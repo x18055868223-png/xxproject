@@ -1,0 +1,63 @@
+{
+  "seed": 20260601,
+  "case_count": 120000,
+  "actual_counts": {
+    "NORMAL": 42858,
+    "EXIT_PREFERRED": 25623,
+    "HEDGE_READY": 36325,
+    "WATCH": 15194
+  },
+  "oracle_route_counts": {
+    "NORMAL": 52842,
+    "EXIT_PREFERRED": 20189,
+    "HEDGE_READY": 31278,
+    "WATCH": 15691
+  },
+  "mismatch_count": 15931,
+  "mismatch_rate": 0.13275833333333334,
+  "mismatch_pairs": {
+    "NORMAL->WATCH": 5242,
+    "NORMAL->EXIT_PREFERRED": 4880,
+    "WATCH->HEDGE_READY": 5058,
+    "WATCH->EXIT_PREFERRED": 602,
+    "EXIT_PREFERRED->NORMAL": 48,
+    "WATCH->NORMAL": 90,
+    "HEDGE_READY->WATCH": 11
+  },
+  "mismatch_reasons": {
+    "watch_too_sensitive": 5242,
+    "other": 4880,
+    "overhedge_due_threshold_or_friction": 5058,
+    "exit_preferred_too_eager": 602,
+    "normal_too_sticky": 138,
+    "late_hedge_or_missing_hard_risk_path": 11
+  },
+  "route_matrix": {
+    "NORMAL": {
+      "NORMAL": 42720,
+      "WATCH": 5242,
+      "EXIT_PREFERRED": 4880
+    },
+    "EXIT_PREFERRED": {
+      "EXIT_PREFERRED": 20141,
+      "NORMAL": 48
+    },
+    "HEDGE_READY": {
+      "HEDGE_READY": 31267,
+      "WATCH": 11
+    },
+    "WATCH": {
+      "HEDGE_READY": 5058,
+      "WATCH": 9941,
+      "EXIT_PREFERRED": 602,
+      "NORMAL": 90
+    }
+  },
+  "derived_design_findings": [
+    "Current v0.3 has a clean minimal decision spine but can be too eager to label EXIT_PREFERRED when risk is only moderately rising and option exit friction is neutral rather than clearly good.",
+    "Hard boundary breach and very high touch probability should create a direct HEDGE_READY path when persistence is at least MEDIUM and hedge friction is better than option exit.",
+    "A WATCH state needs a separate 'rising but not hedgeable yet' lane so drift without persistence does not become hedge intent.",
+    "KPF buffer state should remain a persistence confirmation only; sampled cases confirm using it to alter market touch probability would create false comfort.",
+    "Hedge sizing should be tied to breached/high-probability and tail acceleration, with capped ratios instead of full delta neutralization."
+  ]
+}

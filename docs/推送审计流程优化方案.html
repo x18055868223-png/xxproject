@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>推送审计流程优化方案</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 16mm 16mm 18mm 16mm;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: #111827;
+      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+      line-height: 1.62;
+      font-size: 13.5px;
+      background: #ffffff;
+    }
+    h1, h2, h3 {
+      line-height: 1.25;
+      margin: 0 0 10px;
+      color: #0f172a;
+      page-break-after: avoid;
+    }
+    h1 { font-size: 28px; letter-spacing: 0; }
+    h2 {
+      font-size: 19px;
+      margin-top: 26px;
+      padding-top: 10px;
+      border-top: 2px solid #dbeafe;
+    }
+    h3 { font-size: 15.5px; margin-top: 18px; color: #1e3a8a; }
+    p { margin: 7px 0; }
+    ul, ol { margin: 7px 0 7px 21px; padding: 0; }
+    li { margin: 3px 0; }
+    code {
+      font-family: Consolas, "Cascadia Mono", monospace;
+      background: #f3f4f6;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 12.5px;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a;
+      color: #e5e7eb;
+      padding: 11px 13px;
+      border-radius: 6px;
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 11.5px;
+      line-height: 1.45;
+      margin: 9px 0 12px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 10px 0 14px;
+      page-break-inside: avoid;
+    }
+    th, td {
+      border: 1px solid #d1d5db;
+      padding: 7px 8px;
+      vertical-align: top;
+    }
+    th {
+      background: #eff6ff;
+      color: #172554;
+      font-weight: 700;
+    }
+    .cover {
+      border: 1px solid #bfdbfe;
+      border-left: 6px solid #2563eb;
+      background: #eff6ff;
+      padding: 18px 20px;
+      border-radius: 8px;
+      margin-bottom: 18px;
+    }
+    .subtitle {
+      color: #334155;
+      font-size: 14.5px;
+      margin-top: 8px;
+    }
+    .meta {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 6px 12px;
+      font-size: 12.5px;
+      color: #334155;
+    }
+    .callout {
+      border-left: 4px solid #0ea5e9;
+      background: #f0f9ff;
+      padding: 10px 12px;
+      margin: 12px 0;
+      border-radius: 5px;
+    }
+    .warning {
+      border-left-color: #d97706;
+      background: #fffbeb;
+    }
+    .success {
+      border-left-color: #16a34a;
+      background: #f0fdf4;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      align-items: stretch;
+      margin: 12px 0 16px;
+      page-break-inside: avoid;
+    }
+    .box {
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 10px 8px;
+      background: #f8fafc;
+      min-height: 88px;
+      position: relative;
+    }
+    .box strong {
+      display: block;
+      font-size: 13px;
+      color: #1e3a8a;
+      margin-bottom: 5px;
+    }
+    .box span { display: block; color: #374151; font-size: 11.5px; }
+    .arrow {
+      text-align: center;
+      color: #2563eb;
+      font-weight: 700;
+      margin-top: -4px;
+      margin-bottom: 8px;
+      letter-spacing: 0;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 10px 0;
+    }
+    .mini {
+      border: 1px solid #e5e7eb;
+      border-radius: 7px;
+      padding: 10px 12px;
+      background: #ffffff;
+      page-break-inside: avoid;
+    }
+    .mini h3 { margin-top: 0; }
+    .small { font-size: 12.2px; color: #374151; }
+    .page-break { page-break-before: always; }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <h1>推送审计流程优化方案</h1>
+    <div class="subtitle">从 FMZ 长文本推送切换为“短摘要兜底 + 外部 Relay 完整审计”的双通道方案</div>
+    <div class="meta">
+      <div>日期</div><div>2026-06-17</div>
+      <div>适用范围</div><div>中性回路信号层 Signal Review Card 推送、邮件审计、网页留档</div>
+      <div>核心链路</div><div>信号生成 -> 写 signal_review.jsonl -> POST 完整 card 到外部 relay -> relay 发 HTML 邮件 / 保存网页 -> FMZ Log@ 发短摘要兜底</div>
+      <div>边界</div><div>不改方向判断、不改 EDB 权重、不改执行层下单逻辑；只优化审计投递与留档链路</div>
+    </div>
+  </section>
+
+  <h2>1. 结论</h2>
+  <div class="callout warning">
+    当前实盘现象和本地 v1.2.1 注释共同说明：FMZ `Log @` 推送可作为即时提醒通道，但不适合承载完整信号审计正文。长文本会被截断，换行也可能被压平成单行，导致背景层、修正层、论证层、冲突层无法完整阅读。
+  </div>
+  <p>因此，推荐将推送体系拆成两个通道：</p>
+  <ol>
+    <li><strong>FMZ 短摘要兜底</strong>：继续使用 `Log(..., "@")` 或现有 `Log(text + " @")`，只发送 120-180 字的决策摘要和审计索引。</li>
+    <li><strong>外部 Relay 完整审计</strong>：信号层生成完整 `Signal Review Card` 后，POST JSON 到自维护 relay。Relay 负责持久化、渲染 HTML 邮件、生成网页详情页，并返回 delivery_id / review_url。</li>
+  </ol>
+  <p>这条方案把 FMZ 推送从“完整审计承载层”降级为“可靠触达提醒层”，让完整审计回到可控的外部投递系统中。</p>
+
+  <h2>2. 依据与约束</h2>
+  <h3>2.1 FMZ 官方推送机制</h3>
+  <ul>
+    <li>FMZ `Log()` 输出内容以 `@` 结尾时，该日志进入消息推送队列，并按账户推送设置投递到邮箱、WebHook 等。</li>
+    <li>FMZ 实盘消息推送存在频率限制：同一实盘 20 秒周期内，只保留最后一条推送消息，其他推送会被过滤。</li>
+    <li>FMZ WebHook 推送采用平台推送设置中的 `{body}` 替换方式，官方示例为 GET URL，例如 `http://abc.com/push.php?data={body}`。</li>
+    <li>Python 策略里不使用 `HttpQuery()`；若要主动 POST 外部服务，应使用 Python 标准库 `urllib` 或同等可用 HTTP 客户端。</li>
+  </ul>
+  <h3>2.2 本地实盘证据</h3>
+  <ul>
+    <li>FMZ 邮件已成功到达，说明 `Log @` 触发链路可用。</li>
+    <li>长正文在邮件中截断，且本地 `neutral_regulation_demo_fmz.py` v1.2.1 注释已记录：完整四层正文超过 FMZ 推送长度上限，观察到约 190 字处截断，换行被压平。</li>
+    <li>当前代码已默认 `signal_review_push_compact=True`，说明短摘要是必要兜底，但它不能替代完整 Review。</li>
+  </ul>
+
+  <h2>3. 总体流程</h2>
+  <div class="flow">
+    <div class="box">
+      <strong>1. 信号生成</strong>
+      <span>NeutralRepair 进入确认态，EDB 生成结论、证据、冲突、阻断与因子截面。</span>
+    </div>
+    <div class="box">
+      <strong>2. 本地留档</strong>
+      <span>先写 `signal_review.jsonl`，确保 relay 或邮件失败也不丢审计基准。</span>
+    </div>
+    <div class="box">
+      <strong>3. POST Relay</strong>
+      <span>发送完整 card JSON，带 HMAC、timestamp、nonce、card_id 幂等键。</span>
+    </div>
+    <div class="box">
+      <strong>4. Relay 投递</strong>
+      <span>持久化、渲染 HTML 邮件、生成网页详情页、记录 delivery 状态。</span>
+    </div>
+    <div class="box">
+      <strong>5. FMZ 兜底</strong>
+      <span>发短摘要 `Log @`：结论、冲突、relay 状态、card_id / review_url。</span>
+    </div>
+  </div>
+  <div class="arrow">信号层只负责生成与发送审计事件；完整阅读、邮件排版、网页留档全部交给 relay。</div>
+
+  <h2>4. 组件职责</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>组件</th>
+        <th>职责</th>
+        <th>不负责</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>信号层 FMZ 策略</td>
+        <td>生成完整 `Signal Review Card`；先写 `signal_review.jsonl`；异步或短超时 POST relay；发送 FMZ compact 摘要。</td>
+        <td>不渲染复杂 HTML；不直接管理邮件账号；不阻塞主循环；不改变交易判断。</td>
+      </tr>
+      <tr>
+        <td>Relay API</td>
+        <td>接收完整 JSON；校验签名；幂等去重；持久化；触发邮件和网页渲染；返回投递状态。</td>
+        <td>不参与方向判断；不改写卡片事实；不持有交易所 API key。</td>
+      </tr>
+      <tr>
+        <td>审计存储</td>
+        <td>保存 raw JSON、HTML 快照、delivery log、错误状态；支持按 `card_id` 查询。</td>
+        <td>不作为交易状态机；不覆盖 FMZ 本地 JSONL。</td>
+      </tr>
+      <tr>
+        <td>邮件服务</td>
+        <td>发送 HTML 邮件，主题前置结论，正文按背景 / 修正 / 论证 / 冲突四层展示，可附 JSON。</td>
+        <td>不承载实时执行命令，不依赖邮箱回复触发交易。</td>
+      </tr>
+      <tr>
+        <td>FMZ Log@</td>
+        <td>作为低延迟提醒和失败兜底，发送短摘要及 relay 状态。</td>
+        <td>不再承载完整审计正文。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>5. 数据契约</h2>
+  <p>建议外部 relay 接收 `application/json` 的完整事件。顶层结构保持稳定，后续可通过 `schema_version` 演进。</p>
+  <pre>{
+  "event_type": "signal_review.created",
+  "schema_version": "nrd.signal_review.v1",
+  "source": {
+    "system": "neutral_regulation_demo",
+    "strategy_version": "1.2.1",
+    "fmz_bot": "xuchen-signal",
+    "environment": "live"
+  },
+  "idempotency_key": "BTC:3e3b:20260612T141232",
+  "card_id": "3e3b",
+  "episode_id": "nr-episode-...",
+  "asset": "BTC",
+  "confirmed_time": 1718172752000,
+  "price": 63339.96,
+  "digest": {
+    "support_label": "WAIT_CONFIRMATION",
+    "confidence": 38,
+    "edb_score": 0.18,
+    "agreement": 0.62,
+    "coverage": 0.83,
+    "aligned": ["TMV", "CVD_4h"],
+    "dissent": ["MACRO", "SRD"]
+  },
+  "card": {
+    "conclusion": {},
+    "window": {},
+    "reasoning": {},
+    "conflict": {},
+    "blocking": {},
+    "factor_cross_section": {}
+  },
+  "auth": {
+    "timestamp": 1718172752,
+    "nonce": "uuid-or-random",
+    "signature": "hmac-sha256(base_string)"
+  }
+}</pre>
+
+  <h3>5.1 Relay 返回</h3>
+  <pre>{
+  "ok": true,
+  "delivery_id": "mail-20260612-0001",
+  "review_url": "https://audit.example.com/reviews/3e3b",
+  "duplicate": false,
+  "mail_status": "queued"
+}</pre>
+  <p>信号层不依赖 relay 返回来改变 EDB 结论。返回值只用于 FMZ compact 摘要和本地 `delivery_state` 记录。</p>
+
+  <h2>6. 邮件与网页样式</h2>
+  <h3>6.1 邮件主题</h3>
+  <pre>[中性回路信号审计] BTC #3e3b WAIT_CONFIRMATION conf38 EDB+0.18</pre>
+  <h3>6.2 邮件正文结构</h3>
+  <ol>
+    <li><strong>首屏摘要</strong>：结论、置信、是否可交易、最大同向证据、最大反向证据、解除条件。</li>
+    <li><strong>背景层</strong>：NR 窗口、Anchor、TMV 24h / 48h、Macro 原始组件。</li>
+    <li><strong>修正层</strong>：Gamma regime、net gamma、pin / flip、SRD、Funding。</li>
+    <li><strong>论证层</strong>：EDB score、confidence decomposition、证据贡献账本。</li>
+    <li><strong>冲突层</strong>：同向、反向、降权、阻断、解除条件。</li>
+    <li><strong>附件 / 链接</strong>：raw JSON 附件或 review_url。</li>
+  </ol>
+  <h3>6.3 网页详情页</h3>
+  <p>网页可比邮件更完整，建议支持：按卡号查询、按日期过滤、复制 JSON、导出 PDF、查看 delivery log、查看原始 `factor_cross_section`。</p>
+
+  <h2>7. FMZ 短摘要格式</h2>
+  <p>FMZ `Log @` 只保留最小可用信息，目标是在截断情况下仍能读到结论。</p>
+  <pre>【信号审计】BTC #3e3b WAIT_CONFIRMATION 暂不交易 conf38 EDB+0.18 一致62% 覆盖83% 同向TMV/CVD 反向MACRO/SRD relay=OK mail=queued 详情 https://audit.example.com/reviews/3e3b</pre>
+  <p>若 relay 失败，FMZ 摘要改为：</p>
+  <pre>【信号审计】BTC #3e3b WAIT_CONFIRMATION conf38 relay=FAILED 本地已写signal_review.jsonl 等待重试</pre>
+
+  <h2>8. 故障降级策略</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>故障</th>
+        <th>系统行为</th>
+        <th>操作员看到什么</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>relay 超时</td>
+        <td>本地 JSONL 已写；事件进入 outbox；FMZ 摘要标 `relay=PENDING` 或 `FAILED`。</td>
+        <td>知道有信号，但完整邮件暂未送达，可查本地 JSONL。</td>
+      </tr>
+      <tr>
+        <td>relay 收到重复 card</td>
+        <td>按 `idempotency_key` 去重，返回 `duplicate=true`，不重复发邮件。</td>
+        <td>不收到重复邮件。</td>
+      </tr>
+      <tr>
+        <td>邮件服务失败</td>
+        <td>relay 保存 card 和网页；delivery log 标 `mail_failed`；可重试邮件。</td>
+        <td>FMZ 摘要可带 review_url；网页仍可查。</td>
+      </tr>
+      <tr>
+        <td>FMZ 推送截断</td>
+        <td>设计上只发送短摘要，截断也保留 card_id 和核心结论。</td>
+        <td>用 `card_id` 或链接进入完整页面。</td>
+      </tr>
+      <tr>
+        <td>网络全部不可用</td>
+        <td>本地 `signal_review.jsonl` 仍为最后审计基准；outbox 后续补发。</td>
+        <td>等待网络恢复后补发邮件，期间从 FMZ 日志 / 本地 JSONL 查。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>9. 安全与合规边界</h2>
+  <ul>
+    <li><strong>最小密钥</strong>：relay token 只允许写入审计事件，不允许读历史、不允许触发交易。</li>
+    <li><strong>HMAC 签名</strong>：签名内容包括 timestamp、nonce、card_id、body hash，防止伪造和重放。</li>
+    <li><strong>TLS</strong>：relay 只开放 HTTPS，拒绝明文生产请求。</li>
+    <li><strong>幂等</strong>：`idempotency_key` 由 asset、card_id、confirmed_time 组成。</li>
+    <li><strong>敏感数据</strong>：不发送交易所 API key、账户余额、真实仓位明细；执行层信息只在未来明确授权后接入。</li>
+    <li><strong>审计可追溯</strong>：relay 保存 raw JSON、渲染 HTML、邮件状态、请求来源、签名校验结果。</li>
+  </ul>
+
+  <h2>10. 三种方案对比</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>方案</th>
+        <th>优点</th>
+        <th>问题</th>
+        <th>结论</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>继续 FMZ 长文本推送</td>
+        <td>改动最少，现有链路已通。</td>
+        <td>长正文截断、换行压平、20 秒推送覆盖、不可控长度上限。</td>
+        <td>不适合作为完整审计通道。</td>
+      </tr>
+      <tr>
+        <td>FMZ WebHook 直接承载全文</td>
+        <td>使用 FMZ 推送设置即可接入外部服务。</td>
+        <td>仍依赖 FMZ push body；官方示例为 GET `{body}` 替换，长中文 JSON 不稳。</td>
+        <td>只适合短触发，不适合完整 card。</td>
+      </tr>
+      <tr>
+        <td>策略直接 SMTP 发邮件</td>
+        <td>不需要中间服务。</td>
+        <td>凭据暴露、TLS/端口/超时麻烦、阻塞策略主循环、难以统一留档和重试。</td>
+        <td>不推荐。</td>
+      </tr>
+      <tr>
+        <td>POST 外部 relay，由 relay 发邮件 / 保存网页</td>
+        <td>完整 JSON 可控、邮件样式可控、重试/幂等/网页留档可控、FMZ 只做短摘要。</td>
+        <td>需要维护一个轻量服务。</td>
+        <td>推荐主方案。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>11. 分阶段落地计划</h2>
+  <h3>P0 - Relay 最小闭环</h3>
+  <ul>
+    <li>实现 `/v1/signal-review` POST 接口。</li>
+    <li>校验 HMAC、timestamp、nonce。</li>
+    <li>保存 raw JSON 到 SQLite / 文件 / 对象存储。</li>
+    <li>返回 `delivery_id` 与 `review_url` 初始值。</li>
+    <li>FMZ compact 摘要显示 `relay=OK/FAILED`。</li>
+  </ul>
+  <h3>P1 - HTML 邮件</h3>
+  <ul>
+    <li>接入 SES / Resend / SMTP 中任一邮件服务。</li>
+    <li>渲染四层审计 HTML 邮件。</li>
+    <li>主题前置 `asset / card_id / support_label / confidence / EDB`。</li>
+    <li>支持失败重试与 delivery log。</li>
+  </ul>
+  <h3>P2 - 网页详情页</h3>
+  <ul>
+    <li>为每个 card 生成只读详情页。</li>
+    <li>支持按卡号查询和复制 JSON。</li>
+    <li>邮件和 FMZ 摘要都带 `review_url`。</li>
+  </ul>
+  <h3>P3 - 补发与监控</h3>
+  <ul>
+    <li>信号侧维护 outbox，网络失败后补发。</li>
+    <li>relay 增加投递状态仪表盘。</li>
+    <li>监控：relay 延迟、邮件失败率、重复率、签名失败率。</li>
+  </ul>
+
+  <h2>12. 验收标准</h2>
+  <ol>
+    <li>实盘产生信号后，本地 `signal_review.jsonl` 必定先写入完整 card。</li>
+    <li>relay 能收到完整 JSON，且字段包含 `conclusion / reasoning / conflict / blocking / factor_cross_section`。</li>
+    <li>FMZ 收到短摘要，即使被截断也能看到 `asset / card_id / support_label / confidence`。</li>
+    <li>HTML 邮件能完整展示背景层、修正层、论证层、冲突层。</li>
+    <li>重复发送同一 card 不产生重复邮件。</li>
+    <li>relay 或邮件失败时，FMZ 摘要明确显示失败状态，本地 outbox 可重试。</li>
+    <li>邮件正文中的置信仍标注为“未校准证据质量分”，不误导为胜率。</li>
+  </ol>
+
+  <h2>13. 推荐最终形态</h2>
+  <div class="callout success">
+    最终主链：信号层只做事实生成、结构化留档和短超时上报；relay 做完整审计投递、网页留档和重试；FMZ `Log @` 只保留短摘要兜底。这样既不破坏信号层只读边界，也不把完整审计绑死在 FMZ 的短推送机制上。
+  </div>
+
+  <h2>14. 参考</h2>
+  <ul class="small">
+    <li>FMZ Live Trading Message Push: https://www.fmz.com/user-guide/live-trading-message-push</li>
+    <li>FMZ Log: https://www.fmz.com/syntax-guide/fun/log/log</li>
+    <li>FMZ HttpQuery: https://www.fmz.com/syntax-guide/fun/global/httpquery</li>
+    <li>本地依据：`demo/最新交付物/neutral_regulation_demo_fmz.py` v1.2.1 推送截断注释与 compact 默认开关。</li>
+  </ul>
+</body>
+</html>

@@ -1,0 +1,60 @@
+P0 必须修复
+信号层到执行层的真实接收链缺失
+附件错误地将信号层写成 v1.0.0 并假设存在 allow_downstream_evaluation：附件:5 (line 5)。实际最新交付物是 0.5.4：README:11 (line 11)，当前 strategy_recommendation 也没有该字段：信号输出:6981 (line 6981)。
+项目已有 SignalEvidencePackage 导出桥，但尚未进入最新信号成品，也没有执行层 receiver/传输通路：signal_bridge.py (line 21)。
+必须新增：
+信号生产、原子传输、执行接收、TTL/schema/reject/data_quality 校验。
+package_id 去重及账本血缘。
+总线不可用时禁止新开仓，但不影响已有持仓管理。
+先完成同托管者 loopback/共享路径可行性 spike。
+短确认码、质量漂移与幂等设计互相冲突
+quality_code 包含实时 quote 和 budget：附件:89 (line 89)。行情每轮变化会导致确认码快速失效，用户很可能尚未输入完成，代码已经更新。
+同时，使用原始命令字符串哈希做跨重启幂等：附件:79 (line 79)，未来相同短码被重新分配时，可能被错误忽略，或让延迟旧命令命中新方案。
+应改为：
+用户批准一个冻结的 approval_snapshot。
+预提交按明确漂移容差复核，不要求实时质量哈希完全相等。
+幂等键使用 robot_id + session_id + refresh_seq + command_type + nonce。
+确认码一次性消费，并检查历史命令账本，而不仅是当前推荐库。
+单一 ALLOW_TRADING 会阻断风险收口
+方案仍用一个主门控制开仓、退出和对冲：附件:20 (line 20)。当需要禁止新开仓时，可能连风险退出和对冲归零一起关闭。
+必须拆分：
+text
+
+
+
+ALLOW_ENTRY_TRADING
+ALLOW_EXIT_TRADING
+ALLOW_HEDGE_TRADING
+KILL_NEW_RISK
+EMERGENCY_REDUCE_ONLY
+
+急停应停止新风险并撤销开仓订单，但继续对账、退出、对冲减仓和孤儿对冲清理；恢复必须重新对账并要求新的计划硬批准。
+退出优先级可能反而压住对冲
+动作仲裁只输出唯一动作，并令 EXIT_PREFERRED > HEDGE_READY：附件:102 (line 102)。若退出未授权、无数据或因预算暂停，系统可能持续选择无法执行的退出，同时不允许对冲。
+应让仲裁同时输出：
+text
+
+
+
+preferred_action
+executable_action
+blocked_reason
+fallback_action
+
+当退出不可执行时，应允许回退到对冲。退出活动处于 PAUSED_BY_BUDGET/DATA 时，也不能一律禁止新增必要对冲。
+“对冲全程 reduce_only”无法建立对冲仓位
+方案 E7 写了“全程 reduce_only”：附件:182 (line 182)。但 reduce-only 订单只能减少已有仓位，不能首次建立或增加对冲仓位。
+应明确：
+HEDGE_OPEN/HEDGE_INCREASE：非 reduce-only，受目标数量、保证金和风险预算限制。
+HEDGE_REDUCE/HEDGE_UNWIND：强制 reduce-only。
+每轮从 Deribit instrument metadata 读取 contract_size/min_trade_amount/tick_size，处理 USD 数量换算、取整、超调和资金费率。
+参考：Deribit reduce-only 文档、instrument metadata。
+投影预算仍只是名字，没有算法
+附件要求 projected_budget_passed：附件:95 (line 95)；但当前实现只检查已有风险是否超限，未把拟建仓位加入计算，并明确标记为 PLACEHOLDER：risk_controls.py (line 19)。
+需要计算建仓后的 gamma、vega、保证金、最大价差损失、对冲保证金和费用储备；输入不完整时必须 fail closed。
+P1 应同步修订
+风险退出授权只有按钮和独立预算概念，缺少最大支出、允许订单类型、有效期、撤销和消费语义。
+面板展示的“胜率”实际仍是 1-|delta|：plans.py (line 47)，不应作为真实胜率或 EV 排名依据。
+文稿称“8 个账本”，实际列出了 9 个：附件:108 (line 108)。
+状态机需要显式加入 SHORT_FLAT_LONG_RESIDUAL，而不是从保护腿回收直接跳到 CLOSED。
+FMZ GetCommand 交互方案可行，但官方文档明确其在回测系统中不生效，因此必须使用真实 FMZ 机器人空跑验收：GetCommand 文档。

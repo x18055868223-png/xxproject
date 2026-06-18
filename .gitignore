@@ -1,0 +1,25 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+
+# Local build/package output
+dist/
+
+# Runtime logs and generated archives
+demo/logs/
+*.jsonl
+
+# Local secrets/config
+.env
+.env.*
+*.pem
+*.key
+*.crt
+id_rsa*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+

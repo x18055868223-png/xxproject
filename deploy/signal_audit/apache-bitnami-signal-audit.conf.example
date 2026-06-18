@@ -1,0 +1,28 @@
+# Bitnami Apache alias for the signal audit static frontend.
+# Include this file from /opt/bitnami/apache/conf/httpd.conf, or copy it to a
+# Bitnami include/vhosts directory if that Apache config already includes one.
+
+Alias /signal-audit/signal_cards/ "/opt/signal-audit/signal_cards/"
+Alias /signal-audit/ "/opt/signal-audit/"
+
+<Directory "/opt/signal-audit">
+    Options -Indexes +FollowSymLinks
+    AllowOverride None
+    Require all granted
+</Directory>
+
+<Directory "/opt/signal-audit/signal_cards">
+    Header set Cache-Control "no-store"
+    Options -Indexes +FollowSymLinks
+    AllowOverride None
+    Require all granted
+    <FilesMatch "\.(json|js)$">
+        Require all granted
+    </FilesMatch>
+</Directory>
+
+<Location "/signal-audit/signal_cards/">
+    Require all granted
+</Location>
+
+RedirectMatch 301 ^/signal-audit$ /signal-audit/

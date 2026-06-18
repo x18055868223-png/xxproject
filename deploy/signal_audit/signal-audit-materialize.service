@@ -1,0 +1,12 @@
+[Unit]
+Description=Materialize FMZ signal_review.jsonl for the static signal audit page
+
+[Service]
+Type=oneshot
+MemoryHigh=64M
+MemoryMax=128M
+CPUQuota=25%
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30
+ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl --output /opt/signal-audit --max-cards 200

@@ -1,0 +1,37 @@
+[Unit]
+Description=gexmonitorapi (BTC GEX Monitor metric API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/gexmonitorapi
+# Secrets/config live here (root-owned, chmod 600). See gexmonitorapi.env.example
+EnvironmentFile=/etc/gexmonitorapi.env
+Environment=PYTHONUNBUFFERED=1
+# Bind to 0.0.0.0 for direct exposure (open port 8000 in the Lightsail firewall).
+# If you put Nginx in front, change --host to 127.0.0.1 instead.
+ExecStart=/home/ubuntu/gexmonitorapi/.venv/bin/python -m uvicorn gexmonitorapi.app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+# First request launches a headless browser; give startup some slack.
+TimeoutStartSec=90
+
+# --- memory containment (CRITICAL on small shared boxes) ---
+# Bounds the blast radius: if the headless browser spikes past these limits the
+# kernel reclaims/kills ONLY this service's cgroup, so it can never thrash the
+# whole host into OOM and take down co-located services (e.g. FMZ). If scrapes
+# start failing under load, raise these or move the service to its own instance.
+MemoryHigh=450M
+MemoryMax=600M
+MemorySwapMax=512M
+
+# --- light hardening (kept loose so the headless browser can launch) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

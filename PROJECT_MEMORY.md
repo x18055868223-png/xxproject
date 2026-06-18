@@ -1,0 +1,83 @@
+# Project Memory
+
+## Project overview
+
+- This repository is the integration workspace for the neutral-loop trading system. It gathers system-level design docs, module snapshots, demo integration code, latest FMZ-ready single-file deliverables, and the signal audit archive sample.
+- The main implementation language present in the deliverables is Python. The repository also contains Markdown documentation plus a static HTML/JSON audit archive sample under `audit_archive/`.
+- The current deployable signal-layer artifact is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file version is `demo_version = "1.3.0"` and `schema_version = "nrd.schema.v1.0.0"`.
+- The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.0.0"`.
+- `demo/最新交付物/README.md` states that `demo/最新交付物/` contains the latest FMZ-ready single-file strategies, while `demo/副本快照/` is the historical timeline.
+- This root directory is not currently a Git repository. `git status --short --branch` returned `fatal: not a git repository (or any of the parent directories): .git`.
+
+## Architecture and boundaries
+
+- The root documentation presents the system as four main areas: `01_信号层_中性回路/`, `02_执行层_Deribit/`, `03_VRP门_建仓前定价/`, and `04_对冲模块/`, with `demo/` as the integration sandbox.
+- The signal-layer FMZ file is read-only observation by default. It does not select legs, quote, or place orders.
+- Signal v1.3.0 uses full local JSON audit records plus a short FMZ push summary. Runtime recording writes through `JsonlRecorder` to `demo/logs/<name>.jsonl`; the signal review recorder name is `signal_review`.
+- Current signal audit JSON output is aligned to the finalized static frontend card schema used by the external archive `信号审计前端页面设计/archives/signal-audit-final-20260618`. That frontend reads `signal_cards/index.json`, then lazy-loads `signal_cards/*.json`; direct file mode also uses `signal_cards/fallback.js`.
+- `audit_archive/` in this repo is an older sample/archive scaffold, not the current finalized frontend. Do not treat `audit_archive/public/index.html` as the authoritative audit page.
+- The execution-layer FMZ file is a vertical credit spread execution chain with a single `run_cycle` main path. Its configured signal source default is `OFFLINE_MANUAL`.
+- Execution trading gates are default-safe: `ALLOW_ENTRY_TRADING`, `ALLOW_EXIT_TRADING`, `ALLOW_HEDGE_TRADING`, `KILL_NEW_RISK`, `EMERGENCY_REDUCE_ONLY`, and legacy `ALLOW_TRADING` are all verified as `False` in the current deployable execution file.
+- VRP is documented and coded as a pricing/filtering gate. It must not decide direction, select expiry, enter plan weights, or unlock trading gates.
+
+## Build, test and validation commands
+
+- Verified during initialization: syntax compilation of the current deployable FMZ files works with Python 3.12:
+
+```powershell
+<python-3.12> -m py_compile `
+  demo\最新交付物\neutral_regulation_demo_fmz.py `
+  demo\最新交付物\spm_calendar_protected_short_v1.py
+```
+
+- Verified during initialization: `.codex/config.toml` and `.codex/agents/*.toml` can be parsed by Python `tomllib`.
+- Verified during initialization: `audit_archive/public` can be served as static files over local HTTP, and both `/index.html` and `/data/index.json` return HTTP 200.
+- Verified during 2026-06-18 signal audit alignment: `demo/tests/test_signal_audit_frontend_contract.py` passes, and `demo/最新交付物/neutral_regulation_demo_fmz.py` compiles with Python 3.12.
+- Documented in `demo/最新交付物/README.md` but not re-run during this initialization: execution-layer full regression command `python demo/execution_build/realsrc/tests/run_all.py`.
+- Documented in `demo/最新交付物/README.md` but not re-run during this initialization: execution bundle check command `python demo/execution_build/realsrc/build_bundle.py --check`.
+- Documented in `demo/HANDOFF.md` but not re-run during this initialization: signal bundle check command `python demo/signal_build/build_signal_bundle.py --check`.
+- No `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`, `requirements*.txt`, `tox.ini`, `pytest.ini`, `mypy.ini`, or `.flake8` file was found at this initialization scan.
+
+## Coding conventions
+
+- Keep deployable FMZ files in `demo/最新交付物/`. Historical copies belong in `demo/副本快照/` with a dated version folder and `快照说明.md`.
+- Prefer repository-relative paths in documentation and project memory. Do not write secrets or local machine sensitive paths into project memory.
+- For signal audit data, keep machine-readable raw values in JSON. Presentation layers may translate labels, but should not overwrite raw enum or numeric values.
+- For static audit data, use an index JSON for list/filter fields and per-card JSON files for detail. The finalized frontend expects `signal_cards/index.json` plus `signal_cards/*.json`; do not require browsers to parse the full JSONL on every page load.
+- Keep signal-layer changes in the observability and signal-evidence boundary unless the user explicitly reopens signal logic, EDB weights, or direction classification.
+- Keep execution-layer live trading disabled by default unless the user explicitly asks to change gates and the required live validation has been completed.
+
+## Important invariants
+
+- Signal audit v1.3.0 changes are observability-only: full JSON record, local JSONL, and short push summary must not change direction, EDB score, confidence, blocking, or execution contracts.
+- FMZ push is an alert/navigation channel only. Full audit evidence belongs in JSONL and the static audit page.
+- FMZ push text must remain a single short message. Prior versions were truncated by FMZ/email clients, so long four-layer audit text must not be restored. In the current signal file, the old `render_review_card_push` / `signal_review_push_compact` path has been removed.
+- `signal_review_push_enabled` and `signal_review_push_test` are verified as `False` by default. Push testing must be explicitly enabled and then turned off after verification. When enabled, the current self-test writes one synthetic audit record to `signal_review.jsonl` and pushes one `非真实信号` short alert with a JSON write status marker.
+- Static audit site URL configuration is optional. If `audit_static_base_url` is empty, push summaries should point to FMZ log/card references rather than pretending the static site is deployed.
+- Execution gates default to dry-run/empty trading behavior. Do not flip trading gates as part of unrelated refactors.
+- Execution `GetCommand` interaction requires real FMZ robot dry-run validation; backtest behavior is not enough for that path.
+- The current `audit_archive/` data is synthetic sample data, not proof of production signal ingestion.
+
+## Known pitfalls
+
+- This workspace root is not a Git repository, so `git diff` and `git status` are not available here unless the project is later placed under Git.
+- `python` was not available on `PATH` in this environment during initialization. Use an available Python 3.12 interpreter explicitly when needed.
+- `audit_archive/public/index.html` is a placeholder from the older scaffold. The current finalized static audit page lives outside this repo in the `signal-audit-final-20260618` archive and expects the `signal_cards/` layout.
+- Runtime signal records are not automatically exported by the FMZ strategy itself. The runtime writes `demo/logs/signal_review.jsonl`; `tools/materialize_signal_cards.py` materializes that JSONL into `signal_cards/index.json`, single-card JSON, and `fallback.js` for the finalized static page. Server automation is provided as an optional systemd timer under `deploy/signal_audit/`.
+- `demo/副本快照/2026-06-18_信号v1.3.0_执行v1.6.2_JSON留档+简要推送/` contains an execution file whose content verifies as `STRATEGY_VERSION = "2.0.0"` despite the folder/file naming saying v1.6.2.
+- The old validation scripts documented in upstream/source repositories may not exist in this integration checkout. Verify actual file presence before running a documented command.
+
+## Durable decisions
+
+- Decision: keep `demo/最新交付物/` as the current deployable FMZ artifact folder. Basis: `demo/最新交付物/README.md`. Impact: update this folder after regeneration and preserve dated history in `demo/副本快照/`.
+- Decision: signal v1.3.0 uses frontend-aligned full JSON audit records plus short FMZ push summaries. Basis: current signal file comments/config, `demo/最新交付物/README.md`, and `demo/tests/test_signal_audit_frontend_contract.py`. Impact: future audit work should build the JSONL-to-static-page materializer instead of re-expanding FMZ push bodies.
+- Decision: current static frontend deployment should target the `signal_cards/index.json` plus `signal_cards/*.json` contract from `signal-audit-final-20260618`; the repo `audit_archive/` scaffold is sample/reference only. Impact: export tools should generate the finalized frontend layout, including a stable missing-source representation for optional GEX data.
+- Decision: execution v2.0.0 is vertical-only and default dry-run with separated gates. Basis: current execution file constants and `demo/最新交付物/README.md`. Impact: do not treat disabled gates as a bug, and do not reintroduce calendar or KPF execution paths.
+- Decision: project-level complex tasks should use bounded subagent delegation through `.codex/agents/` when the task has independent exploration, implementation, or review streams. Basis: root `AGENTS.md` created during this initialization. Impact: future complex work should read `PROJECT_MEMORY.md`, classify complexity, delegate where useful, and verify final integration.
+
+## Unconfirmed items
+
+- Whether the full upstream source repository `中性回路 - opus4.8` is available in this workspace was not confirmed during this initialization.
+- Whether the documented source-side tools `tools/static_validate_demo.ps1`, `tools/runtime_check_demo.ps1`, `tools/signal_review_check.py`, `tools/gex_info_check.py`, and `tools/greeks_freshness_check.py` are available outside this integration checkout was not confirmed.
+- Whether a production static audit host, HTTPS access control, or sync job already exists outside this repository was not confirmed.
+- Whether future Codex sessions will load the newly created `.codex/agents/` definitions without reopening the session was not confirmed; start a fresh Codex session after this initialization.

@@ -1,0 +1,120 @@
+{
+  "asset": "BTC",
+  "fetched_at": "2026-06-03T14:52:45+00:00",
+  "stale": false,
+  "availability": "ready",
+  "gex_board": {
+    "total_net_gex": -67000000.0,
+    "dvol": 42.9,
+    "market_state": "negative_gamma"
+  },
+  "gamma_exposure": {
+    "n2": 60000.0,
+    "n1": 65000.0,
+    "flip_point": 67372.727,
+    "volatility_trigger": 65000.0,
+    "spot_price": 66684.5,
+    "magnet_price": 70000.0,
+    "p1": 80000.0,
+    "p2": 82000.0
+  },
+  "volatility": {
+    "iv_rv_ratio": 1.26,
+    "pcr": 0.93,
+    "term_structure": [
+      {
+        "expiry": "4 JUN 26",
+        "atm_iv": 47.2,
+        "skew_25d": -12.8
+      },
+      {
+        "expiry": "5 JUN 26",
+        "atm_iv": 50.1,
+        "skew_25d": -10.6
+      },
+      {
+        "expiry": "6 JUN 26",
+        "atm_iv": 47.2,
+        "skew_25d": -9.8
+      },
+      {
+        "expiry": "12 JUN 26",
+        "atm_iv": 44.8,
+        "skew_25d": -7.0
+      },
+      {
+        "expiry": "19 JUN 26",
+        "atm_iv": 42.9,
+        "skew_25d": -6.3
+      },
+      {
+        "expiry": "26 JUN 26",
+        "atm_iv": 42.6,
+        "skew_25d": -6.1
+      },
+      {
+        "expiry": "31 JUL 26",
+        "atm_iv": 40.2,
+        "skew_25d": -6.0
+      },
+      {
+        "expiry": "28 AUG 26",
+        "atm_iv": 40.1,
+        "skew_25d": -5.4
+      },
+      {
+        "expiry": "25 SEP 26",
+        "atm_iv": 40.9,
+        "skew_25d": -5.7
+      },
+      {
+        "expiry": "25 DEC 26",
+        "atm_iv": 44.1,
+        "skew_25d": -5.5
+      }
+    ]
+  },
+  "flow": {
+    "call_premium": 27700000.0,
+    "put_premium": 51800000.0,
+    "call_put_bias": "35% Call",
+    "put_call_ratio": 1.88,
+    "abnormal_signal": "Put-led selling is setting the tone."
+  },
+  "missing_fields": [],
+  "field_status": {},
+  "sections": {
+    "gex_board": {
+      "fetched_at": "2026-06-03T14:52:00+00:00",
+      "last_success_at": "2026-06-03T14:52:00+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=gex",
+      "content_hash": "743cc8178b8ed44de7b2aea7d8b006344736a786b366e17ac09a8a9e7148d15d",
+      "missing_fields": []
+    },
+    "gamma_exposure": {
+      "fetched_at": "2026-06-03T14:52:15+00:00",
+      "last_success_at": "2026-06-03T14:52:15+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=gamma",
+      "content_hash": "2f7756ea3e680b11ef48e82d42930968e527fbe616e3f4b8759bb11731ed1659",
+      "missing_fields": []
+    },
+    "volatility": {
+      "fetched_at": "2026-06-03T14:52:30+00:00",
+      "last_success_at": "2026-06-03T14:52:30+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=volatility",
+      "content_hash": "4b59dee6fe9a99e13fea14488dd413b5bf224b31116cf78da45a6ee8d6ef043b",
+      "missing_fields": []
+    },
+    "flow": {
+      "fetched_at": "2026-06-03T14:52:45+00:00",
+      "last_success_at": "2026-06-03T14:52:45+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=flow",
+      "content_hash": "697815570c3094c4d17c02a90707eb1029359a99515a958ceb44a27812399ed1",
+      "missing_fields": []
+    }
+  }
+}

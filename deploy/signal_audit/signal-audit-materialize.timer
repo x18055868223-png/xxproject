@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh signal audit static cards from FMZ JSONL
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=120
+Unit=signal-audit-materialize.service
+
+[Install]
+WantedBy=timers.target

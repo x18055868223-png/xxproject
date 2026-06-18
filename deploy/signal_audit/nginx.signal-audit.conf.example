@@ -1,0 +1,19 @@
+# Example nginx server block for the signal audit static frontend.
+# Adjust server_name and TLS settings for the strategy server.
+
+server {
+    listen 80;
+    server_name _;
+
+    root /opt/signal-audit;
+    index index.html;
+
+    location /signal_cards/ {
+        add_header Cache-Control "no-store";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

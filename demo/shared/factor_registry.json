@@ -1,0 +1,59 @@
+{
+  "schema_name": "FactorRegistry",
+  "schema_version": "nrd.demo.factor_registry.v0.1",
+  "generated": "2026-06-02",
+  "note": "单一真相源：31 因子的层/域/状态/输出包/源路径/标定态。FMZ 构建、面板、回放、文档都读它。状态 LIVE=已生效 | PLACEHOLDER=已接线未标定(安全默认) | WARMING=在线暖机 | OFFLINE=离线工具。",
+  "status_legend": {
+    "LIVE": "已标定/已验证，正常影响决策",
+    "PLACEHOLDER": "已实现已接线、未标定，按安全默认行为，不污染决策",
+    "WARMING": "LIVE 逻辑但运行时样本不足，自动降权/降置信",
+    "OFFLINE": "只在回放/标定 harness 跑，不进 live tick"
+  },
+  "factors": [
+    {"id": "S1_external_gate", "name": "External Gate 外部数据门", "layer": "signal", "domain": "signal_gate", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/modules.py:evaluate_external_gate", "calibration_needs": null},
+    {"id": "S2_anchor", "name": "Anchor GEX锚", "layer": "signal", "domain": "signal_timing", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/modules.py:evaluate_anchor", "calibration_needs": null},
+    {"id": "S3_tmvf", "name": "TMV-F 趋势动量波动", "layer": "signal", "domain": "signal_direction", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/factors.py:compute_tmvf_profile", "calibration_needs": "edb_tmv_vote_ref P0 校准"},
+    {"id": "S4_m_die", "name": "M-DIE 短期单向位移", "layer": "signal", "domain": "signal_timing", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/factors.py:compute_m_die", "calibration_needs": null},
+    {"id": "S5_neutral_repair", "name": "NeutralRepair 时序门", "layer": "signal", "domain": "signal_timing", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/neutral_repair.py", "calibration_needs": "nr_threshold_profile relaxed_test→production (闸B硬前提)"},
+    {"id": "S6_edb", "name": "EDB 到期方向合成层(权威方向)", "layer": "signal", "domain": "signal_direction", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/edb.py:evaluate_edb", "calibration_needs": "置信阶梯35/50/68+score_full+floors P0校准"},
+    {"id": "S7_srd", "name": "SRD 偏斜方向", "layer": "signal", "domain": "signal_direction", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/skew_factor.py", "calibration_needs": "srd_vote_scale/base_weight IC 校准"},
+    {"id": "S8_ggr", "name": "GGR 全局Gamma区制门", "layer": "signal", "domain": "signal_safety", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/gamma_regime.py", "calibration_needs": "veto0.80/cut0.50 P0校准"},
+    {"id": "S9_mpf", "name": "MPF 宏观压力", "layer": "signal", "domain": "signal_direction", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/macro_factor.py", "calibration_needs": "edb_macro_vote_ref/base_weight 校准"},
+    {"id": "S10_signal_events", "name": "signal_events 信号事件记录", "layer": "signal", "domain": "signal_output", "status": "LIVE", "output_package": "SignalEvidencePackage", "source": "中性回路-opus4.8/demo/signal_events.py", "calibration_needs": null},
+
+    {"id": "X1_vrp_window_gate", "name": "VRP 窗口门", "layer": "execution", "domain": "pricing_gate", "status": "LIVE", "integration": "R3_EMBEDDED_CANONICAL", "output_package": "VrpGatePackage", "source": "系统总纲/VRP/src/vrp_model.py:assess_window", "calibration_needs": "min_window_vol_edge PLACEHOLDER(多时点IV)"},
+    {"id": "X2_vrp_candidate_gate", "name": "VRP 候选门", "layer": "execution", "domain": "pricing_gate", "status": "LIVE", "integration": "R3_EMBEDDED_CANONICAL", "output_package": "VrpGatePackage", "source": "系统总纲/VRP/src/vrp_model.py:assess_candidate", "calibration_needs": "min_candidate_edge_ccy PLACEHOLDER(多时点IV)"},
+    {"id": "X3_forward_vol_hurdle", "name": "forward_vol_hurdle 前向波动门槛", "layer": "execution", "domain": "pricing_gate", "status": "LIVE", "integration": "R3_EMBEDDED_CANONICAL", "output_package": "VrpGatePackage", "source": "系统总纲/VRP/src/vrp_model.py:forward_vol_hurdle", "calibration_needs": "percentile/cold_start 乘子 PLACEHOLDER"},
+    {"id": "X4_bs_pricer", "name": "BS pricer 期权定价原语", "layer": "execution", "domain": "pricing_gate", "status": "LIVE", "integration": "SHARED_PRIMITIVE", "output_package": "VrpGatePackage", "source": "系统总纲/VRP/src/vrp_model.py:black_scholes_price_usd", "calibration_needs": null},
+
+    {"id": "X5_leg_selection", "name": "leg_selection 选腿", "layer": "execution", "domain": "plan", "status": "LIVE", "integration": "R1_KPF_CUT_DONE", "output_package": "ExecutionPlanPackage", "source": "Deribit期权交易执行层/src/leg_selection.py", "calibration_needs": null},
+    {"id": "X6_plans", "name": "plans 排序与价值指标", "layer": "execution", "domain": "plan", "status": "LIVE", "integration": "R1_KPF_CUT_DONE", "output_package": "ExecutionPlanPackage", "source": "Deribit期权交易执行层/src/plans.py", "calibration_needs": "PLAN_WEIGHTS 归一{0.375,0.375,0.25} 后回放微调"},
+    {"id": "X7_spm_sim", "name": "spm_sim S:PM 保证金释放", "layer": "execution", "domain": "plan", "status": "LIVE", "output_package": "ExecutionPlanPackage", "source": "Deribit期权交易执行层/src/spm_sim.py", "calibration_needs": "MIN_MARGIN_RELIEF_RATIO 回放微调"},
+
+    {"id": "X8_execution", "name": "execution 执行纪律(maker-only)", "layer": "execution", "domain": "order", "status": "LIVE", "output_package": "OrderIntent/fills", "source": "Deribit期权交易执行层/src/execution.py", "calibration_needs": null},
+
+    {"id": "X9_ledger_anchor", "name": "ledger + EntryRiskAnchor", "layer": "execution", "domain": "ledger", "status": "LIVE", "integration": "R4_ANCHOR_VRP_LINEAGE_DONE", "output_package": "PositionLedgerPackage", "source": "Deribit期权交易执行层/src/ledger.py + hedge_risk.build_entry_risk_anchor", "calibration_needs": null},
+
+    {"id": "X10_portfolio_budget", "name": "组合硬预算(并发/vega/gamma/保证金上限)", "layer": "execution", "domain": "portfolio_risk", "status": "PLACEHOLDER", "output_package": "PortfolioRiskBudgetPackage", "source": "NEW(缺口2)", "calibration_needs": "组合上限/熔断阈 用户拍板风险偏好 + 实盘并发数据", "safe_default": "保守硬上限，超即 size=0"},
+    {"id": "X11_regime_sizing", "name": "区制条件化 sizing", "layer": "execution", "domain": "portfolio_risk", "status": "PLACEHOLDER", "output_package": "PortfolioRiskBudgetPackage", "source": "NEW(缺口2)", "calibration_needs": "regime→size 连续函数(Kelly)后置;先保守离散", "safe_default": "base=test_size; weak/VRP薄/GGR逆/vol扩张 ×0.5或0"},
+    {"id": "X12_drawdown_fuse", "name": "回撤熔断", "layer": "execution", "domain": "portfolio_risk", "status": "PLACEHOLDER", "output_package": "PortfolioRiskBudgetPackage", "source": "NEW(缺口2)", "calibration_needs": "日内/周内最大亏损阈 用户拍板", "safe_default": "保守阈,小回撤即 size=0"},
+
+    {"id": "X13_take_profit", "name": "止盈", "layer": "execution", "domain": "position_manage", "status": "PLACEHOLDER", "output_package": "PositionManageDecision", "source": "NEW(缺口3)", "calibration_needs": "止盈目标比例 回放标定", "safe_default": "权利金回吐到保守目标比例即 TAKE_PROFIT_READY(偏早)"},
+    {"id": "X14_gamma_decay_exit", "name": "末日Gamma退出", "layer": "execution", "domain": "position_manage", "status": "PLACEHOLDER", "output_package": "PositionManageDecision", "source": "NEW(缺口3)", "calibration_needs": "剩余DTE/gamma 触发阈 回放标定", "safe_default": "占位阈偏早触发退出"},
+    {"id": "X15_time_exit_roll", "name": "时间退出复核 / Roll dry-run", "layer": "execution", "domain": "position_manage", "status": "PLACEHOLDER", "output_package": "PositionManageDecision", "source": "NEW(缺口3)", "calibration_needs": "复杂自动roll后置;先只标REVIEW", "safe_default": "到阈值只标 TIME_EXIT_REVIEW,不自动动作"},
+
+    {"id": "X16_hedge_decision_vars", "name": "对冲五决策变量", "layer": "execution", "domain": "hedge", "status": "LIVE", "integration": "R1_V0_4_DONE", "output_package": "PositionRiskPackage", "source": "Deribit期权交易执行层/src/hedge_risk.py:evaluate_position_risk", "calibration_needs": "touch/drift/slope 阈 12万样例回放"},
+    {"id": "X17_persistence", "name": "对冲 persistence 持续性", "layer": "execution", "domain": "hedge", "status": "LIVE", "integration": "R1_KPF_CUT_DONE", "output_package": "PositionRiskPackage", "source": "Deribit期权交易执行层/src/hedge_risk.py:persistence_score", "calibration_needs": "删KPF→两项{EDB,GGR}重标定0/1/2→LOW/MED/HIGH"},
+    {"id": "X18_hedge_state_machine", "name": "对冲状态机", "layer": "execution", "domain": "hedge", "status": "LIVE", "output_package": "PositionRiskPackage/HedgeIntentPackage", "source": "Deribit期权交易执行层/src/hedge_risk.py:_state_from_inputs", "calibration_needs": "v1.0收紧项采纳"},
+    {"id": "X19_touch_probability", "name": "触界概率(IV-based BS障碍)", "layer": "execution", "domain": "hedge", "status": "LIVE", "output_package": "PositionRiskPackage", "source": "Deribit期权交易执行层/src/hedge_risk.py:estimate_touch_probability", "calibration_needs": null},
+
+    {"id": "X20_attribution", "name": "最小收益归因", "layer": "execution", "domain": "attribution", "status": "PLACEHOLDER", "output_package": "AttributionPackage", "source": "NEW(缺口4)", "calibration_needs": "纯观测,精细Greeks/曲面归因后置", "safe_default": "只记录分解,不进任何门(中性观测)"},
+
+    {"id": "X21_chain_replay", "name": "全链扣成本净P&L回放", "layer": "execution", "domain": "replay", "status": "OFFLINE", "output_package": "ReplayExpectationPackage", "source": "NEW(缺口1)", "calibration_needs": "多时点Deribit IV前向采集(闸B硬前提:扣成本正期望)", "safe_default": "离线工具,不进 live tick"}
+  ],
+  "orchestration_mechanisms": [
+    {"id": "M1_execution_session", "name": "ExecutionSession 状态机", "role": "执行FMZ会话中枢,串起全链,session_id贯穿", "package": "ExecutionSessionPackage"},
+    {"id": "M2_approval_intent", "name": "ApprovalIntent 授权", "role": "plan_hash+TTL取代重启式ROUND_MODE,安全锚点", "package": "ApprovalIntentPackage", "spike": "需FMZ交互/持久化能力验证"},
+    {"id": "M3_signal_bridge", "name": "SignalEvidence 导出桥", "role": "信号FMZ→执行FMZ的唯一耦合面", "package": "SignalEvidencePackage"}
+  ]
+}

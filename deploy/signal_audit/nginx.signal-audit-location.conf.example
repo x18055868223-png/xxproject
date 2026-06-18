@@ -1,0 +1,20 @@
+# Example nginx location blocks when the audit page is mounted below an
+# existing server as /signal-audit/.
+#
+# Put these blocks inside the existing `server { ... }` block.
+
+location = /signal-audit {
+    return 301 /signal-audit/;
+}
+
+location /signal-audit/signal_cards/ {
+    alias /opt/signal-audit/signal_cards/;
+    add_header Cache-Control "no-store";
+    try_files $uri =404;
+}
+
+location /signal-audit/ {
+    alias /opt/signal-audit/;
+    index index.html;
+    try_files $uri $uri/ /signal-audit/index.html;
+}

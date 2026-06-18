@@ -1,0 +1,685 @@
+(function () {
+  "use strict";
+
+  const embedded = JSON.parse(document.getElementById("signal-data").textContent);
+  let documents = [];
+  const state = {
+    currentId: null,
+    query: "",
+    direction: "",
+    action: "",
+    quality: ""
+  };
+
+  const enumLabels = {
+    ACTIVE: "参与计票",
+    ALLOWED: "允许",
+    BEARISH: "偏空",
+    BEARISH_CONFIRMED: "偏空已确认",
+    BEARISH_WITH_DISAGREEMENT: "偏空但存在分歧",
+    BULLISH: "偏多",
+    BULLISH_CONFIRMED: "偏多已确认",
+    BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
+    CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
+    DEGRADED: "降级",
+    EXCLUDED: "已排除",
+    FINAL: "定稿",
+    FULL_LIVE: "完整实时",
+    GATE_ONLY: "仅门控",
+    HIGH: "高",
+    INSUFFICIENT_WINDOW_COVERAGE: "窗口覆盖不足",
+    LOCKED: "锁定",
+    LONG: "多",
+    LOW: "低",
+    MATERIAL: "实质分歧",
+    MEDIUM: "中",
+    MILD_CROWDED: "轻度拥挤",
+    MILD_HEADWIND: "轻度逆风",
+    MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
+    MIXED_LOW_CONFIDENCE: "混合信号 / 低置信",
+    NEUTRAL: "中性",
+    NEUTRAL_DEAD_ZONE: "中性死区",
+    NONE: "无",
+    NON_VOTING: "不计票",
+    NOT_READY: "未就绪",
+    OBSERVE: "观察",
+    OBSERVE_LONG_BIAS: "观察偏多",
+    OBSERVE_SHORT_BIAS: "观察偏空",
+    OK: "正常",
+    PARTIAL: "部分可用",
+    POSITIVE_GAMMA: "正 Gamma",
+    POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
+    PREPARE_LONG: "准备做多",
+    PREPARE_SHORT: "准备做空",
+    SOFT_GATE: "软门控",
+    SOURCE_AGE_EXCEEDED: "数据时效超限",
+    STALE: "陈旧",
+    UNCALIBRATED: "未校准",
+    VALID: "有效",
+    WAIT_CONFIRMATION: "等待确认",
+    WAIT_FOR_EVIDENCE: "等待证据"
+  };
+
+  const fieldLabels = {
+    absolute_share_pct: "绝对贡献占比",
+    action: "动作",
+    age: "数据年龄",
+    age_ms: "数据年龄(ms)",
+    agreement: "一致性",
+    agreement_factor: "一致性因子",
+    agreement_raw: "原始一致性",
+    all_required_ready: "必需源全部就绪",
+    block_kind: "阻断类型",
+    call_wall: "看涨墙",
+    calibrated: "是否校准",
+    confidence: "置信度",
+    confidence_calibration: "置信校准",
+    confidence_final: "最终置信",
+    confidence_multiplier: "置信乘子",
+    confidence_pre_veto: "否决前置信",
+    confidence_semantics: "置信语义",
+    config_hash: "配置哈希",
+    config_id: "配置 ID",
+    configured: "配置权重",
+    configured_weight: "配置权重",
+    conflict_ratio: "冲突比例",
+    coverage: "覆盖率",
+    coverage_factor: "覆盖因子",
+    coverage_raw: "原始覆盖率",
+    data_quality: "数据质量",
+    data_status: "数据状态",
+    direction: "方向",
+    directional_bias: "方向偏向",
+    dissent_keys: "反向证据键",
+    distance_to_pin_pct: "距钉住点比例",
+    dominant_aligned: "主要同向证据",
+    dominant_dissent: "主要反向证据",
+    effective: "有效权重",
+    effective_weight: "有效权重",
+    effective_weight_sum: "有效权重合计",
+    evidence: "证据",
+    evidence_strength: "证据强度",
+    exclusion_reason: "排除原因",
+    field: "字段",
+    flip_point: "翻转点",
+    ggr_multiplier: "Gamma 置信乘子",
+    hash: "哈希",
+    hard_veto: "硬否决",
+    has_block: "存在阻断",
+    info: "信息量",
+    integrity: "完整性",
+    lean: "方向倾向",
+    level: "等级",
+    magnet_level: "磁吸点位",
+    market_price: "市场价格",
+    market_state: "市场状态",
+    method: "方法",
+    missing_field_count: "缺失字段数",
+    net_gamma_notional_usd: "净 Gamma 名义额(USD)",
+    next_action: "下一步动作",
+    observed_at: "观测时间",
+    participation: "参与状态",
+    participation_status: "参与状态",
+    pin_strike: "钉住行权价",
+    put_wall: "看跌墙",
+    quality: "质量",
+    ratio: "比例",
+    reason: "原因",
+    record_hash: "记录哈希",
+    regime: "Gamma 状态",
+    regime_strength: "状态强度",
+    reliability: "可靠性",
+    required: "是否必需",
+    score_final: "最终得分",
+    source: "数据源",
+    source_ref: "来源引用",
+    source_snapshot_hash: "源快照哈希",
+    status: "状态",
+    strength: "强度",
+    threshold: "阈值",
+    trade_allowed: "是否允许交易",
+    value: "值",
+    veto: "否决",
+    veto_applied: "是否应用否决",
+    vote: "投票",
+    weighted: "加权贡献",
+    weighted_contribution: "加权贡献",
+    weighted_vote_sum: "加权投票和"
+  };
+
+  const $ = (selector) => document.querySelector(selector);
+  const escapeHtml = (value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+  const asArray = (value) => Array.isArray(value) ? value : [];
+  const asObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const get = (object, path, fallback = null) => {
+    const value = path.split(".").reduce((current, key) => current == null ? undefined : current[key], object);
+    return value === undefined ? fallback : value;
+  };
+  const isNullish = (value) => value === null || value === undefined;
+  const rawEnum = (value) => String(value ?? "");
+  const semanticLabel = (value) => {
+    if (isNullish(value)) return "暂缺 (null)";
+    const raw = rawEnum(value);
+    const translated = enumLabels[raw];
+    return translated ? `${translated} (${raw})` : raw;
+  };
+  const semanticCompact = (value) => enumLabels[rawEnum(value)] || rawEnum(value);
+  const normalizeFieldKey = (label) => String(label ?? "")
+    .trim()
+    .replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)
+    .toLowerCase()
+    .replace(/^_/, "")
+    .replace(/[.\s\-/]+/g, "_")
+    .replace(/[^a-z0-9_]+/g, "")
+    .replace(/_+/g, "_");
+  const fieldLabel = (label) => {
+    const raw = String(label ?? "");
+    if (!raw) return raw;
+    const normalized = normalizeFieldKey(raw);
+    const last = normalizeFieldKey(raw.split(/[.\[\]]+/).filter(Boolean).at(-1) || raw);
+    const translated = fieldLabels[normalized] || fieldLabels[last];
+    return translated ? `${translated} (${raw})` : raw;
+  };
+  const isEnum = (value) => typeof value === "string" && /^[A-Z][A-Z0-9_/-]*$/.test(value);
+  const number = (value, digits = 3) => {
+    if (isNullish(value)) return "暂缺 (null)";
+    if (typeof value !== "number") return String(value);
+    return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(value);
+  };
+  const percent = (value, digits = 1) => isNullish(value) ? "暂缺 (null)" : `${number(value * 100, digits)}%`;
+  const booleanText = (value) => isNullish(value) ? "暂缺 (null)" : value ? "是 (true)" : "否 (false)";
+  const scalarText = (value, options = {}) => {
+    if (isNullish(value)) return "暂缺 (null)";
+    if (typeof value === "boolean") return booleanText(value);
+    if (typeof value === "number") return number(value, options.digits ?? 4);
+    if (isEnum(value) && options.translate !== false) return semanticLabel(value);
+    return String(value);
+  };
+  const valueHtml = (value, options = {}) => (
+    `<span class="${isNullish(value) ? "null-value" : ""}">${escapeHtml(scalarText(value, options))}</span>`
+  );
+  const dateText = (iso, mode = "long") => {
+    if (!iso) return "暂缺 (null)";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return String(iso);
+    const options = mode === "short"
+      ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
+      : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+    return new Intl.DateTimeFormat("zh-CN", options).format(date);
+  };
+  const ageText = (ageMs) => {
+    if (isNullish(ageMs)) return "暂缺 (null)";
+    if (ageMs < 1000) return `${number(ageMs, 0)} ms`;
+    if (ageMs < 60000) return `${number(ageMs / 1000, 1)} 秒`;
+    if (ageMs < 3600000) return `${number(ageMs / 60000, 1)} 分钟`;
+    return `${number(ageMs / 3600000, 1)} 小时`;
+  };
+  const cardId = (doc) => get(doc, "identity.card_id", get(doc, "card_id", "N/A"));
+  const shortId = (doc) => get(doc, "identity.short_id", cardId(doc).slice(-4));
+  const confirmedAt = (doc) => get(doc, "identity.confirmed_at", get(doc, "created_at"));
+  const symbol = (doc) => get(doc, "identity.symbol", get(doc, "symbol", "N/A"));
+  const decision = (doc) => asObject(get(doc, "decision", get(doc, "final_state", {})));
+  const lean = (doc) => get(doc, "decision.lean", get(doc, "final_state.direction", "UNKNOWN"));
+  const support = (doc) => get(doc, "decision.support_label", get(doc, "final_state.action", "UNKNOWN"));
+  const qualityOverall = (doc) => get(doc, "quality.overall", "UNKNOWN");
+  const sortByTimeDesc = (items) => [...items].sort((a, b) => new Date(confirmedAt(b)) - new Date(confirmedAt(a)));
+
+  const badgeClass = (value) => {
+    const normalized = rawEnum(value).toUpperCase();
+    if (["OK", "ACTIVE", "ALLOWED", "BULLISH"].some((key) => normalized.includes(key))) return "is-good";
+    if (["DEGRADED", "STALE", "MISSING", "HIGH", "BEARISH"].some((key) => normalized.includes(key))) return "is-bad";
+    if (["WAIT", "NEUTRAL", "PARTIAL", "UNCALIBRATED", "EXCLUDED", "NON_VOTING"].some((key) => normalized.includes(key))) return "is-wait";
+    return "";
+  };
+  const statusBadge = (label, value, solid = false) => (
+    `<span class="badge ${solid ? "is-solid" : badgeClass(value)}">${label ? `${escapeHtml(label)}: ` : ""}${escapeHtml(semanticLabel(value))}</span>`
+  );
+  const metric = (label, value, note = "") => `
+    <div class="metric">
+      <span class="metric-label">${escapeHtml(fieldLabel(label))}</span>
+      <span class="metric-value ${isNullish(value) ? "null-value" : ""}">${escapeHtml(scalarText(value, { translate: false, digits: 2 }))}</span>
+      ${note ? `<span class="metric-note">${escapeHtml(note)}</span>` : ""}
+    </div>
+  `;
+  const kv = (key, value, options = {}) => `
+    <div class="kv">
+      <dt>${escapeHtml(fieldLabel(key))}</dt>
+      <dd>${valueHtml(value, options)}</dd>
+    </div>
+  `;
+  const section = (title, purpose, content, id = "") => `
+    <section class="section" ${id ? `id="${escapeHtml(id)}"` : ""}>
+      <div class="section-header">
+        <h2 class="section-title">${escapeHtml(title)}</h2>
+        <p class="section-purpose">${escapeHtml(purpose || "")}</p>
+      </div>
+      ${content}
+    </section>
+  `;
+  const listHtml = (items, emptyText = "无") => {
+    const values = asArray(items);
+    if (!values.length) return `<div class="empty-inline">${escapeHtml(emptyText)}</div>`;
+    return `<ul class="plain-list">${values.map((item) => `<li>${valueHtml(item, { translate: false })}</li>`).join("")}</ul>`;
+  };
+
+  async function loadDocuments() {
+    const fallback = sortByTimeDesc(window.SIGNAL_CARD_FIXTURES || embedded);
+    if (window.location.protocol === "file:") return fallback;
+    try {
+      const manifestResponse = await fetch("signal_cards/index.json", { cache: "no-store" });
+      if (!manifestResponse.ok) throw new Error(`manifest ${manifestResponse.status}`);
+      const manifest = await manifestResponse.json();
+      const loaded = await Promise.all(asArray(manifest.cards).map(async (card) => {
+        const response = await fetch(card.path, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${card.path} ${response.status}`);
+        return response.json();
+      }));
+      return sortByTimeDesc(loaded);
+    } catch (error) {
+      console.warn("Using embedded canonical fixtures:", error);
+      return fallback;
+    }
+  }
+
+  function uniqueValues(path) {
+    return [...new Set(documents.map((doc) => get(doc, path)).filter((value) => !isNullish(value)))].sort();
+  }
+
+  function populateSelect(selector, placeholder, values) {
+    const select = $(selector);
+    const current = select.value;
+    select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>`;
+    values.forEach((value) => {
+      select.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(value)}">${escapeHtml(semanticLabel(value))}</option>`);
+    });
+    select.value = current;
+  }
+
+  function populateFilters() {
+    populateSelect("#directionFilter", "全部方向", uniqueValues("decision.lean"));
+    populateSelect("#actionFilter", "全部动作", uniqueValues("decision.support_label"));
+    populateSelect("#qualityFilter", "全部质量状态", uniqueValues("quality.overall"));
+  }
+
+  function setupFilterEvents() {
+    $("#searchInput").addEventListener("input", (event) => {
+      state.query = event.target.value.trim().toLowerCase();
+      render();
+    });
+    $("#directionFilter").addEventListener("change", (event) => {
+      state.direction = event.target.value;
+      render();
+    });
+    $("#actionFilter").addEventListener("change", (event) => {
+      state.action = event.target.value;
+      render();
+    });
+    $("#qualityFilter").addEventListener("change", (event) => {
+      state.quality = event.target.value;
+      render();
+    });
+  }
+
+  function filteredDocuments() {
+    return documents.filter((doc) => {
+      const haystack = [
+        cardId(doc), symbol(doc), get(doc, "identity.strategy_name"),
+        lean(doc), semanticLabel(lean(doc)), support(doc), semanticLabel(support(doc)),
+        qualityOverall(doc), semanticLabel(qualityOverall(doc)), get(doc, "display_layers.headline")
+      ].join(" ").toLowerCase();
+      return (!state.query || haystack.includes(state.query))
+        && (!state.direction || lean(doc) === state.direction)
+        && (!state.action || support(doc) === state.action)
+        && (!state.quality || qualityOverall(doc) === state.quality);
+    }).sort((a, b) => new Date(confirmedAt(b)) - new Date(confirmedAt(a)));
+  }
+
+  function renderIndex(list) {
+    $("#resultCount").textContent = `${list.length} / ${documents.length}`;
+    if (!list.length) {
+      $("#indexList").innerHTML = `<div class="empty">没有匹配的信号文档</div>`;
+      return;
+    }
+    if (!list.some((doc) => cardId(doc) === state.currentId)) state.currentId = cardId(list[0]);
+    $("#indexList").innerHTML = list.map((doc) => {
+      const active = cardId(doc) === state.currentId ? "is-active" : "";
+      const currentDecision = decision(doc);
+      return `
+        <button class="index-item ${active}" type="button" data-card-id="${escapeHtml(cardId(doc))}">
+          <div class="index-topline">
+            <span class="index-symbol">${escapeHtml(symbol(doc))} #${escapeHtml(shortId(doc))}</span>
+            <span class="index-time">${escapeHtml(dateText(confirmedAt(doc), "short"))}</span>
+          </div>
+          <p class="index-summary">${escapeHtml(get(doc, "display_layers.headline", currentDecision.final_conclusion_cn || ""))}</p>
+          <div class="mini-stats">
+            <span>${escapeHtml(semanticCompact(lean(doc)))}</span>
+            <span>${escapeHtml(semanticCompact(support(doc)))}</span>
+            <span>置信 ${escapeHtml(scalarText(currentDecision.confidence, { translate: false }))}</span>
+            <span>${escapeHtml(semanticCompact(qualityOverall(doc)))}</span>
+          </div>
+        </button>
+      `;
+    }).join("");
+    document.querySelectorAll(".index-item").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.currentId = button.dataset.cardId;
+        render();
+      });
+    });
+  }
+
+  function renderDecision(doc) {
+    const current = decision(doc);
+    return section("决策结论", "将方向、证据强度、置信语义和执行许可分开呈现。", `
+      <p class="summary-text">${valueHtml(current.final_conclusion_cn, { translate: false })}</p>
+      <dl class="kv-grid" style="margin-top: 18px;">
+        ${kv("Directional bias", current.directional_bias)}
+        ${kv("Side hint", current.side_hint)}
+        ${kv("Confidence calibration", current.confidence_calibration)}
+        ${kv("Confidence semantics", current.confidence_semantics)}
+        ${kv("Trade allowed", current.trade_allowed)}
+        ${kv("Next action", current.next_action)}
+      </dl>
+    `);
+  }
+
+  function renderGammaOverview(doc) {
+    const gex = asObject(get(doc, "factor_cross_section.gex_info", {}));
+    const gamma = asObject(get(doc, "factor_cross_section.gamma_regime", {}));
+    const hasGex = Object.keys(gex).length > 0;
+    const hasGamma = Object.keys(gamma).length > 0;
+    if (!hasGex && !hasGamma) {
+      return section("期权 Gamma / GEX 重点", "优先位保留给期权 gamma 状态与关键点位。", `<div class="empty">暂无 gex_info 或 gamma_regime</div>`);
+    }
+    return section("期权 Gamma / GEX 重点", "优先展示当前 Gamma 状态、净 Gamma 名义额与关键点位，方便一眼判断空间约束。", `
+      <dl class="kv-grid gamma-grid">
+        ${kv("market_state", gex.market_state)}
+        ${kv("regime", gamma.regime)}
+        ${kv("regime_strength", gamma.regime_strength, { translate: false })}
+        ${kv("net_gamma_notional_usd", gex.net_gamma_notional_usd ?? gamma.net_gamma_notional_usd, { translate: false })}
+        ${kv("flip_point", gex.flip_point ?? gamma.flip_point, { translate: false })}
+        ${kv("pin_strike", gamma.pin_strike, { translate: false })}
+        ${kv("distance_to_pin_pct", isNullish(gamma.distance_to_pin_pct) ? null : percent(gamma.distance_to_pin_pct), { translate: false })}
+        ${kv("confidence_multiplier", gamma.confidence_multiplier, { translate: false })}
+        ${kv("call_wall", gex.call_wall, { translate: false })}
+        ${kv("put_wall", gex.put_wall, { translate: false })}
+        ${kv("magnet_level", gex.magnet_level, { translate: false })}
+        ${kv("veto", gamma.veto)}
+      </dl>
+      <div class="source-ref-row">
+        ${!isNullish(gex.source_ref) ? `<span class="chip">gex_info: ${escapeHtml(gex.source_ref)}</span>` : ""}
+        ${!isNullish(gamma.source_ref) ? `<span class="chip">gamma_regime: ${escapeHtml(gamma.source_ref)}</span>` : ""}
+        ${!isNullish(gex.observed_at) ? `<span class="chip">GEX observed ${escapeHtml(dateText(gex.observed_at))}</span>` : ""}
+        ${!isNullish(gamma.observed_at) ? `<span class="chip">Gamma observed ${escapeHtml(dateText(gamma.observed_at))}</span>` : ""}
+      </div>
+    `, "gamma-overview");
+  }
+
+  function renderDisplayLayers(doc) {
+    const layers = asObject(get(doc, "display_layers", {}));
+    const layerKeys = ["background", "correction", "reasoning", "conflict"];
+    const layerItems = layerKeys.map((key) => {
+      const layer = asObject(layers[key]);
+      if (!Object.keys(layer).length) return "";
+      return `
+        <li class="line-item">
+          <p class="line-title">${escapeHtml(layer.title_cn || key)}</p>
+          <p class="line-body">${valueHtml(layer.summary_cn, { translate: false })}</p>
+          <div class="source-ref-row">${asArray(layer.source_refs).map((ref) => `<span class="chip">${escapeHtml(ref)}</span>`).join("")}</div>
+        </li>
+      `;
+    }).join("");
+    return section("展示层摘要", "由 JSON 自带的展示层文案驱动，避免前端自行猜测结论。", `
+      <ul class="layer-list">${layerItems}</ul>
+      <h3 class="subsection-title">Operator focus</h3>
+      <ol class="focus-list">${asArray(layers.operator_focus).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>
+    `);
+  }
+
+  function renderQuality(doc) {
+    const quality = asObject(get(doc, "quality", {}));
+    const sources = asObject(quality.sources);
+    const rows = Object.entries(sources).map(([key, source]) => `
+      <tr>
+        <td><strong>${escapeHtml(key)}</strong></td>
+        <td>${valueHtml(source.required)}</td>
+        <td>${statusBadge("", source.status)}</td>
+        <td>${escapeHtml(dateText(source.observed_at))}</td>
+        <td class="num">${escapeHtml(ageText(source.age_ms))}</td>
+        <td>${valueHtml(source.source_ref)}</td>
+        <td>${valueHtml(source.reason, { translate: true })}</td>
+      </tr>
+    `).join("");
+    const degraded = asArray(quality.degraded_sources);
+    return section("数据质量与时效", "逐源显示 required、status、observed_at、age_ms 和 source_ref；缺失必须可见。", `
+      <dl class="kv-grid" style="margin-bottom: 16px;">
+        ${kv("Overall", quality.overall)}
+        ${kv("All required ready", quality.all_required_sources_ready)}
+        ${kv("Missing field count", asArray(quality.missing_fields).length, { translate: false })}
+        ${kv("Degraded source count", degraded.length, { translate: false })}
+      </dl>
+      <div class="table-wrap">
+        <table class="source-table">
+          <thead><tr>${["Source", "Required", "Status", "Observed at", "Age", "Source ref", "Reason"].map((label) => `<th>${escapeHtml(fieldLabel(label))}</th>`).join("")}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="two-column-notes">
+        <div><h3 class="subsection-title">Missing fields</h3>${listHtml(quality.missing_fields, "无缺失字段")}</div>
+        <div><h3 class="subsection-title">Degraded sources</h3>${degraded.length ? `<ul class="plain-list">${degraded.map((item) => `<li><strong>${escapeHtml(item.source)}</strong> · ${escapeHtml(semanticLabel(item.status))} · ${escapeHtml(semanticLabel(item.reason))}</li>`).join("")}</ul>` : `<div class="empty-inline">无降级数据源</div>`}</div>
+      </div>
+    `);
+  }
+
+  function renderBlocking(doc) {
+    const blocking = asObject(get(doc, "blocking", {}));
+    const gates = asArray(blocking.soft_gates);
+    const conditions = asArray(blocking.unblock_conditions);
+    return section("阻断与解除条件", "阻断原因和解除条件使用结构化字段，不从文案反推。", `
+      <dl class="kv-grid" style="margin-bottom: 16px;">
+        ${kv("Has block", blocking.has_block)}
+        ${kv("Block kind", blocking.block_kind)}
+        ${kv("Hard veto", blocking.hard_veto)}
+      </dl>
+      <ul class="adjustment-list">
+        ${gates.map((gate) => `<li class="line-item"><p class="line-title">${escapeHtml(semanticLabel(gate.gate))}</p><div class="change"><span class="chip">${escapeHtml(semanticLabel(gate.reason_code))}</span></div><p class="line-body">${valueHtml(gate.reason_cn, { translate: false })}</p></li>`).join("") || `<li class="empty-inline">无 soft gate</li>`}
+      </ul>
+      <h3 class="subsection-title">Unblock conditions</h3>
+      <ul class="adjustment-list">${conditions.map((item) => `<li class="line-item"><p class="line-title">${escapeHtml(item.condition_cn || item.metric)}</p><div class="change"><span class="chip">${escapeHtml(item.metric)}</span><span class="chip">${escapeHtml(item.operator)}</span><span class="chip">threshold: ${escapeHtml(scalarText(item.threshold, { translate: false }))}</span></div></li>`).join("") || `<li class="empty-inline">无解除条件</li>`}</ul>
+    `);
+  }
+
+  function renderReasoning(doc) {
+    const reasoning = asObject(get(doc, "reasoning", {}));
+    const score = asObject(reasoning.score);
+    const agreement = asObject(reasoning.agreement);
+    const coverage = asObject(reasoning.coverage);
+    const decomposition = asObject(reasoning.confidence_decomposition);
+    const evidenceRows = asArray(reasoning.evidence).map((evidence) => `
+      <tr class="participation-${escapeHtml(rawEnum(evidence.participation_status).toLowerCase())}">
+        <td><strong>${escapeHtml(evidence.key || "N/A")}</strong><br><span class="metric-note">${escapeHtml(evidence.gloss_cn || "")}</span></td>
+        <td>${statusBadge("", evidence.participation_status)}</td>
+        <td class="num">${valueHtml(evidence.vote, { translate: false })}</td>
+        <td class="num">${valueHtml(evidence.configured_weight, { translate: false })}</td>
+        <td class="num">${valueHtml(evidence.reliability, { translate: false })}</td>
+        <td class="num">${valueHtml(evidence.information, { translate: false })}</td>
+        <td class="num">${valueHtml(evidence.effective_weight, { translate: false })}</td>
+        <td class="num">${valueHtml(evidence.weighted_contribution, { translate: false })}</td>
+        <td class="num">${isNullish(evidence.absolute_share_pct) ? valueHtml(null) : escapeHtml(`${number(evidence.absolute_share_pct, 2)}%`)}</td>
+        <td>${valueHtml(evidence.lean)}</td>
+        <td>${valueHtml(evidence.source_ref, { translate: false })}</td>
+        <td>${valueHtml(evidence.exclusion_reason)}</td>
+      </tr>
+    `).join("");
+    return section("完整证据账本", reasoning.summary_cn || "保留所有参与、排除、不计票和门控证据。", `
+      <dl class="kv-grid" style="margin-bottom: 16px;">
+        ${kv("Engine", reasoning.engine, { translate: false })}
+        ${kv("Engine version", reasoning.engine_version, { translate: false })}
+        ${kv("Score final", score.final, { translate: false })}
+        ${kv("Agreement", agreement.value, { translate: false })}
+        ${kv("Coverage", coverage.value, { translate: false })}
+        ${kv("Confidence final", decomposition.confidence_final, { translate: false })}
+      </dl>
+      <div class="formula-block"><strong>Score</strong><span>${escapeHtml(score.method || "")}</span><span>weighted sum ${escapeHtml(scalarText(score.weighted_vote_sum, { translate: false }))} / effective weight ${escapeHtml(scalarText(score.effective_weight_sum, { translate: false }))}</span></div>
+      <div class="table-wrap" style="margin-top: 16px;">
+        <table class="evidence-table">
+          <thead><tr>${["Evidence", "Participation", "Vote", "Configured", "Reliability", "Info", "Effective", "Weighted", "Absolute share pct", "Lean", "Source ref", "Exclusion reason"].map((label) => `<th>${escapeHtml(fieldLabel(label))}</th>`).join("")}</tr></thead>
+          <tbody>${evidenceRows}</tbody>
+        </table>
+      </div>
+      <h3 class="subsection-title">Confidence decomposition</h3>
+      <dl class="kv-grid">
+        ${kv("Strength", decomposition.strength, { translate: false })}
+        ${kv("Agreement factor", decomposition.agreement_factor, { translate: false })}
+        ${kv("Coverage factor", decomposition.coverage_factor, { translate: false })}
+        ${kv("GGR multiplier", decomposition.ggr_multiplier, { translate: false })}
+        ${kv("Confidence pre-veto", decomposition.confidence_pre_veto, { translate: false })}
+        ${kv("Veto applied", decomposition.veto_applied)}
+        ${kv("Confidence final", decomposition.confidence_final, { translate: false })}
+      </dl>
+    `);
+  }
+
+  function renderConflict(doc) {
+    const conflict = asObject(get(doc, "conflict", {}));
+    const dominant = asObject(conflict.dominant_conflict);
+    return section("冲突解释", conflict.explanation_cn || "", `
+      <dl class="kv-grid">
+        ${kv("Method", conflict.method, { translate: false })}
+        ${kv("Ratio", isNullish(conflict.ratio) ? null : percent(conflict.ratio), { translate: false })}
+        ${kv("Level", conflict.level)}
+        ${kv("Dominant aligned", dominant.aligned_key, { translate: false })}
+        ${kv("Dominant dissent", dominant.dissent_key, { translate: false })}
+      </dl>
+      <div class="conflict-sides" style="margin-top: 16px;">
+        <div class="side"><span class="side-label">Aligned keys</span><span class="side-value">${escapeHtml(asArray(conflict.aligned_keys).join(", ") || "无")}</span></div>
+        <div class="side"><span class="side-label">Dissent keys</span><span class="side-value">${escapeHtml(asArray(conflict.dissent_keys).join(", ") || "无")}</span></div>
+      </div>
+      <div class="text-block"><p>${valueHtml(dominant.explanation_cn, { translate: false })}</p></div>
+    `);
+  }
+
+  function flatten(value, prefix = "", depth = 0, rows = []) {
+    if (depth > 3 || isNullish(value) || typeof value !== "object") {
+      rows.push([prefix || "value", value]);
+      return rows;
+    }
+    if (Array.isArray(value)) {
+      if (!value.length) rows.push([prefix || "value", []]);
+      value.forEach((item, index) => flatten(item, `${prefix}[${index}]`, depth + 1, rows));
+      return rows;
+    }
+    const entries = Object.entries(value);
+    if (!entries.length) rows.push([prefix || "value", {}]);
+    entries.forEach(([key, child]) => flatten(child, prefix ? `${prefix}.${key}` : key, depth + 1, rows));
+    return rows;
+  }
+
+  function renderFactorCrossSection(doc) {
+    const crossSection = asObject(get(doc, "factor_cross_section", {}));
+    const blocks = Object.entries(crossSection).map(([key, value]) => {
+      const rows = flatten(value).map(([path, scalar]) => `
+        <tr><td class="field-path">${escapeHtml(fieldLabel(path))}</td><td>${Array.isArray(scalar) || (scalar && typeof scalar === "object") ? `<code>${escapeHtml(JSON.stringify(scalar))}</code>` : valueHtml(scalar)}</td></tr>
+      `).join("");
+      const status = get(value, "data_status", get(value, "status"));
+      return `
+        <details class="factor-detail" ${["tmvf", "micro_flow", "gamma_regime"].includes(key) ? "open" : ""}>
+          <summary><span>${escapeHtml(key)}</span>${!isNullish(status) ? statusBadge("", status) : ""}</summary>
+          <div class="table-wrap"><table class="field-table"><thead><tr><th>${escapeHtml(fieldLabel("Field"))}</th><th>${escapeHtml(fieldLabel("Value"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
+        </details>
+      `;
+    }).join("");
+    return section("因子原始截面", "按 JSON 实际字段递归展示；新增少量字段无需修改固定模板。", `<div class="factor-list">${blocks || `<div class="empty">暂无 factor_cross_section</div>`}</div>`);
+  }
+
+  function renderProvenance(doc) {
+    const provenance = asObject(get(doc, "provenance", {}));
+    const sourceSnapshot = asObject(provenance.source_snapshot);
+    const configSnapshot = asObject(provenance.config_snapshot);
+    const versions = asObject(provenance.component_versions);
+    const integrity = asObject(get(doc, "integrity", {}));
+    const delivery = asObject(get(doc, "delivery", {}));
+    return section("来源、交付与完整性", "配置、源快照、组件版本和哈希独立展示；null 不隐藏。", `
+      <h3 class="subsection-title">Provenance</h3>
+      <dl class="kv-grid">
+        ${kv("Runtime mode", provenance.runtime_mode)}
+        ${kv("Source snapshot id", sourceSnapshot.snapshot_id, { translate: false })}
+        ${kv("Source snapshot hash", sourceSnapshot.hash, { translate: false })}
+        ${kv("Config id", configSnapshot.config_id, { translate: false })}
+        ${kv("Config hash", configSnapshot.hash, { translate: false })}
+      </dl>
+      <h3 class="subsection-title">Component versions</h3>
+      <ul class="audit-list">${Object.entries(versions).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtml(value, { translate: false })}</span></li>`).join("") || `<li class="empty-inline">暂无组件版本</li>`}</ul>
+      <h3 class="subsection-title">Delivery</h3>
+      <div class="push-summary">${valueHtml(delivery.fmz_push_summary, { translate: false })}</div>
+      <ul class="audit-list" style="margin-top: 12px;">${Object.entries(delivery).filter(([key]) => key !== "fmz_push_summary").map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtml(value, { translate: false })}</span></li>`).join("")}</ul>
+      <h3 class="subsection-title">Integrity</h3>
+      <ul class="audit-list">${Object.entries(integrity).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${value && typeof value === "object" ? `<code>${escapeHtml(JSON.stringify(value))}</code>` : valueHtml(value, { translate: false })}</span></li>`).join("")}</ul>
+    `);
+  }
+
+  function renderDocument(doc) {
+    if (!doc) {
+      $("#documentView").innerHTML = `<div class="empty">请选择一份信号文档</div>`;
+      return;
+    }
+    const currentDecision = decision(doc);
+    const schema = asObject(get(doc, "schema", {}));
+    const identity = asObject(get(doc, "identity", {}));
+    const quality = asObject(get(doc, "quality", {}));
+    const conflict = asObject(get(doc, "conflict", {}));
+    const price = get(doc, "market_context.price", get(doc, "market_price"));
+    $("#documentView").innerHTML = `
+      <header class="doc-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(`${schema.name || "signal_review_card"}@${schema.version || "unknown"} / ${schema.status || ""}`)}</p>
+          <h1 class="doc-title">${escapeHtml(symbol(doc))} 信号审计卡</h1>
+          <p class="doc-subtitle">${escapeHtml(identity.strategy_name || "")}${identity.strategy_version ? ` ${escapeHtml(identity.strategy_version)}` : ""} · ${escapeHtml(dateText(confirmedAt(doc)))} · ${escapeHtml(cardId(doc))}</p>
+        </div>
+        <div class="status-stack">
+          ${statusBadge("Direction", lean(doc), true)}
+          ${statusBadge("Action", support(doc))}
+          ${statusBadge("Quality", quality.overall)}
+          ${identity.is_synthetic ? statusBadge("Record", "SYNTHETIC") : ""}
+        </div>
+      </header>
+      <div class="metric-strip" aria-label="信号关键指标">
+        ${metric("Market price", price, get(doc, "market_context.quote_currency", ""))}
+        ${metric("Evidence strength", currentDecision.evidence_strength)}
+        ${metric("Confidence", currentDecision.confidence, semanticCompact(currentDecision.confidence_calibration))}
+        ${metric("Conflict ratio", isNullish(conflict.ratio) ? null : `${number(conflict.ratio * 100, 1)}%`, semanticCompact(conflict.level))}
+        ${metric("Data quality", semanticCompact(quality.overall), quality.all_required_sources_ready ? "required ready" : "requires review")}
+      </div>
+      ${renderGammaOverview(doc)}
+      ${renderDecision(doc)}
+      ${renderDisplayLayers(doc)}
+      ${renderQuality(doc)}
+      ${renderBlocking(doc)}
+      ${renderReasoning(doc)}
+      ${renderConflict(doc)}
+      ${renderFactorCrossSection(doc)}
+      ${renderProvenance(doc)}
+    `;
+  }
+
+  function render() {
+    const list = filteredDocuments();
+    renderIndex(list);
+    renderDocument(documents.find((doc) => cardId(doc) === state.currentId));
+  }
+
+  async function start() {
+    setupFilterEvents();
+    documents = await loadDocuments();
+    state.currentId = documents[0] ? cardId(documents[0]) : null;
+    populateFilters();
+    render();
+  }
+
+  start();
+})();

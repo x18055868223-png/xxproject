@@ -1,0 +1,9 @@
+{
+  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.18-r1",
+  "backup_date": "2026-06-18",
+  "project_name": "中性回路整合工程",
+  "target_repository": "https://github.com/x18055868223-png/xxproject",
+  "source_workspace": "C:/Users/Xu/Documents/中性回路整合工程",
+  "scope": "signal layer, execution layer, VRP gate, hedge module, GEX monitor API, signal audit frontend deployment assets, current docs and asset index",
+  "secret_policy": "backup snapshot must exclude runtime logs, caches, virtual environments, local git directories, and live token-bearing deployment overrides where practical"
+}
