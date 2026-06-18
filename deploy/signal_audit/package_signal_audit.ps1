@@ -29,6 +29,7 @@ Copy-Item -LiteralPath (Join-Path $frontend.Path "signal_cards") -Destination (J
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\materialize_signal_cards.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_or_update.sh") -Destination (Join-Path $packageRoot "deploy") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "apache-bitnami-signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "nginx.signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "nginx.signal-audit-location.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-materialize.service") -Destination (Join-Path $packageRoot "deploy") -Force

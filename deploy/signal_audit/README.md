@@ -8,7 +8,7 @@ its `signal_cards/` data from the FMZ `signal_review.jsonl` file.
 Default input confirmed from the FMZ simulation run:
 
 ```text
-/home/bitnami/fmz2/logs/storage/654434/signal_review.jsonl
+/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
 ```
 
 Recommended static frontend root:
@@ -113,14 +113,47 @@ Build live cards from the FMZ JSONL:
 
 ```bash
 sudo /usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py \
-  --source /home/bitnami/fmz2/logs/storage/654434/signal_review.jsonl \
+  --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl \
   --output /opt/signal-audit \
   --max-cards 200
 ```
 
 Expected output is JSON with `written_cards >= 1` after the FMZ self-test.
 
-## Nginx Example
+## Apache / Nginx Example
+
+On the current Bitnami strategy server, port 80 is already owned by Bitnami
+Apache (`/opt/bitnami/apache/bin/httpd`). Prefer adding an Apache alias instead
+of starting nginx on port 80.
+
+Apache alias example:
+
+```bash
+sudo cp deploy/signal_audit/apache-bitnami-signal-audit.conf.example \
+  /opt/bitnami/apache/conf/extra/signal-audit.conf
+
+grep -q 'conf/extra/signal-audit.conf' /opt/bitnami/apache/conf/httpd.conf || \
+  echo 'Include "/opt/bitnami/apache/conf/extra/signal-audit.conf"' | \
+  sudo tee -a /opt/bitnami/apache/conf/httpd.conf
+
+sudo /opt/bitnami/apache/bin/apachectl -t
+sudo /opt/bitnami/ctlscript.sh restart apache
+```
+
+Verification URLs:
+
+```text
+http://<server>/signal-audit/
+http://<server>/signal-audit/signal_cards/index.json
+```
+
+Disable nginx if it was installed but failed because Apache owns port 80:
+
+```bash
+sudo systemctl disable --now nginx || true
+```
+
+### Nginx Alternative
 
 Use one of the nginx examples as a template:
 

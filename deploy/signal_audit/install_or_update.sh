@@ -6,7 +6,7 @@ FRONTEND_SRC="$REPO_ROOT/deploy/signal_audit/frontend"
 TOOL_SRC="$REPO_ROOT/tools/materialize_signal_cards.py"
 STATIC_ROOT="${STATIC_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
-JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/654434/signal_review.jsonl}"
+JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 MAX_CARDS="${MAX_CARDS:-200}"
 
 if [[ ! -f "$FRONTEND_SRC/index.html" || ! -f "$FRONTEND_SRC/app.js" ]]; then
