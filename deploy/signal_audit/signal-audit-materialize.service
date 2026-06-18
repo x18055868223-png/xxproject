@@ -8,5 +8,5 @@ MemoryMax=128M
 CPUQuota=25%
 Nice=10
 IOSchedulingClass=idle
-RuntimeMaxSec=30
+TimeoutStartSec=30
 ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl --output /opt/signal-audit --max-cards 200
