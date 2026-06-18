@@ -29,6 +29,8 @@ def materialize(source, output, max_cards=200):
     output = Path(output)
     cards_dir = output / "signal_cards"
     cards_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_public_dir(output)
+    _chmod_public_dir(cards_dir)
 
     records, skipped = _read_jsonl(source)
     records = _dedupe_by_card_id(records)
@@ -143,15 +145,25 @@ def _write_fallback(path, records):
 def _atomic_write_text(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_public_dir(path.parent)
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
                                     dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+        os.chmod(temp_name, 0o644)
         os.replace(temp_name, path)
+        os.chmod(path, 0o644)
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)
+
+
+def _chmod_public_dir(path):
+    try:
+        os.chmod(path, 0o755)
+    except OSError:
+        pass
 
 
 def _now_iso():
