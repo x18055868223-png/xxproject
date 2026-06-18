@@ -389,6 +389,37 @@
       overflow-wrap: anywhere;
     }
 
+    .rank-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .rank-cell {
+      min-height: 98px;
+    }
+
+    .rank-primary {
+      display: block;
+      font-size: 22px;
+      line-height: 1.15;
+      font-weight: 800;
+    }
+
+    .rank-meta {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      font-weight: 650;
+    }
+
+    .rank-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
     .text-block {
       margin: 16px 0 0;
       border-left: 3px solid var(--ink);

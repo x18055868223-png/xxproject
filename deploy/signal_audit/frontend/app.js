@@ -130,6 +130,10 @@
     regime_strength: "状态强度",
     reliability: "可靠性",
     required: "是否必需",
+    rank: "历史分位",
+    rank_pct: "Rank 百分位",
+    abs_rank_pct: "绝对值 Rank 百分位",
+    sample_count: "样本数",
     score_final: "最终得分",
     source: "数据源",
     source_ref: "来源引用",
@@ -250,6 +254,34 @@
     <div class="kv">
       <dt>${escapeHtml(fieldLabel(key))}</dt>
       <dd>${valueHtml(value, options)}</dd>
+    </div>
+  `;
+  const rankPct = (metric, field = "rank_pct") => {
+    const value = asObject(metric)[field];
+    return isNullish(value) ? "暂缺 (null)" : `${number(value, 1)}%`;
+  };
+  const rankMetric = (rank, key) => asObject(asObject(asObject(rank).metrics)[key]);
+  const rankValueLine = (metric) => {
+    const value = asObject(metric).value;
+    return isNullish(value) ? "" : `<span class="rank-meta">值 ${escapeHtml(scalarText(value, { translate: false, digits: 2 }))}</span>`;
+  };
+  const rankSampleLine = (metric) => {
+    const sample = asObject(metric).sample_count;
+    const quality = asObject(metric).quality;
+    const parts = [];
+    if (!isNullish(sample)) parts.push(`n=${scalarText(sample, { translate: false, digits: 0 })}`);
+    if (!isNullish(quality)) parts.push(`quality=${scalarText(quality, { translate: false })}`);
+    return parts.length ? `<span class="rank-meta">${escapeHtml(parts.join(" / "))}</span>` : "";
+  };
+  const rankKv = (label, metric, extra = "") => `
+    <div class="kv rank-cell">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>
+        <span class="rank-primary">${escapeHtml(rankPct(metric))}</span>
+        ${extra}
+        ${rankValueLine(metric)}
+        ${rankSampleLine(metric)}
+      </dd>
     </div>
   `;
   const section = (title, purpose, content, id = "") => `
@@ -418,6 +450,39 @@
         ${!isNullish(gamma.observed_at) ? `<span class="chip">Gamma observed ${escapeHtml(dateText(gamma.observed_at))}</span>` : ""}
       </div>
     `, "gamma-overview");
+  }
+
+  function renderGexRank(doc) {
+    const gex = asObject(get(doc, "factor_cross_section.gex_info", {}));
+    const rank = asObject(gex.rank);
+    const metrics = asObject(rank.metrics);
+    if (!Object.keys(rank).length || !Object.keys(metrics).length) {
+      return section("GEX Rank 分位", "展示 GEX Monitor 最近 30 日或已有样本内的历史分位，仅作只读上下文。", `<div class="empty">暂无 GEX rank 分位；等待 gexmonitorapi 累计样本。</div>`, "gex-rank");
+    }
+    const window = asObject(rank.window);
+    const netGex = rankMetric(rank, "gex_board.total_net_gex");
+    const dvol = rankMetric(rank, "gex_board.dvol");
+    const ivrv = rankMetric(rank, "volatility.iv_rv_ratio");
+    const pcr = rankMetric(rank, "volatility.pcr");
+    const callShare = rankMetric(rank, "flow.call_share_pct");
+    const flowPc = rankMetric(rank, "flow.put_call_ratio");
+    const noteParts = [
+      window.mode ? `窗口 ${window.mode}` : "窗口 rolling_30d_or_available",
+      !isNullish(window.sample_count) ? `样本 ${scalarText(window.sample_count, { translate: false, digits: 0 })}` : "",
+      !isNullish(window.history_retained_count) ? `保留 ${scalarText(window.history_retained_count, { translate: false, digits: 0 })}` : "",
+      !isNullish(window.window_days) ? `覆盖 ${scalarText(window.window_days, { translate: false, digits: 2 })} 天` : "",
+    ].filter(Boolean);
+    return section("GEX Rank 分位", "把 netGEX、IV/RV、P/C 等裸数值转换为当前样本窗口里的相对位置；冷启动期 quality 会保留显示。", `
+      <dl class="kv-grid rank-grid">
+        ${rankKv("netGEX", netGex, `<span class="rank-meta">绝对值 ${escapeHtml(rankPct(netGex, "abs_rank_pct"))}</span>`)}
+        ${rankKv("DVOL", dvol)}
+        ${rankKv("IV/RV", ivrv)}
+        ${rankKv("PCR", pcr)}
+        ${rankKv("Call share", callShare)}
+        ${rankKv("Flow P/C", flowPc)}
+      </dl>
+      <div class="rank-note">${escapeHtml(noteParts.join(" / ") || "rank window 暂缺")}</div>
+    `, "gex-rank");
   }
 
   function renderDisplayLayers(doc) {
@@ -656,6 +721,7 @@
         ${metric("Data quality", semanticCompact(quality.overall), quality.all_required_sources_ready ? "required ready" : "requires review")}
       </div>
       ${renderGammaOverview(doc)}
+      ${renderGexRank(doc)}
       ${renderDecision(doc)}
       ${renderDisplayLayers(doc)}
       ${renderQuality(doc)}
