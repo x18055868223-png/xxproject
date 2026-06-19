@@ -8,12 +8,13 @@
 - The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.5.0"`, with entry/exit/hedge/live trading gates still default-safe/off.
 - The current GEX Monitor API snapshot is `05_GEX监控API_数据增强接口/`, with `__version__ = "0.2.0"` and rank output using `rolling_30d_or_available`.
 - The current LLM review sidecar is `tools/gemini_signal_llm_review.py`, defaulting to Gemini `gemini-3.5-flash`, `signal_llm_review@1.2.0`, and `gemini_signal_review_prompt@1.2.0`.
+- Documentation r2.2 aligns `05_GEX监控API_数据增强接口/` and `deploy/signal_audit/` with the 00-04 module convention by adding `因子文档/` indexes, Chinese semantic entrypoints, and `deploy/signal_audit/frontend/VERSION.json`; it does not move service source code or change runtime behavior.
 - `demo/最新交付物/README.md` states that `demo/最新交付物/` contains the latest FMZ-ready single-file strategies, while `demo/副本快照/` is the historical timeline.
 - This workspace may be checked out either as the signal-audit deployment repository or as the xxproject backup clone; verify `git remote -v` before committing or pushing.
 
 ## Architecture and boundaries
 
-- The root documentation presents the system as four main areas: `01_信号层_中性回路/`, `02_执行层_Deribit/`, `03_VRP门_建仓前定价/`, and `04_对冲模块/`, with `demo/` as the integration sandbox.
+- The root documentation presents the system as core areas `01_信号层_中性回路/`, `02_执行层_Deribit/`, `03_VRP门_建仓前定价/`, `04_对冲模块/`, plus the current auxiliary running assets `05_GEX监控API_数据增强接口/` and `deploy/signal_audit/`, with `demo/` as the integration sandbox.
 - The signal-layer FMZ file is read-only observation by default. It does not select legs, quote, or place orders.
 - Signal v1.3.0 uses full local JSON audit records plus a short FMZ push summary. Runtime recording writes through `JsonlRecorder` to `demo/logs/<name>.jsonl`; the signal review recorder name is `signal_review`.
 - Current signal audit JSON output is aligned to the finalized static frontend card schema used by the external archive `信号审计前端页面设计/archives/signal-audit-final-20260618`. That frontend reads `signal_cards/index.json`, then lazy-loads `signal_cards/*.json`; direct file mode also uses `signal_cards/fallback.js`.

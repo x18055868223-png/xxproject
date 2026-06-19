@@ -1,6 +1,6 @@
 # 中性回路整合工程备份标记
 
-备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2.1`
+备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2.2`
 
 本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
@@ -22,6 +22,7 @@
 - GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
 - LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.2.0`，`gemini_signal_review_prompt@1.2.0`。
 - 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar。
+- 文档收纳：05 与 `deploy/signal_audit` 已补齐 `因子文档/`、中文语义入口和前端 `VERSION.json`，按 00-04 的模块阅读惯例收纳。
 
 ## 快速排障入口
 
@@ -40,11 +41,11 @@ sudo bash tools/server_self_check_signal_stack.sh --run-oneshots
 
 ## 使用顺序
 
-1. 先读 `00_总纲/中性回路工程总纲_v2026.06.19-r2.1.md`。
+1. 先读 `00_总纲/中性回路工程总纲_v2026.06.19-r2.2.md`。
 2. 再读 `99_工程资产索引/README.md` 区分当前运行资产、未启用资产和历史/失效资产。
 3. 部署 FMZ 时取 `demo/最新交付物/neutral_regulation_demo_fmz.py`，不要从历史快照目录复制。
-4. GEX API 以 `05_GEX监控API_数据增强接口/` 当前 rank 版本为准。
-5. 审计页面部署以 `deploy/signal_audit/install_or_update.sh` 为准。
+4. GEX API 先读 `05_GEX监控API_数据增强接口/因子文档/00_GEX监控API总览.md`，再看源码和部署文档。
+5. 审计页面先读 `deploy/signal_audit/因子文档/00_审计部署总览.md`，部署以 `deploy/signal_audit/install_or_update.sh` 为准。
 
 ## 维护规则
 

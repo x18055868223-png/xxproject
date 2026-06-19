@@ -1,4 +1,4 @@
-﻿> 当前交付物口径（r2.1 / 2026-06-19）：本目录仍是 FMZ 可部署单文件入口；当前信号层 `demo_version=1.3.0`，当前执行层 `STRATEGY_VERSION=2.5.0` 且交易门默认关闭。审计前端、GEX rank 与 Gemini LLM 复核属于服务器旁路/展示链路，不代表执行层启用。
+> 当前交付物口径（r2.2 / 2026-06-19）：本目录仍是 FMZ 可部署单文件入口；当前信号层 `demo_version=1.3.0`，当前执行层 `STRATEGY_VERSION=2.5.0` 且交易门默认关闭。审计前端、GEX rank 与 Gemini LLM 复核属于服务器旁路/展示链路，不代表执行层启用。
 # 最新交付物（FMZ 可直接部署单文件）
 
 > 用途：本文件夹**只放最新的、可直接部署到 FMZ 的两份单文件 Python 策略**——拿来即用、即测，与因子文档/源码分离。
@@ -19,7 +19,7 @@
 4. 可选项：
    - 信号审计推送（v1.3）→ 设 `signal_review_push_enabled=True`：出信号时 FMZ ` @` 推一条 **≤140 字符简要**（决策前置 + 审计指针）；**全量 v1.0 记录写本机 `demo/logs/signal_review.jsonl`**（唯一事实源）。
    - **推送自检** → 设 `signal_review_push_test=True` 重启：启动即写一条合成审计记录到 `demo/logs/signal_review.jsonl`，并推一条「推送自检·非真实信号」简要；推送末尾会标 `JSON已写` 或 `JSON失败`。确认后**改回 False**。
-   - **静态审计站点** → 设 `audit_static_base_url`（如 `https://audit.example.com`）后，简要末尾给 `审计:<base>/c/<id>`；不设则给 `详见FMZ Log #<id>`。当前静态页面定稿归档：`C:\Users\Xu\Documents\信号审计前端页面设计\archives\signal-audit-final-20260618`；数据契约为 `signal_cards/index.json` + 单卡 JSON。
+   - **静态审计站点** → 设 `audit_static_base_url`（如 `https://audit.example.com`）后，简要末尾给 `审计:<base>/c/<id>`；不设则给 `详见FMZ Log #<id>`。当前备份内页面入口见 `deploy/signal_audit/frontend/`；历史定稿归档名为 `signal-audit-final-20260618`。数据契约为 `signal_cards/index.json` + 单卡 JSON。
    - gex_info 数据增强 → 设 `gex_info_token`（或环境变量 `NRD_GEX_INFO_TOKEN`）；不设则该层自动降级、不影响运行。
 
 ## 验证状态（2026-06-04，全绿）

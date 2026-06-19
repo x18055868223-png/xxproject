@@ -1,4 +1,6 @@
-# GEX Monitor BTC 分析页摘要 API 计划
+# 历史计划稿：GEX Monitor BTC 分析页摘要 API 计划
+
+> 当前口径提示（r2.2 / 2026-06-19）：本文是早期需求草稿，保留用于追溯，不再作为当前接口、部署或信号层接入口径。当前权威接口是 `GET /v1/info`、`POST /v1/refresh?section=...`，当前语义入口见 `README.md` 与 `因子文档/00_GEX监控API总览.md`。本文中 `/v1/gexmonitor/...` 等旧端点不要再用于部署或开发。
 
 ## Summary
 在空仓库 `C:\Users\Xu\Documents\gexmonitorapi` 新建一个 Python/FastAPI 服务，用 Scrapling 抓取并结构化 GEX Monitor 公开分析页面的可见内容。第一版只覆盖 BTC 的四个分析子页：`gex`、`gamma`、`volatility`、`flow`。服务本地 Windows 调试通过后，部署到 AWS 轻量 Linux 服务器，使用单个 Bearer token 保护摘要和刷新端点。

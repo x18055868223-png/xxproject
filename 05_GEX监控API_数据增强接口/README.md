@@ -1,4 +1,21 @@
-# gexmonitorapi
+# ⑤ GEX Monitor API · 数据增强接口
+
+> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前运行资产，服务版本 `gexmonitorapi=0.2.0`。当前权威接口是 Bearer 保护的 `/v1/info`，包含 GEX/Gamma/IV-RV/P-C/flow 与本地历史 rank。本文作为工程模块入口；因子语义先读 [`因子文档/00_GEX监控API总览.md`](因子文档/00_GEX监控API总览.md)。
+
+## 0. 工程收纳
+
+| 路径 | 用途 |
+| --- | --- |
+| `因子文档/` | 按 00-04 模块惯例整理的中文语义入口，解释 `/v1/info` 如何进入信号层和审计卡 |
+| `docs/` | 接口字段语义、样例响应、测试记录 |
+| `deploy/` | 服务器部署、systemd、Nginx 与环境变量模板 |
+| `src/gexmonitorapi/` | FastAPI 服务源码 |
+| `tests/` | API、cache、parser 合同测试 |
+| `readme.txt` | 历史需求草稿，非当前接口口径 |
+
+本轮 r2.2 不移动源码、测试或部署文件，只补齐工程索引和中文因子文档，避免破坏已部署服务路径。
+
+## 1. 服务简介
 
 一个用 **FastAPI + Scrapling** 实现的、单 Bearer Token 保护的 BTC 指标字典 API。
 它用动态（浏览器）抓取 GEX Monitor 公开分析页 BTC 的四个 tab（`gex` / `gamma` / `volatility` / `flow`），
@@ -7,7 +24,7 @@
 > 合规说明：仅抓取公开页面的可见内容；不抓登录页 / 后台 / `/_next/` 静态包 / 未公开接口，
 > 也不二次包装 GEX Monitor 官方 `/api/` 数据接口。
 
-## 接口
+## 2. 接口
 
 | Method | Path | 鉴权 | 说明 |
 | --- | --- | --- | --- |
@@ -49,7 +66,7 @@
 
 > 每个字段的单位与真实语义见 [`docs/info接口语义文档.md`](docs/info接口语义文档.md)；完整响应示例见 [`docs/info.sample.json`](docs/info.sample.json)。
 
-## 本地开发（Windows）
+## 3. 本地开发（Windows）
 
 需要 Python 3.12。仓库已带 `.venv`，也可自建：
 
@@ -83,13 +100,13 @@ curl -H "Authorization: Bearer <你的TOKEN>" http://127.0.0.1:8000/v1/info
 curl -X POST -H "Authorization: Bearer <你的TOKEN>" "http://127.0.0.1:8000/v1/refresh?section=gex_board"
 ```
 
-## 配置项
+## 4. 配置项
 
 全部可经环境变量或 `.env` 覆盖，见 [.env.example](.env.example)：
 `API_TOKEN`、`REFRESH_INTERVAL_SECONDS`、`REQUEST_TIMEOUT_SECONDS`、`CACHE_FILE`、
 `HISTORY_FILE`、`RANK_LOOKBACK_DAYS`、`USER_AGENT`、`ENABLE_BACKGROUND_REFRESH`、`REFRESH_ON_STARTUP`。
 
-## 部署到 AWS 轻量服务器
+## 5. 部署到 AWS 轻量服务器
 
 完整步骤见 [deploy/README.md](deploy/README.md)（Ubuntu + venv + systemd，含浏览器系统依赖、
 内存/swap 建议、防火墙端口与可选 Nginx 反代）。

@@ -1,4 +1,18 @@
-# Signal Audit Static Deployment
+# 审计静态页面部署模块
+
+> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前审计页面部署资产，包含静态前端、materializer、Gemini LLM sidecar runner、systemd timer 和 Web server 示例。中文组件语义先读 [`因子文档/00_审计部署总览.md`](因子文档/00_审计部署总览.md)；审计卡展示语义见 [`docs/审计卡片语义.md`](docs/审计卡片语义.md)。
+
+## 工程收纳
+
+| 路径 | 用途 |
+| --- | --- |
+| `因子文档/` | 按 00-04 模块惯例整理的组件语义入口 |
+| `docs/` | 审计卡片和前端展示语义 |
+| `frontend/` | 静态页面、样例 `signal_cards/`、`VERSION.json` |
+| `*.service` / `*.timer` | systemd 单元 |
+| `install_or_update.sh` | 服务器安装/更新脚本 |
+
+本轮 r2.2 不改变部署脚本行为，只补齐文档收纳和前端版本元数据。
 
 This deployment target serves the finalized static audit frontend and refreshes
 its `signal_cards/` data from the FMZ `signal_review.jsonl` file.

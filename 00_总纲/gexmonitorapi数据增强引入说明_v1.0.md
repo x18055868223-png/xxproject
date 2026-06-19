@@ -1,6 +1,6 @@
 # gexmonitorapi 数据增强接口引入说明 v1.0
 
-> 当前口径（r2.1 / 2026-06-19）：本文是 GEX 数据增强的早期引入说明。当前仓库内 `05_GEX监控API_数据增强接口/` 已升级为 `gexmonitorapi=0.2.0`，`/v1/info` 已包含 rank 分位；服务器配置以 `/etc/gexmonitorapi.env` 为准。rank 当前窗口为 `rolling_30d_or_available`：不满 30 天用已有样本，超过 30 天只用最近 30 天计算当前分位，但保留全量历史。
+> 当前口径（r2.2 / 2026-06-19）：本文是 GEX 数据增强的早期引入说明。当前仓库内 `05_GEX监控API_数据增强接口/` 已升级为 `gexmonitorapi=0.2.0`，`/v1/info` 已包含 rank 分位，并已补齐 `05_GEX监控API_数据增强接口/因子文档/` 作为当前中文语义入口；服务器配置以 `/etc/gexmonitorapi.env` 为准。rank 当前窗口为 `rolling_30d_or_available`：不满 30 天用已有样本，超过 30 天只用最近 30 天计算当前分位，但保留全量历史。
 
 > 落地日期：2026-06-04　|　范围决策：**A+B**（可靠性加固 + 面板/可观测/VRP交叉校验，**本轮不新增 EDB 投票因子**）
 > 关键前提：系统**此前已在抓取 gexmonitor**（`demo/config.py:gex_base_url="https://gexmonitor.com/api/gex-latest"`，`gex_adapter.py` 仅稳健提取 flip_point/spring；GGR 从 raw_payload **尽力而为**读 net_gex/walls）。`gexmonitorapi`（FastAPI `/v1/info`，Bearer，服务端~10min缓存）是这条既有 feed 的**干净、带语义、可降级的升级版**。
@@ -28,7 +28,7 @@
 ## 3. 配置与启用
 - 新增 `demo/config.py`：`gex_info_enabled`(True)、`gex_info_base_url`(`http://127.0.0.1:8000/v1/info`)、`gex_info_token`(**空**)、`gex_info_refresh_sec`(600)、`gex_info_cache_file`、`gex_info_cache_max_age_ms`。
 - **激活**：设 `NRD_GEX_INFO_TOKEN`（或本地改 `gex_info_token`）。token 为空时整层自动降级，**不影响任何现有行为**。token **不入库**（安全）。
-- r2.1 服务器配置：真实 API token 只应存在于 `/etc/gexmonitorapi.env` 或 FMZ 参数/环境变量；仓库只保留 `.env.example` / `deploy/gexmonitorapi.env.example` 模板。
+- 当前服务器配置：真实 API token 只应存在于 `/etc/gexmonitorapi.env` 或 FMZ 参数/环境变量；仓库只保留 `.env.example` / `deploy/gexmonitorapi.env.example` 模板。
 
 ## 4. 验证状态（全绿）
 - 信号层：`compileall` / `runtime_check_demo.ps1`（离线 smoke）/ `static_validate_demo.ps1`（FMZ 同步+交付摘要+无未完成标记）/ 独立 `tools/gex_info_check.py`（解析+GGR 降级+降级路径）。
