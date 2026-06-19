@@ -1,6 +1,6 @@
 # 中性回路整合工程备份标记
 
-备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2`
+备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2.1`
 
 本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
@@ -14,6 +14,14 @@
 | LLM 复核旁路 | Gemini 复核脚本 + systemd timer；生成 `signal_llm_reviews.jsonl` sidecar，再由 materializer 合并 | `tools/gemini_signal_llm_review.py`、`deploy/signal_audit/` |
 | 执行层 | Deribit 垂直价差执行链；当前保留为未正式测试启用的全空跑交付物 | `demo/最新交付物/spm_calendar_protected_short_v1.py` |
 | 服务器自检 | 用于定位 FMZ JSONL、GEX API、审计页面、LLM sidecar、systemd timer 哪一层异常 | `tools/server_self_check_signal_stack.sh` |
+
+## 当前版本锚点
+
+- 信号层：`demo_version=1.3.0`，`schema_version=nrd.schema.v1.0.0`。
+- 执行层：`STRATEGY_VERSION=2.5.0`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭。
+- GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
+- LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.2.0`，`gemini_signal_review_prompt@1.2.0`。
+- 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar。
 
 ## 快速排障入口
 
@@ -32,7 +40,7 @@ sudo bash tools/server_self_check_signal_stack.sh --run-oneshots
 
 ## 使用顺序
 
-1. 先读 `00_总纲/中性回路工程总纲_v2026.06.19-r2.md`。
+1. 先读 `00_总纲/中性回路工程总纲_v2026.06.19-r2.1.md`。
 2. 再读 `99_工程资产索引/README.md` 区分当前运行资产、未启用资产和历史/失效资产。
 3. 部署 FMZ 时取 `demo/最新交付物/neutral_regulation_demo_fmz.py`，不要从历史快照目录复制。
 4. GEX API 以 `05_GEX监控API_数据增强接口/` 当前 rank 版本为准。

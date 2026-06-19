@@ -43,7 +43,12 @@ Commit only source/config/scripts and the static runtime assets under
 - FMZ storage dumps
 - server private keys
 
-Local first-time Git setup:
+Local first-time Git setup for a brand new standalone deployment repo:
+
+> In the integrated backup workflow, prefer using the existing
+> `https://github.com/x18055868223-png/xxproject.git` repository instead of
+> creating another remote. The snippet below is only for the older standalone
+> `signal-audit-deploy` route.
 
 ```bash
 git init
@@ -55,23 +60,36 @@ git remote add origin git@github.com:<your-org-or-user>/<repo>.git
 git push -u origin main
 ```
 
-Server first-time clone:
+Server first-time clone for the integrated backup repo:
 
 ```bash
 sudo apt update
 sudo apt install -y git nginx rsync python3
 sudo mkdir -p /opt/repos
 sudo chown "$USER":"$USER" /opt/repos
-git clone git@github.com:<your-org-or-user>/<repo>.git /opt/repos/neutral-loop
+git clone https://github.com/x18055868223-png/xxproject.git /opt/repos/xxproject
 ```
 
 Server deploy/update from Git:
 
 ```bash
-cd /opt/repos/neutral-loop
+cd /opt/repos/xxproject
 git pull --ff-only
 sudo bash deploy/signal_audit/install_or_update.sh
 ```
+
+`install_or_update.sh` is an active audit-service update, not a read-only
+check. It copies frontend files into `/opt/signal-audit`, installs tools under
+`/opt/signal-audit-tools`, and enables/starts the materializer and LLM review
+timers. Run it during a maintenance window. It does not change FMZ strategy
+code, execution-layer trading gates, or exchange credentials.
+
+If an older server is still running from `/opt/repos/signal-audit-deploy`, use
+one repository directory consistently during a maintenance window. Do not pull
+`xxproject` in one directory while running install scripts from the old
+`signal-audit-deploy` checkout unless you intentionally keep both routes and
+know which one owns the deployed files under `/opt/signal-audit` and
+`/opt/signal-audit-tools`.
 
 The install script now also installs and enables the two systemd timers:
 

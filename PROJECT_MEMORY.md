@@ -6,6 +6,8 @@
 - The main implementation language present in the deliverables is Python. The repository also contains Markdown documentation plus a static HTML/JSON audit archive sample under `audit_archive/`.
 - The current deployable signal-layer artifact is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file version is `demo_version = "1.3.0"` and `schema_version = "nrd.schema.v1.0.0"`.
 - The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.5.0"`, with entry/exit/hedge/live trading gates still default-safe/off.
+- The current GEX Monitor API snapshot is `05_GEX监控API_数据增强接口/`, with `__version__ = "0.2.0"` and rank output using `rolling_30d_or_available`.
+- The current LLM review sidecar is `tools/gemini_signal_llm_review.py`, defaulting to Gemini `gemini-3.5-flash`, `signal_llm_review@1.2.0`, and `gemini_signal_review_prompt@1.2.0`.
 - `demo/最新交付物/README.md` states that `demo/最新交付物/` contains the latest FMZ-ready single-file strategies, while `demo/副本快照/` is the historical timeline.
 - This workspace may be checked out either as the signal-audit deployment repository or as the xxproject backup clone; verify `git remote -v` before committing or pushing.
 
@@ -72,7 +74,7 @@
 - Decision: keep `demo/最新交付物/` as the current deployable FMZ artifact folder. Basis: `demo/最新交付物/README.md`. Impact: update this folder after regeneration and preserve dated history in `demo/副本快照/`.
 - Decision: signal v1.3.0 uses frontend-aligned full JSON audit records plus short FMZ push summaries. Basis: current signal file comments/config, `demo/最新交付物/README.md`, and `demo/tests/test_signal_audit_frontend_contract.py`. Impact: future audit work should build the JSONL-to-static-page materializer instead of re-expanding FMZ push bodies.
 - Decision: current static frontend deployment should target the `signal_cards/index.json` plus `signal_cards/*.json` contract from `signal-audit-final-20260618`; the repo `audit_archive/` scaffold is sample/reference only. Impact: export tools should generate the finalized frontend layout, including a stable missing-source representation for optional GEX data.
-- Decision: execution v2.0.0 is vertical-only and default dry-run with separated gates. Basis: current execution file constants and `demo/最新交付物/README.md`. Impact: do not treat disabled gates as a bug, and do not reintroduce calendar or KPF execution paths.
+- Decision: execution v2.5.0 is vertical-only and default dry-run with separated gates plus the v2.5.0 risk-chain audit fixes. Basis: current execution file constants, `demo/最新交付物/README.md`, and `docs/执行层完整说明_v2.1.md`. Impact: do not treat disabled gates as a bug, and do not reintroduce calendar or KPF execution paths.
 - Decision: project-level complex tasks should use bounded subagent delegation through `.codex/agents/` when the task has independent exploration, implementation, or review streams. Basis: root `AGENTS.md` created during this initialization. Impact: future complex work should read `PROJECT_MEMORY.md`, classify complexity, delegate where useful, and verify final integration.
 
 ## Unconfirmed items

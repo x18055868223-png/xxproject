@@ -1,5 +1,7 @@
 # 信号后 LLM「独立理论视角」扩展 — 方法论与落地理论文档 v1.0
 
+> 当前口径（r2.1 / 2026-06-19）：本文是理论方法论文档，不是服务器部署说明。当前实现已落在 `tools/gemini_signal_llm_review.py`：默认 Gemini `gemini-3.5-flash`，输出 `signal_llm_review@1.2.0`，prompt `gemini_signal_review_prompt@1.2.0`；服务器 key 只配置在 `/etc/signal-audit/llm.env`。`theoretical_active_view` 只作审计参考，不改变系统信号、门控或交易许可。
+
 > 受征询对象：Opus 4.8（claude-opus-4-8）
 > 文档性质：为「LLM 复核从『只解释系统结论』扩展为『解释 + 独立理论倾向参考』」提供理论依据与落地建议
 > 配套文档：[信号后LLM复核层_Opus4.8意见文档_v1.0.md](信号后LLM复核层_Opus4.8意见文档_v1.0.md)（实现/契约层）

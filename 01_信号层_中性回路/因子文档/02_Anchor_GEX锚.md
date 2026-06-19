@@ -1,3 +1,4 @@
+﻿> 当前信号层口径（r2.1 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.1 总纲为准。
 # 02 · Anchor（GEX 锚 / 引力均值回归）
 
 > 模块：① 信号层 · 主链路 2/3（进 `MODULE_SEQUENCE` / `module_results`）

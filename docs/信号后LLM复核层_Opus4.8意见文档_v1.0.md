@@ -1,5 +1,7 @@
 # 信号后 LLM 复核层 — Opus 4.8 意见文档 v1.0
 
+> 当前口径（r2.1 / 2026-06-19）：本文是外部模型意见稿，保留用于解释设计来源；当前运行实现以 `tools/gemini_signal_llm_review.py`、`deploy/signal_audit/signal-audit-llm-review.*` 和 `00_总纲/中性回路工程总纲_v2026.06.19-r2.1.md` 为准。当前模型为 Gemini `gemini-3.5-flash`，输出 `signal_llm_review@1.2.0`，prompt `gemini_signal_review_prompt@1.2.0`；真实 key 不入库，只在 `/etc/signal-audit/llm.env`。
+
 > 受征询对象：Opus 4.8（claude-opus-4-8）
 > 文档性质：对《信号后 LLM 复核层设计需求说明》的深度审核 + 全量意见与落地方案
 > 基准代码：`signal_review_card@1.0.0`、`demo/tests/test_signal_llm_review_contract.py`、`demo/最新交付物/neutral_regulation_demo_fmz.py`

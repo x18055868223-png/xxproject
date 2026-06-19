@@ -1,6 +1,6 @@
 # 工程资产索引
 
-版本标记：`NRD-XXPROJECT-BACKUP-2026.06.19-r2`
+版本标记：`NRD-XXPROJECT-BACKUP-2026.06.19-r2.1`
 
 本目录用于区分当前运行资产、未启用资产、历史/失效资产、部署资产和验证入口。当前判断以代码、服务器部署脚本和最近实盘页面验证为准。
 
@@ -37,12 +37,22 @@
 
 | 路径 | 用途 |
 | --- | --- |
-| `00_总纲/中性回路工程总纲_v2026.06.19-r2.md` | 当前工程级主入口 |
+| `00_总纲/中性回路工程总纲_v2026.06.19-r2.1.md` | 当前工程级主入口 |
 | `README_XXPROJECT_BACKUP.md` | GitHub 备份说明 |
 | `BACKUP_VERSION.json` | 机器可读版本标记 |
 | `SECRETS_REDACTED.md` | 脱敏与禁提交说明 |
 | `05_GEX监控API_数据增强接口/docs/info接口语义文档.md` | `/v1/info` 字段语义与 rank 说明 |
 | `deploy/signal_audit/README.md` | 审计页面和 LLM timer 部署说明 |
+
+## 当前版本锚点
+
+| 资产 | 当前锚点 |
+| --- | --- |
+| 信号层 | `demo_version=1.3.0`；`schema_version=nrd.schema.v1.0.0`；FMZ 内只写 JSONL/短推，不调用 LLM HTTP |
+| GEX API | `gexmonitorapi=0.2.0`；rank 采用 `rolling_30d_or_available`，保留全量历史，只用最近 30 天算当前分位 |
+| 审计 materializer | 默认读取 `/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl`，输出 `/opt/signal-audit/signal_cards/` |
+| LLM sidecar | Gemini `gemini-3.5-flash`；输出 `signal_llm_review@1.2.0`；prompt `gemini_signal_review_prompt@1.2.0` |
+| 执行层 | `STRATEGY_VERSION=2.5.0`；所有交易门默认关闭；仅作为空跑/后续测试资产 |
 
 ## 当前验证命令
 

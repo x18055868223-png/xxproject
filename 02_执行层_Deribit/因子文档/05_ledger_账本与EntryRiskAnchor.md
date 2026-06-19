@@ -1,3 +1,4 @@
+﻿> 当前执行层口径（r2.1 / 2026-06-19）：本因子文档可能保留早期 v1.6.2/KPF/Phase 1 描述；当前执行交付物以 `demo/最新交付物/spm_calendar_protected_short_v1.py` `STRATEGY_VERSION=2.5.0` 为准，交易门默认关闭。本文用于解释历史设计和组件语义，不代表当前已启用交易。
 # 05 · ledger + EntryRiskAnchor（库存账本 / 状态机 / 入场风险锚）
 
 > 模块：② 执行层（EntryRiskAnchor 构造在 `hedge_risk.py`，由 `strategy.py` 在成交后挂入账本包）
