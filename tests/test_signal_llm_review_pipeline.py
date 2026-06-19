@@ -261,16 +261,18 @@ def test_generate_reviews_redacts_sensitive_error_text():
                         "error sidecar should redact sensitive token text: " + forbidden)
 
 
-def test_frontend_renders_llm_review_directly_below_rank():
+def test_frontend_renders_session_context_between_rank_and_llm_review():
     app = FRONTEND_APP.read_text(encoding="utf-8")
     html = FRONTEND_HTML.read_text(encoding="utf-8")
     rank_idx = app.find("${renderGexRank(doc)}")
+    session_idx = app.find("${renderSignalSessionContext(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
     decision_idx = app.find("${renderDecision(doc)}")
-    assert_true(rank_idx != -1 and llm_idx != -1 and decision_idx != -1,
-                "rank, llm, decision render calls should exist")
-    assert_true(rank_idx < llm_idx < decision_idx,
-                "LLM review should render after rank and before decision")
+    assert_true(rank_idx != -1 and session_idx != -1 and llm_idx != -1
+                and decision_idx != -1,
+                "rank, session context, llm, decision render calls should exist")
+    assert_true(rank_idx < session_idx < llm_idx < decision_idx,
+                "session context should render after rank and before LLM review")
     assert_true(".llm-review-panel" in html and ".llm-review-summary" in html,
                 "LLM review should have prominent panel styling")
     for text in (
@@ -285,6 +287,8 @@ def test_frontend_renders_llm_review_directly_below_rank():
         "混合不明",
         'gemini: "Gemini"',
         "输入包哈希",
+        "信号时区置信度 / 前提耐久度",
+        "低转中缓冲带",
     ):
         assert_true(text in app, "LLM review should localize " + text)
     assert_true('statusBadge("Status"' not in app and 'statusBadge("Caution"' not in app,
@@ -320,6 +324,6 @@ if __name__ == "__main__":
     test_gemini_packet_prompt_and_sidecar_generation()
     test_materializer_merges_sidecar_without_downgrading_inline_ok()
     test_generate_reviews_redacts_sensitive_error_text()
-    test_frontend_renders_llm_review_directly_below_rank()
+    test_frontend_renders_session_context_between_rank_and_llm_review()
     test_fmz_signal_loop_does_not_call_llm_in_process()
     print("signal_llm_review_pipeline: PASS")

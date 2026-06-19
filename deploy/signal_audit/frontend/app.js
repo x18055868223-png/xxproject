@@ -32,6 +32,11 @@
     GATE_ONLY: "仅门控",
     GEMINI: "Gemini",
     gemini: "Gemini",
+    CONSERVATIVE_LOWER_TIER: "缓冲带就低不就高",
+    DEEP: "深",
+    EDT: "美国夏令时",
+    EST: "美国冬令时",
+    EVENT_BLACKOUT: "事件黑名单",
     HIGH: "高",
     INSUFFICIENT_WINDOW_COVERAGE: "窗口覆盖不足",
     INVALID_OUTPUT: "输出无效",
@@ -39,11 +44,15 @@
     LONG_GAMMA_STABILIZING: "长 Gamma 稳定/钉住",
     LONG: "多",
     LOW: "低",
+    LOW_TO_MEDIUM_BUFFER: "低转中缓冲带",
     LOWER: "下调方向把握",
     MATERIAL: "实质分歧",
     MEDIUM: "中",
+    MEDIUM_TO_HIGH_BUFFER: "中转高缓冲带",
+    MEDIUM_TO_LOW_BUFFER: "中转低缓冲带",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
+    MODERATE: "中等",
     MIXED_UNCLEAR: "混合不明",
     MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
     MIXED_LOW_CONFIDENCE: "混合信号 / 低置信",
@@ -60,11 +69,13 @@
     OK: "正常",
     PARTIAL: "部分可用",
     PARTIAL_SUPPORT: "部分支持系统结论",
+    PHASE_0_OBSERVE_ONLY: "观察层（不改信号）",
     POSITIVE_GAMMA: "正 Gamma",
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
     SKIPPED: "已跳过",
+    THIN: "薄",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
     SOFT_GATE: "软门控",
     SOURCE_AGE_EXCEEDED: "数据时效超限",
@@ -88,8 +99,15 @@
     agreement_raw: "原始一致性",
     agreement_with_system: "与系统结论关系",
     all_required_ready: "必需源全部就绪",
+    affects_blocking: "是否影响门控",
+    affects_confidence: "是否影响置信",
+    affects_trade_allowed: "是否影响交易许可",
+    base_zone: "静态基础档位",
     block_kind: "阻断类型",
+    boundary_buffer_min: "边界缓冲(分钟)",
+    buffer_policy: "缓冲策略",
     call_wall: "看涨墙",
+    catalyst_exposure: "外源冲击暴露",
     caution_level: "谨慎等级",
     basis_cn: "理论依据",
     bias: "理论倾向",
@@ -117,15 +135,19 @@
     direction: "方向",
     directional_bias: "方向偏向",
     dissent_keys: "反向证据键",
+    display_label: "展示标签",
     distance_to_pin_pct: "距钉住点比例",
     dominant_aligned: "主要同向证据",
     dominant_dissent: "主要反向证据",
+    dst_mode: "美国时制",
     effective: "有效权重",
+    effective_zone: "有效时区档位",
     effective_weight: "有效权重",
     effective_weight_sum: "有效权重合计",
     evidence: "证据",
     evidence_strength: "证据强度",
     exclusion_reason: "排除原因",
+    event_blackout: "事件黑名单",
     field: "字段",
     flip_point: "翻转点",
     flip: "翻转点",
@@ -139,6 +161,8 @@
     key_drivers: "关键驱动",
     lean: "方向倾向",
     level: "等级",
+    liquidity_depth: "形成时流动性深度",
+    london_dst_mode: "伦敦时制",
     magnet_level: "磁吸点位",
     market_price: "市场价格",
     market_state: "市场状态",
@@ -151,9 +175,11 @@
     observed_at: "观测时间",
     participation: "参与状态",
     participation_status: "参与状态",
+    phase: "阶段",
     pin_strike: "钉住行权价",
     pin: "钉住点",
     positioning_assumption_cn: "持仓符号假设",
+    premise_durability: "前提耐久度",
     put_wall: "看跌墙",
     quality: "质量",
     ratio: "比例",
@@ -180,6 +206,7 @@
     strength: "强度",
     threshold: "阈值",
     theoretical_active_view: "理论主动倾向",
+    transition: "边界缓冲状态",
     conviction_effect_on_directional_view: "对方向把握的影响",
     data_quality_cn: "数据质量说明",
     derived_blind: "真盲读生成",
@@ -189,6 +216,7 @@
     key_levels: "关键位",
     lens_is_risk_overlay_not_direction: "风险叠加，不是方向",
     trade_allowed: "是否允许交易",
+    utc8_time: "UTC+8 时间",
     validation_status: "验证状态",
     value: "值",
     veto: "否决",
@@ -196,7 +224,8 @@
     vote: "投票",
     weighted: "加权贡献",
     weighted_contribution: "加权贡献",
-    weighted_vote_sum: "加权投票和"
+    weighted_vote_sum: "加权投票和",
+    weekend_adjustment: "周末修正"
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -818,6 +847,72 @@
     `, "gex-rank");
   }
 
+  function renderSignalSessionContext(doc) {
+    const ctx = asObject(get(doc, "signal_window.session_context", {}));
+    if (!Object.keys(ctx).length) return "";
+    const transition = asObject(ctx.transition);
+    const weekend = asObject(ctx.weekend_adjustment);
+    const event = asObject(ctx.event_blackout);
+    const display = ctx.display_label || ctx.effective_zone || ctx.base_zone || "UNKNOWN";
+    const chips = [
+      `展示档位: ${semanticLabel(display)}`,
+      `有效档位: ${semanticLabel(ctx.effective_zone)}`,
+      `校准: ${semanticCompact(ctx.calibration_state)}`,
+      ctx.affects_confidence === false ? "不改置信" : "",
+      ctx.affects_blocking === false ? "不改门控" : "",
+      ctx.affects_trade_allowed === false ? "不改交易许可" : "",
+    ].filter(Boolean);
+    const transitionText = transition.active
+      ? `${semanticCompact(ctx.display_label)} / ${transition.boundary || ""} / ${scalarText(transition.minutes_from_boundary, { translate: false, digits: 1 })} 分钟`
+      : "非边界缓冲";
+    const eventText = event.active
+      ? `${event.event || "HIGH_IMPACT"} ${event.phase || "WINDOW"}`
+      : "无事件黑名单覆盖";
+    const weekendText = weekend.applied
+      ? `${semanticCompact(weekend.from_zone)} → ${semanticCompact(weekend.to_zone)}`
+      : "未触发";
+    return section("信号时区置信度 / 前提耐久度", "展示信号成立时的时间先验；只读提示，不改变系统方向、置信、门控或交易许可。", `
+      <div class="session-context-panel">
+        <div class="session-context-topline">
+          ${chips.map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("")}
+        </div>
+        <p class="session-context-summary">${valueHtml(ctx.rationale_cn, { translate: false })}</p>
+      </div>
+      <dl class="kv-grid session-context-grid">
+        ${kv("premise_durability", ctx.premise_durability || ctx.effective_zone)}
+        ${kv("base_zone", ctx.base_zone)}
+        ${kv("display_label", ctx.display_label)}
+        ${kv("liquidity_depth", ctx.liquidity_depth)}
+        ${kv("catalyst_exposure", ctx.catalyst_exposure)}
+        ${kv("boundary_buffer_min", ctx.boundary_buffer_min, { translate: false })}
+        ${kv("buffer_policy", ctx.buffer_policy)}
+        ${kv("phase", ctx.phase)}
+        ${kv("dst_mode", ctx.dst_mode)}
+        ${kv("london_dst_mode", ctx.london_dst_mode)}
+        ${kv("utc8_time", ctx.utc8_time, { translate: false })}
+        ${kv("affects_confidence", ctx.affects_confidence)}
+      </dl>
+      <div class="two-column-notes session-context-notes">
+        <div>
+          <h3 class="subsection-title">理论支撑</h3>
+          <p>本层衡量的是信号论证前提在下一轮主导流动性或外源事件到来前的耐久度，不是胜率，也不是 evidence confidence。</p>
+        </div>
+        <div>
+          <h3 class="subsection-title">缓冲与降档</h3>
+          <p>边界附近按“缓冲带就低不就高”处理；例如低转中缓冲带内，流动性虽在恢复，但校准前仍按低前提耐久度展示。</p>
+        </div>
+        <div>
+          <h3 class="subsection-title">边界状态</h3>
+          <p>${escapeHtml(transitionText)}</p>
+        </div>
+        <div>
+          <h3 class="subsection-title">事件与周末修正</h3>
+          <p>${escapeHtml(eventText)}；周末修正：${escapeHtml(weekendText)}。</p>
+        </div>
+      </div>
+    `, "session-context");
+  }
+
   function renderDisplayLayers(doc) {
     const layers = asObject(get(doc, "display_layers", {}));
     const layerKeys = ["background", "correction", "reasoning", "conflict"];
@@ -1092,6 +1187,7 @@
       </div>
       ${renderGammaOverview(doc)}
       ${renderGexRank(doc)}
+      ${renderSignalSessionContext(doc)}
       ${renderLlmReview(doc)}
       ${renderDecision(doc)}
       ${renderDisplayLayers(doc)}

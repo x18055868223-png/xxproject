@@ -145,6 +145,24 @@ def test_llm_input_package_is_sanitized(mod):
         assert_true(forbidden not in encoded, "LLM package leaked " + forbidden)
 
 
+def test_llm_input_package_excludes_session_context(mod):
+    record, config = sample_record_and_config(mod)
+    record["signal_window"]["session_context"] = {
+        "schema": "signal_session_context@1.0.0",
+        "display_label": "LOW_TO_MEDIUM_BUFFER",
+        "rationale_cn": "刚越过亚洲午后低谷进入欧洲早盘。",
+        "affects_confidence": False,
+    }
+
+    package = mod.build_llm_review_package(record, config)
+    signal_window = package.get("signal_window") or {}
+    encoded = json.dumps(package, ensure_ascii=False, sort_keys=True)
+    assert_true("session_context" not in signal_window,
+                "LLM package should not forward deterministic session context")
+    assert_true("LOW_TO_MEDIUM_BUFFER" not in encoded,
+                "LLM review should remain independent from session context labels")
+
+
 def test_llm_request_contains_guardrails(mod):
     record, config = sample_record_and_config(mod)
     request = mod.build_llm_review_request(record, config)
@@ -264,6 +282,7 @@ def test_attach_llm_review_never_calls_or_adds_field(mod):
 def main():
     mod = load_signal_module()
     test_llm_input_package_is_sanitized(mod)
+    test_llm_input_package_excludes_session_context(mod)
     test_llm_request_contains_guardrails(mod)
     test_llm_output_validation(mod)
     test_attach_llm_review_is_compatibility_noop(mod)
