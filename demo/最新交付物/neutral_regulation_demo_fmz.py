@@ -4134,6 +4134,26 @@ def _audit_status(value, default="OK"):
     }.get(raw, raw)
 
 
+def _audit_reason(node, status):
+    node = node or {}
+    reason = node.get("reason")
+    if reason:
+        return reason
+    reasons = node.get("reasons")
+    if isinstance(reasons, list) and reasons:
+        return "; ".join(str(item) for item in reasons if item)
+    if isinstance(reasons, str) and reasons:
+        return reasons
+    fetch_error = node.get("fetch_error") or node.get("last_error")
+    if fetch_error:
+        return fetch_error
+    if status == "OK":
+        return "OK"
+    if status in ("LKGV_CACHE", "CACHED"):
+        return "CACHE_VALID_WITH_LATEST_KNOWN_GOOD"
+    return node.get("status") or status
+
+
 def _audit_age_ms(name, node, status):
     node = node or {}
     for key in ("age_ms", "data_age_ms", "cache_age_ms", "source_age_ms",
@@ -4260,6 +4280,12 @@ def _audit_cross_section(cross, card):
         gamma["net_gamma_notional_usd"] = safe_float(gamma.get("net_gamma_notional"))
     if "pin_strike" not in gamma:
         gamma["pin_strike"] = safe_float((gamma.get("pin") or {}).get("pin_strike"))
+    if "distance_to_pin_pct" not in gamma:
+        gamma["distance_to_pin_pct"] = safe_float(
+            (gamma.get("pin") or {}).get("distance_to_pin_pct"))
+    if "pin_pull_direction" not in gamma:
+        gamma["pin_pull_direction"] = (gamma.get("pin") or {}).get(
+            "pin_pull_direction")
     gamma.setdefault("source_ref", _source_ref_for("gamma_regime"))
 
     gex = _audit_gex_info(cross.get("gex_info"))
@@ -4348,7 +4374,7 @@ def _audit_quality(card):
                                or (node or {}).get("data_state")
                                or (node or {}).get("status"),
                                "OK" if node else "MISSING")
-        reason = (node or {}).get("reason") or (node or {}).get("status")
+        reason = _audit_reason(node, status)
         age_ms = _audit_age_ms(name, node, status)
         observed_at = _audit_observed_at(name, node, card, age_ms)
         sources[name] = {
@@ -9873,16 +9899,17 @@ class DemoRuntime:
             tmvf, self.option_expiries, self.config, edb=edb)
         factor_snapshot["strategy_recommendation"] = _strategy_factors(
             strategy_recommendation)
+        signal_runtime_facts = self._runtime_facts()
         self.last_signal_recorded = self.signal_events.maybe_record(
             neutral_repair_signal,
             factor_snapshot,
-            {"current_price": self.current_price})
+            signal_runtime_facts)
         factor_snapshot["signal_events"] = self.signal_events.snapshot()
         self._emit_signal_review_card()
         decision_snapshot = decide(
             module_results, strategy_recommendation, self.config)
         attach_factor_snapshot(decision_snapshot, factor_snapshot)
-        attach_runtime_facts(decision_snapshot, self._runtime_facts())
+        attach_runtime_facts(decision_snapshot, signal_runtime_facts)
         contract_audit = validate_evaluation_contract(
             decision_snapshot, module_results, factor_snapshot, self.config)
         decision_snapshot["contract_audit"] = contract_audit

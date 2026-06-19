@@ -213,6 +213,7 @@
     return value === undefined ? fallback : value;
   };
   const isNullish = (value) => value === null || value === undefined;
+  const isBlank = (value) => isNullish(value) || value === "";
   const rawEnum = (value) => String(value ?? "");
   const semanticLabel = (value) => {
     if (isNullish(value)) return "暂缺 (null)";
@@ -252,9 +253,33 @@
     if (isEnum(value) && options.translate !== false) return semanticLabel(value);
     return String(value);
   };
-  const valueHtml = (value, options = {}) => (
-    `<span class="${isNullish(value) ? "null-value" : ""}">${escapeHtml(scalarText(value, options))}</span>`
-  );
+  const valueHtml = (value, options = {}) => {
+    const missing = isNullish(value);
+    const text = missing ? (options.nullText || scalarText(value, options)) : scalarText(value, options);
+    const className = missing ? (options.nullClass || "null-value") : "";
+    return `<span class="${className}">${escapeHtml(text)}</span>`;
+  };
+  const benignNullHtml = (text) => valueHtml(null, {
+    nullText: text,
+    nullClass: "benign-null-value",
+    translate: false
+  });
+  const pctPoint = (value, digits = 2) => {
+    if (isNullish(value)) return "暂缺 (null)";
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return String(value);
+    return `${number(numeric, digits)}%`;
+  };
+  const normalizeDistancePct = (value) => {
+    const numeric = safeNumber(value);
+    if (numeric === null) return null;
+    return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+  };
+  const safeNumber = (value) => {
+    if (isBlank(value)) return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
   const dateText = (iso, mode = "long") => {
     if (!iso) return "暂缺 (null)";
     const date = new Date(iso);
@@ -320,8 +345,16 @@
   }
   function qualityReasonText(source) {
     const view = asObject(source);
-    if (!isNullish(view.reason) && view.reason !== "") return view.reason;
-    return rawEnum(view.status).toUpperCase() === "OK" ? "OK" : null;
+    if (!isBlank(view.reason)) return view.reason;
+    if (Array.isArray(view.reasons) && view.reasons.length) return view.reasons.filter(Boolean).join("; ");
+    if (!isBlank(view.fetch_error)) return view.fetch_error;
+    if (!isBlank(view.last_error)) return view.last_error;
+    const status = rawEnum(view.status).toUpperCase();
+    if (status === "OK") return "OK";
+    if (status === "LKGV_CACHE") return "缓存可用，主体数据完整";
+    if (status.includes("WARMING_UP")) return "样本积累中";
+    if (status.includes("CACHE")) return "缓存可用";
+    return null;
   }
   function qualitySourceView(doc, key, source) {
     const original = asObject(source);
@@ -368,7 +401,7 @@
     const normalized = rawEnum(value).toUpperCase();
     if (["OK", "ACTIVE", "ALLOWED", "BULLISH"].some((key) => normalized.includes(key))) return "is-good";
     if (["DEGRADED", "STALE", "MISSING", "HIGH", "BEARISH"].some((key) => normalized.includes(key))) return "is-bad";
-    if (["WAIT", "NEUTRAL", "PARTIAL", "UNCALIBRATED", "EXCLUDED", "NON_VOTING"].some((key) => normalized.includes(key))) return "is-wait";
+    if (["WAIT", "NEUTRAL", "PARTIAL", "UNCALIBRATED", "EXCLUDED", "NON_VOTING", "LKGV_CACHE", "CACHE", "WARMING_UP"].some((key) => normalized.includes(key))) return "is-wait";
     return "";
   };
   const statusBadge = (label, value, solid = false) => (
@@ -387,6 +420,54 @@
       <dd>${valueHtml(value, options)}</dd>
     </div>
   `;
+  function pinDistanceText(doc, gamma, gex) {
+    const explicit = firstPresent(
+      gamma.distance_to_pin_pct,
+      get(gamma, "pin.distance_to_pin_pct"),
+      gex.distance_to_pin_pct
+    );
+    if (!isBlank(explicit)) {
+      const direction = firstPresent(gamma.pin_pull_direction, get(gamma, "pin.pin_pull_direction"));
+      const normalizedPct = normalizeDistancePct(explicit);
+      return `${pctPoint(normalizedPct)}${direction ? ` (${semanticCompact(direction) || direction})` : ""}`;
+    }
+    const price = safeNumber(firstPresent(
+      get(doc, "market_context.price"),
+      gamma.spot_price,
+      gamma.price,
+      gex.spot_price,
+      gex.price
+    ));
+    const pin = safeNumber(firstPresent(
+      gamma.pin_strike,
+      get(gamma, "pin.pin_strike"),
+      gex.magnet_level,
+      gex.magnet_price
+    ));
+    if (price === null || pin === null || pin <= 0) return null;
+    const diffPct = ((price - pin) / pin) * 100;
+    const direction = diffPct > 0 ? "高于钉住点" : (diffPct < 0 ? "低于钉住点" : "贴合钉住点");
+    return `${number(Math.abs(diffPct), 2)}% (${direction})`;
+  }
+  function nullSemantics(path, scope = "") {
+    const normalized = String(path || "").toLowerCase();
+    const scoped = `${scope}.${normalized}`;
+    if (/(^|\.)(fetch_error|last_error|error)$/.test(normalized)) return "无错误";
+    if (/(^|\.)(warning|hard_warning)$/.test(normalized)) return "无警告";
+    if (/(^|\.)(veto_reason)$/.test(normalized)) return "无否决原因";
+    if (/(^|\.)(hard_veto)$/.test(normalized)) return "无硬否决";
+    if (/(^|\.)(exclusion_reason)$/.test(normalized)) return "不适用";
+    if (/(^|\.)(static_web_url)$/.test(scoped)) return "未配置";
+    if (/(^|\.)(source_snapshot|config_snapshot)/.test(scoped)) return "当前卡未提供";
+    return null;
+  }
+  const valueHtmlByPath = (path, value, options = {}) => {
+    if (isNullish(value)) {
+      const nullText = nullSemantics(path, options.scope);
+      if (nullText) return benignNullHtml(nullText);
+    }
+    return valueHtml(value, options);
+  };
   const rankPct = (metric, field = "rank_pct") => {
     const value = asObject(metric)[field];
     return isNullish(value) ? "暂缺 (null)" : `${number(value, 1)}%`;
@@ -661,6 +742,7 @@
   function renderGammaOverview(doc) {
     const gex = asObject(get(doc, "factor_cross_section.gex_info", {}));
     const gamma = asObject(get(doc, "factor_cross_section.gamma_regime", {}));
+    const pinDistance = pinDistanceText(doc, gamma, gex);
     const showFlipPoint = !hasLlmGammaKeyLevel(doc, "flip");
     const showCallWall = !hasLlmGammaKeyLevel(doc, "call_wall");
     const showPutWall = !hasLlmGammaKeyLevel(doc, "put_wall");
@@ -684,7 +766,7 @@
         ${kv("regime", gamma.regime)}
         ${kv("regime_strength", gamma.regime_strength, { translate: false })}
         ${kv("net_gamma_notional_usd", gex.net_gamma_notional_usd ?? gamma.net_gamma_notional_usd, { translate: false })}
-        ${kv("distance_to_pin_pct", isNullish(gamma.distance_to_pin_pct) ? null : percent(gamma.distance_to_pin_pct), { translate: false })}
+        ${kv("distance_to_pin_pct", pinDistance, { translate: false })}
         ${kv("confidence_multiplier", gamma.confidence_multiplier, { translate: false })}
         ${kv("veto", gamma.veto)}
         ${showFlipPoint ? kv("flip_point", gex.flip_point ?? gamma.flip_point, { translate: false }) : ""}
@@ -767,15 +849,15 @@
           <td><strong>${escapeHtml(key)}</strong></td>
           <td>${valueHtml(source.required)}</td>
           <td>${statusBadge("", source.status)}</td>
-          <td>${escapeHtml(dateText(source.observed_at))}</td>
-          <td class="num">${escapeHtml(ageText(source.age_ms))}</td>
+          <td>${isNullish(source.observed_at) ? benignNullHtml("未提供") : escapeHtml(dateText(source.observed_at))}</td>
+          <td class="num">${isNullish(source.age_ms) ? benignNullHtml("未提供") : escapeHtml(ageText(source.age_ms))}</td>
           <td>${valueHtml(source.source_ref)}</td>
-          <td>${valueHtml(source.reason, { translate: true })}</td>
+          <td>${valueHtml(source.reason, { translate: true, nullText: "无错误原因", nullClass: "benign-null-value" })}</td>
         </tr>
       `;
     }).join("");
     const degraded = asArray(quality.degraded_sources);
-    return section("数据质量与时效", "逐源显示 required、status、observed_at、age_ms 和 source_ref；缺失必须可见。", `
+    return section("数据质量与时效", "按模块主体状态展示 required、status、observed_at、age_ms 和 source_ref；无错误、未配置、冷启动与真正缺失分开标记。", `
       <dl class="kv-grid" style="margin-bottom: 16px;">
         ${kv("Overall", quality.overall)}
         ${kv("All required ready", quality.all_required_sources_ready)}
@@ -790,7 +872,7 @@
       </div>
       <div class="two-column-notes">
         <div><h3 class="subsection-title">Missing fields</h3>${listHtml(quality.missing_fields, "无缺失字段")}</div>
-        <div><h3 class="subsection-title">Degraded sources</h3>${degraded.length ? `<ul class="plain-list">${degraded.map((item) => `<li><strong>${escapeHtml(item.source)}</strong> · ${escapeHtml(semanticLabel(item.status))} · ${escapeHtml(semanticLabel(item.reason))}</li>`).join("")}</ul>` : `<div class="empty-inline">无降级数据源</div>`}</div>
+        <div><h3 class="subsection-title">Degraded sources</h3>${degraded.length ? `<ul class="plain-list">${degraded.map((item) => `<li><strong>${escapeHtml(item.source)}</strong> · ${escapeHtml(semanticLabel(item.status))} · ${escapeHtml(item.reason ? semanticLabel(item.reason) : "未提供原因")}</li>`).join("")}</ul>` : `<div class="empty-inline">无降级数据源</div>`}</div>
       </div>
     `);
   }
@@ -803,7 +885,7 @@
       <dl class="kv-grid" style="margin-bottom: 16px;">
         ${kv("Has block", blocking.has_block)}
         ${kv("Block kind", blocking.block_kind)}
-        ${kv("Hard veto", blocking.hard_veto)}
+        ${kv("Hard veto", blocking.hard_veto, { nullText: "无硬否决", nullClass: "benign-null-value" })}
       </dl>
       <ul class="adjustment-list">
         ${gates.map((gate) => `<li class="line-item"><p class="line-title">${escapeHtml(semanticLabel(gate.gate))}</p><div class="change"><span class="chip">${escapeHtml(semanticLabel(gate.reason_code))}</span></div><p class="line-body">${valueHtml(gate.reason_cn, { translate: false })}</p></li>`).join("") || `<li class="empty-inline">无 soft gate</li>`}
@@ -811,6 +893,19 @@
       <h3 class="subsection-title">Unblock conditions</h3>
       <ul class="adjustment-list">${conditions.map((item) => `<li class="line-item"><p class="line-title">${escapeHtml(item.condition_cn || item.metric)}</p><div class="change"><span class="chip">${escapeHtml(item.metric)}</span><span class="chip">${escapeHtml(item.operator)}</span><span class="chip">threshold: ${escapeHtml(scalarText(item.threshold, { translate: false }))}</span></div></li>`).join("") || `<li class="empty-inline">无解除条件</li>`}</ul>
     `);
+  }
+
+  function evidenceValueHtml(evidence, field, value) {
+    if (!isNullish(value)) return valueHtml(value, { translate: field !== "source_ref" });
+    const status = rawEnum(evidence.participation_status).toUpperCase();
+    if (field === "exclusion_reason") {
+      return ["ACTIVE"].includes(status) ? benignNullHtml("无排除") : benignNullHtml("不适用");
+    }
+    if (["EXCLUDED", "NON_VOTING", "GATE_ONLY"].includes(status)) {
+      if (field === "vote") return benignNullHtml("不计票");
+      if (field === "reliability" || field === "lean") return benignNullHtml("不适用");
+    }
+    return valueHtml(null);
   }
 
   function renderReasoning(doc) {
@@ -823,16 +918,16 @@
       <tr class="participation-${escapeHtml(rawEnum(evidence.participation_status).toLowerCase())}">
         <td><strong>${escapeHtml(evidence.key || "N/A")}</strong><br><span class="metric-note">${escapeHtml(evidence.gloss_cn || "")}</span></td>
         <td>${statusBadge("", evidence.participation_status)}</td>
-        <td class="num">${valueHtml(evidence.vote, { translate: false })}</td>
+        <td class="num">${evidenceValueHtml(evidence, "vote", evidence.vote)}</td>
         <td class="num">${valueHtml(evidence.configured_weight, { translate: false })}</td>
-        <td class="num">${valueHtml(evidence.reliability, { translate: false })}</td>
+        <td class="num">${evidenceValueHtml(evidence, "reliability", evidence.reliability)}</td>
         <td class="num">${valueHtml(evidence.information, { translate: false })}</td>
         <td class="num">${valueHtml(evidence.effective_weight, { translate: false })}</td>
         <td class="num">${valueHtml(evidence.weighted_contribution, { translate: false })}</td>
         <td class="num">${isNullish(evidence.absolute_share_pct) ? valueHtml(null) : escapeHtml(`${number(evidence.absolute_share_pct, 2)}%`)}</td>
-        <td>${valueHtml(evidence.lean)}</td>
+        <td>${evidenceValueHtml(evidence, "lean", evidence.lean)}</td>
         <td>${valueHtml(evidence.source_ref, { translate: false })}</td>
-        <td>${valueHtml(evidence.exclusion_reason)}</td>
+        <td>${evidenceValueHtml(evidence, "exclusion_reason", evidence.exclusion_reason)}</td>
       </tr>
     `).join("");
     return section("完整证据账本", reasoning.summary_cn || "保留所有参与、排除、不计票和门控证据。", `
@@ -902,9 +997,12 @@
   function renderFactorCrossSection(doc) {
     const crossSection = asObject(get(doc, "factor_cross_section", {}));
     const blocks = Object.entries(crossSection).map(([key, value]) => {
-      const rows = flatten(value).map(([path, scalar]) => `
-        <tr><td class="field-path">${escapeHtml(fieldLabel(path))}</td><td>${Array.isArray(scalar) || (scalar && typeof scalar === "object") ? `<code>${escapeHtml(JSON.stringify(scalar))}</code>` : valueHtml(scalar)}</td></tr>
-      `).join("");
+      const rows = flatten(value).map(([path, scalar]) => {
+        const renderedValue = Array.isArray(scalar) || (scalar && typeof scalar === "object")
+          ? `<code>${escapeHtml(JSON.stringify(scalar))}</code>`
+          : valueHtmlByPath(path, scalar, { scope: key });
+        return `<tr><td class="field-path">${escapeHtml(fieldLabel(path))}</td><td>${renderedValue}</td></tr>`;
+      }).join("");
       const status = get(value, "data_status", get(value, "status"));
       return `
         <details class="factor-detail" ${["tmvf", "micro_flow", "gamma_regime"].includes(key) ? "open" : ""}>
@@ -913,7 +1011,7 @@
         </details>
       `;
     }).join("");
-    return section("因子原始截面", "按 JSON 实际字段递归展示；新增少量字段无需修改固定模板。", `<div class="factor-list">${blocks || `<div class="empty">暂无 factor_cross_section</div>`}</div>`);
+    return section("因子原始截面", "按 JSON 实际字段递归展示；无错误、无警告和不适用的 null 会灰色标记，真实缺失仍保留红色提示。", `<div class="factor-list">${blocks || `<div class="empty">暂无 factor_cross_section</div>`}</div>`);
   }
 
   function renderProvenance(doc) {
@@ -923,22 +1021,40 @@
     const versions = asObject(provenance.component_versions);
     const integrity = asObject(get(doc, "integrity", {}));
     const delivery = asObject(get(doc, "delivery", {}));
-    return section("来源、交付与完整性", "配置、源快照、组件版本和哈希独立展示；null 不隐藏。", `
+    const hasSourceSnapshot = Object.values(sourceSnapshot).some((value) => !isBlank(value));
+    const hasConfigSnapshot = Object.values(configSnapshot).some((value) => !isBlank(value));
+    const deliveryRows = Object.entries(delivery)
+      .filter(([key]) => key !== "fmz_push_summary");
+    const sourceSnapshotBlock = hasSourceSnapshot ? `
+      <dl class="kv-grid">
+        ${kv("Source snapshot id", sourceSnapshot.snapshot_id, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+        ${kv("Source snapshot hash", sourceSnapshot.hash, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+        ${!isBlank(sourceSnapshot.local_ref) ? kv("local_ref", sourceSnapshot.local_ref, { translate: false }) : ""}
+      </dl>
+    ` : `<div class="empty-inline">当前卡未提供独立源快照；以组件版本、交付路径和完整性字段作为留档线索。</div>`;
+    const configSnapshotBlock = hasConfigSnapshot ? `
+      <dl class="kv-grid">
+        ${kv("Config id", configSnapshot.config_id, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+        ${kv("Config hash", configSnapshot.hash, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+      </dl>
+    ` : `<div class="empty-inline">当前卡未提供配置快照；这不是行情数据缺失。</div>`;
+    return section("来源、交付与完整性", "只展示可追溯的运行模式、版本、交付路径和完整性字段；未启用或当前版本不产出的快照项不再按缺失处理。", `
       <h3 class="subsection-title">Provenance</h3>
       <dl class="kv-grid">
         ${kv("Runtime mode", provenance.runtime_mode)}
-        ${kv("Source snapshot id", sourceSnapshot.snapshot_id, { translate: false })}
-        ${kv("Source snapshot hash", sourceSnapshot.hash, { translate: false })}
-        ${kv("Config id", configSnapshot.config_id, { translate: false })}
-        ${kv("Config hash", configSnapshot.hash, { translate: false })}
       </dl>
+      <h3 class="subsection-title">Source snapshot</h3>
+      ${sourceSnapshotBlock}
+      <h3 class="subsection-title">Config snapshot</h3>
+      ${configSnapshotBlock}
       <h3 class="subsection-title">Component versions</h3>
       <ul class="audit-list">${Object.entries(versions).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtml(value, { translate: false })}</span></li>`).join("") || `<li class="empty-inline">暂无组件版本</li>`}</ul>
       <h3 class="subsection-title">Delivery</h3>
       <div class="push-summary">${valueHtml(delivery.fmz_push_summary, { translate: false })}</div>
-      <ul class="audit-list" style="margin-top: 12px;">${Object.entries(delivery).filter(([key]) => key !== "fmz_push_summary").map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtml(value, { translate: false })}</span></li>`).join("")}</ul>
+      <ul class="audit-list" style="margin-top: 12px;">${deliveryRows.map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtmlByPath(key, value, { scope: "delivery", translate: false })}</span></li>`).join("") || `<li class="empty-inline">暂无交付路径</li>`}</ul>
+      ${isBlank(delivery.static_web_url) ? `<div class="empty-inline">未启用静态深链；当前可通过 FMZ Log、本地 JSONL 或 materialized card 路径定位。</div>` : ""}
       <h3 class="subsection-title">Integrity</h3>
-      <ul class="audit-list">${Object.entries(integrity).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${value && typeof value === "object" ? `<code>${escapeHtml(JSON.stringify(value))}</code>` : valueHtml(value, { translate: false })}</span></li>`).join("")}</ul>
+      <ul class="audit-list">${Object.entries(integrity).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${value && typeof value === "object" ? `<code>${escapeHtml(JSON.stringify(value))}</code>` : valueHtmlByPath(key, value, { scope: "integrity", translate: false })}</span></li>`).join("")}</ul>
     `);
   }
 
