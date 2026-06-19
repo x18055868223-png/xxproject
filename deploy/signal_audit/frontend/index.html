@@ -420,6 +420,137 @@
       line-height: 1.6;
     }
 
+    .merge-note {
+      margin: 10px 0 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 11px;
+      color: var(--muted);
+      background: var(--surface);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    #llm-review {
+      border-top: 2px solid var(--ink);
+      padding-top: 26px;
+    }
+
+    .llm-review-panel {
+      border: 1px solid var(--ink);
+      border-left-width: 5px;
+      border-radius: 6px;
+      padding: 16px 18px;
+      background: var(--surface);
+    }
+
+    .llm-review-panel.is-error {
+      border-color: rgba(107, 29, 29, 0.35);
+    }
+
+    .llm-review-summary {
+      margin: 10px 0 0;
+      font-size: 16px;
+      line-height: 1.65;
+      font-weight: 650;
+    }
+
+    .llm-review-topline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .llm-review-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .llm-active-view {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 14px 16px;
+      background: var(--surface);
+    }
+
+    .llm-active-basis {
+      margin: 10px 0 0;
+      line-height: 1.65;
+    }
+
+    .llm-active-lists {
+      margin-top: 12px;
+    }
+
+    .llm-active-boundary {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .llm-gamma-lens {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 14px 16px;
+      background: var(--bg);
+    }
+
+    .llm-gamma-copy {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .llm-gamma-copy p,
+    .llm-gamma-notes p {
+      margin: 0;
+      line-height: 1.65;
+    }
+
+    .llm-gamma-levels {
+      margin-top: 12px;
+    }
+
+    .llm-gamma-notes {
+      margin-top: 12px;
+    }
+
+    .llm-gamma-boundary {
+      margin: 12px 0 0;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .llm-review-quality {
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: var(--muted);
+      background: var(--bg);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .llm-review-lists {
+      margin-top: 16px;
+    }
+
+    .llm-review-error {
+      margin-top: 12px;
+      color: var(--bad);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
     .text-block {
       margin: 16px 0 0;
       border-left: 3px solid var(--ink);
@@ -798,6 +929,7 @@
       }
 
       .formula-block,
+      .llm-gamma-copy,
       .two-column-notes {
         grid-template-columns: 1fr;
       }
@@ -1512,7 +1644,7 @@
 ]
   </script>
 
-  <script src="signal_cards/fallback.js"></script>
-  <script src="app.js"></script>
+  <script src="signal_cards/fallback.js?v=20260619-llm-gamma-lens"></script>
+  <script src="app.js?v=20260619-llm-gamma-lens"></script>
 </body>
 </html>

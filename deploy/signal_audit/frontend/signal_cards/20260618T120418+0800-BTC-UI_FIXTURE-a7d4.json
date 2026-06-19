@@ -674,5 +674,38 @@
       "contains_account_balance": false,
       "contains_position_size": false
     }
+  },
+  "llm_review": {
+    "status": "OK",
+    "schema": {
+      "name": "llm_review",
+      "version": "1.0.0"
+    },
+    "reviewed_at": "2026-06-18T12:05:30+08:00",
+    "summary_cn": "系统等待确认的结论与当前冲突结构基本一致；TMV 与短窗主动流偏同向，但宏观压力和偏斜仍要求谨慎。",
+    "agreement_with_system": "部分支持",
+    "main_supporting_factors": [
+      "量价主干与 4h 主动流同向，说明修复窗口内存在局部需求支撑。",
+      "正 Gamma 钉住降低追随单边突破的确定性，支持等待确认而不是直接放行。"
+    ],
+    "main_risks_or_conflicts": [
+      "宏观压力和期权偏斜仍为反向证据，冲突比例处于实质分歧区间。",
+      "GEX rank 为样例窗口，真实使用时应关注 warming_up 或样本不足状态。"
+    ],
+    "operator_focus": [
+      "观察冲突比例是否下降，尤其是 MACRO/SRD 是否回落。",
+      "确认价格是否继续贴近 pin/flip 区域，避免单根波动误读。",
+      "等待 CVD 慢窗或 GEX rank 样本继续补齐。"
+    ],
+    "invalid_if": [
+      "价格快速脱离 pin 区域且主动流反向放大。",
+      "GEX Monitor 的 netGEX、IV/RV 或 P/C rank 出现新的极端状态。",
+      "数据质量从 OK/PARTIAL 降为 STALE/MISSING。"
+    ],
+    "caution_level": "MEDIUM",
+    "not_trading_advice": true,
+    "model": "fixture-llm-review",
+    "prompt_version": "llm_review_prompt_v1.0.0",
+    "redaction_version": "llm_review_redaction_v1.0.0"
   }
 }

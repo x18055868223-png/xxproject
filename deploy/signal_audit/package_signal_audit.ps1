@@ -27,6 +27,7 @@ Copy-Item -LiteralPath (Join-Path $frontend.Path "app.js") -Destination (Join-Pa
 Copy-Item -LiteralPath (Join-Path $frontend.Path "signal_cards") -Destination (Join-Path $packageRoot "frontend") -Recurse -Force
 
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\materialize_signal_cards.py") -Destination (Join-Path $packageRoot "tools") -Force
+Copy-Item -LiteralPath (Join-Path $root.Path "tools\gemini_signal_llm_review.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_or_update.sh") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "apache-bitnami-signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
