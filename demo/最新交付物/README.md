@@ -9,7 +9,7 @@
 | 文件 | 层 | 版本 | 运行边界 | 源 / 重生成 |
 |---|---|---|---|---|
 | `neutral_regulation_demo_fmz.py` | ① 信号层·中性回路 | demo **1.3.0** / schema `nrd.schema.v1.0.0`（全量 v1.0 审计 JSON 写 jsonl + FMZ ≤140 简要推送 + 推送自检） | **只读观察**：不选腿、不报价、不下单（`read_only_demo=True`） | `中性回路 - opus4.8/`；`tools/build_fmz_single.ps1` 由 `demo/*.py` 合成 |
-| `spm_calendar_protected_short_v1.py` | ② 执行层·Deribit S:PM 垂直信用价差卖方 | STRATEGY_VERSION **2.2.0**（v3 重构（开仓活动跨轮持久 / 对冲场所可选）：垂直唯一 + 单一 `run_cycle` 主链 + 交互控制台/短确认码硬授权 + 软授权止盈 + 低成本退出 + 对冲生命周期，场所 **Deribit BTC-PERPETUAL 默认 / Binance BTCUSDC maker-0 可选**） | **全空跑**：5 门控 `ALLOW_ENTRY/EXIT/HEDGE_TRADING` + `KILL_NEW_RISK` + `EMERGENCY_REDUCE_ONLY` 默认 False，仅展示意图/控制台、不真实下单 | `demo/execution_build/realsrc/`；`python build_bundle.py` 由 `src/*.py` 合成 |
+| `spm_calendar_protected_short_v1.py` | ② 执行层·Deribit S:PM 垂直信用价差卖方 | STRATEGY_VERSION **2.5.0**（v3 重构（风险严重度→仲裁+审计整改 / 持仓后链路补强 / 开仓活动跨轮持久 / 对冲场所可选）：垂直唯一 + 单一 `run_cycle` 主链 + 交互控制台/短确认码硬授权 + 软授权止盈 + 低成本退出 + 对冲生命周期 + **风险触发主动退出(EXIT_PREFERRED·可越价吃单)/对冲(HEDGE_READY)**，场所 **Deribit BTC-PERPETUAL 默认 / Binance BTCUSDC maker-0 可选**） | **全空跑**：5 门控 `ALLOW_ENTRY/EXIT/HEDGE_TRADING` + `KILL_NEW_RISK` + `EMERGENCY_REDUCE_ONLY` 默认 False，仅展示意图/控制台、不真实下单 | `demo/execution_build/realsrc/`；`python build_bundle.py` 由 `src/*.py` 合成 |
 
 ## 部署到 FMZ
 1. FMZ 控制台 → 策略库 → 新建策略 → 语言选 **Python**。
@@ -23,7 +23,9 @@
 
 ## 验证状态（2026-06-04，全绿）
 - 信号层：`static_validate_demo.ps1`（FMZ 同步+交付摘要+无未完成标记）/ `runtime_check_demo.ps1`（离线 smoke）/ `tools/gex_info_check.py` / `tools/signal_review_check.py`。
-- 执行层 **v2.2.0（2026-06-17 v3 重构 + 对冲场所可选 + 开仓活动跨轮持久）**：`build_bundle.py --check`（语法+名称解析+无 KPF/无日历残留）/ `tests/run_all.py`（**189 通过**）。完整说明见 `docs/执行层完整说明_v2.1.md`（含审计发现）。
+- 执行层 **v2.5.0（2026-06-18：v3 重构 + 对冲场所可选 + 开仓活动跨轮持久 + 持仓后链路补强 P0①②③ + 风险严重度→仲裁 C.2 + 风险链路审计整改 F1-F3/C1-C3）**：`build_bundle.py --check`（语法+名称解析+无 KPF/无日历残留）/ `tests/run_all.py`（**210 通过**）。完整说明见 `docs/执行层完整说明_v2.1.md`（含审计发现）。
+  - v2.4.0：入场冻结 `entry_risk_anchor`；`manage_cycle` 每轮经 `hedge_risk.evaluate_position_risk` 算 `tail_risk_state`，驱动仲裁 `exit_preferred/hedge_ready`——风险严重偏退出(EXIT_PREFERRED，需 `风险退出授权`)、持续且对冲更优偏对冲(HEDGE_READY)；对冲数量改用**结构净 delta(短−保护)** + 方向符号核对（反向禁新增对冲）。**OFFLINE 默认仅 EXIT_PREFERRED 活跃**（HEDGE_READY 待总线 edb/ggr）。
+  - v2.5.0（审计整改）：F1 风险退出**独立预算**(`RISK_EXIT_MAX_SPEND`)+**可越价吃单**(成本封顶)+越价不可成交则**回退对冲**；F2 控制台「风险」行+风险退出授权码+操作提示；F3 短腿盘口缺 delta/IV 显式**数据缺口**；C1 Deribit 对冲下单**成交确认**(等待+撤残+复查)+None 盘口守门；C2 **孤儿对冲清理不受 `ALLOW_HEDGE_TRADING` 阻断**；C3 `no_unknown_orders` **真实活动订单查询**(fail-closed)+启动恢复按在途活动重校验。
   - **FMZ 交互须真实机器人空跑验收**（`GetCommand` 在回测系统不生效）。需在机器人「交互」区配置按钮：`执行`(字符串=方案确认码)、`拒绝`、`授权止盈`(字符串=持仓授权码)、`撤销授权`、`风险退出授权`(字符串)、`急停`、`恢复`。状态栏顶部「交互控制台」给出当前阶段/门控/信号接收/待批方案确认码/软授权码/止盈资格/退出活动/对冲/操作提示。
 
 ## 更新约定（重要）

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Neutral Regulation Premium Model demo for FMZ Python.
 
 Generated from the multi-file demo package. This file is read-only by default:
@@ -223,10 +223,10 @@ CONFIG = {
 
     # gexmonitorapi /v1/info: 策略服务器上的清洗增强接口，属于软证据。
     # base_url 可填服务器根地址或完整 /v1/info；代码会把根地址补全为 /v1/info。
-    # token 是当前策略服务器的 Bearer token；更换服务器或轮换 token 时只改这里。
+    # token 不写入交付物；在 FMZ 参数或 NRD_GEX_INFO_TOKEN 运行时覆盖中配置。
     "gex_info_enabled": True,
     "gex_info_base_url": "http://13.231.16.198:8000",
-    "gex_info_token": "<REDACTED_GEX_INFO_TOKEN>",
+    "gex_info_token": "",
     "gex_info_refresh_sec": 600,
     "gex_info_cache_file": "demo/logs/gex_info_cache.json",
     "gex_info_cache_max_age_ms": 86400000,
@@ -239,6 +239,15 @@ CONFIG = {
     "signal_review_push_test": False,
     "signal_review_recorder_name": "signal_review",
     "audit_static_base_url": "",
+    "llm_review_enabled": False,
+    "llm_review_endpoint": "",
+    "llm_review_api_key": "",
+    "llm_review_model": "",
+    "llm_review_timeout_sec": 3,
+    "llm_review_retries": 0,
+    "llm_review_temperature": 0,
+    "llm_review_prompt_version": "llm_review_prompt_v1.0.0",
+    "llm_review_redaction_version": "llm_review_redaction_v1.0.0",
     "logs_dir": "demo/logs",
 
     # ============================================================
@@ -537,6 +546,15 @@ USER_CONFIG_KEYS = (
     "signal_review_push_test",
     "signal_review_recorder_name",
     "audit_static_base_url",
+    "llm_review_enabled",
+    "llm_review_endpoint",
+    "llm_review_api_key",
+    "llm_review_model",
+    "llm_review_timeout_sec",
+    "llm_review_retries",
+    "llm_review_temperature",
+    "llm_review_prompt_version",
+    "llm_review_redaction_version",
     "logs_dir",
 )
 
@@ -587,7 +605,7 @@ USER_CONFIG_DOC_CN = {
     "gex_lite": "旧 GEX 公共源轻量返回参数。",
     "gex_info_enabled": "是否启用策略服务器 gexmonitorapi /v1/info 增强接口。",
     "gex_info_base_url": "策略服务器 GEX 地址，可填根地址或完整 /v1/info。",
-    "gex_info_token": "策略服务器 GEX Bearer token，轮换 token 时修改。",
+    "gex_info_token": "策略服务器 GEX Bearer token；不要硬编码进交付物，使用 FMZ 参数或 NRD_GEX_INFO_TOKEN 覆盖。",
     "gex_info_refresh_sec": "GEX 增强接口刷新间隔秒数。",
     "gex_info_cache_file": "GEX 增强接口本地缓存文件。",
     "gex_info_cache_max_age_ms": "GEX 增强接口缓存最大可用毫秒数。",
@@ -596,6 +614,15 @@ USER_CONFIG_DOC_CN = {
     "signal_review_push_test": "是否启动一次非真实信号推送自检，正常运行应为 False。",
     "signal_review_recorder_name": "审计 JSONL 文件名，不含 .jsonl。",
     "audit_static_base_url": "审计静态站根地址；未启用深链前保持空值。",
+    "llm_review_enabled": "保留兼容字段；当前 FMZ 主进程不调用 LLM，复核由旁路脚本处理。",
+    "llm_review_endpoint": "保留兼容字段；当前不在 FMZ 主进程使用。",
+    "llm_review_api_key": "保留兼容字段；不要写入交付物。",
+    "llm_review_model": "保留兼容字段；当前不在 FMZ 主进程使用。",
+    "llm_review_timeout_sec": "保留兼容字段；当前不在 FMZ 主进程使用。",
+    "llm_review_retries": "保留兼容字段；当前不在 FMZ 主进程使用。",
+    "llm_review_temperature": "保留兼容字段；当前不在 FMZ 主进程使用。",
+    "llm_review_prompt_version": "LLM 复核提示词版本，写入审计字段便于回放对比。",
+    "llm_review_redaction_version": "LLM 复核输入脱敏版本，写入审计字段便于追踪外发包边界。",
     "logs_dir": "FMZ 本地 JSONL 和缓存写入目录。",
 }
 
@@ -1360,6 +1387,7 @@ class DemoChart:
             factors = decision_snapshot.get("factor_snapshot") or {}
             anchor = factors.get("anchor") or {}
             flow = factors.get("flow") or {}
+            gex_info = factors.get("gex_info") or {}
 
             price = safe_float(runtime.get("current_bar_close"))
             if price is None:
@@ -1370,6 +1398,11 @@ class DemoChart:
                 anchor_axis = safe_float(anchor.get("flip_point"))
             tmv_score = safe_float(flow.get("tmv_blend"))
             m_die = safe_float((factors.get("m_die") or {}).get("m_die"))
+            net_gamma_musd = safe_float(gex_info.get("total_net_gex"))
+            if net_gamma_musd is None:
+                net_gamma_musd = safe_float(gex_info.get("net_gamma_notional_usd"))
+            if net_gamma_musd is not None:
+                net_gamma_musd = net_gamma_musd / 1000000.0
             if ts_ms is None:
                 return False
             if price is not None:
@@ -1386,6 +1419,9 @@ class DemoChart:
                 self.points_added += 1
             if m_die is not None:
                 self.chart.add(4, [ts_ms, m_die])
+                self.points_added += 1
+            if net_gamma_musd is not None:
+                self.chart.add(5, [ts_ms, net_gamma_musd])
                 self.points_added += 1
             self.last_error = None
             return True
@@ -1404,7 +1440,7 @@ class DemoChart:
 
     def _init_chart(self, chart_func):
         chart_config = {
-            "title": {"text": "NRD 0.4.1 前置信号观察图"},
+            "title": {"text": "NRD 1.3.0 信号层观察图"},
             "xAxis": {"type": "datetime"},
             "yAxis": [
                 {"title": {"text": "BTC价格"}, "opposite": False},
@@ -1432,6 +1468,14 @@ class DemoChart:
                          "dashStyle": "ShortDash", "width": 1},
                     ],
                 },
+                {
+                    "title": {"text": "净Gamma(M USD)"},
+                    "opposite": True,
+                    "plotLines": [
+                        {"value": 0, "color": "#9E9E9E",
+                         "dashStyle": "ShortDash", "width": 1},
+                    ],
+                },
             ],
             "series": [
                 {"id": "price", "name": "实时成交价",
@@ -1448,6 +1492,10 @@ class DemoChart:
                 {"id": "m_die", "name": "M-DIE 15m",
                  "data": [], "yAxis": 2, "color": "#FF9800",
                  "lineWidth": 2},
+                {"id": "processed_net_gamma_musd",
+                 "name": "处理后净Gamma(M USD)",
+                 "data": [], "yAxis": 3, "color": "#607D8B",
+                 "lineWidth": 2, "dashStyle": "ShortDot"},
             ],
         }
         self.chart = chart_func(chart_config)
@@ -1532,6 +1580,65 @@ class HttpClient:
             "data": None,
             "error": last_error or "unknown_http_error",
             "url": full_url,
+        }, SCHEMA_HTTP_RESULT, self.config)
+
+    def post_json(self, url, payload=None, headers=None, timeout_sec=None,
+                  retries=None):
+        timeout = timeout_sec or self.config["http_timeout_sec"]
+        retry_count = self.config["http_retries"] if retries is None else retries
+        retry_delays = self.config.get("http_retry_delays", [0.6, 1.2])
+        req_headers = {
+            "User-Agent": "Mozilla/5.0 (neutral-regulation-demo)",
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+        }
+        if headers:
+            req_headers.update(headers)
+        body = json.dumps(payload or {}, ensure_ascii=False,
+                          separators=(",", ":")).encode("utf-8")
+
+        last_error = None
+        for attempt in range(retry_count + 1):
+            try:
+                req = urllib.request.Request(
+                    url=url, data=body, headers=req_headers, method="POST")
+                resp = self._opener.open(req, timeout=timeout)
+                status = getattr(resp, "status", 200)
+                text = resp.read().decode("utf-8", errors="replace")
+                if status < 200 or status >= 300:
+                    return add_schema({
+                        "quality": QUALITY_ERROR,
+                        "data": None,
+                        "error": "http_status_" + str(status),
+                        "url": url,
+                    }, SCHEMA_HTTP_RESULT, self.config)
+                try:
+                    return add_schema({
+                        "quality": QUALITY_OK,
+                        "data": json.loads(text),
+                        "error": None,
+                        "url": url,
+                    }, SCHEMA_HTTP_RESULT, self.config)
+                except Exception as error:
+                    return add_schema({
+                        "quality": QUALITY_INVALID,
+                        "data": None,
+                        "error": "json_parse_error:" + str(error),
+                        "url": url,
+                    }, SCHEMA_HTTP_RESULT, self.config)
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+                    OSError) as error:
+                last_error = str(error)
+                if attempt < retry_count:
+                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                    time.sleep(delay)
+
+        return add_schema({
+            "quality": QUALITY_ERROR,
+            "data": None,
+            "error": last_error or "unknown_http_error",
+            "url": url,
         }, SCHEMA_HTTP_RESULT, self.config)
 
     @staticmethod
@@ -3262,7 +3369,7 @@ def build_signal_review_card(factor_snapshot, runtime_facts=None,
     conflict = _build_conflict(edb, evidence)
     blocking = _build_blocking(edb, nr, fs)
     window = _build_window(nr, event_context, anchor_context)
-    cross = _build_cross_section(fs)
+    cross = _build_cross_section(fs, rf)
 
     card = {
         "card_id": card_id,
@@ -3354,6 +3461,7 @@ def build_sample_review_card(config=None):
         "macro_pressure": {"macro_score": 0.23, "macro_regime": "Mild Headwind",
                            "macro_data_confidence": 1.0,
                            "data_status": "full_live",
+                           "data_age_ms": 180000,
                            "components": [{"key": "VOLQ", "scoring_bps": 210},
                                           {"key": "DXY", "scoring_bps": 35},
                                           {"key": "US10Y", "scoring_bps": 8}]},
@@ -3366,7 +3474,13 @@ def build_sample_review_card(config=None):
         "m_die": {"m_die": -0.92, "direction": "DOWN"},
         "anchor": {"normalized_deviation": -0.31},
     }
-    return build_signal_review_card(fs, {"current_price": 63339.96}, nr, config)
+    runtime = {
+        "current_price": 63339.96,
+        "tmvf_data_age_ms": 45000,
+        "option_greeks_age_ms": 240000,
+        "last_cycle_trade_count": 128,
+    }
+    return build_signal_review_card(fs, runtime, nr, config)
 
 
 # --------------------------------------------------------------------------
@@ -3558,6 +3672,332 @@ def _safe_brief(card, config):
         return None
 
 
+LLM_REVIEW_SCHEMA_VERSION = "1.0.0"
+
+_LLM_REVIEW_FACTOR_KEYS = (
+    "tmvf",
+    "micro_flow",
+    "macro_pressure",
+    "gamma_regime",
+    "gex_info",
+    "skew",
+    "funding",
+)
+
+_LLM_REVIEW_REQUIRED_FIELDS = (
+    "summary_cn",
+    "agreement_with_system",
+    "main_supporting_factors",
+    "main_risks_or_conflicts",
+    "operator_focus",
+    "invalid_if",
+    "caution_level",
+    "not_trading_advice",
+)
+
+_LLM_REVIEW_LIST_FIELDS = (
+    "main_supporting_factors",
+    "main_risks_or_conflicts",
+    "operator_focus",
+    "invalid_if",
+)
+
+_LLM_REVIEW_SENSITIVE_KEY_PARTS = (
+    "token",
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "authorization",
+    "bearer",
+    "header",
+    "account",
+    "balance",
+    "position",
+    "order",
+    "quantity",
+    "private",
+    "cache_file",
+    "logs_dir",
+    "local_ref",
+    "local_jsonl",
+    "local_card_json",
+    "static_web_url",
+    "fmz_log_ref",
+    "config_snapshot",
+    "record_hash",
+)
+
+_LLM_REVIEW_FIELD_GLOSSARY = {
+    "decision": "系统程序化结论；LLM 只能解释，不能修改方向、置信、门控或交易许可。",
+    "confidence": "证据质量/收敛程度，不是胜率，也不是收益概率。",
+    "reasoning.evidence": "EDB 证据账本，包含参与、排除、门控和有效权重。",
+    "conflict.ratio": "反向有效证据权重占比；越高代表分歧越高。",
+    "blocking": "硬否决、软门和解除条件；LLM 不得覆盖这些门控。",
+    "rank": "GEX Monitor 历史窗口内相对分位；warming_up 表示样本仍在冷启动。",
+    "gex_info": "策略服务器清洗后的 GEX Monitor 只读上下文。",
+}
+
+_LLM_REVIEW_GUARDRAILS = (
+    "你是信号审计复核员，不是交易执行系统。",
+    "只基于给定 JSON 截面复核；不得编造未提供的数据，不得引用外部行情。",
+    "不改变系统信号方向、confidence、EDB、blocking、trade_allowed 或 next_action。",
+    "confidence 不是胜率，只代表证据质量和收敛程度。",
+    "不得因为单一因子强就覆盖系统结论；必须同时检查数据质量、缺失字段和冲突比例。",
+    "rank 冷启动、数据缺失、冲突高或置信未校准时，必须降低复核确定性。",
+    "输出中文 JSON，不写长篇散文，不输出确定性收益预测。",
+)
+
+
+def llm_review_system_prompt():
+    return (
+        "你是信号审计复核员，职责是为程序化交易信号生成外部审计意见。"
+        "你不改变系统信号、不改变置信度、不改变门控、不触发交易执行。"
+        "你只能基于用户提供的 JSON 字段解释证据、风险、冲突和人工观察重点；"
+        "不得编造未提供的数据，不得引用外部实时行情，不得假设盘口或仓位。"
+        "必须明确区分系统结论和 LLM 复核意见；confidence 不是胜率。"
+        "当数据缺失、rank 冷启动、冲突比例高或置信未校准时，必须提高 caution_level。"
+        "只输出一个 JSON object，字段固定为 summary_cn, agreement_with_system, "
+        "main_supporting_factors, main_risks_or_conflicts, operator_focus, invalid_if, "
+        "caution_level, not_trading_advice。"
+    )
+
+
+def build_llm_review_package(record, config=None):
+    """Build the redacted, replayable evidence package sent to the LLM reviewer.
+
+    This is an observability-only projection of the audit card. It deliberately
+    excludes delivery paths, integrity hashes, config snapshots, tokens, account
+    state, positions, orders, and raw logs.
+    """
+    config = config or CONFIG
+    record = record or {}
+    cross = record.get("factor_cross_section") or {}
+    quality = record.get("quality") or {}
+    identity = record.get("identity") or {}
+    factors = {}
+    for key in _LLM_REVIEW_FACTOR_KEYS:
+        factors[key] = _llm_safe_copy(cross.get(key))
+    return _llm_safe_copy({
+        "schema": {
+            "name": "llm_review_package",
+            "version": LLM_REVIEW_SCHEMA_VERSION,
+            "base_card_schema": ((record.get("schema") or {}).get("name")
+                                 or "signal_review_card"),
+            "base_card_version": (record.get("schema") or {}).get("version"),
+            "prompt_version": config.get("llm_review_prompt_version"),
+            "redaction_version": config.get("llm_review_redaction_version"),
+        },
+        "identity": {
+            "card_id": identity.get("card_id"),
+            "short_id": identity.get("short_id"),
+            "episode_id": identity.get("episode_id"),
+            "event_type": identity.get("event_type"),
+            "is_synthetic": identity.get("is_synthetic"),
+            "symbol": identity.get("symbol"),
+            "strategy_version": identity.get("strategy_version"),
+            "confirmed_at": identity.get("confirmed_at"),
+        },
+        "market_context": record.get("market_context") or {},
+        "decision": record.get("decision") or {},
+        "signal_window": record.get("signal_window") or {},
+        "reasoning": record.get("reasoning") or {},
+        "conflict": record.get("conflict") or {},
+        "blocking": record.get("blocking") or {},
+        "quality": {
+            "overall": quality.get("overall"),
+            "all_required_sources_ready": quality.get("all_required_sources_ready"),
+            "missing_fields": quality.get("missing_fields") or [],
+            "degraded_sources": quality.get("degraded_sources") or [],
+            "sources": quality.get("sources") or {},
+        },
+        "factor_cross_section": factors,
+        "field_glossary": _LLM_REVIEW_FIELD_GLOSSARY,
+        "guardrails": list(_LLM_REVIEW_GUARDRAILS),
+    })
+
+
+def build_llm_review_request(record, config=None):
+    config = config or CONFIG
+    package = build_llm_review_package(record, config)
+    user_content = (
+        "请对下面的信号审计 JSON 截面做一次外部复核。"
+        "不要重算模型权重，不要改变系统结论，只输出结构化 JSON。\n"
+        + json.dumps(package, ensure_ascii=False, sort_keys=True)
+    )
+    return {
+        "model": config.get("llm_review_model"),
+        "temperature": safe_float(config.get("llm_review_temperature")) or 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": llm_review_system_prompt()},
+            {"role": "user", "content": user_content},
+        ],
+    }
+
+
+def validate_llm_review_output(payload):
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception as exc:
+            return _llm_invalid_output("json_parse_error:" + str(exc), payload)
+    if not isinstance(payload, dict):
+        return _llm_invalid_output("output_not_object", payload)
+    missing = [key for key in _LLM_REVIEW_REQUIRED_FIELDS if key not in payload]
+    if missing:
+        return _llm_invalid_output("missing_fields:" + ",".join(missing), payload)
+    caution = str(payload.get("caution_level") or "").upper()
+    if caution not in ("LOW", "MEDIUM", "HIGH"):
+        return _llm_invalid_output("bad_caution_level:" + caution, payload)
+    for key in _LLM_REVIEW_LIST_FIELDS:
+        if not isinstance(payload.get(key), list):
+            return _llm_invalid_output("field_not_list:" + key, payload)
+    return {
+        "status": "OK",
+        "schema": {
+            "name": "llm_review",
+            "version": LLM_REVIEW_SCHEMA_VERSION,
+        },
+        "reviewed_at": _iso8601_utc8(now_ms()),
+        "summary_cn": _llm_text(payload.get("summary_cn")),
+        "agreement_with_system": _llm_text(payload.get("agreement_with_system")),
+        "main_supporting_factors": _llm_text_list(
+            payload.get("main_supporting_factors")),
+        "main_risks_or_conflicts": _llm_text_list(
+            payload.get("main_risks_or_conflicts")),
+        "operator_focus": _llm_text_list(payload.get("operator_focus")),
+        "invalid_if": _llm_text_list(payload.get("invalid_if")),
+        "caution_level": caution,
+        "not_trading_advice": True,
+    }
+
+
+def attach_llm_review(record, http_client, config=None):
+    """Compatibility no-op.
+
+    LLM review is now generated out of process from signal_review.jsonl by
+    tools/gemini_signal_llm_review.py, so the FMZ signal loop never performs an
+    LLM HTTP request.
+    """
+    del http_client, config
+    return record or {}
+
+
+def _extract_llm_review_payload(data):
+    if isinstance(data, dict) and all(
+            key in data for key in ("summary_cn", "agreement_with_system")):
+        return data
+    if isinstance(data, dict):
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            message = (choices[0] or {}).get("message") or {}
+            content = message.get("content")
+            if isinstance(content, dict):
+                return content
+            if isinstance(content, str):
+                return json.loads(content)
+    return data
+
+
+def _llm_safe_copy(value):
+    if isinstance(value, dict):
+        out = {}
+        for key, child in value.items():
+            if _llm_sensitive_key(key):
+                continue
+            out[key] = _llm_safe_copy(child)
+        return out
+    if isinstance(value, list):
+        return [_llm_safe_copy(item) for item in value]
+    return value
+
+
+def _llm_sensitive_key(key):
+    normalized = str(key or "").lower()
+    return any(part in normalized for part in _LLM_REVIEW_SENSITIVE_KEY_PARTS)
+
+
+def _llm_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _llm_text_list(values):
+    if not isinstance(values, list):
+        return []
+    return [_llm_text(item) for item in values if _llm_text(item)]
+
+
+def _llm_invalid_output(reason, raw=None):
+    review = {
+        "status": "INVALID_OUTPUT",
+        "schema": {
+            "name": "llm_review",
+            "version": LLM_REVIEW_SCHEMA_VERSION,
+        },
+        "reviewed_at": _iso8601_utc8(now_ms()),
+        "summary_cn": "LLM 复核输出结构无效，已降级为无效输出。",
+        "agreement_with_system": "无法判断",
+        "main_supporting_factors": [],
+        "main_risks_or_conflicts": ["LLM 输出缺失固定字段或字段类型不符合契约。"],
+        "operator_focus": ["以系统审计卡原始字段为准，忽略本次 LLM 文本。"],
+        "invalid_if": [],
+        "caution_level": "HIGH",
+        "not_trading_advice": True,
+        "error": str(reason),
+    }
+    if raw is not None:
+        review["raw_excerpt"] = _llm_excerpt(raw)
+    return review
+
+
+def _llm_error_review(reason, config=None):
+    config = config or CONFIG
+    return {
+        "status": "ERROR",
+        "schema": {
+            "name": "llm_review",
+            "version": LLM_REVIEW_SCHEMA_VERSION,
+        },
+        "reviewed_at": _iso8601_utc8(now_ms()),
+        "summary_cn": "LLM 复核调用失败；系统审计卡和短推不受影响。",
+        "agreement_with_system": "无法判断",
+        "main_supporting_factors": [],
+        "main_risks_or_conflicts": ["LLM 复核层软失败：" + str(reason)],
+        "operator_focus": ["以系统审计 JSON 的 decision、reasoning、blocking 为准。"],
+        "invalid_if": [],
+        "caution_level": "HIGH",
+        "not_trading_advice": True,
+        "error": str(reason),
+        "prompt_version": config.get("llm_review_prompt_version"),
+        "redaction_version": config.get("llm_review_redaction_version"),
+    }
+
+
+def _llm_excerpt(raw):
+    try:
+        text = json.dumps(raw, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        text = str(raw)
+    if len(text) > 500:
+        return text[:500] + "...[truncated]"
+    return text
+
+
+def _refresh_audit_integrity(record):
+    if not isinstance(record, dict):
+        return record
+    record.pop("integrity", None)
+    record["integrity"] = _audit_integrity(record)
+    return record
+
+
+def _json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
 def _self_test_push_body(card, config, wrote_json):
     status = " JSON已写" if wrote_json else " JSON失败"
     banner = "【推送自检·非真实信号】"
@@ -3694,6 +4134,63 @@ def _audit_status(value, default="OK"):
     }.get(raw, raw)
 
 
+def _audit_age_ms(name, node, status):
+    node = node or {}
+    for key in ("age_ms", "data_age_ms", "cache_age_ms", "source_age_ms",
+                "fetch_age_ms"):
+        value = safe_float(node.get(key))
+        if value is not None:
+            return max(0, int(round(value)))
+    if status == "OK" and name in ("price", "neutral_repair"):
+        return 0
+    return None
+
+
+def _audit_time_value(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return _iso8601_utc8(value)
+    return value
+
+
+def _audit_observed_at(name, node, card, age_ms):
+    node = node or {}
+    for key in ("observed_at", "fetched_at", "last_success_at",
+                "last_data_time", "last_data_at", "updated_at"):
+        value = _audit_time_value(node.get(key))
+        if value:
+            return value
+    for key in ("observed_time_ms", "fetched_at_ms", "last_data_ms",
+                "last_refresh_ms"):
+        value = _audit_time_value(node.get(key))
+        if value:
+            return value
+    confirmed_ms = safe_float(card.get("confirmed_time"))
+    if confirmed_ms is not None and age_ms is not None:
+        return _iso8601_utc8(confirmed_ms - age_ms)
+    if confirmed_ms is not None and name in ("price", "neutral_repair"):
+        return _iso8601_utc8(confirmed_ms)
+    return None
+
+
+def _audit_enrich_timing(name, node, card):
+    if not isinstance(node, dict):
+        return node
+    status = _audit_status(node.get("data_status")
+                           or node.get("data_state")
+                           or node.get("status")
+                           or node.get("quality"),
+                           "OK" if node else "MISSING")
+    age_ms = _audit_age_ms(name, node, status)
+    if age_ms is not None and "age_ms" not in node:
+        node["age_ms"] = age_ms
+    observed_at = _audit_observed_at(name, node, card, age_ms)
+    if observed_at and not node.get("observed_at"):
+        node["observed_at"] = observed_at
+    return node
+
+
 def _audit_cross_section(cross, card):
     cross = cross or {}
     window = card.get("window") or {}
@@ -3784,6 +4281,9 @@ def _audit_cross_section(cross, card):
         "gex_info": gex,
         "skew": skew,
     }
+    for name in ("neutral_repair", "tmvf", "micro_flow", "funding",
+                 "macro_pressure", "gamma_regime", "gex_info", "skew"):
+        out[name] = _audit_enrich_timing(name, out.get(name), card)
     return out
 
 
@@ -3833,7 +4333,7 @@ def _audit_quality(card):
     cross = _audit_cross_section(card.get("factor_cross_section") or {}, card)
     specs = (
         ("price", True, {"data_status": "OK", "observed_at": _iso8601_utc8(
-            card.get("confirmed_time"))}),
+            card.get("confirmed_time")), "age_ms": 0}),
         ("neutral_repair", True, cross.get("neutral_repair") or {}),
         ("tmvf", True, cross.get("tmvf") or {}),
         ("micro_flow", True, cross.get("micro_flow") or {}),
@@ -3849,11 +4349,13 @@ def _audit_quality(card):
                                or (node or {}).get("status"),
                                "OK" if node else "MISSING")
         reason = (node or {}).get("reason") or (node or {}).get("status")
+        age_ms = _audit_age_ms(name, node, status)
+        observed_at = _audit_observed_at(name, node, card, age_ms)
         sources[name] = {
             "required": bool(required),
             "status": status,
-            "observed_at": (node or {}).get("observed_at"),
-            "age_ms": None,
+            "observed_at": observed_at,
+            "age_ms": age_ms,
             "source_ref": (node or {}).get("source_ref") or _source_ref_for(name),
             "reason": reason,
         }
@@ -4306,28 +4808,52 @@ def _build_window(nr, event_context, anchor_context):
     }
 
 
-def _build_cross_section(fs):
+def _build_cross_section(fs, runtime_facts=None):
     flow = fs.get("flow") or {}
+    runtime_facts = runtime_facts or {}
+    tmvf_age_ms = runtime_facts.get("tmvf_data_age_ms")
+    option_greeks_age_ms = runtime_facts.get("option_greeks_age_ms")
+    current_trade_poll = runtime_facts.get("last_cycle_trade_count")
+    micro_age_ms = 0 if current_trade_poll is not None else None
+    gex_age_ms = runtime_facts.get("gex_fetch_age_ms")
+    tmvf = {
+        "direction": flow.get("direction"),
+        "tmv_blend": flow.get("tmv_blend"),
+        "window_conflict": flow.get("window_conflict"),
+        "tmvf_24h": flow.get("tmvf_24h"),
+        "tmvf_48h": flow.get("tmvf_48h"),
+    }
+    if tmvf_age_ms is not None:
+        tmvf["age_ms"] = tmvf_age_ms
+    micro_flow = dict(flow.get("micro_flow") or {})
+    if micro_flow and micro_age_ms is not None and "age_ms" not in micro_flow:
+        micro_flow["age_ms"] = micro_age_ms
+    funding = {
+        "last_funding_rate": flow.get("last_funding_rate"),
+        "tmvf_funding_effect": flow.get("tmvf_funding_effect"),
+    }
+    if tmvf_age_ms is not None:
+        funding["age_ms"] = tmvf_age_ms
+    gamma_regime = dict(fs.get("gamma_regime") or {})
+    if option_greeks_age_ms is not None and "age_ms" not in gamma_regime:
+        gamma_regime["age_ms"] = option_greeks_age_ms
+    skew = dict(fs.get("skew") or {})
+    if option_greeks_age_ms is not None and "age_ms" not in skew:
+        skew["age_ms"] = option_greeks_age_ms
+    gex_info = dict(fs.get("gex_info") or {})
+    if gex_info and gex_age_ms is not None and "age_ms" not in gex_info:
+        gex_info["age_ms"] = gex_age_ms
     return {
         "anchor": fs.get("anchor"),
-        "tmvf": {
-            "direction": flow.get("direction"),
-            "tmv_blend": flow.get("tmv_blend"),
-            "window_conflict": flow.get("window_conflict"),
-            "tmvf_24h": flow.get("tmvf_24h"),
-            "tmvf_48h": flow.get("tmvf_48h"),
-        },
-        "micro_flow": flow.get("micro_flow"),
-        "funding": {
-            "last_funding_rate": flow.get("last_funding_rate"),
-            "tmvf_funding_effect": flow.get("tmvf_funding_effect"),
-        },
+        "tmvf": tmvf,
+        "micro_flow": micro_flow,
+        "funding": funding,
         "m_die": fs.get("m_die"),
         "neutral_repair": fs.get("neutral_repair_signal"),
         "macro_pressure": fs.get("macro_pressure"),
-        "gex_info": fs.get("gex_info"),
-        "gamma_regime": fs.get("gamma_regime"),
-        "skew": fs.get("skew"),
+        "gex_info": gex_info,
+        "gamma_regime": gamma_regime,
+        "skew": skew,
     }
 
 
@@ -6013,6 +6539,7 @@ def parse_info_payload(payload, config=None):
     vol = vol if isinstance(vol, dict) else {}
     flow = payload.get("flow")
     flow = flow if isinstance(flow, dict) else {}
+    rank = _normalize_gex_info_rank(payload.get("rank"))
 
     n1 = safe_float(gamma.get("n1"))
     n2 = safe_float(gamma.get("n2"))
@@ -6071,6 +6598,8 @@ def parse_info_payload(payload, config=None):
         "put_call_ratio": safe_float(flow.get("put_call_ratio")),
         "call_put_bias": flow.get("call_put_bias"),
         "abnormal_signal": flow.get("abnormal_signal"),
+        # rank (display-only historical percentile context from gexmonitorapi)
+        "rank": rank,
         # audit
         "missing_fields": list(payload.get("missing_fields") or []),
         "quality": QUALITY_OK,
@@ -6079,6 +6608,22 @@ def parse_info_payload(payload, config=None):
         "fetch_error": None,
     }
     return add_schema(snapshot, SCHEMA_GEX_INFO, config)
+
+
+def _normalize_gex_info_rank(raw_rank):
+    if not isinstance(raw_rank, dict):
+        return None
+    window = raw_rank.get("window")
+    metrics = raw_rank.get("metrics")
+    normalized_window = dict(window) if isinstance(window, dict) else {}
+    normalized_metrics = {}
+    if isinstance(metrics, dict):
+        for key, value in metrics.items():
+            if isinstance(value, dict):
+                normalized_metrics[str(key)] = dict(value)
+    if not normalized_window and not normalized_metrics:
+        return None
+    return {"window": normalized_window, "metrics": normalized_metrics}
 
 
 def missing_gex_info_snapshot(config=None, reasons=None, error=None):
@@ -6113,6 +6658,7 @@ def missing_gex_info_snapshot(config=None, reasons=None, error=None):
         "put_call_ratio": None,
         "call_put_bias": None,
         "abnormal_signal": None,
+        "rank": None,
         "missing_fields": [],
         "quality": QUALITY_MISSING,
         "data_state": "missing",
@@ -8740,6 +9286,15 @@ def _gex_info_table(info):
          "Call权利金 " + _fmt_usd_compact(info.get("call_premium"))
          + " / Put权利金 " + _fmt_usd_compact(info.get("put_premium")),
          _join_cell_lines(_wrap_cell_text(info.get("abnormal_signal"), 36, 3))],
+        ["rank", "历史分位(rank)",
+         "netGEX " + _fmt_gex_rank(info, "gex_board.total_net_gex")
+         + " / |netGEX| "
+         + _fmt_gex_rank(info, "gex_board.total_net_gex",
+                         field="abs_rank_pct"),
+         "IV/RV " + _fmt_gex_rank(info, "volatility.iv_rv_ratio")
+         + " / P/C " + _fmt_gex_rank(info, "volatility.pcr")
+         + " / Call share " + _fmt_gex_rank(info, "flow.call_share_pct"),
+         _gex_rank_window_text(info)],
         ["meta", "数据质量/新鲜度",
          _cn_quality(info.get("quality")) + " / " + _fmt(info.get("data_state")),
          "抓取 " + _fmt(info.get("fetched_at"))
@@ -8751,6 +9306,57 @@ def _gex_info_table(info):
         "id": "gex_info", "type": "table", "title": title, "cols": cols,
         "rows": rows,
     }
+
+
+def _gex_rank_metric(info, key):
+    rank = info.get("rank") if isinstance(info, dict) else {}
+    if not isinstance(rank, dict):
+        return {}
+    metrics = rank.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        return {}
+    metric = metrics.get(key)
+    return metric if isinstance(metric, dict) else {}
+
+
+def _fmt_gex_rank(info, key, field="rank_pct"):
+    metric = _gex_rank_metric(info, key)
+    return _fmt_percent_0_100(metric.get(field))
+
+
+def _fmt_percent_0_100(value):
+    pct = safe_float(value)
+    if pct is None:
+        return "-"
+    if abs(pct - round(pct)) < 0.000001:
+        return str(int(round(pct))) + "%"
+    return _fmt_num(pct, 1) + "%"
+
+
+def _gex_rank_window_text(info):
+    rank = info.get("rank") if isinstance(info, dict) else {}
+    if not isinstance(rank, dict):
+        return "rank暂缺：等待gexmonitorapi累计样本"
+    window = rank.get("window") or {}
+    metrics = rank.get("metrics") or {}
+    sample_count = window.get("sample_count")
+    if sample_count is None and isinstance(metrics, dict):
+        for metric in metrics.values():
+            if isinstance(metric, dict) and metric.get("sample_count") is not None:
+                sample_count = metric.get("sample_count")
+                break
+    quality = None
+    if isinstance(metrics, dict):
+        for metric in metrics.values():
+            if isinstance(metric, dict) and metric.get("quality"):
+                quality = metric.get("quality")
+                break
+    return (
+        "窗口 " + _fmt(window.get("mode") or "rolling_30d_or_available")
+        + " / n=" + _fmt(sample_count)
+        + " / retained=" + _fmt(window.get("history_retained_count"))
+        + " / quality=" + _fmt(quality)
+    )
 
 
 def _walls_text(walls):
@@ -9303,9 +9909,10 @@ class DemoRuntime:
         # full v1.0 audit record -> signal_review.jsonl (single source of truth);
         # FMZ push gets only the <=140-char brief (full chain stays in JSONL).
         record = build_audit_record(card, self.config)
+        recorder_name = self.config.get("signal_review_recorder_name",
+                                        "signal_review")
         self.recorder.write(
-            self.config.get("signal_review_recorder_name", "signal_review"),
-            record)
+            recorder_name, record)
         if self.config.get("signal_review_push_enabled", False):
             try:
                 fmz_push(render_push_brief(card, self.config))
@@ -9313,6 +9920,8 @@ class DemoRuntime:
                 # A signal DID fire; never let a render error swallow the push.
                 fmz_push("【信号】审计简讯异常 #"
                          + str(card.get("card_id")) + "：" + str(exc))
+        # LLM review is intentionally out-of-process: signal_review.jsonl is the
+        # stable input, and tools/gemini_signal_llm_review.py writes the sidecar.
 
     def _emit_push_self_test(self):
         # signal_review_push_test=True: push ONE synthetic sample card at startup

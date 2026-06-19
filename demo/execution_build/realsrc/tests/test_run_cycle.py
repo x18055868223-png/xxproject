@@ -253,7 +253,8 @@ def test_run_cycle_authorize_invalid_code():
 def _open_tp_position(ST, LG, A):
     LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
     ST._G(ST._POSITION_KEY, {"position_id": "pos-tp", "short_instrument": "BTC-S-80000-C",
-                             "remaining_short_qty": 0.1, "entry_profit_ceiling_net": 0.01,
+                             "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_profit_ceiling_net": 0.01,
                              "max_total_exit_spend": 0.002, "realized_exit_spend": 0.0,
                              "take_profit_target_ratio": 0.80})
     ST._G(ST._EXIT_AUTH_KEY, A.build_authorization("pos-tp", A.POLICY_TAKE_PROFIT, 1))
@@ -278,8 +279,8 @@ def test_run_cycle_exit_buyback_flattens_short_when_gated_on():
     _open_tp_position(ST, LG, A)
     ST.ALLOW_EXIT_TRADING = True
     orig = ST.exec_exit_buyback_step
-    ST.exec_exit_buyback_step = lambda inst, amt, cap, allow_live, label="exit_short": {
-        "filled": amt, "avg_price": 0.0018, "dry": False, "reason": "EXIT_STEP"}
+    ST.exec_exit_buyback_step = lambda inst, amt, cap, allow_live, allow_taker=False, label="exit_short": {
+        "filled": amt, "avg_price": 0.0018, "dry": False, "taker": allow_taker, "reason": "EXIT_STEP"}
     try:
         ST.run_cycle()
     finally:
@@ -341,3 +342,268 @@ def test_entry_campaign_dry_persists_not_oneshot():
         assert last.get("entry_state") == "ENTRY_WORKING"  # 信用底线内、可挂(dry)
     finally:
         ST._build_precommit_live = orig
+
+
+# ===== H1：持仓后链路补强（P0①②③）=====
+
+def test_closed_archival_when_all_flat():
+    """P0②：两腿 + 对冲 perp 均归零 → 归档 CLOSED、清快照。"""
+    import ledger as LG
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_FLAT_LONG_RESIDUAL)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-c", "short_instrument": "BTC-S-80000-C",
+                             "remaining_short_qty": 0.0, "long_remaining_qty": 0.0})
+    ST.run_cycle()
+    assert LG.ledger_get_state() == LG.S_CLOSED
+    assert ST._G(ST._POSITION_KEY) is None
+    assert ST._G(ST._CLOSED_HISTORY_KEY) and len(ST._G(ST._CLOSED_HISTORY_KEY)) == 1
+
+
+def test_protection_recovery_then_closed_when_gated_on():
+    """P0②：短腿归零后回收保护腿（门开+成交）→ 两腿归零 → CLOSED。"""
+    import ledger as LG
+    ST = _setup()
+    ST.ALLOW_EXIT_TRADING = True
+    LG.ledger_set_state(LG.S_SHORT_FLAT_LONG_RESIDUAL)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-r", "short_instrument": "BTC-S-80000-C",
+                             "long_instrument": "BTC-S-79000-C",
+                             "remaining_short_qty": 0.0, "long_remaining_qty": 0.1})
+    orig = ST.exec_protection_recovery_step
+    ST.exec_protection_recovery_step = lambda li, qty, allow_live, label="recover_long": {
+        "sold": qty, "price": 0.001, "dry": False, "state": "COMPLETE", "reason": "RECOVER_STEP"}
+    try:
+        ST.run_cycle()
+    finally:
+        ST.exec_protection_recovery_step = orig
+        ST.ALLOW_EXIT_TRADING = False
+    assert LG.ledger_get_state() == LG.S_CLOSED
+    assert ST._G(ST._POSITION_KEY) is None
+
+
+def test_exit_active_forbids_new_hedge_open():
+    """P0③：授权+止盈资格达标(退出活动 WORKING)时，对冲本应 OPEN 被禁→HEDGE_HOLD。"""
+    import ledger as LG
+    import authorization as A
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-e", "short_instrument": "BTC-S-80000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_profit_ceiling_net": 0.01, "max_total_exit_spend": 0.002,
+                             "take_profit_target_ratio": 0.80})
+    ST._G(ST._EXIT_AUTH_KEY, A.build_authorization("pos-e", A.POLICY_TAKE_PROFIT, 1))
+    ctx = ST.run_cycle()
+    assert ctx.get("exit_campaign_state") == "WORKING_SHORT"
+    assert "HEDGE_HOLD" in (ctx.get("hedge_state") or "")   # 退出期禁新增对冲敞口
+
+
+# ===== 风险严重度 → 仲裁（接 hedge_risk.evaluate_position_risk）=====
+
+def _risk_anchor(loss_boundary, entry_prob=0.25, dte=48.0):
+    """入场风险锚（最小字段）：触界基线 + 损失边界 + DTE + 入场 gamma。"""
+    return {"entry_touch_probability": entry_prob, "entry_probability_confidence": "LOW",
+            "entry_loss_boundary": loss_boundary, "entry_dte_hours": dte,
+            "entry_short_gamma": 0.00005}
+
+
+def test_run_cycle_entry_freezes_risk_anchor():
+    """入场 _attempt_commit 冻结快照时一并冻结 entry_risk_anchor + short_expiry_ts。"""
+    ST = _setup()
+    a = ST.run_cycle()
+    code = a["pending_candidates"][0]["confirm_code"]
+    fmz_shim._commands.append("执行:" + code)
+    ST.run_cycle()                                        # 锁定
+    orig_live, orig_step = ST._build_precommit_live, ST.exec_entry_campaign_step
+    _all_pass_live(ST)
+    ST.exec_entry_campaign_step = lambda prot_i, short_i, amount, floor, steps, attempt, pdone, sdone, allow_live, label="entry": {
+        "quotes_ok": True, "credit_ok": True, "dry": False, "prot_price": 0.006, "short_price": 0.010,
+        "net_credit": 0.0003, "n_used": 0, "prot_fill": amount, "short_fill": amount, "reason": "ENTRY_STEP"}
+    ST.ALLOW_ENTRY_TRADING = True
+    try:
+        c = ST.run_cycle()
+    finally:
+        ST._build_precommit_live, ST.exec_entry_campaign_step = orig_live, orig_step
+        ST.ALLOW_ENTRY_TRADING = False
+    snap = c.get("entry_snapshot")
+    assert snap and snap.get("entry_risk_anchor")               # 风险锚已冻结
+    assert "entry_touch_probability" in snap["entry_risk_anchor"]
+    assert snap.get("short_expiry_ts")                          # 短腿到期已冻结（供持仓后 DTE）
+
+
+def test_run_cycle_risk_severe_prefers_exit_but_unauthorized_holds():
+    """高 delta 短腿(触界概率高) → tail_risk_state=EXIT_PREFERRED → 仲裁 preferred=EXIT_PREFERRED；
+    未授权 + 退出门关 → executable 回落 HOLD（不空动真实仓）。"""
+    import ledger as LG
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-rs", "short_instrument": "BTC-S-74000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_profit_ceiling_net": 0.002, "max_total_exit_spend": 0.0004,
+                             "entry_risk_anchor": _risk_anchor(74000)})
+    ctx = ST.run_cycle()
+    assert ctx["console_phase"] == "POSITION_MANAGE"
+    assert ctx.get("risk_state") == "EXIT_PREFERRED"
+    assert ctx["action_arb"]["preferred_action"] == "EXIT_PREFERRED"
+    assert ctx["action_arb"]["executable_action"] == "HOLD"      # 未授权 → 不可执行，回落
+    assert ST._G(ST._POSITION_KEY)["remaining_short_qty"] == 0.1  # 默认空跑不动仓
+
+
+def test_run_cycle_risk_mild_holds():
+    """低 delta 短腿(触界概率低) → tail_risk_state=NORMAL → exit_preferred/hedge_ready 均假 → HOLD。"""
+    import ledger as LG
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-rm", "short_instrument": "BTC-S-80000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_risk_anchor": _risk_anchor(80000)})
+    ctx = ST.run_cycle()
+    assert ctx.get("risk_state") == "NORMAL"
+    assert ctx["action_arb"]["preferred_action"] == "HOLD"
+
+
+def test_run_cycle_risk_exit_executes_when_authorized_and_gated():
+    """风险主动退出全链路：EXIT_PREFERRED + 风险退出授权 + 退出门开 + 预算/盘口足 →
+    executable=EXIT_PREFERRED → 单动作收口买回短腿至归零（非止盈资格驱动）。"""
+    import ledger as LG
+    import authorization as A
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-rx", "short_instrument": "BTC-S-74000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_profit_ceiling_net": 0.002, "max_total_exit_spend": 0.0004,
+                             "realized_exit_spend": 0.0, "take_profit_target_ratio": 0.80,
+                             "entry_risk_anchor": _risk_anchor(74000)})
+    # 风险退出授权携带独立预算 max_exit_spend（=RISK_EXIT_MAX_SPEND，需 >0 才可越价退出）
+    ST._G(ST._EXIT_AUTH_KEY, A.build_authorization("pos-rx", A.POLICY_RISK_EXIT, 1, max_exit_spend=0.05))
+    ST.ALLOW_EXIT_TRADING = True
+    seen = {"taker": None}
+    orig = ST.exec_exit_buyback_step
+    def _fake_exit(inst, amt, cap, allow_live, allow_taker=False, label="exit_short"):
+        seen["taker"] = allow_taker
+        return {"filled": amt, "avg_price": 0.015, "dry": False, "taker": allow_taker, "reason": "RISK_EXIT_STEP"}
+    ST.exec_exit_buyback_step = _fake_exit
+    try:
+        ctx = ST.run_cycle()
+    finally:
+        ST.exec_exit_buyback_step = orig
+        ST.ALLOW_EXIT_TRADING = False
+    assert ctx["action_arb"]["preferred_action"] == "EXIT_PREFERRED"
+    assert ctx["action_arb"]["executable_action"] == "EXIT_PREFERRED"
+    assert seen["taker"] is True                                     # F1：风险退出越价吃单（非被动）
+    assert ST._G(ST._POSITION_KEY)["remaining_short_qty"] == 0.0     # 风险退出已买回归零
+    assert LG.ledger_get_state() == LG.S_SHORT_FLAT_LONG_RESIDUAL
+
+
+def test_run_cycle_risk_hedge_ready_executes_when_gated():
+    """HEDGE_READY（需总线 edb/ggr，OFFLINE 不可达 → monkeypatch 风险包）+ 对冲门开 + 无在场对冲 →
+    executable=HEDGE_READY → 单动作收口落对冲单。"""
+    import ledger as LG
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-rh", "short_instrument": "BTC-S-74000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1,
+                             "entry_risk_anchor": _risk_anchor(74000)})
+    ST.ALLOW_HEDGE_TRADING = True
+    called = {"hedge": 0}
+    orig_risk, orig_hedge = ST.evaluate_position_risk, ST.exec_hedge_step
+    ST.evaluate_position_risk = lambda **kw: {"tail_risk_state": "HEDGE_READY",
+                                              "current_risk": {}, "reason_codes": []}
+    def _fake_hedge(venue_cfg, side, contracts, reduce_only, allow_live, label="hedge"):
+        called["hedge"] += 1
+        return {"placed": True, "dry": False}
+    ST.exec_hedge_step = _fake_hedge
+    try:
+        ctx = ST.run_cycle()
+    finally:
+        ST.evaluate_position_risk, ST.exec_hedge_step = orig_risk, orig_hedge
+        ST.ALLOW_HEDGE_TRADING = False
+    assert ctx.get("risk_state") == "HEDGE_READY"
+    assert ctx["action_arb"]["preferred_action"] == "HEDGE_READY"
+    assert ctx["action_arb"]["executable_action"] == "HEDGE_READY"
+    assert called["hedge"] == 1                                      # 对冲单已落（单动作收口）
+
+
+def test_run_cycle_risk_exit_unaffordable_falls_back_to_hedge():
+    """F1：风险退出预算不足以越价(ask>cap)→exit 不可执行→仲裁回退对冲(不再卡在挂不上的退出)。"""
+    import ledger as LG
+    import authorization as A
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-fb", "short_instrument": "BTC-S-74000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_risk_anchor": _risk_anchor(74000)})
+    ST._G(ST._EXIT_AUTH_KEY, A.build_authorization("pos-fb", A.POLICY_RISK_EXIT, 1, max_exit_spend=0.0001))
+    ST.ALLOW_EXIT_TRADING = True
+    ST.ALLOW_HEDGE_TRADING = True                                    # 对冲门开 → 回退可执行
+    called = {"hedge": 0}
+    orig = ST.exec_hedge_step
+    def _fake_hedge(vcfg, side, contracts, reduce_only, allow_live, label="hedge"):
+        called["hedge"] += 1
+        return {"filled": contracts, "dry": False, "reason": "HEDGE_STEP"}
+    ST.exec_hedge_step = _fake_hedge
+    try:
+        ctx = ST.run_cycle()
+    finally:
+        ST.exec_hedge_step = orig
+        ST.ALLOW_EXIT_TRADING = False
+        ST.ALLOW_HEDGE_TRADING = False
+    arb = ctx["action_arb"]
+    assert arb["preferred_action"] == "EXIT_PREFERRED"               # 偏退出
+    assert arb["executable_action"] == "HEDGE_READY"                 # 但退出越价不可成交 → 回退对冲
+    assert arb["blocked_reason"] == "EXIT_NOT_EXECUTABLE"
+    assert called["hedge"] == 1
+    assert ST._G(ST._POSITION_KEY)["remaining_short_qty"] == 0.1     # 未买回（退出受阻）
+
+
+def test_run_cycle_risk_data_gap_surfaced_no_action():
+    """F3：短腿盘口缺 delta/IV → 风险评估显式数据缺口（不静默判 NORMAL），不驱动主动动作。"""
+    import ledger as LG
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-dg", "short_instrument": "BTC-S-76000-C",
+                             "side": "CALL", "remaining_short_qty": 0.1, "long_remaining_qty": 0.1,
+                             "entry_risk_anchor": _risk_anchor(76000)})
+    orig = ST.exec_quote
+    ST.exec_quote = lambda inst: {"mark": 0.01, "best_bid": 0.009, "best_ask": 0.011,
+                                  "tick": 0.0001, "delta": None, "gamma": None, "mark_iv": None}
+    try:
+        ctx = ST.run_cycle()
+    finally:
+        ST.exec_quote = orig
+    assert ctx.get("risk_state") is None
+    assert (ctx.get("risk_pkg") or {}).get("market_data_gap") is True
+    assert ctx["action_arb"]["preferred_action"] == "HOLD"           # 数据缺口不触发主动退出/对冲
+
+
+def test_run_cycle_orphan_cleanup_bypasses_hedge_gate():
+    """C2：裸 perp(short=0,perp≠0)清理为纯降险 reduce_only，perp 已存在=场所已配置 →
+    即使 ALLOW_HEDGE_TRADING=False 也自动清理。"""
+    import ledger as LG
+    ST = _setup()                                                    # ALLOW_HEDGE_TRADING 默认 False
+    LG.ledger_set_state(LG.S_SHORT_FLAT_LONG_RESIDUAL)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-orph", "short_instrument": "BTC-S-76000-C",
+                             "side": "CALL", "remaining_short_qty": 0.0, "long_remaining_qty": 0.0})
+    orig_pos, orig_hedge = ST.dbt_get_positions, ST.exec_hedge_step
+    ST.dbt_get_positions = lambda cur, kind="option": ([{"size": 100.0}] if kind == "future" else [])
+    seen = {"reduce_only": None, "n": 0}
+    def _fake_hedge(vcfg, side, contracts, reduce_only, allow_live, label="hedge"):
+        seen["reduce_only"], seen["n"] = reduce_only, seen["n"] + 1
+        return {"filled": contracts, "dry": False, "reason": "HEDGE_STEP"}
+    ST.exec_hedge_step = _fake_hedge
+    try:
+        ctx = ST.run_cycle()
+    finally:
+        ST.dbt_get_positions, ST.exec_hedge_step = orig_pos, orig_hedge
+    assert ctx["action_arb"]["executable_action"] == "ORPHAN_HEDGE_EMERGENCY"
+    assert seen["n"] == 1 and seen["reduce_only"] is True            # 不受 allow_hedge 阻断、强制 reduce_only
+
+
+def test_reconcile_mismatch_surfaced_not_blocking():
+    """P0①：快照有仓但交易所持仓不符 → reconciled=False 已 surfaced，但仍继续管理(不阻断风险收口)。"""
+    import ledger as LG
+    ST = _setup()
+    LG.ledger_set_state(LG.S_SHORT_ACTIVE_PROTECTED)
+    ST._G(ST._POSITION_KEY, {"position_id": "pos-x", "short_instrument": "BTC-S-80000-C",
+                             "remaining_short_qty": 0.1, "long_remaining_qty": 0.1})
+    ctx = ST.run_cycle()
+    assert ctx["console_phase"] == "POSITION_MANAGE"
+    assert ctx.get("reconciled") is False

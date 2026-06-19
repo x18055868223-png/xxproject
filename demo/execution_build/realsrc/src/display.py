@@ -376,6 +376,11 @@ def disp_operation_hint(ctx):
     if g("kill_new_risk"):
         return _HINTS["KILLED"]
     phase = g("console_phase")
+    # 风险严重(EXIT_PREFERRED) 且未授权：优先引导风险退出授权（区别于 80% 止盈授权）
+    if phase == "POSITION_MANAGE" and g("risk_state") == "EXIT_PREFERRED" \
+            and "已授权" not in (g("exit_auth_state") or ""):
+        return ("风险严重(EXIT_PREFERRED)：点【风险退出授权】输入风险退出码 %s 允许越价限价退出"
+                "（成本封顶 RISK_EXIT_MAX_SPEND；该预算=0 时退出受阻将回退对冲）" % (g("risk_exit_auth_code") or "—"))
     if phase in _HINTS:
         return _HINTS[phase]
     sv = g("signal_verdict") or {}
@@ -408,6 +413,30 @@ def disp_signal_status_line(verdict):
     return "%s ｜ %s ｜ side=%s" % (avail, block, verdict.get("side_hint") or "—")
 
 
+_RISK_STATE_CN = {
+    "NORMAL": "正常", "WATCH": "观察", "EXIT_PREFERRED": "偏退出(风险严重)",
+    "HEDGE_READY": "偏对冲(风险严重持续)", "HEDGE_ACTIVE": "对冲监控中",
+    "MANUAL_REVIEW": "人工复核",
+}
+
+
+def disp_risk_line(risk):
+    """持仓后风险评估压成一行：状态 + 触界概率 + 漂移。数据缺口单独标注。"""
+    if not risk:
+        return None
+    if risk.get("market_data_gap"):
+        return "数据缺口（短腿盘口缺 delta/IV，风险评估降级·未驱动主动动作）"
+    cr = risk.get("current_risk") or {}
+    p, d = cr.get("touch_probability_now"), cr.get("touch_probability_drift")
+    state = _RISK_STATE_CN.get(risk.get("tail_risk_state"), risk.get("tail_risk_state") or "—")
+    extras = []
+    if isinstance(p, (int, float)):
+        extras.append("触界%.0f%%" % (p * 100))
+    if isinstance(d, (int, float)):
+        extras.append("漂移%+.0f%%" % (d * 100))
+    return "%s%s" % (state, ("｜" + " ".join(extras)) if extras else "")
+
+
 def disp_console_table(ctx):
     """交互控制台：每轮置顶。阶段 + 门控 + 信号接收 +（待批方案确认码 / 软授权 / 退出活动）+ 操作提示。
     后续阶段（E2 确认码 / E5 软授权 / E6 退出进度）通过 ctx 字段填充对应行。"""
@@ -436,6 +465,9 @@ def disp_console_table(ctx):
         if arb.get("blocked_reason"):
             line += " (优先 %s 受阻:%s)" % (arb.get("preferred_action"), arb.get("blocked_reason"))
         rows.append(["风险动作", line])
+    _rl = disp_risk_line(g("risk_pkg"))
+    if _rl:
+        rows.append(["风险", _rl])
     if g("exit_auth_state"):
         rows.append(["软授权", g("exit_auth_state")])
     if g("take_profit_ratio") is not None:
@@ -444,6 +476,8 @@ def disp_console_table(ctx):
         rows.append(["退出活动", g("exit_campaign_state")])
     if g("hedge_state"):
         rows.append(["对冲", g("hedge_state")])
+    if g("reconciled") is False:
+        rows.append(["对账", "✗ 快照与交易所持仓不符（已记录，风险收口继续）"])
     rows.append(["操作提示", disp_operation_hint(ctx)])
     return {"type": "table", "title": "交互控制台", "cols": ["项目", "值"], "rows": rows}
 

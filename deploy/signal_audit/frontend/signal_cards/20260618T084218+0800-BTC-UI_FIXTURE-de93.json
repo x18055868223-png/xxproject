@@ -1,618 +1,669 @@
-﻿{
-    "schema":  {
-                   "name":  "signal_review_card",
-                   "version":  "1.0.0",
-                   "status":  "FINAL",
-                   "record_type":  "confirmed_signal_event_audit",
-                   "frontend_profile":  "signal_audit_static_v1",
-                   "canonicalization":  "SORTED_KEYS_COMPACT_UTF8_V1"
-               },
-    "identity":  {
-                     "card_id":  "20260618T084218+0800-BTC-UI_FIXTURE-de93",
-                     "short_id":  "de93",
-                     "episode_id":  "UI_FIXTURE_09",
-                     "event_type":  "NR_REPAIR_CONFIRMED",
-                     "is_synthetic":  true,
-                     "symbol":  "BTC",
-                     "strategy_name":  "中性回路信号层",
-                     "strategy_version":  "1.3.0",
-                     "producer":  "build_signal_review_card",
-                     "confirmed_at":  "2026-06-18T08:42:18.716+08:00",
-                     "confirmed_time_ms":  1781743338716
-                 },
-    "provenance":  {
-                       "runtime_mode":  "OBSERVE",
-                       "source_snapshot":  {
-                                               "snapshot_id":  "snapshot-20260618T120418+0800-BTC-a7d4",
-                                               "local_ref":  "audit_archive/source_snapshots/2026/06/18/snapshot-20260618T120418+0800-BTC-a7d4.json",
-                                               "hash_algorithm":  "SHA-256",
-                                               "hash":  null
-                                           },
-                       "config_snapshot":  {
-                                               "config_id":  "nrd-audit-relevant-1.3.0",
-                                               "hash_algorithm":  "SHA-256",
-                                               "hash":  "sha256:6f2652e6a5ab5e4002e4a2386fd9ae8ec6f7948d013b5f0b567c5b57148ee608",
-                                               "decision_parameters":  {
-                                                                           "edb_score_full":  0.75,
-                                                                           "edb_agreement_floor":  0.6,
-                                                                           "edb_coverage_floor":  0.5,
-                                                                           "edb_conf_neutral_min":  35,
-                                                                           "edb_conf_weak":  50,
-                                                                           "edb_conf_strong":  68,
-                                                                           "edb_neutral_score_abs":  0.12,
-                                                                           "edb_score_smooth_n":  1
-                                                                       }
-                                           },
-                       "component_versions":  {
-                                                  "signal_review_builder":  "1.3.0",
-                                                  "edb":  "0.5",
-                                                  "tmvf":  "embedded:strategy-1.3.0",
-                                                  "neutral_repair":  "embedded:strategy-1.3.0",
-                                                  "macro_pressure":  "embedded:strategy-1.3.0",
-                                                  "gamma_regime":  "embedded:strategy-1.3.0",
-                                                  "skew_srd":  "embedded:strategy-1.3.0"
-                                              }
-                   },
-    "quality":  {
-                    "overall":  "DEGRADED",
-                    "all_required_sources_ready":  false,
-                    "missing_fields":  [
-                                           "provenance.source_snapshot.hash",
-                                           "integrity.record_hash"
-                                       ],
-                    "degraded_sources":  [
-
-                                         ],
-                    "optional_missing_sources":  [
-
-                                                 ],
-                    "sources":  {
-                                    "price":  {
-                                                  "required":  true,
-                                                  "status":  "OK",
-                                                  "observed_at":  "2026-06-18T12:04:17.716+08:00",
-                                                  "age_ms":  1000,
-                                                  "source_ref":  "BINANCE_SPOT"
-                                              },
-                                    "neutral_repair":  {
-                                                           "required":  true,
-                                                           "status":  "OK",
-                                                           "observed_at":  "2026-06-18T12:04:18.716+08:00",
-                                                           "age_ms":  0,
-                                                           "source_ref":  "INTERNAL_DIE_ANCHOR"
-                                                       },
-                                    "tmvf":  {
-                                                 "required":  true,
-                                                 "status":  "OK",
-                                                 "observed_at":  "2026-06-18T12:02:12.716+08:00",
-                                                 "age_ms":  126000,
-                                                 "source_ref":  "BINANCE_KLINE_AND_FUNDING"
-                                             },
-                                    "micro_flow":  {
-                                                       "required":  true,
-                                                       "status":  "OK",
-                                                       "observed_at":  "2026-06-18T12:02:12.716+08:00",
-                                                       "age_ms":  126000,
-                                                       "source_ref":  "BINANCE_AGG_TRADES",
-                                                       "reason":  null
-                                                   },
-                                    "macro_pressure":  {
-                                                           "required":  true,
-                                                           "status":  "OK",
-                                                           "observed_at":  "2026-06-18T11:33:38.716+08:00",
-                                                           "age_ms":  1840000,
-                                                           "source_ref":  "YAHOO_FINANCE"
-                                                       },
-                                    "gamma_regime":  {
-                                                         "required":  true,
-                                                         "status":  "OK",
-                                                         "observed_at":  "2026-06-18T11:55:18.716+08:00",
-                                                         "age_ms":  540000,
-                                                         "source_ref":  "DERIBIT_OPTIONS"
-                                                     },
-                                    "gex_info":  {
-                                                     "required":  false,
-                                                     "status":  "OK",
-                                                     "observed_at":  "2026-06-18T11:55:18.716+08:00",
-                                                     "age_ms":  540000,
-                                                     "source_ref":  "GEX_MONITOR_API"
-                                                 },
-                                    "skew":  {
-                                                 "required":  true,
-                                                 "status":  "OK",
-                                                 "observed_at":  "2026-06-18T12:01:16.716+08:00",
-                                                 "age_ms":  182000,
-                                                 "source_ref":  "DERIBIT_OPTIONS"
-                                             }
-                                }
-                },
-    "market_context":  {
-                           "price":  62644.88,
-                           "price_source":  "BINANCE_SPOT",
-                           "quote_currency":  "USDT",
-                           "bar_interval":  "1h"
-                       },
-    "decision":  {
-                     "lean":  "BEARISH",
-                     "lean_cn":  "方向偏空",
-                     "directional_bias":  "BEARISH_CONFIRMED",
-                     "support_label":  "PREPARE_SHORT",
-                     "support_cn":  "准备做空",
-                     "side_hint":  "SHORT",
-                     "side_hint_cn":  "空",
-                     "evidence_strength":  100,
-                     "confidence":  100,
-                     "confidence_calibration":  "UNCALIBRATED",
-                     "confidence_semantics":  "EVIDENCE_QUALITY_NOT_WIN_RATE",
-                     "trade_allowed":  true,
-                     "next_action":  "PREPARE_SHORT",
-                     "final_conclusion_cn":  "方向偏空，准备做空；证据强度 100，置信 100，冲突 0%。"
-                 },
-    "display_layers":  {
-                           "headline":  "BTC｜偏空｜准备做空｜置信｜冲突0%",
-                           "background":  {
-                                              "title_cn":  "背景层",
-                                              "summary_cn":  "现价 62,644.88；时序窗口已确认，原始因子截面见下方。",
-                                              "source_refs":  [
-                                                                  "market_context",
-                                                                  "signal_window",
-                                                                  "factor_cross_section.tmvf",
-                                                                  "factor_cross_section.macro_pressure"
-                                                              ]
-                                          },
-                           "correction":  {
-                                              "title_cn":  "修正层",
-                                              "summary_cn":  "正 Gamma 钉住状态将置信乘以 0.80；Funding 未触发警告；Skew 轻度偏空。",
-                                              "source_refs":  [
-                                                                  "blocking",
-                                                                  "factor_cross_section.gamma_regime",
-                                                                  "factor_cross_section.funding",
-                                                                  "factor_cross_section.skew"
-                                                              ]
-                                          },
-                           "reasoning":  {
-                                             "title_cn":  "论证层",
-                                             "summary_cn":  "有效证据得分 -0.68367，证据强度 100，置信 100。",
-                                             "source_refs":  [
-                                                                 "reasoning.score",
-                                                                 "reasoning.confidence_decomposition",
-                                                                 "reasoning.evidence"
-                                                             ]
-                                         },
-                           "conflict":  {
-                                            "title_cn":  "冲突层",
-                                            "summary_cn":  "反向有效权重占比 0%，等级 LOW。",
-                                            "source_refs":  [
-                                                                "conflict",
-                                                                "blocking"
-                                                            ]
-                                        },
-                           "operator_focus":  [
-                                                  "同向有效证据是否继续增强",
-                                                  "反向证据是否回落",
-                                                  "置信是否达到 50 的弱支持阈值",
-                                                  "数据源 PARTIAL/STALE 是否恢复"
-                                              ]
-                       },
-    "signal_window":  {
-                          "nr_state":  "NR_REPAIR_CONFIRMED",
-                          "is_active":  true,
-                          "episode_direction":  "DOWN",
-                          "peak_m_die":  -0.92,
-                          "event_count_merged":  4,
-                          "anchor_score":  72.0,
-                          "anchor_normalized_deviation":  -0.31,
-                          "interpretation_cn":  "时序窗口已确认修复；窗口只确定信号审计时点，不单独决定交易方向。"
-                      },
-    "blocking":  {
-                     "has_block":  false,
-                     "block_kind":  "NONE",
-                     "hard_veto":  null,
-                     "soft_gates":  null,
-                     "unblock_conditions":  [
-                                                {
-                                                    "metric":  "decision.confidence",
-                                                    "operator":  "\u003e=",
-                                                    "threshold":  50,
-                                                    "condition_cn":  "置信达到弱方向支持阈值"
-                                                },
-                                                {
-                                                    "metric":  "conflict.ratio",
-                                                    "operator":  "DECREASE",
-                                                    "threshold":  null,
-                                                    "condition_cn":  "反向证据回落或同向证据增强"
-                                                }
-                                            ]
-                 },
-    "reasoning":  {
-                      "engine":  "EDB",
-                      "engine_version":  "0.5",
-                      "score":  {
-                                    "method":  "sum(vote * effective_weight) / sum(effective_weight)",
-                                    "weighted_vote_sum":  -0.64976,
-                                    "effective_weight_sum":  0.9504,
-                                    "raw":  -0.68367,
-                                    "smoothing":  {
-                                                      "applied":  false,
-                                                      "window_n":  1,
-                                                      "previous_score":  null,
-                                                      "parameter":  null
-                                                  },
-                                    "final":  -0.68367
-                                },
-                      "agreement":  {
-                                        "method":  "aligned_effective_weight / effective_weight_sum",
-                                        "aligned_effective_weight":  0.9504,
-                                        "value":  1
-                                    },
-                      "coverage":  {
-                                       "method":  "informative_required_evidence / configured_required_evidence",
-                                       "value":  1
-                                   },
-                      "confidence_decomposition":  {
-                                                       "formula":  "100 * strength * agreement_factor * coverage_factor * ggr_multiplier",
-                                                       "strength":  1,
-                                                       "strength_formula":  "abs(score.final) / score_full",
-                                                       "score_full":  0.75,
-                                                       "agreement_raw":  1,
-                                                       "agreement_floor":  0.6,
-                                                       "agreement_factor":  1,
-                                                       "coverage_raw":  1,
-                                                       "coverage_floor":  0.5,
-                                                       "coverage_factor":  1,
-                                                       "ggr_multiplier":  1,
-                                                       "confidence_pre_veto":  100,
-                                                       "veto_applied":  false,
-                                                       "confidence_final":  100
-                                                   },
-                      "evidence":  [
-                                       {
-                                           "key":  "TMV",
-                                           "gloss_cn":  "量价主干",
-                                           "participation_status":  "ACTIVE",
-                                           "vote":  -1,
-                                           "configured_weight":  0.34,
-                                           "reliability":  1,
-                                           "information":  1,
-                                           "effective_weight":  0.34,
-                                           "weighted_contribution":  -0.34,
-                                           "net_contribution_pct":  52.327013,
-                                           "absolute_share_pct":  52.327013,
-                                           "aligned":  true,
-                                           "lean":  "BEARISH",
-                                           "source_ref":  "factor_cross_section.tmvf",
-                                           "detail":  {
-                                                          "tmv_blend":  0.42,
-                                                          "tmvf_24h_final":  0.31,
-                                                          "tmvf_48h_final":  0.49,
-                                                          "window_conflict":  false
-                                                      }
-                                       },
-                                       {
-                                           "key":  "CVD_4H",
-                                           "gloss_cn":  "四小时主动流×价",
-                                           "participation_status":  "ACTIVE",
-                                           "vote":  -0.72,
-                                           "configured_weight":  0.18,
-                                           "reliability":  1,
-                                           "information":  1,
-                                           "effective_weight":  0.18,
-                                           "weighted_contribution":  -0.1296,
-                                           "net_contribution_pct":  19.945826,
-                                           "absolute_share_pct":  19.945826,
-                                           "aligned":  true,
-                                           "lean":  "BEARISH",
-                                           "source_ref":  "factor_cross_section.micro_flow.fast_4h",
-                                           "detail":  {
-                                                          "cvd_sum":  1200.0,
-                                                          "normalized_strength":  0.55,
-                                                          "verdict":  "BUY_CONFIRMS_UP"
-                                                      }
-                                       },
-                                       {
-                                           "key":  "MACRO",
-                                           "gloss_cn":  "宏观压力",
-                                           "participation_status":  "ACTIVE",
-                                           "vote":  -0.55,
-                                           "configured_weight":  0.16,
-                                           "reliability":  1,
-                                           "information":  1,
-                                           "effective_weight":  0.16,
-                                           "weighted_contribution":  -0.088,
-                                           "net_contribution_pct":  13.543462,
-                                           "absolute_share_pct":  13.543462,
-                                           "aligned":  true,
-                                           "lean":  "BEARISH",
-                                           "source_ref":  "factor_cross_section.macro_pressure",
-                                           "detail":  {
-                                                          "macro_score":  0.23,
-                                                          "macro_regime":  "MILD_HEADWIND"
-                                                      }
-                                       },
-                                       {
-                                           "key":  "SRD",
-                                           "gloss_cn":  "期权偏斜",
-                                           "participation_status":  "ACTIVE",
-                                           "vote":  -0.3,
-                                           "configured_weight":  0.16,
-                                           "reliability":  1,
-                                           "information":  1,
-                                           "effective_weight":  0.16,
-                                           "weighted_contribution":  -0.048,
-                                           "net_contribution_pct":  7.387343,
-                                           "absolute_share_pct":  7.387343,
-                                           "aligned":  true,
-                                           "lean":  "BEARISH",
-                                           "source_ref":  "factor_cross_section.skew",
-                                           "detail":  {
-                                                          "rr_z":  -0.06,
-                                                          "data_status":  "OK"
-                                                      }
-                                       },
-                                       {
-                                           "key":  "CVD_12H",
-                                           "gloss_cn":  "十二小时主动流×价",
-                                           "participation_status":  "ACTIVE",
-                                           "vote":  -0.4,
-                                           "configured_weight":  0.12,
-                                           "reliability":  0.92,
-                                           "information":  1,
-                                           "effective_weight":  0.1104,
-                                           "weighted_contribution":  -0.04416,
-                                           "net_contribution_pct":  6.796356,
-                                           "absolute_share_pct":  6.796356,
-                                           "aligned":  true,
-                                           "exclusion_reason":  null,
-                                           "source_ref":  "factor_cross_section.micro_flow.slow_12h",
-                                           "lean":  "BEARISH"
-                                       },
-                                       {
-                                           "key":  "FUNDING",
-                                           "gloss_cn":  "资金费率",
-                                           "participation_status":  "NON_VOTING",
-                                           "vote":  0.0,
-                                           "configured_weight":  0.07,
-                                           "reliability":  1.0,
-                                           "information":  0.0,
-                                           "effective_weight":  0.0,
-                                           "weighted_contribution":  0.0,
-                                           "net_contribution_pct":  0.0,
-                                           "absolute_share_pct":  0.0,
-                                           "aligned":  false,
-                                           "exclusion_reason":  "NEUTRAL_DEAD_ZONE",
-                                           "source_ref":  "factor_cross_section.funding"
-                                       },
-                                       {
-                                           "key":  "GGR_SPATIAL",
-                                           "gloss_cn":  "Gamma 空间门控",
-                                           "participation_status":  "GATE_ONLY",
-                                           "vote":  0.0,
-                                           "configured_weight":  0.0,
-                                           "reliability":  1.0,
-                                           "information":  0.0,
-                                           "effective_weight":  0.0,
-                                           "weighted_contribution":  0.0,
-                                           "net_contribution_pct":  0.0,
-                                           "absolute_share_pct":  0.0,
-                                           "aligned":  false,
-                                           "exclusion_reason":  "CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE",
-                                           "source_ref":  "factor_cross_section.gamma_regime"
-                                       }
-                                   ],
-                      "summary_cn":  "完整账本包含 7 行；ACTIVE 5 行，其余保留排除或门控原因。"
-                  },
-    "conflict":  {
-                     "method":  "1 - reasoning.agreement.value",
-                     "ratio":  0,
-                     "level":  "LOW",
-                     "aligned_keys":  [
-                                          "TMV",
-                                          "CVD_4H",
-                                          "MACRO",
-                                          "SRD",
-                                          "CVD_12H"
-                                      ],
-                     "dissent_keys":  [
-
-                                      ],
-                     "dominant_conflict":  {
-                                               "aligned_key":  "TMV",
-                                               "dissent_key":  null,
-                                               "explanation_cn":  "当前有效证据方向一致。"
-                                           },
-                     "explanation_cn":  "反向有效权重占比 0%，等级 LOW。"
-                 },
-    "factor_cross_section":  {
-                                 "anchor":  {
-                                                "score":  72.0,
-                                                "normalized_deviation":  -0.31,
-                                                "gravity_state":  "VALID",
-                                                "data_status":  "OK",
-                                                "observed_at":  "2026-06-18T12:04:18.716+08:00",
-                                                "source_ref":  "INTERNAL_ANCHOR"
-                                            },
-                                 "m_die":  {
-                                               "value":  -0.92,
-                                               "direction":  "DOWN",
-                                               "event_threshold":  0.65,
-                                               "data_status":  "OK",
-                                               "observed_at":  "2026-06-18T12:04:18.716+08:00",
-                                               "source_ref":  "BINANCE_1M_KLINE"
-                                           },
-                                 "neutral_repair":  {
-                                                        "state":  "NR_REPAIR_CONFIRMED",
-                                                        "is_active":  true,
-                                                        "episode_id":  "STANDARD_SAMPLE",
-                                                        "episode_direction":  "DOWN",
-                                                        "peak_m_die":  -0.92,
-                                                        "event_count_merged":  4,
-                                                        "anchor_score":  72.0,
-                                                        "anchor_normalized_deviation":  -0.31,
-                                                        "confirmed_ticks":  2
-                                                    },
-                                 "tmvf":  {
-                                              "direction":  "BULLISH",
-                                              "tmv_blend":  0.42,
-                                              "window_conflict":  false,
-                                              "tmvf_24h":  {
-                                                               "final":  0.31,
-                                                               "trend_component":  0.28,
-                                                               "momentum_component":  0.34,
-                                                               "volume_component":  0.22,
-                                                               "bar_count":  24,
-                                                               "data_ready":  true
-                                                           },
-                                              "tmvf_48h":  {
-                                                               "final":  0.49,
-                                                               "trend_component":  0.44,
-                                                               "momentum_component":  0.53,
-                                                               "volume_component":  0.37,
-                                                               "bar_count":  48,
-                                                               "data_ready":  true
-                                                           },
-                                              "data_status":  "OK",
-                                              "observed_at":  "2026-06-18T12:02:12.716+08:00",
-                                              "source_ref":  "BINANCE_1H_KLINE"
-                                          },
-                                 "micro_flow":  {
-                                                    "fast_4h":  {
-                                                                    "cvd_sum":  1200.0,
-                                                                    "momentum_return_pct":  0.42,
-                                                                    "normalized_strength":  0.72,
-                                                                    "coverage_hours":  3.8,
-                                                                    "sample_count":  48,
-                                                                    "data_ready":  true,
-                                                                    "verdict":  "SELL_CONFIRMS_DOWN"
-                                                                },
-                                                    "medium_8h":  {
-                                                                      "cvd_sum":  1840.0,
-                                                                      "momentum_return_pct":  0.58,
-                                                                      "normalized_strength":  0.41,
-                                                                      "coverage_hours":  7.6,
-                                                                      "sample_count":  91,
-                                                                      "data_ready":  true,
-                                                                      "verdict":  "BUY_LEAN"
-                                                                  },
-                                                    "slow_12h":  {
-                                                                     "cvd_sum":  -1320,
-                                                                     "momentum_return_pct":  -0.41,
-                                                                     "normalized_strength":  0.4,
-                                                                     "coverage_hours":  11.8,
-                                                                     "sample_count":  136,
-                                                                     "data_ready":  true,
-                                                                     "status":  "OK"
-                                                                 },
-                                                    "data_status":  "OK",
-                                                    "observed_at":  "2026-06-18T12:02:12.716+08:00",
-                                                    "source_ref":  "BINANCE_AGG_TRADES"
-                                                },
-                                 "funding":  {
-                                                 "last_rate":  0.00012,
-                                                 "rate_unit":  "DECIMAL",
-                                                 "effect":  "MILD_CROWDED",
-                                                 "verdict":  "NEUTRAL_DEAD_ZONE",
-                                                 "hard_warning":  false,
-                                                 "history_points":  105,
-                                                 "data_status":  "OK",
-                                                 "observed_at":  "2026-06-18T08:00:00+08:00",
-                                                 "source_ref":  "BINANCE_FUNDING_RATE"
-                                             },
-                                 "macro_pressure":  {
-                                                        "score":  0.23,
-                                                        "regime":  "MILD_HEADWIND",
-                                                        "summary_label_cn":  "轻度逆风",
-                                                        "data_confidence":  1.0,
-                                                        "data_status":  "FULL_LIVE",
-                                                        "observed_at":  "2026-06-18T11:33:38.716+08:00",
-                                                        "components":  [
-                                                                           {
-                                                                               "key":  "VOLQ",
-                                                                               "source_symbol":  "^VIX",
-                                                                               "source_status":  "OK",
-                                                                               "current_close":  16.2,
-                                                                               "reference_close":  15.86,
-                                                                               "change_pct_3d":  0.021,
-                                                                               "scoring_bps":  210
-                                                                           },
-                                                                           {
-                                                                               "key":  "DXY",
-                                                                               "source_symbol":  "DX-Y.NYB",
-                                                                               "source_status":  "OK",
-                                                                               "current_close":  104.1,
-                                                                               "reference_close":  103.74,
-                                                                               "change_pct_3d":  0.0035,
-                                                                               "scoring_bps":  35
-                                                                           },
-                                                                           {
-                                                                               "key":  "US10Y",
-                                                                               "source_symbol":  "^TNX",
-                                                                               "source_status":  "OK",
-                                                                               "current_close":  4.31,
-                                                                               "reference_close":  4.3,
-                                                                               "change_pct_3d":  0.0018,
-                                                                               "scoring_bps":  8
-                                                                           }
-                                                                       ],
-                                                        "source_ref":  "YAHOO_FINANCE"
-                                                    },
-                                 "gamma_regime":  {
-                                                      "regime":  "POSITIVE_GAMMA_PINNING",
-                                                      "regime_strength":  0.74,
-                                                      "net_gamma_notional_usd":  12400000.0,
-                                                      "flip_point":  62800.0,
-                                                      "pin_strike":  64000.0,
-                                                      "distance_to_pin_pct":  -0.021174,
-                                                      "confidence_multiplier":  1,
-                                                      "veto":  false,
-                                                      "veto_reason":  null,
-                                                      "data_status":  "OK",
-                                                      "observed_at":  "2026-06-18T11:55:18.716+08:00",
-                                                      "source_ref":  "DERIBIT_OPTIONS"
-                                                  },
-                                 "gex_info":  {
-                                                  "market_state":  "POSITIVE_GAMMA",
-                                                  "net_gamma_notional_usd":  12400000.0,
-                                                  "flip_point":  62800.0,
-                                                  "call_wall":  65000.0,
-                                                  "put_wall":  60000.0,
-                                                  "magnet_level":  64000.0,
-                                                  "data_status":  "OK",
-                                                  "observed_at":  "2026-06-18T11:55:18.716+08:00",
-                                                  "source_ref":  "GEX_MONITOR_API"
-                                              },
-                                 "skew":  {
-                                              "vote":  -0.08,
-                                              "rr_25d":  -0.03,
-                                              "rr_z":  -0.06,
-                                              "rr_blend":  -0.05,
-                                              "skew_slope":  -0.012,
-                                              "term_slope":  0.006,
-                                              "target_expiry_hours":  48,
-                                              "expiry_count":  2,
-                                              "data_status":  "OK",
-                                              "observed_at":  "2026-06-18T12:01:16.716+08:00",
-                                              "source_ref":  "DERIBIT_OPTIONS"
-                                          }
-                             },
-    "delivery":  {
-                     "fmz_push_summary":  "【信号】BTC #de93 偏空/准备做空 强度100 置信100 冲突0%",
-                     "fmz_log_ref":  "signal_review card_id=20260618T084218+0800-BTC-UI_FIXTURE-de93",
-                     "static_web_url":  "https://audit.example.com/#/card/20260618T084218+0800-BTC-UI_FIXTURE-de93",
-                     "local_jsonl":  "audit_archive/source/signal_review.jsonl",
-                     "local_card_json":  "signal_cards/20260618T084218+0800-BTC-UI_FIXTURE-de93.json"
-                 },
-    "integrity":  {
-                      "hash_algorithm":  "SHA-256",
-                      "canonicalization":  "SORTED_KEYS_COMPACT_UTF8_V1",
-                      "source_snapshot_hash":  null,
-                      "config_snapshot_hash":  "sha256:6f2652e6a5ab5e4002e4a2386fd9ae8ec6f7948d013b5f0b567c5b57148ee608",
-                      "record_hash":  null,
-                      "record_hash_scope":  "entire_record_excluding_integrity",
-                      "redaction":  {
-                                        "version":  "1.0.0",
-                                        "contains_secret":  false,
-                                        "contains_account_balance":  false,
-                                        "contains_position_size":  false
-                                    }
-                  }
+{
+  "schema": {
+    "name": "signal_review_card",
+    "version": "1.0.0",
+    "status": "FINAL",
+    "record_type": "confirmed_signal_event_audit",
+    "frontend_profile": "signal_audit_static_v1",
+    "canonicalization": "SORTED_KEYS_COMPACT_UTF8_V1"
+  },
+  "identity": {
+    "card_id": "20260618T084218+0800-BTC-UI_FIXTURE-de93",
+    "short_id": "de93",
+    "episode_id": "UI_FIXTURE_09",
+    "event_type": "NR_REPAIR_CONFIRMED",
+    "is_synthetic": true,
+    "symbol": "BTC",
+    "strategy_name": "中性回路信号层",
+    "strategy_version": "1.3.0",
+    "producer": "build_signal_review_card",
+    "confirmed_at": "2026-06-18T08:42:18.716+08:00",
+    "confirmed_time_ms": 1781743338716
+  },
+  "provenance": {
+    "runtime_mode": "OBSERVE",
+    "source_snapshot": {
+      "snapshot_id": "snapshot-20260618T120418+0800-BTC-a7d4",
+      "local_ref": "audit_archive/source_snapshots/2026/06/18/snapshot-20260618T120418+0800-BTC-a7d4.json",
+      "hash_algorithm": "SHA-256",
+      "hash": null
+    },
+    "config_snapshot": {
+      "config_id": "nrd-audit-relevant-1.3.0",
+      "hash_algorithm": "SHA-256",
+      "hash": "sha256:6f2652e6a5ab5e4002e4a2386fd9ae8ec6f7948d013b5f0b567c5b57148ee608",
+      "decision_parameters": {
+        "edb_score_full": 0.75,
+        "edb_agreement_floor": 0.6,
+        "edb_coverage_floor": 0.5,
+        "edb_conf_neutral_min": 35,
+        "edb_conf_weak": 50,
+        "edb_conf_strong": 68,
+        "edb_neutral_score_abs": 0.12,
+        "edb_score_smooth_n": 1
+      }
+    },
+    "component_versions": {
+      "signal_review_builder": "1.3.0",
+      "edb": "0.5",
+      "tmvf": "embedded:strategy-1.3.0",
+      "neutral_repair": "embedded:strategy-1.3.0",
+      "macro_pressure": "embedded:strategy-1.3.0",
+      "gamma_regime": "embedded:strategy-1.3.0",
+      "skew_srd": "embedded:strategy-1.3.0"
+    }
+  },
+  "quality": {
+    "overall": "DEGRADED",
+    "all_required_sources_ready": false,
+    "missing_fields": [
+      "provenance.source_snapshot.hash",
+      "integrity.record_hash"
+    ],
+    "degraded_sources": [],
+    "optional_missing_sources": [],
+    "sources": {
+      "price": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T12:04:17.716+08:00",
+        "age_ms": 1000,
+        "source_ref": "BINANCE_SPOT"
+      },
+      "neutral_repair": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T12:04:18.716+08:00",
+        "age_ms": 0,
+        "source_ref": "INTERNAL_DIE_ANCHOR"
+      },
+      "tmvf": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T12:02:12.716+08:00",
+        "age_ms": 126000,
+        "source_ref": "BINANCE_KLINE_AND_FUNDING"
+      },
+      "micro_flow": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T12:02:12.716+08:00",
+        "age_ms": 126000,
+        "source_ref": "BINANCE_AGG_TRADES",
+        "reason": null
+      },
+      "macro_pressure": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T11:33:38.716+08:00",
+        "age_ms": 1840000,
+        "source_ref": "YAHOO_FINANCE"
+      },
+      "gamma_regime": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T11:55:18.716+08:00",
+        "age_ms": 540000,
+        "source_ref": "DERIBIT_OPTIONS"
+      },
+      "gex_info": {
+        "required": false,
+        "status": "OK",
+        "observed_at": "2026-06-18T11:55:18.716+08:00",
+        "age_ms": 540000,
+        "source_ref": "GEX_MONITOR_API"
+      },
+      "skew": {
+        "required": true,
+        "status": "OK",
+        "observed_at": "2026-06-18T12:01:16.716+08:00",
+        "age_ms": 182000,
+        "source_ref": "DERIBIT_OPTIONS"
+      }
+    }
+  },
+  "market_context": {
+    "price": 62644.88,
+    "price_source": "BINANCE_SPOT",
+    "quote_currency": "USDT",
+    "bar_interval": "1h"
+  },
+  "decision": {
+    "lean": "BEARISH",
+    "lean_cn": "方向偏空",
+    "directional_bias": "BEARISH_CONFIRMED",
+    "support_label": "PREPARE_SHORT",
+    "support_cn": "准备做空",
+    "side_hint": "SHORT",
+    "side_hint_cn": "空",
+    "evidence_strength": 100,
+    "confidence": 100,
+    "confidence_calibration": "UNCALIBRATED",
+    "confidence_semantics": "EVIDENCE_QUALITY_NOT_WIN_RATE",
+    "trade_allowed": true,
+    "next_action": "PREPARE_SHORT",
+    "final_conclusion_cn": "方向偏空，准备做空；证据强度 100，置信 100，冲突 0%。"
+  },
+  "display_layers": {
+    "headline": "BTC｜偏空｜准备做空｜置信｜冲突0%",
+    "background": {
+      "title_cn": "背景层",
+      "summary_cn": "现价 62,644.88；时序窗口已确认，原始因子截面见下方。",
+      "source_refs": [
+        "market_context",
+        "signal_window",
+        "factor_cross_section.tmvf",
+        "factor_cross_section.macro_pressure"
+      ]
+    },
+    "correction": {
+      "title_cn": "修正层",
+      "summary_cn": "正 Gamma 钉住状态将置信乘以 0.80；Funding 未触发警告；Skew 轻度偏空。",
+      "source_refs": [
+        "blocking",
+        "factor_cross_section.gamma_regime",
+        "factor_cross_section.funding",
+        "factor_cross_section.skew"
+      ]
+    },
+    "reasoning": {
+      "title_cn": "论证层",
+      "summary_cn": "有效证据得分 -0.68367，证据强度 100，置信 100。",
+      "source_refs": [
+        "reasoning.score",
+        "reasoning.confidence_decomposition",
+        "reasoning.evidence"
+      ]
+    },
+    "conflict": {
+      "title_cn": "冲突层",
+      "summary_cn": "反向有效权重占比 0%，等级 LOW。",
+      "source_refs": [
+        "conflict",
+        "blocking"
+      ]
+    },
+    "operator_focus": [
+      "同向有效证据是否继续增强",
+      "反向证据是否回落",
+      "置信是否达到 50 的弱支持阈值",
+      "数据源 PARTIAL/STALE 是否恢复"
+    ]
+  },
+  "signal_window": {
+    "nr_state": "NR_REPAIR_CONFIRMED",
+    "is_active": true,
+    "episode_direction": "DOWN",
+    "peak_m_die": -0.92,
+    "event_count_merged": 4,
+    "anchor_score": 72.0,
+    "anchor_normalized_deviation": -0.31,
+    "interpretation_cn": "时序窗口已确认修复；窗口只确定信号审计时点，不单独决定交易方向。"
+  },
+  "blocking": {
+    "has_block": false,
+    "block_kind": "NONE",
+    "hard_veto": null,
+    "soft_gates": null,
+    "unblock_conditions": [
+      {
+        "metric": "decision.confidence",
+        "operator": ">=",
+        "threshold": 50,
+        "condition_cn": "置信达到弱方向支持阈值"
+      },
+      {
+        "metric": "conflict.ratio",
+        "operator": "DECREASE",
+        "threshold": null,
+        "condition_cn": "反向证据回落或同向证据增强"
+      }
+    ]
+  },
+  "reasoning": {
+    "engine": "EDB",
+    "engine_version": "0.5",
+    "score": {
+      "method": "sum(vote * effective_weight) / sum(effective_weight)",
+      "weighted_vote_sum": -0.64976,
+      "effective_weight_sum": 0.9504,
+      "raw": -0.68367,
+      "smoothing": {
+        "applied": false,
+        "window_n": 1,
+        "previous_score": null,
+        "parameter": null
+      },
+      "final": -0.68367
+    },
+    "agreement": {
+      "method": "aligned_effective_weight / effective_weight_sum",
+      "aligned_effective_weight": 0.9504,
+      "value": 1
+    },
+    "coverage": {
+      "method": "informative_required_evidence / configured_required_evidence",
+      "value": 1
+    },
+    "confidence_decomposition": {
+      "formula": "100 * strength * agreement_factor * coverage_factor * ggr_multiplier",
+      "strength": 1,
+      "strength_formula": "abs(score.final) / score_full",
+      "score_full": 0.75,
+      "agreement_raw": 1,
+      "agreement_floor": 0.6,
+      "agreement_factor": 1,
+      "coverage_raw": 1,
+      "coverage_floor": 0.5,
+      "coverage_factor": 1,
+      "ggr_multiplier": 1,
+      "confidence_pre_veto": 100,
+      "veto_applied": false,
+      "confidence_final": 100
+    },
+    "evidence": [
+      {
+        "key": "TMV",
+        "gloss_cn": "量价主干",
+        "participation_status": "ACTIVE",
+        "vote": -1,
+        "configured_weight": 0.34,
+        "reliability": 1,
+        "information": 1,
+        "effective_weight": 0.34,
+        "weighted_contribution": -0.34,
+        "net_contribution_pct": 52.327013,
+        "absolute_share_pct": 52.327013,
+        "aligned": true,
+        "lean": "BEARISH",
+        "source_ref": "factor_cross_section.tmvf",
+        "detail": {
+          "tmv_blend": 0.42,
+          "tmvf_24h_final": 0.31,
+          "tmvf_48h_final": 0.49,
+          "window_conflict": false
+        }
+      },
+      {
+        "key": "CVD_4H",
+        "gloss_cn": "四小时主动流×价",
+        "participation_status": "ACTIVE",
+        "vote": -0.72,
+        "configured_weight": 0.18,
+        "reliability": 1,
+        "information": 1,
+        "effective_weight": 0.18,
+        "weighted_contribution": -0.1296,
+        "net_contribution_pct": 19.945826,
+        "absolute_share_pct": 19.945826,
+        "aligned": true,
+        "lean": "BEARISH",
+        "source_ref": "factor_cross_section.micro_flow.fast_4h",
+        "detail": {
+          "cvd_sum": 1200.0,
+          "normalized_strength": 0.55,
+          "verdict": "BUY_CONFIRMS_UP"
+        }
+      },
+      {
+        "key": "MACRO",
+        "gloss_cn": "宏观压力",
+        "participation_status": "ACTIVE",
+        "vote": -0.55,
+        "configured_weight": 0.16,
+        "reliability": 1,
+        "information": 1,
+        "effective_weight": 0.16,
+        "weighted_contribution": -0.088,
+        "net_contribution_pct": 13.543462,
+        "absolute_share_pct": 13.543462,
+        "aligned": true,
+        "lean": "BEARISH",
+        "source_ref": "factor_cross_section.macro_pressure",
+        "detail": {
+          "macro_score": 0.23,
+          "macro_regime": "MILD_HEADWIND"
+        }
+      },
+      {
+        "key": "SRD",
+        "gloss_cn": "期权偏斜",
+        "participation_status": "ACTIVE",
+        "vote": -0.3,
+        "configured_weight": 0.16,
+        "reliability": 1,
+        "information": 1,
+        "effective_weight": 0.16,
+        "weighted_contribution": -0.048,
+        "net_contribution_pct": 7.387343,
+        "absolute_share_pct": 7.387343,
+        "aligned": true,
+        "lean": "BEARISH",
+        "source_ref": "factor_cross_section.skew",
+        "detail": {
+          "rr_z": -0.06,
+          "data_status": "OK"
+        }
+      },
+      {
+        "key": "CVD_12H",
+        "gloss_cn": "十二小时主动流×价",
+        "participation_status": "ACTIVE",
+        "vote": -0.4,
+        "configured_weight": 0.12,
+        "reliability": 0.92,
+        "information": 1,
+        "effective_weight": 0.1104,
+        "weighted_contribution": -0.04416,
+        "net_contribution_pct": 6.796356,
+        "absolute_share_pct": 6.796356,
+        "aligned": true,
+        "exclusion_reason": null,
+        "source_ref": "factor_cross_section.micro_flow.slow_12h",
+        "lean": "BEARISH"
+      },
+      {
+        "key": "FUNDING",
+        "gloss_cn": "资金费率",
+        "participation_status": "NON_VOTING",
+        "vote": 0.0,
+        "configured_weight": 0.07,
+        "reliability": 1.0,
+        "information": 0.0,
+        "effective_weight": 0.0,
+        "weighted_contribution": 0.0,
+        "net_contribution_pct": 0.0,
+        "absolute_share_pct": 0.0,
+        "aligned": false,
+        "exclusion_reason": "NEUTRAL_DEAD_ZONE",
+        "source_ref": "factor_cross_section.funding"
+      },
+      {
+        "key": "GGR_SPATIAL",
+        "gloss_cn": "Gamma 空间门控",
+        "participation_status": "GATE_ONLY",
+        "vote": 0.0,
+        "configured_weight": 0.0,
+        "reliability": 1.0,
+        "information": 0.0,
+        "effective_weight": 0.0,
+        "weighted_contribution": 0.0,
+        "net_contribution_pct": 0.0,
+        "absolute_share_pct": 0.0,
+        "aligned": false,
+        "exclusion_reason": "CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE",
+        "source_ref": "factor_cross_section.gamma_regime"
+      }
+    ],
+    "summary_cn": "完整账本包含 7 行；ACTIVE 5 行，其余保留排除或门控原因。"
+  },
+  "conflict": {
+    "method": "1 - reasoning.agreement.value",
+    "ratio": 0,
+    "level": "LOW",
+    "aligned_keys": [
+      "TMV",
+      "CVD_4H",
+      "MACRO",
+      "SRD",
+      "CVD_12H"
+    ],
+    "dissent_keys": [],
+    "dominant_conflict": {
+      "aligned_key": "TMV",
+      "dissent_key": null,
+      "explanation_cn": "当前有效证据方向一致。"
+    },
+    "explanation_cn": "反向有效权重占比 0%，等级 LOW。"
+  },
+  "factor_cross_section": {
+    "anchor": {
+      "score": 72.0,
+      "normalized_deviation": -0.31,
+      "gravity_state": "VALID",
+      "data_status": "OK",
+      "observed_at": "2026-06-18T12:04:18.716+08:00",
+      "source_ref": "INTERNAL_ANCHOR"
+    },
+    "m_die": {
+      "value": -0.92,
+      "direction": "DOWN",
+      "event_threshold": 0.65,
+      "data_status": "OK",
+      "observed_at": "2026-06-18T12:04:18.716+08:00",
+      "source_ref": "BINANCE_1M_KLINE"
+    },
+    "neutral_repair": {
+      "state": "NR_REPAIR_CONFIRMED",
+      "is_active": true,
+      "episode_id": "STANDARD_SAMPLE",
+      "episode_direction": "DOWN",
+      "peak_m_die": -0.92,
+      "event_count_merged": 4,
+      "anchor_score": 72.0,
+      "anchor_normalized_deviation": -0.31,
+      "confirmed_ticks": 2
+    },
+    "tmvf": {
+      "direction": "BULLISH",
+      "tmv_blend": 0.42,
+      "window_conflict": false,
+      "tmvf_24h": {
+        "final": 0.31,
+        "trend_component": 0.28,
+        "momentum_component": 0.34,
+        "volume_component": 0.22,
+        "bar_count": 24,
+        "data_ready": true
+      },
+      "tmvf_48h": {
+        "final": 0.49,
+        "trend_component": 0.44,
+        "momentum_component": 0.53,
+        "volume_component": 0.37,
+        "bar_count": 48,
+        "data_ready": true
+      },
+      "data_status": "OK",
+      "observed_at": "2026-06-18T12:02:12.716+08:00",
+      "source_ref": "BINANCE_1H_KLINE"
+    },
+    "micro_flow": {
+      "fast_4h": {
+        "cvd_sum": 1200.0,
+        "momentum_return_pct": 0.42,
+        "normalized_strength": 0.72,
+        "coverage_hours": 3.8,
+        "sample_count": 48,
+        "data_ready": true,
+        "verdict": "SELL_CONFIRMS_DOWN"
+      },
+      "medium_8h": {
+        "cvd_sum": 1840.0,
+        "momentum_return_pct": 0.58,
+        "normalized_strength": 0.41,
+        "coverage_hours": 7.6,
+        "sample_count": 91,
+        "data_ready": true,
+        "verdict": "BUY_LEAN"
+      },
+      "slow_12h": {
+        "cvd_sum": -1320,
+        "momentum_return_pct": -0.41,
+        "normalized_strength": 0.4,
+        "coverage_hours": 11.8,
+        "sample_count": 136,
+        "data_ready": true,
+        "status": "OK"
+      },
+      "data_status": "OK",
+      "observed_at": "2026-06-18T12:02:12.716+08:00",
+      "source_ref": "BINANCE_AGG_TRADES"
+    },
+    "funding": {
+      "last_rate": 0.00012,
+      "rate_unit": "DECIMAL",
+      "effect": "MILD_CROWDED",
+      "verdict": "NEUTRAL_DEAD_ZONE",
+      "hard_warning": false,
+      "history_points": 105,
+      "data_status": "OK",
+      "observed_at": "2026-06-18T08:00:00+08:00",
+      "source_ref": "BINANCE_FUNDING_RATE"
+    },
+    "macro_pressure": {
+      "score": 0.23,
+      "regime": "MILD_HEADWIND",
+      "summary_label_cn": "轻度逆风",
+      "data_confidence": 1.0,
+      "data_status": "FULL_LIVE",
+      "observed_at": "2026-06-18T11:33:38.716+08:00",
+      "components": [
+        {
+          "key": "VOLQ",
+          "source_symbol": "^VIX",
+          "source_status": "OK",
+          "current_close": 16.2,
+          "reference_close": 15.86,
+          "change_pct_3d": 0.021,
+          "scoring_bps": 210
+        },
+        {
+          "key": "DXY",
+          "source_symbol": "DX-Y.NYB",
+          "source_status": "OK",
+          "current_close": 104.1,
+          "reference_close": 103.74,
+          "change_pct_3d": 0.0035,
+          "scoring_bps": 35
+        },
+        {
+          "key": "US10Y",
+          "source_symbol": "^TNX",
+          "source_status": "OK",
+          "current_close": 4.31,
+          "reference_close": 4.3,
+          "change_pct_3d": 0.0018,
+          "scoring_bps": 8
+        }
+      ],
+      "source_ref": "YAHOO_FINANCE"
+    },
+    "gamma_regime": {
+      "regime": "POSITIVE_GAMMA_PINNING",
+      "regime_strength": 0.74,
+      "net_gamma_notional_usd": 12400000.0,
+      "flip_point": 62800.0,
+      "pin_strike": 64000.0,
+      "distance_to_pin_pct": -0.021174,
+      "confidence_multiplier": 1,
+      "veto": false,
+      "veto_reason": null,
+      "data_status": "OK",
+      "observed_at": "2026-06-18T11:55:18.716+08:00",
+      "source_ref": "DERIBIT_OPTIONS"
+    },
+    "gex_info": {
+      "market_state": "POSITIVE_GAMMA",
+      "net_gamma_notional_usd": 12400000.0,
+      "flip_point": 62800.0,
+      "call_wall": 65000.0,
+      "put_wall": 60000.0,
+      "magnet_level": 64000.0,
+      "data_status": "OK",
+      "observed_at": "2026-06-18T11:55:18.716+08:00",
+      "source_ref": "GEX_MONITOR_API",
+      "rank": {
+        "window": {
+          "mode": "rolling_30d_or_available",
+          "lookback_days": 30,
+          "sample_count": 42,
+          "history_retained_count": 42,
+          "start_at": "2026-06-18T15:14:23.865707+00:00",
+          "end_at": "2026-06-18T15:15:23.408169+00:00",
+          "window_days": 14.5
+        },
+        "metrics": {
+          "gex_board.total_net_gex": {
+            "rank_pct": 61,
+            "abs_rank_pct": 88,
+            "quality": "warming_up",
+            "percentile": 0.61,
+            "sample_count": 42,
+            "value": 12400000.0,
+            "abs_percentile": 0.88
+          },
+          "gex_board.dvol": {
+            "rank_pct": 49,
+            "quality": "warming_up",
+            "percentile": 0.49,
+            "sample_count": 42,
+            "value": 41.099999999999994
+          },
+          "volatility.iv_rv_ratio": {
+            "rank_pct": 38,
+            "quality": "warming_up",
+            "percentile": 0.38,
+            "sample_count": 42,
+            "value": 0.87
+          },
+          "volatility.pcr": {
+            "rank_pct": 70,
+            "quality": "warming_up",
+            "percentile": 0.7,
+            "sample_count": 42,
+            "value": 1.37
+          },
+          "flow.call_share_pct": {
+            "rank_pct": 28,
+            "quality": "warming_up",
+            "percentile": 0.28,
+            "sample_count": 42,
+            "value": 38
+          },
+          "flow.put_call_ratio": {
+            "rank_pct": 76,
+            "quality": "warming_up",
+            "percentile": 0.76,
+            "sample_count": 42,
+            "value": 1.8
+          }
+        }
+      }
+    },
+    "skew": {
+      "vote": -0.08,
+      "rr_25d": -0.03,
+      "rr_z": -0.06,
+      "rr_blend": -0.05,
+      "skew_slope": -0.012,
+      "term_slope": 0.006,
+      "target_expiry_hours": 48,
+      "expiry_count": 2,
+      "data_status": "OK",
+      "observed_at": "2026-06-18T12:01:16.716+08:00",
+      "source_ref": "DERIBIT_OPTIONS"
+    }
+  },
+  "delivery": {
+    "fmz_push_summary": "【信号】BTC #de93 偏空/准备做空 强度100 置信100 冲突0%",
+    "fmz_log_ref": "signal_review card_id=20260618T084218+0800-BTC-UI_FIXTURE-de93",
+    "static_web_url": "https://audit.example.com/#/card/20260618T084218+0800-BTC-UI_FIXTURE-de93",
+    "local_jsonl": "audit_archive/source/signal_review.jsonl",
+    "local_card_json": "signal_cards/20260618T084218+0800-BTC-UI_FIXTURE-de93.json"
+  },
+  "integrity": {
+    "hash_algorithm": "SHA-256",
+    "canonicalization": "SORTED_KEYS_COMPACT_UTF8_V1",
+    "source_snapshot_hash": null,
+    "config_snapshot_hash": "sha256:6f2652e6a5ab5e4002e4a2386fd9ae8ec6f7948d013b5f0b567c5b57148ee608",
+    "record_hash": null,
+    "record_hash_scope": "entire_record_excluding_integrity",
+    "redaction": {
+      "version": "1.0.0",
+      "contains_secret": false,
+      "contains_account_balance": false,
+      "contains_position_size": false
+    }
+  }
 }

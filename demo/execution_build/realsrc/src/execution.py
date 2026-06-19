@@ -271,25 +271,34 @@ def exec_entry_campaign_step(prot_inst, short_inst, amount, credit_floor, max_ti
 # ---------- 低成本退出：买回卖方短腿（§7.3；每轮一次、价格 ≤ 预算上限、post-only）----------
 
 def exec_exit_buyback_step(short_instrument, target_amount, price_cap, allow_live,
-                           label="exit_short"):
-    """退出活动一轮：以 ≤ price_cap 的被动 post-only 买单买回（平）卖方短腿。
-    allow_live=False → 仅返回意图(dry)，不下单。撤未成交单后再查一次以捕捉晚到成交。
-    返回 {filled, avg_price, dry, price, reason}。"""
+                           allow_taker=False, label="exit_short"):
+    """退出活动一轮：买回（平）卖方短腿。
+    - **止盈退出**(allow_taker=False)：被动 post-only，买价 ≤ min(ask−tick, price_cap)，patient 不越价。
+    - **风险退出**(allow_taker=True)：可**越价吃单**至 price_cap（限价=price_cap、非 post-only，
+      扫所有 ask ≤ cap 的卖盘、残量挂 cap）；成本仍硬封在 price_cap·qty 内（由风险退出预算反推）。
+    allow_live=False → 仅返回意图(dry)。撤未成交单后再查一次以捕捉晚到成交。
+    返回 {filled, avg_price, dry, price, taker, reason}。"""
     q = exec_quote(short_instrument)
     if not q or q.get("best_bid") is None or q.get("best_ask") is None or q.get("mark") is None:
         return {"filled": 0.0, "dry": (not allow_live), "reason": "NO_QUOTE"}
     tick = q.get("tick") or 0.0
-    maker_safe = (q["best_ask"] - tick) if tick else q["best_bid"]   # 最高仍为 maker 的买价
-    price = min(maker_safe, price_cap)
+    if allow_taker:
+        price = price_cap                       # 限价=预算上限：≤cap 的卖盘成交、残量挂 cap（成本硬封）
+        post_only = False
+    else:
+        maker_safe = (q["best_ask"] - tick) if tick else q["best_bid"]   # 最高仍为 maker 的买价
+        price = min(maker_safe, price_cap)
+        post_only = True
     if price <= 0 or price > price_cap + 1e-12:
         return {"filled": 0.0, "dry": (not allow_live), "price": price, "reason": "ABOVE_BUDGET_CAP"}
     if not allow_live:
-        return {"filled": 0.0, "dry": True, "price": price, "reason": "EXIT_DRYRUN"}
+        return {"filled": 0.0, "dry": True, "price": price, "taker": allow_taker, "reason": "EXIT_DRYRUN"}
     resp = dbt_place_order("buy", short_instrument, target_amount, price,
-                           post_only=True, reject_post_only=True, label=label)
+                           post_only=post_only, reject_post_only=post_only, label=label)
     order = _extract_order(resp)
     if order is None:
-        return {"filled": 0.0, "dry": False, "price": price, "reason": "POST_ONLY_REJECTED"}
+        return {"filled": 0.0, "dry": False, "price": price, "taker": allow_taker,
+                "reason": ("ORDER_REJECTED" if allow_taker else "POST_ONLY_REJECTED")}
     oid = order.get("order_id")
     Sleep(int(CHASE_WAIT_SECONDS * 1000))
     st = _extract_order(dbt_get_order_state(oid)) or order
@@ -301,7 +310,8 @@ def exec_exit_buyback_step(short_instrument, target_amount, price_cap, allow_liv
         if (st2.get("filled_amount") or 0.0) > filled:
             filled = st2.get("filled_amount")
             avg = st2.get("average_price") or avg
-    return {"filled": filled, "avg_price": avg, "dry": False, "price": price, "reason": "EXIT_STEP"}
+    return {"filled": filled, "avg_price": avg, "dry": False, "price": price,
+            "taker": allow_taker, "reason": "EXIT_STEP"}
 
 
 # ---------- 保护腿回收（§7.5；短腿归零后 maker 卖出；无 bid → LONG_RESIDUAL_ONLY）----------
@@ -311,6 +321,9 @@ def exec_protection_recovery_step(long_inst, qty, allow_live, label="recover_lon
     allow_live=False → 仅意图(dry)。返回 {sold, price, state, dry, reason}。"""
     if not qty or qty <= 0:
         return {"sold": 0.0, "dry": (not allow_live), "state": "COMPLETE", "reason": "NO_LONG"}
+    if not long_inst:
+        return {"sold": 0.0, "dry": (not allow_live), "state": "LONG_RESIDUAL_ONLY",
+                "reason": "NO_LONG_INSTRUMENT"}
     q = exec_quote(long_inst)
     bid = (q or {}).get("best_bid")
     if not q or bid in (None, 0) or bid <= 0:
@@ -344,6 +357,9 @@ def exec_hedge_step(venue_cfg, side, amount, reduce_only, allow_live, label="hed
                 "side": side, "amount": amount, "reduce_only": reduce_only, "reason": "HEDGE_DRYRUN"}
     q = exec_quote(instrument) or {}
     price = q.get("best_ask") if side == "buy" else q.get("best_bid")
+    if price is None or price <= 0:                       # C1：无可成交盘口 → 不下单（防 price=None 误单）
+        return {"filled": 0.0, "dry": False, "venue": venue, "reduce_only": reduce_only,
+                "reason": "NO_QUOTE"}
     resp = dbt_place_order(side, instrument, amount, price, post_only=maker_only,
                            reject_post_only=False, label=label, reduce_only=reduce_only)
     order = _extract_order(resp)
@@ -351,6 +367,13 @@ def exec_hedge_step(venue_cfg, side, amount, reduce_only, allow_live, label="hed
         return {"filled": 0.0, "dry": False, "venue": venue, "reduce_only": reduce_only,
                 "reason": "HEDGE_ORDER_FAILED"}
     oid = order.get("order_id")
+    Sleep(int(CHASE_WAIT_SECONDS * 1000))                 # C1：等一周期再查成交（原即查多为 0）
     st = _extract_order(dbt_get_order_state(oid)) or order
-    return {"filled": st.get("filled_amount") or 0.0, "dry": False, "venue": venue,
+    filled = st.get("filled_amount") or 0.0
+    if st.get("order_state") not in ("filled",) and (amount - filled) > 0:
+        dbt_cancel(oid)                                  # 残单撤掉(不留挂)，撤后再查捕捉晚到成交
+        st2 = _extract_order(dbt_get_order_state(oid)) or st
+        if (st2.get("filled_amount") or 0.0) > filled:
+            filled = st2.get("filled_amount")
+    return {"filled": filled, "avg_price": st.get("average_price"), "dry": False, "venue": venue,
             "reduce_only": reduce_only, "reason": "HEDGE_STEP"}

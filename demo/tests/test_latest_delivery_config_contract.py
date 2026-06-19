@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SIGNAL_FILE = ROOT / "demo" / "最新交付物" / "neutral_regulation_demo_fmz.py"
 
 EXPECTED_GEX_INFO_BASE_URL = "http://13.231.16.198:8000"
-EXPECTED_GEX_INFO_TOKEN = "<REDACTED_GEX_INFO_TOKEN>"
+TEST_GEX_INFO_TOKEN = "TEST_BEARER_TOKEN"
 
 
 def load_signal_module():
@@ -80,8 +80,8 @@ def main():
     assert_true(config["gex_info_enabled"] is True, "GEX info should be enabled by default")
     assert_true(config["gex_info_base_url"] == EXPECTED_GEX_INFO_BASE_URL,
                 "GEX info base URL should point at the strategy server")
-    assert_true(config["gex_info_token"] == EXPECTED_GEX_INFO_TOKEN,
-                "GEX info token should match the deployment token")
+    assert_true(config["gex_info_token"] == "",
+                "GEX info token should not be hard-coded in the delivery file")
     assert_true(
         mod._gex_info_endpoint(config["gex_info_base_url"])
         == EXPECTED_GEX_INFO_BASE_URL + "/v1/info",
@@ -93,14 +93,15 @@ def main():
         "full GEX info endpoint should remain stable",
     )
     config["gex_info_cache_file"] = ""
+    config["gex_info_token"] = TEST_GEX_INFO_TOKEN
     http = RecordingHttp()
     adapter = mod.GexInfoAdapter(http, config)
     adapter.refresh()
     assert_true(http.url == EXPECTED_GEX_INFO_BASE_URL + "/v1/info",
                 "GEX adapter should call normalized /v1/info endpoint")
     assert_true(
-        http.headers.get("Authorization") == "Bearer " + EXPECTED_GEX_INFO_TOKEN,
-        "GEX adapter should send deployment bearer token",
+        http.headers.get("Authorization") == "Bearer " + TEST_GEX_INFO_TOKEN,
+        "GEX adapter should send configured bearer token",
     )
     assert_true(http.timeout_sec == config["http_timeout_sec"],
                 "GEX adapter should use configured HTTP timeout")

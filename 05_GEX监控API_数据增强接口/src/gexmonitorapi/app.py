@@ -30,6 +30,8 @@ def create_app(settings: Settings | None = None, cache: Any | None = None) -> Fa
     cache = cache or MetricsCache(
         ScraplingScraper(settings),
         cache_file=settings.cache_file,
+        history_file=settings.history_file,
+        rank_lookback_days=settings.rank_lookback_days,
         refresh_interval_seconds=settings.refresh_interval_seconds,
     )
     stop_event = asyncio.Event()
@@ -90,4 +92,3 @@ def _unauthorized() -> HTTPException:
 
 
 app = create_app()
-

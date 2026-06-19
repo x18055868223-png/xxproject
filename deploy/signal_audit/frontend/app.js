@@ -15,30 +15,42 @@
     ACTIVE: "参与计票",
     ALLOWED: "允许",
     BEARISH: "偏空",
+    BEARISH_LEAN: "理论偏空",
     BEARISH_CONFIRMED: "偏空已确认",
     BEARISH_WITH_DISAGREEMENT: "偏空但存在分歧",
     BULLISH: "偏多",
+    BULLISH_LEAN: "理论偏多",
     BULLISH_CONFIRMED: "偏多已确认",
     BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
     CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
     DEGRADED: "降级",
+    DO_NOT_SUPPORT: "不支持系统结论",
+    ERROR: "错误",
     EXCLUDED: "已排除",
     FINAL: "定稿",
     FULL_LIVE: "完整实时",
     GATE_ONLY: "仅门控",
+    GEMINI: "Gemini",
+    gemini: "Gemini",
     HIGH: "高",
     INSUFFICIENT_WINDOW_COVERAGE: "窗口覆盖不足",
+    INVALID_OUTPUT: "输出无效",
     LOCKED: "锁定",
+    LONG_GAMMA_STABILIZING: "长 Gamma 稳定/钉住",
     LONG: "多",
     LOW: "低",
+    LOWER: "下调方向把握",
     MATERIAL: "实质分歧",
     MEDIUM: "中",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
+    MIXED_UNCLEAR: "混合不明",
     MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
     MIXED_LOW_CONFIDENCE: "混合信号 / 低置信",
     NEUTRAL: "中性",
+    NEUTRALIZE: "中和方向把握",
     NEUTRAL_DEAD_ZONE: "中性死区",
+    NEUTRAL_OR_RANGE: "理论中性/区间",
     NONE: "无",
     NON_VOTING: "不计票",
     NOT_READY: "未就绪",
@@ -47,14 +59,20 @@
     OBSERVE_SHORT_BIAS: "观察偏空",
     OK: "正常",
     PARTIAL: "部分可用",
+    PARTIAL_SUPPORT: "部分支持系统结论",
     POSITIVE_GAMMA: "正 Gamma",
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
+    SKIPPED: "已跳过",
+    SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
     SOFT_GATE: "软门控",
     SOURCE_AGE_EXCEEDED: "数据时效超限",
     STALE: "陈旧",
+    SUPPORT: "支持系统结论",
     UNCALIBRATED: "未校准",
+    UNKNOWN: "未知",
+    UNABLE_TO_JUDGE: "无法判断",
     VALID: "有效",
     WAIT_CONFIRMATION: "等待确认",
     WAIT_FOR_EVIDENCE: "等待证据"
@@ -68,9 +86,14 @@
     agreement: "一致性",
     agreement_factor: "一致性因子",
     agreement_raw: "原始一致性",
+    agreement_with_system: "与系统结论关系",
     all_required_ready: "必需源全部就绪",
     block_kind: "阻断类型",
     call_wall: "看涨墙",
+    caution_level: "谨慎等级",
+    basis_cn: "理论依据",
+    bias: "理论倾向",
+    boundary_cn: "边界说明",
     calibrated: "是否校准",
     confidence: "置信度",
     confidence_calibration: "置信校准",
@@ -78,6 +101,8 @@
     confidence_multiplier: "置信乘子",
     confidence_pre_veto: "否决前置信",
     confidence_semantics: "置信语义",
+    conviction: "定性把握度",
+    counter_evidence: "反向证据",
     config_hash: "配置哈希",
     config_id: "配置 ID",
     configured: "配置权重",
@@ -87,6 +112,7 @@
     coverage_factor: "覆盖因子",
     coverage_raw: "原始覆盖率",
     data_quality: "数据质量",
+    data_quality_note: "数据质量说明",
     data_status: "数据状态",
     direction: "方向",
     directional_bias: "方向偏向",
@@ -102,12 +128,15 @@
     exclusion_reason: "排除原因",
     field: "字段",
     flip_point: "翻转点",
+    flip: "翻转点",
     ggr_multiplier: "Gamma 置信乘子",
+    gamma_regime_lens: "全局 Gamma 体制分析",
     hash: "哈希",
     hard_veto: "硬否决",
     has_block: "存在阻断",
     info: "信息量",
     integrity: "完整性",
+    key_drivers: "关键驱动",
     lean: "方向倾向",
     level: "等级",
     magnet_level: "磁吸点位",
@@ -115,29 +144,52 @@
     market_state: "市场状态",
     method: "方法",
     missing_field_count: "缺失字段数",
+    model: "模型",
     net_gamma_notional_usd: "净 Gamma 名义额(USD)",
     next_action: "下一步动作",
+    not_trading_advice: "非交易建议",
     observed_at: "观测时间",
     participation: "参与状态",
     participation_status: "参与状态",
     pin_strike: "钉住行权价",
+    pin: "钉住点",
+    positioning_assumption_cn: "持仓符号假设",
     put_wall: "看跌墙",
     quality: "质量",
     ratio: "比例",
     reason: "原因",
     record_hash: "记录哈希",
+    reviewed_at: "复核时间",
     regime: "Gamma 状态",
+    regime_extremity: "体制极端度",
     regime_strength: "状态强度",
     reliability: "可靠性",
     required: "是否必需",
+    rank: "历史分位",
+    rank_pct: "Rank 百分位",
+    abs_rank_pct: "绝对值 Rank 百分位",
+    sample_count: "样本数",
     score_final: "最终得分",
     source: "数据源",
     source_ref: "来源引用",
     source_snapshot_hash: "源快照哈希",
     status: "状态",
+    input_packet_hash: "输入包哈希",
+    prompt_version: "提示词版本",
+    provider: "模型服务商",
     strength: "强度",
     threshold: "阈值",
+    theoretical_active_view: "理论主动倾向",
+    conviction_effect_on_directional_view: "对方向把握的影响",
+    data_quality_cn: "数据质量说明",
+    derived_blind: "真盲读生成",
+    dominant_tail_risk_cn: "主要尾部风险",
+    dynamics_cn: "体制动力学",
+    is_not_a_signal: "非信号",
+    key_levels: "关键位",
+    lens_is_risk_overlay_not_direction: "风险叠加，不是方向",
     trade_allowed: "是否允许交易",
+    validation_status: "验证状态",
     value: "值",
     veto: "否决",
     veto_applied: "是否应用否决",
@@ -219,6 +271,89 @@
     if (ageMs < 3600000) return `${number(ageMs / 60000, 1)} 分钟`;
     return `${number(ageMs / 3600000, 1)} 小时`;
   };
+  const firstPresent = (...values) => values.find((value) => !isNullish(value) && value !== "");
+  const numericMs = (value) => {
+    if (isNullish(value) || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+  };
+  const isoFromEpochMs = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return new Date(parsed).toISOString();
+  };
+  const ageFromObservedAt = (doc, observedAt) => {
+    if (!observedAt) return null;
+    const confirmedMs = new Date(confirmedAt(doc)).getTime();
+    const observedMs = new Date(observedAt).getTime();
+    if (!Number.isFinite(confirmedMs) || !Number.isFinite(observedMs)) return null;
+    return Math.max(0, confirmedMs - observedMs);
+  };
+  const observedAtFromAge = (doc, ageMs) => {
+    const age = numericMs(ageMs);
+    const confirmedMs = new Date(confirmedAt(doc)).getTime();
+    if (age === null || !Number.isFinite(confirmedMs)) return null;
+    return new Date(confirmedMs - age).toISOString();
+  };
+  const qualityFallbackPaths = {
+    price: ["market_context"],
+    neutral_repair: ["factor_cross_section.neutral_repair", "factor_cross_section.anchor", "signal_window"],
+    tmvf: ["factor_cross_section.tmvf"],
+    micro_flow: ["factor_cross_section.micro_flow"],
+    macro_pressure: ["factor_cross_section.macro_pressure"],
+    gamma_regime: ["factor_cross_section.gamma_regime"],
+    gex_info: ["factor_cross_section.gex_info"],
+    skew: ["factor_cross_section.skew"],
+    funding: ["factor_cross_section.funding"]
+  };
+  function qualityFallbackObjects(doc, key) {
+    return asArray(qualityFallbackPaths[key]).map((path) => asObject(get(doc, path, {})));
+  }
+  function firstFromObjects(objects, fields) {
+    for (const object of objects) {
+      for (const field of fields) {
+        const value = object[field];
+        if (!isNullish(value) && value !== "") return value;
+      }
+    }
+    return null;
+  }
+  function qualityReasonText(source) {
+    const view = asObject(source);
+    if (!isNullish(view.reason) && view.reason !== "") return view.reason;
+    return rawEnum(view.status).toUpperCase() === "OK" ? "OK" : null;
+  }
+  function qualitySourceView(doc, key, source) {
+    const original = asObject(source);
+    const fallbacks = qualityFallbackObjects(doc, key);
+    const sourceRef = firstPresent(
+      original.source_ref,
+      firstFromObjects(fallbacks, ["source_ref", "price_source", "source", "source_url"])
+    );
+    let ageMs = numericMs(firstPresent(
+      original.age_ms,
+      firstFromObjects(fallbacks, ["age_ms", "data_age_ms", "cache_age_ms", "source_age_ms", "fetch_age_ms"])
+    ));
+    let observedAt = firstPresent(
+      original.observed_at,
+      firstFromObjects(fallbacks, ["observed_at", "fetched_at", "last_success_at", "last_data_time", "last_data_at", "updated_at"])
+    );
+    const epochObserved = firstFromObjects(fallbacks, ["observed_time_ms", "fetched_at_ms", "last_data_ms", "last_refresh_ms"]);
+    if (isNullish(observedAt) && !isNullish(epochObserved)) observedAt = isoFromEpochMs(epochObserved);
+    if (isNullish(observedAt) && !isNullish(ageMs)) observedAt = observedAtFromAge(doc, ageMs);
+    if (isNullish(ageMs) && !isNullish(observedAt)) ageMs = ageFromObservedAt(doc, observedAt);
+    if (rawEnum(original.status).toUpperCase() === "OK" && ["price", "neutral_repair"].includes(key)) {
+      ageMs = isNullish(ageMs) ? 0 : ageMs;
+      observedAt = observedAt || confirmedAt(doc);
+    }
+    return {
+      ...original,
+      observed_at: observedAt,
+      age_ms: ageMs,
+      source_ref: sourceRef,
+      reason: qualityReasonText(original)
+    };
+  }
   const cardId = (doc) => get(doc, "identity.card_id", get(doc, "card_id", "N/A"));
   const shortId = (doc) => get(doc, "identity.short_id", cardId(doc).slice(-4));
   const confirmedAt = (doc) => get(doc, "identity.confirmed_at", get(doc, "created_at"));
@@ -250,6 +385,34 @@
     <div class="kv">
       <dt>${escapeHtml(fieldLabel(key))}</dt>
       <dd>${valueHtml(value, options)}</dd>
+    </div>
+  `;
+  const rankPct = (metric, field = "rank_pct") => {
+    const value = asObject(metric)[field];
+    return isNullish(value) ? "暂缺 (null)" : `${number(value, 1)}%`;
+  };
+  const rankMetric = (rank, key) => asObject(asObject(asObject(rank).metrics)[key]);
+  const rankValueLine = (metric) => {
+    const value = asObject(metric).value;
+    return isNullish(value) ? "" : `<span class="rank-meta">值 ${escapeHtml(scalarText(value, { translate: false, digits: 2 }))}</span>`;
+  };
+  const rankSampleLine = (metric) => {
+    const sample = asObject(metric).sample_count;
+    const quality = asObject(metric).quality;
+    const parts = [];
+    if (!isNullish(sample)) parts.push(`n=${scalarText(sample, { translate: false, digits: 0 })}`);
+    if (!isNullish(quality)) parts.push(`quality=${scalarText(quality, { translate: false })}`);
+    return parts.length ? `<span class="rank-meta">${escapeHtml(parts.join(" / "))}</span>` : "";
+  };
+  const rankKv = (label, metric, extra = "") => `
+    <div class="kv rank-cell">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>
+        <span class="rank-primary">${escapeHtml(rankPct(metric))}</span>
+        ${extra}
+        ${rankValueLine(metric)}
+        ${rankSampleLine(metric)}
+      </dd>
     </div>
   `;
   const section = (title, purpose, content, id = "") => `
@@ -388,9 +551,128 @@
     `);
   }
 
+  function renderLlmReview(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    if (!Object.keys(review).length) return "";
+    const content = Object.assign({}, asObject(review.content), review);
+    const status = review.status || "UNKNOWN";
+    const failed = rawEnum(status) !== "OK";
+    const panelClass = failed ? "llm-review-panel is-error" : "llm-review-panel";
+    return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
+      <div class="${panelClass}">
+        <div class="llm-review-topline">
+          ${statusBadge("状态", status)}
+          ${statusBadge("谨慎等级", content.caution_level || "UNKNOWN")}
+          ${review.provider ? statusBadge("模型服务", review.provider) : ""}
+        </div>
+        <p class="llm-review-summary">${valueHtml(content.summary_cn, { translate: false })}</p>
+      </div>
+      ${renderTheoreticalActiveView(content.theoretical_active_view)}
+      ${renderGammaRegimeLens(content.gamma_regime_lens)}
+      <dl class="kv-grid llm-review-grid" style="margin-top: 16px;">
+        ${kv("agreement_with_system", content.agreement_with_system)}
+        ${kv("reviewed_at", review.reviewed_at, { translate: false })}
+        ${kv("not_trading_advice", content.not_trading_advice)}
+        ${kv("model", review.model, { translate: false })}
+        ${kv("prompt_version", review.prompt_version, { translate: false })}
+        ${kv("input_packet_hash", review.input_packet_hash, { translate: false })}
+      </dl>
+      ${content.data_quality_note ? `<div class="llm-review-quality">${escapeHtml(content.data_quality_note)}</div>` : ""}
+      <div class="two-column-notes llm-review-lists">
+        <div><h3 class="subsection-title">支持系统结论的因素</h3>${listHtml(content.main_supporting_factors, "无")}</div>
+        <div><h3 class="subsection-title">主要风险或冲突</h3>${listHtml(content.main_risks_or_conflicts, "无")}</div>
+        <div><h3 class="subsection-title">人工观察重点</h3>${listHtml(content.operator_focus, "无")}</div>
+        <div><h3 class="subsection-title">复核失效条件</h3>${listHtml(content.invalid_if, "无")}</div>
+      </div>
+      ${review.error ? `<div class="llm-review-error">${escapeHtml(review.error)}</div>` : ""}
+    `, "llm-review");
+  }
+
+  function renderTheoreticalActiveView(view) {
+    const active = asObject(view);
+    if (!Object.keys(active).length) return "";
+    return `
+      <div class="llm-active-view">
+        <div class="llm-review-topline">
+          ${statusBadge("理论主动倾向", active.bias || "UNABLE_TO_JUDGE")}
+          ${statusBadge("定性把握度", active.conviction || "LOW")}
+        </div>
+        <p class="llm-active-basis"><strong>理论依据</strong> ${escapeHtml(active.basis_cn || "暂无")}</p>
+        <div class="two-column-notes llm-active-lists">
+          <div><h3 class="subsection-title">关键驱动</h3>${listHtml(active.key_drivers, "无")}</div>
+          <div><h3 class="subsection-title">反向证据</h3>${listHtml(active.counter_evidence, "无")}</div>
+        </div>
+        ${active.boundary_cn ? `<p class="llm-active-boundary">${escapeHtml(active.boundary_cn)}</p>` : ""}
+      </div>
+    `;
+  }
+
+  function renderGammaRegimeLens(lens) {
+    const gamma = asObject(lens);
+    if (!Object.keys(gamma).length) return "";
+    const levels = asObject(gamma.key_levels);
+    return `
+      <div class="llm-gamma-lens">
+        <div class="llm-review-topline">
+          ${statusBadge("全局 Gamma 体制分析", gamma.regime || "UNKNOWN")}
+          ${statusBadge("体制极端度", gamma.regime_extremity || "UNKNOWN")}
+          ${statusBadge("对方向把握的影响", gamma.conviction_effect_on_directional_view || "UNKNOWN")}
+          ${statusBadge("风险叠加，不是方向", gamma.lens_is_risk_overlay_not_direction ? "VALID" : "UNKNOWN")}
+        </div>
+        <div class="llm-gamma-copy">
+          <p><strong>体制动力学</strong> ${escapeHtml(gamma.dynamics_cn || "暂无")}</p>
+          <p><strong>主要尾部风险</strong> ${escapeHtml(gamma.dominant_tail_risk_cn || "暂无")}</p>
+        </div>
+        <dl class="kv-grid llm-gamma-levels">
+          ${kv("flip", levels.flip, { translate: false })}
+          ${kv("call_wall", levels.call_wall, { translate: false })}
+          ${kv("put_wall", levels.put_wall, { translate: false })}
+          ${kv("pin", levels.pin, { translate: false })}
+        </dl>
+        <div class="two-column-notes llm-gamma-notes">
+          <div>
+            <h3 class="subsection-title">持仓符号假设</h3>
+            <p>${escapeHtml(gamma.positioning_assumption_cn || "暂无")}</p>
+          </div>
+          <div>
+            <h3 class="subsection-title">数据质量说明</h3>
+            <p>${escapeHtml(gamma.data_quality_cn || "暂无")}</p>
+          </div>
+        </div>
+        <p class="llm-gamma-boundary">全局 Gamma 体制分析只解释分布、尾部与反身性风险；它是风险叠加，不是方向信号，不改变系统结论、EDB、门控或交易许可。</p>
+      </div>
+    `;
+  }
+
+  function llmGammaKeyLevels(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    const content = Object.assign({}, asObject(review.content), review);
+    return asObject(get(content, "gamma_regime_lens.key_levels", {}));
+  }
+
+  function hasLlmGammaKeyLevel(doc, key) {
+    return !isNullish(llmGammaKeyLevels(doc)[key]);
+  }
+
+  function hasLlmGammaKeyLevels(doc) {
+    return ["flip", "call_wall", "put_wall", "pin"].some((key) => hasLlmGammaKeyLevel(doc, key));
+  }
+
   function renderGammaOverview(doc) {
     const gex = asObject(get(doc, "factor_cross_section.gex_info", {}));
     const gamma = asObject(get(doc, "factor_cross_section.gamma_regime", {}));
+    const showFlipPoint = !hasLlmGammaKeyLevel(doc, "flip");
+    const showCallWall = !hasLlmGammaKeyLevel(doc, "call_wall");
+    const showPutWall = !hasLlmGammaKeyLevel(doc, "put_wall");
+    const showPinStrike = !hasLlmGammaKeyLevel(doc, "pin");
+    const showMagnetLevel = !hasLlmGammaKeyLevel(doc, "pin");
+    const mergedKeyLevels = [
+      showFlipPoint,
+      showCallWall,
+      showPutWall,
+      showPinStrike,
+      showMagnetLevel,
+    ].some((show) => !show);
     const hasGex = Object.keys(gex).length > 0;
     const hasGamma = Object.keys(gamma).length > 0;
     if (!hasGex && !hasGamma) {
@@ -402,15 +684,16 @@
         ${kv("regime", gamma.regime)}
         ${kv("regime_strength", gamma.regime_strength, { translate: false })}
         ${kv("net_gamma_notional_usd", gex.net_gamma_notional_usd ?? gamma.net_gamma_notional_usd, { translate: false })}
-        ${kv("flip_point", gex.flip_point ?? gamma.flip_point, { translate: false })}
-        ${kv("pin_strike", gamma.pin_strike, { translate: false })}
         ${kv("distance_to_pin_pct", isNullish(gamma.distance_to_pin_pct) ? null : percent(gamma.distance_to_pin_pct), { translate: false })}
         ${kv("confidence_multiplier", gamma.confidence_multiplier, { translate: false })}
-        ${kv("call_wall", gex.call_wall, { translate: false })}
-        ${kv("put_wall", gex.put_wall, { translate: false })}
-        ${kv("magnet_level", gex.magnet_level, { translate: false })}
         ${kv("veto", gamma.veto)}
+        ${showFlipPoint ? kv("flip_point", gex.flip_point ?? gamma.flip_point, { translate: false }) : ""}
+        ${showPinStrike ? kv("pin_strike", gamma.pin_strike, { translate: false }) : ""}
+        ${showCallWall ? kv("call_wall", gex.call_wall, { translate: false }) : ""}
+        ${showPutWall ? kv("put_wall", gex.put_wall, { translate: false }) : ""}
+        ${showMagnetLevel ? kv("magnet_level", gex.magnet_level, { translate: false }) : ""}
       </dl>
+      ${mergedKeyLevels ? `<p class="merge-note">关键点位已在 LLM Gamma 体制分析栏合并展示；此处保留原始体制、强度、净 Gamma 与质量状态，避免重复阅读。</p>` : ""}
       <div class="source-ref-row">
         ${!isNullish(gex.source_ref) ? `<span class="chip">gex_info: ${escapeHtml(gex.source_ref)}</span>` : ""}
         ${!isNullish(gamma.source_ref) ? `<span class="chip">gamma_regime: ${escapeHtml(gamma.source_ref)}</span>` : ""}
@@ -418,6 +701,39 @@
         ${!isNullish(gamma.observed_at) ? `<span class="chip">Gamma observed ${escapeHtml(dateText(gamma.observed_at))}</span>` : ""}
       </div>
     `, "gamma-overview");
+  }
+
+  function renderGexRank(doc) {
+    const gex = asObject(get(doc, "factor_cross_section.gex_info", {}));
+    const rank = asObject(gex.rank);
+    const metrics = asObject(rank.metrics);
+    if (!Object.keys(rank).length || !Object.keys(metrics).length) {
+      return section("GEX Rank 分位", "展示 GEX Monitor 最近 30 日或已有样本内的历史分位，仅作只读上下文。", `<div class="empty">暂无 GEX rank 分位；等待 gexmonitorapi 累计样本。</div>`, "gex-rank");
+    }
+    const window = asObject(rank.window);
+    const netGex = rankMetric(rank, "gex_board.total_net_gex");
+    const dvol = rankMetric(rank, "gex_board.dvol");
+    const ivrv = rankMetric(rank, "volatility.iv_rv_ratio");
+    const pcr = rankMetric(rank, "volatility.pcr");
+    const callShare = rankMetric(rank, "flow.call_share_pct");
+    const flowPc = rankMetric(rank, "flow.put_call_ratio");
+    const noteParts = [
+      window.mode ? `窗口 ${window.mode}` : "窗口 rolling_30d_or_available",
+      !isNullish(window.sample_count) ? `样本 ${scalarText(window.sample_count, { translate: false, digits: 0 })}` : "",
+      !isNullish(window.history_retained_count) ? `保留 ${scalarText(window.history_retained_count, { translate: false, digits: 0 })}` : "",
+      !isNullish(window.window_days) ? `覆盖 ${scalarText(window.window_days, { translate: false, digits: 2 })} 天` : "",
+    ].filter(Boolean);
+    return section("GEX Rank 分位", "把 netGEX、IV/RV、P/C 等裸数值转换为当前样本窗口里的相对位置；冷启动期 quality 会保留显示。", `
+      <dl class="kv-grid rank-grid">
+        ${rankKv("netGEX", netGex, `<span class="rank-meta">绝对值 ${escapeHtml(rankPct(netGex, "abs_rank_pct"))}</span>`)}
+        ${rankKv("DVOL", dvol)}
+        ${rankKv("IV/RV", ivrv)}
+        ${rankKv("PCR", pcr)}
+        ${rankKv("Call share", callShare)}
+        ${rankKv("Flow P/C", flowPc)}
+      </dl>
+      <div class="rank-note">${escapeHtml(noteParts.join(" / ") || "rank window 暂缺")}</div>
+    `, "gex-rank");
   }
 
   function renderDisplayLayers(doc) {
@@ -444,17 +760,20 @@
   function renderQuality(doc) {
     const quality = asObject(get(doc, "quality", {}));
     const sources = asObject(quality.sources);
-    const rows = Object.entries(sources).map(([key, source]) => `
-      <tr>
-        <td><strong>${escapeHtml(key)}</strong></td>
-        <td>${valueHtml(source.required)}</td>
-        <td>${statusBadge("", source.status)}</td>
-        <td>${escapeHtml(dateText(source.observed_at))}</td>
-        <td class="num">${escapeHtml(ageText(source.age_ms))}</td>
-        <td>${valueHtml(source.source_ref)}</td>
-        <td>${valueHtml(source.reason, { translate: true })}</td>
-      </tr>
-    `).join("");
+    const rows = Object.entries(sources).map(([key, rawSource]) => {
+      const source = qualitySourceView(doc, key, rawSource);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(key)}</strong></td>
+          <td>${valueHtml(source.required)}</td>
+          <td>${statusBadge("", source.status)}</td>
+          <td>${escapeHtml(dateText(source.observed_at))}</td>
+          <td class="num">${escapeHtml(ageText(source.age_ms))}</td>
+          <td>${valueHtml(source.source_ref)}</td>
+          <td>${valueHtml(source.reason, { translate: true })}</td>
+        </tr>
+      `;
+    }).join("");
     const degraded = asArray(quality.degraded_sources);
     return section("数据质量与时效", "逐源显示 required、status、observed_at、age_ms 和 source_ref；缺失必须可见。", `
       <dl class="kv-grid" style="margin-bottom: 16px;">
@@ -656,6 +975,8 @@
         ${metric("Data quality", semanticCompact(quality.overall), quality.all_required_sources_ready ? "required ready" : "requires review")}
       </div>
       ${renderGammaOverview(doc)}
+      ${renderGexRank(doc)}
+      ${renderLlmReview(doc)}
       ${renderDecision(doc)}
       ${renderDisplayLayers(doc)}
       ${renderQuality(doc)}

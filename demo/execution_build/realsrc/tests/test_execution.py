@@ -101,3 +101,66 @@ def test_maker_fill_wide_spread_guard():
     r = EX.exec_maker_only_fill("sell", "X", 0.1)
     assert r.get("reason") == "WIDE_SPREAD" and r["filled"] == 0.0
     _restore_ex()
+
+
+# ---- F1：风险退出可越价吃单 vs 止盈退出被动 maker ----
+
+def test_exit_buyback_taker_crosses_at_cap():
+    EX.dbt_ticker = _mock_quote                      # ask 0.0103
+    EX.dbt_get_instrument = lambda i: {"tick_size": 0.0001}
+    seen = {}
+    def _place(side, inst, amt, price, **k):
+        seen["price"], seen["post_only"] = price, k.get("post_only")
+        return {"order": {"order_id": "1", "order_state": "filled",
+                          "filled_amount": amt, "average_price": 0.0101}}
+    EX.dbt_place_order = _place
+    EX.dbt_get_order_state = lambda oid: {"order": {"order_id": oid, "order_state": "filled",
+                                                    "filled_amount": 0.1, "average_price": 0.0101}}
+    EX.dbt_cancel = lambda oid: {"order_id": oid}
+    EX.Sleep = lambda ms: None
+    r = EX.exec_exit_buyback_step("X", 0.1, price_cap=0.02, allow_live=True, allow_taker=True)
+    assert not r["dry"] and r["taker"] is True and _approx(r["filled"], 0.1)
+    assert seen["post_only"] is False and _approx(seen["price"], 0.02)   # 限价=cap、可越价吃单
+    _restore_ex()
+
+
+def test_exit_buyback_maker_passive_below_ask():
+    EX.dbt_ticker = _mock_quote                      # ask 0.0103 tick 0.0001 → maker_safe 0.0102
+    EX.dbt_get_instrument = lambda i: {"tick_size": 0.0001}
+    seen = {}
+    def _place(side, inst, amt, price, **k):
+        seen["price"], seen["post_only"] = price, k.get("post_only")
+        return {"order": {"order_id": "1", "order_state": "open", "filled_amount": 0.0}}
+    EX.dbt_place_order = _place
+    EX.dbt_get_order_state = lambda oid: {"order": {"order_id": oid, "order_state": "open", "filled_amount": 0.0}}
+    EX.dbt_cancel = lambda oid: {"order_id": oid}
+    EX.Sleep = lambda ms: None
+    r = EX.exec_exit_buyback_step("X", 0.1, price_cap=0.02, allow_live=True, allow_taker=False)
+    assert seen["post_only"] is True and _approx(seen["price"], 0.0102)  # ask-tick，被动不越价
+    _restore_ex()
+
+
+# ---- C1：Deribit 对冲 None 盘口守门 + 成交确认 ----
+
+def test_hedge_step_deribit_no_quote_guard():
+    EX.dbt_ticker = lambda i: {"mark_price": 50000, "best_bid_price": None, "best_ask_price": None}
+    EX.dbt_get_instrument = lambda i: {"tick_size": 0.5}
+    vcfg = {"venue": "DERIBIT", "instrument": "BTC-PERPETUAL", "maker_only": False}
+    r = EX.exec_hedge_step(vcfg, "buy", 100.0, reduce_only=False, allow_live=True)
+    assert r["reason"] == "NO_QUOTE" and r["filled"] == 0.0           # price=None → 不下单
+    _restore_ex()
+
+
+def test_hedge_step_deribit_confirms_fill():
+    EX.dbt_ticker = lambda i: {"mark_price": 50000, "best_bid_price": 49999, "best_ask_price": 50001}
+    EX.dbt_get_instrument = lambda i: {"tick_size": 0.5}
+    EX.dbt_place_order = lambda side, inst, amt, price, **k: {
+        "order": {"order_id": "h1", "order_state": "open", "filled_amount": 0.0}}
+    EX.dbt_get_order_state = lambda oid: {
+        "order": {"order_id": oid, "order_state": "filled", "filled_amount": 100.0, "average_price": 50001}}
+    EX.dbt_cancel = lambda oid: {"order_id": oid}
+    EX.Sleep = lambda ms: None
+    vcfg = {"venue": "DERIBIT", "instrument": "BTC-PERPETUAL", "maker_only": False}
+    r = EX.exec_hedge_step(vcfg, "buy", 100.0, reduce_only=False, allow_live=True)
+    assert not r["dry"] and _approx(r["filled"], 100.0) and r["reason"] == "HEDGE_STEP"  # 等待后查得成交
+    _restore_ex()

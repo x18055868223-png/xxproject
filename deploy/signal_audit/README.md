@@ -47,7 +47,7 @@ Local first-time Git setup:
 
 ```bash
 git init
-git add .gitignore .gitattributes tools/materialize_signal_cards.py deploy/signal_audit
+git add .gitignore .gitattributes tools/materialize_signal_cards.py tools/gemini_signal_llm_review.py tools/server_self_check_signal_stack.sh deploy/signal_audit
 git status --short
 git commit -m "Prepare signal audit git deployment"
 git branch -M main
@@ -72,6 +72,15 @@ cd /opt/repos/neutral-loop
 git pull --ff-only
 sudo bash deploy/signal_audit/install_or_update.sh
 ```
+
+The install script now also installs and enables the two systemd timers:
+
+- `signal-audit-materialize.timer`: refreshes static card JSON from FMZ JSONL.
+- `signal-audit-llm-review.timer`: generates Gemini LLM review sidecar JSONL,
+  then triggers materialization so the frontend shows the review.
+
+The LLM timer is safe before the key is configured: it exits successfully with a
+clear message and does not call the model.
 
 Optional direct zip package still exists for emergency/manual transfer:
 
@@ -106,7 +115,11 @@ Copy the materializer script from this repo:
 ```bash
 sudo mkdir -p /opt/signal-audit-tools
 sudo cp /tmp/signal-audit-deploy/tools/materialize_signal_cards.py /opt/signal-audit-tools/
+sudo cp /tmp/signal-audit-deploy/tools/gemini_signal_llm_review.py /opt/signal-audit-tools/
+sudo cp /tmp/signal-audit-deploy/deploy/run_signal_llm_review.sh /opt/signal-audit-tools/
 sudo chmod +x /opt/signal-audit-tools/materialize_signal_cards.py
+sudo chmod +x /opt/signal-audit-tools/gemini_signal_llm_review.py
+sudo chmod +x /opt/signal-audit-tools/run_signal_llm_review.sh
 ```
 
 Build live cards from the FMZ JSONL:
@@ -115,7 +128,8 @@ Build live cards from the FMZ JSONL:
 sudo /usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py \
   --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl \
   --output /opt/signal-audit \
-  --max-cards 200
+  --max-cards 200 \
+  --llm-reviews /opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
 
 Expected output is JSON with `written_cards >= 1` after the FMZ self-test.
@@ -237,22 +251,49 @@ Optional log rotation check:
 sudo logrotate -d /etc/logrotate.d/nginx
 ```
 
-## Optional Auto-Refresh
+## LLM API Key
 
-Install the example systemd unit and timer:
+Configure the Gemini key only on the server:
 
 ```bash
-sudo cp deploy/signal_audit/signal-audit-materialize.service /etc/systemd/system/
-sudo cp deploy/signal_audit/signal-audit-materialize.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now signal-audit-materialize.timer
+sudo mkdir -p /etc/signal-audit
+sudo chmod 700 /etc/signal-audit
+sudo install -m 600 deploy/signal_audit/signal-audit-llm.env.example /etc/signal-audit/llm.env
+sudoedit /etc/signal-audit/llm.env
 ```
 
-Manual refresh:
+Set:
+
+```text
+GEMINI_API_KEY=<your Gemini API key>
+GEMINI_MODEL=gemini-3.5-flash
+LLM_REVIEW_LIMIT=2
+LLM_REVIEW_TIMEOUT=60
+JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
+LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
+```
+
+Never commit `/etc/signal-audit/llm.env`. The repository only contains
+`signal-audit-llm.env.example` with an empty key.
+
+## Auto-Refresh And LLM Review
+
+`install_or_update.sh` installs and enables these by default. Manual commands
+are still useful for troubleshooting:
 
 ```bash
+sudo systemctl start signal-audit-llm-review.service
+sudo systemctl status signal-audit-llm-review.service --no-pager
 sudo systemctl start signal-audit-materialize.service
 sudo systemctl status signal-audit-materialize.service --no-pager
+systemctl list-timers | grep signal-audit
 ```
 
-Keep the timer disabled until the one-time deploy and HTTP verification pass.
+The LLM review service writes:
+
+```text
+/opt/signal-audit-tools/signal_llm_reviews.jsonl
+```
+
+The materializer merges that file into `signal_cards/*.json` and
+`signal_cards/fallback.js`.

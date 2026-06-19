@@ -44,6 +44,30 @@ def hedge_side(side):
     return None
 
 
+def structure_net_delta(short_delta, protection_delta):
+    """结构净 delta（每单位）= 短腿 delta − 保护腿 delta（P1）。
+    短腿与保护腿同类型(同 call/put)、保护腿为多头 → 部分抵消短腿敞口，对冲应按净敞口而非仅短腿。
+    保护腿 delta 缺失 → 退化为短腿 delta（保守：过对冲优于欠对冲）；短腿缺失 → None。"""
+    if not _is_num(short_delta):
+        return None
+    if not _is_num(protection_delta):
+        return short_delta
+    return short_delta - protection_delta
+
+
+def hedge_direction_consistent(side, struct_net_delta):
+    """方向符号核对（P1）：卖方腿为空头 → 结构 position delta = −struct_net_delta。
+    SHORT_CALL（应 buy）要求 position delta ≤ 0；SHORT_PUT（应 sell）要求 ≥ 0。
+    数据缺失 / 净敞口≈0 / 无对冲方向 → True（缺 greeks 不阻断既有逻辑，仅用于挡反向加仓）。"""
+    h = hedge_side(side)
+    if h is None or not _is_num(struct_net_delta) or abs(struct_net_delta) <= _EPS:
+        return True
+    position_delta = -struct_net_delta
+    if h == "buy":
+        return position_delta <= _EPS
+    return position_delta >= -_EPS
+
+
 def hedge_target_contracts(remaining_short_qty, structure_delta, reduction_ratio,
                            spot, contract_size, min_trade_amount,
                            option_structure_state="OPEN", linear=False):

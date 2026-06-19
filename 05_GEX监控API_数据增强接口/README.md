@@ -12,7 +12,7 @@
 | Method | Path | 鉴权 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/health` | 否 | 服务存活与版本 |
-| `GET` | `/v1/info` | Bearer | 返回四组指标字典 + 抓取时间 + 缓存状态 + 缺失字段 |
+| `GET` | `/v1/info` | Bearer | 返回四组指标字典 + rank 分位上下文 + 抓取时间 + 缓存状态 + 缺失字段 |
 | `POST` | `/v1/refresh?section=all` | Bearer | 立即重抓。`section` ∈ `gex_board\|gamma_exposure\|volatility\|flow\|all` |
 
 鉴权：除 `/health` 外所有端点都要求请求头 `Authorization: Bearer <API_TOKEN>`，否则返回 `401`。
@@ -30,13 +30,22 @@
   "volatility":     { "iv_rv_ratio": null, "pcr": null, "term_structure": [] },
   "flow":           { "call_premium": null, "put_premium": null, "call_put_bias": null, "...": null },
   "missing_fields": ["gamma_exposure.n2", "..."],
-  "field_status":   { "gamma_exposure.n2": { "status": "missing", "reason": "not_found_in_rendered_page" } }
+  "field_status":   { "gamma_exposure.n2": { "status": "missing", "reason": "not_found_in_rendered_page" } },
+  "rank": {
+    "window": { "mode": "rolling_30d_or_available", "lookback_days": 30, "sample_count": 96 },
+    "metrics": {
+      "gex_board.total_net_gex": { "value": -62730587.7, "percentile": 0.22, "rank_pct": 22.0, "abs_percentile": 0.81 },
+      "volatility.iv_rv_ratio": { "value": 0.83, "percentile": 0.18, "rank_pct": 18.0 },
+      "flow.call_share_pct": { "value": 38.0, "percentile": 0.44, "rank_pct": 44.0 }
+    }
+  }
 }
 ```
 
 - `availability`：`ready`（全部命中）/ `partial`（部分缺失或有错误）/ `missing`（从未成功）。
 - `stale`：上一次刷新是否有失败；失败不会清空旧缓存。
 - 抓不到的字段不会让请求失败，而是记入 `missing_fields` 与 `field_status`。
+- `rank`：每次全量刷新追加一行本地 JSONL 历史；不足 30 天时用已有样本，超过 30 天后只用最近 30 天计算当前分位，但保留全量历史。
 
 > 每个字段的单位与真实语义见 [`docs/info接口语义文档.md`](docs/info接口语义文档.md)；完整响应示例见 [`docs/info.sample.json`](docs/info.sample.json)。
 
@@ -78,7 +87,7 @@ curl -X POST -H "Authorization: Bearer <你的TOKEN>" "http://127.0.0.1:8000/v1/
 
 全部可经环境变量或 `.env` 覆盖，见 [.env.example](.env.example)：
 `API_TOKEN`、`REFRESH_INTERVAL_SECONDS`、`REQUEST_TIMEOUT_SECONDS`、`CACHE_FILE`、
-`USER_AGENT`、`ENABLE_BACKGROUND_REFRESH`、`REFRESH_ON_STARTUP`。
+`HISTORY_FILE`、`RANK_LOOKBACK_DAYS`、`USER_AGENT`、`ENABLE_BACKGROUND_REFRESH`、`REFRESH_ON_STARTUP`。
 
 ## 部署到 AWS 轻量服务器
 

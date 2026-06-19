@@ -3,10 +3,13 @@ Description=Materialize FMZ signal_review.jsonl for the static signal audit page
 
 [Service]
 Type=oneshot
+Environment=JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
+Environment=LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
+Environment=MAX_CARDS=200
 MemoryHigh=64M
 MemoryMax=128M
 CPUQuota=25%
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=30
-ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl --output /opt/signal-audit --max-cards 200
+ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source ${JSONL_SOURCE} --output /opt/signal-audit --max-cards ${MAX_CARDS} --llm-reviews ${LLM_REVIEWS_SOURCE}

@@ -1,13 +1,13 @@
-# Project Memory
+﻿# Project Memory
 
 ## Project overview
 
 - This repository is the integration workspace for the neutral-loop trading system. It gathers system-level design docs, module snapshots, demo integration code, latest FMZ-ready single-file deliverables, and the signal audit archive sample.
 - The main implementation language present in the deliverables is Python. The repository also contains Markdown documentation plus a static HTML/JSON audit archive sample under `audit_archive/`.
 - The current deployable signal-layer artifact is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file version is `demo_version = "1.3.0"` and `schema_version = "nrd.schema.v1.0.0"`.
-- The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.0.0"`.
+- The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.5.0"`, with entry/exit/hedge/live trading gates still default-safe/off.
 - `demo/最新交付物/README.md` states that `demo/最新交付物/` contains the latest FMZ-ready single-file strategies, while `demo/副本快照/` is the historical timeline.
-- This root directory is not currently a Git repository. `git status --short --branch` returned `fatal: not a git repository (or any of the parent directories): .git`.
+- This workspace may be checked out either as the signal-audit deployment repository or as the xxproject backup clone; verify `git remote -v` before committing or pushing.
 
 ## Architecture and boundaries
 
@@ -60,7 +60,7 @@
 
 ## Known pitfalls
 
-- This workspace root is not a Git repository, so `git diff` and `git status` are not available here unless the project is later placed under Git.
+- The workspace root can now be a Git repository; always verify the active remote because local work may target either `signal-audit-deploy` or `xxproject`.
 - `python` was not available on `PATH` in this environment during initialization. Use an available Python 3.12 interpreter explicitly when needed.
 - `audit_archive/public/index.html` is a placeholder from the older scaffold. The current finalized static audit page lives outside this repo in the `signal-audit-final-20260618` archive and expects the `signal_cards/` layout.
 - Runtime signal records are not automatically exported by the FMZ strategy itself. The runtime writes `demo/logs/signal_review.jsonl`; `tools/materialize_signal_cards.py` materializes that JSONL into `signal_cards/index.json`, single-card JSON, and `fallback.js` for the finalized static page. Server automation is provided as an optional systemd timer under `deploy/signal_audit/`.

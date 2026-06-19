@@ -87,6 +87,8 @@ def build_approval_snapshot(candidate, session_id, signal_package_id, refresh_se
         "short_instrument": short_inst, "long_instrument": long_inst,
         "short_strike": candidate.get("short_strike"),
         "long_strike": candidate.get("protection_strike"),
+        "short_expiry": candidate.get("short_expiry"),       # 锁定→入场快照→持仓后 DTE
+        "breakeven": candidate.get("breakeven"),             # 入场风险锚 loss_boundary
         "amount": candidate.get("amount"),
         "entry_net_credit_after_costs": candidate.get("net_credit_effective"),
         "max_loss": candidate.get("max_loss"),

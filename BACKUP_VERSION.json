@@ -1,9 +1,23 @@
 {
-  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.18-r1",
-  "backup_date": "2026-06-18",
-  "project_name": "中性回路整合工程",
+  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.19-r2",
+  "backup_date": "2026-06-19",
+  "project_name": "neutral-loop-integration",
   "target_repository": "https://github.com/x18055868223-png/xxproject",
-  "source_workspace": "C:/Users/Xu/Documents/中性回路整合工程",
-  "scope": "signal layer, execution layer, VRP gate, hedge module, GEX monitor API, signal audit frontend deployment assets, current docs and asset index",
-  "secret_policy": "backup snapshot must exclude runtime logs, caches, virtual environments, local git directories, and live token-bearing deployment overrides where practical"
+  "source_workspace": "C:/Users/Xu/Documents/neutral-loop-integration",
+  "scope": [
+    "fmz_signal_layer_v1.3.0",
+    "gexmonitorapi_rank_enabled_endpoint",
+    "signal_audit_static_frontend",
+    "gemini_llm_review_sidecar",
+    "fmz_execution_layer_v2.5.0_dry_run",
+    "server_self_check_workflow"
+  ],
+  "runtime_server_baseline": {
+    "fmz_jsonl": "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl",
+    "audit_root": "/opt/signal-audit",
+    "audit_tools": "/opt/signal-audit-tools",
+    "llm_env": "/etc/signal-audit/llm.env",
+    "gex_env": "/etc/gexmonitorapi.env"
+  },
+  "secret_policy": "exclude runtime logs, JSONL production data, cache folders, virtual environments, local git directories, and live token-bearing deployment overrides"
 }

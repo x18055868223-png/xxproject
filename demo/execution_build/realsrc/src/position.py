@@ -35,9 +35,12 @@ def entry_profit_ceiling_net(short_credit, long_debit, entry_fees):
 
 
 def build_vertical_entry_snapshot(locked, short_fill, long_fill, entry_fees,
-                                  now_ts, take_profit_ratio=DEFAULT_TAKE_PROFIT_RATIO):
+                                  now_ts, take_profit_ratio=DEFAULT_TAKE_PROFIT_RATIO,
+                                  entry_risk_anchor=None):
     """成交后冻结入场快照。short_fill/long_fill: {filled, avg_price}。
-    `entry_profit_ceiling_net` 一经冻结即为审计基准，禁止后续覆盖（见 freeze_entry_ceiling）。"""
+    `entry_profit_ceiling_net` 一经冻结即为审计基准，禁止后续覆盖（见 freeze_entry_ceiling）。
+    `entry_risk_anchor`（hedge_risk.build_entry_risk_anchor）与 `short_expiry_ts` 一并冻结，
+    供持仓后「风险严重度→仲裁」逐轮调用 evaluate_position_risk。"""
     locked = locked or {}
     sc = (short_fill or {}).get("avg_price")
     sa = (short_fill or {}).get("filled")
@@ -70,6 +73,8 @@ def build_vertical_entry_snapshot(locked, short_fill, long_fill, entry_fees,
         "realized_exit_spend": 0.0,
         "remaining_short_qty": sa,
         "long_remaining_qty": la,          # 保护腿剩余（回收时递减；持仓真相之一）
+        "short_expiry_ts": locked.get("short_expiry"),     # 短腿到期（持仓后 DTE/风险评估用）
+        "entry_risk_anchor": entry_risk_anchor,            # 入场风险锚（风险严重度→仲裁）
         "frozen_ts": now_ts,
         "immutable": True,
     }

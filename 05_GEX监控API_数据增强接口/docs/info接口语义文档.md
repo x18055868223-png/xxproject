@@ -5,7 +5,7 @@
 BTC 分析页四个 tab 的真实标签与图例。
 
 - **数据来源**:`gex`(GEX 看板)、`gamma`(Gamma Exposure)、`volatility`(波动率)、`flow`(资金流向)四个公开页面。
-- **刷新**:服务端每 ~10 分钟自动抓取并缓存;调用方直接轮询本接口即可,无需频繁触发刷新。
+- **刷新**:服务端默认每 ~30 分钟自动抓取并缓存;调用方直接轮询本接口即可,无需频繁触发刷新。
 - **鉴权**:请求头 `Authorization: Bearer <API_TOKEN>`。
 - **完整示例**:见同目录 [`info.sample.json`](info.sample.json)(下文按分组拆解)。
 
@@ -23,7 +23,8 @@ BTC 分析页四个 tab 的真实标签与图例。
 | `availability` | string | `ready`=全部命中;`partial`=部分字段缺失或有错误;`missing`=从未成功抓取 |
 | `missing_fields` | string[] | 未取到的字段路径(如 `"gamma_exposure.n2"`);全部命中时为 `[]` |
 | `field_status` | object | **只列出有问题的字段**及原因;全部正常时为 `{}`。`reason`:`not_found_in_rendered_page`(页面中未解析到)/ `not_yet_fetched`(尚未抓取) |
-| `sections` | object | 每个 tab 的抓取审计(见第 6 节) |
+| `rank` | object | 本地历史分位排名上下文;每次全量刷新追加一条轻量历史,默认用最近 30 天窗口计算(见第 6 节) |
+| `sections` | object | 每个 tab 的抓取审计(见第 7 节) |
 
 ---
 
@@ -96,7 +97,49 @@ BTC 分析页四个 tab 的真实标签与图例。
 
 ---
 
-## 6. `sections` —— 每个 tab 的抓取审计
+## 6. `rank` —— 本地历史分位排名
+
+`rank` 不改变原始指标,只给当前值增加「在本地历史里处于什么位置」的上下文。服务每次 `section=all` 的成功刷新会向 `HISTORY_FILE` 追加一行 JSONL 快照;单独刷新某个 tab 不会写入历史,避免半截数据污染序列。
+
+```json
+"rank": {
+  "window": {
+    "mode": "rolling_30d_or_available",
+    "lookback_days": 30,
+    "sample_count": 96,
+    "history_retained_count": 96,
+    "start_at": "2026-06-01T14:52:45+00:00",
+    "end_at": "2026-06-03T14:52:45+00:00",
+    "window_days": 2.0
+  },
+  "metrics": {
+    "gex_board.total_net_gex": {
+      "value": -67000000.0,
+      "percentile": 0.22,
+      "rank_pct": 22.0,
+      "sample_count": 96,
+      "quality": "warming_up",
+      "abs_percentile": 0.81,
+      "abs_rank_pct": 81.0
+    }
+  }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `rank.window.sample_count` | 本次 rank 计算实际使用的窗口样本数。历史不足 30 天时使用已有全部样本;超过 30 天时只取最近 30 天。 |
+| `rank.window.history_retained_count` | 本地已保留的全量历史样本数。历史不会因 rank 窗口滚动而删除。 |
+| `rank.metrics.*.value` | 当前指标值,与原字段同单位。 |
+| `rank.metrics.*.percentile` / `rank_pct` | 当前值在窗口样本中的分位。`0.86` / `86.0` 表示高于或等于窗口内约 86% 的样本。 |
+| `rank.metrics.gex_board.total_net_gex.abs_percentile` | `netGEX` 绝对值强度分位。负值本身的 `percentile` 越低代表越偏负,`abs_percentile` 越高代表净 GEX 规模越极端。 |
+| `quality` | `missing`=当前值缺失;`single_sample`=仅一个样本;`warming_up`=样本可用但不足完整 lookback 窗口;`ok`=窗口覆盖完整。 |
+
+当前纳入 rank 的指标:`gex_board.total_net_gex`、`gex_board.dvol`、`volatility.iv_rv_ratio`、`volatility.pcr`、`flow.call_share_pct`、`flow.put_call_ratio`。
+
+---
+
+## 7. `sections` —— 每个 tab 的抓取审计
 
 ```json
 "sections": { "gex_board": { "fetched_at":"...", "last_success_at":"...", "last_error":null,
@@ -115,7 +158,7 @@ BTC 分析页四个 tab 的真实标签与图例。
 
 ---
 
-## 7. 数值格式与重要语义提示
+## 8. 数值格式与重要语义提示
 
 **格式约定**
 - 后缀自动展开:`K`=×10³、`M`=×10⁶、`B`=×10⁹、`T`=×10¹²;`$`、千分位逗号、正负号均已归一化为纯数值。

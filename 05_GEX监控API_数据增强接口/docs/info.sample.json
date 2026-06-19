@@ -83,6 +83,63 @@
   },
   "missing_fields": [],
   "field_status": {},
+  "rank": {
+    "window": {
+      "mode": "rolling_30d_or_available",
+      "lookback_days": 30,
+      "sample_count": 96,
+      "history_retained_count": 96,
+      "start_at": "2026-06-01T14:52:45+00:00",
+      "end_at": "2026-06-03T14:52:45+00:00",
+      "window_days": 2.0
+    },
+    "metrics": {
+      "gex_board.total_net_gex": {
+        "value": -67000000.0,
+        "percentile": 0.22,
+        "rank_pct": 22.0,
+        "sample_count": 96,
+        "quality": "warming_up",
+        "abs_percentile": 0.81,
+        "abs_rank_pct": 81.0
+      },
+      "gex_board.dvol": {
+        "value": 42.9,
+        "percentile": 0.58,
+        "rank_pct": 58.0,
+        "sample_count": 96,
+        "quality": "warming_up"
+      },
+      "volatility.iv_rv_ratio": {
+        "value": 1.26,
+        "percentile": 0.74,
+        "rank_pct": 74.0,
+        "sample_count": 96,
+        "quality": "warming_up"
+      },
+      "volatility.pcr": {
+        "value": 0.93,
+        "percentile": 0.43,
+        "rank_pct": 43.0,
+        "sample_count": 96,
+        "quality": "warming_up"
+      },
+      "flow.call_share_pct": {
+        "value": 35.0,
+        "percentile": 0.31,
+        "rank_pct": 31.0,
+        "sample_count": 96,
+        "quality": "warming_up"
+      },
+      "flow.put_call_ratio": {
+        "value": 1.88,
+        "percentile": 0.86,
+        "rank_pct": 86.0,
+        "sample_count": 96,
+        "quality": "warming_up"
+      }
+    }
+  },
   "sections": {
     "gex_board": {
       "fetched_at": "2026-06-03T14:52:00+00:00",

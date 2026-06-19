@@ -50,6 +50,13 @@ def main():
     assert_true("sources" in record["quality"], "quality sources")
     assert_true(isinstance(record["quality"]["sources"], dict), "quality sources map")
     assert_true("price" in record["quality"]["sources"], "price source status")
+    for name, source in record["quality"]["sources"].items():
+        assert_true(source.get("source_ref"), name + " source ref")
+        if source.get("status") == "OK":
+            assert_true(source.get("observed_at"),
+                        name + " OK source observed_at")
+            assert_true(source.get("age_ms") is not None,
+                        name + " OK source age_ms")
     assert_true(record["decision"]["confidence_semantics"]
                 == "EVIDENCE_QUALITY_NOT_WIN_RATE", "confidence semantics")
     assert_true("directional_bias" in record["decision"], "directional bias")

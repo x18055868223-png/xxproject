@@ -68,6 +68,31 @@ def test_hedge_target_linear_vs_inverse():
     assert H.hedge_target_contracts(0.0, 0.3, 0.5, 73000, 1, 0.001, linear=True) == 0.0
 
 
+def test_structure_net_delta():
+    # 同期 call 垂直：短腿 0.30 − 保护腿 0.15 = 0.15（保护腿抵消一半敞口）
+    assert abs(H.structure_net_delta(0.30, 0.15) - 0.15) < 1e-12
+    # put 垂直：−0.30 − (−0.15) = −0.15
+    assert abs(H.structure_net_delta(-0.30, -0.15) - (-0.15)) < 1e-12
+    # 保护腿 delta 缺失 → 退化为短腿 delta（保守过对冲）
+    assert H.structure_net_delta(0.30, None) == 0.30
+    # 短腿缺失 → None
+    assert H.structure_net_delta(None, 0.15) is None
+
+
+def test_hedge_direction_consistent():
+    # SHORT_CALL：净 delta>0 → position delta<0 → 应 buy（一致）
+    assert H.hedge_direction_consistent("CALL", 0.15) is True
+    # SHORT_PUT：净 delta<0 → position delta>0 → 应 sell（一致）
+    assert H.hedge_direction_consistent("PUT", -0.15) is True
+    # 反向结构（保护腿过抵消使净 delta 与方向相悖）→ 不一致
+    assert H.hedge_direction_consistent("CALL", -0.04) is False
+    assert H.hedge_direction_consistent("PUT", 0.04) is False
+    # 数据缺失 / 净≈0 / 无方向 → True（不阻断）
+    assert H.hedge_direction_consistent("CALL", None) is True
+    assert H.hedge_direction_consistent("CALL", 0.0) is True
+    assert H.hedge_direction_consistent("X", 0.15) is True
+
+
 def test_settlement_guard():
     s = H.settlement_guard(0.1, near_expiry=False, settled=True, perp_qty=50.0)
     assert s["target"] == 0.0 and s["orphan"] is True

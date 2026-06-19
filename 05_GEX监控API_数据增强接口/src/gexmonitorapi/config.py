@@ -26,8 +26,16 @@ class Settings(BaseSettings):
         default=Path(".cache/gexmonitorapi/cache.json"),
         validation_alias=AliasChoices("CACHE_FILE", "GEXMONITOR_CACHE_FILE"),
     )
+    history_file: Path = Field(
+        default=Path(".cache/gexmonitorapi/metrics_history.jsonl"),
+        validation_alias=AliasChoices("HISTORY_FILE", "GEXMONITOR_HISTORY_FILE"),
+    )
+    rank_lookback_days: int = Field(
+        default=30,
+        validation_alias=AliasChoices("RANK_LOOKBACK_DAYS", "GEXMONITOR_RANK_LOOKBACK_DAYS"),
+    )
     user_agent: str = Field(
-        default="gexmonitorapi/0.1 (+https://gexmonitor.com public page metric monitor)",
+        default="gexmonitorapi/0.2 (+https://gexmonitor.com public page metric monitor)",
         validation_alias=AliasChoices("USER_AGENT", "GEXMONITOR_USER_AGENT"),
     )
     enable_background_refresh: bool = Field(
@@ -66,4 +74,3 @@ class Settings(BaseSettings):
         validate_by_name=True,
         validate_by_alias=True,
     )
-

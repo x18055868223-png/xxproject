@@ -30,7 +30,8 @@ from position import (build_vertical_entry_snapshot, reference_profit_capture_ra
 from authorization import (authorize_from_code, is_authorized, revoke, auth_code,
                           POLICY_TAKE_PROFIT, POLICY_RISK_EXIT)
 from hedge import (hedge_target_contracts, hedge_order_action, hedge_orphan,
-                  hedge_side, hedge_venue_config, HEDGE_INSTRUMENT)
+                  hedge_side, hedge_venue_config, HEDGE_INSTRUMENT,
+                  structure_net_delta, hedge_direction_consistent)
 from binance_io import bnc_get_position_btc
 from deribit_io import *
 from leg_selection import *
@@ -40,7 +41,8 @@ from plans import *
 from ledger import *
 from execution import *
 from display import *
-from hedge_risk import build_entry_risk_anchor
+from hedge_risk import (build_entry_risk_anchor, evaluate_position_risk,
+                       STATE_EXIT_PREFERRED, STATE_HEDGE_READY)
 from vrp_gate import apply_vrp_gate
 from risk_controls import (evaluate_portfolio_budget, evaluate_projected_budget,
                           unified_action_arbiter)
@@ -477,7 +479,8 @@ def _handle_exit_authorize(code, now_ms, policy):
         return "no_position_to_authorize"
     kw = {}
     if policy == POLICY_RISK_EXIT:
-        kw = {"max_exit_spend": RISK_EXIT_MAX_SPEND, "allowed_order_types": ["post_only"]}
+        # 风险退出：可越价限价(marketable)退出，成本硬封在 max_exit_spend(=RISK_EXIT_MAX_SPEND)
+        kw = {"max_exit_spend": RISK_EXIT_MAX_SPEND, "allowed_order_types": ["limit"]}
     auth = authorize_from_code(code, pos_id, policy, now_ms, **kw)
     if not auth:
         return "auth_code_invalid"
@@ -516,6 +519,32 @@ _POSITION_KEY = "spm_entry_snapshot_v1"      # 冻结的 VerticalEntrySnapshot
 def _current_portfolio():
     """当前组合风险载荷（E3：无并发持仓时为空；E4 接入真实多仓汇总）。"""
     return {"open_positions": 0, "short_gamma": 0.0, "short_vega": 0.0, "margin_used": 0.0}
+
+
+_KNOWN_ORDER_LABELS = ("entry", "exit", "short", "prot", "hedge", "recover", "risk_exit", "unwind")
+
+
+def _label_known(label):
+    s = str(label or "")
+    return bool(s) and any(s.startswith(p) for p in _KNOWN_ORDER_LABELS)
+
+
+def _no_unknown_orders(currency, instruments):
+    """交易所活动订单中**没有**落在我方合约、且非我方 label 的未知挂单（防双开/与本策略冲突）。
+    任一未知挂单 / 查询失败 → False（fail-closed：预提交不过，不真实开仓）。"""
+    insts = set(i for i in instruments if i)
+    if not insts:
+        return False
+    try:
+        orders = dbt_get_open_orders(currency)
+    except Exception:
+        return False
+    if orders is None:
+        return False
+    for o in orders:
+        if o.get("instrument_name") in insts and not _label_known(o.get("label")):
+            return False
+    return True
 
 
 def _build_precommit_live(locked, spot, verdict):
@@ -559,10 +588,37 @@ def _build_precommit_live(locked, spot, verdict):
         "net_credit_after_costs": net_credit,
         "projected_budget_decision": budget.get("decision"),
         "ledger_reconciled": reconciled,
-        "no_unknown_orders": True,               # 真实活动订单查询 E4 接入
+        "no_unknown_orders": _no_unknown_orders(SETTLEMENT_CURRENCY, [short_i, long_i]),  # C3：真实活动订单查询
         "spread_ok": spread_ok,
         "_budget": budget,
     }
+
+
+def _side_to_direction_bias(side):
+    """持仓 side（'CALL'/'PUT' 或已是 'SHORT_*'）→ hedge_risk 方向偏置（'SHORT_CALL'/'SHORT_PUT'）。"""
+    s = str(side or "").upper()
+    if s in ("CALL", "SHORT_CALL"):
+        return "SHORT_CALL"
+    if s in ("PUT", "SHORT_PUT"):
+        return "SHORT_PUT"
+    return s
+
+
+def _dte_hours_to(expiry_ts, now_ms):
+    """到期剩余小时（毫秒时间戳 → 小时）；无到期 → None。"""
+    if not expiry_ts:
+        return None
+    return (expiry_ts - now_ms) / 3600000.0
+
+
+def _build_entry_risk_anchor(locked, spot, now_ms):
+    """入场冻结风险锚：短腿当前 greeks + 入场行情 → 触界概率基线（供持仓后风险评估）。"""
+    sq = exec_quote((locked or {}).get("short_instrument")) or {}
+    return build_entry_risk_anchor(
+        _side_to_direction_bias((locked or {}).get("side")),
+        spot, _dte_hours_to((locked or {}).get("short_expiry"), now_ms),
+        sq.get("delta"), sq.get("gamma"), sq.get("mark_iv"),
+        (locked or {}).get("breakeven"), SIGNAL_STATE, "UNKNOWN")
 
 
 def _attempt_commit(locked, spot, verdict, now_ms):
@@ -609,9 +665,11 @@ def _attempt_commit(locked, spot, verdict, now_ms):
         avg_short = (prog["short_credit"] / prog["short_done"]) if prog["short_done"] > 0 else step.get("short_price")
         entry_fees = (acct_option_fee_ccy(avg_short or 0.0, prog["short_done"])
                       + acct_option_fee_ccy(avg_prot or 0.0, prog["prot_done"]))
+        anchor = _build_entry_risk_anchor(locked, spot, now_ms)   # 冻结入场风险锚
         snap = build_vertical_entry_snapshot(
             locked, {"filled": prog["short_done"], "avg_price": avg_short},
-            {"filled": prog["prot_done"], "avg_price": avg_prot}, entry_fees, now_ms)
+            {"filled": prog["prot_done"], "avg_price": avg_prot}, entry_fees, now_ms,
+            entry_risk_anchor=anchor)
         _G(_POSITION_KEY, snap)
         _G(_LOCKED_KEY, None)
         ledger_set_state(S_SHORT_ACTIVE_PROTECTED)
@@ -628,24 +686,52 @@ def _attempt_commit(locked, spot, verdict, now_ms):
 
 
 _RECOVERY_KEY = "spm_recovery_verdict_v1"
-_EXIT_AUTH_KEY = "spm_exit_auth_v1"          # E5 软授权（此处先占位读取）
+_EXIT_AUTH_KEY = "spm_exit_auth_v1"          # E5 软授权
+_CLOSED_HISTORY_KEY = "spm_closed_history_v1"
 
 
 def _recovery_verdict():
     return _G(_RECOVERY_KEY) or {"state": "OK", "allow_new_open": True}
 
 
+def _archive_closed(snap, now_ms):
+    """P0②：两腿 + 对冲 perp 均归零 → 归档 closed_position_history、清快照/授权、置 CLOSED。"""
+    hist = list(_G(_CLOSED_HISTORY_KEY) or [])
+    rec = dict(snap or {})
+    rec["closed_ts"] = now_ms
+    hist.append(rec)
+    _G(_CLOSED_HISTORY_KEY, hist[-50:])
+    _G(_POSITION_KEY, None)
+    _G(_EXIT_AUTH_KEY, None)
+    ledger_set_state(S_CLOSED)
+
+
 def startup_recovery_check(currency):
-    """启动恢复：读交易所真实期权/永续持仓 + 账本短腿 → 裁决并落 _G（恢复完成前禁开新仓）。"""
-    opt = dbt_get_positions(currency, "option") or []
+    """启动恢复（P0①：以 _POSITION_KEY 入场快照为持仓真相）：读交易所真实期权/永续持仓 +
+    快照剩余短/保护腿（无快照但开仓活动在途 → 用活动进度作期望，按成交重校验）+ 真实活动订单
+    → 裁决并落 _G（恢复完成前禁开新仓）。"""
+    try:
+        opt = dbt_get_positions(currency, "option") or []
+    except Exception:
+        opt = []
     try:
         perp = dbt_get_positions(currency, "future") or []
     except Exception:
         perp = []
     perp_qty = sum(abs(p.get("size") or 0.0) for p in perp)
-    led = ledger_load()
-    short_qty = (led.get("short") or {}).get("amount") or 0.0
-    verdict = evaluate_startup_recovery(opt, perp_qty, short_qty, active_orders=[])
+    snap = _G(_POSITION_KEY)
+    short_qty = (snap or {}).get("remaining_short_qty") or 0.0
+    long_qty = (snap or {}).get("long_remaining_qty") or 0.0
+    if not snap:                                   # C3②：在途开仓活动按其进度作期望（与交易所成交重校验）
+        prog = (_G(_LOCKED_KEY) or {}).get("entry") or {}
+        short_qty = prog.get("short_done") or 0.0
+        long_qty = prog.get("prot_done") or 0.0
+    try:
+        orders = dbt_get_open_orders(currency) or []   # 未知(无 label)活动订单 → 恢复阻塞（见 evaluate）
+    except Exception:
+        orders = []
+    verdict = evaluate_startup_recovery(opt, perp_qty, short_qty, active_orders=orders,
+                                        expected_long_qty=long_qty)
     _G(_RECOVERY_KEY, verdict)
     return verdict
 
@@ -675,6 +761,25 @@ def _evaluate_take_profit(snap):
             "remaining_budget": rem_budget, "price_cap": cap, "quote_ok": quote_ok}
 
 
+def _risk_exit_budget_cap(snap, auth):
+    """风险退出预算/价格上限（F1）：用**风险退出授权**的 max_exit_spend(=RISK_EXIT_MAX_SPEND) 反推，
+    **独立于止盈 20% 缓冲**；并判定能否越价吃单(best_ask ≤ cap)。
+    无风险退出授权 / 无预算 / 无盘口 → (None, 0.0, False)（不可下单 → 仲裁回退对冲）。"""
+    max_spend = (auth or {}).get("max_exit_spend")
+    rem_qty = (snap or {}).get("remaining_short_qty") or 0.0
+    if not isinstance(max_spend, (int, float)) or max_spend <= 0 or rem_qty <= 0:
+        return None, 0.0, False
+    q = exec_quote((snap or {}).get("short_instrument")) or {}
+    realized = (snap or {}).get("realized_exit_spend") or 0.0
+    fee_reserve = acct_option_fee_ccy(q.get("mark") or 0.0, rem_qty)
+    rem_budget = short_buyback_budget(max_spend, realized, fee_reserve)
+    tick = q.get("tick") or 0.0
+    cap = short_buyback_price_cap(rem_budget, fee_reserve, rem_qty, tick) if rem_budget else 0.0
+    ask = q.get("best_ask")
+    within = bool(ask is not None and cap > 0 and ask <= cap + 1e-12)
+    return rem_budget, cap, within
+
+
 def _apply_exit_fill(snap, step, now_ms):
     """把一次短腿买回成交计入入场快照：减剩余短腿、加已用退出支出；归零则转 SHORT_FLAT_LONG_RESIDUAL。"""
     filled = step.get("filled") or 0.0
@@ -694,7 +799,11 @@ def _evaluate_hedge(snap):
     rem_qty = (snap or {}).get("remaining_short_qty") or 0.0
     vcfg = hedge_venue_config(HEDGE_VENUE, HEDGE_BINANCE_INSTRUMENT, HEDGE_BINANCE_MAKER_ONLY)
     state = "SETTLED" if rem_qty <= 0 else "OPEN"
-    delta = (exec_quote((snap or {}).get("short_instrument")) or {}).get("delta") if snap else None
+    # P1：对冲数量按**结构净 delta**(短腿−保护腿)，无保护腿/缺报价时退化为短腿 delta（保守）
+    si, li = (snap or {}).get("short_instrument"), (snap or {}).get("long_instrument")
+    short_delta = (exec_quote(si) or {}).get("delta") if si else None
+    prot_delta = (exec_quote(li) or {}).get("delta") if li else None
+    net_delta = structure_net_delta(short_delta, prot_delta)
     if vcfg["venue"] == "BINANCE":
         perp_qty = bnc_get_position_btc(vcfg["instrument"])
         contract_size, min_trade = 1.0, HEDGE_BINANCE_MIN_TRADE
@@ -707,66 +816,160 @@ def _evaluate_hedge(snap):
         meta = dbt_get_instrument(vcfg["instrument"]) or {}
         contract_size = meta.get("contract_size") or HEDGE_CONTRACT_SIZE_FALLBACK
         min_trade = meta.get("min_trade_amount") or HEDGE_MIN_TRADE_FALLBACK
-    target = hedge_target_contracts(rem_qty, delta, HEDGE_REDUCTION_RATIO, _spot_price(),
+    target = hedge_target_contracts(rem_qty, net_delta, HEDGE_REDUCTION_RATIO, _spot_price(),
                                     contract_size, min_trade, state, linear=vcfg["linear"])
-    return {"perp_qty": perp_qty, "target": target,
-            "action": hedge_order_action(perp_qty, target, min_trade),
+    action = hedge_order_action(perp_qty, target, min_trade)
+    # P1：方向符号核对——反向时**禁新增**对冲敞口（仍允许 reduce/unwind 清理）
+    consistent = hedge_direction_consistent((snap or {}).get("side"), net_delta)
+    if not consistent and action["action"] in ("HEDGE_OPEN", "HEDGE_INCREASE"):
+        action = {"action": "HEDGE_HOLD", "reduce_only": False, "delta_contracts": 0.0,
+                  "blocked": "DIRECTION_INCONSISTENT"}
+    return {"perp_qty": perp_qty, "target": target, "action": action,
             "orphan": hedge_orphan(rem_qty, perp_qty),
             "side": hedge_side((snap or {}).get("side")),
+            "net_delta": net_delta, "direction_consistent": consistent,
             "venue": vcfg["venue"], "instrument": vcfg["instrument"], "venue_cfg": vcfg}
 
 
+def _evaluate_position_risk_now(snap, now_ms, existing_hedge=False):
+    """持仓后风险评估（接 hedge_risk.evaluate_position_risk）：入场风险锚 + 当前短腿行情 →
+    PositionRiskPackage（触界概率/漂移/尾部加速/持续性 → tail_risk_state）。
+    无快照 / 无入场锚 → None（不驱动主动退出/对冲，保守留给止盈资格 + 孤儿）。
+    注：OFFLINE 无总线 edb/ggr → persistence 恒 LOW，HEDGE_READY 暂不可达（仅 EXIT_PREFERRED）；
+    edb/ggr 接入(总线模式)后 HEDGE_READY 自然生效。"""
+    anchor = (snap or {}).get("entry_risk_anchor")
+    if not snap or not anchor:
+        return None
+    sq = exec_quote(snap.get("short_instrument")) or {}
+    # F3：短腿盘口缺 delta 且缺 IV → 无法估触界概率 → 显式数据缺口（不静默判 NORMAL，面板红标）
+    if sq.get("delta") is None and sq.get("mark_iv") is None:
+        return {"tail_risk_state": None, "market_data_gap": True,
+                "current_risk": {}, "reason_codes": ["RISK_MARKET_DATA_GAP"]}
+    dte_h = _dte_hours_to(snap.get("short_expiry_ts"), now_ms)
+    if dte_h is None:
+        dte_h = anchor.get("entry_dte_hours")
+    return evaluate_position_risk(
+        position_id=snap.get("position_id"),
+        direction_bias=_side_to_direction_bias(snap.get("side")),
+        entry_risk_anchor=anchor, current_price=_spot_price(),
+        dte_hours=dte_h, short_delta=sq.get("delta"), short_gamma=sq.get("gamma"),
+        iv=sq.get("mark_iv"), loss_boundary=anchor.get("entry_loss_boundary"),
+        existing_hedge=existing_hedge)
+
+
 def manage_cycle(now_ms):
-    """持仓管理一轮（设计稿 §9.1 的 10 域）：对账 + 止盈资格 + 退出活动(受授权+预算+门控) + 四输出仲裁。
-    退出真实买回受 ALLOW_EXIT_TRADING 门控，默认空跑预览；对冲真实执行 E7 接入。"""
+    """持仓管理一轮（§9.1）：对账(快照为真相) + 止盈资格；退出/对冲由四输出仲裁**单动作收口**
+    （每轮仅执行 executable 的风险动作）；短腿归零后回收保护腿(清理)；两腿+对冲 perp 归零→归档 CLOSED。
+    **退出活动期禁新增对冲敞口**（只许 reduce/unwind）。退出/对冲/回收真实下单均受各自门控，默认空跑。"""
     snap = _G(_POSITION_KEY)
     pos_id = (snap or {}).get("position_id")
-    rec = ledger_reconcile(SETTLEMENT_CURRENCY)
     recovery = _recovery_verdict()
     auth = _G(_EXIT_AUTH_KEY)
     authorized = is_authorized(auth, pos_id, now_ms)
     tp_code = auth_code(pos_id, POLICY_TAKE_PROFIT) if pos_id else None
+    risk_code = auth_code(pos_id, POLICY_RISK_EXIT) if pos_id else None
+    try:
+        opt_pos = dbt_get_positions(SETTLEMENT_CURRENCY, "option") or []
+    except Exception:
+        opt_pos = []
+    rec = position_reconcile(snap, opt_pos)        # P0①：快照 vs 交易所（surfaced；不阻断风险收口）
 
     tp = _evaluate_take_profit(snap)
+    rem_short = tp["remaining_short_qty"]
+    long_rem = (snap or {}).get("long_remaining_qty")
+    if long_rem is None:
+        long_rem = (snap or {}).get("long_fill_amount") or 0.0
+
+    # 风险严重度（接 hedge_risk）：先算对冲(取 perp 持仓判 existing_hedge) → 风险包 → 仲裁输入
+    hedge = _evaluate_hedge(snap)
+    existing_hedge = abs(hedge.get("perp_qty") or 0.0) > 1e-9
+    risk = _evaluate_position_risk_now(snap, now_ms, existing_hedge)
+    risk_state = (risk or {}).get("tail_risk_state")
+    exit_preferred = risk_state == STATE_EXIT_PREFERRED      # 风险严重且期权退出可接受
+    hedge_ready = risk_state == STATE_HEDGE_READY            # 风险严重持续且对冲摩擦更优
+
+    # 退出活动触发 = 止盈资格 ∨ 风险主动退出。
+    # F1：风险退出用**独立预算/价格上限**(风险退出授权 max_exit_spend)、且可越价吃单(within=ask≤cap)；
+    #     止盈退出沿用 80% 缓冲、被动 maker(patient，恒 within)。
+    risk_exit = exit_preferred                               # 风险驱动退出（区别于止盈资格退出）
+    if risk_exit:
+        exit_budget, exit_cap, exit_within = _risk_exit_budget_cap(snap, auth)
+    else:
+        exit_budget, exit_cap, exit_within = tp["remaining_budget"], tp["price_cap"], True
+    exit_trigger = bool(tp["qualified"] or exit_preferred)
+    exit_decision = exit_campaign_decision(authorized, exit_trigger, rem_short,
+                                           exit_budget, tp["quote_ok"], exit_cap)
+    exit_state = exit_decision["state"]
     exit_gate = gate_decision(ACTION_EXIT, ALLOW_ENTRY_TRADING, ALLOW_EXIT_TRADING,
                               ALLOW_HEDGE_TRADING, _effective_kill(), EMERGENCY_REDUCE_ONLY)["allowed"]
-    decision = exit_campaign_decision(authorized, tp["qualified"], tp["remaining_short_qty"],
-                                      tp["remaining_budget"], tp["quote_ok"], tp["price_cap"])
-    exit_state = decision["state"]
-    if decision["can_order"] and exit_gate and snap:        # 受控真实买回（默认门关→不进入）
-        step = exec_exit_buyback_step(snap.get("short_instrument"), tp["remaining_short_qty"],
-                                      tp["price_cap"], allow_live=True, label="exit_short")
-        if not step.get("dry") and (step.get("filled") or 0) > 0:
-            _apply_exit_fill(snap, step, now_ms)
-            snap = _G(_POSITION_KEY)
+    exit_executable = bool(exit_decision["can_order"] and exit_gate and exit_within)
+    exit_active = authorized and exit_state in (EXIT_WORKING_SHORT, EXIT_PAUSED_BUDGET,
+                                                EXIT_PAUSED_DATA, EXIT_WORKING_LONG)
 
-    hedge = _evaluate_hedge(snap)
-    hedge_exec = gate_decision(ACTION_HEDGE_OPEN, ALLOW_ENTRY_TRADING, ALLOW_EXIT_TRADING,
-                               ALLOW_HEDGE_TRADING, _effective_kill(),
-                               EMERGENCY_REDUCE_ONLY)["allowed"]
-    # 受控对冲下单（默认门关→dry）：reduce/unwind 强制 reduce_only 且 kill 下仍允许；open/increase 受 emergency 阻断
-    h_act = hedge["action"]["action"]
-    if h_act != "HEDGE_HOLD":
-        h_gate_act = ACTION_HEDGE_REDUCE if hedge["action"]["reduce_only"] else ACTION_HEDGE_OPEN
-        if gate_decision(h_gate_act, ALLOW_ENTRY_TRADING, ALLOW_EXIT_TRADING, ALLOW_HEDGE_TRADING,
-                         _effective_kill(), EMERGENCY_REDUCE_ONLY)["allowed"]:
-            exec_hedge_step(hedge["venue_cfg"], hedge["side"], hedge["action"]["delta_contracts"],
-                            hedge["action"]["reduce_only"], allow_live=True, label="hedge")
+    # P0③ 退出活动期禁新增对冲——但 F1：**风险退出无法满足**(预算不足/越价不可成交)时放行对冲回退
+    risk_exit_unsatisfiable = risk_exit and not exit_executable
+    if exit_active and not risk_exit_unsatisfiable \
+            and hedge["action"]["action"] in ("HEDGE_OPEN", "HEDGE_INCREASE"):
+        hedge["action"] = {"action": "HEDGE_HOLD", "reduce_only": False, "delta_contracts": 0.0}
+    h_reduce = hedge["action"]["reduce_only"]
+    h_gate_act = ACTION_HEDGE_REDUCE if h_reduce else ACTION_HEDGE_OPEN
+    h_gate_ok = gate_decision(h_gate_act, ALLOW_ENTRY_TRADING, ALLOW_EXIT_TRADING,
+                              ALLOW_HEDGE_TRADING, _effective_kill(), EMERGENCY_REDUCE_ONLY)["allowed"]
+    # C2：孤儿对冲(裸 perp：short=0 而 perp≠0)清理为纯降险 reduce_only，且 perp 已存在=场所已配置 →
+    #     不受 allow_hedge 阻断（缺省空跑下也能清理裸敞口）。
+    orphan_cleanup = bool(hedge["orphan"] and h_reduce)
+    hedge_exec = (hedge["action"]["action"] != "HEDGE_HOLD" and (h_gate_ok or orphan_cleanup))
     pause = ("PAUSED_BY_BUDGET" if exit_state == EXIT_PAUSED_BUDGET else
              ("PAUSED_BY_DATA" if exit_state == EXIT_PAUSED_DATA else None))
     arb = unified_action_arbiter({
         "recovery_blocked": recovery.get("state") == "RECOVERY_BLOCKED",
         "orphan_hedge": (recovery.get("state") == "ORPHAN_HEDGE_EMERGENCY") or hedge["orphan"],
-        "in_flight_order": False, "exit_preferred": False, "hedge_ready": False,
+        "in_flight_order": False,
+        "exit_preferred": exit_preferred, "hedge_ready": hedge_ready,   # 风险严重度→仲裁（接回 hedge_risk）
         "take_profit_ready": tp["qualified"],
         "exit_authorized": authorized,
-        "exit_executable": bool(decision["can_order"] and exit_gate),
-        "exit_pause_reason": pause,
-        "hedge_executable": hedge_exec,
+        "exit_executable": exit_executable,
+        "exit_pause_reason": pause, "hedge_executable": bool(hedge_exec),
     })
-    return {"arb": arb, "entry_snapshot": snap, "reconcile": rec,
+    executable = arb["executable_action"]
+
+    # P0③ 单动作收口：仅执行 executable 指定的风险动作（短腿退出 / 对冲）
+    hedge_step = None
+    if executable in ("TAKE_PROFIT_READY", "EXIT_PREFERRED") and rem_short > 1e-12 and exit_executable:
+        step = exec_exit_buyback_step(snap.get("short_instrument"), rem_short, exit_cap,
+                                      allow_live=True, allow_taker=(executable == "EXIT_PREFERRED"),
+                                      label=("risk_exit" if executable == "EXIT_PREFERRED" else "exit_short"))
+        if not step.get("dry") and (step.get("filled") or 0) > 0:
+            _apply_exit_fill(snap, step, now_ms)
+            snap = _G(_POSITION_KEY)
+            rem_short = (snap or {}).get("remaining_short_qty") or 0.0
+    elif executable in ("HEDGE_READY", "ORPHAN_HEDGE_EMERGENCY") and hedge_exec:
+        hedge_step = exec_hedge_step(hedge["venue_cfg"], hedge["side"], hedge["action"]["delta_contracts"],
+                                     h_reduce, allow_live=True, label="hedge")
+
+    # P0② 保护腿回收（短腿归零后的清理；非风险动作，不与上面竞争）
+    long_state = None
+    if rem_short <= 1e-12 and long_rem > 1e-12:
+        li = (snap or {}).get("long_instrument")
+        pb = (exec_quote(li) or {}).get("best_bid") if li else None
+        prec = protection_recovery_decision(True, long_rem, pb)
+        long_state = prec["state"]
+        if prec["can_sell"] and exit_gate and li:
+            r = exec_protection_recovery_step(li, long_rem, allow_live=True)
+            if (r.get("sold") or 0) > 0 and snap:
+                snap["long_remaining_qty"] = max(0.0, long_rem - r["sold"])
+                _G(_POSITION_KEY, snap)
+                long_rem = snap["long_remaining_qty"]
+
+    # P0② CLOSED 归档：两腿 + 对冲 perp 均归零（对冲未归零不 CLOSED）
+    if snap and rem_short <= 1e-12 and long_rem <= 1e-12 and abs(hedge.get("perp_qty") or 0.0) <= 1e-9:
+        _archive_closed(snap, now_ms)
+
+    return {"arb": arb, "entry_snapshot": snap, "reconcile": rec, "executable": executable,
             "auth": auth, "authorized": authorized, "tp_auth_code": tp_code,
-            "exit_campaign_state": exit_state, "tp_ratio": tp["ratio"], "hedge": hedge}
+            "risk_exit_auth_code": risk_code, "risk_exit": risk_exit, "exit_executable": exit_executable,
+            "exit_campaign_state": (long_state or exit_state), "tp_ratio": tp["ratio"], "hedge": hedge,
+            "hedge_step": hedge_step, "risk_state": risk_state, "risk": risk}
 
 
 def run_cycle(now_ms=None):
@@ -844,8 +1047,15 @@ def run_cycle(now_ms=None):
     if manage_result:
         ctx["action_arb"] = manage_result.get("arb")
         ctx["entry_snapshot"] = manage_result.get("entry_snapshot")
+        ctx["reconciled"] = (manage_result.get("reconcile") or {}).get("reconciled")
+        ctx["risk_state"] = manage_result.get("risk_state")
+        ctx["risk_pkg"] = manage_result.get("risk")                       # F2：风险包→控制台「风险」行
+        ctx["risk_exit_auth_code"] = manage_result.get("risk_exit_auth_code")
         if manage_result.get("authorized"):
             ctx["exit_auth_state"] = "已授权(AUTHORIZED)"
+        elif manage_result.get("risk_state") == STATE_EXIT_PREFERRED:     # F2：风险严重→显示风险退出码
+            ctx["exit_auth_state"] = "未授权 ｜ 风险退出码 %s（风险严重，建议风险退出授权）｜ 止盈码 %s" % (
+                manage_result.get("risk_exit_auth_code") or "—", manage_result.get("tp_auth_code") or "—")
         else:
             ctx["exit_auth_state"] = "未授权 ｜ 授权止盈码 %s" % (manage_result.get("tp_auth_code") or "—")
         ctx["exit_campaign_state"] = manage_result.get("exit_campaign_state")
@@ -853,9 +1063,11 @@ def run_cycle(now_ms=None):
         ctx["take_profit_ratio"] = ("%.1f%%" % (_r * 100)) if isinstance(_r, (int, float)) else "数据缺口"
         _h = manage_result.get("hedge")
         if _h:
-            ctx["hedge_state"] = "[%s] %s 目标%.4g 当前%.4g %s%s" % (
+            _hs = manage_result.get("hedge_step")
+            ctx["hedge_state"] = "[%s] %s 目标%.4g 当前%.4g %s%s%s" % (
                 _h.get("venue") or "—", _h.get("side") or "—", _h.get("target") or 0.0,
-                _h.get("perp_qty") or 0.0, _h["action"]["action"], "·孤儿" if _h.get("orphan") else "")
+                _h.get("perp_qty") or 0.0, _h["action"]["action"], "·孤儿" if _h.get("orphan") else "",
+                ("·已落单 %s" % _hs.get("reason")) if (_hs and not _hs.get("dry")) else "")
     if recovery.get("state") != "OK":
         ctx["recovery_state"] = recovery.get("state")
     if locked and not (commit_result and commit_result.get("committed")):

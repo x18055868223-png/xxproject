@@ -1,6 +1,10 @@
 # Python/cache
 __pycache__/
 *.py[cod]
+.cache/
+.pytest_cache/
+.venv/
+venv/
 
 # Local build/package output
 dist/
@@ -8,10 +12,16 @@ dist/
 # Runtime logs and generated archives
 demo/logs/
 *.jsonl
+*.log
 
 # Local secrets/config
 .env
 .env.*
+*.env
+!.env.example
+!**/.env.example
+llm.env
+deploy/signal_audit/*.env
 *.pem
 *.key
 *.crt
@@ -22,4 +32,3 @@ id_rsa*
 Thumbs.db
 .vscode/
 .idea/
-

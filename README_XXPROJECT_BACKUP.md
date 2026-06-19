@@ -1,30 +1,46 @@
 # 中性回路整合工程备份标记
 
-备份版本：`NRD-XXPROJECT-BACKUP-2026.06.18-r1`
+备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2`
 
-本文件用于标记推送到 `x18055868223-png/xxproject` 的整合工程备份快照。当前备份目标不是替代各模块开发仓库，而是保留一个可读、可审计、可继续整理的工程级快照。
+本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
-## 当前模块
+## 当前运行链路
 
 | 模块 | 当前定位 | 最新入口 |
 | --- | --- | --- |
-| 信号层 | FMZ 只读观察信号层，输出 JSONL 审计卡和短推 | `demo/最新交付物/neutral_regulation_demo_fmz.py` |
-| 执行层 | Deribit 垂直价差执行链，默认全门控关闭 | `demo/最新交付物/spm_calendar_protected_short_v1.py` |
-| VRP 门 | 建仓前定价过滤器，只过滤不解交易门 | `03_VRP门_建仓前定价/交付物快照/` |
-| 对冲模块 | 持仓后尾部风险意图层，默认 dry intent | `04_对冲模块/交付物快照/` |
-| GEX API | `gexmonitorapi` 已迁移为数据增强接口模块 | `05_GEX监控API_数据增强接口/` |
-| 审计页面部署 | 静态审计页和 JSON materializer 部署资产 | `deploy/signal_audit/` |
+| FMZ 信号层本体 | 只读观察与信号生成；输出短推、状态栏、`signal_review.jsonl` 审计卡 | `demo/最新交付物/neutral_regulation_demo_fmz.py` |
+| GEX Monitor API | 策略服务器 `/v1/info` 增强端点；含 netGEX、IV/RV、P/C、flow 与 30 日滚动 rank | `05_GEX监控API_数据增强接口/` |
+| 审计前端 | 静态页面 + `signal_cards/index.json` + 单卡 JSON；展示 rank 与 LLM 复核 | `deploy/signal_audit/frontend/` |
+| LLM 复核旁路 | Gemini 复核脚本 + systemd timer；生成 `signal_llm_reviews.jsonl` sidecar，再由 materializer 合并 | `tools/gemini_signal_llm_review.py`、`deploy/signal_audit/` |
+| 执行层 | Deribit 垂直价差执行链；当前保留为未正式测试启用的全空跑交付物 | `demo/最新交付物/spm_calendar_protected_short_v1.py` |
+| 服务器自检 | 用于定位 FMZ JSONL、GEX API、审计页面、LLM sidecar、systemd timer 哪一层异常 | `tools/server_self_check_signal_stack.sh` |
 
-## 使用方式
+## 快速排障入口
 
-1. 先读 `00_总纲/中性回路工程总纲_v2026.06.18-r1.md`。
-2. 再读 `99_工程资产索引/README.md` 区分最新交付、历史失效、文档入口。
-3. 部署 FMZ 时取 `demo/最新交付物/`，不要从历史快照目录复制。
-4. 推送公开仓库前检查 token、日志、缓存和虚拟环境是否被排除。
+在策略服务器上，更新到本版本后可执行：
+
+```bash
+cd /opt/repos/xxproject
+bash tools/server_self_check_signal_stack.sh
+```
+
+默认是只读检查。需要主动触发 LLM 和 materializer oneshot 时再执行：
+
+```bash
+sudo bash tools/server_self_check_signal_stack.sh --run-oneshots
+```
+
+## 使用顺序
+
+1. 先读 `00_总纲/中性回路工程总纲_v2026.06.19-r2.md`。
+2. 再读 `99_工程资产索引/README.md` 区分当前运行资产、未启用资产和历史/失效资产。
+3. 部署 FMZ 时取 `demo/最新交付物/neutral_regulation_demo_fmz.py`，不要从历史快照目录复制。
+4. GEX API 以 `05_GEX监控API_数据增强接口/` 当前 rank 版本为准。
+5. 审计页面部署以 `deploy/signal_audit/install_or_update.sh` 为准。
 
 ## 维护规则
 
-- 新版本只更新 `demo/最新交付物/` 和对应审计/总纲记录。
-- 历史副本放入 `demo/副本快照/`，不要覆盖。
-- 文档更新优先改总纲和资产索引，再补模块 README。
-- 运行日志、`.env`、`.venv`、`.pytest_cache`、`__pycache__` 不进入备份仓库。
+- 真实 key、token、`.env`、服务器运行 JSONL、缓存和虚拟环境不进入本仓库。
+- FMZ 信号层只负责生成审计 JSONL 和短推；Gemini LLM 复核在服务器旁路层执行。
+- 执行层默认全空跑，除非经过单独实盘验证流程，不得把本仓库备份视为交易启用。
+- 每次服务器链路发生变化，都要同步更新 `tools/server_self_check_signal_stack.sh` 和 `99_工程资产索引/README.md`。

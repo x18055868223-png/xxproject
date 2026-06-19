@@ -143,6 +143,17 @@ def dbt_place_order(side, instrument_name, amount, price,
     return _call("GET", path, params, "place_order:" + side)
 
 
+def dbt_get_open_orders(currency, kind=None):
+    """当前未成交挂单（按币种；kind 可选 option/future）。
+    供预提交 no_unknown_orders 与启动恢复的「未知活动订单」检测。
+    **读失败返回 None**（区别于"确实无挂单"的 []），便于调用方对查询失败 fail-closed。"""
+    params = {"currency": currency}
+    if kind:
+        params["kind"] = kind
+    return _call("GET", "/private/get_open_orders_by_currency", params,
+                 "open_orders", _READ_RETRIES)
+
+
 def dbt_get_order_state(order_id):
     return _call("GET", "/private/get_order_state", {"order_id": order_id}, "order_state")
 
