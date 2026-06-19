@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Gemini LLM reviews for signal audit cards
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=180
+Persistent=true
+Unit=signal-audit-llm-review.service
+
+[Install]
+WantedBy=timers.target

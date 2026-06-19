@@ -8,6 +8,7 @@ Output layout:
 """
 
 import argparse
+from collections import deque
 import datetime as _dt
 import json
 import os
@@ -32,9 +33,10 @@ def materialize(source, output, max_cards=200, llm_reviews=None):
     _chmod_public_dir(output)
     _chmod_public_dir(cards_dir)
 
-    records, skipped = _read_jsonl(source)
+    tail_limit = _read_tail_limit(max_cards)
+    records, skipped = _read_jsonl(source, max_records=tail_limit)
     records = _dedupe_by_card_id(records)
-    review_map = _read_llm_reviews(llm_reviews)
+    review_map = _read_llm_reviews(llm_reviews, max_records=tail_limit)
     merged_review_count = 0
     if review_map:
         for record in records:
@@ -86,11 +88,20 @@ def materialize(source, output, max_cards=200, llm_reviews=None):
     }
 
 
-def _read_jsonl(source):
-    records = []
+def _read_tail_limit(max_cards):
+    if not max_cards or max_cards <= 0:
+        return None
+    return max(500, max_cards * 5)
+
+
+def _read_jsonl(source, max_records=None, require_identity=True):
+    if max_records and max_records > 0:
+        records = deque(maxlen=max_records)
+    else:
+        records = []
     skipped = 0
     if not source.exists():
-        return records, skipped
+        return [], skipped
     with source.open("r", encoding="utf-8-sig") as handle:
         for line in handle:
             text = line.strip()
@@ -101,11 +112,13 @@ def _read_jsonl(source):
             except json.JSONDecodeError:
                 skipped += 1
                 continue
-            if isinstance(value, dict) and _identity(value).get("card_id"):
+            if (isinstance(value, dict)
+                    and (not require_identity
+                         or _identity(value).get("card_id"))):
                 records.append(value)
             else:
                 skipped += 1
-    return records, skipped
+    return list(records), skipped
 
 
 def _dedupe_by_card_id(records):
@@ -115,28 +128,20 @@ def _dedupe_by_card_id(records):
     return list(by_id.values())
 
 
-def _read_llm_reviews(path):
+def _read_llm_reviews(path, max_records=None):
     if not path:
         return {}
     path = Path(path)
     if not path.exists():
         return {}
     reviews = {}
-    with path.open("r", encoding="utf-8-sig") as handle:
-        for line in handle:
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                value = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(value, dict):
-                continue
-            card_id = value.get("card_id") or _identity(value).get("card_id")
-            review = value.get("llm_review")
-            if card_id and isinstance(review, dict):
-                reviews[card_id] = review
+    records, _skipped = _read_jsonl(path, max_records=max_records,
+                                    require_identity=False)
+    for value in records:
+        card_id = value.get("card_id") or _identity(value).get("card_id")
+        review = value.get("llm_review")
+        if card_id and isinstance(review, dict):
+            reviews[card_id] = review
     return reviews
 
 

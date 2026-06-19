@@ -30,11 +30,15 @@ Copy-Item -LiteralPath (Join-Path $root.Path "tools\materialize_signal_cards.py"
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\gemini_signal_llm_review.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_or_update.sh") -Destination (Join-Path $packageRoot "deploy") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "run_signal_llm_review.sh") -Destination (Join-Path $packageRoot "deploy") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-llm.env.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "apache-bitnami-signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "nginx.signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "nginx.signal-audit-location.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-materialize.service") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-materialize.timer") -Destination (Join-Path $packageRoot "deploy") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-llm-review.service") -Destination (Join-Path $packageRoot "deploy") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-llm-review.timer") -Destination (Join-Path $packageRoot "deploy") -Force
 
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force

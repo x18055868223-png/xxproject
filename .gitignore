@@ -12,6 +12,9 @@ demo/logs/
 # Local secrets/config
 .env
 .env.*
+*.env
+llm.env
+deploy/signal_audit/*.env
 *.pem
 *.key
 *.crt
@@ -22,4 +25,3 @@ id_rsa*
 Thumbs.db
 .vscode/
 .idea/
-

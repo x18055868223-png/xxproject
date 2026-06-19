@@ -1,0 +1,22 @@
+[Unit]
+Description=Generate Gemini LLM reviews for signal audit cards
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=TOOLS_ROOT=/opt/signal-audit-tools
+Environment=JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
+Environment=LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
+Environment=GEMINI_MODEL=gemini-3.5-flash
+Environment=LLM_REVIEW_LIMIT=2
+Environment=LLM_REVIEW_TIMEOUT=60
+EnvironmentFile=-/etc/signal-audit/llm.env
+MemoryHigh=128M
+MemoryMax=256M
+CPUQuota=35%
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=210
+ExecStart=/opt/signal-audit-tools/run_signal_llm_review.sh
+ExecStartPost=/bin/systemctl start signal-audit-materialize.service
