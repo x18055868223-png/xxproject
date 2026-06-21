@@ -322,7 +322,11 @@ def test_frontend_renders_session_context_between_rank_and_llm_review():
         'gemini: "Gemini"',
         "输入包哈希",
         "信号时区置信度 / 前提耐久度",
-        "低转中缓冲带",
+        "本层结论",
+        "三年验证依据",
+        "结论红线",
+        "时区调整",
+        "三年实测Δ复合",
     ):
         assert_true(text in app, "LLM review should localize " + text)
     assert_true('statusBadge("Status"' not in app and 'statusBadge("Caution"' not in app,
