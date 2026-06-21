@@ -47,7 +47,7 @@ Local first-time Git setup:
 
 ```bash
 git init
-git add .gitignore .gitattributes tools/materialize_signal_cards.py deploy/signal_audit
+git add .gitignore .gitattributes tools/materialize_signal_cards.py tools/gemini_signal_llm_review.py tools/server_self_check_signal_stack.sh deploy/signal_audit
 git status --short
 git commit -m "Prepare signal audit git deployment"
 git branch -M main
@@ -251,9 +251,9 @@ Optional log rotation check:
 sudo logrotate -d /etc/logrotate.d/nginx
 ```
 
-## LLM API Key
+## LLM API Keys
 
-Configure the Gemini key only on the server:
+Configure Gemini keys only on the server:
 
 ```bash
 sudo mkdir -p /etc/signal-audit
@@ -265,13 +265,24 @@ sudoedit /etc/signal-audit/llm.env
 Set:
 
 ```text
-GEMINI_API_KEY=<your Gemini API key>
+GEMINI_3_5_FLASH_API_KEY=<low-cost Gemini 3.5 Flash key>
+GEMINI_PAID_API_KEY=<normal paid-tier fallback key>
 GEMINI_MODEL=gemini-3.5-flash
 LLM_REVIEW_LIMIT=2
 LLM_REVIEW_TIMEOUT=60
 JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
 LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
+
+The review tool performs two Gemini calls per card:
+
+1. A true-blind first pass that sees only the blind theoretical packet.
+2. A reconciliation pass that sees the full audit packet plus the first-pass
+   blind result.
+
+Each call tries the low-cost key first, then falls back to the paid-tier key if
+the low-cost call fails. `GEMINI_API_KEY` remains supported as a backward-
+compatible single-key fallback, but the two-key setup above is preferred.
 
 Never commit `/etc/signal-audit/llm.env`. The repository only contains
 `signal-audit-llm.env.example` with an empty key.

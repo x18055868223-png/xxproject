@@ -17,7 +17,7 @@ import re
 import tempfile
 
 
-DEFAULT_FMZ_JSONL = "/home/bitnami/fmz2/logs/storage/654434/signal_review.jsonl"
+DEFAULT_FMZ_JSONL = "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl"
 MANIFEST_SCHEMA = {
     "name": "signal_cards_manifest",
     "version": "1.0.0",

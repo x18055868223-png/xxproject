@@ -127,15 +127,25 @@ def test_gemini_packet_prompt_and_sidecar_generation():
     assert_true("gex_info" in blind_text and "gamma_regime" in blind_text,
                 "blind theoretical packet should retain Gamma/GEX context")
 
-    prompt = tool.build_prompt(packet)
-    assert_true("BLIND_THEORETICAL_PACKET" in prompt,
-                "prompt should present blind theoretical packet separately")
-    assert_true("FULL_AUDIT_PACKET" in prompt,
-                "prompt should present full audit packet after blind section")
-    assert_true("正 Gamma" in prompt and "负 Gamma" in prompt,
-                "prompt should include Gamma regime lens theory")
-    assert_true("不是胜率" in prompt, "prompt should reject confidence-as-win-rate")
-    assert_true("不得重算模型" in prompt, "prompt should reject recomputation")
+    blind_prompt = tool.build_blind_prompt(packet)
+    assert_true("BLIND_THEORETICAL_PACKET" in blind_prompt,
+                "first prompt should present the blind theoretical packet")
+    assert_true("FULL_AUDIT_PACKET" not in blind_prompt,
+                "first prompt must not include the full audit packet")
+    for forbidden in ("decision", "signal_window", "trade_allowed"):
+        assert_true(forbidden not in blind_prompt,
+                    "true blind prompt should omit " + forbidden)
+    assert_true("正 Gamma" in blind_prompt and "负 Gamma" in blind_prompt,
+                "blind prompt should include Gamma regime lens theory")
+    assert_true("不得重算模型" in blind_prompt,
+                "blind prompt should reject recomputation")
+
+    full_prompt = tool.build_full_review_prompt(packet, model_payload())
+    assert_true("FULL_AUDIT_PACKET" in full_prompt,
+                "second prompt should include full audit packet")
+    assert_true("BLIND_REVIEW_RESULT" in full_prompt,
+                "second prompt should include first-call blind result")
+    assert_true("不是胜率" in full_prompt, "full prompt should reject confidence-as-win-rate")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)
@@ -144,29 +154,53 @@ def test_gemini_packet_prompt_and_sidecar_generation():
         source.write_text(json.dumps(sample, ensure_ascii=False) + "\n",
                           encoding="utf-8")
 
+        calls = []
+
         def fake_call(api_key, model, request_body, timeout):
-            assert_true(api_key == "test-key", "api key should only be passed to call")
+            del model, timeout
+            prompt_text = request_body["contents"][0]["parts"][0]["text"]
+            calls.append((api_key, prompt_text))
+            if api_key == "low-cost-key":
+                raise RuntimeError("Gemini HTTP 429: low-cost quota exhausted")
             generation = request_body["generationConfig"]
             assert_true(generation["responseMimeType"] == "application/json",
                         "Gemini request should ask for JSON")
-            schema = generation["responseSchema"]
-            assert_true("summary_cn" in schema["required"], "schema required summary")
+            if "FULL_AUDIT_PACKET" not in prompt_text:
+                schema = generation["responseSchema"]
+                assert_true("theoretical_active_view" in schema["required"],
+                            "blind schema should require theoretical view")
+                payload = {
+                    "theoretical_active_view": model_payload()["theoretical_active_view"],
+                    "gamma_regime_lens": model_payload()["gamma_regime_lens"],
+                }
+            else:
+                schema = generation["responseSchema"]
+                assert_true("summary_cn" in schema["required"], "schema required summary")
+                payload = model_payload()
             return {"candidates": [{"content": {"parts": [
-                {"text": json.dumps(model_payload(), ensure_ascii=False)}
+                {"text": json.dumps(payload, ensure_ascii=False)}
             ]}}]}
 
-        result = tool.generate_reviews(source, reviews, api_key="test-key",
+        result = tool.generate_reviews(source, reviews, api_key="low-cost-key",
+                                       fallback_api_key="paid-key",
                                        model="gemini-3.5-flash",
                                        call_gemini=fake_call,
                                        reviewed_at="2026-06-19T00:00:00+00:00")
         assert_true(result["written_reviews"] == 1, "one review written")
+        assert_true([call[0] for call in calls] == [
+            "low-cost-key", "paid-key", "low-cost-key", "paid-key",
+        ], "LLM calls should try low-cost key before paid fallback for each phase")
+        assert_true("FULL_AUDIT_PACKET" not in calls[1][1],
+                    "successful first phase should stay truly blind")
+        assert_true("FULL_AUDIT_PACKET" in calls[3][1],
+                    "successful second phase should reconcile against full packet")
         saved = json.loads(reviews.read_text(encoding="utf-8"))
         review = saved["llm_review"]
         assert_true(review["provider"] == "gemini", "provider should be gemini")
         active_view = review.get("theoretical_active_view")
         assert_true(isinstance(active_view, dict), "review should include theoretical active view")
-        assert_true(active_view["derived_blind"] is False,
-                    "single-call theoretical view must not pretend true blind derivation")
+        assert_true(active_view["derived_blind"] is True,
+                    "two-call theoretical view should mark true blind derivation")
         assert_true(active_view["validation_status"] == "UNVALIDATED",
                     "theoretical view should remain unvalidated by default")
         assert_true(active_view["bias"] == "MIXED_UNCLEAR",
@@ -261,16 +295,18 @@ def test_generate_reviews_redacts_sensitive_error_text():
                         "error sidecar should redact sensitive token text: " + forbidden)
 
 
-def test_frontend_renders_llm_review_directly_below_rank():
+def test_frontend_renders_session_context_between_rank_and_llm_review():
     app = FRONTEND_APP.read_text(encoding="utf-8")
     html = FRONTEND_HTML.read_text(encoding="utf-8")
     rank_idx = app.find("${renderGexRank(doc)}")
+    session_idx = app.find("${renderSignalSessionContext(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
     decision_idx = app.find("${renderDecision(doc)}")
-    assert_true(rank_idx != -1 and llm_idx != -1 and decision_idx != -1,
-                "rank, llm, decision render calls should exist")
-    assert_true(rank_idx < llm_idx < decision_idx,
-                "LLM review should render after rank and before decision")
+    assert_true(rank_idx != -1 and session_idx != -1 and llm_idx != -1
+                and decision_idx != -1,
+                "rank, session context, llm, decision render calls should exist")
+    assert_true(rank_idx < session_idx < llm_idx < decision_idx,
+                "session context should render after rank and before LLM review")
     assert_true(".llm-review-panel" in html and ".llm-review-summary" in html,
                 "LLM review should have prominent panel styling")
     for text in (
@@ -285,6 +321,8 @@ def test_frontend_renders_llm_review_directly_below_rank():
         "混合不明",
         'gemini: "Gemini"',
         "输入包哈希",
+        "信号时区置信度 / 前提耐久度",
+        "低转中缓冲带",
     ):
         assert_true(text in app, "LLM review should localize " + text)
     assert_true('statusBadge("Status"' not in app and 'statusBadge("Caution"' not in app,
@@ -320,6 +358,6 @@ if __name__ == "__main__":
     test_gemini_packet_prompt_and_sidecar_generation()
     test_materializer_merges_sidecar_without_downgrading_inline_ok()
     test_generate_reviews_redacts_sensitive_error_text()
-    test_frontend_renders_llm_review_directly_below_rank()
+    test_frontend_renders_session_context_between_rank_and_llm_review()
     test_fmz_signal_loop_does_not_call_llm_in_process()
     print("signal_llm_review_pipeline: PASS")
