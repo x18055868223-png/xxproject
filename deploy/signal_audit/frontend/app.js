@@ -28,7 +28,10 @@
     CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
     CONFLICT: "冲突",
     DEGRADED: "降级",
+    DECREASE: "降低前提耐久",
+    DECREASE_TENTATIVE: "轻度降低前提耐久",
     DO_NOT_SUPPORT: "不支持系统结论",
+    DO_NOT_MULTIPLY_CONFIDENCE: "不乘进置信",
     ERROR: "错误",
     EXCLUDED: "已排除",
     FINAL: "定稿",
@@ -36,12 +39,15 @@
     GATE_ONLY: "仅门控",
     GEMINI: "Gemini",
     gemini: "Gemini",
+    CONFIRMED: "已确认",
+    CONFIRMED_60M_LOCAL: "60m局部确认",
     CONSERVATIVE_LOWER_TIER: "缓冲带就低不就高",
     DEEP: "深",
     EDT: "美国夏令时",
     EST: "美国冬令时",
     EVENT_BLACKOUT: "事件黑名单",
     HIGH: "高",
+    INCREASE: "提高前提耐久",
     INSUFFICIENT_WINDOW_COVERAGE: "窗口覆盖不足",
     INVALID_OUTPUT: "输出无效",
     LOCKED: "锁定",
@@ -49,11 +55,15 @@
     LONG: "多",
     LOW: "低",
     LOW_TO_MEDIUM_BUFFER: "低转中缓冲带",
+    LOWER_DURABILITY_CONFIRMED: "确认降耐久",
+    LOWER_DURABILITY_TENTATIVE: "暂定降耐久",
     LOWER: "下调方向把握",
     MATERIAL: "实质分歧",
     MEDIUM: "中",
     MEDIUM_TO_HIGH_BUFFER: "中转高缓冲带",
     MEDIUM_TO_LOW_BUFFER: "中转低缓冲带",
+    MARKET_PRIOR_VALIDATED: "市场先验已验证",
+    MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED: "市场先验已验证 / 非信号校准",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
     MODERATE: "中等",
@@ -61,6 +71,8 @@
     MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
     MIXED_LOW_CONFIDENCE: "混合信号 / 低置信",
     NEUTRAL: "中性",
+    NEUTRAL_CONSERVATIVE: "中性保守",
+    NEUTRAL_OBSERVE: "中性观察",
     NEUTRALIZE: "中和方向把握",
     NEUTRAL_DEAD_ZONE: "中性死区",
     NEUTRAL_OR_RANGE: "理论中性/区间",
@@ -81,6 +93,7 @@
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
+    RAISE_DURABILITY_TENTATIVE: "暂定升耐久",
     SKIPPED: "已跳过",
     THIN: "薄",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
@@ -89,6 +102,7 @@
     STALE: "陈旧",
     SUPPORT: "支持系统结论",
     SUPPORTIVE: "支持",
+    TENTATIVE: "暂定",
     UNCALIBRATED: "未校准",
     UNKNOWN: "未知",
     UNABLE_TO_JUDGE: "无法判断",
@@ -100,6 +114,7 @@
   const fieldLabels = {
     absolute_share_pct: "绝对贡献占比",
     action: "动作",
+    adjustment_direction: "时区先验调整",
     age: "数据年龄",
     age_ms: "数据年龄(ms)",
     agreement: "一致性",
@@ -115,16 +130,19 @@
     boundary_buffer_min: "边界缓冲(分钟)",
     buffer_policy: "缓冲策略",
     call_wall: "看涨墙",
+    backtest_delta_pp: "三年实测Δ复合(pp)",
     catalyst_exposure: "外源冲击暴露",
     caution_level: "谨慎等级",
     basis_cn: "理论依据",
     bias: "理论倾向",
     boundary_cn: "边界说明",
     calibrated: "是否校准",
+    calibration_state: "校准状态",
     confidence: "置信度",
     confidence_calibration: "置信校准",
     confidence_final: "最终置信",
     confidence_multiplier: "置信乘子",
+    confidence_policy: "置信红线",
     confidence_pre_veto: "否决前置信",
     confidence_semantics: "置信语义",
     conviction: "定性把握度",
@@ -133,12 +151,14 @@
     config_id: "配置 ID",
     configured: "配置权重",
     configured_weight: "配置权重",
+    clock_window: "时段",
     conflict_ratio: "冲突比例",
     coverage: "覆盖率",
     coverage_factor: "覆盖因子",
     coverage_raw: "原始覆盖率",
     data_quality: "数据质量",
     data_quality_note: "数据质量说明",
+    data_range: "数据区间",
     data_status: "数据状态",
     decision_matrix: "决策矩阵",
     decision_state: "决策状态",
@@ -155,6 +175,7 @@
     effective_weight: "有效权重",
     effective_weight_sum: "有效权重合计",
     evidence: "证据",
+    evidence_level: "证据等级",
     evidence_strength: "证据强度",
     exclusion_reason: "排除原因",
     event_blackout: "事件黑名单",
@@ -184,6 +205,8 @@
     net_gamma_notional_usd: "净 Gamma 名义额(USD)",
     next_action: "下一步动作",
     not_trading_advice: "非交易建议",
+    operator_hint_cn: "操作提示",
+    headline_horizon_min: "主口径未来窗(分钟)",
     observed_at: "观测时间",
     participation: "参与状态",
     participation_status: "参与状态",
@@ -196,6 +219,7 @@
     quality: "质量",
     ratio: "比例",
     reason: "原因",
+    rationale_code: "时段代码",
     record_hash: "记录哈希",
     reviewed_at: "复核时间",
     regime: "Gamma 状态",
@@ -206,6 +230,7 @@
     rank: "历史分位",
     rank_pct: "Rank 百分位",
     abs_rank_pct: "绝对值 Rank 百分位",
+    sample_bars: "样本K线数",
     sample_count: "样本数",
     score_final: "最终得分",
     source: "数据源",
@@ -216,6 +241,7 @@
     input_packet_hash: "输入包哈希",
     prompt_version: "提示词版本",
     provider: "模型服务商",
+    research_grade: "研究等级",
     strength: "强度",
     threshold: "阈值",
     theoretical_active_view: "理论主动倾向",
@@ -235,6 +261,7 @@
     temporal_durability: "时间耐久",
     trade_allowed: "是否允许交易",
     utc8_time: "UTC+8 时间",
+    validation_basis: "验证依据",
     validation_status: "验证状态",
     value: "值",
     veto: "否决",
@@ -316,11 +343,6 @@
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return String(value);
     return `${number(numeric, digits)}%`;
-  };
-  const normalizeDistancePct = (value) => {
-    const numeric = safeNumber(value);
-    if (numeric === null) return null;
-    return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
   };
   const safeNumber = (value) => {
     if (isBlank(value)) return null;
@@ -475,8 +497,8 @@
     );
     if (!isBlank(explicit)) {
       const direction = firstPresent(gamma.pin_pull_direction, get(gamma, "pin.pin_pull_direction"));
-      const normalizedPct = normalizeDistancePct(explicit);
-      return `${pctPoint(normalizedPct)}${direction ? ` (${semanticCompact(direction) || direction})` : ""}`;
+      const explicitPct = safeNumber(explicit);
+      return `${pctPoint(explicitPct)}${direction ? ` (${semanticCompact(direction) || direction})` : ""}`;
     }
     const price = safeNumber(firstPresent(
       get(doc, "market_context.price"),
@@ -491,10 +513,10 @@
       gex.magnet_level,
       gex.magnet_price
     ));
-    if (price === null || pin === null || pin <= 0) return null;
-    const diffPct = ((price - pin) / pin) * 100;
-    const direction = diffPct > 0 ? "高于钉住点" : (diffPct < 0 ? "低于钉住点" : "贴合钉住点");
-    return `${number(Math.abs(diffPct), 2)}% (${direction})`;
+    if (price === null || pin === null || price <= 0) return null;
+    const diffPct = ((pin - price) / price) * 100;
+    const direction = diffPct > 0 ? "UP" : (diffPct < 0 ? "DOWN" : "FLAT");
+    return `${pctPoint(diffPct)} (${semanticCompact(direction) || direction})`;
   }
   function nullSemantics(path, scope = "") {
     const normalized = String(path || "").toLowerCase();
@@ -901,10 +923,16 @@
     const transition = asObject(ctx.transition);
     const weekend = asObject(ctx.weekend_adjustment);
     const event = asObject(ctx.event_blackout);
+    const basis = asObject(ctx.validation_basis);
     const display = ctx.display_label || ctx.effective_zone || ctx.base_zone || "UNKNOWN";
+    const basisLine = basis.data_range
+      ? `BTC_USDT 5m K线 ${basis.data_range}，${scalarText(basis.sample_bars, { translate: false, digits: 0 })} 根；主口径未来窗 ${scalarText(basis.headline_horizon_min, { translate: false, digits: 0 })} 分钟。`
+      : "等待验证依据字段";
     const chips = [
       `展示档位: ${semanticLabel(display)}`,
       `有效档位: ${semanticLabel(ctx.effective_zone)}`,
+      `时区调整: ${semanticLabel(ctx.adjustment_direction || "NEUTRAL")}`,
+      `证据等级: ${semanticLabel(ctx.evidence_level || "UNKNOWN")}`,
       `校准: ${semanticCompact(ctx.calibration_state)}`,
       ctx.affects_confidence === false ? "不改置信" : "",
       ctx.affects_blocking === false ? "不改门控" : "",
@@ -926,7 +954,15 @@
         </div>
         <p class="session-context-summary">${valueHtml(ctx.rationale_cn, { translate: false })}</p>
       </div>
+      <div class="text-block">
+        <p><strong>本层结论</strong> ${escapeHtml(ctx.operator_hint_cn || "保持中性观察。")} 该结论来自三年 K 线代理验证，只影响前提耐久度提示和人工确认要求，不改变 evidence confidence。</p>
+      </div>
       <dl class="kv-grid session-context-grid">
+        ${kv("rationale_code", ctx.rationale_code, { translate: false })}
+        ${kv("clock_window", ctx.clock_window, { translate: false })}
+        ${kv("adjustment_direction", ctx.adjustment_direction)}
+        ${kv("evidence_level", ctx.evidence_level)}
+        ${kv("backtest_delta_pp", ctx.backtest_delta_pp, { translate: false })}
         ${kv("premise_durability", ctx.premise_durability || ctx.effective_zone)}
         ${kv("base_zone", ctx.base_zone)}
         ${kv("display_label", ctx.display_label)}
@@ -942,12 +978,12 @@
       </dl>
       <div class="two-column-notes session-context-notes">
         <div>
-          <h3 class="subsection-title">理论支撑</h3>
-          <p>本层衡量的是信号论证前提在下一轮主导流动性或外源事件到来前的耐久度，不是胜率，也不是 evidence confidence。</p>
+          <h3 class="subsection-title">三年验证依据</h3>
+          <p>${escapeHtml(basisLine)}研究等级：${escapeHtml(semanticCompact(basis.research_grade || ctx.calibration_state))}。</p>
         </div>
         <div>
-          <h3 class="subsection-title">缓冲与降档</h3>
-          <p>边界附近按“缓冲带就低不就高”处理；例如低转中缓冲带内，流动性虽在恢复，但校准前仍按低前提耐久度展示。</p>
+          <h3 class="subsection-title">结论红线</h3>
+          <p>本层衡量的是信号论证前提在下一轮主导流动性或外源事件到来前的耐久度，不是胜率，也不是 evidence confidence；${escapeHtml(semanticCompact(ctx.confidence_policy || "DO_NOT_MULTIPLY_CONFIDENCE"))}。</p>
         </div>
         <div>
           <h3 class="subsection-title">边界状态</h3>
