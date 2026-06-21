@@ -29,16 +29,20 @@ def main():
                 "LLM service should load the protected server env file")
     assert_true("EnvironmentFile=-/etc/signal-audit/llm.env" in llm_service,
                 "LLM service should tolerate missing env until key is configured")
-    assert_true("GEMINI_API_KEY" in llm_env,
-                "LLM env example should document GEMINI_API_KEY")
+    assert_true("GEMINI_3_5_FLASH_API_KEY" in llm_env
+                and "GEMINI_PAID_API_KEY" in llm_env
+                and "GEMINI_API_KEY" in llm_env,
+                "LLM env example should document low-cost, paid fallback, and legacy key names")
     assert_true("AIza" not in llm_env and "sk-" not in llm_env,
                 "LLM env example must not contain a real-looking key")
     assert_true("run_signal_llm_review.sh" in llm_service,
                 "LLM service should call the guarded runner")
     assert_true("--reviews-output" in runner,
                 "LLM runner should write sidecar reviews")
-    assert_true("GEMINI_API_KEY is not configured" in runner,
-                "LLM runner should skip cleanly before the key is configured")
+    assert_true("Gemini API key is not configured" in runner
+                and "GEMINI_3_5_FLASH_API_KEY" in runner
+                and "GEMINI_PAID_API_KEY" in runner,
+                "LLM runner should skip cleanly before either key is configured")
     assert_true("LLM_REVIEWS_SOURCE" in llm_service,
                 "LLM service should use a stable sidecar path")
     assert_true("signal-audit-materialize.service" in llm_service,

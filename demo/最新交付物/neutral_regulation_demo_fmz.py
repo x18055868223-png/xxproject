@@ -146,8 +146,11 @@ CONFIG = {
     # record (build_audit_record) is written to signal_review.jsonl as the single
     # source of truth, and FMZ pushes only a <=140-char single-line brief
     # (render_push_brief). Static web reads JSONL-derived JSON cards.
+    # v1.4.0 (2026-06-21): signal-chain closure. CVD windows merge into one
+    # FLOW_CONFIRM package, Funding/GGR spatial default to non-directional
+    # audit roles, and execution permission is separated from model support.
     # Render/observability only; nrd schema_version stays v1.0.0.
-    "demo_version": "1.3.0",
+    "demo_version": "1.4.0",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -451,6 +454,16 @@ CONFIG = {
     "edb_agreement_floor": 0.60,    # agreement modulator floor
     "edb_coverage_floor": 0.50,     # coverage modulator floor
     "edb_price_confirm_full_pct": 0.75,  # |price%| where CVD confirm saturates
+    # v1.4 signal-chain closure: CVD 4h/12h are one flow confirmation package,
+    # not two independent decision owners. The old dual-vote path remains
+    # available by flipping edb_flow_confirm_merge_enabled=False.
+    "edb_flow_confirm_merge_enabled": True,
+    "edb_flow_confirm_aligned_weight_boost": 1.15,
+    "edb_flow_confirm_conflict_weight_mult": 0.45,
+    "edb_flow_confirm_weight_cap_ratio": 1.0,  # combined FLOW <= TMV weight
+    # Funding remains a crowding modifier in TMV/funding gates. By default it
+    # no longer gets a second independent direction vote in EDB.
+    "edb_funding_direction_vote_enabled": False,
     # CVD strength by rolling distribution of |cvd_norm| (replaces fixed abs
     # thresholds that net/gross imbalance could never reach). Percentile-based
     # => adapts to the asset's own distribution, no hallucinated absolute cut.
@@ -483,10 +496,11 @@ CONFIG = {
     "ggr_transition_band_pct": 0.003,
     "ggr_negative_cut_strength": 0.50,
     "ggr_negative_veto_strength": 0.80,
-    "ggr_positive_conf_boost_max": 1.15,
+    "ggr_positive_conf_boost_max": 1.0,
     "ggr_negative_conf_floor": 0.40,
     "ggr_pin_min_oi_share": 0.15,
     "ggr_pin_trust_negative_gamma": 0.0,
+    "ggr_spatial_vote_enabled": False,
     "ggr_spatial_vote_cap": 0.25,
     "ggr_pin_distance_ref_pct": 0.02,
     # de-double-count: micro_flow no longer tilts TMV direction (CVD owns flow)
@@ -2901,7 +2915,12 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
 
     evidence = []
     evidence.append(_tmv_vote(flow, config))
-    evidence.extend(_cvd_votes(flow, cvd_history, config))
+    flow_confirm = None
+    if config.get("edb_flow_confirm_merge_enabled", True):
+        flow_confirm = _flow_confirm_vote(flow, cvd_history, config)
+        evidence.append(flow_confirm)
+    else:
+        evidence.extend(_cvd_votes(flow, cvd_history, config))
     evidence.append(_macro_vote(macro, config))
     evidence.append(_funding_vote(funding, config))
     evidence.append(_srd_vote(skew, config))
@@ -2946,6 +2965,12 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
     if veto:
         confidence = 0.0
 
+    if flow_confirm is None:
+        flow_confirm = _flow_confirm_from_evidence(evidence)
+    flow_confirm_package = (flow_confirm or {}).get("detail") or {}
+    structure_stability = _structure_stability_package(ggr)
+    spatial_constraint = _spatial_constraint_package(ggr, edb_score)
+
     lean, support, side_hint, next_action = _classify(
         edb_score, confidence, precondition_active, veto, config)
     conflict = _conflict_level(agreement)
@@ -2986,6 +3011,10 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
             "multiplier": ggr_mult,
             "veto": bool(ggr.get("veto")),
         },
+        "flow_confirm": flow_confirm_package,
+        "structure_stability": structure_stability,
+        "spatial_constraint": spatial_constraint,
+        "role_closure": _role_closure_summary(config),
         "veto_reason": veto_reason,
         "evidence": evidence,
         "reason_codes": _reason_codes(evidence, veto_reason, precondition_active),
@@ -3040,6 +3069,131 @@ def _cvd_votes(flow, cvd_history, config):
         if vote:
             out.append(vote)
     return out
+
+
+def _flow_confirm_vote(flow, cvd_history, config):
+    votes = _cvd_votes(flow, cvd_history, config)
+    by_role = {((item.get("detail") or {}).get("role")): item for item in votes}
+    fast = by_role.get("4h") or _missing_cvd_window("4h")
+    slow = by_role.get("12h") or _missing_cvd_window("12h")
+    active = [item for item in (fast, slow) if item.get("weight", 0.0) > 0]
+    signs = set()
+    for item in active:
+        vote = safe_float(item.get("vote")) or 0.0
+        if vote > 0:
+            signs.add(1)
+        elif vote < 0:
+            signs.add(-1)
+    if not active:
+        agreement = "MISSING"
+    elif len(active) == 1:
+        agreement = "PARTIAL"
+    elif len(signs) == 1:
+        agreement = "ALIGNED"
+    else:
+        agreement = "CONFLICT"
+
+    if active:
+        raw_weight_sum = sum(max(0.0, safe_float(item.get("weight")) or 0.0)
+                             for item in active)
+        combined_vote = sum((safe_float(item.get("vote")) or 0.0)
+                            * max(0.0, safe_float(item.get("weight")) or 0.0)
+                            for item in active) / max(raw_weight_sum, 1e-9)
+        max_window_weight = max(safe_float(item.get("weight")) or 0.0
+                                for item in active)
+        if agreement == "ALIGNED":
+            raw_combined_weight = max_window_weight * float(
+                config.get("edb_flow_confirm_aligned_weight_boost", 1.15))
+        elif agreement == "CONFLICT":
+            raw_combined_weight = max_window_weight * float(
+                config.get("edb_flow_confirm_conflict_weight_mult", 0.45))
+        else:
+            raw_combined_weight = max_window_weight
+        combined_weight = min(_flow_confirm_weight_cap(config),
+                              raw_combined_weight)
+    else:
+        combined_vote = 0.0
+        combined_weight = 0.0
+    absorption = _flow_absorption_state(active)
+    data_quality = "OK" if len(active) == 2 else (
+        "PARTIAL" if len(active) == 1 else "MISSING")
+    package = {
+        "schema_name": "FlowConfirmPackage",
+        "fast_4h": _flow_window_detail(fast),
+        "slow_12h": _flow_window_detail(slow),
+        "agreement": agreement,
+        "absorption_state": absorption,
+        "combined_vote": clamp(combined_vote, -1.0, 1.0),
+        "combined_weight": combined_weight,
+        "weight_cap": _flow_confirm_weight_cap(config),
+        "data_quality": data_quality,
+        "reason_codes": _flow_reason_codes(agreement, absorption, active),
+    }
+    return {
+        "key": "FLOW_CONFIRM",
+        "vote": package["combined_vote"],
+        "weight": combined_weight,
+        "detail": package,
+    }
+
+
+def _missing_cvd_window(role):
+    return {
+        "key": "CVD_" + role,
+        "vote": 0.0,
+        "weight": 0.0,
+        "detail": {"role": role, "data_ready": False},
+    }
+
+
+def _flow_confirm_weight_cap(config):
+    tmv = _base_weight("TMV", config)
+    ratio = safe_float(config.get("edb_flow_confirm_weight_cap_ratio"))
+    if ratio is None:
+        ratio = 1.0
+    return max(0.0, tmv * ratio)
+
+
+def _flow_confirm_expected_weight(config):
+    cvd = _base_weight("CVD", config)
+    boost = safe_float(config.get("edb_flow_confirm_aligned_weight_boost"))
+    if boost is None:
+        boost = 1.15
+    return min(_flow_confirm_weight_cap(config), cvd * boost)
+
+
+def _flow_window_detail(item):
+    item = item or {}
+    detail = dict(item.get("detail") or {})
+    detail["vote"] = safe_float(item.get("vote"))
+    detail["weight"] = safe_float(item.get("weight"))
+    return detail
+
+
+def _flow_absorption_state(active):
+    verdicts = [str((item.get("detail") or {}).get("verdict") or "")
+                for item in active]
+    if any("BUY_ABSORBED" in verdict for verdict in verdicts):
+        return "BUY_ABSORBED"
+    if any("SELL_ABSORBED" in verdict for verdict in verdicts):
+        return "SELL_ABSORBED"
+    return "NONE"
+
+
+def _flow_reason_codes(agreement, absorption, active):
+    codes = ["FLOW_CONFIRM_" + agreement]
+    if absorption != "NONE":
+        codes.append("FLOW_CONFIRM_" + absorption)
+    if len(active) < 2:
+        codes.append("FLOW_CONFIRM_PARTIAL_WINDOW")
+    return codes
+
+
+def _flow_confirm_from_evidence(evidence):
+    for item in evidence or []:
+        if item.get("key") == "FLOW_CONFIRM":
+            return item
+    return None
 
 
 def _cvd_window_vote(window, history, role, config):
@@ -3146,6 +3300,14 @@ def _macro_vote(macro, config):
 
 
 def _funding_vote(funding, config):
+    if not config.get("edb_funding_direction_vote_enabled", False):
+        return {"key": "FUNDING", "vote": 0.0, "weight": 0.0,
+                "detail": {
+                    "verdict": (funding or {}).get("verdict"),
+                    "funding_norm": (funding or {}).get("funding_norm"),
+                    "role": "CROWDING_MODIFIER",
+                    "exclusion_reason": "DIRECTION_VOTE_DISABLED",
+                }}
     base = _base_weight("FUNDING", config)
     verdict = funding.get("verdict")
     norm = safe_float(funding.get("funding_norm"))
@@ -3178,6 +3340,13 @@ def _srd_vote(skew, config):
 
 
 def _ggr_spatial_vote(gamma_regime, config):
+    if not config.get("ggr_spatial_vote_enabled", False):
+        return {"key": "GGR_SPATIAL", "vote": 0.0, "weight": 0.0,
+                "detail": {
+                    "regime": (gamma_regime or {}).get("regime"),
+                    "role": "SPATIAL_GATE",
+                    "exclusion_reason": "SPATIAL_VOTE_DISABLED",
+                }}
     base = _base_weight("GGR_SPATIAL", config)
     ggr = gamma_regime or {}
     vote = safe_float(ggr.get("spatial_vote")) or 0.0
@@ -3191,6 +3360,93 @@ def _ggr_spatial_vote(gamma_regime, config):
                        "flip_point": ggr.get("flip_point"),
                        "distance_to_flip_pct": ggr.get("distance_to_flip_pct"),
                        "pin": (ggr.get("pin") or {}).get("pin_strike")}}
+
+
+def _structure_stability_package(gamma_regime):
+    ggr = gamma_regime or {}
+    regime = ggr.get("regime")
+    if ggr.get("veto"):
+        state = "ADVERSE"
+    elif regime == "POSITIVE_GAMMA_PINNING":
+        state = "SUPPORTIVE"
+    elif regime == "NEGATIVE_GAMMA_AMPLIFYING":
+        state = "ADVERSE"
+    elif regime:
+        state = "NEUTRAL"
+    else:
+        state = "UNKNOWN"
+    return {
+        "schema_name": "StructureStabilityPackage",
+        "regime": regime,
+        "state": state,
+        "confidence_multiplier": safe_float(ggr.get("confidence_multiplier")),
+        "veto": bool(ggr.get("veto")),
+        "reason_codes": list(ggr.get("reason_codes") or []),
+    }
+
+
+def _spatial_constraint_package(gamma_regime, edb_score):
+    ggr = gamma_regime or {}
+    pin = ggr.get("pin") or {}
+    edb_side = "BULLISH" if edb_score > 0 else (
+        "BEARISH" if edb_score < 0 else "NEUTRAL")
+    if ggr.get("veto"):
+        state = "ADVERSE"
+    elif ggr.get("regime") == "POSITIVE_GAMMA_PINNING":
+        state = "SUPPORTIVE"
+    elif ggr:
+        state = "NEUTRAL"
+    else:
+        state = "UNKNOWN"
+    return {
+        "schema_name": "SpatialConstraintPackage",
+        "price": safe_float(ggr.get("price")),
+        "flip": safe_float(ggr.get("flip_point")),
+        "pin": safe_float(pin.get("pin_strike")),
+        "support_walls": _spatial_walls(ggr, "support"),
+        "resistance_walls": _spatial_walls(ggr, "resistance"),
+        "edb_side": edb_side,
+        "distance_to_adverse_boundary_band": safe_float(
+            pin.get("distance_to_pin_pct")),
+        "anchor_relocation_with_thesis": None,
+        "spatial_state": state,
+        "reason_codes": list(ggr.get("reason_codes") or []),
+    }
+
+
+def _spatial_walls(ggr, side):
+    if not isinstance(ggr, dict):
+        return []
+    key = "put_wall" if side == "support" else "call_wall"
+    value = safe_float(ggr.get(key))
+    return [value] if value is not None else []
+
+
+def _role_closure_summary(config):
+    return {
+        "schema_name": "SignalRoleClosure",
+        "roles": {
+            "M_DIE": "TRIGGER",
+            "ANCHOR": "TRIGGER_WINDOW",
+            "TMV": "DIRECTION_OWNER",
+            "FLOW_CONFIRM": "CONFIRM",
+            "FUNDING": "CROWDING_MODIFIER",
+            "GGR": "STRUCTURE_GATE",
+            "SPATIAL": "SPATIAL_GATE",
+            "MACRO": "EVENT_BACKGROUND_CONTEXT",
+            "SRD": "DIRECTION_SHADOW_PENDING_ABLATION",
+            "LLM": "AUDIT_ONLY",
+            "HUMAN": "FINAL_APPROVER",
+        },
+        "legacy_toggles": {
+            "dual_cvd_votes": not bool(config.get(
+                "edb_flow_confirm_merge_enabled", True)),
+            "funding_direction_vote": bool(config.get(
+                "edb_funding_direction_vote_enabled", False)),
+            "ggr_spatial_vote": bool(config.get(
+                "ggr_spatial_vote_enabled", False)),
+        },
+    }
 
 
 # --------------------------------------------------------------------------
@@ -3233,14 +3489,25 @@ def _coverage(evidence, config):
     present. Missing CVD or a cold/uninformative SRD lowers coverage, which
     lowers confidence (less independent info -> higher entropy)."""
     bw = config.get("edb_base_weights") or {}
+    if config.get("edb_flow_confirm_merge_enabled", True):
+        flow_total = _flow_confirm_expected_weight(config)
+        cvd_keys = ("FLOW_CONFIRM",)
+    else:
+        flow_total = 2.0 * (safe_float(bw.get("CVD")) or 0.0)
+        cvd_keys = ("CVD_4h", "CVD_12h")
+    funding_total = ((safe_float(bw.get("FUNDING")) or 0.0)
+                     if config.get("edb_funding_direction_vote_enabled", False)
+                     else 0.0)
     total = ((safe_float(bw.get("TMV")) or 0.0)
-             + 2.0 * (safe_float(bw.get("CVD")) or 0.0)
+             + flow_total
              + (safe_float(bw.get("MACRO")) or 0.0)
-             + (safe_float(bw.get("FUNDING")) or 0.0)
+             + funding_total
              + (safe_float(bw.get("SRD")) or 0.0))
     if total <= 0:
         return 0.0
-    dir_keys = ("TMV", "CVD_4h", "CVD_12h", "MACRO", "FUNDING", "SRD")
+    dir_keys = ("TMV",) + cvd_keys + ("MACRO", "SRD")
+    if config.get("edb_funding_direction_vote_enabled", False):
+        dir_keys = dir_keys + ("FUNDING",)
     present = sum(item.get("eff_weight", 0.0) for item in evidence
                   if item.get("key") in dir_keys)
     return clamp(present / total, 0.0, 1.0)
@@ -3350,8 +3617,10 @@ import hashlib
 import json
 
 
-_DIR_KEYS = ("TMV", "CVD_4h", "CVD_12h", "MACRO", "FUNDING", "SRD")
-_ALL_KEYS = _DIR_KEYS + ("GGR_SPATIAL",)
+_DIR_KEYS = ("TMV", "FLOW_CONFIRM", "MACRO", "SRD")
+_AUX_KEYS = ("FUNDING", "GGR_SPATIAL")
+_LEGACY_DIR_KEYS = ("CVD_4h", "CVD_12h")
+_ALL_KEYS = _DIR_KEYS + _AUX_KEYS
 
 _SESSION_ZONE_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 _SESSION_ZONE_DOWN = {"HIGH": "MEDIUM", "MEDIUM": "LOW", "LOW": "LOW"}
@@ -3762,11 +4031,44 @@ def build_sample_review_card(config=None):
                      "veto": False},
         "evidence": [
             ev("TMV", 1.00, 0.34, {"window_conflict": False, "tmv_blend": 0.42}),
-            ev("CVD_4h", 0.35, 0.18, {"verdict": "BUY_CONFIRMS_UP"}),
+            ev("FLOW_CONFIRM", 0.35, 0.18, {
+                "schema_name": "FlowConfirmPackage",
+                "agreement": "PARTIAL",
+                "absorption_state": "NONE",
+                "combined_vote": 0.35,
+                "combined_weight": 0.18,
+                "data_quality": "PARTIAL",
+                "fast_4h": {"verdict": "BUY_CONFIRMS_UP"},
+                "slow_12h": {"data_ready": False},
+            }),
             ev("MACRO", -0.50, 0.16, {"macro_regime": "Mild Headwind"}),
             ev("SRD", -0.20, 0.18, {"rr_z": -0.06}),
         ],
         "summary_cn": "样例：证据冲突未消解，等待确认。",
+        "flow_confirm": {
+            "schema_name": "FlowConfirmPackage",
+            "agreement": "PARTIAL",
+            "absorption_state": "NONE",
+            "combined_vote": 0.35,
+            "combined_weight": 0.18,
+            "data_quality": "PARTIAL",
+        },
+        "structure_stability": {
+            "schema_name": "StructureStabilityPackage",
+            "state": "SUPPORTIVE",
+            "regime": "POSITIVE_GAMMA_PINNING",
+            "confidence_multiplier": 1.0,
+            "veto": False,
+            "reason_codes": [],
+        },
+        "spatial_constraint": {
+            "schema_name": "SpatialConstraintPackage",
+            "spatial_state": "SUPPORTIVE",
+            "edb_side": "BULLISH",
+            "pin": 64000.0,
+            "flip": 62800.0,
+            "reason_codes": [],
+        },
     }
     nr = {
         "state": "NR_REPAIR_CONFIRMED", "is_active": True,
@@ -3816,6 +4118,7 @@ AUDIT_SCHEMA_VERSION = "1.0.0"
 
 _EVIDENCE_SOURCE_REF = {
     "TMV": "factor_cross_section.tmvf",
+    "FLOW_CONFIRM": "factor_cross_section.micro_flow",
     "CVD_4h": "factor_cross_section.micro_flow.fast_4h",
     "CVD_12h": "factor_cross_section.micro_flow.slow_12h",
     "MACRO": "factor_cross_section.macro_pressure",
@@ -3890,11 +4193,15 @@ def build_audit_record(card, config=None):
             "confidence": conclusion.get("confidence"),
             "confidence_calibration": cal,
             "confidence_semantics": "EVIDENCE_QUALITY_NOT_WIN_RATE",
-            "trade_allowed": support in ("TRADE_SUPPORT_STRONG",
-                                         "TRADE_SUPPORT_WEAK"),
+            "model_trade_support": support in ("TRADE_SUPPORT_STRONG",
+                                               "TRADE_SUPPORT_WEAK"),
+            "execution_allowed": _audit_execution_allowed(support, config),
+            "trade_allowed": _audit_execution_allowed(support, config),
+            "execution_permission_note": _audit_execution_note(support, config),
             "next_action": conclusion.get("next_action"),
             "final_conclusion_cn": card.get("final_conclusion_cn"),
         },
+        "decision_matrix": _audit_decision_matrix(card, config),
         "display_layers": _audit_display_layers(card),
         "signal_window": {
             "nr_state": window.get("nr_state"),
@@ -3909,7 +4216,7 @@ def build_audit_record(card, config=None):
                 if window.get("is_active") else "时序窗口未开，方向仅作观察预热。"),
             "session_context": window.get("session_context"),
         },
-        "blocking": _audit_blocking(blocking),
+        "blocking": _audit_blocking(blocking, config),
         "reasoning": _audit_reasoning(reasoning, decomp, cal),
         "conflict": {
             "ratio": safe_float(conflict.get("ratio")),
@@ -4786,7 +5093,78 @@ def _audit_display_layers(card):
     }
 
 
-def _audit_blocking(blocking):
+def _audit_execution_allowed(support, config):
+    model_support = support in ("TRADE_SUPPORT_STRONG", "TRADE_SUPPORT_WEAK")
+    return bool(model_support and not config.get("read_only_demo", True))
+
+
+def _audit_execution_note(support, config):
+    if support not in ("TRADE_SUPPORT_STRONG", "TRADE_SUPPORT_WEAK"):
+        return "MODEL_NOT_SUPPORTING_EXECUTION"
+    if config.get("read_only_demo", True):
+        return "MODEL_SUPPORT_ONLY_READ_ONLY_DEMO"
+    return "MODEL_SUPPORT_AND_EXECUTION_GATE_OPEN"
+
+
+def _audit_decision_matrix(card, config):
+    conclusion = card.get("conclusion") or {}
+    window = card.get("window") or {}
+    reasoning = card.get("reasoning") or {}
+    blocking = card.get("blocking") or {}
+    flow = reasoning.get("flow_confirm") or {}
+    structure = reasoning.get("structure_stability") or {}
+    spatial = reasoning.get("spatial_constraint") or {}
+    support = conclusion.get("support_label")
+    if blocking.get("hard_veto"):
+        state = "BLOCKED"
+    elif support == "WAIT_CONFIRMATION":
+        state = "WAIT_CONFIRMATION"
+    elif support in ("TRADE_SUPPORT_STRONG", "TRADE_SUPPORT_WEAK"):
+        if (card.get("conflict") or {}).get("level") in ("MATERIAL", "SEVERE"):
+            state = "REVIEW_REQUIRED"
+        else:
+            state = "APPROVABLE"
+    else:
+        state = "BLOCKED"
+    warnings = []
+    for row in reasoning.get("evidence") or []:
+        key = row.get("key")
+        if key in ("FUNDING", "MACRO", "SRD") and (
+                row.get("participation_status") in ("NON_VOTING", "GATE_ONLY")
+                or (safe_float(row.get("vote")) or 0.0) < 0):
+            warnings.append(key)
+    return {
+        "schema_name": "SignalDecisionMatrix",
+        "window": "CONFIRMED" if window.get("is_active") else "NOT_CONFIRMED",
+        "direction": conclusion.get("lean"),
+        "flow_confirm": flow.get("agreement") or "MISSING",
+        "structure_stability": structure.get("state") or "UNKNOWN",
+        "spatial_safety": spatial.get("spatial_state") or "UNKNOWN",
+        "temporal_durability": "NOT_IMPLEMENTED_SHADOW",
+        "context_warnings": sorted(set(warnings)),
+        "audit_dissent": "PENDING_LLM",
+        "decision_state": state,
+        "model_trade_support": support in ("TRADE_SUPPORT_STRONG",
+                                           "TRADE_SUPPORT_WEAK"),
+        "execution_allowed": _audit_execution_allowed(support, config),
+        "reason_codes": _decision_matrix_reason_codes(flow, structure, spatial,
+                                                       support, config),
+    }
+
+
+def _decision_matrix_reason_codes(flow, structure, spatial, support, config):
+    codes = []
+    codes.extend(flow.get("reason_codes") or [])
+    codes.extend(structure.get("reason_codes") or [])
+    codes.extend(spatial.get("reason_codes") or [])
+    if support:
+        codes.append("SUPPORT_LABEL_" + str(support))
+    if config.get("read_only_demo", True):
+        codes.append("READ_ONLY_DEMO_EXECUTION_DISABLED")
+    return sorted(set(str(code) for code in codes if code))
+
+
+def _audit_blocking(blocking, config):
     hard = blocking.get("hard_veto")
     soft = []
     for gate in (blocking.get("soft_gates") or []):
@@ -4806,6 +5184,14 @@ def _audit_blocking(blocking):
     return {
         "has_block": bool(blocking.get("has_block")),
         "block_kind": blocking.get("block_kind"),
+        "execution_allowed": not config.get("read_only_demo", True)
+                             and not bool(blocking.get("has_block")),
+        "execution_gate": {
+            "read_only_demo": bool(config.get("read_only_demo", True)),
+            "note": "READ_ONLY_DEMO_BLOCKS_EXECUTION"
+                    if config.get("read_only_demo", True)
+                    else "EXECUTION_GATE_CONFIG_OPEN",
+        },
         "hard_veto": ({"veto_reason": hard.get("veto_reason"),
                        "reason_cn": hard.get("zh"),
                        "evidence_cn": hard.get("evidence")} if hard else None),
@@ -4870,6 +5256,12 @@ def _audit_reasoning(reasoning, decomp, cal):
             "confidence_final": safe_float(decomp.get("confidence_final")),
         },
         "evidence": rows,
+        "participants": [row.get("key") for row in rows
+                         if row.get("participation_status") == "ACTIVE"],
+        "flow_confirm": reasoning.get("flow_confirm") or {},
+        "structure_stability": reasoning.get("structure_stability") or {},
+        "spatial_constraint": reasoning.get("spatial_constraint") or {},
+        "role_closure": reasoning.get("role_closure") or {},
         "summary_cn": "完整账本包含 " + str(len(rows)) + " 行；保留排除和门控原因。",
     }
 
@@ -4906,8 +5298,9 @@ def _audit_supplemental_evidence_row(key):
     status = "GATE_ONLY" if key == "GGR_SPATIAL" else (
         "NON_VOTING" if key == "FUNDING" else "EXCLUDED")
     reason = {
+        "FLOW_CONFIRM": "NOT_EMITTED_BY_EDB",
         "GGR_SPATIAL": "CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE",
-        "FUNDING": "NEUTRAL_DEAD_ZONE",
+        "FUNDING": "DIRECTION_VOTE_DISABLED",
         "CVD_12h": "NOT_EMITTED_BY_EDB",
     }.get(key, "NOT_EMITTED_BY_EDB")
     return {
@@ -4930,6 +5323,8 @@ def _audit_supplemental_evidence_row(key):
 
 def _audit_configured_weight(key):
     weights = CONFIG.get("edb_base_weights") or {}
+    if key == "FLOW_CONFIRM":
+        return _flow_confirm_expected_weight(CONFIG)
     if key.startswith("CVD"):
         return safe_float(weights.get("CVD"))
     return safe_float(weights.get(key))
@@ -5076,6 +5471,10 @@ def _build_reasoning(edb, evidence, decomp):
         "evidence": out,
         "participants": [e.get("key") for e in out],
         "confidence_decomposition": decomp,
+        "flow_confirm": edb.get("flow_confirm") or {},
+        "structure_stability": edb.get("structure_stability") or {},
+        "spatial_constraint": edb.get("spatial_constraint") or {},
+        "role_closure": edb.get("role_closure") or {},
     }
 
 
@@ -5217,6 +5616,7 @@ def _build_cross_section(fs, runtime_facts=None):
 def evidence_gloss_cn(key):
     return {
         "TMV": "量价主干",
+        "FLOW_CONFIRM": "主动流确认",
         "CVD_4h": "主动流×价(4h)",
         "CVD_12h": "主动流×价(12h)",
         "MACRO": "宏观",

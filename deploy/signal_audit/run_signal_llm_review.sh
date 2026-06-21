@@ -8,8 +8,9 @@ GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"
 LLM_REVIEW_LIMIT="${LLM_REVIEW_LIMIT:-2}"
 LLM_REVIEW_TIMEOUT="${LLM_REVIEW_TIMEOUT:-60}"
 
-if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-  echo "GEMINI_API_KEY is not configured; edit /etc/signal-audit/llm.env"
+if [[ -z "${GEMINI_3_5_FLASH_API_KEY:-}${GEMINI_FLASH_API_KEY:-}${GEMINI_LOW_COST_API_KEY:-}${GEMINI_API_KEY:-}${GEMINI_PAID_API_KEY:-}${GEMINI_FALLBACK_API_KEY:-}${GEMINI_PRO_API_KEY:-}" ]]; then
+  echo "Gemini API key is not configured; edit /etc/signal-audit/llm.env"
+  echo "preferred: GEMINI_3_5_FLASH_API_KEY for low-cost calls, GEMINI_PAID_API_KEY for fallback"
   exit 0
 fi
 
