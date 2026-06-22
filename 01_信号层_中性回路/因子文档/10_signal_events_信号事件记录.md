@@ -1,10 +1,23 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
-> 当前模块口径（r2.2 / 2026-06-19）：本页早期内容含 v1.1/v0.5 历史描述；当前 FMZ 信号层以 `demo/最新交付物/neutral_regulation_demo_fmz.py` 为准，版本 `demo_version=1.3.0`、`schema_version=nrd.schema.v1.0.0`。当前运行路径是短推 + `signal_review.jsonl` + materializer + 静态审计页；LLM 复核在服务器旁路层执行，不在 FMZ 主循环调用。
 # 10 · signal_events（信号事件记录）
 
 > 模块：① 信号层 · 输出层（不进 `module_results`）
 > canonical：`demo\signal_events.py:SignalEventTracker` + `demo\signal_review.py`（审计卡组装/渲染）
 > 最后核对：2026-06-18（demo v1.3.0：紧凑体仍被 FMZ 截断 → 采纳 JSON 留档标准：`build_audit_record` 全量 v1.0 记录写 `signal_review.jsonl`（唯一事实源），`render_push_brief` 只推 ≤160 字符单行简要；新增 `audit_archive/` 流程目录 + 样例。标准见 `docs/信号审计JSON推送与静态Web标准_v1.0.md`）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | signal_events（信号事件记录） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 审计 / 触发 |
+| 理论机制 | 在 NeutralRepair 确认窗口时固化全量信号截面、审计卡、JSONL 和短推摘要，保证事后复盘有唯一事实源。 |
+| 预期符号 | 无方向符号；方向来自 EDB，事件层只记录和分发。 |
+| 适用周期 | 每个 confirmed signal event，按 episode 去重。 |
+| 与现有因子重叠 | 消费 NeutralRepair、EDB 与各因子截面；不重算、不改写上游结论。 |
+| 主要失效条件 | recorder 写入失败、episode 去重错误、push 关闭或推送限长、schema 漂移。 |
+| 改变的决策 | 改变审计留档、静态卡片和 FMZ 短推是否生成，不改变系统方向或交易许可。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 当 NeutralRepair 进入 `NR_REPAIR_CONFIRMED`（窗口真正打开）时，落**一张信号审计卡（Signal Review Card）**：把当时的**全量因子截面 + EDB 倾向推理链路与参与项 + 冲突比例/原因 + 阻断项/内容 + 置信分解 + 最终结论**定格存档并可推送。不是判断因子，是观测/审计层。**关键**：完整论证数据本就在 `factor_snapshot.edb`（evidence/agreement/coverage/veto_reason + 新增 confidence_decomposition），审计卡是**组装+序列化**，不重算、不改方向/置信。
@@ -35,7 +48,7 @@
 
 ## 7. 信号审计卡结构（Signal Review Card v1.0，2026-06-04）
 一张卡 = 同一 `card`，多态渲染（状态栏 Style A 分区 / **FMZ ≤160 简要 `render_push_brief`** / **JSONL 全量 v1.0 记录 `build_audit_record`**（唯一事实源）/ 桥 digest）。卡结构本身 v1.0 起未变（v1.3 只是换留档/推送形态；全量恒在 jsonl）。下面 `card` 内部结构：
-- `conclusion`：lean/support_label/side_hint/confidence/**calibration_state**(v1.1.0)/next_action + 中文。置信链与综述显式标「未校准·非真实胜率」。
+- `conclusion`：lean/support_label/side_hint/confidence/**calibration_state**(v1.1.0)/next_action + 中文。`calibration_state` 保留为兼容审计 raw 字段；当前前端关键指标与 FMZ 短推不再展示“未校准”提示，置信只按内部证据分呈现。
 - `window`：nr_state/is_active/episode_direction/peak_m_die/event_count_merged/anchor_score/nd。
 - `reasoning`：edb_score、`evidence[]`（key/vote/weight/eff_weight/**contribution_pct** 按贡献/aligned/gloss_cn/detail）、agreement、coverage、`confidence_decomposition`{strength,agr_factor,cov_factor,ggr_mult,conf_pre_veto,confidence_final}。
 - `conflict`：`ratio`=1−agreement、level、aligned_keys、`dissent[]`、explanation_cn。

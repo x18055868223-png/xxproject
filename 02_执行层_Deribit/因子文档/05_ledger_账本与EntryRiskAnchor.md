@@ -1,9 +1,23 @@
-> 当前执行层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v1.6.2/KPF/Phase 1 描述；当前执行交付物以 `demo/最新交付物/spm_calendar_protected_short_v1.py` `STRATEGY_VERSION=2.5.0` 为准，交易门默认关闭。本文用于解释历史设计和组件语义，不代表当前已启用交易。
 # 05 · ledger + EntryRiskAnchor（库存账本 / 状态机 / 入场风险锚）
 
 > 模块：② 执行层（EntryRiskAnchor 构造在 `hedge_risk.py`，由 `strategy.py` 在成交后挂入账本包）
 > canonical：`src\ledger.py` + `src\hedge_risk.py:build_entry_risk_anchor`（`strategy.py:310-318` 调用）
 > 最后核对：2026-06-02（源码 + grep 实证）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | ledger + EntryRiskAnchor（账本与入场风险锚） |
+| 所属回路 | ② 执行层 · Deribit |
+| 作用层 | 审计 / 风险门 |
+| 理论机制 | 用持仓账本、状态机和入场风险锚固化成交后的唯一事实源，供恢复、对账和尾部风险评估使用。 |
+| 预期符号 | 无方向符号；锚记录入场时的 loss boundary、touch probability、IV/greeks 与信号侧信息。 |
+| 适用周期 | 成交后、重启恢复、持仓监控和退出/对冲决策前。 |
+| 与现有因子重叠 | 与 execution 成交状态、对冲模块 EntryRiskAnchor 和 VRP 入场血缘相邻。 |
+| 主要失效条件 | 成交回报缺失、账本与交易所持仓不一致、重启恢复失败、EntryRiskAnchor 被覆盖。 |
+| 改变的决策 | 改变持仓真相、恢复判定、后续风险管理输入和是否允许继续推进状态机。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 持仓库存与生命周期的单一真相源：库存账本 + 13 态状态机 + `_G()` 持久化 + 启动对账；成交即落**不可覆盖的入场风险锚 EntryRiskAnchor**，供对冲模块算 drift。

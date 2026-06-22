@@ -4,6 +4,21 @@
 > canonical：`deploy/signal_audit/*.service`、`*.timer`、`install_or_update.sh`
 > 最后核对：2026-06-19（r2.2 文档收纳）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | systemd（定时任务与服务器路径） |
+| 所属回路 | 审计部署链路 |
+| 作用层 | 审计 / 风险门 |
+| 理论机制 | 用受限 systemd service/timer 周期刷新 materializer 与 LLM sidecar，让审计站点可恢复、可重复、低资源运行。 |
+| 预期符号 | DEPLOYMENT_RELIABILITY_GATE |
+| 适用周期 | 服务器部署、重启、timer 周期运行。 |
+| 与现有因子重叠 | 与 install_or_update、materializer、LLM runner 重叠，但只负责运行编排和路径权限。 |
+| 主要失效条件 | 路径不一致、env 权限错误、timer 未 enable、资源限制不足或 Apache/Nginx 端口冲突。 |
+| 改变的决策 | 改变审计服务是否可持续刷新和是否安全部署，不改变交易系统输出。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 
 systemd 单元负责在策略服务器上轻量、可恢复地刷新审计卡和 LLM sidecar。

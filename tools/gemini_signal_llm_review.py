@@ -21,10 +21,10 @@ import urllib.request
 DEFAULT_MODEL = "gemini-3.5-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.2.0"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.2.0"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.3.0"
+PROMPT_VERSION = "gemini_signal_review_prompt@1.3.0"
 PACKET_VERSION = "signal_llm_review_packet@1.0.0"
-BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.0.0"
+BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
 
 FACTOR_KEYS = (
     "tmvf",
@@ -59,6 +59,7 @@ REQUIRED_REVIEW_FIELDS = (
     "invalid_if",
     "not_trading_advice",
 )
+REQUIRED_BLIND_FIELDS = ("theoretical_active_view", "gamma_regime_lens")
 THEORETICAL_ACTIVE_BIASES = {
     "BULLISH_LEAN",
     "BEARISH_LEAN",
@@ -139,11 +140,8 @@ def build_blind_theoretical_packet(packet):
         "schema": {
             "name": BLIND_PACKET_VERSION,
             "source_packet_schema": _safe_copy(_as_dict(source.get("schema")).get("name")),
-            "derived_blind": False,
-            "independence_mode": "single_call_blind_ordered",
-            "limitation_cn": (
-                "本包用于同一次请求中的先读步骤；后文会给完整审计包，因此不是严格两次调用盲读。"
-            ),
+            "strict_blind_input": True,
+            "independence_mode": "two_call_first_pass_true_blind",
         },
         "identity": _safe_copy({
             "card_id": identity.get("card_id"),
@@ -175,45 +173,35 @@ def build_blind_theoretical_packet(packet):
     return _safe_copy(blind)
 
 
-def build_prompt(packet):
+def build_blind_prompt(packet):
     blind_packet = build_blind_theoretical_packet(packet)
     return (
         "你是交易信号审计复核员，只做审计增强，不是交易执行系统。\n"
-        "请基于给定 signal_review 审计截面进行综合复核，输出中文 JSON。\n"
-        "本请求采用单次调用的『先盲读、后复核』结构：你必须先依据 BLIND_THEORETICAL_PACKET "
-        "形成 theoretical_active_view 与 gamma_regime_lens，再依据 FULL_AUDIT_PACKET "
-        "解释系统结论。因为这是单次请求，不得声称 derived_blind=true。\n\n"
+        "这是两次调用真盲审的第一阶段。你只能依据 BLIND_THEORETICAL_PACKET "
+        "形成 theoretical_active_view 与 gamma_regime_lens，输出中文 JSON。\n"
+        "你看不到系统结论、窗口、阻断、交易许可或 EDB 结论，"
+        "不得猜测这些系统结论。\n\n"
         "边界：\n"
-        "1. 系统信号结论已经由 decision 给出，你不得改变方向、置信度、EDB、blocking、trade_allowed 或下一步动作。\n"
-        "2. confidence 是证据质量刻度，不是胜率、收益概率或可交易概率。\n"
-        "3. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
-        "4. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
-        "5. 先检查数据质量、缺失字段、冲突比例、rank 冷启动，再解释方向。\n"
-        "6. 输出应帮助人工审计：说明支持项、风险冲突、下一步观察重点和复核失效条件。\n"
-        "7. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
-        "8. 你必须额外输出 theoretical_active_view：这是基于市场微结构、量价、Gamma/GEX、"
-        "宏观、偏斜、资金费率等理论关系的主动倾向参考；它不是系统信号，不改变 decision、"
-        "blocking 或 trade_allowed。\n"
-        "9. theoretical_active_view 可以给出倾向，但必须言之有物：至少引用两类给定因子，"
+        "1. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
+        "2. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
+        "3. 先检查数据质量、缺失字段、rank 冷启动，再解释理论倾向。\n"
+        "4. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
+        "5. 你必须输出 theoretical_active_view：这是基于市场微结构、量价、Gamma/GEX、"
+        "宏观、偏斜、资金费率等理论关系的主动倾向参考；它不是系统信号，不改变系统结论、"
+        "阻断或交易许可。\n"
+        "6. theoretical_active_view 可以给出倾向，但必须言之有物：至少引用两类给定因子，"
         "同时列出反证或不确定性；证据不足时选择 MIXED_UNCLEAR 或 UNABLE_TO_JUDGE。\n"
-        "10. 你必须额外输出 gamma_regime_lens：它只分析 Gamma 体制对分布、尾部和反身性的"
+        "7. 你必须输出 gamma_regime_lens：它只分析 Gamma 体制对分布、尾部和反身性的"
         "风险叠加，绝不产出竞争性方向；只能降低/中和方向倾向的把握度，不能翻转方向。\n"
-        "11. 正 Gamma → 预期波动压制、均值回归、向 pin/call/put 大额行权价钉住；"
+        "8. 正 Gamma → 预期波动压制、均值回归、向 pin/call/put 大额行权价钉住；"
         "负 Gamma → 预期波动放大、助涨助跌、两个方向都可能剧烈反身。\n"
-        "12. 极端负 Gamma + 已有方向倾向时，必须提示催化剂导致反向挤压/剧烈反转的尾部风险，"
+        "9. 极端负 Gamma + 已有方向倾向时，必须提示催化剂导致反向挤压/剧烈反转的尾部风险，"
         "并点名 flip / 对侧 wall / pin 等关键位。\n"
-        "13. 如果 flip/GEX 缺失、rank warming_up 或符号假设不稳，gamma_regime_lens.regime 选 UNKNOWN，"
+        "10. 如果 flip/GEX 缺失、rank warming_up 或符号假设不稳，gamma_regime_lens.regime 选 UNKNOWN，"
         "不得臆断体制。\n"
-        "14. GEX 符号在加密市场是持仓假设，不是测得事实；必须在 positioning_assumption_cn 中说明。\n"
-        "15. 不得把 theoretical_active_view 或 gamma_regime_lens 写成开仓建议、收益预测或对系统模型的重算。\n"
-        "16. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
-        "字段含义摘要：\n"
-        "- market_context: 当前价格、报价币种和价格来源。\n"
-        "- decision: 程序化系统结论；必须作为只读事实。\n"
-        "- reasoning.evidence: 因子证据账本，含同向/反向贡献和排除原因。\n"
-        "- conflict: 同向与反向证据冲突情况。\n"
-        "- blocking: 硬/软门控及解除条件。\n"
-        "- factor_cross_section: TMV、微观流、宏观压力、Gamma/GEX、rank、偏斜和资金费率截面。\n\n"
+        "11. GEX 符号在加密市场是持仓假设，不是测得事实；必须在 positioning_assumption_cn 中说明。\n"
+        "12. 不得把 theoretical_active_view 或 gamma_regime_lens 写成开仓建议、收益预测或对系统模型的重算。\n"
+        "13. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
         "theoretical_active_view 字段要求：\n"
         "- bias 枚举：BULLISH_LEAN / BEARISH_LEAN / NEUTRAL_OR_RANGE / MIXED_UNCLEAR / UNABLE_TO_JUDGE。\n"
         "- conviction 枚举：LOW / MEDIUM / HIGH，表示该参考视角的定性把握度，不是胜率。\n"
@@ -232,10 +220,49 @@ def build_prompt(packet):
         "- data_quality_cn: 说明 GEX/flip/rank 冷启动或缺失带来的可靠性限制。\n"
         "- lens_is_risk_overlay_not_direction: 必须为 true。\n\n"
         "BLIND_THEORETICAL_PACKET JSON：\n"
-        f"{json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)}\n\n"
+        f"{json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+def build_full_review_prompt(packet, blind_payload):
+    blind_payload = _validate_blind_payload(blind_payload)
+    return (
+        "你是交易信号审计复核员，只做审计增强，不是交易执行系统。\n"
+        "这是两次调用真盲审的第二阶段。BLIND_REVIEW_RESULT 是第一阶段在看不到"
+        "系统结论时形成的理论主动视角；你现在可以读取 FULL_AUDIT_PACKET 做复核，"
+        "但不得修改系统 decision、置信度、EDB、blocking、trade_allowed 或下一步动作。\n\n"
+        "边界：\n"
+        "1. decision 是程序化系统结论；必须作为只读事实。\n"
+        "2. confidence 是证据质量刻度，不是胜率、收益概率或可交易概率。\n"
+        "3. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
+        "4. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
+        "5. 输出应帮助人工审计：说明支持项、风险冲突、下一步观察重点和复核失效条件。\n"
+        "6. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
+        "7. 保留 BLIND_REVIEW_RESULT 的 theoretical_active_view 与 gamma_regime_lens 边界："
+        "它们只作审计参考，不改变系统信号、门控、置信或交易许可。\n"
+        "8. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
+        "字段含义摘要：\n"
+        "- market_context: 当前价格、报价币种和价格来源。\n"
+        "- decision: 程序化系统结论；必须作为只读事实。\n"
+        "- reasoning.evidence: 因子证据账本，含同向/反向贡献和排除原因。\n"
+        "- conflict: 同向与反向证据冲突情况。\n"
+        "- blocking: 硬/软门控及解除条件。\n"
+        "- factor_cross_section: TMV、微观流、宏观压力、Gamma/GEX、rank、偏斜和资金费率截面。\n\n"
+        "BLIND_REVIEW_RESULT JSON：\n"
+        f"{json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)}\n\n"
         "FULL_AUDIT_PACKET JSON：\n"
         f"{json.dumps(packet, ensure_ascii=False, sort_keys=True)}"
     )
+
+
+def build_prompt(packet):
+    blind_payload = {
+        "theoretical_active_view": _default_theoretical_active_view(
+            "兼容路径未执行第一阶段盲审。"),
+        "gamma_regime_lens": _default_gamma_regime_lens(
+            "兼容路径未执行第一阶段盲审。"),
+    }
+    return build_full_review_prompt(packet, blind_payload)
 
 
 def review_response_schema():
@@ -419,8 +446,23 @@ def review_response_schema():
     }
 
 
-def build_gemini_request(prompt, model=DEFAULT_MODEL):
+def blind_response_schema():
+    full = review_response_schema()
+    props = full["properties"]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "theoretical_active_view": props["theoretical_active_view"],
+            "gamma_regime_lens": props["gamma_regime_lens"],
+        },
+        "required": list(REQUIRED_BLIND_FIELDS),
+    }
+
+
+def build_gemini_request(prompt, model=DEFAULT_MODEL, schema=None):
     del model
+    schema = schema or review_response_schema()
     return {
         "contents": [{
             "role": "user",
@@ -430,7 +472,7 @@ def build_gemini_request(prompt, model=DEFAULT_MODEL):
             "temperature": 0.2,
             "topP": 0.85,
             "responseMimeType": "application/json",
-            "responseSchema": _strip_schema_for_legacy(review_response_schema()),
+            "responseSchema": _strip_schema_for_legacy(schema),
         },
     }
 
@@ -444,6 +486,51 @@ def call_gemini(api_key, model, request_body, timeout=60):
         if "responseFormat" not in str(exc) and "response_format" not in str(exc):
             raise
         return _post_gemini(api_key, model, _legacy_gemini_request(request_body), timeout)
+
+
+def resolve_gemini_api_keys(api_key=None, fallback_api_key=None, environ=None):
+    environ = environ if environ is not None else os.environ
+
+    def first_present(names):
+        for name in names:
+            value = environ.get(name)
+            if value:
+                return value
+        return None
+
+    primary = api_key or first_present((
+        "GEMINI_3_5_FLASH_API_KEY",
+        "GEMINI_FLASH_API_KEY",
+        "GEMINI_LOW_COST_API_KEY",
+        "GEMINI_API_KEY",
+    ))
+    fallback = fallback_api_key or first_present((
+        "GEMINI_PAID_API_KEY",
+        "GEMINI_FALLBACK_API_KEY",
+        "GEMINI_PRO_API_KEY",
+    ))
+    chain = []
+    if primary:
+        chain.append(("low_cost", primary))
+    if fallback and fallback != primary:
+        chain.append(("paid_fallback", fallback))
+    return chain
+
+
+def _call_gemini_with_key_chain(key_chain, model, request_body, timeout,
+                                caller=call_gemini):
+    if not key_chain:
+        raise RuntimeError(
+            "Gemini API key is required; set GEMINI_3_5_FLASH_API_KEY "
+            "(or GEMINI_API_KEY) and optional GEMINI_PAID_API_KEY fallback.")
+    failures = []
+    for tier, key in key_chain:
+        try:
+            return caller(key, model, request_body, timeout)
+        except Exception as exc:
+            failures.append(tier + ": " + _redact_sensitive_text(str(exc))[:180])
+    raise RuntimeError("Gemini call failed for all key tiers: "
+                       + " | ".join(failures))
 
 
 def _post_gemini(api_key, model, request_body, timeout):
@@ -514,10 +601,17 @@ def parse_gemini_response(response):
     return json.loads(_strip_json_fence(text))
 
 
-def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None):
+def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
+                     blind_payload=None):
     payload = _validate_model_payload(payload)
+    blind_payload = _validate_blind_payload(blind_payload) if blind_payload else None
     packet = build_review_packet(card)
+    blind_packet = build_blind_theoretical_packet(packet)
     reviewed_at = reviewed_at or _now_iso()
+    active_view = ((blind_payload or {}).get("theoretical_active_view")
+                   if blind_payload else payload["theoretical_active_view"])
+    gamma_lens = ((blind_payload or {}).get("gamma_regime_lens")
+                  if blind_payload else payload["gamma_regime_lens"])
     review = {
         "schema": OUTPUT_SCHEMA_VERSION,
         "status": "OK",
@@ -526,13 +620,14 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None):
         "reviewed_at": reviewed_at,
         "prompt_version": PROMPT_VERSION,
         "input_packet_hash": _sha256_json(packet),
+        "blind_input_packet_hash": _sha256_json(blind_packet),
         "summary_cn": payload["summary_cn"],
         "agreement_with_system": payload["agreement_with_system"],
         "caution_level": _policy_caution(payload["caution_level"], packet),
         "theoretical_active_view": _normalize_theoretical_active_view(
-            payload["theoretical_active_view"]),
+            active_view, derived_blind=bool(blind_payload)),
         "gamma_regime_lens": _normalize_gamma_regime_lens(
-            payload["gamma_regime_lens"]),
+            gamma_lens),
         "main_supporting_factors": _trim_list(payload["main_supporting_factors"]),
         "main_risks_or_conflicts": _trim_list(payload["main_risks_or_conflicts"]),
         "operator_focus": _trim_list(payload["operator_focus"]),
@@ -543,8 +638,8 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None):
     return review
 
 
-def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
-                     limit=20, include_synthetic=False, timeout=60,
+def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None,
+                     model=DEFAULT_MODEL, limit=20, include_synthetic=False, timeout=60,
                      call_gemini=call_gemini, reviewed_at=None):
     source = Path(source)
     reviews_output = Path(reviews_output)
@@ -552,11 +647,13 @@ def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
     cards = _dedupe_cards(cards)
     cards = sorted(cards, key=_card_sort_key, reverse=True)
     done = _read_review_card_ids(reviews_output)
+    key_chain = resolve_gemini_api_keys(api_key, fallback_api_key)
     written = 0
+    attempted = 0
     skipped = 0
     errors = 0
     for card in cards:
-        if limit and written >= limit:
+        if limit and attempted >= limit:
             break
         card_id = _card_id(card)
         if not card_id:
@@ -568,13 +665,25 @@ def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
         if _is_synthetic(card) and not include_synthetic:
             skipped += 1
             continue
+        attempted += 1
         try:
             packet = build_review_packet(card)
-            prompt = build_prompt(packet)
-            request_body = build_gemini_request(prompt, model=model)
-            raw_response = call_gemini(api_key, model, request_body, timeout)
+            blind_prompt = build_blind_prompt(packet)
+            blind_request = build_gemini_request(
+                blind_prompt, model=model, schema=blind_response_schema())
+            blind_response = _call_gemini_with_key_chain(
+                key_chain, model, blind_request, timeout, call_gemini)
+            blind_payload = _validate_blind_payload(
+                parse_gemini_response(blind_response))
+
+            prompt = build_full_review_prompt(packet, blind_payload)
+            request_body = build_gemini_request(
+                prompt, model=model, schema=review_response_schema())
+            raw_response = _call_gemini_with_key_chain(
+                key_chain, model, request_body, timeout, call_gemini)
             payload = parse_gemini_response(raw_response)
             review = build_llm_review(card, payload, model=model,
+                                      blind_payload=blind_payload,
                                       reviewed_at=reviewed_at)
             _append_jsonl(reviews_output, {
                 "card_id": card_id,
@@ -615,10 +724,23 @@ def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
         "source": str(source),
         "reviews_output": str(reviews_output),
         "written_reviews": written,
+        "attempted_cards": attempted,
         "skipped_cards": skipped,
         "errors": errors,
         "model": model,
+        "api_key_tiers": [tier for tier, _ in key_chain],
     }
+
+
+def _validate_blind_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("blind model output must be object")
+    missing = [key for key in REQUIRED_BLIND_FIELDS if key not in payload]
+    if missing:
+        raise ValueError("blind model output missing fields: " + ", ".join(missing))
+    _validate_theoretical_active_view(payload.get("theoretical_active_view"))
+    _validate_gamma_regime_lens(payload.get("gamma_regime_lens"))
+    return payload
 
 
 def _validate_model_payload(payload):
@@ -663,7 +785,7 @@ def _validate_theoretical_active_view(view):
         raise ValueError("theoretical_active_view.counter_evidence must be list")
 
 
-def _normalize_theoretical_active_view(view):
+def _normalize_theoretical_active_view(view, derived_blind=False):
     view = _as_dict(view)
     bias = str(view.get("bias") or "UNABLE_TO_JUDGE").upper()
     conviction = str(view.get("conviction") or "LOW").upper()
@@ -680,7 +802,7 @@ def _normalize_theoretical_active_view(view):
         "boundary_cn": str(view.get("boundary_cn") or (
             "该判断只作审计参考，不改变系统信号、门控、置信或交易许可。"
         ))[:260],
-        "derived_blind": False,
+        "derived_blind": bool(derived_blind),
         "is_not_a_signal": True,
         "validation_status": "UNVALIDATED",
     }
@@ -780,7 +902,7 @@ def _policy_caution(caution, packet):
     order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
     floor = "LOW"
     conflict = _as_dict(packet.get("conflict"))
-    if str(conflict.get("level") or "").upper() in {"MATERIAL", "HIGH"}:
+    if str(conflict.get("level") or "").upper() in {"MATERIAL", "HIGH", "SEVERE"}:
         floor = "MEDIUM"
     quality = _as_dict(packet.get("quality"))
     if quality.get("overall") not in (None, "OK"):
@@ -881,13 +1003,33 @@ def _card_id(card):
 def _card_sort_key(card):
     identity = _as_dict(card.get("identity"))
     return (
-        identity.get("confirmed_time_ms")
-        or card.get("confirmed_time_ms")
-        or identity.get("confirmed_at")
-        or card.get("created_at")
-        or "",
+        _timestamp_sort_value(
+            identity.get("confirmed_time_ms") or card.get("confirmed_time_ms"))
+        or _timestamp_sort_value(
+            identity.get("confirmed_at") or card.get("created_at")),
         _card_id(card) or "",
     )
+
+
+def _timestamp_sort_value(value):
+    if isinstance(value, bool) or value in ("", None):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = _dt.datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+            return parsed.timestamp() * 1000.0
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _is_synthetic(card):
@@ -933,8 +1075,17 @@ def main(argv=None):
                         help="Sidecar JSONL path for LLM reviews.")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help="Gemini model name.")
-    parser.add_argument("--api-key", default=os.environ.get("GEMINI_API_KEY"),
-                        help="Gemini API key. Prefer GEMINI_API_KEY env var.")
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help=("Low-cost Gemini key for the default first attempt. Env order: "
+              "GEMINI_3_5_FLASH_API_KEY, GEMINI_FLASH_API_KEY, "
+              "GEMINI_LOW_COST_API_KEY, GEMINI_API_KEY."))
+    parser.add_argument(
+        "--fallback-api-key",
+        default=None,
+        help=("Fallback paid-tier Gemini key. Env order: GEMINI_PAID_API_KEY, "
+              "GEMINI_FALLBACK_API_KEY, GEMINI_PRO_API_KEY."))
     parser.add_argument("--limit", type=int, default=5,
                         help="Maximum new cards to review in this run.")
     parser.add_argument("--timeout", type=int, default=60,
@@ -946,6 +1097,7 @@ def main(argv=None):
         args.source,
         args.reviews_output,
         api_key=args.api_key,
+        fallback_api_key=args.fallback_api_key,
         model=args.model,
         limit=args.limit,
         include_synthetic=args.include_synthetic,

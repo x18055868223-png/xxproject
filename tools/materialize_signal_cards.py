@@ -54,10 +54,12 @@ def materialize(source, output, max_cards=200, llm_reviews=None):
         records = records[:max_cards]
 
     manifest_cards = []
+    expected_card_files = set()
     for record in records:
         identity = _identity(record)
         card_id = identity.get("card_id") or record.get("card_id")
         filename = _filename_for_card(card_id)
+        expected_card_files.add(filename)
         rel_path = "signal_cards/" + filename
         _write_json(cards_dir / filename, record)
         manifest_cards.append({
@@ -71,9 +73,9 @@ def materialize(source, output, max_cards=200, llm_reviews=None):
     manifest = {
         "schema": dict(MANIFEST_SCHEMA),
         "generated_at": _now_iso(),
-        "source": str(source),
         "cards": manifest_cards,
     }
+    _prune_stale_card_json(cards_dir, expected_card_files)
     _write_json(cards_dir / "index.json", manifest)
     _write_fallback(cards_dir / "fallback.js", records)
     return {
@@ -166,10 +168,32 @@ def _quality(record):
 def _sort_key(record):
     identity = _identity(record)
     ms = identity.get("confirmed_time_ms") or record.get("confirmed_time_ms")
-    if isinstance(ms, (int, float)):
-        return (float(ms), identity.get("card_id") or "")
-    confirmed_at = identity.get("confirmed_at") or record.get("created_at") or ""
-    return (confirmed_at, identity.get("card_id") or "")
+    timestamp = _timestamp_sort_value(ms)
+    if timestamp == 0.0:
+        timestamp = _timestamp_sort_value(
+            identity.get("confirmed_at") or record.get("created_at"))
+    return (timestamp, identity.get("card_id") or "")
+
+
+def _timestamp_sort_value(value):
+    if isinstance(value, bool) or value in ("", None):
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = _dt.datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+            return parsed.timestamp() * 1000.0
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 def _filename_for_card(card_id):
@@ -178,6 +202,14 @@ def _filename_for_card(card_id):
     if not safe:
         safe = "card"
     return safe + ".json"
+
+
+def _prune_stale_card_json(cards_dir, expected_card_files):
+    expected = set(expected_card_files)
+    for path in cards_dir.glob("*.json"):
+        if path.name == "index.json" or path.name in expected:
+            continue
+        path.unlink()
 
 
 def _write_json(path, payload):

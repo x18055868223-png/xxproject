@@ -1,10 +1,24 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
 # 02 · Anchor（GEX 锚 / 引力均值回归）
 
 > 模块：① 信号层 · 主链路 2/3（进 `MODULE_SEQUENCE` / `module_results`）
 > canonical：`中性回路 - opus4.8\demo\modules.py:evaluate_anchor` + `demo\factors.py`（band/nd/gravity）
 > 数据源：gexmonitor 快照（`flip_point` / `spring` / `source_ts`）
 > 最后核对：2026-06-02（源码）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | Anchor（GEX 锚 / 引力均值回归） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 触发 / 风险门 |
+| 理论机制 | 以 gamma flip point 为锚，衡量价格相对锚的标准化偏离、引力强度和锚是否受损后修复。 |
+| 预期符号 | `nd` 的正负只表示价格在锚上方或下方，不是交易方向。 |
+| 适用周期 | 每轮 GEX 快照与主链评估；新鲜度约束约 70 分钟。 |
+| 与现有因子重叠 | 与 GGR/GEX 信息共用期权空间数据，并为 NeutralRepair 提供锚状态。 |
+| 主要失效条件 | flip 缺失或过期、band 被上下限夹住、spring/std 异常、GEX 快照不新鲜。 |
+| 改变的决策 | 改变 Anchor module state，并参与 NeutralRepair 窗口开启条件。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 以 gexmonitor 的 **gamma flip_point 为锚**，度量当前价相对锚的标准化偏离与"被拉回锚"的引力强度。是 NeutralRepair 时序门判断"锚是否受损/修复"的依据。

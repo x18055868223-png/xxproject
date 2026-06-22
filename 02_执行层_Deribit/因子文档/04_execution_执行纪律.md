@@ -1,9 +1,23 @@
-> 当前执行层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v1.6.2/KPF/Phase 1 描述；当前执行交付物以 `demo/最新交付物/spm_calendar_protected_short_v1.py` `STRATEGY_VERSION=2.5.0` 为准，交易门默认关闭。本文用于解释历史设计和组件语义，不代表当前已启用交易。
 # 04 · execution（执行纪律：保护腿优先 / maker-only / 只追一步）
 
 > 模块：② 执行层
 > canonical：`Deribit期权交易执行层\src\execution.py`（`exec_*`）
 > 最后核对：2026-06-02（源码）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | execution（执行纪律） |
+| 所属回路 | ② 执行层 · Deribit |
+| 作用层 | 风险门 / 审计 |
+| 理论机制 | 以保护腿优先、maker-only、最多追价一步、禁止 taker/market 和多重开关约束真实下单路径。 |
+| 预期符号 | 无方向符号；只判断执行意图能否从 dry intent 进入真实订单。 |
+| 适用周期 | ORDER 轮下单、追价、撤单、回滚全过程。 |
+| 与现有因子重叠 | 与 ledger 共享成交和意图状态，与 plans 共享被选方案。 |
+| 主要失效条件 | 人工授权误开、价差突然扩大、保护腿未成交仍卖短腿、post_only 被拒后追价越界。 |
+| 改变的决策 | 改变是否真实下单、是否撤残单、是否回滚保护腿和最终执行状态。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 下单纪律层。**保护腿优先、maker-only(post_only)、最多追一步、禁 taker/market**。`ALLOW_TRADING=False` 或 `KILL_SWITCH=True` 时所有真实下单短路为"记录意图"（空跑核对）。

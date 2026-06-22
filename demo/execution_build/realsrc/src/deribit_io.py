@@ -107,8 +107,10 @@ def dbt_account_summary(currency, extended=True):
 
 
 def dbt_get_positions(currency, kind="option"):
+    """**读失败返回 None**（区别于"确实无持仓"的 []），便于关键路径(启动恢复)对未知 fail-closed；
+    best-effort 调用方按需 `or []`（不阻断降险/管理）。"""
     return _call("GET", "/private/get_positions",
-                 {"currency": currency, "kind": kind}, "get_positions", _READ_RETRIES) or []
+                 {"currency": currency, "kind": kind}, "get_positions", _READ_RETRIES)
 
 
 def dbt_simulate_portfolio(currency, simulated_positions, add_positions=True):

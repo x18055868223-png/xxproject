@@ -1,10 +1,24 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
 # 06 · EDB（到期窗口方向合成层）—— 权威方向层
 
 > 模块：① 信号层 · 方向层（**权威**，不进 `module_results`）
 > canonical：`demo\edb.py:evaluate_edb`
 > 设计稿：`demo\FORWARD_DESIGN_V0.5_EDB.md` / `demo\LOGIC_REVIEW_V0.5_EDB.md`
 > 最后核对：2026-06-05（源码，demo v1.1.0；算法仍 v0.5.4 标定口径，本版仅加 `calibration_state` 诚实标注，未改方向/置信算法）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | EDB（到期窗口方向合成层） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 方向 |
+| 理论机制 | 将 TMV、CVD、MACRO、FUNDING、SRD、GGR_SPATIAL 等独立证据按权重、覆盖、一致性和安全门合成方向后验。 |
+| 预期符号 | 正值偏 bullish，负值偏 bearish，接近 0 为中性或方向不足。 |
+| 适用周期 | 每个 NeutralRepair 有效窗口和信号审计截面。 |
+| 与现有因子重叠 | 汇总多因子证据，是方向权威层；不应被下游重复读内部因子后重判。 |
+| 主要失效条件 | 证据覆盖不足、票源高度冲突、GGR/MACRO 硬 veto、冷启动分布不稳。 |
+| 改变的决策 | 改变 `directional_bias`、`support_label`、`side_hint`、内部证据分和动作建议。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 系统**唯一权威方向层**。把六类独立证据的有符号方向票按权重合成后验方向，置信 = 强度 × 一致度 × 覆盖度（带 floor 调制）× GGR 乘子。取代已退役的 bias_thesis。
@@ -38,7 +52,7 @@ confidence = clamp(100·strength·agr_factor·cov_factor · ggr_multiplier, 0, 1
 ```
 **为什么改**：v0.5.3 的 `100·|EDB|·一致度·覆盖·GGR` 四连乘把强趋势压垮（实盘强空只给 3-6）。0.5.4 把一致度/覆盖改为**带 floor 的调制**，强而一致、较完整的读数能真正进可交易区，真冲突/稀疏仍低。
 
-**置信语义（v1.1.0 新增 `calibration_state`）**：payload 带 `calibration_state`（读 `config.edb_calibration_state`，现 `UNCALIBRATED`）。在前向标签标定前，`confidence` 是**证据后验质量分**（强度×一致×覆盖×Gamma门），**不是真实胜率/盈亏概率**——审计卡结论句、置信链、推送综述、桥 digest 均显式标「未校准」。这是落实"未校准 confidence 不得被解释为胜率、执行层不得线性放大"的红线。P0 校准签收后把 `edb_calibration_state` 翻成 `CALIBRATED`，所有"未校准"提示自动消失，无需改码。`calibration_state` 为新增非破坏字段，故 `schema_version` 仍 `nrd.schema.v1.0.0`。
+**置信语义（v1.1.0 新增 `calibration_state`）**：payload 带 `calibration_state`（读 `config.edb_calibration_state`，现 `UNCALIBRATED`）作为兼容审计 raw 字段。在前向标签标定前，`confidence` 是**证据后验质量分**（强度×一致×覆盖×Gamma门），**不是真实胜率/盈亏概率**。当前前端关键指标与 FMZ 短推不再展示“未校准”提示，只显示内部证据分；`calibration_state` 为新增非破坏字段，故 `schema_version` 仍 `nrd.schema.v1.0.0`。
 
 ### 2.5 门（veto / 调制）
 - GGR `veto=True` → `GGR_NEGATIVE_GAMMA_VETO`；MACRO `MACRO_BLOCKING`；FUNDING `FUNDING_HARD_WARNING` → 任一 veto → confidence=0。

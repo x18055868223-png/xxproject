@@ -1,7 +1,7 @@
 {
   "name": "signal-audit-frontend-fixture",
-  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.19-r2.2",
-  "generated_at": "2026-06-19",
+  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.22-r3.0",
+  "generated_at": "2026-06-22",
   "frontend_profile": "signal_audit_static_v1",
   "card_schema": "signal_review_card@1.0.0",
   "manifest_schema": "signal_cards_manifest@1.0.0",

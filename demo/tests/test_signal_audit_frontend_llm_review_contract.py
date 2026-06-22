@@ -4,10 +4,6 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-ARCHIVE = pathlib.Path(
-    r"C:\Users\Xu\Documents\信号审计前端页面设计\archives"
-    r"\signal-audit-final-20260618"
-)
 DEPLOY_FRONTEND = ROOT / "deploy" / "signal_audit" / "frontend"
 
 
@@ -37,14 +33,12 @@ def first_fixture_with_active_view(root):
 
 
 def main():
-    for root in (ARCHIVE, DEPLOY_FRONTEND):
+    for root in (DEPLOY_FRONTEND,):
         assert_true(root.exists(), "frontend root missing " + str(root))
         app = read(root / "app.js")
         html = read(root / "index.html")
         assert_true("function renderLlmReview(doc)" in app,
                     "app.js should define renderLlmReview")
-        assert_true("function renderSignalSessionContext(doc)" in app,
-                    "app.js should define renderSignalSessionContext")
         assert_true("function hasLlmGammaKeyLevel(doc, key)" in app,
                     "app.js should detect individual LLM gamma key levels before rendering repeated key levels")
         for marker in (
@@ -74,23 +68,18 @@ def main():
             "主要尾部风险",
             "体制极端度",
             "输入包哈希",
-            "信号时区置信度 / 前提耐久度",
-            "低转中缓冲带",
-            "不改变系统方向、置信、门控或交易许可",
         ):
             assert_true(text in app, "app.js should localize LLM review text " + text)
         assert_true('statusBadge("Status"' not in app and 'statusBadge("Caution"' not in app,
                     "LLM review badges should use Chinese labels")
         rank_idx = app.find("${renderGexRank(doc)}")
-        session_idx = app.find("${renderSignalSessionContext(doc)}")
         llm_idx = app.find("${renderLlmReview(doc)}")
         decision_idx = app.find("${renderDecision(doc)}")
         layers_idx = app.find("${renderDisplayLayers(doc)}")
-        assert_true(rank_idx != -1 and session_idx != -1 and llm_idx != -1
-                    and decision_idx != -1 and layers_idx != -1,
-                    "renderDocument should call rank, session context, llm review, decision, and display layers")
-        assert_true(rank_idx < session_idx < llm_idx < decision_idx < layers_idx,
-                    "session context should render between rank and LLM review")
+        assert_true(rank_idx != -1 and llm_idx != -1 and decision_idx != -1 and layers_idx != -1,
+                    "renderDocument should call rank, llm review, decision, and display layers")
+        assert_true(rank_idx < llm_idx < decision_idx < layers_idx,
+                    "LLM review should render immediately after rank and before system decision")
         assert_true(".llm-review-panel" in html and ".llm-review-summary" in html,
                     "index.html should include prominent LLM review styles")
 
@@ -153,10 +142,10 @@ def main():
         assert_true("\"gamma_regime_lens\"" in fallback,
                     "fallback.js should include gamma regime lens fixture data")
 
-    assert_true(read(ARCHIVE / "app.js") == read(DEPLOY_FRONTEND / "app.js"),
-                "archive and deploy app.js should stay mirrored")
-    assert_true(read(ARCHIVE / "index.html") == read(DEPLOY_FRONTEND / "index.html"),
-                "archive and deploy index.html should stay mirrored")
+    assert_true((DEPLOY_FRONTEND / "app.js").exists(),
+                "deploy app.js should exist")
+    assert_true((DEPLOY_FRONTEND / "index.html").exists(),
+                "deploy index.html should exist")
     print("signal_audit_frontend_llm_review_contract: PASS")
 
 

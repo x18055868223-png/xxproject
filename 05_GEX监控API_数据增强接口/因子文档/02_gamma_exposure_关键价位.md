@@ -4,6 +4,21 @@
 > canonical：`src/gexmonitorapi/parsers.py` + `/v1/info.gamma_exposure`
 > 最后核对：2026-06-19（r2.2 文档收纳）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | gamma_exposure（关键价位） |
+| 所属回路 | ⑤ GEX 数据增强接口 |
+| 作用层 | 风险门 / 时间先验 / 审计 |
+| 理论机制 | 将 flip、pin、call wall、put wall、magnet 等外部关键位映射为空间约束背景，观察现价与期权结构的贴合度。 |
+| 预期符号 | NEUTRAL_SPATIAL_CONTEXT |
+| 适用周期 | GEX API 刷新轮 / 信号审计展示轮。 |
+| 与现有因子重叠 | 与内部 GGR 的 `flip_point`、`pin_strike` 和 `distance_to_pin_pct` 重叠，但外部来源需单独标注。 |
+| 主要失效条件 | 关键位缺失、跨标的数据源混入、外部页面延迟或字段语义变化。 |
+| 改变的决策 | 改变审计页空间约束解释和人工排查项，不改变执行层授权。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 
 `gamma_exposure` 提供 flip、pin、wall、magnet 等关键价位，用于观察价格与期权结构空间约束的贴合程度。

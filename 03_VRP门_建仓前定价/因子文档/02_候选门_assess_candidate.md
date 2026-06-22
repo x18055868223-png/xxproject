@@ -4,6 +4,21 @@
 > canonical：`系统总纲\VRP\src\vrp_model.py:assess_candidate`（:280）
 > 最后核对：2026-06-02（源码）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | assess_candidate（VRP 候选门） |
+| 所属回路 | ②-门 VRP · 建仓前定价 |
+| 作用层 | 风险门 |
+| 理论机制 | 对具体垂直候选计算可执行净 credit、hurdle 净 credit 和完整 round-trip 摩擦后的 ccy edge。 |
+| 预期符号 | `candidate_vrp_edge_ccy` 为正且超过门槛才 PASS；小于门槛则 BLOCK。 |
+| 适用周期 | PLAN 轮每条垂直候选经过窗口门后。 |
+| 与现有因子重叠 | 与 plans/leg_selection 共用候选报价，与 forward_vol_hurdle/BS pricer 共用重定价基准。 |
+| 主要失效条件 | bid/ask 过期、保护腿 IV 缺失、费用/价差摩擦低估、把 edge 加进 plan_ev。 |
+| 改变的决策 | 改变候选是否能进入方案库和 VRP 相关审计字段。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 对窗口门 PASS 后的每条**具体垂直候选**，做权威的**币种全摩擦（full-burn）净 edge** 判定：可执行报价下的净 credit，减去同结构在 forward_vol_hurdle 下 BS 重定价的净 credit，再减完整 round-trip 摩擦。**这才是 VRP 那道"硬门"。**
 

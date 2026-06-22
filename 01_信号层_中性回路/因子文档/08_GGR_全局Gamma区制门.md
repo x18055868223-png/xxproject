@@ -1,4 +1,3 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
 # 08 · GGR（全局 Gamma 区制门）
 
 > 模块：① 信号层 · EDB 证据 + **安全门**（不进 `module_results`）
@@ -6,6 +5,21 @@
 > 因子卡：`add\global_gamma_regime_factor_v1.0.md`（已复制进交付物快照）
 > 数据源：gexmonitor（flip_point/spring/net_gex/walls）+ Deribit 每档 gamma×OI
 > 最后核对：2026-06-02（源码）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | GGR（全局 Gamma 区制门） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 风险门 / 方向 |
+| 理论机制 | 用 net gamma、flip 距离、max gamma strike 与 walls 判断市场处于钉住、过渡或负 gamma 放大区。 |
+| 预期符号 | 正 gamma 提升钉住可信度；负 gamma 只下调或否决置信，不直接给硬方向。 |
+| 适用周期 | 每轮期权快照和 GEX 增强信息刷新。 |
+| 与现有因子重叠 | 与 Anchor/GEX info 共用空间信息，也向 EDB 提供安全门与有限 spatial vote。 |
+| 主要失效条件 | greeks/OI 过期、flip 缺失、gamma 符号误读、wall 档位覆盖不足。 |
+| 改变的决策 | 改变 EDB `confidence_multiplier`、`veto`、GGR_SPATIAL 票与对冲持续性例外修正。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 判市场处于**正 Gamma 钉住区**（做市商对冲压波动，适合单边卖权）还是**负 Gamma 放大区**（危险）。**首先是安全门**（负 gamma 砍/否决置信），其次是置信调制，最后才在钉住区给一个小空间票。

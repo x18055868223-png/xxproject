@@ -1,10 +1,24 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
 # 03 · TMV-F（趋势-动量-波动因子）
 
 > 模块：① 信号层 · 主链路 3/3（进 `MODULE_SEQUENCE` / `module_results`）
 > canonical：`demo\modules.py:evaluate_tmvf` + `demo\factors.py:compute_tmvf_profile / compute_tmv_core / compute_funding_layer / compute_micro_flow_context`
 > 在 EDB 中的角色：**主干证据 TMV**（base_weight 1.00，权重最高）
 > 最后核对：2026-06-02（源码）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | TMV-F（趋势-动量-波动因子） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 方向 |
+| 理论机制 | 用 24h/48h 趋势、动量、量能与有界 funding 修正形成方向骨架，并保留 CVD 微流上下文给 EDB 使用。 |
+| 预期符号 | 正值偏 bullish，负值偏 bearish，接近 0 为中性或不明确。 |
+| 适用周期 | 1h K 线的 24h/48h 主窗口，4h/8h/12h 微流辅助窗口。 |
+| 与现有因子重叠 | 与 EDB 的 TMV、CVD、FUNDING 证据相邻；micro_flow 不回灌 TMV，避免流向双计。 |
+| 主要失效条件 | K 线不足、双窗口冲突、funding 拥挤被误当确认、微流覆盖不足。 |
+| 改变的决策 | 改变 EDB 中 TMV 证据票、方向一致性与置信分解。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 1h K 线驱动的趋势骨架。双窗口（24h/48h）各算 TMV 核（趋势方向 + 动量 + 量能），叠加**有界 funding 反身性**修正，blend 成 `tmv_blend`；另算 volume-bar 的 CVD 微流上下文供 EDB 的 CVD 证据使用。

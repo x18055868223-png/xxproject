@@ -4,6 +4,21 @@
 > canonical：`src/gexmonitorapi/parsers.py` + `src/gexmonitorapi/models.py`
 > 最后核对：2026-06-19（r2.2 文档收纳）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | gex_board（GEX 总览） |
+| 所属回路 | ⑤ GEX 数据增强接口 |
+| 作用层 | 风险门 / 审计 |
+| 理论机制 | 把外部 GEX 页面中的净 Gamma、DVOL 与市场状态整理为只读背景，帮助识别当前 Gamma 环境。 |
+| 预期符号 | NEUTRAL_CONTEXT / RISK_OVERLAY |
+| 适用周期 | GEX API 刷新轮 / 审计卡物料化轮。 |
+| 与现有因子重叠 | 与信号层 GGR、Gamma regime、LLM Gamma lens 重叠，但只提供外部背景，不覆盖内部门控。 |
+| 主要失效条件 | 页面结构变化、样本冷启动、标的价格与期权链不匹配、缓存陈旧。 |
+| 改变的决策 | 改变审计页 Gamma/GEX 展示与人工复核重点，不改变方向、置信、阻断或交易许可。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 
 `gex_board` 给出当前市场的 Gamma 背景摘要，主要用于回答“当前是否处在偏正 Gamma、偏负 Gamma、还是过渡区”的只读上下文问题。

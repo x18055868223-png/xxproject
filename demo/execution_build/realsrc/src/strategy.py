@@ -425,10 +425,25 @@ def _gate_summary_now():
                         _effective_kill(), EMERGENCY_REDUCE_ONLY)
 
 
+def _signal_side_to_bias(side_hint):
+    """信号包 side_hint → 执行方向偏置（put/put_credit→SHORT_PUT，call/call_credit→SHORT_CALL）。
+    无法映射（缺失/非法）→ None（fail-closed）。"""
+    s = str(side_hint or "").upper()
+    if "PUT" in s:
+        return "SHORT_PUT"
+    if "CALL" in s:
+        return "SHORT_CALL"
+    return None
+
+
 def _signal_allows_entry(verdict):
     if (verdict or {}).get("availability") == "OFFLINE_MANUAL":
-        return SIGNAL_STATE in ENTER_SIGNALS          # 离线手动：静态信号决定
-    return bool((verdict or {}).get("tradeable")) and not (verdict or {}).get("block_new_opens")
+        return SIGNAL_STATE in ENTER_SIGNALS          # 离线手动：静态信号决定（仅 DRY_RUN 权威）
+    if not (bool((verdict or {}).get("tradeable")) and not (verdict or {}).get("block_new_opens")):
+        return False
+    # FILE/G 总线：信号方向必须与执行方向(DIRECTION_BIAS)一致，否则 **fail-closed**（防 side_hint=put 却生成 call 价差）。
+    # 注：完整"side_hint 驱动方向"(ExecutionSignalContext) 随总线模式落地；此处先做不一致即阻断的守门。
+    return _signal_side_to_bias((verdict or {}).get("side_hint")) == DIRECTION_BIAS
 
 
 def _has_position(state):
@@ -675,9 +690,30 @@ def _attempt_commit(locked, spot, verdict, now_ms):
         ledger_set_state(S_SHORT_ACTIVE_PROTECTED)
         result.update({"committed": True, "entry_snapshot": snap, "reason": "STRUCTURE_OPEN"})
         return result
-    if decision["state"] == ENTRY_ABANDONED:                     # 超额度未成交 → 撤/回退保护腿残量
-        if gate["allowed"] and prog["prot_done"] > 0 and UNWIND_PROTECTION_ON_NO_SHORT:
-            exec_maker_only_fill("sell", long_i, prog["prot_done"], label="entry_unwind")
+    if decision["state"] == ENTRY_ABANDONED:                     # 超额度未成交 → 收口残量
+        short_done = prog["short_done"] or 0.0
+        prot_done = prog["prot_done"] or 0.0
+        if short_done > 1e-12:
+            # INV-03：已部分卖出短腿 → 冻结为(较小)1:1 已覆盖持仓，仅退**多余**保护，**绝不卖到短腿覆盖量以下**
+            avg_short = prog["short_credit"] / short_done
+            avg_prot = (prog["prot_cost"] / prot_done) if prot_done > 0 else avg_short
+            if gate["allowed"] and (prot_done - short_done) > 1e-12 and UNWIND_PROTECTION_ON_NO_SHORT:
+                exec_maker_only_fill("sell", long_i, prot_done - short_done, label="entry_unwind_excess")
+            entry_fees = (acct_option_fee_ccy(avg_short, short_done)
+                          + acct_option_fee_ccy(avg_prot, short_done))
+            anchor = _build_entry_risk_anchor(locked, spot, now_ms)
+            snap = build_vertical_entry_snapshot(
+                locked, {"filled": short_done, "avg_price": avg_short},
+                {"filled": short_done, "avg_price": avg_prot}, entry_fees, now_ms,
+                entry_risk_anchor=anchor)
+            _G(_POSITION_KEY, snap)
+            _G(_LOCKED_KEY, None)
+            ledger_set_state(S_SHORT_ACTIVE_PROTECTED)
+            result.update({"committed": True, "entry_snapshot": snap,
+                           "reason": "ENTRY_ABANDONED_PARTIAL_FROZEN:" + decision["reason"]})
+            return result
+        if gate["allowed"] and prot_done > 0 and UNWIND_PROTECTION_ON_NO_SHORT:
+            exec_maker_only_fill("sell", long_i, prot_done, label="entry_unwind")   # 无短腿 → 可全退保护
         _G(_LOCKED_KEY, None)
         result["reason"] = "ENTRY_ABANDONED:" + decision["reason"]
         return result
@@ -691,7 +727,9 @@ _CLOSED_HISTORY_KEY = "spm_closed_history_v1"
 
 
 def _recovery_verdict():
-    return _G(_RECOVERY_KEY) or {"state": "OK", "allow_new_open": True}
+    # 默认 **fail-closed**：恢复未检查（如启动恢复尚未运行）→ 禁开新仓，不可默认放行（INV-04/10）。
+    # 生产 main() 启动即调 startup_recovery_check 落 OK/DATA_UNKNOWN；此默认仅覆盖"尚未检查"窗口。
+    return _G(_RECOVERY_KEY) or {"state": "RECOVERY_NOT_CHECKED", "allow_new_open": False}
 
 
 def _archive_closed(snap, now_ms):
@@ -706,18 +744,28 @@ def _archive_closed(snap, now_ms):
     ledger_set_state(S_CLOSED)
 
 
+def _data_unknown_verdict(reason):
+    """关键账户读取未知 → 禁开新仓（不凭本地空状态假设交易所无仓位；INV-04/INV-10）。"""
+    return {"state": "DATA_UNKNOWN", "reasons": [reason], "allow_new_open": False}
+
+
 def startup_recovery_check(currency):
     """启动恢复（P0①：以 _POSITION_KEY 入场快照为持仓真相）：读交易所真实期权/永续持仓 +
     快照剩余短/保护腿（无快照但开仓活动在途 → 用活动进度作期望，按成交重校验）+ 真实活动订单
-    → 裁决并落 _G（恢复完成前禁开新仓）。"""
+    → 裁决并落 _G（恢复完成前禁开新仓）。
+    **三态读取**：持仓/活动订单读取失败=未知 → DATA_UNKNOWN（禁新开），**不可凭本地空判"无仓"**。"""
     try:
-        opt = dbt_get_positions(currency, "option") or []
+        opt = dbt_get_positions(currency, "option")
     except Exception:
-        opt = []
+        opt = None
     try:
-        perp = dbt_get_positions(currency, "future") or []
+        perp = dbt_get_positions(currency, "future")
     except Exception:
-        perp = []
+        perp = None
+    if opt is None or perp is None:                # 读失败=未知（区别于确实空 []）→ fail-closed
+        v = _data_unknown_verdict("POSITIONS_READ_UNKNOWN")
+        _G(_RECOVERY_KEY, v)
+        return v
     perp_qty = sum(abs(p.get("size") or 0.0) for p in perp)
     snap = _G(_POSITION_KEY)
     short_qty = (snap or {}).get("remaining_short_qty") or 0.0
@@ -727,9 +775,13 @@ def startup_recovery_check(currency):
         short_qty = prog.get("short_done") or 0.0
         long_qty = prog.get("prot_done") or 0.0
     try:
-        orders = dbt_get_open_orders(currency) or []   # 未知(无 label)活动订单 → 恢复阻塞（见 evaluate）
+        orders = dbt_get_open_orders(currency)     # 未知(无 label)活动订单 → 恢复阻塞（见 evaluate）
     except Exception:
-        orders = []
+        orders = None
+    if orders is None:                             # 活动订单读失败=未知 → fail-closed
+        v = _data_unknown_verdict("OPEN_ORDERS_READ_UNKNOWN")
+        _G(_RECOVERY_KEY, v)
+        return v
     verdict = evaluate_startup_recovery(opt, perp_qty, short_qty, active_orders=orders,
                                         expected_long_qty=long_qty)
     _G(_RECOVERY_KEY, verdict)

@@ -4,6 +4,21 @@
 > canonical：`系统总纲\VRP\src\vrp_model.py:forward_vol_hurdle`（:118）
 > 最后核对：2026-06-02（源码）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | forward_vol_hurdle（前向波动门槛） |
+| 所属回路 | ②-门 VRP · 建仓前定价 |
+| 作用层 | 风险门 |
+| 理论机制 | 用多窗口 RV anchor、RV 分位修正和冷启动保护生成卖方至少需要拿到的前向 IV 门槛。 |
+| 预期符号 | hurdle 越高越保守；front IV 高于 hurdle 才可能形成卖方 edge。 |
+| 适用周期 | VRP 窗口门与候选门共用，每个 expiry/side 或候选评估时计算。 |
+| 与现有因子重叠 | 是 assess_window 和 assess_candidate 的共同标量来源，避免各处自建 hurdle。 |
+| 主要失效条件 | RV 缺失、历史天数不足、分位冷启动、波动 regime 突变导致门槛滞后。 |
+| 改变的决策 | 改变窗口 PASS、候选重定价和 edge 阈值判断的基准。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 VRP 的核心标量门槛："卖方至少要拿到多高的 IV 才算够补偿"。窗口门拿它比 front IV、候选门拿它给两腿 BS 重定价。
 

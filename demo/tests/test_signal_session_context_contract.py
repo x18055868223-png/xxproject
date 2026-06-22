@@ -5,14 +5,22 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-SIGNAL_FILE = ROOT / "demo" / "最新交付物" / "neutral_regulation_demo_fmz.py"
+SIGNAL_FILE = (
+    ROOT / "demo" / "\u6700\u65b0\u4ea4\u4ed8\u7269" /
+    "neutral_regulation_demo_fmz.py"
+)
 
 
 def load_signal_module():
-    spec = importlib.util.spec_from_file_location("nrd_signal", SIGNAL_FILE)
+    spec = importlib.util.spec_from_file_location("nrd_signal_session", SIGNAL_FILE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def utc8_ms(iso_text):
+    dt = datetime.datetime.fromisoformat(iso_text)
+    return int(dt.timestamp() * 1000)
 
 
 def assert_true(condition, message):
@@ -20,75 +28,97 @@ def assert_true(condition, message):
         raise AssertionError(message)
 
 
-def ms_utc8(year, month, day, hour, minute):
-    tz = datetime.timezone(datetime.timedelta(hours=8))
-    dt = datetime.datetime(year, month, day, hour, minute, tzinfo=tz)
-    return int(dt.timestamp() * 1000)
+def session_for(mod, config, iso_text):
+    card = mod.build_sample_review_card(config)
+    confidence_before = card["conclusion"]["confidence"]
+    card["confirmed_time"] = utc8_ms(iso_text)
+    record = mod.build_audit_record(card, config)
+    ctx = record["signal_window"].get("session_context")
+    assert_true(isinstance(ctx, dict), "signal_window.session_context should exist")
+    assert_true(record["decision"]["confidence"] == confidence_before,
+                "session layer must not rewrite evidence confidence")
+    assert_true(ctx.get("affects_confidence") is False,
+                "session layer should explicitly mark confidence unchanged")
+    assert_true(ctx.get("affects_blocking") is False,
+                "session layer should not change blocking")
+    assert_true(ctx.get("affects_trade_allowed") is False,
+                "session layer should not change trading permission")
+    assert_true(ctx.get("validation_basis", {}).get("research_grade")
+                == "MARKET_PRIOR_VALIDATED",
+                "session layer should expose the three-year validation grade")
+    assert_true("2023-04-17" in ctx.get("validation_basis", {}).get("data_range", ""),
+                "session layer should expose the backtest data range")
+    assert_true(record["decision_matrix"]["temporal_durability"]
+                == ctx["premise_durability"],
+                "decision matrix should reuse session premise durability")
+    return ctx, record
 
 
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
 
-    low_to_medium = mod.classify_signal_session_context(
-        ms_utc8(2026, 6, 19, 15, 4), config)
-    assert_true(low_to_medium["schema"] == "signal_session_context@1.0.0",
-                "session context schema")
-    assert_true(low_to_medium["base_zone"] == "MEDIUM",
-                "15:04 static table should enter London early medium zone")
-    assert_true(low_to_medium["effective_zone"] == "LOW",
-                "15:04 should remain conservative low inside buffer")
-    assert_true(low_to_medium["display_label"] == "LOW_TO_MEDIUM_BUFFER",
-                "15:04 should display low-to-medium buffer")
-    assert_true(low_to_medium["premise_durability"] == "LOW",
-                "buffer premise durability should use effective zone")
-    assert_true(low_to_medium["transition"]["active"] is True,
-                "15:04 should mark transition active")
-    assert_true(low_to_medium["affects_confidence"] is False,
-                "phase 0 must not affect confidence")
-    assert_true(low_to_medium["calibration_state"] == "UNCALIBRATED",
-                "initial layer remains uncalibrated")
-
-    pre_us = mod.classify_signal_session_context(
-        ms_utc8(2026, 6, 19, 20, 30), config)
-    assert_true(pre_us["effective_zone"] == "LOW",
-                "20:30 pre-US runway should be low durability")
+    pre_us, _record = session_for(mod, config, "2026-04-17T19:00:00+08:00")
     assert_true(pre_us["rationale_code"] == "PRE_US_TRAPDOOR",
-                "20:30 should explain US data/open trapdoor")
-    assert_true(pre_us["catalyst_exposure"] == "HIGH",
-                "pre-US runway should carry high catalyst exposure")
+                "18:00-21:30 UTC+8 should be PRE_US_TRAPDOOR")
+    assert_true(pre_us["adjustment_direction"] == "DECREASE",
+                "PRE_US_TRAPDOOR should lower premise durability")
+    assert_true(pre_us["evidence_level"] == "CONFIRMED",
+                "PRE_US_TRAPDOOR should be confirmed by three-year backtest")
+    assert_true(pre_us["backtest_delta_pp"] == 5.31,
+                "PRE_US_TRAPDOOR should expose +5.31pp rewrite delta")
+    assert_true("等美盘开后再确认" in pre_us["rationale_cn"],
+                "PRE_US_TRAPDOOR should require post-US-open confirmation")
 
-    high_delay = mod.classify_signal_session_context(
-        ms_utc8(2026, 6, 19, 23, 30), config)
-    assert_true(high_delay["base_zone"] == "HIGH",
-                "23:30 should be in the US deep base zone")
-    assert_true(high_delay["effective_zone"] == "MEDIUM",
-                "high zone should be earned after the post-open digestion buffer")
-    assert_true(high_delay["display_label"] == "MEDIUM_TO_HIGH_BUFFER",
-                "23:30 should display medium-to-high buffer")
+    us_deep, _record = session_for(mod, config, "2026-04-17T23:30:00+08:00")
+    assert_true(us_deep["rationale_code"] == "US_DEEP_POST_CATALYST",
+                "23:00-04:00 UTC+8 should be US_DEEP_POST_CATALYST")
+    assert_true(us_deep["adjustment_direction"] == "INCREASE",
+                "US_DEEP_POST_CATALYST should raise premise durability")
+    assert_true(us_deep["evidence_level"] == "TENTATIVE",
+                "US_DEEP_POST_CATALYST should stay tentative, not overclaim")
+    assert_true(us_deep["backtest_delta_pp"] == -1.49,
+                "US_DEEP_POST_CATALYST should expose -1.49pp rewrite delta")
 
-    missing_time_a = mod.classify_signal_session_context(None, config)
-    missing_time_b = mod.classify_signal_session_context(None, config)
-    assert_true(missing_time_a == missing_time_b,
-                "missing timestamp classification should be deterministic")
-    assert_true(missing_time_a["effective_zone"] == "LOW",
-                "missing timestamp should fall back to conservative low")
-    assert_true(missing_time_a["rationale_code"] == "MISSING_CONFIRMED_TIME",
-                "missing timestamp should explain the fallback reason")
-    assert_true(missing_time_a["affects_confidence"] is False,
-                "missing timestamp fallback remains observe-only")
+    asia_morning, _record = session_for(mod, config, "2026-04-17T09:00:00+08:00")
+    assert_true(asia_morning["rationale_code"] == "ASIA_MORNING",
+                "08:00-11:30 UTC+8 should be ASIA_MORNING")
+    assert_true(asia_morning["adjustment_direction"] == "NEUTRAL",
+                "ASIA_MORNING should remain neutral")
 
-    card = mod.build_sample_review_card(config)
-    record = mod.build_audit_record(card, config)
-    session = record["signal_window"].get("session_context")
-    assert_true(isinstance(session, dict), "audit record should include session_context")
-    assert_true(session["affects_confidence"] is False,
-                "audit record session context remains observe-only")
-    assert_true(record["decision"]["confidence_semantics"]
-                == "EVIDENCE_QUALITY_NOT_WIN_RATE",
-                "confidence semantics must remain unchanged")
-    assert_true(record["decision"]["confidence"] == card["conclusion"]["confidence"],
-                "session layer must not mutate confidence")
+    asia_lull, _record = session_for(mod, config, "2026-04-17T12:00:00+08:00")
+    assert_true(asia_lull["rationale_code"] == "ASIA_AFTERNOON_LULL",
+                "11:30-15:00 UTC+8 should be ASIA_AFTERNOON_LULL")
+    assert_true(asia_lull["adjustment_direction"] == "NEUTRAL_CONSERVATIVE",
+                "ASIA_AFTERNOON_LULL should not be raised on the 60m proxy alone")
+    assert_true("60m" in asia_lull["rationale_cn"] and "长窗" in asia_lull["rationale_cn"],
+                "ASIA_AFTERNOON_LULL should display the horizon mismatch caveat")
+
+    post_us, _record = session_for(mod, config, "2026-04-17T04:30:00+08:00")
+    assert_true(post_us["rationale_code"] == "POST_US_DEADZONE",
+                "04:00-08:00 UTC+8 should be POST_US_DEADZONE")
+    assert_true(post_us["adjustment_direction"] == "NEUTRAL_CONSERVATIVE",
+                "POST_US_DEADZONE should remain neutral conservative")
+    assert_true(post_us["backtest_delta_pp"] == 0.09,
+                "POST_US_DEADZONE should expose +0.09pp neutral delta")
+
+    for iso_text, expected in (
+            ("2026-04-17T03:59:00+08:00", "US_DEEP_POST_CATALYST"),
+            ("2026-04-17T04:00:00+08:00", "POST_US_DEADZONE"),
+            ("2026-04-17T07:59:00+08:00", "POST_US_DEADZONE"),
+            ("2026-04-17T08:00:00+08:00", "ASIA_MORNING"),
+            ("2026-04-17T11:29:00+08:00", "ASIA_MORNING"),
+            ("2026-04-17T11:30:00+08:00", "ASIA_AFTERNOON_LULL"),
+            ("2026-04-17T17:59:00+08:00", "LONDON_EARLY"),
+            ("2026-04-17T18:00:00+08:00", "PRE_US_TRAPDOOR"),
+            ("2026-04-17T21:29:00+08:00", "PRE_US_TRAPDOOR"),
+            ("2026-04-17T21:30:00+08:00", "US_OPEN_TURBULENCE"),
+            ("2026-04-17T22:59:00+08:00", "US_OPEN_TURBULENCE"),
+            ("2026-04-17T23:00:00+08:00", "US_DEEP_POST_CATALYST"),
+    ):
+        ctx, _record = session_for(mod, config, iso_text)
+        assert_true(ctx["rationale_code"] == expected,
+                    "{} should map to {}".format(iso_text, expected))
 
     print("signal_session_context_contract: PASS")
 

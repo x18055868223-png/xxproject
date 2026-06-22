@@ -4,6 +4,21 @@
 > canonical：`系统总纲\VRP\src\vrp_model.py:assess_window`（:163）
 > 最后核对：2026-06-02（源码）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | assess_window（VRP 窗口门） |
+| 所属回路 | ②-门 VRP · 建仓前定价 |
+| 作用层 | 风险门 |
+| 理论机制 | 对 EDB 背书的 expiry/side 做 vol-space 预筛，比较 front IV 与 forward_vol_hurdle 并识别期限结构扭曲。 |
+| 预期符号 | `representative_vol_edge` 为正且足够厚才可 PASS；BLOCK 或 DISTORTED_REVIEW 不进入枚举。 |
+| 适用周期 | 执行层 PLAN 轮每个候选到期窗口。 |
+| 与现有因子重叠 | 与 forward_vol_hurdle 和 assess_candidate 共用 IV/RV 输入；只筛窗口，不做 ccy full-burn。 |
+| 主要失效条件 | front IV/RV 缺失、期限倒挂被误判、vol edge 单位与候选 ccy edge 混用。 |
+| 改变的决策 | 改变哪些 expiry/side 有资格进入候选枚举。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 对每个 EDB 背书的 expiry/侧，做一道**廉价的 vol-space 预筛**：front 锚 IV 是否高于 forward_vol_hurdle，并按期限结构/数据质量路由。**只回答"这个 expiry/侧值不值得进入枚举"**，不算 ccy full-burn（那是候选门的权威工作，上游重复只会引入 delta→strike 反演噪声）。
 

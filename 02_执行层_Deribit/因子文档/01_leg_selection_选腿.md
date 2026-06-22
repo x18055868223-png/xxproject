@@ -1,9 +1,23 @@
-> 当前执行层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v1.6.2/KPF/Phase 1 描述；当前执行交付物以 `demo/最新交付物/spm_calendar_protected_short_v1.py` `STRATEGY_VERSION=2.5.0` 为准，交易门默认关闭。本文用于解释历史设计和组件语义，不代表当前已启用交易。
 # 01 · leg_selection（选腿）
 
 > 模块：② 执行层
 > canonical：`Deribit期权交易执行层\src\leg_selection.py`（`legsel_*`，纯逻辑可单测）
 > 最后核对：2026-06-02（源码）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | leg_selection（选腿） |
+| 所属回路 | ② 执行层 · Deribit |
+| 作用层 | 风险门 |
+| 理论机制 | 将信号层给出的方向与 DTE/Delta/腿宽约束映射为可枚举的 OTM 短腿和外侧保护腿。 |
+| 预期符号 | 无独立方向符号；方向只继承信号层，候选 credit 为正才有执行价值。 |
+| 适用周期 | PLAN 轮候选枚举阶段。 |
+| 与现有因子重叠 | 与 plans、VRP candidate 和 S:PM 释放共用候选结构，但只负责候选宇宙。 |
+| 主要失效条件 | option chain 缺失、delta/greeks 过期、保护腿宽不合格、方向与信号权威不一致。 |
+| 改变的决策 | 改变可进入排序和后续硬门的候选集合，不直接决定下单。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 把"方向 + DTE/Delta 范围"映射为具体合约：OTM 侧按**目标 delta** 选短腿，按**腿宽**选保护腿。到期一律用合约自带 `expiration_timestamp`，不解析合约名。

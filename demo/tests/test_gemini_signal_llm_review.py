@@ -110,26 +110,27 @@ def main():
     assert_true("gamma_regime" in blind_text and "gex_info" in blind_text,
                 "blind theoretical packet should retain gamma context")
 
-    prompt = tool.build_prompt(packet)
-    assert_true("BLIND_THEORETICAL_PACKET" in prompt,
-                "prompt should include a blind theoretical packet")
-    assert_true("FULL_AUDIT_PACKET" in prompt,
-                "prompt should include full audit packet for reconciliation")
-    assert_true("Gamma 体制" in prompt and "反身" in prompt,
-                "prompt should force Gamma regime lens reasoning")
-    assert_true("不是胜率" in prompt, "prompt should prevent confidence-as-win-rate")
-    assert_true("不得重算模型" in prompt, "prompt should forbid model recomputation")
-    assert_true("只输出 JSON" in prompt, "prompt should require JSON-only output")
+    blind_prompt = tool.build_blind_prompt(packet)
+    assert_true("BLIND_THEORETICAL_PACKET" in blind_prompt,
+                "first prompt should include a blind theoretical packet")
+    assert_true("FULL_AUDIT_PACKET" not in blind_prompt,
+                "first prompt must not include full audit packet")
+    for forbidden in ("decision", "signal_window", "trade_allowed"):
+        assert_true(forbidden not in blind_prompt,
+                    "true blind prompt should omit " + forbidden)
+    assert_true("Gamma 体制" in blind_prompt and "反身" in blind_prompt,
+                "blind prompt should force Gamma regime lens reasoning")
+    assert_true("不得重算模型" in blind_prompt,
+                "blind prompt should forbid model recomputation")
+    assert_true("只输出 JSON" in blind_prompt, "blind prompt should require JSON-only output")
 
-    request = tool.build_gemini_request(prompt, model="gemini-3.5-flash")
+    request = tool.build_gemini_request(blind_prompt, schema=tool.blind_response_schema(),
+                                        model="gemini-3.5-flash")
     generation = request["generationConfig"]
     assert_true(generation["responseMimeType"] == "application/json",
                 "Gemini request should ask for JSON")
     required = set(generation["responseSchema"]["required"])
-    for key in ("summary_cn", "agreement_with_system", "caution_level",
-                "theoretical_active_view", "gamma_regime_lens",
-                "main_supporting_factors", "main_risks_or_conflicts",
-                "operator_focus", "invalid_if", "not_trading_advice"):
+    for key in ("theoretical_active_view", "gamma_regime_lens"):
         assert_true(key in required, "schema missing " + key)
     view_schema = generation["responseSchema"]["properties"]["theoretical_active_view"]
     view_required = set(view_schema["required"])
@@ -186,15 +187,23 @@ def main():
             }
         }]
     })
+    full_prompt = tool.build_full_review_prompt(packet, model_payload)
+    assert_true("BLIND_REVIEW_RESULT" in full_prompt,
+                "second prompt should include the first blind result")
+    assert_true("FULL_AUDIT_PACKET" in full_prompt,
+                "second prompt should include full audit packet for reconciliation")
+    assert_true("不是胜率" in full_prompt, "full prompt should prevent confidence-as-win-rate")
+
     review = tool.build_llm_review(card, parsed, model="gemini-3.5-flash",
+                                   blind_payload=model_payload,
                                    reviewed_at="2026-06-19T00:00:00+00:00")
     assert_true(review["status"] == "OK", "valid model output should become OK review")
     assert_true(review["provider"] == "gemini", "provider should be gemini")
     assert_true(review["not_trading_advice"] is True, "disclaimer flag should be forced true")
     assert_true(review["theoretical_active_view"]["bias"] == "BULLISH_LEAN",
                 "theoretical active view should be persisted")
-    assert_true(review["theoretical_active_view"]["derived_blind"] is False,
-                "single-call theoretical view should mark derived_blind false")
+    assert_true(review["theoretical_active_view"]["derived_blind"] is True,
+                "two-call theoretical view should mark derived_blind true")
     assert_true(review["gamma_regime_lens"]["regime"] == "LONG_GAMMA_STABILIZING",
                 "gamma regime lens should be persisted")
     assert_true(review["gamma_regime_lens"]["lens_is_risk_overlay_not_direction"] is True,
@@ -209,21 +218,42 @@ def main():
         reviews = root / "llm_reviews.jsonl"
         source.write_text(json.dumps(card, ensure_ascii=False) + "\n", encoding="utf-8")
 
+        calls = []
+
         def fake_call(api_key, model, request_body, timeout):
-            assert_true(api_key == "test-key", "fake call receives api key")
+            del model, timeout
+            prompt_text = request_body["contents"][0]["parts"][0]["text"]
+            calls.append((api_key, prompt_text))
+            if api_key == "low-cost-key":
+                raise RuntimeError("Gemini HTTP 429: low-cost quota exhausted")
+            if "FULL_AUDIT_PACKET" not in prompt_text:
+                payload = {
+                    "theoretical_active_view": model_payload["theoretical_active_view"],
+                    "gamma_regime_lens": model_payload["gamma_regime_lens"],
+                }
+            else:
+                payload = model_payload
             return {
                 "candidates": [{
                     "content": {
-                        "parts": [{"text": json.dumps(model_payload, ensure_ascii=False)}]
+                        "parts": [{"text": json.dumps(payload, ensure_ascii=False)}]
                     }
                 }]
             }
 
-        result = tool.generate_reviews(source, reviews, api_key="test-key",
+        result = tool.generate_reviews(source, reviews, api_key="low-cost-key",
+                                       fallback_api_key="paid-key",
                                        model="gemini-3.5-flash", limit=5,
                                        call_gemini=fake_call,
                                        reviewed_at="2026-06-19T00:00:00+00:00")
         assert_true(result["written_reviews"] == 1, "one review should be written")
+        assert_true([call[0] for call in calls] == [
+            "low-cost-key", "paid-key", "low-cost-key", "paid-key",
+        ], "low-cost key should be attempted before paid fallback")
+        assert_true("FULL_AUDIT_PACKET" not in calls[1][1],
+                    "first successful request should be true blind")
+        assert_true("FULL_AUDIT_PACKET" in calls[3][1],
+                    "second successful request should perform reconciliation")
         saved = json.loads(reviews.read_text(encoding="utf-8").strip())
         assert_true(saved["card_id"] == card["identity"]["card_id"], "sidecar card id")
         assert_true(saved["llm_review"]["summary_cn"] == model_payload["summary_cn"],

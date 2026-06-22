@@ -4,6 +4,21 @@
 > canonical：`src/gexmonitorapi/cache.py` + `/v1/info.rank`
 > 最后核对：2026-06-19（r2.2 文档收纳）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | rank（历史分位） |
+| 所属回路 | ⑤ GEX 数据增强接口 |
+| 作用层 | 风险门 / 审计 |
+| 理论机制 | 把当前外部 GEX、DVOL、IV/RV、PCR、Call share、Flow P/C 转成滚动窗口内的相对位置，避免只看绝对值。 |
+| 预期符号 | RELATIVE_CONTEXT_ONLY |
+| 适用周期 | GEX API 刷新轮 / rank cache 更新轮。 |
+| 与现有因子重叠 | 与数据质量、LLM caution、GEX/Gamma 展示重叠，但 rank_pct 不等于胜率或置信度。 |
+| 主要失效条件 | 样本冷启动、历史缓存迁移、窗口过短或外部字段口径变化。 |
+| 改变的决策 | 改变审计页分位解释和人工复核强度，不改写 EDB 权重、blocking 或交易许可。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 
 `rank` 把当前截面中的 netGEX、DVOL、IV/RV、PCR、Call share、Flow P/C 转成当前样本窗口内的相对位置，解决“只看数值不知高低”的问题。

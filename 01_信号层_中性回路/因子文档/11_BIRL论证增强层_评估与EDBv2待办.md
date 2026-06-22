@@ -1,5 +1,3 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
-> 当前模块口径（r2.2 / 2026-06-19）：本页早期内容含 v1.1/v0.5 历史描述；当前 FMZ 信号层以 `demo/最新交付物/neutral_regulation_demo_fmz.py` 为准，版本 `demo_version=1.3.0`、`schema_version=nrd.schema.v1.0.0`。当前运行路径是短推 + `signal_review.jsonl` + materializer + 静态审计页；LLM 复核在服务器旁路层执行，不在 FMZ 主循环调用。
 # 11 · BIRL 倾向性论证增强层 —— 方案评估与 EDB v2 待办
 
 > 性质：**设计评估记录 / 押后清单**（不是已落地因子，不进 `module_results`，不进 FactorSnapshot）
@@ -8,6 +6,21 @@
 > 结论：**v1.1 不引入完整 BIRL 引擎**；只采纳两项零标定依赖的真实改进（已落地，见 §4）。其余作为 **EDB v2 候选**押后，待真实标定数据。
 
 ---
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | BIRL（倾向性论证增强层） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 审计 / 方向 |
+| 理论机制 | 计划把 EDB 的加权投票升级为可追溯 EvidenceUnit、相关性折扣、因果折扣与熵度量后验体系。 |
+| 预期符号 | 未来若启用，正后验偏 bullish，负后验偏 bearish；当前不参与投票。 |
+| 适用周期 | 待真实前向样本和标定数据覆盖后再进入 shadow 评估。 |
+| 与现有因子重叠 | 与 EDB 高度重叠；当前只作为 EDB v2 评估清单，不能替代现有方向权威层。 |
+| 主要失效条件 | 无足够 snapshots/labels、相关性折扣过拟合、双计现有票源、解释层误变成交易门。 |
+| 改变的决策 | 当前不改变任何运行决策；未来只可能先改变 EDBv2 shadow 证据权重。 |
+| 当前状态 | SHADOW |
 
 ## 1. 背景与定位
 
@@ -65,7 +78,7 @@
 
 ### B. 置信诚实标注（零标定）
 - EDB 新增 `calibration_state`（读 `config.edb_calibration_state`，现 `UNCALIBRATED`）。
-- 审计卡结论句、置信链、推送综述、桥 digest 均显式标「未校准·非真实胜率/盈亏概率」。直接落实参考稿不变量 #7（未校准 confidence 不得解释为胜率）。
+- 审计 raw payload 保留 `calibration_state`，但当前前端关键指标与 FMZ 短推不展示“未校准”提示；`confidence` 仍仅解释为内部证据分，不得解释为胜率或盈亏概率。
 - 标定签收后翻 `config.edb_calibration_state="CALIBRATED"`，所有「未校准」提示**自动消失，无需改码**。
 - `calibration_state` 为新增非破坏字段 → `schema_version` 仍 `nrd.schema.v1.0.0`。
 

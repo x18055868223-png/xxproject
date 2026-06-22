@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import pathlib
+import subprocess
 import sys
 
 
@@ -33,6 +35,117 @@ def assert_equal(actual, expected, message):
 
 def read(path):
     return path.read_text(encoding="utf-8")
+
+
+def assert_distance_render(root):
+    card = {
+        "schema": {
+            "name": "signal_review_card",
+            "version": "1.0.0",
+            "status": "FINAL",
+        },
+        "identity": {
+            "card_id": "DISTANCE-PIN-UNIT-TEST",
+            "short_id": "DPIN",
+            "confirmed_at": "2026-06-21T16:52:09+08:00",
+            "symbol": "BTC",
+            "strategy_name": "中性回路信号层",
+            "strategy_version": "1.3.0",
+        },
+        "market_context": {
+            "price": 63694.07,
+            "quote_currency": "USDT",
+        },
+        "decision": {
+            "lean": "NEUTRAL",
+            "support_label": "WAIT_CONFIRMATION",
+            "evidence_strength": 69,
+            "confidence": 48,
+            "confidence_calibration": "UNCALIBRATED",
+            "final_conclusion_cn": "distance render test",
+        },
+        "quality": {
+            "overall": "OK",
+            "all_required_sources_ready": True,
+            "sources": {},
+        },
+        "factor_cross_section": {
+            "gamma_regime": {
+                "regime": "TRANSITION",
+                "confidence_multiplier": 0.98,
+                "distance_to_pin_pct": -0.304691,
+                "pin_pull_direction": "DOWN",
+                "pin_strike": 63500,
+            },
+            "gex_info": {},
+        },
+        "reasoning": {},
+        "conflict": {},
+        "blocking": {},
+        "provenance": {},
+        "delivery": {},
+        "integrity": {},
+    }
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const app = fs.readFileSync(__APP_PATH__, "utf8");
+const card = __CARD_JSON__;
+const elements = {};
+function element(id) {
+  if (!elements[id]) {
+    elements[id] = {
+      id,
+      value: "",
+      innerHTML: "",
+      textContent: "",
+      dataset: {},
+      addEventListener() {},
+      insertAdjacentHTML(_where, html) { this.innerHTML += html; }
+    };
+  }
+  return elements[id];
+}
+const document = {
+  getElementById(id) {
+    if (id === "signal-data") return { textContent: JSON.stringify([card]) };
+    return element(id);
+  },
+  querySelector(selector) {
+    return element(selector.startsWith("#") ? selector.slice(1) : selector);
+  },
+  querySelectorAll() { return []; }
+};
+const context = {
+  window: { location: { protocol: "file:" } },
+  document,
+  console,
+  Intl,
+  setTimeout,
+  clearTimeout,
+  fetch: () => Promise.reject(new Error("unexpected fetch"))
+};
+vm.createContext(context);
+vm.runInContext(app, context);
+setTimeout(() => {
+  const html = elements.documentView.innerHTML;
+  if (!html.includes("-0.3%")) {
+    throw new Error("pin distance should render near -0.3%, got: " + html.slice(0, 2000));
+  }
+  if (html.includes("-30.47%") || html.includes("-30.46%")) {
+    throw new Error("pin distance was scaled by 100: " + html.slice(0, 2000));
+  }
+}, 0);
+"""
+    script = script.replace("__APP_PATH__", json.dumps(str(root / "app.js")))
+    script = script.replace("__CARD_JSON__", json.dumps(card, ensure_ascii=False))
+    result = subprocess.run(["node", "-e", script],
+                            text=True, capture_output=True,
+                            encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise AssertionError(
+            "frontend should render distance_to_pin_pct as percent points: "
+            + (result.stderr or result.stdout))
 
 
 def main():
@@ -113,12 +226,25 @@ def main():
                     "renderQuality should use the derived source view")
         assert_true("function pinDistanceText(doc, gamma, gex)" in app,
                     "app.js should derive missing distance_to_pin_pct for old cards")
+        assert_true("normalizeDistancePct" not in app,
+                    "app.js should not rescale distance_to_pin_pct; it is already percent points")
+        assert_true("Math.abs(numeric) <= 1 ? numeric * 100 : numeric" not in app,
+                    "app.js should not use <=1 percent heuristics for pin distance")
+        assert_true("const explicitPct = safeNumber(explicit);" in app,
+                    "app.js should parse explicit distance_to_pin_pct without unit conversion")
+        assert_true("pctPoint(explicitPct)" in app,
+                    "app.js should render explicit pin distance as percent points")
+        assert_true("const diffPct = ((pin - price) / price) * 100;" in app,
+                    "app.js should derive missing pin distance with signal-layer sign convention")
+        assert_true("const direction = diffPct > 0 ? \"UP\" : (diffPct < 0 ? \"DOWN\" : \"FLAT\");" in app,
+                    "app.js should derive pin direction with signal-layer labels")
         assert_true("function nullSemantics(path, scope = \"\")" in app,
                     "app.js should classify benign null fields by path")
         assert_true("缓存可用，主体数据完整" in app,
                     "app.js should explain LKGV cache as usable body data")
         assert_true("无错误" in app and "无警告" in app,
                     "app.js should not mark no-error/no-warning nulls as missing")
+        assert_distance_render(root)
 
     signal_source = read(SIGNAL_FILE)
     assert_true("signal_runtime_facts = self._runtime_facts()" in signal_source,

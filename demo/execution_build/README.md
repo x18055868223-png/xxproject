@@ -1,7 +1,5 @@
 # execution_build —— 执行 FMZ 构建区
 
-> 当前口径（r2.2 / 2026-06-19）：本目录的 `realsrc/` 已演进到 `STRATEGY_VERSION=2.5.0`，并可生成 `demo/最新交付物/spm_calendar_protected_short_v1.py`。下方 v0.1 / v1.6.2 / Phase 1-8 描述是早期构建规划和历史基线，不是当前交付物版本。当前执行层仍默认全空跑，交易门未启用。
-
 > 目标交付物：`nrd_execution_fmz.py`（执行层 FMZ 单文件，含 21 因子 + ExecutionSession 编排 + ApprovalIntent）。
 > 当前：demo v0.1 仅定计划，未开工。**整合主战场在这里。**
 

@@ -50,8 +50,15 @@ load_env_file() {
   file="$1"
   if [ -r "$file" ]; then
     # shellcheck disable=SC1090
-    set -a; . "$file"; set +a
-    ok "loaded env file: $file"
+    set -a
+    . "$file"
+    status="$?"
+    set +a
+    if [ "$status" -eq 0 ]; then
+      ok "loaded env file: $file"
+    else
+      fail "env file failed to load: $file"
+    fi
   else
     warn "env file not readable or absent: $file"
   fi
@@ -223,10 +230,15 @@ else
 fi
 
 section "LLM review sidecar"
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-  ok "GEMINI_API_KEY is configured in environment"
+if [ -n "${GEMINI_3_5_FLASH_API_KEY:-}${GEMINI_FLASH_API_KEY:-}${GEMINI_LOW_COST_API_KEY:-}${GEMINI_API_KEY:-}" ]; then
+  ok "low-cost Gemini key is configured in environment"
 else
-  warn "GEMINI_API_KEY not loaded; LLM timer will skip calls"
+  warn "low-cost Gemini key not loaded; LLM timer will skip calls unless fallback is set"
+fi
+if [ -n "${GEMINI_PAID_API_KEY:-}${GEMINI_FALLBACK_API_KEY:-}${GEMINI_PRO_API_KEY:-}" ]; then
+  ok "paid fallback Gemini key is configured in environment"
+else
+  warn "paid fallback Gemini key not loaded; low-cost key has no backup"
 fi
 if [ -r "$LLM_REVIEWS_SOURCE" ]; then
   json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("model:", review.get("model"))'

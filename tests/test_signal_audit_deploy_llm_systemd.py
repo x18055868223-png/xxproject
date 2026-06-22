@@ -24,21 +24,27 @@ def main():
     llm_env = read(DEPLOY / "signal-audit-llm.env.example")
     runner = read(DEPLOY / "run_signal_llm_review.sh")
     package = read(DEPLOY / "package_signal_audit.ps1")
+    deploy_readme = read(DEPLOY / "README.md")
+    self_check = read(ROOT / "tools" / "server_self_check_signal_stack.sh")
 
     assert_true("/etc/signal-audit/llm.env" in llm_service,
                 "LLM service should load the protected server env file")
     assert_true("EnvironmentFile=-/etc/signal-audit/llm.env" in llm_service,
                 "LLM service should tolerate missing env until key is configured")
-    assert_true("GEMINI_API_KEY" in llm_env,
-                "LLM env example should document GEMINI_API_KEY")
+    assert_true("GEMINI_3_5_FLASH_API_KEY" in llm_env
+                and "GEMINI_PAID_API_KEY" in llm_env
+                and "GEMINI_API_KEY" in llm_env,
+                "LLM env example should document low-cost, paid fallback, and legacy key names")
     assert_true("AIza" not in llm_env and "sk-" not in llm_env,
                 "LLM env example must not contain a real-looking key")
     assert_true("run_signal_llm_review.sh" in llm_service,
                 "LLM service should call the guarded runner")
     assert_true("--reviews-output" in runner,
                 "LLM runner should write sidecar reviews")
-    assert_true("GEMINI_API_KEY is not configured" in runner,
-                "LLM runner should skip cleanly before the key is configured")
+    assert_true("Gemini API key is not configured" in runner
+                and "GEMINI_3_5_FLASH_API_KEY" in runner
+                and "GEMINI_PAID_API_KEY" in runner,
+                "LLM runner should skip cleanly before either key is configured")
     assert_true("LLM_REVIEWS_SOURCE" in llm_service,
                 "LLM service should use a stable sidecar path")
     assert_true("signal-audit-materialize.service" in llm_service,
@@ -51,6 +57,15 @@ def main():
                 "LLM timer should run automatically but not too aggressively")
     assert_true("SCRIPT_DIR=" in install and "DEPLOY_SRC=" in install,
                 "install script should support both git and zip package layouts")
+    assert_true("--exclude='*.jsonl'" in install,
+                "install script must not publish local JSONL fixtures into the static root")
+    assert_true("unsafe STATIC_ROOT" in install and 'STATIC_ROOT" == "/"' in install,
+                "install script should reject an unsafe static root before cleanup")
+    assert_true("find \"$STATIC_ROOT\" -type f -name '*.jsonl' -delete" in install,
+                "install script must remove stale target-side JSONL from the public static root")
+    assert_true("--exclude='*.jsonl'" in deploy_readme
+                and "find /opt/signal-audit -type f -name '*.jsonl' -delete" in deploy_readme,
+                "manual deployment docs must also avoid and clean public JSONL files")
     assert_true("signal-audit-llm-review.timer" in install,
                 "install script should install and enable LLM timer by default")
     assert_true("signal-audit-llm.env.example" in install,
@@ -62,6 +77,9 @@ def main():
                 and "signal-audit-llm-review.timer" in package
                 and "signal-audit-llm.env.example" in package,
                 "package script should include LLM systemd assets")
+    assert_true("env file failed to load" in self_check
+                and 'status="$?"' in self_check,
+                "self-check must fail, not pass, when an env file has shell syntax errors")
 
     print("signal_audit_deploy_llm_systemd: PASS")
 

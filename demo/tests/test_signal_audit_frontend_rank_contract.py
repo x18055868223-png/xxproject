@@ -4,11 +4,8 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-ARCHIVE = pathlib.Path(
-    r"C:\Users\Xu\Documents\信号审计前端页面设计\archives"
-    r"\signal-audit-final-20260618"
-)
 DEPLOY_FRONTEND = ROOT / "deploy" / "signal_audit" / "frontend"
+DIST_FRONTEND = ROOT / "dist" / "signal-audit-deploy" / "frontend"
 
 
 def assert_true(condition, message):
@@ -45,7 +42,7 @@ def first_fixture_with_rank(root):
 
 
 def main():
-    for root in (ARCHIVE, DEPLOY_FRONTEND):
+    for root in (DEPLOY_FRONTEND, DIST_FRONTEND):
         assert_true(root.exists(), "frontend root missing " + str(root))
         app = read(root / "app.js")
         html = read(root / "index.html")
@@ -73,10 +70,10 @@ def main():
         assert_true("\"rank\"" in fallback and "gex_board.total_net_gex" in fallback,
                     "fallback.js should include rank fixture data for file mode")
 
-    assert_true(read(ARCHIVE / "app.js") == read(DEPLOY_FRONTEND / "app.js"),
-                "archive and deploy app.js should stay mirrored")
-    assert_true(read(ARCHIVE / "index.html") == read(DEPLOY_FRONTEND / "index.html"),
-                "archive and deploy index.html should stay mirrored")
+    assert_true(read(DEPLOY_FRONTEND / "app.js") == read(DIST_FRONTEND / "app.js"),
+                "deploy and dist app.js should stay mirrored")
+    assert_true(read(DEPLOY_FRONTEND / "index.html") == read(DIST_FRONTEND / "index.html"),
+                "deploy and dist index.html should stay mirrored")
     print("signal_audit_frontend_rank_contract: PASS")
 
 

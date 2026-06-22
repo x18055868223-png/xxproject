@@ -4,6 +4,21 @@
 > canonical：`tools/materialize_signal_cards.py`
 > 最后核对：2026-06-19（r2.2 文档收纳）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | materializer（审计卡片生成） |
+| 所属回路 | 审计部署链路 |
+| 作用层 | 审计 |
+| 理论机制 | 将 FMZ `signal_review.jsonl` 和可选 LLM sidecar 合成为静态前端可读取的 index、单卡 JSON 与 fallback fixture。 |
+| 预期符号 | AUDIT_ARTIFACT_PRODUCER |
+| 适用周期 | systemd materialize timer / 手工部署刷新。 |
+| 与现有因子重叠 | 与信号层 delivery、LLM sidecar、static frontend 重叠，但只负责物料生成，不生成信号。 |
+| 主要失效条件 | JSONL 尾部窗口过大、卡片 schema 不兼容、LLM sidecar 缺失或文件权限错误。 |
+| 改变的决策 | 改变审计站点展示内容和可追溯性，不改变方向、置信、阻断或交易许可。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 
 materializer 把 FMZ 产生的 `signal_review.jsonl` 转成前端可直接读取的 `signal_cards/index.json`、单卡 JSON 和 `fallback.js`。

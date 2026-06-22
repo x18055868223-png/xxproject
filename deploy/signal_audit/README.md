@@ -1,18 +1,4 @@
-# 审计静态页面部署模块
-
-> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前审计页面部署资产，包含静态前端、materializer、Gemini LLM sidecar runner、systemd timer 和 Web server 示例。中文组件语义先读 [`因子文档/00_审计部署总览.md`](因子文档/00_审计部署总览.md)；审计卡展示语义见 [`docs/审计卡片语义.md`](docs/审计卡片语义.md)。
-
-## 工程收纳
-
-| 路径 | 用途 |
-| --- | --- |
-| `因子文档/` | 按 00-04 模块惯例整理的组件语义入口 |
-| `docs/` | 审计卡片和前端展示语义 |
-| `frontend/` | 静态页面、样例 `signal_cards/`、`VERSION.json` |
-| `*.service` / `*.timer` | systemd 单元 |
-| `install_or_update.sh` | 服务器安装/更新脚本 |
-
-本轮 r2.2 不改变部署脚本行为，只补齐文档收纳和前端版本元数据。
+# Signal Audit Static Deployment
 
 This deployment target serves the finalized static audit frontend and refreshes
 its `signal_cards/` data from the FMZ `signal_review.jsonl` file.
@@ -57,12 +43,7 @@ Commit only source/config/scripts and the static runtime assets under
 - FMZ storage dumps
 - server private keys
 
-Local first-time Git setup for a brand new standalone deployment repo:
-
-> In the integrated backup workflow, prefer using the existing
-> `https://github.com/x18055868223-png/xxproject.git` repository instead of
-> creating another remote. The snippet below is only for the older standalone
-> `signal-audit-deploy` route.
+Local first-time Git setup:
 
 ```bash
 git init
@@ -74,36 +55,23 @@ git remote add origin git@github.com:<your-org-or-user>/<repo>.git
 git push -u origin main
 ```
 
-Server first-time clone for the integrated backup repo:
+Server first-time clone:
 
 ```bash
 sudo apt update
 sudo apt install -y git nginx rsync python3
 sudo mkdir -p /opt/repos
 sudo chown "$USER":"$USER" /opt/repos
-git clone https://github.com/x18055868223-png/xxproject.git /opt/repos/xxproject
+git clone git@github.com:<your-org-or-user>/<repo>.git /opt/repos/neutral-loop
 ```
 
 Server deploy/update from Git:
 
 ```bash
-cd /opt/repos/xxproject
+cd /opt/repos/neutral-loop
 git pull --ff-only
 sudo bash deploy/signal_audit/install_or_update.sh
 ```
-
-`install_or_update.sh` is an active audit-service update, not a read-only
-check. It copies frontend files into `/opt/signal-audit`, installs tools under
-`/opt/signal-audit-tools`, and enables/starts the materializer and LLM review
-timers. Run it during a maintenance window. It does not change FMZ strategy
-code, execution-layer trading gates, or exchange credentials.
-
-If an older server is still running from `/opt/repos/signal-audit-deploy`, use
-one repository directory consistently during a maintenance window. Do not pull
-`xxproject` in one directory while running install scripts from the old
-`signal-audit-deploy` checkout unless you intentionally keep both routes and
-know which one owns the deployed files under `/opt/signal-audit` and
-`/opt/signal-audit-tools`.
 
 The install script now also installs and enables the two systemd timers:
 
@@ -134,9 +102,10 @@ Copy only the runtime frontend assets to the server root:
 
 ```bash
 sudo mkdir -p /opt/signal-audit
-sudo rsync -a --delete \
+sudo rsync -a --delete --exclude='*.jsonl' \
   /tmp/signal-audit-deploy/frontend/ \
   /opt/signal-audit/
+sudo find /opt/signal-audit -type f -name '*.jsonl' -delete
 ```
 
 Do not publish temporary notes such as `新建文本文档.txt`. `README.md` and
@@ -283,9 +252,9 @@ Optional log rotation check:
 sudo logrotate -d /etc/logrotate.d/nginx
 ```
 
-## LLM API Key
+## LLM API Keys
 
-Configure the Gemini key only on the server:
+Configure Gemini keys only on the server:
 
 ```bash
 sudo mkdir -p /etc/signal-audit
@@ -297,13 +266,24 @@ sudoedit /etc/signal-audit/llm.env
 Set:
 
 ```text
-GEMINI_API_KEY=<your Gemini API key>
+GEMINI_3_5_FLASH_API_KEY=<low-cost Gemini 3.5 Flash key>
+GEMINI_PAID_API_KEY=<normal paid-tier fallback key>
 GEMINI_MODEL=gemini-3.5-flash
 LLM_REVIEW_LIMIT=2
 LLM_REVIEW_TIMEOUT=60
 JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
 LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
+
+The review tool performs two Gemini calls per card:
+
+1. A true-blind first pass that sees only the blind theoretical packet.
+2. A reconciliation pass that sees the full audit packet plus the first-pass
+   blind result.
+
+Each call tries the low-cost key first, then falls back to the paid-tier key if
+the low-cost call fails. `GEMINI_API_KEY` remains supported as a backward-
+compatible single-key fallback, but the two-key setup above is preferred.
 
 Never commit `/etc/signal-audit/llm.env`. The repository only contains
 `signal-audit-llm.env.example` with an empty key.

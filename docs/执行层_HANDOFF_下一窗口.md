@@ -1,14 +1,15 @@
 # 执行层 HANDOFF（下一窗口接手指南）
 
-> 截至：2026-06-18，执行层 **STRATEGY_VERSION 2.5.0**，`tests/run_all.py` **210 passed, 0 failed**。
-> 本文件 + 记忆 `execution-v2-seal` + `docs/执行层完整说明_v2.1.md`(完整说明含审计 §13) + `docs/执行层重构_v3_进度.md`(逐步日志) 构成完整上下文。
-> **「风险严重度 → 仲裁」(R1/v2.4.0) + 其全量审计整改(R2/v2.5.0：F1-F3/C1-C3) 已完成（见 §3）。下一头号任务：总线模式接入（signal evidence → 同时解锁 VRP 放行 + HEDGE_READY 持续性），详见 §4。**
+> 截至：2026-06-22，执行层 **STRATEGY_VERSION 2.7.0**，`tests/run_all.py` **215 passed, 0 failed**。**里程碑 = `DRY_RUN_CANDIDATE`（非可实盘）。**
+> 本文件 + 记忆 `execution-v2-seal` + `docs/执行层完整说明_v2.1.md`(完整说明含审计 §13/§14) + `docs/执行层重构_v3_进度.md`(逐步日志) 构成完整上下文。
+> **R1 风险→仲裁(v2.4.0) + R2 风险链路审计整改(v2.5.0) + R3 外部审计 Tier0(v2.6.0：裸短腿 INV-03 + 读取三态 INV-04/10) + R4 T0 扩展(v2.7.0：恢复默认 fail-closed + 信号方向权威守门) 已完成。已采纳外部审计文档为"开真闸门清单 + INV-01..12"。下一步：①正式端到端空跑前补 T0-C 全版(side_hint 驱动方向)+T0-D(VRP 可注入)+SyntheticFillAdapter；②小额实盘前做 Tier1（统一真相/VRP+预算入库/有符号对冲/T0-A 全版+T0-LIVE/NewRiskApprovalPackage 捆绑降险授权）。详见 §4。**
 
 ## 1. 现状（已完成）
 
 v3 重构全链路落地：E0 删日历(垂直唯一) → E1 门控拆分/命令幂等/信号接收/交互控制台 → E2 推荐库+短确认码硬授权+单一 `run_cycle` 主链 → E3 受控真实开仓+13 项预提交+投影预算 → E4 管理循环+四输出仲裁+启动恢复 → E5 软授权 → E6 止盈资格/低成本退出 → E7 BTC-PERPETUAL 对冲生命周期 → E8 交付。
 F1 对冲场所可选(Binance USDC maker-0)；G1 开仓活动 entry_campaign(跨轮持久 maker+信用底线)；**H1 持仓后链路补强 P0①②③**(统一持仓真相到 `_POSITION_KEY` + 保护腿回收/CLOSED + 仲裁单动作收口+退出期禁新增对冲)；**R1 风险严重度→仲裁 (v2.4.0)**(入场冻 `entry_risk_anchor` → manage 每轮 `hedge_risk.evaluate_position_risk` → `tail_risk_state` 驱动 `exit_preferred/hedge_ready`，替换两个 False hook；对冲数量改结构净 delta + 方向符号核对)；**R2 风险链路审计整改 (v2.5.0)**(F1 风险退出独立预算+可越价吃单+不可成交回退对冲；F2 控制台风险行/风险退出码/提示；F3 盘口缺数据显式缺口；C1 对冲成交确认；C2 孤儿清理免门；C3 真实活动订单查询 fail-closed + 启动恢复重校验)。
-《docs/补充意见.txt》P0-1~P0-6 + P1 已全部落地。**默认全空跑、非"策略已验证"。**
+**R3 外部审计 Tier0 (v2.6.0)**(INV-03 部分短腿成交放弃→冻结 1:1 覆盖、绝不留裸短腿；INV-04/10 `dbt_get_positions` 读失败→None、`startup_recovery_check` 持仓/订单未知→DATA_UNKNOWN 禁开新仓)；**R4 T0 扩展 (v2.7.0)**(T0-B `_recovery_verdict` 默认 fail-closed=RECOVERY_NOT_CHECKED；T0-C `_signal_allows_entry` FILE/G 下 side_hint 须与 DIRECTION_BIAS 一致否则 fail-closed)。
+《docs/补充意见.txt》P0-1~P0-6 + P1 已全部落地；外部审计文档 v1.0 已采纳为开真闸门清单。**默认全空跑、非"策略已验证"。**
 
 ## 2. 架构速查
 
@@ -58,11 +59,13 @@ F1 对冲场所可选(Binance USDC maker-0)；G1 开仓活动 entry_campaign(跨
 
 ## 4. 其余残留（按优先级；详见 完整说明 §13/§14）
 
-1. **（新头号）总线模式接入**：信号侧落 `SignalEvidencePackage`（含 `direction_evidence.edb` + `pre_trade_context.ggr` + IV/RV market_context），执行侧 `signal_receiver` 已就位(默认 OFFLINE_MANUAL)。接入后**一举解锁两项**：①`_build_precommit_live` 的 `vrp_pass`（OFFLINE 恒 None/fail-closed）→ 经 `vrp_gate.apply_vrp_gate` 放行；②把 edb/ggr 喂给 `_evaluate_position_risk_now`(当前传 None) → persistence 升到 MEDIUM/HIGH → **HEDGE_READY 真正可达**（目前仅 EXIT_PREFERRED 活跃）。`hedge_watch.watch_position` 已封装「anchor + signal_evidence → evaluate_position_risk」，可直接复用。
+0. **（端到端空跑前必做，阶段 A 收尾）**：T0-C 完整版——`side_hint` **驱动**方向(`ExecutionSignalContext`)而非仅"与 DIRECTION_BIAS 一致才放行"(v2.7.0 已做不一致即阻断的最小守门)；T0-D——VRP **可注入**接口/测试 fixture（禁生产硬写 `vrp_pass=True`），让预提交能真正跑到 entry campaign；`SyntheticFillAdapter`——仅替换成交回报、不碰真实私有写口，用于跑通 §11.1 entry campaign 场景矩阵。
+1. **（新头号·阶段 B/总线）总线模式接入**：信号侧落 `SignalEvidencePackage`（含 `direction_evidence.edb` + `pre_trade_context.ggr` + IV/RV market_context），执行侧 `signal_receiver` 已就位(默认 OFFLINE_MANUAL)。接入后**一举解锁两项**：①`_build_precommit_live` 的 `vrp_pass`（OFFLINE 恒 None/fail-closed）→ 经 `vrp_gate.apply_vrp_gate` 放行；②把 edb/ggr 喂给 `_evaluate_position_risk_now`(当前传 None) → persistence 升到 MEDIUM/HIGH → **HEDGE_READY 真正可达**（目前仅 EXIT_PREFERRED 活跃）。`hedge_watch.watch_position` 已封装「anchor + signal_evidence → evaluate_position_risk」，可直接复用。T0-C/T0-D 在此一并落全版。
 2. 信号→执行总线 spike（落地 §4.1 的传输面）：信号侧调 `demo/signal_build/signal_bridge.export_signal_evidence_package` 落盘 + 原子 rename + 同托管 loopback；执行侧 receiver 已就位(默认 OFFLINE_MANUAL)。
 3. ~~`no_unknown_orders` 预提交桩~~ **（v2.5.0 C3① 已接真实 `dbt_get_open_orders` + fail-closed）**。
 4. ~~重启在途 campaign 未按成交重校验~~ **（v2.5.0 C3② 已按在途活动 prog + 真实活动订单重校验；entry_campaign 放弃回退失败的残值态仍未显式管理）**。
-5. entry_campaign 放弃时回退保护腿失败 → 残值态未显式管理（仅清锁）。
+5. ~~entry_campaign 放弃留裸短腿~~ **（v2.6.0 INV-03 已修：部分短腿→冻结 1:1 覆盖、只退多余保护）**。残留：①门关时多余保护卖不掉 → 未跟踪 long 残值态（仅成本、非裸卖；reconcile surfaced）；②**T0-A 完整版（真实资金前）**：放弃冻结当前用本地 `prog` 计数，应改为**重读交易所真实腿量 + 确认订单终态**后再冻结（与下 T0-LIVE 同批）。
+5b. **T0-LIVE（真实资金前）**：`_post_maker_once`/对冲下单未持久 order_id、无 `ORDER_STATE_UNKNOWN`——提交结果未知(响应丢失/撤单状态未知)时下一轮可能重复下单；`_no_unknown_orders` 只挡未知 label、不挡我方 `entry_*` 仍活动单。须：任何提交结果未知 → campaign 进 ORDER_STATE_UNKNOWN → 禁重复下单 → 查证到确定终态再继续。**纯空跑不触发**（不实际下单）。
 6. `gex_info` 增强并入 `realsrc/src`（仅最新交付物 spm 单文件有，shadow-only、可降级）。
 7. 旧整合层清理（off v3 路径，仅测试/bundle-smoke 引用）：`_plan_round/_run_order/_order_loop/integrated_plan_preview`、`session_core.ExecutionSession`、`vrp_gate.apply_vrp_gate`、`risk_controls.evaluate_portfolio_budget/decide_position_manage/build_attribution`、`hedge_watch.watch_position`（注意：`hedge_risk.evaluate_position_risk/build_entry_risk_anchor` v2.4.0 已接回 v3 链，**不要删**）。
 8. 阈值标定：`PORTFOLIO_LIMITS / ENTRY_MIN_NET_CREDIT / HEDGE_REDUCTION_RATIO / EXIT_RESERVE_RATIO / RISK_EXIT_MAX_SPEND` 均占位（`RISK_EXIT_MAX_SPEND` v2.5.0 起为风险退出**独立预算**的真实消费者——=0 时风险退出受阻即回退对冲，须标定为可接受的最大止损成本）。

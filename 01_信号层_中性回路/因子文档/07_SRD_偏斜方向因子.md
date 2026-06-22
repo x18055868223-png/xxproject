@@ -1,4 +1,3 @@
-> 当前信号层口径（r2.2 / 2026-06-19）：本因子文档可能保留早期 v0.5/v1.1 代码路径或标定说明；当前 FMZ 交付物以 `demo/最新交付物/neutral_regulation_demo_fmz.py` v1.3.0 为准。本文用于解释因子语义和历史演进，实际运行字段以当前审计 JSON、状态栏和 r2.2 总纲为准。
 # 07 · SRD（Skew / 25Δ 风险逆转 方向因子）
 
 > 模块：① 信号层 · EDB 证据（不进 `module_results`）
@@ -6,6 +5,21 @@
 > 因子卡：`add\skew_rr_directional_factor_v1.0.md`（已复制进交付物快照）
 > 数据源：Deribit 期权链（near-money greeks：delta / mark_iv / open_interest）
 > 最后核对：2026-06-02（源码）
+
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | SRD（偏斜方向因子） |
+| 所属回路 | ① 信号层 · 中性回路 |
+| 作用层 | 方向 |
+| 理论机制 | 用 25Delta risk reversal 的相对分布位置与变化方向衡量期权偏斜对到期方向的边际提示。 |
+| 预期符号 | call skew 改善或 put skew 缓和偏 bullish；反向偏 bearish。 |
+| 适用周期 | 24h/48h 到期窗口及相邻期权快照。 |
+| 与现有因子重叠 | 与 Deribit options/GGR 共用期权数据，但只表达偏斜结构，不表达 gamma 库存。 |
+| 主要失效条件 | 25Delta 报价缺失、OI 太低、近到期跳变、历史分布冷启动。 |
+| 改变的决策 | 改变 EDB 的 SRD 证据票、有效权重与冲突来源。 |
+| 当前状态 | ACTIVE |
 
 ## 1. 一句话定位
 从 25Δ 风险逆转（call_iv − put_iv）的**相对变化**出有符号方向票，喂 EDB（base_weight 0.70）。**关键正确性**：BTC 25Δ 偏斜结构性为负（看跌权贵是常态），所以方向**绝不能读 RR 的原始符号**，必须用相对基线（rr_z）+ 动量（Δrr）。

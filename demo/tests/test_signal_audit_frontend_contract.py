@@ -59,6 +59,15 @@ def main():
                         name + " OK source age_ms")
     assert_true(record["decision"]["confidence_semantics"]
                 == "EVIDENCE_QUALITY_NOT_WIN_RATE", "confidence semantics")
+    session_context = record["signal_window"].get("session_context")
+    assert_true(isinstance(session_context, dict), "session context")
+    assert_true(session_context["validation_basis"]["research_grade"]
+                == "MARKET_PRIOR_VALIDATED", "session validation grade")
+    assert_true(session_context["affects_confidence"] is False,
+                "session context must not change confidence")
+    assert_true(record["decision_matrix"]["temporal_durability"]
+                == session_context["premise_durability"],
+                "matrix temporal durability should mirror session context")
     assert_true("directional_bias" in record["decision"], "directional bias")
     assert_true("evidence_strength" in record["decision"], "evidence strength")
     assert_true("headline" in record["display_layers"], "display headline")

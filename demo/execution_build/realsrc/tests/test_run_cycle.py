@@ -55,6 +55,8 @@ def _handler(*args):
                            "initial_margin": 0.02, "maintenance_margin": 0.015}}
     if path.endswith("/private/get_positions"):
         return {"result": []}
+    if path.endswith("/private/get_open_orders_by_currency"):
+        return {"result": []}
     if path.endswith("/private/simulate_portfolio"):
         simpos = json.loads(qs.get("simulated_positions", ["{}"])[0])
         im = 0.025 if len(simpos) == 1 else 0.013
@@ -88,6 +90,7 @@ def _setup():
     ST.EMERGENCY_REDUCE_ONLY = False
     ST.ROBOT_ID = "r-test"
     ST.HEDGE_VENUE = "DERIBIT"
+    ST.startup_recovery_check(ST.SETTLEMENT_CURRENCY)   # 镜像生产启动：落 recovery=OK（默认 fail-closed）
     return ST
 
 
@@ -595,6 +598,92 @@ def test_run_cycle_orphan_cleanup_bypasses_hedge_gate():
         ST.dbt_get_positions, ST.exec_hedge_step = orig_pos, orig_hedge
     assert ctx["action_arb"]["executable_action"] == "ORPHAN_HEDGE_EMERGENCY"
     assert seen["n"] == 1 and seen["reduce_only"] is True            # 不受 allow_hedge 阻断、强制 reduce_only
+
+
+# ===== Tier0 审计整改（文档 3.2 / 3.3）=====
+
+def test_attempt_commit_abandon_partial_freezes_covered_no_naked_short():
+    """文档 3.2 / INV-03：部分短腿成交后放弃 → 冻结为 1:1 已覆盖较小持仓，
+    **绝不把保护卖到短腿覆盖量以下**（无裸短腿）。"""
+    import ledger as LG
+    ST = _setup()
+    ST.ENTRY_MAX_ATTEMPTS = 1
+    now = ST._now_ms()
+    locked = {"session_id": "s", "signal_package_id": "pkg", "strategy_code": "sc",
+              "quality_code": "qc", "plan_hash": "ph", "side": "CALL",
+              "short_instrument": "BTC-S-76000-C", "long_instrument": "BTC-S-74000-C",
+              "short_expiry": now + 48 * H, "breakeven": 76300.0, "amount": 0.1,
+              "entry": {"prot_done": 0.1, "short_done": 0.05, "attempts": 1,
+                        "prot_cost": 0.0006, "short_credit": 0.0005}}
+    ST._G(ST._LOCKED_KEY, locked)
+    orig_live, orig_step, orig_pre = (ST._build_precommit_live, ST.exec_entry_campaign_step,
+                                      ST.evaluate_precommit_checks)
+    _all_pass_live(ST)
+    ST.evaluate_precommit_checks = lambda locked, lib, live: {"passed": True, "failed": [], "checks": {}}
+    ST.exec_entry_campaign_step = lambda *a, **k: {
+        "quotes_ok": True, "credit_ok": True, "dry": True, "prot_fill": 0.0, "short_fill": 0.0,
+        "net_credit": 0.0002, "reason": "ENTRY_DRYRUN"}                      # 门关空跑：不再追加成交
+    try:
+        r = ST._attempt_commit(locked, 73400.0, {"availability": "OFFLINE_MANUAL"}, now)
+    finally:
+        (ST._build_precommit_live, ST.exec_entry_campaign_step,
+         ST.evaluate_precommit_checks) = orig_live, orig_step, orig_pre
+        ST.ENTRY_MAX_ATTEMPTS = 20
+    snap = r.get("entry_snapshot")
+    assert r["committed"] and "PARTIAL_FROZEN" in r["reason"]
+    assert snap["remaining_short_qty"] == 0.05
+    assert snap["long_remaining_qty"] == 0.05                                # 1:1 覆盖冻结
+    assert snap["long_remaining_qty"] >= snap["remaining_short_qty"]         # INV-03：无裸短腿
+    assert snap["entry_profit_ceiling_net"] > 0
+    assert LG.ledger_get_state() == LG.S_SHORT_ACTIVE_PROTECTED
+
+
+def test_startup_recovery_data_unknown_on_positions_read_failure():
+    """文档 3.3 / INV-04/10：持仓读取失败=未知 → DATA_UNKNOWN、禁开新仓（不凭本地空判'无仓'）。"""
+    ST = _setup()
+    orig = ST.dbt_get_positions
+    ST.dbt_get_positions = lambda cur, kind="option": None                  # 读失败
+    try:
+        v = ST.startup_recovery_check("BTC")
+    finally:
+        ST.dbt_get_positions = orig
+    assert v["state"] == "DATA_UNKNOWN" and v["allow_new_open"] is False
+
+
+def test_startup_recovery_ok_when_reads_succeed_empty():
+    """三态：确实读到空(非失败) → OK、允许开新仓（与读失败区分）。"""
+    ST = _setup()
+    v = ST.startup_recovery_check("BTC")                                     # mock：持仓[]、活动订单[]
+    assert v["state"] == "OK" and v["allow_new_open"] is True
+
+
+def test_recovery_not_checked_defaults_fail_closed():
+    """T0-B：恢复状态不存在(未检查) → 默认 RECOVERY_NOT_CHECKED、禁开新仓（不再默认放行）。"""
+    ST = _setup()
+    ST._G(ST._RECOVERY_KEY, None)                       # 清掉 _setup 落的 OK → 模拟"未检查"
+    v = ST._recovery_verdict()
+    assert v["state"] == "RECOVERY_NOT_CHECKED" and v["allow_new_open"] is False
+    ctx = ST.run_cycle()
+    assert not ctx.get("pending_candidates")            # 未检查 → 不建库、不放行
+    assert ctx.get("recovery_state") == "RECOVERY_NOT_CHECKED"
+
+
+def test_signal_bus_direction_mismatch_fails_closed():
+    """T0-C：FILE/G 总线下信号方向与执行方向不一致 → fail-closed（防生成反向结构）；一致才放行。"""
+    ST = _setup()
+    ST.SIGNAL_SOURCE = "G"
+    ST.SIGNAL_G_KEY = "nrd_sig_test"
+    ST.DIRECTION_BIAS = "SHORT_CALL"
+    base = {"schema_name": "SignalEvidencePackage", "schema_version": "nrd.integration.signal.v1",
+            "package_id": "sig-1", "expires_ts": ST._now_ms() + 10 ** 7}
+    # 信号说卖 PUT，但执行方向是 SHORT_CALL → 阻断
+    ST._G("nrd_sig_test", dict(base, strategy_recommendation={"side_hint": "SHORT_PUT", "expiry_hours": 48}))
+    ctx = ST.run_cycle()
+    assert not ctx.get("pending_candidates") and ctx["console_phase"] == "WAIT_SIGNAL"
+    # 信号与执行方向一致 → 放行建库
+    ST._G("nrd_sig_test", dict(base, strategy_recommendation={"side_hint": "SHORT_CALL", "expiry_hours": 48}))
+    ctx2 = ST.run_cycle()
+    assert ctx2["console_phase"] in ("RECOMMEND_READY", "HARD_APPROVAL_WAIT")
 
 
 def test_reconcile_mismatch_surfaced_not_blocking():

@@ -4,19 +4,18 @@
 
 - This repository is the integration workspace for the neutral-loop trading system. It gathers system-level design docs, module snapshots, demo integration code, latest FMZ-ready single-file deliverables, and the signal audit archive sample.
 - The main implementation language present in the deliverables is Python. The repository also contains Markdown documentation plus a static HTML/JSON audit archive sample under `audit_archive/`.
-- The current deployable signal-layer artifact is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file version is `demo_version = "1.3.0"` and `schema_version = "nrd.schema.v1.0.0"`.
-- The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.5.0"`, with entry/exit/hedge/live trading gates still default-safe/off.
-- The current GEX Monitor API snapshot is `05_GEX监控API_数据增强接口/`, with `__version__ = "0.2.0"` and rank output using `rolling_30d_or_available`.
-- The current LLM review sidecar is `tools/gemini_signal_llm_review.py`, defaulting to Gemini `gemini-3.5-flash`, `signal_llm_review@1.2.0`, and `gemini_signal_review_prompt@1.2.0`.
-- Documentation r2.2 aligns `05_GEX监控API_数据增强接口/` and `deploy/signal_audit/` with the 00-04 module convention by adding `因子文档/` indexes, Chinese semantic entrypoints, and `deploy/signal_audit/frontend/VERSION.json`; it does not move service source code or change runtime behavior.
+- The current deployable signal-layer artifact is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file version is `demo_version = "1.4.0"` and `schema_version = "nrd.schema.v1.0.0"`.
+- The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.7.0"`, with entry/exit/hedge/live trading gates still default-safe/off.
+- The current xxproject backup marker is `NRD-XXPROJECT-BACKUP-2026.06.22-r3.0`, recorded in `BACKUP_VERSION.json`, `README_XXPROJECT_BACKUP.md`, and `99_工程资产索引/README.md`.
 - `demo/最新交付物/README.md` states that `demo/最新交付物/` contains the latest FMZ-ready single-file strategies, while `demo/副本快照/` is the historical timeline.
 - This workspace may be checked out either as the signal-audit deployment repository or as the xxproject backup clone; verify `git remote -v` before committing or pushing.
 
 ## Architecture and boundaries
 
-- The root documentation presents the system as core areas `01_信号层_中性回路/`, `02_执行层_Deribit/`, `03_VRP门_建仓前定价/`, `04_对冲模块/`, plus the current auxiliary running assets `05_GEX监控API_数据增强接口/` and `deploy/signal_audit/`, with `demo/` as the integration sandbox.
+- The root documentation presents the system as four main areas: `01_信号层_中性回路/`, `02_执行层_Deribit/`, `03_VRP门_建仓前定价/`, and `04_对冲模块/`, with `demo/` as the integration sandbox.
+- The root factor documentation has 24 light factor cards: 23 current running factor docs plus `01_信号层_中性回路/因子文档/11_BIRL论证增强层_评估与EDBv2待办.md` as SHADOW. `00_*总览.md` files remain indexes and do not carry individual cards.
 - The signal-layer FMZ file is read-only observation by default. It does not select legs, quote, or place orders.
-- Signal v1.3.0 uses full local JSON audit records plus a short FMZ push summary. Runtime recording writes through `JsonlRecorder` to `demo/logs/<name>.jsonl`; the signal review recorder name is `signal_review`.
+- Signal v1.4.0 uses full local JSON audit records, `session_context`/decision-matrix temporal durability fields, a short FMZ push summary, and out-of-process LLM sidecar review tooling. Runtime recording writes through `JsonlRecorder` to `demo/logs/<name>.jsonl`; the signal review recorder name is `signal_review`.
 - Current signal audit JSON output is aligned to the finalized static frontend card schema used by the external archive `信号审计前端页面设计/archives/signal-audit-final-20260618`. That frontend reads `signal_cards/index.json`, then lazy-loads `signal_cards/*.json`; direct file mode also uses `signal_cards/fallback.js`.
 - `audit_archive/` in this repo is an older sample/archive scaffold, not the current finalized frontend. Do not treat `audit_archive/public/index.html` as the authoritative audit page.
 - The execution-layer FMZ file is a vertical credit spread execution chain with a single `run_cycle` main path. Its configured signal source default is `OFFLINE_MANUAL`.
@@ -52,9 +51,10 @@
 
 ## Important invariants
 
-- Signal audit v1.3.0 changes are observability-only: full JSON record, local JSONL, and short push summary must not change direction, EDB score, confidence, blocking, or execution contracts.
+- Signal audit v1.4.0 changes are observability-only: full JSON record, local JSONL, session time-zone/durability fields, LLM sidecar review, and short push summary must not change direction, EDB score, confidence, blocking, or execution contracts.
 - FMZ push is an alert/navigation channel only. Full audit evidence belongs in JSONL and the static audit page.
 - FMZ push text must remain a single short message. Prior versions were truncated by FMZ/email clients, so long four-layer audit text must not be restored. In the current signal file, the old `render_review_card_push` / `signal_review_push_compact` path has been removed.
+- Confidence calibration raw fields may remain in JSON for compatibility, but the current frontend key metrics and FMZ short push omit the old “未校准” reminder; confidence is shown as an internal evidence score only.
 - `signal_review_push_enabled` and `signal_review_push_test` are verified as `False` by default. Push testing must be explicitly enabled and then turned off after verification. When enabled, the current self-test writes one synthetic audit record to `signal_review.jsonl` and pushes one `非真实信号` short alert with a JSON write status marker.
 - Static audit site URL configuration is optional. If `audit_static_base_url` is empty, push summaries should point to FMZ log/card references rather than pretending the static site is deployed.
 - Execution gates default to dry-run/empty trading behavior. Do not flip trading gates as part of unrelated refactors.
@@ -67,15 +67,16 @@
 - `python` was not available on `PATH` in this environment during initialization. Use an available Python 3.12 interpreter explicitly when needed.
 - `audit_archive/public/index.html` is a placeholder from the older scaffold. The current finalized static audit page lives outside this repo in the `signal-audit-final-20260618` archive and expects the `signal_cards/` layout.
 - Runtime signal records are not automatically exported by the FMZ strategy itself. The runtime writes `demo/logs/signal_review.jsonl`; `tools/materialize_signal_cards.py` materializes that JSONL into `signal_cards/index.json`, single-card JSON, and `fallback.js` for the finalized static page. Server automation is provided as an optional systemd timer under `deploy/signal_audit/`.
+- Signal session `weekend_adjustment` is currently a known residual placeholder: the active logic is not enabled, so it always emits `applied=false` / “未触发” and does not apply Saturday/Sunday down-tier logic. Treat it as a deferred TODO for the next combined signal time-zone cleanup, not as implemented weekend handling.
 - `demo/副本快照/2026-06-18_信号v1.3.0_执行v1.6.2_JSON留档+简要推送/` contains an execution file whose content verifies as `STRATEGY_VERSION = "2.0.0"` despite the folder/file naming saying v1.6.2.
 - The old validation scripts documented in upstream/source repositories may not exist in this integration checkout. Verify actual file presence before running a documented command.
 
 ## Durable decisions
 
 - Decision: keep `demo/最新交付物/` as the current deployable FMZ artifact folder. Basis: `demo/最新交付物/README.md`. Impact: update this folder after regeneration and preserve dated history in `demo/副本快照/`.
-- Decision: signal v1.3.0 uses frontend-aligned full JSON audit records plus short FMZ push summaries. Basis: current signal file comments/config, `demo/最新交付物/README.md`, and `demo/tests/test_signal_audit_frontend_contract.py`. Impact: future audit work should build the JSONL-to-static-page materializer instead of re-expanding FMZ push bodies.
-- Decision: current static frontend deployment should target the `signal_cards/index.json` plus `signal_cards/*.json` contract from `signal-audit-final-20260618`; the repo `audit_archive/` scaffold is sample/reference only. Impact: export tools should generate the finalized frontend layout, including a stable missing-source representation for optional GEX data.
-- Decision: execution v2.5.0 is vertical-only and default dry-run with separated gates plus the v2.5.0 risk-chain audit fixes. Basis: current execution file constants, `demo/最新交付物/README.md`, and `docs/执行层完整说明_v2.1.md`. Impact: do not treat disabled gates as a bug, and do not reintroduce calendar or KPF execution paths.
+- Decision: signal v1.4.0 uses frontend-aligned full JSON audit records plus short FMZ push summaries and server-side LLM sidecar review. Basis: current signal file comments/config, `demo/最新交付物/README.md`, and signal audit tests. Impact: future audit work should build the JSONL-to-static-page materializer and sidecar merge instead of re-expanding FMZ push bodies or calling LLM from FMZ.
+- Decision: current static frontend deployment should target the `signal_cards/index.json` plus `signal_cards/*.json` contract from `signal-audit-final-20260618`; the repo `audit_archive/` scaffold is sample/reference only. Impact: export tools should generate the finalized frontend layout, including a stable missing-source representation for optional GEX data and visible HTTP load failures.
+- Decision: execution v2.7.0 remains vertical-only and default dry-run with separated gates. Basis: current execution file constants and `demo/最新交付物/README.md`. Impact: do not treat disabled gates as a bug, and do not reintroduce calendar or KPF execution paths.
 - Decision: project-level complex tasks should use bounded subagent delegation through `.codex/agents/` when the task has independent exploration, implementation, or review streams. Basis: root `AGENTS.md` created during this initialization. Impact: future complex work should read `PROJECT_MEMORY.md`, classify complexity, delegate where useful, and verify final integration.
 
 ## Unconfirmed items

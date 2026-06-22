@@ -4,6 +4,21 @@
 > canonical：`tools/gemini_signal_llm_review.py` + `deploy/signal_audit/run_signal_llm_review.sh`
 > 最后核对：2026-06-19（r2.2 文档收纳）
 
+## 0. 轻量因子卡
+
+| 字段 | 内容 |
+|---|---|
+| 因子 | LLM sidecar（Gemini 复核） |
+| 所属回路 | 审计部署链路 |
+| 作用层 | 审计 |
+| 理论机制 | 在 FMZ 主进程外读取真实审计卡，先盲读原始事实包再对照系统结论，输出只读复核意见 sidecar。 |
+| 预期符号 | BLIND_REVIEW_OVERLAY |
+| 适用周期 | 新信号卡出现后 / systemd LLM review timer。 |
+| 与现有因子重叠 | 与 reasoning、decision、Gamma/GEX 展示重叠，但不覆盖系统结论，不改写门控。 |
+| 主要失效条件 | API key 缺失、模型失败、输入包字段不完整、sidecar 与原卡 hash 不匹配。 |
+| 改变的决策 | 改变人工审计建议、风险提示和 invalid_if，不改变方向、置信、阻断或交易许可。 |
+| 当前状态 | ACTIVE |
+
 ## 1. 一句话定位
 
 LLM sidecar 在 FMZ 主策略外读取真实信号卡，调用 Gemini 生成审计复核意见，并写入 sidecar JSONL。
