@@ -714,29 +714,35 @@
     }
 
     .raw-values {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      min-width: 280px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 5px;
+      min-width: 0;
     }
 
     .raw-chip {
-      display: inline-flex;
-      align-items: baseline;
+      display: grid;
+      grid-template-columns: minmax(58px, auto) minmax(0, 1fr);
       gap: 5px;
-      max-width: 360px;
+      min-width: 0;
       border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 3px 7px;
+      border-radius: 6px;
+      padding: 4px 6px;
       background: var(--bg);
       color: var(--ink);
-      font-size: 11px;
+      font-size: 10.5px;
+      line-height: 1.3;
       overflow-wrap: anywhere;
     }
 
     .raw-chip strong {
       color: var(--muted);
       font-weight: 760;
+    }
+
+    .raw-chip span {
+      min-width: 0;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
     }
 
     .conflict-sides {
@@ -906,8 +912,116 @@
       min-width: 980px;
     }
 
+    .evidence-ledger {
+      display: grid;
+      gap: 10px;
+    }
+
+    .evidence-item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--bg);
+      overflow: hidden;
+    }
+
+    .evidence-item-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .evidence-title {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .evidence-key {
+      font-size: 15px;
+      overflow-wrap: anywhere;
+    }
+
+    .evidence-gloss {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .evidence-status {
+      flex: 0 0 auto;
+    }
+
+    .evidence-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      border-bottom: 1px solid var(--line);
+    }
+
+    .evidence-metric {
+      min-width: 0;
+      padding: 8px 9px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .evidence-metric:nth-child(6n) {
+      border-right: 0;
+    }
+
+    .evidence-metric:nth-last-child(-n + 6) {
+      border-bottom: 0;
+    }
+
+    .evidence-metric-wide {
+      grid-column: span 2;
+    }
+
+    .evidence-metric-label {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 760;
+      line-height: 1.3;
+    }
+
+    .evidence-metric-value {
+      display: block;
+      margin-top: 4px;
+      font-weight: 700;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .evidence-raw-row {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 10px;
+      padding: 10px 12px;
+    }
+
+    .evidence-raw-title {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .evidence-item.participation-excluded,
+    .evidence-item.participation-non_voting,
+    .evidence-item.participation-gate_only {
+      background: var(--surface);
+    }
+
+    .evidence-item.participation-excluded .evidence-item-head,
+    .evidence-item.participation-non_voting .evidence-item-head,
+    .evidence-item.participation-gate_only .evidence-item-head {
+      background: #f1f1f1;
+    }
+
     .evidence-table {
-      min-width: 1880px;
+      min-width: 1180px;
     }
 
     .field-table {
@@ -996,6 +1110,33 @@
 
       .metric-strip {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .evidence-detail-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .evidence-metric,
+      .evidence-metric:nth-child(6n),
+      .evidence-metric:nth-last-child(-n + 6) {
+        border-right: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .evidence-metric:nth-child(2n) {
+        border-right: 0;
+      }
+
+      .evidence-metric:nth-last-child(-n + 2) {
+        border-bottom: 0;
+      }
+
+      .evidence-metric-wide {
+        grid-column: span 2;
+      }
+
+      .evidence-raw-row {
+        grid-template-columns: 1fr;
       }
 
       .metric {

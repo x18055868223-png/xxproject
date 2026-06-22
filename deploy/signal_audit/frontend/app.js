@@ -325,6 +325,7 @@
     if (isNullish(value)) return "暂缺 (null)";
     if (typeof value === "boolean") return booleanText(value);
     if (typeof value === "number") return number(value, options.digits ?? 4);
+    if (Array.isArray(value) || typeof value === "object") return rawValueText(value);
     if (isEnum(value) && options.translate !== false) return semanticLabel(value);
     return String(value);
   };
@@ -1234,12 +1235,73 @@
     return raw;
   }
 
+  function rawValueText(value, depth = 0) {
+    if (isNullish(value) || value === "") return "null";
+    if (Array.isArray(value)) {
+      if (!value.length) return "[]";
+      return value.map((item) => rawValueText(item, depth + 1)).join(" ; ");
+    }
+    if (typeof value === "object") {
+      const entries = Object.entries(value)
+        .filter(([, child]) => child !== undefined && child !== null && child !== "");
+      if (!entries.length) return "{}";
+      return entries
+        .map(([name, child]) => `${name}: ${rawValueText(child, depth + 1)}`)
+        .join(" / ");
+    }
+    return scalarText(value, { translate: false, digits: 4 });
+  }
+
   function rawValuesHtml(evidence, doc) {
     const entries = Object.entries(evidenceRawValues(evidence, doc))
       .filter(([, value]) => value !== undefined && value !== null && value !== "")
-      .slice(0, 10);
+      .sort(([left], [right]) => left.localeCompare(right));
     if (!entries.length) return benignNullHtml("无原始细节");
-    return `<div class="raw-values">${entries.map(([name, value]) => `<span class="raw-chip"><strong>${escapeHtml(fieldLabel(name))}</strong>${valueHtml(value, { translate: false })}</span>`).join("")}</div>`;
+    return `<div class="raw-values">${entries.map(([name, value]) => {
+      const text = rawValueText(value);
+      return `<span class="raw-chip" title="${escapeHtml(`${fieldLabel(name)} ${text}`)}"><strong>${escapeHtml(name)}</strong><span>${escapeHtml(text)}</span></span>`;
+    }).join("")}</div>`;
+  }
+
+  function evidenceMetric(label, html, options = {}) {
+    const className = options.wide ? "evidence-metric evidence-metric-wide" : "evidence-metric";
+    return `<div class="${className}"><span class="evidence-metric-label">${escapeHtml(fieldLabel(label))}</span><span class="evidence-metric-value">${html}</span></div>`;
+  }
+
+  function evidenceLedgerItem(evidence, doc) {
+    const status = rawEnum(evidence.participation_status).toLowerCase() || "unknown";
+    const share = isNullish(evidence.absolute_share_pct)
+      ? valueHtml(null)
+      : escapeHtml(`${number(evidence.absolute_share_pct, 2)}%`);
+    return `
+      <article class="evidence-item participation-${escapeHtml(status)}">
+        <div class="evidence-item-head">
+          <div class="evidence-title">
+            <strong class="evidence-key">${escapeHtml(evidence.key || "N/A")}</strong>
+            <span class="evidence-gloss">${escapeHtml(evidence.gloss_cn || "")}</span>
+          </div>
+          <div class="evidence-status">${statusBadge("", evidence.participation_status)}</div>
+        </div>
+        <div class="evidence-detail-grid">
+          ${evidenceMetric("Vote", evidenceValueHtml(evidence, "vote", evidence.vote))}
+          ${evidenceMetric("Configured", valueHtml(evidence.configured_weight, { translate: false }))}
+          ${evidenceMetric("Reliability", evidenceValueHtml(evidence, "reliability", evidence.reliability))}
+          ${evidenceMetric("Info", valueHtml(evidence.information, { translate: false }))}
+          ${evidenceMetric("Effective", valueHtml(evidence.effective_weight, { translate: false }))}
+          ${evidenceMetric("Weighted", valueHtml(evidence.weighted_contribution, { translate: false }))}
+          ${evidenceMetric("Absolute share pct", share)}
+          ${evidenceMetric("Lean", evidenceValueHtml(evidence, "lean", evidence.lean))}
+          ${evidenceMetric("Aux role", valueHtml(evidenceAuxiliaryRole(evidence), { translate: false }), { wide: true })}
+          ${evidenceMetric("Aux tendency", valueHtml(evidenceAuxiliaryLean(evidence, doc), { translate: false }))}
+          ${evidenceMetric("Source ref", valueHtml(evidence.source_ref, { translate: false }), { wide: true })}
+          ${evidenceMetric("Exclusion reason", evidenceValueHtml(evidence, "exclusion_reason", evidence.exclusion_reason), { wide: true })}
+        </div>
+        <div class="evidence-raw-row">
+          <span class="evidence-raw-title">${escapeHtml(fieldLabel("Raw values"))}</span>
+          ${rawValuesHtml(evidence, doc)}
+        </div>
+      </article>
+    `;
   }
 
   function renderReasoning(doc) {
@@ -1248,25 +1310,9 @@
     const agreement = asObject(reasoning.agreement);
     const coverage = asObject(reasoning.coverage);
     const decomposition = asObject(reasoning.confidence_decomposition);
-    const evidenceRows = asArray(reasoning.evidence).map((evidence) => `
-      <tr class="participation-${escapeHtml(rawEnum(evidence.participation_status).toLowerCase())}">
-        <td><strong>${escapeHtml(evidence.key || "N/A")}</strong><br><span class="metric-note">${escapeHtml(evidence.gloss_cn || "")}</span></td>
-        <td>${statusBadge("", evidence.participation_status)}</td>
-        <td class="num">${evidenceValueHtml(evidence, "vote", evidence.vote)}</td>
-        <td class="num">${valueHtml(evidence.configured_weight, { translate: false })}</td>
-        <td class="num">${evidenceValueHtml(evidence, "reliability", evidence.reliability)}</td>
-        <td class="num">${valueHtml(evidence.information, { translate: false })}</td>
-        <td class="num">${valueHtml(evidence.effective_weight, { translate: false })}</td>
-        <td class="num">${valueHtml(evidence.weighted_contribution, { translate: false })}</td>
-        <td class="num">${isNullish(evidence.absolute_share_pct) ? valueHtml(null) : escapeHtml(`${number(evidence.absolute_share_pct, 2)}%`)}</td>
-        <td>${evidenceValueHtml(evidence, "lean", evidence.lean)}</td>
-        <td>${valueHtml(evidenceAuxiliaryRole(evidence), { translate: false })}</td>
-        <td>${valueHtml(evidenceAuxiliaryLean(evidence, doc), { translate: false })}</td>
-        <td>${rawValuesHtml(evidence, doc)}</td>
-        <td>${valueHtml(evidence.source_ref, { translate: false })}</td>
-        <td>${evidenceValueHtml(evidence, "exclusion_reason", evidence.exclusion_reason)}</td>
-      </tr>
-    `).join("");
+    const evidenceRows = asArray(reasoning.evidence)
+      .map((evidence) => evidenceLedgerItem(evidence, doc))
+      .join("");
     return section("完整证据账本", reasoning.summary_cn || "保留所有参与、排除、不计票和门控证据。", `
       <dl class="kv-grid" style="margin-bottom: 16px;">
         ${kv("Engine", reasoning.engine, { translate: false })}
@@ -1277,12 +1323,7 @@
         ${kv("Confidence final", decomposition.confidence_final, { translate: false })}
       </dl>
       <div class="formula-block"><strong>Score</strong><span>${escapeHtml(score.method || "")}</span><span>weighted sum ${escapeHtml(scalarText(score.weighted_vote_sum, { translate: false }))} / effective weight ${escapeHtml(scalarText(score.effective_weight_sum, { translate: false }))}</span></div>
-      <div class="table-wrap" style="margin-top: 16px;">
-        <table class="evidence-table">
-          <thead><tr>${["Evidence", "Participation", "Vote", "Configured", "Reliability", "Info", "Effective", "Weighted", "Absolute share pct", "Lean", "Aux role", "Aux tendency", "Raw values", "Source ref", "Exclusion reason"].map((label) => `<th>${escapeHtml(fieldLabel(label))}</th>`).join("")}</tr></thead>
-          <tbody>${evidenceRows}</tbody>
-        </table>
-      </div>
+      <div class="evidence-ledger" style="margin-top: 16px;">${evidenceRows || `<div class="empty-inline">No evidence rows</div>`}</div>
       <h3 class="subsection-title">Confidence decomposition</h3>
       <dl class="kv-grid">
         ${kv("Strength", decomposition.strength, { translate: false })}

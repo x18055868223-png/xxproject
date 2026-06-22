@@ -156,9 +156,18 @@ def main():
                 "frontend should render raw evidence values inside the ledger")
     assert_true("function evidenceAuxiliaryLean" in app,
                 "frontend should derive auxiliary evidence tendency for old cards")
+    assert_true("function rawValueText" in app,
+                "frontend should format nested raw evidence values")
+    assert_true("evidence-ledger" in app,
+                "frontend should use a responsive evidence ledger layout")
+    assert_true("slice(0, 10)" not in app,
+                "raw evidence ledger should not silently truncate at 10 fields")
     for marker in ("Raw values", "Aux tendency", "FUTURES_FUNDING_CROWDING",
                    "OPTION_SKEW_DIRECTION", "OPTION_GAMMA_STRUCTURE"):
         assert_true(marker in app, "frontend evidence ledger missing " + marker)
+    index_html = (DEPLOY_FRONTEND / "index.html").read_text(encoding="utf-8")
+    assert_true(".evidence-table {\n      min-width: 1880px;" not in index_html,
+                "evidence ledger should not rely on the old 1880px wide table")
     print("signal_audit_frontend_contract: PASS")
 
 

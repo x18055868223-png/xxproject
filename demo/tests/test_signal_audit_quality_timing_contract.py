@@ -148,6 +148,158 @@ setTimeout(() => {
             + (result.stderr or result.stdout))
 
 
+def assert_evidence_ledger_render(root):
+    raw_values = {
+        "nested_object": {
+            "a0": 0, "a1": 1, "a2": 2, "a3": 3, "a4": 4,
+            "a5": 5, "a6": 6, "a7": 7, "a8": 8,
+        },
+        "nested_array": [
+            {"name": "arr0", "ready": True},
+            {"name": "arr1", "ready": True},
+            {"name": "arr2", "ready": True},
+            {"name": "arr3", "ready": True},
+            {"name": "arr4", "ready": True},
+            {"name": "arr5", "ready": True},
+            {"name": "arr6", "ready": False},
+        ],
+    }
+    for idx in range(12):
+        raw_values["field_{:02d}".format(idx)] = idx
+    raw_values["observed_at"] = "2026-06-22T13:43:59+08:00"
+    raw_values["source_ref"] = "LEDGER_RENDER_TEST"
+    card = {
+        "schema": {
+            "name": "signal_review_card",
+            "version": "1.0.0",
+            "status": "FINAL",
+        },
+        "identity": {
+            "card_id": "LEDGER-RENDER-TEST",
+            "short_id": "LEDGER",
+            "confirmed_at": "2026-06-22T13:44:00+08:00",
+            "symbol": "BTC",
+            "strategy_name": "中性回路信号层",
+            "strategy_version": "1.4.0",
+        },
+        "market_context": {"price": 64000, "quote_currency": "USDT"},
+        "decision": {
+            "lean": "NEUTRAL",
+            "support_label": "WAIT_CONFIRMATION",
+            "evidence_strength": 69,
+            "confidence": 48,
+            "final_conclusion_cn": "ledger render test",
+        },
+        "quality": {"overall": "OK", "all_required_sources_ready": True, "sources": {}},
+        "factor_cross_section": {"gamma_regime": {}, "gex_info": {}},
+        "reasoning": {
+            "engine": "EDB",
+            "engine_version": "0.5",
+            "score": {"method": "test", "weighted_vote_sum": 0.1,
+                      "effective_weight_sum": 1, "final": 0.1},
+            "agreement": {"value": 1},
+            "coverage": {"value": 1},
+            "confidence_decomposition": {"confidence_final": 48},
+            "evidence": [{
+                "key": "FLOW_CONFIRM",
+                "gloss_cn": "主动流确认",
+                "participation_status": "ACTIVE",
+                "vote": 0.35,
+                "configured_weight": 0.18,
+                "reliability": 1,
+                "information": 1,
+                "effective_weight": 0.18,
+                "weighted_contribution": 0.063,
+                "absolute_share_pct": 3.78,
+                "lean": "BULLISH",
+                "auxiliary_role": "FLOW_CONFIRMATION",
+                "auxiliary_lean": "BULLISH",
+                "source_ref": {"source_path": "factor_cross_section.micro_flow", "source_rank": 3},
+                "raw_values": raw_values,
+            }],
+        },
+        "conflict": {},
+        "blocking": {},
+        "provenance": {},
+        "delivery": {},
+        "integrity": {},
+    }
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const app = fs.readFileSync(__APP_PATH__, "utf8");
+const card = __CARD_JSON__;
+const elements = {};
+function element(id) {
+  if (!elements[id]) {
+    elements[id] = {
+      id,
+      value: "",
+      innerHTML: "",
+      textContent: "",
+      dataset: {},
+      addEventListener() {},
+      insertAdjacentHTML(_where, html) { this.innerHTML += html; }
+    };
+  }
+  return elements[id];
+}
+const document = {
+  getElementById(id) {
+    if (id === "signal-data") return { textContent: JSON.stringify([card]) };
+    return element(id);
+  },
+  querySelector(selector) {
+    return element(selector.startsWith("#") ? selector.slice(1) : selector);
+  },
+  querySelectorAll() { return []; }
+};
+const context = {
+  window: { location: { protocol: "file:" } },
+  document,
+  console,
+  Intl,
+  setTimeout,
+  clearTimeout,
+  fetch: () => Promise.reject(new Error("unexpected fetch"))
+};
+vm.createContext(context);
+vm.runInContext(app, context);
+setTimeout(() => {
+  const html = elements.documentView.innerHTML;
+  if (!html.includes("class=\"evidence-ledger\"")) {
+    throw new Error("ledger layout missing: " + html.slice(0, 2000));
+  }
+  if (html.includes("class=\"evidence-table\"")) {
+    throw new Error("old evidence table should not render: " + html.slice(0, 2000));
+  }
+  if (html.includes("[object Object]")) {
+    throw new Error("nested raw values should not render as object strings: " + html.slice(0, 2000));
+  }
+  if (html.includes(" / +")) {
+    throw new Error("raw ledger should not hide object or array entries behind count suffixes: " + html.slice(0, 3000));
+  }
+  for (const required of [
+    "nested_object", "nested_array", "a8", "arr6", "field_11",
+    "observed_at", "source_ref", "source_path", "source_rank"
+  ]) {
+    if (!html.includes(required)) {
+      throw new Error("raw ledger field missing " + required + ": " + html.slice(0, 3000));
+    }
+  }
+}, 0);
+"""
+    script = script.replace("__APP_PATH__", json.dumps(str(root / "app.js")))
+    script = script.replace("__CARD_JSON__", json.dumps(card, ensure_ascii=False))
+    result = subprocess.run(["node", "-e", script],
+                            text=True, capture_output=True,
+                            encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise AssertionError(
+            "frontend should render compact evidence ledger: "
+            + (result.stderr or result.stdout))
+
+
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
@@ -238,6 +390,14 @@ def main():
                     "app.js should derive missing pin distance with signal-layer sign convention")
         assert_true("const direction = diffPct > 0 ? \"UP\" : (diffPct < 0 ? \"DOWN\" : \"FLAT\");" in app,
                     "app.js should derive pin direction with signal-layer labels")
+        assert_true("function rawValueText(value, depth = 0)" in app,
+                    "app.js should format nested raw values in evidence ledger")
+        assert_true("class=\"evidence-ledger\"" in app,
+                    "app.js should render evidence as responsive ledger cards")
+        assert_true("class=\"evidence-table\"" not in app,
+                    "app.js should not render the old wide evidence table")
+        assert_true(".slice(0, 10)" not in app,
+                    "app.js should not silently truncate raw evidence fields")
         assert_true("function nullSemantics(path, scope = \"\")" in app,
                     "app.js should classify benign null fields by path")
         assert_true("缓存可用，主体数据完整" in app,
@@ -245,6 +405,7 @@ def main():
         assert_true("无错误" in app and "无警告" in app,
                     "app.js should not mark no-error/no-warning nulls as missing")
         assert_distance_render(root)
+        assert_evidence_ledger_render(root)
 
     signal_source = read(SIGNAL_FILE)
     assert_true("signal_runtime_facts = self._runtime_facts()" in signal_source,
