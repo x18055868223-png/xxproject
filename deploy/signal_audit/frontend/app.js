@@ -1113,6 +1113,135 @@
     return valueHtml(null);
   }
 
+  function evidenceKey(evidence) {
+    return rawEnum(evidence && evidence.key).toUpperCase();
+  }
+
+  function factorNodeForEvidence(doc, evidence) {
+    const key = evidenceKey(evidence);
+    const cross = asObject(get(doc, "factor_cross_section", {}));
+    if (key === "FUNDING") {
+      const funding = { ...asObject(cross.funding) };
+      const tmvf48h = asObject(asObject(cross.tmvf).tmvf_48h);
+      const funding48h = asObject(tmvf48h.funding);
+      Object.entries(funding48h).forEach(([name, value]) => {
+        if (funding[name] === undefined || funding[name] === null || funding[name] === "") funding[name] = value;
+      });
+      if ((funding.funding_state === undefined || funding.funding_state === null || funding.funding_state === "") && tmvf48h.funding_state !== undefined) funding.funding_state = tmvf48h.funding_state;
+      if ((funding.last_rate === undefined || funding.last_rate === null || funding.last_rate === "") && funding.last_funding_rate !== undefined) funding.last_rate = funding.last_funding_rate;
+      if ((funding.effect === undefined || funding.effect === null || funding.effect === "") && funding.tmvf_funding_effect !== undefined) funding.effect = funding.tmvf_funding_effect;
+      return funding;
+    }
+    if (key === "SRD") return asObject(cross.skew);
+    if (key === "GGR_SPATIAL") return asObject(cross.gamma_regime);
+    if (key === "TMV") return asObject(cross.tmvf);
+    if (key === "FLOW_CONFIRM") return asObject(cross.micro_flow);
+    if (key === "MACRO") return asObject(cross.macro_pressure);
+    if (key === "CVD_4H") return asObject(asObject(cross.micro_flow).fast_4h);
+    if (key === "CVD_12H") return asObject(asObject(cross.micro_flow).slow_12h);
+    return {};
+  }
+
+  function evidenceAuxiliaryRole(evidence) {
+    const role = evidence && evidence.auxiliary_role;
+    if (role) return role;
+    return {
+      FUNDING: "FUTURES_FUNDING_CROWDING",
+      SRD: "OPTION_SKEW_DIRECTION",
+      GGR_SPATIAL: "OPTION_GAMMA_STRUCTURE",
+      TMV: "DIRECTION_OWNER",
+      FLOW_CONFIRM: "FLOW_CONFIRMATION",
+      MACRO: "MACRO_CONTEXT",
+      CVD_4H: "FLOW_CONFIRM_COMPONENT",
+      CVD_12H: "FLOW_CONFIRM_COMPONENT"
+    }[evidenceKey(evidence)] || null;
+  }
+
+  function firstNumberFrom(objects, fields) {
+    for (const object of objects) {
+      const source = asObject(object);
+      for (const field of fields) {
+        const value = safeNumber(source[field]);
+        if (value !== null) return value;
+      }
+    }
+    return null;
+  }
+
+  function signedLean(value) {
+    const numeric = safeNumber(value);
+    if (numeric === null) return null;
+    if (numeric > 0) return "BULLISH";
+    if (numeric < 0) return "BEARISH";
+    return "NEUTRAL";
+  }
+
+  function evidenceAuxiliaryLean(evidence, doc) {
+    if (evidence && evidence.auxiliary_lean) return evidence.auxiliary_lean;
+    const key = evidenceKey(evidence);
+    const detail = asObject(evidence && evidence.detail);
+    const factor = factorNodeForEvidence(doc, evidence);
+    if (key === "FUNDING") {
+      const rate = firstNumberFrom([detail, factor], ["funding_norm", "last_rate", "last_funding_rate"]);
+      return signedLean(rate === null ? null : -rate);
+    }
+    if (key === "SRD") {
+      return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]));
+    }
+    if (key === "GGR_SPATIAL") {
+      if (factor.veto) return "ADVERSE";
+      const regime = rawEnum(factor.regime || detail.regime).toUpperCase();
+      if (regime.includes("NEGATIVE") || regime.includes("AMPLIFY")) return "ADVERSE";
+      if (regime.includes("POSITIVE") || regime.includes("PINNING")) return "SUPPORTIVE";
+      const multiplier = firstNumberFrom([factor, detail], ["confidence_multiplier"]);
+      if (multiplier !== null && multiplier > 1) return "SUPPORTIVE";
+      if (multiplier !== null && multiplier < 1) return "ADVERSE";
+      return "NEUTRAL";
+    }
+    return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]));
+  }
+
+  function evidenceRawFields(key, detail) {
+    const defaults = {
+      FUNDING: ["last_rate", "last_funding_rate", "funding_norm", "funding_cum", "funding_count", "funding_state", "effect", "tmvf_funding_effect", "verdict", "hard_warning", "history_points", "observed_at", "age_ms", "source_ref"],
+      SRD: ["vote", "rr_blend", "rr_25d", "delta_rr", "rr_z", "skew_norm_blend", "skew_slope", "term_slope", "vote_confidence", "target_expiry_hours", "expiry_count", "data_status", "data_state", "observed_at", "age_ms", "source_ref"],
+      GGR_SPATIAL: ["regime", "regime_strength", "confidence_multiplier", "veto", "veto_reason", "net_gamma_notional_usd", "net_gamma_notional", "flip_point", "distance_to_flip_pct", "pin_strike", "distance_to_pin_pct", "pin_pull_direction", "max_gamma_strike", "call_wall", "put_wall", "market_state", "observed_at", "age_ms", "source_ref"]
+    };
+    return defaults[key] || Object.keys(detail);
+  }
+
+  function evidenceRawValues(evidence, doc) {
+    const key = evidenceKey(evidence);
+    const existing = asObject(evidence && evidence.raw_values);
+    const detail = asObject(evidence && evidence.detail);
+    const factor = factorNodeForEvidence(doc, evidence);
+    const raw = { ...existing };
+    evidenceRawFields(key, detail).forEach((field) => {
+      if (raw[field] !== undefined && raw[field] !== null && raw[field] !== "") return;
+      const value = detail[field] !== undefined ? detail[field] : factor[field];
+      if (value !== undefined && value !== null && value !== "") raw[field] = value;
+    });
+    const pin = asObject(factor.pin);
+    if (key === "GGR_SPATIAL") {
+      [["pin_strike", "pin_strike"], ["distance_to_pin_pct", "distance_to_pin_pct"], ["pin_pull_direction", "pin_pull_direction"]].forEach(([source, target]) => {
+        if ((raw[target] === undefined || raw[target] === null || raw[target] === "") && pin[source] !== undefined && pin[source] !== null && pin[source] !== "") raw[target] = pin[source];
+      });
+    }
+    if (key === "FUNDING") {
+      if ((raw.last_rate === undefined || raw.last_rate === null || raw.last_rate === "") && raw.last_funding_rate !== undefined) raw.last_rate = raw.last_funding_rate;
+      if ((raw.effect === undefined || raw.effect === null || raw.effect === "") && raw.tmvf_funding_effect !== undefined) raw.effect = raw.tmvf_funding_effect;
+    }
+    return raw;
+  }
+
+  function rawValuesHtml(evidence, doc) {
+    const entries = Object.entries(evidenceRawValues(evidence, doc))
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .slice(0, 10);
+    if (!entries.length) return benignNullHtml("无原始细节");
+    return `<div class="raw-values">${entries.map(([name, value]) => `<span class="raw-chip"><strong>${escapeHtml(fieldLabel(name))}</strong>${valueHtml(value, { translate: false })}</span>`).join("")}</div>`;
+  }
+
   function renderReasoning(doc) {
     const reasoning = asObject(get(doc, "reasoning", {}));
     const score = asObject(reasoning.score);
@@ -1131,6 +1260,9 @@
         <td class="num">${valueHtml(evidence.weighted_contribution, { translate: false })}</td>
         <td class="num">${isNullish(evidence.absolute_share_pct) ? valueHtml(null) : escapeHtml(`${number(evidence.absolute_share_pct, 2)}%`)}</td>
         <td>${evidenceValueHtml(evidence, "lean", evidence.lean)}</td>
+        <td>${valueHtml(evidenceAuxiliaryRole(evidence), { translate: false })}</td>
+        <td>${valueHtml(evidenceAuxiliaryLean(evidence, doc), { translate: false })}</td>
+        <td>${rawValuesHtml(evidence, doc)}</td>
         <td>${valueHtml(evidence.source_ref, { translate: false })}</td>
         <td>${evidenceValueHtml(evidence, "exclusion_reason", evidence.exclusion_reason)}</td>
       </tr>
@@ -1147,7 +1279,7 @@
       <div class="formula-block"><strong>Score</strong><span>${escapeHtml(score.method || "")}</span><span>weighted sum ${escapeHtml(scalarText(score.weighted_vote_sum, { translate: false }))} / effective weight ${escapeHtml(scalarText(score.effective_weight_sum, { translate: false }))}</span></div>
       <div class="table-wrap" style="margin-top: 16px;">
         <table class="evidence-table">
-          <thead><tr>${["Evidence", "Participation", "Vote", "Configured", "Reliability", "Info", "Effective", "Weighted", "Absolute share pct", "Lean", "Source ref", "Exclusion reason"].map((label) => `<th>${escapeHtml(fieldLabel(label))}</th>`).join("")}</tr></thead>
+          <thead><tr>${["Evidence", "Participation", "Vote", "Configured", "Reliability", "Info", "Effective", "Weighted", "Absolute share pct", "Lean", "Aux role", "Aux tendency", "Raw values", "Source ref", "Exclusion reason"].map((label) => `<th>${escapeHtml(fieldLabel(label))}</th>`).join("")}</tr></thead>
           <tbody>${evidenceRows}</tbody>
         </table>
       </div>

@@ -713,6 +713,32 @@
       font-weight: 650;
     }
 
+    .raw-values {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 280px;
+    }
+
+    .raw-chip {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      max-width: 360px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 3px 7px;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
+
+    .raw-chip strong {
+      color: var(--muted);
+      font-weight: 760;
+    }
+
     .conflict-sides {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -881,7 +907,7 @@
     }
 
     .evidence-table {
-      min-width: 1460px;
+      min-width: 1880px;
     }
 
     .field-table {

@@ -48,6 +48,86 @@ def mixed_time_record(card_id, confirmed_at=None, confirmed_time_ms=None):
     }
 
 
+def auxiliary_evidence_record():
+    return {
+        "identity": {
+            "card_id": "AUX-EVIDENCE",
+            "confirmed_at": "2026-06-18T16:00:00+08:00",
+            "symbol": "BTC",
+        },
+        "quality": {"overall": "OK"},
+        "reasoning": {
+            "evidence": [
+                {
+                    "key": "FUNDING",
+                    "participation_status": "NON_VOTING",
+                    "vote": 0.0,
+                    "configured_weight": 0.25,
+                    "effective_weight": 0.0,
+                    "weighted_contribution": 0.0,
+                    "source_ref": "factor_cross_section.funding",
+                    "exclusion_reason": "DIRECTION_VOTE_DISABLED",
+                    "raw_values": {"last_rate": 0.000072},
+                },
+                {
+                    "key": "SRD",
+                    "participation_status": "ACTIVE",
+                    "vote": -0.61,
+                    "configured_weight": 0.70,
+                    "effective_weight": 0.56,
+                    "weighted_contribution": -0.3416,
+                    "source_ref": "factor_cross_section.skew",
+                },
+                {
+                    "key": "GGR_SPATIAL",
+                    "participation_status": "GATE_ONLY",
+                    "vote": 0.0,
+                    "configured_weight": 0.25,
+                    "effective_weight": 0.0,
+                    "weighted_contribution": 0.0,
+                    "source_ref": "factor_cross_section.gamma_regime",
+                    "exclusion_reason": "CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE",
+                },
+            ],
+        },
+        "factor_cross_section": {
+            "funding": {
+                "last_funding_rate": 0.000072,
+                "tmvf_funding_effect": "overcrowded",
+                "source_ref": "BINANCE_FUNDING_RATE",
+            },
+            "tmvf": {
+                "tmvf_48h": {
+                    "funding": {
+                        "funding_norm": 0.31,
+                        "funding_cum": 0.62,
+                        "funding_count": 25,
+                        "funding_state": "crowded",
+                    },
+                },
+            },
+            "skew": {
+                "vote": -0.61,
+                "rr_blend": -0.059,
+                "delta_rr": -0.0032,
+                "rr_z": -1.0,
+                "vote_confidence": 0.80,
+                "source_ref": "DERIBIT_OPTIONS",
+            },
+            "gamma_regime": {
+                "regime": "POSITIVE_GAMMA_PINNING",
+                "regime_strength": 0.86,
+                "confidence_multiplier": 0.98,
+                "net_gamma_notional_usd": 22870000.0,
+                "distance_to_flip_pct": -0.44,
+                "pin_strike": 64536.21,
+                "distance_to_pin_pct": 0.85,
+                "source_ref": "DERIBIT_OPTIONS",
+            },
+        },
+    }
+
+
 def main():
     tool = load_tool()
     source_text = TOOL_FILE.read_text(encoding="utf-8")
@@ -116,6 +196,51 @@ def main():
         tool.materialize(source, output, max_cards=20)
         assert_true(not stale.exists(),
                     "materializer should remove stale card JSON files outside the current manifest")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "aux_signal_review.jsonl"
+        output = root / "public"
+        source.write_text(json.dumps(auxiliary_evidence_record(),
+                                     ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        tool.materialize(source, output, max_cards=20)
+        card = json.loads((output / "signal_cards" / "AUX-EVIDENCE.json")
+                          .read_text(encoding="utf-8"))
+        rows = {row["key"]: row for row in card["reasoning"]["evidence"]}
+        funding = rows["FUNDING"]
+        assert_true(funding["auxiliary_role"] == "FUTURES_FUNDING_CROWDING",
+                    "materializer should enrich old funding rows with auxiliary role")
+        assert_true(funding["auxiliary_lean"] == "BEARISH",
+                    "positive funding should surface bearish crowding tendency")
+        assert_true(funding["raw_values"]["last_rate"] == 0.000072,
+                    "funding raw last_rate should be carried into the ledger")
+        assert_true(funding["raw_values"]["funding_norm"] == 0.31,
+                    "funding raw crowding norm should be filled from tmvf_48h")
+        assert_true(funding["raw_values"]["funding_cum"] == 0.62,
+                    "funding raw cumulative funding should be filled from tmvf_48h")
+        assert_true(funding["raw_values"]["funding_count"] == 25,
+                    "funding raw sample count should be filled from tmvf_48h")
+        assert_true(funding["raw_values"]["funding_state"] == "crowded",
+                    "funding raw state should be filled from tmvf_48h")
+        assert_true(funding["raw_values"]["effect"] == "overcrowded",
+                    "funding effect alias should be filled for the ledger")
+        srd = rows["SRD"]
+        assert_true(srd["auxiliary_role"] == "OPTION_SKEW_DIRECTION",
+                    "SRD should expose option-skew role")
+        assert_true(srd["auxiliary_lean"] == "BEARISH",
+                    "negative SRD vote should surface bearish option-skew tendency")
+        assert_true(srd["raw_values"]["rr_blend"] == -0.059,
+                    "SRD raw rr_blend should be carried into the ledger")
+        ggr = rows["GGR_SPATIAL"]
+        assert_true(ggr["auxiliary_role"] == "OPTION_GAMMA_STRUCTURE",
+                    "GGR should expose option gamma structure role")
+        assert_true(ggr["auxiliary_lean"] == "SUPPORTIVE",
+                    "positive gamma pinning should surface supportive structure tendency")
+        assert_true(ggr["raw_values"]["confidence_multiplier"] == 0.98,
+                    "GGR confidence multiplier should be carried into the ledger")
+        assert_true(ggr["raw_values"]["distance_to_flip_pct"] == -0.44,
+                    "GGR distance-to-flip context should be carried into the ledger")
 
     print("materializer_tail_window: PASS")
 

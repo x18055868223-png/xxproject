@@ -3900,7 +3900,7 @@ def build_audit_record(card, config=None):
             "session_context": session_context,
         },
         "blocking": _audit_blocking(blocking, config),
-        "reasoning": _audit_reasoning(reasoning, decomp, cal),
+        "reasoning": _audit_reasoning(reasoning, decomp, cal, cross),
         "conflict": {
             "ratio": safe_float(conflict.get("ratio")),
             "method": "1 - reasoning.agreement.value",
@@ -5128,13 +5128,15 @@ def _audit_blocking(blocking, config):
     }
 
 
-def _audit_reasoning(reasoning, decomp, cal):
+def _audit_reasoning(reasoning, decomp, cal, cross=None):
     raw_rows = list(reasoning.get("evidence") or [])
     seen = {row.get("key") for row in raw_rows}
-    rows = [_audit_evidence_row(row) for row in raw_rows]
+    rows = [_audit_enrich_evidence_row(_audit_evidence_row(row), cross)
+            for row in raw_rows]
     for key in _ALL_KEYS:
         if key not in seen:
-            rows.append(_audit_supplemental_evidence_row(key))
+            rows.append(_audit_enrich_evidence_row(
+                _audit_supplemental_evidence_row(key), cross))
     abs_total = sum(abs(safe_float(row.get("weighted_contribution")) or 0.0)
                     for row in rows)
     for row in rows:
@@ -5247,6 +5249,179 @@ def _audit_supplemental_evidence_row(key):
         "source_ref": _EVIDENCE_SOURCE_REF.get(key),
         "exclusion_reason": reason,
     }
+
+
+def _audit_enrich_evidence_row(row, cross):
+    if not isinstance(row, dict):
+        return row
+    key = row.get("key")
+    detail = dict(row.get("detail") or {})
+    factor = _audit_factor_for_evidence(key, cross)
+    raw_values = _audit_auxiliary_raw_values(key, detail, factor)
+    auxiliary_role = _audit_auxiliary_role(key)
+    auxiliary_lean = _audit_auxiliary_lean(key, row, detail, factor)
+    if raw_values:
+        existing = row.get("raw_values")
+        if isinstance(existing, dict):
+            for name, value in raw_values.items():
+                if existing.get(name) in (None, ""):
+                    existing[name] = value
+        else:
+            row["raw_values"] = raw_values
+    if auxiliary_role and not row.get("auxiliary_role"):
+        row["auxiliary_role"] = auxiliary_role
+    if auxiliary_lean and not row.get("auxiliary_lean"):
+        row["auxiliary_lean"] = auxiliary_lean
+    if not row.get("detail") and detail:
+        row["detail"] = detail
+    return row
+
+
+def _audit_factor_for_evidence(key, cross):
+    cross = cross or {}
+    normalized = str(key or "").upper()
+    if normalized == "FUNDING":
+        return cross.get("funding") or {}
+    if normalized == "SRD":
+        return cross.get("skew") or {}
+    if normalized == "GGR_SPATIAL":
+        return cross.get("gamma_regime") or {}
+    if normalized == "TMV":
+        return cross.get("tmvf") or {}
+    if normalized == "FLOW_CONFIRM":
+        return cross.get("micro_flow") or {}
+    if normalized == "MACRO":
+        return cross.get("macro_pressure") or {}
+    if normalized in ("CVD_4H", "CVD_12H"):
+        micro = cross.get("micro_flow") or {}
+        return micro.get("fast_4h" if normalized == "CVD_4H" else "slow_12h") or {}
+    return {}
+
+
+def _audit_auxiliary_role(key):
+    return {
+        "FUNDING": "FUTURES_FUNDING_CROWDING",
+        "SRD": "OPTION_SKEW_DIRECTION",
+        "GGR_SPATIAL": "OPTION_GAMMA_STRUCTURE",
+        "TMV": "DIRECTION_OWNER",
+        "FLOW_CONFIRM": "FLOW_CONFIRMATION",
+        "MACRO": "MACRO_CONTEXT",
+        "CVD_4H": "FLOW_CONFIRM_COMPONENT",
+        "CVD_12H": "FLOW_CONFIRM_COMPONENT",
+    }.get(str(key or "").upper())
+
+
+def _audit_auxiliary_raw_values(key, detail, factor):
+    normalized = str(key or "").upper()
+    if normalized == "FUNDING":
+        fields = ("last_rate", "last_funding_rate", "funding_norm",
+                  "funding_cum", "funding_count", "funding_state", "effect",
+                  "tmvf_funding_effect", "verdict", "hard_warning",
+                  "history_points", "rate_unit", "observed_at", "age_ms",
+                  "source_ref")
+    elif normalized == "SRD":
+        fields = ("vote", "rr_blend", "rr_25d", "delta_rr", "rr_z",
+                  "skew_norm_blend", "skew_slope", "term_slope",
+                  "vote_confidence", "target_expiry_hours", "expiry_count",
+                  "data_status", "data_state", "observed_at", "age_ms",
+                  "source_ref")
+    elif normalized == "GGR_SPATIAL":
+        fields = ("regime", "regime_strength", "confidence_multiplier",
+                  "veto", "veto_reason", "net_gamma_notional_usd",
+                  "net_gamma_notional", "flip_point", "distance_to_flip_pct",
+                  "pin_strike", "distance_to_pin_pct", "pin_pull_direction",
+                  "max_gamma_strike", "call_wall", "put_wall",
+                  "market_state", "observed_at", "age_ms", "source_ref")
+    elif normalized == "FLOW_CONFIRM":
+        fields = ("agreement", "absorption_state", "combined_vote",
+                  "combined_weight", "data_quality", "fast_4h", "slow_12h",
+                  "age_ms", "source_ref")
+    elif normalized in ("CVD_4H", "CVD_12H"):
+        fields = ("verdict", "cvd_norm", "cvd_sum", "price_return_pct",
+                  "strength", "strength_pctl", "data_ready", "vote",
+                  "weight")
+    elif normalized == "MACRO":
+        fields = ("macro_score", "score", "macro_regime", "regime",
+                  "verdict", "data_status", "data_confidence")
+    else:
+        fields = tuple((detail or {}).keys())
+    raw = {}
+    for field in fields:
+        value = None
+        if isinstance(detail, dict) and field in detail:
+            value = detail.get(field)
+        if (value is None or value == "") and isinstance(factor, dict):
+            value = factor.get(field)
+        if value is not None and value != "":
+            raw[field] = value
+    if normalized == "GGR_SPATIAL" and isinstance(factor, dict):
+        pin = factor.get("pin") or {}
+        if isinstance(pin, dict):
+            for source, target in (("pin_strike", "pin_strike"),
+                                   ("distance_to_pin_pct", "distance_to_pin_pct"),
+                                   ("pin_pull_direction", "pin_pull_direction")):
+                if target not in raw and pin.get(source) is not None:
+                    raw[target] = pin.get(source)
+    if normalized == "FUNDING":
+        if "last_rate" not in raw and raw.get("last_funding_rate") is not None:
+            raw["last_rate"] = raw.get("last_funding_rate")
+        if "effect" not in raw and raw.get("tmvf_funding_effect") is not None:
+            raw["effect"] = raw.get("tmvf_funding_effect")
+    return raw
+
+
+def _audit_auxiliary_lean(key, row, detail, factor):
+    normalized = str(key or "").upper()
+    if normalized == "FUNDING":
+        rate = _first_safe_float(detail, factor, (
+            "funding_norm", "last_rate", "last_funding_rate"))
+        return _signed_lean(-rate if rate is not None else None)
+    if normalized == "SRD":
+        vote = _first_safe_float(row, detail, factor, ("vote",))
+        return _signed_lean(vote)
+    if normalized == "GGR_SPATIAL":
+        if (factor or {}).get("veto"):
+            return "ADVERSE"
+        regime = str((factor or {}).get("regime")
+                     or (detail or {}).get("regime") or "").upper()
+        if "NEGATIVE" in regime or "AMPLIFY" in regime:
+            return "ADVERSE"
+        if "POSITIVE" in regime or "PINNING" in regime:
+            return "SUPPORTIVE"
+        mult = _first_safe_float(factor, detail, ("confidence_multiplier",))
+        if mult is not None:
+            if mult > 1.0:
+                return "SUPPORTIVE"
+            if mult < 1.0:
+                return "ADVERSE"
+        return "NEUTRAL"
+    vote = _first_safe_float(row, detail, factor, ("vote",))
+    return _signed_lean(vote)
+
+
+def _first_safe_float(*items):
+    if len(items) < 2:
+        return None
+    fields = items[-1]
+    for obj in items[:-1]:
+        if not isinstance(obj, dict):
+            continue
+        for field in fields:
+            value = safe_float(obj.get(field))
+            if value is not None:
+                return value
+    return None
+
+
+def _signed_lean(value):
+    value = safe_float(value)
+    if value is None:
+        return None
+    if value > 0:
+        return "BULLISH"
+    if value < 0:
+        return "BEARISH"
+    return "NEUTRAL"
 
 
 def _audit_configured_weight(key):
@@ -5508,9 +5683,18 @@ def _build_cross_section(fs, runtime_facts=None):
     micro_flow = dict(flow.get("micro_flow") or {})
     if micro_flow and micro_age_ms is not None and "age_ms" not in micro_flow:
         micro_flow["age_ms"] = micro_age_ms
+    tmvf_48h = flow.get("tmvf_48h") or {}
+    tmvf_48h_funding = tmvf_48h.get("funding") or {}
     funding = {
+        "last_rate": flow.get("last_funding_rate"),
         "last_funding_rate": flow.get("last_funding_rate"),
+        "effect": flow.get("tmvf_funding_effect"),
         "tmvf_funding_effect": flow.get("tmvf_funding_effect"),
+        "funding_norm": tmvf_48h_funding.get("funding_norm"),
+        "funding_cum": tmvf_48h_funding.get("funding_cum"),
+        "funding_count": tmvf_48h_funding.get("funding_count"),
+        "funding_state": (tmvf_48h.get("funding_state")
+                          or tmvf_48h_funding.get("funding_state")),
     }
     if tmvf_age_ms is not None:
         funding["age_ms"] = tmvf_age_ms

@@ -5,6 +5,7 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+DEPLOY_FRONTEND = ROOT / "deploy" / "signal_audit" / "frontend"
 SIGNAL_FILE = ROOT / "demo" / "最新交付物" / "neutral_regulation_demo_fmz.py"
 
 
@@ -91,6 +92,45 @@ def main():
                     "reliability", "information", "effective_weight",
                     "weighted_contribution", "absolute_share_pct", "source_ref"):
             assert_true(key in row, "evidence missing " + key)
+    by_key = {str(row["key"]).upper(): row for row in evidence}
+    funding = by_key.get("FUNDING")
+    assert_true(isinstance(funding, dict), "funding evidence row should exist")
+    assert_true(funding.get("participation_status") == "NON_VOTING",
+                "funding should remain a non-voting crowding modifier")
+    assert_true(funding.get("auxiliary_role") == "FUTURES_FUNDING_CROWDING",
+                "funding row should expose its futures-side auxiliary role")
+    assert_true(funding.get("auxiliary_lean") in ("BULLISH", "BEARISH", "NEUTRAL"),
+                "funding row should expose directional crowding tendency")
+    assert_true(get_path(funding, "raw_values.last_rate") is not None,
+                "funding row should list raw last funding rate")
+    assert_true(get_path(funding, "raw_values.effect") is not None,
+                "funding row should list funding effect")
+
+    srd = by_key.get("SRD")
+    assert_true(isinstance(srd, dict), "SRD evidence row should exist")
+    assert_true(srd.get("auxiliary_role") == "OPTION_SKEW_DIRECTION",
+                "SRD row should expose option-skew auxiliary role")
+    assert_true(get_path(srd, "raw_values.rr_blend") is not None,
+                "SRD row should list risk-reversal blend")
+    assert_true(get_path(srd, "raw_values.delta_rr") is not None,
+                "SRD row should list delta risk reversal")
+
+    flow_confirm = by_key.get("FLOW_CONFIRM")
+    assert_true(isinstance(flow_confirm, dict),
+                "flow confirm evidence row should exist")
+    assert_true(get_path(flow_confirm, "raw_values.combined_vote") is not None,
+                "flow confirm row should preserve its merged raw vote")
+
+    ggr = by_key.get("GGR_SPATIAL")
+    assert_true(isinstance(ggr, dict), "GGR spatial evidence row should exist")
+    assert_true(ggr.get("participation_status") == "GATE_ONLY",
+                "GGR spatial row should remain gate-only by default")
+    assert_true(ggr.get("auxiliary_role") == "OPTION_GAMMA_STRUCTURE",
+                "GGR row should expose option gamma structure role")
+    assert_true(get_path(ggr, "raw_values.regime") is not None,
+                "GGR row should list gamma regime")
+    assert_true(get_path(ggr, "raw_values.confidence_multiplier") is not None,
+                "GGR row should list confidence multiplier")
 
     assert_true("dissent_keys" in record["conflict"], "conflict dissent keys")
     assert_true("dominant_conflict" in record["conflict"], "dominant conflict")
@@ -111,6 +151,14 @@ def main():
     encoded = json.dumps(record, ensure_ascii=False, sort_keys=True)
     assert_true("render_review_card_push" not in encoded,
                 "old renderer must not leak into records")
+    app = (DEPLOY_FRONTEND / "app.js").read_text(encoding="utf-8")
+    assert_true("function evidenceRawValues" in app,
+                "frontend should render raw evidence values inside the ledger")
+    assert_true("function evidenceAuxiliaryLean" in app,
+                "frontend should derive auxiliary evidence tendency for old cards")
+    for marker in ("Raw values", "Aux tendency", "FUTURES_FUNDING_CROWDING",
+                   "OPTION_SKEW_DIRECTION", "OPTION_GAMMA_STRUCTURE"):
+        assert_true(marker in app, "frontend evidence ledger missing " + marker)
     print("signal_audit_frontend_contract: PASS")
 
 

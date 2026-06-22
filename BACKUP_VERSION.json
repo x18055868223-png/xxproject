@@ -1,5 +1,5 @@
 {
-  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.22-r3.0",
+  "backup_version": "NRD-XXPROJECT-BACKUP-2026.06.22-r3.0.1",
   "backup_date": "2026-06-22",
   "project_name": "neutral-loop-integration",
   "target_repository": "https://github.com/x18055868223-png/xxproject",
@@ -9,6 +9,7 @@
     "signal_chain_session_context_timezone_decision_matrix",
     "gexmonitorapi_rank_enabled_endpoint",
     "signal_audit_static_frontend_rank_llm",
+    "signal_audit_auxiliary_evidence_ledger_patch",
     "two_pass_blind_llm_review_sidecar",
     "fmz_execution_layer_v2.7.0_dry_run_candidate",
     "factor_light_cards_24_docs",

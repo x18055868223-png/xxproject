@@ -6,7 +6,7 @@
 - The main implementation language present in the deliverables is Python. The repository also contains Markdown documentation plus a static HTML/JSON audit archive sample under `audit_archive/`.
 - The current deployable signal-layer artifact is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file version is `demo_version = "1.4.0"` and `schema_version = "nrd.schema.v1.0.0"`.
 - The current deployable execution-layer artifact is `demo/最新交付物/spm_calendar_protected_short_v1.py`. Its verified in-file version is `STRATEGY_VERSION = "2.7.0"`, with entry/exit/hedge/live trading gates still default-safe/off.
-- The current xxproject backup marker is `NRD-XXPROJECT-BACKUP-2026.06.22-r3.0`, recorded in `BACKUP_VERSION.json`, `README_XXPROJECT_BACKUP.md`, and `99_工程资产索引/README.md`.
+- The current xxproject backup marker is `NRD-XXPROJECT-BACKUP-2026.06.22-r3.0.1`, recorded in `BACKUP_VERSION.json`, `README_XXPROJECT_BACKUP.md`, and `99_工程资产索引/README.md`.
 - `demo/最新交付物/README.md` states that `demo/最新交付物/` contains the latest FMZ-ready single-file strategies, while `demo/副本快照/` is the historical timeline.
 - This workspace may be checked out either as the signal-audit deployment repository or as the xxproject backup clone; verify `git remote -v` before committing or pushing.
 
