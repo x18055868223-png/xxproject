@@ -153,16 +153,20 @@ def main():
                 "old renderer must not leak into records")
     app = (DEPLOY_FRONTEND / "app.js").read_text(encoding="utf-8")
     assert_true("function evidenceRawValues" in app,
-                "frontend should render raw evidence values inside the ledger")
+                "frontend should derive key evidence facts from raw values")
     assert_true("function evidenceAuxiliaryLean" in app,
                 "frontend should derive auxiliary evidence tendency for old cards")
     assert_true("function rawValueText" in app,
                 "frontend should format nested raw evidence values")
+    assert_true("function evidenceAssessment" in app,
+                "frontend should summarize EDB evidence rows")
+    assert_true("function fundingAssessment" in app,
+                "frontend should explain futures funding tendency")
     assert_true("evidence-ledger" in app,
                 "frontend should use a responsive evidence ledger layout")
     assert_true("slice(0, 10)" not in app,
                 "raw evidence ledger should not silently truncate at 10 fields")
-    for marker in ("Raw values", "Aux tendency", "FUTURES_FUNDING_CROWDING",
+    for marker in ("模块倾向", "费率端倾向", "永续资金费率", "反身性辅助倾向", "多头倾向", "0.01%", "FUTURES_FUNDING_CROWDING",
                    "OPTION_SKEW_DIRECTION", "OPTION_GAMMA_STRUCTURE"):
         assert_true(marker in app, "frontend evidence ledger missing " + marker)
     index_html = (DEPLOY_FRONTEND / "index.html").read_text(encoding="utf-8")

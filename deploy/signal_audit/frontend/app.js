@@ -1252,27 +1252,223 @@
     return scalarText(value, { translate: false, digits: 4 });
   }
 
-  function rawValuesHtml(evidence, doc) {
-    const entries = Object.entries(evidenceRawValues(evidence, doc))
-      .filter(([, value]) => value !== undefined && value !== null && value !== "")
-      .sort(([left], [right]) => left.localeCompare(right));
-    if (!entries.length) return benignNullHtml("无原始细节");
-    return `<div class="raw-values">${entries.map(([name, value]) => {
-      const text = rawValueText(value);
-      return `<span class="raw-chip" title="${escapeHtml(`${fieldLabel(name)} ${text}`)}"><strong>${escapeHtml(name)}</strong><span>${escapeHtml(text)}</span></span>`;
-    }).join("")}</div>`;
+  function textClip(value, limit = 72) {
+    const text = scalarText(value, { translate: false, digits: 4 });
+    return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
   }
 
-  function evidenceMetric(label, html, options = {}) {
-    const className = options.wide ? "evidence-metric evidence-metric-wide" : "evidence-metric";
-    return `<div class="${className}"><span class="evidence-metric-label">${escapeHtml(fieldLabel(label))}</span><span class="evidence-metric-value">${html}</span></div>`;
+  function evidenceContext(evidence, doc) {
+    return {
+      key: evidenceKey(evidence),
+      detail: asObject(evidence && evidence.detail),
+      raw: evidenceRawValues(evidence, doc),
+      factor: factorNodeForEvidence(doc, evidence)
+    };
+  }
+
+  function evidenceFirstValue(evidence, ctx, fields) {
+    return firstFromObjects([ctx.raw, ctx.detail, evidence, ctx.factor], fields);
+  }
+
+  function evidenceFirstNumber(evidence, ctx, fields) {
+    return firstNumberFrom([ctx.raw, ctx.detail, evidence, ctx.factor], fields);
+  }
+
+  function pairSymbol(doc) {
+    const base = rawEnum(symbol(doc)).toUpperCase();
+    const quote = rawEnum(get(doc, "market_context.quote_currency", "USDT")).toUpperCase();
+    if (!base || base === "N/A") return "BTCUSDT";
+    return base.endsWith(quote) ? base : `${base}${quote || "USDT"}`;
+  }
+
+  function ratePctText(rate) {
+    const numeric = safeNumber(rate);
+    return numeric === null ? "暂缺" : `${number(numeric * 100, 4)}%`;
+  }
+
+  function evidenceFact(label, value) {
+    if (isNullish(value) || value === "") return "";
+    const text = textClip(value);
+    return `<span class="evidence-fact"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(text)}">${escapeHtml(text)}</strong></span>`;
+  }
+
+  function evidenceFactsHtml(facts) {
+    const html = facts.filter(Boolean).join("");
+    return html ? `<div class="evidence-facts">${html}</div>` : `<div class="empty-inline">无关键事实</div>`;
+  }
+
+  function evidenceImpactHtml(evidence) {
+    const share = isNullish(evidence.absolute_share_pct) ? "n/a" : `${number(evidence.absolute_share_pct, 2)}%`;
+    const configured = scalarText(evidence.configured_weight, { translate: false, digits: 4 });
+    const effective = scalarText(evidence.effective_weight, { translate: false, digits: 4 });
+    const weighted = scalarText(evidence.weighted_contribution, { translate: false, digits: 4 });
+    return `
+      <div class="evidence-impact">
+        <span><em>vote</em><strong>${escapeHtml(scalarText(evidence.vote, { translate: false, digits: 4 }))}</strong></span>
+        <span><em>weight</em><strong>${escapeHtml(`${configured} / ${effective}`)}</strong></span>
+        <span><em>contrib</em><strong>${escapeHtml(weighted)}</strong></span>
+        <span><em>share</em><strong>${escapeHtml(share)}</strong></span>
+      </div>
+    `;
+  }
+
+  function fundingAssessment(evidence, doc, ctx) {
+    const rate = evidenceFirstNumber(evidence, ctx, ["last_rate", "last_funding_rate"]);
+    const threshold = 0.0001;
+    let tendency = "中性";
+    let note = "资金费率暂缺，仅保留为不计票辅助项。";
+    let reflexive = "NEUTRAL";
+    if (rate !== null) {
+      if (rate > 0) tendency = `${Math.abs(rate) >= threshold ? "拥挤" : "温和"}多头倾向`;
+      else if (rate < 0) tendency = `${Math.abs(rate) >= threshold ? "拥挤" : "温和"}空头倾向`;
+      reflexive = signedLean(-rate) || "NEUTRAL";
+      note = `${pairSymbol(doc)} 永续资金费率 ${ratePctText(rate)}，阈值 0.01%，当前为${tendency}。`;
+    }
+    return {
+      stanceLabel: "费率端倾向",
+      stance: tendency,
+      sentence: `${note} 反身性辅助倾向为${semanticCompact(reflexive) || reflexive}，本项不直接改变 EDB 方向票。`,
+      facts: [
+        evidenceFact("funding", ratePctText(rate)),
+        evidenceFact("threshold", "0.01%"),
+        evidenceFact("reflexive", semanticCompact(reflexive) || reflexive),
+        evidenceFact("effect", firstPresent(evidenceFirstValue(evidence, ctx, ["effect", "tmvf_funding_effect"]), "n/a"))
+      ]
+    };
+  }
+
+  function srdAssessment(evidence, ctx) {
+    const vote = evidenceFirstNumber(evidence, ctx, ["vote"]);
+    const rrBlend = evidenceFirstNumber(evidence, ctx, ["rr_blend"]);
+    const rrZ = evidenceFirstNumber(evidence, ctx, ["rr_z"]);
+    const deltaRr = evidenceFirstNumber(evidence, ctx, ["delta_rr"]);
+    const leanText = semanticCompact(evidence.lean || evidenceAuxiliaryLean(evidence, { factor_cross_section: { skew: ctx.factor } })) || "UNKNOWN";
+    return {
+      stance: leanText,
+      sentence: `期权斜率投票 ${scalarText(vote, { translate: false, digits: 4 })}，风险逆转 ${scalarText(rrBlend, { translate: false, digits: 4 })}，当前判断为${leanText}。`,
+      facts: [
+        evidenceFact("rr_blend", rrBlend),
+        evidenceFact("rr_z", rrZ),
+        evidenceFact("delta_rr", deltaRr),
+        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["vote_confidence"]))
+      ]
+    };
+  }
+
+  function ggrAssessment(evidence, ctx) {
+    const regime = evidenceFirstValue(evidence, ctx, ["regime", "market_state"]);
+    const multiplier = evidenceFirstNumber(evidence, ctx, ["confidence_multiplier"]);
+    const veto = evidenceFirstValue(evidence, ctx, ["veto"]);
+    const flipDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_flip_pct"]);
+    const pinDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_pin_pct"]);
+    const stance = semanticCompact(evidenceAuxiliaryLean(evidence, { factor_cross_section: { gamma_regime: ctx.factor } })) || "NEUTRAL";
+    return {
+      stance,
+      sentence: `Gamma 结构 ${scalarText(regime, { translate: false })}，置信乘子 ${scalarText(multiplier, { translate: false, digits: 4 })}，当前作为空间安全/门控参考。`,
+      facts: [
+        evidenceFact("netGEX", evidenceFirstValue(evidence, ctx, ["net_gamma_notional_usd", "net_gamma_notional"])),
+        evidenceFact("flip", evidenceFirstValue(evidence, ctx, ["flip_point"])),
+        evidenceFact("dist_flip", flipDistance === null ? null : pctPoint(flipDistance)),
+        evidenceFact("dist_pin", pinDistance === null ? null : pctPoint(pinDistance)),
+        evidenceFact("veto", veto)
+      ]
+    };
+  }
+
+  function tmvAssessment(evidence, ctx) {
+    const blend = evidenceFirstNumber(evidence, ctx, ["tmv_blend"]);
+    const windowConflict = evidenceFirstValue(evidence, ctx, ["window_conflict"]);
+    const direction = evidenceFirstValue(evidence, ctx, ["direction"]);
+    const leanText = semanticCompact(evidence.lean || signedLean(blend)) || "UNKNOWN";
+    return {
+      stance: leanText,
+      sentence: `量价主干 blend ${scalarText(blend, { translate: false, digits: 4 })}，窗口冲突 ${scalarText(windowConflict, { translate: false })}，作为主方向骨架。`,
+      facts: [
+        evidenceFact("tmv_blend", blend),
+        evidenceFact("direction", direction),
+        evidenceFact("24h", evidenceFirstValue(evidence, ctx, ["tmvf_24h_final"])),
+        evidenceFact("48h", evidenceFirstValue(evidence, ctx, ["tmvf_48h_final"]))
+      ]
+    };
+  }
+
+  function flowAssessment(evidence, ctx) {
+    const combinedVote = evidenceFirstNumber(evidence, ctx, ["combined_vote", "vote"]);
+    const agreement = evidenceFirstValue(evidence, ctx, ["agreement"]);
+    const absorption = evidenceFirstValue(evidence, ctx, ["absorption_state"]);
+    const fast = asObject(evidenceFirstValue(evidence, ctx, ["fast_4h"]));
+    const slow = asObject(evidenceFirstValue(evidence, ctx, ["slow_12h"]));
+    const leanText = semanticCompact(evidence.lean || signedLean(combinedVote)) || "UNKNOWN";
+    return {
+      stance: leanText,
+      sentence: `主动流合成 vote ${scalarText(combinedVote, { translate: false, digits: 4 })}，一致性 ${scalarText(agreement, { translate: false })}，用于确认或削弱主方向。`,
+      facts: [
+        evidenceFact("absorption", absorption),
+        evidenceFact("fast_4h", fast.verdict),
+        evidenceFact("slow_12h", slow.verdict),
+        evidenceFact("data", evidenceFirstValue(evidence, ctx, ["data_quality", "data_status"]))
+      ]
+    };
+  }
+
+  function macroAssessment(evidence, ctx) {
+    const score = firstNumberFrom([ctx.raw, ctx.detail, ctx.factor], ["macro_score", "score"]);
+    const regime = evidenceFirstValue(evidence, ctx, ["macro_regime", "regime"]);
+    const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote)) || "UNKNOWN";
+    return {
+      stance: leanText,
+      sentence: `宏观背景 ${scalarText(regime, { translate: false })}，分数 ${scalarText(score, { translate: false, digits: 4 })}，仅作为跨市场顺逆风。`,
+      facts: [
+        evidenceFact("regime", regime),
+        evidenceFact("score", score),
+        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["data_confidence", "macro_data_confidence"]))
+      ]
+    };
+  }
+
+  function cvdAssessment(evidence, ctx) {
+    const cvdSum = evidenceFirstNumber(evidence, ctx, ["cvd_sum"]);
+    const strength = evidenceFirstNumber(evidence, ctx, ["normalized_strength", "strength"]);
+    const verdict = evidenceFirstValue(evidence, ctx, ["verdict"]);
+    const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote)) || "UNKNOWN";
+    return {
+      stance: leanText,
+      sentence: `CVD 分量 ${scalarText(cvdSum, { translate: false, digits: 4 })}，强度 ${scalarText(strength, { translate: false, digits: 4 })}，结论 ${scalarText(verdict, { translate: false })}。`,
+      facts: [
+        evidenceFact("cvd_sum", cvdSum),
+        evidenceFact("strength", strength),
+        evidenceFact("verdict", verdict)
+      ]
+    };
+  }
+
+  function defaultEvidenceAssessment(evidence, ctx) {
+    const leanText = semanticCompact(evidence.lean || evidenceAuxiliaryLean(evidence, { factor_cross_section: {} })) || "UNKNOWN";
+    return {
+      stance: leanText,
+      sentence: `${evidence.key || "Evidence"} 投票 ${scalarText(evidence.vote, { translate: false, digits: 4 })}，有效权重 ${scalarText(evidence.effective_weight, { translate: false, digits: 4 })}。`,
+      facts: [
+        evidenceFact("source", evidence.source_ref),
+        evidenceFact("role", evidenceAuxiliaryRole(evidence))
+      ]
+    };
+  }
+
+  function evidenceAssessment(evidence, doc) {
+    const ctx = evidenceContext(evidence, doc);
+    if (ctx.key === "FUNDING") return fundingAssessment(evidence, doc, ctx);
+    if (ctx.key === "SRD") return srdAssessment(evidence, ctx);
+    if (ctx.key === "GGR_SPATIAL") return ggrAssessment(evidence, ctx);
+    if (ctx.key === "TMV") return tmvAssessment(evidence, ctx);
+    if (ctx.key === "FLOW_CONFIRM") return flowAssessment(evidence, ctx);
+    if (ctx.key === "MACRO") return macroAssessment(evidence, ctx);
+    if (ctx.key === "CVD_4H" || ctx.key === "CVD_12H") return cvdAssessment(evidence, ctx);
+    return defaultEvidenceAssessment(evidence, ctx);
   }
 
   function evidenceLedgerItem(evidence, doc) {
     const status = rawEnum(evidence.participation_status).toLowerCase() || "unknown";
-    const share = isNullish(evidence.absolute_share_pct)
-      ? valueHtml(null)
-      : escapeHtml(`${number(evidence.absolute_share_pct, 2)}%`);
+    const assessment = evidenceAssessment(evidence, doc);
     return `
       <article class="evidence-item participation-${escapeHtml(status)}">
         <div class="evidence-item-head">
@@ -1282,23 +1478,19 @@
           </div>
           <div class="evidence-status">${statusBadge("", evidence.participation_status)}</div>
         </div>
-        <div class="evidence-detail-grid">
-          ${evidenceMetric("Vote", evidenceValueHtml(evidence, "vote", evidence.vote))}
-          ${evidenceMetric("Configured", valueHtml(evidence.configured_weight, { translate: false }))}
-          ${evidenceMetric("Reliability", evidenceValueHtml(evidence, "reliability", evidence.reliability))}
-          ${evidenceMetric("Info", valueHtml(evidence.information, { translate: false }))}
-          ${evidenceMetric("Effective", valueHtml(evidence.effective_weight, { translate: false }))}
-          ${evidenceMetric("Weighted", valueHtml(evidence.weighted_contribution, { translate: false }))}
-          ${evidenceMetric("Absolute share pct", share)}
-          ${evidenceMetric("Lean", evidenceValueHtml(evidence, "lean", evidence.lean))}
-          ${evidenceMetric("Aux role", valueHtml(evidenceAuxiliaryRole(evidence), { translate: false }), { wide: true })}
-          ${evidenceMetric("Aux tendency", valueHtml(evidenceAuxiliaryLean(evidence, doc), { translate: false }))}
-          ${evidenceMetric("Source ref", valueHtml(evidence.source_ref, { translate: false }), { wide: true })}
-          ${evidenceMetric("Exclusion reason", evidenceValueHtml(evidence, "exclusion_reason", evidence.exclusion_reason), { wide: true })}
-        </div>
-        <div class="evidence-raw-row">
-          <span class="evidence-raw-title">${escapeHtml(fieldLabel("Raw values"))}</span>
-          ${rawValuesHtml(evidence, doc)}
+        <div class="evidence-body">
+          <div class="evidence-stance">
+            <span>${escapeHtml(assessment.stanceLabel || "模块倾向")}</span>
+            <strong>${escapeHtml(assessment.stance)}</strong>
+          </div>
+          ${evidenceImpactHtml(evidence)}
+          <p class="evidence-judgement">${escapeHtml(assessment.sentence)}</p>
+          ${evidenceFactsHtml(assessment.facts)}
+          <div class="evidence-foot">
+            <span>${escapeHtml(evidenceAuxiliaryRole(evidence) || "EDB_MODULE")}</span>
+            <span>${escapeHtml(evidence.source_ref ? textClip(evidence.source_ref, 96) : "原始截面见下方")}</span>
+            ${evidence.exclusion_reason ? `<span>${escapeHtml(textClip(evidence.exclusion_reason, 96))}</span>` : ""}
+          </div>
         </div>
       </article>
     `;
@@ -1389,7 +1581,25 @@
         </details>
       `;
     }).join("");
-    return section("因子原始截面", "按 JSON 实际字段递归展示；无错误、无警告和不适用的 null 会灰色标记，真实缺失仍保留红色提示。", `<div class="factor-list">${blocks || `<div class="empty">暂无 factor_cross_section</div>`}</div>`);
+    const evidenceRawBlocks = asArray(get(doc, "reasoning.evidence", []))
+      .map((evidence) => {
+        const raw = asObject(evidence && evidence.raw_values);
+        if (!Object.keys(raw).length) return "";
+        const rows = flatten(raw).map(([path, scalar]) => {
+          const renderedValue = Array.isArray(scalar) || (scalar && typeof scalar === "object")
+            ? `<code>${escapeHtml(JSON.stringify(scalar))}</code>`
+            : valueHtmlByPath(path, scalar, { scope: evidenceKey(evidence), translate: false });
+          return `<tr><td class="field-path">${escapeHtml(fieldLabel(`${evidenceKey(evidence)}.${path}`))}</td><td>${renderedValue}</td></tr>`;
+        }).join("");
+        return `
+          <details class="factor-detail evidence-raw-detail">
+            <summary><span>${escapeHtml(`evidence_raw_values.${evidenceKey(evidence)}`)}</span>${statusBadge("", evidence.participation_status)}</summary>
+            <div class="table-wrap"><table class="field-table"><thead><tr><th>${escapeHtml(fieldLabel("Field"))}</th><th>${escapeHtml(fieldLabel("Value"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
+          </details>
+        `;
+      })
+      .join("");
+    return section("因子原始截面", "按 JSON 实际字段递归展示；无错误、无警告和不适用的 null 会灰色标记，真实缺失仍保留红色提示。", `<div class="factor-list">${blocks || `<div class="empty">暂无 factor_cross_section</div>`}${evidenceRawBlocks}</div>`);
   }
 
   function renderProvenance(doc) {

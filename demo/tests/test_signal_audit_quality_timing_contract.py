@@ -191,7 +191,16 @@ def assert_evidence_ledger_render(root):
             "final_conclusion_cn": "ledger render test",
         },
         "quality": {"overall": "OK", "all_required_sources_ready": True, "sources": {}},
-        "factor_cross_section": {"gamma_regime": {}, "gex_info": {}},
+        "factor_cross_section": {
+            "gamma_regime": {},
+            "gex_info": {},
+            "macro_pressure": {
+                "macro_regime": "Mild Headwind",
+                "score": 0.23,
+                "data_confidence": 1,
+                "source_ref": "MACRO_TEST",
+            },
+        },
         "reasoning": {
             "engine": "EDB",
             "engine_version": "0.5",
@@ -201,21 +210,26 @@ def assert_evidence_ledger_render(root):
             "coverage": {"value": 1},
             "confidence_decomposition": {"confidence_final": 48},
             "evidence": [{
-                "key": "FLOW_CONFIRM",
+                "key": "FUNDING",
                 "gloss_cn": "主动流确认",
-                "participation_status": "ACTIVE",
-                "vote": 0.35,
-                "configured_weight": 0.18,
+                "participation_status": "NON_VOTING",
+                "vote": 0,
+                "configured_weight": 0.25,
                 "reliability": 1,
                 "information": 1,
-                "effective_weight": 0.18,
-                "weighted_contribution": 0.063,
-                "absolute_share_pct": 3.78,
-                "lean": "BULLISH",
-                "auxiliary_role": "FLOW_CONFIRMATION",
+                "effective_weight": 0,
+                "weighted_contribution": 0,
+                "absolute_share_pct": 0,
+                "lean": "NEUTRAL",
+                "auxiliary_role": "FUTURES_FUNDING_CROWDING",
                 "auxiliary_lean": "BULLISH",
-                "source_ref": {"source_path": "factor_cross_section.micro_flow", "source_rank": 3},
-                "raw_values": raw_values,
+                "source_ref": {"source_path": "factor_cross_section.funding", "source_rank": 3},
+                "raw_values": {
+                    **raw_values,
+                    "last_rate": 0.000061,
+                    "effect": "mild_long_bias",
+                    "source_ref": "BINANCE_FUNDING_RATE",
+                },
             }],
         },
         "conflict": {},
@@ -224,6 +238,35 @@ def assert_evidence_ledger_render(root):
         "delivery": {},
         "integrity": {},
     }
+    template = json.loads(json.dumps(card["reasoning"]["evidence"][0], ensure_ascii=False))
+    card["reasoning"]["evidence"] = []
+    for rate, effect in [
+        (0.000061, "mild_long_bias"),
+        (0.00012, "crowded_long_bias"),
+        (-0.000061, "mild_short_bias"),
+        (-0.00012, "crowded_short_bias"),
+    ]:
+        row = json.loads(json.dumps(template, ensure_ascii=False))
+        row["raw_values"]["last_rate"] = rate
+        row["raw_values"]["effect"] = effect
+        row["auxiliary_lean"] = "BEARISH" if rate > 0 else "BULLISH"
+        card["reasoning"]["evidence"].append(row)
+    card["reasoning"]["evidence"].append({
+        "key": "MACRO",
+        "gloss_cn": "宏观",
+        "participation_status": "ACTIVE",
+        "vote": -0.5,
+        "configured_weight": 0.16,
+        "reliability": 1,
+        "information": 1,
+        "effective_weight": 0.16,
+        "weighted_contribution": -0.08,
+        "absolute_share_pct": 15,
+        "lean": "BEARISH",
+        "auxiliary_role": "MACRO_CONTEXT",
+        "source_ref": "factor_cross_section.macro_pressure",
+        "detail": {"macro_regime": "Mild Headwind"},
+    })
     script = r"""
 const fs = require("fs");
 const vm = require("vm");
@@ -276,15 +319,29 @@ setTimeout(() => {
   if (html.includes("[object Object]")) {
     throw new Error("nested raw values should not render as object strings: " + html.slice(0, 2000));
   }
-  if (html.includes(" / +")) {
-    throw new Error("raw ledger should not hide object or array entries behind count suffixes: " + html.slice(0, 3000));
+  const ledgerStart = html.indexOf("class=\"evidence-ledger\"");
+  const ledgerEnd = html.indexOf("Confidence decomposition", ledgerStart);
+  const ledgerHtml = html.slice(ledgerStart, ledgerEnd > ledgerStart ? ledgerEnd : undefined);
+  for (const forbidden of ["nested_object", "nested_array", "a8", "arr6", "field_11", "Raw values"]) {
+    if (ledgerHtml.includes(forbidden)) {
+      throw new Error("EDB ledger should not expand raw noise field " + forbidden + ": " + ledgerHtml.slice(0, 3000));
+    }
+  }
+  for (const rawTrace of ["evidence_raw_values.FUNDING", "nested_object", "a8", "arr6", "field_11"]) {
+    if (!html.includes(rawTrace)) {
+      throw new Error("full data section should preserve raw trace " + rawTrace + ": " + html.slice(0, 3000));
+    }
   }
   for (const required of [
-    "nested_object", "nested_array", "a8", "arr6", "field_11",
-    "observed_at", "source_ref", "source_path", "source_rank"
+    "FUNDING", "费率端倾向", "BTCUSDT 永续资金费率 0.0061%",
+    "温和多头倾向", "0.012%", "拥挤多头倾向",
+    "-0.0061%", "温和空头倾向", "-0.012%", "拥挤空头倾向",
+    "0.01%", "反身性辅助倾向为偏空", "反身性辅助倾向为偏多",
+    "宏观背景 Mild Headwind，分数 0.23", "FUTURES_FUNDING_CROWDING",
+    "source_path", "source_rank"
   ]) {
-    if (!html.includes(required)) {
-      throw new Error("raw ledger field missing " + required + ": " + html.slice(0, 3000));
+    if (!ledgerHtml.includes(required)) {
+      throw new Error("EDB ledger summary missing " + required + ": " + ledgerHtml.slice(0, 3000));
     }
   }
 }, 0);
