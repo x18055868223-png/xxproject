@@ -12,6 +12,7 @@ fi
 SERVER_BASE_URL="${SERVER_BASE_URL:-http://127.0.0.1}"
 AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
+GEX_REQUIRED="${GEX_REQUIRED:-1}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -137,6 +138,7 @@ PY
 section "Environment"
 printf 'AUDIT_URL=%s\n' "$AUDIT_URL"
 printf 'GEX_URL=%s\n' "$GEX_URL"
+printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
 printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
 
@@ -158,7 +160,11 @@ else
 fi
 
 section "Systemd services"
-systemd_state gexmonitorapi.service
+if [ "$GEX_REQUIRED" = "1" ]; then
+  systemd_state gexmonitorapi.service
+else
+  warn "GEX_REQUIRED=0; skipped gexmonitorapi.service check"
+fi
 systemd_state signal-audit-materialize.service
 systemd_state signal-audit-llm-review.service
 timer_state signal-audit-materialize.timer
@@ -175,11 +181,12 @@ else
 fi
 
 section "GEX Monitor API"
-http_head "gex health" "${GEX_URL%/}/health"
-if [ -n "${API_TOKEN:-}" ]; then
-  tmp_gex="$(mktemp)"
-  if curl -k -s -H "Authorization: Bearer ${API_TOKEN}" "${GEX_URL%/}/v1/info" > "$tmp_gex"; then
-    if python3 - "$tmp_gex" <<'PY'
+if [ "$GEX_REQUIRED" = "1" ]; then
+  http_head "gex health" "${GEX_URL%/}/health"
+  if [ -n "${API_TOKEN:-}" ]; then
+    tmp_gex="$(mktemp)"
+    if curl -k -s -H "Authorization: Bearer ${API_TOKEN}" "${GEX_URL%/}/v1/info" > "$tmp_gex"; then
+      if python3 - "$tmp_gex" <<'PY'
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 rank = data.get("rank") or {}
@@ -189,17 +196,20 @@ print("stale:", data.get("stale"))
 print("rank_samples:", window.get("sample_count"))
 print("net_gex:", (data.get("gex_board") or {}).get("total_net_gex"))
 PY
-    then
-      ok "gex /v1/info JSON parsed with rank context"
+      then
+        ok "gex /v1/info JSON parsed with rank context"
+      else
+        fail "gex /v1/info returned invalid JSON"
+      fi
     else
-      fail "gex /v1/info returned invalid JSON"
+      fail "gex /v1/info request failed"
     fi
+    rm -f "$tmp_gex"
   else
-    fail "gex /v1/info request failed"
+    warn "API_TOKEN not loaded; skipped authenticated /v1/info"
   fi
-  rm -f "$tmp_gex"
 else
-  warn "API_TOKEN not loaded; skipped authenticated /v1/info"
+  warn "GEX_REQUIRED=0; skipped GEX Monitor API active checks"
 fi
 
 section "Signal audit frontend"

@@ -24,6 +24,7 @@ def main():
     llm_env = read(DEPLOY / "signal-audit-llm.env.example")
     runner = read(DEPLOY / "run_signal_llm_review.sh")
     package = read(DEPLOY / "package_signal_audit.ps1")
+    self_check = read(ROOT / "tools" / "server_self_check_signal_stack.sh")
 
     assert_true("/etc/signal-audit/llm.env" in llm_service,
                 "LLM service should load the protected server env file")
@@ -62,6 +63,10 @@ def main():
                 and "signal-audit-llm-review.timer" in package
                 and "signal-audit-llm.env.example" in package,
                 "package script should include LLM systemd assets")
+    assert_true("GEX_REQUIRED" in self_check
+                and "skipped gexmonitorapi.service check" in self_check
+                and "skipped GEX Monitor API active checks" in self_check,
+                "self-check should support signal-audit-only hosts without GEX")
 
     print("signal_audit_deploy_llm_systemd: PASS")
 

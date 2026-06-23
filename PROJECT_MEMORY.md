@@ -39,6 +39,7 @@
 - Verified during initialization: `audit_archive/public` can be served as static files over local HTTP, and both `/index.html` and `/data/index.json` return HTTP 200.
 - Verified during 2026-06-18 signal audit alignment: `demo/tests/test_signal_audit_frontend_contract.py` passes, and `demo/最新交付物/neutral_regulation_demo_fmz.py` compiles with Python 3.12.
 - Verified during 2026-06-23 signal-audit r3.1 frontend closure: `tests/test_materializer_tail_window.py`, `tests/test_signal_session_context_deploy_assets.py`, and `tests/test_signal_audit_frontend_render_contract.py` pass with Python 3.12.
+- Verified during 2026-06-23 server migration asset addition: `tests/test_server_bootstrap_assets.py` passes with Python 3.12. New-server signal-stack bootstrap now lives at `tools/server_bootstrap_signal_stack.sh`, with migration guidance in `deploy/signal_audit/SERVER_MIGRATION.md`; the bootstrap release default is `r3.1.1`.
 - Documented in `demo/最新交付物/README.md` but not re-run during this initialization: execution-layer full regression command `python demo/execution_build/realsrc/tests/run_all.py`.
 - Documented in `demo/最新交付物/README.md` but not re-run during this initialization: execution bundle check command `python demo/execution_build/realsrc/build_bundle.py --check`.
 - Documented in `demo/HANDOFF.md` but not re-run during this initialization: signal bundle check command `python demo/signal_build/build_signal_bundle.py --check`.
@@ -72,6 +73,7 @@
 - `python` was not available on `PATH` in this environment during initialization. Use an available Python 3.12 interpreter explicitly when needed.
 - `audit_archive/public/index.html` is a placeholder from the older scaffold. The current finalized static audit page lives outside this repo in the `signal-audit-final-20260618` archive and expects the `signal_cards/` layout.
 - Runtime signal records are not automatically exported by the FMZ strategy itself. The runtime writes `demo/logs/signal_review.jsonl`; `tools/materialize_signal_cards.py` materializes that JSONL into `signal_cards/index.json`, single-card JSON, and `fallback.js` for the finalized static page. Server automation is provided as an optional systemd timer under `deploy/signal_audit/`.
+- New-server rebuilds should start from `xxproject` release tags using `tools/server_bootstrap_signal_stack.sh`; for the current migration asset use `r3.1.1`. The script creates env templates only; `/etc/signal-audit/llm.env`, `/etc/gexmonitorapi.env`, FMZ runtime JSONL, and historical sidecar JSONL remain server-local and must not be committed.
 - `demo/副本快照/2026-06-18_信号v1.3.0_执行v1.6.2_JSON留档+简要推送/` contains an execution file whose content verifies as `STRATEGY_VERSION = "2.0.0"` despite the folder/file naming saying v1.6.2.
 - The old validation scripts documented in upstream/source repositories may not exist in this integration checkout. Verify actual file presence before running a documented command.
 
