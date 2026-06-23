@@ -7,6 +7,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "tools" / "server_bootstrap_signal_stack.sh"
 MIGRATION = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION.md"
+MIGRATION_ZH = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION_ZH.md"
 
 
 def assert_true(condition, message):
@@ -19,9 +20,12 @@ def main():
                 "new-server bootstrap script should exist")
     assert_true(MIGRATION.exists(),
                 "server migration README should exist")
+    assert_true(MIGRATION_ZH.exists(),
+                "Chinese server migration quick runbook should exist")
 
     script = BOOTSTRAP.read_text(encoding="utf-8")
     doc = MIGRATION.read_text(encoding="utf-8")
+    doc_zh = MIGRATION_ZH.read_text(encoding="utf-8")
 
     assert_true(script.startswith("#!/usr/bin/env bash"),
                 "bootstrap should be a bash script")
@@ -92,6 +96,25 @@ def main():
         assert_true(token in doc, "migration README should mention " + token)
     assert_true("do not commit" in doc.lower() or "never commit" in doc.lower(),
                 "migration README should warn against committing secrets")
+    assert_true("AIza" not in doc_zh and "sk-" not in doc_zh,
+                "Chinese migration runbook must not embed API keys")
+    for token in (
+            "xxproject",
+            "r3.1.1",
+            "server_bootstrap_signal_stack.sh",
+            "SERVER_MIGRATION.md",
+            "/etc/signal-audit/llm.env",
+            "/etc/gexmonitorapi.env",
+            "GEMINI_API_KEY",
+            "API_TOKEN",
+            "signal_review.jsonl",
+            "signal_llm_reviews.jsonl",
+            "GEX_REQUIRED=0",
+            "server_self_check_signal_stack.sh --run-oneshots",
+            "FAIL=0",
+            "signal-audit-deploy"):
+        assert_true(token in doc_zh,
+                    "Chinese migration runbook should mention " + token)
 
     print("server_bootstrap_assets: PASS")
 

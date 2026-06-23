@@ -17,8 +17,9 @@
 This deployment target serves the finalized static audit frontend and refreshes
 its `signal_cards/` data from the FMZ `signal_review.jsonl` file.
 
-For new-server rebuilds or server migration, use
-[`SERVER_MIGRATION.md`](SERVER_MIGRATION.md) and
+For new-server rebuilds or server migration, use the Chinese quick runbook
+[`SERVER_MIGRATION_ZH.md`](SERVER_MIGRATION_ZH.md), the detailed English
+runbook [`SERVER_MIGRATION.md`](SERVER_MIGRATION.md), and
 [`../../tools/server_bootstrap_signal_stack.sh`](../../tools/server_bootstrap_signal_stack.sh).
 The current migration/bootstrap release target is `r3.1.1` in the primary
 `xxproject` repository.
