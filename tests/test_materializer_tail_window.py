@@ -54,6 +54,18 @@ def synthetic_record(card_id):
     return item
 
 
+def legacy_push_summary_record():
+    item = mixed_time_record("LEGACY-PUSH-SUMMARY",
+                             confirmed_at="2026-06-18T19:00:00+08:00")
+    item["delivery"] = {
+        "fmz_push_summary": "【信号】BTC #abcd 强偏多 置信76未校准 冲突7%",
+    }
+    item["display_layers"] = {
+        "headline": "BTC｜置信度76未校准｜旧提示",
+    }
+    return item
+
+
 def auxiliary_evidence_record():
     return {
         "identity": {
@@ -238,6 +250,26 @@ def main():
         preview_ids = [item["card_id"] for item in preview_manifest["cards"]]
         assert_true(preview_ids[0] == "SYNTHETIC-CARD",
                     "explicit preview materialization may include synthetic cards")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "legacy_push_summary_signal_review.jsonl"
+        output = root / "public"
+        source.write_text(json.dumps(legacy_push_summary_record(),
+                                     ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        tool.materialize(source, output, max_cards=20)
+        card_text = (output / "signal_cards" / "LEGACY-PUSH-SUMMARY.json").read_text(
+            encoding="utf-8")
+        fallback = (output / "signal_cards" / "fallback.js").read_text(encoding="utf-8")
+        legacy_pattern = "未校准"
+        assert_true(legacy_pattern not in card_text,
+                    "materialized card JSON should remove legacy confidence calibration reminders")
+        assert_true(legacy_pattern not in fallback,
+                    "fallback fixture should remove legacy confidence calibration reminders")
+        card = json.loads(card_text)
+        assert_true("置信76 冲突7%" in card["delivery"]["fmz_push_summary"],
+                    "summary should preserve confidence value while removing old reminder")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)

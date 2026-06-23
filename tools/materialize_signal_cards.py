@@ -23,6 +23,7 @@ MANIFEST_SCHEMA = {
     "version": "1.0.0",
     "card_schema": "signal_review_card@1.0.0",
 }
+LEGACY_CONFIDENCE_REMINDER_RE = re.compile(r"(置信度?\s*[0-9]+)\s*未校准")
 
 
 def materialize(source, output, max_cards=200, llm_reviews=None,
@@ -61,6 +62,7 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
     expected_card_files = set()
     for record in records:
         _enrich_auxiliary_evidence(record)
+        _sanitize_legacy_display_text(record)
         identity = _identity(record)
         card_id = identity.get("card_id") or record.get("card_id")
         filename = _filename_for_card(card_id)
@@ -177,6 +179,20 @@ def _is_synthetic(record):
     if isinstance(marker, str):
         return marker.strip().lower() in {"1", "true", "yes", "synthetic"}
     return bool(marker)
+
+
+def _sanitize_legacy_display_text(value):
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _sanitize_legacy_display_text(item)
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _sanitize_legacy_display_text(item)
+        return value
+    if isinstance(value, str):
+        return LEGACY_CONFIDENCE_REMINDER_RE.sub(r"\1", value)
+    return value
 
 
 def _enrich_auxiliary_evidence(record):
