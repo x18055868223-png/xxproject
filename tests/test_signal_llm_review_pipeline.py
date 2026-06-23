@@ -1,7 +1,9 @@
 import importlib.util
 import json
 import pathlib
+import socket
 import tempfile
+import urllib.error
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -126,14 +128,26 @@ def test_gemini_packet_prompt_and_sidecar_generation():
                     "blind theoretical packet should omit " + forbidden)
     assert_true("gex_info" in blind_text and "gamma_regime" in blind_text,
                 "blind theoretical packet should retain Gamma/GEX context")
+    assert_true(blind["schema"]["derived_blind"] is True,
+                "blind packet should declare true two-call blind mode")
 
-    prompt = tool.build_prompt(packet)
-    assert_true("BLIND_THEORETICAL_PACKET" in prompt,
-                "prompt should present blind theoretical packet separately")
+    blind_prompt = tool.build_blind_prompt(packet)
+    assert_true("FULL_AUDIT_PACKET" not in blind_prompt,
+                "blind prompt must not include full audit packet")
+    assert_true("BLIND_THEORETICAL_PACKET" in blind_prompt,
+                "blind prompt should present blind packet")
+    prompt = tool.build_prompt(packet, {
+        "theoretical_active_view": model_payload()["theoretical_active_view"],
+        "gamma_regime_lens": model_payload()["gamma_regime_lens"],
+    })
+    assert_true("BLIND_REVIEW_RESULT" in prompt,
+                "full prompt should include the first-call blind result")
+    assert_true("第一次盲读" in prompt,
+                "full prompt should preserve blind audit boundary")
     assert_true("FULL_AUDIT_PACKET" in prompt,
-                "prompt should present full audit packet after blind section")
-    assert_true("正 Gamma" in prompt and "负 Gamma" in prompt,
-                "prompt should include Gamma regime lens theory")
+        "prompt should present full audit packet after blind section")
+    assert_true("正 Gamma" in blind_prompt and "负 Gamma" in blind_prompt,
+                "blind prompt should include Gamma regime lens theory")
     assert_true("不是胜率" in prompt, "prompt should reject confidence-as-win-rate")
     assert_true("不得重算模型" in prompt, "prompt should reject recomputation")
 
@@ -144,12 +158,24 @@ def test_gemini_packet_prompt_and_sidecar_generation():
         source.write_text(json.dumps(sample, ensure_ascii=False) + "\n",
                           encoding="utf-8")
 
+        calls = []
+
         def fake_call(api_key, model, request_body, timeout):
             assert_true(api_key == "test-key", "api key should only be passed to call")
+            calls.append(request_body)
             generation = request_body["generationConfig"]
             assert_true(generation["responseMimeType"] == "application/json",
                         "Gemini request should ask for JSON")
             schema = generation["responseSchema"]
+            if len(calls) == 1:
+                assert_true("summary_cn" not in schema["required"],
+                            "blind call should not ask for final summary")
+                return {"candidates": [{"content": {"parts": [
+                    {"text": json.dumps({
+                        "theoretical_active_view": model_payload()["theoretical_active_view"],
+                        "gamma_regime_lens": model_payload()["gamma_regime_lens"],
+                    }, ensure_ascii=False)}
+                ]}}]}
             assert_true("summary_cn" in schema["required"], "schema required summary")
             return {"candidates": [{"content": {"parts": [
                 {"text": json.dumps(model_payload(), ensure_ascii=False)}
@@ -160,13 +186,20 @@ def test_gemini_packet_prompt_and_sidecar_generation():
                                        call_gemini=fake_call,
                                        reviewed_at="2026-06-19T00:00:00+00:00")
         assert_true(result["written_reviews"] == 1, "one review written")
+        assert_true(len(calls) == 2, "true blind review should make two Gemini calls")
         saved = json.loads(reviews.read_text(encoding="utf-8"))
         review = saved["llm_review"]
         assert_true(review["provider"] == "gemini", "provider should be gemini")
+        assert_true(review["blind_review_mode"] == "two_call_strict",
+                    "review should record strict two-call blind mode")
+        assert_true(review["llm_call_count"] == 2,
+                    "review should record two LLM calls")
+        assert_true(review["api_key_route"] == "unknown",
+                    "fake call without route metadata should not claim a channel")
         active_view = review.get("theoretical_active_view")
         assert_true(isinstance(active_view, dict), "review should include theoretical active view")
-        assert_true(active_view["derived_blind"] is False,
-                    "single-call theoretical view must not pretend true blind derivation")
+        assert_true(active_view["derived_blind"] is True,
+                    "two-call theoretical view should mark true blind derivation")
         assert_true(active_view["validation_status"] == "UNVALIDATED",
                     "theoretical view should remain unvalidated by default")
         assert_true(active_view["bias"] == "MIXED_UNCLEAR",
@@ -181,6 +214,120 @@ def test_gemini_packet_prompt_and_sidecar_generation():
                     "gamma lens should preserve regime enum")
         assert_true(review["caution_level"] == "MEDIUM",
                     "material conflict and warming rank should lift caution floor")
+
+
+def test_call_gemini_falls_back_to_channel2_only_for_retryable_errors():
+    tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review_fallback")
+    original_post = tool._post_gemini
+    calls = []
+
+    def retryable_first(api_key, model, request_body, timeout):
+        del model, request_body, timeout
+        calls.append(api_key)
+        if api_key == "free-key":
+            raise tool.GeminiApiError(503, "high demand")
+        return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+
+    try:
+        tool._post_gemini = retryable_first
+        response = tool.call_gemini(
+            "free-key", "gemini-3.5-flash", {}, timeout=1,
+            fallback_api_key="paid-key")
+        assert_true(calls == ["free-key", "paid-key"],
+                    "503 should retry channel2 after channel1")
+        assert_true(response["_api_key_route"] == "channel2",
+                    "successful fallback response should record channel2")
+    finally:
+        tool._post_gemini = original_post
+
+    for status_code in (400, 409, 425):
+        calls = []
+
+        def non_retryable_first(api_key, model, request_body, timeout, code=status_code):
+            del model, request_body, timeout
+            calls.append(api_key)
+            raise tool.GeminiApiError(code, "not a capacity failure")
+
+        try:
+            tool._post_gemini = non_retryable_first
+            try:
+                tool.call_gemini(
+                    "free-key", "gemini-3.5-flash", {}, timeout=1,
+                    fallback_api_key="paid-key")
+                raise AssertionError(str(status_code) + " should not fall back to channel2")
+            except tool.GeminiApiError as exc:
+                assert_true(exc.status_code == status_code,
+                            "should keep original " + str(status_code))
+                assert_true(exc.api_key_routes == ["channel1"],
+                            "error should record attempted channel1 only")
+            assert_true(calls == ["free-key"],
+                        "non-retryable errors should not spend channel2")
+        finally:
+            tool._post_gemini = original_post
+
+    calls = []
+
+    def timeout_first(api_key, model, request_body, timeout):
+        del model, request_body, timeout
+        calls.append(api_key)
+        if api_key == "free-key":
+            raise TimeoutError("timed out")
+        return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+
+    try:
+        tool._post_gemini = timeout_first
+        response = tool.call_gemini(
+            "free-key", "gemini-3.5-flash", {}, timeout=1,
+            fallback_api_key="paid-key")
+        assert_true(calls == ["free-key", "paid-key"],
+                    "timeout should retry channel2")
+        assert_true(response["_api_key_route"] == "channel2",
+                    "timeout fallback response should record channel2")
+    finally:
+        tool._post_gemini = original_post
+
+    calls = []
+
+    def plain_url_error(api_key, model, request_body, timeout):
+        del model, request_body, timeout
+        calls.append(api_key)
+        raise urllib.error.URLError("dns failure")
+
+    try:
+        tool._post_gemini = plain_url_error
+        try:
+            tool.call_gemini(
+                "free-key", "gemini-3.5-flash", {}, timeout=1,
+                fallback_api_key="paid-key")
+            raise AssertionError("plain URLError should not fall back to channel2")
+        except urllib.error.URLError as exc:
+            assert_true(exc.api_key_routes == ["channel1"],
+                        "URL error should record attempted channel1 only")
+        assert_true(calls == ["free-key"],
+                    "plain URL errors should not spend channel2")
+    finally:
+        tool._post_gemini = original_post
+
+    calls = []
+
+    def url_timeout(api_key, model, request_body, timeout):
+        del model, request_body, timeout
+        calls.append(api_key)
+        if api_key == "free-key":
+            raise urllib.error.URLError(socket.timeout("timed out"))
+        return {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+
+    try:
+        tool._post_gemini = url_timeout
+        response = tool.call_gemini(
+            "free-key", "gemini-3.5-flash", {}, timeout=1,
+            fallback_api_key="paid-key")
+        assert_true(calls == ["free-key", "paid-key"],
+                    "URL timeout should retry channel2")
+        assert_true(response["_api_key_route"] == "channel2",
+                    "URL timeout fallback response should record channel2")
+    finally:
+        tool._post_gemini = original_post
 
 
 def test_materializer_merges_sidecar_without_downgrading_inline_ok():
@@ -241,9 +388,12 @@ def test_generate_reviews_redacts_sensitive_error_text():
 
         def failing_call(api_key, model, request_body, timeout):
             del api_key, model, request_body, timeout
-            raise RuntimeError(
+            exc = RuntimeError(
                 "request failed with AIza" + "A" * 28
-                + " GEMINI_API_KEY x-goog-api-key Bearer test-token")
+                + " AQ." + "C" * 28
+                + " GEMINI_API_KEY GEMINI_CHANNEL1_API_KEY GEMINI_CHANNEL2_API_KEY x-goog-api-key Bearer test-token")
+            exc.api_key_routes = ["channel1"]
+            raise exc
 
         result = tool.generate_reviews(
             source,
@@ -256,7 +406,15 @@ def test_generate_reviews_redacts_sensitive_error_text():
         )
         assert_true(result["errors"] == 1, "failing fake call should record one error")
         text = reviews.read_text(encoding="utf-8")
-        for forbidden in ("AIza", "GEMINI_API_KEY", "x-goog-api-key", "Bearer", "test-token"):
+        saved = json.loads(text)
+        review = saved["llm_review"]
+        assert_true(review["api_key_route"] == "channel1",
+                    "error sidecar should record attempted channel route")
+        assert_true(review["llm_call_routes"] == ["channel1"],
+                    "error sidecar should record attempted route list")
+        for forbidden in (
+                "AIza", "AQ.", "GEMINI_API_KEY", "GEMINI_CHANNEL1_API_KEY",
+                "GEMINI_CHANNEL2_API_KEY", "x-goog-api-key", "Bearer", "test-token"):
             assert_true(forbidden not in text,
                         "error sidecar should redact sensitive token text: " + forbidden)
 
@@ -322,6 +480,7 @@ def test_fmz_signal_loop_does_not_call_llm_in_process():
 
 if __name__ == "__main__":
     test_gemini_packet_prompt_and_sidecar_generation()
+    test_call_gemini_falls_back_to_channel2_only_for_retryable_errors()
     test_materializer_merges_sidecar_without_downgrading_inline_ok()
     test_generate_reviews_redacts_sensitive_error_text()
     test_frontend_renders_session_context_between_rank_and_llm_review()

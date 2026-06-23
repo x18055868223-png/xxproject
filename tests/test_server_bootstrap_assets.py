@@ -33,8 +33,8 @@ def main():
                 "bootstrap should fail closed")
     assert_true("https://github.com/x18055868223-png/xxproject.git" in script,
                 "bootstrap should default to the xxproject primary repo")
-    assert_true('RELEASE_REF="${RELEASE_REF:-r3.1.1}"' in script,
-                "bootstrap should default to the current r3.1.1 release")
+    assert_true('RELEASE_REF="${RELEASE_REF:-r3.2}"' in script,
+                "bootstrap should default to the current r3.2 release")
     for token in (
             "install_or_update.sh",
             "server_self_check_signal_stack.sh",
@@ -76,7 +76,7 @@ def main():
 
     for token in (
             "xxproject",
-            "r3.1.1",
+            "r3.2",
             "/etc/signal-audit/llm.env",
             "/etc/gexmonitorapi.env",
             "/var/lib/gexmonitorapi",
@@ -85,11 +85,12 @@ def main():
             "server_self_check_signal_stack.sh --run-oneshots",
             "GEX_REQUIRED=0",
             "GEX_BIND_HOST=0.0.0.0",
-            "GEMINI_API_KEY",
+            "GEMINI_CHANNEL1_API_KEY",
+            "GEMINI_CHANNEL2_API_KEY",
             "API_TOKEN",
             "FMZ",
             "history",
-            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.1.1",
+            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.2",
             "active verification",
             "rsync --delete",
             "commit hash"):
@@ -100,12 +101,13 @@ def main():
                 "Chinese migration runbook must not embed API keys")
     for token in (
             "xxproject",
-            "r3.1.1",
+            "r3.2",
             "server_bootstrap_signal_stack.sh",
             "SERVER_MIGRATION.md",
             "/etc/signal-audit/llm.env",
             "/etc/gexmonitorapi.env",
-            "GEMINI_API_KEY",
+            "GEMINI_CHANNEL1_API_KEY",
+            "GEMINI_CHANNEL2_API_KEY",
             "API_TOKEN",
             "signal_review.jsonl",
             "signal_llm_reviews.jsonl",

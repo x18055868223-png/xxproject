@@ -8,7 +8,7 @@ optionally the GEX Monitor API.
 ## Repository Authority
 
 - Primary repo: `https://github.com/x18055868223-png/xxproject.git`
-- Current release ref: `r3.1.1`
+- Current release ref: `r3.2`
 - Do not use `signal-audit-deploy` as the project baseline. It is only a static
   audit mirror/helper surface.
 
@@ -16,7 +16,7 @@ optionally the GEX Monitor API.
 
 The bootstrap installs or refreshes:
 
-- `/opt/repos/neutral-loop`: checkout of `xxproject` at `r3.1.1`.
+- `/opt/repos/neutral-loop`: checkout of `xxproject` at `r3.2`.
 - `/opt/signal-audit`: static audit frontend.
 - `/opt/signal-audit-tools/materialize_signal_cards.py`: JSONL-to-card
   materializer.
@@ -33,7 +33,8 @@ The bootstrap installs or refreshes:
 Do not commit these values to git and do not bake them into release tags.
 
 - `/etc/signal-audit/llm.env`
-  - Set `GEMINI_API_KEY` or the key names used by the deployed runner.
+  - Set `GEMINI_CHANNEL1_API_KEY` for the low-cost/free tier.
+  - Set `GEMINI_CHANNEL2_API_KEY` for the paid fallback tier.
   - Keep mode `0600`.
 - `/etc/gexmonitorapi.env`
   - Set `API_TOKEN` if GEX is installed.
@@ -52,11 +53,11 @@ Do not commit these values to git and do not bake them into release tags.
 Run as a sudo-capable user on the new server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.1.1/tools/server_bootstrap_signal_stack.sh \
+curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.2/tools/server_bootstrap_signal_stack.sh \
   -o /tmp/server_bootstrap_signal_stack.sh
 chmod +x /tmp/server_bootstrap_signal_stack.sh
 
-RELEASE_REF=r3.1.1 \
+RELEASE_REF=r3.2 \
 REPO_DIR=/opt/repos/neutral-loop \
 INSTALL_GEX=0 \
 GEX_REQUIRED=0 \
@@ -148,14 +149,14 @@ cd /opt/repos/neutral-loop
 git rev-parse --short HEAD
 git describe --tags --exact-match
 
-GEX_REQUIRED=0 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
+GEX_REQUIRED=0 LLM_REQUIRED=1 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
 ```
 
 Expected release output:
 
 ```text
 <commit hash>
-r3.1.1
+r3.2
 ```
 
 Expected self-check summary:
@@ -165,12 +166,24 @@ FAIL=0
 ```
 
 `server_self_check_signal_stack.sh --run-oneshots` is active verification: it
-starts the materializer and LLM sidecar units once. If `GEMINI_API_KEY` is
-configured, this can trigger a Gemini call. Warnings are acceptable when they
-describe intentionally missing optional state, for example a missing
-`GEMINI_API_KEY` before LLM keys are configured. The signal-audit runtime is
-considered ready only after the audit page and manifest return HTTP 200 and the
-materializer service has `Result=success`.
+starts the materializer and LLM sidecar units once. If either Gemini channel key
+is configured, each new unreviewed card can trigger two Gemini calls: a blind
+theoretical read and then full audit reconciliation. For production LLM
+verification, set `LLM_REQUIRED=1`; the self-check then fails if either channel
+key is not loaded or if the latest signal card does not have an OK two-call
+sidecar review.
+With the r3.2 two-channel standard, `GEMINI_CHANNEL1_API_KEY` is tried first
+for cost control and `GEMINI_CHANNEL2_API_KEY` is the paid fallback. Channel 2
+is used only when channel 1 returns a retryable capacity/network failure such
+as 429, 5xx, or timeout; 400/schema/parse errors do not fall back because they
+usually indicate a prompt or code defect. The sidecar records `api_key_route`
+and `llm_call_routes` so operators can verify whether a review used channel 1,
+channel 2, or mixed routing.
+Warnings are acceptable only when they describe intentionally missing optional
+state and `LLM_REQUIRED=0`. The signal-audit runtime is considered ready only
+after the audit page and manifest return HTTP 200, the materializer service has
+`Result=success`, and, when LLM is required, the latest card has
+`blind_review_mode=two_call_strict` and `llm_call_count>=2`.
 
 For a signal-audit-only migration, run the self-check with `GEX_REQUIRED=0`.
 That skips the `gexmonitorapi.service`, `/health`, and authenticated `/v1/info`
@@ -182,7 +195,7 @@ and LLM sidecar state.
 Use this extra text check after the first materialization:
 
 ```bash
-python3 -c 'import json,pathlib,re; root=pathlib.Path("/opt/signal-audit"); index=(root/"index.html").read_text(encoding="utf-8"); fallback=(root/"signal_cards/fallback.js").read_text(encoding="utf-8"); manifest=json.loads((root/"signal_cards/index.json").read_text(encoding="utf-8")); cards=manifest.get("cards") or []; blob=index+fallback+"".join((root/item["path"]).read_text(encoding="utf-8") for item in cards); checks=[("HAS_APP_R3_1","app.js?v=20260623-r3.1" in index),("NO_GEMINI_LOCAL_PREVIEW","GEMINI-LOCAL-PREVIEW" not in blob),("NO_SYNTHETIC_TRUE","\"is_synthetic\": true" not in blob),("NO_OLD_CALIBRATION_TEXT",not re.search(r"\u7f6e\u4fe1\d+\u672a\u6821\u51c6|\u7f6e\u4fe1\u5ea6\d+\u672a\u6821\u51c6", blob))]; [print(k,v) for k,v in checks]; print("CARDS",len(cards),cards[0].get("card_id") if cards else None); raise SystemExit(0 if all(v for _,v in checks) else 1)'
+python3 -c 'import json,pathlib,re; root=pathlib.Path("/opt/signal-audit"); index=(root/"index.html").read_text(encoding="utf-8"); app=(root/"app.js").read_text(encoding="utf-8"); fallback=(root/"signal_cards/fallback.js").read_text(encoding="utf-8"); manifest=json.loads((root/"signal_cards/index.json").read_text(encoding="utf-8")); cards=manifest.get("cards") or []; blob=index+app+fallback+"".join((root/item["path"]).read_text(encoding="utf-8") for item in cards); checks=[("HAS_APP_R3_2","app.js?v=20260623-r3.2" in index),("HAS_LLM_SECTION","LLM 复核意见" in app),("HAS_PENDING_LLM","LLM 复核尚未生成" in app),("NO_GEMINI_LOCAL_PREVIEW","GEMINI-LOCAL-PREVIEW" not in blob),("NO_SYNTHETIC_TRUE","\"is_synthetic\": true" not in blob),("NO_OLD_CALIBRATION_TEXT",not re.search(r"\u7f6e\u4fe1\d+\u672a\u6821\u51c6|\u7f6e\u4fe1\u5ea6\d+\u672a\u6821\u51c6", blob))]; [print(k,v) for k,v in checks]; print("CARDS",len(cards),cards[0].get("card_id") if cards else None); raise SystemExit(0 if all(v for _,v in checks) else 1)'
 ```
 
 ## Rollback
@@ -192,7 +205,7 @@ The checkout is a normal git worktree:
 ```bash
 cd /opt/repos/neutral-loop
 git fetch xxproject --tags
-git checkout -B deploy-r3.1 refs/tags/r3.1
+git checkout -B deploy-r3.2 refs/tags/r3.2
 sudo bash deploy/signal_audit/install_or_update.sh
 ```
 

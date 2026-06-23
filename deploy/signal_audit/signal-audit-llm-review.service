@@ -17,6 +17,6 @@ MemoryMax=256M
 CPUQuota=35%
 Nice=10
 IOSchedulingClass=idle
-TimeoutStartSec=210
+TimeoutStartSec=300
 ExecStart=/opt/signal-audit-tools/run_signal_llm_review.sh
 ExecStartPost=/bin/systemctl start signal-audit-materialize.service

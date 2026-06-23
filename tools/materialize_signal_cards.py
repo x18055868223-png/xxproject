@@ -314,7 +314,9 @@ def _auxiliary_raw_values(key, detail, factor):
             "strength", "strength_pctl", "data_ready", "vote", "weight"),
         "MACRO": (
             "macro_score", "score", "macro_regime", "regime", "verdict",
-            "data_status", "data_confidence"),
+            "data_status", "data_confidence", "macro_data_confidence",
+            "components", "component_scores", "macro_components_cn",
+            "source_ref"),
     }.get(key, tuple(detail.keys()))
     raw = {}
     for field in fields:
@@ -349,10 +351,10 @@ def _auxiliary_lean(key, row, detail, factor):
         return _signed_lean(_first_number(row, detail, factor, fields=("vote",)))
     if key == "GGR_SPATIAL":
         if factor.get("veto"):
-            return "ADVERSE"
+            return "RISK_CONSTRAINT"
         regime = str(factor.get("regime") or detail.get("regime") or "").upper()
         if "NEGATIVE" in regime or "AMPLIFY" in regime:
-            return "ADVERSE"
+            return "RISK_CONSTRAINT"
         if "POSITIVE" in regime or "PINNING" in regime:
             return "SUPPORTIVE"
         multiplier = _first_number(factor, detail,
@@ -361,8 +363,14 @@ def _auxiliary_lean(key, row, detail, factor):
             if multiplier > 1.0:
                 return "SUPPORTIVE"
             if multiplier < 1.0:
-                return "ADVERSE"
+                return "CONSTRAINT"
         return "NEUTRAL"
+    if key == "MACRO":
+        vote = _first_number(row, detail, factor, fields=("vote",))
+        if vote is not None:
+            return _signed_lean(vote)
+        score = _first_number(detail, factor, fields=("macro_score", "score"))
+        return _signed_lean(-score if score is not None else None)
     return _signed_lean(_first_number(row, detail, factor, fields=("vote",)))
 
 

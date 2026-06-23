@@ -8,8 +8,11 @@ GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"
 LLM_REVIEW_LIMIT="${LLM_REVIEW_LIMIT:-2}"
 LLM_REVIEW_TIMEOUT="${LLM_REVIEW_TIMEOUT:-60}"
 
-if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-  echo "GEMINI_API_KEY is not configured; edit /etc/signal-audit/llm.env"
+CHANNEL1_KEY="${GEMINI_CHANNEL1_API_KEY:-}"
+CHANNEL2_KEY="${GEMINI_CHANNEL2_API_KEY:-}"
+
+if [[ -z "$CHANNEL1_KEY" && -z "$CHANNEL2_KEY" ]]; then
+  echo "GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY are not configured; edit /etc/signal-audit/llm.env"
   exit 0
 fi
 

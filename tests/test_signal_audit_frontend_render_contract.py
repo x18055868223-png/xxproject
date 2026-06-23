@@ -94,7 +94,12 @@ function renderCard(card) {
       sourceRefLinks: (html.match(/class="source-ref-link/g) || []).length,
       rawTraceNav: html.includes("raw-trace-nav"),
       rawTargets: (html.match(/id="raw-/g) || []).length,
-      flowConfirm: /FLOW_CONFIRM|combined_weight|absorption_state|fast_4h|slow_12h/.test(text)
+      flowConfirm: /FLOW_CONFIRM|combined_weight|absorption_state|fast_4h|slow_12h/.test(text),
+      llmSection: text.includes("LLM 复核意见"),
+      llmPending: text.includes("PENDING_LLM") || text.includes("LLM 复核尚未生成"),
+      macroProxyFacts: /VOLQ|DXY|US10Y|纳斯达克|美元|美债/.test(text),
+      macroUnknown: text.includes("UNKNOWN") && text.includes("宏观背景"),
+      ggrSpatialConstraint: text.includes("空间约束") || text.includes("空间安全")
     });
   }
   process.stdout.write(JSON.stringify(rows));
@@ -143,6 +148,11 @@ def main():
         assert_true(row["fundingRateSide"], row["card_id"] + " should show fee-side funding tendency")
         assert_true(row["reflexiveFunding"], row["card_id"] + " should show reflexive funding tendency")
         assert_true(row["macroRawScore"], row["card_id"] + " should show raw macro score")
+        assert_true(row["llmSection"], row["card_id"] + " should always render the LLM review section")
+        assert_true(row["llmPending"], row["card_id"] + " should explain pending/missing LLM sidecar reviews")
+        assert_true(row["macroProxyFacts"], row["card_id"] + " should show macro proxy component facts")
+        assert_true(not row["macroUnknown"], row["card_id"] + " should not show UNKNOWN macro stance when raw score exists")
+        assert_true(row["ggrSpatialConstraint"], row["card_id"] + " should describe GGR as spatial/gate context")
         assert_true(row["flowConfirm"], row["card_id"] + " should expose flow confirmation details")
         assert_true(row["rawTraceNav"], row["card_id"] + " should render raw trace navigation")
         assert_true(row["sourceRefLinks"] >= len(row["sourceRefs"]),

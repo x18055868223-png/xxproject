@@ -7,7 +7,7 @@
 ## 当前权威来源
 
 - 主仓库：`https://github.com/x18055868223-png/xxproject.git`
-- 当前迁移默认 release：`r3.1.1`
+- 当前迁移默认 release：`r3.2`
 - 快速 bootstrap 脚本：`tools/server_bootstrap_signal_stack.sh`
 - 完整英文 runbook：`deploy/signal_audit/SERVER_MIGRATION.md`
 - 审计页面安装脚本：`deploy/signal_audit/install_or_update.sh`
@@ -29,7 +29,8 @@
 这些内容属于服务器本地状态或秘密，不应提交到 git：
 
 - `/etc/signal-audit/llm.env`
-  - `GEMINI_API_KEY`
+  - `GEMINI_CHANNEL1_API_KEY`
+  - `GEMINI_CHANNEL2_API_KEY`
   - `GEMINI_MODEL`
   - LLM 限速、超时、JSONL 路径配置
 - `/etc/gexmonitorapi.env`
@@ -47,11 +48,11 @@
 在新服务器上用 sudo 用户执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.1.1/tools/server_bootstrap_signal_stack.sh \
+curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.2/tools/server_bootstrap_signal_stack.sh \
   -o /tmp/server_bootstrap_signal_stack.sh
 chmod +x /tmp/server_bootstrap_signal_stack.sh
 
-RELEASE_REF=r3.1.1 \
+RELEASE_REF=r3.2 \
 REPO_DIR=/opt/repos/neutral-loop \
 INSTALL_GEX=0 \
 GEX_REQUIRED=0 \
@@ -63,7 +64,7 @@ RUN_SELF_CHECK=1 \
 
 ```bash
 INSTALL_SYSTEM_PACKAGES=1 \
-RELEASE_REF=r3.1.1 \
+RELEASE_REF=r3.2 \
 REPO_DIR=/opt/repos/neutral-loop \
 INSTALL_GEX=0 \
 GEX_REQUIRED=0 \
@@ -85,13 +86,18 @@ sudo systemctl restart signal-audit-materialize.service
 至少确认：
 
 ```text
-GEMINI_API_KEY=<server local key>
+GEMINI_CHANNEL1_API_KEY=<低成本或免费层级 key>
+GEMINI_CHANNEL2_API_KEY=<付费 fallback key>
 GEMINI_MODEL=gemini-3.5-flash
 JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
 LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
 
-如果暂时不填 `GEMINI_API_KEY`，审计页面和 materializer 仍可运行，但 LLM sidecar 会跳过新复核调用，只能展示已有 sidecar 历史。
+如果两个通道都不填，审计页面和 materializer 仍可运行，但 LLM sidecar 会跳过新复核调用，只能展示已有 sidecar 历史。
+
+从 `r3.2` 起，LLM sidecar 对每张新卡采用真正两次调用：第一次只看盲包形成理论主动视角与 Gamma 体制风险叠加，第二次再读取完整审计包做复核。API 用量页面应能看到新卡触发的调用；如果用量为 0，优先检查 `/etc/signal-audit/llm.env` 是否真的加载了 `GEMINI_CHANNEL1_API_KEY` 或 `GEMINI_CHANNEL2_API_KEY`，以及最新 sidecar 是否匹配最新 `card_id`。
+
+双通道标准：`GEMINI_CHANNEL1_API_KEY` 是通道 1，默认放低成本或免费层级 key；`GEMINI_CHANNEL2_API_KEY` 是通道 2，默认放付费层级 key。sidecar 先调通道 1；只有通道 1 返回 429、5xx、timeout 等可重试容量/网络错误时，才切到通道 2 补全。400/schema/解析错误不切通道，以免掩盖程序或提示词问题。sidecar 会记录 `api_key_route` 和 `llm_call_routes`，用于确认本次复核实际走了通道 1、通道 2 还是 mixed。
 
 ## 可选启用 GEX Monitor API
 
@@ -143,15 +149,16 @@ cd /opt/repos/neutral-loop
 git rev-parse --short HEAD
 git describe --tags --exact-match
 
-GEX_REQUIRED=0 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
+GEX_REQUIRED=0 LLM_REQUIRED=1 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
 ```
 
 期望：
 
-- `git describe --tags --exact-match` 输出 `r3.1.1`。
+- `git describe --tags --exact-match` 输出 `r3.2`。
 - self-check 汇总 `FAIL=0`。
 - `signal-audit-materialize.service` 的 `Result=success`。
-- `signal-audit-llm-review.service` 的 `Result=success`，或者在没有 `GEMINI_API_KEY` 时只出现明确的跳过/警告。
+- `signal-audit-llm-review.service` 的 `Result=success`。
+- `LLM_REQUIRED=1` 模式下两个 Gemini 通道 key 都必须加载，且最新 signal card 必须有 `status=OK`、`blind_review_mode=two_call_strict`、`llm_call_count>=2` 的 sidecar 复核。
 - `http://127.0.0.1/signal-audit/` 返回 HTTP 200。
 - `http://127.0.0.1/signal-audit/signal_cards/index.json` 返回 HTTP 200 且有真实卡片。
 

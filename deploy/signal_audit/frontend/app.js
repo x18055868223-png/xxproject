@@ -42,6 +42,7 @@
     gemini: "Gemini",
     CONFIRMED: "已确认",
     CONFIRMED_60M_LOCAL: "60m局部确认",
+    CONSTRAINT: "空间约束",
     CONSERVATIVE_LOWER_TIER: "缓冲带就低不就高",
     DEEP: "深",
     EDT: "美国夏令时",
@@ -95,6 +96,7 @@
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
     RAISE_DURABILITY_TENTATIVE: "暂定升耐久",
+    RISK_CONSTRAINT: "空间风险约束",
     SKIPPED: "已跳过",
     THIN: "薄",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
@@ -755,19 +757,21 @@
 
   function renderLlmReview(doc) {
     const review = asObject(get(doc, "llm_review", {}));
-    if (!Object.keys(review).length) return "";
+    const hasReview = Object.keys(review).length > 0;
+    const matrix = asObject(get(doc, "decision_matrix", {}));
     const content = Object.assign({}, asObject(review.content), review);
-    const status = review.status || "UNKNOWN";
-    const failed = rawEnum(status) !== "OK";
-    const panelClass = failed ? "llm-review-panel is-error" : "llm-review-panel";
+    const status = hasReview ? (review.status || "UNKNOWN") : (matrix.audit_dissent || "PENDING_LLM");
+    const failed = hasReview && rawEnum(status) !== "OK";
+    const panelClass = failed ? "llm-review-panel is-error" : (hasReview ? "llm-review-panel" : "llm-review-panel is-pending");
+    const summary = content.summary_cn || "LLM 复核尚未生成或尚未被 sidecar 合并；本区保留为发布前必查板块，不改变系统方向、置信、门控或交易许可。";
     return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
       <div class="${panelClass}">
         <div class="llm-review-topline">
           ${statusBadge("状态", status)}
-          ${statusBadge("谨慎等级", content.caution_level || "UNKNOWN")}
+          ${statusBadge("谨慎等级", content.caution_level || (hasReview ? "UNKNOWN" : "PENDING_LLM"))}
           ${review.provider ? statusBadge("模型服务", review.provider) : ""}
         </div>
-        <p class="llm-review-summary">${valueHtml(content.summary_cn, { translate: false })}</p>
+        <p class="llm-review-summary">${valueHtml(summary, { translate: false })}</p>
       </div>
       ${renderTheoreticalActiveView(content.theoretical_active_view)}
       ${renderGammaRegimeLens(content.gamma_regime_lens)}
@@ -1177,6 +1181,14 @@
     return "NEUTRAL";
   }
 
+  function macroLeanFromScore(score) {
+    const numeric = safeNumber(score);
+    if (numeric === null) return null;
+    if (numeric > 0) return "BEARISH";
+    if (numeric < 0) return "BULLISH";
+    return "NEUTRAL";
+  }
+
   function evidenceAuxiliaryLean(evidence, doc) {
     if (evidence && evidence.auxiliary_lean) return evidence.auxiliary_lean;
     const key = evidenceKey(evidence);
@@ -1190,14 +1202,18 @@
       return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]));
     }
     if (key === "GGR_SPATIAL") {
-      if (factor.veto) return "ADVERSE";
+      if (factor.veto) return "RISK_CONSTRAINT";
       const regime = rawEnum(factor.regime || detail.regime).toUpperCase();
-      if (regime.includes("NEGATIVE") || regime.includes("AMPLIFY")) return "ADVERSE";
+      if (regime.includes("NEGATIVE") || regime.includes("AMPLIFY")) return "RISK_CONSTRAINT";
       if (regime.includes("POSITIVE") || regime.includes("PINNING")) return "SUPPORTIVE";
       const multiplier = firstNumberFrom([factor, detail], ["confidence_multiplier"]);
       if (multiplier !== null && multiplier > 1) return "SUPPORTIVE";
-      if (multiplier !== null && multiplier < 1) return "ADVERSE";
+      if (multiplier !== null && multiplier < 1) return "CONSTRAINT";
       return "NEUTRAL";
+    }
+    if (key === "MACRO") {
+      return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]))
+        || macroLeanFromScore(firstNumberFrom([detail, factor], ["macro_score", "score"]));
     }
     return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]));
   }
@@ -1206,7 +1222,8 @@
     const defaults = {
       FUNDING: ["last_rate", "last_funding_rate", "funding_norm", "funding_cum", "funding_count", "funding_state", "effect", "tmvf_funding_effect", "verdict", "hard_warning", "history_points", "observed_at", "age_ms", "source_ref"],
       SRD: ["vote", "rr_blend", "rr_25d", "delta_rr", "rr_z", "skew_norm_blend", "skew_slope", "term_slope", "vote_confidence", "target_expiry_hours", "expiry_count", "data_status", "data_state", "observed_at", "age_ms", "source_ref"],
-      GGR_SPATIAL: ["regime", "regime_strength", "confidence_multiplier", "veto", "veto_reason", "net_gamma_notional_usd", "net_gamma_notional", "flip_point", "distance_to_flip_pct", "pin_strike", "distance_to_pin_pct", "pin_pull_direction", "max_gamma_strike", "call_wall", "put_wall", "market_state", "observed_at", "age_ms", "source_ref"]
+      GGR_SPATIAL: ["regime", "regime_strength", "confidence_multiplier", "veto", "veto_reason", "net_gamma_notional_usd", "net_gamma_notional", "flip_point", "distance_to_flip_pct", "pin_strike", "distance_to_pin_pct", "pin_pull_direction", "max_gamma_strike", "call_wall", "put_wall", "market_state", "observed_at", "age_ms", "source_ref"],
+      MACRO: ["macro_score", "score", "macro_regime", "regime", "verdict", "data_status", "data_confidence", "macro_data_confidence", "components", "component_scores", "macro_components_cn", "source_ref"]
     };
     return defaults[key] || Object.keys(detail);
   }
@@ -1332,6 +1349,30 @@
     return `<span class="evidence-fact"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(text)}">${escapeHtml(text)}</strong></span>`;
   }
 
+  function macroComponentLabel(component) {
+    const key = rawEnum(component && component.key).toUpperCase();
+    if (key === "VOLQ" || key === "VXN" || key === "VIX") return `纳斯达克代理(${key})`;
+    if (key === "DXY") return "美元(DXY)";
+    if (key === "US10Y" || key === "TNX") return "美债10Y(US10Y)";
+    return key || "macro_proxy";
+  }
+
+  function macroComponentValue(component) {
+    const item = asObject(component);
+    const bps = firstNumberFrom([item], ["scoring_bps", "change_bps", "change_3d_bps"]);
+    if (bps !== null) return `${number(bps, 1)} bp`;
+    const pct = safeNumber(item.change_pct_3d);
+    if (pct !== null) return `${number(pct * 100, 2)}%`;
+    return firstPresent(item.source_symbol, item.current_symbol, item.key, "n/a");
+  }
+
+  function macroComponentFacts(ctx) {
+    const components = asArray(firstPresent(ctx.raw.components, ctx.factor.components, ctx.raw.component_scores, ctx.factor.component_scores));
+    return components
+      .filter((component) => Object.keys(asObject(component)).length)
+      .map((component) => evidenceFact(macroComponentLabel(component), macroComponentValue(component)));
+  }
+
   function evidenceFactsHtml(facts) {
     const html = facts.filter(Boolean).join("");
     return html ? `<div class="evidence-facts">${html}</div>` : `<div class="empty-inline">无关键事实</div>`;
@@ -1401,15 +1442,18 @@
     const veto = evidenceFirstValue(evidence, ctx, ["veto"]);
     const flipDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_flip_pct"]);
     const pinDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_pin_pct"]);
-    const stance = semanticCompact(evidenceAuxiliaryLean(evidence, { factor_cross_section: { gamma_regime: ctx.factor } })) || "NEUTRAL";
+    const stanceCode = evidenceAuxiliaryLean(evidence, { factor_cross_section: { gamma_regime: ctx.factor } });
+    const stance = semanticCompact(stanceCode) || "空间约束";
     return {
+      stanceLabel: "空间状态",
       stance,
-      sentence: `Gamma 结构 ${scalarText(regime, { translate: false })}，置信乘子 ${scalarText(multiplier, { translate: false, digits: 4 })}，当前作为空间安全/门控参考。`,
+      sentence: `Gamma 结构 ${scalarText(regime, { translate: false })}，置信乘子 ${scalarText(multiplier, { translate: false, digits: 4 })}，这是期权空间安全/门控约束，不作为偏多或偏空方向票。`,
       facts: [
         evidenceFact("netGEX", evidenceFirstValue(evidence, ctx, ["net_gamma_notional_usd", "net_gamma_notional"])),
         evidenceFact("flip", evidenceFirstValue(evidence, ctx, ["flip_point"])),
         evidenceFact("dist_flip", flipDistance === null ? null : pctPoint(flipDistance)),
         evidenceFact("dist_pin", pinDistance === null ? null : pctPoint(pinDistance)),
+        evidenceFact("spatial_role", stance),
         evidenceFact("veto", veto)
       ]
     };
@@ -1454,14 +1498,16 @@
   function macroAssessment(evidence, ctx) {
     const score = firstNumberFrom([ctx.raw, ctx.detail, ctx.factor], ["macro_score", "score"]);
     const regime = evidenceFirstValue(evidence, ctx, ["macro_regime", "regime"]);
-    const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote)) || "UNKNOWN";
+    const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote) || macroLeanFromScore(score)) || "UNKNOWN";
+    const voteMissing = isNullish(evidence.vote);
     return {
       stance: leanText,
-      sentence: `宏观背景 ${scalarText(regime, { translate: false })}，分数 ${scalarText(score, { translate: false, digits: 4 })}，仅作为跨市场顺逆风。`,
+      sentence: `宏观背景 ${scalarText(regime, { translate: false })}，分数 ${scalarText(score, { translate: false, digits: 4 })}；score > 0 表示风险资产逆风。${voteMissing ? "本行 vote 为空代表本轮不作为方向投票或被门控排除，不代表 raw 宏观数据缺失。" : ""}`,
       facts: [
         evidenceFact("regime", regime),
         evidenceFact("score", score),
-        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["data_confidence", "macro_data_confidence"]))
+        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["data_confidence", "macro_data_confidence"])),
+        ...macroComponentFacts(ctx)
       ]
     };
   }

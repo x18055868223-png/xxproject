@@ -20,7 +20,7 @@
 - 信号层：`demo_version=1.3.0`，`schema_version=nrd.schema.v1.0.0`。
 - 执行层：`STRATEGY_VERSION=2.5.0`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭。
 - GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
-- LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.2.0`，`gemini_signal_review_prompt@1.2.0`。
+- LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.3.0`，`gemini_signal_review_prompt@1.3.0`；sidecar 使用两次调用真盲审。
 - 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar。
 - 文档收纳：05 与 `deploy/signal_audit` 已补齐 `因子文档/`、中文语义入口和前端 `VERSION.json`，按 00-04 的模块阅读惯例收纳。
 

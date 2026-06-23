@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/x18055868223-png/xxproject.git}"
-RELEASE_REF="${RELEASE_REF:-r3.1.1}"
+RELEASE_REF="${RELEASE_REF:-r3.2}"
 REPO_DIR="${REPO_DIR:-/opt/repos/neutral-loop}"
 
 STATIC_ROOT="${STATIC_ROOT:-/opt/signal-audit}"
@@ -296,7 +296,7 @@ Important files to review:
 - FMZ signal JSONL source: ${JSONL_SOURCE}
 - LLM sidecar JSONL: ${LLM_REVIEWS_SOURCE}
 
-Secrets are templates only. Fill GEMINI_API_KEY/API_TOKEN on the server,
+Secrets are templates only. Fill GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY/API_TOKEN on the server,
 then rerun the self-check:
   sudo bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
 EOF

@@ -13,6 +13,7 @@ SERVER_BASE_URL="${SERVER_BASE_URL:-http://127.0.0.1}"
 AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
+LLM_REQUIRED="${LLM_REQUIRED:-0}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -139,6 +140,7 @@ section "Environment"
 printf 'AUDIT_URL=%s\n' "$AUDIT_URL"
 printf 'GEX_URL=%s\n' "$GEX_URL"
 printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
+printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
 printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
 
@@ -233,15 +235,82 @@ else
 fi
 
 section "LLM review sidecar"
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-  ok "GEMINI_API_KEY is configured in environment"
+CHANNEL1_KEY="${GEMINI_CHANNEL1_API_KEY:-}"
+CHANNEL2_KEY="${GEMINI_CHANNEL2_API_KEY:-}"
+if [ -n "$CHANNEL1_KEY" ]; then
+  ok "Gemini channel 1 key is configured in environment"
 else
-  warn "GEMINI_API_KEY not loaded; LLM timer will skip calls"
+  if [ "$LLM_REQUIRED" = "1" ]; then
+    fail "Gemini channel 1 key is not loaded; free/low-cost first pass is disabled"
+  else
+    warn "Gemini channel 1 key is not loaded; free/low-cost first pass is disabled"
+  fi
+fi
+if [ -n "$CHANNEL2_KEY" ]; then
+  ok "Gemini channel 2 key is configured in environment"
+else
+  if [ "$LLM_REQUIRED" = "1" ]; then
+    fail "Gemini channel 2 key is not loaded; paid fallback is disabled"
+  else
+    warn "Gemini channel 2 key is not loaded; paid fallback is disabled"
+  fi
+fi
+if [ -z "$CHANNEL1_KEY" ] && [ -z "$CHANNEL2_KEY" ]; then
+  if [ "$LLM_REQUIRED" = "1" ]; then
+    fail "no Gemini channel key loaded; LLM timer will skip calls"
+  else
+    warn "no Gemini channel key loaded; LLM timer will skip calls"
+  fi
 fi
 if [ -r "$LLM_REVIEWS_SOURCE" ]; then
-  json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("model:", review.get("model"))'
+  json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("model:", review.get("model")); print("blind_review_mode:", review.get("blind_review_mode")); print("llm_call_count:", review.get("llm_call_count")); print("api_key_route:", review.get("api_key_route")); print("llm_call_routes:", review.get("llm_call_routes"))'
 else
   warn "LLM review sidecar not readable yet: $LLM_REVIEWS_SOURCE"
+fi
+if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && have python3; then
+  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" <<'PY'
+import json, pathlib, sys
+signal_path = pathlib.Path(sys.argv[1])
+review_path = pathlib.Path(sys.argv[2])
+signal_lines = [x for x in signal_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+review_lines = [x for x in review_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+if not signal_lines:
+    raise SystemExit("signal_review.jsonl empty")
+latest = json.loads(signal_lines[-1])
+latest_id = (latest.get("identity") or {}).get("card_id") or latest.get("card_id")
+ok_reviews = {}
+latest_ok_id = None
+for line in review_lines:
+    item = json.loads(line)
+    review = item.get("llm_review") or {}
+    card_id = item.get("card_id") or ((item.get("identity") or {}).get("card_id"))
+    if review.get("status") == "OK" and card_id:
+        ok_reviews[card_id] = review
+        latest_ok_id = card_id
+print("latest_signal_card_id:", latest_id)
+print("latest_ok_llm_card_id:", latest_ok_id)
+review = ok_reviews.get(latest_id)
+if not review:
+    raise SystemExit(3)
+print("latest_signal_llm_status:", review.get("status"))
+print("latest_signal_blind_review_mode:", review.get("blind_review_mode"))
+print("latest_signal_llm_call_count:", review.get("llm_call_count"))
+print("latest_signal_api_key_route:", review.get("api_key_route"))
+print("latest_signal_llm_call_routes:", review.get("llm_call_routes"))
+if review.get("blind_review_mode") != "two_call_strict" or int(review.get("llm_call_count") or 0) < 2:
+    raise SystemExit(4)
+PY
+  then
+    ok "latest signal card has OK two-call LLM sidecar review"
+  else
+    if [ "$LLM_REQUIRED" = "1" ]; then
+      fail "latest signal card does not have an OK two-call LLM sidecar review"
+    else
+      warn "latest signal card does not have an OK two-call LLM sidecar review"
+    fi
+  fi
+else
+  warn "skipped latest-card LLM match check; source or sidecar not readable"
 fi
 
 section "Listening ports and memory"

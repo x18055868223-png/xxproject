@@ -397,6 +397,8 @@ CONFIG = {
     "nr_opposite_confirm_ticks": 2,
     "nr_anchor_repair_score": 60.0,
     "nr_anchor_damage_score": 60.0,
+    "nr_anchor_damage_floor_score": 55.0,
+    "nr_anchor_damage_floor_confirm_ticks": 2,
     "nr_anchor_damage_nd_abs": 1.0,
     "nr_anchor_damage_drop_score": 10.0,
     "nr_anchor_repair_nd_abs": 0.75,
@@ -2390,6 +2392,7 @@ class NeutralRepairSignalTracker:
                 safe_float(facts.get("normalized_deviation")) or 0.0),
             "anchor_damage_observed": False,
             "anchor_damage_evidence": [],
+            "anchor_damage_floor_confirm_count": 0,
             "repair_confirm_count": 0,
             "confirmed_at_ms": None,
         }
@@ -2438,8 +2441,21 @@ class NeutralRepairSignalTracker:
             self.context["min_anchor_score_after_event"] = (
                 anchor_score if current_min is None
                 else min(current_min, anchor_score))
-            if anchor_score < float(
-                    self.config.get("nr_anchor_damage_score", 60.0)):
+            floor_score = float(self.config.get(
+                "nr_anchor_damage_floor_score",
+                self.config.get("nr_anchor_damage_score", 60.0)))
+            if anchor_score < floor_score:
+                self.context["anchor_damage_floor_confirm_count"] = (
+                    int(self.context.get("anchor_damage_floor_confirm_count")
+                        or 0) + 1)
+            else:
+                self.context["anchor_damage_floor_confirm_count"] = 0
+            required = int(self.config.get(
+                "nr_anchor_damage_floor_confirm_ticks", 1))
+            if (anchor_score < floor_score
+                    and self.context["anchor_damage_floor_confirm_count"]
+                    >= required):
+                evidence.append("ANCHOR_DAMAGE_OBSERVED_BELOW_BUFFER")
                 evidence.append("ANCHOR_DAMAGE_OBSERVED_BELOW_60")
             score_at_event = safe_float(
                 self.context.get("anchor_score_at_event"))
@@ -2502,6 +2518,8 @@ class NeutralRepairSignalTracker:
         event_context = self._public_event_context(active_ts_ms)
         anchor_context = self._public_anchor_context(anchor_score, nd)
         require_damage = bool(self.config.get("nr_require_anchor_damage", True))
+        floor_required = int(self.config.get(
+            "nr_anchor_damage_floor_confirm_ticks", 1))
         event_threshold = float(self.config.get(
             "nr_mdie_event_on_abs",
             self.config.get("nr_mdie_event_threshold", 0.65)))
@@ -2516,6 +2534,11 @@ class NeutralRepairSignalTracker:
             "anchor_damage_ok": (
                 not require_damage
                 or bool(anchor_context.get("anchor_damage_observed"))),
+            "anchor_damage_floor_ok": (
+                not require_damage
+                or bool(anchor_context.get("anchor_damage_observed"))
+                or int(anchor_context.get("anchor_damage_floor_confirm_count")
+                       or 0) >= floor_required),
             "anchor_repair_ok": (
                 anchor_score is not None and anchor_score >= float(
                     self.config.get("nr_anchor_repair_score", 60.0))),
@@ -2575,6 +2598,13 @@ class NeutralRepairSignalTracker:
         return {
             "anchor_score": anchor_score,
             "anchor_repair_score": self.config.get("nr_anchor_repair_score"),
+            "anchor_damage_score": self.config.get("nr_anchor_damage_score"),
+            "anchor_damage_floor_score": self.config.get(
+                "nr_anchor_damage_floor_score"),
+            "anchor_damage_floor_confirm_required": self.config.get(
+                "nr_anchor_damage_floor_confirm_ticks"),
+            "anchor_damage_floor_confirm_count": int(
+                ctx.get("anchor_damage_floor_confirm_count") or 0),
             "anchor_score_at_event": ctx.get("anchor_score_at_event"),
             "min_anchor_score_after_event": ctx.get(
                 "min_anchor_score_after_event"),
@@ -2704,12 +2734,14 @@ def evaluate_macro_verdict(macro_pressure, config=None):
     macro_pressure = macro_pressure or {}
     flags = macro_pressure.get("flags") or []
     blocking_flags = macro_pressure.get("blocking_flags") or []
+    score = safe_float(macro_pressure.get("macro_score"))
+    score_block = score is not None and score >= 0.46
     status = macro_pressure.get("data_status")
     regime = macro_pressure.get("macro_regime")
     if status == "unavailable":
         verdict = "MACRO_UNAVAILABLE"
     elif (config.get("bias_macro_blocking_enabled", True)
-          and blocking_flags):
+          and (blocking_flags or score_block)):
         verdict = "MACRO_BLOCKING"
     else:
         verdict = {
@@ -2943,8 +2975,6 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
 
     conf_pre_veto = clamp(conf_raw * ggr_mult, 0.0, 100.0)
     confidence = conf_pre_veto
-    if veto:
-        confidence = 0.0
 
     lean, support, side_hint, next_action = _classify(
         edb_score, confidence, precondition_active, veto, config)
@@ -2972,6 +3002,8 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
             "ggr_mult": ggr_mult,
             "conf_pre_veto": conf_pre_veto,
             "confidence_final": int(round(confidence)),
+            "veto_applied": bool(veto),
+            "confidence_blocked_to_zero": False,
             "score_full": score_full,
             "agreement_floor": agr_floor,
             "coverage_floor": cov_floor,
@@ -3121,8 +3153,7 @@ def _cvd_strength(abs_cvd_norm, history, config):
 def _macro_vote(macro, config):
     score = safe_float(macro.get("macro_score"))
     base = _base_weight("MACRO", config)
-    if score is None or macro.get("verdict") in ("MACRO_UNAVAILABLE",
-                                                 "MACRO_BLOCKING"):
+    if score is None or macro.get("verdict") == "MACRO_UNAVAILABLE":
         return {"key": "MACRO", "vote": 0.0, "weight": 0.0,
                 "detail": {"verdict": macro.get("verdict")}}
     ref = float(config.get("edb_macro_vote_ref", 0.46))
@@ -4866,7 +4897,7 @@ def _audit_reasoning(reasoning, decomp, cal):
             "coverage_factor": safe_float(decomp.get("cov_factor")),
             "ggr_multiplier": safe_float(decomp.get("ggr_mult")),
             "confidence_pre_veto": safe_float(decomp.get("conf_pre_veto")),
-            "veto_applied": False,
+            "veto_applied": bool(decomp.get("veto_applied")),
             "confidence_final": safe_float(decomp.get("confidence_final")),
         },
         "evidence": rows,

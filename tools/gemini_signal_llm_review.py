@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -21,10 +22,10 @@ import urllib.request
 DEFAULT_MODEL = "gemini-3.5-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.2.0"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.2.0"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.3.0"
+PROMPT_VERSION = "gemini_signal_review_prompt@1.3.0"
 PACKET_VERSION = "signal_llm_review_packet@1.0.0"
-BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.0.0"
+BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
 
 FACTOR_KEYS = (
     "tmvf",
@@ -43,10 +44,12 @@ SENSITIVE_KEY_RE = re.compile(
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_\-]{12,}"),
     re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),
+    re.compile(r"AQ\.[0-9A-Za-z_\-]{20,}"),
     re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
     re.compile(r"[A-Za-z]:\\[^,\]\}\n\r\t ]+"),
     re.compile(r"/(?:home|opt|var|etc|root|Users)/[^,\]\}\n\r\t ]+"),
 )
+RETRYABLE_GEMINI_HTTP_CODES = {429, 500, 502, 503, 504}
 REQUIRED_REVIEW_FIELDS = (
     "summary_cn",
     "agreement_with_system",
@@ -139,10 +142,10 @@ def build_blind_theoretical_packet(packet):
         "schema": {
             "name": BLIND_PACKET_VERSION,
             "source_packet_schema": _safe_copy(_as_dict(source.get("schema")).get("name")),
-            "derived_blind": False,
-            "independence_mode": "single_call_blind_ordered",
+            "derived_blind": True,
+            "independence_mode": "two_call_blind_first",
             "limitation_cn": (
-                "本包用于同一次请求中的先读步骤；后文会给完整审计包，因此不是严格两次调用盲读。"
+                "本包用于第一次独立盲读调用；不包含系统结论、证据账本、冲突账本或门控结论。"
             ),
         },
         "identity": _safe_copy({
@@ -175,45 +178,30 @@ def build_blind_theoretical_packet(packet):
     return _safe_copy(blind)
 
 
-def build_prompt(packet):
+def build_blind_prompt(packet):
     blind_packet = build_blind_theoretical_packet(packet)
     return (
-        "你是交易信号审计复核员，只做审计增强，不是交易执行系统。\n"
-        "请基于给定 signal_review 审计截面进行综合复核，输出中文 JSON。\n"
-        "本请求采用单次调用的『先盲读、后复核』结构：你必须先依据 BLIND_THEORETICAL_PACKET "
-        "形成 theoretical_active_view 与 gamma_regime_lens，再依据 FULL_AUDIT_PACKET "
-        "解释系统结论。因为这是单次请求，不得声称 derived_blind=true。\n\n"
+        "你是交易信号审计复核员。现在是第一次独立盲读调用。\n"
+        "你只能基于 BLIND_THEORETICAL_PACKET 给出 theoretical_active_view 与 gamma_regime_lens，"
+        "不能推断或提及系统 decision、reasoning、conflict、blocking 或 trade_allowed。\n"
+        "只输出 JSON，不要 markdown，不要额外解释。\n\n"
         "边界：\n"
-        "1. 系统信号结论已经由 decision 给出，你不得改变方向、置信度、EDB、blocking、trade_allowed 或下一步动作。\n"
-        "2. confidence 是证据质量刻度，不是胜率、收益概率或可交易概率。\n"
-        "3. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
-        "4. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
-        "5. 先检查数据质量、缺失字段、冲突比例、rank 冷启动，再解释方向。\n"
-        "6. 输出应帮助人工审计：说明支持项、风险冲突、下一步观察重点和复核失效条件。\n"
-        "7. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
-        "8. 你必须额外输出 theoretical_active_view：这是基于市场微结构、量价、Gamma/GEX、"
+        "1. 不得使用外部市场数据，不得编造未提供的数据。\n"
+        "2. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
+        "3. 你必须输出 theoretical_active_view：这是基于市场微结构、量价、Gamma/GEX、"
         "宏观、偏斜、资金费率等理论关系的主动倾向参考；它不是系统信号，不改变 decision、"
         "blocking 或 trade_allowed。\n"
-        "9. theoretical_active_view 可以给出倾向，但必须言之有物：至少引用两类给定因子，"
+        "4. theoretical_active_view 可以给出倾向，但必须言之有物：至少引用两类给定因子，"
         "同时列出反证或不确定性；证据不足时选择 MIXED_UNCLEAR 或 UNABLE_TO_JUDGE。\n"
-        "10. 你必须额外输出 gamma_regime_lens：它只分析 Gamma 体制对分布、尾部和反身性的"
+        "5. 你必须输出 gamma_regime_lens：它只分析 Gamma 体制对分布、尾部和反身性的"
         "风险叠加，绝不产出竞争性方向；只能降低/中和方向倾向的把握度，不能翻转方向。\n"
-        "11. 正 Gamma → 预期波动压制、均值回归、向 pin/call/put 大额行权价钉住；"
+        "6. 正 Gamma → 预期波动压制、均值回归、向 pin/call/put 大额行权价钉住；"
         "负 Gamma → 预期波动放大、助涨助跌、两个方向都可能剧烈反身。\n"
-        "12. 极端负 Gamma + 已有方向倾向时，必须提示催化剂导致反向挤压/剧烈反转的尾部风险，"
+        "7. 极端负 Gamma + 已有倾向时，必须提示催化剂导致反向挤压/剧烈反转的尾部风险，"
         "并点名 flip / 对侧 wall / pin 等关键位。\n"
-        "13. 如果 flip/GEX 缺失、rank warming_up 或符号假设不稳，gamma_regime_lens.regime 选 UNKNOWN，"
+        "8. 如果 flip/GEX 缺失、rank warming_up 或符号假设不稳，gamma_regime_lens.regime 选 UNKNOWN，"
         "不得臆断体制。\n"
-        "14. GEX 符号在加密市场是持仓假设，不是测得事实；必须在 positioning_assumption_cn 中说明。\n"
-        "15. 不得把 theoretical_active_view 或 gamma_regime_lens 写成开仓建议、收益预测或对系统模型的重算。\n"
-        "16. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
-        "字段含义摘要：\n"
-        "- market_context: 当前价格、报价币种和价格来源。\n"
-        "- decision: 程序化系统结论；必须作为只读事实。\n"
-        "- reasoning.evidence: 因子证据账本，含同向/反向贡献和排除原因。\n"
-        "- conflict: 同向与反向证据冲突情况。\n"
-        "- blocking: 硬/软门控及解除条件。\n"
-        "- factor_cross_section: TMV、微观流、宏观压力、Gamma/GEX、rank、偏斜和资金费率截面。\n\n"
+        "9. GEX 符号在加密市场是持仓假设，不是测得事实；必须在 positioning_assumption_cn 中说明。\n\n"
         "theoretical_active_view 字段要求：\n"
         "- bias 枚举：BULLISH_LEAN / BEARISH_LEAN / NEUTRAL_OR_RANGE / MIXED_UNCLEAR / UNABLE_TO_JUDGE。\n"
         "- conviction 枚举：LOW / MEDIUM / HIGH，表示该参考视角的定性把握度，不是胜率。\n"
@@ -232,7 +220,44 @@ def build_prompt(packet):
         "- data_quality_cn: 说明 GEX/flip/rank 冷启动或缺失带来的可靠性限制。\n"
         "- lens_is_risk_overlay_not_direction: 必须为 true。\n\n"
         "BLIND_THEORETICAL_PACKET JSON：\n"
-        f"{json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)}\n\n"
+        f"{json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+def build_prompt(packet, blind_payload=None):
+    if not blind_payload:
+        blind_payload = {
+            "theoretical_active_view": _default_theoretical_active_view(
+                "盲读结果缺失，仅保留完整审计复核。"),
+            "gamma_regime_lens": _default_gamma_regime_lens(
+                "盲读结果缺失，仅保留完整审计复核。"),
+        }
+    blind_payload = _validate_blind_payload(blind_payload)
+    return (
+        "你是交易信号审计复核员，只做审计增强，不是交易执行系统。\n"
+        "现在是第二次复核调用。第一次盲读结果已经给出，不能被完整审计包重写；"
+        "你只能基于 FULL_AUDIT_PACKET 判断系统结论是否与盲读视角、证据账本和门控一致。\n"
+        "请输出中文 JSON。\n\n"
+        "边界：\n"
+        "1. 系统信号结论已经由 decision 给出，你不得改变方向、置信度、EDB、blocking、trade_allowed 或下一步动作。\n"
+        "2. confidence 是证据质量刻度，不是胜率、收益概率或可交易概率。\n"
+        "3. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
+        "4. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
+        "5. 先检查数据质量、缺失字段、冲突比例、rank 冷启动，再解释方向。\n"
+        "6. 输出应帮助人工审计：说明支持项、风险冲突、下一步观察重点和复核失效条件。\n"
+        "7. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
+        "8. theoretical_active_view 与 gamma_regime_lens 必须沿用 BLIND_REVIEW_RESULT，"
+        "它们是第一次调用产生的真盲读结果。\n"
+        "9. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
+        "字段含义摘要：\n"
+        "- market_context: 当前价格、报价币种和价格来源。\n"
+        "- decision: 程序化系统结论；必须作为只读事实。\n"
+        "- reasoning.evidence: 因子证据账本，含同向/反向贡献和排除原因。\n"
+        "- conflict: 同向与反向证据冲突情况。\n"
+        "- blocking: 硬/软门控及解除条件。\n"
+        "- factor_cross_section: TMV、微观流、宏观压力、Gamma/GEX、rank、偏斜和资金费率截面。\n\n"
+        "BLIND_REVIEW_RESULT JSON：\n"
+        f"{json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)}\n\n"
         "FULL_AUDIT_PACKET JSON：\n"
         f"{json.dumps(packet, ensure_ascii=False, sort_keys=True)}"
     )
@@ -435,15 +460,96 @@ def build_gemini_request(prompt, model=DEFAULT_MODEL):
     }
 
 
-def call_gemini(api_key, model, request_body, timeout=60):
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is required")
+def blind_response_schema():
+    full = review_response_schema()
+    props = full["properties"]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "theoretical_active_view": props["theoretical_active_view"],
+            "gamma_regime_lens": props["gamma_regime_lens"],
+        },
+        "required": ["theoretical_active_view", "gamma_regime_lens"],
+    }
+
+
+def build_blind_gemini_request(prompt, model=DEFAULT_MODEL):
+    del model
+    return {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": prompt}],
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "topP": 0.85,
+            "responseMimeType": "application/json",
+            "responseSchema": _strip_schema_for_legacy(blind_response_schema()),
+        },
+    }
+
+
+class GeminiApiError(RuntimeError):
+    def __init__(self, status_code, detail):
+        self.status_code = int(status_code)
+        self.detail = detail
+        super().__init__(f"Gemini HTTP {self.status_code}: {detail}")
+
+
+def call_gemini(api_key, model, request_body, timeout=60, fallback_api_key=None):
+    attempts = []
+    if api_key:
+        attempts.append(("channel1", api_key))
+    if fallback_api_key and fallback_api_key != api_key:
+        attempts.append(("channel2", fallback_api_key))
+    if not attempts:
+        raise RuntimeError("GEMINI_CHANNEL1_API_KEY or GEMINI_CHANNEL2_API_KEY is required")
+
+    last_exc = None
+    attempted_routes = []
+    for idx, (route, key) in enumerate(attempts):
+        attempted_routes.append(route)
+        try:
+            response = _call_gemini_single_key(key, model, request_body, timeout)
+            if isinstance(response, dict):
+                response.setdefault("_api_key_route", route)
+            return response
+        except Exception as exc:
+            setattr(exc, "api_key_routes", list(attempted_routes))
+            last_exc = exc
+            has_next = idx + 1 < len(attempts)
+            if not has_next or not _is_retryable_gemini_error(exc):
+                raise
+    raise last_exc
+
+
+def _call_gemini_single_key(api_key, model, request_body, timeout):
     try:
         return _post_gemini(api_key, model, request_body, timeout)
     except RuntimeError as exc:
         if "responseFormat" not in str(exc) and "response_format" not in str(exc):
             raise
         return _post_gemini(api_key, model, _legacy_gemini_request(request_body), timeout)
+
+
+def _is_retryable_gemini_error(exc):
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        return isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout))
+    status_code = getattr(exc, "status_code", None)
+    if status_code in RETRYABLE_GEMINI_HTTP_CODES:
+        return True
+    text = str(exc)
+    return any(f"HTTP {code}" in text for code in RETRYABLE_GEMINI_HTTP_CODES)
+
+
+def _invoke_call_gemini(call_fn, api_key, model, request_body, timeout, fallback_api_key):
+    if fallback_api_key:
+        return call_fn(api_key, model, request_body, timeout,
+                       fallback_api_key=fallback_api_key)
+    return call_fn(api_key, model, request_body, timeout)
 
 
 def _post_gemini(api_key, model, request_body, timeout):
@@ -463,7 +569,7 @@ def _post_gemini(api_key, model, request_body, timeout):
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini HTTP {exc.code}: {detail}") from exc
+        raise GeminiApiError(exc.code, detail) from exc
 
 
 def _legacy_gemini_request(request_body):
@@ -514,7 +620,9 @@ def parse_gemini_response(response):
     return json.loads(_strip_json_fence(text))
 
 
-def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None):
+def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
+                     derived_blind=True, llm_call_count=2,
+                     llm_call_routes=None):
     payload = _validate_model_payload(payload)
     packet = build_review_packet(card)
     reviewed_at = reviewed_at or _now_iso()
@@ -525,12 +633,17 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None):
         "model": model,
         "reviewed_at": reviewed_at,
         "prompt_version": PROMPT_VERSION,
+        "blind_review_mode": "two_call_strict" if derived_blind else "compatibility",
+        "llm_call_count": int(llm_call_count),
+        "api_key_route": _summarize_call_routes(llm_call_routes),
+        "llm_call_routes": list(llm_call_routes or []),
         "input_packet_hash": _sha256_json(packet),
+        "blind_packet_hash": _sha256_json(build_blind_theoretical_packet(packet)),
         "summary_cn": payload["summary_cn"],
         "agreement_with_system": payload["agreement_with_system"],
         "caution_level": _policy_caution(payload["caution_level"], packet),
         "theoretical_active_view": _normalize_theoretical_active_view(
-            payload["theoretical_active_view"]),
+            payload["theoretical_active_view"], derived_blind=derived_blind),
         "gamma_regime_lens": _normalize_gamma_regime_lens(
             payload["gamma_regime_lens"]),
         "main_supporting_factors": _trim_list(payload["main_supporting_factors"]),
@@ -543,8 +656,8 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None):
     return review
 
 
-def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
-                     limit=20, include_synthetic=False, timeout=60,
+def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None,
+                     model=DEFAULT_MODEL, limit=20, include_synthetic=False, timeout=60,
                      call_gemini=call_gemini, reviewed_at=None):
     source = Path(source)
     reviews_output = Path(reviews_output)
@@ -570,12 +683,29 @@ def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
             continue
         try:
             packet = build_review_packet(card)
-            prompt = build_prompt(packet)
+            blind_prompt = build_blind_prompt(packet)
+            blind_request = build_blind_gemini_request(blind_prompt, model=model)
+            blind_raw_response = _invoke_call_gemini(
+                call_gemini, api_key, model, blind_request, timeout,
+                fallback_api_key)
+            blind_payload = _validate_blind_payload(
+                parse_gemini_response(blind_raw_response))
+            prompt = build_prompt(packet, blind_payload)
             request_body = build_gemini_request(prompt, model=model)
-            raw_response = call_gemini(api_key, model, request_body, timeout)
+            raw_response = _invoke_call_gemini(
+                call_gemini, api_key, model, request_body, timeout,
+                fallback_api_key)
             payload = parse_gemini_response(raw_response)
+            payload["theoretical_active_view"] = blind_payload["theoretical_active_view"]
+            payload["gamma_regime_lens"] = blind_payload["gamma_regime_lens"]
             review = build_llm_review(card, payload, model=model,
-                                      reviewed_at=reviewed_at)
+                                      reviewed_at=reviewed_at,
+                                      derived_blind=True,
+                                      llm_call_count=2,
+                                      llm_call_routes=[
+                                          _api_key_route(blind_raw_response),
+                                          _api_key_route(raw_response),
+                                      ])
             _append_jsonl(reviews_output, {
                 "card_id": card_id,
                 "symbol": _as_dict(card.get("identity")).get("symbol") or card.get("symbol"),
@@ -587,6 +717,7 @@ def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
         except Exception as exc:  # keep sidecar script soft-fail per card
             errors += 1
             safe_error = _redact_sensitive_text(str(exc))[:220]
+            error_routes = _exception_call_routes(exc)
             _append_jsonl(reviews_output, {
                 "card_id": card_id,
                 "llm_review": {
@@ -596,6 +727,8 @@ def generate_reviews(source, reviews_output, api_key=None, model=DEFAULT_MODEL,
                     "model": model,
                     "reviewed_at": reviewed_at or _now_iso(),
                     "prompt_version": PROMPT_VERSION,
+                    "api_key_route": _summarize_call_routes(error_routes),
+                    "llm_call_routes": error_routes,
                     "summary_cn": "LLM 复核生成失败，保留系统审计卡原始结论。",
                     "agreement_with_system": "UNABLE_TO_JUDGE",
                     "caution_level": "HIGH",
@@ -642,6 +775,21 @@ def _validate_model_payload(payload):
     return payload
 
 
+def _validate_blind_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("blind model output must be object")
+    if "theoretical_active_view" not in payload:
+        raise ValueError("blind model output missing theoretical_active_view")
+    if "gamma_regime_lens" not in payload:
+        raise ValueError("blind model output missing gamma_regime_lens")
+    _validate_theoretical_active_view(payload.get("theoretical_active_view"))
+    _validate_gamma_regime_lens(payload.get("gamma_regime_lens"))
+    return {
+        "theoretical_active_view": payload["theoretical_active_view"],
+        "gamma_regime_lens": payload["gamma_regime_lens"],
+    }
+
+
 def _validate_theoretical_active_view(view):
     if not isinstance(view, dict):
         raise ValueError("theoretical_active_view must be object")
@@ -663,7 +811,7 @@ def _validate_theoretical_active_view(view):
         raise ValueError("theoretical_active_view.counter_evidence must be list")
 
 
-def _normalize_theoretical_active_view(view):
+def _normalize_theoretical_active_view(view, derived_blind=False):
     view = _as_dict(view)
     bias = str(view.get("bias") or "UNABLE_TO_JUDGE").upper()
     conviction = str(view.get("conviction") or "LOW").upper()
@@ -680,7 +828,7 @@ def _normalize_theoretical_active_view(view):
         "boundary_cn": str(view.get("boundary_cn") or (
             "该判断只作审计参考，不改变系统信号、门控、置信或交易许可。"
         ))[:260],
-        "derived_blind": False,
+        "derived_blind": bool(derived_blind),
         "is_not_a_signal": True,
         "validation_status": "UNVALIDATED",
     }
@@ -831,6 +979,8 @@ def _redact_sensitive_text(value):
     for pattern in SENSITIVE_TEXT_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
     redacted = re.sub(r"GEMINI_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"GEMINI_CHANNEL[12]_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"GEMINI_(PAID|FALLBACK)_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
     redacted = re.sub(r"x-goog-api-key", "[REDACTED_HEADER]", redacted, flags=re.IGNORECASE)
     redacted = re.sub(r"Bearer\s+\S+", "[REDACTED_BEARER]", redacted, flags=re.IGNORECASE)
     return redacted
@@ -894,6 +1044,27 @@ def _is_synthetic(card):
     return bool(_as_dict(card.get("identity")).get("is_synthetic") or card.get("is_synthetic"))
 
 
+def _api_key_route(response):
+    route = _as_dict(response).get("_api_key_route")
+    return route if route in {"channel1", "channel2"} else "unknown"
+
+
+def _exception_call_routes(exc):
+    routes = getattr(exc, "api_key_routes", [])
+    return [route for route in list(routes or []) if route in {"channel1", "channel2"}]
+
+
+def _summarize_call_routes(routes):
+    clean = [route for route in list(routes or []) if route in {"channel1", "channel2"}]
+    if not clean:
+        return "unknown"
+    if all(route == "channel1" for route in clean):
+        return "channel1"
+    if all(route == "channel2" for route in clean):
+        return "channel2"
+    return "mixed"
+
+
 def _append_jsonl(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -924,6 +1095,14 @@ def _now_iso():
     return _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _env_first(*names):
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate Gemini LLM audit reviews for signal_review.jsonl.")
@@ -933,8 +1112,12 @@ def main(argv=None):
                         help="Sidecar JSONL path for LLM reviews.")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help="Gemini model name.")
-    parser.add_argument("--api-key", default=os.environ.get("GEMINI_API_KEY"),
-                        help="Gemini API key. Prefer GEMINI_API_KEY env var.")
+    parser.add_argument("--channel1-api-key",
+                        default=_env_first("GEMINI_CHANNEL1_API_KEY"),
+                        help="Channel 1 Gemini key. Prefer low-cost/free tier.")
+    parser.add_argument("--channel2-api-key",
+                        default=_env_first("GEMINI_CHANNEL2_API_KEY"),
+                        help="Channel 2 Gemini key. Prefer paid fallback tier.")
     parser.add_argument("--limit", type=int, default=5,
                         help="Maximum new cards to review in this run.")
     parser.add_argument("--timeout", type=int, default=60,
@@ -945,7 +1128,8 @@ def main(argv=None):
     result = generate_reviews(
         args.source,
         args.reviews_output,
-        api_key=args.api_key,
+        api_key=args.channel1_api_key,
+        fallback_api_key=args.channel2_api_key,
         model=args.model,
         limit=args.limit,
         include_synthetic=args.include_synthetic,

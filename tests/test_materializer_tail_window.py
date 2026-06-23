@@ -106,6 +106,16 @@ def auxiliary_evidence_record():
                     "source_ref": "factor_cross_section.gamma_regime",
                     "exclusion_reason": "CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE",
                 },
+                {
+                    "key": "MACRO",
+                    "participation_status": "EXCLUDED",
+                    "vote": None,
+                    "configured_weight": 0.30,
+                    "effective_weight": 0.0,
+                    "weighted_contribution": 0.0,
+                    "source_ref": "factor_cross_section.macro_pressure",
+                    "exclusion_reason": "MACRO_BLOCKING_GATE",
+                },
             ],
         },
         "factor_cross_section": {
@@ -133,14 +143,26 @@ def auxiliary_evidence_record():
                 "source_ref": "DERIBIT_OPTIONS",
             },
             "gamma_regime": {
-                "regime": "POSITIVE_GAMMA_PINNING",
-                "regime_strength": 0.86,
+                "regime": "TRANSITION",
+                "regime_strength": 0.112,
                 "confidence_multiplier": 0.98,
                 "net_gamma_notional_usd": 22870000.0,
                 "distance_to_flip_pct": -0.44,
                 "pin_strike": 64536.21,
                 "distance_to_pin_pct": 0.85,
                 "source_ref": "DERIBIT_OPTIONS",
+            },
+            "macro_pressure": {
+                "macro_score": 0.457,
+                "macro_regime": "Mild Headwind",
+                "macro_data_confidence": 1.0,
+                "data_status": "OK",
+                "components": [
+                    {"key": "VOLQ", "scoring_bps": 150},
+                    {"key": "DXY", "scoring_bps": 8},
+                    {"key": "US10Y", "scoring_bps": 17.6},
+                ],
+                "source_ref": "YAHOO_FINANCE",
             },
         },
     }
@@ -309,12 +331,23 @@ def main():
         ggr = rows["GGR_SPATIAL"]
         assert_true(ggr["auxiliary_role"] == "OPTION_GAMMA_STRUCTURE",
                     "GGR should expose option gamma structure role")
-        assert_true(ggr["auxiliary_lean"] == "SUPPORTIVE",
-                    "positive gamma pinning should surface supportive structure tendency")
+        assert_true(ggr["auxiliary_lean"] == "CONSTRAINT",
+                    "transition gamma with multiplier below 1 should surface spatial constraint, not directional adverse wording")
         assert_true(ggr["raw_values"]["confidence_multiplier"] == 0.98,
                     "GGR confidence multiplier should be carried into the ledger")
         assert_true(ggr["raw_values"]["distance_to_flip_pct"] == -0.44,
                     "GGR distance-to-flip context should be carried into the ledger")
+        macro = rows["MACRO"]
+        assert_true(macro["auxiliary_role"] == "MACRO_CONTEXT",
+                    "MACRO should expose macro-context role even when excluded from vote")
+        assert_true(macro["auxiliary_lean"] == "BEARISH",
+                    "positive macro headwind score should surface bearish risk-asset context")
+        assert_true(macro["raw_values"]["macro_score"] == 0.457,
+                    "MACRO raw score should be carried into the ledger")
+        assert_true(macro["raw_values"]["macro_data_confidence"] == 1.0,
+                    "MACRO raw confidence should be carried into the ledger")
+        assert_true(len(macro["raw_values"]["components"]) == 3,
+                    "MACRO component proxies should be carried into the ledger")
 
     print("materializer_tail_window: PASS")
 

@@ -109,14 +109,41 @@ def main():
                     "blind theoretical packet should omit " + forbidden)
     assert_true("gamma_regime" in blind_text and "gex_info" in blind_text,
                 "blind theoretical packet should retain gamma context")
+    assert_true(blind["schema"]["derived_blind"] is True,
+                "blind packet should use true two-call blind mode")
 
-    prompt = tool.build_prompt(packet)
-    assert_true("BLIND_THEORETICAL_PACKET" in prompt,
-                "prompt should include a blind theoretical packet")
+    blind_prompt = tool.build_blind_prompt(packet)
+    assert_true("BLIND_THEORETICAL_PACKET" in blind_prompt,
+                "blind prompt should include a blind theoretical packet")
+    assert_true("FULL_AUDIT_PACKET" not in blind_prompt,
+                "blind prompt should not include full audit packet")
+    prompt = tool.build_prompt(packet, {
+        "theoretical_active_view": {
+            "bias": "BULLISH_LEAN",
+            "conviction": "LOW",
+            "basis_cn": "盲读理论截面偏多但不确定性高。",
+            "key_drivers": ["TMV 正贡献仍在"],
+            "counter_evidence": ["宏观压力和 SRD 反向"],
+            "boundary_cn": "这是审计参考视角，不改变系统结论、置信度、门控或交易许可。",
+        },
+        "gamma_regime_lens": {
+            "regime": "LONG_GAMMA_STABILIZING",
+            "regime_extremity": "MEDIUM",
+            "dynamics_cn": "正 Gamma 钉住倾向压制波动并吸附到 pin 附近。",
+            "dominant_tail_risk_cn": "主要风险是把钉住误读为趋势突破。",
+            "conviction_effect_on_directional_view": "LOWER",
+            "key_levels": {"flip": 62800, "call_wall": 65000, "put_wall": 60000, "pin": 64000},
+            "positioning_assumption_cn": "假设 netGEX 符号可代理做市商 Gamma 暴露。",
+            "data_quality_cn": "rank 仍处于 warming_up。",
+            "lens_is_risk_overlay_not_direction": True,
+        },
+    })
+    assert_true("BLIND_REVIEW_RESULT" in prompt,
+                "full prompt should include first-call blind result")
     assert_true("FULL_AUDIT_PACKET" in prompt,
                 "prompt should include full audit packet for reconciliation")
-    assert_true("Gamma 体制" in prompt and "反身" in prompt,
-                "prompt should force Gamma regime lens reasoning")
+    assert_true("Gamma 体制" in blind_prompt and "反身" in blind_prompt,
+                "blind prompt should force Gamma regime lens reasoning")
     assert_true("不是胜率" in prompt, "prompt should prevent confidence-as-win-rate")
     assert_true("不得重算模型" in prompt, "prompt should forbid model recomputation")
     assert_true("只输出 JSON" in prompt, "prompt should require JSON-only output")
@@ -193,8 +220,10 @@ def main():
     assert_true(review["not_trading_advice"] is True, "disclaimer flag should be forced true")
     assert_true(review["theoretical_active_view"]["bias"] == "BULLISH_LEAN",
                 "theoretical active view should be persisted")
-    assert_true(review["theoretical_active_view"]["derived_blind"] is False,
-                "single-call theoretical view should mark derived_blind false")
+    assert_true(review["theoretical_active_view"]["derived_blind"] is True,
+                "two-call theoretical view should mark derived_blind true")
+    assert_true(review["blind_review_mode"] == "two_call_strict",
+                "review should record strict two-call blind mode")
     assert_true(review["gamma_regime_lens"]["regime"] == "LONG_GAMMA_STABILIZING",
                 "gamma regime lens should be persisted")
     assert_true(review["gamma_regime_lens"]["lens_is_risk_overlay_not_direction"] is True,
@@ -209,8 +238,22 @@ def main():
         reviews = root / "llm_reviews.jsonl"
         source.write_text(json.dumps(card, ensure_ascii=False) + "\n", encoding="utf-8")
 
+        calls = []
+
         def fake_call(api_key, model, request_body, timeout):
             assert_true(api_key == "test-key", "fake call receives api key")
+            calls.append(request_body)
+            if len(calls) == 1:
+                return {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": json.dumps({
+                                "theoretical_active_view": model_payload["theoretical_active_view"],
+                                "gamma_regime_lens": model_payload["gamma_regime_lens"],
+                            }, ensure_ascii=False)}]
+                        }
+                    }]
+                }
             return {
                 "candidates": [{
                     "content": {
@@ -224,6 +267,7 @@ def main():
                                        call_gemini=fake_call,
                                        reviewed_at="2026-06-19T00:00:00+00:00")
         assert_true(result["written_reviews"] == 1, "one review should be written")
+        assert_true(len(calls) == 2, "one sidecar review should use two Gemini calls")
         saved = json.loads(reviews.read_text(encoding="utf-8").strip())
         assert_true(saved["card_id"] == card["identity"]["card_id"], "sidecar card id")
         assert_true(saved["llm_review"]["summary_cn"] == model_payload["summary_cn"],

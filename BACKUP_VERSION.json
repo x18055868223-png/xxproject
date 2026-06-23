@@ -17,7 +17,7 @@
     "signal_layer": "demo_version=1.3.0; schema_version=nrd.schema.v1.0.0",
     "execution_layer": "STRATEGY_VERSION=2.5.0; trading_gates_default_false",
     "gexmonitorapi": "0.2.0; rank_window=rolling_30d_or_available",
-    "llm_review": "provider=gemini; model=gemini-3.5-flash; schema=signal_llm_review@1.2.0; prompt=gemini_signal_review_prompt@1.2.0",
+    "llm_review": "provider=gemini; model=gemini-3.5-flash; schema=signal_llm_review@1.3.0; prompt=gemini_signal_review_prompt@1.3.0; blind_mode=two_call_strict",
     "audit_frontend": "signal_cards/index.json + signal_cards/*.json + fallback.js",
     "documentation_storage": "05_GEX监控API_数据增强接口/因子文档 + deploy/signal_audit/因子文档 + deploy/signal_audit/frontend/VERSION.json"
   },

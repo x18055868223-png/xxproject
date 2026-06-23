@@ -57,7 +57,7 @@
 | 信号层 | `demo_version=1.3.0`；`schema_version=nrd.schema.v1.0.0`；FMZ 内只写 JSONL/短推，不调用 LLM HTTP |
 | GEX API | `gexmonitorapi=0.2.0`；rank 采用 `rolling_30d_or_available`，保留全量历史，只用最近 30 天算当前分位 |
 | 审计 materializer | 默认读取 `/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl`，输出 `/opt/signal-audit/signal_cards/` |
-| LLM sidecar | Gemini `gemini-3.5-flash`；输出 `signal_llm_review@1.2.0`；prompt `gemini_signal_review_prompt@1.2.0` |
+| LLM sidecar | Gemini `gemini-3.5-flash`；输出 `signal_llm_review@1.3.0`；prompt `gemini_signal_review_prompt@1.3.0`；两次调用真盲审 |
 | 执行层 | `STRATEGY_VERSION=2.5.0`；所有交易门默认关闭；仅作为空跑/后续测试资产 |
 | 文档收纳 | r2.2 将 `05_GEX监控API_数据增强接口` 与 `deploy/signal_audit` 纳入 `因子文档/` + 中文语义入口 + 版本元数据惯例 |
 

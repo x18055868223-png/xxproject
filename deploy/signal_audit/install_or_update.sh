@@ -60,7 +60,7 @@ install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
 install -m 0644 "$LLM_ENV_EXAMPLE_SRC" "$CONFIG_ROOT/llm.env.example"
 if [[ ! -f "$LLM_ENV_FILE" ]]; then
   install -m 0600 "$LLM_ENV_EXAMPLE_SRC" "$LLM_ENV_FILE"
-  echo "created LLM API key template at $LLM_ENV_FILE; edit GEMINI_API_KEY before expecting reviews"
+  echo "created LLM API key template at $LLM_ENV_FILE; edit GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY before expecting reviews"
 else
   chmod 0600 "$LLM_ENV_FILE"
 fi

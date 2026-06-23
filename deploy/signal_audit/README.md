@@ -21,7 +21,7 @@ For new-server rebuilds or server migration, use the Chinese quick runbook
 [`SERVER_MIGRATION_ZH.md`](SERVER_MIGRATION_ZH.md), the detailed English
 runbook [`SERVER_MIGRATION.md`](SERVER_MIGRATION.md), and
 [`../../tools/server_bootstrap_signal_stack.sh`](../../tools/server_bootstrap_signal_stack.sh).
-The current migration/bootstrap release target is `r3.1.1` in the primary
+The current migration/bootstrap release target is `r3.2` in the primary
 `xxproject` repository.
 
 ## Server Paths
@@ -304,7 +304,8 @@ sudoedit /etc/signal-audit/llm.env
 Set:
 
 ```text
-GEMINI_API_KEY=<your Gemini API key>
+GEMINI_CHANNEL1_API_KEY=<low-cost or free-tier Gemini API key>
+GEMINI_CHANNEL2_API_KEY=<paid fallback Gemini API key>
 GEMINI_MODEL=gemini-3.5-flash
 LLM_REVIEW_LIMIT=2
 LLM_REVIEW_TIMEOUT=60
@@ -313,7 +314,9 @@ LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
 
 Never commit `/etc/signal-audit/llm.env`. The repository only contains
-`signal-audit-llm.env.example` with an empty key.
+`signal-audit-llm.env.example` with empty channel keys. Channel 1 is tried
+first for cost control; channel 2 is used only when channel 1 returns a
+retryable capacity/network error such as 429, 5xx, or timeout.
 
 ## Auto-Refresh And LLM Review
 
