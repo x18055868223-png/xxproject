@@ -133,6 +133,9 @@ def main():
     assert_true((DEPLOY_FRONTEND / "app.js").read_text(encoding="utf-8")
                 == (DIST_FRONTEND / "app.js").read_text(encoding="utf-8"),
                 "deploy and dist app.js should match")
+    assert_true((DEPLOY_FRONTEND / "index.html").read_text(encoding="utf-8")
+                == (DIST_FRONTEND / "index.html").read_text(encoding="utf-8"),
+                "deploy and dist index.html should match")
     print("signal_session_context_deploy_assets: PASS")
 
 
