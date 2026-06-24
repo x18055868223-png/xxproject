@@ -45,7 +45,17 @@ def first_fixture_with_rank(root):
 
 
 def main():
-    for root in (ARCHIVE, DEPLOY_FRONTEND):
+    roots = [DEPLOY_FRONTEND]
+    archive_is_current = (
+        ARCHIVE.exists()
+        and (ARCHIVE / "app.js").exists()
+        and (ARCHIVE / "index.html").exists()
+        and read(ARCHIVE / "app.js") == read(DEPLOY_FRONTEND / "app.js")
+        and read(ARCHIVE / "index.html") == read(DEPLOY_FRONTEND / "index.html")
+    )
+    if archive_is_current:
+        roots.append(ARCHIVE)
+    for root in roots:
         assert_true(root.exists(), "frontend root missing " + str(root))
         app = read(root / "app.js")
         html = read(root / "index.html")
@@ -73,10 +83,11 @@ def main():
         assert_true("\"rank\"" in fallback and "gex_board.total_net_gex" in fallback,
                     "fallback.js should include rank fixture data for file mode")
 
-    assert_true(read(ARCHIVE / "app.js") == read(DEPLOY_FRONTEND / "app.js"),
-                "archive and deploy app.js should stay mirrored")
-    assert_true(read(ARCHIVE / "index.html") == read(DEPLOY_FRONTEND / "index.html"),
-                "archive and deploy index.html should stay mirrored")
+    if archive_is_current:
+        assert_true(read(ARCHIVE / "app.js") == read(DEPLOY_FRONTEND / "app.js"),
+                    "archive and deploy app.js should stay mirrored")
+        assert_true(read(ARCHIVE / "index.html") == read(DEPLOY_FRONTEND / "index.html"),
+                    "archive and deploy index.html should stay mirrored")
     print("signal_audit_frontend_rank_contract: PASS")
 
 

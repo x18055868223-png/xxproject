@@ -72,9 +72,13 @@ def main():
             "SignalSessionPremiseDurabilityContext",
             "compat_backfill_applied",
             "strategy_version",
-            "1.4.1",
+            "1.5.0",
             "latest card uses materializer compatibility backfill",
-            "latest card strategy_version is not 1.4.1"):
+            "latest card strategy_version is not 1.5.0",
+            "TRANSITION_REQUIRED",
+            "TRANSITION_LLM_REQUIRED",
+            "TRANSITION_LEDGER_SOURCE",
+            "TRANSITION_LLM_REVIEWS_SOURCE"):
         assert_true(token in self_check,
                     "server self-check should enforce " + token)
 

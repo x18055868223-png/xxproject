@@ -159,7 +159,7 @@ GEX_REQUIRED=0 LLM_REQUIRED=1 SESSION_CONTEXT_REQUIRED=1 sudo -E bash tools/serv
 - `signal-audit-materialize.service` 的 `Result=success`。
 - `signal-audit-llm-review.service` 的 `Result=success`。
 - `LLM_REQUIRED=1` 模式下两个 Gemini 通道 key 都必须加载，且最新 signal card 必须有 `status=OK`、`blind_review_mode=two_call_strict`、`llm_call_count>=2` 的 sidecar 复核。
-- `SESSION_CONTEXT_REQUIRED=1` 模式下最新真实卡必须来自 `identity.strategy_version=1.4.1` 的 FMZ 生产者，且不能带 `compat_backfill_applied=true`；同时必须有 `SignalSessionPremiseDurabilityContext`、`clock_window`、`backtest_delta_pp`、结构化 `validation_basis`、`confidence_policy` 和 `decision_matrix.temporal_durability`。否则说明 FMZ 生产者、materializer 或部署链路仍未闭环，不得封版。
+- `SESSION_CONTEXT_REQUIRED=1` 模式下最新真实卡必须来自 `identity.strategy_version=1.5.0` 的 FMZ 生产者，且不能带 `compat_backfill_applied=true`；同时必须有 `SignalSessionPremiseDurabilityContext`、`clock_window`、`backtest_delta_pp`、结构化 `validation_basis`、`confidence_policy` 和 `decision_matrix.temporal_durability`。若本次把变化链纳入封版，还应设置 `TRANSITION_REQUIRED=1` 与 `TRANSITION_LLM_REQUIRED=1`，并确认最新卡 `transition_context.audit_scope=AUDIT_ONLY`、私有 `signal_transition_ledger.jsonl` 对齐最新卡、transition LLM review 保留 `no_trading_instruction` guard。否则说明 FMZ 生产者、materializer 或部署链路仍未闭环，不得封版。
 - `http://127.0.0.1/signal-audit/` 返回 HTTP 200。
 - `http://127.0.0.1/signal-audit/signal_cards/index.json` 返回 HTTP 200 且有真实卡片。
 

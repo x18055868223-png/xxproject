@@ -184,13 +184,20 @@ state and `LLM_REQUIRED=0`. The signal-audit runtime is considered ready only
 after the audit page and manifest return HTTP 200, the materializer service has
 `Result=success`, and, when LLM is required, the latest card has
 `blind_review_mode=two_call_strict` and `llm_call_count>=2`.
-For r3.2.1 session-context acceptance, also set `SESSION_CONTEXT_REQUIRED=1`.
+For r3.3.0 / FMZ signal-layer v1.5.0 acceptance, also set
+`SESSION_CONTEXT_REQUIRED=1`. If transition ledger and transition LLM sidecars
+are part of the release gate, set `TRANSITION_REQUIRED=1` and
+`TRANSITION_LLM_REQUIRED=1` as well.
 The self-check must fail if the latest real card is not from FMZ producer
-`identity.strategy_version=1.4.1`, uses materializer compatibility backfill, or lacks
+`identity.strategy_version=1.5.0`, uses materializer compatibility backfill, or lacks
 `SignalSessionPremiseDurabilityContext`, `clock_window`, `backtest_delta_pp`,
 structured `validation_basis`, `confidence_policy`, or
 `decision_matrix.temporal_durability`. This prevents a server/front-end update
 from being mistaken for an updated FMZ signal-layer producer.
+When transition checks are required, the latest card must include
+`transition_context.audit_scope=AUDIT_ONLY`, the private
+`signal_transition_ledger.jsonl` must align to the latest card, and transition
+LLM reviews must preserve the `no_trading_instruction` guard.
 
 For a signal-audit-only migration, run the self-check with `GEX_REQUIRED=0`.
 That skips the `gexmonitorapi.service`, `/health`, and authenticated `/v1/info`

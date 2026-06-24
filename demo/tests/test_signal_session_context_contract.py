@@ -29,8 +29,8 @@ def ms_utc8(year, month, day, hour, minute):
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
-    assert_true(config["demo_version"] == "1.4.1",
-                "FMZ signal deliverable version should match r3.2.1 contract")
+    assert_true(config["demo_version"] == "1.5.0",
+                "FMZ signal deliverable version should match r3.3 transition audit contract")
 
     london = mod.classify_signal_session_context(
         ms_utc8(2026, 6, 19, 15, 4), config)
@@ -102,6 +102,21 @@ def main():
 
     card = mod.build_sample_review_card(config)
     record = mod.build_audit_record(card, config)
+    transition_source = record["provenance"].get("transition_audit_source")
+    assert_true(isinstance(transition_source, dict),
+                "producer should emit native transition audit source anchor")
+    assert_true(transition_source["schema_name"] == "SignalTransitionProducerAnchor",
+                "transition anchor schema name")
+    assert_true(transition_source["schema_version"] == "1.0.0",
+                "transition anchor schema version")
+    assert_true(transition_source["audit_scope"] == "AUDIT_ONLY",
+                "transition anchor must stay audit-only")
+    assert_true(transition_source["event_time_ms"] == record["identity"]["confirmed_time_ms"],
+                "transition anchor should use producer-native event time")
+    assert_true(transition_source["event_time_basis"] == "identity.confirmed_time_ms",
+                "transition anchor should declare the event time source")
+    assert_true(transition_source["transition_computation_owner"] == "MATERIALIZER_DERIVED",
+                "producer must not compute transition deltas")
     session = record["signal_window"].get("session_context")
     assert_true(isinstance(session, dict), "audit record should include session_context")
     assert_true(session["affects_confidence"] is False,

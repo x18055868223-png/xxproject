@@ -18,6 +18,7 @@
     ALLOWED: "允许",
     ALIGNED: "一致",
     APPROVABLE: "可提交人工批准",
+    AUDIT_ONLY: "仅审计",
     BEARISH: "偏空",
     BEARISH_LEAN: "理论偏空",
     BEARISH_CONFIRMED: "偏空已确认",
@@ -28,6 +29,7 @@
     BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
     CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
     CONFLICT: "冲突",
+    DECISION: "决策",
     DEGRADED: "降级",
     DECREASE: "降低前提耐久",
     DECREASE_TENTATIVE: "轻度降低前提耐久",
@@ -37,13 +39,17 @@
     EXCLUDED: "已排除",
     FINAL: "定稿",
     FULL_LIVE: "完整实时",
+    FUNDING: "资金费率",
     GATE_ONLY: "仅门控",
     GEMINI: "Gemini",
     gemini: "Gemini",
+    GAMMA: "Gamma",
+    GAMMA_TRANSITION: "Gamma 过渡",
     CONFIRMED: "已确认",
     CONFIRMED_60M_LOCAL: "60m局部确认",
     CONSTRAINT: "空间约束",
     CONSERVATIVE_LOWER_TIER: "缓冲带就低不就高",
+    CROWDED: "拥挤",
     DEEP: "深",
     EDT: "美国夏令时",
     EST: "美国冬令时",
@@ -55,6 +61,7 @@
     LOCKED: "锁定",
     LONG_GAMMA_STABILIZING: "长 Gamma 稳定/钉住",
     LONG: "多",
+    LONG_BIAS: "多头偏好",
     LOW: "低",
     LOW_TO_MEDIUM_BUFFER: "低转中缓冲带",
     LOWER_DURABILITY_CONFIRMED: "确认降耐久",
@@ -68,6 +75,7 @@
     MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED: "市场先验已验证 / 非信号校准",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
+    MACRO: "宏观",
     MODERATE: "中等",
     MIXED_UNCLEAR: "混合不明",
     MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
@@ -78,11 +86,13 @@
     NEUTRALIZE: "中和方向把握",
     NEUTRAL_DEAD_ZONE: "中性死区",
     NEUTRAL_OR_RANGE: "理论中性/区间",
+    NEGATIVE_GAMMA: "负 Gamma",
     NONE: "无",
     NON_VOTING: "不计票",
     NOT_CONFIRMED: "未确认",
     NOT_IMPLEMENTED_SHADOW: "未落地影子项",
     NOT_READY: "未就绪",
+    NO_TRADE_BLOCKED: "无交易/阻断",
     OBSERVE: "观察",
     OBSERVE_LONG_BIAS: "观察偏多",
     OBSERVE_SHORT_BIAS: "观察偏空",
@@ -95,23 +105,45 @@
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
+    CALL_SKEW: "看涨偏斜",
+    PUT_SKEW: "看跌偏斜",
     RAISE_DURABILITY_TENTATIVE: "暂定升耐久",
     RISK_CONSTRAINT: "空间风险约束",
     SKIPPED: "已跳过",
     THIN: "薄",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
+    SHORT_BIAS: "空头偏好",
+    SKEW: "偏斜",
     SOFT_GATE: "软门控",
     SOURCE_AGE_EXCEEDED: "数据时效超限",
     STALE: "陈旧",
     SUPPORT: "支持系统结论",
     SUPPORTIVE: "支持",
     TENTATIVE: "暂定",
+    TRADE_SUPPORT_STRONG: "强交易支持",
+    TRADE_SUPPORT_WEAK: "弱交易支持",
     UNCALIBRATED: "未校准",
     UNKNOWN: "未知",
     UNABLE_TO_JUDGE: "无法判断",
     VALID: "有效",
     WAIT_CONFIRMATION: "等待确认",
-    WAIT_FOR_EVIDENCE: "等待证据"
+    WAIT_FOR_EVIDENCE: "等待证据",
+    BLOCKED: "已被阻断",
+    CONTINUING: "延续",
+    DETERIORATING: "恶化",
+    IMPROVING: "改善",
+    REVERSING: "反转",
+    STABLE: "稳定",
+    NEUTRALIZED: "中和",
+    DECISION_SUPPORT_COLLAPSE: "决策支持塌缩",
+    FUNDING_CROWDING_ESCALATION: "资金拥挤升温",
+    FUNDING_CROWDING_UP: "资金拥挤上升",
+    GAMMA_REGIME_SHIFT: "Gamma 体制切换",
+    MACRO_SHOCK: "宏观压力冲击",
+    MULTI_DOMAIN_RISK_DETERIORATION: "多域风险恶化",
+    RISK_HEADWIND_SIGN_FLIP: "逆风符号翻转",
+    SKEW_REVERSAL: "偏斜反转",
+    CRITICAL: "关键"
   };
 
   const fieldLabels = {
@@ -128,6 +160,7 @@
     affects_blocking: "是否影响门控",
     affects_confidence: "是否影响置信",
     affects_trade_allowed: "是否影响交易许可",
+    audit_scope: "审计边界",
     base_zone: "静态基础档位",
     block_kind: "阻断类型",
     boundary_buffer_min: "边界缓冲(分钟)",
@@ -163,6 +196,10 @@
     data_quality_note: "数据质量说明",
     data_range: "数据区间",
     data_status: "数据状态",
+    comparison_quality: "比较质量",
+    current_card_id: "当前状态",
+    delta_abs: "变化量",
+    delta_relative: "相对变化",
     decision_matrix: "决策矩阵",
     decision_state: "决策状态",
     direction: "方向",
@@ -182,6 +219,7 @@
     evidence_strength: "证据强度",
     exclusion_reason: "排除原因",
     event_blackout: "事件黑名单",
+    elapsed_ms: "经过时间",
     field: "字段",
     flow_confirm: "主动流确认",
     flip_point: "翻转点",
@@ -197,6 +235,7 @@
     lean: "方向倾向",
     level: "等级",
     liquidity_depth: "形成时流动性深度",
+    llm_review_required: "需要 LLM 复核",
     london_dst_mode: "伦敦时制",
     magnet_level: "磁吸点位",
     market_price: "市场价格",
@@ -217,6 +256,7 @@
     pin_strike: "钉住行权价",
     pin: "钉住点",
     positioning_assumption_cn: "持仓符号假设",
+    previous_card_id: "上一状态",
     premise_durability: "前提耐久度",
     put_wall: "看跌墙",
     quality: "质量",
@@ -273,7 +313,25 @@
     weighted: "加权贡献",
     weighted_contribution: "加权贡献",
     weighted_vote_sum: "加权投票和",
-    weekend_adjustment: "周末修正"
+    weekend_adjustment: "周末修正",
+    baseline_24h: "24 小时基线",
+    current: "当前值",
+    cross_factor_interactions: "跨因子相互作用",
+    distinguishes_observation_from_causality: "区分观察与因果",
+    domain: "领域",
+    fact_cn: "事实说明",
+    invalid_if: "失效条件",
+    materiality: "材料性",
+    materiality_score: "材料性分数",
+    no_external_data: "不使用外部数据",
+    no_trading_instruction: "不含交易建议",
+    observed_changes: "观察到的变化",
+    operator_focus: "人工观察重点",
+    previous: "上一值",
+    recent_5_trajectory: "最近 5 次轨迹",
+    role: "字段角色",
+    signal_continuity: "连续性",
+    trajectory_state: "轨迹状态"
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -700,6 +758,7 @@
             <span>置信 ${escapeHtml(scalarText(currentDecision.confidence, { translate: false }))}</span>
             <span>${escapeHtml(semanticCompact(qualityOverall(doc)))}</span>
           </div>
+          ${renderIndexTransitionBadges(doc)}
         </button>
       `;
     }).join("");
@@ -709,6 +768,22 @@
         render();
       });
     });
+  }
+
+  function transitionContext(doc) {
+    return asObject(get(doc, "transition_context", {}));
+  }
+
+  function renderIndexTransitionBadges(doc) {
+    const ctx = transitionContext(doc);
+    if (!Object.keys(ctx).length) return "";
+    const flags = asArray(ctx.cross_domain_flags);
+    return `
+      <div class="transition-badges">
+        <span>${escapeHtml(ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN"))}</span>
+        <span>${escapeHtml(flags[0] || "AUDIT_ONLY")}</span>
+      </div>
+    `;
   }
 
   function renderDecision(doc) {
@@ -792,6 +867,185 @@
       </div>
       ${review.error ? `<div class="llm-review-error">${escapeHtml(review.error)}</div>` : ""}
     `, "llm-review");
+  }
+
+  function renderTransitionContext(doc) {
+    const ctx = transitionContext(doc);
+    if (!Object.keys(ctx).length) return "";
+    const decisionTransition = asObject(ctx.decision_transition);
+    const flags = asArray(ctx.cross_domain_flags);
+    const quality = ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN");
+    const elapsed = isNullish(ctx.elapsed_ms) ? null : ageText(ctx.elapsed_ms);
+    const previousState = [
+      semanticLabel(decisionTransition.lean_before),
+      semanticLabel(decisionTransition.support_before),
+      isNullish(decisionTransition.confidence_before) ? "" : `置信 ${decisionTransition.confidence_before}`
+    ].filter(Boolean).join(" / ");
+    const currentState = [
+      semanticLabel(decisionTransition.lean_after),
+      semanticLabel(decisionTransition.support_after),
+      isNullish(decisionTransition.confidence_after) ? "" : `置信 ${decisionTransition.confidence_after}`
+    ].filter(Boolean).join(" / ");
+    return section("状态转移审计", "AUDIT_ONLY 变化链由 materializer 生成；前端只展示已物化字段，不计算 delta。", `
+      <div class="transition-panel">
+        <div class="llm-review-topline">
+          ${statusBadge("AUDIT_ONLY", ctx.audit_scope || "AUDIT_ONLY")}
+          ${statusBadge("比较质量", quality)}
+          ${flags.slice(0, 3).map((flag) => statusBadge("", flag)).join("")}
+        </div>
+        <dl class="kv-grid transition-grid">
+          ${kv("上一状态", previousState || ctx.previous_card_id, { translate: false })}
+          ${kv("当前状态", currentState || ctx.current_card_id, { translate: false })}
+          ${kv("elapsed_ms", elapsed, { translate: false })}
+          ${kv("comparison_quality", quality)}
+          ${kv("previous_card_id", ctx.previous_card_id, { translate: false })}
+          ${kv("current_card_id", ctx.current_card_id, { translate: false })}
+          ${kv("materiality_score", ctx.materiality_score, { translate: false })}
+          ${kv("llm_review_required", ctx.llm_review_required)}
+        </dl>
+      </div>
+      ${renderTransitionLlmReview(doc)}
+      <div class="transition-raw-block">
+        <h3 class="subsection-title">原始字段变化</h3>
+        ${renderTransitionChanges(doc, asArray(ctx.top_material_changes))}
+        ${renderTransitionComparisonTabs(ctx)}
+      </div>
+    `, "transition-context");
+  }
+
+  function renderTransitionChanges(doc, changes) {
+    if (!changes.length) return `<div class="empty-inline">暂无材料变化</div>`;
+    return `<div class="transition-change-list">${changes.map((change) => {
+      const source = change.source_ref ? sourceRefLink(change.source_ref, doc, change.source_ref) : "";
+      return `
+        <div class="transition-change">
+          <div class="transition-change-topline">
+            <strong>${escapeHtml(transitionDomainLabel(change.domain))}</strong>
+            <span>${escapeHtml(semanticCompact(change.materiality || "UNKNOWN"))}</span>
+          </div>
+          <p class="transition-field">${escapeHtml(fieldLabel(change.field || "field"))}</p>
+          <dl class="transition-mini-grid">
+            ${kv("previous", transitionValueText(change.previous), { translate: false })}
+            ${kv("current", transitionValueText(change.current), { translate: false })}
+            ${kv("delta_abs", transitionValueText(change.delta_abs), { translate: false })}
+            ${kv("role", `${semanticCompact(change.role_before || "UNKNOWN")} → ${semanticCompact(change.role_after || "UNKNOWN")}`, { translate: false })}
+          </dl>
+          <div class="source-ref-row">
+            ${change.sign_flip ? `<span class="chip">${escapeHtml(semanticCompact(change.sign_flip))}</span>` : ""}
+            ${change.meaning ? `<span class="chip">${escapeHtml(semanticCompact(change.meaning))}</span>` : ""}
+            ${source}
+          </div>
+        </div>
+      `;
+    }).join("")}</div>`;
+  }
+
+  function transitionDomainLabel(domain) {
+    const labels = {
+      DECISION: "决策",
+      FUNDING: "资金费率",
+      GAMMA: "Gamma",
+      MACRO: "宏观",
+      QUALITY: "数据质量",
+      SKEW: "偏斜"
+    };
+    const raw = rawEnum(domain || "UNKNOWN");
+    return labels[raw] ? `${labels[raw]} (${raw})` : semanticCompact(raw);
+  }
+
+  function transitionValueText(value) {
+    if (Array.isArray(value) || (value && typeof value === "object")) return rawValueTextLabeled(value);
+    if (isEnum(value)) return semanticLabel(value);
+    return scalarText(value, { translate: false, digits: 4 });
+  }
+
+  function rawValueTextLabeled(value, depth = 0) {
+    if (isNullish(value) || value === "") return "null";
+    if (Array.isArray(value)) {
+      if (!value.length) return "[]";
+      return value.map((item) => rawValueTextLabeled(item, depth + 1)).join(" ; ");
+    }
+    if (typeof value === "object") {
+      const entries = Object.entries(value)
+        .filter(([, child]) => child !== undefined && child !== null && child !== "");
+      if (!entries.length) return "{}";
+      return entries
+        .map(([name, child]) => `${fieldLabel(name)}: ${rawValueTextLabeled(child, depth + 1)}`)
+        .join(" / ");
+    }
+    return transitionValueText(value);
+  }
+
+  function renderTransitionComparisonTabs(ctx) {
+    const recent = asArray(ctx.recent_5_trajectory);
+    const baseline = asObject(ctx.baseline_24h);
+    const episode = asObject(ctx.episode_anchor);
+    return `
+      <div class="transition-comparison-tabs">
+        <div>
+          <h3 class="subsection-title">最近 5 次轨迹</h3>
+          ${recent.length ? `<ol class="transition-trajectory">${recent.map((item) => `
+            <li>
+              <span>${escapeHtml(item.card_id || "UNKNOWN")}</span>
+              <span>${escapeHtml([semanticCompact(item.lean), semanticCompact(item.support_label)].filter(Boolean).join(" / "))}</span>
+              <span>${escapeHtml(rawValueText({
+                macro_score: item.macro_score,
+                funding_last_rate: item.funding_last_rate,
+                gamma_regime: semanticCompact(item.gamma_regime)
+              }))}</span>
+            </li>
+          `).join("")}</ol>` : `<div class="empty-inline">暂无最近轨迹</div>`}
+        </div>
+        <div>
+          <h3 class="subsection-title">24 小时基线</h3>
+          <p>${escapeHtml(rawValueTextLabeled(baseline))}</p>
+        </div>
+        <div>
+          <h3 class="subsection-title">同片段锚点</h3>
+          <p>${escapeHtml(rawValueTextLabeled(episode))}</p>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderTransitionLlmReview(doc) {
+    const ctx = transitionContext(doc);
+    const review = asObject(get(doc, "transition_llm_review", {}));
+    if (!Object.keys(review).length) {
+      if (!ctx.llm_review_required) return "";
+      return `
+        <div class="transition-llm is-pending">
+          <h3 class="subsection-title">LLM 变化链解释</h3>
+          <p>等待 transition sidecar 合并；程序化 ledger 已可用于审计。</p>
+        </div>
+      `;
+    }
+    const guard = asObject(review.language_guard);
+    return `
+      <div class="transition-llm">
+        <h3 class="subsection-title">LLM 变化链解释</h3>
+        <div class="llm-review-topline">
+          ${statusBadge("状态", review.status || "UNKNOWN")}
+          ${statusBadge("禁止交易指令", guard.no_trading_instruction ? "VALID" : "UNKNOWN")}
+          ${statusBadge("不使用外部数据", guard.no_external_data ? "VALID" : "UNKNOWN")}
+          ${statusBadge("区分观察与因果", guard.distinguishes_observation_from_causality ? "VALID" : "UNKNOWN")}
+          ${statusBadge("不含交易建议", review.not_trading_advice ? "VALID" : "UNKNOWN")}
+        </div>
+        <p class="llm-review-summary">${valueHtml(review.transition_summary_cn || "暂无解释", { translate: false })}</p>
+        <dl class="kv-grid llm-review-grid" style="margin-top: 12px;">
+          ${kv("trajectory_state", review.trajectory_state)}
+          ${kv("signal_continuity", review.signal_continuity)}
+          ${kv("model", review.model, { translate: false })}
+          ${kv("input_packet_hash", review.input_packet_hash, { translate: false })}
+        </dl>
+        <div class="two-column-notes llm-review-lists">
+          <div><h3 class="subsection-title">观察到的变化</h3>${listHtml(asArray(review.observed_changes).map((item) => rawValueTextLabeled(item)), "无")}</div>
+          <div><h3 class="subsection-title">跨因子相互作用</h3>${listHtml(review.cross_factor_interactions, "无")}</div>
+          <div><h3 class="subsection-title">人工观察重点</h3>${listHtml(review.operator_focus, "无")}</div>
+          <div><h3 class="subsection-title">失效条件</h3>${listHtml(review.invalid_if, "无")}</div>
+        </div>
+      </div>
+    `;
   }
 
   function renderTheoreticalActiveView(view) {
@@ -1776,6 +2030,7 @@
       ${renderGammaOverview(doc)}
       ${renderGexRank(doc)}
       ${renderSignalSessionContext(doc)}
+      ${renderTransitionContext(doc)}
       ${renderLlmReview(doc)}
       ${renderDecision(doc)}
       ${renderDecisionMatrix(doc)}

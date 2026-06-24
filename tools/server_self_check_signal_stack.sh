@@ -14,11 +14,15 @@ AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
 LLM_REQUIRED="${LLM_REQUIRED:-0}"
+TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
+TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
 LLM_REVIEWS_SOURCE="${LLM_REVIEWS_SOURCE:-${TOOLS_ROOT}/signal_llm_reviews.jsonl}"
+TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-${TOOLS_ROOT}/signal_transition_ledger.jsonl}"
+TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-${TOOLS_ROOT}/signal_transition_llm_reviews.jsonl}"
 GEX_ENV="${GEX_ENV:-/etc/gexmonitorapi.env}"
 LLM_ENV="${LLM_ENV:-/etc/signal-audit/llm.env}"
 
@@ -142,8 +146,12 @@ printf 'AUDIT_URL=%s\n' "$AUDIT_URL"
 printf 'GEX_URL=%s\n' "$GEX_URL"
 printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
 printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
+printf 'TRANSITION_REQUIRED=%s\n' "$TRANSITION_REQUIRED"
+printf 'TRANSITION_LLM_REQUIRED=%s\n' "$TRANSITION_LLM_REQUIRED"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
 printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
+printf 'TRANSITION_LEDGER_SOURCE=%s\n' "$TRANSITION_LEDGER_SOURCE"
+printf 'TRANSITION_LLM_REVIEWS_SOURCE=%s\n' "$TRANSITION_LLM_REVIEWS_SOURCE"
 printf 'SESSION_CONTEXT_REQUIRED=%s\n' "$SESSION_CONTEXT_REQUIRED"
 
 have curl && ok "curl available" || fail "curl missing"
@@ -271,18 +279,89 @@ if matrix.get("temporal_durability") != ctx.get("premise_durability"):
     raise SystemExit("decision_matrix temporal_durability mismatch")
 if ctx.get("compat_backfill_applied"):
     raise SystemExit("latest card uses materializer compatibility backfill")
-if str(identity.get("strategy_version")) != "1.4.1":
-    raise SystemExit("latest card strategy_version is not 1.4.1")
+if str(identity.get("strategy_version")) != "1.5.0":
+    raise SystemExit("latest card strategy_version is not 1.5.0")
 PY
   then
-    ok "latest audit card has native v1.4.1 session_context premise durability schema"
+    ok "latest audit card has native v1.5.0 session_context premise durability schema"
   else
     if [ "$SESSION_CONTEXT_REQUIRED" = "1" ]; then
-      fail "latest audit card lacks native v1.4.1 session_context premise durability schema"
+      fail "latest audit card lacks native v1.5.0 session_context premise durability schema"
     else
-      warn "latest audit card lacks native v1.4.1 session_context premise durability schema"
+      warn "latest audit card lacks native v1.5.0 session_context premise durability schema"
     fi
   fi
+fi
+
+section "Signal transition ledger"
+if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
+  if python3 - "$AUDIT_ROOT" "$TRANSITION_LEDGER_SOURCE" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+ledger_path = pathlib.Path(sys.argv[2])
+manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
+cards = manifest.get("cards") or []
+if not cards:
+    raise SystemExit("no cards")
+card_path = root / cards[0].get("path", "")
+card = json.loads(card_path.read_text(encoding="utf-8"))
+identity = card.get("identity") or {}
+ctx = card.get("transition_context") or {}
+anchor = ((ctx.get("producer_anchor") or {}).get("current") or {})
+print("latest_audit_card_id:", identity.get("card_id") or cards[0].get("card_id"))
+print("transition_context:", bool(ctx))
+print("transition_audit_scope:", ctx.get("audit_scope"))
+print("transition_comparison_quality:", ctx.get("comparison_quality"))
+print("transition_previous_card_id:", ctx.get("previous_card_id"))
+print("transition_producer_anchor_native:", anchor.get("native"))
+if not ctx:
+    raise SystemExit(3)
+if ctx.get("audit_scope") != "AUDIT_ONLY":
+    raise SystemExit("transition_context.audit_scope is not AUDIT_ONLY")
+if ctx.get("compat_backfill_applied"):
+    raise SystemExit("transition_context uses materializer compatibility backfill")
+if anchor.get("native") is not True:
+    raise SystemExit("transition producer anchor is not native")
+if anchor.get("schema_name") != "SignalTransitionProducerAnchor":
+    raise SystemExit("transition producer anchor schema_name mismatch")
+if anchor.get("event_time_basis") != "identity.confirmed_time_ms":
+    raise SystemExit("transition producer anchor event_time_basis mismatch")
+if anchor.get("transition_computation_owner") != "MATERIALIZER_DERIVED":
+    raise SystemExit("transition computation owner mismatch")
+if "future" in json.dumps(ctx, ensure_ascii=False).lower() or "outcome" in json.dumps(ctx, ensure_ascii=False).lower():
+    raise SystemExit("transition_context contains future/outcome fields")
+if not ledger_path.exists():
+    raise SystemExit("transition ledger not readable: " + str(ledger_path))
+lines = [x for x in ledger_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+if not lines:
+    raise SystemExit("transition ledger empty")
+latest_id = identity.get("card_id") or cards[0].get("card_id")
+matching = None
+for line in lines:
+    item = json.loads(line)
+    if item.get("current_card_id") == latest_id:
+        matching = item
+if not matching:
+    raise SystemExit("transition ledger does not align to latest card")
+print("transition_id:", matching.get("transition_id"))
+print("transition_record_hash:", matching.get("record_hash"))
+if matching.get("audit_scope") != "AUDIT_ONLY":
+    raise SystemExit("ledger audit_scope is not AUDIT_ONLY")
+ledger_anchor = ((matching.get("producer_anchor") or {}).get("current") or {})
+if ledger_anchor.get("native") is not True:
+    raise SystemExit("ledger transition producer anchor is not native")
+PY
+  then
+    ok "latest audit card has aligned AUDIT_ONLY transition_context and ledger record"
+  else
+    if [ "$TRANSITION_REQUIRED" = "1" ]; then
+      fail "latest audit card lacks aligned AUDIT_ONLY transition_context and ledger record"
+    else
+      warn "latest audit card lacks aligned AUDIT_ONLY transition_context and ledger record"
+    fi
+  fi
+else
+  warn "skipped transition ledger check; manifest or python3 unavailable"
 fi
 
 section "LLM review sidecar"
@@ -362,6 +441,64 @@ PY
   fi
 else
   warn "skipped latest-card LLM match check; source or sidecar not readable"
+fi
+
+section "Transition LLM review sidecar"
+if [ -r "$TRANSITION_LLM_REVIEWS_SOURCE" ]; then
+  json_probe "latest transition LLM review sidecar" "$TRANSITION_LLM_REVIEWS_SOURCE" 'review=data.get("transition_llm_review") or {}; guard=review.get("language_guard") or {}; print("transition_id:", data.get("transition_id")); print("status:", review.get("status")); print("model:", review.get("model")); print("no_trading_instruction:", guard.get("no_trading_instruction"))'
+else
+  warn "transition LLM review sidecar not readable yet: $TRANSITION_LLM_REVIEWS_SOURCE"
+fi
+if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && [ -r "$TRANSITION_LLM_REVIEWS_SOURCE" ] && have python3; then
+  if python3 - "$AUDIT_ROOT" "$TRANSITION_LLM_REVIEWS_SOURCE" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+review_path = pathlib.Path(sys.argv[2])
+manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
+cards = manifest.get("cards") or []
+if not cards:
+    raise SystemExit("no cards")
+card = json.loads((root / cards[0].get("path", "")).read_text(encoding="utf-8"))
+ctx = card.get("transition_context") or {}
+transition_id = ctx.get("transition_id")
+if not transition_id:
+    raise SystemExit("latest card has no transition_id")
+reviews = {}
+for line in review_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    if not line.strip():
+        continue
+    item = json.loads(line)
+    review = item.get("transition_llm_review") or {}
+    if item.get("transition_id") and review.get("status") == "OK":
+        reviews[item.get("transition_id")] = review
+review = reviews.get(transition_id)
+if not review:
+    raise SystemExit("no OK transition review for latest transition")
+guard = review.get("language_guard") or {}
+print("latest_transition_id:", transition_id)
+print("latest_transition_llm_status:", review.get("status"))
+print("no_trading_instruction:", guard.get("no_trading_instruction"))
+print("no_external_data:", guard.get("no_external_data"))
+print("distinguishes_observation_from_causality:", guard.get("distinguishes_observation_from_causality"))
+if (
+    guard.get("no_trading_instruction") is not True
+    or guard.get("no_external_data") is not True
+    or guard.get("distinguishes_observation_from_causality") is not True
+    or review.get("not_trading_advice") is not True
+):
+    raise SystemExit("transition LLM guard failed")
+PY
+  then
+    ok "latest transition has OK LLM review with no_trading_instruction guard"
+  else
+    if [ "$TRANSITION_LLM_REQUIRED" = "1" ]; then
+      fail "latest transition lacks OK LLM review with no_trading_instruction guard"
+    else
+      warn "latest transition lacks OK LLM review with no_trading_instruction guard"
+    fi
+  fi
+else
+  warn "skipped transition LLM match check; manifest or sidecar not readable"
 fi
 
 section "Listening ports and memory"

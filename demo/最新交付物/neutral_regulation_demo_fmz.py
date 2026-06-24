@@ -147,7 +147,7 @@ CONFIG = {
     # source of truth, and FMZ pushes only a <=140-char single-line brief
     # (render_push_brief). Static web reads JSONL-derived JSON cards.
     # Render/observability only; nrd schema_version stays v1.0.0.
-    "demo_version": "1.4.1",
+    "demo_version": "1.5.0",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -4091,7 +4091,7 @@ def build_audit_record(card, config=None):
             "confirmed_at": _iso8601_utc8(ms),
             "confirmed_time_ms": ms,
         },
-        "provenance": _audit_provenance(config),
+        "provenance": _audit_provenance(config, ms),
         "quality": _audit_quality(card),
         "market_context": {
             "price": safe_float(card.get("price")),
@@ -4684,7 +4684,7 @@ def _static_web_url(full_id, config):
     return base + "/#/card/" + full_id
 
 
-def _audit_provenance(config):
+def _audit_provenance(config, event_time_ms=None):
     version = str(config.get("demo_version"))
     return {
         "runtime_mode": "OBSERVE" if config.get("read_only_demo", True) else "LIVE",
@@ -4697,6 +4697,14 @@ def _audit_provenance(config):
             "macro_pressure": "embedded:" + version,
             "gamma_regime": "embedded:" + version,
             "skew_srd": "embedded:" + version,
+        },
+        "transition_audit_source": {
+            "schema_name": "SignalTransitionProducerAnchor",
+            "schema_version": "1.0.0",
+            "audit_scope": "AUDIT_ONLY",
+            "event_time_ms": event_time_ms,
+            "event_time_basis": "identity.confirmed_time_ms",
+            "transition_computation_owner": "MATERIALIZER_DERIVED",
         },
     }
 

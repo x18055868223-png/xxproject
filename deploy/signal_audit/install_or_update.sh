@@ -27,6 +27,9 @@ CONFIG_ROOT="${CONFIG_ROOT:-/etc/signal-audit}"
 LLM_ENV_FILE="${LLM_ENV_FILE:-$CONFIG_ROOT/llm.env}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 LLM_REVIEWS_SOURCE="${LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_llm_reviews.jsonl}"
+TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-$TOOLS_ROOT/signal_transition_ledger.jsonl}"
+TRANSITION_STATE_SOURCE="${TRANSITION_STATE_SOURCE:-$TOOLS_ROOT/signal_transition_state.json}"
+TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_transition_llm_reviews.jsonl}"
 MAX_CARDS="${MAX_CARDS:-200}"
 
 if [[ ! -f "$FRONTEND_SRC/index.html" || ! -f "$FRONTEND_SRC/app.js" ]]; then
@@ -77,7 +80,10 @@ if [[ -f "$JSONL_SOURCE" ]]; then
   materialize_args=(
     --source "$JSONL_SOURCE" \
     --output "$STATIC_ROOT" \
-    --max-cards "$MAX_CARDS"
+    --max-cards "$MAX_CARDS" \
+    --transition-ledger "$TRANSITION_LEDGER_SOURCE" \
+    --transition-state "$TRANSITION_STATE_SOURCE" \
+    --transition-reviews "$TRANSITION_LLM_REVIEWS_SOURCE"
   )
   if [[ -n "$LLM_REVIEWS_SOURCE" && -f "$LLM_REVIEWS_SOURCE" ]]; then
     materialize_args+=(--llm-reviews "$LLM_REVIEWS_SOURCE")
@@ -93,3 +99,6 @@ echo "materializer installed to $TOOLS_ROOT/materialize_signal_cards.py"
 echo "Gemini review tool installed to $TOOLS_ROOT/gemini_signal_llm_review.py"
 echo "LLM API key config lives at $LLM_ENV_FILE"
 echo "LLM review sidecar lives at $LLM_REVIEWS_SOURCE"
+echo "transition ledger lives at $TRANSITION_LEDGER_SOURCE"
+echo "transition state lives at $TRANSITION_STATE_SOURCE"
+echo "transition LLM review sidecar lives at $TRANSITION_LLM_REVIEWS_SOURCE"

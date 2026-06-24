@@ -108,7 +108,8 @@ def main():
         tool.os.chmod = lambda path, mode: chmod_calls.append(
             (pathlib.Path(path).name, mode))
         result = tool.materialize(source, output, max_cards=20,
-                                  llm_reviews=reviews)
+                                  llm_reviews=reviews,
+                                  include_synthetic=True)
         tool.os.chmod = original_chmod
 
         manifest_path = output / "signal_cards" / "index.json"
@@ -168,7 +169,8 @@ def main():
         source.write_text("\n".join(json.dumps(item, ensure_ascii=False)
                                     for item in many_records) + "\n",
                           encoding="utf-8")
-        result = tool.materialize(source, output, max_cards=20)
+        result = tool.materialize(source, output, max_cards=20,
+                                  include_synthetic=True)
         manifest = json.loads((output / "signal_cards" / "index.json")
                               .read_text(encoding="utf-8"))
         assert_true(result["written_cards"] == 20,

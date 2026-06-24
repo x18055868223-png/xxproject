@@ -73,6 +73,69 @@ def card(card_id="20260619T000000+0800-BTC-GEMINI-LOCAL-PREVIEW"):
     }
 
 
+def transition_record():
+    return {
+        "schema_name": "SignalTransitionRecord",
+        "schema_version": "signal_transition_record@1.0.0",
+        "transition_id": "tr-CARD-A-CARD-B",
+        "symbol": "BTC",
+        "previous_card_id": "CARD-A",
+        "current_card_id": "CARD-B",
+        "previous_ts_ms": 1781770200000,
+        "current_ts_ms": 1781773800000,
+        "elapsed_ms": 3600000,
+        "relation": {
+            "comparison_quality": "HIGH",
+            "comparison_limitations": [],
+        },
+        "decision_transition": {
+            "lean_before": "BULLISH_STRONG",
+            "lean_after": "NEUTRAL",
+            "support_before": "TRADE_SUPPORT_STRONG",
+            "support_after": "NO_TRADE_BLOCKED",
+            "block_entered": True,
+        },
+        "top_material_changes": [
+            {
+                "domain": "MACRO",
+                "field": "factor_cross_section.macro_pressure.macro_score",
+                "previous": 0.0309,
+                "current": 0.4588,
+                "delta_abs": 0.4279,
+                "materiality": "CRITICAL",
+                "meaning": "MORE_RISK_HEADWIND",
+            },
+            {
+                "domain": "MACRO",
+                "field": "factor_cross_section.macro_pressure.components.US10Y.scoring_bps",
+                "previous": -1.8,
+                "current": 6.2,
+                "delta_abs": 8.0,
+                "sign_flip": True,
+                "materiality": "HIGH",
+                "meaning": "RISK_HEADWIND_SIGN_FLIP",
+            },
+        ],
+        "trajectory": {
+            "recent_event_count": 2,
+            "macro_direction": "DETERIORATING",
+            "funding_direction": "CROWDING_UP",
+        },
+        "domain_states": {
+            "MACRO": "SHOCK",
+            "FUNDING": "RISING_NON_VOTING",
+        },
+        "cross_domain_flags": [
+            "DECISION_SUPPORT_COLLAPSE",
+            "MACRO_SHOCK",
+            "MULTI_DOMAIN_RISK_DETERIORATION",
+        ],
+        "materiality_score": 91.0,
+        "llm_review_required": True,
+        "record_hash": "sha256:transition",
+    }
+
+
 def model_payload():
     return {
         "summary_cn": "系统结论为方向中性，复核意见认为等待确认合理。",
@@ -109,6 +172,140 @@ def model_payload():
         "data_quality_note": "rank 样本仍在 warming up。",
         "not_trading_advice": True,
     }
+
+
+def transition_model_payload():
+    return {
+        "transition_summary_cn": "程序化差分显示宏观压力跳升，系统由偏多支持转为中性阻断。",
+        "trajectory_state": "DETERIORATING",
+        "signal_continuity": "NEUTRALIZED",
+        "observed_changes": [
+            {
+                "domain": "MACRO",
+                "fact_cn": "macro_score 上升 0.4279，US10Y 压力由负转正。",
+                "materiality": "CRITICAL",
+            }
+        ],
+        "cross_factor_interactions": [
+            "宏观压力与 Funding 拥挤同步变差，构成多域风险趋同。"
+        ],
+        "candidate_causal_hypotheses": [
+            {
+                "hypothesis_cn": "外生风险压力可能降低原偏多前提耐久性。",
+                "supporting_fact_ids": ["MACRO_SHOCK", "US10Y_SIGN_FLIP"],
+                "alternative_explanations_cn": ["两张卡可能共同响应同一上游冲击。"],
+                "confidence": "MEDIUM",
+            }
+        ],
+        "anomaly_assessment": {
+            "state": "REGIME_SHIFT",
+            "basis_cn": "宏观分数变化超过材料阈值。"
+        },
+        "operator_focus": ["观察 GGR 是否继续转向放大。"],
+        "invalid_if": ["两张卡不属于可比较市场阶段。"],
+        "language_guard": {
+            "distinguishes_observation_from_causality": True,
+            "no_external_data": True,
+            "no_trading_instruction": True,
+        },
+    }
+
+
+def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
+    tool = load_module(GEMINI_TOOL, "gemini_signal_transition_llm_review")
+    transition = transition_record()
+    packet = tool.build_transition_review_packet(transition)
+    packet_text = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    assert_true("top_material_changes" in packet_text,
+                "transition packet should include program-calculated material deltas")
+    assert_true("FULL_AUDIT_PACKET" not in packet_text and "factor_cross_section" not in packet_text,
+                "transition packet must not embed full audit cards")
+    assert_true("trade_allowed" not in packet_text and "position" not in packet_text,
+                "transition packet should not include execution/account fields")
+    prompt = tool.build_transition_review_prompt(packet)
+    assert_true("只解释程序已经计算出的 delta" in prompt,
+                "transition prompt should forbid LLM recalculation")
+    assert_true("相关性等于因果" in prompt,
+                "transition prompt should guard causal certainty")
+    assert_true("不得输出交易建议" in prompt,
+                "transition prompt should forbid trading advice")
+    assert_true("SignalTransitionReviewPacket" in prompt,
+                "transition prompt should name the packet boundary")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        ledger = root / "signal_transition_ledger.jsonl"
+        reviews = root / "signal_transition_llm_reviews.jsonl"
+        ledger.write_text(json.dumps(transition, ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        calls = []
+
+        def fake_call(api_key, model, request_body, timeout):
+            del api_key, model, timeout
+            calls.append(request_body)
+            schema = request_body["generationConfig"]["responseSchema"]
+            assert_true("transition_summary_cn" in schema["required"],
+                        "transition schema should require transition summary")
+            return {"candidates": [{"content": {"parts": [
+                {"text": json.dumps(transition_model_payload(), ensure_ascii=False)}
+            ]}}]}
+
+        result = tool.generate_transition_reviews(
+            ledger,
+            reviews,
+            api_key="test-key",
+            model="gemini-3.5-flash",
+            limit=5,
+            call_gemini=fake_call,
+            reviewed_at="2026-06-19T00:00:00+00:00",
+        )
+        assert_true(result["written_reviews"] == 1,
+                    "one transition review should be written")
+        assert_true(len(calls) == 1,
+                    "transition mode should make one focused Gemini call")
+        saved = json.loads(reviews.read_text(encoding="utf-8"))
+        assert_true(saved["transition_id"] == transition["transition_id"],
+                    "sidecar should key by transition id")
+        review = saved["transition_llm_review"]
+        assert_true(review["schema_version"] == "signal_transition_llm_review@1.0.0",
+                    "transition LLM schema version")
+        assert_true(review["status"] == "OK",
+                    "transition review status")
+        assert_true(review["input_packet_hash"].startswith("sha256:"),
+                    "transition review should be reproducible by packet hash")
+        assert_true(review["language_guard"]["no_trading_instruction"] is True,
+                    "transition LLM review should preserve no-trading guard")
+        assert_true(review["language_guard"]["no_external_data"] is True,
+                    "transition LLM review should preserve no-external-data guard")
+        assert_true(review["language_guard"]["distinguishes_observation_from_causality"] is True,
+                    "transition LLM review should preserve causality language guard")
+        assert_true(review["not_trading_advice"] is True,
+                    "transition LLM review should be explicitly advisory only")
+
+        bad_payload = transition_model_payload()
+        bad_payload["language_guard"]["no_external_data"] = False
+        try:
+            tool.build_transition_llm_review(
+                transition,
+                bad_payload,
+                model="gemini-3.5-flash",
+                reviewed_at="2026-06-19T00:00:00+00:00",
+            )
+            raise AssertionError("false no_external_data guard should be rejected")
+        except ValueError:
+            pass
+
+        result2 = tool.generate_transition_reviews(
+            ledger,
+            reviews,
+            api_key="test-key",
+            model="gemini-3.5-flash",
+            limit=5,
+            call_gemini=fake_call,
+            reviewed_at="2026-06-19T00:00:00+00:00",
+        )
+        assert_true(result2["skipped_transitions"] == 1,
+                    "same transition_id should be skipped after sidecar is written")
 
 
 def test_gemini_packet_prompt_and_sidecar_generation():
@@ -479,6 +676,7 @@ def test_fmz_signal_loop_does_not_call_llm_in_process():
 
 
 if __name__ == "__main__":
+    test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar()
     test_gemini_packet_prompt_and_sidecar_generation()
     test_call_gemini_falls_back_to_channel2_only_for_retryable_errors()
     test_materializer_merges_sidecar_without_downgrading_inline_ok()

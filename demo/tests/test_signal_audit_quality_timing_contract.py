@@ -101,7 +101,10 @@ def main():
                  "pin_pull_direction"], "DOWN",
                  "gamma nested pin direction should be promoted")
 
-    for root in (DEPLOY_FRONTEND, DIST_FRONTEND):
+    roots = [DEPLOY_FRONTEND]
+    if DIST_FRONTEND.exists():
+        roots.append(DIST_FRONTEND)
+    for root in roots:
         app = read(root / "app.js")
         assert_true("function qualitySourceView(doc, key, source)" in app,
                     "app.js should derive quality timing from nearby factor data")

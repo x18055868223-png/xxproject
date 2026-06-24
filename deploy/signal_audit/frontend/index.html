@@ -204,6 +204,23 @@
       font-size: 12px;
     }
 
+    .transition-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .transition-badges span {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 7px;
+      background: var(--surface);
+    }
+
     .workspace {
       min-width: 0;
       padding: 30px 42px 48px;
@@ -489,6 +506,109 @@
       margin: 0;
       color: var(--muted);
       line-height: 1.65;
+    }
+
+    #transition-context {
+      border-top: 2px solid var(--line-strong);
+      padding-top: 26px;
+    }
+
+    .transition-panel,
+    .transition-llm {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 14px 16px;
+      background: var(--surface);
+    }
+
+    .transition-grid,
+    .transition-mini-grid {
+      margin-top: 12px;
+    }
+
+    .transition-mini-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-radius: 4px;
+    }
+
+    .transition-mini-grid .kv {
+      min-height: 58px;
+      padding: 9px 10px;
+    }
+
+    .transition-mini-grid .kv dd {
+      font-size: 13px;
+      font-weight: 680;
+    }
+
+    .transition-change-list {
+      display: grid;
+      gap: 10px;
+      margin: 10px 0 16px;
+    }
+
+    .transition-change {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--bg);
+    }
+
+    .transition-change-topline,
+    .transition-trajectory li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .transition-change-topline span,
+    .transition-field {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .transition-field {
+      margin: 6px 0 0;
+      overflow-wrap: anywhere;
+    }
+
+    .transition-comparison-tabs {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .transition-comparison-tabs > div {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--bg);
+    }
+
+    .transition-comparison-tabs p {
+      margin: 0;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .transition-trajectory {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .transition-llm {
+      margin-top: 14px;
+    }
+
+    .transition-llm.is-pending {
+      background: #fffdf7;
     }
 
     #llm-review {

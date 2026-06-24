@@ -67,6 +67,23 @@ def main():
     assert_true("LLM_REVIEWS_SOURCE" in materialize_service
                 and "--llm-reviews" in materialize_service,
                 "materializer should merge the LLM sidecar by default")
+    assert_true("TRANSITION_LEDGER_SOURCE" in materialize_service
+                and "--transition-ledger" in materialize_service
+                and "TRANSITION_LLM_REVIEWS_SOURCE" in materialize_service
+                and "--transition-reviews" in materialize_service,
+                "materializer should build and merge transition sidecars without a new service")
+    assert_true("--mode" in runner and "both" in runner
+                and "TRANSITION_LEDGER_SOURCE" in runner
+                and "TRANSITION_LLM_REVIEWS_SOURCE" in runner,
+                "LLM runner should invoke card and transition review modes together")
+    assert_true("TRANSITION_REQUIRED" in self_check
+                and "TRANSITION_LLM_REQUIRED" in self_check
+                and "transition_context" in self_check
+                and "no_trading_instruction" in self_check,
+                "server self-check should validate transition context and transition LLM guard")
+    transition_units = list(DEPLOY.glob("signal-transition-*"))
+    assert_true(not transition_units,
+                "T0/T1 must reuse existing services, not add signal-transition units")
     assert_true("signal-audit-llm-review.service" in package
                 and "signal-audit-llm-review.timer" in package
                 and "signal-audit-llm.env.example" in package,

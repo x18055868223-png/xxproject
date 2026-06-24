@@ -26,6 +26,9 @@ OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.3.0"
 PROMPT_VERSION = "gemini_signal_review_prompt@1.3.0"
 PACKET_VERSION = "signal_llm_review_packet@1.0.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
+TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.0.0"
+TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.0.0"
+TRANSITION_PACKET_VERSION = "SignalTransitionReviewPacket@1.0.0"
 
 FACTOR_KEYS = (
     "tmvf",
@@ -78,6 +81,21 @@ GAMMA_LENS_REGIMES = {
 }
 GAMMA_LENS_EXTREMITIES = {"LOW", "MEDIUM", "HIGH", "UNKNOWN"}
 GAMMA_LENS_EFFECTS = {"NEUTRALIZE", "LOWER", "NEUTRAL", "UNKNOWN"}
+TRANSITION_TRAJECTORY_STATES = {
+    "DETERIORATING",
+    "IMPROVING",
+    "MIXED",
+    "STABLE",
+    "INSUFFICIENT_HISTORY",
+    "UNKNOWN",
+}
+TRANSITION_CONTINUITY_STATES = {
+    "CONTINUING",
+    "NEUTRALIZED",
+    "REVERSING",
+    "BLOCKED",
+    "UNKNOWN",
+}
 
 
 def build_review_packet(card):
@@ -490,6 +508,269 @@ def build_blind_gemini_request(prompt, model=DEFAULT_MODEL):
     }
 
 
+def build_transition_review_packet(transition):
+    transition = _as_dict(transition)
+    relation = _as_dict(transition.get("relation"))
+    packet = {
+        "schema": {
+            "name": TRANSITION_PACKET_VERSION,
+            "source_schema": transition.get("schema_version"),
+        },
+        "identity": _safe_copy({
+            "transition_id": transition.get("transition_id"),
+            "symbol": transition.get("symbol"),
+            "previous_card_id": transition.get("previous_card_id"),
+            "current_card_id": transition.get("current_card_id"),
+            "previous_ts_ms": transition.get("previous_ts_ms"),
+            "current_ts_ms": transition.get("current_ts_ms"),
+            "elapsed_ms": transition.get("elapsed_ms"),
+        }),
+        "comparison": _safe_copy({
+            "comparison_quality": (
+                transition.get("comparison_quality")
+                or relation.get("comparison_quality")
+            ),
+            "comparison_limitations": relation.get("comparison_limitations") or [],
+            "same_episode": relation.get("same_episode"),
+        }),
+        "decision_transition": _safe_copy(
+            _transition_decision_packet(transition.get("decision_transition"))),
+        "top_material_changes": _safe_copy([
+            _transition_change_packet(item)
+            for item in list(transition.get("top_material_changes") or [])[:8]
+            if isinstance(item, dict)
+        ]),
+        "recent_5_trajectory": _safe_copy(
+            transition.get("recent_5_trajectory")
+            or _as_dict(transition.get("trajectory")).get("recent_5")
+            or []),
+        "baseline_24h": _safe_copy(transition.get("baseline_24h")),
+        "episode_anchor": _safe_copy(transition.get("episode_anchor")),
+        "trajectory": _safe_copy(transition.get("trajectory")),
+        "domain_states": _safe_copy(transition.get("domain_states")),
+        "cross_domain_flags": _safe_copy(transition.get("cross_domain_flags") or []),
+        "materiality_score": transition.get("materiality_score"),
+        "field_glossary": {
+            "delta_abs": "程序已计算的当前值减上一值；LLM 只能解释，不得重算。",
+            "comparison_quality": "由两张卡的时间间隔确定：<=90m HIGH, <=6h MEDIUM, <=24h LOW, >24h VERY_LOW。",
+            "materiality": "程序化阈值给出的变化材料性，不是交易强度。",
+            "role_before_role_after": "保留 NON_VOTING / EXCLUDED / GATE_ONLY 等原始角色，仅用于审计。",
+        },
+        "guardrails": {
+            "role": "AUDIT_ADVISORY_ONLY",
+            "only_explain_program_delta": True,
+            "do_not_recompute_delta_or_weights": True,
+            "do_not_use_external_market_data": True,
+            "distinguish_correlation_from_causality": True,
+            "no_trading_instruction": True,
+            "not_trading_advice": True,
+        },
+    }
+    return _safe_copy(packet)
+
+
+def _transition_decision_packet(decision):
+    decision = _as_dict(decision)
+    return {
+        "lean_before": decision.get("lean_before"),
+        "lean_after": decision.get("lean_after"),
+        "support_before": decision.get("support_before"),
+        "support_after": decision.get("support_after"),
+        "confidence_before": decision.get("confidence_before"),
+        "confidence_after": decision.get("confidence_after"),
+        "block_before": decision.get("block_before"),
+        "block_after": decision.get("block_after"),
+        "block_entered": decision.get("block_entered"),
+        "blocking_reason_after": decision.get("blocking_reason_after"),
+    }
+
+
+def _transition_change_packet(change):
+    return {
+        "domain": change.get("domain"),
+        "field": _transition_public_field(change.get("field")),
+        "previous": change.get("previous"),
+        "current": change.get("current"),
+        "delta_abs": change.get("delta_abs"),
+        "delta_relative": change.get("delta_relative"),
+        "sign_before": change.get("sign_before"),
+        "sign_after": change.get("sign_after"),
+        "sign_flip": change.get("sign_flip"),
+        "role_before": change.get("role_before"),
+        "role_after": change.get("role_after"),
+        "materiality": change.get("materiality"),
+        "meaning": change.get("meaning"),
+        "source_ref": change.get("source_ref"),
+    }
+
+
+def _transition_public_field(field):
+    text = str(field or "")
+    if text.startswith("factor_cross_section."):
+        text = text[len("factor_cross_section."):]
+    return text
+
+
+def build_transition_review_prompt(packet):
+    return (
+        "你是信号审计变化链复核员，只解释程序已经计算出的 delta，"
+        "不得重算字段、权重、置信度或材料性。\n"
+        "严格边界：不得使用外部行情，不得把相关性等于因果，"
+        "不得输出交易建议、仓位建议、下单建议或执行层动作。\n"
+        "请基于 SignalTransitionReviewPacket 输出结构化中文解释，"
+        "所有判断都要锚定 packet 中的 top_material_changes、"
+        "cross_domain_flags、comparison_quality 和 comparison_limitations。\n\n"
+        "SignalTransitionReviewPacket:\n"
+        + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    )
+
+
+def transition_response_schema():
+    text_item = {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 360,
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "transition_summary_cn": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 520,
+            },
+            "trajectory_state": {
+                "type": "string",
+                "enum": sorted(TRANSITION_TRAJECTORY_STATES),
+            },
+            "signal_continuity": {
+                "type": "string",
+                "enum": sorted(TRANSITION_CONTINUITY_STATES),
+            },
+            "observed_changes": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "domain": {"type": "string"},
+                        "fact_cn": text_item,
+                        "materiality": {"type": "string"},
+                    },
+                    "required": ["domain", "fact_cn", "materiality"],
+                },
+            },
+            "cross_factor_interactions": {
+                "type": "array",
+                "maxItems": 5,
+                "items": text_item,
+            },
+            "candidate_causal_hypotheses": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "hypothesis_cn": text_item,
+                        "supporting_fact_ids": {
+                            "type": "array",
+                            "maxItems": 8,
+                            "items": {"type": "string"},
+                        },
+                        "alternative_explanations_cn": {
+                            "type": "array",
+                            "maxItems": 5,
+                            "items": text_item,
+                        },
+                        "confidence": {
+                            "type": "string",
+                            "enum": ["LOW", "MEDIUM", "HIGH"],
+                        },
+                    },
+                    "required": [
+                        "hypothesis_cn",
+                        "supporting_fact_ids",
+                        "alternative_explanations_cn",
+                        "confidence",
+                    ],
+                },
+            },
+            "anomaly_assessment": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "enum": [
+                            "NORMAL_DELTA",
+                            "REGIME_SHIFT",
+                            "DATA_QUALITY_WARNING",
+                            "INSUFFICIENT_COMPARABILITY",
+                        ],
+                    },
+                    "basis_cn": text_item,
+                },
+                "required": ["state", "basis_cn"],
+            },
+            "operator_focus": {
+                "type": "array",
+                "maxItems": 5,
+                "items": text_item,
+            },
+            "invalid_if": {
+                "type": "array",
+                "maxItems": 5,
+                "items": text_item,
+            },
+            "language_guard": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "distinguishes_observation_from_causality": {"type": "boolean"},
+                    "no_external_data": {"type": "boolean"},
+                    "no_trading_instruction": {"type": "boolean"},
+                },
+                "required": [
+                    "distinguishes_observation_from_causality",
+                    "no_external_data",
+                    "no_trading_instruction",
+                ],
+            },
+        },
+        "required": [
+            "transition_summary_cn",
+            "trajectory_state",
+            "signal_continuity",
+            "observed_changes",
+            "cross_factor_interactions",
+            "candidate_causal_hypotheses",
+            "anomaly_assessment",
+            "operator_focus",
+            "invalid_if",
+            "language_guard",
+        ],
+    }
+
+
+def build_transition_gemini_request(prompt, model=DEFAULT_MODEL):
+    del model
+    return {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": prompt}],
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "topP": 0.85,
+            "responseMimeType": "application/json",
+            "responseSchema": _strip_schema_for_legacy(transition_response_schema()),
+        },
+    }
+
+
 class GeminiApiError(RuntimeError):
     def __init__(self, status_code, detail):
         self.status_code = int(status_code)
@@ -754,6 +1035,238 @@ def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None
     }
 
 
+def build_transition_llm_review(transition, payload, model=DEFAULT_MODEL,
+                                reviewed_at=None, llm_call_routes=None):
+    payload = _validate_transition_payload(payload)
+    packet = build_transition_review_packet(transition)
+    reviewed_at = reviewed_at or _now_iso()
+    language_guard = _as_dict(payload.get("language_guard"))
+    language_guard = {
+        "distinguishes_observation_from_causality": bool(
+            language_guard.get("distinguishes_observation_from_causality")),
+        "no_external_data": bool(language_guard.get("no_external_data")),
+        "no_trading_instruction": True,
+    }
+    return {
+        "schema_name": "SignalTransitionLlmReview",
+        "schema_version": TRANSITION_OUTPUT_SCHEMA_VERSION,
+        "status": "OK",
+        "provider": "gemini",
+        "model": model,
+        "reviewed_at": reviewed_at,
+        "prompt_version": TRANSITION_PROMPT_VERSION,
+        "llm_call_count": 1,
+        "api_key_route": _summarize_call_routes(llm_call_routes),
+        "llm_call_routes": list(llm_call_routes or []),
+        "input_packet_hash": _sha256_json(packet),
+        "transition_summary_cn": str(payload.get("transition_summary_cn") or "")[:520],
+        "trajectory_state": _transition_enum(
+            payload.get("trajectory_state"), TRANSITION_TRAJECTORY_STATES),
+        "signal_continuity": _transition_enum(
+            payload.get("signal_continuity"), TRANSITION_CONTINUITY_STATES),
+        "observed_changes": _normalize_observed_changes(
+            payload.get("observed_changes")),
+        "cross_factor_interactions": _trim_list(
+            payload.get("cross_factor_interactions"), limit=5),
+        "candidate_causal_hypotheses": _normalize_causal_hypotheses(
+            payload.get("candidate_causal_hypotheses")),
+        "anomaly_assessment": _normalize_anomaly_assessment(
+            payload.get("anomaly_assessment")),
+        "operator_focus": _trim_list(payload.get("operator_focus"), limit=5),
+        "invalid_if": _trim_list(payload.get("invalid_if"), limit=5),
+        "language_guard": language_guard,
+        "not_trading_advice": True,
+    }
+
+
+def generate_transition_reviews(ledger, reviews_output, api_key=None,
+                                fallback_api_key=None, model=DEFAULT_MODEL,
+                                limit=20, timeout=60, call_gemini=call_gemini,
+                                reviewed_at=None):
+    ledger = Path(ledger)
+    reviews_output = Path(reviews_output)
+    transitions = _read_jsonl(ledger)
+    transitions = [
+        item for item in transitions
+        if item.get("transition_id") and item.get("llm_review_required") is True
+    ]
+    transitions = sorted(transitions, key=_transition_sort_key, reverse=True)
+    done = _read_transition_review_ids(reviews_output)
+    written = 0
+    skipped = 0
+    errors = 0
+    attempted = 0
+    for transition in transitions:
+        if limit and written >= limit:
+            break
+        transition_id = transition.get("transition_id")
+        if transition_id in done:
+            skipped += 1
+            continue
+        attempted += 1
+        try:
+            packet = build_transition_review_packet(transition)
+            prompt = build_transition_review_prompt(packet)
+            request_body = build_transition_gemini_request(prompt, model=model)
+            raw_response = _invoke_call_gemini(
+                call_gemini, api_key, model, request_body, timeout,
+                fallback_api_key)
+            payload = parse_gemini_response(raw_response)
+            review = build_transition_llm_review(
+                transition,
+                payload,
+                model=model,
+                reviewed_at=reviewed_at,
+                llm_call_routes=[_api_key_route(raw_response)],
+            )
+            _append_jsonl(reviews_output, {
+                "transition_id": transition_id,
+                "current_card_id": transition.get("current_card_id"),
+                "symbol": transition.get("symbol"),
+                "current_ts_ms": transition.get("current_ts_ms"),
+                "transition_llm_review": review,
+            })
+            done.add(transition_id)
+            written += 1
+        except Exception as exc:  # keep transition sidecar soft-fail per record
+            errors += 1
+            safe_error = _redact_sensitive_text(str(exc))[:220]
+            error_routes = _exception_call_routes(exc)
+            _append_jsonl(reviews_output, {
+                "transition_id": transition_id,
+                "current_card_id": transition.get("current_card_id"),
+                "symbol": transition.get("symbol"),
+                "transition_llm_review": _transition_error_review(
+                    model, reviewed_at, safe_error, error_routes),
+            })
+    return {
+        "ledger": str(ledger),
+        "reviews_output": str(reviews_output),
+        "attempted_transitions": attempted,
+        "written_reviews": written,
+        "skipped_transitions": skipped,
+        "errors": errors,
+        "model": model,
+    }
+
+
+def _transition_error_review(model, reviewed_at, safe_error, error_routes):
+    return {
+        "schema_name": "SignalTransitionLlmReview",
+        "schema_version": TRANSITION_OUTPUT_SCHEMA_VERSION,
+        "status": "ERROR",
+        "provider": "gemini",
+        "model": model,
+        "reviewed_at": reviewed_at or _now_iso(),
+        "prompt_version": TRANSITION_PROMPT_VERSION,
+        "api_key_route": _summarize_call_routes(error_routes),
+        "llm_call_routes": error_routes,
+        "transition_summary_cn": "LLM 变化链解释生成失败，保留程序化 transition ledger 结论。",
+        "trajectory_state": "UNKNOWN",
+        "signal_continuity": "UNKNOWN",
+        "observed_changes": [],
+        "cross_factor_interactions": [],
+        "candidate_causal_hypotheses": [],
+        "anomaly_assessment": {
+            "state": "DATA_QUALITY_WARNING",
+            "basis_cn": "LLM 调用或解析失败：" + safe_error,
+        },
+        "operator_focus": ["仅依据程序化变化链继续人工复核。"],
+        "invalid_if": [],
+        "language_guard": {
+            "distinguishes_observation_from_causality": True,
+            "no_external_data": True,
+            "no_trading_instruction": True,
+        },
+        "not_trading_advice": True,
+    }
+
+
+def _validate_transition_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("transition model output must be object")
+    missing = [
+        key for key in transition_response_schema()["required"]
+        if key not in payload
+    ]
+    if missing:
+        raise ValueError("transition model output missing fields: "
+                         + ", ".join(missing))
+    if str(payload.get("trajectory_state") or "").upper() not in TRANSITION_TRAJECTORY_STATES:
+        raise ValueError("invalid trajectory_state")
+    if str(payload.get("signal_continuity") or "").upper() not in TRANSITION_CONTINUITY_STATES:
+        raise ValueError("invalid signal_continuity")
+    if not isinstance(payload.get("observed_changes"), list):
+        raise ValueError("observed_changes must be list")
+    if not isinstance(payload.get("cross_factor_interactions"), list):
+        raise ValueError("cross_factor_interactions must be list")
+    if not isinstance(payload.get("candidate_causal_hypotheses"), list):
+        raise ValueError("candidate_causal_hypotheses must be list")
+    if not isinstance(payload.get("operator_focus"), list):
+        raise ValueError("operator_focus must be list")
+    if not isinstance(payload.get("invalid_if"), list):
+        raise ValueError("invalid_if must be list")
+    guard = _as_dict(payload.get("language_guard"))
+    if guard.get("distinguishes_observation_from_causality") is not True:
+        raise ValueError("transition review must distinguish observation from causality")
+    if guard.get("no_external_data") is not True:
+        raise ValueError("transition review must not use external data")
+    if guard.get("no_trading_instruction") is not True:
+        raise ValueError("transition review must forbid trading instruction")
+    return payload
+
+
+def _transition_enum(value, allowed):
+    text = str(value or "UNKNOWN").upper()
+    return text if text in allowed else "UNKNOWN"
+
+
+def _normalize_observed_changes(items):
+    rows = []
+    for item in list(items or [])[:8]:
+        item = _as_dict(item)
+        rows.append({
+            "domain": str(item.get("domain") or "")[:80],
+            "fact_cn": str(item.get("fact_cn") or "")[:360],
+            "materiality": str(item.get("materiality") or "")[:40],
+        })
+    return rows
+
+
+def _normalize_causal_hypotheses(items):
+    rows = []
+    for item in list(items or [])[:3]:
+        item = _as_dict(item)
+        confidence = str(item.get("confidence") or "LOW").upper()
+        if confidence not in {"LOW", "MEDIUM", "HIGH"}:
+            confidence = "LOW"
+        rows.append({
+            "hypothesis_cn": str(item.get("hypothesis_cn") or "")[:360],
+            "supporting_fact_ids": _trim_list(
+                item.get("supporting_fact_ids"), limit=8),
+            "alternative_explanations_cn": _trim_list(
+                item.get("alternative_explanations_cn"), limit=5),
+            "confidence": confidence,
+        })
+    return rows
+
+
+def _normalize_anomaly_assessment(value):
+    value = _as_dict(value)
+    state = str(value.get("state") or "NORMAL_DELTA").upper()
+    if state not in {
+            "NORMAL_DELTA",
+            "REGIME_SHIFT",
+            "DATA_QUALITY_WARNING",
+            "INSUFFICIENT_COMPARABILITY",
+    }:
+        state = "NORMAL_DELTA"
+    return {
+        "state": state,
+        "basis_cn": str(value.get("basis_cn") or "")[:360],
+    }
+
+
 def _validate_model_payload(payload):
     if not isinstance(payload, dict):
         raise ValueError("model output must be object")
@@ -1015,6 +1528,16 @@ def _read_review_card_ids(path):
     return done
 
 
+def _read_transition_review_ids(path):
+    done = set()
+    for value in _read_jsonl(path):
+        transition_id = value.get("transition_id")
+        review = _as_dict(value.get("transition_llm_review"))
+        if transition_id and review.get("status") == "OK":
+            done.add(transition_id)
+    return done
+
+
 def _dedupe_cards(cards):
     by_id = {}
     for card in cards:
@@ -1037,6 +1560,16 @@ def _card_sort_key(card):
         or card.get("created_at")
         or "",
         _card_id(card) or "",
+    )
+
+
+def _transition_sort_key(transition):
+    return (
+        transition.get("current_ts_ms")
+        or transition.get("current_time_ms")
+        or transition.get("current_confirmed_at")
+        or "",
+        transition.get("transition_id") or "",
     )
 
 
@@ -1106,10 +1639,18 @@ def _env_first(*names):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate Gemini LLM audit reviews for signal_review.jsonl.")
-    parser.add_argument("--source", required=True,
+    parser.add_argument("--mode", choices=("card", "transition", "both"),
+                        default="card",
+                        help="Review card sidecar, transition sidecar, or both.")
+    parser.add_argument("--source", default="",
                         help="Path to signal_review.jsonl.")
     parser.add_argument("--reviews-output", default=DEFAULT_REVIEWS,
                         help="Sidecar JSONL path for LLM reviews.")
+    parser.add_argument("--transition-ledger", default="",
+                        help="Path to materialized signal_transition_ledger.jsonl.")
+    parser.add_argument("--transition-reviews-output",
+                        default="signal_transition_llm_reviews.jsonl",
+                        help="Sidecar JSONL path for transition LLM reviews.")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help="Gemini model name.")
     parser.add_argument("--channel1-api-key",
@@ -1120,23 +1661,50 @@ def main(argv=None):
                         help="Channel 2 Gemini key. Prefer paid fallback tier.")
     parser.add_argument("--limit", type=int, default=5,
                         help="Maximum new cards to review in this run.")
+    parser.add_argument("--transition-limit", type=int, default=5,
+                        help="Maximum new transition records to review in this run.")
     parser.add_argument("--timeout", type=int, default=60,
                         help="HTTP timeout seconds.")
     parser.add_argument("--include-synthetic", action="store_true",
                         help="Allow synthetic/local fixture cards for preview testing.")
     args = parser.parse_args(argv)
-    result = generate_reviews(
-        args.source,
-        args.reviews_output,
-        api_key=args.channel1_api_key,
-        fallback_api_key=args.channel2_api_key,
-        model=args.model,
-        limit=args.limit,
-        include_synthetic=args.include_synthetic,
-        timeout=args.timeout,
-    )
+    result = {"mode": args.mode}
+    exit_code = 0
+    if args.mode in {"card", "both"}:
+        if not args.source:
+            parser.error("--source is required for card or both mode")
+        card_result = generate_reviews(
+            args.source,
+            args.reviews_output,
+            api_key=args.channel1_api_key,
+            fallback_api_key=args.channel2_api_key,
+            model=args.model,
+            limit=args.limit,
+            include_synthetic=args.include_synthetic,
+            timeout=args.timeout,
+        )
+        result["card"] = card_result
+        if card_result["errors"] and not card_result["written_reviews"]:
+            exit_code = 1
+    if args.mode in {"transition", "both"}:
+        if not args.transition_ledger:
+            parser.error("--transition-ledger is required for transition or both mode")
+        transition_result = generate_transition_reviews(
+            args.transition_ledger,
+            args.transition_reviews_output,
+            api_key=args.channel1_api_key,
+            fallback_api_key=args.channel2_api_key,
+            model=args.model,
+            limit=args.transition_limit,
+            timeout=args.timeout,
+        )
+        result["transition"] = transition_result
+        if (transition_result["errors"]
+                and not transition_result["written_reviews"]
+                and transition_result["attempted_transitions"]):
+            exit_code = 1
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 1 if result["errors"] and not result["written_reviews"] else 0
+    return exit_code
 
 
 if __name__ == "__main__":

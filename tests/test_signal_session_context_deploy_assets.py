@@ -47,8 +47,23 @@ def assert_asset_root(root):
         assert_true(expected in codes, "static cards should cover " + expected)
     for _path, card, ctx in cards:
         identity = card.get("identity") or {}
-        assert_true(identity.get("strategy_version") == "1.4.1",
+        assert_true(identity.get("strategy_version") == "1.5.0",
                     "deploy fixture should match current FMZ producer version")
+        anchor = ((card.get("provenance") or {}).get("transition_audit_source")
+                  or {})
+        assert_true(anchor.get("schema_name") == "SignalTransitionProducerAnchor",
+                    "deploy fixture should include native transition producer anchor")
+        assert_true(anchor.get("schema_version") == "1.0.0",
+                    "transition producer anchor version")
+        assert_true(anchor.get("audit_scope") == "AUDIT_ONLY",
+                    "transition producer anchor should stay audit-only")
+        assert_true(anchor.get("event_time_ms") == identity.get("confirmed_time_ms"),
+                    "transition producer anchor should use confirmed event time")
+        assert_true(anchor.get("event_time_basis") == "identity.confirmed_time_ms",
+                    "transition producer anchor should declare event time basis")
+        assert_true(anchor.get("transition_computation_owner")
+                    == "MATERIALIZER_DERIVED",
+                    "producer should delegate transition computation to materializer")
         assert_true(ctx.get("schema_name") == "SignalSessionPremiseDurabilityContext",
                     "session_context should use full premise durability schema")
         assert_true(ctx.get("compat_backfill_applied") is not True,

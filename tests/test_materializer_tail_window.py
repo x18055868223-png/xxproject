@@ -189,6 +189,99 @@ def auxiliary_evidence_record():
     }
 
 
+def transition_record(card_id, confirmed_time_ms, lean, support, macro_score,
+                      volq, dxy, us10y, funding_rate, ggr_regime="POSITIVE_GAMMA_PINNING",
+                      skew_vote="NEUTRAL", episode="EP-A"):
+    return {
+        "schema": {"name": "signal_review_card", "version": "1.0.0"},
+        "identity": {
+            "card_id": card_id,
+            "short_id": card_id[-4:],
+            "episode_id": episode,
+            "symbol": "BTC",
+            "strategy_version": "1.5.0",
+            "confirmed_time_ms": confirmed_time_ms,
+            "confirmed_at": "2026-06-18T{:02d}:{:02d}:00+08:00".format(
+                (confirmed_time_ms // 3600000) % 24,
+                (confirmed_time_ms // 60000) % 60),
+        },
+        "provenance": {
+            "transition_audit_source": {
+                "schema_name": "SignalTransitionProducerAnchor",
+                "schema_version": "1.0.0",
+                "audit_scope": "AUDIT_ONLY",
+                "event_time_ms": confirmed_time_ms,
+                "event_time_basis": "identity.confirmed_time_ms",
+                "transition_computation_owner": "MATERIALIZER_DERIVED",
+            },
+        },
+        "quality": {"overall": "OK"},
+        "decision": {
+            "lean": lean,
+            "support_label": support,
+            "confidence": 76 if support == "TRADE_SUPPORT_STRONG" else 0,
+            "trade_allowed": support == "TRADE_SUPPORT_STRONG",
+        },
+        "decision_matrix": {
+            "direction": lean,
+            "decision_state": "APPROVABLE" if support == "TRADE_SUPPORT_STRONG" else "BLOCKED",
+            "model_trade_support": support,
+            "execution_allowed": False,
+        },
+        "blocking": {
+            "has_block": support == "NO_TRADE_BLOCKED",
+            "block_kind": "HARD" if support == "NO_TRADE_BLOCKED" else None,
+            "hard_veto": {"veto_reason": "MACRO_SHOCK"} if support == "NO_TRADE_BLOCKED" else {},
+        },
+        "reasoning": {
+            "evidence": [
+                {
+                    "key": "MACRO",
+                    "participation_status": "EXCLUDED",
+                    "source_ref": "factor_cross_section.macro_pressure",
+                    "raw_values": {
+                        "macro_score": macro_score,
+                        "macro_regime": "Mild Headwind" if macro_score > 0.2 else "Neutral",
+                    },
+                },
+                {
+                    "key": "FUNDING",
+                    "participation_status": "NON_VOTING",
+                    "source_ref": "factor_cross_section.funding",
+                    "raw_values": {"last_rate": funding_rate},
+                },
+            ],
+        },
+        "factor_cross_section": {
+            "macro_pressure": {
+                "macro_score": macro_score,
+                "macro_regime": "Mild Headwind" if macro_score > 0.2 else "Neutral",
+                "components": [
+                    {"key": "VOLQ", "scoring_bps": volq},
+                    {"key": "DXY", "scoring_bps": dxy},
+                    {"key": "US10Y", "scoring_bps": us10y},
+                ],
+            },
+            "funding": {
+                "last_rate": funding_rate,
+                "funding_state": "MILD_CROWDED" if funding_rate > 0.00004 else "LOW",
+                "effect": "overcrowded" if funding_rate > 0.00004 else "neutral",
+            },
+            "gamma_regime": {
+                "regime": ggr_regime,
+                "distance_to_flip_pct": -0.31,
+                "distance_to_pin_pct": 0.45,
+            },
+            "skew": {
+                "vote": skew_vote,
+                "rr_25d": -0.012 if skew_vote == "BEARISH" else 0.003,
+                "rr_z": -1.1 if skew_vote == "BEARISH" else 0.2,
+            },
+        },
+        "integrity": {"record_hash": "sha256:" + card_id.lower()},
+    }
+
+
 def main():
     tool = load_tool()
     source_text = TOOL_FILE.read_text(encoding="utf-8")
@@ -397,6 +490,132 @@ def main():
                     "MACRO raw confidence should be carried into the ledger")
         assert_true(len(macro["raw_values"]["components"]) == 3,
                     "MACRO component proxies should be carried into the ledger")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "transition_signal_review.jsonl"
+        reviews = root / "signal_transition_llm_reviews.jsonl"
+        output = root / "public"
+        ledger = root / "signal_transition_ledger.jsonl"
+        state = root / "signal_transition_state.json"
+        base_ms = 1781770200000
+        records = [
+            transition_record("CARD-A", base_ms, "BULLISH_STRONG",
+                              "TRADE_SUPPORT_STRONG", 0.0309, 150.5, 7.6,
+                              -1.8, 0.000015),
+            transition_record("CARD-B", base_ms + 60 * 60 * 1000, "NEUTRAL",
+                              "NO_TRADE_BLOCKED", 0.4588, 592.9, 14.7,
+                              6.2, 0.000054, ggr_regime="TRANSITION",
+                              skew_vote="BEARISH"),
+        ]
+        source.write_text("\n".join(json.dumps(item, ensure_ascii=False)
+                                    for item in records) + "\n",
+                          encoding="utf-8")
+        result = tool.materialize(
+            source,
+            output,
+            max_cards=20,
+            transition_ledger=ledger,
+            transition_state=state,
+            transition_reviews=reviews,
+        )
+        assert_true(result["transition_records"] == 1,
+                    "materializer should build one transition for the non-first card")
+        latest = json.loads((output / "signal_cards" / "CARD-B.json")
+                            .read_text(encoding="utf-8"))
+        transition = latest.get("transition_context")
+        assert_true(transition["schema_name"] == "SignalTransitionRecord",
+                    "card should receive materialized transition context")
+        assert_true(transition["schema_version"] == "signal_transition_record@1.0.0",
+                    "transition schema version")
+        assert_true(transition["audit_scope"] == "AUDIT_ONLY",
+                    "transition context must be audit-only")
+        assert_true(transition["producer_anchor"]["current"]["native"] is True,
+                    "native producer anchor should be preserved on transition")
+        assert_true(transition["compat_backfill_applied"] is False,
+                    "native transition should not be marked as compat backfill")
+        assert_true(transition["previous_card_id"] == "CARD-A",
+                    "transition should link immediate predecessor")
+        assert_true(transition["elapsed_ms"] == 60 * 60 * 1000,
+                    "transition should expose exact elapsed time")
+        assert_true(transition["comparison_quality"] == "HIGH",
+                    "one hour comparison should be high quality")
+        assert_true(transition["decision_transition"]["block_entered"] is True,
+                    "decision support collapse should enter block")
+        assert_true("DECISION_SUPPORT_COLLAPSE" in transition["cross_domain_flags"],
+                    "decision support collapse flag")
+        assert_true("MACRO_SHOCK" in transition["cross_domain_flags"],
+                    "macro shock flag")
+        assert_true("MULTI_DOMAIN_RISK_DETERIORATION" in transition["cross_domain_flags"],
+                    "multi-domain risk deterioration flag")
+        fields = {item["field"]: item for item in transition["top_material_changes"]}
+        assert_true(fields["factor_cross_section.macro_pressure.macro_score"]["delta_abs"] == 0.4279,
+                    "macro score delta should be calculated from canonical raw fields")
+        assert_true(fields["factor_cross_section.macro_pressure.components.US10Y.scoring_bps"]["sign_flip"] is True,
+                    "US10Y pressure should detect sign flip")
+        assert_true(fields["factor_cross_section.funding.last_rate"]["role_before"] == "NON_VOTING",
+                    "NON_VOTING raw funding should still be compared")
+        assert_true(transition["llm_review_required"] is True,
+                    "material event should request transition LLM review")
+        assert_true("future" not in json.dumps(transition, ensure_ascii=False).lower(),
+                    "real-time transition context must not include future outcome fields")
+
+        ledger_lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+        assert_true(len(ledger_lines) == 1,
+                    "ledger should contain one transition record")
+        assert_true(ledger_lines[0]["current_card_id"] == "CARD-B",
+                    "ledger should align to latest transition card")
+        assert_true(ledger_lines[0]["record_hash"].startswith("sha256:"),
+                    "ledger should include hash-chain record hash")
+        ledger_text = ledger.read_text(encoding="utf-8")
+        tool.materialize(
+            source,
+            output,
+            max_cards=20,
+            transition_ledger=ledger,
+            transition_state=state,
+            transition_reviews=reviews,
+        )
+        assert_true(ledger.read_text(encoding="utf-8") == ledger_text,
+                    "same input should replay to the same transition ledger hash chain")
+        state_doc = json.loads(state.read_text(encoding="utf-8"))
+        assert_true(state_doc["last_transition_hash"] == ledger_lines[0]["record_hash"],
+                    "state should persist last transition hash")
+        trajectory = json.loads((output / "signal_cards" / "trajectory" / "BTC.json")
+                                .read_text(encoding="utf-8"))
+        assert_true(trajectory["symbol"] == "BTC" and trajectory["event_count"] == 2,
+                    "trajectory output should summarize symbol event history")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "transition_legacy_signal_review.jsonl"
+        output = root / "public"
+        base_ms = 1781770200000
+        legacy_records = [
+            transition_record("LEGACY-A", base_ms, "BULLISH_STRONG",
+                              "TRADE_SUPPORT_STRONG", 0.0309, 150.5, 7.6,
+                              -1.8, 0.000015),
+            transition_record("LEGACY-B", base_ms + 60 * 60 * 1000, "NEUTRAL",
+                              "NO_TRADE_BLOCKED", 0.4588, 592.9, 14.7,
+                              6.2, 0.000054, ggr_regime="TRANSITION",
+                              skew_vote="BEARISH"),
+        ]
+        for item in legacy_records:
+            item["provenance"].pop("transition_audit_source", None)
+        source.write_text("\n".join(json.dumps(item, ensure_ascii=False)
+                                    for item in legacy_records) + "\n",
+                          encoding="utf-8")
+        tool.materialize(source, output, max_cards=20)
+        legacy_latest = json.loads((output / "signal_cards" / "LEGACY-B.json")
+                                   .read_text(encoding="utf-8"))
+        legacy_transition = legacy_latest["transition_context"]
+        assert_true(legacy_transition["compat_backfill_applied"] is True,
+                    "missing producer anchor should be explicit compat backfill")
+        assert_true(legacy_transition["producer_anchor"]["current"]["native"] is False,
+                    "missing producer anchor must not masquerade as native")
+        assert_true("identity.confirmed_time_ms" in
+                    legacy_transition["compat_source_fields"],
+                    "compat transition should record source fields")
 
     print("materializer_tail_window: PASS")
 
