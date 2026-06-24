@@ -66,6 +66,27 @@ def legacy_push_summary_record():
     return item
 
 
+def legacy_session_context_record():
+    item = mixed_time_record("LEGACY-SESSION-CONTEXT",
+                             confirmed_at="2026-06-24T09:07:04+08:00")
+    item["decision"] = {"lean": "NEUTRAL"}
+    item["signal_window"] = {
+        "session_context": {
+            "schema": "signal_session_context@1.0.0",
+            "rationale_code": "ASIA_MORNING",
+            "base_zone": "MEDIUM",
+            "effective_zone": "MEDIUM",
+            "display_label": "MEDIUM",
+            "premise_durability": "MEDIUM",
+            "affects_confidence": False,
+            "affects_blocking": False,
+            "affects_trade_allowed": False,
+            "utc8_time": "2026-06-24T09:07:04+08:00",
+        },
+    }
+    return item
+
+
 def auxiliary_evidence_record():
     return {
         "identity": {
@@ -292,6 +313,34 @@ def main():
         card = json.loads(card_text)
         assert_true("置信76 冲突7%" in card["delivery"]["fmz_push_summary"],
                     "summary should preserve confidence value while removing old reminder")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "legacy_session_context_signal_review.jsonl"
+        output = root / "public"
+        source.write_text(json.dumps(legacy_session_context_record(),
+                                     ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        tool.materialize(source, output, max_cards=20)
+        card = json.loads((output / "signal_cards" / "LEGACY-SESSION-CONTEXT.json")
+                          .read_text(encoding="utf-8"))
+        ctx = card["signal_window"]["session_context"]
+        assert_true(ctx["schema_name"] == "SignalSessionPremiseDurabilityContext",
+                    "legacy session_context should be upgraded to full schema")
+        assert_true(ctx["clock_window"] == "08:00-11:30",
+                    "legacy Asia morning should backfill clock window")
+        assert_true(ctx["backtest_delta_pp"] == 0.02,
+                    "legacy Asia morning should backfill calibrated delta")
+        assert_true(ctx["evidence_level"] == "NEUTRAL",
+                    "legacy Asia morning should backfill evidence level")
+        assert_true(ctx["validation_basis"]["source_document"]
+                    == "结论档案_各时段信号耐久度_2023-2026_v1",
+                    "legacy session_context should backfill validation source")
+        assert_true(ctx["compat_backfill_applied"] is True,
+                    "legacy session_context backfill should be explicit")
+        assert_true(card["decision_matrix"]["temporal_durability"]
+                    == ctx["premise_durability"],
+                    "materializer should mirror temporal durability into decision matrix")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)

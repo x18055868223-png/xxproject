@@ -4,10 +4,19 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 
 ## Repository authority
 
-- `x18055868223-png/xxproject` is the primary project repository and the default target for project baseline, release, tag, and server-deployment decisions.
+- `https://github.com/x18055868223-png/xxproject` (`xxproject`) is the primary project repository and the default target for project baseline, release, tag, and server-deployment decisions.
 - `signal-audit-deploy` is only a deployment/helper mirror for the static audit surface. Do not treat it as the project main repository, do not use it as the authoritative main branch, and do not conclude the project baseline is updated merely because changes were pushed there.
 - Before any commit, tag, push, or server deployment instruction, verify the active remote and state the intended target. If `origin` points to `signal-audit-deploy`, add or use the `xxproject` remote for project-level releases.
 - Never force-update `xxproject/main` from a history that would delete or replace the wider project asset tree. If histories differ, integrate changes on top of `xxproject/main` in an isolated worktree and preserve the full project asset surface.
+
+## Release and asset coherence
+
+- 发布、打 tag、推送、服务器部署前，必须同时核对三层版本一致：Git release/tag 所在提交、`demo/最新交付物/neutral_regulation_demo_fmz.py` 内部 `demo_version`、服务器最新真实审计卡 `identity.strategy_version` 与关键 schema 字段。
+- 不得只因为 `xxproject/main`、前端 `app.js?v=...` 或 systemd 自检通过，就宣称 FMZ 信号层本体已经完成更新。
+- 涉及信号审计 JSON schema 的改动，必须增加 producer 级测试，直接调用 FMZ 本体生成/构造记录并断言关键字段存在；不能只依赖 materializer 或前端回填测试。
+- 如果为了历史卡可读性在 materializer 做兼容回填，必须显式写入 `compat_backfill_applied=true` 和来源字段，不得伪装成源端原生输出。
+- 服务器部署验收建议使用 `SESSION_CONTEXT_REQUIRED=1`；如果最新真实卡缺 `SignalSessionPremiseDurabilityContext`、`clock_window`、`backtest_delta_pp`、`validation_basis` 或 `decision_matrix.temporal_durability`，或仍带 `compat_backfill_applied=true`，或 `identity.strategy_version` 不是当前 FMZ 交付版本，不得封版。
+- 使用 worktree 发布时，完成后必须同步根目录可见的 `demo/最新交付物/` 资产，或明确告知用户当前可见目录不是发布工作树；避免“远端已更新、本地交付物未更新”的混淆。
 
 # Codex orchestration policy
 

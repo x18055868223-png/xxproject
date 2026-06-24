@@ -1,6 +1,6 @@
 # Signal Audit Frontend Fixture
 
-> 当前模块口径（r3.2 / 2026-06-23）：本目录提交的是静态审计页面运行资产和本地 fixture。生产服务器上的 `signal_cards/` 由 materializer 从 FMZ JSONL 生成，仓库内样例不代表实时生产数据。
+> 当前模块口径（r3.2.1 / 2026-06-24）：本目录提交的是静态审计页面运行资产和本地 fixture。生产服务器上的 `signal_cards/` 由 materializer 从 FMZ JSONL 生成，仓库内样例不代表实时生产数据。
 
 ## 文件
 

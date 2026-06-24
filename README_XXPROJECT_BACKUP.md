@@ -1,6 +1,6 @@
 # 中性回路整合工程备份标记
 
-备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2.2`
+备份版本：`NRD-XXPROJECT-BACKUP-2026.06.24-r3.2.1`
 
 本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
@@ -17,7 +17,7 @@
 
 ## 当前版本锚点
 
-- 信号层：`demo_version=1.3.0`，`schema_version=nrd.schema.v1.0.0`。
+- 信号层：`demo_version=1.4.1`，`schema_version=nrd.schema.v1.0.0`；FMZ 本体原生输出完整 `SignalSessionPremiseDurabilityContext`，materializer 仅对历史卡做显式兼容回填。
 - 执行层：`STRATEGY_VERSION=2.5.0`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭。
 - GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
 - LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.3.0`，`gemini_signal_review_prompt@1.3.0`；sidecar 使用两次调用真盲审。
@@ -36,7 +36,7 @@ bash tools/server_self_check_signal_stack.sh
 默认是只读检查。需要主动触发 LLM 和 materializer oneshot 时再执行：
 
 ```bash
-sudo bash tools/server_self_check_signal_stack.sh --run-oneshots
+GEX_REQUIRED=0 LLM_REQUIRED=1 SESSION_CONTEXT_REQUIRED=1 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
 ```
 
 ## 使用顺序
@@ -53,3 +53,4 @@ sudo bash tools/server_self_check_signal_stack.sh --run-oneshots
 - FMZ 信号层只负责生成审计 JSONL 和短推；Gemini LLM 复核在服务器旁路层执行。
 - 执行层默认全空跑，除非经过单独实盘验证流程，不得把本仓库备份视为交易启用。
 - 每次服务器链路发生变化，都要同步更新 `tools/server_self_check_signal_stack.sh` 和 `99_工程资产索引/README.md`。
+- 每次发布、打 tag 或给服务器部署命令前，都要同时核对 `xxproject` release/tag、`demo/最新交付物/neutral_regulation_demo_fmz.py` 的 `demo_version`、服务器最新真实卡 `identity.strategy_version` 和最新卡关键 schema 字段；最新卡如果带 `compat_backfill_applied=true`，只能证明 materializer 兼容了历史卡，不能证明 FMZ 本体已更新。

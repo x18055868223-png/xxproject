@@ -24,6 +24,103 @@ MANIFEST_SCHEMA = {
     "card_schema": "signal_review_card@1.0.0",
 }
 LEGACY_CONFIDENCE_REMINDER_RE = re.compile(r"(置信度?\s*[0-9]+)\s*未校准")
+SESSION_VALIDATION_BASIS = {
+    "bar_interval": "5m",
+    "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+    "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+    "coverage_ratio": 1.0,
+    "data_range": "2023-04-17 -> 2026-04-16",
+    "headline_horizon_min": 60,
+    "method": "KLINE_PROXY_PREMISE_REWRITE_RATE",
+    "research_grade": "MARKET_PRIOR_VALIDATED",
+    "sample_bars": 315363,
+    "source_document": "结论档案_各时段信号耐久度_2023-2026_v1",
+    "symbol": "BTC_USDT",
+}
+SESSION_PREMISE_CONTEXTS = {
+    "POST_US_DEADZONE": {
+        "clock_window": "04:00-08:00", "start_min": 240, "end_min": 480,
+        "backtest_delta_pp": 0.09, "theory_zone": "LOW", "base_zone": "LOW",
+        "effective_zone": "NEUTRAL_CONSERVATIVE", "display_label": "中性保守",
+        "premise_durability": "NEUTRAL_CONSERVATIVE", "liquidity_depth": "THIN",
+        "catalyst_exposure": "TAIL_SPIKE_RISK",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE", "evidence_level": "NEUTRAL",
+        "axis": "A_THIN_TAIL_RISK",
+        "operator_hint_cn": "保持中性保守；等待长窗/边界覆盖复核。",
+        "rationale_cn": "04:00-08:00 UTC+8 在 60m 口径下仅 +0.09pp，未显示稳定脆性；但薄盘尾部插针属于均值口径难覆盖的尾部风险，本版本保持中性保守，不据此升耐久，也不改写 confidence。",
+    },
+    "ASIA_MORNING": {
+        "clock_window": "08:00-11:30", "start_min": 480, "end_min": 690,
+        "backtest_delta_pp": 0.02, "theory_zone": "MEDIUM", "base_zone": "MEDIUM",
+        "effective_zone": "NEUTRAL", "display_label": "中性",
+        "premise_durability": "NEUTRAL", "liquidity_depth": "MEDIUM",
+        "catalyst_exposure": "NORMAL", "adjustment_direction": "NEUTRAL",
+        "evidence_level": "NEUTRAL", "axis": "REGIONAL_LIQUIDITY",
+        "operator_hint_cn": "保持中性观察；不区分、不乘进 confidence。",
+        "rationale_cn": "08:00-11:30 UTC+8 三年 K 线代理复合重写率仅 +0.02pp，无可落地差异；保持中性提示，不区分、不乘进 confidence。",
+    },
+    "ASIA_AFTERNOON_LULL": {
+        "clock_window": "11:30-15:00", "start_min": 690, "end_min": 900,
+        "backtest_delta_pp": -2.51, "theory_zone": "LOW", "base_zone": "LOW",
+        "effective_zone": "NEUTRAL_CONSERVATIVE", "display_label": "60m耐久但暂不升档",
+        "premise_durability": "NEUTRAL_CONSERVATIVE", "liquidity_depth": "THIN",
+        "catalyst_exposure": "DISTANT_EU_US_COVERAGE",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "CONFIRMED_60M_LOCAL",
+        "axis": "A_THIN_B_DISTANT_COVERAGE",
+        "operator_hint_cn": "60m 局部耐久但不放松跨时段覆盖防护。",
+        "rationale_cn": "11:30-15:00 UTC+8 在 60m 局部口径下更耐久（-2.51pp，92%一致），但该结论捕捉的是薄盘安静，不覆盖数小时后欧美主导流动性重写；本版本保持理论保守，等待 120/240m 长窗或边界覆盖复核后再决定，切勿据 60m 结果放松防护或改写 confidence。",
+    },
+    "LONDON_EARLY": {
+        "clock_window": "15:00-18:00", "start_min": 900, "end_min": 1080,
+        "backtest_delta_pp": -1.37, "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM", "effective_zone": "NEUTRAL",
+        "display_label": "中性/观察", "premise_durability": "NEUTRAL",
+        "liquidity_depth": "MODERATE", "catalyst_exposure": "PRE_US_AHEAD",
+        "adjustment_direction": "NEUTRAL", "evidence_level": "TENTATIVE",
+        "axis": "EU_LIQUIDITY_US_AHEAD",
+        "operator_hint_cn": "偏耐久但未确认，保持中性观察。",
+        "rationale_cn": "15:00-18:00 UTC+8 欧洲早盘补流动性，60m 代理显示 -1.37pp 偏耐久但不稳；维持中性观察，不据此改写 confidence。",
+    },
+    "PRE_US_TRAPDOOR": {
+        "clock_window": "18:00-21:30", "start_min": 1080, "end_min": 1290,
+        "backtest_delta_pp": 5.31, "theory_zone": "LOW", "base_zone": "LOW",
+        "effective_zone": "LOWER_DURABILITY_CONFIRMED",
+        "display_label": "降耐久/要求确认",
+        "premise_durability": "LOWER_DURABILITY_CONFIRMED",
+        "liquidity_depth": "PRE_US_TRANSITION",
+        "catalyst_exposure": "NEAR_US_DATA_AND_OPEN",
+        "adjustment_direction": "DECREASE", "evidence_level": "CONFIRMED",
+        "axis": "B_NEAR_US_DATA_AND_OPEN",
+        "operator_hint_cn": "弱信号应等美盘开后再确认。",
+        "rationale_cn": "18:00-21:30 UTC+8 是美盘前数据/开盘活板门；三年 BTC 5m K 线代理显示复合重写率 +5.31pp、12/12 季度一致，是唯一强确认的脆性窗口。弱信号应等美盘开后再确认；本层只降低前提耐久度提示，不改写 confidence。",
+    },
+    "US_OPEN_TURBULENCE": {
+        "clock_window": "21:30-23:00", "start_min": 1290, "end_min": 1380,
+        "backtest_delta_pp": 1.49, "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM", "effective_zone": "NEUTRAL_CONSERVATIVE",
+        "display_label": "开盘湍流/暂不升档",
+        "premise_durability": "NEUTRAL_CONSERVATIVE",
+        "liquidity_depth": "DEEP_BUT_TURBULENT",
+        "catalyst_exposure": "US_OPEN_REPRICING",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "TENTATIVE", "axis": "B_US_OPEN_TURBULENCE",
+        "operator_hint_cn": "开盘再定价阶段，避免过早升 HIGH。",
+        "rationale_cn": "21:30-23:00 UTC+8 为纽约开盘湍流阶段，60m 代理显示 +1.49pp 偏脆但不稳；本版本保持中性保守，避免过早升高前提耐久度，不改写 confidence。",
+    },
+    "US_DEEP_POST_CATALYST": {
+        "clock_window": "23:00-04:00", "start_min": 1380, "end_min": 1440,
+        "backtest_delta_pp": -1.49, "theory_zone": "HIGH", "base_zone": "HIGH",
+        "effective_zone": "RAISE_DURABILITY_TENTATIVE",
+        "display_label": "升耐久（中等信心）",
+        "premise_durability": "RAISE_DURABILITY_TENTATIVE",
+        "liquidity_depth": "DEEP", "catalyst_exposure": "POST_CATALYST",
+        "adjustment_direction": "INCREASE", "evidence_level": "TENTATIVE",
+        "axis": "A_DEEP_LIQUIDITY_AND_POST_CATALYST",
+        "operator_hint_cn": "可中等提高前提耐久度，但仍保持审计提示口径。",
+        "rationale_cn": "23:00-04:00 UTC+8 属美盘深流动性/催化剂已消化窗口；三年 K 线代理显示复合重写率 -1.49pp，方向与理论一致但仍属暂定，因此只作为中等幅度提高前提耐久度的人工提示，不改写 confidence。",
+    },
+}
 
 
 def materialize(source, output, max_cards=200, llm_reviews=None,
@@ -61,6 +158,7 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
     manifest_cards = []
     expected_card_files = set()
     for record in records:
+        _backfill_session_context(record)
         _enrich_auxiliary_evidence(record)
         _sanitize_legacy_display_text(record)
         identity = _identity(record)
@@ -193,6 +291,94 @@ def _sanitize_legacy_display_text(value):
     if isinstance(value, str):
         return LEGACY_CONFIDENCE_REMINDER_RE.sub(r"\1", value)
     return value
+
+
+def _backfill_session_context(record):
+    if not isinstance(record, dict):
+        return record
+    signal_window = record.get("signal_window")
+    if not isinstance(signal_window, dict):
+        return record
+    ctx = signal_window.get("session_context")
+    if not isinstance(ctx, dict) or not ctx:
+        return record
+    code = str(ctx.get("rationale_code") or "").strip()
+    template = SESSION_PREMISE_CONTEXTS.get(code)
+    if not template:
+        return record
+    needs_backfill = (
+        ctx.get("schema_name") != "SignalSessionPremiseDurabilityContext"
+        or ctx.get("clock_window") in (None, "")
+        or ctx.get("backtest_delta_pp") in (None, "")
+        or not isinstance(ctx.get("validation_basis"), dict)
+    )
+    if not needs_backfill:
+        _ensure_decision_matrix_temporal(record, ctx)
+        return record
+
+    original_schema = ctx.get("schema") or ctx.get("schema_name")
+    preserved = {
+        "dst_mode": ctx.get("dst_mode"),
+        "london_dst_mode": ctx.get("london_dst_mode"),
+        "utc8_time": ctx.get("utc8_time"),
+        "is_weekend": ctx.get("is_weekend"),
+        "weekend_adjustment": ctx.get("weekend_adjustment"),
+        "event_blackout": ctx.get("event_blackout"),
+        "affects_confidence": ctx.get("affects_confidence"),
+        "affects_blocking": ctx.get("affects_blocking"),
+        "affects_trade_allowed": ctx.get("affects_trade_allowed"),
+        "transition": ctx.get("transition"),
+    }
+    ctx.clear()
+    ctx.update(template)
+    ctx.update({
+        "schema": "SignalSessionPremiseDurabilityContext@1.0.0",
+        "schema_name": "SignalSessionPremiseDurabilityContext",
+        "schema_version": "1.0.0",
+        "rationale_code": code,
+        "boundary_buffer_min": 0,
+        "buffer_policy": "DIRECT_UTC8_SUMMER_BUCKET_MAPPING",
+        "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+        "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+        "confidence_multiplier": 1.0,
+        "validation_basis": dict(SESSION_VALIDATION_BASIS),
+        "compat_backfill_applied": True,
+        "compat_backfill_source": "materializer_session_context_v1",
+        "compat_source_schema": original_schema,
+    })
+    for key, value in preserved.items():
+        if value not in (None, ""):
+            ctx[key] = value
+    if not isinstance(ctx.get("event_blackout"), dict):
+        ctx["event_blackout"] = {"active": False}
+    if not isinstance(ctx.get("weekend_adjustment"), dict):
+        ctx["weekend_adjustment"] = {"applied": False}
+    if not isinstance(ctx.get("transition"), dict):
+        ctx["transition"] = {
+            "active": False,
+            "boundary": str(template.get("clock_window", "")).split("-")[0] or None,
+            "minutes_from_boundary": None,
+            "policy": "DISPLAY_ONLY_NO_CONFIDENCE_CHANGE",
+        }
+    for key in ("affects_confidence", "affects_blocking", "affects_trade_allowed"):
+        ctx[key] = False
+    _ensure_decision_matrix_temporal(record, ctx)
+    return record
+
+
+def _ensure_decision_matrix_temporal(record, ctx):
+    matrix = record.get("decision_matrix")
+    if not isinstance(matrix, dict):
+        matrix = {"schema_name": "SignalDecisionMatrix"}
+        record["decision_matrix"] = matrix
+    matrix["temporal_durability"] = ctx.get("premise_durability")
+    if not matrix.get("window"):
+        matrix["window"] = "CONFIRMED"
+    if not matrix.get("audit_dissent"):
+        matrix["audit_dissent"] = "PENDING_LLM"
+    if not matrix.get("direction"):
+        matrix["direction"] = _dict(record.get("decision")).get("lean")
+    return matrix
 
 
 def _enrich_auxiliary_evidence(record):

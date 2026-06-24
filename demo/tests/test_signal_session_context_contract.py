@@ -29,43 +29,63 @@ def ms_utc8(year, month, day, hour, minute):
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
+    assert_true(config["demo_version"] == "1.4.1",
+                "FMZ signal deliverable version should match r3.2.1 contract")
 
-    low_to_medium = mod.classify_signal_session_context(
+    london = mod.classify_signal_session_context(
         ms_utc8(2026, 6, 19, 15, 4), config)
-    assert_true(low_to_medium["schema"] == "signal_session_context@1.0.0",
-                "session context schema")
-    assert_true(low_to_medium["base_zone"] == "MEDIUM",
+    assert_true(london["schema_name"] == "SignalSessionPremiseDurabilityContext",
+                "session context schema name")
+    assert_true(london["schema_version"] == "1.0.0",
+                "session context schema version")
+    assert_true(london["clock_window"] == "15:00-18:00",
+                "15:04 should map to London early UTC+8 bucket")
+    assert_true(london["base_zone"] == "MEDIUM",
                 "15:04 static table should enter London early medium zone")
-    assert_true(low_to_medium["effective_zone"] == "LOW",
-                "15:04 should remain conservative low inside buffer")
-    assert_true(low_to_medium["display_label"] == "LOW_TO_MEDIUM_BUFFER",
-                "15:04 should display low-to-medium buffer")
-    assert_true(low_to_medium["premise_durability"] == "LOW",
-                "buffer premise durability should use effective zone")
-    assert_true(low_to_medium["transition"]["active"] is True,
-                "15:04 should mark transition active")
-    assert_true(low_to_medium["affects_confidence"] is False,
+    assert_true(london["effective_zone"] == "NEUTRAL",
+                "London early remains neutral observe-only")
+    assert_true(london["backtest_delta_pp"] == -1.37,
+                "London early should carry calibrated backtest delta")
+    assert_true(isinstance(london["validation_basis"], dict),
+                "session context should include validation basis")
+    assert_true(london["validation_basis"]["source_document"]
+                == "结论档案_各时段信号耐久度_2023-2026_v1",
+                "session context should cite the durability archive")
+    assert_true(london["affects_confidence"] is False,
                 "phase 0 must not affect confidence")
-    assert_true(low_to_medium["calibration_state"] == "UNCALIBRATED",
-                "initial layer remains uncalibrated")
+    assert_true(london["confidence_policy"] == "DO_NOT_MULTIPLY_CONFIDENCE",
+                "session layer must not multiply confidence")
 
     pre_us = mod.classify_signal_session_context(
         ms_utc8(2026, 6, 19, 20, 30), config)
-    assert_true(pre_us["effective_zone"] == "LOW",
-                "20:30 pre-US runway should be low durability")
+    assert_true(pre_us["effective_zone"] == "LOWER_DURABILITY_CONFIRMED",
+                "20:30 pre-US runway should lower durability")
     assert_true(pre_us["rationale_code"] == "PRE_US_TRAPDOOR",
                 "20:30 should explain US data/open trapdoor")
-    assert_true(pre_us["catalyst_exposure"] == "HIGH",
+    assert_true(pre_us["backtest_delta_pp"] == 5.31,
+                "pre-US runway should carry confirmed fragile delta")
+    assert_true(pre_us["catalyst_exposure"] == "NEAR_US_DATA_AND_OPEN",
                 "pre-US runway should carry high catalyst exposure")
 
     high_delay = mod.classify_signal_session_context(
         ms_utc8(2026, 6, 19, 23, 30), config)
     assert_true(high_delay["base_zone"] == "HIGH",
                 "23:30 should be in the US deep base zone")
-    assert_true(high_delay["effective_zone"] == "MEDIUM",
-                "high zone should be earned after the post-open digestion buffer")
-    assert_true(high_delay["display_label"] == "MEDIUM_TO_HIGH_BUFFER",
-                "23:30 should display medium-to-high buffer")
+    assert_true(high_delay["effective_zone"] == "RAISE_DURABILITY_TENTATIVE",
+                "US deep should carry tentative durability raise")
+    assert_true(high_delay["display_label"] == "升耐久（中等信心）",
+                "23:30 should display the calibrated durability label")
+
+    asia = mod.classify_signal_session_context(
+        ms_utc8(2026, 6, 24, 9, 7), config)
+    assert_true(asia["rationale_code"] == "ASIA_MORNING",
+                "09:07 should classify as Asia morning")
+    assert_true(asia["clock_window"] == "08:00-11:30",
+                "Asia morning should include clock window")
+    assert_true(asia["backtest_delta_pp"] == 0.02,
+                "Asia morning should include backtest delta")
+    assert_true(asia["evidence_level"] == "NEUTRAL",
+                "Asia morning should include evidence level")
 
     missing_time_a = mod.classify_signal_session_context(None, config)
     missing_time_b = mod.classify_signal_session_context(None, config)
@@ -75,6 +95,8 @@ def main():
                 "missing timestamp should fall back to conservative low")
     assert_true(missing_time_a["rationale_code"] == "MISSING_CONFIRMED_TIME",
                 "missing timestamp should explain the fallback reason")
+    assert_true(missing_time_a["schema_name"] == "SignalSessionPremiseDurabilityContext",
+                "missing timestamp should still use full schema")
     assert_true(missing_time_a["affects_confidence"] is False,
                 "missing timestamp fallback remains observe-only")
 
@@ -84,6 +106,11 @@ def main():
     assert_true(isinstance(session, dict), "audit record should include session_context")
     assert_true(session["affects_confidence"] is False,
                 "audit record session context remains observe-only")
+    assert_true(session["schema_name"] == "SignalSessionPremiseDurabilityContext",
+                "audit record should carry full session context schema")
+    assert_true(record["decision_matrix"]["temporal_durability"]
+                == session["premise_durability"],
+                "decision matrix should mirror session premise durability")
     assert_true(record["decision"]["confidence_semantics"]
                 == "EVIDENCE_QUALITY_NOT_WIN_RATE",
                 "confidence semantics must remain unchanged")

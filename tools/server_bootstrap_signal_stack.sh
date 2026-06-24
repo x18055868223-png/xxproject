@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/x18055868223-png/xxproject.git}"
-RELEASE_REF="${RELEASE_REF:-r3.2}"
+RELEASE_REF="${RELEASE_REF:-r3.2.1}"
 REPO_DIR="${REPO_DIR:-/opt/repos/neutral-loop}"
 
 STATIC_ROOT="${STATIC_ROOT:-/opt/signal-audit}"
@@ -263,7 +263,7 @@ self_check() {
     GEX_REQUIRED="$GEX_REQUIRED" \
     GEX_ENV="$GEX_ENV_FILE" \
     LLM_ENV="$LLM_ENV_FILE" \
-    bash "$REPO_DIR/tools/server_self_check_signal_stack.sh" --run-oneshots
+    SESSION_CONTEXT_REQUIRED=1 bash "$REPO_DIR/tools/server_self_check_signal_stack.sh" --run-oneshots
 }
 
 log "system packages"
@@ -298,5 +298,5 @@ Important files to review:
 
 Secrets are templates only. Fill GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY/API_TOKEN on the server,
 then rerun the self-check:
-  sudo bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
+  SESSION_CONTEXT_REQUIRED=1 sudo -E bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
 EOF

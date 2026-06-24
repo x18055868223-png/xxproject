@@ -147,7 +147,7 @@ CONFIG = {
     # source of truth, and FMZ pushes only a <=140-char single-line brief
     # (render_push_brief). Static web reads JSONL-derived JSON cards.
     # Render/observability only; nrd schema_version stays v1.0.0.
-    "demo_version": "1.3.0",
+    "demo_version": "1.4.1",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -3398,6 +3398,168 @@ _SESSION_RATIONALE_CN = {
     "EVENT_BLACKOUT": "高影响事件窗口，时区先验强制按低前提耐久度处理。",
 }
 
+_SESSION_VALIDATION_BASIS = {
+    "bar_interval": "5m",
+    "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+    "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+    "coverage_ratio": 1.0,
+    "data_range": "2023-04-17 -> 2026-04-16",
+    "headline_horizon_min": 60,
+    "method": "KLINE_PROXY_PREMISE_REWRITE_RATE",
+    "research_grade": "MARKET_PRIOR_VALIDATED",
+    "sample_bars": 315363,
+    "source_document": "结论档案_各时段信号耐久度_2023-2026_v1",
+    "symbol": "BTC_USDT",
+}
+
+_SESSION_PREMISE_CONTEXTS = {
+    "POST_US_DEADZONE": {
+        "clock_window": "04:00-08:00",
+        "start_min": 240,
+        "end_min": 480,
+        "backtest_delta_pp": 0.09,
+        "theory_zone": "LOW",
+        "base_zone": "LOW",
+        "effective_zone": "NEUTRAL_CONSERVATIVE",
+        "display_label": "中性保守",
+        "premise_durability": "NEUTRAL_CONSERVATIVE",
+        "liquidity_depth": "THIN",
+        "catalyst_exposure": "TAIL_SPIKE_RISK",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "NEUTRAL",
+        "axis": "A_THIN_TAIL_RISK",
+        "operator_hint_cn": "保持中性保守；等待长窗/边界覆盖复核。",
+        "rationale_cn": (
+            "04:00-08:00 UTC+8 在 60m 口径下仅 +0.09pp，未显示稳定脆性；"
+            "但薄盘尾部插针属于均值口径难覆盖的尾部风险，本版本保持中性保守，"
+            "不据此升耐久，也不改写 confidence。"),
+    },
+    "ASIA_MORNING": {
+        "clock_window": "08:00-11:30",
+        "start_min": 480,
+        "end_min": 690,
+        "backtest_delta_pp": 0.02,
+        "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM",
+        "effective_zone": "NEUTRAL",
+        "display_label": "中性",
+        "premise_durability": "NEUTRAL",
+        "liquidity_depth": "MEDIUM",
+        "catalyst_exposure": "NORMAL",
+        "adjustment_direction": "NEUTRAL",
+        "evidence_level": "NEUTRAL",
+        "axis": "REGIONAL_LIQUIDITY",
+        "operator_hint_cn": "保持中性观察；不区分、不乘进 confidence。",
+        "rationale_cn": (
+            "08:00-11:30 UTC+8 三年 K 线代理复合重写率仅 +0.02pp，"
+            "无可落地差异；保持中性提示，不区分、不乘进 confidence。"),
+    },
+    "ASIA_AFTERNOON_LULL": {
+        "clock_window": "11:30-15:00",
+        "start_min": 690,
+        "end_min": 900,
+        "backtest_delta_pp": -2.51,
+        "theory_zone": "LOW",
+        "base_zone": "LOW",
+        "effective_zone": "NEUTRAL_CONSERVATIVE",
+        "display_label": "60m耐久但暂不升档",
+        "premise_durability": "NEUTRAL_CONSERVATIVE",
+        "liquidity_depth": "THIN",
+        "catalyst_exposure": "DISTANT_EU_US_COVERAGE",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "CONFIRMED_60M_LOCAL",
+        "axis": "A_THIN_B_DISTANT_COVERAGE",
+        "operator_hint_cn": "60m 局部耐久但不放松跨时段覆盖防护。",
+        "rationale_cn": (
+            "11:30-15:00 UTC+8 在 60m 局部口径下更耐久（-2.51pp，92%一致），"
+            "但该结论捕捉的是薄盘安静，不覆盖数小时后欧美主导流动性重写；"
+            "本版本保持理论保守，等待 120/240m 长窗或边界覆盖复核后再决定，"
+            "切勿据 60m 结果放松防护或改写 confidence。"),
+    },
+    "LONDON_EARLY": {
+        "clock_window": "15:00-18:00",
+        "start_min": 900,
+        "end_min": 1080,
+        "backtest_delta_pp": -1.37,
+        "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM",
+        "effective_zone": "NEUTRAL",
+        "display_label": "中性/观察",
+        "premise_durability": "NEUTRAL",
+        "liquidity_depth": "MODERATE",
+        "catalyst_exposure": "PRE_US_AHEAD",
+        "adjustment_direction": "NEUTRAL",
+        "evidence_level": "TENTATIVE",
+        "axis": "EU_LIQUIDITY_US_AHEAD",
+        "operator_hint_cn": "偏耐久但未确认，保持中性观察。",
+        "rationale_cn": (
+            "15:00-18:00 UTC+8 欧洲早盘补流动性，60m 代理显示 -1.37pp 偏耐久但不稳；"
+            "维持中性观察，不据此改写 confidence。"),
+    },
+    "PRE_US_TRAPDOOR": {
+        "clock_window": "18:00-21:30",
+        "start_min": 1080,
+        "end_min": 1290,
+        "backtest_delta_pp": 5.31,
+        "theory_zone": "LOW",
+        "base_zone": "LOW",
+        "effective_zone": "LOWER_DURABILITY_CONFIRMED",
+        "display_label": "降耐久/要求确认",
+        "premise_durability": "LOWER_DURABILITY_CONFIRMED",
+        "liquidity_depth": "PRE_US_TRANSITION",
+        "catalyst_exposure": "NEAR_US_DATA_AND_OPEN",
+        "adjustment_direction": "DECREASE",
+        "evidence_level": "CONFIRMED",
+        "axis": "B_NEAR_US_DATA_AND_OPEN",
+        "operator_hint_cn": "弱信号应等美盘开后再确认。",
+        "rationale_cn": (
+            "18:00-21:30 UTC+8 是美盘前数据/开盘活板门；三年 BTC 5m K 线代理显示"
+            "复合重写率 +5.31pp、12/12 季度一致，是唯一强确认的脆性窗口。"
+            "弱信号应等美盘开后再确认；本层只降低前提耐久度提示，不改写 confidence。"),
+    },
+    "US_OPEN_TURBULENCE": {
+        "clock_window": "21:30-23:00",
+        "start_min": 1290,
+        "end_min": 1380,
+        "backtest_delta_pp": 1.49,
+        "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM",
+        "effective_zone": "NEUTRAL_CONSERVATIVE",
+        "display_label": "开盘湍流/暂不升档",
+        "premise_durability": "NEUTRAL_CONSERVATIVE",
+        "liquidity_depth": "DEEP_BUT_TURBULENT",
+        "catalyst_exposure": "US_OPEN_REPRICING",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "TENTATIVE",
+        "axis": "B_US_OPEN_TURBULENCE",
+        "operator_hint_cn": "开盘再定价阶段，避免过早升 HIGH。",
+        "rationale_cn": (
+            "21:30-23:00 UTC+8 为纽约开盘湍流阶段，60m 代理显示 +1.49pp 偏脆但不稳；"
+            "本版本保持中性保守，避免过早升高前提耐久度，不改写 confidence。"),
+    },
+    "US_DEEP_POST_CATALYST": {
+        "clock_window": "23:00-04:00",
+        "start_min": 1380,
+        "end_min": 1440,
+        "backtest_delta_pp": -1.49,
+        "theory_zone": "HIGH",
+        "base_zone": "HIGH",
+        "effective_zone": "RAISE_DURABILITY_TENTATIVE",
+        "display_label": "升耐久（中等信心）",
+        "premise_durability": "RAISE_DURABILITY_TENTATIVE",
+        "liquidity_depth": "DEEP",
+        "catalyst_exposure": "POST_CATALYST",
+        "adjustment_direction": "INCREASE",
+        "evidence_level": "TENTATIVE",
+        "axis": "A_DEEP_LIQUIDITY_AND_POST_CATALYST",
+        "operator_hint_cn": "可中等提高前提耐久度，但仍保持审计提示口径。",
+        "rationale_cn": (
+            "23:00-04:00 UTC+8 属美盘深流动性/催化剂已消化窗口；三年 K 线代理显示"
+            "复合重写率 -1.49pp，方向与理论一致但仍属暂定，因此只作为中等幅度提高"
+            "前提耐久度的人工提示，不改写 confidence。"),
+    },
+}
+
 _SESSION_TRANSITION_CN = {
     "LOW_TO_MEDIUM_BUFFER": "低转中缓冲带",
     "MEDIUM_TO_HIGH_BUFFER": "中转高缓冲带",
@@ -3472,21 +3634,21 @@ def _local_session_times(ms):
 
 
 def _base_session_zone(times):
-    ny_h = _hour_float(times["ny"])
-    lon_h = _hour_float(times["lon"])
     sh_h = _hour_float(times["sh"])
-    if 11.0 <= ny_h < 16.0:
+    if 23.0 <= sh_h or sh_h < 4.0:
         return "HIGH", "US_DEEP_POST_CATALYST"
-    if 9.5 <= ny_h < 11.0:
+    if 21.5 <= sh_h < 23.0:
         return "MEDIUM", "US_OPEN_TURBULENCE"
-    if 6.0 <= ny_h < 9.5:
+    if 18.0 <= sh_h < 21.5:
         return "LOW", "PRE_US_TRAPDOOR"
-    if 16.0 <= ny_h < 20.0:
-        return "LOW", "POST_US_DEADZONE"
-    if 8.0 <= lon_h < 11.0:
+    if 15.0 <= sh_h < 18.0:
         return "MEDIUM", "LONDON_EARLY"
+    if 11.5 <= sh_h < 15.0:
+        return "LOW", "ASIA_AFTERNOON_LULL"
     if 8.0 <= sh_h < 11.5:
         return "MEDIUM", "ASIA_MORNING"
+    if 4.0 <= sh_h < 8.0:
+        return "LOW", "POST_US_DEADZONE"
     return "LOW", "ASIA_AFTERNOON_LULL"
 
 
@@ -3601,34 +3763,43 @@ def classify_signal_session_context(confirmed_time_ms, config=None):
     not change EDB confidence, blocking, side hint, or downstream permission.
     """
     config = config or CONFIG
-    buffer_min = safe_float(config.get("signal_session_boundary_buffer_min"))
-    if buffer_min is None:
-        buffer_min = 60.0
-    high_min = safe_float(config.get("signal_session_high_confirmation_min"))
-    if high_min is None:
-        high_min = buffer_min
+    buffer_min = 0.0
 
     if safe_float(confirmed_time_ms) is None:
         return {
-            "schema": "signal_session_context@1.0.0",
+            "schema": "SignalSessionPremiseDurabilityContext@1.0.0",
+            "schema_name": "SignalSessionPremiseDurabilityContext",
+            "schema_version": "1.0.0",
+            "clock_window": None,
+            "start_min": None,
+            "end_min": None,
+            "backtest_delta_pp": None,
+            "theory_zone": "LOW",
             "base_zone": "LOW",
             "effective_zone": "LOW",
             "display_label": "LOW",
             "premise_durability": "LOW",
             "liquidity_depth": "THIN",
             "catalyst_exposure": "HIGH",
+            "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+            "evidence_level": "MISSING",
+            "axis": "MISSING_CONFIRMED_TIME",
             "rationale_code": "MISSING_CONFIRMED_TIME",
             "rationale_cn": "确认时间缺失，时区前提无法判定；观察层按低前提耐久度保守展示。",
-            "transition": {"active": False},
-            "boundary_buffer_min": int(round(buffer_min)),
-            "buffer_policy": "CONSERVATIVE_LOWER_TIER",
+            "operator_hint_cn": "补齐确认时间后再判定时区前提耐久度。",
+            "transition": {"active": False, "policy": "DISPLAY_ONLY_NO_CONFIDENCE_CHANGE"},
+            "boundary_buffer_min": 0,
+            "buffer_policy": "DIRECT_UTC8_SUMMER_BUCKET_MAPPING",
             "dst_mode": None,
             "london_dst_mode": None,
             "utc8_time": None,
             "is_weekend": None,
             "weekend_adjustment": {"applied": False},
-            "event_blackout": None,
-            "calibration_state": "UNCALIBRATED",
+            "event_blackout": {"active": False},
+            "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+            "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+            "confidence_multiplier": 1.0,
+            "validation_basis": dict(_SESSION_VALIDATION_BASIS),
             "phase": "PHASE_0_OBSERVE_ONLY",
             "affects_confidence": False,
             "affects_blocking": False,
@@ -3640,57 +3811,75 @@ def classify_signal_session_context(confirmed_time_ms, config=None):
     event_blackout = _event_blackout_context(times, config)
     if event_blackout:
         base_zone, code = "LOW", "EVENT_BLACKOUT"
-        effective_zone, display_label = "LOW", "EVENT_BLACKOUT"
-        transition = {"active": False}
     else:
         base_zone, code = _base_session_zone(times)
-        effective_zone, display_label, transition = _session_buffer_transition(
-            base_zone, code, times, buffer_min, high_min)
 
-    # Weekend handling is a conservative liquidity adjustment. It is independent
-    # from confidence scoring and kept explicit for later calibration.
-    weekend = times["sh"].weekday() >= 5
-    weekend_adjustment = {"applied": False}
-    if weekend and not event_blackout:
-        before = effective_zone
-        effective_zone = _SESSION_ZONE_DOWN.get(effective_zone, effective_zone)
-        weekend_adjustment = {
-            "applied": before != effective_zone,
-            "from_zone": before,
-            "to_zone": effective_zone,
-            "policy": "CN_WEEKEND_CONSERVATIVE_DOWNGRADE",
+    template = dict(_SESSION_PREMISE_CONTEXTS.get(code) or {})
+    if not template:
+        liquidity_depth, catalyst_exposure = _session_zone_props(base_zone, code)
+        template = {
+            "clock_window": None,
+            "start_min": None,
+            "end_min": None,
+            "backtest_delta_pp": None,
+            "theory_zone": base_zone,
+            "base_zone": base_zone,
+            "effective_zone": "LOW",
+            "display_label": code,
+            "premise_durability": "LOW",
+            "liquidity_depth": liquidity_depth,
+            "catalyst_exposure": catalyst_exposure,
+            "adjustment_direction": "DECREASE",
+            "evidence_level": "EVENT" if event_blackout else "UNKNOWN",
+            "axis": code,
+            "operator_hint_cn": "事件窗口仅作为观察层提示，不改写 confidence。",
+            "rationale_cn": _SESSION_RATIONALE_CN.get(code, code),
         }
 
-    liquidity_depth, catalyst_exposure = _session_zone_props(effective_zone, code)
-    if display_label in _SESSION_ZONE_ORDER:
-        display_label = effective_zone
-    rationale = _SESSION_RATIONALE_CN.get(code, code)
-    if transition.get("active"):
-        rationale = (transition.get("label_cn") + "：" + rationale
-                     + " 校准前按相邻低档保守处理。")
-    if weekend_adjustment.get("applied"):
-        rationale += " 周末流动性下调一档。"
+    transition = {
+        "active": False,
+        "boundary": template.get("clock_window", "").split("-")[0] or None,
+        "minutes_from_boundary": None,
+        "policy": "DISPLAY_ONLY_NO_CONFIDENCE_CHANGE",
+    }
+    weekend = times["sh"].weekday() >= 5
+    weekend_adjustment = {"applied": False}
+    event_context = event_blackout or {"active": False}
 
     return {
-        "schema": "signal_session_context@1.0.0",
-        "base_zone": base_zone,
-        "effective_zone": effective_zone,
-        "display_label": display_label,
-        "premise_durability": effective_zone,
-        "liquidity_depth": liquidity_depth,
-        "catalyst_exposure": catalyst_exposure,
+        "schema": "SignalSessionPremiseDurabilityContext@1.0.0",
+        "schema_name": "SignalSessionPremiseDurabilityContext",
+        "schema_version": "1.0.0",
+        "clock_window": template.get("clock_window"),
+        "start_min": template.get("start_min"),
+        "end_min": template.get("end_min"),
+        "backtest_delta_pp": template.get("backtest_delta_pp"),
+        "theory_zone": template.get("theory_zone", base_zone),
+        "base_zone": template.get("base_zone", base_zone),
+        "effective_zone": template.get("effective_zone"),
+        "display_label": template.get("display_label"),
+        "premise_durability": template.get("premise_durability"),
+        "liquidity_depth": template.get("liquidity_depth"),
+        "catalyst_exposure": template.get("catalyst_exposure"),
+        "adjustment_direction": template.get("adjustment_direction"),
+        "evidence_level": template.get("evidence_level"),
+        "axis": template.get("axis"),
         "rationale_code": code,
-        "rationale_cn": rationale,
+        "rationale_cn": template.get("rationale_cn"),
+        "operator_hint_cn": template.get("operator_hint_cn"),
         "transition": transition,
         "boundary_buffer_min": int(round(buffer_min)),
-        "buffer_policy": "CONSERVATIVE_LOWER_TIER",
+        "buffer_policy": "DIRECT_UTC8_SUMMER_BUCKET_MAPPING",
         "dst_mode": times["dst_mode"],
         "london_dst_mode": times["london_dst_mode"],
         "utc8_time": _iso8601_utc8(confirmed_time_ms),
         "is_weekend": weekend,
         "weekend_adjustment": weekend_adjustment,
-        "event_blackout": event_blackout,
-        "calibration_state": "UNCALIBRATED",
+        "event_blackout": event_context,
+        "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+        "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+        "confidence_multiplier": 1.0,
+        "validation_basis": dict(_SESSION_VALIDATION_BASIS),
         "phase": "PHASE_0_OBSERVE_ONLY",
         "affects_confidence": False,
         "affects_blocking": False,
@@ -3879,6 +4068,7 @@ def build_audit_record(card, config=None):
     support = conclusion.get("support_label")
     cal = conclusion.get("calibration_state") or "UNCALIBRATED"
 
+    session_context = window.get("session_context") or {}
     record = {
         "schema": {
             "name": "signal_review_card",
@@ -3938,8 +4128,10 @@ def build_audit_record(card, config=None):
             "interpretation_cn": (
                 "时序窗口已确认修复，但窗口只确定审计时点，不单独决定交易方向。"
                 if window.get("is_active") else "时序窗口未开，方向仅作观察预热。"),
-            "session_context": window.get("session_context"),
+            "session_context": session_context,
         },
+        "decision_matrix": _audit_decision_matrix(
+            conclusion, blocking, conflict, session_context),
         "blocking": _audit_blocking(blocking),
         "reasoning": _audit_reasoning(reasoning, decomp, cal),
         "conflict": {
@@ -3963,6 +4155,52 @@ def build_audit_record(card, config=None):
     }
     record["integrity"] = _audit_integrity(record)
     return record
+
+
+def _audit_decision_matrix(conclusion, blocking, conflict, session_context):
+    support = conclusion.get("support_label")
+    has_block = bool((blocking or {}).get("has_block"))
+    hard_veto = (blocking or {}).get("hard_veto") or {}
+    conflict_ratio = safe_float((conflict or {}).get("ratio"))
+    if support in ("TRADE_SUPPORT_STRONG", "TRADE_SUPPORT_WEAK") and not has_block:
+        decision_state = "APPROVABLE"
+    elif hard_veto:
+        decision_state = "BLOCKED"
+    else:
+        decision_state = "WAIT_CONFIRMATION"
+    if conflict_ratio is None:
+        audit_dissent = "PENDING_LLM"
+    elif conflict_ratio >= 0.30:
+        audit_dissent = "CONFLICT"
+    elif conflict_ratio >= 0.15:
+        audit_dissent = "WATCH"
+    else:
+        audit_dissent = "LOW"
+    return {
+        "schema_name": "SignalDecisionMatrix",
+        "window": "CONFIRMED",
+        "direction": conclusion.get("lean"),
+        "decision_state": decision_state,
+        "temporal_durability": (session_context or {}).get("premise_durability"),
+        "audit_dissent": audit_dissent,
+        "execution_allowed": bool((blocking or {}).get("execution_allowed")),
+        "model_trade_support": support in ("TRADE_SUPPORT_STRONG",
+                                           "TRADE_SUPPORT_WEAK"),
+        "reason_codes": _audit_decision_reason_codes(support, blocking),
+    }
+
+
+def _audit_decision_reason_codes(support, blocking):
+    codes = []
+    hard_veto = (blocking or {}).get("hard_veto") or {}
+    if hard_veto.get("veto_reason"):
+        codes.append(str(hard_veto.get("veto_reason")))
+    for gate in (blocking or {}).get("soft_gates") or []:
+        if isinstance(gate, dict) and gate.get("reason_code"):
+            codes.append(str(gate.get("reason_code")))
+    if support:
+        codes.append("SUPPORT_LABEL_" + str(support))
+    return codes
 
 
 def render_push_brief(card, config=None):

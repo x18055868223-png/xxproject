@@ -6,6 +6,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BOOTSTRAP = ROOT / "tools" / "server_bootstrap_signal_stack.sh"
+SELF_CHECK = ROOT / "tools" / "server_self_check_signal_stack.sh"
 MIGRATION = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION.md"
 MIGRATION_ZH = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION_ZH.md"
 
@@ -18,12 +19,15 @@ def assert_true(condition, message):
 def main():
     assert_true(BOOTSTRAP.exists(),
                 "new-server bootstrap script should exist")
+    assert_true(SELF_CHECK.exists(),
+                "server self-check script should exist")
     assert_true(MIGRATION.exists(),
                 "server migration README should exist")
     assert_true(MIGRATION_ZH.exists(),
                 "Chinese server migration quick runbook should exist")
 
     script = BOOTSTRAP.read_text(encoding="utf-8")
+    self_check = SELF_CHECK.read_text(encoding="utf-8")
     doc = MIGRATION.read_text(encoding="utf-8")
     doc_zh = MIGRATION_ZH.read_text(encoding="utf-8")
 
@@ -33,8 +37,8 @@ def main():
                 "bootstrap should fail closed")
     assert_true("https://github.com/x18055868223-png/xxproject.git" in script,
                 "bootstrap should default to the xxproject primary repo")
-    assert_true('RELEASE_REF="${RELEASE_REF:-r3.2}"' in script,
-                "bootstrap should default to the current r3.2 release")
+    assert_true('RELEASE_REF="${RELEASE_REF:-r3.2.1}"' in script,
+                "bootstrap should default to the current r3.2.1 release")
     for token in (
             "install_or_update.sh",
             "server_self_check_signal_stack.sh",
@@ -45,6 +49,7 @@ def main():
             "GEX_STATE_DIR",
             "GEX_BIND_HOST",
             "GEX_REQUIRED",
+            "SESSION_CONTEXT_REQUIRED=1",
             "CACHE_FILE=",
             "HISTORY_FILE=",
             "10-bootstrap-overrides.conf",
@@ -62,6 +67,16 @@ def main():
                 "bootstrap may create templates, not real secrets")
     assert_true("AIza" not in script and "sk-" not in script,
                 "bootstrap must not embed API keys")
+    for token in (
+            "SESSION_CONTEXT_REQUIRED",
+            "SignalSessionPremiseDurabilityContext",
+            "compat_backfill_applied",
+            "strategy_version",
+            "1.4.1",
+            "latest card uses materializer compatibility backfill",
+            "latest card strategy_version is not 1.4.1"):
+        assert_true(token in self_check,
+                    "server self-check should enforce " + token)
 
     if shutil.which("bash"):
         bash_check = subprocess.run(
@@ -76,7 +91,7 @@ def main():
 
     for token in (
             "xxproject",
-            "r3.2",
+            "r3.2.1",
             "/etc/signal-audit/llm.env",
             "/etc/gexmonitorapi.env",
             "/var/lib/gexmonitorapi",
@@ -90,7 +105,9 @@ def main():
             "API_TOKEN",
             "FMZ",
             "history",
-            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.2",
+            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.2.1",
+            "SESSION_CONTEXT_REQUIRED=1",
+            "SignalSessionPremiseDurabilityContext",
             "active verification",
             "rsync --delete",
             "commit hash"):
@@ -101,7 +118,7 @@ def main():
                 "Chinese migration runbook must not embed API keys")
     for token in (
             "xxproject",
-            "r3.2",
+            "r3.2.1",
             "server_bootstrap_signal_stack.sh",
             "SERVER_MIGRATION.md",
             "/etc/signal-audit/llm.env",
@@ -112,6 +129,7 @@ def main():
             "signal_review.jsonl",
             "signal_llm_reviews.jsonl",
             "GEX_REQUIRED=0",
+            "SESSION_CONTEXT_REQUIRED=1",
             "server_self_check_signal_stack.sh --run-oneshots",
             "FAIL=0",
             "signal-audit-deploy"):

@@ -14,6 +14,7 @@ AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
 LLM_REQUIRED="${LLM_REQUIRED:-0}"
+SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -143,6 +144,7 @@ printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
 printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
 printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
+printf 'SESSION_CONTEXT_REQUIRED=%s\n' "$SESSION_CONTEXT_REQUIRED"
 
 have curl && ok "curl available" || fail "curl missing"
 have python3 && ok "python3 available" || fail "python3 missing"
@@ -232,6 +234,55 @@ PY
   fi
 else
   fail "audit manifest not readable at $AUDIT_ROOT/signal_cards/index.json"
+fi
+if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
+  if python3 - "$AUDIT_ROOT" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
+cards = manifest.get("cards") or []
+if not cards:
+    raise SystemExit("no cards")
+path = root / cards[0].get("path", "")
+card = json.loads(path.read_text(encoding="utf-8"))
+identity = card.get("identity") or {}
+ctx = ((card.get("signal_window") or {}).get("session_context") or {})
+matrix = card.get("decision_matrix") or {}
+required = [
+    "schema_name", "clock_window", "adjustment_direction", "evidence_level",
+    "backtest_delta_pp", "validation_basis", "confidence_policy",
+]
+missing = [key for key in required if ctx.get(key) in (None, "")]
+print("latest_audit_card_id:", identity.get("card_id") or cards[0].get("card_id"))
+print("latest_strategy_version:", identity.get("strategy_version"))
+print("session_schema_name:", ctx.get("schema_name"))
+print("session_rationale_code:", ctx.get("rationale_code"))
+print("session_clock_window:", ctx.get("clock_window"))
+print("session_backtest_delta_pp:", ctx.get("backtest_delta_pp"))
+print("session_compat_backfill_applied:", ctx.get("compat_backfill_applied"))
+print("decision_temporal_durability:", matrix.get("temporal_durability"))
+if ctx.get("schema_name") != "SignalSessionPremiseDurabilityContext":
+    raise SystemExit(2)
+if missing:
+    raise SystemExit("missing session context fields: " + ",".join(missing))
+if not isinstance(ctx.get("validation_basis"), dict):
+    raise SystemExit("validation_basis not structured")
+if matrix.get("temporal_durability") != ctx.get("premise_durability"):
+    raise SystemExit("decision_matrix temporal_durability mismatch")
+if ctx.get("compat_backfill_applied"):
+    raise SystemExit("latest card uses materializer compatibility backfill")
+if str(identity.get("strategy_version")) != "1.4.1":
+    raise SystemExit("latest card strategy_version is not 1.4.1")
+PY
+  then
+    ok "latest audit card has native v1.4.1 session_context premise durability schema"
+  else
+    if [ "$SESSION_CONTEXT_REQUIRED" = "1" ]; then
+      fail "latest audit card lacks native v1.4.1 session_context premise durability schema"
+    else
+      warn "latest audit card lacks native v1.4.1 session_context premise durability schema"
+    fi
+  fi
 fi
 
 section "LLM review sidecar"

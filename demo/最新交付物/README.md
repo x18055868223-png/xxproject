@@ -1,15 +1,15 @@
-> 当前交付物口径（r2.2 / 2026-06-19）：本目录仍是 FMZ 可部署单文件入口；当前信号层 `demo_version=1.3.0`，当前执行层 `STRATEGY_VERSION=2.5.0` 且交易门默认关闭。审计前端、GEX rank 与 Gemini LLM 复核属于服务器旁路/展示链路，不代表执行层启用。
+> 当前交付物口径（r3.2.1 / 2026-06-24）：本目录仍是 FMZ 可部署单文件入口；当前信号层 `demo_version=1.4.1`，当前执行层 `STRATEGY_VERSION=2.5.0` 且交易门默认关闭。审计前端、GEX rank 与 Gemini LLM 复核属于服务器旁路/展示链路，不代表执行层启用。
 # 最新交付物（FMZ 可直接部署单文件）
 
 > 用途：本文件夹**只放最新的、可直接部署到 FMZ 的两份单文件 Python 策略**——拿来即用、即测，与因子文档/源码分离。
 > 每次迭代覆盖更新本文件夹，并在 [`../副本快照/`](../副本快照/) 留一份带版本+时间的快照。
-> 最后更新：2026-06-18　|　信号层 **v1.3.0**（紧凑推送仍被 FMZ 截断 → 采纳 JSON 留档标准：全量 v1.0 记录写 `signal_review.jsonl`，FMZ 只推 ≤140 字符简要；JSON 字段已对齐静态审计页面 `signal_cards/index.json + signal_cards/*.json` 契约）。标定阈值仍 PLACEHOLDER、`ALLOW_TRADING` 仍 False、闸 B 实盘仍待实盘复观——**非"策略已验证"**。
+> 最后更新：2026-06-24　|　信号层 **v1.4.1**（全量 v1.0 审计 JSON + 完整 `SignalSessionPremiseDurabilityContext` + `decision_matrix.temporal_durability`；FMZ 仍只推 ≤140 字符简要，LLM/GEX/静态页面仍属于服务器旁路）。标定阈值仍 PLACEHOLDER、`ALLOW_TRADING` 仍 False、闸 B 实盘仍待实盘复观——**非"策略已验证"**。
 
 ## 文件清单
 
 | 文件 | 层 | 版本 | 运行边界 | 源 / 重生成 |
 |---|---|---|---|---|
-| `neutral_regulation_demo_fmz.py` | ① 信号层·中性回路 | demo **1.3.0** / schema `nrd.schema.v1.0.0`（全量 v1.0 审计 JSON 写 jsonl + FMZ ≤140 简要推送 + 推送自检） | **只读观察**：不选腿、不报价、不下单（`read_only_demo=True`） | `中性回路 - opus4.8/`；`tools/build_fmz_single.ps1` 由 `demo/*.py` 合成 |
+| `neutral_regulation_demo_fmz.py` | ① 信号层·中性回路 | demo **1.4.1** / schema `nrd.schema.v1.0.0`（全量 v1.0 审计 JSON 写 jsonl + 完整时区/前提耐久度上下文 + 决策矩阵镜像 + FMZ ≤140 简要推送） | **只读观察**：不选腿、不报价、不下单（`read_only_demo=True`） | `中性回路 - opus4.8/`；`tools/build_fmz_single.ps1` 由 `demo/*.py` 合成 |
 | `spm_calendar_protected_short_v1.py` | ② 执行层·Deribit S:PM 垂直信用价差卖方 | STRATEGY_VERSION **2.5.0**（v3 重构（风险严重度→仲裁+审计整改 / 持仓后链路补强 / 开仓活动跨轮持久 / 对冲场所可选）：垂直唯一 + 单一 `run_cycle` 主链 + 交互控制台/短确认码硬授权 + 软授权止盈 + 低成本退出 + 对冲生命周期 + **风险触发主动退出(EXIT_PREFERRED·可越价吃单)/对冲(HEDGE_READY)**，场所 **Deribit BTC-PERPETUAL 默认 / Binance BTCUSDC maker-0 可选**） | **全空跑**：5 门控 `ALLOW_ENTRY/EXIT/HEDGE_TRADING` + `KILL_NEW_RISK` + `EMERGENCY_REDUCE_ONLY` 默认 False，仅展示意图/控制台、不真实下单 | `demo/execution_build/realsrc/`；`python build_bundle.py` 由 `src/*.py` 合成 |
 
 ## 部署到 FMZ
@@ -33,6 +33,13 @@
 - 本文件夹**永远是"最新可部署"**：每次源码迭代 → 重生成单文件 → 覆盖本文件夹两份。
 - 同时在 `../副本快照/` 新建 `YYYY-MM-DD_信号<ver>_执行<ver>_<特性>` 子文件夹，拷入两份带版本+时间后缀的副本 + `快照说明.md`。
 - 本文件夹**不放因子文档/源码**，只放成品单文件。
+
+## v1.4.1 变更（时区/前提耐久度生产者收口，2026-06-24）
+本轮修正上一次只更新服务器旁路和前端、但 FMZ 信号层本体仍输出旧 `signal_session_context@1.0.0` 轻量字段的混淆。**只改审计输出与可观测，不改方向/EDB/阻断/执行契约。**
+- **FMZ 生产者原生输出完整 session context**：`classify_signal_session_context` 现在输出 `SignalSessionPremiseDurabilityContext@1.0.0`、`clock_window`、`backtest_delta_pp`、`validation_basis`、`confidence_policy`、`operator_hint_cn` 等字段。
+- **封板决策矩阵补齐时间耐久镜像**：`build_audit_record` 写入 `decision_matrix.temporal_durability`，用于前端封板决策矩阵展示，不改变系统方向、置信、门控或交易许可。
+- **兼容回填只属于 materializer**：历史旧卡可以被 materializer 补齐展示字段，但必须带 `compat_backfill_applied=true`，不得伪装为 FMZ 源端原生输出。
+- **发布验收新规则**：服务器验收必须使用 `SESSION_CONTEXT_REQUIRED=1`；若最新真实卡缺完整时区上下文或决策矩阵镜像，不得封版。
 
 ## v1.3.0 变更（JSON 留档 + 简要推送，2026-06-18）
 紧凑推送（~324c）实盘仍被 FMZ 截断 → 采纳《信号审计 JSON、FMZ 推送与静态 Web 标准 v1.0》（`docs/`）。**只改留档/推送/可观测，不改方向/EDB/阻断/执行契约；nrd schema 仍 v1.0.0。**

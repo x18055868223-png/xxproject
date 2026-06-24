@@ -46,6 +46,24 @@ def assert_asset_root(root):
                      "POST_US_DEADZONE"):
         assert_true(expected in codes, "static cards should cover " + expected)
     for _path, card, ctx in cards:
+        identity = card.get("identity") or {}
+        assert_true(identity.get("strategy_version") == "1.4.1",
+                    "deploy fixture should match current FMZ producer version")
+        assert_true(ctx.get("schema_name") == "SignalSessionPremiseDurabilityContext",
+                    "session_context should use full premise durability schema")
+        assert_true(ctx.get("compat_backfill_applied") is not True,
+                    "deploy fixture should represent native producer output, not materializer backfill")
+        for key in ("clock_window", "adjustment_direction", "evidence_level",
+                    "backtest_delta_pp", "validation_basis"):
+            assert_true(ctx.get(key) not in (None, ""),
+                        "session_context missing " + key)
+        assert_true(isinstance(ctx.get("validation_basis"), dict),
+                    "validation_basis should be structured")
+        assert_true(ctx["validation_basis"].get("source_document")
+                    == "结论档案_各时段信号耐久度_2023-2026_v1",
+                    "validation_basis should cite source document")
+        assert_true(ctx.get("confidence_policy") == "DO_NOT_MULTIPLY_CONFIDENCE",
+                    "session_context must not multiply confidence")
         assert_true(ctx.get("affects_confidence") is False,
                     "session_context should not affect confidence")
         assert_true(ctx.get("affects_blocking") is False,
