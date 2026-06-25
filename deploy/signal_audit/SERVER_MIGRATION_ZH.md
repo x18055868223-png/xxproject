@@ -1,4 +1,4 @@
-# 信号层配套服务新服务器迁移速查
+﻿# 信号层配套服务新服务器迁移速查
 
 本文件用于回答一个实操问题：如果后续迁移服务器，是否能用当前仓库资产快速复建一份完整的信号层配套服务。
 
@@ -7,7 +7,7 @@
 ## 当前权威来源
 
 - 主仓库：`https://github.com/x18055868223-png/xxproject.git`
-- 当前迁移默认 release：`r3.2.1`
+- 当前迁移默认 release：`r3.3.1`
 - 快速 bootstrap 脚本：`tools/server_bootstrap_signal_stack.sh`
 - 完整英文 runbook：`deploy/signal_audit/SERVER_MIGRATION.md`
 - 审计页面安装脚本：`deploy/signal_audit/install_or_update.sh`
@@ -48,11 +48,11 @@
 在新服务器上用 sudo 用户执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.2.1/tools/server_bootstrap_signal_stack.sh \
+curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.3.1/tools/server_bootstrap_signal_stack.sh \
   -o /tmp/server_bootstrap_signal_stack.sh
 chmod +x /tmp/server_bootstrap_signal_stack.sh
 
-RELEASE_REF=r3.2.1 \
+RELEASE_REF=r3.3.1 \
 REPO_DIR=/opt/repos/neutral-loop \
 INSTALL_GEX=0 \
 GEX_REQUIRED=0 \
@@ -64,7 +64,7 @@ RUN_SELF_CHECK=1 \
 
 ```bash
 INSTALL_SYSTEM_PACKAGES=1 \
-RELEASE_REF=r3.2.1 \
+RELEASE_REF=r3.3.1 \
 REPO_DIR=/opt/repos/neutral-loop \
 INSTALL_GEX=0 \
 GEX_REQUIRED=0 \
@@ -154,12 +154,12 @@ GEX_REQUIRED=0 LLM_REQUIRED=1 SESSION_CONTEXT_REQUIRED=1 sudo -E bash tools/serv
 
 期望：
 
-- `git describe --tags --exact-match` 输出 `r3.2.1`。
+- `git describe --tags --exact-match` 输出 `r3.3.1`。
 - self-check 汇总 `FAIL=0`。
 - `signal-audit-materialize.service` 的 `Result=success`。
 - `signal-audit-llm-review.service` 的 `Result=success`。
 - `LLM_REQUIRED=1` 模式下两个 Gemini 通道 key 都必须加载，且最新 signal card 必须有 `status=OK`、`blind_review_mode=two_call_strict`、`llm_call_count>=2` 的 sidecar 复核。
-- `SESSION_CONTEXT_REQUIRED=1` 模式下最新真实卡必须来自 `identity.strategy_version=1.5.0` 的 FMZ 生产者，且不能带 `compat_backfill_applied=true`；同时必须有 `SignalSessionPremiseDurabilityContext`、`clock_window`、`backtest_delta_pp`、结构化 `validation_basis`、`confidence_policy` 和 `decision_matrix.temporal_durability`。若本次把变化链纳入封版，还应设置 `TRANSITION_REQUIRED=1` 与 `TRANSITION_LLM_REQUIRED=1`，并确认最新卡 `transition_context.audit_scope=AUDIT_ONLY`、私有 `signal_transition_ledger.jsonl` 对齐最新卡、transition LLM review 保留 `no_trading_instruction` guard。否则说明 FMZ 生产者、materializer 或部署链路仍未闭环，不得封版。
+- `SESSION_CONTEXT_REQUIRED=1` 模式下最新真实卡必须来自 `identity.strategy_version=1.5.1` 的 FMZ 生产者，且不能带 `compat_backfill_applied=true`；同时必须有 `SignalSessionPremiseDurabilityContext`、`clock_window`、`backtest_delta_pp`、结构化 `validation_basis`、`confidence_policy` 和 `decision_matrix.temporal_durability`，并原生带有 `factor_cross_section.macro_pressure.macro_shock.state/block`。若本次把变化链纳入封版，还应设置 `TRANSITION_REQUIRED=1` 与 `TRANSITION_LLM_REQUIRED=1`，并确认最新卡 `transition_context.audit_scope=AUDIT_ONLY`、私有 `signal_transition_ledger.jsonl` 对齐最新卡、transition LLM review 保留 `no_trading_instruction` guard。否则说明 FMZ 生产者、materializer 或部署链路仍未闭环，不得封版。
 - `http://127.0.0.1/signal-audit/` 返回 HTTP 200。
 - `http://127.0.0.1/signal-audit/signal_cards/index.json` 返回 HTTP 200 且有真实卡片。
 

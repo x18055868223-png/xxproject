@@ -116,6 +116,89 @@ def transition_record():
                 "meaning": "RISK_HEADWIND_SIGN_FLIP",
             },
         ],
+        "core_skeleton": {
+            "schema_version": "transition_core_skeleton@1.0.0",
+            "timeline": {
+                "previous_card_id": "CARD-A",
+                "current_card_id": "CARD-B",
+                "elapsed_ms": 3600000,
+                "comparison_quality": "HIGH",
+            },
+            "domains": [
+                {
+                    "domain": "TMV",
+                    "previous": {"tmv_blend": 0.42, "tmvf_24h_final": 0.31},
+                    "current": {"tmv_blend": 0.18, "tmvf_24h_final": 0.11},
+                    "source_refs": ["factor_cross_section.tmvf"],
+                },
+                {
+                    "domain": "MACRO",
+                    "previous": {"macro_score": 0.0309},
+                    "current": {"macro_score": 0.4588},
+                    "source_refs": ["factor_cross_section.macro_pressure"],
+                },
+                {
+                    "domain": "FUNDING",
+                    "previous": {"last_rate": 0.000015},
+                    "current": {"last_rate": 0.000054},
+                    "source_refs": ["factor_cross_section.funding"],
+                },
+                {
+                    "domain": "GAMMA",
+                    "previous": {"net_gamma_notional_usd": 12400000.0},
+                    "current": {"net_gamma_notional_usd": -7600000.0},
+                    "source_refs": ["factor_cross_section.gamma_regime"],
+                },
+                {
+                    "domain": "P_C_RATIO",
+                    "previous": {"put_call_ratio": 0.92},
+                    "current": {"put_call_ratio": 1.22},
+                    "source_refs": ["factor_cross_section.gex_info"],
+                },
+                {
+                    "domain": "CONFLICT",
+                    "previous": {"ratio": 0.18, "level": "LOW"},
+                    "current": {"ratio": 0.62, "level": "MATERIAL"},
+                    "source_refs": ["conflict"],
+                },
+            ],
+        },
+        "domain_change_summaries": [
+            {
+                "domain": "MACRO",
+                "materiality": "CRITICAL",
+                "raw_change_count": 2,
+                "primary_fields": [
+                    "factor_cross_section.macro_pressure.macro_score",
+                    "factor_cross_section.macro_pressure.components.US10Y.scoring_bps",
+                ],
+                "source_refs": ["factor_cross_section.macro_pressure"],
+                "children": [],
+            },
+            {
+                "domain": "FUNDING",
+                "materiality": "HIGH",
+                "raw_change_count": 1,
+                "primary_fields": ["factor_cross_section.funding.last_rate"],
+                "source_refs": ["factor_cross_section.funding"],
+                "children": [],
+            },
+            {
+                "domain": "GAMMA",
+                "materiality": "HIGH",
+                "raw_change_count": 1,
+                "primary_fields": ["factor_cross_section.gamma_regime.net_gamma_notional_usd"],
+                "source_refs": ["factor_cross_section.gamma_regime"],
+                "children": [],
+            },
+        ],
+        "raw_change_groups": [
+            {
+                "domain": "MACRO",
+                "raw_change_count": 2,
+                "children": [],
+            },
+        ],
         "trajectory": {
             "recent_event_count": 2,
             "macro_direction": "DETERIORATING",
@@ -216,10 +299,20 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
     transition = transition_record()
     packet = tool.build_transition_review_packet(transition)
     packet_text = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    assert_true("core_skeleton" in packet,
+                "transition packet should lead with the multi-domain event skeleton")
+    assert_true("domain_change_summaries" in packet,
+                "transition packet should include grouped domain summaries")
+    assert_true(packet["domain_change_summaries"][0]["domain"] == "MACRO",
+                "MACRO should be represented once as a grouped domain summary")
+    assert_true(len([item for item in packet["domain_change_summaries"]
+                     if item.get("domain") == "MACRO"]) == 1,
+                "transition packet should not repeat split MACRO component rows as top-level changes")
     assert_true("top_material_changes" in packet_text,
-                "transition packet should include program-calculated material deltas")
-    assert_true("FULL_AUDIT_PACKET" not in packet_text and "factor_cross_section" not in packet_text,
-                "transition packet must not embed full audit cards")
+                "transition packet should keep raw material deltas only as trace")
+    assert_true("FULL_AUDIT_PACKET" not in packet_text
+                and '"factor_cross_section":' not in packet_text,
+                "transition packet must not embed full audit card objects")
     assert_true("trade_allowed" not in packet_text and "position" not in packet_text,
                 "transition packet should not include execution/account fields")
     prompt = tool.build_transition_review_prompt(packet)
@@ -231,6 +324,8 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
                 "transition prompt should forbid trading advice")
     assert_true("SignalTransitionReviewPacket" in prompt,
                 "transition prompt should name the packet boundary")
+    assert_true("core_skeleton" in prompt and "domain_change_summaries" in prompt,
+                "transition prompt should anchor the LLM to skeleton and grouped summaries")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)
@@ -621,13 +716,16 @@ def test_frontend_renders_session_context_between_rank_and_llm_review():
     html = FRONTEND_HTML.read_text(encoding="utf-8")
     rank_idx = app.find("${renderGexRank(doc)}")
     session_idx = app.find("${renderSignalSessionContext(doc)}")
+    transition_idx = app.find("${renderTransitionContext(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
     decision_idx = app.find("${renderDecision(doc)}")
-    assert_true(rank_idx != -1 and session_idx != -1 and llm_idx != -1
-                and decision_idx != -1,
-                "rank, session context, llm, decision render calls should exist")
-    assert_true(rank_idx < session_idx < llm_idx < decision_idx,
-                "session context should render after rank and before LLM review")
+    assert_true(rank_idx != -1 and session_idx != -1 and transition_idx != -1
+                and llm_idx != -1,
+                "rank, session context, transition, and llm render calls should exist")
+    assert_true(decision_idx == -1,
+                "low-signal decision conclusion should not render in the main flow")
+    assert_true(rank_idx < session_idx < transition_idx < llm_idx,
+                "session context should render after rank and before transition/LLM review")
     assert_true(".llm-review-panel" in html and ".llm-review-summary" in html,
                 "LLM review should have prominent panel styling")
     for text in (

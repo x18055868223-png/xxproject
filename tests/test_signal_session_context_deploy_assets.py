@@ -47,8 +47,15 @@ def assert_asset_root(root):
         assert_true(expected in codes, "static cards should cover " + expected)
     for _path, card, ctx in cards:
         identity = card.get("identity") or {}
-        assert_true(identity.get("strategy_version") == "1.5.0",
+        assert_true(identity.get("strategy_version") == "1.5.1",
                     "deploy fixture should match current FMZ producer version")
+        macro = ((card.get("factor_cross_section") or {}).get("macro_pressure")
+                 or {})
+        macro_shock = macro.get("macro_shock") or {}
+        assert_true(macro_shock.get("state") in ("CLEAR", "WATCH", "BLOCK", "UNKNOWN"),
+                    "deploy fixture should include producer-native macro shock state")
+        assert_true(macro_shock.get("block") in (True, False),
+                    "deploy fixture should include producer-native macro shock block")
         anchor = ((card.get("provenance") or {}).get("transition_audit_source")
                   or {})
         assert_true(anchor.get("schema_name") == "SignalTransitionProducerAnchor",

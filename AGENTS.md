@@ -8,6 +8,8 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 - `signal-audit-deploy` is only a deployment/helper mirror for the static audit surface. Do not treat it as the project main repository, do not use it as the authoritative main branch, and do not conclude the project baseline is updated merely because changes were pushed there.
 - Before any commit, tag, push, or server deployment instruction, verify the active remote and state the intended target. If `origin` points to `signal-audit-deploy`, add or use the `xxproject` remote for project-level releases.
 - Never force-update `xxproject/main` from a history that would delete or replace the wider project asset tree. If histories differ, integrate changes on top of `xxproject/main` in an isolated worktree and preserve the full project asset surface.
+- For any signal audit frontend version update, do not commit, push, tag, or deploy until the local audit page has been reviewed in the browser and the user explicitly confirms: `当前本地页面可推送`. This gate applies even when tests pass.
+- Signal audit page additions must keep the current reader-style information architecture and follow the product rule: `重点清晰、逻辑贯通、关键内容全面`. Put high-signal interpretation and complete market-state skeletons first; keep raw IDs, hashes, machine flags, and field-level traces in lower trace/metadata areas.
 
 ## Release and asset coherence
 

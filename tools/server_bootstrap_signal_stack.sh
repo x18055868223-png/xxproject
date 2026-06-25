@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/x18055868223-png/xxproject.git}"
-RELEASE_REF="${RELEASE_REF:-r3.2.1}"
+RELEASE_REF="${RELEASE_REF:-r3.3.1}"
 REPO_DIR="${REPO_DIR:-/opt/repos/neutral-loop}"
 
 STATIC_ROOT="${STATIC_ROOT:-/opt/signal-audit}"
@@ -17,6 +17,9 @@ CONFIG_ROOT="${CONFIG_ROOT:-/etc/signal-audit}"
 LLM_ENV_FILE="${LLM_ENV_FILE:-${CONFIG_ROOT}/llm.env}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 LLM_REVIEWS_SOURCE="${LLM_REVIEWS_SOURCE:-${TOOLS_ROOT}/signal_llm_reviews.jsonl}"
+TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-${TOOLS_ROOT}/signal_transition_ledger.jsonl}"
+TRANSITION_STATE_SOURCE="${TRANSITION_STATE_SOURCE:-${TOOLS_ROOT}/signal_transition_state.json}"
+TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-${TOOLS_ROOT}/signal_transition_llm_reviews.jsonl}"
 MAX_CARDS="${MAX_CARDS:-200}"
 
 GEX_ENV_FILE="${GEX_ENV_FILE:-/etc/gexmonitorapi.env}"
@@ -145,6 +148,9 @@ install_signal_audit() {
     LLM_ENV_FILE="$LLM_ENV_FILE" \
     JSONL_SOURCE="$JSONL_SOURCE" \
     LLM_REVIEWS_SOURCE="$LLM_REVIEWS_SOURCE" \
+    TRANSITION_LEDGER_SOURCE="$TRANSITION_LEDGER_SOURCE" \
+    TRANSITION_STATE_SOURCE="$TRANSITION_STATE_SOURCE" \
+    TRANSITION_LLM_REVIEWS_SOURCE="$TRANSITION_LLM_REVIEWS_SOURCE" \
     MAX_CARDS="$MAX_CARDS" \
     bash "$REPO_DIR/deploy/signal_audit/install_or_update.sh"
   install_signal_audit_dropins
@@ -163,9 +169,12 @@ Environment="TOOLS_ROOT=$(systemd_escape_value "$TOOLS_ROOT")"
 Environment="STATIC_ROOT=$(systemd_escape_value "$STATIC_ROOT")"
 Environment="JSONL_SOURCE=$(systemd_escape_value "$JSONL_SOURCE")"
 Environment="LLM_REVIEWS_SOURCE=$(systemd_escape_value "$LLM_REVIEWS_SOURCE")"
+Environment="TRANSITION_LEDGER_SOURCE=$(systemd_escape_value "$TRANSITION_LEDGER_SOURCE")"
+Environment="TRANSITION_STATE_SOURCE=$(systemd_escape_value "$TRANSITION_STATE_SOURCE")"
+Environment="TRANSITION_LLM_REVIEWS_SOURCE=$(systemd_escape_value "$TRANSITION_LLM_REVIEWS_SOURCE")"
 Environment="MAX_CARDS=$(systemd_escape_value "$MAX_CARDS")"
 ExecStart=
-ExecStart=/usr/bin/python3 \${TOOLS_ROOT}/materialize_signal_cards.py --source \${JSONL_SOURCE} --output \${STATIC_ROOT} --max-cards \${MAX_CARDS} --llm-reviews \${LLM_REVIEWS_SOURCE}
+ExecStart=/usr/bin/python3 \${TOOLS_ROOT}/materialize_signal_cards.py --source \${JSONL_SOURCE} --output \${STATIC_ROOT} --max-cards \${MAX_CARDS} --llm-reviews \${LLM_REVIEWS_SOURCE} --transition-ledger \${TRANSITION_LEDGER_SOURCE} --transition-state \${TRANSITION_STATE_SOURCE} --transition-reviews \${TRANSITION_LLM_REVIEWS_SOURCE}
 EOF
   "${SUDO[@]}" install -m 0644 "$temp_conf" "$mat_dir/10-bootstrap-overrides.conf"
   rm -f "$temp_conf"
@@ -176,8 +185,12 @@ EOF
 Environment="TOOLS_ROOT=$(systemd_escape_value "$TOOLS_ROOT")"
 Environment="JSONL_SOURCE=$(systemd_escape_value "$JSONL_SOURCE")"
 Environment="LLM_REVIEWS_SOURCE=$(systemd_escape_value "$LLM_REVIEWS_SOURCE")"
+Environment="TRANSITION_LEDGER_SOURCE=$(systemd_escape_value "$TRANSITION_LEDGER_SOURCE")"
+Environment="TRANSITION_LLM_REVIEWS_SOURCE=$(systemd_escape_value "$TRANSITION_LLM_REVIEWS_SOURCE")"
 EnvironmentFile=
 EnvironmentFile=-$(systemd_escape_value "$LLM_ENV_FILE")
+ExecStartPre=
+ExecStartPre=/bin/systemctl start signal-audit-materialize.service
 ExecStart=
 ExecStart=\${TOOLS_ROOT}/run_signal_llm_review.sh
 ExecStartPost=

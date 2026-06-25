@@ -80,14 +80,25 @@ function renderCard(card) {
     const evidence = Array.isArray(card.reasoning && card.reasoning.evidence)
       ? card.reasoning.evidence
       : [];
+    const hasLlmReview = !!(card.llm_review && Object.keys(card.llm_review).length);
     const sourceRefs = evidence.map((entry) => entry.source_ref).filter(Boolean);
     rows.push({
       card_id: card.identity && card.identity.card_id,
       synthetic: !!(card.identity && card.identity.is_synthetic),
+      hasLlmReview,
       sourceRefs,
       objectObject: text.includes("[object Object]"),
       compactLedger: html.includes("evidence-ledger") && html.includes("evidence-item"),
       oldWideTable: html.includes("evidence-table"),
+      redundantDecisionConclusion: text.includes("决策结论"),
+      redundantDecisionMatrix: text.includes("封板决策矩阵"),
+      redundantContextWarnings: text.includes("Context warnings"),
+      redundantReasonCodes: text.includes("Reason codes"),
+      gexRankSection: text.includes("GEX Rank 分位"),
+      gammaOverviewSection: text.includes("期权 Gamma / GEX 重点"),
+      completeEvidenceLedger: text.includes("完整证据账本"),
+      factorCrossSection: text.includes("因子原始截面"),
+      rawTraceJump: text.includes("原始截面跳转"),
       fundingRateSide: html.includes("费率端倾向"),
       reflexiveFunding: html.includes("反身性辅助倾向"),
       macroRawScore: html.includes("宏观背景") && html.includes("分数"),
@@ -98,7 +109,14 @@ function renderCard(card) {
       llmSection: text.includes("LLM 复核意见"),
       llmPending: text.includes("PENDING_LLM") || text.includes("LLM 复核尚未生成"),
       macroProxyFacts: /VOLQ|DXY|US10Y|纳斯达克|美元|美债/.test(text),
-      macroUnknown: text.includes("UNKNOWN") && text.includes("宏观背景"),
+      macroUnknown: /宏观背景\s+UNKNOWN/.test(text),
+      macroDirectionBackground: text.includes("方向背景"),
+      macroShockGate: text.includes("冲击门"),
+      macroShockMissingOrState: text.includes("历史卡未提供冲击门字段")
+        || text.includes("CLEAR")
+        || text.includes("WATCH")
+        || text.includes("BLOCK")
+        || text.includes("UNKNOWN"),
       ggrSpatialConstraint: text.includes("空间约束") || text.includes("空间安全")
     });
   }
@@ -124,7 +142,7 @@ def render_transition_contract(root):
             "card_id": "TRANSITION-CONTRACT-CARD",
             "short_id": "TCC",
             "symbol": "BTC",
-            "strategy_version": "1.5.0",
+            "strategy_version": "1.5.1",
             "confirmed_at": "2026-06-18T11:00:00+08:00",
         },
         "quality": {"overall": "OK"},
@@ -132,6 +150,16 @@ def render_transition_contract(root):
             "lean": "LONG_BIAS",
             "support_label": "NO_TRADE_BLOCKED",
             "confidence": 64,
+        },
+        "decision_matrix": {
+            "window": "CONFIRMED",
+            "direction": "LONG_BIAS",
+            "temporal_durability": "NEUTRAL",
+            "audit_dissent": "PENDING_LLM",
+            "model_trade_support": None,
+            "execution_allowed": None,
+            "context_warnings": ["SHOULD_NOT_RENDER_CONTEXT_WARNING"],
+            "reason_codes": ["SHOULD_NOT_RENDER_REASON_CODE"],
         },
         "reasoning": {"evidence": []},
         "transition_context": {
@@ -155,6 +183,94 @@ def render_transition_contract(root):
                 "confidence_before": 58,
                 "confidence_after": 64,
             },
+            "core_skeleton": {
+                "schema_version": "transition_core_skeleton@1.0.0",
+                "timeline": {
+                    "previous_card_id": "PREV-CARD",
+                    "current_card_id": "TRANSITION-CONTRACT-CARD",
+                    "previous_short_id": "PREV",
+                    "current_short_id": "TCC",
+                    "previous_ts_ms": 1781770200000,
+                    "current_ts_ms": 1781772900000,
+                    "elapsed_ms": 2700000,
+                    "comparison_quality": "HIGH",
+                },
+                "domains": [
+                    {
+                        "domain": "TMV",
+                        "previous": {"tmv_blend": 0.42, "tmvf_24h_final": 0.31},
+                        "current": {"tmv_blend": 0.18, "tmvf_24h_final": 0.11},
+                        "source_refs": ["factor_cross_section.tmvf"],
+                    },
+                    {
+                        "domain": "MACRO",
+                        "previous": {"macro_score": 0.26},
+                        "current": {"macro_score": 0.45},
+                        "source_refs": ["factor_cross_section.macro_pressure"],
+                    },
+                    {
+                        "domain": "GAMMA",
+                        "previous": {"net_gamma_notional_usd": 12400000},
+                        "current": {"net_gamma_notional_usd": -7600000},
+                        "source_refs": ["factor_cross_section.gamma_regime"],
+                    },
+                    {
+                        "domain": "P_C_RATIO",
+                        "previous": {"put_call_ratio": 0.92},
+                        "current": {"put_call_ratio": 1.22},
+                        "source_refs": ["factor_cross_section.gex_info"],
+                    },
+                    {
+                        "domain": "CONFLICT",
+                        "previous": {"ratio": 0.18, "level": "LOW"},
+                        "current": {"ratio": 0.62, "level": "MATERIAL"},
+                        "source_refs": ["conflict"],
+                    },
+                ],
+            },
+            "domain_change_summaries": [
+                {
+                    "domain": "MACRO",
+                    "materiality": "CRITICAL",
+                    "raw_change_count": 3,
+                    "primary_fields": [
+                        "factor_cross_section.macro_pressure.macro_score",
+                        "factor_cross_section.macro_pressure.components.DXY.scoring_bps",
+                        "factor_cross_section.macro_pressure.components.US10Y.scoring_bps",
+                    ],
+                    "source_refs": ["factor_cross_section.macro_pressure"],
+                    "children": [],
+                },
+                {
+                    "domain": "FUNDING",
+                    "materiality": "HIGH",
+                    "raw_change_count": 1,
+                    "primary_fields": ["factor_cross_section.funding.last_rate"],
+                    "source_refs": ["factor_cross_section.funding"],
+                    "children": [],
+                },
+            ],
+            "raw_change_groups": [
+                {
+                    "domain": "MACRO",
+                    "materiality": "CRITICAL",
+                    "raw_change_count": 3,
+                    "children": [
+                        {
+                            "domain": "MACRO",
+                            "field": "factor_cross_section.macro_pressure.components.DXY.scoring_bps",
+                            "previous": 17,
+                            "current": 24,
+                            "delta_abs": 7,
+                            "role_before": "EXCLUDED",
+                            "role_after": "EXCLUDED",
+                            "materiality": "HIGH",
+                            "meaning": "DXY_PRESSURE_RISE",
+                            "source_ref": "factor_cross_section.macro_pressure",
+                        }
+                    ],
+                },
+            ],
             "top_material_changes": [
                 {
                     "domain": "FUNDING",
@@ -190,6 +306,11 @@ def render_transition_contract(root):
             "trajectory_state": "DETERIORATING",
             "signal_continuity": "BLOCKED",
             "observed_changes": [
+                {
+                    "domain": "TMV",
+                    "fact_cn": "TMV 从 0.42 降至 0.18，量价路径转弱。",
+                    "materiality": "CRITICAL",
+                },
                 {
                     "domain": "FUNDING",
                     "fact_cn": "资金费率原始值上升。",
@@ -283,25 +404,43 @@ function renderCard(card) {
 
 def main():
     app = (FRONTEND / "app.js").read_text(encoding="utf-8")
+    project_memory = (ROOT / "PROJECT_MEMORY.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert_true("本地前端页面人工确认前不得推送" in project_memory,
+                "PROJECT_MEMORY should record the frontend human-confirmation push gate")
+    assert_true("重点清晰、逻辑贯通、关键内容全面" in project_memory,
+                "PROJECT_MEMORY should record the audit-page clarity principle")
+    assert_true("当前本地页面可推送" in agents,
+                "AGENTS should require explicit local-page push confirmation")
     assert_true("function renderTransitionContext(doc)" in app,
                 "frontend should render materialized transition_context")
+    assert_true("function renderTransitionRawChanges(doc)" in app,
+                "frontend should render raw transition changes as a separate lower trace section")
     assert_true("function renderIndexTransitionBadges(doc)" in app,
                 "index should render transition badges from materialized data")
     assert_true("function renderTransitionLlmReview(doc)" in app,
                 "frontend should render transition LLM sidecar reviews")
+    assert_true("macro_shock" in app and "legacy_blocking_flags" in app,
+                "frontend should keep native macro shock and legacy macro block fields traceable")
     session_idx = app.find("${renderSignalSessionContext(doc)}")
     transition_idx = app.find("${renderTransitionContext(doc)}")
+    transition_raw_idx = app.find("${renderTransitionRawChanges(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
+    reasoning_idx = app.find("${renderReasoning(doc)}")
     assert_true(session_idx != -1 and transition_idx != -1 and llm_idx != -1,
                 "document render flow should include session, transition, and LLM sections")
     assert_true(session_idx < transition_idx < llm_idx,
                 "transition context should render after session context and before card LLM review")
+    assert_true(reasoning_idx < transition_raw_idx,
+                "raw transition changes should render after the complete EDB ledger")
     for marker in (
             "状态转移审计",
-            "上一状态",
-            "当前状态",
+            "状态路径",
+            "核心骨架",
+            "领域变化摘要",
+            "审计元数据",
             "比较质量",
-            "原始字段变化",
+            "状态转移原始字段变化",
             "LLM 变化链解释",
             "AUDIT_ONLY",
     ):
@@ -337,11 +476,31 @@ def main():
         assert_true(not row["objectObject"], row["card_id"] + " rendered [object Object]")
         assert_true(row["compactLedger"], row["card_id"] + " should render compact evidence ledger")
         assert_true(not row["oldWideTable"], row["card_id"] + " should not render old wide evidence table")
+        assert_true(not row["redundantDecisionConclusion"],
+                    row["card_id"] + " should not render the low-signal decision conclusion section")
+        assert_true(not row["redundantDecisionMatrix"],
+                    row["card_id"] + " should not render the low-signal decision matrix section")
+        assert_true(not row["redundantContextWarnings"],
+                    row["card_id"] + " should not render decision-matrix context warnings in the main page")
+        assert_true(not row["redundantReasonCodes"],
+                    row["card_id"] + " should not render decision-matrix reason codes in the main page")
+        assert_true(row["gexRankSection"], row["card_id"] + " should keep GEX Rank percentile visible")
+        assert_true(row["gammaOverviewSection"], row["card_id"] + " should keep Gamma/GEX highlights visible")
+        assert_true(row["completeEvidenceLedger"], row["card_id"] + " should keep the complete evidence ledger visible")
+        assert_true(row["factorCrossSection"], row["card_id"] + " should keep factor raw cross-section visible")
+        assert_true(row["rawTraceJump"], row["card_id"] + " should keep raw trace jump navigation visible")
         assert_true(row["fundingRateSide"], row["card_id"] + " should show fee-side funding tendency")
         assert_true(row["reflexiveFunding"], row["card_id"] + " should show reflexive funding tendency")
         assert_true(row["macroRawScore"], row["card_id"] + " should show raw macro score")
+        assert_true(row["macroDirectionBackground"],
+                    row["card_id"] + " should show MACRO direction background")
+        assert_true(row["macroShockGate"],
+                    row["card_id"] + " should show MACRO shock gate")
+        assert_true(row["macroShockMissingOrState"],
+                    row["card_id"] + " should not default missing macro shock to CLEAR/0")
         assert_true(row["llmSection"], row["card_id"] + " should always render the LLM review section")
-        assert_true(row["llmPending"], row["card_id"] + " should explain pending/missing LLM sidecar reviews")
+        if not row["hasLlmReview"]:
+            assert_true(row["llmPending"], row["card_id"] + " should explain pending/missing LLM sidecar reviews")
         assert_true(row["macroProxyFacts"], row["card_id"] + " should show macro proxy component facts")
         assert_true(not row["macroUnknown"], row["card_id"] + " should not show UNKNOWN macro stance when raw score exists")
         assert_true(row["ggrSpatialConstraint"], row["card_id"] + " should describe GGR as spatial/gate context")
@@ -355,15 +514,60 @@ def main():
     transition_render = render_transition_contract(FRONTEND)
     full_transition_text = transition_render["text"]
     transition_html = transition_render["html"]
+    for label in (
+            "决策结论",
+            "封板决策矩阵",
+            "Context warnings",
+            "Reason codes",
+            "SHOULD_NOT_RENDER_CONTEXT_WARNING",
+            "SHOULD_NOT_RENDER_REASON_CODE",
+    ):
+        assert_true(label not in full_transition_text,
+                    "decision and decision_matrix data should not render as low-signal main sections: " + label)
     start = full_transition_text.find("状态转移审计")
     end = full_transition_text.find("LLM 复核意见")
     transition_text = full_transition_text[start:end] if start != -1 and end != -1 else full_transition_text
     llm_pos = transition_text.find("LLM 变化链解释")
-    raw_pos = transition_text.find("原始字段变化")
+    raw_pos = full_transition_text.find("状态转移原始字段变化")
+    edb_pos = full_transition_text.find("完整证据账本")
     assert_true(llm_pos != -1, "transition LLM explanation should use Chinese title")
     assert_true(raw_pos != -1, "raw field changes should use Chinese title")
-    assert_true(llm_pos < raw_pos,
-                "transition LLM explanation should render before raw field changes")
+    assert_true(edb_pos != -1 and edb_pos < raw_pos,
+                "raw transition changes should render after the complete EDB ledger")
+    assert_true("状态转移原始字段变化" not in transition_text,
+                "raw transition changes should not occupy the top transition board")
+    metadata_pos = transition_text.find("审计元数据")
+    assert_true(metadata_pos != -1,
+                "machine audit fields should be available only inside audit metadata")
+    primary_transition_text = transition_text[:metadata_pos]
+    assert_true("previous_card_id" not in primary_transition_text
+                and "current_card_id" not in primary_transition_text
+                and "materiality_score" not in primary_transition_text
+                and "llm_review_required" not in primary_transition_text,
+                "machine audit fields should not be promoted in the top transition board")
+    assert_true("TMV（量价路径）" in transition_text
+                and "宏观（利率/美元/波动率）" in transition_text
+                and "Gamma（净 Gamma）" in transition_text
+                and "P/C（期权需求）" in transition_text,
+                "top transition board should render the multi-domain semantic skeleton")
+    assert_true("关键变化骨架 / Core transition" in transition_text,
+                "top transition board should merge skeleton and domain summaries")
+    assert_true("核心骨架" not in transition_text
+                and "领域变化摘要" not in transition_text,
+                "core skeleton and domain summaries should not render as separate top sections")
+    assert_true("TMV（量价路径）" in transition_text
+                and "Funding（期货资金费率）" in transition_text,
+                "LLM observed changes should use bold Chinese semantic domain titles")
+    assert_true("领域 (domain)" not in transition_text
+                and "事实说明 (fact_cn)" not in transition_text
+                and "材料性 (materiality)" not in transition_text,
+                "LLM observed changes should not expose raw object field labels")
+    assert_true("0.42 → 0.18" in transition_text
+                and "0.92 → 1.22" in transition_text,
+                "merged core transition should show key previous/current values")
+    assert_true("source_ref" not in primary_transition_text
+                and "factor_cross_section" not in primary_transition_text,
+                "source/path details should stay out of the top transition board")
     for label in (
             "观察到的变化",
             "跨因子相互作用",
@@ -374,6 +578,11 @@ def main():
             "不含交易建议",
             "不使用外部数据",
             "区分观察与因果",
+            "状态路径",
+    ):
+        assert_true(label in transition_text,
+                    "transition UI should show Chinese semantic label: " + label)
+    for label in (
             "最近 5 次轨迹",
             "24 小时基线",
             "同片段锚点",
@@ -382,8 +591,8 @@ def main():
             "变化量",
             "字段角色",
     ):
-        assert_true(label in transition_text,
-                    "transition UI should show Chinese semantic label: " + label)
+        assert_true(label in full_transition_text[raw_pos:],
+                    "raw transition trace should retain Chinese semantic label: " + label)
     for raw_label in (
             "Top material changes",
             "observed_changes",

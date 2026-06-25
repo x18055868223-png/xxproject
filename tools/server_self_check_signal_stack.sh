@@ -164,8 +164,9 @@ load_env_file "$LLM_ENV"
 section "Optional active checks"
 if [ "$RUN_ONESHOTS" -eq 1 ]; then
   if have systemctl; then
+    systemctl start signal-audit-materialize.service >/dev/null 2>&1 && ok "started signal-audit-materialize.service before LLM" || warn "could not start signal-audit-materialize.service before LLM"
     systemctl start signal-audit-llm-review.service >/dev/null 2>&1 && ok "started signal-audit-llm-review.service" || warn "could not start signal-audit-llm-review.service"
-    systemctl start signal-audit-materialize.service >/dev/null 2>&1 && ok "started signal-audit-materialize.service" || warn "could not start signal-audit-materialize.service"
+    systemctl start signal-audit-materialize.service >/dev/null 2>&1 && ok "started signal-audit-materialize.service after LLM" || warn "could not start signal-audit-materialize.service after LLM"
   fi
 else
   warn "read-only mode; pass --run-oneshots to trigger LLM/materializer once"
@@ -260,7 +261,17 @@ required = [
     "schema_name", "clock_window", "adjustment_direction", "evidence_level",
     "backtest_delta_pp", "validation_basis", "confidence_policy",
 ]
+macro = ((card.get("factor_cross_section") or {}).get("macro_pressure") or {})
+macro_shock = macro.get("macro_shock") or {}
 missing = [key for key in required if ctx.get(key) in (None, "")]
+def contains_value(node, target):
+    if node == target:
+        return True
+    if isinstance(node, dict):
+        return any(contains_value(value, target) for value in node.values())
+    if isinstance(node, list):
+        return any(contains_value(value, target) for value in node)
+    return False
 print("latest_audit_card_id:", identity.get("card_id") or cards[0].get("card_id"))
 print("latest_strategy_version:", identity.get("strategy_version"))
 print("session_schema_name:", ctx.get("schema_name"))
@@ -269,6 +280,8 @@ print("session_clock_window:", ctx.get("clock_window"))
 print("session_backtest_delta_pp:", ctx.get("backtest_delta_pp"))
 print("session_compat_backfill_applied:", ctx.get("compat_backfill_applied"))
 print("decision_temporal_durability:", matrix.get("temporal_durability"))
+print("macro_shock_state:", macro_shock.get("state"))
+print("macro_shock_block:", macro_shock.get("block"))
 if ctx.get("schema_name") != "SignalSessionPremiseDurabilityContext":
     raise SystemExit(2)
 if missing:
@@ -279,16 +292,22 @@ if matrix.get("temporal_durability") != ctx.get("premise_durability"):
     raise SystemExit("decision_matrix temporal_durability mismatch")
 if ctx.get("compat_backfill_applied"):
     raise SystemExit("latest card uses materializer compatibility backfill")
-if str(identity.get("strategy_version")) != "1.5.0":
-    raise SystemExit("latest card strategy_version is not 1.5.0")
+if str(identity.get("strategy_version")) != "1.5.1":
+    raise SystemExit("latest card strategy_version is not 1.5.1")
+if not isinstance(macro_shock, dict) or macro_shock.get("state") in (None, ""):
+    raise SystemExit("latest card lacks producer-native macro_shock state")
+if macro_shock.get("block") not in (True, False):
+    raise SystemExit("latest card lacks producer-native macro_shock block")
+if macro_shock.get("block") is True and not contains_value(card, "MACRO_SHOCK_BLOCKING"):
+    raise SystemExit("latest MACRO shock block lacks MACRO_SHOCK_BLOCKING trace")
 PY
   then
-    ok "latest audit card has native v1.5.0 session_context premise durability schema"
+    ok "latest audit card has native v1.5.1 session_context and macro_shock schema"
   else
     if [ "$SESSION_CONTEXT_REQUIRED" = "1" ]; then
-      fail "latest audit card lacks native v1.5.0 session_context premise durability schema"
+      fail "latest audit card lacks native v1.5.1 session_context or macro_shock schema"
     else
-      warn "latest audit card lacks native v1.5.0 session_context premise durability schema"
+      warn "latest audit card lacks native v1.5.1 session_context or macro_shock schema"
     fi
   fi
 fi

@@ -1,4 +1,4 @@
-# Signal Stack Server Migration
+﻿# Signal Stack Server Migration
 
 This document describes how to bring up a new server for the signal-layer
 supporting services from the current `xxproject` release. The target is a fast,
@@ -8,7 +8,7 @@ optionally the GEX Monitor API.
 ## Repository Authority
 
 - Primary repo: `https://github.com/x18055868223-png/xxproject.git`
-- Current release ref: `r3.2.1`
+- Current release ref: `r3.3.1`
 - Do not use `signal-audit-deploy` as the project baseline. It is only a static
   audit mirror/helper surface.
 
@@ -16,7 +16,7 @@ optionally the GEX Monitor API.
 
 The bootstrap installs or refreshes:
 
-- `/opt/repos/neutral-loop`: checkout of `xxproject` at `r3.2.1`.
+- `/opt/repos/neutral-loop`: checkout of `xxproject` at `r3.3.1`.
 - `/opt/signal-audit`: static audit frontend.
 - `/opt/signal-audit-tools/materialize_signal_cards.py`: JSONL-to-card
   materializer.
@@ -53,11 +53,11 @@ Do not commit these values to git and do not bake them into release tags.
 Run as a sudo-capable user on the new server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.2.1/tools/server_bootstrap_signal_stack.sh \
+curl -fsSL https://raw.githubusercontent.com/x18055868223-png/xxproject/r3.3.1/tools/server_bootstrap_signal_stack.sh \
   -o /tmp/server_bootstrap_signal_stack.sh
 chmod +x /tmp/server_bootstrap_signal_stack.sh
 
-RELEASE_REF=r3.2.1 \
+RELEASE_REF=r3.3.1 \
 REPO_DIR=/opt/repos/neutral-loop \
 INSTALL_GEX=0 \
 GEX_REQUIRED=0 \
@@ -156,7 +156,7 @@ Expected release output:
 
 ```text
 <commit hash>
-r3.2.1
+r3.3.1
 ```
 
 Expected self-check summary:
@@ -184,16 +184,19 @@ state and `LLM_REQUIRED=0`. The signal-audit runtime is considered ready only
 after the audit page and manifest return HTTP 200, the materializer service has
 `Result=success`, and, when LLM is required, the latest card has
 `blind_review_mode=two_call_strict` and `llm_call_count>=2`.
-For r3.3.0 / FMZ signal-layer v1.5.0 acceptance, also set
+For r3.3.1 / FMZ signal-layer v1.5.1 acceptance, also set
 `SESSION_CONTEXT_REQUIRED=1`. If transition ledger and transition LLM sidecars
 are part of the release gate, set `TRANSITION_REQUIRED=1` and
 `TRANSITION_LLM_REQUIRED=1` as well.
 The self-check must fail if the latest real card is not from FMZ producer
-`identity.strategy_version=1.5.0`, uses materializer compatibility backfill, or lacks
+`identity.strategy_version=1.5.1`, uses materializer compatibility backfill, or lacks
 `SignalSessionPremiseDurabilityContext`, `clock_window`, `backtest_delta_pp`,
 structured `validation_basis`, `confidence_policy`, or
-`decision_matrix.temporal_durability`. This prevents a server/front-end update
-from being mistaken for an updated FMZ signal-layer producer.
+`decision_matrix.temporal_durability`. It must also include producer-native
+`factor_cross_section.macro_pressure.macro_shock.state` and `.block`, proving the
+MACRO dual-axis shock gate came from the FMZ signal-layer producer rather than
+the materializer. This prevents a server/front-end update from being mistaken
+for an updated FMZ signal-layer producer.
 When transition checks are required, the latest card must include
 `transition_context.audit_scope=AUDIT_ONLY`, the private
 `signal_transition_ledger.jsonl` must align to the latest card, and transition
@@ -209,7 +212,7 @@ and LLM sidecar state.
 Use this extra text check after the first materialization:
 
 ```bash
-python3 -c 'import json,pathlib,re; root=pathlib.Path("/opt/signal-audit"); index=(root/"index.html").read_text(encoding="utf-8"); app=(root/"app.js").read_text(encoding="utf-8"); fallback=(root/"signal_cards/fallback.js").read_text(encoding="utf-8"); manifest=json.loads((root/"signal_cards/index.json").read_text(encoding="utf-8")); cards=manifest.get("cards") or []; blob=index+app+fallback+"".join((root/item["path"]).read_text(encoding="utf-8") for item in cards); checks=[("HAS_APP_R3_2_1","app.js?v=20260624-r3.2.1" in index),("HAS_LLM_SECTION","LLM 复核意见" in app),("HAS_PENDING_LLM","LLM 复核尚未生成" in app),("NO_GEMINI_LOCAL_PREVIEW","GEMINI-LOCAL-PREVIEW" not in blob),("NO_SYNTHETIC_TRUE","\"is_synthetic\": true" not in blob),("NO_OLD_CALIBRATION_TEXT",not re.search(r"\u7f6e\u4fe1\d+\u672a\u6821\u51c6|\u7f6e\u4fe1\u5ea6\d+\u672a\u6821\u51c6", blob))]; [print(k,v) for k,v in checks]; print("CARDS",len(cards),cards[0].get("card_id") if cards else None); raise SystemExit(0 if all(v for _,v in checks) else 1)'
+python3 -c 'import json,pathlib,re; root=pathlib.Path("/opt/signal-audit"); index=(root/"index.html").read_text(encoding="utf-8"); app=(root/"app.js").read_text(encoding="utf-8"); fallback=(root/"signal_cards/fallback.js").read_text(encoding="utf-8"); manifest=json.loads((root/"signal_cards/index.json").read_text(encoding="utf-8")); cards=manifest.get("cards") or []; blob=index+app+fallback+"".join((root/item["path"]).read_text(encoding="utf-8") for item in cards); checks=[("HAS_APP_R3_3_1","app.js?v=20260625-r3.3.1" in index),("HAS_LLM_SECTION","LLM 复核意见" in app),("HAS_PENDING_LLM","LLM 复核尚未生成" in app),("NO_GEMINI_LOCAL_PREVIEW","GEMINI-LOCAL-PREVIEW" not in blob),("NO_SYNTHETIC_TRUE","\"is_synthetic\": true" not in blob),("NO_OLD_CALIBRATION_TEXT",not re.search(r"\u7f6e\u4fe1\d+\u672a\u6821\u51c6|\u7f6e\u4fe1\u5ea6\d+\u672a\u6821\u51c6", blob))]; [print(k,v) for k,v in checks]; print("CARDS",len(cards),cards[0].get("card_id") if cards else None); raise SystemExit(0 if all(v for _,v in checks) else 1)'
 ```
 
 ## Rollback
@@ -219,7 +222,7 @@ The checkout is a normal git worktree:
 ```bash
 cd /opt/repos/neutral-loop
 git fetch xxproject --tags
-git checkout -B deploy-r3.2.1 refs/tags/r3.2.1
+git checkout -B deploy-r3.3.1 refs/tags/r3.3.1
 sudo bash deploy/signal_audit/install_or_update.sh
 ```
 

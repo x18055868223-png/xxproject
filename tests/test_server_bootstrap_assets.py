@@ -37,13 +37,16 @@ def main():
                 "bootstrap should fail closed")
     assert_true("https://github.com/x18055868223-png/xxproject.git" in script,
                 "bootstrap should default to the xxproject primary repo")
-    assert_true('RELEASE_REF="${RELEASE_REF:-r3.2.1}"' in script,
-                "bootstrap should default to the current r3.2.1 release")
+    assert_true('RELEASE_REF="${RELEASE_REF:-r3.3.1}"' in script,
+                "bootstrap should default to the current r3.3.1 release")
     for token in (
             "install_or_update.sh",
             "server_self_check_signal_stack.sh",
             "--run-oneshots",
             "JSONL_SOURCE",
+            "TRANSITION_LEDGER_SOURCE",
+            "TRANSITION_STATE_SOURCE",
+            "TRANSITION_LLM_REVIEWS_SOURCE",
             "LLM_ENV_FILE",
             "GEX_ENV_FILE",
             "GEX_STATE_DIR",
@@ -54,6 +57,7 @@ def main():
             "HISTORY_FILE=",
             "10-bootstrap-overrides.conf",
             "EnvironmentFile=",
+            "ExecStartPre=",
             "ExecStart=",
             ".service.d",
             "find_gex_source_dir",
@@ -63,6 +67,21 @@ def main():
             "need rsync",
             "RUN_SELF_CHECK"):
         assert_true(token in script, "bootstrap should mention " + token)
+    for token in (
+            "--transition-ledger \\${TRANSITION_LEDGER_SOURCE}",
+            "--transition-state \\${TRANSITION_STATE_SOURCE}",
+            "--transition-reviews \\${TRANSITION_LLM_REVIEWS_SOURCE}",
+            "signal_transition_ledger.jsonl",
+            "signal_transition_state.json",
+            "signal_transition_llm_reviews.jsonl"):
+        assert_true(token in script,
+                    "bootstrap materializer override should preserve " + token)
+    for token in (
+            'Environment="TRANSITION_LEDGER_SOURCE=',
+            'Environment="TRANSITION_LLM_REVIEWS_SOURCE=',
+            "ExecStartPre=/bin/systemctl start signal-audit-materialize.service"):
+        assert_true(token in script,
+                    "bootstrap LLM override should preserve " + token)
     assert_true("REPLACE_WITH" in script,
                 "bootstrap may create templates, not real secrets")
     assert_true("AIza" not in script and "sk-" not in script,
@@ -72,9 +91,13 @@ def main():
             "SignalSessionPremiseDurabilityContext",
             "compat_backfill_applied",
             "strategy_version",
-            "1.5.0",
+            "1.5.1",
+            "macro_shock",
+            "MACRO_SHOCK_BLOCKING",
+            "latest card lacks producer-native macro_shock state",
+            "latest MACRO shock block lacks MACRO_SHOCK_BLOCKING trace",
             "latest card uses materializer compatibility backfill",
-            "latest card strategy_version is not 1.5.0",
+            "latest card strategy_version is not 1.5.1",
             "TRANSITION_REQUIRED",
             "TRANSITION_LLM_REQUIRED",
             "TRANSITION_LEDGER_SOURCE",
@@ -95,7 +118,7 @@ def main():
 
     for token in (
             "xxproject",
-            "r3.2.1",
+            "r3.3.1",
             "/etc/signal-audit/llm.env",
             "/etc/gexmonitorapi.env",
             "/var/lib/gexmonitorapi",
@@ -109,7 +132,7 @@ def main():
             "API_TOKEN",
             "FMZ",
             "history",
-            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.2.1",
+            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.3.1",
             "SESSION_CONTEXT_REQUIRED=1",
             "SignalSessionPremiseDurabilityContext",
             "active verification",
@@ -122,7 +145,7 @@ def main():
                 "Chinese migration runbook must not embed API keys")
     for token in (
             "xxproject",
-            "r3.2.1",
+            "r3.3.1",
             "server_bootstrap_signal_stack.sh",
             "SERVER_MIGRATION.md",
             "/etc/signal-audit/llm.env",

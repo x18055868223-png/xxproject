@@ -29,7 +29,207 @@ TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
 TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.0.0"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+TRANSITION_DOMAIN_ORDER = (
+    "TMV", "MACRO", "FUNDING", "SKEW", "GAMMA", "P_C_RATIO",
+    "CONFLICT", "DECISION", "QUALITY",
+)
+TRANSITION_SKELETON_SPECS = (
+    {
+        "domain": "TMV",
+        "source_ref": "factor_cross_section.tmvf",
+        "fields": (
+            ("direction", ("factor_cross_section.tmvf.direction",)),
+            ("tmv_blend", ("factor_cross_section.tmvf.tmv_blend",)),
+            ("tmvf_24h_final", (
+                "factor_cross_section.tmvf.tmvf_24h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_24h.final",
+                "factor_cross_section.tmvf.tmvf_24h_final",
+                "tmvf_24h_final",
+            )),
+            ("tmvf_48h_final", (
+                "factor_cross_section.tmvf.tmvf_48h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_48h.final",
+                "factor_cross_section.tmvf.tmvf_48h_final",
+                "tmvf_48h_final",
+            )),
+            ("window_conflict", ("factor_cross_section.tmvf.window_conflict",)),
+        ),
+    },
+    {
+        "domain": "MACRO",
+        "source_ref": "factor_cross_section.macro_pressure",
+        "fields": (
+            ("macro_score", (
+                "factor_cross_section.macro_pressure.macro_score",
+                "factor_cross_section.macro_pressure.score",
+                "macro_score",
+                "score",
+            )),
+            ("macro_regime", (
+                "factor_cross_section.macro_pressure.macro_regime",
+                "factor_cross_section.macro_pressure.regime",
+                "macro_regime",
+                "regime",
+            )),
+            ("volq_scoring_bps", (
+                "factor_cross_section.macro_pressure.components.VOLQ.scoring_bps",
+                "components.VOLQ.scoring_bps",
+            )),
+            ("dxy_scoring_bps", (
+                "factor_cross_section.macro_pressure.components.DXY.scoring_bps",
+                "components.DXY.scoring_bps",
+            )),
+            ("us10y_scoring_bps", (
+                "factor_cross_section.macro_pressure.components.US10Y.scoring_bps",
+                "components.US10Y.scoring_bps",
+            )),
+            ("macro_shock_state", (
+                "factor_cross_section.macro_pressure.macro_shock.state",
+                "macro_shock.state",
+            )),
+            ("macro_shock_block", (
+                "factor_cross_section.macro_pressure.macro_shock.block",
+                "macro_shock.block",
+            )),
+        ),
+    },
+    {
+        "domain": "FUNDING",
+        "source_ref": "factor_cross_section.funding",
+        "fields": (
+            ("last_rate", (
+                "factor_cross_section.funding.last_rate",
+                "factor_cross_section.funding.last_funding_rate",
+                "last_rate",
+                "last_funding_rate",
+            )),
+            ("funding_norm", (
+                "factor_cross_section.funding.funding_norm",
+                "factor_cross_section.tmvf.tmvf_48h.funding.funding_norm",
+                "funding_norm",
+            )),
+            ("funding_state", (
+                "factor_cross_section.funding.funding_state",
+                "factor_cross_section.tmvf.tmvf_48h.funding_state",
+                "funding_state",
+            )),
+            ("effect", (
+                "factor_cross_section.funding.effect",
+                "factor_cross_section.funding.tmvf_funding_effect",
+                "effect",
+                "tmvf_funding_effect",
+            )),
+        ),
+    },
+    {
+        "domain": "SKEW",
+        "source_ref": "factor_cross_section.skew",
+        "fields": (
+            ("vote", ("factor_cross_section.skew.vote", "vote")),
+            ("rr_blend", ("factor_cross_section.skew.rr_blend", "rr_blend")),
+            ("rr_25d", ("factor_cross_section.skew.rr_25d", "rr_25d")),
+            ("skew_norm_blend", (
+                "factor_cross_section.skew.skew_norm_blend",
+                "skew_norm_blend",
+            )),
+        ),
+    },
+    {
+        "domain": "GAMMA",
+        "source_ref": "factor_cross_section.gamma_regime",
+        "fields": (
+            ("regime", ("factor_cross_section.gamma_regime.regime", "regime")),
+            ("net_gamma_notional_usd", (
+                "factor_cross_section.gamma_regime.net_gamma_notional_usd",
+                "factor_cross_section.gamma_regime.net_gamma_notional",
+                "net_gamma_notional_usd",
+                "net_gamma_notional",
+            )),
+            ("distance_to_flip_pct", (
+                "factor_cross_section.gamma_regime.distance_to_flip_pct",
+                "distance_to_flip_pct",
+            )),
+            ("distance_to_pin_pct", (
+                "factor_cross_section.gamma_regime.distance_to_pin_pct",
+                "factor_cross_section.gamma_regime.pin.distance_to_pin_pct",
+                "distance_to_pin_pct",
+            )),
+        ),
+    },
+    {
+        "domain": "P_C_RATIO",
+        "source_ref": "factor_cross_section.gex_info",
+        "fields": (
+            ("put_call_ratio", (
+                "factor_cross_section.gex_info.put_call_ratio",
+                "factor_cross_section.gex_info.pc_ratio",
+                "factor_cross_section.gex_info.pcr",
+                "factor_cross_section.gex_info.call_put_ratio",
+            )),
+        ),
+    },
+    {
+        "domain": "CONFLICT",
+        "source_ref": "conflict",
+        "fields": (
+            ("ratio", ("conflict.ratio",)),
+            ("level", ("conflict.level",)),
+            ("aligned_keys", ("conflict.aligned_keys",)),
+            ("dissent_keys", ("conflict.dissent_keys",)),
+        ),
+    },
+    {
+        "domain": "DECISION",
+        "source_ref": "decision",
+        "fields": (
+            ("lean", ("decision.lean",)),
+            ("support_label", ("decision.support_label",)),
+            ("confidence", ("decision.confidence",)),
+            ("decision_state", ("decision_matrix.decision_state",)),
+        ),
+    },
+    {
+        "domain": "QUALITY",
+        "source_ref": "quality",
+        "fields": (
+            ("overall", ("quality.overall",)),
+            ("missing_field_count", ("quality.missing_field_count",)),
+        ),
+    },
+)
 TRANSITION_FIELD_REGISTRY = (
+    {
+        "path": "factor_cross_section.tmvf.tmv_blend",
+        "domain": "TMV",
+        "type": "continuous",
+        "role": "DIRECTION_OWNER",
+        "absolute_floor": 0.10,
+        "critical_floor": 0.30,
+        "higher_meaning": "TMV_BULLISH_PRESSURE_RISE",
+    },
+    {
+        "path": "factor_cross_section.tmvf.tmvf_24h.tmv_final",
+        "domain": "TMV",
+        "type": "continuous",
+        "role": "DIRECTION_OWNER",
+        "absolute_floor": 0.10,
+        "higher_meaning": "TMV_24H_PRESSURE_RISE",
+    },
+    {
+        "path": "factor_cross_section.tmvf.tmvf_48h.tmv_final",
+        "domain": "TMV",
+        "type": "continuous",
+        "role": "DIRECTION_OWNER",
+        "absolute_floor": 0.10,
+        "higher_meaning": "TMV_48H_PRESSURE_RISE",
+    },
+    {
+        "path": "factor_cross_section.tmvf.window_conflict",
+        "domain": "TMV",
+        "type": "categorical",
+        "role": "DIRECTION_OWNER",
+        "meaning": "TMV_WINDOW_CONFLICT_CHANGE",
+    },
     {
         "path": "decision.lean",
         "domain": "DECISION",
@@ -96,6 +296,20 @@ TRANSITION_FIELD_REGISTRY = (
         "unit": "bps",
     },
     {
+        "path": "factor_cross_section.macro_pressure.macro_shock.state",
+        "domain": "MACRO",
+        "type": "categorical",
+        "role": "GATE_ONLY",
+        "meaning": "MACRO_SHOCK_GATE_STATE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.macro_shock.block",
+        "domain": "MACRO",
+        "type": "categorical",
+        "role": "GATE_ONLY",
+        "meaning": "MACRO_SHOCK_GATE_BLOCK_CHANGE",
+    },
+    {
         "path": "factor_cross_section.funding.last_rate",
         "domain": "FUNDING",
         "type": "continuous",
@@ -109,6 +323,15 @@ TRANSITION_FIELD_REGISTRY = (
         "type": "categorical",
         "role": "CONTEXT",
         "meaning": "FUNDING_STATE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.gamma_regime.net_gamma_notional_usd",
+        "domain": "GAMMA",
+        "type": "continuous",
+        "role": "GATE_ONLY",
+        "absolute_floor": 5000000.0,
+        "higher_meaning": "NET_GAMMA_RISE",
+        "unit": "usd_notional",
     },
     {
         "path": "factor_cross_section.gamma_regime.regime",
@@ -136,11 +359,28 @@ TRANSITION_FIELD_REGISTRY = (
         "unit": "pct_points",
     },
     {
+        "path": "factor_cross_section.gex_info.put_call_ratio",
+        "domain": "P_C_RATIO",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.15,
+        "critical_floor": 0.35,
+        "higher_meaning": "PUT_CALL_RATIO_RISE",
+    },
+    {
         "path": "factor_cross_section.skew.vote",
         "domain": "SKEW",
         "type": "categorical",
         "role": "CONTEXT",
         "meaning": "SKEW_VOTE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.skew.rr_blend",
+        "domain": "SKEW",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.01,
+        "higher_meaning": "RR_BLEND_RISE",
     },
     {
         "path": "factor_cross_section.skew.rr_25d",
@@ -151,6 +391,22 @@ TRANSITION_FIELD_REGISTRY = (
         "higher_meaning": "CALL_SKEW_RISE",
     },
     {
+        "path": "conflict.ratio",
+        "domain": "CONFLICT",
+        "type": "continuous",
+        "role": "QUALITY",
+        "absolute_floor": 0.10,
+        "critical_floor": 0.30,
+        "higher_meaning": "CONFLICT_RATIO_RISE",
+    },
+    {
+        "path": "conflict.level",
+        "domain": "CONFLICT",
+        "type": "categorical",
+        "role": "QUALITY",
+        "meaning": "CONFLICT_LEVEL_CHANGE",
+    },
+    {
         "path": "quality.overall",
         "domain": "QUALITY",
         "type": "categorical",
@@ -159,6 +415,7 @@ TRANSITION_FIELD_REGISTRY = (
     },
 )
 EVIDENCE_KEY_BY_DOMAIN = {
+    "TMV": "TMV",
     "MACRO": "MACRO",
     "FUNDING": "FUNDING",
     "GAMMA": "GGR_SPATIAL",
@@ -478,6 +735,10 @@ def _transition_record(previous, current, history, previous_transition_hash):
     comparison_quality = _comparison_quality(elapsed_ms)
     changes = _transition_changes(previous, current, elapsed_ms)
     top_changes = _top_material_changes(changes)
+    core_skeleton = _core_skeleton(previous, current, elapsed_ms,
+                                   comparison_quality)
+    domain_summaries = _domain_change_summaries(changes)
+    raw_change_groups = _raw_change_groups(changes)
     flags = _transition_flags(previous, current, top_changes)
     materiality_score = _materiality_score(top_changes, flags)
     transition_id = _transition_id(
@@ -520,6 +781,9 @@ def _transition_record(previous, current, history, previous_transition_hash):
                 previous, current, elapsed_ms, comparison_quality),
         },
         "decision_transition": _decision_transition(previous, current),
+        "core_skeleton": core_skeleton,
+        "domain_change_summaries": domain_summaries,
+        "raw_change_groups": raw_change_groups,
         "top_material_changes": top_changes,
         "recent_5_trajectory": _recent_trajectory(history, limit=5),
         "baseline_24h": _baseline_24h(history, current_ts_ms),
@@ -589,6 +853,76 @@ def _transition_changes(previous, current, elapsed_ms):
     return changes
 
 
+def _core_skeleton(previous, current, elapsed_ms, comparison_quality):
+    prev_identity = _identity(previous)
+    curr_identity = _identity(current)
+    return {
+        "schema_version": "transition_core_skeleton@1.0.0",
+        "timeline": {
+            "previous_card_id": prev_identity.get("card_id") or previous.get("card_id"),
+            "current_card_id": curr_identity.get("card_id") or current.get("card_id"),
+            "previous_short_id": prev_identity.get("short_id"),
+            "current_short_id": curr_identity.get("short_id"),
+            "previous_ts_ms": _event_time_ms(previous),
+            "current_ts_ms": _event_time_ms(current),
+            "elapsed_ms": elapsed_ms,
+            "comparison_quality": comparison_quality,
+        },
+        "domains": [
+            _skeleton_domain(previous, current, spec)
+            for spec in TRANSITION_SKELETON_SPECS
+        ],
+    }
+
+
+def _skeleton_domain(previous, current, spec):
+    domain = spec.get("domain")
+    source_ref = spec.get("source_ref")
+    return {
+        "domain": domain,
+        "previous": _skeleton_values(previous, domain, spec.get("fields") or ()),
+        "current": _skeleton_values(current, domain, spec.get("fields") or ()),
+        "source_refs": _unique_values([
+            source_ref,
+            _source_ref_for_domain(previous, domain, source_ref),
+            _source_ref_for_domain(current, domain, source_ref),
+        ]),
+    }
+
+
+def _skeleton_values(record, domain, fields):
+    values = {}
+    for name, paths in fields:
+        values[name] = _first_transition_value(record, domain, paths)
+    return values
+
+
+def _first_transition_value(record, domain, paths):
+    for path in paths:
+        value = _get_path(record, path)
+        if value not in (None, ""):
+            return value
+    row = _evidence_row(record, domain)
+    for source_name in ("raw_values", "detail"):
+        source = row.get(source_name) if isinstance(row, dict) else None
+        for path in paths:
+            value = _raw_value_for_path(source, path)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _source_ref_for_domain(record, domain, default_ref):
+    row = _evidence_row(record, domain)
+    if isinstance(row, dict) and row.get("source_ref"):
+        return row.get("source_ref")
+    if default_ref:
+        value = _get_path(record, default_ref + ".source_ref")
+        if value:
+            return value
+    return default_ref
+
+
 def _field_snapshot(record, entry):
     value, source = _field_value(record, entry)
     row = _evidence_row(record, entry.get("domain"))
@@ -596,8 +930,23 @@ def _field_snapshot(record, entry):
         "value": value,
         "source": source,
         "role": _evidence_role(row, entry),
-        "source_ref": row.get("source_ref") if isinstance(row, dict) else None,
+        "source_ref": (
+            row.get("source_ref") if isinstance(row, dict) and row.get("source_ref")
+            else _source_ref_for_path(record, entry.get("path"))
+        ),
     }
+
+
+def _source_ref_for_path(record, dotted_path):
+    parts = str(dotted_path or "").split(".")
+    for length in range(len(parts) - 1, 0, -1):
+        parent = ".".join(parts[:length])
+        value = _get_path(record, parent + ".source_ref")
+        if value:
+            return value
+    if parts:
+        return ".".join(parts[:-1]) if len(parts) > 1 else parts[0]
+    return None
 
 
 def _field_value(record, entry):
@@ -648,6 +997,9 @@ def _raw_value_for_path(values, dotted_path):
     values = _dict(values)
     if not values:
         return None
+    compact = _compact_raw_key(dotted_path)
+    if compact in values:
+        return values.get(compact)
     leaf = str(dotted_path or "").split(".")[-1]
     if leaf in values:
         return values.get(leaf)
@@ -662,6 +1014,13 @@ def _raw_value_for_path(values, dotted_path):
         if leaf in component:
             return component.get(leaf)
     return None
+
+
+def _compact_raw_key(dotted_path):
+    parts = str(dotted_path or "").split(".")
+    if len(parts) >= 2:
+        return "_".join(parts[-2:])
+    return parts[0] if parts else ""
 
 
 def _evidence_row(record, domain):
@@ -820,6 +1179,146 @@ def _top_material_changes(changes, limit=8):
     )[:limit]
 
 
+def _domain_change_summaries(changes):
+    summaries = []
+    grouped = _group_changes_by_domain(changes)
+    for domain in TRANSITION_DOMAIN_ORDER:
+        items = grouped.get(domain) or []
+        if not items:
+            continue
+        strongest = _strongest_change(items)
+        summaries.append({
+            "domain": domain,
+            "materiality": strongest.get("materiality") if strongest else "NONE",
+            "meaning": strongest.get("meaning") if strongest else None,
+            "raw_change_count": len(items),
+            "primary_fields": [item.get("field") for item in items[:4]
+                               if item.get("field")],
+            "source_refs": _unique_values(item.get("source_ref") for item in items),
+            "role_transition": _domain_role_transition(items),
+            "previous": _domain_value_summary(items, "previous"),
+            "current": _domain_value_summary(items, "current"),
+            "children": [_raw_change_child(item) for item in items],
+        })
+    for domain, items in sorted(grouped.items()):
+        if domain in TRANSITION_DOMAIN_ORDER or not items:
+            continue
+        strongest = _strongest_change(items)
+        summaries.append({
+            "domain": domain,
+            "materiality": strongest.get("materiality") if strongest else "NONE",
+            "meaning": strongest.get("meaning") if strongest else None,
+            "raw_change_count": len(items),
+            "primary_fields": [item.get("field") for item in items[:4]
+                               if item.get("field")],
+            "source_refs": _unique_values(item.get("source_ref") for item in items),
+            "role_transition": _domain_role_transition(items),
+            "previous": _domain_value_summary(items, "previous"),
+            "current": _domain_value_summary(items, "current"),
+            "children": [_raw_change_child(item) for item in items],
+        })
+    return summaries
+
+
+def _raw_change_groups(changes):
+    grouped = _group_changes_by_domain(changes)
+    groups = []
+    for domain in list(TRANSITION_DOMAIN_ORDER) + sorted(
+            domain for domain in grouped if domain not in TRANSITION_DOMAIN_ORDER):
+        items = grouped.get(domain) or []
+        if not items:
+            continue
+        strongest = _strongest_change(items)
+        groups.append({
+            "domain": domain,
+            "materiality": strongest.get("materiality") if strongest else "NONE",
+            "raw_change_count": len(items),
+            "source_refs": _unique_values(item.get("source_ref") for item in items),
+            "children": [_raw_change_child(item) for item in items],
+        })
+    return groups
+
+
+def _group_changes_by_domain(changes):
+    grouped = {}
+    material = [change for change in changes
+                if MATERIALITY_RANK.get(change.get("materiality"), 0) > 0]
+    for change in sorted(material, key=_change_sort_key):
+        domain = str(change.get("domain") or "OTHER").upper()
+        grouped.setdefault(domain, []).append(change)
+    return grouped
+
+
+def _change_sort_key(item):
+    return (
+        -MATERIALITY_RANK.get(item.get("materiality"), 0),
+        0 if item.get("sign_flip") else 1,
+        0 if item.get("delta_abs") is not None else 1,
+        str(item.get("field") or ""),
+    )
+
+
+def _strongest_change(items):
+    if not items:
+        return None
+    return sorted(items, key=_change_sort_key)[0]
+
+
+def _domain_role_transition(items):
+    before = _unique_values(item.get("role_before") for item in items)
+    after = _unique_values(item.get("role_after") for item in items)
+    return {
+        "before": before[0] if len(before) == 1 else before,
+        "after": after[0] if len(after) == 1 else after,
+    }
+
+
+def _domain_value_summary(items, side):
+    values = {}
+    for item in items[:6]:
+        field = _field_leaf(item.get("field"))
+        if field:
+            values[field] = item.get(side)
+    return values
+
+
+def _raw_change_child(change):
+    return {
+        "domain": change.get("domain"),
+        "field": change.get("field"),
+        "previous": change.get("previous"),
+        "current": change.get("current"),
+        "delta_abs": change.get("delta_abs"),
+        "delta_relative": change.get("delta_relative"),
+        "sign_before": change.get("sign_before"),
+        "sign_after": change.get("sign_after"),
+        "sign_flip": change.get("sign_flip"),
+        "role_before": change.get("role_before"),
+        "role_after": change.get("role_after"),
+        "materiality": change.get("materiality"),
+        "meaning": change.get("meaning"),
+        "source_ref": change.get("source_ref"),
+        "source_priority": change.get("source_priority"),
+    }
+
+
+def _field_leaf(field):
+    parts = str(field or "").split(".")
+    if len(parts) >= 3 and parts[-2].isupper():
+        return parts[-2].lower() + "_" + parts[-1]
+    return parts[-1] if parts else ""
+
+
+def _unique_values(values):
+    result = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        if value not in result:
+            result.append(value)
+    return result
+
+
 def _transition_flags(previous, current, top_changes):
     flags = []
     decision = _decision_transition(previous, current)
@@ -920,6 +1419,7 @@ def _recent_trajectory(history, limit=5):
     for record in history[-limit:]:
         identity = _identity(record)
         decision = _dict(record.get("decision"))
+        skeleton = _recent_skeleton_values(record)
         rows.append({
             "card_id": identity.get("card_id") or record.get("card_id"),
             "confirmed_time_ms": _event_time_ms(record),
@@ -929,8 +1429,44 @@ def _recent_trajectory(history, limit=5):
             "macro_score": _number(_get_path(record, "factor_cross_section.macro_pressure.macro_score")),
             "funding_last_rate": _number(_get_path(record, "factor_cross_section.funding.last_rate")),
             "gamma_regime": _get_path(record, "factor_cross_section.gamma_regime.regime"),
+            **skeleton,
         })
     return rows
+
+
+def _recent_skeleton_values(record):
+    return {
+        "tmv_blend": _number(_first_transition_value(
+            record, "TMV", ("factor_cross_section.tmvf.tmv_blend", "tmv_blend"))),
+        "tmvf_24h_final": _number(_first_transition_value(
+            record, "TMV", (
+                "factor_cross_section.tmvf.tmvf_24h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_24h.final",
+                "tmvf_24h_final",
+            ))),
+        "tmvf_48h_final": _number(_first_transition_value(
+            record, "TMV", (
+                "factor_cross_section.tmvf.tmvf_48h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_48h.final",
+                "tmvf_48h_final",
+            ))),
+        "net_gamma_notional_usd": _number(_first_transition_value(
+            record, "GAMMA", (
+                "factor_cross_section.gamma_regime.net_gamma_notional_usd",
+                "factor_cross_section.gamma_regime.net_gamma_notional",
+            ))),
+        "put_call_ratio": _number(_first_transition_value(
+            record, "P_C_RATIO", (
+                "factor_cross_section.gex_info.put_call_ratio",
+                "factor_cross_section.gex_info.pc_ratio",
+                "factor_cross_section.gex_info.pcr",
+            ))),
+        "conflict_ratio": _number(_get_path(record, "conflict.ratio")),
+        "skew_vote": _first_transition_value(
+            record, "SKEW", ("factor_cross_section.skew.vote", "vote")),
+        "skew_rr_blend": _number(_first_transition_value(
+            record, "SKEW", ("factor_cross_section.skew.rr_blend", "rr_blend"))),
+    }
 
 
 def _baseline_24h(history, current_ts_ms):
@@ -1408,7 +1944,8 @@ def _auxiliary_raw_values(key, detail, factor):
             "macro_score", "score", "macro_regime", "regime", "verdict",
             "data_status", "data_confidence", "macro_data_confidence",
             "components", "component_scores", "macro_components_cn",
-            "source_ref"),
+            "macro_shock", "legacy_blocking_flags", "blocking_flags",
+            "reason_codes", "source_ref"),
     }.get(key, tuple(detail.keys()))
     raw = {}
     for field in fields:

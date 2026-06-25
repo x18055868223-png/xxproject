@@ -147,7 +147,9 @@ CONFIG = {
     # source of truth, and FMZ pushes only a <=140-char single-line brief
     # (render_push_brief). Static web reads JSONL-derived JSON cards.
     # Render/observability only; nrd schema_version stays v1.0.0.
-    "demo_version": "1.5.0",
+    # v1.5.1 (2026-06-25): MACRO dual-axis minimum enhancement. Stable macro
+    # headwind remains directional context; only confirmed macro shock gates.
+    "demo_version": "1.5.1",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -275,6 +277,8 @@ CONFIG = {
         "US10Y": [4, 9, 16, 28],
     },
     "macro_volq_shock_bps": 450,
+    "macro_dual_axis_shadow": True,
+    "macro_volq_shock_delta_bps": 150,
     "macro_volq_single_factor_blocking": False,
 
     "gex_min_fetch_interval_ms": 60000,
@@ -1673,6 +1677,7 @@ import urllib.parse
 
 
 MACRO_COMPONENT_ORDER = ("VOLQ", "DXY", "US10Y")
+MACRO_PREVIOUS_SNAPSHOT_KEY = "nrd_macro_previous_snapshot_v1"
 
 
 class MacroPressureFactor:
@@ -1680,7 +1685,7 @@ class MacroPressureFactor:
         self.http = http_client
         self.config = config or CONFIG
         self.last_refresh_ms = None
-        self.last_snapshot = None
+        self.last_snapshot = self._read_previous_snapshot()
 
     def is_stale(self):
         if self.last_snapshot is None or self.last_refresh_ms is None:
@@ -1691,10 +1696,13 @@ class MacroPressureFactor:
         return now_ms() - self.last_refresh_ms >= refresh_ms
 
     def refresh(self):
+        previous = self.last_snapshot
         snapshot = compute_macro_pressure(
-            self._load_components(), self.config)
+            self._load_components(), self.config, previous_macro=previous)
         self.last_refresh_ms = now_ms()
-        self.last_snapshot = snapshot
+        if macro_snapshot_updates_previous(snapshot):
+            self.last_snapshot = snapshot
+            self._write_previous_snapshot(snapshot)
         return snapshot
 
     def _load_components(self):
@@ -1743,6 +1751,15 @@ class MacroPressureFactor:
         return parse_yahoo_chart_bars(result.get("data"))
 
     def _read_cache(self):
+        payload = self._read_cache_payload()
+        components = payload.get("components")
+        return components if isinstance(components, dict) else {}
+
+    def _read_previous_snapshot(self):
+        snapshot = self._read_cache_payload().get(MACRO_PREVIOUS_SNAPSHOT_KEY)
+        return snapshot if isinstance(snapshot, dict) else None
+
+    def _read_cache_payload(self):
         path = self.config.get("macro_cache_file")
         if not path or not os.path.exists(path):
             return {}
@@ -1751,8 +1768,7 @@ class MacroPressureFactor:
                 payload = json.load(handle)
         except Exception:
             return {}
-        components = payload.get("components")
-        return components if isinstance(components, dict) else {}
+        return payload if isinstance(payload, dict) else {}
 
     def _write_cache(self, components):
         path = self.config.get("macro_cache_file")
@@ -1762,11 +1778,31 @@ class MacroPressureFactor:
             directory = os.path.dirname(path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
+            payload = self._read_cache_payload()
+            payload["updated_at_ms"] = now_ms()
+            payload["components"] = components
             with open(path, "w", encoding="utf-8") as handle:
-                json.dump({
-                    "updated_at_ms": now_ms(),
-                    "components": components,
-                }, handle, ensure_ascii=False, sort_keys=True)
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            return True
+        except Exception:
+            return False
+
+    def _write_previous_snapshot(self, snapshot):
+        path = self.config.get("macro_cache_file")
+        if not path:
+            return False
+        summary = macro_previous_snapshot_summary(snapshot)
+        if not summary:
+            return False
+        try:
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            payload = self._read_cache_payload()
+            payload[MACRO_PREVIOUS_SNAPSHOT_KEY] = summary
+            payload["previous_snapshot_updated_at_ms"] = now_ms()
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
             return True
         except Exception:
             return False
@@ -1940,7 +1976,8 @@ def unavailable_macro_component(key, config=None, source_symbol=None):
     }
 
 
-def compute_macro_pressure(components, config=None, ts_ms=None):
+def compute_macro_pressure(components, config=None, ts_ms=None,
+                           previous_macro=None):
     config = config or CONFIG
     clean = []
     by_key = {item.get("key"): item for item in components or []
@@ -1960,7 +1997,8 @@ def compute_macro_pressure(components, config=None, ts_ms=None):
     data_age_ms = None if last_data_ms is None else active_ts_ms - last_data_ms
     status = macro_data_status(clean)
     flags = macro_flags(clean, config)
-    blocking_flags = macro_blocking_flags(clean, macro_score, config)
+    legacy_blocking_flags = macro_legacy_blocking_flags(
+        clean, macro_score, config)
     snapshot = {
         "factor_name": "MPF",
         "factor_version": "v1.1",
@@ -1976,11 +2014,16 @@ def compute_macro_pressure(components, config=None, ts_ms=None):
         "data_status": status,
         "quality": _macro_quality(status),
         "flags": flags,
-        "blocking_flags": blocking_flags,
+        "blocking_flags": [],
+        "legacy_blocking_flags": legacy_blocking_flags,
         "components": clean,
         "interpretation_cn": macro_interpretation_cn(
             macro_score, clean, flags),
     }
+    macro_shock = evaluate_macro_shock(snapshot, previous_macro, config)
+    snapshot["macro_shock"] = macro_shock
+    snapshot["blocking_flags"] = macro_blocking_flags(
+        clean, macro_score, config, macro_shock=macro_shock)
     return add_schema(snapshot, SCHEMA_MACRO_PRESSURE, config)
 
 
@@ -2007,7 +2050,8 @@ def normalize_macro_component(component, key, config=None):
     )
 
 
-def offline_macro_pressure_snapshot(config=None, ts_ms=None):
+def offline_macro_pressure_snapshot(config=None, ts_ms=None,
+                                    previous_macro=None):
     config = config or CONFIG
     active_ts_ms = ts_ms or now_ms()
     current_ts = int(active_ts_ms / 1000)
@@ -2031,7 +2075,29 @@ def offline_macro_pressure_snapshot(config=None, ts_ms=None):
     for key in MACRO_COMPONENT_ORDER:
         components.append(build_macro_component(
             key, symbols.get(key), "live", bars[key], config))
-    return compute_macro_pressure(components, config, ts_ms=active_ts_ms)
+    return compute_macro_pressure(
+        components, config, ts_ms=active_ts_ms,
+        previous_macro=previous_macro)
+
+
+def macro_snapshot_updates_previous(snapshot):
+    snapshot = snapshot or {}
+    if snapshot.get("data_status") == "unavailable":
+        return False
+    if safe_float(snapshot.get("macro_score")) is None:
+        return False
+    return _macro_volq_bps(snapshot) is not None
+
+
+def macro_previous_snapshot_summary(snapshot):
+    if not macro_snapshot_updates_previous(snapshot):
+        return None
+    return {
+        "ts_ms": snapshot.get("last_refresh_ms") or snapshot.get("ts_ms"),
+        "macro_score": _macro_round(snapshot.get("macro_score")),
+        "macro_regime": snapshot.get("macro_regime"),
+        "volq_bps": _macro_round(_macro_volq_bps(snapshot), 1),
+    }
 
 
 def macro_strength(key, bps, config=None):
@@ -2131,7 +2197,128 @@ def macro_flags(components, config=None):
     return flags
 
 
-def macro_blocking_flags(components, macro_score, config=None):
+def _macro_components_by_key(macro_pressure):
+    components = (macro_pressure or {}).get("components")
+    if isinstance(components, dict):
+        return {str(key): value for key, value in components.items()
+                if isinstance(value, dict)}
+    return {item.get("key"): item for item in components or []
+            if isinstance(item, dict) and item.get("key")}
+
+
+def _macro_volq_bps(macro_pressure):
+    direct = safe_float((macro_pressure or {}).get("volq_bps"))
+    if direct is not None:
+        return direct
+    volq = _macro_components_by_key(macro_pressure).get("VOLQ") or {}
+    return safe_float(volq.get("scoring_bps"))
+
+
+def _macro_pressure_component(macro_pressure, key):
+    item = _macro_components_by_key(macro_pressure).get(key) or {}
+    return safe_float(item.get("normalized_pressure"))
+
+
+def _macro_round(value, digits=4):
+    value = safe_float(value)
+    if value is None:
+        return None
+    return round(value, digits)
+
+
+def evaluate_macro_shock(current_macro, previous_macro, config=None):
+    config = config or CONFIG
+    current_macro = current_macro or {}
+    previous_macro = previous_macro or {}
+    status = current_macro.get("data_status")
+    score = safe_float(current_macro.get("macro_score"))
+    previous_score = safe_float(previous_macro.get("macro_score"))
+    current_volq = _macro_volq_bps(current_macro)
+    previous_volq = _macro_volq_bps(previous_macro)
+    dxy_pressure = _macro_pressure_component(current_macro, "DXY")
+    us10y_pressure = _macro_pressure_component(current_macro, "US10Y")
+    if status == "unavailable" or score is None:
+        return {
+            "block": False,
+            "state": "UNKNOWN",
+            "macro_score_delta": None,
+            "volq_bps_delta": None,
+            "headwind_threshold_crossed": False,
+            "direction_confirmed": False,
+            "reason_codes": ["MACRO_UNAVAILABLE"],
+        }
+
+    headwind_ref = float(config.get("edb_macro_vote_ref", 0.46))
+    shock_level = float(config.get("macro_volq_shock_bps", 450))
+    shock_delta = float(config.get("macro_volq_shock_delta_bps", 150))
+    confirm_level = 0.18
+    volq_level_high = current_volq is not None and current_volq >= shock_level
+    volq_jump = (
+        current_volq is not None
+        and previous_volq is not None
+        and current_volq - previous_volq >= shock_delta
+    )
+    headwind_cross = (
+        score is not None
+        and previous_score is not None
+        and previous_score < headwind_ref
+        and score >= headwind_ref
+    )
+    dxy_confirm = dxy_pressure is not None and dxy_pressure > confirm_level
+    us10y_confirm = us10y_pressure is not None and us10y_pressure > confirm_level
+    direction_confirmed = dxy_confirm or us10y_confirm
+    previous_missing = previous_score is None or previous_volq is None
+    shock_event = volq_level_high and (volq_jump or headwind_cross)
+    bootstrap_uncertain = previous_missing and volq_level_high
+    single_factor = bool(config.get("macro_volq_single_factor_blocking", False))
+
+    reason_codes = []
+    if score >= headwind_ref:
+        reason_codes.append("MACRO_STRONG_HEADWIND")
+    if volq_level_high:
+        reason_codes.append("VOLQ_SHOCK_LEVEL")
+    if volq_jump:
+        reason_codes.append("VOLQ_SHOCK_JUMP")
+    if headwind_cross:
+        reason_codes.append("MACRO_HEADWIND_THRESHOLD_CROSS")
+    if dxy_confirm:
+        reason_codes.append("DXY_PRESSURE_CONFIRM")
+    if us10y_confirm:
+        reason_codes.append("US10Y_PRESSURE_CONFIRM")
+    if bootstrap_uncertain and direction_confirmed:
+        reason_codes.append("MACRO_SHOCK_BOOTSTRAP_UNCERTAIN")
+
+    block = bool((shock_event or bootstrap_uncertain)
+                 and (direction_confirmed or single_factor))
+    if block:
+        reason_codes.append("MACRO_SHOCK_BLOCKING")
+    elif (shock_event or bootstrap_uncertain) and not direction_confirmed:
+        reason_codes.append("VOLQ_SHOCK_UNCONFIRMED")
+
+    if block:
+        state = "BLOCK"
+    elif (shock_event or bootstrap_uncertain) and not block:
+        state = "WATCH"
+    elif previous_missing:
+        state = "UNKNOWN"
+    else:
+        state = "CLEAR"
+
+    return {
+        "block": block,
+        "state": state,
+        "macro_score_delta": _macro_round(
+            None if previous_score is None else score - previous_score),
+        "volq_bps_delta": _macro_round(
+            None if current_volq is None or previous_volq is None
+            else current_volq - previous_volq, 1),
+        "headwind_threshold_crossed": bool(headwind_cross),
+        "direction_confirmed": bool(direction_confirmed),
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
+def macro_legacy_blocking_flags(components, macro_score, config=None):
     config = config or CONFIG
     flags = []
     if safe_float(macro_score) is not None and macro_score >= 0.46:
@@ -2150,6 +2337,20 @@ def macro_blocking_flags(components, macro_score, config=None):
             if pressure > 0.18:
                 flags.append("VOLATILITY_SHOCK_CONFIRMED")
                 break
+    return sorted(set(flags))
+
+
+def macro_blocking_flags(components, macro_score, config=None, macro_shock=None):
+    del components, macro_score
+    config = config or CONFIG
+    del config
+    flags = []
+    macro_shock = macro_shock or {}
+    reason_codes = macro_shock.get("reason_codes") or []
+    if macro_shock.get("block"):
+        flags.append("MACRO_SHOCK_BLOCKING")
+        if "MACRO_SHOCK_BOOTSTRAP_UNCERTAIN" in reason_codes:
+            flags.append("MACRO_SHOCK_BOOTSTRAP_UNCERTAIN")
     return sorted(set(flags))
 
 
@@ -2735,14 +2936,13 @@ def evaluate_macro_verdict(macro_pressure, config=None):
     flags = macro_pressure.get("flags") or []
     blocking_flags = macro_pressure.get("blocking_flags") or []
     score = safe_float(macro_pressure.get("macro_score"))
-    score_block = score is not None and score >= 0.46
     status = macro_pressure.get("data_status")
     regime = macro_pressure.get("macro_regime")
+    macro_shock = macro_pressure.get("macro_shock") or {}
     if status == "unavailable":
         verdict = "MACRO_UNAVAILABLE"
-    elif (config.get("bias_macro_blocking_enabled", True)
-          and (blocking_flags or score_block)):
-        verdict = "MACRO_BLOCKING"
+    elif macro_shock.get("block") or "MACRO_SHOCK_BLOCKING" in blocking_flags:
+        verdict = "MACRO_SHOCK_BLOCKING"
     else:
         verdict = {
             "Tailwind": "MACRO_SUPPORTIVE",
@@ -2760,6 +2960,8 @@ def evaluate_macro_verdict(macro_pressure, config=None):
         "macro_data_confidence": macro_pressure.get("macro_data_confidence"),
         "flags": flags,
         "blocking_flags": blocking_flags,
+        "legacy_blocking_flags": macro_pressure.get("legacy_blocking_flags") or [],
+        "macro_shock": macro_shock,
         "component_scores": _macro_component_scores(macro_pressure),
         "macro_diagnostics": diagnostics["macro_diagnostics"],
         "macro_components_cn": summarize_macro_components_cn(macro_pressure),
@@ -2829,6 +3031,10 @@ def _macro_diagnostics(macro_pressure):
             "macro_data_confidence": macro_pressure.get(
                 "macro_data_confidence"),
             "flags": macro_pressure.get("flags") or [],
+            "blocking_flags": macro_pressure.get("blocking_flags") or [],
+            "legacy_blocking_flags": (
+                macro_pressure.get("legacy_blocking_flags") or []),
+            "macro_shock": macro_pressure.get("macro_shock") or {},
             "components": components,
         },
         "reason_codes": reason_codes,
@@ -2968,14 +3174,16 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
         ggr_mult = 1.0
     if ggr.get("veto"):
         veto, veto_reason = True, "GGR_NEGATIVE_GAMMA_VETO"
-    if macro.get("verdict") == "MACRO_BLOCKING":
-        veto, veto_reason = True, "MACRO_BLOCKING"
-    if funding.get("verdict") == "FUNDING_HARD_WARNING":
+    if (not veto) and macro.get("verdict") == "MACRO_SHOCK_BLOCKING":
+        veto, veto_reason = True, "MACRO_SHOCK_BLOCKING"
+    if (not veto) and funding.get("verdict") == "FUNDING_HARD_WARNING":
         veto, veto_reason = True, "FUNDING_HARD_WARNING"
 
     conf_pre_veto = clamp(conf_raw * ggr_mult, 0.0, 100.0)
     confidence = conf_pre_veto
 
+    lean_pre_gate, support_pre_gate, side_hint_pre_gate, next_action_pre_gate = _classify(
+        edb_score, confidence, precondition_active, False, config)
     lean, support, side_hint, next_action = _classify(
         edb_score, confidence, precondition_active, veto, config)
     conflict = _conflict_level(agreement)
@@ -3009,9 +3217,13 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
             "coverage_floor": cov_floor,
         },
         "lean": lean,
+        "lean_pre_gate": lean_pre_gate,
         "side_hint": side_hint,
+        "side_hint_pre_gate": side_hint_pre_gate,
         "support_label": support,
+        "support_pre_gate": support_pre_gate,
         "next_action": next_action,
+        "next_action_pre_gate": next_action_pre_gate,
         "conflict_level": conflict,
         "ggr_gate": {
             "regime": ggr.get("regime"),
@@ -3171,6 +3383,8 @@ def _macro_vote(macro, config):
             "macro_score": score,
             "macro_regime": macro.get("macro_regime"),
             "verdict": macro.get("verdict"),
+            "macro_shock": macro.get("macro_shock"),
+            "legacy_blocking_flags": macro.get("legacy_blocking_flags"),
             "components_cn": macro.get("macro_components_cn"),
         },
     }
@@ -3342,7 +3556,7 @@ def _summary_cn(lean, support, confidence, edb_score, agreement, coverage,
     if veto_reason:
         zh = {
             "GGR_NEGATIVE_GAMMA_VETO": "负Gamma放大区制，单边卖权被否决",
-            "MACRO_BLOCKING": "宏观硬阻断",
+            "MACRO_SHOCK_BLOCKING": "宏观冲击门阻断",
             "FUNDING_HARD_WARNING": "资金费率极端拥挤，硬阻断",
         }.get(veto_reason, veto_reason)
         return "EDB 阻断：" + zh + "，本轮不形成可交易方向。"
@@ -4102,11 +4316,17 @@ def build_audit_record(card, config=None):
         "decision": {
             "lean": conclusion.get("lean"),
             "lean_cn": conclusion.get("lean_cn"),
+            "lean_pre_gate": conclusion.get("lean_pre_gate"),
+            "lean_pre_gate_cn": conclusion.get("lean_pre_gate_cn"),
             "directional_bias": _directional_bias(reasoning, conflict),
             "support_label": support,
             "support_cn": conclusion.get("support_cn"),
+            "support_pre_gate": conclusion.get("support_pre_gate"),
+            "support_pre_gate_cn": conclusion.get("support_pre_gate_cn"),
             "side_hint": conclusion.get("side_hint"),
             "side_hint_cn": conclusion.get("side_hint_cn"),
+            "side_hint_pre_gate": conclusion.get("side_hint_pre_gate"),
+            "side_hint_pre_gate_cn": conclusion.get("side_hint_pre_gate_cn"),
             "evidence_strength": _audit_strength_pct(decomp),
             "confidence": conclusion.get("confidence"),
             "confidence_calibration": cal,
@@ -4114,6 +4334,7 @@ def build_audit_record(card, config=None):
             "trade_allowed": support in ("TRADE_SUPPORT_STRONG",
                                          "TRADE_SUPPORT_WEAK"),
             "next_action": conclusion.get("next_action"),
+            "next_action_pre_gate": conclusion.get("next_action_pre_gate"),
             "final_conclusion_cn": card.get("final_conclusion_cn"),
         },
         "display_layers": _audit_display_layers(card),
@@ -5298,13 +5519,20 @@ def _build_conclusion(edb):
     return {
         "lean": edb.get("lean"),
         "lean_cn": _lean_cn(edb.get("lean")),
+        "lean_pre_gate": edb.get("lean_pre_gate"),
+        "lean_pre_gate_cn": _lean_cn(edb.get("lean_pre_gate")),
         "support_label": edb.get("support_label"),
         "support_cn": _support_cn(edb.get("support_label")),
+        "support_pre_gate": edb.get("support_pre_gate"),
+        "support_pre_gate_cn": _support_cn(edb.get("support_pre_gate")),
         "side_hint": edb.get("side_hint"),
         "side_hint_cn": _side_hint_cn(edb.get("side_hint")),
+        "side_hint_pre_gate": edb.get("side_hint_pre_gate"),
+        "side_hint_pre_gate_cn": _side_hint_cn(edb.get("side_hint_pre_gate")),
         "confidence": edb.get("confidence"),
         "calibration_state": edb.get("calibration_state", "UNCALIBRATED"),
         "next_action": edb.get("next_action"),
+        "next_action_pre_gate": edb.get("next_action_pre_gate"),
         "edb_summary_cn": edb.get("summary_cn"),
     }
 
@@ -5506,17 +5734,21 @@ def evidence_gloss_cn(key):
 def veto_zh(veto_reason):
     return {
         "GGR_NEGATIVE_GAMMA_VETO": "负Gamma放大区制，单边卖权被否决",
-        "MACRO_BLOCKING": "宏观硬阻断",
+        "MACRO_SHOCK_BLOCKING": "宏观冲击门阻断",
         "FUNDING_HARD_WARNING": "资金费率极端拥挤，硬阻断",
     }.get(veto_reason, veto_reason or "")
 
 
 def _veto_evidence_cn(veto_reason, fs):
-    if veto_reason == "MACRO_BLOCKING":
-        score = safe_float((fs.get("macro_pressure") or {}).get("macro_score"))
-        if score is not None:
-            return "macro_score {0:+.3f} ≥ 0.46 逆风阈".format(score)
-        return "宏观逆风达硬阻断阈"
+    if veto_reason == "MACRO_SHOCK_BLOCKING":
+        macro = fs.get("macro_pressure") or {}
+        shock = macro.get("macro_shock") or {}
+        state = shock.get("state") or "BLOCK"
+        delta = shock.get("volq_bps_delta")
+        if delta is not None:
+            return "宏观冲击门 {0}，VOLQ 差分 {1:+.1f}bp".format(
+                state, float(delta))
+        return "宏观冲击门确认阻断"
     if veto_reason == "GGR_NEGATIVE_GAMMA_VETO":
         strength = safe_float((fs.get("gamma_regime") or {}).get(
             "regime_strength"))
@@ -5532,8 +5764,8 @@ def _veto_evidence_cn(veto_reason, fs):
 
 
 def _unblock_hint_cn(veto_reason, support, nr_active):
-    if veto_reason == "MACRO_BLOCKING":
-        return "待宏观逆风回落至阈下"
+    if veto_reason == "MACRO_SHOCK_BLOCKING":
+        return "待宏观冲击差分解除；稳定逆风仍仅作方向背景"
     if veto_reason == "GGR_NEGATIVE_GAMMA_VETO":
         return "待价格回到正Gamma钉住区"
     if veto_reason == "FUNDING_HARD_WARNING":
@@ -10892,12 +11124,20 @@ class DemoRuntime:
         if not live:
             if offline_fixture and self.last_macro_snapshot is None:
                 self.last_macro_snapshot = offline_macro_pressure_snapshot(
-                    self.config)
+                    self.config,
+                    previous_macro=self.macro_factor.last_snapshot)
+                if macro_snapshot_updates_previous(self.last_macro_snapshot):
+                    self.macro_factor.last_snapshot = self.last_macro_snapshot
             elif self.last_macro_snapshot is None:
                 self.last_macro_snapshot = compute_macro_pressure(
-                    [], self.config)
+                    [], self.config,
+                    previous_macro=self.macro_factor.last_snapshot)
             return self.last_macro_snapshot
         if self.macro_factor.is_stale():
+            if (self.macro_factor.last_snapshot is None
+                    and macro_snapshot_updates_previous(
+                        self.last_macro_snapshot)):
+                self.macro_factor.last_snapshot = self.last_macro_snapshot
             self.last_macro_snapshot = self.macro_factor.refresh()
         return self.last_macro_snapshot
 
@@ -10906,9 +11146,14 @@ class DemoRuntime:
             return self.last_macro_snapshot
         if self.config.get("offline_fixture_enabled", False):
             self.last_macro_snapshot = offline_macro_pressure_snapshot(
-                self.config)
+                self.config,
+                previous_macro=self.macro_factor.last_snapshot)
+            if macro_snapshot_updates_previous(self.last_macro_snapshot):
+                self.macro_factor.last_snapshot = self.last_macro_snapshot
         else:
-            self.last_macro_snapshot = compute_macro_pressure([], self.config)
+            self.last_macro_snapshot = compute_macro_pressure(
+                [], self.config,
+                previous_macro=self.macro_factor.last_snapshot)
         return self.last_macro_snapshot
 
     def _refresh_gex_info(self, live):
@@ -11267,8 +11512,10 @@ class DemoRuntime:
         self.last_mdie_refresh_ms = base_ts_ms
         self.mdie_data_quality = QUALITY_OK
         self.last_macro_snapshot = offline_macro_pressure_snapshot(
-            self.config, base_ts_ms)
-        self.macro_factor.last_snapshot = self.last_macro_snapshot
+            self.config, base_ts_ms,
+            previous_macro=self.macro_factor.last_snapshot)
+        if macro_snapshot_updates_previous(self.last_macro_snapshot):
+            self.macro_factor.last_snapshot = self.last_macro_snapshot
         self.macro_factor.last_refresh_ms = base_ts_ms
         self._seed_offline_option_greeks(base_ts_ms)
         # Deterministic gex_info that AGREES with the fixture regime (price above

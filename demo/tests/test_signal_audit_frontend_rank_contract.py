@@ -65,11 +65,15 @@ def main():
                     "rank section title should be in app.js")
         gamma_idx = app.find("${renderGammaOverview(doc)}")
         rank_idx = app.find("${renderGexRank(doc)}")
+        session_idx = app.find("${renderSignalSessionContext(doc)}")
         decision_idx = app.find("${renderDecision(doc)}")
-        assert_true(gamma_idx != -1 and rank_idx != -1 and decision_idx != -1,
-                    "renderDocument should call gamma, rank, and decision sections")
-        assert_true(gamma_idx < rank_idx < decision_idx,
-                    "rank section should render after Gamma/GEX and before Decision")
+        decision_matrix_idx = app.find("${renderDecisionMatrix(doc)}")
+        assert_true(gamma_idx != -1 and rank_idx != -1 and session_idx != -1,
+                    "renderDocument should call gamma, rank, and session-context sections")
+        assert_true(gamma_idx < rank_idx < session_idx,
+                    "rank section should render after Gamma/GEX and before session/context sections")
+        assert_true(decision_idx == -1 and decision_matrix_idx == -1,
+                    "renderDocument should not call removed low-signal decision sections")
         assert_true(".rank-grid" in html and ".rank-note" in html,
                     "index.html should include compact rank styles")
 

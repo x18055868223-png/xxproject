@@ -52,6 +52,10 @@ def main():
                 "LLM service should use a stable sidecar path")
     assert_true("signal-audit-materialize.service" in llm_service,
                 "LLM service should refresh materialized cards after reviews")
+    assert_true("ExecStartPre=/bin/systemctl start signal-audit-materialize.service" in llm_service,
+                "LLM service should materialize before review so transition ledger is current")
+    assert_true("ExecStartPost=/bin/systemctl start signal-audit-materialize.service" in llm_service,
+                "LLM service should materialize after review so sidecars are merged")
     assert_true("MemoryMax=256M" in llm_service,
                 "LLM service should be capped for a 1GB server")
     assert_true("TimeoutStartSec=300" in llm_service,
@@ -81,6 +85,9 @@ def main():
                 and "transition_context" in self_check
                 and "no_trading_instruction" in self_check,
                 "server self-check should validate transition context and transition LLM guard")
+    assert_true("started signal-audit-materialize.service before LLM" in self_check
+                and "started signal-audit-materialize.service after LLM" in self_check,
+                "server self-check active mode should materialize before and after LLM")
     transition_units = list(DEPLOY.glob("signal-transition-*"))
     assert_true(not transition_units,
                 "T0/T1 must reuse existing services, not add signal-transition units")

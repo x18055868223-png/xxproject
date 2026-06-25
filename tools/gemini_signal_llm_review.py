@@ -535,6 +535,12 @@ def build_transition_review_packet(transition):
         }),
         "decision_transition": _safe_copy(
             _transition_decision_packet(transition.get("decision_transition"))),
+        "core_skeleton": _safe_copy(transition.get("core_skeleton")),
+        "domain_change_summaries": _safe_copy([
+            _transition_domain_summary_packet(item)
+            for item in list(transition.get("domain_change_summaries") or [])[:8]
+            if isinstance(item, dict)
+        ]),
         "top_material_changes": _safe_copy([
             _transition_change_packet(item)
             for item in list(transition.get("top_material_changes") or [])[:8]
@@ -604,6 +610,29 @@ def _transition_change_packet(change):
     }
 
 
+def _transition_domain_summary_packet(summary):
+    children = [
+        _transition_change_packet(item)
+        for item in list(summary.get("children") or [])[:8]
+        if isinstance(item, dict)
+    ]
+    return {
+        "domain": summary.get("domain"),
+        "materiality": summary.get("materiality"),
+        "meaning": summary.get("meaning"),
+        "raw_change_count": summary.get("raw_change_count"),
+        "primary_fields": [
+            _transition_public_field(field)
+            for field in list(summary.get("primary_fields") or [])[:6]
+        ],
+        "source_refs": summary.get("source_refs") or [],
+        "role_transition": summary.get("role_transition"),
+        "previous": summary.get("previous"),
+        "current": summary.get("current"),
+        "children": children,
+    }
+
+
 def _transition_public_field(field):
     text = str(field or "")
     if text.startswith("factor_cross_section."):
@@ -618,8 +647,11 @@ def build_transition_review_prompt(packet):
         "严格边界：不得使用外部行情，不得把相关性等于因果，"
         "不得输出交易建议、仓位建议、下单建议或执行层动作。\n"
         "请基于 SignalTransitionReviewPacket 输出结构化中文解释，"
-        "所有判断都要锚定 packet 中的 top_material_changes、"
-        "cross_domain_flags、comparison_quality 和 comparison_limitations。\n\n"
+        "优先锚定 packet 中的 core_skeleton 和 domain_change_summaries，"
+        "围绕 TMV/TMVF、期货资金费率、期权斜率、net gamma/GEX、P/C 比例、"
+        "冲突比例和宏观状态解释综合变化链；top_material_changes 只作为底层 trace，"
+        "不得让拆分后的宏观子字段主导解释。所有判断还要参考 cross_domain_flags、"
+        "comparison_quality 和 comparison_limitations。\n\n"
         "SignalTransitionReviewPacket:\n"
         + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )

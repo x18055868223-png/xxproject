@@ -1,6 +1,6 @@
 # 审计静态页面部署模块
 
-> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前审计页面部署资产，包含静态前端、materializer、Gemini LLM sidecar runner、systemd timer 和 Web server 示例。中文组件语义先读 [`因子文档/00_审计部署总览.md`](因子文档/00_审计部署总览.md)；审计卡展示语义见 [`docs/审计卡片语义.md`](docs/审计卡片语义.md)。
+> 当前模块口径（r3.3.1 / 2026-06-25）：本目录是当前审计页面部署资产，包含静态前端、materializer、Gemini LLM sidecar runner、transition 审计旁路、MACRO 双轴审计展示、systemd timer 和 Web server 示例。中文组件语义先读 [`因子文档/00_审计部署总览.md`](因子文档/00_审计部署总览.md)；审计卡展示语义见 [`docs/审计卡片语义.md`](docs/审计卡片语义.md)。
 
 ## 工程收纳
 
@@ -12,7 +12,7 @@
 | `*.service` / `*.timer` | systemd 单元 |
 | `install_or_update.sh` | 服务器安装/更新脚本 |
 
-本轮 r2.2 不改变部署脚本行为，只补齐文档收纳和前端版本元数据。
+本轮 r3.3.1 保持既有服务/timer 复用，新增 transition ledger/LLM sidecar 参数与 MACRO direction-background/shock-gate 自检，不新增独立 transition 或 macro 服务。
 
 This deployment target serves the finalized static audit frontend and refreshes
 its `signal_cards/` data from the FMZ `signal_review.jsonl` file.
@@ -21,7 +21,7 @@ For new-server rebuilds or server migration, use the Chinese quick runbook
 [`SERVER_MIGRATION_ZH.md`](SERVER_MIGRATION_ZH.md), the detailed English
 runbook [`SERVER_MIGRATION.md`](SERVER_MIGRATION.md), and
 [`../../tools/server_bootstrap_signal_stack.sh`](../../tools/server_bootstrap_signal_stack.sh).
-The current migration/bootstrap release target is `r3.2.1` in the primary
+The current migration/bootstrap release target is `r3.3.1` in the primary
 `xxproject` repository.
 
 ## Server Paths

@@ -178,6 +178,12 @@ def auxiliary_evidence_record():
                 "macro_regime": "Mild Headwind",
                 "macro_data_confidence": 1.0,
                 "data_status": "OK",
+                "macro_shock": {
+                    "block": False,
+                    "state": "CLEAR",
+                    "reason_codes": ["MACRO_STRONG_HEADWIND"],
+                },
+                "legacy_blocking_flags": ["MACRO_HEADWIND_BLOCK"],
                 "components": [
                     {"key": "VOLQ", "scoring_bps": 150},
                     {"key": "DXY", "scoring_bps": 8},
@@ -190,8 +196,12 @@ def auxiliary_evidence_record():
 
 
 def transition_record(card_id, confirmed_time_ms, lean, support, macro_score,
-                      volq, dxy, us10y, funding_rate, ggr_regime="POSITIVE_GAMMA_PINNING",
-                      skew_vote="NEUTRAL", episode="EP-A"):
+                      volq, dxy, us10y, funding_rate,
+                      ggr_regime="POSITIVE_GAMMA_PINNING",
+                      skew_vote="NEUTRAL", episode="EP-A",
+                      tmv_blend=0.42, tmvf_24h_final=0.31,
+                      tmvf_48h_final=0.49, net_gamma=12400000.0,
+                      put_call_ratio=0.92, conflict_ratio=0.18):
     return {
         "schema": {"name": "signal_review_card", "version": "1.0.0"},
         "identity": {
@@ -199,7 +209,7 @@ def transition_record(card_id, confirmed_time_ms, lean, support, macro_score,
             "short_id": card_id[-4:],
             "episode_id": episode,
             "symbol": "BTC",
-            "strategy_version": "1.5.0",
+            "strategy_version": "1.5.1",
             "confirmed_time_ms": confirmed_time_ms,
             "confirmed_at": "2026-06-18T{:02d}:{:02d}:00+08:00".format(
                 (confirmed_time_ms // 3600000) % 24,
@@ -236,6 +246,16 @@ def transition_record(card_id, confirmed_time_ms, lean, support, macro_score,
         "reasoning": {
             "evidence": [
                 {
+                    "key": "TMV",
+                    "participation_status": "ACTIVE",
+                    "source_ref": "factor_cross_section.tmvf",
+                    "raw_values": {
+                        "tmv_blend": tmv_blend,
+                        "tmvf_24h_final": tmvf_24h_final,
+                        "tmvf_48h_final": tmvf_48h_final,
+                    },
+                },
+                {
                     "key": "MACRO",
                     "participation_status": "EXCLUDED",
                     "source_ref": "factor_cross_section.macro_pressure",
@@ -252,10 +272,40 @@ def transition_record(card_id, confirmed_time_ms, lean, support, macro_score,
                 },
             ],
         },
+        "conflict": {
+            "ratio": conflict_ratio,
+            "level": "MATERIAL" if conflict_ratio >= 0.35 else "LOW",
+            "aligned_keys": ["TMV"],
+            "dissent_keys": ["MACRO", "SRD"] if conflict_ratio >= 0.35 else ["MACRO"],
+        },
         "factor_cross_section": {
+            "tmvf": {
+                "direction": "Bullish" if tmv_blend > 0 else "Bearish",
+                "tmv_blend": tmv_blend,
+                "tmvf_24h": {"final": tmvf_24h_final, "tmv_final": tmvf_24h_final},
+                "tmvf_48h": {"final": tmvf_48h_final, "tmv_final": tmvf_48h_final},
+                "window_conflict": conflict_ratio >= 0.35,
+                "source_ref": "BINANCE_1H_KLINE",
+            },
             "macro_pressure": {
                 "macro_score": macro_score,
                 "macro_regime": "Mild Headwind" if macro_score > 0.2 else "Neutral",
+                "macro_shock": {
+                    "block": support == "NO_TRADE_BLOCKED",
+                    "state": "BLOCK" if support == "NO_TRADE_BLOCKED" else "CLEAR",
+                    "macro_score_delta": 0.4279 if support == "NO_TRADE_BLOCKED" else 0.0,
+                    "volq_bps_delta": 442.4 if support == "NO_TRADE_BLOCKED" else 0.0,
+                    "reason_codes": (
+                        ["VOLQ_SHOCK_JUMP", "US10Y_PRESSURE_CONFIRM", "MACRO_SHOCK_BLOCKING"]
+                        if support == "NO_TRADE_BLOCKED"
+                        else ["MACRO_STRONG_HEADWIND"]
+                    ),
+                },
+                "legacy_blocking_flags": (
+                    ["MACRO_HEADWIND_BLOCK", "VOLATILITY_SHOCK_CONFIRMED"]
+                    if support == "NO_TRADE_BLOCKED"
+                    else []
+                ),
                 "components": [
                     {"key": "VOLQ", "scoring_bps": volq},
                     {"key": "DXY", "scoring_bps": dxy},
@@ -269,8 +319,15 @@ def transition_record(card_id, confirmed_time_ms, lean, support, macro_score,
             },
             "gamma_regime": {
                 "regime": ggr_regime,
+                "net_gamma_notional_usd": net_gamma,
                 "distance_to_flip_pct": -0.31,
                 "distance_to_pin_pct": 0.45,
+            },
+            "gex_info": {
+                "market_state": ggr_regime,
+                "net_gamma_notional_usd": net_gamma,
+                "put_call_ratio": put_call_ratio,
+                "source_ref": "GEX_MONITOR_API",
             },
             "skew": {
                 "vote": skew_vote,
@@ -490,6 +547,10 @@ def main():
                     "MACRO raw confidence should be carried into the ledger")
         assert_true(len(macro["raw_values"]["components"]) == 3,
                     "MACRO component proxies should be carried into the ledger")
+        assert_true(macro["raw_values"]["macro_shock"]["state"] == "CLEAR",
+                    "MACRO native shock gate should be carried into raw ledger values")
+        assert_true(macro["raw_values"]["legacy_blocking_flags"] == ["MACRO_HEADWIND_BLOCK"],
+                    "MACRO legacy blocking flags should remain auditable without becoming native blocking")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)
@@ -506,7 +567,10 @@ def main():
             transition_record("CARD-B", base_ms + 60 * 60 * 1000, "NEUTRAL",
                               "NO_TRADE_BLOCKED", 0.4588, 592.9, 14.7,
                               6.2, 0.000054, ggr_regime="TRANSITION",
-                              skew_vote="BEARISH"),
+                              skew_vote="BEARISH", tmv_blend=0.18,
+                              tmvf_24h_final=0.11, tmvf_48h_final=0.24,
+                              net_gamma=-7600000.0, put_call_ratio=1.22,
+                              conflict_ratio=0.62),
         ]
         source.write_text("\n".join(json.dumps(item, ensure_ascii=False)
                                     for item in records) + "\n",
@@ -559,6 +623,44 @@ def main():
                     "material event should request transition LLM review")
         assert_true("future" not in json.dumps(transition, ensure_ascii=False).lower(),
                     "real-time transition context must not include future outcome fields")
+        skeleton = transition.get("core_skeleton")
+        assert_true(skeleton and skeleton["schema_version"] == "transition_core_skeleton@1.0.0",
+                    "transition should expose a stable multi-domain core skeleton")
+        skeleton_domains = {item["domain"]: item for item in skeleton["domains"]}
+        for domain in ("TMV", "MACRO", "FUNDING", "SKEW", "GAMMA",
+                       "P_C_RATIO", "CONFLICT", "DECISION", "QUALITY"):
+            assert_true(domain in skeleton_domains,
+                        "core skeleton should include domain " + domain)
+        assert_true(skeleton_domains["TMV"]["current"]["tmv_blend"] == 0.18,
+                    "TMV skeleton should carry current canonical tmv_blend")
+        assert_true(skeleton_domains["GAMMA"]["current"]["net_gamma_notional_usd"] == -7600000.0,
+                    "Gamma skeleton should carry current net gamma")
+        assert_true(skeleton_domains["P_C_RATIO"]["current"]["put_call_ratio"] == 1.22,
+                    "P/C skeleton should carry current put-call ratio")
+        assert_true(skeleton_domains["CONFLICT"]["current"]["ratio"] == 0.62,
+                    "conflict skeleton should carry current conflict ratio")
+        assert_true(skeleton_domains["MACRO"]["current"]["macro_shock_state"] == "BLOCK",
+                    "MACRO skeleton should carry producer-native macro shock state when present")
+        assert_true(skeleton_domains["MACRO"]["current"]["macro_shock_block"] is True,
+                    "MACRO skeleton should carry producer-native macro shock block when present")
+        summaries = transition.get("domain_change_summaries") or []
+        macro_summaries = [item for item in summaries if item.get("domain") == "MACRO"]
+        assert_true(len(macro_summaries) == 1,
+                    "split macro component changes should collapse to one MACRO summary")
+        assert_true(macro_summaries[0]["raw_change_count"] >= 3,
+                    "MACRO summary should preserve child raw change count")
+        macro_child_fields = {item["field"] for item in macro_summaries[0]["children"]}
+        assert_true("factor_cross_section.macro_pressure.components.US10Y.scoring_bps" in macro_child_fields,
+                    "MACRO summary should retain raw child field trace")
+        raw_groups = {item["domain"]: item for item in transition.get("raw_change_groups") or []}
+        assert_true("MACRO" in raw_groups and raw_groups["MACRO"]["raw_change_count"] >= 3,
+                    "raw change groups should retain full grouped MACRO trace")
+        recent = transition.get("recent_5_trajectory") or []
+        assert_true(recent and "tmv_blend" in recent[-1]
+                    and "net_gamma_notional_usd" in recent[-1]
+                    and "put_call_ratio" in recent[-1]
+                    and "conflict_ratio" in recent[-1],
+                    "recent trajectory should include the multi-domain event skeleton")
 
         ledger_lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         assert_true(len(ledger_lines) == 1,
@@ -598,7 +700,10 @@ def main():
             transition_record("LEGACY-B", base_ms + 60 * 60 * 1000, "NEUTRAL",
                               "NO_TRADE_BLOCKED", 0.4588, 592.9, 14.7,
                               6.2, 0.000054, ggr_regime="TRANSITION",
-                              skew_vote="BEARISH"),
+                              skew_vote="BEARISH", tmv_blend=0.18,
+                              tmvf_24h_final=0.11, tmvf_48h_final=0.24,
+                              net_gamma=-7600000.0, put_call_ratio=1.22,
+                              conflict_ratio=0.62),
         ]
         for item in legacy_records:
             item["provenance"].pop("transition_audit_source", None)

@@ -1,6 +1,6 @@
 # 中性回路整合工程备份标记
 
-备份版本：`NRD-XXPROJECT-BACKUP-2026.06.24-r3.2.1`
+备份版本：`NRD-XXPROJECT-BACKUP-2026.06.25-r3.3.1`
 
 本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
@@ -17,7 +17,7 @@
 
 ## 当前版本锚点
 
-- 信号层：`demo_version=1.4.1`，`schema_version=nrd.schema.v1.0.0`；FMZ 本体原生输出完整 `SignalSessionPremiseDurabilityContext`，materializer 仅对历史卡做显式兼容回填。
+- Signal layer: `demo_version=1.5.1`; `schema_version=nrd.schema.v1.0.0`; producer-native `SignalSessionPremiseDurabilityContext`, `SignalTransitionProducerAnchor@1.0.0`, and `macro_shock`; materializer compatibility backfill remains explicit for legacy cards only.
 - 执行层：`STRATEGY_VERSION=2.5.0`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭。
 - GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
 - LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.3.0`，`gemini_signal_review_prompt@1.3.0`；sidecar 使用两次调用真盲审。
@@ -36,7 +36,7 @@ bash tools/server_self_check_signal_stack.sh
 默认是只读检查。需要主动触发 LLM 和 materializer oneshot 时再执行：
 
 ```bash
-GEX_REQUIRED=0 LLM_REQUIRED=1 SESSION_CONTEXT_REQUIRED=1 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
+GEX_REQUIRED=0 LLM_REQUIRED=1 SESSION_CONTEXT_REQUIRED=1 TRANSITION_REQUIRED=1 TRANSITION_LLM_REQUIRED=1 sudo -E bash tools/server_self_check_signal_stack.sh --run-oneshots
 ```
 
 ## 使用顺序

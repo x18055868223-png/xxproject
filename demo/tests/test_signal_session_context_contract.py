@@ -29,8 +29,8 @@ def ms_utc8(year, month, day, hour, minute):
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
-    assert_true(config["demo_version"] == "1.5.0",
-                "FMZ signal deliverable version should match r3.3 transition audit contract")
+    assert_true(config["demo_version"] == "1.5.1",
+                "FMZ signal deliverable version should match r3.3.1 macro dual-axis contract")
 
     london = mod.classify_signal_session_context(
         ms_utc8(2026, 6, 19, 15, 4), config)
