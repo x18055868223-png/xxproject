@@ -34,12 +34,42 @@ def cards_with_session_context(root):
     return cards
 
 
+def event_time(card):
+    identity = card.get("identity") or {}
+    value = identity.get("confirmed_time_ms")
+    return value if isinstance(value, (int, float)) else 0
+
+
 def assert_asset_root(root):
     assert_true((root / "app.js").exists(), "missing app.js in " + str(root))
     assert_true((root / "signal_cards" / "index.json").exists(),
                 "missing signal_cards/index.json in " + str(root))
     cards = cards_with_session_context(root)
     assert_true(cards, "static signal_cards should include session_context in " + str(root))
+    ordered_cards = sorted((card for _path, card, _ctx in cards), key=event_time)
+    transition_cards = [
+        card for card in ordered_cards
+        if isinstance(card.get("transition_context"), dict)
+        and card["transition_context"].get("transition_id")
+    ]
+    assert_true(len(ordered_cards) >= 5,
+                "deploy fixture should include at least five representative cards")
+    assert_true(len(transition_cards) >= len(ordered_cards) - 1,
+                "all cards after the first event should include materialized transition_context")
+    latest_card = ordered_cards[-1]
+    latest_transition = latest_card.get("transition_context") or {}
+    assert_true(latest_transition.get("audit_scope") == "AUDIT_ONLY",
+                "latest deploy fixture transition should stay audit-only")
+    assert_true(latest_transition.get("current_card_id")
+                == (latest_card.get("identity") or {}).get("card_id"),
+                "latest transition should align with current card identity")
+    for key in ("raw_change_groups", "recent_5_trajectory",
+                "baseline_24h", "episode_anchor"):
+        assert_true(latest_transition.get(key),
+                    "latest transition JSON should keep " + key
+                    + " for non-visual trace reuse")
+    assert_true((root / "signal_cards" / "trajectory" / "BTC.json").exists(),
+                "deploy fixture should publish BTC transition trajectory JSON")
     codes = {ctx.get("rationale_code") for _path, _card, ctx in cards}
     for expected in ("PRE_US_TRAPDOOR", "US_DEEP_POST_CATALYST",
                      "ASIA_MORNING", "ASIA_AFTERNOON_LULL",
@@ -178,6 +208,10 @@ def main():
         assert_true((DEPLOY_FRONTEND / "index.html").read_text(encoding="utf-8")
                     == (DIST_FRONTEND / "index.html").read_text(encoding="utf-8"),
                     "deploy and dist index.html should match")
+    else:
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        assert_true("dist/" in gitignore,
+                    "dist may be absent only because it is ignored package output")
     print("signal_session_context_deploy_assets: PASS")
 
 

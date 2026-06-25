@@ -2386,7 +2386,6 @@
       ${renderQuality(doc)}
       ${renderBlocking(doc)}
       ${renderReasoning(doc)}
-      ${renderTransitionRawChanges(doc)}
       ${renderConflict(doc)}
       ${renderFactorCrossSection(doc)}
       ${renderProvenance(doc)}

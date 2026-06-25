@@ -414,8 +414,8 @@ def main():
                 "AGENTS should require explicit local-page push confirmation")
     assert_true("function renderTransitionContext(doc)" in app,
                 "frontend should render materialized transition_context")
-    assert_true("function renderTransitionRawChanges(doc)" in app,
-                "frontend should render raw transition changes as a separate lower trace section")
+    assert_true("${renderTransitionRawChanges(doc)}" not in app,
+                "frontend should not render low-signal raw transition changes in the main page")
     assert_true("function renderIndexTransitionBadges(doc)" in app,
                 "index should render transition badges from materialized data")
     assert_true("function renderTransitionLlmReview(doc)" in app,
@@ -424,15 +424,11 @@ def main():
                 "frontend should keep native macro shock and legacy macro block fields traceable")
     session_idx = app.find("${renderSignalSessionContext(doc)}")
     transition_idx = app.find("${renderTransitionContext(doc)}")
-    transition_raw_idx = app.find("${renderTransitionRawChanges(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
-    reasoning_idx = app.find("${renderReasoning(doc)}")
     assert_true(session_idx != -1 and transition_idx != -1 and llm_idx != -1,
                 "document render flow should include session, transition, and LLM sections")
     assert_true(session_idx < transition_idx < llm_idx,
                 "transition context should render after session context and before card LLM review")
-    assert_true(reasoning_idx < transition_raw_idx,
-                "raw transition changes should render after the complete EDB ledger")
     for marker in (
             "状态转移审计",
             "状态路径",
@@ -531,9 +527,9 @@ def main():
     raw_pos = full_transition_text.find("状态转移原始字段变化")
     edb_pos = full_transition_text.find("完整证据账本")
     assert_true(llm_pos != -1, "transition LLM explanation should use Chinese title")
-    assert_true(raw_pos != -1, "raw field changes should use Chinese title")
-    assert_true(edb_pos != -1 and edb_pos < raw_pos,
-                "raw transition changes should render after the complete EDB ledger")
+    assert_true(raw_pos == -1,
+                "low-signal raw transition changes should not render in the main page")
+    assert_true(edb_pos != -1, "complete EDB ledger should remain visible")
     assert_true("状态转移原始字段变化" not in transition_text,
                 "raw transition changes should not occupy the top transition board")
     metadata_pos = transition_text.find("审计元数据")
@@ -591,8 +587,8 @@ def main():
             "变化量",
             "字段角色",
     ):
-        assert_true(label in full_transition_text[raw_pos:],
-                    "raw transition trace should retain Chinese semantic label: " + label)
+        assert_true(label not in full_transition_text,
+                    "low-signal transition trace label should not render in the main page: " + label)
     for raw_label in (
             "Top material changes",
             "observed_changes",
