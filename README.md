@@ -1,6 +1,10 @@
 # 中性回路整合工程备份标记
 
-备份版本：`NRD-XXPROJECT-BACKUP-2026.06.19-r2.2`
+> **当前最新版本：`r3.3.2`（备份标记 `NRD-XXPROJECT-BACKUP-2026.06.26-r3.3.2`）**
+> 更新推送时间：**2026-06-26（UTC+8）** ｜ 提交：`c10b6ee`（信号审计前端封版）
+> 最新版本位置：本仓库 `main` 分支 → https://github.com/x18055868223-png/xxproject
+>
+> **r3.3.2 更新**（在 r3.3.1 之上叠加，后端 `demo/`、执行层等保持不变）：信号审计前端封版 —— transition LLM 复核降级态与旧版 sidecar 改为醒目告警条，与通过态明显区分（SUPPRESS/未知态 fail-closed）；删除冗余决策死代码与潜伏 `sign_flip` 显示 bug；卡片时间统一 `Asia/Shanghai`；`evidence_raw_values.*` 源引用可跳转；funding 方向取值优先 `last_rate`。render-contract / materializer / llm 三套回归测试通过。
 
 本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
@@ -17,11 +21,11 @@
 
 ## 当前版本锚点
 
-- 信号层：`demo_version=1.3.0`，`schema_version=nrd.schema.v1.0.0`。
+- 信号层：`demo_version=1.5.1`，`schema_version=nrd.schema.v1.0.0`；producer 原生 `SignalSessionPremiseDurabilityContext@1.0.0`、`SignalTransitionProducerAnchor@1.0.0`、`macro_shock`。
 - 执行层：`STRATEGY_VERSION=2.5.0`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭。
 - GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
-- LLM 复核：Gemini `gemini-3.5-flash`，`signal_llm_review@1.2.0`，`gemini_signal_review_prompt@1.2.0`。
-- 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar。
+- LLM 复核：Gemini `gemini-3.5-flash`，卡片级 `signal_llm_review@1.3.0` / `gemini_signal_review_prompt@1.3.0`，状态转移级 `signal_transition_llm_review@1.2.2`。
+- 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar；前端封版 r3.3.2，缓存位 `?v=20260626b-transition-v1.2.2`，降级/旧版 transition 复核醒目告警。
 - 文档收纳：05 与 `deploy/signal_audit` 已补齐 `因子文档/`、中文语义入口和前端 `VERSION.json`，按 00-04 的模块阅读惯例收纳。
 
 ## 快速排障入口
