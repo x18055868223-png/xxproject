@@ -26,8 +26,8 @@ OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.3.0"
 PROMPT_VERSION = "gemini_signal_review_prompt@1.3.0"
 PACKET_VERSION = "signal_llm_review_packet@1.0.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
-TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.3"
-TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.3"
+TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
+TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.4"
 TRANSITION_PACKET_VERSION = "SignalTransitionReviewPacket@1.1.1"
 TRANSITION_EVIDENCE_CATALOG_VERSION = "transition_evidence_catalog@1.0.0"
 TRANSITION_RAW_FIELD_LEAK_PATTERNS = (
@@ -2004,13 +2004,11 @@ def _validate_transition_payload(payload):
         raise ValueError("invalid_if must be list")
     if not isinstance(payload.get("operator_checks"), list):
         raise ValueError("operator_checks must be list")
-    guard = _as_dict(payload.get("language_guard"))
-    if guard.get("distinguishes_observation_from_causality") is not True:
-        raise ValueError("transition review must distinguish observation from causality")
-    if guard.get("no_external_data") is not True:
-        raise ValueError("transition review must not use external data")
-    if guard.get("no_trading_instruction") is not True:
-        raise ValueError("transition review must forbid trading instruction")
+    # language_guard self-reports (no_external_data / no_trading_instruction /
+    # distinguishes_observation_from_causality) are recorded as advisory metadata,
+    # not enforced as a gate: transition LLM review is an audit bypass reference and
+    # does not change confidence/factors/release. Only structural/format integrity is
+    # validated here so the frontend audit page renders correctly.
     return payload
 
 
@@ -2834,53 +2832,34 @@ def _transition_policy_validation(review, packet):
     blocking_unit_terms = [
         term for term in unit_terms if term not in normalization_issues
     ]
-    if trading_terms:
-        severity = "FATAL"
-        render_state = "SUPPRESS_LLM_TEXT"
-    elif (invalid_refs or missing_evidence_refs or direction_conflicts
-          or blocking_unit_terms or raw_enum_terms
-          or raw_field_path_terms
-          or external_data_terms
-          or missing_core_domains
-          or missing_observed_changes
-          or "incompatible_epistemic_state" in issue_codes
-          or "partial_evidence_changes_judgment" in issue_codes
-          or "sufficient_evidence_understated" in issue_codes
-          or "system_assertion_observed_change" in issue_codes
-          or "invalid_effect_target_for_domain" in issue_codes):
+    # Content-expression issues (trading language, causal/external attribution, raw
+    # enum or field-path leakage, unit mislabel, materiality boilerplate, fact/impact
+    # direction tension) are recorded as advisory metadata only and no longer gate
+    # display: the transition LLM review is an audit-bypass reference and does not
+    # change confidence/factors/release. Only structural/format problems that would
+    # break the audit page or its evidence traceability still degrade the render so
+    # the frontend keeps showing correctly.
+    structural_block = bool(
+        missing_observed_changes
+        or not result["observed_changes_have_fact_impact_tendency"]
+        or invalid_refs
+        or missing_evidence_refs
+        or missing_core_domains
+        or "incompatible_epistemic_state" in issue_codes
+        or "partial_evidence_changes_judgment" in issue_codes
+        or "sufficient_evidence_understated" in issue_codes
+        or "system_assertion_observed_change" in issue_codes
+        or "invalid_effect_target_for_domain" in issue_codes
+    )
+    if structural_block:
         severity = "ERROR"
-        render_state = "DEGRADED_LLM_TEXT"
-    elif materiality_terms or causal_overclaim_terms:
-        severity = "WARN"
         render_state = "DEGRADED_LLM_TEXT"
     else:
         severity = "OK"
         render_state = "DISPLAY_LLM_TEXT"
     result["severity"] = severity
     result["render_state"] = render_state
-    result["passed"] = all((
-        result["no_external_data"],
-        result["no_trading_instruction"],
-        result["distinguishes_observation_from_causality"],
-        result["not_trading_advice"],
-        result["observed_changes_have_fact_impact_tendency"],
-        result["no_materiality_boilerplate"],
-        not missing_observed_changes,
-        not raw_enum_terms,
-        not blocking_unit_terms,
-        not invalid_refs,
-        not missing_evidence_refs,
-        not direction_conflicts,
-        not causal_overclaim_terms,
-        not external_data_terms,
-        not raw_field_path_terms,
-        not missing_core_domains,
-        "incompatible_epistemic_state" not in issue_codes,
-        "partial_evidence_changes_judgment" not in issue_codes,
-        "sufficient_evidence_understated" not in issue_codes,
-        "system_assertion_observed_change" not in issue_codes,
-        "invalid_effect_target_for_domain" not in issue_codes,
-    ))
+    result["passed"] = not structural_block
     _strip_transition_private_validation_fields(review)
     return result
 

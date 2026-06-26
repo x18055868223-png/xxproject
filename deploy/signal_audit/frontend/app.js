@@ -1691,10 +1691,9 @@
     const policy = asObject(review.policy_validation);
     const renderState = String(policy.render_state || "").toUpperCase();
     const suppressLlmText = renderState === "SUPPRESS_LLM_TEXT";
-    const isLegacyUnvalidated = !Object.keys(policy).length;
-    const degradedLlmText = renderState === "DEGRADED_LLM_TEXT" || isLegacyUnvalidated;
-    const hardDegradedLlmText = suppressLlmText || !["", "DISPLAY_LLM_TEXT", "DEGRADED_LLM_TEXT", "SUPPRESS_LLM_TEXT"].includes(renderState);
-    const softDegradedLlmText = degradedLlmText && !hardDegradedLlmText;
+    // Content-expression issues no longer gate display; the transition LLM area is a
+    // neutral audit-bypass reference. Only SUPPRESS_LLM_TEXT (defensive) and unknown
+    // render states still fail closed and hide the model text.
     const knownRenderStates = new Set([
       "",
       "DISPLAY_LLM_TEXT",
@@ -1740,12 +1739,10 @@
       `;
     }
     return `
-      <div class="transition-llm${degradedLlmText ? ` is-degraded ${softDegradedLlmText ? "is-soft-degraded" : "is-hard-degraded"}` : ""}">
+      <div class="transition-llm">
         <h3 class="subsection-title">LLM 变化链解释</h3>
         ${topline}
-        ${degradedLlmText ? `<div class="transition-llm-degraded-banner" role="alert">${escapeHtml(isLegacyUnvalidated
-          ? "此复核来自旧版 sidecar，未按当前 v1.2.3 策略校验；以下正文仅供参考，请以程序化 transition ledger、证据目录和原始审计卡为准。"
-          : "此复核未通过当前策略校验，正文为降级展示，可能包含被标记表述；请以程序化 transition ledger、证据目录和原始审计卡为准。")}</div>` : ""}
+        <div class="transition-llm-reference-note">LLM 变化链解释为审计旁路参考，仅用于信息整理与人工复核，不影响置信度、因子、放行或执行；如有内容表述问题仅作 metadata 记录。</div>
         <p class="llm-review-summary">${valueHtml(sanitizeTransitionReadable(
           review.transition_summary_cn,
           "LLM 解释含原始字段路径，已在主阅读区隐藏；请以核心骨架和策略校验继续复核。"
