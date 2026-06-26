@@ -806,8 +806,8 @@ def main():
     raw_leak_render = render_transition_contract(FRONTEND, raw_leak_llm=True)
     raw_leak_text = raw_leak_render["text"]
     raw_leak_html = raw_leak_render["html"]
-    assert_true("transition-llm is-degraded is-soft-degraded" in raw_leak_html,
-                "nonfatal degraded transition LLM text should render as soft amber degraded")
+    assert_true("transition-llm is-degraded" not in raw_leak_html,
+                "content-expression issues should not render as amber/red degraded")
     raw_start = raw_leak_text.find("LLM")
     raw_metadata = raw_leak_text.find("Core transition", raw_start)
     raw_primary = (

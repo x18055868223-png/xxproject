@@ -520,9 +520,9 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
         assert_true(saved["transition_id"] == transition["transition_id"],
                     "sidecar should key by transition id")
         review = saved["transition_llm_review"]
-        assert_true(review["schema_version"] == "signal_transition_llm_review@1.2.3",
+        assert_true(review["schema_version"] == "signal_transition_llm_review@1.2.4",
                     "transition LLM schema version")
-        assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.3",
+        assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.4",
                     "transition prompt version")
         assert_true(tool.build_gemini_request("x")["generationConfig"]["temperature"] == 0.2,
                     "card-level review temperature should remain unchanged")
@@ -741,10 +741,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(direction_conflict_review["policy_validation"]["passed"] is False
+        assert_true(direction_conflict_review["policy_validation"]["passed"] is True
                     and "fact_impact_direction_conflict" in direction_conflict_review["policy_validation"]["issue_codes"]
-                    and direction_conflict_review["policy_validation"]["render_state"] == "DEGRADED_LLM_TEXT",
-                    "impact/tendency text should not contradict deterministic evidence direction")
+                    and direction_conflict_review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
+                    "content-expression conflicts should be recorded but not gate LLM display")
 
         understated_payload = transition_model_payload()
         understated_payload["observed_changes"][0]["directional_role"] = "UNDETERMINED"
@@ -781,10 +781,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(trading_review["policy_validation"]["passed"] is False
+        assert_true(trading_review["policy_validation"]["passed"] is True
                     and "开仓" in trading_review["policy_validation"]["trading_instruction_terms"]
-                    and trading_review["policy_validation"]["render_state"] == "SUPPRESS_LLM_TEXT",
-                    "operator checks should be guarded against execution advice")
+                    and trading_review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
+                    "trading-language content should be metadata only for transition LLM display")
 
         not_comparable_payload = transition_model_payload()
         not_comparable_payload["observed_changes"][0]["evidence_status"] = "NOT_COMPARABLE"
@@ -843,10 +843,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(raw_path_review["policy_validation"]["passed"] is False
+        assert_true(raw_path_review["policy_validation"]["passed"] is True
                     and "raw_field_path_leak" in raw_path_review["policy_validation"]["issue_codes"]
-                    and raw_path_review["policy_validation"]["render_state"] == "DEGRADED_LLM_TEXT",
-                    "raw field/path leakage in human text should degrade the transition review")
+                    and raw_path_review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
+                    "raw field/path leakage should be recorded but not gate transition LLM display")
 
         external_payload = transition_model_payload()
         external_payload["candidate_explanations"][0]["explanation_cn"] = (
@@ -857,10 +857,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(external_review["policy_validation"]["passed"] is False
+        assert_true(external_review["policy_validation"]["passed"] is True
                     and "external_data_claim" in external_review["policy_validation"]["issue_codes"]
                     and external_review["policy_validation"]["no_external_data"] is False,
-                    "packet-external macro/news explanations should fail local policy validation")
+                    "packet-external macro/news explanations should be metadata only")
 
         soft_external_payload = transition_model_payload()
         soft_external_payload["candidate_explanations"][0]["explanation_cn"] = (
@@ -872,10 +872,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(soft_external_review["policy_validation"]["passed"] is False
+        assert_true(soft_external_review["policy_validation"]["passed"] is True
                     and "external_data_claim" in soft_external_review["policy_validation"]["issue_codes"]
                     and "causal_overclaim" in soft_external_review["policy_validation"]["issue_codes"],
-                    "soft external macro liquidity causes and deterministic blocking claims should fail validation")
+                    "external and causal expression issues should not gate LLM display")
 
         funding_flow_payload = transition_model_payload()
         funding_flow_payload["candidate_explanations"][0]["alternative_explanations_cn"] = [
@@ -887,9 +887,9 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(funding_flow_review["policy_validation"]["passed"] is False
+        assert_true(funding_flow_review["policy_validation"]["passed"] is True
                     and "external_data_claim" in funding_flow_review["policy_validation"]["issue_codes"],
-                    "external short-term fund-flow explanations should fail validation")
+                    "external short-term fund-flow explanations should be metadata only")
 
         trigger_overclaim_payload = transition_model_payload()
         trigger_overclaim_payload["transition_summary_cn"] = (
@@ -900,9 +900,9 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(trigger_overclaim_review["policy_validation"]["passed"] is False
+        assert_true(trigger_overclaim_review["policy_validation"]["passed"] is True
                     and "causal_overclaim" in trigger_overclaim_review["policy_validation"]["issue_codes"],
-                    "deterministic trigger wording for blocking should fail validation")
+                    "deterministic trigger wording should be metadata only")
 
         quality_state_payload = transition_model_payload()
         quality_state_payload["anomaly_assessment"]["basis_cn"] = (
@@ -1116,16 +1116,15 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
 
         bad_payload = transition_model_payload()
         bad_payload["language_guard"]["no_external_data"] = False
-        try:
-            tool.build_transition_llm_review(
-                transition,
-                bad_payload,
-                model="gemini-3.5-flash",
-                reviewed_at="2026-06-19T00:00:00+00:00",
-            )
-            raise AssertionError("false no_external_data guard should be rejected")
-        except ValueError:
-            pass
+        bad_guard_review = tool.build_transition_llm_review(
+            transition,
+            bad_payload,
+            model="gemini-3.5-flash",
+            reviewed_at="2026-06-19T00:00:00+00:00",
+        )
+        assert_true(bad_guard_review["policy_validation"]["passed"] is True
+                    and bad_guard_review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
+                    "language guard self-report should not gate transition LLM display")
 
         result2 = tool.generate_transition_reviews(
             ledger,

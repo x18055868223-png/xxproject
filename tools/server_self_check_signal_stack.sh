@@ -506,33 +506,28 @@ print("latest_transition_evidence_catalog_hash:", review.get("evidence_catalog_h
 print("no_trading_instruction:", guard.get("no_trading_instruction"))
 print("no_external_data:", guard.get("no_external_data"))
 print("distinguishes_observation_from_causality:", guard.get("distinguishes_observation_from_causality"))
-if review.get("schema_version") != "signal_transition_llm_review@1.2.3":
-    raise SystemExit("latest transition LLM schema version is not signal_transition_llm_review@1.2.3")
-if review.get("prompt_version") != "gemini_signal_transition_review_prompt@1.2.3":
-    raise SystemExit("latest transition LLM prompt version is not gemini_signal_transition_review_prompt@1.2.3")
+if review.get("schema_version") != "signal_transition_llm_review@1.2.4":
+    raise SystemExit("latest transition LLM schema version is not signal_transition_llm_review@1.2.4")
+if review.get("prompt_version") != "gemini_signal_transition_review_prompt@1.2.4":
+    raise SystemExit("latest transition LLM prompt version is not gemini_signal_transition_review_prompt@1.2.4")
 if not review.get("evidence_catalog_hash"):
     raise SystemExit("latest transition LLM review lacks evidence_catalog_hash")
 if not policy:
     raise SystemExit("latest transition LLM review lacks policy_validation")
 if policy.get("render_state") not in {"DISPLAY_LLM_TEXT", "DEGRADED_LLM_TEXT", "SUPPRESS_LLM_TEXT"}:
     raise SystemExit("latest transition LLM review has unknown render_state")
-if policy.get("passed") is not True:
-    raise SystemExit("latest transition LLM policy_validation did not pass")
-if (
-    guard.get("no_trading_instruction") is not True
-    or guard.get("no_external_data") is not True
-    or guard.get("distinguishes_observation_from_causality") is not True
-    or review.get("not_trading_advice") is not True
-):
-    raise SystemExit("transition LLM guard failed")
+# Content-expression issues are advisory metadata only; policy_passed and language
+# guard self-reports no longer gate deployment. Only schema/version, evidence-catalog
+# provenance and a known render_state are enforced here so the audit page stays
+# renderable. policy_passed / issue_codes remain printed above for visibility.
 PY
   then
-    ok "latest transition has OK v1.2.3 LLM review with policy validation and no_trading_instruction guard"
+    ok "latest transition has OK v1.2.4 LLM review with schema/render_state integrity"
   else
     if [ "$TRANSITION_LLM_REQUIRED" = "1" ]; then
-      fail "latest transition lacks OK v1.2.3 LLM review with passing policy validation and no_trading_instruction guard"
+      fail "latest transition lacks OK v1.2.4 LLM review with valid schema/render_state integrity"
     else
-      warn "latest transition lacks OK v1.2.3 LLM review with passing policy validation and no_trading_instruction guard"
+      warn "latest transition lacks OK v1.2.4 LLM review with valid schema/render_state integrity"
     fi
   fi
 else
