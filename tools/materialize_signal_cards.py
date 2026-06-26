@@ -27,7 +27,7 @@ MANIFEST_SCHEMA = {
 TRANSITION_SCHEMA_VERSION = "signal_transition_record@1.0.0"
 TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
-TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.2"
+TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.3"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 TRANSITION_DOMAIN_ORDER = (
     "TMV", "MACRO", "FUNDING", "SKEW", "GAMMA", "P_C_RATIO",
@@ -1064,6 +1064,8 @@ def _display_meaning_cn(domain, key, previous, current):
             return "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力消失，方向意义偏弱。"
         if prev_num is not None and curr_num is not None and prev_num < 0 < curr_num:
             return "资金费率由负转正，提示永续端多头付费重新出现，需结合 TMV 与宏观判断。"
+        if curr_num is not None and 0 < curr_num < 0.0001:
+            return "资金费率低于 0.01% 阈值，当前为温和多头倾向。"
         return "资金费率上行，提示拥挤升温。" if rising else "资金费率回落，提示拥挤缓和。"
     if domain == "SKEW":
         return "期权偏斜压力加深，保护需求或下行尾部定价更重。" if falling else "期权偏斜压力缓和。"

@@ -464,7 +464,7 @@ fi
 
 section "Transition LLM review sidecar"
 if [ -r "$TRANSITION_LLM_REVIEWS_SOURCE" ]; then
-  json_probe "latest transition LLM review sidecar" "$TRANSITION_LLM_REVIEWS_SOURCE" 'review=data.get("transition_llm_review") or {}; guard=review.get("language_guard") or {}; print("transition_id:", data.get("transition_id")); print("status:", review.get("status")); print("model:", review.get("model")); print("no_trading_instruction:", guard.get("no_trading_instruction"))'
+  json_probe "latest transition LLM review sidecar" "$TRANSITION_LLM_REVIEWS_SOURCE" 'review=data.get("transition_llm_review") or {}; guard=review.get("language_guard") or {}; policy=review.get("policy_validation") or {}; print("transition_id:", data.get("transition_id")); print("status:", review.get("status")); print("schema_version:", review.get("schema_version")); print("prompt_version:", review.get("prompt_version")); print("model:", review.get("model")); print("policy_passed:", policy.get("passed")); print("render_state:", policy.get("render_state")); print("issue_codes:", policy.get("issue_codes")); print("no_trading_instruction:", guard.get("no_trading_instruction"))'
 else
   warn "transition LLM review sidecar not readable yet: $TRANSITION_LLM_REVIEWS_SOURCE"
 fi
@@ -494,11 +494,30 @@ review = reviews.get(transition_id)
 if not review:
     raise SystemExit("no OK transition review for latest transition")
 guard = review.get("language_guard") or {}
+policy = review.get("policy_validation") or {}
 print("latest_transition_id:", transition_id)
 print("latest_transition_llm_status:", review.get("status"))
+print("latest_transition_schema_version:", review.get("schema_version"))
+print("latest_transition_prompt_version:", review.get("prompt_version"))
+print("latest_transition_policy_passed:", policy.get("passed"))
+print("latest_transition_render_state:", policy.get("render_state"))
+print("latest_transition_issue_codes:", policy.get("issue_codes"))
+print("latest_transition_evidence_catalog_hash:", review.get("evidence_catalog_hash"))
 print("no_trading_instruction:", guard.get("no_trading_instruction"))
 print("no_external_data:", guard.get("no_external_data"))
 print("distinguishes_observation_from_causality:", guard.get("distinguishes_observation_from_causality"))
+if review.get("schema_version") != "signal_transition_llm_review@1.2.3":
+    raise SystemExit("latest transition LLM schema version is not signal_transition_llm_review@1.2.3")
+if review.get("prompt_version") != "gemini_signal_transition_review_prompt@1.2.3":
+    raise SystemExit("latest transition LLM prompt version is not gemini_signal_transition_review_prompt@1.2.3")
+if not review.get("evidence_catalog_hash"):
+    raise SystemExit("latest transition LLM review lacks evidence_catalog_hash")
+if not policy:
+    raise SystemExit("latest transition LLM review lacks policy_validation")
+if policy.get("render_state") not in {"DISPLAY_LLM_TEXT", "DEGRADED_LLM_TEXT", "SUPPRESS_LLM_TEXT"}:
+    raise SystemExit("latest transition LLM review has unknown render_state")
+if policy.get("passed") is not True:
+    raise SystemExit("latest transition LLM policy_validation did not pass")
 if (
     guard.get("no_trading_instruction") is not True
     or guard.get("no_external_data") is not True
@@ -508,12 +527,12 @@ if (
     raise SystemExit("transition LLM guard failed")
 PY
   then
-    ok "latest transition has OK LLM review with no_trading_instruction guard"
+    ok "latest transition has OK v1.2.3 LLM review with policy validation and no_trading_instruction guard"
   else
     if [ "$TRANSITION_LLM_REQUIRED" = "1" ]; then
-      fail "latest transition lacks OK LLM review with no_trading_instruction guard"
+      fail "latest transition lacks OK v1.2.3 LLM review with passing policy validation and no_trading_instruction guard"
     else
-      warn "latest transition lacks OK LLM review with no_trading_instruction guard"
+      warn "latest transition lacks OK v1.2.3 LLM review with passing policy validation and no_trading_instruction guard"
     fi
   fi
 else

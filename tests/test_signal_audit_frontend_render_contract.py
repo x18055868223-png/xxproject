@@ -761,6 +761,12 @@ def main():
     assert_true("TMV（量价路径）" in transition_text
                 and "Funding（期货资金费率）" in transition_text,
                 "LLM observed changes should use bold Chinese semantic domain titles")
+    assert_true('transition-observed-segment transition-observed-fact' in transition_html
+                and 'transition-observed-segment transition-observed-impact' in transition_html
+                and 'transition-observed-label">倾向' in transition_html,
+                "LLM observed changes should render fact/impact/tendency as structured DOM segments")
+    assert_true("；倾向：" not in transition_text and "； 倾向：" not in transition_text,
+                "LLM observed changes should not prepend tendency with inline semicolon punctuation")
     assert_true("领域 (domain)" not in transition_text
                 and "事实说明 (fact_cn)" not in transition_text
                 and "材料性 (materiality)" not in transition_text,
@@ -799,6 +805,9 @@ def main():
                 "source/path details should stay out of the top transition board")
     raw_leak_render = render_transition_contract(FRONTEND, raw_leak_llm=True)
     raw_leak_text = raw_leak_render["text"]
+    raw_leak_html = raw_leak_render["html"]
+    assert_true("transition-llm is-degraded is-soft-degraded" in raw_leak_html,
+                "nonfatal degraded transition LLM text should render as soft amber degraded")
     raw_start = raw_leak_text.find("LLM")
     raw_metadata = raw_leak_text.find("Core transition", raw_start)
     raw_primary = (
@@ -878,6 +887,9 @@ def main():
 
     suppressed_render = render_transition_contract(FRONTEND, suppress_llm=True)
     suppressed_text = suppressed_render["text"]
+    suppressed_html = suppressed_render["html"]
+    assert_true("transition-llm is-degraded is-hard-degraded" in suppressed_html,
+                "suppressed/fatal transition LLM text should keep hard degraded styling")
     assert_true("LLM 变化链解释" in suppressed_text
                 and "策略校验" in suppressed_text,
                 "suppressed transition LLM card should retain audit status")

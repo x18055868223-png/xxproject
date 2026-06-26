@@ -520,9 +520,9 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
         assert_true(saved["transition_id"] == transition["transition_id"],
                     "sidecar should key by transition id")
         review = saved["transition_llm_review"]
-        assert_true(review["schema_version"] == "signal_transition_llm_review@1.2.2",
+        assert_true(review["schema_version"] == "signal_transition_llm_review@1.2.3",
                     "transition LLM schema version")
-        assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.2",
+        assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.3",
                     "transition prompt version")
         assert_true(tool.build_gemini_request("x")["generationConfig"]["temperature"] == 0.2,
                     "card-level review temperature should remain unchanged")
@@ -931,6 +931,130 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
         )
         assert_true("invalid_effect_target_for_domain" not in skew_coherence_review["policy_validation"]["issue_codes"],
                     "SKEW should be allowed to explain signal coherence when used as background")
+
+        funding_units_payload = transition_model_payload()
+        funding_units_payload["observed_changes"][0].update({
+            "domain": "FUNDING",
+            "effect_target": "CROWDING_OR_LEVERAGE",
+            "fact_cn": "资金费率从 2.999e-05 升至 7.117e-05。",
+            "impact_cn": "资金费率上升但仍低于阈值，只说明永续端温和多头倾向，不构成拥挤升温。",
+            "tendency_cn": "温和多头倾向",
+            "evidence_refs": ["EV_DISPLAY_FUNDING_LAST_RATE"],
+            "directional_role": "NEUTRAL_OR_EASING",
+            "magnitude_verdict": "background_only",
+            "audit_attention_effect": "BACKGROUND_ONLY",
+            "epistemic_status": "OBSERVED",
+        })
+        transition["core_transition_display"] = [
+            row if row.get("domain") != "FUNDING" else {
+                **row,
+                "previous_display": "0.003%",
+                "current_display": "0.0071%",
+                "delta_display": "0.0041%",
+                "meaning_cn": "资金费率低于 0.01% 阈值，当前为温和多头倾向，不代表拥挤升温。",
+            }
+            for row in transition["core_transition_display"]
+        ]
+        funding_units_review = tool.build_transition_llm_review(
+            transition,
+            funding_units_payload,
+            model="gemini-3.5-flash",
+            reviewed_at="2026-06-19T00:00:00+00:00",
+        )
+        funding_change = funding_units_review["observed_changes"][0]
+        funding_text = " ".join(str(funding_change.get(key, ""))
+                                for key in ("fact_cn", "impact_cn", "tendency_cn"))
+        assert_true("e-05" not in funding_text and "0.0071%" in funding_text,
+                    "Funding human text should use display percent values, not scientific notation: "
+                    + funding_text)
+        assert_true("拥挤升温" not in funding_text and "温和多头倾向" in funding_text,
+                    "Funding below threshold should stay mild-long, not crowding escalation: "
+                    + funding_text)
+        assert_true("scientific_notation_in_human_text" in funding_units_review["policy_validation"]["issue_codes"]
+                    and "numeric_display_mismatch" in funding_units_review["policy_validation"]["issue_codes"],
+                    "policy should record that the raw model text was normalized")
+
+        gamma_units_payload = transition_model_payload()
+        gamma_units_payload["observed_changes"][0].update({
+            "domain": "GAMMA",
+            "effect_target": "VOLATILITY_SPACE",
+            "fact_cn": "净Gamma负值从 -0.151 USD 收窄至 -0.042 USD。",
+            "impact_cn": "Gamma 只解释波动空间与钉住约束，不直接形成方向信号。",
+            "tendency_cn": "空间约束",
+            "evidence_refs": ["EV_DISPLAY_GAMMA_NET_GAMMA_NOTIONAL_USD"],
+            "directional_role": "MIXED",
+            "magnitude_verdict": "changes_judgment",
+            "audit_attention_effect": "SHIFT_FOCUS",
+            "epistemic_status": "OBSERVED",
+        })
+        if not any(row.get("domain") == "GAMMA" for row in transition["core_transition_display"]):
+            transition["core_transition_display"].append({
+                "domain": "GAMMA",
+                "title_cn": "Gamma（净 Gamma）",
+                "value_key": "net_gamma_notional_usd",
+                "previous_display": "-$152M",
+                "current_display": "-$42M",
+                "delta_display": "$110M",
+                "source_note": "净 Gamma USD 名义额",
+                "meaning_cn": "净 Gamma 仍为负值，用于解释波动放大和空间约束，不是方向信号。",
+            })
+        transition["core_transition_display"] = [
+            row if row.get("domain") != "GAMMA" else {
+                **row,
+                "previous_display": "-$152M",
+                "current_display": "-$42M",
+                "delta_display": "$110M",
+                "source_note": "净 Gamma USD 名义额",
+                "meaning_cn": "净 Gamma 仍为负值，用于解释波动放大和空间约束，不是方向信号。",
+            }
+            for row in transition["core_transition_display"]
+        ]
+        gamma_units_review = tool.build_transition_llm_review(
+            transition,
+            gamma_units_payload,
+            model="gemini-3.5-flash",
+            reviewed_at="2026-06-19T00:00:00+00:00",
+        )
+        gamma_change = gamma_units_review["observed_changes"][0]
+        gamma_text = " ".join(str(gamma_change.get(key, ""))
+                              for key in ("fact_cn", "impact_cn", "tendency_cn"))
+        assert_true("-0.151 USD" not in gamma_text and "-$152M" in gamma_text,
+                    "Gamma human text should align with display USD notional: " + gamma_text)
+        assert_true("gamma_usd_unit_misread" in gamma_units_review["policy_validation"]["issue_codes"]
+                    and "numeric_display_mismatch" in gamma_units_review["policy_validation"]["issue_codes"],
+                    "policy should record suspicious small-USD Gamma normalization")
+
+        for gamma_alias in ("GEX", "GAMMA_GEX"):
+            gamma_alias_payload = json.loads(json.dumps(gamma_units_payload, ensure_ascii=False))
+            gamma_alias_payload["observed_changes"][0]["domain"] = gamma_alias
+            gamma_alias_review = tool.build_transition_llm_review(
+                transition,
+                gamma_alias_payload,
+                model="gemini-3.5-flash",
+                reviewed_at="2026-06-19T00:00:00+00:00",
+            )
+            gamma_alias_change = gamma_alias_review["observed_changes"][0]
+            gamma_alias_text = " ".join(str(gamma_alias_change.get(key, ""))
+                                        for key in ("fact_cn", "impact_cn", "tendency_cn"))
+            assert_true("-0.151 USD" not in gamma_alias_text and "-$152M" in gamma_alias_text,
+                        gamma_alias + " should share Gamma/GEX USD display normalization: "
+                        + gamma_alias_text)
+            assert_true("gamma_usd_unit_misread" in gamma_alias_review["policy_validation"]["issue_codes"]
+                        and "numeric_display_mismatch" in gamma_alias_review["policy_validation"]["issue_codes"],
+                        gamma_alias + " should record Gamma/GEX unit normalization")
+
+        internal_macro_payload = transition_model_payload()
+        internal_macro_payload["candidate_explanations"][0]["explanation_cn"] = (
+            "包内宏观背景显示美债收益率、美元指数与波动率压力共同抬升，"
+            "只能解释为宏观压力同步变化，不能写成外部事件原因。")
+        internal_macro_review = tool.build_transition_llm_review(
+            transition,
+            internal_macro_payload,
+            model="gemini-3.5-flash",
+            reviewed_at="2026-06-19T00:00:00+00:00",
+        )
+        assert_true("external_data_claim" not in internal_macro_review["policy_validation"]["issue_codes"],
+                    "packet-internal macro fields should not be treated as external data claims")
 
         hidden_ref_coverage_payload = transition_model_payload()
         hidden_ref_coverage_payload["transition_summary_cn"] = "只说明宏观压力上升，未给出其他核心骨架论证。"

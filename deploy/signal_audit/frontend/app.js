@@ -1309,12 +1309,15 @@
       ));
     const impact = transitionObservedImpactText(change, displayRow, fact);
     const tendency = transitionObservedTendencyText(change, displayRow, `${fact} ${impact}`);
-    const parts = [fact, impact ? `影响：${impact}` : "", tendency ? `倾向：${tendency}` : ""]
-      .filter(Boolean);
+    const segments = [
+      fact ? `<span class="transition-observed-segment transition-observed-fact">${escapeHtml(fact)}</span>` : "",
+      impact ? `<span class="transition-observed-segment transition-observed-impact"><strong class="transition-observed-label">影响</strong>${escapeHtml(impact)}</span>` : "",
+      tendency ? `<span class="transition-observed-segment transition-observed-tendency"><strong class="transition-observed-label">倾向</strong>${escapeHtml(tendency)}</span>` : ""
+    ].filter(Boolean).join("");
     return `
       <li>
         <strong>${escapeHtml(title)}</strong>
-        <span>${escapeHtml(parts.join("；"))}</span>
+        <span class="transition-observed-copy">${segments}</span>
         ${renderTransitionObservedMeta(change)}
       </li>
     `;
@@ -1690,6 +1693,8 @@
     const suppressLlmText = renderState === "SUPPRESS_LLM_TEXT";
     const isLegacyUnvalidated = !Object.keys(policy).length;
     const degradedLlmText = renderState === "DEGRADED_LLM_TEXT" || isLegacyUnvalidated;
+    const hardDegradedLlmText = suppressLlmText || !["", "DISPLAY_LLM_TEXT", "DEGRADED_LLM_TEXT", "SUPPRESS_LLM_TEXT"].includes(renderState);
+    const softDegradedLlmText = degradedLlmText && !hardDegradedLlmText;
     const knownRenderStates = new Set([
       "",
       "DISPLAY_LLM_TEXT",
@@ -1708,7 +1713,7 @@
     `;
     if (!knownRenderStates.has(renderState)) {
       return `
-        <div class="transition-llm is-suppressed">
+        <div class="transition-llm is-degraded is-hard-degraded is-suppressed">
           <h3 class="subsection-title">LLM 变化链解释</h3>
           ${topline}
           ${renderTransitionPolicyValidation(review)}
@@ -1722,7 +1727,7 @@
     }
     if (suppressLlmText) {
       return `
-        <div class="transition-llm is-suppressed">
+        <div class="transition-llm is-degraded is-hard-degraded is-suppressed">
           <h3 class="subsection-title">LLM 变化链解释</h3>
           ${topline}
           ${renderTransitionPolicyValidation(review)}
@@ -1735,11 +1740,11 @@
       `;
     }
     return `
-      <div class="transition-llm${degradedLlmText ? " is-degraded" : ""}">
+      <div class="transition-llm${degradedLlmText ? ` is-degraded ${softDegradedLlmText ? "is-soft-degraded" : "is-hard-degraded"}` : ""}">
         <h3 class="subsection-title">LLM 变化链解释</h3>
         ${topline}
         ${degradedLlmText ? `<div class="transition-llm-degraded-banner" role="alert">${escapeHtml(isLegacyUnvalidated
-          ? "此复核来自旧版 sidecar，未按当前 v1.2.2 策略校验；以下正文仅供参考，请以程序化 transition ledger、证据目录和原始审计卡为准。"
+          ? "此复核来自旧版 sidecar，未按当前 v1.2.3 策略校验；以下正文仅供参考，请以程序化 transition ledger、证据目录和原始审计卡为准。"
           : "此复核未通过当前策略校验，正文为降级展示，可能包含被标记表述；请以程序化 transition ledger、证据目录和原始审计卡为准。")}</div>` : ""}
         <p class="llm-review-summary">${valueHtml(sanitizeTransitionReadable(
           review.transition_summary_cn,

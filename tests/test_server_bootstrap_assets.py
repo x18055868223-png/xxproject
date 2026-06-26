@@ -105,7 +105,15 @@ def main():
             "TRANSITION_REQUIRED",
             "TRANSITION_LLM_REQUIRED",
             "TRANSITION_LEDGER_SOURCE",
-            "TRANSITION_LLM_REVIEWS_SOURCE"):
+            "TRANSITION_LLM_REVIEWS_SOURCE",
+            "signal_transition_llm_review@1.2.3",
+            "gemini_signal_transition_review_prompt@1.2.3",
+            "policy_validation",
+            "policy_passed",
+            "render_state",
+            "issue_codes",
+            "evidence_catalog_hash",
+            "latest transition LLM policy_validation did not pass"):
         assert_true(token in self_check,
                     "server self-check should enforce " + token)
 
