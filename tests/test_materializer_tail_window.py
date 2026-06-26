@@ -683,6 +683,9 @@ def main():
         assert_true(display_rows["FUNDING"]["previous_display"] == "0.0015%"
                     and display_rows["FUNDING"]["current_display"] == "0.0054%",
                     "Funding display should format decimal rates as percentages")
+        assert_true("温和多头倾向" in display_rows["FUNDING"]["meaning_cn"]
+                    and "拥挤升温" not in display_rows["FUNDING"]["meaning_cn"],
+                    "Funding below 0.01% should be described as mild long, not crowding escalation")
         assert_true("-0M" not in display_rows["GAMMA"]["previous_display"]
                     and "-0M" not in display_rows["GAMMA"]["current_display"],
                     "Gamma display must never collapse small or scaled values to -0M")

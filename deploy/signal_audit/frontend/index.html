@@ -615,15 +615,30 @@
       border-bottom: 0;
     }
 
-    .transition-observed-list strong {
+    .transition-observed-list > li > strong {
       font-size: 13px;
       line-height: 1.35;
     }
 
-    .transition-observed-list span {
+    .transition-observed-copy {
+      display: grid;
+      gap: 3px;
+    }
+
+    .transition-observed-segment {
+      display: block;
       color: var(--ink);
       font-size: 13px;
       line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+
+    .transition-observed-label {
+      display: inline-block;
+      margin-right: 6px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 760;
     }
 
     .transition-observed-meta {
@@ -778,6 +793,13 @@
     }
 
     .transition-llm.is-degraded {
+      border-color: rgba(128, 92, 32, 0.45);
+      border-left: 5px solid #b47a1f;
+      background: #fffaf0;
+    }
+
+    .transition-llm.is-hard-degraded,
+    .transition-llm.is-suppressed {
       border-color: rgba(107, 29, 29, 0.45);
       border-left: 5px solid var(--bad);
       background: #fff7f7;
@@ -785,15 +807,22 @@
 
     .transition-llm-degraded-banner {
       margin: 10px 0 0;
-      border: 1px solid rgba(107, 29, 29, 0.35);
-      border-left: 4px solid var(--bad);
+      border: 1px solid rgba(128, 92, 32, 0.35);
+      border-left: 4px solid #b47a1f;
       border-radius: 6px;
       padding: 9px 12px;
       background: #fff;
-      color: var(--bad);
+      color: #805c20;
       font-size: 13px;
       font-weight: 700;
       line-height: 1.5;
+    }
+
+    .transition-llm.is-hard-degraded .transition-llm-degraded-banner,
+    .transition-llm.is-suppressed .transition-llm-degraded-banner {
+      border-color: rgba(107, 29, 29, 0.35);
+      border-left-color: var(--bad);
+      color: var(--bad);
     }
 
     #llm-review {
@@ -1695,7 +1724,7 @@
 []
   </script>
 
-  <script src="signal_cards/fallback.js?v=20260626b-transition-v1.2.2"></script>
-  <script src="app.js?v=20260626b-transition-v1.2.2"></script>
+  <script src="signal_cards/fallback.js?v=20260626c-transition-v1.2.3"></script>
+  <script src="app.js?v=20260626c-transition-v1.2.3"></script>
 </body>
 </html>

@@ -26,8 +26,8 @@ OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.3.0"
 PROMPT_VERSION = "gemini_signal_review_prompt@1.3.0"
 PACKET_VERSION = "signal_llm_review_packet@1.0.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
-TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.2"
-TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.2"
+TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.3"
+TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.3"
 TRANSITION_PACKET_VERSION = "SignalTransitionReviewPacket@1.1.1"
 TRANSITION_EVIDENCE_CATALOG_VERSION = "transition_evidence_catalog@1.0.0"
 TRANSITION_RAW_FIELD_LEAK_PATTERNS = (
@@ -1017,9 +1017,10 @@ def build_transition_review_prompt(packet):
         "“支撑”、“中性/缓和”，不是价格预测或操作方向。\n\n"
         "domain 语义规则：MACRO 必须将 DXY、US10Y、VOLQ 等子项聚合为一条，除非是数据质量异常；"
         "Funding 必须区分真实 last_rate/last_funding_rate 与 funding_norm 归一化指标，"
+        "真实资金费率必须写成百分比，不得输出 7.117e-05 这类科学计数法；低于 0.01% 阈值的正资金费率只能写为温和多头倾向，不得写成拥挤升温；"
         "归一化指标不得写成真实资金费率；P/C 是非负比率，禁止写“正负符号翻转”，"
         "只能解释保护需求或相对期权需求变化；Gamma/GEX 只解释波动放大、钉住或空间约束，"
-        "不得直接写成方向信号，历史兼容指标不得伪装成 USD 名义额；"
+        "不得直接写成方向信号；若是净 Gamma USD 名义额必须使用 core_transition_display_values 中的展示口径，历史兼容指标不得伪装成 USD 名义额；"
         "字段缺失、单位不明或口径不可比时，evidence_status 写 PARTIAL/NOT_COMPARABLE/MISSING，"
         "magnitude_verdict 写 indeterminate，epistemic_status 写 NOT_ASSESSABLE，不得编造影响。\n\n"
         "人工审计方案：operator_focus 保留简短中文观察重点；operator_checks 输出 2 至 4 项结构化核验任务，"
@@ -2065,9 +2066,15 @@ def _normalize_observed_changes(items, packet=None):
     for item in list(items or [])[:8]:
         item = _as_dict(item)
         refs = _normalize_evidence_refs(item.get("evidence_refs"), packet, limit=8)
-        fact_cn = _derive_transition_fact_cn(
+        fact_result = _derive_transition_fact_cn(
             item.get("domain"), refs["valid"], packet,
-            str(item.get("fact_cn") or ""))
+            str(item.get("fact_cn") or ""),
+            return_issues=True)
+        if isinstance(fact_result, tuple):
+            fact_cn, normalization_issues = fact_result
+        else:
+            fact_cn = fact_result
+            normalization_issues = []
         impact_cn = _sanitize_transition_impact_cn(
             str(item.get("impact_cn") or item.get("meaning_cn") or fact_cn))
         tendency_cn = _sanitize_transition_tendency_cn(
@@ -2105,6 +2112,7 @@ def _normalize_observed_changes(items, packet=None):
             "tendency_cn": tendency_cn[:80],
             "evidence_refs": refs["valid"],
             "_invalid_evidence_refs": refs["invalid"],
+            "_normalization_issues": normalization_issues,
             "evidence_status": evidence_status,
             "directional_role": directional_role,
             "magnitude_verdict": magnitude,
@@ -2155,6 +2163,9 @@ def _sanitize_transition_cn(text):
         ("P_C_RATIO", "P/C 比例"),
         ("macro_shock.state", "宏观冲击门状态"),
         ("发生正负符号翻转", "出现结构变化"),
+        ("不构成拥挤升温", "未达到拥挤阈值"),
+        ("不代表拥挤升温", "未达到拥挤阈值"),
+        ("不是拥挤升温", "未达到拥挤阈值"),
     )
     result = str(text or "")
     for old, new in replacements:
@@ -2174,20 +2185,154 @@ def _sanitize_transition_fact_cn(text):
     return result
 
 
-def _derive_transition_fact_cn(domain, refs, packet, fallback):
+def _derive_transition_fact_cn(domain, refs, packet, fallback, return_issues=False):
     domain_label = str(domain or "").upper() or "UNKNOWN"
     fallback_text = _sanitize_transition_fact_cn(fallback)
-    if fallback_text and not _transition_text_has_raw_field_leak(fallback_text):
-        return fallback_text
+    issues = _transition_human_numeric_issues(domain_label, fallback_text)
+    if (fallback_text and not _transition_text_has_raw_field_leak(fallback_text)
+            and not issues):
+        return (fallback_text, []) if return_issues else fallback_text
     summaries = []
     for ref in list(refs or [])[:3]:
         summary = _transition_safe_ref_summary(ref, packet)
         if summary:
             summaries.append(summary)
+    if not summaries and issues:
+        summary = _transition_display_summary_for_domain(domain_label, packet)
+        if summary:
+            summaries.append(summary)
     if summaries:
-        return _sanitize_transition_fact_cn(
+        fact = _sanitize_transition_fact_cn(
             f"{domain_label}：" + "；".join(summaries))
-    return fallback_text
+        return (fact, issues) if return_issues else fact
+    return (fallback_text, issues) if return_issues else fallback_text
+
+
+def _transition_human_numeric_issues(domain, text):
+    text = str(text or "")
+    issues = []
+    if re.search(r"[-+]?\d+(?:\.\d+)?[eE][-+]?\d+", text):
+        issues.append("scientific_notation_in_human_text")
+        issues.append("numeric_display_mismatch")
+    domain = _transition_core_domain_alias(domain)
+    if domain == "GAMMA" and re.search(r"[-+]?(?:0?\.\d+|[1-9]\d{0,2}(?:\.\d+)?)\s*(?:USD|美元)", text, flags=re.IGNORECASE):
+        issues.append("gamma_usd_unit_misread")
+        issues.append("numeric_display_mismatch")
+    if domain == "FUNDING" and re.search(r"(?<![%\w])0\.0{3,}\d+", text):
+        issues.append("funding_rate_percent_misread")
+        issues.append("numeric_display_mismatch")
+    return sorted(set(issues))
+
+
+def _transition_display_summary_for_domain(domain, packet):
+    domain = _transition_core_domain_alias(domain)
+    for item in list(_as_dict(packet).get("core_transition_display") or []):
+        item = _as_dict(item)
+        if _transition_core_domain_alias(item.get("domain")) != domain:
+            continue
+        title = item.get("title_cn") or item.get("domain") or domain
+        previous = item.get("previous_display")
+        current = item.get("current_display")
+        if previous is None and current is None:
+            continue
+        summary = f"{title}：{_compact_transition_value(previous)} -> {_compact_transition_value(current)}"
+        meaning = item.get("meaning_cn")
+        if meaning:
+            summary += f"，{_compact_transition_value(meaning)}"
+        return summary
+    for item in list(_as_dict(_as_dict(packet).get("core_skeleton")).get("domains") or []):
+        item = _as_dict(item)
+        if _transition_core_domain_alias(item.get("domain")) != domain:
+            continue
+        previous, current = _transition_core_display_pair_from_skeleton(domain, item)
+        if previous is None and current is None:
+            continue
+        title = _transition_domain_title_cn(domain)
+        summary = f"{title}：{_compact_transition_value(previous)} -> {_compact_transition_value(current)}"
+        meaning = _transition_core_skeleton_meaning_cn(domain, item)
+        if meaning:
+            summary += f"，{meaning}"
+        return summary
+    return ""
+
+
+def _transition_core_display_pair_from_skeleton(domain, item):
+    previous = _as_dict(_as_dict(item).get("previous"))
+    current = _as_dict(_as_dict(item).get("current"))
+    keys = {
+        "FUNDING": ("last_rate", "last_funding_rate"),
+        "GAMMA": ("net_gamma_notional_usd", "net_gamma_notional"),
+    }.get(domain, ())
+    for key in keys:
+        if key in previous or key in current:
+            return (
+                _transition_domain_value_text(domain, key, previous.get(key)),
+                _transition_domain_value_text(domain, key, current.get(key)),
+            )
+    return None, None
+
+
+def _transition_domain_value_text(domain, key, value):
+    number = _transition_number(value)
+    if number is None:
+        return _compact_transition_value(value)
+    if domain == "FUNDING" and key in {"last_rate", "last_funding_rate"}:
+        return _transition_trim_number(number * 100.0, 6) + "%"
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        if abs(number) < 1000:
+            return _transition_trim_number(number, 4)
+        return _transition_usd_notional_text(number)
+    return _transition_trim_number(number, 4)
+
+
+def _transition_domain_title_cn(domain):
+    return {
+        "FUNDING": "Funding（期货资金费率）",
+        "GAMMA": "Gamma（净 Gamma）",
+    }.get(domain, domain)
+
+
+def _transition_core_skeleton_meaning_cn(domain, item):
+    previous = _as_dict(_as_dict(item).get("previous"))
+    current = _as_dict(_as_dict(item).get("current"))
+    if domain == "FUNDING":
+        current_rate = _transition_number(
+            current.get("last_rate", current.get("last_funding_rate")))
+        if current_rate is not None and current_rate > 0 and current_rate < 0.0001:
+            return "资金费率低于 0.01% 阈值，当前为温和多头倾向。"
+    if domain == "GAMMA":
+        values = [
+            _transition_number(previous.get("net_gamma_notional_usd", previous.get("net_gamma_notional"))),
+            _transition_number(current.get("net_gamma_notional_usd", current.get("net_gamma_notional"))),
+        ]
+        numeric = [value for value in values if value is not None]
+        if numeric and max(abs(value) for value in numeric) < 1000:
+            return "旧卡兼容推导的 Gamma 指标，不伪装为 USD 名义额。"
+        return "净 Gamma USD 名义额，用于解释波动空间与空间约束，不是方向信号。"
+    return ""
+
+
+def _transition_trim_number(value, digits):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number) < 0.5 * (10 ** -digits):
+        number = 0.0
+    text = ("{0:." + str(digits) + "f}").format(number)
+    return text.rstrip("0").rstrip(".") or "0"
+
+
+def _transition_usd_notional_text(value):
+    sign = "-" if value < 0 else ""
+    amount = abs(float(value))
+    if amount >= 1_000_000_000:
+        return sign + "$" + _transition_trim_number(amount / 1_000_000_000, 2) + "B"
+    if amount >= 1_000_000:
+        return sign + "$" + _transition_trim_number(amount / 1_000_000, 2) + "M"
+    if amount >= 1_000:
+        return sign + "$" + _transition_trim_number(amount / 1_000, 2) + "K"
+    return sign + "$" + _transition_trim_number(amount, 2)
 
 
 def _transition_safe_ref_summary(ref, packet):
@@ -2201,7 +2346,11 @@ def _transition_safe_ref_summary(ref, packet):
         previous = value.get("previous_display") or value.get("previous")
         current = value.get("current_display") or value.get("current")
         if title and (previous is not None or current is not None):
-            return f"{title}：{_compact_transition_value(previous)} -> {_compact_transition_value(current)}"
+            summary = f"{title}：{_compact_transition_value(previous)} -> {_compact_transition_value(current)}"
+            meaning = value.get("meaning_cn")
+            if meaning:
+                summary += f"，{_compact_transition_value(meaning)}"
+            return summary
         if domain:
             return f"{domain} 结构化证据可用于审计说明"
     if catalog_item:
@@ -2597,6 +2746,8 @@ def _transition_policy_validation(review, packet):
             ("Gamma零百万", r"(^|[^0-9A-Za-z])-?0M([^0-9A-Za-z]|$)")):
         if re.search(pattern, joined, flags=re.IGNORECASE):
             unit_terms.append(label)
+    normalization_issues = _collect_transition_normalization_issues(review)
+    unit_terms.extend(normalization_issues)
     causal_overclaim_terms = []
     for label, pattern in (
             ("确定性因果", r"(导致|触发|引发|造成|证明)[^。；\n]{0,40}(价格|市场|下跌|上涨|趋势|风险资产|阻断|门阻断|冲击|约束|压制|风险偏好)"),
@@ -2605,7 +2756,7 @@ def _transition_policy_validation(review, packet):
             causal_overclaim_terms.append(label)
     external_data_terms = []
     for label, pattern in (
-            ("外部宏观事件", r"(外部宏观|宏观环境|宏观事件|宏观流动性|流动性收紧|金融条件|风险偏好|短期资金流向|资金流向|宏观经济数据|经济数据|货币政策|政策预期|地缘政治|新闻|盘中事件|避险资金|央行|美联储|CPI|非农)"),
+            ("外部宏观事件", r"(外部宏观|宏观事件|宏观流动性|流动性收紧|金融条件|风险偏好|短期资金流向|资金流向|宏观经济数据|经济数据|货币政策|政策预期|地缘政治|新闻|盘中事件|避险资金|央行|美联储|CPI|非农)"),
     ):
         if re.search(pattern, joined, flags=re.IGNORECASE):
             external_data_terms.append(label)
@@ -2644,6 +2795,7 @@ def _transition_policy_validation(review, packet):
         issue_codes.append("missing_core_domain_coverage")
     if direction_conflicts:
         issue_codes.append("fact_impact_direction_conflict")
+    issue_codes.extend(normalization_issues)
     issue_codes.extend(_transition_state_matrix_issues(review))
     issue_codes = sorted(set(issue_codes))
     guard = _as_dict(review.get("language_guard"))
@@ -2667,6 +2819,7 @@ def _transition_policy_validation(review, packet):
         "raw_enum_leaks": raw_enum_terms,
         "trading_instruction_terms": trading_terms,
         "unit_mislabel_terms": unit_terms,
+        "normalization_issue_terms": normalization_issues,
         "materiality_boilerplate_terms": materiality_terms,
         "invalid_evidence_refs": invalid_refs,
         "system_assertion_evidence_refs": system_assertion_refs,
@@ -2678,11 +2831,14 @@ def _transition_policy_validation(review, packet):
         "missing_core_domain_coverage": missing_core_domains,
         "issue_codes": issue_codes,
     }
+    blocking_unit_terms = [
+        term for term in unit_terms if term not in normalization_issues
+    ]
     if trading_terms:
         severity = "FATAL"
         render_state = "SUPPRESS_LLM_TEXT"
     elif (invalid_refs or missing_evidence_refs or direction_conflicts
-          or unit_terms or raw_enum_terms
+          or blocking_unit_terms or raw_enum_terms
           or raw_field_path_terms
           or external_data_terms
           or missing_core_domains
@@ -2711,7 +2867,7 @@ def _transition_policy_validation(review, packet):
         result["no_materiality_boilerplate"],
         not missing_observed_changes,
         not raw_enum_terms,
-        not unit_terms,
+        not blocking_unit_terms,
         not invalid_refs,
         not missing_evidence_refs,
         not direction_conflicts,
@@ -2751,6 +2907,18 @@ def _transition_state_matrix_issues(review):
             issues.append("sufficient_evidence_understated")
         issues.extend(_transition_domain_target_issues(item))
     return issues
+
+
+def _collect_transition_normalization_issues(value):
+    issues = []
+    if isinstance(value, dict):
+        issues.extend(value.get("_normalization_issues") or [])
+        for item in value.values():
+            issues.extend(_collect_transition_normalization_issues(item))
+    elif isinstance(value, list):
+        for item in value:
+            issues.extend(_collect_transition_normalization_issues(item))
+    return sorted(set(str(item)[:120] for item in issues if item))
 
 
 def _transition_domain_target_issues(item):
@@ -3041,6 +3209,7 @@ def _collect_invalid_transition_refs(value):
 def _strip_transition_private_validation_fields(value):
     if isinstance(value, dict):
         value.pop("_invalid_evidence_refs", None)
+        value.pop("_normalization_issues", None)
         for item in value.values():
             _strip_transition_private_validation_fields(item)
     elif isinstance(value, list):
