@@ -18,6 +18,7 @@
     ALLOWED: "允许",
     ALIGNED: "一致",
     APPROVABLE: "可提交人工批准",
+    AUDIT_ONLY: "仅审计",
     BEARISH: "偏空",
     BEARISH_LEAN: "理论偏空",
     BEARISH_CONFIRMED: "偏空已确认",
@@ -28,6 +29,7 @@
     BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
     CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
     CONFLICT: "冲突",
+    DECISION: "决策",
     DEGRADED: "降级",
     DECREASE: "降低前提耐久",
     DECREASE_TENTATIVE: "轻度降低前提耐久",
@@ -37,12 +39,17 @@
     EXCLUDED: "已排除",
     FINAL: "定稿",
     FULL_LIVE: "完整实时",
+    FUNDING: "资金费率",
     GATE_ONLY: "仅门控",
     GEMINI: "Gemini",
     gemini: "Gemini",
+    GAMMA: "Gamma",
+    GAMMA_TRANSITION: "Gamma 过渡",
     CONFIRMED: "已确认",
     CONFIRMED_60M_LOCAL: "60m局部确认",
+    CONSTRAINT: "空间约束",
     CONSERVATIVE_LOWER_TIER: "缓冲带就低不就高",
+    CROWDED: "拥挤",
     DEEP: "深",
     EDT: "美国夏令时",
     EST: "美国冬令时",
@@ -54,6 +61,7 @@
     LOCKED: "锁定",
     LONG_GAMMA_STABILIZING: "长 Gamma 稳定/钉住",
     LONG: "多",
+    LONG_BIAS: "多头偏好",
     LOW: "低",
     LOW_TO_MEDIUM_BUFFER: "低转中缓冲带",
     LOWER_DURABILITY_CONFIRMED: "确认降耐久",
@@ -67,6 +75,7 @@
     MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED: "市场先验已验证 / 非信号校准",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
+    MACRO: "宏观",
     MODERATE: "中等",
     MIXED_UNCLEAR: "混合不明",
     MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
@@ -77,11 +86,13 @@
     NEUTRALIZE: "中和方向把握",
     NEUTRAL_DEAD_ZONE: "中性死区",
     NEUTRAL_OR_RANGE: "理论中性/区间",
+    NEGATIVE_GAMMA: "负 Gamma",
     NONE: "无",
     NON_VOTING: "不计票",
     NOT_CONFIRMED: "未确认",
     NOT_IMPLEMENTED_SHADOW: "未落地影子项",
     NOT_READY: "未就绪",
+    NO_TRADE_BLOCKED: "无交易/阻断",
     OBSERVE: "观察",
     OBSERVE_LONG_BIAS: "观察偏多",
     OBSERVE_SHORT_BIAS: "观察偏空",
@@ -94,22 +105,45 @@
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
+    CALL_SKEW: "看涨偏斜",
+    PUT_SKEW: "看跌偏斜",
     RAISE_DURABILITY_TENTATIVE: "暂定升耐久",
+    RISK_CONSTRAINT: "空间风险约束",
     SKIPPED: "已跳过",
     THIN: "薄",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
+    SHORT_BIAS: "空头偏好",
+    SKEW: "偏斜",
     SOFT_GATE: "软门控",
     SOURCE_AGE_EXCEEDED: "数据时效超限",
     STALE: "陈旧",
     SUPPORT: "支持系统结论",
     SUPPORTIVE: "支持",
     TENTATIVE: "暂定",
+    TRADE_SUPPORT_STRONG: "强交易支持",
+    TRADE_SUPPORT_WEAK: "弱交易支持",
     UNCALIBRATED: "未校准",
     UNKNOWN: "未知",
     UNABLE_TO_JUDGE: "无法判断",
     VALID: "有效",
     WAIT_CONFIRMATION: "等待确认",
-    WAIT_FOR_EVIDENCE: "等待证据"
+    WAIT_FOR_EVIDENCE: "等待证据",
+    BLOCKED: "已被阻断",
+    CONTINUING: "延续",
+    DETERIORATING: "恶化",
+    IMPROVING: "改善",
+    REVERSING: "反转",
+    STABLE: "稳定",
+    NEUTRALIZED: "中和",
+    DECISION_SUPPORT_COLLAPSE: "决策支持塌缩",
+    FUNDING_CROWDING_ESCALATION: "资金拥挤升温",
+    FUNDING_CROWDING_UP: "资金拥挤上升",
+    GAMMA_REGIME_SHIFT: "Gamma 体制切换",
+    MACRO_SHOCK: "宏观压力冲击",
+    MULTI_DOMAIN_RISK_DETERIORATION: "多域风险恶化",
+    RISK_HEADWIND_SIGN_FLIP: "逆风符号翻转",
+    SKEW_REVERSAL: "偏斜反转",
+    CRITICAL: "关键"
   };
 
   const fieldLabels = {
@@ -126,6 +160,7 @@
     affects_blocking: "是否影响门控",
     affects_confidence: "是否影响置信",
     affects_trade_allowed: "是否影响交易许可",
+    audit_scope: "审计边界",
     base_zone: "静态基础档位",
     block_kind: "阻断类型",
     boundary_buffer_min: "边界缓冲(分钟)",
@@ -161,6 +196,10 @@
     data_quality_note: "数据质量说明",
     data_range: "数据区间",
     data_status: "数据状态",
+    comparison_quality: "比较质量",
+    current_card_id: "当前状态",
+    delta_abs: "变化量",
+    delta_relative: "相对变化",
     decision_matrix: "决策矩阵",
     decision_state: "决策状态",
     direction: "方向",
@@ -180,6 +219,7 @@
     evidence_strength: "证据强度",
     exclusion_reason: "排除原因",
     event_blackout: "事件黑名单",
+    elapsed_ms: "经过时间",
     field: "字段",
     flow_confirm: "主动流确认",
     flip_point: "翻转点",
@@ -195,6 +235,7 @@
     lean: "方向倾向",
     level: "等级",
     liquidity_depth: "形成时流动性深度",
+    llm_review_required: "需要 LLM 复核",
     london_dst_mode: "伦敦时制",
     magnet_level: "磁吸点位",
     market_price: "市场价格",
@@ -215,6 +256,7 @@
     pin_strike: "钉住行权价",
     pin: "钉住点",
     positioning_assumption_cn: "持仓符号假设",
+    previous_card_id: "上一状态",
     premise_durability: "前提耐久度",
     put_wall: "看跌墙",
     quality: "质量",
@@ -242,7 +284,9 @@
     input_packet_hash: "输入包哈希",
     prompt_version: "提示词版本",
     provider: "模型服务商",
+    audit_metadata: "审计元数据",
     research_grade: "研究等级",
+    core_skeleton: "核心骨架",
     strength: "强度",
     threshold: "阈值",
     theoretical_active_view: "理论主动倾向",
@@ -271,7 +315,27 @@
     weighted: "加权贡献",
     weighted_contribution: "加权贡献",
     weighted_vote_sum: "加权投票和",
-    weekend_adjustment: "周末修正"
+    weekend_adjustment: "周末修正",
+    baseline_24h: "24 小时基线",
+    current: "当前值",
+    cross_factor_interactions: "跨因子相互作用",
+    distinguishes_observation_from_causality: "区分观察与因果",
+    domain: "领域",
+    domain_change_summaries: "领域变化摘要",
+    fact_cn: "事实说明",
+    invalid_if: "失效条件",
+    materiality: "材料性",
+    materiality_score: "材料性分数",
+    no_external_data: "不使用外部数据",
+    no_trading_instruction: "不含交易建议",
+    observed_changes: "观察到的变化",
+    operator_focus: "人工观察重点",
+    previous: "上一值",
+    raw_change_count: "原始变化数",
+    recent_5_trajectory: "最近 5 次轨迹",
+    role: "字段角色",
+    signal_continuity: "连续性",
+    trajectory_state: "轨迹状态"
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -356,8 +420,8 @@
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return String(iso);
     const options = mode === "short"
-      ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
-      : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+      ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" }
+      : { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Shanghai" };
     return new Intl.DateTimeFormat("zh-CN", options).format(date);
   };
   const ageText = (ageMs) => {
@@ -478,6 +542,9 @@
   const statusBadge = (label, value, solid = false) => (
     `<span class="badge ${solid ? "is-solid" : badgeClass(value)}">${label ? `${escapeHtml(label)}: ` : ""}${escapeHtml(semanticLabel(value))}</span>`
   );
+  const statusBadgeCn = (label, value, solid = false) => (
+    `<span class="badge ${solid ? "is-solid" : badgeClass(value)}">${label ? `${escapeHtml(label)}: ` : ""}${escapeHtml(semanticCompact(value))}</span>`
+  );
   const metric = (label, value, note = "") => `
     <div class="metric">
       <span class="metric-label">${escapeHtml(fieldLabel(label))}</span>
@@ -495,6 +562,12 @@
     <div class="kv">
       <dt>${escapeHtml(fieldLabel(key))}</dt>
       <dd>${valueHtml(value, options)}</dd>
+    </div>
+  `;
+  const kvCn = (key, value) => `
+    <div class="kv">
+      <dt>${escapeHtml(fieldLabel(key))}</dt>
+      <dd>${valueHtml(semanticCompact(value || "UNKNOWN"), { translate: false })}</dd>
     </div>
   `;
   function gexKv(key, value) {
@@ -698,6 +771,7 @@
             <span>置信 ${escapeHtml(scalarText(currentDecision.confidence, { translate: false }))}</span>
             <span>${escapeHtml(semanticCompact(qualityOverall(doc)))}</span>
           </div>
+          ${renderIndexTransitionBadges(doc)}
         </button>
       `;
     }).join("");
@@ -709,65 +783,39 @@
     });
   }
 
-  function renderDecision(doc) {
-    const current = decision(doc);
-    return section("决策结论", "将方向、证据强度、置信语义和执行许可分开呈现。", `
-      <p class="summary-text">${valueHtml(current.final_conclusion_cn, { translate: false })}</p>
-      <dl class="kv-grid" style="margin-top: 18px;">
-        ${kv("Directional bias", current.directional_bias)}
-        ${kv("Side hint", current.side_hint)}
-        ${kv("Confidence semantics", current.confidence_semantics)}
-        ${kv("Model trade support", current.model_trade_support)}
-        ${kv("Execution allowed", current.execution_allowed)}
-        ${kv("Execution permission note", current.execution_permission_note)}
-        ${kv("Trade allowed", current.trade_allowed)}
-        ${kv("Next action", current.next_action)}
-      </dl>
-    `);
+  function transitionContext(doc) {
+    return asObject(get(doc, "transition_context", {}));
   }
 
-  function renderDecisionMatrix(doc) {
-    const matrix = asObject(get(doc, "decision_matrix", {}));
-    if (!Object.keys(matrix).length) return "";
-    const warnings = asArray(matrix.context_warnings);
-    const reasonCodes = asArray(matrix.reason_codes);
-    return section("封板决策矩阵", "角色收口后的最终信号合成视图；LLM 与人工仍只做审计/批准，不回写系统结论。", `
-      <div class="status-stack" style="align-items: flex-start; margin-bottom: 16px;">
-        ${statusBadge("决策状态", matrix.decision_state || "UNKNOWN")}
-        ${statusBadge("主动流确认", matrix.flow_confirm || "MISSING")}
-        ${statusBadge("结构稳定性", matrix.structure_stability || "UNKNOWN")}
-        ${statusBadge("空间安全", matrix.spatial_safety || "UNKNOWN")}
+  function renderIndexTransitionBadges(doc) {
+    const ctx = transitionContext(doc);
+    if (!Object.keys(ctx).length) return "";
+    const flags = asArray(ctx.cross_domain_flags);
+    return `
+      <div class="transition-badges">
+        <span>${escapeHtml(ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN"))}</span>
+        <span>${escapeHtml(flags[0] || "AUDIT_ONLY")}</span>
       </div>
-      <dl class="kv-grid">
-        ${kv("Window", matrix.window)}
-        ${kv("Direction", matrix.direction)}
-        ${kv("Temporal durability", matrix.temporal_durability)}
-        ${kv("Audit dissent", matrix.audit_dissent)}
-        ${kv("Model trade support", matrix.model_trade_support)}
-        ${kv("Execution allowed", matrix.execution_allowed)}
-      </dl>
-      <div class="two-column-notes" style="margin-top: 16px;">
-        <div><h3 class="subsection-title">上下文警示</h3>${listHtml(warnings, "无")}</div>
-        <div><h3 class="subsection-title">Reason codes</h3>${listHtml(reasonCodes, "无")}</div>
-      </div>
-    `);
+    `;
   }
 
   function renderLlmReview(doc) {
     const review = asObject(get(doc, "llm_review", {}));
-    if (!Object.keys(review).length) return "";
+    const hasReview = Object.keys(review).length > 0;
+    const matrix = asObject(get(doc, "decision_matrix", {}));
     const content = Object.assign({}, asObject(review.content), review);
-    const status = review.status || "UNKNOWN";
-    const failed = rawEnum(status) !== "OK";
-    const panelClass = failed ? "llm-review-panel is-error" : "llm-review-panel";
+    const status = hasReview ? (review.status || "UNKNOWN") : (matrix.audit_dissent || "PENDING_LLM");
+    const failed = hasReview && rawEnum(status) !== "OK";
+    const panelClass = failed ? "llm-review-panel is-error" : (hasReview ? "llm-review-panel" : "llm-review-panel is-pending");
+    const summary = content.summary_cn || "LLM 复核尚未生成或尚未被 sidecar 合并；本区保留为发布前必查板块，不改变系统方向、置信、门控或交易许可。";
     return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
       <div class="${panelClass}">
         <div class="llm-review-topline">
           ${statusBadge("状态", status)}
-          ${statusBadge("谨慎等级", content.caution_level || "UNKNOWN")}
+          ${statusBadge("谨慎等级", content.caution_level || (hasReview ? "UNKNOWN" : "PENDING_LLM"))}
           ${review.provider ? statusBadge("模型服务", review.provider) : ""}
         </div>
-        <p class="llm-review-summary">${valueHtml(content.summary_cn, { translate: false })}</p>
+        <p class="llm-review-summary">${valueHtml(summary, { translate: false })}</p>
       </div>
       ${renderTheoreticalActiveView(content.theoretical_active_view)}
       ${renderGammaRegimeLens(content.gamma_regime_lens)}
@@ -788,6 +836,931 @@
       </div>
       ${review.error ? `<div class="llm-review-error">${escapeHtml(review.error)}</div>` : ""}
     `, "llm-review");
+  }
+
+  function renderTransitionContext(doc) {
+    const ctx = transitionContext(doc);
+    if (!Object.keys(ctx).length) return "";
+    const decisionTransition = asObject(ctx.decision_transition);
+    const flags = asArray(ctx.cross_domain_flags);
+    const quality = ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN");
+    const elapsed = isNullish(ctx.elapsed_ms) ? null : ageText(ctx.elapsed_ms);
+    return section("状态转移审计", "AUDIT_ONLY 变化链由 materializer 生成；前端只展示已物化字段，不计算 delta。", `
+      <div class="transition-panel">
+        <div class="llm-review-topline">
+          ${statusBadge("AUDIT_ONLY", ctx.audit_scope || "AUDIT_ONLY")}
+          ${statusBadge("比较质量", quality)}
+          ${flags.slice(0, 3).map((flag) => statusBadge("", flag)).join("")}
+        </div>
+        <div class="transition-timeline">
+          <span>状态路径</span>
+          <strong>${escapeHtml(transitionTimelineText(ctx, doc))}</strong>
+        </div>
+        ${renderTransitionLlmReview(doc)}
+        ${renderTransitionCoreSummary(ctx)}
+        ${renderTransitionAuditMetadata(ctx, elapsed)}
+      </div>
+    `, "transition-context");
+  }
+
+  function transitionTimelineText(ctx, doc) {
+    const timeline = asObject(asObject(ctx.core_skeleton).timeline);
+    const previousTime = timeOnly(firstPresent(
+      timeline.previous_ts_ms,
+      ctx.previous_ts_ms
+    ));
+    const currentTime = timeOnly(firstPresent(
+      timeline.current_ts_ms,
+      ctx.current_ts_ms,
+      get(doc, "identity.confirmed_time_ms")
+    ));
+    const previousShort = shortCardRef(firstPresent(
+      timeline.previous_short_id,
+      ctx.previous_card_id
+    ));
+    const currentShort = shortCardRef(firstPresent(
+      timeline.current_short_id,
+      ctx.current_card_id
+    ));
+    return [
+      [previousTime, currentTime].filter(Boolean).join(" -> "),
+      ctx.elapsed_ms === null || ctx.elapsed_ms === undefined ? "" : ageText(ctx.elapsed_ms),
+      [previousShort, currentShort].filter(Boolean).join(" -> ")
+    ].filter(Boolean).join(" / ") || "暂缺 (null)";
+  }
+
+  function timeOnly(value) {
+    if (isNullish(value) || value === "") return "";
+    const numeric = Number(value);
+    const date = Number.isFinite(numeric) ? new Date(numeric) : new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Shanghai"
+    }).format(date);
+  }
+
+  function shortCardRef(value) {
+    if (isNullish(value) || value === "") return "";
+    const raw = String(value);
+    const match = raw.match(/(?:FULLSIM-|LOCAL-|CARD-)?0*([0-9]{1,4})$/);
+    if (match) return `#${match[1].padStart(Math.min(2, match[1].length), "0")}`;
+    if (raw.length <= 8) return `#${raw}`;
+    return `#${raw.slice(-4)}`;
+  }
+
+  function renderTransitionCoreSummary(ctx) {
+    const rows = transitionCoreRows(ctx);
+    if (!rows.length) return "";
+    return `
+      <div class="transition-core-summary">
+        <h3 class="subsection-title">关键变化骨架 / Core transition</h3>
+        <div class="transition-core-list">
+          ${rows.map((row) => `
+            <article class="transition-core-row">
+              <div class="transition-core-main">
+                <strong>${escapeHtml(row.title || transitionDomainSemanticTitle(row.domain))}</strong>
+              </div>
+              <div class="transition-core-values">${escapeHtml(row.valueText)}</div>
+              <p>${escapeHtml(row.meaning)}</p>
+            </article>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function transitionCoreRows(ctx) {
+    const displayRows = transitionDisplayCoreRows(ctx);
+    const fallbackRows = transitionFallbackCoreRows(ctx);
+    if (!displayRows.length) return fallbackRows;
+    const byDisplay = new Map(displayRows.map((row) => [rawEnum(row.domain).toUpperCase(), row]));
+    const byFallback = new Map(fallbackRows.map((row) => [rawEnum(row.domain).toUpperCase(), row]));
+    const domains = [];
+    [...fallbackRows, ...displayRows].forEach((row) => {
+      const domain = rawEnum(row.domain || "OTHER").toUpperCase();
+      if (!domains.includes(domain)) domains.push(domain);
+    });
+    return domains.map((domain) => byDisplay.get(domain) || byFallback.get(domain)).filter(Boolean);
+  }
+
+  function transitionDisplayCoreRows(ctx) {
+    return asArray(ctx.core_transition_display).map((item) => {
+      const row = asObject(item);
+      const domain = rawEnum(row.domain || "OTHER").toUpperCase();
+      const previous = row.previous_display || "缺失";
+      const current = row.current_display || "缺失";
+      const materiality = transitionMaterialityFromGrade(row.grade_cn);
+      return {
+        domain,
+        title: row.title_cn || transitionDomainSemanticTitle(domain),
+        materiality,
+        valueText: `${previous} → ${current}`,
+        meaning: sanitizeTransitionNarrative(row.meaning_cn || row.source_note || "关键状态变化")
+      };
+    }).filter((row) => row.domain);
+  }
+
+  function transitionFallbackCoreRows(ctx) {
+    const skeletonDomains = asArray(asObject(ctx.core_skeleton).domains);
+    const summaries = transitionDomainSummaries(ctx);
+    const topChanges = asArray(ctx.top_material_changes);
+    const bySkeleton = new Map();
+    const bySummary = new Map();
+    const byChange = new Map();
+    skeletonDomains.forEach((item) => {
+      const domain = rawEnum(item.domain || "OTHER").toUpperCase();
+      if (!bySkeleton.has(domain)) bySkeleton.set(domain, item);
+    });
+    summaries.forEach((item) => {
+      const domain = rawEnum(item.domain || "OTHER").toUpperCase();
+      if (!bySummary.has(domain)) bySummary.set(domain, item);
+    });
+    topChanges.forEach((item) => {
+      const domain = rawEnum(item.domain || "OTHER").toUpperCase();
+      if (!byChange.has(domain)) byChange.set(domain, item);
+    });
+    const domains = [];
+    [...skeletonDomains, ...summaries, ...topChanges].forEach((item) => {
+      const domain = rawEnum(item.domain || "OTHER").toUpperCase();
+      if (!domains.includes(domain)) domains.push(domain);
+    });
+    return domains.map((domain) => transitionCoreRow(
+      domain,
+      asObject(bySkeleton.get(domain)),
+      asObject(bySummary.get(domain)),
+      asObject(byChange.get(domain))
+    )).filter(Boolean);
+  }
+
+  function transitionMaterialityFromGrade(value) {
+    const raw = rawEnum(value || "UNKNOWN").toUpperCase();
+    const labels = {
+      关键: "CRITICAL",
+      高: "HIGH",
+      中: "MEDIUM",
+      低: "LOW",
+      很低: "VERY_LOW",
+      未定: "UNKNOWN",
+      无: "NONE"
+    };
+    return labels[value] || raw;
+  }
+
+  function transitionCoreRow(domain, skeleton, summary, change) {
+    const value = transitionCoreValue(domain, skeleton, summary, change);
+    if (!value) return null;
+    const materiality = firstPresent(summary.materiality, change.materiality, value.materiality, "UNKNOWN");
+    return {
+      domain,
+      materiality,
+      valueText: `${value.previous} → ${value.current}`,
+      meaning: transitionCoreMeaning(domain, value)
+    };
+  }
+
+  function transitionCoreValue(domain, skeleton, summary, change) {
+    const previous = asObject(skeleton.previous);
+    const current = asObject(skeleton.current);
+    const preferred = transitionCorePreferredKeys(domain);
+    for (const key of preferred) {
+      if (!isNullish(previous[key]) || !isNullish(current[key])) {
+        return {
+          key,
+          previous: transitionCoreValueText(domain, key, previous[key]),
+          current: transitionCoreValueText(domain, key, current[key]),
+          previousRaw: previous[key],
+          currentRaw: current[key],
+          materiality: summary.materiality
+        };
+      }
+    }
+    const children = asArray(summary.children);
+    const child = children.find((item) => !isNullish(item.previous) || !isNullish(item.current));
+    if (child) {
+      const key = String(child.field || "").split(".").pop() || "value";
+      return {
+        key,
+        previous: transitionCoreValueText(domain, key, child.previous),
+        current: transitionCoreValueText(domain, key, child.current),
+        previousRaw: child.previous,
+        currentRaw: child.current,
+        materiality: child.materiality || summary.materiality
+      };
+    }
+    if (Object.keys(change).length && (!isNullish(change.previous) || !isNullish(change.current))) {
+      const key = String(change.field || "").split(".").pop() || "value";
+      return {
+        key,
+        previous: transitionCoreValueText(domain, key, change.previous),
+        current: transitionCoreValueText(domain, key, change.current),
+        previousRaw: change.previous,
+        currentRaw: change.current,
+        materiality: change.materiality
+      };
+    }
+    return null;
+  }
+
+  function transitionCorePreferredKeys(domain) {
+    const keys = {
+      TMV: ["tmv_blend", "tmvf_24h_final", "tmvf_48h_final"],
+      MACRO: ["macro_score", "us10y_scoring_bps", "dxy_scoring_bps", "volq_scoring_bps"],
+      FUNDING: ["last_rate", "last_funding_rate", "funding_norm"],
+      SKEW: ["rr_25d", "rr_blend", "skew_norm_blend"],
+      GAMMA: ["net_gamma_notional_usd", "distance_to_flip_pct", "distance_to_pin_pct"],
+      P_C_RATIO: ["put_call_ratio"],
+      CONFLICT: ["ratio", "level"],
+      DECISION: ["confidence", "support_label", "decision_state"],
+      QUALITY: ["overall", "missing_field_count"]
+    };
+    return keys[rawEnum(domain).toUpperCase()] || [];
+  }
+
+  function transitionCoreValueText(domain, key, value) {
+    if (isNullish(value) || value === "") return "缺失";
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const lowered = String(key || "").toLowerCase();
+      if (rawEnum(domain).toUpperCase() === "CONFLICT" && lowered === "ratio") {
+        return `${Math.round(value * 100)}%`;
+      }
+      if (rawEnum(domain).toUpperCase() === "FUNDING" && ["last_rate", "last_funding_rate"].includes(lowered)) {
+        return `${trimNumber(value * 100, 6)}%`;
+      }
+      if (lowered.includes("gamma_notional") || lowered.includes("notional_usd")) {
+        if (Math.abs(value) < 1000) return trimNumber(value, 4);
+        return compactUsdNotional(value);
+      }
+      if (Math.abs(value) > 0 && Math.abs(value) < 0.001) return trimNumber(value, 6);
+      return trimNumber(value, 4);
+    }
+    if (isEnum(value)) return semanticCompact(value);
+    return String(value);
+  }
+
+  function trimNumber(value, digits) {
+    if (!Number.isFinite(value)) return String(value);
+    const normalized = Math.abs(value) < 0.5 * Math.pow(10, -digits) ? 0 : value;
+    return normalized.toFixed(digits).replace(/\.?0+$/, "");
+  }
+
+  function compactUsdNotional(value) {
+    const sign = value < 0 ? "-" : "";
+    const amount = Math.abs(value);
+    if (amount >= 1_000_000_000) return `${sign}$${trimNumber(amount / 1_000_000_000, 2)}B`;
+    if (amount >= 1_000_000) return `${sign}$${trimNumber(amount / 1_000_000, 2)}M`;
+    if (amount >= 1000) return `${sign}$${trimNumber(amount / 1000, 2)}K`;
+    return `${sign}$${trimNumber(amount, 2)}`;
+  }
+
+  function transitionCoreMeaning(domain, value) {
+    const raw = rawEnum(domain).toUpperCase();
+    const before = typeof value.previousRaw === "number" ? value.previousRaw : null;
+    const after = typeof value.currentRaw === "number" ? value.currentRaw : null;
+    const rising = before !== null && after !== null ? after > before : false;
+    const falling = before !== null && after !== null ? after < before : false;
+    if (raw === "TMV") {
+      if (before !== null && after !== null && before >= 0 && after < 0) return "量价路径由正转负";
+      return falling ? "量价路径转弱" : "量价路径改善";
+    }
+    if (raw === "MACRO") return rising ? "宏观压力上升" : "宏观压力回落";
+    if (raw === "FUNDING") return rising ? "资金费率拥挤上升" : "资金费率拥挤缓和";
+    if (raw === "SKEW") return falling ? "期权偏斜压力加深" : "期权偏斜压力缓和";
+    if (raw === "GAMMA") return after !== null && before !== null && after < before ? "净 Gamma 敞口加深" : "净 Gamma 敞口缓和";
+    if (raw === "P_C_RATIO") return rising ? "期权保护需求上升" : "期权保护需求回落";
+    if (raw === "CONFLICT") return rising ? "信号分歧升高" : "信号分歧缓和";
+    if (raw === "DECISION") return falling ? "决策置信下降" : "决策状态变化";
+    if (raw === "QUALITY") return "数据质量状态";
+    return "关键状态变化";
+  }
+
+  function transitionDomainSummaries(ctx) {
+    const summaries = asArray(ctx.domain_change_summaries);
+    if (summaries.length) return summaries;
+    return fallbackDomainSummaries(asArray(ctx.top_material_changes));
+  }
+
+  function fallbackDomainSummaries(changes) {
+    const grouped = new Map();
+    changes.forEach((change) => {
+      const domain = rawEnum(change.domain || "OTHER").toUpperCase();
+      if (!grouped.has(domain)) grouped.set(domain, []);
+      grouped.get(domain).push(change);
+    });
+    return [...grouped.entries()].map(([domain, children]) => ({
+      domain,
+      materiality: children[0] && children[0].materiality,
+      raw_change_count: children.length,
+      primary_fields: children.map((item) => item.field).filter(Boolean).slice(0, 4),
+      source_refs: children.map((item) => item.source_ref).filter(Boolean),
+      children
+    }));
+  }
+
+  function renderTransitionAuditMetadata(ctx, elapsed) {
+    return `
+      <details class="transition-metadata">
+        <summary>审计元数据 / Audit metadata</summary>
+        <dl class="kv-grid transition-grid">
+          ${kv("transition_id", ctx.transition_id, { translate: false })}
+          ${kv("previous_card_id", ctx.previous_card_id, { translate: false })}
+          ${kv("current_card_id", ctx.current_card_id, { translate: false })}
+          ${kv("elapsed_ms", elapsed, { translate: false })}
+          ${kv("materiality_score", ctx.materiality_score, { translate: false })}
+          ${kv("llm_review_required", ctx.llm_review_required)}
+          ${kv("record_hash", ctx.record_hash, { translate: false })}
+          ${kv("compat_backfill_applied", ctx.compat_backfill_applied)}
+        </dl>
+      </details>
+    `;
+  }
+
+  function renderTransitionChanges(doc, changes) {
+    if (!changes.length) return `<div class="empty-inline">暂无材料变化</div>`;
+    return `<div class="transition-change-list">${changes.map((change) => {
+      const source = change.source_ref ? sourceRefLink(change.source_ref, doc, change.source_ref) : "";
+      return `
+        <div class="transition-change">
+          <div class="transition-change-topline">
+            <strong>${escapeHtml(transitionDomainLabel(change.domain))}</strong>
+            <span>${escapeHtml(semanticCompact(change.materiality || "UNKNOWN"))}</span>
+          </div>
+          <p class="transition-field">${escapeHtml(fieldLabel(change.field || "field"))}</p>
+          <dl class="transition-mini-grid">
+            ${kv("previous", transitionValueText(change.previous), { translate: false })}
+            ${kv("current", transitionValueText(change.current), { translate: false })}
+            ${kv("delta_abs", transitionValueText(change.delta_abs), { translate: false })}
+            ${kv("role", `${semanticCompact(change.role_before || "UNKNOWN")} → ${semanticCompact(change.role_after || "UNKNOWN")}`, { translate: false })}
+          </dl>
+          <div class="source-ref-row">
+            ${change.meaning ? `<span class="chip">${escapeHtml(semanticCompact(change.meaning))}</span>` : ""}
+            ${source}
+          </div>
+        </div>
+      `;
+    }).join("")}</div>`;
+  }
+
+  function renderTransitionRawChanges(doc) {
+    const ctx = transitionContext(doc);
+    if (!Object.keys(ctx).length) return "";
+    const groups = transitionRawGroups(ctx);
+    if (!groups.length && !asArray(ctx.top_material_changes).length) return "";
+    return section("状态转移原始字段变化", "按 domain 分组；宏观合并为一条，展开查看子字段。", `
+      <div class="transition-raw-block">
+        ${groups.map((group) => renderTransitionRawGroup(doc, group)).join("")}
+        ${renderTransitionComparisonTabs(ctx)}
+      </div>
+    `, "transition-raw-changes");
+  }
+
+  function transitionRawGroups(ctx) {
+    const groups = asArray(ctx.raw_change_groups);
+    if (groups.length) return groups;
+    return fallbackDomainSummaries(asArray(ctx.top_material_changes));
+  }
+
+  function renderTransitionRawGroup(doc, group) {
+    const children = asArray(group.children);
+    const label = transitionDomainLabel(group.domain);
+    return `
+      <details class="transition-raw-group">
+        <summary>
+          <span>${escapeHtml(label)}</span>
+          <span>${escapeHtml(scalarText(group.raw_change_count ?? children.length, { translate: false, digits: 0 }))} 项原始变化</span>
+        </summary>
+        ${renderTransitionChanges(doc, children)}
+      </details>
+    `;
+  }
+
+  function transitionDomainLabel(domain) {
+    const labels = {
+      DECISION: "决策",
+      FUNDING: "资金费率",
+      GAMMA: "Gamma",
+      MACRO: "宏观",
+      P_C_RATIO: "P/C 比例",
+      CONFLICT: "冲突",
+      TMV: "TMV",
+      QUALITY: "数据质量",
+      SKEW: "偏斜"
+    };
+    const raw = rawEnum(domain || "UNKNOWN");
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionDomainSemanticTitle(domain) {
+    const labels = {
+      TMV: "TMV（量价路径）",
+      MACRO: "宏观（利率/美元/波动率）",
+      SKEW: "期权偏斜（Skew）",
+      P_C_RATIO: "P/C（期权需求）",
+      GAMMA: "Gamma（净 Gamma）",
+      FUNDING: "Funding（期货资金费率）",
+      CONFLICT: "冲突（信号分歧）",
+      DECISION: "决策（状态/置信）",
+      QUALITY: "数据质量（完整性）"
+    };
+    const raw = rawEnum(domain || "UNKNOWN");
+    return labels[raw] || transitionDomainLabel(raw);
+  }
+
+  function transitionGradeLabel(value) {
+    const labels = {
+      CRITICAL: "关键",
+      HIGH: "高",
+      MEDIUM: "中",
+      LOW: "低",
+      VERY_LOW: "很低",
+      UNKNOWN: "未定"
+    };
+    const raw = rawEnum(value || "UNKNOWN");
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionValueText(value) {
+    if (Array.isArray(value) || (value && typeof value === "object")) return rawValueTextLabeled(value);
+    if (isEnum(value)) return semanticLabel(value);
+    return scalarText(value, { translate: false, digits: 4 });
+  }
+
+  function renderTransitionObservedChanges(changes, ctx = {}) {
+    const items = asArray(changes);
+    if (!items.length) return `<div class="empty-inline">无</div>`;
+    const displayByDomain = new Map(transitionCoreRows(ctx).map((row) => [
+      rawEnum(row.domain || "OTHER").toUpperCase(),
+      row
+    ]));
+    return `<ul class="transition-observed-list">${items.map((item) => renderTransitionObservedChange(item, displayByDomain)).join("")}</ul>`;
+  }
+
+  function renderTransitionObservedChange(item, displayByDomain = new Map()) {
+    const change = asObject(item);
+    const domain = rawEnum(change.domain || "OTHER").toUpperCase();
+    const title = transitionDomainSemanticTitle(domain);
+    const displayRow = displayByDomain.get(domain);
+    const fact = stripTransitionMaterialityBoilerplate(
+      sanitizeTransitionReadable(
+        change.fact_cn || change.fact || change.summary_cn,
+        displayRow && displayRow.meaning
+      ));
+    const impact = transitionObservedImpactText(change, displayRow, fact);
+    const tendency = transitionObservedTendencyText(change, displayRow, `${fact} ${impact}`);
+    const parts = [fact, impact ? `影响：${impact}` : "", tendency ? `倾向：${tendency}` : ""]
+      .filter(Boolean);
+    return `
+      <li>
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(parts.join("；"))}</span>
+        ${renderTransitionObservedMeta(change)}
+      </li>
+    `;
+  }
+
+  function renderTransitionObservedMeta(change) {
+    const chips = [
+      transitionMetaChip("证据状态", change.evidence_status, transitionEvidenceStatusLabel),
+      transitionMetaChip("方向作用", change.directional_role, transitionDirectionalRoleLabel),
+      transitionMetaChip("幅度判断", change.magnitude_verdict, transitionMagnitudeVerdictLabel),
+      transitionMetaChip("关注影响", change.audit_attention_effect, transitionAuditAttentionLabel),
+      transitionMetaChip("认知性质", change.epistemic_status, transitionEpistemicStatusLabel),
+    ].filter(Boolean);
+    if (!chips.length) return "";
+    return `<div class="transition-observed-meta">${chips.join("")}</div>`;
+  }
+
+  function transitionMetaChip(label, value, formatter) {
+    if (isNullish(value) || value === "") return "";
+    if (isUninformativeTransitionMetaValue(value)) return "";
+    return `<span class="chip">${escapeHtml(label)}: ${escapeHtml(formatter(value))}</span>`;
+  }
+
+  function isUninformativeTransitionMetaValue(value) {
+    const raw = rawEnum(value).toUpperCase();
+    return raw === "UNKNOWN" || raw === "UNDETERMINED" || raw === "INDETERMINATE";
+  }
+
+  function transitionEvidenceStatusLabel(value) {
+    const labels = {
+      SUFFICIENT: "充分",
+      PARTIAL: "部分",
+      NOT_COMPARABLE: "不可比",
+      MISSING: "缺失"
+    };
+    const raw = rawEnum(value || "UNKNOWN").toUpperCase();
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionDirectionalRoleLabel(value) {
+    const labels = {
+      RISK_CONSTRAINT: "风险约束",
+      SUPPORT: "支撑",
+      NEUTRAL_OR_EASING: "中性/缓和",
+      MIXED: "混合",
+      UNDETERMINED: "未定"
+    };
+    const raw = rawEnum(value || "UNKNOWN").toUpperCase();
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionMagnitudeVerdictLabel(value) {
+    const labels = {
+      changes_judgment: "改变判断重点",
+      background_only: "仅作背景",
+      indeterminate: "不足判断"
+    };
+    const raw = rawEnum(value || "indeterminate");
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionAuditAttentionLabel(value) {
+    const labels = {
+      SHIFT_FOCUS: "转移关注",
+      REINFORCE_VIEW: "强化原判断",
+      WEAKEN_VIEW: "削弱原判断",
+      BACKGROUND_ONLY: "背景信息",
+      UNDETERMINED: "未定"
+    };
+    const raw = rawEnum(value || "UNKNOWN").toUpperCase();
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionEpistemicStatusLabel(value) {
+    const labels = {
+      OBSERVED: "直接观察",
+      SUPPORTED_INFERENCE: "有证据推断",
+      HYPOTHESIS: "假设",
+      NOT_ASSESSABLE: "不可评估"
+    };
+    const raw = rawEnum(value || "UNKNOWN").toUpperCase();
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionCrossRelationLabel(value) {
+    const labels = {
+      REINFORCING: "共振",
+      OFFSETTING: "抵消",
+      CO_MOVEMENT: "同步",
+      CONSTRAINT_INTERACTION: "约束互动"
+    };
+    const raw = rawEnum(value || "CO_MOVEMENT").toUpperCase();
+    return labels[raw] || semanticCompact(raw);
+  }
+
+  function transitionObservedImpactText(change, displayRow, fact) {
+    const explicit = stripTransitionMaterialityBoilerplate(
+      sanitizeTransitionReadable(change.impact_cn || change.actual_impact_cn || change.meaning_cn, ""));
+    if (explicit) return ensureSentenceEnd(explicit);
+    const displayMeaning = stripTransitionMaterialityBoilerplate(
+      sanitizeTransitionNarrative(displayRow && displayRow.meaning));
+    if (displayMeaning) return ensureSentenceEnd(displayMeaning);
+    return ensureSentenceEnd(transitionInferredImpact(change.domain, fact));
+  }
+
+  function transitionObservedTendencyText(change, displayRow, text) {
+    const explicit = stripTransitionMaterialityBoilerplate(
+      sanitizeTransitionReadable(change.tendency_cn, ""));
+    if (explicit) return explicit;
+    const domain = rawEnum(change.domain || (displayRow && displayRow.domain) || "OTHER").toUpperCase();
+    return transitionInferredTendency(domain, text || "");
+  }
+
+  function transitionListHtml(items, emptyText = "无") {
+    const values = asArray(items)
+      .map((item) => sanitizeTransitionReadable(item, ""))
+      .filter(Boolean);
+    if (!values.length) return `<div class="empty-inline">${escapeHtml(emptyText)}</div>`;
+    return `<ul class="plain-list">${values.map((item) => `<li>${valueHtml(item, { translate: false })}</li>`).join("")}</ul>`;
+  }
+
+  function renderTransitionCrossFactor(review) {
+    const structured = asArray(asObject(review).cross_factor_assessments);
+    if (!structured.length) {
+      return transitionListHtml(asObject(review).cross_factor_interactions, "无");
+    }
+    return `<ul class="plain-list transition-assessment-list">${structured.map((item) => {
+      const row = asObject(item);
+      const domains = asArray(row.domains).map((domain) => transitionDomainLabel(domain)).join(" / ");
+      return `
+        <li>
+          <strong>${escapeHtml([domains, transitionCrossRelationLabel(row.relation)].filter(Boolean).join(" · "))}</strong>
+          <p>${escapeHtml(sanitizeTransitionReadable(row.assessment_cn, "暂无说明"))}</p>
+        </li>
+      `;
+    }).join("")}</ul>`;
+  }
+
+  function renderTransitionOperatorChecks(review) {
+    const checks = asArray(asObject(review).operator_checks);
+    if (!checks.length) return transitionListHtml(asObject(review).operator_focus, "无");
+    return `<ul class="plain-list transition-check-list">${checks.map((item) => {
+      const row = asObject(item);
+      return `
+        <li>
+          <strong>${escapeHtml(sanitizeTransitionReadable(row.focus_cn, "核验项"))}</strong>
+          ${row.why_cn ? `<p>${escapeHtml(sanitizeTransitionReadable(row.why_cn, ""))}</p>` : ""}
+          ${row.strengthens_if_cn ? `<p><span>增强条件：</span>${escapeHtml(sanitizeTransitionReadable(row.strengthens_if_cn, ""))}</p>` : ""}
+          ${row.weakens_if_cn ? `<p><span>削弱条件：</span>${escapeHtml(sanitizeTransitionReadable(row.weakens_if_cn, ""))}</p>` : ""}
+        </li>
+      `;
+    }).join("")}</ul>`;
+  }
+
+  function renderTransitionPolicyValidation(review) {
+    const policy = asObject(asObject(review).policy_validation);
+    if (!Object.keys(policy).length) {
+      return `<div class="transition-policy-note"><strong>策略校验</strong><span>未按当前策略验证</span></div>`;
+    }
+    const issueCount = [
+      policy.raw_enum_leaks,
+      policy.trading_instruction_terms,
+      policy.unit_mislabel_terms,
+      policy.materiality_boilerplate_terms,
+      policy.invalid_evidence_refs,
+      policy.system_assertion_evidence_refs,
+      policy.missing_evidence_refs,
+      policy.causal_overclaim_terms
+    ].reduce((sum, value) => sum + asArray(value).length, 0);
+    const label = policy.passed ? "通过" : `需复核${issueCount ? ` · ${issueCount} 项` : ""}`;
+    return `<div class="transition-policy-note"><strong>策略校验</strong><span>${escapeHtml(label)}</span></div>`;
+  }
+
+  function stripTransitionMaterialityBoilerplate(value) {
+    let text = String(value ?? "");
+    [
+      "被评估为关键变化",
+      "被评估为高材料性变化",
+      "被评估为中材料性变化",
+      "被评估为低材料性变化",
+      "评估为关键变化",
+      "评估为高材料性变化",
+      "高材料性变化",
+      "关键变化",
+      "材料性变化",
+      "材料性"
+    ].forEach((phrase) => {
+      text = text.split(phrase).join("");
+    });
+    return text
+      .replace(/，{2,}/g, "，")
+      .replace(/。{2,}/g, "。")
+      .replace(/，。/g, "。")
+      .replace(/；。/g, "。")
+      .replace(/\s+/g, " ")
+      .replace(/[；，。\s]+$/g, "")
+      .trim();
+  }
+
+  function ensureSentenceEnd(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    return /[。！？]$/.test(text) ? text : `${text}。`;
+  }
+
+  function transitionInferredImpact(domain, text) {
+    const upper = rawEnum(domain || "OTHER").toUpperCase();
+    const value = String(text || "");
+    if (upper === "MACRO") return "宏观压力变化会影响风险资产估值背景和信号释放约束。";
+    if (upper === "TMV" || upper === "TMVF") return "量价路径变化直接影响方向骨架的强弱。";
+    if (upper === "FUNDING") return "资金费率变化反映永续端拥挤和杠杆付费压力。";
+    if (upper === "SKEW") return "期权偏斜变化反映保护需求和尾部风险定价。";
+    if (upper === "GAMMA") return "Gamma 变化影响价格波动放大或钉住约束。";
+    if (upper === "P_C_RATIO") return "P/C 变化反映期权保护需求的相对强弱。";
+    if (upper === "CONFLICT") return "分歧变化影响信号是否收敛。";
+    if (upper === "DECISION") return "决策状态变化影响审计结论的释放条件。";
+    return value || "该变化需要结合其他域共同判断。";
+  }
+
+  function transitionInferredTendency(domain, text) {
+    const upper = rawEnum(domain || "OTHER").toUpperCase();
+    const value = String(text || "");
+    if (upper === "MACRO" && /上升|加深|恶化|转弱|压力|逆风/.test(value)) return "利空/风险约束";
+    if ((upper === "TMV" || upper === "TMVF") && /下降|降至|转弱|走弱/.test(value)) return "偏空";
+    if ((upper === "TMV" || upper === "TMVF") && /上升|回升|改善|支撑/.test(value)) return "偏多/支撑";
+    if (upper === "FUNDING" && /转负|回落|消失|缓和/.test(value)) return "中性/拥挤缓和";
+    if (upper === "FUNDING" && /上升|拥挤|升温/.test(value)) return "利空/拥挤升温";
+    if (upper === "SKEW" && /转弱|下降|保护|尾部/.test(value)) return "利空/尾部保护升温";
+    if (upper === "GAMMA" && /下降|走弱|负|放大|加深/.test(value)) return "利空/空间约束加深";
+    if (upper === "GAMMA" && /回升|支撑|钉住|缓和/.test(value)) return "中性/波动约束缓和";
+    if (upper === "P_C_RATIO" && /下降|降低|回落|缓和/.test(value)) return "中性/保护需求缓和";
+    if (upper === "P_C_RATIO" && /上升|升高/.test(value)) return "利空/保护需求升温";
+    if (upper === "CONFLICT" && /上升|升高|扩大/.test(value)) return "利空/分歧升高";
+    if (upper === "CONFLICT" && /下降|回落|缓和/.test(value)) return "中性/分歧缓和";
+    if (/利空|风险|压制|阻断|逆风/.test(value)) return "利空/风险约束";
+    if (/利多|支撑|改善/.test(value)) return "利多/支撑";
+    if (/缓和|回落/.test(value)) return "中性/缓和";
+    return "中性/需结合其他维度";
+  }
+
+  function sanitizeTransitionNarrative(value) {
+    let text = String(value ?? "");
+    [
+      ["Mild Headwind", "轻度逆风"],
+      ["Strong Headwind", "强逆风"],
+      ["MACRO_SHOCK_GATE_BLOCK", "宏观冲击门阻断状态"],
+      ["MACRO_SHOCK_GATE_STATE", "宏观冲击门状态"],
+      ["MACRO_SHOCK_BLOCKING", "宏观冲击门阻断"],
+      ["MACRO_SHOCK", "宏观冲击"],
+      ["MACRO_BLOCKING", "宏观硬阻断"],
+      ["MACRO Headwind", "宏观逆风"],
+      ["MACRO", "宏观"],
+      ["Neutral", "中性"],
+      ["Mild", "轻度"],
+      ["Strong", "强"],
+      ["Headwind", "逆风"],
+      ["WAIT_CONFIRMATION", "等待确认"],
+      ["POSITIVE_GAMMA_PINNING", "正 Gamma 钉住"],
+      ["NEGATIVE_GAMMA", "负 Gamma"],
+      ["BULLISH", "偏多"],
+      ["BEARISH", "偏空"],
+      ["Bullish", "偏多"],
+      ["Bearish", "偏空"],
+      ["CRITICAL", "关键"],
+      ["HIGH", "高"],
+      ["BLOCKED", "已被阻断"],
+      ["WATCH", "观察"],
+      ["BLOCK", "阻断"],
+      ["CLEAR", "清除"],
+      ["NONE", "无"],
+      ["NEUTRAL", "中性"],
+      ["FUNDING", "资金费率"],
+      ["SKEW_REVERSAL", "偏斜反转"],
+      ["TRANSITION", "过渡区"],
+      ["P_C_RATIO", "P/C 比例"],
+      ["macro_shock.state", "宏观冲击门状态"],
+      ["发生正负符号翻转", "出现结构变化"],
+      ["正负符号翻转", "结构变化"],
+    ].forEach(([from, to]) => {
+      text = text.split(from).join(to);
+    });
+    return text
+      .replace(/维持中性偏好，持续受宏观硬阻断阻碍/g, "维持中性偏好，持续受宏观硬阻断")
+      .replace(/受宏观硬阻断阻碍/g, "受宏观硬阻断")
+      .replace(/关键（关键）/g, "关键")
+      .replace(/高（高）/g, "高")
+      .replace(/观察（观察）/g, "观察")
+      .replace(/阻断（阻断）/g, "阻断")
+      .replace(/等待确认（等待确认）/g, "等待确认");
+  }
+
+  function sanitizeTransitionReadable(value, fallback = "") {
+    if (value && typeof value === "object") {
+      return sanitizeTransitionNarrative(fallback);
+    }
+    const text = sanitizeTransitionNarrative(value);
+    if (!text || hasTransitionRawFieldLeak(text)) {
+      return sanitizeTransitionNarrative(fallback);
+    }
+    return text;
+  }
+
+  function hasTransitionRawFieldLeak(value) {
+    const text = String(value ?? "");
+    return /factor_cross_section|macro_pressure\.components|source_ref|primary_fields|主要字段|核心前后值已入包|来源[:：]|原始变化\s*\d*\s*项/i.test(text)
+      || /\b[a-z][a-z0-9_]*(?:\.[A-Za-z0-9_]+){2,}\b/.test(text);
+  }
+
+  function rawValueTextLabeled(value, depth = 0) {
+    if (isNullish(value) || value === "") return "null";
+    if (Array.isArray(value)) {
+      if (!value.length) return "[]";
+      return value.map((item) => rawValueTextLabeled(item, depth + 1)).join(" ; ");
+    }
+    if (typeof value === "object") {
+      const entries = Object.entries(value)
+        .filter(([, child]) => child !== undefined && child !== null && child !== "");
+      if (!entries.length) return "{}";
+      return entries
+        .map(([name, child]) => `${fieldLabel(name)}: ${rawValueTextLabeled(child, depth + 1)}`)
+        .join(" / ");
+    }
+    return transitionValueText(value);
+  }
+
+  function renderTransitionComparisonTabs(ctx) {
+    const recent = asArray(ctx.recent_5_trajectory);
+    const baseline = asObject(ctx.baseline_24h);
+    const episode = asObject(ctx.episode_anchor);
+    return `
+      <div class="transition-comparison-tabs">
+        <div>
+          <h3 class="subsection-title">最近 5 次轨迹</h3>
+          ${recent.length ? `<ol class="transition-trajectory">${recent.map((item) => `
+            <li>
+              <span>${escapeHtml(item.card_id || "UNKNOWN")}</span>
+              <span>${escapeHtml([semanticCompact(item.lean), semanticCompact(item.support_label)].filter(Boolean).join(" / "))}</span>
+              <span>${escapeHtml(rawValueText({
+                macro_score: item.macro_score,
+                funding_last_rate: item.funding_last_rate,
+                gamma_regime: semanticCompact(item.gamma_regime)
+              }))}</span>
+            </li>
+          `).join("")}</ol>` : `<div class="empty-inline">暂无最近轨迹</div>`}
+        </div>
+        <div>
+          <h3 class="subsection-title">24 小时基线</h3>
+          <p>${escapeHtml(rawValueTextLabeled(baseline))}</p>
+        </div>
+        <div>
+          <h3 class="subsection-title">同片段锚点</h3>
+          <p>${escapeHtml(rawValueTextLabeled(episode))}</p>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderTransitionLlmReview(doc) {
+    const ctx = transitionContext(doc);
+    const review = asObject(get(doc, "transition_llm_review", {}));
+    if (!Object.keys(review).length) {
+      if (!ctx.llm_review_required) return "";
+      return `
+        <div class="transition-llm is-pending">
+          <h3 class="subsection-title">LLM 变化链解释</h3>
+          <p>等待 transition sidecar 合并；程序化 ledger 已可用于审计。</p>
+        </div>
+      `;
+    }
+    const guard = asObject(review.language_guard);
+    const policy = asObject(review.policy_validation);
+    const renderState = String(policy.render_state || "").toUpperCase();
+    const suppressLlmText = renderState === "SUPPRESS_LLM_TEXT";
+    const isLegacyUnvalidated = !Object.keys(policy).length;
+    const degradedLlmText = renderState === "DEGRADED_LLM_TEXT" || isLegacyUnvalidated;
+    const knownRenderStates = new Set([
+      "",
+      "DISPLAY_LLM_TEXT",
+      "DEGRADED_LLM_TEXT",
+      "SUPPRESS_LLM_TEXT"
+    ]);
+    const topline = `
+      <div class="llm-review-topline">
+        ${statusBadgeCn("状态", review.status || "UNKNOWN")}
+        ${Object.keys(policy).length ? statusBadgeCn("策略校验", policy.passed ? "VALID" : "DEGRADED") : ""}
+        ${statusBadgeCn("禁止交易指令", guard.no_trading_instruction ? "VALID" : "UNKNOWN")}
+        ${statusBadgeCn("不使用外部数据", guard.no_external_data ? "VALID" : "UNKNOWN")}
+        ${statusBadgeCn("区分观察与因果", guard.distinguishes_observation_from_causality ? "VALID" : "UNKNOWN")}
+        ${statusBadgeCn("不含交易建议", review.not_trading_advice ? "VALID" : "UNKNOWN")}
+      </div>
+    `;
+    if (!knownRenderStates.has(renderState)) {
+      return `
+        <div class="transition-llm is-suppressed">
+          <h3 class="subsection-title">LLM 变化链解释</h3>
+          ${topline}
+          ${renderTransitionPolicyValidation(review)}
+          <p class="llm-review-summary">复核结果未通过当前客户端校验；请以程序化 transition ledger、证据目录和原始审计卡继续复核。</p>
+          <dl class="kv-grid llm-review-grid" style="margin-top: 12px;">
+            ${kv("model", review.model, { translate: false })}
+            ${kv("input_packet_hash", review.input_packet_hash, { translate: false })}
+          </dl>
+        </div>
+      `;
+    }
+    if (suppressLlmText) {
+      return `
+        <div class="transition-llm is-suppressed">
+          <h3 class="subsection-title">LLM 变化链解释</h3>
+          ${topline}
+          ${renderTransitionPolicyValidation(review)}
+          <p class="llm-review-summary">LLM 正文因策略校验未通过已降级隐藏；请以程序化 transition ledger、证据目录和原始审计卡继续复核。</p>
+          <dl class="kv-grid llm-review-grid" style="margin-top: 12px;">
+            ${kv("model", review.model, { translate: false })}
+            ${kv("input_packet_hash", review.input_packet_hash, { translate: false })}
+          </dl>
+        </div>
+      `;
+    }
+    return `
+      <div class="transition-llm${degradedLlmText ? " is-degraded" : ""}">
+        <h3 class="subsection-title">LLM 变化链解释</h3>
+        ${topline}
+        ${degradedLlmText ? `<div class="transition-llm-degraded-banner" role="alert">${escapeHtml(isLegacyUnvalidated
+          ? "此复核来自旧版 sidecar，未按当前 v1.2.2 策略校验；以下正文仅供参考，请以程序化 transition ledger、证据目录和原始审计卡为准。"
+          : "此复核未通过当前策略校验，正文为降级展示，可能包含被标记表述；请以程序化 transition ledger、证据目录和原始审计卡为准。")}</div>` : ""}
+        <p class="llm-review-summary">${valueHtml(sanitizeTransitionReadable(
+          review.transition_summary_cn,
+          "LLM 解释含原始字段路径，已在主阅读区隐藏；请以核心骨架和策略校验继续复核。"
+        ), { translate: false })}</p>
+        ${renderTransitionPolicyValidation(review)}
+        <dl class="kv-grid llm-review-grid" style="margin-top: 12px;">
+          ${kvCn("trajectory_state", review.trajectory_state)}
+          ${kvCn("signal_continuity", review.signal_continuity)}
+          ${kv("model", review.model, { translate: false })}
+          ${kv("input_packet_hash", review.input_packet_hash, { translate: false })}
+        </dl>
+        <div class="two-column-notes llm-review-lists">
+          <div><h3 class="subsection-title">观察到的变化</h3>${renderTransitionObservedChanges(review.observed_changes, ctx)}</div>
+          <div><h3 class="subsection-title">跨因子相互作用</h3>${renderTransitionCrossFactor(review)}</div>
+          <div><h3 class="subsection-title">人工核验方案</h3>${renderTransitionOperatorChecks(review)}</div>
+          <div><h3 class="subsection-title">人工观察重点</h3>${transitionListHtml(review.operator_focus, "无")}</div>
+          <div><h3 class="subsection-title">失效条件</h3>${transitionListHtml(review.invalid_if, "无")}</div>
+        </div>
+      </div>
+    `;
   }
 
   function renderTheoreticalActiveView(view) {
@@ -1177,27 +2150,39 @@
     return "NEUTRAL";
   }
 
+  function macroLeanFromScore(score) {
+    const numeric = safeNumber(score);
+    if (numeric === null) return null;
+    if (numeric > 0) return "BEARISH";
+    if (numeric < 0) return "BULLISH";
+    return "NEUTRAL";
+  }
+
   function evidenceAuxiliaryLean(evidence, doc) {
     if (evidence && evidence.auxiliary_lean) return evidence.auxiliary_lean;
     const key = evidenceKey(evidence);
     const detail = asObject(evidence && evidence.detail);
     const factor = factorNodeForEvidence(doc, evidence);
     if (key === "FUNDING") {
-      const rate = firstNumberFrom([detail, factor], ["funding_norm", "last_rate", "last_funding_rate"]);
+      const rate = firstNumberFrom([detail, factor], ["last_rate", "last_funding_rate", "funding_norm"]);
       return signedLean(rate === null ? null : -rate);
     }
     if (key === "SRD") {
       return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]));
     }
     if (key === "GGR_SPATIAL") {
-      if (factor.veto) return "ADVERSE";
+      if (factor.veto) return "RISK_CONSTRAINT";
       const regime = rawEnum(factor.regime || detail.regime).toUpperCase();
-      if (regime.includes("NEGATIVE") || regime.includes("AMPLIFY")) return "ADVERSE";
+      if (regime.includes("NEGATIVE") || regime.includes("AMPLIFY")) return "RISK_CONSTRAINT";
       if (regime.includes("POSITIVE") || regime.includes("PINNING")) return "SUPPORTIVE";
       const multiplier = firstNumberFrom([factor, detail], ["confidence_multiplier"]);
       if (multiplier !== null && multiplier > 1) return "SUPPORTIVE";
-      if (multiplier !== null && multiplier < 1) return "ADVERSE";
+      if (multiplier !== null && multiplier < 1) return "CONSTRAINT";
       return "NEUTRAL";
+    }
+    if (key === "MACRO") {
+      return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]))
+        || macroLeanFromScore(firstNumberFrom([detail, factor], ["macro_score", "score"]));
     }
     return signedLean(firstNumberFrom([evidence, detail, factor], ["vote"]));
   }
@@ -1206,7 +2191,8 @@
     const defaults = {
       FUNDING: ["last_rate", "last_funding_rate", "funding_norm", "funding_cum", "funding_count", "funding_state", "effect", "tmvf_funding_effect", "verdict", "hard_warning", "history_points", "observed_at", "age_ms", "source_ref"],
       SRD: ["vote", "rr_blend", "rr_25d", "delta_rr", "rr_z", "skew_norm_blend", "skew_slope", "term_slope", "vote_confidence", "target_expiry_hours", "expiry_count", "data_status", "data_state", "observed_at", "age_ms", "source_ref"],
-      GGR_SPATIAL: ["regime", "regime_strength", "confidence_multiplier", "veto", "veto_reason", "net_gamma_notional_usd", "net_gamma_notional", "flip_point", "distance_to_flip_pct", "pin_strike", "distance_to_pin_pct", "pin_pull_direction", "max_gamma_strike", "call_wall", "put_wall", "market_state", "observed_at", "age_ms", "source_ref"]
+      GGR_SPATIAL: ["regime", "regime_strength", "confidence_multiplier", "veto", "veto_reason", "net_gamma_notional_usd", "net_gamma_notional", "flip_point", "distance_to_flip_pct", "pin_strike", "distance_to_pin_pct", "pin_pull_direction", "max_gamma_strike", "call_wall", "put_wall", "market_state", "observed_at", "age_ms", "source_ref"],
+      MACRO: ["macro_score", "score", "macro_regime", "regime", "verdict", "data_status", "data_confidence", "macro_data_confidence", "components", "component_scores", "macro_components_cn", "macro_shock", "legacy_blocking_flags", "blocking_flags", "reason_codes", "source_ref"]
     };
     return defaults[key] || Object.keys(detail);
   }
@@ -1276,11 +2262,19 @@
 
   function hasRawTraceTarget(ref, doc) {
     const root = rawTraceRoot(ref);
-    if (!root.startsWith("factor_cross_section.")) return false;
-    const value = get(doc, root);
-    if (isNullish(value)) return false;
-    if (typeof value === "object") return Object.keys(asObject(value)).length > 0;
-    return true;
+    if (root.startsWith("factor_cross_section.")) {
+      const value = get(doc, root);
+      if (isNullish(value)) return false;
+      if (typeof value === "object") return Object.keys(asObject(value)).length > 0;
+      return true;
+    }
+    if (root.startsWith("evidence_raw_values.")) {
+      const key = root.slice("evidence_raw_values.".length).toUpperCase();
+      return asArray(get(doc, "reasoning.evidence", [])).some((evidence) =>
+        evidenceKey(evidence) === key
+        && Object.keys(asObject(evidence && evidence.raw_values)).length > 0);
+    }
+    return false;
   }
 
   function sourceRefLink(ref, doc, label = null) {
@@ -1330,6 +2324,52 @@
     if (isNullish(value) || value === "") return "";
     const text = textClip(value);
     return `<span class="evidence-fact"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(text)}">${escapeHtml(text)}</strong></span>`;
+  }
+
+  function macroComponentLabel(component) {
+    const key = rawEnum(component && component.key).toUpperCase();
+    if (key === "VOLQ" || key === "VXN" || key === "VIX") return `纳斯达克代理(${key})`;
+    if (key === "DXY") return "美元(DXY)";
+    if (key === "US10Y" || key === "TNX") return "美债10Y(US10Y)";
+    return key || "macro_proxy";
+  }
+
+  function macroComponentValue(component) {
+    const item = asObject(component);
+    const bps = firstNumberFrom([item], ["scoring_bps", "change_bps", "change_3d_bps"]);
+    if (bps !== null) return `${number(bps, 1)} bp`;
+    const pct = safeNumber(item.change_pct_3d);
+    if (pct !== null) return `${number(pct * 100, 2)}%`;
+    return firstPresent(item.source_symbol, item.current_symbol, item.key, "n/a");
+  }
+
+  function macroComponentFacts(ctx) {
+    const components = asArray(firstPresent(ctx.raw.components, ctx.factor.components, ctx.raw.component_scores, ctx.factor.component_scores));
+    return components
+      .filter((component) => Object.keys(asObject(component)).length)
+      .map((component) => evidenceFact(macroComponentLabel(component), macroComponentValue(component)));
+  }
+
+  function macroDirectionBackgroundText(regime, score, leanText) {
+    const scoreText = scalarText(score, { translate: false, digits: 4 });
+    const regimeText = scalarText(regime, { translate: false });
+    return `${regimeText} / ${leanText} / macro_score ${scoreText}`;
+  }
+
+  function macroShockObject(ctx) {
+    return asObject(firstPresent(ctx.raw.macro_shock, ctx.detail.macro_shock, ctx.factor.macro_shock));
+  }
+
+  function macroShockGateText(ctx) {
+    const shock = macroShockObject(ctx);
+    if (!Object.keys(shock).length) return "历史卡未提供冲击门字段";
+    const state = rawEnum(shock.state || (shock.block ? "BLOCK" : "CLEAR")) || "UNKNOWN";
+    const delta = safeNumber(shock.volq_bps_delta);
+    const deltaText = delta === null ? "VOLQ delta 暂缺" : `VOLQ ${number(delta, 1)}bp`;
+    const confirmed = shock.direction_confirmed === true
+      ? "DXY/US10Y 确认"
+      : (shock.direction_confirmed === false ? "未获方向确认" : "confirmation 暂缺");
+    return `${state} / ${deltaText} / ${confirmed}`;
   }
 
   function evidenceFactsHtml(facts) {
@@ -1401,15 +2441,18 @@
     const veto = evidenceFirstValue(evidence, ctx, ["veto"]);
     const flipDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_flip_pct"]);
     const pinDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_pin_pct"]);
-    const stance = semanticCompact(evidenceAuxiliaryLean(evidence, { factor_cross_section: { gamma_regime: ctx.factor } })) || "NEUTRAL";
+    const stanceCode = evidenceAuxiliaryLean(evidence, { factor_cross_section: { gamma_regime: ctx.factor } });
+    const stance = semanticCompact(stanceCode) || "空间约束";
     return {
+      stanceLabel: "空间状态",
       stance,
-      sentence: `Gamma 结构 ${scalarText(regime, { translate: false })}，置信乘子 ${scalarText(multiplier, { translate: false, digits: 4 })}，当前作为空间安全/门控参考。`,
+      sentence: `Gamma 结构 ${scalarText(regime, { translate: false })}，置信乘子 ${scalarText(multiplier, { translate: false, digits: 4 })}，这是期权空间安全/门控约束，不作为偏多或偏空方向票。`,
       facts: [
         evidenceFact("netGEX", evidenceFirstValue(evidence, ctx, ["net_gamma_notional_usd", "net_gamma_notional"])),
         evidenceFact("flip", evidenceFirstValue(evidence, ctx, ["flip_point"])),
         evidenceFact("dist_flip", flipDistance === null ? null : pctPoint(flipDistance)),
         evidenceFact("dist_pin", pinDistance === null ? null : pctPoint(pinDistance)),
+        evidenceFact("spatial_role", stance),
         evidenceFact("veto", veto)
       ]
     };
@@ -1454,14 +2497,20 @@
   function macroAssessment(evidence, ctx) {
     const score = firstNumberFrom([ctx.raw, ctx.detail, ctx.factor], ["macro_score", "score"]);
     const regime = evidenceFirstValue(evidence, ctx, ["macro_regime", "regime"]);
-    const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote)) || "UNKNOWN";
+    const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote) || macroLeanFromScore(score)) || "UNKNOWN";
+    const voteMissing = isNullish(evidence.vote);
+    const directionBackground = macroDirectionBackgroundText(regime, score, leanText);
+    const shockGate = macroShockGateText(ctx);
     return {
       stance: leanText,
-      sentence: `宏观背景 ${scalarText(regime, { translate: false })}，分数 ${scalarText(score, { translate: false, digits: 4 })}，仅作为跨市场顺逆风。`,
+      sentence: `宏观背景 ${directionBackground}；冲击门 ${shockGate}；分数 ${scalarText(score, { translate: false, digits: 4 })}。score > 0 表示风险资产逆风。${voteMissing ? "本行 vote 为空代表本轮不作为方向投票或被门控排除，不代表 raw 宏观数据缺失。" : ""}`,
       facts: [
+        evidenceFact("方向背景", directionBackground),
+        evidenceFact("冲击门", shockGate),
         evidenceFact("regime", regime),
         evidenceFact("score", score),
-        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["data_confidence", "macro_data_confidence"]))
+        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["data_confidence", "macro_data_confidence"])),
+        ...macroComponentFacts(ctx)
       ]
     };
   }
@@ -1730,9 +2779,8 @@
       ${renderGammaOverview(doc)}
       ${renderGexRank(doc)}
       ${renderSignalSessionContext(doc)}
+      ${renderTransitionContext(doc)}
       ${renderLlmReview(doc)}
-      ${renderDecision(doc)}
-      ${renderDecisionMatrix(doc)}
       ${renderDisplayLayers(doc)}
       ${renderQuality(doc)}
       ${renderBlocking(doc)}

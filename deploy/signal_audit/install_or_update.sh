@@ -27,6 +27,9 @@ CONFIG_ROOT="${CONFIG_ROOT:-/etc/signal-audit}"
 LLM_ENV_FILE="${LLM_ENV_FILE:-$CONFIG_ROOT/llm.env}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 LLM_REVIEWS_SOURCE="${LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_llm_reviews.jsonl}"
+TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-$TOOLS_ROOT/signal_transition_ledger.jsonl}"
+TRANSITION_STATE_SOURCE="${TRANSITION_STATE_SOURCE:-$TOOLS_ROOT/signal_transition_state.json}"
+TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_transition_llm_reviews.jsonl}"
 MAX_CARDS="${MAX_CARDS:-200}"
 
 if [[ ! -f "$FRONTEND_SRC/index.html" || ! -f "$FRONTEND_SRC/app.js" ]]; then
@@ -44,11 +47,6 @@ if [[ ! -f "$GEMINI_TOOL_SRC" ]]; then
   exit 2
 fi
 
-if [[ -z "$STATIC_ROOT" || "$STATIC_ROOT" == "/" ]]; then
-  echo "unsafe STATIC_ROOT for static deployment: $STATIC_ROOT" >&2
-  exit 2
-fi
-
 for required in "$LLM_RUNNER_SRC" "$LLM_ENV_EXAMPLE_SRC" "$MATERIALIZE_SERVICE_SRC" "$MATERIALIZE_TIMER_SRC" "$LLM_SERVICE_SRC" "$LLM_TIMER_SRC"; do
   if [[ ! -f "$required" ]]; then
     echo "missing deployment asset: $required" >&2
@@ -58,17 +56,14 @@ done
 
 install -d "$STATIC_ROOT" "$TOOLS_ROOT" "$CONFIG_ROOT"
 chmod 0700 "$CONFIG_ROOT"
-rsync -a --delete --exclude='*.jsonl' "$FRONTEND_SRC"/ "$STATIC_ROOT"/
-# Excludes prevent new fixture JSONL from being copied, but rsync also protects
-# old target-side JSONL from --delete. Remove any stale public JSONL explicitly.
-find "$STATIC_ROOT" -type f -name '*.jsonl' -delete
+rsync -a --delete "$FRONTEND_SRC"/ "$STATIC_ROOT"/
 install -m 0755 "$TOOL_SRC" "$TOOLS_ROOT/materialize_signal_cards.py"
 install -m 0755 "$GEMINI_TOOL_SRC" "$TOOLS_ROOT/gemini_signal_llm_review.py"
 install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
 install -m 0644 "$LLM_ENV_EXAMPLE_SRC" "$CONFIG_ROOT/llm.env.example"
 if [[ ! -f "$LLM_ENV_FILE" ]]; then
   install -m 0600 "$LLM_ENV_EXAMPLE_SRC" "$LLM_ENV_FILE"
-  echo "created LLM API key template at $LLM_ENV_FILE; edit GEMINI_3_5_FLASH_API_KEY and optional GEMINI_PAID_API_KEY before expecting reviews"
+  echo "created LLM API key template at $LLM_ENV_FILE; edit GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY before expecting reviews"
 else
   chmod 0600 "$LLM_ENV_FILE"
 fi
@@ -85,7 +80,10 @@ if [[ -f "$JSONL_SOURCE" ]]; then
   materialize_args=(
     --source "$JSONL_SOURCE" \
     --output "$STATIC_ROOT" \
-    --max-cards "$MAX_CARDS"
+    --max-cards "$MAX_CARDS" \
+    --transition-ledger "$TRANSITION_LEDGER_SOURCE" \
+    --transition-state "$TRANSITION_STATE_SOURCE" \
+    --transition-reviews "$TRANSITION_LLM_REVIEWS_SOURCE"
   )
   if [[ -n "$LLM_REVIEWS_SOURCE" && -f "$LLM_REVIEWS_SOURCE" ]]; then
     materialize_args+=(--llm-reviews "$LLM_REVIEWS_SOURCE")
@@ -101,3 +99,6 @@ echo "materializer installed to $TOOLS_ROOT/materialize_signal_cards.py"
 echo "Gemini review tool installed to $TOOLS_ROOT/gemini_signal_llm_review.py"
 echo "LLM API key config lives at $LLM_ENV_FILE"
 echo "LLM review sidecar lives at $LLM_REVIEWS_SOURCE"
+echo "transition ledger lives at $TRANSITION_LEDGER_SOURCE"
+echo "transition state lives at $TRANSITION_STATE_SOURCE"
+echo "transition LLM review sidecar lives at $TRANSITION_LLM_REVIEWS_SOURCE"

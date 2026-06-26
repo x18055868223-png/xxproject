@@ -4,13 +4,18 @@ set -euo pipefail
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 LLM_REVIEWS_SOURCE="${LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_llm_reviews.jsonl}"
+TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-$TOOLS_ROOT/signal_transition_ledger.jsonl}"
+TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_transition_llm_reviews.jsonl}"
 GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"
 LLM_REVIEW_LIMIT="${LLM_REVIEW_LIMIT:-2}"
+TRANSITION_REVIEW_LIMIT="${TRANSITION_REVIEW_LIMIT:-2}"
 LLM_REVIEW_TIMEOUT="${LLM_REVIEW_TIMEOUT:-60}"
 
-if [[ -z "${GEMINI_3_5_FLASH_API_KEY:-}${GEMINI_FLASH_API_KEY:-}${GEMINI_LOW_COST_API_KEY:-}${GEMINI_API_KEY:-}${GEMINI_PAID_API_KEY:-}${GEMINI_FALLBACK_API_KEY:-}${GEMINI_PRO_API_KEY:-}" ]]; then
-  echo "Gemini API key is not configured; edit /etc/signal-audit/llm.env"
-  echo "preferred: GEMINI_3_5_FLASH_API_KEY for low-cost calls, GEMINI_PAID_API_KEY for fallback"
+CHANNEL1_KEY="${GEMINI_CHANNEL1_API_KEY:-}"
+CHANNEL2_KEY="${GEMINI_CHANNEL2_API_KEY:-}"
+
+if [[ -z "$CHANNEL1_KEY" && -z "$CHANNEL2_KEY" ]]; then
+  echo "GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY are not configured; edit /etc/signal-audit/llm.env"
   exit 0
 fi
 
@@ -20,8 +25,12 @@ if [[ ! -f "$JSONL_SOURCE" ]]; then
 fi
 
 exec /usr/bin/python3 "$TOOLS_ROOT/gemini_signal_llm_review.py" \
+  --mode both \
   --source "$JSONL_SOURCE" \
   --reviews-output "$LLM_REVIEWS_SOURCE" \
+  --transition-ledger "$TRANSITION_LEDGER_SOURCE" \
+  --transition-reviews-output "$TRANSITION_LLM_REVIEWS_SOURCE" \
   --model "$GEMINI_MODEL" \
   --limit "$LLM_REVIEW_LIMIT" \
+  --transition-limit "$TRANSITION_REVIEW_LIMIT" \
   --timeout "$LLM_REVIEW_TIMEOUT"

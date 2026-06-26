@@ -5,6 +5,9 @@ Description=Materialize FMZ signal_review.jsonl for the static signal audit page
 Type=oneshot
 Environment=JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
 Environment=LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
+Environment=TRANSITION_LEDGER_SOURCE=/opt/signal-audit-tools/signal_transition_ledger.jsonl
+Environment=TRANSITION_STATE_SOURCE=/opt/signal-audit-tools/signal_transition_state.json
+Environment=TRANSITION_LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_transition_llm_reviews.jsonl
 Environment=MAX_CARDS=200
 MemoryHigh=64M
 MemoryMax=128M
@@ -12,4 +15,4 @@ CPUQuota=25%
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=30
-ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source ${JSONL_SOURCE} --output /opt/signal-audit --max-cards ${MAX_CARDS} --llm-reviews ${LLM_REVIEWS_SOURCE}
+ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source ${JSONL_SOURCE} --output /opt/signal-audit --max-cards ${MAX_CARDS} --llm-reviews ${LLM_REVIEWS_SOURCE} --transition-ledger ${TRANSITION_LEDGER_SOURCE} --transition-state ${TRANSITION_STATE_SOURCE} --transition-reviews ${TRANSITION_LLM_REVIEWS_SOURCE}

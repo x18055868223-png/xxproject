@@ -204,6 +204,23 @@
       font-size: 12px;
     }
 
+    .transition-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .transition-badges span {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 7px;
+      background: var(--surface);
+    }
+
     .workspace {
       min-width: 0;
       padding: 30px 42px 48px;
@@ -342,6 +359,7 @@
     .section {
       border-top: 1px solid var(--line);
       padding: 24px 0;
+      min-width: 0;
     }
 
     .section:first-of-type {
@@ -491,6 +509,293 @@
       line-height: 1.65;
     }
 
+    #transition-context {
+      border-top: 2px solid var(--line-strong);
+      padding-top: 26px;
+    }
+
+    .transition-panel,
+    .transition-llm {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 14px 16px;
+      background: var(--surface);
+    }
+
+    .transition-grid,
+    .transition-mini-grid {
+      margin-top: 12px;
+    }
+
+    .transition-timeline {
+      display: grid;
+      gap: 5px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .transition-timeline span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .transition-timeline strong {
+      font-size: 18px;
+      line-height: 1.35;
+    }
+
+    .transition-core-summary,
+    .transition-metadata {
+      margin-top: 14px;
+    }
+
+    .transition-core-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .transition-core-row {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--bg);
+      display: grid;
+      grid-template-columns: minmax(150px, .8fr) minmax(130px, .55fr) minmax(220px, 1fr);
+      align-items: center;
+      gap: 12px;
+    }
+
+    .transition-core-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .transition-core-main strong {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .transition-core-values {
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 760;
+      line-height: 1.35;
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+
+    .transition-core-row p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .transition-observed-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 0;
+    }
+
+    .transition-observed-list li {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      gap: 5px;
+    }
+
+    .transition-observed-list li:last-child {
+      border-bottom: 0;
+    }
+
+    .transition-observed-list strong {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .transition-observed-list span {
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .transition-observed-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 2px;
+    }
+
+    .transition-policy-note {
+      margin-top: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: var(--bg);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .transition-assessment-list p,
+    .transition-check-list p {
+      margin: 4px 0 0;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .transition-check-list span {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .transition-metadata {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: var(--bg);
+    }
+
+    .transition-mini-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-radius: 4px;
+    }
+
+    .transition-mini-grid .kv {
+      min-height: 58px;
+      padding: 9px 10px;
+    }
+
+    .transition-mini-grid .kv dd {
+      font-size: 13px;
+      font-weight: 680;
+    }
+
+    .transition-change-list {
+      display: grid;
+      gap: 10px;
+      margin: 10px 0 16px;
+    }
+
+    .transition-raw-group {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 12px;
+      margin-bottom: 10px;
+      background: var(--surface);
+    }
+
+    .transition-raw-group summary,
+    .transition-metadata summary {
+      cursor: pointer;
+      padding: 10px 0;
+      font-weight: 750;
+    }
+
+    .transition-raw-group summary {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--ink);
+    }
+
+    .transition-raw-group summary span:last-child {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .transition-change {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--bg);
+    }
+
+    .transition-change-topline,
+    .transition-trajectory li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .transition-change-topline span,
+    .transition-field {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .transition-field {
+      margin: 6px 0 0;
+      overflow-wrap: anywhere;
+    }
+
+    .transition-comparison-tabs {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .transition-comparison-tabs > div {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--bg);
+    }
+
+    .transition-comparison-tabs p {
+      margin: 0;
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .transition-trajectory {
+      margin: 0;
+      padding-left: 18px;
+      display: grid;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .transition-llm {
+      margin-top: 14px;
+    }
+
+    .transition-llm.is-pending {
+      background: #fffdf7;
+    }
+
+    .transition-llm.is-degraded {
+      border-color: rgba(107, 29, 29, 0.45);
+      border-left: 5px solid var(--bad);
+      background: #fff7f7;
+    }
+
+    .transition-llm-degraded-banner {
+      margin: 10px 0 0;
+      border: 1px solid rgba(107, 29, 29, 0.35);
+      border-left: 4px solid var(--bad);
+      border-radius: 6px;
+      padding: 9px 12px;
+      background: #fff;
+      color: var(--bad);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+
     #llm-review {
       border-top: 2px solid var(--ink);
       padding-top: 26px;
@@ -508,6 +813,11 @@
       border-color: rgba(107, 29, 29, 0.35);
     }
 
+    .llm-review-panel.is-pending {
+      border-color: rgba(125, 104, 50, 0.38);
+      background: #fffdf7;
+    }
+
     .llm-review-summary {
       margin: 10px 0 0;
       font-size: 16px;
@@ -520,6 +830,13 @@
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
+    }
+
+    .llm-review-topline .badge {
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
     }
 
     .llm-review-grid {
@@ -625,6 +942,8 @@
 
     .table-wrap {
       overflow-x: auto;
+      max-width: 100%;
+      min-width: 0;
       border: 1px solid var(--line);
       border-radius: 6px;
     }
@@ -1288,8 +1607,27 @@
 
       .metric-strip,
       .kv-grid,
+      .transition-core-row,
+      .transition-comparison-tabs,
       .conflict-sides {
         grid-template-columns: 1fr;
+      }
+
+      .transition-core-row {
+        align-items: start;
+      }
+
+      .transition-change-topline,
+      .transition-trajectory li {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .transition-raw-group summary {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
       }
 
       .metric:nth-child(odd) {
@@ -1357,7 +1695,7 @@
 []
   </script>
 
-  <script src="signal_cards/fallback.js?v=20260623-r3.1"></script>
-  <script src="app.js?v=20260623-r3.1"></script>
+  <script src="signal_cards/fallback.js?v=20260626b-transition-v1.2.2"></script>
+  <script src="app.js?v=20260626b-transition-v1.2.2"></script>
 </body>
 </html>

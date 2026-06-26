@@ -10,6 +10,7 @@ Output layout:
 import argparse
 from collections import deque
 import datetime as _dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,10 +24,508 @@ MANIFEST_SCHEMA = {
     "version": "1.0.0",
     "card_schema": "signal_review_card@1.0.0",
 }
+TRANSITION_SCHEMA_VERSION = "signal_transition_record@1.0.0"
+TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
+TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
+TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.2"
+MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+TRANSITION_DOMAIN_ORDER = (
+    "TMV", "MACRO", "FUNDING", "SKEW", "GAMMA", "P_C_RATIO",
+    "CONFLICT", "DECISION", "QUALITY",
+)
+TRANSITION_SKELETON_SPECS = (
+    {
+        "domain": "TMV",
+        "source_ref": "factor_cross_section.tmvf",
+        "fields": (
+            ("direction", ("factor_cross_section.tmvf.direction",)),
+            ("tmv_blend", ("factor_cross_section.tmvf.tmv_blend",)),
+            ("tmvf_24h_final", (
+                "factor_cross_section.tmvf.tmvf_24h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_24h.final",
+                "factor_cross_section.tmvf.tmvf_24h_final",
+                "tmvf_24h_final",
+            )),
+            ("tmvf_48h_final", (
+                "factor_cross_section.tmvf.tmvf_48h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_48h.final",
+                "factor_cross_section.tmvf.tmvf_48h_final",
+                "tmvf_48h_final",
+            )),
+            ("window_conflict", ("factor_cross_section.tmvf.window_conflict",)),
+        ),
+    },
+    {
+        "domain": "MACRO",
+        "source_ref": "factor_cross_section.macro_pressure",
+        "fields": (
+            ("macro_score", (
+                "factor_cross_section.macro_pressure.macro_score",
+                "factor_cross_section.macro_pressure.score",
+                "macro_score",
+                "score",
+            )),
+            ("macro_regime", (
+                "factor_cross_section.macro_pressure.macro_regime",
+                "factor_cross_section.macro_pressure.regime",
+                "macro_regime",
+                "regime",
+            )),
+            ("volq_scoring_bps", (
+                "factor_cross_section.macro_pressure.components.VOLQ.scoring_bps",
+                "components.VOLQ.scoring_bps",
+            )),
+            ("dxy_scoring_bps", (
+                "factor_cross_section.macro_pressure.components.DXY.scoring_bps",
+                "components.DXY.scoring_bps",
+            )),
+            ("us10y_scoring_bps", (
+                "factor_cross_section.macro_pressure.components.US10Y.scoring_bps",
+                "components.US10Y.scoring_bps",
+            )),
+            ("macro_shock_state", (
+                "factor_cross_section.macro_pressure.macro_shock.state",
+                "macro_shock.state",
+            )),
+            ("macro_shock_block", (
+                "factor_cross_section.macro_pressure.macro_shock.block",
+                "macro_shock.block",
+            )),
+        ),
+    },
+    {
+        "domain": "FUNDING",
+        "source_ref": "factor_cross_section.funding",
+        "fields": (
+            ("last_rate", (
+                "factor_cross_section.funding.last_rate",
+                "factor_cross_section.funding.last_funding_rate",
+                "last_rate",
+                "last_funding_rate",
+            )),
+            ("funding_norm", (
+                "factor_cross_section.funding.funding_norm",
+                "factor_cross_section.tmvf.tmvf_48h.funding.funding_norm",
+                "funding_norm",
+            )),
+            ("funding_state", (
+                "factor_cross_section.funding.funding_state",
+                "factor_cross_section.tmvf.tmvf_48h.funding_state",
+                "funding_state",
+            )),
+            ("effect", (
+                "factor_cross_section.funding.effect",
+                "factor_cross_section.funding.tmvf_funding_effect",
+                "effect",
+                "tmvf_funding_effect",
+            )),
+        ),
+    },
+    {
+        "domain": "SKEW",
+        "source_ref": "factor_cross_section.skew",
+        "fields": (
+            ("vote", ("factor_cross_section.skew.vote", "vote")),
+            ("rr_blend", ("factor_cross_section.skew.rr_blend", "rr_blend")),
+            ("rr_25d", ("factor_cross_section.skew.rr_25d", "rr_25d")),
+            ("skew_norm_blend", (
+                "factor_cross_section.skew.skew_norm_blend",
+                "skew_norm_blend",
+            )),
+        ),
+    },
+    {
+        "domain": "GAMMA",
+        "source_ref": "factor_cross_section.gamma_regime",
+        "fields": (
+            ("regime", ("factor_cross_section.gamma_regime.regime", "regime")),
+            ("net_gamma_notional_usd", (
+                "factor_cross_section.gamma_regime.net_gamma_notional_usd",
+                "factor_cross_section.gamma_regime.net_gamma_notional",
+                "net_gamma_notional_usd",
+                "net_gamma_notional",
+            )),
+            ("distance_to_flip_pct", (
+                "factor_cross_section.gamma_regime.distance_to_flip_pct",
+                "distance_to_flip_pct",
+            )),
+            ("distance_to_pin_pct", (
+                "factor_cross_section.gamma_regime.distance_to_pin_pct",
+                "factor_cross_section.gamma_regime.pin.distance_to_pin_pct",
+                "distance_to_pin_pct",
+            )),
+        ),
+    },
+    {
+        "domain": "P_C_RATIO",
+        "source_ref": "factor_cross_section.gex_info",
+        "fields": (
+            ("put_call_ratio", (
+                "factor_cross_section.gex_info.put_call_ratio",
+                "factor_cross_section.gex_info.pc_ratio",
+                "factor_cross_section.gex_info.pcr",
+                "factor_cross_section.gex_info.call_put_ratio",
+            )),
+        ),
+    },
+    {
+        "domain": "CONFLICT",
+        "source_ref": "conflict",
+        "fields": (
+            ("ratio", ("conflict.ratio",)),
+            ("level", ("conflict.level",)),
+            ("aligned_keys", ("conflict.aligned_keys",)),
+            ("dissent_keys", ("conflict.dissent_keys",)),
+        ),
+    },
+    {
+        "domain": "DECISION",
+        "source_ref": "decision",
+        "fields": (
+            ("lean", ("decision.lean",)),
+            ("support_label", ("decision.support_label",)),
+            ("confidence", ("decision.confidence",)),
+            ("decision_state", ("decision_matrix.decision_state",)),
+        ),
+    },
+    {
+        "domain": "QUALITY",
+        "source_ref": "quality",
+        "fields": (
+            ("overall", ("quality.overall",)),
+            ("missing_field_count", ("quality.missing_field_count",)),
+        ),
+    },
+)
+TRANSITION_FIELD_REGISTRY = (
+    {
+        "path": "factor_cross_section.tmvf.tmv_blend",
+        "domain": "TMV",
+        "type": "continuous",
+        "role": "DIRECTION_OWNER",
+        "absolute_floor": 0.10,
+        "critical_floor": 0.30,
+        "higher_meaning": "TMV_BULLISH_PRESSURE_RISE",
+    },
+    {
+        "path": "factor_cross_section.tmvf.tmvf_24h.tmv_final",
+        "domain": "TMV",
+        "type": "continuous",
+        "role": "DIRECTION_OWNER",
+        "absolute_floor": 0.10,
+        "higher_meaning": "TMV_24H_PRESSURE_RISE",
+    },
+    {
+        "path": "factor_cross_section.tmvf.tmvf_48h.tmv_final",
+        "domain": "TMV",
+        "type": "continuous",
+        "role": "DIRECTION_OWNER",
+        "absolute_floor": 0.10,
+        "higher_meaning": "TMV_48H_PRESSURE_RISE",
+    },
+    {
+        "path": "factor_cross_section.tmvf.window_conflict",
+        "domain": "TMV",
+        "type": "categorical",
+        "role": "DIRECTION_OWNER",
+        "meaning": "TMV_WINDOW_CONFLICT_CHANGE",
+    },
+    {
+        "path": "decision.lean",
+        "domain": "DECISION",
+        "type": "categorical",
+        "role": "DECISION",
+        "meaning": "DIRECTION_CHANGE",
+    },
+    {
+        "path": "decision.support_label",
+        "domain": "DECISION",
+        "type": "categorical",
+        "role": "DECISION",
+        "meaning": "SUPPORT_CHANGE",
+    },
+    {
+        "path": "decision.confidence",
+        "domain": "DECISION",
+        "type": "continuous",
+        "role": "DECISION",
+        "absolute_floor": 10.0,
+        "meaning": "CONFIDENCE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.macro_score",
+        "domain": "MACRO",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.08,
+        "critical_floor": 0.30,
+        "higher_meaning": "MORE_RISK_HEADWIND",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.macro_regime",
+        "domain": "MACRO",
+        "type": "categorical",
+        "role": "CONTEXT",
+        "meaning": "MACRO_REGIME_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.components.VOLQ.scoring_bps",
+        "domain": "MACRO",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 100.0,
+        "higher_meaning": "VOLATILITY_PRESSURE_RISE",
+        "unit": "bps",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.components.DXY.scoring_bps",
+        "domain": "MACRO",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 5.0,
+        "higher_meaning": "DXY_PRESSURE_RISE",
+        "unit": "bps",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.components.US10Y.scoring_bps",
+        "domain": "MACRO",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 5.0,
+        "higher_meaning": "RATE_PRESSURE_RISE",
+        "unit": "bps",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.macro_shock.state",
+        "domain": "MACRO",
+        "type": "categorical",
+        "role": "GATE_ONLY",
+        "meaning": "MACRO_SHOCK_GATE_STATE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.macro_pressure.macro_shock.block",
+        "domain": "MACRO",
+        "type": "categorical",
+        "role": "GATE_ONLY",
+        "meaning": "MACRO_SHOCK_GATE_BLOCK_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.funding.last_rate",
+        "domain": "FUNDING",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.00002,
+        "higher_meaning": "FUNDING_CROWDING_UP",
+    },
+    {
+        "path": "factor_cross_section.funding.funding_state",
+        "domain": "FUNDING",
+        "type": "categorical",
+        "role": "CONTEXT",
+        "meaning": "FUNDING_STATE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.gamma_regime.net_gamma_notional_usd",
+        "domain": "GAMMA",
+        "type": "continuous",
+        "role": "GATE_ONLY",
+        "absolute_floor": 5000000.0,
+        "higher_meaning": "NET_GAMMA_RISE",
+        "unit": "usd_notional",
+    },
+    {
+        "path": "factor_cross_section.gamma_regime.regime",
+        "domain": "GAMMA",
+        "type": "categorical",
+        "role": "GATE_ONLY",
+        "meaning": "GAMMA_REGIME_SHIFT",
+    },
+    {
+        "path": "factor_cross_section.gamma_regime.distance_to_flip_pct",
+        "domain": "GAMMA",
+        "type": "continuous",
+        "role": "GATE_ONLY",
+        "absolute_floor": 0.25,
+        "higher_meaning": "FARTHER_FROM_FLIP",
+        "unit": "pct_points",
+    },
+    {
+        "path": "factor_cross_section.gamma_regime.distance_to_pin_pct",
+        "domain": "GAMMA",
+        "type": "continuous",
+        "role": "GATE_ONLY",
+        "absolute_floor": 0.25,
+        "higher_meaning": "FARTHER_FROM_PIN",
+        "unit": "pct_points",
+    },
+    {
+        "path": "factor_cross_section.gex_info.put_call_ratio",
+        "domain": "P_C_RATIO",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.15,
+        "critical_floor": 0.35,
+        "higher_meaning": "PUT_CALL_RATIO_RISE",
+        "sign_flip_applicable": False,
+    },
+    {
+        "path": "factor_cross_section.skew.vote",
+        "domain": "SKEW",
+        "type": "categorical",
+        "role": "CONTEXT",
+        "meaning": "SKEW_VOTE_CHANGE",
+    },
+    {
+        "path": "factor_cross_section.skew.rr_blend",
+        "domain": "SKEW",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.01,
+        "higher_meaning": "RR_BLEND_RISE",
+    },
+    {
+        "path": "factor_cross_section.skew.rr_25d",
+        "domain": "SKEW",
+        "type": "continuous",
+        "role": "CONTEXT",
+        "absolute_floor": 0.01,
+        "higher_meaning": "CALL_SKEW_RISE",
+    },
+    {
+        "path": "conflict.ratio",
+        "domain": "CONFLICT",
+        "type": "continuous",
+        "role": "QUALITY",
+        "absolute_floor": 0.10,
+        "critical_floor": 0.30,
+        "higher_meaning": "CONFLICT_RATIO_RISE",
+        "sign_flip_applicable": False,
+    },
+    {
+        "path": "conflict.level",
+        "domain": "CONFLICT",
+        "type": "categorical",
+        "role": "QUALITY",
+        "meaning": "CONFLICT_LEVEL_CHANGE",
+    },
+    {
+        "path": "quality.overall",
+        "domain": "QUALITY",
+        "type": "categorical",
+        "role": "QUALITY",
+        "meaning": "DATA_QUALITY_CHANGE",
+    },
+)
+EVIDENCE_KEY_BY_DOMAIN = {
+    "TMV": "TMV",
+    "MACRO": "MACRO",
+    "FUNDING": "FUNDING",
+    "GAMMA": "GGR_SPATIAL",
+    "SKEW": "SRD",
+}
+LEGACY_CONFIDENCE_REMINDER_RE = re.compile(r"(置信度?\s*[0-9]+)\s*未校准")
+SESSION_VALIDATION_BASIS = {
+    "bar_interval": "5m",
+    "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+    "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+    "coverage_ratio": 1.0,
+    "data_range": "2023-04-17 -> 2026-04-16",
+    "headline_horizon_min": 60,
+    "method": "KLINE_PROXY_PREMISE_REWRITE_RATE",
+    "research_grade": "MARKET_PRIOR_VALIDATED",
+    "sample_bars": 315363,
+    "source_document": "结论档案_各时段信号耐久度_2023-2026_v1",
+    "symbol": "BTC_USDT",
+}
+SESSION_PREMISE_CONTEXTS = {
+    "POST_US_DEADZONE": {
+        "clock_window": "04:00-08:00", "start_min": 240, "end_min": 480,
+        "backtest_delta_pp": 0.09, "theory_zone": "LOW", "base_zone": "LOW",
+        "effective_zone": "NEUTRAL_CONSERVATIVE", "display_label": "中性保守",
+        "premise_durability": "NEUTRAL_CONSERVATIVE", "liquidity_depth": "THIN",
+        "catalyst_exposure": "TAIL_SPIKE_RISK",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE", "evidence_level": "NEUTRAL",
+        "axis": "A_THIN_TAIL_RISK",
+        "operator_hint_cn": "保持中性保守；等待长窗/边界覆盖复核。",
+        "rationale_cn": "04:00-08:00 UTC+8 在 60m 口径下仅 +0.09pp，未显示稳定脆性；但薄盘尾部插针属于均值口径难覆盖的尾部风险，本版本保持中性保守，不据此升耐久，也不改写 confidence。",
+    },
+    "ASIA_MORNING": {
+        "clock_window": "08:00-11:30", "start_min": 480, "end_min": 690,
+        "backtest_delta_pp": 0.02, "theory_zone": "MEDIUM", "base_zone": "MEDIUM",
+        "effective_zone": "NEUTRAL", "display_label": "中性",
+        "premise_durability": "NEUTRAL", "liquidity_depth": "MEDIUM",
+        "catalyst_exposure": "NORMAL", "adjustment_direction": "NEUTRAL",
+        "evidence_level": "NEUTRAL", "axis": "REGIONAL_LIQUIDITY",
+        "operator_hint_cn": "保持中性观察；不区分、不乘进 confidence。",
+        "rationale_cn": "08:00-11:30 UTC+8 三年 K 线代理复合重写率仅 +0.02pp，无可落地差异；保持中性提示，不区分、不乘进 confidence。",
+    },
+    "ASIA_AFTERNOON_LULL": {
+        "clock_window": "11:30-15:00", "start_min": 690, "end_min": 900,
+        "backtest_delta_pp": -2.51, "theory_zone": "LOW", "base_zone": "LOW",
+        "effective_zone": "NEUTRAL_CONSERVATIVE", "display_label": "60m耐久但暂不升档",
+        "premise_durability": "NEUTRAL_CONSERVATIVE", "liquidity_depth": "THIN",
+        "catalyst_exposure": "DISTANT_EU_US_COVERAGE",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "CONFIRMED_60M_LOCAL",
+        "axis": "A_THIN_B_DISTANT_COVERAGE",
+        "operator_hint_cn": "60m 局部耐久但不放松跨时段覆盖防护。",
+        "rationale_cn": "11:30-15:00 UTC+8 在 60m 局部口径下更耐久（-2.51pp，92%一致），但该结论捕捉的是薄盘安静，不覆盖数小时后欧美主导流动性重写；本版本保持理论保守，等待 120/240m 长窗或边界覆盖复核后再决定，切勿据 60m 结果放松防护或改写 confidence。",
+    },
+    "LONDON_EARLY": {
+        "clock_window": "15:00-18:00", "start_min": 900, "end_min": 1080,
+        "backtest_delta_pp": -1.37, "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM", "effective_zone": "NEUTRAL",
+        "display_label": "中性/观察", "premise_durability": "NEUTRAL",
+        "liquidity_depth": "MODERATE", "catalyst_exposure": "PRE_US_AHEAD",
+        "adjustment_direction": "NEUTRAL", "evidence_level": "TENTATIVE",
+        "axis": "EU_LIQUIDITY_US_AHEAD",
+        "operator_hint_cn": "偏耐久但未确认，保持中性观察。",
+        "rationale_cn": "15:00-18:00 UTC+8 欧洲早盘补流动性，60m 代理显示 -1.37pp 偏耐久但不稳；维持中性观察，不据此改写 confidence。",
+    },
+    "PRE_US_TRAPDOOR": {
+        "clock_window": "18:00-21:30", "start_min": 1080, "end_min": 1290,
+        "backtest_delta_pp": 5.31, "theory_zone": "LOW", "base_zone": "LOW",
+        "effective_zone": "LOWER_DURABILITY_CONFIRMED",
+        "display_label": "降耐久/要求确认",
+        "premise_durability": "LOWER_DURABILITY_CONFIRMED",
+        "liquidity_depth": "PRE_US_TRANSITION",
+        "catalyst_exposure": "NEAR_US_DATA_AND_OPEN",
+        "adjustment_direction": "DECREASE", "evidence_level": "CONFIRMED",
+        "axis": "B_NEAR_US_DATA_AND_OPEN",
+        "operator_hint_cn": "弱信号应等美盘开后再确认。",
+        "rationale_cn": "18:00-21:30 UTC+8 是美盘前数据/开盘活板门；三年 BTC 5m K 线代理显示复合重写率 +5.31pp、12/12 季度一致，是唯一强确认的脆性窗口。弱信号应等美盘开后再确认；本层只降低前提耐久度提示，不改写 confidence。",
+    },
+    "US_OPEN_TURBULENCE": {
+        "clock_window": "21:30-23:00", "start_min": 1290, "end_min": 1380,
+        "backtest_delta_pp": 1.49, "theory_zone": "MEDIUM",
+        "base_zone": "MEDIUM", "effective_zone": "NEUTRAL_CONSERVATIVE",
+        "display_label": "开盘湍流/暂不升档",
+        "premise_durability": "NEUTRAL_CONSERVATIVE",
+        "liquidity_depth": "DEEP_BUT_TURBULENT",
+        "catalyst_exposure": "US_OPEN_REPRICING",
+        "adjustment_direction": "NEUTRAL_CONSERVATIVE",
+        "evidence_level": "TENTATIVE", "axis": "B_US_OPEN_TURBULENCE",
+        "operator_hint_cn": "开盘再定价阶段，避免过早升 HIGH。",
+        "rationale_cn": "21:30-23:00 UTC+8 为纽约开盘湍流阶段，60m 代理显示 +1.49pp 偏脆但不稳；本版本保持中性保守，避免过早升高前提耐久度，不改写 confidence。",
+    },
+    "US_DEEP_POST_CATALYST": {
+        "clock_window": "23:00-04:00", "start_min": 1380, "end_min": 1440,
+        "backtest_delta_pp": -1.49, "theory_zone": "HIGH", "base_zone": "HIGH",
+        "effective_zone": "RAISE_DURABILITY_TENTATIVE",
+        "display_label": "升耐久（中等信心）",
+        "premise_durability": "RAISE_DURABILITY_TENTATIVE",
+        "liquidity_depth": "DEEP", "catalyst_exposure": "POST_CATALYST",
+        "adjustment_direction": "INCREASE", "evidence_level": "TENTATIVE",
+        "axis": "A_DEEP_LIQUIDITY_AND_POST_CATALYST",
+        "operator_hint_cn": "可中等提高前提耐久度，但仍保持审计提示口径。",
+        "rationale_cn": "23:00-04:00 UTC+8 属美盘深流动性/催化剂已消化窗口；三年 K 线代理显示复合重写率 -1.49pp，方向与理论一致但仍属暂定，因此只作为中等幅度提高前提耐久度的人工提示，不改写 confidence。",
+    },
+}
 
 
 def materialize(source, output, max_cards=200, llm_reviews=None,
-                include_synthetic=False):
+                include_synthetic=False, transition_ledger=None,
+                transition_state=None, transition_reviews=None):
     source = Path(source)
     output = Path(output)
     cards_dir = output / "signal_cards"
@@ -38,6 +537,8 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
     records, skipped = _read_jsonl(source, max_records=tail_limit)
     records = _dedupe_by_card_id(records)
     review_map = _read_llm_reviews(llm_reviews, max_records=tail_limit)
+    transition_review_map = _read_transition_reviews(transition_reviews,
+                                                     max_records=tail_limit)
     merged_review_count = 0
     if review_map:
         for record in records:
@@ -57,10 +558,21 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
     if max_cards and max_cards > 0:
         records = records[:max_cards]
 
+    for record in records:
+        _backfill_session_context(record)
+        _enrich_auxiliary_evidence(record)
+        _sanitize_legacy_display_text(record)
+
+    transitions = _build_transition_records(records, transition_review_map)
+    if transition_ledger:
+        _write_jsonl(transition_ledger, transitions)
+    if transition_state:
+        _write_transition_state(transition_state, transitions)
+    _write_trajectory_files(output, records, transitions)
+
     manifest_cards = []
     expected_card_files = set()
     for record in records:
-        _enrich_auxiliary_evidence(record)
         identity = _identity(record)
         card_id = identity.get("card_id") or record.get("card_id")
         filename = _filename_for_card(card_id)
@@ -94,6 +606,9 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
         "merged_review_count": merged_review_count,
         "filtered_synthetic_count": 0 if include_synthetic else synthetic_count,
         "include_synthetic": bool(include_synthetic),
+        "transition_records": len(transitions),
+        "transition_ledger": str(transition_ledger) if transition_ledger else "",
+        "transition_reviews": str(transition_reviews) if transition_reviews else "",
     }
 
 
@@ -154,6 +669,1273 @@ def _read_llm_reviews(path, max_records=None):
     return reviews
 
 
+def _read_transition_reviews(path, max_records=None):
+    if not path:
+        return {}
+    path = Path(path)
+    if not path.exists():
+        return {}
+    reviews = {}
+    records, _skipped = _read_jsonl(path, max_records=max_records,
+                                    require_identity=False)
+    for value in records:
+        transition_id = value.get("transition_id")
+        review = value.get("transition_llm_review")
+        if transition_id and isinstance(review, dict):
+            reviews[transition_id] = review
+    return reviews
+
+
+def _build_transition_records(records, review_map=None):
+    review_map = review_map or {}
+    by_symbol_previous = {}
+    by_symbol_history = {}
+    transitions = []
+    previous_transition_hash = None
+    for current in sorted(records, key=_sort_key):
+        identity = _identity(current)
+        symbol = str(identity.get("symbol") or current.get("symbol") or "UNKNOWN")
+        history = by_symbol_history.setdefault(symbol, [])
+        previous = by_symbol_previous.get(symbol)
+        if previous:
+            transition = _transition_record(
+                previous,
+                current,
+                history + [current],
+                previous_transition_hash,
+            )
+            previous_transition_hash = transition.get("record_hash")
+            review = review_map.get(transition.get("transition_id"))
+            current["transition_context"] = _transition_context_for_card(transition)
+            if isinstance(review, dict):
+                current["transition_llm_review"] = review
+            transitions.append(transition)
+        history.append(current)
+        if len(history) > 64:
+            del history[:-64]
+        by_symbol_previous[symbol] = current
+    return transitions
+
+
+def _transition_record(previous, current, history, previous_transition_hash):
+    prev_identity = _identity(previous)
+    curr_identity = _identity(current)
+    symbol = curr_identity.get("symbol") or current.get("symbol") or prev_identity.get("symbol")
+    previous_card_id = prev_identity.get("card_id") or previous.get("card_id")
+    current_card_id = curr_identity.get("card_id") or current.get("card_id")
+    previous_ts_ms = _event_time_ms(previous)
+    current_ts_ms = _event_time_ms(current)
+    previous_anchor = _producer_anchor(previous)
+    current_anchor = _producer_anchor(current)
+    compat_anchor = (
+        previous_anchor.get("compat_backfill_applied")
+        or current_anchor.get("compat_backfill_applied")
+    )
+    elapsed_ms = None
+    if previous_ts_ms and current_ts_ms:
+        elapsed_ms = int(current_ts_ms - previous_ts_ms)
+    comparison_quality = _comparison_quality(elapsed_ms)
+    changes = _transition_changes(previous, current, elapsed_ms)
+    top_changes = _top_material_changes(changes)
+    core_skeleton = _core_skeleton(previous, current, elapsed_ms,
+                                   comparison_quality)
+    domain_summaries = _domain_change_summaries(changes)
+    core_transition_display = _core_transition_display(
+        core_skeleton, domain_summaries, top_changes)
+    raw_change_groups = _raw_change_groups(changes)
+    flags = _transition_flags(previous, current, top_changes)
+    materiality_score = _materiality_score(top_changes, flags)
+    transition_id = _transition_id(
+        symbol, previous_card_id, current_card_id,
+        _producer_record_hash(previous), _producer_record_hash(current))
+    record = {
+        "schema_name": "SignalTransitionRecord",
+        "schema_version": TRANSITION_SCHEMA_VERSION,
+        "computation_version": TRANSITION_COMPUTATION_VERSION,
+        "field_registry_version": TRANSITION_FIELD_REGISTRY_VERSION,
+        "audit_scope": "AUDIT_ONLY",
+        "transition_id": transition_id,
+        "symbol": symbol,
+        "previous_card_id": previous_card_id,
+        "current_card_id": current_card_id,
+        "previous_ts_ms": previous_ts_ms,
+        "current_ts_ms": current_ts_ms,
+        "elapsed_ms": elapsed_ms,
+        "comparison_quality": comparison_quality,
+        "producer_anchor": {
+            "previous": previous_anchor,
+            "current": current_anchor,
+        },
+        "compat_backfill_applied": bool(compat_anchor),
+        "compat_backfill_source": (
+            "materializer_transition_producer_anchor_compat_v1"
+            if compat_anchor else None
+        ),
+        "compat_source_fields": _compat_source_fields(
+            previous_anchor, current_anchor),
+        "producer_record_hashes": {
+            "previous": _producer_record_hash(previous),
+            "current": _producer_record_hash(current),
+        },
+        "relation": {
+            "immediate_predecessor": True,
+            "same_episode": _episode_id(previous) == _episode_id(current),
+            "comparison_quality": comparison_quality,
+            "comparison_limitations": _comparison_limitations(
+                previous, current, elapsed_ms, comparison_quality),
+        },
+        "decision_transition": _decision_transition(previous, current),
+        "core_skeleton": core_skeleton,
+        "core_transition_display": core_transition_display,
+        "domain_change_summaries": domain_summaries,
+        "raw_change_groups": raw_change_groups,
+        "top_material_changes": top_changes,
+        "recent_5_trajectory": _recent_trajectory(history, limit=5),
+        "baseline_24h": _baseline_24h(history, current_ts_ms),
+        "episode_anchor": _episode_anchor(history, current),
+        "trajectory": _trajectory_summary(history),
+        "domain_states": _domain_states(top_changes),
+        "cross_domain_flags": flags,
+        "materiality_score": materiality_score,
+        "llm_review_required": bool(flags and materiality_score >= 25.0),
+        "hash_chain": {
+            "algorithm": "sha256",
+            "canonicalization": "json_sort_keys_compact",
+            "previous_transition_hash": previous_transition_hash,
+            "basis": [
+                "producer_integrity.record_hash.previous",
+                "producer_integrity.record_hash.current",
+                "transition_canonical_json",
+            ],
+        },
+    }
+    record["record_hash"] = _transition_hash(record, previous_transition_hash)
+    return record
+
+
+def _transition_context_for_card(transition):
+    context = dict(transition)
+    return context
+
+
+def _transition_id(symbol, previous_card_id, current_card_id,
+                   previous_record_hash, current_record_hash):
+    seed = {
+        "symbol": symbol,
+        "previous_card_id": previous_card_id,
+        "current_card_id": current_card_id,
+        "previous_record_hash": previous_record_hash,
+        "current_record_hash": current_record_hash,
+        "field_registry_version": TRANSITION_FIELD_REGISTRY_VERSION,
+    }
+    return "tr-" + _sha256_json(seed)[7:23]
+
+
+def _transition_hash(record, previous_transition_hash):
+    payload = dict(record)
+    payload.pop("record_hash", None)
+    seed = {
+        "previous_transition_hash": previous_transition_hash,
+        "transition": payload,
+    }
+    return _sha256_json(seed)
+
+
+def _sha256_json(value):
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _transition_changes(previous, current, elapsed_ms):
+    changes = []
+    for entry in TRANSITION_FIELD_REGISTRY:
+        before = _field_snapshot(previous, entry)
+        after = _field_snapshot(current, entry)
+        change = _compare_transition_field(entry, before, after, elapsed_ms)
+        if change:
+            changes.append(change)
+    return changes
+
+
+def _core_skeleton(previous, current, elapsed_ms, comparison_quality):
+    prev_identity = _identity(previous)
+    curr_identity = _identity(current)
+    return {
+        "schema_version": "transition_core_skeleton@1.0.0",
+        "timeline": {
+            "previous_card_id": prev_identity.get("card_id") or previous.get("card_id"),
+            "current_card_id": curr_identity.get("card_id") or current.get("card_id"),
+            "previous_short_id": prev_identity.get("short_id"),
+            "current_short_id": curr_identity.get("short_id"),
+            "previous_ts_ms": _event_time_ms(previous),
+            "current_ts_ms": _event_time_ms(current),
+            "elapsed_ms": elapsed_ms,
+            "comparison_quality": comparison_quality,
+        },
+        "domains": [
+            _skeleton_domain(previous, current, spec)
+            for spec in TRANSITION_SKELETON_SPECS
+        ],
+    }
+
+
+def _skeleton_domain(previous, current, spec):
+    domain = spec.get("domain")
+    source_ref = spec.get("source_ref")
+    return {
+        "domain": domain,
+        "previous": _skeleton_values(previous, domain, spec.get("fields") or ()),
+        "current": _skeleton_values(current, domain, spec.get("fields") or ()),
+        "source_refs": _unique_values([
+            source_ref,
+            _source_ref_for_domain(previous, domain, source_ref),
+            _source_ref_for_domain(current, domain, source_ref),
+        ]),
+    }
+
+
+def _skeleton_values(record, domain, fields):
+    values = {}
+    for name, paths in fields:
+        values[name] = _first_transition_value(record, domain, paths)
+    return values
+
+
+def _core_transition_display(core_skeleton, domain_summaries, top_changes):
+    skeleton_by_domain = {
+        str(item.get("domain") or "").upper(): item
+        for item in _list(_dict(core_skeleton).get("domains"))
+        if isinstance(item, dict)
+    }
+    summary_by_domain = {
+        str(item.get("domain") or "").upper(): item
+        for item in _list(domain_summaries)
+        if isinstance(item, dict)
+    }
+    change_by_domain = {}
+    for item in _list(top_changes):
+        if isinstance(item, dict):
+            change_by_domain.setdefault(str(item.get("domain") or "").upper(), item)
+    rows = []
+    for domain in TRANSITION_DOMAIN_ORDER:
+        skeleton = _dict(skeleton_by_domain.get(domain))
+        if not skeleton:
+            continue
+        previous = _dict(skeleton.get("previous"))
+        current = _dict(skeleton.get("current"))
+        value_key = _display_value_key(domain, previous, current)
+        prev_value = previous.get(value_key) if value_key else None
+        curr_value = current.get(value_key) if value_key else None
+        if value_key is None:
+            value_key = "state"
+        summary = _dict(summary_by_domain.get(domain))
+        change = _dict(change_by_domain.get(domain))
+        grade = _grade_cn(summary.get("materiality") or change.get("materiality"))
+        source_note = _display_source_note(domain, value_key, prev_value, curr_value)
+        rows.append({
+            "domain": domain,
+            "title_cn": _display_title_cn(domain),
+            "value_key": _display_public_value_key(domain, value_key, prev_value, curr_value),
+            "previous_display": _display_value_text(domain, value_key, prev_value),
+            "current_display": _display_value_text(domain, value_key, curr_value),
+            "delta_display": _display_delta_text(domain, value_key, prev_value, curr_value),
+            "meaning_cn": _display_meaning_cn(domain, value_key, prev_value, curr_value),
+            "grade_cn": grade,
+            "source_note": source_note,
+        })
+    return rows
+
+
+def _display_value_key(domain, previous, current):
+    preferences = {
+        "TMV": ("tmv_blend", "tmvf_24h_final", "tmvf_48h_final", "direction"),
+        "MACRO": ("macro_score", "macro_shock_state", "macro_regime"),
+        "FUNDING": ("last_rate", "last_funding_rate", "funding_state",
+                    "funding_norm", "effect"),
+        "SKEW": ("rr_25d", "rr_blend", "skew_norm_blend", "vote"),
+        "GAMMA": ("net_gamma_notional_usd", "distance_to_flip_pct",
+                  "distance_to_pin_pct", "regime"),
+        "P_C_RATIO": ("put_call_ratio",),
+        "CONFLICT": ("ratio", "level"),
+        "DECISION": ("confidence", "lean", "support_label", "decision_state"),
+        "QUALITY": ("overall", "missing_field_count"),
+    }.get(domain, ())
+    for key in preferences:
+        if previous.get(key) not in (None, "") or current.get(key) not in (None, ""):
+            return key
+    keys = list(previous.keys()) + [key for key in current if key not in previous]
+    for key in keys:
+        if previous.get(key) not in (None, "") or current.get(key) not in (None, ""):
+            return key
+    return None
+
+
+def _display_public_value_key(domain, key, previous, current):
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        values = [_number(previous), _number(current)]
+        numeric = [value for value in values if value is not None]
+        if numeric and max(abs(value) for value in numeric) < 1000:
+            return "net_gamma_metric"
+    return key
+
+
+def _display_title_cn(domain):
+    return {
+        "TMV": "TMV（量价路径）",
+        "MACRO": "宏观（利率/美元/波动率）",
+        "FUNDING": "Funding（期货资金费率）",
+        "SKEW": "期权偏斜（Skew）",
+        "GAMMA": "Gamma（净 Gamma）",
+        "P_C_RATIO": "P/C（期权需求）",
+        "CONFLICT": "冲突（信号分歧）",
+        "DECISION": "决策（状态/置信）",
+        "QUALITY": "数据质量（完整性）",
+    }.get(domain, domain or "其他")
+
+
+def _grade_cn(materiality):
+    return {
+        "CRITICAL": "关键",
+        "HIGH": "高",
+        "MEDIUM": "中",
+        "LOW": "低",
+        "VERY_LOW": "很低",
+        "NONE": "无",
+        "UNKNOWN": "未定",
+        None: "未定",
+    }.get(materiality, str(materiality))
+
+
+def _display_value_text(domain, key, value):
+    if value in (None, ""):
+        return "缺失"
+    numeric = _number(value)
+    if numeric is None:
+        return _enum_cn(value)
+    if domain == "FUNDING" and key in {"last_rate", "last_funding_rate"}:
+        return _trim_number(numeric * 100.0, 6) + "%"
+    if domain == "CONFLICT" and key == "ratio":
+        return _trim_number(numeric * 100.0, 1) + "%"
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        if abs(numeric) < 1000:
+            return _trim_number(numeric, 4)
+        return _usd_notional_text(numeric)
+    if key in {"distance_to_flip_pct", "distance_to_pin_pct"}:
+        return _trim_number(numeric, 2) + "%"
+    return _trim_number(numeric, 4)
+
+
+def _display_delta_text(domain, key, previous, current):
+    prev_num = _number(previous)
+    curr_num = _number(current)
+    if prev_num is None or curr_num is None:
+        return "缺失"
+    return _display_value_text(domain, key, curr_num - prev_num)
+
+
+def _display_source_note(domain, key, previous, current):
+    if domain == "FUNDING" and key in {"last_rate", "last_funding_rate"}:
+        return "原始 last_rate"
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        values = [_number(previous), _number(current)]
+        numeric = [value for value in values if value is not None]
+        if numeric and max(abs(value) for value in numeric) < 1000:
+            return "旧卡兼容推导：按 Gamma 指标显示，不伪装为 USD 名义额"
+        return "净 Gamma USD 名义额"
+    if domain == "P_C_RATIO":
+        return "GEX put_call_ratio"
+    return "materializer display-only"
+
+
+def _display_meaning_cn(domain, key, previous, current):
+    prev_num = _number(previous)
+    curr_num = _number(current)
+    rising = prev_num is not None and curr_num is not None and curr_num > prev_num
+    falling = prev_num is not None and curr_num is not None and curr_num < prev_num
+    if domain == "TMV":
+        if prev_num is not None and curr_num is not None and prev_num >= 0 > curr_num:
+            return "量价路径由正转负，方向骨架转弱。"
+        return "量价路径转弱。" if falling else "量价路径改善或维持。"
+    if domain == "MACRO":
+        return "宏观逆风压力上升，更多是风险背景约束。" if rising else "宏观逆风压力回落或维持。"
+    if domain == "FUNDING":
+        if prev_num is not None and curr_num is not None and prev_num > 0 > curr_num:
+            return "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力消失，方向意义偏弱。"
+        if prev_num is not None and curr_num is not None and prev_num < 0 < curr_num:
+            return "资金费率由负转正，提示永续端多头付费重新出现，需结合 TMV 与宏观判断。"
+        return "资金费率上行，提示拥挤升温。" if rising else "资金费率回落，提示拥挤缓和。"
+    if domain == "SKEW":
+        return "期权偏斜压力加深，保护需求或下行尾部定价更重。" if falling else "期权偏斜压力缓和。"
+    if domain == "GAMMA":
+        values = [value for value in (prev_num, curr_num) if value is not None]
+        compat = bool(values and max(abs(value) for value in values) < 1000)
+        prefix = "旧卡兼容推导的 Gamma 指标" if compat else "净 Gamma 名义敞口"
+        return prefix + ("走弱，空间约束略加深。" if falling else "回升或维持，空间约束未继续加深。")
+    if domain == "P_C_RATIO":
+        if rising:
+            return "期权保护需求上升，说明防护/看跌需求更重；这不是方向交易结论。"
+        return "期权保护需求从高位略回落，但仍需结合绝对水平判断，不构成方向反转。"
+    if domain == "CONFLICT":
+        return "信号分歧升高，说明多维证据一致性下降。" if rising else "信号分歧缓和。"
+    if domain == "DECISION":
+        return "决策置信下降，说明审计证据收缩，不代表胜率变化。" if falling else "决策状态维持或改善。"
+    if domain == "QUALITY":
+        return "数据质量状态，用于解释审计可读性和比较可信度。"
+    return "关键状态变化。"
+
+
+def _trim_number(value, digits):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number) < 0.5 * (10 ** -digits):
+        number = 0.0
+    text = ("{0:." + str(digits) + "f}").format(number)
+    return text.rstrip("0").rstrip(".") or "0"
+
+
+def _usd_notional_text(value):
+    sign = "-" if value < 0 else ""
+    amount = abs(float(value))
+    if amount >= 1_000_000_000:
+        return sign + "$" + _trim_number(amount / 1_000_000_000, 2) + "B"
+    if amount >= 1_000_000:
+        return sign + "$" + _trim_number(amount / 1_000_000, 2) + "M"
+    if amount >= 1_000:
+        return sign + "$" + _trim_number(amount / 1_000, 2) + "K"
+    return sign + "$" + _trim_number(amount, 2)
+
+
+def _enum_cn(value):
+    text = str(value)
+    return {
+        "NEUTRAL": "中性",
+        "BULLISH": "偏多",
+        "BEARISH": "偏空",
+        "BULLISH_STRONG": "强偏多",
+        "BEARISH_STRONG": "强偏空",
+        "NO_TRADE_BLOCKED": "无交易/阻断",
+        "WAIT_CONFIRMATION": "等待确认",
+        "TRADE_SUPPORT_STRONG": "强交易支持",
+        "TRADE_SUPPORT_WEAK": "弱交易支持",
+        "BLOCK": "阻断",
+        "WATCH": "观察",
+        "CLEAR": "清除",
+        "Mild Headwind": "轻度逆风",
+        "Headwind": "逆风",
+        "TRANSITION": "过渡区",
+        "POSITIVE_GAMMA_PINNING": "正 Gamma 钉住",
+        "NEGATIVE_GAMMA": "负 Gamma",
+        "OK": "正常",
+        "MATERIAL": "实质分歧",
+        "LOW": "低",
+    }.get(text, text)
+
+
+def _first_transition_value(record, domain, paths):
+    for path in paths:
+        value = _get_path(record, path)
+        if value not in (None, ""):
+            return value
+    row = _evidence_row(record, domain)
+    for source_name in ("raw_values", "detail"):
+        source = row.get(source_name) if isinstance(row, dict) else None
+        for path in paths:
+            value = _raw_value_for_path(source, path)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _source_ref_for_domain(record, domain, default_ref):
+    row = _evidence_row(record, domain)
+    if isinstance(row, dict) and row.get("source_ref"):
+        return row.get("source_ref")
+    if default_ref:
+        value = _get_path(record, default_ref + ".source_ref")
+        if value:
+            return value
+    return default_ref
+
+
+def _field_snapshot(record, entry):
+    value, source = _field_value(record, entry)
+    row = _evidence_row(record, entry.get("domain"))
+    return {
+        "value": value,
+        "source": source,
+        "role": _evidence_role(row, entry),
+        "source_ref": (
+            row.get("source_ref") if isinstance(row, dict) and row.get("source_ref")
+            else _source_ref_for_path(record, entry.get("path"))
+        ),
+    }
+
+
+def _source_ref_for_path(record, dotted_path):
+    parts = str(dotted_path or "").split(".")
+    for length in range(len(parts) - 1, 0, -1):
+        parent = ".".join(parts[:length])
+        value = _get_path(record, parent + ".source_ref")
+        if value:
+            return value
+    if parts:
+        return ".".join(parts[:-1]) if len(parts) > 1 else parts[0]
+    return None
+
+
+def _field_value(record, entry):
+    value = _get_path(record, entry.get("path"))
+    if value not in (None, ""):
+        return value, "canonical"
+    row = _evidence_row(record, entry.get("domain"))
+    if row:
+        raw_values = row.get("raw_values")
+        value = _raw_value_for_path(raw_values, entry.get("path"))
+        if value not in (None, ""):
+            return value, "reasoning.evidence.raw_values"
+        detail = row.get("detail")
+        value = _raw_value_for_path(detail, entry.get("path"))
+        if value not in (None, ""):
+            return value, "reasoning.evidence.detail"
+    return None, "missing"
+
+
+def _get_path(value, dotted_path):
+    if not dotted_path:
+        return None
+    current = value
+    for part in str(dotted_path).split("."):
+        if isinstance(current, dict):
+            if part not in current:
+                return None
+            current = current.get(part)
+            continue
+        if isinstance(current, list):
+            current = _select_keyed_item(current, part)
+            if current is None:
+                return None
+            continue
+        return None
+    return current
+
+
+def _select_keyed_item(items, key):
+    wanted = str(key).upper()
+    for item in items:
+        if isinstance(item, dict) and str(item.get("key") or "").upper() == wanted:
+            return item
+    return None
+
+
+def _raw_value_for_path(values, dotted_path):
+    values = _dict(values)
+    if not values:
+        return None
+    compact = _compact_raw_key(dotted_path)
+    if compact in values:
+        return values.get(compact)
+    leaf = str(dotted_path or "").split(".")[-1]
+    if leaf in values:
+        return values.get(leaf)
+    parts = str(dotted_path or "").split(".")
+    if len(parts) >= 3 and parts[-2].isupper():
+        component = _select_keyed_item(values.get("components") or [], parts[-2])
+        if isinstance(component, dict):
+            return component.get(leaf)
+    if "component_scores" in values and len(parts) >= 3 and parts[-2].isupper():
+        component_scores = _dict(values.get("component_scores"))
+        component = _dict(component_scores.get(parts[-2]))
+        if leaf in component:
+            return component.get(leaf)
+    return None
+
+
+def _compact_raw_key(dotted_path):
+    parts = str(dotted_path or "").split(".")
+    if len(parts) >= 2:
+        return "_".join(parts[-2:])
+    return parts[0] if parts else ""
+
+
+def _evidence_row(record, domain):
+    key = EVIDENCE_KEY_BY_DOMAIN.get(str(domain or "").upper())
+    if not key:
+        return {}
+    rows = _dict(record.get("reasoning")).get("evidence")
+    if not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("key") or "").upper() == key:
+            return row
+    return {}
+
+
+def _evidence_role(row, entry):
+    if isinstance(row, dict):
+        status = str(row.get("participation_status") or "").upper()
+        if status:
+            return status
+    return entry.get("role")
+
+
+def _compare_transition_field(entry, before, after, elapsed_ms):
+    previous_value = before.get("value")
+    current_value = after.get("value")
+    if previous_value in (None, "") and current_value in (None, ""):
+        return None
+    if entry.get("type") == "continuous":
+        return _compare_continuous(entry, before, after, elapsed_ms)
+    return _compare_categorical(entry, before, after, elapsed_ms)
+
+
+def _compare_continuous(entry, before, after, elapsed_ms):
+    prev_num = _number(before.get("value"))
+    curr_num = _number(after.get("value"))
+    changed = prev_num is not None and curr_num is not None and prev_num != curr_num
+    missing_changed = (prev_num is None) != (curr_num is None)
+    if not changed and not missing_changed:
+        return None
+    delta_abs = None
+    delta_relative = None
+    sign_before = _sign_label(prev_num)
+    sign_after = _sign_label(curr_num)
+    sign_flip = False
+    if prev_num is not None and curr_num is not None:
+        delta_abs = round(curr_num - prev_num, 10)
+        if abs(prev_num) > 1e-12:
+            delta_relative = round((curr_num - prev_num) / abs(prev_num), 10)
+        sign_flip = bool(
+            entry.get("sign_flip_applicable", True)
+            and prev_num * curr_num < 0
+        )
+    materiality = _continuous_materiality(entry, prev_num, curr_num, delta_abs,
+                                          sign_flip, missing_changed)
+    if materiality == "NONE":
+        return None
+    return {
+        "domain": entry.get("domain"),
+        "field": entry.get("path"),
+        "previous": before.get("value"),
+        "current": after.get("value"),
+        "delta_abs": delta_abs,
+        "delta_relative": delta_relative,
+        "sign_before": sign_before,
+        "sign_after": sign_after,
+        "sign_flip": sign_flip,
+        "elapsed_ms": elapsed_ms,
+        "role_before": before.get("role"),
+        "role_after": after.get("role"),
+        "materiality": materiality,
+        "meaning": _continuous_meaning(entry, delta_abs, sign_flip),
+        "source_priority": [before.get("source"), after.get("source")],
+        "source_ref": after.get("source_ref") or before.get("source_ref"),
+    }
+
+
+def _compare_categorical(entry, before, after, elapsed_ms):
+    previous_value = before.get("value")
+    current_value = after.get("value")
+    if str(previous_value) == str(current_value):
+        return None
+    materiality = "HIGH" if previous_value not in (None, "") and current_value not in (None, "") else "MEDIUM"
+    return {
+        "domain": entry.get("domain"),
+        "field": entry.get("path"),
+        "previous": previous_value,
+        "current": current_value,
+        "delta_abs": None,
+        "delta_relative": None,
+        "sign_before": None,
+        "sign_after": None,
+        "sign_flip": False,
+        "elapsed_ms": elapsed_ms,
+        "role_before": before.get("role"),
+        "role_after": after.get("role"),
+        "materiality": materiality,
+        "meaning": entry.get("meaning") or "CATEGORY_CHANGE",
+        "source_priority": [before.get("source"), after.get("source")],
+        "source_ref": after.get("source_ref") or before.get("source_ref"),
+    }
+
+
+def _continuous_materiality(entry, prev_num, curr_num, delta_abs, sign_flip,
+                            missing_changed):
+    if missing_changed:
+        return "MEDIUM"
+    if delta_abs is None:
+        return "NONE"
+    abs_delta = abs(delta_abs)
+    floor = float(entry.get("absolute_floor") or 0.0)
+    critical = float(entry.get("critical_floor") or max(floor * 3.0, floor))
+    if critical and abs_delta >= critical:
+        return "CRITICAL"
+    if sign_flip and floor and abs_delta >= floor:
+        return "HIGH"
+    if floor and abs_delta >= floor:
+        return "HIGH"
+    if abs_delta > 0:
+        return "LOW"
+    return "NONE"
+
+
+def _continuous_meaning(entry, delta_abs, sign_flip):
+    if sign_flip:
+        return "RISK_HEADWIND_SIGN_FLIP"
+    if delta_abs is None:
+        return "VALUE_AVAILABILITY_CHANGE"
+    if delta_abs > 0 and entry.get("higher_meaning"):
+        return entry.get("higher_meaning")
+    if delta_abs < 0 and entry.get("higher_meaning"):
+        return "LOWER_" + str(entry.get("higher_meaning"))
+    return entry.get("meaning") or "VALUE_CHANGE"
+
+
+def _sign_label(value):
+    value = _number(value)
+    if value is None:
+        return None
+    if value > 0:
+        return "POSITIVE"
+    if value < 0:
+        return "NEGATIVE"
+    return "ZERO"
+
+
+def _top_material_changes(changes, limit=8):
+    material = [change for change in changes
+                if MATERIALITY_RANK.get(change.get("materiality"), 0) > 0]
+    return sorted(
+        material,
+        key=lambda item: (
+            -MATERIALITY_RANK.get(item.get("materiality"), 0),
+            0 if item.get("sign_flip") else 1,
+            0 if item.get("delta_abs") is not None else 1,
+            str(item.get("domain") or ""),
+            str(item.get("field") or ""),
+        ),
+    )[:limit]
+
+
+def _domain_change_summaries(changes):
+    summaries = []
+    grouped = _group_changes_by_domain(changes)
+    for domain in TRANSITION_DOMAIN_ORDER:
+        items = grouped.get(domain) or []
+        if not items:
+            continue
+        strongest = _strongest_change(items)
+        summaries.append({
+            "domain": domain,
+            "materiality": strongest.get("materiality") if strongest else "NONE",
+            "meaning": strongest.get("meaning") if strongest else None,
+            "raw_change_count": len(items),
+            "primary_fields": [item.get("field") for item in items[:4]
+                               if item.get("field")],
+            "source_refs": _unique_values(item.get("source_ref") for item in items),
+            "role_transition": _domain_role_transition(items),
+            "previous": _domain_value_summary(items, "previous"),
+            "current": _domain_value_summary(items, "current"),
+            "children": [_raw_change_child(item) for item in items],
+        })
+    for domain, items in sorted(grouped.items()):
+        if domain in TRANSITION_DOMAIN_ORDER or not items:
+            continue
+        strongest = _strongest_change(items)
+        summaries.append({
+            "domain": domain,
+            "materiality": strongest.get("materiality") if strongest else "NONE",
+            "meaning": strongest.get("meaning") if strongest else None,
+            "raw_change_count": len(items),
+            "primary_fields": [item.get("field") for item in items[:4]
+                               if item.get("field")],
+            "source_refs": _unique_values(item.get("source_ref") for item in items),
+            "role_transition": _domain_role_transition(items),
+            "previous": _domain_value_summary(items, "previous"),
+            "current": _domain_value_summary(items, "current"),
+            "children": [_raw_change_child(item) for item in items],
+        })
+    return summaries
+
+
+def _raw_change_groups(changes):
+    grouped = _group_changes_by_domain(changes)
+    groups = []
+    for domain in list(TRANSITION_DOMAIN_ORDER) + sorted(
+            domain for domain in grouped if domain not in TRANSITION_DOMAIN_ORDER):
+        items = grouped.get(domain) or []
+        if not items:
+            continue
+        strongest = _strongest_change(items)
+        groups.append({
+            "domain": domain,
+            "materiality": strongest.get("materiality") if strongest else "NONE",
+            "raw_change_count": len(items),
+            "source_refs": _unique_values(item.get("source_ref") for item in items),
+            "children": [_raw_change_child(item) for item in items],
+        })
+    return groups
+
+
+def _group_changes_by_domain(changes):
+    grouped = {}
+    material = [change for change in changes
+                if MATERIALITY_RANK.get(change.get("materiality"), 0) > 0]
+    for change in sorted(material, key=_change_sort_key):
+        domain = str(change.get("domain") or "OTHER").upper()
+        grouped.setdefault(domain, []).append(change)
+    return grouped
+
+
+def _change_sort_key(item):
+    return (
+        -MATERIALITY_RANK.get(item.get("materiality"), 0),
+        0 if item.get("sign_flip") else 1,
+        0 if item.get("delta_abs") is not None else 1,
+        str(item.get("field") or ""),
+    )
+
+
+def _strongest_change(items):
+    if not items:
+        return None
+    return sorted(items, key=_change_sort_key)[0]
+
+
+def _domain_role_transition(items):
+    before = _unique_values(item.get("role_before") for item in items)
+    after = _unique_values(item.get("role_after") for item in items)
+    return {
+        "before": before[0] if len(before) == 1 else before,
+        "after": after[0] if len(after) == 1 else after,
+    }
+
+
+def _domain_value_summary(items, side):
+    values = {}
+    for item in items[:6]:
+        field = _field_leaf(item.get("field"))
+        if field:
+            values[field] = item.get(side)
+    return values
+
+
+def _raw_change_child(change):
+    return {
+        "domain": change.get("domain"),
+        "field": change.get("field"),
+        "previous": change.get("previous"),
+        "current": change.get("current"),
+        "delta_abs": change.get("delta_abs"),
+        "delta_relative": change.get("delta_relative"),
+        "sign_before": change.get("sign_before"),
+        "sign_after": change.get("sign_after"),
+        "sign_flip": change.get("sign_flip"),
+        "role_before": change.get("role_before"),
+        "role_after": change.get("role_after"),
+        "materiality": change.get("materiality"),
+        "meaning": change.get("meaning"),
+        "source_ref": change.get("source_ref"),
+        "source_priority": change.get("source_priority"),
+    }
+
+
+def _field_leaf(field):
+    parts = str(field or "").split(".")
+    if len(parts) >= 3 and parts[-2].isupper():
+        return parts[-2].lower() + "_" + parts[-1]
+    return parts[-1] if parts else ""
+
+
+def _unique_values(values):
+    result = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _transition_flags(previous, current, top_changes):
+    flags = []
+    decision = _decision_transition(previous, current)
+    if decision.get("block_entered") or (
+            str(decision.get("support_before") or "").startswith("TRADE_SUPPORT")
+            and str(decision.get("support_after") or "").startswith("NO_TRADE")):
+        flags.append("DECISION_SUPPORT_COLLAPSE")
+    domains_high = {
+        change.get("domain")
+        for change in top_changes
+        if MATERIALITY_RANK.get(change.get("materiality"), 0) >= MATERIALITY_RANK["HIGH"]
+    }
+    macro_changes = [
+        change for change in top_changes
+        if change.get("domain") == "MACRO"
+    ]
+    if any(change.get("materiality") == "CRITICAL"
+           or abs(_number(change.get("delta_abs")) or 0.0) >= 0.2
+           for change in macro_changes):
+        flags.append("MACRO_SHOCK")
+    if "FUNDING" in domains_high:
+        flags.append("FUNDING_CROWDING_ESCALATION")
+    if "GAMMA" in domains_high:
+        flags.append("GAMMA_REGIME_SHIFT")
+    if "SKEW" in domains_high:
+        flags.append("SKEW_REVERSAL")
+    non_decision_domains = {domain for domain in domains_high
+                            if domain not in {"DECISION", "QUALITY"}}
+    if len(non_decision_domains) >= 2 or (
+            "DECISION_SUPPORT_COLLAPSE" in flags and "MACRO_SHOCK" in flags):
+        flags.append("MULTI_DOMAIN_RISK_DETERIORATION")
+    return flags
+
+
+def _decision_transition(previous, current):
+    prev_decision = _dict(previous.get("decision"))
+    curr_decision = _dict(current.get("decision"))
+    prev_blocking = _dict(previous.get("blocking"))
+    curr_blocking = _dict(current.get("blocking"))
+    before_block = bool(prev_blocking.get("has_block")
+                        or _dict(previous.get("decision_matrix")).get("decision_state") == "BLOCKED")
+    after_block = bool(curr_blocking.get("has_block")
+                       or _dict(current.get("decision_matrix")).get("decision_state") == "BLOCKED")
+    return {
+        "lean_before": prev_decision.get("lean"),
+        "lean_after": curr_decision.get("lean"),
+        "support_before": prev_decision.get("support_label"),
+        "support_after": curr_decision.get("support_label"),
+        "confidence_before": prev_decision.get("confidence"),
+        "confidence_after": curr_decision.get("confidence"),
+        "block_before": before_block,
+        "block_after": after_block,
+        "block_entered": bool(after_block and not before_block),
+        "blocking_reason_after": _dict(curr_blocking.get("hard_veto")).get("veto_reason")
+        or curr_blocking.get("block_kind"),
+    }
+
+
+def _materiality_score(top_changes, flags):
+    score = 0.0
+    weights = {"LOW": 3.0, "MEDIUM": 8.0, "HIGH": 16.0, "CRITICAL": 28.0}
+    for change in top_changes:
+        score += weights.get(change.get("materiality"), 0.0)
+    score += 7.0 * len(flags)
+    return min(100.0, round(score, 2))
+
+
+def _comparison_quality(elapsed_ms):
+    if elapsed_ms is None or elapsed_ms < 0:
+        return "VERY_LOW"
+    minutes = elapsed_ms / 60000.0
+    if minutes <= 90:
+        return "HIGH"
+    if minutes <= 360:
+        return "MEDIUM"
+    if minutes <= 1440:
+        return "LOW"
+    return "VERY_LOW"
+
+
+def _comparison_limitations(previous, current, elapsed_ms, comparison_quality):
+    limitations = []
+    if comparison_quality in {"LOW", "VERY_LOW"}:
+        limitations.append("SPARSE_EVENT_GAP")
+    if elapsed_ms is not None and elapsed_ms > 6 * 60 * 60 * 1000:
+        limitations.append("EVENT_GAP_OVER_6H")
+    if elapsed_ms is not None and elapsed_ms > 24 * 60 * 60 * 1000:
+        limitations.append("EVENT_GAP_OVER_24H")
+    if _identity(previous).get("strategy_version") != _identity(current).get("strategy_version"):
+        limitations.append("DIFFERENT_STRATEGY_VERSION")
+    if _dict(previous.get("schema")).get("version") != _dict(current.get("schema")).get("version"):
+        limitations.append("DIFFERENT_CARD_SCHEMA_VERSION")
+    return limitations
+
+
+def _recent_trajectory(history, limit=5):
+    rows = []
+    for record in history[-limit:]:
+        identity = _identity(record)
+        decision = _dict(record.get("decision"))
+        skeleton = _recent_skeleton_values(record)
+        rows.append({
+            "card_id": identity.get("card_id") or record.get("card_id"),
+            "confirmed_time_ms": _event_time_ms(record),
+            "episode_id": identity.get("episode_id"),
+            "lean": decision.get("lean"),
+            "support_label": decision.get("support_label"),
+            "macro_score": _number(_get_path(record, "factor_cross_section.macro_pressure.macro_score")),
+            "funding_last_rate": _number(_get_path(record, "factor_cross_section.funding.last_rate")),
+            "gamma_regime": _get_path(record, "factor_cross_section.gamma_regime.regime"),
+            **skeleton,
+        })
+    return rows
+
+
+def _recent_skeleton_values(record):
+    return {
+        "tmv_blend": _number(_first_transition_value(
+            record, "TMV", ("factor_cross_section.tmvf.tmv_blend", "tmv_blend"))),
+        "tmvf_24h_final": _number(_first_transition_value(
+            record, "TMV", (
+                "factor_cross_section.tmvf.tmvf_24h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_24h.final",
+                "tmvf_24h_final",
+            ))),
+        "tmvf_48h_final": _number(_first_transition_value(
+            record, "TMV", (
+                "factor_cross_section.tmvf.tmvf_48h.tmv_final",
+                "factor_cross_section.tmvf.tmvf_48h.final",
+                "tmvf_48h_final",
+            ))),
+        "net_gamma_notional_usd": _number(_first_transition_value(
+            record, "GAMMA", (
+                "factor_cross_section.gamma_regime.net_gamma_notional_usd",
+                "factor_cross_section.gamma_regime.net_gamma_notional",
+            ))),
+        "put_call_ratio": _number(_first_transition_value(
+            record, "P_C_RATIO", (
+                "factor_cross_section.gex_info.put_call_ratio",
+                "factor_cross_section.gex_info.pc_ratio",
+                "factor_cross_section.gex_info.pcr",
+            ))),
+        "conflict_ratio": _number(_get_path(record, "conflict.ratio")),
+        "skew_vote": _first_transition_value(
+            record, "SKEW", ("factor_cross_section.skew.vote", "vote")),
+        "skew_rr_blend": _number(_first_transition_value(
+            record, "SKEW", ("factor_cross_section.skew.rr_blend", "rr_blend"))),
+    }
+
+
+def _baseline_24h(history, current_ts_ms):
+    if not current_ts_ms:
+        return {"available": False, "reason": "NO_CURRENT_EVENT_TIME"}
+    window_start = current_ts_ms - 24 * 60 * 60 * 1000
+    candidates = [record for record in history
+                  if (_event_time_ms(record) or 0) >= window_start
+                  and (_event_time_ms(record) or 0) <= current_ts_ms]
+    if not candidates:
+        return {"available": False, "reason": "NO_CARD_IN_24H_WINDOW"}
+    baseline = candidates[0]
+    identity = _identity(baseline)
+    return {
+        "available": True,
+        "card_id": identity.get("card_id") or baseline.get("card_id"),
+        "elapsed_ms": int(current_ts_ms - (_event_time_ms(baseline) or current_ts_ms)),
+        "event_count": len(candidates),
+    }
+
+
+def _episode_anchor(history, current):
+    current_episode = _episode_id(current)
+    if not current_episode:
+        return {"available": False, "reason": "NO_EPISODE_ID"}
+    for record in history:
+        if _episode_id(record) == current_episode:
+            identity = _identity(record)
+            return {
+                "available": True,
+                "episode_id": current_episode,
+                "card_id": identity.get("card_id") or record.get("card_id"),
+                "elapsed_ms": int((_event_time_ms(current) or 0) - (_event_time_ms(record) or 0)),
+            }
+    return {"available": False, "reason": "NO_SAME_EPISODE_ANCHOR"}
+
+
+def _trajectory_summary(history):
+    recent = _recent_trajectory(history, limit=5)
+    macro_values = [_number(item.get("macro_score")) for item in recent
+                    if _number(item.get("macro_score")) is not None]
+    funding_values = [_number(item.get("funding_last_rate")) for item in recent
+                      if _number(item.get("funding_last_rate")) is not None]
+    gamma_regimes = [item.get("gamma_regime") for item in recent
+                     if item.get("gamma_regime")]
+    return {
+        "recent_event_count": len(recent),
+        "macro_direction": _direction_from_values(macro_values,
+                                                  high_label="DETERIORATING",
+                                                  low_label="EASING"),
+        "funding_direction": _direction_from_values(funding_values,
+                                                    high_label="CROWDING_UP",
+                                                    low_label="CROWDING_DOWN"),
+        "gamma_last_regime": gamma_regimes[-1] if gamma_regimes else None,
+    }
+
+
+def _direction_from_values(values, high_label, low_label):
+    if len(values) < 2:
+        return "INSUFFICIENT_HISTORY"
+    delta = values[-1] - values[0]
+    if delta > 0:
+        return high_label
+    if delta < 0:
+        return low_label
+    return "UNCHANGED"
+
+
+def _domain_states(top_changes):
+    states = {}
+    for domain in ("MACRO", "FUNDING", "GAMMA", "SKEW", "DECISION", "QUALITY"):
+        domain_changes = [change for change in top_changes
+                          if change.get("domain") == domain]
+        if not domain_changes:
+            continue
+        strongest = max(domain_changes,
+                        key=lambda item: MATERIALITY_RANK.get(item.get("materiality"), 0))
+        if domain == "MACRO" and MATERIALITY_RANK.get(strongest.get("materiality"), 0) >= MATERIALITY_RANK["HIGH"]:
+            states[domain] = "SHOCK"
+        elif domain == "FUNDING":
+            states[domain] = "RISING_NON_VOTING" if (strongest.get("role_after") == "NON_VOTING") else "CHANGED"
+        elif domain == "GAMMA":
+            states[domain] = "STRUCTURE_SHIFT"
+        elif domain == "SKEW":
+            states[domain] = "VOTE_SHIFT"
+        elif domain == "DECISION":
+            states[domain] = "SYSTEM_STATE_CHANGED"
+        else:
+            states[domain] = "CHANGED"
+    return states
+
+
+def _event_time_ms(record):
+    identity = _identity(record)
+    for value in (
+            _dict(_dict(record.get("provenance")).get("transition_audit_source")).get("event_time_ms"),
+            identity.get("confirmed_time_ms"),
+            record.get("confirmed_time_ms"),
+            identity.get("confirmed_at"),
+            record.get("created_at")):
+        parsed = _timestamp_sort_value(value)
+        if parsed:
+            return int(parsed)
+    return None
+
+
+def _episode_id(record):
+    return _identity(record).get("episode_id") or record.get("episode_id")
+
+
+def _producer_anchor(record):
+    anchor = _dict(_dict(record.get("provenance")).get("transition_audit_source"))
+    identity = _identity(record)
+    event_time_ms = anchor.get("event_time_ms")
+    source_fields = []
+    if event_time_ms in (None, ""):
+        event_time_ms = identity.get("confirmed_time_ms") or record.get("confirmed_time_ms")
+        source_fields.append("identity.confirmed_time_ms")
+    if event_time_ms in (None, ""):
+        event_time_ms = identity.get("confirmed_at") or record.get("created_at")
+        source_fields.append("identity.confirmed_at")
+    native = (
+        anchor.get("schema_name") == "SignalTransitionProducerAnchor"
+        and anchor.get("schema_version") == "1.0.0"
+        and anchor.get("audit_scope") == "AUDIT_ONLY"
+        and anchor.get("event_time_basis") == "identity.confirmed_time_ms"
+        and anchor.get("transition_computation_owner") == "MATERIALIZER_DERIVED"
+        and anchor.get("event_time_ms") not in (None, "")
+    )
+    return {
+        "native": bool(native),
+        "schema_name": anchor.get("schema_name"),
+        "schema_version": anchor.get("schema_version"),
+        "audit_scope": anchor.get("audit_scope"),
+        "event_time_ms": event_time_ms,
+        "event_time_basis": anchor.get("event_time_basis")
+        or (";".join(source_fields) if source_fields else None),
+        "transition_computation_owner": anchor.get("transition_computation_owner"),
+        "compat_backfill_applied": not native,
+        "compat_backfill_source": None if native else "materializer_transition_producer_anchor_compat_v1",
+        "compat_source_fields": source_fields,
+    }
+
+
+def _compat_source_fields(*anchors):
+    fields = []
+    for anchor in anchors:
+        for field in anchor.get("compat_source_fields") or []:
+            if field not in fields:
+                fields.append(field)
+    return fields
+
+
+def _producer_record_hash(record):
+    return _dict(record.get("integrity")).get("record_hash")
+
+
+def _write_jsonl(path, rows):
+    text = "".join(
+        json.dumps(row, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")) + "\n"
+        for row in rows
+    )
+    _atomic_write_text(path, text)
+
+
+def _write_transition_state(path, transitions):
+    last = transitions[-1] if transitions else {}
+    _write_json(path, {
+        "schema_name": "SignalTransitionState",
+        "schema_version": "signal_transition_state@1.0.0",
+        "computation_version": TRANSITION_COMPUTATION_VERSION,
+        "updated_at": _now_iso(),
+        "transition_count": len(transitions),
+        "last_transition_id": last.get("transition_id"),
+        "last_current_card_id": last.get("current_card_id"),
+        "last_transition_hash": last.get("record_hash"),
+    })
+
+
+def _write_trajectory_files(output, records, transitions):
+    trajectory_dir = Path(output) / "signal_cards" / "trajectory"
+    trajectory_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_public_dir(trajectory_dir)
+    by_symbol_records = {}
+    for record in sorted(records, key=_sort_key):
+        identity = _identity(record)
+        symbol = str(identity.get("symbol") or record.get("symbol") or "UNKNOWN")
+        by_symbol_records.setdefault(symbol, []).append(record)
+    by_symbol_transitions = {}
+    for transition in transitions:
+        by_symbol_transitions.setdefault(
+            str(transition.get("symbol") or "UNKNOWN"), []).append(transition)
+    expected = set()
+    for symbol, symbol_records in by_symbol_records.items():
+        filename = _filename_for_symbol(symbol)
+        expected.add(filename)
+        _write_json(trajectory_dir / filename, {
+            "schema_name": "SignalTrajectory",
+            "schema_version": "signal_trajectory@1.0.0",
+            "audit_scope": "AUDIT_ONLY",
+            "generated_at": _now_iso(),
+            "symbol": symbol,
+            "event_count": len(symbol_records),
+            "events": _recent_trajectory(symbol_records, limit=len(symbol_records)),
+            "recent_transitions": [
+                {
+                    "transition_id": transition.get("transition_id"),
+                    "current_card_id": transition.get("current_card_id"),
+                    "elapsed_ms": transition.get("elapsed_ms"),
+                    "comparison_quality": transition.get("comparison_quality"),
+                    "cross_domain_flags": transition.get("cross_domain_flags"),
+                    "materiality_score": transition.get("materiality_score"),
+                    "record_hash": transition.get("record_hash"),
+                }
+                for transition in by_symbol_transitions.get(symbol, [])[-5:]
+            ],
+        })
+    for path in trajectory_dir.glob("*.json"):
+        if path.name not in expected:
+            path.unlink()
+
+
+def _filename_for_symbol(symbol):
+    safe = re.sub(r"[^A-Za-z0-9_.+@=-]+", "_", str(symbol or "").strip())
+    safe = safe.strip("._")
+    return (safe or "UNKNOWN") + ".json"
+
+
 def _review_status(review):
     if not isinstance(review, dict):
         return ""
@@ -177,6 +1959,108 @@ def _is_synthetic(record):
     if isinstance(marker, str):
         return marker.strip().lower() in {"1", "true", "yes", "synthetic"}
     return bool(marker)
+
+
+def _sanitize_legacy_display_text(value):
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _sanitize_legacy_display_text(item)
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _sanitize_legacy_display_text(item)
+        return value
+    if isinstance(value, str):
+        return LEGACY_CONFIDENCE_REMINDER_RE.sub(r"\1", value)
+    return value
+
+
+def _backfill_session_context(record):
+    if not isinstance(record, dict):
+        return record
+    signal_window = record.get("signal_window")
+    if not isinstance(signal_window, dict):
+        return record
+    ctx = signal_window.get("session_context")
+    if not isinstance(ctx, dict) or not ctx:
+        return record
+    code = str(ctx.get("rationale_code") or "").strip()
+    template = SESSION_PREMISE_CONTEXTS.get(code)
+    if not template:
+        return record
+    needs_backfill = (
+        ctx.get("schema_name") != "SignalSessionPremiseDurabilityContext"
+        or ctx.get("clock_window") in (None, "")
+        or ctx.get("backtest_delta_pp") in (None, "")
+        or not isinstance(ctx.get("validation_basis"), dict)
+    )
+    if not needs_backfill:
+        _ensure_decision_matrix_temporal(record, ctx)
+        return record
+
+    original_schema = ctx.get("schema") or ctx.get("schema_name")
+    preserved = {
+        "dst_mode": ctx.get("dst_mode"),
+        "london_dst_mode": ctx.get("london_dst_mode"),
+        "utc8_time": ctx.get("utc8_time"),
+        "is_weekend": ctx.get("is_weekend"),
+        "weekend_adjustment": ctx.get("weekend_adjustment"),
+        "event_blackout": ctx.get("event_blackout"),
+        "affects_confidence": ctx.get("affects_confidence"),
+        "affects_blocking": ctx.get("affects_blocking"),
+        "affects_trade_allowed": ctx.get("affects_trade_allowed"),
+        "transition": ctx.get("transition"),
+    }
+    ctx.clear()
+    ctx.update(template)
+    ctx.update({
+        "schema": "SignalSessionPremiseDurabilityContext@1.0.0",
+        "schema_name": "SignalSessionPremiseDurabilityContext",
+        "schema_version": "1.0.0",
+        "rationale_code": code,
+        "boundary_buffer_min": 0,
+        "buffer_policy": "DIRECT_UTC8_SUMMER_BUCKET_MAPPING",
+        "calibration_state": "MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED",
+        "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+        "confidence_multiplier": 1.0,
+        "validation_basis": dict(SESSION_VALIDATION_BASIS),
+        "compat_backfill_applied": True,
+        "compat_backfill_source": "materializer_session_context_v1",
+        "compat_source_schema": original_schema,
+    })
+    for key, value in preserved.items():
+        if value not in (None, ""):
+            ctx[key] = value
+    if not isinstance(ctx.get("event_blackout"), dict):
+        ctx["event_blackout"] = {"active": False}
+    if not isinstance(ctx.get("weekend_adjustment"), dict):
+        ctx["weekend_adjustment"] = {"applied": False}
+    if not isinstance(ctx.get("transition"), dict):
+        ctx["transition"] = {
+            "active": False,
+            "boundary": str(template.get("clock_window", "")).split("-")[0] or None,
+            "minutes_from_boundary": None,
+            "policy": "DISPLAY_ONLY_NO_CONFIDENCE_CHANGE",
+        }
+    for key in ("affects_confidence", "affects_blocking", "affects_trade_allowed"):
+        ctx[key] = False
+    _ensure_decision_matrix_temporal(record, ctx)
+    return record
+
+
+def _ensure_decision_matrix_temporal(record, ctx):
+    matrix = record.get("decision_matrix")
+    if not isinstance(matrix, dict):
+        matrix = {"schema_name": "SignalDecisionMatrix"}
+        record["decision_matrix"] = matrix
+    matrix["temporal_durability"] = ctx.get("premise_durability")
+    if not matrix.get("window"):
+        matrix["window"] = "CONFIRMED"
+    if not matrix.get("audit_dissent"):
+        matrix["audit_dissent"] = "PENDING_LLM"
+    if not matrix.get("direction"):
+        matrix["direction"] = _dict(record.get("decision")).get("lean")
+    return matrix
 
 
 def _enrich_auxiliary_evidence(record):
@@ -255,6 +2139,10 @@ def _dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _list(value):
+    return value if isinstance(value, list) else []
+
+
 def _auxiliary_role(key):
     return {
         "FUNDING": "FUTURES_FUNDING_CROWDING",
@@ -298,7 +2186,10 @@ def _auxiliary_raw_values(key, detail, factor):
             "strength", "strength_pctl", "data_ready", "vote", "weight"),
         "MACRO": (
             "macro_score", "score", "macro_regime", "regime", "verdict",
-            "data_status", "data_confidence"),
+            "data_status", "data_confidence", "macro_data_confidence",
+            "components", "component_scores", "macro_components_cn",
+            "macro_shock", "legacy_blocking_flags", "blocking_flags",
+            "reason_codes", "source_ref"),
     }.get(key, tuple(detail.keys()))
     raw = {}
     for field in fields:
@@ -326,17 +2217,17 @@ def _auxiliary_raw_values(key, detail, factor):
 def _auxiliary_lean(key, row, detail, factor):
     if key == "FUNDING":
         rate = _first_number(detail, factor,
-                             fields=("funding_norm", "last_rate",
-                                     "last_funding_rate"))
+                             fields=("last_rate", "last_funding_rate",
+                                     "funding_norm"))
         return _signed_lean(-rate if rate is not None else None)
     if key == "SRD":
         return _signed_lean(_first_number(row, detail, factor, fields=("vote",)))
     if key == "GGR_SPATIAL":
         if factor.get("veto"):
-            return "ADVERSE"
+            return "RISK_CONSTRAINT"
         regime = str(factor.get("regime") or detail.get("regime") or "").upper()
         if "NEGATIVE" in regime or "AMPLIFY" in regime:
-            return "ADVERSE"
+            return "RISK_CONSTRAINT"
         if "POSITIVE" in regime or "PINNING" in regime:
             return "SUPPORTIVE"
         multiplier = _first_number(factor, detail,
@@ -345,8 +2236,14 @@ def _auxiliary_lean(key, row, detail, factor):
             if multiplier > 1.0:
                 return "SUPPORTIVE"
             if multiplier < 1.0:
-                return "ADVERSE"
+                return "CONSTRAINT"
         return "NEUTRAL"
+    if key == "MACRO":
+        vote = _first_number(row, detail, factor, fields=("vote",))
+        if vote is not None:
+            return _signed_lean(vote)
+        score = _first_number(detail, factor, fields=("macro_score", "score"))
+        return _signed_lean(-score if score is not None else None)
     return _signed_lean(_first_number(row, detail, factor, fields=("vote",)))
 
 
@@ -481,12 +2378,21 @@ def main(argv=None):
                         help="Maximum newest cards to publish; <=0 publishes all.")
     parser.add_argument("--llm-reviews", default="",
                         help="Optional sidecar JSONL generated by gemini_signal_llm_review.py.")
+    parser.add_argument("--transition-ledger", default="",
+                        help="Optional private JSONL output path for materialized transition records.")
+    parser.add_argument("--transition-state", default="",
+                        help="Optional private JSON state output path for the transition hash chain.")
+    parser.add_argument("--transition-reviews", default="",
+                        help="Optional sidecar JSONL of transition LLM reviews to merge into cards.")
     parser.add_argument("--include-synthetic", action="store_true",
                         help="Include synthetic/local preview cards in the published manifest.")
     args = parser.parse_args(argv)
     result = materialize(args.source, args.output, args.max_cards,
                          llm_reviews=args.llm_reviews,
-                         include_synthetic=args.include_synthetic)
+                         include_synthetic=args.include_synthetic,
+                         transition_ledger=args.transition_ledger,
+                         transition_state=args.transition_state,
+                         transition_reviews=args.transition_reviews)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
