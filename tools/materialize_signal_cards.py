@@ -27,7 +27,7 @@ MANIFEST_SCHEMA = {
 TRANSITION_SCHEMA_VERSION = "signal_transition_record@1.0.0"
 TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
-TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.0.0"
+TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.2"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 TRANSITION_DOMAIN_ORDER = (
     "TMV", "MACRO", "FUNDING", "SKEW", "GAMMA", "P_C_RATIO",
@@ -366,6 +366,7 @@ TRANSITION_FIELD_REGISTRY = (
         "absolute_floor": 0.15,
         "critical_floor": 0.35,
         "higher_meaning": "PUT_CALL_RATIO_RISE",
+        "sign_flip_applicable": False,
     },
     {
         "path": "factor_cross_section.skew.vote",
@@ -398,6 +399,7 @@ TRANSITION_FIELD_REGISTRY = (
         "absolute_floor": 0.10,
         "critical_floor": 0.30,
         "higher_meaning": "CONFLICT_RATIO_RISE",
+        "sign_flip_applicable": False,
     },
     {
         "path": "conflict.level",
@@ -738,6 +740,8 @@ def _transition_record(previous, current, history, previous_transition_hash):
     core_skeleton = _core_skeleton(previous, current, elapsed_ms,
                                    comparison_quality)
     domain_summaries = _domain_change_summaries(changes)
+    core_transition_display = _core_transition_display(
+        core_skeleton, domain_summaries, top_changes)
     raw_change_groups = _raw_change_groups(changes)
     flags = _transition_flags(previous, current, top_changes)
     materiality_score = _materiality_score(top_changes, flags)
@@ -782,6 +786,7 @@ def _transition_record(previous, current, history, previous_transition_hash):
         },
         "decision_transition": _decision_transition(previous, current),
         "core_skeleton": core_skeleton,
+        "core_transition_display": core_transition_display,
         "domain_change_summaries": domain_summaries,
         "raw_change_groups": raw_change_groups,
         "top_material_changes": top_changes,
@@ -895,6 +900,238 @@ def _skeleton_values(record, domain, fields):
     for name, paths in fields:
         values[name] = _first_transition_value(record, domain, paths)
     return values
+
+
+def _core_transition_display(core_skeleton, domain_summaries, top_changes):
+    skeleton_by_domain = {
+        str(item.get("domain") or "").upper(): item
+        for item in _list(_dict(core_skeleton).get("domains"))
+        if isinstance(item, dict)
+    }
+    summary_by_domain = {
+        str(item.get("domain") or "").upper(): item
+        for item in _list(domain_summaries)
+        if isinstance(item, dict)
+    }
+    change_by_domain = {}
+    for item in _list(top_changes):
+        if isinstance(item, dict):
+            change_by_domain.setdefault(str(item.get("domain") or "").upper(), item)
+    rows = []
+    for domain in TRANSITION_DOMAIN_ORDER:
+        skeleton = _dict(skeleton_by_domain.get(domain))
+        if not skeleton:
+            continue
+        previous = _dict(skeleton.get("previous"))
+        current = _dict(skeleton.get("current"))
+        value_key = _display_value_key(domain, previous, current)
+        prev_value = previous.get(value_key) if value_key else None
+        curr_value = current.get(value_key) if value_key else None
+        if value_key is None:
+            value_key = "state"
+        summary = _dict(summary_by_domain.get(domain))
+        change = _dict(change_by_domain.get(domain))
+        grade = _grade_cn(summary.get("materiality") or change.get("materiality"))
+        source_note = _display_source_note(domain, value_key, prev_value, curr_value)
+        rows.append({
+            "domain": domain,
+            "title_cn": _display_title_cn(domain),
+            "value_key": _display_public_value_key(domain, value_key, prev_value, curr_value),
+            "previous_display": _display_value_text(domain, value_key, prev_value),
+            "current_display": _display_value_text(domain, value_key, curr_value),
+            "delta_display": _display_delta_text(domain, value_key, prev_value, curr_value),
+            "meaning_cn": _display_meaning_cn(domain, value_key, prev_value, curr_value),
+            "grade_cn": grade,
+            "source_note": source_note,
+        })
+    return rows
+
+
+def _display_value_key(domain, previous, current):
+    preferences = {
+        "TMV": ("tmv_blend", "tmvf_24h_final", "tmvf_48h_final", "direction"),
+        "MACRO": ("macro_score", "macro_shock_state", "macro_regime"),
+        "FUNDING": ("last_rate", "last_funding_rate", "funding_state",
+                    "funding_norm", "effect"),
+        "SKEW": ("rr_25d", "rr_blend", "skew_norm_blend", "vote"),
+        "GAMMA": ("net_gamma_notional_usd", "distance_to_flip_pct",
+                  "distance_to_pin_pct", "regime"),
+        "P_C_RATIO": ("put_call_ratio",),
+        "CONFLICT": ("ratio", "level"),
+        "DECISION": ("confidence", "lean", "support_label", "decision_state"),
+        "QUALITY": ("overall", "missing_field_count"),
+    }.get(domain, ())
+    for key in preferences:
+        if previous.get(key) not in (None, "") or current.get(key) not in (None, ""):
+            return key
+    keys = list(previous.keys()) + [key for key in current if key not in previous]
+    for key in keys:
+        if previous.get(key) not in (None, "") or current.get(key) not in (None, ""):
+            return key
+    return None
+
+
+def _display_public_value_key(domain, key, previous, current):
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        values = [_number(previous), _number(current)]
+        numeric = [value for value in values if value is not None]
+        if numeric and max(abs(value) for value in numeric) < 1000:
+            return "net_gamma_metric"
+    return key
+
+
+def _display_title_cn(domain):
+    return {
+        "TMV": "TMV（量价路径）",
+        "MACRO": "宏观（利率/美元/波动率）",
+        "FUNDING": "Funding（期货资金费率）",
+        "SKEW": "期权偏斜（Skew）",
+        "GAMMA": "Gamma（净 Gamma）",
+        "P_C_RATIO": "P/C（期权需求）",
+        "CONFLICT": "冲突（信号分歧）",
+        "DECISION": "决策（状态/置信）",
+        "QUALITY": "数据质量（完整性）",
+    }.get(domain, domain or "其他")
+
+
+def _grade_cn(materiality):
+    return {
+        "CRITICAL": "关键",
+        "HIGH": "高",
+        "MEDIUM": "中",
+        "LOW": "低",
+        "VERY_LOW": "很低",
+        "NONE": "无",
+        "UNKNOWN": "未定",
+        None: "未定",
+    }.get(materiality, str(materiality))
+
+
+def _display_value_text(domain, key, value):
+    if value in (None, ""):
+        return "缺失"
+    numeric = _number(value)
+    if numeric is None:
+        return _enum_cn(value)
+    if domain == "FUNDING" and key in {"last_rate", "last_funding_rate"}:
+        return _trim_number(numeric * 100.0, 6) + "%"
+    if domain == "CONFLICT" and key == "ratio":
+        return _trim_number(numeric * 100.0, 1) + "%"
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        if abs(numeric) < 1000:
+            return _trim_number(numeric, 4)
+        return _usd_notional_text(numeric)
+    if key in {"distance_to_flip_pct", "distance_to_pin_pct"}:
+        return _trim_number(numeric, 2) + "%"
+    return _trim_number(numeric, 4)
+
+
+def _display_delta_text(domain, key, previous, current):
+    prev_num = _number(previous)
+    curr_num = _number(current)
+    if prev_num is None or curr_num is None:
+        return "缺失"
+    return _display_value_text(domain, key, curr_num - prev_num)
+
+
+def _display_source_note(domain, key, previous, current):
+    if domain == "FUNDING" and key in {"last_rate", "last_funding_rate"}:
+        return "原始 last_rate"
+    if domain == "GAMMA" and key in {"net_gamma_notional_usd", "net_gamma_notional"}:
+        values = [_number(previous), _number(current)]
+        numeric = [value for value in values if value is not None]
+        if numeric and max(abs(value) for value in numeric) < 1000:
+            return "旧卡兼容推导：按 Gamma 指标显示，不伪装为 USD 名义额"
+        return "净 Gamma USD 名义额"
+    if domain == "P_C_RATIO":
+        return "GEX put_call_ratio"
+    return "materializer display-only"
+
+
+def _display_meaning_cn(domain, key, previous, current):
+    prev_num = _number(previous)
+    curr_num = _number(current)
+    rising = prev_num is not None and curr_num is not None and curr_num > prev_num
+    falling = prev_num is not None and curr_num is not None and curr_num < prev_num
+    if domain == "TMV":
+        if prev_num is not None and curr_num is not None and prev_num >= 0 > curr_num:
+            return "量价路径由正转负，方向骨架转弱。"
+        return "量价路径转弱。" if falling else "量价路径改善或维持。"
+    if domain == "MACRO":
+        return "宏观逆风压力上升，更多是风险背景约束。" if rising else "宏观逆风压力回落或维持。"
+    if domain == "FUNDING":
+        if prev_num is not None and curr_num is not None and prev_num > 0 > curr_num:
+            return "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力消失，方向意义偏弱。"
+        if prev_num is not None and curr_num is not None and prev_num < 0 < curr_num:
+            return "资金费率由负转正，提示永续端多头付费重新出现，需结合 TMV 与宏观判断。"
+        return "资金费率上行，提示拥挤升温。" if rising else "资金费率回落，提示拥挤缓和。"
+    if domain == "SKEW":
+        return "期权偏斜压力加深，保护需求或下行尾部定价更重。" if falling else "期权偏斜压力缓和。"
+    if domain == "GAMMA":
+        values = [value for value in (prev_num, curr_num) if value is not None]
+        compat = bool(values and max(abs(value) for value in values) < 1000)
+        prefix = "旧卡兼容推导的 Gamma 指标" if compat else "净 Gamma 名义敞口"
+        return prefix + ("走弱，空间约束略加深。" if falling else "回升或维持，空间约束未继续加深。")
+    if domain == "P_C_RATIO":
+        if rising:
+            return "期权保护需求上升，说明防护/看跌需求更重；这不是方向交易结论。"
+        return "期权保护需求从高位略回落，但仍需结合绝对水平判断，不构成方向反转。"
+    if domain == "CONFLICT":
+        return "信号分歧升高，说明多维证据一致性下降。" if rising else "信号分歧缓和。"
+    if domain == "DECISION":
+        return "决策置信下降，说明审计证据收缩，不代表胜率变化。" if falling else "决策状态维持或改善。"
+    if domain == "QUALITY":
+        return "数据质量状态，用于解释审计可读性和比较可信度。"
+    return "关键状态变化。"
+
+
+def _trim_number(value, digits):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number) < 0.5 * (10 ** -digits):
+        number = 0.0
+    text = ("{0:." + str(digits) + "f}").format(number)
+    return text.rstrip("0").rstrip(".") or "0"
+
+
+def _usd_notional_text(value):
+    sign = "-" if value < 0 else ""
+    amount = abs(float(value))
+    if amount >= 1_000_000_000:
+        return sign + "$" + _trim_number(amount / 1_000_000_000, 2) + "B"
+    if amount >= 1_000_000:
+        return sign + "$" + _trim_number(amount / 1_000_000, 2) + "M"
+    if amount >= 1_000:
+        return sign + "$" + _trim_number(amount / 1_000, 2) + "K"
+    return sign + "$" + _trim_number(amount, 2)
+
+
+def _enum_cn(value):
+    text = str(value)
+    return {
+        "NEUTRAL": "中性",
+        "BULLISH": "偏多",
+        "BEARISH": "偏空",
+        "BULLISH_STRONG": "强偏多",
+        "BEARISH_STRONG": "强偏空",
+        "NO_TRADE_BLOCKED": "无交易/阻断",
+        "WAIT_CONFIRMATION": "等待确认",
+        "TRADE_SUPPORT_STRONG": "强交易支持",
+        "TRADE_SUPPORT_WEAK": "弱交易支持",
+        "BLOCK": "阻断",
+        "WATCH": "观察",
+        "CLEAR": "清除",
+        "Mild Headwind": "轻度逆风",
+        "Headwind": "逆风",
+        "TRANSITION": "过渡区",
+        "POSITIVE_GAMMA_PINNING": "正 Gamma 钉住",
+        "NEGATIVE_GAMMA": "负 Gamma",
+        "OK": "正常",
+        "MATERIAL": "实质分歧",
+        "LOW": "低",
+    }.get(text, text)
 
 
 def _first_transition_value(record, domain, paths):
@@ -1070,7 +1307,10 @@ def _compare_continuous(entry, before, after, elapsed_ms):
         delta_abs = round(curr_num - prev_num, 10)
         if abs(prev_num) > 1e-12:
             delta_relative = round((curr_num - prev_num) / abs(prev_num), 10)
-        sign_flip = bool(prev_num * curr_num < 0)
+        sign_flip = bool(
+            entry.get("sign_flip_applicable", True)
+            and prev_num * curr_num < 0
+        )
     materiality = _continuous_materiality(entry, prev_num, curr_num, delta_abs,
                                           sign_flip, missing_changed)
     if materiality == "NONE":
@@ -1899,6 +2139,10 @@ def _dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _list(value):
+    return value if isinstance(value, list) else []
+
+
 def _auxiliary_role(key):
     return {
         "FUNDING": "FUTURES_FUNDING_CROWDING",
@@ -1973,8 +2217,8 @@ def _auxiliary_raw_values(key, detail, factor):
 def _auxiliary_lean(key, row, detail, factor):
     if key == "FUNDING":
         rate = _first_number(detail, factor,
-                             fields=("funding_norm", "last_rate",
-                                     "last_funding_rate"))
+                             fields=("last_rate", "last_funding_rate",
+                                     "funding_norm"))
         return _signed_lean(-rate if rate is not None else None)
     if key == "SRD":
         return _signed_lean(_first_number(row, detail, factor, fields=("vote",)))

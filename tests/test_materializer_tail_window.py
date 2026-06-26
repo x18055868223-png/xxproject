@@ -619,6 +619,18 @@ def main():
                     "US10Y pressure should detect sign flip")
         assert_true(fields["factor_cross_section.funding.last_rate"]["role_before"] == "NON_VOTING",
                     "NON_VOTING raw funding should still be compared")
+        pc_entry = next(item for item in tool.TRANSITION_FIELD_REGISTRY
+                        if item["path"] == "factor_cross_section.gex_info.put_call_ratio")
+        pc_change = tool._compare_continuous(
+            pc_entry,
+            {"value": -2.29, "role": "CONTEXT", "source_ref": "factor_cross_section.gex_info"},
+            {"value": 2.18, "role": "CONTEXT", "source_ref": "factor_cross_section.gex_info"},
+            60 * 60 * 1000,
+        )
+        assert_true(pc_change["sign_flip"] is False,
+                    "P/C ratio is a non-negative ratio and must not emit sign-flip semantics")
+        assert_true(pc_change["meaning"] != "RISK_HEADWIND_SIGN_FLIP",
+                    "P/C ratio should not use generic risk-headwind sign-flip meaning")
         assert_true(transition["llm_review_required"] is True,
                     "material event should request transition LLM review")
         assert_true("future" not in json.dumps(transition, ensure_ascii=False).lower(),
@@ -661,6 +673,21 @@ def main():
                     and "put_call_ratio" in recent[-1]
                     and "conflict_ratio" in recent[-1],
                     "recent trajectory should include the multi-domain event skeleton")
+        display_rows = {item["domain"]: item for item in transition.get("core_transition_display") or []}
+        for domain in ("TMV", "MACRO", "FUNDING", "SKEW", "GAMMA",
+                       "P_C_RATIO", "CONFLICT", "DECISION", "QUALITY"):
+            assert_true(domain in display_rows,
+                        "core transition display should include domain " + domain)
+        assert_true(display_rows["FUNDING"]["value_key"] == "last_rate",
+                    "Funding display must prioritize raw last_rate over funding_norm")
+        assert_true(display_rows["FUNDING"]["previous_display"] == "0.0015%"
+                    and display_rows["FUNDING"]["current_display"] == "0.0054%",
+                    "Funding display should format decimal rates as percentages")
+        assert_true("-0M" not in display_rows["GAMMA"]["previous_display"]
+                    and "-0M" not in display_rows["GAMMA"]["current_display"],
+                    "Gamma display must never collapse small or scaled values to -0M")
+        assert_true("符号翻转" not in display_rows["P_C_RATIO"]["meaning_cn"],
+                    "P/C display should explain demand change, not sign flip")
 
         ledger_lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         assert_true(len(ledger_lines) == 1,
@@ -670,6 +697,68 @@ def main():
         assert_true(ledger_lines[0]["record_hash"].startswith("sha256:"),
                     "ledger should include hash-chain record hash")
         ledger_text = ledger.read_text(encoding="utf-8")
+        review_payload = {
+            "transition_id": ledger_lines[0]["transition_id"],
+            "current_card_id": "CARD-B",
+            "symbol": "BTC",
+            "transition_llm_review": {
+                "schema_name": "SignalTransitionLlmReview",
+                "schema_version": "signal_transition_llm_review@1.2.1",
+                "status": "OK",
+                "provider": "gemini",
+                "model": "gemini-3.5-flash",
+                "prompt_version": "gemini_signal_transition_review_prompt@1.2.1",
+                "blind_review_mode": "single_call_evidence_first",
+                "llm_call_count": 1,
+                "evidence_catalog_schema_version": "transition_evidence_catalog@1.0.0",
+                "evidence_catalog_hash": "sha256:test-catalog",
+                "transition_summary_cn": "宏观压力与资金费率同步抬升，人工审计应优先核验约束是否持续。",
+                "trajectory_state": "DETERIORATING",
+                "signal_continuity": "BLOCKED",
+                "observed_changes": [{
+                    "domain": "MACRO",
+                    "fact_cn": "macro_score 从 0.0309 升至 0.4588。",
+                    "impact_cn": "宏观背景从轻压力转为硬约束，足以改变人工审计关注重点。",
+                    "tendency_cn": "利空/风险约束",
+                    "evidence_refs": ["/domain_change_summaries/0"],
+                    "evidence_status": "SUFFICIENT",
+                    "directional_role": "RISK_CONSTRAINT",
+                    "magnitude_verdict": "changes_judgment",
+                    "audit_attention_effect": "SHIFT_FOCUS",
+                    "epistemic_status": "SUPPORTED_INFERENCE",
+                }],
+                "cross_factor_interactions": ["宏观压力与 Funding 升温共振。"],
+                "cross_factor_assessments": [{
+                    "domains": ["MACRO", "FUNDING"],
+                    "relation": "REINFORCING",
+                    "assessment_cn": "宏观压力与资金费率同步升温，共同提高风险约束。",
+                    "evidence_refs": ["/domain_change_summaries/0", "/core_transition_display/2"],
+                }],
+                "operator_focus": ["观察宏观冲击门是否连续维持。"],
+                "operator_checks": [{
+                    "focus_cn": "核验宏观冲击门连续性。",
+                    "why_cn": "连续性决定该约束是短噪声还是状态切换。",
+                    "strengthens_if_cn": "若后续卡仍处于 BLOCK，则约束解释增强。",
+                    "weakens_if_cn": "若后续卡回到 CLEAR，则约束解释减弱。",
+                    "evidence_refs": ["/domain_change_summaries/0"],
+                }],
+                "invalid_if": ["两张卡不再属于可比较市场阶段。"],
+                "language_guard": {
+                    "distinguishes_observation_from_causality": True,
+                    "no_external_data": True,
+                    "no_trading_instruction": True,
+                },
+                "not_trading_advice": True,
+                "policy_validation": {
+                    "passed": True,
+                    "severity": "OK",
+                    "render_state": "DISPLAY_LLM_TEXT",
+                    "invalid_evidence_refs": [],
+                },
+            },
+        }
+        reviews.write_text(json.dumps(review_payload, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
         tool.materialize(
             source,
             output,
@@ -680,6 +769,18 @@ def main():
         )
         assert_true(ledger.read_text(encoding="utf-8") == ledger_text,
                     "same input should replay to the same transition ledger hash chain")
+        latest_with_review = json.loads((output / "signal_cards" / "CARD-B.json")
+                                        .read_text(encoding="utf-8"))
+        review = latest_with_review["transition_llm_review"]
+        assert_true(review["schema_version"] == "signal_transition_llm_review@1.2.1",
+                    "materializer should merge current transition review sidecar")
+        assert_true(review["evidence_catalog_hash"] == "sha256:test-catalog"
+                    and review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
+                    "materializer should preserve v1.2.1 provenance and render-state fields")
+        assert_true(review["operator_checks"][0]["focus_cn"] == "核验宏观冲击门连续性。",
+                    "materializer should preserve operator checks without backfilling conclusions")
+        assert_true(review["policy_validation"]["passed"] is True,
+                    "materializer should preserve runner-side policy validation")
         state_doc = json.loads(state.read_text(encoding="utf-8"))
         assert_true(state_doc["last_transition_hash"] == ledger_lines[0]["record_hash"],
                     "state should persist last transition hash")
@@ -721,6 +822,52 @@ def main():
         assert_true("identity.confirmed_time_ms" in
                     legacy_transition["compat_source_fields"],
                     "compat transition should record source fields")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "transition_historical_units_signal_review.jsonl"
+        output = root / "public"
+        base_ms = 1781770200000
+        previous = transition_record("HIST-A", base_ms, "NEUTRAL",
+                                     "NO_TRADE_BLOCKED", 0.6365, 120, 8,
+                                     6, 0.0000038, ggr_regime="TRANSITION",
+                                     skew_vote="BEARISH", tmv_blend=-0.2082,
+                                     tmvf_24h_final=0.1218,
+                                     tmvf_48h_final=-0.11,
+                                     net_gamma=-1.5562, put_call_ratio=2.29,
+                                     conflict_ratio=0.1321)
+        current = transition_record("HIST-B", base_ms + 60 * 60 * 1000,
+                                    "NEUTRAL", "NO_TRADE_BLOCKED", 0.6367,
+                                    121, 8.2, 6.1, -0.00001438,
+                                    ggr_regime="TRANSITION", skew_vote="BEARISH",
+                                    tmv_blend=-0.2376,
+                                    tmvf_24h_final=0.0609,
+                                    tmvf_48h_final=-0.12,
+                                    net_gamma=-1.6217, put_call_ratio=2.18,
+                                    conflict_ratio=0.1760)
+        previous["factor_cross_section"]["funding"]["funding_norm"] = -0.1359
+        current["factor_cross_section"]["funding"]["funding_norm"] = -0.1359
+        source.write_text(json.dumps(previous, ensure_ascii=False) + "\n"
+                          + json.dumps(current, ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        tool.materialize(source, output, max_cards=20)
+        latest = json.loads((output / "signal_cards" / "HIST-B.json")
+                            .read_text(encoding="utf-8"))
+        display_rows = {item["domain"]: item
+                        for item in latest["transition_context"].get("core_transition_display") or []}
+        assert_true(display_rows["FUNDING"]["previous_display"] == "0.00038%",
+                    "historical funding display should preserve tiny positive rate as percent")
+        assert_true(display_rows["FUNDING"]["current_display"] == "-0.001438%",
+                    "historical funding display should preserve tiny negative rate as percent")
+        assert_true("-0.1359" not in json.dumps(display_rows["FUNDING"], ensure_ascii=False),
+                    "historical funding display should not promote funding_norm as the main rate")
+        assert_true(display_rows["GAMMA"]["previous_display"] == "-1.5562"
+                    and display_rows["GAMMA"]["current_display"] == "-1.6217",
+                    "historical tiny Gamma values should remain precise instead of becoming -0M")
+        assert_true("旧卡兼容推导" in display_rows["GAMMA"]["source_note"],
+                    "small historical Gamma values should be labeled as compat metric, not USD notional")
+        assert_true("符号翻转" not in display_rows["P_C_RATIO"]["meaning_cn"],
+                    "historical P/C ratio decline should not be described as sign flip")
 
     print("materializer_tail_window: PASS")
 

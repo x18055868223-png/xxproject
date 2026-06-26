@@ -32,3 +32,6 @@ id_rsa*
 Thumbs.db
 .vscode/
 .idea/
+.preview_signal_audit/
+.worktrees/
+.claude/

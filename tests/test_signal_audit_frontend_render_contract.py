@@ -77,6 +77,23 @@ function renderCard(card) {
     const card = JSON.parse(fs.readFileSync(cardPath, "utf8"));
     const html = await renderCard(card);
     const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+    const transitionStart = text.indexOf("状态转移审计");
+    const transitionEnd = text.indexOf("LLM 复核意见");
+    const transitionMainText = transitionStart >= 0 && transitionEnd > transitionStart
+      ? text.slice(transitionStart, transitionEnd)
+      : "";
+    const transitionLlmStart = transitionMainText.indexOf("LLM 变化链解释");
+    const transitionCoreStart = transitionMainText.indexOf("关键变化骨架");
+    const transitionLlmAndCoreText = transitionLlmStart >= 0
+      ? transitionMainText.slice(
+          transitionLlmStart,
+          transitionCoreStart > transitionLlmStart ? transitionCoreStart : transitionMainText.length)
+      : "";
+    const observedStart = transitionLlmAndCoreText.indexOf("观察到的变化");
+    const interactionStart = transitionLlmAndCoreText.indexOf("跨因子相互作用");
+    const transitionObservedText = observedStart >= 0 && interactionStart > observedStart
+      ? transitionLlmAndCoreText.slice(observedStart, interactionStart)
+      : "";
     const evidence = Array.isArray(card.reasoning && card.reasoning.evidence)
       ? card.reasoning.evidence
       : [];
@@ -117,7 +134,27 @@ function renderCard(card) {
         || text.includes("WATCH")
         || text.includes("BLOCK")
         || text.includes("UNKNOWN"),
-      ggrSpatialConstraint: text.includes("空间约束") || text.includes("空间安全")
+      ggrSpatialConstraint: text.includes("空间约束") || text.includes("空间安全"),
+      transitionLlmRawEnumLeaks: [
+        "Neutral",
+        "Mild Headwind",
+        "Strong Headwind",
+        "Headwind",
+        "NEUTRAL",
+        "MACRO_BLOCKING",
+        "WAIT_CONFIRMATION",
+        "P_C_RATIO",
+        "发生正负符号翻转"
+      ].filter((token) => transitionLlmAndCoreText.includes(token)),
+      transitionObservedBoilerplate: [
+        "评估为",
+        "材料性",
+        "高材料性",
+        "被评估为关键",
+        "被评估为高"
+      ].filter((token) => transitionObservedText.includes(token)),
+      transitionObservedHasTendency: !transitionObservedText
+        || /利空|利多|偏空|偏多|中性|风险约束|支撑|缓和|压制/.test(transitionObservedText)
     });
   }
   process.stdout.write(JSON.stringify(rows));
@@ -135,7 +172,9 @@ function renderCard(card) {
     return json.loads(result.stdout)
 
 
-def render_transition_contract(root):
+def render_transition_contract(root, suppress_llm=False, unknown_render_state=False,
+                               legacy_llm=False, raw_leak_llm=False,
+                               noisy_meta=False):
     sample = {
         "schema": {"name": "signal_review_card", "version": "1.0.0"},
         "identity": {
@@ -250,6 +289,41 @@ def render_transition_contract(root):
                     "children": [],
                 },
             ],
+            "core_transition_display": [
+                {
+                    "domain": "FUNDING",
+                    "title_cn": "Funding（期货资金费率）",
+                    "value_key": "last_rate",
+                    "previous_display": "0.00038%",
+                    "current_display": "-0.001438%",
+                    "delta_display": "-0.001818%",
+                    "meaning_cn": "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力已经消失，方向意义偏弱但能提示拥挤结构缓和。",
+                    "grade_cn": "低",
+                    "source_note": "原始 last_rate",
+                },
+                {
+                    "domain": "GAMMA",
+                    "title_cn": "Gamma（净 Gamma）",
+                    "value_key": "net_gamma_metric",
+                    "previous_display": "-1.5562",
+                    "current_display": "-1.6217",
+                    "delta_display": "-0.0655",
+                    "meaning_cn": "旧卡兼容推导的 Gamma 指标小幅走弱，只能说明空间约束略加深，不能伪装成 USD 名义额。",
+                    "grade_cn": "低",
+                    "source_note": "旧卡兼容推导",
+                },
+                {
+                    "domain": "P_C_RATIO",
+                    "title_cn": "P/C（期权需求）",
+                    "value_key": "put_call_ratio",
+                    "previous_display": "2.29",
+                    "current_display": "2.18",
+                    "delta_display": "-0.11",
+                    "meaning_cn": "期权保护需求从高位略回落，但仍处偏高区域，对方向判断只是缓和不是反转。",
+                    "grade_cn": "低",
+                    "source_note": "GEX put_call_ratio",
+                },
+            ],
             "raw_change_groups": [
                 {
                     "domain": "MACRO",
@@ -302,32 +376,148 @@ def render_transition_contract(root):
             "status": "OK",
             "model": "gemini-3.5-flash",
             "input_packet_hash": "sha256:contract",
-            "transition_summary_cn": "LLM 先解释程序化变化链，不重算 delta。",
+            "transition_summary_cn": "维持NEUTRAL偏好，持续受MACRO_BLOCKING阻碍。",
             "trajectory_state": "DETERIORATING",
             "signal_continuity": "BLOCKED",
             "observed_changes": [
                 {
                     "domain": "TMV",
                     "fact_cn": "TMV 从 0.42 降至 0.18，量价路径转弱。",
+                    "impact_cn": "量价骨架明显走弱，需要把人工关注从延续支撑转向支撑失效核验。",
+                    "tendency_cn": "偏空/支撑削弱",
+                    "evidence_refs": ["/core_transition_display/0"],
+                    "evidence_status": "SUFFICIENT",
+                    "directional_role": "RISK_CONSTRAINT",
+                    "magnitude_verdict": "changes_judgment",
+                    "audit_attention_effect": "SHIFT_FOCUS",
+                    "epistemic_status": "SUPPORTED_INFERENCE",
                     "materiality": "CRITICAL",
                 },
                 {
                     "domain": "FUNDING",
-                    "fact_cn": "资金费率原始值上升。",
+                    "fact_cn": "Funding 从 3.8e-06 转负至 -1.438e-05，发生正负符号翻转。",
+                    "impact_cn": "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力消失，方向意义偏弱。",
+                    "tendency_cn": "中性/拥挤缓和",
+                    "evidence_refs": ["/core_transition_display/2"],
+                    "evidence_status": "SUFFICIENT",
+                    "directional_role": "NEUTRAL_OR_EASING",
+                    "magnitude_verdict": "background_only",
+                    "audit_attention_effect": "WEAKEN_VIEW",
+                    "epistemic_status": "SUPPORTED_INFERENCE",
+                    "materiality": "HIGH",
+                },
+                {
+                    "domain": "P_C_RATIO",
+                    "fact_cn": "Put/Call 比例从 2.29 降至 2.18，发生正负符号翻转。",
+                    "impact_cn": "保护需求从高位略回落，但绝对水平仍高，不足以单独改变中性审计结论。",
+                    "tendency_cn": "中性/保护需求缓和",
+                    "evidence_refs": ["/core_transition_display/5"],
+                    "evidence_status": "SUFFICIENT",
+                    "directional_role": "NEUTRAL_OR_EASING",
+                    "magnitude_verdict": "background_only",
+                    "audit_attention_effect": "BACKGROUND_ONLY",
+                    "epistemic_status": "SUPPORTED_INFERENCE",
                     "materiality": "HIGH",
                 }
             ],
-            "cross_factor_interactions": ["资金与宏观风险同向恶化。"],
+            "cross_factor_interactions": ["宏观逆风（MACRO Headwind）持续存在，与资金费率（FUNDING）转负共同压制NEUTRAL偏好。"],
+            "cross_factor_assessments": [
+                {
+                    "domains": ["TMV", "MACRO", "FUNDING"],
+                    "relation": "CONSTRAINT_INTERACTION",
+                    "assessment_cn": "量价路径转弱与宏观硬阻断同向构成约束，资金费率转负仅削弱拥挤解释，不能抵消主约束。",
+                    "evidence_refs": ["/core_transition_display/0", "/core_transition_display/1", "/core_transition_display/2"],
+                }
+            ],
             "operator_focus": ["确认变化链而不是执行交易。"],
-            "invalid_if": ["模拟数据不能外推。"],
+            "operator_checks": [
+                {
+                    "focus_cn": "核验宏观硬阻断是否继续存在。",
+                    "why_cn": "它决定当前变化是短暂压力还是持续约束。",
+                    "strengthens_if_cn": "若后续卡仍处于宏观硬阻断且 TMV 未恢复，约束解释增强。",
+                    "weakens_if_cn": "若宏观压力回落且 TMV 恢复，约束解释减弱。",
+                    "evidence_refs": ["/core_transition_display/0", "/core_transition_display/1"],
+                }
+            ],
+            "invalid_if": ["如果宏观评分回落且脱离Headwind状态，MACRO_BLOCKING阻碍可能失效。"],
             "language_guard": {
                 "no_trading_instruction": True,
                 "no_external_data": True,
                 "distinguishes_observation_from_causality": True,
             },
             "not_trading_advice": True,
+            "policy_validation": {
+                "passed": True,
+                "raw_enum_leaks": [],
+                "trading_instruction_terms": [],
+                "unit_mislabel_terms": [],
+                "materiality_boilerplate_terms": [],
+                "invalid_evidence_refs": [],
+            },
         },
     }
+    if suppress_llm:
+        review = sample["transition_llm_review"]
+        review["transition_summary_cn"] = "SHOULD_NOT_RENDER_SUPPRESSED_SUMMARY 开仓"
+        review["observed_changes"][0]["fact_cn"] = "SHOULD_NOT_RENDER_SUPPRESSED_CHANGE"
+        review["cross_factor_assessments"][0]["assessment_cn"] = "SHOULD_NOT_RENDER_SUPPRESSED_CROSS_FACTOR"
+        review["operator_checks"][0]["focus_cn"] = "SHOULD_NOT_RENDER_SUPPRESSED_OPERATOR"
+        review["operator_focus"] = ["SHOULD_NOT_RENDER_SUPPRESSED_FOCUS"]
+        review["invalid_if"] = ["SHOULD_NOT_RENDER_SUPPRESSED_INVALID_IF"]
+        review["policy_validation"] = {
+            "passed": False,
+            "severity": "FATAL",
+            "render_state": "SUPPRESS_LLM_TEXT",
+            "issue_codes": ["trading_instruction"],
+            "trading_instruction_terms": ["开仓"],
+            "raw_enum_leaks": [],
+            "unit_mislabel_terms": [],
+            "materiality_boilerplate_terms": [],
+            "invalid_evidence_refs": [],
+        }
+    if unknown_render_state:
+        review = sample["transition_llm_review"]
+        review["transition_summary_cn"] = "SHOULD_NOT_RENDER_UNKNOWN_RENDER_STATE"
+        review["observed_changes"][0]["fact_cn"] = "SHOULD_NOT_RENDER_UNKNOWN_RENDER_STATE_CHANGE"
+        review["policy_validation"] = {
+            "passed": False,
+            "severity": "ERROR",
+            "render_state": "FUTURE_RENDER_STATE",
+            "issue_codes": ["future_policy_state"],
+        }
+    if legacy_llm:
+        review = sample["transition_llm_review"]
+        review["schema_version"] = "signal_transition_llm_review@1.1.0"
+        review["prompt_version"] = "gemini_signal_transition_review_prompt@1.1.0"
+        review.pop("policy_validation", None)
+    if raw_leak_llm:
+        review = sample["transition_llm_review"]
+        leaked = (
+            "宏观 原始变化 6 项，主要字段：macro_pressure.components.US10Y.scoring_bps，"
+            "来源：factor_cross_section.macro_pressure；核心前后值已入包。")
+        review["transition_summary_cn"] = leaked
+        review["observed_changes"][0]["fact_cn"] = leaked
+        review["observed_changes"][0]["impact_cn"] = "source_ref 指向 factor_cross_section.macro_pressure。"
+        review["cross_factor_assessments"][0]["assessment_cn"] = (
+            "macro_pressure.components.DXY.scoring_bps 与 TMV 共同变化。")
+        review["operator_checks"][0]["focus_cn"] = "核对 source_ref 与 primary_fields。"
+        review["policy_validation"] = {
+            "passed": False,
+            "severity": "ERROR",
+            "render_state": "DEGRADED_LLM_TEXT",
+            "issue_codes": ["raw_field_path_leak"],
+            "raw_field_path_terms": ["factor_cross_section", "macro_pressure.components"],
+            "raw_enum_leaks": [],
+            "trading_instruction_terms": [],
+            "unit_mislabel_terms": [],
+            "materiality_boilerplate_terms": [],
+            "invalid_evidence_refs": [],
+        }
+    if noisy_meta:
+        review = sample["transition_llm_review"]
+        review["observed_changes"][0]["directional_role"] = "UNDETERMINED"
+        review["observed_changes"][0]["magnitude_verdict"] = "indeterminate"
+        review["observed_changes"][0]["audit_attention_effect"] = "UNDETERMINED"
     script = r"""
 const fs = require("fs");
 const path = require("path");
@@ -506,10 +696,27 @@ def main():
                     row["card_id"] + " should link every evidence source_ref")
         assert_true(row["rawTargets"] >= len(row["sourceRefs"]),
                     row["card_id"] + " should expose raw trace targets")
+        assert_true(not row["transitionLlmRawEnumLeaks"],
+                    row["card_id"] + " transition LLM/core text leaked raw enum terms: "
+                    + ", ".join(row["transitionLlmRawEnumLeaks"]))
+        assert_true(not row["transitionObservedBoilerplate"],
+                    row["card_id"] + " transition observed changes used vague materiality wording: "
+                    + ", ".join(row["transitionObservedBoilerplate"]))
+        assert_true(row["transitionObservedHasTendency"],
+                    row["card_id"] + " transition observed changes should explain impact and tendency")
 
     transition_render = render_transition_contract(FRONTEND)
     full_transition_text = transition_render["text"]
     transition_html = transition_render["html"]
+    core_start = transition_html.find("transition-core-summary")
+    core_end = transition_html.find("transition-metadata", core_start)
+    transition_core_html = (
+        transition_html[core_start:core_end]
+        if core_start != -1 and core_end > core_start
+        else ""
+    )
+    assert_true('class="badge' not in transition_core_html,
+                "core transition skeleton should not render materiality/grade badges")
     for label in (
             "决策结论",
             "封板决策矩阵",
@@ -559,16 +766,73 @@ def main():
                 and "材料性 (materiality)" not in transition_text,
                 "LLM observed changes should not expose raw object field labels")
     assert_true("0.42 → 0.18" in transition_text
-                and "0.92 → 1.22" in transition_text,
+                and "2.29 → 2.18" in transition_text,
                 "merged core transition should show key previous/current values")
+    assert_true("0.00038% → -0.001438%" in transition_text,
+                "core transition should use raw funding rate percent display")
+    assert_true("-0.1359" not in transition_text,
+                "core transition should not promote funding_norm as funding rate")
+    assert_true("-0M" not in transition_text and "0M → 0M" not in transition_text,
+                "core transition should not collapse Gamma values to zero million")
+    assert_true("旧卡兼容推导" in transition_text,
+                "historical Gamma metric should be labeled as compat-derived when not USD notional")
+    assert_true("维持中性偏好，持续受宏观硬阻断" in transition_text,
+                "transition LLM summary should localize raw decision/blocking enums")
+    assert_true("状态: 正常 (OK)" not in primary_transition_text
+                and "禁止交易指令: 有效 (VALID)" not in primary_transition_text
+                and "轨迹状态 恶化 (DETERIORATING)" not in primary_transition_text
+                and "连续性 已被阻断 (BLOCKED)" not in primary_transition_text,
+                "transition LLM guard/status display should not append raw enum codes")
+    assert_true("状态: 正常" in primary_transition_text
+                and "禁止交易指令: 有效" in primary_transition_text
+                and "轨迹状态 (trajectory_state) 恶化" in primary_transition_text
+                and "连续性 (signal_continuity) 已被阻断" in primary_transition_text,
+                "transition LLM guard/status display should remain Chinese-readable")
+    assert_true("维持NEUTRAL" not in transition_text
+                and "MACRO_BLOCKING" not in transition_text
+                and "Headwind" not in transition_text,
+                "transition main text should not leak raw enum wording")
+    assert_true("正负符号翻转" not in transition_text,
+                "P/C and other non-sign domains should not surface generic sign-flip wording")
     assert_true("source_ref" not in primary_transition_text
                 and "factor_cross_section" not in primary_transition_text,
                 "source/path details should stay out of the top transition board")
+    raw_leak_render = render_transition_contract(FRONTEND, raw_leak_llm=True)
+    raw_leak_text = raw_leak_render["text"]
+    raw_start = raw_leak_text.find("LLM")
+    raw_metadata = raw_leak_text.find("Core transition", raw_start)
+    raw_primary = (
+        raw_leak_text[raw_start:raw_metadata]
+        if raw_start != -1 and raw_metadata > raw_start
+        else raw_leak_text
+    )
+    for token in (
+            "macro_pressure.components",
+            "factor_cross_section",
+            "source_ref",
+            "primary_fields",
+            "主要字段",
+            "核心前后值已入包",
+    ):
+        assert_true(token not in raw_primary,
+                    "raw field/path leakage should be masked in the transition reading flow: " + token)
+    noisy_meta_render = render_transition_contract(FRONTEND, noisy_meta=True)
+    noisy_meta_text = noisy_meta_render["text"]
+    assert_true("方向作用: 未定" not in noisy_meta_text
+                and "幅度判断: 不足判断" not in noisy_meta_text
+                and "关注影响: 未定" not in noisy_meta_text,
+                "uninformative transition meta chips should be hidden")
     for label in (
             "观察到的变化",
             "跨因子相互作用",
             "人工观察重点",
+            "人工核验方案",
             "失效条件",
+            "策略校验",
+            "证据状态",
+            "方向作用",
+            "幅度判断",
+            "关注影响",
             "轨迹状态",
             "连续性",
             "不含交易建议",
@@ -593,7 +857,12 @@ def main():
             "Top material changes",
             "observed_changes",
             "cross_factor_interactions",
+            "cross_factor_assessments",
             "operator_focus",
+            "operator_checks",
+            "policy_validation",
+            "evidence_refs",
+            "magnitude_verdict",
             "invalid_if",
             "no_trading_instruction",
             "not_trading_advice",
@@ -606,6 +875,46 @@ def main():
     assert_true("[object Object]" not in transition_text
                 and "[object Object]" not in transition_html,
                 "transition UI should not leak object stringification")
+
+    suppressed_render = render_transition_contract(FRONTEND, suppress_llm=True)
+    suppressed_text = suppressed_render["text"]
+    assert_true("LLM 变化链解释" in suppressed_text
+                and "策略校验" in suppressed_text,
+                "suppressed transition LLM card should retain audit status")
+    assert_true("已降级隐藏" in suppressed_text,
+                "suppressed transition LLM card should explain hidden model text")
+    for label in (
+            "SHOULD_NOT_RENDER_SUPPRESSED_SUMMARY",
+            "SHOULD_NOT_RENDER_SUPPRESSED_CHANGE",
+            "SHOULD_NOT_RENDER_SUPPRESSED_CROSS_FACTOR",
+            "SHOULD_NOT_RENDER_SUPPRESSED_OPERATOR",
+            "SHOULD_NOT_RENDER_SUPPRESSED_FOCUS",
+            "SHOULD_NOT_RENDER_SUPPRESSED_INVALID_IF",
+            "开仓",
+            "观察到的变化",
+            "人工核验方案",
+    ):
+        assert_true(label not in suppressed_text,
+                    "suppressed transition LLM text should not render: " + label)
+
+    unknown_render = render_transition_contract(FRONTEND, unknown_render_state=True)
+    unknown_text = unknown_render["text"]
+    assert_true("复核结果未通过当前客户端校验" in unknown_text,
+                "unknown transition render_state should fail closed")
+    for label in (
+            "SHOULD_NOT_RENDER_UNKNOWN_RENDER_STATE",
+            "SHOULD_NOT_RENDER_UNKNOWN_RENDER_STATE_CHANGE",
+            "观察到的变化",
+    ):
+        assert_true(label not in unknown_text,
+                    "unknown transition render_state should not render model text: " + label)
+
+    legacy_render = render_transition_contract(FRONTEND, legacy_llm=True)
+    legacy_text = legacy_render["text"]
+    assert_true("未按当前策略验证" in legacy_text,
+                "legacy transition LLM sidecar should be marked as not current-policy validated")
+    assert_true("维持中性偏好，持续受宏观硬阻断" in legacy_text,
+                "legacy transition LLM sidecar may still render readable audit text")
 
     print("signal_audit_frontend_render_contract: PASS")
 
