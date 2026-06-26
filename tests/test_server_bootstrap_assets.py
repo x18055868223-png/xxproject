@@ -82,6 +82,10 @@ def main():
             "ExecStartPre=/bin/systemctl start signal-audit-materialize.service"):
         assert_true(token in script,
                     "bootstrap LLM override should preserve " + token)
+    assert_true("ExecStart=\\${TOOLS_ROOT}/run_signal_llm_review.sh" not in script,
+                "systemd ExecStart executable path must not start with an environment variable")
+    assert_true('ExecStart=$(systemd_escape_value "$TOOLS_ROOT")/run_signal_llm_review.sh' in script,
+                "bootstrap should render an absolute LLM runner path into the drop-in")
     assert_true("REPLACE_WITH" in script,
                 "bootstrap may create templates, not real secrets")
     assert_true("AIza" not in script and "sk-" not in script,

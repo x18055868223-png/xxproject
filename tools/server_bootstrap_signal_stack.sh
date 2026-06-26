@@ -192,7 +192,7 @@ EnvironmentFile=-$(systemd_escape_value "$LLM_ENV_FILE")
 ExecStartPre=
 ExecStartPre=/bin/systemctl start signal-audit-materialize.service
 ExecStart=
-ExecStart=\${TOOLS_ROOT}/run_signal_llm_review.sh
+ExecStart=$(systemd_escape_value "$TOOLS_ROOT")/run_signal_llm_review.sh
 ExecStartPost=
 ExecStartPost=/bin/systemctl start signal-audit-materialize.service
 EOF
