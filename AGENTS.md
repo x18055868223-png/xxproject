@@ -14,6 +14,7 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 ## Release and asset coherence
 
 - 发布、打 tag、推送、服务器部署前，必须同时核对三层版本一致：Git release/tag 所在提交、`demo/最新交付物/neutral_regulation_demo_fmz.py` 内部 `demo_version`、服务器最新真实审计卡 `identity.strategy_version` 与关键 schema 字段。
+- 涉及 FMZ 信号层本体策略更新时，必须同步更新两处交付面：用户当前可见根目录的 `demo/最新交付物/neutral_regulation_demo_fmz.py` 与 `xxproject` 上对应工作分支/标签中的同一文件。使用隔离 worktree 发版时，最终答复前必须同步根目录最新交付物，或明确说明根目录仍未同步且不可直接复制到 FMZ。
 - 不得只因为 `xxproject/main`、前端 `app.js?v=...` 或 systemd 自检通过，就宣称 FMZ 信号层本体已经完成更新。
 - 涉及信号审计 JSON schema 的改动，必须增加 producer 级测试，直接调用 FMZ 本体生成/构造记录并断言关键字段存在；不能只依赖 materializer 或前端回填测试。
 - 如果为了历史卡可读性在 materializer 做兼容回填，必须显式写入 `compat_backfill_applied=true` 和来源字段，不得伪装成源端原生输出。
