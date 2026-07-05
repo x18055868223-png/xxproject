@@ -17,6 +17,8 @@ LLM_REQUIRED="${LLM_REQUIRED:-0}"
 TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
+DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
+EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.2}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -148,6 +150,8 @@ printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
 printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
 printf 'TRANSITION_REQUIRED=%s\n' "$TRANSITION_REQUIRED"
 printf 'TRANSITION_LLM_REQUIRED=%s\n' "$TRANSITION_LLM_REQUIRED"
+printf 'DURABILITY_REQUIRED=%s\n' "$DURABILITY_REQUIRED"
+printf 'EXPECTED_SIGNAL_VERSION=%s\n' "$EXPECTED_SIGNAL_VERSION"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
 printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
 printf 'TRANSITION_LEDGER_SOURCE=%s\n' "$TRANSITION_LEDGER_SOURCE"
@@ -246,8 +250,10 @@ else
 fi
 if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
   if python3 - "$AUDIT_ROOT" <<'PY'
-import json, pathlib, sys
+import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
+expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.2")
+durability_required = os.environ.get("DURABILITY_REQUIRED", "0") == "1"
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
 if not cards:
@@ -263,6 +269,7 @@ required = [
 ]
 macro = ((card.get("factor_cross_section") or {}).get("macro_pressure") or {})
 macro_shock = macro.get("macro_shock") or {}
+durability = card.get("signal_durability") or {}
 missing = [key for key in required if ctx.get(key) in (None, "")]
 def contains_value(node, target):
     if node == target:
@@ -274,6 +281,7 @@ def contains_value(node, target):
     return False
 print("latest_audit_card_id:", identity.get("card_id") or cards[0].get("card_id"))
 print("latest_strategy_version:", identity.get("strategy_version"))
+print("expected_signal_version:", expected_version)
 print("session_schema_name:", ctx.get("schema_name"))
 print("session_rationale_code:", ctx.get("rationale_code"))
 print("session_clock_window:", ctx.get("clock_window"))
@@ -282,6 +290,21 @@ print("session_compat_backfill_applied:", ctx.get("compat_backfill_applied"))
 print("decision_temporal_durability:", matrix.get("temporal_durability"))
 print("macro_shock_state:", macro_shock.get("state"))
 print("macro_shock_block:", macro_shock.get("block"))
+print("durability_required:", durability_required)
+print("signal_durability_schema_name:", durability.get("schema_name"))
+print("signal_durability_schema_version:", durability.get("schema_version"))
+print("signal_durability_audit_scope:", durability.get("audit_scope"))
+print("signal_durability_headline_score:", durability.get("headline_score"))
+print("signal_durability_headline_state:", durability.get("headline_state"))
+print("signal_durability_comfort_tag:",
+      (durability.get("comfort_window") or {}).get("tag")
+      if isinstance(durability.get("comfort_window"), dict) else None)
+print("signal_durability_price_anchor_state:",
+      ((durability.get("price_anchor_durability") or {}).get("durability_state")
+       or (durability.get("price_anchor_durability") or {}).get("state"))
+      if isinstance(durability.get("price_anchor_durability"), dict) else None)
+print("signal_durability_compat_backfill_applied:",
+      durability.get("compat_backfill_applied"))
 if ctx.get("schema_name") != "SignalSessionPremiseDurabilityContext":
     raise SystemExit(2)
 if missing:
@@ -292,22 +315,52 @@ if matrix.get("temporal_durability") != ctx.get("premise_durability"):
     raise SystemExit("decision_matrix temporal_durability mismatch")
 if ctx.get("compat_backfill_applied"):
     raise SystemExit("latest card uses materializer compatibility backfill")
-if str(identity.get("strategy_version")) != "1.5.1":
-    raise SystemExit("latest card strategy_version is not 1.5.1")
+if str(identity.get("strategy_version")) != expected_version:
+    raise SystemExit("latest card strategy_version does not match EXPECTED_SIGNAL_VERSION")
 if not isinstance(macro_shock, dict) or macro_shock.get("state") in (None, ""):
     raise SystemExit("latest card lacks producer-native macro_shock state")
 if macro_shock.get("block") not in (True, False):
     raise SystemExit("latest card lacks producer-native macro_shock block")
 if macro_shock.get("block") is True and not contains_value(card, "MACRO_SHOCK_BLOCKING"):
     raise SystemExit("latest MACRO shock block lacks MACRO_SHOCK_BLOCKING trace")
+if durability_required:
+    if not isinstance(durability, dict) or not durability:
+        raise SystemExit("latest card lacks native signal_durability schema")
+    if durability.get("schema_name") != "SignalDurabilityLayer":
+        raise SystemExit("latest card lacks native signal_durability schema")
+    if durability.get("schema_version") != "nrd.signal.durability_layer.v1":
+        raise SystemExit("latest card lacks native signal_durability schema")
+    if durability.get("audit_scope") != "AUDIT_ONLY":
+        raise SystemExit("latest card signal_durability audit_scope is not AUDIT_ONLY")
+    if durability.get("headline_score") in (None, ""):
+        raise SystemExit("latest card signal_durability lacks headline_score")
+    if durability.get("headline_state") in (None, ""):
+        raise SystemExit("latest card signal_durability lacks headline_state")
+    comfort = durability.get("comfort_window")
+    if not isinstance(comfort, dict) or comfort.get("tag") in (None, ""):
+        raise SystemExit("latest card signal_durability lacks comfort_window.tag")
+    anchor = durability.get("price_anchor_durability")
+    if not isinstance(anchor, dict) or not anchor:
+        raise SystemExit("latest card signal_durability lacks price_anchor_durability")
+    if anchor.get("schema_name") != "SignalPriceAnchorDurability":
+        raise SystemExit("latest card price_anchor_durability lacks native schema")
+    if anchor.get("durability_score") in (None, ""):
+        raise SystemExit("latest card price_anchor_durability lacks durability_score")
+    if anchor.get("durability_state") in (None, ""):
+        raise SystemExit("latest card price_anchor_durability lacks durability_state")
+    layer_scores = anchor.get("layer_scores")
+    if not isinstance(layer_scores, dict):
+        raise SystemExit("latest card price_anchor_durability lacks layer_scores")
+    if durability.get("compat_backfill_applied"):
+        raise SystemExit("latest card signal_durability uses materializer compatibility backfill")
 PY
   then
-    ok "latest audit card has native v1.5.1 session_context and macro_shock schema"
+    ok "latest audit card has native expected session_context, macro_shock, and optional durability schema"
   else
-    if [ "$SESSION_CONTEXT_REQUIRED" = "1" ]; then
-      fail "latest audit card lacks native v1.5.1 session_context or macro_shock schema"
+    if [ "$SESSION_CONTEXT_REQUIRED" = "1" ] || [ "$DURABILITY_REQUIRED" = "1" ]; then
+      fail "latest audit card lacks native expected session_context, macro_shock, or durability schema"
     else
-      warn "latest audit card lacks native v1.5.1 session_context or macro_shock schema"
+      warn "latest audit card lacks native expected session_context, macro_shock, or durability schema"
     fi
   fi
 fi

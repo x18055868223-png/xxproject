@@ -1,6 +1,6 @@
 # 最新交付物
 
-更新时间：2026-06-26
+更新时间：2026-07-05
 
 本目录只保留当前可见的最新 FMZ 单文件交付物。历史执行层版本保留在 `demo/副本快照/`；当前执行层最新交付物已切换为 Human Audit Gate 人工审计门版本。
 
@@ -8,7 +8,7 @@
 
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.1` | 当前信号层交付物 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.2` | 当前信号层交付物；新增 `signal_durability` / `comfort_window` / `price_anchor_durability` AUDIT_ONLY 展示层 | 只读观察，不选腿、不报价、不下单 |
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 ## 执行层说明

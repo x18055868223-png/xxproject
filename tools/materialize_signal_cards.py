@@ -560,6 +560,7 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
 
     for record in records:
         _backfill_session_context(record)
+        _backfill_signal_durability(record)
         _enrich_auxiliary_evidence(record)
         _sanitize_legacy_display_text(record)
 
@@ -2063,6 +2064,186 @@ def _ensure_decision_matrix_temporal(record, ctx):
     if not matrix.get("direction"):
         matrix["direction"] = _dict(record.get("decision")).get("lean")
     return matrix
+
+
+def _backfill_signal_durability(record):
+    if not isinstance(record, dict):
+        return record
+    durability = record.get("signal_durability")
+    if isinstance(durability, dict) and durability:
+        missing = _signal_durability_native_missing_fields(durability)
+        if missing:
+            durability.setdefault("compat_backfill_applied", True)
+            durability.setdefault(
+                "compat_backfill_source",
+                "materializer_signal_durability_partial_v1")
+            durability.setdefault("compat_source_fields", ["signal_durability"])
+            durability["compat_missing_native_fields"] = missing
+        _ensure_signal_durability_defaults(durability)
+        return record
+    if durability not in (None, {}, ""):
+        return record
+
+    aliases = {}
+    for key in (
+            "comfort_window",
+            "price_anchor_durability",
+            "temporal_session",
+            "session_context",
+            "durability_layer_scores",
+            "durability_reason_codes",
+            "durability_data_gaps"):
+        value = record.get(key)
+        if value not in (None, "", [], {}):
+            aliases[key] = value
+    signal_window = record.get("signal_window")
+    if isinstance(signal_window, dict):
+        ctx = signal_window.get("session_context")
+        if isinstance(ctx, dict) and ctx:
+            aliases.setdefault("session_context", ctx)
+
+    if not any(key in aliases for key in (
+            "comfort_window", "price_anchor_durability")):
+        return record
+
+    wrapper = {
+        "schema_name": "SignalDurabilityLayer",
+        "schema_version": "nrd.signal.durability_layer.v1",
+        "audit_scope": "AUDIT_ONLY",
+        "score_semantics": "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY",
+        "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+        "policy": _signal_durability_policy(),
+        "compat_backfill_applied": True,
+        "compat_backfill_source": "materializer_signal_durability_alias_v1",
+        "compat_source_fields": sorted(aliases),
+    }
+    field_map = {
+        "comfort_window": "comfort_window",
+        "price_anchor_durability": "price_anchor_durability",
+        "temporal_session": "temporal_session",
+        "session_context": "session_context",
+        "durability_layer_scores": "layer_scores",
+        "durability_reason_codes": "reason_codes",
+        "durability_data_gaps": "data_gaps",
+    }
+    for source_key, target_key in field_map.items():
+        if source_key in aliases:
+            wrapper[target_key] = aliases[source_key]
+    anchor = wrapper.get("price_anchor_durability")
+    if isinstance(anchor, dict):
+        _ensure_price_anchor_durability_defaults(anchor)
+        score = _first_present(
+            anchor.get("durability_score"), anchor.get("headline_score"),
+            anchor.get("score"))
+        state = _first_present(
+            anchor.get("durability_state"), anchor.get("headline_state"),
+            anchor.get("state"))
+        if score not in (None, ""):
+            wrapper["headline_score"] = score
+            wrapper["score"] = score
+        if state not in (None, ""):
+            wrapper["headline_state"] = state
+            wrapper["state"] = state
+        if isinstance(anchor.get("layer_scores"), dict):
+            wrapper["layer_scores"] = anchor.get("layer_scores")
+    record["signal_durability"] = wrapper
+    return record
+
+
+def _first_present(*values):
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _signal_durability_native_missing_fields(durability):
+    missing = []
+    if durability.get("schema_name") != "SignalDurabilityLayer":
+        missing.append("schema_name")
+    if durability.get("schema_version") != "nrd.signal.durability_layer.v1":
+        missing.append("schema_version")
+    if durability.get("audit_scope") != "AUDIT_ONLY":
+        missing.append("audit_scope")
+    if durability.get("headline_score") in (None, ""):
+        missing.append("headline_score")
+    if durability.get("headline_state") in (None, ""):
+        missing.append("headline_state")
+    comfort = durability.get("comfort_window")
+    if not isinstance(comfort, dict) or comfort.get("tag") in (None, ""):
+        missing.append("comfort_window.tag")
+    anchor = durability.get("price_anchor_durability")
+    if not isinstance(anchor, dict):
+        missing.append("price_anchor_durability")
+        return missing
+    if anchor.get("schema_name") != "SignalPriceAnchorDurability":
+        missing.append("price_anchor_durability.schema_name")
+    if anchor.get("durability_score") in (None, ""):
+        missing.append("price_anchor_durability.durability_score")
+    if anchor.get("durability_state") in (None, ""):
+        missing.append("price_anchor_durability.durability_state")
+    if not isinstance(anchor.get("layer_scores"), dict):
+        missing.append("price_anchor_durability.layer_scores")
+    return missing
+
+
+def _ensure_signal_durability_defaults(durability):
+    durability.setdefault("schema_name", "SignalDurabilityLayer")
+    durability.setdefault("schema_version", "nrd.signal.durability_layer.v1")
+    durability.setdefault("audit_scope", "AUDIT_ONLY")
+    durability.setdefault("score_semantics",
+                          "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY")
+    durability.setdefault("confidence_policy", "DO_NOT_MULTIPLY_CONFIDENCE")
+    durability.setdefault("policy", _signal_durability_policy())
+    anchor = durability.get("price_anchor_durability")
+    if isinstance(anchor, dict):
+        _ensure_price_anchor_durability_defaults(anchor)
+        score = _first_present(
+            durability.get("headline_score"), anchor.get("durability_score"),
+            anchor.get("headline_score"), anchor.get("score"))
+        state = _first_present(
+            durability.get("headline_state"), anchor.get("durability_state"),
+            anchor.get("headline_state"), anchor.get("state"))
+        if score not in (None, ""):
+            durability.setdefault("headline_score", score)
+            durability.setdefault("score", score)
+        if state not in (None, ""):
+            durability.setdefault("headline_state", state)
+            durability.setdefault("state", state)
+        if isinstance(anchor.get("layer_scores"), dict):
+            durability.setdefault("layer_scores", anchor.get("layer_scores"))
+
+
+def _signal_durability_policy():
+    return {
+        "not_direction_factor": True,
+        "not_execution_gate": True,
+        "not_confidence_multiplier": True,
+        "display_only_for_manual_audit": True,
+    }
+
+
+def _ensure_price_anchor_durability_defaults(anchor):
+    anchor.setdefault("schema_name", "SignalPriceAnchorDurability")
+    anchor.setdefault("schema_version", "nrd.signal.price_anchor_durability.v1")
+    anchor.setdefault("audit_scope", "AUDIT_ONLY")
+    anchor.setdefault("score_method", "LAYERED_HEURISTIC_V1")
+    anchor.setdefault("score_semantics",
+                      "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY")
+    anchor.setdefault("score_calibration", "HEURISTIC_UNCALIBRATED")
+    anchor.setdefault("policy", _signal_durability_policy())
+    score = _first_present(anchor.get("durability_score"),
+                           anchor.get("headline_score"), anchor.get("score"))
+    state = _first_present(anchor.get("durability_state"),
+                           anchor.get("headline_state"), anchor.get("state"))
+    if score not in (None, ""):
+        anchor.setdefault("durability_score", score)
+        anchor.setdefault("headline_score", score)
+        anchor.setdefault("score", score)
+    if state not in (None, ""):
+        anchor.setdefault("durability_state", state)
+        anchor.setdefault("headline_state", state)
+        anchor.setdefault("state", state)
 
 
 def _enrich_auxiliary_evidence(record):

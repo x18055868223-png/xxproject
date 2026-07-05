@@ -36,6 +36,8 @@ def main():
     record = mod.build_audit_record(card, config)
     brief = mod.render_push_brief(card, config)
 
+    assert_true(config["demo_version"] == "1.5.2",
+                "FMZ signal deliverable version should match r3.3.6 producer")
     assert_true(record["schema"]["name"] == "signal_review_card", "schema name")
     assert_true(record["schema"]["version"] == "1.0.0", "schema version")
     assert_true(record["schema"].get("status") == "FINAL", "schema status")
@@ -59,6 +61,24 @@ def main():
                         name + " OK source age_ms")
     assert_true(record["decision"]["confidence_semantics"]
                 == "EVIDENCE_QUALITY_NOT_WIN_RATE", "confidence semantics")
+    durability = record.get("signal_durability")
+    assert_true(isinstance(durability, dict), "signal durability layer")
+    assert_true(durability["audit_scope"] == "AUDIT_ONLY",
+                "durability layer is audit-only")
+    assert_true(durability["score_semantics"]
+                == "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY",
+                "durability score semantics")
+    assert_true(durability["policy"]["not_direction_factor"] is True,
+                "durability not direction factor")
+    assert_true(durability["policy"]["not_execution_gate"] is True,
+                "durability not execution gate")
+    assert_true(durability["policy"]["not_confidence_multiplier"] is True,
+                "durability not confidence multiplier")
+    assert_true(record.get("comfort_window") == durability["comfort_window"],
+                "comfort alias mirrors canonical durability object")
+    assert_true(record.get("price_anchor_durability")
+                == durability["price_anchor_durability"],
+                "price anchor alias mirrors canonical durability object")
     assert_true("directional_bias" in record["decision"], "directional bias")
     assert_true("evidence_strength" in record["decision"], "evidence strength")
     assert_true("headline" in record["display_layers"], "display headline")
@@ -89,9 +109,27 @@ def main():
                 "delivery push summary matches renderer")
     assert_true(len(brief) <= 140, "brief target length <= 140")
     assert_true("\n" not in brief and "\r" not in brief, "brief single line")
+    assert_true("耐" in brief and any(token in brief for token in (
+                "/DUR ", "/WEAK ", "/BRK ", "/GAP ")),
+                "brief contains compact durability token")
+    long_config = dict(config)
+    long_config["audit_static_base_url"] = "https://example.com/" + ("x" * 120)
+    long_brief = mod.render_push_brief(card, long_config)
+    assert_true(len(long_brief) <= 140,
+                "long-url fallback brief target length <= 140")
+    assert_true("\n" not in long_brief and "\r" not in long_brief,
+                "long-url fallback brief single line")
+    assert_true("耐" in long_brief and any(token in long_brief for token in (
+                "/DUR ", "/WEAK ", "/BRK ", "/GAP ")),
+                "fallback brief keeps durability token")
 
     for path in (
         "market_context.price",
+        "signal_durability.price_anchor_durability.state",
+        "signal_durability.price_anchor_durability.durability_state",
+        "comfort_window.window_code",
+        "price_anchor_durability.score",
+        "price_anchor_durability.durability_score",
         "factor_cross_section.gamma_regime.regime",
         "factor_cross_section.gex_info.market_state",
         "integrity.record_hash",

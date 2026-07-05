@@ -44,6 +44,29 @@ def assert_asset_root(root):
     assert_true((root / "app.js").exists(), "missing app.js in " + str(root))
     assert_true((root / "signal_cards" / "index.json").exists(),
                 "missing signal_cards/index.json in " + str(root))
+    app = (root / "app.js").read_text(encoding="utf-8")
+    index_html = (root / "index.html").read_text(encoding="utf-8")
+    version = read_json(root / "VERSION.json")
+    for token in (
+            "function renderSignalDurability(doc)",
+            "signal_durability",
+            "comfort_window",
+            "price_anchor_durability",
+            "US_T2_CORE_COMFORT",
+            "DO_NOT_MULTIPLY_CONFIDENCE"):
+        assert_true(token in app,
+                    "frontend app should expose durability renderer token " + token)
+    assert_true("app.js?v=20260705-r3.3.6-durability" in index_html
+                and "fallback.js?v=20260705-r3.3.6-durability" in index_html,
+                "index.html should cache-bust r3.3.6 durability assets")
+    assert_true(version.get("backup_version")
+                == "NRD-XXPROJECT-BACKUP-2026.07.05-r3.3.6",
+                "VERSION backup_version should name the r3.3.6 durability slice")
+    assert_true(version.get("generated_at") == "2026-07-05",
+                "VERSION generated_at should match the r3.3.6 asset refresh date")
+    assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
+                and "durability" in version.get("frontend_contract", ""),
+                "VERSION should document the signal durability frontend contract")
     cards = cards_with_session_context(root)
     assert_true(cards, "static signal_cards should include session_context in " + str(root))
     ordered_cards = sorted((card for _path, card, _ctx in cards), key=event_time)
@@ -176,14 +199,14 @@ vm.runInContext(app, context);
 setTimeout(() => {
   const html = elements.documentView.innerHTML;
   const required = [
-    "信号时区置信度 / 前提耐久度",
-    "本层结论",
-    "三年验证依据",
-    "结论红线"
+    "信号耐用性层",
+    "只读解释",
+    "不改变置信",
+    "旧卡兼容"
   ];
   const missing = required.filter((item) => !html.includes(item));
   if (missing.length) {
-    throw new Error("session context render missing: " + missing.join(","));
+    throw new Error("signal durability render missing: " + missing.join(","));
   }
 }, 0);
 """
@@ -192,7 +215,7 @@ setTimeout(() => {
                             capture_output=True, encoding="utf-8",
                             errors="replace")
     assert_true(result.returncode == 0,
-                "frontend should render session_context: "
+                "frontend should render signal_durability: "
                 + (result.stderr or result.stdout))
 
 

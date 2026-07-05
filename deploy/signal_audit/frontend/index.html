@@ -316,7 +316,7 @@
 
     .metric-strip {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       border: 1px solid var(--line);
       border-radius: 6px;
       overflow: hidden;
@@ -507,6 +507,107 @@
       margin: 0;
       color: var(--muted);
       line-height: 1.65;
+    }
+
+    .signal-durability-panel {
+      border: 1px solid var(--line-strong);
+      border-left: 5px solid var(--ink);
+      border-radius: 6px;
+      padding: 14px 16px;
+      background: var(--surface);
+    }
+
+    .durability-policy {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .durability-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .durability-summary-card,
+    .durability-layer-card,
+    .durability-conclusion-card {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px 13px;
+      background: var(--bg);
+      min-width: 0;
+    }
+
+    .durability-summary-card strong,
+    .durability-conclusion-card strong {
+      display: block;
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .durability-summary-card span {
+      display: block;
+      margin-top: 6px;
+      font-size: 19px;
+      line-height: 1.2;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .durability-summary-card p,
+    .durability-layer-card p,
+    .durability-conclusion-card p {
+      margin: 7px 0 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .durability-layer-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .durability-layer-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .durability-layer-title strong {
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .durability-layer-title span {
+      font-size: 18px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .durability-layer-state {
+      color: var(--ink) !important;
+      font-weight: 760;
+    }
+
+    .durability-conclusion-card {
+      margin-top: 12px;
+    }
+
+    .durability-reason-list {
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .durability-compat-note {
+      color: var(--faint) !important;
+      font-size: 12px;
     }
 
     #transition-context {
@@ -1612,7 +1713,7 @@
         border-right: 1px solid var(--line);
       }
 
-      .metric:nth-last-child(-n + 1) {
+      .metric:nth-last-child(-n + 2) {
         border-bottom: 0;
       }
 
@@ -1627,7 +1728,9 @@
 
       .formula-block,
       .llm-gamma-copy,
-      .two-column-notes {
+      .two-column-notes,
+      .durability-summary-grid,
+      .durability-layer-list {
         grid-template-columns: 1fr;
       }
     }
@@ -1647,6 +1750,8 @@
 
       .metric-strip,
       .kv-grid,
+      .durability-summary-grid,
+      .durability-layer-list,
       .transition-core-row,
       .transition-comparison-tabs,
       .conflict-sides {
@@ -1735,7 +1840,7 @@
 []
   </script>
 
-  <script src="signal_cards/fallback.js?v=20260626d-transition-v1.2.4"></script>
-  <script src="app.js?v=20260626d-transition-v1.2.4"></script>
+  <script src="signal_cards/fallback.js?v=20260705-r3.3.6-durability"></script>
+  <script src="app.js?v=20260705-r3.3.6-durability"></script>
 </body>
 </html>

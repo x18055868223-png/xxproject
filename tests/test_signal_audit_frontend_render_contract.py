@@ -592,6 +592,187 @@ function renderCard(card) {
     return json.loads(result.stdout)
 
 
+def render_sample_card(root, sample):
+    script = r"""
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+const root = __ROOT__;
+const card = __CARD__;
+const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
+const elements = {};
+function element(id) {
+  if (!elements[id]) {
+    elements[id] = {
+      id,
+      value: "",
+      innerHTML: "",
+      textContent: "",
+      dataset: {},
+      classList: { add() {}, remove() {}, toggle() {} },
+      addEventListener() {},
+      insertAdjacentHTML(_where, html) { this.innerHTML += html; },
+      focus() {}
+    };
+  }
+  return elements[id];
+}
+const document = {
+  getElementById(id) {
+    if (id === "signal-data") return { textContent: JSON.stringify([card]) };
+    return element(id);
+  },
+  querySelector(selector) {
+    return element(selector.startsWith("#") ? selector.slice(1) : selector);
+  },
+  querySelectorAll() { return []; }
+};
+const context = {
+  window: { location: { protocol: "file:" }, SIGNAL_CARD_FIXTURES: [card] },
+  document,
+  console,
+  Intl,
+  setTimeout,
+  clearTimeout,
+  fetch: () => Promise.reject(new Error("unexpected fetch"))
+};
+vm.createContext(context);
+vm.runInContext(app, context);
+setTimeout(() => {
+  const documentHtml = elements.documentView ? elements.documentView.innerHTML : "";
+  const indexHtml = elements.indexList ? elements.indexList.innerHTML : "";
+  const text = documentHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  const indexText = indexHtml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  process.stdout.write(JSON.stringify({ documentHtml, indexHtml, text, indexText }));
+}, 20);
+"""
+    script = (
+        script
+        .replace("__ROOT__", json.dumps(str(root)))
+        .replace("__CARD__", json.dumps(sample, ensure_ascii=False))
+    )
+    result = subprocess.run(
+        ["node", "-e", script],
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert_true(result.returncode == 0, result.stderr or result.stdout)
+    return json.loads(result.stdout)
+
+
+def durability_sample_card(with_durability=True):
+    card = {
+        "schema": {"name": "signal_review_card", "version": "1.0.0"},
+        "identity": {
+            "card_id": "DURABILITY-CONTRACT-CARD",
+            "short_id": "DUR",
+            "symbol": "BTC",
+            "strategy_version": "1.5.2",
+            "confirmed_at": "2026-06-24T10:00:00+08:00",
+        },
+        "market_context": {"price": 101234.5, "quote_currency": "USDT"},
+        "quality": {"overall": "OK", "all_required_sources_ready": True},
+        "decision": {
+            "lean": "NEUTRAL",
+            "support_label": "NO_TRADE_BLOCKED",
+            "confidence": 64,
+            "evidence_strength": "MEDIUM",
+        },
+        "conflict": {"ratio": 0.12, "level": "LOW"},
+        "reasoning": {"evidence": []},
+        "signal_window": {
+            "session_context": {
+                "display_label": "中性保守",
+                "premise_durability": "NEUTRAL_CONSERVATIVE",
+                "effective_zone": "NEUTRAL_CONSERVATIVE",
+                "backtest_delta_pp": 0.09,
+                "validation_basis": {
+                    "data_range": "2023-04-17 -> 2026-04-16",
+                    "headline_horizon_min": 60,
+                    "sample_bars": 315363,
+                    "research_grade": "MARKET_PRIOR_VALIDATED",
+                },
+            },
+        },
+    }
+    if with_durability:
+        card["signal_durability"] = {
+            "schema_name": "SignalDurabilityLayer",
+            "schema_version": "nrd.signal.durability_layer.v1",
+            "audit_scope": "AUDIT_ONLY",
+            "headline_score": 72,
+            "headline_state": "ANCHOR_DURABLE",
+            "comfort_window": {
+                "tag": "NORMAL_WINDOW",
+                "state": "NORMAL",
+                "brief_token": "NW",
+            },
+            "temporal_session": {
+                "state": "MEDIUM",
+                "score": 0.61,
+                "display_label": "中性保守",
+                "premise_durability": "NEUTRAL_CONSERVATIVE",
+                "backtest_delta_pp": 0.09,
+                "validation_basis": {
+                    "data_range": "2023-04-17 -> 2026-04-16",
+                    "headline_horizon_min": 60,
+                    "sample_bars": 315363,
+                    "research_grade": "MARKET_PRIOR_VALIDATED",
+                },
+            },
+            "session_context": {
+                "state": "MEDIUM",
+                "score": 0.61,
+                "display_label": "中性保守",
+                "premise_durability": "NEUTRAL_CONSERVATIVE",
+                "backtest_delta_pp": 0.09,
+            },
+            "price_anchor_durability": {
+                "schema_name": "SignalPriceAnchorDurability",
+                "schema_version": "nrd.signal.price_anchor_durability.v1",
+                "durability_state": "ANCHOR_DURABLE",
+                "durability_score": 72,
+                "state": "ANCHOR_DURABLE",
+                "score": 72,
+                "score_quality": "HIGH",
+                "layer_scores": {
+                    "anchor_native": {"score": 0.72, "state": "ANCHOR_DURABLE"},
+                    "price_efficiency": {
+                        "score": 0.65,
+                        "state": "ANCHOR_WEAK",
+                        "ppe": 0.72,
+                        "interpretation": "PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS",
+                    },
+                    "options_gamma": {"score": 0.80, "state": "ANCHOR_DURABLE"},
+                    "perp_funding": {
+                        "score": 0.70,
+                        "interpretation": "HEALTHY_CONFIRMATION",
+                    },
+                },
+            },
+            "layer_scores": {
+                "anchor_native": {"score": 0.72, "state": "ANCHOR_DURABLE"},
+                "price_efficiency": {
+                    "score": 0.65,
+                    "state": "ANCHOR_WEAK",
+                    "ppe": 0.72,
+                    "interpretation": "PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS",
+                },
+                "options_gamma": {"score": 0.80, "state": "ANCHOR_DURABLE"},
+                "perp_funding": {
+                    "score": 0.70,
+                    "interpretation": "HEALTHY_CONFIRMATION",
+                },
+            },
+            "reason_codes": ["COMFORT_WINDOW_OK", "PRICE_ANCHOR_OK"],
+            "data_gaps": ["NO_TRADE_GATE"],
+            "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+        }
+    return card
+
+
 def main():
     app = (FRONTEND / "app.js").read_text(encoding="utf-8")
     project_memory = (ROOT / "PROJECT_MEMORY.md").read_text(encoding="utf-8")
@@ -612,13 +793,35 @@ def main():
                 "frontend should render transition LLM sidecar reviews")
     assert_true("macro_shock" in app and "legacy_blocking_flags" in app,
                 "frontend should keep native macro shock and legacy macro block fields traceable")
-    session_idx = app.find("${renderSignalSessionContext(doc)}")
+    assert_true("function renderSignalDurability(doc)" in app,
+                "frontend should expose unified signal durability renderer")
+    assert_true("${renderSignalDurability(doc)}" in app,
+                "document render flow should call unified signal durability renderer")
+    assert_true("${renderSignalSessionContext(doc)}" not in app,
+                "standalone session-context renderer should be replaced in the main flow")
+    session_idx = app.find("${renderSignalDurability(doc)}")
     transition_idx = app.find("${renderTransitionContext(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
     assert_true(session_idx != -1 and transition_idx != -1 and llm_idx != -1,
-                "document render flow should include session, transition, and LLM sections")
+                "document render flow should include durability, transition, and LLM sections")
     assert_true(session_idx < transition_idx < llm_idx,
-                "transition context should render after session context and before card LLM review")
+                "transition context should render after durability context and before card LLM review")
+    for marker in (
+            "comfort_window",
+            "price_anchor_durability",
+            "layer_scores",
+            "reason_codes",
+            "data_gaps",
+            "AUDIT_ONLY",
+            "DO_NOT_MULTIPLY_CONFIDENCE",
+            "US_T2_CORE_COMFORT",
+            "anchor_native",
+            "price_efficiency",
+            "options_gamma",
+            "perp_funding",
+    ):
+        assert_true(marker in app,
+                    "frontend should expose signal durability marker: " + marker)
     for marker in (
             "状态转移审计",
             "状态路径",
@@ -654,6 +857,88 @@ def main():
     fallback = (FRONTEND / "signal_cards" / "fallback.js").read_text(encoding="utf-8")
     assert_true("GEMINI-LOCAL-PREVIEW" not in fallback,
                 "default fallback.js should exclude synthetic preview cards")
+
+    durability_render = render_sample_card(FRONTEND, durability_sample_card())
+    durability_text = durability_render["text"]
+    durability_html = durability_render["documentHtml"]
+    durability_index = durability_render["indexText"]
+    assert_true("signal-durability" in durability_html,
+                "native card should render unified signal durability section")
+    for token in (
+            "信号耐用性层",
+            "合成耐用性",
+            "舒适窗口",
+            "时区耐用性",
+            "72",
+            "锚原生层",
+            "PPE路径效率",
+            "GEX / Gamma放大器",
+            "Funding杠杆解释",
+            "+0.09pp",
+            "中性保守",
+            "合成解释",
+            "只读解释",
+            "不改变置信",
+    ):
+        assert_true(token in durability_text,
+                    "durability UI missing readable conclusion token: " + token)
+    for raw_token in (
+            "NORMAL_WINDOW",
+            "ANCHOR_DURABLE",
+            "anchor_native",
+            "price_efficiency",
+            "options_gamma",
+            "perp_funding",
+            "PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS",
+            "COMFORT_WINDOW_OK",
+            "NO_TRADE_GATE",
+            "DO_NOT_MULTIPLY_CONFIDENCE",
+            "headline_score",
+            "comfort_window.tag",
+            "NW",
+    ):
+        assert_true(raw_token not in durability_text,
+                    "durability UI should not expose raw machine token: " + raw_token)
+    assert_true("A. 锚原生层" not in durability_text
+                and "B. PPE路径效率" not in durability_text,
+                "durability layer titles should not include A/B prefixes")
+    assert_true("舒适窗 否" in durability_index
+                and "72" in durability_index
+                and "NW" not in durability_index,
+                "sidebar mini-stats should show comfort-window conclusion, not raw NW")
+    time_only_card = durability_sample_card()
+    time_only_card["signal_durability"]["comfort_window"] = {
+        "tag": "US_T2_TIME_ONLY",
+        "state": "COMFORTABLE",
+        "brief_token": "T2T",
+    }
+    time_only_index = render_sample_card(FRONTEND, time_only_card)["indexText"]
+    assert_true("舒适窗 是" in time_only_index
+                and "舒适窗 时间" not in time_only_index
+                and "T2T" not in time_only_index
+                and "US_T2_TIME_ONLY" not in time_only_index,
+                "sidebar time-only comfort tag should collapse to yes/no conclusion")
+    assert_true("[object Object]" not in durability_text
+                and "[object Object]" not in durability_html,
+                "durability UI should not leak object stringification")
+
+    old_render = render_sample_card(
+        FRONTEND, durability_sample_card(with_durability=False))
+    old_text = old_render["text"]
+    old_html = old_render["documentHtml"]
+    old_index = old_render["indexText"]
+    assert_true("signal-durability" in old_html,
+                "old cards should still render a benign durability section")
+    assert_true("旧卡兼容" in old_text and "未提供" in old_text,
+                "old cards should explain missing durability as legacy compatible")
+    assert_true("+0.09pp" in old_text
+                and "中性保守" in old_text,
+                "old cards should show front-end backfilled three-year temporal durability basis")
+    assert_true("舒适窗 关闭" in old_index
+                and "舒适窗 未提供" not in old_index,
+                "old-card sidebar comfort status should use close/false wording")
+    assert_true("[object Object]" not in old_text and "[object Object]" not in old_html,
+                "old-card durability fallback should not stringify objects")
 
     rows = render_contract(FRONTEND)
     assert_true(rows, "render contract should cover cards")

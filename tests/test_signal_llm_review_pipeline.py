@@ -1599,21 +1599,21 @@ def test_review_generation_limit_caps_failed_attempts():
                     "transition review limit should cap failed attempts, not only successful writes")
 
 
-def test_frontend_renders_session_context_between_rank_and_llm_review():
+def test_frontend_renders_durability_between_rank_and_llm_review():
     app = FRONTEND_APP.read_text(encoding="utf-8")
     html = FRONTEND_HTML.read_text(encoding="utf-8")
     rank_idx = app.find("${renderGexRank(doc)}")
-    session_idx = app.find("${renderSignalSessionContext(doc)}")
+    durability_idx = app.find("${renderSignalDurability(doc)}")
     transition_idx = app.find("${renderTransitionContext(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
     decision_idx = app.find("${renderDecision(doc)}")
-    assert_true(rank_idx != -1 and session_idx != -1 and transition_idx != -1
+    assert_true(rank_idx != -1 and durability_idx != -1 and transition_idx != -1
                 and llm_idx != -1,
-                "rank, session context, transition, and llm render calls should exist")
+                "rank, durability, transition, and llm render calls should exist")
     assert_true(decision_idx == -1,
                 "low-signal decision conclusion should not render in the main flow")
-    assert_true(rank_idx < session_idx < transition_idx < llm_idx,
-                "session context should render after rank and before transition/LLM review")
+    assert_true(rank_idx < durability_idx < transition_idx < llm_idx,
+                "durability layer should render after rank and before transition/LLM review")
     assert_true(".llm-review-panel" in html and ".llm-review-summary" in html,
                 "LLM review should have prominent panel styling")
     for text in (
@@ -1628,7 +1628,7 @@ def test_frontend_renders_session_context_between_rank_and_llm_review():
         "混合不明",
         'gemini: "Gemini"',
         "输入包哈希",
-        "信号时区置信度 / 前提耐久度",
+        "信号耐用性层",
         "低转中缓冲带",
     ):
         assert_true(text in app, "LLM review should localize " + text)
@@ -1669,6 +1669,6 @@ if __name__ == "__main__":
     test_materializer_merges_sidecar_without_downgrading_inline_ok()
     test_generate_reviews_redacts_sensitive_error_text()
     test_review_generation_limit_caps_failed_attempts()
-    test_frontend_renders_session_context_between_rank_and_llm_review()
+    test_frontend_renders_durability_between_rank_and_llm_review()
     test_fmz_signal_loop_does_not_call_llm_in_process()
     print("signal_llm_review_pipeline: PASS")

@@ -149,7 +149,8 @@ CONFIG = {
     # Render/observability only; nrd schema_version stays v1.0.0.
     # v1.5.1 (2026-06-25): MACRO dual-axis minimum enhancement. Stable macro
     # headwind remains directional context; only confirmed macro shock gates.
-    "demo_version": "1.5.1",
+    # v1.5.2 (2026-07-05): Signal Durability Layer producer fields.
+    "demo_version": "1.5.2",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -4154,6 +4155,856 @@ def classify_signal_session_context(confirmed_time_ms, config=None):
     }
 
 
+_SIGNAL_DURABILITY_WEIGHTS = {
+    "anchor_native": 0.45,
+    "price_efficiency": 0.25,
+    "options_gamma": 0.20,
+    "perp_funding": 0.10,
+}
+
+
+def _durability_policy():
+    return {
+        "not_direction_factor": True,
+        "not_execution_gate": True,
+        "not_confidence_multiplier": True,
+        "affects_confidence": False,
+        "affects_trade_allowed": False,
+        "affects_blocking": False,
+        "audit_scope": "AUDIT_ONLY",
+    }
+
+
+def _durability_json_clone(value):
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return value
+
+
+def _durability_unit_score(score):
+    score = safe_float(score)
+    if score is None:
+        return None
+    if score > 1.0:
+        score = score / 100.0
+    return clamp(score, 0.0, 1.0)
+
+
+def _durability_state_from_score(score):
+    score = _durability_unit_score(score)
+    if score is None:
+        return "ANCHOR_DATA_GAP"
+    if score >= 0.70:
+        return "ANCHOR_DURABLE"
+    if score >= 0.45:
+        return "ANCHOR_WEAK"
+    return "ANCHOR_BROKEN"
+
+
+def _durability_score_100(score):
+    score = _durability_unit_score(score)
+    if score is None:
+        return None
+    return int(round(clamp(score, 0.0, 1.0) * 100.0))
+
+
+def _first_float(*values):
+    for value in values:
+        parsed = safe_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def build_comfort_window_context(event_ts_ms, cfg=None):
+    """AUDIT_ONLY T2 display window. Does not feed direction or gates."""
+    event_ms = safe_float(event_ts_ms)
+    base = {
+        "schema_name": "SignalComfortWindow",
+        "schema_version": "nrd.signal.comfort_window.v1",
+        "audit_scope": "AUDIT_ONLY",
+        "reference_market": "US_EQUITY_CASH",
+        "timezone": "America/New_York",
+        "event_time_ms": None if event_ms is None else int(round(event_ms)),
+        "ny_open_reference": "09:30",
+        "minutes_after_ny_open": None,
+        "tag": "NORMAL_WINDOW",
+        "calendar_state": "CALENDAR_UNKNOWN",
+        "state": "NORMAL",
+        "window_code": "NORMAL_WINDOW",
+        "session_assumption": "CALENDAR_UNKNOWN",
+        "brief_token": "NW",
+        "scoring_role": "DISPLAY_CONTEXT_ONLY",
+        "score_input_policy": "DISPLAY_CONTEXT_NOT_PRICE_ANCHOR_SCORE_INPUT",
+        "affects_confidence": False,
+        "affects_blocking": False,
+        "affects_trade_allowed": False,
+        "ny_time": None,
+        "ny_weekday": None,
+        "is_weekend": None,
+        "operator_hint_cn": "非 T2 舒适观察窗；仅供人工审计提醒。",
+    }
+    if event_ms is None:
+        base["reason_codes"] = ["MISSING_EVENT_TIME"]
+        return base
+    try:
+        times = _local_session_times(event_ms)
+    except Exception:
+        base["reason_codes"] = ["INVALID_EVENT_TIME"]
+        return base
+    ny = times["ny"]
+    hour = _hour_float(ny)
+    weekend = ny.weekday() >= 5
+    minutes_after_open = (
+        ny.hour * 60.0 + ny.minute + ny.second / 60.0 + ny.microsecond / 60000000.0
+        - (9 * 60 + 30)
+    )
+    calendar_state = "WEEKEND_TIME_ONLY" if weekend else "REGULAR_SESSION_ASSUMED"
+    base.update({
+        "ny_time": ny.isoformat(),
+        "ny_weekday": ny.weekday(),
+        "is_weekend": weekend,
+        "dst_mode": times.get("dst_mode"),
+        "calendar_state": calendar_state,
+        "session_assumption": calendar_state,
+        "minutes_after_ny_open": round(minutes_after_open, 2),
+    })
+    if weekend and 10.0 <= hour <= 13.0:
+        base.update({
+            "tag": "US_T2_TIME_ONLY",
+            "state": "TIME_ONLY",
+            "brief_token": "T2T",
+            "operator_hint_cn": "NY 时间命中 T2，但周末/日历不可作为常规美股现金时段，仅供审计提示。",
+        })
+    elif (not weekend) and 10.0 <= hour < 11.0:
+        base.update({
+            "tag": "US_T2_EARLY_REPRICE",
+            "state": "EARLY_REPRICE",
+            "brief_token": "T2E",
+            "operator_hint_cn": "T2 早段再定价，开盘后结构尚在沉淀；仅供审计提示。",
+        })
+    elif (not weekend) and 11.0 <= hour <= 13.0:
+        base.update({
+            "tag": "US_T2_CORE_COMFORT",
+            "state": "COMFORTABLE",
+            "brief_token": "T2C",
+            "operator_hint_cn": "T2 核心观察窗，仅供人工审计提醒，不自动放行。",
+        })
+    base["window_code"] = base["tag"]
+    if base["tag"] == "US_T2_EARLY_REPRICE":
+        reason = "NY_TIME_WITHIN_T2_EARLY_REPRICE"
+    elif base["tag"] == "US_T2_CORE_COMFORT":
+        reason = "NY_TIME_WITHIN_T2_CORE"
+    elif base["tag"] == "US_T2_TIME_ONLY":
+        reason = "NY_WEEKEND_TIME_ONLY_T2"
+    else:
+        reason = "NY_TIME_OUTSIDE_T2"
+    base["reason_codes"] = [reason]
+    return base
+
+
+def compute_price_path_efficiency(price_points=None, ohlc=None, eps=1e-12):
+    reason_codes = []
+    points = [safe_float(v) for v in (price_points or [])]
+    points = [v for v in points if v is not None]
+    if len(points) >= 2:
+        path = sum(abs(points[i] - points[i - 1])
+                   for i in range(1, len(points)))
+        net = abs(points[-1] - points[0])
+        base_price = abs(points[0]) if abs(points[0]) > eps else 1.0
+        if path <= eps:
+            value = 1.0 if net <= eps else 0.0
+            reason_codes.append("PPE_FLAT_EXACT_PATH")
+        else:
+            value = clamp(net / path, 0.0, 1.0)
+        bar_direction = (
+            "UP" if points[-1] > points[0]
+            else ("DOWN" if points[-1] < points[0] else "FLAT"))
+        return {
+            "schema_name": "PricePathEfficiency",
+            "schema_version": "nrd.signal.price_path_efficiency.v1",
+            "method": "EXACT_PRICE_POINTS",
+            "ppe_source": "VOLUME_BAR_PATH",
+            "data_state": "OK",
+            "value": value,
+            "ppe": value,
+            "score": value,
+            "net_move": net,
+            "net_move_pct": net / base_price,
+            "path_travel": path,
+            "gross_travel_pct": path / base_price,
+            "point_count": len(points),
+            "path_points_count": len(points),
+            "bar_direction": bar_direction,
+            "reason_codes": reason_codes,
+        }
+
+    ohlc = ohlc or {}
+    open_v = _first_float(ohlc.get("open"), ohlc.get("bar_open"),
+                          ohlc.get("current_bar_open"))
+    high_v = _first_float(ohlc.get("high"), ohlc.get("bar_high"),
+                          ohlc.get("current_bar_high"))
+    low_v = _first_float(ohlc.get("low"), ohlc.get("bar_low"),
+                         ohlc.get("current_bar_low"))
+    close_v = _first_float(ohlc.get("close"), ohlc.get("bar_close"),
+                           ohlc.get("current_bar_close"),
+                           ohlc.get("current_price"))
+    if open_v is None or close_v is None:
+        return {
+            "schema_name": "PricePathEfficiency",
+            "schema_version": "nrd.signal.price_path_efficiency.v1",
+            "method": "DATA_GAP",
+            "ppe_source": "MISSING",
+            "data_state": "MISSING",
+            "value": None,
+            "ppe": None,
+            "score": None,
+            "path_points_count": 0,
+            "reason_codes": ["PPE_DATA_GAP"],
+        }
+    if high_v is None:
+        high_v = max(open_v, close_v)
+    if low_v is None:
+        low_v = min(open_v, close_v)
+    high_v = max(high_v, open_v, close_v)
+    low_v = min(low_v, open_v, close_v)
+    span = high_v - low_v
+    net = abs(close_v - open_v)
+    base_price = abs(open_v) if abs(open_v) > eps else 1.0
+    if span <= eps:
+        value = 1.0 if net <= eps else 0.0
+        reason_codes.append("PPE_FLAT_PROXY_RANGE")
+    else:
+        value = clamp(net / span, 0.0, 1.0)
+    reason_codes.append("PPE_PROXY_OHLC_USED")
+    bar_direction = (
+        "UP" if close_v > open_v
+        else ("DOWN" if close_v < open_v else "FLAT"))
+    return {
+        "schema_name": "PricePathEfficiency",
+        "schema_version": "nrd.signal.price_path_efficiency.v1",
+        "method": "PROXY_OHLC",
+        "ppe_source": "OHLC_PROXY",
+        "data_state": "PROXY",
+        "value": value,
+        "ppe": value,
+        "score": value,
+        "net_move": net,
+        "net_move_pct": net / base_price,
+        "path_travel": span,
+        "gross_travel_pct": span / base_price,
+        "path_points_count": 2,
+        "bar_direction": bar_direction,
+        "ohlc": {
+            "open": open_v, "high": high_v, "low": low_v, "close": close_v,
+        },
+        "reason_codes": reason_codes,
+    }
+
+
+def direction_sign_from_decision(decision, decision_matrix=None,
+                                 selected_side=None):
+    decision = decision or {}
+    decision_matrix = decision_matrix or {}
+    for value in (
+            decision.get("lean"),
+            decision.get("directional_bias"),
+            decision_matrix.get("direction")):
+        text = str(value or "").upper()
+        if "BULL" in text or "LONG" in text:
+            return 1
+        if "BEAR" in text or "SHORT" in text:
+            return -1
+    side = str(selected_side or decision.get("side_hint") or "").lower()
+    if "put_credit" in side or side in ("put", "pcs"):
+        return 1
+    if "call_credit" in side or side in ("call", "ccs"):
+        return -1
+    return 0
+
+
+def _durability_runtime_price_path_snapshot(runtime_facts):
+    runtime_facts = runtime_facts or {}
+    price_points = _extract_price_points(runtime_facts)
+    ohlc, source = _extract_ohlc_from_facts(runtime_facts)
+    out = {}
+    if price_points:
+        out["price_points"] = price_points
+    if ohlc:
+        out["ohlc"] = ohlc
+        out["ohlc_source"] = source
+    return out
+
+
+def _extract_price_points(facts):
+    if not isinstance(facts, dict):
+        return []
+    for node in (
+            facts,
+            facts.get("price_path") or {},
+            facts.get("runtime_facts") or {}):
+        points = node.get("price_points") if isinstance(node, dict) else None
+        if isinstance(points, list):
+            clean = [safe_float(v) for v in points]
+            clean = [v for v in clean if v is not None]
+            if len(clean) >= 2:
+                return clean
+    return []
+
+
+def _ohlc_from_node(node):
+    if not isinstance(node, dict):
+        return None
+    open_v = _first_float(node.get("open"), node.get("bar_open"),
+                          node.get("current_bar_open"))
+    high_v = _first_float(node.get("high"), node.get("bar_high"),
+                          node.get("current_bar_high"))
+    low_v = _first_float(node.get("low"), node.get("bar_low"),
+                         node.get("current_bar_low"))
+    close_v = _first_float(node.get("close"), node.get("bar_close"),
+                           node.get("current_bar_close"),
+                           node.get("current_price"), node.get("price"))
+    if open_v is None or close_v is None:
+        return None
+    if high_v is None:
+        high_v = max(open_v, close_v)
+    if low_v is None:
+        low_v = min(open_v, close_v)
+    return {
+        "open": open_v,
+        "high": max(high_v, open_v, close_v),
+        "low": min(low_v, open_v, close_v),
+        "close": close_v,
+    }
+
+
+def _extract_ohlc_from_facts(facts):
+    if not isinstance(facts, dict):
+        return None, None
+    candidates = (
+        (facts.get("ohlc"), "ohlc"),
+        ((facts.get("price_path") or {}).get("ohlc"), "price_path.ohlc"),
+        (facts.get("runtime_facts"), "runtime_facts"),
+        (facts, "runtime_facts"),
+    )
+    for node, source in candidates:
+        ohlc = _ohlc_from_node(node)
+        if ohlc:
+            return ohlc, source
+    return None, None
+
+
+def _extract_market_price(facts):
+    if not isinstance(facts, dict):
+        return None, None
+    candidates = (
+        (((facts.get("market_context") or {}).get("price")),
+         "market_context.price"),
+        (facts.get("price"), "price"),
+        (facts.get("current_price"), "current_price"),
+        (facts.get("current_bar_close"), "current_bar_close"),
+        (facts.get("bar_close"), "bar_close"),
+        (((facts.get("runtime_facts") or {}).get("current_price")),
+         "runtime_facts.current_price"),
+        (((facts.get("runtime_facts") or {}).get("current_bar_close")),
+         "runtime_facts.current_bar_close"),
+    )
+    for value, source in candidates:
+        price = safe_float(value)
+        if price is not None:
+            return price, source
+    ohlc, source = _extract_ohlc_from_facts(facts)
+    if ohlc:
+        return ohlc.get("close"), source + ".close"
+    return None, None
+
+
+def _anchor_price_context(factor_cross_section, market_price):
+    cross = factor_cross_section or {}
+    anchor = cross.get("anchor") or {}
+    reason_codes = []
+    source = None
+    anchor_price = safe_float(anchor.get("effective_flip_point"))
+    if anchor_price is not None:
+        source = "factor_cross_section.anchor.effective_flip_point"
+    if anchor_price is None:
+        anchor_price = safe_float(anchor.get("flip_point"))
+        if anchor_price is not None:
+            source = "factor_cross_section.anchor.flip_point"
+    if anchor_price is None and market_price is not None:
+        anchor_price = market_price
+        source = "market_context.price"
+        reason_codes.append("ANCHOR_PRICE_FALLBACK_MARKET_PRICE")
+    if anchor_price is None:
+        reason_codes.append("ANCHOR_PRICE_MISSING")
+
+    band_half = _first_float(anchor.get("band_half"),
+                             anchor.get("band_half_width"))
+    if band_half is None and anchor_price is not None:
+        band_half = abs(anchor_price) * 0.004
+        reason_codes.append("ANCHOR_BAND_DEFAULT_HALF_PCT_0_004")
+    band = {
+        "half_width": band_half,
+        "half_pct": (band_half / abs(anchor_price)
+                     if anchor_price not in (None, 0) and band_half is not None
+                     else None),
+        "lower": (anchor_price - band_half
+                  if anchor_price is not None and band_half is not None else None),
+        "upper": (anchor_price + band_half
+                  if anchor_price is not None and band_half is not None else None),
+    }
+    return anchor_price, source, band, reason_codes
+
+
+def _anchor_native_sublayer(factor_cross_section, signal_window, distance_ratio):
+    anchor = (factor_cross_section or {}).get("anchor") or {}
+    signal_window = signal_window or {}
+    raw = _first_float(anchor.get("anchor_score"), anchor.get("score"),
+                       signal_window.get("anchor_score"))
+    reason_codes = []
+    if raw is None and distance_ratio is not None:
+        raw = max(0.0, 1.0 - min(1.0, abs(distance_ratio)))
+        reason_codes.append("ANCHOR_NATIVE_DISTANCE_PROXY_USED")
+    if raw is None:
+        score = None
+        reason_codes.append("ANCHOR_NATIVE_SCORE_MISSING")
+    else:
+        score = raw / 100.0 if raw > 1.0 else raw
+        score = clamp(score, 0.0, 1.0)
+    state = _durability_state_from_score(score)
+    return {
+        "schema_name": "SignalDurabilityAnchorNative",
+        "audit_scope": "AUDIT_ONLY",
+        "score": score,
+        "score_100": _durability_score_100(score),
+        "state": state,
+        "distance_ratio": distance_ratio,
+        "reason_codes": reason_codes,
+    }
+
+
+def _price_efficiency_sublayer(facts, direction_sign=0, distance_ratio=None):
+    points = _extract_price_points(facts)
+    ohlc, source = _extract_ohlc_from_facts(facts)
+    ppe = compute_price_path_efficiency(price_points=points, ohlc=ohlc)
+    ppe_value = safe_float(ppe.get("ppe"))
+    bar_direction = str(ppe.get("bar_direction") or "UNKNOWN").upper()
+    bar_sign = 1 if bar_direction == "UP" else (-1 if bar_direction == "DOWN" else 0)
+    if not direction_sign or not bar_sign:
+        net_move_vs_signal = "NEUTRAL" if bar_sign == 0 else "UNKNOWN"
+    elif bar_sign == direction_sign:
+        net_move_vs_signal = "FAVORABLE"
+    elif bar_sign == -direction_sign:
+        net_move_vs_signal = "ADVERSE"
+    else:
+        net_move_vs_signal = "UNKNOWN"
+    abs_distance = abs(distance_ratio) if distance_ratio is not None else None
+    inside_anchor_band = (abs_distance <= 1.0 if abs_distance is not None
+                          else None)
+    near_anchor_band_edge = (
+        0.75 <= abs_distance <= 1.0 if abs_distance is not None else None)
+    outside_anchor_band = (abs_distance > 1.0 if abs_distance is not None
+                           else None)
+    reason_codes = list(ppe.get("reason_codes") or [])
+    if ppe_value is None:
+        score = None
+        interpretation = "PRICE_EFFICIENCY_MISSING"
+    elif inside_anchor_band and ppe_value <= 0.35:
+        score = 0.92
+        interpretation = "PPE_ABSORPTIVE"
+    elif inside_anchor_band and ppe_value <= 0.65:
+        score = 0.75
+        interpretation = "PPE_MIXED_INSIDE_BAND"
+    elif ppe_value > 0.65 and net_move_vs_signal == "FAVORABLE":
+        score = 0.65
+        interpretation = "PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS"
+    elif (ppe_value > 0.65 and net_move_vs_signal == "ADVERSE"
+          and outside_anchor_band):
+        score = 0.20
+        interpretation = "PPE_ADVERSE_BAND_BREAK"
+    elif ppe_value > 0.65 and net_move_vs_signal == "ADVERSE":
+        score = 0.40
+        interpretation = "PPE_ADVERSE_EFFICIENT"
+    else:
+        score = 0.60
+        interpretation = "PPE_MIXED_OR_DIRECTION_UNKNOWN"
+    reason_codes.append(interpretation)
+    return {
+        "schema_name": "SignalDurabilityPriceEfficiency",
+        "audit_scope": "AUDIT_ONLY",
+        "score": score,
+        "score_100": _durability_score_100(score),
+        "state": _durability_state_from_score(score),
+        "ppe": ppe_value,
+        "ppe_source": ppe.get("ppe_source"),
+        "data_state": ppe.get("data_state"),
+        "path_points_count": ppe.get("path_points_count"),
+        "net_move_vs_signal": net_move_vs_signal,
+        "inside_anchor_band": inside_anchor_band,
+        "near_anchor_band_edge": near_anchor_band_edge,
+        "outside_anchor_band": outside_anchor_band,
+        "band_distance_ratio": abs_distance,
+        "interpretation": interpretation,
+        "method": ppe.get("method"),
+        "ohlc_source": source,
+        "detail": ppe,
+        "reason_codes": reason_codes,
+    }
+
+
+def _options_gamma_sublayer(factor_cross_section):
+    gamma = (factor_cross_section or {}).get("gamma_regime") or {}
+    if not gamma:
+        return {
+            "schema_name": "SignalDurabilityOptionsGamma",
+            "audit_scope": "AUDIT_ONLY",
+            "score": None,
+            "score_100": None,
+            "state": "ANCHOR_DATA_GAP",
+            "reason_codes": ["OPTIONS_GAMMA_DATA_GAP"],
+        }
+    regime = str(gamma.get("regime") or gamma.get("market_state") or "").upper()
+    net_gamma = _first_float(gamma.get("net_gamma_notional_usd"),
+                             gamma.get("net_gamma_notional"))
+    reason_codes = []
+    if "NEGATIVE" in regime or (net_gamma is not None and net_gamma < 0):
+        score = 0.55
+        reason_codes.append("NEGATIVE_GAMMA_RISK_OVERLAY_NOT_BREAK")
+    elif "POSITIVE" in regime or (net_gamma is not None and net_gamma > 0):
+        score = 0.80
+        reason_codes.append("POSITIVE_GAMMA_STABILIZING")
+    else:
+        score = 0.65
+        reason_codes.append("GAMMA_TRANSITION_OR_UNCLEAR")
+    return {
+        "schema_name": "SignalDurabilityOptionsGamma",
+        "audit_scope": "AUDIT_ONLY",
+        "score": score,
+        "score_100": _durability_score_100(score),
+        "state": _durability_state_from_score(score),
+        "regime": gamma.get("regime") or gamma.get("market_state"),
+        "net_gamma_notional_usd": net_gamma,
+        "reason_codes": reason_codes,
+    }
+
+
+def _perp_funding_sublayer(factor_cross_section, direction_sign, cfg=None):
+    config = cfg or CONFIG
+    funding = (factor_cross_section or {}).get("funding") or {}
+    rate = _first_float(funding.get("last_rate"),
+                        funding.get("last_funding_rate"))
+    if rate is None:
+        return {
+            "schema_name": "SignalDurabilityPerpFunding",
+            "audit_scope": "AUDIT_ONLY",
+            "score": None,
+            "score_100": None,
+            "state": "ANCHOR_DATA_GAP",
+            "funding_rate": None,
+            "funding_pressure_sign": None,
+            "funding_aligns_with_signal": None,
+            "interpretation": "DATA_GAP",
+            "reason_codes": ["PERP_FUNDING_DATA_GAP"],
+        }
+    neutral_abs = safe_float(config.get("funding_observe_neutral_abs"))
+    if neutral_abs is None:
+        neutral_abs = 0.00005
+    light_abs = safe_float(config.get("funding_observe_light_abs"))
+    if light_abs is None:
+        light_abs = neutral_abs * 3.0
+    if abs(rate) <= neutral_abs:
+        funding_pressure_sign = 0
+    else:
+        funding_pressure_sign = 1 if rate > 0 else -1
+    funding_aligns = (
+        bool(direction_sign) and funding_pressure_sign == direction_sign)
+    funding_against = (
+        bool(direction_sign) and funding_pressure_sign == -direction_sign)
+    reason_codes = []
+    if funding_pressure_sign == 0:
+        score = 0.70
+        reason_codes.append("FUNDING_NEUTRAL_OR_SMALL")
+        interpretation = "NEUTRAL"
+    elif funding_aligns and abs(rate) <= light_abs:
+        score = 0.82
+        reason_codes.append("FUNDING_HEALTHY_CONFIRMATION")
+        interpretation = "HEALTHY_CONFIRMATION"
+    elif funding_aligns:
+        score = 0.58
+        reason_codes.append("FUNDING_CROWDED_CONFIRMATION")
+        interpretation = "CROWDED_CONFIRMATION"
+    elif funding_against:
+        score = 0.35
+        reason_codes.append("FUNDING_ADVERSE_CROWDING")
+        interpretation = "ADVERSE_LEVERAGE_BUILD"
+    else:
+        score = 0.65
+        reason_codes.append("FUNDING_DIRECTIONLESS_CONTEXT")
+        interpretation = "NEUTRAL"
+    return {
+        "schema_name": "SignalDurabilityPerpFunding",
+        "audit_scope": "AUDIT_ONLY",
+        "score": score,
+        "score_100": _durability_score_100(score),
+        "state": _durability_state_from_score(score),
+        "last_rate": rate,
+        "funding_rate": rate,
+        "direction_sign": direction_sign,
+        "funding_pressure_sign": funding_pressure_sign,
+        "funding_aligns_with_signal": funding_aligns if direction_sign else None,
+        "funding_against_signal": funding_against if direction_sign else None,
+        "interpretation": interpretation,
+        "reason_codes": reason_codes,
+    }
+
+
+def build_price_anchor_durability(record_or_runtime_facts=None, decision=None,
+                                  factor_cross_section=None,
+                                  signal_window=None, cfg=None):
+    facts = record_or_runtime_facts or {}
+    decision = decision or {}
+    cross = factor_cross_section or {}
+    signal_window = signal_window or {}
+    market_price, market_source = _extract_market_price(facts)
+    anchor_price, anchor_source, band, anchor_reasons = _anchor_price_context(
+        cross, market_price)
+
+    if market_price is None and anchor_price is None:
+        sublayers = {
+            "anchor_native": _anchor_native_sublayer(cross, signal_window, None),
+            "price_efficiency": _price_efficiency_sublayer(facts, 0, None),
+            "options_gamma": _options_gamma_sublayer(cross),
+            "perp_funding": _perp_funding_sublayer(cross, 0, cfg),
+        }
+        return {
+            "schema_name": "SignalPriceAnchorDurability",
+            "schema_version": "nrd.signal.price_anchor_durability.v1",
+            "audit_scope": "AUDIT_ONLY",
+            "score_method": "LAYERED_HEURISTIC_V1",
+            "score_semantics": "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY",
+            "policy": _durability_policy(),
+            "durability_state": "ANCHOR_DATA_GAP",
+            "durability_score": None,
+            "headline_state": "ANCHOR_DATA_GAP",
+            "headline_score": None,
+            "state": "ANCHOR_DATA_GAP",
+            "score": None,
+            "score_raw": None,
+            "score_quality": "DATA_GAP",
+            "score_calibration": "HEURISTIC_UNCALIBRATED",
+            "hard_breaker_triggered": False,
+            "layer_weights": dict(_SIGNAL_DURABILITY_WEIGHTS),
+            "weights": dict(_SIGNAL_DURABILITY_WEIGHTS),
+            "layer_scores": sublayers,
+            "anchor_price": anchor_price,
+            "anchor_price_source": anchor_source,
+            "anchor_band_half_pct": (band or {}).get("half_pct"),
+            "market_price": market_price,
+            "market_price_source": market_source,
+            "band": band,
+            "sublayers": sublayers,
+            "data_gaps": ["MARKET_PRICE_DATA_GAP", "ANCHOR_PRICE_MISSING"],
+            "reason_codes": anchor_reasons + ["MARKET_PRICE_DATA_GAP"],
+        }
+
+    band_half = safe_float((band or {}).get("half_width"))
+    distance_ratio = None
+    if (market_price is not None and anchor_price is not None
+            and band_half is not None and band_half > 0):
+        distance_ratio = (market_price - anchor_price) / band_half
+
+    direction_sign = direction_sign_from_decision(decision)
+    sublayers = {
+        "anchor_native": _anchor_native_sublayer(
+            cross, signal_window, distance_ratio),
+        "price_efficiency": _price_efficiency_sublayer(
+            facts, direction_sign, distance_ratio),
+        "options_gamma": _options_gamma_sublayer(cross),
+        "perp_funding": _perp_funding_sublayer(cross, direction_sign, cfg),
+    }
+    data_gaps = []
+    score_raw = 0.0
+    for name, weight in _SIGNAL_DURABILITY_WEIGHTS.items():
+        score = safe_float((sublayers.get(name) or {}).get("score"))
+        if score is None:
+            score = 0.50
+            data_gaps.append(name.upper() + "_SCORE_MISSING")
+        score_raw += weight * score
+    score_raw = clamp(score_raw, 0.0, 1.0)
+    state = _durability_state_from_score(score_raw)
+    reason_codes = list(anchor_reasons)
+    if distance_ratio is not None and abs(distance_ratio) > 1.0:
+        reason_codes.append("PRICE_OUTSIDE_ANCHOR_BAND")
+    anchor_state = sublayers["anchor_native"]["state"]
+    ppe_layer = sublayers.get("price_efficiency") or {}
+    ppe_interpretation = ppe_layer.get("interpretation")
+    hard_breaker_triggered = False
+    if (anchor_state == "ANCHOR_BROKEN"
+            or (distance_ratio is not None and abs(distance_ratio) > 1.5)):
+        state = "ANCHOR_BROKEN"
+        hard_breaker_triggered = True
+        reason_codes.append("ANCHOR_NATIVE_BROKEN_CAP")
+        ppe_score = safe_float(sublayers["price_efficiency"].get("score"))
+        if ppe_score is not None and safe_float(ppe_layer.get("ppe")) is not None:
+            reason_codes.append("PPE_CANNOT_AUTOPASS_ANCHOR")
+    if ppe_interpretation == "PPE_ADVERSE_BAND_BREAK":
+        state = "ANCHOR_BROKEN"
+        hard_breaker_triggered = True
+        reason_codes.append("PPE_ADVERSE_BAND_BREAK_HARD_BREAKER")
+    for name, layer in sublayers.items():
+        if not isinstance(layer, dict):
+            continue
+        if layer.get("state") == "ANCHOR_DATA_GAP":
+            data_gaps.append(name.upper() + "_DATA_GAP")
+        for code in layer.get("reason_codes") or []:
+            if code.endswith("_DATA_GAP") or code.endswith("_MISSING"):
+                data_gaps.append(code)
+    data_gaps = sorted(set(data_gaps))
+    score_quality = "HIGH"
+    if data_gaps:
+        score_quality = "LOW" if len(data_gaps) >= 2 else "MEDIUM"
+    if ppe_layer.get("ppe_source") == "OHLC_PROXY" and score_quality == "HIGH":
+        score_quality = "MEDIUM"
+    durability_score = _durability_score_100(score_raw)
+
+    return {
+        "schema_name": "SignalPriceAnchorDurability",
+        "schema_version": "nrd.signal.price_anchor_durability.v1",
+        "audit_scope": "AUDIT_ONLY",
+        "score_method": "LAYERED_HEURISTIC_V1",
+        "score_semantics": "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY",
+        "policy": _durability_policy(),
+        "durability_state": state,
+        "durability_score": durability_score,
+        "headline_state": state,
+        "headline_score": durability_score,
+        "state": state,
+        "score": durability_score,
+        "score_raw": score_raw,
+        "score_quality": score_quality,
+        "score_calibration": "HEURISTIC_UNCALIBRATED",
+        "hard_breaker_triggered": hard_breaker_triggered,
+        "layer_weights": dict(_SIGNAL_DURABILITY_WEIGHTS),
+        "weights": dict(_SIGNAL_DURABILITY_WEIGHTS),
+        "layer_scores": sublayers,
+        "anchor_price": anchor_price,
+        "anchor_price_source": anchor_source,
+        "anchor_band_half_pct": (band or {}).get("half_pct"),
+        "market_price": market_price,
+        "market_price_source": market_source,
+        "band": band,
+        "direction_sign": direction_sign,
+        "distance_ratio": distance_ratio,
+        "sublayers": sublayers,
+        "data_gaps": data_gaps,
+        "reason_codes": reason_codes,
+    }
+
+
+def _event_time_for_durability(facts):
+    facts = facts or {}
+    for value in (
+            facts.get("confirmed_time"),
+            (facts.get("identity") or {}).get("confirmed_time_ms"),
+            facts.get("event_time_ms"),
+            facts.get("confirmed_time_ms")):
+        parsed = safe_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def build_signal_durability_layer(record_or_runtime_facts, decision,
+                                  factor_cross_section, signal_window, cfg):
+    facts = record_or_runtime_facts or {}
+    signal_window = signal_window or {}
+    event_time_ms = _event_time_for_durability(facts)
+    comfort = build_comfort_window_context(event_time_ms, cfg)
+    temporal_session = signal_window.get("session_context")
+    if temporal_session is None:
+        temporal_session = ((facts.get("signal_window") or {})
+                            .get("session_context"))
+    price_anchor = build_price_anchor_durability(
+        facts, decision, factor_cross_section, signal_window, cfg)
+    temporal_payload = _durability_json_clone(temporal_session or {})
+    if temporal_payload:
+        temporal_payload.setdefault("source_ref", "signal_window.session_context")
+        temporal_payload.setdefault(
+            "score_input_policy",
+            "DISPLAY_CONTEXT_NOT_PRICE_ANCHOR_SCORE_INPUT")
+    else:
+        temporal_payload = {
+            "source_ref": "signal_window.session_context",
+            "data_state": "MISSING",
+            "score_input_policy": "DISPLAY_CONTEXT_NOT_PRICE_ANCHOR_SCORE_INPUT",
+        }
+    headline_score = price_anchor.get("durability_score")
+    headline_state = price_anchor.get("durability_state")
+    headline_label = (
+        "锚耐用 {}/100".format(headline_score)
+        if headline_score is not None else "锚耐用 NA")
+    return {
+        "schema_name": "SignalDurabilityLayer",
+        "schema_version": "nrd.signal.durability_layer.v1",
+        "audit_scope": "AUDIT_ONLY",
+        "headline_score": headline_score,
+        "headline_state": headline_state,
+        "headline_label_cn": headline_label,
+        "score_semantics": "STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY",
+        "confidence_policy": "DO_NOT_MULTIPLY_CONFIDENCE",
+        "policy": _durability_policy(),
+        "comfort_window": comfort,
+        "temporal_session": temporal_payload,
+        "temporal_session_score_role": "DISPLAY_CONTEXT_ONLY",
+        "price_anchor_durability": price_anchor,
+        "layer_scores": price_anchor.get("layer_scores"),
+        "layer_weights": price_anchor.get("layer_weights"),
+        "score_quality": price_anchor.get("score_quality"),
+        "score_calibration": price_anchor.get("score_calibration"),
+        "data_gaps": list(price_anchor.get("data_gaps") or []),
+        "state": headline_state,
+        "score": headline_score,
+        "reason_codes": list(price_anchor.get("reason_codes") or []),
+    }
+
+
+def _brief_durability_token(card, config=None):
+    try:
+        card = card or {}
+        facts = {
+            "price": card.get("price"),
+            "confirmed_time": card.get("confirmed_time"),
+            "price_path": card.get("price_path") or {},
+        }
+        layer = build_signal_durability_layer(
+            facts,
+            card.get("conclusion") or {},
+            card.get("factor_cross_section") or {},
+            card.get("window") or {},
+            config or CONFIG)
+        score = layer.get("headline_score")
+        state = layer.get("headline_state")
+        score_txt = "NA" if score is None else str(score)
+        state_token = {
+            "ANCHOR_DURABLE": "DUR",
+            "ANCHOR_WEAK": "WEAK",
+            "ANCHOR_BROKEN": "BRK",
+            "ANCHOR_DATA_GAP": "GAP",
+        }.get(state, "GAP")
+        token = (layer.get("comfort_window") or {}).get("brief_token") or "NW"
+        return "耐" + score_txt + "/" + state_token + " " + token
+    except Exception:
+        return "耐NA/GAP NW"
+
+
+def _cap_single_line(text, limit=140):
+    text = str(text or "").replace("\r", " ").replace("\n", " ")
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
 def build_signal_review_card(factor_snapshot, runtime_facts=None,
                              neutral_repair_signal=None, config=None):
     config = config or CONFIG
@@ -4181,6 +5032,7 @@ def build_signal_review_card(factor_snapshot, runtime_facts=None,
     window["session_context"] = classify_signal_session_context(
         confirmed_time, config)
     cross = _build_cross_section(fs, rf)
+    price_path = _durability_runtime_price_path_snapshot(rf)
 
     card = {
         "card_id": card_id,
@@ -4196,6 +5048,8 @@ def build_signal_review_card(factor_snapshot, runtime_facts=None,
         "final_conclusion_cn": _final_conclusion_cn(
             conclusion, blocking, conflict, reasoning),
     }
+    if price_path:
+        card["price_path"] = price_path
     return add_schema(card, SCHEMA_SIGNAL_REVIEW_CARD, config)
 
 
@@ -4287,6 +5141,10 @@ def build_sample_review_card(config=None):
     }
     runtime = {
         "current_price": 63339.96,
+        "current_bar_open": 63080.0,
+        "current_bar_high": 63420.0,
+        "current_bar_low": 62990.0,
+        "current_bar_close": 63339.96,
         "tmvf_data_age_ms": 45000,
         "option_greeks_age_ms": 240000,
         "last_cycle_trade_count": 128,
@@ -4427,6 +5285,21 @@ def build_audit_record(card, config=None):
             "local_card_json": "signal_cards/" + full_id + ".json",
         },
     }
+    durability_input = {
+        "market_context": record.get("market_context") or {},
+        "confirmed_time": ms,
+        "price_path": card.get("price_path") or {},
+    }
+    signal_durability = build_signal_durability_layer(
+        durability_input,
+        record.get("decision") or {},
+        record.get("factor_cross_section") or {},
+        record.get("signal_window") or {},
+        config)
+    record["signal_durability"] = signal_durability
+    record["comfort_window"] = signal_durability.get("comfort_window")
+    record["price_anchor_durability"] = signal_durability.get(
+        "price_anchor_durability")
     record["integrity"] = _audit_integrity(record)
     return record
 
@@ -4490,6 +5363,7 @@ def render_push_brief(card, config=None):
     short = str(card.get("card_id"))
     cal = conclusion.get("calibration_state") or "UNCALIBRATED"
     cal_tag = "未校准" if cal != "CALIBRATED" else ""
+    dur_token = _brief_durability_token(card, config)
     strength = safe_float(decomp.get("strength"))
     strength_txt = "-" if strength is None else str(int(round(strength * 100)))
     ev = [e for e in (reasoning.get("evidence") or [])
@@ -4502,7 +5376,8 @@ def render_push_brief(card, config=None):
     opp = ",".join(_brief_key(e.get("key")) + _fmt_signed(e.get("vote"), 2)
                    for e in dissent) or "无"
     base = (config.get("audit_static_base_url") or "").rstrip("/")
-    tail = ("审计:" + base + "/c/" + short) if base else ("详见FMZ Log #" + short)
+    log_tail = "详见FMZ Log #" + short
+    tail = ("审计:" + base + "/c/" + short) if base else log_tail
     text = ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
             + " " + _brief_dir(conclusion.get("lean_cn"))
             + "/" + _brief_action(conclusion.get("support_label"))
@@ -4510,25 +5385,30 @@ def render_push_brief(card, config=None):
             + " 强" + strength_txt
             + " 置信" + _fmt_int(conclusion.get("confidence")) + cal_tag
             + " 冲突" + _brief_pct(conflict.get("ratio"))
+            + " " + dur_token
             + " 同" + same + " 反" + opp + " " + tail)
     if len(text) <= 140:
-        return text
+        return _cap_single_line(text)
+    tail = log_tail
     text = ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
             + " " + _brief_dir(conclusion.get("lean_cn"))
             + "/" + _brief_action(conclusion.get("support_label"))
             + " 价" + _brief_price(card.get("price"))
             + " 置信" + _fmt_int(conclusion.get("confidence")) + cal_tag
             + " 冲突" + _brief_pct(conflict.get("ratio"))
+            + " " + dur_token
             + " 同" + _brief_keys(aligned) + " 反" + _brief_keys(dissent)
             + " " + tail)
     if len(text) <= 140:
-        return text
-    return ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
+        return _cap_single_line(text)
+    text = ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
             + " " + _brief_dir(conclusion.get("lean_cn"))
             + "/" + _brief_action(conclusion.get("support_label"))
             + " 置信" + _fmt_int(conclusion.get("confidence")) + cal_tag
             + " 冲突" + _brief_pct(conflict.get("ratio"))
+            + " " + dur_token
             + " " + tail)
+    return _cap_single_line(text)
 
 
 def _safe_brief(card, config):
@@ -4876,12 +5756,14 @@ def _self_test_push_body(card, config, wrote_json):
         return body
     short = str((card or {}).get("card_id") or "-")
     confidence = ((card or {}).get("conclusion") or {}).get("confidence")
+    dur_token = _brief_durability_token(card, config)
     fallback = (banner + str(config.get("asset", "BTC")) + " #" + short
-                + " 置信" + _fmt_int(confidence) + status
+                + " 置信" + _fmt_int(confidence)
+                + " " + dur_token + status
                 + " 详见FMZ Log #" + short)
     if len(fallback) <= 140:
-        return fallback
-    return fallback[:140]
+        return _cap_single_line(fallback)
+    return _cap_single_line(fallback)
 
 
 def _brief_key(key):

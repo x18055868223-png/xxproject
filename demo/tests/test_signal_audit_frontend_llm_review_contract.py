@@ -39,8 +39,8 @@ def main():
         html = read(root / "index.html")
         assert_true("function renderLlmReview(doc)" in app,
                     "app.js should define renderLlmReview")
-        assert_true("function renderSignalSessionContext(doc)" in app,
-                    "app.js should define renderSignalSessionContext")
+        assert_true("function renderSignalDurability(doc)" in app,
+                    "app.js should define renderSignalDurability")
         assert_true("function hasLlmGammaKeyLevel(doc, key)" in app,
                     "app.js should detect individual LLM gamma key levels before rendering repeated key levels")
         for marker in (
@@ -70,23 +70,25 @@ def main():
             "主要尾部风险",
             "体制极端度",
             "输入包哈希",
-            "信号时区置信度 / 前提耐久度",
-            "低转中缓冲带",
-            "不改变系统方向、置信、门控或交易许可",
+            "信号耐用性层",
+            "DO_NOT_MULTIPLY_CONFIDENCE",
+            "旧卡兼容",
         ):
             assert_true(text in app, "app.js should localize LLM review text " + text)
         assert_true('statusBadge("Status"' not in app and 'statusBadge("Caution"' not in app,
                     "LLM review badges should use Chinese labels")
         rank_idx = app.find("${renderGexRank(doc)}")
-        session_idx = app.find("${renderSignalSessionContext(doc)}")
+        durability_idx = app.find("${renderSignalDurability(doc)}")
         llm_idx = app.find("${renderLlmReview(doc)}")
         decision_idx = app.find("${renderDecision(doc)}")
         layers_idx = app.find("${renderDisplayLayers(doc)}")
-        assert_true(rank_idx != -1 and session_idx != -1 and llm_idx != -1
-                    and decision_idx != -1 and layers_idx != -1,
-                    "renderDocument should call rank, session context, llm review, decision, and display layers")
-        assert_true(rank_idx < session_idx < llm_idx < decision_idx < layers_idx,
-                    "session context should render between rank and LLM review")
+        assert_true(rank_idx != -1 and durability_idx != -1 and llm_idx != -1
+                    and layers_idx != -1,
+                    "renderDocument should call rank, durability, llm review, and display layers")
+        assert_true(decision_idx == -1,
+                    "renderDocument should not call removed low-signal decision section")
+        assert_true(rank_idx < durability_idx < llm_idx < layers_idx,
+                    "durability context should render between rank and LLM review")
         assert_true(".llm-review-panel" in html and ".llm-review-summary" in html,
                     "index.html should include prominent LLM review styles")
 

@@ -1,10 +1,10 @@
 # 中性回路整合工程备份标记
 
-> **当前最新版本：`r3.3.2`（备份标记 `NRD-XXPROJECT-BACKUP-2026.06.26-r3.3.2`）**
-> 更新推送时间：**2026-06-26（UTC+8）** ｜ 提交：`c10b6ee`（信号审计前端封版）
+> **当前工作版本：`r3.3.6`（信号耐用性层小版本，目标分支 `codex/signal-durability-r3.3.6`）**
+> 更新时间：**2026-07-05（UTC+8）** ｜ 发布门禁：本地页面审计后需用户确认 `当前本地页面可推送`
 > 最新版本位置：本仓库 `main` 分支 → https://github.com/x18055868223-png/xxproject
 >
-> **r3.3.2 更新**（在 r3.3.1 之上叠加，后端 `demo/`、执行层等保持不变）：信号审计前端封版 —— transition LLM 复核降级态与旧版 sidecar 改为醒目告警条，与通过态明显区分（SUPPRESS/未知态 fail-closed）；删除冗余决策死代码与潜伏 `sign_flip` 显示 bug；卡片时间统一 `Asia/Shanghai`；`evidence_raw_values.*` 源引用可跳转；funding 方向取值优先 `last_rate`。render-contract / materializer / llm 三套回归测试通过。
+> **r3.3.6 更新**（在 r3.3.5 全量备份之上叠加）：FMZ 信号层 `demo_version=1.5.2` 新增 AUDIT_ONLY `signal_durability` 总耐用性层、`comfort_window` 舒适区 tag、`price_anchor_durability` 四层价格锚耐用性解释；短推增加 `耐72/DUR T2C` 类紧凑摘要；materializer 和前端支持 producer-native 字段与旧卡显式兼容回填。执行层和交易门未改动。
 
 本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
 
@@ -16,16 +16,16 @@
 | GEX Monitor API | 策略服务器 `/v1/info` 增强端点；含 netGEX、IV/RV、P/C、flow 与 30 日滚动 rank | `05_GEX监控API_数据增强接口/` |
 | 审计前端 | 静态页面 + `signal_cards/index.json` + 单卡 JSON；展示 rank 与 LLM 复核 | `deploy/signal_audit/frontend/` |
 | LLM 复核旁路 | Gemini 复核脚本 + systemd timer；生成 `signal_llm_reviews.jsonl` sidecar，再由 materializer 合并 | `tools/gemini_signal_llm_review.py`、`deploy/signal_audit/` |
-| 执行层 | Deribit 垂直价差执行链；当前保留为未正式测试启用的全空跑交付物 | `demo/最新交付物/spm_calendar_protected_short_v1.py` |
+| 执行层 | Deribit 垂直价差人工审计门执行链；当前保留为未正式测试启用的默认安全交付物 | `demo/最新交付物/spm_manual_gate_execution_fmz.py` |
 | 服务器自检 | 用于定位 FMZ JSONL、GEX API、审计页面、LLM sidecar、systemd timer 哪一层异常 | `tools/server_self_check_signal_stack.sh` |
 
 ## 当前版本锚点
 
-- 信号层：`demo_version=1.5.1`，`schema_version=nrd.schema.v1.0.0`；producer 原生 `SignalSessionPremiseDurabilityContext@1.0.0`、`SignalTransitionProducerAnchor@1.0.0`、`macro_shock`。
-- 执行层：`STRATEGY_VERSION=2.5.0`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭。
+- 信号层：`demo_version=1.5.2`，`schema_version=nrd.schema.v1.0.0`；producer 原生 `SignalSessionPremiseDurabilityContext@1.0.0`、`SignalTransitionProducerAnchor@1.0.0`、`macro_shock`、`SignalDurabilityLayer@nrd.signal.durability_layer.v1`、`SignalPriceAnchorDurability@nrd.signal.price_anchor_durability.v1`、`SignalComfortWindow@nrd.signal.comfort_window.v1`。
+- 执行层：`STRATEGY_VERSION=3.0.0-manual-gate`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭，`DRY_RUN_PASSED=False`。
 - GEX API：`gexmonitorapi=0.2.0`，rank 窗口为 `rolling_30d_or_available`。
 - LLM 复核：Gemini `gemini-3.5-flash`，卡片级 `signal_llm_review@1.3.0` / `gemini_signal_review_prompt@1.3.0`，状态转移级 `signal_transition_llm_review@1.2.2`。
-- 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar；前端封版 r3.3.2，缓存位 `?v=20260626b-transition-v1.2.2`，降级/旧版 transition 复核醒目告警。
+- 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar；当前工作版本 r3.3.6，缓存位 `?v=20260705-r3.3.6-durability`，统一展示“信号耐用性层”并保留旧卡兼容说明。
 - 文档收纳：05 与 `deploy/signal_audit` 已补齐 `因子文档/`、中文语义入口和前端 `VERSION.json`，按 00-04 的模块阅读惯例收纳。
 
 ## 快速排障入口

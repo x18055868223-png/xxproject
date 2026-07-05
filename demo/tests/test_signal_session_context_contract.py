@@ -29,8 +29,8 @@ def ms_utc8(year, month, day, hour, minute):
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
-    assert_true(config["demo_version"] == "1.5.1",
-                "FMZ signal deliverable version should match r3.3.1 macro dual-axis contract")
+    assert_true(config["demo_version"] == "1.5.2",
+                "FMZ signal deliverable version should match r3.3.6 durability producer")
 
     london = mod.classify_signal_session_context(
         ms_utc8(2026, 6, 19, 15, 4), config)
@@ -126,11 +126,32 @@ def main():
     assert_true(record["decision_matrix"]["temporal_durability"]
                 == session["premise_durability"],
                 "decision matrix should mirror session premise durability")
+    durability = record.get("signal_durability") or {}
+    temporal = durability.get("temporal_session") or {}
+    assert_true(temporal.get("schema_name") == session.get("schema_name"),
+                "durability temporal_session should mirror session schema")
+    assert_true(temporal.get("premise_durability")
+                == session.get("premise_durability"),
+                "durability temporal_session should mirror premise durability")
+    assert_true(temporal.get("source_ref") == "signal_window.session_context",
+                "durability temporal_session should declare its source")
+    assert_true(temporal.get("score_input_policy")
+                == "DISPLAY_CONTEXT_NOT_PRICE_ANCHOR_SCORE_INPUT",
+                "temporal session should not feed price anchor scoring")
+    assert_true(durability.get("temporal_session_score_role")
+                == "DISPLAY_CONTEXT_ONLY",
+                "temporal_session must not score price anchor")
     assert_true(record["decision"]["confidence_semantics"]
                 == "EVIDENCE_QUALITY_NOT_WIN_RATE",
                 "confidence semantics must remain unchanged")
     assert_true(record["decision"]["confidence"] == card["conclusion"]["confidence"],
                 "session layer must not mutate confidence")
+    assert_true(card["conclusion"]["confidence"] == 38,
+                "test fixture confidence should expose accidental mutations")
+    assert_true(record["decision"]["trade_allowed"] is False,
+                "durability layer must not mutate trade_allowed")
+    assert_true(record["decision_matrix"]["execution_allowed"] is False,
+                "durability layer must not unlock execution")
 
     print("signal_session_context_contract: PASS")
 

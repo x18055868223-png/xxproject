@@ -87,6 +87,96 @@ def legacy_session_context_record():
     return item
 
 
+def native_signal_durability_record():
+    item = mixed_time_record("NATIVE-SIGNAL-DURABILITY",
+                             confirmed_at="2026-06-24T10:00:00+08:00")
+    item["signal_durability"] = {
+        "schema_name": "SignalDurabilityLayer",
+        "schema_version": "nrd.signal.durability_layer.v1",
+        "audit_scope": "AUDIT_ONLY",
+        "headline_score": 72,
+        "headline_state": "ANCHOR_DURABLE",
+        "comfort_window": {
+            "tag": "US_T2_CORE_COMFORT",
+            "state": "COMFORTABLE",
+            "brief_token": "T2C",
+        },
+        "temporal_session": {"state": "MEDIUM", "score": 0.61},
+        "session_context": {"state": "MEDIUM", "score": 0.61},
+        "price_anchor_durability": {
+            "schema_name": "SignalPriceAnchorDurability",
+            "schema_version": "nrd.signal.price_anchor_durability.v1",
+            "durability_state": "ANCHOR_DURABLE",
+            "durability_score": 72,
+            "state": "ANCHOR_DURABLE",
+            "score": 72,
+            "layer_scores": {
+                "anchor_native": {"score": 0.72},
+                "price_efficiency": {"score": 0.65},
+                "options_gamma": {"score": 0.80},
+                "perp_funding": {"score": 0.70},
+            },
+        },
+        "layer_scores": {
+            "anchor_native": {"score": 0.72},
+            "price_efficiency": {"score": 0.65},
+            "options_gamma": {"score": 0.80},
+            "perp_funding": {"score": 0.70},
+        },
+        "reason_codes": ["NATIVE_REASON"],
+        "data_gaps": ["NATIVE_GAP"],
+        "producer_marker": {"keep": True},
+    }
+    return item
+
+
+def alias_signal_durability_record():
+    item = mixed_time_record("ALIAS-SIGNAL-DURABILITY",
+                             confirmed_at="2026-06-24T10:05:00+08:00")
+    item["comfort_window"] = {
+        "tag": "US_T2_CORE_COMFORT",
+        "state": "COMFORTABLE",
+        "brief_token": "T2C",
+    }
+    item["price_anchor_durability"] = {
+        "durability_state": "ANCHOR_DURABLE",
+        "durability_score": 72,
+        "state": "ANCHOR_DURABLE",
+        "score": 72,
+        "anchor_price": 101000,
+        "layer_scores": {
+            "anchor_native": {"score": 0.72},
+            "price_efficiency": {"score": 0.65},
+            "options_gamma": {"score": 0.80},
+            "perp_funding": {"score": 0.70},
+        },
+    }
+    item["temporal_session"] = {"state": "MEDIUM", "score": 0.61}
+    item["durability_layer_scores"] = {
+        "anchor_native": {"score": 0.72},
+        "price_efficiency": {"score": 0.65},
+        "options_gamma": {"score": 0.80},
+        "perp_funding": {"score": 0.70},
+    }
+    item["durability_reason_codes"] = ["ALIAS_REASON"]
+    item["durability_data_gaps"] = ["ALIAS_GAP"]
+    return item
+
+
+def partial_native_signal_durability_record():
+    item = mixed_time_record("PARTIAL-SIGNAL-DURABILITY",
+                             confirmed_at="2026-06-24T10:03:00+08:00")
+    item["signal_durability"] = {
+        "audit_scope": "AUDIT_ONLY",
+        "comfort_window": {"tag": "US_T2_CORE_COMFORT"},
+        "price_anchor_durability": {
+            "durability_score": 72,
+            "durability_state": "ANCHOR_DURABLE",
+        },
+    }
+    return item
+
+
 def auxiliary_evidence_record():
     return {
         "identity": {
@@ -491,6 +581,88 @@ def main():
         assert_true(card["decision_matrix"]["temporal_durability"]
                     == ctx["premise_durability"],
                     "materializer should mirror temporal durability into decision matrix")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "signal_durability_signal_review.jsonl"
+        output = root / "public"
+        source.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in [
+            native_signal_durability_record(),
+            partial_native_signal_durability_record(),
+            alias_signal_durability_record(),
+            mixed_time_record("OLD-CARD-NO-DURABILITY",
+                              confirmed_at="2026-06-24T09:55:00+08:00"),
+        ]) + "\n", encoding="utf-8")
+        tool.materialize(source, output, max_cards=20)
+
+        native = json.loads((output / "signal_cards"
+                             / "NATIVE-SIGNAL-DURABILITY.json").read_text(
+                                 encoding="utf-8"))
+        native_durability = native["signal_durability"]
+        assert_true(native_durability["headline_score"] == 72,
+                    "native signal_durability headline score should pass through")
+        assert_true(native_durability["producer_marker"]["keep"] is True,
+                    "native signal_durability custom producer fields should be preserved")
+        assert_true(native_durability["schema_name"] == "SignalDurabilityLayer",
+                    "native signal_durability should keep canonical schema name")
+        assert_true(native_durability["schema_version"]
+                    == "nrd.signal.durability_layer.v1",
+                    "native signal_durability should receive canonical schema version")
+        assert_true(native_durability["confidence_policy"]
+                    == "DO_NOT_MULTIPLY_CONFIDENCE",
+                    "native signal_durability should receive harmless confidence policy default")
+        assert_true(native_durability.get("compat_backfill_applied") is not True,
+                    "native signal_durability must not be marked as materializer backfill")
+
+        partial = json.loads((output / "signal_cards"
+                              / "PARTIAL-SIGNAL-DURABILITY.json").read_text(
+                                  encoding="utf-8"))
+        partial_durability = partial["signal_durability"]
+        assert_true(partial_durability["compat_backfill_applied"] is True,
+                    "partial native-looking signal_durability should be marked compat")
+        assert_true(partial_durability["compat_backfill_source"]
+                    == "materializer_signal_durability_partial_v1",
+                    "partial durability should expose partial compat source")
+        assert_true("schema_name"
+                    in partial_durability["compat_missing_native_fields"],
+                    "partial durability should retain missing native-field evidence")
+
+        alias = json.loads((output / "signal_cards"
+                            / "ALIAS-SIGNAL-DURABILITY.json").read_text(
+                                encoding="utf-8"))
+        alias_durability = alias["signal_durability"]
+        assert_true(alias_durability["compat_backfill_applied"] is True,
+                    "alias signal_durability wrapper should be marked compat backfill")
+        assert_true(alias_durability["compat_backfill_source"]
+                    == "materializer_signal_durability_alias_v1",
+                    "alias signal_durability wrapper should expose compat source")
+        assert_true(alias_durability["comfort_window"]["tag"] == "US_T2_CORE_COMFORT",
+                    "alias comfort_window should be wrapped into signal_durability")
+        assert_true(alias_durability["price_anchor_durability"]["durability_state"]
+                    == "ANCHOR_DURABLE",
+                    "alias price_anchor_durability should be wrapped")
+        assert_true(alias_durability["headline_score"] == 72,
+                    "alias wrapper should copy existing score without inventing one")
+        assert_true(alias_durability["layer_scores"]["price_efficiency"]["score"] == 0.65,
+                    "alias layer scores should be retained")
+        assert_true(alias_durability["audit_scope"] == "AUDIT_ONLY",
+                    "alias durability wrapper should stay audit-only")
+
+        old = json.loads((output / "signal_cards"
+                          / "OLD-CARD-NO-DURABILITY.json").read_text(
+                              encoding="utf-8"))
+        assert_true("signal_durability" not in old,
+                    "old cards without durability aliases should not invent scores")
+        fallback = (output / "signal_cards" / "fallback.js").read_text(
+            encoding="utf-8")
+        assert_true('"signal_durability"' in fallback
+                    and "NATIVE_REASON" in fallback
+                    and "ALIAS_REASON" in fallback,
+                    "fallback.js should retain materialized signal_durability fields")
+        manifest = json.loads((output / "signal_cards" / "index.json")
+                              .read_text(encoding="utf-8"))
+        assert_true("source" not in manifest,
+                    "public manifest should still not expose JSONL source path")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)

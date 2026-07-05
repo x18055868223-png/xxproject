@@ -51,12 +51,22 @@ def main():
                         "self-test record must be synthetic")
             assert_true(record["delivery"]["fmz_push_summary"],
                         "delivery brief exists")
+            assert_true(isinstance(record.get("signal_durability"), dict),
+                        "self-test JSONL should include signal durability layer")
+            assert_true(record.get("comfort_window")
+                        == record["signal_durability"]["comfort_window"],
+                        "self-test JSONL comfort alias")
+            assert_true(record.get("price_anchor_durability")
+                        == record["signal_durability"]["price_anchor_durability"],
+                        "self-test JSONL price anchor alias")
             assert_true(record["integrity"]["record_hash"],
                         "integrity hash exists")
             assert_true(len(pushes) == 1, "one self-test push")
             assert_true(pushes[0].startswith("【推送自检·非真实信号】"),
                         "push banner marks synthetic signal")
             assert_true(len(pushes[0]) <= 140, "self-test push stays <=140 chars")
+            assert_true("耐" in pushes[0] and "DUR " in pushes[0],
+                        "self-test push includes durability token")
 
             mod.DemoRuntime._emit_push_self_test(runtime)
             lines2 = jsonl.read_text(encoding="utf-8").strip().splitlines()

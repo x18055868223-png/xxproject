@@ -143,7 +143,37 @@
     MULTI_DOMAIN_RISK_DETERIORATION: "多域风险恶化",
     RISK_HEADWIND_SIGN_FLIP: "逆风符号翻转",
     SKEW_REVERSAL: "偏斜反转",
-    CRITICAL: "关键"
+    CRITICAL: "关键",
+    ANCHORED: "锚定有效",
+    COMFORTABLE: "舒适窗口",
+    FRAGILE: "脆弱",
+    SIGNAL_DURABLE: "信号耐用",
+    US_T2_EARLY_REPRICE: "T2早段再定价",
+    US_T2_CORE_COMFORT: "T2核心舒适区",
+    US_T2_TIME_ONLY: "T2时间命中/日历降级",
+    NORMAL_WINDOW: "非舒适窗口",
+    ANCHOR_DURABLE: "锚耐用",
+    ANCHOR_WEAK: "锚偏弱",
+    ANCHOR_BROKEN: "锚失效",
+    ANCHOR_DATA_GAP: "锚数据缺口",
+    STRUCTURE_HEALTH_INDEX_NOT_PROBABILITY: "结构健康指数/非概率",
+    LAYERED_HEURISTIC_V1: "分层启发式v1",
+    PPE_ABSORPTIVE: "PPE吸收",
+    PPE_MIXED_INSIDE_BAND: "PPE带内混合",
+    PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS: "有利高效/不自动加分",
+    PPE_ADVERSE_EFFICIENT: "不利高效移动",
+    PPE_ADVERSE_BAND_BREAK: "不利高效脱锚",
+    GEX_NEGATIVE_BUT_NOT_BREAKING: "负Gamma但未破坏",
+    FUNDING_CROWDED_CONFIRMATION: "Funding拥挤确认",
+    FUNDING_HEALTHY_CONFIRMATION: "Funding健康确认",
+    HEALTHY_CONFIRMATION: "健康确认",
+    CROWDED_CONFIRMATION: "拥挤确认",
+    ADVERSE_LEVERAGE_BUILD: "不利杠杆堆积",
+    DELEVERAGING_REPAIR: "去杠杆修复",
+    NEUTRAL: "中性",
+    DATA_GAP: "数据缺口",
+    NO_CONFIDENCE_CHANGE: "不改置信",
+    NO_GATE_CHANGE: "不改门控"
   };
 
   const fieldLabels = {
@@ -179,6 +209,9 @@
     confidence_final: "最终置信",
     confidence_multiplier: "置信乘子",
     confidence_policy: "置信红线",
+    comfort_window: "舒适窗口",
+    compat_backfill_applied: "兼容回填",
+    compat_backfill_source: "兼容来源",
     confidence_pre_veto: "否决前置信",
     confidence_semantics: "置信语义",
     conviction: "定性把握度",
@@ -195,6 +228,7 @@
     data_quality: "数据质量",
     data_quality_note: "数据质量说明",
     data_range: "数据区间",
+    data_gaps: "数据缺口",
     data_status: "数据状态",
     comparison_quality: "比较质量",
     current_card_id: "当前状态",
@@ -248,6 +282,10 @@
     next_action: "下一步动作",
     not_trading_advice: "非交易建议",
     operator_hint_cn: "操作提示",
+    headline_score: "耐久总分",
+    headline_state: "耐久状态",
+    durability_score: "耐用性分数",
+    durability_state: "耐用性状态",
     headline_horizon_min: "主口径未来窗(分钟)",
     observed_at: "观测时间",
     participation: "参与状态",
@@ -257,6 +295,21 @@
     pin: "钉住点",
     positioning_assumption_cn: "持仓符号假设",
     previous_card_id: "上一状态",
+    price_anchor_durability: "价格锚耐久",
+    anchor_native: "锚原生层",
+    price_efficiency: "PPE路径效率层",
+    options_gamma: "GEX/Gamma放大层",
+    perp_funding: "Funding杠杆解释层",
+    ppe: "PPE路径效率",
+    ppe_source: "PPE来源",
+    net_move_vs_signal: "净移动相对信号",
+    inside_anchor_band: "收盘在锚带内",
+    band_distance_ratio: "锚带距离倍数",
+    risk_amplifier: "风险放大器",
+    funding_aligns_with_signal: "Funding与信号同向",
+    score_semantics: "分数语义",
+    score_quality: "评分质量",
+    score_method: "评分方法",
     premise_durability: "前提耐久度",
     put_wall: "看跌墙",
     quality: "质量",
@@ -279,6 +332,8 @@
     source: "数据源",
     source_ref: "来源引用",
     source_snapshot_hash: "源快照哈希",
+    signal_durability: "信号耐用性层",
+    layer_scores: "分层评分",
     spatial_safety: "空间安全",
     status: "状态",
     input_packet_hash: "输入包哈希",
@@ -304,6 +359,7 @@
     execution_allowed: "执行许可",
     execution_permission_note: "执行许可说明",
     temporal_durability: "时间耐久",
+    temporal_session: "时段前提",
     trade_allowed: "是否允许交易",
     utc8_time: "UTC+8 时间",
     validation_basis: "验证依据",
@@ -758,6 +814,7 @@
     $("#indexList").innerHTML = list.map((doc) => {
       const active = cardId(doc) === state.currentId ? "is-active" : "";
       const currentDecision = decision(doc);
+      const durability = signalDurability(doc);
       return `
         <button class="index-item ${active}" type="button" data-card-id="${escapeHtml(cardId(doc))}">
           <div class="index-topline">
@@ -770,6 +827,8 @@
             <span>${escapeHtml(semanticCompact(support(doc)))}</span>
             <span>置信 ${escapeHtml(scalarText(currentDecision.confidence, { translate: false }))}</span>
             <span>${escapeHtml(semanticCompact(qualityOverall(doc)))}</span>
+            <span>耐用 ${escapeHtml(durabilityScoreText(durability))}</span>
+            <span>${escapeHtml(durabilityComfortBrief(durability))}</span>
           </div>
           ${renderIndexTransitionBadges(doc)}
         </button>
@@ -1914,6 +1973,344 @@
     `, "gex-rank");
   }
 
+  function signalDurability(doc) {
+    const nativeLayer = asObject(get(doc, "signal_durability", {}));
+    if (Object.keys(nativeLayer).length) return nativeLayer;
+    const comfort = asObject(get(doc, "comfort_window", {}));
+    const anchor = asObject(get(doc, "price_anchor_durability", {}));
+    const sessionContext = asObject(get(doc, "signal_window.session_context", {}));
+    if (!Object.keys(comfort).length
+        && !Object.keys(anchor).length
+        && !Object.keys(sessionContext).length) return {};
+    const score = firstPresent(anchor.durability_score, anchor.headline_score, anchor.score);
+    const state = firstPresent(anchor.durability_state, anchor.headline_state, anchor.state);
+    return {
+      schema_name: "SignalDurabilityLayer",
+      schema_version: "nrd.signal.durability_layer.v1",
+      audit_scope: "AUDIT_ONLY",
+      compat_backfill_applied: true,
+      compat_backfill_source: "frontend_top_level_alias_and_session_context_v1",
+      headline_score: score,
+      headline_state: state,
+      score: score,
+      state,
+      comfort_window: comfort,
+      temporal_session: sessionContext,
+      session_context: sessionContext,
+      price_anchor_durability: anchor,
+      layer_scores: asObject(anchor.layer_scores),
+      confidence_policy: "DO_NOT_MULTIPLY_CONFIDENCE"
+    };
+  }
+
+  function durabilityMissingText() {
+    return "未提供 / 旧卡兼容";
+  }
+
+  function durabilityScoreText(durability) {
+    const layer = asObject(durability);
+    const anchor = asObject(layer.price_anchor_durability);
+    const score = firstPresent(
+      layer.headline_score, layer.score, anchor.durability_score,
+      anchor.headline_score, anchor.score
+    );
+    return isNullish(score) || score === ""
+      ? durabilityMissingText()
+      : scalarText(durabilityScoreNumber(score), { translate: false, digits: 2 });
+  }
+
+  function durabilityStateText(durability) {
+    const layer = asObject(durability);
+    const anchor = asObject(layer.price_anchor_durability);
+    const state = firstPresent(
+      layer.headline_state, layer.state, anchor.durability_state,
+      anchor.headline_state, anchor.state
+    );
+    return isBlank(state) ? "旧卡兼容" : semanticCompact(state);
+  }
+
+  function durabilityComfortTag(durability) {
+    const comfort = asObject(asObject(durability).comfort_window);
+    return comfort.tag || durabilityMissingText();
+  }
+
+  function durabilityComfortBrief(durability) {
+    const profile = durabilityComfortProfile(durabilityComfortTag(durability));
+    return profile.sidebar;
+  }
+
+  function durabilityTimeWindow(durability) {
+    const comfort = asObject(asObject(durability).comfort_window);
+    return firstPresent(
+      comfort.time_window, comfort.window, comfort.clock_window,
+      comfort.brief_token, comfort.tag
+    );
+  }
+
+  function durabilityScoreNumber(value) {
+    const numeric = safeNumber(value);
+    if (numeric === null) return null;
+    return numeric <= 1 ? numeric * 100 : numeric;
+  }
+
+  function durabilityScoreLine(value) {
+    const normalized = durabilityScoreNumber(value);
+    return normalized === null
+      ? durabilityMissingText()
+      : `${scalarText(normalized, { translate: false, digits: 0 })}/100`;
+  }
+
+  function durabilityReadable(value, fallback = "未提供") {
+    if (isBlank(value)) return fallback;
+    const raw = rawEnum(value);
+    const translated = semanticCompact(raw);
+    if (translated && translated !== raw) return translated;
+    return isEnum(raw) ? fallback : raw;
+  }
+
+  function durabilityComfortProfile(tag) {
+    const raw = rawEnum(tag);
+    const profiles = {
+      US_T2_EARLY_REPRICE: {
+        sidebar: "舒适窗 是",
+        title: "舒适窗：是",
+        value: "T2早段",
+        detail: "处于美国盘 T2 早段再定价窗口，信号前提在主流动性重新接入前有较好的观察舒适度。"
+      },
+      US_T2_CORE_COMFORT: {
+        sidebar: "舒适窗 是",
+        title: "舒适窗：是",
+        value: "T2核心",
+        detail: "处于美国盘 T2 核心舒适窗口，时间前提对下一轮观察更友好。"
+      },
+      US_T2_TIME_ONLY: {
+        sidebar: "舒适窗 是",
+        title: "舒适窗：时间命中",
+        value: "日历降级",
+        detail: "时间落在 T2 区间，但周末/日历因素会降级解释，只作为观察舒适提示。"
+      },
+      NORMAL_WINDOW: {
+        sidebar: "舒适窗 否",
+        title: "舒适窗：否",
+        value: "普通窗口",
+        detail: "当前不处于 T2 舒适观察窗，按普通窗口解释，不额外抬高信号耐用性。"
+      }
+    };
+    return profiles[raw] || {
+      sidebar: "舒适窗 关闭",
+      title: "舒适窗：关闭",
+      value: "关闭",
+      detail: "本卡没有可直接展示的舒适窗口结论；旧卡只展示已有耐用性信息。"
+    };
+  }
+
+  function durabilityLayerScore(layer) {
+    const score = firstPresent(asObject(layer).score_100, asObject(layer).score);
+    return durabilityScoreLine(score);
+  }
+
+  function durabilityLayerVerdict(key, layer, anchor) {
+    const view = asObject(layer);
+    if (!Object.keys(view).length) return "旧卡未提供此层结论。";
+    const state = durabilityReadable(firstPresent(view.interpretation, view.state), "待判");
+    const distance = safeNumber(firstPresent(view.distance_ratio, asObject(anchor).distance_ratio));
+    if (key === "anchor_native") {
+      const distanceText = distance === null
+        ? "偏离度未提供"
+        : `偏离锚带半宽 ${number(Math.abs(distance), 2)} 倍`;
+      return `${state}；当前系统已有锚分直接进入本层，${distanceText}。`;
+    }
+    if (key === "price_efficiency") {
+      const ppe = safeNumber(view.ppe);
+      const source = view.method === "PROXY_OHLC" || view.ppe_source === "OHLC_PROXY"
+        ? "OHLC 近似路径"
+        : (view.method === "EXACT_PRICE_POINTS" ? "逐点价格路径" : "路径来源未提供");
+      const band = view.inside_anchor_band === true
+        ? "仍在锚带内"
+        : (view.outside_anchor_band === true ? "已离开锚带" : "锚带位置未定");
+      const ppeText = ppe === null ? "PPE 未提供" : `PPE ${number(ppe, 2)}`;
+      return `${state}；${ppeText}，${source}，${band}。`;
+    }
+    if (key === "options_gamma") {
+      const regime = durabilityReadable(view.regime, "Gamma 状态待判");
+      const netGamma = safeNumber(view.net_gamma_notional_usd);
+      const gammaText = netGamma === null ? "净 Gamma 未提供" : `净 Gamma ${number(netGamma, 0)}`;
+      return `${state}；${regime}，${gammaText}，作为放大器解释，不单独破坏价格锚。`;
+    }
+    if (key === "perp_funding") {
+      const rate = safeNumber(firstPresent(view.funding_rate, view.last_rate));
+      const rateText = rate === null ? "Funding 费率未提供" : `Funding ${percent(rate, 3)}`;
+      const align = view.funding_aligns_with_signal === true
+        ? "与信号方向同向"
+        : (view.funding_against_signal === true ? "与信号方向相反" : "方向关系中性/待判");
+      return `${state}；${rateText}，${align}。`;
+    }
+    return state;
+  }
+
+  function durabilityReasonSentence(code) {
+    const labels = {
+      ANCHOR_PRICE_FALLBACK_MARKET_PRICE: "锚价使用当前市场价兜底。",
+      ANCHOR_PRICE_MISSING: "锚价缺失，结论按缺口处理。",
+      ANCHOR_BAND_DEFAULT_HALF_PCT_0_004: "锚带使用默认 0.4% 半宽。",
+      ANCHOR_NATIVE_DISTANCE_PROXY_USED: "锚原生分使用距离代理。",
+      ANCHOR_NATIVE_SCORE_MISSING: "锚原生分缺失。",
+      PRICE_OUTSIDE_ANCHOR_BAND: "价格已经离开锚带。",
+      ANCHOR_NATIVE_BROKEN_CAP: "锚原生层触发破坏上限。",
+      PPE_CANNOT_AUTOPASS_ANCHOR: "PPE 不能覆盖已破坏的锚。",
+      PPE_ADVERSE_BAND_BREAK_HARD_BREAKER: "不利高效脱锚触发硬破坏。",
+      PPE_PROXY_OHLC_USED: "PPE 使用 OHLC 近似路径。",
+      PPE_FLAT_EXACT_PATH: "逐点路径显示净移动很小。",
+      PPE_FLAT_PROXY_RANGE: "OHLC 区间显示净移动很小。",
+      MARKET_PRICE_DATA_GAP: "市场价格缺口。",
+      OPTIONS_GAMMA_DATA_GAP: "Gamma 输入缺口。",
+      PERP_FUNDING_DATA_GAP: "Funding 输入缺口。",
+      COMFORT_WINDOW_OK: "舒适窗口判断已完成。",
+      PRICE_ANCHOR_OK: "价格锚层有可用结论。",
+      NO_TRADE_GATE: "本层不作为交易门控。"
+    };
+    if (labels[code]) return labels[code];
+    const readable = durabilityReadable(code, "");
+    if (readable) return `${readable}。`;
+    return "";
+  }
+
+  function durabilityReasonList(codes) {
+    const values = [...new Set(asArray(codes).map(durabilityReasonSentence).filter(Boolean))];
+    if (!values.length) return "";
+    return `<ul class="durability-reason-list">${values.slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  }
+
+  function durabilitySignedPp(value) {
+    const numeric = safeNumber(value);
+    if (numeric === null) return "";
+    const sign = numeric > 0 ? "+" : "";
+    return `${sign}${number(numeric, 2)}pp`;
+  }
+
+  function durabilityTemporalBasis(temporal, session) {
+    const temporalView = asObject(temporal);
+    const sessionView = asObject(session);
+    const basis = asObject(firstPresent(
+      temporalView.validation_basis,
+      sessionView.validation_basis
+    ));
+    const rawDelta = durabilitySignedPp(firstPresent(
+      temporalView.backtest_delta_pp,
+      sessionView.backtest_delta_pp
+    ));
+    const rating = durabilityReadable(
+      firstPresent(
+        temporalView.display_label,
+        temporalView.premise_durability,
+        temporalView.effective_zone,
+        temporalView.state,
+        sessionView.display_label,
+        sessionView.premise_durability,
+        sessionView.effective_zone,
+        sessionView.state
+      ),
+      "未提供 / 旧卡兼容"
+    );
+    const score = firstPresent(temporalView.score, sessionView.score);
+    const headline = rawDelta ? `${rating} · ${rawDelta}` : rating;
+    const parts = [];
+    if (rawDelta) parts.push(`三年回测原始值 ${rawDelta}`);
+    else if (!isBlank(score)) parts.push(`展示分 ${durabilityScoreLine(score)}`);
+    else parts.push("三年回测原始值未提供");
+    parts.push(`评级 ${rating}`);
+    if (!isBlank(basis.data_range)) parts.push(`样本区间 ${basis.data_range}`);
+    if (!isBlank(basis.sample_bars)) parts.push(`样本 ${scalarText(basis.sample_bars, { translate: false, digits: 0 })} 根`);
+    if (!isBlank(basis.headline_horizon_min)) parts.push(`未来窗 ${scalarText(basis.headline_horizon_min, { translate: false, digits: 0 })} 分钟`);
+    if (!isBlank(basis.research_grade)) parts.push(`研究等级 ${durabilityReadable(basis.research_grade, basis.research_grade)}`);
+    return {
+      headline,
+      detail: `${parts.join("；")}。只作为解释，不进入价格锚评分。`
+    };
+  }
+
+  function renderDurabilitySummaryCard(title, value, detail) {
+    return `
+      <div class="durability-summary-card">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(value)}</span>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+    `;
+  }
+
+  function renderDurabilityLayerCard(definition, layers, anchor) {
+    const layer = asObject(asObject(layers)[definition.key]);
+    const score = durabilityLayerScore(layer);
+    const state = durabilityReadable(firstPresent(layer.interpretation, layer.state), "待判");
+    const verdict = durabilityLayerVerdict(definition.key, layer, anchor);
+    return `
+      <article class="durability-layer-card">
+        <div class="durability-layer-title">
+          <strong>${escapeHtml(definition.title)}</strong>
+          <span>${escapeHtml(score)}</span>
+        </div>
+        <p class="durability-layer-state">${escapeHtml(state)}</p>
+        <p>${escapeHtml(verdict)}</p>
+      </article>
+    `;
+  }
+
+  function renderSignalDurability(doc) {
+    const durability = signalDurability(doc);
+    const hasDurability = Object.keys(durability).length > 0;
+    const comfort = asObject(durability.comfort_window);
+    const temporal = asObject(durability.temporal_session);
+    const session = asObject(durability.session_context);
+    const anchor = asObject(durability.price_anchor_durability);
+    const layers = asObject(firstPresent(anchor.layer_scores, durability.layer_scores));
+    const reasonCodes = asArray(durability.reason_codes);
+    const dataGaps = asArray(durability.data_gaps);
+    const layerDefs = [
+      { key: "anchor_native", title: "锚原生层" },
+      { key: "price_efficiency", title: "PPE路径效率" },
+      { key: "options_gamma", title: "GEX / Gamma放大器" },
+      { key: "perp_funding", title: "Funding杠杆解释" },
+    ];
+    const headlineScore = firstPresent(
+      durability.headline_score, durability.score,
+      anchor.durability_score, anchor.score
+    );
+    const headlineState = durabilityStateText(durability);
+    const comfortProfile = durabilityComfortProfile(comfort.tag);
+    const temporalBasis = durabilityTemporalBasis(temporal, session);
+    const qualityText = durabilityReadable(
+      firstPresent(durability.score_quality, anchor.score_quality),
+      "评分质量未提供"
+    );
+    const dataGapText = dataGaps.length
+      ? "存在输入缺口，结论按保守口径展示。"
+      : "关键耐用性输入未报告缺口。";
+    const compatText = durability.compat_backfill_applied
+      ? "兼容回填已标记；旧卡只展示已有别名，不发明新分数。"
+      : (hasDurability ? "本卡提供原生耐用性结论。" : "旧卡兼容：未提供耐用性字段，只保留空结论。");
+    const scoreDetail = `${headlineState}；${qualityText}。耐用性是结构健康指数，不是胜率。`;
+    return section("信号耐用性层", "只读解释：不改变置信、不改变门控、不改变交易许可。", `
+      <div class="signal-durability-panel">
+        <p class="durability-policy"><strong>只读解释</strong>：本层合并舒适窗口、时区前提和价格锚耐用性，只展示结构健康结论，不改变置信、门控或交易许可。</p>
+        <div class="durability-summary-grid">
+          ${renderDurabilitySummaryCard("合成耐用性", durabilityScoreLine(headlineScore), scoreDetail)}
+          ${renderDurabilitySummaryCard("舒适窗口", comfortProfile.title, `${comfortProfile.value}；${comfortProfile.detail}`)}
+          ${renderDurabilitySummaryCard("时区耐用性", temporalBasis.headline, temporalBasis.detail)}
+        </div>
+      </div>
+      <div class="durability-layer-list">
+        ${layerDefs.map((definition) => renderDurabilityLayerCard(definition, layers, anchor)).join("")}
+      </div>
+      <div class="durability-conclusion-card">
+        <strong>合成解释</strong>
+        <p>合成值 ${escapeHtml(durabilityScoreLine(headlineScore))}，当前结论为 ${escapeHtml(headlineState)}。四层以现有锚分/偏离度为主干，PPE、Gamma 与 Funding 只解释锚的稳定或脆弱来源；${escapeHtml(dataGapText)}</p>
+        ${durabilityReasonList(reasonCodes)}
+        <p class="durability-compat-note">${escapeHtml(compatText)}</p>
+      </div>
+    `, "signal-durability");
+  }
+
   function renderSignalSessionContext(doc) {
     const ctx = asObject(get(doc, "signal_window.session_context", {}));
     if (!Object.keys(ctx).length) return "";
@@ -2755,6 +3152,11 @@
     const identity = asObject(get(doc, "identity", {}));
     const quality = asObject(get(doc, "quality", {}));
     const conflict = asObject(get(doc, "conflict", {}));
+    const durability = signalDurability(doc);
+    const durabilityNote = [
+      durabilityStateText(durability),
+      durabilityComfortBrief(durability)
+    ].filter(Boolean).join(" / ");
     const price = get(doc, "market_context.price", get(doc, "market_price"));
     $("#documentView").innerHTML = `
       ${renderLoadNotice()}
@@ -2775,12 +3177,13 @@
         ${metric("Market price", price, get(doc, "market_context.quote_currency", ""))}
         ${metric("Evidence strength", currentDecision.evidence_strength)}
         ${metric("Confidence", currentDecision.confidence)}
+        ${metric("信号耐用性", durabilityScoreText(durability) === durabilityMissingText() ? null : durabilityScoreText(durability), durabilityNote)}
         ${metric("Conflict ratio", isNullish(conflict.ratio) ? null : `${number(conflict.ratio * 100, 1)}%`, semanticCompact(conflict.level))}
         ${metric("Data quality", semanticCompact(quality.overall), quality.all_required_sources_ready ? "required ready" : "requires review")}
       </div>
       ${renderGammaOverview(doc)}
       ${renderGexRank(doc)}
-      ${renderSignalSessionContext(doc)}
+      ${renderSignalDurability(doc)}
       ${renderTransitionContext(doc)}
       ${renderLlmReview(doc)}
       ${renderDisplayLayers(doc)}
