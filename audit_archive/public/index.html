@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>中性回路 · 信号审计</title>
+</head>
+<body>
+  <!-- 占位页：样式与交互由用户后续打磨。 -->
+  <!-- 数据契约：先读 data/index.json 出列表/筛选，进入详情再读 data/cards/<card_id>.json。 -->
+  <!-- 不下载整份 jsonl；index.json 与单卡 json 均为可重建物。 -->
+  <h1>中性回路 · 信号审计（占位）</h1>
+  <p>本页为静态审计站点占位。数据源：<code>data/index.json</code> 与
+     <code>data/cards/&lt;card_id&gt;.json</code>。前端样式待打磨。</p>
+  <pre id="out">loading…</pre>
+  <script>
+    fetch('data/index.json').then(function (r) { return r.json(); })
+      .then(function (idx) {
+        document.getElementById('out').textContent =
+          JSON.stringify(idx, null, 2);
+      })
+      .catch(function (e) {
+        document.getElementById('out').textContent = String(e);
+      });
+  </script>
+</body>
+</html>

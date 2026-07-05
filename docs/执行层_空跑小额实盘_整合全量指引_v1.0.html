@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>执行层空跑与小额实盘整合全量指引 v1.0</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 18mm 16mm 18mm 16mm;
+    }
+
+    :root {
+      --ink: #111;
+      --muted: #555;
+      --line: #d8d8d8;
+      --soft: #f4f4f4;
+      --accent: #0f5f5c;
+      --warn: #8a4b00;
+      --danger: #8a1f11;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: #fff;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+      font-size: 12.5px;
+      line-height: 1.62;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.25;
+      font-weight: 700;
+      page-break-after: avoid;
+    }
+
+    h1 {
+      font-size: 28px;
+      letter-spacing: 0;
+      margin-bottom: 10px;
+    }
+
+    h2 {
+      font-size: 19px;
+      padding-top: 18px;
+      margin-top: 18px;
+      border-top: 2px solid var(--ink);
+    }
+
+    h3 {
+      font-size: 15px;
+      margin-top: 14px;
+      margin-bottom: 5px;
+    }
+
+    p {
+      margin: 6px 0;
+    }
+
+    ul,
+    ol {
+      margin: 6px 0 8px 20px;
+      padding: 0;
+    }
+
+    li {
+      margin: 3px 0;
+    }
+
+    code {
+      font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+      font-size: 11.5px;
+      background: #f0f0f0;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
+    pre {
+      margin: 8px 0;
+      padding: 10px 12px;
+      background: #f5f5f5;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 8px 0 12px;
+      page-break-inside: avoid;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 6px 7px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #efefef;
+      font-weight: 700;
+    }
+
+    .cover {
+      min-height: 235mm;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      page-break-after: always;
+    }
+
+    .cover-main {
+      padding-top: 34mm;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 670px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 36mm 1fr;
+      gap: 5px 14px;
+      margin-top: 24px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      max-width: 690px;
+    }
+
+    .meta-grid dt {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .meta-grid dd {
+      margin: 0;
+    }
+
+    .cover-footer {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      color: var(--muted);
+      font-size: 11.5px;
+    }
+
+    .notice,
+    .danger,
+    .ok {
+      border-left: 4px solid var(--accent);
+      background: var(--soft);
+      padding: 9px 12px;
+      margin: 10px 0;
+      page-break-inside: avoid;
+    }
+
+    .danger {
+      border-left-color: var(--danger);
+    }
+
+    .warn {
+      color: var(--warn);
+      font-weight: 700;
+    }
+
+    .danger strong {
+      color: var(--danger);
+    }
+
+    .ok {
+      border-left-color: var(--accent);
+    }
+
+    .tag {
+      display: inline-block;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 1px 6px;
+      border-radius: 999px;
+      margin: 1px 3px 1px 0;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .compact td,
+    .compact th {
+      padding: 5px 6px;
+      font-size: 11.8px;
+    }
+
+    .break {
+      page-break-before: always;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <div class="cover-main">
+      <div class="eyebrow">Execution Layer Runbook</div>
+      <h1>执行层空跑与小额实盘整合全量指引 v1.0</h1>
+      <p class="subtitle">
+        基于《执行层_空跑验证流程.md》《执行层_小额实盘配置.md》以及 2026-06-23 最新执行层交付物整理。
+        本文把“先真机空跑，再标定，再逐门小额开真”的完整操作链收拢为一份可签收、可复核、可打印的 PDF 指引。
+      </p>
+
+      <dl class="meta-grid">
+        <dt>适用版本</dt>
+        <dd><code>STRATEGY_VERSION = "2.16.0"</code>；里程碑 <code>SMALL_LIVE_CANDIDATE</code>；自检状态 <code>DRY_RUN_READY</code></dd>
+        <dt>当前交付物</dt>
+        <dd><code>demo/最新交付物/spm_vertical_short_pony_v1.py</code></dd>
+        <dt>生成日期</dt>
+        <dd>2026-06-23</dd>
+        <dt>文档定位</dt>
+        <dd>执行层全量操作指引，不是收益承诺、不是策略验证报告、不是实盘授权文件。</dd>
+      </dl>
+    </div>
+
+    <div class="cover-footer">
+      红线：执行层默认全空跑；正确确认码链路与交易所订单/成交/持仓只读核验完成前，不得标记 <code>DRY_RUN_PASSED</code>。任何真实写单前必须完成真机 <code>DRY_RUN_PASSED</code>、标定关键阈值，并按“降险先于新增风险”的顺序逐门开启。
+    </div>
+  </section>
+
+  <h2>1. 一页结论</h2>
+  <div class="danger">
+    <strong>当前状态：</strong>执行层代码已到 <code>v2.16.0</code>，具备小额实盘前 Tier1 最小实现，并完成 FMZ 交互收束、错误确认码拒绝、日志不刷屏的真机复验，但仍停在 <code>DRY_RUN_READY</code>。
+    正确确认码进入执行轮与交易所订单/成交/持仓只读核验仍未完成；这表示“可以进入下一轮真机空跑验收”，不表示“可以直接真实交易”，也不表示“策略盈利性已验证”。
+  </div>
+
+  <table class="compact">
+    <tr>
+      <th>问题</th>
+      <th>当前答案</th>
+    </tr>
+    <tr>
+      <td>最新执行层单文件是哪一个？</td>
+      <td><code>demo/最新交付物/spm_vertical_short_pony_v1.py</code>。旧名 <code>spm_calendar_protected_short_v1.py</code> 属历史/非最新路径，不应作为本次 PDF 的当前交付物。</td>
+    </tr>
+    <tr>
+      <td>代码已落地什么？</td>
+      <td>side_hint 驱动方向、VRP 经 <code>market_context</code> 双门、SyntheticFillAdapter 空跑、OFFLINE-in-LIVE 守门、信号一次性消费、Tier1 防重复/真实预算/统一真相/有符号对冲/批准 TTL/捆绑降险授权、Gate-A 动态 tick/数量合法化/能开不能关校验、24h 到期结算端处理、v2.16 唯一 <code>执行</code> 交互与事件化日志。</td>
+    </tr>
+    <tr>
+      <td>真实写单前还缺什么？</td>
+      <td>真实机器人补齐正确确认码进入执行轮、<code>ALLOW_ENTRY_TRADING=False</code> 下无真实下单、交易所订单/成交/持仓只读无新增风险，之后才能签收 <code>DRY_RUN_PASSED</code>；再标定 <code>RISK_EXIT_MAX_SPEND</code>、<code>PORTFOLIO_LIMITS</code>、<code>ENTRY_MIN_NET_CREDIT</code>、<code>FEAS_*</code>；真实 entry 前补齐并签收 Gate-B 故障注入闭环，包括 <code>ORDER_STATE_UNKNOWN</code> 状态机、订单到 campaign 映射、累计 credit floor 与 TTL 毫秒强约束。</td>
+    </tr>
+    <tr>
+      <td>默认是否会下单？</td>
+      <td>不会。<code>ALLOW_ENTRY_TRADING</code>、<code>ALLOW_EXIT_TRADING</code>、<code>ALLOW_HEDGE_TRADING</code>、<code>ALLOW_HEDGE_OPEN</code>、<code>KILL_NEW_RISK</code>、<code>EMERGENCY_REDUCE_ONLY</code> 与 legacy <code>ALLOW_TRADING</code> 默认均为 <code>False</code>；<code>SIGNAL_SOURCE</code> 默认 <code>OFFLINE_MANUAL</code>，即便误开 entry 门也只应 DRY_RUN。</td>
+    </tr>
+  </table>
+
+  <h2>2. 版本、交付物与边界</h2>
+  <h3>2.1 当前执行层交付物</h3>
+  <table class="compact">
+    <tr>
+      <th>项目</th>
+      <th>值</th>
+      <th>用途</th>
+    </tr>
+    <tr>
+      <td>FMZ 单文件</td>
+      <td><code>demo/最新交付物/spm_vertical_short_pony_v1.py</code></td>
+      <td>当前可直接复制到 FMZ 的执行层单文件。</td>
+    </tr>
+    <tr>
+      <td>版本</td>
+      <td><code>STRATEGY_VERSION = "2.16.0"</code></td>
+      <td>唯一 <code>执行</code> 交互、一码一执行、事件化日志已落地；24h 交割到期结算端处理仍保留。</td>
+    </tr>
+    <tr>
+      <td>状态</td>
+      <td><code>SMALL_LIVE_CANDIDATE</code> / <code>DRY_RUN_READY</code></td>
+      <td>代码项到小额实盘候选，但真实机器人空跑与标定仍未签收。</td>
+    </tr>
+    <tr>
+      <td>生成源</td>
+      <td><code>demo/execution_build/realsrc/</code></td>
+      <td>由 <code>python build_bundle.py</code> 合成，交付物文件夹只放成品单文件。</td>
+    </tr>
+  </table>
+
+  <h3>2.2 必须保留的语义边界</h3>
+  <ul>
+    <li><strong>空跑通过 ≠ 策略已验证。</strong>空跑证明交互、状态、风控闭环和失败收口按预期，不证明收益率、胜率或标定有效。</li>
+    <li><strong>人工批准 ≠ 越过硬门。</strong>确认码只把方案从“禁止”变为“允许继续系统复核”；腿、数量、价格、预算、信号包、VRP、持仓读取和门控仍由系统硬门裁决。</li>
+    <li><strong>OFFLINE 永不真开。</strong><code>OFFLINE_MANUAL</code> 只用于静态方向空跑；实盘新增风险必须来自 <code>FILE</code> 或 <code>G</code> 信号源。</li>
+    <li><strong>真实 entry 有双条件。</strong>entry 门控通过仍不够，真实开仓还要求 <code>SIGNAL_SOURCE != "OFFLINE_MANUAL"</code>。</li>
+    <li><strong>读失败/未知一律 fail-closed。</strong>未知持仓、未知订单、未知结算状态不能凭本地假设清仓或开新风险。</li>
+    <li><strong>降险先于新增风险。</strong>先验证退出，再验证 reduce-only 对冲，最后才允许 entry。</li>
+  </ul>
+
+  <h3>2.3 主链与交互路径</h3>
+  <p>执行层当前是单一主链设计：每轮由 <code>run_cycle</code> 统一读取命令、接收信号、检查门控、管理持仓、尝试开仓并输出控制台状态。操作员应把控制台当作验收面，而不是只看日志是否有报错。</p>
+  <table class="compact">
+    <tr>
+      <th>链路段</th>
+      <th>职责</th>
+      <th>验收关注点</th>
+    </tr>
+    <tr>
+      <td>命令读取</td>
+      <td><code>GetCommand</code> / command router / 命令账本</td>
+      <td>真实机器人可见；错码/旧码拒绝；重复确认幂等；批准、拒绝、授权可追溯。</td>
+    </tr>
+    <tr>
+      <td>信号接收</td>
+      <td><code>OFFLINE_MANUAL</code>、<code>FILE</code>、<code>G</code> 三源</td>
+      <td>实盘新增风险只接受 FILE/G；<code>side_hint</code> 驱动方向；坏包 fail-closed。</td>
+    </tr>
+    <tr>
+      <td>门控与预提交</td>
+      <td>5 门控、Gate-A、VRP、预算、持仓真相</td>
+      <td>门关只展示意图；能开不能关必须报错；未知读取禁新开。</td>
+    </tr>
+    <tr>
+      <td>持仓管理</td>
+      <td><code>manage_cycle</code>、止盈、风险退出、对冲、对账、到期归档</td>
+      <td>风险行、止盈资格、对冲、对账、<code>EXPIRY_IMMINENT</code>/<code>EXPIRED_SETTLED</code> 都要在控制台可见。</td>
+    </tr>
+  </table>
+
+  <h2>3. 状态机：从当前状态到小额实盘</h2>
+  <table>
+    <tr>
+      <th>阶段</th>
+      <th>入口条件</th>
+      <th>动作</th>
+      <th>出口状态</th>
+    </tr>
+    <tr>
+      <td>当前</td>
+      <td>代码 v2.16.0；本地测试/构建记录为 227 passed + bundle check；FMZ 已验证唯一交互、错误确认码拒绝和日志不刷屏</td>
+      <td>只允许准备和下一轮真机空跑，不允许真实写单；不得封 <code>DRY_RUN_PASSED</code></td>
+      <td><code>DRY_RUN_READY</code></td>
+    </tr>
+    <tr>
+      <td>空跑验收</td>
+      <td>真实 FMZ 机器人、唯一 <code>执行</code> 交互已配置、门控全 False</td>
+      <td>跑阶段 0、A1、A2、A3、A4、A5；重点补齐正确确认码执行轮、门控阻断、交易所只读核验，并记录每项证据</td>
+      <td><code>DRY_RUN_PASSED</code></td>
+    </tr>
+    <tr>
+      <td>小额实盘准备</td>
+      <td><code>DRY_RUN_PASSED</code> 已签收</td>
+      <td>标定预算和阈值；补齐/签收 Gate-B；确认专用子账户、单机器人、无遗留挂单/其他策略持仓</td>
+      <td>允许逐门开真</td>
+    </tr>
+    <tr>
+      <td>逐门开真</td>
+      <td>标定完成；操作者在场；每步观察数个完整周期</td>
+      <td>先 <code>ALLOW_EXIT_TRADING</code>，再 <code>ALLOW_HEDGE_TRADING</code>，最后 <code>ALLOW_ENTRY_TRADING</code></td>
+      <td>最小仓位、单仓、人工逐笔的小额实盘</td>
+    </tr>
+    <tr>
+      <td>晋级</td>
+      <td>连续若干完整 entry/exit campaign 无 P0 事故</td>
+      <td>按数据决定是否放宽、窄范围自动或进入 Tier2</td>
+      <td>不得预先承诺完全自动</td>
+    </tr>
+  </table>
+
+  <h2 class="break">4. 空跑验证全流程</h2>
+  <h3>4.1 阶段 0：本机构建与回归</h3>
+  <p>任一命令失败，停止，不进入后续阶段。</p>
+  <pre>cd demo/execution_build/realsrc
+python tests/run_all.py
+python build_bundle.py --check</pre>
+  <p>当前文档记录的期望：<code>tests/run_all.py</code> 为 <code>227 passed, 0 failed</code>；bundle check 覆盖语法、名称解析、smoke、无 KPF/无日历残留。</p>
+
+  <h3>4.2 阶段 A1：本机合成成交矩阵</h3>
+  <p>使用 <code>SyntheticFillAdapter</code> 把交易所私有接口换成合成成交，跑真实 entry campaign / exit / hedge 主链。</p>
+  <table class="compact">
+    <tr>
+      <th>场景</th>
+      <th>期望</th>
+    </tr>
+    <tr>
+      <td>保护全成 + 短腿全成</td>
+      <td>commit，快照满足 <code>short = protection = amount</code>。</td>
+    </tr>
+    <tr>
+      <td>保护全成 + 短腿部分成</td>
+      <td>放弃后冻结 1:1 覆盖，<code>long_remaining_qty ≥ remaining_short_qty</code>，不留裸短腿。</td>
+    </tr>
+    <tr>
+      <td>保护全成 + 短腿不成</td>
+      <td>全退保护，清锁，无持仓。</td>
+    </tr>
+    <tr>
+      <td>保护部分成 + 短腿等量成</td>
+      <td><code>short ≤ protection</code> 不变量保持。</td>
+    </tr>
+    <tr>
+      <td>信号活动中途过期</td>
+      <td>不新增风险，phase 回到 <code>WAIT_SIGNAL</code>。</td>
+    </tr>
+    <tr>
+      <td>净 credit 低于底线</td>
+      <td><code>ENTRY_PAUSED_CREDIT</code> 或超额 <code>ABANDONED</code>。</td>
+    </tr>
+  </table>
+  <p><strong>通过判据：</strong>任意分支无裸短腿、无不可解释状态；所有 commit 快照满足 <code>protection_qty ≥ short_qty</code>。</p>
+
+  <h3>4.3 阶段 A2：真实机器人 OFFLINE 只读/空跑</h3>
+  <div class="notice">
+    <strong>必须真实机器人：</strong><code>GetCommand</code> 在回测系统不生效。本阶段验证交互、读取链、状态迁移和 fail-closed，不真实下单。
+  </div>
+  <pre>SIGNAL_SOURCE = "OFFLINE_MANUAL"
+ALLOW_ENTRY_TRADING = ALLOW_EXIT_TRADING = ALLOW_HEDGE_TRADING = False
+KILL_NEW_RISK = EMERGENCY_REDUCE_ONLY = False
+DIRECTION_BIAS = "SHORT_CALL" 或 "SHORT_PUT"</pre>
+  <p>FMZ 交互区<strong>只配置一个</strong>交互（v2.16 收束）：<code>执行</code>（字符串=方案确认码）。<code>急停/恢复/拒绝/授权止盈/风险退出授权/撤销授权</code> 已下线——急停=配置门 <code>KILL_NEW_RISK</code>，放弃/恢复=批准 TTL 过期 + 重启。两轮模型：授权前=计划入口轮，<code>执行:确认码</code> 成功后=执行轮（单轮自动管理）。</p>
+  <ol>
+    <li>启动日志含 <code>STRATEGY_VERSION 2.16.0</code>，控制台无 <code>DATA_UNKNOWN</code>/<code>RECOVERY_BLOCKED</code>；概览「轮次」=计划入口轮。</li>
+    <li>计划入口轮出待批方案明细 + 短确认码；<code>执行</code> 反馈分支「最近命令」可见（空/格式错/不匹配 → 留 <code>HARD_APPROVAL_WAIT</code>；正确码 → <code>PLAN_LOCKED</code>、轮次转执行轮）。</li>
+    <li>OFFLINE 下预提交 <code>vrp_rechecked</code> 应 fail，因为无 <code>market_context</code>；只显示订单意图表，不真实开仓。</li>
+    <li>临时把 <code>ALLOW_ENTRY_TRADING=True</code> 也仍应因 OFFLINE-in-LIVE 守门只 DRY_RUN；验证后改回 False。</li>
+    <li>急停=配置门：<code>KILL_NEW_RISK=True</code> 重启 → 停新风险（退出/对冲减仓仍可）；改回 False 重启 → 回待计划授权。放弃 = 不操作，批准 TTL 过期自动作废。</li>
+    <li>同一确认码重复执行必须 <code>duplicate_ignored</code>；下线命令（如 <code>急停</code>）输入即「未知命令」。</li>
+    <li>日志不刷屏：无状态变化的周期轮询不再重复输出 <code>RUN_CYCLE:*</code>，仅状态变化写一条事件、命令到达写一条脱敏 <code>[cmd]</code>。</li>
+    <li>Gate-A：价格落真实 tick，数量满足 <code>min_trade_amount</code>；若 entry=True 但 exit=False 或 <code>RISK_EXIT_MAX_SPEND=0</code>，<code>validate_config</code> 必须报错。</li>
+  </ol>
+
+  <h3>4.4 阶段 A3：真实机器人 FILE/G 端到端空跑</h3>
+  <pre>SIGNAL_SOURCE = "G" 或 "FILE"
+门控仍全 False</pre>
+  <p>信号侧落一份 <code>SignalEvidencePackage</code>，至少含 <code>package_id</code>、未来 <code>expires_ts</code>、无拒绝/坏质量、<code>strategy_recommendation.side_hint</code> 和 <code>market_context</code>。</p>
+  <ul>
+    <li><strong>方向权威：</strong>FILE/G 下候选按 <code>side_hint</code> 生成；缺失、中性或不可映射则 fail-closed。</li>
+    <li><strong>VRP 双门：</strong>肥 IV 上下文应通过，薄上下文应 BLOCK；推荐库和预提交只放行 VRP PASS 候选。</li>
+    <li><strong>信号一次性：</strong>同一 <code>package_id</code> 后续不得二次成仓；本阶段只观察，真实消费在小额实盘验收。</li>
+    <li><strong>坏包处理：</strong>过期、拒绝、坏质量包一律禁新开，持仓管理继续。</li>
+  </ul>
+
+  <h3>4.5 阶段 A4：持仓管理空跑</h3>
+  <p>注入带 <code>entry_risk_anchor</code> 的 <code>_POSITION_KEY</code> 快照，观察 manage 一轮。</p>
+  <ul>
+    <li>高 delta 短腿：控制台风险行显示 <code>EXIT_PREFERRED</code> 与触界概率；退出授权随开仓批准自动捆绑（本注入场景需自行注入降险授权，未注入则 executable 回落 HOLD/对冲、软授权行标「未授权·异常」）。</li>
+    <li>短腿盘口缺 delta/IV：必须显示数据缺口，不静默 NORMAL。</li>
+    <li>止盈资格达标 + 已授权（正常=commit 自动捆绑）：生成 exit campaign；门关仍 dry；全程无需任何前端按钮。</li>
+    <li>裸 perp：标记 <code>ORPHAN_HEDGE_EMERGENCY</code>，即便对冲门关也给出清理意图。</li>
+    <li>reconcile 不符：控制台显式记录，风险收口继续，不阻断。</li>
+  </ul>
+
+  <h3>4.6 阶段 A5：24h 到期结算端空跑</h3>
+  <p>注入含 <code>short_instrument</code>、<code>long_instrument</code>、<code>short_expiry_ts</code> 的快照，观察 manage。</p>
+  <table class="compact">
+    <tr>
+      <th>场景</th>
+      <th>期望</th>
+    </tr>
+    <tr>
+      <td>DTE≤0 且交易所读到两腿均不在</td>
+      <td>清零腿量，<code>close_reason=EXPIRED_SETTLED</code>，归档 CLOSED，清快照。</td>
+    </tr>
+    <tr>
+      <td>DTE≤0 但持仓读取失败</td>
+      <td>fail-closed，不归档，快照与腿量保留待复查。</td>
+    </tr>
+    <tr>
+      <td>DTE≤<code>EXPIRY_IMMINENT_HOURS</code></td>
+      <td><code>expiry_imminent=True</code> 可见；退出仍由风险模型驱动，不强平丢信用。</td>
+    </tr>
+  </table>
+  <p>Deribit 期权 08:00 UTC 现金结算；持有到期方案应在结算后下一轮归档，不应卡在买回已下市合约。</p>
+
+  <h3>4.7 DRY_RUN_PASSED 签收清单</h3>
+  <ul>
+    <li>阶段 0 全绿：227 passed + bundle check。</li>
+    <li>A1 合成矩阵无裸短腿、无不可解释状态，commit 快照满足覆盖不变量。</li>
+    <li>A2 交互、幂等、急停/恢复、预提交 fail-closed、读取三态、Gate-A 全如期；OFFLINE 零真实下单。</li>
+    <li>A3 side_hint 驱动方向、VRP 双门真实裁决、坏包 fail-closed。</li>
+    <li>A4 风险、数据缺口、止盈、孤儿、对账均正确 surfaced。</li>
+    <li>A5 到期结算归档、读失败不归档、EXPIRY_IMMINENT 可见。</li>
+    <li>全程零真实下单，所有读失败/未知都禁新开。</li>
+    <li>人工批准、拒绝、授权均进入命令账本，可追溯。</li>
+  </ul>
+
+  <h2 class="break">5. 小额实盘配置全指引</h2>
+  <h3>5.1 权限模型</h3>
+  <table>
+    <tr>
+      <th>类别</th>
+      <th>动作</th>
+      <th>小额实盘策略</th>
+    </tr>
+    <tr>
+      <td>A 新增风险</td>
+      <td>开垂直价差、加短腿、开非 reduce-only 期货</td>
+      <td>每笔人工硬批准 + 系统 13 项预提交复核。</td>
+    </tr>
+    <tr>
+      <td>B 中性维护</td>
+      <td>撤未成交单、刷新、放弃过期方案、对账恢复、告警</td>
+      <td>全自动。</td>
+    </tr>
+    <tr>
+      <td>C 风险收缩</td>
+      <td>买回短腿、卖多余保护、reduce-only 平期货、清孤儿</td>
+      <td>不逐笔批准；开仓时同时授权预定降险边界。</td>
+    </tr>
+  </table>
+
+  <h3>5.2 实盘必须改的 6 项</h3>
+  <table class="compact">
+    <tr>
+      <th>参数</th>
+      <th>空跑值</th>
+      <th>小额实盘值</th>
+      <th>说明</th>
+    </tr>
+    <tr>
+      <td><code>SIGNAL_SOURCE</code></td>
+      <td><code>OFFLINE_MANUAL</code></td>
+      <td><code>"G"</code> 或 <code>"FILE"</code></td>
+      <td>实盘新增风险必须来自总线；OFFLINE 即使开门也只 DRY_RUN。</td>
+    </tr>
+    <tr>
+      <td><code>RISK_EXIT_MAX_SPEND</code></td>
+      <td><code>0.0</code></td>
+      <td><code>&lt;非零&gt;</code></td>
+      <td>风险退出预算；=0 会使风险退出受阻并触发开仓门硬校验。</td>
+    </tr>
+    <tr>
+      <td><code>PORTFOLIO_LIMITS["max_margin"]</code></td>
+      <td><code>0.50</code></td>
+      <td><code>&lt;账户净值×5~10%&gt;</code></td>
+      <td>首跑用小占用上限。</td>
+    </tr>
+    <tr>
+      <td><code>PORTFOLIO_LIMITS["max_spread_loss_per_trade"]</code></td>
+      <td><code>0.02</code></td>
+      <td><code>&lt;单结构最大损失&gt;</code></td>
+      <td>腿宽减净 credit，折算结算币。</td>
+    </tr>
+    <tr>
+      <td><code>ENTRY_MIN_NET_CREDIT</code></td>
+      <td><code>0.0</code></td>
+      <td><code>&lt;非零&gt;</code></td>
+      <td>至少覆盖来回摩擦，不能留 0。</td>
+    </tr>
+    <tr>
+      <td>三门控</td>
+      <td>全 <code>False</code></td>
+      <td>按 §5.5 顺序逐个 <code>True</code></td>
+      <td>降险门先于新增风险门。</td>
+    </tr>
+  </table>
+
+  <h3>5.3 参数组建议</h3>
+  <table class="compact">
+    <tr>
+      <th>组</th>
+      <th>关键参数</th>
+      <th>小额起步原则</th>
+    </tr>
+    <tr>
+      <td>信号与方向</td>
+      <td><code>SETTLEMENT_CURRENCY</code>、<code>DIRECTION_BIAS</code>、<code>SIGNAL_G_KEY</code>、<code>SIGNAL_FILE_PATH</code></td>
+      <td>FILE/G 用 <code>side_hint</code> 驱动方向；<code>DIRECTION_BIAS</code> 仅 OFFLINE 兜底。</td>
+    </tr>
+    <tr>
+      <td>方案枚举</td>
+      <td><code>SHORT_DELTA_RANGE</code>、<code>PROTECTION_WIDTH_RANGE</code>、<code>MENU_SIZE</code>、<code>MIN_SHORT_PREMIUM</code>、<code>MAX_SPREAD_RATIO</code></td>
+      <td>优先沿用空跑，必要时收紧菜单和价差。</td>
+    </tr>
+    <tr>
+      <td>24h 到期</td>
+      <td><code>SHORT_DTE_HOURS</code>、<code>EXPIRY_IMMINENT_HOURS</code>、<code>ORDER_AMOUNT</code></td>
+      <td>专做约 24h 剩余可收窄为 <code>(12,24)</code> 或 <code>(20,28)</code>；<code>ORDER_AMOUNT=0.1</code> 最小起步。</td>
+    </tr>
+    <tr>
+      <td>执行追价</td>
+      <td><code>MAX_CHASE_STEPS</code>、<code>CHASE_WAIT_SECONDS</code>、<code>ENTRY_MAX_TICK_STEPS</code>、<code>ENTRY_MAX_ATTEMPTS</code></td>
+      <td>先使用保守默认；追价只在信用底线内改善。</td>
+    </tr>
+    <tr>
+      <td>退出与对冲</td>
+      <td><code>EXIT_RESERVE_RATIO</code>、<code>HEDGE_VENUE</code>、<code>HEDGE_REDUCTION_RATIO</code>、<code>ALLOW_HEDGE_OPEN</code></td>
+      <td>默认 Deribit；<code>ALLOW_HEDGE_OPEN</code> 保持 False；只启用 reduce-only/孤儿清理。</td>
+    </tr>
+  </table>
+
+  <h3>5.4 一次开仓批准 = 同时授权退出边界</h3>
+  <p>自 v2.10.0 起，开仓 commit 或部分冻结成持仓时，系统自动建立降险授权，绑定持仓与 <code>max_exit_spend=RISK_EXIT_MAX_SPEND</code>。这把“批准新增风险”与“授权预定边界内自动降险”捆在一起，避免只允许开仓却没有退出路径。<strong>v2.16.0 起手工授权按钮全部下线</strong>，前端只剩 <code>执行</code>。</p>
+  <ul>
+    <li><code>执行:确认码</code>：唯一人工交互——锁定方案、预提交、受控开仓，并进入执行轮。</li>
+    <li>止盈（达 80% 资格自动退）、风险退出（风险严重时越价限价退、成本封顶）、reduce-only 对冲、孤儿清理：成持仓后由执行层<strong>自动执行</strong>，无需任何二次授权按钮。</li>
+  </ul>
+
+  <h3>5.5 逐门开真顺序</h3>
+  <ol>
+    <li><strong>先开 <code>ALLOW_EXIT_TRADING = True</code>。</strong>验证止盈与风险退出真实可成交，特别是风险退出越价吃单和“越价不可成交→回退对冲”。前提：<code>RISK_EXIT_MAX_SPEND &gt; 0</code>。</li>
+    <li><strong>再开 <code>ALLOW_HEDGE_TRADING = True</code>。</strong>仅用于 reduce-only、孤儿清理和必要减仓；<code>ALLOW_HEDGE_OPEN</code> 保持 False。</li>
+    <li><strong>最后开 <code>ALLOW_ENTRY_TRADING = True</code>。</strong>只有总线信号、人工确认码、13 项预提交全过时，才真实开仓；保持最小仓位、单仓、逐笔审批。</li>
+  </ol>
+  <div class="danger">
+    <strong>能开不能关硬校验：</strong><code>ALLOW_ENTRY_TRADING=True</code> 时，<code>validate_config</code> 要求 <code>ALLOW_EXIT_TRADING=True</code> 且 <code>RISK_EXIT_MAX_SPEND&gt;0</code>，否则启动自检报错。
+  </div>
+
+  <h3>5.6 上线前清单</h3>
+  <table class="compact">
+    <tr>
+      <th>类别</th>
+      <th>项目</th>
+      <th>状态</th>
+    </tr>
+    <tr>
+      <td>已落地</td>
+      <td>统一持仓真相、真实组合预算、有符号对冲、T0-A 重读交易所、防重复下单、批准 TTL、捆绑降险授权、对冲门拆分</td>
+      <td>代码项已落地</td>
+    </tr>
+    <tr>
+      <td>已落地</td>
+      <td>Gate-A：动态 tick、数量合法化、能开不能关硬校验</td>
+      <td>代码项已落地</td>
+    </tr>
+    <tr>
+      <td>已落地</td>
+      <td>24h 到期结算端：<code>EXPIRED_SETTLED</code>、读失败不归档、<code>EXPIRY_IMMINENT</code></td>
+      <td>代码项已落地</td>
+    </tr>
+    <tr>
+      <td>待验</td>
+      <td>真实机器人 <code>DRY_RUN_PASSED</code></td>
+      <td>开真前必须完成</td>
+    </tr>
+    <tr>
+      <td>待标定</td>
+      <td><code>RISK_EXIT_MAX_SPEND</code>、<code>PORTFOLIO_LIMITS</code>、<code>ENTRY_MIN_NET_CREDIT</code>、<code>FEAS_*</code></td>
+      <td>按真实账户与空跑数据设定</td>
+    </tr>
+    <tr>
+      <td>真实写单前硬边界</td>
+      <td><code>ORDER_STATE_UNKNOWN</code> 完整状态机、订单到 campaign 映射、累计 credit floor、TTL 毫秒强约束、FakeDeribitAdapter 故障注入</td>
+      <td>不取消 <code>SMALL_LIVE_CANDIDATE</code> 代码候选身份；但未补齐/签收前，不得把 <code>ALLOW_ENTRY_TRADING</code> 开到真实新增风险。</td>
+    </tr>
+  </table>
+
+  <h2 class="break">6. 操作员速记</h2>
+  <pre>开仓（计划入口轮）：
+  看控制台待批方案明细 → 评估最大损失可接受 → 复制确认码 → 【执行:确认码】（唯一人工动作）。
+  授权成功进入执行轮：commit 自动捆绑降险授权，止盈/风险退出/对冲/到期归档全自动，无需再点任何按钮。
+
+盯盘（执行轮）：
+  看控制台「轮次」「授权边界」「风险」「止盈资格」「对冲」「对账」（正常无需操作）。
+  风险严重时应出现 EXIT_PREFERRED / 触界概率 / 可执行性说明，系统自动降险。
+
+到期：
+  DTE≤2h 观察 EXPIRY_IMMINENT。
+  持有到期 OTM 时，现金结算后系统应归档 EXPIRED_SETTLED。
+  到期读失败不归档，留待复查。
+
+异常（不再是按钮）：
+  急停 = 配置门 KILL_NEW_RISK=True 重启（停新风险 + 撤开仓单；退出/对冲减仓继续）。
+  排查后改回 KILL_NEW_RISK=False 重启 = 回待计划授权。放弃待批/已锁 = 不操作，批准 TTL 过期自动作废。
+
+红线：
+  OFFLINE 不真开；门默认全 False；专用子账户；最小仓 + 单仓；非策略已验证。</pre>
+
+  <h2>7. 事故与回退规则</h2>
+  <ul>
+    <li>任何阶段出现真实下单、裸短腿、不可解释状态、未知读取后继续新增风险，立即停止并保持在空跑阶段。</li>
+    <li>订单响应丢失或晚到成交不能靠本地状态猜测，先视为未知；新增风险 fail-closed。</li>
+    <li>如果 <code>RISK_EXIT_MAX_SPEND=0</code>，不要开 entry 门；风险退出会受阻并回退对冲。</li>
+    <li>如果存在人工遗留挂单、其他策略持仓或多机器人实例，不进入首次小额实盘。</li>
+    <li>如果当前文件名、版本或测试数量与本指引不一致，以当前代码和最新文档复核为准，先更新指引再执行。</li>
+  </ul>
+
+  <h2>8. 口径冲突处理</h2>
+  <p>本仓库仍保留历史日志、旧快照和少量旧标题。本文采用以下优先级处理冲突：</p>
+  <ol>
+    <li>当前代码中的版本、默认门控和安全配置优先。</li>
+    <li><code>docs/执行层_HANDOFF_下一窗口.md</code>、<code>docs/执行层_FMZ空跑本轮返修审核与交互收束交付单_20260623.md</code> 的 §9/§10/§11、<code>demo/最新交付物/README.md</code> 与 2026-06-23 执行层文档优先。</li>
+    <li>历史进度日志只用于说明演进，不用于覆盖当前事实。</li>
+    <li>若某处仍出现旧口径，例如旧交付名、旧按钮配置、旧 passed 数量或旧候选状态，以 <code>spm_vertical_short_pony_v1.py</code>、<code>STRATEGY_VERSION 2.16.0</code>、<code>227 passed</code>、<code>SMALL_LIVE_CANDIDATE</code>/<code>DRY_RUN_READY</code>、以及“正确确认码链路和交易所只读核验完成前不得封 <code>DRY_RUN_PASSED</code>”为准。</li>
+  </ol>
+
+  <h2>9. 源文件证据附录</h2>
+  <table class="compact">
+    <tr>
+      <th>来源</th>
+      <th>本文采用的事实</th>
+    </tr>
+    <tr>
+      <td><code>docs/执行层_空跑验证流程.md</code></td>
+      <td>阶段 0/A1/A2/A3/A4/A5、<code>DRY_RUN_PASSED</code> 签收条件、OFFLINE 与 FILE/G 空跑边界。</td>
+    </tr>
+    <tr>
+      <td><code>docs/执行层_小额实盘配置.md</code></td>
+      <td>三类权限模型、必须改 6 项、参数组、捆绑降险授权、逐门开真、上线前清单、晋级判据。</td>
+    </tr>
+    <tr>
+      <td><code>docs/执行层完整说明_v2.1.md</code></td>
+      <td><code>STRATEGY_VERSION 2.16.0</code>、227 passed、唯一 <code>执行</code> 交互、<code>SMALL_LIVE_CANDIDATE</code>、<code>DRY_RUN_READY</code>、v2.12 Gate-A、v2.13 到期结算与 v2.16 交互收束说明。</td>
+    </tr>
+    <tr>
+      <td><code>docs/执行层_HANDOFF_下一窗口.md</code></td>
+      <td>下一步顺序：先完成正确确认码真机链路与交易所只读核验，再考虑签收 <code>DRY_RUN_PASSED</code>；随后标定阈值，再逐门小额实盘。</td>
+    </tr>
+    <tr>
+      <td><code>docs/执行层重构_v3_进度.md</code></td>
+      <td>v2.8 至 v2.16 的落地历史、交付物更名、测试数量与快照说明。</td>
+    </tr>
+    <tr>
+      <td><code>demo/最新交付物/README.md</code></td>
+      <td>当前 FMZ 可部署文件清单、执行层运行边界、验证状态与部署到 FMZ 的说明。</td>
+    </tr>
+    <tr>
+      <td><code>demo/最新交付物/spm_vertical_short_pony_v1.py</code></td>
+      <td>真实代码内版本、默认门控、<code>SIGNAL_SOURCE</code>、<code>RISK_EXIT_MAX_SPEND</code>、<code>SHORT_DTE_HOURS</code>、<code>EXPIRY_IMMINENT_HOURS</code>、<code>ORDER_AMOUNT</code>。</td>
+    </tr>
+  </table>
+</body>
+</html>

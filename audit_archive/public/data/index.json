@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-06-18T12:04:18+08:00",
+  "cards": [
+    {
+      "card_id": "20260618T120418+0800-BTC-SAMPLE-3272",
+      "short_id": "3272",
+      "confirmed_at": "2026-06-18T12:04:18+08:00",
+      "symbol": "BTC",
+      "price": 63339.96,
+      "lean": "NEUTRAL",
+      "support_label": "WAIT_CONFIRMATION",
+      "confidence": 38,
+      "calibration": "UNCALIBRATED",
+      "conflict_ratio": 0.38,
+      "conflict_level": "MATERIAL",
+      "block_kind": "SOFT_GATE",
+      "quality": "OK",
+      "detail_path": "data/cards/20260618T120418+0800-BTC-SAMPLE-3272.json"
+    }
+  ]
+}

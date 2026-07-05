@@ -412,6 +412,8 @@ CONFIG = {
     "nr_require_anchor_damage": True,
     "nr_allow_nd_damage_evidence": True,
     "nr_reset_on_opposite_event": True,
+    "nr_opposite_reset_subrepair_damage_carry_enabled": True,
+    "nr_opposite_reset_damage_carry_window_min": 5,
     "signal_event_max_count": 10,
 
     # v0.51 retired the Bias Thesis arbiter; only the macro hard-block flag
@@ -2489,8 +2491,11 @@ class NeutralRepairSignalTracker:
                         m_die,
                         anchor,
                         reason_codes=["DIE_OPPOSITE_EVENT_PENDING_CONFIRM"])
+                previous_context = dict(self.context)
                 self.context = self._new_context(
                     m_die, anchor, runtime_facts, active_ts_ms)
+                self._seed_opposite_reset_subrepair_damage(
+                    previous_context, active_ts_ms, anchor_score)
             else:
                 merge_gap = self._last_event_gap_min(active_ts_ms)
                 if merge_gap is None or merge_gap <= float(
@@ -2593,10 +2598,57 @@ class NeutralRepairSignalTracker:
                 safe_float(facts.get("normalized_deviation")) or 0.0),
             "anchor_damage_observed": False,
             "anchor_damage_evidence": [],
+            "anchor_damage_seed": None,
             "anchor_damage_floor_confirm_count": 0,
             "repair_confirm_count": 0,
             "confirmed_at_ms": None,
         }
+
+    def _seed_opposite_reset_subrepair_damage(self, previous_context,
+                                              active_ts_ms, anchor_score):
+        if not self.config.get(
+                "nr_opposite_reset_subrepair_damage_carry_enabled", True):
+            return False
+        if self.context is None or not previous_context:
+            return False
+        if not previous_context.get("anchor_damage_observed"):
+            return False
+        old_direction = previous_context.get("event_direction")
+        new_direction = self.context.get("event_direction")
+        if not old_direction or old_direction == new_direction:
+            return False
+        score = safe_float(anchor_score)
+        if score is None:
+            return False
+        repair_score = float(self.config.get("nr_anchor_repair_score", 60.0))
+        floor_score = float(self.config.get(
+            "nr_anchor_damage_floor_score",
+            self.config.get("nr_anchor_damage_score", 60.0)))
+        if not (floor_score <= score < repair_score):
+            return False
+        last_seen = safe_float(previous_context.get("last_event_seen_ms"))
+        if last_seen is None:
+            return False
+        window_min = float(self.config.get(
+            "nr_opposite_reset_damage_carry_window_min", 5))
+        if (active_ts_ms - last_seen) / 60000.0 > window_min:
+            return False
+        self.context["anchor_damage_observed"] = True
+        evidence = self.context.setdefault("anchor_damage_evidence", [])
+        code = "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR"
+        if code not in evidence:
+            evidence.append(code)
+        self.context["anchor_damage_seed"] = {
+            "source": "opposite_event_reset",
+            "source_episode_id": previous_context.get("episode_id"),
+            "source_direction": old_direction,
+            "episode_direction": new_direction,
+            "observed_at_ms": active_ts_ms,
+            "anchor_score": score,
+            "anchor_repair_score": repair_score,
+            "anchor_damage_floor_score": floor_score,
+        }
+        return True
 
     def _update_context_peak(self, m_die, anchor, active_ts_ms):
         if self.context is None:
@@ -2811,6 +2863,7 @@ class NeutralRepairSignalTracker:
                 "min_anchor_score_after_event"),
             "anchor_damage_observed": bool(ctx.get("anchor_damage_observed")),
             "anchor_damage_evidence": ctx.get("anchor_damage_evidence") or [],
+            "anchor_damage_seed": ctx.get("anchor_damage_seed"),
             "normalized_deviation": nd,
             "max_abs_nd_after_event": ctx.get("max_abs_nd_after_event"),
             "repair_confirm_count": int(ctx.get("repair_confirm_count") or 0),

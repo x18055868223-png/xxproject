@@ -1,78 +1,48 @@
 # -*- coding: utf-8 -*-
 # === 自动合成产物：请勿手改，改 src/ 后重新 build_bundle.py ===
-# Deribit S:PM 垂直信用价差卖方执行链 v2.5.0（FMZ 单文件；单一 run_cycle 主链 + 交互控制台 + 对冲生命周期）
+# Deribit S:PM 垂直信用价差卖方执行链 v3.0.0-manual-gate（FMZ 单文件；单一 run_cycle 主链 + 交互控制台 + 对冲生命周期）
 
 
 # ===================== module: config =====================
 # -*- coding: utf-8 -*-
 """
-配置 & 信号全局变量块（启动前手填）。
+Human Audit Gate 执行层配置块（FMZ 启动前手填）。
 
-v1 不做动态信号通道：方向 / 信号状态 均为预留全局变量，启动前手动填入。
-合成进 FMZ 单文件后，这些 UPPER_CASE 名字即位于文件顶部的全局区，FMZ 运行时直接可改。
-
-所有阈值集中在此，避免散落硬编码（补设计稿「阈值未量化」缺口）。
+本版本只接受执行层本地人工审计上下文：方向、到期范围、delta 范围、腿宽、
+数量和审计卡引用均来自这些 UPPER_CASE 参数。信号层不参与执行主链路。
 """
 
-# ===== 版本号（便于迭代区分；显示于启动日志/面板/合成文件头）=====
-#   1.0.0 基础执行链 → 1.1.0 短腿按 delta 选档 → 1.2.0 双模+3方案 →
-#   1.3.0 计划轮/下单轮分离、垂直+日历全枚举、复用残值修正、去运行时命令 →
-#   1.4.0 EV/流动性筛选、计划轮节流、执行健壮性(重试/价差守门/裸保护撤退)、下单意图表、选档指引 →
-#   1.5.0 合并「策略选择明细」(期号/双腿/距现价)、稳定唯一编号(按编号匹配执行)、每张mark对齐交易所、综合评级 →
-#   1.6.0 日历价差改可选(默认关)、明细锁定启动时最推荐(不随刷新跳动,补期号+剩余到期)、
-#         价值指标补盈亏平衡价+净credit/保证金回报率(替 EV 上菜单) →
-#   1.6.1 修复：同期垂直长腿不再被「过度虚值(DEEP_OTM)」误过滤(该过滤仅对日历)，解决纯垂直时方案库变空；
-#         新增「枚举诊断」漏斗，实时显示各门控砍掉多少候选 →
-#   1.6.2 状态栏精简：枚举漏斗并入概览(一行)、删独立「选腿明细/概要/S:PM」表、S:PM+成本合并为一张、
-#         策略选择明细补到期+盈亏平衡价(去 #/综合)；启动时整轮方案明细入 Log →
-#   2.0.0 v3 重构：删日历(垂直唯一)、单一持续 run_cycle 主链取代 PLAN/ORDER、5 门控拆分、
-#         命令路由+短确认码硬授权(冻结审批快照+幂等)、信号接收降级、投影预算真实算法(fail-closed)、
-#         止盈资格/低成本退出/保护腿回收、BTC-PERPETUAL 对冲生命周期、交互控制台+操作提示 →
-#   2.1.0 对冲场所可选：新增 Binance USDC 永续 maker-0 备选（操作者显式配置选择 HEDGE_VENUE，默认 Deribit） →
-#   2.2.0 开仓活动 entry_campaign：跨轮持久 maker + 信用底线(ENTRY_MIN_NET_CREDIT)，取代一次性追价开仓，
-#         保护腿先成交、逐 tick 向触价改善至信用上限、超 ENTRY_MAX_ATTEMPTS 放弃回退；低成本∧提高成功率 →
-#   2.3.0 持仓后链路补强(审计 P0①②③)：①统一持仓真相到 _POSITION_KEY(reconcile/recovery 改读、反向校验)；
-#         ②保护腿回收执行器 + 两腿与对冲归零→CLOSED 归档；③manage 由四输出仲裁单动作收口 + 退出期禁新增对冲
-#   2.4.0 风险严重度→仲裁(审计 C.2)：入场冻结 entry_risk_anchor；manage 每轮 evaluate_position_risk →
-#         tail_risk_state 映射 exit_preferred/hedge_ready(替代 False hook)，EXIT_PREFERRED 经退出活动机制
-#         买回(风险退出授权)、HEDGE_READY 经对冲收口；对冲数量改用结构净 delta(短−保护)+方向符号核对挡反向加仓
-#   2.5.0 审计整改(F1-F3/C1-C3)：F1 风险退出独立预算(max_exit_spend)+可越价吃单+越价不可成交则回退对冲；
-#         F2 控制台「风险」行+风险退出授权码+操作提示；F3 短腿盘口缺 delta/IV 显式数据缺口(不静默 NORMAL)；
-#         C1 Deribit 对冲下单等待+撤残单+成交确认+None 盘口守门；C2 孤儿对冲清理不受 allow_hedge 阻断；
-#         C3 no_unknown_orders 真实活动订单查询(fail-closed)+启动恢复按在途活动进度/活动订单重校验
-STRATEGY_VERSION = "2.5.0"
+# ===== 当前版本号（显示于启动日志/面板/合成文件头）=====
+# 3.0.0-manual-gate：独立人工审计门执行层，人工上下文驱动计划。
+STRATEGY_VERSION = "3.0.0-manual-gate"
 
 # ===== 实例标识（命令幂等键 robot_id；多机器人部署时各自唯一，避免跨实例命令串扰）=====
 ROBOT_ID = "spm-exec-1"
 
-# ===== 信号与方向（手填，§4.1 / §5.2 / §6.2）=====
-# 取值依据：案例/前置模型信号流.txt（2026-05-29 全天，信号层 v0.5.4 导出）
-#   - 前置论证持续「偏空 / 支持偏弱 / 置信 62~71」→ 卖 call、WEAK 放行
-#   - 个别轮次「无交易-阻断」对应 NO_TRADE_BLOCKED：那种时刻应把 SIGNAL_STATE 改回阻断值，不进场
-SETTLEMENT_CURRENCY = "BTC"                  # 数据源为 BTCUSDT
-SIGNAL_STATE        = "TRADE_SUPPORT_WEAK"   # 信号流主态=支持偏弱；仅 STRONG/WEAK 放行进场
-DIRECTION_BIAS      = "SHORT_CALL"           # 偏空论证 → 卖出上方 call
+# ===== 人工审计门输入（手填）=====
+# MANUAL_PLANNING_ALLOWED=False 时只等待人工审计门，不生成可执行确认码。
+SETTLEMENT_CURRENCY = "BTC"
+MANUAL_PLANNING_ALLOWED = False
+DIRECTION_BIAS      = "SHORT_CALL"
+MANUAL_AUDIT_CARD_ID = ""
+MANUAL_AUDIT_NOTE = ""
+MANUAL_CONTEXT_TTL_MIN = 30
 
-# ===== 计划轮 / 下单轮（两轮分离，运行后不经界面命令调整计划或仓位）=====
-#   计划轮 ROUND_MODE="PLAN"：枚举所有符合范围的同期垂直备选，按 胜率/盈亏比/信号 筛选排序，
-#       输出方案库到面板并持久化(_G)，绝不下单。
-#   下单轮 ROUND_MODE="ORDER"：读取持久化方案库，按 SELECTED_PLAN 取方案号，复核后
-#       仅当 ALLOW_TRADING=True 才真实开仓（否则展示将执行方案，仍空跑）。
-#   止盈/止损退出模式后置，本版不含。
+# ===== 计划展示参数 =====
+# 当前主链路由人工审计门 + 短确认码驱动；这些值仅保留为本地预览/测试入口。
 ROUND_MODE   = "PLAN"             # "PLAN" / "ORDER"
-SELECTED_PLAN = 0                 # 下单轮执行的方案【唯一编号】(计划轮菜单「编号」列，稳定不随排序变)；0=未指定
+SELECTED_PLAN = 0                 # 本地预览选中的方案【唯一编号】；0=未指定
 MENU_SIZE    = 10                 # 方案库最多输出条数
 
 # ===== 候选枚举范围（计划轮据此选出所有符合要求的备选）=====
 SHORT_DELTA_RANGE      = (0.15, 0.45)   # 短腿 |delta| 接受范围（卖权利金主驱动）
 PROTECTION_WIDTH_RANGE = (2000, 2500)   # 保护腿腿宽范围(USD)，以短腿行权为基准
-# 仅同期垂直信用价差：保护腿与卖方短腿同到期、更价外（v2 删除日历价差运行路径）。
+# 仅同期垂直信用价差：保护腿与卖方短腿同到期、更价外。
 
-# ===== 信号强度 → 偏好 delta（参与排序，不替模型判方向）=====
-SIGNAL_CONFIDENCE = 62            # 0~100 前置模型置信(手填)；弱/低→偏低 delta(高胜率)，强/高→偏高 delta
+# ===== 人工审计强度 → 偏好 delta（参与排序，不替模型判方向）=====
 
-# ===== 方案排序综合分权重（整合 Phase1：删 KPF，剩余三项等比归一 ÷0.80）=====
-PLAN_WEIGHTS = {"win_rate": 0.375, "rr": 0.375, "signal": 0.25}
+# ===== 方案排序综合分权重 =====
+PLAN_WEIGHTS = {"win_rate": 0.50, "rr": 0.50, "manual": 0.0}
 
 # ===== 标的参考价（留 None 走实时 index；真实市场以实时价 + delta 选档）=====
 UNDERLYING_REF_PRICE = None
@@ -85,7 +55,9 @@ ORDER_AMOUNT = 0.1                # 单结构数量（Deribit 期权最小步长
 MIN_MARGIN_RELIEF_RATIO = 0.10    # 量化设计稿「极低」：低于此则该保护腿不合格(§7.2)
 DEEP_OTM_MAX_DELTA = 0.05         # 保护腿「过度虚值」判定：|delta| 低于此视为灾难彩票腿(§6.3)
 MIN_SHORT_PREMIUM  = 0.0005       # 短腿最小权利金(结算币)：低于则权利金过薄、手续费占比高 → 弃
-MAX_SPREAD_RATIO   = 0.60         # 腿最大相对价差 (ask-bid)/mid：超过视为流动性差 → 弃/不成交
+MAX_SPREAD_RATIO   = 0.60         # 短腿最大相对价差 (ask-bid)/mid：超过视为流动性差 → 弃/不成交
+PROTECTION_LOW_PREMIUM_MAX = 0.0006     # 保护腿足够便宜时，点差比例可被绝对价差门替代
+PROTECTION_ABS_SPREAD_MAX  = 0.00015    # 保护腿绝对 bid-ask 宽度上限；覆盖 0.0003/0.0004 这类低价保护腿
 
 # ===== 执行 =====
 MAX_CHASE_STEPS    = 1            # 每条腿最多追价步数(§10.3)
@@ -97,31 +69,22 @@ ENTRY_MIN_NET_CREDIT = 0.0       # 入场净 credit 下限(结算币)：低于�
 ENTRY_MAX_TICK_STEPS = 3         # 信用底线内逐 tick 向触价改善的最大档(>MAX_CHASE_STEPS，给开仓更多成交空间)
 ENTRY_MAX_ATTEMPTS   = 20        # 开仓活动最大尝试轮数(跨轮)；超且未成交→放弃(撤/回退保护腿、回等待)
 
-# ===== 执行授权门控（v2：拆分单一 ALLOW_TRADING，避免「禁新开仓」误伤风险收口）=====
+# ===== 执行授权门控 =====
 # 默认全安全（空跑）；FMZ 运行时可单独改各门。逐动作语义见 gates.py。
 ALLOW_ENTRY_TRADING   = False     # 开立新垂直价差（新增风险）。False=进场空跑(只展示将执行方案)
 ALLOW_EXIT_TRADING    = False     # 买回卖方短腿 / 卖出保护腿（期权降风险退出）
 ALLOW_HEDGE_TRADING   = False     # BTC-PERPETUAL 对冲开 / 加 / 减仓
 KILL_NEW_RISK         = False     # 急停：停新风险并撤开仓单；不阻断退出/对冲减仓/对账/孤儿清理
 EMERGENCY_REDUCE_ONLY = False     # 紧急只减：禁止任何开/加仓，对冲强制 reduce_only
-# 兼容保留（DEPRECATED，将于 E8 移除）：旧单门，仅供未迁移引用解析，不再作为进场判定依据
+# 历史单门仅作为显示/测试占位；实际动作授权以 ALLOW_*_TRADING 为准。
 ALLOW_TRADING = False
 KILL_SWITCH   = False
+DRY_RUN_PASSED = False
 
 # ===== 运行参数 =====
 LOOP_INTERVAL_MS    = 3000        # 主循环间隔
 PLAN_REFRESH_SECONDS = 45         # 计划轮重算方案库的最小间隔(秒)：节流 API + 防刷屏
-
-# 放行进场的信号集合
-ENTER_SIGNALS = ("TRADE_SUPPORT_STRONG", "TRADE_SUPPORT_WEAK")
-# 触发退出/复核的信号集合(§9.2)
-EXIT_REVIEW_SIGNALS = ("NO_TRADE_AMBIGUOUS", "NO_TRADE_BLOCKED")
-
-# ===== 信号→执行接收链（补充意见 P0-1；默认 OFFLINE_MANUAL 用静态 SIGNAL_STATE 降级）=====
-SIGNAL_SOURCE = "OFFLINE_MANUAL"                       # OFFLINE_MANUAL / FILE / G
-SIGNAL_FILE_PATH = "demo/logs/signal_evidence.json"   # FILE 源：同托管共享 JSON（信号侧原子 rename 落盘）
-SIGNAL_G_KEY = "nrd_signal_evidence_pkg"               # G 源：_G 键
-SIGNAL_SCHEMA_VERSION_PREFIX = "nrd.integration.signal."
+APPROVAL_TTL_MS = 30 * 60 * 1000  # 硬批准有效期；超时清锁并要求重新确认
 
 # ===== 组合投影预算限额（P0-6；fail-closed。阈值为占位，未校准）=====
 PORTFOLIO_LIMITS = {
@@ -132,7 +95,7 @@ PORTFOLIO_LIMITS = {
     "max_spread_loss_per_trade": 0.02,
 }
 
-# ===== 风险退出授权（P1：独立于普通止盈预算的风险退出最大支出；默认 0=不允许更高成本退出）=====
+# ===== 风险退出授权（P1：独立于普通止盈预算的风险退出最大支出；0=仅用入场冻结退出预算）=====
 RISK_EXIT_MAX_SPEND = 0.0
 
 # ===== 低成本退出活动（§7.3；每轮一次有限动作，价格上限由剩余预算反推）=====
@@ -150,7 +113,7 @@ HEDGE_MIN_TRADE_FALLBACK = 10.0       # 最小下单(USD/合约)回退
 
 # ----- 对冲场所（可选；默认 Deribit。Binance 为**操作者显式选择**，非运行时自动切换）-----
 # 理由：Deribit 深度足够、与期权同所便于统一对账；但 Binance USDC 永续 maker 0 费，
-# 对冲腿非高频、可等 maker 成交 → 省成本。跨所对账/恢复取舍见 v3.1 文档。
+# 对冲腿非高频、可等 maker 成交 → 省成本。跨所对账/恢复需人工核对。
 HEDGE_VENUE = "DERIBIT"                # "DERIBIT" | "BINANCE"
 HEDGE_BINANCE_INSTRUMENT = "BTCUSDC"   # 币安 USDC 本位永续（线性、maker 0 费）
 HEDGE_BINANCE_MAKER_ONLY = True        # 币安对冲腿强制 maker(post-only)：0 费、低频可等成交
@@ -163,8 +126,12 @@ def validate_config():
     errs = []
     if SETTLEMENT_CURRENCY not in ("BTC", "ETH"):
         errs.append("SETTLEMENT_CURRENCY 必须为 BTC 或 ETH")
+    if not isinstance(MANUAL_PLANNING_ALLOWED, bool):
+        errs.append("MANUAL_PLANNING_ALLOWED must be bool")
     if DIRECTION_BIAS not in ("SHORT_CALL", "SHORT_PUT"):
         errs.append("DIRECTION_BIAS 必须为 SHORT_CALL 或 SHORT_PUT")
+    if MANUAL_CONTEXT_TTL_MIN <= 0:
+        errs.append("MANUAL_CONTEXT_TTL_MIN must be > 0")
     if not (SHORT_DTE_HOURS[0] < SHORT_DTE_HOURS[1]):
         errs.append("SHORT_DTE_HOURS 区间非法")
     if ORDER_AMOUNT <= 0:
@@ -175,8 +142,6 @@ def validate_config():
         errs.append("SHORT_DELTA_RANGE 应满足 0<min<max<1")
     if not (PROTECTION_WIDTH_RANGE[0] <= PROTECTION_WIDTH_RANGE[1]):
         errs.append("PROTECTION_WIDTH_RANGE 区间非法")
-    if not (0 <= SIGNAL_CONFIDENCE <= 100):
-        errs.append("SIGNAL_CONFIDENCE 应在 [0,100]")
     if SELECTED_PLAN < 0:
         errs.append("SELECTED_PLAN 必须 >= 0（0=未指定，下单轮需填计划轮给出的唯一编号）")
     if ROUND_MODE == "ORDER" and SELECTED_PLAN == 0:
@@ -187,24 +152,185 @@ def validate_config():
         errs.append("MIN_SHORT_PREMIUM 不可为负")
     if not (0 < MAX_SPREAD_RATIO <= 5):
         errs.append("MAX_SPREAD_RATIO 应在 (0,5]")
+    if PROTECTION_LOW_PREMIUM_MAX < 0 or PROTECTION_ABS_SPREAD_MAX < 0:
+        errs.append("保护腿低价点差阈值不可为负")
     if PLAN_REFRESH_SECONDS < 1:
         errs.append("PLAN_REFRESH_SECONDS 必须 >= 1")
+    if APPROVAL_TTL_MS <= 0:
+        errs.append("APPROVAL_TTL_MS 必须 > 0")
     if not (0.0 < MIN_MARGIN_RELIEF_RATIO < 1.0):
         errs.append("MIN_MARGIN_RELIEF_RATIO 应在 (0,1)")
     for _n, _v in (("ALLOW_ENTRY_TRADING", ALLOW_ENTRY_TRADING),
                    ("ALLOW_EXIT_TRADING", ALLOW_EXIT_TRADING),
                    ("ALLOW_HEDGE_TRADING", ALLOW_HEDGE_TRADING),
                    ("KILL_NEW_RISK", KILL_NEW_RISK),
-                   ("EMERGENCY_REDUCE_ONLY", EMERGENCY_REDUCE_ONLY)):
+                   ("EMERGENCY_REDUCE_ONLY", EMERGENCY_REDUCE_ONLY),
+                   ("DRY_RUN_PASSED", DRY_RUN_PASSED)):
         if not isinstance(_v, bool):
             errs.append(_n + " 必须为布尔值")
-    if SIGNAL_SOURCE not in ("OFFLINE_MANUAL", "FILE", "G"):
-        errs.append("SIGNAL_SOURCE 必须为 OFFLINE_MANUAL / FILE / G")
+    _live_gates = ALLOW_ENTRY_TRADING or ALLOW_EXIT_TRADING or ALLOW_HEDGE_TRADING
+    if _live_gates and not DRY_RUN_PASSED:
+        errs.append("DRY_RUN_PASSED=False; live trading gates must stay disabled")
+    if ALLOW_ENTRY_TRADING:
+        if not ALLOW_EXIT_TRADING:
+            errs.append("ALLOW_ENTRY_TRADING=True requires ALLOW_EXIT_TRADING=True")
+        if RISK_EXIT_MAX_SPEND <= 0:
+            errs.append("ALLOW_ENTRY_TRADING=True requires RISK_EXIT_MAX_SPEND > 0")
+    if RISK_EXIT_MAX_SPEND < 0:
+        errs.append("RISK_EXIT_MAX_SPEND must be non-negative")
+    if not (0 <= EXIT_RESERVE_RATIO < 1):
+        errs.append("EXIT_RESERVE_RATIO must be in [0,1)")
+    if not (0 < HEDGE_REDUCTION_RATIO <= 1):
+        errs.append("HEDGE_REDUCTION_RATIO must be in (0,1]")
+    _required_limits = (
+        "max_open_positions",
+        "max_short_gamma",
+        "max_short_vega",
+        "max_margin",
+        "max_spread_loss_per_trade",
+    )
+    if not isinstance(PORTFOLIO_LIMITS, dict):
+        errs.append("PORTFOLIO_LIMITS must be a dict")
+    else:
+        for _k in _required_limits:
+            _limit = PORTFOLIO_LIMITS.get(_k)
+            if not isinstance(_limit, (int, float)) or isinstance(_limit, bool) or _limit < 0:
+                errs.append("PORTFOLIO_LIMITS.%s must be a non-negative number" % _k)
     if HEDGE_VENUE not in ("DERIBIT", "BINANCE"):
         errs.append("HEDGE_VENUE 必须为 DERIBIT 或 BINANCE")
     if ENTRY_MAX_ATTEMPTS < 1 or ENTRY_MAX_TICK_STEPS < 0:
         errs.append("ENTRY_MAX_ATTEMPTS≥1、ENTRY_MAX_TICK_STEPS≥0")
     return errs
+
+# ===================== module: manual_context =====================
+# -*- coding: utf-8 -*-
+"""Manual audit gate context helpers."""
+import hashlib
+import json
+
+SCHEMA_NAME = "ManualExecutionContext"
+SCHEMA_VERSION = "nrd.execution.manual_context.v1"
+
+
+def _hash(obj):
+    return hashlib.sha256(
+        json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _pair(value, default=(0, 0)):
+    try:
+        a, b = value
+        return a, b
+    except Exception:
+        return default
+
+
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def manual_context_hash(ctx):
+    ctx = ctx or {}
+    material = {
+        "schema_name": ctx.get("schema_name"),
+        "schema_version": ctx.get("schema_version"),
+        "context_id": ctx.get("context_id"),
+        "created_ts_ms": ctx.get("created_ts_ms"),
+        "expires_ts_ms": ctx.get("expires_ts_ms"),
+        "operator_decision": ctx.get("operator_decision"),
+        "direction_bias": ctx.get("direction_bias"),
+        "audit_reference": ctx.get("audit_reference") or {},
+        "planning_scope": ctx.get("planning_scope") or {},
+        "risk_policy": ctx.get("risk_policy") or {},
+    }
+    return _hash(material)
+
+
+def manual_config_signature(planning_allowed, direction_bias, dte_hours, delta_range,
+                            width_range, amount, audit_card_id, audit_note, ttl_min,
+                            risk_policy=None):
+    dte_min, dte_max = _pair(dte_hours)
+    delta_min, delta_max = _pair(delta_range)
+    width_min, width_max = _pair(width_range)
+    return _hash({
+        "planning_allowed": bool(planning_allowed),
+        "direction_bias": direction_bias,
+        "dte_hours": [dte_min, dte_max],
+        "short_delta": [delta_min, delta_max],
+        "protection_width": [width_min, width_max],
+        "amount": amount,
+        "audit_card_id": str(audit_card_id or "").strip(),
+        "audit_note": str(audit_note or "").strip(),
+        "ttl_min": ttl_min,
+        "risk_policy": risk_policy or {},
+    })
+
+
+def build_manual_context(now_ms, planning_allowed, direction_bias, dte_hours, delta_range,
+                         width_range, amount, audit_card_id, audit_note, ttl_min,
+                         risk_policy=None):
+    dte_min, dte_max = _pair(dte_hours)
+    delta_min, delta_max = _pair(delta_range)
+    width_min, width_max = _pair(width_range)
+    sig = manual_config_signature(
+        planning_allowed, direction_bias, dte_hours, delta_range, width_range,
+        amount, audit_card_id, audit_note, ttl_min, risk_policy)
+    ttl_ms = int((ttl_min or 0) * 60 * 1000) if _num(ttl_min) else 0
+    return {
+        "schema_name": SCHEMA_NAME,
+        "schema_version": SCHEMA_VERSION,
+        "context_id": "manual-%s" % sig[:12],
+        "config_signature": sig,
+        "created_ts_ms": now_ms,
+        "expires_ts_ms": now_ms + ttl_ms,
+        "operator_decision": "APPROVE_PLANNING" if planning_allowed else "WAIT_AUDIT_GATE",
+        "direction_bias": direction_bias,
+        "audit_reference": {
+            "card_id": str(audit_card_id or "").strip(),
+            "operator_notes": str(audit_note or "").strip(),
+        },
+        "planning_scope": {
+            "dte_hours_min": dte_min,
+            "dte_hours_max": dte_max,
+            "short_delta_min": delta_min,
+            "short_delta_max": delta_max,
+            "protection_width_min": width_min,
+            "protection_width_max": width_max,
+            "amount": amount,
+        },
+        "risk_policy": risk_policy or {},
+    }
+
+
+def validate_manual_context(ctx, now_ms):
+    errors = []
+    ctx = ctx or {}
+    scope = ctx.get("planning_scope") or {}
+    audit = ctx.get("audit_reference") or {}
+    if not ctx:
+        errors.append("MANUAL_CONTEXT_MISSING")
+    if ctx.get("operator_decision") != "APPROVE_PLANNING":
+        errors.append("PLANNING_NOT_APPROVED")
+    if ctx.get("direction_bias") not in ("SHORT_CALL", "SHORT_PUT"):
+        errors.append("DIRECTION_BIAS_INVALID")
+    if not str(audit.get("card_id") or "").strip():
+        errors.append("AUDIT_REFERENCE_MISSING")
+    if not (_num(scope.get("dte_hours_min")) and _num(scope.get("dte_hours_max"))
+            and scope["dte_hours_min"] < scope["dte_hours_max"]):
+        errors.append("DTE_RANGE_INVALID")
+    if not (_num(scope.get("short_delta_min")) and _num(scope.get("short_delta_max"))
+            and 0 < scope["short_delta_min"] < scope["short_delta_max"] < 1):
+        errors.append("SHORT_DELTA_RANGE_INVALID")
+    if not (_num(scope.get("protection_width_min")) and _num(scope.get("protection_width_max"))
+            and scope["protection_width_min"] <= scope["protection_width_max"]):
+        errors.append("PROTECTION_WIDTH_RANGE_INVALID")
+    if not (_num(scope.get("amount")) and scope["amount"] > 0):
+        errors.append("ORDER_AMOUNT_INVALID")
+    exp = ctx.get("expires_ts_ms")
+    if not _num(exp) or exp <= now_ms:
+        errors.append("MANUAL_CONTEXT_EXPIRED")
+    return {"valid": not errors, "errors": errors}
 
 # ===================== module: gates =====================
 # -*- coding: utf-8 -*-
@@ -400,171 +526,33 @@ def route_command(raw, ctx, now_ts):
             return {"status": "DUPLICATE", "command": cmd, "key": key}
     return {"status": "ACCEPTED", "command": cmd, "key": key}
 
-# ===================== module: signal_receiver =====================
-# -*- coding: utf-8 -*-
-"""信号→执行接收链（sig_*）：执行侧从同托管共享源读取信号层导出的 SignalEvidencePackage，
-校验 schema / 版本 / TTL / reject_state / data_quality，给出「是否允许新开仓」的裁决。
-
-补充意见 P0-1：当前执行层仅用静态手填 SIGNAL_STATE，缺 receiver / 校验 / 去重。本模块补执行侧：
-  - 总线不可用 / 包过期 / 校验失败 → block_new_opens=True（**禁新开仓**），
-    但裁决**只**用于进场门，**不**影响已有持仓的对账 / 退出 / 对冲 / 恢复。
-  - package_id 血缘记账（_G），供「本轮持仓由哪个信号包触发」审计。
-  - OFFLINE_MANUAL：降级为静态 SIGNAL_STATE / DIRECTION_BIAS（面板须红标），不依赖总线。
-
-依赖（follow-up，先做可行性 spike）：信号侧调 `signal_bridge.export_signal_evidence_package`
-落盘 + 原子 rename 传输 + 同托管 loopback 验证。包结构见 `demo/signal_build/signal_bridge.py`。
-"""
-import json
-
-
-EXPECTED_SCHEMA = "SignalEvidencePackage"
-EXPECTED_VERSION_PREFIX = "nrd.integration.signal."
-
-_REJECT_STATES = frozenset({"REJECT", "REJECTED", "BLOCK", "BLOCKED"})
-_BAD_QUALITY_STATES = frozenset({"BAD", "MISSING", "STALE", "DEGRADED", "INSUFFICIENT"})
-
-_SIG_LINEAGE_KEY = "spm_signal_lineage_v1"
-_SIG_LINEAGE_MAX = 50
-
-
-def _verdict(availability, tradeable, reasons, package_id=None,
-             side_hint=None, expiry_hours=None):
-    return {
-        "schema_name": "SignalReceiveVerdict",
-        # OK / MISSING / STALE / REJECTED / BAD_QUALITY / SCHEMA_MISMATCH / NO_SIDE / OFFLINE_MANUAL
-        "availability": availability,
-        "tradeable": (None if tradeable is None else bool(tradeable)),
-        "block_new_opens": (False if tradeable is None else (not tradeable)),
-        "package_id": package_id,
-        "side_hint": side_hint,
-        "expiry_hours": expiry_hours,
-        "reasons": list(reasons or []),
-    }
-
-
-def _is_rejected(reject_state):
-    if not isinstance(reject_state, dict) or not reject_state:
-        return False
-    if reject_state.get("rejected") is True or reject_state.get("blocked") is True:
-        return True
-    return str(reject_state.get("state") or "").upper() in _REJECT_STATES
-
-
-def _data_quality_bad(dq):
-    if not isinstance(dq, dict) or not dq:
-        return False        # 无显式问题 → 视为可用（不过度阻断）
-    if dq.get("ok") is False or dq.get("degraded") is True:
-        return True
-    return str(dq.get("state") or "").upper() in _BAD_QUALITY_STATES
-
-
-def validate_signal_package(package, now_ts, version_prefix=EXPECTED_VERSION_PREFIX):
-    """纯函数：对一个 SignalEvidencePackage 给出接收裁决。"""
-    if not isinstance(package, dict):
-        return _verdict("MISSING", False, ["SIGNAL_PACKAGE_MISSING"])
-    if package.get("schema_name") != EXPECTED_SCHEMA:
-        return _verdict("SCHEMA_MISMATCH", False, ["SCHEMA_NAME_MISMATCH"],
-                        package.get("package_id"))
-    if not str(package.get("schema_version") or "").startswith(version_prefix):
-        return _verdict("SCHEMA_MISMATCH", False, ["SCHEMA_VERSION_MISMATCH"],
-                        package.get("package_id"))
-    pkg_id = package.get("package_id")
-    if not pkg_id:
-        return _verdict("MISSING", False, ["PACKAGE_ID_MISSING"])
-    exp = package.get("expires_ts")
-    if not isinstance(exp, (int, float)) or now_ts >= exp:
-        return _verdict("STALE", False, ["SIGNAL_PACKAGE_EXPIRED"], pkg_id)
-    if _is_rejected(package.get("reject_state")):
-        return _verdict("REJECTED", False, ["SIGNAL_REJECTED"], pkg_id)
-    if _data_quality_bad(package.get("data_quality")):
-        return _verdict("BAD_QUALITY", False, ["SIGNAL_DATA_QUALITY_BAD"], pkg_id)
-    rec = package.get("strategy_recommendation") or {}
-    side_hint = rec.get("side_hint")
-    expiry_hours = rec.get("expiry_hours")
-    if not side_hint or str(side_hint).lower() in ("none", "neutral"):
-        return _verdict("NO_SIDE", False, ["SIGNAL_NO_EXECUTABLE_SIDE"],
-                        pkg_id, side_hint, expiry_hours)
-    return _verdict("OK", True, [], pkg_id, side_hint, expiry_hours)
-
-
-# ---------- 传输源加载 ----------
-
-def load_package_from_file(path):
-    if not path:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return None
-
-
-def load_package_from_g(key):
-    if not key:
-        return None
-    return _G(key)
-
-
-def receive_signal(now_ts, source, file_path=None, g_key=None,
-                   version_prefix=EXPECTED_VERSION_PREFIX):
-    """按配置源接收并裁决。source ∈ OFFLINE_MANUAL / FILE / G。
-    OFFLINE_MANUAL → tradeable=None（由调用方据静态 SIGNAL_STATE 决定，面板须红标）。
-    总线不可用（读不到包）→ availability=MISSING, block_new_opens=True。"""
-    src = str(source or "OFFLINE_MANUAL").upper()
-    if src == "OFFLINE_MANUAL":
-        return _verdict("OFFLINE_MANUAL", None, ["SIGNAL_OFFLINE_MANUAL_OVERRIDE"])
-    if src == "FILE":
-        pkg = load_package_from_file(file_path)
-    elif src == "G":
-        pkg = load_package_from_g(g_key)
-    else:
-        return _verdict("MISSING", False, ["SIGNAL_SOURCE_UNKNOWN:" + src])
-    if pkg is None:
-        return _verdict("MISSING", False, ["SIGNAL_BUS_UNAVAILABLE"])
-    return validate_signal_package(pkg, now_ts, version_prefix)
-
-
-# ---------- package_id 血缘记账（_G）----------
-
-def signal_lineage_load():
-    return list(_G(_SIG_LINEAGE_KEY) or [])
-
-
-def signal_lineage_record(package_id, now_ts, note=""):
-    recs = signal_lineage_load()
-    recs.append({"package_id": package_id, "ts": now_ts, "note": note})
-    trimmed = recs[-_SIG_LINEAGE_MAX:]
-    _G(_SIG_LINEAGE_KEY, trimmed)
-    return trimmed
-
-
-def signal_lineage_last():
-    recs = signal_lineage_load()
-    return recs[-1] if recs else None
-
 # ===================== module: recommend =====================
 # -*- coding: utf-8 -*-
-"""垂直推荐库编码 + 冻结审批快照 + 短确认码（rec_*）。纯函数，便于单测。
+"""Recommendation library, approval snapshots, and precommit checks.
 
-补充意见 P0-2 的核心修复：
-  - `quality_code` 由**冻结的质量口径**（signal 包 / VRP / S:PM 释放分桶 / 预算决定）哈希得到，
-    **不含实时行情逐 tick 值**，且 S:PM 释放按 0.1 分桶——子桶波动不改码，用户输入期间确认码稳定；
-  - `confirm_code` 标识冻结审批快照(session+strategy+quality+plan_hash) 的短码（Base32 前 4，库内冲突自动延长）；
-  - 质量发生**材料级**变化（跨桶 / 换信号包 / 结构变）→ quality_code 变 → plan_hash 变 → confirm_code 变 →
-    旧码在新库 `resolve_confirm_code` 失败（自动过期），而非依赖实时哈希全等。
-
-`refresh_seq` **不**进入 quality_code（避免每轮刷新改码）；它单独存于审批快照，供 cmd_router 幂等键使用。
+This manual-gate fork binds plan approval to a human-provided manual context
+instead of manual package lineage. The functions stay pure so the small local
+test runner can validate the approval contract without FMZ state.
 """
 import base64
 import hashlib
+import json
 
 QUALIFIED = "QUALIFIED"
-RELIEF_BUCKET = 10          # S:PM 释放分桶粒度：int(ratio*10)，0.1 一桶（漂移容差）
+RELIEF_BUCKET = 10
+FEASIBILITY_BUCKET = 10
+DEFAULT_CONFIG_HASH = "manual-gate-default-config-v1"
 
 
 def _h(*parts):
     s = "|".join("" if p is None else str(p) for p in parts)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _stable_json_hash(payload):
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _b32(hexstr, length):
@@ -578,6 +566,85 @@ def _relief_bucket(ratio):
     return int(ratio * RELIEF_BUCKET)
 
 
+def _feasibility_bucket(score):
+    if not isinstance(score, (int, float)):
+        return "NA"
+    return int(max(0.0, min(100.0, score)) // FEASIBILITY_BUCKET)
+
+
+def _range(scope, min_key, max_key, range_key=None):
+    if range_key and range_key in scope:
+        value = scope.get(range_key)
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return [value[0], value[1]]
+        return value
+    return [scope.get(min_key), scope.get(max_key)]
+
+
+def _audit_reference(manual_context):
+    ref = (manual_context or {}).get("audit_reference") or {}
+    if not isinstance(ref, dict):
+        return {}
+    return ref
+
+
+def _audit_card_id(manual_context):
+    ref = _audit_reference(manual_context)
+    return (ref.get("card_id") or ref.get("audit_card_id")
+            or (manual_context or {}).get("audit_card_id"))
+
+
+def _operator_note(manual_context):
+    ref = _audit_reference(manual_context)
+    return ((manual_context or {}).get("operator_note")
+            or ref.get("operator_note")
+            or ref.get("operator_notes")
+            or "")
+
+
+def _manual_context_id(manual_context):
+    return ((manual_context or {}).get("context_id")
+            or (manual_context or {}).get("manual_context_id"))
+
+
+def _config_hash(manual_context, config_hash=None):
+    return (config_hash
+            or (manual_context or {}).get("config_hash")
+            or DEFAULT_CONFIG_HASH)
+
+
+def manual_context_hash(ctx):
+    """Hash only stable material manual-planning fields."""
+    ctx = ctx or {}
+    planning = ctx.get("planning_scope") or {}
+    risk_policy = ctx.get("risk_policy") or {}
+    if not isinstance(planning, dict):
+        planning = {}
+    if not isinstance(risk_policy, dict):
+        risk_policy = {}
+    material = {
+        "context_id": _manual_context_id(ctx),
+        "direction_bias": ctx.get("direction_bias"),
+        "planning_dte_range": _range(planning, "dte_hours_min", "dte_hours_max",
+                                      "dte_hours_range"),
+        "delta_range": (_range(planning, "short_delta_min", "short_delta_max",
+                               "short_delta_range")
+                        if ("short_delta_min" in planning
+                            or "short_delta_max" in planning
+                            or "short_delta_range" in planning)
+                        else _range(planning, "delta_min", "delta_max",
+                                    "delta_range")),
+        "protection_width_range": _range(planning, "protection_width_min",
+                                          "protection_width_max",
+                                          "protection_width_range"),
+        "amount": planning.get("amount", ctx.get("amount")),
+        "audit_card_id": _audit_card_id(ctx),
+        "risk_policy": risk_policy,
+        "expires_ts_ms": ctx.get("expires_ts_ms"),
+    }
+    return _stable_json_hash(material)
+
+
 def side_of(short_instrument):
     s = str(short_instrument or "")
     if s.endswith("-C"):
@@ -588,14 +655,15 @@ def side_of(short_instrument):
 
 
 def strategy_code(side, expiry_label, short_strike, long_strike):
-    """稳定结构身份：VCS|<side>|<expiry>|<short_strike>|<long_strike>。"""
     return "VCS|%s|%s|%s|%s" % (side, expiry_label, short_strike, long_strike)
 
 
-def quality_code(signal_package_id, relief_ratio, vrp_state, budget_decision):
-    """冻结质量短码（前 8）。仅由材料级质量口径决定，S:PM 释放分桶 → 漂移容差。"""
-    return _h(signal_package_id, _relief_bucket(relief_ratio),
-              vrp_state, budget_decision)[:8]
+def quality_code(manual_ctx_hash, relief_ratio, vrp_state, budget_decision,
+                 execution_feasibility_score=None, config_hash=None):
+    """Frozen quality code bound to manual context and economic/safety buckets."""
+    return _h(manual_ctx_hash, _relief_bucket(relief_ratio), vrp_state,
+              budget_decision, _feasibility_bucket(execution_feasibility_score),
+              "cfg:%s" % (config_hash or DEFAULT_CONFIG_HASH))[:8]
 
 
 def plan_hash(strategy_code_str, quality_code_str, side,
@@ -605,12 +673,16 @@ def plan_hash(strategy_code_str, quality_code_str, side,
 
 
 def confirm_code(session_id, strategy_code_str, quality_code_str, plan_hash_str, length=4):
-    """短确认码：标识冻结审批快照，稳定不随行情逐轮翻动。Base32 前 length 位。"""
     return _b32(_h(session_id, strategy_code_str, quality_code_str, plan_hash_str), length)
 
 
-def build_approval_snapshot(candidate, session_id, signal_package_id, refresh_seq, now_ts):
-    """把一个 plans.plan_assemble 菜单项冻结为可批准的审批快照。"""
+def build_approval_snapshot(candidate, session_id, manual_context, refresh_seq, now_ts,
+                            config_hash=None):
+    candidate = candidate or {}
+    manual_context = manual_context or {}
+    ctx_hash = manual_context_hash(manual_context)
+    ctx_id = _manual_context_id(manual_context)
+    cfg_hash = _config_hash(manual_context, config_hash)
     short_inst = candidate.get("short_instrument") or ""
     long_inst = candidate.get("protection_instrument") or ""
     side = side_of(short_inst)
@@ -618,33 +690,54 @@ def build_approval_snapshot(candidate, session_id, signal_package_id, refresh_se
     budget_decision = candidate.get("budget_decision")
     sc = strategy_code(side, candidate.get("short_expiry_label"),
                        candidate.get("short_strike"), candidate.get("protection_strike"))
-    qc = quality_code(signal_package_id, candidate.get("margin_relief_ratio"),
-                      vrp_state, budget_decision)
+    qc = quality_code(ctx_hash, candidate.get("margin_relief_ratio"),
+                      vrp_state, budget_decision,
+                      execution_feasibility_score=candidate.get("execution_feasibility_score"),
+                      config_hash=cfg_hash)
     ph = plan_hash(sc, qc, side, short_inst, long_inst, candidate.get("amount"))
+    approval_id = _h("approval", session_id, ctx_id, ctx_hash, ph, cfg_hash)[:16]
     cc = confirm_code(session_id, sc, qc, ph)
     return {
-        "schema_name": "VerticalApprovalSnapshot",
-        "session_id": session_id, "signal_package_id": signal_package_id,
-        "refresh_seq": refresh_seq, "plan_id": candidate.get("id"),
-        "side": side, "strategy_code": sc, "quality_code": qc,
-        "plan_hash": ph, "confirm_code": cc,
+        "schema_name": "PlanApprovalSnapshot",
+        "schema_version": "nrd.execution.plan_approval.v1",
+        "approval_id": approval_id,
+        "session_id": session_id,
+        "manual_context_id": ctx_id,
+        "manual_context_hash": ctx_hash,
+        "audit_card_id": _audit_card_id(manual_context),
+        "operator_note": _operator_note(manual_context),
+        "direction_bias": manual_context.get("direction_bias"),
+        "config_hash": cfg_hash,
+        "refresh_seq": refresh_seq,
+        "plan_id": candidate.get("id"),
+        "side": side,
+        "strategy_code": sc,
+        "quality_code": qc,
+        "plan_hash": ph,
+        "confirm_code": cc,
         "recommendation_state": QUALIFIED if candidate.get("qualified", True) else "REJECTED",
-        "short_instrument": short_inst, "long_instrument": long_inst,
+        "short_instrument": short_inst,
+        "long_instrument": long_inst,
         "short_strike": candidate.get("short_strike"),
         "long_strike": candidate.get("protection_strike"),
-        "short_expiry": candidate.get("short_expiry"),       # 锁定→入场快照→持仓后 DTE
-        "breakeven": candidate.get("breakeven"),             # 入场风险锚 loss_boundary
+        "short_expiry": candidate.get("short_expiry"),
+        "short_dte_hours": candidate.get("short_dte_hours"),
+        "short_delta": candidate.get("short_delta"),
+        "breakeven": candidate.get("breakeven"),
         "amount": candidate.get("amount"),
         "entry_net_credit_after_costs": candidate.get("net_credit_effective"),
         "max_loss": candidate.get("max_loss"),
         "margin_relief_ratio": candidate.get("margin_relief_ratio"),
+        "execution_feasibility_grade": candidate.get("execution_feasibility_grade"),
+        "execution_feasibility_score": candidate.get("execution_feasibility_score"),
+        "execution_feasibility_score_norm": candidate.get("execution_feasibility_score_norm"),
+        "execution_feasibility_warnings": candidate.get("execution_feasibility_warnings") or [],
         "frozen_ts": now_ts,
         "summary": "%s Δ%s 宽%s" % (side, candidate.get("short_delta"), candidate.get("width")),
     }
 
 
 def ensure_unique_confirm_codes(snaps, session_id, max_len=8):
-    """库内若有确认码冲突，对全部项统一延长位数直至唯一（封顶 max_len）。"""
     length = 4
     while length <= max_len:
         seen = {}
@@ -662,21 +755,33 @@ def ensure_unique_confirm_codes(snaps, session_id, max_len=8):
     return snaps
 
 
-def build_recommendation_library(menu, session_id, signal_package_id, refresh_seq, now_ts):
-    """从垂直菜单构建推荐库（每项冻结为审批快照，确认码库内唯一）。"""
-    snaps = [build_approval_snapshot(c, session_id, signal_package_id, refresh_seq, now_ts)
+def build_recommendation_library(menu, session_id, manual_context, refresh_seq, now_ts,
+                                 config_hash=None):
+    manual_context = manual_context or {}
+    ctx_hash = manual_context_hash(manual_context)
+    ctx_id = _manual_context_id(manual_context)
+    cfg_hash = _config_hash(manual_context, config_hash)
+    snaps = [build_approval_snapshot(c, session_id, manual_context, refresh_seq, now_ts,
+                                     config_hash=cfg_hash)
              for c in (menu or [])]
     ensure_unique_confirm_codes(snaps, session_id)
     return {
         "schema_name": "VerticalRecommendationLibrary",
-        "session_id": session_id, "signal_package_id": signal_package_id,
-        "refresh_seq": refresh_seq, "generated_ts": now_ts,
+        "schema_version": "nrd.execution.recommendation_library.v1",
+        "session_id": session_id,
+        "manual_context_id": ctx_id,
+        "manual_context_hash": ctx_hash,
+        "audit_card_id": _audit_card_id(manual_context),
+        "operator_note": _operator_note(manual_context),
+        "direction_bias": manual_context.get("direction_bias"),
+        "config_hash": cfg_hash,
+        "refresh_seq": refresh_seq,
+        "generated_ts": now_ts,
         "recommendations": snaps,
     }
 
 
 def resolve_confirm_code(library, code):
-    """在**当前**库中按确认码定位审批快照；找不到（含质量漂移致码变）→ None（旧码自动过期）。"""
     code = str(code or "").strip().upper()
     if not code:
         return None
@@ -688,9 +793,6 @@ def resolve_confirm_code(library, code):
 
 
 def precommit_recheck(locked_snapshot, current_library, live_checks):
-    """预提交复核（补充意见 P0-2：不要求实时质量哈希全等，按漂移容差）。
-    通过条件：①锁定快照的 strategy_code 仍在当前库且仍 QUALIFIED；②plan_hash 一致
-    （quality_code 已分桶 → 子桶漂移不改 plan_hash，跨桶/换包/结构变才改）；③live_checks 全部为真。"""
     reasons = []
     match = next((s for s in (current_library or {}).get("recommendations", [])
                   if s.get("strategy_code") == locked_snapshot.get("strategy_code")
@@ -705,13 +807,13 @@ def precommit_recheck(locked_snapshot, current_library, live_checks):
     return {"passed": not reasons, "reasons": reasons}
 
 
-# ---------- 预提交 13 项硬门评估器（设计稿 §8.1；fail-closed：缺数据即视为不通过）----------
-
 PRECOMMIT_CHECKS = (
-    "signal_fresh", "same_signal_package", "locked_plan_hash_match",
-    "locked_quality_code_match", "vertical_only", "vrp_rechecked",
-    "spm_rechecked", "quotes_rechecked", "entry_net_credit_after_costs_positive",
-    "projected_budget_passed", "ledger_reconciled", "no_unknown_orders", "spread_ok",
+    "manual_context_valid", "same_manual_context", "approval_not_expired",
+    "locked_plan_hash_match", "locked_quality_code_match", "vertical_only",
+    "vrp_rechecked", "spm_rechecked", "quotes_rechecked",
+    "entry_net_credit_after_costs_positive", "projected_budget_passed",
+    "ledger_reconciled", "no_unknown_orders", "spread_ok",
+    "execution_feasibility_rechecked",
 )
 
 
@@ -720,21 +822,17 @@ def _is_num(x):
 
 
 def evaluate_precommit_checks(locked, current_library, live):
-    """对锁定方案做 13 项预提交复核。`live` 为调用方预取的实时复核数据：
-      signal_fresh(bool), sig_package_id, same_expiry(bool), vrp_pass(bool|None),
-      spm_relief(float), min_relief(float), quotes_fresh(bool), net_credit_after_costs(float),
-      projected_budget_decision('ALLOW'|...), ledger_reconciled(bool),
-      no_unknown_orders(bool), spread_ok(bool)
-    返回 {checks:{name:bool}, passed:bool, failed:[names]}；任一缺数据 → 该项 False（fail-closed）。"""
     locked = locked or {}
     live = live or {}
     match = next((s for s in (current_library or {}).get("recommendations", [])
                   if s.get("strategy_code") == locked.get("strategy_code")
                   and s.get("recommendation_state") == QUALIFIED), None)
+    locked_ctx_hash = locked.get("manual_context_hash")
+    live_ctx_hash = live.get("manual_context_hash")
     c = {
-        "signal_fresh": bool(live.get("signal_fresh")),
-        "same_signal_package": (live.get("sig_package_id") is not None
-                                and locked.get("signal_package_id") == live.get("sig_package_id")),
+        "manual_context_valid": bool(live.get("manual_context_valid")),
+        "same_manual_context": bool(locked_ctx_hash) and locked_ctx_hash == live_ctx_hash,
+        "approval_not_expired": live.get("approval_not_expired") is True,
         "locked_plan_hash_match": bool(match) and match.get("plan_hash") == locked.get("plan_hash"),
         "locked_quality_code_match": bool(match) and match.get("quality_code") == locked.get("quality_code"),
         "vertical_only": locked.get("side") in ("CALL", "PUT") and bool(live.get("same_expiry")),
@@ -748,6 +846,8 @@ def evaluate_precommit_checks(locked, current_library, live):
         "ledger_reconciled": bool(live.get("ledger_reconciled")),
         "no_unknown_orders": bool(live.get("no_unknown_orders")),
         "spread_ok": bool(live.get("spread_ok")),
+        "execution_feasibility_rechecked": (
+            (live.get("execution_feasibility_live") or {}).get("hard_gate_passed") is True),
     }
     failed = [k for k in PRECOMMIT_CHECKS if not c.get(k)]
     return {"checks": c, "passed": not failed, "failed": failed}
@@ -811,7 +911,12 @@ def build_vertical_entry_snapshot(locked, short_fill, long_fill, entry_fees,
         "schema_name": "VerticalEntrySnapshot",
         "position_id": "pos-%s" % now_ts,
         "session_id": locked.get("session_id"),
-        "signal_package_id": locked.get("signal_package_id"),
+        "manual_context_id": locked.get("manual_context_id"),
+        "manual_context_hash": locked.get("manual_context_hash"),
+        "audit_card_id": locked.get("audit_card_id"),
+        "operator_note": locked.get("operator_note"),
+        "direction_bias": locked.get("direction_bias"),
+        "approval_id": locked.get("approval_id"),
         "strategy_code": locked.get("strategy_code"),
         "quality_code": locked.get("quality_code"),
         "plan_hash": locked.get("plan_hash"),
@@ -831,6 +936,7 @@ def build_vertical_entry_snapshot(locked, short_fill, long_fill, entry_fees,
         "short_expiry_ts": locked.get("short_expiry"),     # 短腿到期（持仓后 DTE/风险评估用）
         "entry_risk_anchor": entry_risk_anchor,            # 入场风险锚（风险严重度→仲裁）
         "frozen_ts": now_ts,
+        "manual_lineage_only": True,
         "immutable": True,
     }
 
@@ -1100,122 +1206,6 @@ def authorize_from_code(code, position_id, policy_code, now_ts, **kw):
         return None
     return build_authorization(position_id, policy_code, now_ts, **kw)
 
-# ===================== module: session_core =====================
-# -*- coding: utf-8 -*-
-"""ExecutionSession and ApprovalIntent contract harness for demo v0.2."""
-
-import hashlib
-import json
-from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
-
-
-@dataclass(frozen=True)
-class PrecommitChecks:
-    signal_fresh: bool
-    vrp_rechecked: bool
-    spm_rechecked: bool
-    quotes_rechecked: bool
-    ledger_rechecked: bool
-    spread_ok: bool
-    maker_only: bool
-
-    def all_passed(self) -> bool:
-        return all(asdict(self).values())
-
-
-def _stable_hash(payload: Dict[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-@dataclass
-class ExecutionSession:
-    session_id: str
-    signal_package_id: str
-    created_ts: int
-    state: str
-    locked_plan: Optional[Dict[str, Any]] = None
-    approval_intent: Optional[Dict[str, Any]] = None
-
-    @classmethod
-    def open(cls, session_id: str, signal_package_id: str, now_ts: int) -> "ExecutionSession":
-        return cls(
-            session_id=session_id,
-            signal_package_id=signal_package_id,
-            created_ts=now_ts,
-            state="SIGNAL_OBSERVED",
-        )
-
-    def lock_plan(self, plan: Dict[str, Any], now_ts: int, ttl_sec: int) -> Dict[str, Any]:
-        plan_copy = dict(plan)
-        plan_hash = _stable_hash(plan_copy)
-        self.locked_plan = {
-            "schema_name": "ExecutionPlanPackage",
-            "session_id": self.session_id,
-            "signal_package_id": self.signal_package_id,
-            "plan": plan_copy,
-            "plan_hash": plan_hash,
-            "plan_created_ts": now_ts,
-            "ttl_sec": ttl_sec,
-            "expires_ts": now_ts + ttl_sec,
-        }
-        self.state = "PLAN_LOCKED"
-        return self.locked_plan
-
-    def approve_locked_plan(
-        self,
-        now_ts: int,
-        checks: PrecommitChecks,
-        allow_real_order: bool,
-        operator_note: str = "",
-    ) -> Dict[str, Any]:
-        if not self.locked_plan:
-            raise ValueError("Cannot approve without locked plan")
-        approval_id = _stable_hash({
-            "session_id": self.session_id,
-            "signal_package_id": self.signal_package_id,
-            "plan_hash": self.locked_plan["plan_hash"],
-            "approval_created_ts": now_ts,
-        })[:16]
-        self.approval_intent = {
-            "schema_name": "ApprovalIntentPackage",
-            "schema_version": "nrd.integration.approval_intent.v0.1",
-            "approval_id": approval_id,
-            "session_id": self.session_id,
-            "signal_package_id": self.signal_package_id,
-            "plan_hash": self.locked_plan["plan_hash"],
-            "plan_created_ts": self.locked_plan["plan_created_ts"],
-            "approval_created_ts": now_ts,
-            "ttl_sec": self.locked_plan["ttl_sec"],
-            "approval_state": "ARMED",
-            "allow_real_order": bool(allow_real_order),
-            "operator_note": operator_note,
-            "precommit_checks": asdict(checks),
-        }
-        self.state = "ARMED_PREVIEW"
-        return self.approval_intent
-
-    def can_commit_order(self, now_ts: int) -> bool:
-        if self.state != "ARMED_PREVIEW" or not self.locked_plan or not self.approval_intent:
-            return False
-        if now_ts >= self.locked_plan["expires_ts"]:
-            self.approval_intent["approval_state"] = "EXPIRED"
-            return False
-        checks = PrecommitChecks(**self.approval_intent["precommit_checks"])
-        return bool(self.approval_intent["allow_real_order"] and checks.all_passed())
-
-    def package(self) -> Dict[str, Any]:
-        return {
-            "schema_name": "ExecutionSessionPackage",
-            "schema_version": "nrd.integration.execution_session.v0.1",
-            "session_id": self.session_id,
-            "signal_package_id": self.signal_package_id,
-            "state": self.state,
-            "locked_plan": self.locked_plan or {},
-            "approval_intent": self.approval_intent or {},
-        }
-
 # ===================== module: deribit_io =====================
 # -*- coding: utf-8 -*-
 """
@@ -1384,10 +1374,10 @@ def dbt_cancel(order_id):
 """币安 USDC 永续对冲适配（bnc_*）：经 FMZ exchanges[idx] 下对冲腿。
 
 线性合约(单位 BTC)、USDC maker 0 费 → maker(post-only)；reduce_only 用平仓方向。
-仅对冲腿用，不参与期权 / 信号。FMZ 多所：exchanges[0]=Deribit(期权)，exchanges[idx]=Binance。
+仅对冲腿用，不参与期权 / 人工审计。FMZ 多所：exchanges[0]=Deribit(期权)，exchanges[idx]=Binance。
 
 注：真实下单调用形态依 FMZ 币安期货接口（SetContractType/SetDirection/Buy/Sell），**须真实机器人确认**；
-默认 `ALLOW_HEDGE_TRADING=False` + `HEDGE_VENUE=DERIBIT`，本路径不触发。跨所对账/恢复取舍见 v3.1 文档。
+默认 `ALLOW_HEDGE_TRADING=False` + `HEDGE_VENUE=DERIBIT`，本路径不触发。跨所对账/恢复需人工核对。
 """
 
 
@@ -1531,7 +1521,7 @@ def legsel_pick_nearest_delta(enriched, target_delta):
 
 def legsel_protection_candidates(prot_insts, short_strike, want_call, width_band,
                                  delta_of=None, deep_otm_max_delta=0.05):
-    """保护腿候选（以短腿行权价为基准、按腿宽选择；日历与同期垂直通用）：
+    """保护腿候选（以短腿行权价为基准、按腿宽选择）：
       - call: strike > short_strike；put: strike < short_strike（更外侧）
       - 腿宽 = |strike - short_strike| 优先落在 width_band；排除过度虚值(|delta|<deep_otm)
       - 排序：腿宽最接近区间中心者优先；带外档作兜底排后
@@ -1648,7 +1638,7 @@ def acct_build_report(ctx):
         "structure_type": "VERTICAL_CREDIT_SPREAD",
         "account_margin_mode": "S:PM",
         "settlement_currency": g("currency"),
-        "signal_state": g("signal_state"),
+        "manual_gate_state": g("manual_gate_state"),
         "direction_bias": g("direction_bias"),
         "allow_trading": g("allow_trading"),
         "state": g("state"),
@@ -1701,7 +1691,7 @@ def acct_build_report(ctx):
             "maker_only": True,
             "max_chase_steps": g("max_chase_steps"),
             "protection_first": True,
-            "allow_add_on_same_direction_signal": False,
+            "allow_add_on_same_direction_manual": False,
         },
     }
 
@@ -1711,7 +1701,7 @@ def acct_build_report(ctx):
 方案库构建、评估与排序（plan_*）。
 
 计划轮枚举所有符合范围的同期垂直信用价差备选，每个 = 一组(短腿 + 同到期更价外保护腿)，
-按 胜率 / 盈亏比 / 信号契合 计算综合分排序，输出方案库（含方案号 + 推荐标签）。
+按 胜率 / 盈亏比 / 人工审计契合 计算综合分排序，输出方案库（含方案号 + 推荐标签）。
 
 口径（启发式，用于排序比较；非精确定价）：
 - 胜率 ≈ 1 - |短腿 delta|（短腿到期 OTM 近似概率）。
@@ -1721,7 +1711,7 @@ def acct_build_report(ctx):
 纯函数，便于单测。
 """
 
-MODE_VERTICAL = 2  # 唯一结构标识（保留数值 2，兼容菜单/展示读取 p["mode"]）
+MODE_VERTICAL = 2  # 唯一结构标识，供菜单/展示读取 p["mode"]
 
 
 def plan_mode_cn(mode=MODE_VERTICAL):
@@ -1757,8 +1747,8 @@ def plan_width_btc(width_usd, index_price, amount):
 
 
 def plan_effective_credit(short_prem, prot_prem):
-    """垂直：同到期了结，净credit = 短腿权利金 - 保护腿权利金，无复用/残值。
-    返回 (net_credit, net_credit, protection_premium, 0.0)（保留四元组形态兼容既有读取）。
+    """垂直：同到期了结，净credit = 短腿权利金 - 保护腿权利金。
+    返回 (net_credit, net_credit, protection_premium, 0.0)。
     short_prem/prot_prem 为持仓口径权利金(已×数量)。"""
     if short_prem is None or prot_prem is None:
         return None, None, None, None
@@ -1802,17 +1792,14 @@ def plan_credit_on_margin(net_credit_effective, im_with_protection):
     return net_credit_effective / im_with_protection
 
 
-def plan_preferred_delta(signal_state, confidence, delta_range):
-    """信号强度 → 偏好短腿 |delta|：弱/低置信偏低(高胜率)，强/高置信偏高(高盈亏比)。"""
+def plan_preferred_delta(confidence, delta_range):
+    """Manual confidence -> preferred short-leg |delta| within the operator range."""
     lo, hi = delta_range
     c = (confidence if confidence is not None else 50) / 100.0
-    base = lo + (hi - lo) * c
-    if signal_state == "TRADE_SUPPORT_STRONG":
-        base = min(hi, base + 0.05)
-    return base
+    return lo + (hi - lo) * c
 
 
-def plan_signal_fit(short_delta, preferred_delta, scale=0.25):
+def plan_delta_fit(short_delta, preferred_delta, scale=0.25):
     if short_delta is None:
         return 0.0
     return max(0.0, 1.0 - abs(abs(short_delta) - preferred_delta) / scale)
@@ -1893,7 +1880,7 @@ def plan_assemble(amount, spot, min_ratio,
         "credit_on_margin": plan_credit_on_margin(eff_credit, (spm or {}).get("im_with_protection")),
         "entry_fee": fee, "full_burn": full_burn,
         "spread_cost": acct_spread_cost(sq.get("best_bid"), sq.get("best_ask"), amount),
-        "signal_fit": plan_signal_fit(short_delta, preferred_delta),
+        "delta_fit": plan_delta_fit(short_delta, preferred_delta),
         "im_short_only": (spm or {}).get("im_short_only"),
         "im_with_protection": (spm or {}).get("im_with_protection"),
         "margin_relief_abs": (spm or {}).get("relief_abs"),
@@ -1908,8 +1895,9 @@ def plan_prelim_score(c, weights):
     """无 S:PM 的初筛分（用于枚举后裁剪 top-K）。"""
     wr = c.get("win_rate") or 0.0
     rr = c.get("rr") or 0.0
-    return (weights["win_rate"] * wr + weights["rr"] * min(rr, 1.0)
-            + weights["signal"] * (c.get("signal_fit") or 0.0))
+    base = (weights["win_rate"] * wr + weights["rr"] * min(rr, 1.0)
+            + weights.get("manual", 0.0) * (c.get("delta_fit") or 0.0))
+    return base * (c.get("execution_feasibility_penalty") or 1.0)
 
 
 def plan_rank(cands, weights, menu_size):
@@ -1922,8 +1910,10 @@ def plan_rank(cands, weights, menu_size):
         rr = c.get("rr") or 0.0
         rr_norm = min(rr / max_rr, 1.0) if max_rr else 0.0
         c["rr_norm"] = rr_norm
-        c["composite"] = (weights["win_rate"] * wr + weights["rr"] * rr_norm
-                          + weights["signal"] * (c.get("signal_fit") or 0.0))
+        base = (weights["win_rate"] * wr + weights["rr"] * rr_norm
+                + weights.get("manual", 0.0) * (c.get("delta_fit") or 0.0))
+        c["surface_composite"] = base
+        c["composite"] = base * (c.get("execution_feasibility_penalty") or 1.0)
     ranked = sorted(pool, key=lambda c: c["composite"], reverse=True)
     menu = ranked[:menu_size]
     for i, c in enumerate(menu, start=1):
@@ -1958,19 +1948,17 @@ LogStatus 表格格式：`{"type":"table","title":..,"cols":[..],"rows":[[..]]}`
 import json
 
 # ---- 文案映射 ----
-SIGNAL_CN = {
-    "TRADE_SUPPORT_STRONG": "强支持(放行)",
-    "TRADE_SUPPORT_WEAK": "弱支持(放行)",
-    "WAIT_CONFIRMATION": "待确认(不进场)",
-    "NO_TRADE_AMBIGUOUS": "歧义·不交易",
-    "NO_TRADE_BLOCKED": "阻断·不交易",
+MANUAL_GATE_STATE_CN = {
+    "PLANNING_ALLOWED": "人工审计门已开启",
+    "WAIT_MANUAL_AUDIT_GATE": "等待人工审计门",
+    "MANUAL_CONTEXT_INVALID": "人工审计上下文无效",
 }
 BIAS_CN = {
     "SHORT_CALL": "偏空 · 卖出看涨 Call",
     "SHORT_PUT": "偏多 · 卖出看跌 Put",
 }
 STATE_CN = {
-    "NO_POSITION": "无持仓", "SIGNAL_READY": "信号就绪",
+    "NO_POSITION": "无持仓", "MANUAL_READY": "人工审计就绪",
     "PROTECTION_SELECTION": "选保护腿", "SPM_SIMULATION": "S:PM 模拟",
     "PROTECTION_BUILDING": "建保护腿", "PROTECTION_ACTIVE_NO_SHORT": "保护腿就绪·未建卖方腿",
     "SHORT_BUILDING": "建卖方腿", "SHORT_ACTIVE_PROTECTED": "已保护·卖方持仓",
@@ -1991,10 +1979,10 @@ REASON_CN = {
     "NO_PROTECTION_EXPIRY_IN_BAND": "保护腿到期不在设定区间(5–10d)",
     "NO_PROTECTION_CANDIDATE": "无合格保护腿候选（可能均过度虚值）",
     "NO_CANDIDATE": "无任何符合范围的备选（检查 delta/腿宽/到期范围）",
-    "SAME_DIRECTION_CONFIRMATION": "持仓中：同向信号仅确认，不加仓",
-    "PLAN_MENU_READY": "计划轮：方案库已生成（设 ROUND_MODE=ORDER + SELECTED_PLAN 进入下单轮）",
-    "NO_PLAN_MENU(请先运行计划轮)": "下单轮：未找到方案库，请先以 ROUND_MODE=PLAN 运行计划轮",
-    "ORDER_PREVIEW_DRY": "下单轮·空跑预览：已复核选用方案，未真实下单（置 ALLOW_TRADING=True 开仓）",
+    "SAME_DIRECTION_CONFIRMATION": "持仓中：同向人工审计仅确认，不加仓",
+    "PLAN_MENU_READY": "人工审计门：方案候选已生成，等待 VRP/预算通过后给确认码",
+    "NO_PLAN_MENU(请先运行计划轮)": "人工审计门：未找到可复核方案，请重新生成候选",
+    "ORDER_PREVIEW_DRY": "人工审计门·空跑预览：已复核选用方案，未真实下单",
 }
 
 _C_GREEN = "#16a34a"
@@ -2003,16 +1991,18 @@ _C_RED = "#dc2626"
 _C_GRAY = "#64748b"
 
 
-def disp_signal_cn(s):
-    return SIGNAL_CN.get(s, s)
+def disp_manual_gate_state_cn(s):
+    return MANUAL_GATE_STATE_CN.get(s, s or "—")
 
 
-def disp_decision_hint(signal_state):
-    """按信号强弱给选档指引，降低认知负荷（不替操作者决策）。"""
-    if signal_state == "TRADE_SUPPORT_STRONG":
-        return "信号偏强 → 可选「高盈亏比/高期望」档（承受较低胜率换更大盈亏比）"
-    if signal_state == "TRADE_SUPPORT_WEAK":
-        return "信号偏弱 → 优先「高胜率/均衡」档（求稳，降低被行权概率）"
+def disp_manual_hint(manual_gate_state):
+    """按人工审计门状态给操作指引，降低认知负荷。"""
+    if manual_gate_state == "PLANNING_ALLOWED":
+        return "按 DIRECTION_BIAS、到期、delta、腿宽和审计卡引用生成候选"
+    if manual_gate_state == "WAIT_MANUAL_AUDIT_GATE":
+        return "填写 MANUAL_AUDIT_CARD_ID 并开启 MANUAL_PLANNING_ALLOWED 后再生成候选"
+    if manual_gate_state == "MANUAL_CONTEXT_INVALID":
+        return "人工审计参数无效或过期，需修正后重建候选"
     return "—"
 
 
@@ -2025,9 +2015,9 @@ def disp_reason_cn(reason):
         return "—"
     if reason in REASON_CN:
         return REASON_CN[reason]
-    if reason.startswith("EXIT_REVIEW_SIGNAL:"):
+    if reason.startswith("EXIT_REVIEW_MANUAL:"):
         sig = reason.split(":", 1)[1]
-        return "退出/复核信号（%s），不再续卖新卖方腿" % disp_signal_cn(sig)
+        return "退出/复核人工审计（%s），不再续卖新卖方腿" % disp_manual_gate_state_cn(sig)
     if reason.startswith("IDLE"):
         return "空闲：不满足进场条件 " + reason[4:]
     if reason.startswith("PLAN_NOT_QUALIFIED"):
@@ -2123,7 +2113,7 @@ def disp_health_notes(ctx):
     # 8) 保护成本 / 权利金倍数
     pc = g("protection_entry_cost")
     if isinstance(pc, (int, float)) and isinstance(prem, (int, float)) and prem > 0 and pc / prem >= 5:
-        notes.append(("提示", "保护腿成本为权利金的 %.1f 倍，需靠复用/残值摊薄" % (pc / prem)))
+        notes.append(("提示", "保护腿成本为权利金的 %.1f 倍，净 credit 过薄时应放弃" % (pc / prem)))
     # 9) 保护腿 delta 偏低
     pdelta = g("protection_delta")
     if isinstance(pdelta, (int, float)) and abs(pdelta) < 0.08:
@@ -2151,14 +2141,14 @@ def _overview_table(ctx):
             ["版本 / 轮次", "v%s ｜ %s" % (g("version") or "?",
                 "计划轮(PLAN)" if g("round_mode") == "PLAN" else "下单轮(ORDER)")],
             ["标的 / 结算币", g("currency")],
-            ["前置信号态 / 置信", "%s / %s" % (disp_signal_cn(g("signal_state")), g("signal_confidence"))],
+            ["人工审计门 / TTL", "%s / %s" % (disp_manual_gate_state_cn(g("manual_gate_state")), g("manual_context_ttl_min"))],
             ["方向", BIAS_CN.get(g("direction_bias"), g("direction_bias"))],
             ["选用方案号(下单轮)", g("selected_plan")],
             ["选用方案保护模式", g("protection_mode_cn") or "—"],
-            ["交易开关", "实盘下单(ALLOW_TRADING=True)" if g("allow_trading") else "空跑(未下单)"],
+            ["执行门控", disp_gate_line(g("gate_summary"))],
             ["状态机", disp_state_cn(g("state"))],
             ["参考价", _num(g("spot"), small=2, big=2)],
-            ["选档指引", disp_decision_hint(g("signal_state"))],
+            ["选档指引", disp_manual_hint(g("manual_gate_state"))],
             ["枚举漏斗", disp_diag_line(g("enum_diag")) if g("enum_diag") else "—"],
             ["选用方案综合评级", disp_health_grade(ctx) if g("short_instrument") else "—"],
             ["本轮结论", disp_reason_cn(g("reason"))],
@@ -2177,8 +2167,7 @@ def disp_diag_line(diag):
 
 
 def disp_menu_table(menu, selected_no, spot):
-    """方案库对比（垂直+日历并列；★=下单轮将执行的方案号）。
-    日历净credit为复用/残值修正后的「有效净credit(每周期)」，与垂直可比。"""
+    """方案库对比（同期垂直信用价差；★=当前选中的方案号）。"""
     def pct(x):
         return ("%.0f%%" % (x * 100)) if isinstance(x, (int, float)) else "—"
 
@@ -2189,12 +2178,11 @@ def disp_menu_table(menu, selected_no, spot):
     for p in menu:
         g = p.get
         star = "★" if g("id") == selected_no else ""
-        if g("mode") == 1:                       # 日历：短→保护两个期号
-            qihao = "%s→%s" % (g("short_expiry_label"), g("protection_expiry_label"))
-        else:                                    # 同期垂直：同一到期
-            qihao = "%s(同)" % g("short_expiry_label")
+        qihao = "%s(同)" % g("short_expiry_label")
         tags = "/".join(g("tags") or []) or "—"
         ok = "合格" if g("qualified") else ("✗" + (g("reject_reason") or ""))
+        if g("qualified") and g("execution_feasibility_grade"):
+            ok = "%s/%s" % (ok, g("execution_feasibility_grade"))
         dte = ("%.1fd" % (g("short_dte_hours") / 24.0)) if g("short_dte_hours") else "—"
         rows.append([
             "%s%s" % (star, g("id")), tags, g("mode_cn") or "—", qihao, dte,
@@ -2207,7 +2195,7 @@ def disp_menu_table(menu, selected_no, spot):
         ])
     return {
         "type": "table",
-        "title": "策略选择明细（★=下单轮将执行；按【编号】匹配；有效$=日历复用残值修正后；信用/保证金=每周期保证金回报）",
+        "title": "策略选择明细（★=当前选中；按【编号】匹配；有效$=净 credit；信用/保证金=周期保证金回报）",
         "cols": ["编号", "推荐", "模式", "期号(短/保护)", "到期", "短行权(Δ)", "保护行权",
                  "腿宽", "短距现价", "胜率", "有效$", "信用/保证金", "盈亏比", "盈亏平衡价",
                  "释放", "合格"],
@@ -2241,9 +2229,6 @@ def _position_table(ctx):
         ["保护腿权利金支出(×数量)", _num(g("protection_entry_cost")), _usd(g("protection_entry_cost"), spot)],
         ["单笔净credit(×数量)", _num(g("net_credit_single")), _usd(g("net_credit_single"), spot)],
     ]
-    if mode == 1:                                 # 日历：复用/残值修正
-        rows.append(["覆盖周期/残值回收", "%sx" % _num(g("covered_cycles")),
-                     _usd(g("residual_value"), spot)])
     rows += [
         ["有效净credit(每周期)", _num(g("net_credit")), _usd(g("net_credit"), spot)],
         [ml_label, _num(g("max_loss")), _usd(g("max_loss"), spot)],
@@ -2252,6 +2237,12 @@ def _position_table(ctx):
         ["到期盈亏平衡价(近似)", _num(g("breakeven"), small=2, big=2), "—"],
         ["预估开仓手续费", _num(g("estimated_entry_fee")), _usd(g("estimated_entry_fee"), spot)],
     ]
+    if g("execution_feasibility_grade"):
+        rows.append(["执行可行性", "%s / %s" % (
+            g("execution_feasibility_grade"),
+            ("%.0f" % g("execution_feasibility_score"))
+            if isinstance(g("execution_feasibility_score"), (int, float)) else "—"),
+            ",".join(g("execution_feasibility_warnings") or []) or "—"])
     return {
         "type": "table", "title": "选用方案 · 保证金与成本（编号 %s · 评级 %s · 预估）"
         % (g("selected_id"), disp_health_grade(ctx)),
@@ -2290,10 +2281,10 @@ def _header_color(ctx):
     return _C_GRAY
 
 
-# ---- 交互控制台（状态栏顶部「交互页面」：阶段 + 门控 + 信号接收 + 待批方案确认码 + 操作提示）----
+# ---- 交互控制台（状态栏顶部「交互页面」：阶段 + 门控 + 人工审计接收 + 待批方案确认码 + 操作提示）----
 
 _PHASE_CN = {
-    "WAIT_SIGNAL": "等待信号", "OFFLINE_MANUAL": "离线手动(静态信号)",
+    "WAIT_MANUAL_AUDIT_GATE": "等待人工审计", "MANUAL_GATE": "人工审计门",
     "RECOMMEND_READY": "方案库就绪·待硬授权", "HARD_APPROVAL_WAIT": "待计划硬授权",
     "PLAN_LOCKED": "方案锁定·预提交", "POSITION_MANAGE": "持仓管理",
     "EXIT_CAMPAIGN": "退出活动", "LONG_RECOVERY": "保护腿回收",
@@ -2302,8 +2293,8 @@ _PHASE_CN = {
 
 # 操作提示引擎：阶段 → 「下一步点哪个按钮、输什么」的人话提示（落实「在交互栏给出操作提示」）
 _HINTS = {
-    "WAIT_SIGNAL": "等待可交易信号；信号不可用/过期时禁新开仓，持仓管理继续",
-    "OFFLINE_MANUAL": "离线手动信号模式(红标)：进场依据静态 SIGNAL_STATE，请确认其与最新信号一致",
+    "WAIT_MANUAL_AUDIT_GATE": "等待可交易人工审计；人工审计不可用/过期时禁新开仓，持仓管理继续",
+    "MANUAL_GATE": "人工审计门模式：进场依据 MANUAL_PLANNING_ALLOWED、DIRECTION_BIAS 与 MANUAL_AUDIT_* 参数",
     "RECOMMEND_READY": "待批方案：点【执行】输入方案确认码进场 ｜ 点【拒绝】放弃",
     "HARD_APPROVAL_WAIT": "待批方案：点【执行】输入方案确认码进场 ｜ 点【拒绝】放弃",
     "PLAN_LOCKED": "方案已锁定·预提交复核中；复核通过且进场门开启才真实下单",
@@ -2320,7 +2311,7 @@ def _console_phase_cn(p):
 
 
 def disp_operation_hint(ctx):
-    """据当前阶段 / 门控 / 信号裁决给出唯一操作提示串。"""
+    """据当前阶段 / 门控 / 人工审计裁决给出唯一操作提示串。"""
     g = ctx.get
     if g("kill_new_risk"):
         return _HINTS["KILLED"]
@@ -2329,14 +2320,14 @@ def disp_operation_hint(ctx):
     if phase == "POSITION_MANAGE" and g("risk_state") == "EXIT_PREFERRED" \
             and "已授权" not in (g("exit_auth_state") or ""):
         return ("风险严重(EXIT_PREFERRED)：点【风险退出授权】输入风险退出码 %s 允许越价限价退出"
-                "（成本封顶 RISK_EXIT_MAX_SPEND；该预算=0 时退出受阻将回退对冲）" % (g("risk_exit_auth_code") or "—"))
+                "（成本封顶：RISK_EXIT_MAX_SPEND>0 用该值，否则用入场冻结退出预算）" % (g("risk_exit_auth_code") or "—"))
     if phase in _HINTS:
         return _HINTS[phase]
-    sv = g("signal_verdict") or {}
-    if sv.get("availability") == "OFFLINE_MANUAL":
-        return _HINTS["OFFLINE_MANUAL"]
+    sv = g("manual_verdict") or {}
+    if sv.get("availability") == "MANUAL_GATE":
+        return _HINTS["MANUAL_GATE"]
     if sv.get("block_new_opens"):
-        return _HINTS["WAIT_SIGNAL"]
+        return _HINTS["WAIT_MANUAL_AUDIT_GATE"]
     return "—"
 
 
@@ -2351,15 +2342,25 @@ def disp_gate_line(gate_summary):
         mk("ENTRY"), mk("EXIT"), mk("HEDGE_OPEN"), mk("HEDGE_REDUCE"))
 
 
-def disp_signal_status_line(verdict):
-    """信号接收裁决压成一行。"""
+def disp_in_flight_line(in_flight):
+    if not in_flight or not in_flight.get("count"):
+        return None
+    labels = []
+    for o in in_flight.get("orders") or []:
+        labels.append("%s/%s" % (o.get("instrument_name") or "—", o.get("label") or "—"))
+    return "%s 条 ｜ %s" % (in_flight.get("count"), "；".join(labels) or "—")
+
+
+def disp_manual_gate_line(verdict):
+    """人工审计接收裁决压成一行。"""
     if not verdict:
         return "—"
     avail = verdict.get("availability")
-    if avail == "OFFLINE_MANUAL":
-        return "离线手动(静态信号·红标)"
+    if avail == "MANUAL_GATE":
+        return "离线手动(人工审计)"
     block = "禁新开" if verdict.get("block_new_opens") else "可新开"
-    return "%s ｜ %s ｜ side=%s" % (avail, block, verdict.get("side_hint") or "—")
+    direction = verdict.get("direction_bias") or verdict.get("manual_direction") or "NA"
+    return "%s ｜ %s ｜ direction=%s" % (avail, block, direction)
 
 
 _RISK_STATE_CN = {
@@ -2387,13 +2388,13 @@ def disp_risk_line(risk):
 
 
 def disp_console_table(ctx):
-    """交互控制台：每轮置顶。阶段 + 门控 + 信号接收 +（待批方案确认码 / 软授权 / 退出活动）+ 操作提示。
+    """交互控制台：每轮置顶。阶段 + 门控 + 人工审计接收 +（待批方案确认码 / 软授权 / 退出活动）+ 操作提示。
     后续阶段（E2 确认码 / E5 软授权 / E6 退出进度）通过 ctx 字段填充对应行。"""
     g = ctx.get
     rows = [
         ["阶段", _console_phase_cn(g("console_phase"))],
         ["执行门控", disp_gate_line(g("gate_summary"))],
-        ["信号接收", disp_signal_status_line(g("signal_verdict"))],
+        ["人工审计接收", disp_manual_gate_line(g("manual_verdict"))],
     ]
     for c in (g("pending_candidates") or []):
         rows.append(["待批 #%s" % c.get("id"),
@@ -2414,6 +2415,9 @@ def disp_console_table(ctx):
         if arb.get("blocked_reason"):
             line += " (优先 %s 受阻:%s)" % (arb.get("preferred_action"), arb.get("blocked_reason"))
         rows.append(["风险动作", line])
+    _if = disp_in_flight_line(g("manage_in_flight_order"))
+    if _if:
+        rows.append(["活动订单", _if])
     _rl = disp_risk_line(g("risk_pkg"))
     if _rl:
         rows.append(["风险", _rl])
@@ -2569,7 +2573,7 @@ def spm_evaluate_candidates(currency, short_instrument, prot_candidates, amount,
 # -*- coding: utf-8 -*-
 """BTC-PERPETUAL 对冲生命周期（hedge_*）。纯函数，便于单测。
 
-设计稿 §10 + 补充意见 P0-5 + 用户 v2.1 补充（对冲场所可选）：
+对冲场所由操作者显式配置：
   - 对冲工具默认 DERIBIT BTC-PERPETUAL（反向、与期权同所、便于统一账本/恢复）；
     **可选** BINANCE BTCUSDC 永续（线性、USDC maker 0 费）——对冲腿非高频，maker 等成交可省成本。
     场所为**操作者显式配置选择**（HEDGE_VENUE），**非运行时自动切换**（避免补充意见所警示的 UNBOUND）。
@@ -2663,17 +2667,25 @@ def hedge_target_contracts(remaining_short_qty, structure_delta, reduction_ratio
 def hedge_order_action(current_qty, target_qty, min_trade_amount=0.0):
     """据当前 vs 目标决定动作 + reduce_only（P0-5）。
     目标>当前 → HEDGE_OPEN/INCREASE(非 reduce_only)；目标<当前 → HEDGE_REDUCE/UNWIND(reduce_only)。"""
-    cur = abs(current_qty or 0.0)
-    tgt = abs(target_qty or 0.0)
-    step = abs(tgt - cur)
+    cur = current_qty or 0.0
+    tgt = target_qty or 0.0
     thr = max(_EPS, (min_trade_amount or 0.0) * 0.5)
-    if step <= thr:
+    if abs(tgt - cur) <= thr:
         return {"action": "HEDGE_HOLD", "reduce_only": False, "delta_contracts": 0.0}
-    if tgt > cur:
-        return {"action": ("HEDGE_INCREASE" if cur > _EPS else "HEDGE_OPEN"),
-                "reduce_only": False, "delta_contracts": step}
-    return {"action": ("HEDGE_UNWIND" if tgt <= _EPS else "HEDGE_REDUCE"),
-            "reduce_only": True, "delta_contracts": step}
+    if abs(cur) > thr and abs(tgt) > thr and cur * tgt < 0:
+        return {"action": "HEDGE_UNWIND", "reduce_only": True,
+                "delta_contracts": abs(cur)}
+    if abs(tgt) <= thr:
+        return {"action": "HEDGE_UNWIND", "reduce_only": True,
+                "delta_contracts": abs(cur)}
+    if abs(cur) <= thr:
+        return {"action": "HEDGE_OPEN", "reduce_only": False,
+                "delta_contracts": abs(tgt)}
+    if abs(tgt) > abs(cur):
+        return {"action": "HEDGE_INCREASE", "reduce_only": False,
+                "delta_contracts": abs(tgt - cur)}
+    return {"action": "HEDGE_REDUCE", "reduce_only": True,
+            "delta_contracts": abs(tgt - cur)}
 
 
 def hedge_orphan(option_short_qty, perp_qty):
@@ -2955,14 +2967,14 @@ def exec_entry_campaign_step(prot_inst, short_inst, amount, credit_floor, max_ti
 # ---------- 低成本退出：买回卖方短腿（§7.3；每轮一次、价格 ≤ 预算上限、post-only）----------
 
 def exec_exit_buyback_step(short_instrument, target_amount, price_cap, allow_live,
-                           allow_taker=False, label="exit_short"):
+                           allow_taker=False, label="exit_short", quote=None):
     """退出活动一轮：买回（平）卖方短腿。
     - **止盈退出**(allow_taker=False)：被动 post-only，买价 ≤ min(ask−tick, price_cap)，patient 不越价。
     - **风险退出**(allow_taker=True)：可**越价吃单**至 price_cap（限价=price_cap、非 post-only，
       扫所有 ask ≤ cap 的卖盘、残量挂 cap）；成本仍硬封在 price_cap·qty 内（由风险退出预算反推）。
     allow_live=False → 仅返回意图(dry)。撤未成交单后再查一次以捕捉晚到成交。
     返回 {filled, avg_price, dry, price, taker, reason}。"""
-    q = exec_quote(short_instrument)
+    q = quote if quote is not None else exec_quote(short_instrument)
     if not q or q.get("best_bid") is None or q.get("best_ask") is None or q.get("mark") is None:
         return {"filled": 0.0, "dry": (not allow_live), "reason": "NO_QUOTE"}
     tick = q.get("tick") or 0.0
@@ -3000,7 +3012,7 @@ def exec_exit_buyback_step(short_instrument, target_amount, price_cap, allow_liv
 
 # ---------- 保护腿回收（§7.5；短腿归零后 maker 卖出；无 bid → LONG_RESIDUAL_ONLY）----------
 
-def exec_protection_recovery_step(long_inst, qty, allow_live, label="recover_long"):
+def exec_protection_recovery_step(long_inst, qty, allow_live, label="recover_long", quote=None):
     """短腿归零后回收保护腿：被动 maker 卖出(post-only，join bid)；无 bid → LONG_RESIDUAL_ONLY(保持等结算)。
     allow_live=False → 仅意图(dry)。返回 {sold, price, state, dry, reason}。"""
     if not qty or qty <= 0:
@@ -3008,7 +3020,7 @@ def exec_protection_recovery_step(long_inst, qty, allow_live, label="recover_lon
     if not long_inst:
         return {"sold": 0.0, "dry": (not allow_live), "state": "LONG_RESIDUAL_ONLY",
                 "reason": "NO_LONG_INSTRUMENT"}
-    q = exec_quote(long_inst)
+    q = quote if quote is not None else exec_quote(long_inst)
     bid = (q or {}).get("best_bid")
     if not q or bid in (None, 0) or bid <= 0:
         return {"sold": 0.0, "dry": (not allow_live), "state": "LONG_RESIDUAL_ONLY", "reason": "NO_BID"}
@@ -3074,7 +3086,7 @@ def exec_hedge_step(venue_cfg, side, amount, reduce_only, allow_live, label="hed
 
 # ---------- 状态机（§9）----------
 S_NO_POSITION              = "NO_POSITION"
-S_SIGNAL_READY             = "SIGNAL_READY"
+S_MANUAL_READY             = "MANUAL_READY"
 S_PROTECTION_SELECTION     = "PROTECTION_SELECTION"
 S_SPM_SIMULATION           = "SPM_SIMULATION"
 S_PROTECTION_BUILDING      = "PROTECTION_BUILDING"
@@ -3170,8 +3182,8 @@ def ledger_release_short(led, amount):
 
 # ---------- 进场门控（§4.1）----------
 
-def ledger_can_enter(signal_state, enter_signals):
-    return signal_state in enter_signals
+def ledger_can_enter(manual_gate_state, enter_manuals):
+    return manual_gate_state in enter_manuals
 
 
 # ---------- 启动对账（§5 缺口补强）----------
@@ -3237,6 +3249,253 @@ def evaluate_startup_recovery(option_positions, perp_position_qty,
                 "reasons": ["PERP_HEDGE_WITHOUT_OPTION_SHORT_RISK"], "allow_new_open": False}
     return {"state": "OK", "reasons": [], "allow_new_open": True}
 
+# ===================== module: execution_feasibility =====================
+# -*- coding: utf-8 -*-
+"""建仓可行性评分（execution_feasibility，纯逻辑）。
+
+回答：当前盘口快照下，该垂直结构是否具备**完整建立所需的经济空间与报价条件**。
+**不是 fill_probability**（无历史成交标签）；不读 `_G`、不下单、不改计划/人工审计。
+口径与 entry campaign 一致：复用 `execution.exec_buy_price/exec_sell_price` 价格阶梯 +
+`position.entry_credit_capped_index/entry_net_credit` 信用底线档；费率收口 accounting。
+
+设计：硬门(Q1-Q6) + 软分(0~100，4 组件加权) + 排序折损(penalty)。阈值由 cfg 注入（集中在 config）。
+不变量见规范 §16（EF-01..10）。
+"""
+
+SCHEMA_NAME = "ExecutionFeasibilityPackage"
+SCHEMA_VERSION = "nrd.execution.feasibility.v1"
+
+GRADE_HIGHLY = "HIGHLY_BUILDABLE"
+GRADE_BUILDABLE = "BUILDABLE"
+GRADE_PATIENT = "PATIENT_ONLY"
+GRADE_FRAGILE = "FRAGILE"
+GRADE_REJECT = "REJECT"
+
+# 默认阈值（仅作 cfg 缺省；生产由 config.FEAS_* 注入）
+DEFAULT_CFG = {
+    "max_short_spread": 0.60, "max_protection_spread": 0.60,
+    "protection_low_premium_max": PROTECTION_LOW_PREMIUM_MAX,
+    "protection_abs_spread_max": PROTECTION_ABS_SPREAD_MAX,
+    "min_net_credit": 0.0, "min_retention": 0.45, "min_survival_ticks": 0,
+    "retention_bad": 0.45, "retention_good": 0.90,
+    "spread_bad": 0.60, "spread_good": 0.10,
+    "friction_bad": 0.60, "friction_good": 0.10,
+    "weights": {"credit_retention": 0.30, "spread": 0.25, "friction": 0.25, "credit_survival": 0.20},
+}
+
+
+def _is_num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _clamp01(v):
+    return max(0.0, min(1.0, v))
+
+
+def safe_spread_ratio(bid, ask):
+    """相对价差 (ask-bid)/mid；缺数据/非法(<=0 或 ask<bid) → None。"""
+    if not (_is_num(bid) and _is_num(ask)) or bid <= 0 or ask <= 0 or ask < bid:
+        return None
+    mid = (bid + ask) / 2.0
+    return (ask - bid) / mid if mid > 0 else None
+
+
+def _quote_abs_spread(q):
+    bid = (q or {}).get("best_bid")
+    ask = (q or {}).get("best_ask")
+    if not (_is_num(bid) and _is_num(ask)) or ask < bid:
+        return None
+    return ask - bid
+
+
+def _protection_spread_soft_ok(q, ratio, cfg):
+    if ratio is not None and ratio <= cfg["max_protection_spread"]:
+        return True
+    abs_spread = _quote_abs_spread(q)
+    ask = (q or {}).get("best_ask")
+    return (_is_num(abs_spread) and _is_num(ask)
+            and ask <= cfg["protection_low_premium_max"]
+            and abs_spread <= cfg["protection_abs_spread_max"] + 1e-12)
+
+
+def mark_credit_after_fees(short_mark, prot_mark, amount, fees):
+    """mark 口径净 credit = (短腿 mark − 保护腿 mark)×数量 − 入场费。"""
+    return (short_mark - prot_mark) * amount - (fees or 0.0)
+
+
+def executable_credit_after_fees(short_bid, prot_ask, amount, fees):
+    """可成交保守口径净 credit = (短腿 bid − 保护腿 ask)×数量 − 入场费（建仓更真实）。"""
+    return (short_bid - prot_ask) * amount - (fees or 0.0)
+
+
+def credit_retention_ratio(exec_credit, mark_credit):
+    """可成交 credit / mark credit；mark<=0 → None（由硬门拒绝）。"""
+    if not _is_num(mark_credit) or mark_credit <= 0:
+        return None
+    return exec_credit / mark_credit
+
+
+def entry_friction_estimate(short_mark, short_bid, prot_ask, prot_mark, amount, fees):
+    """保守入场摩擦 = [max(0,短腿 mark−bid) + max(0,保护腿 ask−mark)]×数量 + 入场费。
+    任一价格偏离为负（异常 mark）按 0 处理，避免负摩擦奖励（EF-06）。"""
+    short_slip = max(0.0, (short_mark - short_bid))
+    prot_slip = max(0.0, (prot_ask - prot_mark))
+    return (short_slip + prot_slip) * amount + (fees or 0.0)
+
+
+def friction_to_credit_ratio(friction, exec_credit):
+    """摩擦 / 可成交 credit；exec_credit<=0 → None（由硬门拒绝）。"""
+    if not _is_num(exec_credit) or exec_credit <= 0:
+        return None
+    return friction / exec_credit
+
+
+def credit_survival_profile(short_quote, prot_quote, amount, credit_floor, max_tick_steps, fees):
+    """追价阶梯上仍满足 credit floor 的最大档（复用 entry campaign 同一阶梯与信用底线档）。
+    返回 {credit_survival_ticks, max_tick_steps, credit_survival_ratio, credit_at_last_surviving_step}。
+    n_survive=-1 表示第 0 档即低于底线。"""
+    steps = max(0, int(max_tick_steps or 0))
+    prot_buy = [exec_buy_price(prot_quote["mark"], prot_quote["best_ask"], prot_quote["tick"], n)
+                for n in range(steps + 1)]
+    short_sell = [exec_sell_price(short_quote["mark"], short_quote["best_bid"], short_quote["tick"], n)
+                  for n in range(steps + 1)]
+    i_cap = entry_credit_capped_index(prot_buy, short_sell, amount, fees, credit_floor)
+    ratio = (i_cap + 1) / float(steps + 1) if i_cap >= 0 else 0.0
+    last_credit = (entry_net_credit(short_sell[i_cap], prot_buy[i_cap], amount, fees)
+                   if i_cap >= 0 else None)
+    return {"credit_survival_ticks": i_cap, "max_tick_steps": steps,
+            "credit_survival_ratio": ratio, "credit_at_last_surviving_step": last_credit}
+
+
+def component_score_linear(value, bad, good):
+    """线性归一到 0~100。`(value-bad)/(good-bad)` 自动适配方向：
+    good>bad → 越大越好（如 retention）；good<bad → 越小越好（如 spread/friction）。value None → 0。"""
+    if not _is_num(value) or bad == good:
+        return 0.0
+    return _clamp01((value - bad) / (good - bad)) * 100.0
+
+
+def _grade(score):
+    if score >= 85:
+        return GRADE_HIGHLY
+    if score >= 70:
+        return GRADE_BUILDABLE
+    if score >= 55:
+        return GRADE_PATIENT
+    return GRADE_FRAGILE
+
+
+def _leg_quote_ok(q):
+    return bool(q) and all(_is_num(q.get(k)) for k in ("mark", "best_bid", "best_ask", "tick")) \
+        and q["best_bid"] > 0 and q["best_ask"] > 0 and q["best_ask"] >= q["best_bid"] and q["tick"] > 0
+
+
+def _reject(failures, warnings=None):
+    return {"schema_name": SCHEMA_NAME, "schema_version": SCHEMA_VERSION, "status": "REJECT",
+            "grade": GRADE_REJECT, "score": 0.0, "score_norm": 0.0,
+            "hard_gate_passed": False, "hard_failures": list(failures), "warnings": list(warnings or []),
+            "economics": {}, "liquidity": {}, "campaign": {}, "components": {},
+            "reason_codes": ["EXEC_FEASIBILITY_REJECT"]}
+
+
+def evaluate_execution_feasibility(inp, cfg=None):
+    """输入 {short_quote, protection_quote, amount, credit_floor, max_tick_steps, fee_estimate, now_ms}
+    → ExecutionFeasibilityPackage（硬门 + 软分 + 等级）。缺关键报价/越价 → fail-closed(REJECT)。"""
+    c = dict(DEFAULT_CFG)
+    c.update(cfg or {})
+    sq, pq = inp.get("short_quote"), inp.get("protection_quote")
+    amount = inp.get("amount") or 0.0
+    fees = inp.get("fee_estimate") or 0.0
+    credit_floor = inp.get("credit_floor", 0.0)
+    max_steps = inp.get("max_tick_steps", 0)
+
+    # Q1/Q2：双腿报价完整 + 盘口合法（缺保护腿 ask 等 → 硬拒，EF-01/EF-07）
+    fail = []
+    warnings = []
+    if not _leg_quote_ok(sq):
+        fail.append("SHORT_QUOTE_INCOMPLETE")
+    if not _leg_quote_ok(pq):
+        fail.append("PROTECTION_QUOTE_INCOMPLETE")
+    if fail:
+        return _reject(fail)
+
+    # Q3：双腿 spread 不超绝对上限（保护腿同等评估）
+    ss = safe_spread_ratio(sq["best_bid"], sq["best_ask"])
+    ps = safe_spread_ratio(pq["best_bid"], pq["best_ask"])
+    worst = max(ss, ps)
+    if ss > c["max_short_spread"]:
+        fail.append("SHORT_SPREAD_TOO_WIDE")
+    protection_soft = _protection_spread_soft_ok(pq, ps, c)
+    if ps > c["max_protection_spread"] and not protection_soft:
+        fail.append("PROTECTION_SPREAD_TOO_WIDE")
+    elif ps > c["max_protection_spread"]:
+        warnings.append("PROTECTION_SPREAD_SOFT_LOW_PREMIUM")
+
+    # Q4/Q5：可成交 credit 为正且达底线；mark credit>0；保留率达标（EF-02）
+    mark_credit = mark_credit_after_fees(sq["mark"], pq["mark"], amount, fees)
+    exec_credit = executable_credit_after_fees(sq["best_bid"], pq["best_ask"], amount, fees)
+    if mark_credit <= 0:
+        fail.append("MARK_CREDIT_NON_POSITIVE")
+    if exec_credit <= 0:
+        fail.append("EXECUTABLE_CREDIT_NON_POSITIVE")
+    elif exec_credit < c["min_net_credit"]:
+        fail.append("EXECUTABLE_CREDIT_BELOW_FLOOR")
+    retention = credit_retention_ratio(exec_credit, mark_credit)
+    if retention is not None and retention < c["min_retention"]:
+        fail.append("CREDIT_RETENTION_TOO_LOW")
+
+    # Q6：追价后至少有最低可用空间
+    surv = credit_survival_profile(sq, pq, amount, credit_floor, max_steps, fees)
+    if surv["credit_survival_ticks"] < c["min_survival_ticks"]:
+        fail.append("CREDIT_SURVIVAL_INSUFFICIENT")
+
+    if fail:
+        return _reject(fail, warnings)
+
+    # 软分（depth 缺省 → None，权重在余下组件间重归一化，EF-08）
+    cr_score = component_score_linear(retention, c["retention_bad"], c["retention_good"])
+    sp_score = component_score_linear(worst, c["spread_bad"], c["spread_good"])
+    friction = entry_friction_estimate(sq["mark"], sq["best_bid"], pq["best_ask"], pq["mark"], amount, fees)
+    fr_ratio = friction_to_credit_ratio(friction, exec_credit)
+    fr_score = component_score_linear(fr_ratio, c["friction_bad"], c["friction_good"])
+    surv_score = surv["credit_survival_ratio"] * 100.0
+    comps = {"credit_retention": cr_score, "spread": sp_score,
+             "friction": fr_score, "credit_survival": surv_score, "depth": None}
+    w = c["weights"]
+    num = sum(w[k] * comps[k] for k in comps if comps[k] is not None and k in w)
+    den = sum(w[k] for k in comps if comps[k] is not None and k in w)
+    score = (num / den) if den > 0 else 0.0
+
+    reason_codes = ["DUAL_LEG_QUOTES_OK", "EXECUTABLE_CREDIT_POSITIVE",
+                    "CREDIT_SURVIVES_%d_TICKS" % (surv["credit_survival_ticks"] + 1)]
+    return {
+        "schema_name": SCHEMA_NAME, "schema_version": SCHEMA_VERSION, "status": "PASS",
+        "grade": _grade(score), "score": round(score, 2), "score_norm": round(score / 100.0, 4),
+        "hard_gate_passed": True, "hard_failures": [], "warnings": warnings,
+        "economics": {"mark_credit_after_fees": mark_credit,
+                      "executable_credit_after_fees": exec_credit,
+                      "credit_retention_ratio": retention,
+                      "entry_friction_estimate": friction,
+                      "friction_to_credit_ratio": fr_ratio},
+        "liquidity": {"short_spread_ratio": ss, "protection_spread_ratio": ps,
+                      "protection_abs_spread": _quote_abs_spread(pq),
+                      "protection_low_premium_soft": bool(ps > c["max_protection_spread"]
+                                                          and protection_soft),
+                      "worst_leg_spread_ratio": worst,
+                      "depth_coverage_ratio": None, "depth_state": "NOT_EVALUATED"},
+        "campaign": surv,
+        "components": {"credit_retention_score": cr_score, "spread_score": sp_score,
+                       "friction_score": fr_score, "credit_survival_score": surv_score,
+                       "depth_score": None},
+        "reason_codes": reason_codes,
+    }
+
+
+def feasibility_penalty(score_norm, floor=0.50):
+    """排序折损：penalty = floor + (1-floor)×score_norm（满分不折损；可行性 0 最多保留 floor）。"""
+    sn = _clamp01(score_norm if _is_num(score_norm) else 0.0)
+    return floor + (1.0 - floor) * sn
+
 # ===================== module: hedge_risk =====================
 # -*- coding: utf-8 -*-
 """
@@ -3244,7 +3503,7 @@ Post-entry hedge risk evaluator.
 
 The module is deliberately pure: it produces PositionRiskPackage and optional
 dry-run HedgeIntentPackage, but it never places orders or mutates the option
-ledger. It uses EDB as the aggregate signal input and keeps GGR as a boundary
+ledger. It uses EDB as the aggregate manual input and keeps GGR as a boundary
 and persistence modifier, not as a probability predictor.
 """
 import math
@@ -3440,7 +3699,7 @@ def _edb_adverse(direction_bias, edb):
         coverage = 1.0 if confidence >= 50 else 0.0
     if confidence < 50 or coverage < 0.50:
         return False
-    lean = str(edb.get("lean") or edb.get("side_hint") or "").upper()
+    lean = str(edb.get("lean") or edb.get("direction_bias") or "").upper()
     if _is_short_call(direction_bias):
         return lean in ("BULLISH", "UP", "LONG", "SHORT_PUT", "PUT_CREDIT_SPREAD")
     return lean in ("BEARISH", "DOWN", "SHORT", "SHORT_CALL", "CALL_CREDIT_SPREAD")
@@ -3459,7 +3718,7 @@ def _ggr_adverse(gamma_regime):
 
 
 def persistence_score(direction_bias, edb=None, gamma_regime=None):
-    """整合 Phase1：持续性两项制 {EDB_ADVERSE, GGR_ADVERSE}（删 KPF buffer）。
+    """持续性评分：{EDB_ADVERSE, GGR_ADVERSE}。
     重标定 0→LOW / 1→MEDIUM / 2→HIGH。EDB 为唯一方向证据入口、GGR 为负 Gamma 例外修正。"""
     confirmations = []
     if _edb_adverse(direction_bias, edb):
@@ -3547,7 +3806,7 @@ def _make_hedge_intent(position_id, direction_bias, probability_now, drift,
         "hedge_side": _hedge_side(direction_bias),
         "hedge_size_mode": mode,
         "target_delta_reduction_ratio": ratio,
-        "hedge_instrument": "BTC-PERPETUAL",          # v2 固定工具（删 UNBOUND/Binance 场所选择）
+        "hedge_instrument": "BTC-PERPETUAL",
         "hedge_venue": "DERIBIT",
         "execution_mode": EXECUTION_DRY_INTENT_ONLY,
         "reason_codes": ["DRY_INTENT_ONLY", "TAIL_RISK_HEDGE_READY"],
@@ -3598,6 +3857,10 @@ def evaluate_position_risk(position_id, direction_bias, entry_risk_anchor,
         short_gamma, entry_risk_anchor)
     persistence, confirmations = persistence_score(
         direction_bias, edb, gamma_regime)
+    if (persistence == PERSISTENCE_LOW and tail_acc == PERSISTENCE_HIGH
+            and (p_now >= 0.65 or drift >= 0.20)):
+        persistence = PERSISTENCE_MEDIUM
+        confirmations.append("LOCAL_TAIL_ACCELERATION")
     friction = exit_vs_hedge_friction(exit_friction)
     state = _state_from_inputs(
         p_now, drift, slope, persistence, friction, existing_hedge)
@@ -4255,7 +4518,7 @@ def build_replay_context_row(execution_result: Dict[str, Any]) -> Dict[str, Any]
         "schema_name": "ReplayContextRow",
         "schema_version": "nrd.integration.replay_context.v0.8",
         "session_id": session.get("session_id"),
-        "signal_package_id": session.get("signal_package_id"),
+        "manual_package_id": session.get("manual_package_id"),
         "plan_hash": locked_plan.get("plan_hash"),
         "side": plan.get("side", "UNKNOWN"),
         "expiry_hours": plan.get("expiry_hours"),
@@ -4299,58 +4562,15 @@ def replay_expectation_batch_from_execution_results(
         "bucket_report": bucket_report,
     }
 
-# ===================== module: hedge_watch =====================
-# -*- coding: utf-8 -*-
-"""HEDGE_WATCH 域（R5）：持仓后对冲监控集成缝。
-
-驻执行内：读账本 short 记录的 EntryRiskAnchor + 实时行情 + **SignalEvidencePackage 的
-edb/ggr**（整合契约形状），调真实 hedge_risk.evaluate_position_risk，产出 PositionRiskPackage
-（仅 HEDGE_READY 时带 DRY_INTENT_ONLY 的 HedgeIntentPackage）。
-
-边界：只在持仓后运行；不入场、不判方向、不自动改期权账本、第一版不真实下单。
-对冲只读 EntryRiskAnchor 的 VRP 血缘，不反向重做 VRP。
-"""
-
-
-def watch_position(position_id, direction_bias, short_record, current_market,
-                   signal_evidence=None, exit_friction=None, recent_history=None,
-                   now_ms=None, existing_hedge=False):
-    """short_record: 账本 short 记录（含 entry_risk_anchor）。
-    current_market: {price, dte_hours, short_delta, short_gamma, iv}。
-    signal_evidence: SignalEvidencePackage（取 direction_evidence.edb + pre_trade_context.ggr）。
-    返回 PositionRiskPackage（position_risk.v0.4，持续性两项制）。"""
-    anchor = (short_record or {}).get("entry_risk_anchor") or {}
-    se = signal_evidence or {}
-    edb = (se.get("direction_evidence") or {}).get("edb")
-    ggr = (se.get("pre_trade_context") or {}).get("ggr")
-    return evaluate_position_risk(
-        position_id=position_id,
-        direction_bias=direction_bias,
-        entry_risk_anchor=anchor,
-        current_price=current_market.get("price"),
-        dte_hours=current_market.get("dte_hours"),
-        short_delta=current_market.get("short_delta"),
-        short_gamma=current_market.get("short_gamma"),
-        iv=current_market.get("iv"),
-        loss_boundary=anchor.get("entry_loss_boundary"),
-        edb=edb,
-        gamma_regime=ggr,
-        exit_friction=exit_friction,
-        recent_history=recent_history,
-        now_ms=now_ms,
-        existing_hedge=existing_hedge,
-    )
-
 # ===================== module: strategy =====================
 # -*- coding: utf-8 -*-
 """
-主编排 main()（FMZ 入口）。两轮分离，运行后不经界面命令调整计划或仓位。
+主编排 main()（FMZ 入口）。Human Audit Gate 版本只接收本地人工审计参数。
 
-计划轮 ROUND_MODE="PLAN"：
-  枚举所有符合范围(剩余到期/delta/腿宽)的同期垂直备选 → 初筛 top-K → S:PM 模拟 →
-  按 胜率/盈亏比/信号 综合排序 → 输出方案库(含方案号+推荐标签)并持久化(_G)。绝不下单。
-下单轮 ROUND_MODE="ORDER"：
-  读取持久化方案库，按 SELECTED_PLAN 取方案号 → 重新取价+模拟复核 → 仅 ALLOW_TRADING=True 才真实开仓。
+run_cycle() 主链：
+  人工审计门有效 → 枚举同期垂直候选 → S:PM/执行可行性/VRP/预算过滤 →
+  生成短确认码 → 人工输入确认码后进入预提交与开仓活动。
+  持仓存在时直接进入持仓管理，不依赖外部信号层。
 
 约定：本项目内一律用「裸名 + 模块前缀」，合成单文件后位于同一命名空间，bundle 仅剥离项目内 import。
 """
@@ -4359,9 +4579,11 @@ import time
 
 
 _MENU_KEY = "spm_plan_menu_v1"
+_MANUAL_CONTEXT_KEY = "spm_manual_context_v1"
 _LAST = {"plan_ms": 0}
 # 选用方案明细锁定：启动时锁定一个方案的编号，之后不随方案库刷新而改变（重启复位）
 _LOCKED = {"detail_id": None}
+MANUAL_GATE_ISOLATION_TESTS_PASSED = True
 
 
 def _now_ms():
@@ -4390,38 +4612,80 @@ def _quote_cache():
 
     def fn(inst):
         if inst not in cache:
-            cache[inst] = exec_quote(inst)
+            q = exec_quote(inst)
+            if q is not None:
+                cache[inst] = q
+            return q
         return cache[inst]
     return fn
 
 
-def _first_in_width(prots):
-    lo, hi = PROTECTION_WIDTH_RANGE
+def _first_in_width(prots, width_range=None):
+    lo, hi = width_range or PROTECTION_WIDTH_RANGE
     for p in prots:
         if lo <= p.get("_width", 1e18) <= hi:
             return p
     return None
 
 
+def _execution_feasibility_cfg():
+    return {"max_short_spread": MAX_SPREAD_RATIO,
+            "max_protection_spread": MAX_SPREAD_RATIO,
+            "protection_low_premium_max": PROTECTION_LOW_PREMIUM_MAX,
+            "protection_abs_spread_max": PROTECTION_ABS_SPREAD_MAX,
+            "min_net_credit": ENTRY_MIN_NET_CREDIT}
+
+
+def _attach_execution_feasibility(plan, sq, pq):
+    ef = evaluate_execution_feasibility({
+        "short_quote": sq, "protection_quote": pq,
+        "amount": plan.get("amount") or ORDER_AMOUNT,
+        "fee_estimate": plan.get("entry_fee") or 0.0,
+        "credit_floor": ENTRY_MIN_NET_CREDIT,
+        "max_tick_steps": ENTRY_MAX_TICK_STEPS,
+    }, _execution_feasibility_cfg())
+    plan["execution_feasibility"] = ef
+    plan["execution_feasibility_grade"] = ef.get("grade")
+    plan["execution_feasibility_score"] = ef.get("score")
+    plan["execution_feasibility_score_norm"] = ef.get("score_norm")
+    plan["execution_feasibility_penalty"] = feasibility_penalty(ef.get("score_norm"))
+    plan["execution_feasibility_warnings"] = ef.get("warnings") or []
+    if not ef.get("hard_gate_passed"):
+        plan["qualified"] = False
+        plan["reject_reason"] = "执行可行性:" + ",".join(ef.get("hard_failures") or [])
+    return plan
+
+
 # ---------- 计划轮：方案库构建 ----------
 
-def _build_menu(now_ms, spot):
+def _build_menu(now_ms, spot, manual_context=None, _external_unused=None):
     """枚举同期垂直→初筛→top-K 跑 S:PM→排序。返回 (menu, pm_ok, model, reason, diag)。
     diag = 枚举漏斗计数，用于看清是哪个门控在生效（无候选时尤其有用）。"""
-    want_call = legsel_is_call_bias(DIRECTION_BIAS)
+    if isinstance(manual_context, str):
+        manual_context = {"direction_bias": manual_context}
+    manual_context = manual_context or {}
+    scope = manual_context.get("planning_scope") or {}
+    dte_min = scope.get("dte_hours_min", SHORT_DTE_HOURS[0])
+    dte_max = scope.get("dte_hours_max", SHORT_DTE_HOURS[1])
+    dmin = scope.get("short_delta_min", SHORT_DELTA_RANGE[0])
+    dmax = scope.get("short_delta_max", SHORT_DELTA_RANGE[1])
+    width_range = (scope.get("protection_width_min", PROTECTION_WIDTH_RANGE[0]),
+                   scope.get("protection_width_max", PROTECTION_WIDTH_RANGE[1]))
+    amount = scope.get("amount", ORDER_AMOUNT)
+    want_call = legsel_is_call_bias(manual_context.get("direction_bias") or DIRECTION_BIAS)
     delta_fn, quote_fn = _delta_lookup(), _quote_cache()
     diag = {"短腿扫描": 0, "delta区间外": 0, "无报价/无买盘": 0, "权利金过薄": 0,
-            "价差过宽": 0, "无合格保护腿(腿宽内)": 0, "生成候选": 0, "进入菜单": 0, "合格": 0}
+            "价差过宽": 0, "无合格保护腿(腿宽内)": 0, "执行不可行": 0,
+            "生成候选": 0, "进入菜单": 0, "合格": 0}
     instruments = dbt_get_instruments(SETTLEMENT_CURRENCY, "option")
     if not instruments:
         return [], False, None, "NO_INSTRUMENTS", diag
-    short_exps = legsel_expiries_in_band(instruments, SHORT_DTE_HOURS[0], SHORT_DTE_HOURS[1],
+    short_exps = legsel_expiries_in_band(instruments, dte_min, dte_max,
                                          now_ms, want_call)
     if not short_exps:
         return [], False, None, "NO_SHORT_EXPIRY_IN_BAND", diag
     pm_ok, model = spm_account_is_portfolio_margin(dbt_account_summary(SETTLEMENT_CURRENCY))
-    pref = plan_preferred_delta(SIGNAL_STATE, SIGNAL_CONFIDENCE, SHORT_DELTA_RANGE)
-    dmin, dmax = SHORT_DELTA_RANGE
+    pref = (dmin + dmax) / 2.0
 
     prelim = []
     for s_exp, s_insts in short_exps.items():
@@ -4445,7 +4709,7 @@ def _build_menu(now_ms, spot):
             # 同期垂直：保护腿取同到期、更价外、腿宽达标者；长腿是定额风险封顶，
             # 便宜的 OTM 长腿正是所需 → **不套用过度虚值过滤**
             vprot = _first_in_width(legsel_protection_candidates(
-                s_insts, short["strike"], want_call, PROTECTION_WIDTH_RANGE,
+                s_insts, short["strike"], want_call, width_range,
                 None, 0.0))
             if not vprot:
                 diag["无合格保护腿(腿宽内)"] += 1
@@ -4453,16 +4717,20 @@ def _build_menu(now_ms, spot):
             pq = quote_fn(vprot["instrument_name"])
             if not pq or pq.get("mark") is None:
                 continue
-            c = plan_assemble(ORDER_AMOUNT, spot, MIN_MARGIN_RELIEF_RATIO, pref,
+            c = plan_assemble(amount, spot, MIN_MARGIN_RELIEF_RATIO, pref,
                               want_call, short, sq, vprot, pq,
                               None, pm_ok, model, s_dte_h, s_dte_h)
+            _attach_execution_feasibility(c, sq, pq)
+            if (c.get("execution_feasibility") or {}).get("hard_gate_passed") is False:
+                diag["执行不可行"] += 1
+                continue
             c["_re"] = {"short": short, "sq": sq, "prot": vprot, "pq": pq,
                         "s_dte": s_dte_h, "p_dte": s_dte_h}
             prelim.append(c)
             diag["生成候选"] += 1
 
     if not prelim:
-        return [], pm_ok, model, "NO_CANDIDATE", diag
+        return [], pm_ok, model, ("NO_EXECUTION_FEASIBLE" if diag["执行不可行"] else "NO_CANDIDATE"), diag
     prelim.sort(key=lambda c: plan_prelim_score(c, PLAN_WEIGHTS), reverse=True)
     topk = prelim[:max(MENU_SIZE * 2, MENU_SIZE)]
 
@@ -4470,11 +4738,18 @@ def _build_menu(now_ms, spot):
     for c in topk:                                    # 仅对 top-K 跑 S:PM（控制 API 调用）
         re = c["_re"]
         spm = spm_simulate_structure(SETTLEMENT_CURRENCY, re["short"]["instrument_name"],
-                                     re["prot"]["instrument_name"], ORDER_AMOUNT)
-        final.append(plan_assemble(
-            ORDER_AMOUNT, spot, MIN_MARGIN_RELIEF_RATIO, pref,
+                                     re["prot"]["instrument_name"], amount)
+        plan = plan_assemble(
+            amount, spot, MIN_MARGIN_RELIEF_RATIO, pref,
             want_call, re["short"], re["sq"], re["prot"], re["pq"], spm, pm_ok, model,
-            re["s_dte"], re["p_dte"]))
+            re["s_dte"], re["p_dte"])
+        plan = _attach_execution_feasibility(plan, re["sq"], re["pq"])
+        if (plan.get("execution_feasibility") or {}).get("hard_gate_passed") is False:
+            diag["执行不可行"] += 1
+            continue
+        final.append(plan)
+    if not final:
+        return [], pm_ok, model, "NO_EXECUTION_FEASIBLE", diag
     menu = plan_rank(final, PLAN_WEIGHTS, MENU_SIZE)
     diag["进入菜单"] = len(menu)
     diag["合格"] = sum(1 for c in menu if c.get("qualified"))
@@ -4486,9 +4761,12 @@ def _build_menu(now_ms, spot):
 def _ctx_base(state, spot, reason=None):
     return {
         "version": STRATEGY_VERSION,
-        "currency": SETTLEMENT_CURRENCY, "signal_state": SIGNAL_STATE,
+        "currency": SETTLEMENT_CURRENCY,
         "direction_bias": DIRECTION_BIAS, "allow_trading": ALLOW_TRADING,
-        "round_mode": ROUND_MODE, "signal_confidence": SIGNAL_CONFIDENCE,
+        "manual_gate_state": ("PLANNING_ALLOWED" if MANUAL_PLANNING_ALLOWED
+                              else "WAIT_MANUAL_AUDIT_GATE"),
+        "manual_context_ttl_min": MANUAL_CONTEXT_TTL_MIN,
+        "round_mode": ROUND_MODE,
         "state": state,
         "max_chase_steps": MAX_CHASE_STEPS, "min_required_ratio": MIN_MARGIN_RELIEF_RATIO,
         "reason": reason, "spot": spot, "amount": ORDER_AMOUNT,
@@ -4523,6 +4801,10 @@ def _flat_plan_fields(p):
         protection_expiry_label=p.get("protection_expiry_label"),
         protection_dte_hours=p.get("protection_dte_hours"),
         breakeven=p.get("breakeven"), credit_on_margin=p.get("credit_on_margin"),
+        execution_feasibility_grade=p.get("execution_feasibility_grade"),
+        execution_feasibility_score=p.get("execution_feasibility_score"),
+        execution_feasibility_score_norm=p.get("execution_feasibility_score_norm"),
+        execution_feasibility_warnings=p.get("execution_feasibility_warnings"),
     )
 
 
@@ -4542,44 +4824,18 @@ def _emit(ctx, note=""):
 
 # ---------- 计划轮 ----------
 
-def _plan_round(spot):
-    now_ms = _now_ms()
-    if not spot:
-        return _ctx_base(S_NO_POSITION, spot, "NO_SPOT")
-    menu, pm_ok, model, reason, diag = _build_menu(now_ms, spot)
-    if reason != "OK" or not menu:
-        ctx = _ctx_base(S_NO_POSITION, spot, reason)
-        ctx["enum_diag"] = diag                       # 无候选时也展示漏斗，便于定位门控
-        return ctx
-    _G(_MENU_KEY, menu)                               # 持久化方案库供下单轮按【编号】取用
-    # 锁定「选用方案明细」：启动时取最推荐(SELECTED_PLAN 有效则用，否则综合分#1)，
-    # 之后不随方案库刷新而改变；仅当锁定项掉出方案库时才重新锁定。
-    ids = [c["id"] for c in menu]
-    if _LOCKED["detail_id"] not in ids:
-        _LOCKED["detail_id"] = SELECTED_PLAN if SELECTED_PLAN in ids else menu[0]["id"]
-    detail = next((c for c in menu if c["id"] == _LOCKED["detail_id"]), menu[0])
-    r = "PLAN_MENU_READY"
-    if SIGNAL_STATE not in ENTER_SIGNALS:
-        r = "PLAN_MENU_READY(注意:当前信号 %s 不放行进场)" % SIGNAL_STATE
-    ctx = _ctx_with_menu(S_PROTECTION_SELECTION, spot, r, menu, _LOCKED["detail_id"], detail)
-    ctx["enum_diag"] = diag
-    return ctx
-
-
-# ---------- 整合 PLAN 通顺缝（R6）：真实菜单 → VRP 双门 → 组合硬预算 ----------
-
 def integrated_plan_preview(spot, market_context=None, portfolio_state=None):
     """整合执行流的 PLAN 段（执行会话式）：真实 _build_menu → VRP 双门过滤(给 market_context 时)
     → 组合硬预算(给 portfolio_state 时) → 返回可锁定方案 + 各域裁决。
 
     main() 在拿到实时 IV/RV(market_context) 与组合状态后调用本函数；选中方案的会话锁定/授权
-    (ExecutionSession+ApprovalIntent，plan_hash+TTL) 与 FMZ 命令栏交互在上线 spike 接入。
+    plan_hash + TTL 与 FMZ 命令栏交互由人工审计门主链接管。
     边界：VRP/预算**只过滤**，不进 PLAN_WEIGHTS、不判方向、不解 ALLOW_TRADING。"""
     now_ms = _now_ms()
     menu, pm_ok, model, reason, diag = _build_menu(now_ms, spot)
     out = {"reason": reason, "menu": menu, "enum_diag": diag, "pm_ok": pm_ok,
            "vrp_passed": None, "vrp_blocked": None, "portfolio_budget": None,
-           "lockable": list(menu or [])}
+           "lockable": []}
     if reason != "OK" or not menu:
         out["lockable"] = []
         return out
@@ -4590,6 +4846,8 @@ def integrated_plan_preview(spot, market_context=None, portfolio_state=None):
         out["vrp_blocked"] = [{"id": p.get("id"), "reason_codes": g["reason_codes"]}
                               for p, g in blocked]
         out["lockable"] = list(out["vrp_passed"])
+    else:
+        out["not_lockable_reason"] = "VRP_CONTEXT_MISSING"
     # 组合硬预算（缺口2，入场前额外 AND 门；占位安全：超即 size=0 → 无可锁定）
     if portfolio_state:
         budget = evaluate_portfolio_budget(
@@ -4601,102 +4859,31 @@ def integrated_plan_preview(spot, market_context=None, portfolio_state=None):
     return out
 
 
+def _plan_vrp_context(verdict, direction_bias):
+    mc = dict((verdict or {}).get("market_context") or {})
+    if not mc:
+        return None
+    if not mc.get("side"):
+        mc["side"] = direction_bias
+    required = ("front_anchor_iv", "rv_24h", "rv_72h", "rv_7d",
+                "executable_short_iv")
+    return mc if all(mc.get(k) is not None for k in required) else None
+
+
+def _filter_menu_by_vrp(menu, verdict, direction_bias, diag=None):
+    mc = _plan_vrp_context(verdict, direction_bias)
+    if not (menu and mc):
+        return menu, 0
+    try:
+        passed, blocked = apply_vrp_gate(menu, mc)
+    except Exception:
+        return [], len(menu)
+    if diag is not None:
+        diag["VRP阻断"] = len(blocked)
+    return [p for p, _g in passed], len(blocked)
+
+
 # ---------- 下单轮 ----------
-
-def _run_order(led, spot):
-    menu = _G(_MENU_KEY) or []
-    if not menu:
-        return S_NO_POSITION, _ctx_base(S_NO_POSITION, spot, "NO_PLAN_MENU(请先运行计划轮)")
-    sel = next((c for c in menu if c.get("id") == SELECTED_PLAN), None)
-    if not sel:
-        return S_NO_POSITION, _ctx_with_menu(S_NO_POSITION, spot,
-                                             "PLAN_ID_NOT_IN_MENU:%s" % SELECTED_PLAN, menu, SELECTED_PLAN, None)
-
-    # 复核：重新取价 + 重新模拟 S:PM
-    want_call = legsel_is_call_bias(DIRECTION_BIAS)
-    pref = plan_preferred_delta(SIGNAL_STATE, SIGNAL_CONFIDENCE, SHORT_DELTA_RANGE)
-    short = {"instrument_name": sel["short_instrument"], "strike": sel["short_strike"],
-             "expiration_timestamp": sel.get("short_expiry"), "_delta": sel.get("short_delta")}
-    prot = {"instrument_name": sel["protection_instrument"], "strike": sel["protection_strike"],
-            "expiration_timestamp": sel.get("protection_expiry")}
-    sq, pq = exec_quote(short["instrument_name"]), exec_quote(prot["instrument_name"])
-    spm = spm_simulate_structure(SETTLEMENT_CURRENCY, short["instrument_name"],
-                                 prot["instrument_name"], ORDER_AMOUNT)
-    pm_ok, model = spm_account_is_portfolio_margin(dbt_account_summary(SETTLEMENT_CURRENCY))
-    rv = plan_assemble(ORDER_AMOUNT, spot, MIN_MARGIN_RELIEF_RATIO, pref,
-                       want_call, short, sq, prot, pq, spm, pm_ok, model,
-                       sel.get("short_dte_hours"), sel.get("protection_dte_hours"))
-    ctx = _ctx_with_menu(S_SPM_SIMULATION, spot, None, menu, SELECTED_PLAN, rv)
-    # 「将下达订单」意图（保护腿优先在前）
-    ctx["order_intent"] = [
-        dict(leg="保护腿", **exec_plan_prices("buy", prot["instrument_name"], ORDER_AMOUNT)),
-        dict(leg="卖方腿", **exec_plan_prices("sell", short["instrument_name"], ORDER_AMOUNT)),
-    ]
-
-    if not rv["qualified"]:
-        ctx["reason"] = "PLAN_NOT_QUALIFIED:" + (rv.get("reject_reason") or "")
-        return S_NO_POSITION, ctx
-
-    result = exec_open_structure(short["instrument_name"], prot["instrument_name"], ORDER_AMOUNT)
-    if result.get("dry"):
-        ctx["reason"] = "ORDER_PREVIEW_DRY"
-        return S_NO_POSITION, ctx
-
-    prot_fill = result.get("protection_fill") or {}
-    filled_prot = prot_fill.get("filled", 0.0)
-    if filled_prot <= 0:
-        ctx["reason"] = "PROTECTION_NOT_FILLED"
-        return S_NO_POSITION, ctx
-
-    inv = ledger_make_inventory(
-        prot["instrument_name"], "CALL" if want_call else "PUT", prot["strike"],
-        prot.get("expiration_timestamp"), filled_prot, prot_fill.get("avg_price", 0.0),
-        acct_option_fee_ccy(prot_fill.get("avg_price", 0.0), filled_prot),
-        rv.get("margin_relief_ratio"))
-    inv["mode"] = sel["mode"]
-    led["protection"] = inv
-
-    short_fill = result.get("short_fill") or {}
-    filled_short = short_fill.get("filled", 0.0)
-    if filled_short > 0:
-        ledger_allocate_short(led, filled_short)
-        entry_anchor = build_entry_risk_anchor(
-            DIRECTION_BIAS, spot, sel.get("short_dte_hours"),
-            rv.get("short_delta"), sq.get("gamma"), sq.get("mark_iv"),
-            rv.get("breakeven"), SIGNAL_STATE, "UNKNOWN")
-        led["short"] = {"instrument": short["instrument_name"], "strike": short["strike"],
-                        "amount": filled_short, "expiry": short.get("expiration_timestamp"),
-                        "avg_price": short_fill.get("avg_price"), "plan_id": SELECTED_PLAN,
-                        "entry_risk_anchor": entry_anchor}
-        ledger_save(led)
-        ctx["reason"] = "STRUCTURE_OPEN"
-        return S_SHORT_ACTIVE_PROTECTED, ctx
-
-    ledger_save(led)
-    ctx["reason"] = "PROTECTION_ACTIVE_NO_SHORT"
-    return S_PROTECTION_ACTIVE_NO_SHORT, ctx
-
-
-def _order_loop(spot):
-    led = ledger_load()
-    state = ledger_get_state()
-    if SIGNAL_STATE in EXIT_REVIEW_SIGNALS:                          # §9.2
-        ctx = _ctx_base(S_EXIT_OR_WAIT_REVIEW, spot, "EXIT_REVIEW_SIGNAL:" + SIGNAL_STATE)
-        ledger_set_state(S_EXIT_OR_WAIT_REVIEW)
-        _emit(ctx, "下单轮·退出/复核信号")
-    elif state == S_SHORT_ACTIVE_PROTECTED:                          # §4.2/§9.1
-        ctx = _ctx_base(state, spot, "SAME_DIRECTION_CONFIRMATION")
-        _emit(ctx, "下单轮·持仓中(同向不加仓)")
-    elif KILL_SWITCH or not ledger_can_enter(SIGNAL_STATE, ENTER_SIGNALS) \
-            or state not in (S_NO_POSITION, S_SIGNAL_READY):
-        ctx = _ctx_base(state, spot, "IDLE(kill=%s,signal=%s)" % (KILL_SWITCH, SIGNAL_STATE))
-        _emit(ctx, "下单轮·空闲")
-    else:
-        new_state, ctx = _run_order(led, spot)
-        if new_state != S_NO_POSITION:
-            ledger_set_state(new_state)
-        _emit(ctx, "下单轮" + (" [空跑预览]" if not ALLOW_TRADING else ""))
-
 
 # ========== E2：单一持续主链 run_cycle（取代 PLAN/ORDER 双脚本；main() 于 E2.3 切换）==========
 
@@ -4736,11 +4923,80 @@ def _gate_summary_now():
                         _effective_kill(), EMERGENCY_REDUCE_ONLY)
 
 
-def _signal_allows_entry(verdict):
-    if (verdict or {}).get("availability") == "OFFLINE_MANUAL":
-        return SIGNAL_STATE in ENTER_SIGNALS          # 离线手动：静态信号决定
-    return bool((verdict or {}).get("tradeable")) and not (verdict or {}).get("block_new_opens")
+def _manual_risk_policy():
+    return {
+        "max_loss_per_trade": PORTFOLIO_LIMITS.get("max_spread_loss_per_trade"),
+        "min_net_credit": ENTRY_MIN_NET_CREDIT,
+        "allow_hedge_open": bool(ALLOW_HEDGE_TRADING),
+        "allow_hedge_reduce": True,
+        "allow_auto_take_profit": bool(ALLOW_EXIT_TRADING),
+        "allow_auto_risk_exit": bool(ALLOW_EXIT_TRADING),
+    }
 
+
+def _manual_context_signature():
+    return manual_config_signature(
+        MANUAL_PLANNING_ALLOWED, DIRECTION_BIAS, SHORT_DTE_HOURS, SHORT_DELTA_RANGE,
+        PROTECTION_WIDTH_RANGE, ORDER_AMOUNT, MANUAL_AUDIT_CARD_ID,
+        MANUAL_AUDIT_NOTE, MANUAL_CONTEXT_TTL_MIN, _manual_risk_policy())
+
+
+def _manual_context_for_cycle(now_ms):
+    if not MANUAL_PLANNING_ALLOWED:
+        return None
+    sig = _manual_context_signature()
+    ctx = _G(_MANUAL_CONTEXT_KEY)
+    if not ctx or ctx.get("config_signature") != sig:
+        ctx = build_manual_context(
+            now_ms, MANUAL_PLANNING_ALLOWED, DIRECTION_BIAS, SHORT_DTE_HOURS,
+            SHORT_DELTA_RANGE, PROTECTION_WIDTH_RANGE, ORDER_AMOUNT,
+            MANUAL_AUDIT_CARD_ID, MANUAL_AUDIT_NOTE, MANUAL_CONTEXT_TTL_MIN,
+            _manual_risk_policy())
+        _G(_MANUAL_CONTEXT_KEY, ctx)
+    return ctx
+
+
+def _clear_plan_lineage():
+    _G(_LOCKED_KEY, None)
+    _G(_LIB_KEY, None)
+    _G(_LIB_BUILD_TS_KEY, 0)
+
+
+def _approval_expired(snapshot, now_ms):
+    ts = (snapshot or {}).get("locked_ts")
+    return (isinstance(ts, (int, float))
+            and isinstance(now_ms, (int, float))
+            and now_ms - ts >= APPROVAL_TTL_MS)
+
+
+def _lineage_invalidated(snapshot, manual_context, now_ms=None):
+    if not snapshot:
+        return None
+    if _approval_expired(snapshot, now_ms):
+        return "APPROVAL_EXPIRED"
+    if not manual_context:
+        return "MANUAL_CONTEXT_MISSING"
+    if snapshot.get("manual_context_id") != manual_context.get("context_id"):
+        return "MANUAL_CONTEXT_CHANGED"
+    if snapshot.get("manual_context_hash") != manual_context_hash(manual_context):
+        return "MANUAL_CONTEXT_CHANGED"
+    if snapshot.get("config_hash") and snapshot.get("config_hash") != manual_context.get("config_signature"):
+        return "MANUAL_CONFIG_CHANGED"
+    return None
+
+
+def _apply_manual_context_to_ctx(ctx, manual_context, manual_check):
+    ctx["manual_context"] = manual_context
+    ctx["manual_context_hash"] = manual_context_hash(manual_context) if manual_context else None
+    ctx["manual_gate_status"] = ("MANUAL_CONTEXT_VALID" if (manual_check or {}).get("valid")
+                                 else "MANUAL_CONTEXT_INVALID")
+    ctx["manual_gate_state"] = ("PLANNING_ALLOWED" if (manual_check or {}).get("valid")
+                                else ("WAIT_MANUAL_AUDIT_GATE" if not manual_context
+                                      else "MANUAL_CONTEXT_INVALID"))
+    ctx["manual_context_errors"] = (manual_check or {}).get("errors") or []
+    if manual_context:
+        ctx["direction_bias"] = manual_context.get("direction_bias")
+    return ctx
 
 def _has_position(state):
     return state in (S_SHORT_ACTIVE_PROTECTED, S_PROTECTION_ACTIVE_NO_SHORT,
@@ -4749,7 +5005,7 @@ def _has_position(state):
 
 def _handle_execute(code, now_ms):
     """硬授权：在当前推荐库按确认码定位冻结快照 → 锁定不可变副本。
-    预提交 13 项硬门与受控真实开仓由后续每轮 _attempt_commit 评估（见 E3.4）。"""
+    预提交硬门与受控真实开仓由后续每轮 _attempt_commit 评估（见 E3.4）。"""
     lib = _G(_LIB_KEY)
     snap = resolve_confirm_code(lib, code)
     if not snap:
@@ -4790,8 +5046,9 @@ def _handle_exit_authorize(code, now_ms, policy):
         return "no_position_to_authorize"
     kw = {}
     if policy == POLICY_RISK_EXIT:
-        # 风险退出：可越价限价(marketable)退出，成本硬封在 max_exit_spend(=RISK_EXIT_MAX_SPEND)
-        kw = {"max_exit_spend": RISK_EXIT_MAX_SPEND, "allowed_order_types": ["limit"]}
+        # 风险退出：RISK_EXIT_MAX_SPEND=0 时只用入场冻结预算，不额外放大止损额度。
+        max_spend = RISK_EXIT_MAX_SPEND if RISK_EXIT_MAX_SPEND > 0 else (snap or {}).get("max_total_exit_spend")
+        kw = {"max_exit_spend": max_spend, "allowed_order_types": ["limit"]}
     auth = authorize_from_code(code, pos_id, policy, now_ms, **kw)
     if not auth:
         return "auth_code_invalid"
@@ -4858,9 +5115,56 @@ def _no_unknown_orders(currency, instruments):
     return True
 
 
-def _build_precommit_live(locked, spot, verdict):
+def _quote_abs_spread(q):
+    bid, ask = (q or {}).get("best_bid"), (q or {}).get("best_ask")
+    if not isinstance(bid, (int, float)) or not isinstance(ask, (int, float)):
+        return None
+    if bid <= 0 or ask <= 0 or ask < bid:
+        return None
+    return ask - bid
+
+
+def _protection_spread_ok(q, ratio):
+    if ratio is not None and ratio <= MAX_SPREAD_RATIO:
+        return True
+    abs_spread = _quote_abs_spread(q)
+    ask = (q or {}).get("best_ask")
+    return (isinstance(abs_spread, (int, float))
+            and isinstance(ask, (int, float))
+            and ask <= PROTECTION_LOW_PREMIUM_MAX
+            and abs_spread <= PROTECTION_ABS_SPREAD_MAX + 1e-12)
+
+
+def _vrp_recheck_locked(locked, spot, amount, short_quote, protection_quote, manual_context):
+    mc = dict((manual_context or {}).get("market_context") or {})
+    if not mc:
+        return None, None
+    if not mc.get("side"):
+        mc["side"] = _side_to_direction_bias((locked or {}).get("side"))
+    plan = {
+        "spot": spot,
+        "short_strike": locked.get("short_strike"),
+        "protection_strike": locked.get("long_strike"),
+        "short_dte_hours": locked.get("short_dte_hours"),
+        "amount": amount,
+        "short_bid": (short_quote or {}).get("best_bid"),
+        "short_ask": (short_quote or {}).get("best_ask"),
+        "protection_bid": (protection_quote or {}).get("best_bid"),
+        "protection_ask": (protection_quote or {}).get("best_ask"),
+        "short_instrument": locked.get("short_instrument"),
+        "protection_instrument": locked.get("long_instrument"),
+        "short_delta": locked.get("short_delta"),
+    }
+    try:
+        gate = gate_plan(plan, mc)
+    except Exception as exc:
+        return None, {"error": str(exc)}
+    return bool(gate.get("pass")), gate
+
+
+def _build_precommit_live(locked, spot, manual_context, now_ms):
     """预取实时复核数据供 evaluate_precommit_checks。
-    VRP 需 market_context（总线模式）；OFFLINE 无 → vrp_pass=None（fail-closed：不真实成交，仅空跑预览）。"""
+    VRP 需执行侧 manual_context.market_context；缺失时 vrp_pass=None（fail-closed）。"""
     short_i = locked.get("short_instrument")
     long_i = locked.get("long_instrument")
     amount = locked.get("amount") or ORDER_AMOUNT
@@ -4868,13 +5172,21 @@ def _build_precommit_live(locked, spot, verdict):
     quotes_fresh = bool(sq and lq and sq.get("mark") is not None and lq.get("mark") is not None
                         and sq.get("best_bid") not in (None, 0) and lq.get("best_ask") not in (None, 0))
     ssr, lsr = exec_spread_ratio(sq), exec_spread_ratio(lq)
-    spread_ok = (ssr is not None and lsr is not None
-                 and ssr <= MAX_SPREAD_RATIO and lsr <= MAX_SPREAD_RATIO)
+    spread_ok = (ssr is not None and ssr <= MAX_SPREAD_RATIO
+                 and _protection_spread_ok(lq, lsr))
     net_credit = fee_reserve = None
     if quotes_fresh:
         fee_reserve = (acct_option_fee_ccy(sq["mark"], amount)
                        + acct_option_fee_ccy(lq["mark"], amount))
         net_credit = (sq["mark"] - lq["mark"]) * amount - fee_reserve
+    execution_feasibility_live = evaluate_execution_feasibility({
+        "short_quote": sq,
+        "protection_quote": lq,
+        "amount": amount,
+        "fee_estimate": fee_reserve or 0.0,
+        "credit_floor": ENTRY_MIN_NET_CREDIT,
+        "max_tick_steps": ENTRY_MAX_TICK_STEPS,
+    }, _execution_feasibility_cfg())
     spm = spm_simulate_structure(SETTLEMENT_CURRENCY, short_i, long_i, amount)
     relief = (spm or {}).get("relief_ratio")
     proposed = {
@@ -4888,12 +5200,15 @@ def _build_precommit_live(locked, spot, verdict):
     budget = evaluate_projected_budget(proposed, _current_portfolio(), PORTFOLIO_LIMITS)
     rec = ledger_reconcile(SETTLEMENT_CURRENCY)
     reconciled = (rec.get("actual") == rec.get("expected"))
-    sig_pkg = verdict.get("package_id") or ("manual:" + str(SIGNAL_STATE))
+    manual_check = validate_manual_context(manual_context, now_ms)
+    vrp_pass, vrp_gate = _vrp_recheck_locked(locked, spot, amount, sq, lq, manual_context)
     return {
-        "signal_fresh": verdict.get("availability") in ("OK", "OFFLINE_MANUAL"),
-        "sig_package_id": sig_pkg,
+        "manual_context_valid": manual_check.get("valid"),
+        "manual_context_hash": manual_context_hash(manual_context) if manual_context else None,
+        "approval_not_expired": not _approval_expired(locked, now_ms),
         "same_expiry": plan_expiry_label(short_i) == plan_expiry_label(long_i),
-        "vrp_pass": None,                        # OFFLINE 无 market_context（总线模式接入 VRP 双门）
+        "vrp_pass": vrp_pass,
+        "vrp_gate": vrp_gate,
         "spm_relief": relief, "min_relief": MIN_MARGIN_RELIEF_RATIO,
         "quotes_fresh": quotes_fresh,
         "net_credit_after_costs": net_credit,
@@ -4901,6 +5216,11 @@ def _build_precommit_live(locked, spot, verdict):
         "ledger_reconciled": reconciled,
         "no_unknown_orders": _no_unknown_orders(SETTLEMENT_CURRENCY, [short_i, long_i]),  # C3：真实活动订单查询
         "spread_ok": spread_ok,
+        "spread_detail": {"short_ratio": ssr, "protection_ratio": lsr,
+                          "protection_abs_spread": _quote_abs_spread(lq),
+                          "protection_low_premium_soft": bool(lsr is not None and lsr > MAX_SPREAD_RATIO
+                                                              and _protection_spread_ok(lq, lsr))},
+        "execution_feasibility_live": execution_feasibility_live,
         "_budget": budget,
     }
 
@@ -4929,15 +5249,53 @@ def _build_entry_risk_anchor(locked, spot, now_ms):
         _side_to_direction_bias((locked or {}).get("side")),
         spot, _dte_hours_to((locked or {}).get("short_expiry"), now_ms),
         sq.get("delta"), sq.get("gamma"), sq.get("mark_iv"),
-        (locked or {}).get("breakeven"), SIGNAL_STATE, "UNKNOWN")
+        (locked or {}).get("breakeven"), "MANUAL_GATE", "UNKNOWN")
 
 
-def _attempt_commit(locked, spot, verdict, now_ms):
-    """锁定方案 → 预提交 13 项 → **开仓活动(entry campaign)**：信用底线内 maker、保护腿先成交、
+def _build_protection_residual_snapshot(locked, prog, remaining_qty, now_ms):
+    """保护腿已成交、短腿未建成时的最小残值快照；复用持仓管理的保护腿回收分支。"""
+    locked = locked or {}
+    prog = prog or {}
+    filled = prog.get("prot_done") or remaining_qty or 0.0
+    avg_long = (prog.get("prot_cost") / filled) if filled > 0 else None
+    return {
+        "schema_name": "VerticalEntrySnapshot",
+        "position_id": "pos-residual-%s" % now_ms,
+        "session_id": locked.get("session_id"),
+        "manual_context_id": locked.get("manual_context_id"),
+        "manual_context_hash": locked.get("manual_context_hash"),
+        "audit_card_id": locked.get("audit_card_id"),
+        "operator_note": locked.get("operator_note"),
+        "direction_bias": locked.get("direction_bias"),
+        "approval_id": locked.get("approval_id"),
+        "strategy_code": locked.get("strategy_code"),
+        "quality_code": locked.get("quality_code"),
+        "plan_hash": locked.get("plan_hash"),
+        "side": locked.get("side"),
+        "short_instrument": locked.get("short_instrument"),
+        "long_instrument": locked.get("long_instrument"),
+        "short_fill_amount": 0.0, "short_fill_price": None,
+        "long_fill_amount": filled, "long_fill_price": avg_long,
+        "entry_fees": None, "entry_profit_ceiling_net": None,
+        "take_profit_target_ratio": 0.80, "target_profit_amount": None,
+        "max_total_exit_spend": None, "realized_exit_spend": 0.0,
+        "remaining_short_qty": 0.0,
+        "long_remaining_qty": max(0.0, remaining_qty or 0.0),
+        "short_expiry_ts": locked.get("short_expiry"),
+        "entry_risk_anchor": None,
+        "frozen_ts": now_ms,
+        "manual_lineage_only": True,
+        "immutable": True,
+        "residual_reason": "PROTECTION_ONLY_AFTER_ENTRY_ABANDON",
+    }
+
+
+def _attempt_commit(locked, spot, manual_context, now_ms):
+    """锁定方案 → 预提交硬门 → **开仓活动(entry campaign)**：信用底线内 maker、保护腿先成交、
     **跨轮持久重挂**（替代一次性追价）。预提交不过/门控关 → 仅空跑预览；两腿成交达标 → 冻结入场快照；
     超 ENTRY_MAX_ATTEMPTS 仍未成交 → 放弃(撤/回退保护腿残量、清锁回等待)。低成本 ∧ 提高成功率。"""
     lib = _G(_LIB_KEY)
-    live = _build_precommit_live(locked, spot, verdict)
+    live = _build_precommit_live(locked, spot, manual_context, now_ms)
     pre = evaluate_precommit_checks(locked, lib, live)
     amount = locked.get("amount") or ORDER_AMOUNT
     short_i, long_i = locked.get("short_instrument"), locked.get("long_instrument")
@@ -4987,8 +5345,16 @@ def _attempt_commit(locked, spot, verdict, now_ms):
         result.update({"committed": True, "entry_snapshot": snap, "reason": "STRUCTURE_OPEN"})
         return result
     if decision["state"] == ENTRY_ABANDONED:                     # 超额度未成交 → 撤/回退保护腿残量
+        residual_qty = prog["prot_done"]
         if gate["allowed"] and prog["prot_done"] > 0 and UNWIND_PROTECTION_ON_NO_SHORT:
-            exec_maker_only_fill("sell", long_i, prog["prot_done"], label="entry_unwind")
+            unwind = exec_maker_only_fill("sell", long_i, prog["prot_done"], label="entry_unwind")
+            residual_qty = max(0.0, prog["prot_done"] - (unwind.get("filled") or 0.0))
+        if gate["allowed"] and residual_qty > 1e-12:
+            snap = _build_protection_residual_snapshot(locked, prog, residual_qty, now_ms)
+            _G(_POSITION_KEY, snap)
+            ledger_set_state(S_SHORT_FLAT_LONG_RESIDUAL)
+            result["entry_snapshot"] = snap
+            result["residual_position"] = True
         _G(_LOCKED_KEY, None)
         result["reason"] = "ENTRY_ABANDONED:" + decision["reason"]
         return result
@@ -5047,13 +5413,14 @@ def startup_recovery_check(currency):
     return verdict
 
 
-def _evaluate_take_profit(snap):
+def _evaluate_take_profit(snap, quote_fn=None):
     """据入场快照 + 实时短腿盘口算止盈资格(参考捕获率) 与退出预算/价格上限。保护腿价值不入分母。"""
     if not snap:
         return {"ratio": None, "qualified": False, "remaining_short_qty": 0.0,
                 "remaining_budget": None, "price_cap": 0.0, "quote_ok": False}
     rem_qty = snap.get("remaining_short_qty") or 0.0
-    q = exec_quote(snap.get("short_instrument"))
+    quote = quote_fn or exec_quote
+    q = quote(snap.get("short_instrument"))
     quote_ok = bool(q and q.get("mark") is not None and q.get("best_bid") not in (None, 0)
                     and q.get("best_ask") is not None)
     ceiling = snap.get("entry_profit_ceiling_net")
@@ -5072,7 +5439,7 @@ def _evaluate_take_profit(snap):
             "remaining_budget": rem_budget, "price_cap": cap, "quote_ok": quote_ok}
 
 
-def _risk_exit_budget_cap(snap, auth):
+def _risk_exit_budget_cap(snap, auth, quote_fn=None):
     """风险退出预算/价格上限（F1）：用**风险退出授权**的 max_exit_spend(=RISK_EXIT_MAX_SPEND) 反推，
     **独立于止盈 20% 缓冲**；并判定能否越价吃单(best_ask ≤ cap)。
     无风险退出授权 / 无预算 / 无盘口 → (None, 0.0, False)（不可下单 → 仲裁回退对冲）。"""
@@ -5080,7 +5447,8 @@ def _risk_exit_budget_cap(snap, auth):
     rem_qty = (snap or {}).get("remaining_short_qty") or 0.0
     if not isinstance(max_spend, (int, float)) or max_spend <= 0 or rem_qty <= 0:
         return None, 0.0, False
-    q = exec_quote((snap or {}).get("short_instrument")) or {}
+    quote = quote_fn or exec_quote
+    q = quote((snap or {}).get("short_instrument")) or {}
     realized = (snap or {}).get("realized_exit_spend") or 0.0
     fee_reserve = acct_option_fee_ccy(q.get("mark") or 0.0, rem_qty)
     rem_budget = short_buyback_budget(max_spend, realized, fee_reserve)
@@ -5104,7 +5472,7 @@ def _apply_exit_fill(snap, step, now_ms):
     _G(_POSITION_KEY, snap)
 
 
-def _evaluate_hedge(snap):
+def _evaluate_hedge(snap, quote_fn=None):
     """对冲决策（场所感知）：按 HEDGE_VENUE 选 Deribit(反向) 或 Binance(线性) → perp 真实持仓 +
     目标(随剩余短腿敞口) + open/reduce 动作 + 孤儿。默认不真实下单。"""
     rem_qty = (snap or {}).get("remaining_short_qty") or 0.0
@@ -5112,8 +5480,9 @@ def _evaluate_hedge(snap):
     state = "SETTLED" if rem_qty <= 0 else "OPEN"
     # P1：对冲数量按**结构净 delta**(短腿−保护腿)，无保护腿/缺报价时退化为短腿 delta（保守）
     si, li = (snap or {}).get("short_instrument"), (snap or {}).get("long_instrument")
-    short_delta = (exec_quote(si) or {}).get("delta") if si else None
-    prot_delta = (exec_quote(li) or {}).get("delta") if li else None
+    quote = quote_fn or exec_quote
+    short_delta = (quote(si) or {}).get("delta") if si else None
+    prot_delta = (quote(li) or {}).get("delta") if li else None
     net_delta = structure_net_delta(short_delta, prot_delta)
     if vcfg["venue"] == "BINANCE":
         perp_qty = bnc_get_position_btc(vcfg["instrument"])
@@ -5129,6 +5498,8 @@ def _evaluate_hedge(snap):
         min_trade = meta.get("min_trade_amount") or HEDGE_MIN_TRADE_FALLBACK
     target = hedge_target_contracts(rem_qty, net_delta, HEDGE_REDUCTION_RATIO, _spot_price(),
                                     contract_size, min_trade, state, linear=vcfg["linear"])
+    if hedge_side((snap or {}).get("side")) == "sell":
+        target = -target
     action = hedge_order_action(perp_qty, target, min_trade)
     # P1：方向符号核对——反向时**禁新增**对冲敞口（仍允许 reduce/unwind 清理）
     consistent = hedge_direction_consistent((snap or {}).get("side"), net_delta)
@@ -5142,16 +5513,22 @@ def _evaluate_hedge(snap):
             "venue": vcfg["venue"], "instrument": vcfg["instrument"], "venue_cfg": vcfg}
 
 
-def _evaluate_position_risk_now(snap, now_ms, existing_hedge=False):
+def _exit_friction_from_short_quote(short_quote):
+    sr = exec_spread_ratio(short_quote)
+    return {"option_exit_friction": ("HIGH" if sr is None or sr > MAX_SPREAD_RATIO else "LOW"),
+            "future_hedge_friction": "LOW"}
+
+
+def _evaluate_position_risk_now(snap, now_ms, existing_hedge=False, quote_fn=None):
     """持仓后风险评估（接 hedge_risk.evaluate_position_risk）：入场风险锚 + 当前短腿行情 →
     PositionRiskPackage（触界概率/漂移/尾部加速/持续性 → tail_risk_state）。
     无快照 / 无入场锚 → None（不驱动主动退出/对冲，保守留给止盈资格 + 孤儿）。
-    注：OFFLINE 无总线 edb/ggr → persistence 恒 LOW，HEDGE_READY 暂不可达（仅 EXIT_PREFERRED）；
-    edb/ggr 接入(总线模式)后 HEDGE_READY 自然生效。"""
+    注：无执行侧风险上下文时 persistence 恒 LOW；有人工审计/执行风险上下文时进入持续性判定。"""
     anchor = (snap or {}).get("entry_risk_anchor")
     if not snap or not anchor:
         return None
-    sq = exec_quote(snap.get("short_instrument")) or {}
+    quote = quote_fn or exec_quote
+    sq = quote(snap.get("short_instrument")) or {}
     # F3：短腿盘口缺 delta 且缺 IV → 无法估触界概率 → 显式数据缺口（不静默判 NORMAL，面板红标）
     if sq.get("delta") is None and sq.get("mark_iv") is None:
         return {"tail_risk_state": None, "market_data_gap": True,
@@ -5165,7 +5542,30 @@ def _evaluate_position_risk_now(snap, now_ms, existing_hedge=False):
         entry_risk_anchor=anchor, current_price=_spot_price(),
         dte_hours=dte_h, short_delta=sq.get("delta"), short_gamma=sq.get("gamma"),
         iv=sq.get("mark_iv"), loss_boundary=anchor.get("entry_loss_boundary"),
+        edb=None,
+        gamma_regime=None,
+        exit_friction=_exit_friction_from_short_quote(sq),
         existing_hedge=existing_hedge)
+
+
+def _manage_in_flight_orders(snap, hedge):
+    instruments = set(i for i in (
+        (snap or {}).get("short_instrument"),
+        (snap or {}).get("long_instrument"),
+        (hedge or {}).get("instrument"),
+    ) if i)
+    if not instruments:
+        return {"count": 0, "orders": []}
+    try:
+        orders = dbt_get_open_orders(SETTLEMENT_CURRENCY) or []
+    except Exception:
+        return {"count": 0, "orders": []}
+    matched = []
+    for o in orders:
+        if o.get("instrument_name") in instruments:
+            matched.append({"instrument_name": o.get("instrument_name"),
+                            "label": o.get("label")})
+    return {"count": len(matched), "orders": matched[:5]}
 
 
 def manage_cycle(now_ms):
@@ -5185,16 +5585,18 @@ def manage_cycle(now_ms):
         opt_pos = []
     rec = position_reconcile(snap, opt_pos)        # P0①：快照 vs 交易所（surfaced；不阻断风险收口）
 
-    tp = _evaluate_take_profit(snap)
+    quote_fn = _quote_cache()
+    tp = _evaluate_take_profit(snap, quote_fn)
     rem_short = tp["remaining_short_qty"]
     long_rem = (snap or {}).get("long_remaining_qty")
     if long_rem is None:
         long_rem = (snap or {}).get("long_fill_amount") or 0.0
 
     # 风险严重度（接 hedge_risk）：先算对冲(取 perp 持仓判 existing_hedge) → 风险包 → 仲裁输入
-    hedge = _evaluate_hedge(snap)
+    hedge = _evaluate_hedge(snap, quote_fn)
+    in_flight = _manage_in_flight_orders(snap, hedge)
     existing_hedge = abs(hedge.get("perp_qty") or 0.0) > 1e-9
-    risk = _evaluate_position_risk_now(snap, now_ms, existing_hedge)
+    risk = _evaluate_position_risk_now(snap, now_ms, existing_hedge, quote_fn)
     risk_state = (risk or {}).get("tail_risk_state")
     exit_preferred = risk_state == STATE_EXIT_PREFERRED      # 风险严重且期权退出可接受
     hedge_ready = risk_state == STATE_HEDGE_READY            # 风险严重持续且对冲摩擦更优
@@ -5204,7 +5606,7 @@ def manage_cycle(now_ms):
     #     止盈退出沿用 80% 缓冲、被动 maker(patient，恒 within)。
     risk_exit = exit_preferred                               # 风险驱动退出（区别于止盈资格退出）
     if risk_exit:
-        exit_budget, exit_cap, exit_within = _risk_exit_budget_cap(snap, auth)
+        exit_budget, exit_cap, exit_within = _risk_exit_budget_cap(snap, auth, quote_fn)
     else:
         exit_budget, exit_cap, exit_within = tp["remaining_budget"], tp["price_cap"], True
     exit_trigger = bool(tp["qualified"] or exit_preferred)
@@ -5235,7 +5637,7 @@ def manage_cycle(now_ms):
     arb = unified_action_arbiter({
         "recovery_blocked": recovery.get("state") == "RECOVERY_BLOCKED",
         "orphan_hedge": (recovery.get("state") == "ORPHAN_HEDGE_EMERGENCY") or hedge["orphan"],
-        "in_flight_order": False,
+        "in_flight_order": in_flight["count"] > 0,
         "exit_preferred": exit_preferred, "hedge_ready": hedge_ready,   # 风险严重度→仲裁（接回 hedge_risk）
         "take_profit_ready": tp["qualified"],
         "exit_authorized": authorized,
@@ -5249,7 +5651,8 @@ def manage_cycle(now_ms):
     if executable in ("TAKE_PROFIT_READY", "EXIT_PREFERRED") and rem_short > 1e-12 and exit_executable:
         step = exec_exit_buyback_step(snap.get("short_instrument"), rem_short, exit_cap,
                                       allow_live=True, allow_taker=(executable == "EXIT_PREFERRED"),
-                                      label=("risk_exit" if executable == "EXIT_PREFERRED" else "exit_short"))
+                                      label=("risk_exit" if executable == "EXIT_PREFERRED" else "exit_short"),
+                                      quote=quote_fn(snap.get("short_instrument")))
         if not step.get("dry") and (step.get("filled") or 0) > 0:
             _apply_exit_fill(snap, step, now_ms)
             snap = _G(_POSITION_KEY)
@@ -5262,11 +5665,11 @@ def manage_cycle(now_ms):
     long_state = None
     if rem_short <= 1e-12 and long_rem > 1e-12:
         li = (snap or {}).get("long_instrument")
-        pb = (exec_quote(li) or {}).get("best_bid") if li else None
+        pb = (quote_fn(li) or {}).get("best_bid") if li else None
         prec = protection_recovery_decision(True, long_rem, pb)
         long_state = prec["state"]
         if prec["can_sell"] and exit_gate and li:
-            r = exec_protection_recovery_step(li, long_rem, allow_live=True)
+            r = exec_protection_recovery_step(li, long_rem, allow_live=True, quote=quote_fn(li))
             if (r.get("sold") or 0) > 0 and snap:
                 snap["long_remaining_qty"] = max(0.0, long_rem - r["sold"])
                 _G(_POSITION_KEY, snap)
@@ -5280,58 +5683,93 @@ def manage_cycle(now_ms):
             "auth": auth, "authorized": authorized, "tp_auth_code": tp_code,
             "risk_exit_auth_code": risk_code, "risk_exit": risk_exit, "exit_executable": exit_executable,
             "exit_campaign_state": (long_state or exit_state), "tp_ratio": tp["ratio"], "hedge": hedge,
-            "hedge_step": hedge_step, "risk_state": risk_state, "risk": risk}
+            "hedge_step": hedge_step, "risk_state": risk_state, "risk": risk,
+            "manage_in_flight_order": in_flight}
 
 
 def run_cycle(now_ms=None):
-    """单一持续主链一轮：命令轮询 → 信号接收 → 门控 → 维护推荐库/锁定 → 渲染控制台。
-    无持仓且信号放行时维护垂直推荐库 + 短确认码；`执行:码` 经 resolve 锁定 + 预提交。
-    返回 ctx（含控制台字段），便于单测。真实开仓/管理/退出/对冲在 E3+ 接入。"""
+    """Single manual-gate cycle: command, existing risk management, manual plan display, approval lock."""
     now_ms = now_ms or _now_ms()
     sid = _session_id()
     meta = {"robot_id": ROBOT_ID, "session_id": sid, "refresh_seq": _refresh_seq()}
     disp = _dispatch_command(GetCommand(), meta, now_ms)
 
-    verdict = receive_signal(now_ms, SIGNAL_SOURCE, SIGNAL_FILE_PATH, SIGNAL_G_KEY,
-                             SIGNAL_SCHEMA_VERSION_PREFIX)
+    manual_context = _manual_context_for_cycle(now_ms)
+    manual_check = validate_manual_context(manual_context, now_ms) if manual_context else {
+        "valid": False,
+        "errors": ["MANUAL_PLANNING_DISABLED"],
+    }
     gsum = _gate_summary_now()
     kill = _effective_kill()
     state = ledger_get_state()
     has_pos = _has_position(state)
     locked = _G(_LOCKED_KEY)
     spot = _spot_price()
+    lineage_invalidation = _lineage_invalidated(locked, manual_context, now_ms)
+    if lineage_invalidation:
+        _clear_plan_lineage()
+        locked = None
 
     pending = []
+    display_candidates = []
+    not_lockable_reason = None
+    plan_vrp_blocked = 0
     commit_result = None
     manage_result = None
     recovery = _recovery_verdict()
     rec_ok = recovery.get("allow_new_open", True)
+
     if recovery.get("state") == "RECOVERY_BLOCKED":
         phase = "RECOVERY_BLOCKED"
     elif has_pos:
-        manage_result = manage_cycle(now_ms)        # 持仓管理：急停下仍运行（停新风险不停管理）
+        manage_result = manage_cycle(now_ms)
         phase = "POSITION_MANAGE"
     elif kill:
         phase = "KILLED"
     elif locked:
-        commit_result = _attempt_commit(locked, spot, verdict, now_ms)
-        phase = "POSITION_MANAGE" if commit_result["committed"] else "PLAN_LOCKED"
-    elif (not _signal_allows_entry(verdict)) or (not rec_ok):
-        phase = ("OFFLINE_MANUAL" if verdict.get("availability") == "OFFLINE_MANUAL"
-                 else "WAIT_SIGNAL")
+        commit_result = _attempt_commit(locked, spot, manual_context, now_ms)
+        phase = ("POSITION_MANAGE" if (commit_result["committed"]
+                 or commit_result.get("residual_position")) else "PLAN_LOCKED")
+    elif not MANUAL_PLANNING_ALLOWED:
+        phase = "WAIT_MANUAL_AUDIT_GATE"
+    elif not manual_check.get("valid"):
+        phase = "MANUAL_CONTEXT_INVALID"
+    elif not rec_ok:
+        phase = "RECOVERY_BLOCKED"
     else:
-        phase = "RECOMMEND_READY"
+        phase = "PLAN_MENU_READY"
         lib = _G(_LIB_KEY)
+        if _lineage_invalidated(lib, manual_context, now_ms):
+            _clear_plan_lineage()
+            lib = None
         last_build = int(_G(_LIB_BUILD_TS_KEY) or 0)
-        # 节流：每 PLAN_REFRESH_SECONDS 才重建一次推荐库（省 API + 稳定 refresh_seq/确认码）
         if spot and (not lib or now_ms - last_build >= PLAN_REFRESH_SECONDS * 1000):
-            menu, pm_ok, model, reason, diag = _build_menu(now_ms, spot)
-            if reason == "OK" and menu:
+            menu, _pm_ok, _model, reason, diag = _build_menu(now_ms, spot, manual_context)
+            display_candidates = list(menu or [])
+            market_context = (manual_context or {}).get("market_context")
+            lockable = []
+            if reason == "OK" and menu and market_context:
+                try:
+                    passed, blocked = apply_vrp_gate(menu, market_context)
+                    lockable = [p for p, _g in passed]
+                    plan_vrp_blocked = len(blocked)
+                except Exception:
+                    plan_vrp_blocked = len(menu)
+                    reason = "NO_VRP_PASS_CANDIDATE"
+            elif reason == "OK" and menu:
+                not_lockable_reason = "VRP_CONTEXT_MISSING"
+            if reason == "OK" and lockable:
                 rseq = _bump_refresh_seq()
-                sig_pkg = verdict.get("package_id") or ("manual:" + str(SIGNAL_STATE))
-                lib = build_recommendation_library(menu, sid, sig_pkg, rseq, now_ms)
+                lib = build_recommendation_library(
+                    lockable, sid, manual_context, rseq, now_ms,
+                    config_hash=manual_context.get("config_signature"))
                 _G(_LIB_KEY, lib)
                 _G(_LIB_BUILD_TS_KEY, now_ms)
+            else:
+                _clear_plan_lineage()
+                lib = None
+                if reason != "OK" and not not_lockable_reason:
+                    not_lockable_reason = reason
         if lib and lib.get("recommendations"):
             pending = [{"id": s["plan_id"], "summary": s["summary"],
                         "confirm_code": s["confirm_code"]}
@@ -5339,10 +5777,17 @@ def run_cycle(now_ms=None):
             phase = "HARD_APPROVAL_WAIT"
 
     ctx = _ctx_base(state, spot, "RUN_CYCLE:" + phase)
+    _apply_manual_context_to_ctx(ctx, manual_context, manual_check)
     ctx["console_phase"] = phase
+    if phase == "WAIT_MANUAL_AUDIT_GATE":
+        ctx["manual_gate_status"] = "WAIT_MANUAL_AUDIT_GATE"
     ctx["gate_summary"] = gsum
-    ctx["signal_verdict"] = verdict
+    ctx["lineage_invalidation"] = lineage_invalidation
     ctx["pending_candidates"] = pending
+    ctx["display_candidates_count"] = len(display_candidates)
+    ctx["lockable_candidates_count"] = len(pending)
+    ctx["not_lockable_reason"] = not_lockable_reason
+    ctx["plan_vrp_blocked"] = plan_vrp_blocked
     ctx["kill_new_risk"] = kill
     ctx["last_command"] = disp.get("action")
     ctx["last_command_outcome"] = disp.get("outcome")
@@ -5360,32 +5805,23 @@ def run_cycle(now_ms=None):
         ctx["entry_snapshot"] = manage_result.get("entry_snapshot")
         ctx["reconciled"] = (manage_result.get("reconcile") or {}).get("reconciled")
         ctx["risk_state"] = manage_result.get("risk_state")
-        ctx["risk_pkg"] = manage_result.get("risk")                       # F2：风险包→控制台「风险」行
+        ctx["risk_pkg"] = manage_result.get("risk")
+        ctx["manage_in_flight_order"] = manage_result.get("manage_in_flight_order")
         ctx["risk_exit_auth_code"] = manage_result.get("risk_exit_auth_code")
-        if manage_result.get("authorized"):
-            ctx["exit_auth_state"] = "已授权(AUTHORIZED)"
-        elif manage_result.get("risk_state") == STATE_EXIT_PREFERRED:     # F2：风险严重→显示风险退出码
-            ctx["exit_auth_state"] = "未授权 ｜ 风险退出码 %s（风险严重，建议风险退出授权）｜ 止盈码 %s" % (
-                manage_result.get("risk_exit_auth_code") or "—", manage_result.get("tp_auth_code") or "—")
-        else:
-            ctx["exit_auth_state"] = "未授权 ｜ 授权止盈码 %s" % (manage_result.get("tp_auth_code") or "—")
         ctx["exit_campaign_state"] = manage_result.get("exit_campaign_state")
         _r = manage_result.get("tp_ratio")
-        ctx["take_profit_ratio"] = ("%.1f%%" % (_r * 100)) if isinstance(_r, (int, float)) else "数据缺口"
+        ctx["take_profit_ratio"] = ("%.1f%%" % (_r * 100)) if isinstance(_r, (int, float)) else "DATA_GAP"
         _h = manage_result.get("hedge")
         if _h:
-            _hs = manage_result.get("hedge_step")
-            ctx["hedge_state"] = "[%s] %s 目标%.4g 当前%.4g %s%s%s" % (
-                _h.get("venue") or "—", _h.get("side") or "—", _h.get("target") or 0.0,
-                _h.get("perp_qty") or 0.0, _h["action"]["action"], "·孤儿" if _h.get("orphan") else "",
-                ("·已落单 %s" % _hs.get("reason")) if (_hs and not _hs.get("dry")) else "")
+            ctx["hedge_state"] = "%s target=%.4g current=%.4g action=%s" % (
+                _h.get("side") or "-", _h.get("target") or 0.0,
+                _h.get("perp_qty") or 0.0, _h["action"]["action"])
     if recovery.get("state") != "OK":
         ctx["recovery_state"] = recovery.get("state")
     if locked and not (commit_result and commit_result.get("committed")):
         ctx["locked_plan_summary"] = "%s %s" % (locked.get("confirm_code"), locked.get("summary"))
-    _emit(ctx, "主链")
+    _emit(ctx, "manual-gate")
     return ctx
-
 
 def main():
     errs = validate_config()
@@ -5394,8 +5830,8 @@ def main():
         LogStatus("配置错误：" + "; ".join(errs))
         return
 
-    Log("[boot] S:PM 垂直价差执行链 v%s 启动（单一主链 run_cycle）" % STRATEGY_VERSION,
-        "ALLOW_ENTRY=%s" % ALLOW_ENTRY_TRADING, "信号源=%s" % SIGNAL_SOURCE,
+    Log("[boot] S:PM manual-gate execution v%s" % STRATEGY_VERSION,
+        "ALLOW_ENTRY=%s" % ALLOW_ENTRY_TRADING,
         "currency=%s" % SETTLEMENT_CURRENCY)
     startup_recovery_check(SETTLEMENT_CURRENCY)        # 启动恢复：可解释映射 → OK/RECOVERY_BLOCKED/ORPHAN
 
