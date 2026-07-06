@@ -149,8 +149,9 @@ CONFIG = {
     # Render/observability only; nrd schema_version stays v1.0.0.
     # v1.5.1 (2026-06-25): MACRO dual-axis minimum enhancement. Stable macro
     # headwind remains directional context; only confirmed macro shock gates.
+    # v1.5.3 (2026-07-06): NeutralRepair minimal timing gate fix.
     # v1.5.2 (2026-07-05): Signal Durability Layer producer fields.
-    "demo_version": "1.5.2",
+    "demo_version": "1.5.3",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -398,15 +399,19 @@ CONFIG = {
     "nr_mdie_cooldown_abs": 0.42,
     "nr_mdie_event_on_abs": 0.65,
     "nr_mdie_event_off_abs": 0.42,
+    "nr_mdie_cooldown_blocks_repair": False,
     "nr_episode_merge_gap_min": 45,
     "nr_opposite_confirm_ticks": 2,
     "nr_anchor_repair_score": 60.0,
+    "nr_anchor_subrepair_counts_as_handoff": True,
+    "nr_require_below_repair_for_timing_signal": True,
     "nr_anchor_damage_score": 60.0,
     "nr_anchor_damage_floor_score": 55.0,
     "nr_anchor_damage_floor_confirm_ticks": 2,
     "nr_anchor_damage_nd_abs": 1.0,
     "nr_anchor_damage_drop_score": 10.0,
     "nr_anchor_repair_nd_abs": 0.75,
+    "nr_nd_blocks_repair_confirmation": False,
     "nr_repair_confirm_ticks": 2,
     "nr_repair_context_ttl_min": 360,
     "nr_repair_signal_ttl_min": 60,
@@ -2485,7 +2490,6 @@ class NeutralRepairSignalTracker:
                     int(self.context.get("opposite_event_count") or 0) + 1)
                 required = int(cfg.get("nr_opposite_confirm_ticks", 2))
                 if self.context["opposite_event_count"] < required:
-                    self._mark_anchor_damage(anchor)
                     return self._output(
                         "NR_OPPOSITE_EVENT_CONFLICT",
                         active_ts_ms,
@@ -2530,11 +2534,17 @@ class NeutralRepairSignalTracker:
 
         self._mark_anchor_damage(anchor)
         require_damage = bool(cfg.get("nr_require_anchor_damage", True))
-        if require_damage and not self.context.get("anchor_damage_observed"):
+        anchor_damage_ok = bool(self.context.get("anchor_damage_observed"))
+        if (require_damage and bool(cfg.get(
+                "nr_require_below_repair_for_timing_signal", True))):
+            anchor_damage_ok = self._has_anchor_below_repair_handoff()
+        if require_damage and not anchor_damage_ok:
             self.context["repair_confirm_count"] = 0
             return self._output("NR_WAIT_ANCHOR_DAMAGE", active_ts_ms,
                                 m_die, anchor)
-        if m_abs > cooldown:
+        cooldown_blocks = bool(cfg.get("nr_mdie_cooldown_blocks_repair",
+                                       False))
+        if cooldown_blocks and m_abs > cooldown:
             return self._output("NR_DISPLACEMENT_ACTIVE", active_ts_ms,
                                 m_die, anchor)
 
@@ -2544,7 +2554,8 @@ class NeutralRepairSignalTracker:
             return self._output("NR_WAIT_ANCHOR_REPAIR", active_ts_ms,
                                 m_die, anchor)
         repair_nd_abs = safe_float(cfg.get("nr_anchor_repair_nd_abs"))
-        if (repair_nd_abs is not None and nd is not None
+        if (bool(cfg.get("nr_nd_blocks_repair_confirmation", False))
+                and repair_nd_abs is not None and nd is not None
                 and abs(nd) > repair_nd_abs):
             self.context["repair_confirm_count"] = 0
             return self._output("NR_WAIT_ANCHOR_REPAIR", active_ts_ms,
@@ -2612,7 +2623,7 @@ class NeutralRepairSignalTracker:
             return False
         if self.context is None or not previous_context:
             return False
-        if not previous_context.get("anchor_damage_observed"):
+        if not self._has_anchor_below_repair_handoff(previous_context):
             return False
         old_direction = previous_context.get("event_direction")
         new_direction = self.context.get("event_direction")
@@ -2695,6 +2706,12 @@ class NeutralRepairSignalTracker:
             self.context["min_anchor_score_after_event"] = (
                 anchor_score if current_min is None
                 else min(current_min, anchor_score))
+            repair_score = float(self.config.get(
+                "nr_anchor_repair_score", 60.0))
+            if (self.config.get("nr_anchor_subrepair_counts_as_handoff",
+                                True)
+                    and anchor_score < repair_score):
+                evidence.append("ANCHOR_SUBREPAIR_OBSERVED_BELOW_60")
             floor_score = float(self.config.get(
                 "nr_anchor_damage_floor_score",
                 self.config.get("nr_anchor_damage_score", 60.0)))
@@ -2738,6 +2755,19 @@ class NeutralRepairSignalTracker:
             return True
         return False
 
+    def _has_anchor_below_repair_handoff(self, context=None):
+        ctx = self.context if context is None else context
+        if ctx is None:
+            return False
+        evidence = set(ctx.get("anchor_damage_evidence") or [])
+        below_repair_codes = {
+            "ANCHOR_SUBREPAIR_OBSERVED_BELOW_60",
+            "ANCHOR_DAMAGE_OBSERVED_BELOW_60",
+            "ANCHOR_DAMAGE_OBSERVED_BELOW_BUFFER",
+            "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR",
+        }
+        return bool(evidence.intersection(below_repair_codes))
+
     def _is_opposite_event(self, context, m_val):
         if not self.config.get("nr_reset_on_opposite_event", True):
             return False
@@ -2780,6 +2810,11 @@ class NeutralRepairSignalTracker:
         cooldown = float(self.config.get(
             "nr_mdie_event_off_abs",
             self.config.get("nr_mdie_cooldown_abs", 0.42)))
+        anchor_damage_gate_ok = bool(
+            anchor_context.get("anchor_damage_observed"))
+        if (require_damage and bool(self.config.get(
+                "nr_require_below_repair_for_timing_signal", True))):
+            anchor_damage_gate_ok = self._has_anchor_below_repair_handoff()
         gating = {
             "m_die_event_ok": abs(safe_float((m_die or {}).get("m_die"))
                                   or 0.0) >= event_threshold,
@@ -2787,10 +2822,10 @@ class NeutralRepairSignalTracker:
                                      or 0.0) <= cooldown,
             "anchor_damage_ok": (
                 not require_damage
-                or bool(anchor_context.get("anchor_damage_observed"))),
+                or anchor_damage_gate_ok),
             "anchor_damage_floor_ok": (
                 not require_damage
-                or bool(anchor_context.get("anchor_damage_observed"))
+                or anchor_damage_gate_ok
                 or int(anchor_context.get("anchor_damage_floor_confirm_count")
                        or 0) >= floor_required),
             "anchor_repair_ok": (
