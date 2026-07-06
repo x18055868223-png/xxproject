@@ -2109,43 +2109,177 @@
     return durabilityScoreLine(score);
   }
 
-  function durabilityLayerVerdict(key, layer, anchor) {
+  function durabilityUsdText(value) {
+    const numeric = safeNumber(value);
+    if (numeric === null) return "未提供";
+    const sign = numeric < 0 ? "-" : "";
+    const absValue = Math.abs(numeric);
+    const fixedOne = (scaled) => new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1
+    }).format(scaled);
+    if (absValue >= 1_000_000_000) return `${sign}${fixedOne(absValue / 1_000_000_000)}B USD`;
+    if (absValue >= 1_000_000) return `${sign}${fixedOne(absValue / 1_000_000)}M USD`;
+    if (absValue >= 1_000) return `${sign}${fixedOne(absValue / 1_000)}K USD`;
+    return `${sign}${number(absValue, 0)} USD`;
+  }
+
+  function durabilityFirstNonZeroNumber(values) {
+    for (const value of values) {
+      const numeric = safeNumber(value);
+      if (numeric !== null && numeric !== 0) return numeric;
+    }
+    return null;
+  }
+
+  function durabilityGammaNotional(doc, layer) {
     const view = asObject(layer);
-    if (!Object.keys(view).length) return "旧卡未提供此层结论。";
+    const nativeValue = safeNumber(firstPresent(
+      view.net_gamma_notional_usd,
+      view.net_gamma_notional,
+      view.net_gex_usd,
+      view.total_net_gex
+    ));
+    const fallbackValue = durabilityFirstNonZeroNumber([
+      get(doc, "factor_cross_section.gex_info.net_gamma_notional_usd"),
+      get(doc, "factor_cross_section.gex_info.net_gamma_notional"),
+      get(doc, "factor_cross_section.gex_info.total_net_gex"),
+      get(doc, "factor_cross_section.gamma_regime.net_gamma_notional_usd"),
+      get(doc, "factor_cross_section.gamma_regime.net_gamma_notional"),
+      get(doc, "factor_cross_section.gamma_regime.total_net_gex")
+    ]);
+    if ((nativeValue === null || nativeValue === 0) && fallbackValue !== null) return fallbackValue;
+    return nativeValue === 0 ? null : nativeValue;
+  }
+
+  function durabilityGammaPolarity(_doc, _layer, netGamma) {
+    if (netGamma !== null && netGamma > 0) return "positive";
+    if (netGamma !== null && netGamma < 0) return "negative";
+    return "neutral";
+  }
+
+  function durabilityFundingRate(doc, layer) {
+    const view = asObject(layer);
+    return firstNumberFrom([
+      view,
+      get(doc, "factor_cross_section.funding", {}),
+      get(doc, "factor_cross_section.tmvf.tmvf_48h.funding", {})
+    ], ["funding_rate", "last_rate", "last_funding_rate", "rate"]);
+  }
+
+  function durabilityBandDistance(doc, layer, anchor) {
+    return firstNumberFrom([
+      layer,
+      anchor,
+      get(doc, "factor_cross_section.anchor", {})
+    ], [
+      "distance_ratio",
+      "band_distance_ratio",
+      "normalized_deviation",
+      "anchor_normalized_deviation",
+      "distance_to_anchor_band_half"
+    ]);
+  }
+
+  function durabilityLayerNarrative(key, layer, anchor, doc) {
+    const view = asObject(layer);
+    if (!Object.keys(view).length) {
+      return {
+        conclusion: "旧卡未提供",
+        validation: "本卡没有此子层的可验算输入。",
+        basis: "只保留缺口提示，不回填或发明评分。"
+      };
+    }
     const state = durabilityReadable(firstPresent(view.interpretation, view.state), "待判");
-    const distance = safeNumber(firstPresent(view.distance_ratio, asObject(anchor).distance_ratio));
     if (key === "anchor_native") {
+      const score = durabilityLayerScore(view);
+      const distance = durabilityBandDistance(doc, view, anchor);
+      const distanceAbs = distance === null ? null : Math.abs(distance);
+      const outsideBand = view.outside_anchor_band === true
+        || (view.inside_anchor_band !== true && distanceAbs !== null && distanceAbs > 1);
       const distanceText = distance === null
-        ? "偏离度未提供"
-        : `偏离锚带半宽 ${number(Math.abs(distance), 2)} 倍`;
-      return `${state}；当前系统已有锚分直接进入本层，${distanceText}。`;
+        ? "本卡未提供可直接换算的锚带偏离度"
+        : (outsideBand
+          ? `现价已离开锚带，偏离约 ${number(distanceAbs, 2)} 个锚带半宽`
+          : `现价仍在锚带内，偏离约 ${number(distanceAbs, 2)} 个锚带半宽`);
+      const boundaryText = outsideBand ? "需要按破锚/弱锚边界解释。" : "未触发破锚边界。";
+      return {
+        conclusion: outsideBand && state === "锚耐用" ? "离锚风险" : state,
+        validation: `系统锚分 ${score}；${distanceText}，${boundaryText}`,
+        basis: "锚原生层是价格锚主干分，Gamma、Funding 只作为稳定性解释，不替代锚分。"
+      };
     }
     if (key === "price_efficiency") {
       const ppe = safeNumber(view.ppe);
-      const source = view.method === "PROXY_OHLC" || view.ppe_source === "OHLC_PROXY"
+      const efficiency = ppe === null
+        ? "路径效率未提供"
+        : (ppe >= 0.75 ? "路径效率较高" : (ppe >= 0.45 ? "路径效率中等" : "路径效率偏低"));
+      const source = rawEnum(firstPresent(view.method, view.ppe_source)).includes("OHLC")
         ? "OHLC 近似路径"
-        : (view.method === "EXACT_PRICE_POINTS" ? "逐点价格路径" : "路径来源未提供");
+        : (rawEnum(view.method).includes("EXACT") ? "逐点价格路径" : "价格路径");
       const band = view.inside_anchor_band === true
-        ? "仍在锚带内"
+        ? "仍留在锚带内"
         : (view.outside_anchor_band === true ? "已离开锚带" : "锚带位置未定");
-      const ppeText = ppe === null ? "PPE 未提供" : `PPE ${number(ppe, 2)}`;
-      return `${state}；${ppeText}，${source}，${band}。`;
+      const conclusion = view.outside_anchor_band === true && ppe !== null && ppe >= 0.75
+        ? "高效离锚风险"
+        : state;
+      return {
+        conclusion,
+        validation: `${source}显示本段${efficiency}，${band}；价格移动更直接，但没有单独推翻锚。`,
+        basis: "路径效率解释价格移动是否顺滑或反身；高效且离锚才提示脆弱来源，留在锚带内时只是路径质量解释。"
+      };
     }
     if (key === "options_gamma") {
-      const regime = durabilityReadable(view.regime, "Gamma 状态待判");
-      const netGamma = safeNumber(view.net_gamma_notional_usd);
-      const gammaText = netGamma === null ? "净 Gamma 未提供" : `净 Gamma ${number(netGamma, 0)}`;
-      return `${state}；${regime}，${gammaText}，作为放大器解释，不单独破坏价格锚。`;
+      const netGamma = durabilityGammaNotional(doc, view);
+      const polarity = durabilityGammaPolarity(doc, view, netGamma);
+      if (polarity === "positive") {
+        return {
+          conclusion: "正 Gamma 稳定器",
+          validation: `当前净 Gamma 约 ${durabilityUsdText(netGamma)}，为正 Gamma 环境；做市对冲更偏向抑制波动。`,
+          basis: "正 Gamma 通常降低价格离锚后的反身放大风险，是缓冲项；Gamma 只解释稳定性，不单独决定方向。"
+        };
+      }
+      if (polarity === "negative") {
+        return {
+          conclusion: "负 Gamma 放大风险",
+          validation: `当前净 Gamma 约 ${durabilityUsdText(netGamma)}，为负 Gamma 环境；价格离锚后更容易被对冲流放大。`,
+          basis: "负 Gamma 是锚脆弱来源提示，但仍不单独决定方向，也不直接改变交易许可。"
+        };
+      }
+      return {
+        conclusion: "Gamma 状态待判",
+        validation: "本卡没有可直接确认的有效净 Gamma；只能保留为放大器缺口提示。",
+        basis: "Gamma 是波动放大/稳定解释层，缺口时不替代价格锚结论。"
+      };
     }
     if (key === "perp_funding") {
-      const rate = safeNumber(firstPresent(view.funding_rate, view.last_rate));
-      const rateText = rate === null ? "Funding 费率未提供" : `Funding ${percent(rate, 3)}`;
-      const align = view.funding_aligns_with_signal === true
-        ? "与信号方向同向"
-        : (view.funding_against_signal === true ? "与信号方向相反" : "方向关系中性/待判");
-      return `${state}；${rateText}，${align}。`;
+      const rate = durabilityFundingRate(doc, view);
+      const threshold = 0.0001;
+      const rateText = rate === null ? "Funding 未提供" : `Funding ${percent(rate, 3)}`;
+      const thresholdText = percent(threshold, 2);
+      const crowded = rate !== null && Math.abs(rate) >= threshold;
+      const relationText = rate === null
+        ? `未提供可对比 ${thresholdText} 阈值的费率`
+        : (crowded ? `达到或高于 ${thresholdText} 拥挤阈值` : `低于 ${thresholdText} 温和阈值`);
+      const alignText = rate === null
+        ? "方向关系待费率确认"
+        : (view.funding_aligns_with_signal === true
+          ? "温和同向"
+          : (view.funding_against_signal === true ? "逆向" : "方向待判"));
+      const crowdText = rate === null
+        ? `杠杆拥挤状态待判，${alignText}`
+        : (crowded ? `杠杆拥挤抬升，${alignText}但已拥挤` : `杠杆拥挤未抬升，${alignText}但不拥挤`);
+      return {
+        conclusion: rate !== null && view.funding_aligns_with_signal === true && !crowded ? "温和同向 Funding" : state,
+        validation: `当前 ${rateText}，${relationText}；${crowdText}。`,
+        basis: "Funding 是杠杆健康度解释，用来说明拥挤或踩踏风险，不进入交易许可。"
+      };
     }
-    return state;
+    return {
+      conclusion: state,
+      validation: "本层没有独立的可读验算口径。",
+      basis: "保留已有结论，不扩大解释范围。"
+    };
   }
 
   function durabilityReasonSentence(code) {
@@ -2239,19 +2373,19 @@
     `;
   }
 
-  function renderDurabilityLayerCard(definition, layers, anchor) {
+  function renderDurabilityLayerCard(definition, layers, anchor, doc) {
     const layer = asObject(asObject(layers)[definition.key]);
     const score = durabilityLayerScore(layer);
-    const state = durabilityReadable(firstPresent(layer.interpretation, layer.state), "待判");
-    const verdict = durabilityLayerVerdict(definition.key, layer, anchor);
+    const narrative = durabilityLayerNarrative(definition.key, layer, anchor, doc);
     return `
       <article class="durability-layer-card">
         <div class="durability-layer-title">
           <strong>${escapeHtml(definition.title)}</strong>
           <span>${escapeHtml(score)}</span>
         </div>
-        <p class="durability-layer-state">${escapeHtml(state)}</p>
-        <p>${escapeHtml(verdict)}</p>
+        <p class="durability-layer-state"><strong>结论</strong>：${escapeHtml(narrative.conclusion)}</p>
+        <p class="durability-layer-validation"><strong>最小验算</strong>：${escapeHtml(narrative.validation)}</p>
+        <p class="durability-layer-basis"><strong>评分依据</strong>：${escapeHtml(narrative.basis)}</p>
       </article>
     `;
   }
@@ -2300,7 +2434,7 @@
         </div>
       </div>
       <div class="durability-layer-list">
-        ${layerDefs.map((definition) => renderDurabilityLayerCard(definition, layers, anchor)).join("")}
+        ${layerDefs.map((definition) => renderDurabilityLayerCard(definition, layers, anchor, doc)).join("")}
       </div>
       <div class="durability-conclusion-card">
         <strong>合成解释</strong>

@@ -682,6 +682,22 @@ def durability_sample_card(with_durability=True):
         },
         "conflict": {"ratio": 0.12, "level": "LOW"},
         "reasoning": {"evidence": []},
+        "factor_cross_section": {
+            "anchor": {"score": 72, "normalized_deviation": 0.56},
+            "gamma_regime": {
+                "regime": "TRANSITION",
+                "net_gamma_notional_usd": 101000000,
+                "confidence_multiplier": 0.98,
+            },
+            "gex_info": {
+                "market_state": "POSITIVE_GAMMA",
+                "net_gamma_notional_usd": 101000000,
+            },
+            "funding": {
+                "last_rate": 0.00006,
+                "last_funding_rate": 0.00006,
+            },
+        },
         "signal_window": {
             "session_context": {
                 "display_label": "中性保守",
@@ -742,12 +758,23 @@ def durability_sample_card(with_durability=True):
                     "price_efficiency": {
                         "score": 0.65,
                         "state": "ANCHOR_WEAK",
-                        "ppe": 0.72,
+                        "ppe": 1.0,
+                        "method": "PROXY_OHLC",
+                        "inside_anchor_band": True,
+                        "band_distance_ratio": 0.56,
                         "interpretation": "PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS",
                     },
-                    "options_gamma": {"score": 0.80, "state": "ANCHOR_DURABLE"},
+                    "options_gamma": {
+                        "score": 0.80,
+                        "state": "ANCHOR_DURABLE",
+                        "regime": "TRANSITION",
+                        "net_gamma_notional_usd": 0,
+                    },
                     "perp_funding": {
                         "score": 0.70,
+                        "last_rate": 0.00006,
+                        "funding_rate": 0.00006,
+                        "funding_aligns_with_signal": True,
                         "interpretation": "HEALTHY_CONFIRMATION",
                     },
                 },
@@ -757,12 +784,23 @@ def durability_sample_card(with_durability=True):
                 "price_efficiency": {
                     "score": 0.65,
                     "state": "ANCHOR_WEAK",
-                    "ppe": 0.72,
+                    "ppe": 1.0,
+                    "method": "PROXY_OHLC",
+                    "inside_anchor_band": True,
+                    "band_distance_ratio": 0.56,
                     "interpretation": "PPE_FAVORABLE_EFFICIENT_NOT_AUTOPASS",
                 },
-                "options_gamma": {"score": 0.80, "state": "ANCHOR_DURABLE"},
+                "options_gamma": {
+                    "score": 0.80,
+                    "state": "ANCHOR_DURABLE",
+                    "regime": "TRANSITION",
+                    "net_gamma_notional_usd": 0,
+                },
                 "perp_funding": {
                     "score": 0.70,
+                    "last_rate": 0.00006,
+                    "funding_rate": 0.00006,
+                    "funding_aligns_with_signal": True,
                     "interpretation": "HEALTHY_CONFIRMATION",
                 },
             },
@@ -902,6 +940,73 @@ def main():
     assert_true("A. 锚原生层" not in durability_text
                 and "B. PPE路径效率" not in durability_text,
                 "durability layer titles should not include A/B prefixes")
+    for token in (
+            "结论",
+            "最小验算",
+            "评分依据",
+            "系统锚分 72/100",
+            "0.56 个锚带半宽",
+            "路径效率较高",
+            "仍留在锚带内",
+            "正 Gamma",
+            "101.0M USD",
+            "抑制波动",
+            "稳定器",
+            "Funding 0.006%",
+            "0.01%",
+            "温和同向",
+            "不拥挤",
+    ):
+        assert_true(token in durability_text,
+                    "durability UI should show semantic validation token: " + token)
+    for bad_token in (
+            "净 Gamma 0",
+            "锚耐用；Gamma",
+            "PPE 1.00",
+    ):
+        assert_true(bad_token not in durability_text,
+                    "durability UI should not show low-information formula text: " + bad_token)
+    gamma_zero_card = json.loads(json.dumps(durability_sample_card()))
+    gamma_zero_card["factor_cross_section"]["gamma_regime"]["regime"] = "POSITIVE_GAMMA_PINNING"
+    gamma_zero_card["factor_cross_section"]["gamma_regime"]["net_gamma_notional_usd"] = 0
+    gamma_zero_card["factor_cross_section"]["gex_info"]["market_state"] = "POSITIVE_GAMMA"
+    gamma_zero_card["factor_cross_section"]["gex_info"]["net_gamma_notional_usd"] = 0
+    gamma_zero_text = render_sample_card(FRONTEND, gamma_zero_card)["text"]
+    assert_true("Gamma 状态待判" in gamma_zero_text
+                and "本卡没有可直接确认的有效净 Gamma" in gamma_zero_text,
+                "zero net Gamma without nonzero fallback should stay pending")
+    assert_true("正 Gamma 稳定器" not in gamma_zero_text
+                and "当前净 Gamma 约 0 USD" not in gamma_zero_text,
+                "zero net Gamma should not be promoted to positive Gamma semantics")
+
+    outside_anchor_card = json.loads(json.dumps(durability_sample_card()))
+    outside_anchor = outside_anchor_card["signal_durability"]["price_anchor_durability"]["layer_scores"]["anchor_native"]
+    outside_anchor["score"] = 0.41
+    outside_anchor["state"] = "ANCHOR_WEAK"
+    outside_anchor["distance_ratio"] = 1.24
+    outside_anchor["outside_anchor_band"] = True
+    outside_anchor_card["factor_cross_section"]["anchor"]["normalized_deviation"] = 1.24
+    outside_anchor_text = render_sample_card(FRONTEND, outside_anchor_card)["text"]
+    assert_true("现价已离开锚带" in outside_anchor_text
+                and "1.24 个锚带半宽" in outside_anchor_text
+                and "破锚/弱锚边界" in outside_anchor_text,
+                "anchor layer should describe outside-anchor validation when distance exceeds band")
+    assert_true("现价仍在锚带内，偏离约 1.24" not in outside_anchor_text,
+                "outside anchor should not be described as still inside the anchor band")
+
+    missing_funding_card = json.loads(json.dumps(durability_sample_card()))
+    missing_funding = missing_funding_card["signal_durability"]["price_anchor_durability"]["layer_scores"]["perp_funding"]
+    missing_funding.pop("last_rate", None)
+    missing_funding.pop("funding_rate", None)
+    missing_funding_card["factor_cross_section"]["funding"].pop("last_rate", None)
+    missing_funding_card["factor_cross_section"]["funding"].pop("last_funding_rate", None)
+    missing_funding_text = render_sample_card(FRONTEND, missing_funding_card)["text"]
+    assert_true("Funding 未提供" in missing_funding_text
+                and "杠杆拥挤状态待判" in missing_funding_text,
+                "missing Funding rate should stay pending")
+    assert_true("结论：温和同向 Funding" not in missing_funding_text
+                and "温和同向但不拥挤" not in missing_funding_text,
+                "missing Funding rate should not be called warm aligned and uncrowded")
     assert_true("舒适窗 否" in durability_index
                 and "72" in durability_index
                 and "NW" not in durability_index,
