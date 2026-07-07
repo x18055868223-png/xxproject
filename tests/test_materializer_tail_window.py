@@ -864,6 +864,43 @@ def main():
         assert_true("符号翻转" not in display_rows["P_C_RATIO"]["meaning_cn"],
                     "P/C display should explain demand change, not sign flip")
 
+        boundary_records = [
+            transition_record("CARD-GEX-A", base_ms + 2 * 60 * 60 * 1000,
+                              "BULLISH_STRONG", "TRADE_SUPPORT_STRONG",
+                              0.0309, 150.5, 7.6, -1.8, 0.000099,
+                              net_gamma=0.39, put_call_ratio=1.05),
+            transition_record("CARD-GEX-B", base_ms + 3 * 60 * 60 * 1000,
+                              "BULLISH_STRONG", "TRADE_SUPPORT_STRONG",
+                              0.0409, 160.5, 8.6, -1.6, 0.0001,
+                              net_gamma=0.39, put_call_ratio=1.06),
+        ]
+        for item, gex_value in zip(boundary_records, (100000000.0, 112000000.0)):
+            item["factor_cross_section"]["gamma_regime"]["net_gamma_notional_usd"] = 0.39
+            item["factor_cross_section"]["gamma_regime"]["net_gamma_notional"] = 0.39
+            item["factor_cross_section"]["gex_info"]["net_gamma_notional_usd"] = gex_value
+            item["factor_cross_section"]["gex_info"]["total_net_gex"] = gex_value
+        boundary_source = root / "transition_boundary_signal_review.jsonl"
+        boundary_output = root / "boundary_public"
+        boundary_source.write_text("\n".join(json.dumps(item, ensure_ascii=False)
+                                             for item in boundary_records) + "\n",
+                                   encoding="utf-8")
+        tool.materialize(boundary_source, boundary_output, max_cards=20)
+        boundary_latest = json.loads((boundary_output / "signal_cards"
+                                      / "CARD-GEX-B.json").read_text(
+                                          encoding="utf-8"))
+        boundary_transition = boundary_latest["transition_context"]
+        boundary_domains = {item["domain"]: item
+                            for item in boundary_transition["core_skeleton"]["domains"]}
+        assert_true(boundary_domains["GAMMA"]["current"]["net_gamma_notional_usd"] == 112000000.0,
+                    "transition skeleton should prefer real gex_info USD notional over tiny gamma proxy")
+        boundary_display = {item["domain"]: item
+                            for item in boundary_transition["core_transition_display"]}
+        assert_true(boundary_display["GAMMA"]["current_display"] == "$112M",
+                    "transition display should show real GEX USD notional, not 0.39 proxy")
+        assert_true("拥挤升温" not in boundary_display["FUNDING"]["meaning_cn"]
+                    and "温和多头倾向" in boundary_display["FUNDING"]["meaning_cn"],
+                    "Funding exactly 0.0100% should stay mild/baseline in transition display")
+
         ledger_lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         assert_true(len(ledger_lines) == 1,
                     "ledger should contain one transition record")

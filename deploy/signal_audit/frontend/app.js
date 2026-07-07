@@ -1185,7 +1185,14 @@
       return falling ? "量价路径转弱" : "量价路径改善";
     }
     if (raw === "MACRO") return rising ? "宏观压力上升" : "宏观压力回落";
-    if (raw === "FUNDING") return rising ? "资金费率拥挤上升" : "资金费率拥挤缓和";
+    if (raw === "FUNDING") {
+      if (after !== null && Math.abs(after) <= 0.0001) {
+        if (after > 0) return "资金费率温和多头倾向";
+        if (after < 0) return "资金费率温和空头倾向";
+        return "资金费率基准/中性";
+      }
+      return rising ? "资金费率拥挤上升" : "资金费率拥挤缓和";
+    }
     if (raw === "SKEW") return falling ? "期权偏斜压力加深" : "期权偏斜压力缓和";
     if (raw === "GAMMA") return after !== null && before !== null && after < before ? "净 Gamma 敞口加深" : "净 Gamma 敞口缓和";
     if (raw === "P_C_RATIO") return rising ? "期权保护需求上升" : "期权保护需求回落";
@@ -2124,32 +2131,44 @@
     return `${sign}${number(absValue, 0)} USD`;
   }
 
-  function durabilityFirstNonZeroNumber(values) {
+  function durabilityFirstNumber(values) {
     for (const value of values) {
       const numeric = safeNumber(value);
-      if (numeric !== null && numeric !== 0) return numeric;
+      if (numeric !== null) return numeric;
     }
     return null;
   }
 
   function durabilityGammaNotional(doc, layer) {
     const view = asObject(layer);
-    const nativeValue = safeNumber(firstPresent(
-      view.net_gamma_notional_usd,
-      view.net_gamma_notional,
-      view.net_gex_usd,
-      view.total_net_gex
-    ));
-    const fallbackValue = durabilityFirstNonZeroNumber([
+    const gexValue = durabilityFirstNumber([
       get(doc, "factor_cross_section.gex_info.net_gamma_notional_usd"),
-      get(doc, "factor_cross_section.gex_info.net_gamma_notional"),
       get(doc, "factor_cross_section.gex_info.total_net_gex"),
-      get(doc, "factor_cross_section.gamma_regime.net_gamma_notional_usd"),
-      get(doc, "factor_cross_section.gamma_regime.net_gamma_notional"),
-      get(doc, "factor_cross_section.gamma_regime.total_net_gex")
+      get(doc, "factor_cross_section.gex_info.net_gamma_notional")
     ]);
-    if ((nativeValue === null || nativeValue === 0) && fallbackValue !== null) return fallbackValue;
-    return nativeValue === 0 ? null : nativeValue;
+    if (gexValue !== null) return gexValue === 0 ? null : gexValue;
+    const nativeValue = durabilityFirstNumber([
+      view.net_gamma_notional_usd,
+      view.total_net_gex,
+      view.net_gamma_notional,
+      view.net_gex_usd
+    ]);
+    const nativeSource = rawEnum(view.net_gamma_source).toLowerCase();
+    if (nativeValue !== null
+        && (Math.abs(nativeValue) >= 1000
+            || nativeSource.includes("gex_info")
+            || nativeSource.includes("compat_usd"))) {
+      return nativeValue === 0 ? null : nativeValue;
+    }
+    const gammaValue = durabilityFirstNumber([
+      get(doc, "factor_cross_section.gamma_regime.net_gamma_notional_usd"),
+      get(doc, "factor_cross_section.gamma_regime.total_net_gex"),
+      get(doc, "factor_cross_section.gamma_regime.net_gamma_notional")
+    ]);
+    if (gammaValue !== null && Math.abs(gammaValue) >= 1000) {
+      return gammaValue === 0 ? null : gammaValue;
+    }
+    return null;
   }
 
   function durabilityGammaPolarity(_doc, _layer, netGamma) {
@@ -2257,10 +2276,10 @@
       const threshold = 0.0001;
       const rateText = rate === null ? "Funding 未提供" : `Funding ${percent(rate, 3)}`;
       const thresholdText = percent(threshold, 2);
-      const crowded = rate !== null && Math.abs(rate) >= threshold;
+      const crowded = rate !== null && Math.abs(rate) > threshold;
       const relationText = rate === null
         ? `未提供可对比 ${thresholdText} 阈值的费率`
-        : (crowded ? `达到或高于 ${thresholdText} 拥挤阈值` : `低于 ${thresholdText} 温和阈值`);
+        : (crowded ? `超过 ${thresholdText} 初步拥挤阈值` : `不高于 ${thresholdText} 基准阈值`);
       const alignText = rate === null
         ? "方向关系待费率确认"
         : (view.funding_aligns_with_signal === true
@@ -2268,7 +2287,7 @@
           : (view.funding_against_signal === true ? "逆向" : "方向待判"));
       const crowdText = rate === null
         ? `杠杆拥挤状态待判，${alignText}`
-        : (crowded ? `杠杆拥挤抬升，${alignText}但已拥挤` : `杠杆拥挤未抬升，${alignText}但不拥挤`);
+        : (crowded ? `杠杆拥挤抬升，${alignText}且已超过基准阈值` : `杠杆拥挤未抬升，${alignText}且不拥挤`);
       return {
         conclusion: rate !== null && view.funding_aligns_with_signal === true && !crowded ? "温和同向 Funding" : state,
         validation: `当前 ${rateText}，${relationText}；${crowdText}。`,
@@ -2932,10 +2951,11 @@
     let note = "资金费率暂缺，仅保留为不计票辅助项。";
     let reflexive = "NEUTRAL";
     if (rate !== null) {
-      if (rate > 0) tendency = `${Math.abs(rate) >= threshold ? "拥挤" : "温和"}多头倾向`;
-      else if (rate < 0) tendency = `${Math.abs(rate) >= threshold ? "拥挤" : "温和"}空头倾向`;
+      const crowded = Math.abs(rate) > threshold;
+      if (rate > 0) tendency = `${crowded ? "拥挤" : "温和"}多头倾向`;
+      else if (rate < 0) tendency = `${crowded ? "拥挤" : "温和"}空头倾向`;
       reflexive = signedLean(-rate) || "NEUTRAL";
-      note = `${pairSymbol(doc)} 永续资金费率 ${ratePctText(rate)}，阈值 0.01%，当前为${tendency}。`;
+      note = `${pairSymbol(doc)} 永续资金费率 ${ratePctText(rate)}，超过 0.01% 才进入初步拥挤，当前为${tendency}。`;
     }
     return {
       stanceLabel: "费率端倾向",

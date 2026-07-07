@@ -979,6 +979,45 @@ def main():
                 and "当前净 Gamma 约 0 USD" not in gamma_zero_text,
                 "zero net Gamma should not be promoted to positive Gamma semantics")
 
+    funding_boundary_card = json.loads(json.dumps(durability_sample_card()))
+    boundary_funding = funding_boundary_card["signal_durability"]["price_anchor_durability"]["layer_scores"]["perp_funding"]
+    boundary_funding["last_rate"] = 0.0001
+    boundary_funding["funding_rate"] = 0.0001
+    funding_boundary_card["signal_durability"]["layer_scores"]["perp_funding"]["last_rate"] = 0.0001
+    funding_boundary_card["signal_durability"]["layer_scores"]["perp_funding"]["funding_rate"] = 0.0001
+    funding_boundary_card["factor_cross_section"]["funding"]["last_rate"] = 0.0001
+    funding_boundary_card["factor_cross_section"]["funding"]["last_funding_rate"] = 0.0001
+    funding_boundary_text = render_sample_card(FRONTEND, funding_boundary_card)["text"]
+    assert_true("Funding 0.01%" in funding_boundary_text
+                and "不拥挤" in funding_boundary_text,
+                "Funding exactly 0.0100% should stay baseline/mild and uncrowded")
+    for bad_token in (
+            "达到或高于 0.01% 拥挤阈值",
+            "杠杆拥挤抬升",
+            "已拥挤",
+            "拥挤多头倾向",
+    ):
+        assert_true(bad_token not in funding_boundary_text,
+                    "Funding equality boundary should not show crowding token: " + bad_token)
+
+    gamma_proxy_card = json.loads(json.dumps(durability_sample_card()))
+    proxy_gamma = gamma_proxy_card["signal_durability"]["price_anchor_durability"]["layer_scores"]["options_gamma"]
+    proxy_gamma["net_gamma_notional_usd"] = 0.39
+    proxy_gamma["net_gamma_source"] = "factor_cross_section.gamma_regime.proxy_metric"
+    gamma_proxy_card["signal_durability"]["layer_scores"]["options_gamma"]["net_gamma_notional_usd"] = 0.39
+    gamma_proxy_card["signal_durability"]["layer_scores"]["options_gamma"]["net_gamma_source"] = "factor_cross_section.gamma_regime.proxy_metric"
+    gamma_proxy_card["factor_cross_section"]["gamma_regime"]["regime"] = "POSITIVE_GAMMA_PINNING"
+    gamma_proxy_card["factor_cross_section"]["gamma_regime"]["net_gamma_notional_usd"] = 0.39
+    gamma_proxy_card["factor_cross_section"]["gex_info"]["market_state"] = "POSITIVE_GAMMA"
+    gamma_proxy_card["factor_cross_section"]["gex_info"]["net_gamma_notional_usd"] = 112000000
+    gamma_proxy_card["factor_cross_section"]["gex_info"]["total_net_gex"] = 112000000
+    gamma_proxy_text = render_sample_card(FRONTEND, gamma_proxy_card)["text"]
+    assert_true("112.0M USD" in gamma_proxy_text
+                and "正 Gamma 稳定器" in gamma_proxy_text,
+                "real gex_info USD notional should outrank tiny Gamma proxy")
+    assert_true("当前净 Gamma 约 0 USD" not in gamma_proxy_text,
+                "tiny Gamma proxy should not be formatted as zero USD")
+
     outside_anchor_card = json.loads(json.dumps(durability_sample_card()))
     outside_anchor = outside_anchor_card["signal_durability"]["price_anchor_durability"]["layer_scores"]["anchor_native"]
     outside_anchor["score"] = 0.41

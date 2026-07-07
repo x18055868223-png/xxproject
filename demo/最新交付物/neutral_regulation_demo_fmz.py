@@ -149,9 +149,10 @@ CONFIG = {
     # Render/observability only; nrd schema_version stays v1.0.0.
     # v1.5.1 (2026-06-25): MACRO dual-axis minimum enhancement. Stable macro
     # headwind remains directional context; only confirmed macro shock gates.
-    # v1.5.3 (2026-07-06): NeutralRepair minimal timing gate fix.
     # v1.5.2 (2026-07-05): Signal Durability Layer producer fields.
-    "demo_version": "1.5.3",
+    # v1.5.3 (2026-07-06): NeutralRepair minimal timing gate fix.
+    # v1.5.4 (2026-07-07): Funding equality baseline + GEX USD precedence fix.
+    "demo_version": "1.5.4",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -2993,26 +2994,52 @@ helpers that EDB still calls. Nothing here computes a direction or confidence.
 
 
 def evaluate_funding_verdict(flow, config=None):
-    effect = (flow or {}).get("tmvf_funding_effect")
+    config = config or CONFIG
+    flow = flow or {}
+    effect = flow.get("tmvf_funding_effect")
     mapping = {
         "neutral": "FUNDING_NEUTRAL",
         "confirming": "FUNDING_MILD_CONFIRM",
         "opposite_crowding_fuel": "FUNDING_OPPOSITE_FUEL",
         "overcrowded": "FUNDING_CROWDED_WARNING",
-        "extreme_overcrowded": "FUNDING_HARD_WARNING",
-        "crowded_without_price_confirmation": "FUNDING_HARD_WARNING",
+        "extreme_overcrowded": "FUNDING_CROWDED_WARNING",
+        "crowded_without_price_confirmation": "FUNDING_CROWDED_WARNING",
     }
-    item_48 = (flow or {}).get("tmvf_48h") or {}
+    item_48 = flow.get("tmvf_48h") or {}
     funding = item_48.get("funding") or {}
     verdict = mapping.get(effect, "FUNDING_NEUTRAL")
-    rate = (flow or {}).get("last_funding_rate")
+    rate = _first_float(flow.get("last_funding_rate"),
+                        flow.get("last_rate"),
+                        funding.get("last_funding_rate"),
+                        funding.get("last_rate"))
+    funding_norm = _first_float(funding.get("funding_norm"),
+                                flow.get("funding_norm"))
+    light_abs = safe_float(config.get("funding_observe_light_abs"))
+    if light_abs is None:
+        light_abs = 0.0001
+    extreme_abs = safe_float(config.get("tmvf_funding_extreme_abs"))
+    if extreme_abs is None:
+        extreme_abs = 0.85
+    data_ready = funding.get("data_ready")
+    if data_ready is None:
+        data_ready = item_48.get("data_ready")
+    hard_warning = (
+        effect == "extreme_overcrowded"
+        and rate is not None
+        and abs(rate) > light_abs
+        and funding_norm is not None
+        and abs(funding_norm) > extreme_abs
+        and data_ready is True
+    )
+    if hard_warning:
+        verdict = "FUNDING_HARD_WARNING"
     return {
         "effect": effect,
         "verdict": verdict,
         "funding_state": item_48.get("funding_state")
                          or funding.get("funding_state"),
         "last_funding_rate": rate,
-        "funding_norm": funding.get("funding_norm"),
+        "funding_norm": funding_norm,
         "funding_cum": funding.get("funding_cum"),
         "funding_count": funding.get("funding_count"),
         "interpretation_cn": _funding_interpretation_cn(verdict, effect, rate),
@@ -3156,9 +3183,9 @@ def _funding_interpretation_cn(verdict, effect, rate):
     if verdict == "FUNDING_OPPOSITE_FUEL":
         return "反向拥挤燃料，仅作反身性观察"
     if verdict == "FUNDING_CROWDED_WARNING":
-        return "同向拥挤升温，作为论证扣分"
+        return "Funding 超过基准阈值后才按拥挤升温解释，作为论证扣分"
     if verdict == "FUNDING_HARD_WARNING":
-        return "Funding 过度拥挤，触发硬阻断"
+        return "Funding 原始费率与历史归一化均进入极端拥挤，触发硬阻断"
     if rate is None and not effect:
         return "Funding 数据不足或中性"
     return "Funding 中性/轻微，不单独生成方向"
@@ -4689,8 +4716,10 @@ def _price_efficiency_sublayer(facts, direction_sign=0, distance_ratio=None):
 
 
 def _options_gamma_sublayer(factor_cross_section):
-    gamma = (factor_cross_section or {}).get("gamma_regime") or {}
-    if not gamma:
+    cross = factor_cross_section or {}
+    gamma = cross.get("gamma_regime") or {}
+    gex = cross.get("gex_info") or {}
+    if not gamma and not gex:
         return {
             "schema_name": "SignalDurabilityOptionsGamma",
             "audit_scope": "AUDIT_ONLY",
@@ -4699,14 +4728,37 @@ def _options_gamma_sublayer(factor_cross_section):
             "state": "ANCHOR_DATA_GAP",
             "reason_codes": ["OPTIONS_GAMMA_DATA_GAP"],
         }
-    regime = str(gamma.get("regime") or gamma.get("market_state") or "").upper()
-    net_gamma = _first_float(gamma.get("net_gamma_notional_usd"),
-                             gamma.get("net_gamma_notional"))
+    regime = str(gex.get("market_state")
+                 or gamma.get("regime")
+                 or gamma.get("market_state")
+                 or "").upper()
+    gex_net_gamma = _first_float(gex.get("net_gamma_notional_usd"),
+                                 gex.get("total_net_gex"),
+                                 gex.get("net_gamma_notional"))
+    gamma_metric = _first_float(gamma.get("net_gamma_notional_usd"),
+                                gamma.get("net_gamma_notional"))
+    net_gamma = None
+    net_gamma_source = None
+    if gex_net_gamma is not None:
+        net_gamma = gex_net_gamma
+        net_gamma_source = "factor_cross_section.gex_info"
+    elif gamma_metric is not None and abs(gamma_metric) >= 1000:
+        net_gamma = gamma_metric
+        net_gamma_source = "factor_cross_section.gamma_regime.compat_usd"
+    elif gamma_metric is not None:
+        net_gamma_source = "factor_cross_section.gamma_regime.proxy_metric"
     reason_codes = []
-    if "NEGATIVE" in regime or (net_gamma is not None and net_gamma < 0):
+    numeric_regime_confirmed = net_gamma is not None
+    proxy_only = net_gamma is None and gamma_metric is not None
+    if proxy_only:
+        score = 0.65
+        reason_codes.append("GAMMA_PROXY_NOT_USD_NOTIONAL")
+    elif (net_gamma is not None and net_gamma < 0) or (
+            not numeric_regime_confirmed and "NEGATIVE" in regime):
         score = 0.55
         reason_codes.append("NEGATIVE_GAMMA_RISK_OVERLAY_NOT_BREAK")
-    elif "POSITIVE" in regime or (net_gamma is not None and net_gamma > 0):
+    elif (net_gamma is not None and net_gamma > 0) or (
+            not numeric_regime_confirmed and "POSITIVE" in regime):
         score = 0.80
         reason_codes.append("POSITIVE_GAMMA_STABILIZING")
     else:
@@ -4718,8 +4770,12 @@ def _options_gamma_sublayer(factor_cross_section):
         "score": score,
         "score_100": _durability_score_100(score),
         "state": _durability_state_from_score(score),
-        "regime": gamma.get("regime") or gamma.get("market_state"),
+        "regime": gex.get("market_state")
+                  or gamma.get("regime")
+                  or gamma.get("market_state"),
         "net_gamma_notional_usd": net_gamma,
+        "net_gamma_proxy_metric": None if net_gamma is not None else gamma_metric,
+        "net_gamma_source": net_gamma_source,
         "reason_codes": reason_codes,
     }
 
@@ -6126,9 +6182,12 @@ def _audit_gex_info(raw):
                            "MISSING")
     gex["data_status"] = status
     gex["market_state"] = gex.get("market_state") or status
-    if "net_gamma_notional_usd" not in gex:
-        gex["net_gamma_notional_usd"] = safe_float(
-            gex.get("total_net_gex") or gex.get("net_gamma_notional"))
+    net_gamma_usd = safe_float(gex.get("net_gamma_notional_usd"))
+    if net_gamma_usd is None:
+        net_gamma_usd = safe_float(gex.get("total_net_gex"))
+    if net_gamma_usd is None:
+        net_gamma_usd = safe_float(gex.get("net_gamma_notional"))
+    gex["net_gamma_notional_usd"] = net_gamma_usd
     if "magnet_level" not in gex:
         gex["magnet_level"] = safe_float(gex.get("magnet_price"))
     if "call_wall" not in gex:
@@ -6728,8 +6787,9 @@ def _veto_evidence_cn(veto_reason, fs):
     if veto_reason == "FUNDING_HARD_WARNING":
         rate = safe_float((fs.get("flow") or {}).get("last_funding_rate"))
         if rate is not None:
-            return "资金费率极端拥挤 {0}".format(_fmt_signed_pct(rate))
-        return "资金费率极端拥挤"
+            return "资金费率历史极端拥挤；最新费率 {0}".format(
+                _fmt_signed_pct(rate))
+        return "资金费率历史极端拥挤"
     return veto_reason or ""
 
 
@@ -9071,7 +9131,7 @@ def funding_adjustment(core, funding_norm, config=None):
     effect = "neutral"
     warning = None
     if a < neutral or d == 0:
-        if c >= crowded:
+        if c > crowded:
             effect = "crowded_without_price_confirmation"
             warning = "funding_extreme_but_price_behavior_unconfirmed"
         return {
@@ -9093,7 +9153,7 @@ def funding_adjustment(core, funding_norm, config=None):
             d * core_gate * 0.20 * ((c - crowded) / max(1.0 - crowded, 1e-9)))
         adjustment = healthy_boost - crowding_penalty
         effect = "extreme_overcrowded"
-        if c < config["tmvf_funding_extreme_abs"]:
+        if c <= config["tmvf_funding_extreme_abs"]:
             effect = "overcrowded"
     elif s == -d:
         adjustment = d * core_gate * min(0.12, 0.10 * c)
@@ -9703,11 +9763,11 @@ def classify_funding_state(norm, config=None):
     norm = safe_float(norm) or 0.0
     a = abs(norm)
     side = "long" if norm > 0 else "short" if norm < 0 else "neutral"
-    if a < config["tmvf_funding_confirm_abs"]:
+    if a <= config["tmvf_funding_confirm_abs"]:
         return "neutral"
-    if a < config["tmvf_funding_crowded_abs"]:
+    if a <= config["tmvf_funding_crowded_abs"]:
         return "healthy_" + side + "_bias"
-    if a < config["tmvf_funding_extreme_abs"]:
+    if a <= config["tmvf_funding_extreme_abs"]:
         return "crowded_" + side
     return "extreme_crowded_" + side
 

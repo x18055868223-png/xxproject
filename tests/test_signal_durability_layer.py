@@ -171,6 +171,91 @@ def test_options_gamma_and_funding_are_overlays_not_autobreakers(mod, config):
     assert_true(pad["state"] != "ANCHOR_BROKEN",
                 "negative gamma overlay alone should not break composite")
 
+    proxy_cross = durable_cross()
+    proxy_cross["gamma_regime"] = {
+        "regime": "POSITIVE_GAMMA_PINNING",
+        "net_gamma_notional_usd": 0.39,
+    }
+    proxy_cross["gex_info"] = {
+        "market_state": "POSITIVE_GAMMA",
+        "total_net_gex": 112_000_000.0,
+    }
+    gex_preferred = mod.build_price_anchor_durability(
+        {"market_context": {"price": 100.8}},
+        bullish_decision(),
+        proxy_cross,
+        {},
+        config,
+    )
+    gamma_layer = gex_preferred["sublayers"]["options_gamma"]
+    assert_close(gamma_layer["net_gamma_notional_usd"], 112_000_000.0,
+                 "real gex_info notional should outrank tiny gamma proxy")
+    assert_equal(gamma_layer["net_gamma_source"],
+                 "factor_cross_section.gex_info",
+                 "Gamma source should identify GEX notional")
+
+    proxy_only_cross = durable_cross()
+    proxy_only_cross["gamma_regime"] = {
+        "regime": "POSITIVE_GAMMA_PINNING",
+        "net_gamma_notional_usd": 0.39,
+    }
+    proxy_only = mod.build_price_anchor_durability(
+        {"market_context": {"price": 100.8}},
+        bullish_decision(),
+        proxy_only_cross,
+        {},
+        config,
+    )
+    proxy_only_gamma = proxy_only["sublayers"]["options_gamma"]
+    assert_true(proxy_only_gamma["net_gamma_notional_usd"] is None,
+                "tiny Gamma proxy should not be exposed as USD notional")
+    assert_true("GAMMA_PROXY_NOT_USD_NOTIONAL" in proxy_only_gamma["reason_codes"],
+                "tiny Gamma proxy should be explicitly labeled as non-USD proxy")
+
+
+def test_funding_threshold_equality_is_not_hard_veto(mod, config):
+    flow = {
+        "direction": "Bullish",
+        "tmv_blend": 0.42,
+        "last_funding_rate": 0.0001,
+        "tmvf_funding_effect": "extreme_overcrowded",
+        "tmvf_48h": {
+            "funding": {
+                "funding_norm": config["tmvf_funding_extreme_abs"],
+                "funding_count": 12,
+                "data_ready": True,
+            },
+        },
+    }
+    verdict = mod.evaluate_funding_verdict(flow, config)
+    assert_true(verdict["verdict"] != "FUNDING_HARD_WARNING",
+                "raw 0.01% funding and equality normalized threshold should not hard-veto")
+    edb = mod.evaluate_edb(
+        flow,
+        {},
+        {"is_active": True, "state": "NR_REPAIR_CONFIRMED"},
+        skew=None,
+        gamma_regime={"veto": False, "confidence_multiplier": 1.0},
+        cvd_history=None,
+        prev_edb_score=None,
+        config=config,
+    )
+    assert_true(edb.get("veto_reason") != "FUNDING_HARD_WARNING",
+                "funding equality boundary must not become EDB hard veto")
+
+    extreme_flow = dict(flow)
+    extreme_flow["last_funding_rate"] = 0.00010001
+    extreme_flow["tmvf_48h"] = {
+        "funding": {
+            "funding_norm": config["tmvf_funding_extreme_abs"] + 0.01,
+            "funding_count": 12,
+            "data_ready": True,
+        },
+    }
+    extreme = mod.evaluate_funding_verdict(extreme_flow, config)
+    assert_equal(extreme["verdict"], "FUNDING_HARD_WARNING",
+                 "funding hard warning should require strict raw and normalized excess")
+
 
 def test_high_ppe_cannot_autopass_broken_anchor(mod, config):
     cross = durable_cross()
@@ -251,6 +336,7 @@ def main():
     test_price_path_efficiency_exact_and_proxy(mod)
     test_anchor_native_uses_anchor_axis_and_band(mod, config)
     test_options_gamma_and_funding_are_overlays_not_autobreakers(mod, config)
+    test_funding_threshold_equality_is_not_hard_veto(mod, config)
     test_high_ppe_cannot_autopass_broken_anchor(mod, config)
     test_composite_states_and_temporal_session(mod, config)
     print("signal_durability_layer: PASS")

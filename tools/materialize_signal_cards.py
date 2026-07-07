@@ -136,10 +136,17 @@ TRANSITION_SKELETON_SPECS = (
     },
     {
         "domain": "GAMMA",
-        "source_ref": "factor_cross_section.gamma_regime",
+        "source_ref": "factor_cross_section.gex_info",
         "fields": (
-            ("regime", ("factor_cross_section.gamma_regime.regime", "regime")),
+            ("regime", (
+                "factor_cross_section.gex_info.market_state",
+                "factor_cross_section.gamma_regime.regime",
+                "regime",
+            )),
             ("net_gamma_notional_usd", (
+                "factor_cross_section.gex_info.net_gamma_notional_usd",
+                "factor_cross_section.gex_info.total_net_gex",
+                "factor_cross_section.gex_info.net_gamma_notional",
                 "factor_cross_section.gamma_regime.net_gamma_notional_usd",
                 "factor_cross_section.gamma_regime.net_gamma_notional",
                 "net_gamma_notional_usd",
@@ -1065,8 +1072,12 @@ def _display_meaning_cn(domain, key, previous, current):
             return "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力消失，方向意义偏弱。"
         if prev_num is not None and curr_num is not None and prev_num < 0 < curr_num:
             return "资金费率由负转正，提示永续端多头付费重新出现，需结合 TMV 与宏观判断。"
-        if curr_num is not None and 0 < curr_num < 0.0001:
-            return "资金费率低于 0.01% 阈值，当前为温和多头倾向。"
+        if curr_num is not None and abs(curr_num) <= 0.0001:
+            if curr_num > 0:
+                return "资金费率不高于 0.01% 基准阈值，当前为温和多头倾向。"
+            if curr_num < 0:
+                return "资金费率不高于 0.01% 基准阈值，当前为温和空头倾向。"
+            return "资金费率位于基准附近，未显示拥挤。"
         return "资金费率上行，提示拥挤升温。" if rising else "资金费率回落，提示拥挤缓和。"
     if domain == "SKEW":
         return "期权偏斜压力加深，保护需求或下行尾部定价更重。" if falling else "期权偏斜压力缓和。"
@@ -1695,6 +1706,9 @@ def _recent_skeleton_values(record):
             ))),
         "net_gamma_notional_usd": _number(_first_transition_value(
             record, "GAMMA", (
+                "factor_cross_section.gex_info.net_gamma_notional_usd",
+                "factor_cross_section.gex_info.total_net_gex",
+                "factor_cross_section.gex_info.net_gamma_notional",
                 "factor_cross_section.gamma_regime.net_gamma_notional_usd",
                 "factor_cross_section.gamma_regime.net_gamma_notional",
             ))),

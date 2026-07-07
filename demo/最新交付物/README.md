@@ -1,6 +1,6 @@
 # 最新交付物
 
-更新时间：2026-07-06
+更新时间：2026-07-07
 
 本目录只保留当前可见的最新 FMZ 单文件交付物。历史执行层版本保留在 `demo/副本快照/`；当前执行层最新交付物已切换为 Human Audit Gate 人工审计门版本。
 
@@ -8,7 +8,7 @@
 
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.3` | 当前信号层交付物；修复 NeutralRepair 最小时序门：DIE 阈值 + Anchor 低于 60 后回到 60 才确认信号；保留 `signal_durability` AUDIT_ONLY 展示层 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.4` | 当前信号层交付物；保留 NeutralRepair 最小时序门修复，并修正 Funding 0.0100% 等号阈值与 GEX/Gamma 真实 USD 名义额优先显示 | 只读观察，不选腿、不报价、不下单 |
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 ## 执行层说明
