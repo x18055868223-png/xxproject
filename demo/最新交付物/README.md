@@ -8,7 +8,7 @@
 
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.5` | 当前信号层交付物；修复 NeutralRepair stale 锁死、临时数据缺口、活动位移确认计数与反向 reset 丢 handoff，同时保留 Funding/GEX 语义修复 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.6` | 当前信号层交付物；修复实时轮询中的陈旧输入复用、成交积压时间错配、软因子长阻塞和信号审计交付丢失，同时保留 NeutralRepair、Funding/GEX 既有语义 | 只读观察，不选腿、不报价、不下单 |
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 ## 执行层说明

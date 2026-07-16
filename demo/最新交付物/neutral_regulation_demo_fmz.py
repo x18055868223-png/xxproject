@@ -104,6 +104,7 @@ REASON_CODES = (
     "ANCHOR_BAND_UNAVAILABLE",
     "ANCHOR_STALE",
     "ANCHOR_DEVIATION_WIDE",
+    "ANCHOR_TRADE_BACKLOG",
     "ANCHOR_GRAVITY_WARMING",
     "ANCHOR_GRAVITY_LOW",
     "GEX_RAW_MISSING",
@@ -153,7 +154,8 @@ CONFIG = {
     # v1.5.3 (2026-07-06): NeutralRepair minimal timing gate fix.
     # v1.5.4 (2026-07-07): Funding equality baseline + GEX USD precedence fix.
     # v1.5.5 (2026-07-16): NeutralRepair signal-loss/stale/carry repair.
-    "demo_version": "1.5.5",
+    # v1.5.6 (2026-07-16): runtime stale-input, backlog, and delivery repair.
+    "demo_version": "1.5.6",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -196,6 +198,7 @@ CONFIG = {
     "binance_futures_agg_trades_path": "/fapi/v1/aggTrades",
     "agg_trades_limit": 1000,
     "spot_depth_limit": 20,
+    "current_price_max_age_ms": 300000,
 
     # Macro 宏观代理源: Yahoo 公共接口，仅用于宏观压力软证据。
     "macro_yahoo_base_url": "https://query1.finance.yahoo.com/v8/finance/chart",
@@ -328,9 +331,11 @@ CONFIG = {
     "tmvf_supported_interval_hours": [1, 2, 4],
     "tmvf_kline_limit": 160,
     "tmvf_refresh_sec": 300,
+    "tmvf_kline_max_age_ms": 10800000,
     "tmvf_funding_lookback_days": 35,
     "tmvf_funding_limit": 1000,
     "tmvf_funding_interval_hours": 8,
+    "tmvf_funding_max_age_hours": 12,
     "tmvf_core_neutral_abs": 0.05,
     "tmvf_core_directional_abs": 0.20,
     "tmvf_core_strong_abs": 0.45,
@@ -384,6 +389,7 @@ CONFIG = {
     "m_die_interval": "1m",
     "m_die_window_bars": 15,
     "m_die_kline_limit": 40,
+    "m_die_data_max_age_ms": 180000,
     "m_die_return_floor": 0.0006,
     "m_die_micro_return_floor": 0.00005,
     "m_die_z_start": 0.6,
@@ -488,6 +494,11 @@ CONFIG = {
     "srd_vote_scale": 1.0,
     "deribit_option_strikes_each_side": 8,
     "deribit_option_refresh_sec": 300,
+    # A soft options factor must not hold the one-minute signal loop hostage.
+    "deribit_option_ticker_timeout_sec": 2,
+    "deribit_option_ticker_retries": 0,
+    "deribit_option_refresh_wall_time_ms": 12000,
+    "deribit_option_max_consecutive_failures": 3,
     # Option-greeks freshness: SRD/GGR degrade when greeks are older than this.
     # A failed Deribit fetch no longer refreshes the success time, so age grows
     # honestly; SRD -> data_state STALE (drops from EDB), GGR -> drops the
@@ -5430,8 +5441,10 @@ def build_audit_record(card, config=None):
             "confidence": conclusion.get("confidence"),
             "confidence_calibration": cal,
             "confidence_semantics": "EVIDENCE_QUALITY_NOT_WIN_RATE",
-            "trade_allowed": support in ("TRADE_SUPPORT_STRONG",
-                                         "TRADE_SUPPORT_WEAK"),
+            "trade_allowed": (
+                not bool(config.get("read_only_demo", True))
+                and support in ("TRADE_SUPPORT_STRONG", "TRADE_SUPPORT_WEAK")
+            ),
             "next_action": conclusion.get("next_action"),
             "next_action_pre_gate": conclusion.get("next_action_pre_gate"),
             "final_conclusion_cn": card.get("final_conclusion_cn"),
@@ -7051,9 +7064,10 @@ class SignalEventTracker:
             "event_id")
         if not episode_id or episode_id in self.seen_episode_ids:
             return False
+        event = self._build_event(
+            episode_id, signal, factor_snapshot or {}, runtime_facts or {})
         self.seen_episode_ids.add(episode_id)
-        self.events.insert(0, self._build_event(
-            episode_id, signal, factor_snapshot or {}, runtime_facts or {}))
+        self.events.insert(0, event)
         if len(self.events) > self.max_events:
             removed = self.events[self.max_events:]
             self.events = self.events[:self.max_events]
@@ -7206,6 +7220,7 @@ class BinanceAdapter:
         is_buyer_maker = item.get("m")
         if (trade_id is None or price is None or price <= 0
                 or qty is None or qty <= 0
+                or ts_ms is None or ts_ms <= 0
                 or not isinstance(is_buyer_maker, bool)):
             return None
         signed_qty = -qty if is_buyer_maker else qty
@@ -7294,9 +7309,11 @@ class DeribitAdapter:
         self.http = http_client
         self.config = config or CONFIG
 
-    def public_get(self, method, params=None):
+    def public_get(self, method, params=None, timeout_sec=None, retries=None):
         url = self.config["deribit_base_url"] + "/" + method
-        result = self.http.get_json(url, params=params or {})
+        result = self.http.get_json(
+            url, params=params or {}, timeout_sec=timeout_sec,
+            retries=retries)
         if result["quality"] != QUALITY_OK:
             return result
         data = result["data"]
@@ -7323,7 +7340,8 @@ class DeribitAdapter:
     def get_ticker(self, instrument_name):
         return self.public_get("public/ticker", {
             "instrument_name": instrument_name,
-        })
+        }, timeout_sec=self.config.get("deribit_option_ticker_timeout_sec", 2),
+            retries=self.config.get("deribit_option_ticker_retries", 0))
 
     @staticmethod
     def normalize_ticker(data, instrument=None):
@@ -7689,11 +7707,28 @@ directional certainty.
 _REGIME_STRENGTH_SPAN = 0.012
 
 
+def _gex_info_usable_for_signal(info):
+    if not isinstance(info, dict) or info.get("stale") is True:
+        return False
+    status = info.get("quality") or info.get("data_status")
+    if status != QUALITY_OK:
+        return False
+    allowed = ("live", "ready", "ok")
+    data_state = info.get("data_state")
+    availability = info.get("availability")
+    if data_state is not None and str(data_state).lower() not in allowed:
+        return False
+    if availability is not None and str(availability).lower() not in allowed:
+        return False
+    return data_state is not None or availability is not None
+
+
 def evaluate_gamma_regime(gex_snapshot, current_price, option_quotes=None,
                           config=None, gex_info=None, greeks_age_ms=None):
     config = config or CONFIG
     gex = gex_snapshot or {}
-    info = gex_info if isinstance(gex_info, dict) else None
+    raw_info = gex_info if isinstance(gex_info, dict) else None
+    info = raw_info if _gex_info_usable_for_signal(raw_info) else None
     # stale Deribit greeks: drop the per-strike pin / net-gamma derived from
     # them (the flip-based safety gate below stays; gex_info fallback is fresh).
     greeks_stale = greeks_is_stale(
@@ -7737,6 +7772,8 @@ def evaluate_gamma_regime(gex_snapshot, current_price, option_quotes=None,
     payload["data_state"] = "OK"
     if greeks_stale:
         payload["reason_codes"].append("GGR_GREEKS_STALE")
+    if raw_info is not None and info is None:
+        payload["reason_codes"].append("GGR_GEX_INFO_STALE_IGNORED")
 
     band = float(config.get("ggr_transition_band_pct", 0.003))
     if dist_frac <= band:
@@ -8697,6 +8734,9 @@ class BarAssembler:
         self.current_close = None
         self.current_volume = 0.0
         self.current_cvd = 0.0
+        self.current_last_trade_ts_ms = None
+        self.last_trade_price = None
+        self.last_trade_ts_ms = None
         self.cvd_degraded = False
         self.last_cycle_metrics = {}
 
@@ -8709,16 +8749,24 @@ class BarAssembler:
                 "error": result.get("error"),
                 "trade_count": 0,
                 "bar_count": 0,
+                "latest_trade_price": None,
+                "latest_trade_ts_ms": None,
             }
             return []
 
         raw_rows = result.get("data") or []
         had_gap = False
         new_bars = []
+        cycle_last_trade_price = None
+        cycle_last_trade_ts_ms = None
         for item in raw_rows:
             trade = self.normalize_trade(item) if self.normalize_trade else item
             if not trade:
                 continue
+            self.last_trade_price = trade.get("price")
+            self.last_trade_ts_ms = trade.get("ts_ms")
+            cycle_last_trade_price = self.last_trade_price
+            cycle_last_trade_ts_ms = self.last_trade_ts_ms
             if (self.last_trade_id is not None
                     and trade["id"] > self.last_trade_id + 1
                     and not new_bars):
@@ -8736,6 +8784,8 @@ class BarAssembler:
             "trade_count": len(raw_rows),
             "bar_count": len(new_bars),
             "cvd_degraded": self.cvd_degraded,
+            "latest_trade_price": cycle_last_trade_price,
+            "latest_trade_ts_ms": cycle_last_trade_ts_ms,
         }
         return new_bars
 
@@ -8744,7 +8794,12 @@ class BarAssembler:
         start = now_ms()
         rounds = 0
         hit_limit = False
+        hit_round_limit = False
         hit_wall_time = False
+        caught_up = False
+        drain_interrupted = False
+        latest_trade_price = None
+        latest_trade_ts_ms = None
         max_rounds = int(self.config["max_drain_rounds"])
         max_wall = int(self.config["max_drain_wall_time_ms"])
         limit = int(self.config["agg_trades_limit"])
@@ -8753,13 +8808,24 @@ class BarAssembler:
             rounds += 1
             bars = self.poll()
             all_bars.extend(bars)
+            if self.last_cycle_metrics.get("latest_trade_price") is not None:
+                latest_trade_price = self.last_cycle_metrics.get(
+                    "latest_trade_price")
+                latest_trade_ts_ms = self.last_cycle_metrics.get(
+                    "latest_trade_ts_ms")
             trade_count = self.last_cycle_metrics.get("trade_count", 0)
+            if self.last_cycle_metrics.get("quality") != QUALITY_OK:
+                drain_interrupted = True
+                break
             if not self.config.get("drain_enabled", True):
+                caught_up = True
                 break
             if trade_count == 0 or trade_count < limit:
+                caught_up = True
                 break
             hit_limit = True
             if rounds >= max_rounds:
+                hit_round_limit = True
                 break
             if now_ms() - start >= max_wall:
                 hit_wall_time = True
@@ -8769,9 +8835,17 @@ class BarAssembler:
             "catchup_rounds": rounds,
             "wall_time_ms": now_ms() - start,
             "hit_limit": hit_limit,
+            "hit_round_limit": hit_round_limit,
             "hit_wall_time": hit_wall_time,
-            "backlogged": bool(hit_limit and hit_wall_time),
+            "caught_up": caught_up,
+            "drain_interrupted": drain_interrupted,
+            "backlogged": bool(
+                self.config.get("drain_enabled", True)
+                and (hit_round_limit or hit_wall_time
+                     or (hit_limit and not caught_up))),
             "bar_count": len(all_bars),
+            "latest_trade_price": latest_trade_price,
+            "latest_trade_ts_ms": latest_trade_ts_ms,
         })
         return all_bars
 
@@ -8795,6 +8869,7 @@ class BarAssembler:
             self.current_close = trade["price"]
             self.current_volume += take_qty
             self.current_cvd += trade["signed_qty"] * fill_ratio
+            self.current_last_trade_ts_ms = trade.get("ts_ms")
             self.last_trade_id = trade["id"]
             remaining -= take_qty
             if self.current_volume >= threshold:
@@ -8813,7 +8888,7 @@ class BarAssembler:
             "close": self.current_close,
             "total_volume": self.current_volume,
             "cvd_delta": self.current_cvd,
-            "complete_ts_ms": now_ms(),
+            "complete_ts_ms": self.current_last_trade_ts_ms or now_ms(),
         }, SCHEMA_VOLUME_BAR, self.config)
         self.completed_bars.append(bar)
         self.current_open = None
@@ -8822,6 +8897,7 @@ class BarAssembler:
         self.current_close = None
         self.current_volume = 0.0
         self.current_cvd = 0.0
+        self.current_last_trade_ts_ms = None
         return [bar]
 
     def slow_std_usd(self):
@@ -9013,6 +9089,11 @@ def robust_distribution_normalize(current, samples, max_abs_output=1.0,
 def compute_tmvf_profile(klines, funding_points, config=None):
     config = config or CONFIG
     interval_hours = _tmvf_interval_hours(config)
+    reference_ts_ms = None
+    if klines:
+        reference_ts_ms = safe_float(
+            (klines[-1] or {}).get("close_time")
+            or (klines[-1] or {}).get("open_time"))
     results = {}
     for label in ("24h", "48h"):
         cfg = _tmvf_window_config(label, config)
@@ -9022,12 +9103,21 @@ def compute_tmvf_profile(klines, funding_points, config=None):
             cfg["horizon_hours"],
             int(config["tmvf_funding_interval_hours"]),
             config,
+            reference_ts_ms=reference_ts_ms,
         )
-        if core.get("data_ready"):
+        if core.get("data_ready") and funding.get("data_ready"):
             reflexivity = funding_adjustment(
                 core.get("tmv_core"), funding.get("funding_norm", 0.0),
                 config)
             final = reflexivity.get("direction_protected_final")
+        elif core.get("data_ready"):
+            reflexivity = {
+                "adjustment": 0.0,
+                "effect": "unavailable",
+                "warning": "funding_unavailable",
+                "direction_protected_final": core.get("tmv_core"),
+            }
+            final = core.get("tmv_core")
         else:
             reflexivity = {
                 "adjustment": 0.0,
@@ -9177,7 +9267,8 @@ def compute_tmv_core(klines, cfg, config=None):
 
 
 def compute_funding_layer(funding_points, horizon_hours,
-                          funding_interval_hours=8, config=None):
+                          funding_interval_hours=8, config=None,
+                          reference_ts_ms=None):
     config = config or CONFIG
     if not funding_points:
         return {
@@ -9192,6 +9283,27 @@ def compute_funding_layer(funding_points, horizon_hours,
         }
     funding_cum, count, start_time, end_time = current_funding_sum(
         funding_points, horizon_hours)
+    reference = safe_float(reference_ts_ms)
+    if reference is None:
+        reference = now_ms()
+    max_age_ms = int(float(config.get(
+        "tmvf_funding_max_age_hours", 12)) * 60 * 60 * 1000)
+    age_ms = None if end_time is None else max(0, int(reference - end_time))
+    if age_ms is None or (max_age_ms > 0 and age_ms > max_age_ms):
+        return {
+            "horizon_hours": horizon_hours,
+            "funding_cum": 0.0,
+            "funding_count": count,
+            "funding_norm": 0.0,
+            "funding_state": "unavailable",
+            "normalization": {},
+            "funding_interval_hours": funding_interval_hours,
+            "window_start_time": start_time,
+            "window_end_time": end_time,
+            "age_ms": age_ms,
+            "reason": "FUNDING_LATEST_POINT_STALE",
+            "data_ready": False,
+        }
     samples = rolling_funding_sums(funding_points, horizon_hours)
     norm, stats = robust_distribution_normalize(
         funding_cum, samples, max_abs_output=1.0)
@@ -9207,6 +9319,7 @@ def compute_funding_layer(funding_points, horizon_hours,
         "funding_interval_hours": funding_interval_hours,
         "window_start_time": start_time,
         "window_end_time": end_time,
+        "age_ms": age_ms,
         "data_ready": count >= required,
     }
 
@@ -10247,6 +10360,8 @@ def evaluate_tmvf(bars, anchor_result, futures_facts=None, config=None,
 
     reasons = []
     if not combined.get("data_ready"):
+        facts["direction"] = DIRECTION_UNCLEAR
+        facts["market_state"] = MARKET_UNCLEAR
         return module_result(MODULE_TMVF, STATE_UNCLEAR,
                              facts=facts,
                              reasons=["TMVF_KLINE_WINDOW_COLD"],
@@ -11492,6 +11607,7 @@ def _cn_reason(value):
         "ANCHOR_BAND_UNAVAILABLE": "锚带宽不可用",
         "ANCHOR_STALE": "锚数据偏旧",
         "ANCHOR_DEVIATION_WIDE": "价格偏离锚过宽",
+        "ANCHOR_TRADE_BACKLOG": "成交回补仍有积压",
         "GEX_PENDING": "GEX锚仍在确认",
         "TMVF_KLINE_WINDOW_COLD": "TMV-F K线窗口不足",
         "TMVF_FUNDING_HISTORY_MISSING": "Funding历史不足",
@@ -11729,6 +11845,7 @@ class DemoRuntime:
         self.futures_facts = {}
         self.current_price = None
         self.current_price_source = None
+        self.current_price_observed_ms = None
         self.last_source_quality = {}
         self.last_source_details = {}
         self.last_option_expiry_refresh_ms = None
@@ -11737,9 +11854,17 @@ class DemoRuntime:
         self.last_anchor_bar_index = None
         self.tmvf_klines = []
         self.tmvf_funding_points = []
+        self.last_good_tmvf_klines = []
+        self.last_good_tmvf_funding_points = []
+        self.last_tmvf_attempt_ms = None
         self.last_tmvf_refresh_ms = None
+        self.last_tmvf_funding_success_ms = None
+        self.tmvf_kline_quality = QUALITY_MISSING
+        self.tmvf_funding_quality = QUALITY_MISSING
         self.tmvf_data_quality = QUALITY_MISSING
         self.mdie_klines = []
+        self.last_good_mdie_klines = []
+        self.last_mdie_attempt_ms = None
         self.last_mdie_refresh_ms = None
         self.mdie_data_quality = QUALITY_MISSING
         self.macro_factor = MacroPressureFactor(self.http, self.config)
@@ -11750,6 +11875,7 @@ class DemoRuntime:
         self.option_greeks = []
         self.last_option_greeks_refresh_ms = None
         self.option_greeks_success_ms = None
+        self.last_option_refresh_metrics = {}
         _cvd_window = int(self.config.get("edb_cvd_strength_window", 240))
         self.cvd_hist = {
             "4h": collections.deque(maxlen=_cvd_window),
@@ -11757,7 +11883,10 @@ class DemoRuntime:
         }
         self.rr_hist = collections.deque(
             maxlen=int(self.config.get("srd_rr_baseline_window", 240)))
+        self.last_edb_cvd_bar_index = None
+        self.last_edb_rr_success_ms = None
         self.prev_edb_score = None
+        self.pending_signal_reviews = []
         self.chart = DemoChart(self.config)
         self.start_ms = now_ms()
         self.tick_count = 0
@@ -11781,6 +11910,8 @@ class DemoRuntime:
         source_quality = {}
         self.last_source_details = {}
         if live:
+            self.futures_facts = {}
+            self._reset_current_price()
             self._fetch_live_sources(source_quality)
         elif self.config.get("offline_fixture_enabled", False):
             self._seed_offline_fixture()
@@ -11812,7 +11943,7 @@ class DemoRuntime:
 
         gex_snapshot = self.gex_state.snapshot()
         external = evaluate_external_gate(self.config, source_quality)
-        anchor = self._evaluate_anchor_for_completed_bars(gex_snapshot)
+        anchor = self._evaluate_anchor_for_tick(gex_snapshot, live)
         tmvf = evaluate_tmvf(
             list(self.bars.completed_bars), anchor, self.futures_facts,
             self.config,
@@ -11836,6 +11967,7 @@ class DemoRuntime:
         skew = evaluate_skew_rr(
             self.option_greeks, list(self.rr_hist), self.config,
             greeks_age_ms=greeks_age_ms)
+        skew["greeks_epoch_ms"] = self.option_greeks_success_ms
         gamma_regime = evaluate_gamma_regime(
             gex_snapshot, self.current_price, self.option_greeks, self.config,
             gex_info=self.last_gex_info_snapshot,
@@ -11893,23 +12025,51 @@ class DemoRuntime:
         # Read-only: persist the full audit card to JSONL (+ optional FMZ push).
         if not self.config.get("signal_review_enabled", True):
             return
-        if not (self.last_signal_recorded and self.signal_events.events):
+        if not hasattr(self, "pending_signal_reviews"):
+            self.pending_signal_reviews = []
+        if self.last_signal_recorded and self.signal_events.events:
+            card = self.signal_events.events[0]
+            card_key = card.get("episode_id") or card.get("card_id")
+            queued_keys = [
+                item["card"].get("episode_id")
+                or item["card"].get("card_id")
+                for item in self.pending_signal_reviews
+            ]
+            if card_key not in queued_keys:
+                self.pending_signal_reviews.append({
+                    "card": card,
+                    "json_written": False,
+                    "push_done": False,
+                })
+        if not self.pending_signal_reviews:
             return
-        card = self.signal_events.events[0]
+        pending = self.pending_signal_reviews[0]
+        card = pending["card"]
         # full v1.0 audit record -> signal_review.jsonl (single source of truth);
         # FMZ push gets only the <=140-char brief (full chain stays in JSONL).
-        record = build_audit_record(card, self.config)
-        recorder_name = self.config.get("signal_review_recorder_name",
-                                        "signal_review")
-        self.recorder.write(
-            recorder_name, record)
-        if self.config.get("signal_review_push_enabled", False):
+        if not pending["json_written"]:
             try:
-                fmz_push(render_push_brief(card, self.config))
+                record = build_audit_record(card, self.config)
+                recorder_name = self.config.get(
+                    "signal_review_recorder_name", "signal_review")
+                pending["json_written"] = bool(
+                    self.recorder.write(recorder_name, record))
             except Exception as exc:
-                # A signal DID fire; never let a render error swallow the push.
-                fmz_push("【信号】审计简讯异常 #"
-                         + str(card.get("card_id")) + "：" + str(exc))
+                fmz_log("信号审计写入异常", str(exc))
+            if not pending["json_written"]:
+                return
+        if self.config.get("signal_review_push_enabled", False):
+            if not pending["push_done"]:
+                try:
+                    fmz_push(render_push_brief(card, self.config))
+                    pending["push_done"] = True
+                except Exception as exc:
+                    fmz_log("信号审计推送异常", str(exc))
+                    return
+        else:
+            pending["push_done"] = True
+        if pending["json_written"] and pending["push_done"]:
+            self.pending_signal_reviews.pop(0)
         # LLM review is intentionally out-of-process: signal_review.jsonl is the
         # stable input, and tools/gemini_signal_llm_review.py writes the sidecar.
 
@@ -12013,15 +12173,11 @@ class DemoRuntime:
             new_bars = self.bars.poll_with_drain()
             source_quality["binance"] = self.bars.last_cycle_metrics.get(
                 "quality", QUALITY_MISSING)
-            if self.bars.completed_bars:
+            if not self.bars.last_cycle_metrics.get("backlogged"):
                 self._set_current_price(
-                    self.bars.completed_bars[-1]["close"],
-                    "binance_spot_volume_bar",
-                )
-            elif self.gex_state.effective:
-                self._set_current_price(
-                    self.gex_state.effective.get("asset_price"),
-                    "gex_asset_price",
+                    self.bars.last_cycle_metrics.get("latest_trade_price"),
+                    "binance_spot_latest_trade",
+                    self.bars.last_cycle_metrics.get("latest_trade_ts_ms"),
                 )
 
             premium_index = self.binance.fetch_premium_index()
@@ -12032,10 +12188,12 @@ class DemoRuntime:
                 if self.current_price is None:
                     if not self._set_current_price(
                             premium_facts.get("mark_price"),
-                            "binance_futures_mark"):
+                            "binance_futures_mark",
+                            premium_facts.get("time")):
                         self._set_current_price(
                             premium_facts.get("index_price"),
-                            "binance_futures_index")
+                            "binance_futures_index",
+                            premium_facts.get("time"))
             self._refresh_tmvf_market_data()
             self._refresh_mdie_market_data()
             if self.current_price is None:
@@ -12046,6 +12204,7 @@ class DemoRuntime:
                         self.binance.best_mid_from_depth(
                             depth_result.get("data")),
                         "binance_spot_depth_mid",
+                        now_ms(),
                     )
             if new_bars:
                 fmz_log("新成交量柱", len(new_bars))
@@ -12074,6 +12233,7 @@ class DemoRuntime:
                         self._set_current_price(
                             index_data.get("index_price"),
                             "deribit_index_price",
+                            now_ms(),
                         )
             expiry_was_stale = self._option_expiries_stale()
             if expiry_was_stale:
@@ -12090,9 +12250,17 @@ class DemoRuntime:
                 "quality": source_quality.get("deribit"),
                 "expiry_count": len(self.option_expiries),
                 "expiry_age_ms": self._option_expiry_age_ms(),
+                "option_refresh": dict(self.last_option_refresh_metrics),
             }
         except Exception as error:
             self._mark_source_error(source_quality, "deribit", error)
+
+        if self.current_price is None and self.gex_state.effective:
+            self._set_current_price(
+                self.gex_state.effective.get("asset_price"),
+                "gex_asset_price",
+                self.gex_state.effective.get("source_ts_ms"),
+            )
 
     def _mark_source_error(self, source_quality, source, error):
         source_quality[source] = QUALITY_ERROR
@@ -12102,12 +12270,24 @@ class DemoRuntime:
         }
         fmz_log("数据源异常", source, str(error))
 
-    def _set_current_price(self, value, source):
+    def _reset_current_price(self):
+        self.current_price = None
+        self.current_price_source = None
+        self.current_price_observed_ms = None
+
+    def _set_current_price(self, value, source, observed_ms=None):
         price = safe_float(value)
         if price is None or price <= 0:
             return False
         self.current_price = price
         self.current_price_source = source
+        observed = safe_int(observed_ms)
+        observed = observed if observed else now_ms()
+        max_age = int(self.config.get("current_price_max_age_ms", 300000))
+        if max_age > 0 and now_ms() - observed > max_age:
+            self._reset_current_price()
+            return False
+        self.current_price_observed_ms = observed
         return True
 
     def _runtime_facts(self):
@@ -12124,6 +12304,10 @@ class DemoRuntime:
             "max_main_loops": self.config.get("max_main_loops"),
             "current_price": self.current_price,
             "current_price_source": self.current_price_source,
+            "current_price_observed_ms": self.current_price_observed_ms,
+            "current_price_age_ms": (
+                None if self.current_price_observed_ms is None
+                else max(0, now_ms() - self.current_price_observed_ms)),
             "completed_bar_count": len(self.bars.completed_bars),
             "volume_bar_threshold": self.config.get("volume_bar_n"),
             "current_bar_volume": self.bars.current_volume,
@@ -12180,11 +12364,15 @@ class DemoRuntime:
     def _refresh_tmvf_market_data(self):
         if not self._tmvf_data_stale():
             return
-        quality = QUALITY_OK
-        klines_result = self.binance.fetch_futures_klines(
-            interval=self._tmvf_kline_interval(),
-            limit=self.config["tmvf_kline_limit"],
-        )
+        attempt_ms = now_ms()
+        try:
+            klines_result = self.binance.fetch_futures_klines(
+                interval=self._tmvf_kline_interval(),
+                limit=self.config["tmvf_kline_limit"],
+            )
+        except Exception as exc:
+            klines_result = {"quality": QUALITY_ERROR, "error": str(exc)}
+        kline_quality = klines_result.get("quality", QUALITY_ERROR)
         if klines_result.get("quality") == QUALITY_OK:
             klines = []
             for row in klines_result.get("data") or []:
@@ -12192,22 +12380,42 @@ class DemoRuntime:
                 if parsed:
                     klines.append(parsed)
             if klines:
-                self.tmvf_klines = klines
+                closed_times = [
+                    safe_int(item.get("close_time")) for item in klines
+                    if safe_int(item.get("close_time")) is not None
+                    and safe_int(item.get("close_time")) <= attempt_ms
+                ]
+                max_age = int(self.config.get(
+                    "tmvf_kline_max_age_ms", 10800000))
+                if (not closed_times or (max_age > 0 and attempt_ms
+                                         - max(closed_times) > max_age)):
+                    kline_quality = QUALITY_STALE
+                else:
+                    self.tmvf_klines = klines
+                    self.last_good_tmvf_klines = list(klines)
+                    self.last_tmvf_refresh_ms = attempt_ms
+                    kline_quality = QUALITY_OK
             else:
-                quality = QUALITY_MISSING
-        else:
-            quality = klines_result.get("quality", QUALITY_ERROR)
+                kline_quality = QUALITY_MISSING
+        if kline_quality != QUALITY_OK:
+            if self.tmvf_klines:
+                self.last_good_tmvf_klines = list(self.tmvf_klines)
+            self.tmvf_klines = []
 
-        end_ms = now_ms()
+        end_ms = attempt_ms
         start_ms = (
             end_ms
             - int(self.config["tmvf_funding_lookback_days"])
             * 24 * 60 * 60 * 1000)
-        funding_result = self.binance.fetch_funding_rate(
-            start_time=start_ms,
-            end_time=end_ms,
-            limit=self.config["tmvf_funding_limit"],
-        )
+        try:
+            funding_result = self.binance.fetch_funding_rate(
+                start_time=start_ms,
+                end_time=end_ms,
+                limit=self.config["tmvf_funding_limit"],
+            )
+        except Exception as exc:
+            funding_result = {"quality": QUALITY_ERROR, "error": str(exc)}
+        funding_quality = funding_result.get("quality", QUALITY_ERROR)
         if funding_result.get("quality") == QUALITY_OK:
             funding_points = []
             for row in funding_result.get("data") or []:
@@ -12216,22 +12424,44 @@ class DemoRuntime:
                     funding_points.append(parsed)
             funding_points.sort(key=lambda item: item.get("funding_time") or 0)
             if funding_points:
-                self.tmvf_funding_points = funding_points
-            elif quality == QUALITY_OK:
-                quality = QUALITY_STALE
-        elif quality == QUALITY_OK:
-            quality = funding_result.get("quality", QUALITY_STALE)
+                latest_funding_ms = safe_int(
+                    funding_points[-1].get("funding_time"))
+                max_age_ms = int(float(self.config.get(
+                    "tmvf_funding_max_age_hours", 12)) * 60 * 60 * 1000)
+                if (latest_funding_ms is None or (max_age_ms > 0
+                        and attempt_ms - latest_funding_ms > max_age_ms)):
+                    funding_quality = QUALITY_STALE
+                else:
+                    self.tmvf_funding_points = funding_points
+                    self.last_good_tmvf_funding_points = list(funding_points)
+                    self.last_tmvf_funding_success_ms = attempt_ms
+                    funding_quality = QUALITY_OK
+            else:
+                funding_quality = QUALITY_MISSING
+        if funding_quality != QUALITY_OK:
+            if self.tmvf_funding_points:
+                self.last_good_tmvf_funding_points = list(
+                    self.tmvf_funding_points)
+            self.tmvf_funding_points = []
 
-        self.last_tmvf_refresh_ms = now_ms()
-        self.tmvf_data_quality = quality
+        self.last_tmvf_attempt_ms = attempt_ms
+        self.tmvf_kline_quality = kline_quality
+        self.tmvf_funding_quality = funding_quality
+        self.tmvf_data_quality = (
+            kline_quality if kline_quality != QUALITY_OK
+            else funding_quality)
 
     def _refresh_mdie_market_data(self):
         if not self._mdie_data_stale():
             return
-        result = self.binance.fetch_futures_klines(
-            interval=self.config.get("m_die_interval", "1m"),
-            limit=self.config.get("m_die_kline_limit", 40),
-        )
+        attempt_ms = now_ms()
+        try:
+            result = self.binance.fetch_futures_klines(
+                interval=self.config.get("m_die_interval", "1m"),
+                limit=self.config.get("m_die_kline_limit", 40),
+            )
+        except Exception as exc:
+            result = {"quality": QUALITY_ERROR, "error": str(exc)}
         quality = result.get("quality", QUALITY_ERROR)
         if result.get("quality") == QUALITY_OK:
             klines = []
@@ -12240,11 +12470,28 @@ class DemoRuntime:
                 if parsed:
                     klines.append(parsed)
             if klines:
-                self.mdie_klines = klines
-                quality = QUALITY_OK
+                closed_times = [
+                    safe_int(item.get("close_time")) for item in klines
+                    if safe_int(item.get("close_time")) is not None
+                    and safe_int(item.get("close_time")) <= attempt_ms
+                ]
+                max_age = int(self.config.get(
+                    "m_die_data_max_age_ms", 180000))
+                if (not closed_times or (max_age > 0 and attempt_ms
+                                         - max(closed_times) > max_age)):
+                    quality = QUALITY_STALE
+                else:
+                    self.mdie_klines = klines
+                    self.last_good_mdie_klines = list(klines)
+                    self.last_mdie_refresh_ms = attempt_ms
+                    quality = QUALITY_OK
             else:
                 quality = QUALITY_MISSING
-        self.last_mdie_refresh_ms = now_ms()
+        if quality != QUALITY_OK:
+            if self.mdie_klines:
+                self.last_good_mdie_klines = list(self.mdie_klines)
+            self.mdie_klines = []
+        self.last_mdie_attempt_ms = attempt_ms
         self.mdie_data_quality = quality
 
     def _refresh_macro_factor(self, live, offline_fixture=False):
@@ -12304,18 +12551,49 @@ class DemoRuntime:
         if not self.option_instruments or self.current_price is None:
             return
         greeks = []
-        for inst in self._select_near_money_instruments():
-            ticker = self.deribit.get_ticker(inst.get("instrument_name"))
+        started_ms = now_ms()
+        request_count = 0
+        consecutive_failures = 0
+        circuit_open = False
+        wall_budget_ms = int(self.config.get(
+            "deribit_option_refresh_wall_time_ms", 12000))
+        failure_budget = max(1, int(self.config.get(
+            "deribit_option_max_consecutive_failures", 3)))
+        selected = self._select_near_money_instruments()
+        for inst in selected:
+            if (wall_budget_ms > 0
+                    and now_ms() - started_ms >= wall_budget_ms):
+                circuit_open = True
+                break
+            request_count += 1
+            try:
+                ticker = self.deribit.get_ticker(inst.get("instrument_name"))
+            except Exception as exc:
+                ticker = {"quality": QUALITY_ERROR, "error": str(exc)}
             if ticker.get("quality") == QUALITY_OK:
                 norm = self.deribit.normalize_ticker(ticker.get("data"), inst)
                 if norm and norm.get("delta") is not None:
                     greeks.append(norm)
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= failure_budget:
+                    circuit_open = True
+                    break
         if greeks:
             self.option_greeks = greeks
             self.option_greeks_success_ms = now_ms()
         # attempt/throttle time always advances; SUCCESS time only on a real
         # fetch, so a failed fetch lets greeks age honestly (no masking).
         self.last_option_greeks_refresh_ms = now_ms()
+        self.last_option_refresh_metrics = {
+            "selected_count": len(selected),
+            "request_count": request_count,
+            "success_count": len(greeks),
+            "consecutive_failures": consecutive_failures,
+            "circuit_open": circuit_open,
+            "wall_time_ms": now_ms() - started_ms,
+        }
 
     def _option_greeks_stale(self):
         refresh_ms = int(
@@ -12361,23 +12639,40 @@ class DemoRuntime:
 
     def _update_edb_history(self, flow, skew):
         micro = (flow or {}).get("micro_flow") or {}
-        for label, role in (("fast_4h", "4h"), ("slow_12h", "12h")):
-            cvd_norm = safe_float((micro.get(label) or {}).get("cvd_norm"))
-            if cvd_norm is not None:
-                self.cvd_hist[role].append(abs(cvd_norm))
+        bar_epoch = None
+        for label in ("fast_4h", "slow_12h"):
+            window = micro.get(label) or {}
+            bar_epoch = (window.get("latest_bar_index")
+                         or window.get("latest_complete_ts_ms")
+                         or bar_epoch)
+        if bar_epoch is None and self.bars.completed_bars:
+            latest_bar = self.bars.completed_bars[-1]
+            bar_epoch = (latest_bar.get("bar_index")
+                         or latest_bar.get("complete_ts_ms"))
+        if bar_epoch is not None and bar_epoch != self.last_edb_cvd_bar_index:
+            appended = False
+            for label, role in (("fast_4h", "4h"), ("slow_12h", "12h")):
+                cvd_norm = safe_float((micro.get(label) or {}).get("cvd_norm"))
+                if cvd_norm is not None:
+                    self.cvd_hist[role].append(abs(cvd_norm))
+                    appended = True
+            if appended:
+                self.last_edb_cvd_bar_index = bar_epoch
         rr = safe_float((skew or {}).get("rr_blend"))
-        if rr is not None:
+        rr_epoch = ((skew or {}).get("greeks_epoch_ms")
+                    or self.option_greeks_success_ms)
+        if (rr is not None and rr_epoch is not None
+                and rr_epoch != self.last_edb_rr_success_ms):
             self.rr_hist.append(rr)
+            self.last_edb_rr_success_ms = rr_epoch
 
     def _tmvf_data_stale(self):
-        if not self.tmvf_klines:
-            return True
         refresh_ms = int(self.config.get("tmvf_refresh_sec", 300)) * 1000
         if refresh_ms <= 0:
-            return False
-        if self.last_tmvf_refresh_ms is None:
             return True
-        return now_ms() - self.last_tmvf_refresh_ms >= refresh_ms
+        if self.last_tmvf_attempt_ms is None:
+            return True
+        return now_ms() - self.last_tmvf_attempt_ms >= refresh_ms
 
     def _tmvf_data_age_ms(self):
         if self.last_tmvf_refresh_ms is None:
@@ -12386,17 +12681,15 @@ class DemoRuntime:
 
     def _tmvf_next_refresh_in_ms(self):
         refresh_ms = int(self.config.get("tmvf_refresh_sec", 300)) * 1000
-        return self._next_due_ms(self.last_tmvf_refresh_ms, refresh_ms)
+        return self._next_due_ms(self.last_tmvf_attempt_ms, refresh_ms)
 
     def _mdie_data_stale(self):
-        if not self.mdie_klines:
-            return True
         refresh_ms = int(self.config.get("m_die_refresh_sec", 60)) * 1000
         if refresh_ms <= 0:
             return True
-        if self.last_mdie_refresh_ms is None:
+        if self.last_mdie_attempt_ms is None:
             return True
-        return now_ms() - self.last_mdie_refresh_ms >= refresh_ms
+        return now_ms() - self.last_mdie_attempt_ms >= refresh_ms
 
     def _mdie_data_age_ms(self):
         if self.last_mdie_refresh_ms is None:
@@ -12405,7 +12698,7 @@ class DemoRuntime:
 
     def _mdie_next_refresh_in_ms(self):
         refresh_ms = int(self.config.get("m_die_refresh_sec", 60)) * 1000
-        return self._next_due_ms(self.last_mdie_refresh_ms, refresh_ms)
+        return self._next_due_ms(self.last_mdie_attempt_ms, refresh_ms)
 
     def _macro_next_refresh_in_ms(self):
         refresh_ms = int(self.config.get("macro_refresh_sec", 3600)) * 1000
@@ -12521,6 +12814,34 @@ class DemoRuntime:
             self.gex_state.update_band_reference(band_half)
         return anchor
 
+    def _evaluate_anchor_for_tick(self, gex_snapshot, live):
+        if not (live and self.bars.last_cycle_metrics.get("backlogged")):
+            return self._evaluate_anchor_for_completed_bars(gex_snapshot)
+        latest_bar = (
+            self.bars.completed_bars[-1]
+            if self.bars.completed_bars else None)
+        preview = evaluate_anchor(
+            gex_snapshot,
+            self.current_price,
+            self.bars.slow_std_usd(),
+            self.config,
+            latest_bar=latest_bar,
+            nd_window=self.anchor_nd_window,
+            update_window=False,
+        )
+        return self._invalidate_anchor_for_trade_backlog(preview)
+
+    @staticmethod
+    def _invalidate_anchor_for_trade_backlog(anchor):
+        result = dict(anchor or {})
+        result["state"] = STATE_INVALID
+        result["quality"] = QUALITY_STALE
+        reasons = list(result.get("reasons") or [])
+        if "ANCHOR_TRADE_BACKLOG" not in reasons:
+            reasons.append("ANCHOR_TRADE_BACKLOG")
+        result["reasons"] = reasons
+        return result
+
     def _extract_option_expiries(self, instruments):
         active_now = now_ms()
         expiries = []
@@ -12616,6 +12937,12 @@ class DemoRuntime:
                 "mark_price": self.current_price,
             })
         self.last_tmvf_refresh_ms = base_ts_ms
+        self.last_tmvf_attempt_ms = base_ts_ms
+        self.last_tmvf_funding_success_ms = base_ts_ms
+        self.last_good_tmvf_klines = list(self.tmvf_klines)
+        self.last_good_tmvf_funding_points = list(self.tmvf_funding_points)
+        self.tmvf_kline_quality = QUALITY_OK
+        self.tmvf_funding_quality = QUALITY_OK
         self.tmvf_data_quality = QUALITY_OK
         self.mdie_klines = []
         mdie_start = base_ts_ms - 40 * 60 * 1000
@@ -12637,6 +12964,8 @@ class DemoRuntime:
             })
             mdie_price = close_price
         self.last_mdie_refresh_ms = base_ts_ms
+        self.last_mdie_attempt_ms = base_ts_ms
+        self.last_good_mdie_klines = list(self.mdie_klines)
         self.mdie_data_quality = QUALITY_OK
         self.last_macro_snapshot = offline_macro_pressure_snapshot(
             self.config, base_ts_ms,
