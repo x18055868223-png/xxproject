@@ -174,7 +174,7 @@ Environment="TRANSITION_STATE_SOURCE=$(systemd_escape_value "$TRANSITION_STATE_S
 Environment="TRANSITION_LLM_REVIEWS_SOURCE=$(systemd_escape_value "$TRANSITION_LLM_REVIEWS_SOURCE")"
 Environment="MAX_CARDS=$(systemd_escape_value "$MAX_CARDS")"
 ExecStart=
-ExecStart=/usr/bin/python3 \${TOOLS_ROOT}/materialize_signal_cards.py --source \${JSONL_SOURCE} --output \${STATIC_ROOT} --max-cards \${MAX_CARDS} --llm-reviews \${LLM_REVIEWS_SOURCE} --transition-ledger \${TRANSITION_LEDGER_SOURCE} --transition-state \${TRANSITION_STATE_SOURCE} --transition-reviews \${TRANSITION_LLM_REVIEWS_SOURCE}
+ExecStart=/usr/bin/python3 \${TOOLS_ROOT}/materialize_signal_cards.py --source \${JSONL_SOURCE} --require-valid-source-tail --output \${STATIC_ROOT} --max-cards \${MAX_CARDS} --llm-reviews \${LLM_REVIEWS_SOURCE} --transition-ledger \${TRANSITION_LEDGER_SOURCE} --transition-state \${TRANSITION_STATE_SOURCE} --transition-reviews \${TRANSITION_LLM_REVIEWS_SOURCE}
 EOF
   "${SUDO[@]}" install -m 0644 "$temp_conf" "$mat_dir/10-bootstrap-overrides.conf"
   rm -f "$temp_conf"

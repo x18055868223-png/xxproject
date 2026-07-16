@@ -9,6 +9,9 @@ BOOTSTRAP = ROOT / "tools" / "server_bootstrap_signal_stack.sh"
 SELF_CHECK = ROOT / "tools" / "server_self_check_signal_stack.sh"
 MIGRATION = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION.md"
 MIGRATION_ZH = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION_ZH.md"
+MATERIALIZE_SERVICE = ROOT / "deploy" / "signal_audit" / "signal-audit-materialize.service"
+MATERIALIZE_TIMER = ROOT / "deploy" / "signal_audit" / "signal-audit-materialize.timer"
+INSTALL_OR_UPDATE = ROOT / "deploy" / "signal_audit" / "install_or_update.sh"
 
 
 def assert_true(condition, message):
@@ -25,11 +28,20 @@ def main():
                 "server migration README should exist")
     assert_true(MIGRATION_ZH.exists(),
                 "Chinese server migration quick runbook should exist")
+    assert_true(MATERIALIZE_SERVICE.exists(),
+                "materializer systemd service should exist")
+    assert_true(MATERIALIZE_TIMER.exists(),
+                "materializer systemd timer should exist")
+    assert_true(INSTALL_OR_UPDATE.exists(),
+                "signal audit install/update script should exist")
 
     script = BOOTSTRAP.read_text(encoding="utf-8")
     self_check = SELF_CHECK.read_text(encoding="utf-8")
     doc = MIGRATION.read_text(encoding="utf-8")
     doc_zh = MIGRATION_ZH.read_text(encoding="utf-8")
+    materialize_service = MATERIALIZE_SERVICE.read_text(encoding="utf-8")
+    materialize_timer = MATERIALIZE_TIMER.read_text(encoding="utf-8")
+    install_or_update = INSTALL_OR_UPDATE.read_text(encoding="utf-8")
 
     assert_true(script.startswith("#!/usr/bin/env bash"),
                 "bootstrap should be a bash script")
@@ -68,6 +80,7 @@ def main():
             "RUN_SELF_CHECK"):
         assert_true(token in script, "bootstrap should mention " + token)
     for token in (
+            "--require-valid-source-tail",
             "--transition-ledger \\${TRANSITION_LEDGER_SOURCE}",
             "--transition-state \\${TRANSITION_STATE_SOURCE}",
             "--transition-reviews \\${TRANSITION_LLM_REVIEWS_SOURCE}",
@@ -90,6 +103,13 @@ def main():
                 "bootstrap may create templates, not real secrets")
     assert_true("AIza" not in script and "sk-" not in script,
                 "bootstrap must not embed API keys")
+    assert_true("--require-valid-source-tail" in materialize_service,
+                "materializer service should fail loud on a corrupt latest source record")
+    assert_true("--require-valid-source-tail" in install_or_update,
+                "direct post-install materialization should fail loud on a corrupt tail")
+    assert_true("Restart=" not in materialize_service
+                and "RestartSec=" not in materialize_service,
+                "oneshot materializer service must not use Restart")
     for token in (
             "SESSION_CONTEXT_REQUIRED",
             "DURABILITY_REQUIRED",

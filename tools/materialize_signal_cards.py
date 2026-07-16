@@ -29,6 +29,12 @@ TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
 TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+
+
+class SourceTailValidationError(RuntimeError):
+    pass
+
+
 TRANSITION_DOMAIN_ORDER = (
     "TMV", "MACRO", "FUNDING", "SKEW", "GAMMA", "P_C_RATIO",
     "CONFLICT", "DECISION", "QUALITY",
@@ -532,9 +538,12 @@ SESSION_PREMISE_CONTEXTS = {
 
 def materialize(source, output, max_cards=200, llm_reviews=None,
                 include_synthetic=False, transition_ledger=None,
-                transition_state=None, transition_reviews=None):
+                transition_state=None, transition_reviews=None,
+                require_valid_source_tail=False):
     source = Path(source)
     output = Path(output)
+    if require_valid_source_tail:
+        _validate_source_tail(source)
     cards_dir = output / "signal_cards"
     cards_dir.mkdir(parents=True, exist_ok=True)
     _chmod_public_dir(output)
@@ -651,6 +660,42 @@ def _read_jsonl(source, max_records=None, require_identity=True):
             else:
                 skipped += 1
     return list(records), skipped
+
+
+def _validate_source_tail(source):
+    if not source.exists():
+        raise SourceTailValidationError(
+            "source JSONL does not exist: {}".format(source))
+    last_text = None
+    last_line_number = 0
+    try:
+        with source.open("r", encoding="utf-8-sig") as handle:
+            for line_number, line in enumerate(handle, 1):
+                text = line.strip()
+                if text:
+                    last_text = text
+                    last_line_number = line_number
+    except UnicodeDecodeError as exc:
+        raise SourceTailValidationError(
+            "source JSONL is not valid UTF-8: {}".format(source)) from exc
+    if last_text is None:
+        raise SourceTailValidationError(
+            "source JSONL has no non-empty records: {}".format(source))
+    try:
+        value = json.loads(last_text)
+    except json.JSONDecodeError as exc:
+        raise SourceTailValidationError(
+            "last non-empty source line {} in {} is not valid JSON: {}".format(
+                last_line_number, source, exc.msg)) from exc
+    if not isinstance(value, dict):
+        raise SourceTailValidationError(
+            "last non-empty source line {} in {} is not a JSON object".format(
+                last_line_number, source))
+    identity = value.get("identity")
+    if not isinstance(identity, dict) or not identity.get("card_id"):
+        raise SourceTailValidationError(
+            "last non-empty source line {} in {} is missing identity.card_id".format(
+                last_line_number, source))
 
 
 def _dedupe_by_card_id(records):
@@ -2583,13 +2628,20 @@ def main(argv=None):
                         help="Optional sidecar JSONL of transition LLM reviews to merge into cards.")
     parser.add_argument("--include-synthetic", action="store_true",
                         help="Include synthetic/local preview cards in the published manifest.")
+    parser.add_argument("--require-valid-source-tail", action="store_true",
+                        help=("Fail before writing output if the last non-empty "
+                              "source line is not a JSON object with identity.card_id."))
     args = parser.parse_args(argv)
-    result = materialize(args.source, args.output, args.max_cards,
-                         llm_reviews=args.llm_reviews,
-                         include_synthetic=args.include_synthetic,
-                         transition_ledger=args.transition_ledger,
-                         transition_state=args.transition_state,
-                         transition_reviews=args.transition_reviews)
+    try:
+        result = materialize(args.source, args.output, args.max_cards,
+                             llm_reviews=args.llm_reviews,
+                             include_synthetic=args.include_synthetic,
+                             transition_ledger=args.transition_ledger,
+                             transition_state=args.transition_state,
+                             transition_reviews=args.transition_reviews,
+                             require_valid_source_tail=args.require_valid_source_tail)
+    except SourceTailValidationError as exc:
+        parser.exit(2, "materialize_signal_cards: ERROR: {}\n".format(exc))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 

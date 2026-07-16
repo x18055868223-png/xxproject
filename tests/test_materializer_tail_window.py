@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 
@@ -464,6 +465,97 @@ def main():
                             .read_text(encoding="utf-8"))
         assert_true(newest["llm_review"]["summary_cn"] == "tail review",
                     "tail sidecar review should merge")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "bad_tail_signal_review.jsonl"
+        output = root / "public"
+        cards_dir = output / "signal_cards"
+        cards_dir.mkdir(parents=True)
+        old_manifest = '{"sentinel":"keep"}\n'
+        (cards_dir / "index.json").write_text(old_manifest, encoding="utf-8")
+        source.write_text(json.dumps(record(1), ensure_ascii=False)
+                          + "\n{not-json\n\n",
+                          encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(TOOL_FILE),
+                "--source", str(source),
+                "--output", str(output),
+                "--max-cards", "20",
+                "--require-valid-source-tail",
+            ],
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert_true(result.returncode != 0,
+                    "strict source tail mode should fail on a corrupt latest source line")
+        assert_true("last non-empty source line" in result.stderr
+                    and "not valid JSON" in result.stderr,
+                    "strict source tail failure should explain the corrupt tail")
+        assert_true((cards_dir / "index.json").read_text(encoding="utf-8")
+                    == old_manifest,
+                    "strict source tail failure must not overwrite the existing manifest")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "missing_identity_tail_signal_review.jsonl"
+        output = root / "public"
+        source.write_text(json.dumps({"identity": {}, "quality": {"overall": "OK"}},
+                                     ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        try:
+            tool.materialize(source, output, max_cards=20,
+                             require_valid_source_tail=True)
+            raise AssertionError("missing identity.card_id tail should fail")
+        except tool.SourceTailValidationError as exc:
+            assert_true("missing identity.card_id" in str(exc),
+                        "strict source tail failure should name identity.card_id")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        output = root / "public"
+        cards_dir = output / "signal_cards"
+        cards_dir.mkdir(parents=True)
+        old_manifest = '{"sentinel":"keep"}\n'
+        (cards_dir / "index.json").write_text(old_manifest, encoding="utf-8")
+        for source, expected in (
+                (root / "missing.jsonl", "does not exist"),
+                (root / "empty.jsonl", "no non-empty records")):
+            if source.name == "empty.jsonl":
+                source.write_text("\n\n", encoding="utf-8")
+            try:
+                tool.materialize(source, output, max_cards=20,
+                                 require_valid_source_tail=True)
+                raise AssertionError("missing or empty strict source should fail")
+            except tool.SourceTailValidationError as exc:
+                assert_true(expected in str(exc),
+                            "strict source failure should explain " + expected)
+            assert_true((cards_dir / "index.json").read_text(encoding="utf-8")
+                        == old_manifest,
+                        "strict source failure must preserve the existing manifest")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "middle_bad_valid_tail_signal_review.jsonl"
+        output = root / "public"
+        source.write_text(json.dumps(record(1), ensure_ascii=False)
+                          + "\n{not-json\n"
+                          + json.dumps(record(2), ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        result = tool.materialize(source, output, max_cards=20,
+                                  require_valid_source_tail=True)
+        manifest = json.loads((output / "signal_cards" / "index.json")
+                              .read_text(encoding="utf-8"))
+        ids = [item["card_id"] for item in manifest["cards"]]
+        assert_true(result["skipped_lines"] == 1,
+                    "middle corrupt source lines should still be reported as skipped")
+        assert_true(ids == [record(2)["identity"]["card_id"],
+                            record(1)["identity"]["card_id"]],
+                    "valid tail should allow materialization despite earlier corrupt lines")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)

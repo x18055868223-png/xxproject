@@ -10755,19 +10755,53 @@ class JsonlRecorder:
         except Exception:
             self.enabled = False
 
+    def _needs_leading_jsonl_newline(self, path):
+        try:
+            if not os.path.exists(path) or os.path.getsize(path) <= 0:
+                return False
+            with open(path, "rb") as handle:
+                handle.seek(-1, os.SEEK_END)
+                return handle.read(1) != b"\n"
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return True
+
     def write(self, name, payload):
         if not self.enabled:
             fmz_log(name, json.dumps(payload, ensure_ascii=False))
             return False
         path = os.path.join(self.logs_dir, name + ".jsonl")
+        fd = None
+        ok = False
         try:
-            with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False,
-                                        sort_keys=True) + "\n")
-            return True
+            line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            data = line.encode("utf-8") + b"\n"
+            if self._needs_leading_jsonl_newline(path):
+                data = b"\n" + data
+            flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(path, flags, 0o644)
+            written = 0
+            while written < len(data):
+                chunk = os.write(fd, data[written:])
+                if chunk <= 0:
+                    raise OSError("jsonl short write")
+                written += chunk
+            os.fsync(fd)
+            ok = True
         except Exception as error:
             fmz_log("记录写入失败", name, str(error))
-            return False
+            ok = False
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception as error:
+                    fmz_log("记录关闭失败", name, str(error))
+                    ok = False
+        return ok
 
 
 def render_status(decision_snapshot, module_results, config=None):

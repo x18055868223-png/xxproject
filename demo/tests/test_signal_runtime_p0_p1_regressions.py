@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import tempfile
@@ -25,6 +26,8 @@ TESTS = [
     "edb_history_dedupes_same_bar_and_greeks_epoch",
     "signal_event_tracker_build_error_does_not_consume_episode",
     "recorder_retries_json_and_push_without_reordering",
+    "jsonl_recorder_self_synchronizes_after_truncated_tail",
+    "jsonl_recorder_short_write_failure_returns_false_and_runtime_retries",
     "read_only_audit_record_blocks_execution_but_keeps_model_support",
 ]
 
@@ -170,6 +173,20 @@ def sample_card(mod, cfg, episode_id):
     card["episode_id"] = episode_id
     card["card_id"] = episode_id
     return card
+
+
+def read_jsonl_skip_bad(path):
+    records = []
+    skipped = 0
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            records.append(json.loads(text))
+        except json.JSONDecodeError:
+            skipped += 1
+    return records, skipped
 
 
 def test_bar_drain_backlog_and_trade_timestamp(mod):
@@ -660,6 +677,94 @@ def test_recorder_retries_json_and_push_without_reordering(mod):
         "failed push should retry the original queued card before newer cards")
 
 
+def test_jsonl_recorder_self_synchronizes_after_truncated_tail(mod):
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = base_config(mod, tmp)
+        recorder = mod.JsonlRecorder(cfg)
+        path = pathlib.Path(tmp) / "signal_review.jsonl"
+        path.write_bytes(b'{"card_id":"BROKEN"')
+
+        assert_true(
+            recorder.write("signal_review", {"card_id": "CARD-OK"}),
+            "recorder should append a complete record after a truncated tail")
+
+        raw = path.read_bytes()
+        assert_true(
+            b'\n{"card_id": "CARD-OK"}\n' in raw,
+            "successful append after a truncated tail must start on a new line")
+        records, skipped = read_jsonl_skip_bad(path)
+        assert_equal(
+            skipped, 1,
+            "parser should be able to skip the pre-existing truncated tail")
+        assert_equal(
+            len(records), 1,
+            "parser should recover the complete record after the bad line")
+        assert_equal(
+            records[0].get("card_id"), "CARD-OK",
+            "recovered record should be the post-truncation append")
+
+
+def test_jsonl_recorder_short_write_failure_returns_false_and_runtime_retries(mod):
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = base_config(
+            mod,
+            tmp,
+            signal_review_enabled=True,
+            signal_review_push_enabled=False)
+        runtime = object.__new__(mod.DemoRuntime)
+        runtime.config = cfg
+        runtime.signal_events = types.SimpleNamespace(
+            events=[sample_card(mod, cfg, "EP-SHORT-RETRY")])
+        runtime.last_signal_recorded = True
+        runtime.recorder = mod.JsonlRecorder(cfg)
+        path = pathlib.Path(tmp) / "signal_review.jsonl"
+
+        original_write = mod.os.write
+        calls = {"count": 0}
+
+        def fail_after_short_write(fd, data):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                chunk_len = min(len(data), 23)
+                return original_write(fd, data[:chunk_len])
+            raise OSError("simulated append interruption")
+
+        mod.os.write = fail_after_short_write
+        try:
+            mod.DemoRuntime._emit_signal_review_card(runtime)
+        finally:
+            mod.os.write = original_write
+
+        assert_true(
+            calls["count"] >= 2,
+            "recorder must loop after a short os.write instead of accepting it")
+        assert_equal(
+            len(runtime.pending_signal_reviews), 1,
+            "failed JSON append must keep the card pending for retry")
+        partial = path.read_bytes()
+        assert_true(
+            partial and not partial.endswith(b"\n"),
+            "simulated interrupted append should leave a truncated tail")
+
+        runtime.last_signal_recorded = False
+        mod.DemoRuntime._emit_signal_review_card(runtime)
+
+        assert_equal(
+            len(runtime.pending_signal_reviews), 0,
+            "retry without a new signal should write and pop the original card")
+        records, skipped = read_jsonl_skip_bad(path)
+        assert_true(
+            skipped >= 1,
+            "parser should skip the interrupted partial write")
+        assert_true(
+            records and records[-1].get("identity", {}).get("episode_id")
+            == "EP-SHORT-RETRY",
+            "retry should append the original pending audit record")
+        assert_equal(
+            records[-1].get("identity", {}).get("strategy_version"), "1.5.6",
+            "retry must preserve the 1.5.6 producer version")
+
+
 def test_read_only_audit_record_blocks_execution_but_keeps_model_support(mod):
     cfg = dict(mod.CONFIG)
     cfg["read_only_demo"] = True
@@ -703,6 +808,8 @@ def main():
     test_edb_history_dedupes_same_bar_and_greeks_epoch(mod)
     test_signal_event_tracker_build_error_does_not_consume_episode(mod)
     test_recorder_retries_json_and_push_without_reordering(mod)
+    test_jsonl_recorder_self_synchronizes_after_truncated_tail(mod)
+    test_jsonl_recorder_short_write_failure_returns_false_and_runtime_retries(mod)
     test_read_only_audit_record_blocks_execution_but_keeps_model_support(mod)
     print("signal_runtime_p0_p1_regressions: PASS")
 

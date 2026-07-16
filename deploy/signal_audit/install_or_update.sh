@@ -79,6 +79,7 @@ systemctl enable --now signal-audit-llm-review.timer
 if [[ -f "$JSONL_SOURCE" ]]; then
   materialize_args=(
     --source "$JSONL_SOURCE" \
+    --require-valid-source-tail \
     --output "$STATIC_ROOT" \
     --max-cards "$MAX_CARDS" \
     --transition-ledger "$TRANSITION_LEDGER_SOURCE" \
