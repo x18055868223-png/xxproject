@@ -1,11 +1,12 @@
 {
-  "backup_version": "NRD-XXPROJECT-BACKUP-2026.07.07-r3.3.8-funding-gex-card",
-  "backup_date": "2026-07-07",
+  "backup_version": "NRD-XXPROJECT-BACKUP-2026.07.16-r3.3.9-neutral-repair-full-fix",
+  "backup_date": "2026-07-16",
   "project_name": "neutral-loop-integration",
   "target_repository": "https://github.com/x18055868223-png/xxproject",
   "source_workspace": "local integration workspace; exact user path intentionally omitted",
   "scope": [
-    "fmz_signal_layer_v1.5.4",
+    "fmz_signal_layer_v1.5.5",
+    "neutral_repair_signal_loss_fix_r3.3.9",
     "funding_gex_card_fix_r3.3.8",
     "neutral_repair_minimal_timing_gate_r3.3.7",
     "signal_durability_layer_r3.3.6",
@@ -24,7 +25,7 @@
     "full_project_tree_backup_reconciled_from_xxproject_main"
   ],
   "version_anchors": {
-    "signal_layer": "demo_version=1.5.4; schema_version=nrd.schema.v1.0.0; funding_0.0100pct_equality=baseline_not_hard_veto; gex_gamma_display=gex_info_usd_notional_precedence; neutral_repair=minimal_timing_gate_below_60_reclaim; session_context=SignalSessionPremiseDurabilityContext@1.0.0; transition_anchor=SignalTransitionProducerAnchor@1.0.0; macro_shock=native; signal_durability=SignalDurabilityLayer@nrd.signal.durability_layer.v1; price_anchor_durability=SignalPriceAnchorDurability@nrd.signal.price_anchor_durability.v1; comfort_window=SignalComfortWindow@nrd.signal.comfort_window.v1",
+    "signal_layer": "demo_version=1.5.5; schema_version=nrd.schema.v1.0.0; funding_0.0100pct_equality=baseline_not_hard_veto; gex_gamma_display=gex_info_usd_notional_precedence; neutral_repair=below_60_reclaim_with_terminal_stale_transient_freeze_active_streak_reset_and_bounded_opposite_pending_handoff; session_context=SignalSessionPremiseDurabilityContext@1.0.0; transition_anchor=SignalTransitionProducerAnchor@1.0.0; macro_shock=native; signal_durability=SignalDurabilityLayer@nrd.signal.durability_layer.v1; price_anchor_durability=SignalPriceAnchorDurability@nrd.signal.price_anchor_durability.v1; comfort_window=SignalComfortWindow@nrd.signal.comfort_window.v1",
     "execution_layer": "STRATEGY_VERSION=3.0.0-manual-gate; action_trading_gates_default_false; DRY_RUN_PASSED=False",
     "gexmonitorapi": "0.2.0; rank_window=rolling_30d_or_available",
     "llm_review": "provider=gemini; model=gemini-3.5-flash; schema=signal_llm_review@1.3.0; prompt=gemini_signal_review_prompt@1.3.0; blind_mode=two_call_strict",

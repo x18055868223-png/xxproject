@@ -56,14 +56,14 @@ def assert_asset_root(root):
             "DO_NOT_MULTIPLY_CONFIDENCE"):
         assert_true(token in app,
                     "frontend app should expose durability renderer token " + token)
-    assert_true("app.js?v=20260706-r3.3.6-durability-ui1" in index_html
-                and "fallback.js?v=20260706-r3.3.6-durability-ui1" in index_html,
-                "index.html should cache-bust r3.3.6 durability ui assets")
+    assert_true("app.js?v=20260707-r3.3.8-funding-gex" in index_html
+                and "fallback.js?v=20260707-r3.3.8-funding-gex" in index_html,
+                "index.html should cache-bust r3.3.8 funding/GEX assets")
     assert_true(version.get("backup_version")
-                == "NRD-XXPROJECT-BACKUP-2026.07.05-r3.3.6",
-                "VERSION backup_version should name the r3.3.6 durability slice")
-    assert_true(version.get("generated_at") == "2026-07-06",
-                "VERSION generated_at should match the r3.3.6 ui asset refresh date")
+                == "NRD-XXPROJECT-BACKUP-2026.07.07-r3.3.8-funding-gex-card",
+                "VERSION backup_version should name the r3.3.8 frontend slice")
+    assert_true(version.get("generated_at") == "2026-07-07",
+                "VERSION generated_at should match the r3.3.8 asset refresh date")
     assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
                 and "durability" in version.get("frontend_contract", ""),
                 "VERSION should document the signal durability frontend contract")

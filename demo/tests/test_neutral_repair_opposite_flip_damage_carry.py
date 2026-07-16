@@ -339,7 +339,7 @@ def test_opposite_flip_carry_window_expired_can_confirm_from_own_subrepair(mod):
         mod.now_ms = original_now_ms
 
 
-def test_opposite_flip_already_repaired_anchor_does_not_seed(mod):
+def test_opposite_flip_repaired_anchor_carries_pending_handoff(mod):
     tracker, clock = tracker_with_clock(mod)
     original_now_ms = mod.now_ms
     mod.now_ms = clock.now_ms
@@ -352,13 +352,59 @@ def test_opposite_flip_already_repaired_anchor_does_not_seed(mod):
         clock.advance_min()
         out = tracker.update(mdie(0.886), anchor(60.02))
         evidence = out["anchor_context"]["anchor_damage_evidence"]
+        assert_true("ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_PENDING_HANDOFF"
+                    in evidence,
+                    "unconfirmed old below-60 episode should carry a pending "
+                    "handoff even when the reset tick Anchor is already >=60")
+        seed = out["anchor_context"]["anchor_damage_seed"]
+        assert_true(seed and seed.get("source") == "pending_handoff",
+                    "pending handoff carry should expose reset seed metadata")
+        clock.advance_min()
+        out = tracker.update(mdie(0.0), anchor(60.44))
+        assert_true(out["state"] == "NR_REPAIR_CANDIDATE",
+                    "first post-active repaired tick should be candidate only")
+        clock.advance_min()
+        out = tracker.update(mdie(0.0), anchor(60.48))
+        assert_true(out["state"] == "NR_REPAIR_CONFIRMED",
+                    "pending handoff should confirm after two valid repair "
+                    "ticks once the active reset ends")
+    finally:
+        mod.now_ms = original_now_ms
+
+
+def test_opposite_reset_does_not_carry_confirmed_old_episode_damage(mod):
+    tracker, clock = tracker_with_clock(mod)
+    original_now_ms = mod.now_ms
+    mod.now_ms = clock.now_ms
+    try:
+        tracker.update(mdie(-0.90), anchor(54.0))
+        clock.advance_min()
+        tracker.update(mdie(0.0), anchor(60.20))
+        clock.advance_min()
+        confirmed = tracker.update(mdie(0.0), anchor(60.44))
+        assert_true(confirmed["state"] == "NR_REPAIR_CONFIRMED",
+                    "setup should confirm the old episode first")
+
+        clock.advance_min()
+        out = tracker.update(mdie(0.90), anchor(60.20))
+        assert_true(out["state"] == "NR_OPPOSITE_EVENT_CONFLICT",
+                    "first opposite tick should wait for confirmation")
+        clock.advance_min()
+        out = tracker.update(mdie(0.886), anchor(60.20))
+        evidence = out["anchor_context"]["anchor_damage_evidence"]
         assert_true("ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR"
                     not in evidence,
-                    "already repaired Anchor must not seed subrepair damage")
+                    "confirmed old episode damage must not carry into reset")
+        assert_true("ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_PENDING_HANDOFF"
+                    not in evidence,
+                    "confirmed old episode pending handoff must not carry")
+        assert_true(out["anchor_context"]["anchor_damage_seed"] is None,
+                    "confirmed old episode should not seed pending handoff")
         clock.advance_min()
         out = tracker.update(mdie(0.0), anchor(60.44))
         assert_true(out["state"] == "NR_WAIT_ANCHOR_DAMAGE",
-                    "already repaired reset should still wait for damage")
+                    "reset after confirmed episode should wait for fresh "
+                    "below-60 handoff")
     finally:
         mod.now_ms = original_now_ms
 
@@ -390,7 +436,8 @@ def main():
     test_same_direction_gap_reset_subrepair_confirms_from_own_observation(mod)
     test_opposite_flip_without_prior_damage_confirms_from_own_subrepair(mod)
     test_opposite_flip_carry_window_expired_can_confirm_from_own_subrepair(mod)
-    test_opposite_flip_already_repaired_anchor_does_not_seed(mod)
+    test_opposite_flip_repaired_anchor_carries_pending_handoff(mod)
+    test_opposite_reset_does_not_carry_confirmed_old_episode_damage(mod)
     test_signal_event_tracker_records_carried_episode_once(mod)
     print("neutral_repair_opposite_flip_damage_carry: PASS")
 

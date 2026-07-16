@@ -152,7 +152,8 @@ CONFIG = {
     # v1.5.2 (2026-07-05): Signal Durability Layer producer fields.
     # v1.5.3 (2026-07-06): NeutralRepair minimal timing gate fix.
     # v1.5.4 (2026-07-07): Funding equality baseline + GEX USD precedence fix.
-    "demo_version": "1.5.4",
+    # v1.5.5 (2026-07-16): NeutralRepair signal-loss/stale/carry repair.
+    "demo_version": "1.5.5",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -2466,12 +2467,12 @@ class NeutralRepairSignalTracker:
         anchor_reasons = (anchor or {}).get("reasons") or []
 
         if not m_data_ok or anchor_score is None:
-            self.context = None
+            self._reset_repair_confirm_count()
             return self._output(
                 "NR_DATA_INSUFFICIENT", active_ts_ms, m_die, anchor,
                 is_active=False, reason_codes=["NR_DATA_INSUFFICIENT"])
         if anchor_state == STATE_INVALID:
-            self.context = None
+            self._reset_repair_confirm_count()
             return self._output(
                 "NR_DATA_INSUFFICIENT", active_ts_ms, m_die, anchor,
                 is_active=False, reason_codes=["ANCHOR_INVALID"])
@@ -2482,7 +2483,18 @@ class NeutralRepairSignalTracker:
         cooldown = float(cfg.get(
             "nr_mdie_event_off_abs",
             cfg.get("nr_mdie_cooldown_abs", 0.42)))
+        if self._context_ttl_expired(active_ts_ms):
+            if m_abs >= event_threshold:
+                self.context = None
+            else:
+                out = self._output(
+                    "NR_REPAIR_STALE", active_ts_ms, m_die, anchor,
+                    reason_codes=["NR_REPAIR_CONTEXT_TTL_EXPIRED"])
+                self.context = None
+                return out
+
         if m_abs >= event_threshold:
+            self._reset_repair_confirm_count()
             if self.context is None:
                 self.context = self._new_context(
                     m_die, anchor, runtime_facts, active_ts_ms)
@@ -2518,12 +2530,6 @@ class NeutralRepairSignalTracker:
         if self.context is None:
             return self._output("NR_IDLE", active_ts_ms, m_die, anchor)
 
-        if self._context_age_min(active_ts_ms) > float(
-                cfg.get("nr_repair_context_ttl_min", 360)):
-            return self._output(
-                "NR_REPAIR_STALE", active_ts_ms, m_die, anchor,
-                reason_codes=["NR_REPAIR_CONTEXT_TTL_EXPIRED"])
-
         if self.context.get("confirmed_at_ms") is not None:
             signal_age_min = (
                 active_ts_ms - self.context["confirmed_at_ms"]) / 60000.0
@@ -2546,6 +2552,7 @@ class NeutralRepairSignalTracker:
         cooldown_blocks = bool(cfg.get("nr_mdie_cooldown_blocks_repair",
                                        False))
         if cooldown_blocks and m_abs > cooldown:
+            self._reset_repair_confirm_count()
             return self._output("NR_DISPLACEMENT_ACTIVE", active_ts_ms,
                                 m_die, anchor)
 
@@ -2617,6 +2624,26 @@ class NeutralRepairSignalTracker:
             "confirmed_at_ms": None,
         }
 
+    def _reset_repair_confirm_count(self):
+        if self.context is not None:
+            self.context["repair_confirm_count"] = 0
+
+    def _context_ttl_expired(self, active_ts_ms):
+        if self.context is None:
+            return False
+        start_ms = safe_float(self.context.get("event_start_ms"))
+        seed = self.context.get("anchor_damage_seed") or {}
+        if (not self._has_anchor_direct_below_repair_handoff(self.context)
+                and seed.get("source") == "pending_handoff"):
+            origin_start_ms = safe_float(seed.get("origin_event_start_ms"))
+            if origin_start_ms is not None:
+                start_ms = origin_start_ms
+        if start_ms is None:
+            return False
+        age_min = max(0.0, (active_ts_ms - start_ms) / 60000.0)
+        return age_min > float(self.config.get(
+            "nr_repair_context_ttl_min", 360))
+
     def _seed_opposite_reset_subrepair_damage(self, previous_context,
                                               active_ts_ms, anchor_score):
         if not self.config.get(
@@ -2624,7 +2651,9 @@ class NeutralRepairSignalTracker:
             return False
         if self.context is None or not previous_context:
             return False
-        if not self._has_anchor_below_repair_handoff(previous_context):
+        if previous_context.get("confirmed_at_ms") is not None:
+            return False
+        if not self._has_anchor_real_below_repair_handoff(previous_context):
             return False
         old_direction = previous_context.get("event_direction")
         new_direction = self.context.get("event_direction")
@@ -2637,22 +2666,49 @@ class NeutralRepairSignalTracker:
         floor_score = float(self.config.get(
             "nr_anchor_damage_floor_score",
             self.config.get("nr_anchor_damage_score", 60.0)))
-        if not (floor_score <= score < repair_score):
+        if score < floor_score:
             return False
-        last_seen = safe_float(previous_context.get("last_event_seen_ms"))
-        if last_seen is None:
-            return False
-        window_min = float(self.config.get(
-            "nr_opposite_reset_damage_carry_window_min", 5))
-        if (active_ts_ms - last_seen) / 60000.0 > window_min:
-            return False
+        previous_seed = previous_context.get("anchor_damage_seed") or {}
+        origin_event_start_ms = safe_float(
+            previous_seed.get("origin_event_start_ms"))
+        if origin_event_start_ms is None:
+            origin_event_start_ms = safe_float(
+                previous_context.get("event_start_ms"))
+        if score < repair_score:
+            last_seen = safe_float(previous_context.get("last_event_seen_ms"))
+            if last_seen is None:
+                return False
+            window_min = float(self.config.get(
+                "nr_opposite_reset_damage_carry_window_min", 5))
+            if (active_ts_ms - last_seen) / 60000.0 > window_min:
+                return False
+        else:
+            if origin_event_start_ms is None:
+                return False
+            ttl_min = float(self.config.get(
+                "nr_repair_context_ttl_min", 360))
+            if ((active_ts_ms - origin_event_start_ms) / 60000.0
+                    > ttl_min):
+                return False
         self.context["anchor_damage_observed"] = True
         evidence = self.context.setdefault("anchor_damage_evidence", [])
-        code = "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR"
+        if score < repair_score:
+            code = "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR"
+            seed_source = "opposite_event_reset"
+        else:
+            code = "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_PENDING_HANDOFF"
+            seed_source = "pending_handoff"
         if code not in evidence:
             evidence.append(code)
+        origin_episode_id = (previous_seed.get("origin_episode_id")
+                             or previous_context.get("episode_id"))
+        origin_min_anchor_score = safe_float(
+            previous_seed.get("origin_min_anchor_score"))
+        if origin_min_anchor_score is None:
+            origin_min_anchor_score = safe_float(
+                previous_context.get("min_anchor_score_after_event"))
         self.context["anchor_damage_seed"] = {
-            "source": "opposite_event_reset",
+            "source": seed_source,
             "source_episode_id": previous_context.get("episode_id"),
             "source_direction": old_direction,
             "episode_direction": new_direction,
@@ -2660,6 +2716,10 @@ class NeutralRepairSignalTracker:
             "anchor_score": score,
             "anchor_repair_score": repair_score,
             "anchor_damage_floor_score": floor_score,
+            "origin_below_repair": True,
+            "origin_episode_id": origin_episode_id,
+            "origin_event_start_ms": origin_event_start_ms,
+            "origin_min_anchor_score": origin_min_anchor_score,
         }
         return True
 
@@ -2756,6 +2816,42 @@ class NeutralRepairSignalTracker:
             return True
         return False
 
+    def _has_anchor_direct_below_repair_handoff(self, context=None):
+        ctx = self.context if context is None else context
+        if ctx is None:
+            return False
+        evidence = set(ctx.get("anchor_damage_evidence") or [])
+        real_below_repair_codes = {
+            "ANCHOR_SUBREPAIR_OBSERVED_BELOW_60",
+            "ANCHOR_DAMAGE_OBSERVED_BELOW_60",
+            "ANCHOR_DAMAGE_OBSERVED_BELOW_BUFFER",
+        }
+        repair_score = float(self.config.get("nr_anchor_repair_score", 60.0))
+        if evidence.intersection(real_below_repair_codes):
+            min_score = safe_float(ctx.get("min_anchor_score_after_event"))
+            return min_score is not None and min_score < repair_score
+        return False
+
+    def _has_anchor_real_below_repair_handoff(self, context=None):
+        ctx = self.context if context is None else context
+        if ctx is None:
+            return False
+        if self._has_anchor_direct_below_repair_handoff(ctx):
+            return True
+        evidence = set(ctx.get("anchor_damage_evidence") or [])
+        repair_score = float(self.config.get("nr_anchor_repair_score", 60.0))
+        carried_codes = {
+            "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR",
+            "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_PENDING_HANDOFF",
+        }
+        seed = ctx.get("anchor_damage_seed") or {}
+        origin_min_score = safe_float(seed.get("origin_min_anchor_score"))
+        return bool(
+            evidence.intersection(carried_codes)
+            and seed.get("origin_below_repair") is True
+            and origin_min_score is not None
+            and origin_min_score < repair_score)
+
     def _has_anchor_below_repair_handoff(self, context=None):
         ctx = self.context if context is None else context
         if ctx is None:
@@ -2766,6 +2862,7 @@ class NeutralRepairSignalTracker:
             "ANCHOR_DAMAGE_OBSERVED_BELOW_60",
             "ANCHOR_DAMAGE_OBSERVED_BELOW_BUFFER",
             "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_SUBREPAIR",
+            "ANCHOR_DAMAGE_OBSERVED_OPPOSITE_RESET_PENDING_HANDOFF",
         }
         return bool(evidence.intersection(below_repair_codes))
 
