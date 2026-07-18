@@ -24,7 +24,7 @@ if [[ ! -f "$JSONL_SOURCE" ]]; then
   exit 0
 fi
 
-exec /usr/bin/python3 "$TOOLS_ROOT/gemini_signal_llm_review.py" \
+exec /usr/bin/python3 "$TOOLS_ROOT/gemini_signal_llm_review_entry.py" \
   --mode both \
   --source "$JSONL_SOURCE" \
   --reviews-output "$LLM_REVIEWS_SOURCE" \
