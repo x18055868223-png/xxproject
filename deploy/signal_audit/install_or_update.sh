@@ -15,6 +15,7 @@ if [[ ! -d "$FRONTEND_SRC" ]]; then
 fi
 TOOL_SRC="$REPO_ROOT/tools/materialize_signal_cards.py"
 GEMINI_TOOL_SRC="$REPO_ROOT/tools/gemini_signal_llm_review.py"
+GEMINI_ENTRY_SRC="$REPO_ROOT/tools/gemini_signal_llm_review_entry.py"
 LLM_RUNNER_SRC="$DEPLOY_SRC/run_signal_llm_review.sh"
 LLM_ENV_EXAMPLE_SRC="$DEPLOY_SRC/signal-audit-llm.env.example"
 MATERIALIZE_SERVICE_SRC="$DEPLOY_SRC/signal-audit-materialize.service"
@@ -47,6 +48,11 @@ if [[ ! -f "$GEMINI_TOOL_SRC" ]]; then
   exit 2
 fi
 
+if [[ ! -f "$GEMINI_ENTRY_SRC" ]]; then
+  echo "missing Gemini review entrypoint: $GEMINI_ENTRY_SRC" >&2
+  exit 2
+fi
+
 for required in "$LLM_RUNNER_SRC" "$LLM_ENV_EXAMPLE_SRC" "$MATERIALIZE_SERVICE_SRC" "$MATERIALIZE_TIMER_SRC" "$LLM_SERVICE_SRC" "$LLM_TIMER_SRC"; do
   if [[ ! -f "$required" ]]; then
     echo "missing deployment asset: $required" >&2
@@ -59,6 +65,7 @@ chmod 0700 "$CONFIG_ROOT"
 rsync -a --delete "$FRONTEND_SRC"/ "$STATIC_ROOT"/
 install -m 0755 "$TOOL_SRC" "$TOOLS_ROOT/materialize_signal_cards.py"
 install -m 0755 "$GEMINI_TOOL_SRC" "$TOOLS_ROOT/gemini_signal_llm_review.py"
+install -m 0755 "$GEMINI_ENTRY_SRC" "$TOOLS_ROOT/gemini_signal_llm_review_entry.py"
 install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
 install -m 0644 "$LLM_ENV_EXAMPLE_SRC" "$CONFIG_ROOT/llm.env.example"
 if [[ ! -f "$LLM_ENV_FILE" ]]; then
@@ -98,6 +105,7 @@ fi
 echo "installed signal audit frontend to $STATIC_ROOT"
 echo "materializer installed to $TOOLS_ROOT/materialize_signal_cards.py"
 echo "Gemini review tool installed to $TOOLS_ROOT/gemini_signal_llm_review.py"
+echo "Gemini review entrypoint installed to $TOOLS_ROOT/gemini_signal_llm_review_entry.py"
 echo "LLM API key config lives at $LLM_ENV_FILE"
 echo "LLM review sidecar lives at $LLM_REVIEWS_SOURCE"
 echo "transition ledger lives at $TRANSITION_LEDGER_SOURCE"
