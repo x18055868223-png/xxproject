@@ -22,9 +22,9 @@ import urllib.request
 DEFAULT_MODEL = "gemini-3.5-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.3.0"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.3.0"
-PACKET_VERSION = "signal_llm_review_packet@1.0.0"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.4.0"
+PROMPT_VERSION = "gemini_signal_review_prompt@1.4.4"
+PACKET_VERSION = "signal_llm_review_packet@1.1.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
 TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
 TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.4"
@@ -71,6 +71,7 @@ REQUIRED_REVIEW_FIELDS = (
     "caution_level",
     "theoretical_active_view",
     "gamma_regime_lens",
+    "integrated_trade_advisory",
     "main_supporting_factors",
     "main_risks_or_conflicts",
     "operator_focus",
@@ -93,6 +94,93 @@ GAMMA_LENS_REGIMES = {
 }
 GAMMA_LENS_EXTREMITIES = {"LOW", "MEDIUM", "HIGH", "UNKNOWN"}
 GAMMA_LENS_EFFECTS = {"NEUTRALIZE", "LOWER", "NEUTRAL", "UNKNOWN"}
+ADVISORY_RECOMMENDATIONS = {
+    "SELL_PUT_SPREAD_REVIEW",
+    "SELL_CALL_SPREAD_REVIEW",
+    "NEUTRAL_SINGLE_SIDE_REVIEW",
+    "WAIT_FOR_CONFIRMATION",
+    "NO_TRADE",
+    "UNABLE_TO_JUDGE",
+}
+ADVISORY_SPREAD_RECOMMENDATIONS = {
+    "SELL_PUT_SPREAD_REVIEW",
+    "SELL_CALL_SPREAD_REVIEW",
+    "NEUTRAL_SINGLE_SIDE_REVIEW",
+}
+ADVISORY_CONTAINMENT_STATES = {
+    "ESTABLISHED", "INCOMPLETE", "FAILED", "UNABLE_TO_JUDGE",
+}
+ADVISORY_PREMIUM_FIT_STATES = {
+    "FIT", "CONDITIONAL", "NOT_FIT", "UNABLE_TO_JUDGE",
+}
+ADVISORY_LIQUIDITY_ASSESSMENTS = {
+    "ALIGNED", "CAUTION", "TIME_ONLY", "UNKNOWN",
+}
+ADVISORY_WARNING_LEVELS = {"NONE", "INFO", "CAUTION", "HIGH"}
+ADVISORY_SOURCE_ALIGNMENTS = {
+    "ALIGNED", "PARTIALLY_ALIGNED", "DIVERGENT", "UNABLE_TO_JUDGE",
+}
+ADVISORY_HUMAN_RAW_TOKENS = {
+    *ADVISORY_RECOMMENDATIONS,
+    *ADVISORY_CONTAINMENT_STATES,
+    *ADVISORY_PREMIUM_FIT_STATES,
+    *ADVISORY_LIQUIDITY_ASSESSMENTS,
+    *ADVISORY_WARNING_LEVELS,
+    *ADVISORY_SOURCE_ALIGNMENTS,
+    "trade_allowed",
+    "execution_allowed",
+    "source_alignment",
+    "recommendation",
+    "audit_only",
+    "trade_authorization",
+    "evidence_refs",
+}
+ADVISORY_EXECUTION_TEXT_PATTERNS = (
+    ("order_or_position_action", re.compile(
+        r"开仓|平仓|下单|入场|出场|加仓|减仓|止损|止盈")),
+    ("position_size", re.compile(
+        r"(?:仓位|头寸)[^。；\n]{0,24}(?:设置|控制|比例|大小|成|%)")),
+    ("specific_strike", re.compile(
+        r"(?:行权价|执行价)[^。；\n]{0,36}(?:设|选|放|置|低于|高于|上方|下方|\d)"
+        r"|(?:选择|使用|设置)[^。；\n]{0,16}(?:行权价|执行价)")),
+    ("specific_expiry", re.compile(
+        r"(?:到期日|到期时间)[^。；\n]{0,28}(?:设|选|使用|\d)")),
+    ("leverage_action", re.compile(
+        r"(?:使用|提高|降低|调整|设置)[^。；\n]{0,12}杠杆")),
+    ("english_order_action", re.compile(
+        r"\b(?:place|submit|send|cancel)\s+(?:an?\s+)?order\b",
+        re.IGNORECASE)),
+    ("english_position_action", re.compile(
+        r"\b(?:open|close|increase|reduce)\s+(?:the\s+)?position\b",
+        re.IGNORECASE)),
+    ("english_position_size", re.compile(
+        r"\b(?:position\s+size|size\s+the\s+position)\b",
+        re.IGNORECASE)),
+    ("english_specific_strike", re.compile(
+        r"\bstrike\b[^.;\n]{0,40}\d", re.IGNORECASE)),
+    ("english_specific_expiry", re.compile(
+        r"\b(?:expiry|expiration|expires?|expiring)\b[^.;\n]{0,40}\d",
+        re.IGNORECASE)),
+    ("english_specific_spread_legs", re.compile(
+        r"(?:\b\d{4,}(?:\.\d+)?\s*(?:/|and|-)\s*\d{4,}(?:\.\d+)?\b"
+        r"[^.;。；\n]{0,24}\b(?:put|call)\b[^.;。；\n]{0,8}(?:spread|价差)"
+        r"|\b(?:put|call)\b[^.;。；\n]{0,8}(?:spread|价差)"
+        r"[^.;。；\n]{0,24}\b\d{4,}(?:\.\d+)?\s*(?:/|and|-)\s*"
+        r"\d{4,}(?:\.\d+)?\b)", re.IGNORECASE)),
+    ("chinese_specific_spread_legs", re.compile(
+        r"\d{4,}(?:\.\d+)?\s*(?:/|与|和|-)\s*\d{4,}(?:\.\d+)?"
+        r"[^。；\n]{0,24}(?:Put|Call|看涨|看跌)?\s*价差",
+        re.IGNORECASE)),
+    ("english_entry_exit", re.compile(
+        r"\b(?:entry|exit)\b[^.;\n]{0,24}(?:at|above|below|=|:)?\s*\d",
+        re.IGNORECASE)),
+    ("english_stop_target", re.compile(
+        r"\b(?:stop[- ]?loss|take[- ]?profit)\b[^.;\n]{0,24}\d",
+        re.IGNORECASE)),
+    ("english_leverage_action", re.compile(
+        r"\b(?:set|use|raise|lower|adjust)\b[^.;\n]{0,16}\bleverage\b",
+        re.IGNORECASE)),
+)
 TRANSITION_TRAJECTORY_STATES = {
     "DETERIORATING",
     "IMPROVING",
@@ -192,7 +280,11 @@ def build_review_packet(card):
         }),
         "market_context": _safe_copy(card.get("market_context")),
         "decision": _safe_copy(card.get("decision")),
+        "decision_matrix": _safe_copy(card.get("decision_matrix")),
         "signal_window": _safe_copy(card.get("signal_window")),
+        "signal_durability": _safe_copy(card.get("signal_durability")),
+        "comfort_window": _safe_copy(card.get("comfort_window")),
+        "price_anchor_durability": _safe_copy(card.get("price_anchor_durability")),
         "reasoning": _safe_copy(card.get("reasoning")),
         "conflict": _safe_copy(card.get("conflict")),
         "blocking": _safe_copy(card.get("blocking")),
@@ -213,10 +305,48 @@ def build_review_packet(card):
             "do_not_change_system_decision": True,
             "do_not_recompute_weights": True,
             "do_not_use_external_market_data": True,
+            "may_produce_structure_review_advisory": True,
+            "session_context_is_advisory_only": True,
             "not_trading_advice": True,
         },
     }
+    packet["evidence_catalog"] = _build_review_evidence_catalog(packet)
+    packet["evidence_catalog_hash"] = _sha256_json(packet["evidence_catalog"])
     return _safe_copy(packet)
+
+
+def _build_review_evidence_catalog(packet):
+    candidates = (
+        ("EV_MARKET_CONTEXT", "market_context", "市场价格上下文"),
+        ("EV_DECISION", "decision", "程序化信号结论"),
+        ("EV_DECISION_MATRIX", "decision_matrix", "程序化决策矩阵"),
+        ("EV_SIGNAL_WINDOW", "signal_window", "M-DIE 与中性接管窗口"),
+        ("EV_SESSION_CONTEXT", "signal_window.session_context", "时区耐用性先验"),
+        ("EV_SIGNAL_DURABILITY", "signal_durability", "总耐用性层"),
+        ("EV_COMFORT_WINDOW", "comfort_window", "舒适观察窗口"),
+        ("EV_ANCHOR_DURABILITY", "price_anchor_durability", "价格锚耐用性"),
+        ("EV_REASONING", "reasoning", "EDB 证据账本"),
+        ("EV_CONFLICT", "conflict", "证据冲突"),
+        ("EV_BLOCKING", "blocking", "程序化阻断与解除条件"),
+        ("EV_QUALITY", "quality", "数据质量"),
+        ("EV_TMVF", "factor_cross_section.tmvf", "量价主干"),
+        ("EV_MICRO_FLOW", "factor_cross_section.micro_flow", "主动流确认"),
+        ("EV_MACRO", "factor_cross_section.macro_pressure", "宏观双轴"),
+        ("EV_GAMMA", "factor_cross_section.gamma_regime", "Gamma 结构"),
+        ("EV_GEX", "factor_cross_section.gex_info", "GEX 与期权墙"),
+        ("EV_SKEW", "factor_cross_section.skew", "期权偏斜"),
+        ("EV_FUNDING", "factor_cross_section.funding", "资金费率"),
+    )
+    catalog = []
+    for evidence_id, pointer, label_cn in candidates:
+        value = _get_dotted_value(packet, pointer)
+        if value not in (None, {}, []):
+            catalog.append({
+                "id": evidence_id,
+                "pointer": pointer,
+                "label_cn": label_cn,
+            })
+    return catalog
 
 
 def build_blind_theoretical_packet(packet):
@@ -324,33 +454,173 @@ def build_prompt(packet, blind_payload=None):
         }
     blind_payload = _validate_blind_payload(blind_payload)
     return (
-        "你是交易信号审计复核员，只做审计增强，不是交易执行系统。\n"
+        "你是中性回路的结构适配审计复核员，只做事实收束和结构复核建议，不是交易执行系统。\n"
         "现在是第二次复核调用。第一次盲读结果已经给出，不能被完整审计包重写；"
-        "你只能基于 FULL_AUDIT_PACKET 判断系统结论是否与盲读视角、证据账本和门控一致。\n"
+        "你只能基于 FULL_AUDIT_PACKET 判断系统结论是否与盲读视角、证据账本和门控一致，"
+        "并在 integrated_trade_advisory 中形成证据一致性与结构适配评估。\n"
         "请输出中文 JSON。\n\n"
         "边界：\n"
-        "1. 系统信号结论已经由 decision 给出，你不得改变方向、置信度、EDB、blocking、trade_allowed 或下一步动作。\n"
+        "1. 系统信号结论已经由 decision 给出，你不得修改方向、置信度、EDB、blocking 或 trade_allowed；"
+        "但可在独立 advisory 字段中给出卖 Put 价差、卖 Call 价差、中性单边、等待或不交易的人工复核建议。\n"
         "2. confidence 是证据质量刻度，不是胜率、收益概率或可交易概率。\n"
         "3. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
         "4. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
         "5. 先检查数据质量、缺失字段、冲突比例、rank 冷启动，再解释方向。\n"
-        "6. 输出应帮助人工审计：说明支持项、风险冲突、下一步观察重点和复核失效条件。\n"
-        "7. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格等交易执行建议。\n"
-        "8. theoretical_active_view 与 gamma_regime_lens 必须沿用 BLIND_REVIEW_RESULT，"
+        "6. integrated_trade_advisory 必须回答四件事：中性接管是否成立、当前是否适合继续复核定义风险的卖方价差、"
+        "哪一侧容错更合理、当前最大风险或信息缺口是什么。\n"
+        "7. 最终观点可以与系统信号或盲读观点一致；一致不等于复读。必须说明不同调节回路如何共同形成定论、"
+        "主要冲突、成立前提和失效条件，不得只改写 direction/confidence。\n"
+        "7a. 对偏多、偏空、中性/区间、等待确认四类结果使用相同先验和相同证据门槛；不得假设加密资产天然上涨、"
+        "天然下跌，也不得把卖方结构、方向一致或谨慎等待当作默认答案。缺失信息不能自动解释为中性。\n"
+        "7b. 严格按固定顺序裁决：数据是否足够 -> 是否存在硬阻断 -> 中性接管是否成立 -> 卖方结构是否适配 -> "
+        "哪一侧容错更合理。先形成 recommendation，再填写 source_alignment；producer 方向是只读约束，不是待复述答案。\n"
+        "7c. 使用镜像一致性原则：若所有方向性证据、上下墙体和空间关系完全镜像，判断阈值必须保持不变，"
+        "SELL_PUT_SPREAD_REVIEW 与 SELL_CALL_SPREAD_REVIEW 应对称互换。Gamma、Funding、宏观和时段只能按其实际角色"
+        "影响结构适配、拥挤、尾部风险或提醒，不能凭单因子创造方向。\n"
+        "7d. 当数据完整、接管成立、卖方结构适配且关键回路无实质冲突时，不得仅因 WAIT 更保守而选择等待；"
+        "反之，证据冲突、接管不完整或结构不适配时，也不得为了给出方向而强行选择 Put/Call。\n"
+        "7e. premium_selling_fit 只描述期权结构的机械适配度，不等于最终 recommendation；即使结构机械适配，"
+        "高冲突、数据质量不足或关键失效风险仍可使 recommendation 为 NO_TRADE。\n"
+        "7f. producer 方向与盲读/完整证据发生实质背离时，不得强行输出反方向价差；应选择 WAIT_FOR_CONFIRMATION、"
+        "NO_TRADE 或 UNABLE_TO_JUDGE，并用 source_alignment=DIVERGENT 如实记录分歧。\n"
+        "7g. decision.trade_allowed=false 与 decision_matrix.execution_allowed=false 在本审计层是预期的执行隔离事实，"
+        "不等于结构不适配，也不得单独作为 WAIT_FOR_CONFIRMATION 或 NO_TRADE 的理由。只有明确硬阻断、明确等待状态、"
+        "中性接管不成立、结构不适配或实质证据冲突才能形成这些降级结论；价差复核建议仍不得改变交易许可。\n"
+        "7h. rank warming_up、单项缺失或单一风险因子只能按它对当前问题的实际影响降级依据质量；不得把任一单项"
+        "自动当作总否决。若关键 Gamma/墙体/Funding 数值和来源足够完成结构判断，应说明限制并继续按相同门槛裁决。\n"
+        "7i. producer 方向为精确 NEUTRAL 时，不得输出 SELL_PUT_SPREAD_REVIEW 或 SELL_CALL_SPREAD_REVIEW；"
+        "若区间接管和结构适配成立，应使用 NEUTRAL_SINGLE_SIDE_REVIEW，并在 side_basis_cn 解释空间不对称但不改写方向。\n"
+        "7j. 结构建议只能到 Put/Call/Neutral 复核类别，不得把 flip、wall、pin 或现价改写成具体行权价、到期日、"
+        "仓位、开平仓或订单参数。关键价位只能作为可观察失效边界，不得写成选择某个 strike 的建议。\n"
+        "7k. recommendation 等机器枚举只能出现在对应 JSON 枚举字段；所有 *_cn、人读列表和解释文案必须使用自然中文，"
+        "不得复写 SELL_PUT_SPREAD_REVIEW、NO_TRADE、trade_allowed、evidence_refs 等机器码或字段名。\n"
+        "7l. recommendation=NEUTRAL_SINGLE_SIDE_REVIEW 时，人读结论只能表述为中性单侧结构复核；不得写成双边、"
+        "宽跨式、铁鹰或其他未由枚举授权的结构。\n"
+        "8. producer 明确硬阻断时只能输出 NO_TRADE 或 UNABLE_TO_JUDGE，不得绕过阻断。\n"
+        "9. session_context 与 comfort_window 只形成流动性时段提醒，不得改变 recommendation、方向或 confidence；"
+        "美股核心时段不能升级弱信号，非核心时段也不能反转结构建议。\n"
+        "10. key_premises.evidence_refs 只能引用 FULL_AUDIT_PACKET.evidence_catalog 中存在的 id。\n"
+        "11. 输出应帮助人工审计：说明支持项、风险冲突、下一步观察重点和复核失效条件。\n"
+        "12. 不得给出开仓、平仓、仓位、杠杆、止损止盈、下单价格、具体到期日或行权价等交易执行建议。\n"
+        "13. integrated_trade_advisory.audit_only 必须为 true，trade_authorization 必须为 false。\n"
+        "14. theoretical_active_view 与 gamma_regime_lens 必须沿用 BLIND_REVIEW_RESULT，"
         "它们是第一次调用产生的真盲读结果。\n"
-        "9. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
+        "15. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
         "字段含义摘要：\n"
         "- market_context: 当前价格、报价币种和价格来源。\n"
         "- decision: 程序化系统结论；必须作为只读事实。\n"
         "- reasoning.evidence: 因子证据账本，含同向/反向贡献和排除原因。\n"
         "- conflict: 同向与反向证据冲突情况。\n"
         "- blocking: 硬/软门控及解除条件。\n"
+        "- signal_window/session_context/comfort_window: 接管窗口与只读时区流动性提醒。\n"
+        "- signal_durability/price_anchor_durability: 只读结构耐用性，不是胜率。\n"
         "- factor_cross_section: TMV、微观流、宏观压力、Gamma/GEX、rank、偏斜和资金费率截面。\n\n"
         "BLIND_REVIEW_RESULT JSON：\n"
         f"{json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)}\n\n"
         "FULL_AUDIT_PACKET JSON：\n"
         f"{json.dumps(packet, ensure_ascii=False, sort_keys=True)}"
     )
+
+
+def integrated_trade_advisory_schema():
+    text = {"type": "string", "minLength": 1, "maxLength": 520}
+    evidence_refs = {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1, "maxLength": 80},
+        "minItems": 1,
+        "maxItems": 4,
+    }
+    def assessment(states):
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "state": {"type": "string", "enum": sorted(states)},
+                "basis_cn": text,
+            },
+            "required": ["state", "basis_cn"],
+        }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "recommendation": {
+                "type": "string",
+                "enum": sorted(ADVISORY_RECOMMENDATIONS),
+            },
+            "final_conclusion_cn": text,
+            "cross_loop_rationale_cn": text,
+            "containment_assessment": assessment(ADVISORY_CONTAINMENT_STATES),
+            "premium_selling_fit": assessment(ADVISORY_PREMIUM_FIT_STATES),
+            "side_basis_cn": text,
+            "dominant_conflict_cn": text,
+            "key_premises": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "premise_cn": text,
+                        "evidence_refs": evidence_refs,
+                    },
+                    "required": ["premise_cn", "evidence_refs"],
+                },
+                "minItems": 1,
+                "maxItems": 3,
+            },
+            "invalid_if": {
+                "type": "array",
+                "items": text,
+                "minItems": 1,
+                "maxItems": 3,
+            },
+            "next_observation_cn": text,
+            "session_advisory": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "liquidity_assessment": {
+                        "type": "string",
+                        "enum": sorted(ADVISORY_LIQUIDITY_ASSESSMENTS),
+                    },
+                    "warning_level": {
+                        "type": "string",
+                        "enum": sorted(ADVISORY_WARNING_LEVELS),
+                    },
+                    "basis_cn": text,
+                    "does_not_change_recommendation": {"type": "boolean"},
+                },
+                "required": [
+                    "liquidity_assessment",
+                    "warning_level",
+                    "basis_cn",
+                    "does_not_change_recommendation",
+                ],
+            },
+            "source_alignment": {
+                "type": "string",
+                "enum": sorted(ADVISORY_SOURCE_ALIGNMENTS),
+            },
+            "audit_only": {"type": "boolean"},
+            "trade_authorization": {"type": "boolean"},
+        },
+        "required": [
+            "recommendation",
+            "final_conclusion_cn",
+            "cross_loop_rationale_cn",
+            "containment_assessment",
+            "premium_selling_fit",
+            "side_basis_cn",
+            "dominant_conflict_cn",
+            "key_premises",
+            "invalid_if",
+            "next_observation_cn",
+            "session_advisory",
+            "source_alignment",
+            "audit_only",
+            "trade_authorization",
+        ],
+    }
 
 
 def review_response_schema():
@@ -495,6 +765,7 @@ def review_response_schema():
             },
             "theoretical_active_view": active_view_schema,
             "gamma_regime_lens": gamma_lens_schema,
+            "integrated_trade_advisory": integrated_trade_advisory_schema(),
             "main_supporting_factors": {
                 "type": "array",
                 "items": text_item,
@@ -542,7 +813,7 @@ def build_gemini_request(prompt, model=DEFAULT_MODEL):
             "parts": [{"text": prompt}],
         }],
         "generationConfig": {
-            "temperature": 0.2,
+            "temperature": 0,
             "topP": 0.85,
             "responseMimeType": "application/json",
             "responseSchema": _strip_schema_for_legacy(review_response_schema()),
@@ -572,7 +843,7 @@ def build_blind_gemini_request(prompt, model=DEFAULT_MODEL):
             "parts": [{"text": prompt}],
         }],
         "generationConfig": {
-            "temperature": 0.2,
+            "temperature": 0,
             "topP": 0.85,
             "responseMimeType": "application/json",
             "responseSchema": _strip_schema_for_legacy(blind_response_schema()),
@@ -1575,8 +1846,8 @@ def parse_gemini_response(response):
 def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
                      derived_blind=True, llm_call_count=2,
                      llm_call_routes=None):
-    payload = _validate_model_payload(payload)
     packet = build_review_packet(card)
+    payload = _validate_model_payload(payload, packet=packet)
     reviewed_at = reviewed_at or _now_iso()
     review = {
         "schema": OUTPUT_SCHEMA_VERSION,
@@ -1591,6 +1862,7 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
         "llm_call_routes": list(llm_call_routes or []),
         "input_packet_hash": _sha256_json(packet),
         "blind_packet_hash": _sha256_json(build_blind_theoretical_packet(packet)),
+        "evidence_catalog_hash": packet.get("evidence_catalog_hash"),
         "summary_cn": payload["summary_cn"],
         "agreement_with_system": payload["agreement_with_system"],
         "caution_level": _policy_caution(payload["caution_level"], packet),
@@ -1598,6 +1870,8 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
             payload["theoretical_active_view"], derived_blind=derived_blind),
         "gamma_regime_lens": _normalize_gamma_regime_lens(
             payload["gamma_regime_lens"]),
+        "integrated_trade_advisory": _normalize_integrated_trade_advisory(
+            payload["integrated_trade_advisory"]),
         "main_supporting_factors": _trim_list(payload["main_supporting_factors"]),
         "main_risks_or_conflicts": _trim_list(payload["main_risks_or_conflicts"]),
         "operator_focus": _trim_list(payload["operator_focus"]),
@@ -1690,6 +1964,8 @@ def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None
                         "LLM 调用或解析失败，无法形成理论主动倾向参考。"),
                     "gamma_regime_lens": _default_gamma_regime_lens(
                         "LLM 调用或解析失败，无法形成 Gamma 体制风险叠加分析。"),
+                    "integrated_trade_advisory": _default_integrated_trade_advisory(
+                        "LLM 调用或解析失败，无法形成辅助交易决策结论。"),
                     "main_supporting_factors": [],
                     "main_risks_or_conflicts": ["LLM 调用或解析失败：" + safe_error],
                     "operator_focus": ["仅依据系统审计卡继续人工复核。"],
@@ -3196,7 +3472,7 @@ def _strip_transition_private_validation_fields(value):
             _strip_transition_private_validation_fields(item)
 
 
-def _validate_model_payload(payload):
+def _validate_model_payload(payload, packet=None):
     if not isinstance(payload, dict):
         raise ValueError("model output must be object")
     missing = [key for key in REQUIRED_REVIEW_FIELDS if key not in payload]
@@ -3208,13 +3484,296 @@ def _validate_model_payload(payload):
         raise ValueError("invalid agreement_with_system")
     if payload.get("caution_level") not in {"LOW", "MEDIUM", "HIGH"}:
         raise ValueError("invalid caution_level")
+    if payload.get("not_trading_advice") is not True:
+        raise ValueError("not_trading_advice must be true")
     _validate_theoretical_active_view(payload.get("theoretical_active_view"))
     _validate_gamma_regime_lens(payload.get("gamma_regime_lens"))
+    _validate_integrated_trade_advisory(
+        payload.get("integrated_trade_advisory"), packet,
+        theoretical_active_view=payload.get("theoretical_active_view"))
     for key in ("main_supporting_factors", "main_risks_or_conflicts",
                 "operator_focus", "invalid_if"):
         if not isinstance(payload.get(key), list):
             raise ValueError(key + " must be list")
     return payload
+
+
+def _integrated_advisory_human_text(advisory):
+    advisory = _as_dict(advisory)
+    containment = _as_dict(advisory.get("containment_assessment"))
+    premium_fit = _as_dict(advisory.get("premium_selling_fit"))
+    session = _as_dict(advisory.get("session_advisory"))
+    values = [
+        advisory.get("final_conclusion_cn"),
+        advisory.get("cross_loop_rationale_cn"),
+        containment.get("basis_cn"),
+        premium_fit.get("basis_cn"),
+        advisory.get("side_basis_cn"),
+        advisory.get("dominant_conflict_cn"),
+        advisory.get("next_observation_cn"),
+        session.get("basis_cn"),
+    ]
+    values.extend(
+        _as_dict(item).get("premise_cn")
+        for item in (advisory.get("key_premises") or [])
+    )
+    values.extend(advisory.get("invalid_if") or [])
+    return "\n".join(str(value) for value in values if value not in (None, ""))
+
+
+def _find_advisory_raw_tokens(text):
+    leaked = []
+    for token in ADVISORY_HUMAN_RAW_TOKENS:
+        pattern = (r"(?<![A-Za-z0-9_])" + re.escape(token)
+                   + r"(?![A-Za-z0-9_])")
+        if re.search(pattern, text, re.IGNORECASE):
+            leaked.append(token)
+    return sorted(leaked)
+
+
+def _require_nonblank_advisory_text(value, field_name):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(field_name + " must be non-blank text")
+
+
+def _advisory_direction(value):
+    value = str(value or "").upper()
+    if "BULLISH" in value:
+        return "BULLISH"
+    if "BEARISH" in value:
+        return "BEARISH"
+    if value in {"NEUTRAL", "NEUTRAL_OR_RANGE"}:
+        return "NEUTRAL"
+    return "UNKNOWN"
+
+
+def _validate_blind_advisory_alignment(advisory, theoretical_active_view,
+                                       packet=None):
+    blind_bias = str(_as_dict(theoretical_active_view).get("bias") or "").upper()
+    blind_direction = _advisory_direction(blind_bias)
+    producer_lean = _as_dict(_as_dict(packet).get("decision")).get("lean")
+    producer_direction = _advisory_direction(producer_lean)
+    recommendation = str(advisory.get("recommendation") or "").upper()
+    source_alignment = str(advisory.get("source_alignment") or "").upper()
+
+    direct_opposition = {
+        producer_direction, blind_direction,
+    } == {"BULLISH", "BEARISH"}
+    if direct_opposition:
+        if recommendation in ADVISORY_SPREAD_RECOMMENDATIONS:
+            raise ValueError(
+                "blind theoretical direction conflicts with spread recommendation")
+        if source_alignment != "DIVERGENT":
+            raise ValueError(
+                "opposed blind and producer directions require DIVERGENT alignment")
+
+    if (recommendation == "SELL_PUT_SPREAD_REVIEW"
+            and blind_direction == "BEARISH"):
+        raise ValueError("sell Put spread review conflicts with blind direction")
+    if (recommendation == "SELL_CALL_SPREAD_REVIEW"
+            and blind_direction == "BULLISH"):
+        raise ValueError("sell Call spread review conflicts with blind direction")
+
+    aligned_pair = (
+        producer_direction in {"BULLISH", "BEARISH", "NEUTRAL"}
+        and producer_direction == blind_direction
+    )
+    if source_alignment == "ALIGNED" and not aligned_pair:
+        raise ValueError(
+            "ALIGNED source_alignment conflicts with blind and producer directions")
+    if blind_bias == "UNABLE_TO_JUDGE" and source_alignment != "UNABLE_TO_JUDGE":
+        raise ValueError(
+            "unable blind view requires UNABLE_TO_JUDGE source_alignment")
+
+
+def _validate_integrated_trade_advisory(advisory, packet=None,
+                                        theoretical_active_view=None):
+    if not isinstance(advisory, dict):
+        raise ValueError("integrated_trade_advisory must be object")
+    required = {
+        "recommendation",
+        "final_conclusion_cn",
+        "cross_loop_rationale_cn",
+        "containment_assessment",
+        "premium_selling_fit",
+        "side_basis_cn",
+        "dominant_conflict_cn",
+        "key_premises",
+        "invalid_if",
+        "next_observation_cn",
+        "session_advisory",
+        "source_alignment",
+        "audit_only",
+        "trade_authorization",
+    }
+    missing = sorted(required - set(advisory))
+    if missing:
+        raise ValueError("integrated_trade_advisory missing fields: "
+                         + ", ".join(missing))
+    unexpected = sorted(set(advisory) - required)
+    if unexpected:
+        raise ValueError("integrated_trade_advisory unexpected fields: "
+                         + ", ".join(unexpected))
+
+    recommendation = str(advisory.get("recommendation") or "").upper()
+    if recommendation not in ADVISORY_RECOMMENDATIONS:
+        raise ValueError("invalid integrated_trade_advisory.recommendation")
+    if advisory.get("audit_only") is not True:
+        raise ValueError("integrated_trade_advisory.audit_only must be true")
+    if advisory.get("trade_authorization") is not False:
+        raise ValueError("integrated_trade_advisory.trade_authorization must be false")
+    for field_name in (
+            "final_conclusion_cn", "cross_loop_rationale_cn", "side_basis_cn",
+            "dominant_conflict_cn", "next_observation_cn"):
+        _require_nonblank_advisory_text(advisory.get(field_name), field_name)
+    advisory_text = _integrated_advisory_human_text(advisory)
+    raw_human_tokens = _find_advisory_raw_tokens(advisory_text)
+    if raw_human_tokens:
+        raise ValueError("integrated_trade_advisory human text contains raw codes: "
+                         + ", ".join(raw_human_tokens))
+    execution_terms = [
+        label for label, pattern in ADVISORY_EXECUTION_TEXT_PATTERNS
+        if pattern.search(advisory_text)
+    ]
+    if execution_terms:
+        raise ValueError("integrated_trade_advisory contains execution parameters: "
+                         + ", ".join(execution_terms))
+
+    containment = _as_dict(advisory.get("containment_assessment"))
+    if set(containment) != {"state", "basis_cn"}:
+        raise ValueError("containment_assessment must contain state and basis_cn")
+    if str(containment.get("state") or "").upper() not in ADVISORY_CONTAINMENT_STATES:
+        raise ValueError("invalid containment_assessment.state")
+    _require_nonblank_advisory_text(
+        containment.get("basis_cn"), "containment_assessment.basis_cn")
+
+    premium_fit = _as_dict(advisory.get("premium_selling_fit"))
+    if set(premium_fit) != {"state", "basis_cn"}:
+        raise ValueError("premium_selling_fit must contain state and basis_cn")
+    if str(premium_fit.get("state") or "").upper() not in ADVISORY_PREMIUM_FIT_STATES:
+        raise ValueError("invalid premium_selling_fit.state")
+    _require_nonblank_advisory_text(
+        premium_fit.get("basis_cn"), "premium_selling_fit.basis_cn")
+
+    session = _as_dict(advisory.get("session_advisory"))
+    session_fields = {
+        "liquidity_assessment", "warning_level", "basis_cn",
+        "does_not_change_recommendation",
+    }
+    if set(session) != session_fields:
+        raise ValueError("session_advisory fields are incomplete or unexpected")
+    if str(session.get("liquidity_assessment") or "").upper() not in (
+            ADVISORY_LIQUIDITY_ASSESSMENTS):
+        raise ValueError("invalid session_advisory.liquidity_assessment")
+    if str(session.get("warning_level") or "").upper() not in ADVISORY_WARNING_LEVELS:
+        raise ValueError("invalid session_advisory.warning_level")
+    if session.get("does_not_change_recommendation") is not True:
+        raise ValueError("session advisory must not change recommendation")
+    _require_nonblank_advisory_text(
+        session.get("basis_cn"), "session_advisory.basis_cn")
+    if str(advisory.get("source_alignment") or "").upper() not in (
+            ADVISORY_SOURCE_ALIGNMENTS):
+        raise ValueError("invalid integrated_trade_advisory.source_alignment")
+
+    premises = advisory.get("key_premises")
+    if not isinstance(premises, list) or not (1 <= len(premises) <= 3):
+        raise ValueError("integrated_trade_advisory.key_premises must contain 1..3 items")
+    catalog = _as_dict(packet).get("evidence_catalog")
+    if not isinstance(catalog, list):
+        catalog = []
+    valid_evidence_ids = {
+        str(item.get("id"))
+        for item in catalog
+        if isinstance(item, dict) and item.get("id")
+    }
+    for premise in premises:
+        if not isinstance(premise, dict) or set(premise) != {
+                "premise_cn", "evidence_refs"}:
+            raise ValueError("key_premises item fields are incomplete or unexpected")
+        _require_nonblank_advisory_text(
+            premise.get("premise_cn"), "key_premises.premise_cn")
+        refs = premise.get("evidence_refs")
+        if not isinstance(refs, list) or not refs:
+            raise ValueError("key_premises.evidence_refs must be non-empty list")
+        invalid_refs = sorted({str(ref) for ref in refs if str(ref) not in valid_evidence_ids})
+        if invalid_refs:
+            raise ValueError("integrated_trade_advisory invalid evidence refs: "
+                             + ", ".join(invalid_refs))
+        if {str(ref) for ref in refs} & {"EV_SESSION_CONTEXT", "EV_COMFORT_WINDOW"}:
+            raise ValueError("session evidence cannot support the core recommendation")
+    invalid_if = advisory.get("invalid_if")
+    if not isinstance(invalid_if, list) or not (1 <= len(invalid_if) <= 3):
+        raise ValueError("integrated_trade_advisory.invalid_if must contain 1..3 items")
+    for item in invalid_if:
+        _require_nonblank_advisory_text(item, "integrated_trade_advisory.invalid_if")
+
+    _validate_blind_advisory_alignment(
+        advisory, theoretical_active_view, packet=packet)
+
+    hard_blocked = _packet_has_producer_hard_block(packet)
+    if hard_blocked and recommendation not in {"NO_TRADE", "UNABLE_TO_JUDGE"}:
+        raise ValueError("producer hard block requires NO_TRADE or UNABLE_TO_JUDGE")
+    if recommendation in ADVISORY_SPREAD_RECOMMENDATIONS:
+        if _packet_requires_confirmation(packet):
+            raise ValueError("waiting signal cannot be upgraded by advisory")
+        if str(containment.get("state") or "").upper() != "ESTABLISHED":
+            raise ValueError("spread review requires established containment")
+        if str(premium_fit.get("state") or "").upper() not in {"FIT", "CONDITIONAL"}:
+            raise ValueError("spread review requires compatible premium-selling structure")
+        lean = str(_as_dict(_as_dict(packet).get("decision")).get("lean") or "").upper()
+        if recommendation == "SELL_PUT_SPREAD_REVIEW" and "BULLISH" not in lean:
+            raise ValueError("sell Put spread review conflicts with producer direction")
+        if recommendation == "SELL_CALL_SPREAD_REVIEW" and "BEARISH" not in lean:
+            raise ValueError("sell Call spread review conflicts with producer direction")
+        if recommendation == "NEUTRAL_SINGLE_SIDE_REVIEW" and lean != "NEUTRAL":
+            raise ValueError("neutral single-side review conflicts with producer direction")
+        if (recommendation == "NEUTRAL_SINGLE_SIDE_REVIEW"
+                and re.search(r"双边|宽跨|铁鹰", advisory_text)):
+            raise ValueError("neutral single-side review human text names another structure")
+    if recommendation == "UNABLE_TO_JUDGE":
+        if (str(containment.get("state") or "").upper() != "UNABLE_TO_JUDGE"
+                and str(premium_fit.get("state") or "").upper() != "UNABLE_TO_JUDGE"):
+            raise ValueError("UNABLE_TO_JUDGE requires an unable assessment")
+
+
+def _packet_has_producer_hard_block(packet):
+    packet = _as_dict(packet)
+    decision = _as_dict(packet.get("decision"))
+    matrix = _as_dict(packet.get("decision_matrix"))
+    blocking = _as_dict(packet.get("blocking"))
+    support_values = {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+    }
+    if "NO_TRADE_BLOCKED" in support_values:
+        return True
+    if str(blocking.get("block_kind") or "").upper() == "HARD":
+        return True
+    if blocking.get("hard_block") is True or blocking.get("hard_blocked") is True:
+        return True
+    if blocking.get("hard_veto") not in (None, {}, [], False):
+        return True
+    macro = _as_dict(_as_dict(packet.get("factor_cross_section")).get("macro_pressure"))
+    if _as_dict(macro.get("macro_shock")).get("block") is True:
+        return True
+    return False
+
+
+def _packet_requires_confirmation(packet):
+    packet = _as_dict(packet)
+    decision = _as_dict(packet.get("decision"))
+    matrix = _as_dict(packet.get("decision_matrix"))
+    return bool({
+        "WAIT_CONFIRMATION",
+        "WAIT_FOR_CONFIRMATION",
+        "WAITING_CONFIRMATION",
+        "PENDING_CONFIRMATION",
+    } & {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+    })
 
 
 def _validate_blind_payload(payload):
@@ -3363,6 +3922,97 @@ def _default_gamma_regime_lens(reason):
         "positioning_assumption_cn": "无法从当前 LLM 输出形成可靠的 GEX 持仓符号假设。",
         "data_quality_cn": reason,
         "lens_is_risk_overlay_not_direction": True,
+    }
+
+
+def _normalize_integrated_trade_advisory(advisory):
+    advisory = _as_dict(advisory)
+    containment = _as_dict(advisory.get("containment_assessment"))
+    premium_fit = _as_dict(advisory.get("premium_selling_fit"))
+    session = _as_dict(advisory.get("session_advisory"))
+    premises = []
+    for item in advisory.get("key_premises") or []:
+        item = _as_dict(item)
+        premises.append({
+            "premise_cn": str(item.get("premise_cn") or "")[:520],
+            "evidence_refs": [
+                str(ref)[:80] for ref in (item.get("evidence_refs") or [])[:4]
+            ],
+        })
+    return {
+        "recommendation": str(advisory.get("recommendation") or "UNABLE_TO_JUDGE").upper(),
+        "final_conclusion_cn": str(advisory.get("final_conclusion_cn") or "")[:520],
+        "cross_loop_rationale_cn": str(advisory.get("cross_loop_rationale_cn") or "")[:520],
+        "containment_assessment": {
+            "state": str(containment.get("state") or "UNABLE_TO_JUDGE").upper(),
+            "basis_cn": str(containment.get("basis_cn") or "")[:520],
+        },
+        "premium_selling_fit": {
+            "state": str(premium_fit.get("state") or "UNABLE_TO_JUDGE").upper(),
+            "basis_cn": str(premium_fit.get("basis_cn") or "")[:520],
+        },
+        "side_basis_cn": str(advisory.get("side_basis_cn") or "")[:520],
+        "dominant_conflict_cn": str(advisory.get("dominant_conflict_cn") or "")[:520],
+        "key_premises": premises[:3],
+        "invalid_if": _trim_list(advisory.get("invalid_if"), limit=3),
+        "next_observation_cn": str(advisory.get("next_observation_cn") or "")[:520],
+        "session_advisory": {
+            "liquidity_assessment": str(
+                session.get("liquidity_assessment") or "UNKNOWN").upper(),
+            "warning_level": str(session.get("warning_level") or "HIGH").upper(),
+            "basis_cn": str(session.get("basis_cn") or "")[:520],
+            "does_not_change_recommendation": True,
+        },
+        "source_alignment": str(
+            advisory.get("source_alignment") or "UNABLE_TO_JUDGE").upper(),
+        "audit_only": True,
+        "trade_authorization": False,
+        "policy_validation": {
+            "passed": True,
+            "evidence_refs_valid": True,
+            "producer_hard_block_respected": True,
+            "waiting_signal_not_upgraded": True,
+            "session_is_advisory_only": True,
+            "authorization_is_not_structure_gate": True,
+        },
+    }
+
+
+def _default_integrated_trade_advisory(reason):
+    return {
+        "recommendation": "UNABLE_TO_JUDGE",
+        "final_conclusion_cn": reason,
+        "cross_loop_rationale_cn": "未形成可校验的跨回路推理定论。",
+        "containment_assessment": {
+            "state": "UNABLE_TO_JUDGE",
+            "basis_cn": reason,
+        },
+        "premium_selling_fit": {
+            "state": "UNABLE_TO_JUDGE",
+            "basis_cn": reason,
+        },
+        "side_basis_cn": "无法判断复核侧。",
+        "dominant_conflict_cn": reason,
+        "key_premises": [],
+        "invalid_if": ["LLM 审计恢复并产生通过本地校验的结构化结论。"],
+        "next_observation_cn": "修复 LLM 调用或输出校验后重新复核。",
+        "session_advisory": {
+            "liquidity_assessment": "UNKNOWN",
+            "warning_level": "HIGH",
+            "basis_cn": "本次调用失败，未形成时段流动性判断。",
+            "does_not_change_recommendation": True,
+        },
+        "source_alignment": "UNABLE_TO_JUDGE",
+        "audit_only": True,
+        "trade_authorization": False,
+        "policy_validation": {
+            "passed": False,
+            "evidence_refs_valid": False,
+            "producer_hard_block_respected": True,
+            "waiting_signal_not_upgraded": True,
+            "session_is_advisory_only": True,
+            "authorization_is_not_structure_gate": False,
+        },
     }
 
 
@@ -3574,6 +4224,15 @@ def _strip_json_fence(text):
 
 def _as_dict(value):
     return value if isinstance(value, dict) else {}
+
+
+def _get_dotted_value(value, pointer):
+    current = value
+    for part in str(pointer or "").split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
 
 
 def _now_iso():

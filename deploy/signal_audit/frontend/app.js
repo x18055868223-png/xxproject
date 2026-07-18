@@ -121,6 +121,7 @@
     SUPPORTIVE: "支持",
     TENTATIVE: "暂定",
     TRADE_SUPPORT_STRONG: "强交易支持",
+    TRADE_SUPPORT_REVIEW: "结构复核支持",
     TRADE_SUPPORT_WEAK: "弱交易支持",
     UNCALIBRATED: "未校准",
     UNKNOWN: "未知",
@@ -392,6 +393,39 @@
     role: "字段角色",
     signal_continuity: "连续性",
     trajectory_state: "轨迹状态"
+  };
+
+  const advisoryRecommendationLabels = {
+    SELL_PUT_SPREAD_REVIEW: "复核卖出 Put 价差",
+    SELL_CALL_SPREAD_REVIEW: "复核卖出 Call 价差",
+    NEUTRAL_SINGLE_SIDE_REVIEW: "中性单侧结构复核",
+    WAIT_FOR_CONFIRMATION: "等待确认",
+    NO_TRADE: "不进入交易复核",
+    UNABLE_TO_JUDGE: "无法判断"
+  };
+  const advisoryContainmentLabels = {
+    ESTABLISHED: "成立",
+    INCOMPLETE: "不完整",
+    FAILED: "不成立",
+    UNABLE_TO_JUDGE: "无法判断"
+  };
+  const advisoryPremiumFitLabels = {
+    FIT: "适配",
+    CONDITIONAL: "有条件适配",
+    NOT_FIT: "不适配",
+    UNABLE_TO_JUDGE: "无法判断"
+  };
+  const advisoryLiquidityLabels = {
+    ALIGNED: "匹配",
+    CAUTION: "谨慎",
+    TIME_ONLY: "仅时段提醒",
+    UNKNOWN: "未定"
+  };
+  const advisoryWarningLabels = {
+    NONE: "无额外提醒",
+    INFO: "信息提醒",
+    CAUTION: "谨慎提醒",
+    HIGH: "高提醒"
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -852,17 +886,165 @@
     const flags = asArray(ctx.cross_domain_flags);
     return `
       <div class="transition-badges">
-        <span>${escapeHtml(ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN"))}</span>
-        <span>${escapeHtml(flags[0] || "AUDIT_ONLY")}</span>
+        <span>${escapeHtml(semanticCompact(ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN")))}</span>
+        <span>${escapeHtml(semanticCompact(flags[0] || "AUDIT_ONLY"))}</span>
       </div>
     `;
+  }
+
+  function llmReviewContent(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    return Object.assign({}, asObject(review.content), review);
+  }
+
+  function advisoryLabel(labels, value, fallback = "未定") {
+    const key = rawEnum(value).toUpperCase();
+    return labels[key] || fallback;
+  }
+
+  function advisoryItemText(item) {
+    if (typeof item === "string") return item;
+    return asObject(item).premise_cn || "";
+  }
+
+  function advisoryTexts(items) {
+    return asArray(items).map(advisoryItemText).filter(Boolean);
+  }
+
+  function advisoryTextList(items, emptyText) {
+    const values = advisoryTexts(items);
+    return listHtml(values, emptyText);
+  }
+
+  function integratedTradeAdvisory(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    if (rawEnum(review.status).toUpperCase() !== "OK") return null;
+    const content = llmReviewContent(doc);
+    const direct = asObject(content.integrated_trade_advisory);
+    const nested = asObject(get(review, "content.integrated_trade_advisory", {}));
+    const advisory = Object.keys(direct).length ? direct : nested;
+    if (!Object.keys(advisory).length) return null;
+
+    const required = [
+      "recommendation",
+      "final_conclusion_cn",
+      "cross_loop_rationale_cn",
+      "containment_assessment",
+      "premium_selling_fit",
+      "side_basis_cn",
+      "dominant_conflict_cn",
+      "key_premises",
+      "invalid_if",
+      "next_observation_cn",
+      "session_advisory",
+      "source_alignment",
+      "audit_only",
+      "trade_authorization"
+    ];
+    if (required.some((key) => !(key in advisory))) return null;
+    if (advisory.audit_only !== true || advisory.trade_authorization !== false) return null;
+    if (!advisoryRecommendationLabels[rawEnum(advisory.recommendation).toUpperCase()]) return null;
+
+    const containment = asObject(advisory.containment_assessment);
+    const premiumFit = asObject(advisory.premium_selling_fit);
+    const session = asObject(advisory.session_advisory);
+    if (isBlank(advisory.final_conclusion_cn)
+      || isBlank(advisory.cross_loop_rationale_cn)
+      || isBlank(advisory.side_basis_cn)
+      || isBlank(advisory.dominant_conflict_cn)
+      || isBlank(advisory.next_observation_cn)
+      || isBlank(advisory.source_alignment)
+      || isBlank(containment.state)
+      || isBlank(containment.basis_cn)
+      || isBlank(premiumFit.state)
+      || isBlank(premiumFit.basis_cn)
+      || isBlank(session.liquidity_assessment)
+      || isBlank(session.warning_level)
+      || isBlank(session.basis_cn)
+      || session.does_not_change_recommendation !== true
+      || !advisoryTexts(advisory.key_premises).length
+      || !advisoryTexts(advisory.invalid_if).length) {
+      return null;
+    }
+    return advisory;
+  }
+
+  function renderIntegratedTradeAdvisory(doc) {
+    const advisory = integratedTradeAdvisory(doc);
+    if (!advisory) return "";
+    const containment = asObject(advisory.containment_assessment);
+    const premiumFit = asObject(advisory.premium_selling_fit);
+    const session = asObject(advisory.session_advisory);
+    const recommendation = advisoryLabel(advisoryRecommendationLabels, advisory.recommendation, "无法判断");
+    const containmentState = advisoryLabel(advisoryContainmentLabels, containment.state, "无法判断");
+    const premiumState = advisoryLabel(advisoryPremiumFitLabels, premiumFit.state, "无法判断");
+    const liquidity = advisoryLabel(advisoryLiquidityLabels, session.liquidity_assessment, "未定");
+    const warning = advisoryLabel(advisoryWarningLabels, session.warning_level, "提醒");
+    return section("最高辅助交易决策", "只读辅助，不是交易许可；来自 LLM 复核的结构审计摘要，不改变系统方向、门控或执行许可。", `
+      <div class="integrated-advisory-panel">
+        <div class="integrated-advisory-head">
+          <div class="integrated-advisory-conclusion">
+            <span>结论</span>
+            <strong>${escapeHtml(advisory.final_conclusion_cn)}</strong>
+            <p>${escapeHtml(advisory.cross_loop_rationale_cn)}</p>
+          </div>
+          <div class="integrated-advisory-recommendation">
+            <span>结构复核建议</span>
+            <strong>${escapeHtml(recommendation)}</strong>
+            <em>只读辅助，不是交易许可</em>
+          </div>
+        </div>
+        <div class="integrated-advisory-grid">
+          <div>
+            <span>中性接管</span>
+            <strong>${escapeHtml(containmentState)}</strong>
+            <p>${escapeHtml(containment.basis_cn)}</p>
+          </div>
+          <div>
+            <span>卖方结构适配</span>
+            <strong>${escapeHtml(premiumState)}</strong>
+            <p>${escapeHtml(premiumFit.basis_cn)}</p>
+          </div>
+          <div>
+            <span>侧向依据</span>
+            <p>${escapeHtml(advisory.side_basis_cn)}</p>
+          </div>
+          <div>
+            <span>主要冲突</span>
+            <p>${escapeHtml(advisory.dominant_conflict_cn)}</p>
+          </div>
+        </div>
+        <div class="integrated-advisory-detail-grid">
+          <div>
+            <h3 class="subsection-title">关键前提</h3>
+            ${advisoryTextList(advisory.key_premises, "暂无关键前提")}
+          </div>
+          <div>
+            <h3 class="subsection-title">失效条件</h3>
+            ${advisoryTextList(advisory.invalid_if, "暂无失效条件")}
+          </div>
+          <div>
+            <h3 class="subsection-title">下一观察</h3>
+            <p>${escapeHtml(advisory.next_observation_cn)}</p>
+          </div>
+        </div>
+        <div class="integrated-advisory-session">
+          <div>
+            <span>时段提醒</span>
+            <strong>${escapeHtml(`${warning} / ${liquidity}`)}</strong>
+          </div>
+          <p>${escapeHtml(session.basis_cn)}</p>
+          <p class="integrated-advisory-session-note">只提醒，不改变信号方向或结构建议</p>
+        </div>
+      </div>
+    `, "integrated-advisory");
   }
 
   function renderLlmReview(doc) {
     const review = asObject(get(doc, "llm_review", {}));
     const hasReview = Object.keys(review).length > 0;
     const matrix = asObject(get(doc, "decision_matrix", {}));
-    const content = Object.assign({}, asObject(review.content), review);
+    const content = llmReviewContent(doc);
     const status = hasReview ? (review.status || "UNKNOWN") : (matrix.audit_dissent || "PENDING_LLM");
     const failed = hasReview && rawEnum(status) !== "OK";
     const panelClass = failed ? "llm-review-panel is-error" : (hasReview ? "llm-review-panel" : "llm-review-panel is-pending");
@@ -3335,6 +3517,7 @@
         ${metric("Conflict ratio", isNullish(conflict.ratio) ? null : `${number(conflict.ratio * 100, 1)}%`, semanticCompact(conflict.level))}
         ${metric("Data quality", semanticCompact(quality.overall), quality.all_required_sources_ready ? "required ready" : "requires review")}
       </div>
+      ${renderIntegratedTradeAdvisory(doc)}
       ${renderGammaOverview(doc)}
       ${renderGexRank(doc)}
       ${renderSignalDurability(doc)}

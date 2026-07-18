@@ -26,6 +26,16 @@ def assert_true(condition, message):
         raise AssertionError(message)
 
 
+INTEGRATED_TRADE_ADVISORY_RECOMMENDATIONS = {
+    "SELL_PUT_SPREAD_REVIEW",
+    "SELL_CALL_SPREAD_REVIEW",
+    "NEUTRAL_SINGLE_SIDE_REVIEW",
+    "WAIT_FOR_CONFIRMATION",
+    "NO_TRADE",
+    "UNABLE_TO_JUDGE",
+}
+
+
 def card(card_id="20260619T000000+0800-BTC-GEMINI-LOCAL-PREVIEW"):
     return {
         "identity": {
@@ -71,6 +81,205 @@ def card(card_id="20260619T000000+0800-BTC-GEMINI-LOCAL-PREVIEW"):
         "delivery": {"local_jsonl": r"C:\should\not\leave.jsonl"},
         "api_token": "sk-should-not-leave",
     }
+
+
+def review_context_card(card_id="20260619T000000+0800-BTC-GEMINI-LOCAL-PREVIEW"):
+    sample = card(card_id)
+    sample["decision"] = {
+        "lean": "BULLISH",
+        "support_label": "TRADE_SUPPORT_REVIEW",
+        "confidence": 54,
+        "confidence_semantics": "EVIDENCE_QUALITY_NOT_WIN_RATE",
+        "trade_allowed": False,
+    }
+    sample["decision_matrix"] = {
+        "execution_allowed": False,
+        "temporal_durability": "SESSION_CONTEXT_ADVISORY_ONLY",
+    }
+    sample["signal_window"] = {
+        "window_id": "SIG-WIN-1",
+        "anchor_state": "REPAIRED",
+        "session_context": {
+            "schema_name": "SignalSessionPremiseDurabilityContext",
+            "phase": "PRE_US_TRAPDOOR",
+            "clock_window": "18:00-21:30",
+            "premise_durability": "LOWER_DURABILITY_CONFIRMED",
+            "backtest_delta_pp": 5.31,
+            "validation_basis": {
+                "source": "producer_native",
+                "quarter_consistency": "12/12",
+            },
+        },
+    }
+    sample["signal_durability"] = {
+        "schema_name": "SignalDurabilityLayer",
+        "headline_state": "DURABLE",
+        "comfort_window": {
+            "window_code": "NORMAL_WINDOW",
+            "brief_token": "NW",
+        },
+        "price_anchor_durability": {
+            "schema_version": "nrd.signal.price_anchor_durability.v1",
+            "durability_state": "ANCHOR_DURABLE",
+            "durability_score": 0.72,
+        },
+    }
+    sample["comfort_window"] = sample["signal_durability"]["comfort_window"]
+    sample["price_anchor_durability"] = (
+        sample["signal_durability"]["price_anchor_durability"])
+    sample["blocking"] = {
+        "hard_block": False,
+        "blockers": [],
+    }
+    return sample
+
+
+def blocker_review_context_card():
+    sample = review_context_card("20260619T000000+0800-BTC-GEMINI-BLOCKED")
+    sample["decision"]["lean"] = "NEUTRAL"
+    sample["decision"]["support_label"] = "NO_TRADE_BLOCKED"
+    sample["blocking"] = {
+        "hard_block": True,
+        "hard_blocked": True,
+        "blockers": [{"code": "MACRO_BLOCKING", "severity": "HARD"}],
+    }
+    return sample
+
+
+def integrated_trade_advisory(recommendation="WAIT_FOR_CONFIRMATION",
+                              trade_authorization=False,
+                              evidence_refs=None):
+    refs = list(evidence_refs or ["EV_DECISION", "EV_SIGNAL_DURABILITY"])
+    duplicate_premise = "同侧结构复核前提"
+    is_spread_review = recommendation in {
+        "SELL_PUT_SPREAD_REVIEW",
+        "SELL_CALL_SPREAD_REVIEW",
+        "NEUTRAL_SINGLE_SIDE_REVIEW",
+    }
+    return {
+        "recommendation": recommendation,
+        "final_conclusion_cn": "仅审计的跨回路综合结论。",
+        "cross_loop_rationale_cn": "系统证据与盲读视角在大方向上相互印证。",
+        "containment_assessment": {
+            "state": "ESTABLISHED" if is_spread_review else "INCOMPLETE",
+            "basis_cn": "中性接管已足以进入结构复核。"
+            if is_spread_review else "中性接管仍不完整。",
+        },
+        "premium_selling_fit": {
+            "state": "FIT" if is_spread_review else "CONDITIONAL",
+            "basis_cn": "卖方价差结构适合继续人工复核。"
+            if is_spread_review else "卖方结构适配仍需确认。",
+        },
+        "side_basis_cn": "偏多支持只映射为 Put 侧结构复核，不构成交易许可。",
+        "dominant_conflict_cn": "当前矛盾具有实质性，但不属于文案重复问题。",
+        "key_premises": [
+            {"premise_cn": duplicate_premise, "evidence_refs": refs[:1]},
+            {"premise_cn": duplicate_premise, "evidence_refs": refs[1:] or refs[:1]},
+        ],
+        "invalid_if": ["来源证据失去时效性。"],
+        "next_observation_cn": "继续观察耐用性与冲突是否保持一致。",
+        "session_advisory": {
+            "liquidity_assessment": "CAUTION",
+            "warning_level": "HIGH",
+            "basis_cn": "pre-US rewrite prior is +5.31pp; this warning does not change the structure review",
+            "does_not_change_recommendation": True,
+        },
+        "source_alignment": "PARTIALLY_ALIGNED",
+        "audit_only": True,
+        "trade_authorization": trade_authorization,
+    }
+
+
+def assert_integrated_trade_advisory_schema(schema):
+    assert_true("integrated_trade_advisory" in schema["required"],
+                "1.4.0 schema should require integrated_trade_advisory")
+    advisory_schema = schema["properties"].get("integrated_trade_advisory") or {}
+    props = advisory_schema.get("properties") or {}
+    required = set(advisory_schema.get("required") or [])
+    expected_required = {
+        "recommendation",
+        "final_conclusion_cn",
+        "cross_loop_rationale_cn",
+        "containment_assessment",
+        "premium_selling_fit",
+        "side_basis_cn",
+        "dominant_conflict_cn",
+        "key_premises",
+        "invalid_if",
+        "next_observation_cn",
+        "session_advisory",
+        "source_alignment",
+        "audit_only",
+        "trade_authorization",
+    }
+    assert_true(expected_required.issubset(required),
+                "integrated_trade_advisory should require every contract field")
+    assert_true(set(props["recommendation"]["enum"])
+                == INTEGRATED_TRADE_ADVISORY_RECOMMENDATIONS,
+                "integrated_trade_advisory recommendation enum should match contract")
+    for nested, keys in (
+            ("containment_assessment", {"state", "basis_cn"}),
+            ("premium_selling_fit", {"state", "basis_cn"}),
+            ("session_advisory", {
+                "liquidity_assessment",
+                "warning_level",
+                "basis_cn",
+                "does_not_change_recommendation",
+            })):
+        nested_required = set(
+            ((props.get(nested) or {}).get("required")) or [])
+        assert_true(keys.issubset(nested_required),
+                    nested + " should require " + ", ".join(sorted(keys)))
+    premise_schema = (
+        ((props.get("key_premises") or {}).get("items") or {})
+        .get("required") or [])
+    assert_true({"premise_cn", "evidence_refs"}.issubset(set(premise_schema)),
+                "key_premises should require premise_cn and evidence_refs")
+
+
+def assert_default_unable_advisory(review, message):
+    advisory = review.get("integrated_trade_advisory")
+    assert_true(review["status"] == "ERROR", message + ": review should be ERROR")
+    assert_true(isinstance(advisory, dict),
+                message + ": ERROR review should include default advisory")
+    assert_true(advisory["recommendation"] == "UNABLE_TO_JUDGE",
+                message + ": default advisory recommendation")
+    assert_true(advisory["audit_only"] is True,
+                message + ": default advisory should remain audit-only")
+    assert_true(advisory["trade_authorization"] is False,
+                message + ": default advisory should forbid trade authorization")
+
+
+def generate_single_review(tool, sample, payload, blind_payload=None):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "signal_review.jsonl"
+        reviews = root / "signal_llm_reviews.jsonl"
+        source.write_text(json.dumps(sample, ensure_ascii=False) + "\n",
+                          encoding="utf-8")
+        calls = []
+
+        def fake_call(api_key, model, request_body, timeout):
+            del api_key, model, timeout
+            calls.append(request_body)
+            if len(calls) == 1:
+                blind = blind_payload or model_payload()
+                return {"candidates": [{"content": {"parts": [
+                    {"text": json.dumps({
+                        "theoretical_active_view": blind["theoretical_active_view"],
+                        "gamma_regime_lens": blind["gamma_regime_lens"],
+                    }, ensure_ascii=False)}
+                ]}}]}
+            return {"candidates": [{"content": {"parts": [
+                {"text": json.dumps(payload, ensure_ascii=False)}
+            ]}}]}
+
+        result = tool.generate_reviews(source, reviews, api_key="test-key",
+                                       model="gemini-3.5-flash",
+                                       call_gemini=fake_call,
+                                       reviewed_at="2026-06-19T00:00:00+00:00")
+        saved = json.loads(reviews.read_text(encoding="utf-8"))
+        return result, saved, calls
 
 
 def transition_record():
@@ -294,6 +503,8 @@ def model_payload():
         "operator_focus": ["观察反向证据是否回落。"],
         "invalid_if": ["同向证据失效。"],
         "data_quality_note": "rank 样本仍在 warming up。",
+        "integrated_trade_advisory": integrated_trade_advisory(
+            "SELL_PUT_SPREAD_REVIEW"),
         "not_trading_advice": True,
     }
 
@@ -524,8 +735,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
                     "transition LLM schema version")
         assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.4",
                     "transition prompt version")
-        assert_true(tool.build_gemini_request("x")["generationConfig"]["temperature"] == 0.2,
-                    "card-level review temperature should remain unchanged")
+        assert_true(tool.build_gemini_request("x")["generationConfig"]["temperature"] == 0,
+                    "card-level review should use deterministic temperature")
+        assert_true(tool.build_blind_gemini_request("x")["generationConfig"]["temperature"] == 0,
+                    "card blind review should use deterministic temperature")
         assert_true(tool.build_transition_gemini_request("x")["generationConfig"]["temperature"] == 0,
                     "transition review should use deterministic temperature")
         assert_true(tool.build_transition_blind_gemini_request("x")["generationConfig"]["temperature"] == 0,
@@ -1228,15 +1441,44 @@ def test_gemini_packet_prompt_and_sidecar_generation():
     tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review")
     assert_true(tool.DEFAULT_MODEL == "gemini-3.5-flash",
                 "default Gemini model should be Gemini 3.5 Flash")
-    sample = card()
+    sample = review_context_card()
     packet = tool.build_review_packet(sample)
     packet_text = json.dumps(packet, ensure_ascii=False, sort_keys=True)
     assert_true("api_token" not in packet_text, "token key should be removed")
     assert_true("delivery" not in packet_text, "delivery paths should be removed")
     assert_true("should" not in packet_text, "local path should be redacted")
+    for key in ("evidence_catalog", "signal_durability",
+                "comfort_window", "price_anchor_durability"):
+        assert_true(key in packet, "full packet should include " + key)
+    assert_true("session_context" in packet["signal_window"],
+                "session_context should remain nested in signal_window")
+    assert_true("session_context" not in packet,
+                "session_context should not be promoted to packet top level")
+    evidence_ids = {item.get("id") for item in packet.get("evidence_catalog", [])}
+    assert_true({
+        "EV_SESSION_CONTEXT",
+        "EV_SIGNAL_DURABILITY",
+        "EV_COMFORT_WINDOW",
+        "EV_ANCHOR_DURABILITY",
+    }.issubset(evidence_ids),
+                "packet evidence catalog should expose durability/session evidence ids")
     blind = tool.build_blind_theoretical_packet(packet)
     blind_text = json.dumps(blind, ensure_ascii=False, sort_keys=True)
-    for forbidden in ("decision", "reasoning", "conflict", "blocking", "trade_allowed"):
+    for forbidden in (
+            "decision",
+            "reasoning",
+            "conflict",
+            "blocking",
+            "trade_allowed",
+            "signal_window",
+            "signal_durability",
+            "comfort_window",
+            "price_anchor_durability",
+            "session_context",
+            "US_T2_CORE_COMFORT",
+            "PRE_US_TRAPDOOR",
+            "SignalSessionPremiseDurabilityContext",
+    ):
         assert_true(forbidden not in blind_text,
                     "blind theoretical packet should omit " + forbidden)
     assert_true("gex_info" in blind_text and "gamma_regime" in blind_text,
@@ -1263,6 +1505,28 @@ def test_gemini_packet_prompt_and_sidecar_generation():
                 "blind prompt should include Gamma regime lens theory")
     assert_true("不是胜率" in prompt, "prompt should reject confidence-as-win-rate")
     assert_true("不得重算模型" in prompt, "prompt should reject recomputation")
+    assert_true("integrated_trade_advisory" in prompt,
+                "full prompt should request integrated trade advisory")
+    for marker in (
+            "相同先验和相同证据门槛",
+            "缺失信息不能自动解释为中性",
+            "严格按固定顺序裁决",
+            "先形成 recommendation，再填写 source_alignment",
+            "镜像一致性原则",
+            "不得仅因 WAIT 更保守而选择等待",
+            "机械适配度，不等于最终 recommendation",
+            "source_alignment=DIVERGENT",
+            "不等于结构不适配",
+            "不得把任一单项自动当作总否决",
+            "不得写成选择某个 strike 的建议",
+            "不得复写 SELL_PUT_SPREAD_REVIEW",
+            "不得写成双边",
+    ):
+        assert_true(marker in prompt,
+                    "full prompt should enforce direction-neutral reasoning: " + marker)
+    assert_true("5.31" in prompt and "PRE_US_TRAPDOOR" in prompt,
+                "full prompt should carry producer-native pre-US durability evidence")
+    assert_integrated_trade_advisory_schema(tool.review_response_schema())
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)
@@ -1290,6 +1554,7 @@ def test_gemini_packet_prompt_and_sidecar_generation():
                     }, ensure_ascii=False)}
                 ]}}]}
             assert_true("summary_cn" in schema["required"], "schema required summary")
+            assert_integrated_trade_advisory_schema(schema)
             return {"candidates": [{"content": {"parts": [
                 {"text": json.dumps(model_payload(), ensure_ascii=False)}
             ]}}]}
@@ -1302,6 +1567,10 @@ def test_gemini_packet_prompt_and_sidecar_generation():
         assert_true(len(calls) == 2, "true blind review should make two Gemini calls")
         saved = json.loads(reviews.read_text(encoding="utf-8"))
         review = saved["llm_review"]
+        assert_true(review["schema"] == "signal_llm_review@1.4.0",
+                    "successful sidecar should use signal LLM schema 1.4.0")
+        assert_true(review["prompt_version"] == "gemini_signal_review_prompt@1.4.4",
+                    "successful sidecar should use signal LLM prompt 1.4.4")
         assert_true(review["provider"] == "gemini", "provider should be gemini")
         assert_true(review["blind_review_mode"] == "two_call_strict",
                     "review should record strict two-call blind mode")
@@ -1325,8 +1594,307 @@ def test_gemini_packet_prompt_and_sidecar_generation():
                     "gamma lens should be risk overlay, not direction")
         assert_true(gamma_lens["regime"] == "LONG_GAMMA_STABILIZING",
                     "gamma lens should preserve regime enum")
+        advisory = review.get("integrated_trade_advisory")
+        assert_true(isinstance(advisory, dict),
+                    "review should include integrated trade advisory")
+        assert_true(advisory["recommendation"] == "SELL_PUT_SPREAD_REVIEW",
+                    "advisory should preserve same-side spread review")
+        assert_true(advisory["audit_only"] is True,
+                    "advisory should remain audit only")
+        assert_true(advisory["trade_authorization"] is False,
+                    "advisory should not authorize trading")
+        assert_true(advisory["policy_validation"]["authorization_is_not_structure_gate"] is True,
+                    "local policy should keep execution authorization separate from structure fit")
+        assert_true(advisory["session_advisory"]["warning_level"] == "HIGH"
+                    and "5.31" in advisory["session_advisory"]["basis_cn"],
+                    "pre-US warning should remain visible without changing recommendation")
+        premises = advisory["key_premises"]
+        assert_true(len(premises) == 2
+                    and premises[0]["premise_cn"] == premises[1]["premise_cn"],
+                    "same-direction premise wording should be accepted without dedupe")
         assert_true(review["caution_level"] == "MEDIUM",
                     "material conflict and warming rank should lift caution floor")
+
+
+def test_integrated_trade_advisory_blocker_spread_review_writes_error_default():
+    tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review_blocker_advisory")
+    payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    payload["integrated_trade_advisory"] = integrated_trade_advisory(
+        "SELL_CALL_SPREAD_REVIEW")
+
+    result, saved, calls = generate_single_review(
+        tool, blocker_review_context_card(), payload)
+    assert_true(len(calls) == 2,
+                "blocker downgrade should still come after the two-call review")
+    assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                "blocked spread-review output should fail validation")
+    assert_default_unable_advisory(
+        saved["llm_review"], "blocked spread-review output")
+
+    waiting_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    waiting_result, waiting_saved, _ = generate_single_review(
+        tool, card("CARD-WAITING-CANNOT-UPGRADE"), waiting_payload)
+    assert_true(waiting_result["errors"] == 1,
+                "waiting signal must not be upgraded to spread review")
+    assert_default_unable_advisory(
+        waiting_saved["llm_review"], "waiting signal spread-review output")
+
+
+def test_integrated_trade_advisory_invalid_outputs_write_error_default():
+    tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review_invalid_advisory")
+
+    cases = [
+        (
+            "invalid evidence_ref",
+            lambda advisory: advisory["key_premises"][0].update(
+                {"evidence_refs": ["EV_NOT_IN_PACKET"]}),
+        ),
+        (
+            "invalid recommendation enum",
+            lambda advisory: advisory.update({"recommendation": "BUY_FUTURES_NOW"}),
+        ),
+        (
+            "trade authorization true",
+            lambda advisory: advisory.update({"trade_authorization": True}),
+        ),
+        (
+            "session evidence used as recommendation premise",
+            lambda advisory: advisory["key_premises"][0].update(
+                {"evidence_refs": ["EV_SESSION_CONTEXT"]}),
+        ),
+        (
+            "specific strike instruction",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "建议复核，并把行权价设在 62800 下方。",
+            }),
+        ),
+        (
+            "raw recommendation in human text",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "结论为 SELL_PUT_SPREAD_REVIEW。",
+            }),
+        ),
+        (
+            "lowercase raw recommendation in human text",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "结论为 sell_put_spread_review。",
+            }),
+        ),
+        (
+            "English strike and expiry instruction",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "Review strike 62800 and expiry 2026-08-30.",
+            }),
+        ),
+        (
+            "English numeric spread legs",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "Review the 62800/62000 put spread.",
+            }),
+        ),
+        (
+            "English expiring spread",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "Review a put spread expiring 2026-08-30.",
+            }),
+        ),
+        (
+            "Chinese numeric spread legs",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "复核 62800/62000 Put 价差。",
+            }),
+        ),
+        (
+            "nested raw enums in human text",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "ESTABLISHED、FIT、HIGH、PARTIALLY_ALIGNED。",
+            }),
+        ),
+        (
+            "lowercase nested raw enums in human text",
+            lambda advisory: advisory.update({
+                "final_conclusion_cn": "established、fit、high、caution、info。",
+            }),
+        ),
+        (
+            "blank required conclusion",
+            lambda advisory: advisory.update({"final_conclusion_cn": "  "}),
+        ),
+        (
+            "blank nested basis",
+            lambda advisory: advisory["premium_selling_fit"].update(
+                {"basis_cn": ""}),
+        ),
+        (
+            "blank premise text",
+            lambda advisory: advisory["key_premises"][0].update(
+                {"premise_cn": " "}),
+        ),
+        (
+            "blank invalidation",
+            lambda advisory: advisory.update({"invalid_if": [""]}),
+        ),
+    ]
+    for message, mutate in cases:
+        payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+        mutate(payload["integrated_trade_advisory"])
+        result, saved, calls = generate_single_review(
+            tool, review_context_card("CARD-" + message.replace(" ", "-")), payload)
+        assert_true(len(calls) == 2,
+                    message + ": invalid advisory should be checked after two calls")
+        assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                    message + ": invalid advisory should fail validation")
+        assert_default_unable_advisory(saved["llm_review"], message)
+
+
+def test_integrated_trade_advisory_blind_direction_conflicts_fail_closed():
+    tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review_blind_conflict")
+    bullish = review_context_card("CARD-BLIND-CONFLICT-BULLISH")
+    blind_bearish = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    blind_bearish["theoretical_active_view"]["bias"] = "BEARISH_LEAN"
+
+    spread_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    spread_advisory = integrated_trade_advisory("SELL_PUT_SPREAD_REVIEW")
+    spread_advisory["source_alignment"] = "DIVERGENT"
+    spread_payload["integrated_trade_advisory"] = spread_advisory
+    result, saved, _ = generate_single_review(
+        tool, bullish, spread_payload, blind_payload=blind_bearish)
+    assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                "blind bearish view must block a bullish Put-spread review")
+    assert_default_unable_advisory(saved["llm_review"], "blind/Put conflict")
+
+    aligned_wait_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    aligned_wait = integrated_trade_advisory("WAIT_FOR_CONFIRMATION")
+    aligned_wait["source_alignment"] = "ALIGNED"
+    aligned_wait_payload["integrated_trade_advisory"] = aligned_wait
+    result, saved, _ = generate_single_review(
+        tool, bullish, aligned_wait_payload, blind_payload=blind_bearish)
+    assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                "opposed blind and producer directions cannot claim ALIGNED")
+    assert_default_unable_advisory(saved["llm_review"], "false source alignment")
+
+    divergent_wait_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    divergent_wait = integrated_trade_advisory("WAIT_FOR_CONFIRMATION")
+    divergent_wait["source_alignment"] = "DIVERGENT"
+    divergent_wait_payload["integrated_trade_advisory"] = divergent_wait
+    result, saved, _ = generate_single_review(
+        tool, bullish, divergent_wait_payload, blind_payload=blind_bearish)
+    assert_true(result["written_reviews"] == 1 and result["errors"] == 0,
+                "opposed views may resolve to an explicit divergent wait conclusion")
+    assert_true(saved["llm_review"]["integrated_trade_advisory"]["source_alignment"]
+                == "DIVERGENT",
+                "accepted conflict resolution should preserve DIVERGENT alignment")
+
+
+def test_integrated_trade_advisory_directional_balance_matrix():
+    tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review_balance_matrix")
+
+    bullish = review_context_card("CARD-BALANCE-BULLISH")
+    bearish = review_context_card("CARD-BALANCE-BEARISH")
+    bearish["decision"]["lean"] = "BEARISH"
+    bearish["reasoning"]["evidence"] = [
+        {"key": "TMV", "lean": "BEARISH"},
+        {"key": "SRD", "lean": "BULLISH"},
+    ]
+    neutral = review_context_card("CARD-BALANCE-NEUTRAL")
+    neutral["decision"]["lean"] = "NEUTRAL"
+    neutral["reasoning"]["evidence"] = [
+        {"key": "TMV", "lean": "BULLISH"},
+        {"key": "SRD", "lean": "BEARISH"},
+    ]
+    conflicted = review_context_card("CARD-BALANCE-CONFLICT")
+    conflicted["conflict"] = {"ratio": 0.62, "level": "HIGH"}
+
+    cases = [
+        ("bullish fit", bullish, "SELL_PUT_SPREAD_REVIEW"),
+        ("bearish mirrored fit", bearish, "SELL_CALL_SPREAD_REVIEW"),
+        ("neutral fit", neutral, "NEUTRAL_SINGLE_SIDE_REVIEW"),
+        ("material conflict", conflicted, "WAIT_FOR_CONFIRMATION"),
+        ("hard block", blocker_review_context_card(), "NO_TRADE"),
+    ]
+    for label, sample, recommendation in cases:
+        payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+        payload["integrated_trade_advisory"] = integrated_trade_advisory(
+            recommendation)
+        result, saved, calls = generate_single_review(tool, sample, payload)
+        assert_true(len(calls) == 2, label + ": should retain two-call review")
+        assert_true(result["written_reviews"] == 1 and result["errors"] == 0,
+                    label + ": balanced recommendation should be accepted")
+        actual = saved["llm_review"]["integrated_trade_advisory"]["recommendation"]
+        assert_true(actual == recommendation,
+                    label + ": recommendation should follow scenario facts")
+
+    no_trade_fit_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    no_trade_fit = integrated_trade_advisory("NO_TRADE")
+    no_trade_fit["premium_selling_fit"] = {
+        "state": "FIT",
+        "basis_cn": "结构机械适配，但高冲突主导最终结论",
+    }
+    no_trade_fit_payload["integrated_trade_advisory"] = no_trade_fit
+    result, saved, _ = generate_single_review(
+        tool, conflicted, no_trade_fit_payload)
+    assert_true(result["written_reviews"] == 1 and result["errors"] == 0,
+                "mechanical premium fit must not force a trade-review recommendation")
+    assert_true(saved["llm_review"]["integrated_trade_advisory"]["recommendation"]
+                == "NO_TRADE",
+                "material conflict may dominate an otherwise fit option structure")
+
+    neutral_dual_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    neutral_dual = integrated_trade_advisory("NEUTRAL_SINGLE_SIDE_REVIEW")
+    neutral_dual["final_conclusion_cn"] = "建议进入中性双边结构复核。"
+    neutral_dual_payload["integrated_trade_advisory"] = neutral_dual
+    result, saved, _ = generate_single_review(tool, neutral, neutral_dual_payload)
+    assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                "neutral single-side enum must not render as a different structure")
+    assert_default_unable_advisory(saved["llm_review"], "neutral dual structure")
+
+    unable_payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+    unable = integrated_trade_advisory("UNABLE_TO_JUDGE")
+    unable["containment_assessment"] = {
+        "state": "UNABLE_TO_JUDGE",
+        "basis_cn": "required containment evidence is missing",
+    }
+    unable["premium_selling_fit"] = {
+        "state": "UNABLE_TO_JUDGE",
+        "basis_cn": "required structure evidence is missing",
+    }
+    unable["source_alignment"] = "UNABLE_TO_JUDGE"
+    unable_payload["integrated_trade_advisory"] = unable
+    insufficient = review_context_card("CARD-BALANCE-INSUFFICIENT")
+    insufficient["reasoning"]["evidence"] = []
+    insufficient["quality"] = {"overall": "INSUFFICIENT"}
+    result, saved, _ = generate_single_review(tool, insufficient, unable_payload)
+    assert_true(result["written_reviews"] == 1 and result["errors"] == 0,
+                "insufficient data should accept UNABLE_TO_JUDGE without forcing neutral")
+    assert_true(saved["llm_review"]["integrated_trade_advisory"]["recommendation"]
+                == "UNABLE_TO_JUDGE",
+                "missing evidence must not become a neutral structural recommendation")
+
+    for label, sample, recommendation in (
+            ("bullish cannot map to call", bullish, "SELL_CALL_SPREAD_REVIEW"),
+            ("bearish cannot map to put", bearish, "SELL_PUT_SPREAD_REVIEW"),
+    ):
+        payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+        payload["integrated_trade_advisory"] = integrated_trade_advisory(
+            recommendation)
+        result, saved, _ = generate_single_review(tool, sample, payload)
+        assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                    label + ": mirror mismatch should fail closed")
+        assert_default_unable_advisory(saved["llm_review"], label)
+
+    for wait_label in (
+            "WAIT_CONFIRMATION",
+            "WAIT_FOR_CONFIRMATION",
+            "WAITING_CONFIRMATION",
+            "PENDING_CONFIRMATION",
+    ):
+        waiting = review_context_card("CARD-BALANCE-" + wait_label)
+        waiting["decision"]["support_label"] = wait_label
+        payload = json.loads(json.dumps(model_payload(), ensure_ascii=False))
+        result, saved, _ = generate_single_review(tool, waiting, payload)
+        assert_true(result["errors"] == 1 and result["written_reviews"] == 0,
+                    wait_label + ": waiting producer states must not be upgraded")
+        assert_default_unable_advisory(saved["llm_review"], wait_label)
 
 
 def test_call_gemini_falls_back_to_channel2_only_for_retryable_errors():
@@ -1475,6 +2043,7 @@ def test_materializer_merges_sidecar_without_downgrading_inline_ok():
                 "llm_review": {
                     "status": "OK",
                     "summary_cn": "sidecar ok",
+                    "integrated_trade_advisory": integrated_trade_advisory(),
                     "not_trading_advice": True,
                 },
             }, ensure_ascii=False) + "\n",
@@ -1488,6 +2057,12 @@ def test_materializer_merges_sidecar_without_downgrading_inline_ok():
                     "sidecar ERROR should not overwrite inline OK")
         assert_true(card_b["llm_review"]["summary_cn"] == "sidecar ok",
                     "sidecar OK should attach to base card")
+        assert_true(card_b["llm_review"]["integrated_trade_advisory"]["recommendation"]
+                    == "WAIT_FOR_CONFIRMATION",
+                    "materializer should preserve the nested advisory without backfill")
+        fallback = (output / "signal_cards" / "fallback.js").read_text(encoding="utf-8")
+        assert_true("integrated_trade_advisory" in fallback,
+                    "fallback cards should preserve the nested advisory")
 
 
 def test_generate_reviews_redacts_sensitive_error_text():
@@ -1665,6 +2240,10 @@ if __name__ == "__main__":
     test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar()
     test_transition_sort_keys_accept_mixed_timestamp_types()
     test_gemini_packet_prompt_and_sidecar_generation()
+    test_integrated_trade_advisory_blocker_spread_review_writes_error_default()
+    test_integrated_trade_advisory_invalid_outputs_write_error_default()
+    test_integrated_trade_advisory_blind_direction_conflicts_fail_closed()
+    test_integrated_trade_advisory_directional_balance_matrix()
     test_call_gemini_falls_back_to_channel2_only_for_retryable_errors()
     test_materializer_merges_sidecar_without_downgrading_inline_ok()
     test_generate_reviews_redacts_sensitive_error_text()

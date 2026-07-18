@@ -117,7 +117,7 @@ def main():
             "SignalSessionPremiseDurabilityContext",
             "compat_backfill_applied",
             "strategy_version",
-            "1.5.2",
+            "1.5.6",
             "macro_shock",
             "signal_durability",
             "SignalDurabilityLayer",

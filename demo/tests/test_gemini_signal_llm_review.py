@@ -155,6 +155,7 @@ def main():
     required = set(generation["responseSchema"]["required"])
     for key in ("summary_cn", "agreement_with_system", "caution_level",
                 "theoretical_active_view", "gamma_regime_lens",
+                "integrated_trade_advisory",
                 "main_supporting_factors", "main_risks_or_conflicts",
                 "operator_focus", "invalid_if", "not_trading_advice"):
         assert_true(key in required, "schema missing " + key)
@@ -199,6 +200,36 @@ def main():
             "data_quality_cn": "rank 仍处于 warming_up，极端程度判断只作低把握参考。",
             "lens_is_risk_overlay_not_direction": True,
         },
+        "integrated_trade_advisory": {
+            "recommendation": "WAIT_FOR_CONFIRMATION",
+            "final_conclusion_cn": "中性接管与方向证据尚未同时收敛，暂不进入卖方价差结构复核。",
+            "cross_loop_rationale_cn": "正 Gamma 提供稳定背景，但 EDB 冲突仍高且程序化信号要求等待确认。",
+            "containment_assessment": {
+                "state": "INCOMPLETE",
+                "basis_cn": "当前卡仍处于等待确认，不能把稳定背景等同于接管完成。",
+            },
+            "premium_selling_fit": {
+                "state": "CONDITIONAL",
+                "basis_cn": "结构背景可继续观察，但方向证据不足以进入卖方价差复核。",
+            },
+            "side_basis_cn": "程序化方向中性，暂不选择 Put 或 Call 一侧。",
+            "dominant_conflict_cn": "TMV 支撑与宏观、SRD 反向证据尚未收敛。",
+            "key_premises": [{
+                "premise_cn": "程序化结论仍为等待确认，正 Gamma 只作为稳定性背景。",
+                "evidence_refs": ["EV_DECISION", "EV_GEX"],
+            }],
+            "invalid_if": ["后续卡完成中性接管且方向证据收敛。"],
+            "next_observation_cn": "观察冲突是否回落并形成 producer-native 接管确认。",
+            "session_advisory": {
+                "liquidity_assessment": "UNKNOWN",
+                "warning_level": "INFO",
+                "basis_cn": "当前测试卡未提供 producer-native 时区耐用性上下文。",
+                "does_not_change_recommendation": True,
+            },
+            "source_alignment": "PARTIALLY_ALIGNED",
+            "audit_only": True,
+            "trade_authorization": False,
+        },
         "main_supporting_factors": ["TMV 仍提供同向支撑"],
         "main_risks_or_conflicts": ["SRD 与宏观轻度逆风形成反向证据"],
         "operator_focus": ["观察价格是否继续贴近 pin strike"],
@@ -228,6 +259,11 @@ def main():
                 "gamma regime lens should be persisted")
     assert_true(review["gamma_regime_lens"]["lens_is_risk_overlay_not_direction"] is True,
                 "gamma lens should remain risk overlay")
+    assert_true(review["integrated_trade_advisory"]["recommendation"]
+                == "WAIT_FOR_CONFIRMATION",
+                "integrated advisory should preserve the higher-level wait conclusion")
+    assert_true(review["integrated_trade_advisory"]["trade_authorization"] is False,
+                "integrated advisory must not authorize trading")
     assert_true("不改变系统结论" in review["theoretical_active_view"]["boundary_cn"],
                 "theoretical active view should keep audit-only boundary")
     assert_true("decision" not in review, "review must not include nested decision override")

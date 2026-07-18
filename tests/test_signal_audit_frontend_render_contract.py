@@ -811,6 +811,70 @@ def durability_sample_card(with_durability=True):
     return card
 
 
+def advisory_sample_card():
+    card = durability_sample_card()
+    card["identity"]["card_id"] = "ADVISORY-CONTRACT-CARD"
+    card["identity"]["short_id"] = "ADV"
+    card["decision"]["lean"] = "BULLISH_WITH_DISAGREEMENT"
+    card["llm_review"] = {
+        "status": "OK",
+        "schema": "signal_llm_review@1.4.0",
+        "provider": "gemini",
+        "model": "gemini-3.5-flash",
+        "summary_cn": "LLM 复核完成，系统方向仍由信号层决定。",
+        "integrated_trade_advisory": {
+            "recommendation": "SELL_PUT_SPREAD_REVIEW",
+            "final_conclusion_cn": "允许进入卖出 Put 价差的结构复核，但仍保持只读辅助。",
+            "cross_loop_rationale_cn": "信号层方向、耐久度和盲审结构建议大体同向，适合放在人工结构复核清单首位。",
+            "containment_assessment": {
+                "state": "ESTABLISHED",
+                "basis_cn": "中性接管成立，风险已被限定在结构复核而非方向重写。",
+            },
+            "premium_selling_fit": {
+                "state": "FIT",
+                "basis_cn": "卖方价差结构与当前波动和空间约束相匹配，仅供复核。",
+            },
+            "side_basis_cn": "偏多证据只能映射为 Put 侧结构复核，不能升级成交易许可。",
+            "dominant_conflict_cn": "主要冲突来自宏观轻度逆风和分歧率仍未完全收敛。",
+            "key_premises": [
+                {
+                    "premise_cn": "锚定耐久度仍在可复核区间。",
+                    "evidence_refs": ["EV_DECISION"],
+                },
+                {
+                    "premise_cn": "冲突没有扩大到推翻结构复核。",
+                    "evidence_refs": ["EV_SIGNAL_DURABILITY"],
+                },
+            ],
+            "invalid_if": [
+                "宏观冲击升级为硬阻断。",
+                "Gamma 空间结构转为空头放大。",
+            ],
+            "next_observation_cn": "继续观察冲突率是否回落以及锚定耐久度是否保持。",
+            "session_advisory": {
+                "liquidity_assessment": "CAUTION",
+                "warning_level": "HIGH",
+                "basis_cn": "美盘前陷阱窗口历史复合改写为 +5.31pp，需要高亮提醒。",
+                "does_not_change_recommendation": True,
+            },
+            "source_alignment": "ALIGNED",
+            "audit_only": True,
+            "trade_authorization": False,
+            "policy_validation": {"passed": True},
+        },
+    }
+    return card
+
+
+def advisory_section_text(rendered):
+    text = rendered["text"]
+    start = text.find("最高辅助交易决策")
+    if start < 0:
+        return ""
+    end = text.find("Gamma / GEX", start)
+    return text[start:end if end > start else len(text)]
+
+
 def main():
     app = (FRONTEND / "app.js").read_text(encoding="utf-8")
     project_memory = (ROOT / "PROJECT_MEMORY.md").read_text(encoding="utf-8")
@@ -835,13 +899,23 @@ def main():
                 "frontend should expose unified signal durability renderer")
     assert_true("${renderSignalDurability(doc)}" in app,
                 "document render flow should call unified signal durability renderer")
+    assert_true("function renderIntegratedTradeAdvisory(doc)" in app,
+                "frontend should expose integrated trade advisory renderer")
+    assert_true("${renderIntegratedTradeAdvisory(doc)}" in app,
+                "document render flow should call integrated trade advisory renderer")
     assert_true("${renderSignalSessionContext(doc)}" not in app,
                 "standalone session-context renderer should be replaced in the main flow")
+    metric_idx = app.find('class="metric-strip"')
+    advisory_idx = app.find("${renderIntegratedTradeAdvisory(doc)}")
+    gamma_idx = app.find("${renderGammaOverview(doc)}")
     session_idx = app.find("${renderSignalDurability(doc)}")
     transition_idx = app.find("${renderTransitionContext(doc)}")
     llm_idx = app.find("${renderLlmReview(doc)}")
-    assert_true(session_idx != -1 and transition_idx != -1 and llm_idx != -1,
-                "document render flow should include durability, transition, and LLM sections")
+    assert_true(metric_idx != -1 and advisory_idx != -1 and gamma_idx != -1
+                and session_idx != -1 and transition_idx != -1 and llm_idx != -1,
+                "document render flow should include metric, advisory, Gamma, durability, transition, and LLM sections")
+    assert_true(metric_idx < advisory_idx < gamma_idx,
+                "integrated trade advisory should render after the six top metrics and before Gamma/GEX")
     assert_true(session_idx < transition_idx < llm_idx,
                 "transition context should render after durability context and before card LLM review")
     for marker in (
@@ -875,6 +949,9 @@ def main():
                     "frontend should expose transition audit label: " + marker)
     assert_true("delta_abs" in app and "comparison_quality" in app,
                 "frontend should consume materialized deltas, not calculate them")
+    assert_true('semanticCompact(ctx.comparison_quality' in app
+                and 'semanticCompact(flags[0] || "AUDIT_ONLY")' in app,
+                "sidebar transition badges should translate machine enums for readers")
 
     index_html = (FRONTEND / "index.html").read_text(encoding="utf-8")
     assert_true('"is_synthetic": true' not in index_html,
@@ -1083,6 +1160,76 @@ def main():
                 "old-card sidebar comfort status should use close/false wording")
     assert_true("[object Object]" not in old_text and "[object Object]" not in old_html,
                 "old-card durability fallback should not stringify objects")
+
+    advisory_render = render_sample_card(FRONTEND, advisory_sample_card())
+    advisory_text = advisory_section_text(advisory_render)
+    advisory_html = advisory_render["documentHtml"]
+    assert_true(advisory_text, "integrated trade advisory should render for OK complete sidecar")
+    assert_true(advisory_html.find('id="integrated-advisory"') != -1
+                and advisory_html.find('id="gamma-overview"') != -1
+                and advisory_html.find('id="integrated-advisory"') < advisory_html.find('id="gamma-overview"'),
+                "integrated trade advisory should appear before Gamma/GEX in rendered HTML")
+    for label in (
+            "最高辅助交易决策",
+            "允许进入卖出 Put 价差的结构复核",
+            "复核卖出 Put 价差",
+            "中性接管",
+            "卖方结构适配",
+            "侧向依据",
+            "主要冲突",
+            "关键前提",
+            "失效条件",
+            "下一观察",
+            "时段提醒",
+            "+5.31pp",
+            "只提醒，不改变信号方向或结构建议",
+            "只读辅助，不是交易许可",
+    ):
+        assert_true(label in advisory_text,
+                    "integrated advisory should show Chinese reader label/value: " + label)
+    for raw_token in (
+            "SELL_PUT_SPREAD_REVIEW",
+            "ESTABLISHED",
+            "FIT",
+            "CAUTION",
+            "HIGH",
+            "ALIGNED",
+            "recommendation",
+            "audit_only",
+            "trade_authorization",
+            "source_alignment",
+            "session_advisory",
+            "policy_validation",
+            "evidence_refs",
+            "EV_DECISION",
+            "EV_SIGNAL_DURABILITY",
+    ):
+        assert_true(raw_token not in advisory_text,
+                    "integrated advisory should not expose raw enum/field code: " + raw_token)
+    assert_true("[object Object]" not in advisory_text and "[object Object]" not in advisory_html,
+                "integrated advisory should not stringify objects")
+
+    advisory_error_card = advisory_sample_card()
+    advisory_error_card["llm_review"]["status"] = "ERROR"
+    advisory_error_render = render_sample_card(FRONTEND, advisory_error_card)
+    assert_true("最高辅助交易决策" not in advisory_error_render["text"],
+                "ERROR llm_review should not render integrated advisory")
+    assert_true('id="llm-review"' in advisory_error_render["documentHtml"],
+                "ERROR llm_review should not remove the existing LLM section")
+
+    advisory_missing_card = advisory_sample_card()
+    advisory_missing_card["llm_review"]["integrated_trade_advisory"].pop("dominant_conflict_cn")
+    advisory_missing_render = render_sample_card(FRONTEND, advisory_missing_card)
+    assert_true("最高辅助交易决策" not in advisory_missing_render["text"],
+                "missing advisory field should fail closed without rendering the block")
+    assert_true('id="llm-review"' in advisory_missing_render["documentHtml"],
+                "missing advisory field should not remove the existing LLM section")
+
+    advisory_old_render = render_sample_card(FRONTEND, durability_sample_card())
+    assert_true("最高辅助交易决策" not in advisory_old_render["text"],
+                "old cards without integrated advisory should stay compatible")
+    assert_true('id="llm-review"' in advisory_old_render["documentHtml"],
+                "old cards should still render the existing LLM section")
 
     rows = render_contract(FRONTEND)
     assert_true(rows, "render contract should cover cards")

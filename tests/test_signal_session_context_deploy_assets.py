@@ -56,14 +56,17 @@ def assert_asset_root(root):
             "DO_NOT_MULTIPLY_CONFIDENCE"):
         assert_true(token in app,
                     "frontend app should expose durability renderer token " + token)
-    assert_true("app.js?v=20260707-r3.3.8-funding-gex" in index_html
-                and "fallback.js?v=20260707-r3.3.8-funding-gex" in index_html,
-                "index.html should cache-bust r3.3.8 funding/GEX assets")
+    assert_true("app.js?v=20260719-r3.3.11-advisory2" in index_html
+                and "fallback.js?v=20260719-r3.3.11-advisory2" in index_html,
+                "index.html should cache-bust integrated advisory assets")
     assert_true(version.get("backup_version")
-                == "NRD-XXPROJECT-BACKUP-2026.07.07-r3.3.8-funding-gex-card",
-                "VERSION backup_version should name the r3.3.8 frontend slice")
-    assert_true(version.get("generated_at") == "2026-07-07",
-                "VERSION generated_at should match the r3.3.8 asset refresh date")
+                == "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory",
+                "VERSION backup_version should name the r3.3.11 advisory slice")
+    assert_true(version.get("generated_at") == "2026-07-19",
+                "VERSION generated_at should match the r3.3.11 asset refresh date")
+    assert_true(version.get("llm_review_schema") == "signal_llm_review@1.4.0"
+                and version.get("llm_prompt_version") == "gemini_signal_review_prompt@1.4.4",
+                "VERSION should name the integrated advisory schema and prompt")
     assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
                 and "durability" in version.get("frontend_contract", ""),
                 "VERSION should document the signal durability frontend contract")

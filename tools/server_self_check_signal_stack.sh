@@ -14,11 +14,12 @@ AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
 LLM_REQUIRED="${LLM_REQUIRED:-0}"
+INTEGRATED_ADVISORY_REQUIRED="${INTEGRATED_ADVISORY_REQUIRED:-0}"
 TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
-EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.2}"
+EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.6}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -148,6 +149,7 @@ printf 'AUDIT_URL=%s\n' "$AUDIT_URL"
 printf 'GEX_URL=%s\n' "$GEX_URL"
 printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
 printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
+printf 'INTEGRATED_ADVISORY_REQUIRED=%s\n' "$INTEGRATED_ADVISORY_REQUIRED"
 printf 'TRANSITION_REQUIRED=%s\n' "$TRANSITION_REQUIRED"
 printf 'TRANSITION_LLM_REQUIRED=%s\n' "$TRANSITION_LLM_REQUIRED"
 printf 'DURABILITY_REQUIRED=%s\n' "$DURABILITY_REQUIRED"
@@ -252,7 +254,7 @@ if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
   if python3 - "$AUDIT_ROOT" <<'PY'
 import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.2")
+expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.6")
 durability_required = os.environ.get("DURABILITY_REQUIRED", "0") == "1"
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
@@ -513,6 +515,263 @@ PY
   fi
 else
   warn "skipped latest-card LLM match check; source or sidecar not readable"
+fi
+
+if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ]; then
+  section "Integrated trade advisory"
+  if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
+    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" <<'PY'
+import json, pathlib, re, sys
+
+ADVISORY_RECOMMENDATIONS = {
+    "SELL_PUT_SPREAD_REVIEW",
+    "SELL_CALL_SPREAD_REVIEW",
+    "NEUTRAL_SINGLE_SIDE_REVIEW",
+    "WAIT_FOR_CONFIRMATION",
+    "NO_TRADE",
+    "UNABLE_TO_JUDGE",
+}
+ADVISORY_CONTAINMENT_STATES = {
+    "ESTABLISHED", "INCOMPLETE", "FAILED", "UNABLE_TO_JUDGE",
+}
+ADVISORY_PREMIUM_FIT_STATES = {
+    "FIT", "CONDITIONAL", "NOT_FIT", "UNABLE_TO_JUDGE",
+}
+ADVISORY_LIQUIDITY_ASSESSMENTS = {
+    "ALIGNED", "CAUTION", "TIME_ONLY", "UNKNOWN",
+}
+ADVISORY_WARNING_LEVELS = {"NONE", "INFO", "CAUTION", "HIGH"}
+ADVISORY_SOURCE_ALIGNMENTS = {
+    "ALIGNED", "PARTIALLY_ALIGNED", "DIVERGENT", "UNABLE_TO_JUDGE",
+}
+ADVISORY_HUMAN_RAW_TOKENS = {
+    *ADVISORY_RECOMMENDATIONS,
+    *ADVISORY_CONTAINMENT_STATES,
+    *ADVISORY_PREMIUM_FIT_STATES,
+    *ADVISORY_LIQUIDITY_ASSESSMENTS,
+    *ADVISORY_WARNING_LEVELS,
+    *ADVISORY_SOURCE_ALIGNMENTS,
+    "trade_allowed", "execution_allowed", "source_alignment",
+    "recommendation", "audit_only", "trade_authorization", "evidence_refs",
+}
+ADVISORY_EXECUTION_PATTERNS = (
+    re.compile(r"开仓|平仓|下单|入场|出场|加仓|减仓|止损|止盈"),
+    re.compile(r"(?:行权价|执行价)[^。；\n]{0,36}(?:设|选|放|置|低于|高于|上方|下方|\d)"),
+    re.compile(r"(?:到期日|到期时间)[^。；\n]{0,28}(?:设|选|使用|\d)"),
+    re.compile(r"\bstrike\b[^.;\n]{0,40}\d", re.IGNORECASE),
+    re.compile(r"\b(?:expiry|expiration|expires?|expiring)\b[^.;\n]{0,40}\d", re.IGNORECASE),
+    re.compile(
+        r"(?:\b\d{4,}(?:\.\d+)?\s*(?:/|and|-)\s*\d{4,}(?:\.\d+)?\b"
+        r"[^.;。；\n]{0,24}\b(?:put|call)\b[^.;。；\n]{0,8}(?:spread|价差)"
+        r"|\b(?:put|call)\b[^.;。；\n]{0,8}(?:spread|价差)"
+        r"[^.;。；\n]{0,24}\b\d{4,}(?:\.\d+)?\s*(?:/|and|-)\s*"
+        r"\d{4,}(?:\.\d+)?\b)", re.IGNORECASE),
+    re.compile(
+        r"\d{4,}(?:\.\d+)?\s*(?:/|与|和|-)\s*\d{4,}(?:\.\d+)?"
+        r"[^。；\n]{0,24}(?:Put|Call|看涨|看跌)?\s*价差", re.IGNORECASE),
+    re.compile(r"\b(?:position\s+size|size\s+the\s+position)\b", re.IGNORECASE),
+    re.compile(r"\b(?:entry|exit)\b[^.;\n]{0,24}(?:at|above|below|=|:)?\s*\d", re.IGNORECASE),
+    re.compile(r"\b(?:stop[- ]?loss|take[- ]?profit)\b[^.;\n]{0,24}\d", re.IGNORECASE),
+    re.compile(r"\b(?:set|use|raise|lower|adjust)\b[^.;\n]{0,16}\bleverage\b", re.IGNORECASE),
+)
+
+signal_path = pathlib.Path(sys.argv[1])
+review_path = pathlib.Path(sys.argv[2])
+audit_root = pathlib.Path(sys.argv[3])
+
+def read_jsonl(path):
+    lines = [x for x in path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
+    if not lines:
+        raise SystemExit(str(path) + " empty")
+    return [json.loads(line) for line in lines]
+
+def card_id(value):
+    return ((value.get("identity") or {}).get("card_id")
+            or value.get("card_id"))
+
+def advisory_human_text(advisory):
+    containment = advisory.get("containment_assessment") or {}
+    premium = advisory.get("premium_selling_fit") or {}
+    session = advisory.get("session_advisory") or {}
+    values = [
+        advisory.get("final_conclusion_cn"),
+        advisory.get("cross_loop_rationale_cn"),
+        containment.get("basis_cn"),
+        premium.get("basis_cn"),
+        advisory.get("side_basis_cn"),
+        advisory.get("dominant_conflict_cn"),
+        advisory.get("next_observation_cn"),
+        session.get("basis_cn"),
+    ]
+    values.extend(
+        item.get("premise_cn") for item in advisory.get("key_premises") or []
+        if isinstance(item, dict))
+    values.extend(advisory.get("invalid_if") or [])
+    return "\n".join(str(value) for value in values if value not in (None, ""))
+
+def raw_human_tokens(text):
+    leaked = []
+    for token in ADVISORY_HUMAN_RAW_TOKENS:
+        pattern = (r"(?<![A-Za-z0-9_])" + re.escape(token)
+                   + r"(?![A-Za-z0-9_])")
+        if re.search(pattern, text, re.IGNORECASE):
+            leaked.append(token)
+    return sorted(leaked)
+
+def validate_advisory(review, label):
+    advisory = review.get("integrated_trade_advisory")
+    if not isinstance(advisory, dict):
+        raise SystemExit(label + " integrated_trade_advisory is not object")
+    required_fields = {
+        "recommendation", "final_conclusion_cn", "cross_loop_rationale_cn",
+        "containment_assessment", "premium_selling_fit", "side_basis_cn",
+        "dominant_conflict_cn", "key_premises", "invalid_if",
+        "next_observation_cn", "session_advisory", "source_alignment",
+        "audit_only", "trade_authorization", "policy_validation",
+    }
+    missing_fields = sorted(required_fields - set(advisory))
+    unexpected_fields = sorted(set(advisory) - required_fields)
+    if missing_fields or unexpected_fields:
+        raise SystemExit(
+            label + " integrated_trade_advisory fields invalid; missing="
+            + ",".join(missing_fields) + " unexpected="
+            + ",".join(unexpected_fields))
+    recommendation = advisory.get("recommendation")
+    policy = advisory.get("policy_validation")
+    print(label + "_recommendation:", recommendation)
+    print(label + "_audit_only:", advisory.get("audit_only"))
+    print(label + "_trade_authorization:", advisory.get("trade_authorization"))
+    print(label + "_policy_passed:", policy.get("passed") if isinstance(policy, dict) else None)
+    print(label + "_authorization_is_not_structure_gate:",
+          policy.get("authorization_is_not_structure_gate") if isinstance(policy, dict) else None)
+    if recommendation not in ADVISORY_RECOMMENDATIONS:
+        raise SystemExit(label + " integrated_trade_advisory.recommendation invalid")
+    if advisory.get("audit_only") is not True:
+        raise SystemExit(label + " integrated_trade_advisory.audit_only is not true")
+    if advisory.get("trade_authorization") is not False:
+        raise SystemExit(label + " integrated_trade_advisory.trade_authorization is not false")
+    if not isinstance(policy, dict) or policy.get("passed") is not True:
+        raise SystemExit(label + " integrated_trade_advisory.policy_validation.passed is not true")
+    if policy.get("authorization_is_not_structure_gate") is not True:
+        raise SystemExit(label + " advisory authorization/structure separation is not verified")
+    required_text = [
+        "final_conclusion_cn",
+        "cross_loop_rationale_cn",
+        "side_basis_cn",
+        "dominant_conflict_cn",
+        "next_observation_cn",
+    ]
+    for field in required_text:
+        if not isinstance(advisory.get(field), str) or not advisory[field].strip():
+            raise SystemExit(label + " integrated_trade_advisory." + field + " is blank")
+    containment = advisory.get("containment_assessment")
+    if (not isinstance(containment, dict)
+            or set(containment) != {"state", "basis_cn"}
+            or containment.get("state") not in ADVISORY_CONTAINMENT_STATES
+            or not isinstance(containment.get("basis_cn"), str)
+            or not containment["basis_cn"].strip()):
+        raise SystemExit(label + " integrated_trade_advisory.containment_assessment invalid")
+    premium = advisory.get("premium_selling_fit")
+    if (not isinstance(premium, dict)
+            or set(premium) != {"state", "basis_cn"}
+            or premium.get("state") not in ADVISORY_PREMIUM_FIT_STATES
+            or not isinstance(premium.get("basis_cn"), str)
+            or not premium["basis_cn"].strip()):
+        raise SystemExit(label + " integrated_trade_advisory.premium_selling_fit invalid")
+    session = advisory.get("session_advisory")
+    session_fields = {
+        "liquidity_assessment", "warning_level", "basis_cn",
+        "does_not_change_recommendation",
+    }
+    if (not isinstance(session, dict) or set(session) != session_fields
+            or session.get("liquidity_assessment") not in ADVISORY_LIQUIDITY_ASSESSMENTS
+            or session.get("warning_level") not in ADVISORY_WARNING_LEVELS
+            or not isinstance(session.get("basis_cn"), str)
+            or not session["basis_cn"].strip()
+            or session.get("does_not_change_recommendation") is not True):
+        raise SystemExit(label + " integrated_trade_advisory.session_advisory invalid")
+    if advisory.get("source_alignment") not in ADVISORY_SOURCE_ALIGNMENTS:
+        raise SystemExit(label + " integrated_trade_advisory.source_alignment invalid")
+    premises = advisory.get("key_premises")
+    if not isinstance(premises, list) or not (1 <= len(premises) <= 3):
+        raise SystemExit(label + " integrated_trade_advisory.key_premises invalid")
+    for premise in premises:
+        if (not isinstance(premise, dict)
+                or not isinstance(premise.get("premise_cn"), str)
+                or not premise["premise_cn"].strip()
+                or not isinstance(premise.get("evidence_refs"), list)
+                or not premise["evidence_refs"]):
+            raise SystemExit(label + " integrated_trade_advisory.key_premises item invalid")
+    invalid_if = advisory.get("invalid_if")
+    if (not isinstance(invalid_if, list) or not (1 <= len(invalid_if) <= 3)
+            or any(not isinstance(item, str) or not item.strip()
+                   for item in invalid_if)):
+        raise SystemExit(label + " integrated_trade_advisory.invalid_if invalid")
+    human_text = advisory_human_text(advisory)
+    leaked_tokens = raw_human_tokens(human_text)
+    if leaked_tokens:
+        raise SystemExit(label + " integrated_trade_advisory human text contains raw codes: "
+                         + ",".join(leaked_tokens))
+    if any(pattern.search(human_text) for pattern in ADVISORY_EXECUTION_PATTERNS):
+        raise SystemExit(label + " integrated_trade_advisory contains execution parameters")
+    return advisory
+
+source_cards = read_jsonl(signal_path)
+latest_source = source_cards[-1]
+latest_id = card_id(latest_source)
+if not latest_id:
+    raise SystemExit("latest source card lacks card_id")
+
+latest_matching_review = None
+latest_matching_record_id = None
+for item in read_jsonl(review_path):
+    current_id = item.get("card_id") or card_id(item)
+    if current_id == latest_id:
+        latest_matching_review = item.get("llm_review")
+        latest_matching_record_id = current_id
+
+print("latest_signal_card_id:", latest_id)
+print("latest_matching_llm_card_id:", latest_matching_record_id)
+if not isinstance(latest_matching_review, dict):
+    raise SystemExit("no llm_review for latest source card")
+print("latest_advisory_review_status:", latest_matching_review.get("status"))
+print("latest_advisory_schema:", latest_matching_review.get("schema"))
+if latest_matching_review.get("status") != "OK":
+    raise SystemExit("latest matching llm_review is not OK")
+if latest_matching_review.get("schema") != "signal_llm_review@1.4.0":
+    raise SystemExit("latest matching llm_review schema is not signal_llm_review@1.4.0")
+sidecar_advisory = validate_advisory(latest_matching_review, "latest_advisory")
+
+manifest = json.loads((audit_root / "signal_cards/index.json").read_text(encoding="utf-8"))
+cards = manifest.get("cards") or []
+if not cards:
+    raise SystemExit("materialized manifest has no cards")
+materialized_path = audit_root / cards[0].get("path", "")
+materialized_card = json.loads(materialized_path.read_text(encoding="utf-8"))
+materialized_id = card_id(materialized_card) or cards[0].get("card_id")
+materialized_review = materialized_card.get("llm_review")
+print("materialized_card_id:", materialized_id)
+if materialized_id != latest_id:
+    raise SystemExit("materialized latest card does not match latest source card")
+if not isinstance(materialized_review, dict):
+    raise SystemExit("materialized latest card lacks llm_review")
+if materialized_review.get("status") != "OK":
+    raise SystemExit("materialized latest card llm_review is not OK")
+if materialized_review.get("schema") != "signal_llm_review@1.4.0":
+    raise SystemExit("materialized latest card llm_review schema is not signal_llm_review@1.4.0")
+materialized_advisory = validate_advisory(materialized_review, "materialized_advisory")
+print("materialized_advisory_passthrough:", materialized_advisory == sidecar_advisory)
+if materialized_advisory != sidecar_advisory:
+    raise SystemExit("materialized latest card did not pass through integrated_trade_advisory")
+PY
+    then
+      ok "latest signal card has OK v1.4.0 integrated_trade_advisory and materialized passthrough"
+    else
+      fail "latest signal card lacks strict v1.4.0 integrated_trade_advisory or materialized passthrough"
+    fi
+  else
+    fail "skipped integrated_trade_advisory strict check; source, sidecar, manifest, or python3 unavailable"
+  fi
 fi
 
 section "Transition LLM review sidecar"
