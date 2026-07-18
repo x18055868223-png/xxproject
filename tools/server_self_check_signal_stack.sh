@@ -583,7 +583,20 @@ def read_jsonl(path):
     lines = [x for x in path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
     if not lines:
         raise SystemExit(str(path) + " empty")
-    return [json.loads(line) for line in lines]
+    records = []
+    skipped = []
+    for index, line in enumerate(lines, 1):
+        try:
+            records.append(json.loads(line))
+        except Exception as exc:
+            if index == len(lines):
+                raise SystemExit(str(path) + " latest non-empty line is invalid: "
+                                 + type(exc).__name__)
+            skipped.append(index)
+    if not records:
+        raise SystemExit(str(path) + " has no valid records")
+    print(path.name + "_historical_skipped_lines:", len(skipped))
+    return records
 
 def card_id(value):
     return ((value.get("identity") or {}).get("card_id")

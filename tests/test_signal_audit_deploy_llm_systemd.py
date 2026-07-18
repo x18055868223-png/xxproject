@@ -74,7 +74,9 @@ def integrated_advisory_review(status="OK",
 
 
 def run_integrated_advisory_probe(self_check, review_records,
-                                  materialized_review=None):
+                                  materialized_review=None,
+                                  historical_source_corruption=False,
+                                  corrupt_source_tail=False):
     code = extract_integrated_advisory_probe(self_check)
     card_id = "20260718T000000+0800-BTC-INTEGRATED-ADVISORY"
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -85,7 +87,13 @@ def run_integrated_advisory_probe(self_check, review_records,
         card_dir = audit_root / "signal_cards"
         card_dir.mkdir(parents=True)
         source_card = {"identity": {"card_id": card_id}}
-        source.write_text(json.dumps(source_card) + "\n", encoding="utf-8")
+        source_lines = []
+        if historical_source_corruption:
+            source_lines.append('{"historical": broken json')
+        source_lines.append(json.dumps(source_card))
+        if corrupt_source_tail:
+            source_lines.append('{"latest": broken json')
+        source.write_text("\n".join(source_lines) + "\n", encoding="utf-8")
         reviews.write_text(
             "\n".join(json.dumps(record) for record in review_records) + "\n",
             encoding="utf-8")
@@ -164,6 +172,26 @@ def assert_integrated_advisory_probe_behavior(self_check):
                 and "final_conclusion_cn is blank"
                 in (blank_result.stdout + blank_result.stderr),
                 "strict probe must reject an advisory hidden by blank human text")
+
+    historical_corruption_result = run_integrated_advisory_probe(
+        self_check,
+        [ok_record],
+        historical_source_corruption=True,
+    )
+    assert_true(historical_corruption_result.returncode == 0
+                and "signal_review.jsonl_historical_skipped_lines: 1"
+                in historical_corruption_result.stdout,
+                "strict probe should mirror materializer tolerance for historical corruption")
+
+    corrupt_tail_result = run_integrated_advisory_probe(
+        self_check,
+        [ok_record],
+        corrupt_source_tail=True,
+    )
+    assert_true(corrupt_tail_result.returncode != 0
+                and "latest non-empty line is invalid"
+                in (corrupt_tail_result.stdout + corrupt_tail_result.stderr),
+                "strict probe must still reject a corrupt latest source tail")
 
     missing_alignment = integrated_advisory_review()
     missing_alignment["integrated_trade_advisory"].pop("source_alignment")
