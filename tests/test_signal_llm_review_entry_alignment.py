@@ -58,7 +58,7 @@ def main():
     policy = advisory["policy_validation"]
     assert_true(review["status"] == "OK", "bounded repair should yield an OK review")
     assert_true(
-        review["prompt_version"] == "gemini_signal_review_prompt@1.4.5",
+        review["prompt_version"] == "gemini_signal_review_prompt@1.4.6",
         "entrypoint should record the patched prompt version",
     )
     assert_true(
@@ -139,6 +139,62 @@ def main():
         "unknown source_alignment enums must remain fail-closed",
     )
 
+    language_card = fixture.review_context_card("CARD-ENTRY-PROHIBITIVE-LANGUAGE")
+    language_payload = fixture.model_payload()
+    language_payload["integrated_trade_advisory"] = fixture.integrated_trade_advisory(
+        "WAIT_FOR_CONFIRMATION"
+    )
+    language_payload["integrated_trade_advisory"]["final_conclusion_cn"] = (
+        "当前结论不构成开仓依据，也不建议下单。"
+    )
+    language_payload["integrated_trade_advisory"][
+        "premium_selling_fit"
+    ]["basis_cn"] = "尚不具备入场条件。"
+    language_payload["integrated_trade_advisory"]["invalid_if"] = [
+        "若关键阻断解除，也不得直接开仓。"
+    ]
+    language_review = entry.build_llm_review(language_card, language_payload)
+    language_advisory = language_review["integrated_trade_advisory"]
+    language_policy = language_advisory["policy_validation"]
+    human_text = entry.core._integrated_advisory_human_text(language_advisory)
+    assert_true(
+        language_review["status"] == "OK",
+        "explicitly prohibitive execution wording should be rewritten before validation",
+    )
+    assert_true(
+        language_policy["prohibitive_execution_language_repair_applied"] is True
+        and language_policy["prohibitive_execution_language_repair_count"] >= 3
+        and "final_conclusion_cn"
+        in language_policy["prohibitive_execution_language_repair_fields"],
+        "bounded language repair should be fully traceable",
+    )
+    assert_true(
+        not any(
+            pattern.search(human_text)
+            for _, pattern in entry.core.ADVISORY_EXECUTION_TEXT_PATTERNS
+        ),
+        "rewritten prohibitive text must no longer trigger core execution patterns",
+    )
+    assert_true(
+        "交易执行依据" in human_text
+        and "暂不进入交易复核" in human_text,
+        "rewritten text should retain the original prohibitive meaning",
+    )
+
+    positive_card = fixture.review_context_card("CARD-ENTRY-POSITIVE-EXECUTION")
+    positive_payload = fixture.model_payload()
+    positive_payload["integrated_trade_advisory"] = fixture.integrated_trade_advisory(
+        "WAIT_FOR_CONFIRMATION"
+    )
+    positive_payload["integrated_trade_advisory"]["final_conclusion_cn"] = (
+        "建议开仓并继续观察。"
+    )
+    expect_value_error(
+        lambda: entry.build_llm_review(positive_card, positive_payload),
+        "integrated_trade_advisory contains execution parameters",
+        "positive execution language must remain fail-closed",
+    )
+
     prompt = entry.build_prompt(
         entry.core.build_review_packet(card),
         {
@@ -150,6 +206,11 @@ def main():
         "只有 producer decision.lean" in prompt
         and "不得把 recommendation 相同" in prompt,
         "full prompt should include the exact source_alignment mapping",
+    )
+    assert_true(
+        "即使是否定、免责声明或风险边界" in prompt
+        and "不构成交易执行依据" in prompt,
+        "full prompt should forbid blocked execution words in human-readable fields",
     )
 
     installer = INSTALLER.read_text(encoding="utf-8")
