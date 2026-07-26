@@ -19,7 +19,8 @@ TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
-EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.6}"
+EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.7}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-gemini_signal_review_prompt@1.4.7}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -254,7 +255,7 @@ if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
   if python3 - "$AUDIT_ROOT" <<'PY'
 import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.6")
+expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.7")
 durability_required = os.environ.get("DURABILITY_REQUIRED", "0") == "1"
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
@@ -271,6 +272,10 @@ required = [
 ]
 macro = ((card.get("factor_cross_section") or {}).get("macro_pressure") or {})
 macro_shock = macro.get("macro_shock") or {}
+funding = ((card.get("factor_cross_section") or {}).get("funding") or {})
+funding_semantics = funding.get("canonical_funding_semantics") or {}
+gex_rank = ((((card.get("factor_cross_section") or {}).get("gex_info") or {})
+             .get("rank")) or {})
 durability = card.get("signal_durability") or {}
 missing = [key for key in required if ctx.get(key) in (None, "")]
 def contains_value(node, target):
@@ -292,6 +297,15 @@ print("session_compat_backfill_applied:", ctx.get("compat_backfill_applied"))
 print("decision_temporal_durability:", matrix.get("temporal_durability"))
 print("macro_shock_state:", macro_shock.get("state"))
 print("macro_shock_block:", macro_shock.get("block"))
+print("funding_semantic_code:", funding_semantics.get("semantic_code"))
+print("funding_crowding_state:", funding_semantics.get("crowding_state"))
+print("funding_reflexivity_importance:",
+      funding_semantics.get("reflexivity_importance"))
+print("funding_edb_participation:",
+      funding_semantics.get("edb_participation"))
+print("funding_semantics_compat_backfill_applied:",
+      funding_semantics.get("compat_backfill_applied"))
+print("gex_rank_window_days:", (gex_rank.get("window") or {}).get("window_days"))
 print("durability_required:", durability_required)
 print("signal_durability_schema_name:", durability.get("schema_name"))
 print("signal_durability_schema_version:", durability.get("schema_version"))
@@ -325,6 +339,30 @@ if macro_shock.get("block") not in (True, False):
     raise SystemExit("latest card lacks producer-native macro_shock block")
 if macro_shock.get("block") is True and not contains_value(card, "MACRO_SHOCK_BLOCKING"):
     raise SystemExit("latest MACRO shock block lacks MACRO_SHOCK_BLOCKING trace")
+funding_required = {
+    "schema_name", "schema_version", "raw_funding_rate",
+    "crowding_threshold_abs", "semantic_code", "crowding_state",
+    "reflexivity_importance", "edb_participation", "canonical_text_cn",
+    "compat_backfill_applied",
+}
+if not isinstance(funding_semantics, dict) or not funding_required.issubset(funding_semantics):
+    raise SystemExit("latest card lacks complete producer-native Funding semantics")
+if funding_semantics.get("compat_backfill_applied"):
+    raise SystemExit("latest card Funding semantics uses compatibility backfill")
+raw_rate = funding_semantics.get("raw_funding_rate")
+if isinstance(raw_rate, (int, float)) and abs(raw_rate) <= 0.0001:
+    if funding_semantics.get("crowding_state") != "NOT_CROWDED":
+        raise SystemExit("micro Funding rate classified as crowded")
+    if funding_semantics.get("reflexivity_importance") != "NOISE":
+        raise SystemExit("micro Funding rate has non-noise reflexivity")
+    if funding_semantics.get("edb_participation") != "NON_VOTING":
+        raise SystemExit("micro Funding rate participates in EDB")
+rank_window_days = (gex_rank.get("window") or {}).get("window_days")
+rank_metrics = gex_rank.get("metrics") or {}
+if isinstance(rank_window_days, (int, float)) and rank_window_days >= 15.0:
+    if any(str((metric or {}).get("quality") or "").lower() == "warming_up"
+           for metric in rank_metrics.values() if isinstance(metric, dict)):
+        raise SystemExit("GEX rank at or above 15 days remains warming_up")
 if durability_required:
     if not isinstance(durability, dict) or not durability:
         raise SystemExit("latest card lacks native signal_durability schema")
@@ -472,10 +510,11 @@ else
   warn "LLM review sidecar not readable yet: $LLM_REVIEWS_SOURCE"
 fi
 if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && have python3; then
-  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" <<'PY'
+  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$EXPECTED_LLM_PROMPT_VERSION" <<'PY'
 import json, pathlib, sys
 signal_path = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
+expected_prompt_version = sys.argv[3]
 signal_lines = [x for x in signal_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 review_lines = [x for x in review_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 if not signal_lines:
@@ -501,8 +540,11 @@ print("latest_signal_blind_review_mode:", review.get("blind_review_mode"))
 print("latest_signal_llm_call_count:", review.get("llm_call_count"))
 print("latest_signal_api_key_route:", review.get("api_key_route"))
 print("latest_signal_llm_call_routes:", review.get("llm_call_routes"))
+print("latest_signal_llm_prompt_version:", review.get("prompt_version"))
 if review.get("blind_review_mode") != "two_call_strict" or int(review.get("llm_call_count") or 0) < 2:
     raise SystemExit(4)
+if review.get("prompt_version") != expected_prompt_version:
+    raise SystemExit("latest signal LLM prompt version does not match expected runtime entrypoint")
 PY
   then
     ok "latest signal card has OK two-call LLM sidecar review"
@@ -520,7 +562,7 @@ fi
 if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ]; then
   section "Integrated trade advisory"
   if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
-    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" <<'PY'
+    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$EXPECTED_LLM_PROMPT_VERSION" <<'PY'
 import json, pathlib, re, sys
 
 ADVISORY_RECOMMENDATIONS = {
@@ -730,6 +772,7 @@ def validate_advisory(review, label):
     return advisory
 
 source_cards = read_jsonl(signal_path)
+expected_prompt_version = sys.argv[4]
 latest_source = source_cards[-1]
 latest_id = card_id(latest_source)
 if not latest_id:
@@ -753,6 +796,8 @@ if latest_matching_review.get("status") != "OK":
     raise SystemExit("latest matching llm_review is not OK")
 if latest_matching_review.get("schema") != "signal_llm_review@1.4.0":
     raise SystemExit("latest matching llm_review schema is not signal_llm_review@1.4.0")
+if latest_matching_review.get("prompt_version") != expected_prompt_version:
+    raise SystemExit("latest matching llm_review prompt version does not match bounded entrypoint")
 sidecar_advisory = validate_advisory(latest_matching_review, "latest_advisory")
 
 manifest = json.loads((audit_root / "signal_cards/index.json").read_text(encoding="utf-8"))
@@ -772,6 +817,8 @@ if materialized_review.get("status") != "OK":
     raise SystemExit("materialized latest card llm_review is not OK")
 if materialized_review.get("schema") != "signal_llm_review@1.4.0":
     raise SystemExit("materialized latest card llm_review schema is not signal_llm_review@1.4.0")
+if materialized_review.get("prompt_version") != expected_prompt_version:
+    raise SystemExit("materialized latest card llm_review prompt version does not match bounded entrypoint")
 materialized_advisory = validate_advisory(materialized_review, "materialized_advisory")
 print("materialized_advisory_passthrough:", materialized_advisory == sidecar_advisory)
 if materialized_advisory != sidecar_advisory:
@@ -833,8 +880,8 @@ print("no_external_data:", guard.get("no_external_data"))
 print("distinguishes_observation_from_causality:", guard.get("distinguishes_observation_from_causality"))
 if review.get("schema_version") != "signal_transition_llm_review@1.2.4":
     raise SystemExit("latest transition LLM schema version is not signal_transition_llm_review@1.2.4")
-if review.get("prompt_version") != "gemini_signal_transition_review_prompt@1.2.4":
-    raise SystemExit("latest transition LLM prompt version is not gemini_signal_transition_review_prompt@1.2.4")
+if review.get("prompt_version") != "gemini_signal_transition_review_prompt@1.2.5":
+    raise SystemExit("latest transition LLM prompt version is not gemini_signal_transition_review_prompt@1.2.5")
 if not review.get("evidence_catalog_hash"):
     raise SystemExit("latest transition LLM review lacks evidence_catalog_hash")
 if not policy:

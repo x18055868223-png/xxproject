@@ -155,7 +155,7 @@ CONFIG = {
     # v1.5.4 (2026-07-07): Funding equality baseline + GEX USD precedence fix.
     # v1.5.5 (2026-07-16): NeutralRepair signal-loss/stale/carry repair.
     # v1.5.6 (2026-07-16): runtime stale-input, backlog, and delivery repair.
-    "demo_version": "1.5.6",
+    "demo_version": "1.5.7",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -247,6 +247,10 @@ CONFIG = {
     "signal_review_push_enabled": False,
     "signal_review_push_test": False,
     "signal_review_recorder_name": "signal_review",
+    "fixed_analysis_round_enabled": True,
+    "fixed_analysis_round_hour_utc8": 23,
+    "fixed_analysis_round_window_minutes": 5,
+    "fixed_analysis_round_state_file": "",
     "audit_static_base_url": "",
     "signal_session_boundary_buffer_min": 60,
     "signal_session_high_confirmation_min": 60,
@@ -575,6 +579,10 @@ USER_CONFIG_KEYS = (
     "signal_review_push_enabled",
     "signal_review_push_test",
     "signal_review_recorder_name",
+    "fixed_analysis_round_enabled",
+    "fixed_analysis_round_hour_utc8",
+    "fixed_analysis_round_window_minutes",
+    "fixed_analysis_round_state_file",
     "audit_static_base_url",
     "signal_session_boundary_buffer_min",
     "signal_session_high_confirmation_min",
@@ -646,6 +654,10 @@ USER_CONFIG_DOC_CN = {
     "signal_review_push_enabled": "是否对真信号发送 FMZ 短推。",
     "signal_review_push_test": "是否启动一次非真实信号推送自检，正常运行应为 False。",
     "signal_review_recorder_name": "审计 JSONL 文件名，不含 .jsonl。",
+    "fixed_analysis_round_enabled": "是否在北京时间 23:00 生成只读固定轮次分析卡。",
+    "fixed_analysis_round_hour_utc8": "固定轮次北京时间小时；当前契约为 23。",
+    "fixed_analysis_round_window_minutes": "固定轮触发容错窗口分钟数；超过窗口不伪造补发。",
+    "fixed_analysis_round_state_file": "固定轮 JSONL/推送完成状态文件；空值时写入 logs_dir。",
     "audit_static_base_url": "审计静态站根地址；未启用深链前保持空值。",
     "signal_session_boundary_buffer_min": "信号时区分类边界缓冲分钟数；校准前就低不就高。",
     "signal_session_high_confirmation_min": "进入高前提耐久度前的美盘消化确认分钟数。",
@@ -3101,6 +3113,143 @@ helpers that EDB still calls. Nothing here computes a direction or confidence.
 
 
 
+def _funding_first_float(*values):
+    for value in values:
+        parsed = safe_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _funding_crowding_threshold_abs(config=None):
+    config = config or CONFIG
+    threshold = safe_float(config.get("funding_observe_light_abs"))
+    if threshold is None:
+        threshold = 0.0001
+    return threshold
+
+
+def _funding_pct_text(rate):
+    value = safe_float(rate)
+    if value is None:
+        return "-"
+    return "{:+.4f}%".format(value * 100.0)
+
+
+def build_funding_canonical_semantics(rate=None, funding_norm=None, effect=None,
+                                      funding_state=None, config=None,
+                                      source=None):
+    """Raw-fee authoritative Funding semantic fact.
+
+    funding_norm/effect are retained as diagnostics only. They must not classify
+    missing or micro raw funding as crowded.
+    """
+    config = config or CONFIG
+    raw = _funding_first_float(rate)
+    norm = safe_float(funding_norm)
+    threshold = _funding_crowding_threshold_abs(config)
+    threshold_pct = threshold * 100.0
+    base = {
+        "schema_name": "FundingCanonicalSemantics",
+        "schema_version": "nrd.signal.funding_semantics.v1.0.0",
+        "raw_funding_rate": raw,
+        "raw_funding_rate_pct": None if raw is None else raw * 100.0,
+        "crowding_threshold_abs": threshold,
+        "crowding_threshold_pct": threshold_pct,
+        "raw_source": "last_funding_rate",
+        "source": source or "producer:binance_futures_funding_rate.raw_last_funding_rate",
+        "compat_backfill_applied": False,
+        "diagnostic_only": {
+            "funding_norm": norm,
+            "effect": effect,
+            "funding_state": funding_state,
+            "norm_effect_overrides_raw": False,
+        },
+    }
+    if raw is None:
+        base.update({
+            "semantic_code": "UNABLE_TO_JUDGE",
+            "raw_available": False,
+            "fee_bias": "UNKNOWN",
+            "fee_bias_cn": "无法判定",
+            "crowding_state": "UNABLE_TO_JUDGE",
+            "is_crowded": False,
+            "reflexivity_state": "UNABLE_TO_JUDGE",
+            "reflexivity_importance": "UNABLE_TO_JUDGE",
+            "edb_participation": "NON_VOTING",
+            "edb_vote_allowed": False,
+            "canonical_text_cn": (
+                "资金费率缺失：无法判定多空费率倾向；不得由 funding_norm/effect "
+                "反推拥挤或反身性；EDB 不计票。"),
+        })
+        return base
+
+    abs_raw = abs(raw)
+    if raw == 0:
+        fee_bias = "NEUTRAL"
+        fee_bias_cn = "中性"
+        semantic_code = "NEUTRAL_FUNDING"
+    elif raw > 0:
+        fee_bias = "LONG_FEE_BIAS"
+        fee_bias_cn = "温和多头费率倾向"
+        semantic_code = "TEMPERATE_LONG_FUNDING"
+    else:
+        fee_bias = "SHORT_FEE_BIAS"
+        fee_bias_cn = "温和空头费率倾向"
+        semantic_code = "TEMPERATE_SHORT_FUNDING"
+
+    if abs_raw <= threshold:
+        base.update({
+            "semantic_code": semantic_code,
+            "raw_available": True,
+            "fee_bias": fee_bias,
+            "fee_bias_cn": fee_bias_cn,
+            "crowding_state": "NOT_CROWDED",
+            "is_crowded": False,
+            "reflexivity_state": "NOISE",
+            "reflexivity_importance": "NOISE",
+            "edb_participation": "NON_VOTING",
+            "edb_vote_allowed": False,
+            "canonical_text_cn": (
+                "资金费率 {rate}：{bias}；未超过 ±{threshold:.4f}% 拥挤阈值；"
+                "反身性影响可忽略；EDB 不计票。").format(
+                    rate=_funding_pct_text(raw),
+                    bias=fee_bias_cn,
+                    threshold=threshold_pct),
+        })
+        return base
+
+    if raw > 0:
+        fee_bias = "LONG_FEE_BIAS"
+        fee_bias_cn = "多头费率拥挤"
+        crowding_state = "CROWDED_LONGS"
+        semantic_code = "CROWDED_LONG_FUNDING"
+    else:
+        fee_bias = "SHORT_FEE_BIAS"
+        fee_bias_cn = "空头费率拥挤"
+        crowding_state = "CROWDED_SHORTS"
+        semantic_code = "CROWDED_SHORT_FUNDING"
+    base.update({
+        "semantic_code": semantic_code,
+        "raw_available": True,
+        "fee_bias": fee_bias,
+        "fee_bias_cn": fee_bias_cn,
+        "crowding_state": crowding_state,
+        "is_crowded": True,
+        "reflexivity_state": "CANDIDATE",
+        "reflexivity_importance": "CANDIDATE",
+        "edb_participation": "VOTING_CANDIDATE",
+        "edb_vote_allowed": True,
+        "canonical_text_cn": (
+            "资金费率 {rate}：{bias}；已超过 ±{threshold:.4f}% 拥挤阈值；"
+            "反身性仅作为受限候选，须结合归一化历史与价格行为计票。").format(
+                rate=_funding_pct_text(raw),
+                bias=fee_bias_cn,
+                threshold=threshold_pct),
+    })
+    return base
+
+
 def evaluate_funding_verdict(flow, config=None):
     config = config or CONFIG
     flow = flow or {}
@@ -3131,16 +3280,25 @@ def evaluate_funding_verdict(flow, config=None):
     data_ready = funding.get("data_ready")
     if data_ready is None:
         data_ready = item_48.get("data_ready")
-    hard_warning = (
-        effect == "extreme_overcrowded"
-        and rate is not None
-        and abs(rate) > light_abs
-        and funding_norm is not None
-        and abs(funding_norm) > extreme_abs
-        and data_ready is True
-    )
-    if hard_warning:
+    semantics = build_funding_canonical_semantics(
+        rate, funding_norm, effect, item_48.get("funding_state")
+        or funding.get("funding_state"), config)
+    if not semantics.get("raw_available"):
+        verdict = "FUNDING_UNABLE_TO_JUDGE"
+    elif not semantics.get("edb_vote_allowed"):
+        verdict = "FUNDING_NEUTRAL"
+    elif (effect == "extreme_overcrowded"
+          and abs(rate) > light_abs
+          and funding_norm is not None
+          and abs(funding_norm) > extreme_abs
+          and data_ready is True):
         verdict = "FUNDING_HARD_WARNING"
+    elif effect == "opposite_crowding_fuel":
+        verdict = "FUNDING_OPPOSITE_FUEL"
+    elif effect == "confirming":
+        verdict = "FUNDING_MILD_CONFIRM"
+    elif semantics.get("is_crowded"):
+        verdict = "FUNDING_CROWDED_WARNING"
     return {
         "effect": effect,
         "verdict": verdict,
@@ -3150,7 +3308,10 @@ def evaluate_funding_verdict(flow, config=None):
         "funding_norm": funding_norm,
         "funding_cum": funding.get("funding_cum"),
         "funding_count": funding.get("funding_count"),
-        "interpretation_cn": _funding_interpretation_cn(verdict, effect, rate),
+        "canonical_funding_semantics": semantics,
+        "canonical_text_cn": semantics.get("canonical_text_cn"),
+        "interpretation_cn": _funding_interpretation_cn(
+            verdict, effect, rate, semantics),
     }
 
 
@@ -3285,7 +3446,10 @@ def summarize_macro_components_cn(macro_pressure):
     return "\n".join(lines)
 
 
-def _funding_interpretation_cn(verdict, effect, rate):
+def _funding_interpretation_cn(verdict, effect, rate, semantics=None):
+    semantics = semantics or {}
+    if semantics.get("canonical_text_cn"):
+        return semantics.get("canonical_text_cn")
     if verdict == "FUNDING_MILD_CONFIRM":
         return "Funding 温和确认，但不单独生成方向"
     if verdict == "FUNDING_OPPOSITE_FUEL":
@@ -3368,16 +3532,21 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
     evidence.append(_funding_vote(funding, config))
     evidence.append(_srd_vote(skew, config))
     evidence.append(_ggr_spatial_vote(gamma_regime, config))
-    evidence = [item for item in evidence if item and item.get("weight", 0) > 0]
+    evidence = [item for item in evidence if item]
 
     info_ref = float(config.get("edb_informative_vote_abs", 0.15))
     for item in evidence:
-        info = clamp(abs(item["vote"]) / max(info_ref, 1e-9), 0.0, 1.0)
+        active = item.get("weight", 0) > 0
+        info = (clamp(abs(item["vote"]) / max(info_ref, 1e-9), 0.0, 1.0)
+                if active else 0.0)
         item["info"] = info
         item["eff_weight"] = item["weight"] * info
-    raw_score = _weighted_score(evidence)
+        item["participation_status"] = _evidence_participation_status(item)
+    active_evidence = [item for item in evidence
+                       if item.get("participation_status") == "ACTIVE"]
+    raw_score = _weighted_score(active_evidence)
     edb_score = _smooth(raw_score, prev_edb_score, config)
-    agreement = _agreement(evidence, edb_score)
+    agreement = _agreement(active_evidence, edb_score)
     coverage = _coverage(evidence, config)
     # v0.5.4: strength mapping + FLOORED agreement/coverage modulators so the
     # confidence no longer collapses from multiplying three sub-1 factors.
@@ -3456,9 +3625,11 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
         },
         "veto_reason": veto_reason,
         "evidence": evidence,
-        "reason_codes": _reason_codes(evidence, veto_reason, precondition_active),
+        "reason_codes": _reason_codes(
+            active_evidence, veto_reason, precondition_active),
         "summary_cn": _summary_cn(lean, support, confidence, edb_score,
-                                  agreement, coverage, evidence, veto_reason,
+                                  agreement, coverage, active_evidence,
+                                  veto_reason,
                                   precondition_active),
     }
     return add_schema(payload, SCHEMA_EDB, config)
@@ -3470,6 +3641,20 @@ def evaluate_edb(flow, macro_pressure, neutral_repair_signal, skew=None,
 
 def _base_weight(key, config):
     return float((config.get("edb_base_weights") or {}).get(key, 0.0))
+
+
+def _evidence_participation_status(item):
+    if (item or {}).get("weight", 0) > 0:
+        return "ACTIVE"
+    key = str((item or {}).get("key") or "")
+    if key == "FUNDING":
+        if ((item.get("detail") or {}).get("verdict")
+                == "FUNDING_HARD_WARNING"):
+            return "GATE_ONLY"
+        return "NON_VOTING"
+    if key == "GGR_SPATIAL":
+        return "GATE_ONLY"
+    return "EXCLUDED"
 
 
 def _tmv_vote(flow, config):
@@ -3517,41 +3702,45 @@ def _cvd_window_vote(window, history, role, config):
     if cvd_norm is None or price_pct is None or not window.get("data_ready"):
         return {"key": "CVD_" + role, "vote": 0.0, "weight": 0.0,
                 "detail": {"role": role, "data_ready": bool(
-                    window.get("data_ready"))}}
+                    window.get("data_ready"))},
+                "exclusion_reason": "CVD_DATA_NOT_READY"}
     strength, pctl = _cvd_strength(abs(cvd_norm), history, config)
     neutral_pct = float(config.get("edb_price_neutral_return_pct_abs", 0.05))
     price_sign = 1 if price_pct > neutral_pct else (
         -1 if price_pct < -neutral_pct else 0)
     cvd_sign = 1 if cvd_norm > 0 else (-1 if cvd_norm < 0 else 0)
-    active = strength in (CVD_MODERATE, CVD_STRONG)
+    cvd_active = strength in (CVD_MODERATE, CVD_STRONG)
     mag = 0.0 if pctl is None else clamp(pctl, 0.0, 1.0)
-    # v0.5.4: a price-confirmed move must not be undervalued just because the
-    # CVD percentile is mid in a sustained trend. Blend percentile magnitude
-    # with price-confirmation magnitude on the two confirm quadrants.
     price_full = float(config.get("edb_price_confirm_full_pct", 0.75))
     price_confirm = clamp(abs(price_pct) / max(price_full, 1e-9), 0.0, 1.0)
-    confirm_mag = max(mag, price_confirm)
-    confirm_active = active or price_confirm >= 0.5
+    price_confirm_active = (price_sign != 0 and price_confirm >= 0.5)
+    joint_active = (cvd_sign != 0 and cvd_active and price_confirm_active)
+    weak_edge_mag = min(mag, price_confirm)
+    exclusion_reason = None
 
     # joint CVD x price quadrant (the four cases must read differently)
     if cvd_sign > 0 and price_sign > 0:        # buy drives up
-        verdict, vote, w = ("BUY_CONFIRMS_UP", +confirm_mag,
-                            (1.0 if confirm_active else 0.45))
+        verdict, vote, w = ("BUY_CONFIRMS_UP", +weak_edge_mag, 1.0)
     elif cvd_sign < 0 and price_sign < 0:      # sell drives down
-        verdict, vote, w = ("SELL_CONFIRMS_DOWN", -confirm_mag,
-                            (1.0 if confirm_active else 0.45))
+        verdict, vote, w = ("SELL_CONFIRMS_DOWN", -weak_edge_mag, 1.0)
     elif cvd_sign > 0 and price_sign < 0:      # buying absorbed / hidden supply
-        verdict, vote, w = "BUY_ABSORBED_BEARISH", -0.4 * mag, (
-            0.6 if active else 0.3)
+        verdict, vote, w = "BUY_ABSORBED_BEARISH", -0.4 * weak_edge_mag, 0.6
     elif cvd_sign < 0 and price_sign > 0:      # selling absorbed / short cover
-        verdict, vote, w = "SELL_ABSORBED_BULLISH", +0.4 * mag, (
-            0.6 if active else 0.3)
+        verdict, vote, w = "SELL_ABSORBED_BULLISH", +0.4 * weak_edge_mag, 0.6
     elif price_sign != 0:                      # price moves, flow flat
-        verdict, vote, w = "PRICE_ONLY", 0.3 * price_sign, 0.25
+        verdict, vote, w = "PRICE_ONLY", 0.0, 0.0
     else:
-        verdict, vote, w = "FLAT", 0.0, 0.1
-    if strength == CVD_WARMING:
-        w *= 0.5  # distribution not warmed up -> trust price-only lightly
+        verdict, vote, w = "FLAT", 0.0, 0.0
+    if not joint_active:
+        vote, w = 0.0, 0.0
+        if strength == CVD_WARMING:
+            exclusion_reason = "CVD_HISTORY_WARMING"
+        elif not cvd_active:
+            exclusion_reason = "CVD_STRENGTH_NOT_ACTIVE"
+        elif not price_confirm_active:
+            exclusion_reason = "PRICE_CONFIRM_NOT_ACTIVE"
+        else:
+            exclusion_reason = "CVD_PRICE_CONFIRM_BOTH_REQUIRED"
     role_w = 1.0 if role == "4h" else 1.1  # slow window slightly steadier
     return {
         "key": "CVD_" + role,
@@ -3565,7 +3754,14 @@ def _cvd_window_vote(window, history, role, config):
             "price_return_pct": price_pct,
             "strength": strength,
             "strength_pctl": pctl,
+            "cvd_active": cvd_active,
+            "price_confirm": price_confirm,
+            "price_confirm_active": price_confirm_active,
+            "joint_active": joint_active,
+            "weak_edge_magnitude": weak_edge_mag,
+            "exclusion_reason": exclusion_reason,
         },
+        "exclusion_reason": exclusion_reason,
     }
 
 
@@ -3618,6 +3814,23 @@ def _funding_vote(funding, config):
     base = _base_weight("FUNDING", config)
     verdict = funding.get("verdict")
     norm = safe_float(funding.get("funding_norm"))
+    semantics = funding.get("canonical_funding_semantics") or (
+        build_funding_canonical_semantics(
+            _funding_first_float(funding.get("last_funding_rate"),
+                                 funding.get("last_rate")),
+            norm,
+            funding.get("effect"),
+            funding.get("funding_state"),
+            config))
+    if not semantics.get("edb_vote_allowed"):
+        exclusion_reason = (
+            "FUNDING_RAW_SEMANTIC_NON_VOTING"
+            if semantics.get("raw_available")
+            else "FUNDING_RAW_MISSING")
+        return {"key": "FUNDING", "vote": 0.0, "weight": 0.0,
+                "detail": {"verdict": verdict, "funding_norm": norm,
+                           "canonical_funding_semantics": semantics},
+                "exclusion_reason": exclusion_reason}
     # reflexivity: crowded longs (norm>0) = downside fuel -> bearish small vote
     vote, w = 0.0, 0.0
     if verdict == "FUNDING_CROWDED_WARNING" and norm is not None:
@@ -3627,7 +3840,8 @@ def _funding_vote(funding, config):
     elif verdict == "FUNDING_MILD_CONFIRM" and norm is not None:
         vote, w = clamp(norm, -1.0, 1.0) * 0.2, 0.4
     return {"key": "FUNDING", "vote": vote, "weight": base * w,
-            "detail": {"verdict": verdict, "funding_norm": norm}}
+            "detail": {"verdict": verdict, "funding_norm": norm,
+                       "canonical_funding_semantics": semantics}}
 
 
 def _srd_vote(skew, config):
@@ -3698,21 +3912,39 @@ def _agreement(evidence, edb_score):
 
 
 def _coverage(evidence, config):
-    """Fraction of EXPECTED direction-evidence weight that is informatively
-    present. Missing CVD or a cold/uninformative SRD lowers coverage, which
-    lowers confidence (less independent info -> higher entropy)."""
+    """Fraction of eligible direction-evidence weight that is informative.
+
+    Semantically non-voting Funding and inactive-but-present CVD weak edges are
+    noise, not data gaps, so they are removed from both numerator and
+    denominator. Missing/warming inputs remain expected and lower coverage.
+    """
     bw = config.get("edb_base_weights") or {}
-    total = ((safe_float(bw.get("TMV")) or 0.0)
-             + 2.0 * (safe_float(bw.get("CVD")) or 0.0)
-             + (safe_float(bw.get("MACRO")) or 0.0)
-             + (safe_float(bw.get("FUNDING")) or 0.0)
-             + (safe_float(bw.get("SRD")) or 0.0))
+    dir_keys = ("TMV", "CVD_4h", "CVD_12h", "MACRO", "FUNDING", "SRD")
+    total = 0.0
+    present = 0.0
+    for item in evidence:
+        key = item.get("key")
+        if key not in dir_keys or not _coverage_expected(item):
+            continue
+        base_key = "CVD" if str(key).startswith("CVD_") else key
+        total += safe_float(bw.get(base_key)) or 0.0
+        if item.get("participation_status") == "ACTIVE":
+            present += item.get("eff_weight", 0.0)
     if total <= 0:
         return 0.0
-    dir_keys = ("TMV", "CVD_4h", "CVD_12h", "MACRO", "FUNDING", "SRD")
-    present = sum(item.get("eff_weight", 0.0) for item in evidence
-                  if item.get("key") in dir_keys)
     return clamp(present / total, 0.0, 1.0)
+
+
+def _coverage_expected(item):
+    if item.get("participation_status") == "ACTIVE":
+        return True
+    key = str(item.get("key") or "")
+    reason = str(item.get("exclusion_reason") or "")
+    if key.startswith("CVD_"):
+        return reason in ("CVD_DATA_NOT_READY", "CVD_HISTORY_WARMING")
+    if key == "FUNDING":
+        return reason == "FUNDING_RAW_MISSING"
+    return True
 
 
 def _conflict_level(agreement):
@@ -4068,6 +4300,51 @@ def _local_session_times(ms):
         "sh": utc_dt.astimezone(sh_tz),
         "dst_mode": "EDT" if us_dst else "EST",
         "london_dst_mode": "BST" if lon_dst else "GMT",
+    }
+
+
+def build_fixed_analysis_round_context(snapshot_ms, config=None):
+    """Return the deterministic BJT 23:00 audit slot for a due runtime tick."""
+    config = config or CONFIG
+    if not config.get("fixed_analysis_round_enabled", True):
+        return None
+    times = _local_session_times(snapshot_ms)
+    sh = times["sh"]
+    hour = int(config.get("fixed_analysis_round_hour_utc8", 23))
+    window_minutes = int(config.get("fixed_analysis_round_window_minutes", 5))
+    minute_of_day = sh.hour * 60 + sh.minute
+    start_minute = hour * 60
+    if not (start_minute <= minute_of_day < start_minute + window_minutes):
+        return None
+    sh_tz = datetime.timezone(datetime.timedelta(hours=8))
+    scheduled = datetime.datetime(
+        sh.year, sh.month, sh.day, hour, 0, 0, tzinfo=sh_tz)
+    scheduled_ms = int(scheduled.timestamp() * 1000)
+    scheduled_times = _local_session_times(scheduled_ms)
+    date_key = scheduled.strftime("%Y%m%d")
+    time_key = "{:02d}00".format(hour)
+    slot = date_key + "_" + time_key + "_bjt"
+    ny = scheduled_times["ny"]
+    return {
+        "schema_name": "SignalFixedAnalysisRound",
+        "schema_version": "1.0.0",
+        "round_type": "US_FIXED_ANALYSIS_ROUND",
+        "tag": "FIXED_ROUND_ANALYSIS",
+        "label_cn": "固定轮次分析",
+        "slot": slot,
+        "episode_id": "fixed_us_round_" + slot,
+        "trigger_clock": "Asia/Shanghai {:02d}:00".format(hour),
+        "scheduled_time_ms": scheduled_ms,
+        "scheduled_time_utc8": _iso8601_utc8(scheduled_ms),
+        "snapshot_collected_time_utc8": _iso8601_utc8(snapshot_ms),
+        "ny_time": ny.isoformat(),
+        "dst_mode": scheduled_times["dst_mode"],
+        "ny_reference_label": ny.strftime("%H:%M ") + scheduled_times["dst_mode"],
+        "bypassed_gate": "DIE_ANCHOR_TRIGGER_ONLY",
+        "does_not_override_producer_decision": True,
+        "audit_only": True,
+        "merged_with_regular_signal": False,
+        "llm_prompt_policy": "USE_STANDARD_CARD_REVIEW_PROMPT",
     }
 
 
@@ -4893,6 +5170,13 @@ def _perp_funding_sublayer(factor_cross_section, direction_sign, cfg=None):
     funding = (factor_cross_section or {}).get("funding") or {}
     rate = _first_float(funding.get("last_rate"),
                         funding.get("last_funding_rate"))
+    semantics = (funding.get("canonical_funding_semantics")
+                 or build_funding_canonical_semantics(
+                     rate,
+                     funding.get("funding_norm"),
+                     funding.get("effect") or funding.get("tmvf_funding_effect"),
+                     funding.get("funding_state"),
+                     cfg or CONFIG))
     if rate is None:
         return {
             "schema_name": "SignalDurabilityPerpFunding",
@@ -4905,6 +5189,8 @@ def _perp_funding_sublayer(factor_cross_section, direction_sign, cfg=None):
             "funding_aligns_with_signal": None,
             "interpretation": "DATA_GAP",
             "reason_codes": ["PERP_FUNDING_DATA_GAP"],
+            "canonical_funding_semantics": semantics,
+            "canonical_text_cn": semantics.get("canonical_text_cn"),
         }
     neutral_abs = safe_float(config.get("funding_observe_neutral_abs"))
     if neutral_abs is None:
@@ -4921,14 +5207,10 @@ def _perp_funding_sublayer(factor_cross_section, direction_sign, cfg=None):
     funding_against = (
         bool(direction_sign) and funding_pressure_sign == -direction_sign)
     reason_codes = []
-    if funding_pressure_sign == 0:
+    if not semantics.get("edb_vote_allowed"):
         score = 0.70
-        reason_codes.append("FUNDING_NEUTRAL_OR_SMALL")
-        interpretation = "NEUTRAL"
-    elif funding_aligns and abs(rate) <= light_abs:
-        score = 0.82
-        reason_codes.append("FUNDING_HEALTHY_CONFIRMATION")
-        interpretation = "HEALTHY_CONFIRMATION"
+        reason_codes.append("FUNDING_RAW_NOT_CROWDED_REFLEXIVITY_NOISE")
+        interpretation = "REFLEXIVITY_NOISE"
     elif funding_aligns:
         score = 0.58
         reason_codes.append("FUNDING_CROWDED_CONFIRMATION")
@@ -4955,6 +5237,8 @@ def _perp_funding_sublayer(factor_cross_section, direction_sign, cfg=None):
         "funding_against_signal": funding_against if direction_sign else None,
         "interpretation": interpretation,
         "reason_codes": reason_codes,
+        "canonical_funding_semantics": semantics,
+        "canonical_text_cn": semantics.get("canonical_text_cn"),
     }
 
 
@@ -5393,12 +5677,15 @@ def build_audit_record(card, config=None):
     cal = conclusion.get("calibration_state") or "UNCALIBRATED"
 
     session_context = window.get("session_context") or {}
+    event_type = card.get("event_type") or "NR_REPAIR_CONFIRMED"
+    record_type = card.get("record_type") or "confirmed_signal_event_audit"
+    tags = list(card.get("tags") or [])
     record = {
         "schema": {
             "name": "signal_review_card",
             "version": AUDIT_SCHEMA_VERSION,
             "status": "FINAL",
-            "record_type": "confirmed_signal_event_audit",
+            "record_type": record_type,
             "frontend_profile": "signal_audit_static_v1",
             "canonicalization": "SORTED_KEYS_COMPACT_UTF8_V1",
         },
@@ -5406,7 +5693,8 @@ def build_audit_record(card, config=None):
             "card_id": full_id,
             "short_id": short,
             "episode_id": episode,
-            "event_type": "NR_REPAIR_CONFIRMED",
+            "event_type": event_type,
+            "tags": tags,
             "is_synthetic": bool(card.get("is_synthetic", False)),
             "symbol": symbol,
             "strategy_name": "中性回路信号层",
@@ -5486,6 +5774,15 @@ def build_audit_record(card, config=None):
             "local_card_json": "signal_cards/" + full_id + ".json",
         },
     }
+    if isinstance(card.get("analysis_round"), dict):
+        record["analysis_round"] = dict(card.get("analysis_round"))
+        if not record["analysis_round"].get("merged_with_regular_signal"):
+            record["decision_matrix"]["window"] = (
+                "NOT_REQUIRED_FOR_FIXED_ANALYSIS")
+            reason_codes = record["decision_matrix"].setdefault(
+                "reason_codes", [])
+            if "FIXED_ANALYSIS_ROUND" not in reason_codes:
+                reason_codes.append("FIXED_ANALYSIS_ROUND")
     durability_input = {
         "market_context": record.get("market_context") or {},
         "confirmed_time": ms,
@@ -5579,7 +5876,10 @@ def render_push_brief(card, config=None):
     base = (config.get("audit_static_base_url") or "").rstrip("/")
     log_tail = "详见FMZ Log #" + short
     tail = ("审计:" + base + "/c/" + short) if base else log_tail
-    text = ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
+    prefix = ("【固定轮次分析】"
+              if isinstance(card.get("analysis_round"), dict)
+              else "【信号】")
+    text = (prefix + str(config.get("asset", "BTC")) + " #" + short
             + " " + _brief_dir(conclusion.get("lean_cn"))
             + "/" + _brief_action(conclusion.get("support_label"))
             + " 价" + _brief_price(card.get("price"))
@@ -5591,7 +5891,7 @@ def render_push_brief(card, config=None):
     if len(text) <= 140:
         return _cap_single_line(text)
     tail = log_tail
-    text = ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
+    text = (prefix + str(config.get("asset", "BTC")) + " #" + short
             + " " + _brief_dir(conclusion.get("lean_cn"))
             + "/" + _brief_action(conclusion.get("support_label"))
             + " 价" + _brief_price(card.get("price"))
@@ -5602,7 +5902,7 @@ def render_push_brief(card, config=None):
             + " " + tail)
     if len(text) <= 140:
         return _cap_single_line(text)
-    text = ("【信号】" + str(config.get("asset", "BTC")) + " #" + short
+    text = (prefix + str(config.get("asset", "BTC")) + " #" + short
             + " " + _brief_dir(conclusion.get("lean_cn"))
             + "/" + _brief_action(conclusion.get("support_label"))
             + " 置信" + _fmt_int(conclusion.get("confidence")) + cal_tag
@@ -5683,7 +5983,7 @@ _LLM_REVIEW_FIELD_GLOSSARY = {
     "reasoning.evidence": "EDB 证据账本，包含参与、排除、门控和有效权重。",
     "conflict.ratio": "反向有效证据权重占比；越高代表分歧越高。",
     "blocking": "硬否决、软门和解除条件；LLM 不得覆盖这些门控。",
-    "rank": "GEX Monitor 历史窗口内相对分位；warming_up 表示样本仍在冷启动。",
+    "rank": "GEX Monitor 最近30日滚动窗口内相对分位；window_days<15 才是 warming_up，达到15日即为稳健可用。",
     "gex_info": "策略服务器清洗后的 GEX Monitor 只读上下文。",
 }
 
@@ -6223,6 +6523,17 @@ def _audit_cross_section(cross, card):
     if "last_rate" not in funding:
         funding["last_rate"] = safe_float(funding.get("last_funding_rate"))
     funding.setdefault("effect", funding.get("tmvf_funding_effect"))
+    if not funding.get("canonical_funding_semantics"):
+        funding["canonical_funding_semantics"] = build_funding_canonical_semantics(
+            _funding_first_float(funding.get("last_funding_rate"),
+                                 funding.get("last_rate")),
+            safe_float(funding.get("funding_norm")),
+            funding.get("effect"),
+            funding.get("funding_state"),
+            CONFIG)
+    funding.setdefault("canonical_text_cn", (
+        funding.get("canonical_funding_semantics") or {}).get(
+            "canonical_text_cn"))
     funding.setdefault("source_ref", _source_ref_for("funding"))
 
     macro = dict(cross.get("macro_pressure") or {})
@@ -6523,7 +6834,9 @@ def _audit_evidence_row(row):
     return {
         "key": key,
         "gloss_cn": row.get("gloss_cn") or evidence_gloss_cn(key),
-        "participation_status": "ACTIVE" if effective and vote is not None else "EXCLUDED",
+        "participation_status": (
+            row.get("participation_status")
+            or ("ACTIVE" if effective and vote is not None else "EXCLUDED")),
         "vote": vote,
         "configured_weight": configured,
         "reliability": reliability,
@@ -6701,6 +7014,9 @@ def _build_reasoning(edb, evidence, decomp):
         out.append({
             "key": item.get("key"),
             "gloss_cn": evidence_gloss_cn(item.get("key")),
+            "participation_status": (
+                item.get("participation_status")
+                or _evidence_participation_status(item)),
             "vote": vote,
             "weight": safe_float(item.get("weight")),
             "eff_weight": effw,
@@ -6709,6 +7025,7 @@ def _build_reasoning(edb, evidence, decomp):
             "aligned": bool(target != 0 and vsign == target),
             "lean_cn": "多" if vote > 0 else ("空" if vote < 0 else "中"),
             "detail": item.get("detail") or {},
+            "exclusion_reason": item.get("exclusion_reason"),
         })
     out.sort(key=lambda e: abs(e.get("contribution_pct") or 0.0), reverse=True)
     return {
@@ -6718,7 +7035,8 @@ def _build_reasoning(edb, evidence, decomp):
         "coverage": safe_float(edb.get("coverage")),
         "conflict_level": edb.get("conflict_level"),
         "evidence": out,
-        "participants": [e.get("key") for e in out],
+        "participants": [e.get("key") for e in out
+                         if e.get("participation_status") == "ACTIVE"],
         "confidence_decomposition": decomp,
     }
 
@@ -6828,7 +7146,16 @@ def _build_cross_section(fs, runtime_facts=None):
     funding = {
         "last_funding_rate": flow.get("last_funding_rate"),
         "tmvf_funding_effect": flow.get("tmvf_funding_effect"),
+        "canonical_funding_semantics": flow.get("tmvf_funding_semantics"),
     }
+    if not funding.get("canonical_funding_semantics"):
+        funding["canonical_funding_semantics"] = (
+            build_funding_canonical_semantics(
+                flow.get("last_funding_rate"), None,
+                flow.get("tmvf_funding_effect"), None, CONFIG))
+    funding["canonical_text_cn"] = (
+        funding.get("canonical_funding_semantics") or {}).get(
+            "canonical_text_cn")
     if tmvf_age_ms is not None:
         funding["age_ms"] = tmvf_age_ms
     gamma_regime = dict(fs.get("gamma_regime") or {})
@@ -7053,6 +7380,7 @@ class SignalEventTracker:
         self.max_events = int(self.config.get("signal_event_max_count", 10))
         self.events = []
         self.seen_episode_ids = set()
+        self.seen_fixed_round_slots = set()
 
     def maybe_record(self, neutral_repair_signal, factor_snapshot,
                      runtime_facts=None):
@@ -7083,6 +7411,56 @@ class SignalEventTracker:
             "event_count": len(self.events),
             "events": [dict(item) for item in self.events],
         }
+
+    def maybe_record_fixed_round(self, neutral_repair_signal, factor_snapshot,
+                                 runtime_facts, analysis_round):
+        context = dict(analysis_round or {})
+        slot = context.get("slot")
+        if not slot or slot in self.seen_fixed_round_slots:
+            return False
+        scheduled_ms = safe_float(context.get("scheduled_time_ms"))
+        window_ms = int(self.config.get(
+            "fixed_analysis_round_window_minutes", 5)) * 60 * 1000
+        if self.events:
+            current = self.events[0]
+            confirmed_ms = safe_float(current.get("confirmed_time"))
+            if (confirmed_ms is not None and scheduled_ms is not None
+                    and scheduled_ms <= confirmed_ms < scheduled_ms + window_ms):
+                merged = dict(context)
+                merged["merged_with_regular_signal"] = True
+                current["analysis_round"] = merged
+                tags = list(current.get("tags") or [])
+                if "FIXED_ROUND_ANALYSIS" not in tags:
+                    tags.append("FIXED_ROUND_ANALYSIS")
+                current["tags"] = tags
+                self.seen_fixed_round_slots.add(slot)
+                return True
+        signal = neutral_repair_signal or {}
+        event_context = signal.get("event_context") or {}
+        fixed_signal = dict(signal)
+        fixed_event_context = dict(event_context)
+        fixed_event_context["episode_id"] = context.get("episode_id")
+        fixed_signal["event_context"] = fixed_event_context
+        card = build_signal_review_card(
+            factor_snapshot or {}, runtime_facts or {}, fixed_signal,
+            self.config)
+        card["episode_id"] = context.get("episode_id")
+        card["confirmed_time"] = int(context.get("scheduled_time_ms"))
+        card.setdefault("window", {})["session_context"] = (
+            classify_signal_session_context(
+                context.get("scheduled_time_ms"), self.config))
+        card["card_id"] = _card_id(
+            context.get("episode_id"), context.get("scheduled_time_ms"))
+        card["event_type"] = "FIXED_ANALYSIS_ROUND"
+        card["record_type"] = "fixed_analysis_round_audit"
+        card["tags"] = ["FIXED_ROUND_ANALYSIS"]
+        card["analysis_round"] = context
+        self.events.insert(0, card)
+        self.seen_episode_ids.add(context.get("episode_id"))
+        self.seen_fixed_round_slots.add(slot)
+        if len(self.events) > self.max_events:
+            self.events = self.events[:self.max_events]
+        return True
 
     def _build_event(self, episode_id, signal, factor_snapshot, runtime_facts):
         card = build_signal_review_card(
@@ -9108,7 +9486,7 @@ def compute_tmvf_profile(klines, funding_points, config=None):
         if core.get("data_ready") and funding.get("data_ready"):
             reflexivity = funding_adjustment(
                 core.get("tmv_core"), funding.get("funding_norm", 0.0),
-                config)
+                config, funding.get("last_funding_rate"))
             final = reflexivity.get("direction_protected_final")
         elif core.get("data_ready"):
             reflexivity = {
@@ -9116,6 +9494,8 @@ def compute_tmvf_profile(klines, funding_points, config=None):
                 "effect": "unavailable",
                 "warning": "funding_unavailable",
                 "direction_protected_final": core.get("tmv_core"),
+                "canonical_funding_semantics": funding.get(
+                    "canonical_funding_semantics"),
             }
             final = core.get("tmv_core")
         else:
@@ -9125,8 +9505,13 @@ def compute_tmvf_profile(klines, funding_points, config=None):
                 "warning": "tmv_core_unavailable",
                 "core_gate": 0.0,
                 "direction_protected_final": None,
+                "canonical_funding_semantics": funding.get(
+                    "canonical_funding_semantics"),
             }
             final = None
+        if reflexivity.get("canonical_funding_semantics"):
+            funding["canonical_funding_semantics"] = reflexivity.get(
+                "canonical_funding_semantics")
         results[label] = {
             "label": label,
             "data_ready": bool(core.get("data_ready")),
@@ -9271,12 +9656,16 @@ def compute_funding_layer(funding_points, horizon_hours,
                           reference_ts_ms=None):
     config = config or CONFIG
     if not funding_points:
+        semantics = build_funding_canonical_semantics(
+            None, None, "unavailable", "unavailable", config)
         return {
             "horizon_hours": horizon_hours,
             "funding_cum": 0.0,
             "funding_count": 0,
             "funding_norm": 0.0,
             "funding_state": "unavailable",
+            "last_funding_rate": None,
+            "canonical_funding_semantics": semantics,
             "normalization": {},
             "funding_interval_hours": funding_interval_hours,
             "data_ready": False,
@@ -9290,12 +9679,16 @@ def compute_funding_layer(funding_points, horizon_hours,
         "tmvf_funding_max_age_hours", 12)) * 60 * 60 * 1000)
     age_ms = None if end_time is None else max(0, int(reference - end_time))
     if age_ms is None or (max_age_ms > 0 and age_ms > max_age_ms):
+        semantics = build_funding_canonical_semantics(
+            None, None, "unavailable", "unavailable", config)
         return {
             "horizon_hours": horizon_hours,
             "funding_cum": 0.0,
             "funding_count": count,
             "funding_norm": 0.0,
             "funding_state": "unavailable",
+            "last_funding_rate": None,
+            "canonical_funding_semantics": semantics,
             "normalization": {},
             "funding_interval_hours": funding_interval_hours,
             "window_start_time": start_time,
@@ -9309,12 +9702,18 @@ def compute_funding_layer(funding_points, horizon_hours,
         funding_cum, samples, max_abs_output=1.0)
     required = max(
         2, int(math.floor(horizon_hours / max(1, funding_interval_hours))) - 1)
+    funding_state = classify_funding_state(norm, config)
+    last_funding_rate = _latest_funding_rate(funding_points)
+    semantics = build_funding_canonical_semantics(
+        last_funding_rate, norm, None, funding_state, config)
     return {
         "horizon_hours": horizon_hours,
         "funding_cum": funding_cum,
         "funding_count": count,
         "funding_norm": norm,
-        "funding_state": classify_funding_state(norm, config),
+        "funding_state": funding_state,
+        "last_funding_rate": last_funding_rate,
+        "canonical_funding_semantics": semantics,
         "normalization": stats,
         "funding_interval_hours": funding_interval_hours,
         "window_start_time": start_time,
@@ -9324,10 +9723,13 @@ def compute_funding_layer(funding_points, horizon_hours,
     }
 
 
-def funding_adjustment(core, funding_norm, config=None):
+def funding_adjustment(core, funding_norm, config=None, funding_rate=None,
+                       canonical_funding_semantics=None):
     config = config or CONFIG
     core = safe_float(core) or 0.0
     funding_norm = safe_float(funding_norm) or 0.0
+    semantics = canonical_funding_semantics or build_funding_canonical_semantics(
+        funding_rate, funding_norm, None, None, config)
     d = sign(core)
     s = sign(funding_norm)
     a = abs(core)
@@ -9340,16 +9742,41 @@ def funding_adjustment(core, funding_norm, config=None):
     adjustment = 0.0
     effect = "neutral"
     warning = None
+    if not semantics.get("raw_available"):
+        semantics = build_funding_canonical_semantics(
+            funding_rate, funding_norm, "unavailable", None, config)
+        return {
+            "adjustment": 0.0,
+            "effect": "unavailable",
+            "warning": "funding_raw_unavailable",
+            "core_gate": core_gate,
+            "direction_protected_final": core,
+            "canonical_funding_semantics": semantics,
+        }
+    if not semantics.get("edb_vote_allowed"):
+        semantics = build_funding_canonical_semantics(
+            funding_rate, funding_norm, "neutral", None, config)
+        return {
+            "adjustment": 0.0,
+            "effect": "neutral",
+            "warning": "funding_raw_reflexivity_noise",
+            "core_gate": core_gate,
+            "direction_protected_final": core,
+            "canonical_funding_semantics": semantics,
+        }
     if a < neutral or d == 0:
         if c > crowded:
             effect = "crowded_without_price_confirmation"
             warning = "funding_extreme_but_price_behavior_unconfirmed"
+        semantics = build_funding_canonical_semantics(
+            funding_rate, funding_norm, effect, None, config)
         return {
             "adjustment": 0.0,
             "effect": effect,
             "warning": warning,
             "core_gate": core_gate,
             "direction_protected_final": core,
+            "canonical_funding_semantics": semantics,
         }
 
     if s == 0 or c < config["tmvf_funding_confirm_abs"]:
@@ -9375,12 +9802,15 @@ def funding_adjustment(core, funding_norm, config=None):
     if sign(final) != 0 and sign(core) != 0 and sign(final) != sign(core):
         final = 0.0
         warning = warning or "funding_adjustment_blocked_by_direction_protection"
+    semantics = build_funding_canonical_semantics(
+        funding_rate, funding_norm, effect, None, config)
     return {
         "adjustment": adjustment,
         "effect": effect,
         "warning": warning,
         "core_gate": core_gate,
         "direction_protected_final": final,
+        "canonical_funding_semantics": semantics,
     }
 
 
@@ -10136,6 +10566,7 @@ def build_factor_snapshot(module_results, strategy_recommendation=None,
             "tmv_state",
             "window_conflict",
             "tmvf_funding_effect",
+            "tmvf_funding_semantics",
             "micro_flow_effect",
             "micro_flow",
             "kline_count",
@@ -10396,6 +10827,7 @@ def evaluate_tmvf(bars, anchor_result, futures_facts=None, config=None,
     facts["direction"] = direction
     facts["market_state"] = market_state
     facts["tmvf_funding_effect"] = _tmvf_primary_funding_effect(results)
+    facts["tmvf_funding_semantics"] = _tmvf_primary_funding_semantics(results)
     facts["micro_flow_effect"] = micro_combined.get("state")
     facts["momentum"] = _tmvf_micro_fact(micro_flow, "momentum")
     facts["cvd_sum"] = _tmvf_micro_fact(micro_flow, "cvd_sum")
@@ -10426,12 +10858,24 @@ def _tmvf_direction_from_score(score, config):
 def _tmvf_market_state(direction, results, config):
     if direction == DIRECTION_UNCLEAR:
         return MARKET_UNCLEAR
-    effects = [
-        ((item or {}).get("funding_effect") or "")
+    funding_semantics = [
+        (((item or {}).get("funding") or {}).get(
+            "canonical_funding_semantics") or {})
         for item in (results or {}).values()
     ]
-    if any(effect in ("overcrowded", "extreme_overcrowded")
-           for effect in effects):
+    semantic_seen = any(bool(item) for item in funding_semantics)
+    if semantic_seen:
+        funding_crowded = any(
+            bool(item.get("is_crowded")) and bool(item.get("raw_available"))
+            for item in funding_semantics)
+    else:
+        effects = [
+            ((item or {}).get("funding_effect") or "")
+            for item in (results or {}).values()
+        ]
+        funding_crowded = any(effect in ("overcrowded", "extreme_overcrowded")
+                              for effect in effects)
+    if funding_crowded:
         market_state = MARKET_FUNDING_CROWDED
     elif direction in (
             DIRECTION_BULLISH,
@@ -10482,6 +10926,13 @@ def _tmvf_any_funding_ready(results):
 def _tmvf_primary_funding_effect(results):
     item = (results or {}).get("48h") or (results or {}).get("24h") or {}
     return item.get("funding_effect")
+
+
+def _tmvf_primary_funding_semantics(results):
+    item = (results or {}).get("48h") or (results or {}).get("24h") or {}
+    return ((item.get("funding") or {}).get("canonical_funding_semantics")
+            or (item.get("reflexivity") or {}).get(
+                "canonical_funding_semantics"))
 
 
 def _latest_funding_rate(funding_points):
@@ -11114,6 +11565,8 @@ def _edb_table(factors):
     ggrd = (factors or {}).get("gamma_regime") or {}
     fund = detail("FUNDING")
     flow = (factors or {}).get("flow") or {}
+    fund_sem = (fund.get("canonical_funding_semantics")
+                or flow.get("tmvf_funding_semantics") or {})
     strat = (factors or {}).get("strategy_recommendation") or {}
     rows = [
         ["summary", "方向合成",
@@ -11150,9 +11603,10 @@ def _edb_table(factors):
          "多日环境顺/逆风，作方向票之一"],
         ["funding", "资金费率反身性 " + vw("FUNDING"),
          "rate " + _fmt_signed_pct(flow.get("last_funding_rate")),
-         "verdict " + _fmt(fund.get("verdict"))
-         + " / norm " + _fmt_signed_num(fund.get("funding_norm"), 2),
-         "永续仓位拥挤/反身性，小权重方向票"],
+         "语义 " + _fmt(fund_sem.get("semantic_code"))
+         + " / norm诊断 " + _fmt_signed_num(fund.get("funding_norm"), 2),
+         fund_sem.get("canonical_text_cn")
+         or "Funding 语义缺失；按无法判定处理"],
         ["srd", "期权偏斜 SRD " + vw("SRD"),
          "RR " + _fmt_signed_num(srdd.get("rr_blend"), 4)
          + " / 归一 " + _fmt_signed_num(srdd.get("skew_norm_blend"), 3),
@@ -11921,6 +12375,7 @@ class DemoRuntime:
         self.last_edb_rr_success_ms = None
         self.prev_edb_score = None
         self.pending_signal_reviews = []
+        self.fixed_analysis_round_state = self._load_fixed_analysis_round_state()
         self.chart = DemoChart(self.config)
         self.start_ms = now_ms()
         self.tick_count = 0
@@ -11932,6 +12387,90 @@ class DemoRuntime:
             self._log_startup()
         self._push_self_test_done = False
         self._emit_push_self_test()
+
+    def _fixed_analysis_round_state_path(self):
+        configured = self.config.get("fixed_analysis_round_state_file")
+        if configured:
+            return configured
+        return os.path.join(
+            self.config.get("logs_dir", "demo/logs"),
+            "fixed_analysis_round_state.json")
+
+    def _load_fixed_analysis_round_state(self):
+        path = self._fixed_analysis_round_state_path()
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {"slots": {}}
+        except Exception:
+            return {"slots": {}}
+
+    def _save_fixed_analysis_round_state(self):
+        path = self._fixed_analysis_round_state_path()
+        temp_path = path + ".tmp"
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(self.fixed_analysis_round_state, handle,
+                          ensure_ascii=False, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            return True
+        except Exception as exc:
+            fmz_log("固定轮次状态写入异常", str(exc))
+            return False
+
+    def _fixed_analysis_round_already_done(self, slot):
+        state = self._load_fixed_analysis_round_state()
+        item = (state.get("slots") or {}).get(slot) or {}
+        return bool(item.get("json_written") and item.get("push_done"))
+
+    def _fixed_analysis_round_json_already_written(self, card):
+        episode_id = card.get("episode_id")
+        if not episode_id:
+            return False
+        name = self.config.get(
+            "signal_review_recorder_name", "signal_review")
+        path = os.path.join(
+            self.config.get("logs_dir", "demo/logs"), name + ".jsonl")
+        try:
+            with open(path, "rb") as handle:
+                size = os.path.getsize(path)
+                start = max(0, size - 1024 * 1024)
+                handle.seek(start)
+                if start:
+                    handle.readline()
+                for raw_line in handle:
+                    try:
+                        value = json.loads(raw_line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    identity = value.get("identity") or {}
+                    if identity.get("episode_id") == episode_id:
+                        return True
+        except Exception:
+            return False
+        return False
+
+    def _update_fixed_analysis_round_delivery(self, card, pending):
+        context = card.get("analysis_round") or {}
+        slot = context.get("slot")
+        if not slot:
+            return
+        slots = self.fixed_analysis_round_state.setdefault("slots", {})
+        item = dict(slots.get(slot) or {})
+        item.update({
+            "slot": slot,
+            "episode_id": context.get("episode_id"),
+            "card_id": card.get("card_id"),
+            "json_written": bool(pending.get("json_written")),
+            "push_done": bool(pending.get("push_done")),
+        })
+        slots[slot] = item
+        self._save_fixed_analysis_round_state()
 
     def tick(self, live_fetch=None):
         self.tick_count += 1
@@ -12029,10 +12568,23 @@ class DemoRuntime:
         factor_snapshot["strategy_recommendation"] = _strategy_factors(
             strategy_recommendation)
         signal_runtime_facts = self._runtime_facts()
-        self.last_signal_recorded = self.signal_events.maybe_record(
+        regular_signal_recorded = self.signal_events.maybe_record(
             neutral_repair_signal,
             factor_snapshot,
             signal_runtime_facts)
+        fixed_round_recorded = False
+        analysis_round = build_fixed_analysis_round_context(
+            now_ms(), self.config)
+        if (analysis_round
+                and not self._fixed_analysis_round_already_done(
+                    analysis_round.get("slot"))):
+            fixed_round_recorded = self.signal_events.maybe_record_fixed_round(
+                neutral_repair_signal,
+                factor_snapshot,
+                signal_runtime_facts,
+                analysis_round)
+        self.last_signal_recorded = bool(
+            regular_signal_recorded or fixed_round_recorded)
         factor_snapshot["signal_events"] = self.signal_events.snapshot()
         self._emit_signal_review_card()
         decision_snapshot = decide(
@@ -12070,10 +12622,19 @@ class DemoRuntime:
                 for item in self.pending_signal_reviews
             ]
             if card_key not in queued_keys:
+                round_context = card.get("analysis_round") or {}
+                state = getattr(
+                    self, "fixed_analysis_round_state", {"slots": {}})
+                prior = ((state.get("slots") or {})
+                         .get(round_context.get("slot")) or {})
                 self.pending_signal_reviews.append({
                     "card": card,
-                    "json_written": False,
-                    "push_done": False,
+                    "json_written": bool(
+                        prior.get("json_written")
+                        or (round_context and
+                            self._fixed_analysis_round_json_already_written(
+                                card))),
+                    "push_done": bool(prior.get("push_done")),
                 })
         if not self.pending_signal_reviews:
             return
@@ -12092,6 +12653,9 @@ class DemoRuntime:
                 fmz_log("信号审计写入异常", str(exc))
             if not pending["json_written"]:
                 return
+            if (card.get("analysis_round")
+                    and hasattr(self, "_update_fixed_analysis_round_delivery")):
+                self._update_fixed_analysis_round_delivery(card, pending)
         if self.config.get("signal_review_push_enabled", False):
             if not pending["push_done"]:
                 try:
@@ -12102,6 +12666,9 @@ class DemoRuntime:
                     return
         else:
             pending["push_done"] = True
+        if (card.get("analysis_round")
+                and hasattr(self, "_update_fixed_analysis_round_delivery")):
+            self._update_fixed_analysis_round_delivery(card, pending)
         if pending["json_written"] and pending["push_done"]:
             self.pending_signal_reviews.pop(0)
         # LLM review is intentionally out-of-process: signal_review.jsonl is the

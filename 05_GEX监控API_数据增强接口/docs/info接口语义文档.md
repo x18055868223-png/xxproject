@@ -133,7 +133,7 @@ BTC 分析页四个 tab 的真实标签与图例。
 | `rank.metrics.*.value` | 当前指标值,与原字段同单位。 |
 | `rank.metrics.*.percentile` / `rank_pct` | 当前值在窗口样本中的分位。`0.86` / `86.0` 表示高于或等于窗口内约 86% 的样本。 |
 | `rank.metrics.gex_board.total_net_gex.abs_percentile` | `netGEX` 绝对值强度分位。负值本身的 `percentile` 越低代表越偏负,`abs_percentile` 越高代表净 GEX 规模越极端。 |
-| `quality` | `missing`=当前值缺失;`single_sample`=仅一个样本;`warming_up`=样本可用但不足完整 lookback 窗口;`ok`=窗口覆盖完整。 |
+| `quality` | `missing`=当前值缺失;`single_sample`=仅一个样本;`warming_up`=样本可用但窗口覆盖 `<15` 天;`ok`=窗口覆盖 `>=15` 天。rank 分位仍只使用最近 30 天窗口。 |
 
 当前纳入 rank 的指标:`gex_board.total_net_gex`、`gex_board.dvol`、`volatility.iv_rv_ratio`、`volatility.pcr`、`flow.call_share_pct`、`flow.put_call_ratio`。
 

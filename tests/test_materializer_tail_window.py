@@ -768,10 +768,16 @@ def main():
                           .read_text(encoding="utf-8"))
         rows = {row["key"]: row for row in card["reasoning"]["evidence"]}
         funding = rows["FUNDING"]
-        assert_true(funding["auxiliary_role"] == "FUTURES_FUNDING_CROWDING",
-                    "materializer should enrich old funding rows with auxiliary role")
-        assert_true(funding["auxiliary_lean"] == "BEARISH",
-                    "positive funding should surface bearish crowding tendency")
+        assert_true(funding["auxiliary_role"] == "FUTURES_FUNDING_SEMANTICS",
+                    "materializer should enrich old funding rows with canonical role")
+        assert_true(funding["auxiliary_lean"] == "NEUTRAL",
+                    "sub-threshold funding must remain non-voting")
+        semantics = funding["canonical_funding_semantics"]
+        assert_true(semantics["compat_backfill_applied"] is True,
+                    "legacy Funding semantics must disclose compatibility backfill")
+        assert_true(semantics["crowding_state"] == "NOT_CROWDED"
+                    and semantics["reflexivity_importance"] == "NOISE",
+                    "sub-threshold Funding must have one non-crowded meaning")
         assert_true(funding["raw_values"]["last_rate"] == 0.000072,
                     "funding raw last_rate should be carried into the ledger")
         assert_true(funding["raw_values"]["funding_norm"] == 0.31,
@@ -947,9 +953,10 @@ def main():
         assert_true(display_rows["FUNDING"]["previous_display"] == "0.0015%"
                     and display_rows["FUNDING"]["current_display"] == "0.0054%",
                     "Funding display should format decimal rates as percentages")
-        assert_true("温和多头倾向" in display_rows["FUNDING"]["meaning_cn"]
-                    and "拥挤升温" not in display_rows["FUNDING"]["meaning_cn"],
-                    "Funding below 0.01% should be described as mild long, not crowding escalation")
+        assert_true("温和多头费率倾向" in display_rows["FUNDING"]["meaning_cn"]
+                    and "未超过 ±0.0100% 拥挤阈值" in display_rows["FUNDING"]["meaning_cn"]
+                    and "反身性影响可忽略" in display_rows["FUNDING"]["meaning_cn"],
+                    "Funding below 0.01% should reuse canonical mild semantics")
         assert_true("-0M" not in display_rows["GAMMA"]["previous_display"]
                     and "-0M" not in display_rows["GAMMA"]["current_display"],
                     "Gamma display must never collapse small or scaled values to -0M")
@@ -989,9 +996,10 @@ def main():
                             for item in boundary_transition["core_transition_display"]}
         assert_true(boundary_display["GAMMA"]["current_display"] == "$112M",
                     "transition display should show real GEX USD notional, not 0.39 proxy")
-        assert_true("拥挤升温" not in boundary_display["FUNDING"]["meaning_cn"]
-                    and "温和多头倾向" in boundary_display["FUNDING"]["meaning_cn"],
-                    "Funding exactly 0.0100% should stay mild/baseline in transition display")
+        assert_true("温和多头费率倾向" in boundary_display["FUNDING"]["meaning_cn"]
+                    and "未超过 ±0.0100% 拥挤阈值" in boundary_display["FUNDING"]["meaning_cn"]
+                    and "EDB 不计票" in boundary_display["FUNDING"]["meaning_cn"],
+                    "Funding exactly 0.0100% should stay canonical non-voting")
 
         ledger_lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         assert_true(len(ledger_lines) == 1,

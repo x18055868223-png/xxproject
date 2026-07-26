@@ -27,7 +27,13 @@
     BULLISH_LEAN: "理论偏多",
     BULLISH_CONFIRMED: "偏多已确认",
     BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
+    BUY_ABSORBED_BEARISH: "买盘被吸收，偏空",
+    BUY_CONFIRMS_UP: "买方流确认上行",
     CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
+    CVD_DATA_NOT_READY: "CVD 数据未就绪",
+    CVD_HISTORY_WARMING: "CVD 历史样本仍在积累",
+    CVD_PRICE_CONFIRM_BOTH_REQUIRED: "CVD 与价格确认须同时有效",
+    CVD_STRENGTH_NOT_ACTIVE: "CVD 强度未达激活阈值",
     CONFLICT: "冲突",
     DECISION: "决策",
     DEGRADED: "降级",
@@ -40,6 +46,10 @@
     FINAL: "定稿",
     FULL_LIVE: "完整实时",
     FUNDING: "资金费率",
+    FUNDING_RAW_MISSING: "原始资金费率缺失，无法判断",
+    FUNDING_RAW_SEMANTIC_NON_VOTING: "原始费率未达拥挤阈值，不计票",
+    FUTURES_FUNDING_CROWDING: "资金费率拥挤语义",
+    FUTURES_FUNDING_SEMANTICS: "资金费率规范语义",
     GATE_ONLY: "仅门控",
     GEMINI: "Gemini",
     gemini: "Gemini",
@@ -76,6 +86,7 @@
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
     MACRO: "宏观",
+    MACRO_CONTEXT: "宏观背景",
     MODERATE: "中等",
     MIXED_UNCLEAR: "混合不明",
     MIXED_HIGH_CONFLICT: "混合信号 / 高冲突",
@@ -89,6 +100,8 @@
     NEGATIVE_GAMMA: "负 Gamma",
     NONE: "无",
     NON_VOTING: "不计票",
+    NOT_CROWDED: "未拥挤",
+    NOISE: "可忽略",
     NOT_CONFIRMED: "未确认",
     NOT_IMPLEMENTED_SHADOW: "未落地影子项",
     NOT_READY: "未就绪",
@@ -103,6 +116,8 @@
     PENDING_LLM: "等待 LLM 复核",
     POSITIVE_GAMMA: "正 Gamma",
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
+    PRICE_CONFIRM_NOT_ACTIVE: "价格确认未达激活阈值",
+    PRICE_ONLY: "仅价格有效，CVD 不确认",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
     CALL_SKEW: "看涨偏斜",
@@ -113,6 +128,8 @@
     THIN: "薄",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
     SHORT_BIAS: "空头偏好",
+    SELL_ABSORBED_BULLISH: "卖盘被吸收，偏多",
+    SELL_CONFIRMS_DOWN: "卖方流确认下行",
     SKEW: "偏斜",
     SOFT_GATE: "软门控",
     SOURCE_AGE_EXCEEDED: "数据时效超限",
@@ -129,6 +146,11 @@
     VALID: "有效",
     WAIT_CONFIRMATION: "等待确认",
     WAIT_FOR_EVIDENCE: "等待证据",
+    DIRECTION_OWNER: "方向主干",
+    FLOW_CONFIRM_COMPONENT: "主动流确认分量",
+    FLOW_CONFIRMATION: "主动流确认",
+    OPTION_GAMMA_STRUCTURE: "期权 Gamma 结构",
+    OPTION_SKEW_DIRECTION: "期权偏斜方向",
     BLOCKED: "已被阻断",
     CONTINUING: "延续",
     DETERIORATING: "恶化",
@@ -616,6 +638,13 @@
   const shortId = (doc) => get(doc, "identity.short_id", cardId(doc).slice(-4));
   const confirmedAt = (doc) => get(doc, "identity.confirmed_at", get(doc, "created_at"));
   const symbol = (doc) => get(doc, "identity.symbol", get(doc, "symbol", "N/A"));
+  const analysisRound = (doc) => asObject(get(doc, "analysis_round", {}));
+  const isFixedAnalysisRound = (doc) => {
+    const tags = asArray(get(doc, "identity.tags", []));
+    return get(doc, "identity.event_type") === "FIXED_ANALYSIS_ROUND"
+      || tags.includes("FIXED_ROUND_ANALYSIS")
+      || Object.keys(analysisRound(doc)).length > 0;
+  };
   const decision = (doc) => asObject(get(doc, "decision", get(doc, "final_state", {})));
   const lean = (doc) => get(doc, "decision.lean", get(doc, "final_state.direction", "UNKNOWN"));
   const support = (doc) => get(doc, "decision.support_label", get(doc, "final_state.action", "UNKNOWN"));
@@ -864,6 +893,7 @@
             <span>耐用 ${escapeHtml(durabilityScoreText(durability))}</span>
             <span>${escapeHtml(durabilityComfortBrief(durability))}</span>
           </div>
+          ${isFixedAnalysisRound(doc) ? `<div class="transition-badges"><span class="fixed-round-badge">固定轮次</span></div>` : ""}
           ${renderIndexTransitionBadges(doc)}
         </button>
       `;
@@ -883,7 +913,8 @@
   function renderIndexTransitionBadges(doc) {
     const ctx = transitionContext(doc);
     if (!Object.keys(ctx).length) return "";
-    const flags = asArray(ctx.cross_domain_flags);
+    const flags = asArray(ctx.cross_domain_flags)
+      .filter((flag) => flag !== "FIXED_ROUND_ANALYSIS");
     return `
       <div class="transition-badges">
         <span>${escapeHtml(semanticCompact(ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN")))}</span>
@@ -1083,9 +1114,14 @@
     const ctx = transitionContext(doc);
     if (!Object.keys(ctx).length) return "";
     const decisionTransition = asObject(ctx.decision_transition);
-    const flags = asArray(ctx.cross_domain_flags);
+    const flags = asArray(ctx.cross_domain_flags)
+      .filter((flag) => flag !== "FIXED_ROUND_ANALYSIS");
     const quality = ctx.comparison_quality || get(ctx, "relation.comparison_quality", "UNKNOWN");
     const elapsed = isNullish(ctx.elapsed_ms) ? null : ageText(ctx.elapsed_ms);
+    const fixedSnapshotNote = isFixedAnalysisRound(doc)
+      || get(ctx, "event_context.fixed_time_snapshot_diff") === true
+      ? `<div class="llm-review-quality fixed-round-note">固定时间截面差分：基于北京时间 23:00 的固定轮次分析，不表示 Anchor+DIE 自然信号迁移。</div>`
+      : "";
     return section("状态转移审计", "AUDIT_ONLY 变化链由 materializer 生成；前端只展示已物化字段，不计算 delta。", `
       <div class="transition-panel">
         <div class="llm-review-topline">
@@ -1097,6 +1133,7 @@
           <span>状态路径</span>
           <strong>${escapeHtml(transitionTimelineText(ctx, doc))}</strong>
         </div>
+        ${fixedSnapshotNote}
         ${renderTransitionLlmReview(doc)}
         ${renderTransitionCoreSummary(ctx)}
         ${renderTransitionAuditMetadata(ctx, elapsed)}
@@ -1550,13 +1587,19 @@
     const domain = rawEnum(change.domain || "OTHER").toUpperCase();
     const title = transitionDomainSemanticTitle(domain);
     const displayRow = displayByDomain.get(domain);
+    const deterministicFunding = domain === "FUNDING" && displayRow;
+    const fundingFact = deterministicFunding
+      ? [displayRow.valueText, displayRow.meaning].filter(Boolean).join("；")
+      : "";
     const fact = stripTransitionMaterialityBoilerplate(
       sanitizeTransitionReadable(
-        change.fact_cn || change.fact || change.summary_cn,
+        fundingFact || change.fact_cn || change.fact || change.summary_cn,
         displayRow && displayRow.meaning
       ));
-    const impact = transitionObservedImpactText(change, displayRow, fact);
-    const tendency = transitionObservedTendencyText(change, displayRow, `${fact} ${impact}`);
+    const impact = deterministicFunding ? "" : transitionObservedImpactText(change, displayRow, fact);
+    const tendency = deterministicFunding
+      ? ""
+      : transitionObservedTendencyText(change, displayRow, `${fact} ${impact}`);
     const segments = [
       fact ? `<span class="transition-observed-segment transition-observed-fact">${escapeHtml(fact)}</span>` : "",
       impact ? `<span class="transition-observed-segment transition-observed-impact"><strong class="transition-observed-label">影响</strong>${escapeHtml(impact)}</span>` : "",
@@ -1871,7 +1914,9 @@
   function hasTransitionRawFieldLeak(value) {
     const text = String(value ?? "");
     return /factor_cross_section|macro_pressure\.components|source_ref|primary_fields|主要字段|核心前后值已入包|来源[:：]|原始变化\s*\d*\s*项/i.test(text)
-      || /\b[a-z][a-z0-9_]*(?:\.[A-Za-z0-9_]+){2,}\b/.test(text);
+      || /\b[a-z][a-z0-9_]*(?:\.[A-Za-z0-9_]+){2,}\b/.test(text)
+      || /(?:^|[{,'"\s])(?:funding_state|last_rate|last_funding_rate|funding_norm|tmvf_funding_effect|effect)\s*['"]?\s*[:=]/i.test(text)
+      || /[-+]?\d+(?:\.\d+)?e[-+]?\d+/i.test(text);
   }
 
   function rawValueTextLabeled(value, depth = 0) {
@@ -2148,8 +2193,9 @@
       !isNullish(window.sample_count) ? `样本 ${scalarText(window.sample_count, { translate: false, digits: 0 })}` : "",
       !isNullish(window.history_retained_count) ? `保留 ${scalarText(window.history_retained_count, { translate: false, digits: 0 })}` : "",
       !isNullish(window.window_days) ? `覆盖 ${scalarText(window.window_days, { translate: false, digits: 2 })} 天` : "",
+      "15 日起质量健壮可用",
     ].filter(Boolean);
-    return section("GEX Rank 分位", "把 netGEX、IV/RV、P/C 等裸数值转换为当前样本窗口里的相对位置；冷启动期 quality 会保留显示。", `
+    return section("GEX Rank 分位", "把 netGEX、IV/RV、P/C 等裸数值转换为当前样本窗口里的相对位置；quality=ok 表示已达到 15 日稳健可用阈值，窗口仍按最近 30 日滚动维护。", `
       <dl class="kv-grid rank-grid">
         ${rankKv("netGEX", netGex, `<span class="rank-meta">绝对值 ${escapeHtml(rankPct(netGex, "abs_rank_pct"))}</span>`)}
         ${rankKv("DVOL", dvol)}
@@ -2854,7 +2900,7 @@
     const role = evidence && evidence.auxiliary_role;
     if (role) return role;
     return {
-      FUNDING: "FUTURES_FUNDING_CROWDING",
+      FUNDING: "FUTURES_FUNDING_SEMANTICS",
       SRD: "OPTION_SKEW_DIRECTION",
       GGR_SPATIAL: "OPTION_GAMMA_STRUCTURE",
       TMV: "DIRECTION_OWNER",
@@ -3126,28 +3172,49 @@
     `;
   }
 
+  function canonicalFundingSemantics(evidence, doc, ctx) {
+    const candidates = [
+      asObject(ctx && ctx.detail && ctx.detail.canonical_funding_semantics),
+      asObject(ctx && ctx.raw && ctx.raw.canonical_funding_semantics),
+      asObject(evidence && evidence.canonical_funding_semantics),
+      asObject(ctx && ctx.factor && ctx.factor.canonical_funding_semantics),
+      asObject(get(doc, "factor_cross_section.funding.canonical_funding_semantics", {})),
+      asObject(ctx && ctx.detail && ctx.detail.funding_semantics),
+      asObject(ctx && ctx.raw && ctx.raw.funding_semantics),
+      asObject(get(doc, "factor_cross_section.funding.funding_semantics", {}))
+    ];
+    return candidates.find((item) =>
+      Object.keys(item).length
+      && typeof item.canonical_text_cn === "string"
+      && item.canonical_text_cn.trim()) || {};
+  }
+
   function fundingAssessment(evidence, doc, ctx) {
-    const rate = evidenceFirstNumber(evidence, ctx, ["last_rate", "last_funding_rate"]);
-    const threshold = 0.0001;
-    let tendency = "中性";
-    let note = "资金费率暂缺，仅保留为不计票辅助项。";
-    let reflexive = "NEUTRAL";
-    if (rate !== null) {
-      const crowded = Math.abs(rate) > threshold;
-      if (rate > 0) tendency = `${crowded ? "拥挤" : "温和"}多头倾向`;
-      else if (rate < 0) tendency = `${crowded ? "拥挤" : "温和"}空头倾向`;
-      reflexive = signedLean(-rate) || "NEUTRAL";
-      note = `${pairSymbol(doc)} 永续资金费率 ${ratePctText(rate)}，超过 0.01% 才进入初步拥挤，当前为${tendency}。`;
+    const semantics = canonicalFundingSemantics(evidence, doc, ctx);
+    const canonicalText = String(semantics.canonical_text_cn || "").trim();
+    if (!canonicalText) {
+      return {
+        stanceLabel: "费率规范语义",
+        stance: "无法判断",
+        sentence: "资金费率规范语义缺失，无法判断。页面不根据原始字段、历史归一化值或 effect 自行重判。",
+        facts: [
+          evidenceFact("语义状态", "无法判断"),
+          evidenceFact("EDB", "不计票")
+        ]
+      };
     }
+    const ratePct = safeNumber(semantics.raw_funding_rate_pct);
+    const thresholdPct = safeNumber(semantics.crowding_threshold_pct);
     return {
-      stanceLabel: "费率端倾向",
-      stance: tendency,
-      sentence: `${note} 反身性辅助倾向为${semanticCompact(reflexive) || reflexive}，本项不直接改变 EDB 方向票。`,
+      stanceLabel: "费率规范语义",
+      stance: semantics.fee_bias_cn || semanticCompact(semantics.fee_bias) || "无法判断",
+      sentence: canonicalText,
       facts: [
-        evidenceFact("funding", ratePctText(rate)),
-        evidenceFact("threshold", "0.01%"),
-        evidenceFact("reflexive", semanticCompact(reflexive) || reflexive),
-        evidenceFact("effect", firstPresent(evidenceFirstValue(evidence, ctx, ["effect", "tmvf_funding_effect"]), "n/a"))
+        evidenceFact("资金费率", ratePct === null ? "暂缺" : `${number(ratePct, 4)}%`),
+        evidenceFact("拥挤阈值", thresholdPct === null ? "0.01%" : `${number(thresholdPct, 4)}%`),
+        evidenceFact("拥挤状态", semanticCompact(semantics.crowding_state) || semantics.crowding_state),
+        evidenceFact("反身性", semanticCompact(semantics.reflexivity_importance) || semantics.reflexivity_importance),
+        evidenceFact("EDB", semanticCompact(semantics.edb_participation) || semantics.edb_participation)
       ]
     };
   }
@@ -3252,16 +3319,21 @@
 
   function cvdAssessment(evidence, ctx) {
     const cvdSum = evidenceFirstNumber(evidence, ctx, ["cvd_sum"]);
-    const strength = evidenceFirstNumber(evidence, ctx, ["normalized_strength", "strength"]);
+    const strength = evidenceFirstValue(evidence, ctx, ["normalized_strength", "strength"]);
     const verdict = evidenceFirstValue(evidence, ctx, ["verdict"]);
+    const strengthText = semanticCompact(strength) || "暂缺";
+    const verdictText = semanticCompact(verdict) || "无法判断";
+    const participation = semanticCompact(evidence.participation_status) || "未定";
+    const active = rawEnum(evidence.participation_status).toUpperCase() === "ACTIVE";
     const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote)) || "UNKNOWN";
     return {
       stance: leanText,
-      sentence: `CVD 分量 ${scalarText(cvdSum, { translate: false, digits: 4 })}，强度 ${scalarText(strength, { translate: false, digits: 4 })}，结论 ${scalarText(verdict, { translate: false })}。`,
+      sentence: `CVD 分量 ${scalarText(cvdSum, { translate: false, digits: 4 })}，强度 ${strengthText}，象限关系为${verdictText}。${active ? "该证据已参与方向计票。" : "该证据未激活，不参与方向计票或冲突。"}`,
       facts: [
         evidenceFact("cvd_sum", cvdSum),
-        evidenceFact("strength", strength),
-        evidenceFact("verdict", verdict)
+        evidenceFact("强度", strengthText),
+        evidenceFact("象限关系", verdictText),
+        evidenceFact("计票状态", participation)
       ]
     };
   }
@@ -3300,7 +3372,7 @@
             <strong class="evidence-key">${escapeHtml(evidence.key || "N/A")}</strong>
             <span class="evidence-gloss">${escapeHtml(evidence.gloss_cn || "")}</span>
           </div>
-          <div class="evidence-status">${statusBadge("", evidence.participation_status)}</div>
+          <div class="evidence-status">${statusBadgeCn("", evidence.participation_status)}</div>
         </div>
         <div class="evidence-body">
           <div class="evidence-stance">
@@ -3311,9 +3383,9 @@
           <p class="evidence-judgement">${escapeHtml(assessment.sentence)}</p>
           ${evidenceFactsHtml(assessment.facts)}
           <div class="evidence-foot">
-            <span>${escapeHtml(evidenceAuxiliaryRole(evidence) || "EDB_MODULE")}</span>
+            <span>${escapeHtml(semanticCompact(evidenceAuxiliaryRole(evidence)) || "EDB_MODULE")}</span>
             ${evidence.source_ref ? sourceRefLink(evidence.source_ref, doc) : `<span>原始截面见下方</span>`}
-            ${evidence.exclusion_reason ? `<span>${escapeHtml(textClip(evidence.exclusion_reason, 96))}</span>` : ""}
+            ${evidence.exclusion_reason ? `<span>${escapeHtml(textClip(semanticCompact(evidence.exclusion_reason), 96))}</span>` : ""}
           </div>
         </div>
       </article>
@@ -3506,6 +3578,7 @@
           ${statusBadge("Direction", lean(doc), true)}
           ${statusBadge("Action", support(doc))}
           ${statusBadge("Quality", quality.overall)}
+          ${isFixedAnalysisRound(doc) ? `<span class="badge fixed-round-badge">轮次: 固定轮次分析</span>` : ""}
           ${identity.is_synthetic ? statusBadge("Record", "SYNTHETIC") : ""}
         </div>
       </header>

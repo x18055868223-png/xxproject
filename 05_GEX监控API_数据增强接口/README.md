@@ -1,6 +1,6 @@
 # ⑤ GEX Monitor API · 数据增强接口
 
-> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前运行资产，服务版本 `gexmonitorapi=0.2.0`。当前权威接口是 Bearer 保护的 `/v1/info`，包含 GEX/Gamma/IV-RV/P-C/flow 与本地历史 rank。本文作为工程模块入口；因子语义先读 [`因子文档/00_GEX监控API总览.md`](因子文档/00_GEX监控API总览.md)。
+> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前运行资产，服务版本 `gexmonitorapi=0.2.1`。当前权威接口是 Bearer 保护的 `/v1/info`，包含 GEX/Gamma/IV-RV/P-C/flow 与本地历史 rank。本文作为工程模块入口；因子语义先读 [`因子文档/00_GEX监控API总览.md`](因子文档/00_GEX监控API总览.md)。
 
 ## 0. 工程收纳
 
@@ -62,7 +62,7 @@
 - `availability`：`ready`（全部命中）/ `partial`（部分缺失或有错误）/ `missing`（从未成功）。
 - `stale`：上一次刷新是否有失败；失败不会清空旧缓存。
 - 抓不到的字段不会让请求失败，而是记入 `missing_fields` 与 `field_status`。
-- `rank`：每次全量刷新追加一行本地 JSONL 历史；不足 30 天时用已有样本，超过 30 天后只用最近 30 天计算当前分位，但保留全量历史。
+- `rank`：每次全量刷新追加一行本地 JSONL 历史；超过 30 天后只用最近 30 天计算当前分位，但保留全量历史；`quality` 在窗口覆盖满 15 天时直接进入 `ok`，15 天以内为 `warming_up`。
 
 > 每个字段的单位与真实语义见 [`docs/info接口语义文档.md`](docs/info接口语义文档.md)；完整响应示例见 [`docs/info.sample.json`](docs/info.sample.json)。
 

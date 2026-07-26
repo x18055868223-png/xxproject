@@ -58,7 +58,7 @@ def main():
     policy = advisory["policy_validation"]
     assert_true(review["status"] == "OK", "bounded repair should yield an OK review")
     assert_true(
-        review["prompt_version"] == "gemini_signal_review_prompt@1.4.6",
+        review["prompt_version"] == "gemini_signal_review_prompt@1.4.7",
         "entrypoint should record the patched prompt version",
     )
     assert_true(
@@ -211,6 +211,11 @@ def main():
         "即使是否定、免责声明或风险边界" in prompt
         and "不构成交易执行依据" in prompt,
         "full prompt should forbid blocked execution words in human-readable fields",
+    )
+    assert_true(
+        "canonical_funding_semantics" in prompt
+        and "|raw funding|<=0.01%（含等号）" in prompt,
+        "bounded runtime prompt must retain the core canonical Funding rule",
     )
 
     installer = INSTALLER.read_text(encoding="utf-8")

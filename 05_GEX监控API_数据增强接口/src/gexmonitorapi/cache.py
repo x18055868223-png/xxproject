@@ -21,6 +21,8 @@ RANK_METRICS: tuple[str, ...] = (
     "flow.put_call_ratio",
 )
 
+RANK_OK_MIN_WINDOW_DAYS = 15.0
+
 
 class MetricsCache:
     def __init__(
@@ -308,7 +310,7 @@ class MetricsCache:
             return "missing"
         if sample_count < 2:
             return "single_sample"
-        if window_days < self.rank_lookback_days:
+        if window_days < RANK_OK_MIN_WINDOW_DAYS:
             return "warming_up"
         return "ok"
 

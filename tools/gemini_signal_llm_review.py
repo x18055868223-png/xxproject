@@ -18,16 +18,27 @@ import sys
 import urllib.error
 import urllib.request
 
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from signal_fact_semantics import (  # noqa: E402
+    build_funding_semantics,
+    ensure_card_fact_semantics,
+    funding_text_conflicts,
+    has_raw_human_leak,
+    validate_funding_semantics,
+)
+
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.4.0"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.4.4"
-PACKET_VERSION = "signal_llm_review_packet@1.1.0"
+PROMPT_VERSION = "gemini_signal_review_prompt@1.4.5"
+PACKET_VERSION = "signal_llm_review_packet@1.1.1"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
 TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
-TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.4"
+TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.5"
 TRANSITION_PACKET_VERSION = "SignalTransitionReviewPacket@1.1.1"
 TRANSITION_EVIDENCE_CATALOG_VERSION = "transition_evidence_catalog@1.0.0"
 TRANSITION_RAW_FIELD_LEAK_PATTERNS = (
@@ -40,6 +51,12 @@ TRANSITION_RAW_FIELD_LEAK_PATTERNS = (
     ("来源", re.compile(r"来源[:：]")),
     ("核心前后值已入包", re.compile(r"核心前后值已入包")),
     ("原始变化", re.compile(r"原始变化\s*\d*\s*项?")),
+    ("funding_machine_field", re.compile(
+        r"(?:^|[{,'\"\s])(?:funding_state|last_rate|last_funding_rate|"
+        r"funding_norm|tmvf_funding_effect|effect)\s*['\"]?\s*[:=]",
+        re.IGNORECASE)),
+    ("scientific_notation", re.compile(
+        r"[-+]?\d+(?:\.\d+)?e[-+]?\d+", re.IGNORECASE)),
 )
 
 FACTOR_KEYS = (
@@ -259,6 +276,10 @@ TRANSITION_BLIND_MODES = {
 
 
 def build_review_packet(card):
+    card = ensure_card_fact_semantics(
+        card,
+        compat_source="llm_packet:legacy_card_funding_semantics_v1",
+    )
     identity = _as_dict(card.get("identity"))
     factor = _as_dict(card.get("factor_cross_section"))
     selected_factors = {
@@ -277,7 +298,10 @@ def build_review_packet(card):
             "confirmed_at": identity.get("confirmed_at") or card.get("created_at"),
             "strategy_name": identity.get("strategy_name"),
             "strategy_version": identity.get("strategy_version"),
+            "event_type": identity.get("event_type"),
+            "tags": identity.get("tags") or [],
         }),
+        "analysis_round": _safe_copy(card.get("analysis_round")),
         "market_context": _safe_copy(card.get("market_context")),
         "decision": _safe_copy(card.get("decision")),
         "decision_matrix": _safe_copy(card.get("decision_matrix")),
@@ -294,7 +318,11 @@ def build_review_packet(card):
             "confidence": "证据质量刻度，不是胜率或收益概率。",
             "evidence_strength": "程序化证据强度，反映信号截面证据充分程度。",
             "conflict.ratio": "有效反向证据占比，越高越需要谨慎解释。",
-            "gex_info.rank": "GEX Monitor 历史窗口内的百分位，warming_up 表示样本仍不足。",
+            "gex_info.rank": (
+                "GEX Monitor 最近30日滚动窗口内百分位；window_days<15 才是 "
+                "warming_up，window_days>=15 的 quality=ok 表示已稳健可用。"),
+            "funding.canonical_funding_semantics": (
+                "Funding 唯一机械语义；必须原样遵守，effect/funding_norm 仅是诊断字段。"),
             "trade_allowed": "系统交易许可字段，LLM 不得修改或推导执行动作。",
             "theoretical_active_view": (
                 "LLM 基于给定截面做出的理论主动倾向参考，不是系统信号、下单指令或门控。"
@@ -329,6 +357,7 @@ def _build_review_evidence_catalog(packet):
         ("EV_CONFLICT", "conflict", "证据冲突"),
         ("EV_BLOCKING", "blocking", "程序化阻断与解除条件"),
         ("EV_QUALITY", "quality", "数据质量"),
+        ("EV_ANALYSIS_ROUND", "analysis_round", "固定轮次分析触发事实"),
         ("EV_TMVF", "factor_cross_section.tmvf", "量价主干"),
         ("EV_MICRO_FLOW", "factor_cross_section.micro_flow", "主动流确认"),
         ("EV_MACRO", "factor_cross_section.macro_pressure", "宏观双轴"),
@@ -374,7 +403,10 @@ def build_blind_theoretical_packet(packet):
             "confirmed_at": identity.get("confirmed_at"),
             "strategy_name": identity.get("strategy_name"),
             "strategy_version": identity.get("strategy_version"),
+            "event_type": identity.get("event_type"),
+            "tags": identity.get("tags") or [],
         }),
+        "analysis_round": _safe_copy(source.get("analysis_round")),
         "market_context": _safe_copy(source.get("market_context")),
         "quality": _safe_copy(source.get("quality")),
         "factor_cross_section": selected_factors,
@@ -385,7 +417,11 @@ def build_blind_theoretical_packet(packet):
             "gamma_regime_lens": (
                 "Gamma 体制只分析分布、尾部和反身性风险；不能给竞争性方向。"
             ),
-            "gex_info.rank": "GEX Monitor 历史窗口内百分位；warming_up 表示样本仍不足。",
+            "gex_info.rank": (
+                "GEX Monitor 最近30日滚动窗口内百分位；只有 window_days<15 "
+                "才表示样本仍不足，达到15日即为稳健可用。"),
+            "funding.canonical_funding_semantics": (
+                "Funding 唯一机械语义；不得由 funding_norm/effect 另行解释。"),
         },
         "guardrails": {
             "role": "BLIND_THEORETICAL_READING",
@@ -419,7 +455,7 @@ def build_blind_prompt(packet):
         "负 Gamma → 预期波动放大、助涨助跌、两个方向都可能剧烈反身。\n"
         "7. 极端负 Gamma + 已有倾向时，必须提示催化剂导致反向挤压/剧烈反转的尾部风险，"
         "并点名 flip / 对侧 wall / pin 等关键位。\n"
-        "8. 如果 flip/GEX 缺失、rank warming_up 或符号假设不稳，gamma_regime_lens.regime 选 UNKNOWN，"
+        "8. 如果 flip/GEX 缺失、rank 的 window_days<15 或符号假设不稳，gamma_regime_lens.regime 选 UNKNOWN，"
         "不得臆断体制。\n"
         "9. GEX 符号在加密市场是持仓假设，不是测得事实；必须在 positioning_assumption_cn 中说明。\n\n"
         "theoretical_active_view 字段要求：\n"
@@ -465,7 +501,7 @@ def build_prompt(packet, blind_payload=None):
         "2. confidence 是证据质量刻度，不是胜率、收益概率或可交易概率。\n"
         "3. 不得重算模型权重，不得用单一因子覆盖系统结论。\n"
         "4. 不得编造外部实时行情、盘口、新闻或未提供的数据。\n"
-        "5. 先检查数据质量、缺失字段、冲突比例、rank 冷启动，再解释方向。\n"
+        "5. 先检查数据质量、缺失字段、冲突比例以及 rank 是否未满15日，再解释方向。\n"
         "6. integrated_trade_advisory 必须回答四件事：中性接管是否成立、当前是否适合继续复核定义风险的卖方价差、"
         "哪一侧容错更合理、当前最大风险或信息缺口是什么。\n"
         "7. 最终观点可以与系统信号或盲读观点一致；一致不等于复读。必须说明不同调节回路如何共同形成定论、"
@@ -486,8 +522,11 @@ def build_prompt(packet, blind_payload=None):
         "7g. decision.trade_allowed=false 与 decision_matrix.execution_allowed=false 在本审计层是预期的执行隔离事实，"
         "不等于结构不适配，也不得单独作为 WAIT_FOR_CONFIRMATION 或 NO_TRADE 的理由。只有明确硬阻断、明确等待状态、"
         "中性接管不成立、结构不适配或实质证据冲突才能形成这些降级结论；价差复核建议仍不得改变交易许可。\n"
-        "7h. rank warming_up、单项缺失或单一风险因子只能按它对当前问题的实际影响降级依据质量；不得把任一单项"
+        "7h. rank 未满15日、单项缺失或单一风险因子只能按它对当前问题的实际影响降级依据质量；不得把任一单项"
         "自动当作总否决。若关键 Gamma/墙体/Funding 数值和来源足够完成结构判断，应说明限制并继续按相同门槛裁决。\n"
+        "7h-1. Funding 只能引用 factor_cross_section.funding.canonical_funding_semantics。"
+        "|raw funding|<=0.01%（含等号）只能解释为温和多/空或中性、未拥挤、反身性影响可忽略且EDB不计票；"
+        "不得由 effect、funding_norm 或历史状态改写为多头/空头拥挤。原始费率缺失时必须 UNABLE_TO_JUDGE。\n"
         "7i. producer 方向为精确 NEUTRAL 时，不得输出 SELL_PUT_SPREAD_REVIEW 或 SELL_CALL_SPREAD_REVIEW；"
         "若区间接管和结构适配成立，应使用 NEUTRAL_SINGLE_SIDE_REVIEW，并在 side_basis_cn 解释空间不对称但不改写方向。\n"
         "7j. 结构建议只能到 Put/Call/Neutral 复核类别，不得把 flip、wall、pin 或现价改写成具体行权价、到期日、"
@@ -867,7 +906,12 @@ def build_transition_review_packet(transition):
             "previous_ts_ms": transition.get("previous_ts_ms"),
             "current_ts_ms": transition.get("current_ts_ms"),
             "elapsed_ms": transition.get("elapsed_ms"),
+            "previous_event_type": transition.get("previous_event_type"),
+            "current_event_type": transition.get("current_event_type"),
+            "previous_tags": transition.get("previous_tags") or [],
+            "current_tags": transition.get("current_tags") or [],
         }),
+        "event_context": _safe_copy(transition.get("event_context")),
         "comparison": _safe_copy({
             "comparison_quality": (
                 transition.get("comparison_quality")
@@ -987,6 +1031,10 @@ def _build_transition_evidence_catalog(packet):
 
     add("EV_COMPARISON_QUALITY", "/comparison", "QUALITY",
         "comparison_quality", "比较质量", "两张卡的间隔、可比性与限制条件。")
+    if _as_dict(packet.get("event_context")):
+        add("EV_TRANSITION_EVENT_CONTEXT", "event_context", "EVENT",
+            "event_context", "事件触发与固定截面语义",
+            "标识前后卡事件类型，并区分固定时间截面差分与自然信号迁移。")
     add("EV_FIELD_GLOSSARY", "/field_glossary", "QUALITY",
         "field_glossary", "字段语义契约", "单位、材料性、角色和 delta 的解释边界。")
     return rows
@@ -1216,6 +1264,7 @@ def _transition_prompt_packet(packet):
         "guardrails": packet.get("guardrails"),
         "EVIDENCE": {
             "comparison": packet.get("comparison"),
+            "event_context": packet.get("event_context"),
             "core_skeleton": packet.get("core_skeleton"),
             "core_transition_display_values": display_evidence,
             "core_domain_coverage_required": sorted(_transition_required_core_domains(packet)),
@@ -1288,7 +1337,9 @@ def build_transition_review_prompt(packet):
         "“支撑”、“中性/缓和”，不是价格预测或操作方向。\n\n"
         "domain 语义规则：MACRO 必须将 DXY、US10Y、VOLQ 等子项聚合为一条，除非是数据质量异常；"
         "Funding 必须区分真实 last_rate/last_funding_rate 与 funding_norm 归一化指标，"
-        "真实资金费率必须写成百分比，不得输出 7.117e-05 这类科学计数法；低于 0.01% 阈值的正资金费率只能写为温和多头倾向，不得写成拥挤升温；"
+        "真实资金费率必须写成百分比，不得输出 7.117e-05 这类科学计数法；"
+        "|真实资金费率|不高于 0.01%（含等号）时，正值只能写温和多头费率倾向，负值只能写温和空头费率倾向，"
+        "零值写中性；三者都必须同时说明未拥挤、反身性影响可忽略且EDB不计票，不得写成拥挤升温；"
         "归一化指标不得写成真实资金费率；P/C 是非负比率，禁止写“正负符号翻转”，"
         "只能解释保护需求或相对期权需求变化；Gamma/GEX 只解释波动放大、钉住或空间约束，"
         "不得直接写成方向信号；若是净 Gamma USD 名义额必须使用 core_transition_display_values 中的展示口径，历史兼容指标不得伪装成 USD 名义额；"
@@ -2339,9 +2390,10 @@ def _normalize_observed_changes(items, packet=None):
     rows = []
     for item in list(items or [])[:8]:
         item = _as_dict(item)
+        domain = str(item.get("domain") or "")
         refs = _normalize_evidence_refs(item.get("evidence_refs"), packet, limit=8)
         fact_result = _derive_transition_fact_cn(
-            item.get("domain"), refs["valid"], packet,
+            domain, refs["valid"], packet,
             str(item.get("fact_cn") or ""),
             return_issues=True)
         if isinstance(fact_result, tuple):
@@ -2352,7 +2404,14 @@ def _normalize_observed_changes(items, packet=None):
         impact_cn = _sanitize_transition_impact_cn(
             str(item.get("impact_cn") or item.get("meaning_cn") or fact_cn))
         tendency_cn = _sanitize_transition_tendency_cn(
-            item.get("domain"), item.get("tendency_cn"), impact_cn or fact_cn)
+            domain, item.get("tendency_cn"), impact_cn or fact_cn)
+        if _transition_core_domain_alias(domain) == "FUNDING":
+            semantics = _transition_packet_funding_semantics(packet)
+            impact_cn = str(semantics.get("canonical_text_cn") or fact_cn)
+            tendency_cn = str(
+                semantics.get("fee_bias_cn")
+                or semantics.get("fee_bias")
+                or "无法判断")
         evidence_status = _transition_enum(
             item.get("evidence_status"), TRANSITION_EVIDENCE_STATUSES)
         if evidence_status == "UNKNOWN":
@@ -2379,7 +2438,7 @@ def _normalize_observed_changes(items, packet=None):
         if epistemic == "UNKNOWN":
             epistemic = "SUPPORTED_INFERENCE" if impact_cn else "NOT_ASSESSABLE"
         rows.append({
-            "domain": str(item.get("domain") or "")[:80],
+            "domain": domain[:80],
             "effect_target": effect_target,
             "fact_cn": fact_cn[:240],
             "impact_cn": impact_cn[:260],
@@ -2463,6 +2522,11 @@ def _derive_transition_fact_cn(domain, refs, packet, fallback, return_issues=Fal
     domain_label = str(domain or "").upper() or "UNKNOWN"
     fallback_text = _sanitize_transition_fact_cn(fallback)
     issues = _transition_human_numeric_issues(domain_label, fallback_text)
+    if _transition_core_domain_alias(domain_label) == "FUNDING":
+        summary = _transition_funding_fact_cn(packet)
+        if summary:
+            fact = _sanitize_transition_fact_cn(summary)
+            return (fact, issues) if return_issues else fact
     if (fallback_text and not _transition_text_has_raw_field_leak(fallback_text)
             and not issues):
         return (fallback_text, []) if return_issues else fallback_text
@@ -2480,6 +2544,35 @@ def _derive_transition_fact_cn(domain, refs, packet, fallback, return_issues=Fal
             f"{domain_label}：" + "；".join(summaries))
         return (fact, issues) if return_issues else fact
     return (fallback_text, issues) if return_issues else fallback_text
+
+
+def _transition_funding_fact_cn(packet):
+    previous = current = None
+    for item in list(_as_dict(packet).get("core_transition_display") or []):
+        item = _as_dict(item)
+        if _transition_core_domain_alias(item.get("domain")) == "FUNDING":
+            previous = item.get("previous_display")
+            current = item.get("current_display")
+            break
+    if previous is None and current is None:
+        for item in list(
+                _as_dict(_as_dict(packet).get("core_skeleton")).get("domains")
+                or []):
+            item = _as_dict(item)
+            if _transition_core_domain_alias(item.get("domain")) == "FUNDING":
+                previous, current = _transition_core_display_pair_from_skeleton(
+                    "FUNDING", item)
+                break
+    semantics = _transition_packet_funding_semantics(packet)
+    canonical = str(semantics.get("canonical_text_cn") or "").strip()
+    pair = ""
+    if previous is not None or current is not None:
+        pair = "{} -> {}".format(
+            _compact_transition_value(previous),
+            _compact_transition_value(current),
+        )
+    parts = [item for item in (pair, canonical) if item]
+    return "Funding（期货资金费率）：" + "，".join(parts) if parts else ""
 
 
 def _transition_human_numeric_issues(domain, text):
@@ -2572,8 +2665,11 @@ def _transition_core_skeleton_meaning_cn(domain, item):
     if domain == "FUNDING":
         current_rate = _transition_number(
             current.get("last_rate", current.get("last_funding_rate")))
-        if current_rate is not None and current_rate > 0 and current_rate < 0.0001:
-            return "资金费率低于 0.01% 阈值，当前为温和多头倾向。"
+        return build_funding_semantics(
+            current_rate,
+            source="llm_transition_core:funding_rate",
+            compat_backfill_applied=True,
+        )["canonical_text_cn"]
     if domain == "GAMMA":
         values = [
             _transition_number(previous.get("net_gamma_notional_usd", previous.get("net_gamma_notional"))),
@@ -3035,6 +3131,12 @@ def _transition_policy_validation(review, packet):
         if re.search(pattern, joined, flags=re.IGNORECASE):
             external_data_terms.append(label)
     raw_field_path_terms = _transition_raw_field_leak_terms(joined)
+    if has_raw_human_leak(joined) and "funding_machine_field" not in raw_field_path_terms:
+        raw_field_path_terms.append("funding_machine_field")
+    transition_funding_semantics = _transition_packet_funding_semantics(packet)
+    funding_semantic_conflict = bool(
+        transition_funding_semantics
+        and funding_text_conflicts(joined, transition_funding_semantics))
     invalid_refs = _collect_invalid_transition_refs(review)
     system_assertion_refs = sorted(
         ref for ref in invalid_refs if _is_transition_system_assertion_pointer(ref))
@@ -3065,6 +3167,8 @@ def _transition_policy_validation(review, packet):
         issue_codes.append("external_data_claim")
     if raw_field_path_terms:
         issue_codes.append("raw_field_path_leak")
+    if funding_semantic_conflict:
+        issue_codes.append("funding_semantic_conflict")
     if missing_core_domains:
         issue_codes.append("missing_core_domain_coverage")
     if direction_conflicts:
@@ -3102,6 +3206,7 @@ def _transition_policy_validation(review, packet):
         "causal_overclaim_terms": causal_overclaim_terms,
         "external_data_terms": external_data_terms,
         "raw_field_path_terms": raw_field_path_terms,
+        "funding_semantic_conflict": funding_semantic_conflict,
         "missing_core_domain_coverage": missing_core_domains,
         "issue_codes": issue_codes,
     }
@@ -3121,6 +3226,9 @@ def _transition_policy_validation(review, packet):
         or invalid_refs
         or missing_evidence_refs
         or missing_core_domains
+        or raw_enum_terms
+        or raw_field_path_terms
+        or funding_semantic_conflict
         or "incompatible_epistemic_state" in issue_codes
         or "partial_evidence_changes_judgment" in issue_codes
         or "sufficient_evidence_understated" in issue_codes
@@ -3472,6 +3580,30 @@ def _strip_transition_private_validation_fields(value):
             _strip_transition_private_validation_fields(item)
 
 
+def _packet_funding_semantics(packet):
+    factor = _as_dict(_as_dict(packet).get("factor_cross_section"))
+    funding = _as_dict(factor.get("funding"))
+    semantics = _as_dict(funding.get("canonical_funding_semantics"))
+    return semantics if validate_funding_semantics(semantics) else {}
+
+
+def _transition_packet_funding_semantics(packet):
+    core = _as_dict(_as_dict(packet).get("core_skeleton"))
+    for item in list(core.get("domains") or []):
+        item = _as_dict(item)
+        if str(item.get("domain") or "").upper() != "FUNDING":
+            continue
+        current = _as_dict(item.get("current"))
+        rate = _transition_number(
+            current.get("last_rate", current.get("last_funding_rate")))
+        return build_funding_semantics(
+            rate,
+            source="llm_transition_packet:funding_rate",
+            compat_backfill_applied=True,
+        )
+    return {}
+
+
 def _validate_model_payload(payload, packet=None):
     if not isinstance(payload, dict):
         raise ValueError("model output must be object")
@@ -3495,6 +3627,11 @@ def _validate_model_payload(payload, packet=None):
                 "operator_focus", "invalid_if"):
         if not isinstance(payload.get(key), list):
             raise ValueError(key + " must be list")
+    funding_semantics = _packet_funding_semantics(packet)
+    if funding_semantics and funding_text_conflicts(
+            json.dumps(payload, ensure_ascii=False), funding_semantics):
+        raise ValueError(
+            "LLM Funding wording conflicts with canonical_funding_semantics")
     return payload
 
 
@@ -4027,8 +4164,15 @@ def _policy_caution(caution, packet):
         floor = "MEDIUM"
     rank = _as_dict(_as_dict(_as_dict(packet.get("factor_cross_section")).get("gex_info")).get("rank"))
     metrics = _as_dict(rank.get("metrics"))
-    if any(str(_as_dict(metric).get("quality") or "").lower() == "warming_up"
-           for metric in metrics.values()):
+    window_days = _number_or_none(_as_dict(rank.get("window")).get("window_days"))
+    rank_is_warming = (
+        window_days is not None and window_days < 15.0
+    ) or (
+        window_days is None
+        and any(str(_as_dict(metric).get("quality") or "").lower() == "warming_up"
+                for metric in metrics.values())
+    )
+    if rank_is_warming:
         floor = "MEDIUM"
     return caution if order.get(caution, 0) >= order[floor] else floor
 

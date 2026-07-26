@@ -35,7 +35,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("RANK_LOOKBACK_DAYS", "GEXMONITOR_RANK_LOOKBACK_DAYS"),
     )
     user_agent: str = Field(
-        default="gexmonitorapi/0.2 (+https://gexmonitor.com public page metric monitor)",
+        default="gexmonitorapi/0.2.1 (+https://gexmonitor.com public page metric monitor)",
         validation_alias=AliasChoices("USER_AGENT", "GEXMONITOR_USER_AGENT"),
     )
     enable_background_refresh: bool = Field(

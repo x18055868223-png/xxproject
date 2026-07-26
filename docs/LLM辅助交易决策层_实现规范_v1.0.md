@@ -26,6 +26,9 @@
 14. **人机表达隔离**：枚举码和字段名只存在于 JSON 机器字段，人读中文不得回显机器码。`NEUTRAL_SINGLE_SIDE_REVIEW` 只能解释为中性单侧结构复核，不得在文案中扩展成双边或其他结构。
 15. **盲读冲突必须裁决**：第二阶段不得把第一次盲读的明确反向倾向静默改写为“与系统一致”。盲读与 producer 方向明确相反时，不得输出任一方向价差复核，必须显式标记分歧并收束为等待、不交易或无法判断；`source_alignment=ALIGNED` 只允许两者方向实际一致时使用。
 16. **完整结论与多语言防漏**：最终结论、跨回路理由、接管依据、结构适配依据、侧向依据、主要矛盾、关键前提、失效条件、下一观察和时区依据均须为非空人读文本。机器码和执行参数校验不区分大小写，并同时覆盖中英文及所有 advisory 嵌套枚举；任何空壳结论、具体价差腿位、英文 strike/expiry/entry/exit、仓位、杠杆或订单动作均失败封闭。服务器严格验收必须独立重验完整字段、嵌套枚举和人读防漏，不得仅信任 sidecar 自报的通过标志。
+17. **Funding 唯一语义**：producer-native `canonical_funding_semantics` 是资金费率方向倾向、拥挤、反身性和 EDB 参与状态的唯一事实。`|raw funding| <= 0.01%`（含等号）只能是温和多/空或中性、未拥挤、反身性影响可忽略、EDB 不计票；`funding_norm`、`effect` 和历史状态只作诊断，不得覆盖原始费率。历史卡只能确定性兼容回填并写入 `compat_backfill_applied=true`；缺原始费率必须 `UNABLE_TO_JUDGE`。
+18. **CVD 双边激活**：价格只能确认 CVD，不能替代 CVD。确认幅度取 CVD 强度与价格确认的弱边；CVD 自身与价格确认必须同时有效，未激活项保留原始审计事实但以 `vote=0/weight=0` 退出 EDB 与冲突计票。
+19. **GEX 十五日稳健阈值**：Rank 始终按最近30日滚动维护；`window_days < 15` 才为 `warming_up`，`window_days >= 15` 为 `quality=ok`。`ok` 表示统计已稳健可用，不伪装成30日完整覆盖；历史卡达到15日仍标 warming 时必须显式兼容回填。
 
 只要任一不变量无法成立，本层不得输出可用的结构复核建议。
 
@@ -38,10 +41,11 @@ LLM 不得使用外部行情或补造缺失数据。每条关键前提必须引�
 ## 4. 输出与版本
 
 - sidecar schema：`signal_llm_review@1.4.0`
-- prompt：`gemini_signal_review_prompt@1.4.4`
-- packet：`signal_llm_review_packet@1.1.0`
+- 核心 prompt：`gemini_signal_review_prompt@1.4.5`
+- bounded entrypoint 运行态 prompt：`gemini_signal_review_prompt@1.4.7`
+- packet：`signal_llm_review_packet@1.1.1`
 - 新字段：`llm_review.integrated_trade_advisory`
-- FMZ 信号本体：保持 `1.5.6`
+- FMZ 信号本体：本轮 producer 机械事实修复升级为 `1.5.7`
 - 信号卡 schema：保持 `nrd.schema.v1.0.0`
 
 审计前端在顶部六项指标之后、Gamma/GEX 之前显示完整 advisory 的中文读者版结论；materializer 负责原样透传新字段。服务器可通过显式严格开关验收新 sidecar，默认不破坏旧部署。

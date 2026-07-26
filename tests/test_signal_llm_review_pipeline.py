@@ -733,7 +733,7 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
         review = saved["transition_llm_review"]
         assert_true(review["schema_version"] == "signal_transition_llm_review@1.2.4",
                     "transition LLM schema version")
-        assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.4",
+        assert_true(review["prompt_version"] == "gemini_signal_transition_review_prompt@1.2.5",
                     "transition prompt version")
         assert_true(tool.build_gemini_request("x")["generationConfig"]["temperature"] == 0,
                     "card-level review should use deterministic temperature")
@@ -1056,10 +1056,10 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
-        assert_true(raw_path_review["policy_validation"]["passed"] is True
+        assert_true(raw_path_review["policy_validation"]["passed"] is False
                     and "raw_field_path_leak" in raw_path_review["policy_validation"]["issue_codes"]
-                    and raw_path_review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
-                    "raw field/path leakage should be recorded but not gate transition LLM display")
+                    and raw_path_review["policy_validation"]["render_state"] == "DEGRADED_LLM_TEXT",
+                    "raw field/path leakage must fall back to deterministic transition text")
 
         external_payload = transition_model_payload()
         external_payload["candidate_explanations"][0]["explanation_cn"] = (
@@ -1180,8 +1180,11 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
         assert_true("e-05" not in funding_text and "0.0071%" in funding_text,
                     "Funding human text should use display percent values, not scientific notation: "
                     + funding_text)
-        assert_true("拥挤升温" not in funding_text and "温和多头倾向" in funding_text,
-                    "Funding below threshold should stay mild-long, not crowding escalation: "
+        assert_true("温和多头费率倾向" in funding_text
+                    and "未超过 ±0.0100% 拥挤阈值" in funding_text
+                    and "反身性影响可忽略" in funding_text
+                    and "EDB 不计票" in funding_text,
+                    "Funding below threshold should reuse the complete canonical semantics: "
                     + funding_text)
         assert_true("scientific_notation_in_human_text" in funding_units_review["policy_validation"]["issue_codes"]
                     and "numeric_display_mismatch" in funding_units_review["policy_validation"]["issue_codes"],
@@ -1329,15 +1332,17 @@ def test_transition_llm_mode_uses_program_delta_only_and_writes_sidecar():
 
         bad_payload = transition_model_payload()
         bad_payload["language_guard"]["no_external_data"] = False
+        fresh_transition = transition_record()
         bad_guard_review = tool.build_transition_llm_review(
-            transition,
+            fresh_transition,
             bad_payload,
             model="gemini-3.5-flash",
             reviewed_at="2026-06-19T00:00:00+00:00",
         )
         assert_true(bad_guard_review["policy_validation"]["passed"] is True
                     and bad_guard_review["policy_validation"]["render_state"] == "DISPLAY_LLM_TEXT",
-                    "language guard self-report should not gate transition LLM display")
+                    "language guard self-report should not gate transition LLM display: "
+                    + str(bad_guard_review["policy_validation"]))
 
         result2 = tool.generate_transition_reviews(
             ledger,
@@ -1569,8 +1574,8 @@ def test_gemini_packet_prompt_and_sidecar_generation():
         review = saved["llm_review"]
         assert_true(review["schema"] == "signal_llm_review@1.4.0",
                     "successful sidecar should use signal LLM schema 1.4.0")
-        assert_true(review["prompt_version"] == "gemini_signal_review_prompt@1.4.4",
-                    "successful sidecar should use signal LLM prompt 1.4.4")
+        assert_true(review["prompt_version"] == "gemini_signal_review_prompt@1.4.5",
+                    "successful core sidecar should use signal LLM prompt 1.4.5")
         assert_true(review["provider"] == "gemini", "provider should be gemini")
         assert_true(review["blind_review_mode"] == "two_call_strict",
                     "review should record strict two-call blind mode")

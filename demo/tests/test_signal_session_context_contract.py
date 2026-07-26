@@ -29,7 +29,7 @@ def ms_utc8(year, month, day, hour, minute):
 def main():
     mod = load_signal_module()
     config = dict(mod.CONFIG)
-    assert_true(config["demo_version"] == "1.5.6",
+    assert_true(config["demo_version"] == "1.5.7",
                 "FMZ signal deliverable version should match current signal contract")
 
     london = mod.classify_signal_session_context(

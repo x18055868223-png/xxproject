@@ -15,7 +15,17 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
+
+_TOOLS_DIR = str(Path(__file__).resolve().parent)
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+from signal_fact_semantics import (  # noqa: E402
+    build_funding_semantics,
+    ensure_card_fact_semantics,
+    validate_funding_semantics,
+)
 
 
 DEFAULT_FMZ_JSONL = "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl"
@@ -575,6 +585,12 @@ def materialize(source, output, max_cards=200, llm_reviews=None,
         records = records[:max_cards]
 
     for record in records:
+        canonical = ensure_card_fact_semantics(
+            record,
+            compat_source="materializer:legacy_card_funding_semantics_v1",
+        )
+        record.clear()
+        record.update(canonical)
         _backfill_session_context(record)
         _backfill_signal_durability(record)
         _enrich_auxiliary_evidence(record)
@@ -778,6 +794,33 @@ def _transition_record(previous, current, history, previous_transition_hash):
     current_card_id = curr_identity.get("card_id") or current.get("card_id")
     previous_ts_ms = _event_time_ms(previous)
     current_ts_ms = _event_time_ms(current)
+    previous_event_type = prev_identity.get("event_type")
+    current_event_type = curr_identity.get("event_type")
+    previous_tags = list(prev_identity.get("tags") or [])
+    current_tags = list(curr_identity.get("tags") or [])
+    current_round = _dict(current.get("analysis_round"))
+    fixed_time_snapshot = (
+        current_event_type == "FIXED_ANALYSIS_ROUND"
+        or "FIXED_ROUND_ANALYSIS" in current_tags
+        or bool(current_round)
+    )
+    event_context = {
+        "transition_nature": (
+            "FIXED_TIME_SNAPSHOT_DIFF"
+            if fixed_time_snapshot else "SIGNAL_EVENT_TRANSITION"
+        ),
+        "fixed_time_snapshot_diff": bool(fixed_time_snapshot),
+        "previous": {
+            "event_type": previous_event_type,
+            "tags": previous_tags,
+            "analysis_round": _dict(previous.get("analysis_round")),
+        },
+        "current": {
+            "event_type": current_event_type,
+            "tags": current_tags,
+            "analysis_round": current_round,
+        },
+    }
     previous_anchor = _producer_anchor(previous)
     current_anchor = _producer_anchor(current)
     compat_anchor = (
@@ -814,6 +857,11 @@ def _transition_record(previous, current, history, previous_transition_hash):
         "previous_ts_ms": previous_ts_ms,
         "current_ts_ms": current_ts_ms,
         "elapsed_ms": elapsed_ms,
+        "previous_event_type": previous_event_type,
+        "current_event_type": current_event_type,
+        "previous_tags": previous_tags,
+        "current_tags": current_tags,
+        "event_context": event_context,
         "comparison_quality": comparison_quality,
         "producer_anchor": {
             "previous": previous_anchor,
@@ -1113,17 +1161,11 @@ def _display_meaning_cn(domain, key, previous, current):
     if domain == "MACRO":
         return "宏观逆风压力上升，更多是风险背景约束。" if rising else "宏观逆风压力回落或维持。"
     if domain == "FUNDING":
-        if prev_num is not None and curr_num is not None and prev_num > 0 > curr_num:
-            return "资金费率由轻微正值转为轻微负值，说明永续端多头付费压力消失，方向意义偏弱。"
-        if prev_num is not None and curr_num is not None and prev_num < 0 < curr_num:
-            return "资金费率由负转正，提示永续端多头付费重新出现，需结合 TMV 与宏观判断。"
-        if curr_num is not None and abs(curr_num) <= 0.0001:
-            if curr_num > 0:
-                return "资金费率不高于 0.01% 基准阈值，当前为温和多头倾向。"
-            if curr_num < 0:
-                return "资金费率不高于 0.01% 基准阈值，当前为温和空头倾向。"
-            return "资金费率位于基准附近，未显示拥挤。"
-        return "资金费率上行，提示拥挤升温。" if rising else "资金费率回落，提示拥挤缓和。"
+        return build_funding_semantics(
+            curr_num,
+            source="materializer:transition_core_funding_rate",
+            compat_backfill_applied=True,
+        )["canonical_text_cn"]
     if domain == "SKEW":
         return "期权偏斜压力加深，保护需求或下行尾部定价更重。" if falling else "期权偏斜压力缓和。"
     if domain == "GAMMA":
@@ -2327,6 +2369,12 @@ def _enrich_auxiliary_evidence_row(row, cross):
     key = str(row.get("key") or "").upper()
     detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
     factor = _factor_for_evidence(key, cross)
+    if key == "FUNDING":
+        semantics = _dict(factor.get("canonical_funding_semantics"))
+        if validate_funding_semantics(semantics):
+            row["canonical_funding_semantics"] = semantics
+            detail["canonical_funding_semantics"] = semantics
+            row["detail"] = detail
     raw_values = _auxiliary_raw_values(key, detail, factor)
     if raw_values:
         existing = row.get("raw_values")
@@ -2387,7 +2435,7 @@ def _list(value):
 
 def _auxiliary_role(key):
     return {
-        "FUNDING": "FUTURES_FUNDING_CROWDING",
+        "FUNDING": "FUTURES_FUNDING_SEMANTICS",
         "SRD": "OPTION_SKEW_DIRECTION",
         "GGR_SPATIAL": "OPTION_GAMMA_STRUCTURE",
         "TMV": "DIRECTION_OWNER",
@@ -2404,7 +2452,8 @@ def _auxiliary_raw_values(key, detail, factor):
             "last_rate", "last_funding_rate", "funding_norm", "funding_cum",
             "funding_count", "funding_state", "effect", "tmvf_funding_effect",
             "verdict", "hard_warning", "history_points", "rate_unit",
-            "observed_at", "age_ms", "source_ref"),
+            "observed_at", "age_ms", "source_ref",
+            "canonical_funding_semantics", "canonical_text_cn"),
         "SRD": (
             "vote", "rr_blend", "rr_25d", "delta_rr", "rr_z",
             "skew_norm_blend", "skew_slope", "term_slope", "vote_confidence",
@@ -2458,9 +2507,16 @@ def _auxiliary_raw_values(key, detail, factor):
 
 def _auxiliary_lean(key, row, detail, factor):
     if key == "FUNDING":
-        rate = _first_number(detail, factor,
-                             fields=("last_rate", "last_funding_rate",
-                                     "funding_norm"))
+        semantics = _dict(
+            detail.get("canonical_funding_semantics")
+            or factor.get("canonical_funding_semantics"))
+        if validate_funding_semantics(semantics):
+            if semantics.get("edb_vote_allowed") is not True:
+                return "NEUTRAL"
+            rate = _number(semantics.get("raw_funding_rate"))
+            return _signed_lean(-rate if rate is not None else None)
+        rate = _first_number(
+            detail, factor, fields=("last_rate", "last_funding_rate"))
         return _signed_lean(-rate if rate is not None else None)
     if key == "SRD":
         return _signed_lean(_first_number(row, detail, factor, fields=("vote",)))

@@ -23,7 +23,7 @@ import gemini_signal_llm_review as core
 
 
 ENTRY_VERSION = "gemini_signal_review_entry@1.0.1"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.4.6"
+PROMPT_VERSION = "gemini_signal_review_prompt@1.4.7"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
 

@@ -97,6 +97,11 @@ function renderCard(card) {
     const evidence = Array.isArray(card.reasoning && card.reasoning.evidence)
       ? card.reasoning.evidence
       : [];
+    const fundingItemHtml = html.split('<article class="evidence-item')
+      .find((part) => part.includes('<strong class="evidence-key">FUNDING</strong>')) || "";
+    const cvdItemHtml = html.split('<article class="evidence-item')
+      .filter((part) => /<strong class="evidence-key">CVD_(4h|12h)<\/strong>/.test(part))
+      .map((part) => part.split("</article>")[0]).join("");
     const hasLlmReview = !!(card.llm_review && Object.keys(card.llm_review).length);
     const sourceRefs = evidence.map((entry) => entry.source_ref).filter(Boolean);
     rows.push({
@@ -116,8 +121,22 @@ function renderCard(card) {
       completeEvidenceLedger: text.includes("完整证据账本"),
       factorCrossSection: text.includes("因子原始截面"),
       rawTraceJump: text.includes("原始截面跳转"),
-      fundingRateSide: html.includes("费率端倾向"),
-      reflexiveFunding: html.includes("反身性辅助倾向"),
+      fundingSemanticContract: html.includes("费率规范语义"),
+      legacyFundingRecompute: html.includes("反身性辅助倾向"),
+      fundingHumanMachineCodeLeak:
+        /NOT_CROWDED|NOISE|NON_VOTING|FUNDING_RAW_|TEMPERATE_(LONG|SHORT)_FUNDING/.test(
+          fundingItemHtml.split("</article>")[0]),
+      fundingHumanMachineCodes:
+        fundingItemHtml.split("</article>")[0].match(
+          /NOT_CROWDED|NOISE|NON_VOTING|FUNDING_RAW_|TEMPERATE_(LONG|SHORT)_FUNDING/g) || [],
+      fundingMachineContexts:
+        [...fundingItemHtml.split("</article>")[0].matchAll(
+          /NOT_CROWDED|NOISE|NON_VOTING|FUNDING_RAW_|TEMPERATE_(LONG|SHORT)_FUNDING/g)]
+          .map((match) => fundingItemHtml.slice(
+            Math.max(0, match.index - 60), match.index + 100)),
+      cvdHumanMachineCodeLeak:
+        /BUY_CONFIRMS_UP|SELL_CONFIRMS_DOWN|BUY_ABSORBED_BEARISH|SELL_ABSORBED_BULLISH|FLOW_CONFIRM_COMPONENT|CVD_DATA_NOT_READY|CVD_HISTORY_WARMING/.test(
+          cvdItemHtml),
       macroRawScore: html.includes("宏观背景") && html.includes("分数"),
       sourceRefLinks: (html.match(/class="source-ref-link/g) || []).length,
       rawTraceNav: html.includes("raw-trace-nav"),
@@ -1251,8 +1270,15 @@ def main():
         assert_true(row["completeEvidenceLedger"], row["card_id"] + " should keep the complete evidence ledger visible")
         assert_true(row["factorCrossSection"], row["card_id"] + " should keep factor raw cross-section visible")
         assert_true(row["rawTraceJump"], row["card_id"] + " should keep raw trace jump navigation visible")
-        assert_true(row["fundingRateSide"], row["card_id"] + " should show fee-side funding tendency")
-        assert_true(row["reflexiveFunding"], row["card_id"] + " should show reflexive funding tendency")
+        assert_true(row["fundingSemanticContract"],
+                    row["card_id"] + " should show the canonical funding semantic contract")
+        assert_true(not row["legacyFundingRecompute"],
+                    row["card_id"] + " should not recompute funding reflexivity in the frontend")
+        assert_true(not row["fundingHumanMachineCodeLeak"],
+                    row["card_id"] + " should localize funding machine codes in the human evidence card: "
+                    + str(row["fundingMachineContexts"]))
+        assert_true(not row["cvdHumanMachineCodeLeak"],
+                    row["card_id"] + " should localize CVD machine codes in human evidence cards")
         assert_true(row["macroRawScore"], row["card_id"] + " should show raw macro score")
         assert_true(row["macroDirectionBackground"],
                     row["card_id"] + " should show MACRO direction background")

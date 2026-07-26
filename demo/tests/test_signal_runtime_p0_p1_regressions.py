@@ -761,8 +761,8 @@ def test_jsonl_recorder_short_write_failure_returns_false_and_runtime_retries(mo
             == "EP-SHORT-RETRY",
             "retry should append the original pending audit record")
         assert_equal(
-            records[-1].get("identity", {}).get("strategy_version"), "1.5.6",
-            "retry must preserve the 1.5.6 producer version")
+            records[-1].get("identity", {}).get("strategy_version"), "1.5.7",
+            "retry must preserve the 1.5.7 producer version")
 
 
 def test_read_only_audit_record_blocks_execution_but_keeps_model_support(mod):

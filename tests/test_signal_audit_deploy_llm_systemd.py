@@ -36,6 +36,7 @@ def integrated_advisory_review(status="OK",
     return {
         "schema": schema,
         "status": status,
+        "prompt_version": "gemini_signal_review_prompt@1.4.7",
         "integrated_trade_advisory": {
             "recommendation": recommendation,
             "final_conclusion_cn": "当前结论仅进入结构复核。",
@@ -111,7 +112,10 @@ def run_integrated_advisory_probe(self_check, review_records,
             }],
         }), encoding="utf-8")
         return subprocess.run(
-            [sys.executable, "-c", code, str(source), str(reviews), str(audit_root)],
+            [
+                sys.executable, "-c", code, str(source), str(reviews),
+                str(audit_root), "gemini_signal_review_prompt@1.4.7",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -333,8 +337,11 @@ def main():
                 "T0/T1 must reuse existing services, not add signal-transition units")
     assert_true("signal-audit-llm-review.service" in package
                 and "signal-audit-llm-review.timer" in package
-                and "signal-audit-llm.env.example" in package,
+                and "signal-audit-llm.env.example" in package
+                and "signal_fact_semantics.py" in package,
                 "package script should include LLM systemd assets")
+    assert_true("signal_fact_semantics.py" in install,
+                "install script should deploy deterministic fact semantics")
     assert_true("GEX_REQUIRED" in self_check
                 and "skipped gexmonitorapi.service check" in self_check
                 and "skipped GEX Monitor API active checks" in self_check,
@@ -358,9 +365,15 @@ def main():
                 and "authorization_is_not_structure_gate" in self_check
                 and "materialized_advisory_passthrough" in self_check,
                 "self-check should optionally enforce strict integrated trade advisory schema")
-    assert_true('EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.6}"'
+    assert_true('EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.7}"'
                 in self_check,
                 "self-check should default to the current FMZ producer version")
+    assert_true(
+        'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-gemini_signal_review_prompt@1.4.7}"'
+        in self_check
+        and "prompt version does not match bounded entrypoint" in self_check,
+        "self-check should require the current bounded runtime prompt",
+    )
     assert_integrated_advisory_probe_behavior(self_check)
 
     print("signal_audit_deploy_llm_systemd: PASS")

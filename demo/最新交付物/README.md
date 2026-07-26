@@ -8,7 +8,9 @@
 
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.6` | 当前信号层交付物；修复实时轮询中的陈旧输入复用、成交积压时间错配、软因子长阻塞和信号审计交付丢失，同时保留 NeutralRepair、Funding/GEX 既有语义 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.5.7` | 当前信号层交付物；统一 Funding/CVD/GEX 机械语义，并在北京时间 23:00 生成带“固定轮次分析”标签的只读截面审计卡 | 只读观察，不选腿、不报价、不下单 |
+
+固定轮次只绕过 Anchor+DIE 的发卡触发条件，不伪造 `NR_REPAIR_CONFIRMED`，不改写 producer 的 direction、confidence、blocking、trade_allowed 或 execution_allowed。卡片继续写入同一 JSONL，并复用常规 Gemini 两阶段复核链。
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 ## 执行层说明
