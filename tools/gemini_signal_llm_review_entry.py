@@ -2,16 +2,19 @@
 """Runtime entrypoint for Gemini signal reviews.
 
 The core reviewer remains the source of all schema, policy, and fail-closed
-validation. This entrypoint applies only two bounded repairs before the core
+validation. This entrypoint applies only three bounded repairs before the core
 validator runs:
 
 1. mechanically impossible ``source_alignment`` enum combinations;
 2. explicitly prohibitive execution-language phrases such as "不构成开仓依据"
    that contain blocked action words but do not provide an execution instruction.
+3. valid recommendations that conflict with a producer hard block, but only
+   after the advisory human text is already free of execution-language patterns.
 
-Positive or ambiguous execution language, recommendation conflicts, hard blocks,
+Positive or ambiguous execution language, invalid recommendation enums,
 waiting-state upgrades, invalid evidence, authorization, and all remaining
-policy checks stay fail-closed in the core reviewer.
+policy checks stay fail-closed in the core reviewer. The hard-block repair only
+narrows a recognized recommendation to the producer's deterministic safe boundary.
 """
 
 import copy
@@ -22,10 +25,11 @@ import sys
 import gemini_signal_llm_review as core
 
 
-ENTRY_VERSION = "gemini_signal_review_entry@1.0.1"
+ENTRY_VERSION = "gemini_signal_review_entry@1.0.2"
 PROMPT_VERSION = "gemini_signal_review_prompt@1.4.7"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
+_HARD_BLOCK_SAFE_RECOMMENDATIONS = {"NO_TRADE", "UNABLE_TO_JUDGE"}
 
 _ORIGINAL_BUILD_PROMPT = core.build_prompt
 _ORIGINAL_BUILD_LLM_REVIEW = core.build_llm_review
@@ -271,6 +275,113 @@ def _repair_prohibitive_execution_language(payload):
     }
 
 
+_HARD_BLOCK_TEXT = {
+    "final_conclusion_cn": "生产端硬性阻断仍然有效，本轮仅能保留为不交易观察结论。",
+    "cross_loop_rationale_cn": (
+        "跨回路证据必须先服从生产端阻断，结构适配或等待观察都不能覆盖该边界。"
+    ),
+    "side_basis_cn": "方向侧判断在阻断解除前只作为审计背景，不形成交易侧复核。",
+    "dominant_conflict_cn": (
+        "主导冲突是生产端阻断仍未解除，其他结构条件不能越过该边界。"
+    ),
+    "next_observation_cn": (
+        "下一步只观察阻断来源是否解除，以及关键证据是否重新形成一致。"
+    ),
+}
+_HARD_BLOCK_INVALID_IF = [
+    "生产端阻断解除且新证据重新生成后，需要重新评估本轮审计结论。",
+]
+_HARD_BLOCK_CONTAINMENT_BASIS = (
+    "中性接管状态按原始评估保留；但生产端阻断优先，当前只用于风险封存说明。"
+)
+_HARD_BLOCK_PREMIUM_BASIS = (
+    "权利金结构适配度按原始评估保留；但生产端阻断优先，不能推进结构复核。"
+)
+
+
+def _advisory_execution_terms(advisory):
+    text = core._integrated_advisory_human_text(advisory)
+    return sorted(
+        label for label, pattern in core.ADVISORY_EXECUTION_TEXT_PATTERNS
+        if pattern.search(text)
+    )
+
+
+def _hard_block_shape_is_valid_enough_to_repair(advisory):
+    if not isinstance(advisory, dict):
+        return False
+    for field_name in _HARD_BLOCK_TEXT:
+        if not isinstance(advisory.get(field_name), str) or not advisory[field_name].strip():
+            return False
+    invalid_if = advisory.get("invalid_if")
+    if not isinstance(invalid_if, list) or not (1 <= len(invalid_if) <= 3):
+        return False
+    if any(not isinstance(item, str) or not item.strip() for item in invalid_if):
+        return False
+    containment = core._as_dict(advisory.get("containment_assessment"))
+    premium_fit = core._as_dict(advisory.get("premium_selling_fit"))
+    if set(containment) != {"state", "basis_cn"}:
+        return False
+    if set(premium_fit) != {"state", "basis_cn"}:
+        return False
+    if not isinstance(containment.get("basis_cn"), str) or not containment["basis_cn"].strip():
+        return False
+    if not isinstance(premium_fit.get("basis_cn"), str) or not premium_fit["basis_cn"].strip():
+        return False
+    return True
+
+
+def _repair_hard_block_recommendation(payload, packet):
+    """Force only valid non-safe recommendations to NO_TRADE under hard block."""
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    claimed = str(advisory.get("recommendation") or "").upper()
+    final = claimed
+    reason = "NONE"
+    execution_terms = []
+
+    if not core._packet_has_producer_hard_block(packet):
+        reason = "NO_PRODUCER_HARD_BLOCK"
+    elif claimed not in core.ADVISORY_RECOMMENDATIONS:
+        reason = "INVALID_RECOMMENDATION_FAIL_CLOSED"
+    elif claimed in _HARD_BLOCK_SAFE_RECOMMENDATIONS:
+        reason = "ALREADY_HARD_BLOCK_COMPATIBLE"
+    else:
+        execution_terms = _advisory_execution_terms(advisory)
+        if execution_terms:
+            reason = "ORIGINAL_EXECUTION_LANGUAGE_REMAINS_FAIL_CLOSED"
+        elif not _hard_block_shape_is_valid_enough_to_repair(advisory):
+            reason = "ADVISORY_SHAPE_INCOMPLETE_FAIL_CLOSED"
+        else:
+            advisory = copy.deepcopy(advisory)
+            advisory["recommendation"] = "NO_TRADE"
+            for field_name, text in _HARD_BLOCK_TEXT.items():
+                advisory[field_name] = text
+            advisory["invalid_if"] = list(_HARD_BLOCK_INVALID_IF)
+
+            containment = dict(core._as_dict(advisory.get("containment_assessment")))
+            containment["basis_cn"] = _HARD_BLOCK_CONTAINMENT_BASIS
+            advisory["containment_assessment"] = containment
+
+            premium_fit = dict(core._as_dict(advisory.get("premium_selling_fit")))
+            premium_fit["basis_cn"] = _HARD_BLOCK_PREMIUM_BASIS
+            advisory["premium_selling_fit"] = premium_fit
+
+            repaired_payload["integrated_trade_advisory"] = advisory
+            final = "NO_TRADE"
+            reason = "PRODUCER_HARD_BLOCK_FORCES_NO_TRADE"
+
+    trace = {
+        "entry_version": ENTRY_VERSION,
+        "repair_applied": final != claimed,
+        "repair_reason": reason,
+        "claimed": claimed,
+        "final": final,
+        "execution_language_terms": execution_terms,
+    }
+    return repaired_payload, trace
+
+
 def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                      derived_blind=True, llm_call_count=2,
                      llm_call_routes=None):
@@ -279,6 +390,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     repaired_payload, alignment_trace = _repair_source_alignment(payload, packet)
     repaired_payload, execution_trace = _repair_prohibitive_execution_language(
         repaired_payload
+    )
+    repaired_payload, hard_block_trace = _repair_hard_block_recommendation(
+        repaired_payload, packet
     )
     review = _ORIGINAL_BUILD_LLM_REVIEW(
         card,
@@ -310,6 +424,17 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         "prohibitive_execution_language_repair_fields": execution_trace[
             "repair_fields"
         ],
+        "hard_block_recommendation_repair_applied": hard_block_trace[
+            "repair_applied"
+        ],
+        "hard_block_recommendation_repair_reason": hard_block_trace[
+            "repair_reason"
+        ],
+        "hard_block_recommendation_claimed": hard_block_trace["claimed"],
+        "hard_block_recommendation_final": hard_block_trace["final"],
+        "hard_block_recommendation_entry_version": hard_block_trace[
+            "entry_version"
+        ],
         "alignment_entry_version": ENTRY_VERSION,
     })
     review["integrated_trade_advisory"]["policy_validation"] = policy
@@ -330,6 +455,18 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                     "event": "PROHIBITIVE_EXECUTION_LANGUAGE_REPAIRED",
                     "entry_version": ENTRY_VERSION,
                     **execution_trace,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if hard_block_trace["repair_applied"]:
+        print(
+            json.dumps(
+                {
+                    "event": "PRODUCER_HARD_BLOCK_RECOMMENDATION_REPAIRED",
+                    **hard_block_trace,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

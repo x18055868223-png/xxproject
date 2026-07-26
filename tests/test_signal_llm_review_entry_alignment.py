@@ -125,6 +125,118 @@ def main():
         "alignment repair must not legalize a directionally opposed spread",
     )
 
+    blocked_card = fixture.blocker_review_context_card()
+    for recommendation in (
+        "WAIT_FOR_CONFIRMATION",
+        "SELL_PUT_SPREAD_REVIEW",
+    ):
+        blocked_payload = fixture.model_payload()
+        blocked_payload["integrated_trade_advisory"] = (
+            fixture.integrated_trade_advisory(recommendation)
+        )
+        original_containment_state = blocked_payload[
+            "integrated_trade_advisory"
+        ]["containment_assessment"]["state"]
+        original_premium_state = blocked_payload[
+            "integrated_trade_advisory"
+        ]["premium_selling_fit"]["state"]
+        blocked_review = entry.build_llm_review(blocked_card, blocked_payload)
+        blocked_advisory = blocked_review["integrated_trade_advisory"]
+        blocked_policy = blocked_advisory["policy_validation"]
+        assert_true(
+            blocked_review["status"] == "OK"
+            and blocked_advisory["recommendation"] == "NO_TRADE",
+            "producer hard block should contain " + recommendation,
+        )
+        assert_true(
+            blocked_policy["hard_block_recommendation_repair_applied"] is True
+            and blocked_policy["hard_block_recommendation_repair_reason"]
+            == "PRODUCER_HARD_BLOCK_FORCES_NO_TRADE"
+            and blocked_policy["hard_block_recommendation_claimed"]
+            == recommendation
+            and blocked_policy["hard_block_recommendation_final"] == "NO_TRADE"
+            and blocked_policy["hard_block_recommendation_entry_version"]
+            == "gemini_signal_review_entry@1.0.2",
+            "hard-block containment should preserve a complete repair trace",
+        )
+        assert_true(
+            "硬性阻断" in blocked_advisory["final_conclusion_cn"]
+            and "不形成交易侧复核" in blocked_advisory["side_basis_cn"]
+            and "原始评估保留"
+            in blocked_advisory["containment_assessment"]["basis_cn"]
+            and "原始评估保留"
+            in blocked_advisory["premium_selling_fit"]["basis_cn"],
+            "machine and human-readable hard-block conclusions must agree",
+        )
+        assert_true(
+            blocked_advisory["containment_assessment"]["state"]
+            == original_containment_state
+            and blocked_advisory["premium_selling_fit"]["state"]
+            == original_premium_state,
+            "hard-block containment must preserve mechanical assessment states",
+        )
+
+    runtime_payload = fixture.model_payload()
+    runtime_payload["integrated_trade_advisory"] = (
+        fixture.integrated_trade_advisory("WAIT_FOR_CONFIRMATION")
+    )
+    runtime_result, runtime_saved, runtime_calls = fixture.generate_single_review(
+        entry.core, blocked_card, runtime_payload
+    )
+    runtime_review = runtime_saved["llm_review"]
+    assert_true(
+        len(runtime_calls) == 2
+        and runtime_result["written_reviews"] == 1
+        and runtime_result["errors"] == 0
+        and runtime_review["status"] == "OK"
+        and runtime_review["integrated_trade_advisory"]["recommendation"]
+        == "NO_TRADE",
+        "runtime generate_reviews path should write an OK contained sidecar",
+    )
+
+    already_safe_payload = fixture.model_payload()
+    already_safe_payload["integrated_trade_advisory"] = (
+        fixture.integrated_trade_advisory("NO_TRADE")
+    )
+    already_safe_review = entry.build_llm_review(
+        blocked_card, already_safe_payload
+    )
+    already_safe_policy = already_safe_review[
+        "integrated_trade_advisory"
+    ]["policy_validation"]
+    assert_true(
+        already_safe_policy["hard_block_recommendation_repair_applied"] is False
+        and already_safe_policy["hard_block_recommendation_repair_reason"]
+        == "ALREADY_HARD_BLOCK_COMPATIBLE",
+        "already-safe hard-block recommendation should remain unchanged",
+    )
+
+    blocked_invalid_payload = fixture.model_payload()
+    blocked_invalid_payload["integrated_trade_advisory"] = (
+        fixture.integrated_trade_advisory("WAIT_FOR_CONFIRMATION")
+    )
+    blocked_invalid_payload["integrated_trade_advisory"]["recommendation"] = (
+        "NOT_A_REAL_RECOMMENDATION"
+    )
+    expect_value_error(
+        lambda: entry.build_llm_review(blocked_card, blocked_invalid_payload),
+        "invalid integrated_trade_advisory.recommendation",
+        "hard-block containment must not legalize an invalid enum",
+    )
+
+    blocked_execution_payload = fixture.model_payload()
+    blocked_execution_payload["integrated_trade_advisory"] = (
+        fixture.integrated_trade_advisory("WAIT_FOR_CONFIRMATION")
+    )
+    blocked_execution_payload["integrated_trade_advisory"][
+        "final_conclusion_cn"
+    ] = "建议开仓并继续观察。"
+    expect_value_error(
+        lambda: entry.build_llm_review(blocked_card, blocked_execution_payload),
+        "integrated_trade_advisory contains execution parameters",
+        "hard-block containment must not legalize positive execution language",
+    )
+
     invalid_card = fixture.review_context_card("CARD-ENTRY-INVALID-ENUM")
     invalid_payload = fixture.model_payload()
     invalid_payload["integrated_trade_advisory"] = fixture.integrated_trade_advisory(
