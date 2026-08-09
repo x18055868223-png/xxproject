@@ -23,7 +23,7 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.1",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.2",
                 "entry version mismatch")
     assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.3",
                 "entry prompt mismatch")
@@ -73,6 +73,46 @@ def main():
                 and repaired_advisory["key_premises"][0]["premise_cn"] == "无"
                 and repaired_advisory["invalid_if"] == ["无"],
                 "human fields retained raw NONE")
+    level_payload = {
+        "integrated_trade_advisory": {
+            "recommendation": "NO_TRADE",
+            "future_24h_bayesian_report": {
+                "key_levels": [{
+                    "price": 101500,
+                    "role_cn": "卡内现价",
+                    "source_type": "PACKET_OBSERVED",
+                    "basis_cn": "来自卡内现价",
+                }, {
+                    "price": 104800,
+                    "role_cn": "上方观察位",
+                    "source_type": "PACKET_OBSERVED",
+                    "basis_cn": "根据结构距离推导",
+                }],
+            },
+        },
+    }
+    level_repaired, level_trace = entry._repair_misclassified_observed_levels(
+        level_payload,
+        {"market_context": {"price": 101500}},
+    )
+    levels = level_repaired["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]["key_levels"]
+    assert_true(level_trace == {
+        "repair_applied": True,
+        "repair_count": 1,
+        "repair_indexes": [1],
+    }, "misclassified key-level repair trace mismatch")
+    assert_true(levels[0]["source_type"] == "PACKET_OBSERVED"
+                and levels[0]["basis_cn"] == "来自卡内现价",
+                "matched packet-observed level was modified")
+    assert_true(levels[1]["price"] == 104800
+                and levels[1]["source_type"] == "MODEL_ESTIMATED"
+                and levels[1]["basis_cn"].startswith("模型估算观察位："),
+                "unmatched observed level was not safely downgraded")
+    assert_true(level_repaired["integrated_trade_advisory"]["recommendation"]
+                == "NO_TRADE",
+                "key-level repair changed the recommendation")
     help_result = subprocess.run(
         [sys.executable, str(TOOLS / "signal_llm_review_entry.py"), "--help"],
         cwd=ROOT, text=True, capture_output=True, check=False)

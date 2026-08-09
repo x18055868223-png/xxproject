@@ -25,7 +25,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.1"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.2"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -364,6 +364,63 @@ def _repair_none_human_code(payload):
     }
 
 
+def _repair_misclassified_observed_levels(payload, packet):
+    """Downgrade unmatched observed levels to explicitly model-estimated levels."""
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    report = core._as_dict(advisory.get("future_24h_bayesian_report"))
+    levels = report.get("key_levels")
+    if not isinstance(levels, list):
+        return repaired_payload, {
+            "repair_applied": False,
+            "repair_count": 0,
+            "repair_indexes": [],
+        }
+
+    packet_values = core._packet_numeric_values(packet or {})
+    repaired_levels = []
+    repaired_indexes = []
+    for index, raw_item in enumerate(levels):
+        item = dict(core._as_dict(raw_item))
+        price = core._number_or_none(item.get("price"))
+        matched = (
+            price is not None
+            and any(
+                abs(price - observed) <= max(1e-9, abs(observed) * 1e-12)
+                for observed in packet_values
+            )
+        )
+        if item.get("source_type") == "PACKET_OBSERVED" and not matched:
+            item["source_type"] = "MODEL_ESTIMATED"
+            basis = str(item.get("basis_cn") or "").strip()
+            if "模型估算观察位" not in basis:
+                item["basis_cn"] = (
+                    "模型估算观察位：" + basis
+                    if basis
+                    else "模型估算观察位：该点位未在输入卡中逐值出现。"
+                )
+            repaired_indexes.append(index)
+        repaired_levels.append(item)
+
+    if not repaired_indexes:
+        return repaired_payload, {
+            "repair_applied": False,
+            "repair_count": 0,
+            "repair_indexes": [],
+        }
+
+    report = dict(report)
+    report["key_levels"] = repaired_levels
+    advisory = dict(advisory)
+    advisory["future_24h_bayesian_report"] = report
+    repaired_payload["integrated_trade_advisory"] = advisory
+    return repaired_payload, {
+        "repair_applied": True,
+        "repair_count": len(repaired_indexes),
+        "repair_indexes": repaired_indexes,
+    }
+
+
 _HARD_BLOCK_TEXT = {
     "final_conclusion_cn": "生产端硬性阻断仍然有效，本轮仅能保留为不交易观察结论。",
     "cross_loop_rationale_cn": (
@@ -483,6 +540,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     repaired_payload, hard_block_trace = _repair_hard_block_recommendation(
         repaired_payload, packet
     )
+    repaired_payload, key_level_trace = _repair_misclassified_observed_levels(
+        repaired_payload, packet
+    )
     repaired_payload, none_human_trace = _repair_none_human_code(repaired_payload)
     review = _ORIGINAL_BUILD_LLM_REVIEW(
         card,
@@ -528,6 +588,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         "none_human_code_repair_applied": none_human_trace["repair_applied"],
         "none_human_code_repair_count": none_human_trace["repair_count"],
         "none_human_code_repair_fields": none_human_trace["repair_fields"],
+        "key_level_source_repair_applied": key_level_trace["repair_applied"],
+        "key_level_source_repair_count": key_level_trace["repair_count"],
+        "key_level_source_repair_indexes": key_level_trace["repair_indexes"],
         "alignment_entry_version": ENTRY_VERSION,
     })
     review["integrated_trade_advisory"]["policy_validation"] = policy
@@ -573,6 +636,19 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                     "event": "NONE_HUMAN_CODE_REPAIRED",
                     "entry_version": ENTRY_VERSION,
                     **none_human_trace,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if key_level_trace["repair_applied"]:
+        print(
+            json.dumps(
+                {
+                    "event": "KEY_LEVEL_SOURCE_DOWNGRADED",
+                    "entry_version": ENTRY_VERSION,
+                    **key_level_trace,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
