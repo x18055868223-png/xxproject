@@ -38,6 +38,13 @@ def main():
                 "entry did not inherit the core reasoning protocol")
     assert_true("source_alignment 精确映射" in entry_prompt,
                 "entry alignment suffix missing")
+    retry_prompt = entry.build_prompt(
+        {"market_context": {"price": 101500}},
+        blind_payload,
+        empty_content_retry_count=1,
+    )
+    assert_true("RETRY_RECOVERY_INSTRUCTION" in retry_prompt,
+                "entry did not forward the empty-content retry context")
     help_result = subprocess.run(
         [sys.executable, str(TOOLS / "signal_llm_review_entry.py"), "--help"],
         cwd=ROOT, text=True, capture_output=True, check=False)

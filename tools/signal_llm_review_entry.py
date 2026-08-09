@@ -116,10 +116,14 @@ _PROHIBITIVE_EXECUTION_PATTERNS = (
 )
 
 
-def build_prompt(packet, blind_payload=None):
+def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
     """Append exact enum and human-language mappings to the core prompt."""
     return (
-        _ORIGINAL_BUILD_PROMPT(packet, blind_payload)
+        _ORIGINAL_BUILD_PROMPT(
+            packet,
+            blind_payload,
+            empty_content_retry_count=empty_content_retry_count,
+        )
         + _ALIGNMENT_PROMPT_RULES
         + _EXECUTION_LANGUAGE_PROMPT_RULES
     )
