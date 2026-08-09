@@ -146,6 +146,39 @@ def test_response_and_usage_contract(tool):
         else:
             raise AssertionError("invalid/empty response must fail closed")
 
+    empty = {
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {"content": "", "reasoning_content": "SECRET_REASONING"},
+        }],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 9, "total_tokens": 16},
+    }
+    try:
+        tool.parse_chat_response(empty)
+    except tool.LlmEmptyContentError as exc:
+        serialized = json.dumps(exc.diagnostics, sort_keys=True)
+        assert_true(exc.diagnostics["reasoning_content_present"] is True,
+                    "empty-content reasoning presence was not diagnosed")
+        assert_true(exc.diagnostics["reasoning_content_chars"] == 16,
+                    "empty-content reasoning length was not diagnosed")
+        assert_true("SECRET_REASONING" not in serialized and "SECRET_REASONING" not in str(exc),
+                    "reasoning_content text leaked through diagnostics")
+    else:
+        raise AssertionError("empty final content needs the typed error")
+
+    transport_error = RuntimeError("reset")
+    transport_error.api_key_routes = ["bearer"]
+    transport_error.llm_http_calls = 2
+    transport_error.llm_call_profile = tool.CALL_PROFILE_MAIN_RECONCILIATION
+    tool._attach_response_metadata(transport_error, [{
+        "_api_key_route": "bearer",
+        "_llm_call_routes": ["bearer"],
+        "_llm_http_calls": 1,
+    }])
+    assert_true(transport_error.llm_http_calls == 3
+                and transport_error.api_key_routes == ["bearer", "bearer"],
+                "successful prior response must merge with transport attempts")
+
 
 def test_future_contract(tool):
     packet = {"market_context": {"price": 101500}}
@@ -231,6 +264,12 @@ def test_prompt_reasoning_contract(tool):
                 "prompt schema must preserve array cardinality")
     assert_true('"key_premises":[]' not in prompt,
                 "shape example must not contradict key-premise cardinality")
+    retry_prompt = tool.build_prompt(
+        {"market_context": {"price": 101500}}, blind_payload,
+        empty_content_retry_count=1)
+    assert_true("RETRY_RECOVERY_INSTRUCTION" in retry_prompt
+                and "message.content" in retry_prompt,
+                "empty-content cross-round retry instruction is missing")
 
     transition_prompt = tool.build_transition_review_prompt({})
     for phrase in ("delta-first", "不得重复计票", "SYSTEM_ASSERTIONS", "不得把共同出现写成已证实因果",
@@ -574,6 +613,102 @@ def test_transition_concurrency(tool):
                     "concurrent fourth transition failure must be terminal immediately")
 
 
+def test_empty_content_cross_round_recovery(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        card = minimal_card("EMPTY-RECOVERY", 1)
+        tool._append_jsonl(source, card)
+        requests = []
+
+        def response(content, profile):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": content,
+                                "reasoning_content": "SECRET_REASONING"},
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                          "total_tokens": 15},
+                "_api_key_route": "bearer",
+                "_llm_call_routes": ["bearer"],
+                "_llm_http_calls": 1,
+                "_llm_retry_id": "test-retry",
+                "_llm_call_profile": profile,
+                "_daily_http_budget": {"http_calls_used": len(requests)},
+            }
+
+        blind_payload = {
+            "theoretical_active_view": tool._default_theoretical_active_view("test"),
+            "gamma_regime_lens": tool._default_gamma_regime_lens("test"),
+        }
+
+        def fake_call(api_key, model, request_body, timeout, **kwargs):
+            profile = kwargs.get("call_profile")
+            requests.append((profile, request_body["messages"][-1]["content"]))
+            if profile == tool.CALL_PROFILE_MAIN_BLIND:
+                return response(json.dumps(blind_payload), profile)
+            return response("", profile)
+
+        first = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=fake_call, reviewed_at="2020-01-01T00:00:00+00:00")
+        assert_true(first["errors"] == 1 and len(requests) == 2,
+                    "first empty-content round must use exactly two main calls")
+        error_review = tool._read_jsonl(output)[-1]["llm_review"]
+        error_text = json.dumps(error_review, ensure_ascii=False)
+        assert_true(error_review["error_category"] == "EMPTY_CONTENT",
+                    "empty final content was not categorized")
+        assert_true(error_review["llm_http_call_count"] == 2,
+                    "successful blind+reconciliation HTTP calls were lost")
+        assert_true(error_review["llm_call_routes"] == ["bearer", "bearer"],
+                    "successful HTTP routes were lost")
+        assert_true(error_review["call_profile"] == tool.CALL_PROFILE_MAIN_RECONCILIATION,
+                    "failing reconciliation profile was not retained")
+        assert_true(error_review["llm_call_profiles"] == [
+            tool.CALL_PROFILE_MAIN_BLIND,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION,
+        ], "main call profile sequence was not retained")
+        assert_true(error_review["usage"] == {
+            "blind": {"prompt_tokens": 10, "completion_tokens": 5,
+                      "total_tokens": 15},
+            "reconciliation": {"prompt_tokens": 10, "completion_tokens": 5,
+                               "total_tokens": 15},
+        }, "per-stage usage was not retained")
+        assert_true(error_review["record_retry_state"] == "COOLING",
+                    "empty content must retain record-level cooling")
+        assert_true("SECRET_REASONING" not in error_text,
+                    "reasoning_content leaked into the error sidecar")
+
+        original_builder = tool.build_llm_review
+        try:
+            tool.build_llm_review = lambda card, payload, **kwargs: {
+                "schema": tool.OUTPUT_SCHEMA_VERSION,
+                "status": "OK",
+                "provider": tool.PROVIDER,
+                "model": kwargs.get("model", tool.DEFAULT_MODEL),
+                "prompt_version": tool.PROMPT_VERSION,
+                "input_packet_hash": tool._sha256_json(tool.build_review_packet(card)),
+            }
+
+            def recovered_call(api_key, model, request_body, timeout, **kwargs):
+                profile = kwargs.get("call_profile")
+                requests.append((profile, request_body["messages"][-1]["content"]))
+                content = json.dumps(blind_payload) if profile == tool.CALL_PROFILE_MAIN_BLIND else "{}"
+                return response(content, profile)
+
+            second = tool.generate_reviews(
+                source, output, api_key="sk-test-secret-value", limit=1,
+                call_llm=recovered_call, retry_id="EMPTY-RECOVERY")
+        finally:
+            tool.build_llm_review = original_builder
+        assert_true(second["written_reviews"] == 1 and len(requests) == 4,
+                    "cross-round recovery must use one new strict two-call sequence")
+        assert_true("RETRY_RECOVERY_INSTRUCTION" in requests[-1][1],
+                    "explicit retry did not receive the deterministic recovery note")
+
+
 def main():
     tool = load_tool()
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
@@ -589,6 +724,7 @@ def main():
     test_future_contract(tool)
     test_transition_policy_text_boundary(tool)
     test_prompt_reasoning_contract(tool)
+    test_empty_content_cross_round_recovery(tool)
     test_http_retry_and_redaction(tool)
     test_nonstream_keepalive_has_wall_clock_deadline(tool)
     test_daily_cap_and_single_writer(tool)

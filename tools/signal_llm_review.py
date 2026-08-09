@@ -673,7 +673,7 @@ def build_blind_prompt(packet):
     )
 
 
-def build_prompt(packet, blind_payload=None):
+def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
     if not blind_payload:
         blind_payload = {
             "theoretical_active_view": _default_theoretical_active_view(
@@ -682,6 +682,14 @@ def build_prompt(packet, blind_payload=None):
                 "盲读结果缺失，仅保留完整审计复核。"),
         }
     blind_payload = _validate_blind_payload(blind_payload)
+    retry_instruction = ""
+    if int(empty_content_retry_count or 0) > 0:
+        retry_instruction = (
+            "\nRETRY_RECOVERY_INSTRUCTION: A prior reconciliation response for "
+            "this unchanged packet had an empty final content field. Return one "
+            "complete, non-empty JSON object in message.content. Do not leave the "
+            "final answer in reasoning_content and do not add text outside JSON.\n"
+        )
     return (
         "你是中性回路的第二次对照复核员，角色是审计旁路而非交易执行系统。第一性目标是："
         "在不改变 producer 决策与第一次盲读的前提下，最大化对人工辅助决策有用且可追溯的信息，"
@@ -708,6 +716,7 @@ def build_prompt(packet, blind_payload=None):
                      ensure_ascii=False, separators=(",", ":"))
         + "\nBLIND_REVIEW_RESULT JSON（不可改写）：\n"
         + json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)
+        + retry_instruction
         + "\nFULL_AUDIT_PACKET JSON：\n"
         + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )
@@ -2031,6 +2040,17 @@ class LlmApiError(RuntimeError):
         super().__init__(f"LLM HTTP {self.status_code}: {detail}")
 
 
+class LlmEmptyContentError(ValueError):
+    def __init__(self, diagnostics):
+        self.diagnostics = dict(diagnostics or {})
+        detail = ", ".join(
+            f"{key}={str(value).lower() if isinstance(value, bool) else value}"
+            for key, value in self.diagnostics.items()
+        )
+        super().__init__(
+            "LLM response text is empty" + (f" ({detail})" if detail else ""))
+
+
 class DailyBudgetExceeded(RuntimeError):
     pass
 
@@ -2415,7 +2435,14 @@ def parse_chat_response(response):
     else:
         raise ValueError("LLM response missing choices")
     if not text:
-        raise ValueError("LLM response text is empty")
+        reasoning_content = message.get("reasoning_content")
+        diagnostics = {
+            "finish_reason": finish_reason,
+            "reasoning_content_present": bool(reasoning_content),
+            "reasoning_content_chars": len(str(reasoning_content or "")),
+        }
+        diagnostics.update(_response_usage(response))
+        raise LlmEmptyContentError(diagnostics)
     return json.loads(_strip_json_fence(text))
 
 
@@ -2488,6 +2515,50 @@ def _response_usage(response):
     }
 
 
+def _attach_response_metadata(exc, responses, call_profile=None):
+    responses = [response for response in responses if isinstance(response, dict)]
+    if not responses:
+        return
+    routes = []
+    profiles = []
+    usage = {}
+    for response in responses:
+        routes.extend(_response_call_routes(response))
+        profile = response.get("_llm_call_profile")
+        if profile:
+            profiles.append(profile)
+        if profile == CALL_PROFILE_MAIN_BLIND:
+            usage["blind"] = _response_usage(response)
+        elif profile == CALL_PROFILE_MAIN_RECONCILIATION:
+            usage["reconciliation"] = _response_usage(response)
+    routes.extend(getattr(exc, "api_key_routes", []) or [])
+    exc.api_key_routes = routes
+    profiles.extend(getattr(exc, "llm_call_profiles", []) or [])
+    existing_profile = getattr(exc, "llm_call_profile", None)
+    if existing_profile and existing_profile not in profiles:
+        profiles.append(existing_profile)
+    exc.llm_call_profiles = profiles
+    exc.llm_usage = usage
+    exc.llm_http_calls = (
+        sum(_response_http_calls(response) for response in responses)
+        + int(getattr(exc, "llm_http_calls", 0) or 0)
+    )
+    last = responses[-1]
+    exc.llm_retry_id = (
+        getattr(exc, "llm_retry_id", None) or last.get("_llm_retry_id"))
+    exc.llm_call_profile = (
+        getattr(exc, "llm_call_profile", None)
+        or call_profile
+        or last.get("_llm_call_profile"))
+    response_budget = next(
+        (_response_budget_state(item) for item in reversed(responses)
+         if _response_budget_state(item)),
+        None,
+    )
+    exc.daily_http_budget = (
+        getattr(exc, "daily_http_budget", None) or response_budget)
+
+
 def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
     error_routes = _exception_call_routes(exc)
     review = {
@@ -2502,6 +2573,8 @@ def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
         "llm_http_call_count": int(getattr(exc, "llm_http_calls", 0) or 0),
         "retry_id": getattr(exc, "llm_retry_id", None),
         "call_profile": getattr(exc, "llm_call_profile", None),
+        "llm_call_profiles": list(getattr(exc, "llm_call_profiles", []) or []),
+        "usage": dict(getattr(exc, "llm_usage", {}) or {}),
         "daily_http_budget": getattr(exc, "daily_http_budget", None),
         "summary_cn": "LLM review generation failed; source card conclusion is preserved.",
         "agreement_with_system": "UNABLE_TO_JUDGE",
@@ -2522,6 +2595,9 @@ def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
     if _is_unrecoverable_llm_config_error(exc):
         review["error_category"] = "FATAL_CONFIG"
         review["fatal_config_error"] = True
+    elif isinstance(exc, LlmEmptyContentError):
+        review["error_category"] = "EMPTY_CONTENT"
+        review["response_diagnostics"] = dict(exc.diagnostics)
     return {
         "card_id": card_id,
         "llm_review": review,
@@ -2529,9 +2605,13 @@ def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
 
 
 def _build_card_review_record(card, api_key, model, blind_timeout,
-                              reconciliation_timeout, call_fn,
-                              reviewed_at, base_url, budget, retry_id):
+                               reconciliation_timeout, call_fn,
+                               reviewed_at, base_url, budget, retry_id,
+                               empty_content_retry_count=0):
     card_id = _card_id(card)
+    blind_raw_response = None
+    raw_response = None
+    failure_profile = CALL_PROFILE_MAIN_BLIND
     try:
         packet = build_review_packet(card)
         blind_prompt = build_blind_prompt(packet)
@@ -2550,7 +2630,12 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
         )
         blind_payload = _validate_blind_payload(
             parse_chat_response(blind_raw_response))
-        prompt = build_prompt(packet, blind_payload)
+        failure_profile = CALL_PROFILE_MAIN_RECONCILIATION
+        prompt = build_prompt(
+            packet,
+            blind_payload,
+            empty_content_retry_count=empty_content_retry_count,
+        )
         request_body = build_chat_request(prompt, model=model)
         request_body["_local_packet_hash"] = _sha256_json(packet)
         raw_response = _invoke_call_llm(
@@ -2605,6 +2690,11 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
             "llm_review": review,
         }
     except Exception as exc:
+        _attach_response_metadata(
+            exc,
+            [blind_raw_response, raw_response],
+            call_profile=failure_profile,
+        )
         safe_error = _redact_sensitive_text(str(exc))[:220]
         record = _card_error_record(
             card_id, model, reviewed_at, safe_error, exc)
@@ -2647,6 +2737,20 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
     except (TypeError, ValueError):
         pass
     return "READY", count
+
+
+def _latest_matching_error_category(records, identity_key, identity_value,
+                                    review_key, packet_hash):
+    for row in reversed(records):
+        if row.get(identity_key) != identity_value:
+            continue
+        review = _as_dict(row.get(review_key))
+        if (review.get("status") == "ERROR"
+                and review.get("input_packet_hash") == packet_hash):
+            return review.get("error_category")
+        if review.get("status") == "OK":
+            break
+    return None
 
 
 def _record_has_fatal_config_error(record, review_key):
@@ -2748,10 +2852,16 @@ def generate_reviews(source, reviews_output, api_key=None,
         if retry_state != "READY":
             skipped += 1
             continue
-        candidates.append(card)
+        prior_error_category = _latest_matching_error_category(
+            existing_reviews, "card_id", card_id, "llm_review", packet_hash)
+        candidates.append((
+            card,
+            max(1, retry_count) if prior_error_category == "EMPTY_CONTENT" else 0,
+        ))
     def worker(item):
+        card, empty_content_retry_count = item
         return _build_card_review_record(
-            item,
+            card,
             api_key,
             model,
             blind_timeout or timeout,
@@ -2761,6 +2871,7 @@ def generate_reviews(source, reviews_output, api_key=None,
             base_url,
             budget,
             retry_id,
+            empty_content_retry_count,
         )
     results = _run_with_fatal_config_probe(
         candidates, max_concurrency, worker, "llm_review")
