@@ -25,7 +25,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.2"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.3"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -279,14 +279,59 @@ def _repair_prohibitive_execution_language(payload):
     }
 
 
-_NONE_HUMAN_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9_])NONE(?![A-Za-z0-9_])",
-    re.IGNORECASE,
-)
+_HUMAN_CODE_REPLACEMENTS = {
+    "SELL_PUT_SPREAD_REVIEW": "看跌期权价差结构复核",
+    "SELL_CALL_SPREAD_REVIEW": "看涨期权价差结构复核",
+    "NEUTRAL_SINGLE_SIDE_REVIEW": "中性单侧结构复核",
+    "WAIT_FOR_CONFIRMATION": "等待确认",
+    "NO_TRADE": "不交易",
+    "UNABLE_TO_JUDGE": "无法判断",
+    "ESTABLISHED": "已成立",
+    "INCOMPLETE": "不完整",
+    "FAILED": "未成立",
+    "FIT": "适配",
+    "CONDITIONAL": "有条件适配",
+    "NOT_FIT": "不适配",
+    "ALIGNED": "一致",
+    "CAUTION": "谨慎",
+    "TIME_ONLY": "仅时间维度",
+    "UNKNOWN": "未知",
+    "NONE": "无",
+    "INFO": "提示",
+    "HIGH": "高",
+    "PARTIALLY_ALIGNED": "部分一致",
+    "DIVERGENT": "背离",
+    "trade_allowed": "交易许可字段",
+    "execution_allowed": "执行许可字段",
+    "source_alignment": "来源一致性",
+    "recommendation": "辅助建议",
+    "audit_only": "仅审计",
+    "trade_authorization": "交易授权",
+    "evidence_refs": "证据引用",
+}
 
 
-def _repair_none_human_code(payload):
-    """Humanize standalone NONE only in advisory fields owned by human text."""
+def _rewrite_human_codes(value):
+    if not isinstance(value, str) or not value:
+        return value, 0, []
+    rewritten = value
+    total = 0
+    repaired_tokens = []
+    for token in sorted(_HUMAN_CODE_REPLACEMENTS, key=len, reverse=True):
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9_])" + re.escape(token) + r"(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        rewritten, substitutions = pattern.subn(
+            _HUMAN_CODE_REPLACEMENTS[token], rewritten)
+        if substitutions:
+            total += substitutions
+            repaired_tokens.append(token)
+    return rewritten, total, repaired_tokens
+
+
+def _repair_advisory_human_codes(payload):
+    """Humanize raw advisory codes only in fields owned by human text."""
     repaired_payload = copy.deepcopy(payload)
     advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
     if not advisory:
@@ -294,10 +339,12 @@ def _repair_none_human_code(payload):
             "repair_applied": False,
             "repair_count": 0,
             "repair_fields": [],
+            "repair_tokens": [],
         }
 
     advisory = copy.deepcopy(advisory)
     fields = []
+    tokens = []
     total = 0
 
     def repair_field(container, key, path):
@@ -305,11 +352,12 @@ def _repair_none_human_code(payload):
         value = container.get(key)
         if not isinstance(value, str):
             return
-        rewritten, substitutions = _NONE_HUMAN_TOKEN.subn("无", value)
+        rewritten, substitutions, repaired_tokens = _rewrite_human_codes(value)
         if substitutions:
             container[key] = rewritten
             total += substitutions
             fields.append(path)
+            tokens.extend(repaired_tokens)
 
     for field_name in (
         "final_conclusion_cn",
@@ -345,13 +393,11 @@ def _repair_none_human_code(payload):
 
     invalid_if = []
     for index, item in enumerate(advisory.get("invalid_if") or []):
-        if isinstance(item, str):
-            rewritten, substitutions = _NONE_HUMAN_TOKEN.subn("无", item)
-        else:
-            rewritten, substitutions = item, 0
+        rewritten, substitutions, repaired_tokens = _rewrite_human_codes(item)
         if substitutions:
             total += substitutions
             fields.append("invalid_if[" + str(index) + "]")
+            tokens.extend(repaired_tokens)
         invalid_if.append(rewritten)
     if isinstance(advisory.get("invalid_if"), list):
         advisory["invalid_if"] = invalid_if
@@ -361,6 +407,7 @@ def _repair_none_human_code(payload):
         "repair_applied": bool(total),
         "repair_count": total,
         "repair_fields": sorted(set(fields)),
+        "repair_tokens": sorted(set(tokens)),
     }
 
 
@@ -543,7 +590,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     repaired_payload, key_level_trace = _repair_misclassified_observed_levels(
         repaired_payload, packet
     )
-    repaired_payload, none_human_trace = _repair_none_human_code(repaired_payload)
+    repaired_payload, human_code_trace = _repair_advisory_human_codes(
+        repaired_payload
+    )
     review = _ORIGINAL_BUILD_LLM_REVIEW(
         card,
         repaired_payload,
@@ -585,9 +634,10 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         "hard_block_recommendation_entry_version": hard_block_trace[
             "entry_version"
         ],
-        "none_human_code_repair_applied": none_human_trace["repair_applied"],
-        "none_human_code_repair_count": none_human_trace["repair_count"],
-        "none_human_code_repair_fields": none_human_trace["repair_fields"],
+        "human_code_repair_applied": human_code_trace["repair_applied"],
+        "human_code_repair_count": human_code_trace["repair_count"],
+        "human_code_repair_fields": human_code_trace["repair_fields"],
+        "human_code_repair_tokens": human_code_trace["repair_tokens"],
         "key_level_source_repair_applied": key_level_trace["repair_applied"],
         "key_level_source_repair_count": key_level_trace["repair_count"],
         "key_level_source_repair_indexes": key_level_trace["repair_indexes"],
@@ -629,13 +679,13 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
             ),
             file=sys.stderr,
         )
-    if none_human_trace["repair_applied"]:
+    if human_code_trace["repair_applied"]:
         print(
             json.dumps(
                 {
-                    "event": "NONE_HUMAN_CODE_REPAIRED",
+                    "event": "ADVISORY_HUMAN_CODES_REPAIRED",
                     "entry_version": ENTRY_VERSION,
-                    **none_human_trace,
+                    **human_code_trace,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
