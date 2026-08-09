@@ -1,9 +1,9 @@
 [Unit]
-Description=Refresh Gemini LLM reviews for signal audit cards
+Description=Refresh provider-neutral DeepSeek LLM reviews for signal audit cards
 
 [Timer]
 OnBootSec=60
-OnUnitActiveSec=180
+OnUnitInactiveSec=60
 Persistent=true
 Unit=signal-audit-llm-review.service
 

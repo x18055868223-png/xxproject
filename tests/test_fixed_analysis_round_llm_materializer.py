@@ -5,7 +5,7 @@ import tempfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-GEMINI_TOOL = ROOT / "tools" / "gemini_signal_llm_review.py"
+LLM_TOOL = ROOT / "tools" / "signal_llm_review.py"
 MATERIALIZER_TOOL = ROOT / "tools" / "materialize_signal_cards.py"
 
 
@@ -131,7 +131,7 @@ def signal_card(card_id, ts_ms, *, fixed_round=False, direction="BEARISH_WEAK",
 
 
 def test_fixed_round_card_packet_reaches_regular_llm_packets():
-    tool = load_module(GEMINI_TOOL, "gemini_signal_llm_review_fixed_round_packet")
+    tool = load_module(LLM_TOOL, "signal_llm_review_fixed_round_packet")
     card = signal_card("FIXED-ROUND-CARD", 1784905203000, fixed_round=True)
 
     packet = tool.build_review_packet(card)
@@ -212,7 +212,7 @@ def test_materializer_preserves_fixed_round_and_marks_transition_context():
 
 def test_transition_review_packet_carries_fixed_round_delta_context():
     materializer = load_module(MATERIALIZER_TOOL, "materialize_signal_cards_for_llm_packet")
-    gemini = load_module(GEMINI_TOOL, "gemini_signal_llm_review_fixed_transition_packet")
+    gemini = load_module(LLM_TOOL, "signal_llm_review_fixed_transition_packet")
     previous = signal_card("REGULAR-A", 1784901600000, fixed_round=False)
     current = signal_card("FIXED-B", 1784905203000, fixed_round=True)
 

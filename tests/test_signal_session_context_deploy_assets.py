@@ -64,8 +64,8 @@ def assert_asset_root(root):
                 "VERSION backup_version should name the r3.3.11 advisory slice")
     assert_true(version.get("generated_at") == "2026-07-24",
                 "VERSION generated_at should match the fixed-round asset refresh date")
-    assert_true(version.get("llm_review_schema") == "signal_llm_review@1.4.0"
-                and version.get("llm_prompt_version") == "gemini_signal_review_prompt@1.4.7",
+    assert_true(version.get("llm_review_schema") == "signal_llm_review@1.5.0"
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.3",
                 "VERSION should name the integrated advisory schema and prompt")
     assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
                 and "durability" in version.get("frontend_contract", ""),

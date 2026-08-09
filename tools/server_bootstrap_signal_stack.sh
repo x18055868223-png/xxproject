@@ -8,8 +8,13 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/x18055868223-png/xxproject.git}"
-RELEASE_REF="${RELEASE_REF:-r3.3.1}"
+RELEASE_REF="${RELEASE_REF:-}"
 REPO_DIR="${REPO_DIR:-/opt/repos/neutral-loop}"
+
+if [[ -z "$RELEASE_REF" ]]; then
+  echo "RELEASE_REF is required; use the reviewed xxproject tag, branch, or commit SHA." >&2
+  exit 2
+fi
 
 STATIC_ROOT="${STATIC_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -21,6 +26,20 @@ TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-${TOOLS_ROOT}/signal_trans
 TRANSITION_STATE_SOURCE="${TRANSITION_STATE_SOURCE:-${TOOLS_ROOT}/signal_transition_state.json}"
 TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-${TOOLS_ROOT}/signal_transition_llm_reviews.jsonl}"
 MAX_CARDS="${MAX_CARDS:-200}"
+LLM_PROVIDER="${LLM_PROVIDER:-deepseek}"
+LLM_BASE_URL="${LLM_BASE_URL:-https://api.deepseek.com}"
+LLM_MODEL="${LLM_MODEL:-deepseek-v4-flash}"
+LLM_REVIEW_LIMIT="${LLM_REVIEW_LIMIT:-4}"
+TRANSITION_REVIEW_LIMIT="${TRANSITION_REVIEW_LIMIT:-4}"
+LLM_MAX_CONCURRENCY="${LLM_MAX_CONCURRENCY:-4}"
+LLM_DAILY_HTTP_CAP="${LLM_DAILY_HTTP_CAP:-60}"
+TRANSITION_BLIND_MODE="${TRANSITION_BLIND_MODE:-single_call_evidence_first}"
+LLM_BLIND_EFFORT="${LLM_BLIND_EFFORT:-low}"
+LLM_RECON_EFFORT="${LLM_RECON_EFFORT:-high}"
+LLM_TRANSITION_EFFORT="${LLM_TRANSITION_EFFORT:-low}"
+LLM_BLIND_TIMEOUT="${LLM_BLIND_TIMEOUT:-60}"
+LLM_RECON_TIMEOUT="${LLM_RECON_TIMEOUT:-240}"
+LLM_TRANSITION_TIMEOUT="${LLM_TRANSITION_TIMEOUT:-120}"
 
 GEX_ENV_FILE="${GEX_ENV_FILE:-/etc/gexmonitorapi.env}"
 GEX_APP_DIR="${GEX_APP_DIR:-/opt/gexmonitorapi}"
@@ -105,14 +124,14 @@ checkout_release() {
   fi
   "${SUDO[@]}" git -C "$REPO_DIR" remote set-url xxproject "$REPO_URL" 2>/dev/null \
     || "${SUDO[@]}" git -C "$REPO_DIR" remote add xxproject "$REPO_URL"
-  "${SUDO[@]}" git -C "$REPO_DIR" fetch xxproject \
-    "+refs/heads/main:refs/remotes/xxproject/main" \
-    "+refs/tags/${RELEASE_REF}:refs/tags/${RELEASE_REF}"
-  local target
-  target="$("${SUDO[@]}" git -C "$REPO_DIR" rev-parse "refs/tags/${RELEASE_REF}^{}")"
-  "${SUDO[@]}" git -C "$REPO_DIR" checkout -B "deploy-${RELEASE_REF}" "$target"
+  "${SUDO[@]}" git -C "$REPO_DIR" fetch --tags xxproject "$RELEASE_REF"
+  local target short_target
+  target="$("${SUDO[@]}" git -C "$REPO_DIR" rev-parse 'FETCH_HEAD^{commit}')"
+  short_target="$("${SUDO[@]}" git -C "$REPO_DIR" rev-parse --short "$target")"
+  "${SUDO[@]}" git -C "$REPO_DIR" checkout -B "deploy-${short_target}" "$target"
   "${SUDO[@]}" git -C "$REPO_DIR" rev-parse --short HEAD
-  "${SUDO[@]}" git -C "$REPO_DIR" describe --tags --exact-match
+  "${SUDO[@]}" git -C "$REPO_DIR" describe --tags --exact-match 2>/dev/null \
+    || printf 'release_ref=%s\n' "$RELEASE_REF"
 }
 
 import_history() {
@@ -152,6 +171,20 @@ install_signal_audit() {
     TRANSITION_STATE_SOURCE="$TRANSITION_STATE_SOURCE" \
     TRANSITION_LLM_REVIEWS_SOURCE="$TRANSITION_LLM_REVIEWS_SOURCE" \
     MAX_CARDS="$MAX_CARDS" \
+    LLM_PROVIDER="$LLM_PROVIDER" \
+    LLM_BASE_URL="$LLM_BASE_URL" \
+    LLM_MODEL="$LLM_MODEL" \
+    LLM_REVIEW_LIMIT="$LLM_REVIEW_LIMIT" \
+    TRANSITION_REVIEW_LIMIT="$TRANSITION_REVIEW_LIMIT" \
+    LLM_MAX_CONCURRENCY="$LLM_MAX_CONCURRENCY" \
+    LLM_DAILY_HTTP_CAP="$LLM_DAILY_HTTP_CAP" \
+    TRANSITION_BLIND_MODE="$TRANSITION_BLIND_MODE" \
+    LLM_BLIND_EFFORT="$LLM_BLIND_EFFORT" \
+    LLM_RECON_EFFORT="$LLM_RECON_EFFORT" \
+    LLM_TRANSITION_EFFORT="$LLM_TRANSITION_EFFORT" \
+    LLM_BLIND_TIMEOUT="$LLM_BLIND_TIMEOUT" \
+    LLM_RECON_TIMEOUT="$LLM_RECON_TIMEOUT" \
+    LLM_TRANSITION_TIMEOUT="$LLM_TRANSITION_TIMEOUT" \
     bash "$REPO_DIR/deploy/signal_audit/install_or_update.sh"
   install_signal_audit_dropins
 }
@@ -187,6 +220,20 @@ Environment="JSONL_SOURCE=$(systemd_escape_value "$JSONL_SOURCE")"
 Environment="LLM_REVIEWS_SOURCE=$(systemd_escape_value "$LLM_REVIEWS_SOURCE")"
 Environment="TRANSITION_LEDGER_SOURCE=$(systemd_escape_value "$TRANSITION_LEDGER_SOURCE")"
 Environment="TRANSITION_LLM_REVIEWS_SOURCE=$(systemd_escape_value "$TRANSITION_LLM_REVIEWS_SOURCE")"
+Environment="LLM_PROVIDER=$(systemd_escape_value "$LLM_PROVIDER")"
+Environment="LLM_BASE_URL=$(systemd_escape_value "$LLM_BASE_URL")"
+Environment="LLM_MODEL=$(systemd_escape_value "$LLM_MODEL")"
+Environment="LLM_REVIEW_LIMIT=$(systemd_escape_value "$LLM_REVIEW_LIMIT")"
+Environment="TRANSITION_REVIEW_LIMIT=$(systemd_escape_value "$TRANSITION_REVIEW_LIMIT")"
+Environment="LLM_MAX_CONCURRENCY=$(systemd_escape_value "$LLM_MAX_CONCURRENCY")"
+Environment="LLM_DAILY_HTTP_CAP=$(systemd_escape_value "$LLM_DAILY_HTTP_CAP")"
+Environment="TRANSITION_BLIND_MODE=$(systemd_escape_value "$TRANSITION_BLIND_MODE")"
+Environment="LLM_BLIND_EFFORT=$(systemd_escape_value "$LLM_BLIND_EFFORT")"
+Environment="LLM_RECON_EFFORT=$(systemd_escape_value "$LLM_RECON_EFFORT")"
+Environment="LLM_TRANSITION_EFFORT=$(systemd_escape_value "$LLM_TRANSITION_EFFORT")"
+Environment="LLM_BLIND_TIMEOUT=$(systemd_escape_value "$LLM_BLIND_TIMEOUT")"
+Environment="LLM_RECON_TIMEOUT=$(systemd_escape_value "$LLM_RECON_TIMEOUT")"
+Environment="LLM_TRANSITION_TIMEOUT=$(systemd_escape_value "$LLM_TRANSITION_TIMEOUT")"
 EnvironmentFile=
 EnvironmentFile=-$(systemd_escape_value "$LLM_ENV_FILE")
 ExecStartPre=
@@ -194,7 +241,8 @@ ExecStartPre=/bin/systemctl start signal-audit-materialize.service
 ExecStart=
 ExecStart=$(systemd_escape_value "$TOOLS_ROOT")/run_signal_llm_review.sh
 ExecStartPost=
-ExecStartPost=/bin/systemctl start signal-audit-materialize.service
+ExecStopPost=
+ExecStopPost=/bin/systemctl start signal-audit-materialize.service
 EOF
   "${SUDO[@]}" install -m 0644 "$temp_conf" "$llm_dir/10-bootstrap-overrides.conf"
   rm -f "$temp_conf"
@@ -276,6 +324,8 @@ self_check() {
     GEX_REQUIRED="$GEX_REQUIRED" \
     GEX_ENV="$GEX_ENV_FILE" \
     LLM_ENV="$LLM_ENV_FILE" \
+    EXPECTED_LLM_PROVIDER="$LLM_PROVIDER" \
+    EXPECTED_LLM_MODEL="$LLM_MODEL" \
     SESSION_CONTEXT_REQUIRED=1 bash "$REPO_DIR/tools/server_self_check_signal_stack.sh" --run-oneshots
 }
 
@@ -309,7 +359,7 @@ Important files to review:
 - FMZ signal JSONL source: ${JSONL_SOURCE}
 - LLM sidecar JSONL: ${LLM_REVIEWS_SOURCE}
 
-Secrets are templates only. Fill GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY/API_TOKEN on the server,
+Secrets are templates only. Fill LLM_API_KEY/API_TOKEN on the server,
 then rerun the self-check:
-  SESSION_CONTEXT_REQUIRED=1 sudo -E bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
+  SESSION_CONTEXT_REQUIRED=1 LLM_REQUIRED=1 INTEGRATED_ADVISORY_REQUIRED=1 TRANSITION_REQUIRED=1 TRANSITION_LLM_REQUIRED=1 sudo -E bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
 EOF

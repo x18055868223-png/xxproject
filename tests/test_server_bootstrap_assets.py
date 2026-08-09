@@ -49,8 +49,12 @@ def main():
                 "bootstrap should fail closed")
     assert_true("https://github.com/x18055868223-png/xxproject.git" in script,
                 "bootstrap should default to the xxproject primary repo")
-    assert_true('RELEASE_REF="${RELEASE_REF:-r3.3.1}"' in script,
-                "bootstrap should default to the current r3.3.1 release")
+    assert_true('RELEASE_REF="${RELEASE_REF:-}"' in script
+                and "RELEASE_REF is required" in script,
+                "bootstrap should fail closed unless an explicit reviewed ref is provided")
+    assert_true('fetch --tags xxproject "$RELEASE_REF"' in script
+                and "FETCH_HEAD^{commit}" in script,
+                "bootstrap should accept an explicit tag, branch, or commit")
     for token in (
             "install_or_update.sh",
             "server_self_check_signal_stack.sh",
@@ -60,6 +64,14 @@ def main():
             "TRANSITION_STATE_SOURCE",
             "TRANSITION_LLM_REVIEWS_SOURCE",
             "LLM_ENV_FILE",
+            "LLM_PROVIDER",
+            "LLM_BASE_URL",
+            "LLM_MODEL",
+            "LLM_REVIEW_LIMIT",
+            "TRANSITION_REVIEW_LIMIT",
+            "LLM_MAX_CONCURRENCY",
+            "LLM_DAILY_HTTP_CAP",
+            "TRANSITION_BLIND_MODE",
             "GEX_ENV_FILE",
             "GEX_STATE_DIR",
             "GEX_BIND_HOST",
@@ -92,7 +104,14 @@ def main():
     for token in (
             'Environment="TRANSITION_LEDGER_SOURCE=',
             'Environment="TRANSITION_LLM_REVIEWS_SOURCE=',
-            "ExecStartPre=/bin/systemctl start signal-audit-materialize.service"):
+            'Environment="LLM_PROVIDER=',
+            'Environment="LLM_BASE_URL=',
+            'Environment="LLM_MODEL=',
+            'Environment="LLM_MAX_CONCURRENCY=',
+            'Environment="LLM_DAILY_HTTP_CAP=',
+            "ExecStartPre=/bin/systemctl start signal-audit-materialize.service",
+            "ExecStartPost=",
+            "ExecStopPost=/bin/systemctl start signal-audit-materialize.service"):
         assert_true(token in script,
                     "bootstrap LLM override should preserve " + token)
     assert_true("ExecStart=\\${TOOLS_ROOT}/run_signal_llm_review.sh" not in script,
@@ -103,10 +122,20 @@ def main():
                 "bootstrap may create templates, not real secrets")
     assert_true("AIza" not in script and "sk-" not in script,
                 "bootstrap must not embed API keys")
+    assert_true("GEMINI_" not in script and "LLM_API_KEY/API_TOKEN" in script,
+                "bootstrap should not reference Gemini env vars for secrets")
+    assert_true("r3.3.1" not in script and "r3.3.1" not in doc
+                and "r3.3.1" not in doc_zh,
+                "bootstrap and migration docs must not silently deploy the obsolete release")
     assert_true("--require-valid-source-tail" in materialize_service,
                 "materializer service should fail loud on a corrupt latest source record")
     assert_true("--require-valid-source-tail" in install_or_update,
                 "direct post-install materialization should fail loud on a corrupt tail")
+    assert_true("signal_llm_review.py" in install_or_update
+                and "signal_llm_review_entry.py" in install_or_update
+                and "gemini_signal_llm_review.py" not in install_or_update
+                and "LLM_API_KEY before expecting reviews" in install_or_update,
+                "install script should deploy provider-neutral LLM assets")
     assert_true("Restart=" not in materialize_service
                 and "RestartSec=" not in materialize_service,
                 "oneshot materializer service must not use Restart")
@@ -114,12 +143,22 @@ def main():
             "SESSION_CONTEXT_REQUIRED",
             "DURABILITY_REQUIRED",
             "EXPECTED_SIGNAL_VERSION",
+            "EXPECTED_LLM_PROVIDER",
+            "EXPECTED_LLM_MODEL",
+            "EXPECTED_LLM_SCHEMA",
             "EXPECTED_LLM_PROMPT_VERSION",
+            "EXPECTED_LLM_BLIND_MODE",
+            "EXPECTED_LLM_CALL_COUNT",
             "SignalSessionPremiseDurabilityContext",
             "compat_backfill_applied",
             "strategy_version",
             "1.5.7",
-            "gemini_signal_review_prompt@1.4.7",
+            "deepseek",
+            "deepseek-v4-flash",
+            "signal_llm_review@1.5.0",
+            "signal_llm_review_prompt@1.5.3",
+            "two_call_strict",
+            "single_call_evidence_first",
             "macro_shock",
             "signal_durability",
             "SignalDurabilityLayer",
@@ -144,13 +183,16 @@ def main():
             "TRANSITION_LLM_REQUIRED",
             "TRANSITION_LEDGER_SOURCE",
             "TRANSITION_LLM_REVIEWS_SOURCE",
-            "signal_transition_llm_review@1.2.4",
-            "gemini_signal_transition_review_prompt@1.2.5",
+            "EXPECTED_TRANSITION_LLM_SCHEMA",
+            "signal_transition_llm_review@1.3.0",
+            "signal_transition_llm_review_prompt@1.3.2",
             "policy_validation",
             "policy_passed",
             "render_state",
             "issue_codes",
-            "evidence_catalog_hash"):
+            "evidence_catalog_hash",
+            "latest signal card has OK provider-neutral strict two-call LLM sidecar review",
+            "latest transition has OK provider-neutral single-call LLM review"):
         assert_true(token in self_check,
                     "server self-check should enforce " + token)
 
@@ -167,7 +209,7 @@ def main():
 
     for token in (
             "xxproject",
-            "r3.3.1",
+            "DEPLOY_REF=codex/integrated-trade-advisory-next-design",
             "/etc/signal-audit/llm.env",
             "/etc/gexmonitorapi.env",
             "/var/lib/gexmonitorapi",
@@ -176,12 +218,10 @@ def main():
             "server_self_check_signal_stack.sh --run-oneshots",
             "GEX_REQUIRED=0",
             "GEX_BIND_HOST=0.0.0.0",
-            "GEMINI_CHANNEL1_API_KEY",
-            "GEMINI_CHANNEL2_API_KEY",
             "API_TOKEN",
             "FMZ",
             "history",
-            "raw.githubusercontent.com/x18055868223-png/xxproject/r3.3.1",
+            "raw.githubusercontent.com/x18055868223-png/xxproject/${DEPLOY_REF}",
             "SESSION_CONTEXT_REQUIRED=1",
             "SignalSessionPremiseDurabilityContext",
             "active verification",
@@ -194,13 +234,11 @@ def main():
                 "Chinese migration runbook must not embed API keys")
     for token in (
             "xxproject",
-            "r3.3.1",
+            "DEPLOY_REF=codex/integrated-trade-advisory-next-design",
             "server_bootstrap_signal_stack.sh",
             "SERVER_MIGRATION.md",
             "/etc/signal-audit/llm.env",
             "/etc/gexmonitorapi.env",
-            "GEMINI_CHANNEL1_API_KEY",
-            "GEMINI_CHANNEL2_API_KEY",
             "API_TOKEN",
             "signal_review.jsonl",
             "signal_llm_reviews.jsonl",

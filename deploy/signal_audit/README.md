@@ -1,6 +1,6 @@
 # 审计静态页面部署模块
 
-> 当前模块口径（r3.3.1 / 2026-06-25）：本目录是当前审计页面部署资产，包含静态前端、materializer、Gemini LLM sidecar runner、transition 审计旁路、MACRO 双轴审计展示、systemd timer 和 Web server 示例。中文组件语义先读 [`因子文档/00_审计部署总览.md`](因子文档/00_审计部署总览.md)；审计卡展示语义见 [`docs/审计卡片语义.md`](docs/审计卡片语义.md)。
+> 当前模块口径：本目录是审计页面部署资产，包含静态前端、materializer、DeepSeek LLM sidecar runner、transition 审计旁路、systemd timer 和 Web server 示例。中文组件语义先读 [`因子文档/00_审计部署总览.md`](因子文档/00_审计部署总览.md)；审计卡展示语义见 [`docs/审计卡片语义.md`](docs/审计卡片语义.md)。
 
 ## 工程收纳
 
@@ -73,7 +73,7 @@ Local first-time Git setup for a brand new standalone deployment repo:
 
 ```bash
 git init
-git add .gitignore .gitattributes tools/materialize_signal_cards.py tools/gemini_signal_llm_review.py tools/server_self_check_signal_stack.sh deploy/signal_audit
+git add .gitignore .gitattributes tools/materialize_signal_cards.py tools/signal_llm_review.py tools/signal_llm_review_entry.py tools/server_self_check_signal_stack.sh deploy/signal_audit
 git status --short
 git commit -m "Prepare signal audit git deployment"
 git branch -M main
@@ -115,7 +115,7 @@ know which one owns the deployed files under `/opt/signal-audit` and
 The install script now also installs and enables the two systemd timers:
 
 - `signal-audit-materialize.timer`: refreshes static card JSON from FMZ JSONL.
-- `signal-audit-llm-review.timer`: generates Gemini LLM review sidecar JSONL,
+- `signal-audit-llm-review.timer`: generates DeepSeek LLM review sidecar JSONL,
   then triggers materialization so the frontend shows the review.
 
 The LLM timer is safe before the key is configured: it exits successfully with a
@@ -154,10 +154,11 @@ Copy the materializer script from this repo:
 ```bash
 sudo mkdir -p /opt/signal-audit-tools
 sudo cp /tmp/signal-audit-deploy/tools/materialize_signal_cards.py /opt/signal-audit-tools/
-sudo cp /tmp/signal-audit-deploy/tools/gemini_signal_llm_review.py /opt/signal-audit-tools/
+sudo cp /tmp/signal-audit-deploy/tools/signal_llm_review.py /opt/signal-audit-tools/
+sudo cp /tmp/signal-audit-deploy/tools/signal_llm_review_entry.py /opt/signal-audit-tools/
 sudo cp /tmp/signal-audit-deploy/deploy/run_signal_llm_review.sh /opt/signal-audit-tools/
 sudo chmod +x /opt/signal-audit-tools/materialize_signal_cards.py
-sudo chmod +x /opt/signal-audit-tools/gemini_signal_llm_review.py
+sudo chmod +x /opt/signal-audit-tools/signal_llm_review.py /opt/signal-audit-tools/signal_llm_review_entry.py
 sudo chmod +x /opt/signal-audit-tools/run_signal_llm_review.sh
 ```
 
@@ -292,7 +293,7 @@ sudo logrotate -d /etc/logrotate.d/nginx
 
 ## LLM API Key
 
-Configure the Gemini key only on the server:
+Configure the DeepSeek key only on the server:
 
 ```bash
 sudo mkdir -p /etc/signal-audit
@@ -304,19 +305,22 @@ sudoedit /etc/signal-audit/llm.env
 Set:
 
 ```text
-GEMINI_CHANNEL1_API_KEY=<low-cost or free-tier Gemini API key>
-GEMINI_CHANNEL2_API_KEY=<paid fallback Gemini API key>
-GEMINI_MODEL=gemini-3.5-flash
-LLM_REVIEW_LIMIT=2
-LLM_REVIEW_TIMEOUT=60
+LLM_PROVIDER=deepseek
+LLM_API_KEY=<server-only DeepSeek API key>
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-v4-flash
+LLM_REVIEW_LIMIT=4
+TRANSITION_REVIEW_LIMIT=4
+LLM_MAX_CONCURRENCY=4
+LLM_DAILY_HTTP_CAP=60
 JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
 LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
 
 Never commit `/etc/signal-audit/llm.env`. The repository only contains
-`signal-audit-llm.env.example` with empty channel keys. Channel 1 is tried
-first for cost control; channel 2 is used only when channel 1 returns a
-retryable capacity/network error such as 429, 5xx, or timeout.
+`signal-audit-llm.env.example` with an empty key. Gemini variables and fallback
+channels are not read. Each logical call permits at most one narrowly-scoped
+transport retry, and the Beijing-day HTTP ledger fails closed at 60 requests.
 
 ## Auto-Refresh And LLM Review
 

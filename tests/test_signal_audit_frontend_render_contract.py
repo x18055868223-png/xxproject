@@ -835,6 +835,10 @@ def advisory_sample_card():
     card["identity"]["card_id"] = "ADVISORY-CONTRACT-CARD"
     card["identity"]["short_id"] = "ADV"
     card["decision"]["lean"] = "BULLISH_WITH_DISAGREEMENT"
+    card["factor_cross_section"]["tmvf"] = {
+        "tmv_blend": 0.42,
+        "source_ref": "BINANCE_1H_KLINE",
+    }
     card["llm_review"] = {
         "status": "OK",
         "schema": "signal_llm_review@1.4.0",
@@ -879,6 +883,35 @@ def advisory_sample_card():
             "source_alignment": "ALIGNED",
             "audit_only": True,
             "trade_authorization": False,
+            "future_24h_bayesian_report": {
+                "schema_version": "future_24h_bayesian_report@1.0.0",
+                "horizon_hours": 24,
+                "input_scope": "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH",
+                "live_external_data_used": False,
+                "base_case": "UP",
+                "posterior_weights_pct": {"up": 52, "down": 18, "range": 30},
+                "report_cn": "未来24小时贝叶斯观察：基准情景偏上，主观情景权重为上涨52%、下跌18%、区间30%；关键观察位为卡内101500与主观推导的104800；重要反证是宏观压力继续增强，若价格跌破卡内中轴且方向证据转弱则本推断失效。",
+                "key_levels": [
+                    {
+                        "role_cn": "卡内Gamma钉住观察位",
+                        "price": 101500,
+                        "basis_cn": "来自卡内 Gamma 截面。",
+                        "source_type": "PACKET_OBSERVED",
+                    },
+                    {
+                        "role_cn": "上方模型观察位",
+                        "price": 104800,
+                        "basis_cn": "模型估算观察位，由当前冲突率和波动形态推导。",
+                        "source_type": "MODEL_ESTIMATED",
+                    },
+                ],
+                "counter_evidence_cn": ["宏观压力继续增强。"],
+                "invalid_if_cn": ["价格跌破卡内中轴且方向证据转弱。"],
+                "policy_validation": {
+                    "passed": True,
+                    "posterior_weights_sum_100": True,
+                },
+            },
             "policy_validation": {"passed": True},
         },
     }
@@ -922,6 +955,11 @@ def main():
                 "frontend should expose integrated trade advisory renderer")
     assert_true("${renderIntegratedTradeAdvisory(doc)}" in app,
                 "document render flow should call integrated trade advisory renderer")
+    assert_true("function future24hBayesianReport(doc" in app
+                and "function renderFuture24hBayesianTrace(doc)" in app,
+                "frontend should expose future_24h_bayesian_report helpers")
+    assert_true("${renderFuture24hBayesianSummary(doc, advisory)}" in app,
+                "integrated advisory should call future 24h Bayesian summary renderer")
     assert_true("${renderSignalSessionContext(doc)}" not in app,
                 "standalone session-context renderer should be replaced in the main flow")
     metric_idx = app.find('class="metric-strip"')
@@ -937,6 +975,11 @@ def main():
                 "integrated trade advisory should render after the six top metrics and before Gamma/GEX")
     assert_true(session_idx < transition_idx < llm_idx,
                 "transition context should render after durability context and before card LLM review")
+    forecast_summary_idx = app.find("${renderFuture24hBayesianSummary(doc, advisory)}")
+    advisory_grid_idx = app.find('class="integrated-advisory-grid"')
+    assert_true(forecast_summary_idx != -1 and advisory_grid_idx != -1
+                and forecast_summary_idx < advisory_grid_idx,
+                "future 24h Bayesian report should render after advisory conclusion and before structure grid")
     for marker in (
             "comfort_window",
             "price_anchor_durability",
@@ -991,6 +1034,9 @@ def main():
     fallback = (FRONTEND / "signal_cards" / "fallback.js").read_text(encoding="utf-8")
     assert_true("GEMINI-LOCAL-PREVIEW" not in fallback,
                 "default fallback.js should exclude synthetic preview cards")
+    frontend_version = read_json(FRONTEND / "VERSION.json")
+    assert_true("future_24h_bayesian_report" in frontend_version["frontend_contract"],
+                "VERSION frontend_contract should document the optional future 24h report")
 
     durability_render = render_sample_card(FRONTEND, durability_sample_card())
     durability_text = durability_render["text"]
@@ -1188,10 +1234,27 @@ def main():
                 and advisory_html.find('id="gamma-overview"') != -1
                 and advisory_html.find('id="integrated-advisory"') < advisory_html.find('id="gamma-overview"'),
                 "integrated trade advisory should appear before Gamma/GEX in rendered HTML")
+    forecast_summary_idx = advisory_html.find('class="future-24h-summary"')
+    assert_true("未来 24 小时第一性推断" in advisory_html,
+                "future 24h summary should have a visible reader-facing title")
+    forecast_grid_idx = advisory_html.find('class="integrated-advisory-grid"')
+    forecast_summary_html = advisory_html[
+        forecast_summary_idx:forecast_grid_idx
+        if forecast_summary_idx != -1 and forecast_grid_idx > forecast_summary_idx
+        else forecast_summary_idx
+    ]
+    assert_true(advisory_html.find('class="integrated-advisory-head"') < forecast_summary_idx < forecast_grid_idx,
+                "future 24h report should sit after the advisory head and before the structure grid")
+    assert_true(forecast_summary_html.count("<p>") == 1
+                and "<table" not in forecast_summary_html
+                and "<ul" not in forecast_summary_html
+                and "<dl" not in forecast_summary_html,
+                "future 24h top report should be a single readable Chinese paragraph")
     for label in (
             "最高辅助交易决策",
             "允许进入卖出 Put 价差的结构复核",
             "复核卖出 Put 价差",
+            "未来24小时贝叶斯观察",
             "中性接管",
             "卖方结构适配",
             "侧向依据",
@@ -1206,6 +1269,27 @@ def main():
     ):
         assert_true(label in advisory_text,
                     "integrated advisory should show Chinese reader label/value: " + label)
+    for trace_label in (
+            "结构化权重",
+            "点位来源",
+            "验证信息",
+            "模型估算",
+            "卡内观测",
+    ):
+        assert_true(trace_label not in advisory_text,
+                    "future 24h structured trace should stay out of the high advisory section: " + trace_label)
+    for trace_label in (
+            "未来24小时贝叶斯报告追溯",
+            "结构化权重",
+            "点位来源",
+            "验证信息",
+            "模型估算",
+            "卡内观测",
+            "上行情景",
+            "卡内Gamma钉住观察位",
+    ):
+        assert_true(trace_label in advisory_render["text"],
+                    "future 24h low trace should expose readable detail: " + trace_label)
     for raw_token in (
             "SELL_PUT_SPREAD_REVIEW",
             "ESTABLISHED",
@@ -1224,7 +1308,14 @@ def main():
             "EV_SIGNAL_DURABILITY",
     ):
         assert_true(raw_token not in advisory_text,
-                    "integrated advisory should not expose raw enum/field code: " + raw_token)
+                    "integrated advisory and future 24h report should not expose raw enum/field code: " + raw_token)
+    for raw_token in (
+            "MODEL_ESTIMATED",
+            "PACKET_OBSERVED",
+            "EV_FORECAST_TMV",
+    ):
+        assert_true(raw_token not in advisory_render["text"],
+                    "future 24h report should translate source kinds and hide evidence IDs: " + raw_token)
     assert_true("[object Object]" not in advisory_text and "[object Object]" not in advisory_html,
                 "integrated advisory should not stringify objects")
 
@@ -1233,8 +1324,22 @@ def main():
     advisory_error_render = render_sample_card(FRONTEND, advisory_error_card)
     assert_true("最高辅助交易决策" not in advisory_error_render["text"],
                 "ERROR llm_review should not render integrated advisory")
+    assert_true("未来24小时贝叶斯观察" not in advisory_error_render["text"],
+                "ERROR llm_review should not render future 24h report")
     assert_true('id="llm-review"' in advisory_error_render["documentHtml"],
                 "ERROR llm_review should not remove the existing LLM section")
+
+    advisory_failed_policy_card = advisory_sample_card()
+    advisory_failed_policy_card["llm_review"]["integrated_trade_advisory"][
+        "policy_validation"
+    ]["passed"] = False
+    advisory_failed_policy_render = render_sample_card(
+        FRONTEND, advisory_failed_policy_card)
+    assert_true('id="integrated-advisory"' not in
+                advisory_failed_policy_render["documentHtml"],
+                "failed local advisory policy must hide the integrated advisory")
+    assert_true('id="llm-review"' in advisory_failed_policy_render["documentHtml"],
+                "failed advisory policy must preserve the LLM audit section")
 
     advisory_missing_card = advisory_sample_card()
     advisory_missing_card["llm_review"]["integrated_trade_advisory"].pop("dominant_conflict_cn")
@@ -1247,8 +1352,31 @@ def main():
     advisory_old_render = render_sample_card(FRONTEND, durability_sample_card())
     assert_true("最高辅助交易决策" not in advisory_old_render["text"],
                 "old cards without integrated advisory should stay compatible")
+    assert_true("未来24小时贝叶斯观察" not in advisory_old_render["text"]
+                and "未来24小时贝叶斯报告追溯" not in advisory_old_render["text"],
+                "old cards without future report should not render empty report blocks")
     assert_true('id="llm-review"' in advisory_old_render["documentHtml"],
                 "old cards should still render the existing LLM section")
+
+    incomplete_forecast_card = advisory_sample_card()
+    incomplete_forecast_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ].pop("policy_validation")
+    incomplete_forecast_render = render_sample_card(FRONTEND, incomplete_forecast_card)
+    assert_true("最高辅助交易决策" in incomplete_forecast_render["text"],
+                "incomplete future report should not hide the parent advisory")
+    assert_true("未来24小时贝叶斯观察" not in incomplete_forecast_render["text"]
+                and "未来24小时贝叶斯报告追溯" not in incomplete_forecast_render["text"],
+                "incomplete future report should fail closed without visible empty blocks")
+
+    leaking_forecast_card = advisory_sample_card()
+    leaking_forecast_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]["report_cn"] = "未来24小时 MODEL_ESTIMATED 依赖 EV_FORECAST_TMV。"
+    leaking_forecast_render = render_sample_card(FRONTEND, leaking_forecast_card)
+    assert_true("未来24小时 MODEL_ESTIMATED" not in leaking_forecast_render["text"]
+                and "未来24小时贝叶斯报告追溯" not in leaking_forecast_render["text"],
+                "future report with raw enum/evidence leakage should fail closed")
 
     rows = render_contract(FRONTEND)
     assert_true(rows, "render contract should cover cards")

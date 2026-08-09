@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime entrypoint for Gemini signal reviews.
+"""Runtime entrypoint for provider-neutral signal LLM reviews.
 
 The core reviewer remains the source of all schema, policy, and fail-closed
 validation. This entrypoint applies only three bounded repairs before the core
@@ -22,11 +22,11 @@ import json
 import re
 import sys
 
-import gemini_signal_llm_review as core
+import signal_llm_review as core
 
 
-ENTRY_VERSION = "gemini_signal_review_entry@1.0.2"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.4.7"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.0"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
 _HARD_BLOCK_SAFE_RECOMMENDATIONS = {"NO_TRADE", "UNABLE_TO_JUDGE"}

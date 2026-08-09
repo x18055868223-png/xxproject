@@ -20,7 +20,18 @@ TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
 EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.7}"
-EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-gemini_signal_review_prompt@1.4.7}"
+EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
+EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
+EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@1.5.0}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@1.5.3}"
+EXPECTED_LLM_BLIND_MODE="${EXPECTED_LLM_BLIND_MODE:-two_call_strict}"
+EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-2}"
+EXPECTED_TRANSITION_LLM_PROVIDER="${EXPECTED_TRANSITION_LLM_PROVIDER:-$EXPECTED_LLM_PROVIDER}"
+EXPECTED_TRANSITION_LLM_MODEL="${EXPECTED_TRANSITION_LLM_MODEL:-$EXPECTED_LLM_MODEL}"
+EXPECTED_TRANSITION_LLM_SCHEMA="${EXPECTED_TRANSITION_LLM_SCHEMA:-signal_transition_llm_review@1.3.0}"
+EXPECTED_TRANSITION_LLM_PROMPT_VERSION="${EXPECTED_TRANSITION_LLM_PROMPT_VERSION:-signal_transition_llm_review_prompt@1.3.2}"
+EXPECTED_TRANSITION_LLM_BLIND_MODE="${EXPECTED_TRANSITION_LLM_BLIND_MODE:-single_call_evidence_first}"
+EXPECTED_TRANSITION_LLM_CALL_COUNT="${EXPECTED_TRANSITION_LLM_CALL_COUNT:-1}"
 JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
@@ -155,6 +166,14 @@ printf 'TRANSITION_REQUIRED=%s\n' "$TRANSITION_REQUIRED"
 printf 'TRANSITION_LLM_REQUIRED=%s\n' "$TRANSITION_LLM_REQUIRED"
 printf 'DURABILITY_REQUIRED=%s\n' "$DURABILITY_REQUIRED"
 printf 'EXPECTED_SIGNAL_VERSION=%s\n' "$EXPECTED_SIGNAL_VERSION"
+printf 'EXPECTED_LLM_PROVIDER=%s\n' "$EXPECTED_LLM_PROVIDER"
+printf 'EXPECTED_LLM_MODEL=%s\n' "$EXPECTED_LLM_MODEL"
+printf 'EXPECTED_LLM_SCHEMA=%s\n' "$EXPECTED_LLM_SCHEMA"
+printf 'EXPECTED_LLM_PROMPT_VERSION=%s\n' "$EXPECTED_LLM_PROMPT_VERSION"
+printf 'EXPECTED_LLM_BLIND_MODE=%s\n' "$EXPECTED_LLM_BLIND_MODE"
+printf 'EXPECTED_LLM_CALL_COUNT=%s\n' "$EXPECTED_LLM_CALL_COUNT"
+printf 'EXPECTED_TRANSITION_LLM_SCHEMA=%s\n' "$EXPECTED_TRANSITION_LLM_SCHEMA"
+printf 'EXPECTED_TRANSITION_LLM_PROMPT_VERSION=%s\n' "$EXPECTED_TRANSITION_LLM_PROMPT_VERSION"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
 printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
 printf 'TRANSITION_LEDGER_SOURCE=%s\n' "$TRANSITION_LEDGER_SOURCE"
@@ -477,44 +496,58 @@ else
 fi
 
 section "LLM review sidecar"
-CHANNEL1_KEY="${GEMINI_CHANNEL1_API_KEY:-}"
-CHANNEL2_KEY="${GEMINI_CHANNEL2_API_KEY:-}"
-if [ -n "$CHANNEL1_KEY" ]; then
-  ok "Gemini channel 1 key is configured in environment"
+if [ "${LLM_PROVIDER:-}" = "$EXPECTED_LLM_PROVIDER" ]; then
+  ok "LLM provider matches expected provider: $EXPECTED_LLM_PROVIDER"
 else
   if [ "$LLM_REQUIRED" = "1" ]; then
-    fail "Gemini channel 1 key is not loaded; free/low-cost first pass is disabled"
+    fail "LLM provider is not $EXPECTED_LLM_PROVIDER"
   else
-    warn "Gemini channel 1 key is not loaded; free/low-cost first pass is disabled"
+    warn "LLM provider is not $EXPECTED_LLM_PROVIDER"
   fi
 fi
-if [ -n "$CHANNEL2_KEY" ]; then
-  ok "Gemini channel 2 key is configured in environment"
+if [ "${LLM_MODEL:-}" = "$EXPECTED_LLM_MODEL" ]; then
+  ok "LLM model matches expected model: $EXPECTED_LLM_MODEL"
 else
   if [ "$LLM_REQUIRED" = "1" ]; then
-    fail "Gemini channel 2 key is not loaded; paid fallback is disabled"
+    fail "LLM model is not $EXPECTED_LLM_MODEL"
   else
-    warn "Gemini channel 2 key is not loaded; paid fallback is disabled"
+    warn "LLM model is not $EXPECTED_LLM_MODEL"
   fi
 fi
-if [ -z "$CHANNEL1_KEY" ] && [ -z "$CHANNEL2_KEY" ]; then
+if [ -n "${LLM_BASE_URL:-}" ]; then
+  ok "LLM base URL is configured"
+else
   if [ "$LLM_REQUIRED" = "1" ]; then
-    fail "no Gemini channel key loaded; LLM timer will skip calls"
+    fail "LLM base URL is not loaded"
   else
-    warn "no Gemini channel key loaded; LLM timer will skip calls"
+    warn "LLM base URL is not loaded"
+  fi
+fi
+if [ -n "${LLM_API_KEY:-}" ]; then
+  ok "LLM API key is configured in environment"
+else
+  if [ "$LLM_REQUIRED" = "1" ]; then
+    fail "LLM_API_KEY is not loaded; LLM timer will skip calls"
+  else
+    warn "LLM_API_KEY is not loaded; LLM timer will skip calls"
   fi
 fi
 if [ -r "$LLM_REVIEWS_SOURCE" ]; then
-  json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("model:", review.get("model")); print("blind_review_mode:", review.get("blind_review_mode")); print("llm_call_count:", review.get("llm_call_count")); print("api_key_route:", review.get("api_key_route")); print("llm_call_routes:", review.get("llm_call_routes"))'
+  json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("provider:", review.get("provider")); print("model:", review.get("model")); print("schema:", review.get("schema")); print("prompt_version:", review.get("prompt_version")); print("blind_review_mode:", review.get("blind_review_mode")); print("llm_call_count:", review.get("llm_call_count")); print("api_key_route:", review.get("api_key_route")); print("llm_call_routes:", review.get("llm_call_routes"))'
 else
   warn "LLM review sidecar not readable yet: $LLM_REVIEWS_SOURCE"
 fi
 if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && have python3; then
-  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$EXPECTED_LLM_PROMPT_VERSION" <<'PY'
+  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
 import json, pathlib, sys
 signal_path = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
-expected_prompt_version = sys.argv[3]
+expected_provider = sys.argv[3]
+expected_model = sys.argv[4]
+expected_schema = sys.argv[5]
+expected_prompt_version = sys.argv[6]
+expected_blind_mode = sys.argv[7]
+expected_call_count = int(sys.argv[8])
 signal_lines = [x for x in signal_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 review_lines = [x for x in review_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 if not signal_lines:
@@ -536,23 +569,34 @@ review = ok_reviews.get(latest_id)
 if not review:
     raise SystemExit(3)
 print("latest_signal_llm_status:", review.get("status"))
+print("latest_signal_llm_provider:", review.get("provider"))
+print("latest_signal_llm_model:", review.get("model"))
+print("latest_signal_llm_schema:", review.get("schema"))
 print("latest_signal_blind_review_mode:", review.get("blind_review_mode"))
 print("latest_signal_llm_call_count:", review.get("llm_call_count"))
 print("latest_signal_api_key_route:", review.get("api_key_route"))
 print("latest_signal_llm_call_routes:", review.get("llm_call_routes"))
 print("latest_signal_llm_prompt_version:", review.get("prompt_version"))
-if review.get("blind_review_mode") != "two_call_strict" or int(review.get("llm_call_count") or 0) < 2:
-    raise SystemExit(4)
+if review.get("provider") != expected_provider:
+    raise SystemExit("latest signal LLM provider is not " + expected_provider)
+if review.get("model") != expected_model:
+    raise SystemExit("latest signal LLM model is not " + expected_model)
+if review.get("schema") != expected_schema:
+    raise SystemExit("latest signal LLM schema is not " + expected_schema)
 if review.get("prompt_version") != expected_prompt_version:
     raise SystemExit("latest signal LLM prompt version does not match expected runtime entrypoint")
+if review.get("blind_review_mode") != expected_blind_mode:
+    raise SystemExit("latest signal LLM mode is not " + expected_blind_mode)
+if int(review.get("llm_call_count") or 0) < expected_call_count:
+    raise SystemExit("latest signal LLM call count is below " + str(expected_call_count))
 PY
   then
-    ok "latest signal card has OK two-call LLM sidecar review"
+    ok "latest signal card has OK provider-neutral strict two-call LLM sidecar review"
   else
     if [ "$LLM_REQUIRED" = "1" ]; then
-      fail "latest signal card does not have an OK two-call LLM sidecar review"
+      fail "latest signal card does not have an OK provider-neutral strict two-call LLM sidecar review"
     else
-      warn "latest signal card does not have an OK two-call LLM sidecar review"
+      warn "latest signal card does not have an OK provider-neutral strict two-call LLM sidecar review"
     fi
   fi
 else
@@ -562,7 +606,7 @@ fi
 if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ]; then
   section "Integrated trade advisory"
   if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
-    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$EXPECTED_LLM_PROMPT_VERSION" <<'PY'
+    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
 import json, pathlib, re, sys
 
 ADVISORY_RECOMMENDATIONS = {
@@ -682,7 +726,8 @@ def validate_advisory(review, label):
         "containment_assessment", "premium_selling_fit", "side_basis_cn",
         "dominant_conflict_cn", "key_premises", "invalid_if",
         "next_observation_cn", "session_advisory", "source_alignment",
-        "audit_only", "trade_authorization", "policy_validation",
+        "audit_only", "trade_authorization", "future_24h_bayesian_report",
+        "policy_validation",
     }
     missing_fields = sorted(required_fields - set(advisory))
     unexpected_fields = sorted(set(advisory) - required_fields)
@@ -772,7 +817,12 @@ def validate_advisory(review, label):
     return advisory
 
 source_cards = read_jsonl(signal_path)
-expected_prompt_version = sys.argv[4]
+expected_provider = sys.argv[4]
+expected_model = sys.argv[5]
+expected_schema = sys.argv[6]
+expected_prompt_version = sys.argv[7]
+expected_blind_mode = sys.argv[8]
+expected_call_count = int(sys.argv[9])
 latest_source = source_cards[-1]
 latest_id = card_id(latest_source)
 if not latest_id:
@@ -791,13 +841,26 @@ print("latest_matching_llm_card_id:", latest_matching_record_id)
 if not isinstance(latest_matching_review, dict):
     raise SystemExit("no llm_review for latest source card")
 print("latest_advisory_review_status:", latest_matching_review.get("status"))
+print("latest_advisory_provider:", latest_matching_review.get("provider"))
+print("latest_advisory_model:", latest_matching_review.get("model"))
 print("latest_advisory_schema:", latest_matching_review.get("schema"))
+print("latest_advisory_prompt_version:", latest_matching_review.get("prompt_version"))
+print("latest_advisory_blind_review_mode:", latest_matching_review.get("blind_review_mode"))
+print("latest_advisory_llm_call_count:", latest_matching_review.get("llm_call_count"))
 if latest_matching_review.get("status") != "OK":
     raise SystemExit("latest matching llm_review is not OK")
-if latest_matching_review.get("schema") != "signal_llm_review@1.4.0":
-    raise SystemExit("latest matching llm_review schema is not signal_llm_review@1.4.0")
+if latest_matching_review.get("provider") != expected_provider:
+    raise SystemExit("latest matching llm_review provider is not " + expected_provider)
+if latest_matching_review.get("model") != expected_model:
+    raise SystemExit("latest matching llm_review model is not " + expected_model)
+if latest_matching_review.get("schema") != expected_schema:
+    raise SystemExit("latest matching llm_review schema is not " + expected_schema)
 if latest_matching_review.get("prompt_version") != expected_prompt_version:
     raise SystemExit("latest matching llm_review prompt version does not match bounded entrypoint")
+if latest_matching_review.get("blind_review_mode") != expected_blind_mode:
+    raise SystemExit("latest matching llm_review mode is not " + expected_blind_mode)
+if int(latest_matching_review.get("llm_call_count") or 0) < expected_call_count:
+    raise SystemExit("latest matching llm_review call count is below " + str(expected_call_count))
 sidecar_advisory = validate_advisory(latest_matching_review, "latest_advisory")
 
 manifest = json.loads((audit_root / "signal_cards/index.json").read_text(encoding="utf-8"))
@@ -815,19 +878,27 @@ if not isinstance(materialized_review, dict):
     raise SystemExit("materialized latest card lacks llm_review")
 if materialized_review.get("status") != "OK":
     raise SystemExit("materialized latest card llm_review is not OK")
-if materialized_review.get("schema") != "signal_llm_review@1.4.0":
-    raise SystemExit("materialized latest card llm_review schema is not signal_llm_review@1.4.0")
+if materialized_review.get("provider") != expected_provider:
+    raise SystemExit("materialized latest card llm_review provider is not " + expected_provider)
+if materialized_review.get("model") != expected_model:
+    raise SystemExit("materialized latest card llm_review model is not " + expected_model)
+if materialized_review.get("schema") != expected_schema:
+    raise SystemExit("materialized latest card llm_review schema is not " + expected_schema)
 if materialized_review.get("prompt_version") != expected_prompt_version:
     raise SystemExit("materialized latest card llm_review prompt version does not match bounded entrypoint")
+if materialized_review.get("blind_review_mode") != expected_blind_mode:
+    raise SystemExit("materialized latest card llm_review mode is not " + expected_blind_mode)
+if int(materialized_review.get("llm_call_count") or 0) < expected_call_count:
+    raise SystemExit("materialized latest card llm_review call count is below " + str(expected_call_count))
 materialized_advisory = validate_advisory(materialized_review, "materialized_advisory")
 print("materialized_advisory_passthrough:", materialized_advisory == sidecar_advisory)
 if materialized_advisory != sidecar_advisory:
     raise SystemExit("materialized latest card did not pass through integrated_trade_advisory")
 PY
     then
-      ok "latest signal card has OK v1.4.0 integrated_trade_advisory and materialized passthrough"
+      ok "latest signal card has OK provider-neutral integrated_trade_advisory and materialized passthrough"
     else
-      fail "latest signal card lacks strict v1.4.0 integrated_trade_advisory or materialized passthrough"
+      fail "latest signal card lacks strict provider-neutral integrated_trade_advisory or materialized passthrough"
     fi
   else
     fail "skipped integrated_trade_advisory strict check; source, sidecar, manifest, or python3 unavailable"
@@ -836,15 +907,21 @@ fi
 
 section "Transition LLM review sidecar"
 if [ -r "$TRANSITION_LLM_REVIEWS_SOURCE" ]; then
-  json_probe "latest transition LLM review sidecar" "$TRANSITION_LLM_REVIEWS_SOURCE" 'review=data.get("transition_llm_review") or {}; guard=review.get("language_guard") or {}; policy=review.get("policy_validation") or {}; print("transition_id:", data.get("transition_id")); print("status:", review.get("status")); print("schema_version:", review.get("schema_version")); print("prompt_version:", review.get("prompt_version")); print("model:", review.get("model")); print("policy_passed:", policy.get("passed")); print("render_state:", policy.get("render_state")); print("issue_codes:", policy.get("issue_codes")); print("no_trading_instruction:", guard.get("no_trading_instruction"))'
+  json_probe "latest transition LLM review sidecar" "$TRANSITION_LLM_REVIEWS_SOURCE" 'review=data.get("transition_llm_review") or {}; guard=review.get("language_guard") or {}; policy=review.get("policy_validation") or {}; print("transition_id:", data.get("transition_id")); print("status:", review.get("status")); print("provider:", review.get("provider")); print("model:", review.get("model")); print("schema_version:", review.get("schema_version")); print("prompt_version:", review.get("prompt_version")); print("blind_review_mode:", review.get("blind_review_mode")); print("llm_call_count:", review.get("llm_call_count")); print("policy_passed:", policy.get("passed")); print("render_state:", policy.get("render_state")); print("issue_codes:", policy.get("issue_codes")); print("no_trading_instruction:", guard.get("no_trading_instruction"))'
 else
   warn "transition LLM review sidecar not readable yet: $TRANSITION_LLM_REVIEWS_SOURCE"
 fi
 if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && [ -r "$TRANSITION_LLM_REVIEWS_SOURCE" ] && have python3; then
-  if python3 - "$AUDIT_ROOT" "$TRANSITION_LLM_REVIEWS_SOURCE" <<'PY'
+  if python3 - "$AUDIT_ROOT" "$TRANSITION_LLM_REVIEWS_SOURCE" "$EXPECTED_TRANSITION_LLM_PROVIDER" "$EXPECTED_TRANSITION_LLM_MODEL" "$EXPECTED_TRANSITION_LLM_SCHEMA" "$EXPECTED_TRANSITION_LLM_PROMPT_VERSION" "$EXPECTED_TRANSITION_LLM_BLIND_MODE" "$EXPECTED_TRANSITION_LLM_CALL_COUNT" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
+expected_provider = sys.argv[3]
+expected_model = sys.argv[4]
+expected_schema = sys.argv[5]
+expected_prompt_version = sys.argv[6]
+expected_blind_mode = sys.argv[7]
+expected_call_count = int(sys.argv[8])
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
 if not cards:
@@ -869,8 +946,12 @@ guard = review.get("language_guard") or {}
 policy = review.get("policy_validation") or {}
 print("latest_transition_id:", transition_id)
 print("latest_transition_llm_status:", review.get("status"))
+print("latest_transition_provider:", review.get("provider"))
+print("latest_transition_model:", review.get("model"))
 print("latest_transition_schema_version:", review.get("schema_version"))
 print("latest_transition_prompt_version:", review.get("prompt_version"))
+print("latest_transition_blind_review_mode:", review.get("blind_review_mode"))
+print("latest_transition_llm_call_count:", review.get("llm_call_count"))
 print("latest_transition_policy_passed:", policy.get("passed"))
 print("latest_transition_render_state:", policy.get("render_state"))
 print("latest_transition_issue_codes:", policy.get("issue_codes"))
@@ -878,10 +959,18 @@ print("latest_transition_evidence_catalog_hash:", review.get("evidence_catalog_h
 print("no_trading_instruction:", guard.get("no_trading_instruction"))
 print("no_external_data:", guard.get("no_external_data"))
 print("distinguishes_observation_from_causality:", guard.get("distinguishes_observation_from_causality"))
-if review.get("schema_version") != "signal_transition_llm_review@1.2.4":
-    raise SystemExit("latest transition LLM schema version is not signal_transition_llm_review@1.2.4")
-if review.get("prompt_version") != "gemini_signal_transition_review_prompt@1.2.5":
-    raise SystemExit("latest transition LLM prompt version is not gemini_signal_transition_review_prompt@1.2.5")
+if review.get("provider") != expected_provider:
+    raise SystemExit("latest transition LLM provider is not " + expected_provider)
+if review.get("model") != expected_model:
+    raise SystemExit("latest transition LLM model is not " + expected_model)
+if review.get("schema_version") != expected_schema:
+    raise SystemExit("latest transition LLM schema version is not " + expected_schema)
+if review.get("prompt_version") != expected_prompt_version:
+    raise SystemExit("latest transition LLM prompt version is not " + expected_prompt_version)
+if review.get("blind_review_mode") != expected_blind_mode:
+    raise SystemExit("latest transition LLM mode is not " + expected_blind_mode)
+if int(review.get("llm_call_count") or 0) != expected_call_count:
+    raise SystemExit("latest transition LLM call count is not " + str(expected_call_count))
 if not review.get("evidence_catalog_hash"):
     raise SystemExit("latest transition LLM review lacks evidence_catalog_hash")
 if not policy:
@@ -894,12 +983,12 @@ if policy.get("render_state") not in {"DISPLAY_LLM_TEXT", "DEGRADED_LLM_TEXT", "
 # renderable. policy_passed / issue_codes remain printed above for visibility.
 PY
   then
-    ok "latest transition has OK v1.2.4 LLM review with schema/render_state integrity"
+    ok "latest transition has OK provider-neutral single-call LLM review with schema/render_state integrity"
   else
     if [ "$TRANSITION_LLM_REQUIRED" = "1" ]; then
-      fail "latest transition lacks OK v1.2.4 LLM review with valid schema/render_state integrity"
+      fail "latest transition lacks OK provider-neutral single-call LLM review with valid schema/render_state integrity"
     else
-      warn "latest transition lacks OK v1.2.4 LLM review with valid schema/render_state integrity"
+      warn "latest transition lacks OK provider-neutral single-call LLM review with valid schema/render_state integrity"
     fi
   fi
 else

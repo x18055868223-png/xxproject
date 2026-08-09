@@ -597,6 +597,48 @@
       font-weight: 760;
     }
 
+    .future-24h-summary {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--wait);
+      border-radius: 6px;
+      padding: 11px 12px;
+      background: #fffdf7;
+    }
+
+    .future-24h-summary p {
+      margin: 0;
+      line-height: 1.7;
+      overflow-wrap: anywhere;
+    }
+
+    .future-24h-summary > strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--ink);
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+
+    .future-24h-trace-block {
+      display: grid;
+      gap: 8px;
+      padding: 12px 13px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .future-24h-trace-block:last-child {
+      border-bottom: 0;
+    }
+
+    .future-24h-trace-block .subsection-title {
+      margin: 0;
+    }
+
+    .future-24h-table {
+      min-width: 760px;
+    }
+
     #session-context {
       border-top: 1px solid var(--line);
       padding-top: 24px;
@@ -1913,6 +1955,16 @@
 
       .doc-title {
         font-size: 27px;
+      }
+
+      .status-stack {
+        width: 100%;
+      }
+
+      .status-stack .badge {
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
 
       .metric-strip,

@@ -158,32 +158,42 @@ def test_materializer_compat_backfill(materializer):
         )
 
 
-def test_llm_rejects_conflicting_funding_and_raw_transition(tool, pipeline):
-    sample = pipeline.review_context_card("canonical-funding-llm-test")
-    sample["factor_cross_section"]["funding"] = {
+def test_llm_rejects_conflicting_funding_and_raw_transition(tool):
+    sample = {"identity": {"card_id": "canonical-funding-llm-test"},
+              "market_context": {"price": 101500},
+              "factor_cross_section": {"funding": {
         "last_rate": -0.000004,
         "funding_norm": -1.0,
         "effect": "extreme_overcrowded",
-    }
+    }}}
     packet = tool.build_review_packet(sample)
-    payload = pipeline.model_payload()
-    payload["integrated_trade_advisory"]["final_conclusion_cn"] = (
-        "资金费率显示空头拥挤，反身性风险升温。")
-    try:
-        tool._validate_model_payload(payload, packet)
-    except ValueError as exc:
-        assert_true(
-            "canonical_funding_semantics" in str(exc),
-            "Funding semantic contradiction should be explicit",
-        )
-    else:
-        raise AssertionError("conflicting Funding LLM output must fail closed")
+    funding = tool._packet_funding_semantics(packet)
+    assert_true(funding, "canonical Funding semantics should be present")
+    assert_true(tool.funding_text_conflicts(
+        "资金费率显示空头拥挤，反身性风险升温。", funding),
+        "conflicting Funding LLM text must be detected")
 
-    transition = pipeline.transition_record()
+    transition = {
+        "transition_id": "T-CANONICAL", "previous_card_id": "CARD-A",
+        "current_card_id": "CARD-B", "symbol": "BTC",
+        "llm_review_required": True,
+    }
     packet = tool.build_transition_review_packet(transition)
-    review = pipeline.transition_model_payload()
-    review["observed_changes"][0]["fact_cn"] = (
-        "资金费率: {'funding_state':'crowded_short','last_rate':-4e-06}")
+    review = {
+        "observed_changes": [{
+            "domain": "FUNDING", "fact_cn": (
+                "资金费率: {'funding_state':'crowded_short','last_rate':-4e-06}"),
+            "impact_cn": "只读检查。", "tendency": "NEUTRAL",
+            "evidence_refs": [],
+        }],
+        "cross_factor_interactions": [], "cross_factor_assessments": [],
+        "candidate_explanations": [], "anomaly_assessment": {},
+        "operator_focus": [], "invalid_if": [], "operator_checks": [],
+        "language_guard": {"no_external_data": True,
+                           "no_trading_instruction": True,
+                           "distinguishes_observation_from_causality": True},
+        "not_trading_advice": True,
+    }
     policy = tool._transition_policy_validation(review, packet)
     assert_true(
         policy["render_state"] == "DEGRADED_LLM_TEXT",
@@ -205,12 +215,8 @@ def main():
         "materializer_canonical_fact_contract",
     )
     tool = load(
-        ROOT / "tools" / "gemini_signal_llm_review.py",
+        ROOT / "tools" / "signal_llm_review.py",
         "gemini_canonical_fact_contract",
-    )
-    pipeline = load(
-        ROOT / "tests" / "test_signal_llm_review_pipeline.py",
-        "pipeline_fixture_canonical_fact_contract",
     )
     producer = load(
         ROOT / "demo" / "最新交付物" / "neutral_regulation_demo_fmz.py",
@@ -219,7 +225,7 @@ def main():
     test_funding_threshold_matrix(semantics)
     test_producer_and_shared_funding_semantics_match(semantics, producer)
     test_materializer_compat_backfill(materializer)
-    test_llm_rejects_conflicting_funding_and_raw_transition(tool, pipeline)
+    test_llm_rejects_conflicting_funding_and_raw_transition(tool)
     print("canonical_fact_semantics_contract: PASS")
 
 

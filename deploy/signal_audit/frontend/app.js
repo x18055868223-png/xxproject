@@ -83,6 +83,7 @@
     MEDIUM_TO_LOW_BUFFER: "中转低缓冲带",
     MARKET_PRIOR_VALIDATED: "市场先验已验证",
     MARKET_PRIOR_VALIDATED_NOT_SIGNAL_CALIBRATED: "市场先验已验证 / 非信号校准",
+    MODEL_ESTIMATED: "模型估算",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
     MACRO: "宏观",
@@ -112,6 +113,7 @@
     OK: "正常",
     PARTIAL: "部分可用",
     PARTIAL_SUPPORT: "部分支持系统结论",
+    PACKET_OBSERVED: "卡内观测",
     PHASE_0_OBSERVE_ONLY: "观察层（不改信号）",
     PENDING_LLM: "等待 LLM 复核",
     POSITIVE_GAMMA: "正 Gamma",
@@ -448,6 +450,10 @@
     INFO: "信息提醒",
     CAUTION: "谨慎提醒",
     HIGH: "高提醒"
+  };
+  const future24hSourceLabels = {
+    MODEL_ESTIMATED: "模型估算",
+    PACKET_OBSERVED: "卡内观测"
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -947,6 +953,227 @@
     return listHtml(values, emptyText);
   }
 
+  function future24hMachineLeak(text) {
+    return /\[object Object\]|EV_[A-Z0-9_]+|MODEL_ESTIMATED|PACKET_OBSERVED|\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b|\b[a-z]+(?:_[a-z0-9]+)+(?:\.[a-z0-9_]+)*\b/.test(text);
+  }
+
+  function future24hChineseParagraph(value) {
+    if (typeof value !== "string") return "";
+    const text = value
+      .replaceAll("gamma_regime.flip_point", "卡内 Gamma 翻转点")
+      .replaceAll("gamma_regime.pin_strike", "卡内 Gamma 钉住位")
+      .replaceAll("gex_info.call_wall", "卡内上方 Gamma 墙")
+      .replaceAll("gex_info.put_wall", "卡内下方 Gamma 墙")
+      .replace(/\s+/g, " ").trim();
+    if (!/[\u4e00-\u9fff]/.test(text)) return "";
+    if (future24hMachineLeak(text)) return "";
+    return text;
+  }
+
+  function future24hReportRows(value) {
+    if (Array.isArray(value)) return value.map((item) => asObject(item)).filter((item) => Object.keys(item).length);
+    return Object.entries(asObject(value))
+      .map(([key, child]) => {
+        const row = asObject(child);
+        return Object.keys(row).length ? { key, ...row } : { key, value: child };
+      })
+      .filter((row) => Object.keys(row).length);
+  }
+
+  function future24hFirstRows(...values) {
+    for (const value of values) {
+      const rows = future24hReportRows(value);
+      if (rows.length) return rows;
+    }
+    return [];
+  }
+
+  function future24hFirstObject(...values) {
+    for (const value of values) {
+      const object = asObject(value);
+      if (Object.keys(object).length) return object;
+    }
+    return {};
+  }
+
+  function future24hRowLabel(row) {
+    return future24hChineseParagraph(firstPresent(
+      row.label_cn,
+      row.name_cn,
+      row.title_cn,
+      row.factor_cn,
+      row.domain_cn,
+      row.point_cn,
+      row.level_cn
+    ));
+  }
+
+  function future24hSourceKind(row) {
+    return rawEnum(firstPresent(
+      row.source_kind,
+      row.source_type,
+      row.value_source,
+      row.evidence_source
+    )).toUpperCase();
+  }
+
+  function future24hSourceText(row) {
+    return future24hSourceLabels[future24hSourceKind(row)] || "";
+  }
+
+  function future24hRowsAreComplete(rows) {
+    return rows.length > 0 && rows.every((row) => future24hRowLabel(row) && future24hSourceText(row));
+  }
+
+  function future24hReadableScalar(value) {
+    if (isNullish(value) || value === "") return "";
+    if (typeof value === "number") return number(value, 4);
+    if (typeof value === "boolean") return value ? "是" : "否";
+    if (Array.isArray(value) || typeof value === "object") return "";
+    const text = rawEnum(value).replace(/\s+/g, " ").trim();
+    const sourceText = future24hSourceLabels[text.toUpperCase()];
+    if (sourceText) return sourceText;
+    const compact = semanticCompact(text);
+    if (compact !== text) return compact;
+    if (future24hMachineLeak(text)) return "已记录";
+    return text;
+  }
+
+  function future24hFirstReadable(row, fields, fallback = "未说明") {
+    for (const field of fields) {
+      const text = future24hReadableScalar(row[field]);
+      if (text) return text;
+    }
+    return fallback;
+  }
+
+  function future24hValidationRows(validation) {
+    return flatten(validation)
+      .map(([path, value]) => [path, future24hReadableScalar(value)])
+      .filter(([, value]) => value)
+      .slice(0, 18);
+  }
+
+  function future24hReportCandidate(doc, advisory = null) {
+    const review = asObject(get(doc, "llm_review", {}));
+    const content = llmReviewContent(doc);
+    const candidates = [
+      get(advisory || {}, "future_24h_bayesian_report", null),
+      get(content, "integrated_trade_advisory.future_24h_bayesian_report", null),
+      get(review, "content.integrated_trade_advisory.future_24h_bayesian_report", null),
+      get(content, "future_24h_bayesian_report", null),
+      get(review, "content.future_24h_bayesian_report", null),
+      get(review, "future_24h_bayesian_report", null),
+      get(doc, "future_24h_bayesian_report", null)
+    ];
+    return asObject(candidates.find((candidate) => Object.keys(asObject(candidate)).length));
+  }
+
+  function future24hBayesianReport(doc, advisory = null) {
+    const review = asObject(get(doc, "llm_review", {}));
+    const content = llmReviewContent(doc);
+    if (rawEnum(review.status).toUpperCase() !== "OK") return null;
+    const report = future24hReportCandidate(doc, advisory);
+    if (!Object.keys(report).length) return null;
+    if (report.schema_version !== "future_24h_bayesian_report@1.0.0"
+      || Number(report.horizon_hours) !== 24
+      || report.input_scope !== "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH"
+      || report.live_external_data_used !== false
+      || !["UP", "DOWN", "RANGE"].includes(rawEnum(report.base_case).toUpperCase())) return null;
+    const parent = asObject(advisory || get(content, "integrated_trade_advisory", {}));
+    if (parent.audit_only !== true || parent.trade_authorization !== false) return null;
+    const summary = future24hChineseParagraph(report.report_cn);
+    const rawWeights = asObject(report.posterior_weights_pct);
+    const weightValues = [rawWeights.up, rawWeights.down, rawWeights.range];
+    if (!weightValues.every((value) => Number.isInteger(value) && value >= 0 && value <= 100)
+      || weightValues.reduce((sum, value) => sum + value, 0) !== 100) return null;
+    const weights = [
+      { label_cn: "上行情景", weight: `${rawWeights.up}%` },
+      { label_cn: "下行情景", weight: `${rawWeights.down}%` },
+      { label_cn: "区间情景", weight: `${rawWeights.range}%` }
+    ];
+    const pointSources = asArray(report.key_levels);
+    const validation = asObject(report.policy_validation);
+    if (!summary || summary.length > 900 || pointSources.length > 4
+      || !pointSources.every((row) => Number.isFinite(Number(row.price))
+        && future24hChineseParagraph(row.role_cn)
+        && future24hChineseParagraph(row.basis_cn)
+        && future24hSourceText(row))
+      || validation.passed !== true
+      || !future24hValidationRows(validation).length) {
+      return null;
+    }
+    return { summary, weights, pointSources, validation };
+  }
+
+  function renderFuture24hBayesianSummary(doc, advisory) {
+    const report = future24hBayesianReport(doc, advisory);
+    if (!report) return "";
+    return `<div class="future-24h-summary"><strong>未来 24 小时第一性推断</strong><p>${escapeHtml(report.summary)}</p></div>`;
+  }
+
+  function future24hSourceCell(row, doc) {
+    const label = future24hSourceText(row);
+    const ref = firstPresent(row.source_ref, row.source_path, row.packet_path);
+    if (future24hSourceKind(row) === "PACKET_OBSERVED" && ref) {
+      return sourceRefLink(ref, doc, label);
+    }
+    return `<span class="chip">${escapeHtml(label)}</span>`;
+  }
+
+  function renderFuture24hWeightRows(rows, doc) {
+    return rows.map((row) => `
+      <tr>
+        <td>${escapeHtml(future24hRowLabel(row))}</td>
+        <td><span class="chip">模型主观情景权重</span></td>
+        <td class="num">${escapeHtml(future24hFirstReadable(row, ["weight", "effective_weight", "configured_weight", "posterior_weight", "probability"], "未提供"))}</td>
+        <td>${escapeHtml(future24hFirstReadable(row, ["tendency_cn", "lean_cn", "direction_cn", "effect_cn", "basis_cn"], "未说明"))}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderFuture24hPointRows(rows, doc) {
+    return rows.map((row) => `
+      <tr>
+        <td>${escapeHtml(future24hChineseParagraph(row.role_cn))}</td>
+        <td>${future24hSourceCell(row, doc)}</td>
+        <td class="num">${escapeHtml(future24hFirstReadable(row, ["value_cn", "price_cn", "level_value", "value", "price", "level"], "未提供"))}</td>
+        <td>${escapeHtml(future24hFirstReadable(row, ["basis_cn", "reason_cn", "note_cn", "description_cn"], "未说明"))}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderFuture24hValidationRows(validation) {
+    return future24hValidationRows(validation).map(([path, value]) => `
+      <tr>
+        <td class="field-path">${escapeHtml(fieldLabel(path))}</td>
+        <td>${escapeHtml(value)}</td>
+      </tr>
+    `).join("");
+  }
+
+  function renderFuture24hBayesianTrace(doc) {
+    const report = future24hBayesianReport(doc);
+    if (!report) return "";
+    return `
+      <details id="${escapeHtml(rawTraceId("future_24h_bayesian_report"))}" class="factor-detail future-24h-trace raw-trace-group">
+        <summary><span>未来24小时贝叶斯报告追溯</span><span class="badge is-wait">只读辅助</span></summary>
+        <div class="future-24h-trace-block">
+          <h3 class="subsection-title">结构化权重</h3>
+          <div class="table-wrap"><table class="future-24h-table"><thead><tr><th>维度</th><th>来源性质</th><th>权重</th><th>含义</th></tr></thead><tbody>${renderFuture24hWeightRows(report.weights, doc)}</tbody></table></div>
+        </div>
+        <div class="future-24h-trace-block">
+          <h3 class="subsection-title">点位来源</h3>
+          <div class="table-wrap"><table class="future-24h-table"><thead><tr><th>点位</th><th>来源性质</th><th>数值</th><th>依据</th></tr></thead><tbody>${renderFuture24hPointRows(report.pointSources, doc)}</tbody></table></div>
+        </div>
+        <div class="future-24h-trace-block">
+          <h3 class="subsection-title">验证信息</h3>
+          <div class="table-wrap"><table class="future-24h-table"><thead><tr><th>字段</th><th>可读值</th></tr></thead><tbody>${renderFuture24hValidationRows(report.validation)}</tbody></table></div>
+        </div>
+      </details>
+    `;
+  }
+
   function integratedTradeAdvisory(doc) {
     const review = asObject(get(doc, "llm_review", {}));
     if (rawEnum(review.status).toUpperCase() !== "OK") return null;
@@ -970,10 +1197,12 @@
       "session_advisory",
       "source_alignment",
       "audit_only",
-      "trade_authorization"
+      "trade_authorization",
+      "policy_validation"
     ];
     if (required.some((key) => !(key in advisory))) return null;
     if (advisory.audit_only !== true || advisory.trade_authorization !== false) return null;
+    if (asObject(advisory.policy_validation).passed !== true) return null;
     if (!advisoryRecommendationLabels[rawEnum(advisory.recommendation).toUpperCase()]) return null;
 
     const containment = asObject(advisory.containment_assessment);
@@ -1025,6 +1254,7 @@
             <em>只读辅助，不是交易许可</em>
           </div>
         </div>
+        ${renderFuture24hBayesianSummary(doc, advisory)}
         <div class="integrated-advisory-grid">
           <div>
             <span>中性接管</span>
@@ -3463,6 +3693,8 @@
   function renderFactorCrossSection(doc) {
     const crossSection = asObject(get(doc, "factor_cross_section", {}));
     const navEntries = [];
+    const future24hTrace = renderFuture24hBayesianTrace(doc);
+    if (future24hTrace) navEntries.push({ ref: "future_24h_bayesian_report", label: "24h贝叶斯报告" });
     const blocks = Object.entries(crossSection).map(([key, value]) => {
       const ref = `factor_cross_section.${key}`;
       navEntries.push({ ref, label: key });
@@ -3503,7 +3735,7 @@
     const nav = navEntries.length
       ? `<nav class="raw-trace-nav" aria-label="原始截面快速跳转"><span class="raw-trace-nav-title">原始截面跳转</span>${navEntries.map((item) => `<a href="#${escapeHtml(rawTraceId(item.ref))}">${escapeHtml(item.label)}</a>`).join("")}</nav>`
       : "";
-    return section("因子原始截面", "按 JSON 分组保留完整字段；账本只显示决策摘要，完整原始值在这里追溯。", `${nav}<div class="factor-list">${blocks || `<div class="empty">暂无 factor_cross_section</div>`}${evidenceRawBlocks}</div>`);
+    return section("因子原始截面", "按 JSON 分组保留完整字段；账本只显示决策摘要，完整原始值在这里追溯。", `${nav}<div class="factor-list">${future24hTrace}${blocks || `<div class="empty">暂无 factor_cross_section</div>`}${evidenceRawBlocks}</div>`);
   }
 
   function renderProvenance(doc) {

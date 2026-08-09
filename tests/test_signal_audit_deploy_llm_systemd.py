@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -7,6 +8,14 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy" / "signal_audit"
+EXPECTED_LLM_PROVIDER = "deepseek"
+EXPECTED_LLM_MODEL = "deepseek-v4-flash"
+EXPECTED_LLM_SCHEMA = "signal_llm_review@1.5.0"
+EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@1.5.3"
+EXPECTED_LLM_MODE = "two_call_strict"
+EXPECTED_LLM_CALL_COUNT = 2
+EXPECTED_TRANSITION_SCHEMA = "signal_transition_llm_review@1.3.0"
+EXPECTED_TRANSITION_PROMPT = "signal_transition_llm_review_prompt@1.3.2"
 
 
 def assert_true(condition, message):
@@ -29,14 +38,18 @@ def extract_integrated_advisory_probe(self_check):
 
 
 def integrated_advisory_review(status="OK",
-                               schema="signal_llm_review@1.4.0",
+                               schema=EXPECTED_LLM_SCHEMA,
                                recommendation="WAIT_FOR_CONFIRMATION",
                                policy_passed=True,
                                authorization_separated=True):
     return {
         "schema": schema,
         "status": status,
-        "prompt_version": "gemini_signal_review_prompt@1.4.7",
+        "provider": EXPECTED_LLM_PROVIDER,
+        "model": EXPECTED_LLM_MODEL,
+        "prompt_version": EXPECTED_LLM_PROMPT,
+        "blind_review_mode": EXPECTED_LLM_MODE,
+        "llm_call_count": EXPECTED_LLM_CALL_COUNT,
         "integrated_trade_advisory": {
             "recommendation": recommendation,
             "final_conclusion_cn": "当前结论仅进入结构复核。",
@@ -66,6 +79,19 @@ def integrated_advisory_review(status="OK",
             "source_alignment": "PARTIALLY_ALIGNED",
             "audit_only": True,
             "trade_authorization": False,
+            "future_24h_bayesian_report": {
+                "schema_version": "future_24h_bayesian_report@1.0.0",
+                "horizon_hours": 24,
+                "input_scope": "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH",
+                "live_external_data_used": False,
+                "base_case": "RANGE",
+                "posterior_weights_pct": {"up": 30, "down": 30, "range": 40},
+                "report_cn": "包内事实支持区间基准情景，继续观察反证与失效条件。",
+                "key_levels": [],
+                "counter_evidence_cn": ["方向证据仍可能增强。"],
+                "invalid_if_cn": ["包内方向证据显著改变。"],
+                "policy_validation": {"passed": True},
+            },
             "policy_validation": {
                 "passed": policy_passed,
                 "authorization_is_not_structure_gate": authorization_separated,
@@ -114,7 +140,9 @@ def run_integrated_advisory_probe(self_check, review_records,
         return subprocess.run(
             [
                 sys.executable, "-c", code, str(source), str(reviews),
-                str(audit_root), "gemini_signal_review_prompt@1.4.7",
+                str(audit_root), EXPECTED_LLM_PROVIDER, EXPECTED_LLM_MODEL,
+                EXPECTED_LLM_SCHEMA, EXPECTED_LLM_PROMPT, EXPECTED_LLM_MODE,
+                str(EXPECTED_LLM_CALL_COUNT),
             ],
             capture_output=True,
             text=True,
@@ -145,7 +173,7 @@ def assert_integrated_advisory_probe_behavior(self_check):
     old_schema_result = run_integrated_advisory_probe(
         self_check, [{"card_id": card_id, "llm_review": old_schema}])
     assert_true(old_schema_result.returncode != 0
-                and "schema is not signal_llm_review@1.4.0"
+                and "schema is not signal_llm_review@1.5.0"
                 in (old_schema_result.stdout + old_schema_result.stderr),
                 "strict probe must reject old LLM review schemas")
 
@@ -274,10 +302,25 @@ def main():
                 "LLM service should load the protected server env file")
     assert_true("EnvironmentFile=-/etc/signal-audit/llm.env" in llm_service,
                 "LLM service should tolerate missing env until key is configured")
-    assert_true("GEMINI_CHANNEL1_API_KEY" in llm_env
-                and "GEMINI_CHANNEL2_API_KEY" in llm_env,
-                "LLM env example should document two Gemini key channels")
-    for legacy_name in ("GEMINI_API_KEY=", "GEMINI_PAID_API_KEY=", "GEMINI_FALLBACK_API_KEY="):
+    assert_true("LLM_PROVIDER=deepseek" in llm_env
+                and "LLM_API_KEY=" in llm_env
+                and "LLM_BASE_URL=https://api.deepseek.com" in llm_env
+                and f"LLM_MODEL={EXPECTED_LLM_MODEL}" in llm_env,
+                "LLM env example should document provider-neutral DeepSeek config")
+    assert_true("LLM_REVIEW_LIMIT=4" in llm_env
+                and "TRANSITION_REVIEW_LIMIT=4" in llm_env
+                and "LLM_MAX_CONCURRENCY=4" in llm_env
+                and "LLM_DAILY_HTTP_CAP=60" in llm_env,
+                "LLM env example should fix review limits, concurrency, and daily cap")
+    assert_true("LLM_BLIND_EFFORT=low" in llm_env
+                and "LLM_RECON_EFFORT=high" in llm_env
+                and "LLM_TRANSITION_EFFORT=low" in llm_env
+                and "LLM_BLIND_TIMEOUT=60" in llm_env
+                and "LLM_RECON_TIMEOUT=240" in llm_env
+                and "LLM_TRANSITION_TIMEOUT=120" in llm_env,
+                "LLM env example should document per-stage efforts and timeouts")
+    for legacy_name in ("GEMINI_API_KEY=", "GEMINI_PAID_API_KEY=", "GEMINI_FALLBACK_API_KEY=",
+                        "GEMINI_CHANNEL1_API_KEY=", "GEMINI_CHANNEL2_API_KEY="):
         assert_true(legacy_name not in llm_env,
                     "LLM env example should not expose legacy key entry " + legacy_name)
     assert_true("AIza" not in llm_env and "sk-" not in llm_env,
@@ -286,26 +329,44 @@ def main():
                 "LLM service should call the guarded runner")
     assert_true("--reviews-output" in runner,
                 "LLM runner should write sidecar reviews")
-    assert_true("GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY are not configured" in runner,
-                "LLM runner should skip cleanly before both key channels are configured")
-    assert_true("GEMINI_API_KEY:-" not in runner
-                and "GEMINI_PAID_API_KEY:-" not in runner
-                and "GEMINI_FALLBACK_API_KEY:-" not in runner,
-                "LLM runner should only read the two channel key names")
+    assert_true("LLM_API_KEY is not configured" in runner,
+                "LLM runner should skip cleanly before the provider-neutral key is configured")
+    assert_true("flock -n" in runner
+                and "run_signal_llm_review.lock" in runner,
+                "LLM runner should use a non-blocking flock guard")
+    assert_true("GEMINI_" not in runner,
+                "LLM runner should not read any Gemini environment variables")
+    assert_true('exec /usr/bin/python3 "$TOOLS_ROOT/signal_llm_review_entry.py"' in runner
+                and "--provider" in runner
+                and "--base-url" in runner
+                and "--concurrency" in runner
+                and "--daily-cap" in runner
+                and "--blind-mode" not in runner
+                and "--recon-effort" in runner
+                and "--transition-timeout" in runner,
+                "LLM runner should invoke the provider-neutral entrypoint with DeepSeek controls")
     assert_true("LLM_REVIEWS_SOURCE" in llm_service,
                 "LLM service should use a stable sidecar path")
     assert_true("signal-audit-materialize.service" in llm_service,
                 "LLM service should refresh materialized cards after reviews")
     assert_true("ExecStartPre=/bin/systemctl start signal-audit-materialize.service" in llm_service,
                 "LLM service should materialize before review so transition ledger is current")
-    assert_true("ExecStartPost=/bin/systemctl start signal-audit-materialize.service" in llm_service,
-                "LLM service should materialize after review so sidecars are merged")
+    assert_true("ExecStopPost=/bin/systemctl start signal-audit-materialize.service" in llm_service,
+                "LLM service must materialize after both successful and failed review runs")
+    assert_true("ExecStartPost=" not in llm_service,
+                "success-only post materialization would delay ERROR sidecar visibility")
+    assert_true('--api-key "$LLM_API_KEY"' not in runner,
+                "runner must not expose LLM_API_KEY through process arguments")
     assert_true("MemoryMax=256M" in llm_service,
                 "LLM service should be capped for a 1GB server")
-    assert_true("TimeoutStartSec=300" in llm_service,
-                "LLM service timeout should allow two slow Gemini calls plus channel fallback overhead")
-    assert_true("OnUnitActiveSec=180" in llm_timer,
-                "LLM timer should run automatically but not too aggressively")
+    assert_true("TimeoutStartSec=600" in llm_service,
+                "LLM service timeout must cover the full-output stage budgets and materialization")
+    service_timeout = int(re.search(r"TimeoutStartSec=(\d+)", llm_service).group(1))
+    stage_budget = 60 + 240 + 120
+    assert_true(service_timeout >= stage_budget + 120,
+                "LLM service timeout must retain at least two minutes of orchestration slack")
+    assert_true("OnUnitInactiveSec=60" in llm_timer,
+                "LLM timer should wait 60 seconds after the prior run completes")
     assert_true("SCRIPT_DIR=" in install and "DEPLOY_SRC=" in install,
                 "install script should support both git and zip package layouts")
     assert_true("signal-audit-llm-review.timer" in install,
@@ -324,6 +385,12 @@ def main():
                 and "TRANSITION_LEDGER_SOURCE" in runner
                 and "TRANSITION_LLM_REVIEWS_SOURCE" in runner,
                 "LLM runner should invoke card and transition review modes together")
+    assert_true("LLM_BLIND_MODE" not in llm_env
+                and "Environment=LLM_BLIND_MODE" not in llm_service
+                and "--blind-mode" not in runner
+                and "TRANSITION_BLIND_MODE=single_call_evidence_first" in llm_env
+                and "--transition-blind-mode" in runner,
+                "main card reviews should not be forced to single-call while transition stays single-call")
     assert_true("TRANSITION_REQUIRED" in self_check
                 and "TRANSITION_LLM_REQUIRED" in self_check
                 and "transition_context" in self_check
@@ -340,24 +407,39 @@ def main():
                 and "signal-audit-llm.env.example" in package
                 and "signal_fact_semantics.py" in package,
                 "package script should include LLM systemd assets")
+    assert_true("signal_llm_review.py" in package
+                and "signal_llm_review_entry.py" in package
+                and "gemini_signal_llm_review.py" not in package
+                and "gemini_signal_llm_review_entry.py" not in package,
+                "package script should include provider-neutral LLM tools")
     assert_true("signal_fact_semantics.py" in install,
                 "install script should deploy deterministic fact semantics")
+    assert_true("signal_llm_review.py" in install
+                and "signal_llm_review_entry.py" in install
+                and "LLM_API_KEY before expecting reviews" in install,
+                "install script should deploy provider-neutral LLM tools and env")
     assert_true("GEX_REQUIRED" in self_check
                 and "skipped gexmonitorapi.service check" in self_check
                 and "skipped GEX Monitor API active checks" in self_check,
                 "self-check should support signal-audit-only hosts without GEX")
-    assert_true("Gemini channel 1 key is configured" in self_check
-                and "Gemini channel 2 key is configured" in self_check
+    assert_true("LLM provider matches expected provider" in self_check
+                and "LLM model matches expected model" in self_check
+                and "LLM API key is configured in environment" in self_check
                 and "api_key_route" in self_check,
-                "self-check should expose Gemini key channel readiness and route")
+                "self-check should expose provider-neutral key readiness and route")
     assert_true("LLM_REQUIRED" in self_check
-                and "latest signal card has OK two-call LLM sidecar review" in self_check
+                and "latest signal card has OK provider-neutral strict two-call LLM sidecar review" in self_check
                 and "blind_review_mode" in self_check
                 and "llm_call_count" in self_check,
-                "self-check should prove latest card has a two-call LLM review when required")
+                "self-check should prove latest card has a strict two-call LLM review when required")
     assert_true("INTEGRATED_ADVISORY_REQUIRED=\"${INTEGRATED_ADVISORY_REQUIRED:-0}\"" in self_check
                 and "INTEGRATED_ADVISORY_REQUIRED=%s\\n" in self_check
-                and "signal_llm_review@1.4.0" in self_check
+                and EXPECTED_LLM_SCHEMA in self_check
+                and EXPECTED_LLM_PROMPT in self_check
+                and EXPECTED_LLM_PROVIDER in self_check
+                and EXPECTED_LLM_MODEL in self_check
+                and EXPECTED_LLM_MODE in self_check
+                and f'EXPECTED_LLM_CALL_COUNT="${{EXPECTED_LLM_CALL_COUNT:-{EXPECTED_LLM_CALL_COUNT}}}"' in self_check
                 and "integrated_trade_advisory" in self_check
                 and "ADVISORY_RECOMMENDATIONS" in self_check
                 and "latest matching llm_review is not OK" in self_check
@@ -369,11 +451,15 @@ def main():
                 in self_check,
                 "self-check should default to the current FMZ producer version")
     assert_true(
-        'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-gemini_signal_review_prompt@1.4.7}"'
+        f'EXPECTED_LLM_PROMPT_VERSION="${{EXPECTED_LLM_PROMPT_VERSION:-{EXPECTED_LLM_PROMPT}}}"'
         in self_check
         and "prompt version does not match bounded entrypoint" in self_check,
         "self-check should require the current bounded runtime prompt",
     )
+    assert_true(EXPECTED_TRANSITION_SCHEMA in self_check
+                and EXPECTED_TRANSITION_PROMPT in self_check
+                and "latest transition has OK provider-neutral single-call LLM review" in self_check,
+                "self-check should require the current provider-neutral transition review contract")
     assert_integrated_advisory_probe_behavior(self_check)
 
     print("signal_audit_deploy_llm_systemd: PASS")

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Generate sidecar LLM reviews for signal audit cards with Gemini.
+"""Generate sidecar LLM reviews for signal audit cards.
 
 This tool is intentionally outside the FMZ signal loop. It reads the local
-signal_review.jsonl output, asks Gemini for an audit-only review, and writes a
+signal_review.jsonl output, asks the configured LLM for an audit-only review, and writes a
 small sidecar JSONL that the static materializer can merge into card JSON.
 """
 
 import argparse
+import concurrent.futures
+from contextlib import contextmanager
 import datetime as _dt
 import hashlib
 import json
@@ -15,6 +17,9 @@ from pathlib import Path
 import re
 import socket
 import sys
+import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -30,17 +35,33 @@ from signal_fact_semantics import (  # noqa: E402
 )
 
 
-DEFAULT_MODEL = "gemini-3.5-flash"
+DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.4.0"
-PROMPT_VERSION = "gemini_signal_review_prompt@1.4.5"
-PACKET_VERSION = "signal_llm_review_packet@1.1.1"
-BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.1.0"
-TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
-TRANSITION_PROMPT_VERSION = "gemini_signal_transition_review_prompt@1.2.5"
+OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
+PROVIDER = "deepseek"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.0"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
+PACKET_VERSION = "signal_llm_review_packet@1.2.0"
+BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.2.0"
+TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.3.0"
+TRANSITION_PROMPT_VERSION = "signal_transition_llm_review_prompt@1.3.2"
 TRANSITION_PACKET_VERSION = "SignalTransitionReviewPacket@1.1.1"
 TRANSITION_EVIDENCE_CATALOG_VERSION = "transition_evidence_catalog@1.0.0"
+CALL_PROFILE_MAIN_BLIND = "main_blind_low"
+CALL_PROFILE_MAIN_RECONCILIATION = "main_reconciliation_high"
+CALL_PROFILE_TRANSITION = "transition_single_low"
+CALL_PROFILE_TRANSITION_BLIND = "transition_blind_low"
+CALL_PROFILE_TRANSITION_RECONCILIATION = "transition_reconciliation_high"
+CALL_PROFILE_MAX_TOKENS = {
+    CALL_PROFILE_MAIN_BLIND: 4096,
+    CALL_PROFILE_MAIN_RECONCILIATION: 32768,
+    CALL_PROFILE_TRANSITION: 16384,
+    CALL_PROFILE_TRANSITION_BLIND: 4096,
+    CALL_PROFILE_TRANSITION_RECONCILIATION: 16384,
+}
+DEFAULT_DAILY_HTTP_LIMIT = 60
+RETRY_COOLDOWN_SECONDS = (120, 300, 900)
+_APPEND_LOCK = threading.Lock()
 TRANSITION_RAW_FIELD_LEAK_PATTERNS = (
     ("factor_cross_section", re.compile(r"\bfactor_cross_section(?:\.[A-Za-z0-9_]+)*")),
     ("macro_pressure.components", re.compile(r"\bmacro_pressure\.components(?:\.[A-Za-z0-9_]+)*")),
@@ -81,7 +102,10 @@ SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"[A-Za-z]:\\[^,\]\}\n\r\t ]+"),
     re.compile(r"/(?:home|opt|var|etc|root|Users)/[^,\]\}\n\r\t ]+"),
 )
-RETRYABLE_GEMINI_HTTP_CODES = {429, 500, 502, 503, 504}
+RETRYABLE_LLM_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+FATAL_LLM_CONFIG_HTTP_CODES = {401, 403}
+DEFAULT_INLINE_HTTP_RETRY_DELAY_SECONDS = 5.0
+MAX_INLINE_HTTP_RETRY_DELAY_SECONDS = 10.0
 REQUIRED_REVIEW_FIELDS = (
     "summary_cn",
     "agreement_with_system",
@@ -136,6 +160,27 @@ ADVISORY_LIQUIDITY_ASSESSMENTS = {
 ADVISORY_WARNING_LEVELS = {"NONE", "INFO", "CAUTION", "HIGH"}
 ADVISORY_SOURCE_ALIGNMENTS = {
     "ALIGNED", "PARTIALLY_ALIGNED", "DIVERGENT", "UNABLE_TO_JUDGE",
+}
+FUTURE_24H_STATES = {
+    "BULLISH_CONTINUATION",
+    "BEARISH_CONTINUATION",
+    "RANGE_BOUND",
+    "VOLATILE_TWO_SIDED",
+    "UNABLE_TO_JUDGE",
+}
+FUTURE_24H_PROBABILITY_BASIS = {
+    "EVIDENCE_ANCHORED",
+    "MODEL_ESTIMATED",
+    "UNABLE_TO_JUDGE",
+}
+FUTURE_24H_EFFECTS = {
+    "RAISES_BULLISH_ODDS",
+    "RAISES_BEARISH_ODDS",
+    "RAISES_RANGE_ODDS",
+    "RAISES_TWO_SIDED_VOL_ODDS",
+    "LOWERS_CONFIDENCE",
+    "NEUTRAL",
+    "UNABLE_TO_JUDGE",
 }
 ADVISORY_HUMAN_RAW_TOKENS = {
     *ADVISORY_RECOMMENDATIONS,
@@ -434,7 +479,9 @@ def build_blind_theoretical_packet(packet):
     return _safe_copy(blind)
 
 
-def build_blind_prompt(packet):
+# Historical prompt text is kept only for source-level comparison during this
+# migration. Runtime calls resolve to the clean builders defined below.
+def _build_legacy_blind_prompt(packet):
     blind_packet = build_blind_theoretical_packet(packet)
     return (
         "你是交易信号审计复核员。现在是第一次独立盲读调用。\n"
@@ -480,7 +527,7 @@ def build_blind_prompt(packet):
     )
 
 
-def build_prompt(packet, blind_payload=None):
+def _build_legacy_prompt(packet, blind_payload=None):
     if not blind_payload:
         blind_payload = {
             "theoretical_active_view": _default_theoretical_active_view(
@@ -544,7 +591,19 @@ def build_prompt(packet, blind_payload=None):
         "13. integrated_trade_advisory.audit_only 必须为 true，trade_authorization 必须为 false。\n"
         "14. theoretical_active_view 与 gamma_regime_lens 必须沿用 BLIND_REVIEW_RESULT，"
         "它们是第一次调用产生的真盲读结果。\n"
-        "15. 只输出 JSON，不要 markdown，不要额外解释。\n\n"
+        "15. 只输出 JSON，不要 markdown，不要额外解释。\n"
+        "15a. 输出必须完整但克制：先在内部确定全部必需字段再一次性生成最终对象；"
+        "不得复述输入、schema、字段名或同一证据。除 report_cn 外，每个中文解释字段原则上不超过180字，"
+        "每个中文列表项原则上不超过120字；在信息充分的前提下用最短表述，并在填满必需字段后立即结束。\n"
+        "16. integrated_trade_advisory.future_24h_bayesian_report is a 24-hour "
+        "audit-only first-principles Bayesian scenario report. Use only packet "
+        "facts plus model prior knowledge, never live search or invented current "
+        "news. posterior_weights_pct are subjective scenario weights, integers "
+        "summing to 100, never calibrated probabilities. report_cn must be one "
+        "Chinese paragraph covering base direction, all three weights, key levels, "
+        "counter-evidence and invalidation. PACKET_OBSERVED prices must exactly "
+        "match packet numbers. MODEL_ESTIMATED levels must be called 模型估算观察位 "
+        "in basis_cn and must never be entry, stop, strike, expiry or order prices.\n\n"
         "字段含义摘要：\n"
         "- market_context: 当前价格、报价币种和价格来源。\n"
         "- decision: 程序化系统结论；必须作为只读事实。\n"
@@ -558,6 +617,99 @@ def build_prompt(packet, blind_payload=None):
         f"{json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)}\n\n"
         "FULL_AUDIT_PACKET JSON：\n"
         f"{json.dumps(packet, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+_BAYESIAN_REASONING_PROTOCOL = """
+第一性贝叶斯审计协议（必须执行，但不要输出逐步思维链）：
+1. 先把信息分为 PACKET_OBSERVED（卡内明示事实）、MODEL_PRIOR（非实时的一般机制知识）与 UNKNOWN（缺失或不可比）；不得把模型参数知识写成当前市场事实，不得补写实时新闻、事件或行情。
+2. 用三个互斥且穷尽的 24 小时情景 UP、DOWN、RANGE 比较解释力。先采用保守、不过度偏向任一方向的起点，再只用卡内证据更新；缺失本身只是降低把握度，不自动支持 RANGE。
+3. 先将证据按共同来源或共同机制分簇，例如方向/量价、宏观压力、Funding/拥挤、Skew/期权需求、Gamma/GEX/空间约束、数据质量。同簇内高度相关的指标只算一次主要更新，禁止把派生字段、摘要和原始字段重复计票。
+4. 对每个证据簇只判断它更支持哪个情景、区分度强弱、质量与反证；不要虚构似然率、样本频率或精确校准。冲突证据不得平均抹平，必须指出哪一项若成立会推翻基准情景。
+5. posterior_weights_pct 是模型主观情景权重而非已校准胜率，必须为整数且合计 100；base_case 必须是最高权重情景（并列时选择证据链更短、假设更少者）。权重集中度必须与数据质量、独立证据簇数量和冲突程度一致，证据弱或高度相关时不得给出虚假高确定性。
+6. 关键点位先复用卡内现价、GEX 中轴、wall、pin 或其他明确数值；PACKET_OBSERVED 必须逐值一致。确需估算时标为 MODEL_ESTIMATED，basis_cn 必须含“模型估算观察位”并写明推导逻辑，不得伪装成 producer/GEX 事实或交易执行参数。
+7. 反证优先：counter_evidence_cn 写当前已存在且削弱基准情景的证据；invalid_if_cn 写未来观察到何种状态会使基准解释失效。两者不得写成同义重复。
+8. report_cn 只写一段自然中文，依次覆盖：基准走向及因果边界；上涨/下跌/区间三项主观权重；关键观察位与来源；最重要反证；失效条件。用“支持、削弱、约束、与……一致”等审计语言，不把共同出现写成已证实因果。
+9. 在内部完成比较、去重和一致性检查，只输出最终 JSON；不要输出、复述或索取 reasoning_content，也不要展示逐步思维链。
+"""
+
+_MAIN_JSON_SHAPE_EXAMPLE = """
+期望 JSON 结构示例（省略号仅说明字段含义，实际输出不得使用省略号，必须填满本地 schema 的全部必需字段）：
+{"summary_cn":"自然中文摘要","agreement_with_system":"枚举","caution_level":"枚举","theoretical_active_view":{},"gamma_regime_lens":{},"integrated_trade_advisory":{"recommendation":"枚举","final_conclusion_cn":"自然中文","cross_loop_rationale_cn":"自然中文","containment_assessment":{},"premium_selling_fit":{},"side_basis_cn":"自然中文","dominant_conflict_cn":"自然中文","key_premises":[{"premise_cn":"自然中文前提","evidence_refs":["必须替换为输入证据目录中的真实id"]}],"invalid_if":["自然中文失效条件"],"next_observation_cn":"自然中文","session_advisory":{},"source_alignment":"枚举","audit_only":true,"trade_authorization":false,"future_24h_bayesian_report":{"schema_version":"future_24h_bayesian_report@1.0.0","horizon_hours":24,"input_scope":"PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH","live_external_data_used":false,"base_case":"UP","posterior_weights_pct":{"up":34,"down":33,"range":33},"report_cn":"单段自然中文","key_levels":[],"counter_evidence_cn":["自然中文"],"invalid_if_cn":["自然中文"]}},"main_supporting_factors":["自然中文支持项"],"main_risks_or_conflicts":["自然中文风险"],"operator_focus":["自然中文观察重点"],"invalid_if":["自然中文失效条件"],"not_trading_advice":true}
+"""
+
+_TRANSITION_REASONING_PROTOCOL = """
+状态转移第一性审计协议（内部执行，不输出逐步思维链）：
+1. delta-first：只解释 packet 已计算的前后变化，不重新预测价格，不重算 decision、confidence、blocking 或 materiality。
+2. 将相关变化按 domain 与共同机制分簇；原始字段、派生字段和系统摘要不得重复计票，materiality 只用于排序而不是证据。
+3. 严格分开 PACKET_OBSERVED 的事实变化、SYSTEM_ASSERTIONS 的系统标签，以及 causal_status=UNVERIFIED 的候选解释；缺失或不可比必须保留为未知。
+4. 每个变化都要说明它支持、削弱、抵消或不影响哪一项审计骨架，并给出足以改变当前解释的反证或失效观察；不得把共同出现写成已证实因果。
+5. 只输出最终 JSON，不输出 reasoning_content、逐步思维链、外部事实或交易授权。
+"""
+
+
+def build_blind_prompt(packet):
+    blind_packet = build_blind_theoretical_packet(packet)
+    return (
+        "你是中性回路的第一次独立盲读复核员。第一性目标是：在不知道 producer 结论的条件下，"
+        "从卡内事实提炼一个可被第二次调用检验的理论视角，而不是猜测系统答案。\n"
+        "信息边界：只能使用 BLIND_THEORETICAL_PACKET；不得推断或提及 decision、reasoning、conflict、"
+        "blocking、trade_allowed 或完整卡结论；不得使用外部行情、实时新闻或未提供事实；不得给出任何交易执行参数。\n"
+        "方法：先按方向/量价、宏观、Funding/拥挤、Skew/期权需求、Gamma/GEX/空间约束和数据质量分簇；"
+        "同源或派生指标不得重复计票。至少两个相互独立的证据簇才可形成明确倾向，否则使用 MIXED_UNCLEAR 或 UNABLE_TO_JUDGE。"
+        "每个倾向必须同时给出最强反证或关键未知。Gamma/GEX 只能作为波动、尾部和空间约束叠加层，不能单独创造或翻转方向；"
+        "数据缺失、窗口不足或符号假设不稳时必须降级。\n"
+        "在内部完成比较，但不要输出逐步思维链或 reasoning_content。只输出一个合法 JSON 对象，不要 markdown 或 JSON 外文字。\n"
+        "期望 JSON 结构示例（实际输出必须满足本地 schema）："
+        "{\"theoretical_active_view\":{\"bias\":\"MIXED_UNCLEAR\",\"conviction\":\"LOW\","
+        "\"basis_cn\":\"自然中文\",\"key_drivers\":[],\"counter_evidence\":[],\"boundary_cn\":\"自然中文\"},"
+        "\"gamma_regime_lens\":{}}\n"
+        "LOCAL_RESPONSE_JSON_SCHEMA（最终对象必须逐字段满足）：\n"
+        + json.dumps(_strip_schema_for_legacy(blind_response_schema()),
+                     ensure_ascii=False, separators=(",", ":"))
+        + "\n"
+        "BLIND_THEORETICAL_PACKET JSON：\n"
+        + json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)
+    )
+
+
+def build_prompt(packet, blind_payload=None):
+    if not blind_payload:
+        blind_payload = {
+            "theoretical_active_view": _default_theoretical_active_view(
+                "盲读结果缺失，仅保留完整审计复核。"),
+            "gamma_regime_lens": _default_gamma_regime_lens(
+                "盲读结果缺失，仅保留完整审计复核。"),
+        }
+    blind_payload = _validate_blind_payload(blind_payload)
+    return (
+        "你是中性回路的第二次对照复核员，角色是审计旁路而非交易执行系统。第一性目标是："
+        "在不改变 producer 决策与第一次盲读的前提下，最大化对人工辅助决策有用且可追溯的信息，"
+        "以最少额外假设收束跨回路证据，并明确最可能推翻结论的反证。\n"
+        "不可变边界：decision 的方向、confidence、EDB、blocking、trade_allowed 与 execution_allowed 均为只读；"
+        "BLIND_REVIEW_RESULT 的 theoretical_active_view 和 gamma_regime_lens 必须原样沿用，不得重写。"
+        "不得使用实时搜索、外部行情、新闻或未提供的当前事实；模型参数知识只可作为一般机制先验并明确与卡内事实分离。"
+        "不得给出开平仓、仓位、杠杆、订单、止损止盈、到期日或行权价等执行建议；audit_only 必须为 true，"
+        "trade_authorization 必须为 false。\n"
+        "裁决顺序：数据是否足够与可比 -> producer 是否硬阻断/明确等待 -> 中性接管是否成立 -> 卖方结构机械适配度 -> "
+        "哪一侧容错更合理 -> producer、盲读与完整证据是否一致。硬阻断只能输出 NO_TRADE 或 UNABLE_TO_JUDGE；"
+        "明确多空背离只能降级为 WAIT_FOR_CONFIRMATION、NO_TRADE 或 UNABLE_TO_JUDGE。producer 为精确 NEUTRAL 时不得给出方向价差复核。"
+        "trade_allowed=false 只表示执行隔离，不能单独作为等待或不交易理由。\n"
+        "证据规则：confidence 是证据质量而非胜率；不得重算 producer 权重；同一原始量、派生量、摘要或系统标签不得重复计票。"
+        "Funding 只按 canonical_funding_semantics 解读，原始费率缺失则无法判断；Gamma/GEX 只约束分布、波动和尾部，不能单独决定方向；"
+        "session/comfort_window 只作流动性提醒。key_premises.evidence_refs 只能引用 evidence_catalog 中真实存在的 id。\n"
+        + _BAYESIAN_REASONING_PROTOCOL
+        + "\n输出纪律：所有机器枚举只放在对应 JSON 枚举字段；所有 *_cn 与人读列表使用自然中文，不泄漏字段路径或机器代码。"
+        "最终建议必须说明支持项、主冲突、成立前提、下一观察重点与失效条件，不能只是复述 direction/confidence。"
+        "只输出一个合法 JSON 对象，不要 markdown 或 JSON 外解释。\n"
+        + _MAIN_JSON_SHAPE_EXAMPLE
+        + "\nLOCAL_RESPONSE_JSON_SCHEMA（最终对象必须逐字段满足）：\n"
+        + json.dumps(_strip_schema_for_legacy(review_response_schema()),
+                     ensure_ascii=False, separators=(",", ":"))
+        + "\nBLIND_REVIEW_RESULT JSON（不可改写）：\n"
+        + json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)
+        + "\nFULL_AUDIT_PACKET JSON：\n"
+        + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )
 
 
@@ -642,6 +794,7 @@ def integrated_trade_advisory_schema():
             },
             "audit_only": {"type": "boolean"},
             "trade_authorization": {"type": "boolean"},
+            "future_24h_bayesian_report": future_24h_bayesian_report_schema(),
         },
         "required": [
             "recommendation",
@@ -658,9 +811,92 @@ def integrated_trade_advisory_schema():
             "source_alignment",
             "audit_only",
             "trade_authorization",
+            "future_24h_bayesian_report",
         ],
     }
 
+
+
+def future_24h_bayesian_report_schema():
+    short_text = {"type": "string", "minLength": 1, "maxLength": 260}
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema_version": {
+                "type": "string",
+                "enum": ["future_24h_bayesian_report@1.0.0"],
+            },
+            "horizon_hours": {"type": "number"},
+            "input_scope": {
+                "type": "string",
+                "enum": ["PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH"],
+            },
+            "live_external_data_used": {"type": "boolean"},
+            "base_case": {
+                "type": "string",
+                "enum": ["UP", "DOWN", "RANGE"],
+            },
+            "posterior_weights_pct": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "up": {"type": "integer", "minimum": 0, "maximum": 100},
+                    "down": {"type": "integer", "minimum": 0, "maximum": 100},
+                    "range": {"type": "integer", "minimum": 0, "maximum": 100},
+                },
+                "required": ["up", "down", "range"],
+            },
+            "report_cn": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 900,
+            },
+            "key_levels": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "price": {"type": "number"},
+                        "role_cn": short_text,
+                        "source_type": {
+                            "type": "string",
+                            "enum": ["PACKET_OBSERVED", "MODEL_ESTIMATED"],
+                        },
+                        "basis_cn": short_text,
+                    },
+                    "required": ["price", "role_cn", "source_type", "basis_cn"],
+                },
+                "minItems": 0,
+                "maxItems": 4,
+            },
+            "counter_evidence_cn": {
+                "type": "array",
+                "items": short_text,
+                "minItems": 1,
+                "maxItems": 3,
+            },
+            "invalid_if_cn": {
+                "type": "array",
+                "items": short_text,
+                "minItems": 1,
+                "maxItems": 3,
+            },
+        },
+        "required": [
+            "schema_version",
+            "horizon_hours",
+            "input_scope",
+            "live_external_data_used",
+            "base_case",
+            "posterior_weights_pct",
+            "report_cn",
+            "key_levels",
+            "counter_evidence_cn",
+            "invalid_if_cn",
+        ],
+    }
 
 def review_response_schema():
     text_item = {"type": "string", "minLength": 1, "maxLength": 260}
@@ -844,20 +1080,40 @@ def review_response_schema():
     }
 
 
-def build_gemini_request(prompt, model=DEFAULT_MODEL):
-    del model
-    return {
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "topP": 0.85,
-            "responseMimeType": "application/json",
-            "responseSchema": _strip_schema_for_legacy(review_response_schema()),
-        },
+def _build_openai_chat_request(prompt, model, schema, call_profile):
+    high_reasoning = "reconciliation" in call_profile
+    max_tokens = CALL_PROFILE_MAX_TOKENS[call_profile]
+    request = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an audit-only reviewer. Return one valid JSON "
+                    "object only. Do not include markdown or prose outside JSON."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "thinking": {"type": "enabled" if high_reasoning else "disabled"},
+        "response_format": {"type": "json_object"},
+        "max_tokens": max_tokens,
+        "_local_call_profile": call_profile,
+        "_local_json_schema": _strip_schema_for_legacy(schema),
     }
+    if high_reasoning:
+        request["reasoning_effort"] = "high"
+    return request
+
+
+def build_chat_request(prompt, model=DEFAULT_MODEL):
+    return _build_openai_chat_request(
+        prompt,
+        model,
+        review_response_schema(),
+        CALL_PROFILE_MAIN_RECONCILIATION,
+    )
 
 
 def blind_response_schema():
@@ -874,20 +1130,13 @@ def blind_response_schema():
     }
 
 
-def build_blind_gemini_request(prompt, model=DEFAULT_MODEL):
-    del model
-    return {
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "topP": 0.85,
-            "responseMimeType": "application/json",
-            "responseSchema": _strip_schema_for_legacy(blind_response_schema()),
-        },
-    }
+def build_blind_chat_request(prompt, model=DEFAULT_MODEL):
+    return _build_openai_chat_request(
+        prompt,
+        model,
+        blind_response_schema(),
+        CALL_PROFILE_MAIN_BLIND,
+    )
 
 
 def build_transition_review_packet(transition):
@@ -1107,8 +1356,18 @@ def build_transition_blind_prompt(packet):
         "请输出结构化 JSON，重点给出每个 domain 的独立读数、倾向、幅度充分性和证据路径；"
         "evidence_refs 优先使用 evidence_catalog 中的 evidence_id；candidate_explanations "
         "只能写 causal_status=UNVERIFIED 的非确定性解释。这些读数只是实验性独立观察，不改变系统结论。\n\n"
+        + _TRANSITION_REASONING_PROTOCOL
+        + "\n期望 JSON 结构示例（实际输出必须满足本地 schema）："
+        "{\"transition_summary_cn\":\"自然中文\",\"trajectory_state\":\"枚举\","
+        "\"signal_continuity\":\"枚举\",\"observed_changes\":[],\"cross_factor_interactions\":[],"
+        "\"cross_factor_assessments\":[],\"candidate_explanations\":[],\"anomaly_assessment\":{},"
+        "\"operator_focus\":[],\"invalid_if\":[],\"operator_checks\":[],\"language_guard\":{}}\n"
+        "LOCAL_RESPONSE_JSON_SCHEMA（最终对象必须逐字段满足）：\n"
+        + json.dumps(_strip_schema_for_legacy(transition_blind_response_schema()),
+                     ensure_ascii=False, separators=(",", ":"))
+        + "\n"
         "TRANSITION_BLIND_DELTA_PACKET JSON：\n"
-        f"{json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)}"
+        + json.dumps(blind_packet, ensure_ascii=False, sort_keys=True)
     )
 
 
@@ -1116,20 +1375,13 @@ def transition_blind_response_schema():
     return transition_response_schema()
 
 
-def build_transition_blind_gemini_request(prompt, model=DEFAULT_MODEL):
-    del model
-    return {
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "topP": 0.85,
-            "responseMimeType": "application/json",
-            "responseSchema": _strip_schema_for_legacy(transition_blind_response_schema()),
-        },
-    }
+def build_transition_blind_chat_request(prompt, model=DEFAULT_MODEL):
+    return _build_openai_chat_request(
+        prompt,
+        model,
+        transition_blind_response_schema(),
+        CALL_PROFILE_TRANSITION_BLIND,
+    )
 
 
 def build_transition_reconciliation_prompt(packet, blind_payload):
@@ -1149,8 +1401,17 @@ def build_transition_reconciliation_prompt(packet, blind_payload):
         "Call 1 的 observed_changes 是最终事实解释的唯一来源。\n"
         "请输出符合 reconciliation-only response schema 的 JSON，并额外可写 blind_consistency 与 "
         "blind_differences_cn。不得输出交易建议，不得把张力写成系统错误或执行信号。\n\n"
+        + _TRANSITION_REASONING_PROTOCOL
+        + "\n期望 JSON 结构示例（实际输出必须满足 reconciliation schema）："
+        "{\"transition_summary_cn\":\"自然中文\",\"cross_factor_interactions\":[],"
+        "\"operator_focus\":[],\"invalid_if\":[],\"operator_checks\":[],\"language_guard\":{},"
+        "\"not_trading_advice\":true,\"blind_consistency\":\"自然中文\",\"blind_differences_cn\":[]}\n"
+        "LOCAL_RESPONSE_JSON_SCHEMA（最终对象必须逐字段满足）：\n"
+        + json.dumps(_strip_schema_for_legacy(transition_reconciliation_response_schema()),
+                     ensure_ascii=False, separators=(",", ":"))
+        + "\n"
         "TRANSITION_RECONCILIATION_PACKET JSON：\n"
-        f"{json.dumps(reconciliation_packet, ensure_ascii=False)}"
+        + json.dumps(reconciliation_packet, ensure_ascii=False)
     )
 
 
@@ -1326,6 +1587,10 @@ def build_transition_review_prompt(packet):
         "请把事实写成中文的实时事实、实际影响和倾向性，不要把字段清单当作结论。\n\n"
         "核心骨架覆盖：综合论证必须覆盖输入中存在的 TMV、宏观、Funding、Skew、Gamma/GEX、P/C。"
         "稳定或缺失的维度可以放在 cross_factor_assessments 中说明为背景或不可评估，不要伪造成 observed_change；"
+        "observed_changes 只允许包含 packet 明示发生变化且 changed_fields 非空的 domain；前后值相同、UNCHANGED、"
+        "MISSING、NOT_ASSESSABLE 或仅数据可用性改善的维度必须放入 cross_factor_assessments，不得进入 observed_changes。"
+        "同一 domain 原则上只写一条；MACRO 的门控、评分和子项必须聚合为一条，并把 effect_target 指向实际变化的门控/阻断，"
+        "不得再拆一条重复解释方向骨架。"
         "但不能只讨论 MACRO/P/C 而遗漏现行骨架的其他关键维度。请查看 EVIDENCE.core_domain_coverage_required，"
         "并确保这些 domain 全部出现在 observed_changes.domain 或 cross_factor_assessments.domains 中。\n\n"
         "observed_changes 每项必须包含：domain、effect_target、fact_cn、impact_cn、tendency_cn、"
@@ -1361,6 +1626,16 @@ def build_transition_review_prompt(packet):
         "表达阻断时只能写“宏观冲击状态由观察转为阻断”“宏观冲击阻断已激活”，不得写“美债/美元触发阻断”或“宏观因素导致阻断”。alternative_explanations_cn 也必须遵守同一边界，无法给出包内解释时填空数组。\n\n"
         "transition_summary_cn 最多两句：第一句概括状态路径和主要约束/支撑，"
         "第二句说明是否改变人工关注重点及原因。只输出符合 response schema 的 JSON。\n\n"
+        + _TRANSITION_REASONING_PROTOCOL
+        + "\n期望 JSON 结构示例（实际输出不得使用省略号，必须满足本地 schema）："
+        "{\"transition_summary_cn\":\"自然中文\",\"trajectory_state\":\"枚举\","
+        "\"signal_continuity\":\"枚举\",\"observed_changes\":[],\"cross_factor_interactions\":[],"
+        "\"cross_factor_assessments\":[],\"candidate_explanations\":[],\"anomaly_assessment\":{},"
+        "\"operator_focus\":[],\"invalid_if\":[],\"operator_checks\":[],\"language_guard\":{}}\n"
+        "LOCAL_RESPONSE_JSON_SCHEMA（最终对象必须逐字段满足）：\n"
+        + json.dumps(_strip_schema_for_legacy(transition_response_schema()),
+                     ensure_ascii=False, separators=(",", ":"))
+        + "\n"
         "SignalTransitionReviewPacket:\n"
         + json.dumps(prompt_packet, ensure_ascii=False)
     )
@@ -1630,20 +1905,13 @@ def transition_response_schema():
     }
 
 
-def build_transition_gemini_request(prompt, model=DEFAULT_MODEL):
-    del model
-    return {
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "topP": 0.85,
-            "responseMimeType": "application/json",
-            "responseSchema": _strip_schema_for_legacy(transition_response_schema()),
-        },
-    }
+def build_transition_chat_request(prompt, model=DEFAULT_MODEL):
+    return _build_openai_chat_request(
+        prompt,
+        model,
+        transition_response_schema(),
+        CALL_PROFILE_TRANSITION,
+    )
 
 
 def transition_reconciliation_response_schema():
@@ -1743,126 +2011,373 @@ def transition_reconciliation_response_schema():
     }
 
 
-def build_transition_reconciliation_gemini_request(prompt, model=DEFAULT_MODEL):
-    del model
-    return {
-        "contents": [{
-            "role": "user",
-            "parts": [{"text": prompt}],
-        }],
-        "generationConfig": {
-            "temperature": 0,
-            "topP": 0.85,
-            "responseMimeType": "application/json",
-            "responseSchema": _strip_schema_for_legacy(
-                transition_reconciliation_response_schema()),
-        },
-    }
+def build_transition_reconciliation_chat_request(prompt, model=DEFAULT_MODEL):
+    return _build_openai_chat_request(
+        prompt,
+        model,
+        transition_reconciliation_response_schema(),
+        CALL_PROFILE_TRANSITION_RECONCILIATION,
+    )
 
 
 def _transition_reconciliation_allowed_keys():
     return set(transition_reconciliation_response_schema()["properties"].keys())
 
 
-class GeminiApiError(RuntimeError):
+class LlmApiError(RuntimeError):
     def __init__(self, status_code, detail):
         self.status_code = int(status_code)
         self.detail = detail
-        super().__init__(f"Gemini HTTP {self.status_code}: {detail}")
+        super().__init__(f"LLM HTTP {self.status_code}: {detail}")
 
 
-def call_gemini(api_key, model, request_body, timeout=60, fallback_api_key=None):
-    attempts = []
-    if api_key:
-        attempts.append(("channel1", api_key))
-    if fallback_api_key and fallback_api_key != api_key:
-        attempts.append(("channel2", fallback_api_key))
-    if not attempts:
-        raise RuntimeError("GEMINI_CHANNEL1_API_KEY or GEMINI_CHANNEL2_API_KEY is required")
+class DailyBudgetExceeded(RuntimeError):
+    pass
 
-    last_exc = None
-    attempted_routes = []
-    for idx, (route, key) in enumerate(attempts):
-        attempted_routes.append(route)
+
+@contextmanager
+def _exclusive_file_lock(target_path):
+    lock_path = Path(str(target_path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
-            response = _call_gemini_single_key(key, model, request_body, timeout)
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class DailyHttpBudget:
+    def __init__(self, state_path, limit=DEFAULT_DAILY_HTTP_LIMIT,
+                 now_fn=None):
+        self.state_path = Path(state_path)
+        self.limit = max(0, int(limit))
+        self.now_fn = now_fn or (lambda: _dt.datetime.now(_dt.timezone.utc))
+        self._lock = threading.Lock()
+
+    def reserve(self, count=1, role="unknown", packet_hash=None,
+                provider=PROVIDER, model=DEFAULT_MODEL):
+        count = int(count)
+        if count <= 0:
+            return self.snapshot()
+        with self._lock:
+            with _exclusive_file_lock(self.state_path):
+                state = self._read_state()
+                today = _beijing_day(self.now_fn())
+                if state.get("date_bjt") != today:
+                    state = {"date_bjt": today, "http_calls_used": 0}
+                used = int(state.get("http_calls_used") or 0)
+                if used + count > self.limit:
+                    raise DailyBudgetExceeded(
+                        "daily LLM HTTP budget exhausted for Beijing day "
+                        + today
+                        + f": used={used} requested={count} limit={self.limit}"
+                    )
+                state["http_calls_used"] = used + count
+                state["http_calls_limit"] = self.limit
+                state["updated_at_utc"] = self.now_fn().astimezone(
+                    _dt.timezone.utc).isoformat(timespec="seconds")
+                reservation_id = hashlib.sha256(
+                    (state["updated_at_utc"] + ":" + str(os.getpid()) + ":"
+                     + str(threading.get_ident()) + ":" + str(used)).encode("utf-8")
+                ).hexdigest()[:24]
+                events = list(state.get("events") or [])
+                events.append({
+                    "reservation_id": reservation_id,
+                    "requested_at_utc": state["updated_at_utc"],
+                    "role": str(role)[:80],
+                    "card_hash": str(packet_hash or "")[:96],
+                    "provider": provider,
+                    "model": model,
+                    "status_category": "RESERVED",
+                    "usage": {},
+                })
+                state["events"] = events[-self.limit:]
+                _write_json_atomic(self.state_path, state)
+                result = dict(state)
+                result["reservation_id"] = reservation_id
+                return result
+
+    def complete(self, reservation_id, status_category, usage=None):
+        if not reservation_id:
+            return self.snapshot()
+        with self._lock:
+            with _exclusive_file_lock(self.state_path):
+                state = self._read_state()
+                for event in state.get("events") or []:
+                    if event.get("reservation_id") == reservation_id:
+                        event["status_category"] = str(status_category)[:80]
+                        event["usage"] = dict(usage or {})
+                        break
+                _write_json_atomic(self.state_path, state)
+                return dict(state)
+
+    def snapshot(self):
+        with self._lock:
+            with _exclusive_file_lock(self.state_path):
+                state = self._read_state()
+                today = _beijing_day(self.now_fn())
+                if state.get("date_bjt") != today:
+                    return {
+                        "date_bjt": today,
+                        "http_calls_used": 0,
+                        "http_calls_limit": self.limit,
+                    }
+                state.setdefault("http_calls_limit", self.limit)
+                return dict(state)
+
+    def _read_state(self):
+        if not self.state_path.exists():
+            return {}
+        try:
+            return json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+
+def call_llm(api_key, model, request_body, timeout=60, endpoint=None,
+             budget=None, retry_id=None, call_profile=None):
+    if not api_key:
+        raise RuntimeError("LLM_API_KEY is required")
+    route = "bearer"
+    attempted_routes = []
+    http_calls = 0
+    local_profile = (
+        call_profile
+        or _as_dict(request_body).get("_local_call_profile")
+        or "unknown"
+    )
+    packet_hash = _as_dict(request_body).get("_local_packet_hash")
+    last_budget_state = None
+    for attempt in range(2):
+        reservation_state = None
+        try:
+            if budget is not None:
+                reservation_state = budget.reserve(
+                    1, role=local_profile, packet_hash=packet_hash,
+                    provider=PROVIDER, model=model)
+                last_budget_state = reservation_state
+            attempted_routes.append(route)
+            http_calls += 1
+            response = _post_chat_completion(
+                api_key,
+                model,
+                request_body,
+                timeout,
+                endpoint=endpoint,
+            )
             if isinstance(response, dict):
+                if budget is not None:
+                    last_budget_state = budget.complete(
+                        last_budget_state.get("reservation_id"), "OK",
+                        _response_usage(response))
                 response.setdefault("_api_key_route", route)
+                response.setdefault("_llm_call_routes", list(attempted_routes))
+                response.setdefault("_llm_http_calls", http_calls)
+                response.setdefault("_llm_retry_id", retry_id)
+                response.setdefault("_llm_call_profile", local_profile)
+                if last_budget_state is not None:
+                    response.setdefault("_daily_http_budget", last_budget_state)
             return response
         except Exception as exc:
+            if budget is not None and reservation_state:
+                last_budget_state = budget.complete(
+                    reservation_state.get("reservation_id"),
+                    "HTTP_OR_TRANSPORT_ERROR", {})
             setattr(exc, "api_key_routes", list(attempted_routes))
-            last_exc = exc
-            has_next = idx + 1 < len(attempts)
-            if not has_next or not _is_retryable_gemini_error(exc):
+            setattr(exc, "llm_http_calls", http_calls)
+            setattr(exc, "llm_retry_id", retry_id)
+            setattr(exc, "llm_call_profile", local_profile)
+            if last_budget_state is not None:
+                setattr(exc, "daily_http_budget", last_budget_state)
+            retry_delay = _inline_llm_retry_delay(exc)
+            if attempt or retry_delay is None:
                 raise
-    raise last_exc
+            if retry_delay > 0:
+                time.sleep(retry_delay)
+    raise RuntimeError("unreachable LLM retry state")
 
 
-def _call_gemini_single_key(api_key, model, request_body, timeout):
-    try:
-        return _post_gemini(api_key, model, request_body, timeout)
-    except RuntimeError as exc:
-        if "responseFormat" not in str(exc) and "response_format" not in str(exc):
-            raise
-        return _post_gemini(api_key, model, _legacy_gemini_request(request_body), timeout)
+def _is_retryable_llm_error(exc):
+    return _inline_llm_retry_delay(exc) is not None
 
 
-def _is_retryable_gemini_error(exc):
-    if isinstance(exc, (TimeoutError, socket.timeout)):
+def _is_unrecoverable_llm_config_error(exc):
+    if isinstance(exc, LlmApiError):
+        if exc.status_code in FATAL_LLM_CONFIG_HTTP_CODES:
+            return True
+        if exc.status_code in {400, 404} and _looks_like_invalid_model_error(
+                exc.detail):
+            return True
+    text = str(exc or "")
+    if "LLM_API_KEY is required" in text:
         return True
+    return _looks_like_invalid_model_error(text)
+
+
+def _looks_like_invalid_model_error(text):
+    normalized = re.sub(r"[\s_\-]+", " ", str(text or "").lower())
+    checks = (
+        "invalid model",
+        "model not found",
+        "model not exist",
+        "model does not exist",
+        "unknown model",
+        "model is invalid",
+    )
+    if any(check in normalized for check in checks):
+        return True
+    compact = normalized.replace(" ", "_")
+    return "model_not_found" in compact or "invalid_model" in compact
+
+
+def _inline_llm_retry_delay(exc):
+    # A full request timeout is deliberately a cross-round retry, not an
+    # immediate second HTTP attempt. Only a reset/abort during transport is
+    # retried inline.
+    if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
+        return 0.0
     if isinstance(exc, urllib.error.URLError):
-        return isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout))
+        if isinstance(getattr(exc, "reason", None),
+                      (ConnectionResetError, ConnectionAbortedError)):
+            return 0.0
+        return None
     status_code = getattr(exc, "status_code", None)
-    if status_code in RETRYABLE_GEMINI_HTTP_CODES:
-        return True
-    text = str(exc)
-    return any(f"HTTP {code}" in text for code in RETRYABLE_GEMINI_HTTP_CODES)
+    if status_code in RETRYABLE_LLM_HTTP_CODES:
+        retry_after = getattr(exc, "retry_after", None)
+        if getattr(exc, "retry_after_header_present", False) and retry_after is None:
+            return None
+        if retry_after is None:
+            return DEFAULT_INLINE_HTTP_RETRY_DELAY_SECONDS
+        if 0 <= retry_after <= MAX_INLINE_HTTP_RETRY_DELAY_SECONDS:
+            return float(retry_after)
+    return None
 
 
-def _invoke_call_gemini(call_fn, api_key, model, request_body, timeout, fallback_api_key):
-    if fallback_api_key:
-        return call_fn(api_key, model, request_body, timeout,
-                       fallback_api_key=fallback_api_key)
-    return call_fn(api_key, model, request_body, timeout)
+def _invoke_call_llm(call_fn, api_key, model, request_body, timeout,
+                     endpoint=None, budget=None, retry_id=None,
+                     call_profile=None):
+    kwargs = {
+        "endpoint": endpoint,
+        "budget": budget,
+        "retry_id": retry_id,
+        "call_profile": (
+            call_profile
+            or _as_dict(request_body).get("_local_call_profile")
+        ),
+    }
+    try:
+        return call_fn(api_key, model, request_body, timeout, **kwargs)
+    except TypeError as exc:
+        if "unexpected keyword" not in str(exc):
+            raise
+        return call_fn(api_key, model, request_body, timeout)
 
 
-def _post_gemini(api_key, model, request_body, timeout):
-    url = GEMINI_ENDPOINT.format(model=model)
-    body = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
+def _post_chat_completion(api_key, model, request_body, timeout, endpoint=None):
+    base = (endpoint or OPENAI_CHAT_COMPLETIONS_ENDPOINT).rstrip("/")
+    url = base if base.endswith("/chat/completions") else base + "/chat/completions"
+    body_payload = _strip_local_request_fields(request_body)
+    body_payload["model"] = model
+    body = json.dumps(body_payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,
         headers={
             "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
+            "Authorization": "Bearer " + api_key,
         },
         method="POST",
     )
+    deadline = time.monotonic() + float(timeout)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw_body = _read_response_body_with_deadline(response, deadline)
+            return json.loads(raw_body.decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise GeminiApiError(exc.code, detail) from exc
+        detail = _read_response_body_with_deadline(
+            exc, deadline, allow_plain_read=False).decode(
+                "utf-8", errors="replace")
+        error = LlmApiError(exc.code, detail)
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        error.retry_after_header_present = retry_after is not None
+        try:
+            error.retry_after = float(retry_after) if retry_after is not None else None
+        except (TypeError, ValueError):
+            error.retry_after = None
+        raise error from exc
 
 
-def _legacy_gemini_request(request_body):
-    converted = dict(request_body)
-    generation = dict(converted.get("generationConfig") or {})
-    response_format = _as_dict(_as_dict(generation.pop("responseFormat")).get("text"))
-    if response_format:
-        generation["responseMimeType"] = response_format.get("mimeType", "application/json")
-        generation["responseSchema"] = _strip_schema_for_legacy(
-            response_format.get("schema") or {})
-    converted["generationConfig"] = generation
-    return converted
+def _read_response_body_with_deadline(response, deadline, allow_plain_read=True):
+    """Read a non-stream response without letting keepalives extend timeout."""
+    read_chunk = getattr(response, "read1", None)
+    if not callable(read_chunk):
+        return response.read() if allow_plain_read else b""
+    chunks = []
+    while True:
+        remaining = float(deadline) - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("LLM request wall-clock deadline exceeded")
+        _set_response_socket_timeout(response, remaining)
+        try:
+            chunk = read_chunk(65536)
+        except TimeoutError as exc:
+            raise TimeoutError("LLM request wall-clock deadline exceeded") from exc
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _set_response_socket_timeout(response, seconds):
+    """Best-effort tightening of urllib's underlying socket timeout."""
+    current = response
+    seen = set()
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            return
+        seen.add(id(current))
+        sock = getattr(current, "_sock", None)
+        if sock is not None and callable(getattr(sock, "settimeout", None)):
+            sock.settimeout(max(0.001, float(seconds)))
+            return
+        next_obj = None
+        for attr in ("fp", "raw", "_fp"):
+            candidate = getattr(current, attr, None)
+            if candidate is not None and id(candidate) not in seen:
+                next_obj = candidate
+                break
+        current = next_obj
+
+
+def _strip_local_request_fields(request_body):
+    return {
+        key: value
+        for key, value in dict(request_body or {}).items()
+        if not str(key).startswith("_local_")
+    }
 
 
 def _strip_schema_for_legacy(schema):
     if isinstance(schema, dict):
         allowed = {
             "type", "properties", "required", "items", "enum",
-            "description", "nullable",
+            "description", "nullable", "additionalProperties",
+            "minItems", "maxItems", "minLength", "maxLength",
+            "minimum", "maximum",
         }
         result = {}
         for key, value in schema.items():
@@ -1881,16 +2396,26 @@ def _strip_schema_for_legacy(schema):
     return schema
 
 
-def parse_gemini_response(response):
-    candidates = response.get("candidates")
-    if not isinstance(candidates, list) or not candidates:
-        raise ValueError("Gemini response missing candidates")
-    parts = _as_dict(_as_dict(candidates[0]).get("content")).get("parts")
-    if not isinstance(parts, list):
-        raise ValueError("Gemini response missing content.parts")
-    text = "".join(str(_as_dict(part).get("text") or "") for part in parts).strip()
+def parse_chat_response(response):
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = _as_dict(choices[0])
+        finish_reason = choice.get("finish_reason")
+        if finish_reason not in (None, "stop"):
+            raise ValueError("LLM response finish_reason is " + str(finish_reason))
+        message = _as_dict(choice.get("message"))
+        content = message.get("content")
+        if isinstance(content, list):
+            text = "".join(
+                str(_as_dict(part).get("text") or "")
+                for part in content
+            ).strip()
+        else:
+            text = str(content or "").strip()
+    else:
+        raise ValueError("LLM response missing choices")
     if not text:
-        raise ValueError("Gemini response text is empty")
+        raise ValueError("LLM response text is empty")
     return json.loads(_strip_json_fence(text))
 
 
@@ -1903,7 +2428,7 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
     review = {
         "schema": OUTPUT_SCHEMA_VERSION,
         "status": "OK",
-        "provider": "gemini",
+        "provider": PROVIDER,
         "model": model,
         "reviewed_at": reviewed_at,
         "prompt_version": PROMPT_VERSION,
@@ -1933,21 +2458,278 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
     return review
 
 
-def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None,
-                     model=DEFAULT_MODEL, limit=20, include_synthetic=False, timeout=60,
-                     call_gemini=call_gemini, reviewed_at=None):
+
+def _response_call_routes(response):
+    routes = _as_dict(response).get("_llm_call_routes")
+    if isinstance(routes, list) and routes:
+        return [route for route in routes if route in {"bearer"}]
+    return [_api_key_route(response)]
+
+
+def _response_http_calls(response):
+    value = _as_dict(response).get("_llm_http_calls")
+    if isinstance(value, int) and value > 0:
+        return value
+    return len(_response_call_routes(response))
+
+
+def _response_budget_state(response):
+    budget = _as_dict(response).get("_daily_http_budget")
+    return dict(budget) if budget else None
+
+
+def _response_usage(response):
+    usage = _as_dict(_as_dict(response).get("usage"))
+    allowed = ("prompt_tokens", "completion_tokens", "total_tokens")
+    return {
+        key: int(usage[key])
+        for key in allowed
+        if isinstance(usage.get(key), int) and usage[key] >= 0
+    }
+
+
+def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
+    error_routes = _exception_call_routes(exc)
+    review = {
+        "schema": OUTPUT_SCHEMA_VERSION,
+        "status": "ERROR",
+        "provider": PROVIDER,
+        "model": model,
+        "reviewed_at": reviewed_at or _now_iso(),
+        "prompt_version": PROMPT_VERSION,
+        "api_key_route": _summarize_call_routes(error_routes),
+        "llm_call_routes": error_routes,
+        "llm_http_call_count": int(getattr(exc, "llm_http_calls", 0) or 0),
+        "retry_id": getattr(exc, "llm_retry_id", None),
+        "call_profile": getattr(exc, "llm_call_profile", None),
+        "daily_http_budget": getattr(exc, "daily_http_budget", None),
+        "summary_cn": "LLM review generation failed; source card conclusion is preserved.",
+        "agreement_with_system": "UNABLE_TO_JUDGE",
+        "caution_level": "HIGH",
+        "theoretical_active_view": _default_theoretical_active_view(
+            "LLM call or parsing failed; no blind theoretical view was formed."),
+        "gamma_regime_lens": _default_gamma_regime_lens(
+            "LLM call or parsing failed; no Gamma regime lens was formed."),
+        "integrated_trade_advisory": _default_integrated_trade_advisory(
+            "LLM call or parsing failed; no integrated advisory was formed."),
+        "main_supporting_factors": [],
+        "main_risks_or_conflicts": ["LLM call or parsing failed: " + safe_error],
+        "operator_focus": ["Continue manual review from the source audit card only."],
+        "invalid_if": [],
+        "data_quality_note": "",
+        "not_trading_advice": True,
+    }
+    if _is_unrecoverable_llm_config_error(exc):
+        review["error_category"] = "FATAL_CONFIG"
+        review["fatal_config_error"] = True
+    return {
+        "card_id": card_id,
+        "llm_review": review,
+    }
+
+
+def _build_card_review_record(card, api_key, model, blind_timeout,
+                              reconciliation_timeout, call_fn,
+                              reviewed_at, base_url, budget, retry_id):
+    card_id = _card_id(card)
+    try:
+        packet = build_review_packet(card)
+        blind_prompt = build_blind_prompt(packet)
+        blind_request = build_blind_chat_request(blind_prompt, model=model)
+        blind_request["_local_packet_hash"] = _sha256_json(packet)
+        blind_raw_response = _invoke_call_llm(
+            call_fn,
+            api_key,
+            model,
+            blind_request,
+            blind_timeout,
+            endpoint=base_url,
+            budget=budget,
+            retry_id=retry_id,
+            call_profile=CALL_PROFILE_MAIN_BLIND,
+        )
+        blind_payload = _validate_blind_payload(
+            parse_chat_response(blind_raw_response))
+        prompt = build_prompt(packet, blind_payload)
+        request_body = build_chat_request(prompt, model=model)
+        request_body["_local_packet_hash"] = _sha256_json(packet)
+        raw_response = _invoke_call_llm(
+            call_fn,
+            api_key,
+            model,
+            request_body,
+            reconciliation_timeout,
+            endpoint=base_url,
+            budget=budget,
+            retry_id=retry_id,
+            call_profile=CALL_PROFILE_MAIN_RECONCILIATION,
+        )
+        payload = parse_chat_response(raw_response)
+        payload["theoretical_active_view"] = blind_payload["theoretical_active_view"]
+        payload["gamma_regime_lens"] = blind_payload["gamma_regime_lens"]
+        call_routes = (
+            _response_call_routes(blind_raw_response)
+            + _response_call_routes(raw_response)
+        )
+        review = build_llm_review(card, payload, model=model,
+                                  reviewed_at=reviewed_at,
+                                  derived_blind=True,
+                                  llm_call_count=2,
+                                  llm_call_routes=call_routes)
+        review["llm_http_call_count"] = (
+            _response_http_calls(blind_raw_response)
+            + _response_http_calls(raw_response)
+        )
+        review["llm_call_profiles"] = [
+            CALL_PROFILE_MAIN_BLIND,
+            CALL_PROFILE_MAIN_RECONCILIATION,
+        ]
+        review["usage"] = {
+            "blind": _response_usage(blind_raw_response),
+            "reconciliation": _response_usage(raw_response),
+        }
+        review["retry_id"] = retry_id
+        budget_state = (
+            _response_budget_state(raw_response)
+            or _response_budget_state(blind_raw_response)
+        )
+        if budget_state:
+            review["daily_http_budget"] = budget_state
+        return True, {
+            "card_id": card_id,
+            "symbol": _as_dict(card.get("identity")).get("symbol") or card.get("symbol"),
+            "confirmed_at": (
+                _as_dict(card.get("identity")).get("confirmed_at")
+                or card.get("created_at")
+            ),
+            "llm_review": review,
+        }
+    except Exception as exc:
+        safe_error = _redact_sensitive_text(str(exc))[:220]
+        record = _card_error_record(
+            card_id, model, reviewed_at, safe_error, exc)
+        record["llm_review"]["input_packet_hash"] = _sha256_json(
+            build_review_packet(card))
+        return False, record
+
+
+def _retry_state_for_record(records, identity_key, identity_value, review_key,
+                            packet_hash, explicit_retry_id=None, now=None):
+    if explicit_retry_id and explicit_retry_id == identity_value:
+        return "READY", 0
+    matching = []
+    for row in reversed(records):
+        if row.get(identity_key) != identity_value:
+            continue
+        review = _as_dict(row.get(review_key))
+        if review.get("status") == "OK":
+            break
+        if (review.get("status") != "ERROR"
+                or review.get("input_packet_hash") != packet_hash):
+            continue
+        if review.get("fatal_config_error") is True:
+            return "TERMINAL", 1
+        matching.append(review)
+    count = len(matching)
+    if count >= 4:
+        return "TERMINAL", count
+    if not count:
+        return "READY", 0
+    reviewed_at = matching[0].get("reviewed_at")
+    try:
+        last = _dt.datetime.fromisoformat(str(reviewed_at).replace("Z", "+00:00"))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=_dt.timezone.utc)
+        now = now or _dt.datetime.now(_dt.timezone.utc)
+        cooldown = RETRY_COOLDOWN_SECONDS[min(count - 1, 2)]
+        if (now - last.astimezone(_dt.timezone.utc)).total_seconds() < cooldown:
+            return "COOLING", count
+    except (TypeError, ValueError):
+        pass
+    return "READY", count
+
+
+def _record_has_fatal_config_error(record, review_key):
+    review = _as_dict(_as_dict(record).get(review_key))
+    return (review.get("fatal_config_error") is True
+            or review.get("error_category") == "FATAL_CONFIG")
+
+
+def _result_has_fatal_config_error(result, review_key):
+    if not isinstance(result, tuple) or len(result) != 2:
+        return False
+    return _record_has_fatal_config_error(result[1], review_key)
+
+
+def _run_as_completed(items, max_concurrency, worker, stop_on_result=None):
+    max_concurrency = max(1, int(max_concurrency or 1))
+    if max_concurrency == 1 or len(items) <= 1:
+        for item in items:
+            result = worker(item)
+            yield result
+            if stop_on_result and stop_on_result(result):
+                return
+        return
+    iterator = iter(items)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency)
+    futures = set()
+    try:
+        for _ in range(min(max_concurrency, len(items))):
+            futures.add(executor.submit(worker, next(iterator)))
+        while futures:
+            done, futures = concurrent.futures.wait(
+                futures, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                result = future.result()
+                yield result
+                if stop_on_result and stop_on_result(result):
+                    for pending in futures:
+                        pending.cancel()
+                    return
+                try:
+                    futures.add(executor.submit(worker, next(iterator)))
+                except StopIteration:
+                    pass
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def _run_with_fatal_config_probe(items, max_concurrency, worker, review_key):
+    if not items:
+        return
+    first_result = worker(items[0])
+    yield first_result
+    if _result_has_fatal_config_error(first_result, review_key):
+        return
+    yield from _run_as_completed(
+        items[1:],
+        max_concurrency,
+        worker,
+        stop_on_result=lambda result: _result_has_fatal_config_error(
+            result, review_key),
+    )
+
+
+def generate_reviews(source, reviews_output, api_key=None,
+                     model=DEFAULT_MODEL, limit=20, include_synthetic=False,
+                     timeout=60, blind_timeout=None, reconciliation_timeout=None,
+                     call_llm=call_llm, reviewed_at=None, base_url=None,
+                     budget=None, max_concurrency=1, retry_id=None):
     source = Path(source)
     reviews_output = Path(reviews_output)
     cards = _read_jsonl(source)
     cards = _dedupe_cards(cards)
     cards = sorted(cards, key=_card_sort_key, reverse=True)
     done = _read_review_card_ids(reviews_output)
+    existing_reviews = _read_jsonl(reviews_output)
     written = 0
     skipped = 0
     errors = 0
     attempted = 0
+    fatal_config_stop = False
+    candidates = []
     for card in cards:
-        if limit and attempted >= limit:
+        if limit and len(candidates) >= limit:
             break
         card_id = _card_id(card)
         if not card_id:
@@ -1959,72 +2741,51 @@ def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None
         if _is_synthetic(card) and not include_synthetic:
             skipped += 1
             continue
+        packet_hash = _sha256_json(build_review_packet(card))
+        retry_state, retry_count = _retry_state_for_record(
+            existing_reviews, "card_id", card_id, "llm_review", packet_hash,
+            explicit_retry_id=retry_id)
+        if retry_state != "READY":
+            skipped += 1
+            continue
+        candidates.append(card)
+    def worker(item):
+        return _build_card_review_record(
+            item,
+            api_key,
+            model,
+            blind_timeout or timeout,
+            reconciliation_timeout or timeout,
+            call_llm,
+            reviewed_at,
+            base_url,
+            budget,
+            retry_id,
+        )
+    results = _run_with_fatal_config_probe(
+        candidates, max_concurrency, worker, "llm_review")
+    for ok, record in results:
         attempted += 1
-        try:
-            packet = build_review_packet(card)
-            blind_prompt = build_blind_prompt(packet)
-            blind_request = build_blind_gemini_request(blind_prompt, model=model)
-            blind_raw_response = _invoke_call_gemini(
-                call_gemini, api_key, model, blind_request, timeout,
-                fallback_api_key)
-            blind_payload = _validate_blind_payload(
-                parse_gemini_response(blind_raw_response))
-            prompt = build_prompt(packet, blind_payload)
-            request_body = build_gemini_request(prompt, model=model)
-            raw_response = _invoke_call_gemini(
-                call_gemini, api_key, model, request_body, timeout,
-                fallback_api_key)
-            payload = parse_gemini_response(raw_response)
-            payload["theoretical_active_view"] = blind_payload["theoretical_active_view"]
-            payload["gamma_regime_lens"] = blind_payload["gamma_regime_lens"]
-            review = build_llm_review(card, payload, model=model,
-                                      reviewed_at=reviewed_at,
-                                      derived_blind=True,
-                                      llm_call_count=2,
-                                      llm_call_routes=[
-                                          _api_key_route(blind_raw_response),
-                                          _api_key_route(raw_response),
-                                      ])
-            _append_jsonl(reviews_output, {
-                "card_id": card_id,
-                "symbol": _as_dict(card.get("identity")).get("symbol") or card.get("symbol"),
-                "confirmed_at": _as_dict(card.get("identity")).get("confirmed_at") or card.get("created_at"),
-                "llm_review": review,
-            })
-            done.add(card_id)
+        review = _as_dict(record.get("llm_review"))
+        if review.get("status") == "ERROR":
+            fatal_config_stop = (
+                fatal_config_stop
+                or _record_has_fatal_config_error(record, "llm_review"))
+            packet_hash = review.get("input_packet_hash")
+            _, prior_count = _retry_state_for_record(
+                existing_reviews, "card_id", record.get("card_id"),
+                "llm_review", packet_hash, explicit_retry_id=None)
+            review["record_retry_count"] = prior_count + 1
+            review["record_retry_state"] = (
+                "TERMINAL"
+                if fatal_config_stop or prior_count + 1 >= 4
+                else "COOLING")
+        _append_jsonl(reviews_output, record)
+        if ok:
+            done.add(record.get("card_id"))
             written += 1
-        except Exception as exc:  # keep sidecar script soft-fail per card
+        else:
             errors += 1
-            safe_error = _redact_sensitive_text(str(exc))[:220]
-            error_routes = _exception_call_routes(exc)
-            _append_jsonl(reviews_output, {
-                "card_id": card_id,
-                "llm_review": {
-                    "schema": OUTPUT_SCHEMA_VERSION,
-                    "status": "ERROR",
-                    "provider": "gemini",
-                    "model": model,
-                    "reviewed_at": reviewed_at or _now_iso(),
-                    "prompt_version": PROMPT_VERSION,
-                    "api_key_route": _summarize_call_routes(error_routes),
-                    "llm_call_routes": error_routes,
-                    "summary_cn": "LLM 复核生成失败，保留系统审计卡原始结论。",
-                    "agreement_with_system": "UNABLE_TO_JUDGE",
-                    "caution_level": "HIGH",
-                    "theoretical_active_view": _default_theoretical_active_view(
-                        "LLM 调用或解析失败，无法形成理论主动倾向参考。"),
-                    "gamma_regime_lens": _default_gamma_regime_lens(
-                        "LLM 调用或解析失败，无法形成 Gamma 体制风险叠加分析。"),
-                    "integrated_trade_advisory": _default_integrated_trade_advisory(
-                        "LLM 调用或解析失败，无法形成辅助交易决策结论。"),
-                    "main_supporting_factors": [],
-                    "main_risks_or_conflicts": ["LLM 调用或解析失败：" + safe_error],
-                    "operator_focus": ["仅依据系统审计卡继续人工复核。"],
-                    "invalid_if": [],
-                    "data_quality_note": "",
-                    "not_trading_advice": True,
-                },
-            })
     return {
         "source": str(source),
         "reviews_output": str(reviews_output),
@@ -2033,8 +2794,11 @@ def generate_reviews(source, reviews_output, api_key=None, fallback_api_key=None
         "skipped_cards": skipped,
         "errors": errors,
         "model": model,
+        "provider": PROVIDER,
+        "max_concurrency": max(1, int(max_concurrency or 1)),
+        "fatal_config_stop": fatal_config_stop,
+        "daily_http_budget": budget.snapshot() if budget is not None else None,
     }
-
 
 def build_transition_llm_review(transition, payload, model=DEFAULT_MODEL,
                                 reviewed_at=None, llm_call_routes=None,
@@ -2056,7 +2820,7 @@ def build_transition_llm_review(transition, payload, model=DEFAULT_MODEL,
         "schema_name": "SignalTransitionLlmReview",
         "schema_version": TRANSITION_OUTPUT_SCHEMA_VERSION,
         "status": "OK",
-        "provider": "gemini",
+        "provider": PROVIDER,
         "model": model,
         "reviewed_at": reviewed_at,
         "prompt_version": TRANSITION_PROMPT_VERSION,
@@ -2128,11 +2892,14 @@ def _merge_transition_blind_and_reconciliation_payload(blind_payload, reconcilia
     return merged
 
 
+
 def generate_transition_reviews(ledger, reviews_output, api_key=None,
-                                fallback_api_key=None, model=DEFAULT_MODEL,
-                                limit=20, timeout=60, call_gemini=call_gemini,
+                                model=DEFAULT_MODEL,
+                                limit=20, timeout=60, call_llm=call_llm,
                                 reviewed_at=None,
-                                transition_blind_mode="single_call_evidence_first"):
+                                transition_blind_mode="single_call_evidence_first",
+                                base_url=None, budget=None, retry_id=None,
+                                max_concurrency=1):
     if transition_blind_mode not in TRANSITION_BLIND_MODES:
         raise ValueError("invalid transition_blind_mode")
     ledger = Path(ledger)
@@ -2144,50 +2911,130 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
     ]
     transitions = sorted(transitions, key=_transition_sort_key, reverse=True)
     done = _read_transition_review_ids(reviews_output)
+    existing_reviews = _read_jsonl(reviews_output)
     written = 0
     skipped = 0
     errors = 0
     attempted = 0
+    fatal_config_stop = False
+    candidates = []
     for transition in transitions:
-        if limit and attempted >= limit:
+        if limit and len(candidates) >= limit:
             break
         transition_id = transition.get("transition_id")
         if transition_id in done:
             skipped += 1
             continue
+        packet_hash = _sha256_json(build_transition_review_packet(transition))
+        retry_state, _ = _retry_state_for_record(
+            existing_reviews, "transition_id", transition_id,
+            "transition_llm_review", packet_hash, explicit_retry_id=retry_id)
+        if retry_state != "READY":
+            skipped += 1
+            continue
+        candidates.append(transition)
+
+    if max(1, int(max_concurrency or 1)) > 1 and len(candidates) > 1:
+        def transition_worker(item):
+            with tempfile.TemporaryDirectory(prefix="signal-transition-worker-") as tmp:
+                tmp_root = Path(tmp)
+                tmp_ledger = tmp_root / "ledger.jsonl"
+                tmp_reviews = tmp_root / "reviews.jsonl"
+                _append_jsonl(tmp_ledger, item)
+                generate_transition_reviews(
+                    tmp_ledger, tmp_reviews, api_key=api_key, model=model,
+                    limit=1, timeout=timeout, call_llm=call_llm,
+                    reviewed_at=reviewed_at,
+                    transition_blind_mode=transition_blind_mode,
+                    base_url=base_url, budget=budget, retry_id=retry_id,
+                    max_concurrency=1)
+                rows = _read_jsonl(tmp_reviews)
+                if not rows:
+                    raise RuntimeError("transition worker produced no sidecar row")
+                row = rows[-1]
+                ok = _as_dict(row.get("transition_llm_review")).get("status") == "OK"
+                return ok, row
+
+        results = _run_with_fatal_config_probe(
+            candidates, max_concurrency, transition_worker,
+            "transition_llm_review")
+        for ok, row in results:
+            attempted += 1
+            if not ok:
+                review = _as_dict(row.get("transition_llm_review"))
+                fatal_config_stop = (
+                    fatal_config_stop
+                    or _record_has_fatal_config_error(
+                        row, "transition_llm_review"))
+                packet_hash = review.get("input_packet_hash")
+                _, prior_count = _retry_state_for_record(
+                    existing_reviews, "transition_id", row.get("transition_id"),
+                    "transition_llm_review", packet_hash)
+                review["record_retry_count"] = prior_count + 1
+                review["record_retry_state"] = (
+                    "TERMINAL"
+                    if fatal_config_stop or prior_count + 1 >= 4
+                    else "COOLING")
+            _append_jsonl(reviews_output, row)
+            if ok:
+                written += 1
+            else:
+                errors += 1
+        return {
+            "ledger": str(ledger), "reviews_output": str(reviews_output),
+            "attempted_transitions": attempted, "written_reviews": written,
+            "skipped_transitions": skipped, "errors": errors,
+            "model": model, "provider": PROVIDER,
+            "transition_blind_mode": transition_blind_mode,
+            "max_concurrency": max(1, int(max_concurrency or 1)),
+            "fatal_config_stop": fatal_config_stop,
+            "daily_http_budget": budget.snapshot() if budget is not None else None,
+        }
+
+    for transition in candidates:
+        if fatal_config_stop:
+            break
         attempted += 1
+        transition_id = transition.get("transition_id")
+        packet_hash = _sha256_json(build_transition_review_packet(transition))
         try:
             packet = build_transition_review_packet(transition)
             if transition_blind_mode == "two_call_strict":
                 blind_packet = build_transition_blind_delta_packet(packet)
                 blind_prompt = build_transition_blind_prompt(packet)
-                blind_request = build_transition_blind_gemini_request(
+                blind_request = build_transition_blind_chat_request(
                     blind_prompt, model=model)
-                blind_raw_response = _invoke_call_gemini(
-                    call_gemini, api_key, model, blind_request, timeout,
-                    fallback_api_key)
+                blind_request["_local_packet_hash"] = _sha256_json(packet)
+                blind_raw_response = _invoke_call_llm(
+                    call_llm, api_key, model, blind_request, timeout,
+                    endpoint=base_url, budget=budget, retry_id=retry_id,
+                    call_profile=CALL_PROFILE_TRANSITION_BLIND)
                 blind_payload = _validate_transition_payload(
-                    parse_gemini_response(blind_raw_response))
+                    parse_chat_response(blind_raw_response))
                 reconciliation_prompt = build_transition_reconciliation_prompt(
                     packet, blind_payload)
-                reconciliation_request = build_transition_reconciliation_gemini_request(
+                reconciliation_request = build_transition_reconciliation_chat_request(
                     reconciliation_prompt, model=model)
-                reconciliation_raw_response = _invoke_call_gemini(
-                    call_gemini, api_key, model, reconciliation_request,
-                    timeout, fallback_api_key)
+                reconciliation_request["_local_packet_hash"] = _sha256_json(packet)
+                reconciliation_raw_response = _invoke_call_llm(
+                    call_llm, api_key, model, reconciliation_request,
+                    timeout, endpoint=base_url, budget=budget,
+                    retry_id=retry_id,
+                    call_profile=CALL_PROFILE_TRANSITION_RECONCILIATION)
                 reconciliation_payload = _validate_transition_reconciliation_payload(
-                    parse_gemini_response(reconciliation_raw_response))
+                    parse_chat_response(reconciliation_raw_response))
                 payload = _merge_transition_blind_and_reconciliation_payload(
                     blind_payload, reconciliation_payload)
+                routes = (
+                    _response_call_routes(blind_raw_response)
+                    + _response_call_routes(reconciliation_raw_response)
+                )
                 review = build_transition_llm_review(
                     transition,
                     payload,
                     model=model,
                     reviewed_at=reviewed_at,
-                    llm_call_routes=[
-                        _api_key_route(blind_raw_response),
-                        _api_key_route(reconciliation_raw_response),
-                    ],
+                    llm_call_routes=routes,
                     blind_review_mode="transition_two_call_strict",
                     llm_call_count=2,
                     blind_packet_hash=_sha256_json(blind_packet),
@@ -2195,20 +3042,45 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
                     blind_consistency=reconciliation_payload.get("blind_consistency"),
                     blind_differences_cn=reconciliation_payload.get("blind_differences_cn"),
                 )
+                review["llm_http_call_count"] = (
+                    _response_http_calls(blind_raw_response)
+                    + _response_http_calls(reconciliation_raw_response)
+                )
+                review["llm_call_profiles"] = [
+                    CALL_PROFILE_TRANSITION_BLIND,
+                    CALL_PROFILE_TRANSITION_RECONCILIATION,
+                ]
+                review["usage"] = {
+                    "blind": _response_usage(blind_raw_response),
+                    "reconciliation": _response_usage(reconciliation_raw_response),
+                }
+                budget_state = (
+                    _response_budget_state(reconciliation_raw_response)
+                    or _response_budget_state(blind_raw_response)
+                )
             else:
                 prompt = build_transition_review_prompt(packet)
-                request_body = build_transition_gemini_request(prompt, model=model)
-                raw_response = _invoke_call_gemini(
-                    call_gemini, api_key, model, request_body, timeout,
-                    fallback_api_key)
-                payload = parse_gemini_response(raw_response)
+                request_body = build_transition_chat_request(prompt, model=model)
+                request_body["_local_packet_hash"] = _sha256_json(packet)
+                raw_response = _invoke_call_llm(
+                    call_llm, api_key, model, request_body, timeout,
+                    endpoint=base_url, budget=budget, retry_id=retry_id,
+                    call_profile=CALL_PROFILE_TRANSITION)
+                payload = parse_chat_response(raw_response)
                 review = build_transition_llm_review(
                     transition,
                     payload,
                     model=model,
                     reviewed_at=reviewed_at,
-                    llm_call_routes=[_api_key_route(raw_response)],
+                    llm_call_routes=_response_call_routes(raw_response),
                 )
+                review["llm_http_call_count"] = _response_http_calls(raw_response)
+                review["llm_call_profiles"] = [CALL_PROFILE_TRANSITION]
+                review["usage"] = {"transition": _response_usage(raw_response)}
+                budget_state = _response_budget_state(raw_response)
+            review["retry_id"] = retry_id
+            if budget_state:
+                review["daily_http_budget"] = budget_state
             _append_jsonl(reviews_output, {
                 "transition_id": transition_id,
                 "current_card_id": transition.get("current_card_id"),
@@ -2218,17 +3090,38 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
             })
             done.add(transition_id)
             written += 1
-        except Exception as exc:  # keep transition sidecar soft-fail per record
+        except Exception as exc:
             errors += 1
+            fatal_config_stop = _is_unrecoverable_llm_config_error(exc)
             safe_error = _redact_sensitive_text(str(exc))[:220]
             error_routes = _exception_call_routes(exc)
+            error_review = _transition_error_review(
+                model, reviewed_at, safe_error, error_routes,
+                transition_blind_mode)
+            if fatal_config_stop:
+                error_review["error_category"] = "FATAL_CONFIG"
+                error_review["fatal_config_error"] = True
+            error_review["input_packet_hash"] = packet_hash
+            error_review["llm_http_call_count"] = int(
+                getattr(exc, "llm_http_calls", 0) or 0)
+            error_review["retry_id"] = getattr(exc, "llm_retry_id", retry_id)
+            error_review["call_profile"] = getattr(exc, "llm_call_profile", None)
+            budget_state = getattr(exc, "daily_http_budget", None)
+            if budget_state:
+                error_review["daily_http_budget"] = budget_state
+            _, prior_count = _retry_state_for_record(
+                existing_reviews, "transition_id", transition_id,
+                "transition_llm_review", packet_hash)
+            error_review["record_retry_count"] = prior_count + 1
+            error_review["record_retry_state"] = (
+                "TERMINAL"
+                if fatal_config_stop or prior_count + 1 >= 4
+                else "COOLING")
             _append_jsonl(reviews_output, {
                 "transition_id": transition_id,
                 "current_card_id": transition.get("current_card_id"),
                 "symbol": transition.get("symbol"),
-                "transition_llm_review": _transition_error_review(
-                    model, reviewed_at, safe_error, error_routes,
-                    transition_blind_mode),
+                "transition_llm_review": error_review,
             })
     return {
         "ledger": str(ledger),
@@ -2238,9 +3131,11 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
         "skipped_transitions": skipped,
         "errors": errors,
         "model": model,
+        "provider": PROVIDER,
         "transition_blind_mode": transition_blind_mode,
+        "fatal_config_stop": fatal_config_stop,
+        "daily_http_budget": budget.snapshot() if budget is not None else None,
     }
-
 
 def _transition_error_review(model, reviewed_at, safe_error, error_routes,
                              transition_blind_mode="single_call_evidence_first"):
@@ -2253,7 +3148,7 @@ def _transition_error_review(model, reviewed_at, safe_error, error_routes,
         "schema_name": "SignalTransitionLlmReview",
         "schema_version": TRANSITION_OUTPUT_SCHEMA_VERSION,
         "status": "ERROR",
-        "provider": "gemini",
+        "provider": PROVIDER,
         "model": model,
         "reviewed_at": reviewed_at or _now_iso(),
         "prompt_version": TRANSITION_PROMPT_VERSION,
@@ -2501,6 +3396,11 @@ def _sanitize_transition_cn(text):
         ("不是拥挤升温", "未达到拥挤阈值"),
     )
     result = str(text or "")
+    # "Risk appetite" is often emitted as an inferred consequence of packet
+    # facts, but the transition policy intentionally reserves that phrase for
+    # unsupported external-data claims. Keep the inference while removing the
+    # misleading external-data wording before policy validation.
+    result = result.replace("风险偏好", "风险承受空间")
     for old, new in replacements:
         result = result.replace(old, new)
     for old, new in (
@@ -3228,6 +4128,7 @@ def _transition_policy_validation(review, packet):
         or missing_core_domains
         or raw_enum_terms
         or raw_field_path_terms
+        or external_data_terms
         or funding_semantic_conflict
         or "incompatible_epistemic_state" in issue_codes
         or "partial_evidence_changes_judgment" in issue_codes
@@ -3516,6 +4417,7 @@ def _transition_human_text_fields(value):
                 continue
             if key in {
                     "input_packet_hash",
+                    "evidence_catalog_hash",
                     "blind_packet_hash",
                     "blind_result_hash",
                     "record_hash",
@@ -3623,6 +4525,21 @@ def _validate_model_payload(payload, packet=None):
     _validate_integrated_trade_advisory(
         payload.get("integrated_trade_advisory"), packet,
         theoretical_active_view=payload.get("theoretical_active_view"))
+    _validate_future_24h_bayesian_report(
+        _as_dict(payload.get("integrated_trade_advisory")).get(
+            "future_24h_bayesian_report"), packet)
+    advisory = _as_dict(payload.get("integrated_trade_advisory"))
+    future = _as_dict(advisory.get("future_24h_bayesian_report"))
+    producer_lean = str(_as_dict(_as_dict(packet).get("decision")).get("lean") or "").upper()
+    blind_bias = str(_as_dict(payload.get("theoretical_active_view")).get("bias") or "").upper()
+    base_case = str(future.get("base_case") or "").upper()
+    directional_conflict = (
+        (base_case == "UP" and ("BEAR" in producer_lean or "BEAR" in blind_bias))
+        or (base_case == "DOWN" and ("BULL" in producer_lean or "BULL" in blind_bias))
+    )
+    if (directional_conflict and advisory.get("recommendation") not in {
+            "WAIT_FOR_CONFIRMATION", "NO_TRADE", "UNABLE_TO_JUDGE"}):
+        raise ValueError("future_24h directional conflict must degrade recommendation")
     for key in ("main_supporting_factors", "main_risks_or_conflicts",
                 "operator_focus", "invalid_if"):
         if not isinstance(payload.get(key), list):
@@ -3727,22 +4644,10 @@ def _validate_integrated_trade_advisory(advisory, packet=None,
                                         theoretical_active_view=None):
     if not isinstance(advisory, dict):
         raise ValueError("integrated_trade_advisory must be object")
-    required = {
-        "recommendation",
-        "final_conclusion_cn",
-        "cross_loop_rationale_cn",
-        "containment_assessment",
-        "premium_selling_fit",
-        "side_basis_cn",
-        "dominant_conflict_cn",
-        "key_premises",
-        "invalid_if",
-        "next_observation_cn",
-        "session_advisory",
-        "source_alignment",
-        "audit_only",
-        "trade_authorization",
-    }
+    # Keep the semantic validator's field contract anchored to the same schema
+    # used in the response format. This prevents newly required report objects
+    # from being accepted by the wire schema but rejected as unexpected here.
+    required = set(integrated_trade_advisory_schema()["required"])
     missing = sorted(required - set(advisory))
     if missing:
         raise ValueError("integrated_trade_advisory missing fields: "
@@ -3872,6 +4777,119 @@ def _validate_integrated_trade_advisory(advisory, packet=None,
                 and str(premium_fit.get("state") or "").upper() != "UNABLE_TO_JUDGE"):
             raise ValueError("UNABLE_TO_JUDGE requires an unable assessment")
 
+
+
+def _future_24h_human_text(report):
+    report = _as_dict(report)
+    values = [report.get("report_cn")]
+    values.extend(report.get("counter_evidence_cn") or [])
+    values.extend(report.get("invalid_if_cn") or [])
+    for item in report.get("key_levels") or []:
+        item = _as_dict(item)
+        values.append(item.get("role_cn"))
+        values.append(item.get("basis_cn"))
+    return "\n".join(str(value) for value in values if value not in (None, ""))
+
+
+def _packet_numeric_values(value):
+    values = []
+    if isinstance(value, dict):
+        for child in value.values():
+            values.extend(_packet_numeric_values(child))
+    elif isinstance(value, list):
+        for child in value:
+            values.extend(_packet_numeric_values(child))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        values.append(float(value))
+    return values
+
+
+def _validate_future_24h_bayesian_report(report, packet=None):
+    if not isinstance(report, dict):
+        raise ValueError("future_24h_bayesian_report must be object")
+    required = set(future_24h_bayesian_report_schema()["required"])
+    missing = sorted(required - set(report))
+    if missing:
+        raise ValueError("future_24h_bayesian_report missing fields: "
+                         + ", ".join(missing))
+    unexpected = sorted(set(report) - required)
+    if unexpected:
+        raise ValueError("future_24h_bayesian_report unexpected fields: "
+                         + ", ".join(unexpected))
+    if report.get("schema_version") != "future_24h_bayesian_report@1.0.0":
+        raise ValueError("invalid future_24h_bayesian_report.schema_version")
+    if _number_or_none(report.get("horizon_hours")) != 24:
+        raise ValueError("future_24h_bayesian_report.horizon_hours must be 24")
+    if report.get("input_scope") != "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH":
+        raise ValueError("future_24h_bayesian_report.input_scope is invalid")
+    if report.get("live_external_data_used") is not False:
+        raise ValueError("future_24h_bayesian_report.live_external_data_used must be false")
+    if str(report.get("base_case") or "").upper() not in {"UP", "DOWN", "RANGE"}:
+        raise ValueError("invalid future_24h_bayesian_report.base_case")
+    weights = _as_dict(report.get("posterior_weights_pct"))
+    total = 0.0
+    for key in ("up", "down", "range"):
+        value = _number_or_none(weights.get(key))
+        if value is None or value < 0 or value > 100 or not float(value).is_integer():
+            raise ValueError("invalid future_24h posterior weight: " + key)
+        total += value
+    if abs(total - 100.0) > 0.01:
+        raise ValueError("future_24h posterior_weights_pct must sum to 100")
+    base_case_key = {
+        "UP": "up",
+        "DOWN": "down",
+        "RANGE": "range",
+    }[str(report.get("base_case") or "").upper()]
+    max_weight = max(_number_or_none(weights.get(key)) for key in ("up", "down", "range"))
+    if _number_or_none(weights.get(base_case_key)) != max_weight:
+        raise ValueError("future_24h base_case must have a maximum posterior weight")
+    report_cn = report.get("report_cn")
+    if not isinstance(report_cn, str) or not report_cn.strip():
+        raise ValueError("future_24h_bayesian_report.report_cn must be non-blank")
+    if len(report_cn) > 900 or "\n" in report_cn or "\r" in report_cn:
+        raise ValueError("future_24h_bayesian_report.report_cn must be <=900 chars without newlines")
+    levels = report.get("key_levels")
+    if not isinstance(levels, list) or len(levels) > 4:
+        raise ValueError("future_24h_bayesian_report.key_levels must be list <=4")
+    packet_values = _packet_numeric_values(packet or {})
+    for item in levels:
+        item = _as_dict(item)
+        if set(item) != {"price", "role_cn", "source_type", "basis_cn"}:
+            raise ValueError("future_24h key_levels fields are incomplete")
+        price = _number_or_none(item.get("price"))
+        if price is None:
+            raise ValueError("future_24h key_levels.price must be numeric")
+        for key in ("role_cn", "basis_cn"):
+            if not isinstance(item.get(key), str) or not item.get(key).strip():
+                raise ValueError("future_24h key_levels." + key + " must be non-blank")
+        if item.get("source_type") not in {"PACKET_OBSERVED", "MODEL_ESTIMATED"}:
+            raise ValueError("future_24h key_levels.source_type is invalid")
+        if item.get("source_type") == "PACKET_OBSERVED" and not any(
+                abs(price - observed) <= max(1e-9, abs(observed) * 1e-12)
+                for observed in packet_values):
+            raise ValueError("PACKET_OBSERVED key level does not match a packet value")
+        if (item.get("source_type") == "MODEL_ESTIMATED"
+                and "模型估算观察位" not in item.get("basis_cn", "")):
+            raise ValueError("MODEL_ESTIMATED basis must say 模型估算观察位")
+    for key in ("counter_evidence_cn", "invalid_if_cn"):
+        value = report.get(key)
+        if not isinstance(value, list) or not (1 <= len(value) <= 3):
+            raise ValueError("future_24h_bayesian_report." + key + " must contain 1..3 items")
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("future_24h_bayesian_report." + key + " item must be non-blank")
+    report_text = _future_24h_human_text(report)
+    raw_human_tokens = _find_advisory_raw_tokens(report_text)
+    if raw_human_tokens:
+        raise ValueError("future_24h human text contains raw codes: "
+                         + ", ".join(raw_human_tokens))
+    execution_terms = [
+        label for label, pattern in ADVISORY_EXECUTION_TEXT_PATTERNS
+        if pattern.search(report_text)
+    ]
+    if execution_terms:
+        raise ValueError("future_24h report contains execution parameters: "
+                         + ", ".join(execution_terms))
 
 def _packet_has_producer_hard_block(packet):
     packet = _as_dict(packet)
@@ -4104,6 +5122,8 @@ def _normalize_integrated_trade_advisory(advisory):
             advisory.get("source_alignment") or "UNABLE_TO_JUDGE").upper(),
         "audit_only": True,
         "trade_authorization": False,
+        "future_24h_bayesian_report": _normalize_future_24h_bayesian_report(
+            advisory.get("future_24h_bayesian_report")),
         "policy_validation": {
             "passed": True,
             "evidence_refs_valid": True,
@@ -4113,6 +5133,65 @@ def _normalize_integrated_trade_advisory(advisory):
             "authorization_is_not_structure_gate": True,
         },
     }
+
+
+
+def _normalize_future_24h_bayesian_report(report):
+    report = _as_dict(report)
+    weights = _as_dict(report.get("posterior_weights_pct"))
+    key_levels = []
+    model_estimated_count = 0
+    for item in report.get("key_levels") or []:
+        item = _as_dict(item)
+        source_type = str(item.get("source_type") or "MODEL_ESTIMATED").upper()
+        if source_type == "MODEL_ESTIMATED":
+            model_estimated_count += 1
+        key_levels.append({
+            "price": _number_or_none(item.get("price")),
+            "role_cn": str(item.get("role_cn") or "")[:260],
+            "source_type": source_type,
+            "basis_cn": _humanize_future_24h_basis(item.get("basis_cn"))[:260],
+        })
+    return {
+        "schema_version": "future_24h_bayesian_report@1.0.0",
+        "horizon_hours": 24,
+        "input_scope": "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH",
+        "live_external_data_used": False,
+        "base_case": str(report.get("base_case") or "RANGE").upper(),
+        "posterior_weights_pct": {
+            "up": int(_number_or_none(weights.get("up")) or 0),
+            "down": int(_number_or_none(weights.get("down")) or 0),
+            "range": int(_number_or_none(weights.get("range")) or 0),
+        },
+        "report_cn": str(report.get("report_cn") or "")[:900].replace("\n", " ").replace("\r", " "),
+        "key_levels": key_levels[:4],
+        "counter_evidence_cn": _trim_list(report.get("counter_evidence_cn"), limit=3),
+        "invalid_if_cn": _trim_list(report.get("invalid_if_cn"), limit=3),
+        "policy_validation": {
+            "passed": True,
+            "schema_version": "future_24h_policy_validation@1.0.0",
+            "horizon_hours_fixed": True,
+            "input_scope_valid": True,
+            "live_external_data_used": False,
+            "posterior_weights_sum_100": True,
+            "report_cn_single_line_lte_900": True,
+            "model_estimated_key_level_count": model_estimated_count,
+            "audit_only_no_trade_authorization": True,
+        },
+    }
+
+
+def _humanize_future_24h_basis(value):
+    text = str(value or "")
+    replacements = {
+        "gamma_regime.flip_point": "卡内 Gamma 翻转点",
+        "gamma_regime.pin_strike": "卡内 Gamma 钉住位",
+        "gex_info.call_wall": "卡内上方 Gamma 墙",
+        "gex_info.put_wall": "卡内下方 Gamma 墙",
+    }
+    for raw_path, chinese_label in replacements.items():
+        text = text.replace(raw_path, chinese_label)
+    return text
 
 
 def _default_integrated_trade_advisory(reason):
@@ -4142,6 +5221,7 @@ def _default_integrated_trade_advisory(reason):
         "source_alignment": "UNABLE_TO_JUDGE",
         "audit_only": True,
         "trade_authorization": False,
+        "future_24h_bayesian_report": _default_future_24h_bayesian_report(reason),
         "policy_validation": {
             "passed": False,
             "evidence_refs_valid": False,
@@ -4149,6 +5229,33 @@ def _default_integrated_trade_advisory(reason):
             "waiting_signal_not_upgraded": True,
             "session_is_advisory_only": True,
             "authorization_is_not_structure_gate": False,
+        },
+    }
+
+
+
+def _default_future_24h_bayesian_report(reason):
+    return {
+        "schema_version": "future_24h_bayesian_report@1.0.0",
+        "horizon_hours": 24,
+        "input_scope": "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH",
+        "live_external_data_used": False,
+        "base_case": "RANGE",
+        "posterior_weights_pct": {"up": 0, "down": 0, "range": 100},
+        "report_cn": str(reason or "LLM review unavailable")[:900].replace("\n", " ").replace("\r", " "),
+        "key_levels": [],
+        "counter_evidence_cn": ["LLM review unavailable; source packet remains the authority."],
+        "invalid_if_cn": ["A fresh LLM audit passes local validation and replaces this error report."],
+        "policy_validation": {
+            "passed": False,
+            "schema_version": "future_24h_policy_validation@1.0.0",
+            "horizon_hours_fixed": True,
+            "input_scope_valid": True,
+            "live_external_data_used": False,
+            "posterior_weights_sum_100": True,
+            "report_cn_single_line_lte_900": True,
+            "model_estimated_key_level_count": 0,
+            "audit_only_no_trade_authorization": True,
         },
     }
 
@@ -4214,10 +5321,9 @@ def _redact_sensitive_text(value):
     redacted = str(value or "")
     for pattern in SENSITIVE_TEXT_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
-    redacted = re.sub(r"GEMINI_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
-    redacted = re.sub(r"GEMINI_CHANNEL[12]_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
-    redacted = re.sub(r"GEMINI_(PAID|FALLBACK)_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
-    redacted = re.sub(r"x-goog-api-key", "[REDACTED_HEADER]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"DEEPSEEK_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"LLM_API_KEY", "[REDACTED_ENV]", redacted, flags=re.IGNORECASE)
+    redacted = re.sub(r"Authorization", "[REDACTED_HEADER]", redacted, flags=re.IGNORECASE)
     redacted = re.sub(r"Bearer\s+\S+", "[REDACTED_BEARER]", redacted, flags=re.IGNORECASE)
     return redacted
 
@@ -4323,33 +5429,71 @@ def _is_synthetic(card):
     return bool(_as_dict(card.get("identity")).get("is_synthetic") or card.get("is_synthetic"))
 
 
+
 def _api_key_route(response):
     route = _as_dict(response).get("_api_key_route")
-    return route if route in {"channel1", "channel2"} else "unknown"
+    return route if route in {"bearer"} else "unknown"
 
 
 def _exception_call_routes(exc):
     routes = getattr(exc, "api_key_routes", [])
-    return [route for route in list(routes or []) if route in {"channel1", "channel2"}]
+    return [route for route in list(routes or []) if route in {"bearer"}]
 
 
 def _summarize_call_routes(routes):
-    clean = [route for route in list(routes or []) if route in {"channel1", "channel2"}]
+    clean = [route for route in list(routes or []) if route in {"bearer"}]
     if not clean:
         return "unknown"
-    if all(route == "channel1" for route in clean):
-        return "channel1"
-    if all(route == "channel2" for route in clean):
-        return "channel2"
+    if all(route == "bearer" for route in clean):
+        return "bearer"
     return "mixed"
 
 
 def _append_jsonl(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True,
-                                separators=(",", ":")) + "\n")
+    data = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    with _APPEND_LOCK:
+        with _exclusive_file_lock(path):
+            with path.open("ab") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+
+def _write_json_atomic(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _beijing_day(value):
+    if isinstance(value, (int, float)):
+        value = _dt.datetime.fromtimestamp(value, _dt.timezone.utc)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_dt.timezone.utc)
+    return value.astimezone(_dt.timezone(_dt.timedelta(hours=8))).date().isoformat()
 
 
 def _sha256_json(payload):
@@ -4391,9 +5535,10 @@ def _env_first(*names):
     return None
 
 
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Generate Gemini LLM audit reviews for signal_review.jsonl.")
+        description="Generate LLM audit sidecars for signal_review.jsonl.")
     parser.add_argument("--mode", choices=("card", "transition", "both"),
                         default="card",
                         help="Review card sidecar, transition sidecar, or both.")
@@ -4407,40 +5552,84 @@ def main(argv=None):
                         default="signal_transition_llm_reviews.jsonl",
                         help="Sidecar JSONL path for transition LLM reviews.")
     parser.add_argument("--model", default=DEFAULT_MODEL,
-                        help="Gemini model name.")
-    parser.add_argument("--channel1-api-key",
-                        default=_env_first("GEMINI_CHANNEL1_API_KEY"),
-                        help="Channel 1 Gemini key. Prefer low-cost/free tier.")
-    parser.add_argument("--channel2-api-key",
-                        default=_env_first("GEMINI_CHANNEL2_API_KEY"),
-                        help="Channel 2 Gemini key. Prefer paid fallback tier.")
-    parser.add_argument("--limit", type=int, default=5,
+                        help="OpenAI-compatible model name.")
+    parser.add_argument("--provider", choices=(PROVIDER,), default=PROVIDER,
+                        help="LLM provider; only DeepSeek is supported.")
+    parser.add_argument("--api-key",
+                        default=_env_first("LLM_API_KEY"),
+                        help="Bearer token for the configured LLM provider.")
+    parser.add_argument("--base-url",
+                        default=_env_first("LLM_BASE_URL")
+                        or "https://api.deepseek.com",
+                        help="OpenAI-compatible API base URL.")
+    parser.add_argument("--limit", type=int, default=4,
                         help="Maximum new cards to review in this run.")
-    parser.add_argument("--transition-limit", type=int, default=5,
+    parser.add_argument("--transition-limit", type=int, default=4,
                         help="Maximum new transition records to review in this run.")
+    parser.add_argument("--concurrency", "--max-concurrency", dest="max_concurrency",
+                        type=int, default=4,
+                        help="Maximum concurrent card-review HTTP workers.")
+    parser.add_argument("--daily-cap", "--daily-http-limit", dest="daily_http_limit", type=int,
+                        default=DEFAULT_DAILY_HTTP_LIMIT,
+                        help="Maximum HTTP requests per Beijing day.")
+    parser.add_argument("--usage-ledger", default="",
+                        help="JSON state path for the Beijing-day HTTP usage ledger.")
+    parser.add_argument("--retry-id", default="",
+                        help="Optional cross-round retry id; allows initial + 3 retries.")
+    parser.add_argument("--blind-effort", default="low",
+                        choices=("low", "medium", "high"),
+                        help="Recorded effort label for the main blind call.")
+    parser.add_argument("--recon-effort", "--reconciliation-effort",
+                        dest="reconciliation_effort", default="high",
+                        choices=("low", "medium", "high"),
+                        help="Recorded effort label for the main reconciliation call.")
+    parser.add_argument("--transition-effort", default="low",
+                        choices=("low", "medium", "high"),
+                        help="Recorded effort label for transition calls.")
     parser.add_argument("--transition-blind-mode",
                         choices=sorted(TRANSITION_BLIND_MODES),
                         default="single_call_evidence_first",
-                        help="Transition review mode. Default keeps one-call evidence-first control; two_call_strict is experimental.")
+                        help="Transition review mode. Default is single low-profile evidence-first.")
     parser.add_argument("--timeout", type=int, default=60,
-                        help="HTTP timeout seconds.")
+                        help="Fallback HTTP timeout seconds.")
+    parser.add_argument("--blind-timeout", type=int, default=60)
+    parser.add_argument("--recon-timeout", type=int, default=240)
+    parser.add_argument("--transition-timeout", type=int, default=120)
     parser.add_argument("--include-synthetic", action="store_true",
                         help="Allow synthetic/local fixture cards for preview testing.")
     args = parser.parse_args(argv)
     result = {"mode": args.mode}
     exit_code = 0
+    usage_ledger = (
+        Path(args.usage_ledger)
+        if args.usage_ledger
+        else Path(args.reviews_output).with_name("signal_llm_usage_ledger.json")
+    )
+    if args.retry_id:
+        result["retry_reset_id"] = args.retry_id
+    budget = DailyHttpBudget(usage_ledger, limit=args.daily_http_limit)
+    result["effort"] = {
+        "blind": args.blind_effort,
+        "reconciliation": args.reconciliation_effort,
+        "transition": args.transition_effort,
+    }
     if args.mode in {"card", "both"}:
         if not args.source:
             parser.error("--source is required for card or both mode")
         card_result = generate_reviews(
             args.source,
             args.reviews_output,
-            api_key=args.channel1_api_key,
-            fallback_api_key=args.channel2_api_key,
+            api_key=args.api_key,
             model=args.model,
             limit=args.limit,
             include_synthetic=args.include_synthetic,
             timeout=args.timeout,
+            blind_timeout=args.blind_timeout,
+            reconciliation_timeout=args.recon_timeout,
+            base_url=args.base_url,
+            budget=budget,
+            max_concurrency=args.max_concurrency,
+            retry_id=args.retry_id or None,
         )
         result["card"] = card_result
         if card_result["errors"] and not card_result["written_reviews"]:
@@ -4451,12 +5640,15 @@ def main(argv=None):
         transition_result = generate_transition_reviews(
             args.transition_ledger,
             args.transition_reviews_output,
-            api_key=args.channel1_api_key,
-            fallback_api_key=args.channel2_api_key,
+            api_key=args.api_key,
             model=args.model,
             limit=args.transition_limit,
-            timeout=args.timeout,
+            timeout=args.transition_timeout,
             transition_blind_mode=args.transition_blind_mode,
+            base_url=args.base_url,
+            budget=budget,
+            retry_id=args.retry_id or None,
+            max_concurrency=args.max_concurrency,
         )
         result["transition"] = transition_result
         if (transition_result["errors"]

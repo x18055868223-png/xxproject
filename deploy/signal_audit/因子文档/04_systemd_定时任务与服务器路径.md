@@ -14,7 +14,7 @@ systemd 单元负责在策略服务器上轻量、可恢复地刷新审计卡和
 | --- | --- |
 | `signal-audit-materialize.service` | 运行 materializer |
 | `signal-audit-materialize.timer` | 周期刷新静态卡 |
-| `signal-audit-llm-review.service` | 运行 Gemini sidecar |
+| `signal-audit-llm-review.service` | 运行 DeepSeek sidecar |
 | `signal-audit-llm-review.timer` | 周期检查新真实信号并复核 |
 
 ## 3. 当前路径
@@ -25,7 +25,7 @@ systemd 单元负责在策略服务器上轻量、可恢复地刷新审计卡和
 | `/opt/signal-audit` | 静态前端根目录 |
 | `/opt/signal-audit-tools` | materializer / LLM runner 工具目录 |
 | `/opt/signal-audit-tools/signal_llm_reviews.jsonl` | LLM sidecar 输出 |
-| `/etc/signal-audit/llm.env` | Gemini key 和 LLM 配置 |
+| `/etc/signal-audit/llm.env` | `LLM_API_KEY` 和 DeepSeek LLM 配置 |
 
 ## 4. 1GB 服务器约束
 

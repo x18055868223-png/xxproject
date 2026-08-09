@@ -14,8 +14,8 @@ if [[ ! -d "$FRONTEND_SRC" ]]; then
   FRONTEND_SRC="$REPO_ROOT/frontend"
 fi
 TOOL_SRC="$REPO_ROOT/tools/materialize_signal_cards.py"
-GEMINI_TOOL_SRC="$REPO_ROOT/tools/gemini_signal_llm_review.py"
-GEMINI_ENTRY_SRC="$REPO_ROOT/tools/gemini_signal_llm_review_entry.py"
+LLM_TOOL_SRC="$REPO_ROOT/tools/signal_llm_review.py"
+LLM_ENTRY_SRC="$REPO_ROOT/tools/signal_llm_review_entry.py"
 FACT_SEMANTICS_SRC="$REPO_ROOT/tools/signal_fact_semantics.py"
 LLM_RUNNER_SRC="$DEPLOY_SRC/run_signal_llm_review.sh"
 LLM_ENV_EXAMPLE_SRC="$DEPLOY_SRC/signal-audit-llm.env.example"
@@ -44,13 +44,13 @@ if [[ ! -f "$TOOL_SRC" ]]; then
   exit 2
 fi
 
-if [[ ! -f "$GEMINI_TOOL_SRC" ]]; then
-  echo "missing Gemini review tool: $GEMINI_TOOL_SRC" >&2
+if [[ ! -f "$LLM_TOOL_SRC" ]]; then
+  echo "missing provider-neutral LLM review tool: $LLM_TOOL_SRC" >&2
   exit 2
 fi
 
-if [[ ! -f "$GEMINI_ENTRY_SRC" ]]; then
-  echo "missing Gemini review entrypoint: $GEMINI_ENTRY_SRC" >&2
+if [[ ! -f "$LLM_ENTRY_SRC" ]]; then
+  echo "missing provider-neutral LLM review entrypoint: $LLM_ENTRY_SRC" >&2
   exit 2
 fi
 
@@ -70,16 +70,19 @@ install -d "$STATIC_ROOT" "$TOOLS_ROOT" "$CONFIG_ROOT"
 chmod 0700 "$CONFIG_ROOT"
 rsync -a --delete "$FRONTEND_SRC"/ "$STATIC_ROOT"/
 install -m 0755 "$TOOL_SRC" "$TOOLS_ROOT/materialize_signal_cards.py"
-install -m 0755 "$GEMINI_TOOL_SRC" "$TOOLS_ROOT/gemini_signal_llm_review.py"
-install -m 0755 "$GEMINI_ENTRY_SRC" "$TOOLS_ROOT/gemini_signal_llm_review_entry.py"
+install -m 0755 "$LLM_TOOL_SRC" "$TOOLS_ROOT/signal_llm_review.py"
+install -m 0755 "$LLM_ENTRY_SRC" "$TOOLS_ROOT/signal_llm_review_entry.py"
 install -m 0644 "$FACT_SEMANTICS_SRC" "$TOOLS_ROOT/signal_fact_semantics.py"
 install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
 install -m 0644 "$LLM_ENV_EXAMPLE_SRC" "$CONFIG_ROOT/llm.env.example"
 if [[ ! -f "$LLM_ENV_FILE" ]]; then
   install -m 0600 "$LLM_ENV_EXAMPLE_SRC" "$LLM_ENV_FILE"
-  echo "created LLM API key template at $LLM_ENV_FILE; edit GEMINI_CHANNEL1_API_KEY/GEMINI_CHANNEL2_API_KEY before expecting reviews"
+  echo "created LLM API key template at $LLM_ENV_FILE; edit LLM_API_KEY before expecting reviews"
 else
   chmod 0600 "$LLM_ENV_FILE"
+fi
+if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+  chown root:root "$LLM_ENV_FILE"
 fi
 
 install -m 0644 "$MATERIALIZE_SERVICE_SRC" /etc/systemd/system/signal-audit-materialize.service
@@ -111,8 +114,8 @@ fi
 
 echo "installed signal audit frontend to $STATIC_ROOT"
 echo "materializer installed to $TOOLS_ROOT/materialize_signal_cards.py"
-echo "Gemini review tool installed to $TOOLS_ROOT/gemini_signal_llm_review.py"
-echo "Gemini review entrypoint installed to $TOOLS_ROOT/gemini_signal_llm_review_entry.py"
+echo "provider-neutral LLM review tool installed to $TOOLS_ROOT/signal_llm_review.py"
+echo "provider-neutral LLM review entrypoint installed to $TOOLS_ROOT/signal_llm_review_entry.py"
 echo "deterministic fact semantics installed to $TOOLS_ROOT/signal_fact_semantics.py"
 echo "LLM API key config lives at $LLM_ENV_FILE"
 echo "LLM review sidecar lives at $LLM_REVIEWS_SOURCE"

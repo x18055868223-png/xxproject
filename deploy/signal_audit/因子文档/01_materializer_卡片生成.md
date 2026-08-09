@@ -13,7 +13,7 @@ materializer 把 FMZ 产生的 `signal_review.jsonl` 转成前端可直接读取
 | 类型 | 路径/字段 | 说明 |
 | --- | --- | --- |
 | 输入 | `--source signal_review.jsonl` | FMZ 信号层已写出的审计 JSONL |
-| 可选输入 | `--llm-reviews signal_llm_reviews.jsonl` | Gemini LLM sidecar 输出 |
+| 可选输入 | `--llm-reviews signal_llm_reviews.jsonl` | LLM sidecar 输出（新卡由 DeepSeek 生成；历史 Gemini sidecar 只读兼容） |
 | 输出 | `signal_cards/index.json` | 卡片列表、过滤索引、生成时间 |
 | 输出 | `signal_cards/*.json` | 单张审计卡 |
 | 输出 | `signal_cards/fallback.js` | file mode / fallback fixture |
