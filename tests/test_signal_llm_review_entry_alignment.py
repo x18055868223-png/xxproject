@@ -23,7 +23,7 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.0",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.1",
                 "entry version mismatch")
     assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.3",
                 "entry prompt mismatch")
@@ -45,6 +45,34 @@ def main():
     )
     assert_true("RETRY_RECOVERY_INSTRUCTION" in retry_prompt,
                 "entry did not forward the empty-content retry context")
+    none_payload = {
+        "integrated_trade_advisory": {
+            "recommendation": "NONE",
+            "final_conclusion_cn": "当前没有主结论，记为 NONE。",
+            "containment_assessment": {
+                "state": "NONE",
+                "basis_cn": "NONE",
+            },
+            "key_premises": [{
+                "premise_cn": "NONE",
+                "evidence_refs": ["NONE"],
+            }],
+            "invalid_if": ["NONE"],
+        },
+    }
+    repaired, trace = entry._repair_none_human_code(none_payload)
+    repaired_advisory = repaired["integrated_trade_advisory"]
+    assert_true(trace["repair_applied"] and trace["repair_count"] == 4,
+                "standalone NONE human-code repair count mismatch")
+    assert_true(repaired_advisory["recommendation"] == "NONE"
+                and repaired_advisory["containment_assessment"]["state"] == "NONE"
+                and repaired_advisory["key_premises"][0]["evidence_refs"] == ["NONE"],
+                "machine enum or evidence fields were modified")
+    assert_true("NONE" not in repaired_advisory["final_conclusion_cn"]
+                and repaired_advisory["containment_assessment"]["basis_cn"] == "无"
+                and repaired_advisory["key_premises"][0]["premise_cn"] == "无"
+                and repaired_advisory["invalid_if"] == ["无"],
+                "human fields retained raw NONE")
     help_result = subprocess.run(
         [sys.executable, str(TOOLS / "signal_llm_review_entry.py"), "--help"],
         cwd=ROOT, text=True, capture_output=True, check=False)

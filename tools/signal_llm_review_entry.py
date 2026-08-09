@@ -25,7 +25,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.0"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.1"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -279,6 +279,91 @@ def _repair_prohibitive_execution_language(payload):
     }
 
 
+_NONE_HUMAN_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_])NONE(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+
+
+def _repair_none_human_code(payload):
+    """Humanize standalone NONE only in advisory fields owned by human text."""
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    if not advisory:
+        return repaired_payload, {
+            "repair_applied": False,
+            "repair_count": 0,
+            "repair_fields": [],
+        }
+
+    advisory = copy.deepcopy(advisory)
+    fields = []
+    total = 0
+
+    def repair_field(container, key, path):
+        nonlocal total
+        value = container.get(key)
+        if not isinstance(value, str):
+            return
+        rewritten, substitutions = _NONE_HUMAN_TOKEN.subn("无", value)
+        if substitutions:
+            container[key] = rewritten
+            total += substitutions
+            fields.append(path)
+
+    for field_name in (
+        "final_conclusion_cn",
+        "cross_loop_rationale_cn",
+        "side_basis_cn",
+        "dominant_conflict_cn",
+        "next_observation_cn",
+    ):
+        repair_field(advisory, field_name, field_name)
+
+    for object_name in (
+        "containment_assessment",
+        "premium_selling_fit",
+        "session_advisory",
+    ):
+        child = core._as_dict(advisory.get(object_name))
+        if child:
+            child = dict(child)
+            repair_field(child, "basis_cn", object_name + ".basis_cn")
+            advisory[object_name] = child
+
+    premises = []
+    for index, item in enumerate(advisory.get("key_premises") or []):
+        item = dict(core._as_dict(item))
+        repair_field(
+            item,
+            "premise_cn",
+            "key_premises[" + str(index) + "].premise_cn",
+        )
+        premises.append(item)
+    if isinstance(advisory.get("key_premises"), list):
+        advisory["key_premises"] = premises
+
+    invalid_if = []
+    for index, item in enumerate(advisory.get("invalid_if") or []):
+        if isinstance(item, str):
+            rewritten, substitutions = _NONE_HUMAN_TOKEN.subn("无", item)
+        else:
+            rewritten, substitutions = item, 0
+        if substitutions:
+            total += substitutions
+            fields.append("invalid_if[" + str(index) + "]")
+        invalid_if.append(rewritten)
+    if isinstance(advisory.get("invalid_if"), list):
+        advisory["invalid_if"] = invalid_if
+
+    repaired_payload["integrated_trade_advisory"] = advisory
+    return repaired_payload, {
+        "repair_applied": bool(total),
+        "repair_count": total,
+        "repair_fields": sorted(set(fields)),
+    }
+
+
 _HARD_BLOCK_TEXT = {
     "final_conclusion_cn": "生产端硬性阻断仍然有效，本轮仅能保留为不交易观察结论。",
     "cross_loop_rationale_cn": (
@@ -398,6 +483,7 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     repaired_payload, hard_block_trace = _repair_hard_block_recommendation(
         repaired_payload, packet
     )
+    repaired_payload, none_human_trace = _repair_none_human_code(repaired_payload)
     review = _ORIGINAL_BUILD_LLM_REVIEW(
         card,
         repaired_payload,
@@ -439,6 +525,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         "hard_block_recommendation_entry_version": hard_block_trace[
             "entry_version"
         ],
+        "none_human_code_repair_applied": none_human_trace["repair_applied"],
+        "none_human_code_repair_count": none_human_trace["repair_count"],
+        "none_human_code_repair_fields": none_human_trace["repair_fields"],
         "alignment_entry_version": ENTRY_VERSION,
     })
     review["integrated_trade_advisory"]["policy_validation"] = policy
@@ -471,6 +560,19 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                 {
                     "event": "PRODUCER_HARD_BLOCK_RECOMMENDATION_REPAIRED",
                     **hard_block_trace,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if none_human_trace["repair_applied"]:
+        print(
+            json.dumps(
+                {
+                    "event": "NONE_HUMAN_CODE_REPAIRED",
+                    "entry_version": ENTRY_VERSION,
+                    **none_human_trace,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
