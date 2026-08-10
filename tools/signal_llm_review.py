@@ -2761,18 +2761,21 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
     return "READY", count
 
 
-def _latest_matching_error_review(records, identity_key, identity_value,
-                                  review_key, packet_hash):
+def _has_unresolved_reconciliation_empty_content(
+        records, identity_key, identity_value, review_key, packet_hash):
     for row in reversed(records):
         if row.get(identity_key) != identity_value:
             continue
         review = _as_dict(row.get(review_key))
-        if (review.get("status") == "ERROR"
-                and review.get("input_packet_hash") == packet_hash):
-            return review
         if review.get("status") == "OK":
             break
-    return {}
+        if (review.get("status") == "ERROR"
+                and review.get("input_packet_hash") == packet_hash
+                and review.get("error_category") == "EMPTY_CONTENT"
+                and review.get("call_profile")
+                in MAIN_RECONCILIATION_CALL_PROFILES):
+            return True
+    return False
 
 
 def _record_has_fatal_config_error(record, review_key):
@@ -2874,13 +2877,8 @@ def generate_reviews(source, reviews_output, api_key=None,
         if retry_state != "READY":
             skipped += 1
             continue
-        prior_error = _latest_matching_error_review(
+        recover_reconciliation = _has_unresolved_reconciliation_empty_content(
             existing_reviews, "card_id", card_id, "llm_review", packet_hash)
-        recover_reconciliation = (
-            prior_error.get("error_category") == "EMPTY_CONTENT"
-            and prior_error.get("call_profile")
-            in MAIN_RECONCILIATION_CALL_PROFILES
-        )
         candidates.append((
             card,
             max(1, retry_count) if recover_reconciliation else 0,

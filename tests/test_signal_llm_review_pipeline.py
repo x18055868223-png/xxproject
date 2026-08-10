@@ -850,6 +850,49 @@ def test_blind_empty_does_not_downgrade_first_reconciliation(tool):
                     "blind-empty retry incorrectly used non-thinking recovery")
 
 
+def test_reconciliation_recovery_survives_later_blind_error(tool):
+    packet_hash = "sha256:unchanged"
+    records = [
+        {
+            "card_id": "CARD",
+            "llm_review": {
+                "status": "ERROR",
+                "input_packet_hash": packet_hash,
+                "error_category": "EMPTY_CONTENT",
+                "call_profile": tool.CALL_PROFILE_MAIN_RECONCILIATION,
+            },
+        },
+        {
+            "card_id": "CARD",
+            "llm_review": {
+                "status": "ERROR",
+                "input_packet_hash": packet_hash,
+                "error_category": None,
+                "call_profile": tool.CALL_PROFILE_MAIN_BLIND,
+            },
+        },
+    ]
+    assert_true(tool._has_unresolved_reconciliation_empty_content(
+        records, "card_id", "CARD", "llm_review", packet_hash),
+        "later blind error must not erase unresolved reconciliation recovery")
+
+    blind_only = [records[-1]]
+    assert_true(not tool._has_unresolved_reconciliation_empty_content(
+        blind_only, "card_id", "CARD", "llm_review", packet_hash),
+        "blind-only error must not downgrade first reconciliation")
+
+    resolved = records + [{
+        "card_id": "CARD",
+        "llm_review": {
+            "status": "OK",
+            "input_packet_hash": packet_hash,
+        },
+    }]
+    assert_true(not tool._has_unresolved_reconciliation_empty_content(
+        resolved, "card_id", "CARD", "llm_review", packet_hash),
+        "successful review must clear reconciliation recovery history")
+
+
 def main():
     tool = load_tool()
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
@@ -867,6 +910,7 @@ def main():
     test_prompt_reasoning_contract(tool)
     test_empty_content_cross_round_recovery(tool)
     test_blind_empty_does_not_downgrade_first_reconciliation(tool)
+    test_reconciliation_recovery_survives_later_blind_error(tool)
     test_http_retry_and_redaction(tool)
     test_nonstream_keepalive_has_wall_clock_deadline(tool)
     test_daily_cap_and_single_writer(tool)
