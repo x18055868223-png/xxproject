@@ -9,8 +9,9 @@ Usage:
 
 Defaults are canary-only:
   - source JSONL is read from JSONL_SOURCE or the FMZ default
-  - review sidecars, transition ledger/state, usage ledger, and static output are isolated under a temp root
-  - no production files are changed unless --promote is passed
+  - review sidecars, transition ledger/state, and static output are isolated under a temp root
+  - real HTTP reservations always update the authoritative usage ledger and are never rolled back
+  - no production review or static files are changed unless --promote is passed
   - timers are enabled/started only with --enable-timers-after-pass after validation passes
 EOF
 }
@@ -222,7 +223,7 @@ run_isolated_review() {
   LLM_REVIEWS_SOURCE="$CANARY_RUN_REVIEWS" \
   TRANSITION_LEDGER_SOURCE="$CANARY_TRANSITION_LEDGER" \
   TRANSITION_LLM_REVIEWS_SOURCE="$CANARY_RUN_TRANSITION_REVIEWS" \
-  LLM_USAGE_LEDGER="$CANARY_USAGE_LEDGER" \
+  LLM_USAGE_LEDGER="$LLM_USAGE_LEDGER" \
   LLM_LOCK_FILE="$CANARY_ROOT/run_signal_llm_review.lock" \
   ONLY_CARD_ID="$TARGET_CARD_ID" \
   RETRY_ID="$retry_id" \
@@ -352,9 +353,9 @@ def read_json(path):
 
 prod = read_json(production)
 can = read_json(canary)
-# The canary ledger is initialized from production before any HTTP request,
-# so it already contains the authoritative total plus the canary reservations.
-# Adding the two ledgers again would double-count production usage.
+# Real canary requests reserve directly in the authoritative ledger. The
+# canary copy is only an immutable release-evidence snapshot, never a counter
+# to add to or restore over production.
 merged = can or prod
 output.write_text(json.dumps(merged, ensure_ascii=False, sort_keys=True), encoding="utf-8")
 print("MERGED_USAGE_LEDGER=ok")
@@ -450,7 +451,6 @@ restore_from_backup() {
     "transition_ledger:$TRANSITION_LEDGER_SOURCE" \
     "transition_state:$TRANSITION_STATE_SOURCE" \
     "transition_reviews:$TRANSITION_LLM_REVIEWS_SOURCE" \
-    "usage_ledger:$LLM_USAGE_LEDGER" \
     "fallback:$STATIC_ROOT/fallback.js"; do
     local name="${item%%:*}"
     local dest="${item#*:}"
@@ -501,9 +501,6 @@ fi
 install -d "$CANARY_STATIC_ROOT"
 : > "$CANARY_RUN_REVIEWS"
 : > "$CANARY_RUN_TRANSITION_REVIEWS"
-if [[ -f "$LLM_USAGE_LEDGER" ]]; then
-  cp -a "$LLM_USAGE_LEDGER" "$CANARY_USAGE_LEDGER"
-fi
 
 echo "STATUS=START"
 echo "TARGET_CARD_ID=$TARGET_CARD_ID"
@@ -571,6 +568,7 @@ merge_transition_reviews_for_target \
   "$CANARY_RUN_TRANSITION_REVIEWS" \
   "$CANARY_TRANSITION_LEDGER" \
   "$CANARY_TRANSITION_REVIEWS"
+cp -a "$LLM_USAGE_LEDGER" "$CANARY_USAGE_LEDGER"
 merge_usage_ledgers "$LLM_USAGE_LEDGER" "$CANARY_USAGE_LEDGER" "$CANARY_MERGED_USAGE_LEDGER"
 
 /usr/bin/python3 "$MATERIALIZER" \
@@ -622,7 +620,6 @@ backup_path "$LLM_REVIEWS_SOURCE" "llm_reviews" "$BACKUP_DIR"
 backup_path "$TRANSITION_LEDGER_SOURCE" "transition_ledger" "$BACKUP_DIR"
 backup_path "$TRANSITION_STATE_SOURCE" "transition_state" "$BACKUP_DIR"
 backup_path "$TRANSITION_LLM_REVIEWS_SOURCE" "transition_reviews" "$BACKUP_DIR"
-backup_path "$LLM_USAGE_LEDGER" "usage_ledger" "$BACKUP_DIR"
 backup_path "$STATIC_ROOT/fallback.js" "fallback" "$BACKUP_DIR"
 
 PROMOTION_STARTED=1
@@ -630,7 +627,6 @@ install_file_atomic "$CANARY_REVIEWS" "$LLM_REVIEWS_SOURCE" 0644
 install_file_atomic "$CANARY_TRANSITION_LEDGER" "$TRANSITION_LEDGER_SOURCE" 0644
 install_file_atomic "$CANARY_TRANSITION_STATE" "$TRANSITION_STATE_SOURCE" 0644
 install_file_atomic "$CANARY_TRANSITION_REVIEWS" "$TRANSITION_LLM_REVIEWS_SOURCE" 0644
-install_file_atomic "$CANARY_MERGED_USAGE_LEDGER" "$LLM_USAGE_LEDGER" 0644
 install_signal_cards_consistent "$CANARY_STATIC_ROOT/signal_cards" "$STATIC_ROOT/signal_cards"
 install_file_atomic "$CANARY_STATIC_ROOT/fallback.js" "$STATIC_ROOT/fallback.js" 0644
 PROMOTION_STARTED=0

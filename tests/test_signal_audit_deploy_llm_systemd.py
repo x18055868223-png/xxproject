@@ -544,7 +544,7 @@ def main():
                 and "ROLLBACK_COMMAND=" in canary
                 and "ROLLBACK_BACKUP" in canary
                 and "ONLY_CARD_ID=\"$TARGET_CARD_ID\"" in canary
-                and "LLM_USAGE_LEDGER=\"$CANARY_USAGE_LEDGER\"" in canary
+                and "LLM_USAGE_LEDGER=\"$LLM_USAGE_LEDGER\"" in canary
                 and "TARGET_CARD_ID=\"$TARGET_CARD_ID\"" in canary
                 and "SYSTEMD_REQUIRED=0" in canary
                 and "AUDIT_HTTP_REQUIRED=0" in canary,
@@ -555,6 +555,7 @@ def main():
                 and "LLM_SCHEMA=" in canary
                 and "LLM_PROMPT_VERSION=" in canary
                 and "UNIT_${unit//[^A-Za-z0-9]/_}_SHA256=" in canary
+                and 'LLM_USAGE_LEDGER="$LLM_USAGE_LEDGER"' in canary
                 and 'cp -a "$LLM_USAGE_LEDGER" "$CANARY_USAGE_LEDGER"' in canary
                 and "merged = can or prod" in canary
                 and "validate_backup_scope" in canary
@@ -567,6 +568,9 @@ def main():
                 and 'run_isolated_review "$TARGET_CARD_ID"' in canary
                 and "RECOVERY_STATUS=START_RECONCILIATION_ONLY" in canary,
                 "canary must report release identity and preserve the production usage total")
+    assert_true('"usage_ledger:$LLM_USAGE_LEDGER"' not in canary
+                and 'install_file_atomic "$CANARY_MERGED_USAGE_LEDGER" "$LLM_USAGE_LEDGER"' not in canary,
+                "real HTTP usage must never be rolled back with review/static promotion")
     assert_true("systemctl enable --now signal-audit-materialize.timer" in canary
                 and "TIMER_STATUS=ENABLED_AFTER_PASS" in canary,
                 "canary helper may enable timers only after validation pass")
