@@ -30,6 +30,7 @@ Copy-Item -LiteralPath (Join-Path $root.Path "tools\materialize_signal_cards.py"
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review_entry.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review_canary_release.sh") -Destination (Join-Path $packageRoot "tools") -Force
+Copy-Item -LiteralPath (Join-Path $root.Path "tools\server_self_check_signal_stack.sh") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_fact_semantics.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_or_update.sh") -Destination (Join-Path $packageRoot "deploy") -Force

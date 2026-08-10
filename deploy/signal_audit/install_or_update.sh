@@ -18,6 +18,7 @@ LLM_TOOL_SRC="$REPO_ROOT/tools/signal_llm_review.py"
 LLM_ENTRY_SRC="$REPO_ROOT/tools/signal_llm_review_entry.py"
 FACT_SEMANTICS_SRC="$REPO_ROOT/tools/signal_fact_semantics.py"
 CANARY_RELEASE_SRC="$REPO_ROOT/tools/signal_llm_review_canary_release.sh"
+SERVER_SELF_CHECK_SRC="$REPO_ROOT/tools/server_self_check_signal_stack.sh"
 LLM_RUNNER_SRC="$DEPLOY_SRC/run_signal_llm_review.sh"
 LLM_ENV_EXAMPLE_SRC="$DEPLOY_SRC/signal-audit-llm.env.example"
 MATERIALIZE_SERVICE_SRC="$DEPLOY_SRC/signal-audit-materialize.service"
@@ -69,6 +70,11 @@ if [[ ! -f "$CANARY_RELEASE_SRC" ]]; then
   exit 2
 fi
 
+if [[ ! -f "$SERVER_SELF_CHECK_SRC" ]]; then
+  echo "missing server self-check helper: $SERVER_SELF_CHECK_SRC" >&2
+  exit 2
+fi
+
 for required in "$LLM_RUNNER_SRC" "$LLM_ENV_EXAMPLE_SRC" "$MATERIALIZE_SERVICE_SRC" "$MATERIALIZE_TIMER_SRC" "$LLM_SERVICE_SRC" "$LLM_TIMER_SRC"; do
   if [[ ! -f "$required" ]]; then
     echo "missing deployment asset: $required" >&2
@@ -85,6 +91,7 @@ install -m 0755 "$LLM_ENTRY_SRC" "$TOOLS_ROOT/signal_llm_review_entry.py"
 install -m 0644 "$FACT_SEMANTICS_SRC" "$TOOLS_ROOT/signal_fact_semantics.py"
 install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
 install -m 0755 "$CANARY_RELEASE_SRC" "$TOOLS_ROOT/signal_llm_review_canary_release.sh"
+install -m 0755 "$SERVER_SELF_CHECK_SRC" "$TOOLS_ROOT/server_self_check_signal_stack.sh"
 install -m 0644 "$LLM_ENV_EXAMPLE_SRC" "$CONFIG_ROOT/llm.env.example"
 if [[ ! -f "$LLM_ENV_FILE" ]]; then
   install -m 0600 "$LLM_ENV_EXAMPLE_SRC" "$LLM_ENV_FILE"
@@ -148,6 +155,7 @@ echo "provider-neutral LLM review tool installed to $TOOLS_ROOT/signal_llm_revie
 echo "provider-neutral LLM review entrypoint installed to $TOOLS_ROOT/signal_llm_review_entry.py"
 echo "deterministic fact semantics installed to $TOOLS_ROOT/signal_fact_semantics.py"
 echo "canary release helper installed to $TOOLS_ROOT/signal_llm_review_canary_release.sh"
+echo "server self-check helper installed to $TOOLS_ROOT/server_self_check_signal_stack.sh"
 echo "LLM API key config lives at $LLM_ENV_FILE"
 echo "LLM review sidecar lives at $LLM_REVIEWS_SOURCE"
 echo "transition ledger lives at $TRANSITION_LEDGER_SOURCE"

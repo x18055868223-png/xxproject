@@ -141,6 +141,7 @@ def main():
                 and "LLM_API_KEY before expecting reviews" in install_or_update,
                 "install script should deploy provider-neutral LLM assets")
     assert_true("signal_llm_review_canary_release.sh" in install_or_update
+                and "server_self_check_signal_stack.sh" in install_or_update
                 and "ENABLE_SIGNAL_AUDIT_TIMERS" in install_or_update
                 and "START_SIGNAL_AUDIT_TIMERS" in install_or_update
                 and "RUN_INITIAL_MATERIALIZE" in install_or_update

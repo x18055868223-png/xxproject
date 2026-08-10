@@ -429,8 +429,9 @@ def main():
     assert_true("systemctl enable --now signal-audit-materialize.timer" not in install
                 and "systemctl enable --now signal-audit-llm-review.timer" not in install,
                 "install script must not enable/start timers by default")
-    assert_true("signal_llm_review_canary_release.sh" in install,
-                "install script should deploy the canary release helper")
+    assert_true("signal_llm_review_canary_release.sh" in install
+                and "server_self_check_signal_stack.sh" in install,
+                "install script should deploy the canary and self-check helpers")
     assert_true("signal-audit-llm.env.example" in install,
                 "install script should install the env example")
     assert_true("LLM_REVIEWS_SOURCE" in materialize_service
@@ -479,6 +480,7 @@ def main():
     assert_true("signal_llm_review.py" in package
                 and "signal_llm_review_entry.py" in package
                 and "signal_llm_review_canary_release.sh" in package
+                and "server_self_check_signal_stack.sh" in package
                 and "gemini_signal_llm_review.py" not in package
                 and "gemini_signal_llm_review_entry.py" not in package,
                 "package script should include provider-neutral LLM tools")
