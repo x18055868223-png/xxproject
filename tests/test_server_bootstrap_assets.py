@@ -12,6 +12,7 @@ MIGRATION_ZH = ROOT / "deploy" / "signal_audit" / "SERVER_MIGRATION_ZH.md"
 MATERIALIZE_SERVICE = ROOT / "deploy" / "signal_audit" / "signal-audit-materialize.service"
 MATERIALIZE_TIMER = ROOT / "deploy" / "signal_audit" / "signal-audit-materialize.timer"
 INSTALL_OR_UPDATE = ROOT / "deploy" / "signal_audit" / "install_or_update.sh"
+CANARY_RELEASE = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 
 
 def assert_true(condition, message):
@@ -34,6 +35,8 @@ def main():
                 "materializer systemd timer should exist")
     assert_true(INSTALL_OR_UPDATE.exists(),
                 "signal audit install/update script should exist")
+    assert_true(CANARY_RELEASE.exists(),
+                "signal audit canary release script should exist")
 
     script = BOOTSTRAP.read_text(encoding="utf-8")
     self_check = SELF_CHECK.read_text(encoding="utf-8")
@@ -42,6 +45,7 @@ def main():
     materialize_service = MATERIALIZE_SERVICE.read_text(encoding="utf-8")
     materialize_timer = MATERIALIZE_TIMER.read_text(encoding="utf-8")
     install_or_update = INSTALL_OR_UPDATE.read_text(encoding="utf-8")
+    canary_release = CANARY_RELEASE.read_text(encoding="utf-8")
 
     assert_true(script.startswith("#!/usr/bin/env bash"),
                 "bootstrap should be a bash script")
@@ -136,12 +140,30 @@ def main():
                 and "gemini_signal_llm_review.py" not in install_or_update
                 and "LLM_API_KEY before expecting reviews" in install_or_update,
                 "install script should deploy provider-neutral LLM assets")
+    assert_true("signal_llm_review_canary_release.sh" in install_or_update
+                and "ENABLE_SIGNAL_AUDIT_TIMERS" in install_or_update
+                and "START_SIGNAL_AUDIT_TIMERS" in install_or_update
+                and "RUN_INITIAL_MATERIALIZE" in install_or_update
+                and "RUN_INITIAL_LLM_REVIEW" in install_or_update
+                and "systemctl enable --now signal-audit-llm-review.timer" not in install_or_update,
+                "install script should deploy canary helper and keep timers/LLM opt-in")
+    assert_true("--target-card-id" in canary_release
+                and "--promote" in canary_release
+                and "PROMOTION_STATUS=SKIPPED" in canary_release
+                and "ROLLBACK_COMMAND=" in canary_release
+                and "LLM_USAGE_LEDGER" in canary_release
+                and "SYSTEMD_REQUIRED=0" in canary_release
+                and "AUDIT_HTTP_REQUIRED=0" in canary_release,
+                "canary release script should publish exact-target rollback-aware canaries")
     assert_true("Restart=" not in materialize_service
                 and "RestartSec=" not in materialize_service,
                 "oneshot materializer service must not use Restart")
     for token in (
             "SESSION_CONTEXT_REQUIRED",
             "DURABILITY_REQUIRED",
+            "TARGET_CARD_ID",
+            "SYSTEMD_REQUIRED",
+            "AUDIT_HTTP_REQUIRED",
             "EXPECTED_SIGNAL_VERSION",
             "EXPECTED_LLM_PROVIDER",
             "EXPECTED_LLM_MODEL",
@@ -156,7 +178,7 @@ def main():
             "deepseek",
             "deepseek-v4-flash",
             "signal_llm_review@1.5.0",
-            "signal_llm_review_prompt@1.5.3",
+            "signal_llm_review_prompt@1.5.4",
             "two_call_strict",
             "single_call_evidence_first",
             "macro_shock",

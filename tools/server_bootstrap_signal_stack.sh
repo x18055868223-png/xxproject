@@ -185,6 +185,10 @@ install_signal_audit() {
     LLM_BLIND_TIMEOUT="$LLM_BLIND_TIMEOUT" \
     LLM_RECON_TIMEOUT="$LLM_RECON_TIMEOUT" \
     LLM_TRANSITION_TIMEOUT="$LLM_TRANSITION_TIMEOUT" \
+    ENABLE_SIGNAL_AUDIT_TIMERS=0 \
+    START_SIGNAL_AUDIT_TIMERS=0 \
+    RUN_INITIAL_MATERIALIZE=0 \
+    RUN_INITIAL_LLM_REVIEW=0 \
     bash "$REPO_DIR/deploy/signal_audit/install_or_update.sh"
   install_signal_audit_dropins
 }

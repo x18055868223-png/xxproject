@@ -25,8 +25,8 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.3"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.4"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.4"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
 _HARD_BLOCK_SAFE_RECOMMENDATIONS = {"NO_TRADE", "UNABLE_TO_JUDGE"}

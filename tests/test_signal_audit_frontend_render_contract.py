@@ -895,7 +895,7 @@ def advisory_sample_card():
                     {
                         "role_cn": "卡内Gamma钉住观察位",
                         "price": 101500,
-                        "basis_cn": "来自卡内 Gamma 截面。",
+                        "basis_cn": "来自卡内 BINANCE_SPOT 与 GEX pin_strike。",
                         "source_type": "PACKET_OBSERVED",
                     },
                     {
@@ -1237,6 +1237,14 @@ def main():
     forecast_summary_idx = advisory_html.find('class="future-24h-summary"')
     assert_true("未来 24 小时第一性推断" in advisory_html,
                 "future 24h summary should have a visible reader-facing title")
+    forecast_trace_start = advisory_html.find('class="factor-detail future-24h-trace')
+    forecast_trace_end = advisory_html.find("</details>", forecast_trace_start)
+    forecast_trace_html = advisory_html[forecast_trace_start:forecast_trace_end]
+    assert_true("币安现货" in forecast_trace_html
+                and "Gamma 钉住位" in forecast_trace_html
+                and "BINANCE_SPOT" not in forecast_trace_html
+                and "pin_strike" not in forecast_trace_html,
+                "known packet field tokens should be humanized without hiding a valid report")
     forecast_grid_idx = advisory_html.find('class="integrated-advisory-grid"')
     forecast_summary_html = advisory_html[
         forecast_summary_idx:forecast_grid_idx

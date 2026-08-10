@@ -23,9 +23,9 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.3",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.4",
                 "entry version mismatch")
-    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.3",
+    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.4",
                 "entry prompt mismatch")
     assert_true(entry.core.PROVIDER == "deepseek", "entry provider mismatch")
     assert_true(entry.core.DEFAULT_MODEL == "deepseek-v4-flash", "entry model mismatch")
@@ -131,7 +131,7 @@ def main():
     assert_true(help_result.returncode == 0, help_result.stderr)
     for flag in ("--provider", "--api-key", "--base-url", "--concurrency",
                  "--daily-cap", "--blind-timeout", "--recon-timeout",
-                 "--transition-timeout", "--retry-id"):
+                 "--transition-timeout", "--retry-id", "--only-card-id"):
         assert_true(flag in help_result.stdout, "missing CLI flag " + flag)
     installer = (ROOT / "deploy/signal_audit/install_or_update.sh").read_text(encoding="utf-8")
     runner = (ROOT / "deploy/signal_audit/run_signal_llm_review.sh").read_text(encoding="utf-8")

@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -78,6 +80,71 @@ def minimal_transition(transition_id, ts_ms):
     }
 
 
+def compact_reconciliation_payload(tool, card, recommendation="SELL_PUT_SPREAD_REVIEW",
+                                   source_alignment="DIVERGENT"):
+    packet = tool.build_review_packet(card)
+    evidence_ref = next(
+        str(item["id"])
+        for item in packet.get("evidence_catalog", [])
+        if item.get("id") not in {"EV_SESSION_CONTEXT", "EV_COMFORT_WINDOW"}
+    )
+    price = card["market_context"]["price"]
+    return {
+        "summary_cn": "Independent audit summary.",
+        "agreement_with_system": "SUPPORT",
+        "caution_level": "LOW",
+        "integrated_trade_advisory": {
+            "recommendation": recommendation,
+            "final_conclusion_cn": "Bullish structure is internally consistent.",
+            "cross_loop_rationale_cn": "Direction, containment, and premium structure agree.",
+            "containment_assessment": {
+                "state": "ESTABLISHED",
+                "basis_cn": "Containment evidence is complete.",
+            },
+            "premium_selling_fit": {
+                "state": "FIT",
+                "basis_cn": "Premium structure matches the audit question.",
+            },
+            "side_basis_cn": "Put side has the cleaner tolerance.",
+            "dominant_conflict_cn": "No dominant conflict in this fixture.",
+            "key_premises": [{
+                "premise_cn": "Current packet evidence supports the conclusion.",
+                "evidence_refs": [evidence_ref],
+            }],
+            "invalid_if": ["Packet evidence changes materially."],
+            "next_observation_cn": "Watch whether the same evidence cluster weakens.",
+            "session_advisory": {
+                "liquidity_assessment": "ALIGNED",
+                "warning_level": "NONE",
+                "basis_cn": "Session context is advisory only.",
+            },
+            "source_alignment": source_alignment,
+            "audit_only": False,
+            "trade_authorization": True,
+            "future_24h_bayesian_report": {
+                "base_case": "UP",
+                "posterior_weights_pct": {"up": 52, "down": 18, "range": 30},
+                "report_cn": (
+                    "Base case leans up from packet facts; weights are subjective "
+                    "scenario weights, with conflict evidence as the invalidation."
+                ),
+                "key_levels": [{
+                    "price": price,
+                    "role_cn": "Current packet price.",
+                    "source_type": "PACKET_OBSERVED",
+                    "basis_cn": "Observed in the packet.",
+                }],
+                "counter_evidence_cn": ["Macro conflict may strengthen."],
+                "invalid_if_cn": ["Price loses the packet level."],
+            },
+        },
+        "main_supporting_factors": ["Direction and containment agree."],
+        "main_risks_or_conflicts": ["Conflict can return."],
+        "operator_focus": ["Watch invalidation evidence."],
+        "invalid_if": ["Packet hash changes."],
+    }
+
+
 def test_request_contract(tool):
     blind = tool.build_blind_chat_request("blind")
     recon = tool.build_chat_request("recon")
@@ -104,6 +171,23 @@ def test_request_contract(tool):
     assert_true(recon_wire["thinking"] == {"type": "enabled"}
                 and recon_wire["reasoning_effort"] == "high",
                 "reconciliation must retain high thinking mode")
+    recon_schema = recon["_local_json_schema"]
+    assert_true("theoretical_active_view" not in recon_schema["properties"]
+                and "gamma_regime_lens" not in recon_schema["properties"]
+                and "not_trading_advice" not in recon_schema["properties"],
+                "reconciliation wire schema must omit locally assembled top-level fields")
+    advisory_schema = recon_schema["properties"]["integrated_trade_advisory"]
+    for local_field in ("source_alignment", "audit_only", "trade_authorization"):
+        assert_true(local_field not in advisory_schema["properties"],
+                    "reconciliation advisory wire schema retained " + local_field)
+    session_schema = advisory_schema["properties"]["session_advisory"]
+    assert_true("does_not_change_recommendation" not in session_schema["properties"],
+                "session safety flag must be assembled locally")
+    future_schema = advisory_schema["properties"]["future_24h_bayesian_report"]
+    for local_field in ("schema_version", "horizon_hours", "input_scope",
+                        "live_external_data_used"):
+        assert_true(local_field not in future_schema["properties"],
+                    "future report fixed field stayed in wire schema: " + local_field)
     assert_true("reasoning_effort" not in blind and blind["max_tokens"] == 4096,
                 "blind profile mismatch")
     assert_true(recon["reasoning_effort"] == "high" and recon["max_tokens"] == 32768,
@@ -207,9 +291,20 @@ def test_future_contract(tool):
                 "policy validation must be local")
     assert_true(normalized["posterior_weights_pct"] == {"up": 52, "down": 18, "range": 30},
                 "integer weights changed")
+    assert_true(not tool._actionable_execution_terms(
+        "该报告不构成入场依据，也不建议开仓或下单。"),
+        "negated audit boundary must not be misclassified as an instruction")
+    assert_true("order_or_position_action" in tool._actionable_execution_terms(
+        "价格突破后建议入场并开仓。"),
+        "affirmative execution wording must remain fail-closed")
     assert_true("flip_point" not in tool._humanize_future_24h_basis(
         "卡内gamma_regime.flip_point；精度受限"),
         "known packet paths must be humanized before sidecar output")
+    humanized_basis = tool._humanize_future_24h_basis(
+        "卡内 BINANCE_SPOT 与 GEX pin_strike / flip_point / call_wall / put_wall")
+    for raw_token in ("BINANCE_SPOT", "pin_strike", "flip_point", "call_wall", "put_wall"):
+        assert_true(raw_token not in humanized_basis,
+                    "known packet field tokens must be humanized before sidecar output")
     mutations = []
     bad_sum = valid_future(); bad_sum["posterior_weights_pct"]["up"] = 51; mutations.append(bad_sum)
     bad_scope = valid_future(); bad_scope["input_scope"] = "PACKET_ONLY"; mutations.append(bad_scope)
@@ -291,6 +386,90 @@ def test_prompt_reasoning_contract(tool):
                    "changed_fields 非空", "同一 domain 原则上只写一条"):
         assert_true(phrase in transition_prompt,
                     "transition reasoning protocol missing: " + phrase)
+
+
+def test_compact_reconciliation_local_assembly(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        card = minimal_card("COMPACT-OK", 2)
+        card["decision"]["lean"] = "BULLISH"
+        tool._append_jsonl(source, card)
+
+        blind_payload = {
+            "theoretical_active_view": {
+                "bias": "BULLISH_LEAN",
+                "conviction": "MEDIUM",
+                "basis_cn": "Blind packet points up but remains audit-only.",
+                "key_drivers": ["Flow and price agree."],
+                "counter_evidence": ["Macro can weaken."],
+                "boundary_cn": "Blind result does not authorize trading.",
+            },
+            "gamma_regime_lens": tool._default_gamma_regime_lens(
+                "Gamma is only a risk overlay."),
+        }
+        recon_payload = compact_reconciliation_payload(tool, card)
+        calls = []
+
+        def response(content, profile):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": content,
+                        "reasoning_content": "SECRET_REASONING_TRACE",
+                    },
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7,
+                          "total_tokens": 18},
+                "_api_key_route": "bearer",
+                "_llm_call_routes": ["bearer"],
+                "_llm_http_calls": 1,
+                "_llm_call_profile": profile,
+            }
+
+        def fake_call(api_key, model, request_body, timeout, **kwargs):
+            profile = kwargs.get("call_profile")
+            calls.append((profile, request_body["_local_json_schema"]))
+            content = (
+                json.dumps(blind_payload)
+                if profile == tool.CALL_PROFILE_MAIN_BLIND
+                else json.dumps(recon_payload)
+            )
+            return response(content, profile)
+
+        result = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=fake_call)
+        rows = tool._read_jsonl(output)
+        assert_true(result["written_reviews"] == 1 and result["errors"] == 0,
+                    "compact reconciliation review did not succeed")
+        assert_true([item[0] for item in calls] == [
+            tool.CALL_PROFILE_MAIN_BLIND,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION,
+        ], "normal review call sequence drifted")
+        review = rows[-1]["llm_review"]
+        advisory = review["integrated_trade_advisory"]
+        policy = advisory["policy_validation"]
+        serialized = json.dumps(review, ensure_ascii=False)
+        assert_true(advisory["source_alignment"] == "ALIGNED",
+                    "model-provided source_alignment was not overwritten locally")
+        assert_true(policy["source_alignment_locally_derived"] is True
+                    and policy["source_alignment_final"] == "ALIGNED",
+                    "source alignment derivation trace missing")
+        assert_true(advisory["audit_only"] is True
+                    and advisory["trade_authorization"] is False
+                    and advisory["session_advisory"]["does_not_change_recommendation"] is True
+                    and review["not_trading_advice"] is True,
+                    "fixed safety fields were not assembled locally")
+        future = advisory["future_24h_bayesian_report"]
+        assert_true(future["schema_version"] == "future_24h_bayesian_report@1.0.0"
+                    and future["horizon_hours"] == 24
+                    and future["live_external_data_used"] is False,
+                    "future report fixed fields were not assembled locally")
+        assert_true("SECRET_REASONING_TRACE" not in serialized,
+                    "reasoning content leaked into normal sidecar")
 
 
 def test_http_retry_and_redaction(tool):
@@ -404,6 +583,86 @@ def test_daily_cap_and_single_writer(tool):
         for thread in writers: thread.join()
         rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
         assert_true(len(rows) == 20, "single-writer append lost/corrupted rows")
+
+
+def test_daily_cap_defers_without_consuming_record_retry(tool):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        tool._append_jsonl(source, minimal_card("DAILY-CAP", 1))
+
+        def budget_failure(*args, **kwargs):
+            exc = tool.DailyBudgetExceeded("daily cap")
+            exc.llm_call_profile = kwargs.get("call_profile")
+            raise exc
+
+        first = tool.generate_reviews(
+            source, output, api_key="unit-test-key", limit=1,
+            call_llm=budget_failure)
+        second = tool.generate_reviews(
+            source, output, api_key="unit-test-key", limit=1,
+            call_llm=budget_failure)
+        reviews = [row["llm_review"] for row in tool._read_jsonl(output)]
+        assert_true(first["errors"] == 1 and second["errors"] == 1,
+                    "daily cap should stop each run without hiding the target")
+        assert_true(all(
+            review["failure_state"]["type"] == "DAILY_BUDGET_DEFERRED"
+            and review["record_retry_count"] == 0
+            and review["record_retry_state"] == "DAILY_CAP"
+            and review["failure_state"]["terminal"] is False
+            for review in reviews
+        ), "daily cap must not permanently terminalize the card")
+
+
+def test_transition_only_card_filter(tool):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        ledger = root / "transitions.jsonl"
+        output = root / "reviews.jsonl"
+        for item in (
+                minimal_transition("TARGET", 2),
+                minimal_transition("OTHER", 1)):
+            tool._append_jsonl(ledger, item)
+
+        original_builder = tool.build_transition_llm_review
+        try:
+            def fake_call(*args, **kwargs):
+                return {"choices": [{"finish_reason": "stop",
+                                      "message": {"content": "{}"}}]}
+
+            def fake_builder(transition, payload, **kwargs):
+                return {
+                    "status": "OK",
+                    "input_packet_hash": tool._sha256_json(
+                        tool.build_transition_review_packet(transition)),
+                }
+
+            tool.build_transition_llm_review = fake_builder
+            result = tool.generate_transition_reviews(
+                ledger, output, api_key="unit-test-key", limit=4,
+                call_llm=fake_call, only_card_id="C-TARGET")
+        finally:
+            tool.build_transition_llm_review = original_builder
+        rows = tool._read_jsonl(output)
+        assert_true(result["written_reviews"] == 1
+                    and rows[0]["current_card_id"] == "C-TARGET"
+                    and result["target"]["status"] == "FOUND",
+                    "only-card-id must not review unrelated transitions")
+
+        missing_output = root / "missing-reviews.jsonl"
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = tool.main([
+                "--mode", "transition",
+                "--transition-ledger", str(ledger),
+                "--transition-reviews-output", str(missing_output),
+                "--usage-ledger", str(root / "missing-usage.json"),
+                "--only-card-id", "NO-SUCH-CARD",
+                "--api-key", "unit-test-key",
+            ])
+        assert_true(exit_code == 2,
+                    "transition-only missing target must fail exact-card canary")
 
 
 def test_nonstream_keepalive_has_wall_clock_deadline(tool):
@@ -624,8 +883,34 @@ def test_transition_concurrency(tool):
             latest[row["transition_id"]] = row["transition_llm_review"]
         assert_true(all(latest[item["transition_id"]]["record_retry_count"] == 4
                         and latest[item["transition_id"]]["record_retry_state"] == "TERMINAL"
+                        and latest[item["transition_id"]]["failure_state"]["terminal"] is True
+                        and latest[item["transition_id"]]["failure_state"]["retryable"] is False
                         for item in retry_items),
-                    "concurrent fourth transition failure must be terminal immediately")
+                    "concurrent fourth transition failure metadata must be terminal consistently")
+
+        cap_ledger = root / "cap-transitions.jsonl"
+        cap_output = root / "cap-reviews.jsonl"
+        for index in range(2):
+            tool._append_jsonl(
+                cap_ledger, minimal_transition(f"CAP-{index}", index))
+
+        def cap_failure(*args, **kwargs):
+            exc = tool.DailyBudgetExceeded("daily cap")
+            exc.llm_call_profile = kwargs.get("call_profile")
+            raise exc
+
+        cap_result = tool.generate_transition_reviews(
+            cap_ledger, cap_output, api_key="unit-test-key", limit=2,
+            call_llm=cap_failure, max_concurrency=2)
+        cap_review = tool._read_jsonl(cap_output)[-1]["transition_llm_review"]
+        assert_true(cap_result["errors"] == 1
+                    and cap_review["record_retry_count"] == 0
+                    and cap_review["record_retry_state"] == "DAILY_CAP"
+                    and cap_review["failure_state"]["terminal"] is False
+                    and cap_review["failure_state"]["retryable"] is False
+                    and cap_review["failure_state"][
+                        "deferred_until_next_beijing_day"] is True,
+                    "concurrent daily-cap metadata must remain deferred")
 
 
 def test_empty_content_cross_round_recovery(tool):
@@ -705,6 +990,12 @@ def test_empty_content_cross_round_recovery(tool):
         }, "per-stage usage was not retained")
         assert_true(error_review["record_retry_state"] == "COOLING",
                     "empty content must retain record-level cooling")
+        assert_true(error_review["failure_state"]["recovery_allowed"] is True
+                    and error_review["failure_state"]["stage"] == "RECONCILIATION",
+                    "reconciliation empty content must be typed recoverable")
+        assert_true(error_review["validated_blind_context"]["blind_result_hash"]
+                    == tool._sha256_json(blind_payload),
+                    "validated blind context was not persisted for recovery")
         assert_true("SECRET_REASONING" not in error_text,
                     "reasoning_content leaked into the error sidecar")
 
@@ -736,12 +1027,11 @@ def test_empty_content_cross_round_recovery(tool):
                 call_llm=recovered_call, retry_id="EMPTY-RECOVERY")
         finally:
             tool.build_llm_review = original_builder
-        assert_true(second["written_reviews"] == 1 and len(requests) == 4,
-                    "cross-round recovery must use one new strict two-call sequence")
+        assert_true(second["written_reviews"] == 1 and len(requests) == 3,
+                    "cross-round recovery must use one reconciliation-only call")
         assert_true("RETRY_RECOVERY_INSTRUCTION" in requests[-1][1],
                     "explicit retry did not receive the deterministic recovery note")
-        assert_true(requests[-2][0] == tool.CALL_PROFILE_MAIN_BLIND
-                    and requests[-1][0]
+        assert_true(requests[-1][0]
                     == tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
                     "recovery round profile sequence drifted")
         assert_true(requests[-1][3]
@@ -754,16 +1044,16 @@ def test_empty_content_cross_round_recovery(tool):
                     "recovery reconciliation wire contract drifted")
         ok_review = tool._read_jsonl(output)[-1]["llm_review"]
         ok_text = json.dumps(ok_review, ensure_ascii=False)
-        assert_true(ok_review["llm_call_profiles"] == [
-            tool.CALL_PROFILE_MAIN_BLIND,
-            tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
-        ], "recovery success profile sequence was not retained")
-        assert_true(ok_review["usage"] == {
-            "blind": {"prompt_tokens": 10, "completion_tokens": 5,
-                      "total_tokens": 15},
-            "reconciliation": {"prompt_tokens": 10, "completion_tokens": 5,
-                               "total_tokens": 15},
-        }, "recovery per-stage usage was not retained")
+        assert_true(ok_review["reused_validated_blind_context"] is True
+                    and ok_review["llm_call_profiles"]
+                    == [tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY]
+                    and ok_review["llm_http_call_count"] == 1,
+                    "recovery success must record one actual recovery call")
+        assert_true(ok_review["usage"]["reused_blind"] == {
+            "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+        } and ok_review["usage"]["reconciliation"] == {
+            "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+        }, "recovery usage did not distinguish cached blind from live reconciliation")
         assert_true("SECRET_REASONING" not in ok_text,
                     "reasoning_content leaked into the recovered sidecar")
 
@@ -813,6 +1103,9 @@ def test_blind_empty_does_not_downgrade_first_reconciliation(tool):
         assert_true(first_review["error_category"] == "EMPTY_CONTENT"
                     and first_review["call_profile"] == tool.CALL_PROFILE_MAIN_BLIND,
                     "blind empty failure metadata drifted")
+        assert_true(first_review["failure_state"]["recovery_allowed"] is False
+                    and "validated_blind_context" not in first_review,
+                    "blind failure must not create a recovery context")
 
         retry_requests = []
         original_builder = tool.build_llm_review
@@ -848,6 +1141,118 @@ def test_blind_empty_does_not_downgrade_first_reconciliation(tool):
         assert_true(recon_wire["thinking"] == {"type": "enabled"}
                     and recon_wire["reasoning_effort"] == "high",
                     "blind-empty retry incorrectly used non-thinking recovery")
+
+
+def test_invalid_json_is_not_recovery(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        card = minimal_card("INVALID-JSON", 1)
+        tool._append_jsonl(source, card)
+        blind_payload = {
+            "theoretical_active_view": tool._default_theoretical_active_view("test"),
+            "gamma_regime_lens": tool._default_gamma_regime_lens("test"),
+        }
+
+        def response(content, profile):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": content,
+                                "reasoning_content": "SECRET_REASONING"},
+                }],
+                "_api_key_route": "bearer",
+                "_llm_call_routes": ["bearer"],
+                "_llm_http_calls": 1,
+                "_llm_call_profile": profile,
+            }
+
+        def invalid_json_call(api_key, model, request_body, timeout, **kwargs):
+            profile = kwargs.get("call_profile")
+            content = (
+                json.dumps(blind_payload)
+                if profile == tool.CALL_PROFILE_MAIN_BLIND
+                else "{not-json"
+            )
+            return response(content, profile)
+
+        result = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=invalid_json_call)
+        review = tool._read_jsonl(output)[-1]["llm_review"]
+        assert_true(result["errors"] == 1
+                    and review["error_category"] == "INVALID_JSON",
+                    "invalid JSON must be categorized separately")
+        assert_true(review["failure_state"]["type"] == "INVALID_JSON"
+                    and review["failure_state"]["recovery_allowed"] is False
+                    and review["record_retry_state"] == "TERMINAL",
+                    "invalid JSON must fail closed without automatic replay")
+        assert_true("SECRET_REASONING" not in json.dumps(review, ensure_ascii=False),
+                    "reasoning content leaked through invalid JSON error")
+
+
+def test_reconciliation_recovery_is_one_shot(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        card = minimal_card("RECOVERY-ONCE", 1)
+        tool._append_jsonl(source, card)
+        blind_payload = {
+            "theoretical_active_view": tool._default_theoretical_active_view("test"),
+            "gamma_regime_lens": tool._default_gamma_regime_lens("test"),
+        }
+        calls = []
+
+        def response(content, profile):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": content,
+                                "reasoning_content": "SECRET_REASONING"},
+                }],
+                "_api_key_route": "bearer",
+                "_llm_call_routes": ["bearer"],
+                "_llm_http_calls": 1,
+                "_llm_call_profile": profile,
+            }
+
+        def empty_recon_call(api_key, model, request_body, timeout, **kwargs):
+            profile = kwargs.get("call_profile")
+            calls.append(profile)
+            content = (
+                json.dumps(blind_payload)
+                if profile == tool.CALL_PROFILE_MAIN_BLIND
+                else ""
+            )
+            return response(content, profile)
+
+        first = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=empty_recon_call,
+            reviewed_at="2020-01-01T00:00:00+00:00")
+        second = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=empty_recon_call, retry_id="RECOVERY-ONCE")
+        third = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=empty_recon_call, retry_id="RECOVERY-ONCE")
+        reviews = [row["llm_review"] for row in tool._read_jsonl(output)]
+        assert_true(first["errors"] == 1 and second["errors"] == 1,
+                    "setup should create primary and recovery failures")
+        assert_true(calls == [
+            tool.CALL_PROFILE_MAIN_BLIND,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+        ], "recovery must not run blind and must not repeat")
+        assert_true(reviews[-1]["failure_state"]["type"]
+                    == "RECONCILIATION_EMPTY_CONTENT_RECOVERY_EXHAUSTED"
+                    and reviews[-1]["record_retry_state"] == "TERMINAL",
+                    "recovery empty content must become terminal")
+        assert_true(third["attempted_cards"] == 0
+                    and third["skipped_cards"] == 1,
+                    "terminal recovery state must be sticky")
 
 
 def test_reconciliation_recovery_survives_later_blind_error(tool):
@@ -893,12 +1298,88 @@ def test_reconciliation_recovery_survives_later_blind_error(tool):
         "successful review must clear reconciliation recovery history")
 
 
+def test_only_card_id_cli_exit_codes(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        tool._append_jsonl(source, minimal_card("TARGET-OK", 1))
+        tool._append_jsonl(output, {
+            "card_id": "TARGET-OK",
+            "llm_review": {
+                "status": "OK",
+                "input_packet_hash": tool._sha256_json(
+                    tool.build_review_packet(minimal_card("TARGET-OK", 1))),
+            },
+        })
+
+        missing = subprocess.run(
+            [sys.executable, str(TOOL), "--mode", "card",
+             "--source", str(source), "--reviews-output", str(output),
+             "--only-card-id", "NO-SUCH-CARD", "--api-key", "unit-test-key"],
+            cwd=ROOT, text=True, capture_output=True, check=False)
+        assert_true(missing.returncode == 2, missing.stdout + missing.stderr)
+        missing_summary = json.loads(missing.stdout)
+        assert_true(missing_summary["card"]["target"]["status"] == "MISSING",
+                    "missing target summary drifted")
+
+        already_ok = subprocess.run(
+            [sys.executable, str(TOOL), "--mode", "card",
+             "--source", str(source), "--reviews-output", str(output),
+             "--only-card-id", "TARGET-OK", "--api-key", "unit-test-key"],
+            cwd=ROOT, text=True, capture_output=True, check=False)
+        assert_true(already_ok.returncode == 0, already_ok.stdout + already_ok.stderr)
+        ok_summary = json.loads(already_ok.stdout)
+        assert_true(ok_summary["card"]["target"]["status"] == "ALREADY_OK",
+                    "already OK target summary drifted")
+
+        error_source = root / "error-cards.jsonl"
+        error_output = root / "error-reviews.jsonl"
+        tool._append_jsonl(error_source, minimal_card("TARGET-ERROR", 1))
+        attempted_error = subprocess.run(
+            [sys.executable, str(TOOL), "--mode", "card",
+             "--source", str(error_source), "--reviews-output", str(error_output),
+             "--only-card-id", "TARGET-ERROR", "--api-key", ""],
+            cwd=ROOT, text=True, capture_output=True, check=False)
+        assert_true(attempted_error.returncode == 1,
+                    attempted_error.stdout + attempted_error.stderr)
+        error_summary = json.loads(attempted_error.stdout)
+        assert_true(error_summary["card"]["target"]["attempted"] is True
+                    and error_summary["card"]["target"]["status"] == "ERROR",
+                    "attempted-error target summary drifted")
+
+
+def test_partial_batch_error_is_fail_loud(tool):
+    original = tool.generate_reviews
+    try:
+        tool.generate_reviews = lambda *args, **kwargs: {
+            "attempted_cards": 2,
+            "written_reviews": 1,
+            "errors": 1,
+            "target": None,
+        }
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with contextlib.redirect_stdout(output):
+                exit_code = tool.main([
+                    "--mode", "card", "--source", str(root / "unused.jsonl"),
+                    "--reviews-output", str(root / "unused-reviews.jsonl"),
+                    "--usage-ledger", str(root / "usage.json"),
+                    "--api-key", "unit-test-key",
+                ])
+    finally:
+        tool.generate_reviews = original
+    assert_true(exit_code == 1,
+                "partial success must not hide an attempted record error")
+
+
 def main():
     tool = load_tool()
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
     assert_true(tool.PROVIDER == "deepseek", "provider mismatch")
     assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.5.0", "schema mismatch")
-    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.3", "prompt mismatch")
+    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.4", "prompt mismatch")
     assert_true(tool.TRANSITION_OUTPUT_SCHEMA_VERSION == "signal_transition_llm_review@1.3.0",
                 "transition schema mismatch")
     assert_true(tool.TRANSITION_PROMPT_VERSION == "signal_transition_llm_review_prompt@1.3.2",
@@ -908,12 +1389,19 @@ def main():
     test_future_contract(tool)
     test_transition_policy_text_boundary(tool)
     test_prompt_reasoning_contract(tool)
+    test_compact_reconciliation_local_assembly(tool)
     test_empty_content_cross_round_recovery(tool)
     test_blind_empty_does_not_downgrade_first_reconciliation(tool)
+    test_invalid_json_is_not_recovery(tool)
+    test_reconciliation_recovery_is_one_shot(tool)
     test_reconciliation_recovery_survives_later_blind_error(tool)
+    test_only_card_id_cli_exit_codes(tool)
+    test_partial_batch_error_is_fail_loud(tool)
     test_http_retry_and_redaction(tool)
     test_nonstream_keepalive_has_wall_clock_deadline(tool)
     test_daily_cap_and_single_writer(tool)
+    test_daily_cap_defers_without_consuming_record_retry(tool)
+    test_transition_only_card_filter(tool)
     test_cross_process_cap_and_append(tool)
     test_retry_gate_and_cooling(tool)
     test_fatal_config_stops_batch(tool)

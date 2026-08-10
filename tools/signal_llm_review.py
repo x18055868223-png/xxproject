@@ -40,7 +40,7 @@ DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
 PROVIDER = "deepseek"
 OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.0"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.3"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.4"
 PACKET_VERSION = "signal_llm_review_packet@1.2.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.2.0"
 TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.3.0"
@@ -253,6 +253,31 @@ ADVISORY_EXECUTION_TEXT_PATTERNS = (
         r"\b(?:set|use|raise|lower|adjust)\b[^.;\n]{0,16}\bleverage\b",
         re.IGNORECASE)),
 )
+
+_NEGATED_EXECUTION_MENTION_PATTERNS = (
+    re.compile(
+        r"(?:不构成|不作为|不建议|不得|禁止|避免|无需|无须|不能|不可|不应|并非|不是|不)"
+        r"[^。；\n]{0,16}(?:开仓|平仓|下单|入场|出场|加仓|减仓|止损|止盈)"),
+    re.compile(
+        r"\b(?:do\s+not|don't|must\s+not|should\s+not|cannot|can't|never|"
+        r"no\s+need\s+to)\s+(?:place|submit|send|cancel|open|close|increase|reduce)"
+        r"(?:\s+(?:an?\s+|the\s+)?)?(?:order|position)\b",
+        re.IGNORECASE),
+)
+
+
+def _actionable_execution_terms(text):
+    # Conservative boundary statements such as “不构成入场依据” are not
+    # execution instructions. Remove only explicit negated mentions before
+    # applying the strict action/parameter patterns; affirmative wording and
+    # all numeric strike/expiry/size rules remain fail-closed.
+    actionable_text = str(text or "")
+    for pattern in _NEGATED_EXECUTION_MENTION_PATTERNS:
+        actionable_text = pattern.sub("", actionable_text)
+    return [
+        label for label, pattern in ADVISORY_EXECUTION_TEXT_PATTERNS
+        if pattern.search(actionable_text)
+    ]
 TRANSITION_TRAJECTORY_STATES = {
     "DETERIORATING",
     "IMPROVING",
@@ -644,8 +669,12 @@ _BAYESIAN_REASONING_PROTOCOL = """
 """
 
 _MAIN_JSON_SHAPE_EXAMPLE = """
-期望 JSON 结构示例（省略号仅说明字段含义，实际输出不得使用省略号，必须填满本地 schema 的全部必需字段）：
-{"summary_cn":"自然中文摘要","agreement_with_system":"枚举","caution_level":"枚举","theoretical_active_view":{},"gamma_regime_lens":{},"integrated_trade_advisory":{"recommendation":"枚举","final_conclusion_cn":"自然中文","cross_loop_rationale_cn":"自然中文","containment_assessment":{},"premium_selling_fit":{},"side_basis_cn":"自然中文","dominant_conflict_cn":"自然中文","key_premises":[{"premise_cn":"自然中文前提","evidence_refs":["必须替换为输入证据目录中的真实id"]}],"invalid_if":["自然中文失效条件"],"next_observation_cn":"自然中文","session_advisory":{},"source_alignment":"枚举","audit_only":true,"trade_authorization":false,"future_24h_bayesian_report":{"schema_version":"future_24h_bayesian_report@1.0.0","horizon_hours":24,"input_scope":"PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH","live_external_data_used":false,"base_case":"UP","posterior_weights_pct":{"up":34,"down":33,"range":33},"report_cn":"单段自然中文","key_levels":[],"counter_evidence_cn":["自然中文"],"invalid_if_cn":["自然中文"]}},"main_supporting_factors":["自然中文支持项"],"main_risks_or_conflicts":["自然中文风险"],"operator_focus":["自然中文观察重点"],"invalid_if":["自然中文失效条件"],"not_trading_advice":true}
+期望 JSON 结构示例（紧凑 reconciliation）。
+Expected compact reconciliation JSON shape. Local code will assemble blind
+fields, source_alignment, audit_only, trade_authorization,
+session_advisory.does_not_change_recommendation, not_trading_advice, and the
+fixed future_24h fields before validation:
+{"summary_cn":"text","agreement_with_system":"enum","caution_level":"enum","integrated_trade_advisory":{"recommendation":"enum","final_conclusion_cn":"text","cross_loop_rationale_cn":"text","containment_assessment":{"state":"enum","basis_cn":"text"},"premium_selling_fit":{"state":"enum","basis_cn":"text"},"side_basis_cn":"text","dominant_conflict_cn":"text","key_premises":[{"premise_cn":"text","evidence_refs":["real evidence_catalog id"]}],"invalid_if":["text"],"next_observation_cn":"text","session_advisory":{"liquidity_assessment":"enum","warning_level":"enum","basis_cn":"text"},"future_24h_bayesian_report":{"base_case":"UP","posterior_weights_pct":{"up":34,"down":33,"range":33},"report_cn":"text","key_levels":[],"counter_evidence_cn":["text"],"invalid_if_cn":["text"]}},"main_supporting_factors":["text"],"main_risks_or_conflicts":["text"],"operator_focus":["text"],"invalid_if":["text"]}
 """
 
 _TRANSITION_REASONING_PROTOCOL = """
@@ -1099,6 +1128,66 @@ def review_response_schema():
     }
 
 
+def _json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _schema_clone(schema):
+    return _json_clone(schema)
+
+
+def reconciliation_future_24h_bayesian_report_schema():
+    schema = _schema_clone(future_24h_bayesian_report_schema())
+    for field_name in (
+            "schema_version", "horizon_hours", "input_scope",
+            "live_external_data_used"):
+        schema["properties"].pop(field_name, None)
+    schema["required"] = [
+        field_name for field_name in schema["required"]
+        if field_name in schema["properties"]
+    ]
+    return schema
+
+
+def reconciliation_integrated_trade_advisory_schema():
+    schema = _schema_clone(integrated_trade_advisory_schema())
+    for field_name in ("source_alignment", "audit_only", "trade_authorization"):
+        schema["properties"].pop(field_name, None)
+    schema["required"] = [
+        field_name for field_name in schema["required"]
+        if field_name in schema["properties"]
+    ]
+
+    session = schema["properties"].get("session_advisory")
+    if isinstance(session, dict):
+        session.get("properties", {}).pop("does_not_change_recommendation", None)
+        session["required"] = [
+            field_name for field_name in session.get("required", [])
+            if field_name in session.get("properties", {})
+        ]
+
+    report = schema["properties"].get("future_24h_bayesian_report")
+    if isinstance(report, dict):
+        schema["properties"]["future_24h_bayesian_report"] = (
+            reconciliation_future_24h_bayesian_report_schema())
+    return schema
+
+
+def reconciliation_response_schema():
+    schema = _schema_clone(review_response_schema())
+    for field_name in (
+            "theoretical_active_view", "gamma_regime_lens",
+            "not_trading_advice"):
+        schema["properties"].pop(field_name, None)
+    schema["properties"]["integrated_trade_advisory"] = (
+        reconciliation_integrated_trade_advisory_schema())
+    schema["required"] = [
+        field_name for field_name in schema["required"]
+        if field_name in schema["properties"]
+    ]
+    return schema
+
+
 def _build_openai_chat_request(prompt, model, schema, call_profile):
     high_reasoning = call_profile in HIGH_REASONING_CALL_PROFILES
     max_tokens = CALL_PROFILE_MAX_TOKENS[call_profile]
@@ -1136,7 +1225,7 @@ def build_chat_request(prompt, model=DEFAULT_MODEL, empty_content_retry_count=0)
     return _build_openai_chat_request(
         prompt,
         model,
-        review_response_schema(),
+        reconciliation_response_schema(),
         _main_reconciliation_call_profile(empty_content_retry_count),
     )
 
@@ -2462,10 +2551,75 @@ def parse_chat_response(response):
     return json.loads(_strip_json_fence(text))
 
 
+def _derive_source_alignment(packet, theoretical_active_view):
+    blind_bias = str(
+        _as_dict(theoretical_active_view).get("bias") or "").upper()
+    blind_direction = _advisory_direction(blind_bias)
+    producer_lean = _as_dict(_as_dict(packet).get("decision")).get("lean")
+    producer_direction = _advisory_direction(producer_lean)
+    direct_opposition = {
+        producer_direction,
+        blind_direction,
+    } == {"BULLISH", "BEARISH"}
+    if blind_bias == "UNABLE_TO_JUDGE" or producer_direction == "UNKNOWN":
+        alignment = "UNABLE_TO_JUDGE"
+    elif direct_opposition:
+        alignment = "DIVERGENT"
+    elif (
+            producer_direction in {"BULLISH", "BEARISH", "NEUTRAL"}
+            and producer_direction == blind_direction):
+        alignment = "ALIGNED"
+    else:
+        alignment = "PARTIALLY_ALIGNED"
+    return {
+        "source_alignment": alignment,
+        "blind_bias": blind_bias,
+        "blind_direction": blind_direction,
+        "producer_lean": str(producer_lean or ""),
+        "producer_direction": producer_direction,
+    }
+
+
+def _assemble_local_review_payload(payload, packet, blind_payload=None):
+    assembled = _json_clone(_as_dict(payload))
+    blind_source = blind_payload or {
+        "theoretical_active_view": assembled.get("theoretical_active_view"),
+        "gamma_regime_lens": assembled.get("gamma_regime_lens"),
+    }
+    blind = _validate_blind_payload(blind_source)
+    assembled["theoretical_active_view"] = blind["theoretical_active_view"]
+    assembled["gamma_regime_lens"] = blind["gamma_regime_lens"]
+    assembled["not_trading_advice"] = True
+
+    advisory = dict(_as_dict(assembled.get("integrated_trade_advisory")))
+    alignment = _derive_source_alignment(
+        packet, blind["theoretical_active_view"])
+    advisory["source_alignment"] = alignment["source_alignment"]
+    advisory["audit_only"] = True
+    advisory["trade_authorization"] = False
+
+    session = dict(_as_dict(advisory.get("session_advisory")))
+    if session:
+        session["does_not_change_recommendation"] = True
+        advisory["session_advisory"] = session
+
+    report = dict(_as_dict(advisory.get("future_24h_bayesian_report")))
+    if report:
+        report["schema_version"] = "future_24h_bayesian_report@1.0.0"
+        report["horizon_hours"] = 24
+        report["input_scope"] = "PACKET_FACTS_PLUS_MODEL_PRIOR_NO_LIVE_SEARCH"
+        report["live_external_data_used"] = False
+        advisory["future_24h_bayesian_report"] = report
+
+    assembled["integrated_trade_advisory"] = advisory
+    return assembled
+
+
 def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
                      derived_blind=True, llm_call_count=2,
                      llm_call_routes=None):
     packet = build_review_packet(card)
+    payload = _assemble_local_review_payload(payload, packet)
     payload = _validate_model_payload(payload, packet=packet)
     reviewed_at = reviewed_at or _now_iso()
     review = {
@@ -2498,6 +2652,15 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
         "data_quality_note": str(payload.get("data_quality_note") or ""),
         "not_trading_advice": True,
     }
+    policy = review["integrated_trade_advisory"]["policy_validation"]
+    alignment = _derive_source_alignment(
+        packet, payload.get("theoretical_active_view"))
+    policy.update({
+        "source_alignment_locally_derived": True,
+        "source_alignment_final": alignment["source_alignment"],
+        "source_alignment_blind_direction": alignment["blind_direction"],
+        "source_alignment_producer_direction": alignment["producer_direction"],
+    })
     return review
 
 
@@ -2575,8 +2738,81 @@ def _attach_response_metadata(exc, responses, call_profile=None):
         getattr(exc, "daily_http_budget", None) or response_budget)
 
 
+def _failure_stage(call_profile):
+    if call_profile == CALL_PROFILE_MAIN_BLIND:
+        return "BLIND"
+    if call_profile in MAIN_RECONCILIATION_CALL_PROFILES:
+        return "RECONCILIATION"
+    if call_profile in {
+            CALL_PROFILE_TRANSITION, CALL_PROFILE_TRANSITION_BLIND,
+            CALL_PROFILE_TRANSITION_RECONCILIATION}:
+        return "TRANSITION"
+    return "UNKNOWN"
+
+
+def _failure_type(exc, call_profile=None):
+    if isinstance(exc, DailyBudgetExceeded):
+        return "DAILY_BUDGET_DEFERRED"
+    if isinstance(exc, LlmApiError) and exc.status_code in {401, 403}:
+        return "FATAL_AUTH"
+    if _is_unrecoverable_llm_config_error(exc):
+        return "FATAL_CONFIG"
+    if isinstance(exc, LlmEmptyContentError):
+        if call_profile == CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY:
+            return "RECONCILIATION_EMPTY_CONTENT_RECOVERY_EXHAUSTED"
+        return "EMPTY_CONTENT"
+    if isinstance(exc, json.JSONDecodeError):
+        return "INVALID_JSON"
+    if isinstance(exc, ValueError):
+        return "VALIDATION_ERROR"
+    return "CALL_ERROR"
+
+
+def _typed_failure_state(exc, call_profile=None):
+    failure_type = _failure_type(exc, call_profile=call_profile)
+    terminal = failure_type in {
+        "FATAL_AUTH",
+        "FATAL_CONFIG",
+        "INVALID_JSON",
+        "VALIDATION_ERROR",
+        "RECONCILIATION_EMPTY_CONTENT_RECOVERY_EXHAUSTED",
+    }
+    recovery_allowed = (
+        failure_type == "EMPTY_CONTENT"
+        and call_profile == CALL_PROFILE_MAIN_RECONCILIATION
+    )
+    return {
+        "schema_version": "signal_llm_failure_state@1.0.0",
+        "type": failure_type,
+        "stage": _failure_stage(call_profile),
+        "call_profile": call_profile or "UNKNOWN",
+        "terminal": terminal,
+        "retryable": not terminal,
+        "recovery_allowed": recovery_allowed,
+        "recovery_kind": (
+            "RECONCILIATION_EMPTY_CONTENT"
+            if recovery_allowed
+            else "NONE"
+        ),
+        "recovery_attempted": (
+            call_profile == CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY),
+    }
+
+
+def _review_is_terminal_failure(review):
+    review = _as_dict(review)
+    failure = _as_dict(review.get("failure_state"))
+    return (
+        failure.get("terminal") is True
+        or review.get("fatal_config_error") is True
+        or review.get("error_category") == "FATAL_CONFIG"
+    )
+
+
 def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
     error_routes = _exception_call_routes(exc)
+    call_profile = getattr(exc, "llm_call_profile", None)
+    failure_state = _typed_failure_state(exc, call_profile=call_profile)
     review = {
         "schema": OUTPUT_SCHEMA_VERSION,
         "status": "ERROR",
@@ -2588,10 +2824,11 @@ def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
         "llm_call_routes": error_routes,
         "llm_http_call_count": int(getattr(exc, "llm_http_calls", 0) or 0),
         "retry_id": getattr(exc, "llm_retry_id", None),
-        "call_profile": getattr(exc, "llm_call_profile", None),
+        "call_profile": call_profile,
         "llm_call_profiles": list(getattr(exc, "llm_call_profiles", []) or []),
         "usage": dict(getattr(exc, "llm_usage", {}) or {}),
         "daily_http_budget": getattr(exc, "daily_http_budget", None),
+        "failure_state": failure_state,
         "summary_cn": "LLM review generation failed; source card conclusion is preserved.",
         "agreement_with_system": "UNABLE_TO_JUDGE",
         "caution_level": "HIGH",
@@ -2608,44 +2845,134 @@ def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
         "data_quality_note": "",
         "not_trading_advice": True,
     }
-    if _is_unrecoverable_llm_config_error(exc):
+    if isinstance(exc, DailyBudgetExceeded):
+        review["error_category"] = "DAILY_BUDGET"
+        review["budget_deferred"] = True
+    elif _is_unrecoverable_llm_config_error(exc):
         review["error_category"] = "FATAL_CONFIG"
         review["fatal_config_error"] = True
     elif isinstance(exc, LlmEmptyContentError):
         review["error_category"] = "EMPTY_CONTENT"
         review["response_diagnostics"] = dict(exc.diagnostics)
+    elif isinstance(exc, json.JSONDecodeError):
+        review["error_category"] = "INVALID_JSON"
     return {
         "card_id": card_id,
         "llm_review": review,
     }
 
 
+def _validated_blind_context(packet, blind_payload, blind_response):
+    blind = _validate_blind_payload(blind_payload)
+    return {
+        "schema_version": "validated_blind_context@1.0.0",
+        "packet_hash": _sha256_json(packet),
+        "blind_packet_hash": _sha256_json(build_blind_theoretical_packet(packet)),
+        "blind_result_hash": _sha256_json(blind),
+        "theoretical_active_view": _json_clone(blind["theoretical_active_view"]),
+        "gamma_regime_lens": _json_clone(blind["gamma_regime_lens"]),
+        "llm_call_profile": CALL_PROFILE_MAIN_BLIND,
+        "llm_call_routes": _response_call_routes(blind_response),
+        "llm_http_call_count": _response_http_calls(blind_response),
+        "usage": _response_usage(blind_response),
+    }
+
+
+def _blind_payload_from_context(context, packet):
+    context = _as_dict(context)
+    payload = {
+        "theoretical_active_view": context.get("theoretical_active_view"),
+        "gamma_regime_lens": context.get("gamma_regime_lens"),
+    }
+    blind = _validate_blind_payload(payload)
+    if context.get("packet_hash") != _sha256_json(packet):
+        raise ValueError("cached blind context packet hash mismatch")
+    if context.get("blind_packet_hash") != _sha256_json(
+            build_blind_theoretical_packet(packet)):
+        raise ValueError("cached blind packet hash mismatch")
+    if context.get("blind_result_hash") != _sha256_json(blind):
+        raise ValueError("cached blind result hash mismatch")
+    return blind
+
+
+def _attach_validated_blind_context(record, packet, blind_payload, blind_response):
+    review = _as_dict(record.get("llm_review"))
+    context = _validated_blind_context(packet, blind_payload, blind_response)
+    review["validated_blind_context"] = context
+    review["blind_packet_hash"] = context["blind_packet_hash"]
+    review["blind_result_hash"] = context["blind_result_hash"]
+    review["theoretical_active_view"] = _normalize_theoretical_active_view(
+        context["theoretical_active_view"], derived_blind=True)
+    review["gamma_regime_lens"] = _normalize_gamma_regime_lens(
+        context["gamma_regime_lens"])
+    failure = _as_dict(review.get("failure_state"))
+    if (
+            review.get("error_category") == "EMPTY_CONTENT"
+            and failure.get("call_profile") == CALL_PROFILE_MAIN_RECONCILIATION):
+        failure["recovery_allowed"] = True
+        failure["recovery_kind"] = "RECONCILIATION_EMPTY_CONTENT"
+        review["failure_state"] = failure
+
+
+def _reconciliation_recovery_context(
+        records, identity_key, identity_value, review_key, packet_hash):
+    for row in reversed(records):
+        if row.get(identity_key) != identity_value:
+            continue
+        review = _as_dict(row.get(review_key))
+        if review.get("status") == "OK":
+            break
+        if review.get("input_packet_hash") != packet_hash:
+            continue
+        if (
+                review.get("call_profile")
+                == CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY
+                or _as_dict(review.get("failure_state")).get(
+                    "recovery_attempted") is True):
+            return None
+        if (
+                review.get("status") == "ERROR"
+                and review.get("error_category") == "EMPTY_CONTENT"
+                and review.get("call_profile") == CALL_PROFILE_MAIN_RECONCILIATION):
+            context = _as_dict(review.get("validated_blind_context"))
+            if context:
+                return context
+    return None
+
+
 def _build_card_review_record(card, api_key, model, blind_timeout,
                                reconciliation_timeout, call_fn,
                                reviewed_at, base_url, budget, retry_id,
-                               empty_content_retry_count=0):
+                               empty_content_retry_count=0,
+                               recovery_blind_context=None):
     card_id = _card_id(card)
     blind_raw_response = None
     raw_response = None
+    blind_payload = None
+    packet = None
     failure_profile = CALL_PROFILE_MAIN_BLIND
     try:
         packet = build_review_packet(card)
-        blind_prompt = build_blind_prompt(packet)
-        blind_request = build_blind_chat_request(blind_prompt, model=model)
-        blind_request["_local_packet_hash"] = _sha256_json(packet)
-        blind_raw_response = _invoke_call_llm(
-            call_fn,
-            api_key,
-            model,
-            blind_request,
-            blind_timeout,
-            endpoint=base_url,
-            budget=budget,
-            retry_id=retry_id,
-            call_profile=CALL_PROFILE_MAIN_BLIND,
-        )
-        blind_payload = _validate_blind_payload(
-            parse_chat_response(blind_raw_response))
+        if recovery_blind_context:
+            blind_payload = _blind_payload_from_context(
+                recovery_blind_context, packet)
+        else:
+            blind_prompt = build_blind_prompt(packet)
+            blind_request = build_blind_chat_request(blind_prompt, model=model)
+            blind_request["_local_packet_hash"] = _sha256_json(packet)
+            blind_raw_response = _invoke_call_llm(
+                call_fn,
+                api_key,
+                model,
+                blind_request,
+                blind_timeout,
+                endpoint=base_url,
+                budget=budget,
+                retry_id=retry_id,
+                call_profile=CALL_PROFILE_MAIN_BLIND,
+            )
+            blind_payload = _validate_blind_payload(
+                parse_chat_response(blind_raw_response))
         reconciliation_profile = _main_reconciliation_call_profile(
             empty_content_retry_count)
         failure_profile = reconciliation_profile
@@ -2672,33 +2999,46 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
             call_profile=reconciliation_profile,
         )
         payload = parse_chat_response(raw_response)
-        payload["theoretical_active_view"] = blind_payload["theoretical_active_view"]
-        payload["gamma_regime_lens"] = blind_payload["gamma_regime_lens"]
-        call_routes = (
-            _response_call_routes(blind_raw_response)
-            + _response_call_routes(raw_response)
-        )
+        payload = _assemble_local_review_payload(
+            payload, packet, blind_payload=blind_payload)
+        call_routes = _response_call_routes(raw_response)
+        if blind_raw_response is not None:
+            call_routes = _response_call_routes(blind_raw_response) + call_routes
         review = build_llm_review(card, payload, model=model,
                                   reviewed_at=reviewed_at,
                                   derived_blind=True,
                                   llm_call_count=2,
                                   llm_call_routes=call_routes)
-        review["llm_http_call_count"] = (
-            _response_http_calls(blind_raw_response)
-            + _response_http_calls(raw_response)
-        )
-        review["llm_call_profiles"] = [
-            CALL_PROFILE_MAIN_BLIND,
-            reconciliation_profile,
-        ]
-        review["usage"] = {
-            "blind": _response_usage(blind_raw_response),
-            "reconciliation": _response_usage(raw_response),
-        }
+        if recovery_blind_context:
+            review["reused_validated_blind_context"] = True
+            review["reused_blind_packet_hash"] = recovery_blind_context.get(
+                "blind_packet_hash")
+            review["reused_blind_result_hash"] = recovery_blind_context.get(
+                "blind_result_hash")
+            review["llm_http_call_count"] = _response_http_calls(raw_response)
+            review["llm_call_profiles"] = [reconciliation_profile]
+            review["usage"] = {
+                "reused_blind": _as_dict(recovery_blind_context).get("usage") or {},
+                "reconciliation": _response_usage(raw_response),
+            }
+        else:
+            review["llm_http_call_count"] = (
+                _response_http_calls(blind_raw_response)
+                + _response_http_calls(raw_response)
+            )
+            review["llm_call_profiles"] = [
+                CALL_PROFILE_MAIN_BLIND,
+                reconciliation_profile,
+            ]
+            review["usage"] = {
+                "blind": _response_usage(blind_raw_response),
+                "reconciliation": _response_usage(raw_response),
+            }
         review["retry_id"] = retry_id
         budget_state = (
             _response_budget_state(raw_response)
             or _response_budget_state(blind_raw_response)
+            or _as_dict(recovery_blind_context).get("daily_http_budget")
         )
         if budget_state:
             review["daily_http_budget"] = budget_state
@@ -2722,13 +3062,18 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
             card_id, model, reviewed_at, safe_error, exc)
         record["llm_review"]["input_packet_hash"] = _sha256_json(
             build_review_packet(card))
+        if (
+                packet is not None
+                and blind_payload is not None
+                and blind_raw_response is not None
+                and failure_profile in MAIN_RECONCILIATION_CALL_PROFILES):
+            _attach_validated_blind_context(
+                record, packet, blind_payload, blind_raw_response)
         return False, record
 
 
 def _retry_state_for_record(records, identity_key, identity_value, review_key,
                             packet_hash, explicit_retry_id=None, now=None):
-    if explicit_retry_id and explicit_retry_id == identity_value:
-        return "READY", 0
     matching = []
     for row in reversed(records):
         if row.get(identity_key) != identity_value:
@@ -2739,10 +3084,15 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
         if (review.get("status") != "ERROR"
                 or review.get("input_packet_hash") != packet_hash):
             continue
-        if review.get("fatal_config_error") is True:
+        if _as_dict(review.get("failure_state")).get("type") == (
+                "DAILY_BUDGET_DEFERRED"):
+            continue
+        if _review_is_terminal_failure(review):
             return "TERMINAL", 1
         matching.append(review)
     count = len(matching)
+    if explicit_retry_id and explicit_retry_id == identity_value:
+        return "READY", count
     if count >= 4:
         return "TERMINAL", count
     if not count:
@@ -2780,8 +3130,14 @@ def _has_unresolved_reconciliation_empty_content(
 
 def _record_has_fatal_config_error(record, review_key):
     review = _as_dict(_as_dict(record).get(review_key))
-    return (review.get("fatal_config_error") is True
-            or review.get("error_category") == "FATAL_CONFIG")
+    failure_type = _as_dict(review.get("failure_state")).get("type")
+    return (
+        review.get("fatal_config_error") is True
+        or review.get("budget_deferred") is True
+        or review.get("error_category") in {"FATAL_CONFIG", "DAILY_BUDGET"}
+        or failure_type in {
+            "FATAL_AUTH", "DAILY_BUDGET_DEFERRED", "FATAL_CONFIG"}
+    )
 
 
 def _result_has_fatal_config_error(result, review_key):
@@ -2843,7 +3199,8 @@ def generate_reviews(source, reviews_output, api_key=None,
                      model=DEFAULT_MODEL, limit=20, include_synthetic=False,
                      timeout=60, blind_timeout=None, reconciliation_timeout=None,
                      call_llm=call_llm, reviewed_at=None, base_url=None,
-                     budget=None, max_concurrency=1, retry_id=None):
+                     budget=None, max_concurrency=1, retry_id=None,
+                     only_card_id=None):
     source = Path(source)
     reviews_output = Path(reviews_output)
     cards = _read_jsonl(source)
@@ -2857,6 +3214,20 @@ def generate_reviews(source, reviews_output, api_key=None,
     attempted = 0
     fatal_config_stop = False
     candidates = []
+    target = None
+    if only_card_id:
+        target = {
+            "card_id": str(only_card_id),
+            "found": False,
+            "already_ok": False,
+            "attempted": False,
+            "status": "MISSING",
+        }
+        cards = [card for card in cards if _card_id(card) == str(only_card_id)]
+        limit = 1
+        if cards:
+            target["found"] = True
+            target["status"] = "FOUND"
     for card in cards:
         if limit and len(candidates) >= limit:
             break
@@ -2866,6 +3237,9 @@ def generate_reviews(source, reviews_output, api_key=None,
             continue
         if card_id in done:
             skipped += 1
+            if target is not None and card_id == target["card_id"]:
+                target["already_ok"] = True
+                target["status"] = "ALREADY_OK"
             continue
         if _is_synthetic(card) and not include_synthetic:
             skipped += 1
@@ -2876,15 +3250,19 @@ def generate_reviews(source, reviews_output, api_key=None,
             explicit_retry_id=retry_id)
         if retry_state != "READY":
             skipped += 1
+            if target is not None and card_id == target["card_id"]:
+                target["status"] = retry_state
+                target["retry_count"] = retry_count
             continue
-        recover_reconciliation = _has_unresolved_reconciliation_empty_content(
+        recovery_context = _reconciliation_recovery_context(
             existing_reviews, "card_id", card_id, "llm_review", packet_hash)
         candidates.append((
             card,
-            max(1, retry_count) if recover_reconciliation else 0,
+            max(1, retry_count) if recovery_context else 0,
+            recovery_context,
         ))
     def worker(item):
-        card, empty_content_retry_count = item
+        card, empty_content_retry_count, recovery_context = item
         return _build_card_review_record(
             card,
             api_key,
@@ -2897,31 +3275,52 @@ def generate_reviews(source, reviews_output, api_key=None,
             budget,
             retry_id,
             empty_content_retry_count,
+            recovery_context,
         )
     results = _run_with_fatal_config_probe(
         candidates, max_concurrency, worker, "llm_review")
     for ok, record in results:
         attempted += 1
         review = _as_dict(record.get("llm_review"))
+        if target is not None and record.get("card_id") == target["card_id"]:
+            target["attempted"] = True
+            target["status"] = "ATTEMPTED"
         if review.get("status") == "ERROR":
-            fatal_config_stop = (
-                fatal_config_stop
-                or _record_has_fatal_config_error(record, "llm_review"))
+            failure_type = _as_dict(review.get("failure_state")).get("type")
+            fatal_config_stop = fatal_config_stop or failure_type in {
+                "FATAL_AUTH", "FATAL_CONFIG"}
             packet_hash = review.get("input_packet_hash")
             _, prior_count = _retry_state_for_record(
                 existing_reviews, "card_id", record.get("card_id"),
                 "llm_review", packet_hash, explicit_retry_id=None)
-            review["record_retry_count"] = prior_count + 1
-            review["record_retry_state"] = (
-                "TERMINAL"
-                if fatal_config_stop or prior_count + 1 >= 4
-                else "COOLING")
+            if failure_type == "DAILY_BUDGET_DEFERRED":
+                review["record_retry_count"] = prior_count
+                review["record_retry_state"] = "DAILY_CAP"
+            else:
+                review["record_retry_count"] = prior_count + 1
+                terminal_failure = _review_is_terminal_failure(review)
+                review["record_retry_state"] = (
+                    "TERMINAL"
+                    if terminal_failure or fatal_config_stop or prior_count + 1 >= 4
+                    else "COOLING")
+            failure = _as_dict(review.get("failure_state"))
+            failure["terminal"] = review["record_retry_state"] == "TERMINAL"
+            failure["retryable"] = (
+                not failure["terminal"]
+                and review["record_retry_state"] != "DAILY_CAP")
+            failure["deferred_until_next_beijing_day"] = (
+                review["record_retry_state"] == "DAILY_CAP")
+            review["failure_state"] = failure
         _append_jsonl(reviews_output, record)
         if ok:
             done.add(record.get("card_id"))
             written += 1
+            if target is not None and record.get("card_id") == target["card_id"]:
+                target["status"] = "OK"
         else:
             errors += 1
+            if target is not None and record.get("card_id") == target["card_id"]:
+                target["status"] = "ERROR"
     return {
         "source": str(source),
         "reviews_output": str(reviews_output),
@@ -2934,6 +3333,7 @@ def generate_reviews(source, reviews_output, api_key=None,
         "max_concurrency": max(1, int(max_concurrency or 1)),
         "fatal_config_stop": fatal_config_stop,
         "daily_http_budget": budget.snapshot() if budget is not None else None,
+        "target": target,
     }
 
 def build_transition_llm_review(transition, payload, model=DEFAULT_MODEL,
@@ -3035,7 +3435,7 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
                                 reviewed_at=None,
                                 transition_blind_mode="single_call_evidence_first",
                                 base_url=None, budget=None, retry_id=None,
-                                max_concurrency=1):
+                                max_concurrency=1, only_card_id=None):
     if transition_blind_mode not in TRANSITION_BLIND_MODES:
         raise ValueError("invalid transition_blind_mode")
     ledger = Path(ledger)
@@ -3045,6 +3445,21 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
         item for item in transitions
         if item.get("transition_id") and item.get("llm_review_required") is True
     ]
+    target = None
+    if only_card_id:
+        target_found = any(
+            str(item.get("current_card_id") or "") == str(only_card_id)
+            for item in transitions
+        )
+        target = {
+            "card_id": str(only_card_id),
+            "found": target_found,
+            "status": "FOUND" if target_found else "MISSING",
+        }
+        transitions = [
+            item for item in transitions
+            if str(item.get("current_card_id") or "") == str(only_card_id)
+        ]
     transitions = sorted(transitions, key=_transition_sort_key, reverse=True)
     done = _read_transition_review_ids(reviews_output)
     existing_reviews = _read_jsonl(reviews_output)
@@ -3083,7 +3498,7 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
                     reviewed_at=reviewed_at,
                     transition_blind_mode=transition_blind_mode,
                     base_url=base_url, budget=budget, retry_id=retry_id,
-                    max_concurrency=1)
+                    max_concurrency=1, only_card_id=only_card_id)
                 rows = _read_jsonl(tmp_reviews)
                 if not rows:
                     raise RuntimeError("transition worker produced no sidecar row")
@@ -3098,19 +3513,31 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
             attempted += 1
             if not ok:
                 review = _as_dict(row.get("transition_llm_review"))
-                fatal_config_stop = (
-                    fatal_config_stop
-                    or _record_has_fatal_config_error(
-                        row, "transition_llm_review"))
+                failure_type = _as_dict(review.get("failure_state")).get("type")
+                fatal_config_stop = fatal_config_stop or failure_type in {
+                    "FATAL_AUTH", "FATAL_CONFIG"}
                 packet_hash = review.get("input_packet_hash")
                 _, prior_count = _retry_state_for_record(
                     existing_reviews, "transition_id", row.get("transition_id"),
                     "transition_llm_review", packet_hash)
-                review["record_retry_count"] = prior_count + 1
-                review["record_retry_state"] = (
-                    "TERMINAL"
-                    if fatal_config_stop or prior_count + 1 >= 4
-                    else "COOLING")
+                if failure_type == "DAILY_BUDGET_DEFERRED":
+                    review["record_retry_count"] = prior_count
+                    review["record_retry_state"] = "DAILY_CAP"
+                else:
+                    review["record_retry_count"] = prior_count + 1
+                    review["record_retry_state"] = (
+                        "TERMINAL"
+                        if (_review_is_terminal_failure(review)
+                            or fatal_config_stop or prior_count + 1 >= 4)
+                        else "COOLING")
+                failure = _as_dict(review.get("failure_state"))
+                failure["terminal"] = review["record_retry_state"] == "TERMINAL"
+                failure["retryable"] = (
+                    not failure["terminal"]
+                    and review["record_retry_state"] != "DAILY_CAP")
+                failure["deferred_until_next_beijing_day"] = (
+                    review["record_retry_state"] == "DAILY_CAP")
+                review["failure_state"] = failure
             _append_jsonl(reviews_output, row)
             if ok:
                 written += 1
@@ -3125,6 +3552,7 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
             "max_concurrency": max(1, int(max_concurrency or 1)),
             "fatal_config_stop": fatal_config_stop,
             "daily_http_budget": budget.snapshot() if budget is not None else None,
+            "target": target,
         }
 
     for transition in candidates:
@@ -3228,12 +3656,21 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
             written += 1
         except Exception as exc:
             errors += 1
-            fatal_config_stop = _is_unrecoverable_llm_config_error(exc)
+            call_profile = getattr(exc, "llm_call_profile", None)
+            failure_state = _typed_failure_state(
+                exc, call_profile=call_profile)
+            fatal_config_stop = (
+                failure_state["type"]
+                in {"FATAL_AUTH", "FATAL_CONFIG"})
             safe_error = _redact_sensitive_text(str(exc))[:220]
             error_routes = _exception_call_routes(exc)
             error_review = _transition_error_review(
                 model, reviewed_at, safe_error, error_routes,
                 transition_blind_mode)
+            error_review["failure_state"] = failure_state
+            if isinstance(exc, DailyBudgetExceeded):
+                error_review["error_category"] = "DAILY_BUDGET"
+                error_review["budget_deferred"] = True
             if fatal_config_stop:
                 error_review["error_category"] = "FATAL_CONFIG"
                 error_review["fatal_config_error"] = True
@@ -3241,18 +3678,30 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
             error_review["llm_http_call_count"] = int(
                 getattr(exc, "llm_http_calls", 0) or 0)
             error_review["retry_id"] = getattr(exc, "llm_retry_id", retry_id)
-            error_review["call_profile"] = getattr(exc, "llm_call_profile", None)
+            error_review["call_profile"] = call_profile
             budget_state = getattr(exc, "daily_http_budget", None)
             if budget_state:
                 error_review["daily_http_budget"] = budget_state
             _, prior_count = _retry_state_for_record(
                 existing_reviews, "transition_id", transition_id,
                 "transition_llm_review", packet_hash)
-            error_review["record_retry_count"] = prior_count + 1
-            error_review["record_retry_state"] = (
-                "TERMINAL"
-                if fatal_config_stop or prior_count + 1 >= 4
-                else "COOLING")
+            if failure_state["type"] == "DAILY_BUDGET_DEFERRED":
+                error_review["record_retry_count"] = prior_count
+                error_review["record_retry_state"] = "DAILY_CAP"
+            else:
+                error_review["record_retry_count"] = prior_count + 1
+                error_review["record_retry_state"] = (
+                    "TERMINAL"
+                    if (failure_state["terminal"] or fatal_config_stop
+                        or prior_count + 1 >= 4)
+                    else "COOLING")
+            failure_state["terminal"] = error_review["record_retry_state"] == "TERMINAL"
+            failure_state["retryable"] = (
+                not failure_state["terminal"]
+                and error_review["record_retry_state"] != "DAILY_CAP")
+            failure_state["deferred_until_next_beijing_day"] = (
+                error_review["record_retry_state"] == "DAILY_CAP")
+            error_review["failure_state"] = failure_state
             _append_jsonl(reviews_output, {
                 "transition_id": transition_id,
                 "current_card_id": transition.get("current_card_id"),
@@ -3271,6 +3720,7 @@ def generate_transition_reviews(ledger, reviews_output, api_key=None,
         "transition_blind_mode": transition_blind_mode,
         "fatal_config_stop": fatal_config_stop,
         "daily_http_budget": budget.snapshot() if budget is not None else None,
+        "target": target,
     }
 
 def _transition_error_review(model, reviewed_at, safe_error, error_routes,
@@ -4809,10 +5259,7 @@ def _validate_integrated_trade_advisory(advisory, packet=None,
     if raw_human_tokens:
         raise ValueError("integrated_trade_advisory human text contains raw codes: "
                          + ", ".join(raw_human_tokens))
-    execution_terms = [
-        label for label, pattern in ADVISORY_EXECUTION_TEXT_PATTERNS
-        if pattern.search(advisory_text)
-    ]
+    execution_terms = _actionable_execution_terms(advisory_text)
     if execution_terms:
         raise ValueError("integrated_trade_advisory contains execution parameters: "
                          + ", ".join(execution_terms))
@@ -5019,10 +5466,7 @@ def _validate_future_24h_bayesian_report(report, packet=None):
     if raw_human_tokens:
         raise ValueError("future_24h human text contains raw codes: "
                          + ", ".join(raw_human_tokens))
-    execution_terms = [
-        label for label, pattern in ADVISORY_EXECUTION_TEXT_PATTERNS
-        if pattern.search(report_text)
-    ]
+    execution_terms = _actionable_execution_terms(report_text)
     if execution_terms:
         raise ValueError("future_24h report contains execution parameters: "
                          + ", ".join(execution_terms))
@@ -5324,6 +5768,11 @@ def _humanize_future_24h_basis(value):
         "gamma_regime.pin_strike": "卡内 Gamma 钉住位",
         "gex_info.call_wall": "卡内上方 Gamma 墙",
         "gex_info.put_wall": "卡内下方 Gamma 墙",
+        "BINANCE_SPOT": "币安现货",
+        "pin_strike": "Gamma 钉住位",
+        "flip_point": "Gamma 翻转点",
+        "call_wall": "上方 Gamma 墙",
+        "put_wall": "下方 Gamma 墙",
     }
     for raw_path, chinese_label in replacements.items():
         text = text.replace(raw_path, chinese_label)
@@ -5712,6 +6161,8 @@ def main(argv=None):
                         help="JSON state path for the Beijing-day HTTP usage ledger.")
     parser.add_argument("--retry-id", default="",
                         help="Optional cross-round retry id; allows initial + 3 retries.")
+    parser.add_argument("--only-card-id", default="",
+                        help="Review one exact card_id; missing target exits 2.")
     parser.add_argument("--blind-effort", default="low",
                         choices=("low", "medium", "high"),
                         help="Recorded effort label for the main blind call.")
@@ -5766,9 +6217,15 @@ def main(argv=None):
             budget=budget,
             max_concurrency=args.max_concurrency,
             retry_id=args.retry_id or None,
+            only_card_id=args.only_card_id or None,
         )
         result["card"] = card_result
-        if card_result["errors"] and not card_result["written_reviews"]:
+        target = card_result.get("target")
+        if target and target.get("status") == "MISSING":
+            exit_code = 2
+        elif target and target.get("attempted") and card_result["errors"]:
+            exit_code = 1
+        elif card_result["errors"]:
             exit_code = 1
     if args.mode in {"transition", "both"}:
         if not args.transition_ledger:
@@ -5785,11 +6242,20 @@ def main(argv=None):
             budget=budget,
             retry_id=args.retry_id or None,
             max_concurrency=args.max_concurrency,
+            only_card_id=args.only_card_id or None,
         )
         result["transition"] = transition_result
-        if (transition_result["errors"]
-                and not transition_result["written_reviews"]
-                and transition_result["attempted_transitions"]):
+        transition_target = _as_dict(transition_result.get("target"))
+        if (args.mode == "transition" and transition_target
+                and transition_target.get("status") == "MISSING"):
+            exit_code = 2
+        if transition_result["errors"]:
+            exit_code = 1
+    card_target = _as_dict(_as_dict(result.get("card")).get("target"))
+    if card_target:
+        if card_target.get("status") == "MISSING":
+            exit_code = 2
+        elif card_target.get("status") not in {"OK", "ALREADY_OK"}:
             exit_code = 1
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return exit_code

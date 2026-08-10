@@ -5,14 +5,35 @@
 set -u
 
 RUN_ONESHOTS=0
-if [ "${1:-}" = "--run-oneshots" ]; then
-  RUN_ONESHOTS=1
-fi
+TARGET_CARD_ID="${TARGET_CARD_ID:-${ONLY_CARD_ID:-}}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --run-oneshots)
+      RUN_ONESHOTS=1
+      shift
+      ;;
+    --target-card-id|--card-id|--only-card-id)
+      TARGET_CARD_ID="${2:-}"
+      shift 2
+      ;;
+    --target-card-id=*|--card-id=*|--only-card-id=*)
+      TARGET_CARD_ID="${1#*=}"
+      shift
+      ;;
+    *)
+      fail_arg="$1"
+      printf 'unknown argument: %s\n' "$fail_arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
 SERVER_BASE_URL="${SERVER_BASE_URL:-http://127.0.0.1}"
 AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
+SYSTEMD_REQUIRED="${SYSTEMD_REQUIRED:-1}"
+AUDIT_HTTP_REQUIRED="${AUDIT_HTTP_REQUIRED:-1}"
 LLM_REQUIRED="${LLM_REQUIRED:-0}"
 INTEGRATED_ADVISORY_REQUIRED="${INTEGRATED_ADVISORY_REQUIRED:-0}"
 TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
@@ -23,7 +44,7 @@ EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.7}"
 EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
 EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
 EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@1.5.0}"
-EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@1.5.3}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@1.5.4}"
 EXPECTED_LLM_BLIND_MODE="${EXPECTED_LLM_BLIND_MODE:-two_call_strict}"
 EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-2}"
 EXPECTED_TRANSITION_LLM_PROVIDER="${EXPECTED_TRANSITION_LLM_PROVIDER:-$EXPECTED_LLM_PROVIDER}"
@@ -160,6 +181,8 @@ section "Environment"
 printf 'AUDIT_URL=%s\n' "$AUDIT_URL"
 printf 'GEX_URL=%s\n' "$GEX_URL"
 printf 'GEX_REQUIRED=%s\n' "$GEX_REQUIRED"
+printf 'SYSTEMD_REQUIRED=%s\n' "$SYSTEMD_REQUIRED"
+printf 'AUDIT_HTTP_REQUIRED=%s\n' "$AUDIT_HTTP_REQUIRED"
 printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
 printf 'INTEGRATED_ADVISORY_REQUIRED=%s\n' "$INTEGRATED_ADVISORY_REQUIRED"
 printf 'TRANSITION_REQUIRED=%s\n' "$TRANSITION_REQUIRED"
@@ -179,6 +202,7 @@ printf 'LLM_REVIEWS_SOURCE=%s\n' "$LLM_REVIEWS_SOURCE"
 printf 'TRANSITION_LEDGER_SOURCE=%s\n' "$TRANSITION_LEDGER_SOURCE"
 printf 'TRANSITION_LLM_REVIEWS_SOURCE=%s\n' "$TRANSITION_LLM_REVIEWS_SOURCE"
 printf 'SESSION_CONTEXT_REQUIRED=%s\n' "$SESSION_CONTEXT_REQUIRED"
+printf 'TARGET_CARD_ID=%s\n' "${TARGET_CARD_ID:-LATEST}"
 
 have curl && ok "curl available" || fail "curl missing"
 have python3 && ok "python3 available" || fail "python3 missing"
@@ -199,15 +223,19 @@ else
 fi
 
 section "Systemd services"
-if [ "$GEX_REQUIRED" = "1" ]; then
-  systemd_state gexmonitorapi.service
+if [ "$SYSTEMD_REQUIRED" = "1" ]; then
+  if [ "$GEX_REQUIRED" = "1" ]; then
+    systemd_state gexmonitorapi.service
+  else
+    warn "GEX_REQUIRED=0; skipped gexmonitorapi.service check"
+  fi
+  systemd_state signal-audit-materialize.service
+  systemd_state signal-audit-llm-review.service
+  timer_state signal-audit-materialize.timer
+  timer_state signal-audit-llm-review.timer
 else
-  warn "GEX_REQUIRED=0; skipped gexmonitorapi.service check"
+  warn "SYSTEMD_REQUIRED=0; skipped systemd service and timer checks"
 fi
-systemd_state signal-audit-materialize.service
-systemd_state signal-audit-llm-review.service
-timer_state signal-audit-materialize.timer
-timer_state signal-audit-llm-review.timer
 
 section "FMZ signal JSONL"
 if [ -r "$JSONL_SOURCE" ]; then
@@ -252,8 +280,12 @@ else
 fi
 
 section "Signal audit frontend"
-http_head "audit page" "${AUDIT_URL%/}/"
-http_head "audit manifest" "${AUDIT_URL%/}/signal_cards/index.json"
+if [ "$AUDIT_HTTP_REQUIRED" = "1" ]; then
+  http_head "audit page" "${AUDIT_URL%/}/"
+  http_head "audit manifest" "${AUDIT_URL%/}/signal_cards/index.json"
+else
+  warn "AUDIT_HTTP_REQUIRED=0; skipped audit HTTP checks"
+fi
 if [ -r "$AUDIT_ROOT/signal_cards/index.json" ]; then
   if python3 - "$AUDIT_ROOT/signal_cards/index.json" <<'PY'
 import json, sys
@@ -276,11 +308,23 @@ import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.7")
 durability_required = os.environ.get("DURABILITY_REQUIRED", "0") == "1"
+target_card_id = (os.environ.get("TARGET_CARD_ID")
+                  or os.environ.get("ONLY_CARD_ID") or "")
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
 if not cards:
     raise SystemExit("no cards")
-path = root / cards[0].get("path", "")
+
+def manifest_card_id(item):
+    return str(item.get("card_id") or "")
+
+selected_manifest = cards[0]
+if target_card_id:
+    matches = [item for item in cards if manifest_card_id(item) == target_card_id]
+    if not matches:
+        raise SystemExit("target audit card not found in manifest: " + target_card_id)
+    selected_manifest = matches[0]
+path = root / selected_manifest.get("path", "")
 card = json.loads(path.read_text(encoding="utf-8"))
 identity = card.get("identity") or {}
 ctx = ((card.get("signal_window") or {}).get("session_context") or {})
@@ -305,7 +349,8 @@ def contains_value(node, target):
     if isinstance(node, list):
         return any(contains_value(value, target) for value in node)
     return False
-print("latest_audit_card_id:", identity.get("card_id") or cards[0].get("card_id"))
+print("target_card_id:", target_card_id or "LATEST")
+print("latest_audit_card_id:", identity.get("card_id") or selected_manifest.get("card_id"))
 print("latest_strategy_version:", identity.get("strategy_version"))
 print("expected_signal_version:", expected_version)
 print("session_schema_name:", ctx.get("schema_name"))
@@ -427,19 +472,29 @@ fi
 section "Signal transition ledger"
 if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
   if python3 - "$AUDIT_ROOT" "$TRANSITION_LEDGER_SOURCE" <<'PY'
-import json, pathlib, sys
+import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 ledger_path = pathlib.Path(sys.argv[2])
+target_card_id = (os.environ.get("TARGET_CARD_ID")
+                  or os.environ.get("ONLY_CARD_ID") or "")
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
 if not cards:
     raise SystemExit("no cards")
-card_path = root / cards[0].get("path", "")
+selected_manifest = cards[0]
+if target_card_id:
+    matches = [item for item in cards
+               if str(item.get("card_id") or "") == target_card_id]
+    if not matches:
+        raise SystemExit("target audit card not found in manifest: " + target_card_id)
+    selected_manifest = matches[0]
+card_path = root / selected_manifest.get("path", "")
 card = json.loads(card_path.read_text(encoding="utf-8"))
 identity = card.get("identity") or {}
 ctx = card.get("transition_context") or {}
 anchor = ((ctx.get("producer_anchor") or {}).get("current") or {})
-print("latest_audit_card_id:", identity.get("card_id") or cards[0].get("card_id"))
+print("target_card_id:", target_card_id or "LATEST")
+print("latest_audit_card_id:", identity.get("card_id") or selected_manifest.get("card_id"))
 print("transition_context:", bool(ctx))
 print("transition_audit_scope:", ctx.get("audit_scope"))
 print("transition_comparison_quality:", ctx.get("comparison_quality"))
@@ -466,7 +521,7 @@ if not ledger_path.exists():
 lines = [x for x in ledger_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 if not lines:
     raise SystemExit("transition ledger empty")
-latest_id = identity.get("card_id") or cards[0].get("card_id")
+latest_id = identity.get("card_id") or selected_manifest.get("card_id")
 matching = None
 for line in lines:
     item = json.loads(line)
@@ -539,7 +594,7 @@ else
 fi
 if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && have python3; then
   if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
-import json, pathlib, sys
+import json, os, pathlib, sys
 signal_path = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
 expected_provider = sys.argv[3]
@@ -548,11 +603,27 @@ expected_schema = sys.argv[5]
 expected_prompt_version = sys.argv[6]
 expected_blind_mode = sys.argv[7]
 expected_call_count = int(sys.argv[8])
+target_card_id = (os.environ.get("TARGET_CARD_ID")
+                  or os.environ.get("ONLY_CARD_ID") or "")
 signal_lines = [x for x in signal_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 review_lines = [x for x in review_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 if not signal_lines:
     raise SystemExit("signal_review.jsonl empty")
-latest = json.loads(signal_lines[-1])
+source_cards = []
+for line in signal_lines:
+    item = json.loads(line)
+    if isinstance(item, dict):
+        source_cards.append(item)
+if target_card_id:
+    matches = [
+        item for item in source_cards
+        if str((item.get("identity") or {}).get("card_id") or item.get("card_id")) == target_card_id
+    ]
+    if not matches:
+        raise SystemExit("target source card not found: " + target_card_id)
+    latest = matches[-1]
+else:
+    latest = source_cards[-1]
 latest_id = (latest.get("identity") or {}).get("card_id") or latest.get("card_id")
 ok_reviews = {}
 latest_ok_id = None
@@ -563,6 +634,7 @@ for line in review_lines:
     if review.get("status") == "OK" and card_id:
         ok_reviews[card_id] = review
         latest_ok_id = card_id
+print("target_card_id:", target_card_id or "LATEST")
 print("latest_signal_card_id:", latest_id)
 print("latest_ok_llm_card_id:", latest_ok_id)
 review = ok_reviews.get(latest_id)
@@ -607,7 +679,7 @@ if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ]; then
   section "Integrated trade advisory"
   if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
     if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
-import json, pathlib, re, sys
+import json, os, pathlib, re, sys
 
 ADVISORY_RECOMMENDATIONS = {
     "SELL_PUT_SPREAD_REVIEW",
@@ -664,6 +736,8 @@ ADVISORY_EXECUTION_PATTERNS = (
 signal_path = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
 audit_root = pathlib.Path(sys.argv[3])
+target_card_id = (os.environ.get("TARGET_CARD_ID")
+                  or os.environ.get("ONLY_CARD_ID") or "")
 
 def read_jsonl(path):
     lines = [x for x in path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
@@ -823,7 +897,14 @@ expected_schema = sys.argv[6]
 expected_prompt_version = sys.argv[7]
 expected_blind_mode = sys.argv[8]
 expected_call_count = int(sys.argv[9])
-latest_source = source_cards[-1]
+if target_card_id:
+    target_sources = [item for item in source_cards
+                      if str(card_id(item)) == target_card_id]
+    if not target_sources:
+        raise SystemExit("target source card not found: " + target_card_id)
+    latest_source = target_sources[-1]
+else:
+    latest_source = source_cards[-1]
 latest_id = card_id(latest_source)
 if not latest_id:
     raise SystemExit("latest source card lacks card_id")
@@ -836,6 +917,7 @@ for item in read_jsonl(review_path):
         latest_matching_review = item.get("llm_review")
         latest_matching_record_id = current_id
 
+print("target_card_id:", target_card_id or "LATEST")
 print("latest_signal_card_id:", latest_id)
 print("latest_matching_llm_card_id:", latest_matching_record_id)
 if not isinstance(latest_matching_review, dict):
@@ -867,9 +949,16 @@ manifest = json.loads((audit_root / "signal_cards/index.json").read_text(encodin
 cards = manifest.get("cards") or []
 if not cards:
     raise SystemExit("materialized manifest has no cards")
-materialized_path = audit_root / cards[0].get("path", "")
+selected_manifest = cards[0]
+if target_card_id:
+    matches = [item for item in cards
+               if str(item.get("card_id") or "") == target_card_id]
+    if not matches:
+        raise SystemExit("target materialized card not found: " + target_card_id)
+    selected_manifest = matches[0]
+materialized_path = audit_root / selected_manifest.get("path", "")
 materialized_card = json.loads(materialized_path.read_text(encoding="utf-8"))
-materialized_id = card_id(materialized_card) or cards[0].get("card_id")
+materialized_id = card_id(materialized_card) or selected_manifest.get("card_id")
 materialized_review = materialized_card.get("llm_review")
 print("materialized_card_id:", materialized_id)
 if materialized_id != latest_id:
@@ -913,7 +1002,7 @@ else
 fi
 if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && [ -r "$TRANSITION_LLM_REVIEWS_SOURCE" ] && have python3; then
   if python3 - "$AUDIT_ROOT" "$TRANSITION_LLM_REVIEWS_SOURCE" "$EXPECTED_TRANSITION_LLM_PROVIDER" "$EXPECTED_TRANSITION_LLM_MODEL" "$EXPECTED_TRANSITION_LLM_SCHEMA" "$EXPECTED_TRANSITION_LLM_PROMPT_VERSION" "$EXPECTED_TRANSITION_LLM_BLIND_MODE" "$EXPECTED_TRANSITION_LLM_CALL_COUNT" <<'PY'
-import json, pathlib, sys
+import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
 expected_provider = sys.argv[3]
@@ -922,11 +1011,20 @@ expected_schema = sys.argv[5]
 expected_prompt_version = sys.argv[6]
 expected_blind_mode = sys.argv[7]
 expected_call_count = int(sys.argv[8])
+target_card_id = (os.environ.get("TARGET_CARD_ID")
+                  or os.environ.get("ONLY_CARD_ID") or "")
 manifest = json.loads((root / "signal_cards/index.json").read_text(encoding="utf-8"))
 cards = manifest.get("cards") or []
 if not cards:
     raise SystemExit("no cards")
-card = json.loads((root / cards[0].get("path", "")).read_text(encoding="utf-8"))
+selected_manifest = cards[0]
+if target_card_id:
+    matches = [item for item in cards
+               if str(item.get("card_id") or "") == target_card_id]
+    if not matches:
+        raise SystemExit("target audit card not found in manifest: " + target_card_id)
+    selected_manifest = matches[0]
+card = json.loads((root / selected_manifest.get("path", "")).read_text(encoding="utf-8"))
 ctx = card.get("transition_context") or {}
 transition_id = ctx.get("transition_id")
 if not transition_id:
@@ -944,6 +1042,7 @@ if not review:
     raise SystemExit("no OK transition review for latest transition")
 guard = review.get("language_guard") or {}
 policy = review.get("policy_validation") or {}
+print("target_card_id:", target_card_id or "LATEST")
 print("latest_transition_id:", transition_id)
 print("latest_transition_llm_status:", review.get("status"))
 print("latest_transition_provider:", review.get("provider"))

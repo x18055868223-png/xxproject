@@ -1,4 +1,5 @@
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -8,10 +9,11 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy" / "signal_audit"
+CANARY = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 EXPECTED_LLM_PROVIDER = "deepseek"
 EXPECTED_LLM_MODEL = "deepseek-v4-flash"
 EXPECTED_LLM_SCHEMA = "signal_llm_review@1.5.0"
-EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@1.5.3"
+EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@1.5.4"
 EXPECTED_LLM_MODE = "two_call_strict"
 EXPECTED_LLM_CALL_COUNT = 2
 EXPECTED_TRANSITION_SCHEMA = "signal_transition_llm_review@1.3.0"
@@ -103,9 +105,14 @@ def integrated_advisory_review(status="OK",
 def run_integrated_advisory_probe(self_check, review_records,
                                   materialized_review=None,
                                   historical_source_corruption=False,
-                                  corrupt_source_tail=False):
+                                  corrupt_source_tail=False,
+                                  source_card_ids=None,
+                                  manifest_card_ids=None,
+                                  target_card_id=""):
     code = extract_integrated_advisory_probe(self_check)
     card_id = "20260718T000000+0800-BTC-INTEGRATED-ADVISORY"
+    source_card_ids = source_card_ids or [card_id]
+    manifest_card_ids = manifest_card_ids or [card_id]
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)
         source = root / "signal_review.jsonl"
@@ -113,11 +120,11 @@ def run_integrated_advisory_probe(self_check, review_records,
         audit_root = root / "public"
         card_dir = audit_root / "signal_cards"
         card_dir.mkdir(parents=True)
-        source_card = {"identity": {"card_id": card_id}}
         source_lines = []
         if historical_source_corruption:
             source_lines.append('{"historical": broken json')
-        source_lines.append(json.dumps(source_card))
+        for source_id in source_card_ids:
+            source_lines.append(json.dumps({"identity": {"card_id": source_id}}))
         if corrupt_source_tail:
             source_lines.append('{"latest": broken json')
         source.write_text("\n".join(source_lines) + "\n", encoding="utf-8")
@@ -125,18 +132,24 @@ def run_integrated_advisory_probe(self_check, review_records,
             "\n".join(json.dumps(record) for record in review_records) + "\n",
             encoding="utf-8")
         selected_review = materialized_review or review_records[-1]["llm_review"]
-        materialized_card = {
-            "identity": {"card_id": card_id},
-            "llm_review": selected_review,
-        }
-        (card_dir / "latest.json").write_text(json.dumps(materialized_card),
-                                              encoding="utf-8")
-        (card_dir / "index.json").write_text(json.dumps({
-            "cards": [{
-                "card_id": card_id,
-                "path": "signal_cards/latest.json",
-            }],
-        }), encoding="utf-8")
+        manifest_cards = []
+        for index, manifest_id in enumerate(manifest_card_ids):
+            filename = f"card-{index}.json"
+            materialized_card = {"identity": {"card_id": manifest_id}}
+            if manifest_id == card_id:
+                materialized_card["llm_review"] = selected_review
+            (card_dir / filename).write_text(json.dumps(materialized_card),
+                                             encoding="utf-8")
+            manifest_cards.append({
+                "card_id": manifest_id,
+                "path": "signal_cards/" + filename,
+            })
+        (card_dir / "index.json").write_text(json.dumps({"cards": manifest_cards}),
+                                             encoding="utf-8")
+        env = None
+        if target_card_id:
+            env = dict(os.environ)
+            env["TARGET_CARD_ID"] = target_card_id
         return subprocess.run(
             [
                 sys.executable, "-c", code, str(source), str(reviews),
@@ -144,6 +157,7 @@ def run_integrated_advisory_probe(self_check, review_records,
                 EXPECTED_LLM_SCHEMA, EXPECTED_LLM_PROMPT, EXPECTED_LLM_MODE,
                 str(EXPECTED_LLM_CALL_COUNT),
             ],
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -157,6 +171,30 @@ def assert_integrated_advisory_probe_behavior(self_check):
     ok_result = run_integrated_advisory_probe(self_check, [ok_record])
     assert_true(ok_result.returncode == 0,
                 "strict integrated advisory probe should accept valid v1.4.0 OK review")
+
+    exact_target_result = run_integrated_advisory_probe(
+        self_check,
+        [ok_record],
+        source_card_ids=["OLDER-CARD", card_id],
+        manifest_card_ids=["OLDER-CARD", card_id],
+        target_card_id=card_id,
+    )
+    assert_true(exact_target_result.returncode == 0
+                and "target_card_id: " + card_id in exact_target_result.stdout
+                and "materialized_card_id: " + card_id in exact_target_result.stdout,
+                "exact target probe should select the requested card instead of manifest head")
+
+    missing_target_result = run_integrated_advisory_probe(
+        self_check,
+        [ok_record],
+        source_card_ids=["OLDER-CARD", card_id],
+        manifest_card_ids=["OLDER-CARD", card_id],
+        target_card_id="MISSING-CARD",
+    )
+    assert_true(missing_target_result.returncode != 0
+                and "target source card not found"
+                in (missing_target_result.stdout + missing_target_result.stderr),
+                "exact target probe must fail instead of falling back to latest")
 
     error_review = integrated_advisory_review(status="ERROR")
     error_result = run_integrated_advisory_probe(
@@ -297,6 +335,7 @@ def main():
     runner = read(DEPLOY / "run_signal_llm_review.sh")
     package = read(DEPLOY / "package_signal_audit.ps1")
     self_check = read(ROOT / "tools" / "server_self_check_signal_stack.sh")
+    canary = read(CANARY)
 
     assert_true("/etc/signal-audit/llm.env" in llm_service,
                 "LLM service should load the protected server env file")
@@ -329,6 +368,15 @@ def main():
                 "LLM service should call the guarded runner")
     assert_true("--reviews-output" in runner,
                 "LLM runner should write sidecar reviews")
+    assert_true("ONLY_CARD_ID" in runner
+                and "ONLY_CARD_ID not found in source JSONL" in runner
+                and "RUN_LLM_REVIEW_LIMIT=1" in runner
+                and "RUN_TRANSITION_REVIEW_LIMIT=1" in runner
+                and 'entry_args+=(--only-card-id "$ONLY_CARD_ID")' in runner,
+                "LLM runner should enforce exact-card review mode when ONLY_CARD_ID is set")
+    assert_true("LLM_USAGE_LEDGER" in runner
+                and '--usage-ledger "$LLM_USAGE_LEDGER"' in runner,
+                "LLM runner should forward the configured usage ledger")
     assert_true("LLM_API_KEY is not configured" in runner,
                 "LLM runner should skip cleanly before the provider-neutral key is configured")
     assert_true("flock -n" in runner
@@ -371,8 +419,18 @@ def main():
                 "LLM timer should wait 60 seconds after the prior run completes")
     assert_true("SCRIPT_DIR=" in install and "DEPLOY_SRC=" in install,
                 "install script should support both git and zip package layouts")
-    assert_true("signal-audit-llm-review.timer" in install,
-                "install script should install and enable LLM timer by default")
+    assert_true('ENABLE_SIGNAL_AUDIT_TIMERS="${ENABLE_SIGNAL_AUDIT_TIMERS:-${ENABLE_TIMERS:-0}}"' in install
+                and 'START_SIGNAL_AUDIT_TIMERS="${START_SIGNAL_AUDIT_TIMERS:-${START_TIMERS:-0}}"' in install
+                and 'RUN_INITIAL_LLM_REVIEW="${RUN_INITIAL_LLM_REVIEW:-0}"' in install
+                and 'RUN_INITIAL_MATERIALIZE="${RUN_INITIAL_MATERIALIZE:-0}"' in install
+                and "safe default: timers installed but not enabled" in install
+                and "safe default: skipped initial LLM review" in install,
+                "install script should default to install plus daemon-reload only")
+    assert_true("systemctl enable --now signal-audit-materialize.timer" not in install
+                and "systemctl enable --now signal-audit-llm-review.timer" not in install,
+                "install script must not enable/start timers by default")
+    assert_true("signal_llm_review_canary_release.sh" in install,
+                "install script should deploy the canary release helper")
     assert_true("signal-audit-llm.env.example" in install,
                 "install script should install the env example")
     assert_true("LLM_REVIEWS_SOURCE" in materialize_service
@@ -400,6 +458,13 @@ def main():
                 and "transition_context" in self_check
                 and "no_trading_instruction" in self_check,
                 "server self-check should validate transition context and transition LLM guard")
+    assert_true("TARGET_CARD_ID" in self_check
+                and "--target-card-id" in self_check
+                and "target audit card not found in manifest" in self_check
+                and "target source card not found" in self_check
+                and "SYSTEMD_REQUIRED=0; skipped systemd service and timer checks" in self_check
+                and "AUDIT_HTTP_REQUIRED=0; skipped audit HTTP checks" in self_check,
+                "server self-check should support exact target canary mode without latest fallback")
     assert_true("started signal-audit-materialize.service before LLM" in self_check
                 and "started signal-audit-materialize.service after LLM" in self_check,
                 "server self-check active mode should materialize before and after LLM")
@@ -413,6 +478,7 @@ def main():
                 "package script should include LLM systemd assets")
     assert_true("signal_llm_review.py" in package
                 and "signal_llm_review_entry.py" in package
+                and "signal_llm_review_canary_release.sh" in package
                 and "gemini_signal_llm_review.py" not in package
                 and "gemini_signal_llm_review_entry.py" not in package,
                 "package script should include provider-neutral LLM tools")
@@ -465,6 +531,39 @@ def main():
                 and "latest transition has OK provider-neutral single-call LLM review" in self_check,
                 "self-check should require the current provider-neutral transition review contract")
     assert_integrated_advisory_probe_behavior(self_check)
+
+    assert_true("--target-card-id" in canary
+                and "--promote" in canary
+                and "PROMOTE=0" in canary
+                and "PROMOTION_STATUS=SKIPPED" in canary
+                and "STATUS=PASS" in canary
+                and "STATUS=FAIL" in canary
+                and "ROLLBACK_COMMAND=" in canary
+                and "ROLLBACK_BACKUP" in canary
+                and "ONLY_CARD_ID=\"$TARGET_CARD_ID\"" in canary
+                and "LLM_USAGE_LEDGER=\"$CANARY_USAGE_LEDGER\"" in canary
+                and "TARGET_CARD_ID=\"$TARGET_CARD_ID\"" in canary
+                and "SYSTEMD_REQUIRED=0" in canary
+                and "AUDIT_HTTP_REQUIRED=0" in canary,
+                "canary release helper should be exact-target, isolated, and rollback-reporting")
+    assert_true("COMMIT_SHA=" in canary
+                and "LLM_PROVIDER=" in canary
+                and "LLM_MODEL=" in canary
+                and "LLM_SCHEMA=" in canary
+                and "LLM_PROMPT_VERSION=" in canary
+                and "UNIT_${unit//[^A-Za-z0-9]/_}_SHA256=" in canary
+                and 'cp -a "$LLM_USAGE_LEDGER" "$CANARY_USAGE_LEDGER"' in canary
+                and "merged = can or prod" in canary
+                and "validate_backup_scope" in canary
+                and "validate_static_root_scope" in canary
+                and "PROMOTION_STARTED=1" in canary
+                and "AUTO_ROLLBACK_STATUS=COMPLETE" in canary
+                and 'install_file_atomic "$source/index.json"' in canary
+                and 'install_file_atomic "$CANARY_STATIC_ROOT/fallback.js"' in canary,
+                "canary must report release identity and preserve the production usage total")
+    assert_true("systemctl enable --now signal-audit-materialize.timer" in canary
+                and "TIMER_STATUS=ENABLED_AFTER_PASS" in canary,
+                "canary helper may enable timers only after validation pass")
 
     print("signal_audit_deploy_llm_systemd: PASS")
 

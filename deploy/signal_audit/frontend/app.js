@@ -964,6 +964,11 @@
       .replaceAll("gamma_regime.pin_strike", "卡内 Gamma 钉住位")
       .replaceAll("gex_info.call_wall", "卡内上方 Gamma 墙")
       .replaceAll("gex_info.put_wall", "卡内下方 Gamma 墙")
+      .replaceAll("BINANCE_SPOT", "币安现货")
+      .replaceAll("pin_strike", "Gamma 钉住位")
+      .replaceAll("flip_point", "Gamma 翻转点")
+      .replaceAll("call_wall", "上方 Gamma 墙")
+      .replaceAll("put_wall", "下方 Gamma 墙")
       .replace(/\s+/g, " ").trim();
     if (!/[\u4e00-\u9fff]/.test(text)) return "";
     if (future24hMachineLeak(text)) return "";
@@ -1138,7 +1143,12 @@
         <td>${escapeHtml(future24hChineseParagraph(row.role_cn))}</td>
         <td>${future24hSourceCell(row, doc)}</td>
         <td class="num">${escapeHtml(future24hFirstReadable(row, ["value_cn", "price_cn", "level_value", "value", "price", "level"], "未提供"))}</td>
-        <td>${escapeHtml(future24hFirstReadable(row, ["basis_cn", "reason_cn", "note_cn", "description_cn"], "未说明"))}</td>
+        <td>${escapeHtml(future24hChineseParagraph(firstPresent(
+          row.basis_cn,
+          row.reason_cn,
+          row.note_cn,
+          row.description_cn
+        )) || "未说明")}</td>
       </tr>
     `).join("");
   }

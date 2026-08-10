@@ -17,6 +17,7 @@ TOOL_SRC="$REPO_ROOT/tools/materialize_signal_cards.py"
 LLM_TOOL_SRC="$REPO_ROOT/tools/signal_llm_review.py"
 LLM_ENTRY_SRC="$REPO_ROOT/tools/signal_llm_review_entry.py"
 FACT_SEMANTICS_SRC="$REPO_ROOT/tools/signal_fact_semantics.py"
+CANARY_RELEASE_SRC="$REPO_ROOT/tools/signal_llm_review_canary_release.sh"
 LLM_RUNNER_SRC="$DEPLOY_SRC/run_signal_llm_review.sh"
 LLM_ENV_EXAMPLE_SRC="$DEPLOY_SRC/signal-audit-llm.env.example"
 MATERIALIZE_SERVICE_SRC="$DEPLOY_SRC/signal-audit-materialize.service"
@@ -33,6 +34,10 @@ TRANSITION_LEDGER_SOURCE="${TRANSITION_LEDGER_SOURCE:-$TOOLS_ROOT/signal_transit
 TRANSITION_STATE_SOURCE="${TRANSITION_STATE_SOURCE:-$TOOLS_ROOT/signal_transition_state.json}"
 TRANSITION_LLM_REVIEWS_SOURCE="${TRANSITION_LLM_REVIEWS_SOURCE:-$TOOLS_ROOT/signal_transition_llm_reviews.jsonl}"
 MAX_CARDS="${MAX_CARDS:-200}"
+ENABLE_SIGNAL_AUDIT_TIMERS="${ENABLE_SIGNAL_AUDIT_TIMERS:-${ENABLE_TIMERS:-0}}"
+START_SIGNAL_AUDIT_TIMERS="${START_SIGNAL_AUDIT_TIMERS:-${START_TIMERS:-0}}"
+RUN_INITIAL_MATERIALIZE="${RUN_INITIAL_MATERIALIZE:-0}"
+RUN_INITIAL_LLM_REVIEW="${RUN_INITIAL_LLM_REVIEW:-0}"
 
 if [[ ! -f "$FRONTEND_SRC/index.html" || ! -f "$FRONTEND_SRC/app.js" ]]; then
   echo "missing frontend assets under $FRONTEND_SRC" >&2
@@ -59,6 +64,11 @@ if [[ ! -f "$FACT_SEMANTICS_SRC" ]]; then
   exit 2
 fi
 
+if [[ ! -f "$CANARY_RELEASE_SRC" ]]; then
+  echo "missing canary release helper: $CANARY_RELEASE_SRC" >&2
+  exit 2
+fi
+
 for required in "$LLM_RUNNER_SRC" "$LLM_ENV_EXAMPLE_SRC" "$MATERIALIZE_SERVICE_SRC" "$MATERIALIZE_TIMER_SRC" "$LLM_SERVICE_SRC" "$LLM_TIMER_SRC"; do
   if [[ ! -f "$required" ]]; then
     echo "missing deployment asset: $required" >&2
@@ -74,6 +84,7 @@ install -m 0755 "$LLM_TOOL_SRC" "$TOOLS_ROOT/signal_llm_review.py"
 install -m 0755 "$LLM_ENTRY_SRC" "$TOOLS_ROOT/signal_llm_review_entry.py"
 install -m 0644 "$FACT_SEMANTICS_SRC" "$TOOLS_ROOT/signal_fact_semantics.py"
 install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
+install -m 0755 "$CANARY_RELEASE_SRC" "$TOOLS_ROOT/signal_llm_review_canary_release.sh"
 install -m 0644 "$LLM_ENV_EXAMPLE_SRC" "$CONFIG_ROOT/llm.env.example"
 if [[ ! -f "$LLM_ENV_FILE" ]]; then
   install -m 0600 "$LLM_ENV_EXAMPLE_SRC" "$LLM_ENV_FILE"
@@ -90,10 +101,22 @@ install -m 0644 "$MATERIALIZE_TIMER_SRC" /etc/systemd/system/signal-audit-materi
 install -m 0644 "$LLM_SERVICE_SRC" /etc/systemd/system/signal-audit-llm-review.service
 install -m 0644 "$LLM_TIMER_SRC" /etc/systemd/system/signal-audit-llm-review.timer
 systemctl daemon-reload
-systemctl enable --now signal-audit-materialize.timer
-systemctl enable --now signal-audit-llm-review.timer
 
-if [[ -f "$JSONL_SOURCE" ]]; then
+if [[ "$ENABLE_SIGNAL_AUDIT_TIMERS" == "1" ]]; then
+  systemctl enable signal-audit-materialize.timer
+  systemctl enable signal-audit-llm-review.timer
+else
+  echo "safe default: timers installed but not enabled; set ENABLE_SIGNAL_AUDIT_TIMERS=1 after canary validation"
+fi
+
+if [[ "$START_SIGNAL_AUDIT_TIMERS" == "1" ]]; then
+  systemctl start signal-audit-materialize.timer
+  systemctl start signal-audit-llm-review.timer
+else
+  echo "safe default: timers not started; set START_SIGNAL_AUDIT_TIMERS=1 after canary validation"
+fi
+
+if [[ "$RUN_INITIAL_MATERIALIZE" == "1" && -f "$JSONL_SOURCE" ]]; then
   materialize_args=(
     --source "$JSONL_SOURCE" \
     --require-valid-source-tail \
@@ -107,9 +130,16 @@ if [[ -f "$JSONL_SOURCE" ]]; then
     materialize_args+=(--llm-reviews "$LLM_REVIEWS_SOURCE")
   fi
   /usr/bin/python3 "$TOOLS_ROOT/materialize_signal_cards.py" "${materialize_args[@]}"
+elif [[ "$RUN_INITIAL_MATERIALIZE" == "1" ]]; then
+  echo "warning: JSONL source not found yet: $JSONL_SOURCE" >&2
+else
+  echo "safe default: skipped initial materialization; set RUN_INITIAL_MATERIALIZE=1 to run it"
+fi
+
+if [[ "$RUN_INITIAL_LLM_REVIEW" == "1" ]]; then
   systemctl start signal-audit-llm-review.service || true
 else
-  echo "warning: JSONL source not found yet: $JSONL_SOURCE" >&2
+  echo "safe default: skipped initial LLM review; use canary release first or set RUN_INITIAL_LLM_REVIEW=1"
 fi
 
 echo "installed signal audit frontend to $STATIC_ROOT"
@@ -117,6 +147,7 @@ echo "materializer installed to $TOOLS_ROOT/materialize_signal_cards.py"
 echo "provider-neutral LLM review tool installed to $TOOLS_ROOT/signal_llm_review.py"
 echo "provider-neutral LLM review entrypoint installed to $TOOLS_ROOT/signal_llm_review_entry.py"
 echo "deterministic fact semantics installed to $TOOLS_ROOT/signal_fact_semantics.py"
+echo "canary release helper installed to $TOOLS_ROOT/signal_llm_review_canary_release.sh"
 echo "LLM API key config lives at $LLM_ENV_FILE"
 echo "LLM review sidecar lives at $LLM_REVIEWS_SOURCE"
 echo "transition ledger lives at $TRANSITION_LEDGER_SOURCE"
