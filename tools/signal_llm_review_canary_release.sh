@@ -168,6 +168,69 @@ raise SystemExit("target card not found in source JSONL: " + target)
 PY
 }
 
+is_recoverable_reconciliation_empty_content() {
+  /usr/bin/python3 - "$CANARY_RUN_REVIEWS" "$CANARY_RUN_TRANSITION_REVIEWS" "$TARGET_CARD_ID" <<'PY'
+import json
+import pathlib
+import sys
+
+main_path = pathlib.Path(sys.argv[1])
+transition_path = pathlib.Path(sys.argv[2])
+target = sys.argv[3]
+
+def rows(path):
+    if not path.exists():
+        return []
+    result = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(item, dict):
+            result.append(item)
+    return result
+
+matching = [row for row in rows(main_path) if str(row.get("card_id")) == target]
+if not matching:
+    raise SystemExit(1)
+review = matching[-1].get("llm_review") or {}
+failure = review.get("failure_state") or {}
+recoverable = (
+    review.get("status") == "ERROR"
+    and review.get("error_category") == "EMPTY_CONTENT"
+    and failure.get("stage") == "RECONCILIATION"
+    and failure.get("type") == "EMPTY_CONTENT"
+    and failure.get("recovery_allowed") is True
+    and failure.get("recovery_attempted") is False
+    and bool(review.get("validated_blind_context"))
+)
+transition_error = any(
+    (row.get("transition_llm_review") or {}).get("status") == "ERROR"
+    for row in rows(transition_path)
+)
+raise SystemExit(0 if recoverable and not transition_error else 1)
+PY
+}
+
+run_isolated_review() {
+  local retry_id="${1:-}"
+  TOOLS_ROOT="$TOOLS_ROOT" \
+  JSONL_SOURCE="$JSONL_SOURCE" \
+  LLM_REVIEWS_SOURCE="$CANARY_RUN_REVIEWS" \
+  TRANSITION_LEDGER_SOURCE="$CANARY_TRANSITION_LEDGER" \
+  TRANSITION_LLM_REVIEWS_SOURCE="$CANARY_RUN_TRANSITION_REVIEWS" \
+  LLM_USAGE_LEDGER="$CANARY_USAGE_LEDGER" \
+  LLM_LOCK_FILE="$CANARY_ROOT/run_signal_llm_review.lock" \
+  ONLY_CARD_ID="$TARGET_CARD_ID" \
+  RETRY_ID="$retry_id" \
+  LLM_REVIEW_LIMIT=1 \
+  TRANSITION_REVIEW_LIMIT=1 \
+  bash "$RUNNER"
+}
+
 merge_llm_reviews_for_target() {
   local production="$1"
   local canary="$2"
@@ -483,17 +546,24 @@ require_target_card
   --transition-ledger "$CANARY_TRANSITION_LEDGER" \
   --transition-state "$CANARY_TRANSITION_STATE"
 
-TOOLS_ROOT="$TOOLS_ROOT" \
-JSONL_SOURCE="$JSONL_SOURCE" \
-LLM_REVIEWS_SOURCE="$CANARY_RUN_REVIEWS" \
-TRANSITION_LEDGER_SOURCE="$CANARY_TRANSITION_LEDGER" \
-TRANSITION_LLM_REVIEWS_SOURCE="$CANARY_RUN_TRANSITION_REVIEWS" \
-LLM_USAGE_LEDGER="$CANARY_USAGE_LEDGER" \
-LLM_LOCK_FILE="$CANARY_ROOT/run_signal_llm_review.lock" \
-ONLY_CARD_ID="$TARGET_CARD_ID" \
-LLM_REVIEW_LIMIT=1 \
-TRANSITION_REVIEW_LIMIT=1 \
-bash "$RUNNER"
+RUNNER_RC=0
+if run_isolated_review ""; then
+  RUNNER_RC=0
+else
+  RUNNER_RC=$?
+fi
+if [[ "$RUNNER_RC" != "0" ]]; then
+  if is_recoverable_reconciliation_empty_content; then
+    echo "RECOVERY_STATUS=START_RECONCILIATION_ONLY"
+    run_isolated_review "$TARGET_CARD_ID"
+    echo "RECOVERY_STATUS=PASS"
+  else
+    echo "RECOVERY_STATUS=NOT_ELIGIBLE"
+    exit "$RUNNER_RC"
+  fi
+else
+  echo "RECOVERY_STATUS=NOT_NEEDED"
+fi
 
 merge_llm_reviews_for_target "$LLM_REVIEWS_SOURCE" "$CANARY_RUN_REVIEWS" "$CANARY_REVIEWS"
 merge_transition_reviews_for_target \

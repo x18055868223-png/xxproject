@@ -143,6 +143,10 @@ entry_args=(
   --transition-timeout "$LLM_TRANSITION_TIMEOUT"
 )
 
+if [[ -n "${RETRY_ID:-}" ]]; then
+  entry_args+=(--retry-id "$RETRY_ID")
+fi
+
 if [[ "${#TMP_FILES[@]}" -eq 0 ]]; then
   exec /usr/bin/python3 "$TOOLS_ROOT/signal_llm_review_entry.py" "${entry_args[@]}"
 fi

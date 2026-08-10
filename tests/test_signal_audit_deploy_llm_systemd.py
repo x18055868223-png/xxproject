@@ -375,8 +375,9 @@ def main():
                 and 'entry_args+=(--only-card-id "$ONLY_CARD_ID")' in runner,
                 "LLM runner should enforce exact-card review mode when ONLY_CARD_ID is set")
     assert_true("LLM_USAGE_LEDGER" in runner
-                and '--usage-ledger "$LLM_USAGE_LEDGER"' in runner,
-                "LLM runner should forward the configured usage ledger")
+                and '--usage-ledger "$LLM_USAGE_LEDGER"' in runner
+                and 'entry_args+=(--retry-id "$RETRY_ID")' in runner,
+                "LLM runner should forward usage-ledger and explicit recovery identity")
     assert_true("LLM_API_KEY is not configured" in runner,
                 "LLM runner should skip cleanly before the provider-neutral key is configured")
     assert_true("flock -n" in runner
@@ -561,7 +562,10 @@ def main():
                 and "PROMOTION_STARTED=1" in canary
                 and "AUTO_ROLLBACK_STATUS=COMPLETE" in canary
                 and 'install_file_atomic "$source/index.json"' in canary
-                and 'install_file_atomic "$CANARY_STATIC_ROOT/fallback.js"' in canary,
+                and 'install_file_atomic "$CANARY_STATIC_ROOT/fallback.js"' in canary
+                and "is_recoverable_reconciliation_empty_content" in canary
+                and 'run_isolated_review "$TARGET_CARD_ID"' in canary
+                and "RECOVERY_STATUS=START_RECONCILIATION_ONLY" in canary,
                 "canary must report release identity and preserve the production usage total")
     assert_true("systemctl enable --now signal-audit-materialize.timer" in canary
                 and "TIMER_STATUS=ENABLED_AFTER_PASS" in canary,
