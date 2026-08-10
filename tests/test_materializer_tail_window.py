@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -824,6 +825,33 @@ def main():
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)
+        path = root / "atomic_same_text.txt"
+        path.write_text("same", encoding="utf-8")
+        old_ns = 1700000000000000000
+        os.utime(path, ns=(old_ns, old_ns))
+        original_read_bytes = tool.Path.read_bytes
+        read_failures = {"count": 0}
+
+        def fail_target_read_once(self):
+            if self == path and read_failures["count"] == 0:
+                read_failures["count"] += 1
+                raise OSError("simulated read failure")
+            return original_read_bytes(self)
+
+        tool.Path.read_bytes = fail_target_read_once
+        try:
+            tool._atomic_write_text(path, "same")
+        finally:
+            tool.Path.read_bytes = original_read_bytes
+        assert_true(read_failures["count"] == 1,
+                    "atomic writer should attempt target byte comparison")
+        assert_true(path.read_text(encoding="utf-8") == "same",
+                    "read comparison failure should fall back to atomic write")
+        assert_true(path.stat().st_mtime_ns != old_ns,
+                    "read comparison failure should not skip the atomic write")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
         source = root / "transition_signal_review.jsonl"
         reviews = root / "signal_transition_llm_reviews.jsonl"
         output = root / "public"
@@ -1000,6 +1028,30 @@ def main():
                     and "未超过 ±0.0100% 拥挤阈值" in boundary_display["FUNDING"]["meaning_cn"]
                     and "EDB 不计票" in boundary_display["FUNDING"]["meaning_cn"],
                     "Funding exactly 0.0100% should stay canonical non-voting")
+
+        card_path = output / "signal_cards" / "CARD-B.json"
+        fallback_path = output / "signal_cards" / "fallback.js"
+        stale_path = output / "signal_cards" / "STALE-UNCHANGED.json"
+        stale_path.write_text("{}", encoding="utf-8")
+        old_ns = 1700000000000000000
+        for path in (card_path, fallback_path, ledger):
+            os.utime(path, ns=(old_ns, old_ns))
+        tool.materialize(
+            source,
+            output,
+            max_cards=20,
+            transition_ledger=ledger,
+            transition_state=state,
+            transition_reviews=reviews,
+        )
+        assert_true(card_path.stat().st_mtime_ns == old_ns,
+                    "unchanged materialized card should keep its mtime")
+        assert_true(fallback_path.stat().st_mtime_ns == old_ns,
+                    "unchanged fallback fixture should keep its mtime")
+        assert_true(ledger.stat().st_mtime_ns == old_ns,
+                    "unchanged transition ledger should keep its mtime")
+        assert_true(not stale_path.exists(),
+                    "unchanged-output pass should still prune stale card JSON")
 
         ledger_lines = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
         assert_true(len(ledger_lines) == 1,

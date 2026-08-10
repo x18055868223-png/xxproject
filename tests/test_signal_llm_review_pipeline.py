@@ -81,6 +81,8 @@ def minimal_transition(transition_id, ts_ms):
 def test_request_contract(tool):
     blind = tool.build_blind_chat_request("blind")
     recon = tool.build_chat_request("recon")
+    recovery_recon = tool.build_chat_request(
+        "recovery-recon", empty_content_retry_count=1)
     transition = tool.build_transition_chat_request("transition")
     allowed_high = {
         "model", "messages", "stream", "thinking", "reasoning_effort",
@@ -106,6 +108,19 @@ def test_request_contract(tool):
                 "blind profile mismatch")
     assert_true(recon["reasoning_effort"] == "high" and recon["max_tokens"] == 32768,
                 "reconciliation profile mismatch")
+    recovery_wire = tool._strip_local_request_fields(recovery_recon)
+    assert_true(set(recovery_wire) == allowed_low,
+                "recovery reconciliation wire request keys drifted")
+    assert_true(recovery_wire["thinking"] == {"type": "disabled"},
+                "recovery reconciliation must disable thinking")
+    assert_true("reasoning_effort" not in recovery_recon
+                and recovery_recon["max_tokens"] == 32768,
+                "recovery reconciliation profile mismatch")
+    assert_true(recovery_wire["response_format"] == {"type": "json_object"},
+                "recovery reconciliation JSON mode missing")
+    assert_true(recovery_recon["_local_call_profile"]
+                == tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+                "recovery reconciliation local profile mismatch")
     assert_true("reasoning_effort" not in transition and transition["max_tokens"] == 16384,
                 "transition profile mismatch")
     transition_blind = tool.build_transition_blind_chat_request("transition-blind")
@@ -646,7 +661,13 @@ def test_empty_content_cross_round_recovery(tool):
 
         def fake_call(api_key, model, request_body, timeout, **kwargs):
             profile = kwargs.get("call_profile")
-            requests.append((profile, request_body["messages"][-1]["content"]))
+            wire = tool._strip_local_request_fields(request_body)
+            requests.append((
+                profile,
+                request_body["messages"][-1]["content"],
+                wire,
+                request_body.get("_local_call_profile"),
+            ))
             if profile == tool.CALL_PROFILE_MAIN_BLIND:
                 return response(json.dumps(blind_payload), profile)
             return response("", profile)
@@ -656,6 +677,12 @@ def test_empty_content_cross_round_recovery(tool):
             call_llm=fake_call, reviewed_at="2020-01-01T00:00:00+00:00")
         assert_true(first["errors"] == 1 and len(requests) == 2,
                     "first empty-content round must use exactly two main calls")
+        assert_true(requests[0][0] == tool.CALL_PROFILE_MAIN_BLIND
+                    and requests[1][0] == tool.CALL_PROFILE_MAIN_RECONCILIATION,
+                    "first empty-content round profile sequence drifted")
+        assert_true(requests[1][2]["thinking"] == {"type": "enabled"}
+                    and requests[1][2]["reasoning_effort"] == "high",
+                    "first reconciliation must retain high thinking")
         error_review = tool._read_jsonl(output)[-1]["llm_review"]
         error_text = json.dumps(error_review, ensure_ascii=False)
         assert_true(error_review["error_category"] == "EMPTY_CONTENT",
@@ -694,7 +721,13 @@ def test_empty_content_cross_round_recovery(tool):
 
             def recovered_call(api_key, model, request_body, timeout, **kwargs):
                 profile = kwargs.get("call_profile")
-                requests.append((profile, request_body["messages"][-1]["content"]))
+                wire = tool._strip_local_request_fields(request_body)
+                requests.append((
+                    profile,
+                    request_body["messages"][-1]["content"],
+                    wire,
+                    request_body.get("_local_call_profile"),
+                ))
                 content = json.dumps(blind_payload) if profile == tool.CALL_PROFILE_MAIN_BLIND else "{}"
                 return response(content, profile)
 
@@ -707,6 +740,114 @@ def test_empty_content_cross_round_recovery(tool):
                     "cross-round recovery must use one new strict two-call sequence")
         assert_true("RETRY_RECOVERY_INSTRUCTION" in requests[-1][1],
                     "explicit retry did not receive the deterministic recovery note")
+        assert_true(requests[-2][0] == tool.CALL_PROFILE_MAIN_BLIND
+                    and requests[-1][0]
+                    == tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+                    "recovery round profile sequence drifted")
+        assert_true(requests[-1][3]
+                    == tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+                    "recovery local profile was not recorded honestly")
+        assert_true(requests[-1][2]["thinking"] == {"type": "disabled"}
+                    and "reasoning_effort" not in requests[-1][2]
+                    and requests[-1][2]["response_format"] == {"type": "json_object"}
+                    and requests[-1][2]["max_tokens"] == 32768,
+                    "recovery reconciliation wire contract drifted")
+        ok_review = tool._read_jsonl(output)[-1]["llm_review"]
+        ok_text = json.dumps(ok_review, ensure_ascii=False)
+        assert_true(ok_review["llm_call_profiles"] == [
+            tool.CALL_PROFILE_MAIN_BLIND,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+        ], "recovery success profile sequence was not retained")
+        assert_true(ok_review["usage"] == {
+            "blind": {"prompt_tokens": 10, "completion_tokens": 5,
+                      "total_tokens": 15},
+            "reconciliation": {"prompt_tokens": 10, "completion_tokens": 5,
+                               "total_tokens": 15},
+        }, "recovery per-stage usage was not retained")
+        assert_true("SECRET_REASONING" not in ok_text,
+                    "reasoning_content leaked into the recovered sidecar")
+
+
+def test_blind_empty_does_not_downgrade_first_reconciliation(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        card = minimal_card("BLIND-EMPTY", 1)
+        tool._append_jsonl(source, card)
+        blind_payload = {
+            "theoretical_active_view": tool._default_theoretical_active_view("test"),
+            "gamma_regime_lens": tool._default_gamma_regime_lens("test"),
+        }
+
+        def response(content, profile):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": content,
+                                "reasoning_content": "SECRET_REASONING"},
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                          "total_tokens": 15},
+                "_api_key_route": "bearer",
+                "_llm_call_routes": ["bearer"],
+                "_llm_http_calls": 1,
+                "_llm_call_profile": profile,
+            }
+
+        first_requests = []
+
+        def blind_empty_call(api_key, model, request_body, timeout, **kwargs):
+            profile = kwargs.get("call_profile")
+            first_requests.append(profile)
+            return response("", profile)
+
+        first = tool.generate_reviews(
+            source, output, api_key="sk-test-secret-value", limit=1,
+            call_llm=blind_empty_call,
+            reviewed_at="2020-01-01T00:00:00+00:00")
+        assert_true(first["errors"] == 1
+                    and first_requests == [tool.CALL_PROFILE_MAIN_BLIND],
+                    "blind empty content should fail before reconciliation")
+        first_review = tool._read_jsonl(output)[-1]["llm_review"]
+        assert_true(first_review["error_category"] == "EMPTY_CONTENT"
+                    and first_review["call_profile"] == tool.CALL_PROFILE_MAIN_BLIND,
+                    "blind empty failure metadata drifted")
+
+        retry_requests = []
+        original_builder = tool.build_llm_review
+        try:
+            tool.build_llm_review = lambda card, payload, **kwargs: {
+                "schema": tool.OUTPUT_SCHEMA_VERSION,
+                "status": "OK",
+                "provider": tool.PROVIDER,
+                "model": kwargs.get("model", tool.DEFAULT_MODEL),
+                "prompt_version": tool.PROMPT_VERSION,
+                "input_packet_hash": tool._sha256_json(tool.build_review_packet(card)),
+            }
+
+            def recovered_call(api_key, model, request_body, timeout, **kwargs):
+                profile = kwargs.get("call_profile")
+                retry_requests.append((profile, tool._strip_local_request_fields(request_body)))
+                content = (json.dumps(blind_payload)
+                           if profile == tool.CALL_PROFILE_MAIN_BLIND else "{}")
+                return response(content, profile)
+
+            second = tool.generate_reviews(
+                source, output, api_key="sk-test-secret-value", limit=1,
+                call_llm=recovered_call, retry_id="BLIND-EMPTY")
+        finally:
+            tool.build_llm_review = original_builder
+
+        assert_true(second["written_reviews"] == 1
+                    and [item[0] for item in retry_requests] == [
+                        tool.CALL_PROFILE_MAIN_BLIND,
+                        tool.CALL_PROFILE_MAIN_RECONCILIATION,
+                    ], "blind-empty retry must preserve first high reconciliation")
+        recon_wire = retry_requests[-1][1]
+        assert_true(recon_wire["thinking"] == {"type": "enabled"}
+                    and recon_wire["reasoning_effort"] == "high",
+                    "blind-empty retry incorrectly used non-thinking recovery")
 
 
 def main():
@@ -725,6 +866,7 @@ def main():
     test_transition_policy_text_boundary(tool)
     test_prompt_reasoning_contract(tool)
     test_empty_content_cross_round_recovery(tool)
+    test_blind_empty_does_not_downgrade_first_reconciliation(tool)
     test_http_retry_and_redaction(tool)
     test_nonstream_keepalive_has_wall_clock_deadline(tool)
     test_daily_cap_and_single_writer(tool)

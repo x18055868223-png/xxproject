@@ -2641,11 +2641,18 @@ def _atomic_write_text(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _chmod_public_dir(path.parent)
+    encoded = text.encode("utf-8")
+    try:
+        if path.read_bytes() == encoded:
+            os.chmod(path, 0o644)
+            return
+    except OSError:
+        pass
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
                                     dir=str(path.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temp_name, 0o644)

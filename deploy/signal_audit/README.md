@@ -269,7 +269,7 @@ The provided materializer service is capped:
 MemoryHigh=64M
 MemoryMax=128M
 CPUQuota=25%
-TimeoutStartSec=30
+TimeoutStartSec=300
 ```
 
 Keep refresh interval at 120 seconds unless real signal volume requires faster

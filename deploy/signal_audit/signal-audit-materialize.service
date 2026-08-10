@@ -14,5 +14,5 @@ MemoryMax=128M
 CPUQuota=25%
 Nice=10
 IOSchedulingClass=idle
-TimeoutStartSec=30
+TimeoutStartSec=300
 ExecStart=/usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py --source ${JSONL_SOURCE} --require-valid-source-tail --output /opt/signal-audit --max-cards ${MAX_CARDS} --llm-reviews ${LLM_REVIEWS_SOURCE} --transition-ledger ${TRANSITION_LEDGER_SOURCE} --transition-state ${TRANSITION_STATE_SOURCE} --transition-reviews ${TRANSITION_LLM_REVIEWS_SOURCE}

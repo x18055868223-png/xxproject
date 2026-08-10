@@ -359,12 +359,14 @@ def main():
                 "runner must not expose LLM_API_KEY through process arguments")
     assert_true("MemoryMax=256M" in llm_service,
                 "LLM service should be capped for a 1GB server")
-    assert_true("TimeoutStartSec=600" in llm_service,
+    assert_true("TimeoutStartSec=900" in llm_service,
                 "LLM service timeout must cover the full-output stage budgets and materialization")
     service_timeout = int(re.search(r"TimeoutStartSec=(\d+)", llm_service).group(1))
     stage_budget = 60 + 240 + 120
-    assert_true(service_timeout >= stage_budget + 120,
-                "LLM service timeout must retain at least two minutes of orchestration slack")
+    materialize_timeout = int(re.search(
+        r"TimeoutStartSec=(\d+)", materialize_service).group(1))
+    assert_true(service_timeout >= materialize_timeout + stage_budget + 120,
+                "LLM service timeout must cover pre-materialization, stage budgets, and slack")
     assert_true("OnUnitInactiveSec=60" in llm_timer,
                 "LLM timer should wait 60 seconds after the prior run completes")
     assert_true("SCRIPT_DIR=" in install and "DEPLOY_SRC=" in install,
@@ -381,6 +383,8 @@ def main():
                 and "TRANSITION_LLM_REVIEWS_SOURCE" in materialize_service
                 and "--transition-reviews" in materialize_service,
                 "materializer should build and merge transition sidecars without a new service")
+    assert_true(materialize_timeout == 300,
+                "materializer service timeout should match the server-applied 300 second cap")
     assert_true("--mode" in runner and "both" in runner
                 and "TRANSITION_LEDGER_SOURCE" in runner
                 and "TRANSITION_LLM_REVIEWS_SOURCE" in runner,

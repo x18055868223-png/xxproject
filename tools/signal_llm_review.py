@@ -49,16 +49,26 @@ TRANSITION_PACKET_VERSION = "SignalTransitionReviewPacket@1.1.1"
 TRANSITION_EVIDENCE_CATALOG_VERSION = "transition_evidence_catalog@1.0.0"
 CALL_PROFILE_MAIN_BLIND = "main_blind_low"
 CALL_PROFILE_MAIN_RECONCILIATION = "main_reconciliation_high"
+CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY = "main_reconciliation_recovery"
 CALL_PROFILE_TRANSITION = "transition_single_low"
 CALL_PROFILE_TRANSITION_BLIND = "transition_blind_low"
 CALL_PROFILE_TRANSITION_RECONCILIATION = "transition_reconciliation_high"
 CALL_PROFILE_MAX_TOKENS = {
     CALL_PROFILE_MAIN_BLIND: 4096,
     CALL_PROFILE_MAIN_RECONCILIATION: 32768,
+    CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY: 32768,
     CALL_PROFILE_TRANSITION: 16384,
     CALL_PROFILE_TRANSITION_BLIND: 4096,
     CALL_PROFILE_TRANSITION_RECONCILIATION: 16384,
 }
+HIGH_REASONING_CALL_PROFILES = frozenset({
+    CALL_PROFILE_MAIN_RECONCILIATION,
+    CALL_PROFILE_TRANSITION_RECONCILIATION,
+})
+MAIN_RECONCILIATION_CALL_PROFILES = frozenset({
+    CALL_PROFILE_MAIN_RECONCILIATION,
+    CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+})
 DEFAULT_DAILY_HTTP_LIMIT = 60
 RETRY_COOLDOWN_SECONDS = (120, 300, 900)
 _APPEND_LOCK = threading.Lock()
@@ -1090,7 +1100,7 @@ def review_response_schema():
 
 
 def _build_openai_chat_request(prompt, model, schema, call_profile):
-    high_reasoning = "reconciliation" in call_profile
+    high_reasoning = call_profile in HIGH_REASONING_CALL_PROFILES
     max_tokens = CALL_PROFILE_MAX_TOKENS[call_profile]
     request = {
         "model": model,
@@ -1116,12 +1126,18 @@ def _build_openai_chat_request(prompt, model, schema, call_profile):
     return request
 
 
-def build_chat_request(prompt, model=DEFAULT_MODEL):
+def _main_reconciliation_call_profile(empty_content_retry_count=0):
+    if int(empty_content_retry_count or 0) > 0:
+        return CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY
+    return CALL_PROFILE_MAIN_RECONCILIATION
+
+
+def build_chat_request(prompt, model=DEFAULT_MODEL, empty_content_retry_count=0):
     return _build_openai_chat_request(
         prompt,
         model,
         review_response_schema(),
-        CALL_PROFILE_MAIN_RECONCILIATION,
+        _main_reconciliation_call_profile(empty_content_retry_count),
     )
 
 
@@ -2529,7 +2545,7 @@ def _attach_response_metadata(exc, responses, call_profile=None):
             profiles.append(profile)
         if profile == CALL_PROFILE_MAIN_BLIND:
             usage["blind"] = _response_usage(response)
-        elif profile == CALL_PROFILE_MAIN_RECONCILIATION:
+        elif profile in MAIN_RECONCILIATION_CALL_PROFILES:
             usage["reconciliation"] = _response_usage(response)
     routes.extend(getattr(exc, "api_key_routes", []) or [])
     exc.api_key_routes = routes
@@ -2630,13 +2646,19 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
         )
         blind_payload = _validate_blind_payload(
             parse_chat_response(blind_raw_response))
-        failure_profile = CALL_PROFILE_MAIN_RECONCILIATION
+        reconciliation_profile = _main_reconciliation_call_profile(
+            empty_content_retry_count)
+        failure_profile = reconciliation_profile
         prompt = build_prompt(
             packet,
             blind_payload,
             empty_content_retry_count=empty_content_retry_count,
         )
-        request_body = build_chat_request(prompt, model=model)
+        request_body = build_chat_request(
+            prompt,
+            model=model,
+            empty_content_retry_count=empty_content_retry_count,
+        )
         request_body["_local_packet_hash"] = _sha256_json(packet)
         raw_response = _invoke_call_llm(
             call_fn,
@@ -2647,7 +2669,7 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
             endpoint=base_url,
             budget=budget,
             retry_id=retry_id,
-            call_profile=CALL_PROFILE_MAIN_RECONCILIATION,
+            call_profile=reconciliation_profile,
         )
         payload = parse_chat_response(raw_response)
         payload["theoretical_active_view"] = blind_payload["theoretical_active_view"]
@@ -2667,7 +2689,7 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
         )
         review["llm_call_profiles"] = [
             CALL_PROFILE_MAIN_BLIND,
-            CALL_PROFILE_MAIN_RECONCILIATION,
+            reconciliation_profile,
         ]
         review["usage"] = {
             "blind": _response_usage(blind_raw_response),
@@ -2739,18 +2761,18 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
     return "READY", count
 
 
-def _latest_matching_error_category(records, identity_key, identity_value,
-                                    review_key, packet_hash):
+def _latest_matching_error_review(records, identity_key, identity_value,
+                                  review_key, packet_hash):
     for row in reversed(records):
         if row.get(identity_key) != identity_value:
             continue
         review = _as_dict(row.get(review_key))
         if (review.get("status") == "ERROR"
                 and review.get("input_packet_hash") == packet_hash):
-            return review.get("error_category")
+            return review
         if review.get("status") == "OK":
             break
-    return None
+    return {}
 
 
 def _record_has_fatal_config_error(record, review_key):
@@ -2852,11 +2874,16 @@ def generate_reviews(source, reviews_output, api_key=None,
         if retry_state != "READY":
             skipped += 1
             continue
-        prior_error_category = _latest_matching_error_category(
+        prior_error = _latest_matching_error_review(
             existing_reviews, "card_id", card_id, "llm_review", packet_hash)
+        recover_reconciliation = (
+            prior_error.get("error_category") == "EMPTY_CONTENT"
+            and prior_error.get("call_profile")
+            in MAIN_RECONCILIATION_CALL_PROFILES
+        )
         candidates.append((
             card,
-            max(1, retry_count) if prior_error_category == "EMPTY_CONTENT" else 0,
+            max(1, retry_count) if recover_reconciliation else 0,
         ))
     def worker(item):
         card, empty_content_retry_count = item
