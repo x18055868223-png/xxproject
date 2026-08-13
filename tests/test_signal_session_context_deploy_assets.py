@@ -56,13 +56,13 @@ def assert_asset_root(root):
             "DO_NOT_MULTIPLY_CONFIDENCE"):
         assert_true(token in app,
                     "frontend app should expose durability renderer token " + token)
-    assert_true("app.js?v=20260810-deepseek-reliability-v1" in index_html
+    assert_true("app.js?v=20260813-bayesian-render-v1" in index_html
                 and "fallback.js?v=20260723-fact-semantics-v1" in index_html,
                 "index.html should cache-bust canonical frontend assets")
     assert_true(version.get("backup_version")
                 == "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory",
                 "VERSION backup_version should name the r3.3.11 advisory slice")
-    assert_true(version.get("generated_at") == "2026-08-10",
+    assert_true(version.get("generated_at") == "2026-08-13",
                 "VERSION generated_at should match the DeepSeek reliability asset refresh date")
     assert_true(version.get("llm_review_schema") == "signal_llm_review@1.5.0"
                 and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.4",
