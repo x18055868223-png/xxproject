@@ -584,6 +584,13 @@ def main():
                 and "SYSTEMD_REQUIRED=0" in canary
                 and "AUDIT_HTTP_REQUIRED=0" in canary,
                 "canary release helper should be exact-target, isolated, and rollback-reporting")
+    assert_true(
+        "export TARGET_CARD_ID" in self_check
+        and 'TARGET_CARD_ID="${2:-}"' in self_check
+        and 'CHECK_TARGET_CARD_ID="$TARGET_CARD_ID"' in self_check
+        and 'TARGET_CARD_ID="$CHECK_TARGET_CARD_ID"' in self_check,
+        "self-check CLI target must be exported to every embedded Python probe",
+    )
     assert_true("COMMIT_SHA=" in canary
                 and "LLM_PROVIDER=" in canary
                 and "LLM_MODEL=" in canary

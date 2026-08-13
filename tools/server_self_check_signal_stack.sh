@@ -66,6 +66,7 @@ LLM_ENV="${LLM_ENV:-/etc/signal-audit/llm.env}"
 # files may supply credentials/provider settings, but must not redirect an
 # explicit audit to production paths or weaken its required gates.
 CHECK_AUDIT_URL="$AUDIT_URL"
+CHECK_TARGET_CARD_ID="$TARGET_CARD_ID"
 CHECK_GEX_URL="$GEX_URL"
 CHECK_GEX_REQUIRED="$GEX_REQUIRED"
 CHECK_SYSTEMD_REQUIRED="$SYSTEMD_REQUIRED"
@@ -248,6 +249,11 @@ TOOLS_ROOT="$CHECK_TOOLS_ROOT"
 LLM_REVIEWS_SOURCE="$CHECK_LLM_REVIEWS_SOURCE"
 TRANSITION_LEDGER_SOURCE="$CHECK_TRANSITION_LEDGER_SOURCE"
 TRANSITION_LLM_REVIEWS_SOURCE="$CHECK_TRANSITION_LLM_REVIEWS_SOURCE"
+# The embedded Python probes read this selector from the environment. Restore
+# the caller-owned value after loading credential files, then export it so a
+# CLI target and an inherited target have identical exact-card semantics.
+TARGET_CARD_ID="$CHECK_TARGET_CARD_ID"
+export TARGET_CARD_ID
 
 section "Optional active checks"
 if [ "$RUN_ONESHOTS" -eq 1 ]; then
