@@ -23,7 +23,7 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.7",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.8",
                 "entry version mismatch")
     assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5",
                 "entry prompt mismatch")
@@ -179,6 +179,52 @@ def main():
         and invalid_state["integrated_trade_advisory"]
         ["containment_assessment"]["state"] == "CERTAIN",
         "explicit invalid assessment state must remain validator-visible",
+    )
+    premise_payload = {
+        "integrated_trade_advisory": {
+            "key_premises": [
+                {
+                    "premise_cn": "鏍稿績鏂瑰悜渚濇嵁銆?",
+                    "evidence_refs": ["EV_DECISION", "EV_SESSION_CONTEXT"],
+                },
+                {
+                    "premise_cn": "浠呮湁鏃舵鑳屾櫙銆?",
+                    "evidence_refs": ["EV_COMFORT_WINDOW"],
+                },
+            ],
+        },
+    }
+    premise_repaired, premise_trace = entry._remove_session_only_core_premises(
+        premise_payload
+    )
+    assert_true(
+        premise_trace == {
+            "repair_applied": True,
+            "removed_refs": 2,
+            "removed_premises": 1,
+        }
+        and premise_repaired["integrated_trade_advisory"]["key_premises"]
+        == [{
+            "premise_cn": "鏍稿績鏂瑰悜渚濇嵁銆?",
+            "evidence_refs": ["EV_DECISION"],
+        }],
+        "forbidden session evidence was not removed from core premises",
+    )
+    session_only = {
+        "integrated_trade_advisory": {
+            "key_premises": [{
+                "premise_cn": "浠呮湁鏃舵璇佹嵁銆?",
+                "evidence_refs": ["EV_SESSION_CONTEXT"],
+            }],
+        },
+    }
+    session_only_repaired, session_only_trace = (
+        entry._remove_session_only_core_premises(session_only)
+    )
+    assert_true(
+        session_only_trace["repair_applied"] is False
+        and session_only_repaired == session_only,
+        "session-only core premise must remain validator-visible",
     )
     narrowed, narrowed_trace = entry._repair_unsafe_structure_recommendation(
         completed,

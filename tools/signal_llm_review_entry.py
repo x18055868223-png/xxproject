@@ -27,7 +27,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.7"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.8"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -444,6 +444,53 @@ def _repair_incomplete_advisory_assessments(payload):
     }
 
 
+def _remove_session_only_core_premises(payload):
+    """Drop forbidden session refs without inventing replacement evidence."""
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    premises = advisory.get("key_premises") if advisory else None
+    if not isinstance(premises, list):
+        return repaired_payload, {
+            "repair_applied": False,
+            "removed_refs": 0,
+            "removed_premises": 0,
+        }
+    forbidden = {"EV_SESSION_CONTEXT", "EV_COMFORT_WINDOW"}
+    repaired = []
+    removed_refs = 0
+    removed_premises = 0
+    for premise in premises:
+        if not isinstance(premise, dict) or not isinstance(
+                premise.get("evidence_refs"), list):
+            repaired.append(premise)
+            continue
+        refs = premise["evidence_refs"]
+        filtered = [ref for ref in refs if str(ref) not in forbidden]
+        removed_refs += len(refs) - len(filtered)
+        if not filtered:
+            removed_premises += 1
+            continue
+        item = copy.deepcopy(premise)
+        item["evidence_refs"] = filtered
+        repaired.append(item)
+    # Never fabricate a core premise. If every premise depended only on
+    # session evidence, retain the original payload so the core fails closed.
+    if removed_refs and repaired:
+        advisory = copy.deepcopy(advisory)
+        advisory["key_premises"] = repaired
+        repaired_payload["integrated_trade_advisory"] = advisory
+        applied = True
+    else:
+        applied = False
+        removed_refs = 0
+        removed_premises = 0
+    return repaired_payload, {
+        "repair_applied": applied,
+        "removed_refs": removed_refs,
+        "removed_premises": removed_premises,
+    }
+
+
 def _wall_level(packet, name):
     factor = core._as_dict(core._as_dict(packet).get("factor_cross_section"))
     gex = core._as_dict(factor.get("gex_info"))
@@ -837,6 +884,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     repaired_payload, assessment_trace = _repair_incomplete_advisory_assessments(
         repaired_payload
     )
+    repaired_payload, premise_trace = _remove_session_only_core_premises(
+        repaired_payload
+    )
     repaired_payload, hard_block_trace = _repair_hard_block_recommendation(
         repaired_payload, packet
     )
@@ -908,6 +958,11 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         ],
         "assessment_completion_repair_fields": assessment_trace[
             "repair_fields"
+        ],
+        "session_core_premise_repair_applied": premise_trace["repair_applied"],
+        "session_core_premise_removed_refs": premise_trace["removed_refs"],
+        "session_core_premise_removed_premises": premise_trace[
+            "removed_premises"
         ],
         "wall_position_explanation_applied": wall_position_trace["applied"],
         "wall_position_facts": wall_position_trace["facts"],
@@ -982,6 +1037,19 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                     "event": "ADVISORY_ASSESSMENT_COMPLETED_FAIL_CLOSED",
                     "entry_version": ENTRY_VERSION,
                     **assessment_trace,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if premise_trace["repair_applied"]:
+        print(
+            json.dumps(
+                {
+                    "event": "SESSION_CORE_PREMISE_REFS_REMOVED",
+                    "entry_version": ENTRY_VERSION,
+                    **premise_trace,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
