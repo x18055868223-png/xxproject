@@ -25,7 +25,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.4"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.5"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.4"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -575,6 +575,70 @@ def _repair_hard_block_recommendation(payload, packet):
     return repaired_payload, trace
 
 
+def _repair_unsafe_structure_recommendation(payload, packet):
+    """Narrow structurally impossible recognized recommendations to NO_TRADE."""
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    claimed = str(advisory.get("recommendation") or "").upper()
+    final = claimed
+    reasons = []
+
+    containment = core._as_dict(advisory.get("containment_assessment"))
+    premium_fit = core._as_dict(advisory.get("premium_selling_fit"))
+    containment_state = str(containment.get("state") or "").upper()
+    premium_state = str(premium_fit.get("state") or "").upper()
+
+    if claimed in core.ADVISORY_SPREAD_RECOMMENDATIONS:
+        if core._packet_requires_confirmation(packet):
+            reasons.append("PACKET_REQUIRES_CONFIRMATION")
+        if containment_state != "ESTABLISHED":
+            reasons.append("CONTAINMENT_NOT_ESTABLISHED")
+        if premium_state not in {"FIT", "CONDITIONAL"}:
+            reasons.append("PREMIUM_STRUCTURE_NOT_FIT")
+
+        blind_bias, blind_direction, _, producer_direction = (
+            _alignment_context(repaired_payload, packet)
+        )
+        if claimed == "SELL_PUT_SPREAD_REVIEW" and (
+                producer_direction != "BULLISH"
+                or blind_direction == "BEARISH"):
+            reasons.append("PUT_SPREAD_DIRECTION_MISMATCH")
+        elif claimed == "SELL_CALL_SPREAD_REVIEW" and (
+                producer_direction != "BEARISH"
+                or blind_direction == "BULLISH"):
+            reasons.append("CALL_SPREAD_DIRECTION_MISMATCH")
+        elif claimed == "NEUTRAL_SINGLE_SIDE_REVIEW" and (
+                producer_direction != "NEUTRAL"
+                or blind_bias == "UNABLE_TO_JUDGE"):
+            reasons.append("NEUTRAL_STRUCTURE_DIRECTION_MISMATCH")
+
+        future = core._as_dict(advisory.get("future_24h_bayesian_report"))
+        base_case = str(future.get("base_case") or "").upper()
+        if ((base_case == "UP" and (
+                producer_direction == "BEARISH" or blind_direction == "BEARISH"))
+                or (base_case == "DOWN" and (
+                    producer_direction == "BULLISH" or blind_direction == "BULLISH"))):
+            reasons.append("FUTURE_DIRECTIONAL_CONFLICT")
+    elif (claimed == "UNABLE_TO_JUDGE"
+          and containment_state != "UNABLE_TO_JUDGE"
+          and premium_state != "UNABLE_TO_JUDGE"):
+        reasons.append("UNABLE_RECOMMENDATION_WITHOUT_UNABLE_ASSESSMENT")
+
+    if reasons:
+        advisory = dict(advisory)
+        advisory["recommendation"] = "NO_TRADE"
+        repaired_payload["integrated_trade_advisory"] = advisory
+        final = "NO_TRADE"
+
+    return repaired_payload, {
+        "entry_version": ENTRY_VERSION,
+        "repair_applied": final != claimed,
+        "repair_reasons": sorted(set(reasons)),
+        "claimed": claimed,
+        "final": final,
+    }
+
+
 def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                      derived_blind=True, llm_call_count=2,
                      llm_call_routes=None):
@@ -585,6 +649,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         repaired_payload
     )
     repaired_payload, hard_block_trace = _repair_hard_block_recommendation(
+        repaired_payload, packet
+    )
+    repaired_payload, structure_trace = _repair_unsafe_structure_recommendation(
         repaired_payload, packet
     )
     repaired_payload, key_level_trace = _repair_misclassified_observed_levels(
@@ -628,6 +695,12 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         ],
         "hard_block_recommendation_repair_reason": hard_block_trace[
             "repair_reason"
+        ],
+        "unsafe_structure_recommendation_repair_applied": structure_trace[
+            "repair_applied"
+        ],
+        "unsafe_structure_recommendation_repair_reasons": structure_trace[
+            "repair_reasons"
         ],
         "hard_block_recommendation_claimed": hard_block_trace["claimed"],
         "hard_block_recommendation_final": hard_block_trace["final"],
@@ -674,6 +747,16 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                     "event": "PRODUCER_HARD_BLOCK_RECOMMENDATION_REPAIRED",
                     **hard_block_trace,
                 },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if structure_trace["repair_applied"]:
+        print(
+            json.dumps(
+                {"event": "UNSAFE_STRUCTURE_RECOMMENDATION_REPAIRED",
+                 **structure_trace},
                 ensure_ascii=False,
                 sort_keys=True,
             ),

@@ -754,6 +754,32 @@ def test_retry_gate_and_cooling(tool):
         records, "card_id", "CARD", "llm_review", packet_hash,
         explicit_retry_id="CARD", now=now)
     assert_true(state == "READY", "explicit retry-id must reset")
+    records[-1]["llm_review"]["failure_state"] = {"terminal": True}
+    state, count = tool._retry_state_for_record(
+        records, "card_id", "CARD", "llm_review", packet_hash,
+        explicit_retry_id="CARD", now=now)
+    assert_true((state, count) == ("READY", 4),
+                "explicit retry-id must reset a stored terminal state")
+    for failure_review in (
+            {"status": "ERROR", "input_packet_hash": packet_hash,
+             "failure_state": {"terminal": True, "type": "FATAL_CONFIG"}},
+            {"status": "ERROR", "input_packet_hash": packet_hash,
+             "failure_state": {"terminal": True, "type": "FATAL_AUTH"}},
+            {"status": "ERROR", "input_packet_hash": packet_hash,
+             "failure_state": {
+                 "terminal": True,
+                 "type": "RECONCILIATION_EMPTY_CONTENT_RECOVERY_EXHAUSTED"}},
+            {"status": "ERROR", "input_packet_hash": packet_hash,
+             "fatal_config_error": True},
+            {"status": "ERROR", "input_packet_hash": packet_hash,
+             "error_category": "FATAL_CONFIG"},
+    ):
+        state, _ = tool._retry_state_for_record(
+            [{"card_id": "CARD", "llm_review": failure_review}],
+            "card_id", "CARD", "llm_review", packet_hash,
+            explicit_retry_id="CARD", now=now)
+        assert_true(state == "TERMINAL",
+                    "explicit retry-id bypassed a protected terminal failure")
 
 
 def test_fatal_config_stops_batch(tool):

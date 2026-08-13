@@ -23,7 +23,7 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.4",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.5",
                 "entry version mismatch")
     assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.4",
                 "entry prompt mismatch")
@@ -125,6 +125,45 @@ def main():
     assert_true(level_repaired["integrated_trade_advisory"]["recommendation"]
                 == "NO_TRADE",
                 "key-level repair changed the recommendation")
+    structure_payload = {
+        "theoretical_active_view": {"bias": "BULLISH"},
+        "integrated_trade_advisory": {
+            "recommendation": "SELL_PUT_SPREAD_REVIEW",
+            "containment_assessment": {"state": "INCOMPLETE"},
+            "premium_selling_fit": {"state": "FIT"},
+            "future_24h_bayesian_report": {"base_case": "UP"},
+        },
+    }
+    structure_repaired, structure_trace = (
+        entry._repair_unsafe_structure_recommendation(
+            structure_payload,
+            {"decision": {"lean": "BULLISH"}},
+        )
+    )
+    assert_true(
+        structure_repaired["integrated_trade_advisory"]["recommendation"]
+        == "NO_TRADE"
+        and structure_trace["repair_applied"] is True
+        and structure_trace["repair_reasons"] == ["CONTAINMENT_NOT_ESTABLISHED"],
+        "unsafe spread recommendation was not narrowed to NO_TRADE",
+    )
+    unable_repaired, unable_trace = entry._repair_unsafe_structure_recommendation(
+        {
+            "integrated_trade_advisory": {
+                "recommendation": "UNABLE_TO_JUDGE",
+                "containment_assessment": {"state": "INCOMPLETE"},
+                "premium_selling_fit": {"state": "NOT_FIT"},
+            },
+        },
+        {},
+    )
+    assert_true(
+        unable_repaired["integrated_trade_advisory"]["recommendation"]
+        == "NO_TRADE"
+        and unable_trace["repair_reasons"]
+        == ["UNABLE_RECOMMENDATION_WITHOUT_UNABLE_ASSESSMENT"],
+        "inconsistent unable recommendation was not narrowed to NO_TRADE",
+    )
     help_result = subprocess.run(
         [sys.executable, str(TOOLS / "signal_llm_review_entry.py"), "--help"],
         cwd=ROOT, text=True, capture_output=True, check=False)

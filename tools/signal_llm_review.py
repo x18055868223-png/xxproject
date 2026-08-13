@@ -3074,6 +3074,28 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
 
 def _retry_state_for_record(records, identity_key, identity_value, review_key,
                             packet_hash, explicit_retry_id=None, now=None):
+    # An operator-supplied exact identity is the documented manual reset for a
+    # terminal/cooling record. The rebuilt record is still fully validated and
+    # fatal configuration or exhausted empty-content recovery stays sticky.
+    if explicit_retry_id and explicit_retry_id == identity_value:
+        explicit_matches = [
+            _as_dict(row.get(review_key)) for row in records
+            if row.get(identity_key) == identity_value
+            and _as_dict(row.get(review_key)).get("status") == "ERROR"
+            and _as_dict(row.get(review_key)).get("input_packet_hash") == packet_hash
+        ]
+        protected_terminal_types = {
+            "FATAL_AUTH",
+            "FATAL_CONFIG",
+            "RECONCILIATION_EMPTY_CONTENT_RECOVERY_EXHAUSTED",
+        }
+        if not any(
+                (review.get("fatal_config_error") is True
+                 or review.get("error_category") == "FATAL_CONFIG"
+                 or _as_dict(review.get("failure_state")).get("type")
+                 in protected_terminal_types)
+                for review in explicit_matches):
+            return "READY", len(explicit_matches)
     matching = []
     for row in reversed(records):
         if row.get(identity_key) != identity_value:
@@ -3091,8 +3113,6 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
             return "TERMINAL", 1
         matching.append(review)
     count = len(matching)
-    if explicit_retry_id and explicit_retry_id == identity_value:
-        return "READY", count
     if count >= 4:
         return "TERMINAL", count
     if not count:
