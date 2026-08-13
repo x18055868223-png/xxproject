@@ -498,6 +498,10 @@ def main():
                 and "latest non-empty LLM review sidecar line is invalid" in self_check
                 and "except json.JSONDecodeError" in self_check,
                 "exact-target LLM check should skip historical corrupt lines but reject a corrupt tail")
+    assert_true('CHECK_LLM_REVIEWS_SOURCE="$LLM_REVIEWS_SOURCE"' in self_check
+                and 'LLM_REVIEWS_SOURCE="$CHECK_LLM_REVIEWS_SOURCE"' in self_check
+                and 'TRANSITION_REQUIRED="$CHECK_TRANSITION_REQUIRED"' in self_check,
+                "env files must not redirect explicit canary paths or weaken strict gates")
     assert_true("started signal-audit-materialize.service before LLM" in self_check
                 and "started signal-audit-materialize.service after LLM" in self_check,
                 "server self-check active mode should materialize before and after LLM")
