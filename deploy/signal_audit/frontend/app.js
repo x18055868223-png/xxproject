@@ -960,15 +960,18 @@
   function future24hChineseParagraph(value) {
     if (typeof value !== "string") return "";
     const text = value
+      .replaceAll("rr_blend", "期权偏斜融合指标")
       .replaceAll("gamma_regime.flip_point", "卡内 Gamma 翻转点")
       .replaceAll("gamma_regime.pin_strike", "卡内 Gamma 钉住位")
       .replaceAll("gex_info.call_wall", "卡内上方 Gamma 墙")
       .replaceAll("gex_info.put_wall", "卡内下方 Gamma 墙")
+      .replaceAll("gex_info.magnet_level", "卡内 GEX 磁吸位")
       .replaceAll("BINANCE_SPOT", "币安现货")
       .replaceAll("pin_strike", "Gamma 钉住位")
       .replaceAll("flip_point", "Gamma 翻转点")
       .replaceAll("call_wall", "上方 Gamma 墙")
       .replaceAll("put_wall", "下方 Gamma 墙")
+      .replaceAll("magnet_level", "GEX 磁吸位")
       .replace(/\s+/g, " ").trim();
     if (!/[\u4e00-\u9fff]/.test(text)) return "";
     if (future24hMachineLeak(text)) return "";
@@ -3714,7 +3717,10 @@
           : valueHtmlByPath(path, scalar, { scope: key });
         return `<tr><td class="field-path">${escapeHtml(fieldLabel(path))}</td><td>${renderedValue}</td></tr>`;
       }).join("");
-      const status = get(value, "data_status", get(value, "status"));
+      const rawStatus = get(value, "data_status", get(value, "status"));
+      const status = ["string", "number", "boolean"].includes(typeof rawStatus)
+        ? rawStatus
+        : null;
       return `
         <details id="${escapeHtml(rawTraceId(ref))}" class="factor-detail raw-trace-group" ${["tmvf", "micro_flow", "gamma_regime"].includes(key) ? "open" : ""}>
           <summary><span>${escapeHtml(key)}</span>${!isNullish(status) ? statusBadge("", status) : ""}</summary>

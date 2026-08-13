@@ -895,7 +895,7 @@ def advisory_sample_card():
                     {
                         "role_cn": "卡内Gamma钉住观察位",
                         "price": 101500,
-                        "basis_cn": "来自卡内 BINANCE_SPOT 与 GEX pin_strike。",
+                        "basis_cn": "来自卡内 BINANCE_SPOT、gex_info.magnet_level 与 GEX pin_strike。",
                         "source_type": "PACKET_OBSERVED",
                     },
                     {
@@ -960,6 +960,10 @@ def main():
                 "frontend should expose future_24h_bayesian_report helpers")
     assert_true("${renderFuture24hBayesianSummary(doc, advisory)}" in app,
                 "integrated advisory should call future 24h Bayesian summary renderer")
+    assert_true('.replaceAll("rr_blend", "期权偏斜融合指标")' in app,
+                "future report should localize the known rr_blend packet label")
+    assert_true('["string", "number", "boolean"].includes(typeof rawStatus)' in app,
+                "factor status badges should accept scalar statuses only")
     assert_true("${renderSignalSessionContext(doc)}" not in app,
                 "standalone session-context renderer should be replaced in the main flow")
     metric_idx = app.find('class="metric-strip"')
@@ -1385,6 +1389,26 @@ def main():
     assert_true("未来24小时 MODEL_ESTIMATED" not in leaking_forecast_render["text"]
                 and "未来24小时贝叶斯报告追溯" not in leaking_forecast_render["text"],
                 "future report with raw enum/evidence leakage should fail closed")
+
+    rr_blend_forecast_card = advisory_sample_card()
+    rr_blend_forecast_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]["report_cn"] = (
+        "未来24小时基准情景为区间，rr_blend 提示偏斜结构仍需观察；"
+        "上涨28%、下跌32%、区间40%，关键点位与反证继续以卡内事实为准。"
+    )
+    rr_blend_forecast_card["factor_cross_section"]["m_die"] = {
+        "status": {"state": "READY", "reason": "nested status trace"},
+        "score": 0.21,
+    }
+    rr_blend_forecast_render = render_sample_card(
+        FRONTEND, rr_blend_forecast_card)
+    assert_true("未来 24 小时第一性推断" in rr_blend_forecast_render["text"],
+                "known rr_blend packet label should not hide a valid report")
+    assert_true("期权偏斜融合指标" in rr_blend_forecast_render["text"],
+                "known rr_blend packet label should render as Chinese")
+    assert_true("[object Object]" not in rr_blend_forecast_render["text"],
+                "nested factor status objects must not leak into status badges")
 
     rows = render_contract(FRONTEND)
     assert_true(rows, "render contract should cover cards")

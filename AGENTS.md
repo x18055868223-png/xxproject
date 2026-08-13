@@ -26,6 +26,7 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 ## Project memory
 
 - 开始处理复杂任务前，读取根目录 PROJECT_MEMORY.md。
+- 涉及信号审计功能迭代、推送或服务器更新时，同时读取并遵守 `docs/信号审计更新部署规范_v1.0.md`；完成后必须共同检查和维护该规范与 `PROJECT_MEMORY.md`，但不得写入密钥、凭据或一次性事故日志。
 - 将 PROJECT_MEMORY.md 视为项目事实的辅助来源，但始终以当前代码、配置、测试和用户最新指令为准。
 - 如果记忆与当前代码冲突，以当前代码和用户指令为准，并在任务完成后修正过时记忆。
 - 只在发现经过验证、稳定且可跨任务复用的信息时更新 PROJECT_MEMORY.md。
