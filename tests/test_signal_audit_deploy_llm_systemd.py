@@ -39,6 +39,56 @@ def extract_integrated_advisory_probe(self_check):
     return text[heredoc_start:heredoc_end]
 
 
+def extract_function_python(script, function_name):
+    text = script.replace("\r\n", "\n")
+    start = text.index(function_name + "() {")
+    heredoc_start = text.index("<<'PY'\n", start) + len("<<'PY'\n")
+    heredoc_end = text.index("\nPY\n", heredoc_start)
+    return text[heredoc_start:heredoc_end]
+
+
+def assert_canary_seed_behavior(canary):
+    code = extract_function_python(canary, "seed_canary_main_reviews")
+    target = "target-card"
+    rows = [
+        {"card_id": target, "llm_review": {"status": "ERROR", "validated_blind_context": {"ok": True}}},
+        {"card_id": target, "llm_review": {"status": "OK", "prompt_version": "old"}},
+        {"card_id": "other-card", "llm_review": {"status": "OK"}},
+    ]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "production.jsonl"
+        output = root / "canary.jsonl"
+        source.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows) + "not-json\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [sys.executable, "-", str(source), str(output), target],
+            input=code,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert_true(completed.returncode == 0, "canary seed Python should execute")
+        seeded = output.read_text(encoding="utf-8").splitlines()
+        parsed = []
+        for line in seeded:
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+        target_rows = [row for row in parsed if row.get("card_id") == target]
+        assert_true(
+            len(target_rows) == 1
+            and target_rows[0]["llm_review"]["status"] == "ERROR"
+            and any(row.get("card_id") == "other-card" for row in parsed)
+            and "not-json" in seeded
+            and "CANARY_SEED_REMOVED_TARGET_OK=1" in completed.stdout,
+            "canary seed must retain recovery history and unrelated rows but remove stale target OK",
+        )
+
+
 def integrated_advisory_review(status="OK",
                                schema=EXPECTED_LLM_SCHEMA,
                                recommendation="WAIT_FOR_CONFIRMATION",
@@ -569,6 +619,7 @@ def main():
                 and "latest transition has OK provider-neutral single-call LLM review" in self_check,
                 "self-check should require the current provider-neutral transition review contract")
     assert_integrated_advisory_probe_behavior(self_check)
+    assert_canary_seed_behavior(canary)
 
     assert_true("--target-card-id" in canary
                 and "--promote" in canary
@@ -610,8 +661,11 @@ def main():
                 and 'install_file_atomic "$CANARY_STATIC_ROOT/fallback.js"' not in canary
                 and "is_recoverable_reconciliation_empty_content" in canary
                 and 'run_isolated_review "$TARGET_CARD_ID"' in canary
+                and 'seed_canary_main_reviews "$LLM_REVIEWS_SOURCE" "$CANARY_RUN_REVIEWS"' in canary
+                and 'cp -a "$TRANSITION_LLM_REVIEWS_SOURCE" "$CANARY_RUN_TRANSITION_REVIEWS"' in canary
+                and 'run_isolated_review ""' not in canary
                 and "RECOVERY_STATUS=START_RECONCILIATION_ONLY" in canary,
-                "canary must report release identity and preserve the production usage total")
+                "canary must preserve history, target a new retry epoch, report release identity, and preserve usage")
     assert_true("--resume-canary-root" in canary
                 and "/tmp/signal-llm-canary.*" in canary
                 and "RESUME_STATUS=REUSE_COMPLETED_HTTP_RESULTS" in canary

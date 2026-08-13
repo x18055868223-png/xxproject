@@ -179,6 +179,39 @@ raise SystemExit("target card not found in source JSONL: " + target)
 PY
 }
 
+seed_canary_main_reviews() {
+  local source="$1"
+  local output="$2"
+  /usr/bin/python3 - "$source" "$output" "$TARGET_CARD_ID" <<'PY'
+import json
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1])
+output = pathlib.Path(sys.argv[2])
+target = sys.argv[3]
+kept = []
+removed_target_ok = 0
+for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
+    if not line.strip():
+        continue
+    remove = False
+    try:
+        row = json.loads(line)
+    except Exception:
+        row = None
+    if isinstance(row, dict) and str(row.get("card_id")) == target:
+        review = row.get("llm_review") or {}
+        if review.get("status") == "OK":
+            remove = True
+            removed_target_ok += 1
+    if not remove:
+        kept.append(line + "\n")
+output.write_text("".join(kept), encoding="utf-8")
+print("CANARY_SEED_REMOVED_TARGET_OK=" + str(removed_target_ok))
+PY
+}
+
 is_recoverable_reconciliation_empty_content() {
   /usr/bin/python3 - "$CANARY_RUN_REVIEWS" "$CANARY_RUN_TRANSITION_REVIEWS" "$TARGET_CARD_ID" <<'PY'
 import json
@@ -533,8 +566,16 @@ fi
 
 install -d "$CANARY_STATIC_ROOT"
 if [[ -z "$RESUME_CANARY_ROOT" ]]; then
-  : > "$CANARY_RUN_REVIEWS"
-  : > "$CANARY_RUN_TRANSITION_REVIEWS"
+  if [[ -f "$LLM_REVIEWS_SOURCE" ]]; then
+    seed_canary_main_reviews "$LLM_REVIEWS_SOURCE" "$CANARY_RUN_REVIEWS"
+  else
+    : > "$CANARY_RUN_REVIEWS"
+  fi
+  if [[ -f "$TRANSITION_LLM_REVIEWS_SOURCE" ]]; then
+    cp -a "$TRANSITION_LLM_REVIEWS_SOURCE" "$CANARY_RUN_TRANSITION_REVIEWS"
+  else
+    : > "$CANARY_RUN_TRANSITION_REVIEWS"
+  fi
 else
   require_file "$CANARY_RUN_REVIEWS"
   require_file "$CANARY_RUN_TRANSITION_REVIEWS"
@@ -588,7 +629,10 @@ else
     --transition-state "$CANARY_TRANSITION_STATE"
 
   RUNNER_RC=0
-  if run_isolated_review ""; then
+  # Always begin the exact target in an explicit retry epoch.  The isolated
+  # copies above retain validated blind and completed transition history, so a
+  # reconciliation-stage failure can recover without repeating either call.
+  if run_isolated_review "$TARGET_CARD_ID"; then
     RUNNER_RC=0
   else
     RUNNER_RC=$?
