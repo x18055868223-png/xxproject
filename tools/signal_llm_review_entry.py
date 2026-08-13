@@ -27,7 +27,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.6"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.7"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -413,24 +413,23 @@ def _repair_incomplete_advisory_assessments(payload):
     )
     for field_name, allowed_states, basis_cn in contracts:
         assessment = core._as_dict(advisory.get(field_name))
+        state = str(assessment.get("state") or "").upper()
+        basis = assessment.get("basis_cn")
         valid = (
-            set(assessment) == {"state", "basis_cn"}
-            and str(assessment.get("state") or "").upper() in allowed_states
-            and isinstance(assessment.get("basis_cn"), str)
-            and bool(assessment["basis_cn"].strip())
+            state in allowed_states
+            and isinstance(basis, str)
+            and bool(basis.strip())
         )
         if valid:
+            canonical = {"state": state, "basis_cn": basis.strip()}
+            if assessment != canonical:
+                advisory[field_name] = canonical
+                repaired_fields.append(field_name)
             continue
-        # Only missing/incomplete shapes are mechanically repairable. An
-        # explicit but invalid state or an unexpected key remains a validator
-        # failure instead of being silently rewritten.
-        if assessment and (
-                not set(assessment).issubset({"state", "basis_cn"})
-                or (
-                    assessment.get("state") not in (None, "")
-                    and str(assessment.get("state")).upper()
-                    not in allowed_states
-                )):
+        # An explicit invalid state remains a validator failure. Missing text,
+        # missing state, non-object shapes, and harmless extra keys are safely
+        # reduced to the two-field contract without inventing market facts.
+        if assessment.get("state") not in (None, "") and state not in allowed_states:
             continue
         advisory[field_name] = {
             "state": "UNABLE_TO_JUDGE",

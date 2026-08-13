@@ -23,7 +23,7 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.6",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.7",
                 "entry version mismatch")
     assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5",
                 "entry prompt mismatch")
@@ -135,6 +135,51 @@ def main():
                 and completed_advisory["premium_selling_fit"]["state"]
                 == "UNABLE_TO_JUDGE",
                 "missing premium assessment was not completed fail closed")
+    extra_key_payload = {
+        "integrated_trade_advisory": {
+            "containment_assessment": {
+                "state": "established",
+                "basis_cn": "  鍖呭唴浜嬪疄宸插舰鎴愭帴绠°€? ",
+                "confidence": 0.8,
+            },
+            "premium_selling_fit": {
+                "basis_cn": "妯″瀷鏈畬鏁磋緭鍑虹姸鎬併€?",
+                "evidence": ["extra"],
+            },
+        },
+    }
+    canonicalized, canonical_trace = (
+        entry._repair_incomplete_advisory_assessments(extra_key_payload)
+    )
+    canonical_advisory = canonicalized["integrated_trade_advisory"]
+    assert_true(
+        canonical_trace["repair_fields"]
+        == ["containment_assessment", "premium_selling_fit"]
+        and canonical_advisory["containment_assessment"] == {
+            "state": "ESTABLISHED",
+            "basis_cn": "鍖呭唴浜嬪疄宸插舰鎴愭帴绠°€?",
+        }
+        and canonical_advisory["premium_selling_fit"]["state"]
+        == "UNABLE_TO_JUDGE"
+        and set(canonical_advisory["premium_selling_fit"])
+        == {"state", "basis_cn"},
+        "assessment extra keys were not safely canonicalized",
+    )
+    invalid_state, invalid_trace = entry._repair_incomplete_advisory_assessments({
+        "integrated_trade_advisory": {
+            "containment_assessment": {
+                "state": "CERTAIN",
+                "basis_cn": "涓嶅悎娉曠姸鎬佷笉寰楁敼鍐欍€?",
+                "extra": True,
+            },
+        },
+    })
+    assert_true(
+        invalid_trace["repair_fields"] == ["premium_selling_fit"]
+        and invalid_state["integrated_trade_advisory"]
+        ["containment_assessment"]["state"] == "CERTAIN",
+        "explicit invalid assessment state must remain validator-visible",
+    )
     narrowed, narrowed_trace = entry._repair_unsafe_structure_recommendation(
         completed,
         {"decision": {"lean": "BULLISH"}},
