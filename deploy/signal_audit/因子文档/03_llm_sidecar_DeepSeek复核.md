@@ -8,9 +8,10 @@
 | --- | --- |
 | provider | `deepseek` |
 | model | `deepseek-v4-flash`（DeepSeek‑V4‑Flash‑0731） |
-| main schema / prompt | `signal_llm_review@1.5.0` / `signal_llm_review_prompt@1.5.3` |
+| main schema / prompt | `signal_llm_review@1.5.1` / `signal_llm_review_prompt@1.5.5` |
+| entrypoint | `signal_llm_review_entry@1.1.9` |
 | transition schema / prompt | `signal_transition_llm_review@1.3.0` / `signal_transition_llm_review_prompt@1.3.2` |
-| 主信号 | blind `low` 后 reconciliation `high`，严格两次逻辑调用 |
+| 主信号 | blind `low` 后 reconciliation `high`，正常严格两次；reasoning-only 空正文时复用 blind 并追加最多一次 recovery |
 | 状态转移 | `low`，一次逻辑调用 |
 
 运行时只读取 `LLM_API_KEY`，不读取任何 Gemini 密钥或兼容变量。API base 为 `https://api.deepseek.com`；Bearer 请求由本地 JSON schema 与语义校验器最终裁决。历史 Gemini sidecar 可以继续被前端只读展示，但不会被回填或重新标记为 DeepSeek。

@@ -12,7 +12,7 @@ DEPLOY = ROOT / "deploy" / "signal_audit"
 CANARY = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 EXPECTED_LLM_PROVIDER = "deepseek"
 EXPECTED_LLM_MODEL = "deepseek-v4-flash"
-EXPECTED_LLM_SCHEMA = "signal_llm_review@1.5.0"
+EXPECTED_LLM_SCHEMA = "signal_llm_review@1.5.1"
 EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@1.5.5"
 EXPECTED_LLM_MODE = "two_call_strict"
 EXPECTED_LLM_CALL_COUNT = 2
@@ -87,6 +87,110 @@ def assert_canary_seed_behavior(canary):
             and "CANARY_SEED_REMOVED_TARGET_OK=1" in completed.stdout,
             "canary seed must retain recovery history and unrelated rows but remove stale target OK",
         )
+
+
+def assert_canary_reconciliation_recovery_scope(canary):
+    code = extract_function_python(
+        canary, "is_recoverable_reconciliation_empty_content")
+    target = "target-card"
+    target_transition = "tr-target"
+    other_transition = "tr-other"
+
+    def recovery_review(recovery_attempted=False):
+        return {
+            "status": "ERROR",
+            "error_category": "EMPTY_CONTENT",
+            "validated_blind_context": {"status": "OK"},
+            "failure_state": {
+                "stage": "RECONCILIATION",
+                "type": "EMPTY_CONTENT",
+                "recovery_allowed": True,
+                "recovery_attempted": recovery_attempted,
+            },
+        }
+
+    def write_jsonl(path, rows):
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows),
+                        encoding="utf-8")
+
+    def run_probe(transition_rows, ledger_rows=None, review=None):
+        if ledger_rows is None:
+            ledger_rows = [
+                {"transition_id": target_transition, "current_card_id": target},
+                {"transition_id": other_transition, "current_card_id": "old-card"},
+            ]
+        if review is None:
+            review = recovery_review()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            main_reviews = root / "signal_llm_reviews.run.jsonl"
+            transition_reviews = root / "signal_transition_llm_reviews.run.jsonl"
+            transition_ledger = root / "signal_transition_ledger.jsonl"
+            write_jsonl(main_reviews, [{"card_id": target, "llm_review": review}])
+            write_jsonl(transition_reviews, transition_rows)
+            write_jsonl(transition_ledger, ledger_rows)
+            return subprocess.run(
+                [
+                    sys.executable, "-", str(main_reviews),
+                    str(transition_reviews), str(transition_ledger), target,
+                ],
+                input=code,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    ignored_history = run_probe([
+        {
+            "transition_id": other_transition,
+            "transition_llm_review": {"status": "ERROR"},
+        },
+        {
+            "transition_id": "not-in-ledger",
+            "current_card_id": target,
+            "transition_llm_review": {"status": "ERROR"},
+        },
+    ])
+    assert_true(
+        ignored_history.returncode == 0,
+        "canary recovery should ignore non-target historical transition errors",
+    )
+
+    stale_target_error = run_probe([
+        {
+            "transition_id": target_transition,
+            "transition_llm_review": {"status": "ERROR"},
+        },
+        {
+            "transition_id": target_transition,
+            "transition_llm_review": {"status": "OK"},
+        },
+    ])
+    assert_true(
+        stale_target_error.returncode == 0,
+        "canary recovery should use the latest target transition review",
+    )
+
+    latest_target_error = run_probe([
+        {
+            "transition_id": target_transition,
+            "transition_llm_review": {"status": "OK"},
+        },
+        {
+            "transition_id": target_transition,
+            "transition_llm_review": {"status": "ERROR"},
+        },
+    ])
+    assert_true(
+        latest_target_error.returncode != 0,
+        "canary recovery should block on latest target transition ERROR",
+    )
+
+    already_attempted = run_probe([], review=recovery_review(recovery_attempted=True))
+    assert_true(
+        already_attempted.returncode != 0,
+        "canary recovery should still allow only one reconciliation recovery",
+    )
 
 
 def integrated_advisory_review(status="OK",
@@ -267,7 +371,7 @@ def assert_integrated_advisory_probe_behavior(self_check):
     old_schema_result = run_integrated_advisory_probe(
         self_check, [{"card_id": card_id, "llm_review": old_schema}])
     assert_true(old_schema_result.returncode != 0
-                and "schema is not signal_llm_review@1.5.0"
+                and "schema is not signal_llm_review@1.5.1"
                 in (old_schema_result.stdout + old_schema_result.stderr),
                 "strict probe must reject old LLM review schemas")
 
@@ -620,6 +724,7 @@ def main():
                 "self-check should require the current provider-neutral transition review contract")
     assert_integrated_advisory_probe_behavior(self_check)
     assert_canary_seed_behavior(canary)
+    assert_canary_reconciliation_recovery_scope(canary)
 
     assert_true("--target-card-id" in canary
                 and "--promote" in canary

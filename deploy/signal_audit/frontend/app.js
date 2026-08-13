@@ -963,9 +963,13 @@
       .replaceAll("rr_blend", "期权偏斜融合指标")
       .replaceAll("gamma_regime.flip_point", "卡内 Gamma 翻转点")
       .replaceAll("gamma_regime.pin_strike", "卡内 Gamma 钉住位")
+      .replaceAll("gamma_regime.max_gamma_strike", "卡内最大 Gamma 行权价")
       .replaceAll("gex_info.call_wall", "卡内上方 Gamma 墙")
       .replaceAll("gex_info.put_wall", "卡内下方 Gamma 墙")
       .replaceAll("gex_info.magnet_level", "卡内 GEX 磁吸位")
+      .replaceAll("gex_info.max_gamma_strike", "卡内最大 Gamma 行权价")
+      .replaceAll("max_gamma_strike", "最大 Gamma 行权价")
+      .replaceAll("gamma_regime", "Gamma 体制")
       .replaceAll("BINANCE_SPOT", "币安现货")
       .replaceAll("pin_strike", "Gamma 钉住位")
       .replaceAll("flip_point", "Gamma 翻转点")
@@ -1031,6 +1035,14 @@
 
   function future24hRowsAreComplete(rows) {
     return rows.length > 0 && rows.every((row) => future24hRowLabel(row) && future24hSourceText(row));
+  }
+
+  function future24hPointRowIsSafe(row) {
+    const item = asObject(row);
+    return Number.isFinite(Number(item.price))
+      && future24hChineseParagraph(item.role_cn)
+      && future24hChineseParagraph(item.basis_cn)
+      && future24hSourceText(item);
   }
 
   function future24hReadableScalar(value) {
@@ -1100,18 +1112,16 @@
       { label_cn: "下行情景", weight: `${rawWeights.down}%` },
       { label_cn: "区间情景", weight: `${rawWeights.range}%` }
     ];
-    const pointSources = asArray(report.key_levels);
+    const rawPointSources = asArray(report.key_levels);
+    const pointSources = rawPointSources.map((row) => asObject(row)).filter(future24hPointRowIsSafe);
+    const hiddenPointSourceCount = rawPointSources.length - pointSources.length;
     const validation = asObject(report.policy_validation);
-    if (!summary || summary.length > 900 || pointSources.length > 4
-      || !pointSources.every((row) => Number.isFinite(Number(row.price))
-        && future24hChineseParagraph(row.role_cn)
-        && future24hChineseParagraph(row.basis_cn)
-        && future24hSourceText(row))
+    if (!summary || summary.length > 900 || rawPointSources.length > 4
       || validation.passed !== true
       || !future24hValidationRows(validation).length) {
       return null;
     }
-    return { summary, weights, pointSources, validation };
+    return { summary, weights, pointSources, hiddenPointSourceCount, validation };
   }
 
   function renderFuture24hBayesianSummary(doc, advisory) {
@@ -1141,6 +1151,9 @@
   }
 
   function renderFuture24hPointRows(rows, doc) {
+    if (!rows.length) {
+      return `<tr><td colspan="4">暂无可安全显示点位</td></tr>`;
+    }
     return rows.map((row) => `
       <tr>
         <td>${escapeHtml(future24hChineseParagraph(row.role_cn))}</td>
@@ -1154,6 +1167,12 @@
         )) || "未说明")}</td>
       </tr>
     `).join("");
+  }
+
+  function renderFuture24hPointDegradeNote(report) {
+    const hidden = Number(report.hiddenPointSourceCount || 0);
+    if (!Number.isFinite(hidden) || hidden <= 0) return "";
+    return `<p class="future-24h-degrade-note">有 ${escapeHtml(number(hidden, 0))} 个点位因名称、依据或来源不可安全显示，已在低层列表中隐藏。</p>`;
   }
 
   function renderFuture24hValidationRows(validation) {
@@ -1177,6 +1196,7 @@
         </div>
         <div class="future-24h-trace-block">
           <h3 class="subsection-title">点位来源</h3>
+          ${renderFuture24hPointDegradeNote(report)}
           <div class="table-wrap"><table class="future-24h-table"><thead><tr><th>点位</th><th>来源性质</th><th>数值</th><th>依据</th></tr></thead><tbody>${renderFuture24hPointRows(report.pointSources, doc)}</tbody></table></div>
         </div>
         <div class="future-24h-trace-block">

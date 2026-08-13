@@ -213,14 +213,15 @@ PY
 }
 
 is_recoverable_reconciliation_empty_content() {
-  /usr/bin/python3 - "$CANARY_RUN_REVIEWS" "$CANARY_RUN_TRANSITION_REVIEWS" "$TARGET_CARD_ID" <<'PY'
+  /usr/bin/python3 - "$CANARY_RUN_REVIEWS" "$CANARY_RUN_TRANSITION_REVIEWS" "$CANARY_TRANSITION_LEDGER" "$TARGET_CARD_ID" <<'PY'
 import json
 import pathlib
 import sys
 
 main_path = pathlib.Path(sys.argv[1])
 transition_path = pathlib.Path(sys.argv[2])
-target = sys.argv[3]
+ledger_path = pathlib.Path(sys.argv[3])
+target = sys.argv[4]
 
 def rows(path):
     if not path.exists():
@@ -251,9 +252,22 @@ recoverable = (
     and failure.get("recovery_attempted") is False
     and bool(review.get("validated_blind_context"))
 )
+target_transition_ids = {
+    str(row.get("transition_id"))
+    for row in rows(ledger_path)
+    if str(row.get("current_card_id")) == target and row.get("transition_id")
+}
+latest_target_transition_reviews = {}
+for row in rows(transition_path):
+    transition_id = row.get("transition_id")
+    if transition_id is None:
+        continue
+    transition_id = str(transition_id)
+    if transition_id in target_transition_ids:
+        latest_target_transition_reviews[transition_id] = row
 transition_error = any(
     (row.get("transition_llm_review") or {}).get("status") == "ERROR"
-    for row in rows(transition_path)
+    for row in latest_target_transition_reviews.values()
 )
 raise SystemExit(0 if recoverable and not transition_error else 1)
 PY

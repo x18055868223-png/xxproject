@@ -962,6 +962,9 @@ def main():
                 "integrated advisory should call future 24h Bayesian summary renderer")
     assert_true('.replaceAll("rr_blend", "期权偏斜融合指标")' in app,
                 "future report should localize the known rr_blend packet label")
+    assert_true('.replaceAll("gamma_regime", "Gamma 体制")' in app
+                and '.replaceAll("max_gamma_strike", "最大 Gamma 行权价")' in app,
+                "future report should localize known gamma_regime/max_gamma_strike aliases")
     assert_true('["string", "number", "boolean"].includes(typeof rawStatus)' in app,
                 "factor status badges should accept scalar statuses only")
     assert_true("${renderSignalSessionContext(doc)}" not in app,
@@ -1041,6 +1044,8 @@ def main():
     frontend_version = read_json(FRONTEND / "VERSION.json")
     assert_true("future_24h_bayesian_report" in frontend_version["frontend_contract"],
                 "VERSION frontend_contract should document the optional future 24h report")
+    assert_true(frontend_version["llm_review_schema"] == "signal_llm_review@1.5.1",
+                "VERSION should advertise the llm review schema with future report degrade contract")
 
     durability_render = render_sample_card(FRONTEND, durability_sample_card())
     durability_text = durability_render["text"]
@@ -1409,6 +1414,63 @@ def main():
                 "known rr_blend packet label should render as Chinese")
     assert_true("[object Object]" not in rr_blend_forecast_render["text"],
                 "nested factor status objects must not leak into status badges")
+
+    alias_forecast_card = advisory_sample_card()
+    alias_forecast_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]["report_cn"] = (
+        "未来24小时基准情景为区间，gamma_regime 与 max_gamma_strike 只作为卡内空间别名观察；"
+        "上行30%、下行20%、区间50%，重点仍以卡内事实和人工复核为准。"
+    )
+    alias_forecast_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]["key_levels"][0]["basis_cn"] = "来自卡内 gamma_regime.max_gamma_strike 与 gex_info.max_gamma_strike。"
+    alias_forecast_render = render_sample_card(FRONTEND, alias_forecast_card)
+    alias_html = alias_forecast_render["documentHtml"]
+    alias_trace_start = alias_html.find('class="factor-detail future-24h-trace')
+    alias_trace_end = alias_html.find("</details>", alias_trace_start)
+    alias_trace_html = alias_html[alias_trace_start:alias_trace_end]
+    alias_summary_start = alias_html.find('class="future-24h-summary"')
+    alias_grid_start = alias_html.find('class="integrated-advisory-grid"', alias_summary_start)
+    alias_summary_html = alias_html[alias_summary_start:alias_grid_start]
+    alias_report_html = alias_summary_html + alias_trace_html
+    assert_true("未来 24 小时第一性推断" in alias_forecast_render["text"],
+                "known gamma aliases should not hide a valid future report")
+    assert_true("Gamma 体制" in alias_report_html
+                and "最大 Gamma 行权价" in alias_report_html,
+                "known gamma aliases should render as readable Chinese")
+    assert_true("gamma_regime" not in alias_report_html
+                and "max_gamma_strike" not in alias_report_html,
+                "known gamma aliases should not leak raw machine names in the future report")
+
+    degraded_point_card = advisory_sample_card()
+    degraded_point_report = degraded_point_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]
+    degraded_point_report["key_levels"].append({
+        "role_cn": "MODEL_ESTIMATED",
+        "price": 106600,
+        "basis_cn": {"unsafe": "object basis"},
+        "source_type": "MODEL_ESTIMATED",
+    })
+    degraded_point_render = render_sample_card(FRONTEND, degraded_point_card)
+    assert_true("最高辅助交易决策" in degraded_point_render["text"]
+                and "未来 24 小时第一性推断" in degraded_point_render["text"],
+                "one unsafe key level should not hide the advisory or future summary")
+    assert_true("不可安全显示" in degraded_point_render["text"],
+                "unsafe key level should be marked as degraded in the low-level trace")
+    assert_true("object basis" not in degraded_point_render["text"]
+                and "MODEL_ESTIMATED" not in degraded_point_render["text"],
+                "unsafe key level role/basis/source should not leak")
+
+    execution_leak_card = advisory_sample_card()
+    execution_leak_card["llm_review"]["integrated_trade_advisory"][
+        "future_24h_bayesian_report"
+    ]["report_cn"] = "未来24小时 execution_allowed 字段提示可以开仓。"
+    execution_leak_render = render_sample_card(FRONTEND, execution_leak_card)
+    assert_true("未来24小时 execution_allowed" not in execution_leak_render["text"]
+                and "未来24小时贝叶斯报告追溯" not in execution_leak_render["text"],
+                "future report with execution field leakage should fail closed")
 
     rows = render_contract(FRONTEND)
     assert_true(rows, "render contract should cover cards")

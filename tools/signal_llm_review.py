@@ -39,7 +39,7 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
 PROVIDER = "deepseek"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.0"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.1"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
 PACKET_VERSION = "signal_llm_review_packet@1.2.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.2.0"
@@ -192,6 +192,12 @@ FUTURE_24H_EFFECTS = {
     "NEUTRAL",
     "UNABLE_TO_JUDGE",
 }
+BLIND_BOUNDARY_CN = (
+    "该判断只作审计参考，不改变系统信号、门控、置信或交易许可。"
+)
+BLIND_COUNTER_EVIDENCE_INSUFFICIENT_CN = (
+    "盲读输出未提供可校验反证，按信息不足处理。"
+)
 ADVISORY_HUMAN_RAW_TOKENS = {
     *ADVISORY_RECOMMENDATIONS,
     *ADVISORY_CONTAINMENT_STATES,
@@ -2598,12 +2604,152 @@ def _derive_source_alignment(packet, theoretical_active_view):
     }
 
 
-def _assemble_local_review_payload(payload, packet, blind_payload=None):
+def _empty_blind_completeness_repair():
+    return {
+        "schema_version": "blind_completeness_repair@1.0.0",
+        "applied": False,
+        "fields": [],
+        "missing_fields": [],
+        "deterministic_source": "LOCAL_AUDIT_INVARIANT_NO_MARKET_FACTS",
+        "recommendation_cap": "NO_TRADE",
+        "counter_evidence_added": False,
+        "boundary_cn_fixed": False,
+        "recommendation_cap_applied": False,
+        "recommendation_claimed": None,
+        "recommendation_final": None,
+    }
+
+
+def _repair_blind_completeness(payload, *, cap_recommendation=False):
+    """Fill only blind completeness fields that carry no market facts."""
+    trace = _empty_blind_completeness_repair()
+    if not isinstance(payload, dict):
+        return payload, trace
+
+    repaired = _json_clone(payload)
+    view = repaired.get("theoretical_active_view")
+    if not isinstance(view, dict):
+        return repaired, trace
+
+    view = dict(view)
+    fields = []
+    boundary = view.get("boundary_cn")
+    if "boundary_cn" not in view or (
+            isinstance(boundary, str) and not boundary.strip()):
+        view["boundary_cn"] = BLIND_BOUNDARY_CN
+        fields.append("theoretical_active_view.boundary_cn")
+        trace["boundary_cn_fixed"] = True
+
+    counter_evidence = view.get("counter_evidence")
+    if "counter_evidence" not in view or counter_evidence == []:
+        view["counter_evidence"] = [BLIND_COUNTER_EVIDENCE_INSUFFICIENT_CN]
+        fields.append("theoretical_active_view.counter_evidence")
+        trace["counter_evidence_added"] = True
+
+    if not fields:
+        return repaired, trace
+
+    repaired["theoretical_active_view"] = view
+    trace["applied"] = True
+    trace["fields"] = fields
+    trace["missing_fields"] = list(fields)
+
+    if cap_recommendation:
+        advisory = _as_dict(repaired.get("integrated_trade_advisory"))
+        claimed = str(advisory.get("recommendation") or "").upper()
+        final = claimed
+        if claimed in ADVISORY_RECOMMENDATIONS and claimed not in {
+                "NO_TRADE", "UNABLE_TO_JUDGE"}:
+            advisory = dict(advisory)
+            advisory["recommendation"] = "NO_TRADE"
+            repaired["integrated_trade_advisory"] = advisory
+            final = "NO_TRADE"
+            trace["recommendation_cap_applied"] = True
+        trace["recommendation_claimed"] = claimed
+        trace["recommendation_final"] = final
+
+    return repaired, trace
+
+
+def _merge_blind_completeness_repair(existing, current):
+    existing = _as_dict(existing)
+    current = _as_dict(current)
+    if existing.get("schema_version") == "blind_completeness_repair@1.0.0":
+        merged = dict(existing)
+    else:
+        merged = _empty_blind_completeness_repair()
+    merged["applied"] = bool(merged.get("applied") or current.get("applied"))
+    merged["fields"] = sorted(set(
+        list(merged.get("fields") or []) + list(current.get("fields") or [])
+    ))
+    merged["missing_fields"] = list(merged["fields"])
+    for key in (
+            "counter_evidence_added",
+            "boundary_cn_fixed",
+            "recommendation_cap_applied"):
+        merged[key] = bool(merged.get(key) or current.get(key))
+    for key in ("recommendation_claimed", "recommendation_final"):
+        if current.get(key) is not None:
+            merged[key] = current.get(key)
+    return merged
+
+
+def _apply_blind_repair_recommendation_cap(payload, repair):
+    payload = _json_clone(_as_dict(payload))
+    repair = dict(_as_dict(repair))
+    if repair.get("applied") is not True:
+        return payload, repair
+    advisory = dict(_as_dict(payload.get("integrated_trade_advisory")))
+    claimed = str(advisory.get("recommendation") or "").upper()
+    final = claimed
+    if claimed in ADVISORY_RECOMMENDATIONS and claimed not in {
+            "NO_TRADE", "UNABLE_TO_JUDGE"}:
+        advisory["recommendation"] = "NO_TRADE"
+        payload["integrated_trade_advisory"] = advisory
+        final = "NO_TRADE"
+        repair["recommendation_cap_applied"] = True
+    repair["recommendation_claimed"] = claimed
+    repair["recommendation_final"] = final
+    return payload, repair
+
+
+def _normalize_future_24h_basis_aliases(report):
+    report = dict(_as_dict(report))
+    for key in ("report_cn",):
+        original = report.get(key)
+        if isinstance(original, str):
+            report[key] = _humanize_future_24h_basis(original)
+    levels = []
+    for item in report.get("key_levels") or []:
+        item = dict(_as_dict(item))
+        for key in ("role_cn", "basis_cn"):
+            original = item.get(key)
+            if isinstance(original, str):
+                item[key] = _humanize_future_24h_basis(original)
+        levels.append(item)
+    if isinstance(report.get("key_levels"), list):
+        report["key_levels"] = levels
+    for key in ("counter_evidence_cn", "invalid_if_cn"):
+        values = report.get(key)
+        if isinstance(values, list):
+            report[key] = [
+                _humanize_future_24h_basis(value)
+                if isinstance(value, str) else value
+                for value in values
+            ]
+    return report
+
+
+def _assemble_local_review_payload(payload, packet, blind_payload=None,
+                                   blind_completeness_repair=None):
     assembled = _json_clone(_as_dict(payload))
     blind_source = blind_payload or {
         "theoretical_active_view": assembled.get("theoretical_active_view"),
         "gamma_regime_lens": assembled.get("gamma_regime_lens"),
     }
+    blind_source, current_repair = _repair_blind_completeness(blind_source)
+    blind_repair = _merge_blind_completeness_repair(
+        blind_completeness_repair, current_repair)
     blind = _validate_blind_payload(blind_source)
     assembled["theoretical_active_view"] = blind["theoretical_active_view"]
     assembled["gamma_regime_lens"] = blind["gamma_regime_lens"]
@@ -2621,7 +2767,8 @@ def _assemble_local_review_payload(payload, packet, blind_payload=None):
         session["does_not_change_recommendation"] = True
         advisory["session_advisory"] = session
 
-    report = dict(_as_dict(advisory.get("future_24h_bayesian_report")))
+    report = _normalize_future_24h_basis_aliases(
+        advisory.get("future_24h_bayesian_report"))
     if report:
         report["schema_version"] = "future_24h_bayesian_report@1.0.0"
         report["horizon_hours"] = 24
@@ -2630,14 +2777,25 @@ def _assemble_local_review_payload(payload, packet, blind_payload=None):
         advisory["future_24h_bayesian_report"] = report
 
     assembled["integrated_trade_advisory"] = advisory
+    assembled["_blind_completeness_repair"] = blind_repair
     return assembled
 
 
 def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
                      derived_blind=True, llm_call_count=2,
-                     llm_call_routes=None):
+                     llm_call_routes=None, blind_payload=None,
+                     blind_completeness_repair=None):
     packet = build_review_packet(card)
-    payload = _assemble_local_review_payload(payload, packet)
+    repaired_payload, current_repair = _repair_blind_completeness(
+        payload, cap_recommendation=True)
+    blind_repair = _merge_blind_completeness_repair(
+        blind_completeness_repair, current_repair)
+    payload = _assemble_local_review_payload(
+        repaired_payload, packet, blind_payload=blind_payload,
+        blind_completeness_repair=blind_repair)
+    blind_repair = _as_dict(payload.pop("_blind_completeness_repair", None))
+    payload, blind_repair = _apply_blind_repair_recommendation_cap(
+        payload, blind_repair)
     payload = _validate_model_payload(payload, packet=packet)
     reviewed_at = reviewed_at or _now_iso()
     review = {
@@ -2669,6 +2827,7 @@ def build_llm_review(card, payload, model=DEFAULT_MODEL, reviewed_at=None,
         "invalid_if": _trim_list(payload["invalid_if"]),
         "data_quality_note": str(payload.get("data_quality_note") or ""),
         "not_trading_advice": True,
+        "blind_completeness_repair": blind_repair,
     }
     policy = review["integrated_trade_advisory"]["policy_validation"]
     alignment = _derive_source_alignment(
@@ -2880,7 +3039,8 @@ def _card_error_record(card_id, model, reviewed_at, safe_error, exc):
     }
 
 
-def _validated_blind_context(packet, blind_payload, blind_response):
+def _validated_blind_context(packet, blind_payload, blind_response,
+                             blind_completeness_repair=None):
     blind = _validate_blind_payload(blind_payload)
     return {
         "schema_version": "validated_blind_context@1.0.0",
@@ -2893,6 +3053,8 @@ def _validated_blind_context(packet, blind_payload, blind_response):
         "llm_call_routes": _response_call_routes(blind_response),
         "llm_http_call_count": _response_http_calls(blind_response),
         "usage": _response_usage(blind_response),
+        "blind_completeness_repair": _merge_blind_completeness_repair(
+            blind_completeness_repair, None),
     }
 
 
@@ -2913,9 +3075,12 @@ def _blind_payload_from_context(context, packet):
     return blind
 
 
-def _attach_validated_blind_context(record, packet, blind_payload, blind_response):
+def _attach_validated_blind_context(record, packet, blind_payload, blind_response,
+                                    blind_completeness_repair=None):
     review = _as_dict(record.get("llm_review"))
-    context = _validated_blind_context(packet, blind_payload, blind_response)
+    context = _validated_blind_context(
+        packet, blind_payload, blind_response,
+        blind_completeness_repair=blind_completeness_repair)
     review["validated_blind_context"] = context
     review["blind_packet_hash"] = context["blind_packet_hash"]
     review["blind_result_hash"] = context["blind_result_hash"]
@@ -2969,7 +3134,9 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
     card_id = _card_id(card)
     blind_raw_response = None
     raw_response = None
+    reconciliation_responses = []
     blind_payload = None
+    blind_completeness_repair = _empty_blind_completeness_repair()
     packet = None
     failure_profile = CALL_PROFILE_MAIN_BLIND
     try:
@@ -2977,6 +3144,9 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
         if recovery_blind_context:
             blind_payload = _blind_payload_from_context(
                 recovery_blind_context, packet)
+            blind_completeness_repair = _merge_blind_completeness_repair(
+                _as_dict(recovery_blind_context).get(
+                    "blind_completeness_repair"), None)
         else:
             blind_prompt = build_blind_prompt(packet)
             blind_request = build_blind_chat_request(blind_prompt, model=model)
@@ -2992,8 +3162,10 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
                 retry_id=retry_id,
                 call_profile=CALL_PROFILE_MAIN_BLIND,
             )
-            blind_payload = _validate_blind_payload(
-                parse_chat_response(blind_raw_response))
+            blind_raw_payload = parse_chat_response(blind_raw_response)
+            blind_raw_payload, blind_completeness_repair = (
+                _repair_blind_completeness(blind_raw_payload))
+            blind_payload = _validate_blind_payload(blind_raw_payload)
         reconciliation_profile = _main_reconciliation_call_profile(
             empty_content_retry_count)
         failure_profile = reconciliation_profile
@@ -3019,17 +3191,51 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
             retry_id=retry_id,
             call_profile=reconciliation_profile,
         )
-        payload = parse_chat_response(raw_response)
-        payload = _assemble_local_review_payload(
-            payload, packet, blind_payload=blind_payload)
-        call_routes = _response_call_routes(raw_response)
+        reconciliation_responses.append(raw_response)
+        try:
+            payload = parse_chat_response(raw_response)
+        except LlmEmptyContentError as exc:
+            diagnostics = _as_dict(getattr(exc, "diagnostics", None))
+            if (
+                    reconciliation_profile
+                    != CALL_PROFILE_MAIN_RECONCILIATION
+                    or diagnostics.get("reasoning_content_present") is not True):
+                raise
+            reconciliation_profile = CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY
+            failure_profile = reconciliation_profile
+            recovery_prompt = build_prompt(
+                packet, blind_payload, empty_content_retry_count=1)
+            recovery_request = build_chat_request(
+                recovery_prompt, model=model, empty_content_retry_count=1)
+            recovery_request["_local_packet_hash"] = _sha256_json(packet)
+            raw_response = _invoke_call_llm(
+                call_fn,
+                api_key,
+                model,
+                recovery_request,
+                reconciliation_timeout,
+                endpoint=base_url,
+                budget=budget,
+                retry_id=retry_id,
+                call_profile=reconciliation_profile,
+            )
+            reconciliation_responses.append(raw_response)
+            payload = parse_chat_response(raw_response)
+        call_routes = []
+        for response in reconciliation_responses:
+            call_routes.extend(_response_call_routes(response))
         if blind_raw_response is not None:
             call_routes = _response_call_routes(blind_raw_response) + call_routes
         review = build_llm_review(card, payload, model=model,
                                   reviewed_at=reviewed_at,
                                   derived_blind=True,
-                                  llm_call_count=2,
-                                  llm_call_routes=call_routes)
+                                  llm_call_count=(
+                                      len(reconciliation_responses)
+                                      + (0 if recovery_blind_context else 1)),
+                                  llm_call_routes=call_routes,
+                                  blind_payload=blind_payload,
+                                  blind_completeness_repair=(
+                                      blind_completeness_repair))
         if recovery_blind_context:
             review["reused_validated_blind_context"] = True
             review["reused_blind_packet_hash"] = recovery_blind_context.get(
@@ -3045,16 +3251,23 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
         else:
             review["llm_http_call_count"] = (
                 _response_http_calls(blind_raw_response)
-                + _response_http_calls(raw_response)
+                + sum(_response_http_calls(response)
+                      for response in reconciliation_responses)
             )
-            review["llm_call_profiles"] = [
-                CALL_PROFILE_MAIN_BLIND,
-                reconciliation_profile,
+            review["llm_call_profiles"] = [CALL_PROFILE_MAIN_BLIND] + [
+                str(response.get("_llm_call_profile") or "")
+                for response in reconciliation_responses
+                if response.get("_llm_call_profile")
             ]
             review["usage"] = {
                 "blind": _response_usage(blind_raw_response),
                 "reconciliation": _response_usage(raw_response),
             }
+            if len(reconciliation_responses) > 1:
+                review["usage"]["reconciliation_initial"] = _response_usage(
+                    reconciliation_responses[0])
+                review["usage"]["reconciliation_recovery"] = _response_usage(
+                    reconciliation_responses[-1])
         review["retry_id"] = retry_id
         budget_state = (
             _response_budget_state(raw_response)
@@ -3075,7 +3288,7 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
     except Exception as exc:
         _attach_response_metadata(
             exc,
-            [blind_raw_response, raw_response],
+            [blind_raw_response] + reconciliation_responses,
             call_profile=failure_profile,
         )
         safe_error = _redact_sensitive_text(str(exc))[:220]
@@ -3089,7 +3302,8 @@ def _build_card_review_record(card, api_key, model, blind_timeout,
                 and blind_raw_response is not None
                 and failure_profile in MAIN_RECONCILIATION_CALL_PROFILES):
             _attach_validated_blind_context(
-                record, packet, blind_payload, blind_raw_response)
+                record, packet, blind_payload, blind_raw_response,
+                blind_completeness_repair=blind_completeness_repair)
         return False, record
 
 
@@ -5584,6 +5798,7 @@ def _packet_requires_confirmation(packet):
 
 
 def _validate_blind_payload(payload):
+    payload, _ = _repair_blind_completeness(payload)
     if not isinstance(payload, dict):
         raise ValueError("blind model output must be object")
     if "theoretical_active_view" not in payload:
@@ -5613,10 +5828,17 @@ def _validate_theoretical_active_view(view):
         raise ValueError("invalid theoretical_active_view.bias")
     if str(view.get("conviction") or "").upper() not in THEORETICAL_ACTIVE_CONVICTIONS:
         raise ValueError("invalid theoretical_active_view.conviction")
-    if not isinstance(view.get("key_drivers"), list):
-        raise ValueError("theoretical_active_view.key_drivers must be list")
-    if not isinstance(view.get("counter_evidence"), list):
-        raise ValueError("theoretical_active_view.counter_evidence must be list")
+    for key in ("basis_cn", "boundary_cn"):
+        if not isinstance(view.get(key), str) or not view.get(key).strip():
+            raise ValueError("theoretical_active_view." + key + " must be non-blank")
+    for key in ("key_drivers", "counter_evidence"):
+        value = view.get(key)
+        if not isinstance(value, list) or not (1 <= len(value) <= 5):
+            raise ValueError(
+                "theoretical_active_view." + key + " must contain 1..5 items")
+        if any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError(
+                "theoretical_active_view." + key + " items must be non-blank")
 
 
 def _normalize_theoretical_active_view(view, derived_blind=False):
@@ -5647,7 +5869,7 @@ def _default_theoretical_active_view(reason):
         "bias": "UNABLE_TO_JUDGE",
         "conviction": "LOW",
         "basis_cn": reason,
-        "key_drivers": [],
+        "key_drivers": [reason],
         "counter_evidence": [reason],
         "boundary_cn": "该判断只作审计参考，不改变系统信号、门控、置信或交易许可。",
         "derived_blind": False,
@@ -5835,6 +6057,14 @@ def _normalize_future_24h_bayesian_report(report):
 
 def _humanize_future_24h_basis(value):
     text = str(value or "")
+    for raw_path, chinese_label in (
+            ("factor_cross_section.gamma_regime.max_gamma_strike",
+             "卡内最大 Gamma 行权价"),
+            ("factor_cross_section.gex_info.max_gamma_strike",
+             "卡内最大 Gamma 行权价"),
+            ("gamma_regime.max_gamma_strike", "卡内最大 Gamma 行权价"),
+            ("max_gamma_strike", "最大 Gamma 行权价")):
+        text = text.replace(raw_path, chinese_label)
     replacements = {
         "gamma_regime.flip_point": "卡内 Gamma 翻转点",
         "gamma_regime.pin_strike": "卡内 Gamma 钉住位",
@@ -5848,6 +6078,7 @@ def _humanize_future_24h_basis(value):
     }
     for raw_path, chinese_label in replacements.items():
         text = text.replace(raw_path, chinese_label)
+    text = text.replace("gamma_regime", "Gamma 体制")
     return text
 
 

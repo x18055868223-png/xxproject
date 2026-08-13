@@ -27,7 +27,7 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.8"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.9"
 PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
@@ -874,10 +874,16 @@ def _repair_unsafe_structure_recommendation(payload, packet):
 
 def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                      derived_blind=True, llm_call_count=2,
-                     llm_call_routes=None):
+                     llm_call_routes=None, blind_payload=None,
+                     blind_completeness_repair=None):
     """Apply bounded repairs, then delegate every validation to the core."""
     packet = core.build_review_packet(card)
-    repaired_payload, alignment_trace = _repair_source_alignment(payload, packet)
+    repaired_payload, blind_completeness_trace = core._repair_blind_completeness(
+        payload, cap_recommendation=True)
+    blind_completeness_trace = core._merge_blind_completeness_repair(
+        blind_completeness_repair, blind_completeness_trace)
+    repaired_payload, alignment_trace = _repair_source_alignment(
+        repaired_payload, packet)
     repaired_payload, execution_trace = _repair_prohibitive_execution_language(
         repaired_payload
     )
@@ -910,6 +916,8 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         derived_blind=derived_blind,
         llm_call_count=llm_call_count,
         llm_call_routes=llm_call_routes,
+        blind_payload=blind_payload,
+        blind_completeness_repair=blind_completeness_trace,
     )
     policy = core._as_dict(
         core._as_dict(review.get("integrated_trade_advisory")).get(

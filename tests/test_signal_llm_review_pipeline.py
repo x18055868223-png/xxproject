@@ -305,6 +305,17 @@ def test_future_contract(tool):
     for raw_token in ("BINANCE_SPOT", "pin_strike", "flip_point", "call_wall", "put_wall"):
         assert_true(raw_token not in humanized_basis,
                     "known packet field tokens must be humanized before sidecar output")
+    alias_report = valid_future()
+    alias_report["report_cn"] += " gamma_regime"
+    alias_report["key_levels"][0]["role_cn"] += " max_gamma_strike"
+    alias_report["key_levels"][0]["basis_cn"] += (
+        " factor_cross_section.gamma_regime.max_gamma_strike")
+    alias_report["counter_evidence_cn"] = ["gamma_regime 可能变化。"]
+    alias_report["invalid_if_cn"] = ["max_gamma_strike 失效。"]
+    alias_report = tool._normalize_future_24h_basis_aliases(alias_report)
+    assert_true("gamma_regime" not in json.dumps(alias_report, ensure_ascii=False)
+                and "max_gamma_strike" not in json.dumps(alias_report, ensure_ascii=False),
+                "known future-report aliases must be humanized across all reader fields")
     assert_true(tool._find_advisory_raw_patterns(
                     "decision_matrix.window=CONFIRMED，lean=NEUTRAL")
                 == ["machine_assignment", "raw_field_path"],
@@ -419,7 +430,7 @@ def test_compact_reconciliation_local_assembly(tool):
         recon_payload = compact_reconciliation_payload(tool, card)
         calls = []
 
-        def response(content, profile):
+        def response(content, profile, reasoning="SECRET_REASONING"):
             return {
                 "choices": [{
                     "finish_reason": "stop",
@@ -477,6 +488,67 @@ def test_compact_reconciliation_local_assembly(tool):
                     "future report fixed fields were not assembled locally")
         assert_true("SECRET_REASONING_TRACE" not in serialized,
                     "reasoning content leaked into normal sidecar")
+
+
+def test_blind_completeness_repair_is_bounded(tool):
+    card = minimal_card("BLIND-COMPLETENESS", 3)
+    card["decision"]["lean"] = "BULLISH"
+    blind = {
+        "theoretical_active_view": {
+            "bias": "BULLISH_LEAN",
+            "conviction": "MEDIUM",
+            "basis_cn": "卡内方向与量价结构偏强。",
+            "key_drivers": ["卡内方向与量价结构一致。"],
+        },
+        "gamma_regime_lens": tool._default_gamma_regime_lens(
+            "Gamma 仅作为风险覆盖。"),
+    }
+    repaired, trace = tool._repair_blind_completeness(blind)
+    tool._validate_blind_payload(repaired)
+    review = tool.build_llm_review(
+        card,
+        compact_reconciliation_payload(tool, card),
+        blind_payload=blind,
+        blind_completeness_repair=trace,
+    )
+    repair = review["blind_completeness_repair"]
+    assert_true(repair["applied"] is True
+                and repair["missing_fields"] == [
+                    "theoretical_active_view.boundary_cn",
+                    "theoretical_active_view.counter_evidence",
+                ]
+                and repair["deterministic_source"]
+                == "LOCAL_AUDIT_INVARIANT_NO_MARKET_FACTS",
+                "blind completeness repair audit trace is incomplete")
+    assert_true(review["integrated_trade_advisory"]["recommendation"] == "NO_TRADE"
+                and repair["recommendation_cap_applied"] is True,
+                "a repaired blind must cap the final recommendation at NO_TRADE")
+    assert_true(repaired["theoretical_active_view"]["counter_evidence"] == [
+                    tool.BLIND_COUNTER_EVIDENCE_INSUFFICIENT_CN]
+                and repaired["theoretical_active_view"]["boundary_cn"]
+                == tool.BLIND_BOUNDARY_CN,
+                "blind repair must use fixed non-factual audit text")
+
+    invalid_cases = []
+    missing_bias = json.loads(json.dumps(blind))
+    missing_bias["theoretical_active_view"].pop("bias")
+    invalid_cases.append(missing_bias)
+    missing_basis = json.loads(json.dumps(blind))
+    missing_basis["theoretical_active_view"].pop("basis_cn")
+    invalid_cases.append(missing_basis)
+    missing_drivers = json.loads(json.dumps(blind))
+    missing_drivers["theoretical_active_view"].pop("key_drivers")
+    invalid_cases.append(missing_drivers)
+    invalid_gamma = json.loads(json.dumps(blind))
+    invalid_gamma["gamma_regime_lens"]["regime"] = "NOT_A_REGIME"
+    invalid_cases.append(invalid_gamma)
+    for invalid in invalid_cases:
+        try:
+            tool._validate_blind_payload(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-repairable blind defect was accepted")
 
 
 def test_http_retry_and_redaction(tool):
@@ -984,12 +1056,12 @@ def test_empty_content_cross_round_recovery(tool):
         tool._append_jsonl(source, card)
         requests = []
 
-        def response(content, profile):
+        def response(content, profile, reasoning="SECRET_REASONING"):
             return {
                 "choices": [{
                     "finish_reason": "stop",
                     "message": {"content": content,
-                                "reasoning_content": "SECRET_REASONING"},
+                                "reasoning_content": reasoning},
                 }],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5,
                           "total_tokens": 15},
@@ -1017,7 +1089,7 @@ def test_empty_content_cross_round_recovery(tool):
             ))
             if profile == tool.CALL_PROFILE_MAIN_BLIND:
                 return response(json.dumps(blind_payload), profile)
-            return response("", profile)
+            return response("", profile, reasoning="")
 
         first = tool.generate_reviews(
             source, output, api_key="sk-test-secret-value", limit=1,
@@ -1118,6 +1190,77 @@ def test_empty_content_cross_round_recovery(tool):
         }, "recovery usage did not distinguish cached blind from live reconciliation")
         assert_true("SECRET_REASONING" not in ok_text,
                     "reasoning_content leaked into the recovered sidecar")
+
+
+def test_reasoning_empty_content_recovers_in_same_cycle(tool):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        source = root / "cards.jsonl"
+        output = root / "reviews.jsonl"
+        card = minimal_card("SAME-CYCLE-RECOVERY", 1)
+        tool._append_jsonl(source, card)
+        profiles = []
+        blind_payload = {
+            "theoretical_active_view": tool._default_theoretical_active_view("test"),
+            "gamma_regime_lens": tool._default_gamma_regime_lens("test"),
+        }
+
+        def response(content, profile):
+            return {
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": content,
+                        "reasoning_content": "SECRET_REASONING",
+                    },
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                          "total_tokens": 15},
+                "_api_key_route": "bearer",
+                "_llm_call_routes": ["bearer"],
+                "_llm_http_calls": 1,
+                "_llm_call_profile": profile,
+            }
+
+        def fake_call(api_key, model, request_body, timeout, **kwargs):
+            profile = kwargs.get("call_profile")
+            profiles.append(profile)
+            if profile == tool.CALL_PROFILE_MAIN_BLIND:
+                return response(json.dumps(blind_payload), profile)
+            if profile == tool.CALL_PROFILE_MAIN_RECONCILIATION:
+                return response("", profile)
+            return response("{}", profile)
+
+        original_builder = tool.build_llm_review
+        try:
+            tool.build_llm_review = lambda card, payload, **kwargs: {
+                "schema": tool.OUTPUT_SCHEMA_VERSION,
+                "status": "OK",
+                "provider": tool.PROVIDER,
+                "model": kwargs.get("model", tool.DEFAULT_MODEL),
+                "prompt_version": tool.PROMPT_VERSION,
+                "input_packet_hash": tool._sha256_json(
+                    tool.build_review_packet(card)),
+            }
+            result = tool.generate_reviews(
+                source, output, api_key="sk-test-secret-value", limit=1,
+                call_llm=fake_call)
+        finally:
+            tool.build_llm_review = original_builder
+
+        review = tool._read_jsonl(output)[-1]["llm_review"]
+        assert_true(result["written_reviews"] == 1 and result["errors"] == 0,
+                    "reasoning-only empty content should recover in one service cycle")
+        assert_true(profiles == [
+            tool.CALL_PROFILE_MAIN_BLIND,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION,
+            tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+        ], "same-cycle recovery must reuse blind and add one reconciliation only")
+        assert_true(review["llm_http_call_count"] == 3
+                    and review["llm_call_profiles"] == profiles,
+                    "same-cycle recovery call accounting drifted")
+        assert_true("SECRET_REASONING" not in json.dumps(review, ensure_ascii=False),
+                    "reasoning content leaked from same-cycle recovery")
 
 
 def test_blind_empty_does_not_downgrade_first_reconciliation(tool):
@@ -1301,8 +1444,9 @@ def test_reconciliation_recovery_is_one_shot(tool):
             source, output, api_key="sk-test-secret-value", limit=1,
             call_llm=empty_recon_call, retry_id="RECOVERY-ONCE")
         reviews = [row["llm_review"] for row in tool._read_jsonl(output)]
-        assert_true(first["errors"] == 1 and second["errors"] == 1,
-                    "setup should create primary and recovery failures")
+        assert_true(first["errors"] == 1
+                    and second["attempted_cards"] == 0,
+                    "same-cycle exhausted recovery must become sticky immediately")
         assert_true(calls == [
             tool.CALL_PROFILE_MAIN_BLIND,
             tool.CALL_PROFILE_MAIN_RECONCILIATION,
@@ -1312,7 +1456,8 @@ def test_reconciliation_recovery_is_one_shot(tool):
                     == "RECONCILIATION_EMPTY_CONTENT_RECOVERY_EXHAUSTED"
                     and reviews[-1]["record_retry_state"] == "TERMINAL",
                     "recovery empty content must become terminal")
-        assert_true(third["attempted_cards"] == 0
+        assert_true(second["skipped_cards"] == 1
+                    and third["attempted_cards"] == 0
                     and third["skipped_cards"] == 1,
                     "terminal recovery state must be sticky")
 
@@ -1458,7 +1603,7 @@ def main():
     tool = load_tool()
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
     assert_true(tool.PROVIDER == "deepseek", "provider mismatch")
-    assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.5.0", "schema mismatch")
+    assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.5.1", "schema mismatch")
     assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5", "prompt mismatch")
     assert_true(tool.TRANSITION_OUTPUT_SCHEMA_VERSION == "signal_transition_llm_review@1.3.0",
                 "transition schema mismatch")
@@ -1470,7 +1615,9 @@ def main():
     test_transition_policy_text_boundary(tool)
     test_prompt_reasoning_contract(tool)
     test_compact_reconciliation_local_assembly(tool)
+    test_blind_completeness_repair_is_bounded(tool)
     test_empty_content_cross_round_recovery(tool)
+    test_reasoning_empty_content_recovers_in_same_cycle(tool)
     test_blind_empty_does_not_downgrade_first_reconciliation(tool)
     test_invalid_json_is_not_recovery(tool)
     test_reconciliation_recovery_is_one_shot(tool)

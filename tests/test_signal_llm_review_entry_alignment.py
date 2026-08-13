@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 from pathlib import Path
 import subprocess
 import sys
@@ -23,12 +24,16 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.8",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.9",
                 "entry version mismatch")
     assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5",
                 "entry prompt mismatch")
     assert_true(entry.core.PROVIDER == "deepseek", "entry provider mismatch")
     assert_true(entry.core.DEFAULT_MODEL == "deepseek-v4-flash", "entry model mismatch")
+    entry_params = inspect.signature(entry.build_llm_review).parameters
+    assert_true("blind_payload" in entry_params
+                and "blind_completeness_repair" in entry_params,
+                "entry must preserve the core blind-context call contract")
     assert_true(set(entry._HUMAN_CODE_REPLACEMENTS)
                 == set(entry.core.ADVISORY_HUMAN_RAW_TOKENS),
                 "human-code replacement map drifted from the core validator")
