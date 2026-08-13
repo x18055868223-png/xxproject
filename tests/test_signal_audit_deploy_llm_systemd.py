@@ -598,7 +598,9 @@ def main():
                 and "PROMOTION_STARTED=1" in canary
                 and "AUTO_ROLLBACK_STATUS=COMPLETE" in canary
                 and 'install_file_atomic "$source/index.json"' in canary
-                and 'install_file_atomic "$CANARY_STATIC_ROOT/fallback.js"' in canary
+                and 'install_signal_cards_consistent "$CANARY_STATIC_ROOT/signal_cards" "$STATIC_ROOT/signal_cards"' in canary
+                and '"fallback:$STATIC_ROOT/fallback.js"' not in canary
+                and 'install_file_atomic "$CANARY_STATIC_ROOT/fallback.js"' not in canary
                 and "is_recoverable_reconciliation_empty_content" in canary
                 and 'run_isolated_review "$TARGET_CARD_ID"' in canary
                 and "RECOVERY_STATUS=START_RECONCILIATION_ONLY" in canary,

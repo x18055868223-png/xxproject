@@ -469,8 +469,7 @@ restore_from_backup() {
     "llm_reviews:$LLM_REVIEWS_SOURCE" \
     "transition_ledger:$TRANSITION_LEDGER_SOURCE" \
     "transition_state:$TRANSITION_STATE_SOURCE" \
-    "transition_reviews:$TRANSITION_LLM_REVIEWS_SOURCE" \
-    "fallback:$STATIC_ROOT/fallback.js"; do
+    "transition_reviews:$TRANSITION_LLM_REVIEWS_SOURCE"; do
     local name="${item%%:*}"
     local dest="${item#*:}"
     if [[ -f "$backup/$name" ]]; then
@@ -666,15 +665,16 @@ backup_path "$LLM_REVIEWS_SOURCE" "llm_reviews" "$BACKUP_DIR"
 backup_path "$TRANSITION_LEDGER_SOURCE" "transition_ledger" "$BACKUP_DIR"
 backup_path "$TRANSITION_STATE_SOURCE" "transition_state" "$BACKUP_DIR"
 backup_path "$TRANSITION_LLM_REVIEWS_SOURCE" "transition_reviews" "$BACKUP_DIR"
-backup_path "$STATIC_ROOT/fallback.js" "fallback" "$BACKUP_DIR"
 
 PROMOTION_STARTED=1
 install_file_atomic "$CANARY_REVIEWS" "$LLM_REVIEWS_SOURCE" 0644
 install_file_atomic "$CANARY_TRANSITION_LEDGER" "$TRANSITION_LEDGER_SOURCE" 0644
 install_file_atomic "$CANARY_TRANSITION_STATE" "$TRANSITION_STATE_SOURCE" 0644
 install_file_atomic "$CANARY_TRANSITION_REVIEWS" "$TRANSITION_LLM_REVIEWS_SOURCE" 0644
+# signal_cards/fallback.js is a materializer-owned member of this directory.
+# Publish it with the other card assets so backup, promotion, and rollback all
+# use the same canonical path and manifest-last consistency boundary.
 install_signal_cards_consistent "$CANARY_STATIC_ROOT/signal_cards" "$STATIC_ROOT/signal_cards"
-install_file_atomic "$CANARY_STATIC_ROOT/fallback.js" "$STATIC_ROOT/fallback.js" 0644
 PROMOTION_STARTED=0
 
 echo "PROMOTION_STATUS=PROMOTED"
