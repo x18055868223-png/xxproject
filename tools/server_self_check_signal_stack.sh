@@ -610,8 +610,13 @@ review_lines = [x for x in review_path.read_text(encoding="utf-8", errors="repla
 if not signal_lines:
     raise SystemExit("signal_review.jsonl empty")
 source_cards = []
-for line in signal_lines:
-    item = json.loads(line)
+for index, line in enumerate(signal_lines):
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        if index == len(signal_lines) - 1:
+            raise SystemExit("latest non-empty signal_review.jsonl line is invalid")
+        continue
     if isinstance(item, dict):
         source_cards.append(item)
 if target_card_id:
@@ -627,8 +632,13 @@ else:
 latest_id = (latest.get("identity") or {}).get("card_id") or latest.get("card_id")
 ok_reviews = {}
 latest_ok_id = None
-for line in review_lines:
-    item = json.loads(line)
+for index, line in enumerate(review_lines):
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        if index == len(review_lines) - 1:
+            raise SystemExit("latest non-empty LLM review sidecar line is invalid")
+        continue
     review = item.get("llm_review") or {}
     card_id = item.get("card_id") or ((item.get("identity") or {}).get("card_id"))
     if review.get("status") == "OK" and card_id:

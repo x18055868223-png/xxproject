@@ -5,6 +5,7 @@ usage() {
   cat <<'EOF'
 Usage:
   signal_llm_review_canary_release.sh --target-card-id CARD_ID [--promote] [--enable-timers-after-pass]
+  signal_llm_review_canary_release.sh --target-card-id CARD_ID --resume-canary-root DIR [--promote] [--enable-timers-after-pass]
   signal_llm_review_canary_release.sh --rollback-backup BACKUP_DIR
 
 Defaults are canary-only:
@@ -52,6 +53,7 @@ PROMOTE=0
 ENABLE_TIMERS_AFTER_PASS=0
 TARGET_CARD_ID="${TARGET_CARD_ID:-${ONLY_CARD_ID:-}}"
 ROLLBACK_BACKUP=""
+RESUME_CANARY_ROOT=""
 BACKUP_DIR=""
 PROMOTION_STARTED=0
 
@@ -71,6 +73,14 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --enable-timers-after-pass)
       ENABLE_TIMERS_AFTER_PASS=1
+      shift
+      ;;
+    --resume-canary-root)
+      RESUME_CANARY_ROOT="${2:-}"
+      shift 2
+      ;;
+    --resume-canary-root=*)
+      RESUME_CANARY_ROOT="${1#*=}"
       shift
       ;;
     --rollback-backup)
@@ -268,12 +278,21 @@ def card_id(item):
 canary_rows = [item for item in read_jsonl(canary) if str(card_id(item)) == target]
 if not canary_rows:
     raise SystemExit("canary LLM review sidecar has no target row: " + target)
+canonical = canary_rows[-1]
+review = canonical.get("llm_review") or {}
+if review.get("status") != "OK":
+    raise SystemExit("canonical canary LLM review is not OK: " + target)
 rows = [item for item in read_jsonl(production) if str(card_id(item)) != target]
-rows.extend(canary_rows)
+rows.append(canonical)
 output.write_text("".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
                           for item in rows),
                   encoding="utf-8")
+verified = [item for item in read_jsonl(output) if str(card_id(item)) == target]
+if len(verified) != 1 or (verified[0].get("llm_review") or {}).get("status") != "OK":
+    raise SystemExit("canonical target review replacement verification failed: " + target)
 print("MERGED_LLM_REVIEW_ROWS=" + str(len(rows)))
+print("MERGED_LLM_TARGET_ROWS=1")
+print("MERGED_LLM_TARGET_STATUS=OK")
 PY
 }
 
@@ -483,7 +502,22 @@ require_file "$RUNNER"
 require_file "$SELF_CHECK"
 require_file "$JSONL_SOURCE"
 
-CANARY_ROOT="${CANARY_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/signal-llm-canary.XXXXXX")}"
+if [[ -n "$RESUME_CANARY_ROOT" ]]; then
+  CANARY_ROOT="$(readlink -f "$RESUME_CANARY_ROOT")"
+  case "$CANARY_ROOT" in
+    /tmp/signal-llm-canary.*) ;;
+    *)
+      echo "FAIL_REASON=resume canary root is outside the scoped temp namespace" >&2
+      exit 2
+      ;;
+  esac
+  [[ -d "$CANARY_ROOT" ]] || {
+    echo "FAIL_REASON=resume canary root does not exist: $CANARY_ROOT" >&2
+    exit 2
+  }
+else
+  CANARY_ROOT="${CANARY_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/signal-llm-canary.XXXXXX")}"
+fi
 CANARY_STATIC_ROOT="${CANARY_STATIC_ROOT:-$CANARY_ROOT/static}"
 CANARY_REVIEWS="$CANARY_ROOT/signal_llm_reviews.merged.jsonl"
 CANARY_RUN_REVIEWS="$CANARY_ROOT/signal_llm_reviews.run.jsonl"
@@ -499,14 +533,22 @@ if [[ "$KEEP_CANARY_ROOT" != "1" ]]; then
 fi
 
 install -d "$CANARY_STATIC_ROOT"
-: > "$CANARY_RUN_REVIEWS"
-: > "$CANARY_RUN_TRANSITION_REVIEWS"
+if [[ -z "$RESUME_CANARY_ROOT" ]]; then
+  : > "$CANARY_RUN_REVIEWS"
+  : > "$CANARY_RUN_TRANSITION_REVIEWS"
+else
+  require_file "$CANARY_RUN_REVIEWS"
+  require_file "$CANARY_RUN_TRANSITION_REVIEWS"
+  require_file "$CANARY_TRANSITION_LEDGER"
+  require_file "$CANARY_TRANSITION_STATE"
+fi
 
 echo "STATUS=START"
 echo "TARGET_CARD_ID=$TARGET_CARD_ID"
 echo "PROMOTE=$PROMOTE"
 echo "CANARY_ROOT=$CANARY_ROOT"
 echo "CANARY_STATIC_ROOT=$CANARY_STATIC_ROOT"
+echo "RESUME_CANARY_ROOT=${RESUME_CANARY_ROOT:-NONE}"
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
   echo "COMMIT_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)"
 else
@@ -535,31 +577,35 @@ done
 
 require_target_card
 
-/usr/bin/python3 "$MATERIALIZER" \
-  --source "$JSONL_SOURCE" \
-  --require-valid-source-tail \
-  --output "$CANARY_STATIC_ROOT" \
-  --max-cards "$MAX_CARDS" \
-  --transition-ledger "$CANARY_TRANSITION_LEDGER" \
-  --transition-state "$CANARY_TRANSITION_STATE"
+if [[ -n "$RESUME_CANARY_ROOT" ]]; then
+  echo "RESUME_STATUS=REUSE_COMPLETED_HTTP_RESULTS"
+else
+  /usr/bin/python3 "$MATERIALIZER" \
+    --source "$JSONL_SOURCE" \
+    --require-valid-source-tail \
+    --output "$CANARY_STATIC_ROOT" \
+    --max-cards "$MAX_CARDS" \
+    --transition-ledger "$CANARY_TRANSITION_LEDGER" \
+    --transition-state "$CANARY_TRANSITION_STATE"
 
-RUNNER_RC=0
-if run_isolated_review ""; then
   RUNNER_RC=0
-else
-  RUNNER_RC=$?
-fi
-if [[ "$RUNNER_RC" != "0" ]]; then
-  if is_recoverable_reconciliation_empty_content; then
-    echo "RECOVERY_STATUS=START_RECONCILIATION_ONLY"
-    run_isolated_review "$TARGET_CARD_ID"
-    echo "RECOVERY_STATUS=PASS"
+  if run_isolated_review ""; then
+    RUNNER_RC=0
   else
-    echo "RECOVERY_STATUS=NOT_ELIGIBLE"
-    exit "$RUNNER_RC"
+    RUNNER_RC=$?
   fi
-else
-  echo "RECOVERY_STATUS=NOT_NEEDED"
+  if [[ "$RUNNER_RC" != "0" ]]; then
+    if is_recoverable_reconciliation_empty_content; then
+      echo "RECOVERY_STATUS=START_RECONCILIATION_ONLY"
+      run_isolated_review "$TARGET_CARD_ID"
+      echo "RECOVERY_STATUS=PASS"
+    else
+      echo "RECOVERY_STATUS=NOT_ELIGIBLE"
+      exit "$RUNNER_RC"
+    fi
+  else
+    echo "RECOVERY_STATUS=NOT_NEEDED"
+  fi
 fi
 
 merge_llm_reviews_for_target "$LLM_REVIEWS_SOURCE" "$CANARY_RUN_REVIEWS" "$CANARY_REVIEWS"

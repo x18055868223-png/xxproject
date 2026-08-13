@@ -106,6 +106,8 @@ def run_integrated_advisory_probe(self_check, review_records,
                                   materialized_review=None,
                                   historical_source_corruption=False,
                                   corrupt_source_tail=False,
+                                  historical_review_corruption=False,
+                                  corrupt_review_tail=False,
                                   source_card_ids=None,
                                   manifest_card_ids=None,
                                   target_card_id=""):
@@ -128,9 +130,13 @@ def run_integrated_advisory_probe(self_check, review_records,
         if corrupt_source_tail:
             source_lines.append('{"latest": broken json')
         source.write_text("\n".join(source_lines) + "\n", encoding="utf-8")
-        reviews.write_text(
-            "\n".join(json.dumps(record) for record in review_records) + "\n",
-            encoding="utf-8")
+        review_lines = []
+        if historical_review_corruption:
+            review_lines.append('{"historical": broken review')
+        review_lines.extend(json.dumps(record) for record in review_records)
+        if corrupt_review_tail:
+            review_lines.append('{"latest": broken review')
+        reviews.write_text("\n".join(review_lines) + "\n", encoding="utf-8")
         selected_review = materialized_review or review_records[-1]["llm_review"]
         manifest_cards = []
         for index, manifest_id in enumerate(manifest_card_ids):
@@ -253,6 +259,16 @@ def assert_integrated_advisory_probe_behavior(self_check):
                 in historical_corruption_result.stdout,
                 "strict probe should mirror materializer tolerance for historical corruption")
 
+    historical_review_result = run_integrated_advisory_probe(
+        self_check,
+        [ok_record],
+        historical_review_corruption=True,
+    )
+    assert_true(historical_review_result.returncode == 0
+                and "signal_llm_reviews.jsonl_historical_skipped_lines: 1"
+                in historical_review_result.stdout,
+                "strict probe should tolerate historical sidecar corruption")
+
     corrupt_tail_result = run_integrated_advisory_probe(
         self_check,
         [ok_record],
@@ -262,6 +278,17 @@ def assert_integrated_advisory_probe_behavior(self_check):
                 and "latest non-empty line is invalid"
                 in (corrupt_tail_result.stdout + corrupt_tail_result.stderr),
                 "strict probe must still reject a corrupt latest source tail")
+
+    corrupt_review_tail_result = run_integrated_advisory_probe(
+        self_check,
+        [ok_record],
+        corrupt_review_tail=True,
+    )
+    assert_true(corrupt_review_tail_result.returncode != 0
+                and "latest non-empty line is invalid"
+                in (corrupt_review_tail_result.stdout
+                    + corrupt_review_tail_result.stderr),
+                "strict probe must reject a corrupt latest sidecar tail")
 
     missing_alignment = integrated_advisory_review()
     missing_alignment["integrated_trade_advisory"].pop("source_alignment")
@@ -467,6 +494,10 @@ def main():
                 and "SYSTEMD_REQUIRED=0; skipped systemd service and timer checks" in self_check
                 and "AUDIT_HTTP_REQUIRED=0; skipped audit HTTP checks" in self_check,
                 "server self-check should support exact target canary mode without latest fallback")
+    assert_true("latest non-empty signal_review.jsonl line is invalid" in self_check
+                and "latest non-empty LLM review sidecar line is invalid" in self_check
+                and "except json.JSONDecodeError" in self_check,
+                "exact-target LLM check should skip historical corrupt lines but reject a corrupt tail")
     assert_true("started signal-audit-materialize.service before LLM" in self_check
                 and "started signal-audit-materialize.service after LLM" in self_check,
                 "server self-check active mode should materialize before and after LLM")
@@ -568,6 +599,15 @@ def main():
                 and 'run_isolated_review "$TARGET_CARD_ID"' in canary
                 and "RECOVERY_STATUS=START_RECONCILIATION_ONLY" in canary,
                 "canary must report release identity and preserve the production usage total")
+    assert_true("--resume-canary-root" in canary
+                and "/tmp/signal-llm-canary.*" in canary
+                and "RESUME_STATUS=REUSE_COMPLETED_HTTP_RESULTS" in canary
+                and 'require_file "$CANARY_RUN_REVIEWS"' in canary,
+                "canary should resume scoped completed HTTP artifacts without another API call")
+    assert_true("canonical canary LLM review is not OK" in canary
+                and "MERGED_LLM_TARGET_ROWS=1" in canary
+                and "canonical target review replacement verification failed" in canary,
+                "canary promotion must canonicalize the exact target to one verified OK row")
     assert_true('"usage_ledger:$LLM_USAGE_LEDGER"' not in canary
                 and 'install_file_atomic "$CANARY_MERGED_USAGE_LEDGER" "$LLM_USAGE_LEDGER"' not in canary,
                 "real HTTP usage must never be rolled back with review/static promotion")
