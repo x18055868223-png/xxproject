@@ -148,6 +148,12 @@ def main():
                 and "RUN_INITIAL_LLM_REVIEW" in install_or_update
                 and "systemctl enable --now signal-audit-llm-review.timer" not in install_or_update,
                 "install script should deploy canary helper and keep timers/LLM opt-in")
+    assert_true(
+        '[[ -f "$STATIC_ROOT/signal_cards/index.json" ]]' in install_or_update
+        and "--exclude=/signal_cards/" in install_or_update
+        and 'rsync "${frontend_rsync_args[@]}"' in install_or_update,
+        "code-only updates must preserve existing materialized signal cards",
+    )
     assert_true("--target-card-id" in canary_release
                 and "--promote" in canary_release
                 and "PROMOTION_STATUS=SKIPPED" in canary_release

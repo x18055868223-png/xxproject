@@ -84,7 +84,14 @@ done
 
 install -d "$STATIC_ROOT" "$TOOLS_ROOT" "$CONFIG_ROOT"
 chmod 0700 "$CONFIG_ROOT"
-rsync -a --delete "$FRONTEND_SRC"/ "$STATIC_ROOT"/
+frontend_rsync_args=(-a --delete)
+if [[ -f "$STATIC_ROOT/signal_cards/index.json" ]]; then
+  # signal_cards is runtime state produced by the materializer/canary release.
+  # A code-only update must not replace it with the packaged fallback fixture.
+  frontend_rsync_args+=(--exclude=/signal_cards/)
+  echo "preserving existing materialized signal_cards during frontend update"
+fi
+rsync "${frontend_rsync_args[@]}" "$FRONTEND_SRC"/ "$STATIC_ROOT"/
 install -m 0755 "$TOOL_SRC" "$TOOLS_ROOT/materialize_signal_cards.py"
 install -m 0755 "$LLM_TOOL_SRC" "$TOOLS_ROOT/signal_llm_review.py"
 install -m 0755 "$LLM_ENTRY_SRC" "$TOOLS_ROOT/signal_llm_review_entry.py"
