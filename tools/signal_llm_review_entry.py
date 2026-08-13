@@ -2,14 +2,16 @@
 """Runtime entrypoint for provider-neutral signal LLM reviews.
 
 The core reviewer remains the source of all schema, policy, and fail-closed
-validation. This entrypoint applies only three bounded repairs before the core
-validator runs:
+validation. This entrypoint applies a small audited set of bounded repairs
+before the core validator runs:
 
 1. mechanically impossible ``source_alignment`` enum combinations;
 2. explicitly prohibitive execution-language phrases such as "不构成开仓依据"
    that contain blocked action words but do not provide an execution instruction.
 3. valid recommendations that conflict with a producer hard block, but only
    after the advisory human text is already free of execution-language patterns.
+4. known raw field assignments in human text, incomplete assessment objects
+   narrowed to ``UNABLE_TO_JUDGE``, and packet-derived wall-distance context.
 
 Positive or ambiguous execution language, invalid recommendation enums,
 waiting-state upgrades, invalid evidence, authorization, and all remaining
@@ -25,8 +27,8 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.5"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.4"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.6"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
 _HARD_BLOCK_SAFE_RECOMMENDATIONS = {"NO_TRADE", "UNABLE_TO_JUDGE"}
@@ -51,6 +53,17 @@ _EXECUTION_LANGUAGE_PROMPT_RULES = (
     "- ‘无需平仓/不建议减仓’统一改写为‘不涉及持仓处置’。\n"
     "- ‘不设置止损止盈’统一改写为‘不涉及退出参数’。\n"
     "- 正向或含糊的执行指令仍属禁止内容，不得用改写规避。"
+)
+
+_HUMAN_OUTPUT_PROMPT_RULES = (
+    "\n\n最高辅助决策自然语言规则（所有人读字段适用）：\n"
+    "- 禁止输出字段路径、KEY=VALUE、JSON 布尔值或机器枚举串；把系统事实直接翻译成普通中文。\n"
+    "- 例如不得写 decision_matrix.window=CONFIRMED、lean=NEUTRAL、"
+    "blocking=SOFT_GATE WAIT_CONFIRMATION；应分别表述为确认窗口已成立、系统方向保持中性、"
+    "当前仍处于等待确认的软门控。\n"
+    "- 最高解释可以比较现价到上方看涨墙和下方看跌墙的相对距离，但只能作为空间约束说明，"
+    "不得据此单独改变方向、建议或交易许可。\n"
+    "- 输出前逐项检查必需对象和人读文本；缺少依据时使用无法判断，不得省略字段。"
 )
 
 # These patterns only match explicitly prohibitive/boundary language. They do
@@ -126,6 +139,7 @@ def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
         )
         + _ALIGNMENT_PROMPT_RULES
         + _EXECUTION_LANGUAGE_PROMPT_RULES
+        + _HUMAN_OUTPUT_PROMPT_RULES
     )
 
 
@@ -308,7 +322,45 @@ _HUMAN_CODE_REPLACEMENTS = {
     "audit_only": "仅审计",
     "trade_authorization": "交易授权",
     "evidence_refs": "证据引用",
+    "WAIT_CONFIRMATION": "等待确认",
 }
+
+_HUMAN_ASSIGNMENT_REPLACEMENTS = (
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:decision_matrix\.)?window\s*=\s*CONFIRMED",
+            re.IGNORECASE,
+        ),
+        "系统确认窗口已成立",
+        "decision_window_confirmed",
+    ),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:decision\.|producer_)?lean\s*=\s*NEUTRAL",
+            re.IGNORECASE,
+        ),
+        "系统方向保持中性",
+        "decision_lean_neutral",
+    ),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:blocking(?:\.(?:level|state))?)\s*=\s*SOFT_GATE"
+            r"(?:[\s,，;/]*WAIT(?:_FOR)?_CONFIRMATION)?",
+            re.IGNORECASE,
+        ),
+        "当前仍处于等待确认的软门控",
+        "blocking_soft_gate_wait",
+    ),
+    (
+        re.compile(
+            r"(?<![A-Za-z0-9_])(?:decision\.)?trade_allowed\s*=\s*false|"
+            r"(?<![A-Za-z0-9_])(?:decision_matrix\.)?execution_allowed\s*=\s*false",
+            re.IGNORECASE,
+        ),
+        "当前未开放交易执行许可",
+        "execution_permission_false",
+    ),
+)
 
 
 def _rewrite_human_codes(value):
@@ -317,6 +369,11 @@ def _rewrite_human_codes(value):
     rewritten = value
     total = 0
     repaired_tokens = []
+    for pattern, replacement, label in _HUMAN_ASSIGNMENT_REPLACEMENTS:
+        rewritten, substitutions = pattern.subn(replacement, rewritten)
+        if substitutions:
+            total += substitutions
+            repaired_tokens.append(label)
     for token in sorted(_HUMAN_CODE_REPLACEMENTS, key=len, reverse=True):
         pattern = re.compile(
             r"(?<![A-Za-z0-9_])" + re.escape(token) + r"(?![A-Za-z0-9_])",
@@ -328,6 +385,136 @@ def _rewrite_human_codes(value):
             total += substitutions
             repaired_tokens.append(token)
     return rewritten, total, repaired_tokens
+
+
+def _repair_incomplete_advisory_assessments(payload):
+    """Replace only incomplete assessment objects with a fail-closed value."""
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    if not advisory:
+        return repaired_payload, {
+            "repair_applied": False,
+            "repair_fields": [],
+        }
+
+    advisory = copy.deepcopy(advisory)
+    repaired_fields = []
+    contracts = (
+        (
+            "containment_assessment",
+            core.ADVISORY_CONTAINMENT_STATES,
+            "当前输出未完整提供中性接管评估，因此安全降级为无法判断。",
+        ),
+        (
+            "premium_selling_fit",
+            core.ADVISORY_PREMIUM_FIT_STATES,
+            "当前输出未完整提供卖方结构适配依据，因此安全降级为无法判断。",
+        ),
+    )
+    for field_name, allowed_states, basis_cn in contracts:
+        assessment = core._as_dict(advisory.get(field_name))
+        valid = (
+            set(assessment) == {"state", "basis_cn"}
+            and str(assessment.get("state") or "").upper() in allowed_states
+            and isinstance(assessment.get("basis_cn"), str)
+            and bool(assessment["basis_cn"].strip())
+        )
+        if valid:
+            continue
+        # Only missing/incomplete shapes are mechanically repairable. An
+        # explicit but invalid state or an unexpected key remains a validator
+        # failure instead of being silently rewritten.
+        if assessment and (
+                not set(assessment).issubset({"state", "basis_cn"})
+                or (
+                    assessment.get("state") not in (None, "")
+                    and str(assessment.get("state")).upper()
+                    not in allowed_states
+                )):
+            continue
+        advisory[field_name] = {
+            "state": "UNABLE_TO_JUDGE",
+            "basis_cn": basis_cn,
+        }
+        repaired_fields.append(field_name)
+
+    repaired_payload["integrated_trade_advisory"] = advisory
+    return repaired_payload, {
+        "repair_applied": bool(repaired_fields),
+        "repair_fields": repaired_fields,
+    }
+
+
+def _wall_level(packet, name):
+    factor = core._as_dict(core._as_dict(packet).get("factor_cross_section"))
+    gex = core._as_dict(factor.get("gex_info"))
+    gamma = core._as_dict(factor.get("gamma_regime"))
+    value = core._number_or_none(gex.get(name))
+    return value if value is not None else core._number_or_none(gamma.get(name))
+
+
+def _wall_position_sentence(packet):
+    price = core._number_or_none(
+        core._as_dict(core._as_dict(packet).get("market_context")).get("price")
+    )
+    call_wall = _wall_level(packet, "call_wall")
+    put_wall = _wall_level(packet, "put_wall")
+    if (
+            price is None or price <= 0
+            or call_wall is None or put_wall is None
+            or call_wall <= 0 or put_wall <= 0
+            or call_wall <= put_wall):
+        return "", {}
+
+    call_distance = abs(call_wall - price) / price * 100
+    put_distance = abs(price - put_wall) / price * 100
+    if put_wall <= price <= call_wall:
+        nearer = "下方看跌墙" if put_distance < call_distance else "上方看涨墙"
+        position = "位于两道墙之间，位置更靠近" + nearer
+    elif price < put_wall:
+        position = "位于下方看跌墙之下"
+    else:
+        position = "位于上方看涨墙之上"
+    sentence = (
+        f"卡内现价{price:,.2f}{position}；距上方看涨墙{call_wall:,.2f}约"
+        f"{call_distance:.2f}%，距下方看跌墙{put_wall:,.2f}约{put_distance:.2f}%。"
+        "该相对位置只用于解释上下空间约束，不单独决定方向或辅助建议。"
+    )
+    return sentence, {
+        "price": price,
+        "call_wall": call_wall,
+        "put_wall": put_wall,
+        "call_wall_distance_pct": round(call_distance, 4),
+        "put_wall_distance_pct": round(put_distance, 4),
+    }
+
+
+def _append_wall_position_explanation(payload, packet):
+    repaired_payload = copy.deepcopy(payload)
+    advisory = core._as_dict(repaired_payload.get("integrated_trade_advisory"))
+    sentence, facts = _wall_position_sentence(packet)
+    if not advisory or not sentence:
+        return repaired_payload, {
+            "applied": False,
+            "facts": facts,
+        }
+    advisory = copy.deepcopy(advisory)
+    current = str(advisory.get("cross_loop_rationale_cn") or "").strip()
+    if sentence in current:
+        return repaired_payload, {
+            "applied": False,
+            "facts": facts,
+        }
+    keep = max(0, 519 - len(sentence))
+    prefix = current[:keep].rstrip("，,；;。 ")
+    advisory["cross_loop_rationale_cn"] = (
+        (prefix + "。" if prefix else "") + sentence
+    )[:520]
+    repaired_payload["integrated_trade_advisory"] = advisory
+    return repaired_payload, {
+        "applied": True,
+        "facts": facts,
+    }
 
 
 def _repair_advisory_human_codes(payload):
@@ -648,6 +835,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     repaired_payload, execution_trace = _repair_prohibitive_execution_language(
         repaired_payload
     )
+    repaired_payload, assessment_trace = _repair_incomplete_advisory_assessments(
+        repaired_payload
+    )
     repaired_payload, hard_block_trace = _repair_hard_block_recommendation(
         repaired_payload, packet
     )
@@ -659,6 +849,9 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
     )
     repaired_payload, human_code_trace = _repair_advisory_human_codes(
         repaired_payload
+    )
+    repaired_payload, wall_position_trace = _append_wall_position_explanation(
+        repaired_payload, packet
     )
     review = _ORIGINAL_BUILD_LLM_REVIEW(
         card,
@@ -711,6 +904,14 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
         "human_code_repair_count": human_code_trace["repair_count"],
         "human_code_repair_fields": human_code_trace["repair_fields"],
         "human_code_repair_tokens": human_code_trace["repair_tokens"],
+        "assessment_completion_repair_applied": assessment_trace[
+            "repair_applied"
+        ],
+        "assessment_completion_repair_fields": assessment_trace[
+            "repair_fields"
+        ],
+        "wall_position_explanation_applied": wall_position_trace["applied"],
+        "wall_position_facts": wall_position_trace["facts"],
         "key_level_source_repair_applied": key_level_trace["repair_applied"],
         "key_level_source_repair_count": key_level_trace["repair_count"],
         "key_level_source_repair_indexes": key_level_trace["repair_indexes"],
@@ -769,6 +970,32 @@ def build_llm_review(card, payload, model=core.DEFAULT_MODEL, reviewed_at=None,
                     "event": "ADVISORY_HUMAN_CODES_REPAIRED",
                     "entry_version": ENTRY_VERSION,
                     **human_code_trace,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if assessment_trace["repair_applied"]:
+        print(
+            json.dumps(
+                {
+                    "event": "ADVISORY_ASSESSMENT_COMPLETED_FAIL_CLOSED",
+                    "entry_version": ENTRY_VERSION,
+                    **assessment_trace,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+    if wall_position_trace["applied"]:
+        print(
+            json.dumps(
+                {
+                    "event": "ADVISORY_WALL_POSITION_EXPLANATION_APPENDED",
+                    "entry_version": ENTRY_VERSION,
+                    **wall_position_trace,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

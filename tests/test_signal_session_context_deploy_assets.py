@@ -65,7 +65,7 @@ def assert_asset_root(root):
     assert_true(version.get("generated_at") == "2026-08-13",
                 "VERSION generated_at should match the DeepSeek reliability asset refresh date")
     assert_true(version.get("llm_review_schema") == "signal_llm_review@1.5.0"
-                and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.4",
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.5",
                 "VERSION should name the integrated advisory schema and prompt")
     assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
                 and "durability" in version.get("frontend_contract", ""),

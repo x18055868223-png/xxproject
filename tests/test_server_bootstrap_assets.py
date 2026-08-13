@@ -185,7 +185,7 @@ def main():
             "deepseek",
             "deepseek-v4-flash",
             "signal_llm_review@1.5.0",
-            "signal_llm_review_prompt@1.5.4",
+            "signal_llm_review_prompt@1.5.5",
             "two_call_strict",
             "single_call_evidence_first",
             "macro_shock",

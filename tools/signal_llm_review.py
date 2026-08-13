@@ -40,7 +40,7 @@ DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
 PROVIDER = "deepseek"
 OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.0"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.4"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
 PACKET_VERSION = "signal_llm_review_packet@1.2.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.2.0"
 TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.3.0"
@@ -206,7 +206,22 @@ ADVISORY_HUMAN_RAW_TOKENS = {
     "audit_only",
     "trade_authorization",
     "evidence_refs",
+    "WAIT_CONFIRMATION",
 }
+ADVISORY_HUMAN_RAW_PATTERNS = (
+    (
+        "machine_assignment",
+        re.compile(
+            r"\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\s*=\s*"
+            r"(?:[A-Z][A-Z0-9_]*|true|false|null)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "raw_field_path",
+        re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b"),
+    ),
+)
 ADVISORY_EXECUTION_TEXT_PATTERNS = (
     ("order_or_position_action", re.compile(
         r"开仓|平仓|下单|入场|出场|加仓|减仓|止损|止盈")),
@@ -746,7 +761,10 @@ def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
         "Funding 只按 canonical_funding_semantics 解读，原始费率缺失则无法判断；Gamma/GEX 只约束分布、波动和尾部，不能单独决定方向；"
         "session/comfort_window 只作流动性提醒。key_premises.evidence_refs 只能引用 evidence_catalog 中真实存在的 id。\n"
         + _BAYESIAN_REASONING_PROTOCOL
-        + "\n输出纪律：所有机器枚举只放在对应 JSON 枚举字段；所有 *_cn 与人读列表使用自然中文，不泄漏字段路径或机器代码。"
+        + "\n输出纪律：所有机器枚举只放在对应 JSON 枚举字段；所有 *_cn 与人读列表使用自然中文，不泄漏字段路径、"
+        "KEY=VALUE、布尔值或机器代码。不得写 decision_matrix.window=CONFIRMED、lean=NEUTRAL、"
+        "blocking=SOFT_GATE、WAIT_CONFIRMATION 一类调试式表达；必须改写为普通中文事实。"
+        "最高结论若引用现价、上方看涨墙或下方看跌墙，只解释相对位置与距离，不把墙位单独当作方向证据或执行参数。"
         "最终建议必须说明支持项、主冲突、成立前提、下一观察重点与失效条件，不能只是复述 direction/confidence。"
         "只输出一个合法 JSON 对象，不要 markdown 或 JSON 外解释。\n"
         + _MAIN_JSON_SHAPE_EXAMPLE
@@ -2805,7 +2823,7 @@ def _review_is_terminal_failure(review):
     return (
         failure.get("terminal") is True
         or review.get("fatal_config_error") is True
-        or review.get("error_category") == "FATAL_CONFIG"
+        or review.get("error_category") in {"FATAL_AUTH", "FATAL_CONFIG"}
     )
 
 
@@ -2930,10 +2948,13 @@ def _reconciliation_recovery_context(
                 or _as_dict(review.get("failure_state")).get(
                     "recovery_attempted") is True):
             return None
+        failure = _as_dict(review.get("failure_state"))
         if (
                 review.get("status") == "ERROR"
-                and review.get("error_category") == "EMPTY_CONTENT"
-                and review.get("call_profile") == CALL_PROFILE_MAIN_RECONCILIATION):
+                and review.get("call_profile") == CALL_PROFILE_MAIN_RECONCILIATION
+                and failure.get("type") in {
+                    "EMPTY_CONTENT", "INVALID_JSON", "VALIDATION_ERROR"}
+                and failure.get("stage") == "RECONCILIATION"):
             context = _as_dict(review.get("validated_blind_context"))
             if context:
                 return context
@@ -3091,12 +3112,14 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
         }
         if not any(
                 (review.get("fatal_config_error") is True
-                 or review.get("error_category") == "FATAL_CONFIG"
+                 or review.get("error_category") in {
+                     "FATAL_AUTH", "FATAL_CONFIG"}
                  or _as_dict(review.get("failure_state")).get("type")
                  in protected_terminal_types)
                 for review in explicit_matches):
             return "READY", len(explicit_matches)
     matching = []
+    newest_recorded_count = 0
     for row in reversed(records):
         if row.get(identity_key) != identity_value:
             continue
@@ -3110,9 +3133,18 @@ def _retry_state_for_record(records, identity_key, identity_value, review_key,
                 "DAILY_BUDGET_DEFERRED"):
             continue
         if _review_is_terminal_failure(review):
-            return "TERMINAL", 1
+            if not matching:
+                return "TERMINAL", max(
+                    1, int(review.get("record_retry_count") or 0))
+            # A newer non-terminal record for the same packet can only exist
+            # after an explicit operator reset. The older terminal belongs to
+            # the previous retry epoch and must not poison the new epoch.
+            break
         matching.append(review)
-    count = len(matching)
+        if len(matching) == 1:
+            newest_recorded_count = int(
+                review.get("record_retry_count") or 0)
+    count = max(len(matching), newest_recorded_count)
     if count >= 4:
         return "TERMINAL", count
     if not count:
@@ -3154,7 +3186,8 @@ def _record_has_fatal_config_error(record, review_key):
     return (
         review.get("fatal_config_error") is True
         or review.get("budget_deferred") is True
-        or review.get("error_category") in {"FATAL_CONFIG", "DAILY_BUDGET"}
+        or review.get("error_category") in {
+            "FATAL_AUTH", "FATAL_CONFIG", "DAILY_BUDGET"}
         or failure_type in {
             "FATAL_AUTH", "DAILY_BUDGET_DEFERRED", "FATAL_CONFIG"}
     )
@@ -3310,9 +3343,16 @@ def generate_reviews(source, reviews_output, api_key=None,
             fatal_config_stop = fatal_config_stop or failure_type in {
                 "FATAL_AUTH", "FATAL_CONFIG"}
             packet_hash = review.get("input_packet_hash")
-            _, prior_count = _retry_state_for_record(
-                existing_reviews, "card_id", record.get("card_id"),
-                "llm_review", packet_hash, explicit_retry_id=None)
+            if retry_id and retry_id == record.get("card_id"):
+                # An exact manual retry starts a fresh retry epoch. Protected
+                # fatal/recovery-exhausted failures remain terminal through the
+                # typed failure below, but an old ordinary terminal must not
+                # immediately terminate the newly reset record again.
+                prior_count = 0
+            else:
+                _, prior_count = _retry_state_for_record(
+                    existing_reviews, "card_id", record.get("card_id"),
+                    "llm_review", packet_hash, explicit_retry_id=None)
             if failure_type == "DAILY_BUDGET_DEFERRED":
                 review["record_retry_count"] = prior_count
                 review["record_retry_state"] = "DAILY_CAP"
@@ -5191,6 +5231,13 @@ def _find_advisory_raw_tokens(text):
     return sorted(leaked)
 
 
+def _find_advisory_raw_patterns(text):
+    return sorted(
+        label for label, pattern in ADVISORY_HUMAN_RAW_PATTERNS
+        if pattern.search(text)
+    )
+
+
 def _require_nonblank_advisory_text(value, field_name):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(field_name + " must be non-blank text")
@@ -5279,6 +5326,11 @@ def _validate_integrated_trade_advisory(advisory, packet=None,
     if raw_human_tokens:
         raise ValueError("integrated_trade_advisory human text contains raw codes: "
                          + ", ".join(raw_human_tokens))
+    raw_human_patterns = _find_advisory_raw_patterns(advisory_text)
+    if raw_human_patterns:
+        raise ValueError(
+            "integrated_trade_advisory human text contains raw field syntax: "
+            + ", ".join(raw_human_patterns))
     execution_terms = _actionable_execution_terms(advisory_text)
     if execution_terms:
         raise ValueError("integrated_trade_advisory contains execution parameters: "

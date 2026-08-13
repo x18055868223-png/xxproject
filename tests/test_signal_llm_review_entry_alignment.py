@@ -23,9 +23,9 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.5",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.6",
                 "entry version mismatch")
-    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.4",
+    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5",
                 "entry prompt mismatch")
     assert_true(entry.core.PROVIDER == "deepseek", "entry provider mismatch")
     assert_true(entry.core.DEFAULT_MODEL == "deepseek-v4-flash", "entry model mismatch")
@@ -41,6 +41,9 @@ def main():
                 "entry did not inherit the core reasoning protocol")
     assert_true("source_alignment 精确映射" in entry_prompt,
                 "entry alignment suffix missing")
+    assert_true("KEY=VALUE" in entry_prompt
+                and "相对距离" in entry_prompt,
+                "entry human-readable output rules missing")
     retry_prompt = entry.build_prompt(
         {"market_context": {"price": 101500}},
         blind_payload,
@@ -85,6 +88,99 @@ def main():
                 and repaired_advisory["key_premises"][0]["premise_cn"] == "无"
                 and repaired_advisory["invalid_if"] == ["无"],
                 "human fields retained raw NONE")
+    raw_assignment_payload = {
+        "integrated_trade_advisory": {
+            "final_conclusion_cn": (
+                "decision_matrix.window=CONFIRMED，lean=NEUTRAL，"
+                "blocking=SOFT_GATE WAIT_CONFIRMATION。"
+            ),
+        },
+    }
+    assignment_repaired, assignment_trace = entry._repair_advisory_human_codes(
+        raw_assignment_payload
+    )
+    assignment_text = assignment_repaired["integrated_trade_advisory"][
+        "final_conclusion_cn"
+    ]
+    assert_true(assignment_trace["repair_applied"]
+                and "=" not in assignment_text
+                and "decision_matrix" not in assignment_text
+                and "确认窗口已成立" in assignment_text
+                and "系统方向保持中性" in assignment_text
+                and "等待确认的软门控" in assignment_text,
+                "raw assignment syntax was not humanized")
+    producer_assignment, _ = entry._repair_advisory_human_codes({
+        "integrated_trade_advisory": {
+            "final_conclusion_cn": "producer_lean=NEUTRAL。",
+        },
+    })
+    assert_true(producer_assignment["integrated_trade_advisory"][
+                    "final_conclusion_cn"] == "系统方向保持中性。",
+                "producer lean assignment left a partial machine prefix")
+
+    incomplete_payload = {
+        "integrated_trade_advisory": {
+            "recommendation": "SELL_PUT_SPREAD_REVIEW",
+            "containment_assessment": {"state": "ESTABLISHED", "basis_cn": "完整。"},
+        },
+    }
+    completed, completion_trace = entry._repair_incomplete_advisory_assessments(
+        incomplete_payload
+    )
+    completed_advisory = completed["integrated_trade_advisory"]
+    assert_true(completion_trace == {
+                    "repair_applied": True,
+                    "repair_fields": ["premium_selling_fit"],
+                }
+                and completed_advisory["premium_selling_fit"]["state"]
+                == "UNABLE_TO_JUDGE",
+                "missing premium assessment was not completed fail closed")
+    narrowed, narrowed_trace = entry._repair_unsafe_structure_recommendation(
+        completed,
+        {"decision": {"lean": "BULLISH"}},
+    )
+    assert_true(narrowed["integrated_trade_advisory"]["recommendation"]
+                == "NO_TRADE"
+                and "PREMIUM_STRUCTURE_NOT_FIT"
+                in narrowed_trace["repair_reasons"],
+                "fail-closed assessment completion did not contain structure advice")
+
+    wall_payload = {
+        "integrated_trade_advisory": {
+            "cross_loop_rationale_cn": "跨回路证据仍有分歧。",
+        },
+    }
+    wall_repaired, wall_trace = entry._append_wall_position_explanation(
+        wall_payload,
+        {
+            "market_context": {"price": 64000},
+            "factor_cross_section": {
+                "gex_info": {"call_wall": 66000, "put_wall": 63000},
+            },
+        },
+    )
+    wall_text = wall_repaired["integrated_trade_advisory"][
+        "cross_loop_rationale_cn"
+    ]
+    assert_true(wall_trace["applied"] is True
+                and "距上方看涨墙66,000.00约3.12%" in wall_text
+                and "距下方看跌墙63,000.00约1.56%" in wall_text
+                and "不单独决定方向或辅助建议" in wall_text,
+                "deterministic wall-position explanation mismatch")
+    gamma_wall_repaired, gamma_wall_trace = entry._append_wall_position_explanation(
+        wall_payload,
+        {
+            "market_context": {"price": 64000},
+            "factor_cross_section": {
+                "gex_info": {"call_wall": None, "put_wall": None},
+                "gamma_regime": {"call_wall": 66000, "put_wall": 63000},
+            },
+        },
+    )
+    assert_true(gamma_wall_trace["applied"] is True
+                and "66,000.00" in gamma_wall_repaired[
+                    "integrated_trade_advisory"]["cross_loop_rationale_cn"],
+                "gamma wall fallback was not used when GEX values were null")
     level_payload = {
         "integrated_trade_advisory": {
             "recommendation": "NO_TRADE",

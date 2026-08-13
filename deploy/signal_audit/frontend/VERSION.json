@@ -8,7 +8,7 @@
   "llm_provider": "deepseek",
   "llm_model": "deepseek-v4-flash",
   "llm_review_schema": "signal_llm_review@1.5.0",
-  "llm_prompt_version": "signal_llm_review_prompt@1.5.4",
+  "llm_prompt_version": "signal_llm_review_prompt@1.5.5",
   "fixture_policy": "committed signal_cards are local preview fixtures; default deploy fixtures exclude synthetic cards; production cards are generated on the server from FMZ signal_review.jsonl and optional LLM sidecar",
   "frontend_contract": "six-metric summary followed by a reader-style integrated trade advisory with optional fail-closed future_24h_bayesian_report summary, fixed-round analysis identity tags, compact EDB ledger, unified signal durability audit, Funding and GEX semantic display, transition audit, MACRO direction-background/shock-gate display, source_ref anchors, low-layer forecast/raw trace navigation, and desktop/mobile browser audit before deploy changes",
   "live_materializer_source": "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl",

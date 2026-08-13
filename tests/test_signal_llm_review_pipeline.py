@@ -305,6 +305,13 @@ def test_future_contract(tool):
     for raw_token in ("BINANCE_SPOT", "pin_strike", "flip_point", "call_wall", "put_wall"):
         assert_true(raw_token not in humanized_basis,
                     "known packet field tokens must be humanized before sidecar output")
+    assert_true(tool._find_advisory_raw_patterns(
+                    "decision_matrix.window=CONFIRMED，lean=NEUTRAL")
+                == ["machine_assignment", "raw_field_path"],
+                "raw advisory field syntax was not detected")
+    assert_true(not tool._find_advisory_raw_patterns(
+                    "系统确认窗口已成立，方向保持中性。"),
+                "natural Chinese was misclassified as raw field syntax")
     mutations = []
     bad_sum = valid_future(); bad_sum["posterior_weights_pct"]["up"] = 51; mutations.append(bad_sum)
     bad_scope = valid_future(); bad_scope["input_scope"] = "PACKET_ONLY"; mutations.append(bad_scope)
@@ -368,7 +375,7 @@ def test_prompt_reasoning_contract(tool):
             "同簇内高度相关的指标只算一次主要更新", "模型主观情景权重而非已校准胜率",
             "base_case 必须是最高权重情景", "反证优先", "模型估算观察位",
             "不要输出、复述或索取 reasoning_content", "期望 JSON 结构示例",
-            "LOCAL_RESPONSE_JSON_SCHEMA"):
+            "LOCAL_RESPONSE_JSON_SCHEMA", "KEY=VALUE", "上方看涨墙"):
         assert_true(phrase in prompt, "main reasoning protocol missing: " + phrase)
     assert_true('"minItems":1' in prompt and '"maxItems":3' in prompt,
                 "prompt schema must preserve array cardinality")
@@ -773,6 +780,8 @@ def test_retry_gate_and_cooling(tool):
              "fatal_config_error": True},
             {"status": "ERROR", "input_packet_hash": packet_hash,
              "error_category": "FATAL_CONFIG"},
+            {"status": "ERROR", "input_packet_hash": packet_hash,
+             "error_category": "FATAL_AUTH"},
     ):
         state, _ = tool._retry_state_for_record(
             [{"card_id": "CARD", "llm_review": failure_review}],
@@ -780,6 +789,33 @@ def test_retry_gate_and_cooling(tool):
             explicit_retry_id="CARD", now=now)
         assert_true(state == "TERMINAL",
                     "explicit retry-id bypassed a protected terminal failure")
+
+    reset_records = [{
+        "card_id": "CARD",
+        "llm_review": {
+            "status": "ERROR",
+            "input_packet_hash": packet_hash,
+            "reviewed_at": (now - tool._dt.timedelta(hours=1)).isoformat(),
+            "record_retry_count": 4,
+            "record_retry_state": "TERMINAL",
+            "failure_state": {"terminal": True, "type": "VALIDATION_ERROR"},
+        },
+    }, {
+        "card_id": "CARD",
+        "llm_review": {
+            "status": "ERROR",
+            "input_packet_hash": packet_hash,
+            "reviewed_at": now.isoformat(),
+            "record_retry_count": 1,
+            "record_retry_state": "COOLING",
+            "failure_state": {"terminal": False, "type": "EMPTY_CONTENT"},
+        },
+    }]
+    state, count = tool._retry_state_for_record(
+        reset_records, "card_id", "CARD", "llm_review", packet_hash,
+        now=now)
+    assert_true((state, count) == ("COOLING", 1),
+                "older terminal poisoned the explicit-reset retry epoch")
 
 
 def test_fatal_config_stops_batch(tool):
@@ -1323,6 +1359,24 @@ def test_reconciliation_recovery_survives_later_blind_error(tool):
         resolved, "card_id", "CARD", "llm_review", packet_hash),
         "successful review must clear reconciliation recovery history")
 
+    validation_records = [{
+        "card_id": "CARD",
+        "llm_review": {
+            "status": "ERROR",
+            "input_packet_hash": packet_hash,
+            "call_profile": tool.CALL_PROFILE_MAIN_RECONCILIATION,
+            "failure_state": {
+                "type": "VALIDATION_ERROR",
+                "stage": "RECONCILIATION",
+            },
+            "validated_blind_context": {"packet_hash": packet_hash},
+        },
+    }]
+    assert_true(tool._reconciliation_recovery_context(
+                    validation_records, "card_id", "CARD", "llm_review",
+                    packet_hash) == {"packet_hash": packet_hash},
+                "reconciliation validation failure did not retain cached blind context")
+
 
 def test_only_card_id_cli_exit_codes(tool):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1405,7 +1459,7 @@ def main():
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
     assert_true(tool.PROVIDER == "deepseek", "provider mismatch")
     assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.5.0", "schema mismatch")
-    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.4", "prompt mismatch")
+    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5", "prompt mismatch")
     assert_true(tool.TRANSITION_OUTPUT_SCHEMA_VERSION == "signal_transition_llm_review@1.3.0",
                 "transition schema mismatch")
     assert_true(tool.TRANSITION_PROMPT_VERSION == "signal_transition_llm_review_prompt@1.3.2",
