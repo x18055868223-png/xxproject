@@ -155,3 +155,17 @@ def test_parse_dashboard_regime_and_key_levels() -> None:
     assert gamma.data["n2"] is None
     assert volatility.data["pcr"] == 0.64
     assert flow.data["put_call_ratio"] == 0.64
+
+
+def test_dashboard_does_not_promote_chart_percentages_to_gamma_prices() -> None:
+    parsed = parse_section(
+        "gamma_exposure",
+        "NET GEX / REGIME 7M MAGNET DISTANCE -143 points 0.4% "
+        "FLIP DISTANCE +33 points +0.04% Spot: $77,689 "
+        "CALL WALL US$82,000 PUT WALL US$77,500",
+    )
+    assert parsed.data["magnet_price"] is None
+    assert parsed.data["n2"] is None
+    assert parsed.data["p2"] is None
+    assert parsed.data["p1"] == 82000.0
+    assert parsed.data["n1"] == 77500.0

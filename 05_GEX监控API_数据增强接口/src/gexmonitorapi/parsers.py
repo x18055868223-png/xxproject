@@ -31,19 +31,36 @@ def parse_section(section: SectionName, text: str) -> ParsedSection:
     elif section == "gamma_exposure":
         # The "GAMMA COMPONENTS" block holds clean LABEL value rows; slicing to it
         # avoids the chart legend (P1 P2 N1 N2 ...) and axis ticks above it.
-        scope = _slice_from(norm, ["GAMMA COMPONENTS"]) or norm
-        data["n2"] = _num_after(scope, ["N2"], window=14)
+        legacy_scope = _slice_from(norm, ["GAMMA COMPONENTS"])
+        scope = legacy_scope or norm
+        # N2/P2 are legacy component rows. Without that explicit block, short
+        # labels in chart legends/expiry text can yield false values such as 2.0.
+        data["n2"] = _num_after(scope, ["N2"], window=14) if legacy_scope else None
         # Keep the stable legacy shape: dashboard Put/Call Wall values map to
         # the nearest negative/positive gamma wall slots consumed downstream.
-        data["n1"] = _num_after(scope, ["N1", "PUT WALL", "看跌墙"], window=18)
+        data["n1"] = (
+            _num_after(scope, ["N1"], window=14)
+            if legacy_scope
+            else _num_after(norm, ["PUT WALL", "看跌墙"], window=18)
+        )
         data["volatility_trigger"] = _num_after(
             scope, ["VOL TRIGGER", "Volatility Trigger", "波动触发"], window=22
         )
         data["spot_price"] = _num_after(scope, ["SPOT PRICE", "Spot Price", "Spot"], window=18)
-        data["magnet_price"] = _num_after(scope, ["磁吸位", "MAGNET", "Magnet"], window=22)
+        data["magnet_price"] = _num_after(
+            norm, ["磁吸位", "MAGNET PRICE", "MAGNET LEVEL"], window=22
+        )
+        if data["magnet_price"] is None and legacy_scope:
+            data["magnet_price"] = _num_after(scope, ["MAGNET", "Magnet"], window=14)
+        if data["magnet_price"] is None:
+            data["magnet_price"] = _dashboard_magnet_price(norm)
         data["flip_point"] = _flip_point(scope, data["spot_price"])
-        data["p1"] = _num_after(scope, ["P1", "CALL WALL", "看涨墙"], window=18)
-        data["p2"] = _num_after(scope, ["P2"], window=14)
+        data["p1"] = (
+            _num_after(scope, ["P1"], window=14)
+            if legacy_scope
+            else _num_after(norm, ["CALL WALL", "看涨墙"], window=18)
+        )
+        data["p2"] = _num_after(scope, ["P2"], window=14) if legacy_scope else None
     elif section == "volatility":
         data["iv_rv_ratio"] = _num_after(norm, ["IV/RV RATIO", "IV/RV Ratio"], window=14)
         data["pcr"] = _num_after(
@@ -157,6 +174,16 @@ def _flip_point(text: str, spot_price: float | None) -> float | None:
         return None
     delta = _to_number(distance.group(1))
     return spot_price + delta if delta is not None else None
+
+
+def _dashboard_magnet_price(text: str) -> float | None:
+    match = re.search(
+        r"MAGNET\s*(?:DISTANCE|距离)\s*[:：]?\s*[+-]?\s*\d[\d,]*(?:\.\d+)?\s*"
+        r"(?:PTS?|POINTS?|点)?\s*(?:US\s*)?\$\s*\d[\d,]*(?:\.\d+)?",
+        text,
+        re.IGNORECASE,
+    )
+    return _to_number(match.group(0).rsplit("$", 1)[-1]) if match else None
 
 
 def _call_put_bias(text: str) -> str | None:
