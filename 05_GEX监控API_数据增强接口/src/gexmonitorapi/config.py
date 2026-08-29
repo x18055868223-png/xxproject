@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPTIONS_CHAIN_CROSSCHECK", "GEXMONITOR_OPTIONS_CHAIN_CROSSCHECK"),
     )
     refresh_interval_seconds: int = Field(
-        # 30 min by default: fewer headless-browser memory spikes on small hosts.
+        # 30 min by default: low-frequency public JSON reads on small hosts.
         default=1800,
         validation_alias=AliasChoices("REFRESH_INTERVAL_SECONDS", "GEXMONITOR_REFRESH_INTERVAL_SECONDS"),
     )
