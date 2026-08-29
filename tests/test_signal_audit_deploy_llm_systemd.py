@@ -13,7 +13,7 @@ CANARY = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 EXPECTED_LLM_PROVIDER = "deepseek"
 EXPECTED_LLM_MODEL = "deepseek-v4-flash"
 EXPECTED_LLM_SCHEMA = "signal_llm_review@1.5.1"
-EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@1.5.5"
+EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@1.5.6"
 EXPECTED_LLM_MODE = "two_call_strict"
 EXPECTED_LLM_CALL_COUNT = 2
 EXPECTED_TRANSITION_SCHEMA = "signal_transition_llm_review@1.3.0"
@@ -624,6 +624,9 @@ def main():
                 and "TRANSITION_LLM_REVIEWS_SOURCE" in materialize_service
                 and "--transition-reviews" in materialize_service,
                 "materializer should build and merge transition sidecars without a new service")
+    assert_true("Environment=MAX_CARDS=15" in materialize_service
+                and 'MAX_CARDS="${MAX_CARDS:-15}"' in install,
+                "production materialization should default to the newest 15 cards")
     assert_true(materialize_timeout == 300,
                 "materializer service timeout should match the server-applied 300 second cap")
     assert_true("--mode" in runner and "both" in runner

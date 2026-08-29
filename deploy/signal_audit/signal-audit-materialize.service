@@ -8,7 +8,7 @@ Environment=LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 Environment=TRANSITION_LEDGER_SOURCE=/opt/signal-audit-tools/signal_transition_ledger.jsonl
 Environment=TRANSITION_STATE_SOURCE=/opt/signal-audit-tools/signal_transition_state.json
 Environment=TRANSITION_LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_transition_llm_reviews.jsonl
-Environment=MAX_CARDS=200
+Environment=MAX_CARDS=15
 MemoryHigh=64M
 MemoryMax=128M
 CPUQuota=25%

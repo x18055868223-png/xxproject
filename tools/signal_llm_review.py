@@ -40,7 +40,7 @@ DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
 PROVIDER = "deepseek"
 OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.1"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.6"
 PACKET_VERSION = "signal_llm_review_packet@1.2.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.2.0"
 TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.3.0"
@@ -273,6 +273,59 @@ ADVISORY_EXECUTION_TEXT_PATTERNS = (
     ("english_leverage_action", re.compile(
         r"\b(?:set|use|raise|lower|adjust)\b[^.;\n]{0,16}\bleverage\b",
         re.IGNORECASE)),
+)
+
+FUTURE_24H_POINT_ALIAS_PATTERN = (
+    r"factor_cross_section\.(?:gamma_regime|gex_info)\.max_gamma_strike"
+    r"|gamma_regime\.max_gamma_strike"
+    r"|max_gamma_strike"
+    r"|pin_strike"
+    r"|flip_point"
+    r"|call_wall"
+    r"|put_wall"
+    r"|max(?:imum)?\s+gamma\s+strike"
+    r"|gamma\s+max(?:imum)?\s+strike"
+    r"|pin\s+strike"
+    r"|flip\s+point"
+    r"|call\s+wall"
+    r"|put\s+wall"
+)
+FUTURE_24H_POINT_ALIAS_ACTION_RE = re.compile(
+    r"(?:选择|使用|设置|设定|选取|采用|choose|select|use|set)"
+    r"[^。；.;\n]{0,40}(?:" + FUTURE_24H_POINT_ALIAS_PATTERN + r")"
+    r"|(?:" + FUTURE_24H_POINT_ALIAS_PATTERN + r")"
+    r"[^。；.;\n]{0,40}(?:设为|设置为|选为|放在|置于|"
+    r"作为[^。；.;\n]{0,12}(?:行权价|执行价|到期日|到期时间)|"
+    r"\bas\s+(?:an?\s+)?(?:entry|exit|strike|expiry|expiration|order)\b)",
+    re.IGNORECASE,
+)
+FUTURE_24H_POINT_ALIAS_REPLACEMENTS = (
+    (
+        re.compile(
+            r"factor_cross_section\.(?:gamma_regime|gex_info)\.max_gamma_strike",
+            re.IGNORECASE,
+        ),
+        "卡内最大 Gamma 观察点位",
+    ),
+    (
+        re.compile(r"gamma_regime\.max_gamma_strike", re.IGNORECASE),
+        "卡内最大 Gamma 观察点位",
+    ),
+    (
+        re.compile(r"(?<![A-Za-z0-9_])max_gamma_strike(?![A-Za-z0-9_])",
+                   re.IGNORECASE),
+        "最大 Gamma 观察点位",
+    ),
+    (
+        re.compile(r"\b(?:max(?:imum)?\s+gamma\s+strike|gamma\s+max(?:imum)?\s+strike)\b",
+                   re.IGNORECASE),
+        "最大 Gamma 观察点位",
+    ),
+    (
+        re.compile(r"\bgamma\s+pin\s+strike\b|\bpin\s+strike\b",
+                   re.IGNORECASE),
+        "Gamma 钉住观察点位",
+    ),
 )
 
 _NEGATED_EXECUTION_MENTION_PATTERNS = (
@@ -632,8 +685,9 @@ def _build_legacy_prompt(packet, blind_payload=None):
         "不得由 effect、funding_norm 或历史状态改写为多头/空头拥挤。原始费率缺失时必须 UNABLE_TO_JUDGE。\n"
         "7i. producer 方向为精确 NEUTRAL 时，不得输出 SELL_PUT_SPREAD_REVIEW 或 SELL_CALL_SPREAD_REVIEW；"
         "若区间接管和结构适配成立，应使用 NEUTRAL_SINGLE_SIDE_REVIEW，并在 side_basis_cn 解释空间不对称但不改写方向。\n"
-        "7j. 结构建议只能到 Put/Call/Neutral 复核类别，不得把 flip、wall、pin 或现价改写成具体行权价、到期日、"
-        "仓位、开平仓或订单参数。关键价位只能作为可观察失效边界，不得写成选择某个 strike 的建议。\n"
+        "7j. 结构建议只能到 Put/Call/Neutral 复核类别，不得把 flip、wall、pin、max_gamma_strike 或现价"
+        "改写成具体行权价、到期日、仓位、开平仓或订单参数。关键价位只能作为可观察失效边界或 Gamma/GEX 观察点位，"
+        "不得写成选择某个 strike 的建议。\n"
         "7k. recommendation 等机器枚举只能出现在对应 JSON 枚举字段；所有 *_cn、人读列表和解释文案必须使用自然中文，"
         "不得复写 SELL_PUT_SPREAD_REVIEW、NO_TRADE、trade_allowed、evidence_refs 等机器码或字段名。\n"
         "7l. recommendation=NEUTRAL_SINGLE_SIDE_REVIEW 时，人读结论只能表述为中性单侧结构复核；不得写成双边、"
@@ -658,8 +712,11 @@ def _build_legacy_prompt(packet, blind_payload=None):
         "summing to 100, never calibrated probabilities. report_cn must be one "
         "Chinese paragraph covering base direction, all three weights, key levels, "
         "counter-evidence and invalidation. PACKET_OBSERVED prices must exactly "
-        "match packet numbers. MODEL_ESTIMATED levels must be called 模型估算观察位 "
-        "in basis_cn and must never be entry, stop, strike, expiry or order prices.\n\n"
+        "match packet numbers. Every key level is only an 观察点位/space boundary; "
+        "Gamma/GEX aliases such as max_gamma_strike, pin_strike, wall and flip may "
+        "only be called Gamma观察点位/GEX观察点位 or 上下空间约束. MODEL_ESTIMATED "
+        "levels must be called 模型估算观察位 in basis_cn. future_24h human text "
+        "must never contain 行权价、执行价、strike、expiry or order parameters.\n\n"
         "字段含义摘要：\n"
         "- market_context: 当前价格、报价币种和价格来源。\n"
         "- decision: 程序化系统结论；必须作为只读事实。\n"
@@ -683,7 +740,7 @@ _BAYESIAN_REASONING_PROTOCOL = """
 3. 先将证据按共同来源或共同机制分簇，例如方向/量价、宏观压力、Funding/拥挤、Skew/期权需求、Gamma/GEX/空间约束、数据质量。同簇内高度相关的指标只算一次主要更新，禁止把派生字段、摘要和原始字段重复计票。
 4. 对每个证据簇只判断它更支持哪个情景、区分度强弱、质量与反证；不要虚构似然率、样本频率或精确校准。冲突证据不得平均抹平，必须指出哪一项若成立会推翻基准情景。
 5. posterior_weights_pct 是模型主观情景权重而非已校准胜率，必须为整数且合计 100；base_case 必须是最高权重情景（并列时选择证据链更短、假设更少者）。权重集中度必须与数据质量、独立证据簇数量和冲突程度一致，证据弱或高度相关时不得给出虚假高确定性。
-6. 关键点位先复用卡内现价、GEX 中轴、wall、pin 或其他明确数值；PACKET_OBSERVED 必须逐值一致。确需估算时标为 MODEL_ESTIMATED，basis_cn 必须含“模型估算观察位”并写明推导逻辑，不得伪装成 producer/GEX 事实或交易执行参数。
+6. 关键点位先复用卡内现价、GEX 中轴、wall、pin、max_gamma_strike 或其他明确数值；PACKET_OBSERVED 必须逐值一致。所有 Gamma/GEX 点位只能称为观察点位或空间边界，不得写成行权价/执行价/strike/expiry/order。确需估算时标为 MODEL_ESTIMATED，basis_cn 必须含“模型估算观察位”并写明推导逻辑，不得伪装成 producer/GEX 事实或交易执行参数。
 7. 反证优先：counter_evidence_cn 写当前已存在且削弱基准情景的证据；invalid_if_cn 写未来观察到何种状态会使基准解释失效。两者不得写成同义重复。
 8. report_cn 只写一段自然中文，依次覆盖：基准走向及因果边界；上涨/下跌/区间三项主观权重；关键观察位与来源；最重要反证；失效条件。用“支持、削弱、约束、与……一致”等审计语言，不把共同出现写成已证实因果。
 9. 在内部完成比较、去重和一致性检查，只输出最终 JSON；不要输出、复述或索取 reasoning_content，也不要展示逐步思维链。
@@ -5756,6 +5813,10 @@ def _validate_future_24h_bayesian_report(report, packet=None):
     if execution_terms:
         raise ValueError("future_24h report contains execution parameters: "
                          + ", ".join(execution_terms))
+    if FUTURE_24H_POINT_ALIAS_ACTION_RE.search(report_text):
+        raise ValueError(
+            "future_24h report contains execution parameters: "
+            "specific_gamma_point_action")
 
 def _packet_has_producer_hard_block(packet):
     packet = _as_dict(packet)
@@ -6022,7 +6083,8 @@ def _normalize_future_24h_bayesian_report(report):
             model_estimated_count += 1
         key_levels.append({
             "price": _number_or_none(item.get("price")),
-            "role_cn": str(item.get("role_cn") or "")[:260],
+            "role_cn": _humanize_future_24h_basis(
+                item.get("role_cn"))[:260],
             "source_type": source_type,
             "basis_cn": _humanize_future_24h_basis(item.get("basis_cn"))[:260],
         })
@@ -6037,10 +6099,17 @@ def _normalize_future_24h_bayesian_report(report):
             "down": int(_number_or_none(weights.get("down")) or 0),
             "range": int(_number_or_none(weights.get("range")) or 0),
         },
-        "report_cn": str(report.get("report_cn") or "")[:900].replace("\n", " ").replace("\r", " "),
+        "report_cn": _humanize_future_24h_basis(
+            report.get("report_cn"))[:900].replace("\n", " ").replace("\r", " "),
         "key_levels": key_levels[:4],
-        "counter_evidence_cn": _trim_list(report.get("counter_evidence_cn"), limit=3),
-        "invalid_if_cn": _trim_list(report.get("invalid_if_cn"), limit=3),
+        "counter_evidence_cn": [
+            _humanize_future_24h_basis(item)
+            for item in _trim_list(report.get("counter_evidence_cn"), limit=3)
+        ],
+        "invalid_if_cn": [
+            _humanize_future_24h_basis(item)
+            for item in _trim_list(report.get("invalid_if_cn"), limit=3)
+        ],
         "policy_validation": {
             "passed": True,
             "schema_version": "future_24h_policy_validation@1.0.0",
@@ -6057,21 +6126,17 @@ def _normalize_future_24h_bayesian_report(report):
 
 def _humanize_future_24h_basis(value):
     text = str(value or "")
-    for raw_path, chinese_label in (
-            ("factor_cross_section.gamma_regime.max_gamma_strike",
-             "卡内最大 Gamma 行权价"),
-            ("factor_cross_section.gex_info.max_gamma_strike",
-             "卡内最大 Gamma 行权价"),
-            ("gamma_regime.max_gamma_strike", "卡内最大 Gamma 行权价"),
-            ("max_gamma_strike", "最大 Gamma 行权价")):
-        text = text.replace(raw_path, chinese_label)
+    if FUTURE_24H_POINT_ALIAS_ACTION_RE.search(text):
+        return text
+    for pattern, chinese_label in FUTURE_24H_POINT_ALIAS_REPLACEMENTS:
+        text = pattern.sub(chinese_label, text)
     replacements = {
         "gamma_regime.flip_point": "卡内 Gamma 翻转点",
-        "gamma_regime.pin_strike": "卡内 Gamma 钉住位",
+        "gamma_regime.pin_strike": "卡内 Gamma 钉住观察点位",
         "gex_info.call_wall": "卡内上方 Gamma 墙",
         "gex_info.put_wall": "卡内下方 Gamma 墙",
         "BINANCE_SPOT": "币安现货",
-        "pin_strike": "Gamma 钉住位",
+        "pin_strike": "Gamma 钉住观察点位",
         "flip_point": "Gamma 翻转点",
         "call_wall": "上方 Gamma 墙",
         "put_wall": "下方 Gamma 墙",

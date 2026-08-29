@@ -27,8 +27,8 @@ import sys
 import signal_llm_review as core
 
 
-ENTRY_VERSION = "signal_llm_review_entry@1.1.9"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.5"
+ENTRY_VERSION = "signal_llm_review_entry@1.1.10"
+PROMPT_VERSION = "signal_llm_review_prompt@1.5.6"
 _ALLOWED_ALIGNMENTS = set(core.ADVISORY_SOURCE_ALIGNMENTS)
 _RECOGNIZED_DIRECTIONS = {"BULLISH", "BEARISH", "NEUTRAL"}
 _HARD_BLOCK_SAFE_RECOMMENDATIONS = {"NO_TRADE", "UNABLE_TO_JUDGE"}
@@ -63,6 +63,8 @@ _HUMAN_OUTPUT_PROMPT_RULES = (
     "当前仍处于等待确认的软门控。\n"
     "- 最高解释可以比较现价到上方看涨墙和下方看跌墙的相对距离，但只能作为空间约束说明，"
     "不得据此单独改变方向、建议或交易许可。\n"
+    "- future_24h 中的 max_gamma_strike、pin_strike、flip、wall 只能写成 Gamma/GEX 观察点位或空间边界，"
+    "不得写成行权价、执行价、strike、expiry 或订单参数。\n"
     "- 输出前逐项检查必需对象和人读文本；缺少依据时使用无法判断，不得省略字段。"
 )
 

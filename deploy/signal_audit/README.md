@@ -168,7 +168,7 @@ Build live cards from the FMZ JSONL:
 sudo /usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py \
   --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl \
   --output /opt/signal-audit \
-  --max-cards 200 \
+  --max-cards 15 \
   --llm-reviews /opt/signal-audit-tools/signal_llm_reviews.jsonl
 ```
 

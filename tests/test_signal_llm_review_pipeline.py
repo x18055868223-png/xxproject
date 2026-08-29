@@ -316,6 +316,41 @@ def test_future_contract(tool):
     assert_true("gamma_regime" not in json.dumps(alias_report, ensure_ascii=False)
                 and "max_gamma_strike" not in json.dumps(alias_report, ensure_ascii=False),
                 "known future-report aliases must be humanized across all reader fields")
+    alias_text = json.dumps(alias_report, ensure_ascii=False)
+    assert_true("行权价" not in alias_text
+                and "执行价" not in alias_text
+                and "strike" not in alias_text.lower(),
+                "known Gamma aliases must be observation points, not strikes")
+    tool._validate_future_24h_bayesian_report(alias_report, packet)
+
+    english_alias_report = valid_future()
+    english_alias_report["report_cn"] += (
+        " max gamma strike 101500 only marks an observation boundary.")
+    english_alias_report["key_levels"][0]["role_cn"] = "max gamma strike 101500"
+    english_alias_report["key_levels"][0]["basis_cn"] = (
+        "factor_cross_section.gex_info.max_gamma_strike and pin strike are packet points.")
+    english_alias_report = tool._normalize_future_24h_basis_aliases(
+        english_alias_report)
+    english_alias_text = json.dumps(english_alias_report, ensure_ascii=False)
+    assert_true("strike" not in english_alias_text.lower(),
+                "known English Gamma aliases must not trip english_specific_strike")
+    tool._validate_future_24h_bayesian_report(english_alias_report, packet)
+
+    for text, expected_term in (
+            ("价格突破后选择行权价101500。", "specific_strike"),
+            ("Use strike 101500 as the entry reference.", "english_specific_strike"),
+            ("使用 max_gamma_strike 作为交易观察位。", "specific_gamma_point_action"),
+    ):
+        bad_execution = valid_future()
+        bad_execution["report_cn"] = text
+        bad_execution = tool._normalize_future_24h_basis_aliases(bad_execution)
+        try:
+            tool._validate_future_24h_bayesian_report(bad_execution, packet)
+        except ValueError as exc:
+            assert_true(expected_term in str(exc),
+                        "unexpected future execution rejection: " + str(exc))
+        else:
+            raise AssertionError("future execution parameter passed: " + text)
     assert_true(tool._find_advisory_raw_patterns(
                     "decision_matrix.window=CONFIRMED，lean=NEUTRAL")
                 == ["machine_assignment", "raw_field_path"],
@@ -488,6 +523,44 @@ def test_compact_reconciliation_local_assembly(tool):
                     "future report fixed fields were not assembled locally")
         assert_true("SECRET_REASONING_TRACE" not in serialized,
                     "reasoning content leaked into normal sidecar")
+
+
+def test_funding_semantic_conflict_stays_fail_closed(tool):
+    card = minimal_card("FUNDING-CONFLICT", 4)
+    card["decision"]["lean"] = "BULLISH"
+    card["factor_cross_section"] = {
+        "funding": {
+            "last_rate": 0.00005,
+            "last_funding_rate": 0.00005,
+            "canonical_funding_semantics": tool.build_funding_semantics(
+                0.00005,
+                source="unit_test:funding.last_rate",
+                compat_backfill_applied=False,
+            ),
+        },
+    }
+    blind_payload = {
+        "theoretical_active_view": {
+            "bias": "BULLISH_LEAN",
+            "conviction": "MEDIUM",
+            "basis_cn": "卡内方向与量价结构偏强。",
+            "key_drivers": ["卡内方向与量价结构一致。"],
+            "counter_evidence": ["宏观压力可能削弱。"],
+            "boundary_cn": "该判断只作审计参考。",
+        },
+        "gamma_regime_lens": tool._default_gamma_regime_lens(
+            "Gamma 仅作为风险覆盖。"),
+    }
+    payload = compact_reconciliation_payload(tool, card)
+    payload["integrated_trade_advisory"]["cross_loop_rationale_cn"] = (
+        "Funding 多头拥挤升温，和方向证据形成共振。")
+    try:
+        tool.build_llm_review(card, payload, blind_payload=blind_payload)
+    except ValueError as exc:
+        assert_true("Funding wording conflicts" in str(exc),
+                    "Funding conflict failed for the wrong reason: " + str(exc))
+    else:
+        raise AssertionError("Funding semantic conflict must remain fail-closed")
 
 
 def test_blind_completeness_repair_is_bounded(tool):
@@ -1604,7 +1677,7 @@ def main():
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
     assert_true(tool.PROVIDER == "deepseek", "provider mismatch")
     assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.5.1", "schema mismatch")
-    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5", "prompt mismatch")
+    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.6", "prompt mismatch")
     assert_true(tool.TRANSITION_OUTPUT_SCHEMA_VERSION == "signal_transition_llm_review@1.3.0",
                 "transition schema mismatch")
     assert_true(tool.TRANSITION_PROMPT_VERSION == "signal_transition_llm_review_prompt@1.3.2",
@@ -1615,6 +1688,7 @@ def main():
     test_transition_policy_text_boundary(tool)
     test_prompt_reasoning_contract(tool)
     test_compact_reconciliation_local_assembly(tool)
+    test_funding_semantic_conflict_stays_fail_closed(tool)
     test_blind_completeness_repair_is_bounded(tool)
     test_empty_content_cross_round_recovery(tool)
     test_reasoning_empty_content_recovers_in_same_cycle(tool)

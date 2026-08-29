@@ -24,9 +24,9 @@ def load(path, name):
 def main():
     core = load(TOOLS / "signal_llm_review.py", "signal_llm_review_entry_core")
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
-    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.9",
+    assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.10",
                 "entry version mismatch")
-    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.5",
+    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.6",
                 "entry prompt mismatch")
     assert_true(entry.core.PROVIDER == "deepseek", "entry provider mismatch")
     assert_true(entry.core.DEFAULT_MODEL == "deepseek-v4-flash", "entry model mismatch")
@@ -47,7 +47,9 @@ def main():
     assert_true("source_alignment 精确映射" in entry_prompt,
                 "entry alignment suffix missing")
     assert_true("KEY=VALUE" in entry_prompt
-                and "相对距离" in entry_prompt,
+                and "相对距离" in entry_prompt
+                and "Gamma/GEX 观察点位" in entry_prompt
+                and "行权价、执行价、strike、expiry" in entry_prompt,
                 "entry human-readable output rules missing")
     retry_prompt = entry.build_prompt(
         {"market_context": {"price": 101500}},

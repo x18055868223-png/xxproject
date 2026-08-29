@@ -8,7 +8,7 @@
 | --- | --- |
 | provider | `deepseek` |
 | model | `deepseek-v4-flash`（DeepSeek‑V4‑Flash‑0731） |
-| main schema / prompt | `signal_llm_review@1.5.1` / `signal_llm_review_prompt@1.5.5` |
+| main schema / prompt | `signal_llm_review@1.5.1` / `signal_llm_review_prompt@1.5.6` |
 | entrypoint | `signal_llm_review_entry@1.1.9` |
 | transition schema / prompt | `signal_transition_llm_review@1.3.0` / `signal_transition_llm_review_prompt@1.3.2` |
 | 主信号 | blind `low` 后 reconciliation `high`，正常严格两次；reasoning-only 空正文时复用 blind 并追加最多一次 recovery |

@@ -56,16 +56,16 @@ def assert_asset_root(root):
             "DO_NOT_MULTIPLY_CONFIDENCE"):
         assert_true(token in app,
                     "frontend app should expose durability renderer token " + token)
-    assert_true("app.js?v=20260813-bayesian-render-v1" in index_html
-                and "fallback.js?v=20260723-fact-semantics-v1" in index_html,
+    assert_true("app.js?v=20260828-lazy-manifest-v1" in index_html
+                and "fallback.js?v=20260723-fact-semantics-v1" not in index_html,
                 "index.html should cache-bust canonical frontend assets")
     assert_true(version.get("backup_version")
                 == "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory",
                 "VERSION backup_version should name the r3.3.11 advisory slice")
-    assert_true(version.get("generated_at") == "2026-08-13",
-                "VERSION generated_at should match the DeepSeek reliability asset refresh date")
+    assert_true(version.get("generated_at") == "2026-08-28",
+                "VERSION generated_at should match the lazy-load asset refresh date")
     assert_true(version.get("llm_review_schema") == "signal_llm_review@1.5.1"
-                and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.5",
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.6",
                 "VERSION should name the integrated advisory schema and prompt")
     assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
                 and "durability" in version.get("frontend_contract", ""),

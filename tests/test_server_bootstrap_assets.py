@@ -59,6 +59,10 @@ def main():
     assert_true('fetch --tags xxproject "$RELEASE_REF"' in script
                 and "FETCH_HEAD^{commit}" in script,
                 "bootstrap should accept an explicit tag, branch, or commit")
+    assert_true('MAX_CARDS="${MAX_CARDS:-15}"' in script
+                and "Environment=MAX_CARDS=15" in materialize_service
+                and 'MAX_CARDS="${MAX_CARDS:-15}"' in install_or_update,
+                "bootstrap and installed materializer should publish 15 recent cards")
     for token in (
             "install_or_update.sh",
             "server_self_check_signal_stack.sh",
@@ -185,7 +189,7 @@ def main():
             "deepseek",
             "deepseek-v4-flash",
             "signal_llm_review@1.5.1",
-            "signal_llm_review_prompt@1.5.5",
+            "signal_llm_review_prompt@1.5.6",
             "two_call_strict",
             "single_call_evidence_first",
             "macro_shock",

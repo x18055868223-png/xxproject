@@ -249,6 +249,43 @@
       font-size: 13px;
     }
 
+    .card-load-state {
+      border: 1px dashed var(--line-strong);
+      border-radius: 6px;
+      padding: 16px;
+      color: var(--muted);
+      background: var(--surface);
+    }
+
+    .card-load-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .card-retry {
+      min-height: 32px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--bg);
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+
+    .card-retry:disabled {
+      color: var(--faint);
+      cursor: default;
+    }
+
+    .integrated-advisory-panel.is-unavailable {
+      border-left-color: var(--bad);
+      background: #fff7f7;
+    }
+
     .doc-header {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -2060,7 +2097,6 @@
 []
   </script>
 
-  <script src="signal_cards/fallback.js?v=20260723-fact-semantics-v1"></script>
-  <script src="app.js?v=20260813-bayesian-render-v1"></script>
+  <script src="app.js?v=20260828-lazy-manifest-v1"></script>
 </body>
 </html>

@@ -462,10 +462,31 @@ def main():
                     "should publish requested newest cards")
         assert_true(manifest["cards"][0]["card_id"].endswith("000749+0800-BTC-X"),
                     "newest card should survive bounded tail")
+        newest_summary = manifest["cards"][0].get("summary") or {}
+        assert_true(newest_summary.get("identity", {}).get("card_id")
+                    == manifest["cards"][0]["card_id"],
+                    "manifest should carry deterministic identity summary")
+        assert_true(newest_summary.get("quality", {}).get("overall") == "OK"
+                    and newest_summary.get("llm_review_status") == "OK",
+                    "manifest should carry filter and LLM publication status")
         newest = json.loads((output / manifest["cards"][0]["path"])
                             .read_text(encoding="utf-8"))
         assert_true(newest["llm_review"]["summary_cn"] == "tail review",
                     "tail sidecar review should merge")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        source = root / "default_window.jsonl"
+        output = root / "public"
+        source.write_text("\n".join(
+            json.dumps(record(idx), ensure_ascii=False)
+            for idx in range(30)) + "\n", encoding="utf-8")
+        result = tool.materialize(source, output)
+        manifest = json.loads((output / "signal_cards" / "index.json")
+                              .read_text(encoding="utf-8"))
+        assert_true(result["written_cards"] == 15
+                    and len(manifest["cards"]) == 15,
+                    "default public window should publish only the newest 15 cards")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         root = pathlib.Path(temp_dir)

@@ -1,16 +1,16 @@
 {
   "name": "signal-audit-frontend-fixture",
   "backup_version": "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory",
-  "generated_at": "2026-08-13",
+  "generated_at": "2026-08-28",
   "frontend_profile": "signal_audit_static_v1",
   "card_schema": "signal_review_card@1.0.0 + nrd.signal.durability_layer.v1 + nrd.signal.price_anchor_durability.v1 + nrd.signal.comfort_window.v1",
   "manifest_schema": "signal_cards_manifest@1.0.0",
   "llm_provider": "deepseek",
   "llm_model": "deepseek-v4-flash",
   "llm_review_schema": "signal_llm_review@1.5.1",
-  "llm_prompt_version": "signal_llm_review_prompt@1.5.5",
+  "llm_prompt_version": "signal_llm_review_prompt@1.5.6",
   "fixture_policy": "committed signal_cards are local preview fixtures; default deploy fixtures exclude synthetic cards; production cards are generated on the server from FMZ signal_review.jsonl and optional LLM sidecar",
-  "frontend_contract": "six-metric summary followed by a reader-style integrated trade advisory with optional fail-closed future_24h_bayesian_report summary, fixed-round analysis identity tags, compact EDB ledger, unified signal durability audit, Funding and GEX semantic display, transition audit, MACRO direction-background/shock-gate display, source_ref anchors, low-layer forecast/raw trace navigation, and desktop/mobile browser audit before deploy changes",
+  "frontend_contract": "HTTP mode fetches signal_cards/index.json first, renders at most 15 manifest summary cards, lazy-loads selected signal_cards/*.json with memory cache and two-card prefetch isolation, then shows six-metric summary followed by a reader-style integrated trade advisory with fail-closed LLM unpublished states, optional fail-closed future_24h_bayesian_report summary, fixed-round analysis identity tags, compact EDB ledger, unified signal durability audit, Funding and GEX semantic display, transition audit, MACRO direction-background/shock-gate display, source_ref anchors, low-layer forecast/raw trace navigation, and desktop/mobile browser audit before deploy changes",
   "live_materializer_source": "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl",
   "live_output_root": "/opt/signal-audit"
 }

@@ -143,7 +143,10 @@ function renderCard(card) {
       rawTargets: (html.match(/id="raw-/g) || []).length,
       flowConfirm: /FLOW_CONFIRM|combined_weight|absorption_state|fast_4h|slow_12h/.test(text),
       llmSection: text.includes("LLM 复核意见"),
-      llmPending: text.includes("PENDING_LLM") || text.includes("LLM 复核尚未生成"),
+      llmPending: text.includes("PENDING_LLM")
+        || text.includes("LLM 复核尚未生成")
+        || text.includes("LLM内容未发布")
+        || text.includes("等待 LLM 复核发布"),
       macroProxyFacts: /VOLQ|DXY|US10Y|纳斯达克|美元|美债/.test(text),
       macroUnknown: /宏观背景\s+UNKNOWN/.test(text),
       macroDirectionBackground: text.includes("方向背景"),
@@ -963,7 +966,7 @@ def main():
     assert_true('.replaceAll("rr_blend", "期权偏斜融合指标")' in app,
                 "future report should localize the known rr_blend packet label")
     assert_true('.replaceAll("gamma_regime", "Gamma 体制")' in app
-                and '.replaceAll("max_gamma_strike", "最大 Gamma 行权价")' in app,
+                and '.replaceAll("max_gamma_strike", "最大 Gamma 观察点位")' in app,
                 "future report should localize known gamma_regime/max_gamma_strike aliases")
     assert_true('["string", "number", "boolean"].includes(typeof rawStatus)' in app,
                 "factor status badges should accept scalar statuses only")
@@ -1339,8 +1342,9 @@ def main():
     advisory_error_card = advisory_sample_card()
     advisory_error_card["llm_review"]["status"] = "ERROR"
     advisory_error_render = render_sample_card(FRONTEND, advisory_error_card)
-    assert_true("最高辅助交易决策" not in advisory_error_render["text"],
-                "ERROR llm_review should not render integrated advisory")
+    assert_true("最高辅助交易决策" in advisory_error_render["text"]
+                and "LLM内容未发布" in advisory_error_render["text"],
+                "ERROR llm_review should render a fail-closed unpublished advisory slot")
     assert_true("未来24小时贝叶斯观察" not in advisory_error_render["text"],
                 "ERROR llm_review should not render future 24h report")
     assert_true('id="llm-review"' in advisory_error_render["documentHtml"],
@@ -1352,23 +1356,26 @@ def main():
     ]["passed"] = False
     advisory_failed_policy_render = render_sample_card(
         FRONTEND, advisory_failed_policy_card)
-    assert_true('id="integrated-advisory"' not in
-                advisory_failed_policy_render["documentHtml"],
-                "failed local advisory policy must hide the integrated advisory")
+    assert_true('id="integrated-advisory"' in
+                advisory_failed_policy_render["documentHtml"]
+                and "LLM内容未发布" in advisory_failed_policy_render["text"],
+                "failed local advisory policy must keep a fail-closed advisory slot")
     assert_true('id="llm-review"' in advisory_failed_policy_render["documentHtml"],
                 "failed advisory policy must preserve the LLM audit section")
 
     advisory_missing_card = advisory_sample_card()
     advisory_missing_card["llm_review"]["integrated_trade_advisory"].pop("dominant_conflict_cn")
     advisory_missing_render = render_sample_card(FRONTEND, advisory_missing_card)
-    assert_true("最高辅助交易决策" not in advisory_missing_render["text"],
-                "missing advisory field should fail closed without rendering the block")
+    assert_true("最高辅助交易决策" in advisory_missing_render["text"]
+                and "LLM内容未发布" in advisory_missing_render["text"],
+                "missing advisory field should fail closed with an unpublished slot")
     assert_true('id="llm-review"' in advisory_missing_render["documentHtml"],
                 "missing advisory field should not remove the existing LLM section")
 
     advisory_old_render = render_sample_card(FRONTEND, durability_sample_card())
-    assert_true("最高辅助交易决策" not in advisory_old_render["text"],
-                "old cards without integrated advisory should stay compatible")
+    assert_true("最高辅助交易决策" in advisory_old_render["text"]
+                and "LLM内容未发布" in advisory_old_render["text"],
+                "old cards without integrated advisory should show a compatible unpublished slot")
     assert_true("未来24小时贝叶斯观察" not in advisory_old_render["text"]
                 and "未来24小时贝叶斯报告追溯" not in advisory_old_render["text"],
                 "old cards without future report should not render empty report blocks")
@@ -1437,8 +1444,12 @@ def main():
     assert_true("未来 24 小时第一性推断" in alias_forecast_render["text"],
                 "known gamma aliases should not hide a valid future report")
     assert_true("Gamma 体制" in alias_report_html
-                and "最大 Gamma 行权价" in alias_report_html,
+                and "最大 Gamma 观察点位" in alias_report_html,
                 "known gamma aliases should render as readable Chinese")
+    assert_true("行权价" not in alias_report_html
+                and "执行价" not in alias_report_html
+                and "strike" not in alias_report_html.lower(),
+                "known gamma aliases should remain observation points, never execution parameters")
     assert_true("gamma_regime" not in alias_report_html
                 and "max_gamma_strike" not in alias_report_html,
                 "known gamma aliases should not leak raw machine names in the future report")

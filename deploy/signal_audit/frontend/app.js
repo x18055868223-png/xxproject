@@ -2,8 +2,14 @@
   "use strict";
 
   const embedded = JSON.parse(document.getElementById("signal-data").textContent);
+  const INITIAL_CARD_LIMIT = 15;
+  const PREFETCH_CARD_LIMIT = 2;
+  const MAX_CARD_LOAD_ATTEMPTS = 3;
+  const CARD_FETCH_TIMEOUT_MS = Math.max(1, Number(window.SIGNAL_AUDIT_CARD_TIMEOUT_MS || 15000));
   let documents = [];
   let loadState = { mode: "pending", error: "" };
+  const cardCache = new Map();
+  const cardLoadStates = new Map();
   const state = {
     currentId: null,
     query: "",
@@ -793,31 +799,218 @@
     return `<ul class="plain-list">${values.map((item) => `<li>${valueHtml(item, { translate: false })}</li>`).join("")}</ul>`;
   };
 
+  const isFileMode = () => window.location.protocol === "file:";
+  const isHttpMode = () => window.location.protocol === "http:" || window.location.protocol === "https:";
+  const publicLoadReason = (kind, status = "") => {
+    if (kind === "manifest_http") return `信号卡索引未发布或不可访问${status ? `（HTTP ${status}）` : ""}。`;
+    if (kind === "manifest_json") return "信号卡索引 JSON 无法解析，请检查 materialize 输出。";
+    if (kind === "card_http" && Number(status) === 404) return "单卡 JSON 未发布或路径不存在（404）。";
+    if (kind === "card_http") return `单卡 JSON 暂不可访问${status ? `（HTTP ${status}）` : ""}。`;
+    if (kind === "card_timeout") return "单卡 JSON 响应超时，已停止等待；可稍后有限重试。";
+    if (kind === "card_json") return "单卡 JSON 格式非法，已阻止展示该卡详情。";
+    if (kind === "missing_path") return "manifest 未提供单卡路径，无法加载详情。";
+    if (kind === "fallback") return "本地 fallback.js 未加载，请检查 signal_cards/fallback.js。";
+    return "静态卡片暂不可用，请检查发布文件。";
+  };
+  function createLoadError(kind, status = "") {
+    const error = new Error(kind);
+    error.kind = kind;
+    error.status = status;
+    error.publicReason = publicLoadReason(kind, status);
+    return error;
+  }
+  function normalizeManifestPath(item, summary, id) {
+    return firstPresent(item.path, item.card_path, summary.path, summary.card_path, item.href, item.url, id ? `signal_cards/${id}.json` : "");
+  }
+  function normalizeManifestSummary(item, index = 0) {
+    const raw = asObject(item);
+    const summary = asObject(raw.summary);
+    const identity = asObject(summary.identity);
+    const decisionSummary = asObject(summary.decision);
+    const qualitySummary = asObject(summary.quality);
+    const displayLayers = asObject(summary.display_layers);
+    const signalDurability = asObject(summary.signal_durability);
+    const transitionContext = asObject(summary.transition_context);
+    const id = firstPresent(identity.card_id, summary.card_id, raw.card_id, raw.id, raw.path, `manifest-card-${index + 1}`);
+    const confirmed = firstPresent(identity.confirmed_at, summary.confirmed_at, raw.confirmed_at, raw.created_at);
+    const path = normalizeManifestPath(raw, summary, id);
+    const qualityValue = firstPresent(qualitySummary.overall, summary.quality, raw.quality, raw.quality_overall, "UNKNOWN");
+    return {
+      __partial: true,
+      __card_path: path,
+      __llm_review_status: firstPresent(summary.llm_review_status, raw.llm_review_status, "PENDING_LLM"),
+      identity: {
+        ...identity,
+        card_id: id,
+        short_id: firstPresent(identity.short_id, summary.short_id, raw.short_id, String(id).slice(-4)),
+        confirmed_at: confirmed,
+        symbol: firstPresent(identity.symbol, summary.symbol, raw.symbol, "N/A"),
+        strategy_name: firstPresent(identity.strategy_name, summary.strategy_name, raw.strategy_name, ""),
+        is_synthetic: firstPresent(identity.is_synthetic, summary.is_synthetic, raw.is_synthetic, false),
+        event_type: firstPresent(identity.event_type, summary.event_type, raw.event_type, null)
+      },
+      decision: {
+        ...decisionSummary,
+        lean: firstPresent(decisionSummary.lean, summary.lean, raw.lean, raw.direction, "UNKNOWN"),
+        support_label: firstPresent(decisionSummary.support_label, summary.support_label, raw.support_label, raw.action, "UNKNOWN"),
+        confidence: firstPresent(decisionSummary.confidence, summary.confidence, raw.confidence, null)
+      },
+      quality: {
+        ...qualitySummary,
+        overall: qualityValue
+      },
+      display_layers: {
+        ...displayLayers,
+        headline: firstPresent(displayLayers.headline, summary.headline, raw.headline, "单卡详情待加载")
+      },
+      signal_durability: signalDurability,
+      transition_context: transitionContext
+    };
+  }
+  function cacheDocument(doc) {
+    const id = cardId(doc);
+    if (!id || id === "N/A") return doc;
+    const summary = documents.find((item) => cardId(item) === id);
+    const enriched = summary && summary.__card_path && !doc.__card_path
+      ? { ...doc, __card_path: summary.__card_path }
+      : doc;
+    cardCache.set(id, enriched);
+    documents = documents.map((item) => cardId(item) === id ? enriched : item);
+    return enriched;
+  }
+  function loadFallbackScript() {
+    if (Array.isArray(window.SIGNAL_CARD_FIXTURES) && window.SIGNAL_CARD_FIXTURES.length) {
+      return Promise.resolve(window.SIGNAL_CARD_FIXTURES);
+    }
+    return new Promise((resolve, reject) => {
+      if (typeof document.createElement !== "function") {
+        reject(createLoadError("fallback"));
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "signal_cards/fallback.js";
+      script.onload = () => resolve(asArray(window.SIGNAL_CARD_FIXTURES));
+      script.onerror = () => reject(createLoadError("fallback"));
+      const parent = document.head || document.body || document.documentElement;
+      if (!parent || typeof parent.appendChild !== "function") {
+        reject(createLoadError("fallback"));
+        return;
+      }
+      parent.appendChild(script);
+    });
+  }
+  async function fetchJsonWithTimeout(path, source) {
+    let timerId = null;
+    const timeout = new Promise((_, reject) => {
+      timerId = setTimeout(() => reject(createLoadError(source === "manifest" ? "manifest_http" : "card_timeout")), CARD_FETCH_TIMEOUT_MS);
+    });
+    try {
+      const response = await Promise.race([
+        fetch(path, { cache: "no-store" }),
+        timeout
+      ]);
+      clearTimeout(timerId);
+      if (!response || response.ok !== true) {
+        throw createLoadError(source === "manifest" ? "manifest_http" : "card_http", response && response.status);
+      }
+      try {
+        return await response.json();
+      } catch (_error) {
+        throw createLoadError(source === "manifest" ? "manifest_json" : "card_json");
+      }
+    } finally {
+      clearTimeout(timerId);
+    }
+  }
   async function loadDocuments() {
-    const fallback = sortByTimeDesc(window.SIGNAL_CARD_FIXTURES || embedded);
-    if (window.location.protocol === "file:") {
-      loadState = { mode: "file_fallback", error: "" };
+    if (isFileMode()) {
+      try {
+        const fallback = sortByTimeDesc(asArray(window.SIGNAL_CARD_FIXTURES || embedded));
+        const loaded = fallback.length ? fallback : sortByTimeDesc(await loadFallbackScript());
+        loaded.forEach((doc) => cardCache.set(cardId(doc), doc));
+        loadState = { mode: "file_fallback", error: "" };
+        return loaded;
+      } catch (error) {
+        loadState = { mode: "load_error", error: error.publicReason || publicLoadReason("fallback") };
+        return [];
+      }
+    }
+    if (!isHttpMode()) {
+      const fallback = sortByTimeDesc(asArray(window.SIGNAL_CARD_FIXTURES || embedded));
+      fallback.forEach((doc) => cardCache.set(cardId(doc), doc));
+      loadState = { mode: "embedded", error: "" };
       return fallback;
     }
     try {
-      const manifestResponse = await fetch("signal_cards/index.json", { cache: "no-store" });
-      if (!manifestResponse.ok) throw new Error(`manifest ${manifestResponse.status}`);
-      const manifest = await manifestResponse.json();
-      const loaded = await Promise.all(asArray(manifest.cards).map(async (card) => {
-        const response = await fetch(card.path, { cache: "no-store" });
-        if (!response.ok) throw new Error(`${card.path} ${response.status}`);
-        return response.json();
-      }));
-      loadState = { mode: "materialized", error: "" };
-      return sortByTimeDesc(loaded);
+      const manifest = await fetchJsonWithTimeout("signal_cards/index.json", "manifest");
+      const summaries = sortByTimeDesc(asArray(manifest.cards).map(normalizeManifestSummary)).slice(0, INITIAL_CARD_LIMIT);
+      loadState = { mode: "manifest", error: "" };
+      return summaries;
     } catch (error) {
-      console.warn("Signal card load failed:", error);
-      loadState = {
-        mode: "load_error",
-        error: error && error.message ? error.message : String(error)
-      };
+      loadState = { mode: "load_error", error: error.publicReason || publicLoadReason("manifest_http") };
       return [];
     }
+  }
+  function cardLoadState(id) {
+    return cardLoadStates.get(id) || { status: "idle", attempts: 0, publicReason: "" };
+  }
+  function canRetryCard(id) {
+    return cardLoadState(id).attempts < MAX_CARD_LOAD_ATTEMPTS;
+  }
+  async function loadCardDetail(id, options = {}) {
+    if (!id || cardCache.has(id)) return cardCache.get(id);
+    const summary = documents.find((doc) => cardId(doc) === id);
+    const current = cardLoadState(id);
+    if (current.status === "loading" && current.promise) return current.promise;
+    if (current.status === "error" && !options.retry && !(options.selected && current.prefetch && canRetryCard(id))) {
+      throw createLoadError("card_http");
+    }
+    if (current.attempts >= MAX_CARD_LOAD_ATTEMPTS && (options.retry || options.selected)) {
+      return Promise.reject(createLoadError("card_http"));
+    }
+    const path = summary && summary.__card_path;
+    if (!path) {
+      const error = createLoadError("missing_path");
+      cardLoadStates.set(id, {
+        status: "error",
+        attempts: current.attempts + 1,
+        publicReason: error.publicReason,
+        prefetch: !!options.prefetch
+      });
+      throw error;
+    }
+    const attempts = current.attempts + 1;
+    const promise = fetchJsonWithTimeout(path, "card")
+      .then((doc) => {
+        const object = asObject(doc);
+        if (!Object.keys(object).length) throw createLoadError("card_json");
+        const loaded = cacheDocument(object);
+        cardLoadStates.set(id, {
+          status: "loaded",
+          attempts,
+          publicReason: "",
+          prefetch: !!options.prefetch
+        });
+        return loaded;
+      })
+      .catch((error) => {
+        const publicReason = error.publicReason || publicLoadReason("card_http");
+        cardLoadStates.set(id, {
+          status: "error",
+          attempts,
+          publicReason,
+          prefetch: !!options.prefetch
+        });
+        throw error;
+      });
+    cardLoadStates.set(id, {
+      status: "loading",
+      attempts,
+      promise,
+      publicReason: "",
+      prefetch: !!options.prefetch
+    });
+    return promise;
   }
 
   function uniqueValues(path) {
@@ -881,26 +1074,27 @@
     }
     if (!list.some((doc) => cardId(doc) === state.currentId)) state.currentId = cardId(list[0]);
     $("#indexList").innerHTML = list.map((doc) => {
-      const active = cardId(doc) === state.currentId ? "is-active" : "";
-      const currentDecision = decision(doc);
-      const durability = signalDurability(doc);
+      const view = cardCache.get(cardId(doc)) || doc;
+      const active = cardId(view) === state.currentId ? "is-active" : "";
+      const currentDecision = decision(view);
+      const durability = signalDurability(view);
       return `
-        <button class="index-item ${active}" type="button" data-card-id="${escapeHtml(cardId(doc))}">
+        <button class="index-item ${active}" type="button" data-card-id="${escapeHtml(cardId(view))}">
           <div class="index-topline">
-            <span class="index-symbol">${escapeHtml(symbol(doc))} #${escapeHtml(shortId(doc))}</span>
-            <span class="index-time">${escapeHtml(dateText(confirmedAt(doc), "short"))}</span>
+            <span class="index-symbol">${escapeHtml(symbol(view))} #${escapeHtml(shortId(view))}</span>
+            <span class="index-time">${escapeHtml(dateText(confirmedAt(view), "short"))}</span>
           </div>
-          <p class="index-summary">${escapeHtml(get(doc, "display_layers.headline", currentDecision.final_conclusion_cn || ""))}</p>
+          <p class="index-summary">${escapeHtml(get(view, "display_layers.headline", currentDecision.final_conclusion_cn || ""))}</p>
           <div class="mini-stats">
-            <span>${escapeHtml(semanticCompact(lean(doc)))}</span>
-            <span>${escapeHtml(semanticCompact(support(doc)))}</span>
+            <span>${escapeHtml(semanticCompact(lean(view)))}</span>
+            <span>${escapeHtml(semanticCompact(support(view)))}</span>
             <span>置信 ${escapeHtml(scalarText(currentDecision.confidence, { translate: false }))}</span>
-            <span>${escapeHtml(semanticCompact(qualityOverall(doc)))}</span>
+            <span>${escapeHtml(semanticCompact(qualityOverall(view)))}</span>
             <span>耐用 ${escapeHtml(durabilityScoreText(durability))}</span>
             <span>${escapeHtml(durabilityComfortBrief(durability))}</span>
           </div>
-          ${isFixedAnalysisRound(doc) ? `<div class="transition-badges"><span class="fixed-round-badge">固定轮次</span></div>` : ""}
-          ${renderIndexTransitionBadges(doc)}
+          ${isFixedAnalysisRound(view) ? `<div class="transition-badges"><span class="fixed-round-badge">固定轮次</span></div>` : ""}
+          ${renderIndexTransitionBadges(view)}
         </button>
       `;
     }).join("");
@@ -908,6 +1102,7 @@
       button.addEventListener("click", () => {
         state.currentId = button.dataset.cardId;
         render();
+        prefetchRecentCards();
       });
     });
   }
@@ -953,6 +1148,30 @@
     return listHtml(values, emptyText);
   }
 
+  function llmReviewStatus(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    return rawEnum(firstPresent(review.status, get(doc, "__llm_review_status"), get(doc, "decision_matrix.audit_dissent", "PENDING_LLM"))).toUpperCase();
+  }
+
+  function llmReviewPublished(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    return Object.keys(review).length > 0 && llmReviewStatus(doc) === "OK";
+  }
+
+  function llmReviewUnavailableReason(doc, invalidContent = false) {
+    const review = asObject(get(doc, "llm_review", {}));
+    if (!Object.keys(review).length) {
+      return "LLM内容未发布；安全原因：当前卡尚未合并可展示的 sidecar 复核内容，页面保持 fail-closed。";
+    }
+    if (llmReviewStatus(doc) !== "OK") {
+      return "LLM内容未发布；安全原因：sidecar 标记为错误或未完成状态，前端不会展示模型正文、结构建议或 24h 推断。";
+    }
+    if (invalidContent) {
+      return "LLM内容未发布；安全原因：复核内容未通过当前客户端发布校验，已隐藏顶层辅助决策和 24h 推断。";
+    }
+    return "LLM内容未发布；安全原因：可展示字段不完整，页面保持 fail-closed。";
+  }
+
   function future24hMachineLeak(text) {
     return /\[object Object\]|EV_[A-Z0-9_]+|MODEL_ESTIMATED|PACKET_OBSERVED|\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b|\b[a-z]+(?:_[a-z0-9]+)+(?:\.[a-z0-9_]+)*\b/.test(text);
   }
@@ -963,12 +1182,12 @@
       .replaceAll("rr_blend", "期权偏斜融合指标")
       .replaceAll("gamma_regime.flip_point", "卡内 Gamma 翻转点")
       .replaceAll("gamma_regime.pin_strike", "卡内 Gamma 钉住位")
-      .replaceAll("gamma_regime.max_gamma_strike", "卡内最大 Gamma 行权价")
+      .replaceAll("gamma_regime.max_gamma_strike", "卡内最大 Gamma 观察点位")
       .replaceAll("gex_info.call_wall", "卡内上方 Gamma 墙")
       .replaceAll("gex_info.put_wall", "卡内下方 Gamma 墙")
       .replaceAll("gex_info.magnet_level", "卡内 GEX 磁吸位")
-      .replaceAll("gex_info.max_gamma_strike", "卡内最大 Gamma 行权价")
-      .replaceAll("max_gamma_strike", "最大 Gamma 行权价")
+      .replaceAll("gex_info.max_gamma_strike", "卡内最大 Gamma 观察点位")
+      .replaceAll("max_gamma_strike", "最大 Gamma 观察点位")
       .replaceAll("gamma_regime", "Gamma 体制")
       .replaceAll("BINANCE_SPOT", "币安现货")
       .replaceAll("pin_strike", "Gamma 钉住位")
@@ -1264,7 +1483,25 @@
 
   function renderIntegratedTradeAdvisory(doc) {
     const advisory = integratedTradeAdvisory(doc);
-    if (!advisory) return "";
+    if (!advisory) {
+      const reason = llmReviewUnavailableReason(doc, llmReviewPublished(doc));
+      return section("最高辅助交易决策", "只读辅助，不是交易许可；只有通过发布校验的 LLM 结构审计才会显示具体建议。", `
+        <div class="integrated-advisory-panel is-unavailable">
+          <div class="integrated-advisory-head">
+            <div class="integrated-advisory-conclusion">
+              <span>结论</span>
+              <strong>LLM内容未发布</strong>
+              <p>${escapeHtml(reason)}</p>
+            </div>
+            <div class="integrated-advisory-recommendation">
+              <span>结构复核建议</span>
+              <strong>暂不展示</strong>
+              <em>错误或不完整 advisory 不作为有效内容</em>
+            </div>
+          </div>
+        </div>
+      `, "integrated-advisory");
+    }
     const containment = asObject(advisory.containment_assessment);
     const premiumFit = asObject(advisory.premium_selling_fit);
     const session = asObject(advisory.session_advisory);
@@ -1340,7 +1577,19 @@
     const matrix = asObject(get(doc, "decision_matrix", {}));
     const content = llmReviewContent(doc);
     const status = hasReview ? (review.status || "UNKNOWN") : (matrix.audit_dissent || "PENDING_LLM");
-    const failed = hasReview && rawEnum(status) !== "OK";
+    const failed = hasReview && rawEnum(status).toUpperCase() !== "OK";
+    if (failed || !hasReview) {
+      const panelClass = failed ? "llm-review-panel is-error" : "llm-review-panel is-pending";
+      return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
+        <div class="${panelClass}">
+          <div class="llm-review-topline">
+            <span class="badge ${failed ? "is-bad" : "is-wait"}">状态: ${failed ? "LLM内容未发布" : "等待 LLM 复核发布"}</span>
+            <span class="badge is-wait">安全策略: fail-closed</span>
+          </div>
+          <p class="llm-review-summary">${escapeHtml(llmReviewUnavailableReason(doc))}</p>
+        </div>
+      `, "llm-review");
+    }
     const panelClass = failed ? "llm-review-panel is-error" : (hasReview ? "llm-review-panel" : "llm-review-panel is-pending");
     const summary = content.summary_cn || "LLM 复核尚未生成或尚未被 sidecar 合并；本区保留为发布前必查板块，不改变系统方向、置信、门控或交易许可。";
     return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
@@ -1369,7 +1618,6 @@
         <div><h3 class="subsection-title">人工观察重点</h3>${listHtml(content.operator_focus, "无")}</div>
         <div><h3 class="subsection-title">复核失效条件</h3>${listHtml(content.invalid_if, "无")}</div>
       </div>
-      ${review.error ? `<div class="llm-review-error">${escapeHtml(review.error)}</div>` : ""}
     `, "llm-review");
   }
 
@@ -3818,6 +4066,151 @@
     `);
   }
 
+  function selectedSummary(id) {
+    return documents.find((doc) => cardId(doc) === id) || null;
+  }
+
+  function renderSummaryHeader(doc, subtitle) {
+    const currentDecision = decision(doc);
+    const quality = asObject(get(doc, "quality", {}));
+    return `
+      <header class="doc-header">
+        <div>
+          <p class="eyebrow">signal_review_card / manifest summary</p>
+          <h1 class="doc-title">${escapeHtml(symbol(doc))} 信号审计卡</h1>
+          <p class="doc-subtitle">${escapeHtml(subtitle || get(doc, "identity.strategy_name", ""))} · ${escapeHtml(dateText(confirmedAt(doc)))} · ${escapeHtml(cardId(doc))}</p>
+        </div>
+        <div class="status-stack">
+          ${statusBadge("Direction", currentDecision.lean || lean(doc), true)}
+          ${statusBadge("Action", currentDecision.support_label || support(doc))}
+          ${statusBadge("Quality", quality.overall || "UNKNOWN")}
+        </div>
+      </header>
+    `;
+  }
+
+  function renderDocumentSkeleton(summary) {
+    if (!summary) {
+      $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">请选择一份信号文档</div>`;
+      return;
+    }
+    const currentDecision = decision(summary);
+    $("#documentView").innerHTML = `
+      ${renderLoadNotice()}
+      ${renderSummaryHeader(summary, "单卡详情加载中")}
+      <div class="metric-strip" aria-label="信号关键指标加载中">
+        ${metric("Market price", null)}
+        ${metric("Evidence strength", currentDecision.evidence_strength || null)}
+        ${metric("Confidence", currentDecision.confidence)}
+        ${metric("信号耐用性", get(summary, "signal_durability.headline_score", null))}
+        ${metric("Conflict ratio", null)}
+        ${metric("Data quality", semanticCompact(qualityOverall(summary)))}
+      </div>
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">单卡详情加载中</h2>
+          <p class="section-purpose">索引摘要已先显示；完整审计、顶层辅助决策和 LLM 复核意见会在选中卡 JSON 返回后局部更新。</p>
+        </div>
+        <div class="card-load-state">正在加载单卡 JSON，不会下载未选中的全部历史卡。</div>
+      </section>
+    `;
+  }
+
+  function renderCardLoadError(summary) {
+    const id = summary ? cardId(summary) : state.currentId;
+    const stateForCard = cardLoadState(id);
+    const attempts = Number(stateForCard.attempts || 0);
+    const retry = attempts < MAX_CARD_LOAD_ATTEMPTS;
+    const reason = stateForCard.publicReason || publicLoadReason("card_http");
+    $("#documentView").innerHTML = `
+      ${renderLoadNotice()}
+      ${summary ? renderSummaryHeader(summary, "单卡详情未发布") : ""}
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">单卡详情暂不可显示</h2>
+          <p class="section-purpose">列表仍保持可用；该卡详情失败不会影响其他卡加载。</p>
+        </div>
+        <div class="load-alert card-load-error" role="alert">
+          <strong>单卡 JSON 加载失败</strong>
+          <p>${escapeHtml(reason)}</p>
+          <div class="card-load-actions">
+            <span>已尝试 ${escapeHtml(number(attempts, 0))} / ${escapeHtml(number(MAX_CARD_LOAD_ATTEMPTS, 0))}</span>
+            <button class="card-retry" type="button" data-card-id="${escapeHtml(id)}" ${retry ? "" : "disabled"}>${retry ? "重试加载" : "重试次数已用完"}</button>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderDocumentById(id) {
+    if (!id) {
+      $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">请选择一份信号文档</div>`;
+      return;
+    }
+    const cached = cardCache.get(id);
+    if (cached) {
+      renderDocument(cached);
+      return;
+    }
+    const summary = selectedSummary(id);
+    const load = cardLoadState(id);
+    if (load.status === "error") {
+      renderCardLoadError(summary);
+      return;
+    }
+    renderDocumentSkeleton(summary);
+  }
+
+  function setupDocumentActions() {
+    document.querySelectorAll(".card-retry").forEach((button) => {
+      button.addEventListener("click", () => {
+        const id = button.dataset.cardId;
+        if (!id || !canRetryCard(id)) return;
+        const retry = loadCardDetail(id, { selected: true, retry: true });
+        render();
+        retry.then(() => {
+          if (state.currentId === id) {
+            populateFilters();
+            render();
+          }
+        }).catch(() => {
+          if (state.currentId === id) render();
+        });
+      });
+    });
+  }
+
+  function maybeLoadSelectedCard() {
+    const id = state.currentId;
+    if (!isHttpMode() || !id || cardCache.has(id)) return;
+    const load = cardLoadState(id);
+    if (load.status === "loading") return;
+    if (load.status === "error" && !(load.prefetch && canRetryCard(id))) return;
+    loadCardDetail(id, { selected: true, retry: load.status === "error" })
+      .then(() => {
+        if (state.currentId === id) {
+          populateFilters();
+          render();
+        }
+      })
+      .catch(() => {
+        if (state.currentId === id) render();
+      });
+  }
+
+  function prefetchRecentCards() {
+    if (!isHttpMode()) return Promise.resolve([]);
+    const ids = documents
+      .map((doc) => cardId(doc))
+      .filter((id) => id && id !== state.currentId && !cardCache.has(id))
+      .filter((id) => {
+        const load = cardLoadState(id);
+        return load.status !== "loading" && load.status !== "error";
+      })
+      .slice(0, PREFETCH_CARD_LIMIT);
+    return Promise.allSettled(ids.map((id) => loadCardDetail(id, { prefetch: true })));
+  }
+
   function renderDocument(doc) {
     if (!doc) {
       $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">请选择一份信号文档</div>`;
@@ -3887,7 +4280,9 @@
   function render() {
     const list = filteredDocuments();
     renderIndex(list);
-    renderDocument(documents.find((doc) => cardId(doc) === state.currentId));
+    renderDocumentById(state.currentId);
+    setupDocumentActions();
+    maybeLoadSelectedCard();
   }
 
   async function start() {
@@ -3896,6 +4291,7 @@
     state.currentId = documents[0] ? cardId(documents[0]) : null;
     populateFilters();
     render();
+    prefetchRecentCards();
   }
 
   start();
