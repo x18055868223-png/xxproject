@@ -304,6 +304,11 @@ rank = data.get("rank") or {}
 window = rank.get("window") or {}
 print("availability:", data.get("availability"))
 print("stale:", data.get("stale"))
+print("source_mode:", data.get("source_mode"))
+print("data_age_ms:", data.get("data_age_ms"))
+gamma = data.get("gamma_exposure") or {}
+print("wall_strikes:", [gamma.get(key) for key in ("p1", "p2", "n1", "n2")])
+print("cross_check:", (data.get("source_metadata") or {}).get("cross_check"))
 print("rank_samples:", window.get("sample_count"))
 print("net_gex:", (data.get("gex_board") or {}).get("total_net_gex"))
 PY
