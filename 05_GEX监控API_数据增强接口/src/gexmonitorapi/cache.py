@@ -58,8 +58,9 @@ class MetricsCache:
         self._load_history()
 
     async def get_info(self) -> dict[str, Any]:
-        async with self._lock:
-            return self._build_payload()
+        # Browser refreshes can take tens of seconds. Keep the last complete
+        # snapshot readable while refresh holds the writer lock.
+        return self._build_payload()
 
     async def refresh(self, section: RefreshSection = "all") -> dict[str, Any]:
         targets = SECTIONS if section == "all" else (section,)

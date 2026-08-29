@@ -21,30 +21,42 @@ def parse_section(section: SectionName, text: str) -> ParsedSection:
     data = empty_section_data(section)
 
     if section == "gex_board":
-        data["total_net_gex"] = _num_after(norm, ["TOTAL NET GEX", "Total Net GEX", "Net GEX"], window=24)
-        data["dvol"] = _num_after(norm, ["DVOL"], window=16)
+        data["total_net_gex"] = _num_after(
+            norm,
+            ["净 GEX / REGIME", "NET GEX / REGIME", "TOTAL NET GEX", "Total Net GEX", "Net GEX"],
+            window=32,
+        )
+        data["dvol"] = _num_after(norm, ["BTC DVOL", "DVOL"], window=16)
         data["market_state"] = _market_state(norm)
     elif section == "gamma_exposure":
         # The "GAMMA COMPONENTS" block holds clean LABEL value rows; slicing to it
         # avoids the chart legend (P1 P2 N1 N2 ...) and axis ticks above it.
         scope = _slice_from(norm, ["GAMMA COMPONENTS"]) or norm
         data["n2"] = _num_after(scope, ["N2"], window=14)
-        data["n1"] = _num_after(scope, ["N1"], window=14)
-        data["flip_point"] = _num_after(scope, ["FLIP POINT", "FLIP", "Flip Point", "Flip"], window=18)
-        data["volatility_trigger"] = _num_after(scope, ["VOL TRIGGER", "Volatility Trigger"], window=18)
-        data["spot_price"] = _num_after(scope, ["SPOT PRICE", "Spot Price"], window=18)
-        data["magnet_price"] = _num_after(scope, ["MAGNET", "Magnet"], window=14)
-        data["p1"] = _num_after(scope, ["P1"], window=14)
+        # Keep the stable legacy shape: dashboard Put/Call Wall values map to
+        # the nearest negative/positive gamma wall slots consumed downstream.
+        data["n1"] = _num_after(scope, ["N1", "PUT WALL", "看跌墙"], window=18)
+        data["volatility_trigger"] = _num_after(
+            scope, ["VOL TRIGGER", "Volatility Trigger", "波动触发"], window=22
+        )
+        data["spot_price"] = _num_after(scope, ["SPOT PRICE", "Spot Price", "Spot"], window=18)
+        data["magnet_price"] = _num_after(scope, ["磁吸位", "MAGNET", "Magnet"], window=22)
+        data["flip_point"] = _flip_point(scope, data["spot_price"])
+        data["p1"] = _num_after(scope, ["P1", "CALL WALL", "看涨墙"], window=18)
         data["p2"] = _num_after(scope, ["P2"], window=14)
     elif section == "volatility":
         data["iv_rv_ratio"] = _num_after(norm, ["IV/RV RATIO", "IV/RV Ratio"], window=14)
-        data["pcr"] = _num_after(norm, ["PCR (VOLUME)", "PCR", "Put/Call Ratio"], window=24)
+        data["pcr"] = _num_after(
+            norm, ["PCR (VOLUME)", "PCR", "Put/Call Ratio", "看跌/看涨比"], window=24
+        )
         data["term_structure"] = _term_structure(norm)
     elif section == "flow":
         data["call_premium"] = _num_after(norm, ["CALL PREMIUM", "Call Premium"], window=18)
         data["put_premium"] = _num_after(norm, ["PUT PREMIUM", "Put Premium"], window=18)
         data["call_put_bias"] = _call_put_bias(norm)
-        data["put_call_ratio"] = _num_after(norm, ["P/C RATIO", "Put/Call Ratio"], window=16)
+        data["put_call_ratio"] = _num_after(
+            norm, ["P/C RATIO", "Put/Call Ratio", "看跌/看涨比"], window=20
+        )
         data["abnormal_signal"] = _abnormal_signal(norm)
 
     return _with_status(section, data)
@@ -112,13 +124,39 @@ def _num_after(text: str, labels: list[str], window: int = 24) -> float | None:
 
 def _market_state(text: str) -> str | None:
     low = text.lower()
-    if "short gamma" in low or "negative gamma" in low or "gamma is negative" in low or "net short" in low:
+    if ("short gamma" in low or "negative gamma" in low or "gamma is negative" in low
+            or "net short" in low or "负 gamma" in low):
         return "negative_gamma"
-    if "long gamma" in low or "positive gamma" in low or "gamma is positive" in low or "net long" in low:
+    if ("long gamma" in low or "positive gamma" in low or "gamma is positive" in low
+            or "net long" in low or "正 gamma" in low):
         return "positive_gamma"
     if "neutral" in low:
         return "neutral"
     return None
+
+
+def _flip_point(text: str, spot_price: float | None) -> float | None:
+    explicit = re.search(
+        r"(?<![0-9A-Za-z])FLIP(?:\s+POINT)?(?!\s*(?:距离|DISTANCE))\s*[:：]?\s*"
+        r"((?:\$)?\s*[-+]?\s*(?:\$)?\s*\d[\d,]*(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if explicit:
+        value = _to_number(explicit.group(1))
+        if value is not None:
+            return value
+    if spot_price is None:
+        return None
+    distance = re.search(
+        r"FLIP\s*(?:距离|DISTANCE)\s*[:：]?\s*([+-]\s*\d[\d,]*(?:\.\d+)?)\s*(?:点|PTS?|POINTS?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not distance:
+        return None
+    delta = _to_number(distance.group(1))
+    return spot_price + delta if delta is not None else None
 
 
 def _call_put_bias(text: str) -> str | None:

@@ -67,6 +67,20 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("BROWSER_NETWORK_IDLE", "GEXMONITOR_BROWSER_NETWORK_IDLE"),
     )
+    browser_storage_state_file: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "BROWSER_STORAGE_STATE_FILE",
+            "GEXMONITOR_BROWSER_STORAGE_STATE_FILE",
+        ),
+    )
+    browser_text_cache_seconds: int = Field(
+        default=60,
+        validation_alias=AliasChoices(
+            "BROWSER_TEXT_CACHE_SECONDS",
+            "GEXMONITOR_BROWSER_TEXT_CACHE_SECONDS",
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

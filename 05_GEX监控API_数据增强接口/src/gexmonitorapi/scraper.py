@@ -2,38 +2,46 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any
 
 from .config import Settings
-from .models import SECTION_TABS, SectionName
+from .models import SectionName
 
 # The unrendered SSR shell is ~860 chars and only shows the "加载中" placeholder;
 # any genuinely rendered analytics tab is several KB of text.
 _MIN_RENDERED_CHARS = 1200
+_DASHBOARD_MARKERS = ("NET GEX", "净 GEX", "CALL WALL", "PUT WALL", "看跌/看涨比")
 
 
 class ScraplingScraper:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._cached_text: str | None = None
+        self._cache_expires_at = 0.0
 
     async def fetch_section_text(self, section: SectionName) -> str:
         return await asyncio.to_thread(self._fetch_section_text_sync, section)
 
     def source_url(self, section: SectionName) -> str:
-        asset = self.settings.asset.lower()
-        tab = SECTION_TABS[section]
-        return f"{self.settings.base_url.rstrip('/')}/{asset}/options/analytics?tab={tab}"
+        del section
+        return f"{self.settings.base_url.rstrip('/')}/dashboard"
 
     def _fetch_section_text_sync(self, section: SectionName) -> str:
+        if self._cached_text and time.monotonic() < self._cache_expires_at:
+            return self._cached_text
         url = self.source_url(section)
         # Primary: Scrapling DynamicFetcher (used on the server). Fallback: bare
         # Playwright (Scrapling's persistent-context mode can fail to spawn on some
         # hosts). Last resort: static fetch, which usually only yields the shell.
-        strategies = (
-            ("scrapling_dynamic", self._text_from_scrapling_dynamic),
-            ("playwright", self._text_from_playwright),
-            ("static", self._text_from_static),
-        )
+        if self.settings.browser_storage_state_file:
+            strategies = (("playwright", self._text_from_playwright),)
+        else:
+            strategies = (
+                ("scrapling_dynamic", self._text_from_scrapling_dynamic),
+                ("playwright", self._text_from_playwright),
+                ("static", self._text_from_static),
+            )
         errors: list[str] = []
         for name, strategy in strategies:
             try:
@@ -41,9 +49,17 @@ class ScraplingScraper:
             except Exception as exc:  # noqa: BLE001 - record and try the next strategy
                 errors.append(f"{name}={type(exc).__name__}: {str(exc)[:120]}")
                 continue
-            if text and len(text) >= _MIN_RENDERED_CHARS:
+            auth_error = _authentication_error(text)
+            if auth_error:
+                errors.append(f"{name}={auth_error}")
+                continue
+            if text and len(text) >= _MIN_RENDERED_CHARS and _has_dashboard_metrics(text):
+                self._cached_text = text
+                self._cache_expires_at = time.monotonic() + max(
+                    0, self.settings.browser_text_cache_seconds
+                )
                 return text
-            errors.append(f"{name}=loading_placeholder({len(text or '')} chars)")
+            errors.append(f"{name}=no_dashboard_metrics({len(text or '')} chars)")
         raise RuntimeError("no rendered content: " + "; ".join(errors))
 
     def _text_from_scrapling_dynamic(self, url: str) -> str:
@@ -77,11 +93,18 @@ class ScraplingScraper:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(**launch_args)
             try:
-                page = browser.new_page()
+                context_args: dict[str, Any] = {}
+                storage_state = self.settings.browser_storage_state_file
+                if storage_state:
+                    if not storage_state.is_file():
+                        raise RuntimeError(f"storage_state_file_not_found: {storage_state}")
+                    context_args["storage_state"] = str(storage_state)
+                context = browser.new_context(**context_args)
+                page = context.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 if self.settings.browser_wait_ms > 0:
                     page.wait_for_timeout(self.settings.browser_wait_ms)
-                return _clean_text(page.inner_text("body"))
+                return _clean_text(page.inner_text("body", timeout=min(timeout_ms, 5000)))
             finally:
                 browser.close()
 
@@ -127,3 +150,17 @@ def _strip_tags(value: str) -> str:
 
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _authentication_error(text: str) -> str | None:
+    low = (text or "").lower()
+    if "checking authentication status" in low:
+        return "authentication_required"
+    if ("login / register" in low or "登录 / 注册" in text) and not _has_dashboard_metrics(text):
+        return "authentication_required"
+    return None
+
+
+def _has_dashboard_metrics(text: str) -> bool:
+    upper = (text or "").upper()
+    return sum(marker.upper() in upper for marker in _DASHBOARD_MARKERS) >= 2

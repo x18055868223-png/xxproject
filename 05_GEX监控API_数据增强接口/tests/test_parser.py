@@ -124,3 +124,34 @@ def test_missing_fields_are_reported_with_reasons() -> None:
         "status": "missing",
         "reason": "not_found_in_rendered_page",
     }
+
+
+DASHBOARD_TEXT = """
+BTC DVOL 38.4 净 GEX / REGIME 87M 正 Gamma (减震区) 看跌/看涨比 0.64
+磁吸位: $77,500 Vol Trigger: $77,721.169 Spot: $77,642.78
+FLIP 距离 +78 点 +0.1% MAGNET 距离 -143 点 US$77,500
+CALL WALL US$82,000 PUT WALL US$77,500
+"""
+
+
+def test_parse_dashboard_regime_and_key_levels() -> None:
+    board = parse_section("gex_board", DASHBOARD_TEXT)
+    gamma = parse_section("gamma_exposure", DASHBOARD_TEXT)
+    volatility = parse_section("volatility", DASHBOARD_TEXT)
+    flow = parse_section("flow", DASHBOARD_TEXT)
+
+    assert board.data == {
+        "total_net_gex": 87000000.0,
+        "dvol": 38.4,
+        "market_state": "positive_gamma",
+    }
+    assert gamma.data["spot_price"] == 77642.78
+    assert gamma.data["flip_point"] == 77720.78
+    assert gamma.data["volatility_trigger"] == 77721.169
+    assert gamma.data["magnet_price"] == 77500.0
+    assert gamma.data["p1"] == 82000.0
+    assert gamma.data["n1"] == 77500.0
+    assert gamma.data["p2"] is None
+    assert gamma.data["n2"] is None
+    assert volatility.data["pcr"] == 0.64
+    assert flow.data["put_call_ratio"] == 0.64

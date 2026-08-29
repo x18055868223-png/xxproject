@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -23,6 +24,17 @@ class StaticScraper:
 class FailingScraper:
     async def fetch_section_text(self, section: str) -> str:
         raise RuntimeError(f"fetch failed for {section}")
+
+
+class BlockingScraper:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def fetch_section_text(self, section: str) -> str:
+        self.started.set()
+        await self.release.wait()
+        raise RuntimeError(f"released {section}")
 
 
 class SequenceScraper:
@@ -80,6 +92,20 @@ async def test_refresh_failure_keeps_previous_cache_and_marks_stale() -> None:
     assert payload["availability"] == "partial"
     assert payload["gex_board"]["total_net_gex"] == -67000000.0
     assert payload["sections"]["gex_board"]["last_error"] == "fetch failed for gex_board"
+
+
+@pytest.mark.asyncio
+async def test_get_info_does_not_wait_for_blocked_refresh() -> None:
+    scraper = BlockingScraper()
+    cache = MetricsCache(scraper)
+    refresh_task = asyncio.create_task(cache.refresh("gex_board"))
+    await scraper.started.wait()
+
+    payload = await asyncio.wait_for(cache.get_info(), timeout=0.1)
+
+    assert payload["availability"] == "missing"
+    scraper.release.set()
+    await refresh_task
 
 
 @pytest.mark.asyncio
