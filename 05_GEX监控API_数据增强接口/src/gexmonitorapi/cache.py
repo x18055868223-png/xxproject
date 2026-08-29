@@ -46,6 +46,7 @@ class MetricsCache:
         self._last_payload: dict[str, Any] | None = None
         self._stale = True
         self._history: list[dict[str, Any]] = []
+        self._source_metadata: dict[str, Any] = {}
 
     async def load(self) -> None:
         if self.cache_file and self.cache_file.exists():
@@ -66,12 +67,24 @@ class MetricsCache:
         targets = SECTIONS if section == "all" else (section,)
         async with self._lock:
             had_error = False
-            for target in targets:
+            if hasattr(self.scraper, "fetch_snapshot"):
                 try:
-                    await self._refresh_one(target)
+                    snapshot = await self.scraper.fetch_snapshot()
+                    self._apply_source_snapshot(snapshot, targets)
+                    errors = (snapshot.get("metadata") or {}).get("errors") or {}
+                    had_error = any(name in errors for name in ("gex", "volatility", "price"))
+                    self._source_metadata = dict(snapshot.get("metadata") or {})
                 except Exception as exc:
                     had_error = True
-                    self._sections[target]["last_error"] = str(exc)
+                    for target in targets:
+                        self._sections[target]["last_error"] = str(exc)
+            else:
+                for target in targets:
+                    try:
+                        await self._refresh_one(target)
+                    except Exception as exc:
+                        had_error = True
+                        self._sections[target]["last_error"] = str(exc)
             self._stale = had_error
             if section == "all" and not had_error:
                 self._append_history_sample(self._current_history_sample())
@@ -79,6 +92,39 @@ class MetricsCache:
             self._last_payload = payload
             self._save(payload)
             return payload
+
+    def _apply_source_snapshot(self, snapshot: dict[str, Any], targets: tuple[str, ...]) -> None:
+        sections = snapshot.get("sections") if isinstance(snapshot, dict) else None
+        if not isinstance(sections, dict):
+            raise RuntimeError("public_json_missing_sections")
+        metadata = snapshot.get("metadata") or {}
+        errors = metadata.get("errors") or {}
+        fetched_at = metadata.get("observed_at") or self.now().isoformat()
+        for target in targets:
+            state = sections.get(target)
+            if not isinstance(state, dict):
+                raise RuntimeError(f"public_json_missing_section:{target}")
+            data = state.get("data") if isinstance(state.get("data"), dict) else empty_section_data(target)
+            missing = list(state.get("missing_fields") or [])
+            statuses = state.get("field_status") if isinstance(state.get("field_status"), dict) else {}
+            source_error_name = "gex" if target in {"gex_board", "gamma_exposure"} else "volatility"
+            source_error = errors.get(source_error_name)
+            # Keep the last good section during a transient endpoint failure;
+            # expose the failure via stale/availability and last_error instead
+            # of replacing usable values with a wall of nulls.
+            preserve_cached = bool(source_error and self._sections[target].get("last_success_at"))
+            self._sections[target].update(
+                {
+                    "data": self._sections[target]["data"] if preserve_cached else data,
+                    "missing_fields": self._sections[target]["missing_fields"] if preserve_cached else missing,
+                    "field_status": self._sections[target]["field_status"] if preserve_cached else statuses,
+                    "fetched_at": state.get("fetched_at") or fetched_at,
+                    "last_success_at": self._sections[target].get("last_success_at") if preserve_cached else (state.get("last_success_at") or fetched_at),
+                    "source_url": state.get("source_url") or self._source_url(target),
+                    "content_hash": state.get("content_hash"),
+                    "last_error": source_error or state.get("last_error"),
+                }
+            )
 
     async def refresh_periodically(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -112,7 +158,7 @@ class MetricsCache:
 
     def _build_payload(self) -> dict[str, Any]:
         missing_fields: list[str] = []
-        field_status: dict[str, dict[str, str]] = {}
+        field_status: dict[str, dict[str, Any]] = {}
         for state in self._sections.values():
             missing_fields.extend(state["missing_fields"])
             # Only surface fields that need attention; "ok" entries are pure noise.
@@ -124,6 +170,14 @@ class MetricsCache:
             (state.get("fetched_at") for state in self._sections.values() if state.get("fetched_at")),
             default=None,
         )
+        data_age_ms = None
+        if latest_fetch:
+            parsed_latest = self._parse_datetime(latest_fetch)
+            if parsed_latest:
+                # Do not consume the injected clock here: tests and callers use
+                # it to timestamp refreshes deterministically. Age is an
+                # observational wall-clock field and may be computed separately.
+                data_age_ms = max(0, int((datetime.now(UTC) - parsed_latest).total_seconds() * 1000))
         any_success = any(state.get("last_success_at") for state in self._sections.values())
         any_error = any(state.get("last_error") for state in self._sections.values())
         if not any_success:
@@ -136,8 +190,13 @@ class MetricsCache:
         payload = {
             "asset": "BTC",
             "fetched_at": latest_fetch,
+            "observed_at": self._source_metadata.get("observed_at", latest_fetch),
+            "data_age_ms": data_age_ms,
             "stale": self._stale,
             "availability": availability,
+            "source_mode": self._source_metadata.get("source_mode", "legacy_page"),
+            "source_urls": self._source_metadata.get("source_urls", {}),
+            "source_metadata": self._source_metadata,
             "gex_board": self._sections["gex_board"]["data"],
             "gamma_exposure": self._sections["gamma_exposure"]["data"],
             "volatility": self._sections["volatility"]["data"],
@@ -193,6 +252,9 @@ class MetricsCache:
         self._history = loaded
 
     def _restore_cached_payload(self, payload: dict[str, Any]) -> None:
+        source_metadata = payload.get("source_metadata")
+        if isinstance(source_metadata, dict):
+            self._source_metadata = source_metadata
         problem_status = payload.get("field_status", {})
         sections = payload.get("sections", {})
         for section in SECTIONS:
@@ -362,6 +424,7 @@ class MetricsCache:
                 "source_url": state.get("source_url"),
                 "content_hash": state.get("content_hash"),
                 "missing_fields": state.get("missing_fields", []),
+                "field_status": state.get("field_status", {}),
             }
         return states
 

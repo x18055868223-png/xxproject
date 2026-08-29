@@ -55,5 +55,4 @@ class ParsedSection:
     section: SectionName
     data: dict[str, Any]
     missing_fields: list[str]
-    field_status: dict[str, dict[str, str]]
-
+    field_status: dict[str, dict[str, Any]]

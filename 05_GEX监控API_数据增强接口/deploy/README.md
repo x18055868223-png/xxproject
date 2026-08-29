@@ -1,6 +1,6 @@
 # 部署到 AWS Lightsail（Ubuntu + venv + systemd）
 
-本服务靠**无头浏览器**渲染 GEX Monitor 页面再抓指标，所以服务器需要能跑 headless Chromium。
+本服务默认通过 GEX Monitor 公开 JSON 接口读取指标，不需要浏览器、登录态或 storage state。
 下面以 **Ubuntu 24.04 LTS**（自带 Python 3.12）为例。命令里的 `ubuntu` 是 Lightsail 默认用户。
 
 > 占位符：`<TOKEN>` = 你的 API Token，`<IP>` = 实例公网 IP。
@@ -11,9 +11,9 @@
 
 | 内存 | 说明 |
 | --- | --- |
-| 512MB（$5） | ❌ 跑 Chromium 容易 OOM，不建议 |
-| 1GB（$7） | ⚠️ 可用，但必须加 swap |
-| **2GB（$12）** | ✅ 推荐，抓取更稳 |
+| 512MB（$5） | ⚠️ JSON 模式可用；建议配置 swap |
+| 1GB（$7） | ✅ 可用，建议配置 swap |
+| **2GB（$12）** | ✅ 推荐，可与同机其他服务共存 |
 
 蓝图选 **Ubuntu 24.04 LTS**（不要选带应用的镜像）。
 
@@ -45,22 +45,17 @@ git clone <你的仓库URL> /home/ubuntu/gexmonitorapi
 #   scp -r src tests pyproject.toml README.md deploy ubuntu@<IP>:/home/ubuntu/gexmonitorapi/
 ```
 
-## 4. 建 venv + 装依赖 + 装浏览器
+## 4. 建 venv + 装依赖
 
 ```bash
 cd /home/ubuntu/gexmonitorapi
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -e .          # 生产不需要 [dev]
-
-# 装 headless Chromium 需要的系统库（用 root 跑，按系统版本装对包）
-sudo .venv/bin/playwright install-deps chromium
-
-# 下载浏览器内核（必须用运行服务的同一个用户 ubuntu 跑，浏览器会装进 ~/.cache）
-# 抓取主用 Scrapling 动态抓取，并自带 bare-Playwright 兜底，两者共用同一套 Chromium
-.venv/bin/scrapling install
-.venv/bin/playwright install chromium
 ```
+
+只有临时回滚 `GEXMONITOR_SOURCE_MODE=page` 时，才需要额外安装 Scrapling/Playwright 浏览器及系统依赖；
+正常 JSON 运行路径不会启动浏览器。
 
 ## 5.（1GB 实例必做）加 2GB swap
 
@@ -108,12 +103,16 @@ curl -s http://<IP>:8000/health
 curl -s -H "Authorization: Bearer <TOKEN>" http://<IP>:8000/v1/info | head -c 400
 ```
 
-首轮抓取在后台进行，可能要 1–2 分钟四个 tab 才陆续就绪。期间 `/v1/info` 会返回
-`availability: missing/partial`，属正常。可手动催一轮：
+服务启动后会在后台刷新。期间 `/v1/info` 可能短暂返回 `availability: missing/partial`，属正常。
+可手动催一轮：
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer <TOKEN>" "http://127.0.0.1:8000/v1/refresh?section=all" | head -c 400
 ```
+
+JSON 模式首轮通常在数秒内完成。验收时应看到 `source_mode: "public_json"`、
+`source_metadata.cross_check.status: "ok"`（若期权链临时失败则为 `unavailable`，不影响主字段），
+`stale: false`，以及 `gamma_exposure` 中的中轴和四个墙位。
 
 ## 9.（可选）Nginx 反代 + TLS
 
@@ -160,13 +159,16 @@ sudo systemctl restart gexmonitorapi
 里加一行 `BROWSER_NO_SANDBOX=true` 再 `sudo systemctl restart gexmonitorapi`。
 
 **`/v1/info` 一直全是 null（所有字段 missing）**
+- 确认 `/etc/gexmonitorapi.env` 中 `GEXMONITOR_SOURCE_MODE=public_json`，并检查服务器能访问
+  `https://gexmonitor.com/api/gex-latest`、`/api/volatility-metrics` 和 `/api/price`。
+- 检查 `source_metadata.errors` 与各段 `field_status`；不要把页面登录态或浏览器 Cookie 复制到服务器。
 - 看 `field_status` 的 reason；`sections.<x>.last_error` 有没有报错。
-- 后台首轮可能还没跑完（四个 tab 各等 ~12s 渲染），先等 1–2 分钟或手动 `POST /v1/refresh`。
-- 若 `last_error` 提示 `loading_placeholder`：页面没渲染出来，调大 `BROWSER_WAIT_MS`（如 18000）后重启。
-- 若 `last_error` 提示超时：调大 `REQUEST_TIMEOUT_SECONDS`（如 60）后重启。
+- 若公共接口暂时限流，调大 `REQUEST_TIMEOUT_SECONDS`（如 60）并保持低频刷新；必要时将
+  `GEXMONITOR_OPTIONS_CHAIN_CROSSCHECK=false` 暂停可选的期权链校验。
 
 **进程被 OOM kill（journalctl 里有 `Killed`）**
-内存不够。升到 2GB 实例，或确认第 5 步的 swap 已生效（`free -h`）。
+内存不够。JSON 模式内存占用应明显低于页面抓取；确认第 5 步的 swap 已生效（`free -h`），
+并检查是否还有旧的页面抓取定时任务在运行。
 
 **`patchright install-deps` 不可用**
 改用 `sudo .venv/bin/playwright install-deps`；两者等价。

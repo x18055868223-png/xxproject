@@ -17,12 +17,24 @@
 
 ## 1. 服务简介
 
-一个用 **FastAPI + Scrapling** 实现的、单 Bearer Token 保护的 BTC 指标字典 API。
-它用动态（浏览器）抓取 GEX Monitor 公开分析页 BTC 的四个 tab（`gex` / `gamma` / `volatility` / `flow`），
-把可见内容结构化成一个总 `info` JSON，并在抓取失败时保留上一次成功缓存。
+一个用 **FastAPI** 实现的、单 Bearer Token 保护的 BTC 指标字典 API。
+默认使用 GEX Monitor 的公开 JSON 接口，不依赖登录态、Cookie、storage state、Scrapling 或 Playwright 页面渲染。
+页面抓取实现仍保留为显式回滚路径（`GEXMONITOR_SOURCE_MODE=page`），但不是默认运行路径。
 
-> 合规说明：仅抓取公开页面的可见内容；不抓登录页 / 后台 / `/_next/` 静态包 / 未公开接口，
-> 也不二次包装 GEX Monitor 官方 `/api/` 数据接口。
+> 合规说明：仅以低频、带正常 User-Agent/Referer 的方式读取公开 JSON 接口；不抓登录页、后台、Cookie、
+> storage state 或未公开接口。服务只在 `/v1/info` 兼容边界内整理公开数据，并保留来源和派生标记。
+
+### 1.1 公开 JSON 数据源
+
+| 源接口 | 用途 |
+| --- | --- |
+| `/api/gex-latest?asset=BTC&exchange=all&lite=true` | 中轴、现价、总 GEX、DVOL、四个墙位、磁吸位、vol trigger |
+| `/api/volatility-metrics?asset=BTC` | PCR、Call/Put 成交量和 OI、IV rank/percentile、IV/RV、DVOL |
+| `/api/options-chain?asset=BTC` | 期权链交叉校验与墙位备用重算（`OPTIONS_CHAIN_CROSSCHECK=true`） |
+| `/api/price?asset=BTC` | 现价备用源 |
+
+`/v1/info` 保持 `gex_board`、`gamma_exposure`、`volatility`、`flow` 四段结构。公开 JSON 无可靠权利金流时，
+`call_premium`、`put_premium`、`abnormal_signal` 保持 `null`，不会用成交量伪造权利金；`call_put_bias` 明确标记为派生的成交量占比。
 
 ## 2. 接口
 
@@ -78,8 +90,7 @@ py -3.12 -m venv .venv
 # 2. 安装依赖（含浏览器抓取与开发依赖）
 pip install -e ".[dev]"
 
-# 3. 安装 Scrapling 的浏览器内核（动态抓取必需，首次较大）
-scrapling install
+# 3. 默认 JSON 模式无需浏览器；只有回滚到 SOURCE_MODE=page 时才需要 Scrapling/Playwright
 
 # 4. 配置 token
 copy .env.example .env   # 然后编辑 .env 改掉 API_TOKEN
@@ -103,8 +114,13 @@ curl -X POST -H "Authorization: Bearer <你的TOKEN>" "http://127.0.0.1:8000/v1/
 ## 4. 配置项
 
 全部可经环境变量或 `.env` 覆盖，见 [.env.example](.env.example)：
-`API_TOKEN`、`REFRESH_INTERVAL_SECONDS`、`REQUEST_TIMEOUT_SECONDS`、`CACHE_FILE`、
-`HISTORY_FILE`、`RANK_LOOKBACK_DAYS`、`USER_AGENT`、`ENABLE_BACKGROUND_REFRESH`、`REFRESH_ON_STARTUP`。
+`API_TOKEN`、`GEXMONITOR_SOURCE_MODE`、`GEXMONITOR_OPTIONS_CHAIN_CROSSCHECK`、
+`REFRESH_INTERVAL_SECONDS`、`REQUEST_TIMEOUT_SECONDS`、`CACHE_FILE`、`HISTORY_FILE`、
+`RANK_LOOKBACK_DAYS`、`USER_AGENT`、`ENABLE_BACKGROUND_REFRESH`、`REFRESH_ON_STARTUP`。
+
+`GEXMONITOR_SOURCE_MODE=public_json` 为默认值；如需临时回滚旧页面抓取，设置为 `page` 并重启服务。
+JSON 模式响应还包含 `source_mode`、`source_urls`、`source_metadata.cross_check`、`field_status`、`observed_at`、
+`data_age_ms`、`stale` 与 `availability`，供前端和 LLM 区分原生值、派生值和交叉校验状态。
 
 ## 5. 部署到 AWS 轻量服务器
 

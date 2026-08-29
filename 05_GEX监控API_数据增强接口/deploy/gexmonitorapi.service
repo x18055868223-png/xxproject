@@ -16,14 +16,14 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/ubuntu/gexmonitorapi/.venv/bin/python -m uvicorn gexmonitorapi.app:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
-# First request launches a headless browser; give startup some slack.
+# Public JSON mode performs low-frequency HTTP reads; keep a generous startup window
+# for DNS/TLS and optional first-refresh retries.
 TimeoutStartSec=90
 
 # --- memory containment (CRITICAL on small shared boxes) ---
-# Bounds the blast radius: if the headless browser spikes past these limits the
-# kernel reclaims/kills ONLY this service's cgroup, so it can never thrash the
-# whole host into OOM and take down co-located services (e.g. FMZ). If scrapes
-# start failing under load, raise these or move the service to its own instance.
+# Bounds the blast radius so a co-located FMZ service cannot be starved. JSON
+# mode should stay well below these limits; they also protect the explicit page
+# rollback path if it is temporarily enabled.
 MemoryHigh=450M
 MemoryMax=600M
 MemorySwapMax=512M

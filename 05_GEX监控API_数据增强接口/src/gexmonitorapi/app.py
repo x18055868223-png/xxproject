@@ -12,7 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from . import __version__
 from .cache import MetricsCache
 from .config import Settings
-from .scraper import ScraplingScraper
+from .json_source import PublicJsonSource
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -27,8 +27,16 @@ class RefreshSectionParam(str, Enum):
 
 def create_app(settings: Settings | None = None, cache: Any | None = None) -> FastAPI:
     settings = settings or Settings()
+    if settings.source_mode.lower() in {"public_json", "json", "api"}:
+        source = PublicJsonSource(settings)
+    else:
+        # Keep the page path as an explicit rollback option, but do not import
+        # Scrapling/Playwright in the public-JSON process unless it is selected.
+        from .scraper import ScraplingScraper
+
+        source = ScraplingScraper(settings)
     cache = cache or MetricsCache(
-        ScraplingScraper(settings),
+        source,
         cache_file=settings.cache_file,
         history_file=settings.history_file,
         rank_lookback_days=settings.rank_lookback_days,

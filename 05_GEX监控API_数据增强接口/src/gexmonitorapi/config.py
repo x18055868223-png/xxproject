@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     )
     asset: str = "BTC"
     base_url: str = "https://gexmonitor.com"
+    source_mode: str = Field(
+        default="public_json",
+        validation_alias=AliasChoices("SOURCE_MODE", "GEXMONITOR_SOURCE_MODE"),
+    )
+    options_chain_crosscheck: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("OPTIONS_CHAIN_CROSSCHECK", "GEXMONITOR_OPTIONS_CHAIN_CROSSCHECK"),
+    )
     refresh_interval_seconds: int = Field(
         # 30 min by default: fewer headless-browser memory spikes on small hosts.
         default=1800,
@@ -35,7 +43,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("RANK_LOOKBACK_DAYS", "GEXMONITOR_RANK_LOOKBACK_DAYS"),
     )
     user_agent: str = Field(
-        default="gexmonitorapi/0.2.1 (+https://gexmonitor.com public page metric monitor)",
+        default="gexmonitorapi/0.2.1 (+https://gexmonitor.com public JSON metric monitor)",
         validation_alias=AliasChoices("USER_AGENT", "GEXMONITOR_USER_AGENT"),
     )
     enable_background_refresh: bool = Field(
