@@ -230,6 +230,29 @@ def test_response_and_usage_contract(tool):
     }
     assert_true(tool.parse_chat_response(response) == {"ok": True},
                 "choices[0].message.content parsing failed")
+    repeated_json = {"choices": [{
+        "finish_reason": "stop",
+        "message": {"content": '{"ok":true}\n{"ok":true}'},
+    }]}
+    assert_true(tool.parse_chat_response(repeated_json) == {"ok": True},
+                "identical repeated JSON dicts should be recoverable")
+    for bad_content in (
+            '{"ok":true}\n{"ok":false}',
+            '{"ok":true}\ntrailing text',
+            '{"ok":true}\n[{"ok":true}]',
+    ):
+        try:
+            tool.parse_chat_response({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": bad_content},
+                }],
+            })
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError(
+                "non-identical or non-dict extra JSON must fail closed")
     assert_true(tool._response_usage(response) == {
         "prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
     }, "usage allowlist mismatch")

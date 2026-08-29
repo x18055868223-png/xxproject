@@ -2602,6 +2602,29 @@ def _strip_schema_for_legacy(schema):
     return schema
 
 
+def _recover_repeated_json_dicts(text, original_error):
+    decoder = json.JSONDecoder()
+    values = []
+    index = 0
+    while index < len(text):
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        try:
+            value, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError as exc:
+            raise original_error from exc
+        values.append(value)
+
+    if len(values) < 2 or not isinstance(values[0], dict):
+        raise original_error
+    first = values[0]
+    if any(not isinstance(value, dict) or value != first for value in values[1:]):
+        raise original_error
+    return first
+
+
 def parse_chat_response(response):
     choices = response.get("choices")
     if isinstance(choices, list) and choices:
@@ -2629,7 +2652,13 @@ def parse_chat_response(response):
         }
         diagnostics.update(_response_usage(response))
         raise LlmEmptyContentError(diagnostics)
-    return json.loads(_strip_json_fence(text))
+    payload_text = _strip_json_fence(text)
+    try:
+        return json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        return _recover_repeated_json_dicts(payload_text, exc)
 
 
 def _derive_source_alignment(packet, theoretical_active_view):
