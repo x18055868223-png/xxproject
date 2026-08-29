@@ -47,7 +47,11 @@ class ScraplingScraper:
             try:
                 text = strategy(url)
             except Exception as exc:  # noqa: BLE001 - record and try the next strategy
-                errors.append(f"{name}={type(exc).__name__}: {str(exc)[:120]}")
+                detail = str(exc)
+                if "localhost:3000" in detail or "login" in detail.lower():
+                    errors.append(f"{name}=authentication_required")
+                else:
+                    errors.append(f"{name}={type(exc).__name__}: {detail[:120]}")
                 continue
             auth_error = _authentication_error(text)
             if auth_error:
