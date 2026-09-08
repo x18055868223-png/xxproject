@@ -1,16 +1,19 @@
 {
   "name": "signal-audit-frontend-fixture",
-  "backup_version": "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory",
-  "generated_at": "2026-08-28",
+  "backup_version": "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory-astra-evidence-v2",
+  "generated_at": "2026-09-08",
   "frontend_profile": "signal_audit_static_v1",
-  "card_schema": "signal_review_card@1.0.0 + nrd.signal.durability_layer.v1 + nrd.signal.price_anchor_durability.v1 + nrd.signal.comfort_window.v1",
-  "manifest_schema": "signal_cards_manifest@1.0.0",
+  "card_schema": "signal_review_card@1.0.0 + signal_llm_review@2.0.0 side_evidence_ratings + signal_rating@1.0.0 legacy-readable + nrd.signal.durability_layer.v1",
+  "manifest_schema": "signal_cards_manifest@1.0.0 + signal_evidence_summary@2.0.0 + legacy signal_comfort_summary readable-only",
   "llm_provider": "deepseek",
   "llm_model": "deepseek-v4-flash",
-  "llm_review_schema": "signal_llm_review@1.5.1",
-  "llm_prompt_version": "signal_llm_review_prompt@1.5.6",
+  "llm_review_schema": "signal_llm_review@2.0.0",
+  "llm_prompt_version": "signal_llm_review_prompt@2.0.1",
   "fixture_policy": "committed signal_cards are local preview fixtures; default deploy fixtures exclude synthetic cards; production cards are generated on the server from FMZ signal_review.jsonl and optional LLM sidecar",
-  "frontend_contract": "HTTP mode fetches signal_cards/index.json first, renders at most 15 manifest summary cards, lazy-loads selected signal_cards/*.json with memory cache and two-card prefetch isolation, then shows six-metric summary followed by a reader-style integrated trade advisory with fail-closed LLM unpublished states, optional fail-closed future_24h_bayesian_report summary, fixed-round analysis identity tags, compact EDB ledger, unified signal durability audit, Funding and GEX semantic display, transition audit, MACRO direction-background/shock-gate display, source_ref anchors, low-layer forecast/raw trace navigation, and desktop/mobile browser audit before deploy changes",
+  "frontend_contract": "HTTP mode fetches signal_cards/index.json first, renders at most 15 manifest summary cards using signal_evidence_summary as the new list stat, keeps chronological order, supports B+ and A/S filters only for v2 evidence grades, lazy-loads selected signal_cards/*.json with memory cache and two-card prefetch isolation, then shows one Chinese reader path for v2 cards: action summary and local action state, Put/Call evidence grades, adopted side theses and market inclination, spatial geometry and conditional gamma feedback, verified changes, counter/alternative explanations, next and invalidation conditions, complete Chinese numeric facts, and a download-only full audit JSON entry. V2 cards do not render legacy integrated advisory, old LLM deep panels, old confidence/durability totals, 24-hour long report, raw field paths, schema, hashes, formulas, weights, or machine enum fallbacks. Legacy comfort cards remain readable as historical action ratings and are excluded from v2 B+/A-S filters.",
+  "frontend_cache_token": "20260908-astra-paperline",
+  "reader_presentation": "User-selected neutral paper style; same report layout, content and semantic colors, quiet evidence links, tabular figures and visible keyboard focus. Local stage freeze; no model or producer version change.",
   "live_materializer_source": "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl",
-  "live_output_root": "/opt/signal-audit"
+  "live_output_root": "/opt/signal-audit",
+  "price_bias_schema": "price_bias@1.0.0"
 }

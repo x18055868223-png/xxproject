@@ -39,8 +39,9 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
 PROVIDER = "deepseek"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.5.1"
-PROMPT_VERSION = "signal_llm_review_prompt@1.5.6"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@1.6.0"
+MAIN_PROMPT_VERSION = "signal_llm_review_prompt@1.6.0"
+PROMPT_VERSION = MAIN_PROMPT_VERSION
 PACKET_VERSION = "signal_llm_review_packet@1.2.0"
 BLIND_PACKET_VERSION = "signal_llm_blind_theoretical_packet@1.2.0"
 TRANSITION_OUTPUT_SCHEMA_VERSION = "signal_transition_llm_review@1.3.0"
@@ -171,6 +172,117 @@ ADVISORY_WARNING_LEVELS = {"NONE", "INFO", "CAUTION", "HIGH"}
 ADVISORY_SOURCE_ALIGNMENTS = {
     "ALIGNED", "PARTIALLY_ALIGNED", "DIVERGENT", "UNABLE_TO_JUDGE",
 }
+COMFORT_RATINGS_SCHEMA_VERSION = "signal_comfort_ratings@1.0.0"
+COMFORT_RATING_SCOPE = "signal_side_admission"
+COMFORT_CANDIDATE_QUOTE_ECONOMICS = "not_evaluated"
+COMFORT_SIDE_KEYS = ("put_credit", "call_credit")
+COMFORT_SIDE_CN = {
+    "put_credit": "Put 信用价差",
+    "call_credit": "Call 信用价差",
+}
+COMFORT_GRADES = {"D", "C", "B", "A", "S", "UNRATED"}
+COMFORT_RATED_GRADES = {"D", "C", "B", "A", "S"}
+COMFORT_GRADE_ORDER = {"D": 0, "C": 1, "B": 2, "A": 3, "S": 4}
+COMFORT_NATIVE_CLAIMS = {
+    "put_credit": "put_pressure",
+    "call_credit": "call_pressure",
+}
+COMFORT_REQUIRED_CLAIMS = ("structure", "put_pressure", "call_pressure")
+COMFORT_MARKET_EVIDENCE_IDS = frozenset({
+    "EV_ANCHOR",
+    "EV_TMVF",
+    "EV_MICRO_FLOW",
+    "EV_MACRO",
+    "EV_GAMMA",
+    "EV_GEX",
+    "EV_SKEW",
+    "EV_FUNDING",
+})
+COMFORT_DECISION_EVIDENCE_IDS = frozenset({
+    "EV_DECISION",
+    "EV_DECISION_MATRIX",
+    "EV_BLOCKING",
+    "EV_SIGNAL_WINDOW",
+})
+COMFORT_REF_GROUPS = {
+    "EV_ANCHOR": "options_structure",
+    "EV_SIGNAL_RATING": "producer_rating",
+    "EV_GAMMA": "options_structure",
+    "EV_GEX": "options_structure",
+    "EV_SKEW": "options_structure",
+    "EV_TMVF": "price_flow",
+    "EV_MICRO_FLOW": "price_flow",
+    "EV_MACRO": "macro",
+    "EV_FUNDING": "funding",
+    "EV_QUALITY": "quality",
+    "EV_DECISION": "system",
+    "EV_DECISION_MATRIX": "system",
+    "EV_BLOCKING": "lifecycle",
+    "EV_SIGNAL_WINDOW": "lifecycle",
+    "EV_SIGNAL_DURABILITY": "lifecycle",
+    "EV_COMFORT_WINDOW": "lifecycle",
+    "EV_ANCHOR_DURABILITY": "lifecycle",
+    "EV_REASONING": "system",
+    "EV_CONFLICT": "system",
+}
+COMFORT_S_UNUSABLE_GROUPS = frozenset({
+    "producer_rating",
+    "quality",
+    "system",
+    "lifecycle",
+})
+COMFORT_REF_SOURCE_REFS = {
+    "EV_ANCHOR": ("factor_cross_section.anchor",),
+    "EV_GAMMA": ("factor_cross_section.gamma_regime",),
+    "EV_GEX": ("factor_cross_section.gex_info",),
+    "EV_SKEW": ("factor_cross_section.skew",),
+    "EV_TMVF": ("factor_cross_section.tmvf",),
+    "EV_MICRO_FLOW": ("factor_cross_section.micro_flow",),
+    "EV_MACRO": ("factor_cross_section.macro_pressure",),
+    "EV_FUNDING": ("factor_cross_section.funding",),
+}
+COMFORT_SOURCE_QUALITY_KEYS = {
+    "factor_cross_section.anchor": ("anchor", "gex", "gex_info"),
+    "factor_cross_section.gamma_regime": ("gamma", "gamma_regime", "gex"),
+    "factor_cross_section.gex_info": ("gex", "gex_info", "gamma"),
+    "factor_cross_section.skew": ("skew", "srd"),
+    "factor_cross_section.tmvf": ("tmvf", "tmv"),
+    "factor_cross_section.micro_flow": ("micro_flow", "cvd"),
+    "factor_cross_section.macro_pressure": ("macro", "macro_pressure"),
+    "factor_cross_section.funding": ("funding",),
+}
+COMFORT_BAD_SOURCE_STATUSES = frozenset({
+    "MISSING", "STALE", "DEGRADED", "PARTIAL", "ERROR", "FAILED",
+    "UNAVAILABLE", "EXPIRED", "INVALID", "FUTURE_SOURCE_TIME",
+    "UNKNOWN_FRESHNESS", "NOT_READY",
+})
+COMFORT_FUTURE_UPGRADE_TEXT_RE = re.compile(
+    r"未来行情|后续行情|评级后|之后走势|30\s*分钟后|60\s*分钟后|"
+    r"OHLC|开高低收|高低收|K线.*路径|路径.*先后",
+    re.IGNORECASE,
+)
+COMFORT_FORBIDDEN_CONTRACT_DETAIL_RE = re.compile(
+    r"行权价|执行价|到期日|到期时间|\b(?:strike|expiry|expiration)\b",
+    re.IGNORECASE,
+)
+COMFORT_GAMMA_FLIP_TERM_RE = re.compile(
+    r"(?:Gamma|gamma)?\s*(?:反转点|翻转点)|\b(?:gamma\s*)?flip(?:[_\s-]*point)?\b",
+    re.IGNORECASE,
+)
+COMFORT_POSITION_ABOVE_RE = re.compile(
+    r"上方|之上|高于|站上|上穿|above|over",
+    re.IGNORECASE,
+)
+COMFORT_POSITION_BELOW_RE = re.compile(
+    r"下方|之下|低于|跌破|下穿|below|under",
+    re.IGNORECASE,
+)
+COMFORT_CONDITION_SENTENCE_RE = re.compile(
+    r"^\s*(?:若|如果|假如|倘若|待|等待|需要|一旦|后续|下一|观察)"
+    r"|^\s*当[^。！？!?；;]{0,40}时"
+    r"|是否|能否|待确认|需要确认|仍需|接下来|未来|之后",
+    re.IGNORECASE,
+)
 FUTURE_24H_STATES = {
     "BULLISH_CONTINUATION",
     "BEARISH_CONTINUATION",
@@ -192,6 +304,16 @@ FUTURE_24H_EFFECTS = {
     "NEUTRAL",
     "UNABLE_TO_JUDGE",
 }
+SIGNAL_RATING_BOTTOM_EVIDENCE_IDS = frozenset({
+    "EV_TMVF",
+    "EV_MICRO_FLOW",
+    "EV_MACRO",
+    "EV_GAMMA",
+    "EV_GEX",
+    "EV_SKEW",
+    "EV_FUNDING",
+    "EV_QUALITY",
+})
 BLIND_BOUNDARY_CN = (
     "该判断只作审计参考，不改变系统信号、门控、置信或交易许可。"
 )
@@ -459,6 +581,8 @@ def build_review_packet(card):
         "market_context": _safe_copy(card.get("market_context")),
         "decision": _safe_copy(card.get("decision")),
         "decision_matrix": _safe_copy(card.get("decision_matrix")),
+        "signal_rating": _safe_copy(card.get("signal_rating")),
+        "anchor": _safe_copy(factor.get("anchor")),
         "signal_window": _safe_copy(card.get("signal_window")),
         "signal_durability": _safe_copy(card.get("signal_durability")),
         "comfort_window": _safe_copy(card.get("comfort_window")),
@@ -478,6 +602,10 @@ def build_review_packet(card):
             "funding.canonical_funding_semantics": (
                 "Funding 唯一机械语义；必须原样遵守，effect/funding_norm 仅是诊断字段。"),
             "trade_allowed": "系统交易许可字段，LLM 不得修改或推导执行动作。",
+            "signal_rating": (
+                "producer 原生环境/侧别评级；用于解释支持、反对和未知，"
+                "不是独立市场证据、胜率或执行许可。"
+            ),
             "theoretical_active_view": (
                 "LLM 基于给定截面做出的理论主动倾向参考，不是系统信号、下单指令或门控。"
             ),
@@ -486,6 +614,7 @@ def build_review_packet(card):
             "role": "AUDIT_ADVISORY_ONLY",
             "do_not_change_system_decision": True,
             "do_not_recompute_weights": True,
+            "do_not_overwrite_signal_rating": True,
             "do_not_use_external_market_data": True,
             "may_produce_structure_review_advisory": True,
             "session_context_is_advisory_only": True,
@@ -502,6 +631,8 @@ def _build_review_evidence_catalog(packet):
         ("EV_MARKET_CONTEXT", "market_context", "市场价格上下文"),
         ("EV_DECISION", "decision", "程序化信号结论"),
         ("EV_DECISION_MATRIX", "decision_matrix", "程序化决策矩阵"),
+        ("EV_SIGNAL_RATING", "signal_rating", "producer 原生信号评级"),
+        ("EV_ANCHOR", "anchor", "价格锚原始事实"),
         ("EV_SIGNAL_WINDOW", "signal_window", "M-DIE 与中性接管窗口"),
         ("EV_SESSION_CONTEXT", "signal_window.session_context", "时区耐用性先验"),
         ("EV_SIGNAL_DURABILITY", "signal_durability", "总耐用性层"),
@@ -746,14 +877,84 @@ _BAYESIAN_REASONING_PROTOCOL = """
 9. 在内部完成比较、去重和一致性检查，只输出最终 JSON；不要输出、复述或索取 reasoning_content，也不要展示逐步思维链。
 """
 
-_MAIN_JSON_SHAPE_EXAMPLE = """
-期望 JSON 结构示例（紧凑 reconciliation）。
-Expected compact reconciliation JSON shape. Local code will assemble blind
-fields, source_alignment, audit_only, trade_authorization,
-session_advisory.does_not_change_recommendation, not_trading_advice, and the
-fixed future_24h fields before validation:
-{"summary_cn":"text","agreement_with_system":"enum","caution_level":"enum","integrated_trade_advisory":{"recommendation":"enum","final_conclusion_cn":"text","cross_loop_rationale_cn":"text","containment_assessment":{"state":"enum","basis_cn":"text"},"premium_selling_fit":{"state":"enum","basis_cn":"text"},"side_basis_cn":"text","dominant_conflict_cn":"text","key_premises":[{"premise_cn":"text","evidence_refs":["real evidence_catalog id"]}],"invalid_if":["text"],"next_observation_cn":"text","session_advisory":{"liquidity_assessment":"enum","warning_level":"enum","basis_cn":"text"},"future_24h_bayesian_report":{"base_case":"UP","posterior_weights_pct":{"up":34,"down":33,"range":33},"report_cn":"text","key_levels":[],"counter_evidence_cn":["text"],"invalid_if_cn":["text"]}},"main_supporting_factors":["text"],"main_risks_or_conflicts":["text"],"operator_focus":["text"],"invalid_if":["text"]}
-"""
+_MAIN_JSON_SHAPE_OBJECT = {
+    "summary_cn": "text",
+    "agreement_with_system": "UNABLE_TO_JUDGE",
+    "caution_level": "HIGH",
+    "integrated_trade_advisory": {
+        "recommendation": "UNABLE_TO_JUDGE",
+        "final_conclusion_cn": "text",
+        "cross_loop_rationale_cn": "text",
+        "containment_assessment": {
+            "state": "UNABLE_TO_JUDGE",
+            "basis_cn": "text",
+        },
+        "premium_selling_fit": {
+            "state": "UNABLE_TO_JUDGE",
+            "basis_cn": "text",
+        },
+        "side_basis_cn": "text",
+        "dominant_conflict_cn": "text",
+        "key_premises": [{
+            "premise_cn": "text",
+            "evidence_refs": ["EV_TMVF"],
+        }],
+        "invalid_if": ["text"],
+        "next_observation_cn": "text",
+        "session_advisory": {
+            "liquidity_assessment": "UNKNOWN",
+            "warning_level": "HIGH",
+            "basis_cn": "text",
+        },
+        "future_24h_bayesian_report": {
+            "base_case": "RANGE",
+            "posterior_weights_pct": {"up": 34, "down": 33, "range": 33},
+            "report_cn": "text",
+            "key_levels": [],
+            "counter_evidence_cn": ["text"],
+            "invalid_if_cn": ["text"],
+        },
+        "side_comfort_ratings": {
+            "put_credit": {
+                "grade": "B",
+                "basis_cn": "text",
+                "counter_evidence_cn": "text",
+                "unresolved_conditions_cn": ["text"],
+                "next_observation_cn": "text",
+                "evidence_refs": ["EV_TMVF"],
+                "counter_evidence_refs": ["EV_MACRO"],
+                "s_upgrade_basis_cn": "",
+                "s_upgrade_evidence_refs": [],
+            },
+            "call_credit": {
+                "grade": "UNRATED",
+                "basis_cn": "text",
+                "counter_evidence_cn": "text",
+                "unresolved_conditions_cn": ["text"],
+                "next_observation_cn": "text",
+                "evidence_refs": [],
+                "counter_evidence_refs": [],
+                "s_upgrade_basis_cn": "",
+                "s_upgrade_evidence_refs": [],
+            },
+        },
+    },
+    "main_supporting_factors": ["text"],
+    "main_risks_or_conflicts": ["text"],
+    "operator_focus": ["text"],
+    "invalid_if": ["text"],
+}
+
+_MAIN_JSON_SHAPE_EXAMPLE = (
+    "\nCompact reconciliation JSON shape example; local code will assemble blind "
+    "fields, source_alignment, audit_only, trade_authorization, "
+    "session_advisory.does_not_change_recommendation, not_trading_advice, and the "
+    "fixed future_24h fields before validation. Use legal enum values exactly; "
+    "session_advisory.liquidity_assessment only allows ALIGNED/CAUTION/TIME_ONLY/UNKNOWN, "
+    "warning_level only allows NONE/INFO/CAUTION/HIGH; never use MIXED or THIN there:\n"
+    + json.dumps(_MAIN_JSON_SHAPE_OBJECT, ensure_ascii=False, separators=(",", ":"))
+    + "\n"
+)
 
 _TRANSITION_REASONING_PROTOCOL = """
 状态转移第一性审计协议（内部执行，不输出逐步思维链）：
@@ -822,7 +1023,28 @@ def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
         "trade_allowed=false 只表示执行隔离，不能单独作为等待或不交易理由。\n"
         "证据规则：confidence 是证据质量而非胜率；不得重算 producer 权重；同一原始量、派生量、摘要或系统标签不得重复计票。"
         "Funding 只按 canonical_funding_semantics 解读，原始费率缺失则无法判断；Gamma/GEX 只约束分布、波动和尾部，不能单独决定方向；"
-        "session/comfort_window 只作流动性提醒。key_premises.evidence_refs 只能引用 evidence_catalog 中真实存在的 id。\n"
+        "session/comfort_window 只作流动性提醒。signal_rating 如存在，只能作为 producer 原生评级上下文，用来解释环境/侧别支持、"
+        "反对与未知；它不能当作新的独立市场证据、不能覆盖确定性评级、不能把 WAIT/BLOCKED 升级为可复核价差。"
+        "引用 signal_rating 的核心前提必须同时引用至少一条底层事实证据。旧 Anchor Mean-Reversion 标签只能解释为 TMVF 方向中性，"
+        "回归尚未证明；Trend Acceleration 只有卡内 producer 明示产生路径时才可视为实际检测结果。"
+        "key_premises.evidence_refs 只能引用 evidence_catalog 中真实存在的 id。\n"
+        "舒适度评级任务：在 integrated_trade_advisory.side_comfort_ratings 中分别填写 put_credit 与 call_credit，"
+        "grade 只能是 D/C/B/A/S/UNRATED。D 表示本轮回避，C 表示普通观察，B 表示启动关注，A 表示信号层准入，"
+        "S 表示满足 A 且有额外非重复事实值得优先处理；等级只代表当前人工处理优先级，不代表胜率或收益概率。"
+        "Put 侧判断下行侵入压力，Call 侧判断上行侵入压力，压力强不能被写成两侧都好。A/S 不要求全部因素同向，"
+        "但必须说明该侧适配机制、关键反证为何未推翻它，并引用当前 evidence_catalog 中真实底层事实。"
+        "S 必须额外填写 s_upgrade_basis_cn 与 s_upgrade_evidence_refs，说明比 A 多出的非重复依据和主要失效条件；"
+        "不能用同源重复、旧 confidence、耐用总分、时段舒适窗口、未来行情、评级后 OHLC 或路径先后猜测升级。"
+        "未评级时使用 UNRATED，不得把数据缺失或输出失败伪装成 C/D。候选报价、两腿、费用、净补偿与退出条件未评估，"
+        "不得阻止信号层 A/S，也不得据此声称具体价差值得成交。\n"
+        "session_advisory.liquidity_assessment only allows ALIGNED/CAUTION/TIME_ONLY/UNKNOWN; "
+        "session_advisory.warning_level only allows NONE/INFO/CAUTION/HIGH; "
+        "never use MIXED or THIN for session_advisory."
+        "For side_comfort_ratings human text, keep this-card position separate from mechanism conditions: "
+        "basis_cn and s_upgrade_basis_cn must verify market_context.price against factor_cross_section.gamma_regime.flip_point before saying above/below. "
+        "Positive GEX or gex_info market_state must not replace the gamma_regime flip position. "
+        "Put future conditions in next_observation_cn or explicit conditional wording, not as current facts. "
+        "Do not mention strike, expiry, expiration, 行权价, 执行价, 到期日, or 到期时间 in comfort human fields.\n"
         + _BAYESIAN_REASONING_PROTOCOL
         + "\n输出纪律：所有机器枚举只放在对应 JSON 枚举字段；所有 *_cn 与人读列表使用自然中文，不泄漏字段路径、"
         "KEY=VALUE、布尔值或机器代码。不得写 decision_matrix.window=CONFIRMED、lean=NEUTRAL、"
@@ -832,7 +1054,7 @@ def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
         "只输出一个合法 JSON 对象，不要 markdown 或 JSON 外解释。\n"
         + _MAIN_JSON_SHAPE_EXAMPLE
         + "\nLOCAL_RESPONSE_JSON_SCHEMA（最终对象必须逐字段满足）：\n"
-        + json.dumps(_strip_schema_for_legacy(review_response_schema()),
+        + json.dumps(_strip_schema_for_legacy(reconciliation_response_schema()),
                      ensure_ascii=False, separators=(",", ":"))
         + "\nBLIND_REVIEW_RESULT JSON（不可改写）：\n"
         + json.dumps(blind_payload, ensure_ascii=False, sort_keys=True)
@@ -840,6 +1062,164 @@ def build_prompt(packet, blind_payload=None, empty_content_retry_count=0):
         + "\nFULL_AUDIT_PACKET JSON：\n"
         + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )
+
+
+def side_comfort_model_ratings_schema():
+    text = {"type": "string", "minLength": 1, "maxLength": 520}
+    maybe_text = {"type": "string", "minLength": 0, "maxLength": 520}
+    refs = {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1, "maxLength": 80},
+        "minItems": 0,
+        "maxItems": 5,
+    }
+    side = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "grade": {"type": "string", "enum": sorted(COMFORT_GRADES)},
+            "basis_cn": text,
+            "counter_evidence_cn": text,
+            "unresolved_conditions_cn": {
+                "type": "array",
+                "items": text,
+                "minItems": 0,
+                "maxItems": 4,
+            },
+            "next_observation_cn": text,
+            "evidence_refs": refs,
+            "counter_evidence_refs": refs,
+            "s_upgrade_basis_cn": maybe_text,
+            "s_upgrade_evidence_refs": refs,
+        },
+        "required": [
+            "grade",
+            "basis_cn",
+            "counter_evidence_cn",
+            "unresolved_conditions_cn",
+            "next_observation_cn",
+            "evidence_refs",
+            "counter_evidence_refs",
+            "s_upgrade_basis_cn",
+            "s_upgrade_evidence_refs",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "put_credit": side,
+            "call_credit": side,
+        },
+        "required": ["put_credit", "call_credit"],
+    }
+
+
+def side_comfort_ratings_output_schema():
+    text = {"type": "string", "minLength": 0, "maxLength": 520}
+    refs = {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1, "maxLength": 80},
+        "minItems": 0,
+        "maxItems": 5,
+    }
+    side = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "model_grade": {
+                "type": "string",
+                "enum": sorted(COMFORT_RATED_GRADES),
+                "nullable": True,
+            },
+            "final_grade": {
+                "type": "string",
+                "enum": sorted(COMFORT_RATED_GRADES),
+                "nullable": True,
+            },
+            "status": {"type": "string", "enum": ["RATED", "UNRATED"]},
+            "basis_cn": text,
+            "counter_evidence_cn": text,
+            "unresolved_conditions_cn": {
+                "type": "array",
+                "items": text,
+                "minItems": 0,
+                "maxItems": 4,
+            },
+            "next_observation_cn": text,
+            "evidence_refs": refs,
+            "counter_evidence_refs": refs,
+            "s_upgrade_basis_cn": text,
+            "s_upgrade_evidence_refs": refs,
+            "cap_reasons_cn": {
+                "type": "array",
+                "items": text,
+                "minItems": 0,
+                "maxItems": 8,
+            },
+        },
+        "required": [
+            "model_grade",
+            "final_grade",
+            "status",
+            "basis_cn",
+            "counter_evidence_cn",
+            "unresolved_conditions_cn",
+            "next_observation_cn",
+            "evidence_refs",
+            "counter_evidence_refs",
+            "s_upgrade_basis_cn",
+            "s_upgrade_evidence_refs",
+            "cap_reasons_cn",
+        ],
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "schema": {
+                "type": "string",
+                "enum": [COMFORT_RATINGS_SCHEMA_VERSION],
+            },
+            "rating_scope": {
+                "type": "string",
+                "enum": [COMFORT_RATING_SCOPE],
+            },
+            "candidate_quote_economics": {
+                "type": "string",
+                "enum": [COMFORT_CANDIDATE_QUOTE_ECONOMICS],
+            },
+            "as_of_ms": {"type": "number", "nullable": True},
+            "put_credit": side,
+            "call_credit": side,
+            "headline": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "final_grade": {
+                        "type": "string",
+                        "enum": sorted(COMFORT_RATED_GRADES),
+                        "nullable": True,
+                    },
+                    "focus_side": {
+                        "type": "string",
+                        "enum": ["put_credit", "call_credit", "tie", "none"],
+                    },
+                    "action_cn": text,
+                },
+                "required": ["final_grade", "focus_side", "action_cn"],
+            },
+        },
+        "required": [
+            "schema",
+            "rating_scope",
+            "candidate_quote_economics",
+            "as_of_ms",
+            "put_credit",
+            "call_credit",
+            "headline",
+        ],
+    }
 
 
 def integrated_trade_advisory_schema():
@@ -924,6 +1304,7 @@ def integrated_trade_advisory_schema():
             "audit_only": {"type": "boolean"},
             "trade_authorization": {"type": "boolean"},
             "future_24h_bayesian_report": future_24h_bayesian_report_schema(),
+            "side_comfort_ratings": side_comfort_ratings_output_schema(),
         },
         "required": [
             "recommendation",
@@ -941,6 +1322,7 @@ def integrated_trade_advisory_schema():
             "audit_only",
             "trade_authorization",
             "future_24h_bayesian_report",
+            "side_comfort_ratings",
         ],
     }
 
@@ -1251,6 +1633,8 @@ def reconciliation_integrated_trade_advisory_schema():
     if isinstance(report, dict):
         schema["properties"]["future_24h_bayesian_report"] = (
             reconciliation_future_24h_bayesian_report_schema())
+    schema["properties"]["side_comfort_ratings"] = (
+        side_comfort_model_ratings_schema())
     return schema
 
 
@@ -2862,6 +3246,8 @@ def _assemble_local_review_payload(payload, packet, blind_payload=None,
         report["live_external_data_used"] = False
         advisory["future_24h_bayesian_report"] = report
 
+    advisory["side_comfort_ratings"] = _finalize_side_comfort_ratings(
+        advisory.get("side_comfort_ratings"), packet, advisory)
     assembled["integrated_trade_advisory"] = advisory
     assembled["_blind_completeness_repair"] = blind_repair
     return assembled
@@ -3193,22 +3579,27 @@ def _reconciliation_recovery_context(
             break
         if review.get("input_packet_hash") != packet_hash:
             continue
+        failure = _as_dict(review.get("failure_state"))
+        context = _as_dict(review.get("validated_blind_context"))
+        if (
+                review.get("status") == "ERROR"
+                and failure.get("type") == "VALIDATION_ERROR"
+                and failure.get("stage") == "RECONCILIATION"
+                and context):
+            return context
         if (
                 review.get("call_profile")
                 == CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY
-                or _as_dict(review.get("failure_state")).get(
-                    "recovery_attempted") is True):
+                or failure.get("recovery_attempted") is True):
             return None
-        failure = _as_dict(review.get("failure_state"))
         if (
                 review.get("status") == "ERROR"
                 and review.get("call_profile") == CALL_PROFILE_MAIN_RECONCILIATION
                 and failure.get("type") in {
                     "EMPTY_CONTENT", "INVALID_JSON", "VALIDATION_ERROR"}
-                and failure.get("stage") == "RECONCILIATION"):
-            context = _as_dict(review.get("validated_blind_context"))
-            if context:
-                return context
+                and failure.get("stage") == "RECONCILIATION"
+                and context):
+            return context
     return None
 
 
@@ -5452,6 +5843,780 @@ def _transition_packet_funding_semantics(packet):
     return {}
 
 
+def _comfort_default_model_side(reason):
+    return {
+        "grade": "UNRATED",
+        "basis_cn": reason,
+        "counter_evidence_cn": reason,
+        "unresolved_conditions_cn": [reason],
+        "next_observation_cn": "等待下一次有效模型复核或生产端原生评级。",
+        "evidence_refs": [],
+        "counter_evidence_refs": [],
+        "s_upgrade_basis_cn": "",
+        "s_upgrade_evidence_refs": [],
+    }
+
+
+def _comfort_text_from_side(side):
+    side = _as_dict(side)
+    values = [
+        side.get("basis_cn"),
+        side.get("counter_evidence_cn"),
+        side.get("next_observation_cn"),
+        side.get("s_upgrade_basis_cn"),
+    ]
+    values.extend(side.get("unresolved_conditions_cn") or [])
+    return "\n".join(str(value) for value in values if value not in (None, ""))
+
+
+def _comfort_clean_list(items, limit=4):
+    if not isinstance(items, list):
+        return []
+    return [str(item).strip()[:520] for item in items[:limit]
+            if isinstance(item, str) and item.strip()]
+
+
+def _comfort_clean_refs(items, limit=5):
+    refs = []
+    seen = set()
+    if not isinstance(items, list):
+        return refs
+    for item in items[:limit]:
+        ref = str(item or "").strip()[:80]
+        if ref and ref not in seen:
+            refs.append(ref)
+            seen.add(ref)
+    return refs
+
+
+def _comfort_valid_evidence_ids(packet):
+    return {
+        str(item.get("id"))
+        for item in list(_as_dict(packet).get("evidence_catalog") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+
+
+def _comfort_invalid_refs(refs, valid_ids):
+    return sorted({ref for ref in refs if ref not in valid_ids})
+
+
+def _comfort_ref_groups(refs):
+    groups = set()
+    for ref in refs:
+        groups.add(COMFORT_REF_GROUPS.get(str(ref), str(ref)))
+    groups.discard("")
+    return groups
+
+
+def _comfort_claim_label(claim_name):
+    return {
+        "structure": "结构约束",
+        "put_pressure": "Put 侧压力",
+        "call_pressure": "Call 侧压力",
+    }.get(str(claim_name or ""), "评级主张")
+
+
+def _comfort_source_label(source_ref):
+    text = str(source_ref or "")
+    if "anchor" in text:
+        return "价格锚"
+    if "gamma" in text or "gex" in text:
+        return "Gamma/GEX 结构"
+    if "tmvf" in text:
+        return "量价主干"
+    if "micro_flow" in text:
+        return "主动买卖流"
+    if "macro" in text:
+        return "宏观背景"
+    if "funding" in text:
+        return "资金费率"
+    if "skew" in text:
+        return "期权偏斜"
+    if "quality" in text:
+        return "数据质量"
+    return "必要来源"
+
+
+def _comfort_humanize_reason(reason, source_ref, fallback):
+    text = str(reason or fallback or "").strip()
+    if not text:
+        text = _comfort_source_label(source_ref) + "当前不可用。"
+    replacements = {
+        "factor_cross_section.anchor": "价格锚",
+        "factor_cross_section.gamma_regime": "Gamma/GEX 结构",
+        "factor_cross_section.gex_info": "Gamma/GEX 结构",
+        "factor_cross_section.tmvf": "量价主干",
+        "factor_cross_section.micro_flow": "主动买卖流",
+        "factor_cross_section.macro_pressure": "宏观背景",
+        "factor_cross_section.funding": "资金费率",
+        "factor_cross_section.skew": "期权偏斜",
+        "gex_source_ts_ms": "自身时间戳",
+        "scheduled_time_ms": "计划时点",
+        "ready=false": "来源未就绪",
+        "freshness=": "时效状态为",
+    }
+    for raw, label in replacements.items():
+        text = text.replace(raw, label)
+    for raw, label in {
+            "MISSING": "缺失",
+            "STALE": "偏旧",
+            "DEGRADED": "降级",
+            "PARTIAL": "不完整",
+            "ERROR": "错误",
+            "FAILED": "失败",
+            "UNAVAILABLE": "不可用",
+            "EXPIRED": "过期",
+            "INVALID": "无效",
+            "UNKNOWN": "未知",
+            "FUTURE_SOURCE_TIME": "来源时间晚于评级时点",
+            "UNKNOWN_FRESHNESS": "缺少时效证明",
+            "NOT_READY": "来源未就绪",
+    }.items():
+        text = re.sub(r"(?<![A-Za-z0-9_])" + raw + r"(?![A-Za-z0-9_])",
+                      label, text)
+    return text[:520]
+
+
+def _comfort_native_rating_state(packet):
+    rating = _as_dict(_as_dict(packet).get("signal_rating"))
+    claims = _as_dict(rating.get("claims"))
+    as_of_ms = _number_or_none(rating.get("as_of_ms"))
+    reasons = []
+    if rating.get("schema") != "signal_rating@1.0.0":
+        reasons.append("生产端原生评级缺失或版本不可用。")
+    if rating.get("rating_scope") != "side_environment_v1":
+        reasons.append("生产端原生评级用途范围不匹配。")
+    if rating.get("candidate_quote_economics") != "not_evaluated":
+        reasons.append("候选报价经济性状态不符合信号层评级边界。")
+    if as_of_ms is None or as_of_ms <= 0 or as_of_ms != as_of_ms:
+        reasons.append("生产端原生评级缺少有效评级时点。")
+    for claim_name in COMFORT_REQUIRED_CLAIMS:
+        if not isinstance(claims.get(claim_name), dict):
+            reasons.append("生产端原生评级缺少" + _comfort_claim_label(claim_name) + "。")
+    return {
+        "valid": not reasons,
+        "rating": rating,
+        "claims": claims,
+        "as_of_ms": (
+            as_of_ms
+            if as_of_ms is not None and as_of_ms > 0 and as_of_ms == as_of_ms
+            else None
+        ),
+        "reasons": reasons,
+    }
+
+
+def _comfort_packet_value_for_source(packet, source_ref):
+    source_ref = str(source_ref or "")
+    if source_ref == "factor_cross_section.anchor":
+        return _as_dict(packet).get("anchor")
+    if source_ref.startswith("factor_cross_section.anchor."):
+        tail = source_ref[len("factor_cross_section.anchor."):]
+        return _get_dotted_value({"anchor": _as_dict(packet).get("anchor")},
+                                 "anchor." + tail)
+    return _get_dotted_value(packet, source_ref)
+
+
+def _comfort_source_present(packet, source_ref):
+    value = _comfort_packet_value_for_source(packet, source_ref)
+    return value not in (None, {}, [])
+
+
+
+def _comfort_claim_required_items(native, side_key):
+    claims = _as_dict(native.get("claims"))
+    result = []
+    for claim_name in ("structure", COMFORT_NATIVE_CLAIMS[side_key]):
+        claim = _as_dict(claims.get(claim_name))
+        for item in list(claim.get("required_inputs") or []):
+            if isinstance(item, dict):
+                result.append(item)
+            elif isinstance(item, str):
+                result.append({"source_ref": item})
+    return result
+
+
+def _comfort_required_input_reasons(packet, item):
+    item = _as_dict(item)
+    source_ref = item.get("source_ref")
+    reasons = []
+    usable = item.get("usable")
+    status = str(item.get("status") or "").upper()
+    if usable is False:
+        reasons.append(_comfort_humanize_reason(
+            item.get("reason_cn")
+            or (_comfort_source_label(source_ref) + "当前不可用。"),
+            source_ref,
+            _comfort_source_label(source_ref) + "当前不可用。"))
+    elif usable is None and not _comfort_source_present(packet, source_ref):
+        reasons.append(_comfort_source_label(source_ref) + "缺少可核验事实。")
+    if status in COMFORT_BAD_SOURCE_STATUSES:
+        reasons.append(_comfort_humanize_reason(
+            item.get("reason_cn")
+            or (_comfort_source_label(source_ref) + "当前不可用。"),
+            source_ref,
+            _comfort_source_label(source_ref) + "当前不可用。"))
+    return reasons
+
+
+def _comfort_source_quality_reasons(packet, source_ref):
+    quality = _as_dict(_as_dict(packet).get("quality"))
+    sources = _as_dict(quality.get("sources"))
+    reasons = []
+    for key in COMFORT_SOURCE_QUALITY_KEYS.get(str(source_ref or ""), ()):
+        source_quality = _as_dict(sources.get(key))
+        if not source_quality:
+            continue
+        status = str(source_quality.get("status") or source_quality.get("freshness") or "").upper()
+        usable = source_quality.get("usable")
+        if usable is False or status in COMFORT_BAD_SOURCE_STATUSES:
+            reasons.append(_comfort_humanize_reason(
+                source_quality.get("reason_cn")
+                or source_quality.get("basis_cn")
+                or (_comfort_source_label(source_ref) + "当前不可用。"),
+                source_ref,
+                _comfort_source_label(source_ref) + "当前不可用。"))
+    return reasons
+
+
+def _comfort_ms_from_time_value(value):
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        if value != value:
+            return None
+        number = float(value)
+        if abs(number) < 100000000000:
+            number *= 1000.0
+        return number
+    text = str(value).strip()
+    if not text:
+        return None
+    number = _number_or_none(text)
+    if number is not None:
+        if abs(number) < 100000000000:
+            number *= 1000.0
+        return number
+    try:
+        parsed = _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        return parsed.timestamp() * 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _comfort_source_time_reasons(value, source_ref, as_of_ms):
+    if as_of_ms is None:
+        return []
+    value = _as_dict(value)
+    reasons = []
+    for key in (
+            "observed_at", "source_time", "source_ts", "timestamp", "ts",
+            "updated_at", "confirmed_at", "as_of", "as_of_ms", "source_ts_ms",
+            "gex_source_ts_ms", "last_refresh_ms"):
+        if key not in value:
+            continue
+        source_ms = _comfort_ms_from_time_value(value.get(key))
+        if source_ms is not None and source_ms > float(as_of_ms) + 1000.0:
+            reasons.append(_comfort_source_label(source_ref) + "来源时间晚于本卡评级时点。")
+            break
+    age_ms = _number_or_none(value.get("age_ms"))
+    if age_ms is not None and age_ms < 0:
+        reasons.append(_comfort_source_label(source_ref) + "来源时间晚于本卡评级时点。")
+    freshness = str(value.get("freshness") or value.get("status") or "").upper()
+    if freshness in COMFORT_BAD_SOURCE_STATUSES:
+        reasons.append(_comfort_humanize_reason(
+            value.get("reason_cn")
+            or (_comfort_source_label(source_ref) + "当前不可用。"),
+            source_ref,
+            _comfort_source_label(source_ref) + "当前不可用。"))
+    return reasons
+
+
+def _comfort_ref_fact_reasons(packet, native, side_key, ref):
+    ref = str(ref or "")
+    source_refs = COMFORT_REF_SOURCE_REFS.get(ref, ())
+    if not source_refs:
+        return []
+    required_items = _comfort_claim_required_items(native, side_key)
+    reasons = []
+    for source_ref in source_refs:
+        value = _comfort_packet_value_for_source(packet, source_ref)
+        if value in (None, {}, []):
+            reasons.append(_comfort_source_label(source_ref) + "缺少可核验事实。")
+            continue
+        for item in required_items:
+            if item.get("source_ref") == source_ref:
+                reasons.extend(_comfort_required_input_reasons(packet, item))
+        reasons.extend(_comfort_source_quality_reasons(packet, source_ref))
+        reasons.extend(_comfort_source_time_reasons(value, source_ref, native.get("as_of_ms")))
+        if ref == "EV_FUNDING":
+            funding = _as_dict(value)
+            semantics = _as_dict(funding.get("canonical_funding_semantics"))
+            raw_available = semantics.get("raw_available")
+            raw_rate = _number_or_none(semantics.get("raw_funding_rate"))
+            last_rate = _number_or_none(funding.get("last_rate"))
+            alternate_rate = _number_or_none(funding.get("last_funding_rate"))
+            semantic_code = str(semantics.get("semantic_code") or "").upper()
+            if (raw_available is False or semantic_code == "UNABLE_TO_JUDGE" or
+                    (raw_rate is None and last_rate is None and alternate_rate is None)):
+                reasons.append("资金费率缺少可核验的本轮数值。")
+    return sorted(set(reason for reason in reasons if reason))
+
+
+def _comfort_referenced_fact_reasons(packet, native, side_key, refs):
+    reasons = []
+    for ref in refs:
+        reasons.extend(_comfort_ref_fact_reasons(packet, native, side_key, ref))
+    return sorted(set(reason for reason in reasons if reason))
+
+
+def _comfort_claim_missing_reasons(packet, claim):
+    claim = _as_dict(claim)
+    reasons = []
+    required_inputs = claim.get("required_inputs")
+    if not isinstance(required_inputs, list) or not required_inputs:
+        reasons.append("生产端原生评级未列出该项必要输入。")
+        return reasons
+    for item in required_inputs:
+        if isinstance(item, dict):
+            source_ref = item.get("source_ref")
+            usable = item.get("usable")
+            status = str(item.get("status") or "").upper()
+            if usable is False:
+                reasons.append(_comfort_humanize_reason(
+                    item.get("reason_cn")
+                    or (_comfort_source_label(source_ref) + "当前不可用。"),
+                    source_ref,
+                    _comfort_source_label(source_ref) + "当前不可用。"))
+            elif usable is None and not _comfort_source_present(packet, source_ref):
+                reasons.append(_comfort_source_label(source_ref) + "缺失。")
+            if status in COMFORT_BAD_SOURCE_STATUSES:
+                reasons.append(_comfort_humanize_reason(
+                    item.get("reason_cn")
+                    or (_comfort_source_label(source_ref) + "状态当前不可用。"),
+                    source_ref,
+                    _comfort_source_label(source_ref) + "状态当前不可用。"))
+        elif isinstance(item, str):
+            if not _comfort_source_present(packet, item):
+                reasons.append(_comfort_source_label(item) + "缺失。")
+        else:
+            reasons.append("生产端原生评级必要输入格式不可用。")
+    return sorted(set(reason for reason in reasons if reason))
+
+
+def _comfort_side_required_missing(packet, native, side_key):
+    claims = _as_dict(native.get("claims"))
+    reasons = []
+    reasons.extend(_comfort_claim_missing_reasons(packet, claims.get("structure")))
+    reasons.extend(_comfort_claim_missing_reasons(
+        packet, claims.get(COMFORT_NATIVE_CLAIMS[side_key])))
+    return sorted(set(reason for reason in reasons if reason))
+
+
+def _packet_has_any_producer_block(packet):
+    if _packet_has_producer_hard_block(packet):
+        return True
+    packet = _as_dict(packet)
+    decision = _as_dict(packet.get("decision"))
+    matrix = _as_dict(packet.get("decision_matrix"))
+    blocking = _as_dict(packet.get("blocking"))
+    values = {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+        str(blocking.get("block_kind") or "").upper(),
+    }
+    if values & {"BLOCKED", "NO_TRADE_BLOCKED", "BLOCK", "SOFT_GATE"}:
+        return True
+    return bool(blocking.get("has_block") or blocking.get("soft_gates"))
+
+
+def _packet_has_explicit_invalid_window(packet):
+    window = _as_dict(_as_dict(packet).get("signal_window"))
+    if not window:
+        return False
+    state_values = {
+        str(window.get("nr_state") or "").upper(),
+        str(window.get("state") or "").upper(),
+        str(_as_dict(window.get("neutral_repair")).get("state") or "").upper(),
+    }
+    return any(any(token in state for token in (
+        "STALE", "EXPIRED", "TIMEOUT", "INVALID", "FAILED"))
+        for state in state_values if state)
+
+
+def _packet_has_window_not_open(packet):
+    window = _as_dict(_as_dict(packet).get("signal_window"))
+    if not window:
+        return False
+    if _packet_has_explicit_invalid_window(packet):
+        return False
+    if "is_active" in window and window.get("is_active") is False:
+        return True
+    neutral = _as_dict(window.get("neutral_repair"))
+    if "is_active" in neutral and neutral.get("is_active") is False:
+        return True
+    return False
+
+def _comfort_producer_direction(packet):
+    decision = _as_dict(_as_dict(packet).get("decision"))
+    matrix = _as_dict(_as_dict(packet).get("decision_matrix"))
+    text = str(decision.get("lean") or matrix.get("direction") or "").upper()
+    if "BULLISH" in text or text in {"UP", "LONG"}:
+        return "BULLISH"
+    if "BEARISH" in text or text in {"DOWN", "SHORT"}:
+        return "BEARISH"
+    if "NEUTRAL" in text or text in {"RANGE", "FLAT"}:
+        return "NEUTRAL"
+    return "UNKNOWN"
+
+
+def _comfort_side_allows_admission(side_key, advisory, packet):
+    recommendation = str(_as_dict(advisory).get("recommendation") or "").upper()
+    direction = _comfort_producer_direction(packet)
+    if recommendation == "SELL_PUT_SPREAD_REVIEW" and side_key != "put_credit":
+        return False
+    if recommendation == "SELL_CALL_SPREAD_REVIEW" and side_key != "call_credit":
+        return False
+    if recommendation in {"WAIT_FOR_CONFIRMATION", "NO_TRADE",
+                          "UNABLE_TO_JUDGE"}:
+        return False
+    if direction == "BULLISH" and side_key == "call_credit":
+        return False
+    if direction == "BEARISH" and side_key == "put_credit":
+        return False
+    if direction == "NEUTRAL" and recommendation != "NEUTRAL_SINGLE_SIDE_REVIEW":
+        return False
+    return True
+
+
+def _comfort_claim_status(native, claim_name):
+    return str(_as_dict(_as_dict(native).get("claims")).get(
+        claim_name, {}).get("status") or "").upper()
+
+
+def _comfort_side_contract_detail_reasons(side):
+    text = _comfort_text_from_side(side)
+    if COMFORT_FORBIDDEN_CONTRACT_DETAIL_RE.search(text):
+        return ["舒适度说明不能写具体合约价格或期限信息。"]
+    return []
+
+
+def _comfort_gamma_flip_point(packet):
+    gamma = _as_dict(_as_dict(_as_dict(packet).get(
+        "factor_cross_section")).get("gamma_regime"))
+    for key in (
+            "flip_point", "gamma_flip", "gamma_flip_point", "flip",
+            "flip_price"):
+        value = _number_or_none(gamma.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _comfort_packet_price(packet):
+    return _number_or_none(_as_dict(_as_dict(packet).get(
+        "market_context")).get("price"))
+
+
+def _comfort_current_position_sentences(text):
+    for line in str(text or "").splitlines():
+        for sentence in re.split(r"[。！？!?；;]+", line):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if COMFORT_CONDITION_SENTENCE_RE.search(sentence):
+                continue
+            yield sentence
+
+def _comfort_gamma_flip_position_reasons(side, packet):
+    price = _comfort_packet_price(packet)
+    flip = _comfort_gamma_flip_point(packet)
+    if price is None or flip is None or price == flip:
+        return []
+    actual = "below" if price < flip else "above"
+    reasons = []
+    side = _as_dict(side)
+    for field_name in ("basis_cn", "s_upgrade_basis_cn"):
+        for sentence in _comfort_current_position_sentences(side.get(field_name)):
+            if not COMFORT_GAMMA_FLIP_TERM_RE.search(sentence):
+                continue
+            claims_above = bool(COMFORT_POSITION_ABOVE_RE.search(sentence))
+            claims_below = bool(COMFORT_POSITION_BELOW_RE.search(sentence))
+            if claims_above and actual == "below":
+                reasons.append("当前价格低于 Gamma 反转点，舒适度说明不能写成位于上方。")
+            if claims_below and actual == "above":
+                reasons.append("当前价格高于 Gamma 反转点，舒适度说明不能写成位于下方。")
+    return sorted(set(reasons))
+
+
+def _comfort_side_text_is_safe(side, packet):
+    text = _comfort_text_from_side(side)
+    issues = []
+    issues.extend(_comfort_side_contract_detail_reasons(side))
+    issues.extend(_comfort_gamma_flip_position_reasons(side, packet))
+    raw_tokens = _find_advisory_raw_tokens(text)
+    if raw_tokens:
+        issues.append("模型舒适度文字包含机器代码。")
+    raw_patterns = _find_advisory_raw_patterns(text)
+    if raw_patterns:
+        issues.append("模型舒适度文字包含机器字段路径或赋值语法。")
+    if _actionable_execution_terms(text):
+        issues.append("模型舒适度文字包含交易执行参数。")
+    funding_semantics = _packet_funding_semantics(packet)
+    if funding_semantics and funding_text_conflicts(text, funding_semantics):
+        issues.append("模型舒适度文字与 Funding 原始语义冲突。")
+    return sorted(set(issues))
+
+
+def _comfort_unrated_side(side_key, raw_side, model_grade, cap_reasons,
+                          wipe_text=False):
+    if wipe_text:
+        reason = "模型舒适度输出未通过本地评级校验，暂未形成有效等级。"
+        raw_side = _comfort_default_model_side(reason)
+    raw_side = _as_dict(raw_side)
+    return {
+        "model_grade": model_grade,
+        "final_grade": None,
+        "status": "UNRATED",
+        "basis_cn": str(raw_side.get("basis_cn") or "暂未形成有效评级。")[:520],
+        "counter_evidence_cn": str(
+            raw_side.get("counter_evidence_cn") or "反证未形成有效结构化输出。")[:520],
+        "unresolved_conditions_cn": _comfort_clean_list(
+            raw_side.get("unresolved_conditions_cn"), limit=4),
+        "next_observation_cn": str(
+            raw_side.get("next_observation_cn")
+            or ("等待 " + COMFORT_SIDE_CN[side_key] + " 的有效复核。"))[:520],
+        "evidence_refs": _comfort_clean_refs(raw_side.get("evidence_refs")),
+        "counter_evidence_refs": _comfort_clean_refs(
+            raw_side.get("counter_evidence_refs")),
+        "s_upgrade_basis_cn": str(raw_side.get("s_upgrade_basis_cn") or "")[:520],
+        "s_upgrade_evidence_refs": _comfort_clean_refs(
+            raw_side.get("s_upgrade_evidence_refs")),
+        "cap_reasons_cn": _comfort_clean_list(cap_reasons, limit=8),
+    }
+
+
+def _comfort_finalize_side(side_key, raw_side, packet, native, advisory):
+    cap_reasons = []
+    wipe_text = False
+    if not isinstance(raw_side, dict):
+        raw_side = _comfort_default_model_side("历史版本未综合评级。")
+        cap_reasons.append("模型未返回该侧舒适度评级。")
+        return _comfort_unrated_side(side_key, raw_side, None, cap_reasons)
+
+    grade = str(raw_side.get("grade") or "").upper()
+    if grade == "UNRATED":
+        model_grade = None
+    elif grade in COMFORT_RATED_GRADES:
+        model_grade = grade
+    else:
+        model_grade = None
+        cap_reasons.append("模型返回了无效等级，评级作废。")
+
+    required_fields = {
+        "basis_cn", "counter_evidence_cn", "unresolved_conditions_cn",
+        "next_observation_cn", "evidence_refs", "counter_evidence_refs",
+        "s_upgrade_basis_cn", "s_upgrade_evidence_refs",
+    }
+    missing = sorted(required_fields - set(raw_side))
+    if missing:
+        cap_reasons.append("模型舒适度输出字段不完整。")
+    for text_key in ("basis_cn", "counter_evidence_cn", "next_observation_cn"):
+        if not isinstance(raw_side.get(text_key), str) or not raw_side[text_key].strip():
+            cap_reasons.append("模型舒适度输出缺少必要中文说明。")
+            break
+    if not isinstance(raw_side.get("unresolved_conditions_cn"), list):
+        cap_reasons.append("未解条件不是有效中文列表。")
+    for refs_key in ("evidence_refs", "counter_evidence_refs",
+                     "s_upgrade_evidence_refs"):
+        if not isinstance(raw_side.get(refs_key), list):
+            cap_reasons.append("证据引用不是有效列表。")
+            break
+
+    valid_ids = _comfort_valid_evidence_ids(packet)
+    evidence_refs = _comfort_clean_refs(raw_side.get("evidence_refs"))
+    counter_refs = _comfort_clean_refs(raw_side.get("counter_evidence_refs"))
+    s_refs = _comfort_clean_refs(raw_side.get("s_upgrade_evidence_refs"))
+    invalid_refs = _comfort_invalid_refs(evidence_refs + counter_refs + s_refs,
+                                         valid_ids)
+    if invalid_refs:
+        cap_reasons.append("模型引用了当前卡不存在的证据，评级作废。")
+        wipe_text = True
+
+    unsafe_text_reasons = _comfort_side_text_is_safe(raw_side, packet)
+    if unsafe_text_reasons:
+        cap_reasons.extend(unsafe_text_reasons)
+        wipe_text = True
+
+    if not native.get("valid"):
+        cap_reasons.extend(native.get("reasons") or [])
+    else:
+        missing_sources = _comfort_side_required_missing(packet, native, side_key)
+        if missing_sources:
+            cap_reasons.extend(missing_sources)
+        referenced_fact_reasons = _comfort_referenced_fact_reasons(
+            packet, native, side_key, evidence_refs + counter_refs + s_refs)
+        if referenced_fact_reasons:
+            cap_reasons.extend(referenced_fact_reasons)
+            wipe_text = True
+
+    if model_grade is None or cap_reasons:
+        return _comfort_unrated_side(
+            side_key, raw_side, model_grade, cap_reasons,
+            wipe_text=wipe_text)
+
+    if model_grade in {"B", "A", "S"} and not (
+            set(evidence_refs) & COMFORT_MARKET_EVIDENCE_IDS):
+        cap_reasons.append("B级及以上必须引用至少一条底层市场事实。")
+        return _comfort_unrated_side(side_key, raw_side, model_grade,
+                                     cap_reasons, wipe_text=True)
+    if model_grade in {"C", "D"} and not (
+            set(evidence_refs + counter_refs)
+            & (COMFORT_MARKET_EVIDENCE_IDS | COMFORT_DECISION_EVIDENCE_IDS)):
+        cap_reasons.append("评级缺少可核验事实引用。")
+        return _comfort_unrated_side(side_key, raw_side, model_grade,
+                                     cap_reasons, wipe_text=True)
+
+    final_grade = model_grade
+    if final_grade == "S":
+        s_basis = str(raw_side.get("s_upgrade_basis_cn") or "").strip()
+        support_groups = _comfort_ref_groups(evidence_refs)
+        upgrade_groups = _comfort_ref_groups(s_refs)
+        unique_upgrade_refs = [
+            ref for ref in s_refs
+            if (ref not in evidence_refs
+                and COMFORT_REF_GROUPS.get(ref, ref) not in support_groups
+                and COMFORT_REF_GROUPS.get(ref, ref)
+                not in COMFORT_S_UNUSABLE_GROUPS
+                and ref in COMFORT_MARKET_EVIDENCE_IDS)
+        ]
+        if not s_basis or not s_refs:
+            final_grade = "A"
+            cap_reasons.append("S级缺少比 A 多出的升级依据。")
+        elif not unique_upgrade_refs or upgrade_groups <= support_groups:
+            final_grade = "A"
+            cap_reasons.append("S级升级依据缺少额外非重复市场事实，最高降为 A。")
+        elif COMFORT_FUTURE_UPGRADE_TEXT_RE.search(s_basis):
+            final_grade = "A"
+            cap_reasons.append("评级后的行情或 OHLC 路径不能用于当期 S 级升级。")
+
+    if _packet_has_explicit_invalid_window(packet) and final_grade != "D":
+        final_grade = "D"
+        cap_reasons.append("当前信号窗口已经失效，本轮回避该侧结构。")
+
+    if final_grade in {"A", "S"}:
+        unresolved = _comfort_clean_list(
+            raw_side.get("unresolved_conditions_cn"), limit=4)
+        if unresolved:
+            final_grade = "B"
+            cap_reasons.append("仍有未解关键条件，最高保留 B 级关注。")
+        if _packet_has_any_producer_block(packet):
+            final_grade = "B"
+            cap_reasons.append("生产端仍有阻断或等待边界，最高保留 B 级关注。")
+        elif _packet_requires_confirmation(packet):
+            final_grade = "B"
+            cap_reasons.append("生产端仍要求确认，最高保留 B 级关注。")
+        if _packet_has_window_not_open(packet):
+            final_grade = "B"
+            cap_reasons.append("当前窗口尚未开启，最高保留 B 级关注。")
+        if not _comfort_side_allows_admission(side_key, advisory, packet):
+            final_grade = "B"
+            cap_reasons.append("原有结构复核侧别不支持该侧 A/S 准入。")
+        quality = _as_dict(_as_dict(packet).get("quality"))
+        if quality.get("overall") not in (None, "OK"):
+            final_grade = "B"
+            cap_reasons.append("整体数据质量未达到 A/S 准入要求。")
+        structure_status = _comfort_claim_status(native, "structure")
+        side_status = _comfort_claim_status(native, COMFORT_NATIVE_CLAIMS[side_key])
+        if structure_status == "OPPOSED" or side_status == "OPPOSED":
+            final_grade = "B"
+            cap_reasons.append("生产端原生结构或侧别主张存在明确反对，最高保留 B。")
+
+    return {
+        "model_grade": model_grade,
+        "final_grade": final_grade,
+        "status": "RATED",
+        "basis_cn": str(raw_side.get("basis_cn") or "")[:520],
+        "counter_evidence_cn": str(raw_side.get("counter_evidence_cn") or "")[:520],
+        "unresolved_conditions_cn": _comfort_clean_list(
+            raw_side.get("unresolved_conditions_cn"), limit=4),
+        "next_observation_cn": str(raw_side.get("next_observation_cn") or "")[:520],
+        "evidence_refs": evidence_refs,
+        "counter_evidence_refs": counter_refs,
+        "s_upgrade_basis_cn": str(raw_side.get("s_upgrade_basis_cn") or "")[:520],
+        "s_upgrade_evidence_refs": s_refs,
+        "cap_reasons_cn": _comfort_clean_list(cap_reasons, limit=8),
+    }
+
+
+def _comfort_headline(sides):
+    ranked = []
+    for side_key in COMFORT_SIDE_KEYS:
+        side = _as_dict(sides.get(side_key))
+        grade = side.get("final_grade")
+        if grade in COMFORT_RATED_GRADES:
+            ranked.append((COMFORT_GRADE_ORDER[grade], grade, side_key))
+    if not ranked:
+        return {
+            "final_grade": None,
+            "focus_side": "none",
+            "action_cn": "暂未形成有效舒适度评级，保留为人工审计观察。",
+        }
+    ranked.sort(reverse=True)
+    top_score, top_grade, top_side = ranked[0]
+    tied = [side for score, grade, side in ranked
+            if score == top_score and grade == top_grade]
+    focus_side = "tie" if len(tied) > 1 else top_side
+    return {
+        "final_grade": top_grade,
+        "focus_side": focus_side,
+        "action_cn": _comfort_action_cn(top_grade, focus_side),
+    }
+
+
+def _comfort_action_cn(grade, focus_side):
+    side_text = {
+        "put_credit": "Put 信用价差",
+        "call_credit": "Call 信用价差",
+        "tie": "Put/Call 无单一优先侧",
+        "none": "无有效侧别",
+    }.get(focus_side, "无有效侧别")
+    if grade == "S":
+        return side_text + "达到 S 级优先准入；仍需候选报价、补偿和风控确认。"
+    if grade == "A":
+        return side_text + "达到 A 级信号层准入；可启动人工交易准备。"
+    if grade == "B":
+        return side_text + "达到 B 级，启动注意力并等待关键条件变化。"
+    if grade == "C":
+        return side_text + "为 C 级普通观察，暂不需要主动推进。"
+    if grade == "D":
+        return side_text + "为 D 级，本轮回避该侧结构。"
+    return "暂未形成有效舒适度评级，保留为人工审计观察。"
+
+
+def _finalize_side_comfort_ratings(raw_ratings, packet, advisory):
+    native = _comfort_native_rating_state(packet)
+    raw_ratings = _as_dict(raw_ratings)
+    sides = {
+        side_key: _comfort_finalize_side(
+            side_key, raw_ratings.get(side_key), packet, native, advisory)
+        for side_key in COMFORT_SIDE_KEYS
+    }
+    return {
+        "schema": COMFORT_RATINGS_SCHEMA_VERSION,
+        "rating_scope": COMFORT_RATING_SCOPE,
+        "candidate_quote_economics": COMFORT_CANDIDATE_QUOTE_ECONOMICS,
+        "as_of_ms": native.get("as_of_ms"),
+        "put_credit": sides["put_credit"],
+        "call_credit": sides["call_credit"],
+        "headline": _comfort_headline(sides),
+    }
+
+
 def _validate_model_payload(payload, packet=None):
     if not isinstance(payload, dict):
         raise ValueError("model output must be object")
@@ -5698,11 +6863,20 @@ def _validate_integrated_trade_advisory(advisory, packet=None,
                              + ", ".join(invalid_refs))
         if {str(ref) for ref in refs} & {"EV_SESSION_CONTEXT", "EV_COMFORT_WINDOW"}:
             raise ValueError("session evidence cannot support the core recommendation")
+        ref_set = {str(ref) for ref in refs}
+        if (
+                "EV_SIGNAL_RATING" in ref_set
+                and not ref_set.intersection(SIGNAL_RATING_BOTTOM_EVIDENCE_IDS)):
+            raise ValueError(
+                "signal_rating requires bottom evidence refs")
     invalid_if = advisory.get("invalid_if")
     if not isinstance(invalid_if, list) or not (1 <= len(invalid_if) <= 3):
         raise ValueError("integrated_trade_advisory.invalid_if must contain 1..3 items")
     for item in invalid_if:
         _require_nonblank_advisory_text(item, "integrated_trade_advisory.invalid_if")
+
+    _validate_side_comfort_ratings(
+        advisory.get("side_comfort_ratings"), packet=packet)
 
     _validate_blind_advisory_alignment(
         advisory, theoretical_active_view, packet=packet)
@@ -5731,6 +6905,89 @@ def _validate_integrated_trade_advisory(advisory, packet=None,
         if (str(containment.get("state") or "").upper() != "UNABLE_TO_JUDGE"
                 and str(premium_fit.get("state") or "").upper() != "UNABLE_TO_JUDGE"):
             raise ValueError("UNABLE_TO_JUDGE requires an unable assessment")
+
+
+def _validate_side_comfort_ratings(ratings, packet=None):
+    if not isinstance(ratings, dict):
+        raise ValueError("side_comfort_ratings must be object")
+    required = {
+        "schema", "rating_scope", "candidate_quote_economics", "as_of_ms",
+        "put_credit", "call_credit", "headline",
+    }
+    if set(ratings) != required:
+        raise ValueError("side_comfort_ratings fields are incomplete or unexpected")
+    if ratings.get("schema") != COMFORT_RATINGS_SCHEMA_VERSION:
+        raise ValueError("invalid side_comfort_ratings.schema")
+    if ratings.get("rating_scope") != COMFORT_RATING_SCOPE:
+        raise ValueError("invalid side_comfort_ratings.rating_scope")
+    if ratings.get("candidate_quote_economics") != COMFORT_CANDIDATE_QUOTE_ECONOMICS:
+        raise ValueError("invalid side_comfort_ratings.candidate_quote_economics")
+    as_of = ratings.get("as_of_ms")
+    as_of_num = _number_or_none(as_of)
+    if as_of is not None and (
+            as_of_num is None or as_of_num != as_of_num):
+        raise ValueError("side_comfort_ratings.as_of_ms must be numeric or null")
+
+    valid_ids = _comfort_valid_evidence_ids(packet or {})
+    sides = {}
+    for side_key in COMFORT_SIDE_KEYS:
+        side = ratings.get(side_key)
+        if not isinstance(side, dict):
+            raise ValueError(side_key + " comfort rating must be object")
+        side_required = {
+            "model_grade", "final_grade", "status", "basis_cn",
+            "counter_evidence_cn", "unresolved_conditions_cn",
+            "next_observation_cn", "evidence_refs", "counter_evidence_refs",
+            "s_upgrade_basis_cn", "s_upgrade_evidence_refs", "cap_reasons_cn",
+        }
+        if set(side) != side_required:
+            raise ValueError(side_key + " comfort fields are incomplete or unexpected")
+        model_grade = side.get("model_grade")
+        final_grade = side.get("final_grade")
+        status = side.get("status")
+        if model_grade is not None and model_grade not in COMFORT_RATED_GRADES:
+            raise ValueError(side_key + " model_grade is invalid")
+        if final_grade is not None and final_grade not in COMFORT_RATED_GRADES:
+            raise ValueError(side_key + " final_grade is invalid")
+        if status not in {"RATED", "UNRATED"}:
+            raise ValueError(side_key + " status is invalid")
+        if status == "RATED" and final_grade is None:
+            raise ValueError(side_key + " rated status requires final_grade")
+        if status == "UNRATED" and final_grade is not None:
+            raise ValueError(side_key + " unrated status cannot have final_grade")
+        for field_name in (
+                "basis_cn", "counter_evidence_cn", "next_observation_cn"):
+            _require_nonblank_advisory_text(
+                side.get(field_name), side_key + "." + field_name)
+        for list_name in (
+                "unresolved_conditions_cn", "evidence_refs",
+                "counter_evidence_refs", "s_upgrade_evidence_refs",
+                "cap_reasons_cn"):
+            if not isinstance(side.get(list_name), list):
+                raise ValueError(side_key + "." + list_name + " must be list")
+        invalid_refs = _comfort_invalid_refs(
+            _comfort_clean_refs(side.get("evidence_refs"))
+            + _comfort_clean_refs(side.get("counter_evidence_refs"))
+            + _comfort_clean_refs(side.get("s_upgrade_evidence_refs")),
+            valid_ids,
+        )
+        if invalid_refs:
+            raise ValueError(side_key + " comfort invalid evidence refs: "
+                             + ", ".join(invalid_refs))
+        if _comfort_side_text_is_safe(side, packet or {}):
+            raise ValueError(side_key + " comfort text contains unsafe terms")
+        sides[side_key] = side
+
+    headline = ratings.get("headline")
+    if not isinstance(headline, dict) or set(headline) != {
+            "final_grade", "focus_side", "action_cn"}:
+        raise ValueError("side_comfort_ratings.headline is invalid")
+    expected = _comfort_headline(sides)
+    if (headline.get("final_grade") != expected.get("final_grade")
+            or headline.get("focus_side") != expected.get("focus_side")):
+        raise ValueError("side_comfort_ratings.headline does not match sides")
+    _require_nonblank_advisory_text(
+        headline.get("action_cn"), "side_comfort_ratings.headline.action_cn")
 
 
 
@@ -6088,6 +7345,8 @@ def _normalize_integrated_trade_advisory(advisory):
         "trade_authorization": False,
         "future_24h_bayesian_report": _normalize_future_24h_bayesian_report(
             advisory.get("future_24h_bayesian_report")),
+        "side_comfort_ratings": _normalize_side_comfort_ratings(
+            advisory.get("side_comfort_ratings")),
         "policy_validation": {
             "passed": True,
             "evidence_refs_valid": True,
@@ -6096,6 +7355,95 @@ def _normalize_integrated_trade_advisory(advisory):
             "session_is_advisory_only": True,
             "authorization_is_not_structure_gate": True,
         },
+    }
+
+
+def _normalize_side_comfort_side(side):
+    side = _as_dict(side)
+    model_grade = str(side.get("model_grade") or "").upper()
+    final_grade = str(side.get("final_grade") or "").upper()
+    status = str(side.get("status") or "UNRATED").upper()
+    if model_grade not in COMFORT_RATED_GRADES:
+        model_grade = None
+    if final_grade not in COMFORT_RATED_GRADES:
+        final_grade = None
+    if status not in {"RATED", "UNRATED"}:
+        status = "UNRATED"
+    if final_grade is None:
+        status = "UNRATED"
+    return {
+        "model_grade": model_grade,
+        "final_grade": final_grade,
+        "status": status,
+        "basis_cn": str(side.get("basis_cn") or "暂未形成有效评级。")[:520],
+        "counter_evidence_cn": str(
+            side.get("counter_evidence_cn") or "反证未形成有效结构化输出。")[:520],
+        "unresolved_conditions_cn": _comfort_clean_list(
+            side.get("unresolved_conditions_cn"), limit=4),
+        "next_observation_cn": str(
+            side.get("next_observation_cn") or "等待下一次有效复核。")[:520],
+        "evidence_refs": _comfort_clean_refs(side.get("evidence_refs")),
+        "counter_evidence_refs": _comfort_clean_refs(
+            side.get("counter_evidence_refs")),
+        "s_upgrade_basis_cn": str(side.get("s_upgrade_basis_cn") or "")[:520],
+        "s_upgrade_evidence_refs": _comfort_clean_refs(
+            side.get("s_upgrade_evidence_refs")),
+        "cap_reasons_cn": _comfort_clean_list(side.get("cap_reasons_cn"), limit=8),
+    }
+
+
+def _normalize_side_comfort_ratings(ratings):
+    ratings = _as_dict(ratings)
+    put_side = _normalize_side_comfort_side(ratings.get("put_credit"))
+    call_side = _normalize_side_comfort_side(ratings.get("call_credit"))
+    sides = {"put_credit": put_side, "call_credit": call_side}
+    headline = _as_dict(ratings.get("headline")) or _comfort_headline(sides)
+    final_grade = str(headline.get("final_grade") or "").upper()
+    if final_grade not in COMFORT_RATED_GRADES:
+        final_grade = None
+    focus_side = str(headline.get("focus_side") or "none")
+    if focus_side not in {"put_credit", "call_credit", "tie", "none"}:
+        focus_side = "none"
+    return {
+        "schema": COMFORT_RATINGS_SCHEMA_VERSION,
+        "rating_scope": COMFORT_RATING_SCOPE,
+        "candidate_quote_economics": COMFORT_CANDIDATE_QUOTE_ECONOMICS,
+        "as_of_ms": _number_or_none(ratings.get("as_of_ms")),
+        "put_credit": put_side,
+        "call_credit": call_side,
+        "headline": {
+            "final_grade": final_grade,
+            "focus_side": focus_side,
+            "action_cn": str(
+                headline.get("action_cn")
+                or _comfort_action_cn(final_grade, focus_side))[:520],
+        },
+    }
+
+
+def _default_side_comfort_ratings(reason):
+    display_reason = "暂未完成有效复核，保留本卡市场观察。"
+    side = _comfort_unrated_side(
+        "put_credit",
+        _comfort_default_model_side(display_reason),
+        None,
+        [display_reason],
+    )
+    call_side = _comfort_unrated_side(
+        "call_credit",
+        _comfort_default_model_side(display_reason),
+        None,
+        [display_reason],
+    )
+    sides = {"put_credit": side, "call_credit": call_side}
+    return {
+        "schema": COMFORT_RATINGS_SCHEMA_VERSION,
+        "rating_scope": COMFORT_RATING_SCOPE,
+        "candidate_quote_economics": COMFORT_CANDIDATE_QUOTE_ECONOMICS,
+        "as_of_ms": None,
+        "put_credit": side,
+        "call_credit": call_side,
+        "headline": _comfort_headline(sides),
     }
 
 
@@ -6204,6 +7552,7 @@ def _default_integrated_trade_advisory(reason):
         "audit_only": True,
         "trade_authorization": False,
         "future_24h_bayesian_report": _default_future_24h_bayesian_report(reason),
+        "side_comfort_ratings": _default_side_comfort_ratings(reason),
         "policy_validation": {
             "passed": False,
             "evidence_refs_valid": False,
@@ -6270,9 +7619,12 @@ def _safe_copy(value):
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
-            if SENSITIVE_KEY_RE.search(str(key)):
+            key_text = str(key)
+            if (
+                    key_text.lower() != "opposition"
+                    and SENSITIVE_KEY_RE.search(key_text)):
                 continue
-            result[str(key)] = _safe_copy(item)
+            result[key_text] = _safe_copy(item)
         return result
     if isinstance(value, list):
         return [_safe_copy(item) for item in value[:120]]
@@ -6524,6 +7876,9 @@ def main(argv=None):
     parser.add_argument("--mode", choices=("card", "transition", "both"),
                         default="card",
                         help="Review card sidecar, transition sidecar, or both.")
+    parser.add_argument("--review-mode", choices=("single_evidence_v2", "legacy_two_call"),
+                        default="single_evidence_v2",
+                        help="New single assessment; legacy mode is explicit offline research.")
     parser.add_argument("--source", default="",
                         help="Path to signal_review.jsonl.")
     parser.add_argument("--reviews-output", default=DEFAULT_REVIEWS,
@@ -6557,7 +7912,7 @@ def main(argv=None):
     parser.add_argument("--usage-ledger", default="",
                         help="JSON state path for the Beijing-day HTTP usage ledger.")
     parser.add_argument("--retry-id", default="",
-                        help="Optional cross-round retry id; allows initial + 3 retries.")
+                        help="Legacy offline retry identifier; never resets the v2 attempt budget.")
     parser.add_argument("--only-card-id", default="",
                         help="Review one exact card_id; missing target exits 2.")
     parser.add_argument("--blind-effort", default="low",
@@ -6582,17 +7937,17 @@ def main(argv=None):
     parser.add_argument("--include-synthetic", action="store_true",
                         help="Allow synthetic/local fixture cards for preview testing.")
     args = parser.parse_args(argv)
-    result = {"mode": args.mode}
+    result = {"mode": args.mode, "review_mode": args.review_mode}
     exit_code = 0
     usage_ledger = (
         Path(args.usage_ledger)
         if args.usage_ledger
         else Path(args.reviews_output).with_name("signal_llm_usage_ledger.json")
     )
-    if args.retry_id:
+    if args.retry_id and args.review_mode == "legacy_two_call":
         result["retry_reset_id"] = args.retry_id
     budget = DailyHttpBudget(usage_ledger, limit=args.daily_http_limit)
-    result["effort"] = {
+    result["effort"] = {"assessment": "high"} if args.review_mode == "single_evidence_v2" else {
         "blind": args.blind_effort,
         "reconciliation": args.reconciliation_effort,
         "transition": args.transition_effort,
@@ -6600,7 +7955,18 @@ def main(argv=None):
     if args.mode in {"card", "both"}:
         if not args.source:
             parser.error("--source is required for card or both mode")
-        card_result = generate_reviews(
+        if args.review_mode == "single_evidence_v2":
+            from signal_review_v2_runtime import generate_reviews as generate_v2_reviews
+            card_result = generate_v2_reviews(
+                args.source, args.reviews_output, api_key=args.api_key,
+                model=args.model, limit=args.limit,
+                include_synthetic=args.include_synthetic,
+                timeout=args.recon_timeout, base_url=args.base_url,
+                budget=budget, max_concurrency=args.max_concurrency,
+                only_card_id=args.only_card_id or None,
+                transition_ledger=args.transition_ledger or None)
+        else:
+            card_result = generate_reviews(
             args.source,
             args.reviews_output,
             api_key=args.api_key,
@@ -6624,7 +7990,7 @@ def main(argv=None):
             exit_code = 1
         elif card_result["errors"]:
             exit_code = 1
-    if args.mode in {"transition", "both"}:
+    if args.mode == "transition" or (args.mode == "both" and args.review_mode == "legacy_two_call"):
         if not args.transition_ledger:
             parser.error("--transition-ledger is required for transition or both mode")
         transition_result = generate_transition_reviews(
@@ -6652,7 +8018,7 @@ def main(argv=None):
     if card_target:
         if card_target.get("status") == "MISSING":
             exit_code = 2
-        elif card_target.get("status") not in {"OK", "ALREADY_OK"}:
+        elif card_target.get("status") not in {"OK", "PARTIAL", "ALREADY_OK", "DAILY_BUDGET"}:
             exit_code = 1
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return exit_code

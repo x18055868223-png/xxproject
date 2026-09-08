@@ -1,0 +1,4201 @@
+{
+  "kind": "OFFLINE_RESEARCH_REPLAY_NOT_NATIVE_HISTORICAL_OUTPUT",
+  "schema": "astra_rating_replay@1.0.0",
+  "base_sha": "2c7216229a0f64c95cc37355e6151bf0cee01189",
+  "producer_sha256": "71734726d2922e3cff7d0d49840ef77b1b347b0721b3416d8ee5cbbc94e3f2b1",
+  "originals_sha256": "2d16744ea921da318c16baf99f0cecf56d97ea8008ff77f8f9310e2d8406c720",
+  "candles_sha256": "a90cc02341a78adfe0627d07ca72f72c71e9696d716fffb983c421a1196005b1",
+  "cohort_check": {
+    "interval_unique_real_cards": 15,
+    "requested": 15,
+    "unselected": [],
+    "versions": [
+      "1.5.7"
+    ],
+    "invalid_jsonl_lines": 1
+  },
+  "limits": [
+    "Historical same-version replay, not new-version forward validation.",
+    "Fixed-round scheduled time and actual snapshot/rating time are distinct.",
+    "30/60 minutes are diagnostic probes, not predicted lifetime.",
+    "Partial first and last minute candles excluded from excursions; values understate possible full-window adverse movement.",
+    "Endpoint uses last completed minute close, less than 60 seconds before target.",
+    "Episodes and overlapping 30/60 minute windows are not independent observations.",
+    "No options quotes, costs, trade decisions or option profit estimates."
+  ],
+  "status_counts": {
+    "structure": {
+      "SUPPORTED": 13,
+      "CONFLICTED": 1,
+      "INSUFFICIENT": 1
+    },
+    "put_pressure": {
+      "CONFLICTED": 9,
+      "OPPOSED": 1,
+      "SUPPORTED": 5
+    },
+    "call_pressure": {
+      "CONFLICTED": 9,
+      "SUPPORTED": 1,
+      "OPPOSED": 5
+    }
+  },
+  "rows": [
+    {
+      "source_card_id": "20260902T230000+0800-BTC-fixed_us_round_20260902_2300_bjt-f731",
+      "source_record_hash": "sha256:862b77c40fd43d7892a99d6d148311c556d18dddaba8afd5c062aa7de53cdbbd",
+      "source_version": "1.5.7",
+      "event_type": "FIXED_ANALYSIS_ROUND",
+      "episode_id": "fixed_us_round_20260902_2300_bjt",
+      "scheduled_or_event_time_ms": 1788361200000,
+      "reference_price": 77066.43,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788361210000.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_4h 给出上行/承接压力；同源窗口按一组 CVD 证据处理（BUY_CONFIRMS_UP）。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出下行方向压力；宏观冲击阻断仍由旧 veto 独立处理。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：PRICE_CONFIRM_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出下行方向压力；宏观冲击阻断仍由旧 veto 独立处理。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_4h 给出上行/承接压力；同源窗口按一组 CVD 证据处理（BUY_CONFIRMS_UP）。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：PRICE_CONFIRM_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "fixed_us_round_20260902_2300_bjt",
+          "nr_state": "NR_DISPLACEMENT_ACTIVE",
+          "nr_active": false,
+          "analysis_round": {
+            "audit_only": true,
+            "bypassed_gate": "DIE_ANCHOR_TRIGGER_ONLY",
+            "does_not_override_producer_decision": true,
+            "dst_mode": "EDT",
+            "episode_id": "fixed_us_round_20260902_2300_bjt",
+            "label_cn": "固定轮次分析",
+            "llm_prompt_policy": "USE_STANDARD_CARD_REVIEW_PROMPT",
+            "merged_with_regular_signal": false,
+            "ny_reference_label": "11:00 EDT",
+            "ny_time": "2026-09-02T11:00:00-04:00",
+            "round_type": "US_FIXED_ANALYSIS_ROUND",
+            "scheduled_time_ms": 1788361200000,
+            "scheduled_time_utc8": "2026-09-02T23:00:00+08:00",
+            "schema_name": "SignalFixedAnalysisRound",
+            "schema_version": "1.0.0",
+            "slot": "20260902_2300_bjt",
+            "snapshot_collected_time_utc8": "2026-09-02T23:00:10+08:00",
+            "tag": "FIXED_ROUND_ANALYSIS",
+            "trigger_clock": "Asia/Shanghai 23:00"
+          },
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "NO_TRADE_BLOCKED",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "NR 窗口未确认或已失效时，评级只解释环境，不改变旧 WAIT/BLOCKED。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788363010000.0,
+          "endpoint_close_time_ms": 1788362999999,
+          "endpoint_lag_ms": 10001.0,
+          "endpoint_return_pct": -0.0344,
+          "interior_downside_pct": 0.41318,
+          "interior_upside_pct": 0.14996,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788364810000.0,
+          "endpoint_close_time_ms": 1788364799999,
+          "endpoint_lag_ms": 10001.0,
+          "endpoint_return_pct": 0.28878,
+          "interior_downside_pct": 0.41318,
+          "interior_upside_pct": 0.41467,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260903T033726+0800-BTC-nr_1788377401783_DOWN-509a",
+      "source_record_hash": "sha256:5c6d4aa2dfa7153e8a31aeb5551f3a26bd3c4dc3b34072bc07dcda5132b32ed5",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788377401783_DOWN",
+      "scheduled_or_event_time_ms": 1788377846281,
+      "reference_price": 77153.99,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788377846281.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "OPPOSED",
+            "summary_cn": "Put 信用价差 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出下行方向压力；宏观冲击阻断仍由旧 veto 独立处理。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=0.057，48h=-0.399。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "SUPPORTED",
+            "summary_cn": "Call 信用价差 的侧别环境有支持依据；候选报价和补偿仍未评估。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出下行方向压力；宏观冲击阻断仍由旧 veto 独立处理。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=0.057，48h=-0.399。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788377401783_DOWN",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "WAIT_CONFIRMATION",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788379646281.0,
+          "endpoint_close_time_ms": 1788379619999,
+          "endpoint_lag_ms": 26282.0,
+          "endpoint_return_pct": 0.46599,
+          "interior_downside_pct": 0.01427,
+          "interior_upside_pct": 0.46599,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788381446281.0,
+          "endpoint_close_time_ms": 1788381419999,
+          "endpoint_lag_ms": 26282.0,
+          "endpoint_return_pct": 0.40958,
+          "interior_downside_pct": 0.01427,
+          "interior_upside_pct": 0.47439,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260903T230000+0800-BTC-fixed_us_round_20260903_2300_bjt-9894",
+      "source_record_hash": "sha256:44a9e0097eafba5da7af53fdc770382fbe371158d3f6d294f786b3eec807725b",
+      "source_version": "1.5.7",
+      "event_type": "FIXED_ANALYSIS_ROUND",
+      "episode_id": "fixed_us_round_20260903_2300_bjt",
+      "scheduled_or_event_time_ms": 1788447600000,
+      "reference_price": 80579.22525362,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788447621000.0,
+        "claims": {
+          "structure": {
+            "status": "CONFLICTED",
+            "summary_cn": "结构来源同时给出约束与反对信号，不能把空间结构解释成单向保护。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "basis_cn": "Gamma/GGR 指向正 Gamma 或钉扎区制，可作为结构约束背景；不与同源 GEX 信息重复计独立票。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为脱离/弱区，反对把当前环境解释成稳定回归。"
+              }
+            ],
+            "unknowns": []
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h/CVD_4h 给出上行/承接压力；同源窗口按一组 CVD 证据处理（BUY_CONFIRMS_UP, BUY_CONFIRMS_UP）。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出下行方向压力；宏观冲击阻断仍由旧 veto 独立处理。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出下行方向压力；宏观冲击阻断仍由旧 veto 独立处理。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h/CVD_4h 给出上行/承接压力；同源窗口按一组 CVD 证据处理（BUY_CONFIRMS_UP, BUY_CONFIRMS_UP）。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "fixed_us_round_20260903_2300_bjt",
+          "nr_state": "NR_DATA_INSUFFICIENT",
+          "nr_active": false,
+          "analysis_round": {
+            "audit_only": true,
+            "bypassed_gate": "DIE_ANCHOR_TRIGGER_ONLY",
+            "does_not_override_producer_decision": true,
+            "dst_mode": "EDT",
+            "episode_id": "fixed_us_round_20260903_2300_bjt",
+            "label_cn": "固定轮次分析",
+            "llm_prompt_policy": "USE_STANDARD_CARD_REVIEW_PROMPT",
+            "merged_with_regular_signal": false,
+            "ny_reference_label": "11:00 EDT",
+            "ny_time": "2026-09-03T11:00:00-04:00",
+            "round_type": "US_FIXED_ANALYSIS_ROUND",
+            "scheduled_time_ms": 1788447600000,
+            "scheduled_time_utc8": "2026-09-03T23:00:00+08:00",
+            "schema_name": "SignalFixedAnalysisRound",
+            "schema_version": "1.0.0",
+            "slot": "20260903_2300_bjt",
+            "snapshot_collected_time_utc8": "2026-09-03T23:00:21+08:00",
+            "tag": "FIXED_ROUND_ANALYSIS",
+            "trigger_clock": "Asia/Shanghai 23:00"
+          },
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "NO_TRADE_BLOCKED",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "NR 窗口未确认或已失效时，评级只解释环境，不改变旧 WAIT/BLOCKED。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788449421000.0,
+          "endpoint_close_time_ms": 1788449399999,
+          "endpoint_lag_ms": 21001.0,
+          "endpoint_return_pct": 0.20418,
+          "interior_downside_pct": 0.2787,
+          "interior_upside_pct": 0.48077,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788451221000.0,
+          "endpoint_close_time_ms": 1788451199999,
+          "endpoint_lag_ms": 21001.0,
+          "endpoint_return_pct": 0.95406,
+          "interior_downside_pct": 0.2787,
+          "interior_upside_pct": 0.98177,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260904T004204+0800-BTC-nr_1788445558616_UP-58ab",
+      "source_record_hash": "sha256:0a4a4b3fb28aaed86d93e3c2706c25955ea961663f19911aaeb5c82789dcf4c4",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788445558616_UP",
+      "scheduled_or_event_time_ms": 1788453724724,
+      "reference_price": 80827.34,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788453724724.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "SUPPORTED",
+            "summary_cn": "Put 信用价差 的侧别环境有支持依据；候选报价和补偿仍未评估。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "OPPOSED",
+            "summary_cn": "Call 信用价差 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788445558616_UP",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "TRADE_SUPPORT_STRONG",
+          "side_hint": "put_credit_spread",
+          "has_block": false,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788455524724.0,
+          "endpoint_close_time_ms": 1788455519999,
+          "endpoint_lag_ms": 4725.0,
+          "endpoint_return_pct": 0.24082,
+          "interior_downside_pct": 0.07094,
+          "interior_upside_pct": 0.25814,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788457324724.0,
+          "endpoint_close_time_ms": 1788457319999,
+          "endpoint_lag_ms": 4725.0,
+          "endpoint_return_pct": 0.36635,
+          "interior_downside_pct": 0.07094,
+          "interior_upside_pct": 0.41775,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260904T085300+0800-BTC-nr_1788482552937_UP-c0a6",
+      "source_record_hash": "sha256:b8b4fe4981fa8d350700ed827aa44909f49e122d6d6e144ac372981f4dad234a",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788482552937_UP",
+      "scheduled_or_event_time_ms": 1788483180932,
+      "reference_price": 81140.83,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788483180932.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_4h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（BUY_ABSORBED_BEARISH）。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_4h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（BUY_ABSORBED_BEARISH）。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788482552937_UP",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "TRADE_SUPPORT_WEAK",
+          "side_hint": "put_credit_spread",
+          "has_block": false,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788484980932.0,
+          "endpoint_close_time_ms": 1788484979999,
+          "endpoint_lag_ms": 933.0,
+          "endpoint_return_pct": -0.27462,
+          "interior_downside_pct": 0.28888,
+          "interior_upside_pct": 0,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788486780932.0,
+          "endpoint_close_time_ms": 1788486779999,
+          "endpoint_lag_ms": 933.0,
+          "endpoint_return_pct": -0.28337,
+          "interior_downside_pct": 0.46994,
+          "interior_upside_pct": 0,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260904T195546+0800-BTC-nr_1788518392174_UP-1099",
+      "source_record_hash": "sha256:dfcb3cdf8e28fa8de18995b64e47b0af638bf9f19a0c2a1de062c703b0dff0d0",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788518392174_UP",
+      "scheduled_or_event_time_ms": 1788522946721,
+      "reference_price": 81321.73,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788522946721.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "SUPPORTED",
+            "summary_cn": "Put 信用价差 的侧别环境有支持依据；候选报价和补偿仍未评估。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "OPPOSED",
+            "summary_cn": "Call 信用价差 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788518392174_UP",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "TRADE_SUPPORT_STRONG",
+          "side_hint": "put_credit_spread",
+          "has_block": false,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788524746721.0,
+          "endpoint_close_time_ms": 1788524699999,
+          "endpoint_lag_ms": 46722.0,
+          "endpoint_return_pct": -0.1288,
+          "interior_downside_pct": 0.23577,
+          "interior_upside_pct": 0,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788526546721.0,
+          "endpoint_close_time_ms": 1788526499999,
+          "endpoint_lag_ms": 46722.0,
+          "endpoint_return_pct": -2.09798,
+          "interior_downside_pct": 2.63639,
+          "interior_upside_pct": 0.03476,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260904T230000+0800-BTC-fixed_us_round_20260904_2300_bjt-39f7",
+      "source_record_hash": "sha256:d2529d904172610a33251ae254c617638e01301dffb755944ce87a1fc4745f17",
+      "source_version": "1.5.7",
+      "event_type": "FIXED_ANALYSIS_ROUND",
+      "episode_id": "fixed_us_round_20260904_2300_bjt",
+      "scheduled_or_event_time_ms": 1788534000000,
+      "reference_price": 78886.0,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788534044000.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "basis_cn": "Gamma/GGR 指向正 Gamma 或钉扎区制，可作为结构约束背景；不与同源 GEX 信息重复计独立票。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "reason_cn": "Anchor 处于过渡区，只能保留为结构背景，不能单独确认约束。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_4h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.676，48h=0.178。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_4h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.676，48h=0.178。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "fixed_us_round_20260904_2300_bjt",
+          "nr_state": "NR_WAIT_ANCHOR_REPAIR",
+          "nr_active": false,
+          "analysis_round": {
+            "audit_only": true,
+            "bypassed_gate": "DIE_ANCHOR_TRIGGER_ONLY",
+            "does_not_override_producer_decision": true,
+            "dst_mode": "EDT",
+            "episode_id": "fixed_us_round_20260904_2300_bjt",
+            "label_cn": "固定轮次分析",
+            "llm_prompt_policy": "USE_STANDARD_CARD_REVIEW_PROMPT",
+            "merged_with_regular_signal": false,
+            "ny_reference_label": "11:00 EDT",
+            "ny_time": "2026-09-04T11:00:00-04:00",
+            "round_type": "US_FIXED_ANALYSIS_ROUND",
+            "scheduled_time_ms": 1788534000000,
+            "scheduled_time_utc8": "2026-09-04T23:00:00+08:00",
+            "schema_name": "SignalFixedAnalysisRound",
+            "schema_version": "1.0.0",
+            "slot": "20260904_2300_bjt",
+            "snapshot_collected_time_utc8": "2026-09-04T23:00:44+08:00",
+            "tag": "FIXED_ROUND_ANALYSIS",
+            "trigger_clock": "Asia/Shanghai 23:00"
+          },
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "NO_TRADE_BLOCKED",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "NR 窗口未确认或已失效时，评级只解释环境，不改变旧 WAIT/BLOCKED。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788535844000.0,
+          "endpoint_close_time_ms": 1788535799999,
+          "endpoint_lag_ms": 44001.0,
+          "endpoint_return_pct": 0.66809,
+          "interior_downside_pct": 0.10902,
+          "interior_upside_pct": 0.69759,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788537644000.0,
+          "endpoint_close_time_ms": 1788537599999,
+          "endpoint_lag_ms": 44001.0,
+          "endpoint_return_pct": 0.68875,
+          "interior_downside_pct": 0.10902,
+          "interior_upside_pct": 0.84846,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260905T012655+0800-BTC-nr_1788539669414_UP-4d72",
+      "source_record_hash": "sha256:4627cb40aba81a67c861daef84b2092a36043d5bc4de1995cf99f2f6fb341316",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788539669414_UP",
+      "scheduled_or_event_time_ms": 1788542815003,
+      "reference_price": 79579.1,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788542815003.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.515，48h=0.380。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.515，48h=0.380。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788539669414_UP",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "WAIT_CONFIRMATION",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788544615003.0,
+          "endpoint_close_time_ms": 1788544559999,
+          "endpoint_lag_ms": 55004.0,
+          "endpoint_return_pct": -0.12625,
+          "interior_downside_pct": 0.24642,
+          "interior_upside_pct": 0.01867,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788546415003.0,
+          "endpoint_close_time_ms": 1788546359999,
+          "endpoint_lag_ms": 55004.0,
+          "endpoint_return_pct": -0.00187,
+          "interior_downside_pct": 0.24642,
+          "interior_upside_pct": 0.04386,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260905T163651+0800-BTC-nr_1788588376948_UP-8697",
+      "source_record_hash": "sha256:11a265a6543870447e08af01ec3276431bc176d601634fa11be193fd07256caa",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788588376948_UP",
+      "scheduled_or_event_time_ms": 1788597411888,
+      "reference_price": 79589.38,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788597411888.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788588376948_UP",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "WAIT_CONFIRMATION",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788599211888.0,
+          "endpoint_close_time_ms": 1788599159999,
+          "endpoint_lag_ms": 51889.0,
+          "endpoint_return_pct": 0.13036,
+          "interior_downside_pct": 0,
+          "interior_upside_pct": 0.16485,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788601011888.0,
+          "endpoint_close_time_ms": 1788600959999,
+          "endpoint_lag_ms": 51889.0,
+          "endpoint_return_pct": 0.13602,
+          "interior_downside_pct": 0,
+          "interior_upside_pct": 0.18418,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260905T230000+0800-BTC-fixed_us_round_20260905_2300_bjt-db5a",
+      "source_record_hash": "sha256:2d673024616a896f3a0c7eb2240190db817f1e818a84c8e228baf913bcce5e0e",
+      "source_version": "1.5.7",
+      "event_type": "FIXED_ANALYSIS_ROUND",
+      "episode_id": "fixed_us_round_20260905_2300_bjt",
+      "scheduled_or_event_time_ms": 1788620400000,
+      "reference_price": 79719.75,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788620424000.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "SUPPORTED",
+            "summary_cn": "Put 信用价差 的侧别环境有支持依据；候选报价和补偿仍未评估。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=0.052，48h=-0.493。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "OPPOSED",
+            "summary_cn": "Call 信用价差 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=0.052，48h=-0.493。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "fixed_us_round_20260905_2300_bjt",
+          "nr_state": "NR_WAIT_ANCHOR_DAMAGE",
+          "nr_active": false,
+          "analysis_round": {
+            "audit_only": true,
+            "bypassed_gate": "DIE_ANCHOR_TRIGGER_ONLY",
+            "does_not_override_producer_decision": true,
+            "dst_mode": "EDT",
+            "episode_id": "fixed_us_round_20260905_2300_bjt",
+            "label_cn": "固定轮次分析",
+            "llm_prompt_policy": "USE_STANDARD_CARD_REVIEW_PROMPT",
+            "merged_with_regular_signal": false,
+            "ny_reference_label": "11:00 EDT",
+            "ny_time": "2026-09-05T11:00:00-04:00",
+            "round_type": "US_FIXED_ANALYSIS_ROUND",
+            "scheduled_time_ms": 1788620400000,
+            "scheduled_time_utc8": "2026-09-05T23:00:00+08:00",
+            "schema_name": "SignalFixedAnalysisRound",
+            "schema_version": "1.0.0",
+            "slot": "20260905_2300_bjt",
+            "snapshot_collected_time_utc8": "2026-09-05T23:00:24+08:00",
+            "tag": "FIXED_ROUND_ANALYSIS",
+            "trigger_clock": "Asia/Shanghai 23:00"
+          },
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "NO_TRADE_BLOCKED",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "NR 窗口未确认或已失效时，评级只解释环境，不改变旧 WAIT/BLOCKED。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788622224000.0,
+          "endpoint_close_time_ms": 1788622199999,
+          "endpoint_lag_ms": 24001.0,
+          "endpoint_return_pct": -0.0331,
+          "interior_downside_pct": 0.05159,
+          "interior_upside_pct": 0.06913,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788624024000.0,
+          "endpoint_close_time_ms": 1788623999999,
+          "endpoint_lag_ms": 24001.0,
+          "endpoint_return_pct": 0.1082,
+          "interior_downside_pct": 0.05159,
+          "interior_upside_pct": 0.12074,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260906T064403+0800-BTC-nr_1788647373791_DOWN-9201",
+      "source_record_hash": "sha256:e6de8c04ad6cdf96b4e2bf9ff0237df9d01c92433f2bc3bee6cb8c65ccd509d3",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788647373791_DOWN",
+      "scheduled_or_event_time_ms": 1788648243972,
+      "reference_price": 79759.47,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788648243972.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "SUPPORTED",
+            "summary_cn": "Put 信用价差 的侧别环境有支持依据；候选报价和补偿仍未评估。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "OPPOSED",
+            "summary_cn": "Call 信用价差 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出上行方向压力；这不是信号寿命或收益概率。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788647373791_DOWN",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "TRADE_SUPPORT_STRONG",
+          "side_hint": "put_credit_spread",
+          "has_block": false,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788650043972.0,
+          "endpoint_close_time_ms": 1788650039999,
+          "endpoint_lag_ms": 3973.0,
+          "endpoint_return_pct": -0.01498,
+          "interior_downside_pct": 0.0545,
+          "interior_upside_pct": 0.06921,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788651843972.0,
+          "endpoint_close_time_ms": 1788651839999,
+          "endpoint_lag_ms": 3973.0,
+          "endpoint_return_pct": 0.07589,
+          "interior_downside_pct": 0.06699,
+          "interior_upside_pct": 0.10593,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260906T143653+0800-BTC-nr_1788673010874_UP-0853",
+      "source_record_hash": "sha256:c8d55a507fcb37fd07e67d1b6a4255ad2564311c50c1eaefdda73216538e794b",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788673010874_UP",
+      "scheduled_or_event_time_ms": 1788676613528,
+      "reference_price": 79813.01,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788676613528.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "SUPPORTED",
+            "summary_cn": "Put 信用价差 的侧别环境有支持依据；候选报价和补偿仍未评估。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.052，48h=0.508。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：PRICE_CONFIRM_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "OPPOSED",
+            "summary_cn": "Call 信用价差 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出上行压力；只作为期权截面背景。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.052，48h=0.508。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：PRICE_CONFIRM_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788673010874_UP",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "TRADE_SUPPORT_WEAK",
+          "side_hint": "put_credit_spread",
+          "has_block": false,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788678413528.0,
+          "endpoint_close_time_ms": 1788678359999,
+          "endpoint_lag_ms": 53529.0,
+          "endpoint_return_pct": -0.03612,
+          "interior_downside_pct": 0.17084,
+          "interior_upside_pct": 0.0141,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788680213528.0,
+          "endpoint_close_time_ms": 1788680159999,
+          "endpoint_lag_ms": 53529.0,
+          "endpoint_return_pct": 0.0039,
+          "interior_downside_pct": 0.2957,
+          "interior_upside_pct": 0.04635,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260906T230000+0800-BTC-fixed_us_round_20260906_2300_bjt-7cbd",
+      "source_record_hash": "sha256:11fad053c6b00d3e76ea71c0864ba7e10f9517bf176125e5a9d6c8ec6a29bc06",
+      "source_version": "1.5.7",
+      "event_type": "FIXED_ANALYSIS_ROUND",
+      "episode_id": "fixed_us_round_20260906_2300_bjt",
+      "scheduled_or_event_time_ms": 1788706800000,
+      "reference_price": 79538.07,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788706819000.0,
+        "claims": {
+          "structure": {
+            "status": "INSUFFICIENT",
+            "summary_cn": "结构来源可用但未形成明确约束主张。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "reason_cn": "Anchor 处于过渡区，只能保留为结构背景，不能单独确认约束。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "fixed_us_round_20260906_2300_bjt",
+          "nr_state": "NR_WAIT_ANCHOR_REPAIR",
+          "nr_active": false,
+          "analysis_round": {
+            "audit_only": true,
+            "bypassed_gate": "DIE_ANCHOR_TRIGGER_ONLY",
+            "does_not_override_producer_decision": true,
+            "dst_mode": "EDT",
+            "episode_id": "fixed_us_round_20260906_2300_bjt",
+            "label_cn": "固定轮次分析",
+            "llm_prompt_policy": "USE_STANDARD_CARD_REVIEW_PROMPT",
+            "merged_with_regular_signal": false,
+            "ny_reference_label": "11:00 EDT",
+            "ny_time": "2026-09-06T11:00:00-04:00",
+            "round_type": "US_FIXED_ANALYSIS_ROUND",
+            "scheduled_time_ms": 1788706800000,
+            "scheduled_time_utc8": "2026-09-06T23:00:00+08:00",
+            "schema_name": "SignalFixedAnalysisRound",
+            "schema_version": "1.0.0",
+            "slot": "20260906_2300_bjt",
+            "snapshot_collected_time_utc8": "2026-09-06T23:00:19+08:00",
+            "tag": "FIXED_ROUND_ANALYSIS",
+            "trigger_clock": "Asia/Shanghai 23:00"
+          },
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "NO_TRADE_BLOCKED",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "先恢复或补足依据不足项的必要来源，再讨论本项是否支持该侧环境。",
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "NR 窗口未确认或已失效时，评级只解释环境，不改变旧 WAIT/BLOCKED。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788708619000.0,
+          "endpoint_close_time_ms": 1788708599999,
+          "endpoint_lag_ms": 19001.0,
+          "endpoint_return_pct": 0.12302,
+          "interior_downside_pct": 0.19456,
+          "interior_upside_pct": 0.15581,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788710419000.0,
+          "endpoint_close_time_ms": 1788710399999,
+          "endpoint_lag_ms": 19001.0,
+          "endpoint_return_pct": 0.22433,
+          "interior_downside_pct": 0.19456,
+          "interior_upside_pct": 0.24708,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260906T230831+0800-BTC-nr_1788705257006_DOWN-de00",
+      "source_record_hash": "sha256:b1c2164b084fdcf0660b75cb513621228cc2ee300a5663c5cb74497725e93497",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788705257006_DOWN",
+      "scheduled_or_event_time_ms": 1788707311686,
+      "reference_price": 79540.03,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788707311686.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行侵入压力反对 Put 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "basis_cn": "TMVF 量价主干给出下行方向压力；这不是信号寿命或收益概率。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "basis_cn": "主动流×价格 CVD_12h 给出下行/吸收压力；同源窗口按一组 CVD 证据处理（SELL_CONFIRMS_DOWN）。下行/压制压力支持 Call 信用价差环境。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788705257006_DOWN",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "TRADE_SUPPORT_WEAK",
+          "side_hint": "call_credit_spread",
+          "has_block": false,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788709111686.0,
+          "endpoint_close_time_ms": 1788709079999,
+          "endpoint_lag_ms": 31687.0,
+          "endpoint_return_pct": 0.17848,
+          "interior_downside_pct": 0.03501,
+          "interior_upside_pct": 0.17849,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788710911686.0,
+          "endpoint_close_time_ms": 1788710879999,
+          "endpoint_lag_ms": 31687.0,
+          "endpoint_return_pct": 0.11311,
+          "interior_downside_pct": 0.03501,
+          "interior_upside_pct": 0.24461,
+          "interior_bar_count": 59
+        }
+      }
+    },
+    {
+      "source_card_id": "20260907T115950+0800-BTC-nr_1788749787332_DOWN-e206",
+      "source_record_hash": "sha256:ca510c466b5702d4b5b988626a831c1b5c94173c5cd7941cdf2685708f261ca1",
+      "source_version": "1.5.7",
+      "event_type": "NR_REPAIR_CONFIRMED",
+      "episode_id": "nr_1788749787332_DOWN",
+      "scheduled_or_event_time_ms": 1788753590501,
+      "reference_price": 79597.93,
+      "rating": {
+        "schema": "signal_rating@1.0.0",
+        "rating_scope": "side_environment_v1",
+        "candidate_quote_economics": "not_evaluated",
+        "as_of_ms": 1788753590501.0,
+        "claims": {
+          "structure": {
+            "status": "SUPPORTED",
+            "summary_cn": "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。"
+              },
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "source_group": "GGR",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；这不是不可突破边界或胜率。"
+              }
+            ],
+            "opposition": [],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.gamma_regime",
+                "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。"
+              }
+            ]
+          },
+          "put_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Put 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行/承接压力支持 Put 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行侵入压力反对 Put 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.164，48h=0.464。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：PRICE_CONFIRM_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          },
+          "call_pressure": {
+            "status": "CONFLICTED",
+            "summary_cn": "Call 信用价差 同时存在支持与反对压力，适合作为人工复核的冲突清单。",
+            "required_inputs": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "source_group": "TMVF",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow",
+                "source_group": "CVD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。"
+              },
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "source_group": "Funding",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法区分温和非投票与拥挤反身压力。"
+              },
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "status": "OK",
+                "usable": true,
+                "reason_cn": "OK",
+                "impact_cn": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。"
+              }
+            ],
+            "support": [
+              {
+                "source_ref": "factor_cross_section.skew",
+                "source_group": "SRD",
+                "basis_cn": "SRD 偏斜给出下行压力；只作为期权截面背景。下行/压制压力支持 Call 信用价差环境。"
+              }
+            ],
+            "opposition": [
+              {
+                "source_ref": "factor_cross_section.macro_pressure",
+                "source_group": "MACRO",
+                "basis_cn": "MACRO 背景给出上行方向压力；宏观冲击阻断仍由旧 veto 独立处理。上行侵入压力反对 Call 信用价差环境。"
+              }
+            ],
+            "unknowns": [
+              {
+                "source_ref": "factor_cross_section.tmvf",
+                "reason_cn": "TMVF 来源可用但未参与方向，保留当前压力信息：direction=Unclear，window_conflict=True，24h=-0.164，48h=0.464。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.fast_4h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：CVD_STRENGTH_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.micro_flow.slow_12h",
+                "reason_cn": "主动流×价格 来源可用，但本轮未达到参与条件：PRICE_CONFIRM_NOT_ACTIVE。"
+              },
+              {
+                "source_ref": "factor_cross_section.funding",
+                "reason_cn": "Funding 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"
+              }
+            ]
+          }
+        },
+        "market_state": {
+          "legacy_label": null,
+          "interpretation_cn": "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。",
+          "mean_reversion_validation": "not_established",
+          "trend_acceleration_available": false
+        },
+        "context": {
+          "episode_id": "nr_1788749787332_DOWN",
+          "nr_state": "NR_REPAIR_CONFIRMED",
+          "nr_active": true,
+          "analysis_round": null,
+          "future_validity": "unknown",
+          "source_refs": [
+            "factor_cross_section.anchor",
+            "factor_cross_section.gamma_regime",
+            "factor_cross_section.tmvf",
+            "factor_cross_section.micro_flow",
+            "factor_cross_section.macro_pressure",
+            "factor_cross_section.funding",
+            "factor_cross_section.skew",
+            "factor_cross_section.micro_flow.fast_4h",
+            "factor_cross_section.micro_flow.slow_12h"
+          ]
+        },
+        "model_constraints": {
+          "support_label": "WAIT_CONFIRMATION",
+          "side_hint": "none",
+          "has_block": true,
+          "hard_veto": null,
+          "execution_allowed": false
+        },
+        "next_observations_cn": [
+          "把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。",
+          "补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。",
+          "30/60 分钟路径只用于诊断，不代表信号可维持寿命。"
+        ]
+      },
+      "path_probes": {
+        "30": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788755390501.0,
+          "endpoint_close_time_ms": 1788755339999,
+          "endpoint_lag_ms": 50502.0,
+          "endpoint_return_pct": 0.01779,
+          "interior_downside_pct": 0.05412,
+          "interior_upside_pct": 0.12054,
+          "interior_bar_count": 29
+        },
+        "60": {
+          "coverage": "interior_complete_1m_bars",
+          "target_time_ms": 1788757190501.0,
+          "endpoint_close_time_ms": 1788757139999,
+          "endpoint_lag_ms": 50502.0,
+          "endpoint_return_pct": 0.16252,
+          "interior_downside_pct": 0.0723,
+          "interior_upside_pct": 0.16862,
+          "interior_bar_count": 59
+        }
+      }
+    }
+  ],
+  "canaries": [
+    {
+      "kind": "initial_event_compatibility",
+      "card_id": "ASTRA-REPLAY-20260907T115950+0800-BTC-nr_1788749787332_DOWN-e206",
+      "source_record_hash": "sha256:57d92111ab3a7b44bdfbaf343c893b618b634e64ea94151515da935f6cbb12ce",
+      "source_file_sha256": "ba70ecf0ddb7c9245a7dedf02fabc726f2c521deb2d87a89d749fc648fb42ede",
+      "review_file_sha256": "c71d527d194d1b3c6ef9275f3ab0cbcb12ff00671c939c95529284cb3c236d00",
+      "producer_sha256": "5c6ca3ff2e438b856c76cbbfdde660bd30dd45d71400edd734ed1d5036148227",
+      "status": "OK",
+      "schema": "signal_llm_review@1.5.1",
+      "prompt_version": "signal_llm_review_prompt@1.5.7",
+      "model": "deepseek-v4-flash",
+      "reviewed_at": "2026-09-07T12:28:40+00:00",
+      "http_calls": 2,
+      "profiles": [
+        "main_blind_low",
+        "main_reconciliation_high"
+      ],
+      "recommendation": "WAIT_FOR_CONFIRMATION",
+      "policy_passed": true,
+      "producer_hard_block_respected": true,
+      "future_24h_report_present": true
+    },
+    {
+      "kind": "final_fixed_round",
+      "card_id": "ASTRA-FINAL-REPLAY-20260906T230000+0800-BTC-fixed_us_round_20260906_2300_bjt-7cbd",
+      "source_record_hash": "sha256:4b46999868286286930f761aa6a9b1c442ef81378a3caeff78eb5d91e2d42a42",
+      "source_file_sha256": "ec679e7bcadd9fc9f5c3bd87300929cb21a175776e301d3c2bcf369f727df7ff",
+      "review_file_sha256": "a54e0a321d89b7a3ad03c94470aad40fdc90f3b436b44e8addc575f9299568f8",
+      "producer_sha256": "71734726d2922e3cff7d0d49840ef77b1b347b0721b3416d8ee5cbbc94e3f2b1",
+      "status": "OK",
+      "schema": "signal_llm_review@1.5.1",
+      "prompt_version": "signal_llm_review_prompt@1.5.7",
+      "model": "deepseek-v4-flash",
+      "reviewed_at": "2026-09-07T12:31:45+00:00",
+      "http_calls": 3,
+      "profiles": [
+        "main_blind_low",
+        "main_reconciliation_high",
+        "main_reconciliation_recovery"
+      ],
+      "recommendation": "NO_TRADE",
+      "policy_passed": true,
+      "producer_hard_block_respected": true,
+      "future_24h_report_present": true
+    }
+  ],
+  "canary_boundary": "Initial event canary predates the final TMVF unknown-reason wording; final fixed-round canary uses final producer hash. Neither is a live native signal."
+}

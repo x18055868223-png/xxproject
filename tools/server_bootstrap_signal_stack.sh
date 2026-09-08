@@ -30,16 +30,10 @@ LLM_PROVIDER="${LLM_PROVIDER:-deepseek}"
 LLM_BASE_URL="${LLM_BASE_URL:-https://api.deepseek.com}"
 LLM_MODEL="${LLM_MODEL:-deepseek-v4-flash}"
 LLM_REVIEW_LIMIT="${LLM_REVIEW_LIMIT:-4}"
-TRANSITION_REVIEW_LIMIT="${TRANSITION_REVIEW_LIMIT:-4}"
 LLM_MAX_CONCURRENCY="${LLM_MAX_CONCURRENCY:-4}"
 LLM_DAILY_HTTP_CAP="${LLM_DAILY_HTTP_CAP:-60}"
-TRANSITION_BLIND_MODE="${TRANSITION_BLIND_MODE:-single_call_evidence_first}"
-LLM_BLIND_EFFORT="${LLM_BLIND_EFFORT:-low}"
 LLM_RECON_EFFORT="${LLM_RECON_EFFORT:-high}"
-LLM_TRANSITION_EFFORT="${LLM_TRANSITION_EFFORT:-low}"
-LLM_BLIND_TIMEOUT="${LLM_BLIND_TIMEOUT:-60}"
 LLM_RECON_TIMEOUT="${LLM_RECON_TIMEOUT:-240}"
-LLM_TRANSITION_TIMEOUT="${LLM_TRANSITION_TIMEOUT:-120}"
 
 GEX_ENV_FILE="${GEX_ENV_FILE:-/etc/gexmonitorapi.env}"
 GEX_APP_DIR="${GEX_APP_DIR:-/opt/gexmonitorapi}"
@@ -175,22 +169,29 @@ install_signal_audit() {
     LLM_BASE_URL="$LLM_BASE_URL" \
     LLM_MODEL="$LLM_MODEL" \
     LLM_REVIEW_LIMIT="$LLM_REVIEW_LIMIT" \
-    TRANSITION_REVIEW_LIMIT="$TRANSITION_REVIEW_LIMIT" \
     LLM_MAX_CONCURRENCY="$LLM_MAX_CONCURRENCY" \
     LLM_DAILY_HTTP_CAP="$LLM_DAILY_HTTP_CAP" \
-    TRANSITION_BLIND_MODE="$TRANSITION_BLIND_MODE" \
-    LLM_BLIND_EFFORT="$LLM_BLIND_EFFORT" \
     LLM_RECON_EFFORT="$LLM_RECON_EFFORT" \
-    LLM_TRANSITION_EFFORT="$LLM_TRANSITION_EFFORT" \
-    LLM_BLIND_TIMEOUT="$LLM_BLIND_TIMEOUT" \
     LLM_RECON_TIMEOUT="$LLM_RECON_TIMEOUT" \
-    LLM_TRANSITION_TIMEOUT="$LLM_TRANSITION_TIMEOUT" \
     ENABLE_SIGNAL_AUDIT_TIMERS=0 \
     START_SIGNAL_AUDIT_TIMERS=0 \
     RUN_INITIAL_MATERIALIZE=0 \
     RUN_INITIAL_LLM_REVIEW=0 \
     bash "$REPO_DIR/deploy/signal_audit/install_or_update.sh"
+  install_signal_audit_v2_tools
   install_signal_audit_dropins
+}
+
+install_signal_audit_v2_tools() {
+  local module source
+  for module in signal_evidence_v2.py signal_review_v2.py signal_review_v2_runtime.py; do
+    source="$REPO_DIR/tools/$module"
+    if [[ ! -f "$source" ]]; then
+      echo "missing v2 LLM review tool: $source" >&2
+      exit 2
+    fi
+    "${SUDO[@]}" install -m 0755 "$source" "$TOOLS_ROOT/$module"
+  done
 }
 
 install_signal_audit_dropins() {
@@ -228,16 +229,10 @@ Environment="LLM_PROVIDER=$(systemd_escape_value "$LLM_PROVIDER")"
 Environment="LLM_BASE_URL=$(systemd_escape_value "$LLM_BASE_URL")"
 Environment="LLM_MODEL=$(systemd_escape_value "$LLM_MODEL")"
 Environment="LLM_REVIEW_LIMIT=$(systemd_escape_value "$LLM_REVIEW_LIMIT")"
-Environment="TRANSITION_REVIEW_LIMIT=$(systemd_escape_value "$TRANSITION_REVIEW_LIMIT")"
 Environment="LLM_MAX_CONCURRENCY=$(systemd_escape_value "$LLM_MAX_CONCURRENCY")"
 Environment="LLM_DAILY_HTTP_CAP=$(systemd_escape_value "$LLM_DAILY_HTTP_CAP")"
-Environment="TRANSITION_BLIND_MODE=$(systemd_escape_value "$TRANSITION_BLIND_MODE")"
-Environment="LLM_BLIND_EFFORT=$(systemd_escape_value "$LLM_BLIND_EFFORT")"
 Environment="LLM_RECON_EFFORT=$(systemd_escape_value "$LLM_RECON_EFFORT")"
-Environment="LLM_TRANSITION_EFFORT=$(systemd_escape_value "$LLM_TRANSITION_EFFORT")"
-Environment="LLM_BLIND_TIMEOUT=$(systemd_escape_value "$LLM_BLIND_TIMEOUT")"
 Environment="LLM_RECON_TIMEOUT=$(systemd_escape_value "$LLM_RECON_TIMEOUT")"
-Environment="LLM_TRANSITION_TIMEOUT=$(systemd_escape_value "$LLM_TRANSITION_TIMEOUT")"
 EnvironmentFile=
 EnvironmentFile=-$(systemd_escape_value "$LLM_ENV_FILE")
 ExecStartPre=
@@ -330,6 +325,11 @@ self_check() {
     LLM_ENV="$LLM_ENV_FILE" \
     EXPECTED_LLM_PROVIDER="$LLM_PROVIDER" \
     EXPECTED_LLM_MODEL="$LLM_MODEL" \
+    EXPECTED_LLM_SCHEMA=signal_llm_review@2.0.0 \
+    EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1 \
+    EXPECTED_LLM_REVIEW_MODE=single_evidence_v2 \
+    EXPECTED_LLM_CALL_COUNT=1 \
+    EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2 \
     SESSION_CONTEXT_REQUIRED=1 bash "$REPO_DIR/tools/server_self_check_signal_stack.sh" --run-oneshots
 }
 
@@ -362,8 +362,9 @@ Important files to review:
 - GEX env: ${GEX_ENV_FILE}
 - FMZ signal JSONL source: ${JSONL_SOURCE}
 - LLM sidecar JSONL: ${LLM_REVIEWS_SOURCE}
+- v2 evidence tools: ${TOOLS_ROOT}/signal_evidence_v2.py, ${TOOLS_ROOT}/signal_review_v2.py, ${TOOLS_ROOT}/signal_review_v2_runtime.py
 
 Secrets are templates only. Fill LLM_API_KEY/API_TOKEN on the server,
 then rerun the self-check:
-  SESSION_CONTEXT_REQUIRED=1 LLM_REQUIRED=1 INTEGRATED_ADVISORY_REQUIRED=1 TRANSITION_REQUIRED=1 TRANSITION_LLM_REQUIRED=1 sudo -E bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
+  SESSION_CONTEXT_REQUIRED=1 LLM_REQUIRED=1 INTEGRATED_ADVISORY_REQUIRED=1 TRANSITION_REQUIRED=1 sudo -E bash ${REPO_DIR}/tools/server_self_check_signal_stack.sh --run-oneshots
 EOF

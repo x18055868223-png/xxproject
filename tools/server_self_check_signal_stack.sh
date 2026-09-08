@@ -36,17 +36,20 @@ SYSTEMD_REQUIRED="${SYSTEMD_REQUIRED:-1}"
 AUDIT_HTTP_REQUIRED="${AUDIT_HTTP_REQUIRED:-1}"
 LLM_REQUIRED="${LLM_REQUIRED:-0}"
 INTEGRATED_ADVISORY_REQUIRED="${INTEGRATED_ADVISORY_REQUIRED:-0}"
+INTEGRATED_ADVISORY_PROTOCOL="${INTEGRATED_ADVISORY_PROTOCOL:-v2}"
 TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
-EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.5.7}"
+EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.6.0}"
 EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
 EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
-EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@1.5.1}"
-EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@1.5.6}"
+EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.0.0}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.0.1}"
+EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"
+EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-1}"
+EXPECTED_LLM_MAX_HTTP_ATTEMPTS="${EXPECTED_LLM_MAX_HTTP_ATTEMPTS:-2}"
 EXPECTED_LLM_BLIND_MODE="${EXPECTED_LLM_BLIND_MODE:-two_call_strict}"
-EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-2}"
 EXPECTED_TRANSITION_LLM_PROVIDER="${EXPECTED_TRANSITION_LLM_PROVIDER:-$EXPECTED_LLM_PROVIDER}"
 EXPECTED_TRANSITION_LLM_MODEL="${EXPECTED_TRANSITION_LLM_MODEL:-$EXPECTED_LLM_MODEL}"
 EXPECTED_TRANSITION_LLM_SCHEMA="${EXPECTED_TRANSITION_LLM_SCHEMA:-signal_transition_llm_review@1.3.0}"
@@ -73,6 +76,7 @@ CHECK_SYSTEMD_REQUIRED="$SYSTEMD_REQUIRED"
 CHECK_AUDIT_HTTP_REQUIRED="$AUDIT_HTTP_REQUIRED"
 CHECK_LLM_REQUIRED="$LLM_REQUIRED"
 CHECK_INTEGRATED_ADVISORY_REQUIRED="$INTEGRATED_ADVISORY_REQUIRED"
+CHECK_INTEGRATED_ADVISORY_PROTOCOL="$INTEGRATED_ADVISORY_PROTOCOL"
 CHECK_TRANSITION_REQUIRED="$TRANSITION_REQUIRED"
 CHECK_TRANSITION_LLM_REQUIRED="$TRANSITION_LLM_REQUIRED"
 CHECK_SESSION_CONTEXT_REQUIRED="$SESSION_CONTEXT_REQUIRED"
@@ -207,6 +211,7 @@ printf 'SYSTEMD_REQUIRED=%s\n' "$SYSTEMD_REQUIRED"
 printf 'AUDIT_HTTP_REQUIRED=%s\n' "$AUDIT_HTTP_REQUIRED"
 printf 'LLM_REQUIRED=%s\n' "$LLM_REQUIRED"
 printf 'INTEGRATED_ADVISORY_REQUIRED=%s\n' "$INTEGRATED_ADVISORY_REQUIRED"
+printf 'INTEGRATED_ADVISORY_PROTOCOL=%s\n' "$INTEGRATED_ADVISORY_PROTOCOL"
 printf 'TRANSITION_REQUIRED=%s\n' "$TRANSITION_REQUIRED"
 printf 'TRANSITION_LLM_REQUIRED=%s\n' "$TRANSITION_LLM_REQUIRED"
 printf 'DURABILITY_REQUIRED=%s\n' "$DURABILITY_REQUIRED"
@@ -215,8 +220,9 @@ printf 'EXPECTED_LLM_PROVIDER=%s\n' "$EXPECTED_LLM_PROVIDER"
 printf 'EXPECTED_LLM_MODEL=%s\n' "$EXPECTED_LLM_MODEL"
 printf 'EXPECTED_LLM_SCHEMA=%s\n' "$EXPECTED_LLM_SCHEMA"
 printf 'EXPECTED_LLM_PROMPT_VERSION=%s\n' "$EXPECTED_LLM_PROMPT_VERSION"
-printf 'EXPECTED_LLM_BLIND_MODE=%s\n' "$EXPECTED_LLM_BLIND_MODE"
+printf 'EXPECTED_LLM_REVIEW_MODE=%s\n' "$EXPECTED_LLM_REVIEW_MODE"
 printf 'EXPECTED_LLM_CALL_COUNT=%s\n' "$EXPECTED_LLM_CALL_COUNT"
+printf 'EXPECTED_LLM_MAX_HTTP_ATTEMPTS=%s\n' "$EXPECTED_LLM_MAX_HTTP_ATTEMPTS"
 printf 'EXPECTED_TRANSITION_LLM_SCHEMA=%s\n' "$EXPECTED_TRANSITION_LLM_SCHEMA"
 printf 'EXPECTED_TRANSITION_LLM_PROMPT_VERSION=%s\n' "$EXPECTED_TRANSITION_LLM_PROMPT_VERSION"
 printf 'JSONL_SOURCE=%s\n' "$JSONL_SOURCE"
@@ -239,6 +245,7 @@ SYSTEMD_REQUIRED="$CHECK_SYSTEMD_REQUIRED"
 AUDIT_HTTP_REQUIRED="$CHECK_AUDIT_HTTP_REQUIRED"
 LLM_REQUIRED="$CHECK_LLM_REQUIRED"
 INTEGRATED_ADVISORY_REQUIRED="$CHECK_INTEGRATED_ADVISORY_REQUIRED"
+INTEGRATED_ADVISORY_PROTOCOL="$CHECK_INTEGRATED_ADVISORY_PROTOCOL"
 TRANSITION_REQUIRED="$CHECK_TRANSITION_REQUIRED"
 TRANSITION_LLM_REQUIRED="$CHECK_TRANSITION_LLM_REQUIRED"
 SESSION_CONTEXT_REQUIRED="$CHECK_SESSION_CONTEXT_REQUIRED"
@@ -353,9 +360,9 @@ else
 fi
 if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
   if python3 - "$AUDIT_ROOT" <<'PY'
-import json, os, pathlib, sys
+import json, math, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.5.7")
+expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.6.0")
 durability_required = os.environ.get("DURABILITY_REQUIRED", "0") == "1"
 target_card_id = (os.environ.get("TARGET_CARD_ID")
                   or os.environ.get("ONLY_CARD_ID") or "")
@@ -389,6 +396,8 @@ funding_semantics = funding.get("canonical_funding_semantics") or {}
 gex_rank = ((((card.get("factor_cross_section") or {}).get("gex_info") or {})
              .get("rank")) or {})
 durability = card.get("signal_durability") or {}
+signal_rating = card.get("signal_rating")
+rating_obj = signal_rating if isinstance(signal_rating, dict) else {}
 missing = [key for key in required if ctx.get(key) in (None, "")]
 def contains_value(node, target):
     if node == target:
@@ -398,6 +407,47 @@ def contains_value(node, target):
     if isinstance(node, list):
         return any(contains_value(value, target) for value in node)
     return False
+def contains_string_value_ci(node, target):
+    target = str(target).strip().lower()
+    if isinstance(node, str):
+        return node.strip().lower() == target
+    if isinstance(node, dict):
+        return any(contains_string_value_ci(value, target) for value in node.values())
+    if isinstance(node, list):
+        return any(contains_string_value_ci(value, target) for value in node)
+    return False
+def contains_truthy_key(node, key):
+    if isinstance(node, dict):
+        if key in node and bool(node.get(key)):
+            return True
+        return any(contains_truthy_key(value, key) for value in node.values())
+    if isinstance(node, list):
+        return any(contains_truthy_key(value, key) for value in node)
+    return False
+def version_tuple(value):
+    parts = str(value or "").split("-", 1)[0].split(".")
+    parsed = []
+    for part in parts[:3]:
+        try:
+            parsed.append(int(part))
+        except (TypeError, ValueError):
+            parsed.append(0)
+    while len(parsed) < 3:
+        parsed.append(0)
+    return tuple(parsed)
+def signal_rating_required_for_version(value):
+    return version_tuple(value) >= (1, 6, 0)
+def finite_positive_number(value):
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        return None
+    return parsed
+signal_rating_required = signal_rating_required_for_version(expected_version)
 print("target_card_id:", target_card_id or "LATEST")
 print("latest_audit_card_id:", identity.get("card_id") or selected_manifest.get("card_id"))
 print("latest_strategy_version:", identity.get("strategy_version"))
@@ -434,6 +484,12 @@ print("signal_durability_price_anchor_state:",
       if isinstance(durability.get("price_anchor_durability"), dict) else None)
 print("signal_durability_compat_backfill_applied:",
       durability.get("compat_backfill_applied"))
+print("signal_rating_required:", signal_rating_required)
+print("signal_rating_schema:", rating_obj.get("schema"))
+print("signal_rating_scope:", rating_obj.get("rating_scope"))
+print("signal_rating_candidate_quote_economics:",
+      rating_obj.get("candidate_quote_economics"))
+print("signal_rating_as_of_ms:", rating_obj.get("as_of_ms"))
 if ctx.get("schema_name") != "SignalSessionPremiseDurabilityContext":
     raise SystemExit(2)
 if missing:
@@ -446,6 +502,31 @@ if ctx.get("compat_backfill_applied"):
     raise SystemExit("latest card uses materializer compatibility backfill")
 if str(identity.get("strategy_version")) != expected_version:
     raise SystemExit("latest card strategy_version does not match EXPECTED_SIGNAL_VERSION")
+if signal_rating_required:
+    manifest_summary = selected_manifest.get("summary") or {}
+    manifest_identity = manifest_summary.get("identity") or {}
+    synthetic_markers = [
+        identity.get("is_synthetic"),
+        card.get("is_synthetic"),
+        manifest_identity.get("is_synthetic"),
+        selected_manifest.get("is_synthetic"),
+    ]
+    if any(bool(value) for value in synthetic_markers):
+        raise SystemExit("synthetic audit card cannot satisfy signal_rating production acceptance")
+    if contains_string_value_ci(card, "research_replay"):
+        raise SystemExit("research_replay card cannot satisfy signal_rating production acceptance")
+    if not isinstance(signal_rating, dict):
+        raise SystemExit("latest card lacks producer-native signal_rating")
+    if signal_rating.get("schema") != "signal_rating@1.0.0":
+        raise SystemExit("latest card signal_rating schema mismatch")
+    if signal_rating.get("rating_scope") != "side_environment_v1":
+        raise SystemExit("latest card signal_rating scope mismatch")
+    if signal_rating.get("candidate_quote_economics") != "not_evaluated":
+        raise SystemExit("latest card signal_rating candidate economics mismatch")
+    if finite_positive_number(signal_rating.get("as_of_ms")) is None:
+        raise SystemExit("latest card signal_rating lacks finite positive as_of_ms")
+    if contains_truthy_key(signal_rating, "compat_backfill_applied"):
+        raise SystemExit("latest card signal_rating uses compatibility backfill")
 if not isinstance(macro_shock, dict) or macro_shock.get("state") in (None, ""):
     raise SystemExit("latest card lacks producer-native macro_shock state")
 if macro_shock.get("block") not in (True, False):
@@ -508,12 +589,12 @@ if durability_required:
         raise SystemExit("latest card signal_durability uses materializer compatibility backfill")
 PY
   then
-    ok "latest audit card has native expected session_context, macro_shock, and optional durability schema"
+    ok "latest audit card has native expected session_context, macro_shock, signal_rating when required, and optional durability schema"
   else
     if [ "$SESSION_CONTEXT_REQUIRED" = "1" ] || [ "$DURABILITY_REQUIRED" = "1" ]; then
-      fail "latest audit card lacks native expected session_context, macro_shock, or durability schema"
+      fail "latest audit card lacks native expected session_context, macro_shock, required signal_rating, or durability schema"
     else
-      warn "latest audit card lacks native expected session_context, macro_shock, or durability schema"
+      warn "latest audit card lacks native expected session_context, macro_shock, required signal_rating, or durability schema"
     fi
   fi
 fi
@@ -637,12 +718,12 @@ else
   fi
 fi
 if [ -r "$LLM_REVIEWS_SOURCE" ]; then
-  json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("provider:", review.get("provider")); print("model:", review.get("model")); print("schema:", review.get("schema")); print("prompt_version:", review.get("prompt_version")); print("blind_review_mode:", review.get("blind_review_mode")); print("llm_call_count:", review.get("llm_call_count")); print("api_key_route:", review.get("api_key_route")); print("llm_call_routes:", review.get("llm_call_routes"))'
+  json_probe "latest LLM review sidecar" "$LLM_REVIEWS_SOURCE" 'review=data.get("llm_review") or {}; print("card_id:", data.get("card_id")); print("status:", review.get("status")); print("provider:", review.get("provider")); print("model:", review.get("model")); print("schema_version:", review.get("schema_version") or review.get("schema")); print("prompt_version:", review.get("prompt_version")); print("review_mode:", review.get("review_mode") or review.get("blind_review_mode")); print("llm_call_count:", review.get("llm_call_count")); print("llm_http_calls:", review.get("llm_http_calls")); print("api_key_route:", review.get("api_key_route")); print("llm_call_routes:", review.get("llm_call_routes")); print("retry_budget:", review.get("retry_budget"))'
 else
   warn "LLM review sidecar not readable yet: $LLM_REVIEWS_SOURCE"
 fi
 if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && have python3; then
-  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
+  if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_REVIEW_MODE" "$EXPECTED_LLM_CALL_COUNT" "$EXPECTED_LLM_MAX_HTTP_ATTEMPTS" <<'PY'
 import json, os, pathlib, sys
 signal_path = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
@@ -650,10 +731,28 @@ expected_provider = sys.argv[3]
 expected_model = sys.argv[4]
 expected_schema = sys.argv[5]
 expected_prompt_version = sys.argv[6]
-expected_blind_mode = sys.argv[7]
+expected_review_mode = sys.argv[7]
 expected_call_count = int(sys.argv[8])
+expected_max_http_attempts = int(sys.argv[9])
 target_card_id = (os.environ.get("TARGET_CARD_ID")
                   or os.environ.get("ONLY_CARD_ID") or "")
+
+def card_id(item):
+    identity = item.get("identity") if isinstance(item.get("identity"), dict) else {}
+    return item.get("card_id") or identity.get("card_id")
+
+def review_schema(review):
+    return review.get("schema_version") or review.get("schema")
+
+def review_mode(review):
+    return review.get("review_mode") or review.get("blind_review_mode")
+
+def as_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
 signal_lines = [x for x in signal_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 review_lines = [x for x in review_path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
 if not signal_lines:
@@ -671,16 +770,16 @@ for index, line in enumerate(signal_lines):
 if target_card_id:
     matches = [
         item for item in source_cards
-        if str((item.get("identity") or {}).get("card_id") or item.get("card_id")) == target_card_id
+        if str(card_id(item)) == target_card_id
     ]
     if not matches:
         raise SystemExit("target source card not found: " + target_card_id)
     latest = matches[-1]
 else:
     latest = source_cards[-1]
-latest_id = (latest.get("identity") or {}).get("card_id") or latest.get("card_id")
-ok_reviews = {}
-latest_ok_id = None
+latest_id = card_id(latest)
+settled_reviews = {}
+latest_settled_id = None
 for index, line in enumerate(review_lines):
     try:
         item = json.loads(line)
@@ -689,55 +788,266 @@ for index, line in enumerate(review_lines):
             raise SystemExit("latest non-empty LLM review sidecar line is invalid")
         continue
     review = item.get("llm_review") or {}
-    card_id = item.get("card_id") or ((item.get("identity") or {}).get("card_id"))
-    if review.get("status") == "OK" and card_id:
-        ok_reviews[card_id] = review
-        latest_ok_id = card_id
+    current_id = card_id(item)
+    if review.get("status") in {"OK", "PARTIAL"} and current_id:
+        settled_reviews[str(current_id)] = review
+        latest_settled_id = current_id
 print("target_card_id:", target_card_id or "LATEST")
 print("latest_signal_card_id:", latest_id)
-print("latest_ok_llm_card_id:", latest_ok_id)
-review = ok_reviews.get(latest_id)
+print("latest_settled_llm_card_id:", latest_settled_id)
+review = settled_reviews.get(str(latest_id))
 if not review:
-    raise SystemExit(3)
+    raise SystemExit("no OK/PARTIAL LLM review for latest source card")
 print("latest_signal_llm_status:", review.get("status"))
 print("latest_signal_llm_provider:", review.get("provider"))
 print("latest_signal_llm_model:", review.get("model"))
-print("latest_signal_llm_schema:", review.get("schema"))
-print("latest_signal_blind_review_mode:", review.get("blind_review_mode"))
+print("latest_signal_llm_schema:", review_schema(review))
+print("latest_signal_review_mode:", review_mode(review))
 print("latest_signal_llm_call_count:", review.get("llm_call_count"))
+print("latest_signal_llm_http_calls:", review.get("llm_http_calls"))
 print("latest_signal_api_key_route:", review.get("api_key_route"))
 print("latest_signal_llm_call_routes:", review.get("llm_call_routes"))
 print("latest_signal_llm_prompt_version:", review.get("prompt_version"))
+print("latest_signal_retry_budget:", review.get("retry_budget"))
 if review.get("provider") != expected_provider:
     raise SystemExit("latest signal LLM provider is not " + expected_provider)
 if review.get("model") != expected_model:
     raise SystemExit("latest signal LLM model is not " + expected_model)
-if review.get("schema") != expected_schema:
+if review_schema(review) != expected_schema:
     raise SystemExit("latest signal LLM schema is not " + expected_schema)
 if review.get("prompt_version") != expected_prompt_version:
     raise SystemExit("latest signal LLM prompt version does not match expected runtime entrypoint")
-if review.get("blind_review_mode") != expected_blind_mode:
-    raise SystemExit("latest signal LLM mode is not " + expected_blind_mode)
-if int(review.get("llm_call_count") or 0) < expected_call_count:
+if review_mode(review) != expected_review_mode:
+    raise SystemExit("latest signal LLM review mode is not " + expected_review_mode)
+call_count = as_int(review.get("llm_call_count"))
+http_calls = as_int(review.get("llm_http_calls") or review.get("llm_call_count"))
+if call_count < expected_call_count:
     raise SystemExit("latest signal LLM call count is below " + str(expected_call_count))
+if http_calls > expected_max_http_attempts:
+    raise SystemExit("latest signal LLM HTTP attempts exceed " + str(expected_max_http_attempts))
+if expected_schema == "signal_llm_review@2.0.0":
+    budget = review.get("retry_budget") or {}
+    if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
+        raise SystemExit("latest signal LLM v2 retry budget is not persistent max-two")
 PY
   then
-    ok "latest signal card has OK provider-neutral strict two-call LLM sidecar review"
+    ok "latest signal card has provider-neutral v2 single evidence LLM sidecar review"
   else
     if [ "$LLM_REQUIRED" = "1" ]; then
-      fail "latest signal card does not have an OK provider-neutral strict two-call LLM sidecar review"
+      fail "latest signal card does not have a valid provider-neutral v2 LLM sidecar review"
     else
-      warn "latest signal card does not have an OK provider-neutral strict two-call LLM sidecar review"
+      warn "latest signal card does not have a valid provider-neutral v2 LLM sidecar review"
     fi
   fi
 else
   warn "skipped latest-card LLM match check; source or sidecar not readable"
 fi
 
-if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ]; then
+if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ] && [ "$INTEGRATED_ADVISORY_PROTOCOL" != "legacy" ]; then
   section "Integrated trade advisory"
   if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
-    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
+    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$TOOLS_ROOT" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_REVIEW_MODE" "$EXPECTED_LLM_CALL_COUNT" "$EXPECTED_LLM_MAX_HTTP_ATTEMPTS" <<'PY'
+import json, os, pathlib, sys
+
+signal_path = pathlib.Path(sys.argv[1])
+review_path = pathlib.Path(sys.argv[2])
+audit_root = pathlib.Path(sys.argv[3])
+tools_root = pathlib.Path(sys.argv[4])
+sys.path.insert(0, str(tools_root))
+from signal_review_v2 import (  # noqa: E402
+    EvidenceFormatError,
+    build_summary,
+    revalidate_review,
+    validate_persisted_review,
+)
+
+expected_provider = sys.argv[5]
+expected_model = sys.argv[6]
+expected_schema = sys.argv[7]
+expected_prompt_version = sys.argv[8]
+expected_review_mode = sys.argv[9]
+expected_call_count = int(sys.argv[10])
+expected_max_http_attempts = int(sys.argv[11])
+target_card_id = (os.environ.get("TARGET_CARD_ID")
+                  or os.environ.get("ONLY_CARD_ID") or "")
+
+SIDES = ("put_credit", "call_credit")
+REVIEW_STATUSES = {"OK", "PARTIAL"}
+LEGACY_ADVISORY_FIELDS = {
+    "recommendation", "final_conclusion_cn", "cross_loop_rationale_cn",
+    "containment_assessment", "premium_selling_fit", "side_basis_cn",
+    "dominant_conflict_cn", "key_premises", "invalid_if",
+    "next_observation_cn", "session_advisory", "source_alignment",
+    "side_comfort_ratings", "future_24h_bayesian_report",
+}
+
+def read_jsonl(path):
+    lines = [x for x in path.read_text(encoding="utf-8", errors="replace").splitlines()
+             if x.strip()]
+    if not lines:
+        raise SystemExit(str(path) + " empty")
+    records = []
+    skipped = 0
+    for index, line in enumerate(lines, 1):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if index == len(lines):
+                raise SystemExit(str(path) + " latest non-empty line is invalid: "
+                                 + type(exc).__name__)
+            skipped += 1
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    if not records:
+        raise SystemExit(str(path) + " has no valid records")
+    print(path.name + "_historical_skipped_lines:", skipped)
+    return records
+
+def card_id(value):
+    identity = value.get("identity") if isinstance(value.get("identity"), dict) else {}
+    return value.get("card_id") or identity.get("card_id")
+
+def review_schema(review):
+    return review.get("schema_version") or review.get("schema")
+
+def review_mode(review):
+    return review.get("review_mode") or review.get("blind_review_mode")
+
+def as_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+def validate_review_header(review, label):
+    if review.get("status") not in REVIEW_STATUSES:
+        raise SystemExit(label + " review status is not OK/PARTIAL")
+    if review.get("provider") != expected_provider:
+        raise SystemExit(label + " review provider is not " + expected_provider)
+    if review.get("model") != expected_model:
+        raise SystemExit(label + " review model is not " + expected_model)
+    if review_schema(review) != expected_schema:
+        raise SystemExit(label + " review schema is not " + expected_schema)
+    if review.get("prompt_version") != expected_prompt_version:
+        raise SystemExit(label + " review prompt version mismatch")
+    if review_mode(review) != expected_review_mode:
+        raise SystemExit(label + " review mode is not " + expected_review_mode)
+    call_count = as_int(review.get("llm_call_count"))
+    http_calls = as_int(review.get("llm_http_calls") or review.get("llm_call_count"))
+    if call_count < expected_call_count:
+        raise SystemExit(label + " review call count below " + str(expected_call_count))
+    if http_calls > expected_max_http_attempts:
+        raise SystemExit(label + " review HTTP attempts exceed "
+                         + str(expected_max_http_attempts))
+    if expected_schema == "signal_llm_review@2.0.0":
+        budget = review.get("retry_budget") or {}
+        if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
+            raise SystemExit(label + " v2 retry budget is not persistent max-two")
+
+def validate_advisory(card, review, label):
+    advisory = review.get("integrated_trade_advisory")
+    if not isinstance(advisory, dict):
+        raise SystemExit(label + " integrated_trade_advisory is not object")
+    legacy = sorted(field for field in LEGACY_ADVISORY_FIELDS if field in advisory)
+    if legacy:
+        raise SystemExit(label + " v2 advisory still carries legacy fields: "
+                         + ",".join(legacy))
+    try:
+        validate_persisted_review(review)
+        validation = revalidate_review(card, review)
+    except EvidenceFormatError as exc:
+        raise SystemExit(label + " v2 persisted review invalid: " + str(exc))
+    ratings = advisory.get("side_evidence_ratings") or {}
+    print(label + "_assessment_hash:", validation["assessment_hash"])
+    print(label + "_put_grade:", (ratings.get("put_credit") or {}).get("grade"))
+    print(label + "_call_grade:", (ratings.get("call_credit") or {}).get("grade"))
+    return advisory
+
+def validate_summary(summary, review, label):
+    if not isinstance(summary, dict):
+        raise SystemExit(label + " signal_evidence_summary is not object")
+    try:
+        expected = build_summary(review)
+    except EvidenceFormatError as exc:
+        raise SystemExit(label + " signal_evidence_summary source invalid: " + str(exc))
+    if summary.get("assessment_hash") != expected.get("assessment_hash"):
+        raise SystemExit(label + " signal_evidence_summary assessment hash mismatch")
+    if summary != expected:
+        raise SystemExit(label + " signal_evidence_summary mismatch")
+    print(label + "_signal_evidence_summary_hash:", expected.get("assessment_hash"))
+
+source_cards = read_jsonl(signal_path)
+if target_card_id:
+    target_sources = [item for item in source_cards if str(card_id(item)) == target_card_id]
+    if not target_sources:
+        raise SystemExit("target source card not found: " + target_card_id)
+    latest_source = target_sources[-1]
+else:
+    latest_source = source_cards[-1]
+latest_id = card_id(latest_source)
+if not latest_id:
+    raise SystemExit("latest source card lacks card_id")
+
+latest_matching_review = None
+latest_matching_record_id = None
+for item in read_jsonl(review_path):
+    current_id = item.get("card_id") or card_id(item)
+    if str(current_id) == str(latest_id):
+        latest_matching_review = item.get("llm_review")
+        latest_matching_record_id = current_id
+
+print("target_card_id:", target_card_id or "LATEST")
+print("latest_signal_card_id:", latest_id)
+print("latest_matching_llm_card_id:", latest_matching_record_id)
+if not isinstance(latest_matching_review, dict):
+    raise SystemExit("no llm_review for latest source card")
+validate_review_header(latest_matching_review, "latest_advisory")
+sidecar_advisory = validate_advisory(latest_source, latest_matching_review, "latest_advisory")
+
+manifest = json.loads((audit_root / "signal_cards/index.json").read_text(encoding="utf-8"))
+cards = manifest.get("cards") or []
+if not cards:
+    raise SystemExit("materialized manifest has no cards")
+selected_manifest = cards[0]
+if target_card_id:
+    matches = [item for item in cards
+               if str(item.get("card_id") or "") == target_card_id]
+    if not matches:
+        raise SystemExit("target materialized card not found: " + target_card_id)
+    selected_manifest = matches[0]
+materialized_path = audit_root / selected_manifest.get("path", "")
+materialized_card = json.loads(materialized_path.read_text(encoding="utf-8"))
+materialized_id = card_id(materialized_card) or selected_manifest.get("card_id")
+materialized_review = materialized_card.get("llm_review")
+print("materialized_card_id:", materialized_id)
+if str(materialized_id) != str(latest_id):
+    raise SystemExit("materialized latest card does not match latest source card")
+if not isinstance(materialized_review, dict):
+    raise SystemExit("materialized latest card lacks llm_review")
+validate_review_header(materialized_review, "materialized_advisory")
+materialized_advisory = validate_advisory(materialized_card, materialized_review, "materialized_advisory")
+print("materialized_advisory_passthrough:", materialized_advisory == sidecar_advisory)
+if materialized_advisory != sidecar_advisory:
+    raise SystemExit("materialized latest card did not pass through integrated_trade_advisory")
+summary = (selected_manifest.get("summary") or {}).get("signal_evidence_summary")
+validate_summary(summary, materialized_review, "materialized_advisory")
+print("materialized_signal_evidence_summary:", True)
+PY
+    then
+      ok "latest signal card has v2 integrated_trade_advisory and materialized evidence summary passthrough"
+    else
+      fail "latest signal card lacks strict v2 integrated_trade_advisory or materialized evidence summary passthrough"
+    fi
+  else
+    fail "skipped v2 integrated_trade_advisory strict check; source, sidecar, manifest, or python3 unavailable"
+  fi
+fi
+
+if [ "$INTEGRATED_ADVISORY_REQUIRED" = "1" ] && [ "$INTEGRATED_ADVISORY_PROTOCOL" = "legacy" ]; then
+  section "Integrated trade advisory"
+  if [ -r "$JSONL_SOURCE" ] && [ -r "$LLM_REVIEWS_SOURCE" ] && [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
+    if python3 - "$JSONL_SOURCE" "$LLM_REVIEWS_SOURCE" "$AUDIT_ROOT" "$TOOLS_ROOT" "$EXPECTED_LLM_PROVIDER" "$EXPECTED_LLM_MODEL" "$EXPECTED_LLM_SCHEMA" "$EXPECTED_LLM_PROMPT_VERSION" "$EXPECTED_LLM_BLIND_MODE" "$EXPECTED_LLM_CALL_COUNT" <<'PY'
 import json, os, pathlib, re, sys
 
 ADVISORY_RECOMMENDATIONS = {
@@ -761,6 +1071,11 @@ ADVISORY_WARNING_LEVELS = {"NONE", "INFO", "CAUTION", "HIGH"}
 ADVISORY_SOURCE_ALIGNMENTS = {
     "ALIGNED", "PARTIALLY_ALIGNED", "DIVERGENT", "UNABLE_TO_JUDGE",
 }
+COMFORT_GRADES = {"D", "C", "B", "A", "S"}
+COMFORT_GRADE_RANK = {"D": 0, "C": 1, "B": 2, "A": 3, "S": 4}
+COMFORT_STATUSES = {"RATED", "UNRATED"}
+COMFORT_SIDES = ("put_credit", "call_credit")
+COMFORT_FOCUS_SIDES = {"put_credit", "call_credit", "tie", "none"}
 ADVISORY_HUMAN_RAW_TOKENS = {
     *ADVISORY_RECOMMENDATIONS,
     *ADVISORY_CONTAINMENT_STATES,
@@ -770,6 +1085,8 @@ ADVISORY_HUMAN_RAW_TOKENS = {
     *ADVISORY_SOURCE_ALIGNMENTS,
     "trade_allowed", "execution_allowed", "source_alignment",
     "recommendation", "audit_only", "trade_authorization", "evidence_refs",
+    "side_comfort_ratings", "model_grade", "final_grade",
+    "put_credit", "call_credit",
 }
 ADVISORY_EXECUTION_PATTERNS = (
     re.compile(r"开仓|平仓|下单|入场|出场|加仓|减仓|止损|止盈"),
@@ -795,8 +1112,22 @@ ADVISORY_EXECUTION_PATTERNS = (
 signal_path = pathlib.Path(sys.argv[1])
 review_path = pathlib.Path(sys.argv[2])
 audit_root = pathlib.Path(sys.argv[3])
+tools_root = pathlib.Path(sys.argv[4])
 target_card_id = (os.environ.get("TARGET_CARD_ID")
                   or os.environ.get("ONLY_CARD_ID") or "")
+if str(tools_root) not in sys.path:
+    sys.path.insert(0, str(tools_root))
+_COMFORT_CORE = None
+
+def comfort_core():
+    global _COMFORT_CORE
+    if _COMFORT_CORE is None:
+        import signal_llm_review as core
+        _COMFORT_CORE = core
+    return _COMFORT_CORE
+
+def json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
 
 def read_jsonl(path):
     lines = [x for x in path.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()]
@@ -839,7 +1170,385 @@ def advisory_human_text(advisory):
         item.get("premise_cn") for item in advisory.get("key_premises") or []
         if isinstance(item, dict))
     values.extend(advisory.get("invalid_if") or [])
+    comfort = advisory.get("side_comfort_ratings") or {}
+    for side_name in COMFORT_SIDES:
+        side = comfort.get(side_name) or {}
+        values.extend([
+            side.get("basis_cn"),
+            side.get("counter_evidence_cn"),
+            side.get("next_observation_cn"),
+            side.get("s_upgrade_basis_cn"),
+        ])
+        values.extend(side.get("unresolved_conditions_cn") or [])
+        values.extend(side.get("cap_reasons_cn") or [])
     return "\n".join(str(value) for value in values if value not in (None, ""))
+
+def comfort_grade(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, str) and value.strip().upper() in COMFORT_GRADES:
+        return value.strip().upper()
+    return "INVALID"
+
+def validate_string_list(value, allow_empty=True):
+    if not isinstance(value, list):
+        return False
+    if not allow_empty and not value:
+        return False
+    return all(isinstance(item, str) and item.strip() for item in value)
+
+def comfort_expected_headline(put_side, call_side):
+    side_grades = []
+    for side_name, side in (("put_credit", put_side), ("call_credit", call_side)):
+        grade = side.get("final_grade")
+        if grade in COMFORT_GRADE_RANK:
+            side_grades.append((side_name, grade, COMFORT_GRADE_RANK[grade]))
+    if not side_grades:
+        return None, "none"
+    best_rank = max(rank for _side_name, _grade, rank in side_grades)
+    best = [
+        (side_name, grade)
+        for side_name, grade, rank in side_grades
+        if rank == best_rank
+    ]
+    return best[0][1], best[0][0] if len(best) == 1 else "tie"
+
+def source_has_producer_hard_block(source_card):
+    decision = source_card.get("decision") or {}
+    matrix = source_card.get("decision_matrix") or {}
+    blocking = source_card.get("blocking") or {}
+    support_values = {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+    }
+    if "NO_TRADE_BLOCKED" in support_values:
+        return True
+    if str(blocking.get("block_kind") or "").upper() == "HARD":
+        return True
+    if blocking.get("hard_block") is True or blocking.get("hard_blocked") is True:
+        return True
+    if blocking.get("hard_veto") not in (None, {}, [], False):
+        return True
+    macro = ((source_card.get("factor_cross_section") or {}).get("macro_pressure")
+             or {})
+    if (macro.get("macro_shock") or {}).get("block") is True:
+        return True
+    return False
+
+def source_has_any_producer_block(source_card):
+    if source_has_producer_hard_block(source_card):
+        return True
+    decision = source_card.get("decision") or {}
+    matrix = source_card.get("decision_matrix") or {}
+    blocking = source_card.get("blocking") or {}
+    values = {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+        str(blocking.get("block_kind") or "").upper(),
+    }
+    if values & {"BLOCKED", "NO_TRADE_BLOCKED", "BLOCK", "SOFT_GATE"}:
+        return True
+    return bool(blocking.get("has_block") or blocking.get("soft_gates"))
+
+def source_requires_confirmation(source_card):
+    decision = source_card.get("decision") or {}
+    matrix = source_card.get("decision_matrix") or {}
+    return bool({
+        "WAIT_CONFIRMATION", "WAIT_FOR_CONFIRMATION",
+        "WAITING_CONFIRMATION", "PENDING_CONFIRMATION",
+    } & {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+    })
+
+def source_has_window_not_open_or_invalid(source_card):
+    if source_has_explicit_window_failure(source_card):
+        return True
+    window = source_card.get("signal_window") or {}
+    if not isinstance(window, dict) or not window:
+        return False
+    neutral = window.get("neutral_repair")
+    if not isinstance(neutral, dict):
+        neutral = {}
+    if "is_active" in window and window.get("is_active") is False:
+        return True
+    if "is_active" in neutral and neutral.get("is_active") is False:
+        return True
+    return False
+
+def source_has_explicit_window_failure(source_card):
+    window = source_card.get("signal_window") or {}
+    if not isinstance(window, dict) or not window:
+        return False
+    neutral = window.get("neutral_repair")
+    if not isinstance(neutral, dict):
+        neutral = {}
+    state_values = {
+        str(window.get("nr_state") or "").upper(),
+        str(window.get("state") or "").upper(),
+        str(neutral.get("state") or "").upper(),
+    }
+    if any(any(token in state for token in (
+            "STALE", "EXPIRED", "TIMEOUT", "INVALID", "FAILED"))
+            for state in state_values if state):
+        return True
+    return False
+
+def source_direction(source_card):
+    decision = source_card.get("decision") or {}
+    matrix = source_card.get("decision_matrix") or {}
+    text = str(decision.get("lean") or matrix.get("direction") or "").upper()
+    if "BULLISH" in text or text in {"UP", "LONG"}:
+        return "BULLISH"
+    if "BEARISH" in text or text in {"DOWN", "SHORT"}:
+        return "BEARISH"
+    if "NEUTRAL" in text or text in {"RANGE", "FLAT"}:
+        return "NEUTRAL"
+    return "UNKNOWN"
+
+def comfort_side_allows_admission(side_name, advisory, source_card):
+    recommendation = str((advisory or {}).get("recommendation") or "").upper()
+    direction = source_direction(source_card)
+    if recommendation not in {
+            "SELL_PUT_SPREAD_REVIEW", "SELL_CALL_SPREAD_REVIEW",
+            "NEUTRAL_SINGLE_SIDE_REVIEW"}:
+        return False
+    if recommendation == "SELL_PUT_SPREAD_REVIEW" and side_name != "put_credit":
+        return False
+    if recommendation == "SELL_CALL_SPREAD_REVIEW" and side_name != "call_credit":
+        return False
+    if direction == "BULLISH" and side_name == "call_credit":
+        return False
+    if direction == "BEARISH" and side_name == "put_credit":
+        return False
+    if direction == "NEUTRAL" and recommendation != "NEUTRAL_SINGLE_SIDE_REVIEW":
+        return False
+    return True
+
+def native_signal_rating_allows_admission(rating, side_name):
+    claims = (rating or {}).get("claims") or {}
+    if (claims.get("structure") or {}).get("status") == "OPPOSED":
+        return False
+    claim_name = "put_pressure" if side_name == "put_credit" else "call_pressure"
+    if (claims.get(claim_name) or {}).get("status") == "OPPOSED":
+        return False
+    return True
+
+def validate_comfort_admission_consistency(side_name, side, advisory,
+                                           source_card, rating, label):
+    if (source_has_explicit_window_failure(source_card)
+            and side.get("final_grade") in COMFORT_GRADE_RANK
+            and side.get("final_grade") != "D"):
+        raise SystemExit(
+            label + " side_comfort_ratings conflicts with failed window")
+    if side.get("final_grade") not in {"A", "S"}:
+        return
+    if source_has_any_producer_block(source_card):
+        raise SystemExit(label + " side_comfort_ratings conflicts with source block")
+    if source_requires_confirmation(source_card):
+        raise SystemExit(label + " side_comfort_ratings conflicts with source wait")
+    if source_has_window_not_open_or_invalid(source_card):
+        raise SystemExit(label + " side_comfort_ratings conflicts with inactive window")
+    if not comfort_side_allows_admission(side_name, advisory, source_card):
+        raise SystemExit(label + " side_comfort_ratings advisory side mismatch")
+    quality = source_card.get("quality") or {}
+    if quality.get("overall") not in (None, "OK"):
+        raise SystemExit(label + " side_comfort_ratings conflicts with source quality")
+    if not native_signal_rating_allows_admission(rating, side_name):
+        raise SystemExit(label + " side_comfort_ratings conflicts with native rating")
+
+def validate_comfort_side(side, label):
+    expected_fields = {
+        "model_grade", "final_grade", "status", "basis_cn",
+        "counter_evidence_cn", "next_observation_cn",
+        "unresolved_conditions_cn", "evidence_refs",
+        "counter_evidence_refs", "s_upgrade_basis_cn",
+        "s_upgrade_evidence_refs", "cap_reasons_cn",
+    }
+    if not isinstance(side, dict) or set(side) != expected_fields:
+        raise SystemExit(label + " side_comfort_ratings side fields invalid")
+    model_grade = comfort_grade(side.get("model_grade"))
+    final_grade = comfort_grade(side.get("final_grade"))
+    if model_grade == "INVALID" or final_grade == "INVALID":
+        raise SystemExit(label + " side_comfort_ratings grade invalid")
+    status = side.get("status")
+    if status not in COMFORT_STATUSES:
+        raise SystemExit(label + " side_comfort_ratings status invalid")
+    if status == "RATED" and (final_grade is None or model_grade is None):
+        raise SystemExit(label + " side_comfort_ratings rated side lacks final grade")
+    if status == "RATED" and COMFORT_GRADE_RANK[final_grade] > COMFORT_GRADE_RANK[model_grade]:
+        raise SystemExit(label + " side_comfort_ratings final grade upgrades model grade")
+    if status == "UNRATED" and final_grade is not None:
+        raise SystemExit(label + " side_comfort_ratings unrated side has final grade")
+    for field in ("basis_cn", "counter_evidence_cn", "next_observation_cn"):
+        if not isinstance(side.get(field), str) or not side[field].strip():
+            raise SystemExit(label + " side_comfort_ratings " + field + " is blank")
+    if not validate_string_list(side.get("unresolved_conditions_cn")):
+        raise SystemExit(label + " side_comfort_ratings unresolved_conditions_cn invalid")
+    if not validate_string_list(side.get("evidence_refs")):
+        raise SystemExit(label + " side_comfort_ratings evidence_refs invalid")
+    if not validate_string_list(side.get("counter_evidence_refs")):
+        raise SystemExit(label + " side_comfort_ratings counter_evidence_refs invalid")
+    evidence_refs = [
+        item for item in side.get("evidence_refs", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    counter_evidence_refs = [
+        item for item in side.get("counter_evidence_refs", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if status == "RATED":
+        if final_grade in {"B", "A", "S"} and not evidence_refs:
+            raise SystemExit(
+                label + " side_comfort_ratings support grade lacks evidence_refs")
+        if final_grade in {"C", "D"} and not (
+                evidence_refs or counter_evidence_refs):
+            raise SystemExit(
+                label + " side_comfort_ratings observation grade lacks refs")
+    if not validate_string_list(side.get("cap_reasons_cn")):
+        raise SystemExit(label + " side_comfort_ratings cap_reasons_cn invalid")
+    if not validate_string_list(side.get("s_upgrade_evidence_refs")):
+        raise SystemExit(label + " side_comfort_ratings s_upgrade_evidence_refs invalid")
+    if side.get("s_upgrade_basis_cn") not in (None, "") and (
+            not isinstance(side.get("s_upgrade_basis_cn"), str)
+            or not side["s_upgrade_basis_cn"].strip()):
+        raise SystemExit(label + " side_comfort_ratings s_upgrade_basis_cn invalid")
+    if final_grade == "S" and (
+            not isinstance(side.get("s_upgrade_basis_cn"), str)
+            or not side["s_upgrade_basis_cn"].strip()
+            or not side.get("s_upgrade_evidence_refs")):
+        raise SystemExit(label + " side_comfort_ratings S lacks extra basis")
+    normalized = dict(side)
+    normalized["model_grade"] = None if model_grade in (None, "INVALID") else model_grade
+    normalized["final_grade"] = None if final_grade in (None, "INVALID") else final_grade
+    return normalized
+
+def comfort_raw_side(side):
+    model_grade = comfort_grade((side or {}).get("model_grade"))
+    return {
+        "grade": model_grade or "UNRATED",
+        "basis_cn": (side or {}).get("basis_cn"),
+        "counter_evidence_cn": (side or {}).get("counter_evidence_cn"),
+        "unresolved_conditions_cn": list(
+            (side or {}).get("unresolved_conditions_cn") or []),
+        "next_observation_cn": (side or {}).get("next_observation_cn"),
+        "evidence_refs": list((side or {}).get("evidence_refs") or []),
+        "counter_evidence_refs": list(
+            (side or {}).get("counter_evidence_refs") or []),
+        "s_upgrade_basis_cn": (side or {}).get("s_upgrade_basis_cn") or "",
+        "s_upgrade_evidence_refs": list(
+            (side or {}).get("s_upgrade_evidence_refs") or []),
+    }
+
+def comfort_raw_model_shape(comfort):
+    return {
+        side_name: comfort_raw_side((comfort or {}).get(side_name) or {})
+        for side_name in COMFORT_SIDES
+    }
+
+def validate_comfort_against_core(comfort, advisory, source_card, label):
+    try:
+        core = comfort_core()
+        packet = core.build_review_packet(json_clone(source_card))
+        core._validate_side_comfort_ratings(comfort, packet)
+        expected = core._finalize_side_comfort_ratings(
+            comfort_raw_model_shape(comfort), packet, advisory)
+    except Exception as exc:
+        raise SystemExit(
+            label + " side_comfort_ratings core validation failed: "
+            + type(exc).__name__ + ": " + str(exc))
+    for side_name in COMFORT_SIDES:
+        saved = (comfort or {}).get(side_name) or {}
+        expected_side = (expected or {}).get(side_name) or {}
+        if saved.get("status") != expected_side.get("status"):
+            raise SystemExit(
+                label + " side_comfort_ratings core status mismatch")
+        if saved.get("final_grade") != expected_side.get("final_grade"):
+            raise SystemExit(
+                label + " side_comfort_ratings core final grade mismatch")
+    headline = (comfort or {}).get("headline") or {}
+    expected_headline = (expected or {}).get("headline") or {}
+    if (headline.get("final_grade") != expected_headline.get("final_grade")
+            or headline.get("focus_side") != expected_headline.get("focus_side")):
+        raise SystemExit(
+            label + " side_comfort_ratings core headline mismatch")
+
+def validate_comfort_ratings(advisory, source_card, label):
+    comfort = advisory.get("side_comfort_ratings")
+    if not isinstance(comfort, dict):
+        raise SystemExit(label + " side_comfort_ratings is not object")
+    expected_fields = {
+        "schema", "rating_scope", "candidate_quote_economics",
+        "as_of_ms", "put_credit", "call_credit", "headline",
+    }
+    if set(comfort) != expected_fields:
+        raise SystemExit(label + " side_comfort_ratings fields invalid")
+    if comfort.get("schema") != "signal_comfort_ratings@1.0.0":
+        raise SystemExit(label + " side_comfort_ratings schema mismatch")
+    if comfort.get("rating_scope") != "signal_side_admission":
+        raise SystemExit(label + " side_comfort_ratings scope mismatch")
+    if comfort.get("candidate_quote_economics") != "not_evaluated":
+        raise SystemExit(label + " side_comfort_ratings candidate economics mismatch")
+    rating = source_card.get("signal_rating") or {}
+    if (not isinstance(rating, dict)
+            or rating.get("schema") != "signal_rating@1.0.0"
+            or rating.get("rating_scope") != "side_environment_v1"
+            or rating.get("candidate_quote_economics") != "not_evaluated"):
+        raise SystemExit(label + " source card lacks matching native signal_rating")
+    if comfort.get("as_of_ms") != rating.get("as_of_ms"):
+        raise SystemExit(label + " side_comfort_ratings as_of_ms does not match native rating")
+    put_side = validate_comfort_side(comfort.get("put_credit"), label + " put_credit")
+    call_side = validate_comfort_side(comfort.get("call_credit"), label + " call_credit")
+    validate_comfort_admission_consistency(
+        "put_credit", put_side, advisory, source_card, rating, label + " put_credit")
+    validate_comfort_admission_consistency(
+        "call_credit", call_side, advisory, source_card, rating, label + " call_credit")
+    headline = comfort.get("headline")
+    if not isinstance(headline, dict) or set(headline) != {
+            "final_grade", "focus_side", "action_cn"}:
+        raise SystemExit(label + " side_comfort_ratings headline invalid")
+    headline_grade = comfort_grade(headline.get("final_grade"))
+    if headline_grade == "INVALID":
+        raise SystemExit(label + " side_comfort_ratings headline grade invalid")
+    if headline.get("focus_side") not in COMFORT_FOCUS_SIDES:
+        raise SystemExit(label + " side_comfort_ratings focus_side invalid")
+    if not isinstance(headline.get("action_cn"), str) or not headline["action_cn"].strip():
+        raise SystemExit(label + " side_comfort_ratings action_cn is blank")
+    expected_grade, expected_focus = comfort_expected_headline(put_side, call_side)
+    if headline_grade != expected_grade or headline.get("focus_side") != expected_focus:
+        raise SystemExit(label + " side_comfort_ratings headline does not match side grades")
+    validate_comfort_against_core(comfort, advisory, source_card, label)
+    print(label + "_side_comfort_final_grade:", headline_grade)
+    print(label + "_side_comfort_focus_side:", headline.get("focus_side"))
+    return comfort
+
+def compact_comfort_summary(comfort):
+    return {
+        "schema": comfort.get("schema"),
+        "rating_scope": comfort.get("rating_scope"),
+        "candidate_quote_economics": comfort.get("candidate_quote_economics"),
+        "as_of_ms": comfort.get("as_of_ms"),
+        "headline": {
+            "final_grade": (comfort.get("headline") or {}).get("final_grade"),
+            "focus_side": (comfort.get("headline") or {}).get("focus_side"),
+            "action_cn": (comfort.get("headline") or {}).get("action_cn"),
+        },
+        "put_credit": {
+            "status": (comfort.get("put_credit") or {}).get("status"),
+            "final_grade": (comfort.get("put_credit") or {}).get("final_grade"),
+            "basis_cn": (comfort.get("put_credit") or {}).get("basis_cn"),
+            "cap_reasons_cn": (comfort.get("put_credit") or {}).get("cap_reasons_cn"),
+        },
+        "call_credit": {
+            "status": (comfort.get("call_credit") or {}).get("status"),
+            "final_grade": (comfort.get("call_credit") or {}).get("final_grade"),
+            "basis_cn": (comfort.get("call_credit") or {}).get("basis_cn"),
+            "cap_reasons_cn": (comfort.get("call_credit") or {}).get("cap_reasons_cn"),
+        },
+    }
 
 def raw_human_tokens(text):
     leaked = []
@@ -859,8 +1568,8 @@ def validate_advisory(review, label):
         "containment_assessment", "premium_selling_fit", "side_basis_cn",
         "dominant_conflict_cn", "key_premises", "invalid_if",
         "next_observation_cn", "session_advisory", "source_alignment",
-        "audit_only", "trade_authorization", "future_24h_bayesian_report",
-        "policy_validation",
+        "side_comfort_ratings", "audit_only", "trade_authorization",
+        "future_24h_bayesian_report", "policy_validation",
     }
     missing_fields = sorted(required_fields - set(advisory))
     unexpected_fields = sorted(set(advisory) - required_fields)
@@ -947,15 +1656,16 @@ def validate_advisory(review, label):
                          + ",".join(leaked_tokens))
     if any(pattern.search(human_text) for pattern in ADVISORY_EXECUTION_PATTERNS):
         raise SystemExit(label + " integrated_trade_advisory contains execution parameters")
+    validate_comfort_ratings(advisory, latest_source, label)
     return advisory
 
 source_cards = read_jsonl(signal_path)
-expected_provider = sys.argv[4]
-expected_model = sys.argv[5]
-expected_schema = sys.argv[6]
-expected_prompt_version = sys.argv[7]
-expected_blind_mode = sys.argv[8]
-expected_call_count = int(sys.argv[9])
+expected_provider = sys.argv[5]
+expected_model = sys.argv[6]
+expected_schema = sys.argv[7]
+expected_prompt_version = sys.argv[8]
+expected_blind_mode = sys.argv[9]
+expected_call_count = int(sys.argv[10])
 if target_card_id:
     target_sources = [item for item in source_cards
                       if str(card_id(item)) == target_card_id]
@@ -1042,6 +1752,11 @@ materialized_advisory = validate_advisory(materialized_review, "materialized_adv
 print("materialized_advisory_passthrough:", materialized_advisory == sidecar_advisory)
 if materialized_advisory != sidecar_advisory:
     raise SystemExit("materialized latest card did not pass through integrated_trade_advisory")
+manifest_summary = (selected_manifest.get("summary") or {}).get("signal_comfort_summary")
+expected_summary = compact_comfort_summary(materialized_advisory["side_comfort_ratings"])
+print("materialized_signal_comfort_summary:", manifest_summary == expected_summary)
+if manifest_summary != expected_summary:
+    raise SystemExit("materialized manifest did not pass through signal_comfort_summary")
 PY
     then
       ok "latest signal card has OK provider-neutral integrated_trade_advisory and materialized passthrough"

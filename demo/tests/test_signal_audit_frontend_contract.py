@@ -36,8 +36,8 @@ def main():
     record = mod.build_audit_record(card, config)
     brief = mod.render_push_brief(card, config)
 
-    assert_true(config["demo_version"] == "1.5.7",
-                "FMZ signal deliverable version should match r3.3.10 producer")
+    assert_true(config["demo_version"] == "1.6.0",
+                "FMZ signal deliverable version should match current producer")
     assert_true(record["schema"]["name"] == "signal_review_card", "schema name")
     assert_true(record["schema"]["version"] == "1.0.0", "schema version")
     assert_true(record["schema"].get("status") == "FINAL", "schema status")

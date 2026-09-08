@@ -73,7 +73,7 @@ def assert_non_voting_funding(verdict, expected_code, message):
 
 
 def test_version_and_funding_raw_semantics(mod, config):
-    assert_equal(config["demo_version"], "1.5.7", "FMZ producer version")
+    assert_equal(config["demo_version"], "1.6.0", "FMZ producer version")
 
     cases = (
         (0.000004, "TEMPERATE_LONG_FUNDING"),

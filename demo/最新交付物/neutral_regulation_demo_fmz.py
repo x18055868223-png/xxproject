@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Neutral Regulation Premium Model demo for FMZ Python.
 
 Generated from the multi-file demo package. This file is read-only by default:
@@ -155,7 +155,9 @@ CONFIG = {
     # v1.5.4 (2026-07-07): Funding equality baseline + GEX USD precedence fix.
     # v1.5.5 (2026-07-16): NeutralRepair signal-loss/stale/carry repair.
     # v1.5.6 (2026-07-16): runtime stale-input, backlog, and delivery repair.
-    "demo_version": "1.5.7",
+    # v1.6.0 (2026-09-07): producer-native signal_rating@1.0.0 for
+    # side-environment audit; legacy direction/confidence/permissions unchanged.
+    "demo_version": "1.6.0",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -5564,6 +5566,7 @@ def build_sample_review_card(config=None):
     audit JSON section and the short FMZ brief so an operator can verify delivery without
     waiting for a live signal. NOT a real signal; callers banner it as such."""
     config = config or CONFIG
+    sample_source_ts = now_ms()
 
     def ev(key, vote, weight, detail=None):
         return {"key": key, "vote": vote, "weight": weight,
@@ -5610,6 +5613,8 @@ def build_sample_review_card(config=None):
                            "macro_data_confidence": 1.0,
                            "data_status": "full_live",
                            "data_age_ms": 180000,
+                           "last_refresh_ms": sample_source_ts,
+                           "refresh_sec": int(config.get("macro_refresh_sec", 3600)),
                            "components": [{"key": "VOLQ", "scoring_bps": 210},
                                           {"key": "DXY", "scoring_bps": 35},
                                           {"key": "US10Y", "scoring_bps": 8}]},
@@ -5620,7 +5625,16 @@ def build_sample_review_card(config=None):
         "skew": {"vote": -0.20, "rr_z": -0.06, "delta_rr": -0.03,
                  "rr_blend": -0.05, "data_state": "OK"},
         "m_die": {"m_die": -0.92, "direction": "DOWN"},
-        "anchor": {"normalized_deviation": -0.31},
+        "anchor": {
+            "score": 72.0,
+            "anchor_gravity_ref_score": 72.0,
+            "anchor_gravity_ref_label": "Attached",
+            "normalized_deviation": -0.31,
+            "freshness": "FRESH",
+            "gex_freshness": "FRESH",
+            "gex_source_ts_ms": sample_source_ts,
+            "ready": True,
+        },
     }
     runtime = {
         "current_price": 63339.96,
@@ -5651,6 +5665,918 @@ _EVIDENCE_SOURCE_REF = {
     "SRD": "factor_cross_section.skew",
     "GGR_SPATIAL": "factor_cross_section.gamma_regime",
 }
+
+
+SIGNAL_RATING_SCHEMA = "signal_rating@1.0.0"
+SIGNAL_RATING_SCOPE = "side_environment_v1"
+SIGNAL_RATING_CANDIDATE_ECONOMICS = "not_evaluated"
+SIGNAL_RATING_SUPPORTED = "SUPPORTED"
+SIGNAL_RATING_CONFLICTED = "CONFLICTED"
+SIGNAL_RATING_OPPOSED = "OPPOSED"
+SIGNAL_RATING_INSUFFICIENT = "INSUFFICIENT"
+
+_SIGNAL_RATING_BAD_SOURCE_STATES = {
+    "MISSING", "STALE", "DEGRADED", "PARTIAL", "ERROR", "FAILED",
+    "UNAVAILABLE", "UNKNOWN", "LKGV_CACHE", "CACHED", "EXPIRED", "INVALID",
+}
+
+_SIGNAL_RATING_STRUCTURE_INPUTS = (
+    ("factor_cross_section.anchor", "Anchor"),
+    ("factor_cross_section.gamma_regime", "GGR"),
+)
+
+_SIGNAL_RATING_PRESSURE_INPUTS = (
+    ("factor_cross_section.tmvf", "TMVF"),
+    ("factor_cross_section.micro_flow", "CVD"),
+    ("factor_cross_section.macro_pressure", "MACRO"),
+    ("factor_cross_section.funding", "Funding"),
+    ("factor_cross_section.skew", "SRD"),
+)
+
+_SIGNAL_RATING_QUALITY_SOURCE = {
+    "factor_cross_section.anchor": "neutral_repair",
+    "factor_cross_section.neutral_repair": "neutral_repair",
+    "factor_cross_section.tmvf": "tmvf",
+    "factor_cross_section.micro_flow": "micro_flow",
+    "factor_cross_section.micro_flow.fast_4h": "micro_flow",
+    "factor_cross_section.micro_flow.slow_12h": "micro_flow",
+    "factor_cross_section.funding": "tmvf",
+    "factor_cross_section.macro_pressure": "macro_pressure",
+    "factor_cross_section.gamma_regime": "gamma_regime",
+    "factor_cross_section.gex_info": "gex_info",
+    "factor_cross_section.skew": "skew",
+}
+
+_SIGNAL_RATING_EVIDENCE_GROUP = {
+    "TMV": "TMVF",
+    "CVD_4h": "CVD",
+    "CVD_12h": "CVD",
+    "MACRO": "MACRO",
+    "FUNDING": "Funding",
+    "SRD": "SRD",
+    "GGR_SPATIAL": "GGR",
+}
+
+_SIGNAL_RATING_GROUP_SOURCE_REF = {
+    "TMVF": "factor_cross_section.tmvf",
+    "CVD": "factor_cross_section.micro_flow",
+    "MACRO": "factor_cross_section.macro_pressure",
+    "Funding": "factor_cross_section.funding",
+    "SRD": "factor_cross_section.skew",
+    "GGR": "factor_cross_section.gamma_regime",
+}
+
+
+def build_signal_rating(record, config=None):
+    """Build producer-native side-environment claims from record facts only.
+
+    This audit object deliberately does not turn legacy confidence, agreement,
+    coverage, or the final EDB score into grades. It reads current source health,
+    single-factor direction facts, and state flags, then states support,
+    opposition, conflict, or missing basis for the two credit-spread sides.
+    """
+    record = record or {}
+    config = config or CONFIG
+    as_of_ms = _signal_rating_as_of_ms(record)
+    structure = _signal_rating_structure_claim(record, config)
+    pressure_claims = _signal_rating_pressure_claims(record, config)
+    claims = {
+        "structure": structure,
+        "put_pressure": pressure_claims["put_pressure"],
+        "call_pressure": pressure_claims["call_pressure"],
+    }
+    used_refs = _signal_rating_used_refs(claims)
+    window = record.get("signal_window") or {}
+    blocking = record.get("blocking") or {}
+    decision = record.get("decision") or {}
+    matrix = record.get("decision_matrix") or {}
+    identity = record.get("identity") or {}
+    legacy_label = _signal_rating_legacy_label(record, pressure_claims)
+    if legacy_label and "factor_cross_section.tmvf" not in used_refs:
+        used_refs.append("factor_cross_section.tmvf")
+    return {
+        "schema": SIGNAL_RATING_SCHEMA,
+        "rating_scope": SIGNAL_RATING_SCOPE,
+        "candidate_quote_economics": SIGNAL_RATING_CANDIDATE_ECONOMICS,
+        "as_of_ms": as_of_ms,
+        "claims": claims,
+        "market_state": {
+            "legacy_label": legacy_label,
+            "interpretation_cn": _signal_rating_market_interpretation(
+                legacy_label),
+            "mean_reversion_validation": "not_established",
+            "trend_acceleration_available": False,
+        },
+        "context": {
+            "episode_id": identity.get("episode_id"),
+            "nr_state": window.get("nr_state"),
+            "nr_active": bool(window.get("is_active")),
+            "analysis_round": record.get("analysis_round"),
+            "future_validity": "unknown",
+            "source_refs": used_refs,
+        },
+        "model_constraints": {
+            "support_label": decision.get("support_label"),
+            "side_hint": decision.get("side_hint"),
+            "has_block": bool(blocking.get("has_block")),
+            "hard_veto": blocking.get("hard_veto"),
+            "execution_allowed": bool(matrix.get("execution_allowed")),
+        },
+        "next_observations_cn": _signal_rating_next_observations(
+            claims, window),
+    }
+
+
+
+def _signal_rating_as_of_ms(record):
+    """Return the factual timestamp used to judge source freshness.
+
+    Regular event cards use identity.confirmed_time_ms. Fixed analysis rounds may
+    keep that field as the scheduled slot, so they use the recorded snapshot
+    collection time when it is present and not earlier than the scheduled slot.
+    Without that actual collection time, freshness remains unknown.
+    """
+    record = record or {}
+    identity = record.get("identity") or {}
+    round_info = record.get("analysis_round") or {}
+    scheduled = safe_float(round_info.get("scheduled_time_ms"))
+    collected = safe_float(
+        round_info.get("snapshot_collected_time_ms")
+        or round_info.get("snapshot_collected_ms")
+        or round_info.get("collected_time_ms")
+        or round_info.get("actual_time_ms"))
+    if collected is None:
+        for key in ("snapshot_collected_time_utc8", "snapshot_collected_at",
+                    "snapshot_collected_time", "collected_at",
+                    "actual_time_utc8", "actual_at"):
+            collected = _signal_rating_time_ms(round_info.get(key))
+            if collected is not None:
+                break
+    if round_info and scheduled is not None:
+        if collected is not None and collected >= scheduled:
+            return collected
+        return None
+    confirmed = safe_float(identity.get("confirmed_time_ms"))
+    if confirmed is not None:
+        return confirmed
+    return _signal_rating_time_ms(identity.get("confirmed_at"))
+
+def _signal_rating_structure_claim(record, config=None):
+    config = config or CONFIG
+    required = _signal_rating_required_inputs(
+        record, _SIGNAL_RATING_STRUCTURE_INPUTS, config)
+    support, opposition, unknowns = [], [], []
+    unknowns.extend(_signal_rating_unknowns_from_required(required))
+    cross = record.get("factor_cross_section") or {}
+    anchor = cross.get("anchor") or {}
+    gamma = cross.get("gamma_regime") or {}
+    gex = cross.get("gex_info") or {}
+
+    if _signal_rating_input_usable(required, "Anchor"):
+        score = safe_float(anchor.get("score"))
+        nd = safe_float(anchor.get("normalized_deviation"))
+        valid_score = safe_float(config.get("anchor_gravity_valid_score"))
+        if valid_score is None:
+            valid_score = safe_float(config.get("nr_anchor_repair_score")) or 60.0
+        weak_score = safe_float(config.get("anchor_gravity_weak_score"))
+        if weak_score is None:
+            weak_score = 30.0
+        label = str(anchor.get("anchor_gravity_ref_label") or "")
+        label_l = label.lower()
+        if score is None and nd is None:
+            unknowns.append({
+                "source_ref": "factor_cross_section.anchor",
+                "reason_cn": "Anchor 路径存在，但缺少 score 或偏离度，不能判断结构强弱。",
+            })
+        elif ("attached" in label_l
+              or (score is not None and score >= valid_score)):
+            support.append({
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": (
+                    "Anchor 显示为已贴附/有效区，说明评级时点存在内部结构约束；"
+                    "这不是不可突破边界或胜率。"),
+            })
+        elif ("detached" in label_l
+              or (score is not None and score < weak_score)):
+            opposition.append({
+                "source_ref": "factor_cross_section.anchor",
+                "source_group": "Anchor",
+                "basis_cn": (
+                    "Anchor 显示为脱离/弱区，反对把当前环境解释成稳定回归。"),
+            })
+        else:
+            unknowns.append({
+                "source_ref": "factor_cross_section.anchor",
+                "reason_cn": (
+                    "Anchor 处于过渡区，只能保留为结构背景，不能单独确认约束。"),
+            })
+
+    if _signal_rating_input_usable(required, "GGR"):
+        gamma_support, gamma_oppose, gamma_unknown = (
+            _signal_rating_gamma_structure(record, gamma, gex, config))
+        support.extend(gamma_support)
+        opposition.extend(gamma_oppose)
+        unknowns.extend(gamma_unknown)
+
+    return _signal_rating_claim(
+        _signal_rating_claim_status(required, support, opposition),
+        _signal_rating_structure_summary(required, support, opposition),
+        required, support, opposition, unknowns)
+
+
+def _signal_rating_gamma_structure(record, gamma, gex, config=None):
+    support, opposition, unknowns = [], [], []
+    regime = str(gamma.get("regime") or gamma.get("market_state") or "")
+    regime_l = regime.lower()
+    veto = bool(gamma.get("veto"))
+    if veto or "negative" in regime_l:
+        opposition.append({
+            "source_ref": "factor_cross_section.gamma_regime",
+            "source_group": "GGR",
+            "basis_cn": (
+                "Gamma/GGR 指向负 Gamma 或放大区制，反对把结构当作卖方保护。"),
+        })
+    elif "positive" in regime_l or "pinning" in regime_l:
+        support.append({
+            "source_ref": "factor_cross_section.gamma_regime",
+            "source_group": "GGR",
+            "basis_cn": (
+                "Gamma/GGR 指向正 Gamma 或钉扎区制，可作为结构约束背景；"
+                "不与同源 GEX 信息重复计独立票。"),
+        })
+    else:
+        unknowns.append({
+            "source_ref": "factor_cross_section.gamma_regime",
+            "reason_cn": "Gamma/GGR 未给出正负 Gamma 约束结论，按结构过渡处理。",
+        })
+
+    return support, opposition, unknowns
+
+
+
+def _signal_rating_pressure_claims(record, config=None):
+    config = config or CONFIG
+    required = _signal_rating_required_inputs(
+        record, _SIGNAL_RATING_PRESSURE_INPUTS, config)
+    evidence = _signal_rating_pressure_evidence(record, required, config)
+    out = {}
+    for side in ("put_pressure", "call_pressure"):
+        support, opposition = [], []
+        unknowns = _signal_rating_unknowns_from_required(required)
+        unknowns.extend(evidence.get("unknowns") or [])
+        for item in evidence.get("directional") or []:
+            sign = item.get("sign")
+            if sign is None:
+                continue
+            if side == "put_pressure":
+                target = support if sign > 0 else opposition
+                side_text = ("上行/承接压力支持 Put 信用价差环境。"
+                             if sign > 0 else
+                             "下行侵入压力反对 Put 信用价差环境。")
+            else:
+                target = support if sign < 0 else opposition
+                side_text = ("下行/压制压力支持 Call 信用价差环境。"
+                             if sign < 0 else
+                             "上行侵入压力反对 Call 信用价差环境。")
+            target.append({
+                "source_ref": item.get("source_ref"),
+                "source_group": item.get("source_group"),
+                "basis_cn": item.get("basis_cn") + side_text,
+            })
+        status = _signal_rating_claim_status(required, support, opposition)
+        out[side] = _signal_rating_claim(
+            status,
+            _signal_rating_pressure_summary(side, status, support, opposition),
+            required, support, opposition, unknowns)
+    out["_directional_items"] = evidence.get("directional") or []
+    return out
+
+
+def _signal_rating_pressure_evidence(record, required, config=None):
+    config = config or CONFIG
+    rows = ((record.get("reasoning") or {}).get("evidence") or [])
+    by_group = {}
+    unknowns = []
+    for idx, row in enumerate(rows):
+        group = _SIGNAL_RATING_EVIDENCE_GROUP.get(row.get("key"))
+        if group not in _SIGNAL_RATING_GROUP_SOURCE_REF:
+            continue
+        if group == "GGR":
+            continue
+        if not _signal_rating_input_usable(required, group):
+            continue
+        participation = str(row.get("participation_status") or "").upper()
+        ref = row.get("source_ref") or _SIGNAL_RATING_GROUP_SOURCE_REF[group]
+        if not _signal_rating_path_exists(record, ref):
+            ref = "reasoning.evidence." + str(idx)
+        if str(ref).startswith("factor_cross_section.micro_flow."):
+            row_state = _signal_rating_source_state(
+                record, ref, group, config)
+            if not row_state.get("usable"):
+                unknowns.append({
+                    "source_ref": ref,
+                    "reason_cn": (
+                        _signal_rating_group_cn(group)
+                        + " 子窗口不可用，跳过该行方向："
+                        + str(row_state.get("reason_cn"))),
+                })
+                continue
+        vote = safe_float(row.get("vote"))
+        effective = safe_float(row.get("effective_weight"))
+        active = (participation == "ACTIVE" and effective is not None
+                  and effective > 0 and vote is not None and abs(vote) > 1e-12)
+        if active:
+            bucket = by_group.setdefault(group, [])
+            bucket.append({"row": row, "ref": ref, "sign": 1 if vote > 0 else -1})
+            continue
+        if participation in ("NON_VOTING", "GATE_ONLY"):
+            unknowns.append({
+                "source_ref": ref,
+                "reason_cn": (
+                    _signal_rating_group_cn(group)
+                    + " 来源可用但本轮为非投票/门控背景，不当作缺失或独立方向。"),
+            })
+        elif row.get("exclusion_reason"):
+            unknowns.append({
+                "source_ref": ref,
+                "reason_cn": (
+                    _signal_rating_group_cn(group)
+                    + " 来源可用，但本轮未达到参与条件："
+                    + str(row.get("exclusion_reason")) + "。"),
+            })
+        elif participation == "EXCLUDED":
+            unknowns.append({
+                "source_ref": ref,
+                "reason_cn": _signal_rating_excluded_reason(group, row, record),
+            })
+
+    directional = []
+    for group, items in by_group.items():
+        positives = [item for item in items if item["sign"] > 0]
+        negatives = [item for item in items if item["sign"] < 0]
+        if positives:
+            directional.append(_signal_rating_directional_item(
+                group, 1, positives))
+        if negatives:
+            directional.append(_signal_rating_directional_item(
+                group, -1, negatives))
+    return {"directional": directional, "unknowns": unknowns}
+
+
+def _signal_rating_directional_item(group, sign, items):
+    ref = _SIGNAL_RATING_GROUP_SOURCE_REF.get(group) or items[0]["ref"]
+    if group == "CVD":
+        names = "/".join(str((item["row"] or {}).get("key"))
+                         for item in items if (item["row"] or {}).get("key"))
+        verdicts = ", ".join(str(((item["row"] or {}).get("detail") or {}).get(
+            "verdict") or "") for item in items)
+        basis = ("主动流×价格 " + names + " 给出"
+                 + ("上行/承接" if sign > 0 else "下行/吸收") + "压力；"
+                 + "同源窗口按一组 CVD 证据处理"
+                 + (("（" + verdicts + "）。") if verdicts.strip(", ") else "。"))
+    elif group == "TMVF":
+        basis = ("TMVF 量价主干给出"
+                 + ("上行" if sign > 0 else "下行")
+                 + "方向压力；这不是信号寿命或收益概率。")
+    elif group == "MACRO":
+        basis = ("MACRO 背景给出"
+                 + ("上行" if sign > 0 else "下行")
+                 + "方向压力；宏观冲击阻断仍由旧 veto 独立处理。")
+    elif group == "Funding":
+        basis = ("Funding 原始语义达到可投票条件并给出"
+                 + ("上行" if sign > 0 else "下行")
+                 + "反身压力；温和费率不参与此判断。")
+    elif group == "SRD":
+        basis = ("SRD 偏斜给出"
+                 + ("上行" if sign > 0 else "下行")
+                 + "压力；只作为期权截面背景。")
+    else:
+        basis = (_signal_rating_group_cn(group) + " 给出"
+                 + ("上行" if sign > 0 else "下行") + "压力。")
+    return {
+        "source_ref": ref,
+        "source_group": group,
+        "sign": sign,
+        "basis_cn": basis,
+    }
+
+
+def _signal_rating_excluded_reason(group, row, record=None):
+    detail = dict((row or {}).get("detail") or {})
+    if group == "TMVF":
+        source = (((record or {}).get("factor_cross_section") or {}).get(
+            "tmvf") or {})
+        for key in ("direction", "window_conflict", "tmvf_24h_final",
+                    "tmvf_48h_final"):
+            if key not in detail and key in source:
+                detail[key] = source.get(key)
+        for prefix, label in (("tmvf_24h", "24h"), ("tmvf_48h", "48h")):
+            if label + "_final" in detail:
+                continue
+            node = source.get(prefix) or {}
+            value = node.get("final") if isinstance(node, dict) else None
+            if value is None and isinstance(node, dict):
+                value = node.get("tmv_final")
+            if value is not None:
+                detail[label + "_final"] = value
+        parts = []
+        if detail.get("direction"):
+            parts.append("direction=" + str(detail.get("direction")))
+        if "window_conflict" in detail:
+            parts.append("window_conflict=" + str(bool(detail.get(
+                "window_conflict"))))
+        if detail.get("24h_final") is not None:
+            parts.append("24h=" + _fmt_num(detail.get("24h_final"), 3))
+        if detail.get("48h_final") is not None:
+            parts.append("48h=" + _fmt_num(detail.get("48h_final"), 3))
+        if detail.get("tmvf_24h_final") is not None:
+            parts.append("24h=" + _fmt_num(detail.get("tmvf_24h_final"), 3))
+        if detail.get("tmvf_48h_final") is not None:
+            parts.append("48h=" + _fmt_num(detail.get("tmvf_48h_final"), 3))
+        suffix = "，".join(parts) if parts else "无明确排除码"
+        return "TMVF 来源可用但未参与方向，保留当前压力信息：" + suffix + "。"
+    return (_signal_rating_group_cn(group)
+            + " 来源可用但当前未参与方向，未提供明确排除码。")
+
+def _signal_rating_required_inputs(record, specs, config=None):
+    config = config or CONFIG
+    out = []
+    for source_ref, source_group in specs:
+        state = _signal_rating_source_state(
+            record, source_ref, source_group, config)
+        out.append({
+            "source_ref": source_ref,
+            "source_group": source_group,
+            "status": state.get("status"),
+            "usable": bool(state.get("usable")),
+            "reason_cn": state.get("reason_cn"),
+            "impact_cn": _signal_rating_required_impact(source_group),
+        })
+    return out
+
+
+def _signal_rating_source_state(record, source_ref, source_group, config=None):
+    config = config or CONFIG
+    node = _signal_rating_path_get(record, source_ref)
+    if not isinstance(node, dict) or not node:
+        return {
+            "status": "MISSING",
+            "usable": False,
+            "reason_cn": _signal_rating_group_cn(source_group)
+                         + " 必要来源缺失或路径不可解析。",
+        }
+    quality_name = _SIGNAL_RATING_QUALITY_SOURCE.get(source_ref)
+    quality = (((record.get("quality") or {}).get("sources") or {}).get(
+        quality_name) or {})
+    raw_status = (node.get("data_status") or node.get("data_state")
+                  or node.get("status") or node.get("quality")
+                  or quality.get("status"))
+    status = _audit_status(raw_status, "OK")
+    quality_status = _audit_status(quality.get("status"), status)
+    if quality_status in _SIGNAL_RATING_BAD_SOURCE_STATES:
+        status = quality_status
+    if status in _SIGNAL_RATING_BAD_SOURCE_STATES:
+        return {
+            "status": status,
+            "usable": False,
+            "reason_cn": (_signal_rating_group_cn(source_group)
+                          + " 来源状态为 " + status
+                          + "，本项不能使用。"),
+        }
+    if _signal_rating_data_ready_false(node):
+        return {
+            "status": status,
+            "usable": False,
+            "reason_cn": _signal_rating_group_cn(source_group)
+                         + " 显式 data_ready=false。",
+        }
+    if not _signal_rating_ref_has_fact(source_ref, node):
+        return {
+            "status": "MISSING_FACT",
+            "usable": False,
+            "reason_cn": _signal_rating_group_cn(source_group)
+                         + " 路径存在，但缺少本项所需事实。",
+        }
+    freshness = _signal_rating_freshness_state(
+        record, source_ref, node, quality, config)
+    if not freshness.get("usable"):
+        return {
+            "status": freshness.get("status"),
+            "usable": False,
+            "reason_cn": (_signal_rating_group_cn(source_group)
+                          + " " + freshness.get("reason_cn")),
+        }
+    return {"status": status, "usable": True, "reason_cn": "OK"}
+
+
+def _signal_rating_ref_has_fact(source_ref, node):
+    if source_ref == "factor_cross_section.anchor":
+        return (safe_float(node.get("score")) is not None
+                or safe_float(node.get("normalized_deviation")) is not None)
+    if source_ref == "factor_cross_section.gamma_regime":
+        return bool(node.get("regime") or node.get("market_state")
+                    or safe_float(node.get("net_gamma_notional_usd")) is not None
+                    or safe_float(node.get("pin_strike")) is not None)
+    if source_ref == "factor_cross_section.tmvf":
+        return bool(node.get("direction")
+                    or safe_float(node.get("tmv_blend")) is not None
+                    or node.get("tmvf_24h") or node.get("tmvf_48h"))
+    if source_ref == "factor_cross_section.micro_flow":
+        for child_key in ("combined", "fast_4h", "slow_12h"):
+            child = node.get(child_key)
+            if not isinstance(child, dict):
+                continue
+            if any(child.get(key) is not None for key in (
+                    "cvd_norm", "cvd_sum", "price_return_pct",
+                    "price_move_pct")):
+                return True
+        return False
+    if str(source_ref).startswith("factor_cross_section.micro_flow."):
+        return any(node.get(key) is not None for key in (
+            "cvd_norm", "cvd_sum", "price_return_pct", "price_move_pct"))
+    if source_ref == "factor_cross_section.funding":
+        semantics = node.get("canonical_funding_semantics") or {}
+        return (safe_float(node.get("last_rate")) is not None
+                or safe_float(node.get("last_funding_rate")) is not None
+                or semantics.get("raw_available") is True)
+    if source_ref == "factor_cross_section.macro_pressure":
+        return bool(node.get("regime") or node.get("macro_regime")
+                    or safe_float(node.get("score")) is not None
+                    or safe_float(node.get("macro_score")) is not None)
+    if source_ref == "factor_cross_section.skew":
+        return bool(safe_float(node.get("vote")) is not None
+                    or safe_float(node.get("rr_z")) is not None
+                    or safe_float(node.get("skew_norm_blend")) is not None)
+    if source_ref == "factor_cross_section.gex_info":
+        return bool(node.get("market_state")
+                    or safe_float(node.get("net_gamma_notional_usd")) is not None)
+    return True
+
+
+def _signal_rating_freshness_state(record, source_ref, node, quality, config):
+    as_of = _signal_rating_as_of_ms(record)
+    freshness = str(node.get("freshness") or node.get("gex_freshness")
+                    or "").upper()
+    if freshness in _SIGNAL_RATING_BAD_SOURCE_STATES:
+        return {"usable": False, "status": freshness,
+                "reason_cn": "来源 freshness=" + freshness + "。"}
+    if node.get("ready") is False:
+        return {"usable": False, "status": "NOT_READY",
+                "reason_cn": "来源 ready=false。"}
+    if as_of is None:
+        return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                "reason_cn": "缺少评级实际采样时点；不能用 scheduled_time_ms 证明来源有效。"}
+    if source_ref == "factor_cross_section.anchor":
+        source_ts = safe_float(node.get("gex_source_ts_ms")
+                               or node.get("source_ts_ms")
+                               or node.get("observed_time_ms"))
+        if source_ts is None or as_of is None:
+            return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                    "reason_cn": (
+                        "缺少 Anchor 自身 gex_source_ts_ms 或评级时点；"
+                        "不能借 neutral_repair.age_ms 证明新鲜。")}
+        age_ms = as_of - source_ts
+        if age_ms < 0:
+            return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                    "reason_cn": "Anchor 来源时间晚于评级时点。"}
+        max_age = safe_float(config.get("gex_freshness_expired_ms"))
+        stale_age = safe_float(config.get("gex_freshness_stale_ms"))
+        if max_age is not None and max_age > 0 and age_ms >= max_age:
+            return {"usable": False, "status": "EXPIRED",
+                    "reason_cn": "Anchor 来源年龄超过 gex_freshness_expired_ms。"}
+        if stale_age is not None and stale_age > 0 and age_ms >= stale_age:
+            return {"usable": False, "status": "STALE",
+                    "reason_cn": "Anchor 来源年龄超过 gex_freshness_stale_ms。"}
+        if freshness and freshness != "FRESH":
+            return {"usable": False, "status": freshness,
+                    "reason_cn": "Anchor freshness 不是 FRESH。"}
+        return {"usable": True, "status": "OK", "reason_cn": "OK"}
+    if source_ref == "factor_cross_section.macro_pressure":
+        return _signal_rating_macro_freshness_state(
+            record, source_ref, node, quality, config)
+
+    age_ms = safe_float(node.get("age_ms"))
+    if age_ms is None:
+        age_ms = safe_float((quality or {}).get("age_ms"))
+    if age_ms is not None and age_ms < 0:
+        return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                "reason_cn": "来源年龄为负，时间戳晚于评级时点。"}
+    observed = node.get("observed_at") or (quality or {}).get("observed_at")
+    observed_ms = _signal_rating_time_ms(observed)
+    if age_ms is None and observed is not None and observed_ms is None:
+        return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                "reason_cn": "observed_at 无法解析，且没有 age_ms。"}
+    if age_ms is None and observed_ms is not None and as_of is not None:
+        age_ms = as_of - observed_ms
+    elif age_ms is not None and observed_ms is not None and as_of is not None:
+        observed_age = as_of - observed_ms
+        if observed_age < 0:
+            return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                    "reason_cn": "observed_at 晚于评级时点。"}
+        age_ms = max(age_ms, observed_age)
+    if age_ms is None and observed is None:
+        return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                "reason_cn": (
+                    "没有 age_ms 或 observed_at；不能把审计层默认 OK 当作来源新鲜证明。")}
+    if age_ms is not None and age_ms < 0:
+        return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                "reason_cn": "来源年龄为负，时间戳晚于评级时点。"}
+    if observed_ms is not None and as_of is not None and observed_ms > as_of + 1000:
+        return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                "reason_cn": "observed_at 晚于评级时点。"}
+    max_age = _signal_rating_max_age_ms(source_ref, config)
+    if max_age is None and not freshness:
+        return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                "reason_cn": "该来源没有现有最大年龄阈值或 FRESH 事实。"}
+    if (max_age is not None and max_age > 0 and age_ms is not None
+            and age_ms > max_age):
+        return {"usable": False, "status": "STALE",
+                "reason_cn": "来源年龄超过现有配置阈值。"}
+    return {"usable": True, "status": "OK", "reason_cn": "OK"}
+
+
+def _signal_rating_macro_freshness_state(record, source_ref, node, quality,
+                                         config):
+    del source_ref, quality
+    as_of = _signal_rating_as_of_ms(record)
+    last_refresh = safe_float(node.get("last_refresh_ms"))
+    refresh_sec = safe_float(node.get("refresh_sec"))
+    if refresh_sec is None:
+        refresh_sec = safe_float(config.get("macro_refresh_sec"))
+    if last_refresh is None or as_of is None:
+        return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                "reason_cn": "MACRO 缺少 last_refresh_ms 或评级时点。"}
+    refresh_age = as_of - last_refresh
+    if refresh_age < 0:
+        return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                "reason_cn": "MACRO last_refresh_ms 晚于评级时点。"}
+    if refresh_sec is not None and refresh_sec > 0:
+        max_refresh_age = refresh_sec * 2 * 1000
+        if refresh_age > max_refresh_age:
+            return {"usable": False, "status": "STALE",
+                    "reason_cn": "MACRO 刷新年龄超过 refresh_sec 的两倍。"}
+    observed = node.get("observed_at")
+    observed_ms = _signal_rating_time_ms(observed)
+    if observed is not None and observed_ms is None:
+        return {"usable": False, "status": "UNKNOWN_FRESHNESS",
+                "reason_cn": "MACRO observed_at 无法解析。"}
+    if observed_ms is not None and observed_ms > as_of + 1000:
+        return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                "reason_cn": "MACRO observed_at 晚于评级时点。"}
+    data_age = safe_float(node.get("data_age_ms") or node.get("age_ms"))
+    if data_age is not None and data_age < 0:
+        return {"usable": False, "status": "FUTURE_SOURCE_TIME",
+                "reason_cn": "MACRO data_age_ms 为负。"}
+    return {"usable": True, "status": "OK", "reason_cn": "OK"}
+
+
+def _signal_rating_max_age_ms(source_ref, config):
+    if source_ref == "factor_cross_section.tmvf":
+        return safe_float(config.get("tmvf_kline_max_age_ms"))
+    if source_ref == "factor_cross_section.funding":
+        hours = safe_float(config.get("tmvf_funding_max_age_hours"))
+        return None if hours is None else hours * 60 * 60 * 1000
+    if source_ref == "factor_cross_section.micro_flow":
+        return safe_float(config.get("current_price_max_age_ms"))
+    if str(source_ref).startswith("factor_cross_section.micro_flow."):
+        return safe_float(config.get("current_price_max_age_ms"))
+    if source_ref == "factor_cross_section.macro_pressure":
+        return None
+    if source_ref in ("factor_cross_section.gamma_regime",
+                      "factor_cross_section.skew"):
+        return safe_float(config.get("option_greeks_stale_ms"))
+    if source_ref == "factor_cross_section.gex_info":
+        return safe_float(config.get("gex_info_cache_max_age_ms"))
+    return None
+
+
+def _signal_rating_time_ms(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return safe_float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        return None
+    return dt.timestamp() * 1000.0
+
+
+def _signal_rating_data_ready_false(node):
+    if node.get("data_ready") is False or node.get("ready") is False:
+        return True
+    ready_values = []
+    for child_key in ("fast_4h", "slow_12h"):
+        child = node.get(child_key)
+        if not isinstance(child, dict) or "data_ready" not in child:
+            continue
+        status = str(child.get("status") or child.get("data_status") or "")
+        has_fact = any(child.get(key) is not None for key in (
+            "cvd_norm", "cvd_sum", "price_return_pct", "price_move_pct"))
+        if status == "NOT_EMITTED_BY_EDB" and not has_fact:
+            continue
+        if isinstance(child, dict):
+            ready_values.append(bool(child.get("data_ready")))
+    return bool(ready_values) and not any(ready_values)
+
+
+def _signal_rating_input_usable(required, source_group):
+    return any(item.get("source_group") == source_group and item.get("usable")
+               for item in required)
+
+
+def _signal_rating_unknowns_from_required(required):
+    unknowns = []
+    for item in required:
+        if item.get("usable"):
+            continue
+        unknowns.append({
+            "source_ref": item.get("source_ref"),
+            "reason_cn": item.get("reason_cn"),
+        })
+    return unknowns
+
+
+def _signal_rating_claim_status(required, support, opposition):
+    if any(not item.get("usable") for item in required):
+        return SIGNAL_RATING_INSUFFICIENT
+    if support and opposition:
+        return SIGNAL_RATING_CONFLICTED
+    if support:
+        return SIGNAL_RATING_SUPPORTED
+    if opposition:
+        return SIGNAL_RATING_OPPOSED
+    return SIGNAL_RATING_INSUFFICIENT
+
+
+def _signal_rating_claim(status, summary_cn, required_inputs,
+                         support, opposition, unknowns):
+    return {
+        "status": status,
+        "summary_cn": summary_cn,
+        "required_inputs": required_inputs,
+        "support": _signal_rating_public_entries(support),
+        "opposition": _signal_rating_public_entries(opposition),
+        "unknowns": _signal_rating_public_unknowns(unknowns),
+    }
+
+
+def _signal_rating_public_entries(items):
+    out, seen = [], set()
+    for item in items:
+        key = (item.get("source_ref"), item.get("source_group"),
+               item.get("basis_cn"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "source_ref": item.get("source_ref"),
+            "source_group": item.get("source_group"),
+            "basis_cn": item.get("basis_cn"),
+        })
+    return out
+
+
+def _signal_rating_public_unknowns(items):
+    out, seen = [], set()
+    for item in items:
+        key = (item.get("source_ref"), item.get("reason_cn"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "source_ref": item.get("source_ref"),
+            "reason_cn": item.get("reason_cn"),
+        })
+    return out
+
+
+def _signal_rating_structure_summary(required, support, opposition):
+    if any(not item.get("usable") for item in required):
+        return "结构必要来源缺失、陈旧或缺少时效证明；已有观察保留为证据，不生成安全边界。"
+    if support and opposition:
+        return "结构来源同时给出约束与反对信号，不能把空间结构解释成单向保护。"
+    if support:
+        return "结构层有当时约束依据，但不代表不可突破边界、回归成立或胜率。"
+    if opposition:
+        return "结构层反对当前存在稳定空间约束，卖方环境需要等待修复或候选补偿。"
+    return "结构来源可用但未形成明确约束主张。"
+
+
+def _signal_rating_pressure_summary(side, status, support, opposition):
+    name = "Put 信用价差" if side == "put_pressure" else "Call 信用价差"
+    if status == SIGNAL_RATING_INSUFFICIENT:
+        return name + " 的压力判断缺少必要有效输入，或现有输入未形成方向关系。"
+    if status == SIGNAL_RATING_CONFLICTED:
+        return name + " 同时存在支持与反对压力，适合作为人工复核的冲突清单。"
+    if status == SIGNAL_RATING_SUPPORTED:
+        return name + " 的侧别环境有支持依据；候选报价和补偿仍未评估。"
+    if status == SIGNAL_RATING_OPPOSED:
+        return name + " 的侧别环境受到反对压力；候选层仍需独立评估补偿和风险。"
+    return name + " 的压力判断未定。"
+
+
+def _signal_rating_used_refs(claims):
+    refs = []
+    for claim in (claims or {}).values():
+        for item in claim.get("required_inputs") or []:
+            ref = item.get("source_ref")
+            if ref and ref not in refs:
+                refs.append(ref)
+        for bucket in ("support", "opposition", "unknowns"):
+            for item in claim.get(bucket) or []:
+                ref = item.get("source_ref")
+                if ref and ref not in refs:
+                    refs.append(ref)
+    return refs
+
+
+def _signal_rating_legacy_label(record, pressure_claims):
+    del pressure_claims
+    tmvf = ((record.get("factor_cross_section") or {}).get("tmvf") or {})
+    return tmvf.get("market_state")
+
+
+def _signal_rating_market_interpretation(legacy_label):
+    if legacy_label == MARKET_ANCHOR_MEAN_REVERSION:
+        return "旧标签表示 TMVF 方向中性，回归尚未证明。"
+    if legacy_label == MARKET_DIRECTIONAL_DRIFT:
+        return "旧标签只说明已有方向倾向，不代表趋势会延续。"
+    if legacy_label == MARKET_TREND_ACCELERATION:
+        return "旧枚举保留但本 producer 没有实际产生路径，不能当作已检测状态。"
+    if legacy_label == MARKET_FUNDING_CROWDED:
+        return "旧标签只说明资金费拥挤语义，仍需与侧别压力和候选补偿分开。"
+    return "旧市场标签仅作历史兼容说明，新评级按结构、压力和来源分别呈现。"
+
+
+def _signal_rating_next_observations(claims, window):
+    out = []
+    insufficient = [name for name, claim in (claims or {}).items()
+                    if claim.get("status") == SIGNAL_RATING_INSUFFICIENT]
+    conflicted = [name for name, claim in (claims or {}).items()
+                  if claim.get("status") == SIGNAL_RATING_CONFLICTED]
+    if insufficient:
+        out.append("先恢复或补足依据不足项的必要来源，再讨论本项是否支持该侧环境。")
+    if conflicted:
+        out.append("把冲突项的支持和反对来源分开观察，不把局部分歧升级为全局拒绝。")
+    if not bool((window or {}).get("is_active")):
+        out.append("NR 窗口未确认或已失效时，评级只解释环境，不改变旧 WAIT/BLOCKED。")
+    out.append("补偿、两腿报价、费用和退出条件仍在候选层评估，当前对象不报告净收益。")
+    out.append("30/60 分钟路径只用于诊断，不代表信号可维持寿命。")
+    return out
+
+
+def _signal_rating_group_cn(group):
+    return {
+        "Anchor": "Anchor",
+        "GGR": "GGR/GEX",
+        "TMVF": "TMVF",
+        "CVD": "主动流×价格",
+        "MACRO": "MACRO",
+        "Funding": "Funding",
+        "SRD": "SRD",
+    }.get(group, str(group or "来源"))
+
+
+def _signal_rating_required_impact(group):
+    return {
+        "Anchor": "缺失时只影响结构约束主张，不改变旧 NR 状态或交易权限。",
+        "GGR": "缺失时只影响结构代理主张，不恢复被旧 GGR 忽略的来源。",
+        "TMVF": "缺失时无法说明量价主干压力，其他来源仍只保留为各自观察。",
+        "CVD": "缺失时无法说明主动流与价格确认，其他压力来源不升级为整体可靠。",
+        "MACRO": "缺失时无法说明宏观背景压力，不影响微观来源自身记录。",
+        "Funding": "缺失时无法区分温和非投票与拥挤反身压力。",
+        "SRD": "缺失时无法说明期权偏斜背景，候选经济性仍未评估。",
+    }.get(group, "缺失时只影响依赖该来源的主张。")
+
+
+def _signal_rating_path_get(root, path):
+    current = root
+    for part in str(path or "").split("."):
+        if part == "":
+            continue
+        if isinstance(current, list):
+            index = safe_int(part)
+            if index is None or index < 0 or index >= len(current):
+                return None
+            current = current[index]
+            continue
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current.get(part)
+    return current
+
+
+def _signal_rating_path_exists(root, path):
+    return _signal_rating_path_get(root, path) is not None
 
 
 def build_audit_record(card, config=None):
@@ -5798,6 +6724,7 @@ def build_audit_record(card, config=None):
     record["comfort_window"] = signal_durability.get("comfort_window")
     record["price_anchor_durability"] = signal_durability.get(
         "price_anchor_durability")
+    record["signal_rating"] = build_signal_rating(record, config)
     record["integrity"] = _audit_integrity(record)
     return record
 

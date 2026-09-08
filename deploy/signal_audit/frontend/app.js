@@ -15,27 +15,35 @@
     query: "",
     direction: "",
     action: "",
-    quality: ""
+    quality: "",
+    grade: ""
   };
 
   const enumLabels = {
-    ACTIVE: "参与计票",
+    ACTIVE: "本次作为方向依据",
     ADVERSE: "不利",
     ALLOWED: "允许",
     ALIGNED: "一致",
     APPROVABLE: "可提交人工批准",
     AUDIT_ONLY: "仅审计",
     BEARISH: "偏空",
+    BEARISH_BIAS: "偏空背景",
+    BEARISH_STRONG: "强偏空",
     BEARISH_LEAN: "理论偏空",
     BEARISH_CONFIRMED: "偏空已确认",
     BEARISH_WITH_DISAGREEMENT: "偏空但存在分歧",
     BULLISH: "偏多",
+    BULLISH_BIAS: "偏多背景",
+    BULLISH_STRONG: "强偏多",
     BULLISH_LEAN: "理论偏多",
     BULLISH_CONFIRMED: "偏多已确认",
     BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
     BUY_ABSORBED_BEARISH: "买盘被吸收，偏空",
     BUY_CONFIRMS_UP: "买方流确认上行",
-    CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "仅调制置信，不参与方向计票",
+    CALL_CREDIT: "Call 信用价差",
+    CLEAR: "无冲击阻断",
+    BLOCK: "阻断",
+    CONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE: "只影响原信号确认条件，本次未作为方向依据",
     CVD_DATA_NOT_READY: "CVD 数据未就绪",
     CVD_HISTORY_WARMING: "CVD 历史样本仍在积累",
     CVD_PRICE_CONFIRM_BOTH_REQUIRED: "CVD 与价格确认须同时有效",
@@ -46,17 +54,18 @@
     DECREASE: "降低前提耐久",
     DECREASE_TENTATIVE: "轻度降低前提耐久",
     DO_NOT_SUPPORT: "不支持系统结论",
-    DO_NOT_MULTIPLY_CONFIDENCE: "不乘进置信",
+    DO_NOT_MULTIPLY_CONFIDENCE: "不作为独立加分",
     ERROR: "错误",
-    EXCLUDED: "已排除",
+    EXCLUDED: "本次未采用",
     FINAL: "定稿",
+    FRESH: "新鲜",
     FULL_LIVE: "完整实时",
     FUNDING: "资金费率",
     FUNDING_RAW_MISSING: "原始资金费率缺失，无法判断",
-    FUNDING_RAW_SEMANTIC_NON_VOTING: "原始费率未达拥挤阈值，不计票",
+    FUNDING_RAW_SEMANTIC_NON_VOTING: "资金费率未达拥挤阈值，本次未作为方向依据",
     FUTURES_FUNDING_CROWDING: "资金费率拥挤语义",
     FUTURES_FUNDING_SEMANTICS: "资金费率规范语义",
-    GATE_ONLY: "仅门控",
+    GATE_ONLY: "只作为当前限制",
     GEMINI: "Gemini",
     gemini: "Gemini",
     GAMMA: "Gamma",
@@ -66,11 +75,13 @@
     CONSTRAINT: "空间约束",
     CONSERVATIVE_LOWER_TIER: "缓冲带就低不就高",
     CROWDED: "拥挤",
+    CURRENT: "当前截面",
     DEEP: "深",
     EDT: "美国夏令时",
     EST: "美国冬令时",
     EVENT_BLACKOUT: "事件黑名单",
     HIGH: "高",
+    HEADWIND: "逆风",
     INCREASE: "提高前提耐久",
     INSUFFICIENT_WINDOW_COVERAGE: "窗口覆盖不足",
     INVALID_OUTPUT: "输出无效",
@@ -84,6 +95,7 @@
     LOWER_DURABILITY_TENTATIVE: "暂定降耐久",
     LOWER: "下调方向把握",
     MATERIAL: "实质分歧",
+    SEVERE: "严重分歧",
     MEDIUM: "中",
     MEDIUM_TO_HIGH_BUFFER: "中转高缓冲带",
     MEDIUM_TO_LOW_BUFFER: "中转低缓冲带",
@@ -92,6 +104,7 @@
     MODEL_ESTIMATED: "模型估算",
     MILD_CROWDED: "轻度拥挤",
     MILD_HEADWIND: "轻度逆风",
+    MILD_TAILWIND: "轻度顺风",
     MACRO: "宏观",
     MACRO_CONTEXT: "宏观背景",
     MODERATE: "中等",
@@ -106,12 +119,20 @@
     NEUTRAL_OR_RANGE: "理论中性/区间",
     NEGATIVE_GAMMA: "负 Gamma",
     NONE: "无",
-    NON_VOTING: "不计票",
+    NON_VOTING: "本次未作为方向依据",
     NOT_CROWDED: "未拥挤",
     NOISE: "可忽略",
     NOT_CONFIRMED: "未确认",
     NOT_IMPLEMENTED_SHADOW: "未落地影子项",
     NOT_READY: "未就绪",
+    NR_IDLE: "接管窗口空闲",
+    NR_WAIT_ANCHOR_DAMAGE: "接管窗口等待锚损伤",
+    NR_WAIT_ANCHOR_REPAIR: "接管窗口等待锚修复",
+    NR_REPAIR_CANDIDATE: "接管窗口修复候选",
+    NR_REPAIR_CONFIRMED: "接管窗口修复确认",
+    NR_REPAIR_STALE: "接管窗口修复已陈旧",
+    NR_NOT_CONFIRMED: "接管窗口未确认",
+    NR_EXPIRED: "接管窗口已失效",
     NO_TRADE_BLOCKED: "无交易/阻断",
     OBSERVE: "观察",
     OBSERVE_LONG_BIAS: "观察偏多",
@@ -122,10 +143,12 @@
     PACKET_OBSERVED: "卡内观测",
     PHASE_0_OBSERVE_ONLY: "观察层（不改信号）",
     PENDING_LLM: "等待 LLM 复核",
+    PUT_CREDIT: "Put 信用价差",
     POSITIVE_GAMMA: "正 Gamma",
     POSITIVE_GAMMA_PINNING: "正 Gamma 钉住",
     PRICE_CONFIRM_NOT_ACTIVE: "价格确认未达激活阈值",
     PRICE_ONLY: "仅价格有效，CVD 不确认",
+    PREVIOUS_CARD: "前一卡",
     PREPARE_LONG: "准备做多",
     PREPARE_SHORT: "准备做空",
     CALL_SKEW: "看涨偏斜",
@@ -134,21 +157,27 @@
     RISK_CONSTRAINT: "空间风险约束",
     SKIPPED: "已跳过",
     THIN: "薄",
+    TAILWIND: "顺风",
     SHORT_GAMMA_AMPLIFYING: "短 Gamma 放大/反身",
     SHORT_BIAS: "空头偏好",
     SELL_ABSORBED_BULLISH: "卖盘被吸收，偏多",
     SELL_CONFIRMS_DOWN: "卖方流确认下行",
     SKEW: "偏斜",
-    SOFT_GATE: "软门控",
+    SOFT_GATE: "软性限制",
     SOURCE_AGE_EXCEEDED: "数据时效超限",
     STALE: "陈旧",
     SUPPORT: "支持系统结论",
     SUPPORTIVE: "支持",
+    WATCH: "观察",
+    WEAK: "弱",
+    STRONG: "强",
+    TRANSITION: "状态转移",
     TENTATIVE: "暂定",
     TRADE_SUPPORT_STRONG: "强交易支持",
     TRADE_SUPPORT_REVIEW: "结构复核支持",
     TRADE_SUPPORT_WEAK: "弱交易支持",
     UNCALIBRATED: "未校准",
+    UNCLEAR: "不明",
     UNKNOWN: "未知",
     UNABLE_TO_JUDGE: "无法判断",
     VALID: "有效",
@@ -161,10 +190,14 @@
     OPTION_SKEW_DIRECTION: "期权偏斜方向",
     BLOCKED: "已被阻断",
     CONTINUING: "延续",
+    CONFLICTED: "有冲突",
     DETERIORATING: "恶化",
     IMPROVING: "改善",
+    INSUFFICIENT: "依据不足",
     REVERSING: "反转",
     STABLE: "稳定",
+    SUPPORTED: "有支持",
+    OPPOSED: "有反对",
     NEUTRALIZED: "中和",
     DECISION_SUPPORT_COLLAPSE: "决策支持塌缩",
     FUNDING_CROWDING_ESCALATION: "资金拥挤升温",
@@ -203,8 +236,12 @@
     DELEVERAGING_REPAIR: "去杠杆修复",
     NEUTRAL: "中性",
     DATA_GAP: "数据缺口",
-    NO_CONFIDENCE_CHANGE: "不改置信",
-    NO_GATE_CHANGE: "不改门控"
+    NO_CONFIDENCE_CHANGE: "原信号把握不变",
+    NO_GATE_CHANGE: "当前限制不变",
+    "signal_rating@1.0.0": "信号评级 v1",
+    side_environment_v1: "环境与侧别支持",
+    not_evaluated: "候选经济性未评估",
+    not_established: "尚未建立"
   };
 
   const fieldLabels = {
@@ -218,8 +255,8 @@
     agreement_raw: "原始一致性",
     agreement_with_system: "与系统结论关系",
     all_required_ready: "必需源全部就绪",
-    affects_blocking: "是否影响门控",
-    affects_confidence: "是否影响置信",
+    affects_blocking: "是否影响阻断条件",
+    affects_confidence: "是否影响方向把握",
     affects_trade_allowed: "是否影响交易许可",
     audit_scope: "审计边界",
     base_zone: "静态基础档位",
@@ -310,6 +347,10 @@
     model: "模型",
     model_trade_support: "模型支持",
     net_gamma_notional_usd: "净 Gamma 名义额(USD)",
+    net_gamma_notional: "净 Gamma 名义额",
+    net_gex_sign: "Gamma 符号",
+    gamma_regime: "Gamma 结构",
+    gex_info: "GEX 空间",
     next_action: "下一步动作",
     not_trading_advice: "非交易建议",
     operator_hint_cn: "操作提示",
@@ -479,12 +520,16 @@
   const isBlank = (value) => isNullish(value) || value === "";
   const rawEnum = (value) => String(value ?? "");
   const semanticLabel = (value) => {
-    if (isNullish(value)) return "暂缺 (null)";
+    if (isNullish(value)) return "暂缺";
     const raw = rawEnum(value);
-    const translated = enumLabels[raw];
-    return translated ? `${translated} (${raw})` : raw;
+    const translated = enumLabels[raw] || enumLabels[raw.toUpperCase()];
+    return translated || normalizeComfortText(raw, raw);
   };
-  const semanticCompact = (value) => enumLabels[rawEnum(value)] || rawEnum(value);
+  const semanticCompact = (value) => {
+    if (typeof value === "boolean") return booleanText(value);
+    const raw = rawEnum(value);
+    return enumLabels[raw] || enumLabels[raw.toUpperCase()] || raw;
+  };
   const normalizeFieldKey = (label) => String(label ?? "")
     .trim()
     .replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)
@@ -499,18 +544,19 @@
     const normalized = normalizeFieldKey(raw);
     const last = normalizeFieldKey(raw.split(/[.\[\]]+/).filter(Boolean).at(-1) || raw);
     const translated = fieldLabels[normalized] || fieldLabels[last];
-    return translated ? `${translated} (${raw})` : raw;
+    if (translated) return translated;
+    return /[._]/.test(raw) ? "字段" : raw;
   };
   const isEnum = (value) => typeof value === "string" && /^[A-Z][A-Z0-9_/-]*$/.test(value);
   const number = (value, digits = 3) => {
-    if (isNullish(value)) return "暂缺 (null)";
+    if (isNullish(value)) return "暂缺";
     if (typeof value !== "number") return String(value);
     return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(value);
   };
-  const percent = (value, digits = 1) => isNullish(value) ? "暂缺 (null)" : `${number(value * 100, digits)}%`;
-  const booleanText = (value) => isNullish(value) ? "暂缺 (null)" : value ? "是 (true)" : "否 (false)";
+  const percent = (value, digits = 1) => isNullish(value) ? "暂缺" : `${number(value * 100, digits)}%`;
+  const booleanText = (value) => isNullish(value) ? "暂缺" : value ? "是" : "否";
   const scalarText = (value, options = {}) => {
-    if (isNullish(value)) return "暂缺 (null)";
+    if (isNullish(value)) return "暂缺";
     if (typeof value === "boolean") return booleanText(value);
     if (typeof value === "number") return number(value, options.digits ?? 4);
     if (Array.isArray(value) || typeof value === "object") return rawValueText(value);
@@ -529,7 +575,7 @@
     translate: false
   });
   const pctPoint = (value, digits = 2) => {
-    if (isNullish(value)) return "暂缺 (null)";
+    if (isNullish(value)) return "暂缺";
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return String(value);
     return `${number(numeric, digits)}%`;
@@ -540,7 +586,7 @@
     return Number.isFinite(numeric) ? numeric : null;
   };
   const dateText = (iso, mode = "long") => {
-    if (!iso) return "暂缺 (null)";
+    if (!iso) return "暂缺";
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return String(iso);
     const options = mode === "short"
@@ -549,13 +595,100 @@
     return new Intl.DateTimeFormat("zh-CN", options).format(date);
   };
   const ageText = (ageMs) => {
-    if (isNullish(ageMs)) return "暂缺 (null)";
+    if (isNullish(ageMs)) return "暂缺";
     if (ageMs < 1000) return `${number(ageMs, 0)} ms`;
     if (ageMs < 60000) return `${number(ageMs / 1000, 1)} 秒`;
     if (ageMs < 3600000) return `${number(ageMs / 60000, 1)} 分钟`;
     return `${number(ageMs / 3600000, 1)} 小时`;
   };
   const firstPresent = (...values) => values.find((value) => !isNullish(value) && value !== "");
+  const firstTextValue = (...values) => values.find((value) => typeof value === "string" && value.trim() !== "");
+  const firstBooleanValue = (...values) => values.find((value) => typeof value === "boolean");
+  const boundaryHasBlock = (...values) => {
+    if (values.some((value) => value === true)) return true;
+    const value = firstBooleanValue(...values);
+    return value === true;
+  };
+  const boundaryExecutionAllowed = (...values) => {
+    const booleans = values.filter((value) => typeof value === "boolean");
+    if (!booleans.length) return false;
+    if (booleans.some((value) => value === false)) return false;
+    return booleans.some((value) => value === true);
+  };
+  const nrStateText = (value) => {
+    const raw = rawEnum(value).toUpperCase();
+    const labels = {
+      NR_IDLE: "空闲",
+      NR_WAIT_ANCHOR_DAMAGE: "等待锚损伤",
+      NR_WAIT_ANCHOR_REPAIR: "等待锚修复",
+      NR_REPAIR_CANDIDATE: "修复候选",
+      NR_REPAIR_CONFIRMED: "修复确认",
+      NR_REPAIR_STALE: "修复已陈旧",
+      NR_NOT_CONFIRMED: "未确认",
+      NR_EXPIRED: "已失效",
+      CONFIRMED: "已确认",
+      ACTIVE: "激活",
+      INACTIVE: "未激活",
+      UNKNOWN: "未知"
+    };
+    return labels[raw] || semanticCompact(value) || "未声明";
+  };
+  const futureValidityText = (value) => {
+    const raw = rawEnum(value).trim();
+    if (!raw) return "未知";
+    const labels = {
+      unknown: "未知",
+      UNKNOWN: "未知",
+      not_evaluated: "未评估",
+      NOT_EVALUATED: "未评估"
+    };
+    return labels[raw] || semanticCompact(raw) || raw;
+  };
+  const nrWindowStateInfo = (doc) => {
+    const sources = [
+      ["signal_window.neutral_repair", asObject(get(doc, "signal_window.neutral_repair", {}))],
+      ["factor_cross_section.neutral_repair", asObject(get(doc, "factor_cross_section.neutral_repair", {}))],
+      ["neutral_repair", asObject(get(doc, "neutral_repair", {}))],
+      ["window", asObject(get(doc, "window", {}))],
+      ["decision_matrix", asObject(get(doc, "decision_matrix", {}))]
+    ];
+    for (const [path, view] of sources) {
+      const value = firstTextValue(view.state, view.nr_state, view.window_state, view.window, view.status);
+      if (!isBlank(value)) return { value, source: path };
+    }
+    return { value: "UNKNOWN", source: "" };
+  };
+  const nrWindowMetric = (doc) => {
+    const info = nrWindowStateInfo(doc);
+    return {
+      value: nrStateText(info.value),
+      note: info.source ? "生命周期来源已记录" : "生命周期来源暂缺"
+    };
+  };
+  const roundKindText = (doc) => {
+    if (isFixedAnalysisRound(doc)) return "固定轮次";
+    const eventType = firstTextValue(
+      get(doc, "identity.event_type"),
+      get(doc, "schema.record_type"),
+      get(doc, "record_type")
+    );
+    return eventType ? semanticCompact(eventType) : "事件卡";
+  };
+  const indexSummaryText = (doc) => {
+    if (hasSignalEvidenceV2Surface(doc)) {
+      return [
+        symbol(doc) || "N/A",
+        roundKindText(doc),
+        "总体证据评审"
+      ].join("｜");
+    }
+    return [
+      symbol(doc) || "N/A",
+      semanticCompact(lean(doc)) || "方向未定",
+      semanticCompact(support(doc)) || "边界未定",
+      roundKindText(doc)
+    ].join("｜");
+  };
   const numericMs = (value) => {
     if (isNullish(value) || value === "") return null;
     const parsed = Number(value);
@@ -689,6 +822,12 @@
       .replace(/(置信度?\s*[0-9]+)\s*未校准/g, "$1")
       .replace(/(confidence\s*[0-9]+)\s*uncalibrated/gi, "$1");
   }
+  function compactLongDecimalText(value) {
+    return String(value ?? "").replace(/-?\d+\.\d{9,}/g, (match) => {
+      const numeric = Number(match);
+      return Number.isFinite(numeric) ? number(numeric, 4) : match;
+    });
+  }
   const kv = (key, value, options = {}) => `
     <div class="kv">
       <dt>${escapeHtml(fieldLabel(key))}</dt>
@@ -796,20 +935,19 @@
   const listHtml = (items, emptyText = "无") => {
     const values = asArray(items);
     if (!values.length) return `<div class="empty-inline">${escapeHtml(emptyText)}</div>`;
-    return `<ul class="plain-list">${values.map((item) => `<li>${valueHtml(item, { translate: false })}</li>`).join("")}</ul>`;
+    return `<ul class="plain-list">${values.map((item) => `<li>${escapeHtml(normalizeComfortText(item, "未说明"))}</li>`).join("")}</ul>`;
   };
 
   const isFileMode = () => window.location.protocol === "file:";
   const isHttpMode = () => window.location.protocol === "http:" || window.location.protocol === "https:";
   const publicLoadReason = (kind, status = "") => {
-    if (kind === "manifest_http") return `信号卡索引未发布或不可访问${status ? `（HTTP ${status}）` : ""}。`;
-    if (kind === "manifest_json") return "信号卡索引 JSON 无法解析，请检查 materialize 输出。";
-    if (kind === "card_http" && Number(status) === 404) return "单卡 JSON 未发布或路径不存在（404）。";
-    if (kind === "card_http") return `单卡 JSON 暂不可访问${status ? `（HTTP ${status}）` : ""}。`;
-    if (kind === "card_timeout") return "单卡 JSON 响应超时，已停止等待；可稍后有限重试。";
-    if (kind === "card_json") return "单卡 JSON 格式非法，已阻止展示该卡详情。";
-    if (kind === "missing_path") return "manifest 未提供单卡路径，无法加载详情。";
-    if (kind === "fallback") return "本地 fallback.js 未加载，请检查 signal_cards/fallback.js。";
+    if (kind === "manifest_http") return "信号卡索引暂时不可用，请稍后重试。";
+    if (kind === "manifest_json") return "信号卡索引资料无法解析，请检查已生成的发布文件。";
+    if (kind === "card_http") return "这张卡的资料暂时不可用，请稍后重试。";
+    if (kind === "card_timeout") return "单卡资料响应超时，已停止等待；可稍后有限重试。";
+    if (kind === "card_json") return "单卡资料格式非法，已阻止展示该卡详情。";
+    if (kind === "missing_path") return "索引未提供单卡路径，无法加载详情。";
+    if (kind === "fallback") return "本地回退预览资料未加载，请检查发布文件。";
     return "静态卡片暂不可用，请检查发布文件。";
   };
   function createLoadError(kind, status = "") {
@@ -830,6 +968,9 @@
     const qualitySummary = asObject(summary.quality);
     const displayLayers = asObject(summary.display_layers);
     const signalDurability = asObject(summary.signal_durability);
+    const ratingSummary = asObject(firstPresent(summary.signal_rating_summary, raw.signal_rating_summary, {}));
+    const comfortSummary = asObject(firstPresent(summary.signal_comfort_summary, raw.signal_comfort_summary, {}));
+    const evidenceSummary = asObject(firstPresent(summary.signal_evidence_summary, raw.signal_evidence_summary, {}));
     const transitionContext = asObject(summary.transition_context);
     const id = firstPresent(identity.card_id, summary.card_id, raw.card_id, raw.id, raw.path, `manifest-card-${index + 1}`);
     const confirmed = firstPresent(identity.confirmed_at, summary.confirmed_at, raw.confirmed_at, raw.created_at);
@@ -863,6 +1004,9 @@
         ...displayLayers,
         headline: firstPresent(displayLayers.headline, summary.headline, raw.headline, "单卡详情待加载")
       },
+      signal_rating_summary: ratingSummary,
+      signal_comfort_summary: comfortSummary,
+      signal_evidence_summary: evidenceSummary,
       signal_durability: signalDurability,
       transition_context: transitionContext
     };
@@ -871,8 +1015,17 @@
     const id = cardId(doc);
     if (!id || id === "N/A") return doc;
     const summary = documents.find((item) => cardId(item) === id);
-    const enriched = summary && summary.__card_path && !doc.__card_path
-      ? { ...doc, __card_path: summary.__card_path }
+    const summaryComfort = asObject(summary && summary.signal_comfort_summary);
+    const docComfort = asObject(doc && doc.signal_comfort_summary);
+    const summaryEvidence = asObject(summary && summary.signal_evidence_summary);
+    const docEvidence = asObject(doc && doc.signal_evidence_summary);
+    const enriched = summary
+      ? {
+          ...doc,
+          ...((summary.__card_path && !doc.__card_path) ? { __card_path: summary.__card_path } : {}),
+          ...((Object.keys(summaryComfort).length && !Object.keys(docComfort).length) ? { signal_comfort_summary: summaryComfort } : {}),
+          ...((Object.keys(summaryEvidence).length && !Object.keys(docEvidence).length) ? { signal_evidence_summary: summaryEvidence } : {})
+        }
       : doc;
     cardCache.set(id, enriched);
     documents = documents.map((item) => cardId(item) === id ? enriched : item);
@@ -1017,8 +1170,13 @@
     return [...new Set(documents.map((doc) => get(doc, path)).filter((value) => !isNullish(value)))].sort();
   }
 
+  function allDocumentsUseSignalEvidenceV2() {
+    return documents.length > 0 && documents.every((doc) => hasSignalEvidenceV2Surface(doc));
+  }
+
   function populateSelect(selector, placeholder, values) {
     const select = $(selector);
+    if (!select) return;
     const current = select.value;
     select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>`;
     values.forEach((value) => {
@@ -1027,10 +1185,74 @@
     select.value = current;
   }
 
+  function resetSelect(selector, placeholder) {
+    const select = $(selector);
+    if (!select) return;
+    select.value = "";
+    select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>`;
+  }
+
+  function setLegacyFilterGroupsVisible(visible) {
+    [
+      ["#directionFilterGroup", "#directionFilter", "全部方向", "direction"],
+      ["#actionFilterGroup", "#actionFilter", "全部限制", "action"],
+      ["#qualityFilterGroup", "#qualityFilter", "全部质量状态", "quality"]
+    ].forEach(([groupSelector, filterSelector, placeholder, stateKey]) => {
+      const group = $(groupSelector);
+      if (group) group.hidden = !visible;
+      if (!visible) {
+        state[stateKey] = "";
+        resetSelect(filterSelector, placeholder);
+      }
+    });
+  }
+
   function populateFilters() {
+    const showLegacyFilters = !allDocumentsUseSignalEvidenceV2();
+    setLegacyFilterGroupsVisible(showLegacyFilters);
+    if (!showLegacyFilters) return;
     populateSelect("#directionFilter", "全部方向", uniqueValues("decision.lean"));
-    populateSelect("#actionFilter", "全部动作", uniqueValues("decision.support_label"));
+    populateSelect("#actionFilter", "全部限制", uniqueValues("decision.support_label"));
     populateSelect("#qualityFilter", "全部质量状态", uniqueValues("quality.overall"));
+  }
+
+  function isMobileLayout() {
+    return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 980px)").matches;
+  }
+
+  function setMobileSidebarOpen(open) {
+    const sidebar = $("#auditSidebar");
+    const toggle = $("#mobileIndexToggle");
+    if (!sidebar || !toggle) return;
+    sidebar.classList.toggle("is-open", Boolean(open));
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    const label = toggle.querySelector ? toggle.querySelector("span") : null;
+    if (label) label.textContent = open ? "收起信号/筛选" : "切换信号/筛选";
+  }
+
+  function setupMobileIndexToggle() {
+    const toggle = $("#mobileIndexToggle");
+    if (!toggle) return;
+    toggle.addEventListener("click", () => {
+      const sidebar = $("#auditSidebar");
+      setMobileSidebarOpen(!sidebar || !sidebar.classList.contains("is-open"));
+    });
+    if (typeof window.matchMedia === "function") {
+      const media = window.matchMedia("(max-width: 980px)");
+      const sync = () => setMobileSidebarOpen(false);
+      if (media.addEventListener) media.addEventListener("change", sync);
+    }
+  }
+
+  function closeMobileSidebarAfterSelect() {
+    if (!isMobileLayout()) return;
+    setMobileSidebarOpen(false);
+    const documentView = $("#documentView");
+    if (documentView && typeof documentView.scrollIntoView === "function") {
+      documentView.scrollIntoView({ block: "start" });
+    } else if (typeof window.scrollTo === "function") {
+      window.scrollTo({ top: 0 });
+    }
   }
 
   function setupFilterEvents() {
@@ -1050,25 +1272,41 @@
       state.quality = event.target.value;
       render();
     });
+    $("#gradeFilter").addEventListener("change", (event) => {
+      state.grade = event.target.value;
+      render();
+    });
   }
 
   function filteredDocuments() {
+    const useLegacyFilters = !allDocumentsUseSignalEvidenceV2();
     return documents.filter((doc) => {
+      const isV2 = hasSignalEvidenceV2Surface(doc);
+      const legacySearchTerms = isV2 ? [] : [
+        lean(doc), semanticLabel(lean(doc)), support(doc), semanticLabel(support(doc)),
+        qualityOverall(doc), semanticLabel(qualityOverall(doc)), get(doc, "display_layers.headline"),
+        signalRatingSearchText(doc), signalComfortSearchText(doc)
+      ];
       const haystack = [
         cardId(doc), symbol(doc), get(doc, "identity.strategy_name"),
-        lean(doc), semanticLabel(lean(doc)), support(doc), semanticLabel(support(doc)),
-        qualityOverall(doc), semanticLabel(qualityOverall(doc)), get(doc, "display_layers.headline")
+        ...legacySearchTerms,
+        signalEvidenceSearchText(doc)
       ].join(" ").toLowerCase();
       return (!state.query || haystack.includes(state.query))
-        && (!state.direction || lean(doc) === state.direction)
-        && (!state.action || support(doc) === state.action)
-        && (!state.quality || qualityOverall(doc) === state.quality);
+        && (!useLegacyFilters || !state.direction || lean(doc) === state.direction)
+        && (!useLegacyFilters || !state.action || support(doc) === state.action)
+        && (!useLegacyFilters || !state.quality || qualityOverall(doc) === state.quality)
+        && comfortFilterMatches(doc);
     }).sort((a, b) => new Date(confirmedAt(b)) - new Date(confirmedAt(a)));
   }
 
   function renderIndex(list) {
-    $("#resultCount").textContent = `${list.length} / ${documents.length}`;
+    const countText = `${list.length} / ${documents.length}`;
+    $("#resultCount").textContent = countText;
+    const mobileCount = $("#mobileResultCount");
+    if (mobileCount) mobileCount.textContent = countText;
     if (!list.length) {
+      state.currentId = null;
       $("#indexList").innerHTML = `<div class="empty">没有匹配的信号文档</div>`;
       return;
     }
@@ -1076,25 +1314,19 @@
     $("#indexList").innerHTML = list.map((doc) => {
       const view = cardCache.get(cardId(doc)) || doc;
       const active = cardId(view) === state.currentId ? "is-active" : "";
-      const currentDecision = decision(view);
-      const durability = signalDurability(view);
+      const ratingStats = signalEvidenceIndexStats(view) || signalComfortIndexStats(view);
       return `
         <button class="index-item ${active}" type="button" data-card-id="${escapeHtml(cardId(view))}">
           <div class="index-topline">
-            <span class="index-symbol">${escapeHtml(symbol(view))} #${escapeHtml(shortId(view))}</span>
+            <span class="index-symbol">${escapeHtml(symbol(view))}</span>
             <span class="index-time">${escapeHtml(dateText(confirmedAt(view), "short"))}</span>
           </div>
-          <p class="index-summary">${escapeHtml(get(view, "display_layers.headline", currentDecision.final_conclusion_cn || ""))}</p>
+          <p class="index-summary">${escapeHtml(indexSummaryText(view))}</p>
           <div class="mini-stats">
-            <span>${escapeHtml(semanticCompact(lean(view)))}</span>
-            <span>${escapeHtml(semanticCompact(support(view)))}</span>
-            <span>置信 ${escapeHtml(scalarText(currentDecision.confidence, { translate: false }))}</span>
-            <span>${escapeHtml(semanticCompact(qualityOverall(view)))}</span>
-            <span>耐用 ${escapeHtml(durabilityScoreText(durability))}</span>
-            <span>${escapeHtml(durabilityComfortBrief(durability))}</span>
+            ${ratingStats.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
           </div>
           ${isFixedAnalysisRound(view) ? `<div class="transition-badges"><span class="fixed-round-badge">固定轮次</span></div>` : ""}
-          ${renderIndexTransitionBadges(view)}
+          ${hasSignalEvidenceV2Surface(view) ? "" : renderIndexTransitionBadges(view)}
         </button>
       `;
     }).join("");
@@ -1102,6 +1334,7 @@
       button.addEventListener("click", () => {
         state.currentId = button.dataset.cardId;
         render();
+        closeMobileSidebarAfterSelect();
         prefetchRecentCards();
       });
     });
@@ -1148,9 +1381,23 @@
     return listHtml(values, emptyText);
   }
 
+  function advisoryReaderText(value, fallback = "未说明") {
+    return normalizeComfortText(value, fallback);
+  }
+
   function llmReviewStatus(doc) {
     const review = asObject(get(doc, "llm_review", {}));
     return rawEnum(firstPresent(review.status, get(doc, "__llm_review_status"), get(doc, "decision_matrix.audit_dissent", "PENDING_LLM"))).toUpperCase();
+  }
+
+  function llmReviewHasFailed(doc) {
+    const status = llmReviewStatus(doc);
+    return [
+      "ERROR",
+      "FAILED",
+      "INVALID_OUTPUT",
+      "SUPPRESS_LLM_TEXT"
+    ].includes(status);
   }
 
   function llmReviewPublished(doc) {
@@ -1161,15 +1408,15 @@
   function llmReviewUnavailableReason(doc, invalidContent = false) {
     const review = asObject(get(doc, "llm_review", {}));
     if (!Object.keys(review).length) {
-      return "LLM内容未发布；安全原因：当前卡尚未合并可展示的 sidecar 复核内容，页面保持 fail-closed。";
+      return "尚无可用的深入复核内容；先保留本卡市场观察。";
     }
     if (llmReviewStatus(doc) !== "OK") {
-      return "LLM内容未发布；安全原因：sidecar 标记为错误或未完成状态，前端不会展示模型正文、结构建议或 24h 推断。";
+      return "深入复核内容暂不可用；先保留本卡市场观察。";
     }
     if (invalidContent) {
-      return "LLM内容未发布；安全原因：复核内容未通过当前客户端发布校验，已隐藏顶层辅助决策和 24h 推断。";
+      return "深入复核内容暂不可用；先看行动结论、市场事实和边界。";
     }
-    return "LLM内容未发布；安全原因：可展示字段不完整，页面保持 fail-closed。";
+    return "尚无可用的深入复核内容；先保留本卡市场观察。";
   }
 
   function future24hMachineLeak(text) {
@@ -1199,6 +1446,22 @@
     if (!/[\u4e00-\u9fff]/.test(text)) return "";
     if (future24hMachineLeak(text)) return "";
     return text;
+  }
+
+  function future24hReaderSummary(value) {
+    const text = future24hChineseParagraph(value);
+    if (!text) return "";
+    return compactLongDecimalText(text)
+      .replace(/主观情景权重为[^；。]+[；。]?/g, "多情景细节已保留在完整资料；")
+      .replace(/上涨\s*\d+%、\s*下跌\s*\d+%、\s*区间\s*\d+%[；。]?/g, "多情景细节已保留在完整资料；")
+      .replace(/[，,]?\s*分布为区间\s*\d+%\s*[，,]\s*上行\s*\d+%\s*[，,]\s*下行\s*\d+%[；。]?/g, "。")
+      .replace(/[，,]?\s*区间\s*\d+%\s*[，,]\s*上行\s*\d+%\s*[，,]\s*下行\s*\d+%[；。]?/g, "。")
+      .replace(/权重/g, "多情景细节")
+      .replace(/多情景细节为[；。]?/g, "")
+      .replace(/基准情景为([^，。；;]+)[，,]\s*[；。]/g, "基准情景为$1。")
+      .replace(/([；。]){2,}/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function future24hReportRows(value) {
@@ -1321,7 +1584,7 @@
       || !["UP", "DOWN", "RANGE"].includes(rawEnum(report.base_case).toUpperCase())) return null;
     const parent = asObject(advisory || get(content, "integrated_trade_advisory", {}));
     if (parent.audit_only !== true || parent.trade_authorization !== false) return null;
-    const summary = future24hChineseParagraph(report.report_cn);
+    const summary = future24hReaderSummary(report.report_cn);
     const rawWeights = asObject(report.posterior_weights_pct);
     const weightValues = [rawWeights.up, rawWeights.down, rawWeights.range];
     if (!weightValues.every((value) => Number.isInteger(value) && value >= 0 && value <= 100)
@@ -1485,18 +1748,18 @@
     const advisory = integratedTradeAdvisory(doc);
     if (!advisory) {
       const reason = llmReviewUnavailableReason(doc, llmReviewPublished(doc));
-      return section("最高辅助交易决策", "只读辅助，不是交易许可；只有通过发布校验的 LLM 结构审计才会显示具体建议。", `
+      return section("既有深入分析", "已有深入分析缺失时不补造建议；先看市场观察与边界。", `
         <div class="integrated-advisory-panel is-unavailable">
           <div class="integrated-advisory-head">
             <div class="integrated-advisory-conclusion">
               <span>结论</span>
-              <strong>LLM内容未发布</strong>
+              <strong>尚无可用的深入复核内容</strong>
               <p>${escapeHtml(reason)}</p>
             </div>
             <div class="integrated-advisory-recommendation">
-              <span>结构复核建议</span>
+              <span>旧综合建议</span>
               <strong>暂不展示</strong>
-              <em>错误或不完整 advisory 不作为有效内容</em>
+              <em>本区暂不展示</em>
             </div>
           </div>
         </div>
@@ -1510,16 +1773,16 @@
     const premiumState = advisoryLabel(advisoryPremiumFitLabels, premiumFit.state, "无法判断");
     const liquidity = advisoryLabel(advisoryLiquidityLabels, session.liquidity_assessment, "未定");
     const warning = advisoryLabel(advisoryWarningLabels, session.warning_level, "提醒");
-    return section("最高辅助交易决策", "只读辅助，不是交易许可；来自 LLM 复核的结构审计摘要，不改变系统方向、门控或执行许可。", `
+    return section("既有深入分析", "解释结构审计和下一观察，不覆盖本卡行动结论。", `
       <div class="integrated-advisory-panel">
         <div class="integrated-advisory-head">
           <div class="integrated-advisory-conclusion">
             <span>结论</span>
-            <strong>${escapeHtml(advisory.final_conclusion_cn)}</strong>
-            <p>${escapeHtml(advisory.cross_loop_rationale_cn)}</p>
+            <strong>${escapeHtml(advisoryReaderText(advisory.final_conclusion_cn))}</strong>
+            <p>${escapeHtml(advisoryReaderText(advisory.cross_loop_rationale_cn))}</p>
           </div>
           <div class="integrated-advisory-recommendation">
-            <span>结构复核建议</span>
+            <span>旧综合建议</span>
             <strong>${escapeHtml(recommendation)}</strong>
             <em>只读辅助，不是交易许可</em>
           </div>
@@ -1529,20 +1792,20 @@
           <div>
             <span>中性接管</span>
             <strong>${escapeHtml(containmentState)}</strong>
-            <p>${escapeHtml(containment.basis_cn)}</p>
+            <p>${escapeHtml(advisoryReaderText(containment.basis_cn))}</p>
           </div>
           <div>
             <span>卖方结构适配</span>
             <strong>${escapeHtml(premiumState)}</strong>
-            <p>${escapeHtml(premiumFit.basis_cn)}</p>
+            <p>${escapeHtml(advisoryReaderText(premiumFit.basis_cn))}</p>
           </div>
           <div>
             <span>侧向依据</span>
-            <p>${escapeHtml(advisory.side_basis_cn)}</p>
+            <p>${escapeHtml(advisoryReaderText(advisory.side_basis_cn))}</p>
           </div>
           <div>
             <span>主要冲突</span>
-            <p>${escapeHtml(advisory.dominant_conflict_cn)}</p>
+            <p>${escapeHtml(advisoryReaderText(advisory.dominant_conflict_cn))}</p>
           </div>
         </div>
         <div class="integrated-advisory-detail-grid">
@@ -1556,7 +1819,7 @@
           </div>
           <div>
             <h3 class="subsection-title">下一观察</h3>
-            <p>${escapeHtml(advisory.next_observation_cn)}</p>
+            <p>${escapeHtml(advisoryReaderText(advisory.next_observation_cn))}</p>
           </div>
         </div>
         <div class="integrated-advisory-session">
@@ -1564,7 +1827,7 @@
             <span>时段提醒</span>
             <strong>${escapeHtml(`${warning} / ${liquidity}`)}</strong>
           </div>
-          <p>${escapeHtml(session.basis_cn)}</p>
+          <p>${escapeHtml(advisoryReaderText(session.basis_cn))}</p>
           <p class="integrated-advisory-session-note">只提醒，不改变信号方向或结构建议</p>
         </div>
       </div>
@@ -1580,38 +1843,29 @@
     const failed = hasReview && rawEnum(status).toUpperCase() !== "OK";
     if (failed || !hasReview) {
       const panelClass = failed ? "llm-review-panel is-error" : "llm-review-panel is-pending";
-      return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
+      return section("LLM 深入分析", "保留深入复核对本卡的补充解释；没有可用内容时先看市场事实。", `
         <div class="${panelClass}">
           <div class="llm-review-topline">
-            <span class="badge ${failed ? "is-bad" : "is-wait"}">状态: ${failed ? "LLM内容未发布" : "等待 LLM 复核发布"}</span>
-            <span class="badge is-wait">安全策略: fail-closed</span>
+            <span class="badge ${failed ? "is-bad" : "is-wait"}">状态: ${failed ? "尚无可用内容" : "等待复核内容"}</span>
+            <span class="badge is-wait">阅读状态: 暂缺</span>
           </div>
           <p class="llm-review-summary">${escapeHtml(llmReviewUnavailableReason(doc))}</p>
         </div>
       `, "llm-review");
     }
     const panelClass = failed ? "llm-review-panel is-error" : (hasReview ? "llm-review-panel" : "llm-review-panel is-pending");
-    const summary = content.summary_cn || "LLM 复核尚未生成或尚未被 sidecar 合并；本区保留为发布前必查板块，不改变系统方向、置信、门控或交易许可。";
-    return section("LLM 复核意见", "外部模型只做审计建议，不改变系统方向、置信、门控或交易许可。", `
+    const summary = normalizeComfortText(content.summary_cn, "尚无可用的深入复核内容；先看行动结论和市场事实。");
+    return section("LLM 深入分析", "保留深入复核对本卡的补充解释；没有可用内容时先看市场事实。", `
       <div class="${panelClass}">
         <div class="llm-review-topline">
           ${statusBadge("状态", status)}
           ${statusBadge("谨慎等级", content.caution_level || (hasReview ? "UNKNOWN" : "PENDING_LLM"))}
-          ${review.provider ? statusBadge("模型服务", review.provider) : ""}
         </div>
-        <p class="llm-review-summary">${valueHtml(summary, { translate: false })}</p>
+        <p class="llm-review-summary">${escapeHtml(summary)}</p>
       </div>
       ${renderTheoreticalActiveView(content.theoretical_active_view)}
       ${renderGammaRegimeLens(content.gamma_regime_lens)}
-      <dl class="kv-grid llm-review-grid" style="margin-top: 16px;">
-        ${kv("agreement_with_system", content.agreement_with_system)}
-        ${kv("reviewed_at", review.reviewed_at, { translate: false })}
-        ${kv("not_trading_advice", content.not_trading_advice)}
-        ${kv("model", review.model, { translate: false })}
-        ${kv("prompt_version", review.prompt_version, { translate: false })}
-        ${kv("input_packet_hash", review.input_packet_hash, { translate: false })}
-      </dl>
-      ${content.data_quality_note ? `<div class="llm-review-quality">${escapeHtml(content.data_quality_note)}</div>` : ""}
+      ${content.data_quality_note ? `<div class="llm-review-quality">${escapeHtml(normalizeComfortText(content.data_quality_note, ""))}</div>` : ""}
       <div class="two-column-notes llm-review-lists">
         <div><h3 class="subsection-title">支持系统结论的因素</h3>${listHtml(content.main_supporting_factors, "无")}</div>
         <div><h3 class="subsection-title">主要风险或冲突</h3>${listHtml(content.main_risks_or_conflicts, "无")}</div>
@@ -2365,9 +2619,9 @@
     [
       ["Mild Headwind", "轻度逆风"],
       ["Strong Headwind", "强逆风"],
-      ["MACRO_SHOCK_GATE_BLOCK", "宏观冲击门阻断状态"],
-      ["MACRO_SHOCK_GATE_STATE", "宏观冲击门状态"],
-      ["MACRO_SHOCK_BLOCKING", "宏观冲击门阻断"],
+      ["MACRO_SHOCK_GATE_BLOCK", "宏观冲击限制状态"],
+      ["MACRO_SHOCK_GATE_STATE", "宏观冲击限制状态"],
+      ["MACRO_SHOCK_BLOCKING", "宏观冲击阻断"],
       ["MACRO_SHOCK", "宏观冲击"],
       ["MACRO_BLOCKING", "宏观硬阻断"],
       ["MACRO Headwind", "宏观逆风"],
@@ -2395,7 +2649,7 @@
       ["SKEW_REVERSAL", "偏斜反转"],
       ["TRANSITION", "过渡区"],
       ["P_C_RATIO", "P/C 比例"],
-      ["macro_shock.state", "宏观冲击门状态"],
+      ["macro_shock.state", "宏观冲击限制状态"],
       ["发生正负符号翻转", "出现结构变化"],
       ["正负符号翻转", "结构变化"],
     ].forEach(([from, to]) => {
@@ -2431,15 +2685,15 @@
   }
 
   function rawValueTextLabeled(value, depth = 0) {
-    if (isNullish(value) || value === "") return "null";
+    if (isNullish(value) || value === "") return "暂缺";
     if (Array.isArray(value)) {
-      if (!value.length) return "[]";
+      if (!value.length) return "无";
       return value.map((item) => rawValueTextLabeled(item, depth + 1)).join(" ; ");
     }
     if (typeof value === "object") {
       const entries = Object.entries(value)
         .filter(([, child]) => child !== undefined && child !== null && child !== "");
-      if (!entries.length) return "{}";
+      if (!entries.length) return "无";
       return entries
         .map(([name, child]) => `${fieldLabel(name)}: ${rawValueTextLabeled(child, depth + 1)}`)
         .join(" / ");
@@ -2572,18 +2826,20 @@
   function renderTheoreticalActiveView(view) {
     const active = asObject(view);
     if (!Object.keys(active).length) return "";
+    const basis = normalizeComfortText(active.basis_cn, "暂无");
+    const boundary = normalizeComfortText(active.boundary_cn, "");
     return `
       <div class="llm-active-view">
         <div class="llm-review-topline">
           ${statusBadge("理论主动倾向", active.bias || "UNABLE_TO_JUDGE")}
           ${statusBadge("定性把握度", active.conviction || "LOW")}
         </div>
-        <p class="llm-active-basis"><strong>理论依据</strong> ${escapeHtml(active.basis_cn || "暂无")}</p>
+        <p class="llm-active-basis"><strong>理论依据</strong> ${escapeHtml(basis)}</p>
         <div class="two-column-notes llm-active-lists">
           <div><h3 class="subsection-title">关键驱动</h3>${listHtml(active.key_drivers, "无")}</div>
           <div><h3 class="subsection-title">反向证据</h3>${listHtml(active.counter_evidence, "无")}</div>
         </div>
-        ${active.boundary_cn ? `<p class="llm-active-boundary">${escapeHtml(active.boundary_cn)}</p>` : ""}
+        ${boundary ? `<p class="llm-active-boundary">${escapeHtml(boundary)}</p>` : ""}
       </div>
     `;
   }
@@ -2601,8 +2857,8 @@
           ${statusBadge("风险叠加，不是方向", gamma.lens_is_risk_overlay_not_direction ? "VALID" : "UNKNOWN")}
         </div>
         <div class="llm-gamma-copy">
-          <p><strong>体制动力学</strong> ${escapeHtml(gamma.dynamics_cn || "暂无")}</p>
-          <p><strong>主要尾部风险</strong> ${escapeHtml(gamma.dominant_tail_risk_cn || "暂无")}</p>
+          <p><strong>体制动力学</strong> ${escapeHtml(normalizeComfortText(gamma.dynamics_cn, "暂无"))}</p>
+          <p><strong>主要尾部风险</strong> ${escapeHtml(normalizeComfortText(gamma.dominant_tail_risk_cn, "暂无"))}</p>
         </div>
         <dl class="kv-grid llm-gamma-levels">
           ${kv("flip", levels.flip, { translate: false })}
@@ -2613,14 +2869,14 @@
         <div class="two-column-notes llm-gamma-notes">
           <div>
             <h3 class="subsection-title">持仓符号假设</h3>
-            <p>${escapeHtml(gamma.positioning_assumption_cn || "暂无")}</p>
+            <p>${escapeHtml(normalizeComfortText(gamma.positioning_assumption_cn, "暂无"))}</p>
           </div>
           <div>
             <h3 class="subsection-title">数据质量说明</h3>
-            <p>${escapeHtml(gamma.data_quality_cn || "暂无")}</p>
+            <p>${escapeHtml(normalizeComfortText(gamma.data_quality_cn, "暂无"))}</p>
           </div>
         </div>
-        <p class="llm-gamma-boundary">全局 Gamma 体制分析只解释分布、尾部与反身性风险；它是风险叠加，不是方向信号，不改变系统结论、EDB、门控或交易许可。</p>
+        <p class="llm-gamma-boundary">全局 Gamma 体制分析只解释分布、尾部与反身性风险；它是风险叠加，不是方向信号，当前限制与交易许可仍然有效。</p>
       </div>
     `;
   }
@@ -2658,7 +2914,7 @@
     const hasGex = Object.keys(gex).length > 0;
     const hasGamma = Object.keys(gamma).length > 0;
     if (!hasGex && !hasGamma) {
-      return section("期权 Gamma / GEX 重点", "优先位保留给期权 gamma 状态与关键点位。", `<div class="empty">暂无 gex_info 或 gamma_regime</div>`);
+      return section("期权 Gamma / GEX 重点", "优先位保留给期权 Gamma 状态与关键点位。", `<div class="empty">暂无 GEX 或 Gamma 结构资料</div>`);
     }
     return section("期权 Gamma / GEX 重点", "优先展示当前 Gamma 状态、净 Gamma 名义额与关键点位，方便一眼判断空间约束。", `
       <dl class="kv-grid gamma-grid">
@@ -3059,7 +3315,7 @@
       PERP_FUNDING_DATA_GAP: "Funding 输入缺口。",
       COMFORT_WINDOW_OK: "舒适窗口判断已完成。",
       PRICE_ANCHOR_OK: "价格锚层有可用结论。",
-      NO_TRADE_GATE: "本层不作为交易门控。"
+      NO_TRADE_GATE: "本层不作为交易准入依据。"
     };
     if (labels[code]) return labels[code];
     const readable = durabilityReadable(code, "");
@@ -3182,24 +3438,27 @@
       ? "兼容回填已标记；旧卡只展示已有别名，不发明新分数。"
       : (hasDurability ? "本卡提供原生耐用性结论。" : "旧卡兼容：未提供耐用性字段，只保留空结论。");
     const scoreDetail = `${headlineState}；${qualityText}。耐用性是结构健康指数，不是胜率。`;
-    return section("信号耐用性层", "只读解释：不改变置信、不改变门控、不改变交易许可。", `
+    return section("信号耐用性层", "说明舒适窗口、时区前提和价格锚健康度；交易许可仍看当前边界。", `
       <div class="signal-durability-panel">
-        <p class="durability-policy"><strong>只读解释</strong>：本层合并舒适窗口、时区前提和价格锚耐用性，只展示结构健康结论，不改变置信、门控或交易许可。</p>
+        <p class="durability-policy"><strong>背景说明</strong>：本层合并舒适窗口、时区前提和价格锚耐用性，只展示结构健康结论；等待条件、阻断和执行权限仍然有效。</p>
         <div class="durability-summary-grid">
           ${renderDurabilitySummaryCard("合成耐用性", durabilityScoreLine(headlineScore), scoreDetail)}
           ${renderDurabilitySummaryCard("舒适窗口", comfortProfile.title, `${comfortProfile.value}；${comfortProfile.detail}`)}
           ${renderDurabilitySummaryCard("时区耐用性", temporalBasis.headline, temporalBasis.detail)}
         </div>
       </div>
-      <div class="durability-layer-list">
-        ${layerDefs.map((definition) => renderDurabilityLayerCard(definition, layers, anchor, doc)).join("")}
-      </div>
-      <div class="durability-conclusion-card">
-        <strong>合成解释</strong>
-        <p>合成值 ${escapeHtml(durabilityScoreLine(headlineScore))}，当前结论为 ${escapeHtml(headlineState)}。四层以现有锚分/偏离度为主干，PPE、Gamma 与 Funding 只解释锚的稳定或脆弱来源；${escapeHtml(dataGapText)}</p>
-        ${durabilityReasonList(reasonCodes)}
-        <p class="durability-compat-note">${escapeHtml(compatText)}</p>
-      </div>
+      <details class="signal-durability-detail">
+        <summary>展开耐用性推导与来源</summary>
+        <div class="durability-layer-list">
+          ${layerDefs.map((definition) => renderDurabilityLayerCard(definition, layers, anchor, doc)).join("")}
+        </div>
+        <div class="durability-conclusion-card">
+          <strong>合成解释</strong>
+          <p>合成值 ${escapeHtml(durabilityScoreLine(headlineScore))}，当前结论为 ${escapeHtml(headlineState)}。四层以现有锚分/偏离度为主干，PPE、Gamma 与 Funding 只解释锚的稳定或脆弱来源；${escapeHtml(dataGapText)}</p>
+          ${durabilityReasonList(reasonCodes)}
+          <p class="durability-compat-note">${escapeHtml(compatText)}</p>
+        </div>
+      </details>
     `, "signal-durability");
   }
 
@@ -3221,8 +3480,8 @@
       `时区调整: ${isNullish(ctx.adjustment_direction) ? legacyMissing : semanticLabel(ctx.adjustment_direction)}`,
       `证据等级: ${isNullish(ctx.evidence_level) ? legacyMissing : semanticLabel(ctx.evidence_level)}`,
       `校准: ${semanticCompact(ctx.calibration_state)}`,
-      ctx.affects_confidence === false ? "不改置信" : "",
-      ctx.affects_blocking === false ? "不改门控" : "",
+      ctx.affects_confidence === false ? "原信号把握不变" : "",
+      ctx.affects_blocking === false ? "当前限制不变" : "",
       ctx.affects_trade_allowed === false ? "不改交易许可" : "",
     ].filter(Boolean);
     const transitionText = transition.active
@@ -3238,7 +3497,7 @@
       nullText: legacyMissing,
       nullClass: "benign-null-value"
     }, options));
-    return section("信号时区置信度 / 前提耐久度", "展示信号成立时的时间先验；只读提示，不改变系统方向、置信、门控或交易许可。", `
+    return section("信号时段与前提状态", "展示信号成立时的时间先验；当前方向、等待条件和交易许可仍看本卡边界。", `
       <div class="session-context-panel">
         <div class="session-context-topline">
           ${chips.map((item) => `<span class="chip">${escapeHtml(item)}</span>`).join("")}
@@ -3372,7 +3631,7 @@
       return ["ACTIVE"].includes(status) ? benignNullHtml("无排除") : benignNullHtml("不适用");
     }
     if (["EXCLUDED", "NON_VOTING", "GATE_ONLY"].includes(status)) {
-      if (field === "vote") return benignNullHtml("不计票");
+      if (field === "vote") return benignNullHtml("本次未作为方向依据");
       if (field === "reliability" || field === "lean") return benignNullHtml("不适用");
     }
     return valueHtml(null);
@@ -3551,8 +3810,35 @@
     return `raw-${token || "trace"}`;
   }
 
+  function evSourceRoots(ref) {
+    const root = rawTraceRoot(ref).toUpperCase();
+    if (!root.startsWith("EV_")) return [];
+    const key = root.replace(/^EV_/, "");
+    if (/ANCHOR|GGR|GAMMA|GEX|PIN/.test(key)) return ["factor_cross_section.gex_info", "factor_cross_section.gamma_regime", "factor_cross_section.anchor"];
+    if (/SRD|SKEW/.test(key)) return ["factor_cross_section.skew"];
+    if (/TMV|PRICE/.test(key)) return ["factor_cross_section.tmvf"];
+    if (/FLOW|CVD/.test(key)) return ["factor_cross_section.micro_flow"];
+    if (/FUNDING/.test(key)) return ["factor_cross_section.funding"];
+    if (/MACRO/.test(key)) return ["factor_cross_section.macro_pressure"];
+    if (/QUALITY/.test(key)) return ["quality"];
+    if (/NR|REPAIR|WINDOW|EPISODE/.test(key)) return ["signal_window", "factor_cross_section.neutral_repair", "neutral_repair"];
+    return [];
+  }
+
   function hasRawTraceTarget(ref, doc) {
     const root = rawTraceRoot(ref);
+    if (/^EV_[A-Z0-9_]+$/.test(root)) {
+      const expected = root.replace(/^EV_/, "");
+      const hasMappedFact = evSourceRoots(root).some((path) => {
+        const value = get(doc, path);
+        if (isNullish(value)) return false;
+        return typeof value === "object" ? Object.keys(asObject(value)).length > 0 : true;
+      });
+      if (hasMappedFact) return true;
+      return asArray(get(doc, "reasoning.evidence", [])).some((evidence) =>
+        evidenceKey(evidence) === expected
+        && Object.keys(asObject(evidence)).length > 0);
+    }
     if (root.startsWith("factor_cross_section.")) {
       const value = get(doc, root);
       if (isNullish(value)) return false;
@@ -3568,18 +3854,2513 @@
     return false;
   }
 
+  function sourceRefSemanticKey(ref) {
+    const root = rawTraceRoot(ref).toLowerCase();
+    if (!root) return "";
+    if (root.startsWith("ev_")) {
+      if (root.includes("anchor") || root.includes("ggr") || root.includes("gamma") || root.includes("gex")
+        || root.includes("pin") || root.includes("skew") || root.includes("srd")) return "options-structure";
+      if (root.includes("tmv") || root.includes("price")) return "price-path";
+      if (root.includes("flow") || root.includes("cvd")) return "active-flow";
+      if (root.includes("funding")) return "funding-rate";
+      if (root.includes("macro")) return "macro-background";
+    }
+    if (root.includes("anchor") || root.includes("gamma_regime") || root.includes("gex_info")
+      || root.includes("pin") || root.includes("skew") || root.includes("srd")) return "options-structure";
+    if (root.includes("tmvf") || root.includes("tmv")) return "price-path";
+    if (root.includes("micro_flow") || root.includes("flow") || root.includes("cvd")) return "active-flow";
+    if (root.includes("funding")) return "funding-rate";
+    if (root.includes("macro")) return "macro-background";
+    if (root.includes("neutral_repair") || root.includes("signal_window")) return "nr-window";
+    if (root.includes("quality")) return "data-quality";
+    if (root.includes("future_24h")) return "future-report";
+    return "";
+  }
+
+  function sourceGroupLabel(value) {
+    const raw = rawEnum(value).toUpperCase().replace(/^EV_/, "");
+    const labels = {
+      ANCHOR: "价格锚",
+      GGR: "Gamma 结构",
+      GAMMA: "Gamma 结构",
+      GEX: "GEX 空间",
+      PIN: "Gamma 钉住",
+      SRD: "期权偏斜",
+      SKEW: "期权偏斜",
+      TMV: "量价主干",
+      TMVF: "量价主干",
+      FLOW: "主动买卖流",
+      MICRO_FLOW: "主动买卖流",
+      CVD: "主动买卖流",
+      FUNDING: "资金费率",
+      MACRO: "宏观背景",
+      MACRO_PRESSURE: "宏观背景",
+      QUALITY: "数据时效",
+      PRICE: "价格",
+      GAMMA_REGIME: "Gamma 结构",
+      GEX_INFO: "GEX 空间",
+      NEUTRAL_REPAIR: "接管窗口"
+    };
+    return labels[raw] || "";
+  }
+
+  function sideHintReadable(value) {
+    const raw = rawEnum(value).toUpperCase();
+    if (!raw || raw === "UNKNOWN") return "未知";
+    if (raw.includes("PUT")) return "Put 信用价差";
+    if (raw.includes("CALL")) return "Call 信用价差";
+    if (raw.includes("BOTH") || raw.includes("TIE")) return "无单一优先侧";
+    if (raw.includes("NONE")) return "无可用侧别";
+    return normalizeComfortText(value, "未知");
+  }
+
+  function sourceRefLabel(ref, label = null) {
+    const explicit = sourceGroupLabel(label);
+    if (explicit) return explicit;
+    const direct = sourceGroupLabel(ref);
+    if (direct) return direct;
+    const key = sourceRefSemanticKey(ref);
+    const labels = {
+      "options-structure": "期权空间结构",
+      "price-path": "量价主干",
+      "active-flow": "主动买卖流",
+      "funding-rate": "资金费率",
+      "macro-background": "宏观背景",
+      "nr-window": "接管窗口",
+      "data-quality": "数据时效",
+      "future-report": "24 小时推断"
+    };
+    return labels[key] || "来源已记录";
+  }
+
+  function sourceRefAnchorId(ref) {
+    const key = sourceRefSemanticKey(ref);
+    return key ? `market-${key}` : "";
+  }
+
   function sourceRefLink(ref, doc, label = null) {
     if (isNullish(ref) || ref === "") return "";
     const root = rawTraceRoot(ref);
-    const text = label || textClip(ref, 96);
+    const text = sourceRefLabel(root, label);
+    const target = sourceRefAnchorId(root);
     if (!hasRawTraceTarget(root, doc)) {
       return `<span class="chip">${escapeHtml(text)}</span>`;
     }
-    return `<a class="source-ref-link chip" href="#${escapeHtml(rawTraceId(root))}" data-source-ref="${escapeHtml(root)}">${escapeHtml(text)}</a>`;
+    return target
+      ? `<a class="source-ref-link chip" href="#${escapeHtml(target)}">${escapeHtml(text)}</a>`
+      : `<span class="chip">${escapeHtml(text)}</span>`;
   }
 
   function sourceRefList(refs, doc) {
     return asArray(refs).map((ref) => sourceRefLink(ref, doc)).join("");
+  }
+
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.0.0";
+  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.0.1";
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.0.0";
+  const SIGNAL_EVIDENCE_MODE = "single_evidence_v2";
+  const SIGNAL_EVIDENCE_SIDE_STATUSES = new Set(["RATED", "UNRATED"]);
+  const SIGNAL_EVIDENCE_ACTION_STATES = new Set(["PREPARE", "WATCH", "WAIT", "BLOCKED", "AVOID", "UNRATED"]);
+
+  function schemaToken(value) {
+    return rawEnum(value).trim();
+  }
+
+  function isSignalEvidenceSummaryObject(value) {
+    const view = asObject(value);
+    const schema = schemaToken(firstPresent(view.schema_version, view.schema, view.version));
+    return schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
+  }
+
+  function isSignalEvidenceReviewObject(value) {
+    const view = asObject(value);
+    const schema = schemaToken(firstPresent(view.schema_version, view.schema));
+    const prompt = schemaToken(firstPresent(view.prompt_version, view.prompt_schema));
+    const mode = schemaToken(firstPresent(view.review_mode, view.mode));
+    return schema === SIGNAL_EVIDENCE_REVIEW_SCHEMA
+      || prompt === SIGNAL_EVIDENCE_PROMPT_VERSION
+      || prompt === "signal_llm_review_prompt@2.0.0"
+      || mode === SIGNAL_EVIDENCE_MODE;
+  }
+
+  function signalEvidenceSummaryCandidate(doc) {
+    return firstObject(
+      get(doc, "signal_evidence_summary", null),
+      get(doc, "summary.signal_evidence_summary", null)
+    );
+  }
+
+  function rawSignalEvidenceAdvisoryCandidate(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    const content = llmReviewContent(doc);
+    return firstObject(
+      get(content, "integrated_trade_advisory", null),
+      get(review, "content.integrated_trade_advisory", null),
+      get(review, "integrated_trade_advisory", null),
+      get(doc, "integrated_trade_advisory", null)
+    );
+  }
+
+  function hasSignalEvidenceV2Surface(doc) {
+    const summary = signalEvidenceSummaryCandidate(doc);
+    const advisory = rawSignalEvidenceAdvisoryCandidate(doc);
+    return isSignalEvidenceSummaryObject(summary)
+      || Boolean(Object.keys(asObject(advisory.side_evidence_ratings)).length)
+      || isSignalEvidenceReviewObject(get(doc, "llm_review", {}));
+  }
+
+  function canonicalJson(value) {
+    if (value === null || value === undefined) return "null";
+    if (typeof value === "number") return Number.isFinite(value) ? JSON.stringify(value) : "null";
+    if (typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+    if (typeof value === "object") {
+      const keys = Object.keys(value)
+        .filter((key) => value[key] !== undefined)
+        .sort();
+      return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(String(value));
+  }
+
+  function utf8Bytes(value) {
+    const text = String(value);
+    const bytes = [];
+    for (let i = 0; i < text.length; i += 1) {
+      let code = text.codePointAt(i);
+      if (code > 0xffff) i += 1;
+      if (code <= 0x7f) {
+        bytes.push(code);
+      } else if (code <= 0x7ff) {
+        bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+      } else if (code <= 0xffff) {
+        bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      } else {
+        bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+      }
+    }
+    return bytes;
+  }
+
+  function sha256Hex(value) {
+    const k = [
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ];
+    const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    const bytes = utf8Bytes(value);
+    const bitLength = bytes.length * 8;
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    const high = Math.floor(bitLength / 0x100000000);
+    const low = bitLength >>> 0;
+    bytes.push((high >>> 24) & 0xff, (high >>> 16) & 0xff, (high >>> 8) & 0xff, high & 0xff);
+    bytes.push((low >>> 24) & 0xff, (low >>> 16) & 0xff, (low >>> 8) & 0xff, low & 0xff);
+    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+    const w = new Array(64);
+    for (let offset = 0; offset < bytes.length; offset += 64) {
+      for (let i = 0; i < 16; i += 1) {
+        const j = offset + i * 4;
+        w[i] = ((bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]) >>> 0;
+      }
+      for (let i = 16; i < 64; i += 1) {
+        const s0 = (rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3)) >>> 0;
+        const s1 = (rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10)) >>> 0;
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+      }
+      let [a, b, c, d, e, f, g, hh] = h;
+      for (let i = 0; i < 64; i += 1) {
+        const s1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0;
+        const ch = ((e & f) ^ (~e & g)) >>> 0;
+        const temp1 = (hh + s1 + ch + k[i] + w[i]) >>> 0;
+        const s0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0;
+        const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+        const temp2 = (s0 + maj) >>> 0;
+        hh = g; g = f; f = e; e = (d + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+      }
+      h[0] = (h[0] + a) >>> 0;
+      h[1] = (h[1] + b) >>> 0;
+      h[2] = (h[2] + c) >>> 0;
+      h[3] = (h[3] + d) >>> 0;
+      h[4] = (h[4] + e) >>> 0;
+      h[5] = (h[5] + f) >>> 0;
+      h[6] = (h[6] + g) >>> 0;
+      h[7] = (h[7] + hh) >>> 0;
+    }
+    return h.map((word) => word.toString(16).padStart(8, "0")).join("");
+  }
+
+  function advisoryWithoutAssessmentHash(advisory) {
+    const copy = JSON.parse(JSON.stringify(asObject(advisory)));
+    if (copy.validation && typeof copy.validation === "object") delete copy.validation.assessment_hash;
+    return copy;
+  }
+
+  function assessmentHash(advisory) {
+    return `sha256:${sha256Hex(canonicalJson(advisoryWithoutAssessmentHash(advisory)))}`;
+  }
+
+  function signalEvidenceFactKey(fact) {
+    return rawEnum(asObject(fact).id).trim();
+  }
+
+  function evidenceFactTopicKey(fact) {
+    const view = asObject(fact);
+    const topic = rawEnum(view.topic).toLowerCase();
+    const source = rawEnum(view.source_group).toLowerCase();
+    const label = rawEnum(view.label_cn).toLowerCase();
+    const primary = [topic, source, label].join(" ");
+    if (/funding|资金/.test(primary)) return "funding-rate";
+    if (/macro|宏观/.test(primary)) return "macro-background";
+    if (/quality|fresh|stale|missing|change|transition|迁移|时效|缺口|变化|核验/.test(topic)) return "data-quality";
+    if (/structure|anchor|ggr|gamma|gex|pin|skew|srd|空间|结构|锚|墙|翻转|偏斜/.test(topic)) return "options-structure";
+    if (/price_response|price_path|price_pressure|side_progress|current_price|推进|响应|路径|价格表现/.test(topic)) return "price-path";
+    if (topic === "adverse_pressure") {
+      if (/options|skew|srd|期权|偏斜/.test(`${source} ${label}`)) return "options-structure";
+      if (/tmv/.test(source) || source === "price" || /量价/.test(label)) return "price-path";
+    }
+    if (/active_flow|micro_flow|flow|cvd|trade_flow|adverse_pressure|主动|成交|成交流/.test(topic)) return "active-flow";
+    if (/anchor|ggr|gamma|gex|pin|skew|srd|空间|结构|锚|墙|翻转|偏斜/.test(primary)) return "options-structure";
+    if (/price|tmv|path|pressure|推进|响应|路径|价格表现|侵入/.test(primary)) return "price-path";
+    if (/flow|cvd|主动|成交|成交流/.test(primary)) return "active-flow";
+    if (/quality|fresh|stale|missing|change|transition|迁移|时效|缺口|变化|核验/.test(primary)) return "data-quality";
+    const refs = asArray(view.source_refs).join(" ").toLowerCase();
+    if (/funding|资金/.test(refs)) return "funding-rate";
+    if (/macro|宏观/.test(refs)) return "macro-background";
+    if (/anchor|ggr|gamma|gex|pin|skew|srd/.test(refs)) return "options-structure";
+    if (/tmv|price/.test(refs)) return "price-path";
+    if (/flow|cvd/.test(refs)) return "active-flow";
+    return "data-quality";
+  }
+
+  function signalEvidenceTopicLabel(key) {
+    const labels = {
+      "options-structure": "空间结构",
+      "price-path": "价格表现",
+      "active-flow": "主动成交",
+      "funding-rate": "资金费率",
+      "macro-background": "宏观背景",
+      "data-quality": "变化与时效"
+    };
+    return labels[key] || "资料来源";
+  }
+
+  function signalEvidenceFactAnchorId(fact) {
+    const ids = {
+      "options-structure": "market-options-structure",
+      "price-path": "market-price-path",
+      "active-flow": "market-active-flow",
+      "funding-rate": "market-funding-rate",
+      "macro-background": "market-macro-background",
+      "data-quality": "market-data-quality"
+    };
+    return ids[evidenceFactTopicKey(fact)] || "market-data-quality";
+  }
+
+  function signalEvidenceFactsById(facts) {
+    const map = new Map();
+    asArray(facts).forEach((fact) => {
+      const key = signalEvidenceFactKey(fact);
+      if (key) map.set(key, asObject(fact));
+    });
+    return map;
+  }
+
+  function signalEvidenceRefChips(refs, view, roleLabel = "来源") {
+    const factMap = signalEvidenceFactsById(view.market_facts);
+    const groups = new Map();
+    const details = [];
+    asArray(refs).forEach((ref) => {
+      const key = rawEnum(ref).trim();
+      const fact = factMap.get(key);
+      if (!fact) return;
+      const topic = evidenceFactTopicKey(fact);
+      const anchor = signalEvidenceFactAnchorId(fact);
+      const label = signalEvidenceTopicLabel(topic);
+      const groupKey = `${anchor}|${label}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, { anchor, label, count: 0 });
+      groups.get(groupKey).count += 1;
+      details.push(signalEvidenceFactLabel(fact));
+    });
+    const links = Array.from(groups.values()).map((item) => {
+      const count = item.count > 1 ? `（${number(item.count, 0)}项）` : "";
+      const text = `${item.label}${count}`;
+      return item.anchor
+        ? `<a class="source-ref-link chip" href="#${escapeHtml(item.anchor)}">${escapeHtml(text)}</a>`
+        : `<span class="chip">${escapeHtml(text)}</span>`;
+    }).join("");
+    if (!links) return "";
+    const detailText = [...new Set(details)].filter(Boolean).join("；");
+    const detail = detailText
+      ? `<details class="source-ref-detail"><summary>查看引用明细</summary><p>${escapeHtml(detailText)}</p></details>`
+      : "";
+    return `<div class="source-ref-row"><span class="source-ref-label">${escapeHtml(roleLabel)}</span>${links}</div>${detail}`;
+  }
+
+  function normalizeEvidenceSide(side) {
+    const view = asObject(side);
+    const grade = comfortGradeKey(view.grade);
+    const rawStatus = rawEnum(view.status).toUpperCase();
+    const status = SIGNAL_EVIDENCE_SIDE_STATUSES.has(rawStatus)
+      ? rawStatus
+      : (grade ? "RATED" : "UNRATED");
+    return {
+      status,
+      grade,
+      basis_cn: normalizeComfortText(view.basis_cn || view.summary_cn, grade ? "未说明支持解释。" : "暂未完成有效评级。"),
+      market_counter_cn: normalizeComfortText(view.market_counter_cn || view.counter_evidence_cn, "未识别到主要市场反证。"),
+      alternative_cn: normalizeComfortText(view.alternative_cn || view.competing_explanation_cn, "竞争解释暂未形成。"),
+      next_observation_cn: normalizeComfortText(view.next_observation_cn, "等待下一条有效观察。"),
+      invalid_if_cn: normalizeComfortText(view.invalid_if_cn, "尚未声明失效条件。"),
+      evidence_refs: asArray(view.evidence_refs),
+      counter_evidence_refs: asArray(view.counter_evidence_refs),
+      unresolved_conditions_cn: normalizeComfortList(view.unresolved_conditions_cn),
+      validation_reasons_cn: normalizeComfortList(view.validation_reasons_cn)
+    };
+  }
+
+  function normalizeEvidenceActionSide(value) {
+    const view = asObject(value);
+    const rawState = rawEnum(view.state).toUpperCase();
+    const state = SIGNAL_EVIDENCE_ACTION_STATES.has(rawState) ? rawState : "UNRATED";
+    return {
+      state,
+      label_cn: normalizeComfortText(view.label_cn || semanticCompact(state), semanticCompact(state) || "未评级"),
+      reasons_cn: normalizeComfortList(view.reasons_cn)
+    };
+  }
+
+  function normalizeEvidenceSummary(summary) {
+    const object = asObject(summary);
+    return {
+      source: "summary",
+      schema_version: firstPresent(object.schema_version, object.schema, object.version),
+      as_of_ms: object.as_of_ms,
+      input_packet_hash: object.input_packet_hash,
+      assessment_hash: object.assessment_hash,
+      action_summary_cn: normalizeComfortText(object.action_summary_cn, ""),
+      put_credit: normalizeEvidenceSide(object.put_credit),
+      call_credit: normalizeEvidenceSide(object.call_credit),
+      local_action_state: {
+        put_credit: normalizeEvidenceActionSide(get(object, "local_action_state.put_credit")),
+        call_credit: normalizeEvidenceActionSide(get(object, "local_action_state.call_credit"))
+      },
+      market_facts: [],
+      quote_boundary_cn: "",
+      validation: {}
+    };
+  }
+
+  function normalizeEvidenceView(advisory, summary, doc) {
+    const object = asObject(advisory);
+    const ratings = asObject(object.side_evidence_ratings);
+    const validation = asObject(object.validation);
+    const facts = asArray(object.market_facts);
+    const summaryView = normalizeEvidenceSummary(summary);
+    const view = {
+      source: "full",
+      schema_version: SIGNAL_EVIDENCE_REVIEW_SCHEMA,
+      as_of_ms: firstPresent(summaryView.as_of_ms, get(doc, "llm_review.reviewed_at"), confirmedAt(doc)),
+      input_packet_hash: firstPresent(summaryView.input_packet_hash, get(doc, "llm_review.input_packet_hash")),
+      assessment_hash: firstPresent(summaryView.assessment_hash, validation.assessment_hash),
+      action_summary_cn: normalizeComfortText(object.action_summary_cn || summaryView.action_summary_cn, ""),
+      put_credit: normalizeEvidenceSide(ratings.put_credit),
+      call_credit: normalizeEvidenceSide(ratings.call_credit),
+      local_action_state: {
+        put_credit: normalizeEvidenceActionSide(firstObject(get(object, "local_action_state.put_credit"), get(summaryView, "local_action_state.put_credit"))),
+        call_credit: normalizeEvidenceActionSide(firstObject(get(object, "local_action_state.call_credit"), get(summaryView, "local_action_state.call_credit")))
+      },
+      market_facts: facts,
+      price_bias: object.price_bias,
+      quote_boundary_cn: normalizeComfortText(object.quote_boundary_cn, ""),
+      validation
+    };
+    return view;
+  }
+
+  function signalEvidenceSideErrors(side, label, factIds) {
+    const errors = [];
+    if (side.status === "RATED" && !side.grade) errors.push(`${label}声明已评级但缺少等级。`);
+    if (side.status === "UNRATED" && side.grade) errors.push(`${label}声明未评级但带有等级。`);
+    if (side.status === "RATED" && !side.basis_cn) errors.push(`${label}缺少支持解释。`);
+    const refs = [...asArray(side.evidence_refs), ...asArray(side.counter_evidence_refs)]
+      .map((ref) => rawEnum(ref).trim())
+      .filter(Boolean);
+    if (factIds.size && refs.some((ref) => !factIds.has(ref))) errors.push(`${label}存在无法核验的事实引用。`);
+    return [...new Set(errors)];
+  }
+
+  function isolateSignalEvidenceSide(side, errors) {
+    if (!errors.length) return side;
+    return {
+      ...side,
+      status: "UNRATED",
+      grade: null,
+      validation_reasons_cn: [...side.validation_reasons_cn, ...errors]
+    };
+  }
+
+  function signalEvidenceSummaryAlignmentErrors(fullView, summaryView) {
+    const errors = [];
+    if (!summaryView || !isSignalEvidenceSummaryObject(summaryView)) {
+      errors.push("发布摘要缺失或版本不匹配。");
+      return errors;
+    }
+    if (!summaryView.assessment_hash) errors.push("发布摘要缺少结果校验标记。");
+    if (summaryView.assessment_hash && fullView.assessment_hash && summaryView.assessment_hash !== fullView.assessment_hash) {
+      errors.push("发布摘要与详情结果不一致。");
+    }
+    ["put_credit", "call_credit"].forEach((key) => {
+      const fullSide = normalizeEvidenceSide(get(fullView, key));
+      const summarySide = normalizeEvidenceSide(get(summaryView, key));
+      if (fullSide.grade !== summarySide.grade || fullSide.status !== summarySide.status) {
+        errors.push(`${key === "put_credit" ? "Put" : "Call"} 侧摘要与详情不一致。`);
+      }
+    });
+    if ((summaryView.action_summary_cn || "") && fullView.action_summary_cn !== normalizeComfortText(summaryView.action_summary_cn, "")) {
+      errors.push("行动摘要与详情不一致。");
+    }
+    return [...new Set(errors)];
+  }
+
+  function signalEvidenceState(doc) {
+    const summary = signalEvidenceSummaryCandidate(doc);
+    const summaryIsV2 = isSignalEvidenceSummaryObject(summary);
+    const summaryView = summaryIsV2 ? normalizeEvidenceSummary(summary) : null;
+    const advisory = rawSignalEvidenceAdvisoryCandidate(doc);
+    const hasFull = Boolean(Object.keys(asObject(advisory.side_evidence_ratings)).length);
+    if (hasFull) {
+      const review = asObject(get(doc, "llm_review", {}));
+      const view = normalizeEvidenceView(advisory, summary, doc);
+      const errors = [];
+      if (Object.keys(review).length && !isSignalEvidenceReviewObject(review)) errors.push("复核协议不是当前 v2。");
+      if (!view.action_summary_cn) errors.push("行动摘要缺失。");
+      if (!Array.isArray(advisory.market_facts)) errors.push("市场事实包缺失。");
+      if (!signalRatingAsOfIsValid(parseSignalRatingTimeMs(view.as_of_ms))) errors.push("评级时点暂不可核验。");
+      const computedHash = assessmentHash(advisory);
+      if (!view.assessment_hash || computedHash !== view.assessment_hash) errors.push("详情结果校验未通过。");
+      errors.push(...signalEvidenceSummaryAlignmentErrors(view, summary));
+      const factIds = new Set(asArray(view.market_facts).map(signalEvidenceFactKey).filter(Boolean));
+      view.put_credit = isolateSignalEvidenceSide(view.put_credit, signalEvidenceSideErrors(view.put_credit, "Put侧", factIds));
+      view.call_credit = isolateSignalEvidenceSide(view.call_credit, signalEvidenceSideErrors(view.call_credit, "Call侧", factIds));
+      if (errors.length) return { state: "invalid", view, errors };
+      return { state: "full", view, errors: [] };
+    }
+    if (summaryIsV2) {
+      const errors = [];
+      if (!summary.assessment_hash) errors.push("发布摘要缺少结果校验标记。");
+      if (!signalRatingAsOfIsValid(parseSignalRatingTimeMs(summary.as_of_ms))) errors.push("评级时点暂不可核验。");
+      const factIds = new Set();
+      summaryView.put_credit = isolateSignalEvidenceSide(summaryView.put_credit, signalEvidenceSideErrors(summaryView.put_credit, "Put侧", factIds));
+      summaryView.call_credit = isolateSignalEvidenceSide(summaryView.call_credit, signalEvidenceSideErrors(summaryView.call_credit, "Call侧", factIds));
+      if (errors.length) return { state: "invalid", view: summaryView, errors };
+      return { state: "summary", view: summaryView, errors: [] };
+    }
+    if (isSignalEvidenceReviewObject(get(doc, "llm_review", {}))) {
+      return { state: "invalid", view: null, errors: ["v2 复核未形成可用结果。"] };
+    }
+    return { state: "missing", view: null, errors: [] };
+  }
+
+  function signalEvidenceHasUsableView(stateView) {
+    return stateView && stateView.view && stateView.state !== "invalid";
+  }
+
+  function signalEvidenceAsOfMetricText(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (stateView.state === "invalid") return "待完成";
+    if (!stateView.view || stateView.state === "missing") return "未评级";
+    return signalRatingAsOfText(stateView.view);
+  }
+
+  function signalEvidenceIndexStats(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (stateView.state === "invalid") return ["暂未完成有效评级", `质量 ${semanticCompact(qualityOverall(doc))}`];
+    if (!signalEvidenceHasUsableView(stateView)) return null;
+    const view = stateView.view;
+    const putAction = get(view, "local_action_state.put_credit.label_cn");
+    const callAction = get(view, "local_action_state.call_credit.label_cn");
+    return [
+      `Put ${comfortGradeText(view.put_credit.grade)}`,
+      `Call ${comfortGradeText(view.call_credit.grade)}`,
+      textClip(view.action_summary_cn || [putAction, callAction].filter(Boolean).join(" / ") || "行动状态已记录", 44)
+    ];
+  }
+
+  function signalEvidenceFilterMatches(doc) {
+    if (!state.grade) return true;
+    const stateView = signalEvidenceState(doc);
+    if (!signalEvidenceHasUsableView(stateView)) return false;
+    const grades = [stateView.view.put_credit.grade, stateView.view.call_credit.grade];
+    const bestRank = Math.max(...grades.map(comfortGradeRank));
+    if (state.grade === "attention") return bestRank >= comfortGradeRank("B");
+    if (state.grade === "admission") return bestRank >= comfortGradeRank("A");
+    return true;
+  }
+
+  function signalEvidenceSearchText(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (stateView.state === "invalid") return "暂未完成有效评级";
+    if (!signalEvidenceHasUsableView(stateView)) return "";
+    const view = stateView.view;
+    return [
+      comfortGradeText(view.put_credit.grade),
+      comfortGradeText(view.call_credit.grade),
+      view.action_summary_cn,
+      view.put_credit.basis_cn,
+      view.call_credit.basis_cn,
+      view.put_credit.market_counter_cn,
+      view.call_credit.market_counter_cn,
+      view.put_credit.alternative_cn,
+      view.call_credit.alternative_cn,
+      get(view, "local_action_state.put_credit.label_cn"),
+      get(view, "local_action_state.call_credit.label_cn")
+    ].join(" ");
+  }
+
+  function actionStateClass(value) {
+    const stateValue = rawEnum(value).toUpperCase();
+    if (stateValue === "PREPARE") return "is-good";
+    if (stateValue === "AVOID" || stateValue === "BLOCKED") return "is-bad";
+    if (stateValue === "WATCH" || stateValue === "WAIT") return "is-wait";
+    return "";
+  }
+
+  function signalEvidenceActionPanelClass(view) {
+    const states = SIGNAL_COMFORT_SIDES
+      .map(({ key }) => rawEnum(get(view, `local_action_state.${key}.state`)).toUpperCase())
+      .filter(Boolean);
+    if (states.includes("PREPARE")) return "is-grade-a";
+    if (states.some((state) => state === "AVOID" || state === "BLOCKED" || state === "BLOCK")) return "is-grade-d";
+    if (states.some((state) => state === "WATCH" || state === "WAIT")) return "is-grade-b";
+    return "is-unavailable";
+  }
+
+  function renderEvidenceSideAction(action) {
+    const view = asObject(action);
+    const reasons = normalizeComfortList(view.reasons_cn)
+      .map((item) => signalEvidenceReaderText(item, ""))
+      .filter(Boolean);
+    return `
+      <div class="evidence-side-action ${actionStateClass(view.state)}">
+        <strong>行动状态：${escapeHtml(signalEvidenceReaderText(view.label_cn, "未评级"))}</strong>
+        ${reasons.length
+          ? reasons.map((item) => `<p>${escapeHtml(item)}</p>`).join("")
+          : `<p>本地边界未提供额外限制说明。</p>`}
+      </div>
+    `;
+  }
+
+  function evidenceSideCard(side, label, view, sideKey) {
+    const validation = asArray(side.validation_reasons_cn);
+    const refs = signalEvidenceRefChips(side.evidence_refs, view, "支持来源");
+    const counterRefs = signalEvidenceRefChips(side.counter_evidence_refs, view, "反对来源");
+    const action = renderEvidenceSideAction(get(view, `local_action_state.${sideKey}`));
+    return `
+      <article class="comfort-side-card ${comfortGradeClass(side.grade)} evidence-report-side">
+        <div class="comfort-side-head">
+          <strong>${escapeHtml(label)}</strong>
+          <span class="review-side-caption">${side.status === "UNRATED" || !side.grade ? "评审尚未采纳" : "适配论证"}</span>
+        </div>
+        ${side.status === "UNRATED" || !side.grade
+          ? `<p><strong>未采纳的评审说明</strong>：${escapeHtml(side.basis_cn || "暂未完成有效评级。")}</p>`
+          : `<p class="review-thesis-reference">${side.grade === "D" ? "回避依据" : "支持解释"}见上方<a href="#signal-comfort">本侧评级判断</a>。</p>`}
+        ${refs}
+        <p><strong>主要反证</strong>：${escapeHtml(side.market_counter_cn || "未识别到主要市场反证。")}</p>
+        <p><strong>竞争解释</strong>：${escapeHtml(side.alternative_cn)}</p>
+        ${counterRefs}
+        ${action}
+        ${validation.length ? `<p><strong>评级缺口</strong>：${escapeHtml(validation.join("；"))}</p>` : ""}
+      </article>
+    `;
+  }
+
+  function signalEvidenceUsableFact(view, id) {
+    const fact = signalEvidenceFactsById(view.market_facts).get(id);
+    return fact && fact.usable === true ? fact : null;
+  }
+
+  function signalEvidenceSpatialReading(view) {
+    const fact = (id) => signalEvidenceUsableFact(view, id);
+    const numeric = (id) => {
+      const item = fact(id);
+      return item && typeof item.value === "number" && Number.isFinite(item.value) ? item.value : null;
+    };
+    const gamma = numeric("structure.gex.net_gamma_notional_usd");
+    const regime = rawEnum(asObject(fact("structure.gamma.regime")).value).toUpperCase();
+    const regimePositive = /POSITIVE|LONG_GAMMA|正\s*GAMMA/.test(regime);
+    const regimeNegative = /NEGATIVE|SHORT_GAMMA|负\s*GAMMA/.test(regime);
+    const transition = /TRANSITION|过渡/.test(regime);
+    const conflict = gamma !== null && ((gamma > 0 && regimeNegative) || (gamma < 0 && regimePositive));
+    let feedback = "波动反馈待确认";
+    let mechanism = "缺少可用的净 Gamma 或明确体制依据，暂不能区分波动抑制与放大。";
+    if (conflict) {
+      feedback = "Gamma 反馈存在分歧";
+      mechanism = "净 Gamma 符号与体制判断相反，抑制和放大两种解释并存；先核对来源及时间，不能选取有利的一项作为结论。";
+    } else if (transition) {
+      feedback = "过渡区：波动反馈未定";
+      mechanism = gamma !== null && gamma !== 0
+        ? `净 Gamma ${gamma > 0 ? "为正，提供缓冲背景" : "为负，提示放大风险"}；过渡体制尚未确认抑制或放大。`
+        : "当前体制处于过渡区，平抑与放大尚未分明；需观察翻转位置附近的价格响应。";
+    } else if ((regimePositive || regimeNegative) && gamma !== null && gamma !== 0) {
+      feedback = regimePositive ? "波动反馈偏抑制" : "波动反馈偏放大";
+      mechanism = regimePositive
+        ? "按当前净 Gamma 的符号及模型对冲假设，逆向对冲可能缓冲价格偏移；它提供区间收敛的解释，但不等于墙位已经守住。"
+        : "按当前净 Gamma 的符号及模型对冲假设，顺向对冲可能放大价格偏移；触及边界后的延伸风险比单看墙位更重要。";
+    } else if (regimePositive || regimeNegative) {
+      feedback = regimePositive ? "体制偏向抑制波动" : "体制偏向放大波动";
+      mechanism = "现有体制支持这一反馈方向，但缺少可用净 Gamma 名义规模，不能进一步判断程度。";
+    } else if (gamma !== null) {
+      mechanism = "已记录净 Gamma 规模，但缺少明确的体制判断；仅凭名义净值不能确认平抑或放大。";
+    }
+    const call = numeric("structure.distance.call_wall_pct");
+    const put = numeric("structure.distance.put_wall_pct");
+    const price = numeric("market.price.current");
+    const callWall = numeric("structure.gamma.call_wall");
+    const putWall = numeric("structure.gamma.put_wall");
+    let position = "两侧距离待核对";
+    let geometry = "缺少现价或两侧有效墙位，暂不比较哪侧更先面临边界检验。";
+    if (price !== null && callWall !== null && putWall !== null && putWall < callWall) {
+      if (price > callWall) {
+        position = "现价已越过 Call 墙";
+        geometry = "现价已在上方 Call 墙之外，不能再用“双墙内”解释区间约束；需观察越界后的价格响应。";
+      } else if (price < putWall) {
+        position = "现价已越过 Put 墙";
+        geometry = "现价已在下方 Put 墙之外，不能再用“双墙内”解释区间约束；需观察越界后的价格响应。";
+      } else if (call !== null && put !== null && call >= 0 && put >= 0) {
+        position = call === put ? "现价距两墙相当" : call < put ? "现价更靠近 Call 墙" : "现价更靠近 Put 墙";
+        geometry = `距上方 Call 墙约 ${number(call, 2)}%，距下方 Put 墙约 ${number(put, 2)}%。${call === put ? "两侧触及距离相当。" : call < put ? "向上触及边界所需的价格移动更小，下方空间更宽。" : "向下触及边界所需的价格移动更小，上方空间更宽。"}距离比较不代表墙的承接强度。`;
+      }
+    }
+    const response = fact("response.flow_price.relation");
+    const responseText = response ? signalEvidenceReaderText(response.summary_cn, "") : "";
+    const tmv = fact("pressure.tmv.direction");
+    const direction = tmv ? signalEvidenceDisplayValue(tmv) : "";
+    const progress = [fact("side.put.adverse_progress"), fact("side.call.adverse_progress")]
+      .filter(Boolean).map((item) => `${item.id.includes(".put.") ? "Put" : "Call"} 侧：${signalEvidenceDisplayValue(item)}`).join("；");
+    const pressure = [direction ? `量价主干${direction}。` : "", responseText, progress ? `本观察窗内，${progress}。` : ""].filter(Boolean).join(" ")
+      || "当前缺少可配对的压力与价格响应，尚不能判断边界是否正在受到检验。";
+    const magnitude = gamma !== null ? `${gamma > 0 ? "+" : gamma < 0 ? "−" : ""}$${number(Math.abs(gamma) / 1e6, 2)}M` : "未提供";
+    const strength = transition
+      ? "体制过渡，约束强度尚未明确。"
+      : "缺少同口径强弱对照，不能仅凭净规模判断约束强度。";
+    return { feedback, mechanism, position, geometry, pressure, magnitude, strength };
+  }
+
+  function renderSignalEvidenceSpatialDynamics(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (!stateView.view || !asArray(stateView.view.market_facts).length) return "";
+    if (stateView.state === "invalid") return section("空间约束动力学", "", `<p class="empty-inline">资料核验未通过，暂不形成空间解释；下方仍保留已归档事实。</p>`, "signal-spatial-dynamics");
+    const reading = signalEvidenceSpatialReading(stateView.view);
+    return section("空间约束动力学", "边界在哪里，波动如何反馈，压力有没有穿透。", `
+      <div class="llm-gamma-lens evidence-spatial-report">
+        <div class="llm-review-topline"><span class="badge">${escapeHtml(reading.feedback)}</span><span class="badge">${escapeHtml(reading.position)}</span></div>
+        <div class="llm-gamma-copy">
+          <p><strong>空间分布</strong> ${escapeHtml(reading.geometry)}</p>
+          <p><strong>波动机制</strong> ${escapeHtml(reading.mechanism)}</p>
+          <p><strong>压力检验</strong> ${escapeHtml(reading.pressure)}</p>
+        </div>
+        <p class="evidence-spatial-scale"><strong>净 Gamma ${escapeHtml(reading.magnitude)}</strong> · ${escapeHtml(reading.strength)}</p>
+        <div class="source-ref-row"><a class="source-ref-link" href="#market-options-structure">核对空间位置与 Gamma</a><a class="source-ref-link" href="#market-price-path">核对压力与价格响应</a></div>
+      </div>`, "signal-spatial-dynamics");
+  }
+
+  function renderEvidenceNextSide(view, sideKey, label) {
+    const side = asObject(view[sideKey]);
+    const scope = side.status === "UNRATED" ? "（原评审观察，尚未采纳）" : "";
+    return `
+      <div class="evidence-next-side">
+        <h3>${escapeHtml(label)}${escapeHtml(scope)}</h3>
+        <h4>继续观察</h4>
+        <p>${escapeHtml(signalEvidenceReaderText(side.next_observation_cn, "等待下一条有效观察。"))}</p>
+        <h4>判断失效</h4>
+        <p>${escapeHtml(signalEvidenceReaderText(side.invalid_if_cn, "尚未声明失效条件。"))}</p>
+      </div>
+    `;
+  }
+
+function renderSignalEvidenceDecision(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (stateView.state === "invalid") return section("最高辅助交易决策", "合并本卡评级与行动判断；证据字母不代表交易胜率。", `
+      <div class="comfort-panel evidence-report-panel is-unavailable"><div class="comfort-headline"><span>本卡行动结论</span><strong>暂未完成有效评级</strong><p>${escapeHtml(asArray(stateView.errors).join("；") || "本卡复核暂不能用于当前行动结论。")}</p></div></div>`, "signal-comfort");
+    if (!signalEvidenceHasUsableView(stateView)) return "";
+    const view = stateView.view;
+    const quoteBoundary = view.quote_boundary_cn || "候选两腿、报价、费用、净补偿与退出条件仍在交易准备环节确认。";
+    const pressureFacts = [["pressure.tmv.direction", "量价倾向"], ["pressure.cvd.combined_direction", "主动流倾向"]];
+    const pressureHeadline = pressureFacts.map(([id, label]) => {
+      const fact = signalEvidenceUsableFact(view, id);
+      return fact ? `${label}：${signalEvidenceDisplayValue(fact)}` : "";
+    }).filter(Boolean).join("；");
+    const sideSummary = (key, label) => {
+      const side = asObject(view[key]);
+      const action = asObject(get(view, `local_action_state.${key}`));
+      const unavailable = side.status === "UNRATED" || !side.grade;
+      return `<div class="evidence-decision-side">
+        <span>${escapeHtml(label)}</span>
+        <div class="evidence-decision-grade"><strong class="badge ${comfortGradeClass(side.grade)} evidence-grade">${escapeHtml(comfortGradeText(side.grade))}</strong><span class="badge ${unavailable ? "" : actionStateClass(action.state)}">${escapeHtml(unavailable ? "暂未评级" : signalEvidenceReaderText(action.label_cn, "待复核"))}</span></div>
+        ${!unavailable ? `<p class="evidence-side-thesis">${escapeHtml(side.basis_cn)}</p>` : ""}
+        <p>${escapeHtml(unavailable ? "当前证据未形成有效等级，详见独立复核中的缺口。" : asArray(action.reasons_cn).map((item) => signalEvidenceReaderText(item, "")).filter(Boolean).join("；") || "按本卡有效证据与行动状态继续核对。")}</p>
+      </div>`;
+    };
+    return section("最高辅助交易决策", "本卡结论、两侧评级与市场倾向。", `
+      <div class="comfort-panel evidence-report-panel ${signalEvidenceActionPanelClass(view)}">
+        <div class="comfort-headline"><span>本卡行动结论</span><strong>${escapeHtml(view.action_summary_cn || "本卡已形成分侧证据评级。")}</strong>${pressureHeadline ? `<p class="evidence-pressure-headline">${escapeHtml(pressureHeadline)}</p>` : ""}</div>
+        <div class="evidence-decision-grid">${sideSummary("put_credit", "Put 信用价差")}${sideSummary("call_credit", "Call 信用价差")}</div>
+        <p class="evidence-decision-footnote">评级时点：${escapeHtml(signalRatingAsOfText(view))}。${escapeHtml(quoteBoundary)}</p>
+      </div>`, "signal-comfort");
+  }
+
+  function renderSignalEvidencePriceBias(view) {
+    const raw = view.price_bias;
+    const bias = asObject(raw);
+    const labels = { BULLISH: "偏多", BEARISH: "偏空", NEUTRAL: "中性", MIXED: "多空分歧", UNDETERMINED: "方向依据不足" };
+    const fieldNames = ["basis_cn", "counter_cn", "invalid_if_cn"];
+    const refs = [...asArray(bias.evidence_refs), ...asArray(bias.counter_evidence_refs)];
+    const factMap = signalEvidenceFactsById(view.market_facts);
+    const asOf = parseSignalRatingTimeMs(view.as_of_ms);
+    const validRefs = (refs.length > 0 || bias.bias === "UNDETERMINED") && refs.every((ref) => {
+      const fact = factMap.get(ref);
+      return typeof ref === "string" && fact && fact.usable === true
+        && Number.isFinite(fact.observed_at_ms) && fact.observed_at_ms > 0
+        && fact.observed_at_ms <= asOf;
+    });
+    const valid = bias.schema === "price_bias@1.0.0" && bias.status === "ASSESSED"
+      && Object.prototype.hasOwnProperty.call(labels, bias.bias)
+      && Array.isArray(bias.evidence_refs) && Array.isArray(bias.counter_evidence_refs)
+      && Array.isArray(bias.validation_reasons_cn) && bias.validation_reasons_cn.length === 0
+      && fieldNames.every((field) => typeof bias[field] === "string" && bias[field].trim()
+        && !/(?:[a-z][a-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+|[A-Z]{2,}(?:_[A-Z0-9]+)+)/.test(bias[field]))
+      && validRefs;
+    if (!valid) {
+      const note = !raw
+        ? "这张历史卡未单列 LLM 价格倾向，保留原有两侧论证。"
+        : "价格倾向尚未通过有效核验；两侧评级与已核验事实仍可分别阅读。";
+      return `<div class="evidence-price-bias"><div class="evidence-price-bias-head"><span>LLM 价格倾向</span><strong>暂未形成方向结论</strong></div><p>${escapeHtml(note)}</p></div>`;
+    }
+    return `<div class="evidence-price-bias">
+      <div class="evidence-price-bias-head"><span>LLM 价格倾向</span><strong>${escapeHtml(labels[bias.bias])}</strong></div>
+      <p>${escapeHtml(signalEvidenceReaderText(bias.basis_cn, ""))}</p>
+      <p><strong>主要反证：</strong>${escapeHtml(signalEvidenceReaderText(bias.counter_cn, ""))}</p>
+      <p><strong>改变判断：</strong>${escapeHtml(signalEvidenceReaderText(bias.invalid_if_cn, ""))}</p>
+      ${signalEvidenceRefChips(bias.evidence_refs, view, "方向依据")}
+      ${signalEvidenceRefChips(bias.counter_evidence_refs, view, "反证来源")}
+      <p class="market-fact-meta">对应本卡时点 ${escapeHtml(signalRatingAsOfText(view))}；价格倾向与价差适配等级分别判断。</p>
+    </div>`;
+  }
+
+  function renderSignalEvidenceLlmReview(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (!signalEvidenceHasUsableView(stateView) || stateView.state !== "full") return "";
+    const view = stateView.view;
+    return section("LLM 独立复核意见", "保留同一次综合评审的论证与异议；按原始事实核对，不替代最高层行动边界。", `
+      <div class="evidence-review-panel">
+        ${renderSignalEvidencePriceBias(view)}
+        <div class="comfort-side-grid evidence-report-side-grid">${evidenceSideCard(view.put_credit, "Put 信用价差", view, "put_credit")}${evidenceSideCard(view.call_credit, "Call 信用价差", view, "call_credit")}</div>
+      </div>`, "signal-llm-review");
+  }
+
+  function renderSignalEvidenceNextConditions(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (!signalEvidenceHasUsableView(stateView)) return "";
+    const view = stateView.view;
+    return section("下一观察条件", "这些条件用于判断本卡是否增强、维持或失效。", `
+      <div class="evidence-next-grid">
+        ${renderEvidenceNextSide(view, "put_credit", "Put 信用价差")}
+        ${renderEvidenceNextSide(view, "call_credit", "Call 信用价差")}
+      </div>
+    `, "signal-next-conditions");
+  }
+
+  function signalEvidenceDisplayValue(fact) {
+    const view = asObject(fact);
+    const value = view.value;
+    if (isNullish(value) || value === "") return "";
+    if (Array.isArray(value) || typeof value === "object") return "";
+    const unitRaw = rawEnum(view.unit).trim().toLowerCase();
+    if (typeof value === "number" && unitRaw === "decimal" && signalEvidenceFactIsFunding(view)) {
+      return fundingDecimalText(value);
+    }
+    const base = typeof value === "number" ? number(value, 4) : signalEvidenceReaderText(semanticCompact(value), String(value));
+    const unit = signalEvidenceUnitText(view.unit);
+    return [base, unit].filter(Boolean).join(" ");
+  }
+
+  function signalEvidenceReaderText(value, fallback = "未说明") {
+    const text = normalizeComfortText(value, fallback);
+    return text
+      .replace(/记录提供来源年龄，但\s*v2\s*不自行创造新的新鲜度阈值。?/gi, "已记录来源年龄；是否足够新鲜按原始采集口径复核。")
+      .replace(/只记录显式带宽；不采用旧代码的默认\s*0\.4%\s*带宽。?/g, "仅记录本卡显式给出的锚带宽；缺少显式带宽时不补造空间边界。")
+      .replace(/\bv2\b/gi, "本轮评级")
+      .replace(/旧代码/g, "历史默认逻辑")
+      .replace(/原始字段|字段路径|字段/g, "资料口径")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function signalEvidenceFactIsLegacyAnchorFitScore(fact) {
+    const view = asObject(fact);
+    const id = rawEnum(view.id).trim().toLowerCase();
+    const label = rawEnum(view.label_cn);
+    const topic = rawEnum(view.topic).toLowerCase();
+    const sourceGroup = rawEnum(view.source_group).toLowerCase();
+    const refs = asArray(view.source_refs).join(" ").toLowerCase();
+    return id === "structure.anchor.score"
+      || id.includes("anchor.score")
+      || (label.includes("价格锚来源状态") && (topic.includes("anchor") || topic.includes("锚") || sourceGroup.includes("anchor") || sourceGroup.includes("锚") || refs.includes("anchor") || refs.includes("锚")));
+  }
+
+  function signalEvidenceFactLabel(fact) {
+    if (signalEvidenceFactIsLegacyAnchorFitScore(fact)) return "历史锚贴合刻度（仅背景）";
+    const view = asObject(fact);
+    return signalEvidenceReaderText(view.label_cn || sourceGroupLabel(view.source_group) || "市场事实", "市场事实");
+  }
+  function signalEvidenceFactIsFunding(fact) {
+    const view = asObject(fact);
+    return [
+      view.topic,
+      view.label_cn,
+      view.source_group,
+      asArray(view.source_refs).join(" ")
+    ].join(" ").toLowerCase().includes("funding")
+      || [
+        view.topic,
+        view.label_cn,
+        view.source_group,
+        asArray(view.source_refs).join(" ")
+      ].join(" ").includes("资金");
+  }
+
+  function signalEvidenceUnitText(value) {
+    const raw = rawEnum(value).trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower === "decimal") return "小数值";
+    if (lower === "ratio") return "比值";
+    if (lower === "bps") return "基点";
+    return signalEvidenceReaderText(semanticCompact(raw), raw);
+  }
+
+  function fundingDecimalText(value) {
+    const pct = Number(value) * 100;
+    if (!Number.isFinite(pct)) return "";
+    const abs = Math.abs(pct);
+    const digits = abs > 0 && abs < 0.0001 ? 8 : (abs > 0 && abs < 0.01 ? 6 : (abs < 0.1 ? 4 : 3));
+    const text = number(pct, digits);
+    return `${pct > 0 ? "+" : ""}${text}%`;
+  }
+
+  function signalEvidenceWindowText(value) {
+    const raw = rawEnum(value).trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    const labels = {
+      current: "当前截面",
+      previous_card: "前一卡",
+      previous: "前一卡"
+    };
+    if (labels[lower]) return labels[lower];
+    const minutes = lower.match(/^(\d+)\s*(?:m|min|mins|minute|minutes)$/);
+    if (minutes) return `${minutes[1]} 分钟`;
+    const hours = lower.match(/^(\d+)\s*(?:h|hr|hrs|hour|hours)$/);
+    if (hours) return `${hours[1]} 小时`;
+    const days = lower.match(/^(\d+)\s*(?:d|day|days)$/);
+    if (days) return `${days[1]} 天`;
+    if (/^\d+$/.test(lower)) return `${lower} 个观察窗口`;
+    return signalEvidenceReaderText(semanticCompact(raw), raw);
+  }
+
+  function renderSignalEvidenceFact(fact) {
+    const view = asObject(fact);
+    const metaLine = signalEvidenceFactMetaLine(view, { includeSource: true });
+    const notes = signalEvidenceFactLimitations(view);
+    const rawSummary = signalEvidenceReaderText(view.summary_cn, "");
+    const summary = signalEvidenceSummaryIsMechanical(signalEvidenceFactLabel(view), signalEvidenceDisplayValue(view), rawSummary) ? "" : rawSummary;
+    return `
+      <div class="signal-evidence-fact">
+        <strong>${escapeHtml(signalEvidenceFactLabel(view))}</strong>
+        ${metaLine ? `<p>${escapeHtml(metaLine)}</p>` : ""}
+        ${summary ? `<p>${escapeHtml(summary)}</p>` : ""}
+        ${notes.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}
+      </div>
+    `;
+  }
+
+  function signalEvidenceSourceText(fact) {
+    const view = asObject(fact);
+    const source = sourceGroupLabel(view.source_group) || sourceRefLabel(asArray(view.source_refs)[0]);
+    return source === "来源已记录" ? "" : source;
+  }
+
+  function signalEvidenceFactMetaLine(fact, options = {}) {
+    const view = asObject(fact);
+    const parts = [];
+    const source = signalEvidenceSourceText(view);
+    if (options.includeSource && source) parts.push(`来源：${source}`);
+    const windowText = signalEvidenceWindowText(view.window);
+    if (windowText) parts.push(`窗口：${windowText}`);
+    const observed = firstPresent(view.observed_at_ms, view.observed_at);
+    parts.push(`时点：${observed ? dateText(parseSignalRatingTimeMs(observed) || observed) : "未提供"}`);
+    return parts.join("；");
+  }
+
+function signalEvidenceGroupMetaLine(facts) {
+    const counts = new Map();
+    asArray(facts).forEach((fact) => {
+      const line = signalEvidenceFactMetaLine(fact);
+      if (line) counts.set(line, (counts.get(line) || 0) + 1);
+    });
+    const common = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    return common && common[1] > 1 ? common[0] : "";
+  }
+
+  function signalEvidenceCompactCompareText(value) {
+    return String(value || "").replace(/[：:，,。；;、｜|\s]/g, "");
+  }
+
+  function signalEvidenceSummaryIsMechanical(label, value, summary) {
+    const normalizedSummary = signalEvidenceCompactCompareText(summary);
+    if (!normalizedSummary) return true;
+    const normalizedLabel = signalEvidenceCompactCompareText(label);
+    const normalizedValue = signalEvidenceCompactCompareText(value);
+    const mechanicalSentences = [
+      normalizedLabel,
+      normalizedValue,
+      `${normalizedLabel}${normalizedValue}`,
+      `${normalizedLabel}为${normalizedValue}`,
+      `${normalizedLabel}是${normalizedValue}`
+    ];
+    return normalizedSummary === normalizedLabel
+      || mechanicalSentences.includes(normalizedSummary);
+  }
+
+  function signalEvidenceRowOnlyLimitation(text) {
+    return /暂不可用|不可用于评级|陈旧|缺失|未知|时效不足|stale|missing|unknown/i.test(String(text || ""));
+  }
+
+  function signalEvidenceFactLimitations(fact) {
+    const view = asObject(fact);
+    const limitations = asArray(view.limitations_cn)
+      .map((item) => signalEvidenceReaderText(item, ""))
+      .filter(Boolean);
+    if (view.usable === false) limitations.unshift("本项暂不可用于评级。");
+    return limitations;
+  }
+
+  function signalEvidenceGroupNotes(facts) {
+    const entries = new Map();
+    const factList = asArray(facts);
+    factList.forEach((fact) => {
+      const label = signalEvidenceFactLabel(fact);
+      signalEvidenceFactLimitations(fact).forEach((text) => {
+        if (signalEvidenceRowOnlyLimitation(text)) return;
+        if (!entries.has(text)) entries.set(text, []);
+        entries.get(text).push(label);
+      });
+    });
+    return Array.from(entries.entries())
+      .filter(([, labels]) => labels.length > 1)
+      .map(([text, labels]) => ({
+        text,
+        labels: [...new Set(labels)].filter(Boolean)
+      }));
+  }
+
+  function renderSignalEvidenceGroupNotes(notes, factCount) {
+    if (!notes.length) return "";
+    return `
+      <div class="evidence-group-notes">
+        <strong>本组共同限制</strong>
+        ${notes.map((note) => {
+          const scope = note.labels.length && note.labels.length < factCount
+            ? `适用于：${note.labels.join("、")}。`
+            : "";
+          return `<p>${escapeHtml(`${scope}${note.text}`)}</p>`;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function signalEvidenceSortWeight(fact, groupId) {
+    if (groupId !== "market-options-structure") return 100;
+    const view = asObject(fact);
+    const id = signalEvidenceFactKey(fact).toLowerCase();
+    const label = rawEnum(view.label_cn).trim();
+    const text = [
+      rawEnum(view.topic),
+      label
+    ].join(" ").toLowerCase();
+    if (id === "market.price.current" || /^(现价|当前现价|当前价格)$/.test(label)) return 10;
+    if (id === "structure.gamma.call_wall") return 20;
+    if (id === "structure.distance.call_wall_pct") return 21;
+    if (id === "structure.gamma.put_wall") return 22;
+    if (id === "structure.distance.put_wall_pct") return 23;
+    if (id === "structure.gamma.flip_point") return 30;
+    if (id === "structure.distance.flip_pct") return 31;
+    if (id === "structure.gamma.pin_strike") return 40;
+    if (id === "structure.distance.pin_pct") return 41;
+    if (/call_wall.*distance|distance.*call_wall|距.*call.*墙|距.*看涨墙|距.*上方.*墙/.test(id)
+      || /距.*call.*墙|距.*看涨墙|距.*上方.*墙/.test(text)) return 21;
+    if (/call_wall|看涨墙|上方.*墙/.test(id) || /call.*墙|看涨墙|上方.*墙/.test(text)) return 20;
+    if (/put_wall.*distance|distance.*put_wall|距.*put.*墙|距.*看跌墙|距.*下方.*墙/.test(id)
+      || /距.*put.*墙|距.*看跌墙|距.*下方.*墙/.test(text)) return 23;
+    if (/put_wall|看跌墙|下方.*墙/.test(id) || /put.*墙|看跌墙|下方.*墙/.test(text)) return 22;
+    if (/flip|翻转/.test(id) || /flip|翻转/.test(text)) return 30;
+    if (/pin|钉/.test(id) || /pin|钉/.test(text)) return 40;
+    if (/net.?gamma|净.?gamma|gamma/.test(id) || /net.?gamma|净.?gamma|gamma/.test(text)) return 50;
+    if (/anchor|锚|band|带宽/.test(id) || /anchor|锚|band|带宽/.test(text)) return 60;
+    return 100;
+  }
+
+  function signalEvidenceSortedFacts(facts, groupId) {
+    return asArray(facts)
+      .map((fact, index) => ({ fact, index, weight: signalEvidenceSortWeight(fact, groupId) }))
+      .sort((a, b) => (a.weight - b.weight) || (a.index - b.index))
+      .map((item) => item.fact);
+  }
+
+  function renderSignalEvidenceFactOverview(fact, groupNoteSet) {
+    const view = asObject(fact);
+    const label = signalEvidenceFactLabel(view);
+    const value = signalEvidenceDisplayValue(view);
+    const rawSummary = signalEvidenceReaderText(view.summary_cn, "");
+    const summary = signalEvidenceSummaryIsMechanical(label, value, rawSummary) ? "" : rawSummary;
+    const limitations = signalEvidenceFactLimitations(view).filter((item) => !groupNoteSet.has(item));
+    const numericDescription = typeof view.value === "number" && summary.includes(number(view.value, 4));
+    const repeatsState = ["structure.gamma.regime", "structure.location.wall_zone"].includes(signalEvidenceFactKey(view));
+    const readingItems = [
+      numericDescription || repeatsState ? "" : summary,
+      ...limitations.filter(signalEvidenceRowOnlyLimitation)
+    ].filter(Boolean);
+    return `
+      <div class="market-fact-overview-item${signalEvidenceFactKey(view) === "market.price.current" ? " is-current-price" : ""}">
+        <div class="market-fact-name"><strong>${escapeHtml(label)}</strong></div>
+        <div class="market-fact-value">${escapeHtml(value || "未提供数值")}</div>
+        <div class="market-fact-reading">
+          ${readingItems.map((item, index) => `<p>${escapeHtml(item)}</p>`).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSignalEvidenceFactCard(id, title, summary, facts) {
+    const factList = signalEvidenceSortedFacts(
+      asArray(facts).filter((fact) => !signalEvidenceFactIsLegacyAnchorFitScore(fact)),
+      id
+    );
+    const groupNotes = signalEvidenceGroupNotes(factList);
+    const groupNoteSet = new Set(groupNotes.map((note) => note.text));
+    const detailHtml = factList.map(renderSignalEvidenceFact).join("");
+    return `
+      <article id="${escapeHtml(id)}" class="market-fact-card">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(summary)}</p>
+        ${factList.length ? `
+          <div class="market-fact-overview">
+            ${factList.map((fact) => renderSignalEvidenceFactOverview(fact, groupNoteSet)).join("")}
+          </div>
+          <details class="signal-evidence-detail">
+            <summary>来源时点与解释边界</summary>
+            <div class="signal-evidence-detail-body">${renderSignalEvidenceGroupNotes(groupNotes, factList.length)}${detailHtml}</div>
+          </details>
+        ` : `<div class="empty-inline">本卡未提供该类事实。</div>`}
+      </article>
+    `;
+  }
+
+function signalEvidenceFactIsVerifiedChange(fact) {
+    const topic = rawEnum(asObject(fact).topic).toLowerCase();
+    return topic === "change_context" || topic === "verified_change";
+  }
+
+  function renderSignalEvidenceChangeRow(fact, context) {
+    const view = asObject(fact);
+    const summary = signalEvidenceReaderText(view.summary_cn, "");
+    const samePeriod = context && view.window === context.window && view.observed_at_ms === context.observed_at_ms;
+    return `<article class="transition-core-row evidence-change-row">
+      <div class="transition-core-main"><strong>${escapeHtml(signalEvidenceFactLabel(view))}</strong></div>
+      <div class="transition-core-values">${escapeHtml(signalEvidenceDisplayValue(view) || "未提供差值")}</div>
+      <div class="market-fact-reading"><p>${escapeHtml(summary || "本卡仅记录该项变化，未声明进一步含义。")}</p>${signalEvidenceFactLimitations(view).map((text) => `<p>${escapeHtml(text)}</p>`).join("")}${samePeriod ? "" : `<p class="market-fact-meta">${escapeHtml(signalEvidenceFactMetaLine(view))}</p>`}</div>
+    </article>`;
+  }
+
+  function renderSignalEvidenceKeyChanges(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (!stateView.view || stateView.state === "summary") return "";
+    const facts = asArray(stateView.view.market_facts).filter(signalEvidenceFactIsVerifiedChange);
+    const context = facts.find((fact) => signalEvidenceFactKey(fact) === "change.context.status");
+    const statusUsable = context && asObject(context).usable === true && asObject(context).value === "变化可用";
+    const changes = statusUsable && stateView.state !== "invalid"
+      ? facts.filter((fact) => fact !== context && asObject(fact).usable === true) : [];
+    const reason = stateView.state === "invalid" ? "本卡资料核验未通过，变化摘要暂不采用。"
+      : context ? signalEvidenceReaderText(context.summary_cn, "变化判断暂不可用。")
+      : "本卡尚无可核验的前后对照，当前截面的结构与证据仍可阅读。";
+    if (!changes.length) return section("关键变化骨架", "", `<p class="evidence-change-unavailable">${escapeHtml(stateView.state === "invalid" ? "资料核验未通过，暂不采用变化判断。" : "前后对照暂不可用；当前截面仍可阅读。")} <a href="#market-data-quality">查看对照缺口</a></p>`, "signal-key-changes");
+    return section("关键变化骨架", "区分价格移动与结构位迁移，保留变化含义及比较边界。", `
+      <div class="evidence-changes-panel">
+        <p><strong>${escapeHtml(context ? signalEvidenceFactLabel(context) : "前后对照")}</strong>：${escapeHtml(changes.length ? `${signalEvidenceFactMetaLine(context)}。以下呈现已记录的变化，未记录项不补算。` : reason)}</p>
+        ${changes.length ? `<div class="transition-core-list">${changes.map((fact) => renderSignalEvidenceChangeRow(fact, context)).join("")}</div>` : ""}
+        ${context ? signalEvidenceFactLimitations(context).map((text) => `<p>${escapeHtml(text)}</p>`).join("") : ""}
+        ${statusUsable && !changes.length ? `<p>比较条件已满足，但本卡没有可用的变化数值；不从其他资料补算。</p>` : ""}
+      </div>`, "signal-key-changes");
+  }
+
+  function signalEvidenceGroupedMarketFacts(view) {
+    const grouped = {
+      "options-structure": [],
+      "price-path": [],
+      "active-flow": [],
+      "funding-rate": [],
+      "macro-background": [],
+      "data-quality": []
+    };
+    asArray(asObject(view).market_facts).forEach((fact) => {
+      grouped[evidenceFactTopicKey(fact)].push(fact);
+    });
+    return grouped;
+  }
+
+  function renderSignalEvidenceMarketFacts(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (!stateView.view || !asArray(stateView.view.market_facts).length) return "";
+    const grouped = signalEvidenceGroupedMarketFacts(stateView.view);
+    return section("中文市场事实", "完整证据面：空间位置、压力、响应与背景；同源派生描述不增加独立证明力。", `
+      <div class="market-fact-grid">
+        ${renderSignalEvidenceFactCard("market-options-structure", "空间结构", "先看结构位置，再解释倾向。期权偏斜属于方向背景，不等于墙位约束。", grouped["options-structure"])}
+        ${renderSignalEvidenceFactCard("market-price-path", "价格路径与压力", "说明不利侧推进程度，平盘不解释成强趋势。", grouped["price-path"])}
+        ${renderSignalEvidenceFactCard("market-active-flow", "主动成交与响应", "观察压力是否传导到价格，避免把同源流重复加票。", grouped["active-flow"])}
+        ${renderSignalEvidenceFactCard("market-funding-rate", "资金费率", "只作为杠杆拥挤和反身性背景。", grouped["funding-rate"])}
+        ${renderSignalEvidenceFactCard("market-macro-background", "宏观背景", "区分方向背景和冲击限制。", grouped["macro-background"])}
+        ${renderSignalEvidenceFactCard("market-data-quality", "变化、时效与缺口", "前后卡不匹配只影响变化判断，不拖垮当前截面事实。", grouped["data-quality"])}
+      </div>
+    `, "market-evidence");
+  }
+
+function renderSignalEvidenceReaderNav(doc) {
+    const stateView = signalEvidenceState(doc);
+    const view = stateView.view || {};
+    const items = [];
+    if (stateView.state === "invalid" || signalEvidenceHasUsableView(stateView)) items.push({id:"signal-comfort",label:"决策与评级"});
+    if (asArray(view.market_facts).length) items.push({id:"signal-spatial-dynamics",label:"空间约束动力学"});
+    if (stateView.view && stateView.state !== "summary") items.push({id:"signal-key-changes",label:"关键变化"});
+    if (stateView.state === "full") items.push({id:"signal-llm-review",label:"独立复核"});
+    if (stateView.state === "full") items.push({id:"signal-next-conditions",label:"下一观察"});
+    if (asArray(view.market_facts).length) items.push({id:"market-evidence",label:"数值与来源"});
+    return items.length ? `<nav class="evidence-reader-nav" aria-label="本卡阅读导航">${items.map((item) => `<a href="#${item.id}">${item.label}</a>`).join("")}</nav>` : "";
+  }
+
+  function renderSignalEvidenceReader(doc, content) {
+    return `<div class="evidence-reader">${renderLoadNotice()}${content}</div>`;
+  }
+
+  const SIGNAL_COMFORT_SCHEMA = "signal_comfort_ratings@1.0.0";
+  const SIGNAL_COMFORT_SCOPE = "signal_side_admission";
+  const SIGNAL_COMFORT_ECONOMICS = "not_evaluated";
+  const SIGNAL_COMFORT_GRADES = ["D", "C", "B", "A", "S"];
+  const SIGNAL_COMFORT_SIDES = [
+    { key: "put_credit", label: "Put 信用价差" },
+    { key: "call_credit", label: "Call 信用价差" }
+  ];
+  const SIGNAL_COMFORT_FOCUS_SIDES = new Set(["put_credit", "call_credit", "tie", "none"]);
+  const SIGNAL_COMFORT_SIDE_STATUSES = new Set(["RATED", "UNRATED"]);
+
+  function firstObject(...values) {
+    for (const value of values) {
+      const object = asObject(value);
+      if (Object.keys(object).length) return object;
+    }
+    return {};
+  }
+
+  function comfortGradeKey(value) {
+    const raw = rawEnum(value).toUpperCase();
+    return SIGNAL_COMFORT_GRADES.includes(raw) ? raw : null;
+  }
+
+  function comfortGradeRank(value) {
+    const grade = comfortGradeKey(value);
+    return grade ? SIGNAL_COMFORT_GRADES.indexOf(grade) : -1;
+  }
+
+  function comfortGradeText(value) {
+    const grade = comfortGradeKey(value);
+    return grade ? `${grade}级` : "未评级";
+  }
+
+  function comfortGradeClass(value) {
+    const grade = comfortGradeKey(value);
+    return grade ? `is-grade-${grade.toLowerCase()}` : "is-unrated";
+  }
+
+  function comfortGradeAction(value) {
+    const grade = comfortGradeKey(value);
+    const actions = {
+      S: "优先准入：先处理该侧信号层机会，再进入候选价差与风控确认。",
+      A: "信号层准入：可以启动人工交易准备，但不代表具体价差值得成交。",
+      B: "启动关注：有可说明机会，先跟踪关键条件与反证变化。",
+      C: "普通观察：数据足以阅读，但本轮没有主动跟踪价值。",
+      D: "本轮回避：存在明确不适配、前提失效或风险否决。"
+    };
+    return actions[grade] || "暂未完成有效评级：必要资料或复核尚未形成可用等级。";
+  }
+
+  function comfortFocusSideText(value) {
+    const raw = rawEnum(value).toLowerCase();
+    const labels = {
+      put_credit: "Put 信用价差",
+      call_credit: "Call 信用价差",
+      tie: "无单一优先侧",
+      none: "无可用侧别"
+    };
+    return labels[raw] || "无可用侧别";
+  }
+
+  function normalizeComfortText(value, fallback = "未说明") {
+    if (isBlank(value) || Array.isArray(value) || typeof value === "object") return fallback;
+    return compactLongDecimalText(String(value))
+      .replace(/总耐用性评分(?:为|是|:|：)?\s*\d+(?:\.\d+)?(?:\/100)?[，,；;。]?/g, "")
+      .replaceAll("factor_cross_section.anchor", "价格锚")
+      .replaceAll("factor_cross_section.gamma_regime", "Gamma 结构")
+      .replaceAll("factor_cross_section.gex_info", "GEX 空间")
+      .replaceAll("factor_cross_section.tmvf", "量价主干")
+      .replaceAll("factor_cross_section.micro_flow", "主动买卖流")
+      .replaceAll("factor_cross_section.funding", "资金费率")
+      .replaceAll("factor_cross_section.macro_pressure", "宏观背景")
+      .replaceAll("bullish_bias", "偏多背景")
+      .replaceAll("bearish_bias", "偏空背景")
+      .replaceAll("net_gamma_notional", "净 Gamma 名义额")
+      .replaceAll("net_gex_sign", "Gamma 符号")
+      .replaceAll("gamma_regime", "Gamma 结构")
+      .replaceAll("gex_info", "GEX 空间")
+      .replace(/Mild\s+Tailwind/gi, "温和顺风")
+      .replace(/Mild\s+Headwind/gi, "温和逆风")
+      .replace(/Strong\s+Tailwind/gi, "强顺风")
+      .replace(/Strong\s+Headwind/gi, "强逆风")
+      .replace(/\bTailwind\b/gi, "顺风")
+      .replace(/\bHeadwind\b/gi, "逆风")
+      .replace(/\bWeak\b/gi, "弱")
+      .replace(/\bCONFIDENCE_GATE_NOT_DIRECTIONAL_VOTE\b/gi, "置信门仅作限制，不提供方向依据")
+      .replace(/\bMATERIAL\b/g, "实质分歧")
+      .replace(/\bMISSING\b/g, "缺失")
+      .replace(/\bSEVERE\b/g, "严重分歧")
+      .replaceAll("WAIT_CONFIRMATION", "等待确认")
+      .replaceAll("NO_TRADE_BLOCKED", "阻断观望")
+      .replaceAll("TRADE_SUPPORT_STRONG", "强结构复核")
+      .replaceAll("TRADE_SUPPORT_REVIEW", "结构复核")
+      .replaceAll("NR_NOT_CONFIRMED", "接管窗口未确认")
+      .replaceAll("execution_allowed", "执行许可")
+      .replace(/confidence/gi, "旧置信")
+      .replace(/durability/gi, "耐用背景")
+      .replace(/方向计票/g, "方向依据")
+      .replace(/参与计票/g, "本次作为方向依据")
+      .replace(/不计票/g, "本次未作为方向依据")
+      .replace(/门控/g, "当前限制")
+      .replace(/已排除/g, "本次未采用")
+      .replace(/\btrue\b/gi, "是")
+      .replace(/\bfalse\b/gi, "否")
+      .replace(/\bEDB\b/g, "证据账本")
+      .replace(/\b[a-z]+(?:_[a-z0-9]+)+(?:\.[a-z0-9_]+)*\b/g, "未说明")
+      .replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g, (token) => enumLabels[token] || enumLabels[token.toUpperCase()] || "已记录状态")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function normalizeComfortList(items) {
+    return asArray(items)
+      .map((item) => normalizeComfortText(item, ""))
+      .filter(Boolean);
+  }
+
+  function normalizeComfortSide(side) {
+    const view = asObject(side);
+    const finalGrade = comfortGradeKey(view.final_grade);
+    const modelGrade = comfortGradeKey(view.model_grade);
+    const rawStatus = rawEnum(view.status).toUpperCase();
+    const status = SIGNAL_COMFORT_SIDE_STATUSES.has(rawStatus) ? rawStatus : "";
+    return {
+      status,
+      model_grade: modelGrade,
+      final_grade: finalGrade,
+      basis_cn: normalizeComfortText(view.basis_cn || view.summary_cn, status === "RATED" ? "未说明支持理由。" : "暂未完成有效评级。"),
+      counter_evidence_cn: normalizeComfortText(view.counter_evidence_cn, "未识别到主要反对理由。"),
+      next_observation_cn: normalizeComfortText(view.next_observation_cn, "等待下一条有效观察。"),
+      unresolved_conditions_cn: normalizeComfortList(view.unresolved_conditions_cn),
+      cap_reasons_cn: normalizeComfortList(view.cap_reasons_cn),
+      evidence_refs: asArray(view.evidence_refs),
+      counter_evidence_refs: asArray(view.counter_evidence_refs),
+      s_upgrade_basis_cn: normalizeComfortText(view.s_upgrade_basis_cn, ""),
+      s_upgrade_evidence_refs: asArray(view.s_upgrade_evidence_refs)
+    };
+  }
+
+  function normalizeComfortHeadline(candidate) {
+    const view = asObject(candidate);
+    const rawFocus = rawEnum(firstPresent(view.focus_side, view.side, view.focus)).toLowerCase();
+    const focusSide = SIGNAL_COMFORT_FOCUS_SIDES.has(rawFocus) ? rawFocus : "";
+    return {
+      final_grade: comfortGradeKey(view.final_grade),
+      focus_side: focusSide,
+      action_cn: normalizeComfortText(view.action_cn || view.summary_cn || view.headline_cn, "")
+    };
+  }
+
+  function rawComfortCandidate(doc) {
+    const review = asObject(get(doc, "llm_review", {}));
+    const content = llmReviewContent(doc);
+    return firstObject(
+      get(content, "integrated_trade_advisory.side_comfort_ratings", null),
+      get(review, "content.integrated_trade_advisory.side_comfort_ratings", null),
+      get(review, "integrated_trade_advisory.side_comfort_ratings", null),
+      get(doc, "integrated_trade_advisory.side_comfort_ratings", null),
+      get(doc, "side_comfort_ratings", null)
+    );
+  }
+
+  function comfortSummaryCandidate(doc) {
+    return firstObject(
+      get(doc, "signal_comfort_summary", null),
+      get(doc, "summary.signal_comfort_summary", null)
+    );
+  }
+
+  function buildComfortView(candidate, source) {
+    const object = asObject(candidate);
+    const put = normalizeComfortSide(object.put_credit);
+    const call = normalizeComfortSide(object.call_credit);
+    const headline = normalizeComfortHeadline(firstObject(object.headline, object));
+    return {
+      source,
+      schema: object.schema,
+      rating_scope: object.rating_scope,
+      candidate_quote_economics: object.candidate_quote_economics,
+      as_of_ms: object.as_of_ms,
+      put_credit: put,
+      call_credit: call,
+      headline,
+      raw_headline: asObject(object.headline)
+    };
+  }
+
+  function comfortSideValidationErrors(side, label) {
+    const errors = [];
+    if (!side.status) errors.push(`${label}评级状态未声明。`);
+    if (side.status === "RATED" && !side.final_grade) errors.push(`${label}声明已评级但缺少最终等级。`);
+    if (side.status === "UNRATED" && side.final_grade) errors.push(`${label}声明未评级但带有最终等级。`);
+    if (side.final_grade && !side.basis_cn) errors.push(`${label}缺少可读支持理由。`);
+    return errors;
+  }
+
+  function comfortHeadlineValidationErrors(view) {
+    const errors = [];
+    const headline = asObject(view.headline);
+    if (!headline.final_grade) errors.push("综合最终等级未声明。");
+    if (!headline.focus_side) errors.push("综合适用侧别未声明。");
+    if (!headline.action_cn) errors.push("综合行动结论未声明。");
+    const putGrade = asObject(view.put_credit).final_grade;
+    const callGrade = asObject(view.call_credit).final_grade;
+    const headlineRank = comfortGradeRank(headline.final_grade);
+    const highestSideRank = Math.max(comfortGradeRank(putGrade), comfortGradeRank(callGrade));
+    if (headlineRank >= 0 && highestSideRank >= 0 && headlineRank !== highestSideRank) {
+      errors.push("综合等级未使用通过校验的最高侧别等级。");
+    }
+    if (headline.focus_side === "put_credit" && headline.final_grade !== putGrade) {
+      errors.push("综合等级与 Put 侧最终等级不一致。");
+    }
+    if (headline.focus_side === "call_credit" && headline.final_grade !== callGrade) {
+      errors.push("综合等级与 Call 侧最终等级不一致。");
+    }
+    if (headline.focus_side === "tie" && (!putGrade || putGrade !== callGrade || headline.final_grade !== putGrade)) {
+      errors.push("并列侧别与两侧最终等级不一致。");
+    }
+    if (headline.focus_side === "none" && headline.final_grade) {
+      errors.push("无可用侧别不能带最终等级。");
+    }
+    return errors;
+  }
+
+  function comfortSummaryAlignmentErrors(fullView, summaryView) {
+    const errors = [];
+    if (!summaryView) {
+      errors.push("发布摘要缺失，详情页不单独升级。");
+      return errors;
+    }
+    const fullHeadline = asObject(fullView.headline);
+    const summaryHeadline = asObject(summaryView.headline);
+    if (!summaryHeadline.final_grade || !summaryHeadline.focus_side) {
+      errors.push("列表摘要未给出有效综合评级，详情页不单独升级。");
+      return errors;
+    }
+    if (summaryHeadline.final_grade !== fullHeadline.final_grade
+      || summaryHeadline.focus_side !== fullHeadline.focus_side) {
+      errors.push("列表摘要与详情综合评级不一致。");
+    }
+    SIGNAL_COMFORT_SIDES.forEach(({ key, label }) => {
+      const fullGrade = asObject(fullView[key]).final_grade;
+      const summaryGrade = asObject(summaryView[key]).final_grade;
+      if (summaryGrade && fullGrade && summaryGrade !== fullGrade) {
+        errors.push(`${label}列表摘要与详情等级不一致。`);
+      }
+    });
+    return errors;
+  }
+
+
+  function comfortViewHasAnyGrade(view) {
+    return Boolean(
+      comfortGradeKey(get(view, "headline.final_grade"))
+      || comfortGradeKey(get(view, "put_credit.final_grade"))
+      || comfortGradeKey(get(view, "call_credit.final_grade"))
+    );
+  }
+
+  function comfortViewRequiresAdmission(view) {
+    return [
+      get(view, "headline.final_grade"),
+      get(view, "put_credit.final_grade"),
+      get(view, "call_credit.final_grade")
+    ].some((grade) => comfortGradeRank(grade) >= comfortGradeRank("A"));
+  }
+
+  function comfortFocusedSideKeys(focusSide) {
+    if (focusSide === "put_credit") return ["put_credit"];
+    if (focusSide === "call_credit") return ["call_credit"];
+    if (focusSide === "tie") return ["put_credit", "call_credit"];
+    return [];
+  }
+
+  function sourceBoundaryBlocksAdmission(doc, boundary) {
+    const markers = [
+      boundary.support_label,
+      boundary.hard_veto,
+      get(doc, "signal_rating.context.nr_state"),
+      get(doc, "neutral_repair.state"),
+      get(doc, "signal_window.state"),
+      get(doc, "decision.nr_state"),
+      get(doc, "decision_matrix.nr_state")
+    ].map((item) => rawEnum(item).toUpperCase()).join(" ");
+    return boundary.has_block === true
+      || !isBlank(boundary.hard_veto)
+      || /WAIT|BLOCK|NO_TRADE|VETO|EXPIRED|STALE|FAILED|INVALID|失效/.test(markers);
+  }
+
+  function comfortRefLooksFuture(ref) {
+    const root = rawTraceRoot(ref).toLowerCase();
+    return root.includes("future_24h") || root.includes("bayesian_report") || root.includes("future_report");
+  }
+
+  function comfortEvidenceRefErrorsForSide(doc, side, label) {
+    const errors = [];
+    const grade = comfortGradeKey(side.final_grade);
+    if (comfortGradeRank(grade) < comfortGradeRank("A")) return errors;
+    const evidenceRefs = asArray(side.evidence_refs).filter((ref) => !isBlank(ref));
+    const counterRefs = asArray(side.counter_evidence_refs).filter((ref) => !isBlank(ref));
+    const upgradeRefs = asArray(side.s_upgrade_evidence_refs).filter((ref) => !isBlank(ref));
+    if (!evidenceRefs.length) errors.push(`${label}缺少可追溯支持来源。`);
+    [...evidenceRefs, ...counterRefs, ...upgradeRefs].forEach((ref) => {
+      if (comfortRefLooksFuture(ref)) {
+        errors.push(`${label}引用了评级之后才能验证的资料。`);
+      } else if (!hasRawTraceTarget(ref, doc)) {
+        errors.push(`${label}存在无法在本卡核验的来源引用。`);
+      }
+    });
+    if (grade === "S") {
+      if (!side.s_upgrade_basis_cn || !upgradeRefs.length) {
+        errors.push(`${label}声明 S 级但没有单列额外依据。`);
+      }
+      const supportRoots = new Set(evidenceRefs.map((ref) => rawTraceRoot(ref)));
+      if (upgradeRefs.some((ref) => supportRoots.has(rawTraceRoot(ref)))) {
+        errors.push(`${label}的 S 级额外依据与 A 级支持来源重复。`);
+      }
+    }
+    return [...new Set(errors)];
+  }
+
+  function comfortSourceValidationErrors(doc, view) {
+    const errors = [];
+    if (!comfortViewHasAnyGrade(view)) return errors;
+    if (comfortViewRequiresAdmission(view) && sourceBoundaryBlocksAdmission(doc, signalRatingBoundaryView(doc))) {
+      errors.push("当前记录仍处在等待、阻断或失效边界，不能显示 A/S 准入。");
+    }
+    comfortFocusedSideKeys(view.headline.focus_side).forEach((sideKey) => {
+      errors.push(...comfortEvidenceRefErrorsForSide(doc, asObject(view[sideKey]), SIGNAL_COMFORT_SIDES.find((item) => item.key === sideKey).label));
+    });
+    return [...new Set(errors)];
+  }
+
+  function signalComfortState(doc) {
+    const summary = comfortSummaryCandidate(doc);
+    const summaryView = Object.keys(summary).length ? buildComfortView(summary, "summary") : null;
+    const full = rawComfortCandidate(doc);
+    if (Object.keys(full).length) {
+      const view = buildComfortView(full, "full");
+      const errors = [];
+      if (view.schema !== SIGNAL_COMFORT_SCHEMA) errors.push("综合评级版本未通过当前页面校验。");
+      if (view.rating_scope !== SIGNAL_COMFORT_SCOPE) errors.push("综合评级用途不是本页的信号层准入。");
+      if (view.candidate_quote_economics !== SIGNAL_COMFORT_ECONOMICS) errors.push("候选价差经济性边界未按未评估处理。");
+      if (!signalRatingAsOfIsValid(view.as_of_ms)) errors.push("综合评级时点暂不可核验。");
+      errors.push(...comfortSideValidationErrors(view.put_credit, "Put侧"));
+      errors.push(...comfortSideValidationErrors(view.call_credit, "Call侧"));
+      errors.push(...comfortHeadlineValidationErrors(view));
+      errors.push(...comfortSummaryAlignmentErrors(view, summaryView));
+      errors.push(...comfortSourceValidationErrors(doc, view));
+      if (errors.length) {
+        return { state: "invalid", view, errors };
+      }
+      return { state: "full", view, errors: [] };
+    }
+    if (summaryView) {
+      return { state: "summary", view: summaryView, errors: [] };
+    }
+    if (llmReviewHasFailed(doc)) {
+      return { state: "invalid", view: null, errors: ["复核未完成，暂不能形成综合评级。"] };
+    }
+    return { state: "missing", view: null, errors: [] };
+  }
+
+  function signalComfortMetricText(doc, side = "headline") {
+    const evidence = signalEvidenceState(doc);
+    if (evidence.state === "invalid") return "评级未完成";
+    if (signalEvidenceHasUsableView(evidence)) {
+      if (side === "headline") return [
+        `Put ${comfortGradeText(evidence.view.put_credit.grade)}`,
+        `Call ${comfortGradeText(evidence.view.call_credit.grade)}`
+      ].join(" / ");
+      return comfortGradeText(asObject(evidence.view[side]).grade);
+    }
+    const stateView = signalComfortState(doc);
+    if (stateView.state === "invalid") return "评级未完成";
+    if (!stateView.view || stateView.state === "missing") return "历史未综合评级";
+    if (side === "headline") return [
+      comfortGradeText(stateView.view.headline.final_grade),
+      comfortFocusSideText(stateView.view.headline.focus_side)
+    ].join(" / ");
+    return comfortGradeText(asObject(stateView.view[side]).final_grade);
+  }
+
+  function signalComfortAsOfMetricText(doc) {
+    if (hasSignalEvidenceV2Surface(doc)) return signalEvidenceAsOfMetricText(doc);
+    const stateView = signalComfortState(doc);
+    if (stateView.state === "invalid") return "待完成";
+    if (!stateView.view || stateView.state === "missing") return "未评级";
+    return signalRatingAsOfText(stateView.view);
+  }
+
+  function currentLimitMetricText(doc) {
+    const boundary = signalRatingBoundaryView(doc);
+    if (boundary.has_block === true) return "有阻断";
+    if (boundary.execution_allowed !== true) return "只读复核";
+    return "当前允许";
+  }
+
+  function signalComfortIndexStats(doc) {
+    const evidenceStats = signalEvidenceIndexStats(doc);
+    if (evidenceStats) return evidenceStats;
+    if (hasSignalEvidenceV2Surface(doc)) return ["暂未完成有效评级", `质量 ${semanticCompact(qualityOverall(doc))}`];
+    const stateView = signalComfortState(doc);
+    if (stateView.state === "invalid") return ["暂未完成有效评级", `质量 ${semanticCompact(qualityOverall(doc))}`];
+    if (!stateView.view || stateView.state === "missing") {
+      return ["历史版本未综合评级", `质量 ${semanticCompact(qualityOverall(doc))}`];
+    }
+    return [
+      `旧版行动评级 ${comfortGradeText(stateView.view.headline.final_grade)}`,
+      comfortFocusSideText(stateView.view.headline.focus_side),
+      `Put ${comfortGradeText(stateView.view.put_credit.final_grade)}`,
+      `Call ${comfortGradeText(stateView.view.call_credit.final_grade)}`
+    ];
+  }
+
+  function comfortFilterMatches(doc) {
+    if (!state.grade) return true;
+    if (hasSignalEvidenceV2Surface(doc)) return signalEvidenceFilterMatches(doc);
+    return false;
+  }
+
+  function signalComfortSearchText(doc) {
+    if (hasSignalEvidenceV2Surface(doc)) return "";
+    const stateView = signalComfortState(doc);
+    if (stateView.state === "invalid") return "暂未完成有效评级";
+    if (!stateView.view) return "历史版本未综合评级";
+    const view = stateView.view;
+    return [
+      comfortGradeText(view.headline.final_grade),
+      comfortFocusSideText(view.headline.focus_side),
+      view.headline.action_cn,
+      view.put_credit.basis_cn,
+      view.put_credit.counter_evidence_cn,
+      view.call_credit.basis_cn,
+      view.call_credit.counter_evidence_cn,
+      ...view.put_credit.unresolved_conditions_cn,
+      ...view.call_credit.unresolved_conditions_cn,
+      ...view.put_credit.cap_reasons_cn,
+      ...view.call_credit.cap_reasons_cn
+    ].join(" ");
+  }
+
+
+  function containsAdmissionLanguage(text) {
+    return /准入|优先处理|交易准备|值得成交|下单|开仓/.test(String(text || ""));
+  }
+
+  function comfortCurrentActionText(view) {
+    const grade = comfortGradeKey(get(view, "headline.final_grade"));
+    const action = get(view, "headline.action_cn", "") || comfortGradeAction(grade);
+    if (comfortGradeRank(grade) >= comfortGradeRank("A") || !containsAdmissionLanguage(action)) return action;
+    if (grade === "B") {
+      return `当前最终等级为 B级，只启动关注；原复核中的准入性表述只作为局部支持依据，不能当作当前准入结论。`;
+    }
+    return `当前最终等级为 ${comfortGradeText(grade)}；原复核中的准入性表述只作为局部意见，不能当作当前准入结论。`;
+  }
+
+  function comfortSideBasisText(side) {
+    const grade = comfortGradeKey(side.final_grade);
+    const basis = side.basis_cn || "未说明支持理由。";
+    if (comfortGradeRank(grade) >= comfortGradeRank("A") || !containsAdmissionLanguage(basis)) return basis;
+    return `原复核理由：${basis} 当前最终等级为 ${comfortGradeText(grade)}，这只保留为支持依据，不代表当前准入。`;
+  }
+
+  function isCandidateEconomicsCondition(text) {
+    return /候选经济性|not_evaluated|具体报价|候选报价|净补偿|权利金补偿|候选结构的经济性|经济性与风险|不构成评级依据|实际可执行性未评估|可执行性未评估/.test(String(text || ""));
+  }
+
+  function isMarketCounterSegment(text) {
+    return /价格|空间|结构|Gamma|GEX|锚|墙|翻转|上行|下行|侵入|压力|主动|成交|CVD|量价|资金费率|宏观|波动|突破|失效|反证|拥挤|路径/.test(String(text || ""));
+  }
+
+  function stripCandidateEconomicsSegments(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    const segments = raw.match(/[^。；;.!?\n]+[。；;.!?]?/g) || [raw];
+    return segments
+      .map((segment) => segment.trim())
+      .filter((segment) => segment && (!isCandidateEconomicsCondition(segment) || isMarketCounterSegment(segment)))
+      .join("");
+  }
+
+  function candidateLiquidityRiskText(text) {
+    return /薄|流动性|liquidity|周末|末日|周末轮/i.test(String(text || ""))
+      ? "执行层仍需复核薄流动性与成交风险；这不是信号评级的升级门。"
+      : "";
+  }
+
+  function comfortSideCounterText(side) {
+    const text = side.market_counter_cn || side.counter_evidence_cn || "未识别到主要反对理由。";
+    const stripped = stripCandidateEconomicsSegments(text);
+    if (stripped) return stripped;
+    if (isCandidateEconomicsCondition(text)) {
+      return candidateLiquidityRiskText(text) || "尚无可用反对说明。";
+    }
+    return text;
+  }
+
+  function sideComfortCard(side, label, doc) {
+    const grade = comfortGradeText(side.final_grade);
+    const gradeKey = comfortGradeKey(side.final_grade);
+    const isUnrated = !gradeKey || side.status === "UNRATED";
+    const refs = asArray(side.evidence_refs).map((ref) => sourceRefLink(ref, doc)).join("");
+    const counterRefs = asArray(side.counter_evidence_refs).map((ref) => sourceRefLink(ref, doc)).join("");
+    const upgradeRefs = comfortGradeKey(side.final_grade) === "S"
+      ? asArray(side.s_upgrade_evidence_refs).map((ref) => sourceRefLink(ref, doc)).join("")
+      : "";
+    return `
+      <article class="comfort-side-card ${comfortGradeClass(side.final_grade)}">
+        <div class="comfort-side-head">
+          <strong>${escapeHtml(label)}</strong>
+          <span class="badge ${comfortGradeClass(side.final_grade)}">${escapeHtml(grade)}</span>
+        </div>
+        ${isUnrated
+          ? `<p><strong>保留观察</strong>：模型尚未给出有效等级，以下为保留观察：${escapeHtml(side.basis_cn || "暂未完成有效评级。")}</p>`
+          : `<p><strong>${gradeKey === "D" ? "回避理由" : "支持理由"}</strong>：${escapeHtml(comfortSideBasisText(side))}</p>`}
+        <p><strong>主要反对</strong>：${escapeHtml(comfortSideCounterText(side))}</p>
+        ${comfortGradeKey(side.final_grade) === "S" && side.s_upgrade_basis_cn ? `<p><strong>S级额外依据</strong>：${escapeHtml(side.s_upgrade_basis_cn)}</p>` : ""}
+        ${refs ? `<div class="source-ref-row">${refs}</div>` : ""}
+        ${counterRefs ? `<div class="source-ref-row">${counterRefs}</div>` : ""}
+        ${upgradeRefs ? `<div class="source-ref-row">${upgradeRefs}</div>` : ""}
+      </article>
+    `;
+  }
+
+  function renderComfortLimitList(view) {
+    const rows = [];
+    let filteredEconomics = false;
+    SIGNAL_COMFORT_SIDES.forEach(({ key, label }) => {
+      const side = asObject(view[key]);
+      asArray(side.cap_reasons_cn).forEach((text) => rows.push(`${label}：${text}`));
+      asArray(side.unresolved_conditions_cn).forEach((text) => {
+        if (isCandidateEconomicsCondition(text)) {
+          const liquidityRisk = candidateLiquidityRiskText(text);
+          if (liquidityRisk) rows.push(`${label}：${liquidityRisk}`);
+          filteredEconomics = true;
+          return;
+        }
+        rows.push(`${label}：${text}`);
+      });
+    });
+    const economicsNote = filteredEconomics
+      ? `<p class="comfort-economics-note">具体报价与补偿在交易准备时确认，不是信号评级的必要输入。</p>`
+      : "";
+    const list = rows.length
+      ? `<ul class="plain-list">${rows.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : `<p>当前没有声明额外限级原因，继续看下一观察条件。</p>`;
+    return `${list}${economicsNote}`;
+  }
+
+  function renderComfortNextList(view) {
+    const rows = SIGNAL_COMFORT_SIDES.map(({ key, label }) => {
+      const side = asObject(view[key]);
+      return `${label}：${side.next_observation_cn || "等待下一条有效观察。"}`;
+    });
+    return `<ul class="plain-list">${rows.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  }
+
+  function renderSignalComfort(doc) {
+    if (hasSignalEvidenceV2Surface(doc)) return renderSignalEvidenceDecision(doc);
+    const stateView = signalComfortState(doc);
+    if (stateView.state === "invalid") {
+      return section("本卡行动结论", "本卡只显示通过核验的行动等级；资料不足时保留市场事实。", `
+        <div class="comfort-panel is-unavailable">
+          <div class="comfort-headline">
+            <span>综合评级</span>
+            <strong>暂未完成有效评级</strong>
+            <p>评级资料暂不能用于当前行动结论；保留本卡市场观察和边界事实。</p>
+          </div>
+        </div>
+      `, "signal-comfort");
+    }
+    if (!stateView.view || stateView.state === "missing") {
+      return section("本卡行动结论", "本卡只说明当前行动优先级；旧卡不会用旧分数补造等级。", `
+        <div class="comfort-panel is-history">
+          <div class="comfort-headline">
+            <span>综合评级</span>
+            <strong>历史版本未综合评级</strong>
+            <p>历史版本未综合评级；保留本卡市场观察、边界事实和已有深入分析。</p>
+          </div>
+        </div>
+      `, "signal-comfort");
+    }
+    const view = stateView.view;
+    const headline = view.headline;
+    return section("本卡行动结论", "D 到 S 表示当前信号对末日垂直信用价差的行动优先级，不表示胜率。", `
+      <div class="comfort-panel ${comfortGradeClass(headline.final_grade)}">
+        <div class="comfort-headline">
+          <span>综合评级</span>
+          <strong>${escapeHtml(`${comfortGradeText(headline.final_grade)}｜${comfortFocusSideText(headline.focus_side)}`)}</strong>
+          <p>${escapeHtml(comfortCurrentActionText(view))}</p>
+          <p>评级时点：${escapeHtml(signalRatingAsOfText(view))}。候选两腿、报价、费用、净补偿与退出条件仍在候选交易层确认。</p>
+        </div>
+        <div class="comfort-side-grid">
+          ${sideComfortCard(view.put_credit, "Put 信用价差", doc)}
+          ${sideComfortCard(view.call_credit, "Call 信用价差", doc)}
+        </div>
+        <div class="comfort-limit-grid">
+          <div>
+            <h3 class="subsection-title">为什么停在这个等级</h3>
+            ${renderComfortLimitList(view)}
+          </div>
+          <div>
+            <h3 class="subsection-title">下一观察条件</h3>
+            ${renderComfortNextList(view)}
+          </div>
+        </div>
+      </div>
+    `, "signal-comfort");
+  }
+
+  const SIGNAL_RATING_SCHEMA = "signal_rating@1.0.0";
+  const SIGNAL_RATING_SCOPE = "side_environment_v1";
+  const SIGNAL_RATING_ECONOMICS = "not_evaluated";
+  const SIGNAL_RATING_CLAIMS = [
+    { key: "structure", label: "结构支持" },
+    { key: "put_pressure", label: "Put 信用价差环境" },
+    { key: "call_pressure", label: "Call 信用价差环境" }
+  ];
+  const SIGNAL_RATING_STATUS_LABELS = {
+    SUPPORTED: "有支持",
+    CONFLICTED: "有冲突",
+    OPPOSED: "有反对",
+    INSUFFICIENT: "依据不足"
+  };
+  const SIGNAL_RATING_STATUS_SET = new Set(Object.keys(SIGNAL_RATING_STATUS_LABELS));
+
+  function signalRatingStatusKey(value) {
+    const raw = rawEnum(value || "INSUFFICIENT").toUpperCase();
+    return SIGNAL_RATING_STATUS_SET.has(raw) ? raw : "INSUFFICIENT";
+  }
+
+  function signalRatingStatusLabel(value) {
+    return SIGNAL_RATING_STATUS_LABELS[signalRatingStatusKey(value)];
+  }
+
+  function signalRatingStatusClass(value) {
+    const status = signalRatingStatusKey(value).toLowerCase();
+    return `is-${status}`;
+  }
+
+  function signalRatingBadgeClass(value) {
+    const status = signalRatingStatusKey(value);
+    if (status === "SUPPORTED") return "is-good";
+    if (status === "OPPOSED") return "is-bad";
+    return "is-wait";
+  }
+
+  function signalRatingScopeText(value) {
+    const raw = rawEnum(value);
+    const labels = {
+      side_environment_v1: "环境/侧别支持"
+    };
+    return labels[raw] || semanticCompact(raw) || raw || "未声明用途";
+  }
+
+  function signalRatingAsOfIsValid(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 && !Number.isNaN(new Date(numeric).getTime());
+  }
+
+  function parseSignalRatingTimeMs(value) {
+    if (isBlank(value)) return null;
+    if (typeof value === "number" || (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim()))) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return null;
+      return numeric < 100000000000 ? numeric * 1000 : numeric;
+    }
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function signalRatingActualSnapshotMs(doc) {
+    const analysis = analysisRound(doc);
+    const candidates = [
+      get(doc, "runtime_facts.snapshot_collected_time_ms"),
+      get(doc, "runtime_facts.snapshot_collected_time_utc8"),
+      get(doc, "runtime_facts.snapshot_collected_at"),
+      get(doc, "runtime.snapshot_collected_time_ms"),
+      get(doc, "runtime.snapshot_collected_time_utc8"),
+      get(doc, "runtime.snapshot_collected_at"),
+      get(doc, "provenance.snapshot_collected_time_ms"),
+      get(doc, "provenance.snapshot_collected_time_utc8"),
+      get(doc, "provenance.actual_snapshot_time_ms"),
+      get(doc, "provenance.actual_snapshot_time"),
+      analysis.snapshot_collected_time_ms,
+      analysis.snapshot_collected_ms,
+      analysis.snapshot_collected_time_utc8,
+      analysis.snapshot_collected_time,
+      analysis.snapshot_collected_at,
+      analysis.actual_snapshot_time_ms,
+      analysis.actual_snapshot_time,
+      get(doc, "snapshot_collected_time_ms"),
+      get(doc, "snapshot_collected_time_utc8"),
+      get(doc, "snapshot_collected_at")
+    ];
+    for (const candidate of candidates) {
+      const parsed = parseSignalRatingTimeMs(candidate);
+      if (parsed !== null) return parsed;
+    }
+    return null;
+  }
+
+  function signalRatingEventConfirmedMs(doc) {
+    return parseSignalRatingTimeMs(confirmedAt(doc));
+  }
+
+  function signalRatingExpectedAsOfMs(doc) {
+    return signalRatingActualSnapshotMs(doc) ?? signalRatingEventConfirmedMs(doc);
+  }
+
+  function signalRatingAsOfCardError(value, doc, label, options = {}) {
+    if (!signalRatingAsOfIsValid(value)) return `${label}.as_of_ms 非法`;
+    const observedMs = Number(value);
+    if (options.checkExpected === false) return null;
+    const expectedMs = signalRatingExpectedAsOfMs(doc);
+    if (expectedMs !== null && Math.abs(observedMs - expectedMs) > 1000) {
+      return `${label}.as_of_ms 与实际快照/确认时间不一致`;
+    }
+    return null;
+  }
+
+  function signalRatingClaimSummary(claim) {
+    const view = asObject(claim);
+    return {
+      status: signalRatingStatusKey(view.status),
+      summary_cn: isBlank(view.summary_cn) ? "该主张没有提供可读摘要。" : String(view.summary_cn)
+    };
+  }
+
+  function signalRatingSummaryFromRating(rating) {
+    const view = asObject(rating);
+    const claims = asObject(view.claims);
+    return {
+      schema: view.schema,
+      rating_scope: view.rating_scope,
+      as_of_ms: view.as_of_ms,
+      structure: signalRatingClaimSummary(claims.structure),
+      put_pressure: signalRatingClaimSummary(claims.put_pressure),
+      call_pressure: signalRatingClaimSummary(claims.call_pressure)
+    };
+  }
+
+  function signalRatingSummaryValidation(summary, doc = null) {
+    const view = asObject(summary);
+    const errors = [];
+    if (view.schema !== SIGNAL_RATING_SCHEMA) errors.push("signal_rating_summary.schema 不匹配");
+    if (view.rating_scope !== SIGNAL_RATING_SCOPE) errors.push("signal_rating_summary.rating_scope 不匹配");
+    const asOfError = signalRatingAsOfCardError(view.as_of_ms, doc || {}, "signal_rating_summary", { checkExpected: false });
+    if (asOfError) errors.push(asOfError);
+    SIGNAL_RATING_CLAIMS.forEach(({ key }) => {
+      const claim = asObject(view[key]);
+      if (!Object.keys(claim).length) {
+        errors.push(`signal_rating_summary.${key} 缺失`);
+      } else if (!SIGNAL_RATING_STATUS_SET.has(rawEnum(claim.status).toUpperCase())) {
+        errors.push(`signal_rating_summary.${key}.status 非法`);
+      }
+    });
+    return { valid: errors.length === 0, errors };
+  }
+
+  function signalRatingValidation(doc) {
+    const rating = asObject(get(doc, "signal_rating", {}));
+    if (!Object.keys(rating).length) return { state: "missing", valid: false, rating: null, errors: [], warnings: [] };
+    const errors = [];
+    const warnings = [];
+    if (rating.schema !== SIGNAL_RATING_SCHEMA) errors.push("signal_rating.schema 不匹配");
+    if (rating.rating_scope !== SIGNAL_RATING_SCOPE) errors.push("signal_rating.rating_scope 不匹配");
+    const asOfError = signalRatingAsOfCardError(rating.as_of_ms, doc, "signal_rating");
+    if (asOfError) errors.push(asOfError);
+    if (rating.candidate_quote_economics !== SIGNAL_RATING_ECONOMICS) {
+      errors.push("candidate_quote_economics 必须为 not_evaluated");
+    }
+    const claims = asObject(rating.claims);
+    SIGNAL_RATING_CLAIMS.forEach(({ key }) => {
+      const claim = asObject(claims[key]);
+      if (!Object.keys(claim).length) {
+        errors.push(`claims.${key} 缺失`);
+        return;
+      }
+      if (!SIGNAL_RATING_STATUS_SET.has(rawEnum(claim.status).toUpperCase())) {
+        errors.push(`claims.${key}.status 非法`);
+      }
+      signalRatingValidateClaimShape(key, claim, errors);
+    });
+    const refIssues = signalRatingSourceRefIssues(rating, doc);
+    if (refIssues.errors.length) errors.push(`有 ${refIssues.errors.length} 个支持/反对 source_ref 不能解析到当前原始截面`);
+    if (refIssues.warnings.length) warnings.push(`有 ${refIssues.warnings.length} 个预期缺失/上下文 source_ref 未命中原始截面，已按普通标记显示`);
+    return { state: errors.length ? "invalid" : "valid", valid: errors.length === 0, rating, errors, warnings };
+  }
+
+  function signalRatingValidateClaimShape(key, claim, errors) {
+    const status = signalRatingStatusKey(claim.status);
+    ["required_inputs", "support", "opposition", "unknowns"].forEach((field) => {
+      if (!Array.isArray(claim[field])) errors.push(`claims.${key}.${field} 必须为数组`);
+    });
+    const requiredInputs = asArray(claim.required_inputs);
+    requiredInputs.forEach((entry, index) => {
+      const item = asObject(entry);
+      if (!Object.keys(item).length || Array.isArray(entry)) {
+        errors.push(`claims.${key}.required_inputs[${index}] 必须为对象`);
+        return;
+      }
+      if (isBlank(item.source_ref)) errors.push(`claims.${key}.required_inputs[${index}].source_ref 缺失`);
+      if (isBlank(item.source_group)) errors.push(`claims.${key}.required_inputs[${index}].source_group 缺失`);
+      if (isBlank(item.status)) errors.push(`claims.${key}.required_inputs[${index}].status 缺失`);
+      if (typeof item.usable !== "boolean") errors.push(`claims.${key}.required_inputs[${index}].usable 必须为布尔值`);
+      if (item.usable === false && isBlank(item.reason_cn)) {
+        errors.push(`claims.${key}.required_inputs[${index}].reason_cn 缺失`);
+      }
+    });
+    if (requiredInputs.some((entry) => asObject(entry).usable === false) && status !== "INSUFFICIENT") {
+      errors.push(`claims.${key}.required_inputs 不可用时 status 必须为 INSUFFICIENT`);
+    }
+    const supportCount = asArray(claim.support).length;
+    const oppositionCount = asArray(claim.opposition).length;
+    if (status === "SUPPORTED" && (!supportCount || oppositionCount)) {
+      errors.push(`claims.${key}.status=SUPPORTED 必须只有支持依据`);
+    }
+    if (status === "CONFLICTED" && (!supportCount || !oppositionCount)) {
+      errors.push(`claims.${key}.status=CONFLICTED 必须同时有支持和反对依据`);
+    }
+    if (status === "OPPOSED" && (!oppositionCount || supportCount)) {
+      errors.push(`claims.${key}.status=OPPOSED 必须只有反对依据`);
+    }
+    [
+      ["support", "basis_cn"],
+      ["opposition", "basis_cn"],
+      ["unknowns", "reason_cn"]
+    ].forEach(([field, reasonField]) => {
+      asArray(claim[field]).forEach((entry, index) => {
+        const item = asObject(entry);
+        if (!Object.keys(item).length || Array.isArray(entry)) {
+          errors.push(`claims.${key}.${field}[${index}] 必须为对象`);
+          return;
+        }
+        if (isBlank(item.source_ref)) errors.push(`claims.${key}.${field}[${index}].source_ref 缺失`);
+        if (isBlank(item[reasonField])) errors.push(`claims.${key}.${field}[${index}].${reasonField} 缺失`);
+      });
+    });
+  }
+
+  function signalRatingDocumentState(doc) {
+    const rawRating = asObject(get(doc, "signal_rating", {}));
+    if (Object.keys(rawRating).length) {
+      const validation = signalRatingValidation(doc);
+      if (!validation.valid) {
+        return { state: "invalid", rating: rawRating, summary: {}, errors: validation.errors, warnings: validation.warnings };
+      }
+      return {
+        state: "valid",
+        rating: rawRating,
+        summary: signalRatingSummaryFromRating(rawRating),
+        errors: [],
+        warnings: validation.warnings
+      };
+    }
+    const summary = asObject(get(doc, "signal_rating_summary", {}));
+    if (Object.keys(summary).length) {
+      const validation = signalRatingSummaryValidation(summary, doc);
+      return validation.valid
+        ? { state: "summary", rating: null, summary, errors: [], warnings: [] }
+        : { state: "invalid_summary", rating: null, summary, errors: validation.errors, warnings: [] };
+    }
+    return { state: "missing", rating: null, summary: {}, errors: [], warnings: [] };
+  }
+
+  function signalRatingMetricText(doc, claimKey) {
+    const state = signalRatingDocumentState(doc);
+    if (state.state === "valid" || state.state === "summary") {
+      return signalRatingStatusLabel(get(state.summary, `${claimKey}.status`));
+    }
+    if (state.state === "invalid" || state.state === "invalid_summary") return "评级不可用";
+    return "历史未评级";
+  }
+
+  function signalRatingIndexStats(doc) {
+    const ratingState = signalRatingDocumentState(doc);
+    const boundary = semanticCompact(support(doc)) || "未知边界";
+    const durability = signalDurability(doc);
+    const durabilityStats = [
+      `耐用 ${durabilityScoreText(durability)}`,
+      durabilityComfortBrief(durability),
+      `边界 ${boundary}`
+    ];
+    if (ratingState.state === "valid" || ratingState.state === "summary") {
+      return SIGNAL_RATING_CLAIMS.map(({ key, label }) =>
+        `${label.replace(" 信用价差环境", "")} ${signalRatingStatusLabel(get(ratingState.summary, `${key}.status`))}`
+      ).concat(durabilityStats);
+    }
+    if (ratingState.state === "invalid" || ratingState.state === "invalid_summary") {
+      return ["评级不可用", `质量 ${semanticCompact(qualityOverall(doc))}`, "候选经济性未评估", ...durabilityStats];
+    }
+    return ["历史未评级", `质量 ${semanticCompact(qualityOverall(doc))}`, "候选经济性未评估", ...durabilityStats];
+  }
+
+  function signalRatingSearchText(doc) {
+    const ratingState = signalRatingDocumentState(doc);
+    if (!(ratingState.state === "valid" || ratingState.state === "summary")) return ratingState.state;
+    return SIGNAL_RATING_CLAIMS.map(({ key, label }) => [
+      label,
+      signalRatingStatusLabel(get(ratingState.summary, `${key}.status`)),
+      get(ratingState.summary, `${key}.summary_cn`, "")
+    ].join(" ")).join(" ");
+  }
+
+  function signalRatingClaim(doc, rating, key) {
+    return asObject(asObject(asObject(rating).claims)[key]);
+  }
+
+  function signalRatingSourceRow(entry, doc, reasonField = "basis_cn") {
+    const item = asObject(entry);
+    const reason = item[reasonField] || item.basis_cn || item.reason_cn || "未说明";
+    const source = item.source_ref
+      ? sourceRefLink(item.source_ref, doc, item.source_group || item.source_ref)
+      : `<span class="chip">${escapeHtml(item.source_group || "未给 source_ref")}</span>`;
+    return `<li>${source}<p>${escapeHtml(reason)}</p></li>`;
+  }
+
+  function signalRatingEntryList(items, doc, emptyText, reasonField = "basis_cn") {
+    const rows = asArray(items).map((item) => signalRatingSourceRow(item, doc, reasonField)).join("");
+    return rows ? `<ul class="signal-rating-entry-list">${rows}</ul>` : `<div class="empty-inline">${escapeHtml(emptyText)}</div>`;
+  }
+
+  function signalRatingRequiredInputView(input, index) {
+    const item = asObject(input);
+    if (Object.keys(item).length && !Array.isArray(input)) {
+      return {
+        source_ref: item.source_ref,
+        source_group: item.source_group,
+        status: item.status,
+        usable: item.usable,
+        reason_cn: item.reason_cn,
+        impact_cn: item.impact_cn,
+        index
+      };
+    }
+    return {
+      source_ref: String(input || ""),
+      source_group: "旧格式",
+      status: "UNKNOWN",
+      usable: null,
+      reason_cn: "旧格式必要输入；仅作兼容显示，不能通过 v1 原生校验。",
+      impact_cn: "",
+      index
+    };
+  }
+
+  function signalRatingRequiredInputs(claim, doc) {
+    const values = asArray(asObject(claim).required_inputs);
+    if (!values.length) return `<div class="empty-inline">必要输入未声明</div>`;
+    return `<div class="signal-rating-input-list">${values.map((item, index) => {
+      const input = signalRatingRequiredInputView(item, index);
+      const source = input.source_ref
+        ? sourceRefLink(input.source_ref, doc, input.source_group || input.source_ref)
+        : `<span class="chip">${escapeHtml(input.source_group || `input ${index + 1}`)}</span>`;
+      const usable = input.usable === true ? "可用" : (input.usable === false ? "不可用" : "可用性未声明");
+      return `
+        <div class="signal-rating-input-row ${input.usable === false ? "is-bad" : ""}">
+          ${source}
+          <span class="chip">${escapeHtml(semanticCompact(input.status) || "状态未声明")}</span>
+          <span class="chip">${escapeHtml(usable)}</span>
+          ${input.reason_cn ? `<p>${escapeHtml(input.reason_cn)}</p>` : ""}
+          ${input.impact_cn ? `<p><strong>影响</strong>：${escapeHtml(input.impact_cn)}</p>` : ""}
+        </div>
+      `;
+    }).join("")}</div>`;
+  }
+
+  function renderSignalRatingClaim(doc, title, claim) {
+    const view = asObject(claim);
+    const status = signalRatingStatusKey(view.status);
+    return `
+      <article class="signal-rating-claim ${signalRatingStatusClass(status)}">
+        <div class="signal-rating-claim-head">
+          <strong>${escapeHtml(title)}</strong>
+          <span class="badge ${signalRatingBadgeClass(status)}">${escapeHtml(signalRatingStatusLabel(status))}</span>
+        </div>
+        <p>${escapeHtml(view.summary_cn || "该侧没有提供可读摘要。")}</p>
+        <details class="signal-rating-detail">
+          <summary>证据、反证与未知</summary>
+          <div class="signal-rating-inputs">${signalRatingRequiredInputs(view, doc)}</div>
+          <h3 class="subsection-title">支持依据</h3>
+          ${signalRatingEntryList(view.support, doc, "无支持依据")}
+          <h3 class="subsection-title">反对依据</h3>
+          ${signalRatingEntryList(view.opposition, doc, "无反对依据")}
+          <h3 class="subsection-title">未知项</h3>
+          ${signalRatingEntryList(view.unknowns, doc, "无未知项", "reason_cn")}
+        </details>
+      </article>
+    `;
+  }
+
+  function signalRatingRefValue(entry) {
+    if (typeof entry === "string" || typeof entry === "number") return String(entry);
+    const view = asObject(entry);
+    return firstTextValue(view.source_ref, view.ref, view.path, "");
+  }
+
+  function signalRatingUsedSourceRefs(rating) {
+    const claims = asObject(asObject(rating).claims);
+    const refs = [
+      ...asArray(get(rating, "context.source_refs", [])).map(signalRatingRefValue)
+    ];
+    SIGNAL_RATING_CLAIMS.forEach(({ key }) => {
+      const claim = asObject(claims[key]);
+      asArray(claim.required_inputs).forEach((entry) => {
+        const ref = asObject(entry).source_ref;
+        if (!isBlank(ref)) refs.push(ref);
+      });
+      ["support", "opposition", "unknowns"].forEach((field) => {
+        asArray(claim[field]).forEach((entry) => {
+          const ref = asObject(entry).source_ref;
+          if (!isBlank(ref)) refs.push(ref);
+        });
+      });
+    });
+    return [...new Set(refs.map((ref) => String(ref)).filter(Boolean))];
+  }
+
+  function signalRatingSourceRefIssues(rating, doc) {
+    const claims = asObject(asObject(rating).claims);
+    const hardRefs = [];
+    const softRefs = [
+      ...asArray(get(rating, "context.source_refs", [])).map(signalRatingRefValue)
+    ];
+    SIGNAL_RATING_CLAIMS.forEach(({ key }) => {
+      const claim = asObject(claims[key]);
+      asArray(claim.required_inputs).forEach((entry) => {
+        const ref = asObject(entry).source_ref;
+        if (!isBlank(ref)) softRefs.push(String(ref));
+      });
+      asArray(claim.unknowns).forEach((entry) => {
+        const ref = asObject(entry).source_ref;
+        if (!isBlank(ref)) softRefs.push(String(ref));
+      });
+      ["support", "opposition"].forEach((field) => {
+        asArray(claim[field]).forEach((entry) => {
+          const ref = asObject(entry).source_ref;
+          if (!isBlank(ref)) hardRefs.push(String(ref));
+        });
+      });
+    });
+    const unresolvedHard = [...new Set(hardRefs)].filter((ref) => !hasRawTraceTarget(ref, doc));
+    const unresolvedSoft = [...new Set(softRefs)]
+      .filter((ref) => !hasRawTraceTarget(ref, doc))
+      .filter((ref) => !unresolvedHard.includes(ref));
+    return { errors: unresolvedHard, warnings: unresolvedSoft };
+  }
+
+  function renderSignalRatingKeyOpposition(rating, doc) {
+    const claims = asObject(asObject(rating).claims);
+    const rows = [];
+    for (const { key, label } of SIGNAL_RATING_CLAIMS) {
+      const item = asObject(asArray(asObject(claims[key]).opposition)[0]);
+      if (!Object.keys(item).length) continue;
+      rows.push({ label, item });
+    }
+    if (!rows.length) return `<p>评级对象内未识别到反对依据。</p>`;
+    return `<ul class="plain-list signal-rating-opposition-list">${rows.map(({ label, item }) => `
+      <li><strong>${escapeHtml(label)}</strong>${item.source_ref ? sourceRefLink(item.source_ref, doc, item.source_group || item.source_ref) : ""}<p>${escapeHtml(item.basis_cn || item.reason_cn || "存在反对依据")}</p></li>
+    `).join("")}</ul><p class="signal-rating-order-note">按主张顺序展示，每项取首条反对依据；未声明强弱排序。</p>`;
+  }
+
+  function signalRatingUnknownList(rating, doc) {
+    const rows = [];
+    const claims = asObject(asObject(rating).claims);
+    SIGNAL_RATING_CLAIMS.forEach(({ key, label }) => {
+      asArray(asObject(claims[key]).unknowns).forEach((item) => {
+        const view = asObject(item);
+        rows.push({
+          label,
+          source_ref: view.source_ref,
+          reason_cn: view.reason_cn || "未知原因未说明"
+        });
+      });
+    });
+    if (!rows.length) return `<div class="empty-inline">当前评级没有声明未知项。</div>`;
+    return `<ul class="plain-list signal-rating-unknown-list">${rows.slice(0, 6).map((row) => `
+      <li><strong>${escapeHtml(row.label)}</strong>${row.source_ref ? sourceRefLink(row.source_ref, doc) : ""}<p>${escapeHtml(row.reason_cn)}</p></li>
+    `).join("")}</ul>`;
+  }
+
+  function signalRatingAsOfText(rating) {
+    const ms = numericMs(asObject(rating).as_of_ms);
+    if (ms !== null && ms > 0) return dateText(isoFromEpochMs(ms));
+    const iso = firstPresent(rating.as_of, rating.as_of_iso, rating.observed_at);
+    return isBlank(iso) ? "未提供评级时点" : dateText(iso);
+  }
+
+  function signalRatingMarketStateText(rating) {
+    const market = asObject(asObject(rating).market_state);
+    const legacy = rawEnum(market.legacy_label);
+    const items = [];
+    if (/Anchor\s+Mean-Reversion/i.test(legacy)) {
+      items.push("旧 Anchor Mean-Reversion 在本页按“TMVF 方向中性，回归尚未证明”解释。");
+    } else if (!isBlank(legacy)) {
+      items.push(`旧标签：${semanticCompact(legacy) || legacy}。`);
+    }
+    if (!isBlank(market.interpretation_cn)) items.push(String(market.interpretation_cn));
+    if (rawEnum(market.mean_reversion_validation).toLowerCase() === "not_established") {
+      items.push("锚回归有效性尚未由评级时点之前的证据建立。");
+    }
+    if (market.trend_acceleration_available === false) {
+      items.push("Trend Acceleration 未产出，不作为本卡检测结果。");
+    }
+    return items.length ? items.join(" ") : "未提供额外市场状态解释。";
+  }
+
+  function signalRatingContextLine(rating) {
+    const context = asObject(asObject(rating).context);
+    const windowText = isBlank(context.nr_state) ? "未声明" : nrStateText(context.nr_state);
+    return `窗口：${windowText}；未来有效时长：${futureValidityText(context.future_validity)}`;
+  }
+
+  function signalRatingBoundaryView(doc) {
+    const blocking = asObject(get(doc, "blocking", {}));
+    const matrix = asObject(get(doc, "decision_matrix", {}));
+    const currentDecision = decision(doc);
+    return {
+      support_label: firstTextValue(currentDecision.support_label, support(doc), matrix.support_label, matrix.model_trade_support, "UNKNOWN"),
+      side_hint: firstTextValue(currentDecision.side_hint, matrix.side_hint, matrix.trade_side, matrix.model_trade_side, "UNKNOWN"),
+      has_block: boundaryHasBlock(blocking.has_block, matrix.has_block, currentDecision.has_block),
+      hard_veto: firstTextValue(blocking.hard_veto, matrix.hard_veto, currentDecision.hard_veto, null),
+      execution_allowed: boundaryExecutionAllowed(matrix.execution_allowed, currentDecision.execution_allowed)
+    };
+  }
+
+  function signalRatingConstraintMismatches(boundary, rating) {
+    const constraints = asObject(asObject(rating).model_constraints);
+    if (!Object.keys(constraints).length) return [];
+    const checks = [
+      ["support_label", "Support"],
+      ["side_hint", "Side"],
+      ["has_block", "Block"],
+      ["hard_veto", "Hard veto"],
+      ["execution_allowed", "Execution"]
+    ];
+    return checks
+      .filter(([key]) => constraints[key] !== undefined && constraints[key] !== boundary[key])
+      .map(([key, label]) => `${label}: 原字段 ${scalarText(boundary[key], { translate: false })} / 评级副本 ${scalarText(constraints[key], { translate: false })}`);
+  }
+
+  function renderSignalRatingBoundary(doc, rating) {
+    const boundary = signalRatingBoundaryView(doc);
+    const mismatches = rating ? signalRatingConstraintMismatches(boundary, rating) : [];
+    const execution = boundary.execution_allowed === true ? "原字段显示允许" : "只读/未授权";
+    return `
+      <div class="signal-rating-boundary">
+        <strong>原机器边界</strong>
+        <div class="signal-rating-boundary-badges">
+          ${statusBadge("Support", boundary.support_label)}
+          ${statusBadge("Side", boundary.side_hint)}
+          ${statusBadge("Block", boundary.has_block === true ? "BLOCKED" : "OK")}
+          ${statusBadge("Execution", execution)}
+          ${boundary.hard_veto ? statusBadge("Hard veto", boundary.hard_veto) : `<span class="badge is-good">硬否决: 无</span>`}
+        </div>
+        <p>评级只解释环境和侧别支持，不改变 WAIT、hard block、NR、trigger 或执行许可。原字段是权威来源，评级内 model_constraints 只做一致性核对。</p>
+        ${rating ? `<details class="signal-rating-constraint-check"><summary>评级副本核对</summary>${mismatches.length ? `<ul class="plain-list">${mismatches.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : `<p>评级副本与原 decision / blocking / decision_matrix 一致。</p>`}</details>` : ""}
+      </div>
+    `;
+  }
+
+  function renderSignalRatingMetadataDetails(rating, doc) {
+    const context = asObject(asObject(rating).context);
+    const replay = asObject(get(doc, "provenance.research_replay", {}));
+    const trigger = firstPresent(context.trigger, context.trigger_state, context.trigger_reason, rating.trigger);
+    const sourcePath = firstPresent(context.producer_source_path, context.source_path, context.code_path, rating.producer_source_path);
+    const round = firstPresent(context.analysis_round, rating.analysis_round);
+    const refs = signalRatingUsedSourceRefs(rating);
+    return `
+      <details class="signal-rating-metadata">
+        <summary>评级证据元数据</summary>
+        <dl class="kv-grid">
+          ${kv("schema", rating.schema, { translate: false })}
+          ${kv("rating_scope", signalRatingScopeText(rating.rating_scope), { translate: false })}
+          ${kv("as_of_ms", rating.as_of_ms, { translate: false })}
+          ${kv("episode_id", context.episode_id, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("trigger", trigger, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("nr_state", context.nr_state, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("nr_active", context.nr_active, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("future_validity", context.future_validity, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("analysis_round", round, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("producer_source_path", sourcePath, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("candidate_quote_economics", rating.candidate_quote_economics)}
+          ${kv("research_replay.source_card_id", replay.source_card_id, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+          ${kv("research_replay.source_record_hash", replay.source_record_hash, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
+        </dl>
+        ${refs.length ? `<div class="source-ref-row signal-rating-source-row"><span class="chip">评级来源</span>${sourceRefList(refs, doc)}</div>` : ""}
+      </details>
+    `;
+  }
+
+  function renderSignalRatingResearchReplayNotice(doc) {
+    const replay = asObject(get(doc, "provenance.research_replay", {}));
+    if (!Object.keys(replay).length) return "";
+    const notice = replay.notice_cn || "离线重评，不是当时原生评级。";
+    return `
+      <div class="signal-rating-replay-notice">
+        <strong>研究重放边界</strong>
+        <p>${escapeHtml(notice)}</p>
+      </div>
+    `;
+  }
+
+  function renderSignalRatingInvalid(doc, state) {
+    return section("信号评级｜环境与侧别支持", "producer 原生评级；格式不合法时隔离显示，不前端补造结论。", `
+      <div class="signal-rating-panel is-unavailable">
+        <div class="signal-rating-topline">
+          <div>
+            <span class="signal-rating-kicker">评级不可用</span>
+            <strong>检测到 signal_rating 对象，但格式未通过 v1 校验。</strong>
+            <p>${escapeHtml(asArray(state.errors).join("；") || "未知格式问题。")}</p>
+          </div>
+          <span class="badge is-bad">不可作为评级阅读</span>
+        </div>
+        ${renderSignalRatingResearchReplayNotice(doc)}
+        ${renderSignalRatingBoundary(doc, null)}
+      </div>
+    `, "signal-rating");
+  }
+
+  function renderSignalRatingMissing(doc) {
+    return section("信号评级｜环境与侧别支持", "旧卡只说明历史边界，不回填新评级。", `
+      <div class="signal-rating-panel is-history">
+        <div class="signal-rating-topline">
+          <div>
+            <span class="signal-rating-kicker">历史版本未评级</span>
+            <strong>这张卡没有原生环境评级。</strong>
+            <p>页面保留已有市场事实、证据账本、LLM 和阻断边界；不会把旧分数换算成新评级。</p>
+          </div>
+          <span class="badge is-wait">环境评级缺失</span>
+        </div>
+        ${renderSignalRatingBoundary(doc, {})}
+      </div>
+    `, "signal-rating");
+  }
+
+  function renderSignalRating(doc) {
+    const state = signalRatingDocumentState(doc);
+    if (state.state === "missing") return renderSignalRatingMissing(doc);
+    if (state.state === "invalid" || state.state === "invalid_summary") return renderSignalRatingInvalid(doc, state);
+    if (state.state === "summary") {
+      return section("信号评级｜环境与侧别支持", "已加载摘要；完整证据打开卡后展示。", `
+        <div class="signal-rating-panel is-history">
+          <div class="signal-rating-topline">
+            <div>
+              <span class="signal-rating-kicker">评级摘要</span>
+              <strong>完整环境评级尚未加载。</strong>
+              <p>打开这张卡后可查看支持、反对、未知和来源说明。</p>
+            </div>
+          </div>
+          ${renderSignalRatingResearchReplayNotice(doc)}
+          <div class="signal-rating-claims">
+            ${SIGNAL_RATING_CLAIMS.map(({ key, label }) => renderSignalRatingClaim(doc, label, asObject(state.summary[key]))).join("")}
+          </div>
+        </div>
+      `, "signal-rating");
+    }
+    const rating = state.rating;
+    const claims = SIGNAL_RATING_CLAIMS.map(({ key, label }) =>
+      renderSignalRatingClaim(doc, label, signalRatingClaim(doc, rating, key))).join("");
+    const nextObservations = asArray(rating.next_observations_cn);
+    return section("信号评级｜环境与侧别支持", "把当前信号解释成末日垂直信用价差的环境支持、反对和未知；不评估两腿报价或净补偿。", `
+      <div class="signal-rating-panel">
+        <div class="signal-rating-topline">
+          <div>
+            <span class="signal-rating-kicker">${escapeHtml(signalRatingScopeText(rating.rating_scope))}</span>
+            <strong>Put / Call 信用价差分别阅读，不合成胜率。</strong>
+            <p>评级时点：${escapeHtml(signalRatingAsOfText(rating))}；${escapeHtml(signalRatingContextLine(rating))}。</p>
+          </div>
+          <div class="signal-rating-economics">
+            <span>候选经济性</span>
+            <strong>未评估</strong>
+            <p>环境支持不能代替两腿、报价、费用、DTE、净补偿与退出条件。</p>
+          </div>
+        </div>
+        ${renderSignalRatingResearchReplayNotice(doc)}
+        <div class="signal-rating-claims">${claims}</div>
+        <div class="signal-rating-meta-grid">
+          <div>
+            <span>市场状态校正</span>
+            <p>${escapeHtml(signalRatingMarketStateText(rating))}</p>
+          </div>
+          <div>
+            <span>关键反对理由</span>
+            ${renderSignalRatingKeyOpposition(rating, doc)}
+          </div>
+          <div>
+            <span>未知项</span>
+            ${signalRatingUnknownList(rating, doc)}
+          </div>
+          <div>
+            <span>下一观察条件</span>
+            ${nextObservations.length ? `<ul class="plain-list">${nextObservations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : `<p>未声明下一观察。</p>`}
+          </div>
+        </div>
+        ${state.warnings.length ? `<p class="signal-rating-warning">${escapeHtml(state.warnings.join("；"))}</p>` : ""}
+        ${renderSignalRatingBoundary(doc, rating)}
+        ${renderSignalRatingMetadataDetails(rating, doc)}
+      </div>
+    `, "signal-rating");
   }
 
   function evidenceContext(evidence, doc) {
@@ -3613,7 +6394,10 @@
 
   function evidenceFact(label, value) {
     if (isNullish(value) || value === "") return "";
-    const text = textClip(value);
+    const normalized = typeof value === "boolean"
+      ? (value ? "是" : "否")
+      : normalizeComfortText(semanticCompact(value), String(value));
+    const text = textClip(normalized);
     return `<span class="evidence-fact"><span>${escapeHtml(label)}</span><strong title="${escapeHtml(text)}">${escapeHtml(text)}</strong></span>`;
   }
 
@@ -3622,7 +6406,7 @@
     if (key === "VOLQ" || key === "VXN" || key === "VIX") return `纳斯达克代理(${key})`;
     if (key === "DXY") return "美元(DXY)";
     if (key === "US10Y" || key === "TNX") return "美债10Y(US10Y)";
-    return key || "macro_proxy";
+    return key || "宏观代理";
   }
 
   function macroComponentValue(component) {
@@ -3643,8 +6427,8 @@
 
   function macroDirectionBackgroundText(regime, score, leanText) {
     const scoreText = scalarText(score, { translate: false, digits: 4 });
-    const regimeText = scalarText(regime, { translate: false });
-    return `${regimeText} / ${leanText} / macro_score ${scoreText}`;
+    const regimeText = normalizeComfortText(semanticCompact(regime), "未知");
+    return `${regimeText} / ${leanText} / 压力分数 ${scoreText}`;
   }
 
   function macroShockObject(ctx) {
@@ -3653,13 +6437,13 @@
 
   function macroShockGateText(ctx) {
     const shock = macroShockObject(ctx);
-    if (!Object.keys(shock).length) return "历史卡未提供冲击门字段";
-    const state = rawEnum(shock.state || (shock.block ? "BLOCK" : "CLEAR")) || "UNKNOWN";
+    if (!Object.keys(shock).length) return "历史卡未提供冲击限制状态";
+    const state = semanticCompact(shock.state || (shock.block ? "BLOCK" : "CLEAR")) || "未知";
     const delta = safeNumber(shock.volq_bps_delta);
     const deltaText = delta === null ? "VOLQ delta 暂缺" : `VOLQ ${number(delta, 1)}bp`;
     const confirmed = shock.direction_confirmed === true
       ? "DXY/US10Y 确认"
-      : (shock.direction_confirmed === false ? "未获方向确认" : "confirmation 暂缺");
+      : (shock.direction_confirmed === false ? "未获方向确认" : "确认状态暂缺");
     return `${state} / ${deltaText} / ${confirmed}`;
   }
 
@@ -3707,10 +6491,10 @@
       return {
         stanceLabel: "费率规范语义",
         stance: "无法判断",
-        sentence: "资金费率规范语义缺失，无法判断。页面不根据原始字段、历史归一化值或 effect 自行重判。",
+        sentence: "资金费率规范语义缺失，无法判断；本卡只保留已能确认的拥挤背景。",
         facts: [
           evidenceFact("语义状态", "无法判断"),
-          evidenceFact("EDB", "不计票")
+          evidenceFact("证据账本", "不参与方向判断")
         ]
       };
     }
@@ -3719,13 +6503,13 @@
     return {
       stanceLabel: "费率规范语义",
       stance: semantics.fee_bias_cn || semanticCompact(semantics.fee_bias) || "无法判断",
-      sentence: canonicalText,
+      sentence: normalizeComfortText(canonicalText, "资金费率规范语义已记录。"),
       facts: [
         evidenceFact("资金费率", ratePct === null ? "暂缺" : `${number(ratePct, 4)}%`),
         evidenceFact("拥挤阈值", thresholdPct === null ? "0.01%" : `${number(thresholdPct, 4)}%`),
         evidenceFact("拥挤状态", semanticCompact(semantics.crowding_state) || semantics.crowding_state),
         evidenceFact("反身性", semanticCompact(semantics.reflexivity_importance) || semantics.reflexivity_importance),
-        evidenceFact("EDB", semanticCompact(semantics.edb_participation) || semantics.edb_participation)
+        evidenceFact("证据账本", semanticCompact(semantics.edb_participation) || semantics.edb_participation)
       ]
     };
   }
@@ -3738,20 +6522,23 @@
     const leanText = semanticCompact(evidence.lean || evidenceAuxiliaryLean(evidence, { factor_cross_section: { skew: ctx.factor } })) || "UNKNOWN";
     return {
       stance: leanText,
-      sentence: `期权斜率投票 ${scalarText(vote, { translate: false, digits: 4 })}，风险逆转 ${scalarText(rrBlend, { translate: false, digits: 4 })}，当前判断为${leanText}。`,
+      sentence: `期权斜率数值 ${scalarText(vote, { translate: false, digits: 4 })}，风险逆转 ${scalarText(rrBlend, { translate: false, digits: 4 })}，当前判断为${leanText}。`,
       facts: [
-        evidenceFact("rr_blend", rrBlend),
-        evidenceFact("rr_z", rrZ),
-        evidenceFact("delta_rr", deltaRr),
-        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["vote_confidence"]))
+        evidenceFact("风险逆转", rrBlend),
+        evidenceFact("相对位置", rrZ),
+        evidenceFact("变化", deltaRr)
       ]
     };
   }
 
   function ggrAssessment(evidence, ctx) {
     const regime = evidenceFirstValue(evidence, ctx, ["regime", "market_state"]);
-    const multiplier = evidenceFirstNumber(evidence, ctx, ["confidence_multiplier"]);
     const veto = evidenceFirstValue(evidence, ctx, ["veto"]);
+    const gammaNotional = evidenceFirstNumber(evidence, ctx, ["net_gamma_notional_usd", "net_gamma_notional"]);
+    const netGammaFact = gammaNotional !== null && Math.abs(gammaNotional) >= 1000 ? durabilityUsdText(gammaNotional) : null;
+    const gammaProxyFact = gammaNotional !== null && Math.abs(gammaNotional) < 1000
+      ? `${gammaNotional > 0 ? "正向" : (gammaNotional < 0 ? "负向" : "中性")} ${number(gammaNotional, 4)}`
+      : null;
     const flipDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_flip_pct"]);
     const pinDistance = evidenceFirstNumber(evidence, ctx, ["distance_to_pin_pct"]);
     const stanceCode = evidenceAuxiliaryLean(evidence, { factor_cross_section: { gamma_regime: ctx.factor } });
@@ -3759,14 +6546,15 @@
     return {
       stanceLabel: "空间状态",
       stance,
-      sentence: `Gamma 结构 ${scalarText(regime, { translate: false })}，置信乘子 ${scalarText(multiplier, { translate: false, digits: 4 })}，这是期权空间安全/门控约束，不作为偏多或偏空方向票。`,
+      sentence: `Gamma 结构 ${normalizeComfortText(semanticCompact(regime), "未说明")}，这是期权空间安全与当前限制，不作为偏多或偏空方向依据。`,
       facts: [
-        evidenceFact("netGEX", evidenceFirstValue(evidence, ctx, ["net_gamma_notional_usd", "net_gamma_notional"])),
-        evidenceFact("flip", evidenceFirstValue(evidence, ctx, ["flip_point"])),
-        evidenceFact("dist_flip", flipDistance === null ? null : pctPoint(flipDistance)),
-        evidenceFact("dist_pin", pinDistance === null ? null : pctPoint(pinDistance)),
-        evidenceFact("spatial_role", stance),
-        evidenceFact("veto", veto)
+        evidenceFact("净 Gamma", netGammaFact),
+        evidenceFact("Gamma 代理", gammaProxyFact),
+        evidenceFact("翻转点", evidenceFirstValue(evidence, ctx, ["flip_point"])),
+        evidenceFact("距翻转点", flipDistance === null ? null : pctPoint(flipDistance)),
+        evidenceFact("距钉住位", pinDistance === null ? null : pctPoint(pinDistance)),
+        evidenceFact("空间作用", stance),
+        evidenceFact("否决", veto)
       ]
     };
   }
@@ -3778,12 +6566,12 @@
     const leanText = semanticCompact(evidence.lean || signedLean(blend)) || "UNKNOWN";
     return {
       stance: leanText,
-      sentence: `量价主干 blend ${scalarText(blend, { translate: false, digits: 4 })}，窗口冲突 ${scalarText(windowConflict, { translate: false })}，作为主方向骨架。`,
+      sentence: `量价主干强度 ${scalarText(blend, { translate: false, digits: 4 })}，窗口冲突 ${normalizeComfortText(semanticCompact(windowConflict), "未说明")}，作为主方向骨架。`,
       facts: [
-        evidenceFact("tmv_blend", blend),
-        evidenceFact("direction", direction),
-        evidenceFact("24h", evidenceFirstValue(evidence, ctx, ["tmvf_24h_final"])),
-        evidenceFact("48h", evidenceFirstValue(evidence, ctx, ["tmvf_48h_final"]))
+        evidenceFact("主干强度", blend),
+        evidenceFact("路径方向", direction),
+        evidenceFact("24小时", evidenceFirstValue(evidence, ctx, ["tmvf_24h_final"])),
+        evidenceFact("48小时", evidenceFirstValue(evidence, ctx, ["tmvf_48h_final"]))
       ]
     };
   }
@@ -3797,12 +6585,12 @@
     const leanText = semanticCompact(evidence.lean || signedLean(combinedVote)) || "UNKNOWN";
     return {
       stance: leanText,
-      sentence: `主动流合成 vote ${scalarText(combinedVote, { translate: false, digits: 4 })}，一致性 ${scalarText(agreement, { translate: false })}，用于确认或削弱主方向。`,
+      sentence: `主动流合成值 ${scalarText(combinedVote, { translate: false, digits: 4 })}，一致性 ${normalizeComfortText(semanticCompact(agreement), "未说明")}，用于确认或削弱主方向。`,
       facts: [
-        evidenceFact("absorption", absorption),
-        evidenceFact("fast_4h", fast.verdict),
-        evidenceFact("slow_12h", slow.verdict),
-        evidenceFact("data", evidenceFirstValue(evidence, ctx, ["data_quality", "data_status"]))
+        evidenceFact("吸收关系", absorption),
+        evidenceFact("快窗", fast.verdict),
+        evidenceFact("慢窗", slow.verdict),
+        evidenceFact("数据状态", evidenceFirstValue(evidence, ctx, ["data_quality", "data_status"]))
       ]
     };
   }
@@ -3816,13 +6604,12 @@
     const shockGate = macroShockGateText(ctx);
     return {
       stance: leanText,
-      sentence: `宏观背景 ${directionBackground}；冲击门 ${shockGate}；分数 ${scalarText(score, { translate: false, digits: 4 })}。score > 0 表示风险资产逆风。${voteMissing ? "本行 vote 为空代表本轮不作为方向投票或被门控排除，不代表 raw 宏观数据缺失。" : ""}`,
+      sentence: `宏观背景 ${directionBackground}；冲击限制 ${shockGate}；分数 ${scalarText(score, { translate: false, digits: 4 })}。正值表示风险资产逆风。${voteMissing ? "本轮未作为方向依据，不代表宏观数据缺失。" : ""}`,
       facts: [
         evidenceFact("方向背景", directionBackground),
-        evidenceFact("冲击门", shockGate),
-        evidenceFact("regime", regime),
-        evidenceFact("score", score),
-        evidenceFact("confidence", evidenceFirstValue(evidence, ctx, ["data_confidence", "macro_data_confidence"])),
+        evidenceFact("冲击限制", shockGate),
+        evidenceFact("背景状态", regime),
+        evidenceFact("压力分数", score),
         ...macroComponentFacts(ctx)
       ]
     };
@@ -3839,12 +6626,12 @@
     const leanText = semanticCompact(evidence.lean || signedLean(evidence.vote)) || "UNKNOWN";
     return {
       stance: leanText,
-      sentence: `CVD 分量 ${scalarText(cvdSum, { translate: false, digits: 4 })}，强度 ${strengthText}，象限关系为${verdictText}。${active ? "该证据已参与方向计票。" : "该证据未激活，不参与方向计票或冲突。"}`,
+      sentence: `CVD 分量 ${scalarText(cvdSum, { translate: false, digits: 4 })}，强度 ${strengthText}，象限关系为${verdictText}。${active ? "该证据本次作为方向依据。" : "该证据未激活，本次未作为方向依据或冲突来源。"}`,
       facts: [
-        evidenceFact("cvd_sum", cvdSum),
+        evidenceFact("CVD 合计", cvdSum),
         evidenceFact("强度", strengthText),
         evidenceFact("象限关系", verdictText),
-        evidenceFact("计票状态", participation)
+        evidenceFact("方向依据状态", participation)
       ]
     };
   }
@@ -3853,12 +6640,27 @@
     const leanText = semanticCompact(evidence.lean || evidenceAuxiliaryLean(evidence, { factor_cross_section: {} })) || "UNKNOWN";
     return {
       stance: leanText,
-      sentence: `${evidence.key || "Evidence"} 投票 ${scalarText(evidence.vote, { translate: false, digits: 4 })}，有效权重 ${scalarText(evidence.effective_weight, { translate: false, digits: 4 })}。`,
+      sentence: `${evidenceDisplayName(evidence)}已记录，当前只作为中文证据摘要展示。`,
       facts: [
-        evidenceFact("source", evidence.source_ref),
-        evidenceFact("role", evidenceAuxiliaryRole(evidence))
+        evidenceFact("来源", sourceRefLabel(evidence.source_ref)),
+        evidenceFact("作用", evidenceAuxiliaryRole(evidence))
       ]
     };
+  }
+
+  function evidenceDisplayName(evidence) {
+    const key = evidenceKey(evidence);
+    const labels = {
+      FUNDING: "资金费率",
+      SRD: "期权偏斜",
+      GGR_SPATIAL: "Gamma 空间结构",
+      TMV: "量价主干",
+      FLOW_CONFIRM: "主动买卖流确认",
+      MACRO: "宏观背景",
+      CVD_4H: "CVD 四小时",
+      CVD_12H: "CVD 十二小时"
+    };
+    return labels[key] || asObject(evidence).gloss_cn || "证据模块";
   }
 
   function evidenceAssessment(evidence, doc) {
@@ -3880,7 +6682,7 @@
       <article class="evidence-item participation-${escapeHtml(status)}">
         <div class="evidence-item-head">
           <div class="evidence-title">
-            <strong class="evidence-key">${escapeHtml(evidence.key || "N/A")}</strong>
+            <strong class="evidence-key">${escapeHtml(evidenceDisplayName(evidence))}</strong>
             <span class="evidence-gloss">${escapeHtml(evidence.gloss_cn || "")}</span>
           </div>
           <div class="evidence-status">${statusBadgeCn("", evidence.participation_status)}</div>
@@ -3890,13 +6692,12 @@
             <span>${escapeHtml(assessment.stanceLabel || "模块倾向")}</span>
             <strong>${escapeHtml(assessment.stance)}</strong>
           </div>
-          ${evidenceImpactHtml(evidence)}
           <p class="evidence-judgement">${escapeHtml(assessment.sentence)}</p>
           ${evidenceFactsHtml(assessment.facts)}
           <div class="evidence-foot">
-            <span>${escapeHtml(semanticCompact(evidenceAuxiliaryRole(evidence)) || "EDB_MODULE")}</span>
-            ${evidence.source_ref ? sourceRefLink(evidence.source_ref, doc) : `<span>原始截面见下方</span>`}
-            ${evidence.exclusion_reason ? `<span>${escapeHtml(textClip(semanticCompact(evidence.exclusion_reason), 96))}</span>` : ""}
+            <span>${escapeHtml(semanticCompact(evidenceAuxiliaryRole(evidence)) || "证据作用已记录")}</span>
+            ${evidence.source_ref ? sourceRefLink(evidence.source_ref, doc) : `<span>来源已随完整资料保存</span>`}
+            ${evidence.exclusion_reason ? `<span>${escapeHtml(textClip(normalizeComfortText(evidence.exclusion_reason, ""), 96))}</span>` : ""}
           </div>
         </div>
       </article>
@@ -3905,53 +6706,23 @@
 
   function renderReasoning(doc) {
     const reasoning = asObject(get(doc, "reasoning", {}));
-    const score = asObject(reasoning.score);
-    const agreement = asObject(reasoning.agreement);
-    const coverage = asObject(reasoning.coverage);
-    const decomposition = asObject(reasoning.confidence_decomposition);
     const evidenceRows = asArray(reasoning.evidence)
       .map((evidence) => evidenceLedgerItem(evidence, doc))
       .join("");
-    return section("完整证据账本", reasoning.summary_cn || "保留所有参与、排除、不计票和门控证据。", `
-      <dl class="kv-grid" style="margin-bottom: 16px;">
-        ${kv("Engine", reasoning.engine, { translate: false })}
-        ${kv("Engine version", reasoning.engine_version, { translate: false })}
-        ${kv("Score final", score.final, { translate: false })}
-        ${kv("Agreement", agreement.value, { translate: false })}
-        ${kv("Coverage", coverage.value, { translate: false })}
-        ${kv("Confidence final", decomposition.confidence_final, { translate: false })}
-      </dl>
-      <div class="formula-block"><strong>Score</strong><span>${escapeHtml(score.method || "")}</span><span>weighted sum ${escapeHtml(scalarText(score.weighted_vote_sum, { translate: false }))} / effective weight ${escapeHtml(scalarText(score.effective_weight_sum, { translate: false }))}</span></div>
-      <div class="evidence-ledger" style="margin-top: 16px;">${evidenceRows || `<div class="empty-inline">No evidence rows</div>`}</div>
-      <h3 class="subsection-title">Confidence decomposition</h3>
-      <dl class="kv-grid">
-        ${kv("Strength", decomposition.strength, { translate: false })}
-        ${kv("Agreement factor", decomposition.agreement_factor, { translate: false })}
-        ${kv("Coverage factor", decomposition.coverage_factor, { translate: false })}
-        ${kv("GGR multiplier", decomposition.ggr_multiplier, { translate: false })}
-        ${kv("Confidence pre-veto", decomposition.confidence_pre_veto, { translate: false })}
-        ${kv("Veto applied", decomposition.veto_applied)}
-        ${kv("Confidence final", decomposition.confidence_final, { translate: false })}
-      </dl>
+    return section("证据账本摘要", normalizeComfortText(reasoning.summary_cn, "保留关键证据，以及它们为什么被采纳或排除。"), `
+      <div class="evidence-ledger">${evidenceRows || `<div class="empty-inline">暂无证据行</div>`}</div>
     `);
   }
 
   function renderConflict(doc) {
     const conflict = asObject(get(doc, "conflict", {}));
     const dominant = asObject(conflict.dominant_conflict);
-    return section("冲突解释", conflict.explanation_cn || "", `
-      <dl class="kv-grid">
-        ${kv("Method", conflict.method, { translate: false })}
-        ${kv("Ratio", isNullish(conflict.ratio) ? null : percent(conflict.ratio), { translate: false })}
-        ${kv("Level", conflict.level)}
-        ${kv("Dominant aligned", dominant.aligned_key, { translate: false })}
-        ${kv("Dominant dissent", dominant.dissent_key, { translate: false })}
-      </dl>
-      <div class="conflict-sides" style="margin-top: 16px;">
-        <div class="side"><span class="side-label">Aligned keys</span><span class="side-value">${escapeHtml(asArray(conflict.aligned_keys).join(", ") || "无")}</span></div>
-        <div class="side"><span class="side-label">Dissent keys</span><span class="side-value">${escapeHtml(asArray(conflict.dissent_keys).join(", ") || "无")}</span></div>
-      </div>
-      <div class="text-block"><p>${valueHtml(dominant.explanation_cn, { translate: false })}</p></div>
+    const explanation = normalizeComfortText(firstPresent(
+      conflict.explanation_cn,
+      dominant.explanation_cn
+    ), "本卡未提供可读冲突解释。");
+    return section("冲突解释", "说明主要分歧、影响方向和需要继续观察的条件。", `
+      <div class="text-block"><p>${escapeHtml(explanation)}</p></div>
     `);
   }
 
@@ -3971,99 +6742,277 @@
     return rows;
   }
 
+  function marketFact(label, value, options = {}) {
+    if (isNullish(value) || value === "") return "";
+    const text = typeof value === "boolean"
+      ? booleanText(value)
+      : (typeof value === "number"
+        ? number(value, options.digits ?? 4)
+        : normalizeComfortText(semanticCompact(value), String(value)));
+    return `<span class="evidence-fact"><span>${escapeHtml(label)}</span><strong>${escapeHtml(text)}</strong></span>`;
+  }
+
+  function marketFactCard(id, title, summary, facts) {
+    const factHtml = facts.filter(Boolean).join("");
+    return `
+      <article id="${escapeHtml(id)}" class="market-fact-card">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(summary)}</p>
+        ${factHtml ? `<div class="evidence-facts">${factHtml}</div>` : `<div class="empty-inline">本卡未提供该类事实。</div>`}
+      </article>
+    `;
+  }
+
+  function observedOrAgeText(doc, node) {
+    const source = qualitySourceView(doc, "price", node);
+    const parts = [];
+    if (source.observed_at) parts.push(`观测 ${dateText(source.observed_at)}`);
+    if (!isNullish(source.age_ms)) parts.push(`年龄 ${ageText(source.age_ms)}`);
+    return parts.join("；") || "";
+  }
+
+  function directObservedOrAgeText(node) {
+    const view = asObject(node);
+    const parts = [];
+    if (view.observed_at) parts.push(`观测 ${dateText(view.observed_at)}`);
+    const age = numericMs(firstPresent(view.age_ms, view.data_age_ms, view.source_age_ms));
+    if (!isNullish(age)) parts.push(`年龄 ${ageText(age)}`);
+    return parts.join("；") || "";
+  }
+
+  function optionStructureFacts(doc) {
+    const gamma = asObject(get(doc, "factor_cross_section.gamma_regime", {}));
+    const gex = asObject(get(doc, "factor_cross_section.gex_info", {}));
+    const anchor = asObject(get(doc, "factor_cross_section.anchor", {}));
+    const regime = firstPresent(gamma.regime, gex.market_state, anchor.regime);
+    const pin = firstPresent(gamma.pin_strike, get(gamma, "pin.pin_strike"), gex.pin_strike, gex.magnet_level);
+    const gexNetGamma = firstPresent(gex.net_gamma_notional_usd, gex.total_net_gex, gex.net_gamma_notional);
+    const gammaNetGamma = firstPresent(gamma.net_gamma_notional_usd, gamma.net_gamma_notional);
+    const gammaNetGammaNumber = safeNumber(gammaNetGamma);
+    const netGamma = !isNullish(gexNetGamma)
+      ? gexNetGamma
+      : (gammaNetGammaNumber !== null && Math.abs(gammaNetGammaNumber) >= 1000 ? gammaNetGammaNumber : null);
+    const gammaProxy = isNullish(gexNetGamma) && gammaNetGammaNumber !== null && Math.abs(gammaNetGammaNumber) < 1000
+      ? `${gammaNetGammaNumber > 0 ? "正向" : (gammaNetGammaNumber < 0 ? "负向" : "中性")} ${number(gammaNetGammaNumber, 4)}`
+      : null;
+    const distance = firstPresent(gamma.distance_to_pin_pct, get(gamma, "pin.distance_to_pin_pct"), gex.distance_to_pin_pct);
+    const anchorFlip = firstPresent(anchor.effective_flip_point, anchor.flip_point);
+    const anchorBand = firstPresent(anchor.band_half, anchor.anchor_band_half);
+    const anchorGaps = [];
+    if (Object.keys(anchor).length) {
+      if (isNullish(anchorFlip)) anchorGaps.push("有效翻转点暂缺");
+      if (isNullish(anchorBand)) anchorGaps.push("锚带半宽暂缺");
+      if (isNullish(anchor.freshness)) anchorGaps.push("新鲜度暂缺");
+      if (isNullish(anchor.ready)) anchorGaps.push("可用状态暂缺");
+    }
+    const facts = [
+      marketFact("结构状态", regime),
+      marketFact("净 Gamma", isNullish(netGamma) ? null : durabilityUsdText(netGamma)),
+      marketFact("Gamma 代理", gammaProxy),
+      marketFact("钉住位", pin, { digits: 2 }),
+      marketFact("距钉住", isNullish(distance) ? null : pctPoint(Number(distance))),
+      marketFact("上方墙", firstPresent(gex.call_wall, gamma.call_wall), { digits: 2 }),
+      marketFact("下方墙", firstPresent(gex.put_wall, gamma.put_wall), { digits: 2 }),
+      marketFact("价格锚有效翻转点", anchorFlip, { digits: 2 }),
+      marketFact("锚带半宽", anchorBand, { digits: 2 }),
+      marketFact("锚新鲜度", anchor.freshness),
+      marketFact("锚可用", anchor.ready),
+      marketFact("锚缺口", anchorGaps.join("；")),
+      directObservedOrAgeText(anchor) ? marketFact("锚时效", directObservedOrAgeText(anchor)) : ""
+    ];
+    return marketFactCard(
+      "market-options-structure",
+      "期权空间结构",
+      Object.keys(gamma).length || Object.keys(gex).length || Object.keys(anchor).length
+        ? "这里只说明空间约束和来源质量，不把锚或 Gamma 当作不可突破边界。"
+        : "本卡没有可读的期权空间结构。",
+      facts
+    );
+  }
+
+  function pricePathFacts(doc) {
+    const tmvf = asObject(get(doc, "factor_cross_section.tmvf", {}));
+    const direction = firstPresent(tmvf.direction, tmvf.lean, tmvf.verdict);
+    const blend = firstPresent(tmvf.tmv_blend, tmvf.blend, tmvf.score);
+    return marketFactCard("market-price-path", "量价主干", "用于判断当前价格路径对上下侵入压力的方向，不单独给胜率。", [
+      marketFact("路径方向", direction),
+      marketFact("主干强度", blend),
+      marketFact("24小时", firstPresent(tmvf.tmvf_24h_final, tmvf.tmv_24h)),
+      marketFact("48小时", firstPresent(tmvf.tmvf_48h_final, tmvf.tmv_48h)),
+      marketFact("窗口冲突", tmvf.window_conflict),
+      observedOrAgeText(doc, tmvf) ? marketFact("时效", observedOrAgeText(doc, tmvf)) : ""
+    ]);
+  }
+
+  function activeFlowFacts(doc) {
+    const flow = asObject(get(doc, "factor_cross_section.micro_flow", {}));
+    const cvdEvidence = asArray(get(doc, "reasoning.evidence", []))
+      .filter((item) => ["CVD_4H", "CVD_12H", "FLOW_CONFIRM"].includes(evidenceKey(item)))
+      .slice(0, 2);
+    const cvdText = cvdEvidence.map((item) => {
+      const ctx = evidenceContext(item, doc);
+      const value = firstPresent(
+        evidenceFirstValue(item, ctx, ["verdict", "agreement", "absorption_state"]),
+        item.participation_status
+      );
+      return normalizeComfortText(semanticCompact(value), "");
+    }).filter(Boolean).join("；");
+    return marketFactCard("market-active-flow", "主动买卖流", "用于确认或反驳量价主干，和价格来源有重叠，不重复当作独立投票。", [
+      marketFact("合成方向", firstPresent(flow.combined_vote, flow.vote)),
+      marketFact("一致性", flow.agreement),
+      marketFact("吸收状态", flow.absorption_state),
+      marketFact("快窗", firstPresent(get(flow, "fast_4h.verdict"), get(flow, "fast.verdict"))),
+      marketFact("慢窗", firstPresent(get(flow, "slow_12h.verdict"), get(flow, "slow.verdict"))),
+      marketFact("CVD", cvdText)
+    ]);
+  }
+
+  function fundingFacts(doc) {
+    const funding = asObject(get(doc, "factor_cross_section.funding", {}));
+    const semantics = asObject(firstPresent(
+      funding.canonical_funding_semantics,
+      funding.funding_semantics
+    ));
+    const rate = firstPresent(semantics.raw_funding_rate, funding.last_rate, funding.last_funding_rate);
+    const sentence = normalizeComfortText(firstTextValue(semantics.canonical_text_cn),
+      "资金费率只作为杠杆拥挤和反身性背景，不自行改写方向。");
+    return marketFactCard("market-funding-rate", "资金费率", sentence, [
+      marketFact("当前费率", ratePctText(rate)),
+      marketFact("拥挤状态", firstPresent(semantics.crowding_state, funding.crowding_state)),
+      marketFact("费率倾向", firstPresent(semantics.fee_bias_cn, semantics.fee_bias)),
+      observedOrAgeText(doc, funding) ? marketFact("时效", observedOrAgeText(doc, funding)) : ""
+    ]);
+  }
+
+  function macroFacts(doc) {
+    const macro = asObject(get(doc, "factor_cross_section.macro_pressure", {}));
+    const shock = asObject(macro.macro_shock);
+    return marketFactCard("market-macro-background", "宏观背景", "宏观只区分方向背景与冲击限制；硬阻断仍以本卡当前边界为准。", [
+      marketFact("背景方向", firstPresent(macro.macro_regime, macro.regime, macro.verdict)),
+      marketFact("压力分数", firstPresent(macro.macro_score, macro.score)),
+      marketFact("冲击限制", firstPresent(shock.state, shock.block === true ? "BLOCK" : (shock.block === false ? "CLEAR" : null))),
+      marketFact("方向确认", shock.direction_confirmed),
+      ...macroComponentFacts({ raw: macro, factor: macro }).slice(0, 4)
+    ]);
+  }
+
+  function dataQualityFacts(doc) {
+    const quality = asObject(get(doc, "quality", {}));
+    const sources = asObject(quality.sources);
+    const sourceRows = Object.entries(sources).slice(0, 6).map(([key, value]) => {
+      const source = qualitySourceView(doc, key, value);
+      return marketFact(sourceGroupLabel(key) || fieldLabel(key), semanticCompact(source.status || source.reason || "已记录"));
+    });
+    return marketFactCard("market-data-quality", "数据时效与缺口", "有效但不投票的数据和真正缺失分开阅读；缺失只影响依赖它的判断。", [
+      marketFact("综合质量", quality.overall),
+      marketFact("必需源", quality.all_required_sources_ready === true ? "全部就绪" : "需要复核"),
+      marketFact("缺口数", asArray(quality.missing_fields).length, { digits: 0 }),
+      marketFact("降级源数", asArray(quality.degraded_sources).length, { digits: 0 }),
+      ...sourceRows
+    ]);
+  }
+
   function renderFactorCrossSection(doc) {
-    const crossSection = asObject(get(doc, "factor_cross_section", {}));
-    const navEntries = [];
-    const future24hTrace = renderFuture24hBayesianTrace(doc);
-    if (future24hTrace) navEntries.push({ ref: "future_24h_bayesian_report", label: "24h贝叶斯报告" });
-    const blocks = Object.entries(crossSection).map(([key, value]) => {
-      const ref = `factor_cross_section.${key}`;
-      navEntries.push({ ref, label: key });
-      const rows = flatten(value).map(([path, scalar]) => {
-        const renderedValue = Array.isArray(scalar) || (scalar && typeof scalar === "object")
-          ? `<code>${escapeHtml(JSON.stringify(scalar))}</code>`
-          : valueHtmlByPath(path, scalar, { scope: key });
-        return `<tr><td class="field-path">${escapeHtml(fieldLabel(path))}</td><td>${renderedValue}</td></tr>`;
-      }).join("");
-      const rawStatus = get(value, "data_status", get(value, "status"));
-      const status = ["string", "number", "boolean"].includes(typeof rawStatus)
-        ? rawStatus
-        : null;
-      return `
-        <details id="${escapeHtml(rawTraceId(ref))}" class="factor-detail raw-trace-group" ${["tmvf", "micro_flow", "gamma_regime"].includes(key) ? "open" : ""}>
-          <summary><span>${escapeHtml(key)}</span>${!isNullish(status) ? statusBadge("", status) : ""}</summary>
-          <div class="table-wrap"><table class="field-table"><thead><tr><th>${escapeHtml(fieldLabel("Field"))}</th><th>${escapeHtml(fieldLabel("Value"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
-        </details>
-      `;
-    }).join("");
-    const evidenceRawBlocks = asArray(get(doc, "reasoning.evidence", []))
-      .map((evidence) => {
-        const raw = asObject(evidence && evidence.raw_values);
-        if (!Object.keys(raw).length) return "";
-        const ref = `evidence_raw_values.${evidenceKey(evidence)}`;
-        navEntries.push({ ref, label: ref });
-        const rows = flatten(raw).map(([path, scalar]) => {
-          const renderedValue = Array.isArray(scalar) || (scalar && typeof scalar === "object")
-            ? `<code>${escapeHtml(JSON.stringify(scalar))}</code>`
-            : valueHtmlByPath(path, scalar, { scope: evidenceKey(evidence), translate: false });
-          return `<tr><td class="field-path">${escapeHtml(fieldLabel(`${evidenceKey(evidence)}.${path}`))}</td><td>${renderedValue}</td></tr>`;
-        }).join("");
-        return `
-          <details id="${escapeHtml(rawTraceId(ref))}" class="factor-detail evidence-raw-detail raw-trace-group">
-            <summary><span>${escapeHtml(`evidence_raw_values.${evidenceKey(evidence)}`)}</span>${statusBadge("", evidence.participation_status)}</summary>
-            <div class="table-wrap"><table class="field-table"><thead><tr><th>${escapeHtml(fieldLabel("Field"))}</th><th>${escapeHtml(fieldLabel("Value"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
-          </details>
-        `;
-      })
-      .join("");
-    const nav = navEntries.length
-      ? `<nav class="raw-trace-nav" aria-label="原始截面快速跳转"><span class="raw-trace-nav-title">原始截面跳转</span>${navEntries.map((item) => `<a href="#${escapeHtml(rawTraceId(item.ref))}">${escapeHtml(item.label)}</a>`).join("")}</nav>`
-      : "";
-    return section("因子原始截面", "按 JSON 分组保留完整字段；账本只显示决策摘要，完整原始值在这里追溯。", `${nav}<div class="factor-list">${future24hTrace}${blocks || `<div class="empty">暂无 factor_cross_section</div>`}${evidenceRawBlocks}</div>`);
+    return section("中文市场证据", "本卡事实按结构、压力、时效和缺口排列，方便先判断环境是否适配。", `
+      <div class="market-fact-grid">
+        ${optionStructureFacts(doc)}
+        ${pricePathFacts(doc)}
+        ${activeFlowFacts(doc)}
+        ${fundingFacts(doc)}
+        ${macroFacts(doc)}
+        ${dataQualityFacts(doc)}
+      </div>
+    `, "market-evidence");
   }
 
   function renderProvenance(doc) {
-    const provenance = asObject(get(doc, "provenance", {}));
-    const sourceSnapshot = asObject(provenance.source_snapshot);
-    const configSnapshot = asObject(provenance.config_snapshot);
-    const versions = asObject(provenance.component_versions);
-    const integrity = asObject(get(doc, "integrity", {}));
-    const delivery = asObject(get(doc, "delivery", {}));
-    const hasSourceSnapshot = Object.values(sourceSnapshot).some((value) => !isBlank(value));
-    const hasConfigSnapshot = Object.values(configSnapshot).some((value) => !isBlank(value));
-    const deliveryRows = Object.entries(delivery)
-      .filter(([key]) => key !== "fmz_push_summary");
-    const sourceSnapshotBlock = hasSourceSnapshot ? `
-      <dl class="kv-grid">
-        ${kv("Source snapshot id", sourceSnapshot.snapshot_id, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
-        ${kv("Source snapshot hash", sourceSnapshot.hash, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
-        ${!isBlank(sourceSnapshot.local_ref) ? kv("local_ref", sourceSnapshot.local_ref, { translate: false }) : ""}
-      </dl>
-    ` : `<div class="empty-inline">当前卡未提供独立源快照；以组件版本、交付路径和完整性字段作为留档线索。</div>`;
-    const configSnapshotBlock = hasConfigSnapshot ? `
-      <dl class="kv-grid">
-        ${kv("Config id", configSnapshot.config_id, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
-        ${kv("Config hash", configSnapshot.hash, { translate: false, nullText: "未提供", nullClass: "benign-null-value" })}
-      </dl>
-    ` : `<div class="empty-inline">当前卡未提供配置快照；这不是行情数据缺失。</div>`;
-    return section("来源、交付与完整性", "只展示可追溯的运行模式、版本、交付路径和完整性字段；未启用或当前版本不产出的快照项不再按缺失处理。", `
-      <h3 class="subsection-title">Provenance</h3>
-      <dl class="kv-grid">
-        ${kv("Runtime mode", provenance.runtime_mode)}
-      </dl>
-      <h3 class="subsection-title">Source snapshot</h3>
-      ${sourceSnapshotBlock}
-      <h3 class="subsection-title">Config snapshot</h3>
-      ${configSnapshotBlock}
-      <h3 class="subsection-title">Component versions</h3>
-      <ul class="audit-list">${Object.entries(versions).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtml(value, { translate: false })}</span></li>`).join("") || `<li class="empty-inline">暂无组件版本</li>`}</ul>
-      <h3 class="subsection-title">Delivery</h3>
-      <div class="push-summary">${valueHtml(stripConfidenceCalibrationReminder(delivery.fmz_push_summary), { translate: false })}</div>
-      <ul class="audit-list" style="margin-top: 12px;">${deliveryRows.map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${valueHtmlByPath(key, value, { scope: "delivery", translate: false })}</span></li>`).join("") || `<li class="empty-inline">暂无交付路径</li>`}</ul>
-      ${isBlank(delivery.static_web_url) ? `<div class="empty-inline">未启用静态深链；当前可通过 FMZ Log、本地 JSONL 或 materialized card 路径定位。</div>` : ""}
-      <h3 class="subsection-title">Integrity</h3>
-      <ul class="audit-list">${Object.entries(integrity).map(([key, value]) => `<li><span class="audit-key">${escapeHtml(key)}</span><span class="audit-value">${value && typeof value === "object" ? `<code>${escapeHtml(JSON.stringify(value))}</code>` : valueHtmlByPath(key, value, { scope: "integrity", translate: false })}</span></li>`).join("")}</ul>
+    return section("完整审计资料", "供进一步核对。", `
+      <div class="download-panel">
+        <button class="card-retry audit-json-download" type="button" data-download-card-id="${escapeHtml(cardId(doc))}" aria-label="下载完整审计资料">下载完整审计资料</button>
+      </div>
     `);
+  }
+
+  function renderSignalBoundaries(doc) {
+    const boundary = signalRatingBoundaryView(doc);
+    const blocking = asObject(get(doc, "blocking", {}));
+    const gates = asArray(blocking.soft_gates);
+    const conditions = asArray(blocking.unblock_conditions);
+    const veto = firstPresent(boundary.hard_veto, blocking.hard_veto);
+    const gateItems = gates.slice(0, 4).map((gate) => {
+      const title = normalizeComfortText(firstPresent(gate.reason_cn, gate.gate, gate.reason_code), "已记录一条软阻断。");
+      return `<li>${escapeHtml(title)}</li>`;
+    }).join("");
+    const conditionItems = conditions.slice(0, 4).map((item) => {
+      const raw = firstPresent(item.condition_cn, item.metric, "");
+      const rawText = rawEnum(raw);
+      if (/置信|confidence|达档|阈值|>=|≥|support_label/i.test(rawText)) {
+        return `<li>${escapeHtml("等待方向证据收敛并满足原信号确认条件。")}</li>`;
+      }
+      const title = normalizeComfortText(raw, "等待确认条件。");
+      return `<li>${escapeHtml(title)}</li>`;
+    }).join("");
+    const sideText = sideHintReadable(boundary.side_hint);
+    return section("系统边界与阻断", "当前等待条件、阻断、接管窗口与执行权限仍然有效。", `
+      <div class="boundary-panel">
+        <div class="llm-review-topline">
+          ${statusBadge("当前限制", boundary.support_label)}
+          <span class="badge">侧别: ${escapeHtml(sideText)}</span>
+          ${statusBadge("阻断", boundary.has_block === true ? "BLOCKED" : "OK")}
+          <span class="badge ${boundary.execution_allowed === true ? "is-good" : "is-wait"}">执行权限: ${escapeHtml(boundary.execution_allowed === true ? "当前允许" : "只读/未授权")}</span>
+          <span class="badge ${veto ? "is-bad" : "is-good"}">硬否决: ${escapeHtml(veto ? normalizeComfortText(veto, "已记录") : "无")}</span>
+        </div>
+        <div class="comfort-limit-grid">
+          <div>
+            <h3 class="subsection-title">当前边界</h3>
+            <p>综合等级只服务人工复核排序；等待、阻断、接管窗口、触发和执行许可仍然有效。</p>
+          </div>
+          <div>
+            <h3 class="subsection-title">解除或复核条件</h3>
+            ${conditionItems ? `<ul class="plain-list">${conditionItems}</ul>` : (gateItems ? `<ul class="plain-list">${gateItems}</ul>` : `<p>本卡未提供额外解除条件。</p>`)}
+          </div>
+        </div>
+      </div>
+    `, "system-boundaries");
+  }
+
+  function renderObservationContext(doc) {
+    const analysis = analysisRound(doc);
+    const ctx = transitionContext(doc);
+    const isFixed = isFixedAnalysisRound(doc);
+    const session = asObject(get(doc, "signal_window.session_context", {}));
+    const basis = asObject(session.validation_basis);
+    const replay = asObject(get(doc, "provenance.research_replay", {}));
+    const horizon = firstPresent(
+      analysis.headline_horizon_min,
+      analysis.observation_horizon_min,
+      basis.headline_horizon_min
+    );
+    const horizonNumber = safeNumber(horizon);
+    const rows = [];
+    if (isFixed) rows.push("固定时间截面差分：本卡属于固定轮次分析，基于北京时间 23:00 的固定时间截面，不表示自然事件触发迁移。");
+    const snapshot = firstPresent(
+      analysis.snapshot_collected_time_utc8,
+      analysis.snapshot_collected_at,
+      get(doc, "runtime_facts.snapshot_collected_time_utc8"),
+      get(doc, "runtime_facts.snapshot_collected_at")
+    );
+    if (snapshot) rows.push(`实际采样时点：${dateText(snapshot)}。`);
+    const planned = firstPresent(
+      analysis.planned_time_utc8,
+      analysis.scheduled_time_utc8,
+      analysis.planned_at,
+      get(ctx, "event_context.planned_time_utc8")
+    );
+    if (planned) rows.push(`计划观察时点：${dateText(planned)}。`);
+    if (horizonNumber !== null) rows.push(`预设观察窗：${number(horizonNumber, 0)} 分钟；只作为诊断探针，不代表信号寿命。`);
+    if (Object.keys(replay).length) rows.push(normalizeComfortText(replay.notice_cn, "离线重评：不是当时原生输出，仅用于本页与 API 链路验收。"));
+    if (!rows.length) return "";
+    return section("观察身份", "区分事件卡、固定轮次和诊断观察窗，避免把历史观察当成当前实时判断。", `
+      <div class="text-block">
+        ${rows.map((row) => `<p>${escapeHtml(row)}</p>`).join("")}
+      </div>
+    `, "observation-context");
   }
 
   function selectedSummary(id) {
@@ -4076,15 +7025,38 @@
     return `
       <header class="doc-header">
         <div>
-          <p class="eyebrow">signal_review_card / manifest summary</p>
+          <p class="eyebrow">信号审计</p>
           <h1 class="doc-title">${escapeHtml(symbol(doc))} 信号审计卡</h1>
-          <p class="doc-subtitle">${escapeHtml(subtitle || get(doc, "identity.strategy_name", ""))} · ${escapeHtml(dateText(confirmedAt(doc)))} · ${escapeHtml(cardId(doc))}</p>
+          <p class="doc-subtitle">${escapeHtml(subtitle || get(doc, "identity.strategy_name", ""))} · ${escapeHtml(dateText(confirmedAt(doc)))}</p>
         </div>
         <div class="status-stack">
-          ${statusBadge("Direction", currentDecision.lean || lean(doc), true)}
-          ${statusBadge("Action", currentDecision.support_label || support(doc))}
-          ${statusBadge("Quality", quality.overall || "UNKNOWN")}
+          ${statusBadge("方向", currentDecision.lean || lean(doc), true)}
+          ${statusBadge("当前限制", currentDecision.support_label || support(doc))}
+          ${statusBadge("质量", quality.overall || "UNKNOWN")}
         </div>
+      </header>
+    `;
+  }
+
+  function renderSignalEvidenceHeader(doc, subtitle = "") {
+    const identity = asObject(get(doc, "identity", {}));
+    const badges = [
+      isFixedAnalysisRound(doc) ? `<span class="badge fixed-round-badge">固定轮次</span>` : "",
+      identity.is_synthetic ? `<span class="badge is-wait">离线样例</span>` : "",
+      Object.keys(asObject(get(doc, "provenance.research_replay", {}))).length ? `<span class="badge is-wait">离线重评</span>` : ""
+    ].filter(Boolean).join("");
+    const subtitleText = [
+      subtitle || identity.strategy_name || "",
+      dateText(confirmedAt(doc))
+    ].filter(Boolean).join(" · ");
+    return `
+      <header class="doc-header">
+        <div>
+          <p class="eyebrow">信号审计</p>
+          <h1 class="doc-title">${escapeHtml(symbol(doc))} 信号审计卡</h1>
+          <p class="doc-subtitle">${escapeHtml(subtitleText)}</p>
+        </div>
+        ${badges ? `<div class="status-stack">${badges}</div>` : ""}
       </header>
     `;
   }
@@ -4094,24 +7066,41 @@
       $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">请选择一份信号文档</div>`;
       return;
     }
-    const currentDecision = decision(summary);
+    if (hasSignalEvidenceV2Surface(summary)) {
+      $("#documentView").innerHTML = renderSignalEvidenceReader(summary, `
+        ${renderSignalEvidenceHeader(summary, "单卡详情加载中")}
+        ${renderSignalEvidenceReaderNav(summary)}
+        ${renderSignalComfort(summary)}
+        ${renderSignalEvidenceKeyChanges(summary)}
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">单卡详情加载中</h2>
+            <p class="section-purpose">正在读取完整资料；稍后显示结构与证据、下一观察条件和下载入口。</p>
+          </div>
+          <div class="card-load-state">正在读取这张卡的完整资料。</div>
+        </section>
+      `);
+      return;
+    }
+    const nrWindow = nrWindowMetric(summary);
     $("#documentView").innerHTML = `
       ${renderLoadNotice()}
       ${renderSummaryHeader(summary, "单卡详情加载中")}
+      ${renderSignalComfort(summary)}
       <div class="metric-strip" aria-label="信号关键指标加载中">
-        ${metric("Market price", null)}
-        ${metric("Evidence strength", currentDecision.evidence_strength || null)}
-        ${metric("Confidence", currentDecision.confidence)}
-        ${metric("信号耐用性", get(summary, "signal_durability.headline_score", null))}
-        ${metric("Conflict ratio", null)}
-        ${metric("Data quality", semanticCompact(qualityOverall(summary)))}
+        ${metric("市场价格", null)}
+        ${metric("评级时点", signalComfortAsOfMetricText(summary))}
+        ${metric("接管窗口", nrWindow.value, nrWindow.note)}
+        ${metric("当前限制", currentLimitMetricText(summary))}
+        ${metric("数据质量", semanticCompact(qualityOverall(summary)))}
+        ${metric("卡片身份", roundKindText(summary))}
       </div>
       <section class="section">
         <div class="section-header">
           <h2 class="section-title">单卡详情加载中</h2>
-          <p class="section-purpose">索引摘要已先显示；完整审计、顶层辅助决策和 LLM 复核意见会在选中卡 JSON 返回后局部更新。</p>
+          <p class="section-purpose">正在读取这张卡的完整资料；稍后显示行动结论、中文市场证据和 LLM 深入分析。</p>
         </div>
-        <div class="card-load-state">正在加载单卡 JSON，不会下载未选中的全部历史卡。</div>
+        <div class="card-load-state">正在读取这张卡的完整资料。</div>
       </section>
     `;
   }
@@ -4124,14 +7113,14 @@
     const reason = stateForCard.publicReason || publicLoadReason("card_http");
     $("#documentView").innerHTML = `
       ${renderLoadNotice()}
-      ${summary ? renderSummaryHeader(summary, "单卡详情未发布") : ""}
+      ${summary ? (hasSignalEvidenceV2Surface(summary) ? renderSignalEvidenceHeader(summary, "本卡资料暂不可用") : renderSummaryHeader(summary, "本卡资料暂不可用")) : ""}
       <section class="section">
         <div class="section-header">
           <h2 class="section-title">单卡详情暂不可显示</h2>
-          <p class="section-purpose">列表仍保持可用；该卡详情失败不会影响其他卡加载。</p>
+          <p class="section-purpose">这张卡暂时无法打开；可以切换其他信号，稍后重试。</p>
         </div>
         <div class="load-alert card-load-error" role="alert">
-          <strong>单卡 JSON 加载失败</strong>
+          <strong>单卡资料加载失败</strong>
           <p>${escapeHtml(reason)}</p>
           <div class="card-load-actions">
             <span>已尝试 ${escapeHtml(number(attempts, 0))} / ${escapeHtml(number(MAX_CARD_LOAD_ATTEMPTS, 0))}</span>
@@ -4140,11 +7129,30 @@
         </div>
       </section>
     `;
+    if (summary && hasSignalEvidenceV2Surface(summary)) {
+      $("#documentView").innerHTML = renderSignalEvidenceReader(summary, `
+        ${renderSignalEvidenceHeader(summary, "本卡资料暂不可用")}
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">单卡详情暂不可显示</h2>
+            <p class="section-purpose">这张卡暂时无法打开；可以切换其他信号，稍后重试。</p>
+          </div>
+          <div class="load-alert card-load-error" role="alert">
+            <strong>单卡资料加载失败</strong>
+            <p>${escapeHtml(reason)}</p>
+            <div class="card-load-actions">
+              <span>已尝试 ${escapeHtml(number(attempts, 0))} / ${escapeHtml(number(MAX_CARD_LOAD_ATTEMPTS, 0))}</span>
+              <button class="card-retry" type="button" data-card-id="${escapeHtml(id)}" ${retry ? "" : "disabled"}>${retry ? "重试加载" : "重试次数已用完"}</button>
+            </div>
+          </div>
+        </section>
+      `);
+    }
   }
 
   function renderDocumentById(id) {
     if (!id) {
-      $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">请选择一份信号文档</div>`;
+      $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">${documents.length ? "当前筛选没有匹配的信号卡，请调整筛选条件。" : "请选择一份信号文档"}</div>`;
       return;
     }
     const cached = cardCache.get(id);
@@ -4164,6 +7172,10 @@
   function setupDocumentActions() {
     document.querySelectorAll(".card-retry").forEach((button) => {
       button.addEventListener("click", () => {
+        if (button.dataset.downloadCardId) {
+          downloadAuditJson(button.dataset.downloadCardId);
+          return;
+        }
         const id = button.dataset.cardId;
         if (!id || !canRetryCard(id)) return;
         const retry = loadCardDetail(id, { selected: true, retry: true });
@@ -4178,6 +7190,42 @@
         });
       });
     });
+  }
+
+  function safeCardDownloadPath(path) {
+    const text = String(path || "").trim().replace(/^\.\/+/, "");
+    if (!text) return "";
+    if (/^[a-z][a-z0-9+.-]*:/i.test(text) || text.startsWith("//") || text.startsWith("/") || text.includes("\\") || text.split("/").includes("..")) {
+      return "";
+    }
+    return /^signal_cards\/[^?#]+\.json(?:[?#].*)?$/i.test(text) ? text : "";
+  }
+
+  function downloadAuditJson(id) {
+    const doc = cardCache.get(id) || documents.find((item) => cardId(item) === id);
+    if (!doc) return;
+    const staticPath = isHttpMode() ? safeCardDownloadPath(doc.__card_path) : "";
+    if (staticPath) {
+      const link = document.createElement("a");
+      link.href = staticPath;
+      link.download = `${id || "signal-card"}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
+    if (typeof Blob === "undefined" || !window.URL || typeof window.URL.createObjectURL !== "function") return;
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${id || "signal-card"}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    if (typeof window.URL.revokeObjectURL === "function") {
+      setTimeout(() => window.URL.revokeObjectURL(url), 30000);
+    }
   }
 
   function maybeLoadSelectedCard() {
@@ -4211,58 +7259,75 @@
     return Promise.allSettled(ids.map((id) => loadCardDetail(id, { prefetch: true })));
   }
 
+  let initialEvidenceSectionPositioned = false;
+
+  function positionInitialEvidenceSection() {
+    if (initialEvidenceSectionPositioned) return;
+    const hash = window.location && window.location.hash;
+    if (!hash || !/^#[a-z][a-z0-9-]+$/.test(hash)) return;
+    const sectionTarget = document.querySelector(hash);
+    if (sectionTarget && typeof sectionTarget.scrollIntoView === "function") {
+      initialEvidenceSectionPositioned = true;
+      sectionTarget.scrollIntoView({ behavior: "instant", block: "start" });
+    }
+  }
+
   function renderDocument(doc) {
     if (!doc) {
       $("#documentView").innerHTML = `${renderLoadNotice()}<div class="empty">请选择一份信号文档</div>`;
       return;
     }
-    const currentDecision = decision(doc);
-    const schema = asObject(get(doc, "schema", {}));
+    if (hasSignalEvidenceV2Surface(doc)) {
+      $("#documentView").innerHTML = renderSignalEvidenceReader(doc, `
+        ${renderSignalEvidenceHeader(doc)}
+        ${renderSignalEvidenceReaderNav(doc)}
+        ${renderSignalComfort(doc)}
+        ${renderSignalEvidenceSpatialDynamics(doc)}
+        ${renderSignalEvidenceKeyChanges(doc)}
+        ${renderSignalEvidenceLlmReview(doc)}
+        ${renderSignalEvidenceNextConditions(doc)}
+        ${renderSignalEvidenceMarketFacts(doc)}
+        ${renderProvenance(doc)}
+      `);
+      positionInitialEvidenceSection();
+      return;
+    }
     const identity = asObject(get(doc, "identity", {}));
     const quality = asObject(get(doc, "quality", {}));
-    const conflict = asObject(get(doc, "conflict", {}));
-    const durability = signalDurability(doc);
-    const durabilityNote = [
-      durabilityStateText(durability),
-      durabilityComfortBrief(durability)
-    ].filter(Boolean).join(" / ");
     const price = get(doc, "market_context.price", get(doc, "market_price"));
+    const nrWindow = nrWindowMetric(doc);
     $("#documentView").innerHTML = `
       ${renderLoadNotice()}
       <header class="doc-header">
         <div>
-          <p class="eyebrow">${escapeHtml(`${schema.name || "signal_review_card"}@${schema.version || "unknown"} / ${schema.status || ""}`)}</p>
+          <p class="eyebrow">信号审计</p>
           <h1 class="doc-title">${escapeHtml(symbol(doc))} 信号审计卡</h1>
-          <p class="doc-subtitle">${escapeHtml(identity.strategy_name || "")}${identity.strategy_version ? ` ${escapeHtml(identity.strategy_version)}` : ""} · ${escapeHtml(dateText(confirmedAt(doc)))} · ${escapeHtml(cardId(doc))}</p>
+          <p class="doc-subtitle">${escapeHtml(identity.strategy_name || "")} · ${escapeHtml(dateText(confirmedAt(doc)))}</p>
         </div>
         <div class="status-stack">
-          ${statusBadge("Direction", lean(doc), true)}
-          ${statusBadge("Action", support(doc))}
-          ${statusBadge("Quality", quality.overall)}
-          ${isFixedAnalysisRound(doc) ? `<span class="badge fixed-round-badge">轮次: 固定轮次分析</span>` : ""}
-          ${identity.is_synthetic ? statusBadge("Record", "SYNTHETIC") : ""}
+          ${statusBadge("方向", lean(doc), true)}
+          ${statusBadge("当前限制", support(doc))}
+          ${statusBadge("质量", quality.overall)}
+          ${isFixedAnalysisRound(doc) ? `<span class="badge fixed-round-badge">固定轮次分析</span>` : ""}
+          ${identity.is_synthetic ? `<span class="badge is-wait">离线样例</span>` : ""}
         </div>
       </header>
+      ${renderSignalComfort(doc)}
       <div class="metric-strip" aria-label="信号关键指标">
-        ${metric("Market price", price, get(doc, "market_context.quote_currency", ""))}
-        ${metric("Evidence strength", currentDecision.evidence_strength)}
-        ${metric("Confidence", currentDecision.confidence)}
-        ${metric("信号耐用性", durabilityScoreText(durability) === durabilityMissingText() ? null : durabilityScoreText(durability), durabilityNote)}
-        ${metric("Conflict ratio", isNullish(conflict.ratio) ? null : `${number(conflict.ratio * 100, 1)}%`, semanticCompact(conflict.level))}
-        ${metric("Data quality", semanticCompact(quality.overall), quality.all_required_sources_ready ? "required ready" : "requires review")}
+        ${metric("市场价格", price, get(doc, "market_context.quote_currency", ""))}
+        ${metric("评级时点", signalComfortAsOfMetricText(doc))}
+        ${metric("接管窗口", nrWindow.value, nrWindow.note)}
+        ${metric("当前限制", currentLimitMetricText(doc))}
+        ${metric("数据质量", semanticCompact(quality.overall), quality.all_required_sources_ready ? "必需源就绪" : "需要复核")}
+        ${metric("卡片身份", roundKindText(doc))}
       </div>
+      ${renderFactorCrossSection(doc)}
+      ${renderSignalBoundaries(doc)}
+      ${renderObservationContext(doc)}
       ${renderIntegratedTradeAdvisory(doc)}
-      ${renderGammaOverview(doc)}
-      ${renderGexRank(doc)}
-      ${renderSignalDurability(doc)}
-      ${renderTransitionContext(doc)}
       ${renderLlmReview(doc)}
-      ${renderDisplayLayers(doc)}
-      ${renderQuality(doc)}
-      ${renderBlocking(doc)}
       ${renderReasoning(doc)}
       ${renderConflict(doc)}
-      ${renderFactorCrossSection(doc)}
       ${renderProvenance(doc)}
     `;
   }
@@ -4272,7 +7337,7 @@
     return `
       <div class="load-alert" role="alert">
         <strong>静态信号卡加载失败</strong>
-        <p>未展示内置样例；请检查 signal_cards/index.json 与单卡 JSON 是否已由 materialize 任务生成并发布。错误：${escapeHtml(loadState.error)}</p>
+        <p>未能显示内置样例；请检查发布文件是否完整，或稍后重新打开页面。</p>
       </div>
     `;
   }
@@ -4287,6 +7352,7 @@
 
   async function start() {
     setupFilterEvents();
+    setupMobileIndexToggle();
     documents = await loadDocuments();
     state.currentId = documents[0] ? cardId(documents[0]) : null;
     populateFilters();

@@ -56,19 +56,22 @@ def assert_asset_root(root):
             "DO_NOT_MULTIPLY_CONFIDENCE"):
         assert_true(token in app,
                     "frontend app should expose durability renderer token " + token)
-    assert_true("app.js?v=20260828-lazy-manifest-v1" in index_html
+    assert_true(version.get("frontend_cache_token")
+                and ("app.js?v=" + version["frontend_cache_token"]) in index_html
                 and "fallback.js?v=20260723-fact-semantics-v1" not in index_html,
                 "index.html should cache-bust canonical frontend assets")
     assert_true(version.get("backup_version")
-                == "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory",
-                "VERSION backup_version should name the r3.3.11 advisory slice")
-    assert_true(version.get("generated_at") == "2026-08-28",
-                "VERSION generated_at should match the lazy-load asset refresh date")
-    assert_true(version.get("llm_review_schema") == "signal_llm_review@1.5.1"
-                and version.get("llm_prompt_version") == "signal_llm_review_prompt@1.5.6",
+                == "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory-astra-evidence-v2",
+                "VERSION backup_version should name the v2 evidence advisory slice")
+    assert_true(version.get("generated_at") == "2026-09-08",
+                "VERSION generated_at should match the Astra rating asset refresh date")
+    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.0.0"
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.0.1",
                 "VERSION should name the integrated advisory schema and prompt")
-    assert_true("nrd.signal.durability_layer.v1" in version.get("card_schema", "")
-                and "durability" in version.get("frontend_contract", ""),
+    assert_true("signal_evidence_summary@2.0.0" in version.get("manifest_schema", "")
+                and "side_evidence_ratings" in version.get("card_schema", "")
+                and "nrd.signal.durability_layer.v1" in version.get("card_schema", "")
+                and "download-only full audit JSON" in version.get("frontend_contract", ""),
                 "VERSION should document the signal durability frontend contract")
     cards = cards_with_session_context(root)
     assert_true(cards, "static signal_cards should include session_context in " + str(root))
@@ -202,23 +205,23 @@ vm.runInContext(app, context);
 setTimeout(() => {
   const html = elements.documentView.innerHTML;
   const required = [
-    "信号耐用性层",
-    "只读解释",
-    "不改变置信",
-    "旧卡兼容"
+    "本卡行动结论",
+    "中文市场证据",
+    "系统边界与阻断",
+    "完整审计资料"
   ];
   const missing = required.filter((item) => !html.includes(item));
   if (missing.length) {
-    throw new Error("signal durability render missing: " + missing.join(","));
+    throw new Error("comfort reader render missing: " + missing.join(","));
   }
-}, 0);
+}, 50);
 """
     script = script.replace("__ROOT__", json.dumps(str(root)))
     result = subprocess.run(["node", "-e", script], text=True,
                             capture_output=True, encoding="utf-8",
                             errors="replace")
     assert_true(result.returncode == 0,
-                "frontend should render signal_durability: "
+                "frontend should render comfort-first reader: "
                 + (result.stderr or result.stdout))
 
 

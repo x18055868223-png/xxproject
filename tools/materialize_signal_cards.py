@@ -11,7 +11,9 @@ import argparse
 from collections import deque
 import datetime as _dt
 import hashlib
+import importlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -39,6 +41,22 @@ TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
 TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.0.0"
+SIGNAL_RATING_SCHEMA_VERSION = "signal_rating@1.0.0"
+SIGNAL_RATING_SCOPE = "side_environment_v1"
+SIGNAL_RATING_CLAIM_STATUSES = frozenset({
+    "SUPPORTED",
+    "CONFLICTED",
+    "OPPOSED",
+    "INSUFFICIENT",
+})
+SIGNAL_COMFORT_SCHEMA_VERSION = "signal_comfort_ratings@1.0.0"
+SIGNAL_COMFORT_SCOPE = "signal_side_admission"
+SIGNAL_COMFORT_GRADES = ("D", "C", "B", "A", "S")
+SIGNAL_COMFORT_GRADE_RANK = {grade: index for index, grade in enumerate(SIGNAL_COMFORT_GRADES)}
+SIGNAL_COMFORT_ADMISSION_GRADES = frozenset({"A", "S"})
+SIGNAL_COMFORT_FOCUS_SIDES = frozenset({"put_credit", "call_credit", "tie", "none"})
+_SIGNAL_COMFORT_CORE = None
 
 
 class SourceTailValidationError(RuntimeError):
@@ -572,19 +590,37 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
             review = review_map.get(card_id)
             if review:
                 existing = record.get("llm_review")
-                if (_review_status(existing) == "OK"
-                        and _review_status(review) != "OK"):
+                selected = _select_llm_review(
+                    existing,
+                    review,
+                    keep_same_protocol_ok=True,
+                )
+                if selected is existing:
                     continue
-                record["llm_review"] = review
+                record["llm_review"] = selected
                 merged_review_count += 1
     synthetic_count = sum(1 for record in records if _is_synthetic(record))
     if not include_synthetic:
         records = [record for record in records if not _is_synthetic(record)]
+    expected_v2_packets = {}
+    prior_by_symbol = {}
+    for current in sorted(records, key=_sort_key):
+        symbol = str(_identity(current).get("symbol") or current.get("symbol"))
+        previous = prior_by_symbol.get(symbol)
+        if _uses_evidence_review_path(current):
+            from signal_evidence_v2 import build_evidence_packet
+            transition = _transition_record(previous, current, [previous, current], None) if previous else None
+            expected_v2_packets[_identity(current).get("card_id")] = build_evidence_packet(current, previous, transition)
+        prior_by_symbol[symbol] = current
     records = sorted(records, key=_sort_key, reverse=True)
     if max_cards and max_cards > 0:
         records = records[:max_cards]
 
     for record in records:
+        if _is_unsupported_evidence_review(record):
+            _unsupported_evidence_review(record)
+        if _is_evidence_v2(record):
+            _validate_evidence_v2(record, expected_v2_packets.get(_identity(record).get("card_id")))
         canonical = ensure_card_fact_semantics(
             record,
             compat_source="materializer:legacy_card_funding_semantics_v1",
@@ -611,6 +647,12 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
         filename = _filename_for_card(card_id)
         expected_card_files.add(filename)
         rel_path = "signal_cards/" + filename
+        if _is_evidence_v2(record):
+            from signal_review_v2 import build_summary
+            record["signal_evidence_summary"] = build_summary(record["llm_review"])
+            record.pop("signal_comfort_summary", None)
+        else:
+            record["signal_comfort_summary"] = _signal_comfort_summary(record)
         _write_json(cards_dir / filename, record)
         manifest_cards.append({
             "card_id": card_id,
@@ -735,8 +777,48 @@ def _read_llm_reviews(path, max_records=None):
         card_id = value.get("card_id") or _identity(value).get("card_id")
         review = value.get("llm_review")
         if card_id and isinstance(review, dict):
-            reviews[card_id] = review
+            reviews[card_id] = _select_llm_review(reviews.get(card_id), review)
     return reviews
+
+
+def _select_llm_review(existing, candidate, *, keep_same_protocol_ok=False):
+    """Prefer the current evidence protocol over legacy review rows."""
+
+    if not isinstance(candidate, dict):
+        return existing
+    if not isinstance(existing, dict):
+        return candidate
+    existing_rank = _llm_review_protocol_rank(existing)
+    candidate_rank = _llm_review_protocol_rank(candidate)
+    if candidate_rank > existing_rank:
+        return candidate
+    if candidate_rank < existing_rank:
+        return existing
+    if (keep_same_protocol_ok
+            and _review_status(existing) == "OK"
+            and _review_status(candidate) != "OK"):
+        return existing
+    return candidate
+
+
+def _llm_review_protocol_rank(review):
+    return 2 if _is_evidence_review_protocol(review) else 1
+
+
+def _is_evidence_review_protocol(review):
+    review = _dict(review)
+    schema = str(review.get("schema_version") or "")
+    if schema == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION:
+        return True
+    if "side_evidence_ratings" in _dict(review.get("integrated_trade_advisory")):
+        return True
+    prefix = "signal_llm_review@"
+    if not schema.startswith(prefix):
+        return False
+    match = re.match(r"^signal_llm_review@(\d+)(?:\.|$)", schema)
+    if not match:
+        return True
+    return int(match.group(1)) >= 2
 
 
 def _read_transition_reviews(path, max_records=None):
@@ -857,6 +939,10 @@ def _transition_record(previous, current, history, previous_transition_hash):
         "current_card_id": current_card_id,
         "previous_ts_ms": previous_ts_ms,
         "current_ts_ms": current_ts_ms,
+        "previous_strategy_version": prev_identity.get("strategy_version"),
+        "current_strategy_version": curr_identity.get("strategy_version"),
+        "previous_card_schema": _source_schema_fingerprint(previous),
+        "current_card_schema": _source_schema_fingerprint(current),
         "elapsed_ms": elapsed_ms,
         "previous_event_type": previous_event_type,
         "current_event_type": current_event_type,
@@ -2069,7 +2155,16 @@ def _manifest_card_summary(record):
     transition = _dict(record.get("transition_context"))
     relation = _dict(transition.get("relation"))
     review = _dict(record.get("llm_review"))
-    return {
+    if _is_evidence_v2(record):
+        from signal_review_v2 import build_summary
+        return {
+            "identity": {key: identity.get(key) for key in (
+                "card_id", "short_id", "confirmed_at", "symbol", "strategy_name",
+                "event_type", "tags", "is_synthetic") if identity.get(key) is not None},
+            "llm_review_status": review.get("status"),
+            "signal_evidence_summary": build_summary(review),
+        }
+    summary = {
         "identity": {
             key: identity.get(key)
             for key in (
@@ -2104,6 +2199,681 @@ def _manifest_card_summary(record):
         } if transition else {},
         "llm_review_status": _review_status(review) or "MISSING",
     }
+    signal_rating_summary = _signal_rating_summary(record)
+    if signal_rating_summary:
+        summary["signal_rating_summary"] = signal_rating_summary
+    if "signal_comfort_summary" in record:
+        signal_comfort_summary = record.get("signal_comfort_summary")
+    else:
+        signal_comfort_summary = _signal_comfort_summary(record)
+    if signal_comfort_summary:
+        summary["signal_comfort_summary"] = signal_comfort_summary
+    return summary
+
+
+def _source_schema_fingerprint(record):
+    schema = _dict(record.get("schema"))
+    if schema:
+        text = json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return record.get("schema_version")
+
+
+def _is_evidence_v2(record):
+    return _dict(record.get("llm_review")).get("schema_version") == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+
+
+def _uses_evidence_review_path(record):
+    return _is_evidence_review_protocol(_dict(record.get("llm_review")))
+
+
+def _is_unsupported_evidence_review(record):
+    review = _dict(record.get("llm_review"))
+    return _is_evidence_review_protocol(review) and review.get("schema_version") != SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+
+
+def _unsupported_evidence_review(record):
+    from signal_evidence_v2 import build_evidence_packet
+    from signal_review_v2 import build_error_review, revalidate_review
+
+    original_review = _json_clone(_dict(record.get("llm_review")))
+    packet = build_evidence_packet(record)
+    record["invalid_llm_review_archive"] = original_review
+    record["llm_review"] = build_error_review(
+        record,
+        packet,
+        "这张卡的综合评审格式尚未受当前版本支持，暂未完成有效评级。",
+        model=original_review.get("model"),
+        reviewed_at=original_review.get("reviewed_at"),
+        require_price_bias=True,
+    )
+    record["llm_review"]["materializer_revalidation"] = "unsupported_review_schema"
+    revalidate_review(record, record["llm_review"])
+
+
+def _validate_evidence_v2(record, expected_packet=None):
+    """Validate against raw source before display compatibility enrichments."""
+    from signal_evidence_v2 import build_evidence_packet
+    from signal_review_v2 import (
+        MODEL_PRICE_BIAS_FIELDS,
+        MODEL_SIDE_FIELDS,
+        PROMPT_VERSION as REVIEW_V2_PROMPT_VERSION,
+        _assessment_hash,
+        build_error_review,
+        build_review,
+        revalidate_review,
+        _fact_assertion_issues,
+        _valid_refs,
+    )
+    review = record["llm_review"]
+    packet = build_evidence_packet(record)
+
+    def requires_price_bias(candidate):
+        advisory = _dict(candidate.get("integrated_trade_advisory"))
+        return (
+            candidate.get("prompt_version") == REVIEW_V2_PROMPT_VERSION
+            or "price_bias" in advisory
+        )
+
+    def review_prompt(candidate):
+        return candidate.get("prompt_version")
+
+    def model_payload_from(candidate):
+        advisory = _dict(candidate.get("integrated_trade_advisory"))
+        payload = {"side_evidence_ratings": {
+            key: {field: side.get(field) for field in MODEL_SIDE_FIELDS}
+            for key, side in _dict(advisory.get("side_evidence_ratings")).items()
+        }}
+        price_bias = _dict(advisory.get("price_bias"))
+        if price_bias.get("status") == "ASSESSED":
+            payload["price_bias"] = {
+                field: price_bias.get(field) for field in MODEL_PRICE_BIAS_FIELDS
+            }
+        return payload
+
+    def preserved_unavailable_price_bias(candidate):
+        price_bias = _dict(
+            _dict(candidate.get("integrated_trade_advisory")).get("price_bias")
+        )
+        if price_bias.get("status") == "UNAVAILABLE":
+            return _json_clone(price_bias)
+        return None
+
+    def restore_unavailable_price_bias(candidate, preserved):
+        if not preserved:
+            return candidate
+        advisory = _dict(candidate.get("integrated_trade_advisory"))
+        if not advisory:
+            return candidate
+        preserved = _json_clone(preserved)
+        facts = {fact["id"]: fact for fact in advisory["market_facts"]}
+        as_of_ms = candidate["evidence_context"]["identity"]["as_of_ms"]
+        removed_refs = False
+        for field in ("evidence_refs", "counter_evidence_refs"):
+            refs, _, _ = _valid_refs(preserved[field], facts, as_of_ms=as_of_ms)
+            removed_refs = removed_refs or refs != preserved[field]
+            preserved[field] = refs
+        if removed_refs:
+            reason = "原方向引用的部分事实已不可核验，仅保留可用引用。"
+            if reason not in preserved["validation_reasons_cn"]:
+                preserved["validation_reasons_cn"].append(reason)
+        advisory["price_bias"] = preserved
+        sides = _dict(advisory.get("side_evidence_ratings"))
+        rated_count = sum(
+            1 for side in sides.values()
+            if _dict(side).get("status") == "RATED"
+        )
+        status = "PARTIAL" if rated_count else "ERROR"
+        candidate["status"] = status
+        validation = _dict(advisory.get("validation"))
+        validation["status"] = status
+        validation["validation_reasons_cn"] = [
+            reason
+            for side in sides.values()
+            for reason in _dict(side).get("validation_reasons_cn", [])
+        ] + list(preserved.get("validation_reasons_cn") or [])
+        validation["assessment_hash"] = None
+        validation["assessment_hash"] = _assessment_hash(advisory)
+        return candidate
+
+    try:
+        # Check integrity, shape, references and permissions before isolating a
+        # newly detected side-local claim error. No model request is made here.
+        revalidate_review(record, review, recheck_claims=False)
+        if review["evidence_context"]["identity"] != packet["identity"]:
+            raise ValueError("source identity mismatch")
+        # Current facts must be reproducible; frozen prior-card differences were
+        # separately checked by the packet builder at assessment time.
+        expected = {f["id"]: f for f in packet["facts"] if f.get("topic") != "change_context"}
+        actual = {f["id"]: f for f in review["integrated_trade_advisory"]["market_facts"]
+                  if f.get("topic") != "change_context"}
+        if actual != expected:
+            raise ValueError("current source facts mismatch")
+        used_changes = [f for f in review["integrated_trade_advisory"]["market_facts"]
+                        if f.get("topic") == "change_context"]
+        if any(f.get("usable") for f in used_changes):
+            expected_changes = [f for f in (expected_packet or packet)["facts"]
+                                if f.get("topic") == "change_context"]
+            if used_changes != expected_changes:
+                record["invalid_llm_review_archive"] = review
+                invalid_ids = {f["id"] for f in used_changes}
+                payload = model_payload_from(review)
+                # Preserve unaffected sides; references to unverifiable changes
+                # become side-local validation errors against the current packet.
+                for side in payload["side_evidence_ratings"].values():
+                    if invalid_ids.intersection(side.get("evidence_refs", []) + side.get("counter_evidence_refs", [])):
+                        side["grade"] = None
+                        side["unresolved_conditions_cn"] = list(side.get("unresolved_conditions_cn") or []) + ["前后变化缺少可核验的对应资料。"]
+                preserved_bias = preserved_unavailable_price_bias(review)
+                record["llm_review"] = restore_unavailable_price_bias({**review, **build_review(
+                    record, payload, packet, model=review.get("model"),
+                    reviewed_at=review.get("reviewed_at"),
+                    require_price_bias=requires_price_bias(review),
+                    prompt_version=review_prompt(review))}, preserved_bias)
+                record["llm_review"]["materializer_revalidation"] = "change_source_unavailable"
+        checked = record["llm_review"]
+        advisory = checked["integrated_trade_advisory"]
+        facts = {fact["id"]: fact for fact in advisory["market_facts"]}
+        if any(side.get("status") == "RATED" and _fact_assertion_issues(side, facts)
+               for side in advisory["side_evidence_ratings"].values()):
+            record.setdefault("invalid_llm_review_archive", review)
+            frozen_packet = {**checked["evidence_context"], "facts": advisory["market_facts"]}
+            payload = model_payload_from(checked)
+            preserved_bias = preserved_unavailable_price_bias(checked)
+            record["llm_review"] = restore_unavailable_price_bias({**checked, **build_review(
+                record, payload, frozen_packet, model=checked.get("model"),
+                reviewed_at=checked.get("reviewed_at"),
+                require_price_bias=requires_price_bias(checked),
+                prompt_version=review_prompt(checked))}, preserved_bias)
+            record["llm_review"]["materializer_revalidation"] = "claim_scope_unavailable"
+        checked = record["llm_review"]
+        advisory = checked["integrated_trade_advisory"]
+        facts = {fact["id"]: fact for fact in advisory["market_facts"]}
+        price_bias = _dict(advisory.get("price_bias"))
+        if (price_bias.get("status") == "ASSESSED"
+                and _fact_assertion_issues(price_bias, facts)):
+            record.setdefault("invalid_llm_review_archive", review)
+            frozen_packet = {**checked["evidence_context"], "facts": advisory["market_facts"]}
+            record["llm_review"] = {**checked, **build_review(
+                record, model_payload_from(checked), frozen_packet,
+                model=checked.get("model"), reviewed_at=checked.get("reviewed_at"),
+                require_price_bias=requires_price_bias(checked),
+                prompt_version=review_prompt(checked))}
+            record["llm_review"]["materializer_revalidation"] = "claim_scope_unavailable"
+        revalidate_review(record, record["llm_review"])
+    except (ValueError, KeyError, TypeError):
+        record["invalid_llm_review_archive"] = review
+        record["llm_review"] = build_error_review(
+            record, packet, "评级资料与本卡来源不一致，暂未完成有效评级。",
+            model=review.get("model"), reviewed_at=review.get("reviewed_at"),
+            require_price_bias=requires_price_bias(review),
+            prompt_version=review_prompt(review))
+
+
+def _signal_rating_summary(record):
+    rating = _dict(record.get("signal_rating"))
+    if not rating:
+        return None
+    if rating.get("schema") != SIGNAL_RATING_SCHEMA_VERSION:
+        return None
+    if rating.get("rating_scope") != SIGNAL_RATING_SCOPE:
+        return None
+    if rating.get("candidate_quote_economics") != "not_evaluated":
+        return None
+    as_of_ms = _number(rating.get("as_of_ms"))
+    if as_of_ms is None or as_of_ms <= 0 or not math.isfinite(as_of_ms):
+        return None
+    claims = _dict(rating.get("claims"))
+    structure = _signal_rating_claim_summary(claims.get("structure"))
+    put_pressure = _signal_rating_claim_summary(claims.get("put_pressure"))
+    call_pressure = _signal_rating_claim_summary(claims.get("call_pressure"))
+    if not (structure and put_pressure and call_pressure):
+        return None
+    return {
+        "schema": rating.get("schema"),
+        "rating_scope": rating.get("rating_scope"),
+        "as_of_ms": rating.get("as_of_ms"),
+        "structure": structure,
+        "put_pressure": put_pressure,
+        "call_pressure": call_pressure,
+    }
+
+
+def _signal_rating_claim_summary(claim):
+    claim = _dict(claim)
+    status = str(claim.get("status") or "").upper()
+    summary_cn = claim.get("summary_cn")
+    if status not in SIGNAL_RATING_CLAIM_STATUSES:
+        return None
+    if not isinstance(summary_cn, str) or not summary_cn.strip():
+        return None
+    if not isinstance(claim.get("required_inputs"), list):
+        return None
+    support = claim.get("support")
+    opposition = claim.get("opposition")
+    unknowns = claim.get("unknowns")
+    if not all(isinstance(value, list)
+               for value in (support, opposition, unknowns)):
+        return None
+    if not all(_signal_rating_basis_item_valid(item)
+               for item in support + opposition):
+        return None
+    if not all(_signal_rating_unknown_item_valid(item) for item in unknowns):
+        return None
+    if status == "SUPPORTED" and (not support or opposition):
+        return None
+    if status == "CONFLICTED" and (not support or not opposition):
+        return None
+    if status == "OPPOSED" and (not opposition or support):
+        return None
+    return {
+        "status": status,
+        "summary_cn": summary_cn.strip(),
+    }
+
+
+def _signal_rating_basis_item_valid(item):
+    item = _dict(item)
+    return all(
+        isinstance(item.get(key), str) and bool(item.get(key).strip())
+        for key in ("source_ref", "source_group", "basis_cn")
+    )
+
+
+def _signal_rating_unknown_item_valid(item):
+    item = _dict(item)
+    return (
+        isinstance(item.get("source_ref"), str)
+        and bool(item.get("source_ref").strip())
+        and isinstance(item.get("reason_cn"), str)
+        and bool(item.get("reason_cn").strip())
+    )
+
+
+def _signal_comfort_summary(record):
+    review = _dict(record.get("llm_review"))
+    if _review_status(review) != "OK":
+        return None
+    advisory = _dict(review.get("integrated_trade_advisory"))
+    comfort = _dict(advisory.get("side_comfort_ratings"))
+    if not comfort:
+        return None
+    if not _signal_comfort_core_consistent(record, advisory, comfort):
+        return None
+    if comfort.get("schema") != SIGNAL_COMFORT_SCHEMA_VERSION:
+        return None
+    if comfort.get("rating_scope") != SIGNAL_COMFORT_SCOPE:
+        return None
+    if comfort.get("candidate_quote_economics") != "not_evaluated":
+        return None
+    as_of_ms = _number(comfort.get("as_of_ms"))
+    if as_of_ms is None or as_of_ms <= 0 or not math.isfinite(as_of_ms):
+        return None
+    native_rating = _signal_rating_summary(record)
+    if not native_rating:
+        return None
+    native_as_of_ms = _number(native_rating.get("as_of_ms"))
+    if native_as_of_ms != as_of_ms:
+        return None
+
+    put = _signal_comfort_side_summary(comfort.get("put_credit"))
+    call = _signal_comfort_side_summary(comfort.get("call_credit"))
+    if put is None or call is None:
+        return None
+    if not _signal_comfort_admission_consistent(
+            record, advisory, native_rating, "put_credit", put):
+        return None
+    if not _signal_comfort_admission_consistent(
+            record, advisory, native_rating, "call_credit", call):
+        return None
+    headline = _signal_comfort_headline_summary(
+        comfort.get("headline"), put, call)
+    if headline is None:
+        return None
+    return {
+        "schema": comfort.get("schema"),
+        "rating_scope": comfort.get("rating_scope"),
+        "candidate_quote_economics": comfort.get("candidate_quote_economics"),
+        "as_of_ms": comfort.get("as_of_ms"),
+        "headline": headline,
+        "put_credit": put,
+        "call_credit": call,
+    }
+
+
+def _signal_comfort_side_summary(side):
+    side = _dict(side)
+    status = str(side.get("status") or "").upper()
+    if status not in {"RATED", "UNRATED"}:
+        return None
+    model_grade = _signal_comfort_grade(side.get("model_grade"))
+    final_grade = _signal_comfort_grade(side.get("final_grade"))
+    if status == "RATED":
+        if final_grade is None or model_grade is None:
+            return None
+        if (SIGNAL_COMFORT_GRADE_RANK[final_grade]
+                > SIGNAL_COMFORT_GRADE_RANK[model_grade]):
+            return None
+    elif final_grade is not None:
+        return None
+    if side.get("model_grade") not in (None, "") and model_grade is None:
+        return None
+    text_fields = (
+        "basis_cn",
+        "counter_evidence_cn",
+        "next_observation_cn",
+    )
+    for field in text_fields:
+        value = side.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return None
+    list_fields = (
+        "unresolved_conditions_cn",
+        "evidence_refs",
+        "counter_evidence_refs",
+        "cap_reasons_cn",
+        "s_upgrade_evidence_refs",
+    )
+    for field in list_fields:
+        value = side.get(field)
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            return None
+    if status == "RATED":
+        evidence_refs = [
+            item for item in side.get("evidence_refs", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        counter_evidence_refs = [
+            item for item in side.get("counter_evidence_refs", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        if final_grade in {"B", "A", "S"} and not evidence_refs:
+            return None
+        if final_grade in {"C", "D"} and not (
+                evidence_refs or counter_evidence_refs):
+            return None
+    if final_grade == "S":
+        basis = side.get("s_upgrade_basis_cn")
+        if (not isinstance(basis, str) or not basis.strip()
+                or not side.get("s_upgrade_evidence_refs")):
+            return None
+    elif side.get("s_upgrade_basis_cn") not in (None, ""):
+        if not isinstance(side.get("s_upgrade_basis_cn"), str):
+            return None
+    return {
+        "status": status,
+        "final_grade": final_grade,
+        "basis_cn": side["basis_cn"].strip(),
+        "cap_reasons_cn": list(side.get("cap_reasons_cn") or []),
+    }
+
+
+def _signal_comfort_core_module():
+    global _SIGNAL_COMFORT_CORE
+    if _SIGNAL_COMFORT_CORE is None:
+        _SIGNAL_COMFORT_CORE = importlib.import_module("signal_llm_review")
+    return _SIGNAL_COMFORT_CORE
+
+
+def _signal_comfort_core_consistent(record, advisory, comfort):
+    try:
+        core = _signal_comfort_core_module()
+        packet = core.build_review_packet(_json_clone(record))
+        core._validate_side_comfort_ratings(comfort, packet)
+        expected = core._finalize_side_comfort_ratings(
+            _signal_comfort_raw_model_shape(comfort), packet, advisory)
+    except Exception:
+        return False
+    return _signal_comfort_finalized_shape_matches(comfort, expected)
+
+
+def _signal_comfort_raw_model_shape(comfort):
+    comfort = _dict(comfort)
+    return {
+        side_key: _signal_comfort_raw_side(
+            _dict(comfort.get(side_key)))
+        for side_key in ("put_credit", "call_credit")
+    }
+
+
+def _signal_comfort_raw_side(side):
+    model_grade = _signal_comfort_grade(side.get("model_grade"))
+    return {
+        "grade": model_grade or "UNRATED",
+        "basis_cn": side.get("basis_cn"),
+        "counter_evidence_cn": side.get("counter_evidence_cn"),
+        "unresolved_conditions_cn": list(
+            side.get("unresolved_conditions_cn") or []),
+        "next_observation_cn": side.get("next_observation_cn"),
+        "evidence_refs": list(side.get("evidence_refs") or []),
+        "counter_evidence_refs": list(
+            side.get("counter_evidence_refs") or []),
+        "s_upgrade_basis_cn": side.get("s_upgrade_basis_cn") or "",
+        "s_upgrade_evidence_refs": list(
+            side.get("s_upgrade_evidence_refs") or []),
+    }
+
+
+def _signal_comfort_finalized_shape_matches(comfort, expected):
+    comfort = _dict(comfort)
+    expected = _dict(expected)
+    for side_key in ("put_credit", "call_credit"):
+        side = _dict(comfort.get(side_key))
+        expected_side = _dict(expected.get(side_key))
+        if side.get("status") != expected_side.get("status"):
+            return False
+        if side.get("final_grade") != expected_side.get("final_grade"):
+            return False
+    headline = _dict(comfort.get("headline"))
+    expected_headline = _dict(expected.get("headline"))
+    return (
+        headline.get("final_grade") == expected_headline.get("final_grade")
+        and headline.get("focus_side") == expected_headline.get("focus_side")
+    )
+
+
+def _json_clone(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def _signal_comfort_admission_consistent(
+        record, advisory, native_rating, side_key, side):
+    final_grade = side.get("final_grade")
+    if (_signal_comfort_record_has_explicit_window_failure(record)
+            and final_grade in SIGNAL_COMFORT_GRADE_RANK
+            and final_grade != "D"):
+        return False
+    if final_grade not in SIGNAL_COMFORT_ADMISSION_GRADES:
+        return True
+    if _signal_comfort_record_has_any_producer_block(record):
+        return False
+    if _signal_comfort_record_requires_confirmation(record):
+        return False
+    if _signal_comfort_record_has_window_not_open_or_invalid(record):
+        return False
+    if not _signal_comfort_side_allows_admission(side_key, advisory, record):
+        return False
+    quality = _dict(record.get("quality"))
+    if quality.get("overall") not in (None, "OK"):
+        return False
+    if not _signal_comfort_native_allows_admission(native_rating, side_key):
+        return False
+    return True
+
+
+def _signal_comfort_record_has_any_producer_block(record):
+    if _signal_comfort_record_has_producer_hard_block(record):
+        return True
+    decision = _dict(record.get("decision"))
+    matrix = _dict(record.get("decision_matrix"))
+    blocking = _dict(record.get("blocking"))
+    values = {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+        str(blocking.get("block_kind") or "").upper(),
+    }
+    if values & {"BLOCKED", "NO_TRADE_BLOCKED", "BLOCK", "SOFT_GATE"}:
+        return True
+    return bool(blocking.get("has_block") or blocking.get("soft_gates"))
+
+
+def _signal_comfort_record_has_producer_hard_block(record):
+    decision = _dict(record.get("decision"))
+    matrix = _dict(record.get("decision_matrix"))
+    blocking = _dict(record.get("blocking"))
+    support_values = {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+    }
+    if "NO_TRADE_BLOCKED" in support_values:
+        return True
+    if str(blocking.get("block_kind") or "").upper() == "HARD":
+        return True
+    if blocking.get("hard_block") is True or blocking.get("hard_blocked") is True:
+        return True
+    if blocking.get("hard_veto") not in (None, {}, [], False):
+        return True
+    macro = _dict(_dict(record.get("factor_cross_section")).get("macro_pressure"))
+    if _dict(macro.get("macro_shock")).get("block") is True:
+        return True
+    return False
+
+
+def _signal_comfort_record_requires_confirmation(record):
+    decision = _dict(record.get("decision"))
+    matrix = _dict(record.get("decision_matrix"))
+    return bool({
+        "WAIT_CONFIRMATION",
+        "WAIT_FOR_CONFIRMATION",
+        "WAITING_CONFIRMATION",
+        "PENDING_CONFIRMATION",
+    } & {
+        str(decision.get("support_label") or "").upper(),
+        str(decision.get("support_pre_gate") or "").upper(),
+        str(matrix.get("decision_state") or "").upper(),
+    })
+
+
+def _signal_comfort_record_has_window_not_open_or_invalid(record):
+    if _signal_comfort_record_has_explicit_window_failure(record):
+        return True
+    window = _dict(record.get("signal_window"))
+    if not window:
+        return False
+    if "is_active" in window and window.get("is_active") is False:
+        return True
+    neutral = _dict(window.get("neutral_repair"))
+    if "is_active" in neutral and neutral.get("is_active") is False:
+        return True
+    return False
+
+
+def _signal_comfort_record_has_explicit_window_failure(record):
+    window = _dict(record.get("signal_window"))
+    if not window:
+        return False
+    state_values = {
+        str(window.get("nr_state") or "").upper(),
+        str(window.get("state") or "").upper(),
+        str(_dict(window.get("neutral_repair")).get("state") or "").upper(),
+    }
+    if any(any(token in state for token in (
+            "STALE", "EXPIRED", "TIMEOUT", "INVALID", "FAILED"))
+            for state in state_values if state):
+        return True
+    return False
+
+
+def _signal_comfort_side_allows_admission(side_key, advisory, record):
+    recommendation = str(_dict(advisory).get("recommendation") or "").upper()
+    direction = _signal_comfort_producer_direction(record)
+    if recommendation not in {
+            "SELL_PUT_SPREAD_REVIEW", "SELL_CALL_SPREAD_REVIEW",
+            "NEUTRAL_SINGLE_SIDE_REVIEW"}:
+        return False
+    if recommendation == "SELL_PUT_SPREAD_REVIEW" and side_key != "put_credit":
+        return False
+    if recommendation == "SELL_CALL_SPREAD_REVIEW" and side_key != "call_credit":
+        return False
+    if direction == "BULLISH" and side_key == "call_credit":
+        return False
+    if direction == "BEARISH" and side_key == "put_credit":
+        return False
+    if direction == "NEUTRAL" and recommendation != "NEUTRAL_SINGLE_SIDE_REVIEW":
+        return False
+    return True
+
+
+def _signal_comfort_producer_direction(record):
+    decision = _dict(record.get("decision"))
+    matrix = _dict(record.get("decision_matrix"))
+    text = str(decision.get("lean") or matrix.get("direction") or "").upper()
+    if "BULLISH" in text or text in {"UP", "LONG"}:
+        return "BULLISH"
+    if "BEARISH" in text or text in {"DOWN", "SHORT"}:
+        return "BEARISH"
+    if "NEUTRAL" in text or text in {"RANGE", "FLAT"}:
+        return "NEUTRAL"
+    return "UNKNOWN"
+
+
+def _signal_comfort_native_allows_admission(native_rating, side_key):
+    if _dict(native_rating.get("structure")).get("status") == "OPPOSED":
+        return False
+    side_claim = "put_pressure" if side_key == "put_credit" else "call_pressure"
+    if _dict(native_rating.get(side_claim)).get("status") == "OPPOSED":
+        return False
+    return True
+
+
+def _signal_comfort_headline_summary(headline, put, call):
+    headline = _dict(headline)
+    final_grade = _signal_comfort_grade(headline.get("final_grade"))
+    if headline.get("final_grade") not in (None, "") and final_grade is None:
+        return None
+    focus_side = str(headline.get("focus_side") or "")
+    if focus_side not in SIGNAL_COMFORT_FOCUS_SIDES:
+        return None
+    action_cn = headline.get("action_cn")
+    if not isinstance(action_cn, str) or not action_cn.strip():
+        return None
+    expected_grade, expected_focus = _signal_comfort_expected_headline(put, call)
+    if final_grade != expected_grade or focus_side != expected_focus:
+        return None
+    return {
+        "final_grade": final_grade,
+        "focus_side": focus_side,
+        "action_cn": action_cn.strip(),
+    }
+
+
+def _signal_comfort_expected_headline(put, call):
+    side_grades = []
+    for side_name, side in (("put_credit", put), ("call_credit", call)):
+        grade = side.get("final_grade")
+        if grade in SIGNAL_COMFORT_GRADE_RANK:
+            side_grades.append((side_name, grade, SIGNAL_COMFORT_GRADE_RANK[grade]))
+    if not side_grades:
+        return None, "none"
+    best_rank = max(rank for _side_name, _grade, rank in side_grades)
+    best = [
+        (side_name, grade)
+        for side_name, grade, rank in side_grades
+        if rank == best_rank
+    ]
+    grade = best[0][1]
+    focus = best[0][0] if len(best) == 1 else "tie"
+    return grade, focus
+
+
+def _signal_comfort_grade(value):
+    if isinstance(value, str):
+        grade = value.strip().upper()
+        if grade in SIGNAL_COMFORT_GRADE_RANK:
+            return grade
+    return None
 
 
 def _is_synthetic(record):
@@ -2115,6 +2885,8 @@ def _is_synthetic(record):
 
 def _sanitize_legacy_display_text(value):
     if isinstance(value, dict):
+        if value.get("schema_version") == "signal_llm_review@2.0.0":
+            return value
         for key, item in list(value.items()):
             value[key] = _sanitize_legacy_display_text(item)
         return value

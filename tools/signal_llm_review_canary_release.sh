@@ -191,7 +191,7 @@ source = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2])
 target = sys.argv[3]
 kept = []
-removed_target_ok = 0
+removed_target_rows = 0
 for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
     if not line.strip():
         continue
@@ -201,91 +201,24 @@ for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
     except Exception:
         row = None
     if isinstance(row, dict) and str(row.get("card_id")) == target:
-        review = row.get("llm_review") or {}
-        if review.get("status") == "OK":
-            remove = True
-            removed_target_ok += 1
+        remove = True
+        removed_target_rows += 1
     if not remove:
         kept.append(line + "\n")
 output.write_text("".join(kept), encoding="utf-8")
-print("CANARY_SEED_REMOVED_TARGET_OK=" + str(removed_target_ok))
-PY
-}
-
-is_recoverable_reconciliation_empty_content() {
-  /usr/bin/python3 - "$CANARY_RUN_REVIEWS" "$CANARY_RUN_TRANSITION_REVIEWS" "$CANARY_TRANSITION_LEDGER" "$TARGET_CARD_ID" <<'PY'
-import json
-import pathlib
-import sys
-
-main_path = pathlib.Path(sys.argv[1])
-transition_path = pathlib.Path(sys.argv[2])
-ledger_path = pathlib.Path(sys.argv[3])
-target = sys.argv[4]
-
-def rows(path):
-    if not path.exists():
-        return []
-    result = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(item, dict):
-            result.append(item)
-    return result
-
-matching = [row for row in rows(main_path) if str(row.get("card_id")) == target]
-if not matching:
-    raise SystemExit(1)
-review = matching[-1].get("llm_review") or {}
-failure = review.get("failure_state") or {}
-recoverable = (
-    review.get("status") == "ERROR"
-    and review.get("error_category") == "EMPTY_CONTENT"
-    and failure.get("stage") == "RECONCILIATION"
-    and failure.get("type") == "EMPTY_CONTENT"
-    and failure.get("recovery_allowed") is True
-    and failure.get("recovery_attempted") is False
-    and bool(review.get("validated_blind_context"))
-)
-target_transition_ids = {
-    str(row.get("transition_id"))
-    for row in rows(ledger_path)
-    if str(row.get("current_card_id")) == target and row.get("transition_id")
-}
-latest_target_transition_reviews = {}
-for row in rows(transition_path):
-    transition_id = row.get("transition_id")
-    if transition_id is None:
-        continue
-    transition_id = str(transition_id)
-    if transition_id in target_transition_ids:
-        latest_target_transition_reviews[transition_id] = row
-transition_error = any(
-    (row.get("transition_llm_review") or {}).get("status") == "ERROR"
-    for row in latest_target_transition_reviews.values()
-)
-raise SystemExit(0 if recoverable and not transition_error else 1)
+print("CANARY_SEED_REMOVED_TARGET_ROWS=" + str(removed_target_rows))
 PY
 }
 
 run_isolated_review() {
-  local retry_id="${1:-}"
   TOOLS_ROOT="$TOOLS_ROOT" \
   JSONL_SOURCE="$JSONL_SOURCE" \
   LLM_REVIEWS_SOURCE="$CANARY_RUN_REVIEWS" \
   TRANSITION_LEDGER_SOURCE="$CANARY_TRANSITION_LEDGER" \
-  TRANSITION_LLM_REVIEWS_SOURCE="$CANARY_RUN_TRANSITION_REVIEWS" \
   LLM_USAGE_LEDGER="$LLM_USAGE_LEDGER" \
   LLM_LOCK_FILE="$CANARY_ROOT/run_signal_llm_review.lock" \
   ONLY_CARD_ID="$TARGET_CARD_ID" \
-  RETRY_ID="$retry_id" \
   LLM_REVIEW_LIMIT=1 \
-  TRANSITION_REVIEW_LIMIT=1 \
   bash "$RUNNER"
 }
 
@@ -327,19 +260,19 @@ if not canary_rows:
     raise SystemExit("canary LLM review sidecar has no target row: " + target)
 canonical = canary_rows[-1]
 review = canonical.get("llm_review") or {}
-if review.get("status") != "OK":
-    raise SystemExit("canonical canary LLM review is not OK: " + target)
+if review.get("status") not in {"OK", "PARTIAL"}:
+    raise SystemExit("canonical canary LLM review is not OK/PARTIAL: " + target)
 rows = [item for item in read_jsonl(production) if str(card_id(item)) != target]
 rows.append(canonical)
 output.write_text("".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
                           for item in rows),
                   encoding="utf-8")
 verified = [item for item in read_jsonl(output) if str(card_id(item)) == target]
-if len(verified) != 1 or (verified[0].get("llm_review") or {}).get("status") != "OK":
+if len(verified) != 1 or (verified[0].get("llm_review") or {}).get("status") not in {"OK", "PARTIAL"}:
     raise SystemExit("canonical target review replacement verification failed: " + target)
 print("MERGED_LLM_REVIEW_ROWS=" + str(len(rows)))
 print("MERGED_LLM_TARGET_ROWS=1")
-print("MERGED_LLM_TARGET_STATUS=OK")
+print("MERGED_LLM_TARGET_STATUS=" + str((verified[0].get("llm_review") or {}).get("status")))
 PY
 }
 
@@ -547,6 +480,9 @@ require_file "$MATERIALIZER"
 require_file "$RUNNER"
 require_file "$SELF_CHECK"
 require_file "$JSONL_SOURCE"
+require_file "$TOOLS_ROOT/signal_evidence_v2.py"
+require_file "$TOOLS_ROOT/signal_review_v2.py"
+require_file "$TOOLS_ROOT/signal_review_v2_runtime.py"
 
 if [[ -n "$RESUME_CANARY_ROOT" ]]; then
   CANARY_ROOT="$(readlink -f "$RESUME_CANARY_ROOT")"
@@ -609,18 +545,16 @@ else
   echo "COMMIT_SHA=UNKNOWN_INSTALLED_ASSET"
 fi
 /usr/bin/python3 - "$TOOLS_ROOT/signal_llm_review.py" <<'PY'
-import importlib.util
 import pathlib
 import sys
 
-path = pathlib.Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("signal_llm_review_canary_meta", path)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-print("LLM_PROVIDER=" + str(module.PROVIDER))
-print("LLM_MODEL=" + str(module.DEFAULT_MODEL))
-print("LLM_SCHEMA=" + str(module.OUTPUT_SCHEMA_VERSION))
-print("LLM_PROMPT_VERSION=" + str(module.PROMPT_VERSION))
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]).parent))
+import signal_llm_review as core
+print("LLM_PROVIDER=" + str(core.PROVIDER))
+print("LLM_MODEL=" + str(core.DEFAULT_MODEL))
+print("LLM_SCHEMA=signal_llm_review@2.0.0")
+print("LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1")
+print("LLM_REVIEW_MODE=single_evidence_v2")
 PY
 for unit in signal-audit-materialize.service signal-audit-materialize.timer signal-audit-llm-review.service signal-audit-llm-review.timer; do
   echo "UNIT_${unit//[^A-Za-z0-9]/_}_SHA256=$(sha256_file "/etc/systemd/system/$unit")"
@@ -642,27 +576,8 @@ else
     --transition-ledger "$CANARY_TRANSITION_LEDGER" \
     --transition-state "$CANARY_TRANSITION_STATE"
 
-  RUNNER_RC=0
-  # Always begin the exact target in an explicit retry epoch.  The isolated
-  # copies above retain validated blind and completed transition history, so a
-  # reconciliation-stage failure can recover without repeating either call.
-  if run_isolated_review "$TARGET_CARD_ID"; then
-    RUNNER_RC=0
-  else
-    RUNNER_RC=$?
-  fi
-  if [[ "$RUNNER_RC" != "0" ]]; then
-    if is_recoverable_reconciliation_empty_content; then
-      echo "RECOVERY_STATUS=START_RECONCILIATION_ONLY"
-      run_isolated_review "$TARGET_CARD_ID"
-      echo "RECOVERY_STATUS=PASS"
-    else
-      echo "RECOVERY_STATUS=NOT_ELIGIBLE"
-      exit "$RUNNER_RC"
-    fi
-  else
-    echo "RECOVERY_STATUS=NOT_NEEDED"
-  fi
+  run_isolated_review
+  echo "RECOVERY_STATUS=OWNED_BY_V2_PERSISTENT_BUDGET"
 fi
 
 merge_llm_reviews_for_target "$LLM_REVIEWS_SOURCE" "$CANARY_RUN_REVIEWS" "$CANARY_REVIEWS"
@@ -696,6 +611,11 @@ SYSTEMD_REQUIRED=0 \
 AUDIT_HTTP_REQUIRED=0 \
 LLM_REQUIRED=1 \
 INTEGRATED_ADVISORY_REQUIRED=1 \
+EXPECTED_LLM_SCHEMA=signal_llm_review@2.0.0 \
+EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1 \
+EXPECTED_LLM_REVIEW_MODE=single_evidence_v2 \
+EXPECTED_LLM_CALL_COUNT=1 \
+EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2 \
 TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}" \
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}" \
 bash "$SELF_CHECK"

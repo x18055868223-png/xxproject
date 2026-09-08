@@ -137,6 +137,30 @@ def compact_reconciliation_payload(tool, card, recommendation="SELL_PUT_SPREAD_R
                 "counter_evidence_cn": ["Macro conflict may strengthen."],
                 "invalid_if_cn": ["Price loses the packet level."],
             },
+            "side_comfort_ratings": {
+                "put_credit": {
+                    "grade": "B",
+                    "basis_cn": "Put side has a trackable signal-layer opportunity.",
+                    "counter_evidence_cn": "No strong counter evidence in this fixture.",
+                    "unresolved_conditions_cn": ["Native producer rating is absent in this fixture."],
+                    "next_observation_cn": "Watch whether producer-native rating becomes available.",
+                    "evidence_refs": [evidence_ref],
+                    "counter_evidence_refs": [],
+                    "s_upgrade_basis_cn": "",
+                    "s_upgrade_evidence_refs": [],
+                },
+                "call_credit": {
+                    "grade": "UNRATED",
+                    "basis_cn": "Call side is not rated in this compact fixture.",
+                    "counter_evidence_cn": "No valid call-side comfort basis was supplied.",
+                    "unresolved_conditions_cn": ["Producer-native side evidence is absent."],
+                    "next_observation_cn": "Wait for native side evidence.",
+                    "evidence_refs": [],
+                    "counter_evidence_refs": [],
+                    "s_upgrade_basis_cn": "",
+                    "s_upgrade_evidence_refs": [],
+                },
+            },
         },
         "main_supporting_factors": ["Direction and containment agree."],
         "main_risks_or_conflicts": ["Conflict can return."],
@@ -180,6 +204,12 @@ def test_request_contract(tool):
     for local_field in ("source_alignment", "audit_only", "trade_authorization"):
         assert_true(local_field not in advisory_schema["properties"],
                     "reconciliation advisory wire schema retained " + local_field)
+    comfort_schema = advisory_schema["properties"]["side_comfort_ratings"]
+    assert_true(set(comfort_schema["required"]) == {"put_credit", "call_credit"},
+                "comfort wire schema must only require the two side objects")
+    assert_true("final_grade" not in comfort_schema["properties"]["put_credit"]["properties"]
+                and "headline" not in comfort_schema["properties"],
+                "comfort wire schema exposed locally validated fields")
     session_schema = advisory_schema["properties"]["session_advisory"]
     assert_true("does_not_change_recommendation" not in session_schema["properties"],
                 "session safety flag must be assembled locally")
@@ -443,13 +473,22 @@ def test_prompt_reasoning_contract(tool):
             "第一性贝叶斯审计协议", "PACKET_OBSERVED", "MODEL_PRIOR", "UNKNOWN",
             "同簇内高度相关的指标只算一次主要更新", "模型主观情景权重而非已校准胜率",
             "base_case 必须是最高权重情景", "反证优先", "模型估算观察位",
-            "不要输出、复述或索取 reasoning_content", "期望 JSON 结构示例",
-            "LOCAL_RESPONSE_JSON_SCHEMA", "KEY=VALUE", "上方看涨墙"):
+            "reasoning_content", "Compact reconciliation JSON shape example",
+            "LOCAL_RESPONSE_JSON_SCHEMA", "KEY=VALUE", "上方看涨墙",
+            "舒适度评级任务", "D/C/B/A/S/UNRATED", "比 A 多出的非重复依据"):
         assert_true(phrase in prompt, "main reasoning protocol missing: " + phrase)
     assert_true('"minItems":1' in prompt and '"maxItems":3' in prompt,
                 "prompt schema must preserve array cardinality")
     assert_true('"key_premises":[]' not in prompt,
                 "shape example must not contradict key-premise cardinality")
+    assert_true("liquidity_assessment only allows ALIGNED/CAUTION/TIME_ONLY/UNKNOWN" in prompt
+                and "warning_level only allows NONE/INFO/CAUTION/HIGH" in prompt
+                and "never use MIXED or THIN" in prompt,
+                "prompt must pin session advisory enum values after API failures")
+    assert_true("market_context.price against factor_cross_section.gamma_regime.flip_point" in prompt
+                and "Positive GEX or gex_info market_state must not replace" in prompt
+                and "Do not mention strike" in prompt,
+                "prompt must separate this-card position from mechanism and contract details")
     retry_prompt = tool.build_prompt(
         {"market_context": {"price": 101500}}, blind_payload,
         empty_content_retry_count=1)
@@ -462,6 +501,34 @@ def test_prompt_reasoning_contract(tool):
                    "changed_fields 非空", "同一 domain 原则上只写一条"):
         assert_true(phrase in transition_prompt,
                     "transition reasoning protocol missing: " + phrase)
+
+
+def test_main_json_shape_example_is_parseable_and_uses_legal_enums(tool):
+    example_text = tool._MAIN_JSON_SHAPE_EXAMPLE
+    example_json = example_text[example_text.index("{"):].strip()
+    example = json.loads(example_json)
+    assert_true(set(example) == {
+        "summary_cn",
+        "agreement_with_system",
+        "caution_level",
+        "integrated_trade_advisory",
+        "main_supporting_factors",
+        "main_risks_or_conflicts",
+        "operator_focus",
+        "invalid_if",
+    }, "main shape example top-level keys drifted")
+    advisory = example["integrated_trade_advisory"]
+    assert_true("side_comfort_ratings" in advisory
+                and set(advisory["side_comfort_ratings"]) == {"put_credit", "call_credit"},
+                "shape example must include both comfort sides inside advisory")
+    session = advisory["session_advisory"]
+    assert_true(session["liquidity_assessment"] in tool.ADVISORY_LIQUIDITY_ASSESSMENTS,
+                "shape example liquidity_assessment must use a legal enum")
+    assert_true(session["warning_level"] in tool.ADVISORY_WARNING_LEVELS,
+                "shape example warning_level must use a legal enum")
+    assert_true("enum" not in example_json and "MIXED" not in example_json
+                and "THIN" not in example_json,
+                "shape example must not contain enum placeholders or illegal session hints")
 
 
 def test_compact_reconciliation_local_assembly(tool):
@@ -1618,6 +1685,25 @@ def test_reconciliation_recovery_survives_later_blind_error(tool):
                     packet_hash) == {"packet_hash": packet_hash},
                 "reconciliation validation failure did not retain cached blind context")
 
+    recovery_validation_records = [{
+        "card_id": "CARD",
+        "llm_review": {
+            "status": "ERROR",
+            "input_packet_hash": packet_hash,
+            "call_profile": tool.CALL_PROFILE_MAIN_RECONCILIATION_RECOVERY,
+            "failure_state": {
+                "type": "VALIDATION_ERROR",
+                "stage": "RECONCILIATION",
+                "recovery_attempted": True,
+            },
+            "validated_blind_context": {"packet_hash": packet_hash},
+        },
+    }]
+    assert_true(tool._reconciliation_recovery_context(
+                    recovery_validation_records, "card_id", "CARD", "llm_review",
+                    packet_hash) == {"packet_hash": packet_hash},
+                "prompt-schema validation failure after recovery must still reuse the validated blind")
+
 
 def test_only_card_id_cli_exit_codes(tool):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1684,7 +1770,8 @@ def test_partial_batch_error_is_fail_loud(tool):
             root = Path(tmp)
             with contextlib.redirect_stdout(output):
                 exit_code = tool.main([
-                    "--mode", "card", "--source", str(root / "unused.jsonl"),
+                    "--mode", "card", "--review-mode", "legacy_two_call",
+                    "--source", str(root / "unused.jsonl"),
                     "--reviews-output", str(root / "unused-reviews.jsonl"),
                     "--usage-ledger", str(root / "usage.json"),
                     "--api-key", "unit-test-key",
@@ -1699,8 +1786,8 @@ def main():
     tool = load_tool()
     assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
     assert_true(tool.PROVIDER == "deepseek", "provider mismatch")
-    assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.5.1", "schema mismatch")
-    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.5.6", "prompt mismatch")
+    assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.6.0", "schema mismatch")
+    assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.6.0", "prompt mismatch")
     assert_true(tool.TRANSITION_OUTPUT_SCHEMA_VERSION == "signal_transition_llm_review@1.3.0",
                 "transition schema mismatch")
     assert_true(tool.TRANSITION_PROMPT_VERSION == "signal_transition_llm_review_prompt@1.3.2",
@@ -1710,6 +1797,7 @@ def main():
     test_future_contract(tool)
     test_transition_policy_text_boundary(tool)
     test_prompt_reasoning_contract(tool)
+    test_main_json_shape_example_is_parseable_and_uses_legal_enums(tool)
     test_compact_reconciliation_local_assembly(tool)
     test_funding_semantic_conflict_stays_fail_closed(tool)
     test_blind_completeness_repair_is_bounded(tool)

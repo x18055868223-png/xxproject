@@ -24,6 +24,47 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const elements = {};
 const buttons = new Map();
 const calls = [];
+const retryButtons = [];
+const downloadClicks = [];
+const comfort = {
+  schema: "signal_comfort_ratings@1.0.0",
+  rating_scope: "signal_side_admission",
+  candidate_quote_economics: "not_evaluated",
+  as_of_ms: 1781751600000,
+  headline: {
+    final_grade: "B",
+    focus_side: "call_credit",
+    action_cn: "启动关注：Call 侧进入人工观察，等待关键反证解除。"
+  },
+  put_credit: {
+    status: "RATED",
+    model_grade: "C",
+    final_grade: "C",
+    basis_cn: "Put 侧暂按普通观察处理。",
+    counter_evidence_cn: "下行压力尚未充分解除。",
+    next_observation_cn: "继续观察下方空间。",
+    evidence_refs: [],
+    counter_evidence_refs: [],
+    unresolved_conditions_cn: [],
+    cap_reasons_cn: [],
+    s_upgrade_basis_cn: "",
+    s_upgrade_evidence_refs: []
+  },
+  call_credit: {
+    status: "RATED",
+    model_grade: "B",
+    final_grade: "B",
+    basis_cn: "Call 侧有可说明机会，但仍停在启动关注。",
+    counter_evidence_cn: "宏观背景仍需观察。",
+    next_observation_cn: "等待下一轮主动流确认。",
+    evidence_refs: [],
+    counter_evidence_refs: [],
+    unresolved_conditions_cn: ["等待主动流确认。"],
+    cap_reasons_cn: [],
+    s_upgrade_basis_cn: "",
+    s_upgrade_evidence_refs: []
+  }
+};
 
 function element(id) {
   if (!elements[id]) {
@@ -43,7 +84,8 @@ const manifest = { cards: Array.from({ length: 20 }, (_, index) => ({
   confirmed_at: `2026-08-${String(28 - index).padStart(2, "0")}T12:00:00+08:00`,
   symbol: "BTC",
   quality: "OK",
-  path: `signal_cards/CARD-${index}.json`
+  path: `signal_cards/CARD-${index}.json`,
+  signal_comfort_summary: index === 1 ? comfort : undefined
 })) };
 
 function detail(index) {
@@ -61,12 +103,27 @@ function detail(index) {
     },
     decision_matrix: { audit_dissent: "PENDING_LLM" },
     reasoning: { evidence: [] },
-    display_layers: { headline: `CARD-${index} 摘要` }
+    display_layers: { headline: `CARD-${index} 摘要` },
+    llm_review: index === 1
+      ? { status: "OK", content: { integrated_trade_advisory: { side_comfort_ratings: comfort } } }
+      : undefined
   };
 }
 
 const document = {
+  body: { appendChild() {} },
   head: { appendChild() { throw new Error("HTTP mode must not load fallback.js"); } },
+  createElement(tag) {
+    if (tag === "a") {
+      return {
+        href: "",
+        download: "",
+        click() { downloadClicks.push({ href: this.href, download: this.download }); },
+        remove() {}
+      };
+    }
+    return { addEventListener() {}, remove() {}, set src(_value) {} };
+  },
   getElementById(id) {
     if (id === "signal-data") return { textContent: "[]" };
     return element(id);
@@ -86,6 +143,26 @@ const document = {
         return button;
       });
     }
+    if (selector === ".card-retry") {
+      retryButtons.length = 0;
+      const html = element("documentView").innerHTML || "";
+      const matches = html.match(/<button\b[^>]*class="[^"]*\bcard-retry\b[^"]*"[^>]*>/g) || [];
+      matches.forEach((tag, index) => {
+        const button = {
+          dataset: {},
+          addEventListener(type, handler) {
+            if (type === "click") this.click = handler;
+          }
+        };
+        tag.replace(/data-([a-z0-9-]+)="([^"]*)"/gi, (_m, key, value) => {
+          const name = String(key).replace(/-([a-z])/g, (_match, ch) => ch.toUpperCase());
+          button.dataset[name] = value;
+          return "";
+        });
+        retryButtons.push(button);
+      });
+      return retryButtons;
+    }
     return [];
   }
 };
@@ -99,7 +176,7 @@ async function fetch(url) {
   if (!match) return { ok: false, status: 404, async json() { return {}; } };
   const index = Number(match[1]);
   if (index === 2) {
-    return { ok: true, status: 200, async json() { throw new SyntaxError("bad json"); } };
+    return { ok: false, status: 404, async json() { return {}; } };
   }
   return { ok: true, status: 200, async json() { return detail(index); } };
 }
@@ -124,7 +201,10 @@ setTimeout(() => {
   setTimeout(() => {
     const failed = {
       cardTwoCalls: calls.filter((item) => item.endsWith("CARD-2.json")).length,
-      errorVisible: element("documentView").innerHTML.includes("单卡 JSON 加载失败"),
+      errorVisible: element("documentView").innerHTML.includes("单卡资料加载失败"),
+      friendlyReason: element("documentView").innerHTML.includes("这张卡的资料暂时不可用，请稍后重试。"),
+      titleVisible: element("documentView").innerHTML.includes("本卡资料暂不可用"),
+      statusHidden: !element("documentView").innerHTML.includes("404") && !element("documentView").innerHTML.includes("HTTP"),
       listStillVisible: (element("indexList").innerHTML.match(/class="index-item/g) || []).length
     };
     const cardOne = buttons.get("CARD-1");
@@ -133,7 +213,11 @@ setTimeout(() => {
     cardOne.click();
     setTimeout(() => {
       const afterCachedClick = calls.filter((item) => item.endsWith("CARD-1.json")).length;
-      process.stdout.write(JSON.stringify({ initial, failed, beforeCachedClick, afterCachedClick }));
+      const cardOneText = element("documentView").innerHTML.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      const downloadButton = retryButtons.find((button) => button.dataset.downloadCardId === "CARD-1");
+      if (!downloadButton || typeof downloadButton.click !== "function") throw new Error("missing CARD-1 download button");
+      downloadButton.click();
+      process.stdout.write(JSON.stringify({ initial, failed, beforeCachedClick, afterCachedClick, cardOneText, downloadClicks }));
     }, 30);
   }, 40);
 }, 80);
@@ -153,13 +237,22 @@ setTimeout(() => {
     assert_true(data["initial"]["fallbackStatic"] is False,
                 "HTTP index must not eagerly download fallback.js")
     assert_true(data["failed"]["cardTwoCalls"] == 2
-                and data["failed"]["errorVisible"],
-                "selected prefetch failure should get one bounded retry and local error UI")
+                and data["failed"]["errorVisible"]
+                and data["failed"]["friendlyReason"]
+                and data["failed"]["titleVisible"]
+                and data["failed"]["statusHidden"],
+                "selected prefetch 404 should get one bounded retry and reader-safe error UI")
     assert_true(data["failed"]["listStillVisible"] == 15,
                 "one bad card must not clear or block the manifest list")
     assert_true(data["beforeCachedClick"] == 1
                 and data["afterCachedClick"] == 1,
                 "clicking a prefetched card should reuse the in-memory cache")
+    assert_true("B级｜Call 信用价差" in data["cardOneText"]
+                and "暂未完成有效评级" not in data["cardOneText"],
+                "HTTP detail cache should preserve the published manifest comfort summary")
+    assert_true(data["downloadClicks"] and data["downloadClicks"][0]["href"] == "signal_cards/CARD-1.json"
+                and data["downloadClicks"][0]["download"] == "CARD-1.json",
+                "HTTP download should use the same-origin static full-card JSON path")
     print("signal_audit_frontend_lazy_load: PASS")
 
 

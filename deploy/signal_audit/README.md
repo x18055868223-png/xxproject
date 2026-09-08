@@ -12,7 +12,7 @@
 | `*.service` / `*.timer` | systemd 单元 |
 | `install_or_update.sh` | 服务器安装/更新脚本 |
 
-本轮 r3.3.1 保持既有服务/timer 复用，新增 transition ledger/LLM sidecar 参数与 MACRO direction-background/shock-gate 自检，不新增独立 transition 或 macro 服务。
+当前Astra版本复用既有服务与timer：新卡只进行一次总体证据综合评审，变化由本地台账提供，不再自动调用独立blind、transition LLM或24小时长报告。升级与回退先读[Astra兼容与数据复用约定](../../docs/astra/10_版本兼容与数据复用约定.md)。本次分支推送不等于已获服务器部署或FMZ更新验收。
 
 This deployment target serves the finalized static audit frontend and refreshes
 its `signal_cards/` data from the FMZ `signal_review.jsonl` file.
@@ -21,8 +21,10 @@ For new-server rebuilds or server migration, use the Chinese quick runbook
 [`SERVER_MIGRATION_ZH.md`](SERVER_MIGRATION_ZH.md), the detailed English
 runbook [`SERVER_MIGRATION.md`](SERVER_MIGRATION.md), and
 [`../../tools/server_bootstrap_signal_stack.sh`](../../tools/server_bootstrap_signal_stack.sh).
-The current migration/bootstrap release target is `r3.3.1` in the primary
-`xxproject` repository.
+The current Astra code target is `codex/astra-signal-rating-v1` in the primary
+`xxproject` repository. The migration runbooks describe earlier infrastructure;
+use the current installer and Astra compatibility contract for review protocols,
+data preservation and timer defaults. Verify the intended commit before installing.
 
 ## Server Paths
 
@@ -64,22 +66,8 @@ Commit only source/config/scripts and the static runtime assets under
 - FMZ storage dumps
 - server private keys
 
-Local first-time Git setup for a brand new standalone deployment repo:
-
-> In the integrated backup workflow, prefer using the existing
-> `https://github.com/x18055868223-png/xxproject.git` repository instead of
-> creating another remote. The snippet below is only for the older standalone
-> `signal-audit-deploy` route.
-
-```bash
-git init
-git add .gitignore .gitattributes tools/materialize_signal_cards.py tools/signal_llm_review.py tools/signal_llm_review_entry.py tools/server_self_check_signal_stack.sh deploy/signal_audit
-git status --short
-git commit -m "Prepare signal audit git deployment"
-git branch -M main
-git remote add origin git@github.com:<your-org-or-user>/<repo>.git
-git push -u origin main
-```
+Use the primary xxproject repository and the selected Astra branch. Do not create
+a separate deployment-only main branch or copy a hand-picked subset of tools.
 
 Server first-time clone for the integrated backup repo:
 
@@ -88,21 +76,28 @@ sudo apt update
 sudo apt install -y git nginx rsync python3
 sudo mkdir -p /opt/repos
 sudo chown "$USER":"$USER" /opt/repos
-git clone https://github.com/x18055868223-png/xxproject.git /opt/repos/xxproject
+git clone --branch codex/astra-signal-rating-v1 https://github.com/x18055868223-png/xxproject.git /opt/repos/xxproject
 ```
 
 Server deploy/update from Git:
 
 ```bash
 cd /opt/repos/xxproject
-git pull --ff-only
+git remote -v
+git fetch origin codex/astra-signal-rating-v1
+git switch codex/astra-signal-rating-v1
+git pull --ff-only origin codex/astra-signal-rating-v1
+git rev-parse HEAD
 sudo bash deploy/signal_audit/install_or_update.sh
 ```
 
 `install_or_update.sh` is an active audit-service update, not a read-only
 check. It copies frontend files into `/opt/signal-audit`, installs tools under
 `/opt/signal-audit-tools`, and enables/starts the materializer and LLM review
-timers. Run it during a maintenance window. It does not change FMZ strategy
+timers only when their explicit enable/start options are set. By default it
+installs units without enabling timers, starting timers or running an initial
+LLM request. Existing running timers are not stopped by installation: pause them
+during a coordinated maintenance window before replacing the tool set. It does not change FMZ strategy
 code, execution-layer trading gates, or exchange credentials.
 
 If an older server is still running from `/opt/repos/signal-audit-deploy`, use
@@ -112,7 +107,8 @@ one repository directory consistently during a maintenance window. Do not pull
 know which one owns the deployed files under `/opt/signal-audit` and
 `/opt/signal-audit-tools`.
 
-The install script now also installs and enables the two systemd timers:
+The install script installs these two systemd timer definitions; enabling and
+starting them remains a separate, explicit step after canary validation:
 
 - `signal-audit-materialize.timer`: refreshes static card JSON from FMZ JSONL.
 - `signal-audit-llm-review.timer`: generates DeepSeek LLM review sidecar JSONL,
@@ -129,50 +125,40 @@ Optional direct zip package still exists for emergency/manual transfer:
 
 ## One-Time Deploy Without Git
 
-If GitHub is unavailable, unpack a zip on the server:
+When GitHub is unavailable, transfer the ZIP produced by the current
+`package_signal_audit.ps1`. Unpack it into a new directory and use the same
+installer as Git deployments:
 
 ```bash
-cd /tmp
-rm -rf signal-audit-deploy
-unzip -q signal-audit-deploy.zip -d signal-audit-deploy
+package_dir=$(mktemp -d /tmp/signal-audit-deploy.XXXXXX)
+unzip -q /tmp/signal-audit-deploy.zip -d "$package_dir"
+sudo bash "$package_dir/deploy/install_or_update.sh"
 ```
 
-Copy only the runtime frontend assets to the server root:
+Do not manually run an unprotected `rsync --delete` against the live frontend
+or copy only the old materializer/LLM files. The installer requires
+`VERSION.json`, installs the complete v2 tools, and protects the whole existing
+`signal_cards/` directory even if its index is missing or damaged. A first
+installation can contain packaged fixtures; these are not current FMZ evidence.
+
+Keep the source JSONL, sidecar, its `.v2_attempts/` directory and responses,
+daily usage ledger, transition ledger/state and existing environment file.
+The installer preserves the existing key and writes an updated example
+separately. Verify DeepSeek provider/base URL/model settings before activating
+the new workflow; old provider settings are not automatically migrated.
+
+After installation and configuration review, refresh through the installed
+materializer service so that all configured review and transition sources are
+used consistently:
 
 ```bash
-sudo mkdir -p /opt/signal-audit
-sudo rsync -a --delete \
-  /tmp/signal-audit-deploy/frontend/ \
-  /opt/signal-audit/
+sudo systemctl start signal-audit-materialize.service
+sudo systemctl status signal-audit-materialize.service --no-pager
 ```
 
-Do not publish temporary notes such as `新建文本文档.txt`. `README.md` and
-`VERSION.json` are useful release metadata but are not runtime dependencies.
-
-Copy the materializer script from this repo:
-
-```bash
-sudo mkdir -p /opt/signal-audit-tools
-sudo cp /tmp/signal-audit-deploy/tools/materialize_signal_cards.py /opt/signal-audit-tools/
-sudo cp /tmp/signal-audit-deploy/tools/signal_llm_review.py /opt/signal-audit-tools/
-sudo cp /tmp/signal-audit-deploy/tools/signal_llm_review_entry.py /opt/signal-audit-tools/
-sudo cp /tmp/signal-audit-deploy/deploy/run_signal_llm_review.sh /opt/signal-audit-tools/
-sudo chmod +x /opt/signal-audit-tools/materialize_signal_cards.py
-sudo chmod +x /opt/signal-audit-tools/signal_llm_review.py /opt/signal-audit-tools/signal_llm_review_entry.py
-sudo chmod +x /opt/signal-audit-tools/run_signal_llm_review.sh
-```
-
-Build live cards from the FMZ JSONL:
-
-```bash
-sudo /usr/bin/python3 /opt/signal-audit-tools/materialize_signal_cards.py \
-  --source /home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl \
-  --output /opt/signal-audit \
-  --max-cards 15 \
-  --llm-reviews /opt/signal-audit-tools/signal_llm_reviews.jsonl
-```
-
-Expected output is JSON with `written_cards >= 1` after the FMZ self-test.
+This operation builds the reading projection; it is not evidence that a new
+LLM request, FMZ update or trading validation succeeded. The initial LLM
+canary and production acceptance remain separate steps.
 
 ## Apache / Nginx Example
 
@@ -293,12 +279,13 @@ sudo logrotate -d /etc/logrotate.d/nginx
 
 ## LLM API Key
 
+The installer creates a template only when no environment file exists. Edit
+the existing file; do not replace it with an empty example during upgrades.
 Configure the DeepSeek key only on the server:
 
 ```bash
 sudo mkdir -p /etc/signal-audit
 sudo chmod 700 /etc/signal-audit
-sudo install -m 600 deploy/signal_audit/signal-audit-llm.env.example /etc/signal-audit/llm.env
 sudoedit /etc/signal-audit/llm.env
 ```
 
@@ -310,7 +297,6 @@ LLM_API_KEY=<server-only DeepSeek API key>
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL=deepseek-v4-flash
 LLM_REVIEW_LIMIT=4
-TRANSITION_REVIEW_LIMIT=4
 LLM_MAX_CONCURRENCY=4
 LLM_DAILY_HTTP_CAP=60
 JSONL_SOURCE=/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl
@@ -319,13 +305,16 @@ LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 
 Never commit `/etc/signal-audit/llm.env`. The repository only contains
 `signal-audit-llm.env.example` with an empty key. Gemini variables and fallback
-channels are not read. Each logical call permits at most one narrowly-scoped
-transport retry, and the Beijing-day HTTP ledger fails closed at 60 requests.
+channels are not read. Each assessment has a shared, persistent limit of two
+HTTP attempts for transport and format recovery, and the Beijing-day HTTP
+ledger fails closed at 60 requests. Restarting or updating code does not clear
+these ledgers or automatically reassess completed historical cards.
 
 ## Auto-Refresh And LLM Review
 
-`install_or_update.sh` installs and enables these by default. Manual commands
-are still useful for troubleshooting:
+`install_or_update.sh` installs the units, but does not enable/start timers by
+default. The following service start can make a real paid LLM request and is
+only for an authorized canary or approved production operation:
 
 ```bash
 sudo systemctl start signal-audit-llm-review.service

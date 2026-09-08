@@ -26,7 +26,8 @@ def main():
     entry = load(TOOLS / "signal_llm_review_entry.py", "signal_llm_review_entry_test")
     assert_true(entry.ENTRY_VERSION == "signal_llm_review_entry@1.1.10",
                 "entry version mismatch")
-    assert_true(entry.PROMPT_VERSION == "signal_llm_review_prompt@1.5.6",
+    assert_true(entry.PROMPT_VERSION == entry.core.MAIN_PROMPT_VERSION
+                and entry.PROMPT_VERSION == "signal_llm_review_prompt@1.6.0",
                 "entry prompt mismatch")
     assert_true(entry.core.PROVIDER == "deepseek", "entry provider mismatch")
     assert_true(entry.core.DEFAULT_MODEL == "deepseek-v4-flash", "entry model mismatch")
@@ -49,6 +50,7 @@ def main():
     assert_true("KEY=VALUE" in entry_prompt
                 and "相对距离" in entry_prompt
                 and "Gamma/GEX 观察点位" in entry_prompt
+                and "舒适度评级任务" in entry_prompt
                 and "行权价、执行价、strike、expiry" in entry_prompt,
                 "entry human-readable output rules missing")
     retry_prompt = entry.build_prompt(
