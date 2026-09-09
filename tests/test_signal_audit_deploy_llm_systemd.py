@@ -331,6 +331,8 @@ def main():
                 "ONLY_CARD_ID should preserve full source context for v2")
     assert_true("flock -n" in runner and "run_signal_llm_review.lock" in runner,
                 "runner should keep the non-blocking flock guard")
+    assert_true('entry_args+=(--automatic-exclusions "$LLM_AUTOMATIC_EXCLUSIONS")' in runner,
+                "runner should pass the configured persistent historical exclusions")
     assert_true("LLM_API_KEY is not configured" in runner,
                 "runner should skip cleanly before the key is configured")
 

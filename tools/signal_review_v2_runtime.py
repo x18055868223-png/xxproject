@@ -19,6 +19,7 @@ from signal_review_v2 import (EvidenceFormatError, build_request, build_review,
 MODE = "single_evidence_v2"
 PROMPT = PROMPT_VERSION
 MAX_ATTEMPTS = 2
+AUTOMATIC_EXCLUSIONS_SCHEMA_VERSION = "signal_review_automatic_exclusions@1.0.0"
 
 
 def _read_state(path):
@@ -28,6 +29,28 @@ def _read_state(path):
     if not isinstance(value, dict) or not isinstance(value.get("attempts"), list):
         raise ValueError("评审额度记录损坏，暂停自动调用")
     return value
+
+
+def _read_automatic_exclusions(path):
+    if not path:
+        return set()
+    path = Path(path)
+    if not path.exists():
+        raise ValueError("自动排除配置不存在，暂停自动调用")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("自动排除配置不可读取，暂停自动调用") from exc
+    if not isinstance(value, dict):
+        raise ValueError("自动排除配置格式错误，暂停自动调用")
+    if value.get("schema_version") != AUTOMATIC_EXCLUSIONS_SCHEMA_VERSION:
+        raise ValueError("自动排除配置版本不受支持，暂停自动调用")
+    card_ids = value.get("card_ids")
+    if not isinstance(card_ids, list):
+        raise ValueError("自动排除配置缺少卡片列表，暂停自动调用")
+    if not all(isinstance(card_id, str) and card_id for card_id in card_ids):
+        raise ValueError("自动排除配置包含无效卡片编号，暂停自动调用")
+    return set(card_ids)
 
 
 def _recoverable(exc):
@@ -169,9 +192,11 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
 def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MODEL,
                      limit=4, include_synthetic=False, timeout=240, base_url=None,
                      budget=None, max_concurrency=4, only_card_id=None,
-                     transition_ledger=None, transport=None, reviewed_at=None):
+                     transition_ledger=None, transport=None, reviewed_at=None,
+                     automatic_exclusions=None):
     cards = sorted(core._dedupe_cards(core._read_jsonl(source)),
                    key=core._card_sort_key, reverse=True)
+    excluded_card_ids = _read_automatic_exclusions(automatic_exclusions)
     by_id = {core._card_id(card): card for card in cards}
     transitions = {str(t.get("current_card_id")): t for t in
                    core._read_jsonl(transition_ledger) if t.get("current_card_id")} if transition_ledger else {}
@@ -191,7 +216,7 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
                   "already_ok": False, "attempted": False, "status": "MISSING"}
         cards = [by_id[only_card_id]] if only_card_id in by_id else []
         limit = 1
-    chosen, skipped = [], 0
+    chosen, skipped, automatic_excluded = [], 0, 0
     for card in cards:
         cid = core._card_id(card)
         if cid in done:
@@ -199,6 +224,10 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
             if target:
                 target.update(already_ok=done[cid]["status"] in {"OK", "PARTIAL"},
                               status="ALREADY_OK" if done[cid]["status"] in {"OK", "PARTIAL"} else "SETTLED_ERROR")
+            continue
+        if not only_card_id and cid in excluded_card_ids:
+            skipped += 1
+            automatic_excluded += 1
             continue
         if core._is_synthetic(card) and not include_synthetic:
             skipped += 1
@@ -252,4 +281,5 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
             target.update(attempted=did_attempt, status=review["status"])
     return {"written": written, "errors": errors, "attempted": attempted,
             "skipped": skipped, "review_mode": MODE, "target": target,
+            "automatic_excluded": automatic_excluded,
             "daily_http_budget": budget.snapshot() if budget else None}

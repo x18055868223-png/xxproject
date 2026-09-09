@@ -7915,6 +7915,8 @@ def main(argv=None):
                         help="Legacy offline retry identifier; never resets the v2 attempt budget.")
     parser.add_argument("--only-card-id", default="",
                         help="Review one exact card_id; missing target exits 2.")
+    parser.add_argument("--automatic-exclusions", default="",
+                        help="Optional JSON file of card_ids excluded from automatic v2 review.")
     parser.add_argument("--blind-effort", default="low",
                         choices=("low", "medium", "high"),
                         help="Recorded effort label for the main blind call.")
@@ -7964,7 +7966,8 @@ def main(argv=None):
                 timeout=args.recon_timeout, base_url=args.base_url,
                 budget=budget, max_concurrency=args.max_concurrency,
                 only_card_id=args.only_card_id or None,
-                transition_ledger=args.transition_ledger or None)
+                transition_ledger=args.transition_ledger or None,
+                automatic_exclusions=args.automatic_exclusions or None)
         else:
             card_result = generate_reviews(
             args.source,

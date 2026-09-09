@@ -88,4 +88,8 @@ if [[ -n "${ONLY_CARD_ID:-}" ]]; then
   entry_args+=(--only-card-id "$ONLY_CARD_ID")
 fi
 
+if [[ -n "${LLM_AUTOMATIC_EXCLUSIONS:-}" ]]; then
+  entry_args+=(--automatic-exclusions "$LLM_AUTOMATIC_EXCLUSIONS")
+fi
+
 exec /usr/bin/python3 "$TOOLS_ROOT/signal_llm_review_entry.py" "${entry_args[@]}"

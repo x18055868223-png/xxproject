@@ -29,7 +29,7 @@
 - 信号层 producer 候选：`demo_version=1.6.0`，`schema_version=nrd.schema.v1.0.0`；只读观察边界、短推、JSONL 审计卡和执行权限隔离仍需分别核验。
 - 执行层：`STRATEGY_VERSION=3.0.0-manual-gate`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭，`DRY_RUN_PASSED=False`。
 - GEX API：`gexmonitorapi=0.2.1`，rank 窗口为 `rolling_30d_or_available`。
-- LLM 复核当前新卡协议：DeepSeek `deepseek-v4-flash`，`signal_llm_review@2.0.0` / `signal_llm_review_prompt@2.0.0`，`review_mode=single_evidence_v2`；历史 1.x 旁路只作为旧卡或离线资料读取。
+- LLM 复核当前新卡协议：DeepSeek `deepseek-v4-flash`，`signal_llm_review@2.0.0` / `signal_llm_review_prompt@2.0.1`，`review_mode=single_evidence_v2`；历史 1.x 旁路只作为旧卡或离线资料读取。
 - 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar；当前阅读入口以 Astra v2 总体证据评级为准，旧方向、旧分数和旧结论不并列为新卡当前结论。
 - 文档收纳：05 与 `deploy/signal_audit` 已补齐 `因子文档/`、中文语义入口和前端 `VERSION.json`，按 00-04 的模块阅读惯例收纳。
 

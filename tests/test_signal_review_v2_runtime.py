@@ -40,6 +40,34 @@ class RuntimeTests(unittest.TestCase):
                                         budget=self.budget, transport=transport or normal,
                                         only_card_id="case-1")
 
+    def write_source_cards(self, *card_ids):
+        records = []
+        for index, card_id in enumerate(card_ids):
+            records.append({
+                "identity": {
+                    "card_id": card_id,
+                    "confirmed_time_ms": 1000 + index,
+                },
+            })
+        self.source.write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+
+    def write_exclusions(self, card_ids, *, path=None):
+        path = path or self.root / "automatic_exclusions.json"
+        path.write_text(json.dumps({
+            "schema_version": runtime.AUTOMATIC_EXCLUSIONS_SCHEMA_VERSION,
+            "card_ids": list(card_ids),
+            "metadata": {"source": "test"},
+        }), encoding="utf-8")
+        return path
+
+    def transport(self, *args, **kwargs):
+        self.calls.append(1)
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8}}
+
     def test_one_call_and_restarting_does_not_repeat(self):
         self.assertEqual(self.run_review()["written"], 1)
         self.assertEqual(self.run_review()["skipped"], 1)
@@ -164,6 +192,97 @@ class RuntimeTests(unittest.TestCase):
         state.write_text("broken", encoding="utf-8")
         self.assertEqual(self.run_review()["errors"], 1)
         self.assertEqual(len(self.calls), 1)
+
+    def test_automatic_exclusion_skips_history_and_reviews_next_card(self):
+        self.write_source_cards("case-new", "case-old")
+        exclusions = self.write_exclusions(["case-old"])
+        result = runtime.generate_reviews(
+            self.source,
+            self.output,
+            api_key="test-only",
+            budget=self.budget,
+            transport=self.transport,
+            limit=1,
+            automatic_exclusions=exclusions,
+        )
+        self.assertEqual(result["automatic_excluded"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["written"], 1)
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(json.loads(self.output.read_text())["card_id"], "case-new")
+
+    def test_automatic_exclusion_persists_across_restart_without_sidecar_or_http(self):
+        exclusions = self.write_exclusions(["case-1"])
+        first = runtime.generate_reviews(
+            self.source,
+            self.output,
+            api_key="test-only",
+            budget=self.budget,
+            transport=self.transport,
+            automatic_exclusions=exclusions,
+        )
+        second = runtime.generate_reviews(
+            self.source,
+            self.output,
+            api_key="test-only",
+            budget=self.budget,
+            transport=self.transport,
+            automatic_exclusions=exclusions,
+        )
+        self.assertEqual(first["automatic_excluded"], 1)
+        self.assertEqual(second["automatic_excluded"], 1)
+        self.assertEqual(first["written"], 0)
+        self.assertEqual(second["written"], 0)
+        self.assertEqual(len(self.calls), 0)
+        self.assertFalse(self.output.exists())
+
+    def test_only_card_id_bypasses_automatic_exclusion(self):
+        exclusions = self.write_exclusions(["case-1"])
+        result = runtime.generate_reviews(
+            self.source,
+            self.output,
+            api_key="test-only",
+            budget=self.budget,
+            transport=self.transport,
+            only_card_id="case-1",
+            automatic_exclusions=exclusions,
+        )
+        self.assertEqual(result["automatic_excluded"], 0)
+        self.assertEqual(result["written"], 1)
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(result["target"]["status"], "OK")
+        self.assertEqual(len(self.calls), 1)
+
+    def test_invalid_automatic_exclusions_fail_before_http(self):
+        cases = {
+            "missing": self.root / "missing.json",
+            "broken_json": self.root / "broken.json",
+            "wrong_schema": self.root / "wrong_schema.json",
+            "non_string_id": self.root / "non_string_id.json",
+        }
+        cases["broken_json"].write_text("{", encoding="utf-8")
+        cases["wrong_schema"].write_text(json.dumps({
+            "schema_version": "signal_review_automatic_exclusions@9.9.9",
+            "card_ids": ["case-1"],
+        }), encoding="utf-8")
+        cases["non_string_id"].write_text(json.dumps({
+            "schema_version": runtime.AUTOMATIC_EXCLUSIONS_SCHEMA_VERSION,
+            "card_ids": ["case-1", 2],
+        }), encoding="utf-8")
+        for name, path in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    runtime.generate_reviews(
+                        self.source,
+                        self.output,
+                        api_key="test-only",
+                        budget=self.budget,
+                        transport=self.transport,
+                        automatic_exclusions=path,
+                    )
+        self.assertEqual(len(self.calls), 0)
+        self.assertFalse(self.output.exists())
 
     def test_interrupted_reservations_still_count_after_restart(self):
         self.run_review()
