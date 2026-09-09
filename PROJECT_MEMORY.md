@@ -6,11 +6,11 @@
 
 工程开发基线是xxproject的codex/astra-signal-rating-v1完整资产分支。新卡使用一次DeepSeek综合评审；B/A/S表达总体证据强弱；证据字母与人工准备边界分离。原WAIT/BLOCK/NO_TRADE、窗口与侧别限制仍有效，不新建执行权。
 
-producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面20260908-astra-paperline分别记版。用户已审阅定稿中性纸面，并于2026-09-09明确授权推送当前版本；本次不合并main、不部署服务器。随后页面改动仍要重新取得可推送确认。
+producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面20260908-astra-paperline分别记版。用户已审阅定稿中性纸面，并于2026-09-09明确授权推送当前版本；不合并main。用户随后授权服务器部署，审计服务已部署5edb288；FMZ运行仍待确认。随后页面改动仍要重新取得可推送确认。
 
 升级保留原始审计、sidecar、持久尝试及响应、预算和变化状态；历史卡不自动重评，新协议不能被旧评审静默覆盖，未知协议显式未评级。代码安装保护整个运行时signal_cards目录，不依赖索引存在。Prompt或输入包修改不能作为清除旧请求额度的理由。
 
-可见根目录与隔离工作树是不同开发面，按本次同步清单核对文件，不能把同步一个FMZ候选推定成整个根目录源码已更新。服务器最新真实卡在本次只读核验中仍为1.5.7；真实API、FMZ及部署验收分别取证。以下为早期工程快照，其中旧版本、Gemini流程和旧展示习惯不作为当前Astra依据。
+可见根目录与隔离工作树是不同开发面，按本次同步清单核对文件，不能把同步一个FMZ候选推定成整个根目录源码已更新。服务器最新真实卡在本次只读核验中仍为1.5.7；两类Prompt2.0.1隔离API已通过、服务器审计timer已恢复；FMZ仍待真实1.6.0新卡。历史自动排除清单与sidecar/额度必须一起迁移，详见[部署回执](docs/astra/11_服务器部署与FMZ同步说明.md)。以下为早期工程快照，其中旧版本、Gemini流程和旧展示习惯不作为当前Astra依据。
 
 ## Project overview
 
@@ -19,7 +19,7 @@ producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面2
 - The current local signal-layer candidate is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file candidate version is `demo_version = "1.6.0"` and `schema_version = "nrd.schema.v1.0.0"`. It preserves the v1.5.6 runtime/delivery protections, adds CVD weak-edge joint activation, emits producer-native `canonical_funding_semantics` as the sole Funding interpretation, and generates one audit-only fixed analysis round from the Beijing 23:00 snapshot. The fixed round bypasses only the Anchor+DIE card-emission trigger, never fabricates `NR_REPAIR_CONFIRMED`, and reuses the normal JSONL, single v2 DeepSeek assessment, materializer, and single integrated-advisory frontend path.
 - The current deployable execution-layer artifact is `demo/最新交付物/spm_manual_gate_execution_fmz.py`. Its verified in-file version is `STRATEGY_VERSION = "3.0.0-manual-gate"`, status `MANUAL_GATE_PLAN_READY`, with entry/exit/hedge/live trading gates still default-safe/off and `DRY_RUN_PASSED = False`.
 - The current GEX Monitor API snapshot is `05_GEX监控API_数据增强接口/`, with `__version__ = "0.2.1"` and rank output using `rolling_30d_or_available`; `window_days>=15` is directly `quality=ok`, while the percentile population remains capped to the most recent 30 days.
-- The current local v2 main path uses tools/signal_evidence_v2.py, tools/signal_review_v2.py and tools/signal_review_v2_runtime.py, dispatched by tools/signal_llm_review.py / signal_llm_review_entry.py. Default single_evidence_v2 uses DeepSeek deepseek-v4-flash, one high-reasoning call, schema/prompt 2.0.0, persistent two-HTTP total budget. Legacy 1.x helpers remain explicit offline/history only; they are not current new-card output contracts.
+- The current local v2 main path uses tools/signal_evidence_v2.py, tools/signal_review_v2.py and tools/signal_review_v2_runtime.py, dispatched by tools/signal_llm_review.py / signal_llm_review_entry.py. Default single_evidence_v2 uses DeepSeek deepseek-v4-flash, one high-reasoning call, schema 2.0.0 / prompt 2.0.1, persistent two-HTTP total budget. Legacy 1.x helpers remain explicit offline/history only; they are not current new-card output contracts.
 - Historical transition LLM sidecars remain readable. New automatic cards use locally verified transition facts in the same v2 call; no independent transition LLM or new 24-hour long report is scheduled.
 - The remote full-project backup branch for the r3.3.5 asset state is `backup/xxproject-r3.3.5-fulltree-20260705` on `xxproject`; r3.3.6 durability work should be layered on top of that full-tree baseline or another explicitly justified full-project baseline.
 - Documentation r2.2 aligns `05_GEX监控API_数据增强接口/` and `deploy/signal_audit/` with the 00-04 module convention by adding `因子文档/` indexes, Chinese semantic entrypoints, and `deploy/signal_audit/frontend/VERSION.json`; it does not move service source code or change runtime behavior.
@@ -29,8 +29,8 @@ producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面2
 
 ## Astra rating implementation boundary
 
-- Current authoritative local implementation route is docs/astra/07_总体证据评级与单次综合评审_v2.md, on the unpushed codex/astra-signal-rating-v1 worktree rooted at full asset commit 2c72162. Preceding v1 comfort tests and discussions are historical evidence.
-- Producer candidate stays 1.6.0 with native signal_rating@1.0.0; the v2 LLM schema/prompt is a separate 2.0.0 version axis. Existing producer direction/confidence/NR/trigger/permission consumers remain unchanged.
+- Current authoritative local implementation route is docs/astra/07_总体证据评级与单次综合评审_v2.md, on the pushed codex/astra-signal-rating-v1 worktree rooted at full asset commit 2c72162. Preceding v1 comfort tests and discussions are historical evidence.
+- Producer candidate stays 1.6.0 with native signal_rating@1.0.0; the v2 LLM schema 2.0.0 / prompt 2.0.1 are separate version axes. Existing producer direction/confidence/NR/trigger/permission consumers remain unchanged.
 - B/A/S mean overall evidence strength, not ideal-market checklists or probabilities. WAIT/BLOCK/NO_TRADE/window/side boundaries constrain locally derived preparation, not evidence letters. Read-only execution false does not lower market evidence.
 - New fact inputs exclude old confidence/durability totals, legacy anchor gravity scores, prior conclusions and full GEX rankings. Anchor gravity is a derived fit score, not source quality; use verified anchor position/band and price response instead. Underlying raw archives and machine-used CVD ranks remain; derived facts retain source dependencies.
 - Macro score polarity is positive=headwind, negative=tailwind for risk assets; do not read its sign as a price-direction score. Same-source or derived descriptions do not add independent votes. A missing source timestamp is not silently replaced by a claimed collection time.
