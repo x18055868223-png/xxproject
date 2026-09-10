@@ -29,12 +29,14 @@
     BEARISH: "偏空",
     BEARISH_BIAS: "偏空背景",
     BEARISH_STRONG: "强偏空",
+    BEARISH_WEAK: "弱偏空",
     BEARISH_LEAN: "理论偏空",
     BEARISH_CONFIRMED: "偏空已确认",
     BEARISH_WITH_DISAGREEMENT: "偏空但存在分歧",
     BULLISH: "偏多",
     BULLISH_BIAS: "偏多背景",
     BULLISH_STRONG: "强偏多",
+    BULLISH_WEAK: "弱偏多",
     BULLISH_LEAN: "理论偏多",
     BULLISH_CONFIRMED: "偏多已确认",
     BULLISH_WITH_DISAGREEMENT: "偏多但存在分歧",
@@ -4334,7 +4336,8 @@
       alternative_cn: normalizeComfortText(view.alternative_cn || view.competing_explanation_cn, "竞争解释暂未形成。"),
       next_observation_cn: normalizeComfortText(view.next_observation_cn, "等待下一条有效观察。"),
       strengthen_if_cn: normalizeEvidenceTextList(view.strengthen_if_cn),
-      weaken_if_cn: weaken.length ? weaken : legacyInvalid,
+      weaken_if_cn: weaken,
+      legacy_invalid_if_cn: weaken.length ? [] : legacyInvalid,
       invalid_if_cn: normalizeComfortText(view.invalid_if_cn, ""),
       evidence_roles: roles,
       evidence_refs: supportRefs,
@@ -4955,15 +4958,22 @@
     const scope = side.status === "UNRATED" ? "（原评审观察，尚未采纳）" : "";
     const strengthen = asArray(side.strengthen_if_cn);
     const weaken = asArray(side.weaken_if_cn);
+    const legacyInvalid = asArray(side.legacy_invalid_if_cn);
+    const currentConditionBlock = strengthen.length || weaken.length
+      ? `<h4>增强该侧适配</h4>${listHtml(strengthen, "尚未声明增强条件。")}<h4>削弱该侧适配</h4>${listHtml(weaken, "尚未声明削弱条件。")}`
+      : "";
+    const legacyConditionBlock = !currentConditionBlock && legacyInvalid.length
+      ? `<h4>旧版失效条件（评审对象未区分）</h4>${listHtml(legacyInvalid, "旧版未声明失效条件。")}`
+      : "";
+    const fallbackBlock = !currentConditionBlock && !legacyConditionBlock
+      ? `<h4>增强该侧适配</h4>${listHtml([], "尚未声明增强条件。")}<h4>削弱该侧适配</h4>${listHtml([], "尚未声明削弱条件。")}`
+      : "";
     return `
       <div class="evidence-next-side">
         <h3>${escapeHtml(label)}${escapeHtml(scope)}</h3>
         <h4>继续观察</h4>
         <p>${escapeHtml(signalEvidenceReaderText(side.next_observation_cn, "等待下一条有效观察。"))}</p>
-        <h4>增强该侧适配</h4>
-        ${listHtml(strengthen, "尚未声明增强条件。")}
-        <h4>削弱该侧适配</h4>
-        ${listHtml(weaken, side.invalid_if_cn ? signalEvidenceReaderText(side.invalid_if_cn, "尚未声明削弱条件。") : "尚未声明削弱条件。")}
+        ${currentConditionBlock || legacyConditionBlock || fallbackBlock}
       </div>
     `;
   }

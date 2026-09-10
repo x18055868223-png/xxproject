@@ -8,7 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from test_signal_comfort_frontend import assert_no_machine_leak, assert_true, render_cards
+from test_signal_comfort_frontend import assert_no_machine_leak, assert_true, fixture_valid_as, render_cards
 from test_signal_evidence_frontend import (
     AS_OF_MS,
     advisory,
@@ -182,6 +182,32 @@ def test_v21_list_header_and_decision_use_projection_price_bias_and_comparison()
     assert_true("C 级侧" not in text and "C级侧" not in text,
                 "double-B summaries should not invent a C-side status")
     assert_no_machine_leak(rendered, context="v2.1 list header comparison")
+    next_section = html_section(rendered["documentHtml"], "signal-next-conditions")
+    assert_true("增强该侧适配" in next_section and "削弱该侧适配" in next_section,
+                "v2.1 sides should keep fixed-fit strengthen/weaken wording")
+    assert_true("旧版失效条件（评审对象未区分）" not in next_section,
+                "v2.1 sides should not be shown as legacy ambiguous conditions")
+
+
+def test_legacy_sidebar_headline_localizes_weak_direction_tokens():
+    bearish = fixture_valid_as()
+    bearish["identity"]["card_id"] = "LEGACY-BEARISH-WEAK"
+    bearish["identity"]["short_id"] = "LBW"
+    bearish["decision"]["lean"] = "BEARISH_WEAK"
+    bearish["decision_matrix"]["direction"] = "BEARISH_WEAK"
+
+    bullish = fixture_valid_as()
+    bullish["identity"]["card_id"] = "LEGACY-BULLISH-WEAK"
+    bullish["identity"]["short_id"] = "LUW"
+    bullish["decision"]["lean"] = "BULLISH_WEAK"
+    bullish["decision_matrix"]["direction"] = "BULLISH_WEAK"
+
+    rendered = render_cards([bearish, bullish])
+    combined = rendered["indexText"] + " " + rendered["indexHtml"]
+    assert_true("弱偏空" in combined and "弱偏多" in combined,
+                "legacy sidebar should localize weak directional headline tokens")
+    assert_true("BEARISH_WEAK" not in combined and "BULLISH_WEAK" not in combined,
+                "legacy sidebar should not leak weak directional enum tokens")
 
 
 def test_v21_evidence_roles_drive_source_groups_without_machine_role_tokens():
@@ -253,6 +279,19 @@ def test_v21_old_summary_keeps_legacy_comparison_gap_readable():
     assert_no_machine_leak(rendered, context="v2.1 old comparison gap")
 
 
+def test_legacy_v20_invalid_if_uses_ambiguous_legacy_condition_label():
+    rendered = render_cards([evidence_card("EVIDENCE-OLD-INVALID")])
+    next_section = html_section(rendered["documentHtml"], "signal-next-conditions")
+    assert_true("旧版失效条件（评审对象未区分）" in next_section,
+                "old invalid_if should keep a legacy ambiguous-condition label")
+    assert_true("若价格有效突破对应空间约束，本轮判断失效。" in next_section,
+                "old invalid_if text should remain visible")
+    assert_true("削弱该侧适配" not in next_section,
+                "old invalid_if must not be presented as v2.1 fixed-fit weaken conditions")
+    assert_true("Put A级" in rendered["indexText"] and "Call C级" in rendered["indexText"],
+                "legacy condition wording must not alter old grades")
+
+
 def test_v21_missing_projection_price_does_not_guess_market_context_price():
     adv = v21_advisory()
     summary = v21_summary(adv, market_status="UNAVAILABLE", price=None, unit="")
@@ -322,10 +361,12 @@ def test_v21_change_gap_uses_reader_wording_for_record_source_check():
 
 def main():
     test_v21_list_header_and_decision_use_projection_price_bias_and_comparison()
+    test_legacy_sidebar_headline_localizes_weak_direction_tokens()
     test_v21_evidence_roles_drive_source_groups_without_machine_role_tokens()
     test_v21_invalid_side_comparison_isolated_from_side_grades()
     test_v21_unavailable_comparison_hides_raw_basis()
     test_v21_old_summary_keeps_legacy_comparison_gap_readable()
+    test_legacy_v20_invalid_if_uses_ambiguous_legacy_condition_label()
     test_v21_missing_projection_price_does_not_guess_market_context_price()
     test_v21_projection_hash_mismatch_invalidates_new_summary()
     test_v21_change_gap_mentions_specific_reason_class()
