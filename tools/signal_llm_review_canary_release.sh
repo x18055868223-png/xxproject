@@ -552,8 +552,8 @@ sys.path.insert(0, str(pathlib.Path(sys.argv[1]).parent))
 import signal_llm_review as core
 print("LLM_PROVIDER=" + str(core.PROVIDER))
 print("LLM_MODEL=" + str(core.DEFAULT_MODEL))
-print("LLM_SCHEMA=signal_llm_review@2.0.0")
-print("LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1")
+print("LLM_SCHEMA=signal_llm_review@2.1.0")
+print("LLM_PROMPT_VERSION=signal_llm_review_prompt@2.1.0")
 print("LLM_REVIEW_MODE=single_evidence_v2")
 PY
 for unit in signal-audit-materialize.service signal-audit-materialize.timer signal-audit-llm-review.service signal-audit-llm-review.timer; do
@@ -611,8 +611,8 @@ SYSTEMD_REQUIRED=0 \
 AUDIT_HTTP_REQUIRED=0 \
 LLM_REQUIRED=1 \
 INTEGRATED_ADVISORY_REQUIRED=1 \
-EXPECTED_LLM_SCHEMA=signal_llm_review@2.0.0 \
-EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1 \
+EXPECTED_LLM_SCHEMA=signal_llm_review@2.1.0 \
+EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.1.0 \
 EXPECTED_LLM_REVIEW_MODE=single_evidence_v2 \
 EXPECTED_LLM_CALL_COUNT=1 \
 EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2 \

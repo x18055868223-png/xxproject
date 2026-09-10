@@ -11,6 +11,58 @@ import signal_review_v2_runtime as runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_v21_recovers_settled_v201_state_without_http(self):
+        states = self.output.with_suffix(self.output.suffix + ".v2_attempts")
+        states.mkdir()
+        prompt = "signal_llm_review_prompt@2.0.1"
+        key = runtime._state_key("case-1", prompt, runtime.MODE, core.DEFAULT_MODEL)
+        record = {"card_id": "case-1", "llm_review": {
+            "schema_version": "signal_llm_review@2.0.0", "prompt_version": prompt,
+            "status": "OK", "retry_budget": {"persistent": True, "used": 1, "limit": 2}}}
+        state = {"packet": self.packet, "prompt": prompt, "attempts": [{"number": 1}],
+                 "settled": True, "record": record}
+        original = json.dumps(state)
+        path = states / (key + ".json")
+        path.write_text(original, encoding="utf-8")
+        with patch.object(runtime, "PROMPT", "signal_llm_review_prompt@2.1.0"), patch.object(
+                runtime, "ACCEPTED_PROMPT_VERSIONS", ("signal_llm_review_prompt@2.0.0", prompt,
+                                                     "signal_llm_review_prompt@2.1.0")):
+            self.run_review()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(path.read_text(encoding="utf-8"), original)
+        self.assertEqual(json.loads(self.output.read_text(encoding="utf-8")), record)
+
+    def test_v21_freezes_unfinished_v201_attempt_without_new_allowance(self):
+        states = self.output.with_suffix(self.output.suffix + ".v2_attempts")
+        states.mkdir()
+        prompt = "signal_llm_review_prompt@2.0.1"
+        path = states / (runtime._state_key("case-1", prompt, runtime.MODE, core.DEFAULT_MODEL) + ".json")
+        state = {"packet": self.packet, "prompt": prompt,
+                 "attempts": [{"number": 1, "status": "RESERVED"}]}
+        original = json.dumps(state)
+        path.write_text(original, encoding="utf-8")
+        with patch.object(runtime, "PROMPT", "signal_llm_review_prompt@2.1.0"), patch.object(
+                runtime, "ACCEPTED_PROMPT_VERSIONS", (prompt, "signal_llm_review_prompt@2.1.0")):
+            self.run_review()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(path.read_text(encoding="utf-8"), original)
+        review = json.loads(self.output.read_text(encoding="utf-8"))["llm_review"]
+        self.assertEqual(review["retry_budget"]["used"], 1)
+        self.assertEqual(len(list(states.glob("*.json"))), 1)
+
+    def test_multiple_prompt_states_fail_closed_without_http(self):
+        states = self.output.with_suffix(self.output.suffix + ".v2_attempts")
+        states.mkdir()
+        prompts = ("signal_llm_review_prompt@2.0.1", "signal_llm_review_prompt@2.1.0")
+        for prompt in prompts:
+            path = states / (runtime._state_key("case-1", prompt, runtime.MODE, core.DEFAULT_MODEL) + ".json")
+            path.write_text(json.dumps({"packet": self.packet, "prompt": prompt,
+                                        "attempts": [{"number": 1}]}), encoding="utf-8")
+        with patch.object(runtime, "PROMPT", prompts[-1]), patch.object(runtime, "ACCEPTED_PROMPT_VERSIONS", prompts):
+            self.run_review()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(json.loads(self.output.read_text(encoding="utf-8"))["llm_review"]["status"], "ERROR")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

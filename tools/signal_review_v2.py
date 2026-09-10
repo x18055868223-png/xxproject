@@ -20,24 +20,39 @@ from typing import Any
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 PROVIDER = "deepseek"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.0.0"
+LEGACY_OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.0.0"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.1.0"
 LEGACY_PROMPT_VERSION = "signal_llm_review_prompt@2.0.0"
-PROMPT_VERSION = "signal_llm_review_prompt@2.0.1"
+PROMPT_VERSION_2_0_1 = "signal_llm_review_prompt@2.0.1"
+PROMPT_VERSION = "signal_llm_review_prompt@2.1.0"
 MAIN_PROMPT_VERSION = PROMPT_VERSION
 REVIEW_MODE = "single_evidence_v2"
 PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.0.0"
-SUMMARY_SCHEMA_VERSION = "signal_evidence_summary@2.0.0"
+SUMMARY_SCHEMA_VERSION = "signal_evidence_summary@2.1.0"
+DISPLAY_PROJECTION_VERSION = "2.1.0"
 PRICE_BIAS_SCHEMA_VERSION = "price_bias@1.0.0"
 
 SIDE_KEYS = ("put_credit", "call_credit")
+SIDE_FIT_THESES = {
+    "put_credit": "put_downside_containment",
+    "call_credit": "call_upside_containment",
+}
 GRADES = ("D", "C", "B", "A", "S")
 SIDE_STATUS = ("RATED", "UNRATED")
 REVIEW_STATUS = ("OK", "PARTIAL", "ERROR")
-ACCEPTED_PROMPT_VERSIONS = (LEGACY_PROMPT_VERSION, PROMPT_VERSION)
+ACCEPTED_OUTPUT_SCHEMA_VERSIONS = (LEGACY_OUTPUT_SCHEMA_VERSION, OUTPUT_SCHEMA_VERSION)
+ACCEPTED_PROMPT_VERSIONS = (
+    LEGACY_PROMPT_VERSION,
+    PROMPT_VERSION_2_0_1,
+    PROMPT_VERSION,
+)
 PRICE_BIASES = ("BULLISH", "BEARISH", "NEUTRAL", "MIXED", "UNDETERMINED")
 PRICE_BIAS_STATUS = ("ASSESSED", "UNAVAILABLE")
+EVIDENCE_ROLES = ("supports_fit", "counters_fit", "context_only")
+COMPARISON_SIDES = ("put_credit", "call_credit", "tie", "not_comparable")
+COMPARISON_STATUS = ("ASSESSED", "UNAVAILABLE")
 
-MODEL_SIDE_FIELDS = {
+LEGACY_MODEL_SIDE_FIELDS = {
     "grade",
     "basis_cn",
     "market_counter_cn",
@@ -48,6 +63,19 @@ MODEL_SIDE_FIELDS = {
     "counter_evidence_refs",
     "unresolved_conditions_cn",
 }
+MODEL_SIDE_FIELDS = {
+    "grade",
+    "basis_cn",
+    "mechanism_cn",
+    "market_counter_cn",
+    "alternative_cn",
+    "next_observation_cn",
+    "strengthen_if_cn",
+    "weaken_if_cn",
+    "evidence_roles",
+    "unresolved_conditions_cn",
+}
+MODEL_SIDE_ROLE_FIELDS = {"ref", "role", "claim_cn"}
 MODEL_PRICE_BIAS_FIELDS = {
     "bias",
     "basis_cn",
@@ -55,6 +83,12 @@ MODEL_PRICE_BIAS_FIELDS = {
     "invalid_if_cn",
     "evidence_refs",
     "counter_evidence_refs",
+}
+MODEL_COMPARISON_FIELDS = {
+    "relative_side",
+    "basis_cn",
+    "evidence_refs",
+    "flip_if_cn",
 }
 
 _CONSTRAINT_WORD_RE = re.compile(
@@ -76,6 +110,11 @@ _MACHINE_TEXT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"[A-Za-z]:\\[^,\]\}\n\r\t ]+"),
+)
+_INTERNAL_IDENTIFIER_RE = re.compile(
+    r"\b(?:put_credit|call_credit|supports_fit|counters_fit|context_only|"
+    r"put_downside_containment|call_upside_containment|fit_thesis|"
+    r"evidence_roles|side_comparison|side_evidence_ratings)\b"
 )
 _FORBIDDEN_TRADE_TEXT_RE = re.compile(
     r"(?:行权价|履约价|strike|挂单价|限价|仓位|杠杆)\s*[:：为=]?\s*\d"
@@ -99,6 +138,39 @@ class EvidenceFormatError(ValueError):
     """Recoverable response-shape problem for the runtime retry controller."""
 
 
+def _resolve_prompt_version(
+    payload: dict[str, Any] | None,
+    *,
+    prompt_version: str | None,
+    require_price_bias: bool,
+) -> str:
+    if prompt_version is not None:
+        if prompt_version not in ACCEPTED_PROMPT_VERSIONS:
+            raise EvidenceFormatError("invalid prompt_version")
+        return prompt_version
+    return PROMPT_VERSION
+
+
+def _is_latest_prompt(prompt_version: str | None) -> bool:
+    return prompt_version == PROMPT_VERSION
+
+
+def _is_latest_review(review: dict[str, Any]) -> bool:
+    return _is_latest_prompt(_as_dict(review).get("prompt_version"))
+
+
+def _prompt_requires_price_bias(prompt_version: str | None) -> bool:
+    return prompt_version in (PROMPT_VERSION_2_0_1, PROMPT_VERSION)
+
+
+def _output_schema_for_prompt(prompt_version: str | None) -> str:
+    if prompt_version == PROMPT_VERSION:
+        return OUTPUT_SCHEMA_VERSION
+    if prompt_version in (LEGACY_PROMPT_VERSION, PROMPT_VERSION_2_0_1):
+        return LEGACY_OUTPUT_SCHEMA_VERSION
+    raise EvidenceFormatError("invalid prompt_version")
+
+
 def build_request(packet: dict[str, Any], model: str, recovery: bool = False) -> dict[str, Any]:
     """Build one Chat Completions request for the v2 evidence review."""
 
@@ -115,24 +187,36 @@ def build_request(packet: dict[str, Any], model: str, recovery: bool = False) ->
         "信号环境更有依据，以及什么变化会"
         "推翻判断。评级 D/C/B/A/S 表示总体证据等级，不表示胜率、收益概率或价格"
         "会单向移动的强弱。末日垂直信用价差首先关注空间约束、不利侧侵入、压力与"
-        "价格响应的关系，再解释倾向性。Put 侧关注下行侵入压力，Call 侧关注上行"
-        "侵入压力。你可以使用定性贝叶斯式证据更新来比较支持解释和竞争解释，但"
+        "价格响应的关系，再解释倾向性。Put 侧固定评审下行侵入风险是否受到可解释"
+        "约束，Call 侧固定评审上行侵入风险是否受到可解释约束。你可以使用定性"
+        "贝叶斯式证据更新来比较支持解释和竞争解释，但"
         "不得输出未经校准的概率、胜率或后验百分比。S 不要求新增来源；它只能表示当前"
         "事实之间的关系让关键替代解释更难成立。"
     )
     user_prompt = (
         f"{mode_line}\n\n"
-        "只返回一个 JSON 对象，且顶层只能包含 side_evidence_ratings 和 price_bias。"
-        "两侧必须是 put_credit 和 call_credit。每侧只填写 grade、basis_cn、"
-        "market_counter_cn、alternative_cn、next_observation_cn、invalid_if_cn、"
-        "evidence_refs、counter_evidence_refs、unresolved_conditions_cn。"
+        "只返回一个 JSON 对象，且顶层只能包含 side_evidence_ratings、price_bias "
+        "和 side_comparison。两侧必须是 put_credit 和 call_credit。"
+        "put_credit 的固定评审对象是下行侵入风险是否受到可解释约束；"
+        "call_credit 的固定评审对象是上行侵入风险是否受到可解释约束。"
+        "每侧只填写 grade、basis_cn、mechanism_cn、market_counter_cn、"
+        "alternative_cn、next_observation_cn、strengthen_if_cn、weaken_if_cn、"
+        "evidence_roles、unresolved_conditions_cn。basis_cn 是等级依据；"
+        "mechanism_cn 说明该侧适配机制及成立程度。"
         "price_bias 只填写 bias、basis_cn、counter_cn、invalid_if_cn、"
         "evidence_refs、counter_evidence_refs；bias 只能是 BULLISH、BEARISH、"
-        "NEUTRAL、MIXED 或 UNDETERMINED。\n\n"
-        "引用规则：evidence_refs 与 counter_evidence_refs 只能使用输入 facts 中的 id；"
+        "NEUTRAL、MIXED 或 UNDETERMINED。side_comparison 只填写 relative_side、"
+        "basis_cn、evidence_refs、flip_if_cn；relative_side 只能是 put_credit、"
+        "call_credit、tie 或 not_comparable。\n\n"
+        "引用规则：evidence_roles 中每项只填写 ref、role、claim_cn；role 只能是 "
+        "supports_fit、counters_fit 或 context_only。ref、price_bias 引用、"
+        "side_comparison 引用都只能使用输入 facts 中的 id；"
         "事实必须 usable=true 且 observed_at_ms 不晚于 identity.as_of_ms。未知或非投票"
-        "事实不是自动反对。OHLC 代理不能证明路径先后顺序，未来行情不能作为本卡升级"
-        "依据。\n\n"
+        "事实不是自动反对。Funding 为非计票观察时只能作为背景，不要把温和正负值写成"
+        "独立方向支持或反对。本侧不利压力或不利推进必须保留为 counters_fit；若你认为"
+        "存在缓冲或承接，只能把相应的结构事实、价格响应事实或传导关系另列为 supports_fit，"
+        "不能把不利推进本身直接写成支持。OHLC 代理不能证明路径先后顺序，未来行情不能作为本卡升级"
+        "依据。同一事实可以在两侧承担不同角色，但必须说明区别，不能当作多份独立确认。\n\n"
         "中文输出规则：所有中文字段只能写交易员可读的市场事实、推理和反证；不得写原始"
         "字段路径、内部枚举、schema/hash、公式、权重、执行许可、下单参数、具体行权价、"
         "具体报价、仓位、胜率、概率、后验百分比或未来路径证明。\n\n"
@@ -142,14 +226,23 @@ def build_request(packet: dict[str, Any], model: str, recovery: bool = False) ->
         "价格方向口径：price_bias 是对标的价格倾向的独立结论，必须明确偏多、偏空、"
         "中性、混合或无法判断；它不能替代两侧价差证据等级，也不能改变本地行动边界。"
         "方向判断要先解释空间约束和不利侧推进，再解释倾向性；方向压力强不等于垂直"
-        "信用价差更适配。\n\n"
-        "字段类型：grade为单个字母或null；五个说明字段必须是字符串；evidence_refs、"
-        "counter_evidence_refs、unresolved_conditions_cn必须是字符串数组，没有条目时返回[]。"
+        "信用价差更适配。看跌依据不能自动成为 Put 信用价差适配依据；上涨使 Put 下行"
+        "风险减弱，也不能被写成 Put 适配失效。上行侵入增强或价格靠近上方 Call 墙，"
+        "通常削弱 Call 信用价差适配；除非另有上冲受阻、回落或压力传导弱化等响应证据，"
+        "不能因此宣称 Call 相对变优。\n\n"
+        "两侧比较口径：side_comparison 只比较两侧当前证据谁更有依据。两侧同为 B 也"
+        "可以给出相对侧别；相对有利不等于达到 A，也不影响本地准备状态。任何一侧缺少"
+        "有效评级时，relative_side 填 not_comparable。比较不能和字母顺序明显矛盾，"
+        "也不能因为一侧无效就宣布另一侧胜出。\n\n"
+        "字段类型：grade为单个字母或null；说明字段必须是字符串；strengthen_if_cn、"
+        "weaken_if_cn、evidence_roles、unresolved_conditions_cn必须是数组，没有条目时返回[]。"
         "price_bias 的三个说明字段必须是字符串，两个引用字段必须是字符串数组。"
-        "不要将未解条件数组合成一段字符串。\n"
+        "side_comparison 的 evidence_refs 必须是字符串数组。不要将数组合成一段字符串。\n"
         "事实口径：宏观逆风刻度正值为风险资产逆风、负值为顺风；不把负数当下跌方向。"
-        "墙位、锚带只是结构参照，距离本身不能证明承接；越过翻转点不单独证明全局净Gamma变号。"
-        "明确区分成交窗口和价格窗口，终点变化不能证明期间持续单向推进。\n\n"
+        "墙位、锚带只是结构参照，距离本身不能证明承接；墙、翻转点与 Pin 不能只因"
+        "距离接近就视为等价约束。越过翻转点不单独证明全局净Gamma变号；Gamma 过渡区"
+        "也不能仅凭正净Gamma认定抑制波动。传导较弱只能提示可能承接，不能写成已观测"
+        "隐藏订单吸收。明确区分成交窗口和价格窗口，终点变化不能证明期间持续单向推进。\n\n"
         "输入事实包：\n"
         f"{json.dumps(canonical_packet, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
     )
@@ -187,24 +280,30 @@ def build_review(
     """Normalize one model payload into the persisted v2 review object."""
 
     canonical_packet = _canonical_packet(packet)
-    raw_ratings, raw_price_bias = _extract_model_payload(payload)
+    resolved_prompt_version = _resolve_prompt_version(
+        payload,
+        prompt_version=prompt_version,
+        require_price_bias=require_price_bias,
+    )
+    latest_protocol = _is_latest_prompt(resolved_prompt_version)
+    raw_ratings, raw_price_bias, raw_comparison = _extract_model_payload(
+        payload,
+        latest=latest_protocol,
+    )
     fact_index = _fact_index(canonical_packet)
-    needs_price_bias = require_price_bias or prompt_version == PROMPT_VERSION
+    needs_price_bias = _prompt_requires_price_bias(resolved_prompt_version)
     raw_sides = [raw_ratings.get(key) for key in SIDE_KEYS]
-    if all(isinstance(side, dict) and not isinstance(side.get("unresolved_conditions_cn"), list)
-           for side in raw_sides):
-        refs = [ref for side in raw_sides for field in ("evidence_refs", "counter_evidence_refs")
-                for ref in (side.get(field) if isinstance(side.get(field), list) else [])]
-        # A shared structural output error may recover once. Fabricated refs
-        # remain semantic errors and never obtain a new model attempt.
-        if all(isinstance(ref, str) and ref in fact_index for ref in refs):
-            raise EvidenceFormatError("unresolved conditions must be arrays")
+    if _shared_array_shape_error(raw_sides, fact_index, latest=latest_protocol):
+        # A shared structural output error may recover once. Fabricated refs and
+        # side-local semantic errors remain final local validation results.
+        raise EvidenceFormatError("side condition fields must be arrays")
     sides = {
         side_key: _normalize_side(
             side_key,
             raw_ratings.get(side_key),
             fact_index=fact_index,
             as_of_ms=_packet_as_of_ms(canonical_packet),
+            latest=latest_protocol,
         )
         for side_key in SIDE_KEYS
     }
@@ -221,6 +320,16 @@ def build_review(
         if needs_price_bias
         else None
     )
+    side_comparison = (
+        _normalize_side_comparison(
+            raw_comparison,
+            sides=sides,
+            fact_index=fact_index,
+            as_of_ms=_packet_as_of_ms(canonical_packet),
+        )
+        if latest_protocol
+        else _legacy_side_comparison()
+    )
     action_state = _build_local_action_state(card, sides)
     validation_reasons = [
         reason
@@ -229,9 +338,13 @@ def build_review(
     ]
     if price_bias is not None:
         validation_reasons.extend(price_bias["validation_reasons_cn"])
+    if latest_protocol:
+        validation_reasons.extend(side_comparison["validation_reasons_cn"])
     rated_count = sum(sides[key]["status"] == "RATED" for key in SIDE_KEYS)
     status = "OK" if rated_count == 2 else "PARTIAL" if rated_count else "ERROR"
     if price_bias is not None and price_bias["status"] != "ASSESSED" and rated_count:
+        status = "PARTIAL"
+    if latest_protocol and side_comparison["validation_reasons_cn"] and rated_count:
         status = "PARTIAL"
     advisory = {
         "side_evidence_ratings": sides,
@@ -250,13 +363,12 @@ def build_review(
     }
     if price_bias is not None:
         advisory["price_bias"] = price_bias
-    persisted_prompt_version = prompt_version or (
-        PROMPT_VERSION if price_bias is not None else LEGACY_PROMPT_VERSION
-    )
+    if latest_protocol:
+        advisory["side_comparison"] = side_comparison
     advisory["validation"]["assessment_hash"] = _assessment_hash(advisory)
     return {
-        "schema_version": OUTPUT_SCHEMA_VERSION,
-        "prompt_version": persisted_prompt_version,
+        "schema_version": _output_schema_for_prompt(resolved_prompt_version),
+        "prompt_version": resolved_prompt_version,
         "review_mode": REVIEW_MODE,
         "status": status,
         "model": model,
@@ -283,9 +395,17 @@ def build_error_review(
     canonical_packet = _canonical_packet(packet)
     display_reason = "暂未完成有效综合评审，保留本卡市场事实。"
     safe_reason = _clean_text(reason_cn, fallback=display_reason, limit=240)
-    needs_price_bias = require_price_bias or prompt_version == PROMPT_VERSION
+    resolved_prompt_version = _resolve_prompt_version(
+        None,
+        prompt_version=prompt_version,
+        require_price_bias=require_price_bias,
+    )
+    latest_protocol = _is_latest_prompt(resolved_prompt_version)
+    needs_price_bias = _prompt_requires_price_bias(resolved_prompt_version)
     sides = {
         side_key: _default_side(
+            side_key=side_key,
+            latest=latest_protocol,
             status="UNRATED",
             grade=None,
             basis_cn=display_reason,
@@ -311,13 +431,14 @@ def build_error_review(
     }
     if needs_price_bias:
         advisory["price_bias"] = _default_price_bias(validation_reasons_cn=[safe_reason])
-    persisted_prompt_version = prompt_version or (
-        PROMPT_VERSION if needs_price_bias else LEGACY_PROMPT_VERSION
-    )
+    if latest_protocol:
+        advisory["side_comparison"] = _default_side_comparison(
+            ["本卡未完成有效综合评审，相对比较不可用。"]
+        )
     advisory["validation"]["assessment_hash"] = _assessment_hash(advisory)
     return {
-        "schema_version": OUTPUT_SCHEMA_VERSION,
-        "prompt_version": persisted_prompt_version,
+        "schema_version": _output_schema_for_prompt(resolved_prompt_version),
+        "prompt_version": resolved_prompt_version,
         "review_mode": REVIEW_MODE,
         "status": "ERROR",
         "model": model,
@@ -329,26 +450,43 @@ def build_error_review(
     }
 
 
-def build_summary(review: dict[str, Any]) -> dict[str, Any]:
+def build_summary(review: dict[str, Any], card: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build the compact materializer summary for a validated v2 review."""
 
-    validation = validate_persisted_review(review)
+    validation = (
+        revalidate_review(card, review)
+        if card is not None
+        else validate_persisted_review(review)
+    )
     advisory = _as_dict(review.get("integrated_trade_advisory"))
     sides = _as_dict(advisory.get("side_evidence_ratings"))
     context = _as_dict(review.get("evidence_context"))
     identity = _as_dict(context.get("identity"))
+    action_state = _clone(advisory.get("local_action_state"))
+    comparison = _summary_side_comparison(
+        advisory.get("side_comparison"),
+        latest=_is_latest_review(review),
+    )
+    display_action_state = _display_action_state(sides, action_state, card=card)
     summary = {
         "schema": SUMMARY_SCHEMA_VERSION,
         "put_credit": _summary_side(sides.get("put_credit")),
         "call_credit": _summary_side(sides.get("call_credit")),
-        "local_action_state": _clone(advisory.get("local_action_state")),
+        "local_action_state": action_state,
         "action_summary_cn": str(advisory.get("action_summary_cn") or ""),
+        "display_projection_version": DISPLAY_PROJECTION_VERSION,
+        "display_action_state": display_action_state,
+        "display_action_summary_cn": _display_action_summary(sides, display_action_state, comparison),
+        "source_record_hash": identity.get("source_record_hash"),
+        "market_snapshot": _market_snapshot(advisory.get("market_facts")),
+        "side_comparison": comparison,
         "as_of_ms": identity.get("as_of_ms"),
         "input_packet_hash": review.get("input_packet_hash"),
         "assessment_hash": validation["assessment_hash"],
     }
     if "price_bias" in advisory:
         summary["price_bias"] = _summary_price_bias(advisory.get("price_bias"))
+    summary["display_projection_hash"] = _display_projection_hash(summary)
     return summary
 
 
@@ -361,11 +499,13 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
 
     if not isinstance(review, dict):
         raise EvidenceFormatError("review must be object")
-    if review.get("schema_version") != OUTPUT_SCHEMA_VERSION:
+    if review.get("schema_version") not in ACCEPTED_OUTPUT_SCHEMA_VERSIONS:
         raise EvidenceFormatError("invalid review schema_version")
     prompt_version = review.get("prompt_version")
     if prompt_version not in ACCEPTED_PROMPT_VERSIONS:
         raise EvidenceFormatError("invalid prompt_version")
+    if review.get("schema_version") != _output_schema_for_prompt(prompt_version):
+        raise EvidenceFormatError("schema_version and prompt_version mismatch")
     if review.get("review_mode") != REVIEW_MODE:
         raise EvidenceFormatError("invalid review_mode")
     if review.get("status") not in REVIEW_STATUS:
@@ -396,6 +536,7 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
         raise EvidenceFormatError("side_evidence_ratings shape mismatch")
     fact_index = _fact_index(rebuilt_packet)
     as_of_ms = _packet_as_of_ms(rebuilt_packet)
+    latest_protocol = _is_latest_prompt(prompt_version)
     for side_key in SIDE_KEYS:
         side = _as_dict(sides.get(side_key))
         if side.get("status") not in SIDE_STATUS:
@@ -406,10 +547,11 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
         if side.get("status") == "UNRATED" and grade is not None:
             raise EvidenceFormatError(f"{side_key} unrated grade must be null")
         _validate_persisted_side(side_key, side, fact_index, as_of_ms=as_of_ms,
-                                 recheck_claims=recheck_claims)
+                                 recheck_claims=recheck_claims,
+                                 latest=latest_protocol)
     has_price_bias = "price_bias" in advisory
-    if prompt_version == PROMPT_VERSION and not has_price_bias:
-        raise EvidenceFormatError("price_bias missing for prompt 2.0.1")
+    if _prompt_requires_price_bias(prompt_version) and not has_price_bias:
+        raise EvidenceFormatError("price_bias missing for prompt")
     if has_price_bias:
         price_bias = _as_dict(advisory.get("price_bias"))
         _validate_persisted_price_bias(
@@ -420,6 +562,19 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
         )
         if price_bias.get("status") != "ASSESSED" and review.get("status") == "OK":
             raise EvidenceFormatError("unavailable price_bias cannot be OK")
+    if latest_protocol:
+        comparison = _as_dict(advisory.get("side_comparison"))
+        _validate_persisted_side_comparison(
+            comparison,
+            sides=sides,
+            fact_index=fact_index,
+            as_of_ms=as_of_ms,
+            recheck_claims=recheck_claims,
+        )
+        if comparison.get("validation_reasons_cn") and review.get("status") == "OK":
+            raise EvidenceFormatError("invalid side_comparison cannot be OK")
+    elif "side_comparison" in advisory:
+        raise EvidenceFormatError("legacy review must not contain side_comparison")
     return {
         "ok": True,
         "assessment_hash": assessment_hash,
@@ -461,7 +616,37 @@ def revalidate_review(card: dict[str, Any], review: dict[str, Any], *, recheck_c
     return result
 
 
+def supported_review_protocol(review: dict[str, Any]) -> str | None:
+    """Return the supported review protocol family, or None for unknown input."""
+    try:
+        schema_version = _as_dict(review).get("schema_version")
+        prompt_version = _as_dict(review).get("prompt_version")
+        if schema_version not in ACCEPTED_OUTPUT_SCHEMA_VERSIONS:
+            return None
+        if prompt_version not in ACCEPTED_PROMPT_VERSIONS:
+            return None
+        if schema_version != _output_schema_for_prompt(prompt_version):
+            return None
+        return "2.1" if prompt_version == PROMPT_VERSION else "2.0"
+    except Exception:
+        return None
+
+
+def is_supported_review_protocol(review: dict[str, Any]) -> bool:
+    return supported_review_protocol(review) is not None
+
+
 def response_schema() -> dict[str, Any]:
+    role_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(MODEL_SIDE_ROLE_FIELDS),
+        "properties": {
+            "ref": {"type": "string"},
+            "role": {"enum": list(EVIDENCE_ROLES)},
+            "claim_cn": {"type": "string"},
+        },
+    }
     side_schema = {
         "type": "object",
         "additionalProperties": False,
@@ -469,12 +654,13 @@ def response_schema() -> dict[str, Any]:
         "properties": {
             "grade": {"enum": ["D", "C", "B", "A", "S", None]},
             "basis_cn": {"type": "string"},
+            "mechanism_cn": {"type": "string"},
             "market_counter_cn": {"type": "string"},
             "alternative_cn": {"type": "string"},
             "next_observation_cn": {"type": "string"},
-            "invalid_if_cn": {"type": "string"},
-            "evidence_refs": {"type": "array", "items": {"type": "string"}},
-            "counter_evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "strengthen_if_cn": {"type": "array", "items": {"type": "string"}},
+            "weaken_if_cn": {"type": "array", "items": {"type": "string"}},
+            "evidence_roles": {"type": "array", "items": role_schema},
             "unresolved_conditions_cn": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -494,10 +680,21 @@ def response_schema() -> dict[str, Any]:
             "counter_evidence_refs": {"type": "array", "items": {"type": "string"}},
         },
     }
+    comparison_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(MODEL_COMPARISON_FIELDS),
+        "properties": {
+            "relative_side": {"enum": list(COMPARISON_SIDES)},
+            "basis_cn": {"type": "string"},
+            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "flip_if_cn": {"type": "string"},
+        },
+    }
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["side_evidence_ratings", "price_bias"],
+        "required": ["side_evidence_ratings", "price_bias", "side_comparison"],
         "properties": {
             "side_evidence_ratings": {
                 "type": "object",
@@ -506,24 +703,88 @@ def response_schema() -> dict[str, Any]:
                 "properties": {side_key: side_schema for side_key in SIDE_KEYS},
             },
             "price_bias": price_bias_schema,
+            "side_comparison": comparison_schema,
         },
     }
 
 
-def _extract_model_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+def _extract_model_payload(
+    payload: dict[str, Any],
+    *,
+    latest: bool,
+) -> tuple[dict[str, Any], Any, Any]:
     if not isinstance(payload, dict):
         raise EvidenceFormatError("model payload must be object")
-    if not set(payload).issubset({"side_evidence_ratings", "price_bias"}):
+    allowed = {"side_evidence_ratings", "price_bias"}
+    if latest:
+        allowed.add("side_comparison")
+    if not set(payload).issubset(allowed):
         raise EvidenceFormatError("model payload top-level shape invalid")
     ratings = payload.get("side_evidence_ratings")
     if not isinstance(ratings, dict):
         raise EvidenceFormatError("side_evidence_ratings must be object")
     if not any(side in ratings for side in SIDE_KEYS):
         raise EvidenceFormatError("side_evidence_ratings has no known sides")
-    return ratings, payload.get("price_bias")
+    return ratings, payload.get("price_bias"), payload.get("side_comparison")
+
+
+def _shared_array_shape_error(
+    raw_sides: list[Any],
+    fact_index: dict[str, dict[str, Any]],
+    *,
+    latest: bool,
+) -> bool:
+    if not all(isinstance(side, dict) for side in raw_sides):
+        return False
+    array_fields = (
+        ("strengthen_if_cn", "weaken_if_cn", "evidence_roles", "unresolved_conditions_cn")
+        if latest
+        else ("unresolved_conditions_cn",)
+    )
+    if not all(any(field in side and not isinstance(side.get(field), list)
+                   for field in array_fields) for side in raw_sides):
+        return False
+    if latest:
+        refs = [
+            role.get("ref")
+            for side in raw_sides
+            for role in (side.get("evidence_roles") if isinstance(side.get("evidence_roles"), list) else [])
+            if isinstance(role, dict)
+        ]
+    else:
+        refs = [
+            ref
+            for side in raw_sides
+            for field in ("evidence_refs", "counter_evidence_refs")
+            for ref in (side.get(field) if isinstance(side.get(field), list) else [])
+        ]
+    return all(isinstance(ref, str) and ref in fact_index for ref in refs)
 
 
 def _normalize_side(
+    side_key: str,
+    raw_side: Any,
+    *,
+    fact_index: dict[str, dict[str, Any]],
+    as_of_ms: int | float,
+    latest: bool = False,
+) -> dict[str, Any]:
+    if latest:
+        return _normalize_v21_side(
+            side_key,
+            raw_side,
+            fact_index=fact_index,
+            as_of_ms=as_of_ms,
+        )
+    return _normalize_legacy_side(
+        side_key,
+        raw_side,
+        fact_index=fact_index,
+        as_of_ms=as_of_ms,
+    )
+
+
+def _normalize_legacy_side(
     side_key: str,
     raw_side: Any,
     *,
@@ -536,7 +797,7 @@ def _normalize_side(
         )
 
     reasons: list[str] = []
-    if set(raw_side) != MODEL_SIDE_FIELDS:
+    if set(raw_side) != LEGACY_MODEL_SIDE_FIELDS:
         reasons.append(_side_label(side_key) + "评级说明结构尚不完整。")
 
     grade = raw_side.get("grade")
@@ -621,6 +882,115 @@ def _normalize_side(
     }
 
 
+def _normalize_v21_side(
+    side_key: str,
+    raw_side: Any,
+    *,
+    fact_index: dict[str, dict[str, Any]],
+    as_of_ms: int | float,
+) -> dict[str, Any]:
+    if not isinstance(raw_side, dict):
+        return _default_side(
+            side_key=side_key,
+            latest=True,
+            validation_reasons_cn=[_side_label(side_key) + "缺少有效评级对象。"],
+        )
+
+    reasons: list[str] = []
+    if set(raw_side) != MODEL_SIDE_FIELDS:
+        reasons.append(_side_label(side_key) + "评级说明结构尚不完整。")
+
+    grade = raw_side.get("grade")
+    if grade is not None and grade not in GRADES:
+        reasons.append(_side_label(side_key) + "等级不是 D/C/B/A/S 或未评级。")
+        grade = None
+
+    text_fields = {
+        "basis_cn": _clean_text(raw_side.get("basis_cn"), fallback="本侧等级依据不足。"),
+        "mechanism_cn": _clean_text(raw_side.get("mechanism_cn"), fallback="本侧适配机制暂未形成有效说明。"),
+        "market_counter_cn": _clean_text(
+            raw_side.get("market_counter_cn"), fallback="主要反证暂未形成有效说明。"
+        ),
+        "alternative_cn": _clean_text(
+            raw_side.get("alternative_cn"), fallback="竞争解释暂未形成有效说明。"
+        ),
+        "next_observation_cn": _clean_text(
+            raw_side.get("next_observation_cn"), fallback="继续观察关键市场事实变化。"
+        ),
+    }
+    for field_name, text in text_fields.items():
+        if not isinstance(raw_side.get(field_name), str) or not raw_side[field_name].strip():
+            reasons.append(_side_label(side_key) + "缺少必要的可读说明。")
+        issue = _v21_human_text_issue(text)
+        if issue:
+            reasons.append(_side_label(side_key) + issue)
+            text_fields[field_name] = "该项说明含有不可展示内容，暂不作为有效评级依据。"
+    reasons.extend(_side_label(side_key) + reason for reason in
+                   _fact_assertion_issues(text_fields, fact_index))
+
+    strengthen, strengthen_ok = _clean_human_text_list(
+        raw_side.get("strengthen_if_cn"),
+        limit=6,
+        fallback_item="补齐关键观察后重新判断。",
+    )
+    if not strengthen_ok:
+        reasons.append(_side_label(side_key) + "增强条件不是可读列表。")
+    weaken, weaken_ok = _clean_human_text_list(
+        raw_side.get("weaken_if_cn"),
+        limit=6,
+        fallback_item="关键事实转弱时需要重新评级。",
+    )
+    if not weaken_ok:
+        reasons.append(_side_label(side_key) + "削弱条件不是可读列表。")
+    unresolved, unresolved_ok = _clean_human_text_list(
+        raw_side.get("unresolved_conditions_cn"),
+        limit=8,
+        fallback_item="仍有未解条件需要观察。",
+    )
+    if not unresolved_ok:
+        reasons.append(_side_label(side_key) + "未解条件不是可读列表。")
+
+    roles, role_refs, role_reasons = _normalize_evidence_roles(
+        side_key,
+        raw_side.get("evidence_roles"),
+        fact_index=fact_index,
+        as_of_ms=as_of_ms,
+    )
+    reasons.extend(role_reasons)
+    evidence_refs = role_refs["supports_fit"]
+    counter_refs = role_refs["counters_fit"]
+    context_refs = role_refs["context_only"]
+
+    if grade is not None and not roles:
+        reasons.append(_side_label(side_key) + "缺少可核验事实引用。")
+    if grade in ("B", "A", "S") and not evidence_refs:
+        reasons.append(_side_label(side_key) + "支持等级缺少可核验支持事实。")
+    if grade in ("A", "S") and not _has_constraint_argument(
+        text_fields, evidence_refs, counter_refs, fact_index
+    ):
+        reasons.append(_side_label(side_key) + "A/S 不能只由方向动量构成，缺少空间约束或压力响应论证。")
+
+    status = "RATED" if grade is not None and not reasons else "UNRATED"
+    return {
+        "status": status,
+        "grade": grade if status == "RATED" else None,
+        "fit_thesis": SIDE_FIT_THESES[side_key],
+        "basis_cn": text_fields["basis_cn"],
+        "mechanism_cn": text_fields["mechanism_cn"],
+        "market_counter_cn": text_fields["market_counter_cn"],
+        "alternative_cn": text_fields["alternative_cn"],
+        "next_observation_cn": text_fields["next_observation_cn"],
+        "strengthen_if_cn": strengthen,
+        "weaken_if_cn": weaken,
+        "evidence_roles": roles if status == "RATED" else [],
+        "evidence_refs": evidence_refs if status == "RATED" else [],
+        "counter_evidence_refs": counter_refs if status == "RATED" else [],
+        "context_evidence_refs": context_refs if status == "RATED" else [],
+        "unresolved_conditions_cn": unresolved,
+        "validation_reasons_cn": reasons,
+    }
+
+
 def _normalize_price_bias(
     raw_bias: Any,
     *,
@@ -689,6 +1059,251 @@ def _normalize_price_bias(
     }
 
 
+def _normalize_side_comparison(
+    raw_comparison: Any,
+    *,
+    sides: dict[str, dict[str, Any]],
+    fact_index: dict[str, dict[str, Any]],
+    as_of_ms: int | float,
+) -> dict[str, Any]:
+    if not isinstance(raw_comparison, dict):
+        return _default_side_comparison(["两侧比较缺少有效对象，相对比较未采纳。"])
+
+    reasons: list[str] = []
+    if set(raw_comparison) != MODEL_COMPARISON_FIELDS:
+        reasons.append("两侧比较结构尚不完整。")
+
+    relative_side = str(raw_comparison.get("relative_side") or "").strip()
+    if relative_side not in COMPARISON_SIDES:
+        reasons.append("两侧比较结果不是可读侧别。")
+        relative_side = "not_comparable"
+    basis_cn = _clean_text(raw_comparison.get("basis_cn"), fallback="相对比较暂未形成有效说明。")
+    flip_if_cn = _clean_text(raw_comparison.get("flip_if_cn"), fallback="补齐有效比较后重新判断。")
+    for raw_value, text in (
+        (raw_comparison.get("basis_cn"), basis_cn),
+        (raw_comparison.get("flip_if_cn"), flip_if_cn),
+    ):
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            reasons.append("两侧比较缺少必要的可读说明。")
+        issue = _v21_human_text_issue(text)
+        if issue:
+            reasons.append("两侧比较" + issue)
+            basis_cn = "相对比较说明含有不可展示内容，暂未采纳。"
+            flip_if_cn = "补齐有效比较后重新判断。"
+            break
+
+    reasons.extend(
+        "两侧比较" + reason
+        for reason in _fact_assertion_issues(
+            {"basis_cn": basis_cn, "flip_if_cn": flip_if_cn},
+            fact_index,
+        )
+    )
+
+    evidence_refs, refs_ok, ref_reasons = _valid_refs(
+        raw_comparison.get("evidence_refs"), fact_index, as_of_ms=as_of_ms
+    )
+    if not refs_ok:
+        reasons.append("两侧比较引用不是可读列表。")
+    reasons.extend("两侧比较" + reason for reason in ref_reasons)
+
+    if relative_side != "not_comparable" and not evidence_refs:
+        reasons.append("两侧比较缺少可核验事实引用。")
+
+    side_statuses = {key: _as_dict(sides.get(key)).get("status") for key in SIDE_KEYS}
+    if any(status != "RATED" for status in side_statuses.values()):
+        if relative_side != "not_comparable":
+            reasons.append("存在未评级侧，不能据此宣布另一侧更有依据。")
+        relative_side = "not_comparable"
+
+    order_issue = _comparison_order_issue(relative_side, sides)
+    if order_issue:
+        reasons.append(order_issue)
+        relative_side = "not_comparable"
+
+    status = (
+        "ASSESSED"
+        if relative_side in ("put_credit", "call_credit", "tie") and not reasons
+        else "UNAVAILABLE"
+    )
+    if status == "UNAVAILABLE" and not reasons and relative_side == "not_comparable":
+        basis_cn = basis_cn or "本卡两侧证据暂不具备有效相对比较。"
+    return {
+        "status": status,
+        "relative_side": relative_side if status == "ASSESSED" else "not_comparable",
+        "basis_cn": basis_cn,
+        "evidence_refs": evidence_refs if status == "ASSESSED" else [],
+        "flip_if_cn": flip_if_cn,
+        "validation_reasons_cn": reasons,
+    }
+
+
+def _comparison_order_issue(
+    relative_side: str,
+    sides: dict[str, dict[str, Any]],
+) -> str:
+    if relative_side == "not_comparable":
+        return ""
+    put_grade = _as_dict(sides.get("put_credit")).get("grade")
+    call_grade = _as_dict(sides.get("call_credit")).get("grade")
+    if put_grade not in GRADES or call_grade not in GRADES:
+        return "两侧比较依赖的等级不完整。"
+    put_rank = GRADES.index(put_grade)
+    call_rank = GRADES.index(call_grade)
+    if relative_side == "put_credit" and put_rank < call_rank:
+        return "两侧比较与等级顺序矛盾，相对比较未采纳。"
+    if relative_side == "call_credit" and call_rank < put_rank:
+        return "两侧比较与等级顺序矛盾，相对比较未采纳。"
+    if relative_side == "tie" and put_rank != call_rank:
+        return "两侧等级不同，不能写成并列。"
+    return ""
+
+
+def _default_side_comparison(
+    validation_reasons_cn: list[str] | None = None,
+    *,
+    basis_cn: str = "相对比较暂未采纳。",
+) -> dict[str, Any]:
+    return {
+        "status": "UNAVAILABLE",
+        "relative_side": "not_comparable",
+        "basis_cn": basis_cn,
+        "evidence_refs": [],
+        "flip_if_cn": "补齐有效两侧比较后重新判断。",
+        "validation_reasons_cn": list(validation_reasons_cn or []),
+    }
+
+
+def _legacy_side_comparison() -> dict[str, Any]:
+    return _default_side_comparison(
+        [],
+        basis_cn="旧版未提供两侧比较。",
+    )
+
+
+def _normalize_evidence_roles(
+    side_key: str,
+    raw_roles: Any,
+    *,
+    fact_index: dict[str, dict[str, Any]],
+    as_of_ms: int | float,
+) -> tuple[list[dict[str, str]], dict[str, list[str]], list[str]]:
+    reasons: list[str] = []
+    if not isinstance(raw_roles, list):
+        return [], {role: [] for role in EVIDENCE_ROLES}, [
+            _side_label(side_key) + "证据角色不是可读列表。"
+        ]
+
+    roles: list[dict[str, str]] = []
+    refs_by_role: dict[str, list[str]] = {role: [] for role in EVIDENCE_ROLES}
+    seen_roles = set()
+    seen_refs: dict[str, set[str]] = {role: set() for role in EVIDENCE_ROLES}
+    for raw in raw_roles:
+        if not isinstance(raw, dict):
+            reasons.append(_side_label(side_key) + "存在不可读证据角色。")
+            continue
+        if set(raw) != MODEL_SIDE_ROLE_FIELDS:
+            reasons.append(_side_label(side_key) + "证据角色结构不完整。")
+        ref = str(raw.get("ref") or "").strip()
+        role = str(raw.get("role") or "").strip()
+        claim = _clean_text(raw.get("claim_cn"), fallback="本项证据作用未形成有效说明。")
+        if role not in EVIDENCE_ROLES:
+            reasons.append(_side_label(side_key) + "证据角色只能是支持、反证或背景。")
+            continue
+        fact = fact_index.get(ref)
+        if not fact:
+            reasons.append(_side_label(side_key) + "存在无法核验的事实引用。")
+            continue
+        usable, reason = _fact_is_usable(fact, as_of_ms=as_of_ms)
+        if not usable:
+            reasons.append(_side_label(side_key) + reason)
+            continue
+        issue = _v21_human_text_issue(claim)
+        if not isinstance(raw.get("claim_cn"), str) or not raw.get("claim_cn", "").strip():
+            reasons.append(_side_label(side_key) + "证据角色缺少可读说明。")
+            continue
+        if issue:
+            reasons.append(_side_label(side_key) + issue)
+            continue
+        role_issue = _evidence_role_issue(side_key, role, fact, fact_index)
+        if role_issue:
+            reasons.append(_side_label(side_key) + role_issue)
+            continue
+        role_key = (ref, role, claim)
+        if role_key in seen_roles:
+            continue
+        seen_roles.add(role_key)
+        roles.append({"ref": ref, "role": role, "claim_cn": claim})
+        if ref not in seen_refs[role]:
+            refs_by_role[role].append(ref)
+            seen_refs[role].add(ref)
+    return roles, refs_by_role, reasons
+
+
+def _evidence_role_issue(
+    side_key: str,
+    role: str,
+    fact: dict[str, Any],
+    fact_index: dict[str, dict[str, Any]],
+) -> str:
+    if _funding_is_nonvoting(fact, fact_index) and role != "context_only":
+        return "非计票资金费率只能作为背景，不能当作该侧独立支持或反证。"
+    if role == "supports_fit" and _fact_is_direct_adverse_pressure(side_key, fact):
+        return "本侧不利推进或方向压力不能直接作为该侧适配支持。"
+    return ""
+
+
+def _funding_is_nonvoting(
+    fact: dict[str, Any],
+    fact_index: dict[str, dict[str, Any]],
+) -> bool:
+    if str(fact.get("source_group") or "").upper() != "FUNDING":
+        return False
+    vote_fact = _as_dict(fact_index.get("pressure.funding.vote_role"))
+    text = " ".join(str(vote_fact.get(key) or "") for key in ("value", "summary_cn"))
+    return "非计票" in text
+
+
+def _fact_is_direct_adverse_pressure(side_key: str, fact: dict[str, Any]) -> bool:
+    fact_id = str(fact.get("id") or "")
+    value = str(fact.get("value") or "")
+    summary = str(fact.get("summary_cn") or "")
+    topic = str(fact.get("topic") or "")
+    mitigated = any(word in summary for word in ("受限", "暂未", "没有", "未见", "不能", "不足以"))
+    if side_key == "put_credit":
+        if fact_id == "side.put.adverse_progress" and value == "下行推进":
+            return True
+        if topic == "adverse_pressure" and value == "下行":
+            return True
+        return not mitigated and (
+            "显示下行推进" in summary or "向 Put 信用价差的不利方向推进" in summary
+        )
+    if fact_id == "side.call.adverse_progress" and value == "上行推进":
+        return True
+    if topic == "adverse_pressure" and value == "上行":
+        return True
+    return not mitigated and (
+        "显示上行推进" in summary or "向 Call 信用价差的不利方向推进" in summary
+    )
+
+
+def _clean_human_text_list(
+    value: Any,
+    *,
+    limit: int,
+    fallback_item: str,
+) -> tuple[list[str], bool]:
+    items, ok = _clean_text_list(value, limit=limit, fallback_item=fallback_item)
+    if not ok:
+        return items, False
+    safe_items: list[str] = []
+    for item in items:
+        if _v21_human_text_issue(item):
+            return safe_items, False
+        safe_items.append(item)
+    return safe_items, True
+
+
 def _valid_refs(
     value: Any,
     fact_index: dict[str, dict[str, Any]],
@@ -724,8 +1339,7 @@ def _valid_refs(
 def _fact_assertion_issues(text_fields, fact_index):
     """Check narrow explicit assertions, not the truth of free-form reasoning."""
     text = " ".join(
-        text_fields.get(key, "")
-        for key in ("basis_cn", "market_counter_cn", "counter_cn")
+        value for value in text_fields.values() if isinstance(value, str)
     )
     reasons = []
     # The v2 packet has point-count/endpoint/efficiency summaries, not a proven
@@ -780,9 +1394,7 @@ def _has_constraint_argument(
     fact_index: dict[str, dict[str, Any]],
 ) -> bool:
     text_chunks = [
-        text_fields.get("basis_cn", ""),
-        text_fields.get("market_counter_cn", ""),
-        text_fields.get("alternative_cn", ""),
+        value for value in text_fields.values() if isinstance(value, str)
     ]
     fact_chunks = []
     for ref in evidence_refs + counter_refs:
@@ -923,7 +1535,15 @@ def _action_summary(
                         for side_key in SIDE_KEYS]
         return "当前不能进入人工准备；" + "，".join(descriptions) + "。"
     if "WATCH" in states:
-        return "当前没有一侧进入人工准备；B 级侧启动关注，C 级侧作为普通观察。"
+        descriptions = [
+            _side_action_phrase(
+                side_key,
+                _as_dict(sides.get(side_key)),
+                _as_dict(action_state.get(side_key)),
+            )
+            for side_key in SIDE_KEYS
+        ]
+        return "当前没有一侧进入人工准备；" + "，".join(descriptions) + "。"
     if "AVOID" in states:
         return "当前没有一侧进入人工准备；D 级侧按本轮回避处理。"
     return "本卡暂未形成有效综合证据等级，保留市场事实等待重新评审。"
@@ -1103,8 +1723,247 @@ def _summary_price_bias(value: Any) -> dict[str, Any]:
         "schema": bias.get("schema"),
         "status": bias.get("status"),
         "bias": bias.get("bias"),
+        "bias_cn": _price_bias_label(bias.get("bias")),
         "basis_cn": str(bias.get("basis_cn") or ""),
     }
+
+
+def _summary_side_comparison(value: Any, *, latest: bool) -> dict[str, Any]:
+    if not latest:
+        return _legacy_side_comparison()
+    comparison = _as_dict(value)
+    if not comparison:
+        return _default_side_comparison(["两侧比较缺失，相对比较未采纳。"])
+    validation_reasons = _clone(comparison.get("validation_reasons_cn") or [])
+    status = comparison.get("status")
+    relative_side = comparison.get("relative_side")
+    if status == "UNAVAILABLE" and validation_reasons:
+        return {
+            "status": "UNAVAILABLE",
+            "relative_side": "not_comparable",
+            "relative_side_cn": _relative_side_label("not_comparable"),
+            "basis_cn": "相对比较未采纳：" + "；".join(str(item) for item in validation_reasons[:2]),
+            "evidence_refs": [],
+            "flip_if_cn": "补齐有效两侧比较后重新判断。",
+            "validation_reasons_cn": validation_reasons,
+        }
+    return {
+        "status": status,
+        "relative_side": relative_side,
+        "relative_side_cn": _relative_side_label(relative_side),
+        "basis_cn": str(comparison.get("basis_cn") or ""),
+        "evidence_refs": _clone(comparison.get("evidence_refs") or []),
+        "flip_if_cn": str(comparison.get("flip_if_cn") or ""),
+        "validation_reasons_cn": validation_reasons,
+    }
+
+
+def _market_snapshot(facts: Any) -> dict[str, Any]:
+    if not isinstance(facts, list):
+        return {
+            "status": "UNAVAILABLE",
+            "price": None,
+            "unit": None,
+            "observed_at_ms": None,
+            "reason_cn": "本卡没有可读价格事实。",
+        }
+    price_fact = next(
+        (fact for fact in facts if isinstance(fact, dict)
+         and fact.get("id") == "market.price.current"),
+        None,
+    )
+    if not price_fact:
+        return {
+            "status": "UNAVAILABLE",
+            "price": None,
+            "unit": None,
+            "observed_at_ms": None,
+            "reason_cn": "本卡未提供卡片时点价格。",
+        }
+    value = price_fact.get("value")
+    unit = price_fact.get("unit")
+    observed_at_ms = price_fact.get("observed_at_ms")
+    if (
+        price_fact.get("usable") is True
+        and isinstance(value, (int, float))
+        and isinstance(unit, str)
+        and unit.strip()
+        and isinstance(observed_at_ms, (int, float))
+    ):
+        return {
+            "status": "AVAILABLE",
+            "price": value,
+            "unit": unit,
+            "observed_at_ms": observed_at_ms,
+        }
+    return {
+        "status": "UNAVAILABLE",
+        "price": None,
+        "unit": unit if isinstance(unit, str) and unit.strip() else None,
+        "observed_at_ms": observed_at_ms if isinstance(observed_at_ms, (int, float)) else None,
+        "reason_cn": "卡片时点价格缺失或不可用，不使用实时行情回填。",
+    }
+
+
+def _display_action_state(
+    sides: dict[str, Any],
+    action_state: Any,
+    *,
+    card: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    actions = _as_dict(action_state)
+    return {
+        side_key: _display_action_for_side(
+            side_key,
+            _as_dict(sides.get(side_key)),
+            _as_dict(actions.get(side_key)),
+            card=card,
+        )
+        for side_key in SIDE_KEYS
+    }
+
+
+def _display_action_for_side(
+    side_key: str,
+    side: dict[str, Any],
+    action: dict[str, Any],
+    *,
+    card: dict[str, Any] | None,
+) -> dict[str, Any]:
+    state = str(action.get("state") or "UNRATED")
+    label_cn = str(action.get("label_cn") or "暂未评级")
+    reasons = _clean_display_reasons(action.get("reasons_cn"))
+    if card is not None:
+        if state == "BLOCKED":
+            reasons = [_card_block_or_expiry_reason(card)]
+        elif state == "WAIT":
+            reasons = [_card_wait_reason(card)]
+    return {
+        "state": state,
+        "label_cn": label_cn,
+        "grade": side.get("grade"),
+        "side_label_cn": _side_label(side_key),
+        "reasons_cn": reasons,
+    }
+
+
+def _display_action_summary(
+    sides: dict[str, Any],
+    action_state: Any,
+    comparison: dict[str, Any],
+) -> str:
+    actions = _as_dict(action_state)
+    prepare = [
+        side_key
+        for side_key in SIDE_KEYS
+        if _as_dict(actions.get(side_key)).get("state") == "PREPARE"
+    ]
+    if len(prepare) == 1:
+        side_key = prepare[0]
+        grade = _as_dict(sides.get(side_key)).get("grade")
+        return (
+            f"{_side_label(side_key)}{grade} 级达到信号层准入，可进入人工交易准备；"
+            "候选两腿、报价、净补偿和退出条件仍需确认。"
+        )
+    if len(prepare) == 2:
+        return "两侧都达到人工准备条件；需要人工二选一复核，不代表双侧同时交易。"
+    reason_text = " ".join(
+        " ".join(str(item) for item in _as_dict(actions.get(side_key)).get("reasons_cn", []))
+        for side_key in SIDE_KEYS
+    )
+    if "窗口尚未打开" in reason_text:
+        return "本卡信号窗口尚未打开，证据等级只作为关注依据，暂不能进入人工交易准备。"
+    if "已经失效" in reason_text:
+        return "本卡信号窗口或事件状态已经失效，需要等待新卡，暂不能进入人工交易准备。"
+    if "本地硬否决" in reason_text or "阻断" in reason_text:
+        return "本卡仍受本地阻断约束，不能进入人工交易准备。"
+    phrases = [
+        _side_action_phrase(side_key, _as_dict(sides.get(side_key)), _as_dict(actions.get(side_key)))
+        for side_key in SIDE_KEYS
+    ]
+    text = "当前没有一侧进入人工准备；" + "，".join(phrases) + "。"
+    if _as_dict(comparison).get("status") == "ASSESSED":
+        text += "相对比较：" + _relative_side_label(comparison.get("relative_side")) + "。"
+    return text
+
+
+def _side_action_phrase(side_key: str, side: dict[str, Any], action: dict[str, Any]) -> str:
+    grade = side.get("grade")
+    grade_text = f"{grade} 级" if grade in GRADES else "未评级"
+    label = str(action.get("label_cn") or "暂未评级")
+    if grade not in GRADES and label == "暂未评级":
+        return f"{_side_label(side_key)}暂未评级"
+    return f"{_side_label(side_key)}{grade_text}{label}"
+
+
+def _display_projection_hash(summary: dict[str, Any]) -> str:
+    clone = _clone(summary)
+    clone.pop("display_projection_hash", None)
+    return "sha256:" + hashlib.sha256(_browser_canonical_json(clone).encode("utf-8")).hexdigest()
+
+
+def _price_bias_label(value: Any) -> str:
+    return {
+        "BULLISH": "偏多",
+        "BEARISH": "偏空",
+        "NEUTRAL": "中性",
+        "MIXED": "分歧",
+        "UNDETERMINED": "无法判断",
+    }.get(value, "无法判断")
+
+
+def _relative_side_label(value: Any) -> str:
+    return {
+        "put_credit": "Put 侧相对更有依据",
+        "call_credit": "Call 侧相对更有依据",
+        "tie": "两侧接近，无单一优先侧",
+        "not_comparable": "相对比较未采纳",
+    }.get(value, "相对比较未采纳")
+
+
+def _clean_display_reasons(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return ["当前行动原因暂未形成有效说明。"]
+    reasons = []
+    for item in value:
+        text = _clean_text(item, fallback="")
+        if text and not _human_text_issue(text):
+            reasons.append(text)
+    return reasons or ["当前行动原因暂未形成有效说明。"]
+
+
+def _card_block_or_expiry_reason(card: dict[str, Any]) -> str:
+    context = _legacy_context(card)
+    if context["expired"]:
+        return "信号窗口或事件状态已经失效，需要等待新卡。"
+    window = _as_dict(_as_dict(card).get("signal_window"))
+    neutral_window = _as_dict(window.get("neutral_repair"))
+    if window.get("is_active") is False or neutral_window.get("is_active") is False:
+        return "信号窗口尚未打开，证据等级只作为关注依据。"
+    blocking = _as_dict(_as_dict(card).get("blocking"))
+    for value in (
+        _as_dict(blocking.get("hard_veto")).get("reason_cn"),
+        blocking.get("reason_cn"),
+        blocking.get("block_reason_cn"),
+    ):
+        text = _clean_text(value, fallback="")
+        if text and not _human_text_issue(text):
+            return "存在本地硬否决：" + text
+    return "旧有阻断或硬否决仍然存在，不能进入人工准备。"
+
+
+def _card_wait_reason(card: dict[str, Any]) -> str:
+    window = _as_dict(_as_dict(card).get("signal_window"))
+    neutral_window = _as_dict(window.get("neutral_repair"))
+    if window.get("is_active") is False or neutral_window.get("is_active") is False:
+        return "信号窗口尚未打开，证据等级只作为关注依据。"
+    blocking = _as_dict(_as_dict(card).get("blocking"))
+    soft_gates = blocking.get("soft_gates") if isinstance(blocking.get("soft_gates"), list) else []
+    for gate in soft_gates:
+        text = _clean_text(_as_dict(gate).get("reason_cn"), fallback="")
+        if text and not _human_text_issue(text):
+            return "存在等待条件：" + text
+    return "旧有等待条件或侧别边界限制仍在，先保留为观察与人工复核。"
 
 
 def _validate_persisted_side(
@@ -1114,8 +1973,18 @@ def _validate_persisted_side(
     *,
     as_of_ms: int | float,
     recheck_claims=True,
+    latest: bool = False,
 ) -> None:
-    expected = MODEL_SIDE_FIELDS | {"status", "validation_reasons_cn"}
+    if latest:
+        _validate_persisted_v21_side(
+            side_key,
+            side,
+            fact_index,
+            as_of_ms=as_of_ms,
+            recheck_claims=recheck_claims,
+        )
+        return
+    expected = LEGACY_MODEL_SIDE_FIELDS | {"status", "validation_reasons_cn"}
     if set(side) != expected:
         raise EvidenceFormatError(f"{side_key} persisted side shape invalid")
     for field_name in (
@@ -1167,6 +2036,163 @@ def _validate_persisted_side(
             fact_index,
         ):
             raise EvidenceFormatError(f"{side_key} A/S constraint argument invalid")
+
+
+def _validate_persisted_v21_side(
+    side_key: str,
+    side: dict[str, Any],
+    fact_index: dict[str, dict[str, Any]],
+    *,
+    as_of_ms: int | float,
+    recheck_claims=True,
+) -> None:
+    expected = (
+        MODEL_SIDE_FIELDS
+        | {
+            "status",
+            "fit_thesis",
+            "validation_reasons_cn",
+            "evidence_refs",
+            "counter_evidence_refs",
+            "context_evidence_refs",
+        }
+    )
+    if set(side) != expected:
+        raise EvidenceFormatError(f"{side_key} persisted side shape invalid")
+    if side.get("fit_thesis") != SIDE_FIT_THESES[side_key]:
+        raise EvidenceFormatError(f"{side_key} fit_thesis invalid")
+    for field_name in (
+        "basis_cn",
+        "mechanism_cn",
+        "market_counter_cn",
+        "alternative_cn",
+        "next_observation_cn",
+    ):
+        text = side.get(field_name)
+        if (
+            not isinstance(text, str)
+            or (recheck_claims and _v21_human_text_issue(text))
+            or (not recheck_claims and _human_text_issue(text))
+        ):
+            raise EvidenceFormatError(f"{side_key} human text invalid")
+    for field_name in ("strengthen_if_cn", "weaken_if_cn", "unresolved_conditions_cn"):
+        values = side.get(field_name)
+        if not isinstance(values, list) or any(
+            not isinstance(item, str)
+            or (recheck_claims and _v21_human_text_issue(item))
+            or (not recheck_claims and _human_text_issue(item))
+            for item in values
+        ):
+            raise EvidenceFormatError(f"{side_key} {field_name} invalid")
+    validation_reasons = side.get("validation_reasons_cn")
+    if not isinstance(validation_reasons, list) or any(
+        not isinstance(item, str)
+        or (recheck_claims and _v21_human_text_issue(item))
+        or (not recheck_claims and _human_text_issue(item))
+        for item in validation_reasons
+    ):
+        raise EvidenceFormatError(f"{side_key} validation reasons invalid")
+    roles, role_refs, role_reasons = _normalize_evidence_roles(
+        side_key,
+        side.get("evidence_roles"),
+        fact_index=fact_index,
+        as_of_ms=as_of_ms,
+    )
+    if role_reasons or roles != side.get("evidence_roles"):
+        raise EvidenceFormatError(f"{side_key} evidence roles invalid")
+    if role_refs["supports_fit"] != side.get("evidence_refs"):
+        raise EvidenceFormatError(f"{side_key} support refs mismatch")
+    if role_refs["counters_fit"] != side.get("counter_evidence_refs"):
+        raise EvidenceFormatError(f"{side_key} counter refs mismatch")
+    if role_refs["context_only"] != side.get("context_evidence_refs"):
+        raise EvidenceFormatError(f"{side_key} context refs mismatch")
+    grade = side.get("grade")
+    if side.get("status") == "RATED":
+        if validation_reasons:
+            raise EvidenceFormatError(f"{side_key} rated side has validation reasons")
+        if recheck_claims and _fact_assertion_issues(side, fact_index):
+            raise EvidenceFormatError(f"{side_key} stated fact contradicts source")
+        if grade is not None and not roles:
+            raise EvidenceFormatError(f"{side_key} rated side missing refs")
+        if grade in ("B", "A", "S") and not side.get("evidence_refs"):
+            raise EvidenceFormatError(f"{side_key} support grade missing evidence")
+        if grade in ("A", "S") and not _has_constraint_argument(
+            {
+                "basis_cn": side.get("basis_cn", ""),
+                "mechanism_cn": side.get("mechanism_cn", ""),
+                "market_counter_cn": side.get("market_counter_cn", ""),
+                "alternative_cn": side.get("alternative_cn", ""),
+            },
+            side.get("evidence_refs"),
+            side.get("counter_evidence_refs"),
+            fact_index,
+        ):
+            raise EvidenceFormatError(f"{side_key} A/S constraint argument invalid")
+
+
+def _validate_persisted_side_comparison(
+    comparison: dict[str, Any],
+    *,
+    sides: dict[str, dict[str, Any]],
+    fact_index: dict[str, dict[str, Any]],
+    as_of_ms: int | float,
+    recheck_claims=True,
+) -> None:
+    expected = MODEL_COMPARISON_FIELDS | {"status", "validation_reasons_cn"}
+    if set(comparison) != expected:
+        raise EvidenceFormatError("side_comparison shape invalid")
+    if comparison.get("status") not in COMPARISON_STATUS:
+        raise EvidenceFormatError("side_comparison status invalid")
+    if comparison.get("relative_side") not in COMPARISON_SIDES:
+        raise EvidenceFormatError("side_comparison relative_side invalid")
+    for field_name in ("basis_cn", "flip_if_cn"):
+        text = comparison.get(field_name)
+        if not isinstance(text, str):
+            raise EvidenceFormatError("side_comparison human text invalid")
+        if recheck_claims and _v21_human_text_issue(text):
+            raise EvidenceFormatError("side_comparison human text invalid")
+    validation_reasons = comparison.get("validation_reasons_cn")
+    if not isinstance(validation_reasons, list):
+        raise EvidenceFormatError("side_comparison validation reasons invalid")
+    if recheck_claims and any(
+        not isinstance(item, str) or _v21_human_text_issue(item) for item in validation_reasons
+    ):
+        raise EvidenceFormatError("side_comparison validation reasons invalid")
+    if not recheck_claims and any(not isinstance(item, str) for item in validation_reasons):
+        raise EvidenceFormatError("side_comparison validation reasons invalid")
+    refs, refs_ok, ref_reasons = _valid_refs(
+        comparison.get("evidence_refs"), fact_index, as_of_ms=as_of_ms
+    )
+    if not refs_ok or ref_reasons or refs != comparison.get("evidence_refs"):
+        raise EvidenceFormatError("side_comparison refs invalid")
+    assertion_reasons = (
+        [
+            "两侧比较" + reason
+            for reason in _fact_assertion_issues(
+                {
+                    "basis_cn": comparison.get("basis_cn", ""),
+                    "flip_if_cn": comparison.get("flip_if_cn", ""),
+                },
+                fact_index,
+            )
+        ]
+        if recheck_claims
+        else []
+    )
+    if comparison.get("status") == "ASSESSED":
+        if assertion_reasons:
+            raise EvidenceFormatError("side_comparison stated fact contradicts source")
+        if validation_reasons:
+            raise EvidenceFormatError("assessed side_comparison has validation reasons")
+        if comparison.get("relative_side") == "not_comparable":
+            raise EvidenceFormatError("assessed side_comparison cannot be not_comparable")
+        if not refs:
+            raise EvidenceFormatError("assessed side_comparison missing refs")
+        issue = _comparison_order_issue(comparison.get("relative_side"), sides)
+        if issue:
+            raise EvidenceFormatError("side_comparison order invalid")
+    elif assertion_reasons and any(reason not in validation_reasons for reason in assertion_reasons):
+        raise EvidenceFormatError("side_comparison validation reasons incomplete")
 
 
 def _validate_persisted_price_bias(
@@ -1239,11 +2265,33 @@ def _validate_persisted_price_bias(
 
 def _default_side(
     *,
+    side_key: str | None = None,
+    latest: bool = False,
     status: str = "UNRATED",
     grade: str | None = None,
     basis_cn: str = "本侧暂未形成有效证据等级。",
     validation_reasons_cn: list[str] | None = None,
 ) -> dict[str, Any]:
+    if latest:
+        expected_thesis = SIDE_FIT_THESES.get(str(side_key or ""), "")
+        return {
+            "status": status,
+            "grade": grade,
+            "fit_thesis": expected_thesis,
+            "basis_cn": basis_cn,
+            "mechanism_cn": "本侧适配机制暂未形成有效说明。",
+            "market_counter_cn": "主要反证暂未形成有效说明。",
+            "alternative_cn": "竞争解释暂未形成有效说明。",
+            "next_observation_cn": "继续观察关键市场事实变化。",
+            "strengthen_if_cn": [],
+            "weaken_if_cn": ["补齐有效评级后重新判断。"],
+            "evidence_roles": [],
+            "evidence_refs": [],
+            "counter_evidence_refs": [],
+            "context_evidence_refs": [],
+            "unresolved_conditions_cn": [],
+            "validation_reasons_cn": list(validation_reasons_cn or []),
+        }
     return {
         "status": status,
         "grade": grade,
@@ -1315,6 +2363,15 @@ def _human_text_issue(text: str) -> str:
         return "说明把评级写成了未经校准的概率或胜率。"
     if _FUTURE_PROOF_RE.search(text):
         return "说明把未来路径当作本卡评级证明。"
+    return ""
+
+
+def _v21_human_text_issue(text: str) -> str:
+    issue = _human_text_issue(text)
+    if issue:
+        return issue
+    if _INTERNAL_IDENTIFIER_RE.search(text):
+        return "说明包含内部侧别、角色或命题标识。"
     return ""
 
 

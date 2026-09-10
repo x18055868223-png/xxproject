@@ -15,8 +15,8 @@ DEPLOY = ROOT / "deploy" / "signal_audit"
 CANARY = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 EXPECTED_LLM_PROVIDER = "deepseek"
 EXPECTED_LLM_MODEL = "deepseek-v4-flash"
-EXPECTED_LLM_SCHEMA = "signal_llm_review@2.0.0"
-EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@2.0.1"
+EXPECTED_LLM_SCHEMA = "signal_llm_review@2.1.0"
+EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@2.1.0"
 EXPECTED_LLM_MODE = "single_evidence_v2"
 
 
@@ -145,9 +145,23 @@ def v2_payload():
 
 def v2_review():
     card = v2_card()
+    answer = v2_payload()
+    for side in answer["side_evidence_ratings"].values():
+        side["mechanism_cn"] = "结构位置与压力对应的价格响应共同构成当前适配论证。"
+        side["evidence_roles"] = [
+            {"ref": ref, "role": role, "claim_cn": "按当前结构与压力响应解释该事实。"}
+            for field, role in (("evidence_refs", "supports_fit"), ("counter_evidence_refs", "counters_fit"))
+            for ref in side.pop(field)
+        ]
+        side["strengthen_if_cn"] = ["不利压力减弱且结构仍可解释时，适配论证增强。"]
+        side["weaken_if_cn"] = [side.pop("invalid_if_cn")]
+    answer["side_comparison"] = {
+        "relative_side": "put_credit", "basis_cn": "本卡下方约束论证较充分，上方支持有限。",
+        "evidence_refs": ["EV_SPACE", "EV_FLOW"], "flip_if_cn": "若下方约束被穿透则重新比较。",
+    }
     review = signal_review_v2.build_review(
         card,
-        v2_payload(),
+        answer,
         v2_packet(card),
         model=EXPECTED_LLM_MODEL,
         reviewed_at="2026-09-08T00:00:00+00:00",
@@ -160,7 +174,7 @@ def v2_review():
 
 
 def signal_evidence_summary(review):
-    return signal_review_v2.build_summary(review)
+    return signal_review_v2.build_summary(review, v2_card())
 
 
 def run_integrated_probe(self_check, review, summary=None):
@@ -352,9 +366,9 @@ def main():
     assert_true(service_timeout >= materialize_timeout + 240 + 120,
                 "LLM service timeout should cover one high-reasoning call and materialization")
 
-    assert_true('EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.0.0}"'
+    assert_true('EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.1.0}"'
                 in self_check
-                and 'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.0.1}"'
+                and 'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.1.0}"'
                 in self_check
                 and 'EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"'
                 in self_check
@@ -389,8 +403,8 @@ def main():
                 and "RETRY_ID=" not in canary
                 and 'run_isolated_review "$TARGET_CARD_ID"' not in canary,
                 "canary should not reset v2 retry budget outside the runtime")
-    assert_true("LLM_SCHEMA=signal_llm_review@2.0.0" in canary
-                and "LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1" in canary
+    assert_true("LLM_SCHEMA=signal_llm_review@2.1.0" in canary
+                and "LLM_PROMPT_VERSION=signal_llm_review_prompt@2.1.0" in canary
                 and "LLM_REVIEW_MODE=single_evidence_v2" in canary
                 and "EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2" in canary,
                 "canary should bind isolated self-check to v2")

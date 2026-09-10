@@ -1,6 +1,8 @@
 # Project Memory
 
-> 2026-09-09北京时间10:50后续确认：用户已替换FMZ实例；服务器持续收到demo_version=1.6.0的决策记录，read_only_demo=true，公开行情采集开启且无采集错误。价格、GEX及时效与源数据正常；当前No Trade来自TMVF周期冲突和成交量柱微流未对齐，属于既有等待分支。服务器5edb288的前端、9个工具及runner哈希匹配，两项timer正常，预算仍为此前隔离检查的3次HTTP。尚无自然1.6.0审计新卡，因此原生signal_rating→LLM→页面完整前向验收仍待新卡。已设置本任务每10分钟只读检查，状态未变保持安静，不造卡、不补跑或额外调用模型；首张卡完成验收后停止跟进。
+> 2026-09-10：当前开发目标为 Astra v2.1 固定适配命题、证据角色、同次两侧比较及阅读投影，见[方案14](docs/astra/14_评级命题校正与两侧比较_v2.1.md)。用户于2026-09-10审阅本地8879页面后明确要求“推送并完成更新”，本轮发布已授权；执行结果见[发布回执15](docs/astra/15_v2.1发布与兼容验收.md)。输出/Prompt/投影2.1.0，事实包2.0.0，FMZ1.6.0不变。历史卡原协议读取、不重评；旧Prompt未完成尝试冻结，不能升级重获额度。模型自然语言通过格式与引用检查不等于因果结论已经证真。以下 v2 部署记录保留为历史事实。
+
+> 2026-09-09晚间最新核验：23:00自然固定轮卡已完成FMZ1.6.0原生证据→单次v2评审→正式页面验收，27项服务器自检通过、0项失败。Put B、Call C、价格多空分歧；时序窗口未开，两侧仍不能进入人工准备。空间对称与承接措辞保留解释局限，详见[首张原生卡验收](docs/astra/12_首张原生固定轮卡验收.md)。Codex定时跟进已取消，后续由用户通知新卡；正常服务器timer继续运行。
 
 ## 当前 Astra 路线入口
 
@@ -8,11 +10,11 @@
 
 工程开发基线是xxproject的codex/astra-signal-rating-v1完整资产分支。新卡使用一次DeepSeek综合评审；B/A/S表达总体证据强弱；证据字母与人工准备边界分离。原WAIT/BLOCK/NO_TRADE、窗口与侧别限制仍有效，不新建执行权。
 
-producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面20260908-astra-paperline分别记版。用户已审阅定稿中性纸面，并于2026-09-09明确授权推送当前版本；不合并main。用户随后授权服务器部署，审计服务已部署5edb288；FMZ运行仍待确认。随后页面改动仍要重新取得可推送确认。
+producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面20260908-astra-paperline分别记版。用户已审阅定稿中性纸面，并于2026-09-09明确授权推送当前版本；不合并main。用户随后授权服务器部署，审计服务已部署5edb288；FMZ1.6.0已由自然固定轮原生卡核验。随后页面改动仍要重新取得可推送确认。
 
 升级保留原始审计、sidecar、持久尝试及响应、预算和变化状态；历史卡不自动重评，新协议不能被旧评审静默覆盖，未知协议显式未评级。代码安装保护整个运行时signal_cards目录，不依赖索引存在。Prompt或输入包修改不能作为清除旧请求额度的理由。
 
-可见根目录与隔离工作树是不同开发面，按本次同步清单核对文件，不能把同步一个FMZ候选推定成整个根目录源码已更新。服务器最新真实卡在本次只读核验中仍为1.5.7；两类Prompt2.0.1隔离API已通过、服务器审计timer已恢复；FMZ仍待真实1.6.0新卡。历史自动排除清单与sidecar/额度必须一起迁移，详见[部署回执](docs/astra/11_服务器部署与FMZ同步说明.md)。以下为早期工程快照，其中旧版本、Gemini流程和旧展示习惯不作为当前Astra依据。
+可见根目录与隔离工作树是不同开发面，按本次同步清单核对文件，不能把同步一个FMZ候选推定成整个根目录源码已更新。首张自然固定轮1.6.0已通过完整链路验收，详细证据见Astra文档12；此前隔离API与自然记录分开保存。历史自动排除清单与sidecar/额度必须一起迁移，详见[部署回执](docs/astra/11_服务器部署与FMZ同步说明.md)。以下为早期工程快照，其中旧版本、Gemini流程和旧展示习惯不作为当前Astra依据。
 
 ## Project overview
 
@@ -21,7 +23,7 @@ producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面2
 - The current local signal-layer candidate is `demo/最新交付物/neutral_regulation_demo_fmz.py`. Its verified in-file candidate version is `demo_version = "1.6.0"` and `schema_version = "nrd.schema.v1.0.0"`. It preserves the v1.5.6 runtime/delivery protections, adds CVD weak-edge joint activation, emits producer-native `canonical_funding_semantics` as the sole Funding interpretation, and generates one audit-only fixed analysis round from the Beijing 23:00 snapshot. The fixed round bypasses only the Anchor+DIE card-emission trigger, never fabricates `NR_REPAIR_CONFIRMED`, and reuses the normal JSONL, single v2 DeepSeek assessment, materializer, and single integrated-advisory frontend path.
 - The current deployable execution-layer artifact is `demo/最新交付物/spm_manual_gate_execution_fmz.py`. Its verified in-file version is `STRATEGY_VERSION = "3.0.0-manual-gate"`, status `MANUAL_GATE_PLAN_READY`, with entry/exit/hedge/live trading gates still default-safe/off and `DRY_RUN_PASSED = False`.
 - The current GEX Monitor API snapshot is `05_GEX监控API_数据增强接口/`, with `__version__ = "0.2.1"` and rank output using `rolling_30d_or_available`; `window_days>=15` is directly `quality=ok`, while the percentile population remains capped to the most recent 30 days.
-- The current local v2 main path uses tools/signal_evidence_v2.py, tools/signal_review_v2.py and tools/signal_review_v2_runtime.py, dispatched by tools/signal_llm_review.py / signal_llm_review_entry.py. Default single_evidence_v2 uses DeepSeek deepseek-v4-flash, one high-reasoning call, schema 2.0.0 / prompt 2.0.1, persistent two-HTTP total budget. Legacy 1.x helpers remain explicit offline/history only; they are not current new-card output contracts.
+- The current local v2 main path uses tools/signal_evidence_v2.py, tools/signal_review_v2.py and tools/signal_review_v2_runtime.py, dispatched by tools/signal_llm_review.py / signal_llm_review_entry.py. Default single_evidence_v2 uses DeepSeek deepseek-v4-flash, one high-reasoning call, schema 2.1.0 / prompt 2.1.0, persistent two-HTTP total budget. Historical schema 2.0.0 / prompt 2.0.0 and 2.0.1 stay readable without rerunning. Legacy 1.x helpers remain explicit offline/history only; they are not current new-card output contracts.
 - Historical transition LLM sidecars remain readable. New automatic cards use locally verified transition facts in the same v2 call; no independent transition LLM or new 24-hour long report is scheduled.
 - The remote full-project backup branch for the r3.3.5 asset state is `backup/xxproject-r3.3.5-fulltree-20260705` on `xxproject`; r3.3.6 durability work should be layered on top of that full-tree baseline or another explicitly justified full-project baseline.
 - Documentation r2.2 aligns `05_GEX监控API_数据增强接口/` and `deploy/signal_audit/` with the 00-04 module convention by adding `因子文档/` indexes, Chinese semantic entrypoints, and `deploy/signal_audit/frontend/VERSION.json`; it does not move service source code or change runtime behavior.

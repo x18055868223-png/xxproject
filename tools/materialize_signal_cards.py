@@ -41,7 +41,10 @@ TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
 TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.0.0"
+SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.1.0"
+SIGNAL_EVIDENCE_REVIEW_SCHEMAS = frozenset((
+    "signal_llm_review@2.0.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION,
+))
 SIGNAL_RATING_SCHEMA_VERSION = "signal_rating@1.0.0"
 SIGNAL_RATING_SCOPE = "side_environment_v1"
 SIGNAL_RATING_CLAIM_STATUSES = frozenset({
@@ -649,7 +652,7 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
         rel_path = "signal_cards/" + filename
         if _is_evidence_v2(record):
             from signal_review_v2 import build_summary
-            record["signal_evidence_summary"] = build_summary(record["llm_review"])
+            record["signal_evidence_summary"] = build_summary(record["llm_review"], record)
             record.pop("signal_comfort_summary", None)
         else:
             record["signal_comfort_summary"] = _signal_comfort_summary(record)
@@ -802,7 +805,14 @@ def _select_llm_review(existing, candidate, *, keep_same_protocol_ok=False):
 
 
 def _llm_review_protocol_rank(review):
-    return 2 if _is_evidence_review_protocol(review) else 1
+    schema = _dict(review).get("schema_version")
+    if schema == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION:
+        return 3
+    if schema == "signal_llm_review@2.0.0":
+        return 2
+    # Unsupported future evidence must remain visible as an unsupported record,
+    # rather than being silently replaced by an older, seemingly valid review.
+    return 4 if _is_evidence_review_protocol(review) else 1
 
 
 def _is_evidence_review_protocol(review):
@@ -2162,7 +2172,7 @@ def _manifest_card_summary(record):
                 "card_id", "short_id", "confirmed_at", "symbol", "strategy_name",
                 "event_type", "tags", "is_synthetic") if identity.get(key) is not None},
             "llm_review_status": review.get("status"),
-            "signal_evidence_summary": build_summary(review),
+            "signal_evidence_summary": build_summary(review, record),
         }
     summary = {
         "identity": {
@@ -2220,7 +2230,7 @@ def _source_schema_fingerprint(record):
 
 
 def _is_evidence_v2(record):
-    return _dict(record.get("llm_review")).get("schema_version") == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+    return _dict(record.get("llm_review")).get("schema_version") in SIGNAL_EVIDENCE_REVIEW_SCHEMAS
 
 
 def _uses_evidence_review_path(record):
@@ -2229,7 +2239,7 @@ def _uses_evidence_review_path(record):
 
 def _is_unsupported_evidence_review(record):
     review = _dict(record.get("llm_review"))
-    return _is_evidence_review_protocol(review) and review.get("schema_version") != SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+    return _is_evidence_review_protocol(review) and review.get("schema_version") not in SIGNAL_EVIDENCE_REVIEW_SCHEMAS
 
 
 def _unsupported_evidence_review(record):
@@ -2257,6 +2267,8 @@ def _validate_evidence_v2(record, expected_packet=None):
     from signal_review_v2 import (
         MODEL_PRICE_BIAS_FIELDS,
         MODEL_SIDE_FIELDS,
+        LEGACY_MODEL_SIDE_FIELDS,
+        MODEL_COMPARISON_FIELDS,
         PROMPT_VERSION as REVIEW_V2_PROMPT_VERSION,
         _assessment_hash,
         build_error_review,
@@ -2264,6 +2276,7 @@ def _validate_evidence_v2(record, expected_packet=None):
         revalidate_review,
         _fact_assertion_issues,
         _valid_refs,
+        _normalize_side_comparison,
     )
     review = record["llm_review"]
     packet = build_evidence_packet(record)
@@ -2280,14 +2293,21 @@ def _validate_evidence_v2(record, expected_packet=None):
 
     def model_payload_from(candidate):
         advisory = _dict(candidate.get("integrated_trade_advisory"))
+        side_fields = (MODEL_SIDE_FIELDS if candidate.get("schema_version") == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+                       else LEGACY_MODEL_SIDE_FIELDS)
         payload = {"side_evidence_ratings": {
-            key: {field: side.get(field) for field in MODEL_SIDE_FIELDS}
+            key: {field: side.get(field) for field in side_fields}
             for key, side in _dict(advisory.get("side_evidence_ratings")).items()
         }}
         price_bias = _dict(advisory.get("price_bias"))
         if price_bias.get("status") == "ASSESSED":
             payload["price_bias"] = {
                 field: price_bias.get(field) for field in MODEL_PRICE_BIAS_FIELDS
+            }
+        comparison = _dict(advisory.get("side_comparison"))
+        if comparison.get("status") == "ASSESSED":
+            payload["side_comparison"] = {
+                field: comparison.get(field) for field in MODEL_COMPARISON_FIELDS
             }
         return payload
 
@@ -2361,7 +2381,9 @@ def _validate_evidence_v2(record, expected_packet=None):
                 # Preserve unaffected sides; references to unverifiable changes
                 # become side-local validation errors against the current packet.
                 for side in payload["side_evidence_ratings"].values():
-                    if invalid_ids.intersection(side.get("evidence_refs", []) + side.get("counter_evidence_refs", [])):
+                    refs = (side.get("evidence_refs", []) + side.get("counter_evidence_refs", [])
+                            + [role.get("ref") for role in side.get("evidence_roles", []) if isinstance(role, dict)])
+                    if invalid_ids.intersection(refs):
                         side["grade"] = None
                         side["unresolved_conditions_cn"] = list(side.get("unresolved_conditions_cn") or []) + ["前后变化缺少可核验的对应资料。"]
                 preserved_bias = preserved_unavailable_price_bias(review)
@@ -2374,6 +2396,29 @@ def _validate_evidence_v2(record, expected_packet=None):
         checked = record["llm_review"]
         advisory = checked["integrated_trade_advisory"]
         facts = {fact["id"]: fact for fact in advisory["market_facts"]}
+        comparison = _dict(advisory.get("side_comparison"))
+        if (checked.get("schema_version") == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+                and comparison.get("status") == "ASSESSED"):
+            normalized_comparison = _normalize_side_comparison(
+                {field: comparison.get(field) for field in MODEL_COMPARISON_FIELDS},
+                sides=advisory["side_evidence_ratings"], fact_index=facts,
+                as_of_ms=checked["evidence_context"]["identity"]["as_of_ms"])
+            if normalized_comparison.get("status") != "ASSESSED":
+                # An intact persisted comparison can fail a subsequently fixed
+                # semantic check. Archive it and isolate only that conclusion.
+                record.setdefault("invalid_llm_review_archive", review)
+                checked = _json_clone(checked)
+                advisory = checked["integrated_trade_advisory"]
+                advisory["side_comparison"] = normalized_comparison
+                checked["status"] = "PARTIAL" if checked["status"] == "OK" else checked["status"]
+                validation = advisory["validation"]
+                validation["status"] = checked["status"]
+                validation["validation_reasons_cn"] = list(dict.fromkeys(
+                    validation["validation_reasons_cn"] + normalized_comparison["validation_reasons_cn"]))
+                validation["assessment_hash"] = None
+                validation["assessment_hash"] = _assessment_hash(advisory)
+                checked["materializer_revalidation"] = "comparison_scope_unavailable"
+                record["llm_review"] = checked
         if any(side.get("status") == "RATED" and _fact_assertion_issues(side, facts)
                for side in advisory["side_evidence_ratings"].values()):
             record.setdefault("invalid_llm_review_archive", review)
@@ -2885,7 +2930,7 @@ def _is_synthetic(record):
 
 def _sanitize_legacy_display_text(value):
     if isinstance(value, dict):
-        if value.get("schema_version") == "signal_llm_review@2.0.0":
+        if value.get("schema_version") in SIGNAL_EVIDENCE_REVIEW_SCHEMAS:
             return value
         for key, item in list(value.items()):
             value[key] = _sanitize_legacy_display_text(item)

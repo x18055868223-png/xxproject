@@ -325,8 +325,8 @@ self_check() {
     LLM_ENV="$LLM_ENV_FILE" \
     EXPECTED_LLM_PROVIDER="$LLM_PROVIDER" \
     EXPECTED_LLM_MODEL="$LLM_MODEL" \
-    EXPECTED_LLM_SCHEMA=signal_llm_review@2.0.0 \
-    EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.0.1 \
+    EXPECTED_LLM_SCHEMA=signal_llm_review@2.1.0 \
+    EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.1.0 \
     EXPECTED_LLM_REVIEW_MODE=single_evidence_v2 \
     EXPECTED_LLM_CALL_COUNT=1 \
     EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2 \

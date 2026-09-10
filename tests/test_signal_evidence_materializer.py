@@ -18,6 +18,14 @@ from test_signal_evidence_v2 import base_card, transition_for
 import signal_evidence_v2 as facts_tool
 
 
+def build_legacy_review(card, payload, packet, **kwargs):
+    # These regressions freeze the 2.0 historical protocol. New 2.1 scenarios
+    # live alongside them and never weaken the current model output contract.
+    kwargs.setdefault("prompt_version", "signal_llm_review_prompt@2.0.1"
+                      if kwargs.get("require_price_bias") or "price_bias" in payload
+                      else "signal_llm_review_prompt@2.0.0")
+    return review_tool.build_review(card, payload, packet, **kwargs)
+
 class MaterializerV2Tests(unittest.TestCase):
     def source(self):
         value = card()
@@ -33,7 +41,7 @@ class MaterializerV2Tests(unittest.TestCase):
         refs = ["market.price.current"]
         answer = payload(side("C", refs, basis_cn="现价可读，但约束证据尚无明显优势。"),
                          side("C", refs, basis_cn="现价可读，但约束证据尚无明显优势。"))
-        value["llm_review"] = review_tool.build_review(value, answer, packet)
+        value["llm_review"] = build_legacy_review(value, answer, packet)
         return value
 
     def legacy_review(self, status="OK"):
@@ -84,7 +92,7 @@ class MaterializerV2Tests(unittest.TestCase):
                 counter_refs=["structure.gamma.regime"],
             ),
         )
-        current["llm_review"] = review_tool.build_review(current, answer, packet)
+        current["llm_review"] = build_legacy_review(current, answer, packet)
         original_review = copy.deepcopy(current["llm_review"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -179,6 +187,7 @@ class MaterializerV2Tests(unittest.TestCase):
             packet,
             "测试错误不应覆盖已有有效复核。",
             require_price_bias=True,
+            prompt_version="signal_llm_review_prompt@2.0.1",
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -196,7 +205,7 @@ class MaterializerV2Tests(unittest.TestCase):
         self.assertNotEqual(detail["llm_review"], error_review)
 
     def test_unsupported_new_evidence_review_schema_fails_closed(self):
-        for schema_version in ("signal_llm_review@2.1.0", "signal_llm_review@3.0.0"):
+        for schema_version in ("signal_llm_review@2.2.0", "signal_llm_review@3.0.0"):
             with self.subTest(schema_version=schema_version):
                 value = self.build()
                 original_review = copy.deepcopy(value["llm_review"])
@@ -211,7 +220,7 @@ class MaterializerV2Tests(unittest.TestCase):
                     manifest = json.loads((root / "public/signal_cards/index.json").read_text())
                     detail = json.loads((root / "public" / manifest["cards"][0]["path"]).read_text())
                 self.assertEqual(detail["invalid_llm_review_archive"], original_review)
-                self.assertEqual(detail["llm_review"]["schema_version"], "signal_llm_review@2.0.0")
+                self.assertEqual(detail["llm_review"]["schema_version"], review_tool.OUTPUT_SCHEMA_VERSION)
                 self.assertEqual(detail["llm_review"]["status"], "ERROR")
                 self.assertEqual(
                     detail["llm_review"]["materializer_revalidation"],
@@ -262,7 +271,7 @@ class MaterializerV2Tests(unittest.TestCase):
         counter = "上行压力仍是主要反证；候选行权价和净权利金尚未评估。"
         answer = payload(side("C", ["market.price.current"], counter_cn=counter),
                          side("C", ["market.price.current"]))
-        review = review_tool.build_review(value, answer, packet)
+        review = build_legacy_review(value, answer, packet)
         self.assertEqual(review["status"], "OK")
         self.assertEqual(review["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]["market_counter_cn"], counter)
 
@@ -282,7 +291,7 @@ class MaterializerV2Tests(unittest.TestCase):
                 invalid_if_cn="若前后变化无法对应，需要撤回方向判断。",
             ),
         )
-        current["llm_review"] = review_tool.build_review(current, answer, wrong_packet)
+        current["llm_review"] = build_legacy_review(current, answer, wrong_packet)
         expected = build_evidence_packet(current, previous, transition_for(facts_tool, previous, current))
         materializer._validate_evidence_v2(current, expected)
         reviewed = current["llm_review"]
@@ -304,7 +313,7 @@ class MaterializerV2Tests(unittest.TestCase):
         from test_signal_review_v2 import packet as review_packet
         for boundary in ("NO_TRADE", "NO_TRADE_BLOCKED", "SOFT_GATE", "UNABLE_TO_JUDGE"):
             value = card(support_label=boundary, decision_state=boundary)
-            reviewed = review_tool.build_review(value, payload(side("A", ["F_STRUCTURE"]), side("B", ["F_STRUCTURE"])), review_packet())
+            reviewed = build_legacy_review(value, payload(side("A", ["F_STRUCTURE"]), side("B", ["F_STRUCTURE"])), review_packet())
             adv = reviewed["integrated_trade_advisory"]
             self.assertEqual(adv["side_evidence_ratings"]["put_credit"]["grade"], "A")
             self.assertNotEqual(adv["local_action_state"]["put_credit"]["state"], "PREPARE")
@@ -313,14 +322,14 @@ class MaterializerV2Tests(unittest.TestCase):
         value = self.source(); packet = build_evidence_packet(value)
         a = side("C", ["market.price.current"]); a["unresolved_conditions_cn"] = "尚需观察"
         with self.assertRaises(review_tool.EvidenceFormatError):
-            review_tool.build_review(value, payload(a, copy.deepcopy(a)), packet)
-        result = review_tool.build_review(value, payload(a, side("C", ["market.price.current"])), packet)
+            build_legacy_review(value, payload(a, copy.deepcopy(a)), packet)
+        result = build_legacy_review(value, payload(a, side("C", ["market.price.current"])), packet)
         self.assertEqual(result["status"], "PARTIAL")
 
     def test_explicit_current_price_contradiction_is_side_local(self):
         value = self.source(); packet = build_evidence_packet(value)
         a = side("C", ["market.price.current"], basis_cn="当前价格为90000，仍在观察。")
-        result = review_tool.build_review(value, payload(a, side("C", ["market.price.current"])), packet)
+        result = build_legacy_review(value, payload(a, side("C", ["market.price.current"])), packet)
         self.assertEqual(result["status"], "PARTIAL")
         self.assertIsNone(result["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]["grade"])
 
@@ -328,16 +337,16 @@ class MaterializerV2Tests(unittest.TestCase):
         value = self.source(); packet = build_evidence_packet(value)
         answer = payload(side("C", ["market.price.current"]),
                          side("C", ["market.price.current"], basis_cn="价格始终没有向上方推进。"))
-        result = review_tool.build_review(value, answer, packet)
+        result = build_legacy_review(value, answer, packet)
         self.assertEqual(result["status"], "PARTIAL")
         self.assertIsNone(result["integrated_trade_advisory"]["side_evidence_ratings"]["call_credit"]["grade"])
         self.assertIn("Call 侧暂未评级", result["integrated_trade_advisory"]["action_summary_cn"])
         answer["side_evidence_ratings"]["call_credit"]["basis_cn"] = "按4小时汇总价格变化，未显示上行推进。"
-        self.assertEqual(review_tool.build_review(value, answer, packet)["status"], "OK")
+        self.assertEqual(build_legacy_review(value, answer, packet)["status"], "OK")
         answer["side_evidence_ratings"]["call_credit"]["basis_cn"] = "价格始终没有向上方推进，但不能证明未来继续。"
-        self.assertEqual(review_tool.build_review(value, answer, packet)["status"], "PARTIAL")
+        self.assertEqual(build_legacy_review(value, answer, packet)["status"], "PARTIAL")
         answer["side_evidence_ratings"]["call_credit"]["basis_cn"] = "无法证明价格始终没有向上方推进。"
-        self.assertEqual(review_tool.build_review(value, answer, packet)["status"], "OK")
+        self.assertEqual(build_legacy_review(value, answer, packet)["status"], "OK")
         exact_source = {"response.price.path_source": {"usable": True, "value": "精确价格点"}}
         self.assertTrue(review_tool._fact_assertion_issues(
             {"basis_cn": "价格全程没有向上方推进。"}, exact_source))
@@ -347,7 +356,7 @@ class MaterializerV2Tests(unittest.TestCase):
         answer = payload(side("C", ["market.price.current"]),
                          side("C", ["market.price.current"], basis_cn="价格始终没有向上方推进。"))
         with patch.object(review_tool, "_fact_assertion_issues", return_value=[]):
-            original = review_tool.build_review(value, answer, packet)
+            original = build_legacy_review(value, answer, packet)
         value["llm_review"] = copy.deepcopy(original)
         materializer._validate_evidence_v2(value)
         self.assertEqual(value["llm_review"]["status"], "PARTIAL")
@@ -371,7 +380,7 @@ class MaterializerV2Tests(unittest.TestCase):
             ),
         )
         with patch.object(review_tool, "_fact_assertion_issues", return_value=[]):
-            original = review_tool.build_review(value, answer, packet)
+            original = build_legacy_review(value, answer, packet)
         original_reasons = original["integrated_trade_advisory"]["price_bias"]["validation_reasons_cn"]
         self.assertIn("价格方向不能只由墙位、距离或净Gamma符号构成", original_reasons[0])
         value["llm_review"] = copy.deepcopy(original)
@@ -400,7 +409,7 @@ class MaterializerV2Tests(unittest.TestCase):
                 invalid_if_cn="若空间结构迁移，需要重新判断。",
             ),
         )
-        current["llm_review"] = review_tool.build_review(current, answer, wrong_packet)
+        current["llm_review"] = build_legacy_review(current, answer, wrong_packet)
         original_reasons = current["llm_review"]["integrated_trade_advisory"]["price_bias"]["validation_reasons_cn"]
         self.assertIn("价格方向不能只由墙位、距离或净Gamma符号构成", original_reasons[0])
         expected = build_evidence_packet(current, previous, transition_for(facts_tool, previous, current))
@@ -424,7 +433,7 @@ class MaterializerV2Tests(unittest.TestCase):
                 bias[field] = ["change.price.delta_pct"]
                 answer = payload_with_bias(side("C", ["market.price.current"]),
                                            side("C", ["market.price.current"]), bias)
-                original = review_tool.build_review(current, answer, wrong_packet)
+                original = build_legacy_review(current, answer, wrong_packet)
                 original_bias = original["integrated_trade_advisory"]["price_bias"]
                 self.assertEqual(original_bias["status"], "UNAVAILABLE")
                 self.assertEqual(original_bias[field], ["change.price.delta_pct"])

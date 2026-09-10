@@ -3955,12 +3955,27 @@
     return asArray(refs).map((ref) => sourceRefLink(ref, doc)).join("");
   }
 
-  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.0.0";
-  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.0.1";
-  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.0.0";
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.1.0";
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMAS = new Set(["signal_llm_review@2.0.0", "signal_llm_review@2.1.0"]);
+  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.1.0";
+  const SIGNAL_EVIDENCE_PROMPT_VERSIONS = new Set([
+    "signal_llm_review_prompt@2.0.0",
+    "signal_llm_review_prompt@2.0.1",
+    "signal_llm_review_prompt@2.1.0"
+  ]);
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.1.0";
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMAS = new Set(["signal_evidence_summary@2.0.0", "signal_evidence_summary@2.1.0"]);
+  const SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION = "2.1.0";
   const SIGNAL_EVIDENCE_MODE = "single_evidence_v2";
   const SIGNAL_EVIDENCE_SIDE_STATUSES = new Set(["RATED", "UNRATED"]);
   const SIGNAL_EVIDENCE_ACTION_STATES = new Set(["PREPARE", "WATCH", "WAIT", "BLOCKED", "AVOID", "UNRATED"]);
+  const SIGNAL_EVIDENCE_COMPARISON_STATUSES = new Set(["ASSESSED", "UNAVAILABLE"]);
+  const SIGNAL_EVIDENCE_COMPARISON_SIDES = new Set(["put_credit", "call_credit", "tie", "not_comparable"]);
+  const SIGNAL_EVIDENCE_ROLE_LABELS = {
+    supports_fit: "支持适配",
+    counters_fit: "反对适配",
+    context_only: "背景说明"
+  };
 
   function schemaToken(value) {
     return rawEnum(value).trim();
@@ -3969,18 +3984,15 @@
   function isSignalEvidenceSummaryObject(value) {
     const view = asObject(value);
     const schema = schemaToken(firstPresent(view.schema_version, view.schema, view.version));
-    return schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
+    return SIGNAL_EVIDENCE_SUMMARY_SCHEMAS.has(schema);
   }
 
   function isSignalEvidenceReviewObject(value) {
     const view = asObject(value);
     const schema = schemaToken(firstPresent(view.schema_version, view.schema));
     const prompt = schemaToken(firstPresent(view.prompt_version, view.prompt_schema));
-    const mode = schemaToken(firstPresent(view.review_mode, view.mode));
-    return schema === SIGNAL_EVIDENCE_REVIEW_SCHEMA
-      || prompt === SIGNAL_EVIDENCE_PROMPT_VERSION
-      || prompt === "signal_llm_review_prompt@2.0.0"
-      || mode === SIGNAL_EVIDENCE_MODE;
+    return SIGNAL_EVIDENCE_REVIEW_SCHEMAS.has(schema)
+      || SIGNAL_EVIDENCE_PROMPT_VERSIONS.has(prompt);
   }
 
   function signalEvidenceSummaryCandidate(doc) {
@@ -4203,23 +4215,131 @@
     return `<div class="source-ref-row"><span class="source-ref-label">${escapeHtml(roleLabel)}</span>${links}</div>${detail}`;
   }
 
-  function normalizeEvidenceSide(side) {
+  function uniqueRefList(refs) {
+    return [...new Set(asArray(refs).map((ref) => rawEnum(ref).trim()).filter(Boolean))];
+  }
+
+  function normalizeEvidenceTextList(value) {
+    if (Array.isArray(value)) return normalizeComfortList(value);
+    const text = normalizeComfortText(value, "");
+    return text ? [text] : [];
+  }
+
+  function defaultEvidenceFitThesis(sideKey) {
+    return sideKey === "call_credit"
+      ? "当前事实是否支持上行侵入风险受到可解释约束。"
+      : "当前事实是否支持下行侵入风险受到可解释约束。";
+  }
+
+  function normalizeEvidenceRoles(value) {
+    return asArray(value).map((entry) => {
+      const item = asObject(entry);
+      const role = rawEnum(item.role).toLowerCase();
+      const ref = rawEnum(item.ref).trim();
+      return {
+        ref,
+        role: Object.prototype.hasOwnProperty.call(SIGNAL_EVIDENCE_ROLE_LABELS, role) ? role : "",
+        claim_cn: normalizeComfortText(item.claim_cn, "")
+      };
+    }).filter((item) => item.ref || item.claim_cn || item.role);
+  }
+
+  function evidenceRefsFromRoles(roles, role) {
+    return uniqueRefList(asArray(roles)
+      .filter((item) => item.role === role)
+      .map((item) => item.ref));
+  }
+
+  function evidenceRoleErrors(roles, factIds) {
+    const errors = [];
+    asArray(roles).forEach((role) => {
+      if (!role.role) errors.push("证据角色存在未识别用途。");
+      if (!role.ref) errors.push("证据角色缺少事实引用。");
+      if (!role.claim_cn) errors.push("证据角色缺少中文作用说明。");
+      if (factIds && factIds.size && role.ref && !factIds.has(role.ref)) {
+        errors.push("证据角色存在无法核验的事实引用。");
+      }
+    });
+    return [...new Set(errors)];
+  }
+
+  function renderEvidenceRoles(side, view) {
+    const roles = asArray(side.evidence_roles);
+    if (!roles.length) return "";
+    const factMap = signalEvidenceFactsById(view.market_facts);
+    const rows = roles.map((role) => {
+      const fact = factMap.get(role.ref);
+      const label = fact ? signalEvidenceFactLabel(fact) : "引用事实";
+      const roleText = SIGNAL_EVIDENCE_ROLE_LABELS[role.role] || "作用未明";
+      const anchor = fact ? signalEvidenceFactAnchorId(fact) : "";
+      const source = anchor
+        ? `<a class="source-ref-link" href="#${escapeHtml(anchor)}">${escapeHtml(label)}</a>`
+        : `<span class="chip">${escapeHtml(label)}</span>`;
+      return `<li><span>${escapeHtml(roleText)}</span>${source}<p>${escapeHtml(role.claim_cn || "未说明具体作用。")}</p></li>`;
+    }).join("");
+    return `<div class="evidence-role-list"><strong>证据角色</strong><ul class="plain-list">${rows}</ul></div>`;
+  }
+
+  function normalizeEvidenceMarketSnapshot(value) {
+    const view = asObject(value);
+    const rawStatus = rawEnum(view.status).toUpperCase();
+    const price = safeNumber(view.price);
+    const unit = rawEnum(view.unit).trim();
+    const observed = firstPresent(view.observed_at_ms, view.observed_at);
+    const observedMs = parseSignalRatingTimeMs(observed);
+    const available = rawStatus === "AVAILABLE" && price !== null && unit && observedMs !== null;
+    return {
+      status: available ? "AVAILABLE" : "UNAVAILABLE",
+      price,
+      unit,
+      observed_at_ms: observedMs,
+      reason_cn: normalizeComfortText(view.reason_cn || view.summary_cn, "")
+    };
+  }
+
+  function marketSnapshotValueText(snapshot) {
+    const view = normalizeEvidenceMarketSnapshot(snapshot);
+    if (view.status !== "AVAILABLE") return "卡时价格未提供";
+    return `${number(view.price, 2)} ${view.unit}`;
+  }
+
+  function marketSnapshotMetaText(snapshot) {
+    const view = normalizeEvidenceMarketSnapshot(snapshot);
+    if (view.status !== "AVAILABLE") return view.reason_cn || "未从发布投影取得卡片时点价格。";
+    return `观察时点 ${dateText(isoFromEpochMs(view.observed_at_ms))}`;
+  }
+
+  function normalizeEvidenceSide(side, sideKey = "") {
     const view = asObject(side);
     const grade = comfortGradeKey(view.grade);
     const rawStatus = rawEnum(view.status).toUpperCase();
     const status = SIGNAL_EVIDENCE_SIDE_STATUSES.has(rawStatus)
       ? rawStatus
       : (grade ? "RATED" : "UNRATED");
+    const roles = normalizeEvidenceRoles(view.evidence_roles);
+    const roleSupportRefs = evidenceRefsFromRoles(roles, "supports_fit");
+    const roleCounterRefs = evidenceRefsFromRoles(roles, "counters_fit");
+    const roleContextRefs = evidenceRefsFromRoles(roles, "context_only");
+    const supportRefs = roles.length ? roleSupportRefs : uniqueRefList(view.evidence_refs);
+    const counterRefs = roles.length ? roleCounterRefs : uniqueRefList(view.counter_evidence_refs);
+    const weaken = normalizeEvidenceTextList(view.weaken_if_cn);
+    const legacyInvalid = normalizeEvidenceTextList(view.invalid_if_cn);
     return {
       status,
       grade,
-      basis_cn: normalizeComfortText(view.basis_cn || view.summary_cn, grade ? "未说明支持解释。" : "暂未完成有效评级。"),
+      fit_thesis: normalizeComfortText(firstPresent(view.fit_thesis_cn, view.fit_thesis), defaultEvidenceFitThesis(sideKey)),
+      mechanism_cn: normalizeComfortText(view.mechanism_cn, grade ? "适配机制尚未单列说明，请结合等级依据阅读。" : "暂未完成有效适配机制说明。"),
+      basis_cn: normalizeComfortText(view.basis_cn || view.summary_cn, grade ? "未说明等级依据。" : "暂未完成有效评级。"),
       market_counter_cn: normalizeComfortText(view.market_counter_cn || view.counter_evidence_cn, "未识别到主要市场反证。"),
       alternative_cn: normalizeComfortText(view.alternative_cn || view.competing_explanation_cn, "竞争解释暂未形成。"),
       next_observation_cn: normalizeComfortText(view.next_observation_cn, "等待下一条有效观察。"),
-      invalid_if_cn: normalizeComfortText(view.invalid_if_cn, "尚未声明失效条件。"),
-      evidence_refs: asArray(view.evidence_refs),
-      counter_evidence_refs: asArray(view.counter_evidence_refs),
+      strengthen_if_cn: normalizeEvidenceTextList(view.strengthen_if_cn),
+      weaken_if_cn: weaken.length ? weaken : legacyInvalid,
+      invalid_if_cn: normalizeComfortText(view.invalid_if_cn, ""),
+      evidence_roles: roles,
+      evidence_refs: supportRefs,
+      counter_evidence_refs: counterRefs,
+      context_evidence_refs: roleContextRefs,
       unresolved_conditions_cn: normalizeComfortList(view.unresolved_conditions_cn),
       validation_reasons_cn: normalizeComfortList(view.validation_reasons_cn)
     };
@@ -4236,21 +4356,93 @@
     };
   }
 
+  function normalizeEvidenceActionState(object) {
+    return {
+      put_credit: normalizeEvidenceActionSide(firstObject(get(object, "display_action_state.put_credit"), get(object, "local_action_state.put_credit"))),
+      call_credit: normalizeEvidenceActionSide(firstObject(get(object, "display_action_state.call_credit"), get(object, "local_action_state.call_credit")))
+    };
+  }
+
+  function normalizeEvidencePriceBiasObject(value) {
+    const bias = asObject(value);
+    return {
+      schema: bias.schema,
+      status: rawEnum(bias.status).toUpperCase(),
+      bias: rawEnum(bias.bias).toUpperCase(),
+      raw_basis_cn: rawEnum(bias.basis_cn),
+      raw_counter_cn: rawEnum(bias.counter_cn),
+      raw_invalid_if_cn: rawEnum(bias.invalid_if_cn),
+      basis_cn: normalizeComfortText(bias.basis_cn, ""),
+      counter_cn: normalizeComfortText(bias.counter_cn, ""),
+      invalid_if_cn: normalizeComfortText(bias.invalid_if_cn, ""),
+      evidence_refs: uniqueRefList(bias.evidence_refs),
+      counter_evidence_refs: uniqueRefList(bias.counter_evidence_refs),
+      validation_reasons_cn: normalizeComfortList(bias.validation_reasons_cn)
+    };
+  }
+
+  function normalizeEvidenceSideComparison(value) {
+    const view = asObject(value);
+    const rawStatus = rawEnum(view.status).toUpperCase();
+    const relativeSide = rawEnum(view.relative_side).toLowerCase();
+    const flip = normalizeEvidenceTextList(view.flip_if_cn);
+    return {
+      status: SIGNAL_EVIDENCE_COMPARISON_STATUSES.has(rawStatus) ? rawStatus : "UNAVAILABLE",
+      relative_side: SIGNAL_EVIDENCE_COMPARISON_SIDES.has(relativeSide) ? relativeSide : "",
+      basis_cn: normalizeComfortText(view.basis_cn, ""),
+      evidence_refs: uniqueRefList(view.evidence_refs),
+      flip_if_cn: flip,
+      validation_reasons_cn: normalizeComfortList(view.validation_reasons_cn)
+    };
+  }
+
+  function signalEvidenceSummaryIsV21(summary) {
+    const view = asObject(summary);
+    const schema = schemaToken(firstPresent(view.schema_version, view.schema, view.version));
+    return schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
+  }
+
+  function signalEvidenceProjectionHash(summary) {
+    const copy = JSON.parse(JSON.stringify(asObject(summary)));
+    delete copy.display_projection_hash;
+    return `sha256:${sha256Hex(canonicalJson(copy))}`;
+  }
+
+  function signalEvidenceSummaryProjectionErrors(summary) {
+    const view = asObject(summary);
+    if (!signalEvidenceSummaryIsV21(view)) return [];
+    const errors = [];
+    if (view.display_projection_version !== SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION) {
+      errors.push("发布投影版本未通过当前页面校验。");
+    }
+    if (!view.source_record_hash) {
+      errors.push("发布投影缺少源记录绑定。");
+    }
+    if (!view.display_projection_hash || view.display_projection_hash !== signalEvidenceProjectionHash(view)) {
+      errors.push("发布投影校验未通过。");
+    }
+    return errors;
+  }
+
   function normalizeEvidenceSummary(summary) {
     const object = asObject(summary);
+    const displayActionSummary = normalizeComfortText(object.display_action_summary_cn, "");
     return {
       source: "summary",
       schema_version: firstPresent(object.schema_version, object.schema, object.version),
+      display_projection_version: object.display_projection_version,
+      source_record_hash: object.source_record_hash,
+      display_projection_hash: object.display_projection_hash,
       as_of_ms: object.as_of_ms,
       input_packet_hash: object.input_packet_hash,
       assessment_hash: object.assessment_hash,
-      action_summary_cn: normalizeComfortText(object.action_summary_cn, ""),
-      put_credit: normalizeEvidenceSide(object.put_credit),
-      call_credit: normalizeEvidenceSide(object.call_credit),
-      local_action_state: {
-        put_credit: normalizeEvidenceActionSide(get(object, "local_action_state.put_credit")),
-        call_credit: normalizeEvidenceActionSide(get(object, "local_action_state.call_credit"))
-      },
+      action_summary_cn: displayActionSummary || normalizeComfortText(object.action_summary_cn, ""),
+      market_snapshot: normalizeEvidenceMarketSnapshot(object.market_snapshot),
+      price_bias: normalizeEvidencePriceBiasObject(firstObject(object.price_bias, object.price_bias_summary)),
+      side_comparison: normalizeEvidenceSideComparison(object.side_comparison),
+      put_credit: normalizeEvidenceSide(object.put_credit, "put_credit"),
+      call_credit: normalizeEvidenceSide(object.call_credit, "call_credit"),
+      local_action_state: normalizeEvidenceActionState(object),
       market_facts: [],
       quote_boundary_cn: "",
       validation: {}
@@ -4263,21 +4455,25 @@
     const validation = asObject(object.validation);
     const facts = asArray(object.market_facts);
     const summaryView = normalizeEvidenceSummary(summary);
+    const displayActionSummary = normalizeComfortText(object.display_action_summary_cn, "");
     const view = {
       source: "full",
-      schema_version: SIGNAL_EVIDENCE_REVIEW_SCHEMA,
+      schema_version: firstPresent(object.schema_version, get(doc, "llm_review.schema_version"), SIGNAL_EVIDENCE_REVIEW_SCHEMA),
+      prompt_version: firstPresent(object.prompt_version, get(doc, "llm_review.prompt_version")),
       as_of_ms: firstPresent(summaryView.as_of_ms, get(doc, "llm_review.reviewed_at"), confirmedAt(doc)),
       input_packet_hash: firstPresent(summaryView.input_packet_hash, get(doc, "llm_review.input_packet_hash")),
       assessment_hash: firstPresent(summaryView.assessment_hash, validation.assessment_hash),
-      action_summary_cn: normalizeComfortText(object.action_summary_cn || summaryView.action_summary_cn, ""),
-      put_credit: normalizeEvidenceSide(ratings.put_credit),
-      call_credit: normalizeEvidenceSide(ratings.call_credit),
-      local_action_state: {
-        put_credit: normalizeEvidenceActionSide(firstObject(get(object, "local_action_state.put_credit"), get(summaryView, "local_action_state.put_credit"))),
-        call_credit: normalizeEvidenceActionSide(firstObject(get(object, "local_action_state.call_credit"), get(summaryView, "local_action_state.call_credit")))
-      },
+      action_summary_cn: displayActionSummary || summaryView.action_summary_cn || normalizeComfortText(object.action_summary_cn, ""),
+      market_snapshot: normalizeEvidenceMarketSnapshot(firstObject(asObject(summary).market_snapshot, object.market_snapshot)),
+      price_bias: normalizeEvidencePriceBiasObject(firstObject(object.price_bias, summaryView.price_bias)),
+      side_comparison: normalizeEvidenceSideComparison(firstObject(object.side_comparison, summaryView.side_comparison)),
+      put_credit: normalizeEvidenceSide(ratings.put_credit, "put_credit"),
+      call_credit: normalizeEvidenceSide(ratings.call_credit, "call_credit"),
+      local_action_state: normalizeEvidenceActionState({
+        display_action_state: object.display_action_state,
+        local_action_state: firstObject(object.local_action_state, summaryView.local_action_state)
+      }),
       market_facts: facts,
-      price_bias: object.price_bias,
       quote_boundary_cn: normalizeComfortText(object.quote_boundary_cn, ""),
       validation
     };
@@ -4288,11 +4484,12 @@
     const errors = [];
     if (side.status === "RATED" && !side.grade) errors.push(`${label}声明已评级但缺少等级。`);
     if (side.status === "UNRATED" && side.grade) errors.push(`${label}声明未评级但带有等级。`);
-    if (side.status === "RATED" && !side.basis_cn) errors.push(`${label}缺少支持解释。`);
+    if (side.status === "RATED" && !side.basis_cn) errors.push(`${label}缺少等级依据。`);
     const refs = [...asArray(side.evidence_refs), ...asArray(side.counter_evidence_refs)]
       .map((ref) => rawEnum(ref).trim())
       .filter(Boolean);
     if (factIds.size && refs.some((ref) => !factIds.has(ref))) errors.push(`${label}存在无法核验的事实引用。`);
+    errors.push(...evidenceRoleErrors(side.evidence_roles, factIds).map((error) => `${label}${error}`));
     return [...new Set(errors)];
   }
 
@@ -4306,12 +4503,79 @@
     };
   }
 
+  function sideComparisonLabel(value) {
+    const labels = {
+      put_credit: "Put 侧相对更有依据",
+      call_credit: "Call 侧相对更有依据",
+      tie: "两侧接近，暂无单一优先侧",
+      not_comparable: "当前暂不可比较"
+    };
+    return labels[rawEnum(value).toLowerCase()] || "相对比较未采纳";
+  }
+
+  function signalEvidenceComparisonErrors(view, factIds) {
+    const comparison = asObject(view.side_comparison);
+    const errors = [];
+    if (comparison.status !== "ASSESSED") return errors;
+    if (!comparison.relative_side || !SIGNAL_EVIDENCE_COMPARISON_SIDES.has(comparison.relative_side)) {
+      errors.push("比较侧别未通过校验。");
+    }
+    if (!comparison.basis_cn) errors.push("比较缺少中文理由。");
+    if ((comparison.relative_side === "put_credit" || comparison.relative_side === "call_credit")) {
+      const put = asObject(view.put_credit);
+      const call = asObject(view.call_credit);
+      if (put.status !== "RATED" || !put.grade || call.status !== "RATED" || !call.grade) {
+        errors.push("有一侧未形成有效等级，不能宣布另一侧相对胜出。");
+      } else if (comparison.relative_side === "put_credit" && comfortGradeRank(put.grade) < comfortGradeRank(call.grade)) {
+        errors.push("比较侧别与两侧等级顺序矛盾。");
+      } else if (comparison.relative_side === "call_credit" && comfortGradeRank(call.grade) < comfortGradeRank(put.grade)) {
+        errors.push("比较侧别与两侧等级顺序矛盾。");
+      }
+    }
+    if (comparison.relative_side === "tie") {
+      const put = asObject(view.put_credit);
+      const call = asObject(view.call_credit);
+      if (put.status === "RATED" && call.status === "RATED" && put.grade && call.grade && put.grade !== call.grade) {
+        errors.push("两侧等级不同，不能显示两侧接近。");
+      }
+    }
+    const refs = asArray(comparison.evidence_refs).map((ref) => rawEnum(ref).trim()).filter(Boolean);
+    if (factIds && factIds.size && refs.some((ref) => !factIds.has(ref))) {
+      errors.push("比较存在无法核验的事实引用。");
+    }
+    return [...new Set(errors)];
+  }
+
+  function applySignalEvidenceComparisonValidation(view, factIds) {
+    const comparison = normalizeEvidenceSideComparison(view.side_comparison);
+    const hasComparison = Object.keys(asObject(view.side_comparison)).length > 0
+      && asObject(view.side_comparison).status !== "UNAVAILABLE";
+    const errors = signalEvidenceComparisonErrors({ ...view, side_comparison: comparison }, factIds);
+    if (!hasComparison && comparison.status !== "ASSESSED") {
+      comparison.validation_reasons_cn = comparison.validation_reasons_cn.length
+        ? comparison.validation_reasons_cn
+        : ["旧版未提供两侧比较。"];
+      view.side_comparison = comparison;
+      return;
+    }
+    if (errors.length) {
+      view.side_comparison = {
+        ...comparison,
+        status: "UNAVAILABLE",
+        validation_reasons_cn: [...comparison.validation_reasons_cn, ...errors]
+      };
+      return;
+    }
+    view.side_comparison = comparison;
+  }
+
   function signalEvidenceSummaryAlignmentErrors(fullView, summaryView) {
     const errors = [];
     if (!summaryView || !isSignalEvidenceSummaryObject(summaryView)) {
       errors.push("发布摘要缺失或版本不匹配。");
       return errors;
     }
+    errors.push(...signalEvidenceSummaryProjectionErrors(summaryView));
     if (!summaryView.assessment_hash) errors.push("发布摘要缺少结果校验标记。");
     if (summaryView.assessment_hash && fullView.assessment_hash && summaryView.assessment_hash !== fullView.assessment_hash) {
       errors.push("发布摘要与详情结果不一致。");
@@ -4323,8 +4587,15 @@
         errors.push(`${key === "put_credit" ? "Put" : "Call"} 侧摘要与详情不一致。`);
       }
     });
-    if ((summaryView.action_summary_cn || "") && fullView.action_summary_cn !== normalizeComfortText(summaryView.action_summary_cn, "")) {
+    const summaryActionText = normalizeComfortText(summaryView.display_action_summary_cn || summaryView.action_summary_cn, "");
+    if (summaryActionText && fullView.action_summary_cn !== summaryActionText) {
       errors.push("行动摘要与详情不一致。");
+    }
+    const summaryComparison = normalizeEvidenceSideComparison(get(summaryView, "side_comparison"));
+    const fullComparison = normalizeEvidenceSideComparison(get(fullView, "side_comparison"));
+    if (summaryComparison.status !== fullComparison.status
+      || summaryComparison.relative_side !== fullComparison.relative_side) {
+      errors.push("两侧比较摘要与详情不一致。");
     }
     return [...new Set(errors)];
   }
@@ -4349,16 +4620,18 @@
       const factIds = new Set(asArray(view.market_facts).map(signalEvidenceFactKey).filter(Boolean));
       view.put_credit = isolateSignalEvidenceSide(view.put_credit, signalEvidenceSideErrors(view.put_credit, "Put侧", factIds));
       view.call_credit = isolateSignalEvidenceSide(view.call_credit, signalEvidenceSideErrors(view.call_credit, "Call侧", factIds));
+      applySignalEvidenceComparisonValidation(view, factIds);
       if (errors.length) return { state: "invalid", view, errors };
       return { state: "full", view, errors: [] };
     }
     if (summaryIsV2) {
-      const errors = [];
+      const errors = signalEvidenceSummaryProjectionErrors(summary);
       if (!summary.assessment_hash) errors.push("发布摘要缺少结果校验标记。");
       if (!signalRatingAsOfIsValid(parseSignalRatingTimeMs(summary.as_of_ms))) errors.push("评级时点暂不可核验。");
       const factIds = new Set();
       summaryView.put_credit = isolateSignalEvidenceSide(summaryView.put_credit, signalEvidenceSideErrors(summaryView.put_credit, "Put侧", factIds));
       summaryView.call_credit = isolateSignalEvidenceSide(summaryView.call_credit, signalEvidenceSideErrors(summaryView.call_credit, "Call侧", factIds));
+      applySignalEvidenceComparisonValidation(summaryView, factIds);
       if (errors.length) return { state: "invalid", view: summaryView, errors };
       return { state: "summary", view: summaryView, errors: [] };
     }
@@ -4386,11 +4659,15 @@
     const view = stateView.view;
     const putAction = get(view, "local_action_state.put_credit.label_cn");
     const callAction = get(view, "local_action_state.call_credit.label_cn");
+    const comparison = signalEvidenceComparisonIndexText(view);
     return [
+      `价格 ${marketSnapshotValueText(view.market_snapshot)}`,
+      signalEvidencePriceBiasIndexText(view),
       `Put ${comfortGradeText(view.put_credit.grade)}`,
       `Call ${comfortGradeText(view.call_credit.grade)}`,
+      comparison,
       textClip(view.action_summary_cn || [putAction, callAction].filter(Boolean).join(" / ") || "行动状态已记录", 44)
-    ];
+    ].filter(Boolean);
   }
 
   function signalEvidenceFilterMatches(doc) {
@@ -4412,9 +4689,14 @@
     return [
       comfortGradeText(view.put_credit.grade),
       comfortGradeText(view.call_credit.grade),
+      marketSnapshotValueText(view.market_snapshot),
+      signalEvidencePriceBiasIndexText(view),
+      signalEvidenceComparisonIndexText(view),
       view.action_summary_cn,
       view.put_credit.basis_cn,
       view.call_credit.basis_cn,
+      view.put_credit.mechanism_cn,
+      view.call_credit.mechanism_cn,
       view.put_credit.market_counter_cn,
       view.call_credit.market_counter_cn,
       view.put_credit.alternative_cn,
@@ -4457,10 +4739,103 @@
     `;
   }
 
+  function signalEvidencePriceBiasLabels() {
+    return { BULLISH: "偏多", BEARISH: "偏空", NEUTRAL: "中性", MIXED: "多空分歧", UNDETERMINED: "方向依据不足" };
+  }
+
+  function signalEvidencePriceBiasResult(view, options = {}) {
+    const raw = asObject(view.price_bias);
+    const labels = signalEvidencePriceBiasLabels();
+    const refs = [...asArray(raw.evidence_refs), ...asArray(raw.counter_evidence_refs)];
+    const factMap = signalEvidenceFactsById(view.market_facts);
+    const asOf = parseSignalRatingTimeMs(view.as_of_ms);
+    const validRefs = options.relaxed === true
+      || ((refs.length > 0 || raw.bias === "UNDETERMINED") && refs.every((ref) => {
+        const fact = factMap.get(ref);
+        return typeof ref === "string" && fact && fact.usable === true
+          && Number.isFinite(fact.observed_at_ms) && fact.observed_at_ms > 0
+          && fact.observed_at_ms <= asOf;
+      }));
+    const rawText = [raw.raw_basis_cn, raw.raw_counter_cn, raw.raw_invalid_if_cn].join(" ");
+    const textFields = [raw.basis_cn, raw.counter_cn, raw.invalid_if_cn];
+    const valid = raw.schema === "price_bias@1.0.0" && raw.status === "ASSESSED"
+      && Object.prototype.hasOwnProperty.call(labels, raw.bias)
+      && Array.isArray(raw.evidence_refs) && Array.isArray(raw.counter_evidence_refs)
+      && Array.isArray(raw.validation_reasons_cn) && raw.validation_reasons_cn.length === 0
+      && (options.relaxed === true || textFields.every((field) => typeof field === "string" && field.trim()))
+      && !/(?:[a-z][a-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+|[A-Z]{2,}(?:_[A-Z0-9]+)+)/.test(rawText)
+      && validRefs;
+    const missing = !Object.keys(raw).length || !raw.schema;
+    return {
+      valid,
+      missing,
+      label: valid ? labels[raw.bias] : "暂未形成方向结论",
+      note: missing
+        ? "这张历史卡未单列 LLM 价格倾向，保留原有两侧论证。"
+        : "价格倾向尚未通过有效核验；两侧评级与已核验事实仍可分别阅读。",
+      bias: raw
+    };
+  }
+
+  function signalEvidencePriceBiasIndexText(view) {
+    const result = signalEvidencePriceBiasResult(view, { relaxed: view.source === "summary" });
+    return result.valid ? `倾向 ${result.label}` : "倾向未提供";
+  }
+
+  function signalEvidenceComparisonDisplay(view) {
+    const comparison = asObject(view.side_comparison);
+    const reasons = normalizeComfortList(comparison.validation_reasons_cn);
+    if (comparison.status === "ASSESSED") {
+      return {
+        adopted: true,
+        label: sideComparisonLabel(comparison.relative_side),
+        detail: comparison.basis_cn || "本次比较未单列理由。",
+        refs: comparison.evidence_refs,
+        flip: comparison.flip_if_cn
+      };
+    }
+    const text = reasons.join("；") || "旧版未提供两侧比较。";
+    return {
+      adopted: false,
+      label: text.includes("旧版未提供") ? "旧版未提供两侧比较" : "相对比较未采纳",
+      detail: text,
+      refs: [],
+      flip: []
+    };
+  }
+
+  function signalEvidenceComparisonIndexText(view) {
+    const comparison = signalEvidenceComparisonDisplay(view);
+    return comparison.adopted ? comparison.label : "";
+  }
+
+  function renderSignalEvidenceDecisionMeta(view) {
+    const market = normalizeEvidenceMarketSnapshot(view.market_snapshot);
+    const bias = signalEvidencePriceBiasResult(view, { relaxed: view.source === "summary" });
+    const comparison = signalEvidenceComparisonDisplay(view);
+    const pressureFacts = [["pressure.tmv.direction", "量价倾向"], ["pressure.cvd.combined_direction", "主动流倾向"]];
+    const pressureHeadline = pressureFacts.map(([id, label]) => {
+      const fact = signalEvidenceUsableFact(view, id);
+      return fact ? `${label}：${signalEvidenceDisplayValue(fact)}` : "";
+    }).filter(Boolean).join("；") || "量价与主动流摘要待完整卡加载。";
+    const comparisonBody = comparison.adopted
+      ? comparison.detail
+      : (comparison.label === "旧版未提供两侧比较" ? comparison.detail : `相对比较未采纳：${comparison.detail}`);
+    return `
+      <div class="evidence-decision-meta" aria-label="本卡市场摘要">
+        <div><span>卡时价格</span><strong>${escapeHtml(marketSnapshotValueText(market))}</strong><p>${escapeHtml(marketSnapshotMetaText(market))}</p></div>
+        <div><span>LLM 价格倾向</span><strong>${escapeHtml(bias.label)}</strong><p>${escapeHtml(bias.valid ? "价格倾向与价差适配等级分开阅读。" : bias.note)}</p></div>
+        <div><span>两侧比较</span><strong>${escapeHtml(comparison.label)}</strong><p>${escapeHtml(comparisonBody)}</p></div>
+        <div><span>压力摘要</span><strong>${escapeHtml(pressureHeadline)}</strong><p>量价与主动流只作为依据，不直接替代价差评级。</p></div>
+      </div>
+    `;
+  }
+
   function evidenceSideCard(side, label, view, sideKey) {
     const validation = asArray(side.validation_reasons_cn);
     const refs = signalEvidenceRefChips(side.evidence_refs, view, "支持来源");
     const counterRefs = signalEvidenceRefChips(side.counter_evidence_refs, view, "反对来源");
+    const contextRefs = signalEvidenceRefChips(side.context_evidence_refs, view, "背景来源");
     const action = renderEvidenceSideAction(get(view, `local_action_state.${sideKey}`));
     return `
       <article class="comfort-side-card ${comfortGradeClass(side.grade)} evidence-report-side">
@@ -4471,7 +4846,11 @@
         ${side.status === "UNRATED" || !side.grade
           ? `<p><strong>未采纳的评审说明</strong>：${escapeHtml(side.basis_cn || "暂未完成有效评级。")}</p>`
           : `<p class="review-thesis-reference">${side.grade === "D" ? "回避依据" : "支持解释"}见上方<a href="#signal-comfort">本侧评级判断</a>。</p>`}
+        <p><strong>评审命题</strong>：${escapeHtml(side.fit_thesis)}</p>
+        <p><strong>适配机制</strong>：${escapeHtml(side.mechanism_cn)}</p>
+        ${renderEvidenceRoles(side, view)}
         ${refs}
+        ${contextRefs}
         <p><strong>主要反证</strong>：${escapeHtml(side.market_counter_cn || "未识别到主要市场反证。")}</p>
         <p><strong>竞争解释</strong>：${escapeHtml(side.alternative_cn)}</p>
         ${counterRefs}
@@ -4574,13 +4953,17 @@
   function renderEvidenceNextSide(view, sideKey, label) {
     const side = asObject(view[sideKey]);
     const scope = side.status === "UNRATED" ? "（原评审观察，尚未采纳）" : "";
+    const strengthen = asArray(side.strengthen_if_cn);
+    const weaken = asArray(side.weaken_if_cn);
     return `
       <div class="evidence-next-side">
         <h3>${escapeHtml(label)}${escapeHtml(scope)}</h3>
         <h4>继续观察</h4>
         <p>${escapeHtml(signalEvidenceReaderText(side.next_observation_cn, "等待下一条有效观察。"))}</p>
-        <h4>判断失效</h4>
-        <p>${escapeHtml(signalEvidenceReaderText(side.invalid_if_cn, "尚未声明失效条件。"))}</p>
+        <h4>增强该侧适配</h4>
+        ${listHtml(strengthen, "尚未声明增强条件。")}
+        <h4>削弱该侧适配</h4>
+        ${listHtml(weaken, side.invalid_if_cn ? signalEvidenceReaderText(side.invalid_if_cn, "尚未声明削弱条件。") : "尚未声明削弱条件。")}
       </div>
     `;
   }
@@ -4592,11 +4975,6 @@ function renderSignalEvidenceDecision(doc) {
     if (!signalEvidenceHasUsableView(stateView)) return "";
     const view = stateView.view;
     const quoteBoundary = view.quote_boundary_cn || "候选两腿、报价、费用、净补偿与退出条件仍在交易准备环节确认。";
-    const pressureFacts = [["pressure.tmv.direction", "量价倾向"], ["pressure.cvd.combined_direction", "主动流倾向"]];
-    const pressureHeadline = pressureFacts.map(([id, label]) => {
-      const fact = signalEvidenceUsableFact(view, id);
-      return fact ? `${label}：${signalEvidenceDisplayValue(fact)}` : "";
-    }).filter(Boolean).join("；");
     const sideSummary = (key, label) => {
       const side = asObject(view[key]);
       const action = asObject(get(view, `local_action_state.${key}`));
@@ -4604,47 +4982,27 @@ function renderSignalEvidenceDecision(doc) {
       return `<div class="evidence-decision-side">
         <span>${escapeHtml(label)}</span>
         <div class="evidence-decision-grade"><strong class="badge ${comfortGradeClass(side.grade)} evidence-grade">${escapeHtml(comfortGradeText(side.grade))}</strong><span class="badge ${unavailable ? "" : actionStateClass(action.state)}">${escapeHtml(unavailable ? "暂未评级" : signalEvidenceReaderText(action.label_cn, "待复核"))}</span></div>
-        ${!unavailable ? `<p class="evidence-side-thesis">${escapeHtml(side.basis_cn)}</p>` : ""}
+        ${!unavailable ? `<p class="evidence-side-thesis"><strong>适配机制：</strong>${escapeHtml(side.mechanism_cn)}</p><p><strong>等级依据：</strong>${escapeHtml(side.basis_cn)}</p>` : ""}
         <p>${escapeHtml(unavailable ? "当前证据未形成有效等级，详见独立复核中的缺口。" : asArray(action.reasons_cn).map((item) => signalEvidenceReaderText(item, "")).filter(Boolean).join("；") || "按本卡有效证据与行动状态继续核对。")}</p>
       </div>`;
     };
     return section("最高辅助交易决策", "本卡结论、两侧评级与市场倾向。", `
       <div class="comfort-panel evidence-report-panel ${signalEvidenceActionPanelClass(view)}">
-        <div class="comfort-headline"><span>本卡行动结论</span><strong>${escapeHtml(view.action_summary_cn || "本卡已形成分侧证据评级。")}</strong>${pressureHeadline ? `<p class="evidence-pressure-headline">${escapeHtml(pressureHeadline)}</p>` : ""}</div>
+        <div class="comfort-headline"><span>本卡行动结论</span><strong>${escapeHtml(view.action_summary_cn || "本卡已形成分侧证据评级。")}</strong></div>
+        ${renderSignalEvidenceDecisionMeta(view)}
         <div class="evidence-decision-grid">${sideSummary("put_credit", "Put 信用价差")}${sideSummary("call_credit", "Call 信用价差")}</div>
         <p class="evidence-decision-footnote">评级时点：${escapeHtml(signalRatingAsOfText(view))}。${escapeHtml(quoteBoundary)}</p>
       </div>`, "signal-comfort");
   }
 
   function renderSignalEvidencePriceBias(view) {
-    const raw = view.price_bias;
-    const bias = asObject(raw);
-    const labels = { BULLISH: "偏多", BEARISH: "偏空", NEUTRAL: "中性", MIXED: "多空分歧", UNDETERMINED: "方向依据不足" };
-    const fieldNames = ["basis_cn", "counter_cn", "invalid_if_cn"];
-    const refs = [...asArray(bias.evidence_refs), ...asArray(bias.counter_evidence_refs)];
-    const factMap = signalEvidenceFactsById(view.market_facts);
-    const asOf = parseSignalRatingTimeMs(view.as_of_ms);
-    const validRefs = (refs.length > 0 || bias.bias === "UNDETERMINED") && refs.every((ref) => {
-      const fact = factMap.get(ref);
-      return typeof ref === "string" && fact && fact.usable === true
-        && Number.isFinite(fact.observed_at_ms) && fact.observed_at_ms > 0
-        && fact.observed_at_ms <= asOf;
-    });
-    const valid = bias.schema === "price_bias@1.0.0" && bias.status === "ASSESSED"
-      && Object.prototype.hasOwnProperty.call(labels, bias.bias)
-      && Array.isArray(bias.evidence_refs) && Array.isArray(bias.counter_evidence_refs)
-      && Array.isArray(bias.validation_reasons_cn) && bias.validation_reasons_cn.length === 0
-      && fieldNames.every((field) => typeof bias[field] === "string" && bias[field].trim()
-        && !/(?:[a-z][a-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+|[A-Z]{2,}(?:_[A-Z0-9]+)+)/.test(bias[field]))
-      && validRefs;
-    if (!valid) {
-      const note = !raw
-        ? "这张历史卡未单列 LLM 价格倾向，保留原有两侧论证。"
-        : "价格倾向尚未通过有效核验；两侧评级与已核验事实仍可分别阅读。";
-      return `<div class="evidence-price-bias"><div class="evidence-price-bias-head"><span>LLM 价格倾向</span><strong>暂未形成方向结论</strong></div><p>${escapeHtml(note)}</p></div>`;
+    const result = signalEvidencePriceBiasResult(view);
+    const bias = result.bias;
+    if (!result.valid) {
+      return `<div class="evidence-price-bias"><div class="evidence-price-bias-head"><span>LLM 价格倾向</span><strong>暂未形成方向结论</strong></div><p>${escapeHtml(result.note)}</p></div>`;
     }
     return `<div class="evidence-price-bias">
-      <div class="evidence-price-bias-head"><span>LLM 价格倾向</span><strong>${escapeHtml(labels[bias.bias])}</strong></div>
+      <div class="evidence-price-bias-head"><span>LLM 价格倾向</span><strong>${escapeHtml(result.label)}</strong></div>
       <p>${escapeHtml(signalEvidenceReaderText(bias.basis_cn, ""))}</p>
       <p><strong>主要反证：</strong>${escapeHtml(signalEvidenceReaderText(bias.counter_cn, ""))}</p>
       <p><strong>改变判断：</strong>${escapeHtml(signalEvidenceReaderText(bias.invalid_if_cn, ""))}</p>
@@ -4989,6 +5347,20 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     </article>`;
   }
 
+  function signalEvidenceChangeUnavailableText(stateView, context) {
+    if (stateView.state === "invalid") return "前后对照暂不可用：本卡资料核验未通过，变化摘要暂不采用。";
+    if (!context) return "前后对照暂不可用：缺少可核验的前一卡对照；当前截面仍可阅读。";
+    const text = [
+      signalEvidenceReaderText(context.summary_cn, ""),
+      ...signalEvidenceFactLimitations(context)
+    ].join("；");
+    if (/身份|品种|symbol|版本|version/i.test(text)) return "前后对照暂不可用：前后卡身份、品种或版本不一致；当前截面仍可阅读。";
+    if (/hash|哈希|校验|核验/i.test(text)) return "前后对照暂不可用：前后记录来源未通过核验；当前截面仍可阅读。";
+    if (/schema|协议|资料结构|结构不同|字段/i.test(text)) return "前后对照暂不可用：前后卡资料结构不同，暂不做变化推断；当前截面仍可阅读。";
+    if (/时序|时间|先后|顺序/i.test(text)) return "前后对照暂不可用：前后卡时间顺序未通过核验；当前截面仍可阅读。";
+    return "前后对照暂不可用：" + signalEvidenceReaderText(context.summary_cn, "变化判断暂不可用；当前截面仍可阅读。");
+  }
+
   function renderSignalEvidenceKeyChanges(doc) {
     const stateView = signalEvidenceState(doc);
     if (!stateView.view || stateView.state === "summary") return "";
@@ -4997,10 +5369,8 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     const statusUsable = context && asObject(context).usable === true && asObject(context).value === "变化可用";
     const changes = statusUsable && stateView.state !== "invalid"
       ? facts.filter((fact) => fact !== context && asObject(fact).usable === true) : [];
-    const reason = stateView.state === "invalid" ? "本卡资料核验未通过，变化摘要暂不采用。"
-      : context ? signalEvidenceReaderText(context.summary_cn, "变化判断暂不可用。")
-      : "本卡尚无可核验的前后对照，当前截面的结构与证据仍可阅读。";
-    if (!changes.length) return section("关键变化骨架", "", `<p class="evidence-change-unavailable">${escapeHtml(stateView.state === "invalid" ? "资料核验未通过，暂不采用变化判断。" : "前后对照暂不可用；当前截面仍可阅读。")} <a href="#market-data-quality">查看对照缺口</a></p>`, "signal-key-changes");
+    const reason = signalEvidenceChangeUnavailableText(stateView, context);
+    if (!changes.length) return section("关键变化骨架", "", `<p class="evidence-change-unavailable">${escapeHtml(reason)} <a href="#market-data-quality">查看对照缺口</a></p>`, "signal-key-changes");
     return section("关键变化骨架", "区分价格移动与结构位迁移，保留变化含义及比较边界。", `
       <div class="evidence-changes-panel">
         <p><strong>${escapeHtml(context ? signalEvidenceFactLabel(context) : "前后对照")}</strong>：${escapeHtml(changes.length ? `${signalEvidenceFactMetaLine(context)}。以下呈现已记录的变化，未记录项不补算。` : reason)}</p>
@@ -7049,12 +7419,21 @@ function renderSignalEvidenceReaderNav(doc) {
       subtitle || identity.strategy_name || "",
       dateText(confirmedAt(doc))
     ].filter(Boolean).join(" · ");
+    const stateView = signalEvidenceState(doc);
+    const quickline = signalEvidenceHasUsableView(stateView)
+      ? [
+        marketSnapshotValueText(stateView.view.market_snapshot),
+        signalEvidencePriceBiasIndexText(stateView.view),
+        signalEvidenceComparisonIndexText(stateView.view)
+      ].filter(Boolean).join(" · ")
+      : "";
     return `
       <header class="doc-header">
         <div>
           <p class="eyebrow">信号审计</p>
           <h1 class="doc-title">${escapeHtml(symbol(doc))} 信号审计卡</h1>
           <p class="doc-subtitle">${escapeHtml(subtitleText)}</p>
+          ${quickline ? `<p class="evidence-header-quickline">${escapeHtml(quickline)}</p>` : ""}
         </div>
         ${badges ? `<div class="status-stack">${badges}</div>` : ""}
       </header>

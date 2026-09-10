@@ -2694,6 +2694,20 @@
     .evidence-reader .signal-evidence-fact p { font-size: 12px; }
     .evidence-reader .source-ref-detail { margin-top: 4px; }
     .evidence-reader .source-ref-detail > summary { padding: 6px 0; }
+    .evidence-header-quickline { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .evidence-decision-meta { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin: 14px 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); overflow: hidden; }
+    .evidence-decision-meta > div { min-width: 0; padding: 12px 13px; border-right: 1px solid var(--line); }
+    .evidence-decision-meta > div:last-child { border-right: 0; }
+    .evidence-decision-meta span { display: block; color: var(--muted); font-size: 12px; font-weight: 650; }
+    .evidence-decision-meta strong { display: block; margin-top: 5px; color: var(--ink); font-size: 14px; line-height: 1.45; font-weight: 760; overflow-wrap: anywhere; }
+    .evidence-decision-meta p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .evidence-role-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .evidence-role-list > strong { display: block; color: var(--ink); font-size: 13px; font-weight: 700; }
+    .evidence-role-list .plain-list { list-style: none; padding: 0; margin: 7px 0 0; }
+    .evidence-role-list li { margin: 0; padding: 9px 0; border-top: 1px solid var(--line); }
+    .evidence-role-list li:first-child { border-top: 0; }
+    .evidence-role-list li > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; font-weight: 650; }
+    .evidence-role-list li p { margin: 6px 0 0 !important; color: var(--muted); font-size: 12px !important; line-height: 1.6 !important; }
     .evidence-decision-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); margin-top: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
     .evidence-decision-side { padding: 13px 14px; min-width: 0; }
     .evidence-decision-side + .evidence-decision-side { border-left: 1px solid var(--line); }
@@ -2744,6 +2758,9 @@
     @media (max-width: 1200px) and (min-width: 981px) {
       .evidence-reader .comfort-side-grid, .evidence-next-grid { grid-template-columns: 1fr; }
       .evidence-reader .comfort-side-card + .comfort-side-card, .evidence-next-side + .evidence-next-side { border-left: 0; border-top: 1px solid var(--line); }
+      .evidence-decision-meta { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .evidence-decision-meta > div:nth-child(2n) { border-right: 0; }
+      .evidence-decision-meta > div:nth-child(n+3) { border-top: 1px solid var(--line); }
       .evidence-reader .market-fact-overview-item, .evidence-reader .transition-core-row { grid-template-columns: minmax(125px,.8fr) minmax(110px,.65fr) minmax(0,1.5fr); }
     }
     @media (max-width: 760px) {
@@ -2757,8 +2774,10 @@
       .evidence-reader .comfort-panel, .evidence-reader .market-fact-card, .evidence-changes-panel { padding: 12px; }
       .evidence-reader .comfort-side-card, .evidence-next-side { padding: 13px; }
       .evidence-review-panel { padding: 12px; }
-      .evidence-decision-grid { grid-template-columns: 1fr; }
+      .evidence-decision-grid, .evidence-decision-meta { grid-template-columns: 1fr; }
       .evidence-decision-side + .evidence-decision-side { border-left: 0; border-top: 1px solid var(--line); }
+      .evidence-decision-meta > div { border-right: 0; border-top: 1px solid var(--line); }
+      .evidence-decision-meta > div:first-child { border-top: 0; }
       .evidence-reader-nav { gap: 4px 5px; padding-top: 6px; }
       .evidence-reader-nav a { min-height: 30px; padding: 0 8px; font-size: 12px; }
       .evidence-reader [id] { scroll-margin-top: 84px; }
@@ -2801,6 +2820,8 @@ html.astra-paperline .evidence-reader-nav,
 html.astra-paperline .comfort-headline,
 html.astra-paperline .comfort-side-head,
 html.astra-paperline .evidence-price-bias,
+html.astra-paperline .evidence-role-list,
+html.astra-paperline .evidence-role-list li,
 html.astra-paperline .signal-evidence-fact,
 html.astra-paperline .evidence-reasoning-chain .reasoning-boundary {
   border-color: var(--line);
@@ -2813,6 +2834,7 @@ html.astra-paperline .evidence-review-panel,
 html.astra-paperline .evidence-changes-panel,
 html.astra-paperline .evidence-next-grid,
 html.astra-paperline .evidence-decision-grid,
+html.astra-paperline .evidence-decision-meta,
 html.astra-paperline .market-fact-overview,
 html.astra-paperline .market-fact-overview-item,
 html.astra-paperline .transition-core-row,
@@ -2826,6 +2848,7 @@ html.astra-paperline .evidence-change-unavailable {
 }
 
 html.astra-paperline .doc-subtitle,
+html.astra-paperline .evidence-header-quickline,
 html.astra-paperline .section-purpose,
 html.astra-paperline .brand p,
 html.astra-paperline .evidence-price-bias-head > span,
@@ -2835,7 +2858,11 @@ html.astra-paperline .market-group-meta,
 html.astra-paperline .review-side-caption,
 html.astra-paperline .source-ref-label,
 html.astra-paperline details > summary,
-html.astra-paperline .evidence-side-action p {
+html.astra-paperline .evidence-side-action p,
+html.astra-paperline .evidence-decision-meta span,
+html.astra-paperline .evidence-decision-meta p,
+html.astra-paperline .evidence-role-list li > span,
+html.astra-paperline .evidence-role-list li p {
   color: var(--muted);
 }
 
@@ -2978,6 +3005,6 @@ html.astra-paperline .transition-badges span {
 []
   </script>
 
-  <script src="app.js?v=20260908-astra-paperline"></script>
+  <script src="app.js?v=20260910-astra-v21"></script>
 </body>
 </html>

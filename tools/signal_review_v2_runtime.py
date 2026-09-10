@@ -14,7 +14,7 @@ import signal_llm_review as core
 from signal_evidence_v2 import build_evidence_packet, packet_hash
 from signal_review_v2 import (EvidenceFormatError, build_request, build_review,
                               build_error_review, LEGACY_PROMPT_VERSION,
-                              PROMPT_VERSION)
+                              PROMPT_VERSION, ACCEPTED_PROMPT_VERSIONS)
 
 MODE = "single_evidence_v2"
 PROMPT = PROMPT_VERSION
@@ -84,12 +84,16 @@ def _state_key(card_id, prompt, mode, model):
 
 def _state_path(states, card_id, model):
     current = states / (_state_key(card_id, PROMPT, MODE, model) + ".json")
-    if current.exists():
-        return current
-    legacy = states / (_state_key(card_id, LEGACY_PROMPT_VERSION, MODE, model) + ".json")
-    if legacy.exists():
-        return legacy
-    return current
+    # A changed prompt is never a new allowance for the same card. Resolve all
+    # supported historical prompts before creating the new state file.
+    existing = []
+    for prompt in dict.fromkeys((*ACCEPTED_PROMPT_VERSIONS, PROMPT)):
+        path = states / (_state_key(card_id, prompt, MODE, model) + ".json")
+        if path.exists():
+            existing.append(path)
+    if len(existing) > 1:
+        raise ValueError("同一卡存在多个版本的尝试状态，需要核对原始额度。")
+    return existing[0] if existing else current
 
 
 def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
@@ -207,7 +211,7 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
     for record in core._read_jsonl(output):
         review = record.get("llm_review", {})
         if review.get("status") in {"OK", "PARTIAL"} or (
-                review.get("schema_version") == "signal_llm_review@2.0.0"
+                str(review.get("schema_version", "")).startswith("signal_llm_review@2.")
                 and review.get("retry_budget", {}).get("persistent")):
             done[str(record.get("card_id"))] = review
     target = None
@@ -242,9 +246,13 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
         previous = by_id.get(str((transition or {}).get("previous_card_id")))
         packet = build_evidence_packet(card, previous, transition)
         try:
-            return _run_card(card, packet, _state_path(states, cid, model), api_key, model,
-                             timeout, base_url, budget, transport or core._post_chat_completion,
-                             reviewed_at)
+            # Serialize version resolution as well as the request. The state
+            # lock inside _run_card also coordinates with older running code.
+            card_lock = states / ("card-" + hashlib.sha256(cid.encode()).hexdigest())
+            with core._exclusive_file_lock(card_lock):
+                return _run_card(card, packet, _state_path(states, cid, model), api_key, model,
+                                 timeout, base_url, budget, transport or core._post_chat_completion,
+                                 reviewed_at)
         except (ValueError, KeyError, TypeError, OSError):
             review = build_error_review(card, packet, "本卡评审记录校验失败，自动调用已暂停。",
                                         model=model, reviewed_at=reviewed_at,

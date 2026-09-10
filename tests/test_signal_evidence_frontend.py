@@ -862,6 +862,7 @@ def py_generated_review_card():
         py_review_model_payload(),
         packet,
         reviewed_at="2026-06-19T03:00:00Z",
+        prompt_version="signal_llm_review_prompt@2.0.1",
     )
     summary = build_summary(review)
     full = copy.deepcopy(source_card)
@@ -1119,7 +1120,7 @@ def test_v2_filters_use_side_evidence_grades_and_ignore_legacy_comfort():
     assert_true("旧版行动评级" in rendered_all["indexText"],
                 "legacy comfort cards should remain readable in the unfiltered list")
     assert_true("EVIDENCE-A" in rendered_attention["indexHtml"] and "EVIDENCE-C" not in rendered_attention["indexHtml"],
-                "B+ filter should keep only v2 side grades at B or above")
+                "B及以上 filter should keep only v2 side grades at B or above")
     assert_true("COMFORT-AS" not in rendered_attention["indexHtml"],
                 "legacy comfort final_grade must not enter v2 evidence filters")
     assert_true("EVIDENCE-A" in rendered_admission["indexHtml"] and "EVIDENCE-C" not in rendered_admission["indexHtml"],
@@ -1312,7 +1313,7 @@ def test_python_generated_review_and_summary_feed_frontend_vm_with_prefixed_hash
     rendered = render_cards([card])
     text = rendered["documentText"]
     html = rendered["documentHtml"]
-    assert_true("最高辅助交易决策" in text and "Put 侧证据等级为 A" in text,
+    assert_true("最高辅助交易决策" in text and "Put" in text and "A级" in text and "准入" in text,
                 "frontend should accept the Python-generated v2 review")
     assert_true("暂未完成有效评级" not in text,
                 "prefixed assessment hash should not invalidate the real v2 shape")

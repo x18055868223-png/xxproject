@@ -44,8 +44,8 @@ DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
 EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.6.0}"
 EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
 EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
-EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.0.0}"
-EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.0.1}"
+EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.1.0}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.1.0}"
 EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"
 EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-1}"
 EXPECTED_LLM_MAX_HTTP_ATTEMPTS="${EXPECTED_LLM_MAX_HTTP_ATTEMPTS:-2}"
@@ -825,7 +825,7 @@ if call_count < expected_call_count:
     raise SystemExit("latest signal LLM call count is below " + str(expected_call_count))
 if http_calls > expected_max_http_attempts:
     raise SystemExit("latest signal LLM HTTP attempts exceed " + str(expected_max_http_attempts))
-if expected_schema == "signal_llm_review@2.0.0":
+if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0"):
     budget = review.get("retry_budget") or {}
     if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
         raise SystemExit("latest signal LLM v2 retry budget is not persistent max-two")
@@ -940,7 +940,7 @@ def validate_review_header(review, label):
     if http_calls > expected_max_http_attempts:
         raise SystemExit(label + " review HTTP attempts exceed "
                          + str(expected_max_http_attempts))
-    if expected_schema == "signal_llm_review@2.0.0":
+    if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0"):
         budget = review.get("retry_budget") or {}
         if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
             raise SystemExit(label + " v2 retry budget is not persistent max-two")
@@ -964,11 +964,11 @@ def validate_advisory(card, review, label):
     print(label + "_call_grade:", (ratings.get("call_credit") or {}).get("grade"))
     return advisory
 
-def validate_summary(summary, review, label):
+def validate_summary(summary, review, label, card):
     if not isinstance(summary, dict):
         raise SystemExit(label + " signal_evidence_summary is not object")
     try:
-        expected = build_summary(review)
+        expected = build_summary(review, card)
     except EvidenceFormatError as exc:
         raise SystemExit(label + " signal_evidence_summary source invalid: " + str(exc))
     if summary.get("assessment_hash") != expected.get("assessment_hash"):
@@ -1031,7 +1031,7 @@ print("materialized_advisory_passthrough:", materialized_advisory == sidecar_adv
 if materialized_advisory != sidecar_advisory:
     raise SystemExit("materialized latest card did not pass through integrated_trade_advisory")
 summary = (selected_manifest.get("summary") or {}).get("signal_evidence_summary")
-validate_summary(summary, materialized_review, "materialized_advisory")
+validate_summary(summary, materialized_review, "materialized_advisory", materialized_card)
 print("materialized_signal_evidence_summary:", True)
 PY
     then

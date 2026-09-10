@@ -61,12 +61,12 @@ def assert_asset_root(root):
                 and "fallback.js?v=20260723-fact-semantics-v1" not in index_html,
                 "index.html should cache-bust canonical frontend assets")
     assert_true(version.get("backup_version")
-                == "NRD-XXPROJECT-BACKUP-2026.07.19-r3.3.11-integrated-advisory-astra-evidence-v2",
+                == "NRD-XXPROJECT-BACKUP-2026.09.10-astra-evidence-v21",
                 "VERSION backup_version should name the v2 evidence advisory slice")
-    assert_true(version.get("generated_at") == "2026-09-08",
+    assert_true(version.get("generated_at") == "2026-09-10",
                 "VERSION generated_at should match the Astra rating asset refresh date")
-    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.0.0"
-                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.0.1",
+    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.1.0"
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.1.0",
                 "VERSION should name the integrated advisory schema and prompt")
     assert_true("signal_evidence_summary@2.0.0" in version.get("manifest_schema", "")
                 and "side_evidence_ratings" in version.get("card_schema", "")
