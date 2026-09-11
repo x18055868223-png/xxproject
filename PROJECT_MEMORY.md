@@ -1,10 +1,10 @@
 # Project Memory
 
-## 当前实施裁定：GEX 时间补丁，FMZ 1.6.2
+## 当前已发布：GEX 时间补丁，FMZ 1.6.2
 
-用户已批准[补丁20](docs/astra/20_GEX时间语义补丁与FMZ1.6.2.md)。当前本地候选区分市场观测、上游结果生成、值抓取及卡片记录时间；事实包2.1.1、Prompt2.2.1，LLM输出/摘要/投影仍2.2.0。原观测未知不补造，已知晚于卡时的来源不能引用，依赖限制逐项传播。旧卡及旧尝试额度按原协议保留。
+用户已批准[补丁20](docs/astra/20_GEX时间语义补丁与FMZ1.6.2.md)。当前已发布版本区分市场观测、上游结果生成、值抓取及卡片记录时间；事实包2.1.1、Prompt2.2.1，LLM输出/摘要/投影仍2.2.0。原观测未知不补造，已知晚于卡时的来源不能引用，依赖限制逐项传播。旧卡及旧尝试额度按原协议保留。
 
-本轮只修审计与来源说明，不改变评级定义、信号逻辑、触发、权限或模型调用频率。[A／S有限跟踪企划21](docs/astra/21_A与S级有限跟踪待研究企划.md)仅为建议／待研究；人工研究B级不受限制，不启用新任务。上一版本的发布确认不授权本地新页面发布；本轮仍先本地验收、用户确认，再部署与同步交付。自然新卡才证明FMZ原生前向链。
+本轮只修审计与来源说明，不改变评级定义、信号逻辑、触发、权限或模型调用频率。[A／S有限跟踪企划21](docs/astra/21_A与S级有限跟踪待研究企划.md)仅为建议／待研究；人工研究B级不受限制，不启用新任务。上一版本的发布确认不授权本地新页面发布；本轮用户已明确确认发布，服务器和用户可见1.6.2交付已同步；自然FMZ新卡仍待核验。以后页面变化仍先验收、确认再发布。自然新卡才证明FMZ原生前向链。
 
 栏目归位采用同一事实的分层展示：空间点位在空间约束动力学，来源区保留完整数值与时点；TMV、净Gamma等补充变化通过独立只读投影1.1.0保存。补充行不改原事实包或评审、不触发LLM；比较需逐项通过来源、方法、单位、窗口及时间核验，前后值不冒充完整行情路径。
 
@@ -172,3 +172,5 @@ producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面2
 - Whether the documented source-side tools `tools/static_validate_demo.ps1`, `tools/runtime_check_demo.ps1`, `tools/signal_review_check.py`, `tools/gex_info_check.py`, and `tools/greeks_freshness_check.py` are available outside this integration checkout was not confirmed.
 - Whether a production static audit host, HTTPS access control, or sync job already exists outside this repository was not confirmed.
 - Whether future Codex sessions will load the newly created `.codex/agents/` definitions without reopening the session was not confirmed; start a fresh Codex session after this initialization.
+
+发布证据分层约定：Git实现与服务程序、用户可见FMZ文件、实例实际运行及自然卡原生输出分别记录；源卡仍旧版时按旧协议验收，不能降低新版原生验收要求。当前部署与交付回执见Astra文档22。
