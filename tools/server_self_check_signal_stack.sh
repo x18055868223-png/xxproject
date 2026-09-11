@@ -41,11 +41,11 @@ TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
-EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.6.0}"
+EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.6.1}"
 EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
 EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
-EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.1.0}"
-EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.1.0}"
+EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.2.0}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.2.0}"
 EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"
 EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-1}"
 EXPECTED_LLM_MAX_HTTP_ATTEMPTS="${EXPECTED_LLM_MAX_HTTP_ATTEMPTS:-2}"
@@ -362,7 +362,7 @@ if [ -r "$AUDIT_ROOT/signal_cards/index.json" ] && have python3; then
   if python3 - "$AUDIT_ROOT" <<'PY'
 import json, math, os, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.6.0")
+expected_version = os.environ.get("EXPECTED_SIGNAL_VERSION", "1.6.1")
 durability_required = os.environ.get("DURABILITY_REQUIRED", "0") == "1"
 target_card_id = (os.environ.get("TARGET_CARD_ID")
                   or os.environ.get("ONLY_CARD_ID") or "")
@@ -502,6 +502,22 @@ if ctx.get("compat_backfill_applied"):
     raise SystemExit("latest card uses materializer compatibility backfill")
 if str(identity.get("strategy_version")) != expected_version:
     raise SystemExit("latest card strategy_version does not match EXPECTED_SIGNAL_VERSION")
+if expected_version == "1.6.1":
+    near = card.get("near_term_market_context")
+    if not isinstance(near, dict) or near.get("schema_version") != "near_term_market_context@1.0.0":
+        raise SystemExit("latest card lacks native near-term market context")
+    if contains_truthy_key(near, "compat_backfill_applied"):
+        raise SystemExit("near-term evidence cannot be a compatibility backfill")
+    windows = near.get("windows") or {}
+    for key in ("15m", "30m"):
+        window = windows.get(key) or {}
+        if window.get("state") not in {"OK", "PARTIAL", "STALE", "MISSING"}:
+            raise SystemExit("near-term window state missing: " + key)
+        if not all(field in window for field in ("bar_count", "missing_minutes", "active_volume_state")):
+            raise SystemExit("near-term window coverage incomplete: " + key)
+    if not isinstance(near.get("bars"), list) or len(near["bars"]) > 30:
+        raise SystemExit("near-term raw samples violate bounded archive contract")
+    print("near_term_window_states:", {key: windows[key]["state"] for key in ("15m", "30m")})
 if signal_rating_required:
     manifest_summary = selected_manifest.get("summary") or {}
     manifest_identity = manifest_summary.get("identity") or {}
@@ -825,7 +841,7 @@ if call_count < expected_call_count:
     raise SystemExit("latest signal LLM call count is below " + str(expected_call_count))
 if http_calls > expected_max_http_attempts:
     raise SystemExit("latest signal LLM HTTP attempts exceed " + str(expected_max_http_attempts))
-if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0"):
+if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"):
     budget = review.get("retry_budget") or {}
     if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
         raise SystemExit("latest signal LLM v2 retry budget is not persistent max-two")
@@ -940,7 +956,7 @@ def validate_review_header(review, label):
     if http_calls > expected_max_http_attempts:
         raise SystemExit(label + " review HTTP attempts exceed "
                          + str(expected_max_http_attempts))
-    if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0"):
+    if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"):
         budget = review.get("retry_budget") or {}
         if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
             raise SystemExit(label + " v2 retry budget is not persistent max-two")

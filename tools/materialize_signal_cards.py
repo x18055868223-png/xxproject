@@ -41,9 +41,9 @@ TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
 TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.1.0"
+SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.2.0"
 SIGNAL_EVIDENCE_REVIEW_SCHEMAS = frozenset((
-    "signal_llm_review@2.0.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION,
+    "signal_llm_review@2.0.0", "signal_llm_review@2.1.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION,
 ))
 SIGNAL_RATING_SCHEMA_VERSION = "signal_rating@1.0.0"
 SIGNAL_RATING_SCOPE = "side_environment_v1"
@@ -613,7 +613,12 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
         if _uses_evidence_review_path(current):
             from signal_evidence_v2 import build_evidence_packet
             transition = _transition_record(previous, current, [previous, current], None) if previous else None
-            expected_v2_packets[_identity(current).get("card_id")] = build_evidence_packet(current, previous, transition)
+            packet_schema = _dict(_dict(current.get("llm_review")).get("evidence_context")).get("schema")
+            if packet_schema not in ("signal_evidence_packet@2.0.0", "signal_evidence_packet@2.1.0"):
+                packet_schema = None
+            expected_v2_packets[_identity(current).get("card_id")] = build_evidence_packet(
+                current, previous, transition, packet_schema=packet_schema)
+            _attach_local_change_projection(current, previous, transition)
         prior_by_symbol[symbol] = current
     records = sorted(records, key=_sort_key, reverse=True)
     if max_cards and max_cards > 0:
@@ -807,12 +812,14 @@ def _select_llm_review(existing, candidate, *, keep_same_protocol_ok=False):
 def _llm_review_protocol_rank(review):
     schema = _dict(review).get("schema_version")
     if schema == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION:
+        return 4
+    if schema == "signal_llm_review@2.1.0":
         return 3
     if schema == "signal_llm_review@2.0.0":
         return 2
     # Unsupported future evidence must remain visible as an unsupported record,
     # rather than being silently replaced by an older, seemingly valid review.
-    return 4 if _is_evidence_review_protocol(review) else 1
+    return 5 if _is_evidence_review_protocol(review) else 1
 
 
 def _is_evidence_review_protocol(review):
@@ -953,6 +960,8 @@ def _transition_record(previous, current, history, previous_transition_hash):
         "current_strategy_version": curr_identity.get("strategy_version"),
         "previous_card_schema": _source_schema_fingerprint(previous),
         "current_card_schema": _source_schema_fingerprint(current),
+        "previous_comparable_schema_key": _comparable_source_schema_key(previous),
+        "current_comparable_schema_key": _comparable_source_schema_key(current),
         "elapsed_ms": elapsed_ms,
         "previous_event_type": previous_event_type,
         "current_event_type": current_event_type,
@@ -2221,6 +2230,40 @@ def _manifest_card_summary(record):
     return summary
 
 
+def _comparable_source_schema_key(record):
+    from signal_evidence_v2 import comparable_schema_key
+    return comparable_schema_key(record)
+
+
+def _attach_local_change_projection(record, previous, transition):
+    """An explicitly local reading, never a replacement for the frozen review."""
+    from signal_evidence_v2 import build_evidence_packet
+    from signal_review_v2 import _browser_canonical_json
+    review = _dict(record.get("llm_review"))
+    if review.get("schema_version") not in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0"):
+        return
+    advisory = _dict(review.get("integrated_trade_advisory"))
+    old_changes = [item for item in _list(advisory.get("market_facts"))
+                   if isinstance(item, dict) and item.get("topic") == "change_context"]
+    if any(item.get("usable") and item.get("id") != "change.context.status" for item in old_changes):
+        return
+    packet = build_evidence_packet(record, previous, transition)
+    facts = [item for item in packet["facts"] if item.get("topic") == "change_context"]
+    if not any(item.get("usable") and item.get("id") != "change.context.status" for item in facts):
+        return
+    projection = {
+        "schema_version": "signal_change_projection@1.0.0",
+        "source_record_hash": packet["identity"].get("source_record_hash"),
+        "assessment_hash": _dict(advisory.get("validation")).get("assessment_hash"),
+        "as_of_ms": packet["identity"].get("as_of_ms"),
+        "label_cn": "本地核验的变化，未进入当时模型评审。",
+        "facts": facts,
+    }
+    projection["projection_hash"] = "sha256:" + hashlib.sha256(
+        _browser_canonical_json(projection).encode("utf-8")).hexdigest()
+    record["local_change_projection"] = projection
+
+
 def _source_schema_fingerprint(record):
     schema = _dict(record.get("schema"))
     if schema:
@@ -2238,8 +2281,12 @@ def _uses_evidence_review_path(record):
 
 
 def _is_unsupported_evidence_review(record):
+    from signal_review_v2 import ACCEPTED_PROMPT_VERSIONS, ACCEPTED_PACKET_SCHEMA_VERSIONS
     review = _dict(record.get("llm_review"))
-    return _is_evidence_review_protocol(review) and review.get("schema_version") not in SIGNAL_EVIDENCE_REVIEW_SCHEMAS
+    return _is_evidence_review_protocol(review) and (
+        review.get("schema_version") not in SIGNAL_EVIDENCE_REVIEW_SCHEMAS
+        or review.get("prompt_version") not in ACCEPTED_PROMPT_VERSIONS
+        or _dict(review.get("evidence_context")).get("schema") not in ACCEPTED_PACKET_SCHEMA_VERSIONS)
 
 
 def _unsupported_evidence_review(record):
@@ -2277,9 +2324,11 @@ def _validate_evidence_v2(record, expected_packet=None):
         _fact_assertion_issues,
         _valid_refs,
         _normalize_side_comparison,
+        model_payload_from_review,
     )
     review = record["llm_review"]
-    packet = build_evidence_packet(record)
+    packet_schema = _dict(review.get("evidence_context")).get("schema")
+    packet = build_evidence_packet(record, packet_schema=packet_schema)
 
     def requires_price_bias(candidate):
         advisory = _dict(candidate.get("integrated_trade_advisory"))
@@ -2292,24 +2341,7 @@ def _validate_evidence_v2(record, expected_packet=None):
         return candidate.get("prompt_version")
 
     def model_payload_from(candidate):
-        advisory = _dict(candidate.get("integrated_trade_advisory"))
-        side_fields = (MODEL_SIDE_FIELDS if candidate.get("schema_version") == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
-                       else LEGACY_MODEL_SIDE_FIELDS)
-        payload = {"side_evidence_ratings": {
-            key: {field: side.get(field) for field in side_fields}
-            for key, side in _dict(advisory.get("side_evidence_ratings")).items()
-        }}
-        price_bias = _dict(advisory.get("price_bias"))
-        if price_bias.get("status") == "ASSESSED":
-            payload["price_bias"] = {
-                field: price_bias.get(field) for field in MODEL_PRICE_BIAS_FIELDS
-            }
-        comparison = _dict(advisory.get("side_comparison"))
-        if comparison.get("status") == "ASSESSED":
-            payload["side_comparison"] = {
-                field: comparison.get(field) for field in MODEL_COMPARISON_FIELDS
-            }
-        return payload
+        return model_payload_from_review(candidate)
 
     def preserved_unavailable_price_bias(candidate):
         price_bias = _dict(
@@ -2397,7 +2429,7 @@ def _validate_evidence_v2(record, expected_packet=None):
         advisory = checked["integrated_trade_advisory"]
         facts = {fact["id"]: fact for fact in advisory["market_facts"]}
         comparison = _dict(advisory.get("side_comparison"))
-        if (checked.get("schema_version") == SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION
+        if (checked.get("schema_version") in ("signal_llm_review@2.1.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION)
                 and comparison.get("status") == "ASSESSED"):
             normalized_comparison = _normalize_side_comparison(
                 {field: comparison.get(field) for field in MODEL_COMPARISON_FIELDS},

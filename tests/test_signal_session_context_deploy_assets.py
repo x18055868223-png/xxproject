@@ -61,17 +61,17 @@ def assert_asset_root(root):
                 and "fallback.js?v=20260723-fact-semantics-v1" not in index_html,
                 "index.html should cache-bust canonical frontend assets")
     assert_true(version.get("backup_version")
-                == "NRD-XXPROJECT-BACKUP-2026.09.10-astra-evidence-v21",
+                == "NRD-XXPROJECT-RELEASE-2026.09.11-astra-evidence-v22",
                 "VERSION backup_version should name the v2 evidence advisory slice")
-    assert_true(version.get("generated_at") == "2026-09-10",
+    assert_true(version.get("generated_at") == "2026-09-11",
                 "VERSION generated_at should match the Astra rating asset refresh date")
-    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.1.0"
-                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.1.0",
+    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.2.0"
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.2.0",
                 "VERSION should name the integrated advisory schema and prompt")
     assert_true("signal_evidence_summary@2.0.0" in version.get("manifest_schema", "")
                 and "side_evidence_ratings" in version.get("card_schema", "")
                 and "nrd.signal.durability_layer.v1" in version.get("card_schema", "")
-                and "download-only full audit JSON" in version.get("frontend_contract", ""),
+                and "Machine fields remain download-only" in version.get("frontend_contract", ""),
                 "VERSION should document the signal durability frontend contract")
     cards = cards_with_session_context(root)
     assert_true(cards, "static signal_cards should include session_context in " + str(root))

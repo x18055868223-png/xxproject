@@ -15,8 +15,13 @@ import json
 import math
 
 
-PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.0.0"
-FACT_KEYS = (
+LEGACY_PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.0.0"
+PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.0"
+SUPPORTED_PACKET_SCHEMAS = {
+    LEGACY_PACKET_SCHEMA_VERSION,
+    PACKET_SCHEMA_VERSION,
+}
+LEGACY_FACT_KEYS = (
     "id",
     "topic",
     "label_cn",
@@ -31,6 +36,7 @@ FACT_KEYS = (
     "limitations_cn",
     "dependencies",
 )
+FACT_KEYS = LEGACY_FACT_KEYS + ("provenance",)
 
 _BAD_STATUS_TOKENS = {
     "BAD",
@@ -68,8 +74,22 @@ _SOURCE_TIME_KEYS = (
     "created_at",
 )
 
+_SKEW_GREEKS_TIME_KEYS = (
+    "greeks_epoch_ms",
+    "greeks_observed_at_ms",
+    "greeks_ts_ms",
+    "greeks_updated_at_ms",
+)
 
-def build_evidence_packet(card, previous_card=None, transition=None):
+
+class _FactList(list):
+    def __init__(self, packet_schema):
+        super().__init__()
+        self.packet_schema = packet_schema
+
+
+def build_evidence_packet(card, previous_card=None, transition=None,
+                          packet_schema=None):
     """Build a v2 evidence packet from one signal audit card.
 
     ``previous_card`` and ``transition`` are used only when the transition
@@ -77,12 +97,16 @@ def build_evidence_packet(card, previous_card=None, transition=None):
     version, and schema.  Otherwise current-card facts remain usable and the
     change facts are marked unavailable.
     """
+    schema_version = packet_schema or PACKET_SCHEMA_VERSION
+    if schema_version not in SUPPORTED_PACKET_SCHEMAS:
+        raise ValueError("unsupported signal evidence packet schema: "
+                         + str(schema_version))
     current = _dict(card)
     previous = _dict(previous_card)
     identity = _identity(current)
     as_of_ms = _event_time_ms(current)
     packet = {
-        "schema": PACKET_SCHEMA_VERSION,
+        "schema": schema_version,
         "identity": {
             "card_id": identity.get("card_id") or current.get("card_id"),
             "symbol": identity.get("symbol") or current.get("symbol"),
@@ -97,7 +121,7 @@ def build_evidence_packet(card, previous_card=None, transition=None):
         ],
     }
 
-    facts = []
+    facts = _FactList(schema_version)
     _add_snapshot_fact(facts, current, as_of_ms)
     _add_market_price_fact(facts, current, as_of_ms)
     _add_structure_facts(facts, current, as_of_ms)
@@ -292,41 +316,148 @@ def _add_structure_facts(facts, card, as_of_ms):
             dependencies=["market.price.current", "structure.anchor.axis_price"],
         )
 
-    gamma_time = _source_time(gamma, as_of_ms) or _source_time(gex, as_of_ms)
-    gamma_usable = _source_usable(card, "gamma_regime", gamma or gex)
-    regime = gamma.get("regime") or gex.get("market_state")
+    if _legacy_facts(facts):
+        gamma_time = _source_time(gamma, as_of_ms) or _source_time(gex, as_of_ms)
+        gamma_usable = _source_usable(card, "gamma_regime", gamma or gex)
+        regime = gamma.get("regime") or gex.get("market_state")
+        if regime not in (None, ""):
+            _append_fact(
+                facts,
+                fact_id="structure.gamma.regime",
+                topic="structure_location",
+                label_cn="Gamma 结构状态",
+                value=_cn_gamma_regime(regime),
+                unit=None,
+                source_refs=["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+                source_group="OPTIONS_STRUCTURE",
+                observed_at_ms=gamma_time,
+                window=_window_from(gamma or gex, "当前截面"),
+                usable=gamma_usable,
+                summary_cn=f"Gamma/GEX 当前显示为{_cn_gamma_regime(regime)}。",
+                limitations_cn=_gex_limitations(gex, [
+                    "Gamma/GEX 只描述空间和尾部约束，不单独决定方向。",
+                ]),
+            )
+        else:
+            _append_missing_fact(
+                facts, "structure.gamma.regime", "structure_location",
+                "Gamma 结构状态", "factor_cross_section.gamma_regime", "OPTIONS_STRUCTURE",
+                "未找到 Gamma/GEX 状态，不能用正 Gamma 或负 Gamma 叙事补足。", gamma_time)
+
+        net_gamma = _first_number(
+            gex.get("net_gamma_notional_usd"),
+            gex.get("total_net_gex"),
+            gex.get("net_gamma_notional"),
+            gamma.get("net_gamma_notional_usd"),
+            gamma.get("net_gamma_notional"),
+        )
+        if net_gamma is not None and abs(net_gamma) >= 1.0:
+            _append_fact(
+                facts,
+                fact_id="structure.gex.net_gamma_notional_usd",
+                topic="structure_location",
+                label_cn="净 Gamma 名义规模",
+                value=_round_number(net_gamma),
+                unit="USD",
+                source_refs=["factor_cross_section.gex_info"],
+                source_group="OPTIONS_STRUCTURE",
+                observed_at_ms=gamma_time,
+                window=_window_from(gex, "当前截面"),
+                usable=_source_usable(card, "gex_info", gex),
+                summary_cn=f"净 Gamma 名义规模约 {_fmt_number(net_gamma)} USD。",
+                limitations_cn=_gex_limitations(gex, [
+                    "同属期权结构来源，不能与墙位、翻转点、Pin 重复当作多份独立确认。",
+                ]),
+            )
+
+        _add_level_fact(facts, card, "structure.gamma.flip_point", "Gamma 翻转点",
+                        _first_number(gamma.get("flip_point"), gex.get("flip_point")),
+                        gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+                        source_node=gamma or gex)
+        _add_level_fact(facts, card, "structure.gamma.call_wall", "上方 Call 墙",
+                        _first_number(gamma.get("call_wall"), gex.get("call_wall")),
+                        gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+                        source_node=gamma or gex)
+        _add_level_fact(facts, card, "structure.gamma.put_wall", "下方 Put 墙",
+                        _first_number(gamma.get("put_wall"), gex.get("put_wall")),
+                        gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+                        source_node=gamma or gex)
+        _add_level_fact(facts, card, "structure.gamma.pin_strike", "Pin 或最大 Gamma 行权价",
+                        _first_number(
+                            gamma.get("pin_strike"),
+                            _dict(gamma.get("pin")).get("pin_strike"),
+                            gex.get("pin_strike"),
+                            gex.get("max_gamma_strike"),
+                            gamma.get("max_gamma_strike"),
+                        ),
+                        gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+                        source_node=gamma or gex)
+
+        _add_spatial_relation_facts(facts, card, price, gamma, gex, gamma_time,
+                                    gamma_usable)
+        return
+
+    gamma_time = _source_time(gamma, as_of_ms)
+    gamma_usable = _source_usable_exact(card, "gamma_regime", gamma)
+    regime = gamma.get("regime")
     if regime not in (None, ""):
         _append_fact(
             facts,
             fact_id="structure.gamma.regime",
             topic="structure_location",
-            label_cn="Gamma 结构状态",
+            label_cn="Gamma 位置分类",
             value=_cn_gamma_regime(regime),
             unit=None,
-            source_refs=["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+            source_refs=["factor_cross_section.gamma_regime"],
             source_group="OPTIONS_STRUCTURE",
             observed_at_ms=gamma_time,
-            window=_window_from(gamma or gex, "当前截面"),
+            window=_window_from(gamma, "当前截面"),
             usable=gamma_usable,
-            summary_cn=f"Gamma/GEX 当前显示为{_cn_gamma_regime(regime)}。",
-            limitations_cn=_gex_limitations(gex, [
-                "Gamma/GEX 只描述空间和尾部约束，不单独决定方向。",
+            summary_cn=f"GGR 按现价相对翻转位判定为{_cn_gamma_regime(regime)}。",
+            limitations_cn=_source_limitations(gamma, [
+                "这是 GGR 的价格位置分类；不能替代看板净 GEX、墙位、翻转点或 Pin 的独立来源。",
+                "Gamma 位置只描述空间和尾部约束，不单独决定方向。",
             ]),
+            provenance=_source_provenance(
+                gamma, "factor_cross_section.gamma_regime",
+                "ggr_price_location_regime", as_of_ms, gamma_time),
         )
     else:
         _append_missing_fact(
             facts, "structure.gamma.regime", "structure_location",
-            "Gamma 结构状态", "factor_cross_section.gamma_regime", "OPTIONS_STRUCTURE",
-            "未找到 Gamma/GEX 状态，不能用正 Gamma 或负 Gamma 叙事补足。", gamma_time)
+            "Gamma 位置分类", "factor_cross_section.gamma_regime", "OPTIONS_STRUCTURE",
+            "未找到 GGR 位置分类，不能用正 Gamma 或负 Gamma 叙事补足。", gamma_time)
+
+    gex_time = _source_time(gex, as_of_ms)
+    gex_state = gex.get("market_state")
+    if gex_state not in (None, ""):
+        _append_fact(
+            facts,
+            fact_id="structure.gex.market_state",
+            topic="structure_location",
+            label_cn="GEX 看板状态",
+            value=_cn_gamma_regime(gex_state),
+            unit=None,
+            source_refs=["factor_cross_section.gex_info"],
+            source_group="OPTIONS_STRUCTURE",
+            observed_at_ms=gex_time,
+            window=_window_from(gex, "当前截面"),
+            usable=_source_usable_exact(card, "gex_info", gex),
+            summary_cn=f"GEX 看板状态为{_cn_gamma_regime(gex_state)}。",
+            limitations_cn=_gex_limitations(gex, [
+                "这是 GEX 看板状态；不能与 GGR 位置分类重复当作两份独立证明。",
+            ]),
+            provenance=_source_provenance(
+                gex, "factor_cross_section.gex_info",
+                "gex_board_market_state", as_of_ms, gex_time),
+        )
 
     net_gamma = _first_number(
         gex.get("net_gamma_notional_usd"),
         gex.get("total_net_gex"),
         gex.get("net_gamma_notional"),
-        gamma.get("net_gamma_notional_usd"),
-        gamma.get("net_gamma_notional"),
     )
-    if net_gamma is not None and abs(net_gamma) >= 1.0:
+    if net_gamma is not None:
         _append_fact(
             facts,
             fact_id="structure.gex.net_gamma_notional_usd",
@@ -336,40 +467,66 @@ def _add_structure_facts(facts, card, as_of_ms):
             unit="USD",
             source_refs=["factor_cross_section.gex_info"],
             source_group="OPTIONS_STRUCTURE",
-            observed_at_ms=gamma_time,
+            observed_at_ms=gex_time,
             window=_window_from(gex, "当前截面"),
-            usable=_source_usable(card, "gex_info", gex),
-            summary_cn=f"净 Gamma 名义规模约 {_fmt_number(net_gamma)} USD。",
+            usable=_field_usable(card, "gex_info", gex,
+                                 "net_gamma_notional_usd",
+                                 "total_net_gex",
+                                 "net_gamma_notional"),
+            summary_cn=f"GEX 看板净 Gamma 名义规模为 {_fmt_number(net_gamma)} USD。",
             limitations_cn=_gex_limitations(gex, [
+                "零值也是合法市场数值；本轮不再用绝对值大于 1 判断是否可记录。",
                 "同属期权结构来源，不能与墙位、翻转点、Pin 重复当作多份独立确认。",
             ]),
+            provenance=_source_provenance(
+                gex, "factor_cross_section.gex_info",
+                "gex_board_net_gamma_usd", as_of_ms, gex_time),
         )
 
-    _add_level_fact(facts, card, "structure.gamma.flip_point", "Gamma 翻转点",
-                    _first_number(gamma.get("flip_point"), gex.get("flip_point")),
-                    gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
-                    source_node=gamma or gex)
-    _add_level_fact(facts, card, "structure.gamma.call_wall", "上方 Call 墙",
-                    _first_number(gamma.get("call_wall"), gex.get("call_wall")),
-                    gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
-                    source_node=gamma or gex)
-    _add_level_fact(facts, card, "structure.gamma.put_wall", "下方 Put 墙",
-                    _first_number(gamma.get("put_wall"), gex.get("put_wall")),
-                    gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
-                    source_node=gamma or gex)
-    _add_level_fact(facts, card, "structure.gamma.pin_strike", "Pin 或最大 Gamma 行权价",
-                    _first_number(
-                        gamma.get("pin_strike"),
-                        _dict(gamma.get("pin")).get("pin_strike"),
-                        gex.get("pin_strike"),
-                        gex.get("max_gamma_strike"),
-                        gamma.get("max_gamma_strike"),
-                    ),
-                    gamma_time, gamma_usable, ["factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
-                    source_node=gamma or gex)
+    gamma_proxy = _first_number(
+        gamma.get("net_gamma_notional_usd"),
+        gamma.get("net_gamma_notional"),
+    )
+    if gamma_proxy is not None:
+        _append_fact(
+            facts,
+            fact_id="structure.gamma.net_gamma_proxy",
+            topic="structure_location",
+            label_cn="GGR 净 Gamma 代理刻度",
+            value=_round_number(gamma_proxy),
+            unit=None,
+            source_refs=["factor_cross_section.gamma_regime"],
+            source_group="OPTIONS_STRUCTURE",
+            observed_at_ms=gamma_time,
+            window=_window_from(gamma, "当前截面"),
+            usable=gamma_usable,
+            summary_cn=f"GGR 内部净 Gamma 代理刻度为 {_fmt_number(gamma_proxy)}。",
+            limitations_cn=[
+                "该值是 GGR 内部位置判断的代理量，不标成 USD 名义规模。",
+                "不能用它替代 GEX 看板净 Gamma。",
+            ] + _time_basis_limitations(gamma),
+            provenance=_source_provenance(
+                gamma, "factor_cross_section.gamma_regime",
+                "ggr_internal_gamma_proxy", as_of_ms, gamma_time),
+        )
 
-    _add_spatial_relation_facts(facts, card, price, gamma, gex, gamma_time,
-                                gamma_usable)
+    levels = _selected_structure_levels(card, gamma, gex, as_of_ms)
+    for key, fact_id, label in (
+            ("flip", "structure.gamma.flip_point", "Gamma 翻转点"),
+            ("call_wall", "structure.gamma.call_wall", "上方 Call 墙"),
+            ("put_wall", "structure.gamma.put_wall", "下方 Put 墙"),
+            ("pin", "structure.gamma.pin_strike", "Pin 或最大 Gamma 行权价")):
+        selected = levels.get(key)
+        if not selected:
+            continue
+        _add_level_fact(
+            facts, card, fact_id, label, selected["value"],
+            selected["observed_at_ms"], selected["usable"],
+            [selected["source_ref"]], source_node=selected["source_node"],
+            provenance=selected["provenance"], window=selected["window"])
+
+    _add_gex_dvol_fact(facts, card, gex, as_of_ms)
+    _add_spatial_relation_facts(facts, card, price, gamma, gex, as_of_ms, True)
 
 
 def _add_pressure_facts(facts, card, as_of_ms):
@@ -379,6 +536,7 @@ def _add_pressure_facts(facts, card, as_of_ms):
     macro = _dict(factor.get("macro_pressure"))
     funding = _dict(factor.get("funding"))
     skew = _dict(factor.get("skew"))
+    m_die = _dict(factor.get("m_die"))
 
     tmv_time = _source_time(tmvf, as_of_ms)
     tmv_usable = _source_usable(card, "tmvf", tmvf)
@@ -425,6 +583,9 @@ def _add_pressure_facts(facts, card, as_of_ms):
             limitations_cn=["该刻度不是胜率或收益概率，也不是本轮证据等级。"],
             dependencies=["pressure.tmv.direction"],
         )
+
+    if not _legacy_facts(facts):
+        _add_m_die_15m_facts(facts, card, m_die, as_of_ms)
 
     _add_cvd_window_facts(facts, card, micro, "fast_4h", "4小时", as_of_ms)
     _add_cvd_window_facts(facts, card, micro, "slow_12h", "12小时", as_of_ms)
@@ -503,7 +664,10 @@ def _add_pressure_facts(facts, card, as_of_ms):
 
 
 def _add_price_response_facts(facts, card, as_of_ms):
-    response = _primary_price_response(card)
+    legacy = _legacy_facts(facts)
+    response = _primary_price_response(card, legacy=legacy)
+    if not legacy:
+        _add_near_term_market_context_facts(facts, card, as_of_ms)
     if response["return_pct"] is None:
         _append_fact(
             facts,
@@ -565,7 +729,7 @@ def _add_price_response_facts(facts, card, as_of_ms):
             dependencies=["response.price.primary_return_pct"],
         )
 
-    flow_relation = _price_flow_relation(card)
+    flow_relation = _price_flow_relation(card, legacy=legacy)
     _append_fact(
         facts,
         fact_id="response.flow_price.relation",
@@ -588,6 +752,262 @@ def _add_price_response_facts(facts, card, as_of_ms):
         _append_fact(facts, **path)
 
 
+def _add_near_term_market_context_facts(facts, card, as_of_ms):
+    context = _dict(card.get("near_term_market_context"))
+    if not context:
+        return
+    source_ref = "near_term_market_context"
+    observed_context = _source_time(context, as_of_ms)
+    base_unit = _clean_unit(context.get("base_unit"))
+    windows = _dict(context.get("windows"))
+    for key, label in (("15m", "15分钟"), ("30m", "30分钟")):
+        window = _dict(windows.get(key) or context.get(key))
+        if not window:
+            continue
+        state = _near_term_state(window)
+        observed = (_as_ms(window.get("observed_end_ms"))
+                    or _as_ms(window.get("end_ms"))
+                    or observed_context)
+        provenance = _source_provenance(
+            window or context, source_ref,
+            "near_term_closed_1m_window_" + key, as_of_ms, observed)
+        requested_start = _as_ms(window.get("requested_start_ms"))
+        requested_end = _as_ms(window.get("requested_end_ms"))
+        observed_start = _as_ms(window.get("observed_start_ms"))
+        observed_end = _as_ms(window.get("observed_end_ms"))
+        bar_count = _first_number(window.get("bar_count"))
+        expected = _first_number(window.get("expected_bar_count"))
+        missing = window.get("missing_minutes")
+        if isinstance(missing, list):
+            missing_text = str(len(missing))
+        elif missing in (None, ""):
+            missing_text = "0"
+        else:
+            missing_text = str(missing)
+        coverage_parts = []
+        if expected is not None:
+            coverage_parts.append(f"应有 {_fmt_number(expected)} 根")
+        if bar_count is not None:
+            coverage_parts.append(f"实际 {_fmt_number(bar_count)} 根")
+        coverage_parts.append(f"缺口 {missing_text} 分钟")
+        if requested_start and requested_end:
+            coverage_parts.append(
+                f"请求范围 {_fmt_ms_time(requested_start)}至{_fmt_ms_time(requested_end)}")
+        if observed_start and observed_end:
+            coverage_parts.append(
+                f"实际覆盖 {_fmt_ms_time(observed_start)}至{_fmt_ms_time(observed_end)}")
+        _append_fact(
+            facts,
+            fact_id=f"response.near_term.{key}.coverage",
+            topic="price_response",
+            label_cn=f"近端{label}行情覆盖",
+            value=_cn_near_term_state(state),
+            unit=None,
+            source_refs=[source_ref],
+            source_group="PRICE_FLOW",
+            observed_at_ms=observed,
+            window=label,
+            usable=state != "MISSING",
+            summary_cn=f"近端{label}行情覆盖为{_cn_near_term_state(state)}；"
+                       + "，".join(coverage_parts) + "。",
+            limitations_cn=[
+                "只使用卡片时点以前已闭合的一分钟K线。",
+                "缺分钟或陈旧会缩小本窗口主张范围，不填补路径。",
+                "来源观测时点未知时，页面应按卡片记录时间说明局限。",
+            ],
+            dependencies=[],
+            provenance=provenance,
+        )
+
+        ohlc = _dict(window.get("ohlc"))
+        ret = _first_number(window.get("return_pct"))
+        if ret is not None:
+            _append_fact(
+                facts,
+                fact_id=f"response.near_term.{key}.return_pct",
+                topic="price_response",
+                label_cn=f"近端{label}价格变化",
+                value=_round_number(ret),
+                unit="%",
+                source_refs=[source_ref],
+                source_group="PRICE_FLOW",
+                observed_at_ms=observed,
+                window=label,
+                usable=state in {"OK", "PARTIAL"},
+                summary_cn=f"近端{label}价格变化为 {_fmt_signed(ret)}%。"
+                           + _near_term_ohlc_text(ohlc),
+                limitations_cn=[
+                    "该价格变化已按百分点记录；本事实不再二次放大。",
+                    "OHLC 不能证明同一分钟内高低点触及顺序。",
+                    "一分钟收盘采样不是逐笔路径。",
+                ],
+                dependencies=[f"response.near_term.{key}.coverage"],
+                provenance=provenance,
+            )
+        range_pct = _first_number(window.get("range_pct"))
+        high_excursion = _first_number(window.get("high_excursion_pct"))
+        low_excursion = _first_number(window.get("low_excursion_pct"))
+        distance_high = _first_number(window.get("distance_from_high_pct"))
+        distance_low = _first_number(window.get("distance_from_low_pct"))
+        extrema = []
+        if range_pct is not None:
+            extrema.append(f"区间振幅 {_fmt_number(range_pct)}%")
+        if high_excursion is not None:
+            extrema.append(f"上探 {_fmt_signed(high_excursion)}%")
+        if low_excursion is not None:
+            extrema.append(f"下探 {_fmt_signed(low_excursion)}%")
+        if distance_high is not None:
+            extrema.append(f"距高点 {_fmt_number(distance_high)}%")
+        if distance_low is not None:
+            extrema.append(f"距低点 {_fmt_number(distance_low)}%")
+        if extrema:
+            _append_fact(
+                facts,
+                fact_id=f"response.near_term.{key}.range_profile",
+                topic="price_response",
+                label_cn=f"近端{label}区间位置",
+                value="；".join(extrema),
+                unit=None,
+                source_refs=[source_ref],
+                source_group="PRICE_FLOW",
+                observed_at_ms=observed,
+                window=label,
+                usable=state in {"OK", "PARTIAL"},
+                summary_cn=f"近端{label}" + "，".join(extrema) + "。",
+                limitations_cn=[
+                    "区间位置描述波动轮廓，不单独证明承接或突破。",
+                ],
+                dependencies=[f"response.near_term.{key}.coverage"],
+                provenance=provenance,
+            )
+        efficiency = _first_number(window.get("close_efficiency"))
+        if efficiency is not None:
+            _append_fact(
+                facts,
+                fact_id=f"response.near_term.{key}.close_efficiency",
+                topic="price_response",
+                label_cn=f"近端{label}收盘采样效率",
+                value=_round_number(efficiency),
+                unit=None,
+                source_refs=[source_ref],
+                source_group="PRICE_FLOW",
+                observed_at_ms=observed,
+                window=label,
+                usable=state in {"OK", "PARTIAL"},
+                summary_cn=f"近端{label}分钟收盘采样效率为 {_fmt_number(efficiency)}。",
+                limitations_cn=[
+                    "平盘不解释成高效趋势；效率为缺失时不补造。",
+                    "该效率来自分钟收盘序列，不是逐笔成交路径。",
+                ],
+                dependencies=[f"response.near_term.{key}.return_pct"],
+                provenance=provenance,
+            )
+        active_state = _near_term_active_state(window.get("active_volume_state"))
+        net_active = _first_number(window.get("net_active_volume"))
+        taker_buy = _first_number(window.get("taker_buy_volume"))
+        total_volume = _first_number(window.get("total_volume"))
+        if net_active is not None:
+            volume_unit = "" if base_unit in (None, "") else f" {base_unit}"
+            volume_parts = [f"净主动量 {_fmt_number(net_active)}{volume_unit}"]
+            if taker_buy is not None:
+                volume_parts.append(f"主动买入 {_fmt_number(taker_buy)}{volume_unit}")
+            if total_volume is not None:
+                volume_parts.append(f"总量 {_fmt_number(total_volume)}{volume_unit}")
+            volume_limits = [
+                "净主动量使用基础币单位，不能与价格百分点直接相减。",
+                "缺少主动买入字段时，只关闭近端主动流判断，不从价格反推。",
+            ]
+            if base_unit in (None, ""):
+                volume_limits.append("净主动量单位未单列，本事实不猜测基础币单位。")
+            if active_state == "UNKNOWN":
+                volume_limits.append("主动成交状态不是已知取值，本窗口主动流判断关闭。")
+            _append_fact(
+                facts,
+                fact_id=f"pressure.near_term.{key}.net_active_volume",
+                topic="adverse_pressure",
+                label_cn=f"近端{label}净主动量",
+                value=_round_number(net_active),
+                unit=base_unit,
+                source_refs=[source_ref],
+                source_group="PRICE_FLOW",
+                observed_at_ms=observed,
+                window=label,
+                usable=state in {"OK", "PARTIAL"} and active_state == "OK",
+                summary_cn=f"近端{label}" + "，".join(volume_parts) + "。",
+                limitations_cn=volume_limits,
+                dependencies=[f"response.near_term.{key}.coverage"],
+                provenance=provenance,
+            )
+
+
+def _near_term_state(window):
+    text = str(window.get("state") or window.get("data_state")
+               or window.get("status") or "").upper()
+    if text in {"OK", "PARTIAL", "STALE", "MISSING"}:
+        return text
+    if not text:
+        return "MISSING"
+    if "STALE" in text:
+        return "STALE"
+    if "PARTIAL" in text or "GAP" in text:
+        return "PARTIAL"
+    if "OK" in text or "READY" in text:
+        return "OK"
+    return text
+
+
+def _cn_near_term_state(state):
+    text = str(state or "").upper()
+    if text == "OK":
+        return "可用"
+    if text == "PARTIAL":
+        return "部分可用"
+    if text == "STALE":
+        return "陈旧"
+    if text == "MISSING":
+        return "缺失"
+    return text or "缺失"
+
+
+def _near_term_active_state(value):
+    text = str(value or "").upper()
+    if text in {"OK", "MISSING"}:
+        return text
+    if "MISSING" in text or "UNAVAILABLE" in text:
+        return "MISSING"
+    if text in {"READY", "AVAILABLE"}:
+        return "OK"
+    return "UNKNOWN"
+
+
+def _clean_unit(value):
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text or any(char.isspace() for char in text) or len(text) > 12:
+        return None
+    return text
+
+
+def _fmt_ms_time(value):
+    ms = _as_ms(value)
+    if ms is None:
+        return "未知时间"
+    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
+
+
+def _near_term_ohlc_text(ohlc):
+    open_v = _first_number(ohlc.get("open"))
+    high_v = _first_number(ohlc.get("high"))
+    low_v = _first_number(ohlc.get("low"))
+    close_v = _first_number(ohlc.get("close"))
+    if None in (open_v, high_v, low_v, close_v):
+        return ""
+    return (" 开收高低分别为 "
+            f"{_fmt_number(open_v)} / {_fmt_number(close_v)} / "
+            f"{_fmt_number(high_v)} / {_fmt_number(low_v)}。")
+
+
 def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
     if not previous_card and not transition:
         _append_fact(
@@ -606,7 +1026,9 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
             limitations_cn=["缺少可核验变化记录，不能自行合成前后变化。"],
         )
         return
-    valid, reasons = _transition_matches(card, previous_card, transition)
+    valid, reasons = _transition_matches(
+        card, previous_card, transition,
+        use_comparable_schema=not _legacy_facts(facts))
     if not valid:
         _append_fact(
             facts,
@@ -664,25 +1086,84 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
             dependencies=["market.price.current", "change.context.status"],
         )
 
-    for fact_id, label, extractor in (
-            ("change.structure.flip_delta_pct", "Gamma 翻转点相对前卡迁移",
-             lambda item: _first_number(
-                 _dict(_dict(item.get("factor_cross_section")).get("gamma_regime")).get("flip_point"),
-                 _dict(_dict(item.get("factor_cross_section")).get("gex_info")).get("flip_point"))),
-            ("change.structure.anchor_delta_pct", "价格锚轴相对前卡迁移",
-             lambda item: _anchor_axis(_dict(
-                 _dict(item.get("factor_cross_section")).get("anchor")))[0]),
-            ("change.structure.call_wall_delta_pct", "Call 墙相对前卡迁移",
-             lambda item: _first_number(
-                 _dict(_dict(item.get("factor_cross_section")).get("gamma_regime")).get("call_wall"),
-                 _dict(_dict(item.get("factor_cross_section")).get("gex_info")).get("call_wall"))),
-            ("change.structure.put_wall_delta_pct", "Put 墙相对前卡迁移",
-             lambda item: _first_number(
-                 _dict(_dict(item.get("factor_cross_section")).get("gamma_regime")).get("put_wall"),
-                 _dict(_dict(item.get("factor_cross_section")).get("gex_info")).get("put_wall"))),
-    ):
-        prev_value = extractor(previous_card)
-        curr_value = extractor(card)
+    if _legacy_facts(facts):
+        change_specs = (
+                ("change.structure.flip_delta_pct", "Gamma 翻转点相对前卡迁移",
+                 lambda item: _first_number(
+                     _dict(_dict(item.get("factor_cross_section")).get("gamma_regime")).get("flip_point"),
+                     _dict(_dict(item.get("factor_cross_section")).get("gex_info")).get("flip_point"))),
+                ("change.structure.anchor_delta_pct", "价格锚轴相对前卡迁移",
+                 lambda item: _anchor_axis(_dict(
+                     _dict(item.get("factor_cross_section")).get("anchor")))[0]),
+                ("change.structure.call_wall_delta_pct", "Call 墙相对前卡迁移",
+                 lambda item: _first_number(
+                     _dict(_dict(item.get("factor_cross_section")).get("gamma_regime")).get("call_wall"),
+                     _dict(_dict(item.get("factor_cross_section")).get("gex_info")).get("call_wall"))),
+                ("change.structure.put_wall_delta_pct", "Put 墙相对前卡迁移",
+                 lambda item: _first_number(
+                     _dict(_dict(item.get("factor_cross_section")).get("gamma_regime")).get("put_wall"),
+                     _dict(_dict(item.get("factor_cross_section")).get("gex_info")).get("put_wall"))),
+        )
+        for fact_id, label, extractor in change_specs:
+            prev_value = extractor(previous_card)
+            curr_value = extractor(card)
+            if prev_value is None or curr_value is None or not prev_value:
+                continue
+            delta_pct = (curr_value - prev_value) / abs(prev_value) * 100.0
+            _append_fact(
+                facts,
+                fact_id=fact_id,
+                topic="change_context",
+                label_cn=label,
+                value=_round_number(delta_pct),
+                unit="%",
+                source_refs=["factor_cross_section.gamma_regime", "factor_cross_section.gex_info", "transition_context"],
+                source_group="CHANGE_CONTEXT",
+                observed_at_ms=as_of_ms,
+                window=None if elapsed_min is None else f"{_fmt_number(elapsed_min)}分钟",
+                usable=True,
+                summary_cn=f"{label}为 {_fmt_signed(delta_pct)}%。",
+                limitations_cn=["结构位迁移与现价移动分开记录，不自动挑选有利边界。"],
+                dependencies=["change.context.status"],
+            )
+        return
+
+    for change_key, fact_id, label in (
+            ("flip", "change.structure.flip_delta_pct", "Gamma 翻转点相对前卡迁移"),
+            ("anchor", "change.structure.anchor_delta_pct", "价格锚轴相对前卡迁移"),
+            ("call_wall", "change.structure.call_wall_delta_pct", "Call 墙相对前卡迁移"),
+            ("put_wall", "change.structure.put_wall_delta_pct", "Put 墙相对前卡迁移")):
+        prev_obs = _change_observation(previous_card, change_key)
+        curr_obs = _change_observation(card, change_key)
+        if not prev_obs or not curr_obs:
+            continue
+        if not _observations_comparable(prev_obs, curr_obs):
+            _append_fact(
+                facts,
+                fact_id=fact_id,
+                topic="change_context",
+                label_cn=label,
+                value="本项不可比",
+                unit="%",
+                source_refs=_unique_strings([
+                    prev_obs.get("source_ref"), curr_obs.get("source_ref"),
+                    "transition_context"]),
+                source_group="CHANGE_CONTEXT",
+                observed_at_ms=as_of_ms,
+                window=None if elapsed_min is None else f"{_fmt_number(elapsed_min)}分钟",
+                usable=False,
+                summary_cn=f"{label}因来源、方法或单位不同，本项不做迁移判断。",
+                limitations_cn=[
+                    "整卡身份仍已核验；只关闭该结构位变化，不影响其他可比事实。",
+                ],
+                dependencies=["change.context.status"],
+                provenance=_derived_provenance(
+                    "transition_context", "field_level_comparability_failed",
+                    as_of_ms, as_of_ms),
+            )
+            continue
+        prev_value = prev_obs["value"]
+        curr_value = curr_obs["value"]
         if prev_value is None or curr_value is None or not prev_value:
             continue
         delta_pct = (curr_value - prev_value) / abs(prev_value) * 100.0
@@ -693,14 +1174,21 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
             label_cn=label,
             value=_round_number(delta_pct),
             unit="%",
-            source_refs=["factor_cross_section.gamma_regime", "factor_cross_section.gex_info", "transition_context"],
+            source_refs=_unique_strings([
+                curr_obs.get("source_ref"), "transition_context"]),
             source_group="CHANGE_CONTEXT",
             observed_at_ms=as_of_ms,
             window=None if elapsed_min is None else f"{_fmt_number(elapsed_min)}分钟",
             usable=True,
             summary_cn=f"{label}为 {_fmt_signed(delta_pct)}%。",
-            limitations_cn=["结构位迁移与现价移动分开记录，不自动挑选有利边界。"],
+            limitations_cn=[
+                "结构位迁移与现价移动分开记录，不自动挑选有利边界。",
+                "本项已确认前后来源、方法和单位可比。",
+            ],
             dependencies=["change.context.status"],
+            provenance=_derived_provenance(
+                "transition_context+" + str(curr_obs.get("source_ref")),
+                "field_level_structure_delta_pct", as_of_ms, as_of_ms),
         )
 
 
@@ -727,8 +1215,130 @@ def _add_source_quality_fact(facts, card, as_of_ms):
     )
 
 
+def _change_observation(card, key):
+    factor = _dict(_dict(card).get("factor_cross_section"))
+    as_of_ms = _event_time_ms(card)
+    if key == "anchor":
+        anchor = _dict(factor.get("anchor"))
+        value, _label = _anchor_axis(anchor)
+        if value is None:
+            return None
+        return {
+            "value": value,
+            "source_ref": "factor_cross_section.anchor",
+            "method": "anchor_selected_axis",
+            "unit": _market_quote(card) or "USDT",
+        }
+    levels = _selected_structure_levels(
+        card, _dict(factor.get("gamma_regime")),
+        _dict(factor.get("gex_info")), as_of_ms)
+    return levels.get(key)
+
+
+def _observations_comparable(left, right):
+    return (
+        left.get("source_ref") == right.get("source_ref")
+        and left.get("method") == right.get("method")
+        and left.get("unit") == right.get("unit")
+    )
+
+
+def _field_usable(card, source_key, node, *field_names):
+    source = _dict(node)
+    if not _source_usable_exact(card, source_key, source):
+        return False
+    missing = {str(item) for item in _list(source.get("missing_fields"))}
+    for field in field_names:
+        if field in source and field not in missing:
+            return True
+    return False
+
+
+def _selected_structure_levels(card, gamma, gex, as_of_ms):
+    specs = {
+        "flip": (
+            ("factor_cross_section.gex_info", gex, "gex_board_flip_point",
+             ("flip_point",)),
+            ("factor_cross_section.gamma_regime", gamma, "ggr_flip_point",
+             ("flip_point",)),
+        ),
+        "call_wall": (
+            ("factor_cross_section.gex_info", gex, "gex_board_call_wall",
+             ("call_wall",)),
+            ("factor_cross_section.gamma_regime", gamma, "ggr_call_wall",
+             ("call_wall",)),
+        ),
+        "put_wall": (
+            ("factor_cross_section.gex_info", gex, "gex_board_put_wall",
+             ("put_wall",)),
+            ("factor_cross_section.gamma_regime", gamma, "ggr_put_wall",
+             ("put_wall",)),
+        ),
+        "pin": (
+            ("factor_cross_section.gex_info", gex, "gex_board_pin_or_max_gamma",
+             ("pin_strike", "max_gamma_strike", "magnet_price")),
+            ("factor_cross_section.gamma_regime", gamma, "ggr_pin_or_max_gamma",
+             ("pin_strike", "max_gamma_strike")),
+            ("factor_cross_section.gamma_regime.pin", _dict(gamma.get("pin")),
+             "ggr_pin_nested", ("pin_strike",)),
+        ),
+    }
+    selected = {}
+    for key, candidates in specs.items():
+        for source_ref, node, method, fields in candidates:
+            source = _dict(node)
+            value = _first_number(*(source.get(field) for field in fields))
+            if value is None:
+                continue
+            source_key = "gex_info" if "gex_info" in source_ref else "gamma_regime"
+            observed = _source_time(source, as_of_ms)
+            selected[key] = {
+                "value": value,
+                "source_ref": source_ref,
+                "source_node": source,
+                "observed_at_ms": observed,
+                "window": _window_from(source, "当前截面"),
+                "usable": _field_usable(card, source_key, source, *fields),
+                "method": method,
+                "unit": _market_quote(card) or "USDT",
+                "provenance": _source_provenance(
+                    source, source_ref, method, as_of_ms, observed),
+            }
+            break
+    return selected
+
+
+def _add_gex_dvol_fact(facts, card, gex, as_of_ms):
+    dvol = _first_number(gex.get("dvol"))
+    if dvol is None:
+        return
+    observed = _source_time(gex, as_of_ms)
+    _append_fact(
+        facts,
+        fact_id="pressure.volatility.dvol",
+        topic="adverse_pressure",
+        label_cn="DVOL 波动率背景",
+        value=_round_number(dvol),
+        unit="DVOL",
+        source_refs=["factor_cross_section.gex_info"],
+        source_group="VOLATILITY_CONTEXT",
+        observed_at_ms=observed,
+        window=_window_from(gex, "当前截面"),
+        usable=_field_usable(card, "gex_info", gex, "dvol"),
+        summary_cn=f"DVOL 按原刻度记录为 {_fmt_number(dvol)}。",
+        limitations_cn=_gex_limitations(gex, [
+            "DVOL 是波动率背景，不是本笔末日期权报价。",
+            "不要把该刻度换算成百万美元。",
+        ]),
+        provenance=_source_provenance(
+            gex, "factor_cross_section.gex_info",
+            "gex_board_dvol_original_scale", as_of_ms, observed),
+    )
+
+
 def _add_level_fact(facts, card, fact_id, label, value, observed_at_ms,
-                    usable, source_refs, source_node=None):
+                    usable, source_refs, source_node=None, provenance=None,
+                    source_group="OPTIONS_STRUCTURE", window="当前截面"):
     if value is None:
         return
     quote = _market_quote(card) or "USDT"
@@ -740,15 +1350,16 @@ def _add_level_fact(facts, card, fact_id, label, value, observed_at_ms,
         value=_round_number(value),
         unit=quote,
         source_refs=source_refs,
-        source_group="OPTIONS_STRUCTURE",
+        source_group=source_group,
         observed_at_ms=observed_at_ms,
-        window="当前截面",
+        window=window,
         usable=usable,
         summary_cn=f"{label}为 {_fmt_number(value)} {quote}。",
         limitations_cn=(
             ["该结构位只用于空间关系，不等于可成交行权价建议。"]
             + _time_basis_limitations(source_node)
         ),
+        provenance=provenance,
     )
 
 
@@ -757,26 +1368,56 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
     if price is None or price <= 0:
         return
     quote = _market_quote(card) or "USDT"
-    levels = (
-        ("structure.distance.call_wall_pct", "现价距上方 Call 墙",
-         _first_number(gamma.get("call_wall"), gex.get("call_wall")),
-         "structure.gamma.call_wall"),
-        ("structure.distance.put_wall_pct", "现价距下方 Put 墙",
-         _first_number(gamma.get("put_wall"), gex.get("put_wall")),
-         "structure.gamma.put_wall"),
-        ("structure.distance.flip_pct", "现价距 Gamma 翻转点",
-         _first_number(gamma.get("flip_point"), gex.get("flip_point")),
-         "structure.gamma.flip_point"),
-        ("structure.distance.pin_pct", "现价距 Pin 或最大 Gamma 行权价",
-         _first_number(
-             gamma.get("pin_strike"),
-             _dict(gamma.get("pin")).get("pin_strike"),
-             gex.get("pin_strike"),
-             gex.get("max_gamma_strike"),
-             gamma.get("max_gamma_strike")),
-         "structure.gamma.pin_strike"),
-    )
-    for fact_id, label, level, dep in levels:
+    if _legacy_facts(facts):
+        levels = (
+            ("structure.distance.call_wall_pct", "现价距上方 Call 墙",
+             _first_number(gamma.get("call_wall"), gex.get("call_wall")),
+             "structure.gamma.call_wall", ["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+             observed_at_ms, usable, None),
+            ("structure.distance.put_wall_pct", "现价距下方 Put 墙",
+             _first_number(gamma.get("put_wall"), gex.get("put_wall")),
+             "structure.gamma.put_wall", ["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+             observed_at_ms, usable, None),
+            ("structure.distance.flip_pct", "现价距 Gamma 翻转点",
+             _first_number(gamma.get("flip_point"), gex.get("flip_point")),
+             "structure.gamma.flip_point", ["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+             observed_at_ms, usable, None),
+            ("structure.distance.pin_pct", "现价距 Pin 或最大 Gamma 行权价",
+             _first_number(
+                 gamma.get("pin_strike"),
+                 _dict(gamma.get("pin")).get("pin_strike"),
+                 gex.get("pin_strike"),
+                 gex.get("max_gamma_strike"),
+                 gamma.get("max_gamma_strike")),
+             "structure.gamma.pin_strike", ["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+             observed_at_ms, usable, None),
+        )
+    else:
+        selected = _selected_structure_levels(card, gamma, gex, observed_at_ms)
+        level_specs = (
+            ("call_wall", "structure.distance.call_wall_pct",
+             "现价距上方 Call 墙", "structure.gamma.call_wall"),
+            ("put_wall", "structure.distance.put_wall_pct",
+             "现价距下方 Put 墙", "structure.gamma.put_wall"),
+            ("flip", "structure.distance.flip_pct",
+             "现价距 Gamma 翻转点", "structure.gamma.flip_point"),
+            ("pin", "structure.distance.pin_pct",
+             "现价距 Pin 或最大 Gamma 行权价", "structure.gamma.pin_strike"),
+        )
+        levels = []
+        for key, fact_id, label, dep in level_specs:
+            item = selected.get(key)
+            if not item:
+                continue
+            levels.append((
+                fact_id, label, item["value"], dep,
+                ["market_context.price", item["source_ref"]],
+                item["observed_at_ms"], item["usable"],
+                _derived_provenance(
+                    "market_context.price+" + item["source_ref"],
+                    "price_to_selected_structure_level", observed_at_ms,
+                    item["observed_at_ms"])))
+    for fact_id, label, level, dep, source_refs, fact_observed, fact_usable, provenance in levels:
         if level is None or level <= 0:
             continue
         signed = (level - price) / price * 100.0
@@ -789,18 +1430,44 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
             label_cn=label,
             value=_round_number(signed),
             unit="%",
-            source_refs=["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+            source_refs=source_refs,
             source_group="DERIVED_RELATION",
-            observed_at_ms=observed_at_ms,
+            observed_at_ms=fact_observed,
             window="卡片时点",
-            usable=usable,
+            usable=fact_usable,
             summary_cn=f"{label}约 {_fmt_signed(signed)}%，价格基准为 {_fmt_number(price)} {quote}。",
             limitations_cn=["距离是当前截面，不证明边界不可突破。"],
             dependencies=["market.price.current", dep],
+            provenance=provenance,
         )
 
-    call_wall = _first_number(gamma.get("call_wall"), gex.get("call_wall"))
-    put_wall = _first_number(gamma.get("put_wall"), gex.get("put_wall"))
+    if _legacy_facts(facts):
+        call_wall = _first_number(gamma.get("call_wall"), gex.get("call_wall"))
+        put_wall = _first_number(gamma.get("put_wall"), gex.get("put_wall"))
+        source_refs = ["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"]
+        zone_usable = usable
+        zone_observed = observed_at_ms
+        zone_provenance = None
+    else:
+        selected = _selected_structure_levels(card, gamma, gex, observed_at_ms)
+        call = selected.get("call_wall")
+        put = selected.get("put_wall")
+        call_wall = None if not call else call["value"]
+        put_wall = None if not put else put["value"]
+        source_refs = ["market_context.price"]
+        if call:
+            source_refs.append(call["source_ref"])
+        if put:
+            source_refs.append(put["source_ref"])
+        zone_usable = bool(call and put and call["usable"] and put["usable"])
+        zone_times = [item for item in (
+            call.get("observed_at_ms") if call else None,
+            put.get("observed_at_ms") if put else None,
+            observed_at_ms) if item is not None]
+        zone_observed = max(zone_times) if zone_times else None
+        zone_provenance = _derived_provenance(
+            "+".join(_unique_strings(source_refs)),
+            "price_between_selected_walls", observed_at_ms, zone_observed)
     if call_wall is not None and put_wall is not None:
         if put_wall <= price <= call_wall:
             value = "墙内"
@@ -818,11 +1485,11 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
             label_cn="现价相对期权墙区间",
             value=value,
             unit=None,
-            source_refs=["market_context.price", "factor_cross_section.gamma_regime", "factor_cross_section.gex_info"],
+            source_refs=source_refs,
             source_group="DERIVED_RELATION",
-            observed_at_ms=observed_at_ms,
+            observed_at_ms=zone_observed,
             window="卡片时点",
-            usable=usable,
+            usable=zone_usable,
             summary_cn=summary,
             limitations_cn=["墙内不等于安全，墙外也不自动等于可交易反向。"],
             dependencies=[
@@ -830,7 +1497,80 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
                 "structure.gamma.call_wall",
                 "structure.gamma.put_wall",
             ],
+            provenance=zone_provenance,
         )
+
+
+def _add_m_die_15m_facts(facts, card, m_die, as_of_ms):
+    if not m_die:
+        return
+    raw = _dict(_dict(_dict(m_die.get("components")).get("displacement")).get("raw"))
+    path_raw = _dict(_dict(_dict(m_die.get("components")).get("path_efficiency")).get("raw"))
+    return_ratio = _first_number(raw.get("window_return_pct"))
+    efficiency = _first_number(path_raw.get("efficiency"))
+    observed = _source_time(m_die, as_of_ms)
+    last_bar = _as_ms(m_die.get("last_closed_bar_time"))
+    if last_bar is not None:
+        observed = last_bar
+    usable = _m_die_source_usable(card, m_die)
+    provenance = _source_provenance(
+        m_die, "factor_cross_section.m_die",
+        "m_die_raw_15m_closed_bars", as_of_ms, observed)
+    if return_ratio is not None:
+        return_pct = return_ratio * 100.0
+        _append_fact(
+            facts,
+            fact_id="response.m_die.15m.window_return_pct",
+            topic="price_response",
+            label_cn="M-DIE 15分钟价格变化",
+            value=_round_number(return_pct),
+            unit="%",
+            source_refs=["factor_cross_section.m_die"],
+            source_group="PRICE_FLOW",
+            observed_at_ms=observed,
+            window="15分钟",
+            usable=usable,
+            summary_cn=f"M-DIE 已记录15分钟窗口收益约 {_fmt_signed(return_pct)}%。",
+            limitations_cn=[
+                "源端记录的是比例值，本事实已转换为百分点。",
+                "该事实只读取 M-DIE 原始窗口变化，不消费 M-DIE 综合分。",
+            ] + _time_basis_limitations(m_die),
+            dependencies=[],
+            provenance=provenance,
+        )
+    if efficiency is not None:
+        _append_fact(
+            facts,
+            fact_id="response.m_die.15m.close_efficiency",
+            topic="price_response",
+            label_cn="M-DIE 15分钟收盘路径效率",
+            value=_round_number(efficiency),
+            unit=None,
+            source_refs=["factor_cross_section.m_die"],
+            source_group="PRICE_FLOW",
+            observed_at_ms=observed,
+            window="15分钟",
+            usable=usable,
+            summary_cn=f"M-DIE 15分钟收盘采样路径效率为 {_fmt_number(efficiency)}。",
+            limitations_cn=[
+                "这是分钟收盘序列效率，不是逐笔路径，也不证明分钟内高低点先后。",
+                "该事实不读取 M-DIE 综合分。",
+            ] + _time_basis_limitations(m_die),
+            dependencies=["response.m_die.15m.window_return_pct"],
+            provenance=provenance,
+        )
+
+
+def _m_die_source_usable(card, m_die):
+    if not _source_usable_exact(card, "m_die", m_die):
+        return False
+    status = _dict(m_die.get("data_status"))
+    state = status.get("data_state") or status.get("status")
+    if _has_bad_status(state):
+        return False
+    if state not in (None, "", "OK", "ok"):
+        return not _has_bad_status(state)
+    return True
 
 
 def _add_cvd_window_facts(facts, card, micro, key, label, as_of_ms):
@@ -865,21 +1605,28 @@ def _add_cvd_window_facts(facts, card, micro, key, label, as_of_ms):
             ),
         )
     if cvd_sum is not None:
+        cvd_unit = window.get("cvd_unit") or micro.get("base_unit") or micro.get("base_asset")
+        if _legacy_facts(facts) and cvd_unit in (None, ""):
+            cvd_unit = "BTC"
+        unit_limitations = []
+        if cvd_unit in (None, ""):
+            unit_limitations.append("主动流净额单位未单列，本事实不猜测基础币单位。")
         _append_fact(
             facts,
             fact_id=f"{fact_prefix}.cvd_sum",
             topic="adverse_pressure",
             label_cn=f"{label}主动流净额",
             value=_round_number(cvd_sum),
-            unit=str(window.get("cvd_unit") or "BTC"),
+            unit=None if cvd_unit in (None, "") else str(cvd_unit),
             source_refs=[f"factor_cross_section.micro_flow.{key}"],
             source_group="PRICE_FLOW",
             observed_at_ms=observed,
             window=label,
             usable=usable,
-            summary_cn=f"{label}主动流净额为 {_fmt_number(cvd_sum)} {window.get('cvd_unit') or 'BTC'}。",
+            summary_cn=(f"{label}主动流净额为 {_fmt_number(cvd_sum)}"
+                        + ("" if cvd_unit in (None, "") else f" {cvd_unit}") + "。"),
             limitations_cn=(
-                ["净额单位不与价格涨跌直接相减。"]
+                ["净额单位不与价格涨跌直接相减。"] + unit_limitations
                 + _time_basis_limitations(window)
             ),
             dependencies=[f"{fact_prefix}.cvd_norm"],
@@ -986,7 +1733,17 @@ def _add_funding_facts(facts, card, funding, as_of_ms):
 def _add_skew_facts(facts, card, skew, as_of_ms):
     if not skew:
         return
-    observed = _source_time(skew, as_of_ms)
+    legacy = _legacy_facts(facts)
+    observed = (
+        _source_time(skew, as_of_ms)
+        if legacy
+        else _skew_observed_time(skew, as_of_ms)
+    )
+    time_limitations = (
+        _time_basis_limitations(skew)
+        if legacy
+        else _skew_time_basis_limitations(skew)
+    )
     usable = _source_usable(card, "skew", skew)
     vote = _first_number(skew.get("vote"), skew.get("rr_blend"))
     if vote is not None:
@@ -1005,9 +1762,133 @@ def _add_skew_facts(facts, card, skew, as_of_ms):
             summary_cn=f"期权偏斜方向刻度为 {_fmt_number(vote)}。",
             limitations_cn=(
                 ["偏斜与 GEX 同属期权来源，需避免重复确认。"]
-                + _time_basis_limitations(skew)
+                + time_limitations
             ),
+            provenance=None if legacy else _skew_provenance(
+                skew, "factor_cross_section.skew",
+                "srd_skew_vote", as_of_ms, observed),
         )
+    if legacy:
+        return
+    per_expiry = _dict(skew.get("per_expiry"))
+    for key, label in (("24h", "24小时目标附近期限"),
+                       ("48h", "48小时目标附近期限")):
+        item = _dict(per_expiry.get(key))
+        if not item:
+            continue
+        state = str(item.get("data_state") or "").upper()
+        expiry_provenance = _skew_provenance(
+            skew, "factor_cross_section.skew.per_expiry." + key,
+            "srd_nearest_actual_expiry", as_of_ms, observed)
+        hours = _first_number(item.get("hours_to_expiry"))
+        if hours is not None:
+            _append_fact(
+                facts,
+                fact_id=f"structure.options.{key}.hours_to_expiry",
+                topic="structure_location",
+                label_cn=f"{label}实际剩余期限",
+                value=_round_number(hours),
+                unit="hours",
+                source_refs=["factor_cross_section.skew.per_expiry." + key],
+                source_group="OPTIONS_STRUCTURE",
+                observed_at_ms=observed,
+                window=label,
+                usable=state == "OK",
+                summary_cn=f"{label}实际剩余期限为 {_fmt_number(hours)} 小时。",
+                limitations_cn=[
+                    "目标标签只用于选择附近期限，不能冒充真实到期时间。",
+                    "该期限不是本笔末日价差的具体合约报价。",
+                ] + time_limitations,
+                dependencies=[],
+                provenance=expiry_provenance,
+            )
+        atm_iv = _first_number(item.get("atm_iv"))
+        if atm_iv is not None:
+            atm_pct = _iv_to_pct(atm_iv)
+            _append_fact(
+                facts,
+                fact_id=f"pressure.options.{key}.atm_iv_pct",
+                topic="adverse_pressure",
+                label_cn=f"{label}ATM IV",
+                value=_round_number(atm_pct),
+                unit="%",
+                source_refs=["factor_cross_section.skew.per_expiry." + key],
+                source_group="VOLATILITY_CONTEXT",
+                observed_at_ms=observed,
+                window=label,
+                usable=state == "OK",
+                summary_cn=f"{label}ATM IV 约 {_fmt_number(atm_pct)}%。",
+                limitations_cn=[
+                    "ATM IV 是该期限的波动背景，不等于候选价差净权利金。",
+                    "空 IV 不生成估计值。",
+                ] + time_limitations,
+                dependencies=[f"structure.options.{key}.hours_to_expiry"],
+                provenance=expiry_provenance,
+            )
+        rr_25 = _first_number(item.get("rr_25"), item.get("skew_25d"))
+        if rr_25 is not None:
+            rr_pct = _iv_to_pct(rr_25)
+            _append_fact(
+                facts,
+                fact_id=f"pressure.options.{key}.skew_25d_pct",
+                topic="adverse_pressure",
+                label_cn=f"{label}25D偏斜",
+                value=_round_number(rr_pct),
+                unit="%",
+                source_refs=["factor_cross_section.skew.per_expiry." + key],
+                source_group="OPTIONS_STRUCTURE",
+                observed_at_ms=observed,
+                window=label,
+                usable=state == "OK",
+                summary_cn=f"{label}25D偏斜约 {_fmt_signed(rr_pct)}%。",
+                limitations_cn=[
+                    "偏斜说明期权需求背景，不直接给出卖出行权价或净补偿结论。",
+                ] + time_limitations,
+                dependencies=[f"pressure.options.{key}.atm_iv_pct"],
+                provenance=expiry_provenance,
+            )
+
+
+def _iv_to_pct(value):
+    number = _finite_number(value)
+    if number is None:
+        return None
+    return number * 100.0 if abs(number) <= 3.0 else number
+
+
+def _skew_greeks_time(skew):
+    source = _dict(skew)
+    for key in _SKEW_GREEKS_TIME_KEYS:
+        parsed = _as_ms(source.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _skew_observed_time(skew, as_of_ms):
+    return _skew_greeks_time(skew) or _source_time(skew, as_of_ms)
+
+
+def _skew_provenance(skew, selected_source, method, card_as_of_ms,
+                     observed_at_ms=None):
+    greeks_time = _skew_greeks_time(skew)
+    if greeks_time is None:
+        return _source_provenance(
+            skew, selected_source, method, card_as_of_ms, observed_at_ms)
+    return {
+        "selected_source": selected_source,
+        "method": method,
+        "time_basis": "source_greeks_observed_at",
+        "observed_at_ms": greeks_time,
+        "fetched_at_ms": _fetched_time(skew),
+        "recorded_at_ms": _as_ms(card_as_of_ms),
+    }
+
+
+def _skew_time_basis_limitations(skew):
+    if _skew_greeks_time(skew) is not None:
+        return ["期权希腊值使用源端观测时点；抓取时间与卡片记录时间分别保留。"]
+    return _time_basis_limitations(skew)
 
 
 def _raw_path_fact(card, as_of_ms):
@@ -1063,7 +1944,123 @@ def _raw_path_fact(card, as_of_ms):
     return None
 
 
-def _primary_price_response(card):
+def _near_term_window_response(card, key):
+    context = _dict(card.get("near_term_market_context"))
+    if not context:
+        return None
+    window = _dict(_dict(context.get("windows")).get(key) or context.get(key))
+    if not window:
+        return None
+    value = _first_number(window.get("return_pct"))
+    if value is None:
+        return None
+    state = _near_term_state(window)
+    observed = (_as_ms(window.get("observed_end_ms"))
+                or _as_ms(window.get("end_ms"))
+                or _source_time(context, _event_time_ms(card)))
+    label = "15分钟" if key == "15m" else str(key)
+    return {
+        "return_pct": value,
+        "window": "近端" + label,
+        "source_refs": ["near_term_market_context"],
+        "observed_at_ms": observed,
+        "usable": state in {"OK", "PARTIAL"},
+        "limitations_cn": [
+            "近端窗口只使用已闭合的一分钟K线摘要。",
+            "一分钟收盘序列不是逐笔路径；OHLC不证明分钟内先后。",
+        ],
+        "dependencies": [f"response.near_term.{key}.return_pct"],
+    }
+
+
+def _m_die_window_response(card):
+    m_die = _dict(_dict(card.get("factor_cross_section")).get("m_die"))
+    raw = _dict(_dict(_dict(m_die.get("components")).get("displacement")).get("raw"))
+    value = _first_number(raw.get("window_return_pct"))
+    if value is None:
+        return None
+    observed = _as_ms(m_die.get("last_closed_bar_time")) or _source_time(
+        m_die, _event_time_ms(card))
+    return {
+        "return_pct": value * 100.0,
+        "window": "M-DIE近端15分钟",
+        "source_refs": ["factor_cross_section.m_die"],
+        "observed_at_ms": observed,
+        "usable": _m_die_source_usable(card, m_die),
+        "limitations_cn": [
+            "M-DIE 原始价格变化是比例值，本事实已转换为百分点。",
+            "这里只使用原始窗口变化，不消费 M-DIE 综合分。",
+        ],
+        "dependencies": ["response.m_die.15m.window_return_pct"],
+    }
+
+
+def _near_term_flow_price_relation(card, key):
+    context = _dict(card.get("near_term_market_context"))
+    if not context:
+        return None
+    window = _dict(_dict(context.get("windows")).get(key) or context.get(key))
+    if not window:
+        return None
+    cvd = _first_number(window.get("net_active_volume"))
+    price = _first_number(window.get("return_pct"))
+    if cvd is None or price is None:
+        return None
+    state = _near_term_state(window)
+    active_state = _near_term_active_state(window.get("active_volume_state"))
+    observed = (_as_ms(window.get("observed_end_ms"))
+                or _as_ms(window.get("end_ms"))
+                or _source_time(context, _event_time_ms(card)))
+    label = "15分钟" if key == "15m" else str(key)
+    cvd_sign = _sign(cvd, 1e-9)
+    price_sign = _sign(price, 0.03)
+    if cvd_sign == 0 and price_sign == 0:
+        value = "流价均平"
+        summary = f"近端{label}净主动量与价格变化都接近平盘。"
+    elif price_sign == 0:
+        value = "传导弱"
+        summary = f"近端{label}净主动量有方向，但价格接近平盘，传导偏弱。"
+    elif cvd_sign == 0:
+        value = "价格单独移动"
+        summary = f"近端{label}价格有变化，但净主动量方向不足。"
+    elif cvd_sign == price_sign:
+        value = "同向推进"
+        side = "上行" if price_sign > 0 else "下行"
+        summary = f"近端{label}净主动量与价格同向，显示{side}推进。"
+    else:
+        value = "流价分歧"
+        summary = f"近端{label}净主动量与价格方向相反，竞争解释需要保留。"
+    limitations = [
+        "该关系只描述同窗口响应，不声称看见隐藏订单或真实吸收队列。",
+        "净主动量使用基础币单位，不能与价格百分点直接相减。",
+    ]
+    if active_state == "UNKNOWN":
+        limitations.append("主动成交状态不是已知取值，本窗口主动流判断关闭。")
+    elif active_state == "MISSING":
+        limitations.append("主动买入字段缺失，本窗口主动流判断关闭。")
+    return {
+        "value": value,
+        "source_refs": ["near_term_market_context"],
+        "observed_at_ms": observed,
+        "window": "近端" + label,
+        "usable": state in {"OK", "PARTIAL"} and active_state == "OK",
+        "summary_cn": summary,
+        "limitations_cn": limitations,
+        "dependencies": [
+            f"pressure.near_term.{key}.net_active_volume",
+            f"response.near_term.{key}.return_pct",
+        ],
+    }
+
+
+def _primary_price_response(card, legacy=False):
+    if not legacy:
+        near = _near_term_window_response(card, "15m")
+        if near:
+            return near
+        m_die = _m_die_window_response(card)
+        if m_die:
+            return m_die
     factor = _dict(card.get("factor_cross_section"))
     micro = _dict(factor.get("micro_flow"))
     for key, label in (("fast_4h", "4小时"), ("slow_12h", "12小时")):
@@ -1117,7 +2114,11 @@ def _primary_price_response(card):
     }
 
 
-def _price_flow_relation(card):
+def _price_flow_relation(card, legacy=False):
+    if not legacy:
+        near = _near_term_flow_price_relation(card, "15m")
+        if near:
+            return near
     factor = _dict(card.get("factor_cross_section"))
     micro = _dict(factor.get("micro_flow"))
     for key, label in (("fast_4h", "4小时"), ("slow_12h", "12小时")):
@@ -1200,7 +2201,8 @@ def _price_move_bucket(return_pct):
     return "下行推进"
 
 
-def _transition_matches(card, previous_card, transition):
+def _transition_matches(card, previous_card, transition,
+                        use_comparable_schema=False):
     reasons = []
     if not previous_card:
         return False, ["缺少前一张卡，不能使用变化记录。"]
@@ -1213,7 +2215,10 @@ def _transition_matches(card, previous_card, transition):
     prev_identity = _identity(previous_card)
     if curr_identity.get("strategy_version") != prev_identity.get("strategy_version"):
         reasons.append("前后卡策略版本不同，不用于变化推断。")
-    if _schema_fingerprint(card) != _schema_fingerprint(previous_card):
+    if use_comparable_schema:
+        if comparable_schema_key(card) != comparable_schema_key(previous_card):
+            reasons.append("前后卡市场事实比较协议不同，不用于变化推断。")
+    elif _schema_fingerprint(card) != _schema_fingerprint(previous_card):
         reasons.append("前后卡资料结构不同，不用于变化推断。")
     curr_id = curr_identity.get("card_id") or card.get("card_id")
     prev_id = prev_identity.get("card_id") or previous_card.get("card_id")
@@ -1287,7 +2292,7 @@ def _append_missing_fact(facts, fact_id, topic, label_cn, source_ref,
 
 def _append_fact(facts, *, fact_id, topic, label_cn, value, unit, source_refs,
                  source_group, observed_at_ms, window, usable, summary_cn,
-                 limitations_cn=None, dependencies=None):
+                 limitations_cn=None, dependencies=None, provenance=None):
     fact = {
         "id": str(fact_id),
         "topic": str(topic),
@@ -1303,9 +2308,35 @@ def _append_fact(facts, *, fact_id, topic, label_cn, value, unit, source_refs,
         "limitations_cn": _unique_strings(limitations_cn or []),
         "dependencies": _unique_strings(dependencies or []),
     }
-    if set(fact) != set(FACT_KEYS):
+    if _legacy_facts(facts):
+        expected_keys = LEGACY_FACT_KEYS
+    else:
+        fact["provenance"] = _normalize_provenance(
+            provenance, fact["source_refs"], source_group, observed_at_ms)
+        expected_keys = FACT_KEYS
+    if set(fact) != set(expected_keys):
         raise AssertionError("internal fact schema mismatch")
     facts.append(fact)
+
+
+def _legacy_facts(facts):
+    return (getattr(facts, "packet_schema", PACKET_SCHEMA_VERSION)
+            == LEGACY_PACKET_SCHEMA_VERSION)
+
+
+def _normalize_provenance(provenance, source_refs, source_group,
+                          observed_at_ms):
+    source = _dict(provenance)
+    first_ref = _unique_strings(source_refs)[0] if _unique_strings(source_refs) else None
+    out = {
+        "selected_source": str(source.get("selected_source") or first_ref or ""),
+        "method": str(source.get("method") or source_group or ""),
+        "time_basis": str(source.get("time_basis") or "fact_observed_at"),
+        "observed_at_ms": _as_ms(source.get("observed_at_ms")) or _as_ms(observed_at_ms),
+        "fetched_at_ms": _as_ms(source.get("fetched_at_ms")),
+        "recorded_at_ms": _as_ms(source.get("recorded_at_ms")),
+    }
+    return out
 
 
 def _scalar_value(value):
@@ -1462,6 +2493,21 @@ def _schema_fingerprint(card):
     return None
 
 
+def comparable_schema_key(card):
+    """Return the market-fact comparison schema key.
+
+    This key intentionally excludes ``record_type`` so fixed-round and event
+    cards with the same real card protocol can compare market facts.  The
+    original schema fingerprint remains the source-integrity proof.
+    """
+    schema = _dict(_dict(card).get("schema"))
+    if schema:
+        comparable = deepcopy(schema)
+        comparable.pop("record_type", None)
+        return packet_hash(comparable)
+    return _schema_fingerprint(card)
+
+
 def _market_price(card):
     market = _dict(_dict(card).get("market_context"))
     return _first_number(
@@ -1520,6 +2566,67 @@ def _source_time(node, card_as_of_ms):
     return _as_ms(card_as_of_ms)
 
 
+def _source_observed_time(node):
+    source = _dict(node)
+    for key in _SOURCE_TIME_KEYS:
+        parsed = _as_ms(source.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _fetched_time(node):
+    source = _dict(node)
+    for key in ("fetched_at_ms", "fetch_at_ms", "retrieved_at_ms",
+                "collected_at_ms", "fetched_at", "fetch_at",
+                "retrieved_at", "collected_at"):
+        parsed = _as_ms(source.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _source_provenance(node, selected_source, method, card_as_of_ms,
+                       observed_at_ms=None):
+    source = _dict(node)
+    explicit_observed = _source_observed_time(source)
+    age_ms = _finite_number(source.get("age_ms"))
+    selected_observed = _as_ms(observed_at_ms)
+    if explicit_observed is not None:
+        observed = explicit_observed
+        time_basis = "source_observed_at"
+    elif age_ms is not None and card_as_of_ms is not None and age_ms >= 0:
+        observed = int(card_as_of_ms - age_ms)
+        time_basis = "source_age_derived_from_card_time"
+    elif selected_observed is not None and selected_observed != _as_ms(card_as_of_ms):
+        observed = selected_observed
+        time_basis = "selected_observation_time"
+    else:
+        observed = selected_observed or _as_ms(card_as_of_ms)
+        time_basis = "card_recorded_at_no_source_observation"
+    return {
+        "selected_source": selected_source,
+        "method": method,
+        "time_basis": time_basis,
+        "observed_at_ms": observed,
+        "fetched_at_ms": _fetched_time(source),
+        "recorded_at_ms": _as_ms(card_as_of_ms),
+    }
+
+
+def _derived_provenance(selected_source, method, card_as_of_ms,
+                        observed_at_ms=None):
+    observed = _as_ms(observed_at_ms) or _as_ms(card_as_of_ms)
+    return {
+        "selected_source": selected_source,
+        "method": method,
+        "time_basis": "derived_from_packet_dependencies",
+        "observed_at_ms": observed,
+        "fetched_at_ms": None,
+        "recorded_at_ms": _as_ms(card_as_of_ms),
+    }
+
+
 def _window_from(node, fallback=None):
     source = _dict(node)
     for key in ("window", "time_window", "clock_window"):
@@ -1540,23 +2647,42 @@ def _window_from(node, fallback=None):
 
 
 def _source_usable(card, source_key, node):
+    return _source_usable_impl(
+        card, source_key, node, use_aliases=True, strict_source_state=False)
+
+
+def _source_usable_exact(card, source_key, node):
+    return _source_usable_impl(
+        card, source_key, node, use_aliases=False, strict_source_state=True)
+
+
+def _source_usable_impl(card, source_key, node, use_aliases,
+                        strict_source_state):
     source = _dict(node)
     if not source:
         return False
+    if strict_source_state and source.get("stale") is True:
+        return False
     for key in ("data_ready", "ready", "available", "raw_available"):
         if source.get(key) is False:
+            return False
+    if strict_source_state:
+        nested_status = _dict(source.get("data_status"))
+        if _has_bad_status(nested_status.get("data_state")):
+            return False
+        if _has_bad_status(nested_status.get("status")):
             return False
     for key in ("freshness", "quality", "data_quality", "data_status",
                 "status", "state"):
         if _has_bad_status(source.get(key)):
             return False
-    status = _quality_source_status(card, source_key)
+    status = _quality_source_status(card, source_key, use_aliases=use_aliases)
     if _has_bad_status(status):
         return False
     return True
 
 
-def _quality_source_status(card, source_key):
+def _quality_source_status(card, source_key, use_aliases=True):
     quality = _dict(_dict(card).get("quality"))
     sources = _dict(quality.get("sources"))
     keys = {str(source_key).lower()}
@@ -1573,7 +2699,8 @@ def _quality_source_status(card, source_key):
         "funding": {"funding"},
         "skew": {"skew", "srd"},
     }
-    keys.update(aliases.get(str(source_key).split(".")[0], set()))
+    if use_aliases:
+        keys.update(aliases.get(str(source_key).split(".")[0], set()))
     for key, value in sources.items():
         if str(key).lower() not in keys:
             continue

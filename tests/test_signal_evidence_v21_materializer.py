@@ -55,7 +55,7 @@ class MaterializerV21Tests(unittest.TestCase):
 
     def reviewed(self, answer=None):
         source = base_card()
-        source["llm_review"] = review_tool.build_review(source, answer or answer_v21(), build_evidence_packet(source))
+        source["llm_review"] = review_tool.build_review(source, answer or answer_v21(), build_evidence_packet(source, packet_schema="signal_evidence_packet@2.0.0"), prompt_version="signal_llm_review_prompt@2.1.0")
         return source
 
     def test_new_review_roundtrip_and_read_projection_binding(self):
@@ -66,7 +66,7 @@ class MaterializerV21Tests(unittest.TestCase):
         self.assertEqual(detail["llm_review"], before)
         projection = detail["signal_evidence_summary"]
         self.assertEqual(entry["summary"]["signal_evidence_summary"], projection)
-        self.assertEqual(projection["display_projection_version"], "2.1.0")
+        self.assertEqual(projection["display_projection_version"], "2.2.0")
         self.assertEqual(projection["market_snapshot"]["price"], 100.0)
         self.assertEqual(projection["market_snapshot"]["unit"], "USDT")
         self.assertEqual(projection["side_comparison"]["relative_side"], "put_credit")
@@ -78,7 +78,7 @@ class MaterializerV21Tests(unittest.TestCase):
         source = base_card()
         answer = payload_with_bias(side("B", ["structure.gamma.regime"]), side("B", ["structure.gamma.regime"]),
                                    price_bias("BULLISH", ["pressure.tmv.direction"]))
-        source["llm_review"] = review_tool.build_review(source, answer, build_evidence_packet(source),
+        source["llm_review"] = review_tool.build_review(source, answer, build_evidence_packet(source, packet_schema="signal_evidence_packet@2.0.0"),
                                                        prompt_version="signal_llm_review_prompt@2.0.1")
         before = copy.deepcopy(source["llm_review"])
         _, detail = self.materialize(source)
@@ -120,7 +120,7 @@ class MaterializerV21Tests(unittest.TestCase):
                        for review in [source["llm_review"], older]]
             path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
             reviews = materializer._read_llm_reviews(path)
-        self.assertEqual(reviews[source["identity"]["card_id"]]["schema_version"], review_tool.OUTPUT_SCHEMA_VERSION)
+        self.assertEqual(reviews[source["identity"]["card_id"]]["schema_version"], "signal_llm_review@2.1.0")
 
     def test_intact_persisted_bad_comparison_is_isolated_after_source_check(self):
         for explanation in ("价格全程向下推进，所以本侧相对有利。", "当前 put_credit 更有依据。"):

@@ -91,8 +91,8 @@ def main():
                     "bootstrap should not carry removed automatic stage " + removed)
 
     for token in (
-            "EXPECTED_LLM_SCHEMA=signal_llm_review@2.1.0",
-            "EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.1.0",
+            "EXPECTED_LLM_SCHEMA=signal_llm_review@2.2.0",
+            "EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.2.0",
             "EXPECTED_LLM_REVIEW_MODE=single_evidence_v2",
             "EXPECTED_LLM_CALL_COUNT=1",
             "EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2",
@@ -117,8 +117,8 @@ def main():
                 "install script must not enable review timers by default")
 
     for token in (
-            'EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.1.0}"',
-            'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.1.0}"',
+            'EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.2.0}"',
+            'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.2.0}"',
             'EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"',
             'EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-1}"',
             'EXPECTED_LLM_MAX_HTTP_ATTEMPTS="${EXPECTED_LLM_MAX_HTTP_ATTEMPTS:-2}"',

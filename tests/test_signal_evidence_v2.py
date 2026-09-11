@@ -159,12 +159,19 @@ def facts_by_id(packet):
     return {item["id"]: item for item in packet["facts"]}
 
 
+def build_legacy_packet(tool, card, previous_card=None, transition=None):
+    return tool.build_evidence_packet(
+        card, previous_card, transition,
+        packet_schema="signal_evidence_packet@2.0.0",
+    )
+
+
 def assert_chinese(text, message):
     assert_true(any("\u4e00" <= char <= "\u9fff" for char in text), message)
 
 
 def test_packet_whitelist_and_legacy_exclusion(tool):
-    packet = tool.build_evidence_packet(base_card())
+    packet = build_legacy_packet(tool, base_card())
     assert_true(packet["schema"] == "signal_evidence_packet@2.0.0",
                 "schema")
     assert_true(set(packet["identity"]) == {
@@ -174,7 +181,7 @@ def test_packet_whitelist_and_legacy_exclusion(tool):
     assert_true(packet["identity"]["source_record_hash"] == record_hash("EVT-1"),
                 "source record hash")
     for fact in packet["facts"]:
-        assert_true(tuple(fact.keys()) == tool.FACT_KEYS,
+        assert_true(tuple(fact.keys()) == tool.LEGACY_FACT_KEYS,
                     "fact whitelist and key order")
         assert_chinese(fact["label_cn"], "label should be Chinese")
         assert_chinese(fact["summary_cn"], "summary should be Chinese")
@@ -204,7 +211,7 @@ def test_packet_whitelist_and_legacy_exclusion(tool):
     changed_score = clone(base_card())
     changed_score["factor_cross_section"]["anchor"]["score"] = 100
     changed_score["factor_cross_section"]["anchor"]["anchor_score"] = 0
-    assert_true(packet == tool.build_evidence_packet(changed_score),
+    assert_true(packet == build_legacy_packet(tool, changed_score),
                 "changing only the legacy anchor score must not alter the new input")
     assert_true(
         any("分位样本不足" in item
@@ -216,7 +223,7 @@ def test_packet_whitelist_and_legacy_exclusion(tool):
                 "raw price points should be preserved")
 
     hash_a = tool.packet_hash(packet)
-    hash_b = tool.packet_hash(tool.build_evidence_packet(clone(base_card())))
+    hash_b = tool.packet_hash(build_legacy_packet(tool, clone(base_card())))
     assert_true(hash_a == hash_b and hash_a.startswith("sha256:"),
                 "packet hash should be canonical and stable")
     tools_dir = str(ROOT / "tools")
@@ -230,7 +237,7 @@ def test_packet_whitelist_and_legacy_exclusion(tool):
 def test_flat_price_is_not_strong_trend(tool):
     card = base_card()
     card["factor_cross_section"]["micro_flow"]["fast_4h"]["price_return_pct"] = 0.0
-    packet = tool.build_evidence_packet(card)
+    packet = build_legacy_packet(tool, card)
     facts = facts_by_id(packet)
     assert_true(facts["side.put.adverse_progress"]["value"] == "平盘",
                 "flat put adverse progress")
@@ -245,7 +252,7 @@ def test_flat_price_is_not_strong_trend(tool):
 def test_unclear_direction_is_chinese(tool):
     card = base_card()
     card["factor_cross_section"]["tmvf"]["direction"] = "Unclear"
-    packet = tool.build_evidence_packet(card)
+    packet = build_legacy_packet(tool, card)
     fact = facts_by_id(packet)["pressure.tmv.direction"]
     assert_true(fact["value"] == "不明", "unclear direction should be Chinese")
     assert_true("Unclear" not in fact["summary_cn"],
@@ -259,7 +266,7 @@ def test_missing_price_response_does_not_infer_from_tmv(tool):
         card["factor_cross_section"]["micro_flow"][window].pop(
             "price_return_pct", None)
     card["signal_durability"].pop("price_points", None)
-    packet = tool.build_evidence_packet(card)
+    packet = build_legacy_packet(tool, card)
     facts = facts_by_id(packet)
     assert_true(facts["response.price.primary_return_pct"]["value"] == "未知",
                 "price response should be unknown")
@@ -279,7 +286,7 @@ def test_ohlc_proxy_declares_sequence_limitation(tool):
         "ohlc": {"open": 100.0, "high": 110.0, "low": 90.0, "close": 101.0},
         "durability_score": 88,
     }
-    packet = tool.build_evidence_packet(card)
+    packet = build_legacy_packet(tool, card)
     facts = facts_by_id(packet)
     assert_true(facts["response.price.path_source"]["value"] == "OHLC代理",
                 "OHLC should be marked as proxy")
@@ -293,7 +300,7 @@ def test_ohlc_proxy_declares_sequence_limitation(tool):
 def test_missing_explicit_anchor_band_does_not_use_default(tool):
     card = base_card()
     card["factor_cross_section"]["anchor"].pop("band_half", None)
-    packet = tool.build_evidence_packet(card)
+    packet = build_legacy_packet(tool, card)
     facts = facts_by_id(packet)
     assert_true("structure.anchor.band_half" not in facts,
                 "no explicit band fact")
@@ -336,7 +343,7 @@ def test_transition_requires_full_identity_match(tool):
     current["factor_cross_section"]["gamma_regime"]["flip_point"] = 100.0
     transition = transition_for(tool, previous, current)
 
-    packet = tool.build_evidence_packet(current, previous, transition)
+    packet = build_legacy_packet(tool, current, previous, transition)
     facts = facts_by_id(packet)
     assert_true(facts["change.context.status"]["value"] == "变化可用",
                 "matching transition")
@@ -347,7 +354,7 @@ def test_transition_requires_full_identity_match(tool):
 
     bad = clone(transition)
     bad["producer_record_hashes"]["current"] = "sha256:" + "bad".ljust(64, "0")
-    bad_packet = tool.build_evidence_packet(current, previous, bad)
+    bad_packet = build_legacy_packet(tool, current, previous, bad)
     bad_facts = facts_by_id(bad_packet)
     assert_true(bad_facts["change.context.status"]["value"] == "变化不可用",
                 "bad hash should block change facts")

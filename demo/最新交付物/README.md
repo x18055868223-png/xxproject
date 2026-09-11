@@ -1,6 +1,6 @@
 # 最新交付物
 
-更新时间：2026-09-09
+更新时间：2026-09-11
 
 本目录只保留当前可见的最新 FMZ 单文件交付物。历史执行层版本保留在 `demo/副本快照/`；当前执行层最新交付物已切换为 Human Audit Gate 人工审计门版本。
 
@@ -8,14 +8,14 @@
 
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.6.0` | Astra工作分支候选，尚未验证FMZ上线；保留 Funding/CVD/GEX 机械语义与固定轮次审计卡，并原生生成 `signal_rating@1.0.0` 侧别环境评级 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.6.1` | Astra v2.2 交付；保留原生四态与旧信号行为，增加 `near_term_market_context@1.0.0` 的15/30分钟闭合缓存摘要。FMZ实例须由用户替换后验收 | 只读观察，不选腿、不报价、不下单 |
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 固定轮次只绕过 Anchor+DIE 的发卡触发条件，不伪造 `NR_REPAIR_CONFIRMED`，不改写 producer 的 direction、confidence、blocking、trade_allowed 或 execution_allowed。卡片继续写入同一 JSONL，并复用现有 LLM 复核链。
 
 `signal_rating@1.0.0` 只回答结构依据、Put/Call 信用价差侧别压力、反对理由和未知项；候选两腿、报价、费用、补偿、退出条件和自动执行许可仍不在信号层评价。旧 `confidence`、`lean`、`side_hint`、`support_label`、NR、trigger 与权限消费者兼容保留。
 
-当前 D–S 总体证据等级由一次 LLM 综合评审形成；独立价格倾向来自同一次返回，本地行动状态另受既有阻断、窗口与侧别限制。证据字母不再套用旧限级，不替换原生四态或交易许可。当前路线见 [Astra 方案07](../../docs/astra/07_总体证据评级与单次综合评审_v2.md)，阅读说明见 [评级与推理链](../../docs/astra/09_当前版本评级与推理链_通俗说明.md)，升级步骤见 [兼容与数据复用约定](../../docs/astra/10_版本兼容与数据复用约定.md)。本次授权仅推送xxproject工作分支并同步本地交付面；只读核验的服务器真实卡仍为1.5.7，不据Git或本地文件认定FMZ已更新。
+当前 D–S 为一次 LLM 综合评审的总体证据等级；价格倾向、两侧比较和建议来自同次评审。B 可以提出人工研究建议，原信号窗口、硬风险和机器权限单独保留。当前路线见 [Astra v2.2](../../docs/astra/17_证据校正与建议式辅助闭环_v2.2.md)，另有[通俗说明](../../docs/astra/09_当前版本评级与推理链_通俗说明.md)与[兼容约定](../../docs/astra/10_版本兼容与数据复用约定.md)。用户已于2026-09-11审阅当前页面并明确要求“推送并更新”；发布顺序为服务器先兼容1.6.0/1.6.1，再同步根目录交付，随后由用户替换FMZ实例。执行结果见[Astra v2.2发布回执](../../docs/astra/18_v2.2发布与兼容验收.md)。不能用交付文件、测试或Git版本代替自然新卡验收。
 
 ## 执行层说明
 

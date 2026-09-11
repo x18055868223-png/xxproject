@@ -157,7 +157,9 @@ CONFIG = {
     # v1.5.6 (2026-07-16): runtime stale-input, backlog, and delivery repair.
     # v1.6.0 (2026-09-07): producer-native signal_rating@1.0.0 for
     # side-environment audit; legacy direction/confidence/permissions unchanged.
-    "demo_version": "1.6.0",
+    # v1.6.1 (2026-09-11): audit-only near_term_market_context@1.0.0
+    # from the existing M-DIE 1m kline cache; legacy signal decisions unchanged.
+    "demo_version": "1.6.1",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -5655,6 +5657,7 @@ def build_sample_review_card(config=None):
 # --------------------------------------------------------------------------
 
 AUDIT_SCHEMA_VERSION = "1.0.0"
+NEAR_TERM_MARKET_CONTEXT_SCHEMA_VERSION = "1.0.0"
 
 _EVIDENCE_SOURCE_REF = {
     "TMV": "factor_cross_section.tmvf",
@@ -6579,6 +6582,269 @@ def _signal_rating_path_exists(root, path):
     return _signal_rating_path_get(root, path) is not None
 
 
+def build_near_term_market_context(klines, as_of_ms=None, config=None):
+    """Build audit-only 15/30m closed minute bar summaries from M-DIE 1m."""
+    cfg = config or CONFIG
+    as_of = safe_int(as_of_ms)
+    if as_of is None:
+        as_of = now_ms()
+    interval = str(cfg.get("m_die_interval", "1m") or "1m").strip().lower()
+    if interval != "1m":
+        return _near_term_disabled_context(as_of, cfg, interval)
+    bars = _near_term_clean_closed_bars(klines, as_of)
+    observed_at = None
+    if bars:
+        observed_at = max(
+            safe_int(item.get("close_time")) for item in bars
+            if safe_int(item.get("close_time")) is not None)
+    return {
+        "schema_version": NEAR_TERM_MARKET_CONTEXT_SCHEMA_VERSION,
+        "source": "binance_futures_klines_1m_cache",
+        "symbol": cfg.get("futures_symbol"),
+        "base_unit": cfg.get("asset"),
+        "quote_unit": cfg.get("quote_currency", "USDT"),
+        "as_of_ms": as_of,
+        "observed_at_ms": observed_at,
+        "windows": {
+            "15m": _near_term_window_summary(bars, 15, as_of, cfg),
+            "30m": _near_term_window_summary(bars, 30, as_of, cfg),
+        },
+        "bars": bars[-30:],
+    }
+
+
+def _near_term_disabled_context(as_of_ms, config, interval):
+    return {
+        "schema_version": NEAR_TERM_MARKET_CONTEXT_SCHEMA_VERSION,
+        "source": "near_term_market_context_disabled_non_1m_m_die_cache",
+        "source_interval": interval,
+        "disabled": True,
+        "disabled_reason_cn": (
+            "M-DIE K线缓存不是1m，近端15/30分钟闭合分钟柱摘要未生成，"
+            "避免将非分钟缓存冒充分钟路径。"),
+        "symbol": config.get("futures_symbol"),
+        "base_unit": config.get("asset"),
+        "quote_unit": config.get("quote_currency", "USDT"),
+        "as_of_ms": as_of_ms,
+        "observed_at_ms": None,
+        "windows": {
+            "15m": _near_term_window_summary([], 15, as_of_ms, config),
+            "30m": _near_term_window_summary([], 30, as_of_ms, config),
+        },
+        "bars": [],
+    }
+
+
+def _near_term_clean_closed_bars(klines, as_of_ms):
+    bars = []
+    for raw in klines or []:
+        if not isinstance(raw, dict):
+            continue
+        open_time = safe_int(raw.get("open_time"))
+        close_time = safe_int(raw.get("close_time"))
+        open_price = safe_float(raw.get("open"))
+        high = safe_float(raw.get("high"))
+        low = safe_float(raw.get("low"))
+        close = safe_float(raw.get("close"))
+        volume = safe_float(raw.get("volume"))
+        if (open_time is None or close_time is None or close_time < open_time
+                or close_time > as_of_ms or open_price is None
+                or high is None or low is None or close is None
+                or open_price <= 0 or high <= 0 or low <= 0 or close <= 0
+                or volume is None):
+            continue
+        bars.append({
+            "open_time": open_time,
+            "close_time": close_time,
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+            "taker_buy_base_asset_volume": safe_float(
+                raw.get("taker_buy_base_asset_volume")),
+        })
+    bars.sort(key=lambda item: (item.get("open_time") or 0,
+                                item.get("close_time") or 0))
+    unique = {}
+    for bar in bars:
+        unique[bar.get("open_time")] = bar
+    return [unique[key] for key in sorted(unique)]
+
+
+def _near_term_window_summary(bars, minutes, as_of_ms, config):
+    expected_count = int(minutes)
+    interval_ms = 60 * 1000
+    end_open = ((as_of_ms - interval_ms + 1) // interval_ms) * interval_ms
+    start_open = end_open - (expected_count - 1) * interval_ms
+    requested_end = end_open + interval_ms - 1
+    expected_opens = [
+        start_open + index * interval_ms for index in range(expected_count)
+    ]
+    by_open = {safe_int(item.get("open_time")): item for item in bars}
+    window_bars = [by_open[item] for item in expected_opens if item in by_open]
+    missing_minutes = expected_count - len(window_bars)
+    max_age_ms = int(config.get("m_die_data_max_age_ms", 180000))
+    observed_start = None
+    observed_end = None
+    if window_bars:
+        observed_start = min(safe_int(item.get("open_time"))
+                             for item in window_bars)
+        observed_end = max(safe_int(item.get("close_time"))
+                           for item in window_bars)
+    state = "MISSING"
+    if window_bars:
+        if (max_age_ms > 0 and observed_end is not None
+                and as_of_ms - observed_end > max_age_ms):
+            state = "STALE"
+        elif missing_minutes > 0:
+            state = "PARTIAL"
+        else:
+            state = "OK"
+    elif bars:
+        latest_close = max(safe_int(item.get("close_time")) for item in bars)
+        if (max_age_ms > 0 and latest_close is not None
+                and as_of_ms - latest_close > max_age_ms):
+            state = "STALE"
+    ohlc = _near_term_ohlc(window_bars)
+    total_volume, taker_buy_volume, net_active, active_state = (
+        _near_term_active_volume(window_bars))
+    return {
+        "state": state,
+        "requested_start_ms": start_open,
+        "requested_end_ms": requested_end,
+        "observed_start_ms": observed_start,
+        "observed_end_ms": observed_end,
+        "bar_count": len(window_bars),
+        "expected_bar_count": expected_count,
+        "missing_minutes": missing_minutes,
+        "ohlc": ohlc,
+        "return_pct": _near_term_return_pct(ohlc),
+        "range_pct": _near_term_range_pct(ohlc),
+        "high_excursion_pct": _near_term_high_excursion_pct(ohlc),
+        "low_excursion_pct": _near_term_low_excursion_pct(ohlc),
+        "distance_from_high_pct": _near_term_distance_from_high_pct(ohlc),
+        "distance_from_low_pct": _near_term_distance_from_low_pct(ohlc),
+        "close_efficiency": _near_term_close_efficiency(
+            ohlc, missing_minutes),
+        "total_volume": total_volume,
+        "taker_buy_volume": taker_buy_volume,
+        "net_active_volume": net_active,
+        "active_volume_state": active_state,
+    }
+
+
+def _near_term_ohlc(bars):
+    if not bars:
+        return {"open": None, "high": None, "low": None, "close": None}
+    ordered = sorted(bars, key=lambda item: item.get("open_time") or 0)
+    return {
+        "open": ordered[0].get("open"),
+        "high": max(item.get("high") for item in ordered),
+        "low": min(item.get("low") for item in ordered),
+        "close": ordered[-1].get("close"),
+    }
+
+
+def _near_term_pct(numerator, denominator):
+    denominator = safe_float(denominator)
+    numerator = safe_float(numerator)
+    if denominator is None or denominator <= 0 or numerator is None:
+        return None
+    return numerator / denominator * 100.0
+
+
+def _near_term_return_pct(ohlc):
+    open_price = safe_float((ohlc or {}).get("open"))
+    close = safe_float((ohlc or {}).get("close"))
+    if open_price is None or close is None:
+        return None
+    return _near_term_pct(close - open_price, open_price)
+
+
+def _near_term_range_pct(ohlc):
+    open_price = safe_float((ohlc or {}).get("open"))
+    high = safe_float((ohlc or {}).get("high"))
+    low = safe_float((ohlc or {}).get("low"))
+    if open_price is None or high is None or low is None:
+        return None
+    return _near_term_pct(high - low, open_price)
+
+
+def _near_term_high_excursion_pct(ohlc):
+    open_price = safe_float((ohlc or {}).get("open"))
+    high = safe_float((ohlc or {}).get("high"))
+    if open_price is None or high is None:
+        return None
+    return _near_term_pct(high - open_price, open_price)
+
+
+def _near_term_low_excursion_pct(ohlc):
+    open_price = safe_float((ohlc or {}).get("open"))
+    low = safe_float((ohlc or {}).get("low"))
+    if open_price is None or low is None:
+        return None
+    return _near_term_pct(low - open_price, open_price)
+
+
+def _near_term_distance_from_high_pct(ohlc):
+    open_price = safe_float((ohlc or {}).get("open"))
+    high = safe_float((ohlc or {}).get("high"))
+    close = safe_float((ohlc or {}).get("close"))
+    if open_price is None or high is None or close is None:
+        return None
+    return _near_term_pct(high - close, open_price)
+
+
+def _near_term_distance_from_low_pct(ohlc):
+    open_price = safe_float((ohlc or {}).get("open"))
+    low = safe_float((ohlc or {}).get("low"))
+    close = safe_float((ohlc or {}).get("close"))
+    if open_price is None or low is None or close is None:
+        return None
+    return _near_term_pct(close - low, open_price)
+
+
+def _near_term_close_efficiency(ohlc, missing_minutes):
+    if missing_minutes:
+        return None
+    open_price = safe_float((ohlc or {}).get("open"))
+    high = safe_float((ohlc or {}).get("high"))
+    low = safe_float((ohlc or {}).get("low"))
+    close = safe_float((ohlc or {}).get("close"))
+    if (open_price is None or high is None or low is None or close is None
+            or high <= low or close == open_price):
+        return None
+    return clamp((close - open_price) / (high - low), -1.0, 1.0)
+
+
+def _near_term_active_volume(bars):
+    if not bars:
+        return None, None, None, "MISSING"
+    total = 0.0
+    taker_total = 0.0
+    missing = False
+    invalid = False
+    for bar in bars:
+        volume = safe_float(bar.get("volume"))
+        taker_buy = safe_float(bar.get("taker_buy_base_asset_volume"))
+        if volume is None or volume < 0:
+            invalid = True
+            continue
+        total += volume
+        if taker_buy is None:
+            missing = True
+        elif taker_buy < 0 or taker_buy > volume + 1e-9:
+            invalid = True
+        else:
+            taker_total += taker_buy
+    if invalid:
+        return total, None, None, "INVALID"
+    if missing:
+        return total, None, None, "MISSING"
+    return total, taker_total, 2.0 * taker_total - total, "OK"
+
+
 def build_audit_record(card, config=None):
     """Map a Signal Review Card to the v1.0 audit record — the full machine JSON
     written (single line) to signal_review.jsonl, the single source of truth.
@@ -6700,6 +6966,9 @@ def build_audit_record(card, config=None):
             "local_card_json": "signal_cards/" + full_id + ".json",
         },
     }
+    if isinstance(card.get("near_term_market_context"), dict):
+        record["near_term_market_context"] = dict(
+            card.get("near_term_market_context"))
     if isinstance(card.get("analysis_round"), dict):
         record["analysis_round"] = dict(card.get("analysis_round"))
         if not record["analysis_round"].get("merged_with_regular_signal"):
@@ -8574,6 +8843,8 @@ class BinanceAdapter:
         close = safe_float(row[4])
         volume = safe_float(row[5])
         close_time = safe_int(row[6])
+        taker_buy_base_asset_volume = (
+            safe_float(row[9]) if len(row) > 9 else None)
         if (open_time is None or close_time is None
                 or open_price is None or high is None or low is None
                 or close is None or close <= 0 or volume is None):
@@ -8586,6 +8857,7 @@ class BinanceAdapter:
             "close": close,
             "volume": volume,
             "close_time": close_time,
+            "taker_buy_base_asset_volume": taker_buy_base_asset_volume,
         }
 
     @staticmethod
@@ -13571,6 +13843,8 @@ class DemoRuntime:
         # FMZ push gets only the <=140-char brief (full chain stays in JSONL).
         if not pending["json_written"]:
             try:
+                card = self._attach_near_term_market_context(card)
+                pending["card"] = card
                 record = build_audit_record(card, self.config)
                 recorder_name = self.config.get(
                     "signal_review_recorder_name", "signal_review")
@@ -13600,6 +13874,18 @@ class DemoRuntime:
             self.pending_signal_reviews.pop(0)
         # LLM review is intentionally out-of-process: signal_review.jsonl is the
         # stable input, and tools/gemini_signal_llm_review.py writes the sidecar.
+
+    def _attach_near_term_market_context(self, card):
+        if not isinstance(card, dict):
+            return card
+        if isinstance(card.get("near_term_market_context"), dict):
+            return card
+        enriched = dict(card)
+        enriched["near_term_market_context"] = build_near_term_market_context(
+            self.mdie_klines,
+            enriched.get("confirmed_time"),
+            self.config)
+        return enriched
 
     def _emit_push_self_test(self):
         # signal_review_push_test=True: push ONE synthetic sample card at startup

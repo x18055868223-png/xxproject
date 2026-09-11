@@ -3957,17 +3957,18 @@
     return asArray(refs).map((ref) => sourceRefLink(ref, doc)).join("");
   }
 
-  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.1.0";
-  const SIGNAL_EVIDENCE_REVIEW_SCHEMAS = new Set(["signal_llm_review@2.0.0", "signal_llm_review@2.1.0"]);
-  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.1.0";
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.2.0";
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMAS = new Set(["signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"]);
+  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.2.0";
   const SIGNAL_EVIDENCE_PROMPT_VERSIONS = new Set([
     "signal_llm_review_prompt@2.0.0",
     "signal_llm_review_prompt@2.0.1",
-    "signal_llm_review_prompt@2.1.0"
+    "signal_llm_review_prompt@2.1.0",
+    "signal_llm_review_prompt@2.2.0"
   ]);
-  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.1.0";
-  const SIGNAL_EVIDENCE_SUMMARY_SCHEMAS = new Set(["signal_evidence_summary@2.0.0", "signal_evidence_summary@2.1.0"]);
-  const SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION = "2.1.0";
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.2.0";
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMAS = new Set(["signal_evidence_summary@2.0.0", "signal_evidence_summary@2.1.0", "signal_evidence_summary@2.2.0"]);
+  const SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION = "2.2.0";
   const SIGNAL_EVIDENCE_MODE = "single_evidence_v2";
   const SIGNAL_EVIDENCE_SIDE_STATUSES = new Set(["RATED", "UNRATED"]);
   const SIGNAL_EVIDENCE_ACTION_STATES = new Set(["PREPARE", "WATCH", "WAIT", "BLOCKED", "AVOID", "UNRATED"]);
@@ -4126,6 +4127,8 @@
 
   function evidenceFactTopicKey(fact) {
     const view = asObject(fact);
+    const id = signalEvidenceFactKey(view);
+    if (/^(structure|pressure)\.options\./.test(id) || id === "pressure.volatility.dvol") return "options-structure";
     const topic = rawEnum(view.topic).toLowerCase();
     const source = rawEnum(view.source_group).toLowerCase();
     const label = rawEnum(view.label_cn).toLowerCase();
@@ -4329,8 +4332,9 @@
     return {
       status,
       grade,
-      fit_thesis: normalizeComfortText(firstPresent(view.fit_thesis_cn, view.fit_thesis), defaultEvidenceFitThesis(sideKey)),
-      mechanism_cn: normalizeComfortText(view.mechanism_cn, grade ? "适配机制尚未单列说明，请结合等级依据阅读。" : "暂未完成有效适配机制说明。"),
+      fit_thesis: ["put_downside_containment", "call_upside_containment"].includes(view.fit_thesis)
+        ? defaultEvidenceFitThesis(sideKey) : normalizeComfortText(firstPresent(view.fit_thesis_cn, view.fit_thesis), defaultEvidenceFitThesis(sideKey)),
+      mechanism_cn: normalizeComfortText(get(view, "mechanism.summary_cn") || view.mechanism_cn, grade ? "适配机制尚未单列说明，请结合等级依据阅读。" : "暂未完成有效适配机制说明。"),
       basis_cn: normalizeComfortText(view.basis_cn || view.summary_cn, grade ? "未说明等级依据。" : "暂未完成有效评级。"),
       market_counter_cn: normalizeComfortText(view.market_counter_cn || view.counter_evidence_cn, "未识别到主要市场反证。"),
       alternative_cn: normalizeComfortText(view.alternative_cn || view.competing_explanation_cn, "竞争解释暂未形成。"),
@@ -4402,7 +4406,7 @@
   function signalEvidenceSummaryIsV21(summary) {
     const view = asObject(summary);
     const schema = schemaToken(firstPresent(view.schema_version, view.schema, view.version));
-    return schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
+    return schema === "signal_evidence_summary@2.1.0" || schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
   }
 
   function signalEvidenceProjectionHash(summary) {
@@ -4415,7 +4419,8 @@
     const view = asObject(summary);
     if (!signalEvidenceSummaryIsV21(view)) return [];
     const errors = [];
-    if (view.display_projection_version !== SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION) {
+    const expectedVersion = schemaToken(view.schema_version || view.schema) === "signal_evidence_summary@2.1.0" ? "2.1.0" : SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION;
+    if (view.display_projection_version !== expectedVersion) {
       errors.push("发布投影版本未通过当前页面校验。");
     }
     if (!view.source_record_hash) {
@@ -4433,6 +4438,7 @@
     return {
       source: "summary",
       schema_version: firstPresent(object.schema_version, object.schema, object.version),
+      review_schema_version: object.review_schema_version,
       display_projection_version: object.display_projection_version,
       source_record_hash: object.source_record_hash,
       display_projection_hash: object.display_projection_hash,
@@ -4443,6 +4449,8 @@
       market_snapshot: normalizeEvidenceMarketSnapshot(object.market_snapshot),
       price_bias: normalizeEvidencePriceBiasObject(firstObject(object.price_bias, object.price_bias_summary)),
       side_comparison: normalizeEvidenceSideComparison(object.side_comparison),
+      advisory_guidance: asObject(object.advisory_guidance),
+      source_boundary: asObject(object.source_boundary),
       put_credit: normalizeEvidenceSide(object.put_credit, "put_credit"),
       call_credit: normalizeEvidenceSide(object.call_credit, "call_credit"),
       local_action_state: normalizeEvidenceActionState(object),
@@ -4470,6 +4478,8 @@
       market_snapshot: normalizeEvidenceMarketSnapshot(firstObject(asObject(summary).market_snapshot, object.market_snapshot)),
       price_bias: normalizeEvidencePriceBiasObject(firstObject(object.price_bias, summaryView.price_bias)),
       side_comparison: normalizeEvidenceSideComparison(firstObject(object.side_comparison, summaryView.side_comparison)),
+      advisory_guidance: asObject(object.advisory_guidance),
+      source_boundary: asObject(object.source_boundary),
       put_credit: normalizeEvidenceSide(ratings.put_credit, "put_credit"),
       call_credit: normalizeEvidenceSide(ratings.call_credit, "call_credit"),
       local_action_state: normalizeEvidenceActionState({
@@ -4595,6 +4605,11 @@
       errors.push("行动摘要与详情不一致。");
     }
     const summaryComparison = normalizeEvidenceSideComparison(get(summaryView, "side_comparison"));
+    if (signalEvidenceIsV22(fullView)) {
+      ["advisory_guidance", "source_boundary"].forEach((key) => {
+        if (canonicalJson(asObject(fullView[key])) !== canonicalJson(asObject(summaryView[key]))) errors.push("建议或原信号边界的摘要与详情不一致。");
+      });
+    }
     const fullComparison = normalizeEvidenceSideComparison(get(fullView, "side_comparison"));
     if (summaryComparison.status !== fullComparison.status
       || summaryComparison.relative_side !== fullComparison.relative_side) {
@@ -4646,6 +4661,30 @@
 
   function signalEvidenceHasUsableView(stateView) {
     return stateView && stateView.view && stateView.state !== "invalid";
+  }
+
+  function signalEvidenceIsV22(view) {
+    const object = asObject(view);
+    return /@2\.2\.0$/.test(schemaToken(object.review_schema_version || object.schema_version));
+  }
+
+  function renderEvidenceGuidance(view) {
+    const guidance = asObject(view.advisory_guidance);
+    if (guidance.status !== "ASSESSED") return `<p class="market-fact-meta">本卡建议尚未通过完整核验；有效的两侧评级仍可分别阅读。</p>`;
+    const outlooks = asArray(guidance.outlooks).filter((item) => [4, 24].includes(asObject(item).horizon_hours));
+    return `${asArray(guidance.tradeoffs_cn).length ? `<div class="evidence-guidance-tradeoffs"><strong>关键取舍</strong>${listHtml(normalizeComfortList(guidance.tradeoffs_cn), "")}</div>` : ""}
+      ${outlooks.length ? `<div class="evidence-next-grid evidence-guidance-outlooks${outlooks.length === 1 ? " is-single" : ""}">${outlooks.map((item) => `<div class="evidence-next-side"><h3>${item.horizon_hours === 4 ? "未来四小时 · 近端情景" : "未来二十四小时 · 背景情景"}</h3><p>${escapeHtml(signalEvidenceReaderText(item.scenario_cn, ""))}</p><p><strong>重判条件：</strong>${escapeHtml(signalEvidenceReaderText(item.watch_cn, ""))}</p></div>`).join("")}</div><p class="market-fact-meta">情景窗口不代表信号寿命或交易期限。</p>` : ""}`;
+  }
+
+  function renderEvidenceSourceBoundary(view) {
+    const boundary = asObject(view.source_boundary);
+    const summary = signalEvidenceReaderText(boundary.summary_cn, "原信号窗口和风险边界保持独立；建议不改变机器执行权限。").replaceAll("。；", "；");
+    return `<div class="evidence-source-boundary"><h3>原信号窗口与风险</h3><p>${escapeHtml(summary)}</p>
+      <div class="evidence-next-grid">${SIGNAL_COMFORT_SIDES.map(({ key }) => {
+        const side = asObject(get(boundary, `sides.${key}`));
+        const reasons = normalizeComfortList(side.reasons_cn).map((text) => signalEvidenceReaderText(text, "")).filter((text) => !signalEvidenceCompactCompareText(summary).includes(signalEvidenceCompactCompareText(text)));
+        return `<div class="evidence-side-action ${actionStateClass(side.state)}"><strong>${key === "put_credit" ? "Put" : "Call"}：${escapeHtml(signalEvidenceReaderText(side.label_cn, "边界待核对"))}</strong>${reasons.map((text) => `<p>${escapeHtml(text)}</p>`).join("")}</div>`;
+      }).join("")}</div></div>`;
   }
 
   function signalEvidenceAsOfMetricText(doc) {
@@ -4839,7 +4878,7 @@
     const refs = signalEvidenceRefChips(side.evidence_refs, view, "支持来源");
     const counterRefs = signalEvidenceRefChips(side.counter_evidence_refs, view, "反对来源");
     const contextRefs = signalEvidenceRefChips(side.context_evidence_refs, view, "背景来源");
-    const action = renderEvidenceSideAction(get(view, `local_action_state.${sideKey}`));
+    const action = signalEvidenceIsV22(view) ? "" : renderEvidenceSideAction(get(view, `local_action_state.${sideKey}`));
     return `
       <article class="comfort-side-card ${comfortGradeClass(side.grade)} evidence-report-side">
         <div class="comfort-side-head">
@@ -4880,9 +4919,13 @@
     const regimeNegative = /NEGATIVE|SHORT_GAMMA|负\s*GAMMA/.test(regime);
     const transition = /TRANSITION|过渡/.test(regime);
     const conflict = gamma !== null && ((gamma > 0 && regimeNegative) || (gamma < 0 && regimePositive));
+    const positionClassification = get(asObject(fact("structure.gamma.regime")), "provenance.method") === "ggr_price_location_regime";
     let feedback = "波动反馈待确认";
     let mechanism = "缺少可用的净 Gamma 或明确体制依据，暂不能区分波动抑制与放大。";
-    if (conflict) {
+    if (positionClassification) {
+      feedback = transition ? "翻转位附近：反馈待确认" : regimeNegative ? "位于翻转位下方" : regimePositive ? "位于翻转位上方" : "结构反馈待核对";
+      mechanism = `价格位置分类${transition ? "处于过渡区" : regimeNegative ? "位于翻转位下方" : regimePositive ? "位于翻转位上方" : "尚不明确"}；${gamma === null ? "看板净 Gamma 尚不可用" : `看板净 Gamma ${gamma > 0 ? "为正" : gamma < 0 ? "为负" : "接近零"}`}。两者分别描述位置与看板规模，不能互相替代；${gamma > 0 ? "逆向对冲缓冲" : gamma < 0 ? "顺向对冲放大" : "波动反馈"}仍是需要价格响应检验的机制解释。`;
+    } else if (conflict) {
       feedback = "Gamma 反馈存在分歧";
       mechanism = "净 Gamma 符号与体制判断相反，抑制和放大两种解释并存；先核对来源及时间，不能选取有利的一项作为结论。";
     } else if (transition) {
@@ -4926,7 +4969,10 @@
     const direction = tmv ? signalEvidenceDisplayValue(tmv) : "";
     const progress = [fact("side.put.adverse_progress"), fact("side.call.adverse_progress")]
       .filter(Boolean).map((item) => `${item.id.includes(".put.") ? "Put" : "Call"} 侧：${signalEvidenceDisplayValue(item)}`).join("；");
-    const pressure = [direction ? `量价主干${direction}。` : "", responseText, progress ? `本观察窗内，${progress}。` : ""].filter(Boolean).join(" ")
+    const near = fact("response.near_term.15m.return_pct") || fact("response.m_die.15m.window_return_pct");
+    const near30 = fact("response.near_term.30m.return_pct");
+    const shortText = near ? `近端15分钟 ${signalEvidenceDisplayValue(near)}${near30 ? `，30分钟 ${signalEvidenceDisplayValue(near30)}` : ""}；这是已闭合分钟窗口的净变化。` : "";
+    const pressure = [shortText, direction ? `较长窗口量价主干${direction}。` : "", responseText, progress ? `对应价格观察窗内，${progress}。` : ""].filter(Boolean).join(" ")
       || "当前缺少可配对的压力与价格响应，尚不能判断边界是否正在受到检验。";
     const magnitude = gamma !== null ? `${gamma > 0 ? "+" : gamma < 0 ? "−" : ""}$${number(Math.abs(gamma) / 1e6, 2)}M` : "未提供";
     const strength = transition
@@ -4985,22 +5031,26 @@ function renderSignalEvidenceDecision(doc) {
     if (!signalEvidenceHasUsableView(stateView)) return "";
     const view = stateView.view;
     const quoteBoundary = view.quote_boundary_cn || "候选两腿、报价、费用、净补偿与退出条件仍在交易准备环节确认。";
+    const isV22 = signalEvidenceIsV22(view);
+    const guidance = asObject(view.advisory_guidance);
+    const headline = isV22 ? (guidance.status === "ASSESSED" ? signalEvidenceReaderText(guidance.summary_cn, "本卡建议尚未完成。") : "本卡建议尚未完成有效核验；可分别阅读两侧证据。") : view.action_summary_cn;
     const sideSummary = (key, label) => {
       const side = asObject(view[key]);
       const action = asObject(get(view, `local_action_state.${key}`));
       const unavailable = side.status === "UNRATED" || !side.grade;
       return `<div class="evidence-decision-side">
         <span>${escapeHtml(label)}</span>
-        <div class="evidence-decision-grade"><strong class="badge ${comfortGradeClass(side.grade)} evidence-grade">${escapeHtml(comfortGradeText(side.grade))}</strong><span class="badge ${unavailable ? "" : actionStateClass(action.state)}">${escapeHtml(unavailable ? "暂未评级" : signalEvidenceReaderText(action.label_cn, "待复核"))}</span></div>
+        <div class="evidence-decision-grade"><strong class="badge ${comfortGradeClass(side.grade)} evidence-grade">${escapeHtml(comfortGradeText(side.grade))}</strong>${isV22 ? "" : `<span class="badge ${unavailable ? "" : actionStateClass(action.state)}">${escapeHtml(unavailable ? "暂未评级" : signalEvidenceReaderText(action.label_cn, "待复核"))}</span>`}</div>
         ${!unavailable ? `<p class="evidence-side-thesis"><strong>适配机制：</strong>${escapeHtml(side.mechanism_cn)}</p><p><strong>等级依据：</strong>${escapeHtml(side.basis_cn)}</p>` : ""}
-        <p>${escapeHtml(unavailable ? "当前证据未形成有效等级，详见独立复核中的缺口。" : asArray(action.reasons_cn).map((item) => signalEvidenceReaderText(item, "")).filter(Boolean).join("；") || "按本卡有效证据与行动状态继续核对。")}</p>
+        <p>${isV22 && !unavailable ? "<strong>主要反证：</strong>" : ""}${escapeHtml(unavailable ? "当前证据未形成有效等级，详见独立复核中的缺口。" : isV22 ? side.market_counter_cn : asArray(action.reasons_cn).map((item) => signalEvidenceReaderText(item, "")).filter(Boolean).join("；") || "按本卡有效证据与行动状态继续核对。")}</p>
       </div>`;
     };
-    return section("最高辅助交易决策", "本卡结论、两侧评级与市场倾向。", `
-      <div class="comfort-panel evidence-report-panel ${signalEvidenceActionPanelClass(view)}">
-        <div class="comfort-headline"><span>本卡行动结论</span><strong>${escapeHtml(view.action_summary_cn || "本卡已形成分侧证据评级。")}</strong></div>
+    return section("最高辅助交易决策", isV22 ? "建议、两侧证据与取舍；等级不代表交易许可。" : "本卡结论、两侧评级与市场倾向。", `
+      <div class="comfort-panel evidence-report-panel ${isV22 ? "" : signalEvidenceActionPanelClass(view)}">
+        <div class="comfort-headline"><span>${isV22 ? "本卡建议" : "本卡行动结论"}</span><strong>${escapeHtml(headline || "本卡已形成分侧证据评级。")}</strong></div>
         ${renderSignalEvidenceDecisionMeta(view)}
         <div class="evidence-decision-grid">${sideSummary("put_credit", "Put 信用价差")}${sideSummary("call_credit", "Call 信用价差")}</div>
+        ${isV22 ? renderEvidenceGuidance(view) + renderEvidenceSourceBoundary(view) : ""}
         <p class="evidence-decision-footnote">评级时点：${escapeHtml(signalRatingAsOfText(view))}。${escapeHtml(quoteBoundary)}</p>
       </div>`, "signal-comfort");
   }
@@ -5050,6 +5100,10 @@ function renderSignalEvidenceDecision(doc) {
     const value = view.value;
     if (isNullish(value) || value === "") return "";
     if (Array.isArray(value) || typeof value === "object") return "";
+    if (signalEvidenceFactKey(view) === "structure.gamma.regime" && get(view, "provenance.method") === "ggr_price_location_regime") {
+      const position = rawEnum(value).toUpperCase();
+      return /TRANSITION|过渡/.test(position) ? "位于翻转过渡区" : /POSITIVE|LONG_GAMMA|正\s*GAMMA/.test(position) ? "位于翻转位上方" : /NEGATIVE|SHORT_GAMMA|负\s*GAMMA/.test(position) ? "位于翻转位下方" : "价格位置分类未明确";
+    }
     const unitRaw = rawEnum(view.unit).trim().toLowerCase();
     if (typeof value === "number" && unitRaw === "decimal" && signalEvidenceFactIsFunding(view)) {
       return fundingDecimalText(value);
@@ -5111,6 +5165,8 @@ function renderSignalEvidenceDecision(doc) {
     if (lower === "decimal") return "小数值";
     if (lower === "ratio") return "比值";
     if (lower === "bps") return "基点";
+    if (["h", "hour", "hours"].includes(lower)) return "小时";
+    if (["m", "min", "minute", "minutes"].includes(lower)) return "分钟";
     return signalEvidenceReaderText(semanticCompact(raw), raw);
   }
 
@@ -5173,7 +5229,14 @@ function renderSignalEvidenceDecision(doc) {
     const windowText = signalEvidenceWindowText(view.window);
     if (windowText) parts.push(`窗口：${windowText}`);
     const observed = firstPresent(view.observed_at_ms, view.observed_at);
-    parts.push(`时点：${observed ? dateText(parseSignalRatingTimeMs(observed) || observed) : "未提供"}`);
+    const provenance = asObject(view.provenance);
+    if (provenance.time_basis === "card_recorded_at_no_source_observation") {
+      parts.push(`卡片记录：${dateText(parseSignalRatingTimeMs(provenance.recorded_at_ms) || provenance.recorded_at_ms)}`);
+      parts.push("来源观测时点未提供");
+    } else {
+      parts.push(`时点：${observed ? dateText(parseSignalRatingTimeMs(observed) || observed) : "未提供"}`);
+    }
+    if (provenance.fetched_at_ms) parts.push(`抓取：${dateText(parseSignalRatingTimeMs(provenance.fetched_at_ms) || provenance.fetched_at_ms)}`);
     return parts.join("；");
   }
 
@@ -5292,23 +5355,54 @@ function signalEvidenceGroupMetaLine(facts) {
       .map((item) => item.fact);
   }
 
-  function renderSignalEvidenceFactOverview(fact, groupNoteSet) {
+  function signalEvidenceNearWindow(fact, doc) {
+    const match = signalEvidenceFactKey(fact).match(/^response\.near_term\.(15m|30m)\./);
+    const near = asObject(get(doc, "near_term_market_context"));
+    const window = asObject(get(near, `windows.${match ? match[1] : ""}`));
+    const cardTime = firstPresent(get(doc, "identity.confirmed_time_ms"), doc.confirmed_time_ms, parseSignalRatingTimeMs(confirmedAt(doc)));
+    if (!match || near.schema_version !== "1.0.0" || get(fact, "provenance.selected_source") !== "near_term_market_context"
+      || near.as_of_ms !== cardTime
+      || window.observed_end_ms !== fact.observed_at_ms) return null;
+    return window;
+  }
+
+  function signalEvidenceCoverageReading(fact, doc) {
+    if (!signalEvidenceFactKey(fact).endsWith(".coverage")) return "";
+    const window = signalEvidenceNearWindow(fact, doc);
+    if (!window || ![window.bar_count, window.expected_bar_count, window.missing_minutes].every((value) => typeof value === "number" && Number.isFinite(value))) return "";
+    const time = (value) => dateText(value, "short");
+    const range = (start, end) => start && end ? `${time(start)} — ${time(end)}` : "起止时间未提供";
+    const actual = range(window.observed_start_ms, window.observed_end_ms);
+    const targetDiffers = window.observed_start_ms !== window.requested_start_ms || window.observed_end_ms !== window.requested_end_ms;
+    return `已闭合 ${window.bar_count} / ${window.expected_bar_count} 根，缺口 ${window.missing_minutes} 分钟。分钟覆盖（北京时间）：${actual}。${targetDiffers ? `目标范围：${range(window.requested_start_ms, window.requested_end_ms)}。` : ""}`;
+  }
+
+  function renderSignalEvidenceFactOverview(fact, groupNoteSet, doc = {}) {
     const view = asObject(fact);
     const label = signalEvidenceFactLabel(view);
     const value = signalEvidenceDisplayValue(view);
-    const rawSummary = signalEvidenceReaderText(view.summary_cn, "");
+    const rawSummary = signalEvidenceCoverageReading(view, doc) || signalEvidenceReaderText(view.summary_cn, "");
     const summary = signalEvidenceSummaryIsMechanical(label, value, rawSummary) ? "" : rawSummary;
     const limitations = signalEvidenceFactLimitations(view).filter((item) => !groupNoteSet.has(item));
     const numericDescription = typeof view.value === "number" && summary.includes(number(view.value, 4));
-    const repeatsState = ["structure.gamma.regime", "structure.location.wall_zone"].includes(signalEvidenceFactKey(view));
+    const id = signalEvidenceFactKey(view);
+    const rangeProfile = /^response\.near_term\.(15m|30m)\.range_profile$/.test(id);
+    const textValue = typeof view.value === "string" && value.length > 24;
+    const repeatsState = ["structure.gamma.regime", "structure.location.wall_zone"].includes(id) || rangeProfile;
+    const validNearObservation = /^response\.near_term\./.test(id) && view.usable === true && get(view, "provenance.time_basis") === "selected_observation_time";
     const readingItems = [
       numericDescription || repeatsState ? "" : summary,
-      ...limitations.filter(signalEvidenceRowOnlyLimitation)
+      ...(validNearObservation ? [] : limitations.filter(signalEvidenceRowOnlyLimitation))
     ].filter(Boolean);
+    const rawWindow = rangeProfile ? signalEvidenceNearWindow(view, doc) : null;
+    const metrics = rawWindow ? [["range_pct", "振幅"], ["high_excursion_pct", "上探"], ["low_excursion_pct", "下探"], ["distance_from_high_pct", "距高"], ["distance_from_low_pct", "距低"]]
+      .filter(([key]) => typeof rawWindow[key] === "number" && Number.isFinite(rawWindow[key]))
+      .map(([key, label]) => `${label} ${key.includes("excursion") && rawWindow[key] > 0 ? "+" : ""}${number(rawWindow[key], 4)}%`) : value.split("；");
+    const valueHtml = rangeProfile ? `<div class="market-fact-metrics">${metrics.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : escapeHtml(value || "未提供数值");
     return `
-      <div class="market-fact-overview-item${signalEvidenceFactKey(view) === "market.price.current" ? " is-current-price" : ""}">
+      <div class="market-fact-overview-item${id === "market.price.current" ? " is-current-price" : ""}${textValue ? " is-text-value" : ""}">
         <div class="market-fact-name"><strong>${escapeHtml(label)}</strong></div>
-        <div class="market-fact-value">${escapeHtml(value || "未提供数值")}</div>
+        <div class="market-fact-value">${valueHtml}</div>
         <div class="market-fact-reading">
           ${readingItems.map((item, index) => `<p>${escapeHtml(item)}</p>`).join("")}
         </div>
@@ -5316,7 +5410,7 @@ function signalEvidenceGroupMetaLine(facts) {
     `;
   }
 
-  function renderSignalEvidenceFactCard(id, title, summary, facts) {
+  function renderSignalEvidenceFactCard(id, title, summary, facts, doc = {}) {
     const factList = signalEvidenceSortedFacts(
       asArray(facts).filter((fact) => !signalEvidenceFactIsLegacyAnchorFitScore(fact)),
       id
@@ -5330,7 +5424,7 @@ function signalEvidenceGroupMetaLine(facts) {
         <p>${escapeHtml(summary)}</p>
         ${factList.length ? `
           <div class="market-fact-overview">
-            ${factList.map((fact) => renderSignalEvidenceFactOverview(fact, groupNoteSet)).join("")}
+            ${factList.map((fact) => renderSignalEvidenceFactOverview(fact, groupNoteSet, doc)).join("")}
           </div>
           <details class="signal-evidence-detail">
             <summary>来源时点与解释边界</summary>
@@ -5374,7 +5468,22 @@ function signalEvidenceFactIsVerifiedChange(fact) {
   function renderSignalEvidenceKeyChanges(doc) {
     const stateView = signalEvidenceState(doc);
     if (!stateView.view || stateView.state === "summary") return "";
-    const facts = asArray(stateView.view.market_facts).filter(signalEvidenceFactIsVerifiedChange);
+    let facts = asArray(stateView.view.market_facts).filter(signalEvidenceFactIsVerifiedChange);
+    let projectionNote = "";
+    if (!facts.some((fact) => fact.usable === true && fact.id !== "change.context.status") && stateView.state !== "invalid") {
+      const projection = asObject(doc.local_change_projection);
+      const copy = JSON.parse(JSON.stringify(projection));
+      delete copy.projection_hash;
+      const summary = asObject(signalEvidenceSummaryCandidate(doc));
+      if (projection.schema_version === "signal_change_projection@1.0.0"
+        && projection.source_record_hash && projection.source_record_hash === summary.source_record_hash
+        && projection.assessment_hash === stateView.view.assessment_hash
+        && projection.as_of_ms === stateView.view.as_of_ms
+        && projection.projection_hash === `sha256:${sha256Hex(canonicalJson(copy))}`) {
+        facts = asArray(projection.facts).filter(signalEvidenceFactIsVerifiedChange);
+        projectionNote = "本地核验的变化，未进入当时模型评审。";
+      }
+    }
     const context = facts.find((fact) => signalEvidenceFactKey(fact) === "change.context.status");
     const statusUsable = context && asObject(context).usable === true && asObject(context).value === "变化可用";
     const changes = statusUsable && stateView.state !== "invalid"
@@ -5383,6 +5492,7 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     if (!changes.length) return section("关键变化骨架", "", `<p class="evidence-change-unavailable">${escapeHtml(reason)} <a href="#market-data-quality">查看对照缺口</a></p>`, "signal-key-changes");
     return section("关键变化骨架", "区分价格移动与结构位迁移，保留变化含义及比较边界。", `
       <div class="evidence-changes-panel">
+        ${projectionNote ? `<p class="market-fact-meta">${escapeHtml(projectionNote)}</p>` : ""}
         <p><strong>${escapeHtml(context ? signalEvidenceFactLabel(context) : "前后对照")}</strong>：${escapeHtml(changes.length ? `${signalEvidenceFactMetaLine(context)}。以下呈现已记录的变化，未记录项不补算。` : reason)}</p>
         ${changes.length ? `<div class="transition-core-list">${changes.map((fact) => renderSignalEvidenceChangeRow(fact, context)).join("")}</div>` : ""}
         ${context ? signalEvidenceFactLimitations(context).map((text) => `<p>${escapeHtml(text)}</p>`).join("") : ""}
@@ -5412,7 +5522,7 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     return section("中文市场事实", "完整证据面：空间位置、压力、响应与背景；同源派生描述不增加独立证明力。", `
       <div class="market-fact-grid">
         ${renderSignalEvidenceFactCard("market-options-structure", "空间结构", "先看结构位置，再解释倾向。期权偏斜属于方向背景，不等于墙位约束。", grouped["options-structure"])}
-        ${renderSignalEvidenceFactCard("market-price-path", "价格路径与压力", "说明不利侧推进程度，平盘不解释成强趋势。", grouped["price-path"])}
+        ${renderSignalEvidenceFactCard("market-price-path", "价格路径与压力", "说明不利侧推进程度，平盘不解释成强趋势。", grouped["price-path"], doc)}
         ${renderSignalEvidenceFactCard("market-active-flow", "主动成交与响应", "观察压力是否传导到价格，避免把同源流重复加票。", grouped["active-flow"])}
         ${renderSignalEvidenceFactCard("market-funding-rate", "资金费率", "只作为杠杆拥挤和反身性背景。", grouped["funding-rate"])}
         ${renderSignalEvidenceFactCard("market-macro-background", "宏观背景", "区分方向背景和冲击限制。", grouped["macro-background"])}

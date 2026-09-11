@@ -252,14 +252,17 @@ def test_request_contract_and_prompt(tool):
     assert_true("future_24h" not in text and "blind" not in text.lower(),
                 "v2 prompt should not require legacy blind or 24h report")
     schema = request["_local_json_schema"]
-    assert_true(set(schema["required"]) == {"side_evidence_ratings", "price_bias", "side_comparison"},
-                "new request schema should require price bias and comparison")
+    assert_true(set(schema["required"]) == {
+        "side_evidence_ratings", "price_bias", "side_comparison", "advisory_guidance"
+    }, "latest request schema should require price bias, comparison and guidance")
     assert_true(set(schema["properties"]["side_evidence_ratings"][
         "properties"]) == {"put_credit", "call_credit"},
         "schema should expose only two sides")
     side_props = schema["properties"]["side_evidence_ratings"]["properties"]["put_credit"]["properties"]
     assert_true("evidence_roles" in side_props and "invalid_if_cn" not in side_props,
                 "new side schema should use evidence roles and strengthen/weaken conditions")
+    assert_true("mechanism" in side_props and "mechanism_cn" not in side_props,
+                "latest side schema should use structured mechanism")
     recovery = tool.build_request(packet(), "model-x", recovery=True)
     assert_true("recovery" in recovery["_local_call_profile"],
                 "recovery flag should be visible to runtime")
@@ -299,8 +302,12 @@ def test_review_summary_hash_context_and_revalidation(tool):
     assert_true(advisory["local_action_state"]["put_credit"]["state"] == "PREPARE",
                 "valid put A on bullish card should prepare")
     summary = tool.build_summary(review)
-    assert_true(summary["schema"] == "signal_evidence_summary@2.1.0",
-                "summary schema should be v2.1 projection")
+    assert_true(summary["schema"] == "signal_evidence_summary@2.2.0",
+                "summary schema should be the current display projection")
+    assert_true(summary["review_schema_version"] == "signal_llm_review@2.0.0"
+                and summary["review_protocol"] == "2.0"
+                and summary["has_advisory_guidance"] is False,
+                "summary should expose legacy review identity without inventing v2.2 guidance")
     assert_true(summary["assessment_hash"] == advisory["validation"]["assessment_hash"],
                 "summary should bind full advisory hash")
     assert_true(summary["price_bias"]["bias"] == "BULLISH",
@@ -716,7 +723,7 @@ def test_v21_roles_comparison_and_summary_projection(tool):
                         flip_if_cn="若下行推进穿透结构约束，相对比较需要反转。"),
     )
     review = tool.build_review(card(direction="NEUTRAL"), answer, p,
-                               prompt_version=tool.PROMPT_VERSION)
+                               prompt_version=tool.PROMPT_VERSION_2_1_0)
     advisory = review["integrated_trade_advisory"]
     put = advisory["side_evidence_ratings"]["put_credit"]
     assert_true(review["schema_version"] == "signal_llm_review@2.1.0",
@@ -731,8 +738,11 @@ def test_v21_roles_comparison_and_summary_projection(tool):
                 and advisory["side_comparison"]["relative_side"] == "put_credit",
                 "same-grade sides may still have a valid relative side")
     summary = tool.build_summary(review)
-    assert_true(summary["display_projection_version"] == "2.1.0",
-                "summary should expose a v2.1 display projection")
+    assert_true(summary["display_projection_version"] == "2.2.0",
+                "summary should expose the current display projection")
+    assert_true(summary["review_protocol"] == "2.1"
+                and summary["has_advisory_guidance"] is False,
+                "summary should keep v2.1 review identity explicit")
     assert_true(summary["market_snapshot"]["status"] == "AVAILABLE"
                 and summary["market_snapshot"]["price"] == 78231.99,
                 "summary should expose frozen card-time price")
@@ -761,7 +771,7 @@ def test_v21_adverse_pressure_cannot_support_same_side_but_buffer_can(tool):
             side_v21("C", [role("F_STRUCTURE")]),
         ),
         p,
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     assert_true(bad["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]["status"] == "UNRATED",
                 "direct put adverse pressure must not support put fit")
@@ -777,7 +787,7 @@ def test_v21_adverse_pressure_cannot_support_same_side_but_buffer_can(tool):
             comparison=side_comparison("tie", ["F_STRUCTURE"]),
         ),
         p,
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     put = good["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]
     assert_true(put["status"] == "RATED" and put["grade"] == "B",
@@ -806,7 +816,7 @@ def test_v21_nonvoting_funding_is_context_only(tool):
             side_v21("C", [role("F_STRUCTURE")]),
         ),
         p,
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     assert_true(review["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]["status"] == "UNRATED",
                 "nonvoting funding cannot be a directional support role")
@@ -822,7 +832,7 @@ def test_v21_nonvoting_funding_is_context_only(tool):
             comparison=side_comparison("tie", ["F_STRUCTURE"]),
         ),
         p,
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     put = ok["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]
     assert_true(put["status"] == "RATED"
@@ -839,7 +849,7 @@ def test_v21_comparison_failures_are_local(tool):
                                    flip_if_cn="若 Put 侧继续增强则重做比较。"),
     )
     review = tool.build_review(card(direction="NEUTRAL"), answer, packet(),
-                               prompt_version=tool.PROMPT_VERSION)
+                               prompt_version=tool.PROMPT_VERSION_2_1_0)
     advisory = review["integrated_trade_advisory"]
     assert_true(advisory["side_evidence_ratings"]["put_credit"]["grade"] == "A",
                 "comparison contradiction should not alter side grades")
@@ -852,7 +862,7 @@ def test_v21_comparison_failures_are_local(tool):
     invalid_side["side_evidence_ratings"]["call_credit"]["evidence_roles"][0]["ref"] = "MISSING"
     invalid_side["side_comparison"] = side_comparison("put_credit", ["F_STRUCTURE"])
     local = tool.build_review(card(direction="NEUTRAL"), invalid_side, packet(),
-                              prompt_version=tool.PROMPT_VERSION)
+                              prompt_version=tool.PROMPT_VERSION_2_1_0)
     assert_true(local["integrated_trade_advisory"]["side_evidence_ratings"]["put_credit"]["grade"] == "A",
                 "valid peer side should survive a bad side")
     assert_true(local["integrated_trade_advisory"]["side_comparison"]["status"] == "UNAVAILABLE",
@@ -891,7 +901,7 @@ def test_v21_comparison_path_overclaim_isolated_from_grades_and_summary(tool):
         ),
     )
     review = tool.build_review(card(direction="NEUTRAL"), answer, packet(),
-                               prompt_version=tool.PROMPT_VERSION)
+                               prompt_version=tool.PROMPT_VERSION_2_1_0)
     advisory = review["integrated_trade_advisory"]
     assert_true(advisory["side_evidence_ratings"]["put_credit"]["grade"] == "B",
                 "comparison path overclaim should not alter put grade")
@@ -945,7 +955,7 @@ def test_v21_comparison_internal_identifier_is_v21_only(tool):
         ),
     )
     review = tool.build_review(card(direction="NEUTRAL"), answer, packet(),
-                               prompt_version=tool.PROMPT_VERSION)
+                               prompt_version=tool.PROMPT_VERSION_2_1_0)
     comparison = review["integrated_trade_advisory"]["side_comparison"]
     assert_true(comparison["status"] == "UNAVAILABLE",
                 "v2.1 comparison should reject internal side or role identifiers")
@@ -1007,7 +1017,7 @@ def test_v21_not_comparable_keeps_readable_reason(tool):
             ),
         ),
         packet(),
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     comparison = review["integrated_trade_advisory"]["side_comparison"]
     assert_true(comparison["status"] == "UNAVAILABLE"
@@ -1026,7 +1036,7 @@ def test_v21_display_summary_window_reason_and_unrated_phrase(tool):
             side_v21("C", [role("F_STRUCTURE")]),
         ),
         packet(),
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     summary = tool.build_summary(
         review,
@@ -1044,7 +1054,7 @@ def test_v21_display_summary_window_reason_and_unrated_phrase(tool):
             side_v21("B", [role("MISSING")]),
         ),
         packet(),
-        prompt_version=tool.PROMPT_VERSION,
+        prompt_version=tool.PROMPT_VERSION_2_1_0,
     )
     unrated_summary = tool.build_summary(unrated)
     assert_true("未评级暂未评级" not in unrated_summary["display_action_summary_cn"],
