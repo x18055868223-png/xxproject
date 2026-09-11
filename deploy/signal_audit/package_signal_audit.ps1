@@ -111,6 +111,7 @@ Copy-Item -LiteralPath (Join-Path $root.Path "tools\materialize_signal_cards.py"
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review_entry.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_evidence_v2.py") -Destination (Join-Path $packageRoot "tools") -Force
+Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_change_display.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_review_v2.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_review_v2_runtime.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review_canary_release.sh") -Destination (Join-Path $packageRoot "tools") -Force

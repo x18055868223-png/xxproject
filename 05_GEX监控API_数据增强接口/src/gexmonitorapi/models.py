@@ -13,6 +13,8 @@ SECTIONS: tuple[SectionName, ...] = (
     "flow",
 )
 
+GEX_TIME_SEMANTICS_SCHEMA = "gex_time_semantics@1.0.0"
+
 SECTION_TABS: dict[SectionName, str] = {
     "gex_board": "gex",
     "gamma_exposure": "gamma",

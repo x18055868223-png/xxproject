@@ -6,9 +6,11 @@
 
 ## 文件清单
 
+本工作树当前为尚未发布的1.6.2候选，见[Astra补丁与验收](../../docs/astra/20_GEX时间语义补丁与FMZ1.6.2.md)。下文的1.6.1发布授权属于上一阶段；本补丁仍需当前页面确认后才能发布，用户可见根目录最新交付物尚未替换。
+
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.6.1` | Astra v2.2 交付；保留原生四态与旧信号行为，增加 `near_term_market_context@1.0.0` 的15/30分钟闭合缓存摘要。FMZ实例须由用户替换后验收 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=1.6.2` | 本地补丁候选：原生 GEX 字段时间说明；保留1.6.1的15/30分钟缓存摘要及旧信号行为。尚未发布，不能代替实例与自然新卡验收 | 只读观察，不选腿、不报价、不下单 |
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 固定轮次只绕过 Anchor+DIE 的发卡触发条件，不伪造 `NR_REPAIR_CONFIRMED`，不改写 producer 的 direction、confidence、blocking、trade_allowed 或 execution_allowed。卡片继续写入同一 JSONL，并复用现有 LLM 复核链。

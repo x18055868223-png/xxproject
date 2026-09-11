@@ -1,6 +1,6 @@
 {
   "name": "signal-audit-frontend-fixture",
-  "backup_version": "NRD-XXPROJECT-RELEASE-2026.09.11-astra-evidence-v22",
+  "backup_version": "NRD-XXPROJECT-LOCAL-2026.09.11-astra-gex-time-patch",
   "generated_at": "2026-09-11",
   "frontend_profile": "signal_audit_static_v1",
   "card_schema": "signal_review_card@1.0.0 + signal_llm_review@2.2.0; historical reviews 2.0/2.1 and signal_rating@1.0.0 remain readable; side_evidence_ratings + nrd.signal.durability_layer.v1",
@@ -8,15 +8,17 @@
   "llm_provider": "deepseek",
   "llm_model": "deepseek-v4-flash",
   "llm_review_schema": "signal_llm_review@2.2.0",
-  "llm_prompt_version": "signal_llm_review_prompt@2.2.0",
+  "llm_prompt_version": "signal_llm_review_prompt@2.2.1",
   "fixture_policy": "committed signal_cards are local preview fixtures; default deploy fixtures exclude synthetic cards; production cards are generated on the server from FMZ signal_review.jsonl and optional LLM sidecar",
   "frontend_contract": "Manifest-first Chinese reader. One validated advisory result supplies suggestion, card-time price and price bias, per-side evidence grades and comparison, mechanisms and primary counters, conditional 4h/24h outlooks. Original signal windows and hard risks are a separate read-only explanation; guidance does not alter execution permissions. Selected-card lazy loading, existing filters and neutral-paper module order remain. Native 15/30m summaries and longer context are separate. Locally restored historical comparisons are hash-bound display projections and are never inserted into archived model evidence. Machine fields remain download-only.",
-  "frontend_cache_token": "20260911-astra-v22-reading",
-  "reader_presentation": "v2.2 neutral paper; current local page reviewed and release explicitly authorized on 2026-09-11. FMZ 1.6.1 native forward acceptance remains separate.",
+  "frontend_cache_token": "20260911-astra-time-patch",
+  "reader_presentation": "Neutral paper. Native GEX source clocks; spatial levels in dynamics; locally verified endpoint changes in the change skeleton.",
   "live_materializer_source": "/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl",
   "live_output_root": "/opt/signal-audit",
   "price_bias_schema": "price_bias@1.0.0",
-  "producer_version": "1.6.1",
-  "evidence_packet_schema": "signal_evidence_packet@2.1.0",
-  "near_term_schema": "near_term_market_context@1.0.0"
+  "producer_version": "1.6.2",
+  "evidence_packet_schema": "signal_evidence_packet@2.1.1",
+  "near_term_schema": "near_term_market_context@1.0.0",
+  "gex_time_semantics_schema": "gex_time_semantics@1.0.0",
+  "local_change_projection_schema": "signal_change_projection@1.1.0"
 }

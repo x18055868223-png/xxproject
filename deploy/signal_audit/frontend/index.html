@@ -2727,6 +2727,24 @@
     .evidence-spatial-report .llm-gamma-copy strong { margin-right: 8px; }
     .evidence-spatial-scale { padding-top: 12px; margin: 12px 0 0; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); line-height: 1.6; }
     .evidence-spatial-scale strong { color: var(--ink); }
+    .spatial-levels { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin: 14px 0 18px; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; background: var(--bg); }
+    .spatial-level { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .spatial-level:nth-child(3n) { border-right: 0; }
+    .spatial-level:nth-last-child(-n+3) { border-bottom: 0; }
+    .spatial-level.is-current-price { background: var(--surface); }
+    .spatial-level dt { font-size: 12px; line-height: 1.5; }
+    .spatial-level dt .source-ref-link { padding: 0; border: 0; background: none; border-radius: 0; }
+    .spatial-level dd { margin: 7px 0 0; }
+    .spatial-level dd strong { display: block; font-size: 16px; font-variant-numeric: tabular-nums; line-height: 1.5; overflow-wrap: anywhere; }
+    .spatial-level dd span { display: block; margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+    @media (max-width: 700px) {
+      .spatial-levels { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .spatial-level:nth-child(n) { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+      .spatial-level:nth-child(2n) { border-right: 0; }
+      .spatial-level:nth-last-child(-n+2) { border-bottom: 0; }
+      .spatial-level { padding: 10px; }
+      .spatial-level dd strong { font-size: 14px; }
+    }
     .evidence-change-unavailable { margin: 0; padding: 10px 14px; border: 1px solid var(--line); background: var(--surface); border-radius: 6px; font-size: 13px; color: var(--muted); }
     .evidence-decision-grade { display: flex; align-items: center; gap: 12px; margin-top: 5px; }
     .evidence-decision-grade > strong { font-size: 22px; line-height: 1.25; }
@@ -2751,6 +2769,15 @@
     .evidence-changes-panel .transition-core-summary { margin-top: 0; }
     .evidence-reader .transition-core-row { grid-template-columns: minmax(140px,.8fr) minmax(115px,.65fr) minmax(0,1.65fr); }
     .evidence-reader .transition-core-row p { font-size: 13px; line-height: 1.65; }
+    .evidence-reader .transition-core-row.evidence-change-row { grid-template-columns: minmax(140px,.8fr) minmax(170px,1fr) minmax(0,1.4fr); }
+    .evidence-change-row .transition-core-values { overflow-wrap: normal; word-break: normal; }
+    .evidence-change-row .transition-core-values > span { display: inline-block; }
+    .evidence-change-row .transition-core-values small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    .evidence-supplementary-changes { margin-bottom: 10px; }
+    @media (max-width: 1100px) {
+      .evidence-reader .transition-core-row.evidence-change-row { grid-template-columns: minmax(125px,.8fr) minmax(0,1.2fr); }
+      .evidence-reader .transition-core-row.evidence-change-row .market-fact-reading { grid-column: 1 / -1; }
+    }
     @media (min-width: 761px) {
       .evidence-reader .transition-core-row .market-fact-reading { grid-column: auto; }
     }
@@ -3015,6 +3042,6 @@ html.astra-paperline .transition-badges span {
 []
   </script>
 
-  <script src="app.js?v=20260911-astra-v22-reading"></script>
+  <script src="app.js?v=20260911-astra-time-patch"></script>
 </body>
 </html>

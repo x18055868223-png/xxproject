@@ -3959,12 +3959,13 @@
 
   const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.2.0";
   const SIGNAL_EVIDENCE_REVIEW_SCHEMAS = new Set(["signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"]);
-  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.2.0";
+  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.2.1";
   const SIGNAL_EVIDENCE_PROMPT_VERSIONS = new Set([
     "signal_llm_review_prompt@2.0.0",
     "signal_llm_review_prompt@2.0.1",
     "signal_llm_review_prompt@2.1.0",
-    "signal_llm_review_prompt@2.2.0"
+    "signal_llm_review_prompt@2.2.0",
+    "signal_llm_review_prompt@2.2.1"
   ]);
   const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.2.0";
   const SIGNAL_EVIDENCE_SUMMARY_SCHEMAS = new Set(["signal_evidence_summary@2.0.0", "signal_evidence_summary@2.1.0", "signal_evidence_summary@2.2.0"]);
@@ -4471,6 +4472,7 @@
       source: "full",
       schema_version: firstPresent(object.schema_version, get(doc, "llm_review.schema_version"), SIGNAL_EVIDENCE_REVIEW_SCHEMA),
       prompt_version: firstPresent(object.prompt_version, get(doc, "llm_review.prompt_version")),
+      packet_schema: firstPresent(get(doc, "llm_review.evidence_context.schema"), get(doc, "llm_review.content.evidence_context.schema")),
       as_of_ms: firstPresent(summaryView.as_of_ms, get(doc, "llm_review.reviewed_at"), confirmedAt(doc)),
       input_packet_hash: firstPresent(summaryView.input_packet_hash, get(doc, "llm_review.input_packet_hash")),
       assessment_hash: firstPresent(summaryView.assessment_hash, validation.assessment_hash),
@@ -4785,6 +4787,19 @@
     return { BULLISH: "偏多", BEARISH: "偏空", NEUTRAL: "中性", MIXED: "多空分歧", UNDETERMINED: "方向依据不足" };
   }
 
+  function signalEvidenceFactAvailable(fact, asOf, packetSchema) {
+    if (!fact || fact.usable !== true) return false;
+    const validTime = (value) => Number.isFinite(value) && value > 0;
+    if (packetSchema === "signal_evidence_packet@2.1.1" || Object.prototype.hasOwnProperty.call(fact, "available_at_ms")) {
+      const provenance = asObject(fact.provenance);
+      const clocks = [fact.available_at_ms, fact.observed_at_ms, provenance.observed_at_ms,
+        provenance.generated_at_ms, provenance.fetched_at_ms, provenance.recorded_at_ms];
+      return validTime(fact.available_at_ms) && !asArray(provenance.time_errors).length
+        && clocks.every((value) => value == null || (validTime(value) && value <= asOf));
+    }
+    return validTime(fact.observed_at_ms) && fact.observed_at_ms <= asOf;
+  }
+
   function signalEvidencePriceBiasResult(view, options = {}) {
     const raw = asObject(view.price_bias);
     const labels = signalEvidencePriceBiasLabels();
@@ -4794,9 +4809,7 @@
     const validRefs = options.relaxed === true
       || ((refs.length > 0 || raw.bias === "UNDETERMINED") && refs.every((ref) => {
         const fact = factMap.get(ref);
-        return typeof ref === "string" && fact && fact.usable === true
-          && Number.isFinite(fact.observed_at_ms) && fact.observed_at_ms > 0
-          && fact.observed_at_ms <= asOf;
+        return typeof ref === "string" && signalEvidenceFactAvailable(fact, asOf, view.packet_schema);
       }));
     const rawText = [raw.raw_basis_cn, raw.raw_counter_cn, raw.raw_invalid_if_cn].join(" ");
     const textFields = [raw.basis_cn, raw.counter_cn, raw.invalid_if_cn];
@@ -4981,6 +4994,36 @@
     return { feedback, mechanism, position, geometry, pressure, magnitude, strength };
   }
 
+  function signalEvidenceSpatialLevelSpecs() {
+    return [
+      ["structure.gamma.put_wall", "Put 墙", "structure.distance.put_wall_pct"],
+      ["market.price.current", "卡时现价", ""],
+      ["structure.gamma.call_wall", "Call 墙", "structure.distance.call_wall_pct"],
+      ["structure.gamma.pin_strike", "Pin／最大 Gamma 位", "structure.distance.pin_pct"],
+      ["structure.gamma.flip_point", "Gamma 翻转点", "structure.distance.flip_pct"],
+      ["structure.anchor.axis_price", "价格锚轴", "structure.anchor.axis_distance_pct"]
+    ];
+  }
+
+  function renderSignalEvidenceSpatialLevels(view) {
+    const price = signalEvidenceUsableFact(view, "market.price.current");
+    const rows = signalEvidenceSpatialLevelSpecs().map(([id, label, distanceId]) => {
+      const fact = signalEvidenceUsableFact(view, id);
+      const distance = signalEvidenceUsableFact(view, distanceId);
+      const value = fact && typeof fact.value === "number" && Number.isFinite(fact.value)
+        ? `${number(fact.value, 2)} ${signalEvidenceUnitText(fact.unit)}`.trim() : "尚无有效点位";
+      const relative = fact && price && distance && typeof distance.value === "number"
+        ? fact.value === price.value ? "与卡时现价重合"
+          : `${fact.value > price.value ? "高于" : "低于"}卡时现价 ${number(Math.abs(distance.value), 2)}%`
+        : id === "market.price.current" ? "本卡位置比较的基准" : fact ? "相对距离暂不可用" : "来源缺口见下方证据";
+      return `<div class="spatial-level${id === "market.price.current" ? " is-current-price" : ""}">
+        <dt><a class="source-ref-link" href="#market-options-structure">${escapeHtml(label)}</a></dt>
+        <dd><strong>${escapeHtml(value)}</strong><span>${escapeHtml(relative)}</span></dd>
+      </div>`;
+    });
+    return `<dl class="spatial-levels" aria-label="关键空间点位，相对卡时现价">${rows.join("")}</dl>`;
+  }
+
   function renderSignalEvidenceSpatialDynamics(doc) {
     const stateView = signalEvidenceState(doc);
     if (!stateView.view || !asArray(stateView.view.market_facts).length) return "";
@@ -4991,10 +5034,11 @@
         <div class="llm-review-topline"><span class="badge">${escapeHtml(reading.feedback)}</span><span class="badge">${escapeHtml(reading.position)}</span></div>
         <div class="llm-gamma-copy">
           <p><strong>空间分布</strong> ${escapeHtml(reading.geometry)}</p>
+          ${renderSignalEvidenceSpatialLevels(stateView.view)}
           <p><strong>波动机制</strong> ${escapeHtml(reading.mechanism)}</p>
+          <p class="evidence-spatial-scale"><strong>净 Gamma ${escapeHtml(reading.magnitude)}</strong> · ${escapeHtml(reading.strength)}</p>
           <p><strong>压力检验</strong> ${escapeHtml(reading.pressure)}</p>
         </div>
-        <p class="evidence-spatial-scale"><strong>净 Gamma ${escapeHtml(reading.magnitude)}</strong> · ${escapeHtml(reading.strength)}</p>
         <div class="source-ref-row"><a class="source-ref-link" href="#market-options-structure">核对空间位置与 Gamma</a><a class="source-ref-link" href="#market-price-path">核对压力与价格响应</a></div>
       </div>`, "signal-spatial-dynamics");
   }
@@ -5116,6 +5160,7 @@ function renderSignalEvidenceDecision(doc) {
   function signalEvidenceReaderText(value, fallback = "未说明") {
     const text = normalizeComfortText(value, fallback);
     return text
+      .replace(/零值也是合法市场数值；本轮不再用绝对值大于 1 判断是否可记录。?/g, "零值同样可以记录；不能仅凭名义规模判断约束强度。")
       .replace(/记录提供来源年龄，但\s*v2\s*不自行创造新的新鲜度阈值。?/gi, "已记录来源年龄；是否足够新鲜按原始采集口径复核。")
       .replace(/只记录显式带宽；不采用旧代码的默认\s*0\.4%\s*带宽。?/g, "仅记录本卡显式给出的锚带宽；缺少显式带宽时不补造空间边界。")
       .replace(/\bv2\b/gi, "本轮评级")
@@ -5205,9 +5250,12 @@ function renderSignalEvidenceDecision(doc) {
     const notes = signalEvidenceFactLimitations(view);
     const rawSummary = signalEvidenceReaderText(view.summary_cn, "");
     const summary = signalEvidenceSummaryIsMechanical(signalEvidenceFactLabel(view), signalEvidenceDisplayValue(view), rawSummary) ? "" : rawSummary;
+    const isSpatialPrimary = signalEvidenceSpatialLevelSpecs().some(([key, , distance]) => [key, distance].includes(view.id))
+      || view.id === "structure.gex.net_gamma_notional_usd";
     return `
       <div class="signal-evidence-fact">
         <strong>${escapeHtml(signalEvidenceFactLabel(view))}</strong>
+        ${isSpatialPrimary ? `<p class="spatial-source-value">${escapeHtml(signalEvidenceDisplayValue(view) || "数值未提供")}</p>` : ""}
         ${metaLine ? `<p>${escapeHtml(metaLine)}</p>` : ""}
         ${summary ? `<p>${escapeHtml(summary)}</p>` : ""}
         ${notes.map((item) => `<p>${escapeHtml(item)}</p>`).join("")}
@@ -5230,6 +5278,21 @@ function renderSignalEvidenceDecision(doc) {
     if (windowText) parts.push(`窗口：${windowText}`);
     const observed = firstPresent(view.observed_at_ms, view.observed_at);
     const provenance = asObject(view.provenance);
+    if (Object.prototype.hasOwnProperty.call(view, "available_at_ms")) {
+      const readableTime = (value) => dateText(parseSignalRatingTimeMs(value) || value);
+      const basis = provenance.time_basis || "";
+      const observedLabel = basis === "derived_from_packet_dependencies" ? "关系截至"
+        : basis === "source_age_derived_from_card_time" ? "按记录年龄回推"
+        : basis === "selected_observation_time" ? "窗口截至"
+        : !basis ? "记录时点" : "市场观测";
+      parts.push(observed && basis !== "card_recorded_at_no_source_observation"
+        ? `${observedLabel}：${readableTime(observed)}` : "真实观测未知");
+      if (provenance.generated_at_ms) parts.push(`上游结果时间：${readableTime(provenance.generated_at_ms)}`);
+      if (provenance.fetched_at_ms) parts.push(`最近抓取：${readableTime(provenance.fetched_at_ms)}`);
+      if (provenance.recorded_at_ms) parts.push(`卡片记录：${readableTime(provenance.recorded_at_ms)}`);
+      if (asArray(provenance.time_errors).length) parts.push("来源时间异常，本项不能用于当期论证");
+      return parts.join("；");
+    }
     if (provenance.time_basis === "card_recorded_at_no_source_observation") {
       parts.push(`卡片记录：${dateText(parseSignalRatingTimeMs(provenance.recorded_at_ms) || provenance.recorded_at_ms)}`);
       parts.push("来源观测时点未提供");
@@ -5418,14 +5481,19 @@ function signalEvidenceGroupMetaLine(facts) {
     const groupNotes = signalEvidenceGroupNotes(factList);
     const groupNoteSet = new Set(groupNotes.map((note) => note.text));
     const detailHtml = factList.map(renderSignalEvidenceFact).join("");
+    const spatialIds = new Set(signalEvidenceSpatialLevelSpecs().flatMap(([key, , distance]) => [key, distance]));
+    spatialIds.add("structure.gex.net_gamma_notional_usd");
+    const overviewFacts = id === "market-options-structure"
+      ? factList.filter((fact) => !spatialIds.has(signalEvidenceFactKey(fact))) : factList;
     return `
       <article id="${escapeHtml(id)}" class="market-fact-card">
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(summary)}</p>
         ${factList.length ? `
-          <div class="market-fact-overview">
-            ${factList.map((fact) => renderSignalEvidenceFactOverview(fact, groupNoteSet, doc)).join("")}
-          </div>
+          ${id === "market-options-structure" ? '<p class="market-fact-meta">关键点位与净 Gamma 见上方<a class="source-ref-link" href="#signal-spatial-dynamics">空间约束动力学</a>；完整数值及各自来源时间保留在下方。</p>' : ""}
+          ${overviewFacts.length ? `<div class="market-fact-overview">
+            ${overviewFacts.map((fact) => renderSignalEvidenceFactOverview(fact, groupNoteSet, doc)).join("")}
+          </div>` : ""}
           <details class="signal-evidence-detail">
             <summary>来源时点与解释边界</summary>
             <div class="signal-evidence-detail-body">${renderSignalEvidenceGroupNotes(groupNotes, factList.length)}${detailHtml}</div>
@@ -5444,10 +5512,15 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     const view = asObject(fact);
     const summary = signalEvidenceReaderText(view.summary_cn, "");
     const samePeriod = context && view.window === context.window && view.observed_at_ms === context.observed_at_ms;
+    const notes = signalEvidenceFactLimitations(view).filter((text) => ![
+      "结构位迁移与现价移动分开记录，不自动挑选有利边界。",
+      "本项已确认前后来源、方法和单位可比。",
+      "这不是独立行情路径，只是两张卡时点差。"
+    ].includes(text));
     return `<article class="transition-core-row evidence-change-row">
       <div class="transition-core-main"><strong>${escapeHtml(signalEvidenceFactLabel(view))}</strong></div>
       <div class="transition-core-values">${escapeHtml(signalEvidenceDisplayValue(view) || "未提供差值")}</div>
-      <div class="market-fact-reading"><p>${escapeHtml(summary || "本卡仅记录该项变化，未声明进一步含义。")}</p>${signalEvidenceFactLimitations(view).map((text) => `<p>${escapeHtml(text)}</p>`).join("")}${samePeriod ? "" : `<p class="market-fact-meta">${escapeHtml(signalEvidenceFactMetaLine(view))}</p>`}</div>
+      <div class="market-fact-reading"><p>${escapeHtml(summary || "本卡仅记录该项变化，未声明进一步含义。")}</p>${notes.map((text) => `<p>${escapeHtml(text)}</p>`).join("")}${samePeriod || view.window === asObject(context).window ? "" : `<p class="market-fact-meta">${escapeHtml(signalEvidenceFactMetaLine(view))}</p>`}</div>
     </article>`;
   }
 
@@ -5470,18 +5543,27 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     if (!stateView.view || stateView.state === "summary") return "";
     let facts = asArray(stateView.view.market_facts).filter(signalEvidenceFactIsVerifiedChange);
     let projectionNote = "";
-    if (!facts.some((fact) => fact.usable === true && fact.id !== "change.context.status") && stateView.state !== "invalid") {
+    let displayRows = [];
+    let previousTime = null;
+    if (stateView.state !== "invalid") {
       const projection = asObject(doc.local_change_projection);
       const copy = JSON.parse(JSON.stringify(projection));
       delete copy.projection_hash;
       const summary = asObject(signalEvidenceSummaryCandidate(doc));
-      if (projection.schema_version === "signal_change_projection@1.0.0"
+      if (["signal_change_projection@1.0.0", "signal_change_projection@1.1.0"].includes(projection.schema_version)
         && projection.source_record_hash && projection.source_record_hash === summary.source_record_hash
         && projection.assessment_hash === stateView.view.assessment_hash
         && projection.as_of_ms === stateView.view.as_of_ms
         && projection.projection_hash === `sha256:${sha256Hex(canonicalJson(copy))}`) {
-        facts = asArray(projection.facts).filter(signalEvidenceFactIsVerifiedChange);
-        projectionNote = "本地核验的变化，未进入当时模型评审。";
+        if (!facts.some((fact) => fact.usable === true && fact.id !== "change.context.status")) {
+          facts = asArray(projection.facts).filter(signalEvidenceFactIsVerifiedChange);
+          projectionNote = "本地核验的变化，未进入当时模型评审。";
+        }
+        if (projection.schema_version === "signal_change_projection@1.1.0") {
+          displayRows = asArray(projection.rows);
+          previousTime = projection.previous_as_of_ms;
+          if (displayRows.length) projectionNote = "补充指标为两卡事实的本地核验，未进入当时模型评审。";
+        }
       }
     }
     const context = facts.find((fact) => signalEvidenceFactKey(fact) === "change.context.status");
@@ -5489,15 +5571,37 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     const changes = statusUsable && stateView.state !== "invalid"
       ? facts.filter((fact) => fact !== context && asObject(fact).usable === true) : [];
     const reason = signalEvidenceChangeUnavailableText(stateView, context);
-    if (!changes.length) return section("关键变化骨架", "", `<p class="evidence-change-unavailable">${escapeHtml(reason)} <a href="#market-data-quality">查看对照缺口</a></p>`, "signal-key-changes");
-    return section("关键变化骨架", "区分价格移动与结构位迁移，保留变化含义及比较边界。", `
+    const comparisonTime = previousTime ? `${dateText(previousTime)} → ${dateText(stateView.view.as_of_ms)}`
+      : `比较截至 ${dateText(stateView.view.as_of_ms)}`;
+    if (!changes.length && !displayRows.length) return section("关键变化骨架", "", `<p class="evidence-change-unavailable">${escapeHtml(reason)} <a href="#market-data-quality">查看对照缺口</a></p>`, "signal-key-changes");
+    return section("关键变化骨架", "从前一卡到本卡：量价、净 Gamma、主动流与空间点位分别比较。", `
       <div class="evidence-changes-panel">
         ${projectionNote ? `<p class="market-fact-meta">${escapeHtml(projectionNote)}</p>` : ""}
-        <p><strong>${escapeHtml(context ? signalEvidenceFactLabel(context) : "前后对照")}</strong>：${escapeHtml(changes.length ? `${signalEvidenceFactMetaLine(context)}。以下呈现已记录的变化，未记录项不补算。` : reason)}</p>
+        <p class="market-fact-meta"><strong>前后对照</strong>：${escapeHtml(comparisonTime)}${context && context.window ? ` · ${escapeHtml(signalEvidenceWindowText(context.window))}` : ""}。两卡时点差不代表期间完整路径；点位迁移不自动证明约束增强。</p>
+        ${displayRows.length ? `<div class="transition-core-list evidence-supplementary-changes">${displayRows.map(renderSignalChangeDisplayRow).join("")}</div>` : ""}
         ${changes.length ? `<div class="transition-core-list">${changes.map((fact) => renderSignalEvidenceChangeRow(fact, context)).join("")}</div>` : ""}
         ${context ? signalEvidenceFactLimitations(context).map((text) => `<p>${escapeHtml(text)}</p>`).join("") : ""}
         ${statusUsable && !changes.length ? `<p>比较条件已满足，但本卡没有可用的变化数值；不从其他资料补算。</p>` : ""}
       </div>`, "signal-key-changes");
+  }
+
+  function renderSignalChangeDisplayRow(item) {
+    const row = asObject(item);
+    const format = (value) => {
+      if (value === null || value === undefined) return "未提供";
+      if (typeof value !== "number") return signalEvidenceReaderText(semanticCompact(value), "未提供");
+      if (row.unit === "decimal") return fundingDecimalText(value);
+      if (row.unit === "USD" && /net.*gamma|gamma.*net|gex/.test(row.key || "")) return compactUsdNotional(value);
+      return `${number(value, 4)}${["USD", "USDT", "BTC", "%"].includes(row.unit) ? " " + row.unit : ""}`;
+    };
+    const valid = row.usable === true;
+    const difference = valid && typeof row.delta === "number" && Number.isFinite(row.delta)
+      ? row.delta === 0 ? "无变化" : `变化 ${row.delta > 0 ? "+" : ""}${format(row.delta)}` : "";
+    return `<article class="transition-core-row evidence-change-row">
+      <div class="transition-core-main"><strong>${escapeHtml(signalEvidenceReaderText(row.label_cn, "市场变化"))}</strong></div>
+      <div class="transition-core-values">${valid ? `<span>${escapeHtml(format(row.previous))}</span><span aria-label="至"> → </span><span>${escapeHtml(format(row.current))}</span>${difference ? `<small>${escapeHtml(difference)}</small>` : ""}` : "暂不可比"}</div>
+      <div class="market-fact-reading"><p>${escapeHtml(signalEvidenceReaderText(valid ? row.summary_cn : row.gap_cn, valid ? "本项为两卡时点差，不代表期间完整路径。" : "本项来源暂不可比。"))}</p></div>
+    </article>`;
   }
 
   function signalEvidenceGroupedMarketFacts(view) {

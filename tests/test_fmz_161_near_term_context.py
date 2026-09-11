@@ -99,7 +99,7 @@ def assert_old_signal_fields_unchanged(before, after):
 
 
 def test_version_and_normalized_kline_taker_buy(mod, config):
-    assert_equal(config["demo_version"], "1.6.1",
+    assert_equal(config["demo_version"], "1.6.2",
                  "FMZ producer version")
     row = [
         1000, "100.0", "102.0", "99.0", "101.0", "12.5", 59999,

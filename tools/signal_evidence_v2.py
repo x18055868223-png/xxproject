@@ -16,9 +16,11 @@ import math
 
 
 LEGACY_PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.0.0"
-PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.0"
+PREVIOUS_PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.0"
+PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.1"
 SUPPORTED_PACKET_SCHEMAS = {
     LEGACY_PACKET_SCHEMA_VERSION,
+    PREVIOUS_PACKET_SCHEMA_VERSION,
     PACKET_SCHEMA_VERSION,
 }
 LEGACY_FACT_KEYS = (
@@ -36,7 +38,26 @@ LEGACY_FACT_KEYS = (
     "limitations_cn",
     "dependencies",
 )
-FACT_KEYS = LEGACY_FACT_KEYS + ("provenance",)
+FACT_KEYS_V210 = LEGACY_FACT_KEYS + ("provenance",)
+FACT_KEYS = LEGACY_FACT_KEYS + ("available_at_ms", "provenance")
+PROVENANCE_KEYS_V210 = (
+    "selected_source",
+    "method",
+    "time_basis",
+    "observed_at_ms",
+    "fetched_at_ms",
+    "recorded_at_ms",
+)
+PROVENANCE_KEYS = (
+    "selected_source",
+    "method",
+    "time_basis",
+    "observed_at_ms",
+    "generated_at_ms",
+    "fetched_at_ms",
+    "recorded_at_ms",
+    "time_errors",
+)
 
 _BAD_STATUS_TOKENS = {
     "BAD",
@@ -81,11 +102,69 @@ _SKEW_GREEKS_TIME_KEYS = (
     "greeks_updated_at_ms",
 )
 
+_GENERATED_TIME_KEYS = (
+    "generated_at_ms",
+    "result_generated_at_ms",
+    "upstream_generated_at_ms",
+    "computed_at_ms",
+    "data_timestamp_ms",
+    "generated_at",
+    "result_generated_at",
+    "upstream_generated_at",
+    "computed_at",
+    "data_timestamp",
+)
+
+_GEX_TIME_SEMANTICS_SCHEMA = "gex_time_semantics@1.0.0"
+
+_GEX_METHOD_TIME_FIELDS = {
+    "gex_board_market_state": (
+        "gex_board.market_state",
+    ),
+    "gex_board_net_gamma_usd": (
+        "gex_board.total_net_gex",
+        "gex_board.net_gamma_notional_usd",
+        "gex_board.net_gamma_notional",
+    ),
+    "gex_board_dvol_original_scale": (
+        "gex_board.dvol",
+        "dvol",
+    ),
+    "gex_board_flip_point": (
+        "gamma_exposure.flip_point",
+        "gex_board.flip_point",
+    ),
+    "gex_board_call_wall": (
+        "gamma_exposure.call_wall",
+        "gex_board.call_wall",
+        "gamma_exposure.n1",
+        "gamma_exposure.n2",
+        "gamma_exposure.p1",
+        "gamma_exposure.p2",
+    ),
+    "gex_board_put_wall": (
+        "gamma_exposure.put_wall",
+        "gex_board.put_wall",
+        "gamma_exposure.p1",
+        "gamma_exposure.p2",
+        "gamma_exposure.n1",
+        "gamma_exposure.n2",
+    ),
+    "gex_board_pin_or_max_gamma": (
+        "gamma_exposure.magnet_price",
+        "gamma_exposure.pin_strike",
+        "gamma_exposure.max_gamma_strike",
+        "gex_board.pin_strike",
+        "gex_board.max_gamma_strike",
+    ),
+}
+
 
 class _FactList(list):
-    def __init__(self, packet_schema):
+    def __init__(self, packet_schema, as_of_ms=None):
         super().__init__()
         self.packet_schema = packet_schema
+        self.as_of_ms = as_of_ms
 
 
 def build_evidence_packet(card, previous_card=None, transition=None,
@@ -121,7 +200,7 @@ def build_evidence_packet(card, previous_card=None, transition=None,
         ],
     }
 
-    facts = _FactList(schema_version)
+    facts = _FactList(schema_version, as_of_ms)
     _add_snapshot_fact(facts, current, as_of_ms)
     _add_market_price_fact(facts, current, as_of_ms)
     _add_structure_facts(facts, current, as_of_ms)
@@ -428,9 +507,28 @@ def _add_structure_facts(facts, card, as_of_ms):
             "Gamma 位置分类", "factor_cross_section.gamma_regime", "OPTIONS_STRUCTURE",
             "未找到 GGR 位置分类，不能用正 Gamma 或负 Gamma 叙事补足。", gamma_time)
 
-    gex_time = _source_time(gex, as_of_ms)
+    semantic_gex_time = _time_semantic_facts(facts)
+    gex_time = None if semantic_gex_time else _source_time(gex, as_of_ms)
     gex_state = gex.get("market_state")
     if gex_state not in (None, ""):
+        state_provenance = (
+            _gex_field_provenance(
+                gex, "factor_cross_section.gex_info",
+                "gex_board_market_state", as_of_ms,
+                selected_value=gex_state)
+            if semantic_gex_time
+            else _source_provenance(
+                gex, "factor_cross_section.gex_info",
+                "gex_board_market_state", as_of_ms, gex_time)
+        )
+        state_observed = (
+            state_provenance.get("observed_at_ms")
+            if semantic_gex_time
+            else gex_time
+        )
+        state_usable = _source_usable_exact(card, "gex_info", gex)
+        if semantic_gex_time:
+            state_usable = _time_usable(state_usable, state_provenance)
         _append_fact(
             facts,
             fact_id="structure.gex.market_state",
@@ -440,16 +538,14 @@ def _add_structure_facts(facts, card, as_of_ms):
             unit=None,
             source_refs=["factor_cross_section.gex_info"],
             source_group="OPTIONS_STRUCTURE",
-            observed_at_ms=gex_time,
+            observed_at_ms=state_observed,
             window=_window_from(gex, "当前截面"),
-            usable=_source_usable_exact(card, "gex_info", gex),
+            usable=state_usable,
             summary_cn=f"GEX 看板状态为{_cn_gamma_regime(gex_state)}。",
             limitations_cn=_gex_limitations(gex, [
                 "这是 GEX 看板状态；不能与 GGR 位置分类重复当作两份独立证明。",
             ]),
-            provenance=_source_provenance(
-                gex, "factor_cross_section.gex_info",
-                "gex_board_market_state", as_of_ms, gex_time),
+            provenance=state_provenance,
         )
 
     net_gamma = _first_number(
@@ -458,6 +554,27 @@ def _add_structure_facts(facts, card, as_of_ms):
         gex.get("net_gamma_notional"),
     )
     if net_gamma is not None:
+        net_provenance = (
+            _gex_field_provenance(
+                gex, "factor_cross_section.gex_info",
+                "gex_board_net_gamma_usd", as_of_ms,
+                selected_value=net_gamma)
+            if semantic_gex_time
+            else _source_provenance(
+                gex, "factor_cross_section.gex_info",
+                "gex_board_net_gamma_usd", as_of_ms, gex_time)
+        )
+        net_observed = (
+            net_provenance.get("observed_at_ms")
+            if semantic_gex_time
+            else gex_time
+        )
+        net_usable = _field_usable(card, "gex_info", gex,
+                                   "net_gamma_notional_usd",
+                                   "total_net_gex",
+                                   "net_gamma_notional")
+        if semantic_gex_time:
+            net_usable = _time_usable(net_usable, net_provenance)
         _append_fact(
             facts,
             fact_id="structure.gex.net_gamma_notional_usd",
@@ -467,20 +584,15 @@ def _add_structure_facts(facts, card, as_of_ms):
             unit="USD",
             source_refs=["factor_cross_section.gex_info"],
             source_group="OPTIONS_STRUCTURE",
-            observed_at_ms=gex_time,
+            observed_at_ms=net_observed,
             window=_window_from(gex, "当前截面"),
-            usable=_field_usable(card, "gex_info", gex,
-                                 "net_gamma_notional_usd",
-                                 "total_net_gex",
-                                 "net_gamma_notional"),
+            usable=net_usable,
             summary_cn=f"GEX 看板净 Gamma 名义规模为 {_fmt_number(net_gamma)} USD。",
             limitations_cn=_gex_limitations(gex, [
                 "零值也是合法市场数值；本轮不再用绝对值大于 1 判断是否可记录。",
                 "同属期权结构来源，不能与墙位、翻转点、Pin 重复当作多份独立确认。",
             ]),
-            provenance=_source_provenance(
-                gex, "factor_cross_section.gex_info",
-                "gex_board_net_gamma_usd", as_of_ms, gex_time),
+            provenance=net_provenance,
         )
 
     gamma_proxy = _first_number(
@@ -510,7 +622,9 @@ def _add_structure_facts(facts, card, as_of_ms):
                 "ggr_internal_gamma_proxy", as_of_ms, gamma_time),
         )
 
-    levels = _selected_structure_levels(card, gamma, gex, as_of_ms)
+    levels = _selected_structure_levels(
+        card, gamma, gex, as_of_ms,
+        strict_gex_times=semantic_gex_time)
     for key, fact_id, label in (
             ("flip", "structure.gamma.flip_point", "Gamma 翻转点"),
             ("call_wall", "structure.gamma.call_wall", "上方 Call 墙"),
@@ -1133,8 +1247,11 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
             ("anchor", "change.structure.anchor_delta_pct", "价格锚轴相对前卡迁移"),
             ("call_wall", "change.structure.call_wall_delta_pct", "Call 墙相对前卡迁移"),
             ("put_wall", "change.structure.put_wall_delta_pct", "Put 墙相对前卡迁移")):
-        prev_obs = _change_observation(previous_card, change_key)
-        curr_obs = _change_observation(card, change_key)
+        strict_times = _time_semantic_facts(facts)
+        prev_obs = _change_observation(
+            previous_card, change_key, strict_gex_times=strict_times)
+        curr_obs = _change_observation(
+            card, change_key, strict_gex_times=strict_times)
         if not prev_obs or not curr_obs:
             continue
         if not _observations_comparable(prev_obs, curr_obs):
@@ -1159,7 +1276,7 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
                 dependencies=["change.context.status"],
                 provenance=_derived_provenance(
                     "transition_context", "field_level_comparability_failed",
-                    as_of_ms, as_of_ms),
+                    as_of_ms, as_of_ms, strict_observed=strict_times),
             )
             continue
         prev_value = prev_obs["value"]
@@ -1167,6 +1284,21 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
         if prev_value is None or curr_value is None or not prev_value:
             continue
         delta_pct = (curr_value - prev_value) / abs(prev_value) * 100.0
+        time_errors = []
+        for obs in (prev_obs, curr_obs):
+            time_errors.extend(_time_error_strings(
+                _dict(obs.get("provenance")).get("time_errors")))
+        available = _max_ms(
+            as_of_ms, prev_obs.get("available_at_ms"),
+            curr_obs.get("available_at_ms"))
+        if strict_times and (
+                prev_obs.get("observed_at_ms") is None
+                or curr_obs.get("observed_at_ms") is None):
+            change_observed = None
+        else:
+            change_observed = _max_ms(
+                as_of_ms, prev_obs.get("observed_at_ms"),
+                curr_obs.get("observed_at_ms"))
         _append_fact(
             facts,
             fact_id=fact_id,
@@ -1177,9 +1309,9 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
             source_refs=_unique_strings([
                 curr_obs.get("source_ref"), "transition_context"]),
             source_group="CHANGE_CONTEXT",
-            observed_at_ms=as_of_ms,
+            observed_at_ms=change_observed,
             window=None if elapsed_min is None else f"{_fmt_number(elapsed_min)}分钟",
-            usable=True,
+            usable=bool(prev_obs.get("usable") and curr_obs.get("usable")),
             summary_cn=f"{label}为 {_fmt_signed(delta_pct)}%。",
             limitations_cn=[
                 "结构位迁移与现价移动分开记录，不自动挑选有利边界。",
@@ -1188,7 +1320,9 @@ def _add_change_facts(facts, card, previous_card, transition, as_of_ms):
             dependencies=["change.context.status"],
             provenance=_derived_provenance(
                 "transition_context+" + str(curr_obs.get("source_ref")),
-                "field_level_structure_delta_pct", as_of_ms, as_of_ms),
+                "field_level_structure_delta_pct", as_of_ms,
+                change_observed, available_at_ms=available,
+                time_errors=time_errors, strict_observed=strict_times),
         )
 
 
@@ -1215,7 +1349,7 @@ def _add_source_quality_fact(facts, card, as_of_ms):
     )
 
 
-def _change_observation(card, key):
+def _change_observation(card, key, strict_gex_times=False):
     factor = _dict(_dict(card).get("factor_cross_section"))
     as_of_ms = _event_time_ms(card)
     if key == "anchor":
@@ -1231,7 +1365,8 @@ def _change_observation(card, key):
         }
     levels = _selected_structure_levels(
         card, _dict(factor.get("gamma_regime")),
-        _dict(factor.get("gex_info")), as_of_ms)
+        _dict(factor.get("gex_info")), as_of_ms,
+        strict_gex_times=strict_gex_times)
     return levels.get(key)
 
 
@@ -1254,7 +1389,8 @@ def _field_usable(card, source_key, node, *field_names):
     return False
 
 
-def _selected_structure_levels(card, gamma, gex, as_of_ms):
+def _selected_structure_levels(card, gamma, gex, as_of_ms,
+                               strict_gex_times=False):
     specs = {
         "flip": (
             ("factor_cross_section.gex_info", gex, "gex_board_flip_point",
@@ -1291,18 +1427,33 @@ def _selected_structure_levels(card, gamma, gex, as_of_ms):
             if value is None:
                 continue
             source_key = "gex_info" if "gex_info" in source_ref else "gamma_regime"
-            observed = _source_time(source, as_of_ms)
+            if strict_gex_times and source_key == "gex_info":
+                provenance = _gex_field_provenance(
+                    gex, source_ref, method, as_of_ms,
+                    extra_fields=("gex_board." + field for field in fields),
+                    selected_value=value)
+                observed = provenance.get("observed_at_ms")
+                usable = _time_usable(
+                    _field_usable(card, source_key, source, *fields),
+                    provenance)
+                available = provenance.get("available_at_ms")
+            else:
+                observed = _source_time(source, as_of_ms)
+                provenance = _source_provenance(
+                    source, source_ref, method, as_of_ms, observed)
+                usable = _field_usable(card, source_key, source, *fields)
+                available = None
             selected[key] = {
                 "value": value,
                 "source_ref": source_ref,
                 "source_node": source,
                 "observed_at_ms": observed,
+                "available_at_ms": available,
                 "window": _window_from(source, "当前截面"),
-                "usable": _field_usable(card, source_key, source, *fields),
+                "usable": usable,
                 "method": method,
                 "unit": _market_quote(card) or "USDT",
-                "provenance": _source_provenance(
-                    source, source_ref, method, as_of_ms, observed),
+                "provenance": provenance,
             }
             break
     return selected
@@ -1312,7 +1463,20 @@ def _add_gex_dvol_fact(facts, card, gex, as_of_ms):
     dvol = _first_number(gex.get("dvol"))
     if dvol is None:
         return
-    observed = _source_time(gex, as_of_ms)
+    if _time_semantic_facts(facts):
+        provenance = _gex_field_provenance(
+            gex, "factor_cross_section.gex_info",
+            "gex_board_dvol_original_scale", as_of_ms,
+            selected_value=dvol)
+        observed = provenance.get("observed_at_ms")
+        usable = _time_usable(_field_usable(card, "gex_info", gex, "dvol"),
+                              provenance)
+    else:
+        observed = _source_time(gex, as_of_ms)
+        provenance = _source_provenance(
+            gex, "factor_cross_section.gex_info",
+            "gex_board_dvol_original_scale", as_of_ms, observed)
+        usable = _field_usable(card, "gex_info", gex, "dvol")
     _append_fact(
         facts,
         fact_id="pressure.volatility.dvol",
@@ -1324,15 +1488,13 @@ def _add_gex_dvol_fact(facts, card, gex, as_of_ms):
         source_group="VOLATILITY_CONTEXT",
         observed_at_ms=observed,
         window=_window_from(gex, "当前截面"),
-        usable=_field_usable(card, "gex_info", gex, "dvol"),
+        usable=usable,
         summary_cn=f"DVOL 按原刻度记录为 {_fmt_number(dvol)}。",
         limitations_cn=_gex_limitations(gex, [
             "DVOL 是波动率背景，不是本笔末日期权报价。",
             "不要把该刻度换算成百万美元。",
         ]),
-        provenance=_source_provenance(
-            gex, "factor_cross_section.gex_info",
-            "gex_board_dvol_original_scale", as_of_ms, observed),
+        provenance=provenance,
     )
 
 
@@ -1393,7 +1555,10 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
              observed_at_ms, usable, None),
         )
     else:
-        selected = _selected_structure_levels(card, gamma, gex, observed_at_ms)
+        strict_times = _time_semantic_facts(facts)
+        selected = _selected_structure_levels(
+            card, gamma, gex, observed_at_ms,
+            strict_gex_times=strict_times)
         level_specs = (
             ("call_wall", "structure.distance.call_wall_pct",
              "现价距上方 Call 墙", "structure.gamma.call_wall"),
@@ -1409,6 +1574,9 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
             item = selected.get(key)
             if not item:
                 continue
+            available = _max_ms(observed_at_ms, item.get("available_at_ms"))
+            time_errors = _time_error_strings(
+                _dict(item.get("provenance")).get("time_errors"))
             levels.append((
                 fact_id, label, item["value"], dep,
                 ["market_context.price", item["source_ref"]],
@@ -1416,7 +1584,9 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
                 _derived_provenance(
                     "market_context.price+" + item["source_ref"],
                     "price_to_selected_structure_level", observed_at_ms,
-                    item["observed_at_ms"])))
+                    item["observed_at_ms"], available_at_ms=available,
+                    time_errors=time_errors,
+                    strict_observed=strict_times)))
     for fact_id, label, level, dep, source_refs, fact_observed, fact_usable, provenance in levels:
         if level is None or level <= 0:
             continue
@@ -1449,7 +1619,10 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
         zone_observed = observed_at_ms
         zone_provenance = None
     else:
-        selected = _selected_structure_levels(card, gamma, gex, observed_at_ms)
+        strict_times = _time_semantic_facts(facts)
+        selected = _selected_structure_levels(
+            card, gamma, gex, observed_at_ms,
+            strict_gex_times=strict_times)
         call = selected.get("call_wall")
         put = selected.get("put_wall")
         call_wall = None if not call else call["value"]
@@ -1460,14 +1633,33 @@ def _add_spatial_relation_facts(facts, card, price, gamma, gex, observed_at_ms,
         if put:
             source_refs.append(put["source_ref"])
         zone_usable = bool(call and put and call["usable"] and put["usable"])
-        zone_times = [item for item in (
-            call.get("observed_at_ms") if call else None,
-            put.get("observed_at_ms") if put else None,
-            observed_at_ms) if item is not None]
-        zone_observed = max(zone_times) if zone_times else None
+        if strict_times and (
+                not call or not put
+                or call.get("observed_at_ms") is None
+                or put.get("observed_at_ms") is None):
+            zone_observed = None
+        else:
+            zone_times = [item for item in (
+                call.get("observed_at_ms") if call else None,
+                put.get("observed_at_ms") if put else None,
+                observed_at_ms) if item is not None]
+            zone_observed = max(zone_times) if zone_times else None
+        zone_available = _max_ms(
+            observed_at_ms,
+            call.get("available_at_ms") if call else None,
+            put.get("available_at_ms") if put else None)
+        zone_errors = []
+        if call:
+            zone_errors.extend(_time_error_strings(
+                _dict(call.get("provenance")).get("time_errors")))
+        if put:
+            zone_errors.extend(_time_error_strings(
+                _dict(put.get("provenance")).get("time_errors")))
         zone_provenance = _derived_provenance(
             "+".join(_unique_strings(source_refs)),
-            "price_between_selected_walls", observed_at_ms, zone_observed)
+            "price_between_selected_walls", observed_at_ms, zone_observed,
+            available_at_ms=zone_available, time_errors=zone_errors,
+            strict_observed=strict_times)
     if call_wall is not None and put_wall is not None:
         if put_wall <= price <= call_wall:
             value = "墙内"
@@ -2293,6 +2485,7 @@ def _append_missing_fact(facts, fact_id, topic, label_cn, source_ref,
 def _append_fact(facts, *, fact_id, topic, label_cn, value, unit, source_refs,
                  source_group, observed_at_ms, window, usable, summary_cn,
                  limitations_cn=None, dependencies=None, provenance=None):
+    schema = _packet_schema(facts)
     fact = {
         "id": str(fact_id),
         "topic": str(topic),
@@ -2308,24 +2501,49 @@ def _append_fact(facts, *, fact_id, topic, label_cn, value, unit, source_refs,
         "limitations_cn": _unique_strings(limitations_cn or []),
         "dependencies": _unique_strings(dependencies or []),
     }
-    if _legacy_facts(facts):
+    if schema == LEGACY_PACKET_SCHEMA_VERSION:
         expected_keys = LEGACY_FACT_KEYS
-    else:
-        fact["provenance"] = _normalize_provenance(
+    elif schema == PREVIOUS_PACKET_SCHEMA_VERSION:
+        fact["provenance"] = _normalize_provenance_v210(
             provenance, fact["source_refs"], source_group, observed_at_ms)
+        expected_keys = FACT_KEYS_V210
+    else:
+        raw_provenance = _dict(provenance)
+        if raw_provenance.get("recorded_at_ms") in (None, ""):
+            raw_provenance = dict(raw_provenance)
+            raw_provenance["recorded_at_ms"] = getattr(facts, "as_of_ms", None)
+        normalized = _normalize_provenance_v211(
+            raw_provenance, fact["source_refs"], source_group, observed_at_ms)
+        fact["observed_at_ms"] = normalized["observed_at_ms"]
+        availability_source = dict(normalized)
+        availability_source["available_at_ms"] = raw_provenance.get("available_at_ms")
+        fact["available_at_ms"] = _available_time_from_provenance(availability_source)
+        time_errors = _fact_time_errors(normalized, fact["available_at_ms"])
+        if time_errors:
+            normalized["time_errors"] = _unique_strings(
+                _time_error_strings(normalized.get("time_errors")) + time_errors)
+            fact["usable"] = False
+        fact["provenance"] = normalized
         expected_keys = FACT_KEYS
     if set(fact) != set(expected_keys):
         raise AssertionError("internal fact schema mismatch")
     facts.append(fact)
 
 
+def _packet_schema(facts):
+    return getattr(facts, "packet_schema", PACKET_SCHEMA_VERSION)
+
+
 def _legacy_facts(facts):
-    return (getattr(facts, "packet_schema", PACKET_SCHEMA_VERSION)
-            == LEGACY_PACKET_SCHEMA_VERSION)
+    return _packet_schema(facts) == LEGACY_PACKET_SCHEMA_VERSION
 
 
-def _normalize_provenance(provenance, source_refs, source_group,
-                          observed_at_ms):
+def _time_semantic_facts(facts):
+    return _packet_schema(facts) == PACKET_SCHEMA_VERSION
+
+
+def _normalize_provenance_v210(provenance, source_refs, source_group,
+                               observed_at_ms):
     source = _dict(provenance)
     first_ref = _unique_strings(source_refs)[0] if _unique_strings(source_refs) else None
     out = {
@@ -2335,6 +2553,38 @@ def _normalize_provenance(provenance, source_refs, source_group,
         "observed_at_ms": _as_ms(source.get("observed_at_ms")) or _as_ms(observed_at_ms),
         "fetched_at_ms": _as_ms(source.get("fetched_at_ms")),
         "recorded_at_ms": _as_ms(source.get("recorded_at_ms")),
+    }
+    return out
+
+
+def _normalize_provenance_v211(provenance, source_refs, source_group,
+                               observed_at_ms):
+    source = _dict(provenance)
+    first_ref = _unique_strings(source_refs)[0] if _unique_strings(source_refs) else None
+    observed, observed_errors = _time_value(source, "observed_at_ms", "观测时间")
+    generated, generated_errors = _time_value(source, "generated_at_ms", "上游结果时间")
+    fetched, fetched_errors = _time_value(source, "fetched_at_ms", "抓取时间")
+    recorded, recorded_errors = _time_value(source, "recorded_at_ms", "卡片记录时间")
+    _available, available_errors = _time_value(source, "available_at_ms", "可得时间")
+    if observed is None and "observed_at_ms" not in source:
+        observed = _as_ms(observed_at_ms)
+    errors = []
+    errors.extend(_time_error_strings(source.get("time_errors")))
+    errors.extend(observed_errors)
+    errors.extend(generated_errors)
+    errors.extend(fetched_errors)
+    errors.extend(recorded_errors)
+    errors.extend(available_errors)
+    out = {
+        "selected_source": str(source.get("selected_source") or first_ref or ""),
+        "method": str(source.get("method") or source_group or ""),
+        "time_basis": str(source.get("time_basis") or _default_time_basis(
+            observed, generated, fetched)),
+        "observed_at_ms": observed,
+        "generated_at_ms": generated,
+        "fetched_at_ms": fetched,
+        "recorded_at_ms": recorded,
+        "time_errors": _unique_strings(errors),
     }
     return out
 
@@ -2463,6 +2713,67 @@ def _as_ms(value):
     return None
 
 
+def _time_value(source, key, label):
+    if key not in _dict(source) or _dict(source).get(key) in (None, ""):
+        return None, []
+    value = _dict(source).get(key)
+    parsed = _as_ms(value)
+    if parsed is None:
+        return None, [f"{label}无法解析。"]
+    return parsed, []
+
+
+def _default_time_basis(observed, generated, fetched):
+    if observed is not None:
+        return "source_observed_at"
+    if generated is not None:
+        return "source_generated_at_without_observation"
+    if fetched is not None:
+        return "source_fetched_at_without_observation"
+    return "card_recorded_at_no_source_observation"
+
+
+def _available_time_from_provenance(provenance):
+    source = _dict(provenance)
+    explicit = _as_ms(source.get("available_at_ms"))
+    if explicit is not None:
+        return explicit
+    recorded = _as_ms(source.get("recorded_at_ms"))
+    candidates = [
+        _as_ms(source.get("observed_at_ms")),
+        _as_ms(source.get("generated_at_ms")),
+        _as_ms(source.get("fetched_at_ms")),
+    ]
+    candidates = [item for item in candidates if item is not None]
+    if candidates:
+        value = max(candidates)
+        if recorded is not None:
+            return max(value, recorded)
+        return value
+    return recorded
+
+
+def _fact_time_errors(provenance, available_at_ms):
+    source = _dict(provenance)
+    recorded = _as_ms(source.get("recorded_at_ms"))
+    errors = []
+    for key, label in (
+            ("observed_at_ms", "观测时间"),
+            ("generated_at_ms", "上游结果时间"),
+            ("fetched_at_ms", "抓取时间"),
+            ("available_at_ms", "可得时间")):
+        value = available_at_ms if key == "available_at_ms" else _as_ms(source.get(key))
+        if value is not None and recorded is not None and value > recorded:
+            errors.append(f"{label}晚于卡片记录时间。")
+    return _unique_strings(errors)
+
+
+def _max_ms(*values):
+    parsed = [_as_ms(value) for value in values]
+    parsed = [value for value in parsed if value is not None]
+    return max(parsed) if parsed else None
+
+
 def _as_ms_delta(value):
     number = _finite_number(value)
     if number is None:
@@ -2586,6 +2897,246 @@ def _fetched_time(node):
     return None
 
 
+def _generated_time(node):
+    source = _dict(node)
+    for key in _GENERATED_TIME_KEYS:
+        parsed = _as_ms(source.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _source_time_parse_errors(node):
+    source = _dict(node)
+    errors = []
+    for key in _SOURCE_TIME_KEYS:
+        if key in source and source.get(key) not in (None, "") and _as_ms(source.get(key)) is None:
+            errors.append(f"{key} 时间无法解析。")
+    for key in _GENERATED_TIME_KEYS:
+        if key in source and source.get(key) not in (None, "") and _as_ms(source.get(key)) is None:
+            errors.append(f"{key} 时间无法解析。")
+    for key in ("fetched_at_ms", "fetch_at_ms", "retrieved_at_ms",
+                "collected_at_ms", "fetched_at", "fetch_at",
+                "retrieved_at", "collected_at"):
+        if key in source and source.get(key) not in (None, "") and _as_ms(source.get(key)) is None:
+            errors.append(f"{key} 时间无法解析。")
+    return _unique_strings(errors)
+
+
+def _time_error_strings(value):
+    if isinstance(value, list):
+        return _unique_strings(value)
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _gex_semantic_fields(gex):
+    semantics = _dict(_dict(gex).get("gex_time_semantics"))
+    if semantics.get("schema_version") != _GEX_TIME_SEMANTICS_SCHEMA:
+        return {}
+    return _dict(semantics.get("fields"))
+
+
+def _gex_time_entry(gex, method, extra_fields=(), selected_value=None):
+    fields = _gex_semantic_fields(gex)
+    if not fields:
+        return None, None
+    keys = _unique_strings(
+        list(_GEX_METHOD_TIME_FIELDS.get(str(method), ()))
+        + list(extra_fields or []))
+    selected_number = _finite_number(selected_value)
+    if selected_number is not None:
+        explicit_keys = _gex_explicit_alias_keys(method)
+        for key in keys:
+            if key not in explicit_keys:
+                continue
+            entry = _dict(fields.get(key))
+            if entry and _same_number(_gex_semantic_value(gex, key), selected_number):
+                return key, entry
+        matches = []
+        for key in keys:
+            if key in explicit_keys:
+                continue
+            entry = _dict(fields.get(key))
+            if entry and _same_number(_gex_semantic_value(gex, key), selected_number):
+                matches.append((key, entry))
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return "multiple_same_value", _merge_gex_time_entries(matches)
+        if explicit_keys:
+            return None, None
+    for key in keys:
+        entry = _dict(fields.get(key))
+        if entry:
+            return key, entry
+    return None, None
+
+
+def _gex_explicit_alias_keys(method):
+    if method == "gex_board_call_wall":
+        return {"gamma_exposure.call_wall", "gex_board.call_wall"}
+    if method == "gex_board_put_wall":
+        return {"gamma_exposure.put_wall", "gex_board.put_wall"}
+    return set()
+
+
+def _merge_gex_time_entries(matches):
+    sources = []
+    observed_values = []
+    generated_values = []
+    fetched_values = []
+    available_values = []
+    errors = []
+    bases = []
+    for key, entry in matches:
+        sources.append(str(entry.get("source_ref") or key))
+        basis = entry.get("time_basis")
+        if basis not in (None, ""):
+            bases.append(str(basis))
+        observed, observed_errors = _time_value(entry, "observed_at_ms", "观测时间")
+        generated, generated_errors = _time_value(entry, "generated_at_ms", "上游结果时间")
+        fetched, fetched_errors = _time_value(entry, "fetched_at_ms", "抓取时间")
+        available, available_errors = _time_value(entry, "available_at_ms", "可得时间")
+        if observed is not None:
+            observed_values.append(observed)
+        if generated is not None:
+            generated_values.append(generated)
+        if fetched is not None:
+            fetched_values.append(fetched)
+        if available is not None:
+            available_values.append(available)
+        errors.extend(_time_error_strings(entry.get("time_errors")))
+        errors.extend(observed_errors + generated_errors + fetched_errors
+                      + available_errors)
+    observed = None
+    if len(observed_values) == len(matches) and len(set(observed_values)) == 1:
+        observed = observed_values[0]
+    # An ambiguous observation stays unknown; all known clocks still constrain availability.
+    available_values.extend(observed_values + generated_values + fetched_values)
+    return {
+        "source_ref": "|".join(_unique_strings(sources)),
+        "observed_at_ms": observed,
+        "generated_at_ms": max(generated_values) if generated_values else None,
+        "fetched_at_ms": max(fetched_values) if fetched_values else None,
+        "available_at_ms": max(available_values) if available_values else None,
+        "time_basis": (
+            "multiple_same_value_gex_fields_conservative"
+            if len(set(bases)) > 1 or not bases
+            else bases[0]
+        ),
+        "time_errors": _unique_strings(errors),
+    }
+
+
+def _gex_field_provenance(gex, selected_source, method, card_as_of_ms,
+                          extra_fields=(), selected_value=None):
+    semantics = _dict(gex).get("gex_time_semantics")
+    if semantics is not None and (
+            not isinstance(semantics, dict)
+            or semantics.get("schema_version") != _GEX_TIME_SEMANTICS_SCHEMA):
+        return _with_time_errors({
+            "selected_source": selected_source, "method": method,
+            "time_basis": "unsupported_gex_time_semantics",
+            "observed_at_ms": None, "generated_at_ms": None,
+            "fetched_at_ms": None, "recorded_at_ms": _as_ms(card_as_of_ms),
+            "available_at_ms": _as_ms(card_as_of_ms),
+            "time_errors": ["来源时间说明版本尚不支持，暂不能核验该项事实。"],
+        })
+    field_key, entry = _gex_time_entry(
+        gex, method, extra_fields, selected_value=selected_value)
+    if entry:
+        observed, observed_errors = _time_value(entry, "observed_at_ms", "观测时间")
+        generated, generated_errors = _time_value(entry, "generated_at_ms", "上游结果时间")
+        fetched, fetched_errors = _time_value(entry, "fetched_at_ms", "抓取时间")
+        available, available_errors = _time_value(entry, "available_at_ms", "可得时间")
+        provenance = {
+            "selected_source": str(entry.get("source_ref") or selected_source),
+            "method": method,
+            "time_basis": str(entry.get("time_basis") or "gex_field_time_semantics"),
+            "observed_at_ms": observed,
+            "generated_at_ms": generated,
+            "fetched_at_ms": fetched,
+            "recorded_at_ms": _as_ms(card_as_of_ms),
+            "available_at_ms": available,
+            "time_errors": _unique_strings(
+                _time_error_strings(entry.get("time_errors"))
+                + observed_errors + generated_errors + fetched_errors
+                + available_errors),
+        }
+        return _with_time_errors(provenance)
+
+    fetched = _fetched_time(gex)
+    return _with_time_errors({
+        "selected_source": selected_source,
+        "method": method,
+        "time_basis": "card_archived_without_gex_field_time_semantics",
+        "observed_at_ms": None,
+        "generated_at_ms": None,
+        "fetched_at_ms": fetched,
+        "recorded_at_ms": _as_ms(card_as_of_ms),
+        "available_at_ms": _as_ms(card_as_of_ms),
+        "time_errors": _source_time_parse_errors(gex),
+    })
+
+
+def _same_number(left, right):
+    left_number = _finite_number(left)
+    right_number = _finite_number(right)
+    if left_number is None or right_number is None:
+        return False
+    scale = max(abs(left_number), abs(right_number), 1.0)
+    return abs(left_number - right_number) <= scale * 1e-9
+
+
+def _gex_semantic_value(gex, key):
+    source = _dict(gex)
+    if key == "gex_board.total_net_gex":
+        return _first_number(source.get("total_net_gex"),
+                             source.get("net_gamma_notional_usd"),
+                             source.get("net_gamma_notional"))
+    if key == "gex_board.dvol":
+        return source.get("dvol")
+    if key == "gex_board.market_state":
+        return source.get("market_state")
+    if key == "gamma_exposure.call_wall" or key == "gex_board.call_wall":
+        return source.get("call_wall")
+    if key == "gamma_exposure.put_wall" or key == "gex_board.put_wall":
+        return source.get("put_wall")
+    if key in ("gamma_exposure.n1", "gamma_exposure.n2",
+               "gamma_exposure.p1", "gamma_exposure.p2"):
+        return source.get(key.rsplit(".", 1)[-1])
+    if key == "gamma_exposure.flip_point" or key == "gex_board.flip_point":
+        return source.get("flip_point")
+    if key in ("gamma_exposure.magnet_price",
+               "gamma_exposure.pin_strike",
+               "gamma_exposure.max_gamma_strike",
+               "gex_board.pin_strike",
+               "gex_board.max_gamma_strike"):
+        return _first_number(source.get("magnet_price"),
+                             source.get("pin_strike"),
+                             source.get("max_gamma_strike"))
+    return _get_path(source, key)
+
+
+def _with_time_errors(provenance):
+    source = _dict(provenance)
+    available = _available_time_from_provenance(source)
+    errors = _unique_strings(
+        _time_error_strings(source.get("time_errors"))
+        + _fact_time_errors(source, available))
+    out = dict(source)
+    out["available_at_ms"] = available
+    out["time_errors"] = errors
+    return out
+
+
+def _time_usable(base_usable, provenance):
+    return bool(base_usable) and not _time_error_strings(
+        _dict(provenance).get("time_errors"))
+
+
 def _source_provenance(node, selected_source, method, card_as_of_ms,
                        observed_at_ms=None):
     source = _dict(node)
@@ -2609,21 +3160,30 @@ def _source_provenance(node, selected_source, method, card_as_of_ms,
         "method": method,
         "time_basis": time_basis,
         "observed_at_ms": observed,
+        "generated_at_ms": _generated_time(source),
         "fetched_at_ms": _fetched_time(source),
         "recorded_at_ms": _as_ms(card_as_of_ms),
+        "available_at_ms": _as_ms(card_as_of_ms),
+        "time_errors": _source_time_parse_errors(source),
     }
 
 
 def _derived_provenance(selected_source, method, card_as_of_ms,
-                        observed_at_ms=None):
-    observed = _as_ms(observed_at_ms) or _as_ms(card_as_of_ms)
+                        observed_at_ms=None, available_at_ms=None,
+                        time_errors=None, strict_observed=False):
+    observed = _as_ms(observed_at_ms)
+    if not strict_observed:
+        observed = observed or _as_ms(card_as_of_ms)
     return {
         "selected_source": selected_source,
         "method": method,
         "time_basis": "derived_from_packet_dependencies",
         "observed_at_ms": observed,
+        "generated_at_ms": None,
         "fetched_at_ms": None,
         "recorded_at_ms": _as_ms(card_as_of_ms),
+        "available_at_ms": _as_ms(available_at_ms) or _as_ms(card_as_of_ms),
+        "time_errors": _unique_strings(time_errors or []),
     }
 
 

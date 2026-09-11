@@ -159,7 +159,9 @@ CONFIG = {
     # side-environment audit; legacy direction/confidence/permissions unchanged.
     # v1.6.1 (2026-09-11): audit-only near_term_market_context@1.0.0
     # from the existing M-DIE 1m kline cache; legacy signal decisions unchanged.
-    "demo_version": "1.6.1",
+    # v1.6.2 (2026-09-11): audit-only GEX field time semantics; no signal
+    # weights, triggers, windows, permissions, or model-call behavior changed.
+    "demo_version": "1.6.2",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -5658,6 +5660,7 @@ def build_sample_review_card(config=None):
 
 AUDIT_SCHEMA_VERSION = "1.0.0"
 NEAR_TERM_MARKET_CONTEXT_SCHEMA_VERSION = "1.0.0"
+GEX_TIME_SEMANTICS_SCHEMA_VERSION = "gex_time_semantics@1.0.0"
 
 _EVIDENCE_SOURCE_REF = {
     "TMV": "factor_cross_section.tmvf",
@@ -7633,6 +7636,16 @@ def _audit_time_value(value):
 
 def _audit_observed_at(name, node, card, age_ms):
     node = node or {}
+    if name == "gex_info":
+        observed_ms = safe_int(node.get("observed_at_ms"))
+        fetched_ms = safe_int(node.get("fetched_at_ms"))
+        if observed_ms is not None and observed_ms != fetched_ms:
+            return _iso8601_utc8(observed_ms)
+        observed_at = _audit_time_value(node.get("observed_at"))
+        fetched_at = _audit_time_value(node.get("fetched_at"))
+        if observed_at and observed_at != fetched_at:
+            return observed_at
+        return None
     for key in ("observed_at", "fetched_at", "last_success_at",
                 "last_data_time", "last_data_at", "updated_at"):
         value = _audit_time_value(node.get(key))
@@ -7662,6 +7675,16 @@ def _audit_enrich_timing(name, node, card):
     age_ms = _audit_age_ms(name, node, status)
     if age_ms is not None and "age_ms" not in node:
         node["age_ms"] = age_ms
+    if name == "gex_info":
+        observed_ms = safe_int(node.get("observed_at_ms"))
+        fetched_ms = safe_int(node.get("fetched_at_ms"))
+        if observed_ms is not None and observed_ms == fetched_ms:
+            node.pop("observed_at_ms", None)
+        observed_at = _audit_time_value(node.get("observed_at"))
+        fetched_at = _audit_time_value(node.get("fetched_at"))
+        if observed_at and observed_at == fetched_at:
+            node.pop("observed_at", None)
+        return node
     observed_at = _audit_observed_at(name, node, card, age_ms)
     if observed_at and not node.get("observed_at"):
         node["observed_at"] = observed_at
@@ -7811,8 +7834,19 @@ def _audit_gex_info(raw):
         gex["call_wall"] = _gex_wall_level(gex.get("resistance_walls"))
     if "put_wall" not in gex:
         gex["put_wall"] = _gex_wall_level(gex.get("support_walls"))
-    if "observed_at" not in gex:
-        gex["observed_at"] = gex.get("fetched_at")
+    gex["gex_time_semantics"] = _build_gex_time_semantics(
+        {"gex_time_semantics": gex.get("gex_time_semantics")},
+        gex.get("fetched_at") or gex.get("fetched_at_ms"))
+    if "source_content_hashes" not in gex:
+        gex["source_content_hashes"] = {}
+    observed_ms = safe_int(gex.get("observed_at_ms"))
+    fetched_ms = safe_int(gex.get("fetched_at_ms"))
+    if observed_ms is not None and observed_ms == fetched_ms:
+        gex.pop("observed_at_ms", None)
+    observed_at = _audit_time_value(gex.get("observed_at"))
+    fetched_at = _audit_time_value(gex.get("fetched_at"))
+    if observed_at and observed_at == fetched_at:
+        gex.pop("observed_at", None)
     return gex
 
 
@@ -10037,6 +10071,192 @@ def _gex_info_endpoint(base):
     return url + "/v1/info"
 
 
+_GEX_TIME_FIELD_SPECS = (
+    ("gex_board", "total_net_gex", "gex-latest.total_gex"),
+    ("gex_board", "dvol", "gex-latest.dvol|volatility-metrics.metrics.dvol"),
+    ("gex_board", "market_state", "derived:total_net_gex_or_spot_flip"),
+    ("gamma_exposure", "n2", "gex-latest.profiles.total.walls.n2"),
+    ("gamma_exposure", "n1", "gex-latest.profiles.total.walls.n1"),
+    ("gamma_exposure", "flip_point", "gex-latest.flip_point"),
+    ("gamma_exposure", "volatility_trigger",
+     "gex-latest.profiles.total.meta.vol_trigger"),
+    ("gamma_exposure", "spot_price", "gex-latest.asset_price|price.price"),
+    ("gamma_exposure", "magnet_price",
+     "gex-latest.profiles.total.meta.magnet_a1|magnet_a2"),
+    ("gamma_exposure", "p1", "gex-latest.profiles.total.walls.p1"),
+    ("gamma_exposure", "p2", "gex-latest.profiles.total.walls.p2"),
+    ("volatility", "iv_rv_ratio", "volatility-metrics.metrics.ivRvRatio"),
+    ("volatility", "pcr", "volatility-metrics.metrics.pcrVolume"),
+    ("volatility", "term_structure", "unavailable"),
+    ("flow", "call_premium", "unavailable"),
+    ("flow", "put_premium", "unavailable"),
+    ("flow", "put_call_ratio", "volatility-metrics.metrics.pcrVolume"),
+    ("flow", "call_put_bias", "derived:totalCallVolume/(Call+Put)"),
+    ("flow", "abnormal_signal", "unavailable"),
+)
+
+
+def _gex_time_ms(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if math.isfinite(value) and value > 0 else None
+    text = str(value).strip()
+    if text.replace(".", "", 1).isdigit():
+        number = safe_float(text)
+        return int(number) if number is not None and math.isfinite(number) and number > 0 else None
+    try:
+        stamp = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        parsed = int(stamp.timestamp() * 1000)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _gex_semantic_time(entry, *keys):
+    errors = []
+    for key in keys:
+        if key not in entry:
+            continue
+        value = entry.get(key)
+        ms = _gex_time_ms(value)
+        if value is not None and ms is None:
+            errors.append(str(key) + "_invalid")
+        return ms, errors
+    return None, errors
+
+
+def _gex_payload_section(payload, section):
+    sections = payload.get("sections")
+    if isinstance(sections, dict):
+        candidate = sections.get(section)
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _gex_payload_field_status(payload, key, section, field):
+    statuses = payload.get("field_status")
+    if isinstance(statuses, dict):
+        candidate = statuses.get(key)
+        if isinstance(candidate, dict):
+            return candidate
+        section_status = statuses.get(section)
+        if isinstance(section_status, dict):
+            candidate = section_status.get(field)
+            if isinstance(candidate, dict):
+                return candidate
+    return {}
+
+
+def _gex_time_basis(observed_ms, generated_ms, fetched_ms):
+    if observed_ms is not None:
+        return "source_observation_time"
+    if generated_ms is not None:
+        return "upstream_result_generated_time"
+    if fetched_ms is not None:
+        return "fetched_time_only_observation_unknown"
+    return "time_unknown"
+
+
+def _normalize_gex_semantic_entry(key, raw_entry, source_ref, fallback_fetched):
+    entry = raw_entry if isinstance(raw_entry, dict) else {}
+    errors = list(entry.get("time_errors") or [])
+    is_raw_semantic_entry = isinstance(raw_entry, dict)
+    observed_ms, obs_errors = _gex_semantic_time(
+        entry, "observed_at_ms", "observed_at")
+    generated_ms, gen_errors = _gex_semantic_time(
+        entry, "generated_at_ms", "generated_at")
+    fetched_ms, fetch_errors = _gex_semantic_time(
+        entry, "fetched_at_ms", "fetched_at")
+    errors.extend(obs_errors + gen_errors + fetch_errors)
+    if (fetched_ms is None and fallback_fetched is not None
+            and not is_raw_semantic_entry):
+        fetched_ms = fallback_fetched
+    if entry.get("source_ref"):
+        source_ref = entry.get("source_ref")
+    elif source_ref and "|" in str(source_ref):
+        source_ref = "selection_unknown:" + str(source_ref)
+    if not source_ref:
+        source_ref = "unknown"
+    return {
+        "source_ref": source_ref,
+        "observed_at_ms": observed_ms,
+        "generated_at_ms": generated_ms,
+        "fetched_at_ms": fetched_ms,
+        "time_basis": entry.get("time_basis") or _gex_time_basis(
+            observed_ms, generated_ms, fetched_ms),
+        "time_errors": errors,
+    }
+
+
+def _build_gex_time_semantics(payload, fetched_at=None):
+    payload = payload if isinstance(payload, dict) else {}
+    raw_semantics = payload.get("gex_time_semantics")
+    if isinstance(raw_semantics, dict) and raw_semantics.get("schema_version") != GEX_TIME_SEMANTICS_SCHEMA_VERSION:
+        # Preserve an unknown protocol for downstream rejection, never relabel it.
+        return json.loads(json.dumps(raw_semantics, ensure_ascii=False))
+    raw_fields = {}
+    if isinstance(raw_semantics, dict) and isinstance(
+            raw_semantics.get("fields"), dict):
+        raw_fields = raw_semantics.get("fields")
+    default_fetched_ms = _gex_time_ms(fetched_at)
+    fields = {}
+    for section, field, default_source in _GEX_TIME_FIELD_SPECS:
+        key = section + "." + field
+        section_state = _gex_payload_section(payload, section)
+        field_status = _gex_payload_field_status(
+            payload, key, section, field)
+        source_ref = field_status.get("source_ref") or default_source
+        field_fetched_ms, fetched_errors = _gex_semantic_time(
+            field_status, "fetched_at_ms", "fetched_at")
+        if field_fetched_ms is None:
+            field_fetched_ms, section_errors = _gex_semantic_time(
+                section_state, "fetched_at_ms", "fetched_at",
+                "last_success_at_ms", "last_success_at")
+            fetched_errors.extend(section_errors)
+        if field_fetched_ms is None:
+            field_fetched_ms = default_fetched_ms
+        entry = _normalize_gex_semantic_entry(
+            key, raw_fields.get(key), source_ref, field_fetched_ms)
+        if fetched_errors and not isinstance(raw_fields.get(key), dict):
+            entry["time_errors"].extend(fetched_errors)
+        fields[key] = entry
+    for key, value in raw_fields.items():
+        if key in fields or not isinstance(value, dict):
+            continue
+        fallback_fetched, fetched_errors = _gex_semantic_time(
+            value, "fetched_at_ms", "fetched_at")
+        if fallback_fetched is None:
+            fallback_fetched = default_fetched_ms
+        entry = _normalize_gex_semantic_entry(
+            str(key), value, value.get("source_ref"), fallback_fetched)
+        if fetched_errors:
+            entry["time_errors"].extend(fetched_errors)
+        fields[str(key)] = entry
+    return {
+        "schema_version": GEX_TIME_SEMANTICS_SCHEMA_VERSION,
+        "fields": fields,
+    }
+
+
+def _gex_info_content_hashes(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    sections = payload.get("sections")
+    if not isinstance(sections, dict):
+        return {}
+    hashes = {}
+    for section, state in sections.items():
+        if not isinstance(state, dict):
+            continue
+        content_hash = state.get("content_hash")
+        if content_hash:
+            hashes[str(section)] = content_hash
+    return hashes
+
+
 class GexInfoAdapter:
     """Fetch + parse GET /v1/info, with LKGV cache and quality tagging."""
 
@@ -10168,6 +10388,8 @@ def parse_info_payload(payload, config=None):
 
     fetched_at = payload.get("fetched_at")
     fetched_at_ms = _iso_to_ms(fetched_at)
+    time_semantics = _build_gex_time_semantics(payload, fetched_at)
+    source_content_hashes = _gex_info_content_hashes(payload)
     snapshot = {
         "factor_name": "GEX_INFO",
         "asset": payload.get("asset"),
@@ -10205,6 +10427,8 @@ def parse_info_payload(payload, config=None):
         "rank": rank,
         # audit
         "missing_fields": list(payload.get("missing_fields") or []),
+        "gex_time_semantics": time_semantics,
+        "source_content_hashes": source_content_hashes,
         "quality": QUALITY_OK,
         "data_state": "live",
         "reasons": [],
@@ -10263,6 +10487,8 @@ def missing_gex_info_snapshot(config=None, reasons=None, error=None):
         "abnormal_signal": None,
         "rank": None,
         "missing_fields": [],
+        "gex_time_semantics": _build_gex_time_semantics({}, None),
+        "source_content_hashes": {},
         "quality": QUALITY_MISSING,
         "data_state": "missing",
         "reasons": list(reasons or ["GEX_INFO_MISSING"]),

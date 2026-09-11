@@ -46,15 +46,15 @@ def assert_true(condition, message):
 
 def test_default_packet_is_v21_with_fact_provenance(tool):
     packet = tool.build_evidence_packet(base_card())
-    assert_true(packet["schema"] == "signal_evidence_packet@2.1.0",
-                "default packet schema should be 2.1.0")
+    assert_true(packet["schema"] == "signal_evidence_packet@2.1.1",
+                "default packet schema should be 2.1.1")
     for fact in packet["facts"]:
         assert_true(tuple(fact.keys()) == tool.FACT_KEYS,
                     "new fact key contract")
         provenance = fact["provenance"]
         assert_true(set(provenance) == {
             "selected_source", "method", "time_basis", "observed_at_ms",
-            "fetched_at_ms", "recorded_at_ms",
+            "generated_at_ms", "fetched_at_ms", "recorded_at_ms", "time_errors",
         }, "provenance contract")
 
     legacy = tool.build_evidence_packet(
@@ -409,7 +409,7 @@ def test_legacy_hash_matches_head_with_skew_greeks_epoch_ms(tool):
     card["factor_cross_section"]["skew"]["fetched_at_ms"] = AS_OF_MS - 45000
     head = load_head_tool()
 
-    old_packet = head.build_evidence_packet(card)
+    old_packet = head.build_evidence_packet(card, packet_schema="signal_evidence_packet@2.0.0")
     new_packet = tool.build_evidence_packet(
         card, packet_schema="signal_evidence_packet@2.0.0")
     assert_true(old_packet == new_packet,

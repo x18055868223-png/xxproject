@@ -26,11 +26,13 @@ OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.2.0"
 LEGACY_PROMPT_VERSION = "signal_llm_review_prompt@2.0.0"
 PROMPT_VERSION_2_0_1 = "signal_llm_review_prompt@2.0.1"
 PROMPT_VERSION_2_1_0 = "signal_llm_review_prompt@2.1.0"
-PROMPT_VERSION = "signal_llm_review_prompt@2.2.0"
+PROMPT_VERSION_2_2_0 = "signal_llm_review_prompt@2.2.0"
+PROMPT_VERSION = "signal_llm_review_prompt@2.2.1"
 MAIN_PROMPT_VERSION = PROMPT_VERSION
 REVIEW_MODE = "single_evidence_v2"
 LEGACY_PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.0.0"
-PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.0"
+PACKET_SCHEMA_VERSION_2_1_0 = "signal_evidence_packet@2.1.0"
+PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.1"
 SUMMARY_SCHEMA_VERSION = "signal_evidence_summary@2.2.0"
 DISPLAY_PROJECTION_VERSION = "2.2.0"
 PRICE_BIAS_SCHEMA_VERSION = "price_bias@1.0.0"
@@ -53,9 +55,10 @@ ACCEPTED_PROMPT_VERSIONS = (
     LEGACY_PROMPT_VERSION,
     PROMPT_VERSION_2_0_1,
     PROMPT_VERSION_2_1_0,
+    PROMPT_VERSION_2_2_0,
     PROMPT_VERSION,
 )
-ACCEPTED_PACKET_SCHEMA_VERSIONS = (LEGACY_PACKET_SCHEMA_VERSION, PACKET_SCHEMA_VERSION)
+ACCEPTED_PACKET_SCHEMA_VERSIONS = (LEGACY_PACKET_SCHEMA_VERSION, PACKET_SCHEMA_VERSION_2_1_0, PACKET_SCHEMA_VERSION)
 PRICE_BIASES = ("BULLISH", "BEARISH", "NEUTRAL", "MIXED", "UNDETERMINED")
 PRICE_BIAS_STATUS = ("ASSESSED", "UNAVAILABLE")
 EVIDENCE_ROLES = ("supports_fit", "counters_fit", "context_only")
@@ -195,7 +198,7 @@ def _is_latest_review(review: dict[str, Any]) -> bool:
 
 
 def _review_protocol_for_prompt(prompt_version: str | None) -> str:
-    if prompt_version == PROMPT_VERSION:
+    if prompt_version in (PROMPT_VERSION_2_2_0, PROMPT_VERSION):
         return "2.2"
     if prompt_version == PROMPT_VERSION_2_1_0:
         return "2.1"
@@ -217,11 +220,11 @@ def _prompt_uses_guidance(prompt_version: str | None) -> bool:
 
 
 def _prompt_requires_price_bias(prompt_version: str | None) -> bool:
-    return prompt_version in (PROMPT_VERSION_2_0_1, PROMPT_VERSION_2_1_0, PROMPT_VERSION)
+    return prompt_version in (PROMPT_VERSION_2_0_1, PROMPT_VERSION_2_1_0, PROMPT_VERSION_2_2_0, PROMPT_VERSION)
 
 
 def _output_schema_for_prompt(prompt_version: str | None) -> str:
-    if prompt_version == PROMPT_VERSION:
+    if prompt_version in (PROMPT_VERSION_2_2_0, PROMPT_VERSION):
         return OUTPUT_SCHEMA_VERSION
     if prompt_version == PROMPT_VERSION_2_1_0:
         return OUTPUT_SCHEMA_VERSION_2_1
@@ -288,7 +291,11 @@ def build_request(packet: dict[str, Any], model: str, recovery: bool = False) ->
         "引用规则：evidence_roles 中每项只填写 ref、role、claim_cn；role 只能是 "
         "supports_fit、counters_fit 或 context_only。ref、price_bias 引用、"
         "side_comparison 引用都只能使用输入 facts 中的 id；"
-        "事实必须 usable=true 且 observed_at_ms 不晚于 identity.as_of_ms。未知或非投票"
+        "事实必须 usable=true 且 available_at_ms 不晚于 identity.as_of_ms；事实包旧版未提供可得时间时，"
+        "按其原有观察时点核验。真实观测时间、上游结果生成时间、接口抓取时间和卡片记录时间分别解释；"
+        "任一已知来源时间晚于卡时的事实不能引用，派生事实继承依赖的时间限制。"
+        "真实观测时间未知但卡时已可得的事实仍可作受限引用，不因此统一限级；"
+        "不能据生成、抓取或记录时间声称底层市场刚完成观测或所有合约同时更新。未知或非投票"
         "事实不是自动反对。Funding 为非计票观察时只能作为背景，不要把温和正负值写成"
         "独立方向支持或反对。本侧不利压力或不利推进必须保留为 counters_fit；若你认为"
         "存在缓冲或承接，只能把相应的结构事实、价格响应事实或传导关系另列为 supports_fit，"
@@ -2036,6 +2043,23 @@ def _fact_is_usable(fact: dict[str, Any], *, as_of_ms: int | float) -> tuple[boo
     label = _clean_text(fact.get("label_cn"), fallback="该事实")
     if fact.get("usable") is not True:
         return False, label + "当前不可用，不能作为本侧引用。"
+    if fact.get("_packet_schema") == PACKET_SCHEMA_VERSION or "available_at_ms" in fact:
+        def valid_time(value):
+            return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value > 0)
+
+        available = fact.get("available_at_ms")
+        provenance = _as_dict(fact.get("provenance"))
+        if not valid_time(available):
+            return False, label + "缺少可核验的卡时可得依据，不能作为本侧引用。"
+        clocks = [available, fact.get("observed_at_ms")]
+        clocks.extend(provenance.get(key) for key in (
+            "observed_at_ms", "generated_at_ms", "fetched_at_ms", "recorded_at_ms"))
+        if provenance.get("time_errors") or any(value is not None and not valid_time(value) for value in clocks):
+            return False, label + "来源时间异常，不能作为本侧引用。"
+        if any(value is not None and value > as_of_ms for value in clocks):
+            return False, label + "存在晚于本卡的来源时间，不能作为当前证据。"
+        return True, ""
     observed_at_ms = fact.get("observed_at_ms")
     if not isinstance(observed_at_ms, (int, float)):
         return False, label + "缺少可核验观察时点，不能作为本侧引用。"
@@ -2298,7 +2322,7 @@ def _packet_as_of_ms(packet: dict[str, Any]) -> int | float:
 
 def _fact_index(packet: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
-        str(fact.get("id")).strip(): fact
+        str(fact.get("id")).strip(): dict(fact, _packet_schema=packet.get("schema"))
         for fact in packet.get("facts", [])
         if isinstance(fact, dict) and str(fact.get("id") or "").strip()
     }

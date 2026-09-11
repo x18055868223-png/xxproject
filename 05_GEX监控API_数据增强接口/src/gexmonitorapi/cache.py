@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .models import SECTION_FIELDS, SECTIONS, RefreshSection, SectionName, empty_section_data
+from .models import GEX_TIME_SEMANTICS_SCHEMA, SECTION_FIELDS, SECTIONS, RefreshSection, SectionName, empty_section_data
 from .parsers import parse_section
 
 RANK_METRICS: tuple[str, ...] = (
@@ -99,7 +100,8 @@ class MetricsCache:
             raise RuntimeError("public_json_missing_sections")
         metadata = snapshot.get("metadata") or {}
         errors = metadata.get("errors") or {}
-        fetched_at = metadata.get("observed_at") or self.now().isoformat()
+        fetched_at = metadata.get("fetched_at") or metadata.get("observed_at") or self.now().isoformat()
+        latest_attempt_at = metadata.get("latest_attempt_at") or fetched_at
         for target in targets:
             state = sections.get(target)
             if not isinstance(state, dict):
@@ -107,6 +109,7 @@ class MetricsCache:
             data = state.get("data") if isinstance(state.get("data"), dict) else empty_section_data(target)
             missing = list(state.get("missing_fields") or [])
             statuses = state.get("field_status") if isinstance(state.get("field_status"), dict) else {}
+            time_semantics = self._coerce_section_time_semantics(target, state.get("gex_time_semantics"))
             source_error_name = "gex" if target in {"gex_board", "gamma_exposure"} else "volatility"
             source_error = errors.get(source_error_name)
             # Keep the last good section during a transient endpoint failure;
@@ -118,10 +121,12 @@ class MetricsCache:
                     "data": self._sections[target]["data"] if preserve_cached else data,
                     "missing_fields": self._sections[target]["missing_fields"] if preserve_cached else missing,
                     "field_status": self._sections[target]["field_status"] if preserve_cached else statuses,
+                    "gex_time_semantics": self._sections[target]["gex_time_semantics"] if preserve_cached else time_semantics,
                     "fetched_at": state.get("fetched_at") or fetched_at,
+                    "latest_attempt_at": state.get("latest_attempt_at") or latest_attempt_at,
                     "last_success_at": self._sections[target].get("last_success_at") if preserve_cached else (state.get("last_success_at") or fetched_at),
                     "source_url": state.get("source_url") or self._source_url(target),
-                    "content_hash": state.get("content_hash"),
+                    "content_hash": self._sections[target].get("content_hash") if preserve_cached else state.get("content_hash"),
                     "last_error": source_error or state.get("last_error"),
                 }
             )
@@ -147,7 +152,9 @@ class MetricsCache:
                 "data": parsed.data,
                 "missing_fields": parsed.missing_fields,
                 "field_status": parsed.field_status,
+                "gex_time_semantics": self._legacy_page_time_semantics(section, parsed.field_status, fetched_at),
                 "fetched_at": fetched_at,
+                "latest_attempt_at": fetched_at,
                 "last_success_at": fetched_at,
                 "source_url": source_url,
                 "raw_excerpt": text[:1000],
@@ -170,6 +177,10 @@ class MetricsCache:
             (state.get("fetched_at") for state in self._sections.values() if state.get("fetched_at")),
             default=None,
         )
+        latest_attempt = max(
+            (state.get("latest_attempt_at") for state in self._sections.values() if state.get("latest_attempt_at")),
+            default=latest_fetch,
+        )
         data_age_ms = None
         if latest_fetch:
             parsed_latest = self._parse_datetime(latest_fetch)
@@ -190,13 +201,15 @@ class MetricsCache:
         payload = {
             "asset": "BTC",
             "fetched_at": latest_fetch,
-            "observed_at": self._source_metadata.get("observed_at", latest_fetch),
+            "latest_attempt_at": latest_attempt,
+            "observed_at": self._source_metadata.get("observed_at"),
             "data_age_ms": data_age_ms,
             "stale": self._stale,
             "availability": availability,
             "source_mode": self._source_metadata.get("source_mode", "legacy_page"),
             "source_urls": self._source_metadata.get("source_urls", {}),
             "source_metadata": self._source_metadata,
+            "gex_time_semantics": self._build_gex_time_semantics(),
             "gex_board": self._sections["gex_board"]["data"],
             "gamma_exposure": self._sections["gamma_exposure"]["data"],
             "volatility": self._sections["volatility"]["data"],
@@ -264,12 +277,22 @@ class MetricsCache:
 
             cached = sections.get(section) if isinstance(sections, dict) else None
             if isinstance(cached, dict):
-                for key in ("fetched_at", "last_success_at", "last_error", "source_url", "content_hash"):
+                for key in ("fetched_at", "latest_attempt_at", "last_success_at", "last_error", "source_url", "content_hash"):
                     if key in cached:
                         self._sections[section][key] = cached[key]
                 missing_fields = cached.get("missing_fields", [])
                 if isinstance(missing_fields, list):
                     self._sections[section]["missing_fields"] = missing_fields
+                section_semantics = cached.get("gex_time_semantics") or _section_fields_from_payload(payload, section)
+                self._sections[section]["gex_time_semantics"] = self._coerce_section_time_semantics(
+                    section,
+                    section_semantics,
+                )
+            else:
+                self._sections[section]["gex_time_semantics"] = self._coerce_section_time_semantics(
+                    section,
+                    _section_fields_from_payload(payload, section),
+                )
 
             missing = set(self._sections[section].get("missing_fields", []))
             field_status: dict[str, dict[str, str]] = {}
@@ -414,17 +437,96 @@ class MetricsCache:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed
 
+    def _build_gex_time_semantics(self) -> dict[str, Any]:
+        fields: dict[str, dict[str, Any]] = {}
+        for section in SECTIONS:
+            fields.update(self._coerce_section_time_semantics(section, self._sections[section].get("gex_time_semantics")))
+        return {"schema_version": GEX_TIME_SEMANTICS_SCHEMA, "fields": fields}
+
+    def _coerce_section_time_semantics(self, section: SectionName, raw: Any) -> dict[str, dict[str, Any]]:
+        raw_fields = raw.get("fields") if isinstance(raw, dict) and isinstance(raw.get("fields"), dict) else raw
+        raw_fields = raw_fields if isinstance(raw_fields, dict) else {}
+        result = self._empty_time_semantics(section)
+        for field in SECTION_FIELDS[section]:
+            path = f"{section}.{field}"
+            item = raw_fields.get(path)
+            if not isinstance(item, dict):
+                continue
+            clocks = {key: self._coerce_ms(item.get(key)) for key in
+                      ("observed_at_ms", "generated_at_ms", "fetched_at_ms")}
+            errors = [str(error) for error in item.get("time_errors") or []]
+            for key, value in clocks.items():
+                if item.get(key) is not None and value is None:
+                    error = f"{key}_invalid:{path}"
+                    if error not in errors:
+                        errors.append(error)
+            result[path] = {
+                "source_ref": str(item.get("source_ref") or result[path]["source_ref"]),
+                **clocks,
+                "time_basis": str(item.get("time_basis") or result[path]["time_basis"]),
+                "time_errors": errors,
+            }
+        return result
+
+    def _empty_time_semantics(self, section: SectionName) -> dict[str, dict[str, Any]]:
+        return {
+            f"{section}.{field}": {
+                "source_ref": "unavailable",
+                "observed_at_ms": None,
+                "generated_at_ms": None,
+                "fetched_at_ms": None,
+                "time_basis": "not_yet_fetched",
+                "time_errors": [],
+            }
+            for field in SECTION_FIELDS[section]
+        }
+
+    def _legacy_page_time_semantics(
+        self,
+        section: SectionName,
+        field_status: dict[str, dict[str, Any]],
+        fetched_at: str,
+    ) -> dict[str, dict[str, Any]]:
+        fetched_ms = self._iso_to_ms(fetched_at)
+        result = self._empty_time_semantics(section)
+        for field in SECTION_FIELDS[section]:
+            path = f"{section}.{field}"
+            status = field_status.get(path, {})
+            has_value = status.get("status") == "ok"
+            result[path] = {
+                "source_ref": str(status.get("source_ref") or "legacy_rendered_page"),
+                "observed_at_ms": None,
+                "generated_at_ms": None,
+                "fetched_at_ms": fetched_ms if has_value else None,
+                "time_basis": "legacy_page_fetch_time_only" if has_value else "source_field_missing",
+                "time_errors": [],
+            }
+        return result
+
+    def _iso_to_ms(self, value: Any) -> int | None:
+        parsed = self._parse_datetime(value)
+        return int(parsed.timestamp() * 1000) if parsed else None
+
+    def _coerce_ms(self, value: Any) -> int | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            return int(value)
+        return None
+
     def _public_section_states(self) -> dict[str, dict[str, Any]]:
         states: dict[str, dict[str, Any]] = {}
         for section, state in self._sections.items():
             states[section] = {
                 "fetched_at": state.get("fetched_at"),
+                "latest_attempt_at": state.get("latest_attempt_at"),
                 "last_success_at": state.get("last_success_at"),
                 "last_error": state.get("last_error"),
                 "source_url": state.get("source_url"),
                 "content_hash": state.get("content_hash"),
                 "missing_fields": state.get("missing_fields", []),
                 "field_status": state.get("field_status", {}),
+                "gex_time_semantics": state.get("gex_time_semantics", {}),
             }
         return states
 
@@ -437,7 +539,9 @@ class MetricsCache:
             "field_status": {
                 path: {"status": "missing", "reason": "not_yet_fetched"} for path in missing
             },
+            "gex_time_semantics": self._empty_time_semantics(section),
             "fetched_at": None,
+            "latest_attempt_at": None,
             "last_success_at": None,
             "source_url": self._source_url(section),
             "raw_excerpt": "",
@@ -455,3 +559,15 @@ class MetricsCache:
             return
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
         self.cache_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _section_fields_from_payload(payload: dict[str, Any], section: SectionName) -> dict[str, Any]:
+    time_semantics = payload.get("gex_time_semantics")
+    fields = time_semantics.get("fields") if isinstance(time_semantics, dict) else None
+    if not isinstance(fields, dict):
+        return {}
+    return {
+        f"{section}.{field}": fields.get(f"{section}.{field}")
+        for field in SECTION_FIELDS[section]
+        if isinstance(fields.get(f"{section}.{field}"), dict)
+    }

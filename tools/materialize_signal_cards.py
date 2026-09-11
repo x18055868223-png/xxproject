@@ -614,7 +614,7 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
             from signal_evidence_v2 import build_evidence_packet
             transition = _transition_record(previous, current, [previous, current], None) if previous else None
             packet_schema = _dict(_dict(current.get("llm_review")).get("evidence_context")).get("schema")
-            if packet_schema not in ("signal_evidence_packet@2.0.0", "signal_evidence_packet@2.1.0"):
+            if packet_schema not in ("signal_evidence_packet@2.0.0", "signal_evidence_packet@2.1.0", "signal_evidence_packet@2.1.1"):
                 packet_schema = None
             expected_v2_packets[_identity(current).get("card_id")] = build_evidence_packet(
                 current, previous, transition, packet_schema=packet_schema)
@@ -2240,24 +2240,25 @@ def _attach_local_change_projection(record, previous, transition):
     from signal_evidence_v2 import build_evidence_packet
     from signal_review_v2 import _browser_canonical_json
     review = _dict(record.get("llm_review"))
-    if review.get("schema_version") not in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0"):
+    if review.get("schema_version") not in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"):
         return
     advisory = _dict(review.get("integrated_trade_advisory"))
-    old_changes = [item for item in _list(advisory.get("market_facts"))
-                   if isinstance(item, dict) and item.get("topic") == "change_context"]
-    if any(item.get("usable") and item.get("id") != "change.context.status" for item in old_changes):
-        return
     packet = build_evidence_packet(record, previous, transition)
     facts = [item for item in packet["facts"] if item.get("topic") == "change_context"]
-    if not any(item.get("usable") and item.get("id") != "change.context.status" for item in facts):
-        return
+    from signal_change_display import build_change_display
+    display = build_change_display(record, previous, transition)
     projection = {
-        "schema_version": "signal_change_projection@1.0.0",
+        "schema_version": "signal_change_projection@1.1.0",
         "source_record_hash": packet["identity"].get("source_record_hash"),
         "assessment_hash": _dict(advisory.get("validation")).get("assessment_hash"),
         "as_of_ms": packet["identity"].get("as_of_ms"),
         "label_cn": "本地核验的变化，未进入当时模型评审。",
         "facts": facts,
+        "rows": display["rows"],
+        "reasons_cn": display["reasons_cn"],
+        "previous_card_id": _identity(previous).get("card_id") if previous else None,
+        "previous_source_record_hash": _producer_record_hash(previous) if previous else None,
+        "previous_as_of_ms": _dict(transition).get("previous_ts_ms"),
     }
     projection["projection_hash"] = "sha256:" + hashlib.sha256(
         _browser_canonical_json(projection).encode("utf-8")).hexdigest()

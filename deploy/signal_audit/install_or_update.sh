@@ -17,6 +17,7 @@ TOOL_SRC="$REPO_ROOT/tools/materialize_signal_cards.py"
 LLM_TOOL_SRC="$REPO_ROOT/tools/signal_llm_review.py"
 LLM_ENTRY_SRC="$REPO_ROOT/tools/signal_llm_review_entry.py"
 LLM_EVIDENCE_V2_SRC="$REPO_ROOT/tools/signal_evidence_v2.py"
+CHANGE_DISPLAY_SRC="$REPO_ROOT/tools/signal_change_display.py"
 LLM_REVIEW_V2_SRC="$REPO_ROOT/tools/signal_review_v2.py"
 LLM_REVIEW_V2_RUNTIME_SRC="$REPO_ROOT/tools/signal_review_v2_runtime.py"
 FACT_SEMANTICS_SRC="$REPO_ROOT/tools/signal_fact_semantics.py"
@@ -65,7 +66,7 @@ if [[ ! -f "$LLM_ENTRY_SRC" ]]; then
   exit 2
 fi
 
-for required in "$LLM_EVIDENCE_V2_SRC" "$LLM_REVIEW_V2_SRC" "$LLM_REVIEW_V2_RUNTIME_SRC"; do
+for required in "$LLM_EVIDENCE_V2_SRC" "$LLM_REVIEW_V2_SRC" "$LLM_REVIEW_V2_RUNTIME_SRC" "$CHANGE_DISPLAY_SRC"; do
   if [[ ! -f "$required" ]]; then
     echo "missing v2 evidence review tool: $required" >&2
     exit 2
@@ -109,6 +110,7 @@ install -m 0755 "$TOOL_SRC" "$TOOLS_ROOT/materialize_signal_cards.py"
 install -m 0755 "$LLM_TOOL_SRC" "$TOOLS_ROOT/signal_llm_review.py"
 install -m 0755 "$LLM_ENTRY_SRC" "$TOOLS_ROOT/signal_llm_review_entry.py"
 install -m 0755 "$LLM_EVIDENCE_V2_SRC" "$TOOLS_ROOT/signal_evidence_v2.py"
+install -m 0755 "$CHANGE_DISPLAY_SRC" "$TOOLS_ROOT/signal_change_display.py"
 install -m 0755 "$LLM_REVIEW_V2_SRC" "$TOOLS_ROOT/signal_review_v2.py"
 install -m 0755 "$LLM_REVIEW_V2_RUNTIME_SRC" "$TOOLS_ROOT/signal_review_v2_runtime.py"
 install -m 0644 "$FACT_SEMANTICS_SRC" "$TOOLS_ROOT/signal_fact_semantics.py"

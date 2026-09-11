@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from gexmonitorapi.cache import MetricsCache
+from gexmonitorapi.models import SECTION_FIELDS, SECTIONS, empty_section_data
 
 
 class StaticScraper:
@@ -35,6 +36,16 @@ class BlockingScraper:
         self.started.set()
         await self.release.wait()
         raise RuntimeError(f"released {section}")
+
+
+class SnapshotScraper:
+    def __init__(self, snapshots: list[dict]) -> None:
+        self.snapshots = snapshots
+        self.index = -1
+
+    async def fetch_snapshot(self) -> dict:
+        self.index += 1
+        return self.snapshots[self.index]
 
 
 class SequenceScraper:
@@ -76,6 +87,8 @@ async def test_refresh_builds_info_payload_and_missing_fields() -> None:
     # field_status only surfaces problem fields; "ok" entries are dropped as noise.
     assert all(s["status"] != "ok" for s in payload["field_status"].values())
     assert "gex_board.total_net_gex" not in payload["field_status"]
+    assert payload["gex_time_semantics"]["schema_version"] == "gex_time_semantics@1.0.0"
+    assert "gex_board.total_net_gex" in payload["gex_time_semantics"]["fields"]
     # raw_excerpt debug blob is no longer exposed in the response.
     assert "raw_excerpt" not in payload["sections"]["gex_board"]
 
@@ -92,6 +105,45 @@ async def test_refresh_failure_keeps_previous_cache_and_marks_stale() -> None:
     assert payload["availability"] == "partial"
     assert payload["gex_board"]["total_net_gex"] == -67000000.0
     assert payload["sections"]["gex_board"]["last_error"] == "fetch failed for gex_board"
+
+
+@pytest.mark.asyncio
+async def test_public_snapshot_failure_keeps_legacy_fetch_age_behavior() -> None:
+    first = _snapshot(
+        "2026-06-03T09:00:00+00:00",
+        "2026-06-03T09:00:00+00:00",
+        total_net_gex=-67000000.0,
+        total_gex_fetched_ms=_ms("2026-06-03T09:00:00+00:00"),
+        content_hash="hash-good",
+    )
+    second = _snapshot(
+        "2026-06-03T09:30:00+00:00",
+        "2026-06-03T09:30:00+00:00",
+        total_net_gex=-1.0,
+        total_gex_fetched_ms=_ms("2026-06-03T09:30:00+00:00"),
+        content_hash="hash-failed",
+        errors={"gex": "blocked", "volatility": "blocked"},
+    )
+    cache = MetricsCache(
+        SnapshotScraper([first, second]),
+        now=lambda: datetime(2026, 6, 3, 10, tzinfo=UTC),
+    )
+
+    await cache.refresh("all")
+    payload = await cache.refresh("all")
+    field = payload["gex_time_semantics"]["fields"]["gex_board.total_net_gex"]
+
+    assert payload["stale"] is True
+    assert payload["availability"] == "partial"
+    assert payload["fetched_at"] == "2026-06-03T09:30:00+00:00"
+    assert payload["data_age_ms"] is not None
+    assert payload["gex_board"]["total_net_gex"] == -67000000.0
+    assert payload["sections"]["gex_board"]["fetched_at"] == "2026-06-03T09:30:00+00:00"
+    assert payload["sections"]["gex_board"]["latest_attempt_at"] == "2026-06-03T09:30:00+00:00"
+    assert payload["sections"]["gex_board"]["content_hash"] == "hash-good"
+    assert payload["sections"]["gex_board"]["last_error"] == "blocked"
+    assert field["fetched_at_ms"] == _ms("2026-06-03T09:00:00+00:00")
+    assert field["time_basis"] == "test_initial_fetch"
 
 
 @pytest.mark.asyncio
@@ -202,3 +254,79 @@ async def test_load_restores_cached_payload_data_and_rank_history(tmp_path) -> N
     assert payload["rank"]["window"]["history_retained_count"] == 1
     assert payload["rank"]["metrics"]["gex_board.total_net_gex"]["value"] == -67000000.0
     assert payload["rank"]["metrics"]["gex_board.total_net_gex"]["percentile"] == 1.0
+    assert payload["gex_time_semantics"]["fields"]["gex_board.total_net_gex"]["time_basis"] == "legacy_page_fetch_time_only"
+
+
+def _snapshot(
+    fetched_at: str,
+    latest_attempt_at: str,
+    *,
+    total_net_gex: float,
+    total_gex_fetched_ms: int,
+    content_hash: str,
+    errors: dict[str, str] | None = None,
+) -> dict:
+    sections = {}
+    for section in SECTIONS:
+        data = empty_section_data(section)
+        if section == "gex_board":
+            data["total_net_gex"] = total_net_gex
+        missing = [
+            f"{section}.{field}"
+            for field in SECTION_FIELDS[section]
+            if data.get(field) is None or (isinstance(data.get(field), list) and not data.get(field))
+        ]
+        semantics = {}
+        for field in SECTION_FIELDS[section]:
+            path = f"{section}.{field}"
+            semantics[path] = {
+                "source_ref": f"test.{path}",
+                "observed_at_ms": None,
+                "generated_at_ms": None,
+                "fetched_at_ms": total_gex_fetched_ms if path == "gex_board.total_net_gex" else None,
+                "time_basis": "test_initial_fetch" if path == "gex_board.total_net_gex" else "source_field_missing",
+                "time_errors": [],
+            }
+        sections[section] = {
+            "data": data,
+            "missing_fields": missing,
+            "field_status": {
+                f"{section}.{field}": {
+                    "status": "missing" if f"{section}.{field}" in missing else "ok",
+                    "reason": "test_missing" if f"{section}.{field}" in missing else "test_ok",
+                    "source_ref": f"test.{section}.{field}",
+                }
+                for field in SECTION_FIELDS[section]
+            },
+            "gex_time_semantics": semantics,
+            "fetched_at": fetched_at,
+            "latest_attempt_at": latest_attempt_at,
+            "last_success_at": fetched_at,
+            "source_url": "https://example.test",
+            "content_hash": content_hash,
+            "last_error": None,
+        }
+    return {
+        "sections": sections,
+        "metadata": {
+            "source_mode": "public_json",
+            "errors": errors or {},
+            "fetched_at": fetched_at,
+            "latest_attempt_at": latest_attempt_at,
+            "observed_at": None,
+        },
+    }
+
+
+def _ms(value: str) -> int:
+    return int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
+def test_cached_invalid_clocks_do_not_crash_or_become_unknown_without_error(tmp_path):
+    cache = MetricsCache(StaticScraper(), cache_file=tmp_path / "times.json")
+    for bad in (True, -1, 0, float("nan"), float("inf"), "invalid"):
+        result = cache._coerce_section_time_semantics("gex_board", {
+            "gex_board.total_net_gex": {"generated_at_ms": bad}
+        })["gex_board.total_net_gex"]
+        assert result["generated_at_ms"] is None
+        assert result["time_errors"]
