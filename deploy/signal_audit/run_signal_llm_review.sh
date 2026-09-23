@@ -34,6 +34,16 @@ fi
 
 RUN_LLM_REVIEW_LIMIT="$LLM_REVIEW_LIMIT"
 
+# Optional local-only computation from an already populated shadow cache.
+# Failure or late arrival never delays/repeats the ordinary LLM assessment.
+if [[ -n "${ASTRA_JOINT_ROOT:-}" && -f "${ASTRA_JOINT_MODEL:-}" && -n "${ASTRA_JOINT_ASSESSMENTS:-}" ]]; then
+  if ! timeout 5s flock -n "$ASTRA_JOINT_ROOT/registry.lock" /usr/bin/python3 "$TOOLS_ROOT/astra_joint_card_statistics.py" \
+    --ledger-folder "$ASTRA_JOINT_ROOT" --source "$JSONL_SOURCE" --artifact "$ASTRA_JOINT_MODEL" \
+    --contracts "$ASTRA_JOINT_ROOT" --registry "$ASTRA_JOINT_ASSESSMENTS"; then
+    echo "joint statistics not ready; continuing the original single review" >&2
+  fi
+fi
+
 if [[ -n "${ONLY_CARD_ID:-}" ]]; then
   /usr/bin/python3 - "$JSONL_SOURCE" "$ONLY_CARD_ID" <<'PY'
 import json
@@ -90,6 +100,9 @@ fi
 
 if [[ -n "${LLM_AUTOMATIC_EXCLUSIONS:-}" ]]; then
   entry_args+=(--automatic-exclusions "$LLM_AUTOMATIC_EXCLUSIONS")
+fi
+if [[ -n "${ASTRA_JOINT_ASSESSMENTS:-}" ]]; then
+  entry_args+=(--joint-assessments "$ASTRA_JOINT_ASSESSMENTS")
 fi
 
 exec /usr/bin/python3 "$TOOLS_ROOT/signal_llm_review_entry.py" "${entry_args[@]}"

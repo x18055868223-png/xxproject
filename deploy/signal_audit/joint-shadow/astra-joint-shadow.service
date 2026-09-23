@@ -1,0 +1,13 @@
+[Unit]
+Description=Astra isolated joint research shadow observation
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bitnami
+EnvironmentFile=/etc/signal-audit/joint.env
+ExecStart=/bin/bash /opt/signal-audit-tools/run_astra_joint_shadow.sh
+MemoryMax=96M
+CPUQuota=50%
+TimeoutStartSec=55
+NoNewPrivileges=true

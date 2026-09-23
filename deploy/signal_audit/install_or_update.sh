@@ -113,6 +113,11 @@ install -m 0755 "$LLM_EVIDENCE_V2_SRC" "$TOOLS_ROOT/signal_evidence_v2.py"
 install -m 0755 "$CHANGE_DISPLAY_SRC" "$TOOLS_ROOT/signal_change_display.py"
 install -m 0755 "$LLM_REVIEW_V2_SRC" "$TOOLS_ROOT/signal_review_v2.py"
 install -m 0755 "$LLM_REVIEW_V2_RUNTIME_SRC" "$TOOLS_ROOT/signal_review_v2_runtime.py"
+for joint_module in signal_review_joint.py astra_joint_v11_contract.py astra_joint_v11_data.py astra_joint_v11_inference.py astra_joint_v11_cards.py astra_joint_v11_forward.py astra_joint_v11_evaluation.py astra_joint_contract.py astra_joint_projection.py astra_joint_bridge.py astra_joint_inference.py astra_joint_data.py astra_joint_events.py astra_joint_dataset.py astra_joint_sources.py astra_joint_shadow.py astra_joint_card_statistics.py astra_joint_operations.py; do
+  install -m 0755 "$REPO_ROOT/tools/$joint_module" "$TOOLS_ROOT/$joint_module"
+done
+# Joint collection is a separate, explicitly installed shadow service. Merely
+# updating the compatible reader never starts collection or a forward window.
 install -m 0644 "$FACT_SEMANTICS_SRC" "$TOOLS_ROOT/signal_fact_semantics.py"
 install -m 0755 "$LLM_RUNNER_SRC" "$TOOLS_ROOT/run_signal_llm_review.sh"
 install -m 0755 "$CANARY_RELEASE_SRC" "$TOOLS_ROOT/signal_llm_review_canary_release.sh"

@@ -184,7 +184,7 @@ install_signal_audit() {
 
 install_signal_audit_v2_tools() {
   local module source
-  for module in signal_evidence_v2.py signal_review_v2.py signal_review_v2_runtime.py; do
+  for module in signal_evidence_v2.py signal_review_v2.py signal_review_v2_runtime.py signal_review_joint.py astra_joint_contract.py astra_joint_projection.py astra_joint_bridge.py; do
     source="$REPO_DIR/tools/$module"
     if [[ ! -f "$source" ]]; then
       echo "missing v2 LLM review tool: $source" >&2
@@ -235,6 +235,7 @@ Environment="LLM_RECON_EFFORT=$(systemd_escape_value "$LLM_RECON_EFFORT")"
 Environment="LLM_RECON_TIMEOUT=$(systemd_escape_value "$LLM_RECON_TIMEOUT")"
 EnvironmentFile=
 EnvironmentFile=-$(systemd_escape_value "$LLM_ENV_FILE")
+EnvironmentFile=-/etc/signal-audit/joint.env
 ExecStartPre=
 ExecStartPre=/bin/systemctl start signal-audit-materialize.service
 ExecStart=
@@ -325,8 +326,8 @@ self_check() {
     LLM_ENV="$LLM_ENV_FILE" \
     EXPECTED_LLM_PROVIDER="$LLM_PROVIDER" \
     EXPECTED_LLM_MODEL="$LLM_MODEL" \
-    EXPECTED_LLM_SCHEMA=signal_llm_review@2.2.0 \
-    EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.2.0 \
+    EXPECTED_LLM_SCHEMA=signal_llm_review@2.3.0 \
+    EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.3.0 \
     EXPECTED_LLM_REVIEW_MODE=single_evidence_v2 \
     EXPECTED_LLM_CALL_COUNT=1 \
     EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2 \

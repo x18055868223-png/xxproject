@@ -61,16 +61,20 @@ def assert_asset_root(root):
                 and "fallback.js?v=20260723-fact-semantics-v1" not in index_html,
                 "index.html should cache-bust canonical frontend assets")
     assert_true(version.get("backup_version")
-                == "NRD-XXPROJECT-LOCAL-2026.09.11-astra-gex-time-patch",
-                "VERSION backup_version should identify the unpublished time patch")
+                == "NRD-XXPROJECT-LOCAL-2026.09.23-astra-card-highlights",
+                "VERSION backup_version should identify the per-card highlights reader revision")
+    assert_true(version.get("optimization_protocol") == "astra_joint_optimization_protocol@1.2.0"
+                and version.get("optimization_status") == "exploratory_research_closed_business_unproven"
+                and "actual EV unknown" in version.get("research_closure", ""),
+                "research closure must not imply a qualified replacement model or economic edge")
     assert_true(version.get("producer_version") == "1.6.2"
                 and version.get("evidence_packet_schema") == "signal_evidence_packet@2.1.1"
                 and version.get("gex_time_semantics_schema") == "gex_time_semantics@1.0.0",
                 "packaged assets must identify the native timing contract")
-    assert_true(version.get("generated_at") == "2026-09-11",
+    assert_true(version.get("generated_at") == "2026-09-23",
                 "VERSION generated_at should match the Astra rating asset refresh date")
-    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.2.0"
-                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.2.1",
+    assert_true(version.get("llm_review_schema") == "signal_llm_review@2.3.0"
+                and version.get("llm_prompt_version") == "signal_llm_review_prompt@2.3.0",
                 "VERSION should name the integrated advisory schema and prompt")
     assert_true("signal_evidence_summary@2.0.0" in version.get("manifest_schema", "")
                 and "side_evidence_ratings" in version.get("card_schema", "")
@@ -111,7 +115,7 @@ def assert_asset_root(root):
     for _path, card, ctx in cards:
         identity = card.get("identity") or {}
         assert_true(identity.get("strategy_version") == "1.5.1",
-                    "deploy fixture should match current FMZ producer version")
+                    "historical compatibility fixture should retain its original producer version")
         macro = ((card.get("factor_cross_section") or {}).get("macro_pressure")
                  or {})
         macro_shock = macro.get("macro_shock") or {}
@@ -229,10 +233,24 @@ setTimeout(() => {
                 + (result.stderr or result.stdout))
 
 
+def dist_matches_current_frontend_version():
+    if not DIST_FRONTEND.exists():
+        return False
+    try:
+        deploy_version = read_json(DEPLOY_FRONTEND / "VERSION.json")
+        dist_version = read_json(DIST_FRONTEND / "VERSION.json")
+    except Exception:
+        return False
+    return (
+        dist_version.get("frontend_cache_token")
+        == deploy_version.get("frontend_cache_token")
+    )
+
+
 def main():
     assert_asset_root(DEPLOY_FRONTEND)
     assert_render(DEPLOY_FRONTEND)
-    if DIST_FRONTEND.exists():
+    if dist_matches_current_frontend_version():
         assert_asset_root(DIST_FRONTEND)
         assert_render(DIST_FRONTEND)
         assert_true((DEPLOY_FRONTEND / "app.js").read_text(encoding="utf-8")
@@ -244,7 +262,7 @@ def main():
     else:
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         assert_true("dist/" in gitignore,
-                    "dist may be absent only because it is ignored package output")
+                    "dist may be absent or stale only because it is ignored package output")
     print("signal_session_context_deploy_assets: PASS")
 
 

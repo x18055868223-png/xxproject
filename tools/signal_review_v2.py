@@ -14,29 +14,39 @@ from decimal import Decimal
 import hashlib
 import json
 import math
+from pathlib import Path
 import re
+import sys
 from typing import Any
 
+_TOOL_DIR = str(Path(__file__).resolve().parent)
+if _TOOL_DIR not in sys.path:
+    sys.path.insert(0, _TOOL_DIR)
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 PROVIDER = "deepseek"
 LEGACY_OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.0.0"
 OUTPUT_SCHEMA_VERSION_2_1 = "signal_llm_review@2.1.0"
-OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.2.0"
+OUTPUT_SCHEMA_VERSION_2_2 = "signal_llm_review@2.2.0"
+OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.3.0"
 LEGACY_PROMPT_VERSION = "signal_llm_review_prompt@2.0.0"
 PROMPT_VERSION_2_0_1 = "signal_llm_review_prompt@2.0.1"
 PROMPT_VERSION_2_1_0 = "signal_llm_review_prompt@2.1.0"
 PROMPT_VERSION_2_2_0 = "signal_llm_review_prompt@2.2.0"
-PROMPT_VERSION = "signal_llm_review_prompt@2.2.1"
+PROMPT_VERSION_2_2_1 = "signal_llm_review_prompt@2.2.1"
+PROMPT_VERSION_2_2_2 = "signal_llm_review_prompt@2.2.2"
+PROMPT_VERSION = "signal_llm_review_prompt@2.3.0"
 MAIN_PROMPT_VERSION = PROMPT_VERSION
 REVIEW_MODE = "single_evidence_v2"
 LEGACY_PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.0.0"
 PACKET_SCHEMA_VERSION_2_1_0 = "signal_evidence_packet@2.1.0"
 PACKET_SCHEMA_VERSION = "signal_evidence_packet@2.1.1"
-SUMMARY_SCHEMA_VERSION = "signal_evidence_summary@2.2.0"
-DISPLAY_PROJECTION_VERSION = "2.2.0"
+SUMMARY_SCHEMA_VERSION = "signal_evidence_summary@2.3.0"
+DISPLAY_PROJECTION_VERSION = "2.3.0"
 PRICE_BIAS_SCHEMA_VERSION = "price_bias@1.0.0"
 ADVISORY_GUIDANCE_SCHEMA_VERSION = "advisory_guidance@1.0.0"
+SEMANTIC_VALIDATION_REVISION = "signal_review_semantic_assertions@2026-09-21"
+JOINT_SIDE_LIMITED_ACTION_SUMMARY_CN = "联合建议暂不采用：推荐侧的证据未通过本地语义核验。"
 
 SIDE_KEYS = ("put_credit", "call_credit")
 SIDE_FIT_THESES = {
@@ -49,6 +59,7 @@ REVIEW_STATUS = ("OK", "PARTIAL", "ERROR")
 ACCEPTED_OUTPUT_SCHEMA_VERSIONS = (
     LEGACY_OUTPUT_SCHEMA_VERSION,
     OUTPUT_SCHEMA_VERSION_2_1,
+    OUTPUT_SCHEMA_VERSION_2_2,
     OUTPUT_SCHEMA_VERSION,
 )
 ACCEPTED_PROMPT_VERSIONS = (
@@ -56,6 +67,8 @@ ACCEPTED_PROMPT_VERSIONS = (
     PROMPT_VERSION_2_0_1,
     PROMPT_VERSION_2_1_0,
     PROMPT_VERSION_2_2_0,
+    PROMPT_VERSION_2_2_1,
+    PROMPT_VERSION_2_2_2,
     PROMPT_VERSION,
 )
 ACCEPTED_PACKET_SCHEMA_VERSIONS = (LEGACY_PACKET_SCHEMA_VERSION, PACKET_SCHEMA_VERSION_2_1_0, PACKET_SCHEMA_VERSION)
@@ -170,6 +183,17 @@ _FUTURE_PROOF_RE = re.compile(
     r"(未来|后续|30\s*分钟后|60\s*分钟后|之后).{0,18}"
     r"(证明|已经证明|确认本次|保证|必然|一定)",
 )
+_SPATIAL_WALL_FACTS = {
+    "put_wall": ("structure.gamma.put_wall", "Put墙"),
+    "call_wall": ("structure.gamma.call_wall", "Call墙"),
+}
+_SPATIAL_WALL_PATTERNS = {
+    "put_wall": re.compile(r"(?:Put|PUT|put)\s*墙|看跌墙"),
+    "call_wall": re.compile(r"(?:Call|CALL|call)\s*墙|看涨墙"),
+}
+_SPATIAL_NUMBER_RE = re.compile(
+    r"([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]{4,}(?:\.[0-9]+)?)"
+)
 
 
 class EvidenceFormatError(ValueError):
@@ -198,7 +222,7 @@ def _is_latest_review(review: dict[str, Any]) -> bool:
 
 
 def _review_protocol_for_prompt(prompt_version: str | None) -> str:
-    if prompt_version in (PROMPT_VERSION_2_2_0, PROMPT_VERSION):
+    if prompt_version in (PROMPT_VERSION_2_2_0, PROMPT_VERSION_2_2_1, PROMPT_VERSION_2_2_2, PROMPT_VERSION):
         return "2.2"
     if prompt_version == PROMPT_VERSION_2_1_0:
         return "2.1"
@@ -220,12 +244,14 @@ def _prompt_uses_guidance(prompt_version: str | None) -> bool:
 
 
 def _prompt_requires_price_bias(prompt_version: str | None) -> bool:
-    return prompt_version in (PROMPT_VERSION_2_0_1, PROMPT_VERSION_2_1_0, PROMPT_VERSION_2_2_0, PROMPT_VERSION)
+    return prompt_version in (PROMPT_VERSION_2_0_1, PROMPT_VERSION_2_1_0, PROMPT_VERSION_2_2_0, PROMPT_VERSION_2_2_1, PROMPT_VERSION_2_2_2, PROMPT_VERSION)
 
 
 def _output_schema_for_prompt(prompt_version: str | None) -> str:
-    if prompt_version in (PROMPT_VERSION_2_2_0, PROMPT_VERSION):
+    if prompt_version == PROMPT_VERSION:
         return OUTPUT_SCHEMA_VERSION
+    if prompt_version in (PROMPT_VERSION_2_2_0, PROMPT_VERSION_2_2_1, PROMPT_VERSION_2_2_2):
+        return OUTPUT_SCHEMA_VERSION_2_2
     if prompt_version == PROMPT_VERSION_2_1_0:
         return OUTPUT_SCHEMA_VERSION_2_1
     if prompt_version in (LEGACY_PROMPT_VERSION, PROMPT_VERSION_2_0_1):
@@ -233,7 +259,8 @@ def _output_schema_for_prompt(prompt_version: str | None) -> str:
     raise EvidenceFormatError("invalid prompt_version")
 
 
-def build_request(packet: dict[str, Any], model: str, recovery: bool = False) -> dict[str, Any]:
+def build_request(packet: dict[str, Any], model: str, recovery: bool = False,
+                  statistical_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build one Chat Completions request for the v2 evidence review."""
 
     canonical_packet = _canonical_packet(packet)
@@ -260,7 +287,7 @@ def build_request(packet: dict[str, Any], model: str, recovery: bool = False) ->
     user_prompt = (
         f"{mode_line}\n\n"
         "只返回一个 JSON 对象，且顶层只能包含 side_evidence_ratings、price_bias、"
-        "side_comparison 和 advisory_guidance。两侧必须是 put_credit 和 call_credit。"
+        "side_comparison、advisory_guidance 和 joint_review。两侧必须是 put_credit 和 call_credit。"
         "put_credit 的固定评审对象是下行侵入风险是否受到可解释约束；"
         "call_credit 的固定评审对象是上行侵入风险是否受到可解释约束。"
         "每侧只填写 grade、basis_cn、mechanism、primary_counter_ref、"
@@ -332,13 +359,25 @@ def build_request(packet: dict[str, Any], model: str, recovery: bool = False) ->
         "side_comparison 的 evidence_refs 必须是字符串数组。advisory_guidance 的 tradeoffs_cn、"
         "evidence_refs、outlooks 必须是数组。不要将数组合成一段字符串。\n"
         "事实口径：宏观逆风刻度正值为风险资产逆风、负值为顺风；不把负数当下跌方向。"
-        "墙位、锚带只是结构参照，距离本身不能证明承接；墙、翻转点与 Pin 不能只因"
+        "墙位、锚带只是结构参照，距离本身不能证明承接或强度；墙、翻转点与 Pin 不能只因"
         "距离接近就视为等价约束。越过翻转点不单独证明全局净Gamma变号；Gamma 过渡区"
         "也不能仅凭正净Gamma认定抑制波动。传导较弱只能提示可能承接，不能写成已观测"
-        "隐藏订单吸收。明确区分成交窗口和价格窗口，终点变化不能证明期间持续单向推进。\n\n"
+        "隐藏订单吸收。明确区分成交窗口和价格窗口，终点变化不能证明期间持续单向推进。"
+        "引用墙位时，上方/下方和具体数值必须按卡时现价与对应事实值描述；破位后按实际数值"
+        "说明，不能默认 Put 墙必在下方或 Call 墙必在上方。同源市场事实或同一统计摘要不能"
+        "当作多份独立确认。\n\n"
         "输入事实包：\n"
         f"{json.dumps(canonical_packet, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
     )
+    if statistical_context is not None:
+        from astra_joint_bridge import prompt_context
+        user_prompt += ("\n\n独立统计研究摘要（不是可投票市场事实，不增加引用编号）：\n" +
+                        json.dumps(prompt_context(statistical_context), ensure_ascii=False, sort_keys=True))
+        user_prompt += ("\n在已有建议与竞争解释中简短核对统计与机制是否相合；相反时保留分歧。"
+                        "数值由本地独立展示，你不重写概率或赔付，不因此更改D–S定义。"
+                        "若资料适用范围不足，说明缺口，不能把统计空缺当成市场反证。")
+    from signal_review_joint import INSTRUCTIONS_CN
+    user_prompt += INSTRUCTIONS_CN
     request = {
         "model": model,
         "messages": [
@@ -369,6 +408,7 @@ def build_review(
     *,
     require_price_bias: bool = False,
     prompt_version: str | None = None,
+    statistical_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize one model payload into the persisted v2 review object."""
 
@@ -382,8 +422,10 @@ def build_review(
     uses_roles = _prompt_uses_roles(resolved_prompt_version)
     uses_comparison = _prompt_uses_comparison(resolved_prompt_version)
     uses_guidance = _prompt_uses_guidance(resolved_prompt_version)
+    raw_payload = dict(payload) if isinstance(payload, dict) else payload
+    raw_joint = raw_payload.pop("joint_review", None) if resolved_prompt_version == PROMPT_VERSION and isinstance(raw_payload, dict) else None
     raw_ratings, raw_price_bias, raw_comparison, raw_guidance = _extract_model_payload(
-        payload,
+        raw_payload,
         protocol=protocol,
     )
     fact_index = _fact_index(canonical_packet)
@@ -468,6 +510,7 @@ def build_review(
         "validation": {
             "status": status,
             "validation_reasons_cn": validation_reasons,
+            "semantic_validation_revision": SEMANTIC_VALIDATION_REVISION,
             "assessment_hash": None,
         },
     }
@@ -477,8 +520,12 @@ def build_review(
         advisory["side_comparison"] = side_comparison
     if guidance is not None:
         advisory["advisory_guidance"] = guidance
+    if resolved_prompt_version == PROMPT_VERSION:
+        from signal_review_joint import normalize
+        advisory["joint_review"] = normalize(raw_joint, statistical_context, fact_index, _packet_as_of_ms(canonical_packet))
     advisory["validation"]["assessment_hash"] = _assessment_hash(advisory)
     return {
+        **({"statistical_context": _clone(statistical_context)} if statistical_context is not None else {}),
         "schema_version": _output_schema_for_prompt(resolved_prompt_version),
         "prompt_version": resolved_prompt_version,
         "review_mode": REVIEW_MODE,
@@ -637,6 +684,26 @@ def build_summary(review: dict[str, Any], card: dict[str, Any] | None = None) ->
         summary["price_bias"] = _summary_price_bias(advisory.get("price_bias"))
     if guidance is not None:
         summary["advisory_guidance"] = guidance
+    if "joint_review" in advisory:
+        from signal_review_joint import summary as joint_summary
+        compact_joint = joint_summary(advisory["joint_review"])
+        joint_recommendation = advisory["joint_review"].get("recommendation")
+        joint_side_limited = (
+            advisory["joint_review"].get("status") == "ASSESSED"
+            and joint_recommendation in SIDE_KEYS
+            and _as_dict(sides.get(joint_recommendation)).get("status") != "RATED"
+        )
+        if joint_side_limited:
+            compact_joint["display_limited_by_side_qualification"] = True
+            compact_joint["display_limit_reason_cn"] = (
+                "联合建议指向的一侧未通过本地证据资格，顶部仍以本地评级边界为准。"
+            )
+            summary["display_action_summary_cn"] = JOINT_SIDE_LIMITED_ACTION_SUMMARY_CN
+            summary["action_summary_cn"] = JOINT_SIDE_LIMITED_ACTION_SUMMARY_CN
+        summary["joint_review"] = compact_joint
+        if advisory["joint_review"].get("status") == "ASSESSED" and not joint_side_limited:
+            summary["display_action_summary_cn"] = advisory["joint_review"]["summary_cn"]
+            summary["action_summary_cn"] = advisory["joint_review"]["summary_cn"]
     summary["display_projection_hash"] = _display_projection_hash(summary)
     return summary
 
@@ -659,6 +726,11 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
         raise EvidenceFormatError("schema_version and prompt_version mismatch")
     if review.get("review_mode") != REVIEW_MODE:
         raise EvidenceFormatError("invalid review_mode")
+    if review.get("statistical_context") is not None:
+        if prompt_version not in (PROMPT_VERSION_2_2_2, PROMPT_VERSION):
+            raise EvidenceFormatError("statistical context requires its native prompt")
+        from astra_joint_bridge import validate_context
+        validate_context(review["statistical_context"])
     if review.get("status") not in REVIEW_STATUS:
         raise EvidenceFormatError("invalid review status")
     context = _as_dict(review.get("evidence_context"))
@@ -679,6 +751,12 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
     validation = _as_dict(advisory.get("validation"))
     if validation.get("status") != review.get("status"):
         raise EvidenceFormatError("validation status mismatch")
+    semantic_revision = validation.get("semantic_validation_revision")
+    if (
+        semantic_revision is not None
+        and semantic_revision != SEMANTIC_VALIDATION_REVISION
+    ):
+        raise EvidenceFormatError("semantic validation revision invalid")
     assessment_hash = validation.get("assessment_hash")
     if assessment_hash != _assessment_hash(advisory):
         raise EvidenceFormatError("assessment_hash mismatch")
@@ -741,6 +819,11 @@ def validate_persisted_review(review: dict[str, Any], *, recheck_claims=True) ->
         _validate_source_boundary(_as_dict(advisory.get("source_boundary")))
     elif "advisory_guidance" in advisory:
         raise EvidenceFormatError("legacy review must not contain advisory_guidance")
+    if prompt_version == PROMPT_VERSION and "joint_review" in advisory:
+        from signal_review_joint import validate
+        validate(advisory["joint_review"], review.get("statistical_context"), fact_index, as_of_ms)
+    elif prompt_version != PROMPT_VERSION and "joint_review" in advisory:
+        raise EvidenceFormatError("joint opinion requires native prompt")
     return {
         "ok": True,
         "assessment_hash": assessment_hash,
@@ -752,6 +835,9 @@ def revalidate_review(card: dict[str, Any], review: dict[str, Any], *, recheck_c
     """Validate persisted review against the current source card identity."""
 
     result = validate_persisted_review(review, recheck_claims=recheck_claims)
+    if review.get("statistical_context") is not None:
+        from astra_joint_bridge import validate_context
+        validate_context(review["statistical_context"], card)
     context_identity = _as_dict(_as_dict(review.get("evidence_context")).get("identity"))
     card_identity = _as_dict(_as_dict(card).get("identity"))
     if context_identity.get("card_id") != card_identity.get("card_id"):
@@ -849,10 +935,15 @@ def model_payload_from_review(review: dict[str, Any]) -> dict[str, Any]:
         payload["advisory_guidance"] = {}
         for field in sorted(MODEL_ADVISORY_GUIDANCE_FIELDS):
             payload["advisory_guidance"][field] = _clone(guidance.get(field))
+    if review.get("prompt_version") == PROMPT_VERSION:
+        # Preserve the original reply, including invalid replies, across a
+        # local repair of an unrelated side. Never reconstruct model prose.
+        payload["joint_review"] = _clone(_as_dict(advisory.get("joint_review")).get("model_output"))
     return payload
 
 
 def response_schema() -> dict[str, Any]:
+    from signal_review_joint import response_schema as joint_schema
     role_schema = {
         "type": "object",
         "additionalProperties": False,
@@ -941,7 +1032,7 @@ def response_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["side_evidence_ratings", "price_bias", "side_comparison", "advisory_guidance"],
+        "required": ["side_evidence_ratings", "price_bias", "side_comparison", "advisory_guidance", "joint_review"],
         "properties": {
             "side_evidence_ratings": {
                 "type": "object",
@@ -952,6 +1043,7 @@ def response_schema() -> dict[str, Any]:
             "price_bias": price_bias_schema,
             "side_comparison": comparison_schema,
             "advisory_guidance": guidance_schema,
+            "joint_review": joint_schema(),
         },
     }
 
@@ -1893,6 +1985,13 @@ def _normalize_evidence_roles(
         if role_issue:
             reasons.append(_side_label(side_key) + role_issue)
             continue
+        assertion_issues = _fact_assertion_issues(
+            {"claim_cn": claim},
+            _fact_assertion_context_for_ref(fact_index, ref),
+        )
+        if assertion_issues:
+            reasons.extend(_side_label(side_key) + issue for issue in assertion_issues)
+            continue
         role_key = (ref, role, claim)
         if role_key in seen_roles:
             continue
@@ -2000,6 +2099,28 @@ def _valid_refs(
     return refs, True, reasons
 
 
+def _fact_assertion_context_for_ref(
+    fact_index: dict[str, dict[str, Any]],
+    ref: str,
+) -> dict[str, dict[str, Any]]:
+    context: dict[str, dict[str, Any]] = {}
+
+    def add_fact(fact_id: str) -> None:
+        fact = fact_index.get(fact_id)
+        if not fact or fact_id in context:
+            return
+        context[fact_id] = fact
+        dependencies = fact.get("dependencies")
+        if isinstance(dependencies, list):
+            for dependency in dependencies:
+                if isinstance(dependency, str):
+                    add_fact(dependency)
+
+    add_fact(ref)
+    add_fact("market.price.current")
+    return context or fact_index
+
+
 def _fact_assertion_issues(text_fields, fact_index):
     """Check narrow explicit assertions, not the truth of free-form reasoning."""
     text = " ".join(
@@ -2036,7 +2157,178 @@ def _fact_assertion_issues(text_fields, fact_index):
         for match in re.finditer(r"(?:净\s*(?:Gamma|GEX)|总Gamma敞口)\s*(?:为|是|呈)\s*(正|负)", text, re.I):
             if (match.group(1) == "正") != (gamma > 0):
                 reasons.append("说明中的净期权敞口符号与本卡事实不一致。")
+    reasons.extend(_spatial_assertion_issues(text, fact_index))
     return reasons
+
+
+def _spatial_assertion_issues(
+    text: str,
+    fact_index: dict[str, dict[str, Any]],
+) -> list[str]:
+    price = _numeric_fact_value(fact_index, "market.price.current")
+    wall_values = {
+        key: _numeric_fact_value(fact_index, fact_id)
+        for key, (fact_id, _label) in _SPATIAL_WALL_FACTS.items()
+    }
+    available_walls = {key for key, value in wall_values.items() if value is not None}
+    if not text or not available_walls:
+        return []
+    reasons: list[str] = []
+    for clause in re.split(r"[；;。\n]", text):
+        clause = clause.strip()
+        if not clause or _spatial_clause_should_skip(clause):
+            continue
+        mentioned = {
+            key for key, pattern in _SPATIAL_WALL_PATTERNS.items()
+            if pattern.search(clause)
+        }
+        if not mentioned:
+            continue
+        if len(available_walls) == 1 and mentioned.isdisjoint(available_walls):
+            reasons.append("说明提到的墙位类型与引用事实不一致。")
+            continue
+        for key in sorted(mentioned & available_walls):
+            for match in _SPATIAL_WALL_PATTERNS[key].finditer(clause):
+                if price is not None:
+                    claimed_relations = _claimed_wall_relations(clause, match)
+                    if any(
+                        not _wall_relation_matches(price, wall_values[key], relation)
+                        for relation in claimed_relations
+                    ):
+                        reasons.append(
+                            f"说明中的{_SPATIAL_WALL_FACTS[key][1]}相对现价上下方与本卡数值不一致。"
+                        )
+                        break
+                numeric_claims = _wall_numeric_claims(clause, match)
+                if numeric_claims and not any(
+                    _numbers_close(number, wall_values[key])
+                    for number in numeric_claims
+                ):
+                    reasons.append(
+                        f"说明中的{_SPATIAL_WALL_FACTS[key][1]}数值与本卡引用事实不一致。"
+                    )
+                    break
+    return _dedupe_reasons(reasons)
+
+
+def _numeric_fact_value(
+    fact_index: dict[str, dict[str, Any]],
+    fact_id: str,
+) -> float | None:
+    value = _as_dict(fact_index.get(fact_id)).get("value")
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    ):
+        return float(value)
+    return None
+
+
+def _spatial_clause_should_skip(clause: str) -> bool:
+    if (
+        re.search(r"(若|如果|一旦|假如|除非|可能|或许|未来|后续)", clause)
+        and re.search(r"(现价|当前价格|标的价格|价格|墙)", clause)
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(不能|无法|不应|不足以|不代表|并非|不是|未能|没有|未见|缺少).{0,24}"
+            r"(上方|下方|高于|低于|跌破|突破|墙|承接|强度)",
+            clause,
+        )
+    )
+
+
+def _claimed_wall_relations(clause: str, match: re.Match[str]) -> list[str]:
+    before = clause[max(0, match.start() - 32):match.start()]
+    after = clause[match.end():match.end() + 32]
+    relations: list[str] = []
+    relations.extend(_price_to_wall_relations(before))
+    if re.search(r"(上方|上侧|上沿|上边|较高处)\s*$", before):
+        relations.append("above")
+    if re.search(r"(下方|下侧|下沿|下边|较低处)\s*$", before):
+        relations.append("below")
+    if re.search(r"(现价|当前价格|标的价格|价格).{0,12}(跌破|下破|低于)\s*$", before):
+        relations.append("above")
+    if re.search(r"(现价|当前价格|标的价格|价格).{0,12}(突破|上破|高于)\s*$", before):
+        relations.append("below")
+    if re.search(r"(现价|当前价格|标的价格|价格)\s*(在|位于|处于)?\s*$", before):
+        if re.match(r"\s*(的)?(上方|之上|以上|高于)", after):
+            relations.append("below")
+        if re.match(r"\s*(的)?(下方|之下|以下|低于)", after):
+            relations.append("above")
+    if re.match(r".{0,8}(位于|处于|在|落在|处在)?(现价|当前价格|标的价格|价格)(的)?(上方|之上|以上)", after):
+        relations.append("above")
+    if re.match(r".{0,8}(位于|处于|在|落在|处在)?(现价|当前价格|标的价格|价格)(的)?(下方|之下|以下)", after):
+        relations.append("below")
+    if re.match(r".{0,8}(高于|超过)(现价|当前价格|标的价格|价格)", after):
+        relations.append("above")
+    if re.match(r".{0,8}低于(现价|当前价格|标的价格|价格)", after):
+        relations.append("below")
+    return relations
+
+
+def _price_to_wall_relations(before_wall: str) -> list[str]:
+    price_matches = list(re.finditer(r"(现价|当前价格|标的价格|价格)", before_wall))
+    if not price_matches:
+        return []
+    tail = before_wall[price_matches[-1].end():]
+    if _mentions_spatial_wall(tail):
+        return []
+    relations: list[str] = []
+    if re.search(r"(上方|之上|以上|较高处|高位)", tail):
+        relations.append("above")
+    if re.search(r"(下方|之下|以下|较低处|低位)", tail):
+        relations.append("below")
+    return relations
+
+
+def _mentions_spatial_wall(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _SPATIAL_WALL_PATTERNS.values())
+
+
+def _wall_relation_matches(price: float, wall: float | None, relation: str) -> bool:
+    if wall is None:
+        return True
+    tolerance = max(0.01, abs(price) * 0.00001)
+    if relation == "above":
+        return wall > price + tolerance
+    if relation == "below":
+        return wall < price - tolerance
+    return True
+
+
+def _wall_numeric_claims(clause: str, match: re.Match[str]) -> list[float]:
+    after = clause[match.end():match.end() + 32]
+    numbers: list[float] = []
+    for found in _SPATIAL_NUMBER_RE.finditer(after):
+        prefix = after[:found.start()]
+        if re.search(r"(距|距离|离|相差|差)\s*(现价|当前价格|标的价格|价格)?\s*(约)?$", prefix):
+            continue
+        if not re.search(r"(^|[，,、\s])(为|是|在|位于|约|=|:|：)\s*$", prefix) and found.start() > 1:
+            continue
+        if after[found.end():found.end() + 1] == "%":
+            continue
+        try:
+            numbers.append(float(found.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return numbers
+
+
+def _numbers_close(observed: float, expected: float | None) -> bool:
+    if expected is None:
+        return True
+    return abs(observed - expected) <= max(0.01, abs(expected) * 0.00001)
+
+
+def _dedupe_reasons(reasons: list[str]) -> list[str]:
+    result: list[str] = []
+    for reason in reasons:
+        if reason not in result:
+            result.append(reason)
+    return result
 
 
 def _fact_is_usable(fact: dict[str, Any], *, as_of_ms: int | float) -> tuple[bool, str]:

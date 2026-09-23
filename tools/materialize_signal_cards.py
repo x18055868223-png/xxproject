@@ -41,9 +41,9 @@ TRANSITION_COMPUTATION_VERSION = "signal_transition_materializer@1.0.0"
 TRANSITION_FIELD_REGISTRY_VERSION = "TRANSITION_FIELD_REGISTRY@1.0.0"
 TRANSITION_REVIEW_SCHEMA_VERSION = "signal_transition_llm_review@1.2.4"
 MATERIALITY_RANK = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
-SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.2.0"
+SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION = "signal_llm_review@2.3.0"
 SIGNAL_EVIDENCE_REVIEW_SCHEMAS = frozenset((
-    "signal_llm_review@2.0.0", "signal_llm_review@2.1.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION,
+    "signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION,
 ))
 SIGNAL_RATING_SCHEMA_VERSION = "signal_rating@1.0.0"
 SIGNAL_RATING_SCOPE = "side_environment_v1"
@@ -570,7 +570,12 @@ SESSION_PREMISE_CONTEXTS = {
 def materialize(source, output, max_cards=15, llm_reviews=None,
                 include_synthetic=False, transition_ledger=None,
                 transition_state=None, transition_reviews=None,
-                require_valid_source_tail=False):
+                require_valid_source_tail=False, joint_assessments=None):
+    from astra_joint_bridge import load_registry, attach_projection
+    try:
+        joint_registry = load_registry(joint_assessments)
+    except (OSError, ValueError, TypeError):
+        joint_registry = {}
     source = Path(source)
     output = Path(output)
     if require_valid_source_tail:
@@ -661,6 +666,7 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
             record.pop("signal_comfort_summary", None)
         else:
             record["signal_comfort_summary"] = _signal_comfort_summary(record)
+        attach_projection(record, joint_registry)
         _write_json(cards_dir / filename, record)
         manifest_cards.append({
             "card_id": card_id,
@@ -670,6 +676,8 @@ def materialize(source, output, max_cards=15, llm_reviews=None,
             "path": rel_path,
             "summary": _manifest_card_summary(record),
         })
+        if record.get("joint_research_summary"):
+            manifest_cards[-1]["summary"]["joint_research_summary"] = record["joint_research_summary"]
 
     manifest = {
         "schema": dict(MANIFEST_SCHEMA),
@@ -2240,7 +2248,7 @@ def _attach_local_change_projection(record, previous, transition):
     from signal_evidence_v2 import build_evidence_packet
     from signal_review_v2 import _browser_canonical_json
     review = _dict(record.get("llm_review"))
-    if review.get("schema_version") not in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"):
+    if review.get("schema_version") not in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0", "signal_llm_review@2.3.0"):
         return
     advisory = _dict(review.get("integrated_trade_advisory"))
     packet = build_evidence_packet(record, previous, transition)
@@ -2424,13 +2432,14 @@ def _validate_evidence_v2(record, expected_packet=None):
                     record, payload, packet, model=review.get("model"),
                     reviewed_at=review.get("reviewed_at"),
                     require_price_bias=requires_price_bias(review),
+                    statistical_context=review.get("statistical_context"),
                     prompt_version=review_prompt(review))}, preserved_bias)
                 record["llm_review"]["materializer_revalidation"] = "change_source_unavailable"
         checked = record["llm_review"]
         advisory = checked["integrated_trade_advisory"]
         facts = {fact["id"]: fact for fact in advisory["market_facts"]}
         comparison = _dict(advisory.get("side_comparison"))
-        if (checked.get("schema_version") in ("signal_llm_review@2.1.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION)
+        if (checked.get("schema_version") in ("signal_llm_review@2.1.0", "signal_llm_review@2.2.0", SIGNAL_EVIDENCE_REVIEW_SCHEMA_VERSION)
                 and comparison.get("status") == "ASSESSED"):
             normalized_comparison = _normalize_side_comparison(
                 {field: comparison.get(field) for field in MODEL_COMPARISON_FIELDS},
@@ -2462,6 +2471,7 @@ def _validate_evidence_v2(record, expected_packet=None):
                 record, payload, frozen_packet, model=checked.get("model"),
                 reviewed_at=checked.get("reviewed_at"),
                 require_price_bias=requires_price_bias(checked),
+                statistical_context=checked.get("statistical_context"),
                 prompt_version=review_prompt(checked))}, preserved_bias)
             record["llm_review"]["materializer_revalidation"] = "claim_scope_unavailable"
         checked = record["llm_review"]
@@ -2476,6 +2486,7 @@ def _validate_evidence_v2(record, expected_packet=None):
                 record, model_payload_from(checked), frozen_packet,
                 model=checked.get("model"), reviewed_at=checked.get("reviewed_at"),
                 require_price_bias=requires_price_bias(checked),
+                statistical_context=checked.get("statistical_context"),
                 prompt_version=review_prompt(checked))}
             record["llm_review"]["materializer_revalidation"] = "claim_scope_unavailable"
         revalidate_review(record, record["llm_review"])
@@ -3593,6 +3604,8 @@ def main(argv=None):
                         help="Path to FMZ signal_review.jsonl.")
     parser.add_argument("--output", required=True,
                         help="Static frontend root containing index.html/app.js.")
+    parser.add_argument("--joint-assessments", default=os.environ.get("ASTRA_JOINT_ASSESSMENTS", ""),
+                        help="Optional isolated joint-research registry; no inference or model calls.")
     parser.add_argument("--max-cards", type=int, default=15,
                         help="Maximum newest cards to publish; <=0 publishes all.")
     parser.add_argument("--llm-reviews", default="",
@@ -3616,7 +3629,8 @@ def main(argv=None):
                              transition_ledger=args.transition_ledger,
                              transition_state=args.transition_state,
                              transition_reviews=args.transition_reviews,
-                             require_valid_source_tail=args.require_valid_source_tail)
+                             require_valid_source_tail=args.require_valid_source_tail,
+                             joint_assessments=args.joint_assessments or None)
     except SourceTailValidationError as exc:
         parser.exit(2, "materialize_signal_cards: ERROR: {}\n".format(exc))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

@@ -278,7 +278,7 @@ def test_v22_request_schema_contract(tool):
     schema = request["_local_json_schema"]
     side_props = schema["properties"]["side_evidence_ratings"]["properties"]["put_credit"]["properties"]
     prompt = "\n".join(message["content"] for message in request["messages"])
-    assert_true(request["_local_prompt_version"] == "signal_llm_review_prompt@2.2.1",
+    assert_true(request["_local_prompt_version"] == "signal_llm_review_prompt@2.3.0",
                 "latest prompt should be v2.2")
     assert_true("advisory_guidance" in schema["required"],
                 "v2.2 schema should require advisory guidance")
@@ -338,10 +338,10 @@ def test_v22_b_wait_guidance_does_not_create_permission(tool):
                 "display summary should also use guidance for v2.2 cards")
     assert_true(summary["source_boundary"] == advisory["source_boundary"],
                 "new summary and full review should expose the same source boundary")
-    assert_true(summary["review_schema_version"] == "signal_llm_review@2.2.0"
+    assert_true(summary["review_schema_version"] == tool.OUTPUT_SCHEMA_VERSION
                 and summary["review_protocol"] == "2.2"
                 and summary["has_advisory_guidance"] is True,
-                "summary should expose native v2.2 review identity")
+                "summary should expose current native review identity")
     assert_true("窗口尚未打开" in summary["source_boundary"]["summary_cn"],
                 "source boundary should preserve the old window reason")
 

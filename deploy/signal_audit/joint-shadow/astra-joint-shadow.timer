@@ -1,0 +1,11 @@
+[Unit]
+Description=Astra shadow closed-minute observation (install only after review)
+
+[Timer]
+OnCalendar=*-*-* *:*:02
+AccuracySec=1s
+Persistent=false
+Unit=astra-joint-shadow.service
+
+[Install]
+WantedBy=timers.target

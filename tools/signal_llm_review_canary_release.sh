@@ -483,6 +483,9 @@ require_file "$JSONL_SOURCE"
 require_file "$TOOLS_ROOT/signal_evidence_v2.py"
 require_file "$TOOLS_ROOT/signal_review_v2.py"
 require_file "$TOOLS_ROOT/signal_review_v2_runtime.py"
+require_file "$TOOLS_ROOT/astra_joint_contract.py"
+require_file "$TOOLS_ROOT/astra_joint_projection.py"
+require_file "$TOOLS_ROOT/astra_joint_bridge.py"
 
 if [[ -n "$RESUME_CANARY_ROOT" ]]; then
   CANARY_ROOT="$(readlink -f "$RESUME_CANARY_ROOT")"
@@ -552,8 +555,8 @@ sys.path.insert(0, str(pathlib.Path(sys.argv[1]).parent))
 import signal_llm_review as core
 print("LLM_PROVIDER=" + str(core.PROVIDER))
 print("LLM_MODEL=" + str(core.DEFAULT_MODEL))
-print("LLM_SCHEMA=signal_llm_review@2.2.0")
-print("LLM_PROMPT_VERSION=signal_llm_review_prompt@2.2.0")
+print("LLM_SCHEMA=signal_llm_review@2.3.0")
+print("LLM_PROMPT_VERSION=signal_llm_review_prompt@2.3.0")
 print("LLM_REVIEW_MODE=single_evidence_v2")
 PY
 for unit in signal-audit-materialize.service signal-audit-materialize.timer signal-audit-llm-review.service signal-audit-llm-review.timer; do
@@ -611,8 +614,8 @@ SYSTEMD_REQUIRED=0 \
 AUDIT_HTTP_REQUIRED=0 \
 LLM_REQUIRED=1 \
 INTEGRATED_ADVISORY_REQUIRED=1 \
-EXPECTED_LLM_SCHEMA=signal_llm_review@2.2.0 \
-EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.2.0 \
+EXPECTED_LLM_SCHEMA=signal_llm_review@2.3.0 \
+EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.3.0 \
 EXPECTED_LLM_REVIEW_MODE=single_evidence_v2 \
 EXPECTED_LLM_CALL_COUNT=1 \
 EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2 \

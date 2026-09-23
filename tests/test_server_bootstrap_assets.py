@@ -74,6 +74,7 @@ def main():
             "TRANSITION_STATE_SOURCE",
             "TRANSITION_LLM_REVIEWS_SOURCE",
             "10-bootstrap-overrides.conf",
+            "EnvironmentFile=-/etc/signal-audit/joint.env",
             "ExecStartPre=/bin/systemctl start signal-audit-materialize.service",
             "ExecStopPost=/bin/systemctl start signal-audit-materialize.service",
             "ExecStart=$(systemd_escape_value \"$TOOLS_ROOT\")/run_signal_llm_review.sh"):
@@ -91,8 +92,8 @@ def main():
                     "bootstrap should not carry removed automatic stage " + removed)
 
     for token in (
-            "EXPECTED_LLM_SCHEMA=signal_llm_review@2.2.0",
-            "EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.2.0",
+            "EXPECTED_LLM_SCHEMA=signal_llm_review@2.3.0",
+            "EXPECTED_LLM_PROMPT_VERSION=signal_llm_review_prompt@2.3.0",
             "EXPECTED_LLM_REVIEW_MODE=single_evidence_v2",
             "EXPECTED_LLM_CALL_COUNT=1",
             "EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2",
@@ -117,8 +118,8 @@ def main():
                 "install script must not enable review timers by default")
 
     for token in (
-            'EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.2.0}"',
-            'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.2.0}"',
+            'EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.3.0}"',
+            'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.3.0}"',
             'EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"',
             'EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-1}"',
             'EXPECTED_LLM_MAX_HTTP_ATTEMPTS="${EXPECTED_LLM_MAX_HTTP_ATTEMPTS:-2}"',

@@ -7883,6 +7883,8 @@ def main(argv=None):
                         help="Path to signal_review.jsonl.")
     parser.add_argument("--reviews-output", default=DEFAULT_REVIEWS,
                         help="Sidecar JSONL path for LLM reviews.")
+    parser.add_argument("--joint-assessments", default=os.environ.get("ASTRA_JOINT_ASSESSMENTS", ""),
+                        help="Optional frozen joint-research registry, no extra model calls.")
     parser.add_argument("--transition-ledger", default="",
                         help="Path to materialized signal_transition_ledger.jsonl.")
     parser.add_argument("--transition-reviews-output",
@@ -7967,7 +7969,8 @@ def main(argv=None):
                 budget=budget, max_concurrency=args.max_concurrency,
                 only_card_id=args.only_card_id or None,
                 transition_ledger=args.transition_ledger or None,
-                automatic_exclusions=args.automatic_exclusions or None)
+                automatic_exclusions=args.automatic_exclusions or None,
+                joint_assessments=args.joint_assessments or None)
         else:
             card_result = generate_reviews(
             args.source,

@@ -2978,6 +2978,239 @@ html.astra-paperline .transition-badges span {
   box-shadow: none;
 }
 
+.audit-highlights-panel {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 22px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  min-width: 0;
+}
+
+.audit-highlights-head {
+  display: grid;
+  gap: 5px;
+}
+
+.audit-highlights-head h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 760;
+}
+
+.audit-highlights-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.audit-highlights-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.audit-highlight-item {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}
+
+.audit-highlight-item.is-alert {
+  border-left-color: var(--bad);
+  background: #fffafa;
+}
+
+.audit-highlight-kind {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 760;
+}
+
+.audit-highlight-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+  font-weight: 760;
+}
+
+.audit-highlight-value {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.25;
+  font-weight: 780;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-highlight-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.audit-highlights-footnote {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.6;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.joint-research-inline {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.joint-research-head {
+  display: grid;
+  grid-template-columns: auto minmax(0,1fr);
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+
+.joint-research-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.joint-research-head strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.joint-research-side-grid {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 12px;
+}
+
+.joint-research-side-grid.compact {
+  margin: 10px 0 12px;
+}
+
+.joint-research-side {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.joint-research-side.is-muted {
+  color: var(--muted);
+}
+
+.joint-research-side p {
+  margin: 8px 0 0;
+  color: var(--ink);
+  line-height: 1.65;
+}
+
+.joint-scalar-grid {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 0;
+  margin: 12px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.joint-scalar-grid div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-right: 1px solid var(--line);
+}
+
+.joint-scalar-grid div:last-child {
+  border-right: 0;
+}
+
+.joint-scalar-grid dt {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.joint-scalar-grid dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+}
+
+.joint-research-scope p {
+  margin: 0 0 8px;
+}
+
+html.astra-paperline .joint-research-inline,
+html.astra-paperline .joint-research-side,
+html.astra-paperline .joint-scalar-grid,
+html.astra-paperline .audit-highlights-panel,
+html.astra-paperline .audit-highlight-item {
+  border-color: var(--line);
+}
+
+html.astra-paperline .joint-research-inline,
+html.astra-paperline .joint-research-side,
+html.astra-paperline .joint-research-panel,
+html.astra-paperline .audit-highlights-panel {
+  background: #fafafa;
+}
+
+html.astra-paperline .audit-highlight-item.is-alert {
+  border-left-color: var(--bad);
+  background: #fffafa;
+}
+
+@media (max-width: 760px) {
+  .joint-research-head,
+  .joint-research-side-grid,
+  .joint-scalar-grid,
+  .audit-highlights-list {
+    grid-template-columns: 1fr;
+  }
+  .joint-scalar-grid div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .joint-scalar-grid div:last-child {
+    border-bottom: 0;
+  }
+}
+
   </style>
 </head>
 <body>
@@ -3016,7 +3249,7 @@ html.astra-paperline .transition-badges span {
             <option value="">全部质量状态</option>
           </select>
         </label>
-        <label>
+        <label id="gradeFilterGroup">
           <span class="field-label">证据等级</span>
           <select id="gradeFilter" class="select">
             <option value="">全部评级</option>
@@ -3042,6 +3275,6 @@ html.astra-paperline .transition-badges span {
 []
   </script>
 
-  <script src="app.js?v=20260911-astra-time-patch"></script>
+  <script src="app.js?v=20260923-astra-card-highlights"></script>
 </body>
 </html>

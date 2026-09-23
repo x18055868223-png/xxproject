@@ -677,6 +677,14 @@
     return eventType ? semanticCompact(eventType) : "事件卡";
   };
   const indexSummaryText = (doc) => {
+    if (hasJointResearchSurface(doc) && !hasSignalEvidenceV2Surface(doc)) {
+      const view = jointResearchView(doc);
+      return [
+        symbol(doc) || "N/A",
+        "联合研究",
+        textClip(view.summary_cn || "影子赔付估计", 24)
+      ].join("｜");
+    }
     if (hasSignalEvidenceV2Surface(doc)) {
       return [
         symbol(doc) || "N/A",
@@ -942,6 +950,21 @@
 
   const isFileMode = () => window.location.protocol === "file:";
   const isHttpMode = () => window.location.protocol === "http:" || window.location.protocol === "https:";
+  function queryParamValue(name) {
+    const search = String((window.location && window.location.search) || "").replace(/^\?/, "");
+    if (!search) return "";
+    const pairs = search.split("&");
+    for (const pair of pairs) {
+      const [rawKey, rawValue = ""] = pair.split("=");
+      try {
+        if (decodeURIComponent(rawKey || "") === name) return decodeURIComponent(rawValue.replace(/\+/g, " "));
+      } catch (_error) {
+        if (rawKey === name) return rawValue;
+      }
+    }
+    return "";
+  }
+  const isJointResearchMode = () => rawEnum(queryParamValue("research")).toLowerCase() === "joint";
   const publicLoadReason = (kind, status = "") => {
     if (kind === "manifest_http") return "信号卡索引暂时不可用，请稍后重试。";
     if (kind === "manifest_json") return "信号卡索引资料无法解析，请检查已生成的发布文件。";
@@ -961,6 +984,38 @@
   }
   function normalizeManifestPath(item, summary, id) {
     return firstPresent(item.path, item.card_path, summary.path, summary.card_path, item.href, item.url, id ? `signal_cards/${id}.json` : "");
+  }
+  function normalizeJointManifestPath(item, summary, id) {
+    return firstPresent(item.path, item.detail_path, summary.path, summary.detail_path, item.href, item.url, id ? `joint-shadow/${id}.json` : "");
+  }
+
+  function normalizeJointManifestSummary(item, index = 0) {
+    const raw = asObject(item);
+    const rawSummary = asObject(firstPresent(raw.summary, raw.joint_research_summary, raw.projection_summary, raw.display_summary, {}));
+    const summary = isJointDisplaySummaryObject(raw) ? raw : rawSummary;
+    const identity = asObject(firstPresent(summary.identity, raw.identity, {}));
+    const id = firstPresent(identity.card_id, summary.card_id, raw.card_id, raw.id, raw.path, `joint-card-${index + 1}`);
+    const confirmed = firstPresent(identity.confirmed_at, summary.confirmed_at, raw.confirmed_at, summary.as_of_ms, raw.as_of_ms, raw.created_at);
+    const path = normalizeJointManifestPath(raw, summary, id);
+    const status = firstPresent(summary.status, raw.status, "unavailable");
+    return {
+      __partial: true,
+      __joint_research: true,
+      __card_path: path,
+      identity: {
+        ...identity,
+        card_id: id,
+        short_id: firstPresent(identity.short_id, summary.short_id, raw.short_id, String(id).slice(-4)),
+        confirmed_at: confirmed,
+        symbol: firstPresent(identity.symbol, summary.symbol, raw.symbol, "BTC"),
+        strategy_name: firstPresent(identity.strategy_name, summary.strategy_name, raw.strategy_name, "Astra 联合研究影子结果"),
+        is_synthetic: firstPresent(identity.is_synthetic, summary.is_synthetic, raw.is_synthetic, false),
+        event_type: "JOINT_RESEARCH"
+      },
+      quality: { overall: rawEnum(status).toUpperCase() === "AVAILABLE" ? "OK" : "RESEARCH_ONLY" },
+      display_layers: { headline: firstPresent(summary.summary_cn, raw.summary_cn, "联合研究详情待加载") },
+      joint_research_summary: summary
+    };
   }
   function normalizeManifestSummary(item, index = 0) {
     const raw = asObject(item);
@@ -1021,12 +1076,16 @@
     const docComfort = asObject(doc && doc.signal_comfort_summary);
     const summaryEvidence = asObject(summary && summary.signal_evidence_summary);
     const docEvidence = asObject(doc && doc.signal_evidence_summary);
+    const summaryJoint = asObject(summary && jointResearchSummaryCandidate(summary));
+    const docJoint = asObject(doc && jointResearchSummaryCandidate(doc));
     const enriched = summary
       ? {
           ...doc,
           ...((summary.__card_path && !doc.__card_path) ? { __card_path: summary.__card_path } : {}),
+          ...((summary.__joint_research && !doc.__joint_research) ? { __joint_research: true } : {}),
           ...((Object.keys(summaryComfort).length && !Object.keys(docComfort).length) ? { signal_comfort_summary: summaryComfort } : {}),
-          ...((Object.keys(summaryEvidence).length && !Object.keys(docEvidence).length) ? { signal_evidence_summary: summaryEvidence } : {})
+          ...((Object.keys(summaryEvidence).length && !Object.keys(docEvidence).length) ? { signal_evidence_summary: summaryEvidence } : {}),
+          ...((Object.keys(summaryJoint).length && !Object.keys(docJoint).length) ? { joint_research_summary: summaryJoint } : {})
         }
       : doc;
     cardCache.set(id, enriched);
@@ -1097,6 +1156,13 @@
       return fallback;
     }
     try {
+      if (isJointResearchMode()) {
+        const manifest = await fetchJsonWithTimeout("joint-shadow/manifest.json", "manifest");
+        const items = asArray(firstPresent(manifest.cards, manifest.items, manifest.records, manifest.assessments, []));
+        const summaries = sortByTimeDesc(items.map(normalizeJointManifestSummary)).slice(0, INITIAL_CARD_LIMIT);
+        loadState = { mode: "joint_manifest", error: "" };
+        return summaries;
+      }
       const manifest = await fetchJsonWithTimeout("signal_cards/index.json", "manifest");
       const summaries = sortByTimeDesc(asArray(manifest.cards).map(normalizeManifestSummary)).slice(0, INITIAL_CARD_LIMIT);
       loadState = { mode: "manifest", error: "" };
@@ -1123,7 +1189,7 @@
     if (current.attempts >= MAX_CARD_LOAD_ATTEMPTS && (options.retry || options.selected)) {
       return Promise.reject(createLoadError("card_http"));
     }
-    const path = summary && summary.__card_path;
+    const path = safeCardDownloadPath(summary && summary.__card_path);
     if (!path) {
       const error = createLoadError("missing_path");
       cardLoadStates.set(id, {
@@ -1176,6 +1242,10 @@
     return documents.length > 0 && documents.every((doc) => hasSignalEvidenceV2Surface(doc));
   }
 
+  function allDocumentsUseJointResearch() {
+    return documents.length > 0 && documents.every((doc) => hasJointResearchSurface(doc) && !hasSignalEvidenceV2Surface(doc));
+  }
+
   function populateSelect(selector, placeholder, values) {
     const select = $(selector);
     if (!select) return;
@@ -1209,9 +1279,20 @@
     });
   }
 
+  function setGradeFilterGroupVisible(visible) {
+    const group = $("#gradeFilterGroup");
+    if (group) group.hidden = !visible;
+    if (!visible) {
+      state.grade = "";
+      resetSelect("#gradeFilter", "全部评级");
+    }
+  }
+
   function populateFilters() {
-    const showLegacyFilters = !allDocumentsUseSignalEvidenceV2();
+    const jointOnly = allDocumentsUseJointResearch();
+    const showLegacyFilters = !jointOnly && !allDocumentsUseSignalEvidenceV2();
     setLegacyFilterGroupsVisible(showLegacyFilters);
+    setGradeFilterGroupVisible(!jointOnly);
     if (!showLegacyFilters) return;
     populateSelect("#directionFilter", "全部方向", uniqueValues("decision.lean"));
     populateSelect("#actionFilter", "全部限制", uniqueValues("decision.support_label"));
@@ -1284,7 +1365,8 @@
     const useLegacyFilters = !allDocumentsUseSignalEvidenceV2();
     return documents.filter((doc) => {
       const isV2 = hasSignalEvidenceV2Surface(doc);
-      const legacySearchTerms = isV2 ? [] : [
+      const isJoint = hasJointResearchSurface(doc) && !isV2;
+      const legacySearchTerms = (isV2 || isJoint) ? [] : [
         lean(doc), semanticLabel(lean(doc)), support(doc), semanticLabel(support(doc)),
         qualityOverall(doc), semanticLabel(qualityOverall(doc)), get(doc, "display_layers.headline"),
         signalRatingSearchText(doc), signalComfortSearchText(doc)
@@ -1292,7 +1374,8 @@
       const haystack = [
         cardId(doc), symbol(doc), get(doc, "identity.strategy_name"),
         ...legacySearchTerms,
-        signalEvidenceSearchText(doc)
+        signalEvidenceSearchText(doc),
+        jointResearchSearchText(doc)
       ].join(" ").toLowerCase();
       return (!state.query || haystack.includes(state.query))
         && (!useLegacyFilters || !state.direction || lean(doc) === state.direction)
@@ -1316,7 +1399,7 @@
     $("#indexList").innerHTML = list.map((doc) => {
       const view = cardCache.get(cardId(doc)) || doc;
       const active = cardId(view) === state.currentId ? "is-active" : "";
-      const ratingStats = signalEvidenceIndexStats(view) || signalComfortIndexStats(view);
+      const ratingStats = signalEvidenceIndexStats(view) || jointResearchIndexStats(view) || signalComfortIndexStats(view);
       return `
         <button class="index-item ${active}" type="button" data-card-id="${escapeHtml(cardId(view))}">
           <div class="index-topline">
@@ -3957,19 +4040,21 @@
     return asArray(refs).map((ref) => sourceRefLink(ref, doc)).join("");
   }
 
-  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.2.0";
-  const SIGNAL_EVIDENCE_REVIEW_SCHEMAS = new Set(["signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"]);
-  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.2.1";
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMA = "signal_llm_review@2.3.0";
+  const SIGNAL_EVIDENCE_REVIEW_SCHEMAS = new Set(["signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0", "signal_llm_review@2.3.0"]);
+  const SIGNAL_EVIDENCE_PROMPT_VERSION = "signal_llm_review_prompt@2.3.0";
   const SIGNAL_EVIDENCE_PROMPT_VERSIONS = new Set([
     "signal_llm_review_prompt@2.0.0",
     "signal_llm_review_prompt@2.0.1",
     "signal_llm_review_prompt@2.1.0",
     "signal_llm_review_prompt@2.2.0",
-    "signal_llm_review_prompt@2.2.1"
+    "signal_llm_review_prompt@2.2.1",
+    "signal_llm_review_prompt@2.2.2",
+    "signal_llm_review_prompt@2.3.0"
   ]);
-  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.2.0";
-  const SIGNAL_EVIDENCE_SUMMARY_SCHEMAS = new Set(["signal_evidence_summary@2.0.0", "signal_evidence_summary@2.1.0", "signal_evidence_summary@2.2.0"]);
-  const SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION = "2.2.0";
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMA = "signal_evidence_summary@2.3.0";
+  const SIGNAL_EVIDENCE_SUMMARY_SCHEMAS = new Set(["signal_evidence_summary@2.0.0", "signal_evidence_summary@2.1.0", "signal_evidence_summary@2.2.0", "signal_evidence_summary@2.3.0"]);
+  const SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION = "2.3.0";
   const SIGNAL_EVIDENCE_MODE = "single_evidence_v2";
   const SIGNAL_EVIDENCE_SIDE_STATUSES = new Set(["RATED", "UNRATED"]);
   const SIGNAL_EVIDENCE_ACTION_STATES = new Set(["PREPARE", "WATCH", "WAIT", "BLOCKED", "AVOID", "UNRATED"]);
@@ -4023,6 +4108,321 @@
     return isSignalEvidenceSummaryObject(summary)
       || Boolean(Object.keys(asObject(advisory.side_evidence_ratings)).length)
       || isSignalEvidenceReviewObject(get(doc, "llm_review", {}));
+  }
+
+  const JOINT_DISPLAY_SCHEMA = "astra_joint_display@1.0.0";
+  const JOINT_DISPLAY_SUMMARY_SCHEMA = "astra_joint_display_summary@1.0.0";
+
+  function isJointDisplayObject(value) {
+    const view = asObject(value);
+    return schemaToken(firstPresent(view.schema_version, view.schema, view.version)) === JOINT_DISPLAY_SCHEMA;
+  }
+
+  function isJointDisplaySummaryObject(value) {
+    const view = asObject(value);
+    return schemaToken(firstPresent(view.schema_version, view.schema, view.version)) === JOINT_DISPLAY_SUMMARY_SCHEMA;
+  }
+
+  function jointResearchSummaryCandidate(doc) {
+    return firstObject(
+      isJointDisplaySummaryObject(doc) ? doc : null,
+      get(doc, "joint_research_summary", null),
+      get(doc, "summary.joint_research_summary", null),
+      get(doc, "astra_joint_summary", null),
+      get(doc, "summary.astra_joint_summary", null),
+      get(doc, "statistical_context.joint_research_summary", null),
+      get(doc, "statistical_context.summary", null),
+      get(doc, "joint_research.summary", null),
+      get(doc, "research_projection.summary", null)
+    );
+  }
+
+  function jointResearchDetailCandidate(doc) {
+    return firstObject(
+      isJointDisplayObject(doc) ? doc : null,
+      get(doc, "joint_research_detail", null),
+      get(doc, "joint_research.detail", null),
+      get(doc, "astra_joint_display", null),
+      get(doc, "statistical_context.joint_research_detail", null),
+      get(doc, "statistical_context.display", null),
+      get(doc, "statistical_context.display_projection", null),
+      get(doc, "research_projection.detail", null)
+    );
+  }
+
+  function hasJointResearchSurface(doc) {
+    return isJointDisplayObject(doc)
+      || isJointDisplaySummaryObject(jointResearchSummaryCandidate(doc))
+      || isJointDisplayObject(jointResearchDetailCandidate(doc))
+      || get(doc, "__joint_research") === true;
+  }
+
+  function jointResearchView(doc) {
+    return firstObject(jointResearchDetailCandidate(doc), jointResearchSummaryCandidate(doc));
+  }
+
+  function jointResearchState(doc) {
+    const detail = jointResearchDetailCandidate(doc);
+    if (isJointDisplayObject(detail)) return { state: "full", view: detail };
+    const summary = jointResearchSummaryCandidate(doc);
+    if (isJointDisplaySummaryObject(summary)) return { state: "summary", view: summary };
+    if (get(doc, "__joint_research") === true) return { state: "missing", view: {} };
+    return { state: "missing", view: {} };
+  }
+
+  function jointResearchSide(view, sideName) {
+    return firstObject(get(view, `sides.${sideName}`, null), get(view, sideName, null));
+  }
+
+  function jointResearchPct(value, digits = 1) {
+    const numeric = safeNumber(value);
+    return numeric === null ? "暂缺" : `${number(numeric * 100, digits)}%`;
+  }
+
+  function jointResearchBtc(value) {
+    const numeric = safeNumber(value);
+    return numeric === null ? "暂缺" : `${number(numeric, 6)} BTC`;
+  }
+
+  function jointResearchRatio(value) {
+    const numeric = safeNumber(value);
+    return numeric === null ? "暂缺" : `${number(numeric * 100, 2)}%`;
+  }
+
+  function jointResearchSideScalar(side, key) {
+    const direct = safeNumber(get(side, key));
+    if (direct !== null) return direct;
+    return safeNumber(get(side, `scalars.${key}`));
+  }
+
+  function jointResearchSideStatus(side, parentStatus = "") {
+    return rawEnum(firstPresent(side.status, parentStatus, "unavailable")).toLowerCase();
+  }
+
+  function jointResearchSideHasData(side) {
+    const view = asObject(side);
+    return Object.keys(view).length > 0 && [
+      "probability_positive",
+      "expected_loss_normalized",
+      "expected_payout_btc",
+      "probability_cn",
+      "expected_loss_cn",
+      "reference_cn",
+      "quote_cn"
+    ].some((key) => !isNullish(get(view, key)) && get(view, key) !== "");
+  }
+
+  function utcDateTextFromMs(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "";
+    const date = new Date(numeric);
+    if (Number.isNaN(date.getTime())) return "";
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day} UTC`;
+  }
+
+  function jointResearchTrainingCutoffText(view) {
+    const provenance = asObject(get(view, "provenance", {}));
+    const dateOnly = firstPresent(provenance.training_cutoff, provenance.training_cutoff_date, provenance.training_cutoff_utc);
+    if (typeof dateOnly === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateOnly.trim())) {
+      return `${dateOnly.trim()} UTC`;
+    }
+    const cutoffMs = provenance.training_cutoff_ms;
+    const numeric = Number(cutoffMs);
+    if (!isNullish(cutoffMs) && cutoffMs !== "" && Number.isFinite(numeric)) {
+      const date = new Date(numeric);
+      if (
+        !Number.isNaN(date.getTime())
+        && date.getUTCHours() === 0
+        && date.getUTCMinutes() === 0
+        && date.getUTCSeconds() === 0
+        && date.getUTCMilliseconds() === 0
+      ) {
+        return utcDateTextFromMs(numeric);
+      }
+    }
+    return cutoffMs ? dateText(cutoffMs) : "";
+  }
+
+  function renderJointResearchSideCards(view, compact = false) {
+    const cards = [];
+    const put = jointResearchSide(view, "put");
+    const call = jointResearchSide(view, "call");
+    if (jointResearchSideHasData(put)) cards.push(renderJointResearchSideCard(put, "Put 信用价差"));
+    if (jointResearchSideHasData(call)) cards.push(renderJointResearchSideCard(call, "Call 信用价差"));
+    if (!cards.length) return "";
+    return `<div class="joint-research-side-grid${compact ? " compact" : ""}">${cards.join("")}</div>`;
+  }
+
+  function jointResearchStatusText(value) {
+    const status = rawEnum(value).toLowerCase();
+    if (status === "available") return "可用";
+    if (status === "insufficient") return "资料不足";
+    if (status === "unavailable") return "暂不可用";
+    if (status === "not_collected") return "未采集";
+    return "状态待核对";
+  }
+
+  function jointResearchComparisonText(view) {
+    return normalizeComfortText(get(view, "risk_comparison.summary_cn", view.summary_cn || "统计研究暂未形成风险排序。"), "统计研究暂未形成风险排序。");
+  }
+
+  function jointResearchQuoteText(view) {
+    return normalizeComfortText(view.quote_comparison_cn, "同期补偿暂未评估；本卡只比较赔付风险。");
+  }
+
+  function jointResearchIndexStats(doc) {
+    const stateView = jointResearchState(doc);
+    if (stateView.state === "missing") return null;
+    const view = stateView.view;
+    const put = jointResearchSide(view, "put");
+    const call = jointResearchSide(view, "call");
+    return [
+      `Put 赔付概率 ${jointResearchPct(jointResearchSideScalar(put, "probability_positive"))}`,
+      `Call 赔付概率 ${jointResearchPct(jointResearchSideScalar(call, "probability_positive"))}`,
+      textClip(jointResearchComparisonText(view), 34),
+      jointResearchStatusText(view.status)
+    ].filter(Boolean);
+  }
+
+  function jointResearchSearchText(doc) {
+    const stateView = jointResearchState(doc);
+    if (stateView.state === "missing") return "";
+    const view = stateView.view;
+    const put = jointResearchSide(view, "put");
+    const call = jointResearchSide(view, "call");
+    return [
+      "联合研究 统计研究 赔付风险 影子结果",
+      view.summary_cn,
+      jointResearchComparisonText(view),
+      jointResearchQuoteText(view),
+      get(view, "scope_cn"),
+      get(put, "probability_cn"), get(put, "expected_loss_cn"), get(put, "quote_cn"), get(put, "scope_cn"),
+      get(call, "probability_cn"), get(call, "expected_loss_cn"), get(call, "quote_cn"), get(call, "scope_cn")
+    ].join(" ");
+  }
+
+  function jointResearchFilterMatches(doc) {
+    if (!hasJointResearchSurface(doc)) return false;
+    return !state.grade;
+  }
+
+  function renderJointResearchHeader(doc, subtitle = "") {
+    const view = jointResearchView(doc);
+    const subtitleText = [subtitle || get(view, "identity.strategy_name") || get(doc, "identity.strategy_name") || "Astra 联合研究影子结果", dateText(confirmedAt(doc))].filter(Boolean).join(" · ");
+    return `
+      <header class="doc-header">
+        <div>
+          <p class="eyebrow">Joint Research</p>
+          <h1 class="doc-title">${escapeHtml(symbol(doc))} 联合研究影子评估</h1>
+          <p class="doc-subtitle">${escapeHtml(subtitleText)}</p>
+        </div>
+        <div class="status-stack"><span class="badge is-wait">只读影子</span><span class="badge">${escapeHtml(jointResearchStatusText(view.status))}</span></div>
+      </header>
+    `;
+  }
+
+  function renderJointResearchNav() {
+    return `<nav class="evidence-reader-nav" aria-label="联合研究阅读导航"><a href="#joint-research-summary">研究摘要</a><a href="#joint-research-sides">两侧赔付</a><a href="#joint-research-scope">研究边界</a><a href="#complete-audit-json">完整资料</a></nav>`;
+  }
+
+  function renderJointResearchSideCard(side, label) {
+    const status = jointResearchSideStatus(side);
+    const probability = normalizeComfortText(side.probability_cn, `赔付发生概率 ${jointResearchPct(jointResearchSideScalar(side, "probability_positive"))}`);
+    const payout = normalizeComfortText(side.expected_loss_cn, `期望赔付 ${jointResearchBtc(jointResearchSideScalar(side, "expected_payout_btc"))}，约为宽度折算的 ${jointResearchRatio(jointResearchSideScalar(side, "expected_loss_normalized"))}`);
+    const reference = normalizeComfortText(side.reference_cn, "参考两腿尚未确认。");
+    const quote = normalizeComfortText(side.quote_cn, "没有同期补偿；只能比较赔付风险，不能说明该侧更值得卖。");
+    const uncertainty = normalizeComfortText(side.uncertainty_cn, "不确定性说明暂缺。");
+    const scope = normalizeComfortText(side.scope_cn, "仅适用于本研究封存口径，不改变生产评级或执行权限。");
+    return `
+      <article class="joint-research-side ${status === "available" ? "is-available" : "is-muted"}">
+        <div class="comfort-side-head"><strong>${escapeHtml(label)}</strong><span class="review-side-caption">${escapeHtml(jointResearchStatusText(status))}</span></div>
+        <dl class="joint-scalar-grid">
+          <div><dt>赔付发生概率</dt><dd>${escapeHtml(jointResearchPct(jointResearchSideScalar(side, "probability_positive")))}</dd></div>
+          <div><dt>宽度折算期望赔付</dt><dd>${escapeHtml(jointResearchRatio(jointResearchSideScalar(side, "expected_loss_normalized")))}</dd></div>
+          <div><dt>期望赔付</dt><dd>${escapeHtml(jointResearchBtc(jointResearchSideScalar(side, "expected_payout_btc")))}</dd></div>
+        </dl>
+        <p><strong>统计读数：</strong>${escapeHtml(probability)}；${escapeHtml(payout)}。</p>
+        <p><strong>参考结构：</strong>${escapeHtml(reference)}</p>
+        <p><strong>同期补偿：</strong>${escapeHtml(quote)}</p>
+        <p><strong>不确定性：</strong>${escapeHtml(uncertainty)}</p>
+        <p class="market-fact-meta">${escapeHtml(scope)}</p>
+      </article>
+    `;
+  }
+
+  function renderJointParticipation(doc) {
+    if (jointResearchState(doc).state === "missing") return "";
+    const included = get(doc, "joint_research_review_included") === true;
+    return `<p class="market-fact-meta" role="note">${included ? "本卡评审已使用这份冻结统计。" : "补充统计，未确认参与本卡评审；不据此改写当时的建议。"}</p>`;
+  }
+
+  function renderJointResearchInline(doc) {
+    const stateView = jointResearchState(doc);
+    if (stateView.state === "missing") return "";
+    const view = stateView.view;
+    const put = jointResearchSide(view, "put");
+    const call = jointResearchSide(view, "call");
+    return `
+      <div class="joint-research-inline" aria-label="联合研究影子摘要">
+        <div class="joint-research-head"><span class="joint-research-badge">统计研究影子</span><strong>${escapeHtml(jointResearchComparisonText(view))}</strong></div>
+        ${renderJointParticipation(doc)}
+        ${renderJointResearchSideCards(view, true)}
+        <p><strong>补偿状态：</strong>${escapeHtml(jointResearchQuoteText(view))}</p>
+        <p class="market-fact-meta">${escapeHtml(normalizeComfortText(view.scope_cn, "统计研究只用于影子验证；不改变 D-S 评级、原信号窗口或交易权限。"))}</p>
+      </div>
+    `;
+  }
+
+  function renderJointResearchSummary(doc) {
+    const stateView = jointResearchState(doc);
+    if (stateView.state === "missing") return section("联合研究影子评估", "统计侧车暂未提供可读投影。", `<div class="card-load-state">正在读取完整研究资料。</div>`, "joint-research-summary");
+    const view = stateView.view;
+    return section("联合研究影子评估", "只读统计赔付估计；不改变生产评级、通知、LLM 或执行权限。", `
+      <div class="comfort-panel joint-research-panel">
+        <div class="comfort-headline"><span>研究摘要</span><strong>${escapeHtml(jointResearchComparisonText(view))}</strong></div>
+        <div class="evidence-decision-meta">
+          <div><span>观察时点</span><strong>${escapeHtml(dateText(get(view, "identity.confirmed_at") || get(view, "as_of_ms") || confirmedAt(doc)))}</strong><p>对应影子评估封存时点。</p></div>
+          <div><span>研究状态</span><strong>${escapeHtml(jointResearchStatusText(view.status))}</strong><p>状态由服务端投影给出。</p></div>
+          <div><span>补偿对照</span><strong>${escapeHtml(jointResearchQuoteText(view))}</strong><p>有同期报价才比较净值。</p></div>
+          <div><span>生产边界</span><strong>只读影子</strong><p>不触发 LLM、通知或交易权限。</p></div>
+        </div>
+      </div>
+    `, "joint-research-summary");
+  }
+
+  function renderJointResearchSides(doc) {
+    const stateView = jointResearchState(doc);
+    if (stateView.state === "missing") return "";
+    const view = stateView.view;
+    const sideGrid = renderJointResearchSideCards(view, false);
+    if (!sideGrid) return "";
+    return section("两侧赔付估计", "比较的是到期赔付风险；没有同期补偿时不能称为更值得卖。", sideGrid, "joint-research-sides");
+  }
+
+  function renderJointResearchScope(doc) {
+    const view = jointResearchView(doc);
+    const training = jointResearchTrainingCutoffText(view);
+    return section("研究边界", "确认这份统计结果的用途和限制。", `
+      <div class="text-block joint-research-scope">
+        <p>${escapeHtml(normalizeComfortText(view.scope_cn, "统计研究只用于影子验证；不改变 D-S 评级、原信号窗口或交易权限。"))}</p>
+        ${training ? `<p><strong>训练截止：</strong>${escapeHtml(training)}。该日期只说明模型训练资料边界。</p>` : ""}
+        <p>页面只读取服务端认可的投影，不在浏览器端计算等级、建议或风险排序。</p>
+      </div>
+    `, "joint-research-scope");
+  }
+
+  function renderJointResearchDocument(doc) {
+    $("#documentView").innerHTML = renderSignalEvidenceReader(doc, `
+      ${renderJointResearchHeader(doc)}
+      ${renderJointResearchNav()}
+      ${renderJointResearchSummary(doc)}
+      ${renderJointResearchSides(doc)}
+      ${renderJointResearchScope(doc)}
+      ${renderProvenance(doc)}
+    `);
   }
 
   function canonicalJson(value) {
@@ -4407,7 +4807,7 @@
   function signalEvidenceSummaryIsV21(summary) {
     const view = asObject(summary);
     const schema = schemaToken(firstPresent(view.schema_version, view.schema, view.version));
-    return schema === "signal_evidence_summary@2.1.0" || schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
+    return schema === "signal_evidence_summary@2.1.0" || schema === "signal_evidence_summary@2.2.0" || schema === SIGNAL_EVIDENCE_SUMMARY_SCHEMA;
   }
 
   function signalEvidenceProjectionHash(summary) {
@@ -4420,7 +4820,7 @@
     const view = asObject(summary);
     if (!signalEvidenceSummaryIsV21(view)) return [];
     const errors = [];
-    const expectedVersion = schemaToken(view.schema_version || view.schema) === "signal_evidence_summary@2.1.0" ? "2.1.0" : SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION;
+    const expectedVersion = schemaToken(view.schema_version || view.schema) === "signal_evidence_summary@2.1.0" ? "2.1.0" : schemaToken(view.schema_version || view.schema) === "signal_evidence_summary@2.2.0" ? "2.2.0" : SIGNAL_EVIDENCE_DISPLAY_PROJECTION_VERSION;
     if (view.display_projection_version !== expectedVersion) {
       errors.push("发布投影版本未通过当前页面校验。");
     }
@@ -4451,6 +4851,7 @@
       price_bias: normalizeEvidencePriceBiasObject(firstObject(object.price_bias, object.price_bias_summary)),
       side_comparison: normalizeEvidenceSideComparison(object.side_comparison),
       advisory_guidance: asObject(object.advisory_guidance),
+      joint_review: asObject(object.joint_review),
       source_boundary: asObject(object.source_boundary),
       put_credit: normalizeEvidenceSide(object.put_credit, "put_credit"),
       call_credit: normalizeEvidenceSide(object.call_credit, "call_credit"),
@@ -4481,6 +4882,7 @@
       price_bias: normalizeEvidencePriceBiasObject(firstObject(object.price_bias, summaryView.price_bias)),
       side_comparison: normalizeEvidenceSideComparison(firstObject(object.side_comparison, summaryView.side_comparison)),
       advisory_guidance: asObject(object.advisory_guidance),
+      joint_review: asObject(object.joint_review),
       source_boundary: asObject(object.source_boundary),
       put_credit: normalizeEvidenceSide(ratings.put_credit, "put_credit"),
       call_credit: normalizeEvidenceSide(ratings.call_credit, "call_credit"),
@@ -4667,7 +5069,7 @@
 
   function signalEvidenceIsV22(view) {
     const object = asObject(view);
-    return /@2\.2\.0$/.test(schemaToken(object.review_schema_version || object.schema_version));
+    return /@2\.[23]\.0$/.test(schemaToken(object.review_schema_version || object.schema_version));
   }
 
   function renderEvidenceGuidance(view) {
@@ -4676,6 +5078,24 @@
     const outlooks = asArray(guidance.outlooks).filter((item) => [4, 24].includes(asObject(item).horizon_hours));
     return `${asArray(guidance.tradeoffs_cn).length ? `<div class="evidence-guidance-tradeoffs"><strong>关键取舍</strong>${listHtml(normalizeComfortList(guidance.tradeoffs_cn), "")}</div>` : ""}
       ${outlooks.length ? `<div class="evidence-next-grid evidence-guidance-outlooks${outlooks.length === 1 ? " is-single" : ""}">${outlooks.map((item) => `<div class="evidence-next-side"><h3>${item.horizon_hours === 4 ? "未来四小时 · 近端情景" : "未来二十四小时 · 背景情景"}</h3><p>${escapeHtml(signalEvidenceReaderText(item.scenario_cn, ""))}</p><p><strong>重判条件：</strong>${escapeHtml(signalEvidenceReaderText(item.watch_cn, ""))}</p></div>`).join("")}</div><p class="market-fact-meta">情景窗口不代表信号寿命或交易期限。</p>` : ""}`;
+  }
+
+  function renderJointGuidance(view) {
+    const opinion = asObject(view.joint_review);
+    if (jointRecommendationLimited(view)) return "";
+    const roles = asArray(opinion.evidence_roles);
+    const support = roles.find(item => item.role === "supports_applicability");
+    const counter = roles.find(item => item.role === "counters_applicability");
+    const gap = normalizeComfortList(opinion.applicability_gaps_cn)[0];
+    const stronger = normalizeComfortList(opinion.strengthen_if_cn)[0];
+    const weaker = normalizeComfortList(opinion.weaken_if_cn)[0];
+    return `<div class="evidence-guidance-tradeoffs">
+      ${support ? `<p><strong>支持统计适用：</strong>${escapeHtml(signalEvidenceReaderText(support.claim_cn, ""))}</p>` : ""}
+      ${counter ? `<p><strong>挑战统计适用：</strong>${escapeHtml(signalEvidenceReaderText(counter.claim_cn, ""))}</p>` : ""}
+      ${gap ? `<p><strong>仍待核对：</strong>${escapeHtml(gap)}</p>` : ""}
+      ${stronger ? `<p><strong>增强判断：</strong>${escapeHtml(stronger)}</p>` : ""}
+      ${weaker ? `<p><strong>削弱判断：</strong>${escapeHtml(weaker)}</p>` : ""}
+    </div>`;
   }
 
   function renderEvidenceSourceBoundary(view) {
@@ -5077,7 +5497,11 @@ function renderSignalEvidenceDecision(doc) {
     const quoteBoundary = view.quote_boundary_cn || "候选两腿、报价、费用、净补偿与退出条件仍在交易准备环节确认。";
     const isV22 = signalEvidenceIsV22(view);
     const guidance = asObject(view.advisory_guidance);
-    const headline = isV22 ? (guidance.status === "ASSESSED" ? signalEvidenceReaderText(guidance.summary_cn, "本卡建议尚未完成。") : "本卡建议尚未完成有效核验；可分别阅读两侧证据。") : view.action_summary_cn;
+    const jointOpinion = asObject(view.joint_review);
+    const combined = Object.keys(jointOpinion).length > 0;
+    const jointLimited = jointRecommendationLimited(view);
+    const statistics = jointResearchView(doc);
+    const headline = jointLimited ? "联合建议暂不采用：推荐侧的证据未通过本地语义核验。" : jointOpinion.status === "ASSESSED" ? signalEvidenceReaderText(jointOpinion.summary_cn, "") : combined ? "联合建议尚未完成有效核验；可分别阅读两侧证据。" : isV22 ? (guidance.status === "ASSESSED" ? signalEvidenceReaderText(guidance.summary_cn, "本卡建议尚未完成。") : "本卡建议尚未完成有效核验；可分别阅读两侧证据。") : view.action_summary_cn;
     const sideSummary = (key, label) => {
       const side = asObject(view[key]);
       const action = asObject(get(view, `local_action_state.${key}`));
@@ -5085,16 +5509,20 @@ function renderSignalEvidenceDecision(doc) {
       return `<div class="evidence-decision-side">
         <span>${escapeHtml(label)}</span>
         <div class="evidence-decision-grade"><strong class="badge ${comfortGradeClass(side.grade)} evidence-grade">${escapeHtml(comfortGradeText(side.grade))}</strong>${isV22 ? "" : `<span class="badge ${unavailable ? "" : actionStateClass(action.state)}">${escapeHtml(unavailable ? "暂未评级" : signalEvidenceReaderText(action.label_cn, "待复核"))}</span>`}</div>
+        ${combined ? renderJointNaturalSide(jointResearchSide(statistics, key === "put_credit" ? "put" : "call")) : ""}
         ${!unavailable ? `<p class="evidence-side-thesis"><strong>适配机制：</strong>${escapeHtml(side.mechanism_cn)}</p><p><strong>等级依据：</strong>${escapeHtml(side.basis_cn)}</p>` : ""}
-        <p>${isV22 && !unavailable ? "<strong>主要反证：</strong>" : ""}${escapeHtml(unavailable ? "当前证据未形成有效等级，详见独立复核中的缺口。" : isV22 ? side.market_counter_cn : asArray(action.reasons_cn).map((item) => signalEvidenceReaderText(item, "")).filter(Boolean).join("；") || "按本卡有效证据与行动状态继续核对。")}</p>
+        <p>${isV22 && !unavailable ? "<strong>主要反证：</strong>" : ""}${escapeHtml(unavailable ? "当前证据未形成有效等级，详见复核意见中的缺口。" : isV22 ? side.market_counter_cn : asArray(action.reasons_cn).map((item) => signalEvidenceReaderText(item, "")).filter(Boolean).join("；") || "按本卡有效证据与行动状态继续核对。")}</p>
       </div>`;
     };
-    return section("最高辅助交易决策", isV22 ? "建议、两侧证据与取舍；等级不代表交易许可。" : "本卡结论、两侧评级与市场倾向。", `
+    return section(combined ? "联合研究评估" : "最高辅助交易决策", isV22 ? "建议、两侧证据与取舍；等级不代表交易许可。" : "本卡结论、两侧评级与市场倾向。", `
       <div class="comfort-panel evidence-report-panel ${isV22 ? "" : signalEvidenceActionPanelClass(view)}">
-        <div class="comfort-headline"><span>${isV22 ? "本卡建议" : "本卡行动结论"}</span><strong>${escapeHtml(headline || "本卡已形成分侧证据评级。")}</strong></div>
+        <div class="comfort-headline"><span>${combined ? "卡时研究意见" : isV22 ? "本卡建议" : "本卡行动结论"}</span><strong>${escapeHtml(headline || "本卡已形成分侧证据评级。")}</strong></div>
         ${renderSignalEvidenceDecisionMeta(view)}
+        ${combined ? renderJointParticipation(doc) : renderJointResearchInline(doc)}
+        ${renderJointOpinion(view, false)}
         <div class="evidence-decision-grid">${sideSummary("put_credit", "Put 信用价差")}${sideSummary("call_credit", "Call 信用价差")}</div>
-        ${isV22 ? renderEvidenceGuidance(view) + renderEvidenceSourceBoundary(view) : ""}
+        ${combined && Object.keys(statistics).length ? `<p class="market-fact-meta"><strong>统计适用范围：</strong>${escapeHtml(normalizeComfortText(statistics.scope_cn, "自然信号的额外效果尚待前向验证。"))} ${escapeHtml(jointResearchQuoteText(statistics))}</p>` : ""}
+        ${isV22 ? (combined ? (jointOpinion.status === "ASSESSED" ? renderJointGuidance(view) : "") : renderEvidenceGuidance(view)) + renderEvidenceSourceBoundary(view) : ""}
         <p class="evidence-decision-footnote">评级时点：${escapeHtml(signalRatingAsOfText(view))}。${escapeHtml(quoteBoundary)}</p>
       </div>`, "signal-comfort");
   }
@@ -5116,12 +5544,54 @@ function renderSignalEvidenceDecision(doc) {
     </div>`;
   }
 
+
+  function renderJointNaturalSide(side) {
+    if (side.status !== "available") return `<p class="market-fact-meta">统计暂不可用；市场证据评级仍可独立阅读。</p>`;
+    return `<dl class="joint-scalar-grid">
+      <div><dt>赔付发生概率</dt><dd>${escapeHtml(jointResearchPct(side.probability_positive))}</dd></div>
+      <div><dt>宽度折算期望赔付</dt><dd>${escapeHtml(jointResearchRatio(side.expected_loss_normalized))}</dd></div>
+      <div><dt>保护腿突破概率</dt><dd>暂不采用</dd></div>
+    </dl><p class="market-fact-meta">${escapeHtml(normalizeComfortText(side.reference_cn, "参考两腿尚未确认。"))}</p>
+    ${side.tail_probability_note_cn ? `<p class="market-fact-meta">${escapeHtml(normalizeComfortText(side.tail_probability_note_cn, ""))}</p>` : ""}
+    <p class="market-fact-meta">${escapeHtml(normalizeComfortText(side.uncertainty_cn, "统计估计不代表获利概率。"))}</p>`;
+  }
+
+  function jointRecommendationLimited(view) {
+    const opinion = asObject(view.joint_review);
+    if (opinion.display_limited_by_side_qualification === true) return true;
+    if (opinion.status !== "ASSESSED" || !["put_credit", "call_credit"].includes(opinion.recommendation)) return false;
+    const side = asObject(view[opinion.recommendation]);
+    return side.status !== "RATED" || !side.grade;
+  }
+
+  function renderJointOpinion(view, detailed = false) {
+    const opinion = asObject(view.joint_review);
+    if (!Object.keys(opinion).length) return "";
+    if (opinion.status !== "ASSESSED") {
+      return detailed ? `<p class="market-fact-meta" role="status">${escapeHtml(normalizeComfortList(opinion.validation_reasons_cn).join("；") || "联合确认尚未形成；原市场分析与两侧评级仍可阅读。")}</p>` : "";
+    }
+    const labels = {put_credit: "Put 侧", call_credit: "Call 侧", tie: "两侧接近", not_comparable: "暂不可比", watch: "暂缓研究", insufficient: "依据不足"};
+    const verdicts = {supports: "机制支持", contradicts: "存在机制异议", uncertain: "适用性待核对"};
+    const limited = jointRecommendationLimited(view);
+    if (!detailed) return `<p class="market-fact-meta"><strong>统计排序：</strong>${escapeHtml(labels[opinion.statistical_preference] || "暂不可比")} · <strong>联合复核：</strong>${limited ? "推荐侧未通过语义核验，暂不采用" : `${escapeHtml(labels[opinion.recommendation] || "依据不足")} · ${escapeHtml(verdicts[opinion.mechanism_verdict] || "待核对")}`}</p><p class="market-fact-meta"><strong>研究资格：</strong>当前统计排序尚未证明优于简单几何基线；联合复核增量与自然卡净效果仍待验证。以下意见用于研究适用性，不表示已验证的交易优势。</p>`;
+    const roles = asArray(opinion.evidence_roles);
+    return `<div class="evidence-source-boundary"><h3>为何维持或调整统计建议</h3>
+      ${limited ? '<p class="market-fact-meta" role="status">推荐侧证据未通过语义核验。以下保留原回复的其他论据供审计，不采纳其方向建议。</p>' : ""}
+      ${roles.map(item => `<p><strong>${item.role === "counters_applicability" ? "适用性反证" : item.role === "supports_applicability" ? "适用性支持" : "背景说明"}：</strong>${escapeHtml(signalEvidenceReaderText(item.claim_cn, ""))}</p>`).join("")}
+      ${signalEvidenceRefChips(roles.map(item => item.ref), view, "联合依据")}
+      ${asArray(opinion.applicability_gaps_cn).length ? `<strong>仍缺什么</strong>${listHtml(normalizeComfortList(opinion.applicability_gaps_cn), "")}` : ""}
+      <div class="evidence-next-grid"><div><strong>增强判断</strong>${listHtml(normalizeComfortList(opinion.strengthen_if_cn), "")}</div><div><strong>削弱判断</strong>${listHtml(normalizeComfortList(opinion.weaken_if_cn), "")}</div></div>
+    </div>`;
+  }
+
   function renderSignalEvidenceLlmReview(doc) {
     const stateView = signalEvidenceState(doc);
     if (!signalEvidenceHasUsableView(stateView) || stateView.state !== "full") return "";
     const view = stateView.view;
-    return section("LLM 独立复核意见", "保留同一次综合评审的论证与异议；按原始事实核对，不替代最高层行动边界。", `
+    const combined = view.joint_review && Object.keys(view.joint_review).length;
+    return section(combined ? "联合复核意见" : "LLM 独立复核意见", combined ? "同一次评审核对统计与市场机制；建议、统计估计和机器权限分别保留。" : "保留本卡原评审的论证与异议，按当时事实核对。", `
       <div class="evidence-review-panel">
+        ${renderJointOpinion(view, true)}
         ${renderSignalEvidencePriceBias(view)}
         <div class="comfort-side-grid evidence-report-side-grid">${evidenceSideCard(view.put_credit, "Put 信用价差", view, "put_credit")}${evidenceSideCard(view.call_credit, "Call 信用价差", view, "call_credit")}</div>
       </div>`, "signal-llm-review");
@@ -5496,7 +5966,7 @@ function signalEvidenceGroupMetaLine(facts) {
           </div>` : ""}
           <details class="signal-evidence-detail">
             <summary>来源时点与解释边界</summary>
-            <div class="signal-evidence-detail-body">${renderSignalEvidenceGroupNotes(groupNotes, factList.length)}${detailHtml}</div>
+            <div class="signal-evidence-detail-body">${detailHtml}${renderSignalEvidenceGroupNotes(groupNotes, factList.length)}</div>
           </details>
         ` : `<div class="empty-inline">本卡未提供该类事实。</div>`}
       </article>
@@ -5538,6 +6008,20 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     return "前后对照暂不可用：" + signalEvidenceReaderText(context.summary_cn, "变化判断暂不可用；当前截面仍可阅读。");
   }
 
+  function verifiedLocalChangeProjection(doc, stateView) {
+    if (stateView.state !== "full") return null;
+    const projection = asObject(doc.local_change_projection);
+    const copy = JSON.parse(JSON.stringify(projection));
+    delete copy.projection_hash;
+    const summary = asObject(signalEvidenceSummaryCandidate(doc));
+    return ["signal_change_projection@1.0.0", "signal_change_projection@1.1.0"].includes(projection.schema_version)
+      && projection.source_record_hash && projection.source_record_hash === summary.source_record_hash
+      && projection.assessment_hash === stateView.view.assessment_hash
+      && projection.as_of_ms === stateView.view.as_of_ms
+      && projection.projection_hash === `sha256:${sha256Hex(canonicalJson(copy))}`
+      ? projection : null;
+  }
+
   function renderSignalEvidenceKeyChanges(doc) {
     const stateView = signalEvidenceState(doc);
     if (!stateView.view || stateView.state === "summary") return "";
@@ -5546,15 +6030,8 @@ function signalEvidenceFactIsVerifiedChange(fact) {
     let displayRows = [];
     let previousTime = null;
     if (stateView.state !== "invalid") {
-      const projection = asObject(doc.local_change_projection);
-      const copy = JSON.parse(JSON.stringify(projection));
-      delete copy.projection_hash;
-      const summary = asObject(signalEvidenceSummaryCandidate(doc));
-      if (["signal_change_projection@1.0.0", "signal_change_projection@1.1.0"].includes(projection.schema_version)
-        && projection.source_record_hash && projection.source_record_hash === summary.source_record_hash
-        && projection.assessment_hash === stateView.view.assessment_hash
-        && projection.as_of_ms === stateView.view.as_of_ms
-        && projection.projection_hash === `sha256:${sha256Hex(canonicalJson(copy))}`) {
+      const projection = verifiedLocalChangeProjection(doc, stateView);
+      if (projection) {
         if (!facts.some((fact) => fact.usable === true && fact.id !== "change.context.status")) {
           facts = asArray(projection.facts).filter(signalEvidenceFactIsVerifiedChange);
           projectionNote = "本地核验的变化，未进入当时模型评审。";
@@ -5585,18 +6062,20 @@ function signalEvidenceFactIsVerifiedChange(fact) {
       </div>`, "signal-key-changes");
   }
 
+  function signalChangeDisplayFormat(row, value) {
+    if (value === null || value === undefined) return "未提供";
+    if (typeof value !== "number") return signalEvidenceReaderText(semanticCompact(value), "未提供");
+    if (row.unit === "decimal") return fundingDecimalText(value);
+    if (row.unit === "USD" && /net.*gamma|gamma.*net|gex/.test(row.key || "")) return compactUsdNotional(value);
+    return `${number(value, 4)}${["USD", "USDT", "BTC", "%"].includes(row.unit) ? " " + row.unit : ""}`;
+  }
+
   function renderSignalChangeDisplayRow(item) {
     const row = asObject(item);
-    const format = (value) => {
-      if (value === null || value === undefined) return "未提供";
-      if (typeof value !== "number") return signalEvidenceReaderText(semanticCompact(value), "未提供");
-      if (row.unit === "decimal") return fundingDecimalText(value);
-      if (row.unit === "USD" && /net.*gamma|gamma.*net|gex/.test(row.key || "")) return compactUsdNotional(value);
-      return `${number(value, 4)}${["USD", "USDT", "BTC", "%"].includes(row.unit) ? " " + row.unit : ""}`;
-    };
+    const format = (value) => signalChangeDisplayFormat(row, value);
     const valid = row.usable === true;
     const difference = valid && typeof row.delta === "number" && Number.isFinite(row.delta)
-      ? row.delta === 0 ? "无变化" : `变化 ${row.delta > 0 ? "+" : ""}${format(row.delta)}` : "";
+      ? row.delta === 0 ? "无变化" : `变化 ${row.delta > 0 && !format(row.delta).startsWith("+") ? "+" : ""}${format(row.delta)}` : "";
     return `<article class="transition-core-row evidence-change-row">
       <div class="transition-core-main"><strong>${escapeHtml(signalEvidenceReaderText(row.label_cn, "市场变化"))}</strong></div>
       <div class="transition-core-values">${valid ? `<span>${escapeHtml(format(row.previous))}</span><span aria-label="至"> → </span><span>${escapeHtml(format(row.current))}</span>${difference ? `<small>${escapeHtml(difference)}</small>` : ""}` : "暂不可比"}</div>
@@ -5639,10 +6118,11 @@ function renderSignalEvidenceReaderNav(doc) {
     const stateView = signalEvidenceState(doc);
     const view = stateView.view || {};
     const items = [];
+    if (stateView.state === "full" || stateView.state === "invalid") items.push({id:"audit-highlights",label:"本轮重点"});
     if (stateView.state === "invalid" || signalEvidenceHasUsableView(stateView)) items.push({id:"signal-comfort",label:"决策与评级"});
     if (asArray(view.market_facts).length) items.push({id:"signal-spatial-dynamics",label:"空间约束动力学"});
     if (stateView.view && stateView.state !== "summary") items.push({id:"signal-key-changes",label:"关键变化"});
-    if (stateView.state === "full") items.push({id:"signal-llm-review",label:"独立复核"});
+    if (stateView.state === "full") items.push({id:"signal-llm-review",label:stateView.view.joint_review && Object.keys(stateView.view.joint_review).length ? "联合复核" : "独立复核"});
     if (stateView.state === "full") items.push({id:"signal-next-conditions",label:"下一观察"});
     if (asArray(view.market_facts).length) items.push({id:"market-evidence",label:"数值与来源"});
     return items.length ? `<nav class="evidence-reader-nav" aria-label="本卡阅读导航">${items.map((item) => `<a href="#${item.id}">${item.label}</a>`).join("")}</nav>` : "";
@@ -5650,6 +6130,88 @@ function renderSignalEvidenceReaderNav(doc) {
 
   function renderSignalEvidenceReader(doc, content) {
     return `<div class="evidence-reader">${renderLoadNotice()}${content}</div>`;
+  }
+
+  function renderAuditHighlights(doc) {
+    const stateView = signalEvidenceState(doc);
+    if (stateView.state !== "full" && stateView.state !== "invalid") return "";
+    const view = asObject(stateView.view);
+    const highlights = [];
+    let sourceNote = "前后对照只表示两卡时点差，不代表期间完整路径。";
+    const add = (kind, title, value, note = "", alert = false) => {
+      highlights.push({ kind, title, value, note, alert });
+    };
+    if (stateView.state === "invalid") {
+      add("资料异常", "本卡复核暂不采用", asArray(stateView.errors).join("；") || "详情未通过核验。", "请以源端卡面与完整资料复核。", true);
+      sourceNote = "本卡详情未通过核验，暂不汇总前后变化。";
+    } else {
+      const comparison = asObject(view.side_comparison);
+      if (jointRecommendationLimited(view)) {
+        add("复核异常", "联合建议暂不采用", "推荐侧证据未通过本地语义核验。", "保留卡时原意见供审计，不据此选择侧别。", true);
+      } else if (comparison.status === "ASSESSED") {
+        add("卡时评审", "两侧证据比较", signalEvidenceComparisonDisplay(view).label, "只是本卡证据比较，未评估同期净信用。");
+      } else if (comparison.status === "UNAVAILABLE") {
+        add("比较缺口", "两侧暂不可比", normalizeComfortList(comparison.validation_reasons_cn)[0] || "本卡未形成有效的两侧比较。", "不据此推定另一侧更优。", true);
+      }
+
+      const quality = asObject(doc.quality);
+      if (quality.overall && !["OK", "UNKNOWN"].includes(rawEnum(quality.overall).toUpperCase())) {
+        const degraded = asArray(quality.degraded_sources).length;
+        const missing = asArray(quality.missing_fields).length;
+        add("资料异常", "来源质量需复核", degraded || missing ? `${degraded} 项来源降级 · ${missing} 项字段缺失` : semanticCompact(quality.overall), "当前截面与变化判断应分别核对。", true);
+      }
+
+      const projection = verifiedLocalChangeProjection(doc, stateView);
+      const priority = { tmv_blend: 0, net_gamma_notional_usd: 1, pin_strike: 2, active_flow: 3, macro_score: 4, funding_raw_rate: 5 };
+      const rows = projection && projection.schema_version === "signal_change_projection@1.1.0"
+        ? asArray(projection.rows).filter((item) => item && item.usable === true
+          && Number.isFinite(item.previous) && Number.isFinite(item.current)
+          && Number.isFinite(item.delta) && item.delta !== 0)
+          .sort((a, b) => (priority[a.key] ?? 99) - (priority[b.key] ?? 99)) : [];
+      if (rows.length) {
+        rows.slice(0, Math.max(0, 4 - highlights.length)).forEach((row) => {
+          add("本地核验变化", signalEvidenceReaderText(row.label_cn, "市场变化"),
+            `${signalChangeDisplayFormat(row, row.previous)} → ${signalChangeDisplayFormat(row, row.current)}`,
+            signalEvidenceReaderText(row.summary_cn, "仅为两卡时点差。"));
+        });
+        sourceNote = "本地核验的变化未进入当时模型评审；两卡时点差不代表期间路径。";
+      } else {
+        const facts = asArray(view.market_facts).filter(signalEvidenceFactIsVerifiedChange);
+        const context = facts.find((fact) => signalEvidenceFactKey(fact) === "change.context.status");
+        const nativeChanges = context && context.usable === true && context.value === "变化可用"
+          ? facts.filter((fact) => fact !== context && fact.usable === true) : [];
+        nativeChanges.slice(0, Math.max(0, 4 - highlights.length)).forEach((fact) => {
+          add("关键变化", signalEvidenceFactLabel(fact), signalEvidenceDisplayValue(fact) || "变化已记录",
+            signalEvidenceReaderText(fact.summary_cn, "仅为两卡时点差。"));
+        });
+        if (!nativeChanges.length) {
+          const ctx = transitionContext(doc);
+          const comparable = ["HIGH", "MEDIUM"].includes(rawEnum(ctx.comparison_quality).toUpperCase())
+            && ctx.compat_backfill_applied !== true && ctx.current_card_id === cardId(doc);
+          const coreRows = comparable ? transitionCoreRows(ctx).filter((row) => ["CRITICAL", "HIGH"].includes(row.materiality)
+            && !row.valueText.includes("缺失")) : [];
+          coreRows.slice(0, Math.max(0, 4 - highlights.length)).forEach((row) => {
+            add("状态变化", row.title || transitionDomainSemanticTitle(row.domain), row.valueText, row.meaning);
+          });
+          if (coreRows.length) sourceNote = "状态转移审计为只读前后对照，不改变评级或交易许可。";
+          else if (highlights.length < 4) {
+            add("对照缺口", "前后变化暂不可用", "缺少可核验的前一卡变化，或比较质量不足。", "当前截面事实仍可阅读。");
+            sourceNote = "本卡没有可核验的前后变化；当前截面事实仍可阅读。";
+          }
+        }
+      }
+    }
+    const cards = highlights.map((item) => `<article class="audit-highlight-item${item.alert ? " is-alert" : ""}">
+      <span class="audit-highlight-kind">${escapeHtml(item.kind)}</span>
+      <h3 class="audit-highlight-title">${escapeHtml(item.title)}</h3>
+      <p class="audit-highlight-value">${escapeHtml(item.value)}</p>
+      ${item.note ? `<p class="audit-highlight-note">${escapeHtml(item.note)}</p>` : ""}
+    </article>`).join("");
+    return `<section class="audit-highlights-panel" id="audit-highlights" aria-labelledby="audit-highlights-title">
+      <div class="audit-highlights-head"><h2 id="audit-highlights-title">本轮重要内容汇总</h2><span>本卡时点 · ${escapeHtml(dateText(confirmedAt(doc)))}</span></div>
+      <div class="audit-highlights-list">${cards}</div>
+      <p class="audit-highlights-footnote">${escapeHtml(sourceNote)} ${stateView.view ? '<a href="#signal-key-changes">查看完整关键变化骨架</a>；' : ""}本栏不产生新的评级或交易许可。</p>
+    </section>`;
   }
 
   const SIGNAL_COMFORT_SCHEMA = "signal_comfort_ratings@1.0.0";
@@ -7520,11 +8082,13 @@ function renderSignalEvidenceReaderNav(doc) {
   }
 
   function renderProvenance(doc) {
-    return section("完整审计资料", "供进一步核对。", `
+    const isJoint = hasJointResearchSurface(doc) && !hasSignalEvidenceV2Surface(doc);
+    const label = isJoint ? "完整研究资料" : "完整审计资料";
+    return section(label, "供进一步核对。", `
       <div class="download-panel">
-        <button class="card-retry audit-json-download" type="button" data-download-card-id="${escapeHtml(cardId(doc))}" aria-label="下载完整审计资料">下载完整审计资料</button>
+        <button class="card-retry audit-json-download" type="button" data-download-card-id="${escapeHtml(cardId(doc))}" aria-label="下载${escapeHtml(label)}">下载${escapeHtml(label)}</button>
       </div>
-    `);
+    `, "complete-audit-json");
   }
 
   function renderSignalBoundaries(doc) {
@@ -7685,6 +8249,21 @@ function renderSignalEvidenceReaderNav(doc) {
       `);
       return;
     }
+    if (hasJointResearchSurface(summary)) {
+      $("#documentView").innerHTML = renderSignalEvidenceReader(summary, `
+        ${renderJointResearchHeader(summary, "研究详情加载中")}
+        ${renderJointResearchNav()}
+        ${renderJointResearchSummary(summary)}
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">研究详情加载中</h2>
+            <p class="section-purpose">正在读取完整影子研究资料；稍后显示两侧赔付、补偿边界和下载入口。</p>
+          </div>
+          <div class="card-load-state">正在读取这份研究资料。</div>
+        </section>
+      `);
+      return;
+    }
     const nrWindow = nrWindowMetric(summary);
     $("#documentView").innerHTML = `
       ${renderLoadNotice()}
@@ -7716,7 +8295,7 @@ function renderSignalEvidenceReaderNav(doc) {
     const reason = stateForCard.publicReason || publicLoadReason("card_http");
     $("#documentView").innerHTML = `
       ${renderLoadNotice()}
-      ${summary ? (hasSignalEvidenceV2Surface(summary) ? renderSignalEvidenceHeader(summary, "本卡资料暂不可用") : renderSummaryHeader(summary, "本卡资料暂不可用")) : ""}
+      ${summary ? (hasSignalEvidenceV2Surface(summary) ? renderSignalEvidenceHeader(summary, "本卡资料暂不可用") : hasJointResearchSurface(summary) ? renderJointResearchHeader(summary, "研究资料暂不可用") : renderSummaryHeader(summary, "本卡资料暂不可用")) : ""}
       <section class="section">
         <div class="section-header">
           <h2 class="section-title">单卡详情暂不可显示</h2>
@@ -7742,6 +8321,25 @@ function renderSignalEvidenceReaderNav(doc) {
           </div>
           <div class="load-alert card-load-error" role="alert">
             <strong>单卡资料加载失败</strong>
+            <p>${escapeHtml(reason)}</p>
+            <div class="card-load-actions">
+              <span>已尝试 ${escapeHtml(number(attempts, 0))} / ${escapeHtml(number(MAX_CARD_LOAD_ATTEMPTS, 0))}</span>
+              <button class="card-retry" type="button" data-card-id="${escapeHtml(id)}" ${retry ? "" : "disabled"}>${retry ? "重试加载" : "重试次数已用完"}</button>
+            </div>
+          </div>
+        </section>
+      `);
+    }
+    if (summary && !hasSignalEvidenceV2Surface(summary) && hasJointResearchSurface(summary)) {
+      $("#documentView").innerHTML = renderSignalEvidenceReader(summary, `
+        ${renderJointResearchHeader(summary, "研究资料暂不可用")}
+        <section class="section">
+          <div class="section-header">
+            <h2 class="section-title">研究详情暂不可显示</h2>
+            <p class="section-purpose">这份影子研究暂时无法打开；可以切换其他记录，稍后重试。</p>
+          </div>
+          <div class="load-alert card-load-error" role="alert">
+            <strong>研究资料加载失败</strong>
             <p>${escapeHtml(reason)}</p>
             <div class="card-load-actions">
               <span>已尝试 ${escapeHtml(number(attempts, 0))} / ${escapeHtml(number(MAX_CARD_LOAD_ATTEMPTS, 0))}</span>
@@ -7798,10 +8396,12 @@ function renderSignalEvidenceReaderNav(doc) {
   function safeCardDownloadPath(path) {
     const text = String(path || "").trim().replace(/^\.\/+/, "");
     if (!text) return "";
-    if (/^[a-z][a-z0-9+.-]*:/i.test(text) || text.startsWith("//") || text.startsWith("/") || text.includes("\\") || text.split("/").includes("..")) {
-      return "";
-    }
-    return /^signal_cards\/[^?#]+\.json(?:[?#].*)?$/i.test(text) ? text : "";
+    let pathname;
+    try { pathname = decodeURIComponent(text.split(/[?#]/, 1)[0]); } catch (_) { return ""; }
+    if (/[\\%\u0000-\u0020]/.test(pathname) || /%2f|%5c/i.test(text.split(/[?#]/, 1)[0])) return "";
+    const segments = pathname.split("/");
+    if (segments.some((part) => !part || part === "." || part === "..")) return "";
+    return /^(signal_cards|joint-shadow)\/[^?#]+\.json$/i.test(pathname) ? text : "";
   }
 
   function downloadAuditJson(id) {
@@ -7883,6 +8483,7 @@ function renderSignalEvidenceReaderNav(doc) {
     if (hasSignalEvidenceV2Surface(doc)) {
       $("#documentView").innerHTML = renderSignalEvidenceReader(doc, `
         ${renderSignalEvidenceHeader(doc)}
+        ${renderAuditHighlights(doc)}
         ${renderSignalEvidenceReaderNav(doc)}
         ${renderSignalComfort(doc)}
         ${renderSignalEvidenceSpatialDynamics(doc)}
@@ -7892,6 +8493,11 @@ function renderSignalEvidenceReaderNav(doc) {
         ${renderSignalEvidenceMarketFacts(doc)}
         ${renderProvenance(doc)}
       `);
+      positionInitialEvidenceSection();
+      return;
+    }
+    if (hasJointResearchSurface(doc)) {
+      renderJointResearchDocument(doc);
       positionInitialEvidenceSection();
       return;
     }

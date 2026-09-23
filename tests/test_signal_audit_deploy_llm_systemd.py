@@ -15,8 +15,8 @@ DEPLOY = ROOT / "deploy" / "signal_audit"
 CANARY = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 EXPECTED_LLM_PROVIDER = "deepseek"
 EXPECTED_LLM_MODEL = "deepseek-v4-flash"
-EXPECTED_LLM_SCHEMA = "signal_llm_review@2.2.0"
-EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@2.2.0"
+EXPECTED_LLM_SCHEMA = "signal_llm_review@2.3.0"
+EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@2.3.0"
 EXPECTED_LLM_MODE = "single_evidence_v2"
 
 
@@ -374,9 +374,9 @@ def main():
     assert_true(service_timeout >= materialize_timeout + 240 + 120,
                 "LLM service timeout should cover one high-reasoning call and materialization")
 
-    assert_true('EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.2.0}"'
+    assert_true('EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.3.0}"'
                 in self_check
-                and 'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.2.0}"'
+                and 'EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.3.0}"'
                 in self_check
                 and 'EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"'
                 in self_check
@@ -411,8 +411,8 @@ def main():
                 and "RETRY_ID=" not in canary
                 and 'run_isolated_review "$TARGET_CARD_ID"' not in canary,
                 "canary should not reset v2 retry budget outside the runtime")
-    assert_true("LLM_SCHEMA=signal_llm_review@2.2.0" in canary
-                and "LLM_PROMPT_VERSION=signal_llm_review_prompt@2.2.0" in canary
+    assert_true("LLM_SCHEMA=signal_llm_review@2.3.0" in canary
+                and "LLM_PROMPT_VERSION=signal_llm_review_prompt@2.3.0" in canary
                 and "LLM_REVIEW_MODE=single_evidence_v2" in canary
                 and "EXPECTED_LLM_MAX_HTTP_ATTEMPTS=2" in canary,
                 "canary should bind isolated self-check to v2")

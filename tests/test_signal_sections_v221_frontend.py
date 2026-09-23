@@ -49,10 +49,14 @@ def test_valid_local_change_projection_is_separate_from_decision_and_tamper_isol
     card['local_change_projection'] = projection
     rendered = render_cards([card])
     changes = html_section(rendered['documentHtml'], 'signal-key-changes')
+    highlights = html_section(rendered['documentHtml'], 'audit-highlights')
     assert '$210.61M' in changes and '$306.82M' in changes
+    assert '$210.61M' in highlights and '$306.82M' in highlights
+    assert rendered['documentText'].index('本轮重要内容汇总') < rendered['documentText'].index('关键变化骨架')
     assert '未进入当时模型评审' in changes
     assert html_section(rendered['documentHtml'], 'signal-comfort') == html_section(baseline['documentHtml'], 'signal-comfort')
     bad = copy.deepcopy(card)
     bad['local_change_projection']['rows'][0]['current'] = 999999999
     assert '$1B' not in html_section(render_cards([bad])['documentHtml'], 'signal-key-changes')
+    assert '$1B' not in html_section(render_cards([bad])['documentHtml'], 'audit-highlights')
     assert_no_machine_leak(rendered, context='local change display')

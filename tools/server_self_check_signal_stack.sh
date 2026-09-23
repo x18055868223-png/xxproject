@@ -44,8 +44,8 @@ DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
 EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.6.2}"
 EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
 EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
-EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.2.0}"
-EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.2.1}"
+EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.3.0}"
+EXPECTED_LLM_PROMPT_VERSION="${EXPECTED_LLM_PROMPT_VERSION:-signal_llm_review_prompt@2.3.0}"
 EXPECTED_LLM_REVIEW_MODE="${EXPECTED_LLM_REVIEW_MODE:-single_evidence_v2}"
 EXPECTED_LLM_CALL_COUNT="${EXPECTED_LLM_CALL_COUNT:-1}"
 EXPECTED_LLM_MAX_HTTP_ATTEMPTS="${EXPECTED_LLM_MAX_HTTP_ATTEMPTS:-2}"
@@ -849,7 +849,7 @@ if call_count < expected_call_count:
     raise SystemExit("latest signal LLM call count is below " + str(expected_call_count))
 if http_calls > expected_max_http_attempts:
     raise SystemExit("latest signal LLM HTTP attempts exceed " + str(expected_max_http_attempts))
-if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"):
+if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0", "signal_llm_review@2.3.0"):
     budget = review.get("retry_budget") or {}
     if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
         raise SystemExit("latest signal LLM v2 retry budget is not persistent max-two")
@@ -964,7 +964,7 @@ def validate_review_header(review, label):
     if http_calls > expected_max_http_attempts:
         raise SystemExit(label + " review HTTP attempts exceed "
                          + str(expected_max_http_attempts))
-    if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0"):
+    if expected_schema in ("signal_llm_review@2.0.0", "signal_llm_review@2.1.0", "signal_llm_review@2.2.0", "signal_llm_review@2.3.0"):
         budget = review.get("retry_budget") or {}
         if budget.get("limit") != expected_max_http_attempts or budget.get("persistent") is not True:
             raise SystemExit(label + " v2 retry budget is not persistent max-two")

@@ -18,6 +18,7 @@ Environment=LLM_DAILY_HTTP_CAP=60
 Environment=LLM_RECON_EFFORT=high
 Environment=LLM_RECON_TIMEOUT=240
 EnvironmentFile=-/etc/signal-audit/llm.env
+EnvironmentFile=-/etc/signal-audit/joint.env
 MemoryHigh=128M
 MemoryMax=256M
 CPUQuota=35%

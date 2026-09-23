@@ -253,7 +253,7 @@ def test_request_contract_and_prompt(tool):
                 "v2 prompt should not require legacy blind or 24h report")
     schema = request["_local_json_schema"]
     assert_true(set(schema["required"]) == {
-        "side_evidence_ratings", "price_bias", "side_comparison", "advisory_guidance"
+        "side_evidence_ratings", "price_bias", "side_comparison", "advisory_guidance", "joint_review"
     }, "latest request schema should require price bias, comparison and guidance")
     assert_true(set(schema["properties"]["side_evidence_ratings"][
         "properties"]) == {"put_credit", "call_credit"},
@@ -302,7 +302,7 @@ def test_review_summary_hash_context_and_revalidation(tool):
     assert_true(advisory["local_action_state"]["put_credit"]["state"] == "PREPARE",
                 "valid put A on bullish card should prepare")
     summary = tool.build_summary(review)
-    assert_true(summary["schema"] == "signal_evidence_summary@2.2.0",
+    assert_true(summary["schema"] == "signal_evidence_summary@2.3.0",
                 "summary schema should be the current display projection")
     assert_true(summary["review_schema_version"] == "signal_llm_review@2.0.0"
                 and summary["review_protocol"] == "2.0"
@@ -738,7 +738,7 @@ def test_v21_roles_comparison_and_summary_projection(tool):
                 and advisory["side_comparison"]["relative_side"] == "put_credit",
                 "same-grade sides may still have a valid relative side")
     summary = tool.build_summary(review)
-    assert_true(summary["display_projection_version"] == "2.2.0",
+    assert_true(summary["display_projection_version"] == "2.3.0",
                 "summary should expose the current display projection")
     assert_true(summary["review_protocol"] == "2.1"
                 and summary["has_advisory_guidance"] is False,

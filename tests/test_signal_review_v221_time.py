@@ -33,7 +33,7 @@ def test_generated_only_and_fetch_only_are_limited_usable_facts():
     for generated in (AS_OF_MS - 2000, None):
         for fact in p['facts']:
             fact['provenance']['generated_at_ms'] = generated
-        built = review.build_review(card(), payload_v22(), p)
+        built = review.build_review(card(), payload_v22(), p, prompt_version='signal_llm_review_prompt@2.2.1')
         assert built['status'] == 'OK'
         assert built['prompt_version'] == 'signal_llm_review_prompt@2.2.1'
         assert built['schema_version'] == 'signal_llm_review@2.2.0'

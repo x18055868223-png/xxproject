@@ -5,6 +5,7 @@ written before HTTP, so an interrupted process cannot reset the attempt limit.
 """
 import hashlib
 import json
+import os
 import time
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -97,7 +98,7 @@ def _state_path(states, card_id, model):
 
 
 def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
-              budget, transport, reviewed_at):
+              budget, transport, reviewed_at, statistical_context=None):
     with core._exclusive_file_lock(state_path):
         state = _read_state(state_path)
         if state:
@@ -105,6 +106,7 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
             if frozen.get("identity") != packet.get("identity"):
                 raise ValueError("同一卡片的来源身份已变化，需独立核查")
             packet = frozen  # A later transition arrival never buys more calls.
+            statistical_context = state.get("statistical_context")
             if state.get("settled"):
                 return state["record"], False
             if state.get("prompt") not in (None, PROMPT):
@@ -120,6 +122,9 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
             state = {"schema": "signal_review_attempts@2.0.0", "packet": packet,
                      "packet_hash": packet_hash(packet), "prompt": PROMPT,
                      "mode": MODE, "model": model, "attempts": []}
+            if statistical_context is not None:
+                from astra_joint_bridge import validate_context
+                state["statistical_context"] = validate_context(statistical_context, card)
         review = None
         while len(state["attempts"]) < MAX_ATTEMPTS:
             number = len(state["attempts"]) + 1
@@ -127,7 +132,8 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
             try:
                 if not api_key:
                     raise RuntimeError("LLM_API_KEY is required")
-                request = build_request(packet, model, recovery=number > 1)
+                request = build_request(packet, model, recovery=number > 1,
+                                        statistical_context=statistical_context)
                 if budget is not None:
                     reservation = budget.reserve(
                         1, role=MODE, packet_hash=state["packet_hash"],
@@ -137,12 +143,18 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
                            "input_bytes": len(json.dumps(
                                core._strip_local_request_fields(request),
                                ensure_ascii=False).encode("utf-8"))}
+                attempt["request_sha256"] = hashlib.sha256(json.dumps(
+                    core._strip_local_request_fields(request), ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
                 state["attempts"].append(attempt)
                 core._write_json_atomic(state_path, state)
                 started = time.monotonic()
                 response = transport(api_key, model, request, timeout, endpoint=endpoint)
                 attempt["elapsed_seconds"] = round(time.monotonic() - started, 3)
                 attempt["usage"] = core._response_usage(response)
+                attempt["returned_model"] = response.get("model") if isinstance(response, dict) else None
+                attempt["system_fingerprint"] = response.get("system_fingerprint") if isinstance(response, dict) else None
+                attempt["completed_at_ms"] = int(time.time() * 1000)
                 response_path = state_path.parent / "responses" / (state_path.stem + f".{number}.json")
                 core._write_json_atomic(response_path, response)
                 attempt["response_sha256"] = hashlib.sha256(response_path.read_bytes()).hexdigest()
@@ -152,7 +164,7 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
                 payload = core.parse_chat_response(response)
                 review = build_review(card, payload, packet, model=model,
                                       reviewed_at=reviewed_at,
-                                      require_price_bias=True)
+                                      require_price_bias=True, statistical_context=statistical_context)
                 attempt["status"] = review["status"]
                 # Semantic or side validation failures are final, never format recovery.
                 break
@@ -187,6 +199,8 @@ def _run_card(card, packet, state_path, api_key, model, timeout, endpoint,
         review["call_audit"] = list(state["attempts"])
         review["retry_budget"] = {"limit": MAX_ATTEMPTS,
                                  "used": len(state["attempts"]), "persistent": True}
+        if statistical_context is not None:
+            review["statistical_context"] = statistical_context
         record = {"card_id": core._card_id(card), "llm_review": review}
         state.update(settled=True, record=record)
         core._write_json_atomic(state_path, state)
@@ -197,7 +211,14 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
                      limit=4, include_synthetic=False, timeout=240, base_url=None,
                      budget=None, max_concurrency=4, only_card_id=None,
                      transition_ledger=None, transport=None, reviewed_at=None,
-                     automatic_exclusions=None):
+                     automatic_exclusions=None, joint_assessments=None):
+    from astra_joint_bridge import load_registry, context_for_card
+    joint_registry_error = None
+    try:
+        joint_registry = load_registry(joint_assessments)
+    except (OSError, ValueError, TypeError) as exc:
+        joint_registry_error = type(exc).__name__
+        joint_registry = {}  # A research-file failure cannot stop core reviews.
     cards = sorted(core._dedupe_cards(core._read_jsonl(source)),
                    key=core._card_sort_key, reverse=True)
     excluded_card_ids = _read_automatic_exclusions(automatic_exclusions)
@@ -250,9 +271,28 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
             # lock inside _run_card also coordinates with older running code.
             card_lock = states / ("card-" + hashlib.sha256(cid.encode()).hexdigest())
             with core._exclusive_file_lock(card_lock):
-                return _run_card(card, packet, _state_path(states, cid, model), api_key, model,
+                result, did_attempt = _run_card(card, packet, _state_path(states, cid, model), api_key, model,
                                  timeout, base_url, budget, transport or core._post_chat_completion,
-                                 reviewed_at)
+                                 reviewed_at, context_for_card(card, joint_registry,
+                                     available_before_ms=int(time.time() * 1000)))
+            frozen = result.get("llm_review", {}).get("statistical_context")
+            result["joint_context_status"] = (
+                "registry_failed" if joint_registry_error else "included" if frozen else
+                "not_available_at_review" if cid in joint_registry else "not_generated")
+            forward_folder = os.environ.get("ASTRA_JOINT_ROOT")
+            if forward_folder and result.get("llm_review", {}).get("prompt_version") == PROMPT:
+                try:
+                    from astra_joint_v11_forward import record_and_quote
+                    forward = record_and_quote(forward_folder, card, result["llm_review"])
+                    quote = forward.get("quote") or {}
+                    result["joint_forward_status"] = {"status": forward["status"],
+                        "http_attempts": forward.get("http_attempts", 0),
+                        "strict": quote.get("strict"), "reasons": quote.get("reasons", [])}
+                except Exception as exc:
+                    result["joint_forward_status"] = {"status": "failed", "error_type": type(exc).__name__}
+                    core._write_json_atomic(states / ("forward-failure-" + hashlib.sha256(cid.encode()).hexdigest() + ".json"),
+                        {"card_id": cid, "stage": "post_opinion_quote", "error_type": type(exc).__name__, "at_ms": int(time.time()*1000)})
+            return result, did_attempt
         except (ValueError, KeyError, TypeError, OSError):
             review = build_error_review(card, packet, "本卡评审记录校验失败，自动调用已暂停。",
                                         model=model, reviewed_at=reviewed_at,
@@ -290,4 +330,5 @@ def generate_reviews(source, reviews_output, api_key=None, model=core.DEFAULT_MO
     return {"written": written, "errors": errors, "attempted": attempted,
             "skipped": skipped, "review_mode": MODE, "target": target,
             "automatic_excluded": automatic_excluded,
+            "joint_registry_error": joint_registry_error,
             "daily_http_budget": budget.snapshot() if budget else None}

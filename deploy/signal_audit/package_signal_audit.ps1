@@ -114,12 +114,16 @@ Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_evidence_v2.py") -Des
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_change_display.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_review_v2.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_review_v2_runtime.py") -Destination (Join-Path $packageRoot "tools") -Force
+foreach ($jointModule in @("signal_review_joint.py", "astra_joint_v11_contract.py", "astra_joint_v11_data.py", "astra_joint_v11_inference.py", "astra_joint_v11_cards.py", "astra_joint_v11_forward.py", "astra_joint_v11_evaluation.py", "astra_joint_contract.py", "astra_joint_projection.py", "astra_joint_bridge.py", "astra_joint_inference.py", "astra_joint_data.py", "astra_joint_events.py", "astra_joint_dataset.py", "astra_joint_sources.py", "astra_joint_shadow.py", "astra_joint_card_statistics.py", "astra_joint_operations.py")) {
+    Copy-Item -LiteralPath (Join-Path $root.Path "tools\$jointModule") -Destination (Join-Path $packageRoot "tools") -Force
+}
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_llm_review_canary_release.sh") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\server_self_check_signal_stack.sh") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $root.Path "tools\signal_fact_semantics.py") -Destination (Join-Path $packageRoot "tools") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "README.md") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install_or_update.sh") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "run_signal_llm_review.sh") -Destination (Join-Path $packageRoot "deploy") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "joint-shadow") -Destination (Join-Path $packageRoot "deploy") -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "signal-audit-llm.env.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "apache-bitnami-signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "nginx.signal-audit.conf.example") -Destination (Join-Path $packageRoot "deploy") -Force
