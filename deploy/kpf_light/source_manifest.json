@@ -1,0 +1,57 @@
+{
+  "schema": "astra_kpf_light_source_manifest@1",
+  "vendor_source": "C:/Users/Xu/Documents/kpf/kpf",
+  "vendor_note": "Minimal original KPF algorithm modules copied verbatim for the lightweight Astra producer.",
+  "files": [
+    {
+      "path": "deploy/kpf_light/vendor/kpf/__init__.py",
+      "sha256": "3a849c4c231bbe650600c5a4e2075e57be2286adff653656fad155b5c9466d71",
+      "bytes": 107
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/basins.py",
+      "sha256": "913d0e3269a2e463dbe304f22a2c31926b54626ba1185ed03d862ffe9128830e",
+      "bytes": 3829
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/config.py",
+      "sha256": "56199d66e399692b6a55e55a3dde9690e277d52b23e55cc20ed4cde4d30f33c9",
+      "bytes": 6511
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/density.py",
+      "sha256": "f9dbea8ff808d99fd7019a4b8adad5e696b913ea63994705ca59966f0e4b8568",
+      "bytes": 2600
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/evidence_rules.py",
+      "sha256": "3b2486b75d1ff1816cfb49b277c19995802c2726fe7a9ccd2ff7db218304910a",
+      "bytes": 7455
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/evidence.py",
+      "sha256": "cae30c539faf3e2b74334173f112e44b96a1097fe49aeca9792acc1f4fe0a951",
+      "bytes": 6859
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/models.py",
+      "sha256": "e9015102d2c84db902c1f34a3b72ad6ffb80778a9d333fa6a6c48de6d17fc54d",
+      "bytes": 5475
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/parser.py",
+      "sha256": "97af9de0efd03e0cbb3c2a2562f1b1a023945eef87849a774e02736757d85ffb",
+      "bytes": 3613
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/targets.py",
+      "sha256": "953cc58e68218b0cce729778509e0953d907442f853df04a9d64f95d9565046f",
+      "bytes": 4957
+    },
+    {
+      "path": "deploy/kpf_light/vendor/kpf/volume_bars.py",
+      "sha256": "a1f9cd8470b81d3aa01657d30f747a60d13ecab88afec68511beaa238077205c",
+      "bytes": 2714
+    }
+  ]
+}

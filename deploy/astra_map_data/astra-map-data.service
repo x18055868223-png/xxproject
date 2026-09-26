@@ -1,0 +1,24 @@
+[Unit]
+Description=Astra same-server MAP data collector and local consumer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=bitnami
+ExecStart=/usr/bin/python3 /opt/astra-map-data/current/tools/astra_map_data_server_v24.py --config /opt/astra-map-data/config.json
+WorkingDirectory=/opt/astra-map-data
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Nice=10
+CPUQuota=25%
+MemoryMax=128M
+TimeoutStartSec=240
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/astra-map-data/state
+StandardOutput=journal
+StandardError=journal

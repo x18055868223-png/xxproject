@@ -1,0 +1,27 @@
+[Unit]
+Description=Astra KPF light one-shot producer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/astra-kpf-light.env
+User=bitnami
+Group=bitnami
+WorkingDirectory=/opt/astra-kpf-light/current
+Nice=10
+CPUQuota=50%
+MemoryMax=240M
+TimeoutStartSec=12h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=astra-kpf-light
+RuntimeDirectory=astra-kpf-light
+ReadWritePaths=/var/lib/astra-kpf-light
+ExecStartPre=/usr/bin/python3 /opt/astra-kpf-light/current/tools/astra_kpf_light_v1.py verify-vendor --data-root /var/lib/astra-kpf-light --output-root /var/lib/astra-kpf-light/published
+ExecStart=/usr/bin/python3 /opt/astra-kpf-light/current/tools/astra_kpf_light_v1.py oneshot --data-root /var/lib/astra-kpf-light --output-root /var/lib/astra-kpf-light/published --fetch-quote
+
+[Install]
+WantedBy=multi-user.target

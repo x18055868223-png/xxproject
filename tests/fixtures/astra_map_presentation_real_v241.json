@@ -1,0 +1,1643 @@
+{
+  "source_identity": "PUBLIC_FROZEN_REPLAY_SUBSET_FOR_PRESENTATION_TEST_ONLY",
+  "snapshot": {
+    "schema": "astra_underwriting_snapshot@2.0.0",
+    "snapshot_id": "82c9c55f269910b81724dde786a67d6c52183cf15c36494d1b3bdb6e8c4a90cd",
+    "candidate_id": "aa500824321e8001431aaca0",
+    "contract": {
+      "venue": "Deribit",
+      "underlying": "BTC",
+      "settlement_currency": "BTC",
+      "short_instrument": "BTC-27SEP26-84000-P",
+      "long_instrument": "BTC-27SEP26-82000-P",
+      "side": "put",
+      "quantity_btc": 1.0,
+      "expiry_ms": 1790496000000,
+      "candidate_id": "aa500824321e8001431aaca0",
+      "short_strike_usd": 84000.0,
+      "long_strike_usd": 82000.0,
+      "width_usd": 2000.0,
+      "contract_size": 1.0,
+      "exit_policy": "hold_to_expiry",
+      "short": {
+        "instrument_name": "BTC-27SEP26-84000-P",
+        "strike_usd": 84000.0,
+        "option_type": "put",
+        "expiry_ms": 1790496000000,
+        "contract_size": 1.0,
+        "quantity_unit": "BTC"
+      },
+      "long": {
+        "instrument_name": "BTC-27SEP26-82000-P",
+        "strike_usd": 82000.0,
+        "option_type": "put",
+        "expiry_ms": 1790496000000,
+        "contract_size": 1.0,
+        "quantity_unit": "BTC"
+      }
+    },
+    "fee": {
+      "amount_btc": 0.00033749999999999996,
+      "basis": "configured_assumption",
+      "entry_fee_btc": 0.00033749999999999996,
+      "delivery_fee_btc": 0.0,
+      "assumption_basis": "public_taker_capped_daily_delivery_zero",
+      "covers": [
+        "delivery",
+        "entry"
+      ],
+      "gap_reasons": []
+    },
+    "economics": {
+      "visible_credit_btc": 0.0021,
+      "valuation_spot_usd": 84051.67,
+      "short_premium_btc": 0.0024,
+      "short_premium_usd_at_spot": 201.72400799999997,
+      "long_premium_btc": 0.0003,
+      "long_premium_usd_at_spot": 25.215500999999996,
+      "premium_spread_btc": 0.0021,
+      "premium_spread_usd_at_spot": 176.50850699999998,
+      "theoretical_two_leg_fee_btc": 0.00033749999999999996,
+      "theoretical_two_leg_fee_usd_at_spot": 28.367438624999995,
+      "delivery_fee_usd_at_spot": 0.0,
+      "total_hold_fee_usd_at_spot": 28.367438624999995,
+      "net_credit_after_entry_fee_btc": 0.0017625,
+      "net_credit_after_entry_fee_usd_at_spot": 148.141068375,
+      "net_credit_after_fee_btc": 0.0017625,
+      "net_credit_after_fee_usd_at_spot": 148.141068375,
+      "loss_budget_btc": 0.0017625,
+      "mu_ref_btc": null,
+      "minimum_reference_credit_btc": null,
+      "reference_margin_btc": null,
+      "error_room_btc": null
+    },
+    "liability": {
+      "starts_at_usd": 84000.0,
+      "protection_at_usd": 82000.0,
+      "usd_intrinsic_cap": 2000.0,
+      "btc_reference_scale_at_spot": 0.0237948871212196,
+      "btc_contract_cap": null,
+      "breakeven_usd": [
+        83852.21047903072
+      ],
+      "signed_distance_to_short_pct": -0.061474090877666754,
+      "signed_distance_to_long_pct": -2.4409628029996244,
+      "payout_table": [
+        {
+          "settlement_usd": 84051.67,
+          "payout_btc": 0.0,
+          "static_net_btc": 0.0017625,
+          "hedged_net_btc": null
+        },
+        {
+          "settlement_usd": 84000.0,
+          "payout_btc": 0.0,
+          "static_net_btc": 0.0017625,
+          "hedged_net_btc": null
+        },
+        {
+          "settlement_usd": 83000.0,
+          "payout_btc": 0.012048192771084338,
+          "static_net_btc": -0.010285692771084338,
+          "hedged_net_btc": null
+        },
+        {
+          "settlement_usd": 82000.0,
+          "payout_btc": 0.024390243902439025,
+          "static_net_btc": -0.022627743902439025,
+          "hedged_net_btc": null
+        },
+        {
+          "settlement_usd": 41000.0,
+          "payout_btc": 0.04878048780487809,
+          "static_net_btc": -0.04701798780487809,
+          "hedged_net_btc": null
+        }
+      ],
+      "account_margin_btc": null
+    },
+    "llm_review": {
+      "status": "not_requested",
+      "reviewed_snapshot_id": null
+    },
+    "data_identity": {
+      "kind": "historical_replay"
+    },
+    "market": {
+      "valuation_ts_ms": 1790408762017,
+      "reference_price_usd": 84051.67,
+      "reference_source": "deribit_index",
+      "quote": {
+        "exchange_times_ms": {
+          "short": 1790408761306,
+          "long": 1790408760131
+        }
+      }
+    }
+  },
+  "map": {
+    "schema": "btc_map@1",
+    "cutoff_at_ms": 1790408762017,
+    "current_price_usd": 84051.67,
+    "price_basis": "deribit_index",
+    "reference_pool": [
+      {
+        "reference_id": "brk-cp-sth",
+        "revision_id": "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d",
+        "family": "ONCHAIN_COST",
+        "role": "CP_STH",
+        "source_family": "brk_cost_basis",
+        "source_record_ids": [
+          "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d"
+        ],
+        "geometry": "POINT",
+        "raw_price": 73552.76,
+        "raw_low": 73552.76,
+        "raw_high": 73552.76,
+        "display_center": 73552.76,
+        "display_band": null,
+        "market": "BRK",
+        "quote_currency": "USD",
+        "price_basis": "ONCHAIN_COST_CP_STH",
+        "expiry_scope": "GLOBAL_ONLY",
+        "observation_end_ms": 1790294399999,
+        "known_at_ms": 1790407949458,
+        "active_from_ms": 1790294399999,
+        "quality": "OK",
+        "usage_decision": {
+          "usage": "background",
+          "status": "USABLE",
+          "can_use": true,
+          "age_ms": 114362018,
+          "ttl_ms": 172800000,
+          "served_at_ms": 1790408762017,
+          "reason_codes": []
+        },
+        "mapped_price": null,
+        "mapped_zone": null,
+        "mapping_policy": null,
+        "mapping_quality": null,
+        "coordinate_qualification": "NOMINAL_ONLY",
+        "eligible_for_display": true,
+        "display_rejection_reasons": [],
+        "limitations": [
+          "onchain_cost_not_execution_price",
+          "nominal_only_not_contract_comparable"
+        ],
+        "selected_for_display": true
+      },
+      {
+        "reference_id": "contract_short_leg",
+        "revision_id": "2557b35e07a91671acf7978430763540303b580140a3894ab3726e927ee7342f",
+        "family": "CONTRACT_LIABILITY",
+        "role": "SHORT_LEG",
+        "source_family": "contract",
+        "source_record_ids": [],
+        "geometry": "POINT",
+        "raw_price": 84000.0,
+        "raw_low": 84000.0,
+        "raw_high": 84000.0,
+        "display_center": 84000.0,
+        "display_band": null,
+        "market": "Deribit",
+        "quote_currency": "USD",
+        "price_basis": "DERIBIT_BTC_USD_INDEX",
+        "expiry_scope": 1790496000000,
+        "observation_end_ms": 1790408762017,
+        "known_at_ms": 1790408762017,
+        "active_from_ms": 1790408762017,
+        "quality": "OK",
+        "usage_decision": {
+          "can_use": true
+        },
+        "mapped_price": null,
+        "mapped_zone": null,
+        "mapping_policy": null,
+        "mapping_quality": null,
+        "coordinate_qualification": "COMPARABLE",
+        "eligible_for_display": true,
+        "display_rejection_reasons": [],
+        "limitations": [
+          "contract_line_not_independent_market_confirmation"
+        ],
+        "selected_for_display": false
+      },
+      {
+        "reference_id": "contract_protective_leg",
+        "revision_id": "2557b35e07a91671acf7978430763540303b580140a3894ab3726e927ee7342f",
+        "family": "CONTRACT_LIABILITY",
+        "role": "PROTECTIVE_LEG",
+        "source_family": "contract",
+        "source_record_ids": [],
+        "geometry": "POINT",
+        "raw_price": 82000.0,
+        "raw_low": 82000.0,
+        "raw_high": 82000.0,
+        "display_center": 82000.0,
+        "display_band": null,
+        "market": "Deribit",
+        "quote_currency": "USD",
+        "price_basis": "DERIBIT_BTC_USD_INDEX",
+        "expiry_scope": 1790496000000,
+        "observation_end_ms": 1790408762017,
+        "known_at_ms": 1790408762017,
+        "active_from_ms": 1790408762017,
+        "quality": "OK",
+        "usage_decision": {
+          "can_use": true
+        },
+        "mapped_price": null,
+        "mapped_zone": null,
+        "mapping_policy": null,
+        "mapping_quality": null,
+        "coordinate_qualification": "COMPARABLE",
+        "eligible_for_display": true,
+        "display_rejection_reasons": [],
+        "limitations": [
+          "contract_line_not_independent_market_confirmation"
+        ],
+        "selected_for_display": false
+      },
+      {
+        "reference_id": "contract_near_breakeven",
+        "revision_id": "2557b35e07a91671acf7978430763540303b580140a3894ab3726e927ee7342f",
+        "family": "CONTRACT_LIABILITY",
+        "role": "NEAR_BREAKEVEN",
+        "source_family": "contract",
+        "source_record_ids": [],
+        "geometry": "POINT",
+        "raw_price": 83852.21047903072,
+        "raw_low": 83852.21047903072,
+        "raw_high": 83852.21047903072,
+        "display_center": 83852.21047903072,
+        "display_band": null,
+        "market": "Deribit",
+        "quote_currency": "USD",
+        "price_basis": "DERIBIT_BTC_USD_INDEX",
+        "expiry_scope": 1790496000000,
+        "observation_end_ms": 1790408762017,
+        "known_at_ms": 1790408762017,
+        "active_from_ms": 1790408762017,
+        "quality": "OK",
+        "usage_decision": {
+          "can_use": true
+        },
+        "mapped_price": null,
+        "mapped_zone": null,
+        "mapping_policy": null,
+        "mapping_quality": null,
+        "coordinate_qualification": "COMPARABLE",
+        "eligible_for_display": true,
+        "display_rejection_reasons": [],
+        "limitations": [
+          "contract_line_not_independent_market_confirmation"
+        ],
+        "selected_for_display": false
+      }
+    ],
+    "policy_link": {
+      "candidate_id": "aa500824321e8001431aaca0",
+      "candidate_version": "2557b35e07a91671acf7978430763540303b580140a3894ab3726e927ee7342f",
+      "valuation_version": "2557b35e07a91671acf7978430763540303b580140a3894ab3726e927ee7342f",
+      "contract": {
+        "side": "put",
+        "short_strike_usd": 84000.0,
+        "long_strike_usd": 82000.0,
+        "quantity_btc": 1.0,
+        "expiry_ms": 1790496000000
+      },
+      "mu_ref_btc": null,
+      "M_ref_btc": null,
+      "region_liability_rows": [
+        {
+          "region_id": "brk-cp-sth",
+          "version": "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d",
+          "family": "ONCHAIN_COST",
+          "role": "CP_STH",
+          "coordinate_qualification": "NOMINAL_ONLY",
+          "geometry": "POINT",
+          "position_vs_current": null,
+          "relation_to_short_long_be": null,
+          "distance_to_short_usd": null,
+          "distance_to_near_be_usd": null,
+          "terminal_payout_range": {
+            "min_btc": 0.02719136576248124,
+            "max_btc": 0.02719136576248124
+          },
+          "static_net_range": {
+            "min_btc": -0.02542886576248124,
+            "max_btc": -0.02542886576248124
+          },
+          "cost_scope": {
+            "title": "hold_to_expiry_static_result_with_listed_fees",
+            "covers": [
+              "delivery",
+              "entry"
+            ],
+            "fee_basis": "configured_assumption"
+          },
+          "response_facts": [],
+          "source_cutoffs": {
+            "known_at_ms": 1790407949458,
+            "observation_end_ms": 1790294399999
+          },
+          "limitations": [
+            "onchain_cost_not_execution_price",
+            "nominal_only_not_contract_comparable",
+            "nominal_scenario_not_precise_contract_mapping"
+          ],
+          "terminal_scenario_basis": "nominal_number_if_official_settlement_equaled_it",
+          "terminal_payout_points": [
+            {
+              "settlement_usd": 73552.76,
+              "payout_btc": 0.02719136576248124
+            }
+          ]
+        }
+      ],
+      "region_liability_full_rows": [
+        {
+          "region_id": "brk-cp-sth",
+          "version": "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d",
+          "family": "ONCHAIN_COST",
+          "role": "CP_STH",
+          "coordinate_qualification": "NOMINAL_ONLY",
+          "geometry": "POINT",
+          "position_vs_current": null,
+          "relation_to_short_long_be": null,
+          "distance_to_short_usd": null,
+          "distance_to_near_be_usd": null,
+          "terminal_payout_range": {
+            "min_btc": 0.02719136576248124,
+            "max_btc": 0.02719136576248124
+          },
+          "static_net_range": {
+            "min_btc": -0.02542886576248124,
+            "max_btc": -0.02542886576248124
+          },
+          "cost_scope": {
+            "title": "hold_to_expiry_static_result_with_listed_fees",
+            "covers": [
+              "delivery",
+              "entry"
+            ],
+            "fee_basis": "configured_assumption"
+          },
+          "response_facts": [],
+          "source_cutoffs": {
+            "known_at_ms": 1790407949458,
+            "observation_end_ms": 1790294399999
+          },
+          "limitations": [
+            "onchain_cost_not_execution_price",
+            "nominal_only_not_contract_comparable",
+            "nominal_scenario_not_precise_contract_mapping"
+          ],
+          "terminal_scenario_basis": "nominal_number_if_official_settlement_equaled_it",
+          "terminal_payout_points": [
+            {
+              "settlement_usd": 73552.76,
+              "payout_btc": 0.02719136576248124
+            }
+          ]
+        }
+      ],
+      "account_risk_not_covered": [
+        "early_exit_cashflow",
+        "slippage",
+        "margin_liquidation",
+        "hedge_cashflow",
+        "touch_is_not_terminal_settlement"
+      ]
+    },
+    "background": {
+      "allocation": {
+        "status": "missing",
+        "summary": null,
+        "summary_cn": "ETF仍为净流入，但近3个交易日日均速度低于7日窗口。",
+        "metrics": {
+          "f3_usd_m": 672.0999999999999,
+          "f7_usd_m": 2978.3,
+          "latest_complete_date": "2026-09-25",
+          "missing": [],
+          "q_abs_usd_m_prior60": 217.86333333333332,
+          "status": "OK",
+          "summary_cn": "ETF仍为净流入，但近3个交易日日均速度低于7日窗口。",
+          "u3": 1.0283205067396992,
+          "u7": 1.952928113518086,
+          "v3_usd_m_per_day": 224.0333333333333,
+          "v7_usd_m_per_day": 425.4714285714286,
+          "windows": {
+            "last3": [
+              "2026-09-23",
+              "2026-09-24",
+              "2026-09-25"
+            ],
+            "last7": [
+              "2026-09-17",
+              "2026-09-18",
+              "2026-09-21",
+              "2026-09-22",
+              "2026-09-23",
+              "2026-09-24",
+              "2026-09-25"
+            ],
+            "prior60_end": "2026-09-16",
+            "prior60_start": "2026-06-23"
+          },
+          "source_values": {
+            "fund_columns": [
+              "ibit",
+              "fbtc",
+              "bitb",
+              "arkb",
+              "btco",
+              "ezbc",
+              "brrr",
+              "hodl",
+              "btcw",
+              "msbt",
+              "gbtc",
+              "btc"
+            ],
+            "metrics": {
+              "f3_usd_m": 672.0999999999999,
+              "f7_usd_m": 2978.3,
+              "latest_complete_date": "2026-09-25",
+              "missing": [],
+              "q_abs_usd_m_prior60": 217.86333333333332,
+              "status": "OK",
+              "summary_cn": "ETF仍为净流入，但近3个交易日日均速度低于7日窗口。",
+              "u3": 1.0283205067396992,
+              "u7": 1.952928113518086,
+              "v3_usd_m_per_day": 224.0333333333333,
+              "v7_usd_m_per_day": 425.4714285714286,
+              "windows": {
+                "last3": [
+                  "2026-09-23",
+                  "2026-09-24",
+                  "2026-09-25"
+                ],
+                "last7": [
+                  "2026-09-17",
+                  "2026-09-18",
+                  "2026-09-21",
+                  "2026-09-22",
+                  "2026-09-23",
+                  "2026-09-24",
+                  "2026-09-25"
+                ],
+                "prior60_end": "2026-09-16",
+                "prior60_start": "2026-06-23"
+              }
+            },
+            "raw_response_sha256": "1295fd46fd77602c958ab9807f4f761a3f62dea77241028e8cae7f6d8824b197",
+            "request_audit": {
+              "actual_http_requests": 1,
+              "endpoints": [
+                "https://farside.co.uk/bitcoin-etf-flow-all-data/"
+              ],
+              "max_http_requests": 1
+            },
+            "rows": [
+              {
+                "complete_for_total": true,
+                "date": "2026-09-14",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": -42.0
+                  },
+                  "bitb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "numeric",
+                    "value_usd_m": 4.6
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 53.3
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 134.3
+                  },
+                  "msbt": {
+                    "state": "numeric",
+                    "value_usd_m": 9.7
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1789416000000,
+                "total_state": "numeric",
+                "total_usd_m": 159.9
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-15",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": -17.4
+                  },
+                  "bitb": {
+                    "state": "numeric",
+                    "value_usd_m": -12.4
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": -214.8
+                  },
+                  "gbtc": {
+                    "state": "numeric",
+                    "value_usd_m": -44.1
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": -161.7
+                  },
+                  "msbt": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1789502400000,
+                "total_state": "numeric",
+                "total_usd_m": -450.4
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-16",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": -84.4
+                  },
+                  "bitb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": -52.7
+                  },
+                  "gbtc": {
+                    "state": "numeric",
+                    "value_usd_m": -18.2
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": -144.1
+                  },
+                  "msbt": {
+                    "state": "numeric",
+                    "value_usd_m": 3.5
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1789588800000,
+                "total_state": "numeric",
+                "total_usd_m": -295.9
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-17",
+                "funds": {
+                  "arkb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "bitb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": -16.6
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "numeric",
+                    "value_usd_m": -7.6
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 183.7
+                  },
+                  "msbt": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1789675200000,
+                "total_state": "numeric",
+                "total_usd_m": 159.5
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-18",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": 1.9
+                  },
+                  "bitb": {
+                    "state": "numeric",
+                    "value_usd_m": 9.7
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 310.7
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "numeric",
+                    "value_usd_m": 2.3
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 108.4
+                  },
+                  "msbt": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1789761600000,
+                "total_state": "numeric",
+                "total_usd_m": 433.0
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-21",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": 289.1
+                  },
+                  "bitb": {
+                    "state": "numeric",
+                    "value_usd_m": 21.6
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "numeric",
+                    "value_usd_m": 3.1
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 238.8
+                  },
+                  "gbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 3.3
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 381.4
+                  },
+                  "msbt": {
+                    "state": "numeric",
+                    "value_usd_m": 61.7
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1790020800000,
+                "total_state": "numeric",
+                "total_usd_m": 999.0
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-22",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": 0.6
+                  },
+                  "bitb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "numeric",
+                    "value_usd_m": 5.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 257.4
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "numeric",
+                    "value_usd_m": 2.4
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 350.3
+                  },
+                  "msbt": {
+                    "state": "numeric",
+                    "value_usd_m": 99.0
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1790107200000,
+                "total_state": "numeric",
+                "total_usd_m": 714.7
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-23",
+                "funds": {
+                  "arkb": {
+                    "state": "numeric",
+                    "value_usd_m": 5.0
+                  },
+                  "bitb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 143.2
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 166.3
+                  },
+                  "msbt": {
+                    "state": "numeric",
+                    "value_usd_m": 32.4
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1790193600000,
+                "total_state": "numeric",
+                "total_usd_m": 346.9
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-24",
+                "funds": {
+                  "arkb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "bitb": {
+                    "state": "numeric",
+                    "value_usd_m": 4.1
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "numeric",
+                    "value_usd_m": -4.0
+                  },
+                  "ezbc": {
+                    "state": "numeric",
+                    "value_usd_m": 4.9
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 12.9
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 162.6
+                  },
+                  "msbt": {
+                    "state": "numeric",
+                    "value_usd_m": 10.2
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1790280000000,
+                "total_state": "numeric",
+                "total_usd_m": 190.7
+              },
+              {
+                "complete_for_total": true,
+                "date": "2026-09-25",
+                "funds": {
+                  "arkb": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "bitb": {
+                    "state": "numeric",
+                    "value_usd_m": -11.8
+                  },
+                  "brrr": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btco": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "btcw": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ezbc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "fbtc": {
+                    "state": "numeric",
+                    "value_usd_m": 49.3
+                  },
+                  "gbtc": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "hodl": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  },
+                  "ibit": {
+                    "state": "numeric",
+                    "value_usd_m": 97.0
+                  },
+                  "msbt": {
+                    "state": "zero",
+                    "value_usd_m": 0.0
+                  }
+                },
+                "missing_funds": [],
+                "observation_end_ms": 1790366400000,
+                "total_state": "numeric",
+                "total_usd_m": 134.5
+              }
+            ],
+            "schema": "btc_etf_flow_normalized@2.4.0",
+            "skipped_rows": [
+              {
+                "label": "Total",
+                "reason": "summary_or_non_day_row"
+              }
+            ],
+            "source_limit_note": "Farside is a public third-party summary; no provider finality flag is invented.",
+            "source_url": "https://farside.co.uk/bitcoin-etf-flow-all-data/",
+            "unit": "US$m",
+            "rows_truncated_to_last": 10
+          }
+        },
+        "cutoff_at_ms": 1790366400000,
+        "missing": [],
+        "fact_state": "usable",
+        "facts": [],
+        "source_record_ids": [
+          "btc.etf.flow.daily.v1:df8cc312a34db892ced121df"
+        ],
+        "known_at_ms": null,
+        "active_from_ms": null,
+        "limitations": []
+      },
+      "inventory": {
+        "status": "missing",
+        "summary": null,
+        "summary_cn": "链上成本样本已读取。",
+        "metrics": {
+          "cost_basis": {
+            "cp_sth_usd": 73552.76,
+            "cp_lth_usd": 84755.66,
+            "cp_all_usd": 82112.69,
+            "source_price_usd": 86137.29,
+            "observation_dates": {
+              "cp_all": "2026-09-24",
+              "cp_lth": "2026-09-24",
+              "cp_sth": "2026-09-24",
+              "phase": "2026-09-24",
+              "source_price": "2026-09-24"
+            }
+          },
+          "gap_sth_now_pct": 14.27398509586861
+        },
+        "cutoff_at_ms": 1790408762017,
+        "missing": [
+          "bitview_sample_bounds_missing:profit",
+          "bitview_shared_budget_exhausted:loss",
+          "bitview_shared_budget_exhausted:realized_cap",
+          "btc.brk.realized_pnl.daily.v1:quality:PARTIAL",
+          "btc.brk.realized_pnl.daily.v1:quality_reason:BITVIEW_SOURCE_TIMESTAMP_MISSING",
+          "btc.brk.realized_pnl.daily.v1:quality_reason:bitview_sample_bounds_missing:profit",
+          "btc.brk.realized_pnl.daily.v1:quality_reason:bitview_shared_budget_exhausted:loss",
+          "btc.brk.realized_pnl.daily.v1:quality_reason:bitview_shared_budget_exhausted:realized_cap",
+          "btc.brk.realized_pnl.daily.v1:quality_reason:less_than_14_complete_utc_days",
+          "btc.brk.realized_pnl.daily.v1:usage:STALE",
+          "btc.brk.realized_pnl.daily.v1:usage_reason:DATA_STATE_PARTIAL",
+          "btc.brk.realized_pnl.daily.v1:usage_reason:USAGE_TTL_EXCEEDED"
+        ],
+        "fact_state": "partial",
+        "facts": [],
+        "source_record_ids": [
+          "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d",
+          "btc.brk.realized_pnl.daily.v1:b39abe0f9c6f2dadfc9486ed"
+        ],
+        "known_at_ms": null,
+        "active_from_ms": null,
+        "limitations": []
+      },
+      "financing": {
+        "status": "missing",
+        "summary": null,
+        "summary_cn": "已结算Funding窗口合计0.000116。",
+        "metrics": {
+          "funding": {
+            "predicted_count_excluded": 0,
+            "prediction_mixed_with_settlement": false,
+            "settled_count": 8,
+            "settled_funding_rate_sum": 0.00011557,
+            "settled_times_ms": [
+              1790179200004,
+              1790208000002,
+              1790236800000,
+              1790265600005,
+              1790294400002,
+              1790323200000,
+              1790352000002,
+              1790380800000
+            ]
+          },
+          "borrow_source_values": {
+            "status": "blocked"
+          }
+        },
+        "cutoff_at_ms": 1790408762017,
+        "missing": [
+          "binance.um.btcusdt.oi.native.v1:usage:STALE",
+          "binance.um.btcusdt.oi.native.v1:usage_reason:USAGE_TTL_EXCEEDED",
+          "cex.usdt.borrow_rate.v1",
+          "cex.usdt.borrow_rate.v1:quality:PARTIAL",
+          "cex.usdt.borrow_rate.v1:quality_reason:BORROW_SOURCE_UNAUTHORIZED_OR_UNCONFIGURED",
+          "cex.usdt.borrow_rate.v1:usage:STALE",
+          "cex.usdt.borrow_rate.v1:usage_reason:DATA_STATE_PARTIAL",
+          "cex.usdt.borrow_rate.v1:usage_reason:USAGE_TTL_EXCEEDED"
+        ],
+        "fact_state": "partial",
+        "facts": [],
+        "source_record_ids": [
+          "binance.um.btcusdt.funding.settled.v1:54d74c6fd54ae1305754ddcc",
+          "binance.um.btcusdt.oi.native.v1:61ac13081789c102166403a1",
+          "cex.usdt.borrow_rate.v1:e890ed494749070fc28f8f91"
+        ],
+        "known_at_ms": null,
+        "active_from_ms": null,
+        "limitations": []
+      },
+      "external_conditions": {
+        "status": "missing",
+        "summary": null,
+        "summary_cn": "外部资本条件共同观察端点为2026-09-24。",
+        "metrics": {
+          "common_dates": [
+            "2026-08-26",
+            "2026-08-27",
+            "2026-08-28",
+            "2026-08-31",
+            "2026-09-01",
+            "2026-09-02",
+            "2026-09-03",
+            "2026-09-04",
+            "2026-09-08",
+            "2026-09-09",
+            "2026-09-10",
+            "2026-09-11",
+            "2026-09-14",
+            "2026-09-15",
+            "2026-09-16",
+            "2026-09-17",
+            "2026-09-18",
+            "2026-09-21",
+            "2026-09-22",
+            "2026-09-23",
+            "2026-09-24"
+          ],
+          "missing": [],
+          "latest_date": "2026-09-24",
+          "nominal_10y": {
+            "latest": 5.18,
+            "change_5obs": 0.23999999999999932,
+            "change_5obs_bp": 23.999999999999932,
+            "change_20obs": 0.5199999999999996,
+            "change_20obs_bp": 51.99999999999996
+          },
+          "real_10y": {
+            "latest": 2.85,
+            "change_5obs": 0.2400000000000002,
+            "change_5obs_bp": 24.00000000000002,
+            "change_20obs": 0.5100000000000002,
+            "change_20obs_bp": 51.00000000000002
+          }
+        },
+        "cutoff_at_ms": 1790294399999,
+        "missing": [
+          "dollar:usage:STALE",
+          "dollar:usage_reason:USAGE_TTL_EXCEEDED"
+        ],
+        "fact_state": "partial",
+        "facts": [],
+        "source_record_ids": [
+          "macro.us10y.nominal.v1:dad6fdf11da898ba968b6460",
+          "macro.us10y.real.v1:043a148cd0735f7f27a07096",
+          "macro.usd.broad.close.v1:cbd2142a5c84469568fb171f"
+        ],
+        "known_at_ms": null,
+        "active_from_ms": null,
+        "limitations": []
+      },
+      "facts_changed_since": [],
+      "missing_or_conflicting": [
+        "binance.um.btcusdt.oi.native.v1:usage:STALE",
+        "binance.um.btcusdt.oi.native.v1:usage_reason:USAGE_TTL_EXCEEDED",
+        "bitview_sample_bounds_missing:profit",
+        "bitview_shared_budget_exhausted:loss",
+        "bitview_shared_budget_exhausted:realized_cap",
+        "btc.brk.realized_pnl.daily.v1:quality:PARTIAL",
+        "btc.brk.realized_pnl.daily.v1:quality_reason:BITVIEW_SOURCE_TIMESTAMP_MISSING",
+        "btc.brk.realized_pnl.daily.v1:quality_reason:bitview_sample_bounds_missing:profit",
+        "btc.brk.realized_pnl.daily.v1:quality_reason:bitview_shared_budget_exhausted:loss",
+        "btc.brk.realized_pnl.daily.v1:quality_reason:bitview_shared_budget_exhausted:realized_cap",
+        "btc.brk.realized_pnl.daily.v1:quality_reason:less_than_14_complete_utc_days",
+        "btc.brk.realized_pnl.daily.v1:usage:STALE",
+        "btc.brk.realized_pnl.daily.v1:usage_reason:DATA_STATE_PARTIAL",
+        "btc.brk.realized_pnl.daily.v1:usage_reason:USAGE_TTL_EXCEEDED",
+        "cex.usdt.borrow_rate.v1",
+        "cex.usdt.borrow_rate.v1:quality:PARTIAL",
+        "cex.usdt.borrow_rate.v1:quality_reason:BORROW_SOURCE_UNAUTHORIZED_OR_UNCONFIGURED",
+        "cex.usdt.borrow_rate.v1:usage:STALE",
+        "cex.usdt.borrow_rate.v1:usage_reason:DATA_STATE_PARTIAL",
+        "cex.usdt.borrow_rate.v1:usage_reason:USAGE_TTL_EXCEEDED",
+        "dollar:usage:STALE",
+        "dollar:usage_reason:USAGE_TTL_EXCEEDED"
+      ]
+    },
+    "source_manifest": {
+      "source_records": [
+        {
+          "record_id": "btc.etf.flow.daily.v1:df8cc312a34db892ced121df",
+          "identity": {
+            "product_id": "btc.etf.flow.daily.v1",
+            "provider_id": "farside_public",
+            "source_ref": "https://farside.co.uk/bitcoin-etf-flow-all-data/",
+            "definition_version": "btc.etf_daily_flow@1.0.0",
+            "market": "US spot BTC ETF",
+            "asset": "BTC",
+            "currency": "USD",
+            "scope": {
+              "asset": "BTC",
+              "source": "farside",
+              "table": "historical"
+            },
+            "scope_key": "scope:fd69e2efb088e38c9b1c",
+            "aggregation": "complete_disclosure_day",
+            "unit": "US$m"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790366400000,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407946761
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "USABLE",
+            "can_use": true,
+            "age_ms": 42362017,
+            "ttl_ms": 172800000,
+            "reason_codes": [],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "binance.um.btcusdt.oi.native.v1:61ac13081789c102166403a1",
+          "identity": {
+            "product_id": "binance.um.btcusdt.oi.native.v1",
+            "provider_id": "binance_public",
+            "source_ref": "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT",
+            "definition_version": "binance.um_open_interest_native@1.0.0",
+            "market": "BTCUSDT USD-M perpetual",
+            "asset": "BTC",
+            "currency": "BTC",
+            "scope": {
+              "symbol": "BTCUSDT",
+              "venue": "binance_um"
+            },
+            "scope_key": "scope:5732503e6e183e92423b",
+            "aggregation": "latest_native_contracts",
+            "unit": "BTC"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790407943272,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407947352
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "STALE",
+            "can_use": false,
+            "age_ms": 818745,
+            "ttl_ms": 300000,
+            "reason_codes": [
+              "USAGE_TTL_EXCEEDED"
+            ],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "binance.um.btcusdt.funding.settled.v1:54d74c6fd54ae1305754ddcc",
+          "identity": {
+            "product_id": "binance.um.btcusdt.funding.settled.v1",
+            "provider_id": "binance_public",
+            "source_ref": "https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT",
+            "definition_version": "binance.um_settled_funding@1.0.0",
+            "market": "BTCUSDT USD-M perpetual",
+            "asset": "BTC",
+            "currency": "USDT",
+            "scope": {
+              "symbol": "BTCUSDT",
+              "venue": "binance_um"
+            },
+            "scope_key": "scope:5732503e6e183e92423b",
+            "aggregation": "settled_period",
+            "unit": "decimal_rate"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790380800000,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407948809
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "USABLE",
+            "can_use": true,
+            "age_ms": 27962017,
+            "ttl_ms": 28800000,
+            "reason_codes": [],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "cex.usdt.borrow_rate.v1:e890ed494749070fc28f8f91",
+          "identity": {
+            "product_id": "cex.usdt.borrow_rate.v1",
+            "provider_id": "cex_borrow_public_or_authorized",
+            "source_ref": "public_or_authorized_borrow_source_not_configured",
+            "definition_version": "cex.usdt_borrow_rate@1.0.0",
+            "market": "USDT borrow",
+            "asset": "USDT",
+            "currency": "rate",
+            "scope": {
+              "asset": "USDT",
+              "source": "public_or_authorized"
+            },
+            "scope_key": "scope:697c9355f8b6dc012d34",
+            "aggregation": "product_vip_current_or_forecast",
+            "unit": "hourly_decimal"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 0,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407948824
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "STALE",
+            "can_use": false,
+            "age_ms": 1790408762017,
+            "ttl_ms": 3600000,
+            "reason_codes": [
+              "DATA_STATE_PARTIAL",
+              "USAGE_TTL_EXCEEDED"
+            ],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "macro.usd.broad.close.v1:cbd2142a5c84469568fb171f",
+          "identity": {
+            "product_id": "macro.usd.broad.close.v1",
+            "provider_id": "fred_public",
+            "source_ref": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTWEXBGS&cosd=2026-06-28&coed=2026-09-26",
+            "definition_version": "macro.usd_broad_close@1.0.0",
+            "market": "Nominal broad US dollar index",
+            "asset": "DTWEXBGS",
+            "currency": "index",
+            "scope": {
+              "series": "DTWEXBGS"
+            },
+            "scope_key": "scope:b944d1317563f9d66b48",
+            "aggregation": "latest_official_or_vendor_close",
+            "unit": "index_point"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1789775999999,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407948838
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "STALE",
+            "can_use": false,
+            "age_ms": 632762018,
+            "ttl_ms": 172800000,
+            "reason_codes": [
+              "USAGE_TTL_EXCEEDED"
+            ],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "macro.us10y.nominal.v1:dad6fdf11da898ba968b6460",
+          "identity": {
+            "product_id": "macro.us10y.nominal.v1",
+            "provider_id": "fred_public",
+            "source_ref": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10&cosd=2026-06-28&coed=2026-09-26",
+            "definition_version": "macro.us10y_nominal@1.0.0",
+            "market": "US Treasury",
+            "asset": "DGS10",
+            "currency": "percent",
+            "scope": {
+              "series": "DGS10"
+            },
+            "scope_key": "scope:799625c6f1129966cdcd",
+            "aggregation": "latest_published_daily",
+            "unit": "percent"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790294399999,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407949122
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "USABLE",
+            "can_use": true,
+            "age_ms": 114362018,
+            "ttl_ms": 172800000,
+            "reason_codes": [],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "macro.us10y.real.v1:043a148cd0735f7f27a07096",
+          "identity": {
+            "product_id": "macro.us10y.real.v1",
+            "provider_id": "fred_public",
+            "source_ref": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10&cosd=2026-06-28&coed=2026-09-26",
+            "definition_version": "macro.us10y_real@1.0.0",
+            "market": "US Treasury",
+            "asset": "DFII10",
+            "currency": "percent",
+            "scope": {
+              "series": "DFII10"
+            },
+            "scope_key": "scope:fc54803e9ffe3939b29f",
+            "aggregation": "latest_published_daily",
+            "unit": "percent"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790294399999,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407949289
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "USABLE",
+            "can_use": true,
+            "age_ms": 114362018,
+            "ttl_ms": 172800000,
+            "reason_codes": [],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d",
+          "identity": {
+            "product_id": "btc.brk.cost_basis.v1",
+            "provider_id": "bitview_public",
+            "source_ref": "https://bitview.space/api/series/search",
+            "definition_version": "btc.brk_cost_basis@1.0.0",
+            "market": "BTC on-chain",
+            "asset": "BTC",
+            "currency": "USD",
+            "scope": {
+              "asset": "BTC",
+              "sample": "limited",
+              "source": "bitview"
+            },
+            "scope_key": "scope:7fdf3cdf4cfe033a583e",
+            "aggregation": "cohort_daily",
+            "unit": "USD"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790294399999,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407949458
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "USABLE",
+            "can_use": true,
+            "age_ms": 114362018,
+            "ttl_ms": 172800000,
+            "reason_codes": [],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "btc.brk.realized_pnl.daily.v1:b39abe0f9c6f2dadfc9486ed",
+          "identity": {
+            "product_id": "btc.brk.realized_pnl.daily.v1",
+            "provider_id": "bitview_public",
+            "source_ref": "https://bitview.space/api/series/search",
+            "definition_version": "btc.brk_realized_pnl@1.0.0",
+            "market": "BTC on-chain",
+            "asset": "BTC",
+            "currency": "USD",
+            "scope": {
+              "asset": "BTC",
+              "sample": "limited",
+              "source": "bitview"
+            },
+            "scope_key": "scope:7fdf3cdf4cfe033a583e",
+            "aggregation": "complete_utc_day",
+            "unit": "USD"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 0,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407955692
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "STALE",
+            "can_use": false,
+            "age_ms": 1790408762017,
+            "ttl_ms": 172800000,
+            "reason_codes": [
+              "DATA_STATE_PARTIAL",
+              "USAGE_TTL_EXCEEDED"
+            ],
+            "qualified_at_ms": 1790408762017
+          }
+        },
+        {
+          "record_id": "btc.brk.cost_basis.v1:44e563b0d2a0ad9b3761e72d",
+          "identity": {
+            "product_id": "btc.brk.cost_basis.v1",
+            "provider_id": "bitview_public",
+            "source_ref": "https://bitview.space/api/series/search",
+            "definition_version": "btc.brk_cost_basis@1.0.0",
+            "market": "BTC on-chain",
+            "asset": "BTC",
+            "currency": "USD",
+            "scope": {
+              "asset": "BTC",
+              "sample": "limited",
+              "source": "bitview"
+            },
+            "scope_key": "scope:7fdf3cdf4cfe033a583e",
+            "aggregation": "cohort_daily",
+            "unit": "USD"
+          },
+          "time": {
+            "observation_start_ms": null,
+            "observation_end_ms": 1790294399999,
+            "published_at_ms": null,
+            "first_seen_at_ms": 1790407949458
+          },
+          "usage_qualification": {
+            "usage": "background",
+            "status": "USABLE",
+            "can_use": true,
+            "age_ms": 114362018,
+            "ttl_ms": 172800000,
+            "reason_codes": [],
+            "qualified_at_ms": 1790408762017
+          }
+        }
+      ]
+    }
+  }
+}

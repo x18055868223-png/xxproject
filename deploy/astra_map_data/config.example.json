@@ -1,0 +1,9 @@
+{
+  "state_dir": "/opt/astra-map-data/state",
+  "data_engine_dir": "/opt/astra-map-data/state/data_engine",
+  "snapshots_jsonl": "/home/bitnami/fmz2/logs/storage/668422/demo/logs/snapshots.jsonl",
+  "kpf_manifest_path": "/var/lib/astra-kpf-light/published/current.json",
+  "sources_enabled": true,
+  "min_free_bytes": 6442450944,
+  "source_config": {}
+}

@@ -1,0 +1,1705 @@
+{
+  "schema": "astra_data_product_registry@2.3.0",
+  "schema_version": "2.3.0",
+  "rule_version": "astra_data_engine_rules@2.3.0",
+  "generated_at": "2026-09-26",
+  "note": "Logical data-product registry for the v2.3 lightweight data engine. REGISTERED_ADAPTER means the source identity and adapter path are registered locally; it is not live-connection proof. Product status describes data responsibility and consumption eligibility, not market edge.",
+  "ttl_policy_note": "TTL values are inherited from existing engineering behavior where known, or fixed here as a v2.3 technical cache budget. They are not claimed to be safe or optimal trading thresholds.",
+  "products": [
+    {
+      "product_id": "fmz.bridge.snapshots.v1",
+      "provider_id": "fmz",
+      "collector_id": "fmz_snapshots_jsonl_bridge",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "fmz_bridge.snapshots@1.0.0",
+      "market": "BTC",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "cross_process_bridge",
+      "aggregation": "latest_snapshot",
+      "unit": "json_record",
+      "source_ref": "demo/logs/snapshots.jsonl",
+      "consumers": [
+        "workbench.current",
+        "space_gate",
+        "daily_snapshot"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 4,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "FMZ producer and server bridge"
+    },
+    {
+      "product_id": "fmz.spacegate.current.v1",
+      "provider_id": "fmz",
+      "collector_id": "fmz_snapshots_jsonl_bridge",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "spacegate.current@1.0.0",
+      "market": "BTC",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "gate_state",
+      "aggregation": "latest_native_gate",
+      "unit": "state",
+      "source_ref": "factor_snapshot.space_gate",
+      "consumers": [
+        "space_gate",
+        "workbench.current",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 4,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_fact_context_v20.py"
+    },
+    {
+      "product_id": "gex.raw.board.v1",
+      "provider_id": "gexmonitorapi",
+      "collector_id": "server_gex_cache",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "gex.raw_board@1.0.0",
+      "market": "BTC options",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "raw_gex_board",
+      "aggregation": "provider_raw_snapshot",
+      "unit": "mixed",
+      "source_ref": "factor_snapshot.gex_info.raw",
+      "consumers": [
+        "space_layer",
+        "macro_context",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "GEX monitor cache"
+    },
+    {
+      "product_id": "gex.effective.accepted.v1",
+      "provider_id": "gexmonitorapi",
+      "collector_id": "server_gex_cache",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "gex.effective_accepted@1.0.0",
+      "market": "BTC options",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "accepted_gex_state",
+      "aggregation": "accepted_after_policy",
+      "unit": "mixed",
+      "source_ref": "factor_snapshot.gex_info.effective",
+      "consumers": [
+        "space_gate",
+        "anchor",
+        "gamma_regime"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "GEX monitor accepted cache"
+    },
+    {
+      "product_id": "gex.pending.candidate.v1",
+      "provider_id": "gexmonitorapi",
+      "collector_id": "server_gex_cache",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "gex.pending_candidate@1.0.0",
+      "market": "BTC options",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "pending_gex_candidate",
+      "aggregation": "pending_not_accepted",
+      "unit": "mixed",
+      "source_ref": "factor_snapshot.gex_info.pending",
+      "consumers": [
+        "data_health",
+        "diagnostic_only"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "GEX monitor pending cache"
+    },
+    {
+      "product_id": "gex.netgamma.proxy.v1",
+      "provider_id": "gexmonitorapi",
+      "collector_id": "server_gex_cache",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "gex.netgamma_proxy@1.0.0",
+      "market": "BTC options",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "net_gamma_proxy",
+      "aggregation": "provider_proxy",
+      "unit": "USD",
+      "source_ref": "gexmonitorapi.gex_board.total_net_gex",
+      "consumers": [
+        "space_gate",
+        "gamma_regime",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "GEX monitor net gamma field"
+    },
+    {
+      "product_id": "binance.spot.btcusdt.trade.v1",
+      "provider_id": "binance",
+      "collector_id": "fmz_binance_adapter",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.spot_trade@1.0.0",
+      "market": "BTCUSDT spot",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "trade_flow",
+      "aggregation": "near_window",
+      "unit": "USDT",
+      "source_ref": "Binance spot trades adapter",
+      "consumers": [
+        "flow",
+        "tmv",
+        "macro_context"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 12,
+        "retry_backoff_ms": [
+          5000,
+          15000,
+          30000
+        ]
+      },
+      "maintenance_ref": "FMZ BinanceAdapter"
+    },
+    {
+      "product_id": "binance.spot.btcusdt.book_ticker.v1",
+      "provider_id": "binance",
+      "collector_id": "fmz_binance_adapter",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.spot_book_ticker@1.0.0",
+      "market": "BTCUSDT spot",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "book_ticker",
+      "aggregation": "latest",
+      "unit": "USDT",
+      "source_ref": "Binance spot book ticker adapter",
+      "consumers": [
+        "price_path",
+        "workbench.current"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "quote": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 12,
+        "retry_backoff_ms": [
+          5000,
+          15000,
+          30000
+        ]
+      },
+      "maintenance_ref": "FMZ BinanceAdapter"
+    },
+    {
+      "product_id": "binance.spot.btcusdt.kline_1m.v1",
+      "provider_id": "binance",
+      "collector_id": "fmz_binance_adapter",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.spot_kline_1m@1.0.0",
+      "market": "BTCUSDT spot",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "closed_kline",
+      "aggregation": "closed_1m",
+      "unit": "USDT",
+      "source_ref": "Binance spot kline adapter",
+      "consumers": [
+        "price_path",
+        "tmv",
+        "current_price"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 12,
+        "retry_backoff_ms": [
+          5000,
+          15000,
+          30000
+        ]
+      },
+      "maintenance_ref": "FMZ BinanceAdapter"
+    },
+    {
+      "product_id": "binance.um.btcusdt.kline_1m.v1",
+      "provider_id": "binance",
+      "collector_id": "fmz_binance_adapter",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.um_kline_1m@1.0.0",
+      "market": "BTCUSDT USD-M perpetual",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "closed_kline",
+      "aggregation": "closed_1m",
+      "unit": "USDT",
+      "source_ref": "Binance USD-M kline adapter",
+      "consumers": [
+        "price_path",
+        "legacy_state_diagnostic"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 12,
+        "retry_backoff_ms": [
+          5000,
+          15000,
+          30000
+        ]
+      },
+      "maintenance_ref": "FMZ BinanceAdapter"
+    },
+    {
+      "product_id": "binance.um.btcusdt.funding.settled.v1",
+      "provider_id": "binance_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.um_settled_funding@1.0.0",
+      "market": "BTCUSDT USD-M perpetual",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "settled_funding",
+      "aggregation": "settled_period",
+      "unit": "decimal_rate",
+      "source_ref": "https://fapi.binance.com/fapi/v1/fundingRate",
+      "consumers": [
+        "funding_context",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 28800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 32400000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ],
+        "min_fetch_interval_ms": 300000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "binance.um.btcusdt.funding.predicted.v1",
+      "provider_id": "binance",
+      "collector_id": "fmz_binance_adapter",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.um_predicted_funding@1.0.0",
+      "market": "BTCUSDT USD-M perpetual",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "predicted_funding",
+      "aggregation": "current_estimate",
+      "unit": "rate",
+      "source_ref": "Binance USD-M premium index adapter",
+      "consumers": [
+        "funding_context",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "FMZ BinanceAdapter"
+    },
+    {
+      "product_id": "binance.um.btcusdt.oi.native.v1",
+      "provider_id": "binance_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.um_open_interest_native@1.0.0",
+      "market": "BTCUSDT USD-M perpetual",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "open_interest",
+      "aggregation": "latest_native_contracts",
+      "unit": "BTC",
+      "source_ref": "https://fapi.binance.com/fapi/v1/openInterest",
+      "consumers": [
+        "derivatives_context",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ],
+        "min_fetch_interval_ms": 300000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "binance.um.btcusdt.oi.usd_notional.v1",
+      "provider_id": "binance",
+      "collector_id": "fmz_binance_adapter",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "binance.um_open_interest_usd_notional@1.0.0",
+      "market": "BTCUSDT USD-M perpetual",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "open_interest_notional",
+      "aggregation": "latest_native_oi_times_index",
+      "unit": "USD",
+      "source_ref": "Binance USD-M openInterest plus index price",
+      "consumers": [
+        "derivatives_context",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 6,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "FMZ BinanceAdapter"
+    },
+    {
+      "product_id": "deribit.btc.option.universe.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_discovery",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.option_universe@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "option_universe_metadata",
+      "aggregation": "public_get_instruments_full_chain",
+      "unit": "instrument_meta_list",
+      "source_ref": "public/get_instruments",
+      "consumers": [
+        "candidate_discovery",
+        "metadata_cache",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 12,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "Deribit public/get_instruments server adapter"
+    },
+    {
+      "product_id": "deribit.btc.discovery.current.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_discovery",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.current_discovery@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "candidate_discovery",
+      "aggregation": "nearest_24h_width_delta_screen",
+      "unit": "candidate_set",
+      "source_ref": "capture_public_discovery",
+      "consumers": [
+        "candidate_discovery",
+        "workbench.current",
+        "manual_review_packet"
+      ],
+      "scope_contract": "Scope includes BTC, target24h expiry, width2000, quantity1, target_delta0.35 and max_delta0.5.",
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 12,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_discovery_v20.py"
+    },
+    {
+      "product_id": "deribit.btc.option.instrument.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_quote",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.option_instrument@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "contract_static_meta",
+      "aggregation": "per_instrument",
+      "unit": "contract_meta",
+      "source_ref": "public/get_instrument",
+      "consumers": [
+        "candidate_meta",
+        "fee_model",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 86400000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 86400000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 20,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_public_quote_v20.py"
+    },
+    {
+      "product_id": "deribit.btc.index.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_quote",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.btc_index@1.0.0",
+      "market": "Deribit BTC index",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "index_price",
+      "aggregation": "latest",
+      "unit": "USD",
+      "source_ref": "public/get_index_price",
+      "consumers": [
+        "candidate_quote",
+        "usd_conversion",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 20,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_public_quote_v20.py"
+    },
+    {
+      "product_id": "deribit.btc.option.greeks_oi.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_quote",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.option_greeks_oi@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "ticker_greeks_oi",
+      "aggregation": "per_instrument",
+      "unit": "mixed",
+      "source_ref": "public/get_order_book greeks/oi fields as currently captured; FMZ ticker would require a separate replica identity",
+      "consumers": [
+        "candidate_discovery",
+        "delta_filter",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 20,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_public_quote_v20.py"
+    },
+    {
+      "product_id": "deribit.btc.option.order_book.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_quote",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.option_order_book@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "single_leg_order_book",
+      "aggregation": "per_instrument_depth",
+      "unit": "BTC",
+      "source_ref": "public/get_order_book",
+      "consumers": [
+        "candidate_quote",
+        "underwriting_accounting",
+        "manual_review_packet"
+      ],
+      "scope_contract": "Scope includes instrument_name, requested depth, and capture purpose. Two-leg spreads freeze the two per-leg records plus a combined quote product when available.",
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "candidate_quote": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 64,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "Deribit public/get_order_book server adapter"
+    },
+    {
+      "product_id": "deribit.btc.vertical.two_leg_book.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_quote",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.vertical_two_leg_book@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "two_leg_order_book",
+      "aggregation": "same_capture_candidate",
+      "unit": "BTC",
+      "source_ref": "public/get_order_book",
+      "consumers": [
+        "candidate_quote",
+        "underwriting_accounting",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "candidate_quote": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 5000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 20,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_public_quote_v20.py"
+    },
+    {
+      "product_id": "deribit.btc.option.fee_schedule.v1",
+      "provider_id": "deribit",
+      "collector_id": "server_deribit_public_quote",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.option_fee_schedule@1.0.0",
+      "market": "Deribit BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "fee_schedule",
+      "aggregation": "contract_meta_commission_fields",
+      "unit": "BTC",
+      "source_ref": "public/get_instrument commission fields",
+      "consumers": [
+        "underwriting_accounting",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 86400000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 20,
+        "retry_backoff_ms": [
+          3000,
+          10000,
+          30000
+        ]
+      },
+      "maintenance_ref": "tools/astra_underwriting_public_quote_v20.py"
+    },
+    {
+      "product_id": "macro.risk_state.components.v1",
+      "provider_id": "fmz_macro_cache",
+      "collector_id": "fmz_snapshots_jsonl_bridge",
+      "primary_collector": "FMZ",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "macro.risk_state_components@1.0.0",
+      "market": "macro",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "macro_component_snapshot",
+      "aggregation": "latest_factor_snapshot",
+      "unit": "mixed",
+      "source_ref": "factor_snapshot.macro_pressure",
+      "consumers": [
+        "macro_layer",
+        "manual_review_packet",
+        "workbench.current"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 43200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "health": {
+          "ttl_ms": 86400000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 4,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "FMZ macro_pressure factor"
+    },
+    {
+      "product_id": "macro.dxy.close.v1",
+      "provider_id": "macro_public",
+      "collector_id": "server_macro_adapter_pending",
+      "primary_collector": "server",
+      "connection_status": "PLANNED_NOT_CONNECTED",
+      "definition_version": "macro.dxy_close@1.0.0",
+      "market": "DXY",
+      "asset": "USD",
+      "currency": "index",
+      "metric_kind": "macro_close",
+      "aggregation": "latest_official_or_vendor_close",
+      "unit": "index_point",
+      "source_ref": "direct source pending",
+      "consumers": [
+        "macro_layer",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          30000,
+          120000,
+          300000
+        ]
+      },
+      "maintenance_ref": "server macro adapter"
+    },
+    {
+      "product_id": "macro.us10y.nominal.v1",
+      "provider_id": "fred_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "macro.us10y_nominal@1.0.0",
+      "market": "US Treasury",
+      "asset": "DGS10",
+      "currency": "percent",
+      "metric_kind": "nominal_yield",
+      "aggregation": "latest_published_daily",
+      "unit": "percent",
+      "source_ref": "https://fred.stlouisfed.org/series/DGS10",
+      "consumers": [
+        "macro_layer",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          30000,
+          120000,
+          300000
+        ],
+        "min_fetch_interval_ms": 21600000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "macro.us10y.real.v1",
+      "provider_id": "fred_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "macro.us10y_real@1.0.0",
+      "market": "US Treasury",
+      "asset": "DFII10",
+      "currency": "percent",
+      "metric_kind": "real_yield",
+      "aggregation": "latest_published_daily",
+      "unit": "percent",
+      "source_ref": "https://fred.stlouisfed.org/series/DFII10",
+      "consumers": [
+        "macro_layer",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          30000,
+          120000,
+          300000
+        ],
+        "min_fetch_interval_ms": 21600000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "macro.vxn.close.v1",
+      "provider_id": "macro_public",
+      "collector_id": "server_macro_adapter_pending",
+      "primary_collector": "server",
+      "connection_status": "PLANNED_NOT_CONNECTED",
+      "definition_version": "macro.vxn_close@1.0.0",
+      "market": "VXN",
+      "asset": "NASDAQ volatility",
+      "currency": "index",
+      "metric_kind": "volatility_index_close",
+      "aggregation": "latest_published_close",
+      "unit": "index_point",
+      "source_ref": "direct source pending",
+      "consumers": [
+        "macro_layer",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          30000,
+          120000,
+          300000
+        ]
+      },
+      "maintenance_ref": "server macro adapter"
+    },
+    {
+      "product_id": "risk.astra.qualified_model.domain.v1",
+      "provider_id": "astra_research",
+      "collector_id": "server_model_artifact_registry",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "astra.qualified_model_domain@1.0.0",
+      "market": "BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "model_support_domain",
+      "aggregation": "artifact_identity",
+      "unit": "model_domain",
+      "source_ref": "portable_qualified/model.json and protocol seal",
+      "consumers": [
+        "risk_reference",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 2592000000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 2592000000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          60000,
+          300000,
+          600000
+        ]
+      },
+      "maintenance_ref": "Astra qualified risk artifacts"
+    },
+    {
+      "product_id": "risk.astra.frozen_mu.reference.v1",
+      "provider_id": "astra_research",
+      "collector_id": "server_risk_provider",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "astra.frozen_mu_reference@1.0.0",
+      "market": "BTC options",
+      "asset": "BTC",
+      "currency": "BTC",
+      "metric_kind": "frozen_mu_reference",
+      "aggregation": "per_candidate",
+      "unit": "BTC",
+      "source_ref": "risk_provider frozen current candidate",
+      "consumers": [
+        "underwriting_accounting",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 300000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 600000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 4,
+        "retry_backoff_ms": [
+          10000,
+          30000,
+          60000
+        ]
+      },
+      "maintenance_ref": "tools/astra_workbench_v20.py risk_provider"
+    },
+    {
+      "product_id": "btc.etf.flow.daily.v1",
+      "provider_id": "farside_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "btc.etf_daily_flow@1.0.0",
+      "market": "US spot BTC ETF",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "daily_net_flow",
+      "aggregation": "complete_disclosure_day",
+      "unit": "US$m",
+      "source_ref": "https://farside.co.uk/btc/",
+      "consumers": [
+        "btc_background",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          60000,
+          300000,
+          600000
+        ],
+        "min_fetch_interval_ms": 3600000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "btc.brk.cost_basis.v1",
+      "provider_id": "bitview_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "btc.brk_cost_basis@1.0.0",
+      "market": "BTC on-chain",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "cost_basis",
+      "aggregation": "cohort_daily",
+      "unit": "USD",
+      "source_ref": "https://bitview.space/llms.txt",
+      "consumers": [
+        "btc_background",
+        "map_readonly"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 32,
+        "retry_backoff_ms": [
+          60000,
+          300000,
+          600000
+        ],
+        "min_fetch_interval_ms": 21600000,
+        "provider_budget_per_minute": 64
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "btc.brk.realized_pnl.daily.v1",
+      "provider_id": "bitview_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "btc.brk_realized_pnl@1.0.0",
+      "market": "BTC on-chain",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "realized_profit_loss",
+      "aggregation": "complete_utc_day",
+      "unit": "USD",
+      "source_ref": "https://bitview.space/llms.txt",
+      "consumers": [
+        "btc_background",
+        "map_readonly"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 32,
+        "retry_backoff_ms": [
+          60000,
+          300000,
+          600000
+        ],
+        "min_fetch_interval_ms": 21600000,
+        "provider_budget_per_minute": 64
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "cex.usdt.borrow_rate.v1",
+      "provider_id": "cex_borrow_public_or_authorized",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "cex.usdt_borrow_rate@1.0.0",
+      "market": "USDT borrow",
+      "asset": "USDT",
+      "currency": "rate",
+      "metric_kind": "borrow_rate",
+      "aggregation": "product_vip_current_or_forecast",
+      "unit": "hourly_decimal",
+      "source_ref": "configured authorized read-only sample only",
+      "consumers": [
+        "btc_background",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 3600000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 7200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          60000,
+          300000,
+          600000
+        ],
+        "min_fetch_interval_ms": 3600000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "btc.kpf.map.readonly.v1",
+      "provider_id": "kpf_offline",
+      "collector_id": "astra_map_projection_v24.collect_kpf_artifacts",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "btc.kpf_map_readonly@1.0.2",
+      "market": "Binance USD-M BTCUSDT",
+      "asset": "BTC",
+      "currency": "USDT",
+      "metric_kind": "readonly_map",
+      "aggregation": "accepted_zone_with_input_cutoff",
+      "unit": "USDT",
+      "source_ref": "Same-server atomic checksum manifest for original Binance USD-M BTCUSDT snapshot/audit/raw-zones; NOMINAL_ONLY against Deribit",
+      "consumers": [
+        "map_readonly",
+        "manual_review_packet"
+      ],
+      "usage_policies": {
+        "background": {
+          "ttl_ms": 604800000,
+          "allowed_data_states": ["OK"]
+        },
+        "default": {
+          "ttl_ms": 604800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 604800000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 1,
+        "retry_backoff_ms": [
+          60000,
+          300000,
+          600000
+        ]
+      },
+      "maintenance_ref": "refresh-only local collector; cached GET/manual read; full finite pool up to 128"
+    },
+    {
+      "product_id": "macro.usd.broad.close.v1",
+      "provider_id": "fred_public",
+      "collector_id": "astra_map_sources_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "macro.usd_broad_close@1.0.0",
+      "market": "Nominal broad US dollar index",
+      "asset": "DTWEXBGS",
+      "currency": "index",
+      "metric_kind": "macro_close",
+      "aggregation": "latest_official_or_vendor_close",
+      "unit": "index_point",
+      "source_ref": "https://fred.stlouisfed.org/series/DTWEXBGS",
+      "consumers": [
+        "macro_layer",
+        "data_health"
+      ],
+      "usage_policies": {
+        "default": {
+          "ttl_ms": 172800000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
+        "health": {
+          "ttl_ms": 259200000,
+          "allowed_data_states": [
+            "OK",
+            "PARTIAL"
+          ]
+        },
+        "fetch": {
+          "ttl_ms": 0,
+          "allowed_data_states": [
+            "OK"
+          ]
+        }
+      },
+      "request_policy": {
+        "budget_per_minute": 2,
+        "retry_backoff_ms": [
+          30000,
+          120000,
+          300000
+        ],
+        "min_fetch_interval_ms": 21600000
+      },
+      "maintenance_ref": "tools/astra_map_sources_v24.py"
+    },
+    {
+      "product_id": "deribit.btc.index.map_context.v1",
+      "provider_id": "deribit",
+      "collector_id": "astra_map_data_server_v24",
+      "primary_collector": "server",
+      "connection_status": "REGISTERED_ADAPTER",
+      "definition_version": "deribit.btc_index_map_context@1.0.0",
+      "market": "Deribit BTC USD index",
+      "asset": "BTC",
+      "currency": "USD",
+      "metric_kind": "background_index_snapshot",
+      "aggregation": "ticker_index_price_with_native_timestamp",
+      "unit": "USD",
+      "source_ref": "https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL",
+      "consumers": ["map_readonly"],
+      "usage_policies": {
+        "default": {"ttl_ms": 300000, "allowed_data_states": ["OK"]},
+        "background": {"ttl_ms": 300000, "allowed_data_states": ["OK"]},
+        "health": {"ttl_ms": 300000, "allowed_data_states": ["OK", "PARTIAL"]},
+        "fetch": {"ttl_ms": 0, "allowed_data_states": ["OK"]}
+      },
+      "request_policy": {"budget_per_minute": 1, "min_fetch_interval_ms": 300000, "retry_backoff_ms": [60000, 300000]},
+      "maintenance_ref": "Independent background axis; never FMZ gate or five-second policy quote"
+    }
+  ],
+  "map_adapter_note": "v2.4: separate DTWEXBGS identity; adapter registration is not current-data proof; source cadence never renews observation clock.",
+  "provider_policies": {
+    "bitview_public": {
+      "budget_per_minute": 64
+    },
+    "fred_public": {
+      "budget_per_minute": 6
+    },
+    "binance_public": {
+      "budget_per_minute": 8
+    },
+    "farside_public": {
+      "budget_per_minute": 2
+    },
+    "deribit": {
+      "budget_per_minute": 64
+    }
+  }
+}
