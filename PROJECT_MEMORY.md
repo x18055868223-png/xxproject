@@ -1,5 +1,11 @@
 # Project Memory
 
+## 2026-09-26 同机轻量KPF生产与MAP消费已部署
+
+[协议67](docs/astra/67_同机KPF轻量生产消费与MAP数据完备性实施冻结_20260926.md)及[验收68](docs/astra/68_同机轻量数据服务与MAP完备性验收_20260926.md)记录数据服务独立发布：后端代码1e1fac2f已推xxproject工作分支并以128,939 B薄包安装在固定KPF/MAP namespace；生产与消费同机，五分钟timer两轮自动成功且MAP读取同版原生三件hash。原KPF十份算法源hash、90/60日窗、100 BTC相位、50 USD桶与A/B资格保持；流式density不保留全bars/解压CSV/ZIP双副本。磁盘留空6 GiB、源预算5 GiB，KPF/MAP内存分别240/128 MiB；一日真实约103万成交RSS24 MiB、MAP33 MiB，完整90日资源尚未证明。
+
+真实指数、ETF、CP_STH/LTH/ALL、严格14日兑现损益、OI、实际Funding及两项美债已进同机统一引擎；宽美元观测过期、无借款授权、KPF仅2/90 WARMUP、FMZ快照0 B与当前GEX/期限门缺失，最终七组中三组完整、全局完备性false。此进度为验收时点，不预先宣布90日READY。新数据有生产背景独立身份，不混入历史训练或自然卡验证；旧Web/FMZ/LLM/模型不随数据上线升级，新链路零LLM不表示旧自动LLM任务停用。此前66未接通及完整兑现窗缺口是前序状态，以68的新证据为准；当前工作台页面仍未发布，需本版本的新确认与统一引擎绑定。
+
 ## 2026-09-23 本轮重要内容静态页面发布
 
 [发布51](docs/astra/51_本轮重要内容页面发布与服务器验收.md)记录本轮页面真实发布状态：`xxproject/codex/astra-signal-rating-v1` 已推 commit `1d05d1b7537ad0f8d0020176958ae987fde7c905`，公网 `http://13.231.16.198/signal-audit/` 已上线四文件静态前端包，显示逐卡动态“本轮重要内容汇总”且无顶部固定 R17；09/22 最新卡与 09/21 卡切换后重点内容不同。第一次完整后端+前端部署失败并自动回滚，因新版 materializer 复核旧 `2.2.0` 评审导致 15 卡中 6 卡 LLM JSON 改变（3 `ERROR`、3 `PARTIAL`）；失败保留。最终成功范围仅为 `frontend_static_only`，active `/opt/signal-audit-releases/astra-1d05d1b-frontend-20260923`，backup `/opt/signal-audit-backups/astra-frontend-before-1d05d1b-20260923`，token `20260923-astra-card-highlights`。15 卡身份与 LLM 签名、sidecar/usage/exclusions、backend 核心工具和 `llm.env` 不变，两个 timers active/enabled；最新真实卡仍为 FMZ `1.6.2`、LLM `2.2.0`，未证明 `2.3` 自然卡消费。只读自检 `24 OK / 2 WARN / 2 FAIL`；服务 `activating` 是当时快照，最新卡缺 `near_term_market_context@1.0.0` 仍使自检保留 FAIL，不可写成全栈通过。原 R17 商业结论、模型、FMZ、90 日验证和经济有效性均未改变；49、50 保留为发布前审计历史。
