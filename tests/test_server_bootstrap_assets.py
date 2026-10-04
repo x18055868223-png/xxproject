@@ -111,8 +111,8 @@ def main():
                 and "signal_evidence_v2.py" in install_or_update
                 and "signal_review_v2.py" in install_or_update
                 and "signal_review_v2_runtime.py" in install_or_update
-                and "signal_llm_review_canary_release.sh" in install_or_update,
-                "install script should deploy common and v2 review helpers")
+                and "signal_llm_review_canary_release.sh" not in install_or_update,
+                "install script should deploy common review helpers without the retired canary runner")
     assert_true("systemctl enable --now signal-audit-llm-review.timer"
                 not in install_or_update,
                 "install script must not enable review timers by default")

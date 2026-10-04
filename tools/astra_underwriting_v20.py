@@ -120,6 +120,8 @@ def candidate_identity(candidate: Mapping[str, Any], metadata: Mapping[str, Any]
     ks, kl = short["strike_usd"], long["strike_usd"]
     if (side == "put" and ks <= kl) or (side == "call" and ks >= kl):
         raise ValueError("strikes do not form a credit vertical")
+    if candidate.get("quantity_unit") is not None and str(candidate.get("quantity_unit")).strip().upper() != "BTC":
+        raise ValueError("candidate quantity_unit must be BTC")
     quantity = _number("quantity_btc", candidate.get("quantity_btc"), positive=True)
     min_trade = max(_number("short min_trade_amount", metadata["short"].get("min_trade_amount"), positive=True),
                     _number("long min_trade_amount", metadata["long"].get("min_trade_amount"), positive=True))
@@ -136,7 +138,7 @@ def candidate_identity(candidate: Mapping[str, Any], metadata: Mapping[str, Any]
             "short": short, "long": long}
 
 
-def _consume_depth(levels: Any, quantity: float, *, bid: bool) -> tuple[float | None, float]:
+def _clean_depth_levels(levels: Any) -> list[tuple[float, float]]:
     clean: list[tuple[float, float]] = []
     for level in levels if isinstance(levels, list) else []:
         if not isinstance(level, (list, tuple)) or len(level) != 2:
@@ -147,6 +149,11 @@ def _consume_depth(levels: Any, quantity: float, *, bid: bool) -> tuple[float | 
         except ValueError:
             continue
         clean.append((price, amount))
+    return clean
+
+
+def _consume_depth(levels: Any, quantity: float, *, bid: bool) -> tuple[float | None, float]:
+    clean = _clean_depth_levels(levels)
     clean.sort(key=lambda item: item[0], reverse=bid)
     remaining, total, available = quantity, 0.0, sum(amount for _, amount in clean)
     for price, amount in clean:
@@ -156,6 +163,13 @@ def _consume_depth(levels: Any, quantity: float, *, bid: bool) -> tuple[float | 
         if remaining <= 1e-12:
             break
     return (total if remaining <= 1e-12 else None), available
+
+
+def _best_book_price(levels: Any, *, bid: bool) -> float | None:
+    clean = _clean_depth_levels(levels)
+    if not clean:
+        return None
+    return max(price for price, _amount in clean) if bid else min(price for price, _amount in clean)
 
 
 def visible_credit(contract: Mapping[str, Any], market: Mapping[str, Any], valuation_ms: int) -> dict[str, Any]:
@@ -217,9 +231,9 @@ def visible_credit(contract: Mapping[str, Any], market: Mapping[str, Any], valua
         available_depth[leg] = available
         if own is None:
             reasons.append(f"{leg}_depth_insufficient")
-        best_bid, _ = _consume_depth(book.get("bids"), min(quantity, 1e-9), bid=True)
-        best_ask, _ = _consume_depth(book.get("asks"), min(quantity, 1e-9), bid=False)
-        if best_bid is not None and best_ask is not None and best_bid > best_ask + 1e-12:
+        best_bid = _best_book_price(book.get("bids"), bid=True)
+        best_ask = _best_book_price(book.get("asks"), bid=False)
+        if best_bid is not None and best_ask is not None and best_bid > best_ask:
             reasons.append(f"{leg}_crossed_book")
     if reasons:
         credit = None

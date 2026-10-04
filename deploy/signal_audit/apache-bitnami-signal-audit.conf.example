@@ -1,6 +1,16 @@
 # Bitnami Apache alias for the signal audit static frontend.
 # Include this file from /opt/bitnami/apache/conf/httpd.conf, or copy it to a
 # Bitnami include/vhosts directory if that Apache config already includes one.
+# Enable mod_proxy and mod_proxy_http before adding this API route. The manual
+# review POST carries an operator token: expose it only through HTTPS or a
+# loopback/SSH tunnel. On the existing HTTP site, proxy GET only and deny POST.
+
+ProxyPass /api/workbench http://127.0.0.1:8895/api/workbench
+ProxyPassReverse /api/workbench http://127.0.0.1:8895/api/workbench
+
+<Location "/api/workbench/review">
+    Require expr %{HTTPS} == "on"
+</Location>
 
 Alias /signal-audit/signal_cards/ "/opt/signal-audit/signal_cards/"
 Alias /signal-audit/ "/opt/signal-audit/"

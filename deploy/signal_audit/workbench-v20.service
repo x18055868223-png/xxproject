@@ -1,0 +1,17 @@
+[Unit]
+Description=Astra v2.0 local underwriting workbench API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/signal-audit-tools
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
+EnvironmentFile=-/etc/signal-audit/llm.env
+ExecStart=/usr/bin/python3 /opt/signal-audit-tools/astra_workbench_v20.py --host ${ASTRA_WORKBENCH_HOST} --port ${ASTRA_WORKBENCH_PORT}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

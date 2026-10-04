@@ -1,0 +1,19 @@
+[Unit]
+Description=Astra v2.3 data engine maintenance from FMZ snapshots
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=bitnami
+WorkingDirectory=/opt/astra-data-engine-v23
+EnvironmentFile=/etc/signal-audit/data-engine-maintenance.env
+MemoryHigh=192M
+MemoryMax=384M
+CPUQuota=100%
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+TimeoutStartSec=300
+ExecStart=/usr/bin/python3 /opt/astra-data-engine-v23/tools/astra_data_server_v23.py --fmz-log-dir ${ASTRA_FMZ_LOG_DIR} --state-dir ${ASTRA_DATA_STATE_DIR}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Astra v2.3 data engine maintenance every five minutes
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=300
+AccuracySec=30
+Unit=astra-data-engine-maintenance.service
+
+[Install]
+WantedBy=timers.target

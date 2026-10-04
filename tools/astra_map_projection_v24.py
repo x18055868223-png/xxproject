@@ -15,16 +15,23 @@ import math
 from typing import Any, Callable, Mapping
 
 if __package__:
+    from . import astra_data_engine_v23 as data_engine
     from . import astra_map_sources_v24 as map_sources
     from . import astra_map_v24 as map_core
     from . import astra_underwriting_v20 as underwriting
 else:  # pragma: no cover - direct script use
+    import astra_data_engine_v23 as data_engine
     import astra_map_sources_v24 as map_sources
     import astra_map_v24 as map_core
     import astra_underwriting_v20 as underwriting
 
 
 SCHEMA = "astra_map_projection@2.4.0"
+PRODUCER_CURRENT_SCHEMA = "astra_map_data_server@2.4.2"
+SOURCE_MODE_COLLECTOR = "collector"
+SOURCE_MODE_PRODUCER_MANIFEST = "producer_manifest"
+DEFAULT_PRODUCER_MAX_AGE_MS = 600_000
+MAX_PRODUCER_CURRENT_BYTES = 8 * 1024 * 1024
 GLOBAL_PRODUCT = "gex.effective.accepted.v1"
 CP_PRODUCT = getattr(map_sources, "BRK_COST", "btc.brk.cost_basis.v1")
 KPF_PRODUCT = "btc.kpf.map.readonly.v1"
@@ -33,9 +40,380 @@ KPF_DEFAULT_DISPLAY_LIMIT = 2
 KPF_MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
 
 
+class SourceConsumerError(ValueError):
+    """Raised when a producer MAP freeze cannot be consumed as a read-only source."""
+
+    def __init__(self, code: str, message: str, *, detail: Any | None = None):
+        super().__init__(message)
+        self.code = code
+        self.detail = deepcopy(detail)
+
+    def as_dict(self) -> dict[str, Any]:
+        out = {"code": self.code, "message": str(self)}
+        if self.detail is not None:
+            out["detail"] = deepcopy(self.detail)
+        return out
+
+
+def _canonical_scope(scope: Any) -> str:
+    if scope is None:
+        return "__global__"
+    if isinstance(scope, str):
+        return scope
+    return "scope:" + _stable_hash(scope)[:20]
+
+
+def _record_scope_key(record: Mapping[str, Any]) -> str:
+    identity = record.get("identity") if isinstance(record.get("identity"), Mapping) else {}
+    if identity.get("scope_key"):
+        return str(identity["scope_key"])
+    return _canonical_scope(identity.get("scope"))
+
+
+def _product_key(product_id: str, scope: Any) -> str:
+    return product_id + "|" + _canonical_scope(scope)
+
+
+def _record_key(record: Mapping[str, Any]) -> str | None:
+    product_id = _product_id(record)
+    if not product_id:
+        return None
+    return product_id + "|" + _record_scope_key(record)
+
+
+def _manifest_hash(manifest: Mapping[str, Any]) -> str:
+    return data_engine._hash({key: value for key, value in manifest.items() if key != "manifest_hash"})
+
+
+def _valid_manifest_hash(manifest: Mapping[str, Any]) -> bool:
+    digest = manifest.get("manifest_hash")
+    return isinstance(digest, str) and digest == _manifest_hash(manifest)
+
+
+def _immutable_record_body(record: Mapping[str, Any]) -> dict[str, Any]:
+    out = {key: deepcopy(record.get(key)) for key in (
+        "record_id", "identity", "time", "version", "content", "quality", "collector"
+    )}
+    return out
+
+
+class ProducerFreezeSourceEngine:
+    """Read-only DataEngine-shaped adapter over a producer current_map freeze."""
+
+    def __init__(
+        self,
+        current_map: Mapping[str, Any],
+        *,
+        path: Path,
+        now_ms: int,
+        max_age_ms: int | None,
+        qualifier_engine: Any,
+        expected_manifest_hash: str | None = None,
+    ):
+        self.path = Path(path)
+        self.now_ms = int(now_ms)
+        self.qualifier_engine = qualifier_engine
+        self.products = getattr(qualifier_engine, "products", None)
+        if not isinstance(self.products, Mapping):
+            raise SourceConsumerError("PRODUCER_QUALIFIER_ENGINE_INVALID", "producer source consumer requires a DataEngine qualifier")
+        self.current_map = deepcopy(dict(current_map))
+        self.legacy_manifest_duplicates = False
+        self.manifest = self._validate_current_map(max_age_ms, expected_manifest_hash)
+        self.records = [deepcopy(dict(row)) for row in self.manifest["source_records"]]
+        self._by_key: dict[str, dict[str, Any]] = {}
+        self._by_id: dict[str, dict[str, Any]] = {}
+        self._index_records()
+
+    @classmethod
+    def from_path(
+        cls,
+        path: str | Path,
+        *,
+        now_ms: int,
+        qualifier_engine: Any,
+        max_age_ms: int | None = DEFAULT_PRODUCER_MAX_AGE_MS,
+        expected_manifest_hash: str | None = None,
+    ) -> "ProducerFreezeSourceEngine":
+        source_path = Path(path)
+        try:
+            with source_path.open("rb") as stream:
+                raw = stream.read(MAX_PRODUCER_CURRENT_BYTES + 1)
+            size = len(raw)
+            if size > MAX_PRODUCER_CURRENT_BYTES:
+                raise SourceConsumerError(
+                    "PRODUCER_CURRENT_TOO_LARGE",
+                    "producer current_map exceeds the configured read limit",
+                    detail={"path": str(source_path), "bytes": size, "max_bytes": MAX_PRODUCER_CURRENT_BYTES},
+                )
+            payload = json.loads(raw.decode("utf-8-sig"))
+        except FileNotFoundError as exc:
+            raise SourceConsumerError("PRODUCER_CURRENT_MISSING", f"producer current_map is missing: {source_path}") from exc
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise SourceConsumerError("PRODUCER_CURRENT_INVALID_JSON", f"producer current_map is not valid JSON: {source_path}") from exc
+        except OSError as exc:
+            raise SourceConsumerError("PRODUCER_CURRENT_UNREADABLE", f"producer current_map cannot be read: {source_path}") from exc
+        if not isinstance(payload, Mapping):
+            raise SourceConsumerError("PRODUCER_CURRENT_INVALID", "producer current_map must be a JSON object")
+        return cls(
+            payload,
+            path=source_path,
+            now_ms=now_ms,
+            max_age_ms=max_age_ms,
+            qualifier_engine=qualifier_engine,
+            expected_manifest_hash=expected_manifest_hash,
+        )
+
+    def _validate_current_map(self, max_age_ms: int | None, expected_manifest_hash: str | None) -> dict[str, Any]:
+        if self.current_map.get("schema") != PRODUCER_CURRENT_SCHEMA:
+            raise SourceConsumerError("PRODUCER_CURRENT_SCHEMA_MISMATCH", f"producer current_map schema must be {PRODUCER_CURRENT_SCHEMA}")
+        generated = _int_from(self.current_map.get("generated_at_ms"))
+        if generated is None:
+            raise SourceConsumerError("PRODUCER_CURRENT_CLOCK_MISSING", "producer current_map generated_at_ms is missing")
+        if generated > self.now_ms + data_engine.CLOCK_SKEW_MS:
+            raise SourceConsumerError("PRODUCER_CURRENT_IN_FUTURE", "producer current_map generated_at_ms is in the future",
+                                      detail={"generated_at_ms": generated, "now_ms": self.now_ms})
+        if max_age_ms is not None and self.now_ms - generated > int(max_age_ms):
+            raise SourceConsumerError("PRODUCER_CURRENT_STALE", "producer current_map is older than the configured consumer age budget",
+                                      detail={"generated_at_ms": generated, "now_ms": self.now_ms, "max_age_ms": int(max_age_ms)})
+        btc_map = self.current_map.get("btc_map")
+        if not isinstance(btc_map, Mapping):
+            raise SourceConsumerError("PRODUCER_BTC_MAP_MISSING", "producer current_map must include btc_map")
+        manifest = self.current_map.get("freeze_manifest")
+        if not isinstance(manifest, Mapping):
+            raise SourceConsumerError("PRODUCER_FREEZE_MANIFEST_MISSING", "producer current_map must include freeze_manifest")
+        if manifest.get("schema") != data_engine.FREEZE_SCHEMA:
+            raise SourceConsumerError("PRODUCER_FREEZE_SCHEMA_MISMATCH", f"producer freeze_manifest schema must be {data_engine.FREEZE_SCHEMA}")
+        if not _valid_manifest_hash(manifest):
+            raise SourceConsumerError("PRODUCER_FREEZE_HASH_MISMATCH", "producer freeze_manifest hash does not match its body")
+        manifest_hash = manifest.get("manifest_hash")
+        if expected_manifest_hash is not None and manifest_hash != expected_manifest_hash:
+            raise SourceConsumerError("PRODUCER_FREEZE_CHANGED", "producer freeze_manifest changed while a frozen workbench view was being reused",
+                                      detail={"expected": expected_manifest_hash, "actual": manifest_hash})
+        cutoff = _int_from(manifest.get("cutoff_at_ms"))
+        if cutoff is None:
+            raise SourceConsumerError("PRODUCER_FREEZE_CUTOFF_MISSING", "producer freeze_manifest cutoff_at_ms is missing")
+        if cutoff > self.now_ms + data_engine.CLOCK_SKEW_MS:
+            raise SourceConsumerError("PRODUCER_FREEZE_CUTOFF_IN_FUTURE", "producer freeze_manifest cutoff is in the future",
+                                      detail={"cutoff_at_ms": cutoff, "now_ms": self.now_ms})
+        records = manifest.get("source_records")
+        if not isinstance(records, list) or not records:
+            raise SourceConsumerError("PRODUCER_SOURCE_RECORDS_MISSING", "producer freeze_manifest must contain source_records")
+        supplied = btc_map.get("source_manifest") if isinstance(btc_map.get("source_manifest"), Mapping) else {}
+        self._validate_btc_map_source_manifest(manifest, supplied)
+        return deepcopy(dict(manifest))
+
+    def _validate_btc_map_source_manifest(self, manifest: Mapping[str, Any], supplied: Mapping[str, Any]) -> None:
+        if not isinstance(supplied, Mapping) or not supplied:
+            raise SourceConsumerError("PRODUCER_BTC_MAP_SOURCE_MANIFEST_MISSING", "producer btc_map must include its source_manifest")
+        if not supplied.get("manifest_hash"):
+            raise SourceConsumerError("PRODUCER_BTC_MAP_SOURCE_HASH_MISSING", "producer btc_map source_manifest must include manifest_hash")
+        if not _valid_manifest_hash(supplied):
+            raise SourceConsumerError("PRODUCER_BTC_MAP_SOURCE_HASH_MISMATCH", "producer btc_map source_manifest hash does not match its body")
+        checks = {
+            "manifest_hash": (manifest.get("manifest_hash"), supplied.get("manifest_hash")),
+            "cutoff_at_ms": (manifest.get("cutoff_at_ms"), supplied.get("cutoff_at_ms")),
+            "candidate_id": (manifest.get("candidate_id"), supplied.get("candidate_id")),
+            "source_records": (manifest.get("source_records"), supplied.get("source_records")),
+        }
+        mismatched = [name for name, (expected, actual) in checks.items() if actual != expected]
+        if not mismatched:
+            return
+        if self._legacy_exact_duplicate_source_manifest(manifest, supplied, mismatched):
+            self.legacy_manifest_duplicates = True
+            return
+        raise SourceConsumerError(
+            "PRODUCER_BTC_MAP_SOURCE_MANIFEST_MISMATCH",
+            "producer btc_map source_manifest is not the same freeze_manifest",
+            detail={"mismatched_fields": mismatched},
+        )
+
+    def _legacy_exact_duplicate_source_manifest(
+        self,
+        manifest: Mapping[str, Any],
+        supplied: Mapping[str, Any],
+        mismatched: list[str],
+    ) -> bool:
+        if sorted(mismatched) != ["manifest_hash", "source_records"]:
+            return False
+        records = supplied.get("source_records")
+        if not isinstance(records, list):
+            return False
+        deduped: list[Any] = []
+        seen: set[str] = set()
+        for record in records:
+            digest = data_engine._hash(record)
+            if digest in seen:
+                continue
+            seen.add(digest)
+            deduped.append(record)
+        normalized = {**supplied, "source_records": deduped}
+        return (len(deduped) < len(records) and deduped == manifest.get("source_records")
+                and _manifest_hash(normalized) == _manifest_hash(manifest))
+
+    def _index_records(self) -> None:
+        seen_hashes: dict[str, str] = {}
+        seen_key_hashes: dict[str, str] = {}
+        for row in self.records:
+            record_id = str(row.get("record_id") or "")
+            if not record_id:
+                raise SourceConsumerError("PRODUCER_SOURCE_RECORD_ID_MISSING", "producer source record is missing record_id")
+            key = _record_key(row)
+            product_id = _product_id(row)
+            if not key or not product_id:
+                raise SourceConsumerError("PRODUCER_SOURCE_PRODUCT_MISSING", "producer source record is missing identity.product_id",
+                                          detail={"record_id": record_id})
+            if product_id not in self.products:
+                raise SourceConsumerError("PRODUCER_SOURCE_PRODUCT_UNKNOWN", "producer source record product is not in the local registry",
+                                          detail={"record_id": record_id, "product_id": product_id})
+            fingerprint = data_engine._hash(_immutable_record_body(row))
+            if record_id in seen_hashes and seen_hashes[record_id] != fingerprint:
+                raise SourceConsumerError("PRODUCER_SOURCE_RECORD_CONFLICT", "producer freeze has conflicting duplicate source records",
+                                          detail={"duplicate": "record_id", "record_id": record_id})
+            seen_hashes[record_id] = fingerprint
+            if key in seen_key_hashes and seen_key_hashes[key] != fingerprint:
+                raise SourceConsumerError("PRODUCER_SOURCE_RECORD_CONFLICT", "producer freeze has conflicting duplicate source records",
+                                          detail={"duplicate": "product_scope", "record_id": record_id, "product_scope_key": key})
+            seen_key_hashes[key] = fingerprint
+            if key not in self._by_key:
+                self._by_key[key] = deepcopy(row)
+            self._by_id[record_id] = deepcopy(row)
+
+    @property
+    def manifest_hash(self) -> str:
+        return str(self.manifest.get("manifest_hash") or "")
+
+    def source_summary(self, now_ms: int | None = None) -> dict[str, Any]:
+        checked = self.now_ms if now_ms is None else int(now_ms)
+        return {
+            "status": "OK",
+            "mode": SOURCE_MODE_PRODUCER_MANIFEST,
+            "current_path": str(self.path),
+            "producer_schema": self.current_map.get("schema"),
+            "producer_generated_at_ms": self.current_map.get("generated_at_ms"),
+            "producer_freeze_cutoff_at_ms": self.manifest.get("cutoff_at_ms"),
+            "producer_manifest_hash": self.manifest_hash,
+            "producer_record_count": len(self.records),
+            "legacy_exact_duplicate_manifest": self.legacy_manifest_duplicates,
+            "checked_at_ms": checked,
+            "note_cn": "只读消费producer冻结source records；当前用途资格按本次checked_at重新核对。",
+        }
+
+    def _product(self, product_id: str) -> dict[str, Any]:
+        try:
+            return self.qualifier_engine._product(product_id)
+        except Exception as exc:
+            raise SourceConsumerError("PRODUCER_SOURCE_PRODUCT_UNKNOWN", f"unknown data product in producer source: {product_id}") from exc
+
+    def read(self, product_id: str, *, now_ms: int, usage: str, scope: Any = None) -> dict[str, Any]:
+        product = self._product(product_id)
+        key = _product_key(product_id, scope)
+        record = self._by_key.get(key)
+        if record is None:
+            return {
+                "schema": data_engine.RECORD_SCHEMA,
+                "identity": self.qualifier_engine._missing_identity(product, scope),
+                "usage_decision": self.qualifier_engine._missing_decision(product, now_ms, usage),
+            }
+        out = deepcopy(record)
+        out.setdefault("schema", data_engine.RECORD_SCHEMA)
+        out["usage_decision"] = self.qualifier_engine._usage_decision(product, out, int(now_ms), usage)
+        return out
+
+    def freeze(
+        self,
+        records: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+        *,
+        cutoff_at_ms: int,
+        candidate_id: str | None = None,
+    ) -> dict[str, Any]:
+        cutoff = int(cutoff_at_ms)
+        prepared_records: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in records:
+            if not isinstance(item, Mapping):
+                excluded.append({"reason": "not_a_data_record"})
+                continue
+            record_id = str(item.get("record_id") or "")
+            original = self._by_id.get(record_id)
+            if original is None:
+                excluded.append({"record_id": item.get("record_id"), "reason": "not_in_producer_freeze"})
+                continue
+            if record_id in seen:
+                continue
+            if data_engine._hash(_immutable_record_body(item)) != data_engine._hash(_immutable_record_body(original)):
+                raise SourceConsumerError("PRODUCER_SOURCE_RECORD_HASH_MISMATCH", "caller supplied a changed producer source record",
+                                          detail={"record_id": record_id})
+            seen.add(record_id)
+            prepared_records.append(self._record_for_qualifier_freeze(original))
+        body = self.qualifier_engine.freeze(prepared_records, cutoff_at_ms=cutoff, candidate_id=candidate_id)
+        if excluded:
+            body["excluded_records"] = list(body.get("excluded_records") or []) + excluded
+        body["producer_manifest_hash"] = self.manifest_hash
+        body["manifest_hash"] = _manifest_hash(body)
+        return body
+
+    def _record_for_qualifier_freeze(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        prepared = deepcopy(dict(record))
+        prepared.setdefault("schema", data_engine.RECORD_SCHEMA)
+        if not isinstance(prepared.get("usage_decision"), Mapping):
+            qualification = prepared.get("usage_qualification")
+            if isinstance(qualification, Mapping):
+                prepared["usage_decision"] = deepcopy(dict(qualification))
+        return prepared
+
+    def health(self, now_ms: int) -> dict[str, Any]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for record in self.records:
+            product_id = _product_id(record)
+            if product_id and product_id in self.products:
+                grouped.setdefault(product_id, []).append(self._record_for_qualifier_freeze(record))
+        products: dict[str, Any] = {}
+        for product_id, records in sorted(grouped.items()):
+            products[product_id] = self.qualifier_engine._health_product(
+                self._product(product_id),
+                records,
+                int(now_ms),
+            )
+        return {
+            "schema": "astra_producer_source_health@2.4.4",
+            "generated_at_ms": now_ms,
+            "producer_manifest_hash": self.manifest_hash,
+            "products": products,
+        }
+
+    def fetch(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise SourceConsumerError("PRODUCER_SOURCE_FETCH_FORBIDDEN", "producer_manifest source mode forbids slow fetch")
+
+    def reserve_request(self, *args: Any, **kwargs: Any) -> None:
+        raise SourceConsumerError("PRODUCER_SOURCE_HTTP_FORBIDDEN", "producer_manifest source mode forbids HTTP reservation")
+
+    def ingest(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise SourceConsumerError("PRODUCER_SOURCE_INGEST_FORBIDDEN", "producer_manifest source mode is read-only")
+
+
+def load_producer_source_engine(
+    path: str | Path,
+    *,
+    now_ms: int,
+    qualifier_engine: Any,
+    max_age_ms: int | None = DEFAULT_PRODUCER_MAX_AGE_MS,
+    expected_manifest_hash: str | None = None,
+) -> ProducerFreezeSourceEngine:
+    return ProducerFreezeSourceEngine.from_path(
+        path,
+        now_ms=now_ms,
+        qualifier_engine=qualifier_engine,
+        max_age_ms=max_age_ms,
+        expected_manifest_hash=expected_manifest_hash,
+    )
+
+
 def read_cached_sources(engine: Any, now_ms: int, config: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     """Read cached source records. This must not issue HTTP."""
 
+    if engine is None:
+        return []
     cfg = dict(config or {})
     cfg.setdefault("usage", "background")
     if hasattr(map_sources, "read_sources"):
@@ -293,7 +671,7 @@ def candidate_map(engine: Any, projection: Mapping[str, Any], snapshot: Mapping[
         source_records=records,
         config=dict(source_config),
     )
-    return map_core.build_map(
+    mapping = map_core.build_map(
         engine,
         now_ms=valuation_ms,
         snapshot=snapshot,
@@ -303,6 +681,10 @@ def candidate_map(engine: Any, projection: Mapping[str, Any], snapshot: Mapping[
         current_price_usd=_snapshot_price(snapshot),
         current_price_basis=_snapshot_price_basis(snapshot),
     )
+    if source_config.get("source_mode") == SOURCE_MODE_PRODUCER_MANIFEST and isinstance(projection.get("source_consumer"), Mapping):
+        mapping["source_consumer"] = deepcopy(dict(projection["source_consumer"]))
+        mapping["map_id"] = map_core._hash({key: value for key, value in mapping.items() if key != "map_id"})
+    return mapping
 
 
 def attach_candidate_map(engine: Any, projection: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -346,7 +728,7 @@ def _event_key(event: Mapping[str, Any]) -> str:
 
 def _background_for_map(wrapper: Mapping[str, Any], records: list[Mapping[str, Any]]) -> dict[str, Any]:
     rows = wrapper.get("rows") if isinstance(wrapper.get("rows"), Mapping) else {}
-    background = {key: deepcopy(dict(value)) for key, value in rows.items() if isinstance(value, Mapping)}
+    background = {key: _normalize_background_row(value) for key, value in rows.items() if isinstance(value, Mapping)}
     background["facts_changed_since"] = deepcopy(wrapper.get("facts_changed_since_previous") or [])
     missing: list[str] = []
     for row in background.values():
@@ -355,6 +737,23 @@ def _background_for_map(wrapper: Mapping[str, Any], records: list[Mapping[str, A
     background["missing_or_conflicting"] = sorted(set(missing))
     background["source_records"] = [deepcopy(dict(record)) for record in records if isinstance(record, Mapping)]
     return background
+
+
+def _normalize_background_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    out = deepcopy(dict(row))
+    fact_state = out.get("fact_state")
+    if not fact_state:
+        raw_status = str(out.get("status") or "").strip().lower()
+        if raw_status in {"ok", "usable", "qualified", "ready"}:
+            fact_state = "usable"
+        elif raw_status in {"partial", "degraded", "warning"}:
+            fact_state = "partial"
+        else:
+            missing = out.get("missing") if isinstance(out.get("missing"), list) else []
+            fact_state = "partial" if missing else "missing"
+        out["fact_state"] = fact_state
+    out["status"] = out.get("status") or str(fact_state)
+    return out
 
 
 def build_references(

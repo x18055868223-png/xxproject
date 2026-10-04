@@ -8,6 +8,24 @@ server {
     root /opt/signal-audit;
     index index.html;
 
+    location = /api/workbench {
+        proxy_pass http://127.0.0.1:8895/api/workbench;
+        add_header Cache-Control "no-store";
+    }
+
+    location = /api/workbench/review-state {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8895/api/workbench/review-state;
+        proxy_set_header Host $host;
+        add_header Cache-Control "no-store";
+    }
+
+    # This example server listens on HTTP, so no operator token is accepted.
+    # Add an HTTPS vhost before allowing this POST route externally.
+    location = /api/workbench/review {
+        return 403;
+    }
+
     location /signal_cards/ {
         add_header Cache-Control "no-store";
         try_files $uri =404;

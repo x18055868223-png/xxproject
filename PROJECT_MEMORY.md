@@ -1,10 +1,42 @@
 # Project Memory
 
+## 2026-09-27 MAP v2.4.2 来源语义与因果阅读链
+
+[修订69](docs/astra/69_MAP来源语义与四问工作台v242本地修订冻结_20260926.md)、[设计70](docs/astra/70_工作台整体数据与因果推理设计整理_v242_20260926.md)及[验收71](docs/astra/71_工作台来源与因果整理v242本地验收_20260926.md)确立源事实、确定性解释和人工 LLM 意见的独立表达层。四问完整保留四类背景，关键门控缺口优先、其余分歧按数量折叠；ETF BTC 列是同版合格指数下名义折合，CP 是 Bitview 持有者资本化价格，币安 OI/Funding 是 U本位原生持仓和实际结算，不能混成净买压或重复确认。Put 下跌、Call 上涨为合同不利方向，未选不借候选；名义/异源/非同刻价格不精确共位。TMV/CVD/EDB 不具有校准概率语义。
+
+折算和价格轴源钟要求 MAP/manifest 截止同时存在且相等、BTC/美元及价系身份明确一致、时钟非未来及用途资格成立；混合资格不称整体完备。合成正常态和真实生产截面冻结回放隔离，回放不补 FMZ/原生空间门、合同或风险参考，按原冻结用途显示资格且明确非当前；实时时效守门不放宽。本地相关131项测试及桌面/窄屏验收通过，模拟忙态自动回执不等于真实 LLM 验收。本版未提交/推送/部署，程序仍在正确开发树，发布须本版本的新“当前本地页面可推送”；已部署数据服务、FMZ实例、自然卡消费和经济有效各自保留证据上限。
+
 ## 2026-09-26 同机轻量KPF生产与MAP消费已部署
 
 [协议67](docs/astra/67_同机KPF轻量生产消费与MAP数据完备性实施冻结_20260926.md)及[验收68](docs/astra/68_同机轻量数据服务与MAP完备性验收_20260926.md)记录数据服务独立发布：后端代码1e1fac2f已推xxproject工作分支并以128,939 B薄包安装在固定KPF/MAP namespace；生产与消费同机，五分钟timer两轮自动成功且MAP读取同版原生三件hash。原KPF十份算法源hash、90/60日窗、100 BTC相位、50 USD桶与A/B资格保持；流式density不保留全bars/解压CSV/ZIP双副本。磁盘留空6 GiB、源预算5 GiB，KPF/MAP内存分别240/128 MiB；一日真实约103万成交RSS24 MiB、MAP33 MiB，完整90日资源尚未证明。
 
 真实指数、ETF、CP_STH/LTH/ALL、严格14日兑现损益、OI、实际Funding及两项美债已进同机统一引擎；宽美元观测过期、无借款授权、KPF仅2/90 WARMUP、FMZ快照0 B与当前GEX/期限门缺失，最终七组中三组完整、全局完备性false。此进度为验收时点，不预先宣布90日READY。新数据有生产背景独立身份，不混入历史训练或自然卡验证；旧Web/FMZ/LLM/模型不随数据上线升级，新链路零LLM不表示旧自动LLM任务停用。此前66未接通及完整兑现窗缺口是前序状态，以68的新证据为准；当前工作台页面仍未发布，需本版本的新确认与统一引擎绑定。
+
+## 2026-09-26 MAP v2.4.1 本地数据与责任表达
+
+[协议62](docs/astra/62_MAP数据与合同责任v24实施冻结协议_20260926.md)、[修订64](docs/astra/64_MAP真实数值轴与决策表达_v241修订冻结_20260926.md)与[验收65](docs/astra/65_MAP数值轴与责任联动v241本地验收_20260926.md)确定：真实线性价格轴、四行定量背景、最多三句确定性摘要及同版保单区域责任联动，不新增模型、mu/M、门或权限。名义成本与不同冻结时点合同不精确共位；Funding按实际结算时钟分窗；美元指数点、百分比与收益率bp分开。KPF只在refresh采集同版三件套入引擎，全部合格有限池用于责任，默认两条展示；失败artifact身份同样冻结，GET/manual仅缓存读。
+
+真实公开两侧合同与慢源已形成冻结回放，但FMZ/GEX/KPF、完整兑现窗与借款仍有缺口，过期OI退出主事实。真实mu/M缺失和手动评审阻断不被页面修复改变。合成与回放隔离，前端交互零真实LLM；原金融账、模型与FMZ本体保留。工作程序仅在正确工作树，本地验收不证明服务器实例加载、自然卡消费或经济有效；本版本仍须用户重新确认“当前本地页面可推送”。此前v2.3“MAP细节延后”是当时状态，现以本条和验收65为准。
+
+原 KPF 算法及部署契约已在[审查66](docs/astra/66_KPF原算法适配与最小服务器接入审查_20260926.md)核对：原生 snapshot/audit 是 JSON，debug 是 CSV，当前 MAP 目标 JSON 适配层尚未接通真实 producer；公开 display_band 不能代替 raw basin。优先复用原 kpf_server 流式单 worker 并补薄导出，保留必需90日计算窗、移除报告/实验部署面；不升级为选边/EV，未完成真实接通。
+
+## 2026-09-26 数据引擎 v2.3 与持续截面边界
+
+[协议60](docs/astra/60_数据引擎与持续截面写入v23修订协议_20260926.md)及[验收61](docs/astra/61_数据引擎v23与持续截面本地服务器验收_20260926.md)确定数据产品身份、源观察/可得时钟、质量与用途期限，由后端统一判断资格；页面读取缓存，人工任务冻结实际数值及来源。注册不等于源已接通，历史导入不能升格为当前事实，缺 Gamma 不从价格补造。健康页面按六类逐层折叠，保留中性纸面风格。
+
+服务器独立 data-only 五分钟维护已安装，只接收 FMZ 本地截面并按精确名单保留/清理日志，不部署新前端或调用 LLM。旧生产自动 LLM timer 尚未迁移；新数据路径零 LLM 不代表全生产栈已纯手动。根目录可见 FMZ 交付物已同步为本地候选 2.0.1，默认 300 秒原子写近期原生截面、180–600 秒配置边界；运行实例尚未证明加载，现行快照为空，阶段 A 生产验收未通过。MAP 细节延后，模型/交易权限/经济裁定不升级。本版页面仍需新的“当前本地页面可推送”确认。正式发布须显式纳入未跟踪模块及被本机 exclude 忽略的 registry、文档。
+
+## 2026-09-25 Astra v2.0 市场骨架与手动回执本地待审
+
+[追加协议57](docs/astra/57_市场骨架与评审回执工作台修订协议_20260925.md)及[验收58](docs/astra/58_市场骨架与手动回执本地验收_20260925.md)记录稳定边界：主工作台从同一 FMZ 连续快照投影非 LLM 量价、宏观、空间、EDB 市场骨架，缺事实仍阻断；本机模拟正常态独立标识且零真实 LLM、不入部署包。人工评审按钮显示忙态并只读轮询持久回执，回执绑定冻结快照及 Put/Call 侧别；同腿新快照仅在再次明确点击且门禁/冷却/共享预算通过后可评审，旧同快照尝试与失败不覆盖。109 项 v20 本地测试及 Nginx 回执路径静态检查通过；本地页面已审，尚未获本版“当前本地页面可推送”确认，未提交/推送/部署或证明经济效力。根目录可见 FMZ 仍旧版。
+
+## 2026-09-25 空间约束工作台 v2.0 本地待审
+
+[修订协议55](docs/astra/55_空间门与动态工作台v20修订协议_20260925.md)和[本地验收56](docs/astra/56_空间门工作台v20本地验收与发布前边界_20260925.md)记录本版：开发树 FMZ 本体 `2.0.0` 原生输出 fail-closed SpaceGate；持续工作台并列生成 Put/Call 开仓前理论候选，卖出腿取同到期可用绝对 Delta 最接近 0.35 且不超过 0.5，精确 2,000 USD 腿宽、1 BTC。净信用专指权利金差减两腿理论建仓手续费；BTC/USD 折合、到期时间、到期盈亏平衡根和条件性全费用 `M_ref` 分层显示，实际成交/持仓/退出账不补造。只有合格原生 FMZ、同版风险参考及正余量才可能开放人工一次 LLM 复核；LLM 不改数和交易许可。当前本地实况缺 FMZ v2 原生事实和合格 `μ_ref`，主门阻断；测试与浏览器只证明本地行为，不证明经济 edge。`xxproject` 是权威远端，根目录可见 FMZ 仍为 `1.6.2`；本版未提交、未推送、未部署，待用户审阅此版本地页后重新明确“当前本地页面可推送”。旧版原始结果及失败保持原身份。
+
+## 2026-09-25 当前具体保单 v2.0 本地候选链
+
+[本地验收53](docs/astra/53_当前保单v2本地验收与待推送清单.md)、[修订协议52](docs/astra/52_截面承保v2本地修订协议.md)及[发现规则54](docs/astra/54_当前保单发现口径补充冻结_20260925.md)记录独立只读候选路径：现有 FMZ 每 tick `EvaluationSnapshot` 可提供源身份/时钟明确的连续事实；明确两腿和数量→公开盘口估算→持有到期费用→合格冻结赔付参考（缺失即 `M_ref=null`）→同版单次因果适用性评审→独立候选卡。自然 NR 与固定轮、原 LLM 卡评审不改。2026-09-25 一次手动采集按最接近 24 小时、1 BTC、精确 2,000 USD 宽度生成 26SEP26 Put/Call 两张并列保单：均绑定同一当前 FMZ 行、盘口深度和时钟通过，但没有合格 `μ_ref/M_ref`；正信用不证明经济 edge 或选侧。研究侧两卡各一次正常 LLM 请求、一次格式恢复，最终均语义拒绝；失败回显和 4/4 共享 HTTP 账保留，未生成合格正文，不重发。原始 API 回复在本次修补前未被留存，后续已改先存回复再校验。最终本地页 `http://127.0.0.1:8890/` 已审阅，五张旧卡与一张历史回放 SHA 不变；本版仍未提交/推送/部署，等待针对本版的“当前本地页面可推送”。历史失败与生产缺口详见53。
 
 ## 2026-09-23 本轮重要内容静态页面发布
 
@@ -352,6 +384,10 @@ producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面2
 - Decision: production signal-audit materialization defaults to the latest 15 cards in the service, installer, bootstrap override, and materializer CLI. HTTP startup loads one manifest plus the selected card and two bounded prefetches; one detail failure must not erase the list or other cached cards. Impact: bootstrap-managed systemd drop-ins must be refreshed with `MAX_CARDS=15`, because an older drop-in can override an updated base unit.
 - Decision: chat response parsing may recover `Extra data` only when the complete response consists of two or more semantically identical JSON objects. Different objects, arrays/scalars, trailing prose, ordinary malformed JSON, or any output that fails the full validator remain fail-closed. Basis: a real DeepSeek reconciliation duplicated one complete object after an otherwise valid response. Impact: parsing compatibility cannot become a general first-object truncation path.
 
+- Astra v2.0 workbench numeric presentation keeps producer measurement semantics: DXY and volatility-index relative bp are distinct from US10Y yield-change bp; raw source close levels and reference/observation times stay visible. Micro price return and TMVF trend strength are separate quantities. Perpetual funding rates are background facts and never become option net credit. Candidate reading guidance explains frozen ledger inputs and same-source EDB conflicts without generating probabilities, EV ranking or execution permission. Synthetic and background identities remain explicit; an absent current FMZ source cannot be replaced by a historical card for a real current-snapshot LLM test.
+
+- 工作台布局以用户2026-09-26最新要求为准：沿用纸面风格，主工作台单列全宽；快照、状态迁移、缺口和历史资料合并为手动综合评审下方的“审计记录”。旧左侧栏布局要求已被替代；原数据身份、历史证据和评审门禁不变。
+
 ## Unconfirmed items
 
 - Whether the full upstream source repository `中性回路 - opus4.8` is available in this workspace was not confirmed during this initialization.
@@ -360,3 +396,50 @@ producer候选1.6.0、原生四态1.0.0、LLM输出2.0.0、Prompt2.0.1和页面2
 - Whether future Codex sessions will load the newly created `.codex/agents/` definitions without reopening the session was not confirmed; start a fresh Codex session after this initialization.
 
 发布证据分层约定：Git实现与服务程序、用户可见FMZ文件、实例实际运行及自然卡原生输出分别记录；源卡仍旧版时按旧协议验收，不能降低新版原生验收要求。当前部署与交付回执见Astra文档22。
+
+## 工作台证据与状态整合的长期约束
+
+- 规范来源身份应在冻结边界去重，同身份不同内容应拒绝；读取旧捕获不得改原字节或哈希。源观察与首次可得须属于同一记录，不能跨源取最大/最小拼成一组时钟。MAP冻结截止、慢源产品窗口端点及逐源时钟分别保存。
+- 操作可用性是当前候选资格与运行中/冷却/既有共享预算的派生结果，读取时重新计算；临时原因不得固化进冻结候选。显示层提示不能代替POST的原子并发、幂等和额度检查，不新增预算来源。
+- 前端区域选择绑定候选/快照/MAP身份；同版明确手选保留，新版本即使复用region_id也重新取同版推荐。缺推荐/未选不借任意区域或另一侧合同。
+- 可维护性优先收拢重复事实重建、兼容适配和状态判断；确定性责任账、不可变证据及最终权限检查有不同职责。增加推理框架或多模型循环须先有相同输入下的可测增益，不能替代来源接通与支持域验证。
+- 标准服务是否注入风险provider、模型支持域是否匹配实际剩余期限，必须单独核验；合成μ/M或已运行的数据后台不能证明真实同候选风险消费。详细诊断与验收入口见docs/astra/72、73、74，本地/发布/真实消费/经济证据分别记录。
+
+
+## 本地冻结输入与研究复核契约（2026-09-27）
+
+- `tools/astra_underwriting_review_v20.py` 的 `build_review_input` 从已校验冻结 snapshot 派生紧凑投影，保留原 snapshot/packet hash；确定性责任账从 snapshot 取，不能从裁剪过的旧 LLM packet 读取。来源资格与时钟集中保存，行引用来源 ID。
+- MAP `fact_state` 是前端与引用资格的状态口径；旧 `_background` 的 `status` 可默认为 missing，不应与 fact_state 并列作第二个复核权威。完整历史 MAP 保留，复核投影去掉旧 status。
+- 研究模式复用同一 `run_review`，但写隔离 `research_only` 子目录，研究回执不进入生产 attach_review。新尝试账按完整 snapshot hash 命名以适应 Windows 原子临时文件路径；旧长文件名优先读，不能改名清空尝试次数。
+- JSON/引用/快照校验通过不证明自由文本金融命题正确。币本位 Put 深尾没有固定 BTC 赔付上限，责任/盈亏结论应以确定性核算为准；失败回答须保留，不能以改善结论为目的自动复呼。工程与金融事实验收分别记录，详见文档 75–77。
+
+
+## 有界目录与来源消费的长期约束
+
+- 新出站承保复核使用有限 claim ID 目录；程序拥有财务数值和中文命题。store 附着必须重放同一冻结投影和目录，不用旧自由文本兼容校验授予新资格。
+- 历史成功回执按原字节保留；读侧区分旧协议与当前协议，不能靠升级代码、改展示或重建账本把旧成功升级成当前合格。
+- producer_manifest 消费只读冻结记录，来源时钟和用途资格委托现有 DataEngine；不共享可写事实缓存，不创建第二套 TTL、freeze 或预算政策。当前 health 必须描述实际消费来源。
+- 可选 MAP 来源失败或在合同核算期间更新，应保留合同确定性账并取消不合格来源引用；不能混版本，也不能把可选缺口升级为所有合同的新增硬门。原生 SpaceGate、报价、费用及风险资格门独立保留。
+- 风险资产消费诊断与风险 provider 是不同职责。研究 qualified 文件名和研究期限匹配不能替代同合同完整特征、价系、数量及支持域验证；诊断不能填充 μ 或授予交易权限。
+
+
+## 两问与本地情景闭环的稳定契约
+
+- 轻微倒挂按有效档位原始最优 bid/ask 判断；清洗规则与目标深度核算共用。显式非 BTC 数量单位拒绝，未知入场费不从总持有费回填。
+- `bounded_claim_ids@2.4.7` 保留九字段出站协议；Q1/Q2 由同一冻结目录、选定证据和确定性账派生，不新增自由文本金额、状态账本或权限。非正 M 必须有补偿反证与重定价条件，缺 μ 保留明确缺口，结构门关闭优先要求新冻结事实。
+- 模拟已提供 μ 与真实来源资格分别表达；研究身份不得覆盖补偿不足、资料缺失或结构阻断的具体取舍。宏观水平或 OI 上升不能从关键词推成 BTC 价格上行，只有源端明确价格方向可作条件解释。
+- 本机有限场景复用核算、MAP、目录及 validator；只有响应 ID 选择是桩。回执按 candidate+snapshot+MAP 身份回绑，保留 SIMULATED、原评审时间与旧版差异，不创建第二套回执存储。当前候选、两问与操作优先呈现，完整来源和责任账渐进展开。
+
+
+## 风险覆盖关系与阅读连续性的稳定约束
+
+- 两问的期限、几何位置、明确量价方向、合格 MAP 推荐区与风险覆盖关系，从同一冻结投影一次派生；不建立第二套执行资格。整体 μ 有值不等于单项软风险已覆盖，没有定量归因就保留未知；同源倾向和慢背景只作条件解释。
+- 所需信用读取规范合同账；费用与风险参考不变时，达到门槛只打平，超过才有正参考余量。不估计额外风险溢价或未来报价。
+- 同版候选 details 用当前 DOM 的 candidate_id、snapshot_id 与稳定 section 保持开关；新版本重置，不使用持久状态。旧回执保留在历史展开区，当前结论须有服务端验证的同版回绑及协议一致。
+- 覆盖未知是证据边界，不是额外终审硬门；交易员在既有硬门内权衡补偿、反证与未知。当前候选的简短取舍、最多两项已有可观察变化与等待代价由冻结事实派生，不增加自动选侧、风险模型或状态枚举。
+- 地图审计展开状态复用当前 DOM 的保留方式，以精确候选/快照/MAP 身份与章节回绑；未选保单只使用全局 MAP 身份，身份缺失或版本变化重置。窄屏名称与价格可上下排，不改变选择行为或字段。
+
+## 价格轴与安装迁移的稳定约束
+
+- “全部”线性价格轴的域须覆盖当前合同与双方截止存在且相等的另一侧合同腿及盈亏平衡点；同宽价差保持同像素距离。聚焦域可把远端合同列为域外说明，不能以边界夹点冒充价格位置；双缺截止不构成同版。
+- 完整安装器必须在替换前端、工具或 unit 前完成输入检查并停止现存 materializer timer/service、旧自动 LLM timer/service 和 workbench service。仅明确 not-found 可跳过；查验、停止或禁用失败须中止。回滚不自动恢复旧自动 LLM。打包哈希清单只证明所列字节，不证明服务器安装、原生 FMZ 输出或真实 provider 已验收。

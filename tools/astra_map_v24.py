@@ -862,14 +862,15 @@ def _background(background: Any) -> dict[str, Any]:
     out = {}
     for key in BACKGROUND_KEYS:
         row = source.get(key) if isinstance(source.get(key), Mapping) else {}
+        fact_state = _fact_state(row)
         out[key] = {
-            "status": row.get("status", "missing"),
+            "status": row.get("status") or fact_state,
             "summary": row.get("summary"),
             "summary_cn": row.get("summary_cn"),
             "metrics": _copy(row.get("metrics")),
             "cutoff_at_ms": _int_ms(row.get("cutoff_at_ms")),
             "missing": _copy(row.get("missing")),
-            "fact_state": row.get("fact_state"),
+            "fact_state": fact_state,
             "facts": _copy(row.get("facts", [])),
             "source_record_ids": _source_ids(row),
             "known_at_ms": _int_ms(row.get("known_at_ms", row.get("known_at"))),
@@ -879,6 +880,20 @@ def _background(background: Any) -> dict[str, Any]:
     out["facts_changed_since"] = _copy(source.get("facts_changed_since", []))
     out["missing_or_conflicting"] = _copy(source.get("missing_or_conflicting", []))
     return out
+
+
+def _fact_state(row: Mapping[str, Any]) -> str:
+    raw_value = row.get("fact_state")
+    raw = str(raw_value or "").strip()
+    if raw:
+        return raw_value
+    status = str(row.get("status") or "").strip().lower()
+    if status in {"ok", "usable", "qualified", "ready"}:
+        return "usable"
+    if status in {"partial", "degraded", "warning"}:
+        return "partial"
+    missing = row.get("missing") if isinstance(row.get("missing"), list) else []
+    return "partial" if missing else "missing"
 
 
 def _extract_records(value: Any) -> list[Mapping[str, Any]]:
@@ -906,10 +921,12 @@ def _source_manifest(engine: Any, now_ms: int, snapshot: Mapping[str, Any] | Non
             if (supplied.get("cutoff_at_ms") != now_ms or supplied.get("candidate_id") != candidate
                     or supplied.get("manifest_hash") != _hash({k: v for k, v in supplied.items() if k != "manifest_hash"})):
                 raise ValueError("supplied MAP source manifest is not the same valid freeze")
+            _validate_source_record_identity_conflicts(supplied.get("source_records"))
             return _copy(supplied)
     records: list[Mapping[str, Any]] = []
     for value in values:
         records.extend(_extract_records(value))
+    records = _dedupe_source_records(records)
     candidate_id = snapshot.get("candidate_id") if isinstance(snapshot, Mapping) else None
     if records and engine is not None and hasattr(engine, "freeze"):
         return engine.freeze(records, cutoff_at_ms=now_ms, candidate_id=candidate_id)
@@ -925,6 +942,7 @@ def _source_manifest(engine: Any, now_ms: int, snapshot: Mapping[str, Any] | Non
             for item in value:
                 if isinstance(item, Mapping):
                     source_refs.extend({"record_id": rid} for rid in _source_ids(item))
+    source_refs = _dedupe_source_refs(source_refs)
     body = {
         "schema": "btc_map_source_manifest@1",
         "cutoff_at_ms": now_ms,
@@ -934,6 +952,41 @@ def _source_manifest(engine: Any, now_ms: int, snapshot: Mapping[str, Any] | Non
     }
     body["manifest_hash"] = _hash(body)
     return body
+
+
+def _validate_source_record_identity_conflicts(records: Any) -> None:
+    if isinstance(records, list):
+        _dedupe_source_records([record for record in records if isinstance(record, Mapping)])
+
+
+def _dedupe_source_records(records: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    out: list[Mapping[str, Any]] = []
+    seen: dict[str, str] = {}
+    for record in records:
+        record_id = str(record.get("record_id") or "")
+        if not record_id:
+            out.append(record)
+            continue
+        fingerprint = _canonical(record)
+        if record_id in seen:
+            if seen[record_id] != fingerprint:
+                raise ValueError(f"conflicting source records with the same record_id: {record_id}")
+            continue
+        seen[record_id] = fingerprint
+        out.append(record)
+    return out
+
+
+def _dedupe_source_refs(source_refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in source_refs:
+        record_id = str(item.get("record_id") or "")
+        if not record_id or record_id in seen:
+            continue
+        seen.add(record_id)
+        out.append(item)
+    return out
 
 
 def build_map(

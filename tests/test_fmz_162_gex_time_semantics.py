@@ -138,7 +138,7 @@ def assert_old_signal_fields_unchanged(before, after):
 
 
 def test_version_and_legacy_payload_has_unknown_observation(mod, config):
-    assert_equal(config["demo_version"], "1.6.2", "FMZ producer version")
+    assert_equal(config["demo_version"], "2.0.1", "FMZ producer version")
     fetched_ms = utc_ms()
     snapshot = mod.parse_info_payload(
         make_payload(fetched_ms, observed_equals_fetch=True), config)
@@ -325,7 +325,9 @@ class FailingHttp:
 
 
 def test_cache_fallback_retains_semantics_and_content_fingerprint(mod, config):
-    fetched_ms = utc_ms()
+    # Cache age is evaluated against the live clock; a fixed 2026-09-11
+    # fixture ages out and no longer exercises the LKGV fallback path.
+    fetched_ms = mod.now_ms()
     cached = mod.parse_info_payload(make_payload(fetched_ms), config)
     with tempfile.TemporaryDirectory() as tmp:
         cache_path = pathlib.Path(tmp) / "gex_info_cache.json"

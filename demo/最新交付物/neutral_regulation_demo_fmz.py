@@ -91,6 +91,13 @@ SIDE_NONE = "none"
 SIDE_PUT_CREDIT_SPREAD = "put_credit_spread"
 SIDE_CALL_CREDIT_SPREAD = "call_credit_spread"
 
+SPACE_GATE_ELIGIBLE = "STRUCTURE_ELIGIBLE"
+SPACE_GATE_BLOCKED = "STRUCTURE_BLOCKED"
+SPACE_GATE_STATES = (
+    SPACE_GATE_ELIGIBLE,
+    SPACE_GATE_BLOCKED,
+)
+
 SELECTION_TMVF_DIRECTION = "TMVF_DIRECTION"
 
 REASON_READ_ONLY_DEMO = "READ_ONLY_DEMO"
@@ -161,7 +168,11 @@ CONFIG = {
     # from the existing M-DIE 1m kline cache; legacy signal decisions unchanged.
     # v1.6.2 (2026-09-11): audit-only GEX field time semantics; no signal
     # weights, triggers, windows, permissions, or model-call behavior changed.
-    "demo_version": "1.6.2",
+    # v2.0.0 (2026-09-25): producer-native SpaceGate state for current
+    # underwriting facts. Audit-only; no direction/weight/permission changes.
+    # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
+    # continuous current facts. No direction/weight/LLM/permission changes.
+    "demo_version": "2.0.1",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -245,6 +256,8 @@ CONFIG = {
     "gex_info_refresh_sec": 600,
     "gex_info_cache_file": "demo/logs/gex_info_cache.json",
     "gex_info_cache_max_age_ms": 86400000,
+    "space_gate_state_file": "",
+    "space_gate_net_gamma_fresh_ms": 1200000,
 
     # 信号审计输出: 全量 JSONL 永远本地落盘，FMZ 只发短推。
     # push_test 只用于部署自检，正常等待真信号时保持 False。
@@ -262,15 +275,15 @@ CONFIG = {
     "signal_session_high_confirmation_min": 60,
     "signal_session_event_blackouts": [],
     "llm_review_enabled": False,
-    "llm_review_endpoint": "",
-    "llm_review_api_key": "",
-    "llm_review_model": "",
-    "llm_review_timeout_sec": 3,
-    "llm_review_retries": 0,
-    "llm_review_temperature": 0,
-    "llm_review_prompt_version": "llm_review_prompt_v1.0.0",
-    "llm_review_redaction_version": "llm_review_redaction_v1.0.0",
     "logs_dir": "demo/logs",
+    "data_export_enabled": True,
+    "data_export_snapshot_file": "snapshots.jsonl",
+    "data_export_interval_sec": 300,
+    "data_export_min_interval_sec": 180,
+    "data_export_max_interval_sec": 600,
+    "data_export_retry_interval_sec": 180,
+    "data_export_max_snapshots": 12,
+    "decision_snapshot_diagnostic_log_enabled": False,
 
     # ============================================================
     # 模型内部默认区: 信号阈值、证据权重、降级规则和缓存策略。
@@ -294,7 +307,6 @@ CONFIG = {
         "US10Y": [4, 9, 16, 28],
     },
     "macro_volq_shock_bps": 450,
-    "macro_dual_axis_shadow": True,
     "macro_volq_shock_delta_bps": 150,
     "macro_volq_single_factor_blocking": False,
 
@@ -328,7 +340,6 @@ CONFIG = {
     "band_fallback_half_pct": 0.005,
     "band_half_min_pct": 0.001,
     "band_half_max_pct": 0.015,
-    "deviation_threshold": 1.0,
     "anchor_weak_deviation": 1.5,
     "anchor_gravity_window": 144,
     "anchor_gravity_warmup": 20,
@@ -393,9 +404,6 @@ CONFIG = {
     "tmvf_micro_momentum_norm": 0.01,
     "tmvf_micro_momentum_weight": 0.65,
     "tmvf_micro_cvd_weight": 0.35,
-    "tmvf_momentum_threshold": 0.0015,
-    "tmvf_cvd_threshold": 0.0,
-
     "m_die_interval": "1m",
     "m_die_window_bars": 15,
     "m_die_kline_limit": 40,
@@ -439,10 +447,6 @@ CONFIG = {
     "nr_opposite_reset_subrepair_damage_carry_enabled": True,
     "nr_opposite_reset_damage_carry_window_min": 5,
     "signal_event_max_count": 10,
-
-    # v0.51 retired the Bias Thesis arbiter; only the macro hard-block flag
-    # (read by evaluate_macro_verdict, now an EDB helper) remains.
-    "bias_macro_blocking_enabled": True,
 
     # --- v0.5 EDB direction layer + SRD(skew) + GGR(gamma regime) ---
     # All thresholds below are robust starting DEFAULTS, not proven optima.
@@ -581,6 +585,8 @@ USER_CONFIG_KEYS = (
     "gex_info_refresh_sec",
     "gex_info_cache_file",
     "gex_info_cache_max_age_ms",
+    "space_gate_state_file",
+    "space_gate_net_gamma_fresh_ms",
     "signal_review_enabled",
     "signal_review_push_enabled",
     "signal_review_push_test",
@@ -594,15 +600,15 @@ USER_CONFIG_KEYS = (
     "signal_session_high_confirmation_min",
     "signal_session_event_blackouts",
     "llm_review_enabled",
-    "llm_review_endpoint",
-    "llm_review_api_key",
-    "llm_review_model",
-    "llm_review_timeout_sec",
-    "llm_review_retries",
-    "llm_review_temperature",
-    "llm_review_prompt_version",
-    "llm_review_redaction_version",
     "logs_dir",
+    "data_export_enabled",
+    "data_export_snapshot_file",
+    "data_export_interval_sec",
+    "data_export_min_interval_sec",
+    "data_export_max_interval_sec",
+    "data_export_retry_interval_sec",
+    "data_export_max_snapshots",
+    "decision_snapshot_diagnostic_log_enabled",
 )
 
 USER_CONFIG_DOC_CN = {
@@ -656,6 +662,8 @@ USER_CONFIG_DOC_CN = {
     "gex_info_refresh_sec": "GEX 增强接口刷新间隔秒数。",
     "gex_info_cache_file": "GEX 增强接口本地缓存文件。",
     "gex_info_cache_max_age_ms": "GEX 增强接口缓存最大可用毫秒数。",
+    "space_gate_state_file": "SpaceGate 状态持久化文件；空值时写入 logs_dir/space_gate_state.json。",
+    "space_gate_net_gamma_fresh_ms": "SpaceGate 对 gex_info.total_net_gex 的最大可用毫秒数。",
     "signal_review_enabled": "是否把真信号审计卡写入 signal_review.jsonl。",
     "signal_review_push_enabled": "是否对真信号发送 FMZ 短推。",
     "signal_review_push_test": "是否启动一次非真实信号推送自检，正常运行应为 False。",
@@ -668,16 +676,16 @@ USER_CONFIG_DOC_CN = {
     "signal_session_boundary_buffer_min": "信号时区分类边界缓冲分钟数；校准前就低不就高。",
     "signal_session_high_confirmation_min": "进入高前提耐久度前的美盘消化确认分钟数。",
     "signal_session_event_blackouts": "高影响事件黑名单窗口列表；默认空，不联网自动读取。",
-    "llm_review_enabled": "保留兼容字段；当前 FMZ 主进程不调用 LLM，复核由旁路脚本处理。",
-    "llm_review_endpoint": "保留兼容字段；当前不在 FMZ 主进程使用。",
-    "llm_review_api_key": "保留兼容字段；不要写入交付物。",
-    "llm_review_model": "保留兼容字段；当前不在 FMZ 主进程使用。",
-    "llm_review_timeout_sec": "保留兼容字段；当前不在 FMZ 主进程使用。",
-    "llm_review_retries": "保留兼容字段；当前不在 FMZ 主进程使用。",
-    "llm_review_temperature": "保留兼容字段；当前不在 FMZ 主进程使用。",
-    "llm_review_prompt_version": "LLM 复核提示词版本，写入审计字段便于回放对比。",
-    "llm_review_redaction_version": "LLM 复核输入脱敏版本，写入审计字段便于追踪外发包边界。",
+    "llm_review_enabled": "保留兼容标记；FMZ 主进程不调用 LLM，复核由旁路脚本处理。",
     "logs_dir": "FMZ 本地 JSONL 和缓存写入目录。",
+    "data_export_enabled": "是否持续导出工作台近期截面；只读观察用途，不改变信号或交易权限。",
+    "data_export_snapshot_file": "工作台读取的近期截面环文件；默认写入 snapshots.jsonl。",
+    "data_export_interval_sec": "工作台截面导出周期秒数，运行时硬限制在 180 到 600 秒。",
+    "data_export_min_interval_sec": "截面导出周期下限秒数，用于防止过密写盘。",
+    "data_export_max_interval_sec": "截面导出周期上限秒数，用于防止工作台事实长时间不更新。",
+    "data_export_retry_interval_sec": "截面写入失败后的有界重试间隔秒数，不每轮无限重试。",
+    "data_export_max_snapshots": "工作台截面环保留的最近记录条数，不清理自然审计卡或失败证据。",
+    "decision_snapshot_diagnostic_log_enabled": "是否额外写入逐轮 DecisionSnapshot 诊断日志；默认关闭，当前工作台只需要近期截面环。",
 }
 
 CONFIG_RUNTIME_OVERRIDE_PREFIX = "NRD_"
@@ -759,6 +767,7 @@ SCHEMA_DECISION_SNAPSHOT = "DecisionSnapshot"
 SCHEMA_RUNTIME_FACTS = "RuntimeFacts"
 SCHEMA_CONTRACT_AUDIT = "ContractAudit"
 SCHEMA_EVALUATION_SNAPSHOT = "EvaluationSnapshot"
+SCHEMA_WORKBENCH_SNAPSHOT = "WorkbenchSnapshot"
 
 
 def add_schema(payload, schema_name, config=None):
@@ -981,6 +990,31 @@ DATA_SOURCE_MANIFEST = (
         ],
     },
     {
+        "source": "gexmonitorapi_info",
+        "venue": "GEXMonitor API",
+        "base_url_config_key": "gex_info_base_url",
+        "path": "/v1/info",
+        "adapter_method": "GexInfoAdapter.refresh",
+        "http_method": "GET",
+        "auth": "optional_bearer",
+        "params": ["asset"],
+        "raw_schema": "HttpResult",
+        "normalized_schema": "GexInfoSnapshot",
+        "used_by": [
+            "GexInfoAdapter",
+            "FactorSnapshot.gex_info",
+            "FactorSnapshot.space_gate",
+            "EvaluationSnapshot",
+        ],
+        "quality_rules": [
+            "DISABLED->MISSING",
+            "AUTH_OR_NETWORK_ERROR->ERROR",
+            "JSON_PARSE_ERROR->INVALID",
+            "UNRECOGNIZED_PAYLOAD->INVALID",
+            "CACHE_FALLBACK->STALE",
+        ],
+    },
+    {
         "source": "yahoo_macro_chart",
         "venue": "Yahoo Finance",
         "base_url_config_key": "macro_yahoo_base_url",
@@ -1047,9 +1081,9 @@ def validate_data_source_manifest(config=None):
         if source_name in seen:
             errors.append(label + "_duplicate_source")
         seen.add(source_name)
-        if item.get("auth") != "none":
+        if item.get("auth") not in ("none", "optional_bearer"):
             checks["all_public"] = False
-            errors.append(label + "_auth_not_none")
+            errors.append(label + "_auth_not_public_read_only")
         if item.get("http_method") != "GET":
             checks["all_get"] = False
             errors.append(label + "_method_not_get")
@@ -1251,6 +1285,23 @@ def _check_v04_factor_snapshot(factor_snapshot, checks, errors, config):
         errors,
         config,
     )
+    space_gate = factor_snapshot.get("space_gate")
+    checks["factor_snapshot_space_gate_native"] = isinstance(space_gate, dict)
+    if not checks["factor_snapshot_space_gate_native"]:
+        errors.append("factor_snapshot_space_gate_missing")
+    else:
+        checks["space_gate_state"] = (
+            space_gate.get("state") in SPACE_GATE_STATES)
+        checks["space_gate_anchor_native"] = isinstance(
+            space_gate.get("anchor"), dict)
+        checks["space_gate_net_gamma_native"] = isinstance(
+            space_gate.get("net_gamma"), dict)
+        for key in (
+                "space_gate_state",
+                "space_gate_anchor_native",
+                "space_gate_net_gamma_native"):
+            if not checks[key]:
+                errors.append(key + "_failed")
     forbidden = (
         "combo_risk",
         "depth_cost",
@@ -1634,65 +1685,6 @@ class HttpClient:
             "data": None,
             "error": last_error or "unknown_http_error",
             "url": full_url,
-        }, SCHEMA_HTTP_RESULT, self.config)
-
-    def post_json(self, url, payload=None, headers=None, timeout_sec=None,
-                  retries=None):
-        timeout = timeout_sec or self.config["http_timeout_sec"]
-        retry_count = self.config["http_retries"] if retries is None else retries
-        retry_delays = self.config.get("http_retry_delays", [0.6, 1.2])
-        req_headers = {
-            "User-Agent": "Mozilla/5.0 (neutral-regulation-demo)",
-            "Accept": "application/json,text/plain,*/*",
-            "Content-Type": "application/json",
-            "Cache-Control": "no-cache",
-        }
-        if headers:
-            req_headers.update(headers)
-        body = json.dumps(payload or {}, ensure_ascii=False,
-                          separators=(",", ":")).encode("utf-8")
-
-        last_error = None
-        for attempt in range(retry_count + 1):
-            try:
-                req = urllib.request.Request(
-                    url=url, data=body, headers=req_headers, method="POST")
-                resp = self._opener.open(req, timeout=timeout)
-                status = getattr(resp, "status", 200)
-                text = resp.read().decode("utf-8", errors="replace")
-                if status < 200 or status >= 300:
-                    return add_schema({
-                        "quality": QUALITY_ERROR,
-                        "data": None,
-                        "error": "http_status_" + str(status),
-                        "url": url,
-                    }, SCHEMA_HTTP_RESULT, self.config)
-                try:
-                    return add_schema({
-                        "quality": QUALITY_OK,
-                        "data": json.loads(text),
-                        "error": None,
-                        "url": url,
-                    }, SCHEMA_HTTP_RESULT, self.config)
-                except Exception as error:
-                    return add_schema({
-                        "quality": QUALITY_INVALID,
-                        "data": None,
-                        "error": "json_parse_error:" + str(error),
-                        "url": url,
-                    }, SCHEMA_HTTP_RESULT, self.config)
-            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                    OSError) as error:
-                last_error = str(error)
-                if attempt < retry_count:
-                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
-                    time.sleep(delay)
-
-        return add_schema({
-            "quality": QUALITY_ERROR,
-            "data": None,
-            "error": last_error or "unknown_http_error",
-            "url": url,
         }, SCHEMA_HTTP_RESULT, self.config)
 
     @staticmethod
@@ -5542,28 +5534,6 @@ def build_signal_review_card(factor_snapshot, runtime_facts=None,
     return add_schema(card, SCHEMA_SIGNAL_REVIEW_CARD, config)
 
 
-def card_digest(card):
-    """Clean, narrow JSON for the signal bridge: no full cross-section."""
-    card = card or {}
-    conclusion = card.get("conclusion") or {}
-    conflict = card.get("conflict") or {}
-    blocking = card.get("blocking") or {}
-    return {
-        "card_id": card.get("card_id"),
-        "confirmed_time": card.get("confirmed_time"),
-        "lean": conclusion.get("lean"),
-        "support_label": conclusion.get("support_label"),
-        "side_hint": conclusion.get("side_hint"),
-        "confidence": conclusion.get("confidence"),
-        "calibration_state": conclusion.get("calibration_state"),
-        "conflict_ratio": conflict.get("ratio"),
-        "conflict_level": conflict.get("level"),
-        "has_block": blocking.get("has_block"),
-        "block_kind": blocking.get("block_kind"),
-        "veto_reason": (blocking.get("hard_veto") or {}).get("veto_reason"),
-    }
-
-
 def build_sample_review_card(config=None):
     """A fully-populated SAMPLE card for the push self-test
     (config.signal_review_push_test). Synthetic values only -- it exercises every
@@ -7120,334 +7090,6 @@ def _safe_brief(card, config):
         return None
 
 
-LLM_REVIEW_SCHEMA_VERSION = "1.0.0"
-
-_LLM_REVIEW_FACTOR_KEYS = (
-    "tmvf",
-    "micro_flow",
-    "macro_pressure",
-    "gamma_regime",
-    "gex_info",
-    "skew",
-    "funding",
-)
-
-_LLM_REVIEW_REQUIRED_FIELDS = (
-    "summary_cn",
-    "agreement_with_system",
-    "main_supporting_factors",
-    "main_risks_or_conflicts",
-    "operator_focus",
-    "invalid_if",
-    "caution_level",
-    "not_trading_advice",
-)
-
-_LLM_REVIEW_LIST_FIELDS = (
-    "main_supporting_factors",
-    "main_risks_or_conflicts",
-    "operator_focus",
-    "invalid_if",
-)
-
-_LLM_REVIEW_SENSITIVE_KEY_PARTS = (
-    "token",
-    "api_key",
-    "apikey",
-    "secret",
-    "password",
-    "authorization",
-    "bearer",
-    "header",
-    "account",
-    "balance",
-    "position",
-    "order",
-    "quantity",
-    "private",
-    "cache_file",
-    "logs_dir",
-    "local_ref",
-    "local_jsonl",
-    "local_card_json",
-    "static_web_url",
-    "fmz_log_ref",
-    "config_snapshot",
-    "record_hash",
-)
-
-_LLM_REVIEW_FIELD_GLOSSARY = {
-    "decision": "系统程序化结论；LLM 只能解释，不能修改方向、置信、门控或交易许可。",
-    "confidence": "证据质量/收敛程度，不是胜率，也不是收益概率。",
-    "reasoning.evidence": "EDB 证据账本，包含参与、排除、门控和有效权重。",
-    "conflict.ratio": "反向有效证据权重占比；越高代表分歧越高。",
-    "blocking": "硬否决、软门和解除条件；LLM 不得覆盖这些门控。",
-    "rank": "GEX Monitor 最近30日滚动窗口内相对分位；window_days<15 才是 warming_up，达到15日即为稳健可用。",
-    "gex_info": "策略服务器清洗后的 GEX Monitor 只读上下文。",
-}
-
-_LLM_REVIEW_GUARDRAILS = (
-    "你是信号审计复核员，不是交易执行系统。",
-    "只基于给定 JSON 截面复核；不得编造未提供的数据，不得引用外部行情。",
-    "不改变系统信号方向、confidence、EDB、blocking、trade_allowed 或 next_action。",
-    "confidence 不是胜率，只代表证据质量和收敛程度。",
-    "不得因为单一因子强就覆盖系统结论；必须同时检查数据质量、缺失字段和冲突比例。",
-    "rank 冷启动、数据缺失、冲突高或置信未校准时，必须降低复核确定性。",
-    "输出中文 JSON，不写长篇散文，不输出确定性收益预测。",
-)
-
-
-def llm_review_system_prompt():
-    return (
-        "你是信号审计复核员，职责是为程序化交易信号生成外部审计意见。"
-        "你不改变系统信号、不改变置信度、不改变门控、不触发交易执行。"
-        "你只能基于用户提供的 JSON 字段解释证据、风险、冲突和人工观察重点；"
-        "不得编造未提供的数据，不得引用外部实时行情，不得假设盘口或仓位。"
-        "必须明确区分系统结论和 LLM 复核意见；confidence 不是胜率。"
-        "当数据缺失、rank 冷启动、冲突比例高或置信未校准时，必须提高 caution_level。"
-        "只输出一个 JSON object，字段固定为 summary_cn, agreement_with_system, "
-        "main_supporting_factors, main_risks_or_conflicts, operator_focus, invalid_if, "
-        "caution_level, not_trading_advice。"
-    )
-
-
-def build_llm_review_package(record, config=None):
-    """Build the redacted, replayable evidence package sent to the LLM reviewer.
-
-    This is an observability-only projection of the audit card. It deliberately
-    excludes delivery paths, integrity hashes, config snapshots, tokens, account
-    state, positions, orders, and raw logs.
-    """
-    config = config or CONFIG
-    record = record or {}
-    cross = record.get("factor_cross_section") or {}
-    quality = record.get("quality") or {}
-    identity = record.get("identity") or {}
-    signal_window = dict(record.get("signal_window") or {})
-    signal_window.pop("session_context", None)
-    factors = {}
-    for key in _LLM_REVIEW_FACTOR_KEYS:
-        factors[key] = _llm_safe_copy(cross.get(key))
-    return _llm_safe_copy({
-        "schema": {
-            "name": "llm_review_package",
-            "version": LLM_REVIEW_SCHEMA_VERSION,
-            "base_card_schema": ((record.get("schema") or {}).get("name")
-                                 or "signal_review_card"),
-            "base_card_version": (record.get("schema") or {}).get("version"),
-            "prompt_version": config.get("llm_review_prompt_version"),
-            "redaction_version": config.get("llm_review_redaction_version"),
-        },
-        "identity": {
-            "card_id": identity.get("card_id"),
-            "short_id": identity.get("short_id"),
-            "episode_id": identity.get("episode_id"),
-            "event_type": identity.get("event_type"),
-            "is_synthetic": identity.get("is_synthetic"),
-            "symbol": identity.get("symbol"),
-            "strategy_version": identity.get("strategy_version"),
-            "confirmed_at": identity.get("confirmed_at"),
-        },
-        "market_context": record.get("market_context") or {},
-        "decision": record.get("decision") or {},
-        "signal_window": signal_window,
-        "reasoning": record.get("reasoning") or {},
-        "conflict": record.get("conflict") or {},
-        "blocking": record.get("blocking") or {},
-        "quality": {
-            "overall": quality.get("overall"),
-            "all_required_sources_ready": quality.get("all_required_sources_ready"),
-            "missing_fields": quality.get("missing_fields") or [],
-            "degraded_sources": quality.get("degraded_sources") or [],
-            "sources": quality.get("sources") or {},
-        },
-        "factor_cross_section": factors,
-        "field_glossary": _LLM_REVIEW_FIELD_GLOSSARY,
-        "guardrails": list(_LLM_REVIEW_GUARDRAILS),
-    })
-
-
-def build_llm_review_request(record, config=None):
-    config = config or CONFIG
-    package = build_llm_review_package(record, config)
-    user_content = (
-        "请对下面的信号审计 JSON 截面做一次外部复核。"
-        "不要重算模型权重，不要改变系统结论，只输出结构化 JSON。\n"
-        + json.dumps(package, ensure_ascii=False, sort_keys=True)
-    )
-    return {
-        "model": config.get("llm_review_model"),
-        "temperature": safe_float(config.get("llm_review_temperature")) or 0,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": llm_review_system_prompt()},
-            {"role": "user", "content": user_content},
-        ],
-    }
-
-
-def validate_llm_review_output(payload):
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except Exception as exc:
-            return _llm_invalid_output("json_parse_error:" + str(exc), payload)
-    if not isinstance(payload, dict):
-        return _llm_invalid_output("output_not_object", payload)
-    missing = [key for key in _LLM_REVIEW_REQUIRED_FIELDS if key not in payload]
-    if missing:
-        return _llm_invalid_output("missing_fields:" + ",".join(missing), payload)
-    caution = str(payload.get("caution_level") or "").upper()
-    if caution not in ("LOW", "MEDIUM", "HIGH"):
-        return _llm_invalid_output("bad_caution_level:" + caution, payload)
-    for key in _LLM_REVIEW_LIST_FIELDS:
-        if not isinstance(payload.get(key), list):
-            return _llm_invalid_output("field_not_list:" + key, payload)
-    return {
-        "status": "OK",
-        "schema": {
-            "name": "llm_review",
-            "version": LLM_REVIEW_SCHEMA_VERSION,
-        },
-        "reviewed_at": _iso8601_utc8(now_ms()),
-        "summary_cn": _llm_text(payload.get("summary_cn")),
-        "agreement_with_system": _llm_text(payload.get("agreement_with_system")),
-        "main_supporting_factors": _llm_text_list(
-            payload.get("main_supporting_factors")),
-        "main_risks_or_conflicts": _llm_text_list(
-            payload.get("main_risks_or_conflicts")),
-        "operator_focus": _llm_text_list(payload.get("operator_focus")),
-        "invalid_if": _llm_text_list(payload.get("invalid_if")),
-        "caution_level": caution,
-        "not_trading_advice": True,
-    }
-
-
-def attach_llm_review(record, http_client, config=None):
-    """Compatibility no-op.
-
-    LLM review is now generated out of process from signal_review.jsonl by
-    tools/gemini_signal_llm_review.py, so the FMZ signal loop never performs an
-    LLM HTTP request.
-    """
-    del http_client, config
-    return record or {}
-
-
-def _extract_llm_review_payload(data):
-    if isinstance(data, dict) and all(
-            key in data for key in ("summary_cn", "agreement_with_system")):
-        return data
-    if isinstance(data, dict):
-        choices = data.get("choices")
-        if isinstance(choices, list) and choices:
-            message = (choices[0] or {}).get("message") or {}
-            content = message.get("content")
-            if isinstance(content, dict):
-                return content
-            if isinstance(content, str):
-                return json.loads(content)
-    return data
-
-
-def _llm_safe_copy(value):
-    if isinstance(value, dict):
-        out = {}
-        for key, child in value.items():
-            if _llm_sensitive_key(key):
-                continue
-            out[key] = _llm_safe_copy(child)
-        return out
-    if isinstance(value, list):
-        return [_llm_safe_copy(item) for item in value]
-    return value
-
-
-def _llm_sensitive_key(key):
-    normalized = str(key or "").lower()
-    return any(part in normalized for part in _LLM_REVIEW_SENSITIVE_KEY_PARTS)
-
-
-def _llm_text(value):
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _llm_text_list(values):
-    if not isinstance(values, list):
-        return []
-    return [_llm_text(item) for item in values if _llm_text(item)]
-
-
-def _llm_invalid_output(reason, raw=None):
-    review = {
-        "status": "INVALID_OUTPUT",
-        "schema": {
-            "name": "llm_review",
-            "version": LLM_REVIEW_SCHEMA_VERSION,
-        },
-        "reviewed_at": _iso8601_utc8(now_ms()),
-        "summary_cn": "LLM 复核输出结构无效，已降级为无效输出。",
-        "agreement_with_system": "无法判断",
-        "main_supporting_factors": [],
-        "main_risks_or_conflicts": ["LLM 输出缺失固定字段或字段类型不符合契约。"],
-        "operator_focus": ["以系统审计卡原始字段为准，忽略本次 LLM 文本。"],
-        "invalid_if": [],
-        "caution_level": "HIGH",
-        "not_trading_advice": True,
-        "error": str(reason),
-    }
-    if raw is not None:
-        review["raw_excerpt"] = _llm_excerpt(raw)
-    return review
-
-
-def _llm_error_review(reason, config=None):
-    config = config or CONFIG
-    return {
-        "status": "ERROR",
-        "schema": {
-            "name": "llm_review",
-            "version": LLM_REVIEW_SCHEMA_VERSION,
-        },
-        "reviewed_at": _iso8601_utc8(now_ms()),
-        "summary_cn": "LLM 复核调用失败；系统审计卡和短推不受影响。",
-        "agreement_with_system": "无法判断",
-        "main_supporting_factors": [],
-        "main_risks_or_conflicts": ["LLM 复核层软失败：" + str(reason)],
-        "operator_focus": ["以系统审计 JSON 的 decision、reasoning、blocking 为准。"],
-        "invalid_if": [],
-        "caution_level": "HIGH",
-        "not_trading_advice": True,
-        "error": str(reason),
-        "prompt_version": config.get("llm_review_prompt_version"),
-        "redaction_version": config.get("llm_review_redaction_version"),
-    }
-
-
-def _llm_excerpt(raw):
-    try:
-        text = json.dumps(raw, ensure_ascii=False, sort_keys=True)
-    except Exception:
-        text = str(raw)
-    if len(text) > 500:
-        return text[:500] + "...[truncated]"
-    return text
-
-
-def _refresh_audit_integrity(record):
-    if not isinstance(record, dict):
-        return record
-    record.pop("integrity", None)
-    record["integrity"] = _audit_integrity(record)
-    return record
-
-
-def _json_clone(value):
-    return json.loads(json.dumps(value, ensure_ascii=False))
-
-
 def _self_test_push_body(card, config, wrote_json):
     status = " JSON已写" if wrote_json else " JSON失败"
     banner = "【推送自检·非真实信号】"
@@ -7521,16 +7163,6 @@ def _full_card_id(ms, symbol, episode, short):
         stamp = datetime.datetime.fromtimestamp(ms / 1000.0, tz).strftime(
             "%Y%m%dT%H%M%S+0800")
     return "-".join([stamp, str(symbol), str(episode), str(short)])
-
-
-def _local_card_path(full_id, ms):
-    ms = safe_float(ms)
-    if ms is None:
-        ymd = "0000/00/00"
-    else:
-        tz = datetime.timezone(datetime.timedelta(hours=8))
-        ymd = datetime.datetime.fromtimestamp(ms / 1000.0, tz).strftime("%Y/%m/%d")
-    return "audit_archive/cards/" + ymd + "/" + full_id + ".json"
 
 
 def _static_web_url(full_id, config):
@@ -8524,11 +8156,6 @@ def _side_hint_cn(side_hint):
     }.get(side_hint, side_hint or "无")
 
 
-def _dir_cn(direction):
-    return {"UP": "向上", "DOWN": "向下"}.get(
-        str(direction or "").upper(), str(direction or "-"))
-
-
 def _card_id(episode_id, ts):
     base = str(episode_id) if episode_id else str(ts)
     acc = 0
@@ -8570,13 +8197,6 @@ def _fmt_pct(value):
     if value is None:
         return "-"
     return "{:.0%}".format(value)
-
-
-def _fmt_pct_int(value):
-    value = safe_float(value)
-    if value is None:
-        return "-"
-    return "{:.0f}%".format(abs(value))
 
 
 def _fmt_signed_pct(value):
@@ -8753,13 +8373,6 @@ class BinanceAdapter:
             result["error"] = "futures_agg_trades_not_list"
             result["data"] = None
         return result
-
-    def fetch_futures_depth(self, limit=20):
-        url = self.config["binance_futures_base_url"] + "/fapi/v1/depth"
-        return self.http.get_json(url, params={
-            "symbol": self.config["futures_symbol"],
-            "limit": int(limit),
-        })
 
     def fetch_premium_index(self):
         url = self.config["binance_futures_base_url"] + "/fapi/v1/premiumIndex"
@@ -10514,6 +10127,327 @@ def _iso_to_ms(value):
     return int(parsed.timestamp() * 1000)
 
 # ================================================================
+# SOURCE: demo/space_gate.py
+# ================================================================
+"""Producer-native underwriting structure gate.
+
+This is an audit-only fact layer for the current concrete policy candidate. It
+does not change direction selection, weights, LLM behavior, push, or execution.
+"""
+
+
+def build_space_gate_snapshot(anchor_module, gex_info, gamma_regime,
+                              config=None, observed_at_ms=None):
+    config = config or CONFIG
+    observed = safe_int(observed_at_ms)
+    if observed is None or observed <= 0:
+        observed = now_ms()
+    reasons = []
+    anchor = _space_gate_anchor(anchor_module, config, reasons)
+    net_gamma = _space_gate_net_gamma(
+        gex_info, gamma_regime, config, observed, reasons)
+    state = (
+        SPACE_GATE_ELIGIBLE
+        if anchor.get("ok") and net_gamma.get("ok")
+        else SPACE_GATE_BLOCKED)
+    return {
+        "state": state,
+        "observed_at_ms": observed,
+        "since_ts_ms": None,
+        "previous_state": None,
+        "last_transition_ts_ms": None,
+        "reason_codes": _dedupe_reason_codes(reasons),
+        "anchor": anchor,
+        "net_gamma": net_gamma,
+    }
+
+
+def _space_gate_anchor(anchor_module, config, reasons):
+    anchor_module = anchor_module if isinstance(anchor_module, dict) else {}
+    facts = anchor_module.get("facts")
+    facts = facts if isinstance(facts, dict) else {}
+    state = anchor_module.get("state")
+    score = safe_float(facts.get("anchor_gravity_ref_score"))
+    source_ts = safe_int(facts.get("gex_source_ts_ms"))
+    freshness = facts.get("freshness") or facts.get("gex_freshness")
+    min_score = safe_float(config.get("anchor_gravity_valid_score"))
+    if min_score is None:
+        min_score = 60.0
+    if state != STATE_VALID:
+        reasons.append("SPACE_GATE_ANCHOR_NOT_VALID")
+    if score is None:
+        reasons.append("SPACE_GATE_ANCHOR_SCORE_MISSING")
+    elif score < min_score:
+        reasons.append("SPACE_GATE_ANCHOR_SCORE_LOW")
+    if source_ts is None:
+        reasons.append("SPACE_GATE_ANCHOR_SOURCE_TS_MISSING")
+    if freshness != "FRESH":
+        reasons.append("SPACE_GATE_ANCHOR_NOT_FRESH")
+    ok = (
+        state == STATE_VALID
+        and score is not None
+        and score >= min_score
+        and source_ts is not None
+        and freshness == "FRESH")
+    return {
+        "state": state,
+        "score": score,
+        "source_ts_ms": source_ts,
+        "freshness": freshness,
+        "ok": bool(ok),
+    }
+
+
+def _space_gate_net_gamma(gex_info, gamma_regime, config, observed, reasons):
+    info = gex_info if isinstance(gex_info, dict) else {}
+    ggr = gamma_regime if isinstance(gamma_regime, dict) else {}
+    value = safe_float(info.get("total_net_gex"))
+    source_ts = _space_gate_gex_source_ts(info)
+    age_ms = observed - source_ts if source_ts is not None else None
+    sign = _space_gate_sign(value)
+    valid = True
+
+    if not info:
+        reasons.append("SPACE_GATE_GEX_INFO_MISSING")
+        valid = False
+    if info.get("asset") != config.get("asset"):
+        reasons.append("SPACE_GATE_GEX_INFO_ASSET_MISMATCH")
+        valid = False
+    if info.get("quality") != QUALITY_OK:
+        reasons.append("SPACE_GATE_GEX_INFO_QUALITY_NOT_OK")
+        valid = False
+    if not _space_gate_status_ok(info.get("data_state")):
+        reasons.append("SPACE_GATE_GEX_INFO_DATA_STATE_NOT_OK")
+        valid = False
+    if not _space_gate_status_ok(info.get("availability")):
+        reasons.append("SPACE_GATE_GEX_INFO_AVAILABILITY_NOT_OK")
+        valid = False
+    if info.get("stale") is True:
+        reasons.append("SPACE_GATE_GEX_INFO_STALE")
+        valid = False
+    if value is None:
+        reasons.append("SPACE_GATE_NET_GAMMA_MISSING")
+        valid = False
+    elif value <= 0:
+        reasons.append("SPACE_GATE_NET_GAMMA_NOT_POSITIVE")
+        valid = False
+    if source_ts is None:
+        reasons.append("SPACE_GATE_NET_GAMMA_SOURCE_TS_MISSING")
+        valid = False
+    elif age_ms is None or age_ms < 0:
+        reasons.append("SPACE_GATE_NET_GAMMA_SOURCE_TS_FUTURE")
+        valid = False
+    elif age_ms > _space_gate_net_gamma_fresh_ms(config):
+        reasons.append("SPACE_GATE_NET_GAMMA_NOT_FRESH")
+        valid = False
+
+    ggr_data_ok = ggr.get("data_state") == "OK"
+    regime = ggr.get("regime")
+    transition = regime == "TRANSITION"
+    conflict = _space_gate_ggr_conflict(ggr, value)
+    if not ggr:
+        reasons.append("SPACE_GATE_GGR_MISSING")
+    if not ggr_data_ok:
+        reasons.append("SPACE_GATE_GGR_DATA_NOT_OK")
+    if not regime:
+        reasons.append("SPACE_GATE_GGR_REGIME_MISSING")
+    if transition:
+        reasons.append("SPACE_GATE_GGR_TRANSITION")
+    if conflict:
+        reasons.append("SPACE_GATE_GGR_CONFLICT")
+
+    ok = bool(valid and ggr_data_ok and regime and not transition
+              and not conflict)
+    return {
+        "value": value,
+        "unit": "USD",
+        "sign": sign,
+        "source": "gexmonitorapi.gex_board.total_net_gex",
+        "source_ts_ms": source_ts,
+        "age_ms": age_ms,
+        "valid": bool(valid),
+        "transition": bool(transition),
+        "conflict": bool(conflict),
+        "ok": ok,
+    }
+
+
+def _space_gate_net_gamma_fresh_ms(config):
+    configured = safe_int(config.get("space_gate_net_gamma_fresh_ms"))
+    if configured is not None and configured > 0:
+        return configured
+    refresh_sec = safe_float(config.get("gex_info_refresh_sec"))
+    if refresh_sec is not None and refresh_sec > 0:
+        return int(refresh_sec * 2000)
+    return 1200000
+
+
+def _space_gate_gex_source_ts(info):
+    if not isinstance(info, dict):
+        return None
+    semantics = info.get("gex_time_semantics")
+    fields = semantics.get("fields") if isinstance(semantics, dict) else {}
+    entry = fields.get("gex_board.total_net_gex") if isinstance(
+        fields, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    if (entry.get("time_basis") == "fetched_time_only_observation_unknown"
+            or entry.get("time_errors")):
+        return None
+    for key in ("observed_at_ms", "generated_at_ms"):
+        parsed = safe_int(entry.get(key))
+        if parsed is not None and parsed > 0:
+            return parsed
+    for key in ("observed_at", "generated_at"):
+        parsed = _gex_time_ms(entry.get(key))
+        if parsed is not None and parsed > 0:
+            return parsed
+    return None
+
+
+def _space_gate_ggr_conflict(ggr, net_gamma_value):
+    if not isinstance(ggr, dict):
+        return False
+    reasons = set(ggr.get("reason_codes") or [])
+    if ggr.get("gex_info_agrees") is False:
+        return True
+    if reasons.intersection({
+            "GGR_AGG_NET_GEX_DISAGREES",
+            "GGR_GEX_INFO_STATE_DISAGREES",
+    }):
+        return True
+    positive_gex = safe_float(net_gamma_value)
+    if positive_gex is None or positive_gex <= 0:
+        return False
+    proxy = safe_float(ggr.get("net_gamma_notional"))
+    greeks_stale = "GGR_GREEKS_STALE" in reasons
+    if proxy is not None and proxy < 0 and not greeks_stale:
+        return True
+    if ggr.get("regime") == "NEGATIVE_GAMMA_AMPLIFYING":
+        return True
+    return False
+
+
+def _space_gate_status_ok(value):
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("ok", "live", "ready")
+
+
+def _space_gate_sign(value):
+    parsed = safe_float(value)
+    if parsed is None:
+        return "UNKNOWN"
+    if parsed > 0:
+        return "POSITIVE"
+    if parsed < 0:
+        return "NEGATIVE"
+    return "ZERO"
+
+
+def _dedupe_reason_codes(reasons):
+    seen = set()
+    out = []
+    for reason in reasons or []:
+        if not reason or reason in seen:
+            continue
+        seen.add(reason)
+        out.append(reason)
+    return out
+
+
+class SpaceGateStateTracker:
+    def __init__(self, config=None):
+        self.config = config or CONFIG
+        self.state = self._read_state()
+
+    def update(self, snapshot):
+        snapshot = dict(snapshot or {})
+        observed = safe_int(snapshot.get("observed_at_ms")) or now_ms()
+        state = snapshot.get("state")
+        if state not in SPACE_GATE_STATES:
+            state = SPACE_GATE_BLOCKED
+        prior = self.state if isinstance(self.state, dict) else {}
+        prior_state = prior.get("state")
+        if prior_state not in SPACE_GATE_STATES:
+            prior_state = None
+        prior_since = safe_int(prior.get("since_ts_ms"))
+        prior_previous = prior.get("previous_state")
+        if prior_previous not in SPACE_GATE_STATES:
+            prior_previous = None
+        prior_transition = safe_int(prior.get("last_transition_ts_ms"))
+        if prior_state == state:
+            since = prior_since or observed
+            previous = prior_previous
+            transition = prior_transition
+        else:
+            since = observed
+            previous = prior_state
+            transition = observed if prior_state is not None else None
+        snapshot.update({
+            "state": state,
+            "observed_at_ms": observed,
+            "since_ts_ms": since,
+            "previous_state": previous,
+            "last_transition_ts_ms": transition,
+        })
+        self.state = {
+            "state": state,
+            "since_ts_ms": since,
+            "previous_state": previous,
+            "last_transition_ts_ms": transition,
+        }
+        self._write_state(observed)
+        return snapshot
+
+    def _state_path(self):
+        configured = self.config.get("space_gate_state_file")
+        if configured:
+            return configured
+        return os.path.join(
+            self.config.get("logs_dir", "demo/logs"),
+            "space_gate_state.json")
+
+    def _read_state(self):
+        path = self._state_path()
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "state": payload.get("state"),
+            "since_ts_ms": safe_int(payload.get("since_ts_ms")),
+            "previous_state": payload.get("previous_state"),
+            "last_transition_ts_ms": safe_int(
+                payload.get("last_transition_ts_ms")),
+        }
+
+    def _write_state(self, observed):
+        path = self._state_path()
+        if not path:
+            return False
+        temp_path = path + ".tmp"
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = dict(self.state or {})
+            payload["updated_at_ms"] = observed
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False,
+                          sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            return True
+        except Exception as exc:
+            fmz_log("SpaceGate状态写入异常", str(exc))
+            return False
+
+# ================================================================
 # SOURCE: demo/bar_assembler.py
 # ================================================================
 """Aggregate Binance trades into fixed-volume bars."""
@@ -12008,6 +11942,7 @@ def build_factor_snapshot(module_results, strategy_recommendation=None,
         "skew": None,
         "gamma_regime": None,
         "edb": None,
+        "space_gate": None,
     }
     return add_schema(snapshot, SCHEMA_FACTOR_SNAPSHOT, config)
 
@@ -12680,6 +12615,300 @@ class JsonlRecorder:
         return ok
 
 
+class WorkbenchSnapshotExporter:
+    """Bounded, atomic snapshot ring for the local audit workbench."""
+
+    def __init__(self, config=None):
+        self.config = config or CONFIG
+        self.enabled = bool(self.config.get("data_export_enabled", True))
+        self.path = self._snapshot_path()
+        self.min_interval_sec = self._bounded_interval_bound(
+            self.config.get("data_export_min_interval_sec", 180), 180)
+        self.max_interval_sec = self._bounded_interval_bound(
+            self.config.get("data_export_max_interval_sec", 600), 600)
+        if self.min_interval_sec > self.max_interval_sec:
+            self.min_interval_sec = 180
+            self.max_interval_sec = 600
+        self.interval_sec = self._bounded_seconds(
+            self.config.get("data_export_interval_sec", 300), 300)
+        self.retry_interval_sec = self._bounded_seconds(
+            self.config.get("data_export_retry_interval_sec", 180), 180)
+        records = safe_int(self.config.get("data_export_max_snapshots", 12))
+        self.max_records = max(1, min(100, records or 12))
+        self.last_attempt_ms = None
+        self.last_success_ms = None
+        self.last_error_type = None
+        self.last_error_message = None
+        self.last_trigger = None
+        self.last_skip_reason = None
+        self.last_write_records = 0
+        self.write_count = 0
+        self.failure_count = 0
+        self.last_exported_spacegate_signature = None
+        self.current_spacegate_signature = None
+
+    def _snapshot_path(self):
+        configured = str(
+            self.config.get("data_export_snapshot_file") or "").strip()
+        if not configured:
+            configured = "snapshots.jsonl"
+        if os.path.isabs(configured):
+            return configured
+        if os.path.dirname(configured):
+            return configured
+        return os.path.join(
+            self.config.get("logs_dir", "demo/logs"), configured)
+
+    @staticmethod
+    def _bounded_interval_bound(value, default_value):
+        parsed = safe_int(value)
+        if parsed is None:
+            parsed = default_value
+        return max(180, min(600, parsed))
+
+    def _bounded_seconds(self, value, default_value):
+        parsed = safe_int(value)
+        if parsed is None:
+            parsed = default_value
+        return max(self.min_interval_sec, min(self.max_interval_sec, parsed))
+
+    def health_snapshot(self, projected=None):
+        projected = projected or {}
+        attempt_ms = projected.get("last_attempt_ms", self.last_attempt_ms)
+        success_ms = projected.get("last_success_ms", self.last_success_ms)
+        error_type = projected.get("last_error_type", self.last_error_type)
+        error_message = projected.get(
+            "last_error_message", self.last_error_message)
+        trigger = projected.get("last_trigger", self.last_trigger)
+        if not self.enabled:
+            status = "disabled"
+        elif error_type and (success_ms is None or attempt_ms != success_ms):
+            status = "error"
+        elif success_ms is not None:
+            status = "ok"
+        else:
+            status = "waiting"
+        now = now_ms()
+        next_due = None
+        if self.enabled:
+            basis = success_ms if success_ms is not None else attempt_ms
+            if basis is not None:
+                wait_ms = (
+                    self.retry_interval_sec * 1000
+                    if error_type and attempt_ms != success_ms
+                    else self.interval_sec * 1000)
+                next_due = max(0, basis + wait_ms - now)
+            else:
+                next_due = 0
+        return {
+            "status": status,
+            "enabled": self.enabled,
+            "snapshot_file": self.path,
+            "file_kind": "recent_cross_section_ring_jsonl",
+            "interval_sec": self.interval_sec,
+            "min_interval_sec": self.min_interval_sec,
+            "max_interval_sec": self.max_interval_sec,
+            "retry_interval_sec": self.retry_interval_sec,
+            "max_snapshots": self.max_records,
+            "last_attempt_ms": attempt_ms,
+            "last_attempt_utc8": (
+                None if attempt_ms is None else utc8_text(attempt_ms)),
+            "last_success_ms": success_ms,
+            "last_success_utc8": (
+                None if success_ms is None else utc8_text(success_ms)),
+            "last_error_type": error_type or "none",
+            "last_error_message": error_message,
+            "last_trigger": trigger,
+            "last_skip_reason": self.last_skip_reason,
+            "last_write_records": self.last_write_records,
+            "write_count": self.write_count,
+            "failure_count": self.failure_count,
+            "next_due_in_ms": next_due,
+            "spacegate_signature": self.current_spacegate_signature,
+            "last_exported_spacegate_signature": (
+                self.last_exported_spacegate_signature),
+            "preserves_signal_review_jsonl": True,
+            "preserves_failure_evidence": True,
+        }
+
+    def maybe_write(self, payload, factor_snapshot=None):
+        if not self.enabled:
+            self.last_skip_reason = "disabled"
+            return False
+        current_ms = now_ms()
+        signature = self._space_gate_signature(factor_snapshot)
+        self.current_spacegate_signature = signature
+        trigger = self._due_trigger(current_ms, signature)
+        if not trigger:
+            return False
+        self.last_attempt_ms = current_ms
+        self.last_trigger = trigger
+        self.last_skip_reason = None
+        projected_health = self.health_snapshot({
+            "last_attempt_ms": current_ms,
+            "last_success_ms": current_ms,
+            "last_error_type": None,
+            "last_error_message": None,
+            "last_trigger": trigger,
+        })
+        export_payload = dict(payload or {})
+        export_payload["snapshot_exported_ms"] = current_ms
+        export_payload["snapshot_exported_utc8"] = utc8_text(current_ms)
+        export_payload["snapshot_export_trigger"] = trigger
+        export_payload["data_export_bridge"] = projected_health
+        decision = export_payload.get("decision")
+        if isinstance(decision, dict):
+            runtime = dict(decision.get("runtime_facts") or {})
+            runtime["data_export_bridge"] = projected_health
+            decision["runtime_facts"] = runtime
+        add_schema(export_payload, SCHEMA_EVALUATION_SNAPSHOT, self.config)
+        try:
+            written_records = self._atomic_write_ring(export_payload)
+        except Exception as error:
+            self.failure_count += 1
+            self.last_error_type = error.__class__.__name__
+            self.last_error_message = str(error)[:240]
+            fmz_log("工作台截面写入失败", self.path,
+                    self.last_error_type, self.last_error_message)
+            return False
+        self.last_success_ms = current_ms
+        self.last_error_type = None
+        self.last_error_message = None
+        self.last_write_records = written_records
+        self.last_exported_spacegate_signature = signature
+        self.write_count += 1
+        return True
+
+    def _due_trigger(self, current_ms, signature):
+        failure_pending = (
+            self.last_error_type
+            and self.last_attempt_ms is not None
+            and self.last_attempt_ms != self.last_success_ms)
+        if failure_pending:
+            retry_ms = self.retry_interval_sec * 1000
+            if current_ms - self.last_attempt_ms < retry_ms:
+                self.last_skip_reason = "retry_wait"
+                return None
+            return "retry"
+        if self.last_success_ms is None:
+            return "startup"
+        if signature != self.last_exported_spacegate_signature:
+            return "spacegate_transition"
+        interval_ms = self.interval_sec * 1000
+        if current_ms - self.last_success_ms >= interval_ms:
+            return "interval"
+        self.last_skip_reason = "cadence_wait"
+        return None
+
+    def _atomic_write_ring(self, payload):
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        existing = self._read_existing_records()
+        keep = max(0, self.max_records - 1)
+        records = existing[-keep:] if keep else []
+        records.append(payload)
+        data = b"".join(
+            (json.dumps(item, ensure_ascii=False, sort_keys=True,
+                        allow_nan=False) + "\n")
+            .encode("utf-8")
+            for item in records)
+        temp_path = (
+            self.path + ".tmp-" + str(os.getpid()) + "-"
+            + str(payload.get("snapshot_exported_ms") or now_ms()))
+        fd = None
+        replaced = False
+        try:
+            flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            fd = os.open(temp_path, flags, 0o644)
+            written = 0
+            while written < len(data):
+                chunk = os.write(fd, data[written:])
+                if chunk <= 0:
+                    raise OSError("snapshot ring short write")
+                written += chunk
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            os.replace(temp_path, self.path)
+            replaced = True
+            self._fsync_parent_dir(directory)
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            if not replaced:
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except Exception:
+                    pass
+        return len(records)
+
+    def _read_existing_records(self):
+        try:
+            if not os.path.exists(self.path) or os.path.getsize(self.path) <= 0:
+                return []
+            records = []
+            with open(self.path, "rb") as handle:
+                for raw_line in handle:
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    item = json.loads(raw_line.decode("utf-8"))
+                    if isinstance(item, dict):
+                        records.append(item)
+            return records[-self.max_records:]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _fsync_parent_dir(directory):
+        try:
+            flags = os.O_RDONLY
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            dir_fd = os.open(directory, flags)
+        except Exception:
+            return
+        try:
+            os.fsync(dir_fd)
+        except Exception:
+            pass
+        finally:
+            try:
+                os.close(dir_fd)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _space_gate_signature(factor_snapshot):
+        factors = factor_snapshot or {}
+        gate = factors.get("space_gate") or {}
+        if not isinstance(gate, dict):
+            gate = {}
+        anchor = gate.get("anchor") or {}
+        net_gamma = gate.get("net_gamma") or {}
+        reason_codes = gate.get("reason_codes")
+        if not isinstance(reason_codes, (list, tuple)):
+            reason_codes = []
+        return json.dumps({
+            "state": gate.get("state"),
+            "since_ts_ms": gate.get("since_ts_ms"),
+            "previous_state": gate.get("previous_state"),
+            "last_transition_ts_ms": gate.get("last_transition_ts_ms"),
+            "reason_codes": sorted(str(item) for item in reason_codes),
+            "anchor_ok": anchor.get("ok"),
+            "net_gamma_ok": net_gamma.get("ok"),
+            "net_gamma_sign": net_gamma.get("sign"),
+            "net_gamma_transition": net_gamma.get("transition"),
+            "net_gamma_conflict": net_gamma.get("conflict"),
+        }, ensure_ascii=False, sort_keys=True)
+
+
 def render_status(decision_snapshot, module_results, config=None):
     config = config or CONFIG
     if not config.get("log_status_enabled", True):
@@ -12810,6 +13039,7 @@ def _source_timer_table(runtime):
     gex = source_details.get("gex") or {}
     binance = source_details.get("binance") or {}
     deribit = source_details.get("deribit") or {}
+    export_bridge = runtime.get("data_export_bridge") or {}
     return {
         "type": "table",
         "title": "数据源与定时任务",
@@ -12843,6 +13073,11 @@ def _source_timer_table(runtime):
              "年龄 " + _fmt_age(runtime.get("gex_fetch_age_ms")),
              "GEX刷新 " + _fmt_age(runtime.get("gex_next_fetch_in_ms")),
              _detail_text(gex, ("cached", "error"))],
+            ["工作台截面", _fmt(export_bridge.get("status")),
+             "成功 " + _fmt(export_bridge.get("last_success_utc8"))
+             + " / 写入 " + _fmt(export_bridge.get("write_count")),
+             "下次 " + _fmt_age(export_bridge.get("next_due_in_ms")),
+             "错误 " + _fmt(export_bridge.get("last_error_type"))],
             ["主循环", "运行中", "间隔 " + _fmt_age(runtime.get("loop_sleep_ms")),
              "下一轮由 FMZ Sleep 控制",
              "最大循环=" + _fmt(runtime.get("max_main_loops"))],
@@ -13754,6 +13989,7 @@ class DemoRuntime:
             self.binance.normalize_agg_trade,
         )
         self.recorder = JsonlRecorder(self.config)
+        self.snapshot_exporter = WorkbenchSnapshotExporter(self.config)
         self.option_expiries = []
         self.futures_facts = {}
         self.current_price = None
@@ -13767,8 +14003,6 @@ class DemoRuntime:
         self.last_anchor_bar_index = None
         self.tmvf_klines = []
         self.tmvf_funding_points = []
-        self.last_good_tmvf_klines = []
-        self.last_good_tmvf_funding_points = []
         self.last_tmvf_attempt_ms = None
         self.last_tmvf_refresh_ms = None
         self.last_tmvf_funding_success_ms = None
@@ -13776,7 +14010,6 @@ class DemoRuntime:
         self.tmvf_funding_quality = QUALITY_MISSING
         self.tmvf_data_quality = QUALITY_MISSING
         self.mdie_klines = []
-        self.last_good_mdie_klines = []
         self.last_mdie_attempt_ms = None
         self.last_mdie_refresh_ms = None
         self.mdie_data_quality = QUALITY_MISSING
@@ -13784,6 +14017,7 @@ class DemoRuntime:
         self.last_macro_snapshot = None
         self.neutral_repair_tracker = NeutralRepairSignalTracker(self.config)
         self.signal_events = SignalEventTracker(self.config)
+        self.space_gate = SpaceGateStateTracker(self.config)
         self.option_instruments = []
         self.option_greeks = []
         self.last_option_greeks_refresh_ms = None
@@ -13986,6 +14220,12 @@ class DemoRuntime:
         # SOFT data-enhancement context: panel + snapshot logging only. Not a
         # vote, not an EDB evidence, does not touch direction/confidence.
         factor_snapshot["gex_info"] = self.last_gex_info_snapshot
+        factor_snapshot["space_gate"] = self.space_gate.update(
+            build_space_gate_snapshot(
+                anchor,
+                factor_snapshot.get("gex_info"),
+                gamma_regime,
+                self.config))
         self.prev_edb_score = edb.get("edb_score")
         self._update_edb_history(factor_snapshot.get("flow"), skew)
         strategy_recommendation = build_strategy_recommendation(
@@ -14020,14 +14260,19 @@ class DemoRuntime:
             decision_snapshot, module_results, factor_snapshot, self.config)
         decision_snapshot["contract_audit"] = contract_audit
         self.chart.update(decision_snapshot)
-        attach_runtime_facts(decision_snapshot, self._runtime_facts())
-        self.recorder.write("decisions", decision_snapshot)
-        self.recorder.write("snapshots", add_schema({
+        snapshot_payload = {
             "decision": decision_snapshot,
             "modules": module_results,
             "factor_snapshot": factor_snapshot,
             "contract_audit": contract_audit,
-        }, SCHEMA_EVALUATION_SNAPSHOT, self.config))
+        }
+        self.snapshot_exporter.maybe_write(snapshot_payload, factor_snapshot)
+        attach_runtime_facts(decision_snapshot, self._runtime_facts())
+        contract_audit = validate_evaluation_contract(
+            decision_snapshot, module_results, factor_snapshot, self.config)
+        decision_snapshot["contract_audit"] = contract_audit
+        if self.config.get("decision_snapshot_diagnostic_log_enabled", False):
+            self.recorder.write("decisions", decision_snapshot)
         self._log_tick_summary(decision_snapshot, module_results)
         render_status(decision_snapshot, module_results, self.config)
         return decision_snapshot, module_results
@@ -14384,6 +14629,7 @@ class DemoRuntime:
             },
             "source_quality": dict(self.last_source_quality),
             "source_details": dict(self.last_source_details),
+            "data_export_bridge": self.snapshot_exporter.health_snapshot(),
             "chart": self.chart.snapshot(),
         }, SCHEMA_RUNTIME_FACTS, self.config)
 
@@ -14432,14 +14678,11 @@ class DemoRuntime:
                     kline_quality = QUALITY_STALE
                 else:
                     self.tmvf_klines = klines
-                    self.last_good_tmvf_klines = list(klines)
                     self.last_tmvf_refresh_ms = attempt_ms
                     kline_quality = QUALITY_OK
             else:
                 kline_quality = QUALITY_MISSING
         if kline_quality != QUALITY_OK:
-            if self.tmvf_klines:
-                self.last_good_tmvf_klines = list(self.tmvf_klines)
             self.tmvf_klines = []
 
         end_ms = attempt_ms
@@ -14473,15 +14716,11 @@ class DemoRuntime:
                     funding_quality = QUALITY_STALE
                 else:
                     self.tmvf_funding_points = funding_points
-                    self.last_good_tmvf_funding_points = list(funding_points)
                     self.last_tmvf_funding_success_ms = attempt_ms
                     funding_quality = QUALITY_OK
             else:
                 funding_quality = QUALITY_MISSING
         if funding_quality != QUALITY_OK:
-            if self.tmvf_funding_points:
-                self.last_good_tmvf_funding_points = list(
-                    self.tmvf_funding_points)
             self.tmvf_funding_points = []
 
         self.last_tmvf_attempt_ms = attempt_ms
@@ -14522,14 +14761,11 @@ class DemoRuntime:
                     quality = QUALITY_STALE
                 else:
                     self.mdie_klines = klines
-                    self.last_good_mdie_klines = list(klines)
                     self.last_mdie_refresh_ms = attempt_ms
                     quality = QUALITY_OK
             else:
                 quality = QUALITY_MISSING
         if quality != QUALITY_OK:
-            if self.mdie_klines:
-                self.last_good_mdie_klines = list(self.mdie_klines)
             self.mdie_klines = []
         self.last_mdie_attempt_ms = attempt_ms
         self.mdie_data_quality = quality
@@ -14979,8 +15215,6 @@ class DemoRuntime:
         self.last_tmvf_refresh_ms = base_ts_ms
         self.last_tmvf_attempt_ms = base_ts_ms
         self.last_tmvf_funding_success_ms = base_ts_ms
-        self.last_good_tmvf_klines = list(self.tmvf_klines)
-        self.last_good_tmvf_funding_points = list(self.tmvf_funding_points)
         self.tmvf_kline_quality = QUALITY_OK
         self.tmvf_funding_quality = QUALITY_OK
         self.tmvf_data_quality = QUALITY_OK
@@ -15005,7 +15239,6 @@ class DemoRuntime:
             mdie_price = close_price
         self.last_mdie_refresh_ms = base_ts_ms
         self.last_mdie_attempt_ms = base_ts_ms
-        self.last_good_mdie_klines = list(self.mdie_klines)
         self.mdie_data_quality = QUALITY_OK
         self.last_macro_snapshot = offline_macro_pressure_snapshot(
             self.config, base_ts_ms,
