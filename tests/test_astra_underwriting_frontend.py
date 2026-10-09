@@ -261,13 +261,13 @@ def test_underwriting_snapshot_renders_real_evaluate_contract_liability_and_boun
     assert "腿宽 2,000 USD" in panel
     assert "2026/9/26" in panel
     assert "24 小时" in panel
-    assert "权利金差 c" in panel
+    assert "权利金差" in panel
     assert "0.0004 BTC" in panel
-    assert "总费用 f" in panel
+    assert "持有到期总费用 f_total" in panel
     assert "0.0000375 BTC" in panel
-    assert "冻结赔付 μ_ref" in panel
+    assert "冻结 μ_ref" in panel
     assert "0.00025 BTC" in panel
-    assert "参考余量 M_ref" in panel
+    assert "参考补偿余量 M_ref" in panel
     assert "0.0001125 BTC" in panel
     assert "到期盈亏平衡价" in panel
     assert "96,649.65 USD" in panel
@@ -314,7 +314,7 @@ def test_underwriting_review_body_is_hidden_from_candidate_when_snapshot_binding
 
     assert "同版评审：未绑定同版评审" in areas["candidateArea"]
     assert "盘口、费用与冻结风险参考绑定同一候选" not in areas["candidateArea"]
-    assert "上一次冻结保单" in areas["manualReviewState"]
+    assert "此前有效评审 · 历史参考" in areas["manualReviewState"]
     assert "盘口、费用与冻结风险参考绑定同一候选" in areas["manualReviewState"]
 
 

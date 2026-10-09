@@ -13,6 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from email.message import EmailMessage
 import argparse
+import gzip
 import hashlib
 import hmac
 import json
@@ -25,8 +26,8 @@ import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Mapping
-from urllib.parse import unquote, urlparse
+from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import unquote, urlparse, parse_qs
 
 if __package__:
     from . import astra_underwriting_discovery_v20 as discovery
@@ -42,6 +43,14 @@ if __package__:
     from . import astra_map_v24 as map_core
     from . import astra_map_projection_v24 as map_projection
     from . import astra_risk_qualification_v244 as risk_qualification
+    from . import astra_candidate_asof_v1 as candidate_asof
+    from . import astra_wpem_workbench_v1 as wpem_workbench
+    from . import astra_wpem_product_review_v1 as wpem_review
+    from . import astra_release_identity_v1 as release_core
+    from . import astra_locked_candidate_store_v1 as locked_store
+    from . import astra_locked_candidate_compare_v1 as locked_compare
+    from . import astra_workbench_reading_v1 as reading
+    from .astra_workbench_session_v1 import WorkbenchSessions
     from . import signal_llm_review
 else:  # direct CLI execution from tools/
     import astra_underwriting_discovery_v20 as discovery
@@ -57,6 +66,14 @@ else:  # direct CLI execution from tools/
     import astra_map_v24 as map_core
     import astra_map_projection_v24 as map_projection
     import astra_risk_qualification_v244 as risk_qualification
+    import astra_candidate_asof_v1 as candidate_asof
+    import astra_wpem_workbench_v1 as wpem_workbench
+    import astra_wpem_product_review_v1 as wpem_review
+    import astra_release_identity_v1 as release_core
+    import astra_locked_candidate_store_v1 as locked_store
+    import astra_locked_candidate_compare_v1 as locked_compare
+    import astra_workbench_reading_v1 as reading
+    from astra_workbench_session_v1 import WorkbenchSessions
     import signal_llm_review
 
 SCHEMA = "astra_workbench@2.0.0"
@@ -76,6 +93,9 @@ MANUAL_REVIEW_COOLDOWN_REASON = "manual_review_cooldown_active"
 MANUAL_REVIEW_INFLIGHT_REASON = "manual_review_inflight"
 MANUAL_REVIEW_BUDGET_EXHAUSTED_REASON = "manual_review_budget_exhausted"
 _POST_ATOMIC_REASONS = {MANUAL_REVIEW_COOLDOWN_REASON, MANUAL_REVIEW_INFLIGHT_REASON}
+REVIEW_PURPOSE = "review"
+OBSERVATION_PURPOSE = "observation"
+_REVIEW_PURPOSES = {REVIEW_PURPOSE, OBSERVATION_PURPOSE}
 
 
 class WorkbenchError(Exception):
@@ -102,6 +122,37 @@ def _canonical(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+_PRIVATE_REVIEW_DISPLAY_KEYS = {
+    "raw_response",
+    "raw_provider_response",
+    "provider_raw",
+    "provider_response",
+    "provider_response_raw",
+    "provider_raw_response",
+    "provider_reasoning",
+    "provider_reasoning_content",
+    "raw_reasoning",
+    "raw_reasoning_content",
+    "reasoning_content",
+}
+
+
+def _strip_private_review_display(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if key_text in _PRIVATE_REVIEW_DISPLAY_KEYS:
+                continue
+            if key_text.endswith("_raw_response") or key_text.endswith("_reasoning_content"):
+                continue
+            out[key] = _strip_private_review_display(item)
+        return out
+    if isinstance(value, list):
+        return [_strip_private_review_display(item) for item in value]
+    return deepcopy(value)
 
 
 def _write_json_atomic(path: str | Path, value: Mapping[str, Any]) -> None:
@@ -152,15 +203,1178 @@ def _review_receipt_for_display(value: Any) -> Any:
         return deepcopy(value)
     out = deepcopy(dict(value))
     body = out.get("review") if isinstance(out.get("review"), Mapping) else out
+    if isinstance(body.get("wpem_evidence"), Mapping):
+        body["wpem_evidence"] = wpem_workbench.public_evidence(body["wpem_evidence"])
+    for key in ("decision_trace", "llm_explanation", "q1", "q2", "selection_origin"):
+        if isinstance(body.get(key), Mapping):
+            body[key] = wpem_workbench.public_evidence(body[key])
     if (out.get("status") in {"OK", "RESEARCH_OK", "attached"}
-            and body.get("response_protocol") != review_core.RESPONSE_PROTOCOL):
+            and body.get("response_protocol") not in {
+                review_core.RESPONSE_PROTOCOL,
+                wpem_review.RESPONSE_PROTOCOL,
+                wpem_review.ROUTING_RESPONSE_PROTOCOL,
+                "evidence_points@2.6.4",
+            }):
         out.update(status="stale_protocol_review", legacy_status=value.get("status"),
                    current_protocol_qualified=False,
                    expected_response_protocol=review_core.RESPONSE_PROTOCOL,
                    reason_cn="旧协议历史回执，未按当前有限目录复核；未自动重发。")
         if body is not out:
             out["review"] = _review_receipt_for_display(body)
+    return _strip_private_review_display(out)
+
+
+def _accepted_review_status(value: Mapping[str, Any]) -> bool:
+    outer_status = value.get("status")
+    if isinstance(value.get("review"), Mapping):
+        return (outer_status in {"OK", "RESEARCH_OK", "attached"}
+                and value["review"].get("status") in {"OK", "RESEARCH_OK"})
+    return outer_status in {"OK", "RESEARCH_OK", "attached"}
+
+
+def _review_body(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return value.get("review") if isinstance(value.get("review"), Mapping) else value
+
+
+def _review_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    body = _review_body(value)
+    validity = body.get("review_validity") if isinstance(body.get("review_validity"), Mapping) else {}
+    return {
+        "candidate_id": value.get("candidate_id") or body.get("candidate_id") or validity.get("candidate_id"),
+        "snapshot_id": (value.get("snapshot_id") or body.get("reviewed_snapshot_id")
+                        or body.get("snapshot_id") or validity.get("snapshot_id")),
+    }
+
+
+def _receipt_needs_full_proof(snapshot_id: str | None, receipt: Any) -> bool:
+    return bool(snapshot_id and isinstance(receipt, Mapping)
+                and _accepted_review_status(receipt)
+                and _review_identity(receipt).get("snapshot_id") == snapshot_id)
+
+
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _reviewed_at_ms(value: Mapping[str, Any], fallback: Any = None) -> int | None:
+    body = _review_body(value)
+    return _first_int(
+        value.get("reviewed_at_ms"),
+        value.get("completed_at_ms"),
+        value.get("recorded_ts_ms"),
+        value.get("historical_completed_ts_ms"),
+        body.get("reviewed_at_ms"),
+        body.get("recorded_ts_ms"),
+        fallback,
+    )
+
+
+def _receipt_id(value: Mapping[str, Any]) -> str | None:
+    body = _review_body(value)
+    for key in ("idempotency_key", "receipt_id", "review_hash", "event_id"):
+        if value.get(key):
+            return str(value[key])
+        if body.get(key):
+            return str(body[key])
+    try:
+        return _hash(value)[:24]
+    except Exception:
+        return None
+
+
+def _display_binding(
+    value: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    same_input: bool,
+    reviewed_at_ms: int | None = None,
+) -> dict[str, Any]:
+    body = _review_body(value)
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    validity = body.get("review_validity") if isinstance(body.get("review_validity"), Mapping) else {}
+    trace = body.get("decision_trace") if isinstance(body.get("decision_trace"), Mapping) else {}
+    trace_binding = trace.get("binding") if isinstance(trace.get("binding"), Mapping) else {}
+    identity = _review_identity(value)
+    binding = {
+        "candidate_id": identity.get("candidate_id") or snapshot.get("candidate_id"),
+        "snapshot_id": identity.get("snapshot_id") or snapshot.get("snapshot_id"),
+        "evidence_input_hash": trace_binding.get("evidence_input_hash"),
+        "frozen_at_ms": _first_int(
+            value.get("frozen_at_ms"),
+            body.get("frozen_at_ms"),
+            validity.get("quote_timestamp_ms"),
+            (snapshot.get("market") or {}).get("valuation_ts_ms"),
+        ),
+        "reviewed_at_ms": reviewed_at_ms if reviewed_at_ms is not None else _reviewed_at_ms(value),
+        "receipt_id": _receipt_id(value),
+        "same_input": bool(same_input),
+    }
+    for key in (
+        "quote_hash",
+        "risk_hash",
+        "window_evidence_hash",
+        "review_evidence_hash",
+        "projection_hash",
+        "review_input_version",
+        "llm_protocol",
+        "routing_schema",
+        "routing_hash",
+    ):
+        if validity.get(key) is not None:
+            binding[key] = deepcopy(validity[key])
+    return binding
+
+
+def _with_display_binding(
+    value: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    same_input: bool,
+    reviewed_at_ms: int | None = None,
+) -> dict[str, Any]:
+    display = _review_receipt_for_display(value)
+    if not isinstance(display, Mapping):
+        display = {}
+    out = deepcopy(dict(display))
+    binding = _display_binding(value, candidate, same_input=same_input, reviewed_at_ms=reviewed_at_ms)
+    body = _review_body(value)
+    for key in ("research_only", "production_attach_allowed", "execution_allowed"):
+        if key not in out and key in body:
+            out[key] = deepcopy(body[key])
+    out["display_binding"] = binding
+    if isinstance(out.get("review"), Mapping):
+        nested = deepcopy(dict(out["review"]))
+        nested["display_binding"] = deepcopy(binding)
+        out["review"] = nested
     return out
+
+
+def _review_has_display_explanation(value: Mapping[str, Any]) -> bool:
+    body = _review_body(value)
+    explanation = body.get("llm_explanation")
+    if isinstance(explanation, Mapping):
+        for key in ("q1", "q2"):
+            item = explanation.get(key)
+            if isinstance(item, Mapping) and (item.get("points") or item.get("text_cn")):
+                return True
+    for key in ("q1", "q2"):
+        if isinstance(body.get(key), Mapping) and body[key]:
+            return True
+    return bool(body.get("summary_cn"))
+
+
+def _decision_trace_evidence_input_hash(value: Mapping[str, Any]) -> str | None:
+    body = _review_body(value)
+    trace = body.get("decision_trace") if isinstance(body.get("decision_trace"), Mapping) else {}
+    binding = trace.get("binding") if isinstance(trace.get("binding"), Mapping) else {}
+    evidence_hash = binding.get("evidence_input_hash")
+    return evidence_hash if isinstance(evidence_hash, str) and evidence_hash else None
+
+
+def _current_review_display_binding(
+    snapshot: Mapping[str, Any],
+    wpem_package: Mapping[str, Any],
+    body: Mapping[str, Any],
+    *,
+    model: str | None,
+) -> dict[str, Any] | None:
+    review_input = wpem_review.build_review_input(
+        snapshot,
+        wpem_package,
+        research_only=body.get("research_only") is True,
+        model=model,
+    )
+    evidence_input = review_input.get("evidence_input")
+    if not isinstance(evidence_input, Mapping) or not evidence_input:
+        return None
+    expected = wpem_review.review_binding(snapshot, wpem_package, review_input, model=model)
+    expected["evidence_input_hash"] = _hash(evidence_input)
+    return expected
+
+
+def _receipt_dedupe_key(value: Mapping[str, Any]) -> tuple[Any, ...]:
+    body = _review_body(value)
+    validity = body.get("review_validity") if isinstance(body.get("review_validity"), Mapping) else {}
+    identity = _review_identity(value)
+    return (
+        value.get("status"),
+        body.get("status"),
+        identity.get("candidate_id"),
+        identity.get("snapshot_id"),
+        body.get("response_protocol"),
+        body.get("packet_hash"),
+        validity.get("projection_hash") or body.get("projection_hash"),
+        validity.get("review_evidence_hash"),
+        validity.get("window_evidence_hash"),
+        _decision_trace_evidence_input_hash(value),
+    )
+
+
+def _candidate_data_asof_ms(candidate: Mapping[str, Any]) -> int | None:
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    return _first_int((snapshot.get("market") or {}).get("valuation_ts_ms"))
+
+
+def _history_receipt(entry: Mapping[str, Any]) -> tuple[Mapping[str, Any], int | None]:
+    if isinstance(entry.get("result"), Mapping):
+        receipt = deepcopy(dict(entry["result"]))
+        if entry.get("idempotency_key") and not receipt.get("idempotency_key"):
+            receipt["idempotency_key"] = entry.get("idempotency_key")
+        return receipt, _first_int(entry.get("updated_at_ms"))
+    return entry, _reviewed_at_ms(entry)
+
+
+def _safe_public_text(value: Any) -> Any:
+    if not isinstance(value, str):
+        return deepcopy(value)
+    if re.search(r"[A-Za-z]:[\\/]", value):
+        return None
+    if value.startswith("\\\\"):
+        return None
+    if re.search(r"(^|[\s\"'=])/(home|srv|opt|var|tmp)(/|$)", value):
+        return None
+    return value
+
+
+_PUBLIC_DROP = object()
+
+
+def _scrub_public_value(value: Any, *, _usage_qualification: bool = False) -> Any:
+    if isinstance(value, Mapping):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            key_text = str(key).lower()
+            key_norm = key_text.replace("-", "_")
+            if key_text in _PRIVATE_REVIEW_DISPLAY_KEYS:
+                continue
+            if key_norm != "usage_qualification" and (
+                    key_norm in ({"provider_usage", "headers", "x_api_key", "private_key"}
+                                 if _usage_qualification else
+                                 {"usage", "provider_usage", "headers", "x_api_key", "private_key"})
+                    or any(part in key_norm for part in (
+                        "api_key", "authorization", "password", "credential", "secret", "private_key"
+                    ))):
+                continue
+            if key_text.endswith("_token") or key_text.endswith("_raw_response") or key_text.endswith("_reasoning_content"):
+                continue
+            scrubbed = _scrub_public_value(item, _usage_qualification=key_norm == "usage_qualification")
+            if scrubbed is not _PUBLIC_DROP:
+                out[key] = scrubbed
+        return out
+    if isinstance(value, list):
+        return [
+            item for item in (
+                _scrub_public_value(item, _usage_qualification=_usage_qualification) for item in value
+            )
+            if item is not _PUBLIC_DROP
+        ]
+    if isinstance(value, str):
+        safe = _safe_public_text(value)
+        return _PUBLIC_DROP if safe is None else safe
+    return deepcopy(value)
+
+
+def _stable_receipt_id(value: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    binding = value.get("display_binding") if isinstance(value.get("display_binding"), Mapping) else {}
+    if binding.get("receipt_id"):
+        return str(binding["receipt_id"])
+    review = value.get("review") if isinstance(value.get("review"), Mapping) else {}
+    nested = review.get("display_binding") if isinstance(review.get("display_binding"), Mapping) else {}
+    if nested.get("receipt_id"):
+        return str(nested["receipt_id"])
+    return _receipt_id(value)
+
+
+def _demotion_reason_cn(reason: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(reason, Mapping):
+        return None
+    code = str(reason.get("code") or "")
+    messages = {
+        "candidate_id_mismatch": "历史回执绑定的 candidate_id 与当前候选不同，只能折叠参考。",
+        "snapshot_id_mismatch": "历史回执绑定的 snapshot_id 与当前快照不同，只能折叠参考。",
+        "evidence_input_hash_mismatch": "历史回执的实际 LLM input hash 与当前冻结输入不同，只能折叠参考。",
+        "quote_timestamp_not_current": "历史回执报价时间不覆盖当前读取时点，只能折叠参考。",
+        "valid_until_expired": "历史回执已超过原记录有效窗口，只能折叠参考。",
+        "model_mismatch": "历史回执使用的模型身份与当前配置不同，只能折叠参考。",
+        "review_evidence_hash_mismatch": "历史回执的 WPEM evidence hash 与当前证据包不同，只能折叠参考。",
+        "quote_hash_mismatch": "历史回执的报价 hash 与当前快照不同，只能折叠参考。",
+        "risk_hash_mismatch": "历史回执的风险参考 hash 与当前快照不同，只能折叠参考。",
+        "selector_exception": "当前审计重建遇到异常，回执不升级为当前解释；程序事实仍可阅读。",
+    }
+    return messages.get(code) or (f"历史回执未通过当前选择器检查：{code}。" if code else None)
+
+
+def _first_demotion_reason(binding: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(binding, Mapping):
+        return None
+    reasons = binding.get("demotion_reasons")
+    if isinstance(reasons, list) and reasons:
+        return _demotion_reason_cn(reasons[0])
+    return None
+
+
+def _lineage_limitation(message_cn: str, *, error_type: str | None = None) -> dict[str, Any]:
+    out = {
+        "schema": "observation_lineage@1",
+        "status": "LIMITED",
+        "reason_cn": message_cn,
+        "points": [],
+        "evidence": [],
+        "program_points": [],
+        "source_records": [],
+        "input_omissions": [],
+        "hash_dictionary": [],
+        "proof_limits": [message_cn],
+    }
+    if error_type:
+        out["error_type"] = error_type
+    return out
+
+
+def _public_review_binding_metadata(
+    value: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    same_input: bool,
+    reviewed_at_ms: int | None = None,
+    selector_diagnostics: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    body = _review_body(value)
+    out = _display_binding(value, candidate, same_input=same_input, reviewed_at_ms=reviewed_at_ms)
+    out["status"] = value.get("status")
+    if body is not value:
+        out["review_status"] = body.get("status")
+    for key in ("response_protocol", "packet_hash", "projection_hash", "requested_model"):
+        if body.get(key) is not None:
+            out[key] = deepcopy(body[key])
+    if isinstance(selector_diagnostics, Mapping):
+        out["selector_status"] = selector_diagnostics.get("status")
+        reasons = selector_diagnostics.get("demotion_reasons")
+        if isinstance(reasons, list):
+            out["demotion_reasons"] = deepcopy(reasons)
+    return _strip_private_review_display(out)
+
+
+def _analysis_identity(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    body = _review_body(value)
+    validity = body.get("review_validity") if isinstance(body.get("review_validity"), Mapping) else {}
+    trace = body.get("decision_trace") if isinstance(body.get("decision_trace"), Mapping) else {}
+    binding = trace.get("binding") if isinstance(trace.get("binding"), Mapping) else {}
+    identity = {
+        "model": body.get("requested_model") or validity.get("model") or body.get("model"),
+        "review_input_schema": binding.get("schema") or validity.get("review_input_version"),
+        "response_protocol": body.get("response_protocol") or binding.get("response_protocol"),
+        "prompt_hash": body.get("prompt_hash") or validity.get("prompt_hash"),
+        "prompt_id": body.get("prompt_id") or validity.get("prompt_id"),
+    }
+    return identity if any(item is not None for item in identity.values()) else None
+
+
+def _is_rejected_review_attempt(value: Mapping[str, Any]) -> bool:
+    body = _review_body(value)
+    statuses = {
+        str(item).lower()
+        for item in (value.get("status"), body.get("status"))
+        if item is not None
+    }
+    if statuses & {"rejected", "failed", "error", "timeout", "malformed"}:
+        return True
+    return bool(value.get("reason_cn") or body.get("reason_cn")) and "not_attached" not in statuses
+
+
+def _candidate_source_manifest(candidate: Mapping[str, Any]) -> Mapping[str, Any]:
+    if isinstance(candidate.get("source_manifest"), Mapping):
+        return candidate["source_manifest"]
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    identity = snapshot.get("data_identity") if isinstance(snapshot.get("data_identity"), Mapping) else {}
+    manifest = identity.get("source_manifest") if isinstance(identity.get("source_manifest"), Mapping) else {}
+    return manifest
+
+
+def _public_source_record(
+    record: Mapping[str, Any],
+    *,
+    candidate_id: Any = None,
+    snapshot_id: Any = None,
+) -> dict[str, Any] | None:
+    identity = record.get("identity") if isinstance(record.get("identity"), Mapping) else {}
+    version = record.get("version") if isinstance(record.get("version"), Mapping) else {}
+    quality = record.get("quality") if isinstance(record.get("quality"), Mapping) else {}
+    collector = record.get("collector") if isinstance(record.get("collector"), Mapping) else {}
+    usage = record.get("usage_qualification") if isinstance(record.get("usage_qualification"), Mapping) else {}
+    time_info = record.get("time") if isinstance(record.get("time"), Mapping) else {}
+    content = record.get("content") if isinstance(record.get("content"), Mapping) else {}
+    values = content.get("values") if isinstance(content.get("values"), Mapping) else {}
+    content_hashes = {
+        key: _safe_public_text(content.get(key))
+        for key in ("content_hash", "hash", "sha256", "raw_response_sha256")
+        if content.get(key)
+    }
+    if values.get("source_hash"):
+        content_hashes["values.source_hash"] = _safe_public_text(values.get("source_hash"))
+    out = {
+        "lane": "current_snapshot_source_manifest",
+        "candidate_id": candidate_id,
+        "snapshot_id": snapshot_id,
+        "record_id": _safe_public_text(record.get("record_id")),
+        "product_id": _safe_public_text(identity.get("product_id")),
+        "provider_id": _safe_public_text(identity.get("provider_id")),
+        "source_ref": _safe_public_text(identity.get("source_ref")),
+        "definition_version": _safe_public_text(identity.get("definition_version")),
+        "market": _safe_public_text(identity.get("market")),
+        "asset": _safe_public_text(identity.get("asset")),
+        "currency": _safe_public_text(identity.get("currency")),
+        "aggregation": _safe_public_text(identity.get("aggregation")),
+        "unit": _safe_public_text(identity.get("unit")),
+        "time": {
+            "observation_start_ms": time_info.get("observation_start_ms"),
+            "observation_end_ms": time_info.get("observation_end_ms"),
+            "published_at_ms": time_info.get("published_at_ms"),
+            "first_seen_at_ms": time_info.get("first_seen_at_ms"),
+        },
+        "hashes": {
+            "source_revision": _safe_public_text(version.get("source_revision")),
+            "payload_hash": _safe_public_text(version.get("payload_hash")),
+            "normalized_version": _safe_public_text(version.get("normalized_version")),
+            "normalizer_version": _safe_public_text(version.get("normalizer_version")),
+            "content_hashes": {key: value for key, value in content_hashes.items() if value is not None},
+        },
+        "quality": {
+            "data_state": quality.get("data_state"),
+            "reason_codes": deepcopy(quality.get("reason_codes") or []),
+            "rule_version": quality.get("rule_version"),
+        },
+        "collector": {
+            "collector_id": _safe_public_text(collector.get("collector_id")),
+            "provider_id": _safe_public_text(collector.get("provider_id")),
+            "primary_collector": _safe_public_text(collector.get("primary_collector")),
+            "accepted_as_current": collector.get("accepted_as_current"),
+            "historical_import": collector.get("historical_import"),
+        },
+        "usage_qualification": {
+            "usage": usage.get("usage"),
+            "status": usage.get("status"),
+            "can_use": usage.get("can_use"),
+            "age_ms": usage.get("age_ms"),
+            "ttl_ms": usage.get("ttl_ms"),
+            "reason_codes": deepcopy(usage.get("reason_codes") or []),
+            "qualified_at_ms": usage.get("qualified_at_ms"),
+        },
+        "source_to_input_mapping": {
+            "status": "not_recorded",
+            "reason_cn": "source manifest record does not store an exact source-record to clean-input-ref mapping.",
+        },
+    }
+    if not out["record_id"]:
+        return None
+    return _strip_private_review_display(out)
+
+
+def _source_ref_record_ids(source_refs: Any) -> list[str]:
+    ids: list[str] = []
+    for item in source_refs or []:
+        if isinstance(item, str):
+            ids.append(item)
+        elif isinstance(item, Mapping) and isinstance(item.get("record_id"), str):
+            ids.append(item["record_id"])
+    return ids
+
+
+def _apply_source_record_forward_maps(
+    source_records: list[dict[str, Any]],
+    evidence: Sequence[Mapping[str, Any]],
+    *,
+    enabled: bool,
+) -> list[dict[str, Any]]:
+    if not enabled:
+        return source_records
+    linked: dict[str, set[str]] = {}
+    known = {record.get("record_id") for record in source_records if record.get("record_id")}
+    for item in evidence:
+        ref = item.get("ref")
+        if not isinstance(ref, str):
+            continue
+        pointer = item.get("source_pointer") if isinstance(item.get("source_pointer"), Mapping) else {}
+        # Some background sources live in the frozen trace, not the current
+        # snapshot manifest. Reuse those retained pointers in the forward index.
+        for source in pointer.get("source_refs") or []:
+            if not isinstance(source, Mapping) or not source.get("record_id"):
+                continue
+            record_id = source["record_id"]
+            if record_id not in known:
+                record = {key: deepcopy(source[key]) for key in (
+                    "record_id", "product_id", "schema", "content_hash", "time", "usage_qualification"
+                ) if key in source}
+                record.update(lane=item.get("lane"), candidate_id=pointer.get("trace_candidate_id"),
+                              snapshot_id=pointer.get("trace_snapshot_id"),
+                              note_cn="来源指针取自这次冻结输入的 Decision Trace，未补造来源原文。")
+                source_records.append(_scrub_public_value(record))
+                known.add(record_id)
+        for record_id in _source_ref_record_ids(pointer.get("source_refs")):
+            if record_id in known:
+                linked.setdefault(record_id, set()).add(ref)
+    for record in source_records:
+        record_id = record.get("record_id")
+        if record_id in linked:
+            record["source_to_input_mapping"] = {
+                "status": "exact_record_id_match",
+                "method": "trace.source_refs.record_id equality",
+                "input_refs": sorted(linked[record_id]),
+                "reason_cn": "当前输入 trace.source_refs 中记录了完全相同的 source record_id。",
+            }
+    return source_records
+
+
+def _lineage_source_records(candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    manifest = _candidate_source_manifest(candidate)
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    records: list[dict[str, Any]] = []
+    for record in manifest.get("source_records") or []:
+        if isinstance(record, Mapping):
+            public = _public_source_record(
+                record,
+                candidate_id=snapshot.get("candidate_id"),
+                snapshot_id=snapshot.get("snapshot_id"),
+            )
+            if public is not None:
+                records.append(public)
+    return records
+
+
+def _trace_for_lineage(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    body = _review_body(value)
+    trace = body.get("decision_trace") if isinstance(body.get("decision_trace"), Mapping) else {}
+    return trace
+
+
+def _public_trace_evidence_item(
+    item: Mapping[str, Any],
+    *,
+    lane: str,
+    trace_binding: Mapping[str, Any],
+    candidate_snapshot: Mapping[str, Any],
+    receipt_id: str | None,
+    referenced_by: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    lineage = item.get("lineage") if isinstance(item.get("lineage"), Mapping) else {}
+    source_refs = lineage.get("source_refs") if isinstance(lineage.get("source_refs"), list) else []
+    out: dict[str, Any] = {
+        "lane": lane,
+        "ref": item.get("ref"),
+        "label_cn": item.get("label_cn"),
+        "group": item.get("group"),
+        "referenced": bool(referenced_by),
+        "referenced_by": deepcopy(list(referenced_by)),
+        "source_pointer": {
+            "ref": lineage.get("ref") or item.get("ref"),
+            "source_path": _safe_public_text(lineage.get("source_path")),
+            "source_refs": _scrub_public_value(source_refs),
+            "trace_candidate_id": trace_binding.get("candidate_id"),
+            "trace_snapshot_id": trace_binding.get("snapshot_id"),
+            "receipt_id": receipt_id,
+            "lane": lane,
+        },
+    }
+    if (trace_binding.get("candidate_id") == candidate_snapshot.get("candidate_id")
+            and trace_binding.get("snapshot_id") == candidate_snapshot.get("snapshot_id")):
+        canonical_paths = {
+            "contract": "snapshot.contract",
+            "quote": "snapshot.market",
+            "fee": "snapshot.fee",
+            "risk": "snapshot.risk",
+        }
+        path = canonical_paths.get(str(item.get("ref")))
+        root_key = path.split(".", 1)[1] if path else None
+        if path and root_key in candidate_snapshot:
+            out["source_pointer"]["canonical_snapshot_pointer"] = {
+                "status": "current_trace_snapshot_match",
+                "source_path": path,
+                "reason_cn": "该 trace 绑定的 candidate/snapshot 与当前候选一致，可回到当前 snapshot 对应字段。",
+            }
+    for key in ("qualification", "relations", "asof", "scope", "limitations", "shared_dependency"):
+        if key in item:
+            out[key] = _scrub_public_value(item[key])
+    facts = item.get("facts")
+    if isinstance(facts, Mapping):
+        try:
+            if len(_canonical(facts)) <= 900:
+                out["facts"] = _scrub_public_value(facts)
+            else:
+                out["facts_included"] = False
+                out["facts_omission_reason_cn"] = "原输入事实过长，保留 ref 与 source_pointer 供页面回到 decision_trace.input_evidence。"
+        except Exception:
+            out["facts_included"] = False
+    return _scrub_public_value(out)
+
+
+def _lineage_from_trace(
+    trace: Mapping[str, Any],
+    *,
+    receipt_id: str | None,
+    lane: str,
+    candidate_snapshot: Mapping[str, Any],
+    include_points: bool,
+) -> dict[str, Any]:
+    trace_binding = trace.get("binding") if isinstance(trace.get("binding"), Mapping) else {}
+    referenced_by_ref: dict[str, list[dict[str, Any]]] = {}
+    if include_points:
+        for fallback_index, point in enumerate(trace.get("points") or []):
+            if not isinstance(point, Mapping):
+                continue
+            index = point.get("index")
+            array_index = index - 1 if isinstance(index, int) and index > 0 else fallback_index
+            for ref in point.get("evidence_refs") or []:
+                if isinstance(ref, str):
+                    referenced_by_ref.setdefault(ref, []).append({
+                        "receipt_id": receipt_id,
+                        "question": point.get("question"),
+                        "array_index": array_index,
+                    })
+    evidence = [
+        _public_trace_evidence_item(
+            item,
+            lane=lane,
+            trace_binding=trace_binding,
+            candidate_snapshot=candidate_snapshot,
+            receipt_id=receipt_id,
+            referenced_by=referenced_by_ref.get(str(item.get("ref")), ()),
+        )
+        for item in trace.get("input_evidence") or []
+        if isinstance(item, Mapping)
+    ]
+    points: list[dict[str, Any]] = []
+    if include_points:
+        for fallback_index, point in enumerate(trace.get("points") or []):
+            if not isinstance(point, Mapping):
+                continue
+            index = point.get("index")
+            array_index = index - 1 if isinstance(index, int) and index > 0 else fallback_index
+            points.append({
+                "receipt_id": receipt_id,
+                "lane": lane,
+                "question": point.get("question"),
+                "array_index": array_index,
+                "text_cn": point.get("text_cn"),
+                "evidence_refs": deepcopy(point.get("evidence_refs") or []),
+            })
+    return {
+        "points": _strip_private_review_display(points),
+        "evidence": evidence,
+        "input_omissions": _strip_private_review_display(trace.get("audit_only") or []),
+    }
+
+
+def _append_program_point(
+    points: list[dict[str, Any]],
+    *,
+    question: str,
+    field: str,
+    text: Any,
+    owner: str,
+    source_paths: Sequence[str],
+    refs: Sequence[str] = (),
+) -> None:
+    if isinstance(text, str) and text.strip():
+        points.append({
+            "question": question,
+            "field": field,
+            "text_cn": text,
+            "owner": owner,
+            "source_paths": list(source_paths),
+            "refs": list(refs),
+        })
+
+
+def _program_lineage_points(candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    questions = candidate.get("current_questions") if isinstance(candidate.get("current_questions"), Mapping) else {}
+    owner = str(questions.get("source_kind") or "deterministic_program_no_llm")
+    q1 = questions.get("q1") if isinstance(questions.get("q1"), Mapping) else {}
+    q2 = questions.get("q2") if isinstance(questions.get("q2"), Mapping) else {}
+    summary = candidate.get("wpem_summary") if isinstance(candidate.get("wpem_summary"), Mapping) else {}
+    points: list[dict[str, Any]] = []
+    _append_program_point(points, question="q1", field="summary_cn", text=q1.get("summary_cn"), owner=owner,
+                          source_paths=("current_questions.q1.summary_cn", "snapshot.contract",
+                                        "snapshot.liability", "snapshot.market"))
+    for idx, text in enumerate(q1.get("routing_observations_cn") or []):
+        _append_program_point(points, question="q1", field=f"routing_observations_cn[{idx}]", text=text, owner=owner,
+                              source_paths=("current_questions.q1.routing_observations_cn",
+                                            "current_questions.q1.routing_evidence_ids"),
+                              refs=q1.get("routing_evidence_ids") or ())
+    _append_program_point(points, question="q1", field="window_attribution_cn", text=q1.get("window_attribution_cn") or summary.get("path_cn"),
+                          owner=owner,
+                          source_paths=("current_questions.q1.window_attribution_cn",
+                                        "wpem_summary.path_cn",
+                                        "wpem_evidence.same_candidate_window"))
+    _append_program_point(points, question="q2", field="summary_cn", text=q2.get("summary_cn"), owner=owner,
+                          source_paths=("current_questions.q2.summary_cn", "snapshot.economics", "snapshot.fee"))
+    for idx, text in enumerate(q2.get("routing_observations_cn") or []):
+        _append_program_point(points, question="q2", field=f"routing_observations_cn[{idx}]", text=text, owner=owner,
+                              source_paths=("current_questions.q2.routing_observations_cn",
+                                            "current_questions.q2.routing_evidence_ids"),
+                              refs=q2.get("routing_evidence_ids") or ())
+    _append_program_point(points, question="q2", field="window_tradeoff_cn", text=q2.get("window_tradeoff_cn") or summary.get("compensation_cn"),
+                          owner=owner,
+                          source_paths=("current_questions.q2.window_tradeoff_cn",
+                                        "wpem_summary.compensation_cn",
+                                        "wpem_evidence.same_candidate_window"))
+    for idx, text in enumerate((q2.get("observable_changes_cn") or [])[:3]):
+        _append_program_point(points, question="q2", field=f"observable_changes_cn[{idx}]", text=text, owner=owner,
+                              source_paths=("current_questions.q2.observable_changes_cn",
+                                            "wpem_evidence.same_candidate_window"))
+    _append_program_point(points, question="q2", field="waiting_cost_cn", text=q2.get("waiting_cost_cn"), owner=owner,
+                          source_paths=("current_questions.q2.waiting_cost_cn", "snapshot.market"))
+    evidence = candidate.get("wpem_evidence") if isinstance(candidate.get("wpem_evidence"), Mapping) else {}
+    account = evidence.get("quote_fee_deterministic_responsibility")
+    if isinstance(account, Mapping) and account.get("c_minus_f_btc") is not None:
+        _append_program_point(
+            points,
+            question="q2",
+            field="quote_fee_deterministic_responsibility.c_minus_f_btc",
+            text=f"扣持有至到期费用后的信用 c-f={account.get('c_minus_f_btc')} BTC",
+            owner=owner,
+            source_paths=("wpem_evidence.quote_fee_deterministic_responsibility",
+                          "snapshot.economics", "snapshot.fee"),
+            refs=("quote", "fee"),
+        )
+    return _strip_private_review_display(points)
+
+
+def _fallback_identity(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    questions = candidate.get("current_questions") if isinstance(candidate.get("current_questions"), Mapping) else {}
+    summary = candidate.get("wpem_summary") if isinstance(candidate.get("wpem_summary"), Mapping) else {}
+    evidence = candidate.get("wpem_evidence") if isinstance(candidate.get("wpem_evidence"), Mapping) else {}
+    return {
+        "schema": "program_fallback_identity@1",
+        "hash": _hash({"snapshot": snapshot, "current_questions": questions, "wpem_summary": summary,
+                       "fee_remainder": evidence.get("quote_fee_deterministic_responsibility")}),
+        "hash_kind": "sha256_canonical_json",
+        "inputs": ["snapshot", "current_questions", "wpem_summary", "wpem_evidence.quote_fee_deterministic_responsibility"],
+    }
+
+
+def _hash_dictionary(
+    candidate: Mapping[str, Any],
+    *,
+    source_records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    identity = snapshot.get("data_identity") if isinstance(snapshot.get("data_identity"), Mapping) else {}
+    rows = [
+        ("source_sha256", "canonical source bundle bytes or normalized source object",
+         "data engine / snapshot builder", "snapshot lineage readers"),
+        ("source_record.payload_hash", "one source manifest record payload",
+         "data engine normalizer", "source record replay and source audit"),
+        ("snapshot_id", "canonical underwriting snapshot",
+         "underwriting snapshot builder", "review selector and UI candidate binding"),
+        ("packet_hash", "WPEM packet canonical serialization",
+         "WPEM packet/replay producer", "WPEM replay validator"),
+        ("review_evidence_hash", "WPEM review evidence package",
+         "WPEM review evidence builder", "review validity selector"),
+        ("window_evidence_hash", "same-candidate WPEM window evidence",
+         "WPEM window builder", "review validity selector"),
+        ("projection_hash", "complete review input projection",
+         "review input builder", "review validity selector"),
+        ("evidence_input_hash", "actual clean evidence input sent to LLM",
+         "Decision Trace builder", "review selector and lineage replay"),
+        ("routing_hash", "information attribution/routing projection",
+         "evidence routing builder", "review validity selector"),
+        ("receipt_id", "existing review receipt or deterministic receipt hash",
+         "review store/read projection", "consumer binding receipt"),
+        ("fallback_identity.hash", "program fallback snapshot, current_questions, WPEM summary and fee remainder projection",
+         "workbench read projection", "consumer binding receipt"),
+    ]
+    present_names = {"snapshot_id", "fallback_identity.hash"}
+    if identity.get("source_sha256"):
+        present_names.add("source_sha256")
+    if any((row.get("hashes") or {}).get("payload_hash") for row in source_records):
+        present_names.add("source_record.payload_hash")
+    result = []
+    for name, obj, producer, consumer in rows:
+        if name not in present_names and name not in {
+            "packet_hash", "review_evidence_hash", "window_evidence_hash", "projection_hash",
+            "evidence_input_hash", "routing_hash", "receipt_id",
+        }:
+            continue
+        result.append({
+            "name": name,
+            "object": obj,
+            "producer": producer,
+            "consumer": consumer,
+            "same_kind_comparison_only": "true",
+        })
+    return result
+
+
+def _lineage_proof_limits() -> list[str]:
+    return [
+        "本追溯是只读消费投影，不是上游市场门或新的交易许可。",
+        "旧视图没有记录 consumed_at_ms；页面渲染、用户展开、阅读或交易动作都不能从这里推断。",
+        "source_records 只公开来源清单元数据，不公开完整 provider 原文或私有回执。",
+        "source_clock_status=NOT_RETAINED 表示原始来源观察时钟未被保留，只能按该缺口阅读。",
+        "Decision Trace 的 produced_refs 只覆盖 clean evidence 或模型点，不代表 Data/WPEM 曾生成的全部上游事实。",
+        "Displayed 只表示工作台 payload 可展示，不证明用户已经打开折叠区或采纳结论。",
+    ]
+
+
+def _build_observation_lineage(
+    candidate: Mapping[str, Any],
+    *,
+    current_display: Mapping[str, Any] | None,
+    historical_display: Mapping[str, Any] | None,
+    rejected_binding: Mapping[str, Any] | None,
+    rejected_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    selected: Mapping[str, Any] | None = None
+    lane = "program_fallback"
+    include_points = False
+    if isinstance(current_display, Mapping):
+        selected = current_display
+        lane = "current_accepted"
+        include_points = True
+    elif isinstance(historical_display, Mapping):
+        selected = historical_display
+        lane = "historical_accepted"
+        include_points = True
+    elif isinstance(rejected_receipt, Mapping):
+        selected = rejected_receipt
+        lane = "rejected_input"
+        include_points = False
+    if isinstance(rejected_receipt, Mapping) and selected is rejected_receipt and isinstance(rejected_binding, Mapping):
+        receipt_id = rejected_binding.get("receipt_id") if isinstance(rejected_binding.get("receipt_id"), str) else None
+    else:
+        receipt_id = _stable_receipt_id(selected)
+    trace_lineage = _lineage_from_trace(
+        _trace_for_lineage(selected),
+        receipt_id=receipt_id,
+        lane=lane,
+        candidate_snapshot=snapshot,
+        include_points=include_points,
+    )
+    source_records = _lineage_source_records(candidate)
+    source_records = _apply_source_record_forward_maps(
+        source_records,
+        trace_lineage["evidence"],
+        enabled=(lane == "current_accepted"),
+    )
+    return {
+        "schema": "observation_lineage@1",
+        "candidate_id": snapshot.get("candidate_id"),
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "selected_trace_lane": lane,
+        "points": trace_lineage["points"],
+        "evidence": trace_lineage["evidence"],
+        "program_points": _program_lineage_points(candidate),
+        "source_records": source_records,
+        "input_omissions": trace_lineage["input_omissions"],
+        "hash_dictionary": _hash_dictionary(candidate, source_records=source_records),
+        "display_semantics": {
+            "produced": "facts or clean evidence created by upstream builders",
+            "included": "facts present in the frozen actual input or public program fallback",
+            "referenced": "accepted model points explicitly cited these refs",
+            "displayed": "available in the generated workbench payload, not proof of user reading or action",
+        },
+        "proof_limits": _lineage_proof_limits(),
+    }
+
+
+def _build_consumer_binding_receipt(
+    candidate: Mapping[str, Any],
+    *,
+    data_asof_ms: int | None,
+    reason_cn: str,
+    current_display: Mapping[str, Any] | None,
+    historical_display: Mapping[str, Any] | None,
+    rejected_binding: Mapping[str, Any] | None,
+    rejected_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    questions = candidate.get("current_questions") if isinstance(candidate.get("current_questions"), Mapping) else {}
+    current_binding = current_display.get("display_binding") if isinstance(current_display, Mapping) else None
+    historical_binding = historical_display.get("display_binding") if isinstance(historical_display, Mapping) else None
+    primary_source = "current_accepted" if isinstance(current_display, Mapping) else "program_fallback"
+    primary_owner = "accepted_llm_review" if primary_source == "current_accepted" else str(
+        questions.get("source_kind") or "deterministic_program_no_llm")
+    analysis_receipt = current_display or historical_display or rejected_receipt
+    consumed_review_id = _stable_receipt_id(current_display)
+    historical_reason_cn = _first_demotion_reason(historical_binding)
+    if isinstance(historical_display, Mapping) and not historical_reason_cn:
+        historical_reason_cn = "最近 accepted 回执未通过当前选择器，只作历史折叠参考。"
+    return {
+        "schema": "consumer_binding_receipt@1",
+        "candidate_id": snapshot.get("candidate_id"),
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "data_asof_ms": data_asof_ms,
+        "primary_source": primary_source,
+        "primary_owner": primary_owner,
+        "reason_cn": reason_cn,
+        "consumed_review_id": consumed_review_id,
+        "fallback_identity": _fallback_identity(candidate),
+        "current_binding": _strip_private_review_display(current_binding) if isinstance(current_binding, Mapping) else None,
+        "historical_binding": (_strip_private_review_display(historical_binding)
+                               if isinstance(historical_binding, Mapping) else None),
+        "rejected_binding": _strip_private_review_display(rejected_binding) if isinstance(rejected_binding, Mapping) else None,
+        "historical_reason_cn": historical_reason_cn,
+        "consumed_at_ms": None,
+        "consumed_at_status": "not_recorded",
+        "analysis_identity": _analysis_identity(analysis_receipt),
+    }
+
+
+def _strict_current_review_status(
+    receipt: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    wpem_package: Mapping[str, Any] | None,
+    model: str | None,
+    now_ms: int | None,
+    diagnostics: dict[str, Any] | None = None,
+) -> str:
+    reasons: list[dict[str, Any]] = []
+
+    def stale(code: str, **detail: Any) -> str:
+        item = {"code": code}
+        item.update({key: value for key, value in detail.items() if value is not None})
+        reason_cn = _demotion_reason_cn(item)
+        if reason_cn:
+            item["reason_cn"] = reason_cn
+        reasons.append(item)
+        if diagnostics is not None:
+            diagnostics["status"] = "STALE"
+            diagnostics["demotion_reasons"] = deepcopy(reasons)
+        return "STALE"
+
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else None
+    if not isinstance(snapshot, Mapping) or not isinstance(wpem_package, Mapping):
+        return stale("snapshot_or_wpem_package_missing")
+    identity = _review_identity(receipt)
+    if identity.get("candidate_id") != snapshot.get("candidate_id"):
+        return stale("candidate_id_mismatch",
+                     receipt_candidate_id=identity.get("candidate_id"),
+                     current_candidate_id=snapshot.get("candidate_id"))
+    if identity.get("snapshot_id") != snapshot.get("snapshot_id"):
+        return stale("snapshot_id_mismatch",
+                     receipt_snapshot_id=identity.get("snapshot_id"),
+                     current_snapshot_id=snapshot.get("snapshot_id"))
+    body = _review_body(receipt)
+    if not _review_has_display_explanation(receipt):
+        return stale("display_explanation_missing")
+    binding = body.get("review_validity") if isinstance(body.get("review_validity"), Mapping) else {}
+    expected_quote_hash = _hash(snapshot.get("market"))
+    expected_risk_hash = _hash(snapshot.get("risk"))
+    for key, expected in (
+        ("candidate_id", snapshot.get("candidate_id")),
+        ("snapshot_id", snapshot.get("snapshot_id")),
+        ("review_evidence_hash", wpem_package.get("evidence_hash")),
+        ("quote_hash", expected_quote_hash),
+        ("risk_hash", expected_risk_hash),
+    ):
+        if binding.get(key) != expected:
+            return stale(f"{key}_mismatch", actual=binding.get(key), expected=expected)
+    if model is not None and (body.get("requested_model") or binding.get("model")) != model:
+        return stale("model_mismatch", actual=body.get("requested_model") or binding.get("model"), expected=model)
+    if now_ms is not None:
+        quote_ms = binding.get("quote_timestamp_ms")
+        if type(quote_ms) is not int or now_ms < quote_ms:
+            return stale("quote_timestamp_not_current", quote_timestamp_ms=quote_ms, now_ms=now_ms)
+        valid_until = binding.get("valid_until_ms")
+        if type(valid_until) is not int or now_ms > valid_until:
+            return stale("valid_until_expired", valid_until_ms=valid_until, now_ms=now_ms)
+    try:
+        frozen_hash = _decision_trace_evidence_input_hash(receipt)
+        expected = _current_review_display_binding(snapshot, wpem_package, body, model=model)
+        if not isinstance(expected, Mapping):
+            return stale("expected_binding_unavailable")
+        if not frozen_hash or frozen_hash != expected.get("evidence_input_hash"):
+            return stale("evidence_input_hash_mismatch", actual=frozen_hash,
+                         expected=expected.get("evidence_input_hash"))
+        for key in ("candidate_id", "snapshot_id", "quote_hash", "risk_hash",
+                    "window_evidence_hash", "review_evidence_hash",
+                    "review_input_version", "projection_hash", "llm_protocol",
+                    "routing_schema", "routing_hash", "quote_timestamp_ms"):
+            if binding.get(key) != expected.get(key):
+                return stale(f"{key}_mismatch", actual=binding.get(key), expected=expected.get(key))
+        if diagnostics is not None:
+            diagnostics["status"] = "CURRENT"
+            diagnostics["demotion_reasons"] = []
+        return "CURRENT"
+    except Exception as exc:
+        return stale("selector_exception", error_type=type(exc).__name__)
+
+
+def review_display_for_candidate(
+    candidate: Mapping[str, Any],
+    manual_review_state: Mapping[str, Any] | None = None,
+    *,
+    wpem_package: Mapping[str, Any] | None = None,
+    model: str | None = None,
+    now_ms: int | None = None,
+    accepted_history: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Select a read-only current/historical review display without changing review authority."""
+    data_asof_ms = _candidate_data_asof_ms(candidate)
+    snapshot = candidate.get("snapshot") if isinstance(candidate.get("snapshot"), Mapping) else {}
+    candidate_id = snapshot.get("candidate_id")
+    receipts: list[tuple[Mapping[str, Any], int | None]] = []
+    attached = candidate.get("review")
+    if isinstance(attached, Mapping):
+        receipts.append((attached, _reviewed_at_ms(attached)))
+    if isinstance(manual_review_state, Mapping):
+        for key, timestamp_key in (("last_result", "last_completed_ts_ms"),
+                                   ("previous_valid_result", "historical_completed_ts_ms")):
+            receipt = manual_review_state.get(key)
+            if isinstance(receipt, Mapping):
+                receipts.append((receipt, _first_int(receipt.get(timestamp_key),
+                                                     manual_review_state.get(timestamp_key),
+                                                     manual_review_state.get("last_completed_ts_ms"))))
+    for entry in accepted_history or ():
+        if isinstance(entry, Mapping):
+            receipts.append(_history_receipt(entry))
+
+    current: list[tuple[int, dict[str, Any]]] = []
+    historical: list[tuple[int, dict[str, Any]]] = []
+    saw_failure = False
+    rejected_candidates: list[tuple[int, Mapping[str, Any], dict[str, Any]]] = []
+    seen_receipts: set[tuple[Any, ...]] = set()
+    for receipt, reviewed_ms in receipts:
+        if not isinstance(receipt, Mapping):
+            continue
+        dedupe_key = _receipt_dedupe_key(receipt)
+        if dedupe_key in seen_receipts:
+            continue
+        seen_receipts.add(dedupe_key)
+        identity = _review_identity(receipt)
+        candidate_matches = (not candidate_id
+                             or not identity.get("candidate_id")
+                             or identity.get("candidate_id") == candidate_id)
+        if not _accepted_review_status(receipt):
+            if candidate_matches and _is_rejected_review_attempt(receipt):
+                saw_failure = saw_failure or bool(receipt.get("status"))
+                rejected_candidates.append((
+                    reviewed_ms or 0,
+                    receipt,
+                    _public_review_binding_metadata(
+                        receipt,
+                        candidate,
+                        same_input=False,
+                        reviewed_at_ms=reviewed_ms,
+                        selector_diagnostics={"status": "REJECTED", "demotion_reasons": [
+                            {"code": "receipt_not_accepted"}
+                        ]},
+                    ),
+                ))
+            continue
+        if candidate_id and identity.get("candidate_id") != candidate_id:
+            continue
+        diagnostics: dict[str, Any] = {}
+        status = _strict_current_review_status(
+            receipt, candidate, wpem_package=wpem_package, model=model, now_ms=now_ms,
+            diagnostics=diagnostics)
+        if status == "CURRENT":
+            display = _with_display_binding(
+                receipt, candidate, same_input=True, reviewed_at_ms=reviewed_ms)
+            display["display_binding"] = _public_review_binding_metadata(
+                receipt, candidate, same_input=True, reviewed_at_ms=reviewed_ms,
+                selector_diagnostics=diagnostics)
+            if isinstance(display.get("review"), Mapping):
+                nested = deepcopy(dict(display["review"]))
+                nested["display_binding"] = deepcopy(display["display_binding"])
+                display["review"] = nested
+            current.append((reviewed_ms or 0, display))
+        else:
+            display = _with_display_binding(
+                receipt, candidate, same_input=False, reviewed_at_ms=reviewed_ms)
+            display["display_binding"] = _public_review_binding_metadata(
+                receipt, candidate, same_input=False, reviewed_at_ms=reviewed_ms,
+                selector_diagnostics=diagnostics)
+            if isinstance(display.get("review"), Mapping):
+                nested = deepcopy(dict(display["review"]))
+                nested["display_binding"] = deepcopy(display["display_binding"])
+                display["review"] = nested
+            historical.append((reviewed_ms or 0, display))
+
+    current_display = max(current, key=lambda item: item[0])[1] if current else None
+    historical_display = max(historical, key=lambda item: item[0])[1] if historical else None
+    rejected_entry = max(rejected_candidates, key=lambda item: item[0]) if rejected_candidates else None
+    rejected_receipt = rejected_entry[1] if rejected_entry else None
+    rejected_binding = rejected_entry[2] if rejected_entry else None
+    if current_display is not None:
+        reason_cn = "当前 accepted 回执与候选、快照、报价、证据输入及来源版本严格一致。"
+    elif historical_display is not None:
+        reason_cn = "当前无合格模型综合解释；最近 accepted 回执仅作历史参考，不能回填当前。"
+    elif saw_failure:
+        reason_cn = "当前尝试未形成合格模型综合解释；失败正文不进入消费层，请阅读程序事实底座。"
+    else:
+        reason_cn = "当前无合格模型综合解释；请阅读程序事实底座。"
+    try:
+        consumer_binding_receipt = _build_consumer_binding_receipt(
+            candidate,
+            data_asof_ms=data_asof_ms,
+            reason_cn=reason_cn,
+            current_display=current_display,
+            historical_display=historical_display,
+            rejected_binding=rejected_binding,
+            rejected_receipt=rejected_receipt,
+        )
+    except Exception as exc:
+        consumer_binding_receipt = {
+            "schema": "consumer_binding_receipt@1",
+            "status": "LIMITED",
+            "candidate_id": snapshot.get("candidate_id"),
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "data_asof_ms": data_asof_ms,
+            "primary_source": "current_accepted" if current_display is not None else "program_fallback",
+            "reason_cn": reason_cn,
+            "projection_limitations": [{
+                "reason_cn": "消费回执投影生成失败；当前/历史选择结果保持原样，程序事实仍可阅读。",
+                "error_type": type(exc).__name__,
+            }],
+            "consumed_at_ms": None,
+            "consumed_at_status": "not_recorded",
+        }
+    try:
+        observation_lineage = _build_observation_lineage(
+            candidate,
+            current_display=current_display,
+            historical_display=historical_display,
+            rejected_binding=rejected_binding,
+            rejected_receipt=rejected_receipt,
+        )
+    except Exception as exc:
+        observation_lineage = _lineage_limitation(
+            "追溯投影生成失败；当前/历史选择结果保持原样，程序事实仍可阅读。",
+            error_type=type(exc).__name__,
+        )
+        observation_lineage.update({
+            "candidate_id": snapshot.get("candidate_id"),
+            "snapshot_id": snapshot.get("snapshot_id"),
+        })
+    return {
+        "current": current_display,
+        "historical": historical_display,
+        "reason_cn": reason_cn,
+        "data_asof_ms": data_asof_ms,
+        "consumer_binding_receipt": consumer_binding_receipt,
+        "observation_lineage": observation_lineage,
+    }
+
+
+
+def _normalize_review_purpose(purpose: str | None) -> str:
+    value = (purpose or REVIEW_PURPOSE).strip().lower()
+    if value not in _REVIEW_PURPOSES:
+        raise WorkbenchError(400, "bad_request", "purpose must be 'review' or 'observation'")
+    return value
 
 
 def _compact_review(review_annex: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -184,6 +1398,8 @@ def _compact_review(review_annex: Mapping[str, Any] | None) -> dict[str, Any]:
         "reassess_if_cn": deepcopy(review.get("reassess_if_cn") or []),
         "http_calls": review.get("http_calls"),
         "recorded_ts_ms": review_annex.get("recorded_ts_ms"),
+        **{key: deepcopy(review[key]) for key in (
+            "review_validity", "llm_explanation", "decision_trace", "selection_origin") if key in review},
     })
 
 
@@ -193,6 +1409,9 @@ class WorkbenchConfig:
     state_dir: Path
     frontend_dir: Path | None = None
     server_token: str | None = None
+    public_origin: str | None = None
+    session_ttl_seconds: int = 43_200
+    max_sessions: int = 32
     api_key: str | None = None
     shared_usage_ledger: Path | None = None
     model: str = DEFAULT_MODEL
@@ -210,6 +1429,16 @@ class WorkbenchConfig:
     map_producer_max_age_ms: int = map_projection.DEFAULT_PRODUCER_MAX_AGE_MS
     risk_model_path: Path | None = None
     risk_protocol_path: Path | None = None
+    research_archive_enabled: bool = False
+    research_sample_interval_ms: int = candidate_asof.DEFAULT_INTERVAL_MS
+    research_max_bytes: int = candidate_asof.DEFAULT_MAX_BYTES
+    research_max_samples: int = candidate_asof.DEFAULT_MAX_SAMPLES
+    wpem_enabled: bool = False
+    locked_sample_interval_ms: int = 60_000
+    locked_max_active: int = 4
+    locked_max_episodes: int = 64
+    locked_max_bytes: int = 268_435_456
+    locked_max_samples: int = 1440
 
     @property
     def state_path(self) -> Path:
@@ -290,6 +1519,45 @@ class AstraWorkbench:
         self.discovery_capture = discovery_capture or self._default_discovery_capture
         self.quote_capture = quote_capture or self._default_quote_capture
         self.risk_provider = risk_provider
+        self.research_archive = None
+        self._research_feature_catalog = None
+        self._research_feature_catalog_error = None
+        self._research_setup_error = None
+        self._research_pending_payloads = {}
+        self._wpem_pending_payloads = {}
+        self._wpem_packages = reading.CompressedPoints(max_items=8, max_bytes=48 * 1024 * 1024)
+        self._wpem_display_packages = {}
+        self._locked_payloads: dict[str, Any] = {}
+        self._lockable_points = reading.CompressedPoints()
+        self._locked_detail_cache: dict[str, Any] = {}
+        self._locked_detail_lock = threading.RLock()
+        self.locked_candidates = locked_store.LockedCandidateStore(
+            config.state_dir / "locked_candidates", max_active=config.locked_max_active,
+            max_episodes=config.locked_max_episodes, max_bytes=config.locked_max_bytes,
+            max_samples=config.locked_max_samples)
+        self._locked_refresh_error: str | None = None
+        self._wpem_archive = candidate_asof.CandidateResearchArchive(
+            config.state_dir / "wpem_evidence", interval_ms=config.research_sample_interval_ms,
+            max_bytes=config.research_max_bytes, max_samples=config.research_max_samples) if config.wpem_enabled else None
+        if config.research_archive_enabled:
+            try:
+                self.research_archive = candidate_asof.CandidateResearchArchive(
+                    config.state_dir / "candidate_research", interval_ms=config.research_sample_interval_ms,
+                    max_bytes=config.research_max_bytes, max_samples=config.research_max_samples)
+            except Exception as exc:
+                self._research_setup_error = type(exc).__name__
+            if config.risk_model_path or config.risk_protocol_path:
+                try:
+                    if not config.risk_model_path or not config.risk_protocol_path:
+                        raise ValueError("both risk asset paths are required")
+                    if __package__:
+                        from . import astra_candidate_features_v1 as candidate_features
+                    else:
+                        import astra_candidate_features_v1 as candidate_features
+                    self._research_feature_catalog = candidate_features.export_feature_catalog(
+                        config.risk_model_path, config.risk_protocol_path)
+                except Exception as exc:
+                    self._research_feature_catalog_error = type(exc).__name__
         self._risk_profile = None
         self._risk_asset_error = None
         if config.risk_model_path or config.risk_protocol_path:
@@ -335,10 +1603,13 @@ class AstraWorkbench:
             key = str(inflight.get("idempotency_key") or "")
             candidate_id = str(inflight.get("candidate_id") or "")
             snapshot_id = str(inflight.get("snapshot_id") or "")
+            purpose = str(inflight.get("purpose") or REVIEW_PURPOSE)
+            research_only = purpose == OBSERVATION_PURPOSE
+            state_root = review_core._review_state_root(self.config.review_state_dir, research_only)
             if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", candidate_id):
-                path = (review_core._review_state_path(self.config.review_state_dir, candidate_id, snapshot_id)
+                path = (review_core._review_state_path(state_root, candidate_id, snapshot_id)
                         if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", snapshot_id)
-                        else self.config.review_state_dir / ("candidate-" + candidate_id + ".json"))
+                        else state_root / ("candidate-" + candidate_id + ".json"))
                 persisted = _read_json(path)
             else:
                 persisted = {}
@@ -349,6 +1620,7 @@ class AstraWorkbench:
                 "candidate_id": candidate_id,
                 "snapshot_id": persisted.get("snapshot_id") or snapshot_id or None,
                 "side": inflight.get("side"),
+                "purpose": purpose,
                 "idempotency_key": key,
                 "review": deepcopy(dict(settled)) if settled else None,
                 "llm_call_count": len(persisted.get("attempts") or []),
@@ -403,6 +1675,7 @@ class AstraWorkbench:
         quantity_btc: float,
         *,
         now_ms: int,
+        allow_partial: bool = False,
     ) -> Mapping[str, Any]:
         metadata_clocks = {}
         def transport(path, params):
@@ -424,7 +1697,8 @@ class AstraWorkbench:
                 metadata_clocks[params["instrument_name"]] = record["time"]["retrieved_at_ms"]
             return deepcopy(record["content"]["values"])
         payload = public_quote.capture_candidate(short_instrument, long_instrument, quantity_btc,
-                                                  transport=transport, clock_ms=self.clock_ms)
+                                                  transport=transport, clock_ms=self.clock_ms,
+                                                  allow_partial=allow_partial)
         payload["metadata_received_ts_ms"] = {"short": metadata_clocks[short_instrument],
                                                "long": metadata_clocks[long_instrument]}
         return payload
@@ -555,7 +1829,8 @@ class AstraWorkbench:
                                      exc: map_projection.SourceConsumerError) -> dict[str, Any]:
         projection = map_projection.build_projection(
             None, now_ms=now_ms, fmz_fact=fmz_fact, source_records=[],
-            config=self._map_source_config(), prior_state=self._map_prior_state())
+            config=self._map_source_config(), prior_state=self._map_prior_state(),
+            presentation_mode="LIVE")
         consumer = {
             "status": "ERROR", "mode": map_projection.SOURCE_MODE_PRODUCER_MANIFEST,
             "checked_at_ms": now_ms, "current_path": str(self.config.map_producer_current_path),
@@ -813,6 +2088,7 @@ class AstraWorkbench:
         gate: Mapping[str, Any],
         now_ms: int,
         btc_map_projection: Mapping[str, Any] | None = None,
+        tracking: bool = False,
     ) -> dict[str, Any]:
         candidate_info = ((discovered.get("candidates") or {}).get(side) or {})
         if candidate_info.get("status") != "candidate":
@@ -823,11 +2099,14 @@ class AstraWorkbench:
                     "reading_guidance": guidance.build_reading_guidance(None, fmz_fact)}
         try:
             raw_candidate = candidate_info["candidate"]
+            quote_options = {"now_ms": now_ms}
+            if tracking and getattr(self.quote_capture, "__func__", None) is AstraWorkbench._default_quote_capture:
+                quote_options["allow_partial"] = True
             payload = dict(self.quote_capture(
                 raw_candidate["short_instrument"],
                 raw_candidate["long_instrument"],
                 raw_candidate["quantity_btc"],
-                now_ms=now_ms,
+                **quote_options,
             ))
             quote_valuation_ms = int((payload.get("market") or {})["valuation_ts_ms"])
             candidate_fact = self.latest_fact(quote_valuation_ms)
@@ -880,6 +2159,11 @@ class AstraWorkbench:
                     or gate.get("state") != candidate_gate.get("state")):
                 review_gate["enabled"] = False
                 review_gate["reasons"] = sorted(set(review_gate["reasons"] + ["candidate_gate_version_changed_during_refresh"]))
+            if self.config.research_archive_enabled:
+                self._research_pending_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
+            if self.config.wpem_enabled:
+                self._wpem_pending_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
+            self._locked_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
             return {
                 "side": side,
                 "status": "snapshot",
@@ -892,6 +2176,7 @@ class AstraWorkbench:
                 "reading_guidance": reading_guidance,
                 "risk_consumption_diagnosis": risk_diagnosis,
                 "source_manifest": manifest,
+                "capture_gaps": deepcopy(payload.get("capture_gaps") or []),
             }
         except Exception as exc:
             return {
@@ -909,6 +2194,8 @@ class AstraWorkbench:
     def refresh(self, *, now_ms: int | None = None, record_daily: bool = True) -> dict[str, Any]:
         now = self.clock_ms() if now_ms is None else int(now_ms)
         with self._refresh_lock:
+            self._research_pending_payloads.clear()
+            self._locked_payloads.clear()
             gaps: list[str] = []
             fmz_fact = self.latest_fact(now)
             gate = self.space_gate_view(fmz_fact, now)
@@ -972,45 +2259,483 @@ class AstraWorkbench:
                 "llm_call_count": 0,
                 "data_health": self._data_health(finished_at_ms, btc_projection),
             }
+            self._attach_wpem(view, finished_at_ms)
+            self._remember_lockable(view, finished_at_ms)
+            self._refresh_locked_candidates(view, finished_at_ms)
+            view["locked_candidates"] = self.locked_candidate_list()
             if record_daily:
                 self._maybe_record_daily_snapshot(view, finished_at_ms)
                 view["daily_snapshots"] = self.recent_daily_snapshots(limit=self.config.daily_snapshot_limit)
+            if self.config.research_archive_enabled:
+                self._record_research_samples(view, finished_at_ms)
             with self._view_lock:
-                self._current_view = deepcopy(view)
+                # Daily raw snapshots remain on disk and in the explicit full
+                # endpoint; do not retain repeated MAP bodies in the read cache.
+                cached = {**view, "daily_snapshots": reading.daily_summaries(view.get("daily_snapshots"))}
+                self._current_view = deepcopy(cached)
                 self._last_refresh_error = None
             self._store_btc_map_state(btc_projection.get("btc_map"))
             return self._apply_current_review_availability(view, finished_at_ms)
 
-    def cached_view(self) -> dict[str, Any]:
+    def _wpem_view_for_candidate(
+        self,
+        cached: Mapping[str, Any] | None,
+        item: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Rebuild WPEM against the current cached candidate set, replacing only the selected side."""
+        candidates: list[dict[str, Any]] = []
+        item_side = item.get("side")
+        replaced = False
+        if isinstance(cached, Mapping):
+            for entry in cached.get("candidates") or []:
+                if isinstance(entry, Mapping) and entry.get("side") == item_side:
+                    candidates.append(deepcopy(dict(item)))
+                    replaced = True
+                elif isinstance(entry, Mapping):
+                    candidates.append(deepcopy(dict(entry)))
+            release_identity = deepcopy(cached.get("release_identity"))
+        else:
+            release_identity = None
+        if not replaced:
+            candidates.append(deepcopy(dict(item)))
+        return {"candidates": candidates, "release_identity": release_identity}
+
+    @staticmethod
+    def _candidate_from_view(view: Mapping[str, Any], item: Mapping[str, Any]) -> dict[str, Any]:
+        item_snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else {}
+        item_id = item_snapshot.get("candidate_id")
+        for entry in view.get("candidates") or []:
+            snapshot = entry.get("snapshot") if isinstance(entry, Mapping) else None
+            if isinstance(snapshot, Mapping) and snapshot.get("candidate_id") == item_id:
+                return deepcopy(dict(entry))
+        return deepcopy(dict(item))
+
+    def _attach_wpem(self, view: dict[str, Any], now_ms: int, *, prune: bool = True) -> None:
+        if not isinstance(view.get("release_identity"), Mapping):
+            view["release_identity"] = release_core.release_identity()
+        if not self.config.wpem_enabled:
+            return
+        for item in view.get("candidates") or []:
+            snapshot = item.get("snapshot")
+            if not isinstance(snapshot, Mapping):
+                continue
+            snapshot_id = snapshot["snapshot_id"]
+            prior = item.get("review") or {}
+            raw_payload = self._wpem_pending_payloads.pop(snapshot_id, None)
+            cross_section = []
+            excluded_peers = []
+
+            def attach_package(package: Mapping[str, Any], isolated: Mapping[str, Any] | None = None) -> None:
+                self._wpem_packages[snapshot_id] = package
+                item["wpem_evidence"] = wpem_workbench.public_evidence(package)
+                self._wpem_display_packages[snapshot_id] = item["wpem_evidence"]
+                summary = wpem_review.window_interpretation(package)
+                questions = wpem_workbench.program_questions(snapshot, package)
+                validity = {"status": wpem_review.review_status(
+                    {**prior, "status": "OK" if prior.get("status") == "attached" else prior.get("status")},
+                    snapshot, package, model=self.config.model, now_ms=now_ms),
+                    "window_evidence_hash": package["same_candidate_window"]["source_window_evidence_hash"],
+                    "evidence_hash": package["evidence_hash"],
+                    "public_evidence_url": "/api/workbench/wpem-evidence/"+snapshot_id,
+                    "full_proof_url": "/api/workbench/wpem-proof/"+snapshot_id}
+                if excluded_peers:
+                    validity["cross_section_excluded_peers"] = excluded_peers
+                if isolated:
+                    note = ("历史证据回放未通过（%s），已隔离；本次仅使用当前冻结截面，"
+                            "不能形成完整同窗路径。" % isolated["code"])
+                    summary = deepcopy(dict(summary))
+                    breaks = list(summary.get("breaks_cn") or [])
+                    if note not in breaks:
+                        breaks.append(note)
+                    summary["breaks_cn"] = breaks
+                    questions = deepcopy(dict(questions))
+                    audit = deepcopy(questions.get("audit") or {})
+                    audit["temporal_scope"] = "current_snapshot_only"
+                    audit["history_replay_isolated"] = True
+                    audit["history_replay_error_code"] = isolated["code"]
+                    audit["history_replay_error_type"] = isolated.get("error_type")
+                    questions["audit"] = audit
+                    validity.update({
+                        "reason": "history_replay_isolated_current_only",
+                        "history_replay_isolated": True,
+                        "history_replay_error_code": isolated["code"],
+                        "history_replay_error_type": isolated.get("error_type"),
+                        "history_replay_message_cn": "历史证据不可用，已隔离为当前截面解释。",
+                        "temporal_scope": "current_snapshot_only",
+                    })
+                item["wpem_summary"] = summary
+                item["current_questions"] = questions
+                item["review_validity"] = validity
+
+            try:
+                current_packet = candidate_asof.build_packet(snapshot, raw_payload=raw_payload)
+                for peer in view.get("candidates") or []:
+                    peer_snapshot = peer.get("snapshot")
+                    if (not isinstance(peer_snapshot, Mapping)
+                            or peer_snapshot["market"]["valuation_ts_ms"] > snapshot["market"]["valuation_ts_ms"]):
+                        continue
+                    try:
+                        candidate_asof.build_packet(peer_snapshot)
+                        cross_section.append(peer_snapshot)
+                    except Exception as peer_exc:
+                        excluded_peers.append(wpem_workbench.non_comparable_peer(peer_snapshot, peer_exc))
+                try:
+                    package = wpem_workbench.compose(snapshot, self._wpem_archive, self.config.snapshots_jsonl,
+                        raw_payload=raw_payload, engine=self.data_engine,
+                        release=view["release_identity"], now_ms=now_ms,
+                        cross_section=cross_section)
+                    wpem_workbench.require_current_package_binding(snapshot, package)
+                    attach_package(package)
+                except Exception as history_exc:
+                    isolated = wpem_workbench.replay_block(history_exc)
+                    isolated["error_type"] = type(history_exc).__name__
+                    try:
+                        package = wpem_workbench.current_only_evidence(
+                            snapshot, current_packet=current_packet,
+                            release=view["release_identity"], cross_section=cross_section)
+                        wpem_workbench.validate_evidence_package(snapshot, package)
+                    except Exception as fallback_exc:
+                        raise history_exc from fallback_exc
+                    attach_package(package, isolated=isolated)
+            except Exception as exc:
+                block = wpem_workbench.replay_block(exc)
+                if snapshot_id in self._wpem_packages:
+                    del self._wpem_packages[snapshot_id]
+                self._wpem_display_packages.pop(snapshot_id, None)
+                item["wpem_evidence"] = {"status": "BLOCKED", "reason": block["code"], "error_code": block["code"]}
+                item["wpem_summary"] = wpem_workbench.blocked_summary(snapshot, exc)
+                item["current_questions"] = wpem_workbench.blocked_program_questions(snapshot, exc)
+                has_review = (isinstance(prior, Mapping)
+                              and prior.get("status") not in {None, "", "not_attached", "NOT_RUN", "missing"})
+                item["review_validity"] = {"status": "STALE" if has_review else "NOT_RUN",
+                                           "reason": "evidence_replay_failed",
+                                           "error_code": block["code"]}
+        self._wpem_pending_payloads.clear()
+        current = {(item.get("snapshot") or {}).get("snapshot_id") for item in view.get("candidates") or []}
+        if prune:
+            for key in list(self._wpem_packages):
+                if key not in current:
+                    del self._wpem_packages[key]
+                    self._wpem_display_packages.pop(key, None)
+            for key in list(self._wpem_display_packages):
+                if key not in self._wpem_packages:
+                    self._wpem_display_packages.pop(key, None)
+
+    def _display_wpem_package(self, snapshot_id: str | None, state: Mapping[str, Any], history: Sequence,
+                              attached: Mapping[str, Any] | None = None) -> Any:
+        # Reconstruct full replay inputs only when an actual same-snapshot
+        # receipt needs strict consumption validation. No receipt means no
+        # opinion can gain authority from the small presence/hash descriptor.
+        receipts = [attached, state.get("last_result"), state.get("previous_valid_result"),
+                    *[_history_receipt(row)[0] for row in history if isinstance(row, Mapping)]]
+        if any(_receipt_needs_full_proof(snapshot_id, row) for row in receipts):
+            return self._wpem_packages.get(snapshot_id)
+        return self._wpem_display_packages.get(snapshot_id)
+
+    def wpem_evidence(self, snapshot_id: str, *, full: bool = True) -> dict[str, Any]:
+        """Read existing proof only; this endpoint never refreshes or invokes a model."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", snapshot_id):
+            raise WorkbenchError(400, "snapshot_id_invalid", "invalid snapshot identity")
+        package = self._wpem_packages.get(snapshot_id) if full else self._wpem_display_packages.get(snapshot_id)
+        if package is None:
+            raise WorkbenchError(404, "wpem_evidence_not_current", "proof is no longer the current snapshot")
+        return package if full else deepcopy(package)
+
+    def _remember_lockable(self, view: dict[str, Any], now_ms: int) -> None:
+        """Keep a bounded set of exact displayed inputs across refresh races."""
+        shown = self._apply_current_review_availability(
+            {**view, "candidates": [dict(item) for item in view.get("candidates") or []]}, now_ms)
+        for item, displayed in zip(view.get("candidates") or [], shown.get("candidates") or []):
+            snapshot = displayed.get("snapshot")
+            if not isinstance(snapshot, Mapping):
+                item["lock_availability"] = {"enabled": False, "reason": "snapshot_missing"}
+                continue
+            snapshot_id = snapshot["snapshot_id"]
+            try:
+                if snapshot_id not in self._lockable_points:
+                    packet = candidate_asof.build_packet(
+                        snapshot, raw_payload=self._locked_payloads.get(snapshot_id),
+                        source_receipts=candidate_asof.collect_source_receipts(snapshot, self.data_engine),
+                        interval_ms=max(1, self.config.locked_sample_interval_ms))
+                    point = {
+                        "candidate": deepcopy(displayed), "packet": packet,
+                        "recorded_at_ms": max(now_ms, int(snapshot["market"]["valuation_ts_ms"]))}
+                    with self._view_lock:
+                        self._lockable_points[snapshot_id] = point
+                item["lock_availability"] = {"enabled": True, "reason": None}
+            except Exception as exc:
+                item["lock_availability"] = {"enabled": False, "reason": "packet_validation_failed",
+                                             "error_type": type(exc).__name__}
+        with self._view_lock:
+            while len(self._lockable_points) > 12:
+                self._lockable_points.pop(next(iter(self._lockable_points)))
+
+    @staticmethod
+    def _locked_binding(contract: Mapping[str, Any]) -> dict[str, Any]:
+        # No discovery timestamp: this routing binding must not be ingested as
+        # a newly observed default-candidate discovery result.
+        return {"selection_origin": "locked_contract", "candidates": {
+            contract["side"]: {"status": "candidate", "selection_origin": "locked_contract",
+                               "candidate": deepcopy(dict(contract))}}}
+
+    def _capture_locked_point(self, episode: Mapping[str, Any], view: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+        contract = episode["contract"]
+        fact = self.latest_fact(now_ms)
+        gate = self.space_gate_view(fact, now_ms)
+        item = self._capture_candidate(
+            contract["side"], self._locked_binding(contract), fact, gate, now_ms,
+            btc_map_projection=view.get("btc_map_projection"), tracking=True)
+        if (item.get("snapshot") or {}).get("candidate_id") != episode["candidate_id"]:
+            raise WorkbenchError(409, "locked_quote_unavailable", "original contract capture is unavailable")
+        local_view = self._wpem_view_for_candidate(view, item)
+        local_view["space_gate"] = gate
+        self._attach_wpem(local_view, max(now_ms, self.clock_ms()), prune=False)
+        self._remember_lockable(local_view, max(now_ms, self.clock_ms()))
+        snapshot_id = item["snapshot"]["snapshot_id"]
+        point = self._lockable_points.get(snapshot_id)
+        if point is None:
+            raise WorkbenchError(409, "locked_packet_unavailable", "original contract packet did not validate")
+        return point
+
+    def _refresh_locked_candidates(self, view: dict[str, Any], now_ms: int) -> None:
+        """Reuse the collector and exact contract; page reads never come here."""
+        self._locked_refresh_error = None
+        try:
+            episodes = self.locked_candidates.active()
+        except locked_store.LockedCandidateError as exc:
+            self._locked_refresh_error = exc.code
+            return
+        captured = {}
+        for item in view.get("candidates") or []:
+            snapshot = item.get("snapshot") or {}
+            point = self._lockable_points.get(snapshot.get("snapshot_id"))
+            if point:
+                captured[snapshot["candidate_id"]] = point
+        for episode in episodes:
+            episode_id = episode["episode_id"]
+            try:
+                if now_ms >= episode["contract"]["expiry_ms"]:
+                    self.locked_candidates.record_gap(episode_id, now_ms=now_ms,
+                        reason="contract_expired_settlement_unverified", expired=True)
+                    continue
+                if now_ms - episode["last_attempt_at_ms"] < max(1, self.config.locked_sample_interval_ms):
+                    continue
+                point = captured.get(episode["candidate_id"])
+                if point is None:
+                    point = self._capture_locked_point(episode, view, self.clock_ms())
+                    captured[episode["candidate_id"]] = point
+                self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
+            except Exception as exc:
+                reason = getattr(exc, "code", None) or "locked_capture_failed:" + type(exc).__name__
+                try:
+                    self.locked_candidates.record_gap(episode_id, now_ms=max(now_ms, self.clock_ms()), reason=reason)
+                except Exception as write_exc:
+                    self._locked_refresh_error = "tracking_state_write_failed:" + type(write_exc).__name__
+        self._locked_payloads.clear()
+
+    def locked_candidate_list(self) -> dict[str, Any]:
+        try:
+            episodes = self.locked_candidates.list()
+            error = self._locked_refresh_error
+        except locked_store.LockedCandidateError as exc:
+            episodes, error = [], exc.code
+        return {"schema": "locked_candidate_list@1.0.0", "episodes": episodes,
+                "error": error, "sample_interval_ms": self.config.locked_sample_interval_ms,
+                "max_active": self.config.locked_max_active, "max_samples": self.config.locked_max_samples,
+                "max_bytes": self.config.locked_max_bytes, "llm_call_count": 0}
+
+    def locked_candidate_detail(self, episode_id: str, *, include_raw: bool = True,
+                                baseline_point_id: str | None = None,
+                                latest_point_id: str | None = None) -> dict[str, Any]:
+        if not include_raw:
+            with self._locked_detail_lock:
+                return self._locked_candidate_reading(episode_id)
+        return self._locked_candidate_projection(episode_id, include_raw=include_raw,
+            baseline_point_id=baseline_point_id, latest_point_id=latest_point_id)
+
+    def _locked_candidate_reading(self, episode_id: str) -> dict[str, Any]:
+        episode = next((item for item in self.locked_candidate_list()["episodes"]
+                        if item["episode_id"] == episode_id), None)
+        if episode is None:
+            raise WorkbenchError(404, "episode_not_found", "locked policy not found")
+        if episode.get("index_error"):
+            raise WorkbenchError(409, "index_integrity_error", "this policy index is unavailable")
+        # Only selected files are stat'ed; unchanged immutable points need not be
+        # decompressed, replayed and projected for each reader/tab.
+        paths = [self.locked_candidates.index_path, self.config.state_path]
+        signature = []
+        for path in paths:
+            try:
+                stat = path.stat()
+                signature.append((str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+            except FileNotFoundError:
+                signature.append((str(path), None))
+        try:
+            signature += [self.locked_candidates.point_read_signature(episode[key])
+                          for key in ("t0_baseline_point_id", "latest_point_id")]
+        except locked_store.LockedCandidateError as exc:
+            raise WorkbenchError(409, exc.code, "this policy evidence is unavailable") from exc
+        cached = self._locked_detail_cache.get(episode_id)
+        if cached is None or cached[0] != signature:
+            result = self._locked_candidate_projection(episode_id, include_raw=False)
+            self._locked_detail_cache[episode_id] = (signature, result)
+            while len(self._locked_detail_cache) > 4:
+                self._locked_detail_cache.pop(next(iter(self._locked_detail_cache)))
+        else:
+            result = cached[1]
+        result = deepcopy(result)
+        expiry = result.get("fixed_contract", {}).get("expiry_ms")
+        if isinstance(expiry, int):
+            result["overview"]["remaining_to_expiry_ms"] = max(0, expiry - self.clock_ms())
+        result["sampling"]["collector_error"] = self._locked_refresh_error or self._last_refresh_error
+        return result
+
+    def _locked_candidate_projection(self, episode_id: str, *, include_raw: bool,
+                                     baseline_point_id: str | None = None,
+                                     latest_point_id: str | None = None) -> dict[str, Any]:
+        try:
+            detail = (self.locked_candidates.detail_pair(episode_id, baseline_point_id, latest_point_id)
+                      if baseline_point_id is not None and latest_point_id is not None
+                      else self.locked_candidates.detail(episode_id))
+            result = locked_compare.build_followup(detail, now_ms=self.clock_ms(), include_raw=include_raw)
+        except locked_store.LockedCandidateError as exc:
+            raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
+        result["sampling"] = {"interval_ms": self.config.locked_sample_interval_ms,
+                              "collector_error": self._locked_refresh_error or self._last_refresh_error,
+                              "max_active": self.config.locked_max_active}
+        latest = detail.get("latest") or {}
+        candidate = deepcopy(latest.get("candidate") or {})
+        snapshot = candidate.get("snapshot") or {}
+        review_state, history = self.manual_review_state(), self._manual_review_receipt_history()
+        candidate["review_display"] = review_display_for_candidate(
+            candidate, review_state,
+            wpem_package=self._display_wpem_package(snapshot.get("snapshot_id"), review_state, history, candidate.get("review")),
+            model=self.config.model, now_ms=self.clock_ms(),
+            accepted_history=history)
+        accepted = locked_compare.public_review_explanation(candidate)
+        if accepted is not None:
+            # A later review is a separate annex. Neither immutable point nor
+            # baseline's explanation is changed by a current display read.
+            result["explanations"]["latest"]["accepted_review"] = accepted
+            result["explanations"]["latest"]["review_added_after_point_capture"] = True
+        result["llm_call_count"] = 0
+        return result
+
+    def candidate_evidence(self, snapshot_id: str) -> dict[str, Any]:
+        with self._view_lock:
+            point = self._lockable_points.get(snapshot_id)
+        if point is None:
+            raise WorkbenchError(409, "evidence_not_retained", "this exact displayed input is no longer retained")
+        return locked_compare._public_point(point)
+
+    def lock_candidate(self, candidate_id: str, snapshot_id: str, request_key: str, *,
+                       authorization: str | None, new_reference: bool = False,
+                       source_episode_id: str | None = None) -> dict[str, Any]:
+        if not self._authorized(authorization):
+            raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
+        if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", snapshot_id)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key)):
+            raise WorkbenchError(400, "bad_lock_request", "snapshot_id and idempotency_key are required")
+        if source_episode_id is not None and (not isinstance(source_episode_id, str)
+                or not re.fullmatch(r"lce_[0-9a-f]{24}", source_episode_id)):
+            raise WorkbenchError(400, "bad_lock_request", "invalid source episode")
+        if source_episode_id and not new_reference:
+            raise WorkbenchError(400, "new_reference_required", "source episode requires explicit new_reference")
+        # Cache publication is brief; local persistence must not wait for the
+        # collector's network-wide refresh lock. Published points are immutable.
+        try:
+            if source_episode_id and not candidate_id:
+                candidate_id = self.locked_candidates.detail(source_episode_id)["episode"]["candidate_id"]
+            existing = self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
+                snapshot_id=snapshot_id, new_reference=new_reference, source_episode_id=source_episode_id)
+            if existing is not None:
+                return {**existing, "llm_call_count": 0, "execution_allowed": False}
+            if source_episode_id:
+                point = self.locked_candidates.retained_point(source_episode_id, snapshot_id)
+            else:
+                with self._view_lock:
+                    point = self._lockable_points.get(snapshot_id)
+            if point is None or point["candidate"]["snapshot"]["snapshot_id"] != snapshot_id:
+                raise WorkbenchError(409, "lock_snapshot_not_retained", "displayed input is no longer retained; refresh explicitly")
+            if point["candidate"]["snapshot"]["candidate_id"] != candidate_id:
+                raise WorkbenchError(409, "lock_candidate_mismatch", "snapshot does not belong to selected contract")
+            if self.clock_ms() >= point["candidate"]["snapshot"]["contract"]["expiry_ms"]:
+                raise WorkbenchError(409, "contract_expired", "expired contract cannot start regular observation")
+            result = self.locked_candidates.lock(point, request_key=request_key, now_ms=self.clock_ms(),
+                                                 new_reference=new_reference, source_episode_id=source_episode_id)
+        except locked_store.LockedCandidateError as exc:
+            raise WorkbenchError(409, exc.code, exc.code) from exc
+        return {**result, "llm_call_count": 0, "execution_allowed": False}
+
+    def stop_locked_candidate(self, episode_id: str, *, authorization: str | None) -> dict[str, Any]:
+        if not self._authorized(authorization):
+            raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
+        try:
+            episode = self.locked_candidates.stop(episode_id, now_ms=self.clock_ms())
+        except locked_store.LockedCandidateError as exc:
+            raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
+        return {"episode": episode, "llm_call_count": 0, "execution_allowed": False}
+
+    def _record_research_samples(self, view: dict[str, Any], recorded_at_ms: int) -> None:
+        """Optional local retention; failures do not erase the current contract view."""
+        view["research_archive"] = {"enabled": True, "setup_error_type": self._research_setup_error,
+                                   "feature_catalog_error_type": self._research_feature_catalog_error}
+        for candidate in view["candidates"]:
+            if self._research_setup_error or self.research_archive is None:
+                candidate["research_archive"] = {"status": "error", "reason": "research_archive_setup_failed"}
+            elif not isinstance(candidate.get("snapshot"), Mapping):
+                candidate["research_archive"] = {"status": "skipped", "reason": "verified_snapshot_missing"}
+            else:
+                try:
+                    candidate["research_archive"] = self.research_archive.sample(
+                        candidate["snapshot"], recorded_at_ms=recorded_at_ms,
+                        feature_catalog=self._research_feature_catalog,
+                        feature_catalog_error=self._research_feature_catalog_error,
+                        raw_payload=self._research_pending_payloads.pop(candidate["snapshot"]["snapshot_id"], None),
+                        source_receipts=candidate_asof.collect_source_receipts(candidate["snapshot"], self.data_engine))
+                except Exception as exc:
+                    candidate["research_archive"] = {"status": "error", "reason": "research_archive_write_failed",
+                                                       "error_type": type(exc).__name__}
+        self._research_pending_payloads.clear()
+
+    def cached_view(self, *, reading_only: bool = False) -> dict[str, Any]:
         """Read the collector's cache. Page reads never cause external requests."""
         now = self.clock_ms()
         with self._view_lock:
-            view = deepcopy(self._current_view)
+            view = ({**self._current_view,
+                     "candidates": [dict(item) for item in self._current_view.get("candidates") or []]}
+                    if reading_only and self._current_view is not None else deepcopy(self._current_view))
             failure = deepcopy(self._last_refresh_error)
         if view is None:
             fact = self.latest_fact(now)
             warm = {"schema": SCHEMA, "updated_at_ms": None, "served_at_ms": now,
+                    "locked_candidates": self.locked_candidate_list(),
                     "market_context": fact, "space_gate": self.space_gate_view(fact, now),
                     "candidates": [], "gaps": ["data_collector_warming_up"],
                     "daily_snapshots": self.recent_daily_snapshots(),
                     "transitions": self.recent_transitions(),
                     "manual_review_state": self.manual_review_state(now), "llm_call_count": 0,
                     "data_health": self._data_health(now)}
-            return self._apply_current_review_availability(warm, now)
+            result = self._apply_current_review_availability(warm, now)
+            return reading.workbench_reading(result) if reading_only else result
         # Recheck facts and current use, without overwriting frozen candidate evidence.
         fact = self.latest_fact(now)
         gate = self.space_gate_view(fact, now)
         view.update({"served_at_ms": now, "market_context": fact, "space_gate": gate,
+                     "locked_candidates": self.locked_candidate_list(),
                      "manual_review_state": self.manual_review_state(now)})
-        view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now)
+        usage_engines: dict[Any, Any] = {}
+        view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now, engines=usage_engines)
         # Global display is a current cache projection. Candidate MAPs stay frozen.
-        current_projection = self._build_btc_map_projection(now, fact, collect_slow_sources=False)
-        view["btc_map"] = deepcopy(current_projection.get("btc_map"))
-        view["data_health"] = self._data_health(now, current_projection)
+        current_projection = (view.get("btc_map_projection") or {}) if reading_only else self._build_btc_map_projection(now, fact, collect_slow_sources=False)
+        view["btc_map"] = current_projection.get("btc_map") if reading_only else deepcopy(current_projection.get("btc_map"))
+        if not reading_only:
+            view["data_health"] = self._data_health(now, current_projection)
+            view["daily_snapshots"] = self.recent_daily_snapshots(limit=self.config.daily_snapshot_limit)
         prior_map_gaps = set((view.get("btc_map_projection") or {}).get("gaps") or [])
         view["gaps"] = sorted((set(view.get("gaps") or []) - prior_map_gaps)
                               | set(current_projection.get("gaps") or []))
-        view["btc_map_projection"] = deepcopy(current_projection)
+        view["btc_map_projection"] = current_projection if reading_only else deepcopy(current_projection)
         for item in view.get("candidates") or []:
             snapshot = item.get("snapshot") or {}
             quoted_at = (snapshot.get("market") or {}).get("valuation_ts_ms")
@@ -1024,16 +2749,28 @@ class AstraWorkbench:
             item["current_usage"] = {"checked_at_ms": now,
                                      "quote_current": isinstance(quoted_at, int) and 0 <= now - quoted_at <= 5_000}
             item["btc_map_current_usage"] = self._map_current_usage(
-                (snapshot.get("data_identity") or {}).get("btc_map"), now)
+                (snapshot.get("data_identity") or {}).get("btc_map"), now, engines=usage_engines)
             item["btc_map_review_delta"] = self._map_review_delta(snapshot, view["manual_review_state"])
+            prior=item.get('review') or {}
+            package=(self._wpem_packages.get(snapshot.get('snapshot_id'))
+                     if _receipt_needs_full_proof(snapshot.get('snapshot_id'), prior)
+                     else self._wpem_display_packages.get(snapshot.get('snapshot_id'))) if self.config.wpem_enabled else None
+            if package is not None:
+                prior=item.get('review') or {}
+                item['review_validity']={**(item.get('review_validity') or {}),
+                    'status':wpem_review.review_status(
+                        {**prior,'status':'OK' if prior.get('status')=='attached' else prior.get('status')},
+                        snapshot,package,model=self.config.model,now_ms=now),'checked_at_ms':now}
             if reasons:
                 item["review_gate"] = {"enabled": False, "reasons": sorted(set(reasons))}
         if failure:
             view["collector_failure"] = failure
             view["gaps"] = sorted(set(view.get("gaps", []) + ["data_collector_refresh_failed"]))
-        return self._apply_current_review_availability(view, now)
+        result = self._apply_current_review_availability(view, now)
+        return reading.workbench_reading(result) if reading_only else result
 
-    def _map_current_usage(self, mapping: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
+    def _map_current_usage(self, mapping: Mapping[str, Any] | None, now_ms: int, *,
+                           engines: dict[Any, Any] | None = None) -> dict[str, Any]:
         """Requalify source identities without mutating the frozen MAP or calling HTTP."""
         if not isinstance(mapping, Mapping):
             return {"status": "MISSING", "checked_at_ms": now_ms, "changed_sources": [], "unusable_sources": []}
@@ -1042,7 +2779,20 @@ class AstraWorkbench:
             return {"status": "ERROR", "checked_at_ms": now_ms, "changed_sources": [], "unusable_sources": [],
                     "error": deepcopy(consumer.get("error") or {"code": "PRODUCER_SOURCE_UNQUALIFIED"})}
         try:
-            engine = self._map_engine_for_projection(now_ms, {"source_consumer": mapping.get("source_consumer")})
+            key = consumer.get("producer_manifest_hash")
+            if engines is not None and key in engines:
+                engine = engines[key]
+                if isinstance(engine, map_projection.SourceConsumerError):
+                    raise engine
+            else:
+                try:
+                    engine = self._map_engine_for_projection(now_ms, {"source_consumer": mapping.get("source_consumer")})
+                except map_projection.SourceConsumerError as exc:
+                    if engines is not None:
+                        engines[key] = exc
+                    raise
+                if engines is not None:
+                    engines[key] = engine
         except map_projection.SourceConsumerError as exc:
             return {"status": "ERROR", "checked_at_ms": now_ms, "changed_sources": [], "unusable_sources": [],
                     "error": exc.as_dict()}
@@ -1164,6 +2914,19 @@ class AstraWorkbench:
         cooldown_until = max(0, last_started + self.config.review_cooldown_ms)
         if cooldown_until <= now:
             cooldown_until = 0
+        previous_valid = None
+        last_result = review.get("last_result") or {}
+        if isinstance(last_result, Mapping) and last_result and last_result.get("status") not in {"OK", "RESEARCH_OK", "attached"}:
+            # Historical fallback is derived from existing immutable receipts.
+            # It never replaces the failed attempt or applies to a new snapshot.
+            successes = [row for row in (review.get("idempotency") or {}).values()
+                         if isinstance(row, Mapping) and isinstance(row.get("result"), Mapping)
+                         and row["result"].get("status") in {"OK", "RESEARCH_OK", "attached"}]
+            if successes:
+                saved = max(successes, key=lambda row: int(row.get("updated_at_ms") or 0))
+                previous_valid = _review_receipt_for_display(saved["result"])
+                previous_valid.update(historical_only=True,
+                                      historical_completed_ts_ms=saved.get("updated_at_ms"))
         return {
             "cooldown_until_ms": cooldown_until,
             "cooldown_remaining_ms": max(0, cooldown_until - now),
@@ -1171,8 +2934,21 @@ class AstraWorkbench:
             "last_started_ts_ms": review.get("last_started_ts_ms"),
             "last_completed_ts_ms": review.get("last_completed_ts_ms"),
             "last_result": _review_receipt_for_display(review.get("last_result")),
+            "previous_valid_result": previous_valid,
             "daily_http_budget": self.budget.snapshot() if self._shared_budget_ready() else None,
         }
+
+    def _manual_review_receipt_history(self) -> list[dict[str, Any]]:
+        state = self._load_state()
+        review = state.get("manual_review") if isinstance(state.get("manual_review"), Mapping) else {}
+        history: list[dict[str, Any]] = []
+        for key, entry in (review.get("idempotency") or {}).items():
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("result"), Mapping):
+                continue
+            row = deepcopy(dict(entry))
+            row["idempotency_key"] = key
+            history.append(row)
+        return history
 
     def review_availability(
         self,
@@ -1218,6 +2994,32 @@ class AstraWorkbench:
         gate["enabled"] = bool(gate.get("enabled")) and not (availability.get("reasons") or [])
         return gate
 
+    def _observation_review_gate(
+        self,
+        item: Mapping[str, Any],
+        now_ms: int,
+        *,
+        current_gate: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        if not self.config.server_token or not self.config.api_key or not self._shared_budget_ready():
+            reasons.append("manual_review_service_not_configured")
+        snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else None
+        if not isinstance(snapshot, Mapping):
+            reasons.append("snapshot_missing")
+            return {"enabled": False, "reasons": sorted(set(reasons))}
+        quoted_at = (snapshot.get("market") or {}).get("valuation_ts_ms")
+        if not isinstance(quoted_at, int):
+            reasons.append("snapshot_time_missing")
+        if isinstance(current_gate, Mapping):
+            current_hash = current_gate.get("fmz_source_hash")
+            item_hash = (item.get("space_gate") or {}).get("fmz_source_hash")
+            if current_hash and item_hash and current_hash != item_hash:
+                reasons.append("candidate_gate_version_changed_during_refresh")
+        if self.config.wpem_enabled and snapshot.get("snapshot_id") not in self._wpem_packages:
+            reasons.append("wpem_evidence_unavailable")
+        return {"enabled": not reasons, "reasons": sorted(set(reasons))}
+
     def _apply_current_review_availability(self, view: dict[str, Any], now_ms: int) -> dict[str, Any]:
         state = view.get("manual_review_state") if isinstance(view.get("manual_review_state"), Mapping) else None
         if state is None:
@@ -1225,7 +3027,24 @@ class AstraWorkbench:
             view["manual_review_state"] = state
         availability = self.review_availability(now_ms, manual_review_state=state)
         view["manual_review_availability"] = availability
+        current_gate = view.get("space_gate") if isinstance(view.get("space_gate"), Mapping) else None
+        accepted_history = self._manual_review_receipt_history()
         for item in view.get("candidates") or []:
+            snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else None
+            package = (self._display_wpem_package(snapshot.get("snapshot_id"), state, accepted_history, item.get("review"))
+                       if self.config.wpem_enabled and isinstance(snapshot, Mapping) else None)
+            item["review_display"] = review_display_for_candidate(
+                item,
+                state,
+                wpem_package=package,
+                model=self.config.model,
+                now_ms=now_ms,
+                accepted_history=accepted_history,
+            )
+            item["observation_review"] = self._merge_review_availability(
+                self._observation_review_gate(item, now_ms, current_gate=current_gate),
+                availability,
+            )
             item["review_gate"] = self._merge_review_availability(item.get("review_gate"), availability)
         return view
 
@@ -1258,14 +3077,22 @@ class AstraWorkbench:
         idempotency_key: str,
         *,
         authorization: str | None,
+        purpose: str | None = REVIEW_PURPOSE,
+        locked_episode_id: str | None = None,
+        snapshot_id: str | None = None,
     ) -> dict[str, Any]:
         if not self._authorized(authorization):
             raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
         if not candidate_id or not idempotency_key:
             raise WorkbenchError(400, "bad_request", "candidate_id and idempotency_key are required")
+        purpose = _normalize_review_purpose(purpose)
+        request_binding = ({"locked_episode_id": locked_episode_id, "requested_snapshot_id": snapshot_id}
+                           if locked_episode_id else {})
         now = self.clock_ms()
-        existing = self._idempotency_result(idempotency_key)
+        existing = self._idempotency_result(idempotency_key, candidate_id=candidate_id, purpose=purpose)
         if existing is not None:
+            if any(existing.get(key) != value for key, value in request_binding.items()):
+                raise WorkbenchError(409, "idempotency_key_conflict", "review request belongs to a different locked input")
             return existing
         # A manual lock refreshes only the chosen existing contract. Discovery
         # remains the collector's responsibility and cannot silently replace it.
@@ -1277,6 +3104,18 @@ class AstraWorkbench:
             discovered = (cached or {}).get("discovery") or {}
             btc_projection = (cached or {}).get("btc_map_projection") if isinstance(cached, Mapping) else None
             discovery_ts = discovered.get("captured_ts_ms")
+            if locked_episode_id:
+                try:
+                    locked = self.locked_candidates.detail(locked_episode_id)
+                except locked_store.LockedCandidateError as exc:
+                    raise WorkbenchError(409, exc.code, exc.code) from exc
+                episode = locked["episode"]
+                if (episode["candidate_id"] != candidate_id or episode["latest_snapshot_id"] != snapshot_id
+                        or episode["status"] != "active"):
+                    raise WorkbenchError(409, "locked_review_target_changed", "refresh the selected locked observation")
+                previous = locked["latest"]["candidate"]
+                discovered = self._locked_binding(episode["contract"])
+                discovery_ts = now
             item = None
             if previous and isinstance(discovery_ts, int) and 0 <= now - discovery_ts <= discovery.DEFAULT_DELTA_MAX_AGE_MS:
                 fact = self.latest_fact(now)
@@ -1288,45 +3127,85 @@ class AstraWorkbench:
                         collect_slow_sources=False,
                     )
                 item = self._capture_candidate(previous["side"], discovered, fact, gate, now,
-                                               btc_map_projection=btc_projection)
+                                               btc_map_projection=btc_projection, tracking=bool(locked_episode_id))
                 if (item.get("snapshot") or {}).get("candidate_id") != candidate_id:
                     item = None
                 if item:
-                    cached["candidates"] = [item if entry.get("side") == item["side"] else entry
-                                             for entry in cached["candidates"]]
+                    cached = cached or {"candidates": []}
+                    if locked_episode_id:
+                        local_view = self._wpem_view_for_candidate(cached, item)
+                        local_view["space_gate"] = gate
+                        self._attach_wpem(local_view, self.clock_ms(), prune=False)
+                        self._remember_lockable(local_view, self.clock_ms())
+                        item = self._candidate_from_view(local_view, item)
+                        point = self._lockable_points.get(item["snapshot"]["snapshot_id"])
+                        if point is None:
+                            raise WorkbenchError(409, "locked_packet_unavailable", "current locked input did not validate")
+                        appended = self.locked_candidates.append(locked_episode_id, point, now_ms=self.clock_ms())
+                        if appended["latest_snapshot_id"] != item["snapshot"]["snapshot_id"]:
+                            raise WorkbenchError(409, "locked_sampling_paused", "current locked input was not retained")
+                    else:
+                        cached["candidates"] = [item if entry.get("side") == item["side"] else entry
+                                                 for entry in cached["candidates"]]
                     cached.update({"updated_at_ms": self.clock_ms(), "market_context": fact,
                                    "space_gate": gate, "btc_map_projection": deepcopy(btc_projection),
                                    "btc_map": deepcopy((btc_projection or {}).get("btc_map")),
                                    "data_health": self._data_health(self.clock_ms(), btc_projection)})
-                    with self._view_lock:
-                        self._current_view = deepcopy(cached)
+                    if not locked_episode_id:
+                        with self._view_lock:
+                            self._current_view = deepcopy(cached)
                     self._store_btc_map_state((btc_projection or {}).get("btc_map"))
         if item is None:
-            result = {"schema": SCHEMA, "status": "rejected", "reason": "candidate_not_current",
+            result = {"schema": SCHEMA, "status": "rejected", **request_binding,
+                      "reason": "locked_quote_unavailable" if locked_episode_id else "candidate_not_current",
                       "candidate_id": candidate_id, "idempotency_key": idempotency_key,
+                      "purpose": purpose,
                       "llm_call_count": 0}
-            self._store_idempotency(idempotency_key, result)
+            self._store_idempotency(idempotency_key, result, candidate_id=candidate_id, purpose=purpose)
             return result
-        base_gate = item.get("review_gate") or {}
+        now = self.clock_ms()
+        if purpose == OBSERVATION_PURPOSE and self.config.wpem_enabled and not locked_episode_id:
+            local_view = self._wpem_view_for_candidate(cached, item)
+            self._attach_wpem(local_view, now)
+            item = self._candidate_from_view(local_view, item)
+        if not locked_episode_id:
+            self._remember_lockable({"candidates": [item], "space_gate": (cached or {}).get("space_gate")}, now)
+        current_gate = (cached or {}).get("space_gate") if isinstance(cached, Mapping) else None
+        base_gate = (self._observation_review_gate(item, now, current_gate=current_gate)
+                     if purpose == OBSERVATION_PURPOSE else item.get("review_gate") or {})
         availability = self.review_availability(now)
         gate = self._merge_review_availability(base_gate, availability)
         availability_reasons = set(availability.get("reasons") or [])
         atomic_reason_active = bool(availability_reasons.intersection(_POST_ATOMIC_REASONS))
         budget_exhausted = MANUAL_REVIEW_BUDGET_EXHAUSTED_REASON in availability_reasons
         if (not base_gate.get("enabled")) or (budget_exhausted and not atomic_reason_active):
-            result = {"schema": SCHEMA, "status": "rejected", "reason": "review_gate_disabled",
+            result = {"schema": SCHEMA, "status": "rejected",
+                      **request_binding,
+                      "reason": "observation_review_unavailable" if purpose == OBSERVATION_PURPOSE else "review_gate_disabled",
                       "candidate_id": candidate_id, "snapshot_id": item["snapshot"]["snapshot_id"],
                       "side": item.get("side"),
-                      "review_gate": deepcopy(gate), "idempotency_key": idempotency_key,
+                      "purpose": purpose,
+                      ("observation_review" if purpose == OBSERVATION_PURPOSE else "review_gate"): deepcopy(gate),
+                      "idempotency_key": idempotency_key,
                       "llm_call_count": 0}
-            self._store_idempotency(idempotency_key, result)
+            self._store_idempotency(idempotency_key, result, candidate_id=candidate_id, purpose=purpose)
             return result
         if not self.config.api_key or not self._shared_budget_ready():
             raise WorkbenchError(503, "llm_not_configured",
                                  "LLM key and existing shared usage ledger are required")
         snapshot = item["snapshot"]
+        wpem_evidence = self._wpem_packages.get(snapshot["snapshot_id"])
+        if self.config.wpem_enabled and wpem_evidence is None:
+            local_view = self._wpem_view_for_candidate(cached, item)
+            self._attach_wpem(local_view, now)
+            item = self._candidate_from_view(local_view, item)
+            snapshot = item["snapshot"]
+            wpem_evidence = self._wpem_packages.get(snapshot["snapshot_id"])
+            if wpem_evidence is None:
+                raise WorkbenchError(409, "wpem_evidence_unavailable", "current evidence did not replay")
         self.ledger.record_snapshot(snapshot, now_ms=now)
-        self._begin_review(candidate_id, snapshot["snapshot_id"], item.get("side"), idempotency_key, now)
+        research_only = purpose == OBSERVATION_PURPOSE
+        self._begin_review(candidate_id, snapshot["snapshot_id"], item.get("side"), idempotency_key, now, purpose=purpose)
         try:
             result = review_core.run_review(
                 snapshot,
@@ -1338,23 +3217,38 @@ class AstraWorkbench:
                 transport=self.llm_transport,
                 timeout=self.config.review_timeout_s,
                 endpoint=self.config.endpoint,
+                wpem_evidence=wpem_evidence,
+                research_only=research_only,
             )
+            if research_only:
+                result = deepcopy(dict(result))
+                result["production_attach_allowed"] = False
+                result["execution_allowed"] = False
             wrapped = {"schema": SCHEMA, "status": result.get("status") or "review_failed", "candidate_id": candidate_id,
+                       **request_binding,
                        "side": item.get("side"),
+                       "purpose": purpose,
                        "snapshot_id": snapshot["snapshot_id"], "idempotency_key": idempotency_key,
                        "review": result, "llm_call_count": result.get("http_calls", 0)}
+            if research_only:
+                wrapped["production_attach_allowed"] = False
+                wrapped["execution_allowed"] = False
             self._finish_review(idempotency_key, wrapped, self.clock_ms())
-            return wrapped
+            return _review_receipt_for_display(wrapped)
         except WorkbenchError as exc:
             wrapped = {"schema": SCHEMA, "status": "ERROR", "candidate_id": candidate_id,
+                       **request_binding,
                        "side": item.get("side"),
+                       "purpose": purpose,
                        "idempotency_key": idempotency_key, "error": exc.as_payload(),
                        "llm_call_count": 0}
             self._finish_review(idempotency_key, wrapped, self.clock_ms())
             raise
         except Exception as exc:
             wrapped = {"schema": SCHEMA, "status": "ERROR", "candidate_id": candidate_id,
+                       **request_binding,
                        "side": item.get("side"),
+                       "purpose": purpose,
                        "idempotency_key": idempotency_key,
                        "error": {"code": "review_failed", "message": str(exc)[:240],
                                  "error_type": type(exc).__name__},
@@ -1362,17 +3256,47 @@ class AstraWorkbench:
             self._finish_review(idempotency_key, wrapped, self.clock_ms())
             return wrapped
 
-    def _idempotency_result(self, key: str) -> dict[str, Any] | None:
+    def _idempotency_result(
+        self,
+        key: str,
+        *,
+        candidate_id: str | None = None,
+        purpose: str | None = None,
+    ) -> dict[str, Any] | None:
         state = self._load_state()
         review = state.get("manual_review") if isinstance(state.get("manual_review"), Mapping) else {}
         entry = (review.get("idempotency") or {}).get(key)
-        return _review_receipt_for_display(entry.get("result")) if isinstance(entry, Mapping) and isinstance(entry.get("result"), Mapping) else None
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("result"), Mapping):
+            return None
+        result = _review_receipt_for_display(entry.get("result"))
+        if candidate_id is not None or purpose is not None:
+            stored_candidate = str(result.get("candidate_id") or entry.get("candidate_id") or "")
+            stored_purpose = str(result.get("purpose") or entry.get("purpose") or REVIEW_PURPOSE)
+            expected_purpose = _normalize_review_purpose(purpose)
+            if ((candidate_id is not None and stored_candidate and stored_candidate != candidate_id)
+                    or stored_purpose != expected_purpose):
+                raise WorkbenchError(409, "idempotency_key_conflict",
+                                     "idempotency key was already used for a different candidate or purpose",
+                                     detail={"existing_candidate_id": stored_candidate or None,
+                                             "existing_purpose": stored_purpose,
+                                             "candidate_id": candidate_id,
+                                             "purpose": expected_purpose})
+        return result
 
-    def _store_idempotency(self, key: str, result: Mapping[str, Any]) -> None:
+    def _store_idempotency(
+        self,
+        key: str,
+        result: Mapping[str, Any],
+        *,
+        candidate_id: str | None = None,
+        purpose: str | None = None,
+    ) -> None:
         def update(state: dict[str, Any]) -> None:
             review = state.setdefault("manual_review", {})
             idem = review.setdefault("idempotency", {})
             idem[key] = {"status": "settled", "result": deepcopy(dict(result)),
+                         "candidate_id": candidate_id or result.get("candidate_id"),
+                         "purpose": purpose or result.get("purpose") or REVIEW_PURPOSE,
                          "updated_at_ms": self.clock_ms()}
             if len(idem) > 200:
                 for old_key in sorted(idem, key=lambda k: int((idem[k] or {}).get("updated_at_ms") or 0))[:-200]:
@@ -1381,7 +3305,7 @@ class AstraWorkbench:
         self._locked_state_update(update)
 
     def _begin_review(self, candidate_id: str, snapshot_id: str, side: str | None,
-                      key: str, now_ms: int) -> None:
+                      key: str, now_ms: int, *, purpose: str = REVIEW_PURPOSE) -> None:
         def update(state: dict[str, Any]) -> None:
             review = state.setdefault("manual_review", {})
             idem = review.setdefault("idempotency", {})
@@ -1396,9 +3320,11 @@ class AstraWorkbench:
                                      detail={"cooldown_until_ms": last_started + self.config.review_cooldown_ms})
             review["inflight"] = {"candidate_id": candidate_id, "snapshot_id": snapshot_id,
                                   "side": side, "idempotency_key": key,
+                                  "purpose": purpose,
                                   "started_ts_ms": now_ms}
             review["last_started_ts_ms"] = now_ms
-            idem[key] = {"status": "inflight", "updated_at_ms": now_ms}
+            idem[key] = {"status": "inflight", "candidate_id": candidate_id,
+                         "purpose": purpose, "updated_at_ms": now_ms}
 
         self._locked_state_update(update)
 
@@ -1411,6 +3337,8 @@ class AstraWorkbench:
             review.setdefault("idempotency", {})[key] = {
                 "status": "settled",
                 "result": deepcopy(dict(result)),
+                "candidate_id": result.get("candidate_id"),
+                "purpose": result.get("purpose") or REVIEW_PURPOSE,
                 "updated_at_ms": now_ms,
             }
 
@@ -1442,23 +3370,125 @@ class AstraWorkbench:
 
 
 def make_handler(workbench: AstraWorkbench):
+    sessions = WorkbenchSessions(workbench.config.server_token, workbench.config.public_origin,
+                                 now_ms=workbench.clock_ms,
+                                 ttl_seconds=workbench.config.session_ttl_seconds,
+                                 max_sessions=workbench.config.max_sessions)
+    proof_slots = threading.BoundedSemaphore(1)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "AstraWorkbenchV20/1.0"
 
-        def _json(self, status: int, payload: Mapping[str, Any]) -> None:
+        def _json(self, status: int, payload: Mapping[str, Any], *, headers: Mapping[str, str] | None = None) -> None:
             body = (_canonical(dict(payload)) + "\n").encode("utf-8")
+            if len(body) > 65536 and self._accepts_gzip():
+                self._send_json_body(status, gzip.compress(body, compresslevel=1, mtime=0), content_encoding="gzip", headers=headers)
+            else:
+                self._send_json_body(status, body, headers=headers)
+
+        def _send_json_body(self, status: int, body: bytes, *, content_encoding: str | None = None,
+                            headers: Mapping[str, str] | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
+            self.send_header("Vary", "Accept-Encoding")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
+        def _accepts_gzip(self) -> bool:
+            for token in (self.headers.get("Accept-Encoding") or "").split(","):
+                name, *parameters = token.lower().split(";")
+                if name.strip() != "gzip":
+                    continue
+                quality = next((part.strip()[2:] for part in parameters if part.strip().startswith("q=")), "1")
+                try:
+                    if 0 < float(quality) <= 1:
+                        return True
+                except ValueError:
+                    pass
+            return False
+
+        def _wpem_proof_json(self, proof: Mapping[str, Any]) -> None:
+            if self._accepts_gzip():
+                compressed = reading.gzip_json(proof, compresslevel=6)
+                if len(compressed) <= 8_000_000:
+                    self._send_json_body(200, compressed, content_encoding="gzip")
+                    return
+            else:
+                parts, size = [], 0
+                for part in json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":")).iterencode(dict(proof)):
+                    encoded = part.encode("utf-8")
+                    size += len(encoded)
+                    if size > 8_000_000:
+                        break
+                    parts.append(encoded)
+                else:
+                    self._send_json_body(200, b"".join(parts) + b"\n")
+                    return
+            self._json(413, {
+                "schema": SCHEMA,
+                "code": "proof_size_budget_exceeded",
+                "evidence_hash": proof["evidence_hash"],
+            })
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            heavy = (parsed.path.endswith("/evidence")
+                     or parsed.path.startswith(("/api/workbench/candidate-evidence/", "/api/workbench/wpem-proof/"))
+                     or parse_qs(parsed.query).get("view") == ["full"])
+            if heavy and not proof_slots.acquire(blocking=False):
+                self._json(429, {"schema": SCHEMA, "code": "evidence_export_busy",
+                                 "message": "An evidence read is in progress; retry explicitly."})
+                return
+            try:
+                self._get()
+            finally:
+                if heavy:
+                    proof_slots.release()
+
+        def _get(self) -> None:
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            if parsed.path == "/api/workbench/session":
+                self._json(200, sessions.status(self.headers, self.client_address[0]))
+                return
+            if parsed.path.startswith("/api/workbench/candidate-evidence/"):
+                try:
+                    self._json(200, workbench.candidate_evidence(unquote(parsed.path.rsplit("/", 1)[-1])))
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                return
+            if parsed.path == "/api/workbench/locked-candidates":
+                self._json(200, workbench.locked_candidate_list())
+                return
+            if parsed.path.startswith("/api/workbench/locked-candidates/"):
+                try:
+                    evidence = parsed.path.endswith("/evidence")
+                    episode_id = unquote(parsed.path.split("/")[-2 if evidence else -1])
+                    if evidence:
+                        baseline_id = query.get("baseline_point_id", [None])[0]
+                        latest_id = query.get("latest_point_id", [None])[0]
+                        if not baseline_id or not latest_id:
+                            raise WorkbenchError(400, "exact_pair_required", "both displayed point identities are required")
+                        result = workbench.locked_candidate_detail(episode_id, include_raw=True,
+                            baseline_point_id=baseline_id, latest_point_id=latest_id)
+                    else:
+                        result = workbench.locked_candidate_detail(episode_id, include_raw=False)
+                    self._json(200, result)
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                except Exception as exc:
+                    self._json(500, {"schema": SCHEMA, "status": "ERROR",
+                                     "code": "locked_projection_unavailable", "error_type": type(exc).__name__})
+                return
             if parsed.path == "/api/workbench":
                 try:
-                    self._json(200, workbench.cached_view())
+                    self._json(200, workbench.cached_view(reading_only=query.get("view") != ["full"]))
                 except Exception as exc:
                     self._json(500, {"schema": SCHEMA, "status": "ERROR",
                                      "code": "refresh_failed", "message": str(exc)[:240]})
@@ -1470,29 +3500,82 @@ def make_handler(workbench: AstraWorkbench):
                                  "manual_review_availability": workbench.review_availability(
                                      manual_review_state=state)})
                 return
+            if parsed.path.startswith("/api/workbench/wpem-evidence/"):
+                try:
+                    proof = workbench.wpem_evidence(unquote(parsed.path.rsplit("/", 1)[-1]), full=False)
+                    self._json(200, wpem_workbench.public_evidence(proof))
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                return
+            if parsed.path.startswith("/api/workbench/wpem-proof/"):
+                if not sessions.authorize("GET", self.headers, self.client_address[0]).ok:
+                    self._json(401, {"schema":SCHEMA,"code":"unauthorized"})
+                    return
+                try:
+                    proof = workbench.wpem_evidence(unquote(parsed.path.rsplit("/", 1)[-1]))
+                    self._wpem_proof_json(proof)
+                except WorkbenchError as exc:
+                    self._json(exc.status_code,exc.as_payload())
+                return
             self._serve_static(parsed.path)
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path != "/api/workbench/review":
+            if parsed.path == "/api/workbench/session":
+                result = sessions.login("POST", self.headers, self.client_address[0])
+                self._json(result.status_code, result.body, headers=result.headers)
+                return
+            lock_path = "/api/workbench/locked-candidates"
+            stop_match = re.fullmatch(re.escape(lock_path) + r"/(lce_[0-9a-f]{24})/stop", parsed.path)
+            if parsed.path not in {"/api/workbench/review", lock_path} and not stop_match:
                 self._json(404, {"schema": SCHEMA, "status": "ERROR", "code": "not_found"})
                 return
             try:
+                access = sessions.authorize("POST", self.headers, self.client_address[0])
+                if not access.ok:
+                    raise WorkbenchError(access.status_code, access.reason, "private access verification required")
                 length = int(self.headers.get("Content-Length") or 0)
                 if not 0 < length <= 8192:
                     self._json(413, {"schema": SCHEMA, "status": "ERROR", "code": "request_size_invalid"})
                     return
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-                result = workbench.review_candidate(
-                    str(body.get("candidate_id") or ""),
-                    str(body.get("idempotency_key") or ""),
-                    authorization=self.headers.get("Authorization"),
-                )
+                if not isinstance(body, dict):
+                    raise WorkbenchError(400, "bad_json", "request body must be an object")
+                if parsed.path == lock_path:
+                    if "new_reference" in body and not isinstance(body["new_reference"], bool):
+                        raise WorkbenchError(400, "bad_lock_request", "new_reference must be boolean")
+                    result = workbench.lock_candidate(
+                        str(body.get("candidate_id") or ""), str(body.get("snapshot_id") or ""),
+                        str(body.get("idempotency_key") or ""),
+                        authorization=access.authorization_for_workbench,
+                        new_reference=body.get("new_reference", False),
+                        source_episode_id=body.get("source_episode_id"))
+                elif stop_match:
+                    result = workbench.stop_locked_candidate(stop_match.group(1),
+                        authorization=access.authorization_for_workbench)
+                else:
+                    result = workbench.review_candidate(
+                        str(body.get("candidate_id") or ""),
+                        str(body.get("idempotency_key") or ""),
+                        authorization=access.authorization_for_workbench,
+                        purpose=str(body.get("purpose") or REVIEW_PURPOSE),
+                        locked_episode_id=body.get("locked_episode_id"),
+                        snapshot_id=body.get("snapshot_id"),
+                    )
                 self._json(200, result)
             except WorkbenchError as exc:
                 self._json(exc.status_code, exc.as_payload())
-            except json.JSONDecodeError:
+            except (ValueError, UnicodeError):
                 self._json(400, {"schema": SCHEMA, "status": "ERROR", "code": "bad_json"})
+            except locked_store.LockedCandidateError as exc:
+                self._json(409, {"schema": SCHEMA, "status": "ERROR", "code": exc.code})
+
+        def do_DELETE(self) -> None:
+            if urlparse(self.path).path != "/api/workbench/session":
+                self._json(404, {"schema": SCHEMA, "code": "not_found"})
+                return
+            result = sessions.logout("DELETE", self.headers, self.client_address[0])
+            self._json(result.status_code, result.body, headers=result.headers)
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -1556,6 +3639,9 @@ def config_from_env() -> WorkbenchConfig:
         state_dir=state_dir,
         frontend_dir=Path(frontend) if frontend else None,
         server_token=os.environ.get("ASTRA_WORKBENCH_TOKEN"),
+        public_origin=os.environ.get("ASTRA_WORKBENCH_PUBLIC_ORIGIN"),
+        session_ttl_seconds=int(os.environ.get("ASTRA_WORKBENCH_SESSION_TTL_SECONDS") or "43200"),
+        max_sessions=int(os.environ.get("ASTRA_WORKBENCH_MAX_SESSIONS") or "32"),
         api_key=os.environ.get("LLM_API_KEY") or os.environ.get("ASTRA_WORKBENCH_LLM_API_KEY"),
         shared_usage_ledger=(Path(os.environ["ASTRA_WORKBENCH_USAGE_LEDGER"])
                              if os.environ.get("ASTRA_WORKBENCH_USAGE_LEDGER") else None),
@@ -1566,12 +3652,22 @@ def config_from_env() -> WorkbenchConfig:
                              or str(signal_llm_review.DEFAULT_DAILY_HTTP_LIMIT)),
         review_timeout_s=int(os.environ.get("ASTRA_WORKBENCH_REVIEW_TIMEOUT_S") or str(DEFAULT_HTTP_TIMEOUT)),
         refresh_interval_s=float(os.environ.get("ASTRA_WORKBENCH_REFRESH_SECONDS") or "30"),
+        wpem_enabled=os.environ.get("ASTRA_WORKBENCH_WPEM_ENABLED", "0") == "1",
+        locked_sample_interval_ms=max(1000, int(os.environ.get("ASTRA_LOCKED_SAMPLE_INTERVAL_MS") or "60000")),
+        locked_max_active=int(os.environ.get("ASTRA_LOCKED_MAX_ACTIVE") or "4"),
+        locked_max_episodes=int(os.environ.get("ASTRA_LOCKED_MAX_EPISODES") or "64"),
+        locked_max_bytes=int(os.environ.get("ASTRA_LOCKED_MAX_BYTES") or "268435456"),
+        locked_max_samples=int(os.environ.get("ASTRA_LOCKED_MAX_SAMPLES") or "1440"),
         map_sources_enabled=os.environ.get("ASTRA_MAP_SOURCES_ENABLED") == "1",
         map_source_mode=os.environ.get("ASTRA_MAP_SOURCE_MODE") or map_projection.SOURCE_MODE_COLLECTOR,
         map_producer_current_path=Path(producer_path) if producer_path else None,
         map_producer_max_age_ms=int(os.environ.get("ASTRA_MAP_PRODUCER_MAX_AGE_MS") or str(map_projection.DEFAULT_PRODUCER_MAX_AGE_MS)),
         risk_model_path=Path(os.environ["ASTRA_RISK_MODEL_PATH"]) if os.environ.get("ASTRA_RISK_MODEL_PATH") else None,
         risk_protocol_path=Path(os.environ["ASTRA_RISK_PROTOCOL_PATH"]) if os.environ.get("ASTRA_RISK_PROTOCOL_PATH") else None,
+        research_archive_enabled=os.environ.get("ASTRA_RESEARCH_ARCHIVE_ENABLED") == "1",
+        research_sample_interval_ms=int(os.environ.get("ASTRA_RESEARCH_SAMPLE_INTERVAL_MS") or str(candidate_asof.DEFAULT_INTERVAL_MS)),
+        research_max_bytes=int(os.environ.get("ASTRA_RESEARCH_MAX_BYTES") or str(candidate_asof.DEFAULT_MAX_BYTES)),
+        research_max_samples=int(os.environ.get("ASTRA_RESEARCH_MAX_SAMPLES") or str(candidate_asof.DEFAULT_MAX_SAMPLES)),
         map_source_config={
             name: os.environ[env_name]
             for name, env_name in (

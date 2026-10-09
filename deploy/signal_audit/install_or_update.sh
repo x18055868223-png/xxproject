@@ -44,10 +44,20 @@ RUN_INITIAL_MATERIALIZE="${RUN_INITIAL_MATERIALIZE:-0}"
 RUN_INITIAL_LLM_REVIEW="${RUN_INITIAL_LLM_REVIEW:-0}"
 ENABLE_WORKBENCH="${ENABLE_WORKBENCH:-0}"
 START_WORKBENCH="${START_WORKBENCH:-0}"
+APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS="${APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS:-0}"
 
 if [[ "$RUN_INITIAL_LLM_REVIEW" == "1" ]]; then
   echo "RUN_INITIAL_LLM_REVIEW is retired in workbench v2.0; manual POST only" >&2
   exit 2
+fi
+if [[ "$APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS" != "1" ]]; then
+  for requested_action in \
+    ENABLE_SIGNAL_AUDIT_TIMERS START_SIGNAL_AUDIT_TIMERS ENABLE_WORKBENCH START_WORKBENCH; do
+    if [[ "${!requested_action}" == "1" ]]; then
+      echo "$requested_action requires APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS=1" >&2
+      exit 2
+    fi
+  done
 fi
 
 for required in "$FRONTEND_SRC/index.html" "$FRONTEND_SRC/app.js" "$FRONTEND_SRC/VERSION.json"; do
@@ -98,6 +108,11 @@ done
 
 workbench_modules=(
   astra_workbench_v20.py
+  astra_workbench_session_v1.py
+  astra_workbench_reading_v1.py
+  astra_locked_candidate_store_v1.py
+  astra_locked_candidate_compare_v1.py
+  astra_observation_replay_v1.py
   astra_risk_qualification_v244.py
   astra_commercial_math_v17.py
   astra_underwriting_v20.py
@@ -108,34 +123,38 @@ workbench_modules=(
   astra_underwriting_store_v20.py
   astra_underwriting_review_v20.py
   astra_underwriting_guidance_v20.py
+  astra_candidate_asof_v1.py
+  astra_candidate_features_v1.py
+  astra_wpem_native_v1.py
+  astra_wpem_shadow_v1.py
+  astra_wpem_review_evidence_v1.py
+  astra_evidence_routing_v1.py
+  astra_wpem_product_review_v1.py
+  astra_wpem_workbench_v1.py
+  astra_wpem_reference_v1.py
+  astra_wpem_results_v1.py
+  astra_release_identity_v1.py
   astra_data_engine_v23.py
   astra_data_projection_v23.py
   astra_data_retention_v23.py
   astra_data_server_v23.py
   astra_map_sources_v24.py
+  astra_map_data_server_v24.py
   astra_map_v24.py
   astra_map_projection_v24.py
   astra_map_presentation_v241.py
 )
 joint_modules=(
-  signal_review_joint.py
+  astra_joint_contract.py
+  astra_joint_data.py
+  astra_joint_dataset.py
+  astra_joint_sources.py
   astra_joint_v11_contract.py
   astra_joint_v11_data.py
   astra_joint_v11_inference.py
-  astra_joint_v11_cards.py
-  astra_joint_v11_forward.py
-  astra_joint_v11_evaluation.py
-  astra_joint_contract.py
+  astra_joint_v11_model.py
   astra_joint_projection.py
   astra_joint_bridge.py
-  astra_joint_inference.py
-  astra_joint_data.py
-  astra_joint_events.py
-  astra_joint_dataset.py
-  astra_joint_sources.py
-  astra_joint_shadow.py
-  astra_joint_card_statistics.py
-  astra_joint_operations.py
 )
 data_engine_deploy_assets=(
   data-engine-maintenance.service
@@ -218,11 +237,15 @@ disable_loaded_timer() {
   fi
 }
 
-disable_loaded_timer signal-audit-materialize.timer
-stop_loaded_unit signal-audit-materialize.service
-disable_loaded_timer signal-audit-llm-review.timer
-stop_loaded_unit signal-audit-llm-review.service
-stop_loaded_unit astra-workbench-v20.service
+if [[ "$APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS" == "1" ]]; then
+  disable_loaded_timer signal-audit-materialize.timer
+  stop_loaded_unit signal-audit-materialize.service
+  disable_loaded_timer signal-audit-llm-review.timer
+  stop_loaded_unit signal-audit-llm-review.service
+  stop_loaded_unit astra-workbench-v20.service
+else
+  echo "safe default: service actions disabled; set APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS=1 to inspect, stop, install, reload, enable, or start systemd units"
+fi
 
 install -d "$STATIC_ROOT" "$TOOLS_ROOT" "$CONFIG_ROOT"
 chmod 0700 "$CONFIG_ROOT"
@@ -252,7 +275,55 @@ install -m 0755 "$SERVER_SELF_CHECK_SRC" "$TOOLS_ROOT/server_self_check_signal_s
 for module in "${workbench_modules[@]}"; do
   install -m 0644 "$REPO_ROOT/tools/$module" "$TOOLS_ROOT/$module"
 done
+sanitize_installed_source_defaults() {
+  local target
+  local dev_artifact_prefix=".artifact""s"
+  local escaped_dev_artifact_prefix="\\.artifact""s"
+  target="$TOOLS_ROOT/astra_joint_v11_data.py"
+  if [[ -f "$target" ]]; then
+    sed -i \
+      -e 's|^DEFAULT_SOURCE_ROOT = .*|DEFAULT_SOURCE_ROOT = Path(os.environ.get("ASTRA_JOINT_V11_SOURCE_ROOT", "offline/astra-joint-v1"))|' \
+      -e 's|^DEFAULT_OUTPUT_ROOT = .*|DEFAULT_OUTPUT_ROOT = Path(os.environ.get("ASTRA_JOINT_V11_OUTPUT_ROOT", "offline/astra-joint-v11"))|' \
+      "$target"
+  fi
+  target="$TOOLS_ROOT/astra_joint_sources.py"
+  if [[ -f "$target" ]]; then
+    sed -i \
+      -e "s|${escaped_dev_artifact_prefix}/astra-local-validation-20260914|offline/astra-local-validation-20260914|g" \
+      -e "s|${escaped_dev_artifact_prefix}/astra-light-study-20260913|offline/astra-light-study-20260913|g" \
+      "$target"
+  fi
+  target="$TOOLS_ROOT/astra_workbench_v20.py"
+  if [[ -f "$target" ]]; then
+    sed -i -e "s|\"${escaped_dev_artifact_prefix}/astra-workbench-v20\"|\"state/astra-workbench-v20\"|g" "$target"
+  fi
+  target="$TOOLS_ROOT/astra_observation_replay_v1.py"
+  if [[ -f "$target" ]]; then
+    sed -i \
+      -e "s|${escaped_dev_artifact_prefix}/observation_lineage_20261007_01|offline/observation_lineage_20261007_01|g" \
+      -e "s|${escaped_dev_artifact_prefix}/semantic_contract_closure_20261007_01|offline/semantic_contract_closure_20261007_01|g" \
+      -e "s|${escaped_dev_artifact_prefix}/semantic_synthesis_20261007_01|offline/semantic_synthesis_20261007_01|g" \
+      -e "s|${escaped_dev_artifact_prefix}/consumption_ui_audit_20261007_01|offline/consumption_ui_audit_20261007_01|g" \
+      "$target"
+  fi
+  target="$TOOLS_ROOT/astra_underwriting_real_replay_v20.py"
+  if [[ -f "$target" ]]; then
+    sed -i -e "s|${escaped_dev_artifact_prefix}/astra-credit-space-20260914|offline/astra-credit-space-20260914|g" "$target"
+  fi
+  unset dev_artifact_prefix
+}
+sanitize_installed_source_defaults
+if [[ -f "$DEPLOY_SRC/release_candidate_manifest.json" ]]; then
+  install -m 0644 "$DEPLOY_SRC/release_candidate_manifest.json" "$TOOLS_ROOT/release_candidate_manifest.json"
+elif [[ -f "$DEPLOY_SRC/signal_audit/release_candidate_manifest.json" ]]; then
+  install -m 0644 "$DEPLOY_SRC/signal_audit/release_candidate_manifest.json" "$TOOLS_ROOT/release_candidate_manifest.json"
+fi
 install -m 0644 "$DATA_REGISTRY_SRC" "$TOOLS_ROOT/data_product_registry_v23.json"
+if [[ -f "$DEPLOY_SRC/phase_release_manifest.json" ]]; then
+  install -m 0644 "$DEPLOY_SRC/phase_release_manifest.json" "$TOOLS_ROOT/phase_release_manifest.json"
+elif [[ -f "$DEPLOY_SRC/signal_audit/phase_release_manifest.json" ]]; then
+  install -m 0644 "$DEPLOY_SRC/signal_audit/phase_release_manifest.json" "$TOOLS_ROOT/phase_release_manifest.json"
+fi
 # Data maintenance uses its own installer and never starts through a page update.
 for asset in "${data_engine_deploy_assets[@]}"; do
   install -m 0644 "$DEPLOY_SRC/$asset" "$TOOLS_ROOT/$asset"
@@ -278,21 +349,36 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   chown root:root "$WORKBENCH_ENV_FILE"
 fi
 
-install -m 0644 "$MATERIALIZE_SERVICE_SRC" /etc/systemd/system/signal-audit-materialize.service
-install -m 0644 "$MATERIALIZE_TIMER_SRC" /etc/systemd/system/signal-audit-materialize.timer
-install -m 0644 "$WORKBENCH_SERVICE_SRC" /etc/systemd/system/astra-workbench-v20.service
-systemctl daemon-reload
+if [[ "$APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS" == "1" ]]; then
+  install -m 0644 "$MATERIALIZE_SERVICE_SRC" /etc/systemd/system/signal-audit-materialize.service
+  install -m 0644 "$MATERIALIZE_TIMER_SRC" /etc/systemd/system/signal-audit-materialize.timer
+  install -m 0644 "$WORKBENCH_SERVICE_SRC" /etc/systemd/system/astra-workbench-v20.service
+  systemctl daemon-reload
 
-if [[ "$ENABLE_SIGNAL_AUDIT_TIMERS" == "1" ]]; then
-  systemctl enable signal-audit-materialize.timer
-else
-  echo "safe default: timers installed but not enabled; set ENABLE_SIGNAL_AUDIT_TIMERS=1 after canary validation"
-fi
+  if [[ "$ENABLE_SIGNAL_AUDIT_TIMERS" == "1" ]]; then
+    systemctl enable signal-audit-materialize.timer
+  else
+    echo "safe default: timers installed but not enabled; set ENABLE_SIGNAL_AUDIT_TIMERS=1 after canary validation"
+  fi
 
-if [[ "$START_SIGNAL_AUDIT_TIMERS" == "1" ]]; then
-  systemctl start signal-audit-materialize.timer
+  if [[ "$START_SIGNAL_AUDIT_TIMERS" == "1" ]]; then
+    systemctl start signal-audit-materialize.timer
+  else
+    echo "safe default: timers not started; set START_SIGNAL_AUDIT_TIMERS=1 after canary validation"
+  fi
+
+  if [[ "$ENABLE_WORKBENCH" == "1" ]]; then
+    systemctl enable astra-workbench-v20.service
+  else
+    echo "safe default: workbench service installed but not enabled"
+  fi
+  if [[ "$START_WORKBENCH" == "1" ]]; then
+    systemctl start astra-workbench-v20.service
+  else
+    echo "safe default: workbench service not started"
+  fi
 else
-  echo "safe default: timers not started; set START_SIGNAL_AUDIT_TIMERS=1 after canary validation"
+  echo "safe default: systemd unit files not written and daemon-reload not run"
 fi
 
 if [[ "$RUN_INITIAL_MATERIALIZE" == "1" && -f "$JSONL_SOURCE" ]]; then
@@ -313,17 +399,6 @@ elif [[ "$RUN_INITIAL_MATERIALIZE" == "1" ]]; then
   echo "warning: JSONL source not found yet: $JSONL_SOURCE" >&2
 else
   echo "safe default: skipped initial materialization; set RUN_INITIAL_MATERIALIZE=1 to run it"
-fi
-
-if [[ "$ENABLE_WORKBENCH" == "1" ]]; then
-  systemctl enable astra-workbench-v20.service
-else
-  echo "safe default: workbench service installed but not enabled"
-fi
-if [[ "$START_WORKBENCH" == "1" ]]; then
-  systemctl start astra-workbench-v20.service
-else
-  echo "safe default: workbench service not started"
 fi
 
 echo "installed signal audit frontend to $STATIC_ROOT"

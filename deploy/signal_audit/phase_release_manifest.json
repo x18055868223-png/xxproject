@@ -1,0 +1,53 @@
+{
+  "schema": "xxproject_phase_release@1.0.0",
+  "phase_id": "v2.6.3-stage.1",
+  "status": "PHASE_USABLE_OBSERVATION_CANDIDATE",
+  "generated_at_utc": "2026-10-09T08:45:30.333621+00:00",
+  "authority": "xxproject",
+  "remote_url": "https://github.com/x18055868223-png/xxproject.git",
+  "git_branch": "codex/astra-signal-rating-v1",
+  "git_tag": "v2.6.3-stage.1",
+  "commit_resolution": "resolve annotated tag to commit; external delivery receipt records SHA to avoid self-reference",
+  "frontend_version": "2.6.3",
+  "fmz_reference_version": "2.0.2",
+  "fmz_reference_sha256": "87632e850d4bf8ccd75bab61bec92d54c0ab5e6c20751e36c4f73d4ebd2c7ab9",
+  "frozen_candidate_graph": {
+    "path": "deploy/signal_audit/release_candidate_manifest.json",
+    "sha256": "a5fc250fa6d469b8b1c6460899cff4c55ab1cbd62adb7c92b98d4bdeb8898d0b",
+    "release_id": "OBSERVATION-2.6.3-22c18ce92bee",
+    "capture_base_git_head": "950631e0aff8f27179b3b2601776b823a793eaa4",
+    "capture_flags_describe_snapshot_time_not_phase_release": true
+  },
+  "validation": {
+    "pytest_passed": 140,
+    "standalone_checks_passed": 5,
+    "browser_review_complete": true,
+    "desktop_viewport": [
+      1440,
+      900
+    ],
+    "narrow_viewport": [
+      390,
+      844
+    ],
+    "horizontal_page_overflow": false,
+    "source_graph_hash_count": 32,
+    "source_graph_hash_mismatches": 0
+  },
+  "user_authorized_actions": [
+    "push_current_candidate_to_xxproject_work_branch",
+    "mark_phase_usable",
+    "new_vps_dependency_and_migration_preparation"
+  ],
+  "new_vps_region": "EU user confirmed; physical city unverified",
+  "new_vps_qualification": "short DNS/TLS/HTTP test passed; production cutover not qualified",
+  "reboot_required_before_service_acceptance": true,
+  "production_release_approval": false,
+  "production_cutover_performed": false,
+  "automatic_llm_enabled_on_new_host": false,
+  "old_services_stop_authorized": false,
+  "financial_gate_changed": false,
+  "risk_reference_status": "REFERENCE_BLOCKED",
+  "manual_trigger_only": true,
+  "receipt": "docs/astra/V263_STAGE_EU_VPS_PREPARATION_20261009.md"
+}

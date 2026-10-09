@@ -250,6 +250,189 @@ def visible_credit(contract: Mapping[str, Any], market: Mapping[str, Any], valua
             "gap_reasons": sorted(set(reasons)), "executable_or_filled": False}
 
 
+def signed_boundary_distance(side: Any, spot_usd: Any, boundary_usd: Any, *, boundary_kind: str) -> dict[str, Any] | None:
+    """Signed distance from spot to one fixed liability boundary.
+
+    Positive means the current spot is still outside the adverse boundary for
+    the selected side. The denominator is always the boundary price itself; no
+    spot- or width-relative fallback is used.
+    """
+    side_text = str(side or "").strip().lower()
+    if side_text not in {"put", "call"} or not boundary_kind:
+        return None
+    try:
+        spot = _number("spot_usd", spot_usd, positive=True)
+        boundary = _number("boundary_usd", boundary_usd, positive=True)
+    except ValueError:
+        return None
+    sign = 1.0 if side_text == "put" else -1.0
+    signed_usd = sign * (spot - boundary)
+    return {
+        "kind": "signed_boundary_distance",
+        "side": side_text,
+        "boundary_kind": str(boundary_kind),
+        "spot_usd": spot,
+        "boundary_usd": boundary,
+        "signed_distance_usd": signed_usd,
+        "signed_distance_pct": signed_usd / boundary * 100.0,
+        "denominator": "boundary_usd",
+    }
+
+
+def _explicit_close_fee(fee: Any) -> tuple[float | None, str, list[str], Any]:
+    reasons: list[str] = []
+    if not isinstance(fee, Mapping):
+        return None, "unknown", ["close_fee_unknown"], None
+    reasons.extend(str(item) for item in fee.get("gap_reasons") or [] if isinstance(item, str))
+    basis = str(fee.get("basis") or "unknown")
+    if basis not in {"actual", "configured_assumption", "unknown"}:
+        raise ValueError("unsupported close fee basis")
+    if basis == "unknown":
+        return None, basis, sorted(set([*reasons, "close_fee_unknown"])), fee.get("detail")
+    source = fee.get("close_fee_btc")
+    if source is None:
+        source = fee.get("exit_fee_btc")
+    if source is None and fee.get("amount_btc") is not None:
+        covers = fee.get("covers")
+        if isinstance(covers, list) and "early_exit" in covers and "delivery" not in covers:
+            source = fee.get("amount_btc")
+    if source is None:
+        return None, basis, sorted(set([*reasons, "close_fee_unknown"])), fee.get("detail")
+    close_fee = _number("close_fee_btc", source)
+    if close_fee < 0:
+        raise ValueError("close_fee_btc must be nonnegative")
+    return close_fee, basis, sorted(set(reasons)), fee.get("detail")
+
+
+def reference_close_quote(
+    contract: Mapping[str, Any],
+    market: Mapping[str, Any],
+    valuation_ms: int,
+    fee: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Target-size close estimate: buy back the short ask and sell the long bid.
+
+    This preserves the same public-book freshness, synchrony, depth and crossed
+    book checks as visible_credit(), but it does not infer account fills, marks
+    or unknown fees.
+    """
+    if not isinstance(contract, Mapping):
+        contract = {}
+    if not isinstance(market, Mapping):
+        market = {}
+    close_fee, fee_basis, fee_reasons, fee_detail = _explicit_close_fee(fee)
+    required_contract = ("short_instrument", "long_instrument", "quantity_btc")
+    missing_contract = [key for key in required_contract if key not in contract]
+    if missing_contract:
+        reasons = ["contract_field_missing:" + ",".join(missing_contract)]
+        return {
+            "kind": "sequential_leg_book_close_estimate",
+            "side": contract.get("side") if isinstance(contract, Mapping) else None,
+            "debit_btc": None,
+            "short_buy_btc": None,
+            "long_sale_btc": None,
+            "close_fee_btc": close_fee,
+            "close_fee_basis": fee_basis,
+            "net_debit_after_close_fee_btc": None,
+            "fee_detail": deepcopy(fee_detail),
+            "source_book_hash": _hash({"short": market.get("short_book"), "long": market.get("long_book")}),
+            "available_depth_btc": {},
+            "exchange_times_ms": {},
+            "leg_received_ts_ms": {},
+            "received_ts_ms": None,
+            "valuation_ts_ms": valuation_ms,
+            "gap_reasons": sorted(set([*reasons, *fee_reasons])),
+            "quote_gap_reasons": reasons,
+            "fee_gap_reasons": sorted(set(fee_reasons)),
+            "executable_or_filled": False,
+        }
+    reasons: list[str] = []
+    try:
+        received_ms = _integer("received_ts_ms", market.get("received_ts_ms"))
+    except ValueError:
+        received_ms = None
+        reasons.append("local_receipt_missing")
+    if received_ms is not None and (received_ms > valuation_ms or valuation_ms - received_ms > MAX_BOOK_AGE_MS):
+        reasons.append("local_receipt_outside_freshness")
+    books = {}
+    leg_receipts = market.get("leg_received_ts_ms") if isinstance(market.get("leg_received_ts_ms"), Mapping) else {}
+    for leg in ("short", "long"):
+        book = market.get(f"{leg}_book")
+        if not isinstance(book, Mapping):
+            reasons.append(f"{leg}_book_missing")
+            continue
+        if book.get("instrument_name") != contract[f"{leg}_instrument"]:
+            reasons.append(f"{leg}_book_instrument_mismatch")
+        if book.get("state") != "open":
+            reasons.append(f"{leg}_book_not_open")
+        try:
+            timestamp = _integer(f"{leg} book timestamp", book.get("timestamp"))
+        except ValueError:
+            reasons.append(f"{leg}_book_timestamp_missing")
+            continue
+        leg_received = leg_receipts.get(leg, received_ms)
+        try:
+            leg_received = _integer(f"{leg} receipt timestamp", leg_received)
+        except ValueError:
+            leg_received = None
+            reasons.append(f"{leg}_receipt_missing")
+        if (leg_received is not None and timestamp > leg_received) or timestamp > valuation_ms or valuation_ms - timestamp > MAX_BOOK_AGE_MS:
+            reasons.append(f"{leg}_book_stale_or_future")
+        books[leg] = (book, timestamp)
+    if len(books) == 2 and abs(books["short"][1] - books["long"][1]) > MAX_BOOK_SKEW_MS:
+        reasons.append("leg_book_time_skew")
+    if market.get("reference_source") == "deribit_index" and len(books) == 2:
+        reference = market.get("reference_price_usd")
+        try:
+            reference = _number("reference_price_usd", reference, positive=True)
+            for leg in ("short", "long"):
+                index = _number(f"{leg} index_price", books[leg][0].get("index_price"), positive=True)
+                if abs(index - reference) / reference > 0.001:
+                    reasons.append("leg_index_mismatch")
+        except ValueError:
+            reasons.append("leg_index_missing")
+    quantity = contract["quantity_btc"]
+    leg_amounts: dict[str, float | None] = {}
+    available_depth: dict[str, float] = {}
+    for leg, direction, field in (("short", False, "asks"), ("long", True, "bids")):
+        if leg not in books:
+            continue
+        book = books[leg][0]
+        own, available = _consume_depth(book.get(field), quantity, bid=direction)
+        leg_amounts[leg] = own
+        available_depth[leg] = available
+        if own is None:
+            reasons.append(f"{leg}_depth_insufficient")
+        best_bid = _best_book_price(book.get("bids"), bid=True)
+        best_ask = _best_book_price(book.get("asks"), bid=False)
+        if best_bid is not None and best_ask is not None and best_bid > best_ask:
+            reasons.append(f"{leg}_crossed_book")
+    quote_reasons = sorted(set(reasons))
+    debit = None if quote_reasons else leg_amounts["short"] - leg_amounts["long"]
+    net_debit = debit + close_fee if debit is not None and close_fee is not None else None
+    return {
+        "kind": "sequential_leg_book_close_estimate",
+        "side": contract.get("side"),
+        "debit_btc": debit,
+        "short_buy_btc": leg_amounts.get("short") if not quote_reasons else None,
+        "long_sale_btc": leg_amounts.get("long") if not quote_reasons else None,
+        "close_fee_btc": close_fee,
+        "close_fee_basis": fee_basis,
+        "net_debit_after_close_fee_btc": net_debit,
+        "fee_detail": deepcopy(fee_detail),
+        "source_book_hash": _hash({"short": market.get("short_book"), "long": market.get("long_book")}),
+        "available_depth_btc": available_depth,
+        "exchange_times_ms": {key: item[1] for key, item in books.items()},
+        "leg_received_ts_ms": dict(leg_receipts),
+        "received_ts_ms": received_ms,
+        "valuation_ts_ms": valuation_ms,
+        "gap_reasons": sorted(set([*quote_reasons, *fee_reasons])),
+        "quote_gap_reasons": quote_reasons,
+        "fee_gap_reasons": sorted(set(fee_reasons)),
+        "executable_or_filled": False,
+    }
+
+
 def breakeven_roots(contract: Mapping[str, Any], net_credit_btc: float | None) -> list[float] | None:
     if net_credit_btc is None:
         return None

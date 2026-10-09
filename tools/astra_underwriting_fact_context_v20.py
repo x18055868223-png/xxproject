@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 SCHEMA = "astra_fmz_fact_context@2.0.0"
 REQUIRED_FMZ_VERSION = "2.0.0"
-SUPPORTED_FMZ_VERSIONS = {"2.0.0", "2.0.1"}  # explicitly tested same native contract
+SUPPORTED_FMZ_VERSIONS = {"2.0.0", "2.0.1", "2.0.2"}  # same basic fact contract; 2.0.2 adds native evidence
 MAX_AGE_MS = 300_000  # technical freshness, not a fitted trading interval
 MAX_SOURCE_TAIL_BYTES = 16 * 1024 * 1024
 

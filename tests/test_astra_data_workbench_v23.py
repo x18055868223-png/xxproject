@@ -62,10 +62,10 @@ def test_uninitialized_page_read_does_not_fetch_or_call_llm(tmp_path):
 def test_supported_native_export_version_preserves_old_gate_checks(tmp_path):
     row = fixtures.write_fmz(tmp_path / "fmz.jsonl", fixtures.native_gate())
     from tools import astra_underwriting_fact_context_v20 as context
-    row["decision"]["demo_version"] = "2.0.1"
+    row["decision"]["demo_version"] = "2.0.2"
     result = context.from_evaluation_snapshot(row, fixtures.T, source_hash="a" * 64)
     assert result["status"] == "current"
-    row["decision"]["demo_version"] = "2.0.2"
+    row["decision"]["demo_version"] = "2.0.3"
     result = context.from_evaluation_snapshot(row, fixtures.T, source_hash="a" * 64)
     assert result["status"] == "background_only"
 

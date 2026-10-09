@@ -38,6 +38,13 @@ KPF_PRODUCT = "btc.kpf.map.readonly.v1"
 KPF_MAX_POOL = 128
 KPF_DEFAULT_DISPLAY_LIMIT = 2
 KPF_MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
+PRODUCER_STRICT_SUBSET_EXTRA_PRODUCTS = {
+    "fmz.bridge.snapshots.v1",
+    "fmz.spacegate.current.v1",
+    "gex.effective.accepted.v1",
+    "gex.netgamma.proxy.v1",
+    "macro.risk_state.components.v1",
+}
 
 
 class SourceConsumerError(ValueError):
@@ -118,6 +125,7 @@ class ProducerFreezeSourceEngine:
             raise SourceConsumerError("PRODUCER_QUALIFIER_ENGINE_INVALID", "producer source consumer requires a DataEngine qualifier")
         self.current_map = deepcopy(dict(current_map))
         self.legacy_manifest_duplicates = False
+        self.strict_subset_manifest_compatibility: dict[str, Any] | None = None
         self.manifest = self._validate_current_map(max_age_ms, expected_manifest_hash)
         self.records = [deepcopy(dict(row)) for row in self.manifest["source_records"]]
         self._by_key: dict[str, dict[str, Any]] = {}
@@ -211,15 +219,19 @@ class ProducerFreezeSourceEngine:
             raise SourceConsumerError("PRODUCER_BTC_MAP_SOURCE_HASH_MISMATCH", "producer btc_map source_manifest hash does not match its body")
         checks = {
             "manifest_hash": (manifest.get("manifest_hash"), supplied.get("manifest_hash")),
-            "cutoff_at_ms": (manifest.get("cutoff_at_ms"), supplied.get("cutoff_at_ms")),
-            "candidate_id": (manifest.get("candidate_id"), supplied.get("candidate_id")),
             "source_records": (manifest.get("source_records"), supplied.get("source_records")),
         }
+        for name in sorted((set(manifest) | set(supplied)) - {"manifest_hash", "source_records"}):
+            checks[name] = (manifest.get(name), supplied.get(name))
         mismatched = [name for name, (expected, actual) in checks.items() if actual != expected]
         if not mismatched:
             return
         if self._legacy_exact_duplicate_source_manifest(manifest, supplied, mismatched):
             self.legacy_manifest_duplicates = True
+            return
+        compat = self._strict_subset_source_manifest(manifest, supplied, mismatched)
+        if compat is not None:
+            self.strict_subset_manifest_compatibility = compat
             return
         raise SourceConsumerError(
             "PRODUCER_BTC_MAP_SOURCE_MANIFEST_MISMATCH",
@@ -249,6 +261,70 @@ class ProducerFreezeSourceEngine:
         normalized = {**supplied, "source_records": deduped}
         return (len(deduped) < len(records) and deduped == manifest.get("source_records")
                 and _manifest_hash(normalized) == _manifest_hash(manifest))
+
+    def _strict_subset_source_manifest(
+        self,
+        manifest: Mapping[str, Any],
+        supplied: Mapping[str, Any],
+        mismatched: list[str],
+    ) -> dict[str, Any] | None:
+        if sorted(mismatched) != ["manifest_hash", "source_records"]:
+            return None
+        outer_records = manifest.get("source_records")
+        inner_records = supplied.get("source_records")
+        if not isinstance(outer_records, list) or not isinstance(inner_records, list):
+            return None
+        outer_by_hash: dict[str, Mapping[str, Any]] = {}
+        for record in outer_records:
+            if not isinstance(record, Mapping):
+                return None
+            outer_by_hash.setdefault(data_engine._hash(record), record)
+        inner_deduped: list[Mapping[str, Any]] = []
+        inner_hashes: set[str] = set()
+        for record in inner_records:
+            if not isinstance(record, Mapping):
+                return None
+            digest = data_engine._hash(record)
+            if digest in inner_hashes:
+                continue
+            inner_hashes.add(digest)
+            inner_deduped.append(record)
+            if digest not in outer_by_hash:
+                return None
+        inner_keys = {_record_key(record) for record in inner_deduped if _record_key(record)}
+        extra_products: set[str] = set()
+        extra_records = 0
+        for digest, record in outer_by_hash.items():
+            if digest in inner_hashes:
+                continue
+            extra_records += 1
+            product_id = _product_id(record)
+            if product_id not in PRODUCER_STRICT_SUBSET_EXTRA_PRODUCTS:
+                return None
+            key = _record_key(record)
+            if key and key in inner_keys:
+                return None
+            extra_products.add(str(product_id))
+        if extra_records <= 0:
+            return None
+        # A cached accepted-GEX record may already be in the inner manifest.
+        # The other four are always appended together by this producer path.
+        required_products = PRODUCER_STRICT_SUBSET_EXTRA_PRODUCTS - {"gex.effective.accepted.v1"}
+        if not required_products.issubset(extra_products):
+            return None
+        if extra_records != len(extra_products):
+            return None
+        return {
+            "mode": "outer_freeze_manifest_strict_superset",
+            "outer_manifest_hash": manifest.get("manifest_hash"),
+            "inner_manifest_hash": supplied.get("manifest_hash"),
+            "outer_record_count": len(outer_records),
+            "inner_record_count": len(inner_records),
+            "inner_unique_record_count": len(inner_deduped),
+            "extra_record_count": extra_records,
+            "extra_product_ids": sorted(extra_products),
+            "source": "producer_build_projection_before_current_fmz_records",
+        }
 
     def _index_records(self) -> None:
         seen_hashes: dict[str, str] = {}
@@ -294,6 +370,7 @@ class ProducerFreezeSourceEngine:
             "producer_manifest_hash": self.manifest_hash,
             "producer_record_count": len(self.records),
             "legacy_exact_duplicate_manifest": self.legacy_manifest_duplicates,
+            "strict_subset_manifest_compatibility": deepcopy(self.strict_subset_manifest_compatibility),
             "checked_at_ms": checked,
             "note_cn": "只读消费producer冻结source records；当前用途资格按本次checked_at重新核对。",
         }
@@ -603,6 +680,7 @@ def build_projection(
     config: Mapping[str, Any] | None = None,
     prior_state: Mapping[str, Any] | None = None,
     current_market: Mapping[str, Any] | None = None,
+    presentation_mode: str | None = None,
 ) -> dict[str, Any]:
     """Build cached background, references and a global no-policy MAP."""
 
@@ -639,6 +717,7 @@ def build_projection(
         prior_state=response_state,
         current_price_usd=current_price,
         current_price_basis=current_basis,
+        presentation_mode=presentation_mode,
     )
     return {
         "schema": SCHEMA,

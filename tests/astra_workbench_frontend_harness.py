@@ -28,7 +28,7 @@ WORKBENCH_IDS = [
 ]
 
 
-def render_workbench(payload: dict) -> dict:
+def render_workbench(payload: dict, *, capture: bool = False) -> dict:
     node = shutil.which("node")
     if not node:
         raise RuntimeError("node is not available")
@@ -109,7 +109,9 @@ api.renderAll();
 
 const areas = {};
 for (const id of ids) areas[id] = elements[id].innerHTML;
-console.log(JSON.stringify({ areas }));
+const captures = process.env.ASTRA_OBSERVATION_CAPTURE === "1"
+  ? (payload.candidates || []).map(candidate => api.observationCapture(candidate, "test-rendered-primary")) : undefined;
+console.log(JSON.stringify({ areas, captures }));
 """
     result = subprocess.run(
         [node, "-e", script],
@@ -119,7 +121,7 @@ console.log(JSON.stringify({ areas }));
         encoding="utf-8",
         capture_output=True,
         check=False,
-        env={**os.environ, "ASTRA_WORKBENCH_IDS": json.dumps(WORKBENCH_IDS)},
+        env={**os.environ, "ASTRA_WORKBENCH_IDS": json.dumps(WORKBENCH_IDS), "ASTRA_OBSERVATION_CAPTURE": "1" if capture else "0"},
     )
     if result.returncode != 0:
         raise AssertionError(result.stdout + result.stderr)

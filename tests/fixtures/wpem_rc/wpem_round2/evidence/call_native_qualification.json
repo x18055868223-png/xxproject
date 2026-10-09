@@ -1,0 +1,37 @@
+{
+  "candidate_id": "77dac0f3a90f1ba4400cd188",
+  "comparability_hash": "ea2f2d3c1e3c39249abbae72e5682cc289bbc0df0ebe4d8e4a25699c44b106c2",
+  "contract_qualified": false,
+  "current_at_export": false,
+  "decision_asof_ms": 1790325293553,
+  "evidence_kind": "historical_public_capture",
+  "execution_allowed": false,
+  "gaps": [
+    "NATIVE_FROZEN_MANIFEST_MISSING",
+    "NATIVE_METADATA_RECEIPT_MISSING",
+    "NATIVE_PROVENANCE_NOT_ATTESTED",
+    "NATIVE_SOURCE_BYTES_MISSING"
+  ],
+  "original_native_clocks": {},
+  "original_packet_gaps": [
+    "binance_spot_closed_1m_reference_missing",
+    "binance_um_closed_1m_window_missing",
+    "candidate_window_coverage_insufficient",
+    "frozen_risk_reference_missing",
+    "frozen_source_manifest_missing",
+    "model_price_basis_binding_missing",
+    "model_scope_research_only",
+    "original_instrument_metadata_receipt_clock_not_retained",
+    "required_features_missing",
+    "v20_contract_feature_binding_not_validated"
+  ],
+  "packet_hash": "531f128048be58579633ddbfd47d2f43377cc7a1f8d92900fe960e6af890a92d",
+  "producer_schema": null,
+  "producer_version": null,
+  "qualification_hash": "7a0497eb308ae60ec078adf548102b6a245c524e1fcdd0228b8a1443d476ce5a",
+  "schema": "wpem_native_qualification@1.0.0-shadow",
+  "snapshot_id": "a0aa49d3aff377539db972dc3d249f628b46bee947df53ed260dfb8455306efe",
+  "source_hash": null,
+  "status": "BLOCKED",
+  "supplemental_acquisition_receipt": {}
+}

@@ -184,6 +184,8 @@ def test_producer_manifest_integrity_failures_do_not_fallback_or_drop_contract_a
     assert slow_calls == []
     assert view["btc_map"]["source_consumer"]["status"] == "ERROR"
     assert view["btc_map"]["source_consumer"]["error"]["code"] == expected_code
+    assert view["btc_map"]["presentation"]["mode"] == "LIVE"
+    assert view["llm_call_count"] == 0
     assert "producer_map_source_unqualified" in view["gaps"]
     for item in view["candidates"]:
         assert item["status"] == "snapshot"
@@ -238,7 +240,7 @@ def test_producer_health_reuses_data_engine_health_shape(tmp_path):
 
 
 def test_saved_real_capture_consumes_at_original_clock(tmp_path):
-    capture = Path(".artifacts/astra-map-v242-20260926/server_current_map_capture.json")
+    capture = Path(__file__).parent / "fixtures/wpem_rc/astra-map-v242-20260926/server_current_map_capture.json"
     if not capture.exists():
         pytest.skip("saved real producer capture is not present in this checkout")
     payload = json.loads(capture.read_text(encoding="utf-8-sig"))

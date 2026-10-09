@@ -1,0 +1,646 @@
+{
+  "M_ref_btc": null,
+  "feature_binding_manifest": {
+    "candidate_id": "86c712b6f4d2a5ee13bb1895",
+    "catalog_hash": "652b0884981cc123e58461d687c78f5a55395040ea22c957b540b9e14f36683e",
+    "decision_asof_ms": 1790325291985,
+    "feature_binding_manifest_hash": "e7ce43a450450371a993d9fe62c70061ae7d87c0d4f6d8b3f809023ade378590",
+    "feature_count": 27,
+    "inference_allowed": false,
+    "inference_calls": 0,
+    "input_row_hash": "40b90e378b7c0e9e292f9b28aacb19462047d03bcdc2228b45e7060890e99555",
+    "llm_http_calls": 0,
+    "packet_hash": "07f5d9b5c6937e9c33f4eea118f233835dd34f74f7b4059feaeb0540ce63040b",
+    "required_feature_accepted_count": 2,
+    "required_feature_count": 10,
+    "required_features": [
+      {
+        "accepted_for_model_row": true,
+        "category": "available_from_snapshot",
+        "classification": [
+          "DERIVABLE_EXACT"
+        ],
+        "first_available_ms": null,
+        "gaps": [],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "dte_hours",
+        "required": true,
+        "retrieved_ms": 1790325291985,
+        "source_observation_ms": 1790325291985,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 24.0,
+          "mean": 16.25,
+          "min": 8.5,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "dte_hours",
+          "row_count": 40768
+        },
+        "value": 23.418893055555557
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "semantic_mismatch",
+        "classification": [
+          "PRICE_BASIS_MISMATCH",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "model_price_basis_binding_missing",
+          "binance_spot_closed_1m_reference_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "short_distance_fraction",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 0.022430219400039152,
+          "mean": 0.0038027365983947796,
+          "min": 8.196720635319056e-08,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "short_distance_fraction",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "semantic_mismatch",
+        "classification": [
+          "PRICE_BASIS_MISMATCH",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "model_price_basis_binding_missing",
+          "binance_spot_closed_1m_reference_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "width_fraction",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 0.0378157687595993,
+          "mean": 0.02198588298144002,
+          "min": 0.008179420496237261,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "width_fraction",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": true,
+        "category": "available_from_snapshot",
+        "classification": [
+          "SOURCE_AVAILABLE_EXACT"
+        ],
+        "first_available_ms": null,
+        "gaps": [],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "side_sign",
+        "required": true,
+        "retrieved_ms": 1790325291985,
+        "source_observation_ms": 1790325291985,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 1.0,
+          "mean": 0.0,
+          "min": -1.0,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "side_sign",
+          "row_count": 40768
+        },
+        "value": -1.0
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "source_not_connected",
+        "classification": [
+          "HISTORY_INSUFFICIENT",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "binance_um_closed_1m_window_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "ret_15",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 0.030114309689689422,
+          "mean": -7.354437743813914e-06,
+          "min": -0.045683554650500224,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "ret_15",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "source_not_connected",
+        "classification": [
+          "HISTORY_INSUFFICIENT",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "binance_um_closed_1m_window_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "ret_30",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 0.03728236080708536,
+          "mean": 1.1587614594025413e-05,
+          "min": -0.04916745732707273,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "ret_30",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "source_not_connected",
+        "classification": [
+          "HISTORY_INSUFFICIENT",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "binance_um_closed_1m_window_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "vol_15",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 0.06718774157076596,
+          "mean": 0.0020394194534800727,
+          "min": 0.0,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "vol_15",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "source_not_connected",
+        "classification": [
+          "HISTORY_INSUFFICIENT",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "binance_um_closed_1m_window_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "vol_30",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40768,
+          "max": 0.06842755849373258,
+          "mean": 0.003102305298519725,
+          "min": 0.0,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "name": "vol_30",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "source_not_connected",
+        "classification": [
+          "HISTORY_INSUFFICIENT",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "binance_um_closed_1m_window_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "net_flow_15",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40764,
+          "max": 0.7487473842747938,
+          "mean": -0.006005434071542507,
+          "min": -0.6786840098010759,
+          "missing_count": 4,
+          "missing_rate": 9.811616954474098e-05,
+          "name": "net_flow_15",
+          "row_count": 40768
+        },
+        "value": null
+      },
+      {
+        "accepted_for_model_row": false,
+        "category": "source_not_connected",
+        "classification": [
+          "HISTORY_INSUFFICIENT",
+          "SOURCE_MISSING"
+        ],
+        "first_available_ms": null,
+        "gaps": [
+          "binance_um_closed_1m_window_missing"
+        ],
+        "missing_clocks_are_not_fabricated": true,
+        "name": "net_flow_30",
+        "required": true,
+        "retrieved_ms": null,
+        "source_observation_ms": null,
+        "substitution_allowed": false,
+        "training_support": {
+          "available_count": 40764,
+          "max": 0.5743379528577023,
+          "mean": -0.005090192242222353,
+          "min": -0.6031459942375353,
+          "missing_count": 4,
+          "missing_rate": 9.811616954474098e-05,
+          "name": "net_flow_30",
+          "row_count": 40768
+        },
+        "value": null
+      }
+    ],
+    "required_missing_features": [
+      "short_distance_fraction",
+      "width_fraction",
+      "ret_15",
+      "ret_30",
+      "vol_15",
+      "vol_30",
+      "net_flow_15",
+      "net_flow_30"
+    ],
+    "row_qualified": false,
+    "schema": "wpem_reference_feature_binding@1.0.0-shadow",
+    "shadow_only": true,
+    "snapshot_id": "283829b135df7765b274d990967f560d290c105e13586d9a5d747aaba8a1d45a",
+    "status": "REQUIRED_FEATURES_MISSING",
+    "terminal_status": "NOT_QUALIFIED_FINAL_FOR_THIS_ROUND"
+  },
+  "inference_calls": 0,
+  "llm_http_calls": 0,
+  "m_ref_btc": null,
+  "mu_ref_btc": null,
+  "qualification_report": {
+    "M_ref_btc": null,
+    "asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+    "candidate_id": "86c712b6f4d2a5ee13bb1895",
+    "catalog_hash": "652b0884981cc123e58461d687c78f5a55395040ea22c957b540b9e14f36683e",
+    "decision_asof_ms": 1790325291985,
+    "earliest_breakpoint": "REQUIRED_FEATURES_ASOF_NOT_QUALIFIED",
+    "execution_allowed": false,
+    "feature_binding_manifest_hash": "e7ce43a450450371a993d9fe62c70061ae7d87c0d4f6d8b3f809023ade378590",
+    "feature_count": 27,
+    "gap_reasons": [
+      "SHADOW_INFERENCE_NOT_ALLOWED",
+      "TARGET_BINDING_UNPROVEN",
+      "binance_spot_closed_1m_reference_missing",
+      "binance_um_closed_1m_window_missing",
+      "model_price_basis_binding_missing",
+      "model_scope_research_only",
+      "required_features_missing",
+      "v20_contract_feature_binding_not_validated"
+    ],
+    "inference_calls": 0,
+    "input_row_hash": "40b90e378b7c0e9e292f9b28aacb19462047d03bcdc2228b45e7060890e99555",
+    "llm_http_calls": 0,
+    "m_ref_btc": null,
+    "model_hash": "0246cccc9b2ac4aa1ccf1ed405e3b81423d397a4804914121e975e4573d2b440",
+    "model_id": "catboost__statistical__D4",
+    "mu_ref_btc": null,
+    "packet_hash": "07f5d9b5c6937e9c33f4eea118f233835dd34f74f7b4059feaeb0540ce63040b",
+    "production_risk_admitted": false,
+    "protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+    "qualification_report_hash": "263aafc65fc62bafa8c2c49d412f1a435e123bbb766ac88cf4703ebb478de026",
+    "required_coverage": {
+      "available": 2,
+      "missing": 8,
+      "total": 10
+    },
+    "required_feature_count": 10,
+    "required_missing_count": 8,
+    "required_missing_features": [
+      "short_distance_fraction",
+      "width_fraction",
+      "ret_15",
+      "ret_30",
+      "vol_15",
+      "vol_30",
+      "net_flow_15",
+      "net_flow_30"
+    ],
+    "row_qualified": false,
+    "schema": "wpem_reference_qualification@1.0.0-shadow",
+    "shadow_inference_allowed": false,
+    "shadow_only": true,
+    "snapshot_id": "283829b135df7765b274d990967f560d290c105e13586d9a5d747aaba8a1d45a",
+    "status": "NOT_QUALIFIED_FINAL_FOR_THIS_ROUND",
+    "target_price_basis_binding_hash": "0811991286bcb91981c7ce4457c5424074c8272b9aa2c124c8bd7731a746205e",
+    "terminal_status": "NOT_QUALIFIED_FINAL_FOR_THIS_ROUND"
+  },
+  "reference_analysis_hash": "a1fd93e8c7fa495700de709da8d762bc2d7c5297bc09cfc1fda1bc7f9bdec715",
+  "schema": "wpem_reference_analysis@1.0.0-shadow",
+  "shadow_only": true,
+  "target_price_basis_binding": {
+    "M_ref_btc": null,
+    "actual_target_symbols": [
+      "_candidate_row",
+      "target_loss",
+      "fast_predictions",
+      "width_value_btc",
+      "payout"
+    ],
+    "asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+    "binding_checks": [
+      {
+        "check": "10_required_features_strict_asof",
+        "status": "FAIL"
+      },
+      {
+        "check": "asset_protocol_hash",
+        "status": "PASS"
+      },
+      {
+        "check": "horizon_side_geometry_price_basis_target_binding",
+        "status": "FAIL"
+      },
+      {
+        "check": "provider_llm_account_free",
+        "status": "PASS"
+      },
+      {
+        "check": "shadow_reference_label",
+        "status": "NOT_REACHED"
+      }
+    ],
+    "binding_reason": "Binance_model_target_to_Deribit_native_payout_not_validated",
+    "candidate_binding_status": "not_validated",
+    "candidate_price_basis": "deribit_index",
+    "catalog_hash": "652b0884981cc123e58461d687c78f5a55395040ea22c957b540b9e14f36683e",
+    "feature_market": "Binance UM BTCUSDT 1m closed bars",
+    "inference_allowed": false,
+    "inference_calls": 0,
+    "llm_http_calls": 0,
+    "loss_over_B": {
+      "clipped_to_one": false,
+      "source": "actual source refs define payout divided by actual_width / entry_price and contain no cap-to-one branch"
+    },
+    "m_ref_btc": null,
+    "model_hash": "0246cccc9b2ac4aa1ccf1ed405e3b81423d397a4804914121e975e4573d2b440",
+    "model_id": "catboost__statistical__D4",
+    "model_reference_price_basis": "last fully closed Binance spot BTCUSDT 1m close at or before observation time",
+    "model_target": {
+      "main": "two-part normalized vertical-spread payout",
+      "primary_selection_metric": "expected payout mean squared error",
+      "statistical_sorting": "choose the side with lower expected_loss_normalized; same-actual-width pairs are the primary side-selection comparison",
+      "tail": "protection-leg breach and unconditional worst-five-percent loss"
+    },
+    "mu_ref_btc": null,
+    "packet_hash": "07f5d9b5c6937e9c33f4eea118f233835dd34f74f7b4059feaeb0540ce63040b",
+    "protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+    "quantity_scale": {
+      "current_native_formula_uses_quantity": true,
+      "current_native_quantity_btc": 1.0,
+      "normalized_scale_B": "actual_width / entry_price",
+      "quantity_mapping_status": "UNPROVEN_FOR_CURRENT_DERIBIT_NATIVE_CONTRACT",
+      "training_payout_quantity": "q=1 implicit in astra_joint_dataset.payout(side, short, long, settlement)"
+    },
+    "schema": "wpem_reference_target_price_basis@1.0.0-shadow",
+    "shadow_only": true,
+    "source_refs": [
+      {
+        "ast_sha256": "37dd1883b80e74adef8674019070f5a2c445c30daaa52cb9e62485bf104fc82b",
+        "bound_asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+        "bound_protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+        "end_line": 929,
+        "file": "tools/astra_joint_v11_data.py",
+        "file_sha256": "a7bc9b8f325c5582b44a5006f68c2ba8df3fb7e9025b2869ea3403642092acfb",
+        "source_definition": "def _candidate_row(\n    observation: Mapping[str, Any],\n    side: str,\n    target_width: float,\n    short: Mapping[str, Any],\n    long: Mapping[str, Any],\n    price: float,\n    expiry: int,\n    dte_hours: float,\n    option_source_sha: str,\n    delivery_source_sha: str | None,\n    settlement: float | None,\n) -> dict[str, Any]:\n    side_text = _side_name(side)\n    actual_width = abs(float(short[\"strike\"]) - float(long[\"strike\"]))\n    feature_row = side_features(observation, side_text, price, short, long, dte_hours)\n    delivery = delivery_date(expiry)\n    identity = {\n        \"observation_id\": observation[\"observation_id\"],\n        \"side\": side_text,\n        \"target_width\": float(target_width),\n        \"actual_width\": actual_width,\n        \"short_strike\": float(short[\"strike\"]),\n        \"long_strike\": float(long[\"strike\"]),\n        \"entry_ms\": int(observation[\"entry_ms\"]),\n        \"expiry_ms\": int(expiry),\n        \"source_observation_hash\": observation[\"source_observation_hash\"],\n    }\n    preoutcome_hash = stable_hash({**identity, \"features\": feature_row})\n    settlement_price = parse_float(settlement)\n    payout_btc = None\n    loss_normalized = None\n    short_breached = None\n    protection_breached = None\n    outcome_status = \"missing_official_delivery\"\n    if settlement_price is not None and settlement_price > 0:\n        payout_btc = payout(side_text, float(short[\"strike\"]), float(long[\"strike\"]), settlement_price)\n        loss_normalized = payout_btc / (actual_width / float(price)) if actual_width > 0 else None\n        if side_text == \"put\":\n            short_breached = settlement_price < float(short[\"strike\"])\n            protection_breached = settlement_price < float(long[\"strike\"])\n        else:\n            short_breached = settlement_price > float(short[\"strike\"])\n            protection_breached = settlement_price > float(long[\"strike\"])\n        outcome_status = \"settled\"\n    year = dt.datetime.fromtimestamp(int(expiry) / 1000, tz=dt.UTC).year\n    row = {\n        \"schema\": MODEL_INPUT_SCHEMA,\n        \"row_id\": stable_hash(identity),\n        \"observation_id\": observation[\"observation_id\"],\n        \"event_family\": observation[\"event_family\"],\n        \"observation_kind\": observation[\"observation_kind\"],\n        \"as_of_ms\": int(observation[\"as_of_ms\"]),\n        \"as_of_utc\": observation.get(\"as_of_utc\"),\n        \"entry_ms\": int(observation[\"entry_ms\"]),\n        \"entry_utc\": observation.get(\"entry_utc\"),\n        \"expiry_ms\": int(expiry),\n        \"expiry_utc\": ms_to_iso(int(expiry)),\n        \"delivery_date\": delivery,\n        \"delivery_year\": year,\n        \"split\": split_for_expiry(expiry),\n        \"historical_usage_role\": historical_usage_role(expiry),\n        \"side\": side_text,\n        \"target_width\": float(target_width),\n        \"actual_width\": actual_width,\n        \"short_strike\": float(short[\"strike\"]),\n        \"long_strike\": float(long[\"strike\"]),\n        \"short_name\": short.get(\"instrument_name\"),\n        \"long_name\": long.get(\"instrument_name\"),\n        \"short_creation_ms\": int(short[\"creation_timestamp\"]),\n        \"long_creation_ms\": int(long[\"creation_timestamp\"]),\n        \"entry_price\": float(price),\n        \"price_source\": observation.get(\"price_source\"),\n        \"price_observation_ms\": observation.get(\"price_observation_ms\"),\n        \"price_observation_utc\": observation.get(\"price_observation_utc\"),\n        \"spot_source_file\": observation.get(\"spot_source_file\"),\n        \"um_source_file\": observation.get(\"um_source_file\"),\n        \"option_source_sha256\": option_source_sha,\n        \"delivery_source_sha256\": delivery_source_sha,\n        \"source_observation_hash\": observation[\"source_observation_hash\"],\n        \"preoutcome_row_hash\": preoutcome_hash,\n        **feature_row,\n        \"settlement_price\": settlement_price,\n        \"payout_btc\": payout_btc,\n        \"loss_normalized\": loss_normalized,\n        \"short_leg_breached\": short_breached,\n        \"protection_leg_breached\": protection_breached,\n        \"outcome_status\": outcome_status,\n    }\n    return {field: row.get(field) for field in CANDIDATE_FIELDS}",
+        "source_definition_sha256": "c310574ce414e17b2b9537aae569fc60f2ae0587a8199930005270f05e5bdc1a",
+        "start_line": 840,
+        "symbol": "_candidate_row"
+      },
+      {
+        "ast_sha256": "af1834acb1e27ec04460326b6c701d40266307aa1b2ab1dd753af4a13736dc08",
+        "bound_asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+        "bound_protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+        "end_line": 325,
+        "file": "tools/astra_joint_v11_model.py",
+        "file_sha256": "47d4246a8ed26bfc57e22748c6b23d1dac46c04e21daab7028db00b6e04b3ab2",
+        "source_definition": "def target_loss(row: Mapping[str, Any]) -> float | None:\n    direct = finite_float(row.get(\"loss_normalized\"))\n    if direct is not None:\n        return max(0.0, direct)\n    payout = finite_float(row.get(\"payout_btc\"))\n    width = finite_float(row.get(\"actual_width\"))\n    entry = finite_float(row.get(\"entry_price\"))\n    if payout is None or width is None or entry is None or width <= 0 or entry <= 0:\n        return None\n    return max(0.0, payout / (width / entry))",
+        "source_definition_sha256": "b7fa1a0b856009d55959df3ea262e812a04abe7673ee0944fb0ea5d08863a527",
+        "start_line": 316,
+        "symbol": "target_loss"
+      },
+      {
+        "ast_sha256": "71c36015b57222c47b298fb0d3a61c0f777d0363d7147b737d65918b7bcebade",
+        "bound_asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+        "bound_protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+        "end_line": 793,
+        "file": "tools/astra_joint_v11_model.py",
+        "file_sha256": "47d4246a8ed26bfc57e22748c6b23d1dac46c04e21daab7028db00b6e04b3ab2",
+        "source_definition": "def fast_predictions(rows: Sequence[Mapping[str, Any]], model: Mapping[str, Any]) -> list[dict[str, Any]]:\n    probs, severities, tails = raw_parts(rows, model)\n    calibrators = model.get(\"calibrators\") or {}\n    predictions = []\n    for row, raw_p, raw_s, raw_tail in zip(rows, probs, severities, tails):\n        p = apply_probability_calibrator(raw_p, calibrators.get(\"occurrence\"))\n        s = apply_scale(raw_s, calibrators.get(\"positive_severity\"))\n        expected_loss = p * s\n        width_btc = finite_float(row.get(\"actual_width\"))\n        entry_price = finite_float(row.get(\"entry_price\"))\n        expected_payout_btc = expected_loss * (width_btc / entry_price) if width_btc is not None and entry_price is not None and width_btc > 0 and entry_price > 0 else None\n        tail_probability = None\n        if math.isfinite(raw_tail):\n            tail_probability = apply_probability_calibrator(raw_tail, calibrators.get(\"tail\"))\n        predictions.append(\n            {\n                \"row_id\": row.get(\"row_id\"),\n                \"side\": row.get(\"side\"),\n                \"probability_positive\": p,\n                \"conditional_positive_loss\": s,\n                \"expected_loss_normalized\": expected_loss,\n                \"expected_payout_btc\": expected_payout_btc,\n                \"tail_probability\": tail_probability,\n                \"breach_probability\": tail_probability,\n            }\n        )\n    return predictions",
+        "source_definition_sha256": "5089068c92d9afc5b914c98b33a25622ab32d8b9c387bdfd9efac8af2625bfca",
+        "start_line": 767,
+        "symbol": "fast_predictions"
+      },
+      {
+        "ast_sha256": "291e82f39cd92e3040b79bb2838b3eacec74f7a5ae7ee74dcc65ee9e60f5361b",
+        "bound_asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+        "bound_protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+        "end_line": 183,
+        "file": "tools/astra_joint_v11_inference.py",
+        "file_sha256": "20050d91ee4a746d82f60bd98bb5b02f23a2d109b8c9860b6923aba28ab25f72",
+        "source_definition": "def width_value_btc(row: Mapping[str, Any]) -> float | None:\n    actual_width = finite_float(row.get(\"actual_width\"))\n    entry_price = finite_float(row.get(\"entry_price\"))\n    if actual_width is None or entry_price is None or actual_width <= 0 or entry_price <= 0:\n        return None\n    return actual_width / entry_price",
+        "source_definition_sha256": "6bb0bbf05340f9f4789749bf58faea94a8f6cd72c5f12f781cce2b27857273cf",
+        "start_line": 178,
+        "symbol": "width_value_btc"
+      },
+      {
+        "ast_sha256": "64015f80cf21763a79dc8662f70a2e4141904e29876b2c648cfd9c75aedc97ab",
+        "bound_asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+        "bound_protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+        "end_line": 121,
+        "file": "tools/astra_joint_dataset.py",
+        "file_sha256": "1ec1be066103c4f70d1e632d05b484f0f938781e9fb91d1a9ba013ab01997a0c",
+        "source_definition": "def payout(side,short,long,settlement):\n    if settlement<=0:raise ValueError('invalid settlement')\n    if side=='put':return (max(short-settlement,0)-max(long-settlement,0))/settlement\n    if side=='call':return (max(settlement-short,0)-max(settlement-long,0))/settlement\n    raise ValueError('invalid side')",
+        "source_definition_sha256": "8fc892d138ea76ed5b386f252454185a2ac158f5bfc1f1e8c80704e03e92eebf",
+        "start_line": 117,
+        "symbol": "payout"
+      },
+      {
+        "ast_sha256": "0728ed559f2ad2c5eb77f06e3db33be257ef50f65b6f2eaa0e3484954ae2cf5d",
+        "bound_asset_sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+        "bound_protocol_sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+        "end_line": 64,
+        "file": "tools/astra_commercial_math_v17.py",
+        "file_sha256": "ef33d35d3dad9c1539322da3a7318d0b5476fe0734a069acd324f75353bbf647",
+        "source_definition": "def inverse_spread_payout(side, short, long, settlement, quantity=1.0) -> float:\n    \"\"\"Terminal BTC liability of a vertical credit spread before entry credit.\"\"\"\n    side = _side(side)\n    short = _positive(\"short\", short)\n    long = _positive(\"long\", long)\n    if side == \"put\" and short <= long:\n        raise ValueError(\"put credit spread requires short strike > long strike\")\n    if side == \"call\" and short >= long:\n        raise ValueError(\"call credit spread requires short strike < long strike\")\n    short_payout = inverse_leg_payout(side, short, settlement, quantity)\n    long_payout = inverse_leg_payout(side, long, settlement, quantity)\n    return short_payout - long_payout",
+        "source_definition_sha256": "b50807cbda3533238205a43e0169bc4f820bf85bb4a9b5a4ebb0642f09e1bb46",
+        "start_line": 53,
+        "symbol": "inverse_spread_payout"
+      }
+    ],
+    "spot_reference_market": "Binance spot BTCUSDT 1m closed bars",
+    "status": "TARGET_BINDING_UNPROVEN",
+    "support_domain": {
+      "geometry_training_ranges": {
+        "dte_hours": {
+          "max": 24.0,
+          "mean": 16.25,
+          "min": 8.5
+        },
+        "short_distance_fraction": {
+          "max": 0.022430219400039152,
+          "mean": 0.0038027365983947796,
+          "min": 8.196720635319056e-08
+        },
+        "side_sign": {
+          "max": 1.0,
+          "mean": 0.0,
+          "min": -1.0
+        },
+        "width_fraction": {
+          "max": 0.0378157687595993,
+          "mean": 0.02198588298144002,
+          "min": 0.008179420496237261
+        }
+      },
+      "horizon_hours": {
+        "max_inclusive": 24,
+        "min_exclusive": 8
+      },
+      "primary_width_usd": 2000,
+      "required_feature_support": {
+        "dte_hours": {
+          "max": 24.0,
+          "min": 8.5,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "net_flow_15": {
+          "max": 0.7487473842747938,
+          "min": -0.6786840098010759,
+          "missing_count": 4,
+          "missing_rate": 9.811616954474098e-05,
+          "row_count": 40768
+        },
+        "net_flow_30": {
+          "max": 0.5743379528577023,
+          "min": -0.6031459942375353,
+          "missing_count": 4,
+          "missing_rate": 9.811616954474098e-05,
+          "row_count": 40768
+        },
+        "ret_15": {
+          "max": 0.030114309689689422,
+          "min": -0.045683554650500224,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "ret_30": {
+          "max": 0.03728236080708536,
+          "min": -0.04916745732707273,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "short_distance_fraction": {
+          "max": 0.022430219400039152,
+          "min": 8.196720635319056e-08,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "side_sign": {
+          "max": 1.0,
+          "min": -1.0,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "vol_15": {
+          "max": 0.06718774157076596,
+          "min": 0.0,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "vol_30": {
+          "max": 0.06842755849373258,
+          "min": 0.0,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        },
+        "width_fraction": {
+          "max": 0.0378157687595993,
+          "min": 0.008179420496237261,
+          "missing_count": 0,
+          "missing_rate": 0.0,
+          "row_count": 40768
+        }
+      }
+    },
+    "tail_publication_limit": {
+      "evidence": {
+        "candidate_id": "catboost__statistical__D4",
+        "expected_sha256": "9a71f02de12f770cf634879b176e9087ce0e676636acdc287f909e8aa6afe560",
+        "inconsistent_rows": 2264,
+        "max_excess": 0.6849678828817931,
+        "path": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.artifacts\\astra-joint-v11-20260915\\validation\\tail_probability_order.json",
+        "rows": 93242,
+        "sha256": "9a71f02de12f770cf634879b176e9087ce0e676636acdc287f909e8aa6afe560",
+        "status": "available"
+      },
+      "meaning": "independent tail probability publication restriction; not the first B-round qualification break",
+      "policy": "research_only"
+    },
+    "target_price_basis_binding_hash": "0811991286bcb91981c7ce4457c5424074c8272b9aa2c124c8bd7731a746205e",
+    "terminal_status": "NOT_QUALIFIED_FINAL_FOR_THIS_ROUND"
+  },
+  "terminal_status": "NOT_QUALIFIED_FINAL_FOR_THIS_ROUND"
+}

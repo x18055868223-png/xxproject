@@ -172,7 +172,9 @@ CONFIG = {
     # underwriting facts. Audit-only; no direction/weight/permission changes.
     # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
     # continuous current facts. No direction/weight/LLM/permission changes.
-    "demo_version": "2.0.1",
+    # v2.0.2 (2026-10-05): producer-local snapshot handoff/export clocks
+    # and same-snapshot session context. No financial/permission changes.
+    "demo_version": "2.0.2",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -12752,6 +12754,16 @@ class WorkbenchSnapshotExporter:
             "last_trigger": trigger,
         })
         export_payload = dict(payload or {})
+        export_payload["ingested_at_ms"] = current_ms
+        export_payload["clock_provenance"] = {
+            "schema": "native_snapshot_clock_provenance@1.0.0",
+            "source_available_at_ms": "snapshot_payload_handoff_before_export_envelope",
+            "ingested_at_ms": "producer_snapshot_exporter_acceptance",
+            "snapshot_exported_ms": "producer_export_attempt_before_atomic_write",
+            "not_remote_receiver_ingestion": True,
+            "not_filesystem_visibility_proof": True,
+            "not_market_source_ingestion": True,
+        }
         export_payload["snapshot_exported_ms"] = current_ms
         export_payload["snapshot_exported_utc8"] = utc8_text(current_ms)
         export_payload["snapshot_export_trigger"] = trigger
@@ -12763,6 +12775,12 @@ class WorkbenchSnapshotExporter:
             decision["runtime_facts"] = runtime
         add_schema(export_payload, SCHEMA_EVALUATION_SNAPSHOT, self.config)
         try:
+            available_ms = export_payload.get("source_available_at_ms")
+            decision_ms = (export_payload.get("decision") or {}).get("ts_ms")
+            if (not isinstance(available_ms, int) or isinstance(available_ms, bool)
+                    or not isinstance(decision_ms, int) or isinstance(decision_ms, bool)
+                    or not 0 <= decision_ms <= available_ms <= current_ms):
+                raise ValueError("native_snapshot_handoff_clock_missing_or_invalid")
             written_records = self._atomic_write_ring(export_payload)
         except Exception as error:
             self.failure_count += 1
@@ -14266,6 +14284,25 @@ class DemoRuntime:
             "factor_snapshot": factor_snapshot,
             "contract_audit": contract_audit,
         }
+        # Observation-only metadata for this exact decision timestamp. Event
+        # cards may be older; they never supply this current snapshot context.
+        decision_ms = decision_snapshot["ts_ms"]
+        session_context = classify_signal_session_context(decision_ms, self.config)
+        session_context["observed_at_ms"] = decision_ms
+        snapshot_payload["current_snapshot_context"] = {
+            "schema": "current_evaluation_context@1.0.0",
+            "observed_at_ms": decision_ms,
+            "source": "current_evaluation_snapshot",
+            "session_context": session_context,
+            "temporal_durability": session_context.get("premise_durability"),
+            "phase": "PHASE_0_OBSERVE_ONLY",
+            "affects_confidence": False,
+            "affects_blocking": False,
+            "affects_trade_allowed": False,
+        }
+        # This is the payload handoff before the export envelope, not final
+        # serialized bytes, upstream-market ingestion or filesystem visibility.
+        snapshot_payload["source_available_at_ms"] = now_ms()
         self.snapshot_exporter.maybe_write(snapshot_payload, factor_snapshot)
         attach_runtime_facts(decision_snapshot, self._runtime_facts())
         contract_audit = validate_evaluation_contract(

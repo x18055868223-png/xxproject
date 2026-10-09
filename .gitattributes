@@ -1,7 +1,18 @@
+.gitattributes text eol=lf
 *.sh text eol=lf
 *.service text eol=lf
 *.timer text eol=lf
 *.py text eol=lf
 deploy/kpf_light/vendor/kpf/*.py -text
+
+# v2.6.3 frozen source hashes are byte contracts; retain their reviewed bytes.
+demo/最新交付物/neutral_regulation_demo_fmz.py -text
+tools/astra_locked_candidate_compare_v1.py -text
+tools/astra_underwriting_review_v20.py -text
+tools/astra_workbench_v20.py -text
+tools/astra_wpem_product_review_v1.py -text
+tools/astra_wpem_reference_v1.py -text
+tools/astra_wpem_review_evidence_v1.py -text
+tools/signal_llm_review.py -text
 *.ps1 text eol=crlf
 

@@ -1,0 +1,444 @@
+{
+  "allowed_refs": [
+    "contract",
+    "fee",
+    "fmz.anchor",
+    "fmz.edb",
+    "fmz.flow",
+    "fmz.gamma_regime",
+    "fmz.neutral_repair",
+    "quote"
+  ],
+  "candidate_id": "86c712b6f4d2a5ee13bb1895",
+  "claim_catalog": {
+    "claims": [
+      {
+        "claim_cn": "Put 信用价差的不利方向是下跌；合同赔付只按冻结的币本位公式读取。",
+        "id": "claim.contract.put_liability_direction",
+        "ref": "contract"
+      },
+      {
+        "claim_cn": "盈亏平衡由冻结净权利金、费用和合约公式确定；不能用触达卖出腿替代。",
+        "id": "claim.contract.breakeven_accounting",
+        "ref": "contract"
+      },
+      {
+        "claim_cn": "当前原生事实显示量价下行，对本侧贴近本侧不利方向。",
+        "id": "claim.direction.flow_adverse",
+        "ref": "fact_context.market_facts.flow.direction"
+      },
+      {
+        "claim_cn": "可见权利金差来自同一冻结盘口；它只是未成交的顺序分腿估值。",
+        "id": "claim.quote.visible_credit",
+        "ref": "quote"
+      },
+      {
+        "claim_cn": "该FMZ事实来自同一冻结上下文，只能作为只读背景证据。",
+        "id": "claim.fmz_anchor.current_fact",
+        "ref": "fmz.anchor"
+      },
+      {
+        "claim_cn": "该FMZ事实来自同一冻结上下文，只能作为只读背景证据。",
+        "id": "claim.fmz_edb.current_fact",
+        "ref": "fmz.edb"
+      },
+      {
+        "claim_cn": "该FMZ事实来自同一冻结上下文，只能作为只读背景证据。",
+        "id": "claim.fmz_flow.current_fact",
+        "ref": "fmz.flow"
+      },
+      {
+        "claim_cn": "该FMZ事实来自同一冻结上下文，只能作为只读背景证据。",
+        "id": "claim.fmz_gamma_regime.current_fact",
+        "ref": "fmz.gamma_regime"
+      },
+      {
+        "claim_cn": "该FMZ事实来自同一冻结上下文，只能作为只读背景证据。",
+        "id": "claim.fmz_neutral_repair.current_fact",
+        "ref": "fmz.neutral_repair"
+      }
+    ],
+    "counterclaims": [
+      {
+        "claim_cn": "保护腿下方不存在固定 BTC 赔付上限；深尾赔付仍随交割价变化。",
+        "id": "counter.contract.put_fixed_btc_cap",
+        "ref": "contract"
+      },
+      {
+        "claim_cn": "卖出腿附近不等于静态净额必然转负，需以冻结盈亏平衡点和赔付表核对。",
+        "id": "counter.contract.short_leg_turns_negative",
+        "ref": "contract"
+      },
+      {
+        "claim_cn": "LLM复核不能生成下单许可，执行许可仍由本地门禁关闭。",
+        "id": "counter.execution.permission_closed",
+        "ref": "contract"
+      },
+      {
+        "claim_cn": "同一冻结事实也可能只是资料缺口、补偿不足或慢背景共振，不能直接写成保单成立。",
+        "id": "counter.q1.competing_context_explanation",
+        "ref": "contract"
+      },
+      {
+        "claim_cn": "量价下行贴近本侧不利方向；当前整体μ没有单项归因，尚无证据证明这项传导进入μ。",
+        "id": "counter.direction.flow_adverse_not_quantified",
+        "ref": "fact_context.market_facts.flow.direction"
+      }
+    ],
+    "gaps": [
+      {
+        "id": "gap.compensation.mu_reference_missing",
+        "ref": "risk",
+        "text_cn": "风险参考μ缺失，不能完成补偿是否覆盖参考风险的判断。"
+      },
+      {
+        "id": "gap.risk_reference_missing",
+        "ref": "risk",
+        "text_cn": "冻结风险参考缺失或未通过支持域校验，不能判断补偿是否充分。"
+      },
+      {
+        "id": "gap.account_margin_missing",
+        "ref": "liability.account_margin_btc",
+        "text_cn": "账户保证金和维护约束未进入冻结责任账，不能扩展成账户可承受结论。"
+      }
+    ],
+    "reassess_conditions": [
+      {
+        "id": "reassess.snapshot_rebuilt",
+        "text_cn": "报价、费用、风险参考、FMZ事实或MAP源时钟变化后，必须重建冻结快照再复核。"
+      },
+      {
+        "id": "reassess.risk_reference_available",
+        "ref": "risk",
+        "text_cn": "取得绑定同一候选、同一估值时点和支持域的风险参考后重新核对。"
+      }
+    ]
+  },
+  "claim_catalog_hash": "47f8fdfbaf0aa6cbaaf1d4a56f4d6c42344d09bc37f38c9eb4cddf04b11cface",
+  "contract": {
+    "candidate_id": "86c712b6f4d2a5ee13bb1895",
+    "contract_size": 1.0,
+    "exit_policy": "hold_to_expiry",
+    "expiry_ms": 1790409600000,
+    "long": {
+      "contract_size": 1.0,
+      "expiry_ms": 1790409600000,
+      "instrument_name": "BTC-26SEP26-82000-P",
+      "option_type": "put",
+      "quantity_unit": "BTC",
+      "strike_usd": 82000.0
+    },
+    "long_instrument": "BTC-26SEP26-82000-P",
+    "long_strike_usd": 82000.0,
+    "quantity_btc": 1.0,
+    "settlement_currency": "BTC",
+    "short": {
+      "contract_size": 1.0,
+      "expiry_ms": 1790409600000,
+      "instrument_name": "BTC-26SEP26-84000-P",
+      "option_type": "put",
+      "quantity_unit": "BTC",
+      "strike_usd": 84000.0
+    },
+    "short_instrument": "BTC-26SEP26-84000-P",
+    "short_strike_usd": 84000.0,
+    "side": "put",
+    "underlying": "BTC",
+    "venue": "Deribit",
+    "width_usd": 2000.0
+  },
+  "decision_relations": {
+    "account": {
+      "fee_btc": 0.0004125,
+      "increment_needed_btc": null,
+      "mu_ref_btc": null,
+      "reference_margin_btc": null,
+      "reprice_condition_cn": "当前规范账未给出所需信用，不能计算重定价条件。",
+      "required_credit_btc": null,
+      "visible_credit_btc": 0.0035000000000000005
+    },
+    "contract_geometry": {
+      "adverse_direction_cn": "下跌",
+      "current_price_usd": 84367.47,
+      "distance_to_long_usd": -2367.470000000001,
+      "distance_to_near_be_usd": -626.0217215596786,
+      "distance_to_short_usd": -367.47000000000116,
+      "expiry_ms": 1790409600000,
+      "horizon_hours": 23.418893055555557,
+      "long_strike_usd": 82000.0,
+      "near_breakeven_usd": 83741.44827844032,
+      "short_strike_usd": 84000.0,
+      "side": "put"
+    },
+    "edb": {
+      "direction": "UNKNOWN",
+      "lean": null,
+      "qualitative_only": true,
+      "relation": "unknown",
+      "source_qualification": "current_fact",
+      "source_ref": null
+    },
+    "flow": {
+      "claim_id": "claim.direction.flow_adverse",
+      "counter_id": "counter.direction.flow_adverse_not_quantified",
+      "direction": "DOWN",
+      "direction_cn": "下行",
+      "relation": "adverse",
+      "relation_cn": "贴近本侧不利方向",
+      "source_qualification": "current_fact",
+      "source_ref": "fact_context.market_facts.flow.direction"
+    },
+    "map_policy": {
+      "qualified": false,
+      "summary_cn": "没有同版推荐的合格MAP责任区域；区域责任关系未知。"
+    },
+    "risk_coverage": {
+      "gap_reasons": [
+        "frozen_risk_reference_missing"
+      ],
+      "horizon_status": "unknown",
+      "overall_mu_status": "missing",
+      "per_risk_quantification": "UNKNOWN",
+      "qualitative_only": true,
+      "qualitative_refs": [
+        "fact_context.market_facts.flow.direction"
+      ],
+      "soft_risk_coverage": "MISSING"
+    },
+    "schema": "astra_underwriting_decision_relations@2.4.7",
+    "selection_requirements": {
+      "claim_ids": [
+        "claim.direction.flow_adverse"
+      ],
+      "counter_ids": [
+        "counter.direction.flow_adverse_not_quantified"
+      ],
+      "reassess_condition_ids": []
+    },
+    "source": "program_from_frozen_snapshot"
+  },
+  "deterministic_account": {
+    "economics": {
+      "error_room_btc": null,
+      "loss_budget_btc": 0.0030875000000000004,
+      "minimum_reference_credit_btc": null,
+      "mu_ref_btc": null,
+      "reference_margin_btc": null,
+      "visible_credit_btc": 0.0035000000000000005
+    },
+    "execution_allowed": false,
+    "gap_reasons": [
+      "frozen_risk_reference_missing"
+    ],
+    "liability": {
+      "account_margin_btc": null,
+      "breakeven_usd": [
+        83741.44827844032
+      ],
+      "btc_contract_cap": null,
+      "btc_reference_scale_at_spot": 0.023705819316378694,
+      "payout_table": [
+        {
+          "hedged_net_btc": null,
+          "payout_btc": 0.0,
+          "settlement_usd": 84367.47,
+          "static_net_btc": 0.0030875000000000004
+        },
+        {
+          "hedged_net_btc": null,
+          "payout_btc": 0.0,
+          "settlement_usd": 84000.0,
+          "static_net_btc": 0.0030875000000000004
+        },
+        {
+          "hedged_net_btc": null,
+          "payout_btc": 0.012048192771084338,
+          "settlement_usd": 83000.0,
+          "static_net_btc": -0.008960692771084338
+        },
+        {
+          "hedged_net_btc": null,
+          "payout_btc": 0.024390243902439025,
+          "settlement_usd": 82000.0,
+          "static_net_btc": -0.021302743902439025
+        },
+        {
+          "hedged_net_btc": null,
+          "payout_btc": 0.04878048780487809,
+          "settlement_usd": 41000.0,
+          "static_net_btc": -0.04569298780487809
+        }
+      ],
+      "protection_at_usd": 82000.0,
+      "signed_distance_to_long_pct": -2.8061408028473567,
+      "signed_distance_to_short_pct": -0.4355588712094849,
+      "starts_at_usd": 84000.0,
+      "usd_intrinsic_cap": 2000.0
+    },
+    "status": "information_gap"
+  },
+  "deterministic_financials": {
+    "account_basis": {
+      "fee_btc": 0.0004125,
+      "mu_ref_btc": null,
+      "net_credit_after_fee_btc": null,
+      "reference_margin_btc": null,
+      "visible_credit_btc": 0.0035000000000000005
+    },
+    "breakeven_usd": [
+      83741.44827844032
+    ],
+    "btc_contract_cap": null,
+    "btc_tail_profile": "unbounded_btc_tail_below_protection",
+    "contract": {
+      "long_strike_usd": 82000.0,
+      "quantity_btc": 1.0,
+      "short_strike_usd": 84000.0,
+      "side": "put",
+      "width_usd": 2000.0
+    },
+    "points": [
+      {
+        "id": "short_strike",
+        "label_cn": "卖出腿行权价",
+        "payout_btc": 0.0,
+        "settlement_usd": 84000.0,
+        "static_net_btc": 0.0030875000000000004
+      },
+      {
+        "id": "breakeven_1",
+        "label_cn": "冻结盈亏平衡点",
+        "payout_btc": 0.003087499999999915,
+        "settlement_usd": 83741.44827844032,
+        "static_net_btc": 8.55435514091063e-17
+      },
+      {
+        "id": "long_strike",
+        "label_cn": "保护腿行权价",
+        "payout_btc": 0.024390243902439025,
+        "settlement_usd": 82000.0,
+        "static_net_btc": -0.021302743902439025
+      },
+      {
+        "id": "deep_tail",
+        "label_cn": "保护腿下方深尾示例",
+        "payout_btc": 2.0,
+        "settlement_usd": 1000.0,
+        "static_net_btc": -1.9969124999999999
+      }
+    ],
+    "schema": "astra_underwriting_deterministic_financials@2.4.4",
+    "source": "program_from_frozen_snapshot"
+  },
+  "packet_hash": "1236890149416a54102c102329233f1d9c985a4fc50dfe9f36afcdc4cd02e617",
+  "packet_schema": "astra_underwriting_llm_packet@2.0.0",
+  "projection_hash": "f0c4316cd4e8c1d5460bab77ea1c42237e7d5310e69a4dec70e6d4ca534cd279",
+  "research_scope": {
+    "input_kind": "live_public_capture",
+    "market_reference_source": "deribit_index",
+    "production_attach_allowed": true,
+    "research_only": false,
+    "risk_source_kind": null
+  },
+  "review_task": "审查事实来源、因果适用性、同源重复、数据缺口和反证；不得改变数值、生成概率或授予交易许可。",
+  "schema": "review_input@2.4.7",
+  "snapshot_id": "283829b135df7765b274d990967f560d290c105e13586d9a5d747aaba8a1d45a",
+  "source_facts": {
+    "fee": {
+      "fee": {
+        "amount_btc": 0.0004125,
+        "assumption_basis": "public_taker_capped_daily_delivery_zero",
+        "basis": "configured_assumption",
+        "covers": [
+          "delivery",
+          "entry"
+        ],
+        "delivery_fee_btc": 0.0,
+        "entry_fee_btc": 0.0004125,
+        "gap_reasons": []
+      },
+      "ref": "fee"
+    },
+    "fmz_fact_context": {
+      "current_price_source": "binance_spot_latest_trade",
+      "current_price_usd": 84390.0,
+      "gap_reasons": [],
+      "market_facts": {
+        "anchor": {
+          "anchor_gravity_ref_score": 34.46556063524173,
+          "effective_flip_point": 84274.05003365615,
+          "gex_freshness": "FRESH"
+        },
+        "edb": {
+          "edb_score": -0.37791669002829803
+        },
+        "flow": {
+          "direction": "Bearish",
+          "market_state": "Directional Drift",
+          "micro_flow_effect": "micro_neutral",
+          "tmv_blend": -0.2988558307026509
+        },
+        "gamma_regime": {
+          "regime": "TRANSITION"
+        },
+        "neutral_repair": {
+          "is_active": false,
+          "state": "NR_DISPLACEMENT_ACTIVE"
+        }
+      },
+      "price_observed_ms": 1790325262820,
+      "runtime_mode": "live_public_read_only",
+      "snapshot_ts_ms": 1790325264851,
+      "source_hash": "f5361e46decda635e2eb1acf114fc1761571481f64cb56d75cf05be24364ed8f",
+      "status": "current",
+      "underlying": "BTC",
+      "valuation_ts_ms": 1790325291985
+    },
+    "quote": {
+      "quote": {
+        "available_depth_btc": {
+          "long": 239.79999999999998,
+          "short": 126.8
+        },
+        "credit_btc": 0.0035000000000000005,
+        "exchange_times_ms": {
+          "long": 1790325291272,
+          "short": 1790325290265
+        },
+        "executable_or_filled": false,
+        "gap_reasons": [],
+        "kind": "sequential_leg_book_estimate",
+        "leg_received_ts_ms": {
+          "long": 1790325291985,
+          "short": 1790325291598
+        },
+        "long_purchase_btc": 0.0009,
+        "received_ts_ms": 1790325291985,
+        "short_sale_btc": 0.0044,
+        "source_book_hash": "9738fac7f72c784a52e8c60d6a5d4b7663f9470a4485f481566865d642b7e42f",
+        "valuation_ts_ms": 1790325291985
+      },
+      "ref": "quote",
+      "source": {
+        "reference_price_usd": 84367.47,
+        "reference_source": "deribit_index",
+        "valuation_ts_ms": 1790325291985
+      }
+    },
+    "risk": {
+      "ref": "risk",
+      "risk": {
+        "gap_reasons": [
+          "frozen_risk_reference_missing"
+        ],
+        "mu_btc": null,
+        "status": "missing"
+      }
+    }
+  },
+  "source_identity": {
+    "kind": "live_public_capture",
+    "source_manifest": {},
+    "source_sha256": "c6649b2ce150b29c258390d4384f1520833ae1a48e03319d52464621312fcb32"
+  }
+}

@@ -1,0 +1,64 @@
+[
+  {
+    "group": "geometry",
+    "candidate_id": "gam__geometry__C0.1__A0.1",
+    "rows": 93242,
+    "inconsistent_rows": 0,
+    "max_excess": 0,
+    "examples": []
+  },
+  {
+    "group": "statistical",
+    "candidate_id": "catboost__statistical__D4",
+    "rows": 93242,
+    "inconsistent_rows": 2264,
+    "max_excess": 0.6849678828817931,
+    "examples": [
+      {
+        "as_of_ms": "1705008600000",
+        "side": "call_credit",
+        "probability_positive": "0.23573517053418278",
+        "breach_probability": "0.262027630523743"
+      },
+      {
+        "as_of_ms": "1705012200000",
+        "side": "call_credit",
+        "probability_positive": "0.17154457129981882",
+        "breach_probability": "0.20446434973465802"
+      },
+      {
+        "as_of_ms": "1705228200000",
+        "side": "put_credit",
+        "probability_positive": "0.33903511731164765",
+        "breach_probability": "0.47489768380409747"
+      }
+    ]
+  },
+  {
+    "group": "joint",
+    "candidate_id": "catboost__joint__D3",
+    "rows": 93242,
+    "inconsistent_rows": 2299,
+    "max_excess": 0.6521799952176212,
+    "examples": [
+      {
+        "as_of_ms": "1704625200000",
+        "side": "put_credit",
+        "probability_positive": "0.33442119381088153",
+        "breach_probability": "0.3364889088010252"
+      },
+      {
+        "as_of_ms": "1705228200000",
+        "side": "put_credit",
+        "probability_positive": "0.3446445478405427",
+        "breach_probability": "0.40511811889094607"
+      },
+      {
+        "as_of_ms": "1705568400000",
+        "side": "put_credit",
+        "probability_positive": "0.32921894451787503",
+        "breach_probability": "0.6627575067881006"
+      }
+    ]
+  }
+]

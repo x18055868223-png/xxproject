@@ -6,6 +6,7 @@ import pytest
 from tools import astra_workbench_preview_v20 as preview
 from astra_workbench_frontend_harness import render_workbench
 from test_astra_round3_frontend import _node_harness, _run_node
+from test_astra_wpem_frontend import Q1_CANONICAL
 
 
 def reviewed_view(scenario="W1"):
@@ -22,8 +23,17 @@ def reviewed_view(scenario="W1"):
     return view
 
 
+def _round5_node_harness(extra_js: str) -> str:
+    return _node_harness(r'''
+sandbox.window.setTimeout = (callback) => {
+  if (typeof callback === "function") callback();
+  return 0;
+};
+''' + extra_js)
+
+
 def test_candidate_receipt_links_choose_attached_side_without_requests():
-    script = _node_harness(r'''
+    script = _round5_node_harness(r'''
 let links = [];
 const area = elements.candidateArea;
 area.querySelectorAll = (selector) => {
@@ -56,8 +66,8 @@ console.log(JSON.stringify({output, last: api.state.workbench.manual_review_stat
         assert "模拟同版保单" in primary
         candidate = next(c for c in view["candidates"] if c["side"].lower() == side)
         assert candidate["snapshot"]["contract"]["short_instrument"] in primary
-        assert candidate["review"]["q1"]["summary_cn"] in primary
-        assert candidate["review"]["q2"]["summary_cn"] in primary
+        assert candidate["review"]["q1"]["summary_cn"].rstrip("。") in primary
+        assert candidate["review"]["q2"]["summary_cn"].rstrip("。") in primary
     assert result["last"] == view["manual_review_state"]["last_result"]
     # The shared harness throws on fetch/timers, so these clicks cannot POST/poll.
 
@@ -89,8 +99,8 @@ def test_overall_status_does_not_replace_environment_or_q2(scenario, side, expec
     view["__test_state"] = {"selectedMapCandidateKey": side}
     html = render_workbench(view)["areas"]["manualReviewState"].split("查看全局最近一次回执")[0]
     assert "综合复核状态：" in html and "适配暂不能判定" not in html
-    q1 = html.split("Q1 · 环境与责任位置")[1].split("Q2 ·")[0]
-    assert candidate["review"]["q1"]["summary_cn"] in q1
+    q1 = html.split(Q1_CANONICAL)[1].split("Q2 ·")[0]
+    assert candidate["review"]["q1"]["summary_cn"].rstrip("。") in q1
     assert expected in html
     if scenario in {"W3", "W4"}:
         assert "补偿侧反证归入 Q2" in q1

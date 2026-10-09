@@ -15,7 +15,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy" / "signal_audit"
 PACKAGE = DEPLOY / "package_signal_audit.ps1"
 INSTALLER = DEPLOY / "install_or_update.sh"
-RELEASE_DOC = "docs/astra/80_工作台v249非FMZ阶段发布协议_20261004.md"
 FREEZE_UNITS = (
     "signal-audit-materialize.timer",
     "signal-audit-materialize.service",
@@ -78,7 +77,6 @@ def assert_package_includes_release_assets():
             package_root / "frontend" / "index.html",
             package_root / "frontend" / "app.js",
             package_root / "frontend" / "VERSION.json",
-            package_root / "frontend" / "README.md",
             package_root / "frontend" / "signal_cards",
             package_root / "tools" / "signal_evidence_v2.py",
             package_root / "tools" / "signal_review_v2.py",
@@ -92,23 +90,58 @@ def assert_package_includes_release_assets():
             "frontend/index.html",
             "frontend/app.js",
             "frontend/VERSION.json",
-            "frontend/README.md",
-            RELEASE_DOC,
             "tools/signal_evidence_v2.py",
             "tools/signal_review_v2.py",
             "tools/signal_review_v2_runtime.py",
+            "tools/astra_joint_bridge.py",
+            "tools/astra_joint_contract.py",
+            "tools/astra_joint_data.py",
+            "tools/astra_joint_dataset.py",
+            "tools/astra_joint_sources.py",
+            "tools/astra_joint_projection.py",
+            "tools/astra_joint_v11_contract.py",
+            "tools/astra_joint_v11_data.py",
+            "tools/astra_joint_v11_inference.py",
+            "tools/astra_joint_v11_model.py",
             "tools/astra_data_engine_v23.py",
             "tools/astra_data_projection_v23.py",
             "tools/astra_data_retention_v23.py",
             "tools/astra_data_server_v23.py",
             "tools/astra_underwriting_guidance_v20.py",
+            "tools/astra_workbench_session_v1.py",
+            "tools/astra_workbench_reading_v1.py",
+            "tools/astra_evidence_routing_v1.py",
+            "tools/astra_map_data_server_v24.py",
+            "tools/astra_wpem_reference_v1.py",
+            "tools/astra_wpem_results_v1.py",
             "tools/data_product_registry_v23.json",
+            "deploy/apache-private-workbench.conf.example",
             "deploy/install_data_engine_v23.sh",
             "deploy/data-engine-maintenance.service",
             "deploy/data-engine-maintenance.timer",
             "deploy/install_or_update.sh",
         ):
             assert_true(name in names, "zip asset missing: " + name)
+        assert_true("frontend/README.md" not in names,
+                    "frontend local README should not ship in the minimal RC package")
+        assert_true("deploy/joint-shadow/README.md" not in names,
+                    "joint shadow research notes should not ship in the minimal RC package")
+        with zipfile.ZipFile(zip_path) as archive:
+            text_by_name = {
+                name: archive.read(name).decode("utf-8", errors="replace")
+                for name in (
+                    "tools/astra_joint_v11_data.py",
+                    "tools/astra_joint_sources.py",
+                    "tools/astra_workbench_v20.py",
+                    "tools/astra_observation_replay_v1.py",
+                    "tools/astra_underwriting_real_replay_v20.py",
+                )
+            }
+        joined_package_text = "\n".join(text_by_name.values())
+        assert_true("C:\\Users\\Xu" not in joined_package_text and "C:/Users/Xu" not in joined_package_text,
+                    "packaged source must not include local user machine paths")
+        assert_true(".artifacts" not in joined_package_text,
+                    "packaged source defaults must not point at development artifact folders")
         assert_true("tools/signal_llm_review_canary_release.sh" not in names,
                     "retired canary helper must not ship without its runner")
         manifest_path = package_root / "package-manifest.json"
@@ -118,7 +151,6 @@ def assert_package_includes_release_assets():
         assert_true("package-manifest.json" not in files, "manifest must not hash itself")
         for name in (
             "frontend/VERSION.json",
-            RELEASE_DOC,
             "deploy/install_or_update.sh",
             "fmz/neutral_regulation_demo_fmz.py",
         ):
@@ -130,6 +162,13 @@ def assert_package_includes_release_assets():
             assert_true(entry.get("sha256") == hashlib.sha256(packaged.read_bytes()).hexdigest(),
                         "manifest sha256 mismatch: " + name)
         source = manifest.get("source", {})
+        source_text = json.dumps(source, ensure_ascii=False)
+        assert_true("repo_root" not in source and "git_top_level" not in source,
+                    "package source manifest must not record local absolute paths")
+        assert_true(".artifacts" not in source_text and not re.search(r"[A-Za-z]:[\\/]", source_text),
+                    "package source manifest must not include development artifact or drive paths")
+        assert_true(source.get("path_policy") == "local_absolute_paths_not_recorded",
+                    "package source manifest should state its local path policy")
         source_state = source.get("source_state")
         assert_true(source_state in {"clean", "dirty", "not_git_root"},
                     "manifest should record clean/dirty/not_git_root source state")
@@ -147,9 +186,10 @@ def assert_package_includes_release_assets():
         assert_true(source.get("release_commit_verification") == "not_performed_by_packager",
                     "manifest should state that commit verification is external")
         frontend = manifest.get("frontend", {})
-        assert_true(frontend.get("frontend_cache_token") == "20260928-round5-repairs-v249-local",
+        source_frontend = json.loads((DEPLOY / "frontend" / "VERSION.json").read_text(encoding="utf-8"))
+        assert_true(frontend.get("frontend_cache_token") == source_frontend["frontend_cache_token"],
                     "manifest should expose the frontend cache token")
-        assert_true(frontend.get("local_review_revision") == "v2.4.9-round5-repairs-local",
+        assert_true(frontend.get("local_review_revision") == source_frontend["local_review_revision"],
                     "manifest should expose the frontend local review revision")
         assert_true(manifest.get("protocol", {}).get("review_response_protocol")
                     == "bounded_claim_ids@2.4.7",
@@ -157,7 +197,7 @@ def assert_package_includes_release_assets():
         assert_true(manifest.get("protocol", {}).get("deterministic_financials_schema")
                     == "astra_underwriting_deterministic_financials@2.4.4",
                     "manifest should expose deterministic financials schema identity")
-        assert_true(manifest.get("fmz", {}).get("producer_version_reference") == "2.0.1",
+        assert_true(manifest.get("fmz", {}).get("producer_version_reference") == "2.0.2",
                     "manifest should expose FMZ producer reference")
         assert_true(manifest.get("fmz", {}).get("reference_only") is True,
                     "packaged FMZ file must be marked reference-only")
@@ -168,8 +208,10 @@ def assert_package_includes_release_assets():
                 sys.executable,
                 "-c",
                 (
-                    "import astra_workbench_v20, astra_underwriting_store_v20, "
-                    "astra_risk_qualification_v244, astra_data_retention_v23"
+                    "import astra_workbench_v20, astra_workbench_session_v1, astra_workbench_reading_v1, "
+                    "astra_underwriting_store_v20, astra_risk_qualification_v244, "
+                    "astra_data_retention_v23, astra_evidence_routing_v1, astra_map_data_server_v24, "
+                    "astra_wpem_reference_v1, astra_wpem_results_v1"
                 ),
             ],
             cwd=ROOT,
@@ -346,8 +388,34 @@ chown() { echo "WRITE chown $*" >> "$INSTALLER_EVENT_LOG"; return 0; }
         return completed, events
 
 
-def assert_installer_quiesces_units_before_writes():
+def assert_installer_default_does_not_touch_systemd():
     completed, events = run_installer_with_stubs("loaded")
+    assert_true(completed.returncode == 0, "stubbed installer should succeed: " + completed.stderr)
+    assert_true(not any(event.startswith("SYSTEMCTL ") for event in events),
+                "default installer must not inspect, stop, disable, reload, enable, or start systemd units")
+    assert_true(any(event.startswith("WRITE ") for event in events),
+                "default installer should still prepare files")
+    assert_true("service actions disabled" in completed.stdout,
+                "default installer should explain the service-action opt-in")
+
+
+def assert_installer_requires_service_action_opt_in_for_enable_start():
+    for name in ("ENABLE_SIGNAL_AUDIT_TIMERS", "START_SIGNAL_AUDIT_TIMERS",
+                 "ENABLE_WORKBENCH", "START_WORKBENCH"):
+        completed, events = run_installer_with_stubs("loaded", {name: "1"})
+        assert_true(completed.returncode != 0,
+                    name + " should require APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS=1")
+        assert_true(name + " requires APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS=1"
+                    in (completed.stdout + completed.stderr),
+                    name + " should emit a clear opt-in message")
+        assert_true(not events, name + " rejection must happen before writes and systemd")
+
+
+def assert_installer_opt_in_quiesces_units_before_writes():
+    completed, events = run_installer_with_stubs(
+        "loaded",
+        {"APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS": "1"},
+    )
     assert_true(completed.returncode == 0, "stubbed installer should succeed: " + completed.stderr)
     first_write = next((index for index, event in enumerate(events) if event.startswith("WRITE ")), None)
     assert_true(first_write is not None, "stubbed installer should reach a writer")
@@ -370,7 +438,10 @@ def assert_installer_quiesces_units_before_writes():
 
 
 def assert_installer_skips_not_found_units_before_writes():
-    completed, events = run_installer_with_stubs("not-found")
+    completed, events = run_installer_with_stubs(
+        "not-found",
+        {"APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS": "1"},
+    )
     assert_true(completed.returncode == 0,
                 "not-found units should be skipped, not treated as failure: " + completed.stderr)
     first_write = next((index for index, event in enumerate(events) if event.startswith("WRITE ")), None)
@@ -387,7 +458,10 @@ def assert_installer_skips_not_found_units_before_writes():
 
 def assert_installer_fail_closed_before_writes():
     for scenario in ("show-fail", "unknown", "stop-fail", "disable-fail"):
-        completed, events = run_installer_with_stubs(scenario)
+        completed, events = run_installer_with_stubs(
+            scenario,
+            {"APPLY_SIGNAL_AUDIT_SERVICE_ACTIONS": "1"},
+        )
         assert_true(completed.returncode != 0,
                     "installer should fail closed for systemctl " + scenario)
         assert_true(not any(event.startswith("WRITE ") for event in events),
@@ -431,7 +505,9 @@ def main():
     assert_package_includes_release_assets()
     assert_package_rejects_unsafe_output_paths()
     assert_installer_preserves_runtime_cards_by_directory()
-    assert_installer_quiesces_units_before_writes()
+    assert_installer_default_does_not_touch_systemd()
+    assert_installer_requires_service_action_opt_in_for_enable_start()
+    assert_installer_opt_in_quiesces_units_before_writes()
     assert_installer_skips_not_found_units_before_writes()
     assert_installer_fail_closed_before_writes()
     assert_installer_layout_detection_remains_dual_mode()

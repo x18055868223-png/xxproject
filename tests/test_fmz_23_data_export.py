@@ -106,9 +106,12 @@ def sample_factor_snapshot(module, state=None):
 
 def sample_payload(module, label, factor_snapshot=None):
     factor_snapshot = factor_snapshot or sample_factor_snapshot(module)
+    payload_ms = module.now_ms()
     return {
         "label": label,
+        "source_available_at_ms": payload_ms,
         "decision": {
+            "ts_ms": payload_ms,
             "runtime_facts": {"current_price_observed_ms": 111},
             "trade_allowed": False,
             "factor_snapshot": factor_snapshot,
@@ -134,8 +137,8 @@ def test_manifest_config_and_permissions(module):
                 "gexmonitorapi should disclose optional bearer auth")
     validation = module.validate_data_source_manifest(module.CONFIG)
     assert_true(validation["ok"], "data source manifest should validate")
-    assert_true(module.CONFIG["demo_version"] == "2.0.1",
-                "FMZ artifact identity should be 2.0.1")
+    assert_true(module.CONFIG["demo_version"] == "2.0.2",
+                "FMZ artifact identity should be 2.0.2")
     assert_true(module.CONFIG["read_only_demo"] is True,
                 "read-only demo safety default should stay true")
     assert_true(module.CONFIG["llm_review_enabled"] is False,
@@ -169,6 +172,23 @@ def test_runtime_first_tick_cadence_transition_and_restart(module):
         rows = read_jsonl(path)
         assert_true(len(rows) == 1, "startup tick should force one snapshot")
         first = rows[0]
+        assert_true(first["decision"]["ts_ms"] <= first["source_available_at_ms"]
+                    <= first["ingested_at_ms"] <= first["snapshot_exported_ms"],
+                    "producer-local handoff/export clocks must be ordered")
+        provenance = first["clock_provenance"]
+        assert_true(provenance["not_remote_receiver_ingestion"] is True
+                    and provenance["not_filesystem_visibility_proof"] is True
+                    and provenance["not_market_source_ingestion"] is True,
+                    "producer clocks must not impersonate remote or market clocks")
+        current = first["current_snapshot_context"]
+        assert_true(current["observed_at_ms"] == first["decision"]["ts_ms"],
+                    "current context must bind this exact decision timestamp")
+        assert_true(current["session_context"] == dict(
+                    module.classify_signal_session_context(first["decision"]["ts_ms"], config),
+                    observed_at_ms=first["decision"]["ts_ms"]),
+                    "current session must use the existing deterministic classifier")
+        assert_true(current["temporal_durability"] == current["session_context"]["premise_durability"],
+                    "temporal context must use the current session")
         assert_true(first["schema_name"] == module.SCHEMA_EVALUATION_SNAPSHOT,
                     "snapshot ring should use native EvaluationSnapshot schema")
         assert_true(first["snapshot_export_trigger"] == "startup",
@@ -388,6 +408,26 @@ def test_diagnostic_decision_log_requires_explicit_switch(module):
                     "diagnostic file keeps native DecisionSnapshot schema")
 
 
+def test_missing_future_or_boolean_handoff_clock_preserves_old_ring(module):
+    with tempfile.TemporaryDirectory() as raw:
+        tmpdir = pathlib.Path(raw)
+        exporter = module.WorkbenchSnapshotExporter(base_config(module, tmpdir))
+        assert_true(exporter.maybe_write(sample_payload(module, "valid")),
+                    "valid clock should export")
+        before = (tmpdir / "snapshots.jsonl").read_bytes()
+        for invalid in (None, True, module.now_ms() + 60_000):
+            force_due(exporter)
+            # A failed attempt has retry backoff; exercise each independent
+            # invalid input without sleeping or relaxing production cadence.
+            exporter.last_attempt_ms = None
+            payload = sample_payload(module, "invalid")
+            payload["source_available_at_ms"] = invalid
+            assert_true(not exporter.maybe_write(payload),
+                        "invalid clock must fail closed")
+            assert_true((tmpdir / "snapshots.jsonl").read_bytes() == before,
+                        "invalid clock must preserve existing evidence bytes")
+
+
 def main():
     module = load_signal_module()
     test_manifest_config_and_permissions(module)
@@ -397,6 +437,7 @@ def main():
     test_non_finite_snapshot_payload_fails_closed(module)
     test_ring_limit_and_disabled_mode(module)
     test_diagnostic_decision_log_requires_explicit_switch(module)
+    test_missing_future_or_boolean_handoff_clock_preserves_old_ring(module)
     print("fmz_23_data_export: PASS")
 
 

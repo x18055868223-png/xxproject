@@ -1,14 +1,50 @@
 # Example nginx location blocks when the audit page is mounted below an
 # existing server as /signal-audit/.
 #
-# Put these blocks inside the existing `server { ... }` block.
+# Put these blocks inside the existing private `server { ... }` block that
+# already provides TLS and the site's access control. These routes are not a
+# standalone public authentication system. Configure
+# ASTRA_WORKBENCH_PUBLIC_ORIGIN explicitly on the backend for the public origin;
+# do not rely on forwarded headers for authorization decisions.
 
 location = /signal-audit {
     return 301 /signal-audit/;
 }
 
 location = /api/workbench {
+    limit_except GET { deny all; }
     proxy_pass http://127.0.0.1:8895/api/workbench;
+    proxy_set_header Host $host;
+    add_header Cache-Control "no-store";
+}
+
+location = /api/workbench/session {
+    if ($scheme != https) { return 403; }
+    client_max_body_size 8k;
+    proxy_pass http://127.0.0.1:8895/api/workbench/session;
+    proxy_set_header Host $host;
+    add_header Cache-Control "no-store";
+}
+
+location = /api/workbench/locked-candidates {
+    if ($scheme != https) { return 403; }
+    client_max_body_size 8k;
+    proxy_pass http://127.0.0.1:8895/api/workbench/locked-candidates;
+    proxy_set_header Host $host;
+    add_header Cache-Control "no-store";
+}
+
+location ^~ /api/workbench/locked-candidates/ {
+    if ($scheme != https) { return 403; }
+    client_max_body_size 8k;
+    proxy_pass http://127.0.0.1:8895;
+    proxy_set_header Host $host;
+    add_header Cache-Control "no-store";
+}
+
+location ^~ /api/workbench/candidate-evidence/ {
+    limit_except GET { deny all; }
+    proxy_pass http://127.0.0.1:8895;
     proxy_set_header Host $host;
     add_header Cache-Control "no-store";
 }
@@ -24,6 +60,20 @@ location = /api/workbench/review {
 location = /api/workbench/review-state {
     limit_except GET { deny all; }
     proxy_pass http://127.0.0.1:8895/api/workbench/review-state;
+    proxy_set_header Host $host;
+    add_header Cache-Control "no-store";
+}
+
+location ^~ /api/workbench/wpem-evidence/ {
+    limit_except GET { deny all; }
+    proxy_pass http://127.0.0.1:8895;
+    proxy_set_header Host $host;
+    add_header Cache-Control "no-store";
+}
+
+location ^~ /api/workbench/wpem-proof/ {
+    if ($scheme != https) { return 403; }
+    proxy_pass http://127.0.0.1:8895;
     proxy_set_header Host $host;
     add_header Cache-Control "no-store";
 }

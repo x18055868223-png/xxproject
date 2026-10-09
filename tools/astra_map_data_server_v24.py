@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -154,11 +155,12 @@ def collect(config: dict, *, now_ms: int | None = None, transport=None) -> dict:
                       "price_usd": price_values.get("price_usd"), "price_basis": price_values.get("price_basis"),
                       "source_product": INDEX, "source_record_id": price_record.get("record_id"),
                       "observed_at_ms": price_record.get("time", {}).get("observation_end_ms")}
-    mapping = projection.build_projection(engine, now_ms=now, fmz_fact=fmz, source_records=records,
-                                           config=read_cfg, prior_state=previous.get("projection_state"), current_market=current_market)
     producer_records = data_projection.fmz_records(engine, fmz, now)
-    all_records = records + producer_records
-    frozen = engine.freeze(all_records, cutoff_at_ms=now)
+    projection_records = records + producer_records
+    mapping = projection.build_projection(engine, now_ms=now, fmz_fact=fmz, source_records=projection_records,
+                                           config=read_cfg, prior_state=previous.get("projection_state"), current_market=current_market)
+    all_records = mapping["source_records"]
+    frozen = deepcopy(mapping["btc_map"]["source_manifest"])
     view = {"schema": SCHEMA, "generated_at_ms": now, "next_slow_group": (tick + 1) % len(SLOW),
             "collected_products": selected, "fmz": {key: fmz.get(key) for key in
                 ("status", "strategy_version", "snapshot_ts_ms", "source_hash", "gap_reasons")},

@@ -1,7 +1,10 @@
+import hashlib
 import json
 import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,16 +31,24 @@ def function_body(app: str, name: str) -> str:
 
 def test_map_version_and_dom_order():
     index = read_text("index.html")
+    app = read_text("app.js")
     version = json.loads(read_text("VERSION.json"))
-    assert_true(version["frontend_cache_token"] == "20260928-round5-repairs-v249-local",
-                "the current local revision should own a fresh cache token")
-    assert_true(f'app.js?v={version["frontend_cache_token"]}"' in index,
+    app_hash = hashlib.sha256((FRONTEND / "app.js").read_bytes()).hexdigest()[:8]
+    cache_token = version["frontend_cache_token"]
+    assert_true(f'app.js?v={cache_token}"' in index,
                 "index should use the declared local cache token")
+    assert_true(app_hash in cache_token, "cache token must contain the hash of the current app.js")
     assert_true("btc_map@1" in version["btc_map_contract"],
                 "VERSION should document the frontend btc_map@1 read contract")
-    order = [index.index(f'id="{item}"') for item in ("currentConclusion", "candidateArea", "manualReviewState", "btcMap", "marketContext", "spaceGate")]
-    assert_true(order == sorted(order), "candidates and two-question review should precede MAP and full source details")
-    assert_true("BTC MAP：背景、价格轴与保单责任" in index,
+    positions = {item: index.index(f'id="{item}"') for item in ("candidateArea", "btcMap", "marketContext", "spaceGate", "currentConclusion", "manualReviewState")}
+    assert_true(positions["candidateArea"] < positions["btcMap"] < positions["marketContext"] < positions["spaceGate"],
+                "candidate Q1/Q2 should lead before the folded research library")
+    assert_true(positions["spaceGate"] < positions["currentConclusion"] < positions["manualReviewState"],
+                "global status and review records should follow the research library")
+    candidate_body = function_body(app, "renderCandidateWpemPanel")
+    assert_true("renderTwoQuestions(review, { primaryOnly: true })" in candidate_body and "renderConsumerResearch(candidate)" in candidate_body,
+                "candidate panel should keep Q1/Q2 before folded research layers")
+    assert_true("市场地图：价格位置与保单责任" in index,
                 "MAP section should have a visible human heading")
 
 
@@ -103,7 +114,9 @@ def test_map_metrics_and_macro_health_labels_are_human_readable():
         assert_true(text in app, f"MAP metric display should be Chinese and unit-aware: {text}")
     for raw_skip in ("request_audit", "source_ref", "source_record_ids", "payload_hash"):
         assert_true(raw_skip in app, "raw fields may appear only in the skip list")
-    assert_true("来源记录" not in app, "main MAP metrics should not render raw source-record labels")
+    metric_body = function_body(app, "mapMetricRows")
+    assert_true('"source_record_ids"' in metric_body and '"source_ref"' in metric_body,
+                "main MAP metric rows should skip raw source-record fields")
     for raw_identity in ("FIXTURE ·", "REPLAY ·", "CURRENT ·"):
         assert_true(raw_identity not in app, f"main MAP identity should not expose machine prefix: {raw_identity}")
     for text in ("合成演示", "冻结回放", "当前资料", "示例现价", "冻结现价", "当前现价", "current_price_fact"):
@@ -212,8 +225,9 @@ def test_map_escapes_visible_content_and_hides_raw_source_ids():
     for raw_visible in ("source_record_ids", "payload_hash", "source_manifest_ref", "map_id"):
         assert_true(raw_visible not in read_text("index.html"),
                     f"index visible text should not expose raw MAP metadata: {raw_visible}")
-    assert_true("来源记录" not in app,
-                "main MAP view should not print raw source record ids")
+    metric_body = function_body(app, "mapMetricRows")
+    assert_true('"source_record_ids"' in metric_body,
+                "main MAP view should keep raw source record ids out of metric rows")
 
 
 def test_map_frontend_syntax_when_node_is_available():

@@ -1,0 +1,418 @@
+{
+  "schema": "release_candidate_manifest@1.0.0",
+  "release_id": "OBSERVATION-2.6.3-22c18ce92bee",
+  "status": "CANONICAL_SOURCE_VERSION_GRAPH",
+  "generated_at_utc": "2026-10-08T14:57:11.274000+00:00",
+  "authority": "xxproject",
+  "git_branch": "codex/astra-signal-rating-v1",
+  "git_head": "950631e0aff8f27179b3b2601776b823a793eaa4",
+  "local_uncommitted_candidate": true,
+  "runtime_status": "LOCAL_CANDIDATE",
+  "loaded_source_hash_status": "NOT_VERIFIED_NONBLOCKING_VERSION_CHECK_ONLY",
+  "account_bindings_source": "USER_CONFIRMED",
+  "account_bindings": [
+    "Binance spot",
+    "Binance futures",
+    "Deribit options"
+  ],
+  "native_feed_status": "NATIVE_CAPTURE_OBSERVED",
+  "risk_reference_status": "REFERENCE_BLOCKED",
+  "llm_protocol": "evidence_points@2.6.4",
+  "llm_model": "deepseek-flash",
+  "llm_provider": "deepseek",
+  "response_alias_last_verified": "deepseek-flash",
+  "manual_trigger_only": true,
+  "cooldown_ms": 600000,
+  "cooldown_is_review_validity": false,
+  "financial_gate_changed": false,
+  "automatic_llm_timer_modified": false,
+  "production_release_approval": false,
+  "components": [
+    {
+      "component": "fmz_producer",
+      "candidate_version": "2.0.2",
+      "source_of_truth": "demo/最新交付物/neutral_regulation_demo_fmz.py",
+      "source_hash": "87632e850d4bf8ccd75bab61bec92d54c0ab5e6c20751e36c4f73d4ebd2c7ab9",
+      "schema_or_protocol": "2.0.2",
+      "lifecycle": "canonical",
+      "runtime_status": "USER_DEPLOYED_NATIVE_OBSERVED",
+      "production_status": "USER_DEPLOYED_NATIVE_OBSERVED"
+    },
+    {
+      "component": "fmz_native_schema",
+      "candidate_version": "nrd.schema.v1.0.0",
+      "source_of_truth": "demo/最新交付物/neutral_regulation_demo_fmz.py",
+      "source_hash": "87632e850d4bf8ccd75bab61bec92d54c0ab5e6c20751e36c4f73d4ebd2c7ab9",
+      "schema_or_protocol": "nrd.schema.v1.0.0",
+      "lifecycle": "canonical",
+      "runtime_status": "NATIVE_OBSERVED",
+      "production_status": "NATIVE_OBSERVED"
+    },
+    {
+      "component": "data_engine",
+      "candidate_version": "astra_data_engine@2.3.0",
+      "source_of_truth": "tools/astra_data_engine_v23.py",
+      "source_hash": "7422e0f296ef9b35dcf148848192372ec1c4588a52fcf5a588a20ce760d35aac",
+      "schema_or_protocol": "astra_data_engine@2.3.0",
+      "lifecycle": "canonical",
+      "runtime_status": "DEPLOYED_SEPARATE_DATA_SERVICE",
+      "production_status": "DEPLOYED_SEPARATE_DATA_SERVICE"
+    },
+    {
+      "component": "candidate_discovery",
+      "candidate_version": "astra_underwriting_discovery@2.0.0",
+      "source_of_truth": "tools/astra_underwriting_discovery_v20.py",
+      "source_hash": "76dbe8491c8dd3d43c9780b944dbeaa5b11692a6605b9c11312496fa0e28bc48",
+      "schema_or_protocol": "astra_underwriting_discovery@2.0.0",
+      "lifecycle": "canonical",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "deterministic_accounting",
+      "candidate_version": "astra_underwriting_snapshot@2.0.0",
+      "source_of_truth": "tools/astra_underwriting_v20.py",
+      "source_hash": "179f2f17621c66a6fd9436de72b11cfd8c3040d040a9649959db40c8592bea85",
+      "schema_or_protocol": "astra_underwriting_snapshot@2.0.0",
+      "lifecycle": "canonical",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "financial_math",
+      "candidate_version": "v1.7",
+      "source_of_truth": "tools/astra_commercial_math_v17.py",
+      "source_hash": "ef33d35d3dad9c1539322da3a7318d0b5476fe0734a069acd324f75353bbf647",
+      "schema_or_protocol": "v1.7",
+      "lifecycle": "canonical",
+      "runtime_status": "UNCHANGED_FINANCIAL_RULES",
+      "production_status": "UNCHANGED_FINANCIAL_RULES"
+    },
+    {
+      "component": "candidate_ledger",
+      "candidate_version": "astra_underwriting_store_event@2.0.0",
+      "source_of_truth": "tools/astra_underwriting_store_v20.py",
+      "source_hash": "06ff05675c04d4267bc62b8382e3f7133075d85507fcd446cdf35871c53a6d20",
+      "schema_or_protocol": "astra_underwriting_store_event@2.0.0",
+      "lifecycle": "canonical",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "candidate_archive",
+      "candidate_version": "astra_candidate_asof_packet@1.0.0",
+      "source_of_truth": "tools/astra_candidate_asof_v1.py",
+      "source_hash": "d2a1211326b70ff229bd351cfd344b05d6a7f0aa26d410e4822d3e8e0b40de4e",
+      "schema_or_protocol": "astra_candidate_asof_packet@1.0.0",
+      "lifecycle": "canonical",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "wpem_native_qualification",
+      "candidate_version": "wpem_native_qualification@1.1.0-shadow",
+      "source_of_truth": "tools/astra_wpem_native_v1.py",
+      "source_hash": "a420cd9229886e8499efb031acc5ddff2521993f0b73bff41e4a332980c17d00",
+      "schema_or_protocol": "wpem_native_qualification@1.1.0-shadow",
+      "lifecycle": "shadow_evidence_dependency",
+      "runtime_status": "PRESERVED_NOT_PROMOTED",
+      "production_status": "PRESERVED_NOT_PROMOTED"
+    },
+    {
+      "component": "wpem_window_projection",
+      "candidate_version": "wpem_shadow_projection@1.0.0",
+      "source_of_truth": "tools/astra_wpem_shadow_v1.py",
+      "source_hash": "d0ca4653c934b5b7770674d6728427803f6a4d6e2c8f141fd161aff52b98389d",
+      "schema_or_protocol": "wpem_shadow_projection@1.0.0",
+      "lifecycle": "shadow_evidence_dependency",
+      "runtime_status": "PRESERVED_NOT_PROMOTED",
+      "production_status": "PRESERVED_NOT_PROMOTED"
+    },
+    {
+      "component": "wpem_product_evidence",
+      "candidate_version": "wpem_review_evidence@1.1.0",
+      "source_of_truth": "tools/astra_wpem_review_evidence_v1.py",
+      "source_hash": "7e3a99d587846ee7ef0e51cce24c5282941ec7df59d250fabf60aab20d56e687",
+      "schema_or_protocol": "wpem_review_evidence@1.1.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "wpem_product_protocol",
+      "candidate_version": "review_input@2.6.9 / evidence_points@2.6.4",
+      "source_of_truth": "tools/astra_wpem_product_review_v1.py",
+      "source_hash": "27dabbc6d8903324390816e7fbc6003bbee87f3997c6409a47964936a335a3f8",
+      "schema_or_protocol": "review_input@2.6.9 / evidence_points@2.6.4",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "legacy_product_protocol",
+      "candidate_version": "bounded_claim_ids@2.4.7 with versioned WPEM dispatch",
+      "source_of_truth": "tools/astra_underwriting_review_v20.py",
+      "source_hash": "aea92d6dce58b7a0119be572d1c5b9922b2f9c95ea3fb02ae85e56888f58afae",
+      "schema_or_protocol": "bounded_claim_ids@2.4.7",
+      "lifecycle": "backward_compatibility",
+      "runtime_status": "PRESERVED_DEFAULT_LEGACY_ENTRY",
+      "production_status": "PRESERVED_DEFAULT_LEGACY_ENTRY"
+    },
+    {
+      "component": "risk_qualification",
+      "candidate_version": "astra_risk_consumption_diagnosis@2.4.4",
+      "source_of_truth": "tools/astra_risk_qualification_v244.py",
+      "source_hash": "baee9d7559b1267ea4d13580d4383010f7264529defebed0825b9c8127c081bb",
+      "schema_or_protocol": "astra_risk_consumption_diagnosis@2.4.4",
+      "lifecycle": "canonical",
+      "runtime_status": "REFERENCE_BLOCKED",
+      "production_status": "REFERENCE_BLOCKED"
+    },
+    {
+      "component": "risk_reference_adapter",
+      "candidate_version": "wpem_reference_qualification@1.0.0-shadow",
+      "source_of_truth": "tools/astra_wpem_reference_v1.py",
+      "source_hash": "58d0686891bb1ac582d60bacb84b926693f6cc0f7b1f02e264553a9c729fc8f1",
+      "schema_or_protocol": "wpem_reference_qualification@1.0.0-shadow",
+      "lifecycle": "shadow",
+      "runtime_status": "REFERENCE_BLOCKED_NO_TRAINING",
+      "production_status": "REFERENCE_BLOCKED_NO_TRAINING"
+    },
+    {
+      "component": "llm_transport",
+      "candidate_version": "existing_DeepSeek_transport",
+      "source_of_truth": "tools/signal_llm_review.py",
+      "source_hash": "8043a7c15686c540c8f95ef5471baad659b0fa76dc3ceb6868881f6184a8a2b7",
+      "schema_or_protocol": "existing_DeepSeek_transport",
+      "lifecycle": "canonical",
+      "runtime_status": "EXISTING_RUNTIME_UNCHANGED",
+      "production_status": "EXISTING_RUNTIME_UNCHANGED"
+    },
+    {
+      "component": "workbench_api",
+      "candidate_version": "astra_workbench@2.0.0",
+      "source_of_truth": "tools/astra_workbench_v20.py",
+      "source_hash": "96997a6fdd961b1a092e1526bb3327fdbb8a68fcfc0e7a7dcf7d4a7fd1906a52",
+      "schema_or_protocol": "astra_workbench@2.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_WPEM_PROFILE_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "workbench_wpem_adapter",
+      "candidate_version": "wpem_workbench_adapter@1.0.0",
+      "source_of_truth": "tools/astra_wpem_workbench_v1.py",
+      "source_hash": "3e2fbcf0efa68e10f297b28a58ebed15fd4472786f21fc01db04bd7ee1e556f6",
+      "schema_or_protocol": "wpem_workbench_adapter@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "map_source_consumer",
+      "candidate_version": "astra_map_projection@2.4.0",
+      "source_of_truth": "tools/astra_map_projection_v24.py",
+      "source_hash": "cce42c376d40bf4bd18e794b7130088e3d94c31c9e3b0ec3c0f235c389d3740a",
+      "schema_or_protocol": "astra_map_projection@2.4.0",
+      "lifecycle": "canonical",
+      "runtime_status": "PRODUCER_MANIFEST_DIAGNOSIS_RETAINED",
+      "production_status": "PRODUCER_MANIFEST_DIAGNOSIS_RETAINED"
+    },
+    {
+      "component": "map_source_producer",
+      "candidate_version": "astra_map_data_server@2.4.2",
+      "source_of_truth": "tools/astra_map_data_server_v24.py",
+      "source_hash": "501251ae63f4c5cea6f138c62d2ab6e1810a9496b0239aa77522d3c2077590f0",
+      "schema_or_protocol": "astra_map_data_server@2.4.2",
+      "lifecycle": "canonical",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "native_receiver",
+      "candidate_version": "accepts_FMZ_2.0.2",
+      "source_of_truth": "tools/astra_underwriting_fact_context_v20.py",
+      "source_hash": "79a5f9442697de7126f9b13a4e02fa5efa7c73d98f7280ffaaa24e97bd0debf7",
+      "schema_or_protocol": "accepts_FMZ_2.0.2",
+      "lifecycle": "canonical",
+      "runtime_status": "REMOTE_TWO_READERS_COMPAT_PATCH_APPLIED",
+      "production_status": "REMOTE_TWO_READERS_COMPAT_PATCH_APPLIED"
+    },
+    {
+      "component": "result_attachment",
+      "candidate_version": "wpem_result_attachment@1.0.0",
+      "source_of_truth": "tools/astra_wpem_results_v1.py",
+      "source_hash": "3829e3ba0e5fa2191fb716231dea3ce682688cf7648bbedcbe3329ab5b1dd17e",
+      "schema_or_protocol": "wpem_result_attachment@1.0.0",
+      "lifecycle": "historical_evidence_only",
+      "runtime_status": "PRESERVED",
+      "production_status": "PRESERVED"
+    },
+    {
+      "component": "frontend",
+      "candidate_version": "v2.6.3-observation-rc-local-not-deployed",
+      "source_of_truth": "deploy/signal_audit/frontend/app.js",
+      "source_hash": "22c18ce92bee47aab2caf2896b1c6bf44030156c03c55093236cc46ab5699148",
+      "schema_or_protocol": "v2.5.0-wpem-rc1",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "frontend_identity",
+      "candidate_version": "v2.6.3-observation-rc-local-not-deployed",
+      "source_of_truth": "deploy/signal_audit/frontend/VERSION.json",
+      "source_hash": "005fef8c62f5e280057c65c037ebc57d55b986d3ac2cb40127960de98ae84a4f",
+      "schema_or_protocol": "v2.5.0-wpem-rc1",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "release_identity_reader",
+      "candidate_version": "release_candidate_manifest@1.0.0",
+      "source_of_truth": "tools/astra_release_identity_v1.py",
+      "source_hash": "e62a3c8dc0225710fb6d3574019796ab9c0f63cb237142aad14833f8b4fc0b30",
+      "schema_or_protocol": "release_candidate_manifest@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "frontend_document",
+      "candidate_version": "v2.6.3-observation-rc-local-not-deployed",
+      "source_of_truth": "deploy/signal_audit/frontend/index.html",
+      "source_hash": "0ad4749898ce723075aecc5f1c519f1d2f9f42ac75f26b4b0968abc168433dfa",
+      "schema_or_protocol": "existing_reader_layout",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "evidence_routing",
+      "candidate_version": "evidence_routing@1.0.0",
+      "source_of_truth": "tools/astra_evidence_routing_v1.py",
+      "source_hash": "acbae92b1ecfd440a305a4f47ea1a8019d17cdc81352fa5737c8feec85271531",
+      "schema_or_protocol": "evidence_routing@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
+    },
+    {
+      "component": "locked_candidate_store",
+      "source_of_truth": "tools/astra_locked_candidate_store_v1.py",
+      "candidate_version": "astra_locked_candidate_store@1.0.0",
+      "schema_or_protocol": "astra_locked_candidate_store@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED",
+      "source_hash": "082c8497c16f73c4f639b42e0752bce7d69caa77b0821349df1502c18d265f69"
+    },
+    {
+      "component": "locked_candidate_comparison",
+      "source_of_truth": "tools/astra_locked_candidate_compare_v1.py",
+      "candidate_version": "locked_candidate_followup@1.0.0",
+      "schema_or_protocol": "locked_candidate_followup@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED",
+      "source_hash": "023f6cbe7c12495f9bd084931a822d974946114c3bfb863f084adb8edb95e6e7"
+    },
+    {
+      "component": "public_observation_scrub",
+      "source_of_truth": "tools/astra_observation_replay_v1.py",
+      "candidate_version": "astra_observation_lineage_replay@1.0.0",
+      "schema_or_protocol": "astra_observation_lineage_replay@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED",
+      "source_hash": "4451610a5f7e2253e63e9a4b00018c8467b15a910c8a0b455781d3a9aebbaf60"
+    },
+    {
+      "component": "workbench_session",
+      "source_of_truth": "tools/astra_workbench_session_v1.py",
+      "candidate_version": "astra_workbench_session@1.0.0",
+      "schema_or_protocol": "astra_workbench_session@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED",
+      "source_hash": "3b78f152ec13409779c4d298934c752ef9c0f2ae0f29d481e1f067a3cae8854b"
+    },
+    {
+      "component": "workbench_reading",
+      "source_of_truth": "tools/astra_workbench_reading_v1.py",
+      "candidate_version": "workbench_reading@1.0.0",
+      "schema_or_protocol": "workbench_reading@1.0.0",
+      "lifecycle": "canonical_candidate",
+      "runtime_status": "LOCAL_NOT_DEPLOYED",
+      "production_status": "NOT_NEWLY_DEPLOYED",
+      "source_hash": "ccb651dd2145c57fe03e4670954dcb5cf3d72b6eb0f73f49c68c6860bbe553df"
+    }
+  ],
+  "phase_receipts_directory": "local_evidence_not_distributed",
+  "historical_authority_preserved": [
+    "R17",
+    "Round1",
+    "Round2",
+    "Round3",
+    "Round4",
+    "P0-trace01",
+    "P0-trace02",
+    "P0-trace03"
+  ],
+  "full_candidate_chain": "RESEARCH_ONLY",
+  "native_window_status": "INSUFFICIENT_WINDOW",
+  "native_candidate_e2e_production_qualified": false,
+  "active_production_risk_asset": null,
+  "risk_asset_activation_allowed": false,
+  "user_review_complete": false,
+  "production_changes_scope": "NONE_LOCAL_OBSERVATION_RC_ONLY",
+  "prior_manifest_sha256": "caebcd02d84346ccf54a2e32114858c7ca929d611fa400f4675aad2107d797c3",
+  "wpem_evidence_schema": "wpem_review_evidence@1.1.0",
+  "review_input_schema": "review_input@2.6.9",
+  "historical_llm_canary": {
+    "release_id": "WPEM-RC-20261005-01",
+    "status": "PASSED_RESEARCH_ONLY",
+    "http_calls": 1,
+    "does_not_prove_current_revision": true
+  },
+  "consumer_fix_scope": [
+    "private_session_reuse",
+    "bounded_compressed_inputs",
+    "thin_reading_and_exact_lazy_evidence",
+    "episode_failure_isolation",
+    "bounded_baseline_delta_storage",
+    "clean_official_package"
+  ],
+  "deferred_scope": [
+    "See docs/astra/DATA_SHORTEST_PATH_OBSERVATION_RECEIPT_20261006.md"
+  ],
+  "source_version_graph_sha256": "33b1a1d4dbd1188593e5793043ebfc65e0d63592b8d37d2b2dddd152ee013f13",
+  "prompt_contract": "evidence_synthesis_prompt@2.1-candidate",
+  "provider_config_version": "wpem_json_delivery@1.0.1",
+  "provider_config": {
+    "model": "deepseek-flash",
+    "endpoint": "https://api.deepseek.com",
+    "api": "chat/completions",
+    "stream": false,
+    "response_format": {
+      "type": "json_object"
+    },
+    "thinking": {
+      "type": "enabled"
+    },
+    "max_tokens_research": 32768,
+    "strict_native_schema_verified": false,
+    "reasoning_effort": "max",
+    "timeout_s": 300
+  },
+  "acceptance_receipt": "docs/astra/OBSERVATION_RELEASE_RC_RECEIPT_20261008.md",
+  "known_limitations": [
+    "risk_reference_BLOCKED_mu_M_null",
+    "window_scope_limited_by_actual_history",
+    "frozen_fixture_is_not_current_market",
+    "local_page_has_no_provider_credentials",
+    "production_deployment_pending_user_approval",
+    "economic_alpha_unproven"
+  ]
+}

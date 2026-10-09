@@ -374,22 +374,62 @@ def _validate_same_snapshot_review(snapshot: Mapping[str, Any], review: Mapping[
                 "selected_gap_ids", "selected_reassess_condition_ids", "supports",
                 "counters", "q1", "q2", "gaps_cn", "reassess_if_cn", "summary_cn",
                 "deterministic_financials", "http_calls"}
+    wpem_evidence = None
+    review_input = None
+    if review.get("response_protocol") in {"bounded_claim_ids@2.5.0", "bounded_claim_ids@2.6.2", "evidence_points@2.6.4"}:
+        expected.update({"wpem_evidence", "review_validity"})
+        if review.get("response_protocol") in {"bounded_claim_ids@2.6.2", "evidence_points@2.6.4"}:
+            expected.add("llm_explanation")
+        if review.get("response_protocol") == "evidence_points@2.6.4":
+            expected.update({"decision_trace", "selection_origin"})
+        wpem_evidence = review.get("wpem_evidence")
+        if not isinstance(wpem_evidence, Mapping):
+            raise ValueError("WPEM review requires its frozen evidence")
+        if __package__:
+            from . import astra_wpem_product_review_v1 as product
+        else:
+            import astra_wpem_product_review_v1 as product
+        validity = review.get("review_validity") or {}
+        # Replay the recorded contract, never silently upgrade a historical input.
+        review_input = product._rebuilt_review_input_for_schema(
+            snapshot, wpem_evidence, research_only=False,
+            model=validity.get("model"), schema=validity.get("review_input_version"))
     if set(review) != expected or review.get("schema") != review_core.SCHEMA or review.get("status") != "OK":
         raise ValueError("only a complete v2 causal review may be attached")
     if (snapshot["data_identity"]["kind"] in {"historical_replay", "synthetic_fixture"}
             or snapshot["market"]["reference_source"] == "synthetic_fixture"):
         raise ValueError("synthetic or historical snapshot cannot receive a live review")
+    allowed_http_calls = {1} if review.get("response_protocol") == "evidence_points@2.6.4" else {1, 2}
     if (review.get("candidate_id") != snapshot["candidate_id"]
             or review.get("packet_hash") != core._hash(core.llm_applicability_packet(snapshot))
             or type(review.get("http_calls")) is not int
-            or review["http_calls"] not in {1, 2}):
+            or review["http_calls"] not in allowed_http_calls):
         raise ValueError("review packet or candidate identity does not match the frozen snapshot")
     payload = {key: review[key] for key in (
         "response_protocol", "reviewed_snapshot_id", "projection_hash",
         "claim_catalog_hash", "applicability", "selected_claim_ids",
         "selected_counter_ids", "selected_gap_ids",
         "selected_reassess_condition_ids")}
-    normalized = review_core.validate_wire_response(snapshot, payload)
+    if review.get("response_protocol") == "bounded_claim_ids@2.6.2":
+        explanation = review.get("llm_explanation") if isinstance(review.get("llm_explanation"), Mapping) else {}
+        payload["explanation"] = {
+            key: {
+                "text_cn": (explanation.get(key) or {}).get("text_cn"),
+                "evidence_refs": (explanation.get(key) or {}).get("evidence_refs"),
+            }
+            for key in ("q1", "q2")
+        }
+    elif review.get("response_protocol") == "evidence_points@2.6.4":
+        explanation = review.get("llm_explanation") or {}
+        payload = {"response_protocol": review["response_protocol"]}
+        for key in ("q1", "q2"):
+            payload[key] = [
+                {"text_cn": point.get("text_cn"), "evidence_refs": point.get("evidence_refs")}
+                for point in (explanation.get(key) or {}).get("points", [])
+                if isinstance(point, Mapping)
+            ]
+    normalized = review_core.validate_wire_response(snapshot, payload, review_input=review_input,
+                                                    wpem_evidence=wpem_evidence)
     for key in expected - {"http_calls"}:
         if review.get(key) != normalized.get(key):
             raise ValueError("review normalized fields do not match the bounded catalog")

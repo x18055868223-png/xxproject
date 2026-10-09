@@ -1,0 +1,40 @@
+# Apache workbench API proxy for an existing private TLS vhost.
+#
+# Include this only inside a vhost that already enforces the operator's private
+# access boundary. It does not create users, passwords, or a public login flow.
+# The backend must remain loopback-only.
+# Configure ASTRA_WORKBENCH_PUBLIC_ORIGIN explicitly on the backend; forwarded
+# headers are not an authorization source.
+
+ProxyPreserveHost On
+RequestHeader set X-Forwarded-Proto "https"
+
+ProxyPass "/api/workbench/session" "http://127.0.0.1:8895/api/workbench/session"
+ProxyPassReverse "/api/workbench/session" "http://127.0.0.1:8895/api/workbench/session"
+
+ProxyPass "/api/workbench/locked-candidates" "http://127.0.0.1:8895/api/workbench/locked-candidates"
+ProxyPassReverse "/api/workbench/locked-candidates" "http://127.0.0.1:8895/api/workbench/locked-candidates"
+
+ProxyPass "/api/workbench/candidate-evidence/" "http://127.0.0.1:8895/api/workbench/candidate-evidence/"
+ProxyPassReverse "/api/workbench/candidate-evidence/" "http://127.0.0.1:8895/api/workbench/candidate-evidence/"
+
+ProxyPass "/api/workbench/wpem-evidence/" "http://127.0.0.1:8895/api/workbench/wpem-evidence/"
+ProxyPassReverse "/api/workbench/wpem-evidence/" "http://127.0.0.1:8895/api/workbench/wpem-evidence/"
+
+ProxyPass "/api/workbench/wpem-proof/" "http://127.0.0.1:8895/api/workbench/wpem-proof/"
+ProxyPassReverse "/api/workbench/wpem-proof/" "http://127.0.0.1:8895/api/workbench/wpem-proof/"
+
+ProxyPass "/api/workbench/review-state" "http://127.0.0.1:8895/api/workbench/review-state"
+ProxyPassReverse "/api/workbench/review-state" "http://127.0.0.1:8895/api/workbench/review-state"
+
+ProxyPass "/api/workbench/review" "http://127.0.0.1:8895/api/workbench/review"
+ProxyPassReverse "/api/workbench/review" "http://127.0.0.1:8895/api/workbench/review"
+
+ProxyPass "/api/workbench" "http://127.0.0.1:8895/api/workbench"
+ProxyPassReverse "/api/workbench" "http://127.0.0.1:8895/api/workbench"
+
+<LocationMatch "^/api/workbench(/.*)?$">
+    AuthMerging And
+    Require expr %{HTTPS} == "on"
+    Header set Cache-Control "no-store"
+</LocationMatch>

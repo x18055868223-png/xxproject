@@ -68,7 +68,8 @@ def test_space_gate_producer_native_and_fail_closed_language():
     assert_true("current data time" in read_text("VERSION.json"), "VERSION should record current-data time requirement")
     for token in ("Anchor", "NetGamma", "state start time", "blocking reasons"):
         assert_true(token in read_text("VERSION.json"), f"VERSION should document {token} in the SpaceGate view")
-    assert_true("Anchor Valid 且分数不低于 60" in index, "index should freeze the Anchor 60 gate wording")
+    assert_true("门槛 60" in app and "Anchor 评分低于 60" in app,
+                "SpaceGate view should keep the Anchor 60 gate wording in the live renderer")
 
 
 def test_audit_module_follows_main_workbench():
@@ -77,26 +78,28 @@ def test_audit_module_follows_main_workbench():
     layout_css = index.split(".layout {", 1)[1].split("}", 1)[0]
     assert_true("display: block;" in layout_css and "grid-template-columns" not in layout_css,
                 "workbench should occupy a single full-width column")
-    for obsolete in ("side-stack", 'aria-label="快照与历史侧栏"', "position: sticky", "height: 100vh"):
+    for obsolete in ("side-stack", 'aria-label="快照与历史侧栏"', "height: 100vh"):
         assert_true(obsolete not in index, f"obsolete sidebar rule should be removed: {obsolete}")
+    assert_true(".candidate-header {" in index and ".historical-reading-context {" in index,
+                "long policy reading should retain its current or historical identity context")
     assert_true("@media (max-width: 860px)" in index, "narrow-screen layout should have an explicit breakpoint")
     mobile_css = index.split("@media (max-width: 860px)", 1)[1]
     assert_true(".audit-grid," in mobile_css and ".audit-history .history-list" in mobile_css,
                 "audit cards and history should have a mobile stacking rule")
-    assert_true('href="#conclusionTitle">跳到工作台内容' in index,
+    assert_true('href="#candidatesTitle">跳到工作台内容' in index,
                 "keyboard skip link should lead to the first workbench section")
-    ids = ("currentConclusion", "candidateArea", "manualReviewState", "btcMap", "marketContext", "spaceGate",
-           "auditModule", "dailySnapshots", "transitions", "gapArea", "historyArea")
+    ids = ("candidateArea", "btcMap", "marketContext", "spaceGate", "currentConclusion", "manualReviewState",
+           "dataHealth", "dailySnapshots", "transitions", "gapArea", "historyArea")
     positions = [index.index(f'id="{name}"') for name in ids]
-    assert_true(positions == sorted(positions), "all audit records should follow the primary workbench")
+    assert_true(positions == sorted(positions), "candidate, research, and global audit areas should keep the new reading order")
     for name in ids + ("historySearch", "reloadHistoryButton"):
         assert_true(index.count(f'id="{name}"') == 1, f"data and interaction ID must remain unique: {name}")
-    assert_true('<h2 id="auditTitle">审计记录</h2>' in index,
-                "audit module should have a clear second-level heading")
+    assert_true('id="auditLibrary"' in index and 'id="auditLibraryTitle"' in index,
+                "global audit records should live in the audit library disclosure")
     for title in ("snapshotTitle", "transitionTitle", "gapsTitle", "historyTitle"):
         assert_true(f'<h3 id="{title}">' in index, "audit subsections should use third-level headings")
-    assert_true("Audit records follow the main workbench" in version,
-                "VERSION should document the audit module below the workbench")
+    assert_true("one research entry and one audit/replay entry" in version,
+                "VERSION should document the candidate research and audit entry contract")
 
 
 def test_market_context_skeleton_is_non_llm_and_gap_explicit():
@@ -138,13 +141,21 @@ def test_manual_review_button_is_backend_gated_and_token_is_memory_only():
     assert_true("if (!previewMode) headers.Authorization = `Bearer ${inMemoryToken}`" in app,
                 "loopback synthetic preview should be the only tokenless POST path")
     assert_true("let inMemoryToken = \"\";" in app, "service token should be memory-only")
-    assert_true("localStorage" not in app and "sessionStorage" not in app, "service token must not be persisted in browser storage")
+    assert_true("localStorage" not in app, "service token must not be persisted in localStorage")
+    assert_true('const DISCLOSURE_STORAGE_KEY = "astra-v261-disclosures";' in app,
+                "sessionStorage should be limited to page disclosure state")
+    assert_true("DISCLOSURE_STORAGE_FORBIDDEN" in app and "authorization" in app and "token" in app,
+                "disclosure persistence must filter auth/token-like keys")
+    for line in app.splitlines():
+        if "sessionStorage" in line or "setItem(DISCLOSURE_STORAGE_KEY" in line:
+            assert_true("inMemoryToken" not in line and "Authorization" not in line,
+                        "session storage must not write service token or authorization")
     assert_true("锁定候选并综合评审" in index and "锁定候选并综合评审" in app, "manual button label should be exact")
     assert_true("正在推理" in app and "startReviewPolling()" in app and "loadReviewStateOnce" in app,
                 "manual review should show busy state and poll for receipt")
     assert_true("Put/Call 两侧按钮同步禁用" in app,
                 "busy manual review should disable both side buttons")
-    assert_true("renderReviewResultDetail" in app and "同版当前保单" in app and "上一次冻结保单" in app,
+    assert_true("renderReviewResultDetail" in app and "同版当前保单" in app and "此前有效评审" in app,
                 "manual review receipt should distinguish current-version and previous frozen policy")
     assert_true('`${label(side)} 保单`' in app,
                 "manual review receipt should identify which side it audited")
@@ -177,14 +188,14 @@ def test_synthetic_preview_is_clearly_watermarked_and_not_real_llm():
 def test_replay_preview_is_not_worded_as_synthetic_or_current_candidate():
     app = read_text("app.js")
     assert_true("function isReplayPreview()" in app, "frontend should detect preview.mode=REPLAY")
-    assert_true("冻结回放 · 非当前交易 · 零真实 LLM" in app
+    assert_true("冻结回放 · 非当前交易 · 查看不调用 LLM" in app
                 and "真实公开来源的历史截面" in app,
                 "REPLAY preview banner should not be described as the synthetic fixture service")
     assert_true("本机冻结回放已连接" in app,
                 "status line should identify frozen replay separately from live/current and synthetic")
     assert_true("冻结回放候选；真实公开来源的历史截面" in app,
                 "candidate header should describe replay candidates as frozen replay, not current server candidates")
-    assert_true("本地模拟 · 零真实 LLM · 执行关闭" in app,
+    assert_true("本地模拟 · 查看不调用 LLM · 执行关闭" in app,
                 "synthetic fixture wording should remain available for FIXTURE mode")
 
 
@@ -203,7 +214,7 @@ def test_main_visual_hides_raw_identifiers():
 def test_candidate_accounting_uses_v2_server_fields_only():
     app = read_text("app.js")
     version = read_text("VERSION.json")
-    for label in ("卖出腿权利金", "保护腿成本", "权利金差", "净费用", "净信用"):
+    for label in ("卖出腿权利金", "保护腿成本", "权利金差", "建仓费用 f_entry", "持有到期总费用 f_total", "净信用"):
         assert_true(label in app, f"candidate card should show accounting row: {label}")
     for field in (
         "premium_spread_btc",
@@ -214,7 +225,8 @@ def test_candidate_accounting_uses_v2_server_fields_only():
         "long_premium_btc",
     ):
         assert_true(field in app, f"frontend should consume server field {field}")
-    assert_true("visible_credit_btc" not in app and "economics.credit_btc" not in app,
+    candidate_body = app.split("function renderCandidate(candidate)", 1)[1].split("function ", 1)[0]
+    assert_true("visible_credit_btc" not in candidate_body and "economics.credit_btc" not in candidate_body,
                 "net credit should not fall back to the old visible/credit fields")
     assert_true("fmtBtcWithUsd" in app and "按本次估值现价折合" in app,
                 "BTC amounts should carry server-provided USD equivalents")
@@ -256,7 +268,7 @@ def test_frontend_has_no_trade_action_surface():
     for token in forbidden:
         assert_true(token not in app + index, f"frontend must not expose trading action token: {token}")
     assert_true("成交控制" not in index, "page should not add a trading-control section")
-    assert_true("不补全实际成交、持仓或退出账目" in index,
+    assert_true("所示为开仓前资料；不代表成交、持仓或执行许可" in index,
                 "workbench should state its pre-entry theoretical scope")
 
 
@@ -310,8 +322,8 @@ def main():
                  "统一时效与状态规则", "来源 / 时钟 / 用途期限",
                  "冻结回放资料", "冻结时点可用", "刷新不会把它变成当前事实"]:
         assert_true(text in index + app, f"compact health view should include: {text}")
-    assert_true(index.index('id="manualReviewState"') < index.index('id="dataHealth"') < index.index('id="auditModule"'),
-                "maintenance follows the main workbench before historical audit")
+    assert_true(index.index('id="manualReviewState"') < index.index('id="dataHealth"') < index.index('id="historyArea"'),
+                "maintenance follows the global review state before historical audit")
     test_app_js_syntax_when_node_is_available()
     print("astra_workbench_frontend: PASS")
 

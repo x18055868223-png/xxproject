@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>空间约束工作台</title>
+  <title>Astra · 当前保单与两问</title>
   <style>
     :root {
       color-scheme: light;
@@ -43,7 +43,7 @@
 
     body {
       margin: 0;
-      min-width: 320px;
+      min-width: 0;
       background: var(--bg);
     }
 
@@ -415,6 +415,9 @@
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
+    }
+    .candidate-grid.is-single {
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .candidate {
@@ -2076,21 +2079,406 @@
     .two-question-grid section { min-width: 0; padding: 14px; border: 1px solid var(--line); background: var(--paper-soft); }
     .two-question-grid p, .two-question-grid li { overflow-wrap: anywhere; }
     .two-question-grid ul { padding-left: 18px; }
-    @media (max-width: 620px) { .two-question-grid, .current-candidate-summary { grid-template-columns: minmax(0, 1fr); } .workbench-nav { padding: 8px 16px; gap: 2px 16px; } }
+    .wpem-panel { margin: 14px 0; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+    .wpem-panel.is-program { background: var(--paper-soft); }
+    .wpem-panel.is-stale { border-style: dashed; }
+    .wpem-summary { margin-top: 10px; padding: 10px 0; border-block: 1px solid var(--line); }
+    .wpem-summary p { margin: 0 0 6px; }
+    .wpem-summary ul { margin: 0; padding-left: 18px; }
+    .wpem-audit, .wpem-stale-review, .review-receipt-audit { margin-top: 10px; }
+    .wpem-audit > summary, .wpem-stale-review > summary, .review-receipt-audit > summary { min-height: 44px; cursor: pointer; color: var(--muted); font-weight: 760; }
+    .wpem-audit-block { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+    .wpem-audit-block p { margin: 0 0 8px; }
+    .wpem-audit-list { display: grid; gap: 0; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; list-style: none; }
+    .wpem-audit-list li { display: grid; grid-template-columns: minmax(110px, 26%) minmax(0, 1fr); gap: 6px 12px; padding: 9px 10px; border-bottom: 1px solid var(--line); min-width: 0; }
+    .wpem-audit-list li:last-child { border-bottom: 0; }
+    .wpem-audit-list span { color: var(--muted); font-size: 12px; font-weight: 760; }
+    .wpem-audit-list strong, .wpem-audit-list small { min-width: 0; overflow-wrap: anywhere; }
+    .wpem-audit-list small { grid-column: 2; color: var(--muted); }
+    .wpem-program-questions section { background: var(--paper); }
+    @media (max-width: 620px) { .two-question-grid, .current-candidate-summary { grid-template-columns: minmax(0, 1fr); } .workbench-nav { padding: 8px 16px; gap: 2px 16px; } .wpem-panel { padding: 11px; } .wpem-audit-list li { grid-template-columns: minmax(0, 1fr); } .wpem-audit-list small { grid-column: 1; } }
+    /* Presentation polish: preserve values, give the two questions priority. */
+    .topbar { padding-block: 14px; }
+    .eyebrow { font-size: 11px; color: var(--faint); }
+    .section-header { padding-block: 13px; }
+    .gate-state { font-size: clamp(23px, 3vw, 30px); }
+    .gate-state.is-good, .gate-state.is-bad, .gate-state.is-warn { color: var(--ink); }
+    .candidate-header { background: var(--paper); }
+    .candidate-header .badge, .wpem-panel > .badge-row .badge { color: var(--muted); background: var(--paper-soft); border-color: var(--line-strong); }
+    .candidate-brief .candidate-compensation { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .candidate-compensation .metric { min-width: 0; padding: 11px 13px; }
+    .candidate-compensation .metric strong { font-variant-numeric: tabular-nums; }
+    .candidate-compensation .metric p { font-size: 12px; }
+    .wpem-panel { padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+    .wpem-panel.is-program { background: var(--paper); }
+    .two-question-grid { gap: 16px; }
+    .two-question-grid section { background: var(--paper); padding: 15px 16px; border-top: 2px solid var(--ink); }
+    .two-question-grid h3 { font-size: 17px; line-height: 1.55; }
+    .two-question-grid p { line-height: 1.75; }
+    .wpem-readout { margin: 12px 0; padding: 10px 12px; background: var(--paper-soft); border: 1px solid var(--line); }
+    .wpem-readout dl { margin: 0; }
+    .wpem-readout-row, .wpem-readout dl > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px 12px; padding-block: 5px; }
+    .wpem-readout dt { color: var(--muted); font-size: 13px; }
+    .wpem-readout dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    .wpem-readout > p { margin: 0 0 6px; }
+    .wpem-readout small { grid-column: 2; color: var(--muted); }
+    .candidate-risk-note { margin: 8px 0; color: var(--muted); font-size: 13px; }
+    .review-binding-meta { margin: 10px 0 12px; }
+    .trace-evidence-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; color: var(--muted); font-size: 13px; }
+    .trace-evidence-tags span { display: inline-block; max-width: 100%; padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper-soft); overflow-wrap: anywhere; }
+    .trace-input-consumption { margin: 10px 0; }
+    .trace-input-consumption > p { margin-bottom: 5px; }
+    .review-operation-details, .map-policy-context { margin-block: 10px; border-top: 1px solid var(--line); padding-top: 4px; }
+    .review-operation-details > summary, .map-policy-context > summary { min-height: 44px; padding-block: 10px; cursor: pointer; color: var(--muted); font-weight: 700; }
+    .map-panel-head h3 { flex: 0 0 auto; }
+    .map-panel-head p { max-width: 72ch; }
+    .map-axis-topline { align-items: start; }
+    .map-axis-readout { margin: 12px 14px; padding: 12px; border: 1px solid var(--line); background: var(--paper-soft); }
+    .map-axis-readout section, .map-axis-readout > div { min-width: 0; padding: 0; border: 0; background: transparent; }
+    .map-axis-readout dl { margin: 0; }
+    .map-axis-readout dt { color: var(--muted); font-size: 12px; }
+    .map-axis-readout dd { margin: 0 0 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .map-axis-readout p { margin: 0; }
+    .map-axis-readout ul { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+    .map-axis-readout li { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 8px; min-width: 0; }
+    .map-axis-readout li span { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    .map-axis-readout small { color: var(--muted); }
+    .map-axis-readout strong { font-variant-numeric: tabular-nums; }
+    .map-price-svg { margin-top: 10px; }
+    @media (max-width: 620px) {
+      .candidate-brief .candidate-compensation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .candidate-compensation .metric:last-child:nth-child(odd) { grid-column: 1 / -1; }
+      .candidate-compensation .metric { padding: 9px 10px; }
+      .candidate-compensation .metric strong { font-size: 17px; }
+      .two-question-grid { gap: 12px; }
+      .two-question-grid section { padding: 13px 12px; }
+      .map-panel-head { flex-direction: column; gap: 5px; }
+      .map-panel-head h3 { margin-bottom: 0; }
+      .map-axis-topline .action-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .map-axis-topline .action-row button { min-width: 0; width: 100%; padding-inline: 8px; }
+      .wpem-readout-row, .wpem-readout dl > div { grid-template-columns: 78px minmax(0, 1fr); }
+      .map-axis-readout { grid-template-columns: minmax(0, 1fr); margin-inline: 12px; }
+      .map-axis-readout li { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+    }
+    /* Decision workspace: overview, readable research, complete audit. */
+    .decision-position-summary { margin: 12px 14px; padding: 14px; border-left: 3px solid var(--ink); background: var(--paper-soft); }
+    .decision-position-summary p { margin: 0 0 8px; }
+    .decision-position-summary dl { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 0; }
+    .decision-position-summary dt { color: var(--muted); font-size: 12px; }
+    .decision-position-summary dd { margin: 3px 0 0; font-variant-numeric: tabular-nums; }
+    .decision-axis-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 14px; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+    .decision-axis-legend li { display: inline-flex; gap: 6px; align-items: center; }
+    .decision-nominal-details { margin: 10px 14px; }
+    .decision-nominal-details summary { padding-block: 10px; }
+    .decision-research { margin: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .decision-research > summary { padding: 13px 0; font-weight: 650; line-height: 1.6; }
+    .decision-research > summary small { display: block; color: var(--muted); font-weight: 400; padding-left: 17px; }
+    .decision-research-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; padding: 4px 0 16px; }
+    .decision-research-grid section { min-width: 0; }
+    .decision-research-grid h4 { margin: 0 0 8px; font-size: 14px; }
+    .decision-research-grid dl { margin: 0; }
+    .decision-research-grid dl > div { padding: 6px 0; }
+    .decision-research-grid dt { color: var(--muted); font-size: 12px; }
+    .decision-research-grid dd { margin: 3px 0 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    .decision-research-grid p, .decision-research-grid li { font-size: 13px; line-height: 1.75; overflow-wrap: anywhere; }
+    .decision-research-grid ul { margin: 8px 0; padding-left: 18px; }
+    .decision-reassess { font-size: 13px; line-height: 1.65; color: var(--muted); border-left: 2px solid var(--line); padding-left: 10px; }
+    .decision-question-evidence strong { font-size: 12px; color: var(--muted); font-weight: 500; }
+    .decision-background > summary { padding: 16px; font-size: 15px; font-weight: 650; }
+    .decision-background > p { padding-inline: 16px; }
+    @media (max-width: 620px) {
+      .wpem-panel { padding: 10px 0 0; }
+      .two-question-grid { gap: 10px; margin: 12px 0; }
+      .two-question-grid h3 { font-size: 15px; line-height: 1.5; }
+      .two-question-grid p { font-size: 14px; line-height: 1.65; }
+      .decision-research-grid { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+      .decision-position-summary { margin-inline: 12px; padding: 12px; }
+      .decision-position-summary dl { gap: 10px 16px; }
+      .decision-axis-legend { gap: 6px 12px; margin-inline: 12px; }
+    }
+
+    .evidence-routing, .consumer-research { margin: 14px 0 20px; border-top: 1px solid var(--line); }
+    .evidence-routing > summary, .consumer-research > summary { min-height: 44px; padding-block: 12px; cursor: pointer; font-size: 14px; }
+    .consumer-research dl > div { display: grid; grid-template-columns: 7em minmax(0,1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+    .consumer-research dt { font-size: 13px; color: var(--muted); }
+    .consumer-research dd { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+    .consumer-research small { display: block; color: var(--muted); margin-top: 4px; }
+    .evidence-routing h4 { margin: 16px 0 8px; font-size: 15px; }
+    .evidence-routing dl { margin: 0; }
+    .routing-problem-map dl > div, .routing-details dl > div { display: grid; grid-template-columns: 7em minmax(0, 1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+    .evidence-routing dt { font-size: 13px; color: var(--muted); }
+    .evidence-routing dd { margin: 0; line-height: 1.65; font-size: 13px; overflow-wrap: anywhere; }
+    .evidence-routing dd small { display: block; color: var(--muted); margin-top: 4px; }
+    .routing-loop-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
+    .routing-loop { min-width: 0; padding: 0 10px 0 0; border-right: 1px solid var(--line); }
+    .routing-loop:last-child { border-right: 0; }
+    .routing-loop h5 { font-size: 13px; margin: 8px 0; }
+    .routing-loop p, .routing-loop-section > p, .routing-conflict, .routing-question-observations { font-size: 13px; line-height: 1.7; }
+    .routing-conflict { padding: 10px 12px; background: var(--paper-soft); border-left: 2px solid var(--ink); }
+    .routing-details > summary { min-height: 44px; padding-block: 12px; color: var(--muted); cursor: pointer; font-size: 13px; }
+    .routing-unit-list { padding: 0; list-style: none; }
+    .routing-unit-list > li { border-top: 1px solid var(--line); padding: 12px 0; overflow-wrap: anywhere; }
+    .routing-unit-list p { font-size: 13px; line-height: 1.6; }
+    .routing-unit-list pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+    .routing-question-observations { padding-left: 18px; }
+    .supporting-state { border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; background: var(--paper); }
+    .supporting-state > summary { cursor: pointer; font-weight: 700; }
+    .supporting-state > .section-body { margin-top: 12px; }
+    @media (max-width: 620px) {
+      .routing-problem-map dl > div, .routing-details dl > div, .consumer-research dl > div { grid-template-columns: minmax(0,1fr); gap: 3px; }
+      .routing-loop-grid { grid-template-columns: minmax(0,1fr); gap: 0; }
+      .routing-loop { padding: 6px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+
+    /* v2.6.1 / frontend-skill: one workspace per policy, quiet secondary layers. */
+    .topbar { align-items: center; padding: 16px 24px; }
+    h1 { font-size: 26px; line-height: 1.3; font-weight: 700; }
+    .subtitle { margin-bottom: 0; max-width: 62em; }
+    .main-stack > .section:first-child { border: 0; border-radius: 0; }
+    .main-stack > .section:first-child > .section-header { padding: 0 0 16px; border: 0; }
+    .main-stack > .section:first-child > .section-body { padding: 0; }
+    .candidate-grid { align-items: start; gap: 24px; }
+    .candidate-grid.is-single { max-width: 980px; }
+    .candidate { min-width: 0; border-radius: 4px; overflow: visible; }
+    .candidate-header { padding: 18px 20px 14px; background: var(--paper); position: sticky; top: 0; z-index: 3; }
+    .section[aria-labelledby="candidatesTitle"] { overflow: visible; }
+    .candidate:has(.wpem-stale-review[open]) > .candidate-header { position: static; }
+    .candidate :is(h3, summary[id]) { scroll-margin-top: 160px; }
+    .historical-reading-context { position: sticky; top: 0; z-index: 4; padding: 10px 0; background: var(--paper); border-bottom: 1px solid var(--line-strong); color: var(--ink); font-weight: 600; }
+    .candidate-title h3 { font-size: 21px; }
+    .candidate-header .badge, .wpem-panel > .badge-row .badge { color: var(--muted); background: transparent; border: 0; padding-inline: 0; }
+    .candidate-brief { padding: 18px 20px; }
+    .candidate-brief > p { line-height: 1.7; }
+    .candidate .candidate-compensation { border: 0; border-radius: 0; background: var(--paper-soft); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .candidate-compensation .metric { border: 0; padding: 12px; }
+    .candidate-compensation .metric strong { font-size: 17px; font-variant-numeric: tabular-nums; }
+    .candidate-compensation .is-net-credit strong { font-size: 23px; }
+    .candidate-time, .candidate-position { margin-block: 12px; overflow-wrap: anywhere; }
+    .candidate-time { color: var(--muted); font-size: 13px; }
+    .candidate-position { padding-block: 10px; border-bottom: 1px solid var(--line); line-height: 1.7; }
+    .candidate .wpem-panel { padding: 14px 0 0; border: 0; background: transparent; }
+    .candidate .two-question-grid { display: block; margin: 12px 0 0; }
+    .candidate .two-question-grid > section { border: 0; border-top: 1px solid var(--line-strong); background: transparent; padding: 20px 0 8px; }
+    .candidate .two-question-grid h3 { font-size: 18px; line-height: 1.55; font-weight: 650; margin-bottom: 18px; }
+    .candidate .two-question-grid p, .candidate .two-question-grid li { font-size: 16px; line-height: 1.7; }
+    .candidate .trace-point { margin: 0 0 20px; }
+    .candidate .trace-point > .review-summary { font-weight: 400; }
+    .candidate .trace-point > .review-summary > strong { color: var(--muted); font-size: 12px; font-weight: 500; }
+    .candidate .trace-point > details { margin: 8px 0 0; }
+    .candidate .trace-point > details > summary { color: var(--blue); font-size: 14px; }
+    .candidate .trace-point > details[open] { padding: 0 0 6px; border-bottom: 1px solid var(--line); }
+    .candidate .trace-point > details .ia-evidence-summary p { font-size: 14px; line-height: 1.7; }
+    .trace-fragments-readout .map-table { min-width: 720px; }
+    .trace-fragments-readout .map-table :is(th, td) { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+    .candidate .trace-point .badge-row { gap: 4px 12px; }
+    .candidate .trace-point .badge { padding: 0; border: 0; background: transparent; color: var(--muted); }
+    .candidate-audit-library > details, .candidate-research-library > details { margin-inline: 0; }
+    .candidate-research-library > summary small { display: block; color: var(--muted); font-size: 13px; font-weight: 400; }
+    .candidate-audit-library, .candidate-research-library { padding-bottom: 8px; }
+    .candidate .decision-research-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .candidate .decision-research-grid > section { padding-top: 12px; border-top: 1px solid var(--line); }
+    .candidate .decision-research-grid h4 { font-size: 16px; }
+    .candidate .callout { border: 0; border-left: 2px solid var(--line-strong); border-radius: 0; background: var(--paper-soft); color: var(--ink); }
+    .candidate .candidate-details { border-radius: 0; }
+    .candidate .candidate-details > summary { padding: 14px 20px; }
+    .candidate .action-row { gap: 10px; align-items: center; }
+    .candidate .action-row a { line-height: 1.6; }
+    .candidate :where(pre, table, svg, dl, details, section, article) { max-width: 100%; min-width: 0; }
+    .candidate .wpem-audit-list { padding-left: 0; }
+    .candidate .wpem-audit-list > li { min-width: 0; }
+    .ia-audit details, .ia-research details { min-width: 0; }
+    .ia-audit p, .ia-audit li, .ia-research p, .ia-research li { overflow-wrap: anywhere; }
+    details > summary { transition: color 140ms ease, background-color 140ms ease; }
+    details > summary:hover { color: var(--blue); background-color: var(--paper-soft); }
+    :target { scroll-margin-block-start: 18px; }
+    .ia-library { min-width: 0; border-top: 1px solid var(--line); margin-top: 8px; }
+    .ia-library > summary { min-height: 48px; padding: 14px 2px; font-weight: 700; cursor: pointer; }
+    .ia-library > summary span { margin-left: 12px; color: var(--muted); font-size: 13px; font-weight: 400; }
+    .ia-library-intro { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+    .ia-library > .section { margin-top: 14px; }
+    .ia-research, .ia-audit, .ia-raw, .ia-evidence-summary { min-width: 0; overflow-wrap: anywhere; }
+    .ia-research > summary, .ia-audit > summary, .ia-raw > summary,
+    .trace-point > details > summary, .trace-point-summary > summary { min-height: 44px; padding-block: 10px; cursor: pointer; }
+    .ia-raw { margin: 8px 0; border-top: 1px solid var(--line); color: var(--muted); }
+    .ia-raw pre { max-width: 100%; max-height: 520px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--paper-soft); font-size: 12px; }
+    .ia-evidence-summary { border-top: 1px solid var(--line); padding: 10px 0; }
+    .ia-evidence-summary p { margin-bottom: 7px; }
+    .ia-evidence-summary dl { margin: 0; }
+    .ia-evidence-summary dt { color: var(--muted); font-size: 12px; }
+    .ia-evidence-summary dd { margin: 3px 0 9px; }
+    .ia-layer-title { font-size: 14px; margin: 14px 0 8px; }
+    .candidate .ia-research, .candidate .ia-audit { margin-top: 10px; border-top: 1px solid var(--line); }
+    .candidate .ia-research > summary, .candidate .ia-audit > summary { font-weight: 650; }
+    .candidate-compensation .metric p { line-height: 1.45; }
+    .candidate-header .muted { margin: 6px 0 0; font-size: 12px; }
+    .locked-headline, .locked-detail-head, .locked-summary-card {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .locked-headline { margin-bottom: 14px; }
+    body.is-locked-route #candidatesSection,
+    body.is-locked-route #researchLibrary,
+    body.is-locked-route #auditLibrary { display: none; }
+    .locked-compact {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+    }
+    .locked-compact p { margin: 3px 0 0; }
+    .locked-switcher {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 12px;
+    }
+    .locked-switcher a {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--paper);
+    }
+    .locked-summary-list { display: grid; gap: 10px; }
+    .locked-summary-card {
+      min-width: 0;
+      padding: 13px 0;
+      border-top: 1px solid var(--line);
+    }
+    .locked-summary-card h3 { margin-bottom: 4px; font-size: 16px; }
+    .locked-summary-card p { margin-bottom: 3px; line-height: 1.55; }
+    .locked-summary-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
+    }
+    .locked-detail {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line-strong);
+      scroll-margin-top: 24px;
+    }
+    .locked-detail-head {
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .locked-detail-head h2 { font-size: 22px; line-height: 1.35; }
+    .locked-identity, .locked-overview, .locked-rows { margin-top: 18px; }
+    .locked-overview-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .locked-limitations { margin: 10px 0 0; padding-left: 18px; color: var(--muted); }
+    .locked-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+    .locked-table {
+      width: 100%;
+      min-width: 860px;
+      table-layout: fixed;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .locked-table caption {
+      padding: 10px 12px 0;
+      color: var(--muted);
+      text-align: left;
+      font-size: 12px;
+    }
+    .locked-table th, .locked-table td {
+      border-top: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .locked-table thead th { position: sticky; top: 0; z-index: 2; background: var(--paper); color: var(--muted); font-size: 12px; }
+    .locked-table tbody th { position: sticky; left: 0; z-index: 1; width: 18%; background: var(--paper); }
+    .locked-table thead th:nth-child(1) { width: 16%; }
+    .locked-table thead th:nth-child(2), .locked-table thead th:nth-child(3) { width: 22%; }
+    .locked-table thead th:nth-child(4) { width: 15%; }
+    .locked-table thead th:nth-child(5) { width: 25%; }
+    .locked-table span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 520;
+    }
+    .locked-row-warn th strong { color: var(--warn); }
+    .locked-comparison-rules { margin: 8px 0 12px; border-top: 1px solid var(--line); }
+    .locked-comparison-rules > summary { min-height: 38px; padding-block: 8px; cursor: pointer; font-weight: 650; }
+    .locked-row-detail { margin-top: 8px; color: var(--muted); }
+    .locked-row-detail > summary { min-height: 32px; cursor: pointer; font-weight: 650; }
+    .locked-process, .locked-explanations { margin-top: 16px; border-top: 1px solid var(--line); }
+    .locked-process > summary, .locked-explanations > summary {
+      min-height: 44px;
+      padding-block: 12px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    .locked-explanation-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .locked-actions { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .lock-candidate-button { border-color: var(--ink); }
+    details > summary:focus-visible, a:focus-visible, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+    @media (max-width: 620px) {
+      .topbar { padding: 12px 16px; gap: 10px; }
+      h1 { font-size: 25px; line-height: 1.2; }
+      .subtitle { font-size: 13px; line-height: 1.5; }
+      .toolbar { display: flex; }
+      .toolbar button { width: auto; flex: 1 1 auto; min-height: 44px; }
+      .main-stack { padding: 10px; }
+      .section-header { padding: 10px 12px; }
+      .section-header h2 { font-size: 18px; }
+      .section-header p { font-size: 13px; }
+      .candidate-header, .candidate-brief { padding: 14px; }
+      .candidate .candidate-compensation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .candidate-compensation .is-net-credit { grid-column: 1 / -1; }
+      .candidate-compensation .metric:last-child:nth-child(odd):not(.is-net-credit) { grid-column: auto; }
+      .candidate-compensation .metric { padding: 10px 12px; }
+      .candidate-compensation .metric p { font-size: 12px; }
+      .candidate .two-question-grid > section { padding: 18px 0 8px; }
+      .candidate .two-question-grid h3 { font-size: 18px; }
+      .candidate .two-question-grid p, .candidate .two-question-grid li { font-size: 16px; line-height: 1.7; }
+      .candidate .candidate-details > summary { padding-inline: 14px; }
+      .candidate .action-row a { padding-block: 6px; }
+      .locked-headline, .locked-detail-head, .locked-summary-card { display: grid; gap: 10px; }
+      .locked-compact { display: grid; }
+      .locked-summary-actions { flex-wrap: wrap; white-space: normal; }
+      .locked-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .locked-explanation-grid { grid-template-columns: minmax(0, 1fr); }
+      .locked-table { min-width: 760px; }
+      .locked-table th, .locked-table td { padding: 9px 10px; }
+      .ia-library > summary span { display: block; margin: 5px 0 0 18px; }
+      .ia-raw pre { max-height: 420px; }
+    }
   </style>
 </head>
 <body>
-  <a class="skip-link" href="#conclusionTitle">跳到工作台内容</a>
+  <a class="skip-link" href="#candidatesTitle">跳到工作台内容</a>
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Astra v2.0 · SpaceGate Workbench</p>
-        <h1>空间约束状态门与当前保单工作台</h1>
-        <p class="subtitle">工作台只核对开仓前可知的合同、公开盘口、理论费用与冻结风险参考，不补全实际成交、持仓或退出账目。两侧候选并列展示，历史卡只作原始证据。</p>
+        <p class="eyebrow">Astra v2.6.3 · 本地观测候选版 · 时间 UTC+8</p>
+        <h1>当前保单与两问工作台</h1>
+        <p class="subtitle">先读本单风险与补偿，再按需展开研究和审计。所示为开仓前资料；不代表成交、持仓或执行许可。</p>
       </div>
       <div class="toolbar" aria-label="工作台操作">
         <button type="button" id="refreshButton">刷新</button>
-        <button type="button" id="forgetTokenButton" class="ghost">清除本页令牌</button>
+        <button type="button" id="forgetTokenButton" class="ghost">退出访问会话</button>
       </div>
     </header>
 
@@ -2099,53 +2487,43 @@
     <div id="scenarioControl" class="workbench-nav" hidden></div>
 
     <nav class="workbench-nav" aria-label="工作台阅读导航">
-      <a href="#conclusionTitle">当前判断</a>
       <a href="#candidatesTitle">候选与两问</a>
-      <a href="#reviewStateTitle">评审回执</a>
-      <a href="#btcMapTitle">地图与责任</a>
-      <a href="#marketContextTitle">市场事实</a>
-      <a href="#dataHealthTitle">数据维护</a>
+      <a href="#lockedCandidates">本单跟踪</a>
+      <a href="#researchLibraryTitle">研究资料</a>
+      <a href="#auditLibraryTitle">回执与审计</a>
     </nav>
     <main id="main" class="layout">
 
 
       <div class="main-stack">
-        <section class="section" aria-labelledby="conclusionTitle">
-          <div class="section-header">
-            <div>
-              <h2 id="conclusionTitle">当前结论</h2>
-              <p>先看当前资料是否可信、结构门是否打开、候选是否值得进入人工评审。</p>
-            </div>
-          </div>
-          <div id="currentConclusion" class="section-body"></div>
-        </section>
-
-        <section class="section" aria-labelledby="candidatesTitle">
+        <section id="candidatesSection" class="section" aria-labelledby="candidatesTitle">
           <div class="section-header">
             <div>
               <h2 id="candidatesTitle">Put / Call 两侧当前保单</h2>
-              <p>先核对具体责任与补偿，再看本单两问及下一步。两侧并列，评审资格由服务端裁定。</p>
+              <p>Q1：风险怎样；Q2：补偿是否值得承担。每一点都可展开依据。</p>
             </div>
           </div>
           <div id="candidateArea" class="section-body"></div>
         </section>
 
-        <section class="section" aria-labelledby="reviewStateTitle">
+        <section id="lockedCandidates" class="section" aria-labelledby="lockedCandidatesTitle">
           <div class="section-header">
             <div>
-              <h2 id="reviewStateTitle">手动综合评审与两问回执</h2>
-              <p>本地模拟使用“模拟评审回执”；真实服务使用“锁定候选并综合评审”。页面刷新、状态邮件和 23:00 快照不会调用 LLM。</p>
+              <h2 id="lockedCandidatesTitle">本单跟踪</h2>
+              <p>锁定参考与持续观察分开于综合评审；查看、导出和展开不会触发 LLM、行情补取或账户动作。</p>
             </div>
           </div>
-          <div class="section-body">
-            <div id="manualReviewState"></div>
-          </div>
+          <div id="lockedCandidatesArea" class="section-body"></div>
         </section>
+
+        <details id="researchLibrary" class="ia-library ia-research" data-disclosure-key="global-research">
+          <summary id="researchLibraryTitle">研究资料库 <span>地图、市场事实与空间背景</span></summary>
+          <p class="ia-library-intro">先在候选卡中查看本单的责任位置、时间变化、市场压力、外部背景与补偿；这里保留可共用的完整背景。</p>
         <section class="section" aria-labelledby="btcMapTitle">
           <div class="section-header">
             <div>
-              <h2 id="btcMapTitle">BTC MAP：背景、价格轴与保单责任</h2>
-              <p>四行背景、最多六个市场参照、区域响应和选定保单责任映射共用同一 MAP 版本；页面只切换本地展示，不自动选边、不发起外部请求或 LLM。</p>
+              <h2 id="btcMapTitle">市场地图：价格位置与保单责任</h2>
+              <p>核对选定保单与同版市场参照的关系。切换展示不会发起模型请求。</p>
             </div>
           </div>
           <div id="btcMap" class="section-body"></div>
@@ -2167,13 +2545,42 @@
           <div class="section-header">
             <div>
               <h2 id="gateTitle">空间层与基础空间约束</h2>
-              <p>先核对基础门控：Anchor Valid 且分数不低于 60，同时 NetGamma 有效、为正、非过渡、无冲突，才进入结构可研究状态。</p>
+              <p>当前横截面的空间状态与原有研究条件；不替代本单风险和补偿判断。</p>
             </div>
             <div id="gateBadges" class="badge-row" aria-label="空间门标签"></div>
           </div>
           <details class="source-details"><summary>展开空间层事实与基础门控明细</summary>
             <div id="spaceGate" class="section-body"></div>
           </details>
+        </section>
+        </details>
+
+        <details id="auditLibrary" class="ia-library ia-audit" data-disclosure-key="global-audit">
+          <summary id="auditLibraryTitle">全局回执与资料审计 <span>评审操作、资料维护与历史</span></summary>
+          <p class="ia-library-intro">本单依据与版本复盘在候选卡内。这里核对全局状态和历史记录；历史内容不作为当前判断。</p>
+        <section class="section" aria-labelledby="conclusionTitle">
+          <div class="section-header">
+            <div>
+              <h2 id="conclusionTitle">资料与评审状态</h2>
+              <p>结构门、资料时间与评审资格作为辅助状态保留，可展开核对。</p>
+            </div>
+          </div>
+          <details class="supporting-state">
+            <summary>展开资料时间、结构门与全局评审状态</summary>
+            <div id="currentConclusion" class="section-body"></div>
+          </details>
+        </section>
+
+        <section class="section" aria-labelledby="reviewStateTitle">
+          <div class="section-header">
+            <div>
+              <h2 id="reviewStateTitle">评审操作与全局回执</h2>
+          <p>“解释本单观测资料”用于研究事实、变化与冲突；“锁定候选并综合评审”沿用主评审条件。页面刷新不会调用 LLM。</p>
+            </div>
+          </div>
+          <div class="section-body">
+            <div id="manualReviewState"></div>
+          </div>
         </section>
 
         <section class="section" aria-labelledby="dataHealthTitle">
@@ -2185,6 +2592,7 @@
           </div>
           <div id="dataHealth" class="section-body"></div>
         </section>
+
         <section id="auditModule" class="section" aria-labelledby="auditTitle">
           <div class="section-header">
             <div>
@@ -2241,6 +2649,7 @@
               </section>
           </div>
         </section>
+        </details>
       </div>
     </main>
   </div>
@@ -2248,18 +2657,18 @@
   <dialog id="tokenDialog" aria-labelledby="tokenDialogTitle">
     <form method="dialog" id="tokenForm">
       <div class="dialog-body">
-        <h2 id="tokenDialogTitle">服务端令牌</h2>
-        <p class="muted">令牌只保存在本页内存中，用于本次手动综合评审。关闭或刷新页面后会丢失。</p>
-        <label for="tokenInput">服务端令牌</label>
+        <h2 id="tokenDialogTitle">私人访问会话</h2>
+        <p id="tokenDialogNote" class="muted">访问密钥只用于这一次会话交换；之后由服务端 cookie 维持私人访问。</p>
+        <label for="tokenInput">访问密钥</label>
         <input id="tokenInput" name="token" type="password" autocomplete="off" required>
         <div class="action-row" style="margin-top: 14px;">
-          <button type="submit" class="primary">提交并评审</button>
+          <button type="submit" class="primary" id="tokenSubmitButton">验证并继续</button>
           <button type="button" id="cancelTokenButton">取消</button>
         </div>
       </div>
     </form>
   </dialog>
 
-  <script src="app.js?v=20260928-round5-repairs-v249-local"></script>
+  <script src="app.js?v=20261008-observation-v263-22c18ce9"></script>
 </body>
 </html>

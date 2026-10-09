@@ -444,7 +444,7 @@ console.log(JSON.stringify({
 def test_q2_round3_order_and_observable_changes_render_from_fields() -> None:
     html = render_workbench(_workbench())["areas"]["manualReviewState"]
     order = [
-        html.index("保留关注，但不生成交易许可。"),
+        html.index("保留关注，但不生成交易许可"),
         html.index("当前交换与最强反证"),
         html.index("已有 MAP 区域出现新的进入或离开记录"),
         html.index("等待可能损失当前保费与剩余期限。"),
@@ -461,6 +461,6 @@ def test_q2_round3_order_and_observable_changes_render_from_fields() -> None:
 
 def test_preview_identity_is_short_with_full_boundary_reachable() -> None:
     html = render_workbench(_workbench())["areas"]["previewBanner"]
-    assert "本地模拟 · 零真实 LLM · 执行关闭" in html
+    assert "本地模拟 · 查看不调用 LLM · 执行关闭" in html
     assert "查看完整边界" in html
     assert "不可作为当前 FMZ 事实" in html

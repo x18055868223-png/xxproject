@@ -39,7 +39,8 @@ def public_transport(path: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc: float,
                       *, transport: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
-                      clock_ms: Callable[[], int] | None = None) -> dict[str, Any]:
+                      clock_ms: Callable[[], int] | None = None,
+                      allow_partial: bool = False) -> dict[str, Any]:
     """Build evaluate()-compatible input; no fee or physical-risk guess."""
     if not isinstance(short_instrument, str) or not isinstance(long_instrument, str):
         raise ValueError("two full instrument names are required")
@@ -56,6 +57,7 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
     books: dict[str, dict[str, Any]] = {}
     receipts: dict[str, int] = {}
     metadata_receipts: dict[str, int] = {}
+    capture_gaps: list[str] = []
     for leg, name in (("short", short_instrument), ("long", long_instrument)):
         meta = fetch("public/get_instrument", {"instrument_name": name})
         metadata_receipts[leg] = int(now())
@@ -63,13 +65,22 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
             raise ValueError(f"{leg} instrument metadata is missing or mismatched")
         metadata[leg] = meta
     for leg, name in (("short", short_instrument), ("long", long_instrument)):
-        book = fetch("public/get_order_book", {"instrument_name": name, "depth": 5})
-        receipts[leg] = int(now())
-        if not isinstance(book, dict) or book.get("instrument_name") != name:
-            raise ValueError(f"{leg} order book is missing or mismatched")
-        books[leg] = book
+        try:
+            book = fetch("public/get_order_book", {"instrument_name": name, "depth": 5})
+            if not isinstance(book, dict) or book.get("instrument_name") != name:
+                raise ValueError(f"{leg} order book is missing or mismatched")
+            receipts[leg] = int(now())
+            books[leg] = book
+        except Exception:
+            if not allow_partial:
+                raise
+            # No substitute book or zero price. A surviving leg can still carry
+            # the same named index; the missing book keeps all quote math closed.
+            books[leg] = {}
+            capture_gaps.append(f"{leg}_book_unavailable")
     valuation_ms = int(now())
-    reference_price = books["short"].get("index_price")
+    reference_leg = "long" if allow_partial and not books["short"].get("index_price") else "short"
+    reference_price = books[reference_leg].get("index_price")
     # The short-leg book supplies the explicitly identified Deribit BTC index.
     # The other leg's index, both exchange timestamps, and both local receipt
     # times stay in the input for independent synchrony/quality checks.
@@ -79,7 +90,7 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
                           "exit_policy": "hold_to_expiry"},
             "metadata": metadata,
             "market": {"valuation_ts_ms": valuation_ms,
-                       "received_ts_ms": max(receipts.values()),
+                       "received_ts_ms": max(receipts.values(), default=valuation_ms),
                        "leg_received_ts_ms": receipts,
                        "reference_price_usd": reference_price,
                        "reference_source": "deribit_index",
@@ -88,6 +99,9 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
             "data_identity": {"kind": "live_public_capture", "source_sha256": core._hash(
                 {"metadata": metadata, "books": books, "receipts": receipts})}}
     payload["metadata_received_ts_ms"] = metadata_receipts
+    if allow_partial:
+        payload["capture_gaps"] = capture_gaps
+        payload["market"]["reference_leg"] = reference_leg
     # The same configured daily-option fee formula is used by the frozen real
     # replay. A stale/unqualified quote or non-daily expiry keeps fees unknown.
     try:

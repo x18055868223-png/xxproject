@@ -1,0 +1,178 @@
+{
+  "entries": [
+    {
+      "bytes": 707746,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/astra-joint-v11-20260915/portable_qualified/model.json",
+      "provenance_note": "sealed Astra v1.1 admitted JSON model/profile used by feature catalog tests; not live evidence",
+      "sha256": "71fb23ff9cbb55a789cc1c95862e7e242d8647ce8ac883047d10bded01fd5860",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.artifacts\\astra-joint-v11-20260915\\portable_qualified\\model.json"
+    },
+    {
+      "bytes": 4693,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/astra-joint-v11-20260915/protocol_v11.json",
+      "provenance_note": "sealed Astra v1.1 protocol JSON used by feature catalog tests; not live evidence",
+      "sha256": "5f007cb512763a17bf475da38bee642c171ab7502e816c74a40091cde7ec828e",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.artifacts\\astra-joint-v11-20260915\\protocol_v11.json"
+    },
+    {
+      "bytes": 1760,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/astra-joint-v11-20260915/validation/tail_probability_order.json",
+      "provenance_note": "Astra v1.1 tail publication validation evidence used by reference binding regression; historical diagnostic evidence only",
+      "sha256": "9a71f02de12f770cf634879b176e9087ce0e676636acdc287f909e8aa6afe560",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.artifacts\\astra-joint-v11-20260915\\validation\\tail_probability_order.json"
+    },
+    {
+      "bytes": 380829,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/astra-map-v242-20260926/server_current_map_capture.json",
+      "provenance_note": "historical MAP producer capture at original generated_at_ms; readonly source-consumer regression, not current native qualification",
+      "sha256": "b474b946eea9e4503ec33437db86ec3b9f4f2f07a26e6b733d1d46faba864caa",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\astra-map-v242-20260926\\server_current_map_capture.json"
+    },
+    {
+      "bytes": 221676,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/astra-wpem-first-round-20261004/historical_real_call_packet.json",
+      "provenance_note": "first-round frozen call packet used for reference qualification regression; historical packet only",
+      "sha256": "72621abb97454911f088daaa9ab921707d151f6c193b356bed7d8979d21be4e8",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\astra-wpem-first-round-20261004\\historical_real_call_packet.json"
+    },
+    {
+      "bytes": 221504,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/astra-wpem-first-round-20261004/historical_real_put_packet.json",
+      "provenance_note": "first-round frozen put packet used for reference qualification regression; historical packet only",
+      "sha256": "303345cfe988d764c25083dc9e9fa2b5e262b2736c9d7efd361a138680a1dee8",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\astra-wpem-first-round-20261004\\historical_real_put_packet.json"
+    },
+    {
+      "bytes": 1475,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/evidence/call_native_qualification.json",
+      "provenance_note": "round2 call native qualification report; historical blocked/native schema regression only",
+      "sha256": "3090230baf01bfec34a8d2d3e4187b7fdebc86a29aeb83c1c74d76d77f324ae5",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\evidence\\call_native_qualification.json"
+    },
+    {
+      "bytes": 221676,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/evidence/historical_real_call_packet.json",
+      "provenance_note": "round2 frozen call packet; historical reconstruction only",
+      "sha256": "72621abb97454911f088daaa9ab921707d151f6c193b356bed7d8979d21be4e8",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\evidence\\historical_real_call_packet.json"
+    },
+    {
+      "bytes": 221504,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/evidence/historical_real_put_packet.json",
+      "provenance_note": "round2 frozen put packet; historical reconstruction only",
+      "sha256": "303345cfe988d764c25083dc9e9fa2b5e262b2736c9d7efd361a138680a1dee8",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\evidence\\historical_real_put_packet.json"
+    },
+    {
+      "bytes": 14957,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/evidence/legacy_put_review_input.json",
+      "provenance_note": "round2 legacy bounded_claim_ids@2.4.7 review input; compatibility regression only",
+      "sha256": "ce2ff3fcdb1c9bbc621646e71c0513bbd60b148f9e87e4600e46e64497462c68",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\evidence\\legacy_put_review_input.json"
+    },
+    {
+      "bytes": 1475,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/evidence/put_native_qualification.json",
+      "provenance_note": "round2 put native qualification report; historical blocked/native schema regression only",
+      "sha256": "e8f0743eaa2a5ee28d70583ad1fd52ce1efa15f41aaac73b51fc07911119ea13",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\evidence\\put_native_qualification.json"
+    },
+    {
+      "bytes": 4338,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_capture_receipts.json",
+      "provenance_note": "round2 official capture receipt fixture; historical reconstruction only",
+      "sha256": "ce661ce43efae327f1e94d99234bc9b9cd3b90c4df64cbe1b4e1171a79d29f68",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_capture_receipts.json"
+    },
+    {
+      "bytes": 982,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_raw/BTC-26SEP26-82000-P.json",
+      "provenance_note": "Deribit instrument metadata fixture for historical reconstruction only",
+      "sha256": "f119277e58e97a6ececeb79d800379a5b8ac567cf9a771e371133567de27162c",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_raw\\BTC-26SEP26-82000-P.json"
+    },
+    {
+      "bytes": 982,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_raw/BTC-26SEP26-84000-P.json",
+      "provenance_note": "Deribit instrument metadata fixture for historical reconstruction only",
+      "sha256": "19b601f16f4731907fca2384425fc91fef0b7a483a3991e5769d3cb6312312ba",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_raw\\BTC-26SEP26-84000-P.json"
+    },
+    {
+      "bytes": 984,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_raw/BTC-26SEP26-84500-C.json",
+      "provenance_note": "Deribit instrument metadata fixture for historical reconstruction only",
+      "sha256": "d0bb3eb728acbda09ced34f495f0b733a320b0173ef71fcf1b48b2e4384518ac",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_raw\\BTC-26SEP26-84500-C.json"
+    },
+    {
+      "bytes": 984,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_raw/BTC-26SEP26-86500-C.json",
+      "provenance_note": "Deribit instrument metadata fixture for historical reconstruction only",
+      "sha256": "2f239c5ac3170ccb0c7d4deb1cbe9be19b4c6cfb829ad5332c6839fc3a43b03c",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_raw\\BTC-26SEP26-86500-C.json"
+    },
+    {
+      "bytes": 223242,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_raw/delivery_events.json",
+      "provenance_note": "Deribit official raw delivery event response captured for historical reconstruction only",
+      "sha256": "1452350c7ef936e009423d3e0c6732515b35913d36494baee07b1bd5b71d2b4d",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_raw\\delivery_events.json"
+    },
+    {
+      "bytes": 2050,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/official_raw/delivery_prices.json",
+      "provenance_note": "Deribit official raw delivery price response captured for historical reconstruction only",
+      "sha256": "28219e2ddd4c367a2a2dce873decd684a4d4a44eb608e7aa6a1a72228397ea94",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\official_raw\\delivery_prices.json"
+    },
+    {
+      "bytes": 2283,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/risk_qualification/call/risk_qualification_report.json",
+      "provenance_note": "round2 call risk qualification report; terminal blocked reference only",
+      "sha256": "fbe57ac89a26c2c5089e19e2eeae80bf2b4e0303b4a8562db3cb207169ee32bc",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\risk_qualification\\call\\risk_qualification_report.json"
+    },
+    {
+      "bytes": 31329,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/risk_qualification/put/reference_analysis.json",
+      "provenance_note": "round2 put reference analysis; terminal blocked reference only",
+      "sha256": "df0a328b13f992be7e1092054d220dc21edb00593fac74f5fc0c25adbd5df067",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\risk_qualification\\put\\reference_analysis.json"
+    },
+    {
+      "bytes": 2283,
+      "evidence_scope": "frozen_test_fixture_not_live_market_or_execution_evidence",
+      "fixture_path": "tests/fixtures/wpem_rc/wpem_round2/risk_qualification/put/risk_qualification_report.json",
+      "provenance_note": "round2 put risk qualification report; terminal blocked reference only",
+      "sha256": "bd0ae76e21bb2d84e8bb9b4ce06c21cb840f356298ef052cb45d4810a8a18d12",
+      "source_path_at_freeze_time": "C:\\Users\\Xu\\Documents\\中性回路整合工程\\.worktrees\\astra-signal-rating-v1\\.artifacts\\wpem_round2\\risk_qualification\\put\\risk_qualification_report.json"
+    }
+  ],
+  "fixture_count": 21,
+  "fixture_root": "tests/fixtures/wpem_rc",
+  "frozen_at": "2026-10-05",
+  "schema": "wpem_rc_test_fixture_provenance@1.0.0",
+  "scope": "Minimal non-secret JSON fixtures for WPEM RC unit tests. These preserve historical regression inputs only and do not establish live market, LLM, execution, or release evidence.",
+  "total_bytes": 2268752
+}

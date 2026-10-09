@@ -3009,7 +3009,31 @@ def _recover_repeated_json_dicts(text, original_error):
     return first
 
 
-def parse_chat_response(response):
+def _reject_duplicate_json_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("LLM response JSON object has duplicate key: " + str(key))
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value):
+    raise ValueError("LLM response JSON object has invalid constant: " + str(value))
+
+
+def _parse_strict_json_object(text):
+    value = json.loads(
+        text,
+        object_pairs_hook=_reject_duplicate_json_pairs,
+        parse_constant=_reject_json_constant,
+    )
+    if not isinstance(value, dict):
+        raise ValueError("LLM response must be a single JSON object")
+    return value
+
+
+def parse_chat_response(response, strict_json_object=False):
     choices = response.get("choices")
     if isinstance(choices, list) and choices:
         choice = _as_dict(choices[0])
@@ -3036,6 +3060,8 @@ def parse_chat_response(response):
         }
         diagnostics.update(_response_usage(response))
         raise LlmEmptyContentError(diagnostics)
+    if strict_json_object:
+        return _parse_strict_json_object(text)
     payload_text = _strip_json_fence(text)
     try:
         return json.loads(payload_text)
