@@ -1793,6 +1793,9 @@ class AstraWorkbench:
 
     def _data_health(self, now_ms: int, projection: Mapping[str, Any] | None = None) -> dict[str, Any]:
         health = self.data_engine.health(now_ms)
+        if self._wpem_archive is not None:
+            # A full archive stops WPEM memory; surface it instead of failing silently.
+            health["wpem_archive"] = self._wpem_archive.usage()
         if self._map_source_mode() != map_projection.SOURCE_MODE_PRODUCER_MANIFEST:
             return health
         projection = projection or {}
@@ -2260,6 +2263,8 @@ class AstraWorkbench:
                 "data_health": self._data_health(finished_at_ms, btc_projection),
             }
             self._attach_wpem(view, finished_at_ms)
+            if self._wpem_archive is not None and isinstance(view.get("data_health"), dict):
+                view["data_health"]["wpem_archive"] = self._wpem_archive.usage()
             self._remember_lockable(view, finished_at_ms)
             self._refresh_locked_candidates(view, finished_at_ms)
             view["locked_candidates"] = self.locked_candidate_list()
@@ -2494,7 +2499,9 @@ class AstraWorkbench:
         snapshot_id = item["snapshot"]["snapshot_id"]
         point = self._lockable_points.get(snapshot_id)
         if point is None:
-            raise WorkbenchError(409, "locked_packet_unavailable", "original contract packet did not validate")
+            cause = (self._candidate_from_view(local_view, item).get("lock_availability") or {}).get("error_type")
+            raise WorkbenchError(409, "locked_packet_unavailable" + (":" + cause if cause else ""),
+                                 "original contract packet did not validate")
         return point
 
     def _refresh_locked_candidates(self, view: dict[str, Any], now_ms: int) -> None:

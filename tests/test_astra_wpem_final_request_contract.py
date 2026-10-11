@@ -84,7 +84,8 @@ def test_old_bad_provider_shapes_and_nested_foreign_ids_remain_rejected():
     with pytest.raises(json.JSONDecodeError, match="Extra data"):
         llm_core.parse_chat_response(_response(two_objects))
 
-    foreign_id = package["counter_catalog_gap_reassess"]["counterclaims"][0]["id"]
+    # any inner WPEM catalog id that the outer bounded catalog does not offer as a counter
+    foreign_id = package["counter_catalog_gap_reassess"]["gaps"][0]["id"]
     outer_counters = {row["id"] for row in review_input["claim_catalog"]["counterclaims"]}
     assert foreign_id not in outer_counters
     foreign = deepcopy(answer)

@@ -12,6 +12,11 @@ import hashlib
 import json
 from typing import Any, Iterable, Mapping, Sequence
 
+if __package__:
+    from . import astra_underwriting_v20 as _contract_core
+else:
+    import astra_underwriting_v20 as _contract_core
+
 
 SCHEMA = "evidence_routing@1.0.0"
 VALIDATION_SCHEMA = "evidence_routing_validation@1.0.0"
@@ -122,6 +127,12 @@ def _fmt_usd(value: Any) -> str | None:
 def _fmt_pct(value: Any) -> str | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return f"{value:.2f}%"
+    return None
+
+
+def _fmt_signed_pct(value: Any) -> str | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value:+.2f}%"
     return None
 
 
@@ -459,8 +470,9 @@ def _snapshot_units(units: list[dict[str, Any]], binding: Mapping[str, Any], sna
              candidate_relevance="DIRECT", information_increment="NOVEL", q1_role="PRIMARY", q2_role="SUPPORT",
              qualification_status="QUALIFIED", freshness_status="CURRENT", wpem_binding=_wpem(evidence, "level", "delta", "path"),
              reason_cn=(
-                 f"短腿距离{_fmt_pct(liability.get('signed_distance_to_short_pct')) or '未知'}，"
-                 f"保护腿距离{_fmt_pct(liability.get('signed_distance_to_long_pct')) or '未知'}，"
+                 f"距短腿责任边界{_fmt_signed_pct(_contract_core.responsibility_distance_pct(snapshot, 'short')) or '未知'}，"
+                 f"距保护腿{_fmt_signed_pct(_contract_core.responsibility_distance_pct(snapshot, 'long')) or '未知'}"
+                 f"（正值表示仍在该边界外），"
                  f"盈亏平衡约{_fmt_price_list(liability.get('breakeven_usd')) or '未形成'}。"
              ),
              trace_refs=["snapshot.liability", "same_candidate_window.LevelDeltaPath.responsibility"])
@@ -922,7 +934,8 @@ def _evidence_units(units: list[dict[str, Any]], binding: Mapping[str, Any], sna
              trace_refs=["same_candidate_window.LevelDeltaPath", "same_candidate_window.coverage_summary"])
 
         if delta.get("changes"):
-            thinner = _delta_thins(delta)
+            # A credit or margin move is observed change, not automatic worsening:
+            # thinner credit can accompany falling risk (time decay, distance).
             changes = _m(delta.get("changes"))
             parts = []
             credit_text = _fmt_signed_btc(changes.get("visible_credit_btc_delta"), noun="可收信用")
@@ -938,14 +951,10 @@ def _evidence_units(units: list[dict[str, Any]], binding: Mapping[str, Any], sna
                  loop_relations=[_rel("OBSERVATION_ONLY", "INCONCLUSIVE", "wpem_delta_not_loop_score")],
                  dependency_group="PRICE_PATH", independence_status="PARTIALLY_DEPENDENT", derived_from=["wpem_window_path", "visible_credit"],
                  horizon=_hz("15M", "1H", "same_candidate_window.LevelDeltaPath.delta"),
-                 candidate_relevance="DIRECT", information_increment="COUNTER_EVIDENCE" if thinner else "NOVEL",
-                 q1_role="NONE", q2_role="COUNTER" if thinner else "SUPPORT",
+                 candidate_relevance="DIRECT", information_increment="NOVEL",
+                 q1_role="NONE", q2_role="REASSESS",
                  qualification_status=q_status, freshness_status="CURRENT" if path_observed else "UNKNOWN", wpem_binding=_wpem(evidence, "delta"),
-                 reason_cn=(
-                     f"同候选窗口内，{delta_text}；补偿变薄进入Q2反证。"
-                     if thinner else
-                     f"同候选窗口内，{delta_text}。"
-                 ),
+                 reason_cn=f"同候选窗口内，{delta_text}；补偿账变化需与责任位置一并重新权衡。",
                  q1_reason_cn=None,
                  q2_reason_cn=f"同候选窗口内，{delta_text}；Q2按当前补偿账重新权衡。",
                  trace_refs=["same_candidate_window.LevelDeltaPath.delta.changes"])
@@ -1030,15 +1039,6 @@ def _evidence_units(units: list[dict[str, Any]], binding: Mapping[str, Any], sna
              qualification_status="PARTIAL", freshness_status="UNKNOWN", wpem_binding=_wpem(evidence),
              reason_cn="Cross-section只作同截面对照，不能填补同候选路径或EV。",
              trace_refs=["current_cross_section.asof_join_rule", "current_cross_section.rows"])
-
-
-def _delta_thins(delta: Mapping[str, Any]) -> bool:
-    changes = _m(delta.get("changes"))
-    credit = changes.get("visible_credit_btc_delta")
-    margin = changes.get("M_ref_btc_delta")
-    return (isinstance(credit, (int, float)) and not isinstance(credit, bool) and credit < 0) or (
-        isinstance(margin, (int, float)) and not isinstance(margin, bool) and margin < 0
-    )
 
 
 def _missing_units(units: list[dict[str, Any]], binding: Mapping[str, Any], facts: Mapping[str, Any]) -> None:

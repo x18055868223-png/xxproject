@@ -323,11 +323,13 @@ def test_catalog_counters_gaps_reassess_and_release_identity_are_carried_for_aud
     catalog = evidence["counter_catalog_gap_reassess"]
 
     assert catalog["catalog_policy"]["unknown_important_counter"] == "CATALOG_GAP"
-    assert {row["id"] for row in catalog["counterclaims"]} >= {
-        "counter.risk.reference_not_qualified",
-        "counter.compensation.expected_payout_unknown",
+    # P0: missing knowledge is a gap (unknown), never a counterclaim.
+    assert {row["id"] for row in catalog["gaps"]} >= {
+        "gap.risk.reference_not_qualified",
+        "gap.compensation.mu_reference_missing",
     }
-    assert "gap.compensation.mu_reference_missing" in {row["id"] for row in catalog["gaps"]}
+    assert not any(row["id"].endswith(("reference_not_qualified", "expected_payout_unknown",
+                                       "path_unavailable")) for row in catalog["counterclaims"])
     assert "reassess.new_quote_or_window" in {row["id"] for row in catalog["reassess_conditions"]}
     assert evidence["release_identity"]["status"] == "NOT_PROVIDED_NOT_BLOCKING"
     assert evidence["release_identity"]["loaded_source_hash_or_account_inventory_required"] is False
@@ -407,7 +409,7 @@ def test_resealed_catalog_tamper_is_rejected_by_rebuild():
     packets_, reports = _covered_synthetic_sequence()
     evidence = _package_for_sequence(packets_, reports)
     tampered = copy.deepcopy(evidence)
-    tampered["counter_catalog_gap_reassess"]["counterclaims"][0]["id"] = "counter.fake"
+    tampered["counter_catalog_gap_reassess"]["gaps"][0]["id"] = "gap.fake"
     tampered = _reseal_review(tampered)
 
     with pytest.raises(ValueError, match="counter_catalog_gap_reassess_rebuild_mismatch"):

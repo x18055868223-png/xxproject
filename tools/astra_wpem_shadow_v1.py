@@ -680,21 +680,9 @@ def _build_catalog(
                              "同候选路径已观察到，但它不生成胜率、μ或交易许可。",
                              relation="SUPPORT", source_kind="program_fact", evidence_group="window_path",
                              evidence_hashes=[wh]))
-    counterclaims = [
-        _entry("counterclaims", "counter.risk.reference_not_qualified", "risk.qualification",
-               "旧风险资产本轮不合格，预计赔付仍未量化。",
-               relation="COUNTER", source_kind="program_fact", evidence_group="risk_reference",
-               evidence_hashes=[risk_status.get("reference_analysis_hash") or ph]),
-        _entry("counterclaims", "counter.compensation.expected_payout_unknown", "q2.expected_payout",
-               "μ为空时，Q2不能给正面经济倾向。",
-               relation="COUNTER", source_kind="program_fact", evidence_group="compensation_accounting",
-               evidence_hashes=[ph]),
-    ]
-    if window_evidence["path"].get("status") != "PATH_OBSERVED":
-        counterclaims.append(_entry("counterclaims", "counter.window.path_unavailable", "window.path",
-                                    "窗口缺口阻止路径结论。",
-                                    relation="COUNTER", source_kind="program_fact", evidence_group="window_path",
-                                    evidence_hashes=[wh]))
+    # Missing knowledge is not counter-evidence: unqualified risk reference and an
+    # unobserved path are recorded as gaps (unknowns), never as counters.
+    counterclaims = []
     if window_evidence["level"]["anchor_gex_wall_group"]["present_inputs"]:
         counterclaims.append(_entry("counterclaims", "counter.source.dependent_anchor_gex_wall",
                                     "source.anchor_gex_wall",
@@ -709,6 +697,15 @@ def _build_catalog(
                                     relation="COUNTER", source_kind="program_fact",
                                     evidence_group="compensation_accounting", evidence_hashes=[ph]))
     gaps = []
+    gaps.append(_entry("gaps", "gap.risk.reference_not_qualified", "risk.qualification",
+                       "旧风险资产本轮不合格，预计赔付仍未量化。",
+                       relation="GAP", source_kind="program_fact", evidence_group="risk_reference",
+                       evidence_hashes=[risk_status.get("reference_analysis_hash") or ph]))
+    if window_evidence["path"].get("status") != "PATH_OBSERVED":
+        gaps.append(_entry("gaps", "gap.window.path_unavailable", "window.path",
+                           "窗口缺口使路径无法判断；这是未知，不是恶化。",
+                           relation="GAP", source_kind="program_fact", evidence_group="window_path",
+                           evidence_hashes=[wh]))
     if window_evidence["level"].get("mu_ref_btc") is None:
         gaps.append(_entry("gaps", "gap.compensation.mu_reference_missing", "risk.mu_ref",
                            "μ缺失，预计赔付保持未知。",
@@ -759,14 +756,14 @@ def _mandatory(catalog: Mapping[str, Any], window_evidence: Mapping[str, Any], r
         "claims", "counterclaims", "gaps", "reassess_conditions")}
     mandatory = {
         "claim_ids": ["claim.window.level_contract_position", "claim.quote.visible_credit"],
-        "counter_ids": ["counter.risk.reference_not_qualified", "counter.compensation.expected_payout_unknown"],
-        "gap_ids": [],
+        "counter_ids": [],
+        "gap_ids": ["gap.risk.reference_not_qualified"],
         "reassess_condition_ids": ["reassess.new_quote_or_window", "reassess.risk_reference_qualification"],
     }
     if window_evidence["level"].get("mu_ref_btc") is None:
         mandatory["gap_ids"].append("gap.compensation.mu_reference_missing")
     if window_evidence["path"].get("status") != "PATH_OBSERVED":
-        mandatory["counter_ids"].append("counter.window.path_unavailable")
+        mandatory["gap_ids"].append("gap.window.path_unavailable")
     if window_evidence["completeness"]["real_window_status"] != "REAL_WINDOW_QUALIFIED":
         mandatory["gap_ids"].append("gap.window.real_native_window_missing")
     if "counter.compensation.nonpositive_margin" in ids["counterclaims"]:
@@ -930,8 +927,8 @@ def validate_shadow_selection(
     all_ids = selected_claims + selected_counters + selected_gaps + selected_reassess
     if len(all_ids) != len(set(all_ids)):
         raise ShadowValidationError("selected ids contain duplicates")
-    if not selected_counters:
-        raise ShadowValidationError("shadow selection requires at least one counterclaim")
+    # No generic "at least one counter": that forced unknowns into counters.
+    # Counters that must be addressed are listed in mandatory["counter_ids"].
     if not selected_reassess:
         raise ShadowValidationError("shadow selection requires at least one reassess condition")
     validator = projection["selection_validator"]

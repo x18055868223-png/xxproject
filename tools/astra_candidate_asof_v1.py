@@ -27,6 +27,8 @@ SCHEMA = "astra_candidate_asof_packet@1.0.0"
 INDEX_SCHEMA = "astra_candidate_research_index@1.0.0"
 WINDOW_VERSION = "candidate_window_coverage@1.0.0"
 DEFAULT_INTERVAL_MS = 300_000
+# Bump only when candidate replay/validation semantics change.
+REPLAY_METHOD_VERSION = "candidate_replay@1"
 DEFAULT_MAX_BYTES = 128 * 1024 * 1024
 DEFAULT_MAX_SAMPLES = 4096
 WINDOWS_MS = (900_000, 3_600_000)
@@ -298,7 +300,10 @@ def build_packet(snapshot: Mapping[str, Any], *, feature_catalog: Mapping[str, A
                                 "identity": row.get("identity"),
                                 "normalizer_version": (row.get("version") or {}).get("normalizer_version")})
                                 for row in records.values()}),
-                            "replay_validator_code_hashes": versions["replay_validator_code_hashes"],
+                            # Semantic replay identity, not source bytes: a comment-only or
+                            # unrelated code release must not restart the window.
+                            "replay_method": {"underwriting_schema": core.SCHEMA,
+                                              "method": REPLAY_METHOD_VERSION},
                             "candidate_price_basis": snapshot["market"]["reference_source"],
                             "model_price_identity": (feature_catalog or {}).get("price_identity"),
                             "model_hash": versions["risk_model_hash"]})
@@ -408,7 +413,19 @@ class CandidateResearchArchive:
                 raise ValueError("research_index_integrity_error")
         return rows
 
-    def sample(self, snapshot: Mapping[str, Any], *, recorded_at_ms: int,
+    def sample(self, snapshot: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
+        """Record the outcome so a stopped archive is visible, never silent."""
+        result = self._sample(snapshot, **kwargs)
+        self.last_sample_status = result if isinstance(result, Mapping) else {"status": "unknown"}
+        return result
+
+    def usage(self) -> dict[str, Any]:
+        used = sum(item.stat().st_size for item in self.path.rglob('*') if item.is_file()) if self.path.exists() else 0
+        last = getattr(self, "last_sample_status", None) or {}
+        return {"used_bytes": int(used), "max_bytes": self.max_bytes,
+                "status": last.get("status"), "reason": last.get("reason")}
+
+    def _sample(self, snapshot: Mapping[str, Any], *, recorded_at_ms: int,
                feature_catalog: Mapping[str, Any] | None = None,
                feature_catalog_error: str | None = None,
                raw_payload: Mapping[str, Any] | None = None, source_receipts: Mapping[str, Any] | None = None) -> dict[str, Any]:

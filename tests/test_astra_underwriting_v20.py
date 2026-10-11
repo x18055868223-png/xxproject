@@ -240,3 +240,13 @@ def test_llm_packet_cannot_be_reattributed_after_numeric_change():
     tampered["economics"]["reference_margin_btc"] = 999
     with pytest.raises(ValueError, match="changed since freeze"):
         u.llm_applicability_packet(tampered)
+
+
+def test_responsibility_distance_is_positive_outside_the_boundary_for_both_sides():
+    def snap(side, short, long, spot):
+        return {"contract": {"side": side}, "market": {"reference_price_usd": spot},
+                "liability": {"starts_at_usd": short, "protection_at_usd": long}}
+    assert u.responsibility_distance_pct(snap("put", 82500, 80500, 83000), "short") > 0
+    assert u.responsibility_distance_pct(snap("call", 83500, 85500, 83000), "short") > 0
+    assert u.responsibility_distance_pct(snap("put", 82500, 80500, 82000), "short") < 0
+    assert u.responsibility_distance_pct(snap("put", 82500, 80500, None), "short") is None

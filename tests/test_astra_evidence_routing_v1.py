@@ -316,7 +316,7 @@ def test_r3_neutral_pin_and_bearish_flow_coexist_without_winner():
     assert all("routing" not in row.get("reason_cn", "") for row in conflicts)
 
 
-def test_r4_wpem_delta_keeps_q1_separate_and_can_counter_q2_without_total_score():
+def test_r4_wpem_delta_keeps_q1_separate_and_asks_q2_reassessment_without_direction():
     snapshot = _snapshot()
     package = _package(snapshot)
     package["same_candidate_window"]["LevelDeltaPath"]["delta"]["changes"] = {
@@ -327,11 +327,15 @@ def test_r4_wpem_delta_keeps_q1_separate_and_can_counter_q2_without_total_score(
     delta = _unit(route, "wpem_delta")
 
     assert delta["q1_role"] == "NONE"
-    assert delta["q2_role"] == "COUNTER"
+    # P0: a credit/margin move is neither counter nor support by itself.
+    assert delta["q2_role"] == "REASSESS"
+    assert delta["information_increment"] == "NOVEL"
+    assert "反证" not in delta["reason_cn"]
     assert "可收信用减少0.00010000BTC" in delta["reason_cn"]
     assert "M变化=None" not in delta["reason_cn"]
     assert delta["q1_reason_cn"] is None
-    assert any(delta["evidence_id"] in item["evidence_ids"] for item in route["selection_summary"]["counters"])
+    assert any(delta["evidence_id"] in item["evidence_ids"] for item in route["selection_summary"]["reassess"])
+    assert not any(delta["evidence_id"] in item["evidence_ids"] for item in route["selection_summary"]["counters"])
     forbidden = {"score", "probability", "prob", "vote", "votes", "vote_count", "confidence"}
     assert not any(key.lower() in forbidden for unit in route["units"] for key in unit)
 

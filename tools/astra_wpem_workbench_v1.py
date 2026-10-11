@@ -128,12 +128,18 @@ def _sources(path):
     return sources
 
 
+def _same_object_rows(rows, snapshot, cutoff, limit=24):
+    """WPEM remembers one risk object: select its own rows, never the side's."""
+    return [row for row in rows if row['decision_asof_ms']<=cutoff
+            and row.get('candidate_id')==snapshot['candidate_id']][-limit:]
+
+
 def compose(snapshot, archive, native_path, *, raw_payload=None, engine=None, release=None, now_ms=None, cross_section=()):
     cutoff=snapshot['market']['valuation_ts_ms']
     receipts=packets.collect_source_receipts(snapshot,engine) if engine is not None else {}
     archive.sample(snapshot,recorded_at_ms=max(cutoff,now_ms or cutoff),raw_payload=raw_payload,source_receipts=receipts)
     rows=archive.rows()
-    selected=[row for row in rows if row['decision_asof_ms']<=cutoff and row['side']==snapshot['contract']['side']][-24:]
+    selected=_same_object_rows(rows,snapshot,cutoff)
     sequence=[archive.replay(row['snapshot_id']) for row in selected]
     if not any(p['snapshot']['snapshot_id']==snapshot['snapshot_id'] for p in sequence):
         sequence.append(packets.build_packet(snapshot,raw_payload=raw_payload,source_receipts=receipts))
@@ -253,9 +259,9 @@ def program_questions(snapshot, package):
     contract=snapshot['contract']; market=snapshot['market']; liability=snapshot['liability']
     side=contract['side']; adverse='下跌' if side=='put' else '上涨'
     q1=f"这张{side.title()}保单承担价格{adverse}进入卖出腿后的赔付责任。"
-    distance=liability.get('signed_distance_to_short_pct')
+    distance=packets.core.responsibility_distance_pct(snapshot,'short')
     if isinstance(distance,(int,float)):
-        q1+=f"当前相对卖出腿的有向距离为{distance:.2f}%；这描述责任位置。"
+        q1+=f"当前距卖出腿责任边界{distance:+.2f}%（正值表示仍在责任区外）；这描述责任位置。"
     account=snapshot['economics']; credit=account.get('visible_credit_btc'); fee=snapshot['fee'].get('amount_btc')
     parts=[]
     if isinstance(credit,(int,float)): parts.append(f"当前可收信用为{credit:.8f} BTC")

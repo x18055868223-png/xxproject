@@ -196,3 +196,47 @@ def test_invalid_peer_clock_is_non_comparable_and_does_not_block_valid_call_proo
             assert json.load(response)['evidence_hash']==proof['evidence_hash']
     finally:
         server.shutdown();server.server_close();thread.join(timeout=3)
+
+
+def test_window_rows_follow_one_object_not_the_side():
+    # P0: a locked contract must not be crowded out by, or "rotated" with,
+    # other candidates on the same side.
+    snapshot = {'candidate_id': 'locked', 'contract': {'side': 'put'}}
+    rows = []
+    for i in range(40):
+        rows.append({'candidate_id': 'default-%d' % (i % 3), 'side': 'put', 'decision_asof_ms': i})
+        if i % 4 == 0:
+            rows.append({'candidate_id': 'locked', 'side': 'put', 'decision_asof_ms': i})
+    rows.append({'candidate_id': 'locked', 'side': 'put', 'decision_asof_ms': 999})
+    selected = adapter._same_object_rows(rows, snapshot, cutoff=100)
+    assert {row['candidate_id'] for row in selected} == {'locked'}
+    assert len(selected) == 10
+    assert all(row['decision_asof_ms'] <= 100 for row in selected)
+
+
+def test_program_q1_uses_the_same_distance_convention_as_locked_compare(tmp_path):
+    # P0: positive = still outside the short-leg liability boundary, for both sides.
+    from tools import astra_underwriting_v20 as core
+    wb = wpem_workbench(tmp_path)
+    view = wb.refresh(now_ms=T)
+    for item in view['candidates']:
+        snap = item['snapshot']
+        pct = core.responsibility_distance_pct(snap, 'short')
+        text = item['current_questions']['q1']['summary_cn']
+        assert f"{pct:+.2f}%" in text and '正值表示仍在责任区外' in text
+        assert '有向距离' not in text
+
+
+def test_full_wpem_archive_is_visible_in_data_health_not_silent(tmp_path):
+    # P0: the archive hit its cap in production and stopped without any notice.
+    original, snapshots = make_workbench(tmp_path)
+    config = replace(original.config, wpem_enabled=True, research_max_bytes=2000)
+    wb = workbench.AstraWorkbench(config, discovery_capture=original.discovery_capture,
+                                  quote_capture=original.quote_capture, clock_ms=original.clock_ms)
+    write_fmz(snapshots, native_gate())
+    view = wb.refresh(now_ms=T)
+    archive = view['data_health']['wpem_archive']
+    assert archive['max_bytes'] == 2000
+    assert archive['status'] == 'stopped'
+    assert archive['reason'] == 'research_byte_budget_exhausted'
+    assert isinstance(archive['used_bytes'], int)

@@ -279,6 +279,17 @@ def signed_boundary_distance(side: Any, spot_usd: Any, boundary_usd: Any, *, bou
     }
 
 
+def responsibility_distance_pct(snapshot: Mapping[str, Any], leg: str = "short") -> float | None:
+    """Reader-facing liability distance: positive = still outside that leg's
+    adverse boundary (same convention as the locked follow-up comparison)."""
+    contract = snapshot.get("contract") or {}
+    liability = snapshot.get("liability") or {}
+    boundary = liability.get("starts_at_usd" if leg == "short" else "protection_at_usd")
+    distance = signed_boundary_distance(contract.get("side"), (snapshot.get("market") or {}).get("reference_price_usd"),
+                                        boundary, boundary_kind=leg)
+    return None if distance is None else distance["signed_distance_pct"]
+
+
 def _explicit_close_fee(fee: Any) -> tuple[float | None, str, list[str], Any]:
     reasons: list[str] = []
     if not isinstance(fee, Mapping):

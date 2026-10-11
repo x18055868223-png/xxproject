@@ -66,7 +66,7 @@ def test_r4_favorable_path_and_thinner_credit_remain_different_question_roles():
     w['LevelDeltaPath']['delta'].update(status='STRICT_SAME_CANDIDATE_DELTA',changes={'visible_credit_btc_delta':-0.0001})
     r=route.build_routing(s,e)
     assert asset(r,'wpem_window_path')['q1_role']=='PRIMARY'
-    assert asset(r,'wpem_delta')['q2_role']=='COUNTER'
+    assert asset(r,'wpem_delta')['q2_role']=='REASSESS'  # a change is not auto-classified as worse
     for name in ('fee','visible_credit','risk_reference'):
         assert asset(r,name)['q1_role'] not in {'PRIMARY','SUPPORT'}
 

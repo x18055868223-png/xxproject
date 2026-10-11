@@ -365,3 +365,19 @@ def test_bad_model_catalog_does_not_block_basic_archive(tmp_path):
     packet = wb.research_archive.replay(view["candidates"][0]["snapshot"]["snapshot_id"])
     assert packet["model_input"]["status"] == "risk_asset_unavailable"
     assert "risk_asset_export_failed:FileNotFoundError" in packet["gaps"]
+
+
+def test_code_release_does_not_break_window_comparability(monkeypatch):
+    # P0: a code deploy that keeps replay semantics must not restart the window.
+    snapshot, _raw = snapshot_at(T)
+    before = packets.build_packet(snapshot)["window"]["comparability_hash"]
+    real_read_bytes = packets.Path.read_bytes
+
+    def edited_source(self):
+        data = real_read_bytes(self)
+        return data + b"\n# comment-only edit\n" if self.name == "astra_underwriting_v20.py" else data
+
+    monkeypatch.setattr(packets.Path, "read_bytes", edited_source)
+    after = packets.build_packet(snapshot)
+    assert after["window"]["comparability_hash"] == before
+    assert after["versions"]["replay_validator_code_hashes"]  # still kept for audit
