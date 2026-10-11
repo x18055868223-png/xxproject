@@ -34,4 +34,5 @@ Thumbs.db
 .idea/
 .preview_signal_audit/
 .worktrees/
-.claude/
+.claude/*
+!.claude/skills/
