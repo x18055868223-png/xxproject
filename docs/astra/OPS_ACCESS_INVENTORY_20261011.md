@@ -41,3 +41,9 @@
 - 整机重启测试通过（11 个服务/定时器自动恢复，托管者自动登录）；robot 不随重启自动拉起，需在 FMZ 手动启动。
 
 回滚：恢复 `/root/cutover-backup-20261011101100/` 中三份 env 与 `/root/cutover-backup-20261011101334-tools/` 中工具文件；删除两个 `20-eu-native-source.conf`；`systemctl enable --now xxproject-fmz-bridge.timer`；`daemon-reload` 后重启 workbench。GEX 回滚为把 `/opt/gexmonitorapi/current` 指回 `releases/v2.6.3-stage.1`。
+
+## 2026-10-11 GEX 上游改版适配（commit ae4986a）
+
+- release `/opt/gexmonitorapi/releases/claude-ae4986a-upstream-redesign`（上一版 `claude-478e126-public-read`）；`/etc/gexmonitorapi.env` 改 `REFRESH_INTERVAL_SECONDS=900`（备份同目录 `.bak-*`）。
+- 上线后 `availability=ready`、`enrichment_availability=ready`，无缺失字段，已停供字段不再出现；响应约 31 KB。
+- 回滚：`ln -sfn /opt/gexmonitorapi/releases/claude-478e126-public-read /opt/gexmonitorapi/current && systemctl restart gexmonitorapi`。
