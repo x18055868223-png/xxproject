@@ -511,6 +511,25 @@ def test_legacy_producer_cannot_open_native_space_gate():
     assert context["market_facts"]["space_context"]["space_gate_reasons"] == ["space_gate_producer_version_mismatch"]
 
 
+@pytest.mark.parametrize("version", ["2.0.0", "2.0.3", "2.1.0", "2.10.7"])
+def test_any_fmz_2x_producer_keeps_the_fact_contract(version):
+    row = fmz_row()
+    row["decision"]["demo_version"] = version
+    context = f.from_evaluation_snapshot(row, T, source_hash="d" * 64)
+    assert "fmz_producer_version_mismatch" not in context["gap_reasons"]
+    assert f.fmz_producer_supported(version)
+
+
+@pytest.mark.parametrize("version", ["1.6.2", "3.0.0", "2.x", "v2.0.3", "", None, True, 2])
+def test_other_major_or_malformed_fmz_version_fails_closed(version):
+    row = fmz_row()
+    row["decision"]["demo_version"] = version
+    context = f.from_evaluation_snapshot(row, T, source_hash="d" * 64)
+    assert context["status"] == "background_only"
+    assert "fmz_producer_version_mismatch" in context["gap_reasons"]
+    assert not f.fmz_producer_supported(version)
+
+
 def test_synthetic_preview_context_is_explicit_and_never_current():
     context = f.synthetic_preview_context(T)
     assert context["status"] == "background_only"

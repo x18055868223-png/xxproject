@@ -13,8 +13,14 @@ else:
     import astra_underwriting_fact_context_v20 as facts
 
 SCHEMA = "wpem_native_qualification@1.1.0-shadow"
-# 2.0.3 keeps the 2.0.2 native evidence contract (GEX read path + dead config only).
-SUPPORTED_NATIVE_PRODUCER_VERSIONS = frozenset({"2.0.2", "2.0.3"})
+# Native evidence first exists in FMZ 2.0.2; later 2.x releases keep that contract.
+MIN_NATIVE_PRODUCER_VERSION = (2, 0, 2)
+
+
+def native_producer_supported(value) -> bool:
+    version = facts.fmz_version_tuple(value)
+    return (version is not None and facts.fmz_producer_supported(value)
+            and version >= MIN_NATIVE_PRODUCER_VERSION)
 WINDOW_SCHEMA = "wpem_qualified_window@1.0.0-shadow"
 MAX_GAP_MS = 600_000
 WINDOWS_MS = (900_000, 3_600_000)
@@ -78,7 +84,7 @@ def qualify_native(packet: Mapping[str, Any], native_raw: bytes | None = None,
             gaps.append("NATIVE_EVALUATION_SCHEMA_MISMATCH")
         if producer.get("schema_version") != "nrd.schema.v1.0.0":
             gaps.append("NATIVE_SCHEMA_VERSION_MISMATCH")
-        if decision.get("demo_version") not in SUPPORTED_NATIVE_PRODUCER_VERSIONS:
+        if not native_producer_supported(decision.get("demo_version")):
             gaps.append("NATIVE_PRODUCER_VERSION_MISMATCH")
         if decision.get("symbol") != "BTC":
             gaps.append("NATIVE_UNDERLYING_MISMATCH")
@@ -159,7 +165,7 @@ def qualify_native(packet: Mapping[str, Any], native_raw: bytes | None = None,
             gaps.append("NATIVE_MANIFEST_SOURCE_BINDING_MISSING")
         if fact.get("snapshot_ts_ms") != decision.get("ts_ms"):
             gaps.append("NATIVE_FACT_TIME_MISMATCH")
-        if fact.get("strategy_version") not in SUPPORTED_NATIVE_PRODUCER_VERSIONS or fact.get("status") != "current":
+        if not native_producer_supported(fact.get("strategy_version")) or fact.get("status") != "current":
             gaps.append("NATIVE_FACT_NOT_CURRENT_AT_ORIGINAL_ASOF")
     if evidence_kind not in {"native_producer", "synthetic_fixture"}:
         gaps.append("NATIVE_PROVENANCE_NOT_ATTESTED")

@@ -67,15 +67,16 @@ def test_synthetic_shape_passes_contract_but_cannot_be_native():
     assert native.qualify_native(packet, source, evidence_kind="native_producer")["status"] == "BLOCKED"
 
 
-@pytest.mark.parametrize("version", ["2.0.2", "2.0.3"])
+@pytest.mark.parametrize("version", ["2.0.2", "2.0.3", "2.1.0"])
 def test_supported_native_producer_versions_pass_contract(version):
     report = report_at(version=version)
     assert report["contract_qualified"] is True
     assert "NATIVE_PRODUCER_VERSION_MISMATCH" not in report.get("gaps", [])
 
 
-def test_unknown_native_producer_version_is_blocked():
-    report = report_at(version="9.9.9")
+@pytest.mark.parametrize("version", ["2.0.1", "1.6.2", "3.0.0", "garbage"])
+def test_pre_native_or_other_major_producer_is_blocked(version):
+    report = report_at(version=version)
     assert report["contract_qualified"] is False
     assert "NATIVE_PRODUCER_VERSION_MISMATCH" in report["gaps"]
 

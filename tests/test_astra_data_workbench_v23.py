@@ -67,6 +67,9 @@ def test_supported_native_export_version_preserves_old_gate_checks(tmp_path):
     assert result["status"] == "current"
     row["decision"]["demo_version"] = "2.0.3"
     result = context.from_evaluation_snapshot(row, fixtures.T, source_hash="a" * 64)
+    assert result["status"] == "current"
+    row["decision"]["demo_version"] = "3.0.0"
+    result = context.from_evaluation_snapshot(row, fixtures.T, source_hash="a" * 64)
     assert result["status"] == "background_only"
 
 

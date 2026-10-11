@@ -14,7 +14,23 @@ from typing import Any, Mapping
 
 SCHEMA = "astra_fmz_fact_context@2.0.0"
 REQUIRED_FMZ_VERSION = "2.0.0"
-SUPPORTED_FMZ_VERSIONS = {"2.0.0", "2.0.1", "2.0.2", "2.0.3"}  # same basic fact contract; 2.0.2 adds native evidence; 2.0.3 GEX path/config only
+# Compatibility follows the FMZ fact contract, not an exact release list: any
+# 2.x producer keeps it; a new major version is a breaking contract change.
+SUPPORTED_FMZ_MAJOR = 2
+
+
+def fmz_version_tuple(value: Any) -> tuple[int, int, int] | None:
+    if not isinstance(value, str):
+        return None
+    parts = value.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return None
+    return int(parts[0]), int(parts[1]), int(parts[2])
+
+
+def fmz_producer_supported(value: Any) -> bool:
+    version = fmz_version_tuple(value)
+    return version is not None and version[0] == SUPPORTED_FMZ_MAJOR
 MAX_AGE_MS = 300_000  # technical freshness, not a fitted trading interval
 MAX_SOURCE_TAIL_BYTES = 16 * 1024 * 1024
 
@@ -472,7 +488,7 @@ def from_evaluation_snapshot(record: Mapping[str, Any], valuation_ts_ms: int,
     factors = record.get("factor_snapshot") if isinstance(record.get("factor_snapshot"), Mapping) else {}
     price_observed = runtime.get("current_price_observed_ms")
     gap_reasons = []
-    if decision.get("demo_version") not in SUPPORTED_FMZ_VERSIONS:
+    if not fmz_producer_supported(decision.get("demo_version")):
         gap_reasons.append("fmz_producer_version_mismatch")
     if decision.get("symbol") != "BTC":
         gap_reasons.append("fmz_underlying_missing_or_mismatch")
@@ -494,7 +510,7 @@ def from_evaluation_snapshot(record: Mapping[str, Any], valuation_ts_ms: int,
             or not runtime.get("current_price_source")):
         gap_reasons.append("fmz_price_or_source_missing")
     space_gate, gate_gap = _native_space_gate(factors.get("space_gate"), valuation_ts_ms, max_age_ms)
-    if decision.get("demo_version") not in SUPPORTED_FMZ_VERSIONS:
+    if not fmz_producer_supported(decision.get("demo_version")):
         space_gate, gate_gap = None, "space_gate_producer_version_mismatch"
     market_facts = _market_facts(
         factors, record, decision, runtime, valuation_ts_ms, space_gate, gate_gap)
