@@ -7,6 +7,8 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 - `https://github.com/x18055868223-png/xxproject` (`xxproject`) is the primary project repository and the default target for project baseline, release, tag, and server-deployment decisions.
 - `signal-audit-deploy` is only a deployment/helper mirror for the static audit surface. Do not treat it as the project main repository, do not use it as the authoritative main branch, and do not conclude the project baseline is updated merely because changes were pushed there.
 - Before any commit, tag, push, or server deployment instruction, verify the active remote and state the intended target. If `origin` points to `signal-audit-deploy`, add or use the `xxproject` remote for project-level releases.
+- Current maintainer is Claude Code. Its working branch is `claude/astra` (worktree `.worktrees/claude-astra`, forked from `codex/astra-signal-rating-v1@918471d`). `codex/*` branches are the preserved previous Codex line: do not push to them, merge between the lines, or rebase across them unless the user explicitly asks.
+- Use plain `git` by default for commit, push, tag and verification (`git push xxproject <branch>`, then `git ls-remote` to confirm the SHA). Credentials come from Git Credential Manager. Use `gh` only for operations git cannot do (PRs, CI, releases) and only after the user has logged in with `gh auth login`.
 - Never force-update `xxproject/main` from a history that would delete or replace the wider project asset tree. If histories differ, integrate changes on top of `xxproject/main` in an isolated worktree and preserve the full project asset surface.
 - For any signal audit frontend version update, do not commit, push, tag, or deploy until the local audit page has been reviewed in the browser and the user explicitly confirms: `当前本地页面可推送`. This gate applies even when tests pass.
 - Signal audit page additions must keep the current reader-style information architecture and follow the product rule: `重点清晰、逻辑贯通、关键内容全面`. Put high-signal interpretation and complete market-state skeletons first; keep raw IDs, hashes, machine flags, and field-level traces in lower trace/metadata areas.
@@ -21,7 +23,7 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 - 服务器部署验收建议使用 `SESSION_CONTEXT_REQUIRED=1`；如果最新真实卡缺 `SignalSessionPremiseDurabilityContext`、`clock_window`、`backtest_delta_pp`、`validation_basis` 或 `decision_matrix.temporal_durability`，或仍带 `compat_backfill_applied=true`，或 `identity.strategy_version` 不是当前 FMZ 交付版本，不得封版。
 - 使用 worktree 发布时，完成后必须同步根目录可见的 `demo/最新交付物/` 资产，或明确告知用户当前可见目录不是发布工作树；避免“远端已更新、本地交付物未更新”的混淆。
 
-# Codex orchestration policy
+# Agent orchestration policy
 
 ## Project memory
 
@@ -91,18 +93,20 @@ This repository contains the neutral-loop integration workspace, deployable FMZ 
 
 ## Agent selection
 
-只使用本项目 `.codex/agents/` 下定义并固定模型的 agent：
+按以下四个角色委派，具体 agent 取决于当前使用的工具：
 
-- explorer：代码库探索、调用链追踪、根因调查，不修改文件。
-- worker：执行边界明确的代码修改，仅修改分配给它的文件。
-- reviewer：独立检查正确性、安全、兼容性、回归和测试缺口，不修改文件。
-- default：当任务不适合上述专门角色时，执行边界明确的通用分析任务。
+| 角色 | 职责 | Claude Code（当前维护者） | Codex（历史配置） |
+|---|---|---|---|
+| explorer | 代码库探索、调用链追踪、根因调查，不修改文件 | `Explore` agent | `.codex/agents/explorer.toml` |
+| worker | 执行边界明确的代码修改，仅修改分配给它的文件 | `general-purpose` agent，明确文件所有权 | `.codex/agents/worker.toml` |
+| reviewer | 独立检查正确性、安全、兼容性、回归和测试缺口，不修改文件 | `/code-review`，或只读 `general-purpose` 复核 | `.codex/agents/reviewer.toml` |
+| default | 不适合上述角色的边界明确的通用分析 | `general-purpose` agent | `.codex/agents/default.toml` |
 
-不得主动使用没有固定模型配置的临时 agent 类型。
+Claude Code 子 agent 继承主会话模型，不另行指定较低模型或较低推理强度。Codex 继续只使用 `.codex/agents/` 中固定模型（gpt-5.5 / xhigh）的配置。
 
-不得静默将这些 agent 替换为较低模型或较低推理强度。
+不得静默将委派替换为较低模型或较低推理强度。
 
-如果 gpt-5.5 或 xhigh 暂时不可用：
+如果指定的模型或配置暂时不可用：
 
 - 明确报告模型或容量问题；
 - 不得伪装成已经使用了指定配置；
