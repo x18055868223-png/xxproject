@@ -11,7 +11,7 @@ Astra 是 xxproject 中把市场证据落实到具体期权合同的工作台。
 | 权威仓库 | `https://github.com/x18055868223-png/xxproject`，remote 名 `xxproject` |
 | 本机续作目录 | `C:/Users/Xu/Documents/中性回路整合工程/.worktrees/astra-signal-rating-v1` |
 | 业务版本记录 | [阶段清单](../../deploy/signal_audit/phase_release_manifest.json)、[候选文件图](../../deploy/signal_audit/release_candidate_manifest.json) |
-| FMZ 信号层 | [最新单文件](../../demo/最新交付物/neutral_regulation_demo_fmz.py)，内部版本 `2.0.3` |
+| FMZ 信号层 | [最新单文件](../../demo/最新交付物/neutral_regulation_demo_fmz.py)，内部版本 `2.0.4` |
 | 工作约定 | [AGENTS](../../AGENTS.md)、[项目记忆](../../PROJECT_MEMORY.md) |
 
 `origin` 指向 `signal-audit-deploy` 辅助镜像；项目资料和代码继续维护在 `xxproject` 分支上。

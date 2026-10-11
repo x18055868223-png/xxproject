@@ -5,8 +5,11 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import bundle_fixture, fixture_payloads, gex_fixture, install_payloads
 
-from gexmonitorapi.cache import MetricsCache
+from gexmonitorapi.cache import RANK_METRICS, MetricsCache
+from gexmonitorapi.config import Settings
+from gexmonitorapi.json_source import PublicJsonSource
 from gexmonitorapi.models import SECTION_FIELDS, SECTIONS, empty_section_data
 
 
@@ -19,7 +22,7 @@ class StaticScraper:
             "volatility": "IV/RV RATIO 1.26x PCR (VOLUME) 0.93",
             "flow": "CALL PREMIUM $27.7M PUT PREMIUM $51.8M P/C RATIO 1.88",
         }
-        return texts[section]
+        return texts.get(section, "")  # gamma_profiles/expiry: no page source
 
 
 class FailingScraper:
@@ -69,7 +72,7 @@ class SequenceScraper:
                 f"CALL / PUT TILT {row['call_share']:g}% Call P/C RATIO {row['put_call_ratio']}"
             ),
         }
-        return texts[section]
+        return texts.get(section, "")  # gamma_profiles/expiry: no page source
 
 
 @pytest.mark.asyncio
@@ -122,7 +125,7 @@ async def test_public_snapshot_failure_keeps_legacy_fetch_age_behavior() -> None
         total_net_gex=-1.0,
         total_gex_fetched_ms=_ms("2026-06-03T09:30:00+00:00"),
         content_hash="hash-failed",
-        errors={"gex": "blocked", "volatility": "blocked"},
+        errors={"gex": "blocked", "bundle": "blocked"},
     )
     cache = MetricsCache(
         SnapshotScraper([first, second]),
@@ -171,19 +174,19 @@ async def test_refresh_all_accumulates_history_and_adds_rolling_rank(tmp_path) -
     now_values = iter(
         [
             datetime(2026, 6, 1, 9, tzinfo=UTC) + timedelta(seconds=i)
-            for i in range(4)
+            for i in range(len(SECTIONS))
         ]
         + [
             datetime(2026, 6, 20, 9, tzinfo=UTC) + timedelta(seconds=i)
-            for i in range(4)
+            for i in range(len(SECTIONS))
         ]
         + [
             datetime(2026, 6, 25, 9, tzinfo=UTC) + timedelta(seconds=i)
-            for i in range(4)
+            for i in range(len(SECTIONS))
         ]
         + [
             datetime(2026, 7, 5, 9, tzinfo=UTC) + timedelta(seconds=i)
-            for i in range(4)
+            for i in range(len(SECTIONS))
         ]
     )
     history_file = tmp_path / "metrics_history.jsonl"
@@ -205,10 +208,11 @@ async def test_refresh_all_accumulates_history_and_adds_rolling_rank(tmp_path) -
     assert rank["metrics"]["gex_board.total_net_gex"]["value"] == -50000000.0
     assert rank["metrics"]["gex_board.total_net_gex"]["percentile"] == pytest.approx(2 / 3)
     assert rank["metrics"]["gex_board.total_net_gex"]["abs_percentile"] == pytest.approx(2 / 3)
-    assert rank["metrics"]["volatility.iv_rv_ratio"]["value"] == 0.83
-    assert rank["metrics"]["volatility.iv_rv_ratio"]["percentile"] == pytest.approx(2 / 3)
-    assert rank["metrics"]["flow.call_share_pct"]["value"] == 38.0
-    assert rank["metrics"]["flow.call_share_pct"]["percentile"] == pytest.approx(2 / 3)
+    assert rank["metrics"]["volatility.pcr"]["value"] == 1.63
+    assert rank["metrics"]["volatility.pcr"]["percentile"] == pytest.approx(1.0)
+    assert rank["metrics"]["flow.put_call_ratio"]["value"] == 1.63
+    assert rank["metrics"]["flow.put_call_ratio"]["percentile"] == pytest.approx(2 / 3)
+    assert set(rank["metrics"]) == set(RANK_METRICS)
     assert len(history_file.read_text(encoding="utf-8").splitlines()) == 4
 
 
@@ -330,3 +334,238 @@ def test_cached_invalid_clocks_do_not_crash_or_become_unknown_without_error(tmp_
         })["gex_board.total_net_gex"]
         assert result["generated_at_ms"] is None
         assert result["time_errors"]
+
+
+# --- public JSON (dashboard-bundle + gex-latest) cache behaviour -----------
+
+REMOVED_NAMES = ("iv_rv_ratio", "call_premium", "put_premium", "call_put_bias", "abnormal_signal", "call_share_pct")
+
+
+def _json_cache(monkeypatch, payloads: dict, **kwargs) -> MetricsCache:
+    install_payloads(monkeypatch, payloads)
+    source = PublicJsonSource(Settings(asset="BTC", request_timeout_seconds=1))
+    kwargs.setdefault("now", lambda: datetime(2026, 10, 11, 9, tzinfo=UTC))
+    return MetricsCache(source, **kwargs)
+
+
+def _assert_no_removed_fields(payload: dict) -> None:
+    dumped = json.dumps(payload)
+    for name in REMOVED_NAMES:
+        assert name not in dumped, name
+
+
+@pytest.mark.asyncio
+async def test_public_json_fixture_payload_is_ready(monkeypatch) -> None:
+    cache = _json_cache(monkeypatch, fixture_payloads())
+    payload = await cache.refresh("all")
+
+    assert payload["availability"] == "ready"
+    assert payload["stale"] is False
+    assert payload["enrichment_availability"] == "ready"
+    assert payload["enrichment_stale"] is False
+    assert payload["missing_fields"] == []
+    assert payload["field_status"] == {}
+    for section in SECTIONS:
+        assert tuple(payload[section]) == SECTION_FIELDS[section]
+        assert section in payload["sections"]
+    assert set(payload["gex_time_semantics"]["fields"]) == {
+        f"{s}.{f}" for s in SECTIONS for f in SECTION_FIELDS[s]
+    }
+    assert "gex_time_semantics" not in payload["source_metadata"]
+    assert payload["rank"]["metrics"]["flow.whale_24h.net_flow_usd"]["value"] == pytest.approx(355603.67684881645)
+    _assert_no_removed_fields(payload)
+
+
+@pytest.mark.asyncio
+async def test_empty_pcr_rows_make_enrichment_partial_not_core(monkeypatch) -> None:
+    bundle = bundle_fixture()
+    bundle["pcr"]["data"] = []
+    payload = await _json_cache(monkeypatch, fixture_payloads(bundle=bundle)).refresh("all")
+    # top-level availability describes the signal core (gex-latest sections)
+    assert payload["availability"] == "ready"
+    assert payload["enrichment_availability"] == "partial"
+    assert "volatility.pcr" in payload["missing_fields"]
+    assert payload["field_status"]["volatility.pcr"]["status"] == "missing"
+
+
+@pytest.mark.asyncio
+async def test_missing_zero_dte_profile_is_optional_and_ready(monkeypatch) -> None:
+    gex = gex_fixture()
+    del gex["profiles"]["0dte"]
+    payload = await _json_cache(monkeypatch, fixture_payloads(gex=gex)).refresh("all")
+    assert payload["availability"] == "ready"
+    assert payload["gamma_profiles"]["zero_dte"] is None
+    assert "gamma_profiles.zero_dte" not in payload["missing_fields"]
+
+
+@pytest.mark.asyncio
+async def test_bundle_error_keeps_cached_bundle_sections_only(monkeypatch) -> None:
+    cache = _json_cache(monkeypatch, fixture_payloads())
+    first = await cache.refresh("all")
+    gex = gex_fixture()
+    gex["total_gex"] = -5_000_000.0
+    install_payloads(monkeypatch, fixture_payloads(bundle=OSError("bundle down"), gex=gex))
+
+    payload = await cache.refresh("all")
+
+    # a bundle outage degrades enrichment only; the signal core stays usable
+    assert payload["stale"] is False
+    assert payload["availability"] == "ready"
+    assert payload["enrichment_stale"] is True
+    assert payload["enrichment_availability"] == "partial"
+    assert payload["gex_board"]["total_net_gex"] == -5_000_000.0
+    assert payload["gex_board"]["market_state"] == "negative_gamma"
+    for section in ("volatility", "flow", "expiry"):
+        assert payload[section] == first[section]
+        assert "bundle down" in payload["sections"][section]["last_error"]
+    for section in ("gex_board", "gamma_exposure", "gamma_profiles"):
+        assert payload["sections"][section]["last_error"] is None
+    assert payload["gex_time_semantics"]["fields"]["volatility.pcr"]["generated_at_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_removed_fields_never_survive_old_cache_restore(monkeypatch, tmp_path) -> None:
+    cache_file = tmp_path / "cache.json"
+    legacy_time = {
+        "source_ref": "volatility-metrics.metrics.ivRvRatio",
+        "observed_at_ms": None,
+        "generated_at_ms": 1780000000000,
+        "fetched_at_ms": 1780000000000,
+        "time_basis": "volatility_metrics_timestamp",
+        "time_errors": [],
+    }
+    old_fields = {
+        "volatility.iv_rv_ratio": legacy_time,
+        "flow.call_premium": legacy_time,
+        "flow.put_premium": legacy_time,
+        "flow.call_put_bias": legacy_time,
+        "flow.abnormal_signal": legacy_time,
+        "volatility.pcr": {**legacy_time, "source_ref": "volatility-metrics.metrics.pcrVolume"},
+    }
+    old_payload = {
+        "asset": "BTC",
+        "stale": False,
+        "source_mode": "public_json",
+        "source_metadata": {"source_mode": "public_json", "gex_time_semantics": {"fields": old_fields}},
+        "gex_time_semantics": {"schema_version": "gex_time_semantics@1.0.0", "fields": old_fields},
+        "gex_board": {"total_net_gex": 1.0, "dvol": 40.0, "market_state": "positive_gamma"},
+        "volatility": {"iv_rv_ratio": 0.9, "pcr": 0.7, "term_structure": []},
+        "flow": {
+            "call_premium": None, "put_premium": None, "call_put_bias": "60.0% Call",
+            "put_call_ratio": 0.7, "abnormal_signal": None,
+        },
+        "missing_fields": ["flow.call_premium", "flow.put_premium", "flow.abnormal_signal"],
+        "field_status": {
+            "flow.call_premium": {"status": "missing", "reason": "not_available_from_public_json"},
+            "flow.abnormal_signal": {"status": "missing", "reason": "not_available_from_public_json"},
+        },
+        "sections": {
+            "volatility": {
+                "fetched_at": "2026-06-03T09:00:00+00:00",
+                "last_success_at": "2026-06-03T09:00:00+00:00",
+                "missing_fields": [],
+                "gex_time_semantics": {"volatility.iv_rv_ratio": legacy_time},
+            },
+            "flow": {
+                "fetched_at": "2026-06-03T09:00:00+00:00",
+                "last_success_at": "2026-06-03T09:00:00+00:00",
+                "missing_fields": ["flow.call_premium", "flow.put_premium", "flow.abnormal_signal"],
+                "field_status": {"flow.call_premium": {"status": "missing"}},
+            },
+        },
+    }
+    cache_file.write_text(json.dumps(old_payload), encoding="utf-8")
+
+    cache = _json_cache(monkeypatch, fixture_payloads(), cache_file=cache_file)
+    await cache.load()
+    restored = await cache.get_info()
+    _assert_no_removed_fields(restored)
+    assert restored["volatility"]["pcr"] == 0.7
+    assert tuple(restored["volatility"]) == SECTION_FIELDS["volatility"]
+    assert tuple(restored["flow"]) == SECTION_FIELDS["flow"]
+
+    refreshed = await cache.refresh("all")
+    _assert_no_removed_fields(refreshed)
+    _assert_no_removed_fields(json.loads(cache_file.read_text(encoding="utf-8")))
+
+
+@pytest.mark.asyncio
+async def test_rank_only_compares_samples_with_same_source(monkeypatch, tmp_path) -> None:
+    history_file = tmp_path / "metrics_history.jsonl"
+    old_lines = [
+        # Pre-redesign sample: no metric_sources recorded.
+        {
+            "asset": "BTC",
+            "fetched_at": "2026-10-01T09:00:00+00:00",
+            "metrics": {
+                "gex_board.total_net_gex": 1.0,
+                "volatility.pcr": 9.0,
+                "volatility.iv_rv_ratio": 1.2,
+                "flow.call_share_pct": 40.0,
+            },
+        },
+        {
+            "asset": "BTC",
+            "fetched_at": "2026-10-02T09:00:00+00:00",
+            "metrics": {"volatility.pcr": 0.1, "gex_board.dvol": 30.0},
+            "metric_sources": {"volatility.pcr": "some-other-source", "gex_board.dvol": "gex-latest.dvol"},
+        },
+    ]
+    history_file.write_text("".join(json.dumps(line) + "\n" for line in old_lines), encoding="utf-8")
+
+    cache = _json_cache(monkeypatch, fixture_payloads(), history_file=history_file)
+    await cache.load()
+    payload = await cache.refresh("all")
+    metrics = payload["rank"]["metrics"]
+
+    assert set(metrics) == set(RANK_METRICS)
+    assert metrics["volatility.pcr"]["sample_count"] == 1
+    assert metrics["volatility.pcr"]["quality"] == "single_sample"
+    assert metrics["gex_board.dvol"]["sample_count"] == 2
+    # Legacy gex-latest.total_gex samples keep continuity (same upstream field).
+    assert metrics["gex_board.total_net_gex"]["sample_count"] == 2
+    newest = json.loads(history_file.read_text(encoding="utf-8").splitlines()[-1])
+    assert newest["metric_sources"]["volatility.pcr"] == "dashboard-bundle.pcr.data[latest].pcr_volume"
+    assert newest["metric_sources"]["flow.whale_24h.net_flow_usd"].startswith(
+        "dashboard-bundle.whaleFlowSummary.summary24h"
+    )
+    assert set(newest["metrics"]) == set(RANK_METRICS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_gex", [
+    {"error": "rate limited"},
+    "missing_timestamp",
+    "upstream_stale",
+])
+async def test_invalid_gex_payload_is_a_core_error_and_keeps_last_good(monkeypatch, bad_gex) -> None:
+    cache = _json_cache(monkeypatch, fixture_payloads())
+    first = await cache.refresh("all")
+    first_time = first["gex_time_semantics"]["fields"]["gex_board.total_net_gex"]["generated_at_ms"]
+    if bad_gex == "missing_timestamp":
+        bad_gex = gex_fixture()
+        bad_gex["total_gex"] = 1.0
+        del bad_gex["timestamp"]
+    elif bad_gex == "upstream_stale":
+        bad_gex = gex_fixture()
+        bad_gex["total_gex"] = 1.0
+        bad_gex["stale"] = True
+    install_payloads(monkeypatch, fixture_payloads(gex=bad_gex))
+
+    payload = await cache.refresh("all")
+
+    assert payload["stale"] is True
+    assert payload["availability"] == "partial"
+    assert payload["gex_board"]["total_net_gex"] == first["gex_board"]["total_net_gex"]
+    assert payload["gex_time_semantics"]["fields"]["gex_board.total_net_gex"]["generated_at_ms"] == first_time
+    assert payload["sections"]["gex_board"]["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_pcr_uses_latest_row_regardless_of_order(monkeypatch) -> None:
+    bundle = bundle_fixture()
+    latest = dict(bundle["pcr"]["data"][0])
+    older = dict(latest, timestamp="2026-10-10T08:00:00.000Z", pcr_volume=9.9, pcr_oi=9.9)
+    bundle["pcr"]["data"] = [latest, older]
+    payload = await _json_cache(monkeypatch, fixture_payloads(bundle=bundle)).refresh("all")
+    assert payload["volatility"]["pcr"] == latest["pcr_volume"]

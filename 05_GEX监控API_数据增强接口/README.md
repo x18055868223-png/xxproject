@@ -1,6 +1,6 @@
 # ⑤ GEX Monitor API · 数据增强接口
 
-> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前运行资产，服务版本 `gexmonitorapi=0.2.1`。当前权威接口是 Bearer 保护的 `/v1/info`，包含 GEX/Gamma/IV-RV/P-C/flow 与本地历史 rank。本文作为工程模块入口；因子语义先读 [`因子文档/00_GEX监控API总览.md`](因子文档/00_GEX监控API总览.md)。
+> 当前模块口径（r2.2 / 2026-06-19）：本目录是当前运行资产，服务版本 `gexmonitorapi=0.2.1`。当前权威接口是 Bearer 保护的 `/v1/info`，包含 GEX/Gamma/分桶墙位/IV/P-C/大单流/到期 与本地历史 rank（2026-10 起数据源为 gex-latest + dashboard-bundle）。本文作为工程模块入口；因子语义先读 [`因子文档/00_GEX监控API总览.md`](因子文档/00_GEX监控API总览.md)。
 
 ## 0. 工程收纳
 
@@ -28,21 +28,21 @@
 
 | 源接口 | 用途 |
 | --- | --- |
-| `/api/gex-latest?asset=BTC&exchange=all&lite=true` | 中轴、现价、总 GEX、DVOL、四个墙位、磁吸位、vol trigger |
-| `/api/volatility-metrics?asset=BTC` | PCR、Call/Put 成交量和 OI、IV rank/percentile、IV/RV、DVOL |
-| `/api/options-chain?asset=BTC` | 期权链交叉校验与墙位备用重算（`OPTIONS_CHAIN_CROSSCHECK=true`） |
-| `/api/price?asset=BTC` | 现价备用源 |
+| `/api/gex-latest?asset=BTC&exchange=all&lite=true` | 总 GEX、flip、现价、DVOL、四个墙位、磁吸位、vol trigger、0DTE/周度分桶、对冲流情景 |
+| `/api/dashboard-bundle?asset=BTC` | PCR（成交量/持仓）、ATM IV、IV 分位、期限结构、25Δ RR、大单流 1h/24h、最大痛点、最近到期摘要；现价/DVOL 备用 |
+| `/api/options-chain?asset=BTC` | 期权链墙位交叉校验（`OPTIONS_CHAIN_CROSSCHECK=true`，失败不置 stale） |
 
-`/v1/info` 保持 `gex_board`、`gamma_exposure`、`volatility`、`flow` 四段结构。公开 JSON 无可靠权利金流时，
-`call_premium`、`put_premium`、`abnormal_signal` 保持 `null`，不会用成交量伪造权利金；`call_put_bias` 明确标记为派生的成交量占比。
+2026-10 上游改版后不再调用 `/api/volatility-metrics`（已变为大体积时间序列）与 `/api/price`。
+`/v1/info` 为六段结构：`gex_board`、`gamma_exposure`、`gamma_profiles`、`volatility`、`flow`、`expiry`。
+`iv_rv_ratio`、`call_premium`、`put_premium`、`call_put_bias`、`abnormal_signal` 及 rank 指标 `flow.call_share_pct` 已移除。
 
 ## 2. 接口
 
 | Method | Path | 鉴权 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/health` | 否 | 服务存活与版本 |
-| `GET` | `/v1/info` | Bearer | 返回四组指标字典 + rank 分位上下文 + 抓取时间 + 缓存状态 + 缺失字段 |
-| `POST` | `/v1/refresh?section=all` | Bearer | 立即重抓。`section` ∈ `gex_board\|gamma_exposure\|volatility\|flow\|all` |
+| `GET` | `/v1/info` | Bearer | 返回六组指标字典 + rank 分位上下文 + 抓取时间 + 缓存状态 + 缺失字段 |
+| `POST` | `/v1/refresh?section=all` | Bearer | 立即重抓。`section` ∈ `gex_board\|gamma_exposure\|gamma_profiles\|volatility\|flow\|expiry\|all` |
 
 鉴权：除 `/health` 外所有端点都要求请求头 `Authorization: Bearer <API_TOKEN>`，否则返回 `401`。
 
@@ -51,30 +51,31 @@
 ```json
 {
   "asset": "BTC",
-  "fetched_at": "2026-06-03T09:00:00+00:00",
+  "fetched_at": "2026-10-11T08:53:10+00:00",
   "stale": false,
   "availability": "ready",
-  "gex_board":      { "total_net_gex": -62730587.7, "dvol": 43.1, "market_state": "negative_gamma" },
-  "gamma_exposure": { "n2": null, "n1": null, "flip_point": 67388.83, "spot_price": 66950.91, "...": null },
-  "volatility":     { "iv_rv_ratio": null, "pcr": null, "term_structure": [] },
-  "flow":           { "call_premium": null, "put_premium": null, "call_put_bias": null, "...": null },
-  "missing_fields": ["gamma_exposure.n2", "..."],
-  "field_status":   { "gamma_exposure.n2": { "status": "missing", "reason": "not_found_in_rendered_page" } },
+  "gex_board":      { "total_net_gex": 158146534.89, "dvol": 36.89, "market_state": "positive_gamma" },
+  "gamma_exposure": { "flip_point": 82725.44, "spot_price": 82997.28, "p1": 90000.0, "n1": 78000.0, "hedging_flows": { "...": "..." }, "...": null },
+  "gamma_profiles": { "zero_dte": { "p1": 84000.0, "walls": { "...": "..." } }, "weekly": { "...": "..." } },
+  "volatility":     { "pcr": 0.69, "pcr_oi": 0.696, "atm_iv": 26.88, "iv_percentile": 16.0, "term_structure": [], "rr_skew": [] },
+  "flow":           { "put_call_ratio": 0.69, "call_volume": 69903.4, "whale_24h": { "net_flow_usd": 355603.68, "...": 0 }, "...": null },
+  "expiry":         { "max_pain_price": 78000.0, "max_pain_target_expiry": "30OCT26", "next_expiry": { "expiry": "12OCT26", "...": null } },
+  "missing_fields": [],
+  "field_status":   {},
   "rank": {
     "window": { "mode": "rolling_30d_or_available", "lookback_days": 30, "sample_count": 96 },
     "metrics": {
-      "gex_board.total_net_gex": { "value": -62730587.7, "percentile": 0.22, "rank_pct": 22.0, "abs_percentile": 0.81 },
-      "volatility.iv_rv_ratio": { "value": 0.83, "percentile": 0.18, "rank_pct": 18.0 },
-      "flow.call_share_pct": { "value": 38.0, "percentile": 0.44, "rank_pct": 44.0 }
+      "gex_board.total_net_gex": { "value": 158146534.89, "percentile": 0.62, "rank_pct": 62.0, "abs_percentile": 0.81 },
+      "volatility.pcr": { "value": 0.69, "percentile": 0.18, "rank_pct": 18.0 }
     }
   }
 }
 ```
 
-- `availability`：`ready`（全部命中）/ `partial`（部分缺失或有错误）/ `missing`（从未成功）。
-- `stale`：上一次刷新是否有失败；失败不会清空旧缓存。
-- 抓不到的字段不会让请求失败，而是记入 `missing_fields` 与 `field_status`。
-- `rank`：每次全量刷新追加一行本地 JSONL 历史；超过 30 天后只用最近 30 天计算当前分位，但保留全量历史；`quality` 在窗口覆盖满 15 天时直接进入 `ok`，15 天以内为 `warming_up`。
+- `availability`：`ready`（必需字段齐全）/ `partial`（必需字段缺失，或 `gex`/`bundle` 请求出错）/ `missing`（从未成功）。
+- `stale`：上一次刷新中 `gex` 或 `bundle` 失败；失败不会清空旧缓存，只保留失败来源对应的段。
+- 抓不到的字段不会让请求失败，而是记入 `missing_fields` 与 `field_status`；可选字段（如 `gamma_profiles.zero_dte`）缺失只标 `optional_missing`。
+- `rank`：每次全量刷新追加一行本地 JSONL 历史（含 `metric_sources`），只与同一上游字段的历史样本比较；超过 30 天后只用最近 30 天，`quality` 窗口满 15 天进入 `ok`。
 
 > 每个字段的单位与真实语义见 [`docs/info接口语义文档.md`](docs/info接口语义文档.md)；完整响应示例见 [`docs/info.sample.json`](docs/info.sample.json)。
 

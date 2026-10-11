@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from gexmonitorapi.app import create_app
 from gexmonitorapi.cache import MetricsCache
 from gexmonitorapi.config import Settings
+from gexmonitorapi.models import SECTIONS
 
 
 class FakeCache:
@@ -35,14 +36,10 @@ class FakeCache:
                 "p1": None,
                 "p2": None,
             },
-            "volatility": {"iv_rv_ratio": None, "pcr": None, "term_structure": []},
-            "flow": {
-                "call_premium": None,
-                "put_premium": None,
-                "call_put_bias": None,
-                "put_call_ratio": None,
-                "abnormal_signal": None,
-            },
+            "volatility": {"pcr": None, "pcr_oi": None, "term_structure": [], "atm_iv": None,
+                           "iv_percentile": None, "rr_skew": []},
+            "flow": {"put_call_ratio": None, "call_volume": None, "put_volume": None,
+                     "call_oi": None, "put_oi": None, "whale_1h": None, "whale_24h": None},
             "missing_fields": ["gamma_exposure.n2"],
             "field_status": {
                 "gamma_exposure.n2": {
@@ -79,7 +76,7 @@ class RankSequenceScraper:
                 f"CALL / PUT TILT {row['call_share']:g}% Call P/C RATIO {row['put_call_ratio']}"
             ),
         }
-        return texts[section]
+        return texts.get(section, "")  # gamma_profiles/expiry: no page source
 
 
 def build_client() -> tuple[TestClient, FakeCache]:
@@ -141,6 +138,16 @@ def test_refresh_accepts_section_and_returns_info() -> None:
     assert response.json()["asset"] == "BTC"
 
 
+def test_refresh_accepts_every_registered_section() -> None:
+    from gexmonitorapi.models import SECTIONS
+
+    client, cache = build_client()
+    for section in SECTIONS:
+        response = client.post(f"/v1/refresh?section={section}", headers={"Authorization": "Bearer test-token"})
+        assert response.status_code == 200
+        assert cache.refreshed_section == section
+
+
 def test_refresh_rejects_unknown_section() -> None:
     client, _cache = build_client()
 
@@ -169,7 +176,7 @@ def test_info_rank_quality_turns_ok_at_15_days_and_keeps_30d_cutoff() -> None:
     now_values = iter(
         timestamp
         for offset in day_offsets
-        for timestamp in [base + timedelta(days=offset)] * 4
+        for timestamp in [base + timedelta(days=offset)] * len(SECTIONS)
     )
     cache = MetricsCache(
         RankSequenceScraper(rows),

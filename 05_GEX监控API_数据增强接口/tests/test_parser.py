@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gexmonitorapi.models import SECTION_FIELDS
 from gexmonitorapi.parsers import parse_section
 
 # Snippets below mirror the real rendered text of gexmonitor.com BTC analytics tabs
@@ -54,8 +55,10 @@ def test_parse_gamma_exposure_key_levels() -> None:
         "magnet_price": 70000.0,
         "p1": 80000.0,
         "p2": 82000.0,
+        "hedging_flows": None,
     }
-    assert parsed.missing_fields == []
+    # Hedging flows only exist in the public JSON source.
+    assert parsed.missing_fields == []  # hedging_flows is optional context
 
 
 def test_gamma_exposure_ignores_chart_legend_noise() -> None:
@@ -82,13 +85,14 @@ def test_parse_volatility_metrics_and_term_structure() -> None:
         """,
     )
 
-    assert parsed.data["iv_rv_ratio"] == 1.26
+    assert "iv_rv_ratio" not in parsed.data
     assert parsed.data["pcr"] == 0.93
     assert parsed.data["term_structure"] == [
         {"expiry": "4 JUN 26", "atm_iv": 47.2, "skew_25d": -12.8},
         {"expiry": "5 JUN 26", "atm_iv": 50.1, "skew_25d": -10.6},
     ]
-    assert parsed.missing_fields == []
+    assert "volatility.pcr" not in parsed.missing_fields
+    assert "volatility.term_structure" not in parsed.missing_fields
 
 
 def test_parse_flow_metrics() -> None:
@@ -105,14 +109,11 @@ def test_parse_flow_metrics() -> None:
         """,
     )
 
-    assert parsed.data == {
-        "call_premium": 27700000.0,
-        "put_premium": 51800000.0,
-        "call_put_bias": "35% Call",
-        "put_call_ratio": 1.88,
-        "abnormal_signal": "Put-led selling is setting the tone.",
-    }
-    assert parsed.missing_fields == []
+    assert tuple(parsed.data) == SECTION_FIELDS["flow"]
+    assert parsed.data["put_call_ratio"] == 1.88
+    assert "flow.put_call_ratio" not in parsed.missing_fields
+    for removed in ("call_premium", "put_premium", "call_put_bias", "abnormal_signal"):
+        assert removed not in parsed.data
 
 
 def test_missing_fields_are_reported_with_reasons() -> None:

@@ -74,18 +74,13 @@ def make_payload(fetched_ms=None, semantics=None, observed_equals_fetch=False):
             "p2": 115000.0,
         },
         "volatility": {
-            "iv_rv_ratio": 1.1,
             "pcr": 0.82,
             "term_structure": [
                 {"expiry": "2026-09-12", "atm_iv": 0.62, "skew_25d": -0.03},
             ],
         },
         "flow": {
-            "call_premium": 1200.0,
-            "put_premium": 900.0,
             "put_call_ratio": 0.75,
-            "call_put_bias": "57.1% Call",
-            "abnormal_signal": None,
         },
         "missing_fields": [],
         "field_status": {
@@ -138,7 +133,7 @@ def assert_old_signal_fields_unchanged(before, after):
 
 
 def test_version_and_legacy_payload_has_unknown_observation(mod, config):
-    assert_equal(config["demo_version"], "2.0.3", "FMZ producer version")
+    assert_equal(config["demo_version"], "2.0.4", "FMZ producer version")
     fetched_ms = utc_ms()
     snapshot = mod.parse_info_payload(
         make_payload(fetched_ms, observed_equals_fetch=True), config)
@@ -172,7 +167,7 @@ def test_version_and_legacy_payload_has_unknown_observation(mod, config):
     dvol = fields["gex_board.dvol"]
     assert_equal(
         dvol["source_ref"],
-        "selection_unknown:gex-latest.dvol|volatility-metrics.metrics.dvol",
+        "selection_unknown:gex-latest.dvol|dashboard-bundle.dvol.value",
         "legacy alternate source is marked as selection-unknown")
     assert_equal(dvol["time_errors"], [],
                  "source selection ambiguity is not a time-format error")

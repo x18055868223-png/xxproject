@@ -13,16 +13,14 @@ from . import __version__
 from .cache import MetricsCache
 from .config import Settings
 from .json_source import PublicJsonSource
+from .models import SECTIONS
 
 bearer = HTTPBearer(auto_error=False)
 
 
-class RefreshSectionParam(str, Enum):
-    all = "all"
-    gex_board = "gex_board"
-    gamma_exposure = "gamma_exposure"
-    volatility = "volatility"
-    flow = "flow"
+RefreshSectionParam = Enum(  # type: ignore[misc]
+    "RefreshSectionParam", {name: name for name in ("all", *SECTIONS)}, type=str
+)
 
 
 def create_app(settings: Settings | None = None, cache: Any | None = None) -> FastAPI:
@@ -84,7 +82,7 @@ def create_app(settings: Settings | None = None, cache: Any | None = None) -> Fa
 
     @app.post("/v1/refresh", dependencies=[Depends(require_token)])
     async def refresh(
-        section: RefreshSectionParam = Query(default=RefreshSectionParam.all),
+        section: RefreshSectionParam = Query(default=RefreshSectionParam["all"]),
     ) -> dict[str, Any]:
         return await cache.refresh(section.value)
 

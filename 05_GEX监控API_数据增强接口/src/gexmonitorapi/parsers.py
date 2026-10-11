@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .models import SECTION_FIELDS, SectionName, ParsedSection, empty_section_data
+from .models import SECTION_FIELDS, SectionName, ParsedSection, empty_section_data, is_missing
 
 # A numeric token as it appears on the rendered page. Handles an optional leading
 # "$" and sign in either order ("$-67M" and "-$24.2M"), thousands separators,
@@ -62,19 +62,14 @@ def parse_section(section: SectionName, text: str) -> ParsedSection:
         )
         data["p2"] = _num_after(scope, ["P2"], window=14) if legacy_scope else None
     elif section == "volatility":
-        data["iv_rv_ratio"] = _num_after(norm, ["IV/RV RATIO", "IV/RV Ratio"], window=14)
         data["pcr"] = _num_after(
             norm, ["PCR (VOLUME)", "PCR", "Put/Call Ratio", "看跌/看涨比"], window=24
         )
         data["term_structure"] = _term_structure(norm)
     elif section == "flow":
-        data["call_premium"] = _num_after(norm, ["CALL PREMIUM", "Call Premium"], window=18)
-        data["put_premium"] = _num_after(norm, ["PUT PREMIUM", "Put Premium"], window=18)
-        data["call_put_bias"] = _call_put_bias(norm)
         data["put_call_ratio"] = _num_after(
             norm, ["P/C RATIO", "Put/Call Ratio", "看跌/看涨比"], window=20
         )
-        data["abnormal_signal"] = _abnormal_signal(norm)
 
     return _with_status(section, data)
 
@@ -84,9 +79,7 @@ def _with_status(section: SectionName, data: dict[str, Any]) -> ParsedSection:
     field_status: dict[str, dict[str, str]] = {}
     for field in SECTION_FIELDS[section]:
         path = f"{section}.{field}"
-        value = data.get(field)
-        missing = value is None or (isinstance(value, list) and not value)
-        if missing:
+        if is_missing(section, field, data.get(field)):
             missing_fields.append(path)
             field_status[path] = {
                 "status": "missing",
@@ -184,28 +177,6 @@ def _dashboard_magnet_price(text: str) -> float | None:
         re.IGNORECASE,
     )
     return _to_number(match.group(0).rsplit("$", 1)[-1]) if match else None
-
-
-def _call_put_bias(text: str) -> str | None:
-    anchor = re.search(r"(?<![0-9A-Za-z])CALL\s*/\s*PUT TILT(?![0-9A-Za-z])", text, re.IGNORECASE)
-    segment = text[anchor.end(): anchor.end() + 40] if anchor else ""
-    tilt = re.search(r"(\d{1,3})\s*%\s*(Call|Put)", segment, re.IGNORECASE)
-    if tilt:
-        return f"{tilt.group(1)}% {tilt.group(2).title()}"
-    return None
-
-
-def _abnormal_signal(text: str) -> str | None:
-    anchor = re.search(r"(?<![0-9A-Za-z])FLOW READ(?![0-9A-Za-z])", text, re.IGNORECASE)
-    if anchor:
-        segment = text[anchor.end(): anchor.end() + 160].strip(" :：-")
-        sentence = re.split(r"(?<=[.。])\s", segment, maxsplit=1)[0].strip()
-        if sentence:
-            return sentence
-    trade = re.search(r"(Single trade \$[\d.,KMBT]+.*?on BTC-[\w-]+)", text)
-    if trade:
-        return trade.group(1).strip()
-    return None
 
 
 def _term_structure(text: str) -> list[dict[str, float | str]]:

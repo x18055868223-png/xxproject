@@ -1,177 +1,432 @@
 {
   "asset": "BTC",
-  "fetched_at": "2026-06-03T14:52:45+00:00",
+  "fetched_at": "2026-10-11T08:53:10+00:00",
+  "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+  "observed_at": null,
+  "data_age_ms": 0,
   "stale": false,
   "availability": "ready",
+  "source_mode": "public_json",
+  "source_urls": {
+    "gex": "https://gexmonitor.com/api/gex-latest?asset=BTC&exchange=all&lite=true",
+    "bundle": "https://gexmonitor.com/api/dashboard-bundle?asset=BTC",
+    "options_chain": "https://gexmonitor.com/api/options-chain?asset=BTC"
+  },
+  "source_metadata": {
+    "source_mode": "public_json",
+    "source_urls": {
+      "gex": "https://gexmonitor.com/api/gex-latest?asset=BTC&exchange=all&lite=true",
+      "bundle": "https://gexmonitor.com/api/dashboard-bundle?asset=BTC",
+      "options_chain": "https://gexmonitor.com/api/options-chain?asset=BTC"
+    },
+    "errors": {},
+    "cross_check": {
+      "status": "ok",
+      "_note": "options-chain wall cross-check, trimmed"
+    },
+    "observed_at": null,
+    "fetched_at": "2026-10-11T08:53:10+00:00",
+    "latest_attempt_at": "2026-10-11T08:53:10+00:00"
+  },
+  "gex_time_semantics": {
+    "schema_version": "gex_time_semantics@1.0.0",
+    "fields": {
+      "gex_board.total_net_gex": {
+        "source_ref": "gex-latest.total_gex",
+        "observed_at_ms": null,
+        "generated_at_ms": 1791708733131,
+        "fetched_at_ms": 1791708790000,
+        "time_basis": "upstream_result_time",
+        "time_errors": []
+      },
+      "gex_board.dvol": {
+        "source_ref": "gex-latest.dvol",
+        "observed_at_ms": null,
+        "generated_at_ms": null,
+        "fetched_at_ms": 1791708790000,
+        "time_basis": "dvol_time_unknown",
+        "time_errors": []
+      },
+      "volatility.pcr": {
+        "source_ref": "dashboard-bundle.pcr.data[latest].pcr_volume",
+        "observed_at_ms": null,
+        "generated_at_ms": 1791708773799,
+        "fetched_at_ms": 1791708790000,
+        "time_basis": "bundle_section_data_timestamp",
+        "time_errors": []
+      },
+      "flow.whale_24h": {
+        "source_ref": "dashboard-bundle.whaleFlowSummary.summary24h",
+        "observed_at_ms": 1791701194488,
+        "generated_at_ms": 1791708782458,
+        "fetched_at_ms": 1791708790000,
+        "time_basis": "whale_summary_time",
+        "time_errors": []
+      },
+      "expiry.max_pain_price": {
+        "source_ref": "dashboard-bundle.maxPain.latest.max_pain_price",
+        "observed_at_ms": null,
+        "generated_at_ms": 1791706501000,
+        "fetched_at_ms": 1791708790000,
+        "time_basis": "bundle_section_data_timestamp",
+        "time_errors": []
+      }
+    },
+    "_note": "trimmed: the real response lists every section.field"
+  },
   "gex_board": {
-    "total_net_gex": -67000000.0,
-    "dvol": 42.9,
-    "market_state": "negative_gamma"
+    "total_net_gex": 158146534.89,
+    "dvol": 36.89,
+    "market_state": "positive_gamma"
   },
   "gamma_exposure": {
-    "n2": 60000.0,
-    "n1": 65000.0,
-    "flip_point": 67372.727,
-    "volatility_trigger": 65000.0,
-    "spot_price": 66684.5,
-    "magnet_price": 70000.0,
-    "p1": 80000.0,
-    "p2": 82000.0
+    "n2": 80000.0,
+    "n1": 78000.0,
+    "flip_point": 82725.44344773793,
+    "volatility_trigger": 90000.0,
+    "spot_price": 82997.28,
+    "magnet_price": 80000.0,
+    "p1": 90000.0,
+    "p2": 95000.0,
+    "hedging_flows": {
+      "total_gamma_usd": 158146534.8928078,
+      "scenarios": [
+        {
+          "price_change_pct": -5.0,
+          "hedging_usd": -189483543.99
+        },
+        {
+          "price_change_pct": -3.0,
+          "hedging_usd": -26123398.65
+        },
+        {
+          "price_change_pct": -2.0,
+          "hedging_usd": 40428246.05
+        },
+        {
+          "price_change_pct": -1.0,
+          "hedging_usd": 80358604.35
+        },
+        {
+          "price_change_pct": 1.0,
+          "hedging_usd": -83205190.72
+        },
+        {
+          "price_change_pct": 2.0,
+          "hedging_usd": -324628622.59
+        },
+        {
+          "price_change_pct": 3.0,
+          "hedging_usd": -601955389.95
+        },
+        {
+          "price_change_pct": 5.0,
+          "hedging_usd": -1218484970.74
+        }
+      ]
+    }
+  },
+  "gamma_profiles": {
+    "zero_dte": {
+      "p1": 84000.0,
+      "p2": 84500.0,
+      "n1": 82500.0,
+      "n2": 81500.0,
+      "walls": {
+        "p1": {
+          "strike": 84000.0,
+          "gex_usd": 12413166.529194506,
+          "distance_pct": 1.2081359774681788
+        },
+        "p2": {
+          "strike": 84500.0,
+          "gex_usd": 6712795.521035742,
+          "distance_pct": 1.8105653582864416
+        },
+        "n1": {
+          "strike": 82500.0,
+          "gex_usd": -2709779.4601911055,
+          "distance_pct": -0.5991521649866103
+        },
+        "n2": {
+          "strike": 81500.0,
+          "gex_usd": -1920573.6766807016,
+          "distance_pct": -1.8040109266231361
+        }
+      },
+      "volatility_trigger": 84000.0,
+      "magnet_price": 84000.0
+    },
+    "weekly": {
+      "p1": 84000.0,
+      "p2": 85000.0,
+      "n1": 80000.0,
+      "n2": 78000.0,
+      "walls": {
+        "p1": {
+          "strike": 84000.0,
+          "gex_usd": 13142343.271514956,
+          "distance_pct": 1.2081359774681788
+        },
+        "p2": {
+          "strike": 85000.0,
+          "gex_usd": 11094866.608416123,
+          "distance_pct": 2.412994739104705
+        },
+        "n1": {
+          "strike": 80000.0,
+          "gex_usd": -14858310.19433175,
+          "distance_pct": -3.611299069077925
+        },
+        "n2": {
+          "strike": 78000.0,
+          "gex_usd": -6572939.28757483,
+          "distance_pct": -6.0210165923509775
+        }
+      },
+      "volatility_trigger": 80000.0,
+      "magnet_price": 83000.0
+    }
   },
   "volatility": {
-    "iv_rv_ratio": 1.26,
-    "pcr": 0.93,
+    "pcr": 0.69,
+    "pcr_oi": 0.696,
     "term_structure": [
       {
-        "expiry": "4 JUN 26",
-        "atm_iv": 47.2,
-        "skew_25d": -12.8
+        "expiry": "13OCT26",
+        "days_to_expiry": 1.0,
+        "atm_iv": 26.88,
+        "skew_25d": null
       },
       {
-        "expiry": "5 JUN 26",
-        "atm_iv": 50.1,
-        "skew_25d": -10.6
+        "expiry": "14OCT26",
+        "days_to_expiry": 2.0,
+        "atm_iv": 28.3,
+        "skew_25d": null
       },
       {
-        "expiry": "6 JUN 26",
-        "atm_iv": 47.2,
-        "skew_25d": -9.8
+        "expiry": "15OCT26",
+        "days_to_expiry": 3.0,
+        "atm_iv": 30.12,
+        "skew_25d": null
+      }
+    ],
+    "atm_iv": 26.88,
+    "iv_percentile": 16.0,
+    "rr_skew": [
+      {
+        "tenor": "1d",
+        "days": 1.0,
+        "expiry": "12OCT26",
+        "call_25d_iv": 23.01,
+        "put_25d_iv": 22.63,
+        "rr": 0.38,
+        "chg_1d": -0.31,
+        "chg_1w": -0.56,
+        "chg_1m": 7.12,
+        "methodology": "exact_expiry"
       },
       {
-        "expiry": "12 JUN 26",
-        "atm_iv": 44.8,
-        "skew_25d": -7.0
+        "tenor": "1w",
+        "days": 7.0,
+        "expiry": null,
+        "call_25d_iv": 30.7299,
+        "put_25d_iv": 33.2285,
+        "rr": -2.4985,
+        "chg_1d": -1.44,
+        "chg_1w": -3.81,
+        "chg_1m": 3.61,
+        "methodology": "constant_maturity_variance_interpolation"
       },
       {
-        "expiry": "19 JUN 26",
-        "atm_iv": 42.9,
-        "skew_25d": -6.3
-      },
-      {
-        "expiry": "26 JUN 26",
-        "atm_iv": 42.6,
-        "skew_25d": -6.1
-      },
-      {
-        "expiry": "31 JUL 26",
-        "atm_iv": 40.2,
-        "skew_25d": -6.0
-      },
-      {
-        "expiry": "28 AUG 26",
-        "atm_iv": 40.1,
-        "skew_25d": -5.4
-      },
-      {
-        "expiry": "25 SEP 26",
-        "atm_iv": 40.9,
-        "skew_25d": -5.7
-      },
-      {
-        "expiry": "25 DEC 26",
-        "atm_iv": 44.1,
-        "skew_25d": -5.5
+        "tenor": "1m",
+        "days": 30.0,
+        "expiry": null,
+        "call_25d_iv": 35.0443,
+        "put_25d_iv": 36.928,
+        "rr": -1.8837,
+        "chg_1d": 0.0,
+        "chg_1w": -2.04,
+        "chg_1m": 5.47,
+        "methodology": "constant_maturity_variance_interpolation"
       }
     ]
   },
   "flow": {
-    "call_premium": 27700000.0,
-    "put_premium": 51800000.0,
-    "call_put_bias": "35% Call",
-    "put_call_ratio": 1.88,
-    "abnormal_signal": "Put-led selling is setting the tone."
+    "put_call_ratio": 0.69,
+    "call_volume": 69903.4,
+    "put_volume": 48221.9,
+    "call_oi": 457354.8,
+    "put_oi": 318101.6,
+    "whale_1h": {
+      "net_flow_usd": 0.0,
+      "buy_volume_usd": 0.0,
+      "sell_volume_usd": 0.0,
+      "execution_net_flow_usd": 0.0,
+      "total_volume_usd": 0.0,
+      "trade_count": 0,
+      "call_count": 0,
+      "put_count": 0,
+      "buy_call_count": 0,
+      "sell_call_count": 0,
+      "buy_put_count": 0,
+      "sell_put_count": 0,
+      "lead_expiry": null,
+      "active_strike": null
+    },
+    "whale_24h": {
+      "net_flow_usd": 355603.67684881645,
+      "buy_volume_usd": 544240.3887573001,
+      "sell_volume_usd": 188636.71190848367,
+      "execution_net_flow_usd": -1001.5285033837426,
+      "total_volume_usd": 732877.1006657836,
+      "trade_count": 16,
+      "call_count": 13,
+      "put_count": 3,
+      "buy_call_count": 5,
+      "sell_call_count": 8,
+      "buy_put_count": 1,
+      "sell_put_count": 2,
+      "lead_expiry": "30OCT26",
+      "active_strike": 100000.0
+    }
+  },
+  "expiry": {
+    "max_pain_price": 78000.0,
+    "max_pain_target_expiry": "30OCT26",
+    "next_expiry": {
+      "expiry": "12OCT26",
+      "expires_at": "2026-10-12T08:00:00.000Z",
+      "hours_to_expiry": 23.1,
+      "put_call_ratio_oi": 0.432,
+      "max_pain_price": 82000.0,
+      "spot_to_max_pain_pct": 1.2,
+      "call_oi": 1629.8,
+      "put_oi": 703.6,
+      "notional_usd": 193662540.0,
+      "expiry_oi_share_pct": 0.6
+    }
   },
   "missing_fields": [],
   "field_status": {},
+  "sections": {
+    "gex_board": {
+      "fetched_at": "2026-10-11T08:53:10+00:00",
+      "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+      "last_success_at": "2026-10-11T08:53:10+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/api/gex-latest?asset=BTC&exchange=all&lite=true",
+      "content_hash": null,
+      "missing_fields": []
+    },
+    "gamma_exposure": {
+      "fetched_at": "2026-10-11T08:53:10+00:00",
+      "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+      "last_success_at": "2026-10-11T08:53:10+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/api/gex-latest?asset=BTC&exchange=all&lite=true",
+      "content_hash": null,
+      "missing_fields": []
+    },
+    "gamma_profiles": {
+      "fetched_at": "2026-10-11T08:53:10+00:00",
+      "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+      "last_success_at": "2026-10-11T08:53:10+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/api/gex-latest?asset=BTC&exchange=all&lite=true",
+      "content_hash": null,
+      "missing_fields": []
+    },
+    "volatility": {
+      "fetched_at": "2026-10-11T08:53:10+00:00",
+      "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+      "last_success_at": "2026-10-11T08:53:10+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/api/dashboard-bundle?asset=BTC",
+      "content_hash": null,
+      "missing_fields": []
+    },
+    "flow": {
+      "fetched_at": "2026-10-11T08:53:10+00:00",
+      "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+      "last_success_at": "2026-10-11T08:53:10+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/api/dashboard-bundle?asset=BTC",
+      "content_hash": null,
+      "missing_fields": []
+    },
+    "expiry": {
+      "fetched_at": "2026-10-11T08:53:10+00:00",
+      "latest_attempt_at": "2026-10-11T08:53:10+00:00",
+      "last_success_at": "2026-10-11T08:53:10+00:00",
+      "last_error": null,
+      "source_url": "https://gexmonitor.com/api/dashboard-bundle?asset=BTC",
+      "content_hash": null,
+      "missing_fields": []
+    }
+  },
   "rank": {
     "window": {
       "mode": "rolling_30d_or_available",
       "lookback_days": 30,
-      "sample_count": 96,
-      "history_retained_count": 96,
-      "start_at": "2026-06-01T14:52:45+00:00",
-      "end_at": "2026-06-03T14:52:45+00:00",
-      "window_days": 2.0
+      "sample_count": 1,
+      "history_retained_count": 1,
+      "start_at": "2026-10-11T08:53:10+00:00",
+      "end_at": "2026-10-11T08:53:10+00:00",
+      "window_days": 0.0
     },
     "metrics": {
       "gex_board.total_net_gex": {
-        "value": -67000000.0,
-        "percentile": 0.22,
-        "rank_pct": 22.0,
-        "sample_count": 96,
-        "quality": "warming_up",
-        "abs_percentile": 0.81,
-        "abs_rank_pct": 81.0
+        "value": 158146534.89,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample",
+        "abs_percentile": 1.0,
+        "abs_rank_pct": 100.0
       },
       "gex_board.dvol": {
-        "value": 42.9,
-        "percentile": 0.58,
-        "rank_pct": 58.0,
-        "sample_count": 96,
-        "quality": "warming_up"
-      },
-      "volatility.iv_rv_ratio": {
-        "value": 1.26,
-        "percentile": 0.74,
-        "rank_pct": 74.0,
-        "sample_count": 96,
-        "quality": "warming_up"
+        "value": 36.89,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample"
       },
       "volatility.pcr": {
-        "value": 0.93,
-        "percentile": 0.43,
-        "rank_pct": 43.0,
-        "sample_count": 96,
-        "quality": "warming_up"
+        "value": 0.69,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample"
       },
-      "flow.call_share_pct": {
-        "value": 35.0,
-        "percentile": 0.31,
-        "rank_pct": 31.0,
-        "sample_count": 96,
-        "quality": "warming_up"
+      "volatility.pcr_oi": {
+        "value": 0.696,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample"
+      },
+      "volatility.atm_iv": {
+        "value": 26.88,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample"
       },
       "flow.put_call_ratio": {
-        "value": 1.88,
-        "percentile": 0.86,
-        "rank_pct": 86.0,
-        "sample_count": 96,
-        "quality": "warming_up"
+        "value": 0.69,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample"
+      },
+      "flow.whale_24h.net_flow_usd": {
+        "value": 355603.67684881645,
+        "percentile": 1.0,
+        "rank_pct": 100.0,
+        "sample_count": 1,
+        "quality": "single_sample"
       }
-    }
-  },
-  "sections": {
-    "gex_board": {
-      "fetched_at": "2026-06-03T14:52:00+00:00",
-      "last_success_at": "2026-06-03T14:52:00+00:00",
-      "last_error": null,
-      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=gex",
-      "content_hash": "743cc8178b8ed44de7b2aea7d8b006344736a786b366e17ac09a8a9e7148d15d",
-      "missing_fields": []
-    },
-    "gamma_exposure": {
-      "fetched_at": "2026-06-03T14:52:15+00:00",
-      "last_success_at": "2026-06-03T14:52:15+00:00",
-      "last_error": null,
-      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=gamma",
-      "content_hash": "2f7756ea3e680b11ef48e82d42930968e527fbe616e3f4b8759bb11731ed1659",
-      "missing_fields": []
-    },
-    "volatility": {
-      "fetched_at": "2026-06-03T14:52:30+00:00",
-      "last_success_at": "2026-06-03T14:52:30+00:00",
-      "last_error": null,
-      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=volatility",
-      "content_hash": "4b59dee6fe9a99e13fea14488dd413b5bf224b31116cf78da45a6ee8d6ef043b",
-      "missing_fields": []
-    },
-    "flow": {
-      "fetched_at": "2026-06-03T14:52:45+00:00",
-      "last_success_at": "2026-06-03T14:52:45+00:00",
-      "last_error": null,
-      "source_url": "https://gexmonitor.com/btc/options/analytics?tab=flow",
-      "content_hash": "697815570c3094c4d17c02a90707eb1029359a99515a958ceb44a27812399ed1",
-      "missing_fields": []
     }
   }
 }

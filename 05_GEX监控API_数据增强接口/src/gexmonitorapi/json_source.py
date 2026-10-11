@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import urllib.error
 import urllib.parse
@@ -10,50 +11,92 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .config import Settings
-from .models import GEX_TIME_SEMANTICS_SCHEMA, SECTION_FIELDS, SECTIONS
+from .models import (
+    GEX_TIME_SEMANTICS_SCHEMA,
+    LIST_FIELDS,
+    OPTIONAL_FIELDS,
+    SECTION_FIELDS,
+    SECTION_SOURCE,
+    SECTIONS,
+    is_empty_value,
+    is_missing,
+)
+
+_WHALE_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("net_flow_usd", "netFlow", "number"),
+    ("buy_volume_usd", "buyVolume", "number"),
+    ("sell_volume_usd", "sellVolume", "number"),
+    ("execution_net_flow_usd", "executionNetFlow", "number"),
+    ("total_volume_usd", "totalVolume", "number"),
+    ("trade_count", "tradeCount", "int"),
+    ("call_count", "callCount", "int"),
+    ("put_count", "putCount", "int"),
+    ("buy_call_count", "buyCallCount", "int"),
+    ("sell_call_count", "sellCallCount", "int"),
+    ("buy_put_count", "buyPutCount", "int"),
+    ("sell_put_count", "sellPutCount", "int"),
+    ("lead_expiry", "leadExpiry", "text"),
+    ("active_strike", "activeStrike", "number"),
+)
+_NEXT_EXPIRY_TEXT = ("expiry", "expires_at")
+_NEXT_EXPIRY_NUMBERS = (
+    "hours_to_expiry",
+    "put_call_ratio_oi",
+    "max_pain_price",
+    "spot_to_max_pain_pct",
+    "call_oi",
+    "put_oi",
+    "notional_usd",
+    "expiry_oi_share_pct",
+)
 
 
 class PublicJsonSource:
-    """Read the public GEX Monitor JSON feeds without a browser session."""
+    """Read the public GEX Monitor JSON feeds without a browser session.
+
+    Per refresh: /api/gex-latest (lite) for GEX levels and profiles,
+    /api/dashboard-bundle for volatility / flow / expiry context, and the
+    optional /api/options-chain wall cross-check.
+    """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.base_url = settings.base_url.rstrip("/")
         self._last_snapshot: dict[str, Any] | None = None
 
-    def source_url(self, section: str) -> str:
-        mapping = {
-            "gex_board": "/api/gex-latest",
-            "gamma_exposure": "/api/gex-latest",
-            "volatility": "/api/volatility-metrics",
-            "flow": "/api/volatility-metrics",
-        }
-        path = mapping.get(section, "/api/gex-latest")
+    def _url(self, name: str) -> str:
         params = {"asset": self.settings.asset}
-        if path.endswith("gex-latest"):
+        if name == "gex":
             params.update({"exchange": "all", "lite": "true"})
+            path = "/api/gex-latest"
+        elif name == "bundle":
+            path = "/api/dashboard-bundle"
+        else:
+            path = "/api/options-chain"
         return self.base_url + path + "?" + urllib.parse.urlencode(params)
+
+    def source_url(self, section: str) -> str:
+        return self._url(SECTION_SOURCE.get(section, "gex"))  # type: ignore[arg-type]
 
     async def fetch_snapshot(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_snapshot_sync)
 
     def _fetch_snapshot_sync(self) -> dict[str, Any]:
         fetched_at = datetime.now(UTC).isoformat()
-        urls = {
-            "gex": self.source_url("gex_board"),
-            "volatility": self.base_url + "/api/volatility-metrics?" + urllib.parse.urlencode({"asset": self.settings.asset}),
-            "options_chain": self.base_url + "/api/options-chain?" + urllib.parse.urlencode({"asset": self.settings.asset}),
-            "price": self.base_url + "/api/price?" + urllib.parse.urlencode({"asset": self.settings.asset}),
-        }
+        urls = {name: self._url(name) for name in ("gex", "bundle", "options_chain")}
         errors: dict[str, str] = {}
         gex = self._get_json(urls["gex"], errors, "gex")
-        volatility = self._get_json(urls["volatility"], errors, "volatility")
-        price = self._get_json(urls["price"], errors, "price")
+        gex_problem = _gex_payload_problem(gex) if gex else None
+        if gex_problem:
+            # A 200 body that is not usable data keeps the last good gex sections.
+            errors["gex"] = gex_problem
+            gex = {}
+        bundle = self._get_json(urls["bundle"], errors, "bundle")
         options = {}
         if self.settings.options_chain_crosscheck:
             options = self._get_json(urls["options_chain"], errors, "options_chain")
 
-        sections = self._build_sections(gex, volatility, price, options, fetched_at)
+        sections = self._build_sections(gex, bundle, fetched_at)
         metadata = {
             "source_mode": "public_json",
             "source_urls": urls,
@@ -92,333 +135,272 @@ class PublicJsonSource:
     def _build_sections(
         self,
         gex: dict[str, Any],
-        volatility: dict[str, Any],
-        price: dict[str, Any],
-        options: dict[str, Any],
+        bundle: dict[str, Any],
         fetched_at: str,
     ) -> dict[str, dict[str, Any]]:
-        total = ((gex.get("profiles") or {}).get("total") or {})
-        walls = total.get("walls") or {}
-        meta = total.get("meta") or {}
-        metrics = volatility.get("metrics") or {}
+        values: dict[str, dict[str, Any]] = {section: {} for section in SECTIONS}
+        semantics: dict[str, dict[str, dict[str, Any]]] = {section: {} for section in SECTIONS}
+
+        def put(
+            section: str,
+            field: str,
+            value: Any,
+            source_ref: str,
+            *,
+            fetched: str | None,
+            basis: str,
+            generated: Any = None,
+            observed: Any = None,
+        ) -> dict[str, Any]:
+            present = not is_empty_value(value)
+            values[section][field] = value
+            item = _time_semantics(
+                source_ref,
+                fetched_at=fetched if present else None,
+                observed_at=observed,
+                generated_at=generated,
+                time_basis=basis if present else "source_field_missing",
+            )
+            semantics[section][field] = item
+            return item
+
+        # ---- gex-latest (lite) -------------------------------------------
         gex_fetch = fetched_at if gex else None
-        volatility_fetch = fetched_at if volatility else None
-        price_fetch = fetched_at if price else None
-        gex_generated_at = gex.get("timestamp")
-        profile_generated_at = meta.get("updateTime")
-        volatility_generated_at = volatility.get("timestamp")
-        price_generated_at = price.get("timestamp")
+        gex_time = gex.get("timestamp")
+        profiles = _dict(gex.get("profiles"))
+        total = _dict(profiles.get("total"))
+        walls = _dict(total.get("walls"))
+        meta = _dict(total.get("meta"))
+        profile_time = meta.get("updateTime")
 
-        gex_spot = _number(gex.get("asset_price"))
-        price_spot = _number(price.get("price"))
-        if gex_spot is not None:
-            spot = gex_spot
-            spot_semantics = _time_semantics(
-                "gex-latest.asset_price",
-                fetched_at=gex_fetch,
-                generated_at=gex_generated_at,
-                time_basis="upstream_result_time",
-            )
-        elif price_spot is not None:
-            spot = price_spot
-            spot_semantics = _time_semantics(
-                "price.price",
-                fetched_at=price_fetch,
-                generated_at=price_generated_at,
-                time_basis="price_endpoint_time",
-            )
-        else:
-            spot = None
-            spot_semantics = _time_semantics(
-                "gex-latest.asset_price|price.price",
-                fetched_at=gex_fetch or price_fetch,
-                generated_at=gex_generated_at or price_generated_at,
-                time_basis="source_field_missing",
-            )
+        # ---- dashboard-bundle --------------------------------------------
+        bundle_fetch = fetched_at if bundle else None
+        meta_sections = _dict(_dict(bundle.get("meta")).get("sections"))
 
-        top_flip = _number(gex.get("flip_point"))
-        meta_flip = _number(meta.get("flip"))
-        if top_flip is not None:
-            flip = top_flip
-            flip_semantics = _time_semantics(
-                "gex-latest.flip_point",
-                fetched_at=gex_fetch,
-                generated_at=gex_generated_at,
-                time_basis="upstream_result_time",
-            )
-        elif meta_flip is not None:
-            flip = meta_flip
-            flip_semantics = _time_semantics(
-                "gex-latest.profiles.total.meta.flip",
-                fetched_at=gex_fetch,
-                generated_at=profile_generated_at,
-                time_basis="profile_group_update_time",
-            )
-        else:
-            flip = None
-            flip_semantics = _time_semantics(
-                "gex-latest.flip_point|gex-latest.profiles.total.meta.flip",
-                fetched_at=gex_fetch,
-                generated_at=gex_generated_at or profile_generated_at,
-                time_basis="source_field_missing",
-            )
+        def bundle_time(name: str, *, meta_name: str | None = None, own: Any = None) -> tuple[Any, str]:
+            # Per-section time only; the bundle-level data_timestamp is the
+            # OLDEST section and must never be attributed to a single field.
+            data_timestamp = _dict(meta_sections.get(meta_name or name)).get("data_timestamp")
+            if data_timestamp:
+                return data_timestamp, "bundle_section_data_timestamp"
+            own = own if own is not None else _dict(bundle.get(name)).get("timestamp")
+            return own, "bundle_section_timestamp"
 
+        price_time, price_basis = bundle_time("price")
+        vol_metrics = _dict(bundle.get("volMetrics"))
+        vol_values = _dict(vol_metrics.get("metrics"))
+        vol_time, vol_basis = bundle_time("volMetrics", meta_name="volatility")
+
+        # gex_board ----------------------------------------------------------
         total_gex = _number(gex.get("total_gex"))
-        total_gex_semantics = _time_semantics(
-            "gex-latest.total_gex",
-            fetched_at=gex_fetch if total_gex is not None else None,
-            generated_at=gex_generated_at,
-            time_basis="upstream_result_time" if total_gex is not None else "source_field_missing",
+        total_gex_semantics = put(
+            "gex_board", "total_net_gex", total_gex, "gex-latest.total_gex",
+            fetched=gex_fetch, generated=gex_time, basis="upstream_result_time",
         )
         gex_dvol = _number(gex.get("dvol"))
-        metrics_dvol = _number(metrics.get("dvol"))
+        bundle_dvol = _number(_dict(bundle.get("dvol")).get("value"))
+        index_dvol = _number(vol_values.get("dvolIndex"))
         if gex_dvol is not None:
-            dvol = gex_dvol
-            dvol_semantics = _time_semantics(
-                "gex-latest.dvol",
-                fetched_at=gex_fetch,
-                observed_at=gex.get("dvol_source_timestamp"),
-                generated_at=gex.get("dvol_timestamp"),
-                time_basis=(
-                    "dvol_native_time"
-                    if gex.get("dvol_source_timestamp") or gex.get("dvol_timestamp")
-                    else "dvol_time_unknown"
-                ),
+            native = gex.get("dvol_source_timestamp") or gex.get("dvol_timestamp")
+            put(
+                "gex_board", "dvol", gex_dvol, "gex-latest.dvol", fetched=gex_fetch,
+                observed=gex.get("dvol_source_timestamp"), generated=gex.get("dvol_timestamp"),
+                basis="dvol_native_time" if native else "dvol_time_unknown",
             )
-        elif metrics_dvol is not None:
-            dvol = metrics_dvol
-            dvol_semantics = _time_semantics(
-                "volatility-metrics.metrics.dvol",
-                fetched_at=volatility_fetch,
-                generated_at=volatility_generated_at,
-                time_basis="volatility_metrics_timestamp",
-            )
+        elif bundle_dvol is not None:
+            put("gex_board", "dvol", bundle_dvol, "dashboard-bundle.dvol.value",
+                fetched=bundle_fetch, basis="dvol_time_unknown")
+        elif index_dvol is not None:
+            put("gex_board", "dvol", index_dvol, "dashboard-bundle.volMetrics.metrics.dvolIndex",
+                fetched=bundle_fetch, generated=vol_time, basis=vol_basis)
         else:
-            dvol = None
-            dvol_semantics = _time_semantics(
-                "gex-latest.dvol|volatility-metrics.metrics.dvol",
-                fetched_at=gex_fetch or volatility_fetch,
-                generated_at=gex.get("dvol_timestamp") or volatility_generated_at,
-                observed_at=gex.get("dvol_source_timestamp"),
-                time_basis="source_field_missing",
-            )
-        call_volume = _number(metrics.get("totalCallVolume"))
-        put_volume = _number(metrics.get("totalPutVolume"))
-        call_share = None
-        if call_volume is not None and put_volume is not None and call_volume + put_volume > 0:
-            call_share = call_volume / (call_volume + put_volume) * 100.0
-        market_state = None
+            put("gex_board", "dvol", None, "gex-latest.dvol|dashboard-bundle.dvol.value",
+                fetched=None, basis="source_field_missing")
+
+        # gamma_exposure -----------------------------------------------------
+        gex_spot = _number(gex.get("asset_price"))
+        bundle_spot = _number(_dict(bundle.get("price")).get("price"))
+        if gex_spot is not None:
+            spot = gex_spot
+            spot_semantics = put("gamma_exposure", "spot_price", spot, "gex-latest.asset_price",
+                                 fetched=gex_fetch, generated=gex_time, basis="upstream_result_time")
+        else:
+            spot = bundle_spot
+            spot_semantics = put("gamma_exposure", "spot_price", spot, "dashboard-bundle.price.price",
+                                 fetched=bundle_fetch, generated=price_time, basis=price_basis)
+
+        top_flip = _number(gex.get("flip_point"))
+        if top_flip is not None:
+            flip = top_flip
+            flip_semantics = put("gamma_exposure", "flip_point", flip, "gex-latest.flip_point",
+                                 fetched=gex_fetch, generated=gex_time, basis="upstream_result_time")
+        else:
+            flip = _number(meta.get("flip"))
+            flip_semantics = put("gamma_exposure", "flip_point", flip, "gex-latest.profiles.total.meta.flip",
+                                 fetched=gex_fetch, generated=profile_time, basis="profile_group_update_time")
+
+        for field in ("n2", "n1", "p1", "p2"):
+            put("gamma_exposure", field, _strike(walls.get(field)), f"gex-latest.profiles.total.walls.{field}",
+                fetched=gex_fetch, generated=profile_time, basis="profile_group_update_time")
+        put("gamma_exposure", "volatility_trigger", _number(meta.get("vol_trigger")),
+            "gex-latest.profiles.total.meta.vol_trigger",
+            fetched=gex_fetch, generated=profile_time, basis="profile_group_update_time")
+        magnet_price, magnet_key = _magnet(meta)
+        put("gamma_exposure", "magnet_price", magnet_price, f"gex-latest.profiles.total.meta.{magnet_key}",
+            fetched=gex_fetch, generated=profile_time, basis="profile_group_update_time")
+        put("gamma_exposure", "hedging_flows", _hedging_flows(gex.get("hedging_flows")), "gex-latest.hedging_flows",
+            fetched=gex_fetch, generated=gex_time, basis="upstream_result_time")
+
         if total_gex is not None:
             market_state = "positive_gamma" if total_gex > 0 else "negative_gamma" if total_gex < 0 else "neutral"
-            market_state_semantics = _derived_time_semantics(
-                "derived:total_gex_sign",
-                [total_gex_semantics],
-                "derived_from_total_gex",
+            market_semantics = _derived_time_semantics(
+                "derived:total_gex_sign", [total_gex_semantics], "derived_from_total_gex"
             )
         elif spot is not None and flip is not None:
             market_state = "positive_gamma" if spot > flip else "negative_gamma"
-            market_state_semantics = _derived_time_semantics(
-                "derived:spot_price_vs_flip_point",
-                [spot_semantics, flip_semantics],
-                "derived_from_spot_and_flip",
+            market_semantics = _derived_time_semantics(
+                "derived:spot_price_vs_flip_point", [spot_semantics, flip_semantics], "derived_from_spot_and_flip"
             )
         else:
-            market_state_semantics = _time_semantics(
-                "derived:market_state",
-                fetched_at=None,
-                time_basis="source_field_missing",
-            )
+            market_state = None
+            market_semantics = _time_semantics("derived:market_state", time_basis="source_field_missing")
+        values["gex_board"]["market_state"] = market_state
+        semantics["gex_board"]["market_state"] = market_semantics
 
-        magnet_a1 = _number(meta.get("magnet_a1"))
-        magnet_a2 = _number(meta.get("magnet_a2"))
-        if magnet_a1 is not None:
-            magnet_price = magnet_a1
-            magnet_source = "gex-latest.profiles.total.meta.magnet_a1"
-        elif magnet_a2 is not None:
-            magnet_price = magnet_a2
-            magnet_source = "gex-latest.profiles.total.meta.magnet_a2"
-        else:
-            magnet_price = None
-            magnet_source = "gex-latest.profiles.total.meta.magnet_a1|magnet_a2"
+        # gamma_profiles (bucket meta.flip is a copy of total: not exposed) ---
+        for field, bucket in (("zero_dte", "0dte"), ("weekly", "weekly")):
+            profile = _dict(profiles.get(bucket))
+            put("gamma_profiles", field, _profile(profile), f"gex-latest.profiles.{bucket}",
+                fetched=gex_fetch, generated=_dict(profile.get("meta")).get("updateTime") or gex_time,
+                basis="profile_group_update_time")
 
-        profile_semantics: dict[str, dict[str, Any]] = {
-            "n2": _time_semantics(
-                "gex-latest.profiles.total.walls.n2",
-                fetched_at=gex_fetch if _strike(walls.get("n2")) is not None else None,
-                generated_at=profile_generated_at,
-                time_basis="profile_group_update_time" if _strike(walls.get("n2")) is not None else "source_field_missing",
-            ),
-            "n1": _time_semantics(
-                "gex-latest.profiles.total.walls.n1",
-                fetched_at=gex_fetch if _strike(walls.get("n1")) is not None else None,
-                generated_at=profile_generated_at,
-                time_basis="profile_group_update_time" if _strike(walls.get("n1")) is not None else "source_field_missing",
-            ),
-            "volatility_trigger": _time_semantics(
-                "gex-latest.profiles.total.meta.vol_trigger",
-                fetched_at=gex_fetch if _number(meta.get("vol_trigger")) is not None else None,
-                generated_at=profile_generated_at,
-                time_basis=(
-                    "profile_group_update_time"
-                    if _number(meta.get("vol_trigger")) is not None
-                    else "source_field_missing"
-                ),
-            ),
-            "magnet_price": _time_semantics(
-                magnet_source,
-                fetched_at=gex_fetch if magnet_price is not None else None,
-                generated_at=profile_generated_at,
-                time_basis="profile_group_update_time" if magnet_price is not None else "source_field_missing",
-            ),
-            "p1": _time_semantics(
-                "gex-latest.profiles.total.walls.p1",
-                fetched_at=gex_fetch if _strike(walls.get("p1")) is not None else None,
-                generated_at=profile_generated_at,
-                time_basis="profile_group_update_time" if _strike(walls.get("p1")) is not None else "source_field_missing",
-            ),
-            "p2": _time_semantics(
-                "gex-latest.profiles.total.walls.p2",
-                fetched_at=gex_fetch if _strike(walls.get("p2")) is not None else None,
-                generated_at=profile_generated_at,
-                time_basis="profile_group_update_time" if _strike(walls.get("p2")) is not None else "source_field_missing",
-            ),
-        }
+        # volatility ---------------------------------------------------------
+        pcr_section = _dict(bundle.get("pcr"))
+        pcr_rows = [row for row in pcr_section.get("data") or [] if isinstance(row, dict)]
+        pcr_row = max(pcr_rows, key=_row_time_ms) if pcr_rows else {}
+        pcr_time, pcr_basis = bundle_time("pcr")
+        pcr_ref = "dashboard-bundle.pcr.data[latest]"
+        pcr_volume = _number(pcr_row.get("pcr_volume"))
+        put("volatility", "pcr", pcr_volume, f"{pcr_ref}.pcr_volume",
+            fetched=bundle_fetch, generated=pcr_time, basis=pcr_basis)
+        put("volatility", "pcr_oi", _number(pcr_row.get("pcr_oi")), f"{pcr_ref}.pcr_oi",
+            fetched=bundle_fetch, generated=pcr_time, basis=pcr_basis)
 
-        volatility_metric_semantics = {
-            "iv_rv_ratio": _time_semantics(
-                "volatility-metrics.metrics.ivRvRatio",
-                fetched_at=volatility_fetch if _number(metrics.get("ivRvRatio")) is not None else None,
-                generated_at=volatility_generated_at,
-                time_basis=(
-                    "volatility_metrics_timestamp"
-                    if _number(metrics.get("ivRvRatio")) is not None
-                    else "source_field_missing"
-                ),
-            ),
-            "pcr": _time_semantics(
-                "volatility-metrics.metrics.pcrVolume",
-                fetched_at=volatility_fetch if _number(metrics.get("pcrVolume")) is not None else None,
-                generated_at=volatility_generated_at,
-                time_basis=(
-                    "volatility_metrics_timestamp"
-                    if _number(metrics.get("pcrVolume")) is not None
-                    else "source_field_missing"
-                ),
-            ),
+        rr_section = _dict(bundle.get("rrSkewSummary"))
+        rr_rows = [row for row in rr_section.get("rows") or [] if isinstance(row, dict)]
+        exact_skew = {
+            row["expiry"]: _number(row.get("rr"))
+            for row in rr_rows
+            if row.get("methodology") == "exact_expiry"
+            and row.get("availability", "ready") == "ready"
+            and isinstance(row.get("expiry"), str)
         }
-        call_put_bias_semantics = _time_semantics(
-            "derived:totalCallVolume/(totalCallVolume+totalPutVolume)",
-            fetched_at=volatility_fetch if call_share is not None else None,
-            generated_at=volatility_generated_at,
-            time_basis="derived_from_volatility_metrics" if call_share is not None else "source_field_missing",
-        )
+        term_time, term_basis = bundle_time("ivTerm")
+        term_structure = [
+            {
+                "expiry": row["expiry"],
+                "days_to_expiry": _number(row.get("days_to_expiry")),
+                "atm_iv": _number(row.get("atm_iv")),
+                "skew_25d": exact_skew.get(row["expiry"]),
+            }
+            for row in _dict(bundle.get("ivTerm")).get("data") or []
+            if isinstance(row, dict) and isinstance(row.get("expiry"), str)
+        ]
+        put("volatility", "term_structure", term_structure,
+            "dashboard-bundle.ivTerm.data+rrSkewSummary.rows[exact_expiry].rr",
+            fetched=bundle_fetch, generated=term_time, basis=term_basis)
+        put("volatility", "atm_iv", _number(vol_values.get("atmIV")), "dashboard-bundle.volMetrics.metrics.atmIV",
+            fetched=bundle_fetch, generated=vol_time, basis=vol_basis)
+        put("volatility", "iv_percentile", _number(vol_values.get("ivPercentile")),
+            "dashboard-bundle.volMetrics.metrics.ivPercentile",
+            fetched=bundle_fetch, generated=vol_time, basis=vol_basis)
+        rr_time, rr_basis = bundle_time("rrSkewSummary")
+        rr_skew = [
+            {
+                "tenor": row.get("shortLabel"),
+                "days": _number(row.get("daysToExpiry")),
+                "expiry": row.get("expiry") if isinstance(row.get("expiry"), str) else None,
+                "call_25d_iv": _number(row.get("call25dIV")),
+                "put_25d_iv": _number(row.get("put25dIV")),
+                "rr": _number(row.get("rr")),
+                "chg_1d": _number(row.get("chg1d")),
+                "chg_1w": _number(row.get("chg1w")),
+                "chg_1m": _number(row.get("chg1m")),
+                "methodology": row.get("methodology"),
+            }
+            for row in rr_rows
+        ]
+        put("volatility", "rr_skew", rr_skew, "dashboard-bundle.rrSkewSummary.rows",
+            fetched=bundle_fetch, generated=rr_time, basis=rr_basis)
 
-        values = {
-            "gex_board": {
-                "total_net_gex": total_gex,
-                "dvol": dvol,
-                "market_state": market_state,
-            },
-            "gamma_exposure": {
-                "n2": _strike(walls.get("n2")),
-                "n1": _strike(walls.get("n1")),
-                "flip_point": flip,
-                "volatility_trigger": _number(meta.get("vol_trigger")),
-                "spot_price": spot,
-                "magnet_price": magnet_price,
-                "p1": _strike(walls.get("p1")),
-                "p2": _strike(walls.get("p2")),
-            },
-            "volatility": {
-                "iv_rv_ratio": _number(metrics.get("ivRvRatio")),
-                "pcr": _number(metrics.get("pcrVolume")),
-                "term_structure": [],
-            },
-            "flow": {
-                "call_premium": None,
-                "put_premium": None,
-                "call_put_bias": f"{call_share:.1f}% Call" if call_share is not None else None,
-                "put_call_ratio": _number(metrics.get("pcrVolume")),
-                "abnormal_signal": None,
-            },
-        }
-        time_semantics = {
-            "gex_board": {
-                "total_net_gex": total_gex_semantics,
-                "dvol": dvol_semantics,
-                "market_state": market_state_semantics,
-            },
-            "gamma_exposure": {
-                "n2": profile_semantics["n2"],
-                "n1": profile_semantics["n1"],
-                "flip_point": flip_semantics,
-                "volatility_trigger": profile_semantics["volatility_trigger"],
-                "spot_price": spot_semantics,
-                "magnet_price": profile_semantics["magnet_price"],
-                "p1": profile_semantics["p1"],
-                "p2": profile_semantics["p2"],
-            },
-            "volatility": {
-                "iv_rv_ratio": volatility_metric_semantics["iv_rv_ratio"],
-                "pcr": volatility_metric_semantics["pcr"],
-                "term_structure": _time_semantics(
-                    "unavailable",
-                    fetched_at=None,
-                    time_basis="unavailable",
-                ),
-            },
-            "flow": {
-                "call_premium": _time_semantics(
-                    "unavailable",
-                    fetched_at=None,
-                    time_basis="unavailable",
-                ),
-                "put_premium": _time_semantics(
-                    "unavailable",
-                    fetched_at=None,
-                    time_basis="unavailable",
-                ),
-                "call_put_bias": call_put_bias_semantics,
-                "put_call_ratio": _time_semantics(
-                    "volatility-metrics.metrics.pcrVolume",
-                    fetched_at=volatility_fetch if _number(metrics.get("pcrVolume")) is not None else None,
-                    generated_at=volatility_generated_at,
-                    time_basis=(
-                        "volatility_metrics_timestamp"
-                        if _number(metrics.get("pcrVolume")) is not None
-                        else "source_field_missing"
-                    ),
-                ),
-                "abnormal_signal": _time_semantics(
-                    "unavailable",
-                    fetched_at=None,
-                    time_basis="unavailable",
-                ),
-            },
-        }
+        # flow ---------------------------------------------------------------
+        # put_call_ratio is an alias of volatility.pcr (volume PCR).
+        put("flow", "put_call_ratio", pcr_volume, f"{pcr_ref}.pcr_volume",
+            fetched=bundle_fetch, generated=pcr_time, basis=pcr_basis)
+        for field, key in (
+            ("call_volume", "total_call_volume"),
+            ("put_volume", "total_put_volume"),
+            ("call_oi", "total_call_oi"),
+            ("put_oi", "total_put_oi"),
+        ):
+            put("flow", field, _number(pcr_row.get(key)), f"{pcr_ref}.{key}",
+                fetched=bundle_fetch, generated=pcr_time, basis=pcr_basis)
+        whale = _dict(bundle.get("whaleFlowSummary"))
+        for field, key in (("whale_1h", "summary1h"), ("whale_24h", "summary24h")):
+            put("flow", field, _whale(whale.get(key)), f"dashboard-bundle.whaleFlowSummary.{key}",
+                fetched=bundle_fetch, observed=whale.get("latest_trade_timestamp"),
+                generated=whale.get("timestamp"), basis="whale_summary_time")
+
+        # expiry -------------------------------------------------------------
+        max_pain = _dict(_dict(bundle.get("maxPain")).get("latest"))
+        max_pain_time, max_pain_basis = bundle_time("maxPain", own=max_pain.get("timestamp"))
+        put("expiry", "max_pain_price", _number(max_pain.get("max_pain_price")),
+            "dashboard-bundle.maxPain.latest.max_pain_price",
+            fetched=bundle_fetch, generated=max_pain_time, basis=max_pain_basis)
+        target = max_pain.get("target_expiry")
+        put("expiry", "max_pain_target_expiry", target if isinstance(target, str) and target else None,
+            "dashboard-bundle.maxPain.latest.target_expiry",
+            fetched=bundle_fetch, generated=max_pain_time, basis=max_pain_basis)
+        summary_time, summary_basis = bundle_time("expirySummary")
+        put("expiry", "next_expiry", _next_expiry(_dict(bundle.get("expirySummary")).get("data")),
+            "dashboard-bundle.expirySummary.data",
+            fetched=bundle_fetch, generated=summary_time, basis=summary_basis)
+
         result: dict[str, dict[str, Any]] = {}
         for section in SECTIONS:
-            data = values[section]
-            missing = [f"{section}.{field}" for field in SECTION_FIELDS[section] if data.get(field) is None or (isinstance(data.get(field), list) and not data.get(field))]
+            data: dict[str, Any] = {}
+            section_semantics: dict[str, dict[str, Any]] = {}
+            missing: list[str] = []
+            statuses: dict[str, dict[str, Any]] = {}
+            for field in SECTION_FIELDS[section]:
+                path = f"{section}.{field}"
+                value = values[section].get(field, [] if field in LIST_FIELDS else None)
+                item = semantics[section].get(field) or _time_semantics(
+                    "unavailable", time_basis="source_field_missing"
+                )
+                data[field] = value
+                section_semantics[path] = item
+                if is_missing(section, field, value):
+                    missing.append(path)
+                    status, reason = "missing", "not_available_from_public_json"
+                elif path in OPTIONAL_FIELDS and is_empty_value(value):
+                    status, reason = "optional_missing", "optional_field_absent"
+                else:
+                    status, reason = "ok", "public_json"
+                statuses[path] = {
+                    "status": status,
+                    "reason": reason,
+                    "source_ref": item["source_ref"],
+                    "derived": field == "market_state",
+                    "observed_at": _iso_from_ms(item["observed_at_ms"]),
+                    "generated_at": _iso_from_ms(item["generated_at_ms"]),
+                    "time_basis": item["time_basis"],
+                }
             result[section] = {
                 "data": data,
                 "missing_fields": missing,
-                "field_status": {
-                    f"{section}.{field}": {
-                        "status": "missing" if f"{section}.{field}" in missing else "ok",
-                        "reason": "not_available_from_public_json" if f"{section}.{field}" in missing else "public_json",
-                        "source_ref": time_semantics[section][field]["source_ref"],
-                        "derived": field in {"market_state", "call_put_bias"},
-                        "observed_at": _iso_from_ms(time_semantics[section][field]["observed_at_ms"]),
-                        "generated_at": _iso_from_ms(time_semantics[section][field]["generated_at_ms"]),
-                        "time_basis": time_semantics[section][field]["time_basis"],
-                    }
-                    for field in SECTION_FIELDS[section]
-                },
-                "gex_time_semantics": {
-                    f"{section}.{field}": time_semantics[section][field]
-                    for field in SECTION_FIELDS[section]
-                },
+                "field_status": statuses,
+                "gex_time_semantics": section_semantics,
                 "fetched_at": fetched_at,
                 "latest_attempt_at": fetched_at,
                 "last_success_at": fetched_at,
@@ -452,6 +434,21 @@ class PublicJsonSource:
             "derived_top_negative_strike": negatives[0][0] if negatives else None,
             "status": "ok" if option_rows else "unavailable",
         }
+
+
+def _gex_payload_problem(gex: dict[str, Any]) -> str | None:
+    if gex.get("stale") is True:
+        return "upstream_stale"
+    if _number(gex.get("total_gex")) is None:
+        return "invalid_payload: total_gex missing"
+    if not gex.get("timestamp"):
+        return "invalid_payload: timestamp missing"
+    return None
+
+
+def _row_time_ms(row: dict[str, Any]) -> int:
+    ms, _errors = _time_to_ms(row.get("timestamp"), "dashboard-bundle.pcr.data", "timestamp")
+    return ms if ms is not None else -1
 
 
 def _number(value: Any) -> float | None:
@@ -561,3 +558,77 @@ def _iso_from_ms(value: Any) -> str | None:
     if not isinstance(value, int | float) or isinstance(value, bool):
         return None
     return datetime.fromtimestamp(float(value) / 1000.0, UTC).isoformat()
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _int(value: Any) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None and math.isfinite(number) else None
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _magnet(meta: dict[str, Any]) -> tuple[float | None, str]:
+    for key in ("magnet_a1", "magnet_a2"):
+        value = _number(meta.get(key))
+        if value is not None:
+            return value, key
+    return None, "magnet_a1|magnet_a2"
+
+
+def _hedging_flows(raw: Any) -> dict[str, Any] | None:
+    raw = _dict(raw)
+    total_gamma = _number(raw.get("total_gamma"))
+    scenarios = [
+        {"price_change_pct": _number(row.get("price_change_pct")), "hedging_usd": _number(row.get("hedging_usd"))}
+        for row in raw.get("scenarios") or []
+        if isinstance(row, dict)
+    ]
+    if total_gamma is None and not scenarios:
+        return None
+    return {"total_gamma_usd": total_gamma, "scenarios": scenarios}
+
+
+def _profile(profile: dict[str, Any]) -> dict[str, Any] | None:
+    walls = _dict(profile.get("walls"))
+    meta = _dict(profile.get("meta"))
+    if not walls and not meta:
+        return None
+    wall_items = {
+        key: {
+            "strike": _strike(walls.get(key)),
+            "gex_usd": _number(_dict(walls.get(key)).get("value")),
+            "distance_pct": _number(_dict(walls.get(key)).get("distance")),
+        }
+        if isinstance(walls.get(key), dict)
+        else None
+        for key in ("p1", "p2", "n1", "n2")
+    }
+    return {
+        **{key: _strike(walls.get(key)) for key in ("p1", "p2", "n1", "n2")},
+        "walls": wall_items,
+        "volatility_trigger": _number(meta.get("vol_trigger")),
+        "magnet_price": _magnet(meta)[0],
+    }
+
+
+def _whale(raw: Any) -> dict[str, Any] | None:
+    # A window with zero trades is a valid observation (all zeros), not missing.
+    if not isinstance(raw, dict) or not raw:
+        return None
+    convert = {"number": _number, "int": _int, "text": _text}
+    return {name: convert[kind](raw.get(key)) for name, key, kind in _WHALE_FIELDS}
+
+
+def _next_expiry(raw: Any) -> dict[str, Any] | None:
+    raw = _dict(raw)
+    if not _text(raw.get("expiry")):
+        return None
+    result: dict[str, Any] = {key: _text(raw.get(key)) for key in _NEXT_EXPIRY_TEXT}
+    result.update({key: _number(raw.get(key)) for key in _NEXT_EXPIRY_NUMBERS})
+    return result

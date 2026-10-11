@@ -41,18 +41,13 @@ def sample_info_payload():
             "p2": 80000,
         },
         "volatility": {
-            "iv_rv_ratio": 0.84,
             "pcr": 1.32,
             "term_structure": [
                 {"expiry": "19 JUN 26", "atm_iv": 40.6, "skew_25d": -9.8},
             ],
         },
         "flow": {
-            "call_premium": 7000000,
-            "put_premium": 12100000,
-            "call_put_bias": "37% Call",
             "put_call_ratio": 1.72,
-            "abnormal_signal": "Put-led selling is setting the tone.",
         },
         "missing_fields": [],
         "rank": {
@@ -80,8 +75,8 @@ def sample_info_payload():
                     "sample_count": 42,
                     "quality": "warming_up",
                 },
-                "volatility.iv_rv_ratio": {
-                    "value": 0.84,
+                "volatility.atm_iv": {
+                    "value": 30.5,
                     "rank_pct": 41,
                     "percentile": 0.41,
                     "sample_count": 42,
@@ -94,8 +89,8 @@ def sample_info_payload():
                     "sample_count": 42,
                     "quality": "warming_up",
                 },
-                "flow.call_share_pct": {
-                    "value": 37,
+                "flow.whale_24h.net_flow_usd": {
+                    "value": 390000,
                     "rank_pct": 31,
                     "percentile": 0.31,
                     "sample_count": 42,
@@ -140,7 +135,7 @@ def test_rank_is_preserved_and_rendered(mod):
     rank_rows = [row for row in table["rows"] if row and row[0] == "rank"]
     assert_true(len(rank_rows) == 1, "GEX status table should include one rank row")
     rank_text = " ".join(str(cell) for cell in rank_rows[0])
-    for expected in ("netGEX", "64%", "|netGEX|", "88%", "IV/RV", "41%", "P/C", "73%"):
+    for expected in ("netGEX", "64%", "|netGEX|", "88%", "ATM IV", "41%", "PCR", "73%"):
         assert_true(expected in rank_text, "rank row missing " + expected)
     assert_true("n=42" in rank_text, "rank row should expose sample count")
 

@@ -160,16 +160,18 @@ def test_g02_anchor_must_be_valid_and_score_60(mod):
                 "G02 weak anchor reason")
 
 
-def test_g03_gex_info_quality_asset_data_state_and_availability(mod):
+def test_g03_gex_info_identity_and_field_freshness(mod):
+    # 2.0.4: payload-level quality/stale/data_state/availability no longer gate;
+    # the gate reads only total_net_gex and that field's own source clock.
+    for gex in (gex_info(mod, quality=mod.QUALITY_STALE), gex_info(mod, stale=True),
+                gex_info(mod, data_state="lkgv_cache"),
+                gex_info(mod, availability="missing")):
+        snapshot = gate(mod, g=gex)
+        assert_equal(snapshot["state"], mod.SPACE_GATE_ELIGIBLE,
+                     "G03 payload-level status does not gate a fresh field")
     cases = (
-        (gex_info(mod, quality=mod.QUALITY_STALE),
-         "SPACE_GATE_GEX_INFO_QUALITY_NOT_OK"),
-        (gex_info(mod, stale=True), "SPACE_GATE_GEX_INFO_STALE"),
-        (gex_info(mod, data_state="lkgv_cache"),
-         "SPACE_GATE_GEX_INFO_DATA_STATE_NOT_OK"),
-        (gex_info(mod, availability="missing"),
-         "SPACE_GATE_GEX_INFO_AVAILABILITY_NOT_OK"),
         (gex_info(mod, asset="ETH"), "SPACE_GATE_GEX_INFO_ASSET_MISMATCH"),
+        (gex_info(mod, source_ts=BASE_MS - 3_600_000), "SPACE_GATE_NET_GAMMA_NOT_FRESH"),
     )
     for gex, reason in cases:
         snapshot = gate(mod, g=gex)
@@ -323,11 +325,11 @@ def test_g08_persistence_restart_and_tick_snapshot_native_fields(mod):
 
 def main():
     mod = load_signal_module()
-    assert_equal(mod.CONFIG["demo_version"], "2.0.3",
+    assert_equal(mod.CONFIG["demo_version"], "2.0.4",
                  "FMZ producer version")
     test_g01_eligible_uses_positive_fresh_observed_net_gamma(mod)
     test_g02_anchor_must_be_valid_and_score_60(mod)
-    test_g03_gex_info_quality_asset_data_state_and_availability(mod)
+    test_g03_gex_info_identity_and_field_freshness(mod)
     test_g04_positive_regime_cannot_replace_positive_number(mod)
     test_g05_freshness_uses_source_time_not_fetch_time(mod)
     test_g06_valid_negative_deribit_proxy_conflicts_with_positive_gex(mod)

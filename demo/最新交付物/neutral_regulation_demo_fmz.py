@@ -172,11 +172,15 @@ CONFIG = {
     # underwriting facts. Audit-only; no direction/weight/permission changes.
     # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
     # continuous current facts. No direction/weight/LLM/permission changes.
+    # v2.0.4 (2026-10-11): gexmonitorapi follows the upstream redesign; fields
+    # the upstream no longer provides are not consumed; new upstream data
+    # (near-term walls, PCR/OI, ATM IV, rr skew, whale flow, expiry) reach the
+    # snapshot/audit/status slots; space gate checks only its own field.
     # v2.0.3 (2026-10-11): GEX info reads the local loopback service without
     # a token (gexmonitorapi PUBLIC_READ); removed dead config keys.
     # v2.0.2 (2026-10-05): producer-local snapshot handoff/export clocks
     # and same-snapshot session context. No financial/permission changes.
-    "demo_version": "2.0.3",
+    "demo_version": "2.0.4",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -7414,6 +7418,12 @@ def _audit_gex_info(raw):
         gex["call_wall"] = _gex_wall_level(gex.get("resistance_walls"))
     if "put_wall" not in gex:
         gex["put_wall"] = _gex_wall_level(gex.get("support_walls"))
+    near = gex.get("near_term_walls") if isinstance(gex.get("near_term_walls"), dict) else {}
+    near_bucket = "zero_dte" if near.get("zero_dte") else ("weekly" if near.get("weekly") else None)
+    near_profile = near.get(near_bucket) or {}
+    gex.setdefault("near_term_wall_bucket", near_bucket)
+    gex.setdefault("near_term_call_wall", _gex_wall_level(near_profile.get("resistance_walls")))
+    gex.setdefault("near_term_put_wall", _gex_wall_level(near_profile.get("support_walls")))
     gex["gex_time_semantics"] = _build_gex_time_semantics(
         {"gex_time_semantics": gex.get("gex_time_semantics")},
         gex.get("fetched_at") or gex.get("fetched_at_ms"))
@@ -9634,7 +9644,7 @@ def _gex_info_endpoint(base):
 
 _GEX_TIME_FIELD_SPECS = (
     ("gex_board", "total_net_gex", "gex-latest.total_gex"),
-    ("gex_board", "dvol", "gex-latest.dvol|volatility-metrics.metrics.dvol"),
+    ("gex_board", "dvol", "gex-latest.dvol|dashboard-bundle.dvol.value"),
     ("gex_board", "market_state", "derived:total_net_gex_or_spot_flip"),
     ("gamma_exposure", "n2", "gex-latest.profiles.total.walls.n2"),
     ("gamma_exposure", "n1", "gex-latest.profiles.total.walls.n1"),
@@ -9646,14 +9656,25 @@ _GEX_TIME_FIELD_SPECS = (
      "gex-latest.profiles.total.meta.magnet_a1|magnet_a2"),
     ("gamma_exposure", "p1", "gex-latest.profiles.total.walls.p1"),
     ("gamma_exposure", "p2", "gex-latest.profiles.total.walls.p2"),
-    ("volatility", "iv_rv_ratio", "volatility-metrics.metrics.ivRvRatio"),
-    ("volatility", "pcr", "volatility-metrics.metrics.pcrVolume"),
-    ("volatility", "term_structure", "unavailable"),
-    ("flow", "call_premium", "unavailable"),
-    ("flow", "put_premium", "unavailable"),
-    ("flow", "put_call_ratio", "volatility-metrics.metrics.pcrVolume"),
-    ("flow", "call_put_bias", "derived:totalCallVolume/(Call+Put)"),
-    ("flow", "abnormal_signal", "unavailable"),
+    ("gamma_exposure", "hedging_flows", "gex-latest.hedging_flows"),
+    ("gamma_profiles", "zero_dte", "gex-latest.profiles.0dte"),
+    ("gamma_profiles", "weekly", "gex-latest.profiles.weekly"),
+    ("volatility", "pcr", "dashboard-bundle.pcr.pcr_volume"),
+    ("volatility", "pcr_oi", "dashboard-bundle.pcr.pcr_oi"),
+    ("volatility", "term_structure", "dashboard-bundle.ivTerm"),
+    ("volatility", "atm_iv", "dashboard-bundle.volMetrics.metrics.atmIV"),
+    ("volatility", "iv_percentile", "dashboard-bundle.volMetrics.metrics.ivPercentile"),
+    ("volatility", "rr_skew", "dashboard-bundle.rrSkewSummary"),
+    ("flow", "put_call_ratio", "dashboard-bundle.pcr.pcr_volume"),
+    ("flow", "call_volume", "dashboard-bundle.pcr.total_call_volume"),
+    ("flow", "put_volume", "dashboard-bundle.pcr.total_put_volume"),
+    ("flow", "call_oi", "dashboard-bundle.pcr.total_call_oi"),
+    ("flow", "put_oi", "dashboard-bundle.pcr.total_put_oi"),
+    ("flow", "whale_1h", "dashboard-bundle.whaleFlowSummary.summary1h"),
+    ("flow", "whale_24h", "dashboard-bundle.whaleFlowSummary.summary24h"),
+    ("expiry", "max_pain_price", "dashboard-bundle.maxPain.latest"),
+    ("expiry", "max_pain_target_expiry", "dashboard-bundle.maxPain.latest"),
+    ("expiry", "next_expiry", "dashboard-bundle.expirySummary"),
 )
 
 
@@ -9921,6 +9942,10 @@ def parse_info_payload(payload, config=None):
     vol = vol if isinstance(vol, dict) else {}
     flow = payload.get("flow")
     flow = flow if isinstance(flow, dict) else {}
+    profiles = payload.get("gamma_profiles")
+    profiles = profiles if isinstance(profiles, dict) else {}
+    expiry = payload.get("expiry")
+    expiry = expiry if isinstance(expiry, dict) else {}
     rank = _normalize_gex_info_rank(payload.get("rank"))
 
     n1 = safe_float(gamma.get("n1"))
@@ -9941,9 +9966,15 @@ def parse_info_payload(payload, config=None):
             continue
         term_structure.append({
             "expiry": item.get("expiry"),
+            "days_to_expiry": safe_float(item.get("days_to_expiry")),
             "atm_iv": safe_float(item.get("atm_iv")),
             "skew_25d": safe_float(item.get("skew_25d")),
         })
+    near_term_walls = {}
+    for bucket in ("zero_dte", "weekly"):
+        profile = _gex_info_profile(profiles.get(bucket))
+        if profile:
+            near_term_walls[bucket] = profile
 
     fetched_at = payload.get("fetched_at")
     fetched_at_ms = _iso_to_ms(fetched_at)
@@ -9972,16 +10003,28 @@ def parse_info_payload(payload, config=None):
         "p2": p2,
         "support_walls": support_walls,
         "resistance_walls": resistance_walls,
+        "hedging_flows": _gex_info_plain_dict(gamma.get("hedging_flows")),
+        # near-term (0DTE / weekly) gamma walls: closer to 24h contracts
+        "near_term_walls": near_term_walls,
         # volatility
-        "iv_rv_ratio": safe_float(vol.get("iv_rv_ratio")),
         "pcr": safe_float(vol.get("pcr")),
+        "pcr_oi": safe_float(vol.get("pcr_oi")),
         "term_structure": term_structure,
-        # flow (call_put_bias / abnormal_signal are strings: display-only)
-        "call_premium": safe_float(flow.get("call_premium")),
-        "put_premium": safe_float(flow.get("put_premium")),
+        "atm_iv": safe_float(vol.get("atm_iv")),
+        "iv_percentile": safe_float(vol.get("iv_percentile")),
+        "rr_skew": [dict(row) for row in vol.get("rr_skew") or [] if isinstance(row, dict)],
+        # flow (option volume / OI are ratio inputs, not absolute open interest)
         "put_call_ratio": safe_float(flow.get("put_call_ratio")),
-        "call_put_bias": flow.get("call_put_bias"),
-        "abnormal_signal": flow.get("abnormal_signal"),
+        "call_volume": safe_float(flow.get("call_volume")),
+        "put_volume": safe_float(flow.get("put_volume")),
+        "call_oi": safe_float(flow.get("call_oi")),
+        "put_oi": safe_float(flow.get("put_oi")),
+        "whale_1h": _gex_info_plain_dict(flow.get("whale_1h")),
+        "whale_24h": _gex_info_plain_dict(flow.get("whale_24h")),
+        # expiry (monthly max pain vs next-expiry summary are different meanings)
+        "max_pain_price": safe_float(expiry.get("max_pain_price")),
+        "max_pain_target_expiry": expiry.get("max_pain_target_expiry"),
+        "next_expiry": _gex_info_plain_dict(expiry.get("next_expiry")),
         # rank (display-only historical percentile context from gexmonitorapi)
         "rank": rank,
         # audit
@@ -9994,6 +10037,30 @@ def parse_info_payload(payload, config=None):
         "fetch_error": None,
     }
     return add_schema(snapshot, SCHEMA_GEX_INFO, config)
+
+
+def _gex_info_plain_dict(raw):
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _gex_info_profile(raw):
+    """Near-term profile walls: same support/resistance convention as total."""
+    if not isinstance(raw, dict):
+        return None
+    levels = {key: safe_float(raw.get(key)) for key in ("p1", "p2", "n1", "n2")}
+    support = sorted([v for v in (levels["n1"], levels["n2"]) if v is not None and v > 0],
+                     reverse=True)
+    resistance = sorted([v for v in (levels["p1"], levels["p2"]) if v is not None and v > 0])
+    if not support and not resistance:
+        return None
+    walls = raw.get("walls") if isinstance(raw.get("walls"), dict) else {}
+    return {
+        "support_walls": support,
+        "resistance_walls": resistance,
+        "walls": {key: dict(value) for key, value in walls.items() if isinstance(value, dict)},
+        "volatility_trigger": safe_float(raw.get("volatility_trigger")),
+        "magnet_price": safe_float(raw.get("magnet_price")),
+    }
 
 
 def _normalize_gex_info_rank(raw_rank):
@@ -10036,14 +10103,24 @@ def missing_gex_info_snapshot(config=None, reasons=None, error=None):
         "p2": None,
         "support_walls": [],
         "resistance_walls": [],
-        "iv_rv_ratio": None,
+        "hedging_flows": {},
+        "near_term_walls": {},
         "pcr": None,
+        "pcr_oi": None,
         "term_structure": [],
-        "call_premium": None,
-        "put_premium": None,
+        "atm_iv": None,
+        "iv_percentile": None,
+        "rr_skew": [],
         "put_call_ratio": None,
-        "call_put_bias": None,
-        "abnormal_signal": None,
+        "call_volume": None,
+        "put_volume": None,
+        "call_oi": None,
+        "put_oi": None,
+        "whale_1h": {},
+        "whale_24h": {},
+        "max_pain_price": None,
+        "max_pain_target_expiry": None,
+        "next_expiry": {},
         "rank": None,
         "missing_fields": [],
         "gex_time_semantics": _build_gex_time_semantics({}, None),
@@ -10159,18 +10236,6 @@ def _space_gate_net_gamma(gex_info, gamma_regime, config, observed, reasons):
     if info.get("asset") != config.get("asset"):
         reasons.append("SPACE_GATE_GEX_INFO_ASSET_MISMATCH")
         valid = False
-    if info.get("quality") != QUALITY_OK:
-        reasons.append("SPACE_GATE_GEX_INFO_QUALITY_NOT_OK")
-        valid = False
-    if not _space_gate_status_ok(info.get("data_state")):
-        reasons.append("SPACE_GATE_GEX_INFO_DATA_STATE_NOT_OK")
-        valid = False
-    if not _space_gate_status_ok(info.get("availability")):
-        reasons.append("SPACE_GATE_GEX_INFO_AVAILABILITY_NOT_OK")
-        valid = False
-    if info.get("stale") is True:
-        reasons.append("SPACE_GATE_GEX_INFO_STALE")
-        valid = False
     if value is None:
         reasons.append("SPACE_GATE_NET_GAMMA_MISSING")
         valid = False
@@ -10232,7 +10297,11 @@ def _space_gate_gex_source_ts(info):
     if not isinstance(info, dict):
         return None
     semantics = info.get("gex_time_semantics")
-    fields = semantics.get("fields") if isinstance(semantics, dict) else {}
+    if not isinstance(semantics, dict) or semantics.get(
+            "schema_version") != GEX_TIME_SEMANTICS_SCHEMA_VERSION:
+        # Only the clock that now guards the gate: an unknown protocol is unusable.
+        return None
+    fields = semantics.get("fields")
     entry = fields.get("gex_board.total_net_gex") if isinstance(
         fields, dict) else None
     if not isinstance(entry, dict):
@@ -10272,12 +10341,6 @@ def _space_gate_ggr_conflict(ggr, net_gamma_value):
     if ggr.get("regime") == "NEGATIVE_GAMMA_AMPLIFYING":
         return True
     return False
-
-
-def _space_gate_status_ok(value):
-    if value is None:
-        return False
-    return str(value).strip().lower() in ("ok", "live", "ready")
 
 
 def _space_gate_sign(value):
@@ -13457,9 +13520,9 @@ def _gex_info_table(info):
     """GEX Monitor data-enhancement context (gexmonitorapi /v1/info).
 
     DISPLAY-ONLY: this panel never votes, never enters EDB, and never gates.
-    It surfaces the regime / premium-richness / options-flow reads the signal
-    layer otherwise lacks, plus the spatial levels used as GGR pin fallback and
-    execution shadow-avoidance context."""
+    It surfaces the regime, total and near-term gamma walls, option sentiment,
+    whale block-trade flow and expiry context, plus the spatial levels used as
+    GGR pin fallback and execution shadow-avoidance context."""
     title = "GEX Monitor 数据增强(只读上下文)"
     cols = ["ID", "分区", "关键输出", "辅助字段", "观察含义"]
     if not info or info.get("quality") == "MISSING":
@@ -13472,6 +13535,11 @@ def _gex_info_table(info):
                       "软增强层：缺失即降级，不影响任何门控/方向"]],
         }
     near = (info.get("term_structure") or [])[:3]
+    near_walls = info.get("near_term_walls") if isinstance(info.get("near_term_walls"), dict) else {}
+    zero_dte = near_walls.get("zero_dte") or {}
+    weekly = near_walls.get("weekly") or {}
+    whale = info.get("whale_24h") if isinstance(info.get("whale_24h"), dict) else {}
+    next_expiry = info.get("next_expiry") if isinstance(info.get("next_expiry"), dict) else {}
     near_text = " / ".join(
         "{0}:IV{1}(skew {2})".format(
             _fmt(item.get("expiry")), _fmt_num(item.get("atm_iv"), 1),
@@ -13489,25 +13557,40 @@ def _gex_info_table(info):
          + " / 支撑 " + _walls_text(info.get("support_walls"))
          + " / 阻力 " + _walls_text(info.get("resistance_walls")),
          "期权持仓墙/磁吸位(GGR pin回退 + 执行层影子避让上下文)"],
-        ["premium", "权利金贵不贵(volatility)",
-         "IV/RV " + _fmt_num(info.get("iv_rv_ratio"), 2)
-         + " / PCR " + _fmt_num(info.get("pcr"), 2),
-         "近月 " + near_text,
-         "期权是否偏贵的早期可视化(VRP 仍是权威门，此处仅观察/交叉校验)"],
-        ["flow", "期权资金流(flow)",
-         _fmt(info.get("call_put_bias"))
-         + " / P/C " + _fmt_num(info.get("put_call_ratio"), 2),
-         "Call权利金 " + _fmt_usd_compact(info.get("call_premium"))
-         + " / Put权利金 " + _fmt_usd_compact(info.get("put_premium")),
-         _join_cell_lines(_wrap_cell_text(info.get("abnormal_signal"), 36, 3))],
+        ["near_walls", "近端墙位(0DTE/周度)",
+         "0DTE 支撑 " + _walls_text(zero_dte.get("support_walls"))
+         + " / 阻力 " + _walls_text(zero_dte.get("resistance_walls")),
+         "周度 支撑 " + _walls_text(weekly.get("support_walls"))
+         + " / 阻力 " + _walls_text(weekly.get("resistance_walls")),
+         "近端到期的Gamma墙，比全期限墙更贴近24h合约"],
+        ["options", "期权情绪(volatility)",
+         "PCR量 " + _fmt_num(info.get("pcr"), 2)
+         + " / PCR持仓 " + _fmt_num(info.get("pcr_oi"), 2),
+         "ATM IV " + _fmt_num(info.get("atm_iv"), 1) + "%(分位 "
+         + _fmt_num(info.get("iv_percentile"), 0) + ") / 近月 " + near_text,
+         "期权情绪与隐含波动水平(VRP 仍是权威门，此处仅观察/交叉校验)"],
+        ["whale", "巨鲸大宗成交(24h)",
+         "净流 " + _fmt_usd_compact(whale.get("net_flow_usd"))
+         + " / " + _fmt(whale.get("trade_count")) + " 笔",
+         "买Call " + _fmt(whale.get("buy_call_count"))
+         + " / 卖Call " + _fmt(whale.get("sell_call_count"))
+         + " / 买Put " + _fmt(whale.get("buy_put_count"))
+         + " / 卖Put " + _fmt(whale.get("sell_put_count")),
+         "大宗成交权利金方向；与Binance微观流分开观察"],
+        ["expiry", "到期与最大痛点",
+         "最近到期 " + _fmt(next_expiry.get("expiry")) + " 最大痛点 "
+         + _fmt_price(next_expiry.get("max_pain_price")),
+         "月度最大痛点 " + _fmt_price(info.get("max_pain_price"))
+         + " / 最近到期P/C持仓 " + _fmt_num(next_expiry.get("put_call_ratio_oi"), 2),
+         "到期前的价格引力参考，不单独决定方向"],
         ["rank", "历史分位(rank)",
          "netGEX " + _fmt_gex_rank(info, "gex_board.total_net_gex")
          + " / |netGEX| "
          + _fmt_gex_rank(info, "gex_board.total_net_gex",
                          field="abs_rank_pct"),
-         "IV/RV " + _fmt_gex_rank(info, "volatility.iv_rv_ratio")
-         + " / P/C " + _fmt_gex_rank(info, "volatility.pcr")
-         + " / Call share " + _fmt_gex_rank(info, "flow.call_share_pct"),
+         "PCR " + _fmt_gex_rank(info, "volatility.pcr")
+         + " / ATM IV " + _fmt_gex_rank(info, "volatility.atm_iv")
+         + " / 巨鲸净流 " + _fmt_gex_rank(info, "flow.whale_24h.net_flow_usd"),
          _gex_rank_window_text(info)],
         ["meta", "数据质量/新鲜度",
          _cn_quality(info.get("quality")) + " / " + _fmt(info.get("data_state")),
@@ -15247,15 +15330,14 @@ class DemoRuntime:
                 "n1": price - 2000.0, "n2": price - 5000.0,
                 "p1": price + 3000.0, "p2": price + 6000.0,
             },
-            "volatility": {"iv_rv_ratio": 1.18, "pcr": 0.95,
+            "volatility": {"pcr": 0.95, "pcr_oi": 0.9, "atm_iv": 55.0,
                            "term_structure": [
-                               {"expiry": "FIX-24H", "atm_iv": 55.0,
-                                "skew_25d": -8.0},
-                               {"expiry": "FIX-48H", "atm_iv": 53.0,
-                                "skew_25d": -7.2}]},
-            "flow": {"call_premium": 3.0e7, "put_premium": 2.4e7,
-                     "call_put_bias": "56% Call", "put_call_ratio": 0.8,
-                     "abnormal_signal": "Balanced flow."},
+                               {"expiry": "FIX-24H", "days_to_expiry": 1,
+                                "atm_iv": 55.0, "skew_25d": -8.0},
+                               {"expiry": "FIX-48H", "days_to_expiry": 2,
+                                "atm_iv": 53.0, "skew_25d": -7.2}]},
+            "flow": {"put_call_ratio": 0.95,
+                     "whale_24h": {"net_flow_usd": 0.0, "trade_count": 0}},
             "missing_fields": [],
         }, self.config)
 

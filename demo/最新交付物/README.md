@@ -6,18 +6,27 @@
 
 ## 文件清单
 
-本目录信号层文件是 `demo_version=2.0.3`。2026-10-11 起 FMZ 本体运行在 EU 新机托管者（账号 69494805，robot 668422），原生输出由同机工作台链消费；自然新卡与三层版本一致性仍需单独验收。2.0.2 及更早的发布记录见[发布回执](../../docs/astra/22_GEX时间补丁发布与FMZ1.6.2交付.md)与 Git 历史。
+本目录信号层文件是 `demo_version=2.0.4`。2026-10-11 起 FMZ 本体运行在 EU 新机托管者（账号 69494805，robot 668422），原生输出由同机工作台链消费；自然新卡与三层版本一致性仍需单独验收。2.0.2 及更早的发布记录见[发布回执](../../docs/astra/22_GEX时间补丁发布与FMZ1.6.2交付.md)与 Git 历史。
 
 | 文件 | 层 | 版本 | 状态 | 边界 |
 |---|---|---:|---|---|
-| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=2.0.3` | GEX 增强接口改读同机 `http://127.0.0.1:8000` 且免 token；清理死配置。信号逻辑、schema 与权限不变 | 只读观察，不选腿、不报价、不下单 |
+| `neutral_regulation_demo_fmz.py` | 信号层 | `demo_version=2.0.4` | 跟随 gexmonitor 上游改版：不再消费上游已停止提供的字段；新数据进入快照/审计卡/状态栏；SpaceGate 只检查所用字段 | 只读观察，不选腿、不报价、不下单 |
 | `spm_manual_gate_execution_fmz.py` | 执行层 | `STRATEGY_VERSION=3.0.0-manual-gate` | `MANUAL_GATE_PLAN_READY` | 独立人工审计门执行层；当前版本不消费信号层输入 |
 
 固定轮次只绕过 Anchor+DIE 的发卡触发条件，不伪造 `NR_REPAIR_CONFIRMED`，不改写 producer 的 direction、confidence、blocking、trade_allowed 或 execution_allowed。卡片继续写入同一 JSONL，并复用现有 LLM 复核链。
 
 `signal_rating@1.0.0` 只回答结构依据、Put/Call 信用价差侧别压力、反对理由和未知项；候选两腿、报价、费用、补偿、退出条件和自动执行许可仍不在信号层评价。旧 `confidence`、`lean`、`side_hint`、`support_label`、NR、trigger 与权限消费者兼容保留。
 
-当前 D–S 为一次 LLM 综合评审的总体证据等级；价格倾向、两侧比较和建议来自同次评审。B 可以提出人工研究建议，原信号窗口、硬风险和机器权限单独保留。历史路线见 [Astra v2.2](../../docs/astra/17_证据校正与建议式辅助闭环_v2.2.md)，另有[通俗说明](../../docs/astra/09_当前版本评级与推理链_通俗说明.md)与[兼容约定](../../docs/astra/10_版本兼容与数据复用约定.md)。用户曾于2026-09-11审阅当时页面并要求“推送并更新”，该次发布顺序与结果见[Astra v2.2发布回执](../../docs/astra/18_v2.2发布与兼容验收.md)；该历史验收不能代替 2.0.3 的自然新卡验收。
+当前 D–S 为一次 LLM 综合评审的总体证据等级；价格倾向、两侧比较和建议来自同次评审。B 可以提出人工研究建议，原信号窗口、硬风险和机器权限单独保留。历史路线见 [Astra v2.2](../../docs/astra/17_证据校正与建议式辅助闭环_v2.2.md)，另有[通俗说明](../../docs/astra/09_当前版本评级与推理链_通俗说明.md)与[兼容约定](../../docs/astra/10_版本兼容与数据复用约定.md)。用户曾于2026-09-11审阅当时页面并要求“推送并更新”，该次发布顺序与结果见[Astra v2.2发布回执](../../docs/astra/18_v2.2发布与兼容验收.md)；该历史验收不能代替 2.0.4 的自然新卡验收。
+
+## 2.0.4 变更（2026-10-11）
+
+gexmonitor.com 约 2026-08-29 改版后，gexmonitorapi 改读 `dashboard-bundle` 与 `gex-latest`。
+
+- **不再消费**：`iv_rv_ratio`、`call_premium`、`put_premium`、`call_put_bias`、`abnormal_signal` 及其衍生排名（上游已不提供，不做缺失标注）。它们此前不进入任何评分、权重或门控，删除本身不改变数值。
+- **新进入快照的上游数据**：近端 0DTE/周度 Gamma 墙（`near_term_walls`，审计卡另派生 `near_term_call_wall` / `near_term_put_wall`）、PCR（成交量/持仓）、ATM IV 与分位、风险逆转偏斜、期权成交量与持仓、巨鲸大宗成交 1h/24h、最大痛点与最近到期摘要、对冲流情景；期限结构补 `days_to_expiry`。FMZ 状态栏新增「近端墙位 / 期权情绪 / 巨鲸 / 到期」四行。
+- **SpaceGate**：只检查 `total_net_gex` 及其自身源时钟新鲜度（且时间语义协议须为 `gex_time_semantics@1.0.0`），不再看整包 quality/stale/data_state/availability。GGR 保持原保守规则（整包 partial 时只展示）。
+- **会改变实盘信号行为（需观察）**：旧服务因上游停供字段永远报 `partial`，GGR 从未使用 gex_info、SpaceGate 从未放行。新服务的顶层 `availability`/`stale` 只描述信号核心（gex-latest 的 gex_board 与 gamma_exposure），增强数据另报 `enrichment_availability`/`enrichment_stale`；核心正常时为 `ready`。因此 GGR 会开始用 gex_info 做体制交叉校验（可能降级为 TRANSITION）与 pin 回退，SpaceGate 可能首次进入 `STRUCTURE_ELIGIBLE`。这对 2.0.3 同样成立（取决于服务端部署）。GEX 服务刷新间隔改为 900 秒，使 SpaceGate 20 分钟新鲜窗内不出现周期性失效。
 
 ## 本轮信号层部署（2.0.3）
 

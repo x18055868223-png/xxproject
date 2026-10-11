@@ -4,23 +4,50 @@ import asyncio
 import hashlib
 import json
 import math
-import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .models import GEX_TIME_SEMANTICS_SCHEMA, SECTION_FIELDS, SECTIONS, RefreshSection, SectionName, empty_section_data
+from .models import (
+    GEX_TIME_SEMANTICS_SCHEMA,
+    OPTIONAL_FIELDS,
+    SECTION_FIELDS,
+    SECTION_SOURCE,
+    SECTIONS,
+    CORE_SECTIONS,
+    CORE_SOURCE_ERRORS,
+    ENRICHMENT_SOURCE_ERRORS,
+    STALE_SOURCE_ERRORS,
+    RefreshSection,
+    SectionName,
+    empty_section_data,
+    is_empty_value,
+    is_missing,
+)
 from .parsers import parse_section
 
+# "section.field[.subkey]": a subkey flattens a scalar out of a dict field.
 RANK_METRICS: tuple[str, ...] = (
     "gex_board.total_net_gex",
     "gex_board.dvol",
-    "volatility.iv_rv_ratio",
     "volatility.pcr",
-    "flow.call_share_pct",
+    "volatility.pcr_oi",
+    "volatility.atm_iv",
     "flow.put_call_ratio",
+    "flow.whale_24h.net_flow_usd",
 )
+
+# History lines written before metric_sources existed came from the
+# /api/gex-latest + /api/volatility-metrics era. gex-latest fields are still
+# read from the same upstream field; the volatility-metrics pcr is not
+# comparable with the options-chain snapshot pcr and stays unmatched.
+LEGACY_HISTORY_SOURCES: dict[str, str] = {
+    "gex_board.total_net_gex": "gex-latest.total_gex",
+    "gex_board.dvol": "gex-latest.dvol",
+    "volatility.pcr": "volatility-metrics.metrics.pcrVolume",
+    "flow.put_call_ratio": "volatility-metrics.metrics.pcrVolume",
+}
 
 RANK_OK_MIN_WINDOW_DAYS = 15.0
 
@@ -46,6 +73,7 @@ class MetricsCache:
         self._sections = {section: self._empty_section_state(section) for section in SECTIONS}
         self._last_payload: dict[str, Any] | None = None
         self._stale = True
+        self._enrichment_stale = True
         self._history: list[dict[str, Any]] = []
         self._source_metadata: dict[str, Any] = {}
 
@@ -55,6 +83,7 @@ class MetricsCache:
                 self._last_payload = json.loads(self.cache_file.read_text(encoding="utf-8"))
                 self._restore_cached_payload(self._last_payload)
                 self._stale = bool(self._last_payload.get("stale", True))
+                self._enrichment_stale = bool(self._last_payload.get("enrichment_stale", True))
             except Exception:
                 pass
         self._load_history()
@@ -68,15 +97,18 @@ class MetricsCache:
         targets = SECTIONS if section == "all" else (section,)
         async with self._lock:
             had_error = False
+            core_error = enrichment_error = False
             if hasattr(self.scraper, "fetch_snapshot"):
                 try:
                     snapshot = await self.scraper.fetch_snapshot()
                     self._apply_source_snapshot(snapshot, targets)
                     errors = (snapshot.get("metadata") or {}).get("errors") or {}
-                    had_error = any(name in errors for name in ("gex", "volatility", "price"))
+                    had_error = any(name in errors for name in STALE_SOURCE_ERRORS)
+                    core_error = any(name in errors for name in CORE_SOURCE_ERRORS)
+                    enrichment_error = any(name in errors for name in ENRICHMENT_SOURCE_ERRORS)
                     self._source_metadata = dict(snapshot.get("metadata") or {})
                 except Exception as exc:
-                    had_error = True
+                    had_error = core_error = enrichment_error = True
                     for target in targets:
                         self._sections[target]["last_error"] = str(exc)
             else:
@@ -84,9 +116,10 @@ class MetricsCache:
                     try:
                         await self._refresh_one(target)
                     except Exception as exc:
-                        had_error = True
+                        had_error = core_error = enrichment_error = True
                         self._sections[target]["last_error"] = str(exc)
-            self._stale = had_error
+            self._stale = core_error
+            self._enrichment_stale = enrichment_error
             if section == "all" and not had_error:
                 self._append_history_sample(self._current_history_sample())
             payload = self._build_payload()
@@ -110,8 +143,7 @@ class MetricsCache:
             missing = list(state.get("missing_fields") or [])
             statuses = state.get("field_status") if isinstance(state.get("field_status"), dict) else {}
             time_semantics = self._coerce_section_time_semantics(target, state.get("gex_time_semantics"))
-            source_error_name = "gex" if target in {"gex_board", "gamma_exposure"} else "volatility"
-            source_error = errors.get(source_error_name)
+            source_error = errors.get(SECTION_SOURCE[target])
             # Keep the last good section during a transient endpoint failure;
             # expose the failure via stale/availability and last_error instead
             # of replacing usable values with a wall of nulls.
@@ -163,6 +195,14 @@ class MetricsCache:
             }
         )
 
+    def _availability(self, sections: tuple[SectionName, ...]) -> str:
+        states = [self._sections[section] for section in sections]
+        if not any(state.get("last_success_at") for state in states):
+            return "missing"
+        if any(state["missing_fields"] or state.get("last_error") for state in states):
+            return "partial"
+        return "ready"
+
     def _build_payload(self) -> dict[str, Any]:
         missing_fields: list[str] = []
         field_status: dict[str, dict[str, Any]] = {}
@@ -189,14 +229,9 @@ class MetricsCache:
                 # it to timestamp refreshes deterministically. Age is an
                 # observational wall-clock field and may be computed separately.
                 data_age_ms = max(0, int((datetime.now(UTC) - parsed_latest).total_seconds() * 1000))
-        any_success = any(state.get("last_success_at") for state in self._sections.values())
-        any_error = any(state.get("last_error") for state in self._sections.values())
-        if not any_success:
-            availability = "missing"
-        elif missing_fields or any_error:
-            availability = "partial"
-        else:
-            availability = "ready"
+        availability = self._availability(CORE_SECTIONS)
+        enrichment_availability = self._availability(
+            tuple(section for section in SECTIONS if section not in CORE_SECTIONS))
 
         payload = {
             "asset": "BTC",
@@ -206,14 +241,14 @@ class MetricsCache:
             "data_age_ms": data_age_ms,
             "stale": self._stale,
             "availability": availability,
+            "enrichment_stale": self._enrichment_stale,
+            "enrichment_availability": enrichment_availability,
             "source_mode": self._source_metadata.get("source_mode", "legacy_page"),
             "source_urls": self._source_metadata.get("source_urls", {}),
-            "source_metadata": self._source_metadata,
+            # Field time semantics live at top level only (registry-filtered).
+            "source_metadata": {k: v for k, v in self._source_metadata.items() if k != "gex_time_semantics"},
             "gex_time_semantics": self._build_gex_time_semantics(),
-            "gex_board": self._sections["gex_board"]["data"],
-            "gamma_exposure": self._sections["gamma_exposure"]["data"],
-            "volatility": self._sections["volatility"]["data"],
-            "flow": self._sections["flow"]["data"],
+            **{section: self._sections[section]["data"] for section in SECTIONS},
             "missing_fields": sorted(set(missing_fields)),
             "field_status": field_status,
             "sections": self._public_section_states(),
@@ -228,15 +263,12 @@ class MetricsCache:
         )
         if not fetched_at:
             return None
-        payload = {
-            "gex_board": self._sections["gex_board"]["data"],
-            "volatility": self._sections["volatility"]["data"],
-            "flow": self._sections["flow"]["data"],
-        }
+        payload = {section: self._sections[section]["data"] for section in SECTIONS}
         return {
             "asset": "BTC",
             "fetched_at": fetched_at,
             "metrics": self._rank_metric_values(payload),
+            "metric_sources": self._rank_metric_sources(self._build_gex_time_semantics()["fields"]),
         }
 
     def _append_history_sample(self, sample: dict[str, Any] | None) -> None:
@@ -271,18 +303,20 @@ class MetricsCache:
         problem_status = payload.get("field_status", {})
         sections = payload.get("sections", {})
         for section in SECTIONS:
+            # Only fields in the current registry survive a restore; fields
+            # removed from the contract must never reappear from an old cache.
             data = payload.get(section)
             if isinstance(data, dict):
-                self._sections[section]["data"] = data
+                defaults = empty_section_data(section)
+                self._sections[section]["data"] = {
+                    field: data.get(field, default) for field, default in defaults.items()
+                }
 
             cached = sections.get(section) if isinstance(sections, dict) else None
             if isinstance(cached, dict):
                 for key in ("fetched_at", "latest_attempt_at", "last_success_at", "last_error", "source_url", "content_hash"):
                     if key in cached:
                         self._sections[section][key] = cached[key]
-                missing_fields = cached.get("missing_fields", [])
-                if isinstance(missing_fields, list):
-                    self._sections[section]["missing_fields"] = missing_fields
                 section_semantics = cached.get("gex_time_semantics") or _section_fields_from_payload(payload, section)
                 self._sections[section]["gex_time_semantics"] = self._coerce_section_time_semantics(
                     section,
@@ -294,11 +328,17 @@ class MetricsCache:
                     _section_fields_from_payload(payload, section),
                 )
 
-            missing = set(self._sections[section].get("missing_fields", []))
+            data = self._sections[section]["data"]
+            missing = [
+                f"{section}.{field}" for field in SECTION_FIELDS[section] if is_missing(section, field, data.get(field))
+            ]
+            self._sections[section]["missing_fields"] = missing
             field_status: dict[str, dict[str, str]] = {}
             for field in SECTION_FIELDS[section]:
                 path = f"{section}.{field}"
-                if path in missing:
+                if path in OPTIONAL_FIELDS and is_empty_value(data.get(field)):
+                    field_status[path] = {"status": "optional_missing", "reason": "optional_field_absent"}
+                elif path in missing:
                     cached_status = problem_status.get(path, {}) if isinstance(problem_status, dict) else {}
                     field_status[path] = {
                         "status": str(cached_status.get("status", "missing")),
@@ -344,12 +384,17 @@ class MetricsCache:
 
         metrics: dict[str, Any] = {}
         current_metrics = current_sample["metrics"]
+        current_sources = self._rank_metric_sources(
+            (payload.get("gex_time_semantics") or {}).get("fields") or {}
+        )
         for metric_path in RANK_METRICS:
             current_value = self._as_number(current_metrics.get(metric_path))
+            # Rank only against samples read from the same upstream field.
             values = [
                 value
                 for _, sample in window_samples
-                if (value := self._as_number(sample["metrics"].get(metric_path))) is not None
+                if self._sample_source(sample, metric_path) == current_sources.get(metric_path)
+                and (value := self._as_number(sample["metrics"].get(metric_path))) is not None
             ]
             item: dict[str, Any] = {
                 "value": current_value,
@@ -379,17 +424,29 @@ class MetricsCache:
         }
 
     def _rank_metric_values(self, payload: dict[str, Any]) -> dict[str, float | None]:
-        gex_board = payload.get("gex_board", {})
-        volatility = payload.get("volatility", {})
-        flow = payload.get("flow", {})
-        return {
-            "gex_board.total_net_gex": self._as_number(gex_board.get("total_net_gex")),
-            "gex_board.dvol": self._as_number(gex_board.get("dvol")),
-            "volatility.iv_rv_ratio": self._as_number(volatility.get("iv_rv_ratio")),
-            "volatility.pcr": self._as_number(volatility.get("pcr")),
-            "flow.call_share_pct": self._call_share_pct(flow.get("call_put_bias")),
-            "flow.put_call_ratio": self._as_number(flow.get("put_call_ratio")),
-        }
+        result: dict[str, float | None] = {}
+        for metric_path in RANK_METRICS:
+            section, field, *subkeys = metric_path.split(".")
+            value: Any = (payload.get(section) or {}).get(field)
+            for key in subkeys:
+                value = value.get(key) if isinstance(value, dict) else None
+            result[metric_path] = self._as_number(value)
+        return result
+
+    def _rank_metric_sources(self, time_fields: dict[str, Any]) -> dict[str, str | None]:
+        result: dict[str, str | None] = {}
+        for metric_path in RANK_METRICS:
+            section, field, *subkeys = metric_path.split(".")
+            item = time_fields.get(f"{section}.{field}")
+            source_ref = item.get("source_ref") if isinstance(item, dict) else None
+            result[metric_path] = ".".join([source_ref, *subkeys]) if source_ref else None
+        return result
+
+    def _sample_source(self, sample: dict[str, Any], metric_path: str) -> str | None:
+        sources = sample.get("metric_sources")
+        if isinstance(sources, dict):
+            return sources.get(metric_path)
+        return LEGACY_HISTORY_SOURCES.get(metric_path)
 
     def _rank_quality(self, sample_count: int, window_days: float, current_value: float | None) -> str:
         if current_value is None or sample_count == 0:
@@ -417,14 +474,6 @@ class MetricsCache:
         if isinstance(value, int | float):
             return float(value)
         return None
-
-    def _call_share_pct(self, value: Any) -> float | None:
-        if not isinstance(value, str):
-            return None
-        match = re.search(r"(\d{1,3}(?:\.\d+)?)\s*%\s*Call", value, re.IGNORECASE)
-        if not match:
-            return None
-        return float(match.group(1))
 
     def _parse_datetime(self, value: Any) -> datetime | None:
         if not isinstance(value, str) or not value:
@@ -532,7 +581,7 @@ class MetricsCache:
 
     def _empty_section_state(self, section: SectionName) -> dict[str, Any]:
         data = empty_section_data(section)
-        missing = [f"{section}.{field}" for field in data]
+        missing = [f"{section}.{field}" for field, value in data.items() if is_missing(section, field, value)]
         return {
             "data": data,
             "missing_fields": missing,
