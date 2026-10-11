@@ -1,76 +1,79 @@
-> 当前阶段入口：[v2.6.3-stage.1 与 EU VPS 准备](docs/astra/V263_STAGE_EU_VPS_PREPARATION_20261009.md)。本轮按用户授权发布观测候选工作分支及阶段标记，新机完成依赖/资产准备；生产入口尚未切换。
+# xxproject · 中性回路整合工程
 
-# 中性回路整合工程备份标记
+xxproject 是一个面向 BTC 期权信用价差的研究与观测工作台。它把市场结构、同一合同的真实报价、币本位赔付核算和后续变化放在一起，帮助使用者回答：**这张保单承担什么责任，市场提供了多少补偿，随着时间推移，原来的判断依据发生了什么变化？**
 
-以下为 10 月 5 日前序候选 **WPEM-CONSUMER-RC-20261005-02** 的历史记录，版本以[清单](deploy/signal_audit/release_candidate_manifest.json)为准，本轮消费与展示修复见[验收82](docs/astra/82_WPEM消费链与展示链最小修复及同版验收_20261005.md)。7 组 MUST 修复及 358 项回归已通过；新版 evidence@1.0.1 / input@2.5.1 已进入实际 LLM 请求，输出协议仍为 bounded_claim_ids@2.5.0。3 次实际 HTTP 响应均未通过严格校验，实际 LLM→两问的成功链仍未通过 RC 验收。默认2.4.7兼容、风险 BLOCKED、μ/M null 保留；未推送、合并或部署新工作台。FMZ 本体2.0.2由用户部署的既有事实不因本轮改变。
+这里的“保单”是对一组明确期权责任的称呼：同到期、同数量的短腿与保护腿，以及对应报价、费用和观察时点。“承保”用于描述自有资金有偿承担风险的经济关系。
 
-下面保留2026-09-09等历史阶段原文；其中的“当前”与授权仅描述当时阶段，不代表本轮版本或发布授权。金融研究结论和历史证据边界继续以Astra接管入口的对应研究协议为准。
+权威仓库为 [x18055868223-png/xxproject](https://github.com/x18055868223-png/xxproject)，本综述对应工作分支 **`codex/astra-signal-rating-v1`**。首次接手请继续阅读 [Astra 项目接手说明](docs/astra/README.md)。
 
-理论沿革、总体证据评级与当前证据边界：[Astra 接管入口](docs/astra/README.md)。
+## 项目要解决什么
 
-> **当前工作状态：Astra v2 中性纸面定稿，用户已授权推送当前分支**（工作分支 `codex/astra-signal-rating-v1`）
-> 当前入口：[docs/astra/07_总体证据评级与单次综合评审_v2.md](docs/astra/07_总体证据评级与单次综合评审_v2.md)
-> 更新时间：**2026-09-09（UTC+8）** ｜ 本次已完成页面审阅并取得推送授权；服务器部署另行验收。后续页面变更仍需用户确认。
-> 项目权威仓库：`xxproject` → https://github.com/x18055868223-png/xxproject
->
-> 当前链路裁定：LLM 复核使用 DeepSeek `deepseek-v4-flash`，新卡协议为 `signal_llm_review@2.0.0` / `signal_llm_review_prompt@2.0.1`，调用模式 `single_evidence_v2`。FMZ producer 候选仍为 `demo_version=1.6.0`，此前 v2 之前的记录哈希不因本轮文档或页面整理改变。本地实现与测试不等于 FMZ 已部署或服务器已验收。
+卖出保护可以获得补偿，但判断一笔交换是否值得，需要同时看保护腿成本、合同赔付、交易摩擦与资本占用。风险更小、胜率更高或市场结构更稳定，都需要回到这张具体合同的账上解释。
 
-本仓库是推送到 `x18055868223-png/xxproject` 的工程级快照。它不是单一服务仓库，而是把当前运行链路拆成可审计、可恢复、可继续整理的模块集合。
+项目围绕三个问题组织信息：
 
-后续更新先读[版本兼容与数据复用约定](docs/astra/10_版本兼容与数据复用约定.md)。2026-09-09服务器最新真实卡仍为1.5.7，本分支FMZ候选为1.6.0；Git推送不等于服务器或FMZ已升级。
+1. **看懂责任。** 精确到短腿、保护腿、数量、到期和结算币，说明价格进入不同区域时承担的责任。
+2. **理解补偿。** 把可见净信用、费用和有适用依据的风险参考放在相同口径下，解释价格与风险之间的取舍。
+3. **持续观察。** 保存判断时的原始参考，跟踪同一合同的后续报价、空间关系和支持或反证，积累可回放的研究资料。
 
-## 当前工程链路
+经济学上的目标是研究可成交补偿能否覆盖责任、摩擦和资本成本，并在不利环境中保留继续经营的能力。现有成果是观测、核算与研究工具；可重复盈利仍需由前瞻结果和真实执行账验证。
 
-| 模块 | 当前定位 | 最新入口 |
-| --- | --- | --- |
-| FMZ 信号层本体 | 只读观察与信号生成；输出短推、状态栏、`signal_review.jsonl` 审计卡 | `demo/最新交付物/neutral_regulation_demo_fmz.py` |
-| GEX Monitor API | 策略服务器 `/v1/info` 增强端点；含 netGEX、IV/RV、P/C、flow 与 30 日滚动 rank | `05_GEX监控API_数据增强接口/` |
-| 审计前端 | 静态页面 + `signal_cards/index.json` + 单卡 JSON；新卡展示 Astra v2 总体证据评级，旧卡按历史协议阅读 | `deploy/signal_audit/frontend/` |
-| LLM 复核旁路 | DeepSeek 单次总体证据评审；生成 `signal_llm_reviews.jsonl` sidecar，再由 materializer 合并 | `tools/signal_llm_review.py`、`tools/signal_llm_review_entry.py`、`tools/signal_evidence_v2.py`、`tools/signal_review_v2.py`、`tools/signal_review_v2_runtime.py`、`deploy/signal_audit/` |
-| 执行层 | Deribit 垂直价差人工审计门执行链；当前保留为未正式测试启用的默认安全交付物 | `demo/最新交付物/spm_manual_gate_execution_fmz.py` |
-| 服务器自检 | 用于定位 FMZ JSONL、GEX API、审计页面、LLM sidecar、systemd timer 哪一层异常 | `tools/server_self_check_signal_stack.sh` |
+## 使用工作台的一条完整路径
 
-## 当前版本锚点
+打开工作台，先看 Put / Call 候选及其合同、报价与资料时点，再阅读两问：**Q1：这张保单为什么适配或不适配；Q2：当前补偿对应哪些风险和取舍。** 空间、时间和经济资料在这里汇合，原件与计算细节可以继续展开。
 
-- 信号层 producer 候选：`demo_version=1.6.0`，`schema_version=nrd.schema.v1.0.0`；只读观察边界、短推、JSONL 审计卡和执行权限隔离仍需分别核验。
-- 执行层：`STRATEGY_VERSION=3.0.0-manual-gate`，`ALLOW_ENTRY_TRADING/ALLOW_EXIT_TRADING/ALLOW_HEDGE_TRADING/ALLOW_TRADING` 默认关闭，`DRY_RUN_PASSED=False`。
-- GEX API：`gexmonitorapi=0.2.1`，rank 窗口为 `rolling_30d_or_available`。
-- LLM 复核当前新卡协议：DeepSeek `deepseek-v4-flash`，`signal_llm_review@2.0.0` / `signal_llm_review_prompt@2.0.1`，`review_mode=single_evidence_v2`；历史 1.x 旁路只作为旧卡或离线资料读取。
-- 审计前端：`signal_cards/index.json` + 单卡 JSON + `fallback.js`，materializer 合并 LLM sidecar；当前阅读入口以 Astra v2 总体证据评级为准，旧方向、旧分数和旧结论不并列为新卡当前结论。
-- 文档收纳：05 与 `deploy/signal_audit` 已补齐 `因子文档/`、中文语义入口和前端 `VERSION.json`，按 00-04 的模块阅读惯例收纳。
+遇到值得跟踪的合同，可直接“锁定参考并跟踪”。系统保存锁定时的 **t0 基线**，以后仍按原两腿、原数量、原到期更新 **t1 观察**。即使首页候选换了，也能继续阅读这张保单的前后变化、报价与退出参考、观察过程，并导出对照资料。锁定建立的是观察记录；实际成交另有身份。
 
-## 历史锚点：r3.3.6 信号耐用性层
+需要进一步解释时，使用既有人工触发的综合评审能力。LLM 消费被冻结的证据，整理支持、反证、未知与重新评估条件；金额和责任关系由确定性程序计算。缺少某项资料时，工作台保留其他可读事实，并指出该缺口影响哪项判断。
 
-`r3.3.6` 是 2026-07-05 的信号耐用性层历史工作版本，目标分支曾为 `codex/signal-durability-r3.3.6`。它在 r3.3.5 全量备份之上叠加：FMZ 信号层 `demo_version=1.5.2` 新增 AUDIT_ONLY `signal_durability` 总耐用性层、`comfort_window` 舒适区 tag、`price_anchor_durability` 四层价格锚耐用性解释；短推增加 `耐72/DUR T2C` 类紧凑摘要；materializer 和前端支持 producer-native 字段与旧卡显式兼容回填。执行层和交易门未改动。
+## 已实现的模块
 
-该锚点用于追溯历史，不代表当前 Astra v2 的运行协议，也不代表当前 FMZ 或服务器已经部署到该历史版本或本轮 v2。
+| 模块 | 作用与产物 | 代码入口 |
+|---|---|---|
+| FMZ 信号层 | 汇集市场事实与结构观察，生成状态展示、原生快照、固定轮与事件审计卡 | [FMZ 单文件交付物](demo/最新交付物/neutral_regulation_demo_fmz.py) |
+| GEX 增强服务 | 整理期权结构、波动率等上游数据，提供统一 API 与来源质量信息 | [GEX 模块](05_GEX监控API_数据增强接口/) |
+| MAP 市场地图 | 组织期权结构、成交接受区、链上成本与合同责任，连接资金流、库存、融资和宏观背景 | [MAP 计算](tools/astra_map_v24.py)、[数据生产器](deploy/astra_map_data/README.md) |
+| KPF 成交分布 | 从 Binance 历史逐笔成交构建成交分布与区域证据，向 MAP 发布可追溯快照 | [KPF Light](deploy/kpf_light/README.md) |
+| WPEM 时间证据 | 将已有观察窗口中的路径、持续性与反证整理成可用于同合同解释的资料 | [原生窗口](tools/astra_wpem_native_v1.py)、[工作台投影](tools/astra_wpem_workbench_v1.py) |
+| 合同经济核算 | 计算 BTC 反向价差责任、现金流、信用、费用、盈亏平衡及具备依据时的补偿参考 | [原生核算](tools/astra_commercial_math_v17.py)、[候选财务](tools/astra_underwriting_v20.py) |
+| Astra 工作台 | 组合候选、Q1/Q2、资料阅读与人工评审，提供交互入口 | [服务核心](tools/astra_workbench_v20.py)、[前端](deploy/signal_audit/frontend/) |
+| 锁定与后续观察 | 保存不可改写的 t0、同合同 t1、缺口与观察过程，支持恢复和对照阅读 | [存储](tools/astra_locked_candidate_store_v1.py)、[对照](tools/astra_locked_candidate_compare_v1.py) |
+| 审计与研究档案 | 将原生审计与评审旁路整理成可阅读卡片，保存历史实验、回放、失败与复算入口 | [审计部署](deploy/signal_audit/README.md)、[历史研究索引](docs/astra/HISTORY_INDEX_20261011.md) |
+| 独立执行交付物 | 保存 Deribit 价差人工审计门执行实现，供独立部署与验证 | [执行层单文件](demo/最新交付物/spm_manual_gate_execution_fmz.py) |
 
-## 快速排障入口
+## 数据怎样连起来
 
-在策略服务器上，更新到本版本后可执行：
-
-```bash
-cd /opt/repos/xxproject
-bash tools/server_self_check_signal_stack.sh
+```text
+Deribit 合同与盘口 ───────────────────────┐
+FMZ 原生事实与审计 ── 空间 / 时间证据 ────┤
+GEX + Binance + ETF / 链上 / 宏观 ─ MAP ──┼─ Astra：合同 + Q1 / Q2
+Binance 历史成交 ─ KPF 发布资产 ──── MAP ──┘          │
+                                          锁定 t0 → 同合同 t1 → 回放
 ```
 
-默认是只读检查。需要主动触发 LLM 和 materializer oneshot 时再执行：
+每类来源保留自身的数据时点、单位、来源和用途。MAP 的空间截面、WPEM 的时间证据和 Economics 的合同账共同解释同一份责任；需要评审时，再把这些证据交给受控 LLM。页面读取复用服务器已保存的资料。
 
-```bash
-sudo bash tools/server_self_check_signal_stack.sh --run-oneshots
-```
+## 已部署的运行资产
 
-## 使用顺序
+依据 2026-10-09 至 10-10 的部署与实机验收记录，运行环境已形成以下分工；这是部署资产摘要，实时健康以服务与源钟为准。
 
-1. 先读 `00_总纲/中性回路工程总纲_v2026.06.19-r2.2.md`。
-2. 再读 `99_工程资产索引/README.md` 区分当前运行资产、未启用资产和历史/失效资产。
-3. 部署 FMZ 时取 `demo/最新交付物/neutral_regulation_demo_fmz.py`，不要从历史快照目录复制。
-4. GEX API 先读 `05_GEX监控API_数据增强接口/因子文档/00_GEX监控API总览.md`，再看源码和部署文档。
-5. 审计页面先读 `deploy/signal_audit/因子文档/00_审计部署总览.md`，部署以 `deploy/signal_audit/install_or_update.sh` 为准。
+| 位置 | 已部署资产与责任 |
+|---|---|
+| EU VPS：6 vCPU / 12 GB / 100 GB NVMe | Astra 工作台、GEX API、MAP / KPF 生产器、审计物化、数据维护与运行观测 |
+| 公网与私人入口 | [带认证的 HTTPS 工作台](https://169.58.177.126/signal-audit/)；另保留 SSH 隧道入口 |
+| 旧机 FMZ 与数据桥 | 旧机产生原生事实与审计，新机通过受限只读桥接收；历史记录和锁定状态已恢复到新环境 |
+| EU FMZ 托管者 | 官方 robot 已安装并由 systemd 持久化管理，已有登录成功记录；策略本体迁入由用户继续完成 |
+| 持久化资料 | FMZ 原生档案、工作台锁定记录、评审旁路与用量记录、MAP 状态、KPF 源数据及不可变发布包、运维备份 |
 
-## 维护规则
+DeepSeek 评审接线属于已实现能力；上述 EU 部署记录中尚未配置其调用凭据。服务器运维补充、私有配置和运行数据并不全部包含在 Git 分支或 `v2.6.3-stage.1` 源码包内，接手时按[资产与运行关系](docs/astra/README.md#运行资产与保存位置)一并清点。
 
-- 真实 key、token、`.env`、服务器运行 JSONL、缓存和虚拟环境不进入本仓库。
-- FMZ 信号层只负责生成审计 JSONL 和短推；Astra v2 的 DeepSeek LLM 复核在服务器旁路层执行，不创建交易许可。
-- 执行层默认全空跑，除非经过单独实盘验证流程，不得把本仓库备份视为交易启用。
-- 每次服务器链路发生变化，都要同步更新 `tools/server_self_check_signal_stack.sh` 和 `99_工程资产索引/README.md`。
+## 如何理解项目中的经济学用语
+
+- **信用与赔付一起看。** 信用价差既卖出一份保护，也买入另一份保护；应比较两腿净补偿与整份合同责任。
+- **坚持原生币种。** BTC 反向合约按交割价格换算 BTC 赔付。美元终端赔付封顶，并不意味着 BTC 赔付或全过程账户损失具有同样的上限。
+- **参考余量有明确来源。** `M_ref = 可见信用 − 参考费用 − μ_ref`；只有合同、期限、单位和风险参考适用时才有解释意义，缺少合格 `μ_ref` 时保留空值。
+- **原参考与后续变化分别保存。** 新开信用、现在平仓的借记、报价条件下的参考结果、实际成交结果各有含义。t1 的新报价不改写 t0 的原账。
+
+上述内容筛选自《xxproject 承保经济学基线 v1.0》（2026-10-08，第 3–7 页及附录 B），并与现有核算、锁定和工作台实现对照。原报告中的研究路线、资本模型与异步 Agent 构想仍按研究材料阅读。
+
+进一步接手：[Astra 项目接手说明](docs/astra/README.md) · [版本与数据复用约定](docs/astra/10_版本兼容与数据复用约定.md) · [历史研究与验收索引](docs/astra/HISTORY_INDEX_20261011.md)。
