@@ -25,7 +25,7 @@
 
 - **GEX 增强接口**：默认 `gex_info_base_url=http://127.0.0.1:8000`，对应 EU 新机 loopback 上的 gexmonitorapi（`PUBLIC_READ=true`，`/v1/info` 免 token）。策略 worker 与宿主共享网络命名空间，已实测可达。若 FMZ 参数里仍有旧的 `gex_info_base_url` 或 `gex_info_token`，请删除或改为新值；`gex_info_token` 已不再读取。
 - **已删除的死配置**：`gex_info_token`、`llm_review_enabled`、`status_max_lines`、`signal_session_boundary_buffer_min`、`signal_session_high_confirmation_min`（及未被调用的 `_session_buffer_transition`）。它们此前不影响任何计算或输出。
-- **导出**：默认相对路径 `demo/logs/snapshots.jsonl`，300 秒一次、近期环 12 条，未改变。
+- **截面导出（持续，非脉冲）**：默认相对路径 `demo/logs/snapshots.jsonl`，保留最近 12 条。触发条件为启动、SpaceGate 状态变化（提前写）、距上次成功满 `data_export_interval_sec`（默认 300 秒，运行时限制 180–600 秒），写失败按 180 秒重试。逐轮 DecisionSnapshot 诊断日志默认关闭（`decision_snapshot_diagnostic_log_enabled=False`）。这些行为自 2.0.1 起未改变。
 
 `source_available_at_ms`、`ingested_at_ms`、`snapshot_exported_ms` 的时钟语义沿用 2.0.2：均为 producer 本地时点，不证明服务器接收或落盘。
 
