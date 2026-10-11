@@ -11,6 +11,12 @@ class Settings(BaseSettings):
         default="dev-token-change-me",
         validation_alias=AliasChoices("API_TOKEN", "GEXMONITOR_API_TOKEN"),
     )
+    # Read-only /v1/info without a token. Only for a loopback-bound service;
+    # /v1/refresh (triggers upstream fetches) always keeps the token.
+    public_read: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PUBLIC_READ", "GEXMONITOR_PUBLIC_READ"),
+    )
     asset: str = "BTC"
     base_url: str = "https://gexmonitor.com"
     source_mode: str = Field(

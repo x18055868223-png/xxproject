@@ -78,7 +78,7 @@ def create_app(settings: Settings | None = None, cache: Any | None = None) -> Fa
     async def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
 
-    @app.get("/v1/info", dependencies=[Depends(require_token)])
+    @app.get("/v1/info", dependencies=[] if settings.public_read else [Depends(require_token)])
     async def info() -> dict[str, Any]:
         return await cache.get_info()
 

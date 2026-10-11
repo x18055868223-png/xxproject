@@ -104,6 +104,16 @@ def test_info_requires_bearer_token() -> None:
     assert client.get("/v1/info", headers={"Authorization": "Bearer wrong"}).status_code == 401
 
 
+def test_public_read_opens_info_but_keeps_refresh_protected() -> None:
+    cache = FakeCache()
+    client = TestClient(create_app(Settings(api_token="test-token", public_read=True), cache=cache))
+
+    assert client.get("/v1/info").status_code == 200
+    assert client.get("/v1/info", headers={"Authorization": "Bearer anything"}).status_code == 200
+    assert client.post("/v1/refresh").status_code == 401
+    assert cache.refreshed_section is None
+
+
 def test_info_returns_clean_metric_dictionaries() -> None:
     client, _cache = build_client()
 
