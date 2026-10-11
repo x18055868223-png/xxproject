@@ -18,15 +18,16 @@ def load_signal_module():
     return module
 
 
-def test_cleanup_preserves_identity_safety_defaults_and_ambiguous_knobs():
+def test_cleanup_preserves_identity_safety_defaults_and_drops_dead_knobs():
     module = load_signal_module()
-    assert module.CONFIG["demo_version"] == "2.0.2"
+    assert module.CONFIG["demo_version"] == "2.0.3"
     assert module.CONFIG["read_only_demo"] is True
     assert module.CONFIG["signal_review_push_enabled"] is False
-    assert module.CONFIG["llm_review_enabled"] is False
-    assert "status_max_lines" in module.CONFIG
-    assert "signal_session_boundary_buffer_min" in module.CONFIG
-    assert hasattr(module, "_session_buffer_transition")
+    for key in ("llm_review_enabled", "status_max_lines", "signal_session_boundary_buffer_min",
+                "signal_session_high_confirmation_min", "gex_info_token"):
+        assert key not in module.CONFIG
+        assert key not in module.USER_CONFIG_KEYS
+    assert not hasattr(module, "_session_buffer_transition")
 
 
 def test_runtime_offline_tick_no_longer_allocates_dead_lkgv_attrs():

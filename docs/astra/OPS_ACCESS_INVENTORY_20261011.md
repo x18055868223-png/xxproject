@@ -14,7 +14,7 @@
 
 | 凭据 | 消费方 | 服务器位置 | 状态 |
 |---|---|---|---|
-| GEX `API_TOKEN` | gexmonitorapi；FMZ 参数 `gex_info_token` / `NRD_GEX_INFO_TOKEN` | `/etc/gexmonitorapi.env` | 新旧机同值。新增 `PUBLIC_READ=true` 后 `/v1/info` 免 token（仅 loopback 部署启用）；FMZ 2.0.2 仍要求 token 非空，填任意非空占位即可 |
+| GEX `API_TOKEN` | gexmonitorapi `/v1/refresh`（FMZ 2.0.3 起不再使用 token） | `/etc/gexmonitorapi.env` | 新旧机同值。新增 `PUBLIC_READ=true` 后 `/v1/info` 免 token（仅 loopback 部署启用）；FMZ 2.0.2 仍要求 token 非空，填任意非空占位即可 |
 | DeepSeek `LLM_API_KEY` | 人工 LLM 评审 / LLM timer | `/etc/signal-audit/llm.env`（0600） | 旧机已配置；EU 待用户脚本写入，写入后预算与 timer 仍需单独授权启用 |
 | 工作台写令牌 `ASTRA_WORKBENCH_TOKEN` | 工作台写会话 | `/etc/signal-audit/workbench-v20.env` | EU 已配置 |
 | 公网网关 Basic 认证 | nginx | `/etc/nginx/xxproject-web.htpasswd` | EU 已配置；本机副本 `~/.ssh/xxproject_eu_web_credentials.json` |

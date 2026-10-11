@@ -45,7 +45,6 @@ def base_config(module, tmpdir, **overrides):
         "chart_enabled": False,
         "signal_review_push_test": False,
         "signal_review_push_enabled": False,
-        "llm_review_enabled": False,
         "fixed_analysis_round_enabled": False,
         "live_fetch_enabled": False,
         "offline_fixture_enabled": True,
@@ -133,16 +132,16 @@ def test_manifest_config_and_permissions(module):
     sources = {item["source"]: item for item in manifest["sources"]}
     assert_true("gexmonitorapi_info" in sources,
                 "gexmonitorapi /v1/info should be in native manifest")
-    assert_true(sources["gexmonitorapi_info"]["auth"] == "optional_bearer",
-                "gexmonitorapi should disclose optional bearer auth")
+    assert_true(sources["gexmonitorapi_info"]["auth"] == "none",
+                "gexmonitorapi info is token-free (server PUBLIC_READ)")
     validation = module.validate_data_source_manifest(module.CONFIG)
     assert_true(validation["ok"], "data source manifest should validate")
-    assert_true(module.CONFIG["demo_version"] == "2.0.2",
-                "FMZ artifact identity should be 2.0.2")
+    assert_true(module.CONFIG["demo_version"] == "2.0.3",
+                "FMZ artifact identity should be 2.0.3")
     assert_true(module.CONFIG["read_only_demo"] is True,
                 "read-only demo safety default should stay true")
-    assert_true(module.CONFIG["llm_review_enabled"] is False,
-                "FMZ main process should not auto-call LLM")
+    assert_true("llm_review_enabled" not in module.CONFIG,
+                "dead LLM compatibility marker should be removed")
     assert_true(module.CONFIG["signal_review_push_enabled"] is False,
                 "FMZ push should stay disabled by default")
     with tempfile.TemporaryDirectory() as raw:

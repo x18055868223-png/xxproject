@@ -138,7 +138,7 @@ def assert_old_signal_fields_unchanged(before, after):
 
 
 def test_version_and_legacy_payload_has_unknown_observation(mod, config):
-    assert_equal(config["demo_version"], "2.0.2", "FMZ producer version")
+    assert_equal(config["demo_version"], "2.0.3", "FMZ producer version")
     fetched_ms = utc_ms()
     snapshot = mod.parse_info_payload(
         make_payload(fetched_ms, observed_equals_fetch=True), config)
@@ -337,7 +337,6 @@ def test_cache_fallback_retains_semantics_and_content_fingerprint(mod, config):
         }), encoding="utf-8")
         cfg = dict(config)
         cfg["gex_info_base_url"] = "http://example.invalid"
-        cfg["gex_info_token"] = "token"
         cfg["gex_info_cache_file"] = str(cache_path)
         cfg["gex_info_cache_max_age_ms"] = 86_400_000
         adapter = mod.GexInfoAdapter(FailingHttp(), cfg)

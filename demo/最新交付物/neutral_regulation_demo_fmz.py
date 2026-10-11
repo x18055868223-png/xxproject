@@ -172,9 +172,11 @@ CONFIG = {
     # underwriting facts. Audit-only; no direction/weight/permission changes.
     # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
     # continuous current facts. No direction/weight/LLM/permission changes.
+    # v2.0.3 (2026-10-11): GEX info reads the local loopback service without
+    # a token (gexmonitorapi PUBLIC_READ); removed dead config keys.
     # v2.0.2 (2026-10-05): producer-local snapshot handoff/export clocks
     # and same-snapshot session context. No financial/permission changes.
-    "demo_version": "2.0.2",
+    "demo_version": "2.0.3",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -201,7 +203,6 @@ CONFIG = {
     "tick_summary_log_every": 1,
     "state_change_log_enabled": True,
     "log_status_enabled": True,
-    "status_max_lines": 42,
     "chart_enabled": True,
     "chart_reset_on_start": True,
 
@@ -251,10 +252,9 @@ CONFIG = {
 
     # gexmonitorapi /v1/info: 策略服务器上的清洗增强接口，属于软证据。
     # base_url 可填服务器根地址或完整 /v1/info；代码会把根地址补全为 /v1/info。
-    # token 不写入交付物；在 FMZ 参数或 NRD_GEX_INFO_TOKEN 运行时覆盖中配置。
+    # 服务端 PUBLIC_READ=true 时 /v1/info 免 token；默认指向同机 loopback 服务。
     "gex_info_enabled": True,
-    "gex_info_base_url": "http://13.231.16.198:8000",
-    "gex_info_token": "",
+    "gex_info_base_url": "http://127.0.0.1:8000",
     "gex_info_refresh_sec": 600,
     "gex_info_cache_file": "demo/logs/gex_info_cache.json",
     "gex_info_cache_max_age_ms": 86400000,
@@ -273,10 +273,7 @@ CONFIG = {
     "fixed_analysis_round_window_minutes": 5,
     "fixed_analysis_round_state_file": "",
     "audit_static_base_url": "",
-    "signal_session_boundary_buffer_min": 60,
-    "signal_session_high_confirmation_min": 60,
     "signal_session_event_blackouts": [],
-    "llm_review_enabled": False,
     "logs_dir": "demo/logs",
     "data_export_enabled": True,
     "data_export_snapshot_file": "snapshots.jsonl",
@@ -553,7 +550,6 @@ USER_CONFIG_KEYS = (
     "tick_summary_log_every",
     "state_change_log_enabled",
     "log_status_enabled",
-    "status_max_lines",
     "chart_enabled",
     "chart_reset_on_start",
     "http_timeout_sec",
@@ -583,7 +579,6 @@ USER_CONFIG_KEYS = (
     "gex_lite",
     "gex_info_enabled",
     "gex_info_base_url",
-    "gex_info_token",
     "gex_info_refresh_sec",
     "gex_info_cache_file",
     "gex_info_cache_max_age_ms",
@@ -598,10 +593,7 @@ USER_CONFIG_KEYS = (
     "fixed_analysis_round_window_minutes",
     "fixed_analysis_round_state_file",
     "audit_static_base_url",
-    "signal_session_boundary_buffer_min",
-    "signal_session_high_confirmation_min",
     "signal_session_event_blackouts",
-    "llm_review_enabled",
     "logs_dir",
     "data_export_enabled",
     "data_export_snapshot_file",
@@ -630,7 +622,6 @@ USER_CONFIG_DOC_CN = {
     "tick_summary_log_every": "观察摘要打印间隔，1 表示每轮打印。",
     "state_change_log_enabled": "是否只在结论状态变化时额外打印状态变化。",
     "log_status_enabled": "是否渲染 FMZ 状态栏表格。",
-    "status_max_lines": "状态栏最大行数，避免 FMZ 页面过长。",
     "chart_enabled": "是否更新 FMZ 图表。",
     "chart_reset_on_start": "启动时是否重置 FMZ 图表。",
     "http_timeout_sec": "公开接口请求超时秒数。",
@@ -659,8 +650,7 @@ USER_CONFIG_DOC_CN = {
     "gex_exchange": "旧 GEX 公共源交易所过滤参数。",
     "gex_lite": "旧 GEX 公共源轻量返回参数。",
     "gex_info_enabled": "是否启用策略服务器 gexmonitorapi /v1/info 增强接口。",
-    "gex_info_base_url": "策略服务器 GEX 地址，可填根地址或完整 /v1/info。",
-    "gex_info_token": "策略服务器 GEX Bearer token；不要硬编码进交付物，使用 FMZ 参数或 NRD_GEX_INFO_TOKEN 覆盖。",
+    "gex_info_base_url": "GEX 增强接口地址，可填根地址或完整 /v1/info；默认同机 loopback，免 token。",
     "gex_info_refresh_sec": "GEX 增强接口刷新间隔秒数。",
     "gex_info_cache_file": "GEX 增强接口本地缓存文件。",
     "gex_info_cache_max_age_ms": "GEX 增强接口缓存最大可用毫秒数。",
@@ -675,10 +665,7 @@ USER_CONFIG_DOC_CN = {
     "fixed_analysis_round_window_minutes": "固定轮触发容错窗口分钟数；超过窗口不伪造补发。",
     "fixed_analysis_round_state_file": "固定轮 JSONL/推送完成状态文件；空值时写入 logs_dir。",
     "audit_static_base_url": "审计静态站根地址；未启用深链前保持空值。",
-    "signal_session_boundary_buffer_min": "信号时区分类边界缓冲分钟数；校准前就低不就高。",
-    "signal_session_high_confirmation_min": "进入高前提耐久度前的美盘消化确认分钟数。",
     "signal_session_event_blackouts": "高影响事件黑名单窗口列表；默认空，不联网自动读取。",
-    "llm_review_enabled": "保留兼容标记；FMZ 主进程不调用 LLM，复核由旁路脚本处理。",
     "logs_dir": "FMZ 本地 JSONL 和缓存写入目录。",
     "data_export_enabled": "是否持续导出工作台近期截面；只读观察用途，不改变信号或交易权限。",
     "data_export_snapshot_file": "工作台读取的近期截面环文件；默认写入 snapshots.jsonl。",
@@ -998,7 +985,7 @@ DATA_SOURCE_MANIFEST = (
         "path": "/v1/info",
         "adapter_method": "GexInfoAdapter.refresh",
         "http_method": "GET",
-        "auth": "optional_bearer",
+        "auth": "none",
         "params": ["asset"],
         "raw_schema": "HttpResult",
         "normalized_schema": "GexInfoSnapshot",
@@ -4230,13 +4217,6 @@ _SESSION_PREMISE_CONTEXTS = {
     },
 }
 
-_SESSION_TRANSITION_CN = {
-    "LOW_TO_MEDIUM_BUFFER": "低转中缓冲带",
-    "MEDIUM_TO_HIGH_BUFFER": "中转高缓冲带",
-    "MEDIUM_TO_LOW_BUFFER": "中转低缓冲带",
-    "HIGH_TO_LOW_BUFFER": "高转低缓冲带",
-}
-
 
 def _nth_weekday(year, month, weekday, n):
     day = datetime.date(year, month, 1)
@@ -4413,40 +4393,6 @@ def _event_blackout_context(times, config):
                 "end_at": end.isoformat().replace("+00:00", "Z"),
             }
     return None
-
-
-def _session_buffer_transition(base_zone, code, times, buffer_min,
-                               high_confirmation_min):
-    ny_h = _hour_float(times["ny"])
-    lon_h = _hour_float(times["lon"])
-    if code == "LONDON_EARLY":
-        since = (lon_h - 8.0) * 60.0
-        if 0 <= since < buffer_min:
-            return "LOW", "LOW_TO_MEDIUM_BUFFER", {
-                "active": True, "from_zone": "LOW", "to_zone": "MEDIUM",
-                "boundary": "ASIA_AFTERNOON_TO_LONDON_EARLY",
-                "minutes_from_boundary": round(since, 1),
-                "label_cn": _SESSION_TRANSITION_CN["LOW_TO_MEDIUM_BUFFER"],
-            }
-    if code == "US_OPEN_TURBULENCE":
-        since = (ny_h - 9.5) * 60.0
-        if 0 <= since < buffer_min:
-            return "LOW", "LOW_TO_MEDIUM_BUFFER", {
-                "active": True, "from_zone": "LOW", "to_zone": "MEDIUM",
-                "boundary": "PRE_US_TO_US_OPEN",
-                "minutes_from_boundary": round(since, 1),
-                "label_cn": _SESSION_TRANSITION_CN["LOW_TO_MEDIUM_BUFFER"],
-            }
-    if code == "US_DEEP_POST_CATALYST":
-        since = (ny_h - 11.0) * 60.0
-        if 0 <= since < high_confirmation_min:
-            return "MEDIUM", "MEDIUM_TO_HIGH_BUFFER", {
-                "active": True, "from_zone": "MEDIUM", "to_zone": "HIGH",
-                "boundary": "US_OPEN_TO_US_DEEP",
-                "minutes_from_boundary": round(since, 1),
-                "label_cn": _SESSION_TRANSITION_CN["MEDIUM_TO_HIGH_BUFFER"],
-            }
-    return base_zone, base_zone, {"active": False}
 
 
 def _session_zone_props(zone, code):
@@ -9667,7 +9613,7 @@ degradable by construction:
 
 Field semantics: docs/info接口语义文档.md in the gexmonitorapi repo. The default
 deployment config now points at the strategy server; operators may still replace
-gex_info_base_url / gex_info_token directly or via NRD_* runtime overrides.
+gex_info_base_url directly or via NRD_* runtime overrides (no token).
 """
 
 import datetime
@@ -9899,12 +9845,10 @@ class GexInfoAdapter:
         if not self.config.get("gex_info_enabled", True):
             return self._cached_or_missing(["GEX_INFO_DISABLED"])
         base = _gex_info_endpoint(self.config.get("gex_info_base_url", ""))
-        token = str(self.config.get("gex_info_token", "")).strip()
-        if not base or not token:
+        if not base:
             return self._cached_or_missing(["GEX_INFO_NOT_CONFIGURED"])
         result = self.http.get_json(
             base,
-            headers={"Authorization": "Bearer " + token},
             timeout_sec=self.config.get("http_timeout_sec", 5))
         if result.get("quality") != QUALITY_OK:
             return self._cached_or_missing(
@@ -13657,11 +13601,11 @@ def _fmt_usd_compact(value):
 def _gex_info_reason_hint(reason):
     return {
         "GEX_INFO_NOT_CONFIGURED":
-            "未配置：设 gex_info_token + 公网可达 base_url(勿用 localhost)",
+            "未配置：设 gex_info_base_url",
         "GEX_INFO_DISABLED": "已禁用：gex_info_enabled=False",
         "GEX_INFO_UNRECOGNIZED": "返回体无法识别：检查 /v1/info 响应结构",
-        "GEX_INFO_MISSING": "未取到：检查 token / base_url / 服务端可达性",
-    }.get(reason, "取数失败：检查 token / base_url / 服务端可达性")
+        "GEX_INFO_MISSING": "未取到：检查 base_url / 服务端可达性",
+    }.get(reason, "取数失败：检查 base_url / 服务端可达性")
 
 
 def _neutral_repair_state_cn(value):

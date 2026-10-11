@@ -71,8 +71,8 @@ def test_old_in_process_llm_entrypoints_are_removed(mod):
                     "FMZ main process should not expose old LLM entrypoint " + name)
     assert_true(not hasattr(mod.HttpClient(mod.CONFIG), "post_json"),
                 "FMZ HTTP client should not retain unused POST helper")
-    assert_true(mod.CONFIG.get("llm_review_enabled") is False,
-                "compatibility marker should remain disabled by default")
+    assert_true("llm_review_enabled" not in mod.CONFIG,
+                "dead LLM compatibility marker should be removed")
     for key in (
         "llm_review_endpoint",
         "llm_review_api_key",
