@@ -7,7 +7,7 @@ from tools import astra_underwriting_fact_context_v20 as facts
 from tests.test_astra_candidate_asof_v1 import snapshot_at, T
 
 
-def native_fixture(offset=0, quantity=0.1):
+def native_fixture(offset=0, quantity=0.1, version="2.0.2"):
     """Synthetic test shape, explicitly never a real producer observation."""
     now = T + offset
     _, raw = snapshot_at(now, quantity=quantity)
@@ -23,7 +23,7 @@ def native_fixture(offset=0, quantity=0.1):
                   "not_remote_receiver_ingestion": True,
                   "not_filesystem_visibility_proof": True,
                   "not_market_source_ingestion": True},
-              "decision": {"demo_version": "2.0.2", "symbol": "BTC", "ts_ms": now-1000,
+              "decision": {"demo_version": version, "symbol": "BTC", "ts_ms": now-1000,
                            "runtime_facts": {"runtime_mode": "live_public_read_only",
                               "current_price": 100000, "current_price_source": "fixture",
                               "current_price_observed_ms": now-1000}},
@@ -54,8 +54,8 @@ def native_fixture(offset=0, quantity=0.1):
     return native.packets.build_packet(snapshot, raw_payload=raw), source_bytes
 
 
-def report_at(offset=0, quantity=0.1):
-    packet, source = native_fixture(offset, quantity)
+def report_at(offset=0, quantity=0.1, version="2.0.2"):
+    packet, source = native_fixture(offset, quantity, version)
     return native.qualify_native(packet, source, evidence_kind="synthetic_fixture")
 
 
@@ -65,6 +65,19 @@ def test_synthetic_shape_passes_contract_but_cannot_be_native():
     assert report["status"] == "SYNTHETIC_CONTRACT_PASSED"
     packet, source = native_fixture()
     assert native.qualify_native(packet, source, evidence_kind="native_producer")["status"] == "BLOCKED"
+
+
+@pytest.mark.parametrize("version", ["2.0.2", "2.0.3"])
+def test_supported_native_producer_versions_pass_contract(version):
+    report = report_at(version=version)
+    assert report["contract_qualified"] is True
+    assert "NATIVE_PRODUCER_VERSION_MISMATCH" not in report.get("gaps", [])
+
+
+def test_unknown_native_producer_version_is_blocked():
+    report = report_at(version="9.9.9")
+    assert report["contract_qualified"] is False
+    assert "NATIVE_PRODUCER_VERSION_MISMATCH" in report["gaps"]
 
 
 @pytest.mark.parametrize("kind", ["compat", "reconstructed", "historical_public_capture"])
