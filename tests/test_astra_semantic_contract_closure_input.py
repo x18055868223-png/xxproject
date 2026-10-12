@@ -104,7 +104,7 @@ def test_current_269_identity_and_268_prompt_are_separate():
     assert product.ROUTING_REVIEW_INPUT_SCHEMA_268 == "review_input@2.6.8"
     assert product.EVIDENCE_SYNTHESIS_PROMPT_VERSION_268 == "evidence_synthesis_prompt@1.0.5"
     assert current["schema"] == "review_input@2.6.9"
-    assert current["request_contract"]["prompt_version"] == "evidence_synthesis_prompt@2.1-candidate"
+    assert current["request_contract"]["prompt_version"] == "evidence_synthesis_prompt@2.2-candidate"
     assert current["response_protocol"] == product.EVIDENCE_POINTS_RESPONSE_PROTOCOL
 
 

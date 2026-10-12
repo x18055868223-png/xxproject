@@ -346,7 +346,13 @@ def _space_context(factors: Mapping[str, Any], space_gate: dict[str, Any] | None
             "asset", "quality", "data_state", "availability", "stale",
             "market_state", "total_net_gex", "fetched_at_ms", "age_ms",
             "spot_price", "flip_point", "magnet_price", "n1", "n2",
-            "p1", "p2", "support_walls", "resistance_walls")),
+            "p1", "p2", "support_walls", "resistance_walls",
+            # gexmonitor dashboard-bundle enrichment (FMZ >= 2.0.4)
+            "volatility_trigger", "near_term_walls", "hedging_flows",
+            "max_pain_price", "max_pain_target_expiry", "next_expiry",
+            "dvol", "atm_iv", "iv_percentile", "term_structure", "rr_skew",
+            "pcr", "pcr_oi", "call_volume", "put_volume", "call_oi", "put_oi",
+            "whale_1h", "whale_24h")),
         "space_gate_state": space_gate.get("state") if space_gate else None,
         "space_gate_reasons": (space_gate or {}).get("reason_codes") or (
             [gate_gap] if gate_gap else []),

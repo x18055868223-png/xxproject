@@ -28,7 +28,7 @@ EVIDENCE_SYNTHESIS_PROMPT_VERSION_265 = "evidence_synthesis_prompt@1.0.2"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_266 = "evidence_synthesis_prompt@1.0.3"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_267 = "evidence_synthesis_prompt@1.0.4"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_268 = "evidence_synthesis_prompt@1.0.5"
-EVIDENCE_SYNTHESIS_PROMPT_VERSION = "evidence_synthesis_prompt@2.1-candidate"
+EVIDENCE_SYNTHESIS_PROMPT_VERSION = "evidence_synthesis_prompt@2.2-candidate"
 PROVIDER_CONFIG_VERSION = "wpem_json_delivery@1.0.1"
 ROUTING_SCHEMA = "evidence_routing@1.0.0"
 REVIEW_INPUT_SCHEMA = "review_input@2.5.2"
@@ -1633,6 +1633,198 @@ def _clean_ref_suffix(value: Any) -> str:
     return _safe_id(value).lower()
 
 
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _liability_position(level: Any, *, side: str, spot: Any, short: Any, long: Any) -> dict[str, Any] | None:
+    """Place a price level in this contract's payoff geometry (program relation)."""
+    level, spot, short, long = (_finite(v) for v in (level, spot, short, long))
+    if None in (level, spot, short, long) or side not in {"put", "call"}:
+        return None
+    if side == "put":
+        adverse_of_spot = level < spot
+        zone = "outside" if level > short else "short_to_long" if level >= long else "beyond_long"
+    else:
+        adverse_of_spot = level > spot
+        zone = "outside" if level < short else "short_to_long" if level <= long else "beyond_long"
+    return {"price": level, "on_adverse_side_of_spot": adverse_of_spot, "liability_zone": zone}
+
+
+def _zone_position(low: Any, high: Any, *, side: str, spot: Any, short: Any, long: Any) -> dict[str, Any] | None:
+    low_pos = _liability_position(low, side=side, spot=spot, short=short, long=long)
+    high_pos = _liability_position(high, side=side, spot=spot, short=short, long=long)
+    if low_pos is None or high_pos is None:
+        return None
+    lo, hi = sorted((low_pos["price"], high_pos["price"]))
+    return {
+        "low": low_pos, "high": high_pos,
+        "contains_spot": lo <= float(spot) <= hi,
+        "contains_short_strike": lo <= float(short) <= hi,
+        "contains_long_strike": lo <= float(long) <= hi,
+    }
+
+
+def _expiry_token(instrument: Any) -> str | None:
+    parts = str(instrument or "").split("-")
+    return parts[1].upper() if len(parts) >= 3 else None
+
+
+def _gex_option_info(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    facts = snapshot.get("fact_context") if isinstance(snapshot.get("fact_context"), Mapping) else {}
+    market = facts.get("market_facts") if isinstance(facts.get("market_facts"), Mapping) else {}
+    space = market.get("space_context") if isinstance(market.get("space_context"), Mapping) else {}
+    info = space.get("gex_info") if isinstance(space.get("gex_info"), Mapping) else {}
+    return dict(info)
+
+
+def _horizon_atm_iv(info: Mapping[str, Any], expiry_token: str | None, horizon_days: float | None) -> dict[str, Any] | None:
+    rows = [row for row in info.get("term_structure") or []
+            if isinstance(row, Mapping) and _finite(row.get("atm_iv")) is not None]
+    exact = [row for row in rows if expiry_token and str(row.get("expiry") or "").upper() == expiry_token]
+    if exact:
+        row, match = exact[0], "exact_expiry"
+    elif rows and horizon_days is not None and all(_finite(r.get("days_to_expiry")) is not None for r in rows):
+        row = min(rows, key=lambda r: abs(float(r["days_to_expiry"]) - horizon_days))
+        match = "nearest_listed_tenor"
+    elif _finite(info.get("atm_iv")) is not None:
+        return {"atm_iv_pct": float(info["atm_iv"]), "expiry": None, "days_to_expiry": None, "match": "front_atm_iv"}
+    else:
+        return None
+    return {"atm_iv_pct": float(row["atm_iv"]), "expiry": row.get("expiry"),
+            "days_to_expiry": row.get("days_to_expiry"), "match": match}
+
+
+def _options_units(snapshot: Mapping[str, Any], contract: Mapping[str, Any], *, horizon_hours: Any,
+                   spot: Any, credit_btc: Any) -> list[dict[str, Any]]:
+    """Program relations from the frozen gexmonitor option data; no fitting."""
+    info = _gex_option_info(snapshot)
+    side = str(contract.get("side") or "").lower()
+    short, long = contract.get("short_strike_usd"), contract.get("long_strike_usd")
+    place = lambda level: _liability_position(level, side=side, spot=spot, short=short, long=long)
+    asof = {"fetched_at_ms": info.get("fetched_at_ms"), "age_ms": info.get("age_ms")}
+    units: list[dict[str, Any]] = []
+    expiry = _expiry_token(contract.get("short_instrument"))
+
+    structure: dict[str, Any] = {}
+    walls = {name: [p for p in (place(level) for level in info.get(name) or []) if p]
+             for name in ("support_walls", "resistance_walls")}
+    if any(walls.values()):
+        structure["all_expiry_walls"] = walls
+    for name in ("magnet_price", "volatility_trigger"):
+        if place(info.get(name)):
+            structure[name] = place(info.get(name))
+    near = info.get("near_term_walls") if isinstance(info.get("near_term_walls"), Mapping) else {}
+    near_out = {}
+    for bucket in ("zero_dte", "weekly"):
+        row = near.get(bucket) if isinstance(near.get(bucket), Mapping) else {}
+        by_name = row.get("walls") if isinstance(row.get("walls"), Mapping) else {}
+        levels = {}
+        for key in ("n1", "n2", "p1", "p2"):
+            wall = by_name.get(key) if isinstance(by_name.get(key), Mapping) else {}
+            pos = place(wall.get("strike"))
+            if pos:
+                levels[key] = {**pos, "gex_usd": wall.get("gex_usd")}
+        if levels or place(row.get("magnet_price")):
+            near_out[bucket] = {"walls": levels, "magnet_price": place(row.get("magnet_price"))}
+    if near_out:
+        structure["near_term_walls"] = near_out
+    pain = place(info.get("max_pain_price"))
+    if pain:
+        target = str(info.get("max_pain_target_expiry") or "").upper() or None
+        structure["max_pain"] = {**pain, "target_expiry": target, "same_expiry_as_contract": target == expiry if target else None}
+    next_expiry = info.get("next_expiry") if isinstance(info.get("next_expiry"), Mapping) else {}
+    if place(next_expiry.get("max_pain_price")):
+        token = str(next_expiry.get("expiry") or "").upper() or None
+        structure["next_expiry_max_pain"] = {**place(next_expiry.get("max_pain_price")), "expiry": token,
+                                             "same_expiry_as_contract": token == expiry if token else None,
+                                             "hours_to_expiry": next_expiry.get("hours_to_expiry")}
+    spot_f, short_f = _finite(spot), _finite(short)
+    flows = info.get("hedging_flows") if isinstance(info.get("hedging_flows"), Mapping) else {}
+    scenarios = [row for row in flows.get("scenarios") or [] if isinstance(row, Mapping)
+                 and _finite(row.get("price_change_pct")) is not None]
+    if scenarios and spot_f and short_f:
+        to_short_pct = (short_f - spot_f) / spot_f * 100.0
+        adverse = [dict(row) for row in scenarios
+                   if (float(row["price_change_pct"]) < 0) == (side == "put")]
+        structure["dealer_hedging_adverse_scenarios"] = {
+            "scenarios": sorted(adverse, key=lambda r: abs(float(r["price_change_pct"]))),
+            "move_to_short_strike_pct": to_short_pct,
+            "sign_convention": "source_defined",
+        }
+    if structure:
+        units.append({
+            "ref": "options.structure", "label_cn": "期权结构位与本单责任区", "facts": structure,
+            "relations": {"position_fields": "on_adverse_side_of_spot 表示该价位在本单不利方向一侧；"
+                                             "liability_zone=outside/short_to_long/beyond_long 为该价位相对本单短腿与保护腿的位置。"},
+            "asof": asof,
+            "basis": "gexmonitor 期权墙、近端墙、最大痛点与做市商对冲情景；位置关系由程序按本单行权价计算。"
+                     "墙与痛点是持仓结构，不是价格保证；对冲金额正负号沿用源端定义。",
+        })
+
+    horizon_h = _finite(horizon_hours)
+    iv = _horizon_atm_iv(info, expiry, horizon_h / 24.0 if horizon_h else None)
+    vol: dict[str, Any] = {}
+    relations: dict[str, Any] = {}
+    if iv:
+        vol["atm_iv_for_horizon"] = iv
+    for name in ("iv_percentile", "dvol"):
+        if _finite(info.get(name)) is not None:
+            vol[name] = info.get(name)
+    rr = [row for row in info.get("rr_skew") or [] if isinstance(row, Mapping)]
+    if rr:
+        front = min(rr, key=lambda r: _finite(r.get("days")) if _finite(r.get("days")) is not None else 1e9)
+        vol["rr_25d_front"] = {key: front.get(key) for key in ("tenor", "expiry", "put_25d_iv", "call_25d_iv", "rr", "chg_1d", "chg_1w")}
+    if iv and horizon_h and spot_f and short_f:
+        sigma_pct = iv["atm_iv_pct"] * math.sqrt(horizon_h / 8760.0)
+        outside_pct = (spot_f - short_f) / spot_f * 100.0 if side == "put" else (short_f - spot_f) / spot_f * 100.0
+        relations["horizon_sigma_move_pct"] = sigma_pct
+        relations["short_strike_distance_pct_outside_positive"] = outside_pct
+        if sigma_pct > 0:
+            relations["short_strike_distance_in_sigma"] = outside_pct / sigma_pct
+        liability = snapshot.get("liability") if isinstance(snapshot.get("liability"), Mapping) else {}
+        breakevens = [b for b in liability.get("breakeven_usd") or [] if _finite(b) is not None]
+        if breakevens and sigma_pct > 0:
+            be = float(breakevens[0])
+            be_pct = (spot_f - be) / spot_f * 100.0 if side == "put" else (be - spot_f) / spot_f * 100.0
+            relations["breakeven_distance_in_sigma"] = be_pct / sigma_pct
+        width = _finite(liability.get("btc_reference_scale_at_spot"))
+        credit = _finite(credit_btc)
+        if width and credit is not None:
+            relations["credit_to_width_at_spot"] = credit / width
+    if vol:
+        units.append({
+            "ref": "options.vol", "label_cn": "隐含波动与本单标准化距离", "facts": vol, "relations": relations,
+            "asof": asof,
+            "basis": "距离按本单剩余期限的ATM隐含波动标准化（未计偏斜），是尺度换算，不是概率或胜率；"
+                     "credit_to_width_at_spot 为可见信用占按现价折算价差宽度的比例。",
+            "limitations": ["ATM近似未计入价外一侧的偏斜（见rr_25d_front）；没有历史基准时不得把IV分位以外的读数说成偏高或偏低。"],
+        })
+
+    flow: dict[str, Any] = {}
+    for name in ("pcr", "pcr_oi", "call_volume", "put_volume", "call_oi", "put_oi"):
+        if _finite(info.get(name)) is not None:
+            flow[name] = info.get(name)
+    for name in ("whale_1h", "whale_24h"):
+        whale = info.get(name) if isinstance(info.get(name), Mapping) else None
+        if whale:
+            row = {key: whale.get(key) for key in (
+                "trade_count", "buy_put_count", "sell_put_count", "buy_call_count", "sell_call_count",
+                "net_flow_usd", "execution_net_flow_usd", "lead_expiry")}
+            row["active_strike"] = place(whale.get("active_strike"))
+            flow[name] = row
+    if flow:
+        units.append({
+            "ref": "options.flow", "label_cn": "期权成交与大宗流", "facts": flow, "asof": asof,
+            "basis": "gexmonitor 全市场 PCR、成交/持仓与大宗成交统计；active_strike 位置由程序按本单行权价计算。",
+            "limitations": ["PCR没有历史基准；大宗笔数少时只是样本读数，不代表全市场方向。"],
+        })
+    return units
+
+
 def _clean_add(
     items: list[dict[str, Any]],
     lineage: dict[str, dict[str, Any]],
@@ -2517,10 +2709,21 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
                 "active_from_ms": row.get("active_from_ms"),
                 "observation_end_ms": row.get("observation_end_ms"),
             },
+            relations=_zone_position(row.get("raw_low"), row.get("raw_high"), side=side,
+                                     spot=quote_source.get("reference_price_usd"),
+                                     short=contract.get("short_strike_usd"), long=contract.get("long_strike_usd")),
             basis="KPF为成交接受区背景，不是本到期实际保护或执行价格。",
             qualification={"coordinate_qualification": row.get("coordinate_qualification")},
             limitations=deepcopy(row.get("limitations") or []),
             source_refs=_map_source_refs(row, records_by_id),
+        )
+    for unit in _options_units(snapshot, contract, horizon_hours=geometry.get("horizon_hours"),
+                               spot=quote_source.get("reference_price_usd"), credit_btc=quote_body.get("credit_btc")):
+        _clean_add(
+            items, lineage, ref=unit["ref"], group="market_context", label_cn=unit["label_cn"],
+            source_path="snapshot.fact_context.market_facts.space_context.gex_info",
+            facts=unit.get("facts"), relations=unit.get("relations"), asof=unit.get("asof"),
+            basis=unit.get("basis"), limitations=unit.get("limitations"),
         )
     omissions = [
         {"field": "claim_catalog", "reason_cn": "目录只供本地安全归一化和审计，模型只接收 clean evidence。"},
@@ -3070,13 +3273,24 @@ def _ref_matches(refs: list[str], *needles: str) -> bool:
     return any(any(needle.lower() in ref for needle in needles) for ref in lowered)
 
 
+_CLASSIFICATION_NEGATION = re.compile(
+    r"(?:不是|并非|而非|不属于|不等于|不作为|不能(?:把|将)?[^。；;，,]{0,10}?(?:当作|视为|算作|作为))[^。；;，,]{0,16}")
+
+
+def _drop_classification_negations(text: str) -> str:
+    """'X不是补偿或费用变化' classifies X; it asserts nothing about fees.
+    Absence claims ('未出现大宗卖压') still need their own evidence."""
+    return _CLASSIFICATION_NEGATION.sub("", text)
+
+
 def _validate_topic_direct_refs(text: str, refs: list[str]) -> None:
     topics = (
         (("主动流", "方向流", "CVD"), ("flow",)),
         (("Funding", "funding", "资金费"), ("funding.current", "funding", "map.funding")),
-        (("Skew", "skew", "偏斜", "SRD", "srd"), ("skew",)),
+        (("Skew", "skew", "偏斜", "SRD", "srd"), ("skew", "options.vol")),
         (("ETF", "etf"), ("map.etf",)),
-        (("OI", "open interest", "持仓"), ("map.oi",)),
+        # Option walls/max pain and PCR are built from option open interest too.
+        (("OI", "open interest", "持仓"), ("map.oi", "options.structure", "options.flow")),
         (("CP", "链上成本", "成本样本"), ("map.cost",)),
         (("RPL", "已实现损益", "已实现盈亏", "已实现利润", "已实现盈利", "实现亏损", "实现损益"), ("map.realized",)),
         (("flip", "Flip", "翻转"), ("space.flip",)),
@@ -3085,6 +3299,10 @@ def _validate_topic_direct_refs(text: str, refs: list[str]) -> None:
         (("风险参考", "支持域", "μ", "mu_ref"), ("risk",)),
         (("费用", "fee"), ("fee", "wpem.fragments", "wpem.delta")),
         (("报价", "权利金", "保费"), ("quote", "wpem.level", "wpem.fragments", "wpem.delta")),
+        (("期权墙", "Gamma墙", "gamma墙", "支撑墙", "阻力墙", "近端墙", "最大痛点", "max pain", "做市商对冲", "对冲情景"),
+         ("options.structure",)),
+        (("隐含波动", "ATM IV", "IV分位", "DVOL", "dvol", "标准差", "σ"), ("options.vol",)),
+        (("PCR", "看跌看涨比", "巨鲸", "大宗成交"), ("options.flow",)),
     )
     for words, required_refs in topics:
         topic_text = text
@@ -3100,7 +3318,7 @@ def _validate_topic_direct_refs(text: str, refs: list[str]) -> None:
             # Funding's cost background is not the option entry/delivery fee.
             # An additional assertion about 本单费用 still requires fee.
             topic_text = re.sub(r"(?<!本单)(?<!期权)(?<!入场)(?<!入局)(?<!交割)费用背景", "资金费背景", topic_text)
-        if _has_any(topic_text, words) and not _ref_matches(refs, *required_refs):
+        if _has_any(_drop_classification_negations(topic_text), words) and not _ref_matches(refs, *required_refs):
             raise legacy.ReviewValidationError("evidence point mentions a topic without its direct evidence ref")
 
 
@@ -3175,7 +3393,7 @@ def _validate_known_status_and_dependency(text: str, refs: list[str], evidence_b
                 raise legacy.ReviewValidationError("shared source dependency is not provided for skew and option space")
 
 
-def _validate_financial_execution_text(text: str) -> None:
+def _validate_financial_execution_text(text: str, refs: list[str] = ()) -> None:
     if re.search(r"(?:[μµ]\s*[=＝]|(?:^|[^A-Za-z])M(?:_?ref)?\s*[=＝]|M_ref\s*[=＝]|m_ref\s*[=＝])", text):
         raise legacy.ReviewValidationError("evidence point contains unsupported mu/M value")
     if re.search(r"[$＄]\s*\d", text) or re.search(r"\d+(?:\.\d+)?\s*(?:BTC|USD|USDT|美元|美金)", text, re.IGNORECASE):
@@ -3200,7 +3418,10 @@ def _validate_financial_execution_text(text: str) -> None:
             if not _execution_phrase_negated(text, index, phrase):
                 raise legacy.ReviewValidationError("evidence point rewrites a frozen quote as filled or booked")
             start = index + len(phrase)
-    if _affirmative_phrase(text, ("盈亏平衡", "赔付表", "赔付曲线", "payout", "breakeven", "保护腿上方趋于平坦")):
+    curve_words = ("赔付表", "赔付曲线", "payout", "保护腿上方趋于平坦")
+    if "options.vol" not in refs:
+        curve_words += ("盈亏平衡", "breakeven")
+    if _affirmative_phrase(text, curve_words):
         raise legacy.ReviewValidationError("evidence point must not rewrite the deterministic payoff curve")
 
 
@@ -3230,7 +3451,7 @@ def _validate_evidence_point_item(value: Any, review_input: Mapping[str, Any], q
     _validate_flip_text(text, clean_refs, evidence_by_ref)
     _validate_baseline_text(text, clean_refs)
     _validate_known_status_and_dependency(text, clean_refs, evidence_by_ref)
-    _validate_financial_execution_text(text)
+    _validate_financial_execution_text(text, clean_refs)
     return {"text_cn": text, "evidence_refs": clean_refs}
 
 
