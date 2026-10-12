@@ -1504,6 +1504,8 @@ class WorkbenchConfig:
     locked_max_episodes: int = 64
     locked_max_bytes: int = 268_435_456
     locked_max_samples: int = 1440
+    scheduled_review_hours_utc: tuple[int, ...] = (2, 14)
+    scheduled_review_window_ms: int = 45 * 60_000
     chain_audit_enabled: bool = True
     chain_audit_interval_ms: int = 900_000
     chain_audit_retention_days: int = 30
@@ -3105,6 +3107,7 @@ class AstraWorkbench:
         if failure:
             view["collector_failure"] = failure
             view["gaps"] = sorted(set(view.get("gaps", []) + ["data_collector_refresh_failed"]))
+        view["scheduled_review"] = self.scheduled_review_status(now)
         result = self._apply_current_review_availability(view, now)
         return reading.workbench_reading(result) if reading_only else result
 
@@ -3460,8 +3463,10 @@ class AstraWorkbench:
         purpose: str | None = REVIEW_PURPOSE,
         locked_episode_id: str | None = None,
         snapshot_id: str | None = None,
+        _scheduled: bool = False,
     ) -> dict[str, Any]:
-        if not self._authorized(authorization):
+        # _scheduled is set only by this process's own scheduler, never from HTTP.
+        if not _scheduled and not self._authorized(authorization):
             raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
         if not candidate_id or not idempotency_key:
             raise WorkbenchError(400, "bad_request", "candidate_id and idempotency_key are required")
@@ -3585,7 +3590,8 @@ class AstraWorkbench:
                 raise WorkbenchError(409, "wpem_evidence_unavailable", "current evidence did not replay")
         self.ledger.record_snapshot(snapshot, now_ms=now)
         research_only = purpose == OBSERVATION_PURPOSE
-        self._begin_review(candidate_id, snapshot["snapshot_id"], item.get("side"), idempotency_key, now, purpose=purpose)
+        self._begin_review(candidate_id, snapshot["snapshot_id"], item.get("side"), idempotency_key, now, purpose=purpose,
+                           ignore_cooldown=_scheduled)
         try:
             result = review_core.run_review(
                 snapshot,
@@ -3686,7 +3692,7 @@ class AstraWorkbench:
         self._locked_state_update(update)
 
     def _begin_review(self, candidate_id: str, snapshot_id: str, side: str | None,
-                      key: str, now_ms: int, *, purpose: str = REVIEW_PURPOSE) -> None:
+                      key: str, now_ms: int, *, purpose: str = REVIEW_PURPOSE, ignore_cooldown: bool = False) -> None:
         def update(state: dict[str, Any]) -> None:
             review = state.setdefault("manual_review", {})
             idem = review.setdefault("idempotency", {})
@@ -3696,7 +3702,7 @@ class AstraWorkbench:
             if isinstance(inflight, Mapping):
                 raise WorkbenchError(409, "review_inflight", "another manual review is already running")
             last_started = int(review.get("last_started_ts_ms") or 0)
-            if last_started and now_ms - last_started < self.config.review_cooldown_ms:
+            if not ignore_cooldown and last_started and now_ms - last_started < self.config.review_cooldown_ms:
                 raise WorkbenchError(429, "review_cooldown", "manual review cooldown is still active",
                                      detail={"cooldown_until_ms": last_started + self.config.review_cooldown_ms})
             review["inflight"] = {"candidate_id": candidate_id, "snapshot_id": snapshot_id,
@@ -3726,6 +3732,96 @@ class AstraWorkbench:
 
         self._locked_state_update(update)
 
+    # ── scheduled reviews ─────────────────────────────
+    _SCHEDULE_TRANSIENT = {"cached_quote_not_current", "candidate_gate_version_changed_during_refresh"}
+
+    def _scheduled_slot(self, now_ms: int) -> str | None:
+        """The UTC slot ('YYYY-MM-DDTHH') whose window contains now, if any."""
+        from datetime import datetime, timezone
+        moment = datetime.fromtimestamp(now_ms / 1000, timezone.utc)
+        for hour in self.config.scheduled_review_hours_utc:
+            start = moment.replace(hour=int(hour) % 24, minute=0, second=0, microsecond=0)
+            if 0 <= now_ms - int(start.timestamp() * 1000) < self.config.scheduled_review_window_ms:
+                return start.strftime("%Y-%m-%dT%H")
+        return None
+
+    def scheduled_review_status(self, now_ms: int | None = None) -> dict[str, Any]:
+        from datetime import datetime, timedelta, timezone
+        now = self.clock_ms() if now_ms is None else int(now_ms)
+        hours = sorted({int(h) % 24 for h in self.config.scheduled_review_hours_utc})
+        moment = datetime.fromtimestamp(now / 1000, timezone.utc)
+        upcoming = []
+        for day in (0, 1):
+            for hour in hours:
+                start = (moment + timedelta(days=day)).replace(hour=hour, minute=0, second=0, microsecond=0)
+                if int(start.timestamp() * 1000) > now:
+                    upcoming.append(int(start.timestamp() * 1000))
+        slots = (self._read_state_cached().get("scheduled_review") or {}).get("slots") or {}
+        last_key = max(slots) if slots else None
+        return {"hours_utc": hours, "window_ms": self.config.scheduled_review_window_ms,
+                "next_due_ms": min(upcoming) if upcoming else None,
+                "last_slot": last_key, "last": slots.get(last_key) if last_key else None}
+
+    def _maybe_scheduled_review(self, now_ms: int, *, wait: bool = False) -> str | None:
+        """Claim the current slot once (persisted, so restarts do not repeat it) and review both sides."""
+        if not self.config.scheduled_review_hours_utc:
+            return None
+        slot = self._scheduled_slot(now_ms)
+        if slot is None:
+            return None
+
+        def claim(state: dict[str, Any]) -> bool:
+            sched = state.setdefault("scheduled_review", {})
+            slots = sched.setdefault("slots", {})
+            if slot in slots:
+                return False
+            slots[slot] = {"started_at_ms": now_ms, "status": "running", "sides": {}}
+            for old in sorted(slots)[:-28]:
+                slots.pop(old, None)
+            return True
+
+        if not self._locked_state_update(claim):
+            return None
+        worker = threading.Thread(target=self._run_scheduled_review, args=(slot,), name="astra-scheduled-review", daemon=True)
+        worker.start()
+        if wait:
+            worker.join()
+        return slot
+
+    def _run_scheduled_review(self, slot: str) -> None:
+        with self._view_lock:
+            items = [dict(item) for item in (self._current_view or {}).get("candidates") or []]
+        outcomes: dict[str, Any] = {}
+        for item in items:
+            snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else None
+            side = item.get("side")
+            if snapshot is None:
+                outcomes[side] = {"status": "skipped", "reason": "snapshot_missing"}
+                continue
+            reasons = set((item.get("review_gate") or {}).get("reasons") or [])
+            purpose = REVIEW_PURPOSE if reasons <= self._SCHEDULE_TRANSIENT else OBSERVATION_PURPOSE
+            key = f"sched-{slot.replace(':', '')}-{side}"
+            try:
+                result = self.review_candidate(snapshot["candidate_id"], key, authorization=None,
+                                               purpose=purpose, _scheduled=True)
+                outcomes[side] = {"status": result.get("status"), "purpose": purpose, "reason": result.get("reason"),
+                                  "snapshot_id": result.get("snapshot_id"), "idempotency_key": key,
+                                  "llm_call_count": result.get("llm_call_count")}
+                self.record_action("scheduled_review", result, request={"candidate_id": snapshot["candidate_id"],
+                                   "purpose": purpose, "idempotency_key": key})
+            except WorkbenchError as exc:
+                outcomes[side] = {"status": "error", "purpose": purpose, "reason": exc.code, "idempotency_key": key}
+                self.record_action("scheduled_review_rejected", None, request={"candidate_id": snapshot["candidate_id"],
+                                   "purpose": purpose, "idempotency_key": key}, error_code=exc.code)
+            except Exception as exc:  # the scheduler must never take the workbench down
+                outcomes[side] = {"status": "error", "purpose": purpose, "reason": type(exc).__name__, "idempotency_key": key}
+
+        def finish(state: dict[str, Any]) -> None:
+            entry = state.setdefault("scheduled_review", {}).setdefault("slots", {}).setdefault(slot, {})
+            entry.update(status="done", finished_at_ms=self.clock_ms(), sides=outcomes)
+
+        self._locked_state_update(finish)
+
     def start_background(self) -> None:
         if self._background_thread and self._background_thread.is_alive():
             return
@@ -3735,6 +3831,7 @@ class AstraWorkbench:
             while not self._background_stop.is_set():
                 try:
                     self.refresh()
+                    self._maybe_scheduled_review(self.clock_ms())
                 except Exception as exc:
                     with self._view_lock:
                         self._last_refresh_error = {"failed_at_ms": self.clock_ms(),
@@ -4086,6 +4183,7 @@ def config_from_env() -> WorkbenchConfig:
         locked_max_episodes=int(os.environ.get("ASTRA_LOCKED_MAX_EPISODES") or "64"),
         locked_max_bytes=int(os.environ.get("ASTRA_LOCKED_MAX_BYTES") or "268435456"),
         locked_max_samples=int(os.environ.get("ASTRA_LOCKED_MAX_SAMPLES") or "1440"),
+        scheduled_review_hours_utc=tuple(int(h) for h in (os.environ.get("ASTRA_SCHEDULED_REVIEW_HOURS_UTC", "2,14") or "").split(",") if h.strip()),
         chain_audit_enabled=os.environ.get("ASTRA_CHAIN_AUDIT_ENABLED", "1") == "1",
         chain_audit_interval_ms=int(os.environ.get("ASTRA_CHAIN_AUDIT_INTERVAL_MS") or "900000"),
         chain_audit_retention_days=int(os.environ.get("ASTRA_CHAIN_AUDIT_RETENTION_DAYS") or "30"),

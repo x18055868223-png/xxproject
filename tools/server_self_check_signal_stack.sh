@@ -28,7 +28,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-SERVER_BASE_URL="${SERVER_BASE_URL:-http://127.0.0.1}"
+# The private loopback listener serves the same static root without the public basic-auth layer.
+SERVER_BASE_URL="${SERVER_BASE_URL:-http://127.0.0.1:8896}"
 AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
@@ -41,7 +42,7 @@ TRANSITION_REQUIRED="${TRANSITION_REQUIRED:-0}"
 TRANSITION_LLM_REQUIRED="${TRANSITION_LLM_REQUIRED:-0}"
 SESSION_CONTEXT_REQUIRED="${SESSION_CONTEXT_REQUIRED:-0}"
 DURABILITY_REQUIRED="${DURABILITY_REQUIRED:-0}"
-EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-1.6.2}"
+EXPECTED_SIGNAL_VERSION="${EXPECTED_SIGNAL_VERSION:-2.0.6}"
 EXPECTED_LLM_PROVIDER="${EXPECTED_LLM_PROVIDER:-deepseek}"
 EXPECTED_LLM_MODEL="${EXPECTED_LLM_MODEL:-deepseek-v4-flash}"
 EXPECTED_LLM_SCHEMA="${EXPECTED_LLM_SCHEMA:-signal_llm_review@2.3.0}"
@@ -56,7 +57,7 @@ EXPECTED_TRANSITION_LLM_SCHEMA="${EXPECTED_TRANSITION_LLM_SCHEMA:-signal_transit
 EXPECTED_TRANSITION_LLM_PROMPT_VERSION="${EXPECTED_TRANSITION_LLM_PROMPT_VERSION:-signal_transition_llm_review_prompt@1.3.2}"
 EXPECTED_TRANSITION_LLM_BLIND_MODE="${EXPECTED_TRANSITION_LLM_BLIND_MODE:-single_call_evidence_first}"
 EXPECTED_TRANSITION_LLM_CALL_COUNT="${EXPECTED_TRANSITION_LLM_CALL_COUNT:-1}"
-JSONL_SOURCE="${JSONL_SOURCE:-/home/bitnami/fmz2/logs/storage/668422/demo/logs/signal_review.jsonl}"
+JSONL_SOURCE="${JSONL_SOURCE:-/var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/signal_review.jsonl}"
 AUDIT_ROOT="${AUDIT_ROOT:-/opt/signal-audit}"
 TOOLS_ROOT="${TOOLS_ROOT:-/opt/signal-audit-tools}"
 LLM_REVIEWS_SOURCE="${LLM_REVIEWS_SOURCE:-${TOOLS_ROOT}/signal_llm_reviews.jsonl}"
@@ -281,9 +282,16 @@ if [ "$SYSTEMD_REQUIRED" = "1" ]; then
     warn "GEX_REQUIRED=0; skipped gexmonitorapi.service check"
   fi
   systemd_state signal-audit-materialize.service
-  systemd_state signal-audit-llm-review.service
   timer_state signal-audit-materialize.timer
-  timer_state signal-audit-llm-review.timer
+  # The per-card signal-layer LLM review is retired from the current workflow
+  # (2026-10-12); model reviews run in the underwriting workbench instead
+  # (scheduled UTC 02:00/14:00 plus manual observation reviews).
+  if [ "$LLM_REQUIRED" = "1" ]; then
+    systemd_state signal-audit-llm-review.service
+    timer_state signal-audit-llm-review.timer
+  else
+    ok "signal-layer LLM review retired; workbench scheduled reviews replace it"
+  fi
 else
   warn "SYSTEMD_REQUIRED=0; skipped systemd service and timer checks"
 fi

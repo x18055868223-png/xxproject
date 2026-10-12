@@ -259,3 +259,39 @@ def test_production_review_without_mu_runs_and_displays_as_current(tmp_path):
     current=shown['review_display']['current']
     assert current is not None, shown['review_display'].get('reason_cn')
     assert (current.get('review') or current)['status']=='OK'
+
+
+def test_scheduled_reviews_run_once_per_utc_slot_for_both_sides(tmp_path):
+    # T is 08:00 UTC; schedule that hour so T falls inside the window.
+    calls=[]
+    def transport(key,model,request,timeout,endpoint=None):
+        calls.append(request)
+        return {'model':model,'choices':[{'finish_reason':'stop','message':{'content':json.dumps(points())}}]}
+    original, snapshots=make_workbench(tmp_path,transport=transport)
+    config=replace(original.config,wpem_enabled=True,scheduled_review_hours_utc=(8,))
+    wb=workbench.AstraWorkbench(config,discovery_capture=original.discovery_capture,quote_capture=original.quote_capture,
+        llm_transport=transport,clock_ms=original.clock_ms)
+    write_fmz(snapshots,native_gate())
+    wb.refresh(now_ms=T)
+    assert wb._maybe_scheduled_review(T+5*60_000,wait=True)=='2026-09-25T08'
+    assert len(calls)==2                      # both sides; the second is not blocked by the click cooldown
+    slot=wb._load_state()['scheduled_review']['slots']['2026-09-25T08']
+    assert slot['status']=='done' and {s['status'] for s in slot['sides'].values()}=={'OK'}
+    assert {s['purpose'] for s in slot['sides'].values()}=={'review'}   # gate open, mu not required
+    assert wb._maybe_scheduled_review(T+10*60_000,wait=True) is None  # same slot only once
+    restarted=workbench.AstraWorkbench(config,discovery_capture=original.discovery_capture,quote_capture=original.quote_capture,
+        llm_transport=transport,clock_ms=original.clock_ms)
+    assert restarted._maybe_scheduled_review(T+20*60_000,wait=True) is None
+    assert wb._maybe_scheduled_review(T+50*60_000,wait=True) is None  # outside the 45-minute window
+    assert len(calls)==2
+    status=wb.scheduled_review_status(T+60*60_000)
+    assert status['hours_utc']==[8] and status['last_slot']=='2026-09-25T08'
+    assert status['next_due_ms']==T+86_400_000
+
+
+def test_scheduled_review_rejects_http_shortcut(tmp_path):
+    wb=wpem_workbench(tmp_path,transport=lambda *a,**k:pytest.fail('no LLM'))
+    item=wb.refresh(now_ms=T)['candidates'][0]
+    with pytest.raises(workbench.WorkbenchError) as failure:
+        wb.review_candidate(item['snapshot']['candidate_id'],'x',authorization=None)
+    assert failure.value.status_code==401
