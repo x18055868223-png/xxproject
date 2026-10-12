@@ -106,6 +106,36 @@ def test_conflicting_source_identity_is_rejected_instead_of_last_write_wins(same
         packets.build_packet(snapshot)
 
 
+def test_candidate_and_map_manifests_may_hold_different_evaluations_of_one_stream():
+    # Production: GEX-derived values are re-scored on each FMZ snapshot under the
+    # same GEX clock, and MAP froze a newer evaluation than the candidate did.
+    snapshot, _ = snapshot_at()
+    identity = {"product_id": "gex.effective.accepted.v1", "scope": None}
+    own = {"record_id": "own", "identity": identity,
+           "time": {"observation_end_ms": T - 300_000, "first_seen_at_ms": T - 60_000},
+           "version": {"payload_hash": "a" * 64}, "content": {"values": {"score": 10.6}}}
+    rescored = copy.deepcopy(own)
+    rescored.update(record_id="rescored", version={"payload_hash": "b" * 64}, content={"values": {"score": 10.7}})
+    rescored["time"]["first_seen_at_ms"] = T - 5_000
+    manifest = {"cutoff_at_ms": T, "candidate_id": snapshot["candidate_id"], "source_records": [own]}
+    btc_map = {"cutoff_at_ms": T, "candidate_id": snapshot["candidate_id"], "source_records": [rescored]}
+    snapshot["data_identity"]["source_manifest"] = manifest
+    snapshot["data_identity"]["btc_map"] = {"source_manifest": btc_map}
+    assert set(packets._source_records(snapshot)) == {"own", "rescored"}
+
+    # MAP ingested the very same record itself: only its acquisition clock differs.
+    same = copy.deepcopy(own)
+    same["time"]["first_seen_at_ms"] = T - 1_000
+    btc_map["source_records"] = [same]
+    records = packets._source_records(snapshot)
+    assert records["own"]["time"]["first_seen_at_ms"] == T - 60_000
+
+    # The same record ID with a different payload is still a conflict.
+    same["content"] = {"values": {"score": 99}}
+    with pytest.raises(ValueError, match="source_record_identity_conflict"):
+        packets._source_records(snapshot)
+
+
 def test_candidate_price_basis_change_breaks_window():
     first, _ = snapshot_at()
     old = packets.build_packet(first)

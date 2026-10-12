@@ -77,20 +77,36 @@ def _manifests(snapshot: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [value for value in candidates if isinstance(value, Mapping)]
 
 
+_ACQUISITION_CLOCKS = frozenset({"first_seen_at_ms", "retrieved_at_ms"})
+
+
+def _record_basis(row: Mapping[str, Any]) -> dict[str, Any]:
+    time = row.get("time") if isinstance(row.get("time"), Mapping) else {}
+    return {"identity": row.get("identity"), "version": row.get("version"), "content": row.get("content"),
+            "time": {key: value for key, value in time.items() if key not in _ACQUISITION_CLOCKS}}
+
+
 def _source_records(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    records, identities = {}, {}
+    records = {}
     for manifest in _manifests(snapshot):
+        # One freeze holds one version per source identity. Separate freezes (the
+        # candidate's own and its MAP's) may legitimately hold different evaluations
+        # of one stream, e.g. GEX-derived values re-scored on a newer FMZ snapshot
+        # under the same GEX clock; each consumer reads its own manifest.
+        identities = {}
         for row in manifest.get("source_records", []):
             record_id = row["record_id"]
             # The same facts can carry distinct role-specific qualifications.
             # Identity, original clocks and payload may not change under an ID.
-            basis = {key: row.get(key) for key in ("identity", "time", "version", "content")}
-            identity_hash = core._hash(row.get("identity"))
-            if record_id in records and basis != {key: records[record_id].get(key) for key in basis}:
+            # Each collector stamps its own acquisition clock; the first manifest's
+            # record (the workbench's own) is kept for receipt checks.
+            if record_id in records and _record_basis(row) != _record_basis(records[record_id]):
                 raise ValueError("source_record_identity_conflict")
-            if identity_hash in identities and identities[identity_hash] != core._hash(basis):
+            identity_hash = core._hash(row.get("identity"))
+            basis_hash = core._hash(_record_basis(row))
+            if identity_hash in identities and identities[identity_hash] != basis_hash:
                 raise ValueError("source_identity_version_conflict")
-            identities[identity_hash] = core._hash(basis)
+            identities[identity_hash] = basis_hash
             records.setdefault(record_id, deepcopy(row))
     return records
 
