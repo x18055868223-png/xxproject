@@ -963,3 +963,11 @@ def test_background_rejects_records_observed_after_current_cutoff(tmp_path):
     assert any("FIRST_SEEN_AFTER_CUTOFF" in item for item in row["missing"])
     assert row["summary_cn"] == "ETF配置记录存在，但当前用途资格未通过。"
     assert row["source_record_ids"] == [record["record_id"]]
+
+
+def test_unconfigured_borrow_source_is_not_consumed_and_not_a_gap():
+    blocked = {"record_id": "b", "time": {"observation_end_ms": 0},
+               "content": {"values": {"schema": "usdt_borrow_rate@2.4.0", "status": "blocked"}}}
+    row = map24._financing_row([], [], [blocked], 1_000)
+    assert "cex.usdt.borrow_rate.v1" not in row["missing"]
+    assert "borrow_source_values" not in row["metrics"]

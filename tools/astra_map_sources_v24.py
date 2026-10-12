@@ -1833,7 +1833,11 @@ def _financing_row(oi_records: list[Mapping[str, Any]], funding_records: list[Ma
             parts.append(f"所载实际Funding结算样本合计{funding_metrics['settled_funding_rate_sum']:+.4%}，未形成24小时覆盖。")
     else:
         missing.append("binance.um.btcusdt.funding.settled.v1")
-    if borrow:
+    # No public borrow-rate source exists and no authorized read-only one is
+    # configured: that series is not consumed, so it does not mark financing partial.
+    if borrow and (_values(borrow) or {}).get("status") == "blocked":
+        borrow = None
+    elif borrow:
         ids.append(str(borrow.get("record_id")))
         borrow_values = _compact_values(_values(borrow))
         metrics["borrow_source_values"] = borrow_values
@@ -1846,8 +1850,6 @@ def _financing_row(oi_records: list[Mapping[str, Any]], funding_records: list[Ma
             parts.append(f"USDT借款简单APR约{rate['simple_apr_pct']:.3f}%。")
         else:
             missing.append("cex.usdt.borrow_rate.v1")
-    else:
-        missing.append("cex.usdt.borrow_rate.v1")
     summary = " ".join(parts) if parts else "杠杆融资来源未形成当前合格背景。"
     return _row("financing", summary, metrics, max([_cutoff(r, now_ms) for r in (oi, funding, borrow) if r] or [now_ms]), sorted(set(missing)), ids, "usable" if not missing else "partial")
 
