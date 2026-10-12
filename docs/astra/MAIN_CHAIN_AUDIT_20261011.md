@@ -23,7 +23,7 @@
 | FMZ → 快照 → 事实 → SpaceGate | 实际未闭合 | 数据产品注册表把 `gex.netgamma.proxy.v1` 的有效期设为 300s，FMZ 自身接受 20 分钟；约 92% 的快照因此被降为 `background_only`。FMZ 自身 SpaceGate 因锚点评分低（约 26–35，需 ≥60）阻断，这是真实市场状态 |
 | 发现 → 报价 → 经济 → Q1/Q2 | 部分闭合 | **μ_ref 无生产者**：`serve()` 未注入 `risk_provider`；风险资格模块只诊断、固定输出 `mu_ref=None` |
 | 锁定 → 采样 → t0/t1 → 到期 | 到期前闭合 | 到期只标 `contract_expired_settlement_unverified`，从不取交割价核对 |
-| 人工 LLM 评审 | 生产用途不可达 | 评审门需要 SpaceGate 合格 + μ/M 存在；观察用途可达但按钮常因刷新期间版本变化而禁用 |
+| 人工 LLM 评审 | 观察用途可达（10-12 修复） | 生产用途仍需 SpaceGate 合格 + μ/M；10-12 放宽有效期后曾整体不可达（as-of 冲突，`abe4ce9` 已修）；消费与内容验收见 [LLM_CONSUMPTION_AUDIT_20261012](LLM_CONSUMPTION_AUDIT_20261012.md) |
 | 审计卡 | 展示闭合 | 卡片 LLM 复核自 10-07 起停止（旧复核定时器未迁到 EU），无告警 |
 | MAP / KPF / GEX → 工作台 | 闭合 | 部分来源 MISSING/STALE 已在页面显示 |
 | 执行层 | 未接线（预期） | — |
@@ -52,6 +52,6 @@
 2. 备份：每日离机快照（需确定备份目标）。
 3. canary 加时效检查与容量告警（覆盖上面所有上限与输入）。
 4. 恢复卡片 LLM 复核（EU 上安装复核定时器，共享已配置的用量账本）。
-5. μ_ref 生产者（建议先做 `frozen_geometry`：经验期限收益分布 × 赔付表），这是两问证据的前提，与 WPEM P1 并行设计。
+5. μ_ref：10-12 评估为现有数据做不出严谨结果；改为程序给出 σ 距离与信用/宽度（已上线），下一步冻结两腿 Deribit mark/IV/delta 作为市场隐含参考，见 [LLM_CONSUMPTION_AUDIT_20261012](LLM_CONSUMPTION_AUDIT_20261012.md)。
 6. 到期交割核对（Deribit 交割价 → 锁定记录终点）。
 7. FMZ 快照归档器（按字节上限与日切分）。
