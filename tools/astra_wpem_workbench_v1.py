@@ -264,8 +264,9 @@ def program_questions(snapshot, package):
         q1+=f"当前距卖出腿责任边界{distance:+.2f}%（正值表示仍在责任区外）；这描述责任位置。"
     account=snapshot['economics']; credit=account.get('visible_credit_btc'); fee=snapshot['fee'].get('amount_btc')
     parts=[]
-    if isinstance(credit,(int,float)): parts.append(f"当前可收信用为{credit:.8f} BTC")
-    if isinstance(fee,(int,float)): parts.append(f"持有至到期费用假设为{fee:.8f} BTC")
+    btc=lambda v: (f"{v:.8f}".rstrip('0').rstrip('.') or '0')
+    if isinstance(credit,(int,float)): parts.append(f"当前可收信用为{btc(credit)} BTC")
+    if isinstance(fee,(int,float)): parts.append(f"持有至到期费用假设为{btc(fee)} BTC")
     q2='，'.join(parts)+'。' if parts else '本次盘口或费用资料不足，尚不能形成补偿取舍。'
     return {'source_kind':'deterministic_program_no_llm',
             'research_context':product._contextual_market_reads(snapshot,package),

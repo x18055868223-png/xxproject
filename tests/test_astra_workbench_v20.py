@@ -623,3 +623,21 @@ def test_old_producer_version_cannot_open_workbench_gate(tmp_path):
     assert view["space_gate"]["state"] == "STRUCTURE_BLOCKED"
     assert "fmz_producer_version_mismatch" in view["gaps"]
     assert all(not candidate["review_gate"]["enabled"] for candidate in view["candidates"])
+
+
+def test_ledger_replay_is_cached_until_the_ledger_file_changes(tmp_path, monkeypatch):
+    wb, snapshots = make_workbench(tmp_path, api_key=None)
+    write_fmz(snapshots, native_gate())
+    wb.refresh(now_ms=T)
+    wb.ledger.path.parent.mkdir(parents=True, exist_ok=True)
+    wb.ledger.path.touch()
+    calls = []
+    real = wb.ledger.state
+    monkeypatch.setattr(wb.ledger, "state", lambda: calls.append(1) or real())
+    first = wb._ledger_state()
+    assert wb._ledger_state() is first and len(calls) == 1
+    import os
+    stat = os.stat(wb.ledger.path)
+    os.utime(wb.ledger.path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    assert wb._ledger_state() == first and len(calls) == 2
+    assert set(first["snapshots"]) == set(real()["snapshots"])

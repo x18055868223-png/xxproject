@@ -420,7 +420,8 @@ def _candidate_data_asof_ms(candidate: Mapping[str, Any]) -> int | None:
 
 def _history_receipt(entry: Mapping[str, Any]) -> tuple[Mapping[str, Any], int | None]:
     if isinstance(entry.get("result"), Mapping):
-        receipt = deepcopy(dict(entry["result"]))
+        # Shallow: only a top-level key is added here; display copies deeply later.
+        receipt = dict(entry["result"])
         if entry.get("idempotency_key") and not receipt.get("idempotency_key"):
             receipt["idempotency_key"] = entry.get("idempotency_key")
         return receipt, _first_int(entry.get("updated_at_ms"))
@@ -1572,6 +1573,8 @@ class AstraWorkbench:
         self.clock_ms = clock_ms or _now_ms
         self.map_source_capture = map_source_capture
         self.ledger = store.UnderwritingLedger(config.ledger_path)
+        self._ledger_cache: tuple[Any, dict[str, Any]] | None = None
+        self._ledger_cache_lock = threading.Lock()
         self.data_engine = data_engine.DataEngine(config.state_dir / "data_engine")
         self.budget = (signal_llm_review.DailyHttpBudget(
             config.usage_ledger_path, limit=config.daily_http_limit)
@@ -2139,8 +2142,9 @@ class AstraWorkbench:
                     btc_map_projection,
                     snapshot,
                 )
-            prior = self.ledger.state()["snapshots"].get(snapshot["snapshot_id"])
-            annex = (store.build_card_annex(self.ledger.state(), snapshot["snapshot_id"])
+            ledger_state = self._ledger_state()
+            prior = ledger_state["snapshots"].get(snapshot["snapshot_id"])
+            annex = (store.build_card_annex(ledger_state, snapshot["snapshot_id"])
                      if prior else {"review_annex": {"status": "not_attached"}})
             review_gate = self._review_gate(snapshot, candidate_gate)
             if source_gaps:
@@ -2821,11 +2825,27 @@ class AstraWorkbench:
                 "changed_sources": sorted(set(changed)), "unusable_sources": sorted(set(unusable)),
                 "note_cn": "当前缓存重新核对，仅提示来源变更或失效；不覆盖冻结账，也不自动补发评审。"}
 
+    def _ledger_state(self) -> dict[str, Any]:
+        """Replay the append-only ledger once per file change; callers only read it."""
+        try:
+            st = Path(self.ledger.path).stat()
+            key: Any = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            key = None
+        with self._ledger_cache_lock:
+            if key is not None and self._ledger_cache is not None and self._ledger_cache[0] == key:
+                return self._ledger_cache[1]
+        state = self.ledger.state()
+        if key is not None:
+            with self._ledger_cache_lock:
+                self._ledger_cache = (key, state)
+        return state
+
     def _map_review_delta(self, snapshot: Mapping[str, Any], review_state: Mapping[str, Any]) -> dict[str, Any]:
         receipt = review_state.get("last_result") or {}
         if receipt.get("candidate_id") != snapshot.get("candidate_id") or not receipt.get("snapshot_id"):
             return {}
-        reviewed = (self.ledger.state().get("snapshots", {}).get(receipt["snapshot_id"]) or {}).get("snapshot")
+        reviewed = (self._ledger_state().get("snapshots", {}).get(receipt["snapshot_id"]) or {}).get("snapshot")
         if not isinstance(reviewed, Mapping):
             return {"summary_cn": "最近回执的冻结资料未读回；不套用到当前保单。"}
         differences = []
@@ -2952,7 +2972,7 @@ class AstraWorkbench:
         for key, entry in (review.get("idempotency") or {}).items():
             if not isinstance(entry, Mapping) or not isinstance(entry.get("result"), Mapping):
                 continue
-            row = deepcopy(dict(entry))
+            row = dict(entry)  # freshly parsed state; shallow copy is enough
             row["idempotency_key"] = key
             history.append(row)
         return history
