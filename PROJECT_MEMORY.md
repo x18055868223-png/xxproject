@@ -1,5 +1,14 @@
 # Project Memory
 
+## 2026-10-12 中性回路承保决策工作台 v3 阶段封版
+
+- 当前工作流：信号层逐卡 LLM 复核已停用且不恢复；模型复核只在工作台进行，每天 UTC 02:00 / 14:00 两侧各一次（空间门放行时为生产用途，否则观察用途；时段先落盘，重启不重复；额度与单任务照常，只跳过两次点击间冷却），另有手动观察复核。`ASTRA_SCHEDULED_REVIEW_HOURS_UTC` 可调。
+- μ_ref 不再是生产复核前置条件：现实概率版无严谨来源，市场隐含版使 M_ref 结构性为负、无信息；字段保留为 null，若将来有合格 μ，M_ref≤0 仍关门。
+- 锁定追踪：`/locked-candidates/<id>/series` 给出逐点读数（按内容哈希校验，采样时即算并落盘缓存）；到期后按 Deribit `public/get_delivery_prices` 结算（t0 扣费后信用 − 到期赔付，不是成交记录）。可锁定点缓存需在复用时刷新先后，否则行情不动时会被挤出。
+- 主链路审计日志 `astra_chain_audit@1.0.0`：状态目录 `chain_audit/`，按北京日分文件、哈希链、文件头带中文字段说明，30 天保留，`chain-daily.jsonl` 长期保留；`tools/astra_chain_audit_v1.py summarize/compare/verify` 用于迭代前后对照，说明见 `docs/astra/CHAIN_AUDIT_LOG.md`。
+- 页面读 `GET /api/workbench?view=page`（只含页面字段）；`data_health` 中 `server_deribit_public_quote` 产品是按需记录，年龄不代表断流。工作台状态文件只保留最近 6 份完整复核回执，每日快照只读尾部并在 64 MB 时归档。
+- 封版核对：`python tools/astra_release_check_v1.py --view-url <view> --root-deliverable <根目录交付物>`（交付物版本 / 清单版本与哈希 / 服务器运行版本 / 根目录同步）加服务器 `SESSION_CONTEXT_REQUIRED=1 EXPECTED_SIGNAL_VERSION=<版本> server_self_check_signal_stack.sh`（EU 默认路径与内部 8896 监听已内置）。
+
 ## 同一保单锁定与后续观察契约
 
 - `locked_candidates` 独立保存不可变参考点，精确绑定 candidate/snapshot/packet；锁定与手动综合评审分开，锁定不依赖 provider、μ/M 或完整 Path。既有后台按原两腿、到期和数量观察，默认候选轮换不重置基线；GET 与导出不采集、不调用模型。存储位于 workbench state 下，预算暂停、采样缺口、停止及到期未核验须显式显示。
