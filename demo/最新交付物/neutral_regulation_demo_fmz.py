@@ -172,6 +172,8 @@ CONFIG = {
     # underwriting facts. Audit-only; no direction/weight/permission changes.
     # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
     # continuous current facts. No direction/weight/LLM/permission changes.
+    # v2.0.6 (2026-10-12): after a restart, backfill volume bars from Binance spot
+    # 1m klines (taker buy/sell) so CVD windows and the anchor score are not empty for hours.
     # v2.0.5 (2026-10-11): clean exit on FMZ stop (no exit-code-1 error),
     # timezone-aware UTC helpers, net-gamma freshness 2h for slow GEX upstream.
     # v2.0.4 (2026-10-11): gexmonitorapi follows the upstream redesign; fields
@@ -182,7 +184,7 @@ CONFIG = {
     # a token (gexmonitorapi PUBLIC_READ); removed dead config keys.
     # v2.0.2 (2026-10-05): producer-local snapshot handoff/export clocks
     # and same-snapshot session context. No financial/permission changes.
-    "demo_version": "2.0.5",
+    "demo_version": "2.0.6",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -332,6 +334,8 @@ CONFIG = {
     "gex_observation_stddev_mean_max": 0.01,
 
     "volume_bar_n": 10.0,
+    "volume_bar_backfill_enabled": True,
+    "volume_bar_backfill_hours": 12,
     "bar_history_size": 2500,
     "slow_std_window": 60,
     "drain_enabled": True,
@@ -8309,6 +8313,21 @@ class BinanceAdapter:
             result["data"] = None
         return result
 
+    def fetch_spot_klines(self, interval="1m", limit=720):
+        url = self.config["binance_spot_base_url"] + "/api/v3/klines"
+        result = self.http.get_json(url, params={
+            "symbol": self.config["spot_symbol"],
+            "interval": interval,
+            "limit": int(limit),
+        })
+        if result["quality"] != QUALITY_OK:
+            return result
+        if not isinstance(result["data"], list):
+            result["quality"] = QUALITY_INVALID
+            result["error"] = "spot_klines_not_list"
+            result["data"] = None
+        return result
+
     def fetch_spot_depth(self, limit=20):
         url = self.config["binance_spot_base_url"] + "/api/v3/depth"
         return self.http.get_json(url, params={
@@ -10647,6 +10666,66 @@ class BarAssembler:
         self.current_cvd = 0.0
         self.current_last_trade_ts_ms = None
         return [bar]
+
+    def backfill_from_klines(self, klines, cutoff_ms):
+        """Seed empty history with volume bars rebuilt from closed 1m klines.
+
+        Each kline's volume is split across fixed-volume bars in proportion;
+        its signed flow is taker buy minus taker sell (2 * taker_buy - volume).
+        Only klines closed before cutoff_ms are used, so live trades fetched
+        afterwards do not double count. Bars are marked as backfilled.
+        """
+        if self.completed_bars or self.current_open is not None:
+            return {"applied": False, "reason": "history_not_empty"}
+        threshold = float(self.config["volume_bar_n"])
+        rows = []
+        for raw in klines or []:
+            try:
+                close_ts = int(raw[6])
+                row = (int(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]),
+                       float(raw[4]), float(raw[5]), close_ts, float(raw[9]))
+            except (TypeError, ValueError, IndexError):
+                continue
+            if close_ts < cutoff_ms and row[5] > 0 and 0 <= row[7] <= row[5] + 1e-9:
+                rows.append(row)
+        rows.sort(key=lambda item: item[0])
+        bar = None
+        made = 0
+        for _open_ts, k_open, k_high, k_low, k_close, volume, close_ts, taker_buy in rows:
+            signed_per_unit = (2.0 * taker_buy - volume) / volume
+            remaining = volume
+            while remaining > 1e-12:
+                if bar is None:
+                    bar = {"open": k_open, "high": k_high, "low": k_low, "volume": 0.0, "cvd": 0.0}
+                take = min(remaining, threshold - bar["volume"])
+                bar["high"] = max(bar["high"], k_high)
+                bar["low"] = min(bar["low"], k_low)
+                bar["volume"] += take
+                bar["cvd"] += signed_per_unit * take
+                remaining -= take
+                if bar["volume"] >= threshold - 1e-9:
+                    self.bar_index += 1
+                    self.completed_bars.append(add_schema({
+                        "bar_index": self.bar_index,
+                        "open": bar["open"],
+                        "high": bar["high"],
+                        "low": bar["low"],
+                        "close": k_close,
+                        "total_volume": bar["volume"],
+                        "cvd_delta": bar["cvd"],
+                        "complete_ts_ms": close_ts,
+                        "source": "kline_backfill_1m",
+                    }, SCHEMA_VOLUME_BAR, self.config))
+                    made += 1
+                    bar = None
+        return {
+            "applied": made > 0,
+            "bar_count": made,
+            "kline_count": len(rows),
+            "from_ms": rows[0][0] if rows else None,
+            "to_ms": rows[-1][6] if rows else None,
+            "source": "binance_spot_klines_1m_taker_buy",
+        }
 
     def slow_std_usd(self):
         window = int(self.config["slow_std_window"])
@@ -14035,6 +14114,7 @@ class DemoRuntime:
             self.config,
             self.binance.normalize_agg_trade,
         )
+        self.bar_backfill = None
         self.recorder = JsonlRecorder(self.config)
         self.snapshot_exporter = WorkbenchSnapshotExporter(self.config)
         self.option_expiries = []
@@ -14520,6 +14600,8 @@ class DemoRuntime:
         except Exception as error:
             self._mark_source_error(source_quality, "gex", error)
 
+        if self.bar_backfill is None:
+            self.bar_backfill = self._backfill_volume_bars()
         try:
             new_bars = self.bars.poll_with_drain()
             source_quality["binance"] = self.bars.last_cycle_metrics.get(
@@ -14660,6 +14742,7 @@ class DemoRuntime:
                 None if self.current_price_observed_ms is None
                 else max(0, now_ms() - self.current_price_observed_ms)),
             "completed_bar_count": len(self.bars.completed_bars),
+            "bar_backfill": self.bar_backfill,
             "volume_bar_threshold": self.config.get("volume_bar_n"),
             "current_bar_volume": self.bars.current_volume,
             "current_bar_progress_frac": self._current_bar_progress_frac(),
@@ -14705,6 +14788,21 @@ class DemoRuntime:
         if self.config.get("offline_fixture_enabled", False):
             return "offline_fixture"
         return "offline_missing_sources"
+
+    def _backfill_volume_bars(self):
+        """Once per process: rebuild recent volume bars so CVD windows start warm."""
+        if not self.config.get("volume_bar_backfill_enabled", True):
+            return {"applied": False, "reason": "disabled"}
+        hours = max(1, min(16, int(self.config.get("volume_bar_backfill_hours", 12))))
+        try:
+            result = self.binance.fetch_spot_klines("1m", hours * 60)
+            if result.get("quality") != QUALITY_OK:
+                return {"applied": False, "reason": "klines_" + str(result.get("quality"))}
+            return self.bars.backfill_from_klines(result.get("data"), now_ms() - 60000)
+        except Exception as error:
+            if _is_fmz_stop(error):
+                raise
+            return {"applied": False, "reason": "error", "error": str(error)[:200]}
 
     def _current_bar_progress_frac(self):
         threshold = safe_float(self.config.get("volume_bar_n"))

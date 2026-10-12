@@ -21,8 +21,8 @@ class StopError(BaseException):
     """Same class name FMZ raises from Sleep() when the robot is stopped."""
 
 
-def test_version_is_205(mod):
-    assert mod.CONFIG["demo_version"] == "2.0.5"
+def test_version_is_at_least_205(mod):
+    assert tuple(int(x) for x in mod.CONFIG["demo_version"].split(".")) >= (2, 0, 5)
 
 
 def test_main_exits_cleanly_when_fmz_stops_the_robot(mod, monkeypatch):
