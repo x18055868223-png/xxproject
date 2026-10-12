@@ -136,8 +136,8 @@ def test_manifest_config_and_permissions(module):
                 "gexmonitorapi info is token-free (server PUBLIC_READ)")
     validation = module.validate_data_source_manifest(module.CONFIG)
     assert_true(validation["ok"], "data source manifest should validate")
-    assert_true(module.CONFIG["demo_version"] == "2.0.4",
-                "FMZ artifact identity should be 2.0.4")
+    assert_true(module.CONFIG["demo_version"] == "2.0.5",
+                "FMZ artifact identity should be 2.0.5")
     assert_true(module.CONFIG["read_only_demo"] is True,
                 "read-only demo safety default should stay true")
     assert_true("llm_review_enabled" not in module.CONFIG,

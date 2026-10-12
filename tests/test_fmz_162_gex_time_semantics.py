@@ -133,7 +133,7 @@ def assert_old_signal_fields_unchanged(before, after):
 
 
 def test_version_and_legacy_payload_has_unknown_observation(mod, config):
-    assert_equal(config["demo_version"], "2.0.4", "FMZ producer version")
+    assert_equal(config["demo_version"], "2.0.5", "FMZ producer version")
     fetched_ms = utc_ms()
     snapshot = mod.parse_info_payload(
         make_payload(fetched_ms, observed_equals_fetch=True), config)

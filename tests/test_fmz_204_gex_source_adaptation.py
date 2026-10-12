@@ -68,8 +68,8 @@ def new_layout_payload():
     }
 
 
-def test_version_is_204(mod):
-    assert mod.CONFIG["demo_version"] == "2.0.4"
+def test_version_is_at_least_204(mod):
+    assert tuple(int(x) for x in mod.CONFIG["demo_version"].split(".")) >= (2, 0, 4)
 
 
 def test_removed_fields_are_not_consumed_anywhere(mod):

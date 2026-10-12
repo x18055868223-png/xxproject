@@ -31,7 +31,7 @@ def fmz_version_tuple(value: Any) -> tuple[int, int, int] | None:
 def fmz_producer_supported(value: Any) -> bool:
     version = fmz_version_tuple(value)
     return version is not None and version[0] == SUPPORTED_FMZ_MAJOR
-MAX_AGE_MS = 300_000  # technical freshness, not a fitted trading interval
+MAX_AGE_MS = 600_000  # technical freshness: FMZ exports every ~300s, allow one missed cycle
 MAX_SOURCE_TAIL_BYTES = 16 * 1024 * 1024
 
 

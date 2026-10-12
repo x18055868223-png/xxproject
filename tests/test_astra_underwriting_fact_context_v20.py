@@ -303,7 +303,7 @@ def test_existing_fmz_tick_is_selected_without_nr_event(tmp_path):
 
 
 def test_stale_offline_and_future_fact_guards(tmp_path):
-    stale = f.from_evaluation_snapshot(fmz_row(ts=T - 400_000), T, source_hash="a" * 64)
+    stale = f.from_evaluation_snapshot(fmz_row(ts=T - 700_000), T, source_hash="a" * 64)  # beyond MAX_AGE_MS=600s
     assert stale["status"] == "background_only"
     assert "fmz_snapshot_stale" in stale["gap_reasons"]
     offline = f.from_evaluation_snapshot(fmz_row(mode="offline_fixture"), T, source_hash="b" * 64)

@@ -20,7 +20,7 @@ def load_signal_module():
 
 def test_cleanup_preserves_identity_safety_defaults_and_drops_dead_knobs():
     module = load_signal_module()
-    assert module.CONFIG["demo_version"] == "2.0.4"
+    assert module.CONFIG["demo_version"] == "2.0.5"
     assert module.CONFIG["read_only_demo"] is True
     assert module.CONFIG["signal_review_push_enabled"] is False
     for key in ("llm_review_enabled", "status_max_lines", "signal_session_boundary_buffer_min",

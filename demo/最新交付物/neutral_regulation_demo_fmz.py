@@ -172,6 +172,8 @@ CONFIG = {
     # underwriting facts. Audit-only; no direction/weight/permission changes.
     # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
     # continuous current facts. No direction/weight/LLM/permission changes.
+    # v2.0.5 (2026-10-11): clean exit on FMZ stop (no exit-code-1 error),
+    # timezone-aware UTC helpers, net-gamma freshness 2h for slow GEX upstream.
     # v2.0.4 (2026-10-11): gexmonitorapi follows the upstream redesign; fields
     # the upstream no longer provides are not consumed; new upstream data
     # (near-term walls, PCR/OI, ATM IV, rr skew, whale flow, expiry) reach the
@@ -180,7 +182,7 @@ CONFIG = {
     # a token (gexmonitorapi PUBLIC_READ); removed dead config keys.
     # v2.0.2 (2026-10-05): producer-local snapshot handoff/export clocks
     # and same-snapshot session context. No financial/permission changes.
-    "demo_version": "2.0.4",
+    "demo_version": "2.0.5",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -263,7 +265,7 @@ CONFIG = {
     "gex_info_cache_file": "demo/logs/gex_info_cache.json",
     "gex_info_cache_max_age_ms": 86400000,
     "space_gate_state_file": "",
-    "space_gate_net_gamma_fresh_ms": 1200000,
+    "space_gate_net_gamma_fresh_ms": 7200000,
 
     # 信号审计输出: 全量 JSONL 永远本地落盘，FMZ 只发短推。
     # push_test 只用于部署自检，正常等待真信号时保持 False。
@@ -1360,7 +1362,7 @@ def safe_int(value):
 def utc8_text(timestamp_ms):
     if timestamp_ms is None:
         return "-"
-    dt = datetime.datetime.utcfromtimestamp(timestamp_ms / 1000.0)
+    dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000.0, datetime.timezone.utc)
     dt = dt + datetime.timedelta(hours=8)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -12469,7 +12471,7 @@ def format_option_expiry(expiry_ts_ms, asset="BTC"):
     expiry = safe_float(expiry_ts_ms)
     if expiry is None or expiry <= 0:
         return None
-    dt = datetime.datetime.utcfromtimestamp(expiry / 1000.0)
+    dt = datetime.datetime.fromtimestamp(expiry / 1000.0, datetime.timezone.utc)
     month = (
         "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
         "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
@@ -15394,6 +15396,8 @@ def run(live_fetch=None, max_loops=None):
         try:
             runtime.tick(live_fetch=live_fetch)
         except Exception as error:
+            if _is_fmz_stop(error):
+                raise
             runtime.last_tick_error = str(error)
             fmz_log("循环异常", "轮次=" + str(count), str(error))
             fmz_status(
@@ -15414,8 +15418,19 @@ def run(live_fetch=None, max_loops=None):
         fmz_sleep(sleep_ms)
 
 
+def _is_fmz_stop(error):
+    # FMZ raises fmz.StopError from Sleep()/API calls when the robot is stopped.
+    return type(error).__name__ == "StopError"
+
+
 def main():
-    run()
+    try:
+        run()
+    except BaseException as error:
+        if _is_fmz_stop(error):
+            fmz_log("收到停止指令", "策略正常退出")
+            return
+        raise
 
 
 def run_offline_fixture_once():

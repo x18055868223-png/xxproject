@@ -325,7 +325,7 @@ def test_g08_persistence_restart_and_tick_snapshot_native_fields(mod):
 
 def main():
     mod = load_signal_module()
-    assert_equal(mod.CONFIG["demo_version"], "2.0.4",
+    assert_equal(mod.CONFIG["demo_version"], "2.0.5",
                  "FMZ producer version")
     test_g01_eligible_uses_positive_fresh_observed_net_gamma(mod)
     test_g02_anchor_must_be_valid_and_score_60(mod)

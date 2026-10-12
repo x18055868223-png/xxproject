@@ -118,7 +118,7 @@ def test_manual_lock_fetches_only_chosen_side_and_never_rediscovers(tmp_path):
 def test_stale_gamma_input_cannot_keep_native_gate_current(tmp_path):
     wb, path = fixtures.make_workbench(tmp_path)
     gate = fixtures.native_gate()
-    gate['net_gamma']['source_ts_ms'] = fixtures.T - 3600_000
+    gate['net_gamma']['source_ts_ms'] = fixtures.T - 3 * 3600_000
     fixtures.write_fmz(path, gate)
     result = wb.latest_fact(fixtures.T)
     assert result['status'] == 'background_only'

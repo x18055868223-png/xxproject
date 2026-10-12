@@ -551,3 +551,14 @@ def test_d26_restart_preserves_current_record_and_freeze_evidence(tmp_path):
     assert read["record_id"] == rec["record_id"]
     assert manifest["source_records"][0]["record_id"] == rec["record_id"]
     assert manifest["source_records"][0]["content"]["values"]["mu_btc"] == 0.001
+
+
+def test_gex_and_fmz_freshness_matches_source_cadence():
+    # GEX upstream may refresh hourly or slower; FMZ exports every ~300s.
+    import json, pathlib
+    registry = json.loads((pathlib.Path(__file__).resolve().parents[1] / "demo" / "shared" /
+                           "data_product_registry_v23.json").read_text(encoding="utf-8"))
+    products = {p["product_id"]: p for p in registry["products"]}
+    for pid in ("gex.raw.board.v1", "gex.effective.accepted.v1", "gex.pending.candidate.v1", "gex.netgamma.proxy.v1"):
+        assert products[pid]["usage_policies"]["default"]["ttl_ms"] >= 7_200_000, pid
+    assert products["fmz.bridge.snapshots.v1"]["usage_policies"]["default"]["ttl_ms"] >= 600_000
