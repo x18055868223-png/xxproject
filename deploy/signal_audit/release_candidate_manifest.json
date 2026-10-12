@@ -30,10 +30,10 @@
   "components": [
     {
       "component": "fmz_producer",
-      "candidate_version": "2.0.5",
+      "candidate_version": "2.0.6",
       "source_of_truth": "demo/最新交付物/neutral_regulation_demo_fmz.py",
-      "source_hash": "4c1fd297fced891f64ec295a590923eb7ce77d3b2a0de2794084e0682817ef71",
-      "schema_or_protocol": "2.0.5",
+      "source_hash": "6a4ac7edba6278050d6cc9da4e7add645ce5723f073dd66d180ab6892fde5549",
+      "schema_or_protocol": "2.0.6",
       "lifecycle": "canonical",
       "runtime_status": "USER_DEPLOYED_NATIVE_OBSERVED",
       "production_status": "USER_DEPLOYED_NATIVE_OBSERVED"

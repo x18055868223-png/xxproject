@@ -113,6 +113,7 @@ workbench_modules=(
   astra_locked_candidate_store_v1.py
   astra_locked_candidate_compare_v1.py
   astra_observation_replay_v1.py
+  astra_chain_audit_v1.py
   astra_risk_qualification_v244.py
   astra_commercial_math_v17.py
   astra_underwriting_v20.py

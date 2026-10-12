@@ -47,6 +47,7 @@ if __package__:
     from . import astra_wpem_workbench_v1 as wpem_workbench
     from . import astra_wpem_product_review_v1 as wpem_review
     from . import astra_release_identity_v1 as release_core
+    from . import astra_chain_audit_v1 as chain_audit
     from . import astra_locked_candidate_store_v1 as locked_store
     from . import astra_locked_candidate_compare_v1 as locked_compare
     from . import astra_workbench_reading_v1 as reading
@@ -70,6 +71,7 @@ else:  # direct CLI execution from tools/
     import astra_wpem_workbench_v1 as wpem_workbench
     import astra_wpem_product_review_v1 as wpem_review
     import astra_release_identity_v1 as release_core
+    import astra_chain_audit_v1 as chain_audit
     import astra_locked_candidate_store_v1 as locked_store
     import astra_locked_candidate_compare_v1 as locked_compare
     import astra_workbench_reading_v1 as reading
@@ -1440,6 +1442,9 @@ class WorkbenchConfig:
     locked_max_episodes: int = 64
     locked_max_bytes: int = 268_435_456
     locked_max_samples: int = 1440
+    chain_audit_enabled: bool = True
+    chain_audit_interval_ms: int = 900_000
+    chain_audit_retention_days: int = 30
 
     @property
     def state_path(self) -> Path:
@@ -1573,7 +1578,17 @@ class AstraWorkbench:
         self.clock_ms = clock_ms or _now_ms
         self.map_source_capture = map_source_capture
         self.ledger = store.UnderwritingLedger(config.ledger_path)
+        self.chain_audit = (chain_audit.ChainAuditLog(
+            config.state_dir / "chain_audit", interval_ms=config.chain_audit_interval_ms,
+            retention_days=config.chain_audit_retention_days,
+            prompt_versions={"review_prompt": wpem_review.EVIDENCE_SYNTHESIS_PROMPT_VERSION,
+                             "review_protocol": wpem_review.EVIDENCE_POINTS_RESPONSE_PROTOCOL})
+            if config.chain_audit_enabled else None)
         self._ledger_cache: tuple[Any, dict[str, Any]] | None = None
+        # Retained lock points are immutable, so their compact metrics are cached by point id.
+        self._series_cache: dict[str, dict[str, Any]] | None = None
+        self._series_baselines: dict[str, Any] = {}
+        self._series_lock = threading.Lock()
         self._ledger_cache_lock = threading.Lock()
         self.data_engine = data_engine.DataEngine(config.state_dir / "data_engine")
         self.budget = (signal_llm_review.DailyHttpBudget(
@@ -2287,7 +2302,10 @@ class AstraWorkbench:
                 self._current_view = deepcopy(cached)
                 self._last_refresh_error = None
             self._store_btc_map_state(btc_projection.get("btc_map"))
-            return self._apply_current_review_availability(view, finished_at_ms)
+            result = self._apply_current_review_availability(view, finished_at_ms)
+            if self.chain_audit is not None:
+                self.chain_audit.observe(result, finished_at_ms)
+            return result
 
     def _wpem_view_for_candidate(
         self,
@@ -2539,6 +2557,7 @@ class AstraWorkbench:
                     point = self._capture_locked_point(episode, view, self.clock_ms())
                     captured[episode["candidate_id"]] = point
                 self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
+                self._warm_series_metrics(episode, point)
             except Exception as exc:
                 reason = getattr(exc, "code", None) or "locked_capture_failed:" + type(exc).__name__
                 try:
@@ -2566,6 +2585,142 @@ class AstraWorkbench:
                 return self._locked_candidate_reading(episode_id)
         return self._locked_candidate_projection(episode_id, include_raw=include_raw,
             baseline_point_id=baseline_point_id, latest_point_id=latest_point_id)
+
+    def record_action(self, kind: str, result: Mapping[str, Any] | None = None, *,
+                      request: Mapping[str, Any] | None = None, error_code: str | None = None) -> None:
+        """Append one user action to the main-chain audit log; never raises."""
+        if self.chain_audit is None:
+            return
+        request = request or {}
+        result = result or {}
+        review = result.get("review") if isinstance(result.get("review"), Mapping) else {}
+        episode = result.get("episode") if isinstance(result.get("episode"), Mapping) else {}
+        detail = {
+            "ok": error_code is None,
+            "error_code": error_code,
+            "candidate_id": request.get("candidate_id") or result.get("candidate_id"),
+            "snapshot_id": request.get("snapshot_id") or result.get("snapshot_id"),
+            "purpose": request.get("purpose"),
+            "idempotency_key": request.get("idempotency_key"),
+            "status": result.get("status") or review.get("status"),
+            "reason": result.get("reason"),
+            "llm_call_count": result.get("llm_call_count"),
+            "applicability": review.get("applicability"),
+            "response_protocol": review.get("response_protocol"),
+            "created": result.get("created"),
+            "episode_id": episode.get("episode_id") or request.get("episode_id"),
+            "episode_status": episode.get("status"),
+            "new_reference": request.get("new_reference"),
+            "source_episode_id": request.get("source_episode_id"),
+        }
+        with self._view_lock:
+            view = self._current_view or {}
+            context = {"market_context": {"current_price_usd": (view.get("market_context") or {}).get("current_price_usd"),
+                                          "strategy_version": (view.get("market_context") or {}).get("strategy_version")},
+                       "space_gate": {"state": (view.get("space_gate") or {}).get("state")}}
+        self.chain_audit.event(kind, self.clock_ms(), {k: v for k, v in detail.items() if v is not None}, context)
+
+    def locked_candidate_series(self, episode_id: str, *, max_points: int = 480) -> dict[str, Any]:
+        """Per-point metrics of one locked policy over time; no LLM, no market refresh."""
+        if not re.fullmatch(r"lce_[0-9a-f]{24}", str(episode_id or "")):
+            raise WorkbenchError(400, "invalid_episode_id", "invalid locked policy id")
+        try:
+            index = self.locked_candidates.episode_observations(episode_id)
+        except locked_store.LockedCandidateError as exc:
+            raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
+        observations = index["observations"]
+        points = [row for row in observations if row.get("kind") == "point" and row.get("point_id")]
+        gaps = [{"recorded_at_ms": row.get("recorded_at_ms"), "reason": (row.get("gap") or {}).get("reason"),
+                 "expired": bool((row.get("gap") or {}).get("expired"))}
+                for row in observations if row.get("kind") != "point"]
+        # Long episodes are thinned evenly; the first and last point are always kept.
+        if len(points) > max_points:
+            stride = (len(points) - 1) / (max_points - 1)
+            points = [points[round(i * stride)] for i in range(max_points)]
+        cache = self._series_metrics_cache()
+        with self._series_lock:
+            missing = [row["point_id"] for row in points if row["point_id"] not in cache]
+        if missing:
+            computed: dict[str, dict[str, Any]] = {}
+            baseline = None
+            wanted = [index["baseline_point_id"], *[pid for pid in missing if pid != index["baseline_point_id"]]]
+            for point_id, point, error in self.locked_candidates.iter_points(wanted):
+                if point is None:
+                    continue
+                if baseline is None and point_id == index["baseline_point_id"]:
+                    baseline = point
+                if baseline is None:
+                    break
+                if point_id in missing:
+                    try:
+                        computed[point_id] = locked_compare.point_metrics(point, baseline)
+                    except Exception:
+                        continue
+            if computed:
+                with self._series_lock:
+                    cache.update(computed)
+                    if len(cache) > 20_000:
+                        for key in list(cache)[: len(cache) - 20_000]:
+                            cache.pop(key, None)
+                    snapshot = dict(cache)
+                self._save_series_cache(snapshot)
+        series, unreadable = [], 0
+        for row in points:
+            metrics = cache.get(row["point_id"])
+            if metrics is None:
+                unreadable += 1
+                continue
+            series.append({"step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
+                           "point_id": row["point_id"], **metrics})
+        return {"schema": locked_compare.SERIES_SCHEMA, "episode": index["episode"],
+                "points": series, "gaps": gaps, "thinned": len(points) < sum(1 for r in observations if r.get("kind") == "point"),
+                "unreadable_points": unreadable, "llm_call_count": 0, "execution_allowed": False}
+
+    def _warm_series_metrics(self, episode: Mapping[str, Any], point: Mapping[str, Any]) -> None:
+        """The appended point is in memory: compute its metrics now instead of re-reading it later."""
+        try:
+            point_id = locked_store._hash(point)
+            cache = self._series_metrics_cache()
+            if point_id in cache:
+                return
+            baseline_id = episode["t0_baseline_point_id"]
+            baseline = self._series_baselines.get(baseline_id)
+            if baseline is None:
+                found = next(self.locked_candidates.iter_points([baseline_id]), (None, None, "missing"))
+                if found[1] is None:
+                    return
+                baseline = self._series_baselines[baseline_id] = found[1]
+                if len(self._series_baselines) > 16:
+                    self._series_baselines.pop(next(iter(self._series_baselines)))
+            metrics = locked_compare.point_metrics(point, baseline)
+            with self._series_lock:
+                cache[point_id] = metrics
+                snapshot = dict(cache)
+            self._save_series_cache(snapshot)
+        except Exception:
+            return  # the series endpoint computes it on demand instead
+
+    def _series_cache_path(self) -> Path:
+        return self.config.state_dir / "locked_series_cache.json"
+
+    def _series_metrics_cache(self) -> dict[str, dict[str, Any]]:
+        """Metrics of immutable points survive restarts; a damaged file is simply rebuilt."""
+        with self._series_lock:
+            if self._series_cache is None:
+                loaded = _read_json(self._series_cache_path(), {})
+                points = loaded.get("points") if loaded.get("schema") == locked_compare.SERIES_SCHEMA else None
+                self._series_cache = dict(points) if isinstance(points, Mapping) else {}
+            return self._series_cache
+
+    def _save_series_cache(self, points: Mapping[str, Any]) -> None:
+        try:
+            path = self._series_cache_path()
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"schema": locked_compare.SERIES_SCHEMA, "points": points},
+                                      ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass  # the cache only saves time
 
     def _locked_candidate_reading(self, episode_id: str) -> dict[str, Any]:
         episode = next((item for item in self.locked_candidate_list()["episodes"]
@@ -3496,6 +3651,41 @@ def make_handler(workbench: AstraWorkbench):
             if parsed.path == "/api/workbench/locked-candidates":
                 self._json(200, workbench.locked_candidate_list())
                 return
+            if parsed.path == "/api/workbench/chain-audit":
+                if workbench.chain_audit is None:
+                    self._json(404, {"schema": SCHEMA, "code": "chain_audit_disabled"})
+                else:
+                    self._json(200, workbench.chain_audit.index())
+                return
+            if parsed.path.startswith("/api/workbench/chain-audit/"):
+                name = unquote(parsed.path.rsplit("/", 1)[-1])
+                try:
+                    if workbench.chain_audit is None:
+                        raise FileNotFoundError(name)
+                    data = workbench.chain_audit.read_file(name)
+                except ValueError:
+                    self._json(400, {"schema": SCHEMA, "code": "invalid_audit_file"})
+                    return
+                except FileNotFoundError:
+                    self._json(404, {"schema": SCHEMA, "code": "audit_file_not_found"})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if parsed.path.startswith("/api/workbench/locked-candidates/") and parsed.path.endswith("/series"):
+                try:
+                    self._json(200, workbench.locked_candidate_series(unquote(parsed.path.split("/")[-2])))
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                except Exception as exc:
+                    self._json(500, {"schema": SCHEMA, "status": "ERROR", "code": "locked_series_unavailable",
+                                     "error_type": type(exc).__name__})
+                return
             if parsed.path.startswith("/api/workbench/locked-candidates/"):
                 try:
                     evidence = parsed.path.endswith("/evidence")
@@ -3518,7 +3708,9 @@ def make_handler(workbench: AstraWorkbench):
                 return
             if parsed.path == "/api/workbench":
                 try:
-                    self._json(200, workbench.cached_view(reading_only=query.get("view") != ["full"]))
+                    view_kind = (query.get("view") or ["reading"])[0]
+                    result = workbench.cached_view(reading_only=view_kind != "full")
+                    self._json(200, reading.workbench_page(result) if view_kind == "page" else result)
                 except Exception as exc:
                     self._json(500, {"schema": SCHEMA, "status": "ERROR",
                                      "code": "refresh_failed", "message": str(exc)[:240]})
@@ -3560,6 +3752,7 @@ def make_handler(workbench: AstraWorkbench):
             if parsed.path not in {"/api/workbench/review", lock_path} and not stop_match:
                 self._json(404, {"schema": SCHEMA, "status": "ERROR", "code": "not_found"})
                 return
+            body: dict[str, Any] = {}
             try:
                 access = sessions.authorize("POST", self.headers, self.client_address[0])
                 if not access.ok:
@@ -3593,8 +3786,16 @@ def make_handler(workbench: AstraWorkbench):
                         snapshot_id=body.get("snapshot_id"),
                     )
                 self._json(200, result)
+                audit_kind = "lock" if parsed.path == lock_path else "lock_stop" if stop_match else "review"
+                workbench.record_action(audit_kind, result, request={**body, "episode_id": stop_match.group(1) if stop_match else None})
             except WorkbenchError as exc:
                 self._json(exc.status_code, exc.as_payload())
+                if exc.status_code not in (401, 403):
+                    audit_kind = "lock" if parsed.path == lock_path else "lock_stop" if stop_match else "review"
+                    workbench.record_action(audit_kind + "_rejected", None,
+                                            request={**(body if isinstance(body, dict) else {}),
+                                                     "episode_id": stop_match.group(1) if stop_match else None},
+                                            error_code=exc.code)
             except (ValueError, UnicodeError):
                 self._json(400, {"schema": SCHEMA, "status": "ERROR", "code": "bad_json"})
             except locked_store.LockedCandidateError as exc:
@@ -3688,6 +3889,9 @@ def config_from_env() -> WorkbenchConfig:
         locked_max_episodes=int(os.environ.get("ASTRA_LOCKED_MAX_EPISODES") or "64"),
         locked_max_bytes=int(os.environ.get("ASTRA_LOCKED_MAX_BYTES") or "268435456"),
         locked_max_samples=int(os.environ.get("ASTRA_LOCKED_MAX_SAMPLES") or "1440"),
+        chain_audit_enabled=os.environ.get("ASTRA_CHAIN_AUDIT_ENABLED", "1") == "1",
+        chain_audit_interval_ms=int(os.environ.get("ASTRA_CHAIN_AUDIT_INTERVAL_MS") or "900000"),
+        chain_audit_retention_days=int(os.environ.get("ASTRA_CHAIN_AUDIT_RETENTION_DAYS") or "30"),
         map_sources_enabled=os.environ.get("ASTRA_MAP_SOURCES_ENABLED") == "1",
         map_source_mode=os.environ.get("ASTRA_MAP_SOURCE_MODE") or map_projection.SOURCE_MODE_COLLECTOR,
         map_producer_current_path=Path(producer_path) if producer_path else None,

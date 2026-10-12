@@ -86,3 +86,53 @@ def workbench_reading(view):
         if identity:
             candidate["evidence_url"] = "/api/workbench/candidate-evidence/" + identity
     return result
+
+
+_PAGE_CANDIDATE_KEYS = (
+    "side", "status", "error", "snapshot", "discovery", "current_questions", "reading_guidance", "wpem_summary",
+    "review_validity", "review_gate", "observation_review", "lock_availability", "current_usage",
+    "remaining_to_expiry_ms", "review_display", "evidence_url", "space_gate",
+)
+_PAGE_SNAPSHOT_DROP = {"data_identity", "origins", "llm_review"}
+_PAGE_DISPLAY_DROP = {"observation_lineage"}
+
+
+def workbench_page(reading):
+    """What the v3 page draws, nothing more: source identities, WPEM proof bodies,
+    full receipts already projected into review_display, and MAP presentation
+    stay on the reading and full views. Builds new containers; never mutates."""
+    page = {key: value for key, value in reading.items()
+            if key not in {"discovery", "btc_map_current_usage", "btc_map", "data_health", "manual_review_state", "candidates"}}
+    page["display_projection"] = "workbench_page@1.0.0"
+    btc_map = reading.get("btc_map") or {}
+    page["btc_map"] = {key: btc_map.get(key) for key in ("current_price_usd", "background", "reference_pool") if key in btc_map}
+    state = reading.get("manual_review_state") or {}
+    page["manual_review_state"] = {
+        **{key: value for key, value in state.items() if key not in {"last_result", "previous_valid_result"}},
+        **{key: {"status": (state.get(key) or {}).get("status")} for key in ("last_result", "previous_valid_result")
+           if isinstance(state.get(key), dict)},
+    }
+    health = reading.get("data_health") or {}
+    products = {}
+    for product_id, product in (health.get("products") or {}).items():
+        first = (product.get("current") or [None])[0]
+        products[product_id] = {
+            **{key: product.get(key) for key in ("status", "collector_id", "affected_consumers", "usage_decision") if key in product},
+            "current": [{key: first.get(key) for key in ("usage_decision", "observation_end_ms", "data_state")}] if isinstance(first, dict) else [],
+        }
+    page["data_health"] = {"generated_at_ms": health.get("generated_at_ms"), "products": products}
+    candidates = []
+    for item in reading.get("candidates") or []:
+        candidate = {key: item.get(key) for key in _PAGE_CANDIDATE_KEYS if key in item}
+        snapshot = candidate.get("snapshot")
+        if isinstance(snapshot, dict):
+            candidate["snapshot"] = {key: value for key, value in snapshot.items() if key not in _PAGE_SNAPSHOT_DROP}
+        display = candidate.get("review_display")
+        if isinstance(display, dict):
+            candidate["review_display"] = {key: value for key, value in display.items() if key not in _PAGE_DISPLAY_DROP}
+        discovery = candidate.get("discovery")
+        if isinstance(discovery, dict):
+            candidate["discovery"] = {key: value for key, value in discovery.items() if key != "metadata"}
+        candidates.append(candidate)
+    page["candidates"] = candidates
+    return page

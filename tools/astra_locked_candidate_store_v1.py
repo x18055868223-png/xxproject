@@ -593,6 +593,47 @@ class LockedCandidateStore:
                 return self._read_point(row["point_id"], include_point=True)["point"]
         return None
 
+    def episode_observations(self, episode_id: str) -> dict[str, Any]:
+        """The episode summary plus its compact observation index (points and gaps)."""
+        state = self._read_state()
+        episode = self._episode(state, _text(episode_id, "invalid_episode_id"))
+        rows = [{key: deepcopy(row.get(key)) for key in (
+            "step", "kind", "recorded_at_ms", "decision_asof_ms", "point_id", "snapshot_id", "gap") if key in row}
+            for row in episode["observations"]]
+        return {"episode": self._summary(episode), "baseline_point_id": episode["t0_baseline_point_id"],
+                "observations": rows}
+
+    def iter_points(self, point_ids: list[str]):
+        """Yield (point_id, point, error_code) for read-only projections.
+
+        Every point is checked against its content hash; a delta's full base is
+        read and hash-checked once for the whole batch instead of per point.
+        """
+        bases: dict[str, Any] = {}
+        for raw_id in point_ids:
+            try:
+                point_id = _point_id(raw_id)
+                stored, _stat = self._read_stored_json(point_id)
+                if _is_delta_envelope(stored):
+                    base_id = _point_id(stored.get("base_point_id"))
+                    if base_id not in bases:
+                        base, _base_stat = self._read_stored_json(base_id)
+                        if _is_delta_envelope(base) or _hash(base) != base_id:
+                            raise LockedCandidateError("delta_base_hash_mismatch", "delta base does not match its id")
+                        bases[base_id] = base
+                    point = _apply_delta_patch(bases[base_id], stored.get("patch"))
+                else:
+                    point = stored
+                if _hash(point) != point_id:
+                    raise LockedCandidateError("point_hash_mismatch", "stored point content hash does not match filename")
+                yield point_id, point, None
+            except LockedCandidateError as exc:
+                yield raw_id, None, exc.code
+
+    def read_point(self, point_id: str) -> dict[str, Any]:
+        """One retained point, hash-checked (delta points are reconstructed)."""
+        return self._read_point(point_id, include_point=True)["point"]
+
     def point_read_signature(self, point_id: str) -> dict[str, Any]:
         point_id = _point_id(point_id)
         stat = self._point_file_stat(point_id)

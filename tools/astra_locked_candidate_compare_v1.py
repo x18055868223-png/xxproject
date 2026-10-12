@@ -874,6 +874,63 @@ def _explanations(point: Mapping[str, Any] | None) -> dict[str, Any] | None:
     })
 
 
+SERIES_SCHEMA = "locked_candidate_series@1.0.0"
+
+
+def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> Any:
+    for item in _research_items(candidate):
+        if str(item.get("id") or "").startswith(prefix):
+            value = _dig(_mapping(item.get("readings")), path)
+            if value is not None:
+                return value
+    return None
+
+
+def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact, numbers-first reading of one retained point against the fixed t0.
+
+    Distances follow core.signed_boundary_distance (percent of the boundary,
+    positive = still outside). The reference result uses the t0 entry credit
+    and this point's close quote, exactly as the follow-up row does.
+    """
+    snapshot = _point_snapshot(point)
+    base = _point_snapshot(baseline)
+    candidate = _mapping(point.get("candidate"))
+    contract = _mapping(snapshot.get("contract"))
+    side = contract.get("side")
+    spot = _spot(snapshot)
+
+    def distance(boundary: Any, kind: str) -> float | None:
+        found = core.signed_boundary_distance(side, spot, boundary, boundary_kind=kind)
+        return None if found is None else found["signed_distance_pct"]
+
+    breakevens = _baseline_breakevens(base)
+    close = _close_quote(point)
+    reference = _reference_result(base, close)
+    quote = _mapping(_dig(snapshot, ("market", "quote")))
+    gate = _mapping(candidate.get("space_gate"))
+    return {
+        "asof_ms": _point_asof(point, snapshot),
+        "spot_usd": spot,
+        "short_distance_pct": distance(contract.get("short_strike_usd"), "short"),
+        "protection_distance_pct": distance(contract.get("long_strike_usd"), "protection"),
+        "breakeven_distance_pct": distance(breakevens[0], "breakeven") if breakevens else None,
+        "visible_credit_btc": _number(_dig(snapshot, ("economics", "visible_credit_btc"))),
+        "close_debit_btc": _number(close.get("debit_btc")),
+        "close_fee_btc": _number(close.get("close_fee_btc")),
+        "reference_result_btc": _number(reference.get("reference_result_btc")),
+        "reference_gaps": list(reference.get("gap_reasons") or []),
+        "quote_gaps": list(quote.get("gap_reasons") or []),
+        "space_gate_state": gate.get("state") or ("STRUCTURE_ELIGIBLE" if gate.get("eligible") is True
+                                                   else "STRUCTURE_BLOCKED" if gate.get("eligible") is False else None),
+        "flow_direction": _reading(candidate, "context.active_flow", ("combined", "direction")),
+        "flow_ready": _reading(candidate, "context.active_flow", ("combined", "data_ready")),
+        "tmv_state": _reading(candidate, "context.tmv_price_path", ("tmv_state",)),
+        "gamma_regime": _reading(candidate, "context.option_space", ("gamma_regime", "regime")),
+        "macro_regime": _reading(candidate, "context.macro", ("macro_regime",)),
+    }
+
+
 def build_followup(detail: Mapping[str, Any], *, now_ms: int, include_raw: bool = True) -> dict[str, Any]:
     """Build the public same-candidate follow-up contract."""
     if not isinstance(detail, Mapping):

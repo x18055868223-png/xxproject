@@ -259,6 +259,86 @@ def test_locked_manual_review_rotated_target_retains_gates_and_baseline(tmp_path
 def test_locked_runtime_modules_are_in_both_packaging_lists():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    for name in ("astra_locked_candidate_store_v1.py", "astra_locked_candidate_compare_v1.py", "astra_observation_replay_v1.py"):
+    for name in ("astra_locked_candidate_store_v1.py", "astra_locked_candidate_compare_v1.py", "astra_observation_replay_v1.py",
+                 "astra_chain_audit_v1.py"):
         for path in ("deploy/signal_audit/package_signal_audit.ps1", "deploy/signal_audit/install_or_update.sh"):
             assert name in (root / path).read_text(encoding="utf-8-sig")
+
+
+def test_series_reads_every_point_against_fixed_t0_and_caches_points(tmp_path):
+    wb, snapshots, clock, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    clock[0] += 120_000
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    series = wb.locked_candidate_series(episode["episode_id"])
+    assert series["schema"] == "locked_candidate_series@1.0.0"
+    assert series["llm_call_count"] == 0 and series["execution_allowed"] is False
+    points = series["points"]
+    assert len(points) == 2 and points[0]["point_id"] == episode["t0_baseline_point_id"]
+    assert [p["space_gate_state"] for p in points] == ["STRUCTURE_ELIGIBLE", "STRUCTURE_BLOCKED"]
+    for p in points:
+        assert isinstance(p["short_distance_pct"], float) and isinstance(p["spot_usd"], float)
+    assert points[0]["visible_credit_btc"] == pytest.approx(snapshot["economics"]["visible_credit_btc"])
+    # Retained points are immutable: a second read, even after a restart, does not touch point files.
+    wb.locked_candidates.iter_points = lambda *_: pytest.fail("cached point re-read")
+    assert wb.locked_candidate_series(episode["episode_id"])["points"] == points
+    restarted = module.AstraWorkbench(wb.config, clock_ms=lambda: clock[0])
+    restarted.locked_candidates.iter_points = lambda *_: pytest.fail("cache not persisted")
+    assert restarted.locked_candidate_series(episode["episode_id"])["points"] == points
+
+
+def test_series_skips_a_tampered_point_instead_of_showing_it(tmp_path):
+    import gzip
+    wb, snapshots, clock, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    clock[0] += 120_000
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    latest = wb.locked_candidates.episode_observations(episode["episode_id"])["observations"][-1]["point_id"]
+    path = wb.locked_candidates._point_path(latest)
+    stored = json.loads(gzip.decompress(path.read_bytes()))
+    stored.setdefault("patch", {}).setdefault("set", {})["/recorded_at_ms"] = 1
+    if "patch" not in stored or stored.get("schema") is None:
+        stored["recorded_at_ms"] = 1
+    path.write_bytes(gzip.compress(json.dumps(stored).encode()))
+    # Metrics already derived from the authentic content (keyed by its hash) stay as recorded.
+    assert len(wb.locked_candidate_series(episode["episode_id"])["points"]) == 2
+    # Rebuilt from disk, the tampered point fails its hash check and is left out, not shown.
+    wb._series_cache = {}
+    wb._series_cache_path().unlink()
+    series = wb.locked_candidate_series(episode["episode_id"])
+    assert [p["point_id"] for p in series["points"]] == [episode["t0_baseline_point_id"]]
+    assert series["unreadable_points"] == 1
+
+
+def test_series_http_get_is_read_only_and_rejects_bad_ids(tmp_path):
+    wb, _, _, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    wb.quote_capture = lambda *a, **k: pytest.fail("GET capture")
+    before = {p: p.read_bytes() for p in wb.locked_candidates.root.rglob("*") if p.is_file()}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), module.make_handler(wb))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/api/workbench/locked-candidates"
+    try:
+        with urlopen(base + "/" + episode["episode_id"] + "/series") as response:
+            body = json.load(response)
+        assert len(body["points"]) == 1 and body["episode"]["episode_id"] == episode["episode_id"]
+        with pytest.raises(HTTPError) as failure:
+            urlopen(base + "/not-an-id/series")
+        assert failure.value.code == 400
+        assert before == {p: p.read_bytes() for p in wb.locked_candidates.root.rglob("*") if p.is_file()}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
+def test_sampling_warms_series_metrics_without_rereading_points(tmp_path):
+    wb, snapshots, clock, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    clock[0] += 120_000
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    observed = wb.locked_candidates.episode_observations(episode["episode_id"])["observations"]
+    latest = [row["point_id"] for row in observed if row.get("kind") == "point"][-1]
+    assert latest in wb._series_metrics_cache()

@@ -664,3 +664,25 @@ def test_missing_mu_with_closed_space_gate_names_only_the_space_gate(tmp_path):
     view = wb.refresh(now_ms=T)
     for item in view["candidates"]:
         assert item["review_gate"] == {"enabled": False, "reasons": ["structure_gate_not_eligible"]}
+
+
+def test_page_projection_keeps_what_the_page_draws_and_never_mutates_the_cache(tmp_path):
+    from copy import deepcopy
+    from tools import astra_workbench_reading_v1 as reading
+    wb, snapshots = make_workbench(tmp_path, api_key=None)
+    write_fmz(snapshots, native_gate())
+    wb.refresh(now_ms=T)
+    before = deepcopy(wb._current_view)
+    full = wb.cached_view(reading_only=True)
+    page = reading.workbench_page(full)
+    assert wb._current_view == before
+    assert page["display_projection"] == "workbench_page@1.0.0"
+    assert len(json.dumps(page, ensure_ascii=False)) < len(json.dumps(full, ensure_ascii=False))
+    for item in page["candidates"]:
+        assert {"side", "snapshot", "review_gate", "observation_review", "lock_availability", "review_display"} <= set(item)
+        assert "wpem_evidence" not in item and "data_identity" not in item["snapshot"]
+        assert {"contract", "economics", "liability", "market", "fee", "risk", "fact_context"} <= set(item["snapshot"])
+    for product in page["data_health"]["products"].values():
+        assert set(product["current"][0]) <= {"usage_decision", "observation_end_ms", "data_state"} if product["current"] else True
+    assert "last_result" not in page["manual_review_state"] or set(page["manual_review_state"]["last_result"]) == {"status"}
+    assert set(page["btc_map"]) <= {"current_price_usd", "background", "reference_pool"}
