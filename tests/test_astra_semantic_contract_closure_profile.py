@@ -18,7 +18,7 @@ def test_new_candidate_profile_applies_to_both_call_modes(research_only):
                                    wpem_evidence=evidence)
     wire = llm._strip_local_request_fields(request)
     assert request['_local_review_input']['schema'] == 'review_input@2.6.9'
-    assert request['_local_prompt_version'] == 'evidence_synthesis_prompt@2.2-candidate'
+    assert request['_local_prompt_version'] == 'evidence_synthesis_prompt@2.3-candidate'
     assert wire['model'] == 'deepseek-flash'
     assert wire['thinking'] == {'type': 'enabled'}
     assert wire['reasoning_effort'] == 'max'

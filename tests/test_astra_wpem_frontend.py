@@ -560,7 +560,7 @@ def test_version_token_contract_and_no_new_post_surface():
     assert "separate from trading quote TTL" in version["wpem_frontend_contract"]
     assert "never a newer snapshot" in version["wpem_frontend_contract"]
     assert version["wpem_request_contract_identity"]["input"] == "review_input@2.6.9"
-    assert version["wpem_request_contract_identity"]["prompt"] == "evidence_synthesis_prompt@2.2-candidate"
+    assert version["wpem_request_contract_identity"]["prompt"] == "evidence_synthesis_prompt@2.3-candidate"
     assert f'app.js?v={version["frontend_cache_token"]}' in index
     assert app.count('method: "POST"') == 1
 

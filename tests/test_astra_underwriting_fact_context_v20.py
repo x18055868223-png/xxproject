@@ -551,3 +551,13 @@ def test_synthetic_preview_context_is_explicit_and_never_current():
     assert facts["volume_price"]["tmvf_24h"]["core"]["price"] == 100000.0
     assert facts["volume_price"]["micro_flow"]["slow_12h"]["coverage_hours"] == 11.75
     assert facts["volume_price"]["funding"]["tmvf_48h"]["funding_interval_hours"] == 8
+
+
+def test_m_die_path_efficiency_components_are_kept():
+    row = rich_fmz_row()
+    row["factor_snapshot"]["m_die"] = {"direction": "DOWN", "m_die": -0.69, "score": 0.69, "level": "strong",
+                                       "move_shape": "clean", "window": "15m", "n_bars": 15,
+                                       "components": {"path_efficiency": {"score": 0.8, "raw": {"efficiency": 0.72}}}}
+    m = f.from_evaluation_snapshot(row, T, source_hash="9" * 64)["market_facts"]["m_die"]
+    assert m["components"]["path_efficiency"]["raw"]["efficiency"] == 0.72
+    assert m["window"] == "15m" and m["move_shape"] == "clean"

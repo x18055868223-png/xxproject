@@ -471,7 +471,10 @@ def _market_facts(factors: Mapping[str, Any], record: Mapping[str, Any],
             "reason_codes")),
         "strategy_recommendation": _strategy_context(factors.get("strategy_recommendation")),
         "m_die": _fields(factors.get("m_die"), (
-            "state", "score", "value", "m_die", "direction", "reason_codes")),
+            "state", "score", "value", "m_die", "direction", "reason_codes",
+            # 15m displacement / path efficiency / persistence behind the score
+            "level", "move_shape", "label_cn", "window", "n_bars", "last_closed_bar_time",
+            "components")),
         "conflicts": _conflicts(factors, gate_gap),
         "source_trace": _source_trace(record, decision, runtime, valuation_ts_ms),
     }

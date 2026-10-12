@@ -43,7 +43,7 @@ def test_current_contract_only_sends_frozen_evidence_and_demands_exact_single_js
     frozen = request['_local_review_input']
     user_prompt = request['messages'][1]['content']
     assert frozen['schema'] == 'review_input@2.6.9'
-    assert request['_local_prompt_version'] == 'evidence_synthesis_prompt@2.2-candidate'
+    assert request['_local_prompt_version'] == 'evidence_synthesis_prompt@2.3-candidate'
     assert json.loads(user_prompt.split('\n本次证据：', 1)[1]) == frozen['evidence_input']
     assert 'HTTP response_format是传输配置，不是回答字段' in user_prompt
     assert request['response_format'] == {'type': 'json_object'}

@@ -151,3 +151,12 @@ def test_native_check_tolerates_fields_added_to_the_projection_later():
     assert native._frozen_matches(frozen, {"space_context": {"gex_info": {"total_net_gex": 1.0, "atm_iv": 29.0}}})
     assert not native._frozen_matches(frozen, {"space_context": {"gex_info": {"total_net_gex": 2.0}}})
     assert not native._frozen_matches(frozen, {"space_context": {}})
+
+
+def test_nearness_in_percent_against_expected_move():
+    rel = units()["options.vol"]["relations"]
+    assert rel["breakeven_distance_pct_outside_positive"] == pytest.approx((SPOT - 83249.21) / SPOT * 100)
+    product._validate_topic_direct_refs("短腿距现价0.4%，在到期前预期波动1.7%以内。", ["options.vol"])
+    with pytest.raises(legacy.ReviewValidationError):
+        product._validate_topic_direct_refs("短腿在预期波动以内。", ["contract"])
+    product._validate_financial_execution_text("盈亏平衡距现价约0.9%，仍在预期波动以内。", ["options.vol"])

@@ -28,7 +28,7 @@ EVIDENCE_SYNTHESIS_PROMPT_VERSION_265 = "evidence_synthesis_prompt@1.0.2"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_266 = "evidence_synthesis_prompt@1.0.3"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_267 = "evidence_synthesis_prompt@1.0.4"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_268 = "evidence_synthesis_prompt@1.0.5"
-EVIDENCE_SYNTHESIS_PROMPT_VERSION = "evidence_synthesis_prompt@2.2-candidate"
+EVIDENCE_SYNTHESIS_PROMPT_VERSION = "evidence_synthesis_prompt@2.3-candidate"
 PROVIDER_CONFIG_VERSION = "wpem_json_delivery@1.0.1"
 ROUTING_SCHEMA = "evidence_routing@1.0.0"
 REVIEW_INPUT_SCHEMA = "review_input@2.5.2"
@@ -1791,6 +1791,7 @@ def _options_units(snapshot: Mapping[str, Any], contract: Mapping[str, Any], *, 
         if breakevens and sigma_pct > 0:
             be = float(breakevens[0])
             be_pct = (spot_f - be) / spot_f * 100.0 if side == "put" else (be - spot_f) / spot_f * 100.0
+            relations["breakeven_distance_pct_outside_positive"] = be_pct
             relations["breakeven_distance_in_sigma"] = be_pct / sigma_pct
         width = _finite(liability.get("btc_reference_scale_at_spot"))
         credit = _finite(credit_btc)
@@ -3324,7 +3325,7 @@ def _validate_topic_direct_refs(text: str, refs: list[str]) -> None:
         (("报价", "权利金", "保费"), ("quote", "wpem.level", "wpem.fragments", "wpem.delta")),
         (("期权墙", "Gamma墙", "gamma墙", "支撑墙", "阻力墙", "近端墙", "最大痛点", "max pain", "做市商对冲", "对冲情景"),
          ("options.structure",)),
-        (("隐含波动", "ATM IV", "IV分位", "DVOL", "dvol", "标准差", "σ"), ("options.vol",)),
+        (("隐含波动", "预期波动", "ATM IV", "IV分位", "DVOL", "dvol", "标准差", "σ"), ("options.vol",)),
         (("PCR", "看跌看涨比", "巨鲸", "大宗成交"), ("options.flow",)),
     )
     for words, required_refs in topics:
@@ -3444,9 +3445,9 @@ def _validate_financial_execution_text(text: str, refs: list[str] = ()) -> None:
     curve_text = text
     if "options.vol" in refs:
         # 'breakeven is ~0.5 sigma away' restates the program relation, not the curve.
-        curve_text = "。".join(clause for clause in re.split(r"[。；;，,]", text)
-                              if not (_has_any(clause, ("盈亏平衡", "breakeven"))
-                                      and _has_any(clause, ("σ", "标准化", "标准差"))))
+        curve_text = "。".join(re.sub(r"盈亏平衡|breakeven", "", clause, flags=re.IGNORECASE)
+                              if _has_any(clause, ("σ", "标准化", "标准差", "预期波动")) else clause
+                              for clause in re.split(r"[。；;]", text))
     if _affirmative_phrase(curve_text, ("盈亏平衡", "赔付表", "赔付曲线", "payout", "breakeven", "保护腿上方趋于平坦")):
         raise legacy.ReviewValidationError("evidence point must not rewrite the deterministic payoff curve")
 
