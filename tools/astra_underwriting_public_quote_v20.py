@@ -22,7 +22,7 @@ else:
     import astra_underwriting_real_replay_v20 as fee_math
 
 BASE_URL = "https://www.deribit.com/api/v2"
-PUBLIC_PATHS = frozenset({"public/get_instrument", "public/get_order_book"})
+PUBLIC_PATHS = frozenset({"public/get_instrument", "public/get_order_book", "public/get_delivery_prices"})
 
 
 def public_transport(path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -35,6 +35,23 @@ def public_transport(path: str, params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict) or body.get("error") or not isinstance(body.get("result"), dict):
         raise ValueError(f"Deribit public {path} returned an invalid result")
     return body["result"]
+
+
+def delivery_price(expiry_ms: int, *, transport=public_transport, index_name: str = "btc_usd") -> dict[str, Any] | None:
+    """The exchange's published delivery (settlement) price for an expiry, or None if not yet published.
+
+    Deribit settles BTC options at 08:00 UTC against that day's delivery price.
+    """
+    from datetime import datetime, timezone
+    day = datetime.fromtimestamp(int(expiry_ms) / 1000, timezone.utc).strftime("%Y-%m-%d")
+    result = transport("public/get_delivery_prices", {"index_name": index_name, "count": 10})
+    for row in result.get("data") or []:
+        if isinstance(row, dict) and row.get("date") == day:
+            price = row.get("delivery_price")
+            if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
+                return {"date": day, "delivery_price_usd": float(price), "index_name": index_name,
+                        "source": "deribit public/get_delivery_prices"}
+    return None
 
 
 def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc: float,

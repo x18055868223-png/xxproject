@@ -176,6 +176,68 @@ def _read_json(path: str | Path, default: Mapping[str, Any] | None = None) -> di
     return dict(value) if isinstance(value, dict) else dict(default or {})
 
 
+FULL_RECEIPTS_KEPT = 6
+DAILY_SNAPSHOT_ROTATE_BYTES = 64 * 1024 * 1024
+DAILY_SNAPSHOT_KEEP_AFTER_ROTATE = 15
+
+
+def _compact_receipt(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Identity and outcome of an older receipt; its full body stays in review_state/."""
+    review = result.get("review") if isinstance(result.get("review"), Mapping) else {}
+    keep = ("schema", "status", "candidate_id", "snapshot_id", "side", "purpose", "idempotency_key",
+            "llm_call_count", "reason", "execution_allowed", "production_attach_allowed")
+    out = {key: result.get(key) for key in keep if key in result}
+    if review:
+        out["review"] = {key: review.get(key) for key in (
+            "status", "applicability", "reviewed_snapshot_id", "candidate_id", "response_protocol",
+            "requested_model", "response_model", "research_only") if key in review}
+    out["compacted"] = True
+    return out
+
+
+def _compact_review_history(review: dict[str, Any]) -> None:
+    """Keep full receipts for the newest few settled entries only."""
+    idem = review.get("idempotency")
+    if not isinstance(idem, dict):
+        return
+    settled = sorted((key for key, entry in idem.items()
+                      if isinstance(entry, Mapping) and isinstance(entry.get("result"), Mapping)
+                      and not entry["result"].get("compacted")),
+                     key=lambda key: int((idem[key] or {}).get("updated_at_ms") or 0))
+    for key in settled[:-FULL_RECEIPTS_KEPT]:
+        idem[key] = {**idem[key], "result": _compact_receipt(idem[key]["result"])}
+
+
+def _read_jsonl_tail(path: str | Path, limit: int) -> list[dict[str, Any]]:
+    """The last `limit` JSON lines without parsing the rest of a large file."""
+    path = Path(path)
+    if limit <= 0 or not path.exists():
+        return []
+    lines: list[bytes] = []
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        position, remainder = handle.tell(), b""
+        while position > 0 and len(lines) <= limit:
+            step = min(1 << 20, position)
+            position -= step
+            handle.seek(position)
+            chunk = handle.read(step) + remainder
+            parts = chunk.split(b"\n")
+            remainder = parts[0]
+            lines = [line for line in parts[1:] if line.strip()] + lines
+        if position == 0 and remainder.strip():
+            lines = [remainder] + lines
+    rows = []
+    for line in lines[-limit:]:
+        try:
+            value = json.loads(line.decode("utf-8-sig"))
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
 def _append_jsonl(path: str | Path, row: Mapping[str, Any]) -> None:
     store.append_jsonl(path, [dict(row)])
 
@@ -1585,9 +1647,14 @@ class AstraWorkbench:
                              "review_protocol": wpem_review.EVIDENCE_POINTS_RESPONSE_PROTOCOL})
             if config.chain_audit_enabled else None)
         self._ledger_cache: tuple[Any, dict[str, Any]] | None = None
+        self._state_cache: tuple[Any, dict[str, Any]] | None = None
+        self._state_cache_lock = threading.Lock()
         # Retained lock points are immutable, so their compact metrics are cached by point id.
         self._series_cache: dict[str, dict[str, Any]] | None = None
         self._series_baselines: dict[str, Any] = {}
+        # Settlement of expired locks: exchange delivery price, fetched in the background only.
+        self.delivery_price_fetch = public_quote.delivery_price
+        self._settlement_attempts: dict[str, int] = {}
         self._series_lock = threading.Lock()
         self._ledger_cache_lock = threading.Lock()
         self.data_engine = data_engine.DataEngine(config.state_dir / "data_engine")
@@ -1602,6 +1669,34 @@ class AstraWorkbench:
         self._background_stop = threading.Event()
         self._background_thread: threading.Thread | None = None
         self._reconcile_interrupted_review()
+        self._compact_state_once()
+
+    def _compact_state_once(self) -> None:
+        """Shrink receipts written before compaction existed; a no-op once compact."""
+        if not self.config.state_path.is_file():
+            return
+        review = self._read_state_cached().get("manual_review") or {}
+        full = sum(1 for entry in (review.get("idempotency") or {}).values()
+                   if isinstance(entry, Mapping) and isinstance(entry.get("result"), Mapping)
+                   and not entry["result"].get("compacted"))
+        if full > FULL_RECEIPTS_KEPT:
+            self._locked_state_update(lambda state: _compact_review_history(state.setdefault("manual_review", {})))
+
+    def _read_state_cached(self) -> dict[str, Any]:
+        """Parse the state file once per version for read-only callers; writers parse fresh."""
+        try:
+            stat = self.config.state_path.stat()
+            key: Any = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            key = None
+        with self._state_cache_lock:
+            if key is not None and self._state_cache is not None and self._state_cache[0] == key:
+                return self._state_cache[1]
+        state = self._load_state()
+        if key is not None:
+            with self._state_cache_lock:
+                self._state_cache = (key, state)
+        return state
 
     def _reconcile_interrupted_review(self) -> None:
         """On process start, expose a durable receipt without replaying an LLM call."""
@@ -2289,6 +2384,7 @@ class AstraWorkbench:
                 view["data_health"]["wpem_archive"] = self._wpem_archive.usage()
             self._remember_lockable(view, finished_at_ms)
             self._refresh_locked_candidates(view, finished_at_ms)
+            self._settle_expired_locks(finished_at_ms)
             view["locked_candidates"] = self.locked_candidate_list()
             if record_daily:
                 self._maybe_record_daily_snapshot(view, finished_at_ms)
@@ -2482,7 +2578,12 @@ class AstraWorkbench:
                 continue
             snapshot_id = snapshot["snapshot_id"]
             try:
-                if snapshot_id not in self._lockable_points:
+                if snapshot_id in self._lockable_points:
+                    # An unchanged market repeats the same snapshot id; keep it newest so the
+                    # bounded cache does not evict a point a lock is about to sample.
+                    with self._view_lock:
+                        self._lockable_points.touch(snapshot_id)
+                else:
                     packet = candidate_asof.build_packet(
                         snapshot, raw_payload=self._locked_payloads.get(snapshot_id),
                         source_receipts=candidate_asof.collect_source_receipts(snapshot, self.data_engine),
@@ -2673,6 +2774,7 @@ class AstraWorkbench:
             series.append({"step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
                            "point_id": row["point_id"], **metrics})
         return {"schema": locked_compare.SERIES_SCHEMA, "episode": index["episode"],
+                "settlement": self.locked_settlements().get(episode_id),
                 "points": series, "gaps": gaps, "thinned": len(points) < sum(1 for r in observations if r.get("kind") == "point"),
                 "unreadable_points": unreadable, "llm_call_count": 0, "execution_allowed": False}
 
@@ -2699,6 +2801,73 @@ class AstraWorkbench:
             self._save_series_cache(snapshot)
         except Exception:
             return  # the series endpoint computes it on demand instead
+
+    SETTLEMENT_SCHEMA = "locked_candidate_settlement@1.0.0"
+    SETTLEMENT_RETRY_MS = 10 * 60_000
+    SETTLEMENT_GIVE_UP_MS = 48 * 3_600_000
+
+    def _settlements_path(self) -> Path:
+        return self.config.state_dir / "locked_settlements.json"
+
+    def locked_settlements(self) -> dict[str, Any]:
+        loaded = _read_json(self._settlements_path(), {})
+        rows = loaded.get("episodes") if loaded.get("schema") == self.SETTLEMENT_SCHEMA else None
+        return dict(rows) if isinstance(rows, Mapping) else {}
+
+    def _settle_expired_locks(self, now_ms: int) -> None:
+        """After expiry: delivery price -> terminal payout -> t0 net credit minus payout. Never raises."""
+        try:
+            settled = self.locked_settlements()
+            pending = [e for e in self.locked_candidates.list()
+                       if e.get("status") == "expired" and e["episode_id"] not in settled
+                       and isinstance((e.get("contract") or {}).get("expiry_ms"), int)
+                       and now_ms >= e["contract"]["expiry_ms"] + 2 * 60_000]
+        except Exception:
+            return
+        changed = False
+        for episode in pending:
+            episode_id = episode["episode_id"]
+            if now_ms - self._settlement_attempts.get(episode_id, 0) < self.SETTLEMENT_RETRY_MS:
+                continue
+            self._settlement_attempts[episode_id] = now_ms
+            contract = episode["contract"]
+            row: dict[str, Any] = {"episode_id": episode_id, "expiry_ms": contract["expiry_ms"], "settled_at_ms": now_ms,
+                                   "actual_trade_pnl_recorded": False, "llm_call_count": 0}
+            try:
+                delivery = self.delivery_price_fetch(contract["expiry_ms"])
+            except Exception as exc:
+                delivery, row["fetch_error"] = None, type(exc).__name__
+            if delivery is None:
+                if now_ms - contract["expiry_ms"] < self.SETTLEMENT_GIVE_UP_MS:
+                    continue  # not published yet; retry later
+                row.update(status="delivery_price_unavailable")
+            else:
+                quantity = float(contract.get("quantity_btc") or 1.0)
+                payout = underwriting_core.inverse_spread_payout(contract["side"], contract["short_strike_usd"],
+                                                          contract["long_strike_usd"], delivery["delivery_price_usd"], quantity)
+                entry = None
+                found = next(self.locked_candidates.iter_points([episode["t0_baseline_point_id"]]), (None, None, None))
+                if found[1] is not None:
+                    snapshot = locked_compare._point_snapshot(found[1])
+                    entry = locked_compare._number(((snapshot.get("economics") or {}).get("net_credit_after_entry_fee_btc")))
+                row.update(status="settled", delivery=delivery, payout_btc=payout,
+                           entry_after_fee_btc=entry,
+                           settlement_result_btc=None if entry is None else entry - payout,
+                           settlement_result_usd=None if entry is None else (entry - payout) * delivery["delivery_price_usd"],
+                           meaning_cn="按交易所交割价计算的到期静态结果：锁定时扣入场费后信用减去到期赔付（币本位）；交割费按 0；不是实际成交记录。")
+            settled[episode_id] = row
+            changed = True
+            if self.chain_audit is not None:
+                self.chain_audit.event("lock_settled", now_ms, {k: v for k, v in row.items() if v is not None})
+        if changed:
+            try:
+                path = self._settlements_path()
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps({"schema": self.SETTLEMENT_SCHEMA, "episodes": settled},
+                                          ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                os.replace(tmp, path)
+            except OSError:
+                pass
 
     def _series_cache_path(self) -> Path:
         return self.config.state_dir / "locked_series_cache.json"
@@ -2753,6 +2922,7 @@ class AstraWorkbench:
         else:
             result = cached[1]
         result = deepcopy(result)
+        result["settlement"] = self.locked_settlements().get(episode_id)
         expiry = result.get("fixed_contract", {}).get("expiry_ms")
         if isinstance(expiry, int):
             result["overview"]["remaining_to_expiry_ms"] = max(0, expiry - self.clock_ms())
@@ -3082,18 +3252,40 @@ class AstraWorkbench:
             daily["last_snapshot_id"] = row["snapshot_id"]
 
         self._locked_state_update(update)
+        self._rotate_daily_snapshots()
 
     def recent_transitions(self, *, limit: int = 30) -> list[dict[str, Any]]:
         rows = _read_jsonl(self.config.transitions_path)
         return rows[-max(0, int(limit)):]
 
     def recent_daily_snapshots(self, *, limit: int = DEFAULT_DAILY_LIMIT) -> list[dict[str, Any]]:
-        rows = _read_jsonl(self.config.daily_snapshots_path)
-        return rows[-max(0, int(limit)):]
+        return _read_jsonl_tail(self.config.daily_snapshots_path, max(0, int(limit)))
+
+    def _rotate_daily_snapshots(self) -> None:
+        """Move older daily snapshots to a gzip archive once the live file grows large."""
+        path = self.config.daily_snapshots_path
+        try:
+            if path.stat().st_size <= DAILY_SNAPSHOT_ROTATE_BYTES:
+                return
+            keep = _read_jsonl_tail(path, DAILY_SNAPSHOT_KEEP_AFTER_ROTATE)
+            archive = path.with_name(f"daily_snapshots-archive-{self.clock_ms()}.jsonl.gz")
+            with path.open("rb") as source, gzip.open(archive, "wb", compresslevel=6) as target:
+                while True:
+                    block = source.read(1 << 20)
+                    if not block:
+                        break
+                    target.write(block)
+            tmp = path.with_suffix(".tmp")
+            with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+                for row in keep:
+                    handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+            os.replace(tmp, path)
+        except OSError:
+            return
 
     def manual_review_state(self, now_ms: int | None = None) -> dict[str, Any]:
         now = self.clock_ms() if now_ms is None else int(now_ms)
-        state = self._load_state()
+        state = self._read_state_cached()
         review = state.get("manual_review") if isinstance(state.get("manual_review"), Mapping) else {}
         last_started = int(review.get("last_started_ts_ms") or 0)
         cooldown_until = max(0, last_started + self.config.review_cooldown_ms)
@@ -3106,6 +3298,7 @@ class AstraWorkbench:
             # It never replaces the failed attempt or applies to a new snapshot.
             successes = [row for row in (review.get("idempotency") or {}).values()
                          if isinstance(row, Mapping) and isinstance(row.get("result"), Mapping)
+                         and not row["result"].get("compacted")
                          and row["result"].get("status") in {"OK", "RESEARCH_OK", "attached"}]
             if successes:
                 saved = max(successes, key=lambda row: int(row.get("updated_at_ms") or 0))
@@ -3124,12 +3317,14 @@ class AstraWorkbench:
         }
 
     def _manual_review_receipt_history(self) -> list[dict[str, Any]]:
-        state = self._load_state()
+        state = self._read_state_cached()
         review = state.get("manual_review") if isinstance(state.get("manual_review"), Mapping) else {}
         history: list[dict[str, Any]] = []
         for key, entry in (review.get("idempotency") or {}).items():
             if not isinstance(entry, Mapping) or not isinstance(entry.get("result"), Mapping):
                 continue
+            if entry["result"].get("compacted"):
+                continue  # outcome only; the full receipt is in review_state/
             row = dict(entry)  # freshly parsed state; shallow copy is enough
             row["idempotency_key"] = key
             history.append(row)
@@ -3483,6 +3678,7 @@ class AstraWorkbench:
                          "candidate_id": candidate_id or result.get("candidate_id"),
                          "purpose": purpose or result.get("purpose") or REVIEW_PURPOSE,
                          "updated_at_ms": self.clock_ms()}
+            _compact_review_history(review)
             if len(idem) > 200:
                 for old_key in sorted(idem, key=lambda k: int((idem[k] or {}).get("updated_at_ms") or 0))[:-200]:
                     idem.pop(old_key, None)
@@ -3526,6 +3722,7 @@ class AstraWorkbench:
                 "purpose": result.get("purpose") or REVIEW_PURPOSE,
                 "updated_at_ms": now_ms,
             }
+            _compact_review_history(review)
 
         self._locked_state_update(update)
 

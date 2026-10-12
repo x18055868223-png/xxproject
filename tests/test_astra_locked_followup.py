@@ -342,3 +342,57 @@ def test_sampling_warms_series_metrics_without_rereading_points(tmp_path):
     observed = wb.locked_candidates.episode_observations(episode["episode_id"])["observations"]
     latest = [row["point_id"] for row in observed if row.get("kind") == "point"][-1]
     assert latest in wb._series_metrics_cache()
+
+
+def test_unchanged_snapshot_is_not_evicted_before_the_lock_samples_it(tmp_path):
+    wb, _, clock, snapshot = setup(tmp_path)
+    lock(wb, snapshot)
+    # The locked snapshot is the oldest cached point; fill the bounded cache behind it.
+    for key in [k for k in wb._lockable_points if k != snapshot["snapshot_id"]]:
+        del wb._lockable_points[key]
+    for i in range(11):
+        wb._lockable_points[f"filler-{i}"] = {"n": i}
+    assert next(iter(wb._lockable_points)) == snapshot["snapshot_id"]
+    # The market did not move: the same snapshot is shown again, then a new point arrives.
+    wb._remember_lockable({"candidates": [dict(wb._current_view["candidates"][0])],
+                           "space_gate": wb._current_view["space_gate"]}, clock[0])
+    wb._lockable_points["newer"] = {"n": 99}
+    assert snapshot["snapshot_id"] in wb._lockable_points
+
+
+def _expire(wb, clock, minutes_after=5):
+    clock[0] = EXPIRY + minutes_after * 60_000
+    wb.refresh(now_ms=clock[0], record_daily=False)
+
+
+def test_expired_lock_is_settled_from_the_delivery_price(tmp_path):
+    from tools import astra_commercial_math_v17 as math
+    wb, snapshots, clock, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    contract = snapshot["contract"]
+    price = contract["short_strike_usd"] - 500 if contract["side"] == "put" else contract["short_strike_usd"] + 500
+    wb.delivery_price_fetch = lambda expiry_ms: {"date": "d", "delivery_price_usd": float(price), "source": "test"}
+    _expire(wb, clock)
+    row = wb.locked_settlements()[episode["episode_id"]]
+    payout = math.inverse_spread_payout(contract["side"], contract["short_strike_usd"], contract["long_strike_usd"],
+                                        price, contract["quantity_btc"])
+    assert row["status"] == "settled" and row["payout_btc"] == pytest.approx(payout)
+    assert row["settlement_result_btc"] == pytest.approx(snapshot["economics"]["net_credit_after_entry_fee_btc"] - payout)
+    assert row["actual_trade_pnl_recorded"] is False
+    assert wb.locked_candidate_series(episode["episode_id"])["settlement"] == row
+    assert wb.locked_candidate_detail(episode["episode_id"], include_raw=False)["settlement"] == row
+
+
+def test_settlement_waits_for_publication_then_gives_up(tmp_path):
+    wb, snapshots, clock, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    calls = []
+    wb.delivery_price_fetch = lambda expiry_ms: calls.append(expiry_ms) or None
+    _expire(wb, clock)
+    assert episode["episode_id"] not in wb.locked_settlements() and len(calls) == 1
+    wb._settle_expired_locks(clock[0] + 60_000)            # within the retry interval: no new request
+    assert len(calls) == 1
+    wb._settle_expired_locks(clock[0] + 11 * 60_000)
+    assert len(calls) == 2 and episode["episode_id"] not in wb.locked_settlements()
+    wb._settle_expired_locks(EXPIRY + 49 * 3_600_000)
+    assert wb.locked_settlements()[episode["episode_id"]]["status"] == "delivery_price_unavailable"

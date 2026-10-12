@@ -686,3 +686,25 @@ def test_page_projection_keeps_what_the_page_draws_and_never_mutates_the_cache(t
         assert set(product["current"][0]) <= {"usage_decision", "observation_end_ms", "data_state"} if product["current"] else True
     assert "last_result" not in page["manual_review_state"] or set(page["manual_review_state"]["last_result"]) == {"status"}
     assert set(page["btc_map"]) <= {"current_price_usd", "background", "reference_pool"}
+
+
+def test_production_review_runs_end_to_end_without_mu_when_the_space_gate_is_open(tmp_path):
+    calls = []
+
+    def transport(api_key, model, request, timeout, endpoint=None):
+        calls.append(request)
+        packet = json.loads(request["messages"][1]["content"].split("冻结候选：", 1)[1])
+        snapshot = wb.ledger.state()["snapshots"][packet["snapshot_id"]]["snapshot"]
+        return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(good_review(snapshot), ensure_ascii=False)}}]}
+
+    wb, snapshots = make_workbench(tmp_path, transport=transport)
+    write_fmz(snapshots, native_gate())
+    view = wb.refresh(now_ms=T)
+    item = view["candidates"][0]
+    assert item["snapshot"]["economics"]["mu_ref_btc"] is None
+    assert item["review_gate"] == {"enabled": True, "reasons": []}
+    result = wb.review_candidate(item["snapshot"]["candidate_id"], "prod-1", authorization="Bearer secret")
+    assert len(calls) == 1
+    assert result["purpose"] == "review" and result["status"] not in {"rejected", "ERROR"}
+    assert result["review"]["status"] == result["status"]
+    assert result.get("execution_allowed") in (None, False)

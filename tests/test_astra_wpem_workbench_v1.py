@@ -242,3 +242,20 @@ def test_full_wpem_archive_is_visible_in_data_health_not_silent(tmp_path):
     assert archive['status'] == 'stopped'
     assert archive['reason'] == 'research_byte_budget_exhausted'
     assert isinstance(archive['used_bytes'], int)
+
+
+def test_production_review_without_mu_runs_and_displays_as_current(tmp_path):
+    calls=[]
+    def transport(key,model,request,timeout,endpoint=None):
+        calls.append(request)
+        return {'model':model,'choices':[{'finish_reason':'stop','message':{'content':json.dumps(points())}}]}
+    wb=wpem_workbench(tmp_path,transport=transport)
+    item=wb.refresh(now_ms=T)['candidates'][0]
+    assert item['snapshot']['economics']['mu_ref_btc'] is None
+    assert item['review_gate']['enabled'], item['review_gate']
+    result=wb.review_candidate(item['snapshot']['candidate_id'],'prod-no-mu',authorization='Bearer secret')
+    assert result['status']=='OK' and result['purpose']=='review' and len(calls)==1
+    shown=[c for c in wb.cached_view(reading_only=True)['candidates'] if c['side']==item['side']][0]
+    current=shown['review_display']['current']
+    assert current is not None, shown['review_display'].get('reason_cn')
+    assert (current.get('review') or current)['status']=='OK'

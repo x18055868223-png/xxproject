@@ -43,6 +43,11 @@ class CompressedPoints(MutableMapping):
     def __delitem__(self, key):
         del self.entries[key]
 
+    def touch(self, key):
+        """Mark an existing entry as most recently used, so eviction takes older ones first."""
+        if key in self.entries:
+            self.entries[key] = self.entries.pop(key)
+
     def __iter__(self):
         return iter(self.entries)
 
