@@ -17,6 +17,17 @@ SCHEMA = "wpem_native_qualification@1.1.0-shadow"
 MIN_NATIVE_PRODUCER_VERSION = (2, 0, 2)
 
 
+def _frozen_matches(frozen: Any, projected: Any) -> bool:
+    """Frozen facts must equal today's projection on every field they hold.
+
+    Fields the projection added later (e.g. gexmonitor enrichment) are not a
+    content mismatch for facts frozen before them; changed values still are.
+    """
+    if isinstance(frozen, Mapping) and isinstance(projected, Mapping):
+        return all(key in projected and _frozen_matches(value, projected[key]) for key, value in frozen.items())
+    return frozen == projected
+
+
 def native_producer_supported(value) -> bool:
     version = facts.fmz_version_tuple(value)
     return (version is not None and facts.fmz_producer_supported(value)
@@ -152,7 +163,7 @@ def qualify_native(packet: Mapping[str, Any], native_raw: bytes | None = None,
             gaps.append("NATIVE_FACT_SOURCE_HASH_MISMATCH")
         try:
             projected = facts.from_evaluation_snapshot(producer, cutoff, source_hash=raw_hash)
-            if any(fact.get(key) != projected.get(key) for key in (
+            if any(not _frozen_matches(fact.get(key), projected.get(key)) for key in (
                     "snapshot_ts_ms", "producer_schema_version", "underlying", "strategy_version",
                     "runtime_mode", "current_price_usd", "current_price_source",
                     "price_observed_ms", "market_facts")):

@@ -106,3 +106,48 @@ def test_breakeven_distance_from_options_vol_is_not_a_rewritten_curve():
     product._validate_financial_execution_text("盈亏平衡价按隐含波动约0.4个σ。", ["options.vol"])
     with pytest.raises(legacy.ReviewValidationError):
         product._validate_financial_execution_text("盈亏平衡价在短腿下方。", ["contract"])
+
+
+@pytest.mark.parametrize("text, refs", [
+    # Independent review counterexamples: real claims hidden behind a negation cue.
+    ("短腿并非安全：隐含波动下仅0.2个σ。", ["contract"]),
+    ("下跌风险并非只来自巨鲸卖压与PCR偏高。", ["contract"]),
+    ("风险不是来自资金费而是近端期权墙压在短腿上方。", ["contract"]),
+    # options.* refs must not satisfy unrelated topics by substring.
+    ("CVD持续流出，主动卖压加大。", ["options.flow"]),
+    ("SRD偏斜转向Put。", ["options.vol"]),
+])
+def test_grounding_gate_counterexamples_still_reject(text, refs):
+    with pytest.raises(legacy.ReviewValidationError):
+        product._validate_topic_direct_refs(text, refs)
+
+
+def test_breakeven_exemption_only_for_sigma_distance():
+    with pytest.raises(legacy.ReviewValidationError):
+        product._validate_financial_execution_text("盈亏平衡价在保护腿下方。", ["options.vol"])
+    with pytest.raises(legacy.ReviewValidationError):
+        product._validate_financial_execution_text("盈亏平衡价约0.5个σ，赔付曲线在保护腿下方趋平。", ["options.vol"])
+
+
+def test_expired_horizon_and_unknown_side_do_not_crash_or_invent():
+    expired = {u["ref"]: u for u in product._options_units(
+        SNAPSHOT, CONTRACT, horizon_hours=-3.0, spot=SPOT, credit_btc=0.0034)}
+    assert "short_strike_distance_in_sigma" not in expired["options.vol"]["relations"]
+    call = dict(CONTRACT, side="call", short_strike_usd=84500.0, long_strike_usd=86500.0)
+    snap = {**SNAPSHOT, "fact_context": {"market_facts": {"space_context": {"gex_info": dict(
+        GEX, hedging_flows={"scenarios": [{"price_change_pct": 0.0, "hedging_usd": 1.0},
+                                          {"price_change_pct": 1.0, "hedging_usd": -1.0}]})}}}}
+    units_call = {u["ref"]: u for u in product._options_units(snap, call, horizon_hours=10, spot=SPOT, credit_btc=0.001)}
+    pcts = [r["price_change_pct"] for r in units_call["options.structure"]["facts"]["dealer_hedging_adverse_scenarios"]["scenarios"]]
+    assert pcts == [1.0]
+    odd = dict(CONTRACT, side="straddle")
+    assert all("dealer_hedging_adverse_scenarios" not in (u.get("facts") or {})
+               for u in product._options_units(SNAPSHOT, odd, horizon_hours=10, spot=SPOT, credit_btc=0.001))
+
+
+def test_native_check_tolerates_fields_added_to_the_projection_later():
+    from tools import astra_wpem_native_v1 as native
+    frozen = {"space_context": {"gex_info": {"total_net_gex": 1.0}}}
+    assert native._frozen_matches(frozen, {"space_context": {"gex_info": {"total_net_gex": 1.0, "atm_iv": 29.0}}})
+    assert not native._frozen_matches(frozen, {"space_context": {"gex_info": {"total_net_gex": 2.0}}})
+    assert not native._frozen_matches(frozen, {"space_context": {}})

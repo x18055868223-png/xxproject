@@ -124,7 +124,7 @@ def test_registry_contains_required_v23_products_and_planned_sources(tmp_path):
     assert e.products["deribit.btc.vertical.two_leg_book.v1"]["usage_policies"]["candidate_quote"]["ttl_ms"] == 5000
     assert e.products["deribit.btc.option.order_book.v1"]["usage_policies"]["fetch"]["ttl_ms"] == 5000
     assert e.products["deribit.btc.option.universe.v1"]["usage_policies"]["fetch"]["ttl_ms"] == 300000
-    assert e.products["fmz.spacegate.current.v1"]["usage_policies"]["default"]["ttl_ms"] == 300000
+    assert e.products["fmz.spacegate.current.v1"]["usage_policies"]["default"]["ttl_ms"] == 600000
     assert "TTL values" in e.registry["ttl_policy_note"]
 
 
@@ -423,7 +423,7 @@ def test_d20_old_health_green_expires(tmp_path):
         retrieved_at_ms=None,
         ingested_at_ms=T,
     )
-    health = e.health(T + 700_000)
+    health = e.health(T + 1_000_000)  # beyond the 900s health TTL
     product = health["products"]["fmz.spacegate.current.v1"]
     assert product["current"][0]["usage_decision"]["status"] == "STALE"
     assert product["status"] == "STALE"
@@ -561,4 +561,6 @@ def test_gex_and_fmz_freshness_matches_source_cadence():
     products = {p["product_id"]: p for p in registry["products"]}
     for pid in ("gex.raw.board.v1", "gex.effective.accepted.v1", "gex.pending.candidate.v1", "gex.netgamma.proxy.v1"):
         assert products[pid]["usage_policies"]["default"]["ttl_ms"] >= 7_200_000, pid
-    assert products["fmz.bridge.snapshots.v1"]["usage_policies"]["default"]["ttl_ms"] >= 600_000
+    for pid in ("fmz.bridge.snapshots.v1", "fmz.spacegate.current.v1"):
+        # Must outlast one ~327s export cycle, or facts flap to background_only.
+        assert products[pid]["usage_policies"]["default"]["ttl_ms"] >= 600_000, pid

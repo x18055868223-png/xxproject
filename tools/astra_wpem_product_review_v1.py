@@ -1746,10 +1746,10 @@ def _options_units(snapshot: Mapping[str, Any], contract: Mapping[str, Any], *, 
     flows = info.get("hedging_flows") if isinstance(info.get("hedging_flows"), Mapping) else {}
     scenarios = [row for row in flows.get("scenarios") or [] if isinstance(row, Mapping)
                  and _finite(row.get("price_change_pct")) is not None]
-    if scenarios and spot_f and short_f:
+    if scenarios and spot_f and short_f and side in {"put", "call"}:
         to_short_pct = (short_f - spot_f) / spot_f * 100.0
         adverse = [dict(row) for row in scenarios
-                   if (float(row["price_change_pct"]) < 0) == (side == "put")]
+                   if (float(row["price_change_pct"]) < 0 if side == "put" else float(row["price_change_pct"]) > 0)]
         structure["dealer_hedging_adverse_scenarios"] = {
             "scenarios": sorted(adverse, key=lambda r: abs(float(r["price_change_pct"]))),
             "move_to_short_strike_pct": to_short_pct,
@@ -1766,6 +1766,7 @@ def _options_units(snapshot: Mapping[str, Any], contract: Mapping[str, Any], *, 
         })
 
     horizon_h = _finite(horizon_hours)
+    horizon_h = horizon_h if horizon_h is not None and horizon_h > 0 else None
     iv = _horizon_atm_iv(info, expiry, horizon_h / 24.0 if horizon_h else None)
     vol: dict[str, Any] = {}
     relations: dict[str, Any] = {}
@@ -3269,28 +3270,50 @@ def _affirmative_phrase(text: str, phrases: tuple[str, ...]) -> str | None:
 
 
 def _ref_matches(refs: list[str], *needles: str) -> bool:
+    """Exact ref, or every ref under a needle that ends with '.' (e.g. 'map.kpf.')."""
     lowered = [ref.lower() for ref in refs]
-    return any(any(needle.lower() in ref for needle in needles) for ref in lowered)
+    return any(ref == needle.lower() or (needle.endswith(".") and ref.startswith(needle.lower()))
+               for needle in needles for ref in lowered)
 
 
-_CLASSIFICATION_NEGATION = re.compile(
-    r"(?:不是|并非|而非|不属于|不等于|不作为|不能(?:把|将)?[^。；;，,]{0,10}?(?:当作|视为|算作|作为))[^。；;，,]{0,16}")
+_CLASSIFICATION_CUE = re.compile(
+    r"不是|并非|而非|不属于|不等于|不作为|不能(?:把|将)?[^。；;，,：:]{0,10}?(?:当作|视为|算作|作为)")
+_CLASSIFICATION_STOP = re.compile(r"[。；;，,：:！？!?]|而是|但是|但|只是|只来自|来自")
+_CLASSIFIED_OBJECT = re.compile(r"(?:变化|改善|恶化|增加|减少|证据|确认|依据)(?:的证据|的依据)?$")
 
 
 def _drop_classification_negations(text: str) -> str:
     """'X不是补偿或费用变化' classifies X; it asserts nothing about fees.
-    Absence claims ('未出现大宗卖压') still need their own evidence."""
-    return _CLASSIFICATION_NEGATION.sub("", text)
+
+    Only the negated object list right after the cue is exempt, and only items
+    naming a change/evidence ('费用变化', '补偿改善的证据'). Absence claims
+    ('未出现大宗卖压'), attributions ('并非只来自巨鲸卖压') and anything after a
+    contrast or colon still need their own evidence.
+    """
+    out, pos = [], 0
+    for cue in _CLASSIFICATION_CUE.finditer(text):
+        if cue.start() < pos:
+            continue
+        stop = _CLASSIFICATION_STOP.search(text, cue.end())
+        end = stop.start() if stop else len(text)
+        items = re.split(r"(或|和|与|及|、)", text[cue.end():end])
+        kept = [item for item in items if not _CLASSIFIED_OBJECT.search(item.strip())]
+        out.append(text[pos:cue.end()] + "".join(kept))
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def _validate_topic_direct_refs(text: str, refs: list[str]) -> None:
     topics = (
         (("主动流", "方向流", "CVD"), ("flow",)),
         (("Funding", "funding", "资金费"), ("funding.current", "funding", "map.funding")),
-        (("Skew", "skew", "偏斜", "SRD", "srd"), ("skew", "options.vol")),
+        (("SRD", "srd"), ("skew",)),
+        (("Skew", "skew", "偏斜"), ("skew", "options.vol")),
         (("ETF", "etf"), ("map.etf",)),
+        (("OI", "open interest"), ("map.oi", "options.flow")),
         # Option walls/max pain and PCR are built from option open interest too.
-        (("OI", "open interest", "持仓"), ("map.oi", "options.structure", "options.flow")),
+        (("持仓",), ("map.oi", "options.structure", "options.flow")),
         (("CP", "链上成本", "成本样本"), ("map.cost",)),
         (("RPL", "已实现损益", "已实现盈亏", "已实现利润", "已实现盈利", "实现亏损", "实现损益"), ("map.realized",)),
         (("flip", "Flip", "翻转"), ("space.flip",)),
@@ -3418,10 +3441,13 @@ def _validate_financial_execution_text(text: str, refs: list[str] = ()) -> None:
             if not _execution_phrase_negated(text, index, phrase):
                 raise legacy.ReviewValidationError("evidence point rewrites a frozen quote as filled or booked")
             start = index + len(phrase)
-    curve_words = ("赔付表", "赔付曲线", "payout", "保护腿上方趋于平坦")
-    if "options.vol" not in refs:
-        curve_words += ("盈亏平衡", "breakeven")
-    if _affirmative_phrase(text, curve_words):
+    curve_text = text
+    if "options.vol" in refs:
+        # 'breakeven is ~0.5 sigma away' restates the program relation, not the curve.
+        curve_text = "。".join(clause for clause in re.split(r"[。；;，,]", text)
+                              if not (_has_any(clause, ("盈亏平衡", "breakeven"))
+                                      and _has_any(clause, ("σ", "标准化", "标准差"))))
+    if _affirmative_phrase(curve_text, ("盈亏平衡", "赔付表", "赔付曲线", "payout", "breakeven", "保护腿上方趋于平坦")):
         raise legacy.ReviewValidationError("evidence point must not rewrite the deterministic payoff curve")
 
 
