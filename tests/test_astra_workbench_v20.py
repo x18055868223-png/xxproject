@@ -212,7 +212,11 @@ def test_refresh_uses_native_space_gate_and_missing_mu_keeps_review_disabled(tmp
     for item in view["candidates"]:
         assert item["snapshot"]["economics"]["mu_ref_btc"] is None
         assert item["review_gate"]["enabled"] is False
-        assert "risk_reference_missing_or_unqualified" in item["review_gate"]["reasons"]
+        # mu is not a precondition: only the unconfigured review service closes this gate.
+        assert "risk_reference_missing_or_unqualified" not in item["review_gate"]["reasons"]
+        assert "m_ref_null" not in item["review_gate"]["reasons"]
+        assert "snapshot_not_reviewable" not in item["review_gate"]["reasons"]
+        assert item["review_gate"]["reasons"] == ["manual_review_service_not_configured"]
     assert view["llm_call_count"] == 0
 
 
@@ -641,3 +645,22 @@ def test_ledger_replay_is_cached_until_the_ledger_file_changes(tmp_path, monkeyp
     os.utime(wb.ledger.path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
     assert wb._ledger_state() == first and len(calls) == 2
     assert set(first["snapshots"]) == set(real()["snapshots"])
+
+
+def test_missing_mu_does_not_close_review_when_space_gate_is_open(tmp_path):
+    wb, snapshots = make_workbench(tmp_path)
+    write_fmz(snapshots, native_gate())
+    view = wb.refresh(now_ms=T)
+    for item in view["candidates"]:
+        assert item["snapshot"]["economics"]["mu_ref_btc"] is None
+        assert item["snapshot"]["status"] == "information_gap"
+        assert item["review_gate"] == {"enabled": True, "reasons": []}
+    assert view["llm_call_count"] == 0
+
+
+def test_missing_mu_with_closed_space_gate_names_only_the_space_gate(tmp_path):
+    wb, snapshots = make_workbench(tmp_path)
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED"))
+    view = wb.refresh(now_ms=T)
+    for item in view["candidates"]:
+        assert item["review_gate"] == {"enabled": False, "reasons": ["structure_gate_not_eligible"]}

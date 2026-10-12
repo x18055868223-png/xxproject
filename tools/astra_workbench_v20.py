@@ -2066,19 +2066,22 @@ class AstraWorkbench:
             return {"enabled": False, "reasons": sorted(set(reasons))}
         quote = ((snapshot.get("market") or {}).get("quote") or {})
         economics = snapshot.get("economics") if isinstance(snapshot.get("economics"), Mapping) else {}
-        risk = snapshot.get("risk") if isinstance(snapshot.get("risk"), Mapping) else {}
-        if snapshot.get("status") != "reviewable":
+        # mu_ref is no longer a precondition (2026-10-12): it has no rigorous
+        # producer, and a market-implied mu makes M_ref structurally negative.
+        # The fields stay in the contract as null; if a qualified mu ever
+        # arrives, a non-positive M_ref still closes the gate below.
+        mu_missing = economics.get("mu_ref_btc") is None
+        status = snapshot.get("status")
+        mu_only_gap = (status == "information_gap" and mu_missing
+                       and economics.get("net_credit_after_fee_btc") is not None)
+        if status != "reviewable" and not mu_only_gap:
             reasons.append("snapshot_not_reviewable")
         if quote.get("credit_btc") is None:
             reasons.append("quote_invalid_or_stale")
         if (snapshot.get("fee") or {}).get("amount_btc") is None:
             reasons.append("fee_missing_or_incomplete")
-        if risk.get("status") != "supported" or economics.get("mu_ref_btc") is None:
-            reasons.append("risk_reference_missing_or_unqualified")
         margin = economics.get("reference_margin_btc")
-        if margin is None:
-            reasons.append("m_ref_null")
-        else:
+        if not mu_missing and margin is not None:
             try:
                 if float(margin) <= 0:
                     reasons.append("m_ref_non_positive")

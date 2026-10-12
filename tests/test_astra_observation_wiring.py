@@ -72,7 +72,7 @@ def test_observation_post_researches_when_main_gate_is_financially_closed(tmp_pa
     candidate_id = item["snapshot"]["candidate_id"]
     assert item["review_gate"]["enabled"] is False
     assert "structure_gate_not_eligible" in item["review_gate"]["reasons"]
-    assert "risk_reference_missing_or_unqualified" in item["review_gate"]["reasons"]
+    assert "risk_reference_missing_or_unqualified" not in item["review_gate"]["reasons"]
     assert item["observation_review"] == {"enabled": True, "reasons": []}
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), fx.workbench.make_handler(wb))

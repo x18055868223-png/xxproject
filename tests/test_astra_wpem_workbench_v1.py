@@ -39,7 +39,9 @@ def test_refresh_produces_compact_two_question_attribution_without_llm_or_gate_c
     assert 'composition_inputs' not in item['wpem_evidence']
     assert 'source_bindings' not in item['wpem_evidence']
     assert wb.wpem_evidence(item['snapshot']['snapshot_id'])['composition_inputs']
-    assert item['review_gate']['enabled'] is False
+    # WPEM attribution never opens or closes the gate; since 2026-10-12 a missing mu is not a reason either.
+    assert not {'risk_reference_missing_or_unqualified','m_ref_null'} & set(item['review_gate']['reasons'])
+    assert not any(r.startswith('wpem') for r in item['review_gate']['reasons'])
     assert item['review_validity']['status']=='NOT_RUN'
     before=wb.ledger.state()
     wb.cached_view();wb.wpem_evidence(item['snapshot']['snapshot_id'])
