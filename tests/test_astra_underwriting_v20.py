@@ -198,7 +198,7 @@ def test_hand_supplied_current_fmz_fact_needs_btc_and_sha256_binding():
     with pytest.raises(ValueError, match="BTC identity and a sha256 source hash"):
         u.evaluate(payload)
     payload["fmz_fact_context"]["underlying"] = "BTC"
-    payload["fmz_fact_context"]["snapshot_ts_ms"] = T - 300_001
+    payload["fmz_fact_context"]["snapshot_ts_ms"] = T - u.MAX_FMZ_AGE_MS - 1
     with pytest.raises(ValueError, match="stale or not live read-only"):
         u.evaluate(payload)
     payload["fmz_fact_context"]["snapshot_ts_ms"] = T

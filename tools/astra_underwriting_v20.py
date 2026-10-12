@@ -28,7 +28,7 @@ FEE_COVERAGE = {"entry", "delivery", "early_exit", "slippage", "hedge"}
 REQUIRED_HOLD_COVERAGE = {"entry", "delivery"}
 MAX_BOOK_AGE_MS = 5_000
 MAX_BOOK_SKEW_MS = 2_000
-MAX_FMZ_AGE_MS = 300_000
+MAX_FMZ_AGE_MS = 600_000  # FMZ exports every ~300-330s; matches the fact layer
 
 
 def _hash(value: Any) -> str:

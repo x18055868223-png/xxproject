@@ -561,3 +561,8 @@ def test_m_die_path_efficiency_components_are_kept():
     m = f.from_evaluation_snapshot(row, T, source_hash="9" * 64)["market_facts"]["m_die"]
     assert m["components"]["path_efficiency"]["raw"]["efficiency"] == 0.72
     assert m["window"] == "15m" and m["move_shape"] == "clean"
+
+
+def test_underwriting_fact_age_matches_fact_layer_and_export_cadence():
+    # FMZ exports every ~300-330s; a stricter core limit drops candidates each cycle.
+    assert u.MAX_FMZ_AGE_MS == f.MAX_AGE_MS >= 600_000
