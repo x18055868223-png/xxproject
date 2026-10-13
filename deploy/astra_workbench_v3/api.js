@@ -4,7 +4,8 @@ const BASE = "/api/workbench";
 async function json(resp) {
   const text = await resp.text();
   let body = null;
-  try { body = text ? JSON.parse(text) : null; } catch { body = { code: "bad_json", message: text.slice(0, 200) }; }
+  // A proxy error page (HTML) is never shown as text; only its status is kept.
+  try { body = text ? JSON.parse(text) : null; } catch { body = { code: "bad_json", message: `服务器返回了非预期的内容（HTTP ${resp.status}）` }; }
   if (!resp.ok) {
     const err = new Error((body && (body.message || body.code)) || `HTTP ${resp.status}`);
     err.status = resp.status; err.body = body; throw err;

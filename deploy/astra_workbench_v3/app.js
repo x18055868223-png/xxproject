@@ -10,6 +10,14 @@ import { lockList, lockDetail } from "./locks.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
 const POLL_MS = 30_000;
+/**
+ * The public HTTPS entry reads data only with a workbench session, so the page
+ * asks for the token before it reads anything (no browser password dialog).
+ * The private listener and the local preview read without one (`?gate=1`
+ * previews the public behaviour there).
+ */
+const SESSION_GATED = !FIXTURE && (location.protocol === "https:" || new URLSearchParams(location.search).has("gate"));
+const needsLogin = () => SESSION_GATED && !state.session.authenticated;
 const state = {
   view: null, sides: {}, focus: "put", auditRef: null, auditPoint: null,
   session: { authenticated: false },
@@ -29,6 +37,7 @@ function signatureOf(view) {
 }
 
 async function load(force = false) {
+  if (needsLogin()) { renderBanners(); return; }
   while (force && state.busy) await new Promise((r) => setTimeout(r, 200));
   if (state.busy) return;
   state.busy = true;
@@ -45,9 +54,11 @@ async function load(force = false) {
     state.loadedAt = Date.now();
   } catch (err) {
     state.error = err;
+    if (SESSION_GATED && err.status === 401) { state.error = null; state.session = { authenticated: false }; renderSession(); }
   } finally {
     state.busy = false;
   }
+  if (needsLogin()) { renderBanners(); openLogin("会话已过期，请重新输入工作台令牌。"); return; }
   if (changed || state.error) render(); else { renderStrip(); renderBanners(); renderDecks(); }
   // The newest active lock opens by itself once; an open, active lock stays current with the page.
   const L = state.lock;
@@ -74,6 +85,7 @@ async function loadSession() {
   try { state.session = await api.session(); } catch { state.session = { authenticated: false }; }
   if (isNum(state.session.expires_at_ms) && state.session.expires_at_ms <= Date.now()) state.session = { authenticated: false };
   renderSession();
+  if (needsLogin()) renderBanners();
 }
 
 /** While a review runs anywhere, follow it through the small review-state endpoint. */
@@ -175,6 +187,12 @@ function renderBanners() {
   const v = state.view || {};
   state.notices = state.notices.filter((n) => n.until > Date.now());
   for (const n of state.notices) box.append(h("div", { class: "banner info" }, n.text));
+  if (needsLogin()) {
+    box.append(h("div", { class: "banner info gate" }, h("b", { text: "请先登录。" }),
+      " 公网入口需要工作台令牌，登录后才读取数据；令牌只用于换取会话。",
+      h("button", { class: "btn", type: "button", text: "输入令牌", onclick: () => openLogin("") })));
+    return;
+  }
   if (FIXTURE && !state.error) box.append(h("div", { class: "banner info" }, h("b", { text: "示例数据。" }),
     " 页面使用 2026-10-12 的真实冻结快照与已通过校验的模型回执拼成，用于检查版式；数值不代表当前市场。"));
   if (state.error) box.append(h("div", { class: "banner" }, h("b", { text: "读取失败。" }),
@@ -954,13 +972,30 @@ function renderSession() {
   btn.disabled = FIXTURE;
 }
 
-$("session-btn").addEventListener("click", async () => {
-  if (state.session.authenticated) { try { await api.logout(); } catch {} await loadSession(); renderDecks(); renderLocks(); return; }
-  $("login-msg").textContent = "";
-  $("login").showModal();
+function openLogin(message) {
+  $("login-msg").textContent = message;
+  if (!$("login").open) $("login").showModal();
   $("login-token").focus();
+}
+
+$("session-btn").addEventListener("click", async () => {
+  if (state.session.authenticated) {
+    try { await api.logout(); } catch {}
+    // On the public entry the data was read under this session; leave nothing behind on screen.
+    if (SESSION_GATED) { location.reload(); return; }
+    await loadSession(); renderDecks(); renderLocks(); return;
+  }
+  openLogin("");
 });
 $("login-cancel").addEventListener("click", () => $("login").close());
+
+function loginFailure(err) {
+  const code = err.body?.code;
+  if (err.status === 401 && (!code || code === "unauthorized" || code === "bad_json")) return "令牌不正确。";
+  if (err.status === 429) return `登录失败：${reasonCn("rate_limited")}`;
+  if (!err.status) return `登录失败：${reasonCn("network_error")}`;
+  return `登录失败：${reasonCn(code && code !== "bad_json" ? code : "unknown")}（HTTP ${err.status}）`;
+}
 $("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("login-token");
@@ -971,9 +1006,10 @@ $("login-form").addEventListener("submit", async (e) => {
     await api.login(token);
     $("login").close();
     await loadSession();
+    if (SESSION_GATED && !state.view) await load(true);
     renderDecks(); renderLocks();
   } catch (err) {
-    $("login-msg").textContent = err.status === 401 ? "令牌不正确。" : `登录失败：${reasonCn(err.body?.code || "unknown")}`;
+    $("login-msg").textContent = loginFailure(err);
   }
 });
 
@@ -981,8 +1017,12 @@ $("login-form").addEventListener("submit", async (e) => {
 let resizeTimer = null;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderMapBand, 150); });
 $("banners").append(h("div", { class: "banner info" }, "正在读取工作台数据…"));
-load();
-loadSession();
+if (SESSION_GATED) {
+  loadSession().then(() => (needsLogin() ? openLogin("") : load()));
+} else {
+  load();
+  loadSession();
+}
 setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
 setInterval(() => { renderStrip(); }, 10_000);
 setInterval(() => { if (!document.hidden) loadSession(); }, 5 * 60_000);

@@ -62,9 +62,28 @@ const REASONS = {
   locked_sampling_paused: "锁定采样暂停",
   episode_not_found: "找不到该追踪",
   request_key_reused: "请求键已被使用",
+  // transport, session and generic server answers
+  preview_read_only: "本地预览只读，不发送任何操作；请在线上页面登录和操作",
+  server_token_unconfigured: "服务器未配置工作台令牌",
+  method_not_allowed: "请求方式不被接受",
+  rate_limited: "尝试过于频繁，请稍等一分钟再试",
+  network_error: "无法连接服务器，请检查网络或稍后再试",
+  bad_json: "服务器返回了非预期的内容",
+  not_found: "请求的内容不存在",
+  refresh_failed: "工作台刷新失败",
+  review_failed: "复核执行失败",
+  receipt_not_accepted: "回执未被接受",
+  request_size_invalid: "请求大小不合规",
+  locked_projection_unavailable: "锁定追踪读数暂不可用",
+  locked_series_unavailable: "锁定过程序列暂不可用",
+  chain_audit_disabled: "审计日志未启用",
+  audit_file_not_found: "找不到该审计日志文件",
+  invalid_audit_file: "审计日志文件名无效",
+  evidence_export_busy: "证据导出正忙，请稍后再试",
+  unknown: "原因未知",
 };
-/** Unmapped codes are rare; they stay visible but marked, never passed off as prose. */
-export const reasonCn = (code) => REASONS[code] || (/^[A-Za-z0-9_.]+$/.test(String(code)) ? `未归类（${code}）` : String(code));
+/** Unmapped codes are rare; they stay visible as a code, never passed off as prose. */
+export const reasonCn = (code) => REASONS[code] || (/^[A-Za-z0-9_.]+$/.test(String(code)) ? `其他原因（代码 ${code}）` : String(code));
 
 const STATUS_CN = {
   RESEARCH_OK: "已通过校验", OK: "已通过校验", rejected: "未执行", ERROR: "调用失败", SEMANTIC_REJECTED: "未通过程序校验",
