@@ -74,7 +74,7 @@ def test_history_failure_uses_current_only_evidence_for_observation_input(tmp_pa
     item = view["candidates"][0]
     snapshot = copy.deepcopy(item["snapshot"])
     assert item["observation_review"] == {"enabled": True, "reasons": []}
-    assert item["review_gate"]["enabled"] is False
+    assert "structure_gate_not_eligible" not in item["review_gate"]["reasons"]  # evaluated, not gated
     assert item["snapshot"]["economics"] == snapshot["economics"]
     assert item["review_validity"]["history_replay_isolated"] is True
     assert item["current_questions"]["audit"]["temporal_scope"] == "current_snapshot_only"
@@ -148,8 +148,7 @@ def test_current_only_public_get_does_not_call_llm_or_change_space_financials(tm
     public = item["wpem_evidence"]
     proof = wb.wpem_evidence(snapshot["snapshot_id"])
 
-    assert item["review_gate"]["enabled"] is False
-    assert "structure_gate_not_eligible" in item["review_gate"]["reasons"]
+    assert "structure_gate_not_eligible" not in item["review_gate"]["reasons"]  # evaluated, not gated
     assert item["observation_review"] == {"enabled": True, "reasons": []}
     assert snapshot["economics"] == before
     assert public["evidence_hash"] == proof["evidence_hash"]

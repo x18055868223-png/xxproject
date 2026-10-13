@@ -239,15 +239,17 @@ def test_negative_reference_margin_keeps_manual_review_disabled(tmp_path):
     assert view["llm_call_count"] == 0
 
 
-def test_old_fmz_rows_without_space_gate_are_not_current_eligible(tmp_path):
+def test_old_fmz_rows_without_space_gate_show_the_gap_without_gating(tmp_path):
+    # Since 2026-10-13 the space structure is evaluated, not gated: a missing native gate
+    # is a visible gap in the evaluation, not a blocked review.
     wb, snapshots = make_workbench(tmp_path)
     write_fmz(snapshots, gate=None)
 
     view = wb.refresh(now_ms=T)
 
-    assert view["space_gate"]["state"] == "STRUCTURE_BLOCKED"
+    assert view["space_gate"]["gating"] is False
     assert "producer_native_space_gate_missing" in view["space_gate"]["gap_reasons"]
-    assert all("structure_gate_not_eligible" in item["review_gate"]["reasons"] for item in view["candidates"])
+    assert all("structure_gate_not_eligible" not in item["review_gate"]["reasons"] for item in view["candidates"])
 
 
 def test_quote_receipt_after_refresh_start_binds_fmz_to_actual_valuation(tmp_path):
@@ -532,7 +534,9 @@ def test_review_state_api_reads_receipt_without_market_refresh(tmp_path):
 def test_review_post_rejects_disabled_gate_without_llm(tmp_path):
     calls = []
     wb, snapshots = make_workbench(tmp_path, risk_provider=positive_risk, transport=lambda *a, **k: calls.append(a))
-    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED"))
+    row = write_fmz(snapshots, native_gate())
+    row["decision"]["demo_version"] = "1.6.2"  # a wrong-version FMZ fact keeps review closed
+    snapshots.write_text(json.dumps(row) + "\n", encoding="utf-8")
     view = wb.refresh(now_ms=T)
     candidate_id = view["candidates"][0]["snapshot"]["candidate_id"]
 
@@ -603,7 +607,7 @@ def test_gate_blocks_current_view_while_old_snapshot_review_is_inflight(tmp_path
         assert entered.wait(timeout=3)
         write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=T), now=T + 1000)
         during = wb.refresh(now_ms=T + 1000)
-        assert during["space_gate"]["state"] == "STRUCTURE_BLOCKED"
+        assert during["space_gate"]["producer_state"] == "STRUCTURE_BLOCKED"
         assert all(not item["review_gate"]["enabled"] for item in during["candidates"])
         assert all(item["snapshot"]["snapshot_id"] != old_snapshot_id for item in during["candidates"])
     finally:
@@ -614,7 +618,7 @@ def test_gate_blocks_current_view_while_old_snapshot_review_is_inflight(tmp_path
     assert errors == []
     assert results[0]["snapshot_id"] == old_snapshot_id
     latest = wb.refresh(now_ms=T + 1000)
-    assert latest["space_gate"]["state"] == "STRUCTURE_BLOCKED"
+    assert latest["space_gate"]["producer_state"] == "STRUCTURE_BLOCKED"
     assert all(not item["review_gate"]["enabled"] for item in latest["candidates"])
     assert all(item["review"]["status"] == "not_attached" for item in latest["candidates"])
 
@@ -625,9 +629,10 @@ def test_old_producer_version_cannot_open_workbench_gate(tmp_path):
     row["decision"]["demo_version"] = "1.6.2"
     snapshots.write_text(json.dumps(row) + "\n", encoding="utf-8")
     view = wb.refresh(now_ms=T)
-    assert view["space_gate"]["state"] == "STRUCTURE_BLOCKED"
+    assert view["space_gate"]["gating"] is False
     assert "fmz_producer_version_mismatch" in view["gaps"]
     assert all(not candidate["review_gate"]["enabled"] for candidate in view["candidates"])
+    assert all("fmz_fact_not_current" in candidate["review_gate"]["reasons"] for candidate in view["candidates"])
 
 
 def test_ledger_replay_is_cached_until_the_ledger_file_changes(tmp_path, monkeypatch):
@@ -659,12 +664,13 @@ def test_missing_mu_does_not_close_review_when_space_gate_is_open(tmp_path):
     assert view["llm_call_count"] == 0
 
 
-def test_missing_mu_with_closed_space_gate_names_only_the_space_gate(tmp_path):
+def test_missing_mu_with_a_closed_producer_gate_blocks_nothing(tmp_path):
+    # Neither mu_ref (2026-10-12) nor the space structure (2026-10-13) is a precondition.
     wb, snapshots = make_workbench(tmp_path)
     write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED"))
     view = wb.refresh(now_ms=T)
     for item in view["candidates"]:
-        assert item["review_gate"] == {"enabled": False, "reasons": ["structure_gate_not_eligible"]}
+        assert item["review_gate"] == {"enabled": True, "reasons": []}
 
 
 def test_page_projection_keeps_what_the_page_draws_and_never_mutates_the_cache(tmp_path):
@@ -718,14 +724,14 @@ def test_the_flip_anchor_informs_but_does_not_gate(tmp_path):
     blocked_by_anchor["net_gamma"]["ok"] = True
     write_fmz(snapshots, blocked_by_anchor, now=T)
     gate = wb.refresh(now_ms=T, record_daily=False)["space_gate"]
-    assert gate["state"] == "STRUCTURE_ELIGIBLE" and gate["eligible"] is True
+    assert gate["state"] == "STRUCTURE_ELIGIBLE" and gate["gating"] is False
     assert gate["producer_state"] == "STRUCTURE_BLOCKED"
     assert gate["anchor_reason_codes"] == ["SPACE_GATE_ANCHOR_NOT_VALID", "SPACE_GATE_ANCHOR_SCORE_LOW"]
-    assert gate["reason_codes"] == [] and gate["gate_basis"].startswith("net_gamma_only")
-    # net gamma still gates
+    assert gate["reason_codes"] == [] and gate["gate_basis"].startswith("evaluation_only")
+    # net gamma does not gate either; the producer's codes stay visible
     write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=T + 9_000), now=T + 10_000)
     gate = wb.refresh(now_ms=T + 10_000, record_daily=False)["space_gate"]
-    assert gate["state"] == "STRUCTURE_BLOCKED" and gate["reason_codes"] == ["NET_GAMMA_NON_POSITIVE"]
+    assert gate["state"] == "STRUCTURE_ELIGIBLE" and gate["producer_reason_codes"] == ["NET_GAMMA_NON_POSITIVE"]
 
 
 def test_the_transition_log_follows_the_anchors_utility(tmp_path):

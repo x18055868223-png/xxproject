@@ -722,7 +722,7 @@ def _opening_blocked(snapshot: Mapping[str, Any]) -> bool:
     if not isinstance(gate, Mapping) or not gate:
         return False
     if gate.get("state") in {"STRUCTURE_ELIGIBLE", "STRUCTURE_BLOCKED"}:
-        # net gamma only; the flip anchor is information (underwriting.structure_gate)
+        # the space structure is an evaluation, not admission (underwriting.structure_gate)
         return not underwriting.structure_gate(gate)["eligible"]
     return gate.get("eligible") is False
 

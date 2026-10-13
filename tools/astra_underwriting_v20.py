@@ -250,31 +250,25 @@ def visible_credit(contract: Mapping[str, Any], market: Mapping[str, Any], valua
             "gap_reasons": sorted(set(reasons)), "executable_or_filled": False}
 
 
-STRUCTURE_GATE_BASIS = "net_gamma_only@2026-10-13"
+STRUCTURE_GATE_BASIS = "evaluation_only@2026-10-13"
 ANCHOR_REASON_PREFIX = "SPACE_GATE_ANCHOR_"
 
 
 def structure_gate(native: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Admission read from the producer's native space gate: net gamma only.
+    """The producer's native space gate read as an evaluation, never as admission.
 
-    The producer (FMZ) blocks on two parts: the flip anchor (spot's position on the
-    flip axis within a radius, scored 0-100, valid at >= 60) and net gamma (positive,
-    fresh, gamma regime not in transition or conflict). Since 2026-10-13 the anchor is
-    information only: its evidence does not carry the weight of a hard precondition.
-    The producer's own state and codes are left untouched and reported beside this.
+    The producer (FMZ) blocks on the flip anchor (spot within a radius of the flip axis,
+    scored 0-100) and on net gamma (positive, fresh, regime not in transition or
+    conflict). Neither carries the evidence a hard gate needs: a "transition" near the
+    flip may as well be price pinned by it. Since 2026-10-13 the space structure is
+    described and scored only; nothing here blocks. The producer's own state and codes
+    are left untouched and reported beside this.
     """
-    if not isinstance(native, Mapping) or native.get("state") not in {"STRUCTURE_ELIGIBLE", "STRUCTURE_BLOCKED"}:
-        return {"eligible": False, "blocking_codes": ["producer_native_space_gate_missing"],
-                "anchor_codes": [], "basis": STRUCTURE_GATE_BASIS}
-    codes = {str(code) for code in native.get("reason_codes") or [] if code}
-    anchor_codes = sorted(code for code in codes if code.startswith(ANCHOR_REASON_PREFIX))
-    blocking = sorted(code for code in codes if not code.startswith(ANCHOR_REASON_PREFIX))
-    net_gamma = native.get("net_gamma")
-    net_ok = isinstance(net_gamma, Mapping) and net_gamma.get("ok") is True
-    if not net_ok and not blocking:
-        blocking = ["SPACE_GATE_NET_GAMMA_NOT_OK"]
-    return {"eligible": net_ok and not blocking, "blocking_codes": blocking,
-            "anchor_codes": anchor_codes, "basis": STRUCTURE_GATE_BASIS}
+    codes = sorted({str(code) for code in ((native or {}).get("reason_codes") or []) if code})         if isinstance(native, Mapping) else []
+    return {"eligible": True, "blocking_codes": [],
+            "anchor_codes": [code for code in codes if code.startswith(ANCHOR_REASON_PREFIX)],
+            "observed_codes": codes, "producer_present": isinstance(native, Mapping),
+            "basis": STRUCTURE_GATE_BASIS}
 
 
 def signed_boundary_distance(side: Any, spot_usd: Any, boundary_usd: Any, *, boundary_kind: str) -> dict[str, Any] | None:

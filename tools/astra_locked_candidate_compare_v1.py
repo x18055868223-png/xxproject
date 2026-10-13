@@ -966,8 +966,11 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
         "reference_result_btc": _number(reference.get("reference_result_btc")),
         "reference_gaps": list(reference.get("gap_reasons") or []),
         "quote_gaps": list(quote.get("gap_reasons") or []),
-        "space_gate_state": gate.get("state") or ("STRUCTURE_ELIGIBLE" if gate.get("eligible") is True
-                                                   else "STRUCTURE_BLOCKED" if gate.get("eligible") is False else None),
+        # The workbench gate stopped gating on 2026-10-13; the producer's native state keeps the
+        # lane meaningful and continuous with older points.
+        "space_gate_state": (gate.get("producer_state") if gate.get("gating") is False else gate.get("state"))
+        or ("STRUCTURE_ELIGIBLE" if gate.get("eligible") is True
+            else "STRUCTURE_BLOCKED" if gate.get("eligible") is False else None),
         "flow_direction": _reading(candidate, "context.active_flow", ("combined", "direction")),
         "flow_ready": _reading(candidate, "context.active_flow", ("combined", "data_ready")),
         "tmv_state": _reading(candidate, "context.tmv_price_path", ("tmv_state",)),

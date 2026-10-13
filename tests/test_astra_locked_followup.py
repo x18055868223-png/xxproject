@@ -134,8 +134,7 @@ def test_rotation_closed_gate_and_restart_keep_original_contract(tmp_path):
     assert calls == [(contract["short_instrument"], contract["long_instrument"], contract["quantity_btc"])]
     assert detail["episode"]["point_count"] == 2
     assert detail["episode"]["t0_baseline_point_id"] == initial_hash
-    assert detail["latest"]["candidate"]["space_gate"]["state"] == "STRUCTURE_BLOCKED"
-    assert detail["latest"]["candidate"]["review_gate"]["enabled"] is False
+    assert detail["latest"]["candidate"]["space_gate"]["producer_state"] == "STRUCTURE_BLOCKED"
     assert detail["latest"]["candidate"]["snapshot"]["contract"] == contract
 
 

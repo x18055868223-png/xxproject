@@ -270,7 +270,7 @@ def test_partial_producer_background_stays_visible_without_blocking_review_gate(
     assert all(item["review_gate"]["enabled"] is True for item in view["candidates"])
 
 
-def test_native_space_gate_still_hard_blocks_when_optional_background_missing(tmp_path, monkeypatch):
+def test_native_space_gate_no_longer_blocks_and_optional_background_never_does(tmp_path, monkeypatch):
     current_path, _producer = _write_producer_current(tmp_path, complete=False)
     wb = _make_env_workbench(tmp_path, monkeypatch, current_path)
     fx.write_fmz(wb.config.snapshots_jsonl, fx.native_gate("STRUCTURE_BLOCKED"))
@@ -278,9 +278,9 @@ def test_native_space_gate_still_hard_blocks_when_optional_background_missing(tm
     view = wb.refresh(now_ms=fx.T, record_daily=False)
 
     assert "producer_map_background_incomplete" in view["gaps"]
+    assert view["space_gate"]["producer_state"] == "STRUCTURE_BLOCKED" and view["space_gate"]["gating"] is False
     for item in view["candidates"]:
-        assert item["review_gate"]["enabled"] is False
-        assert "structure_gate_not_eligible" in item["review_gate"]["reasons"]
+        assert "structure_gate_not_eligible" not in item["review_gate"]["reasons"]
         assert "producer_map_background_incomplete" not in item["review_gate"]["reasons"]
 
 

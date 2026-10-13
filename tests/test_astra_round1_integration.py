@@ -39,18 +39,18 @@ def test_rising_macro_levels_do_not_become_btc_price_direction(side_index, adver
     assert "源端给出的BTC价格方向" not in result["q1"]["summary_cn"]
 
 
-def test_closed_structure_gate_outranks_positive_reference_compensation():
+def test_a_closed_producer_gate_no_longer_outranks_positive_reference_compensation():
+    # Since 2026-10-13 the space structure is evaluated, not gated: a closed producer gate
+    # no longer forces deferral or the opening-blocked counter.
     payload = preview.build_preview(NOW_MS, scenario_id="W5")
     snapshot = payload["candidates"][0]["snapshot"]
     wire, result = preview._wire_response(snapshot, "W5")
 
     assert snapshot["economics"]["reference_margin_btc"] > 0
-    assert result["q2"]["disposition"] == "defer_reassess"
-    assert result["q2"]["strongest_counter"]["id"] == "counter.structure.opening_blocked"
+    assert result["q2"]["disposition"] != "defer_reassess"
+    assert "counter.structure.opening_blocked" not in result["selected_counter_ids"]
     assert snapshot["execution_allowed"] is False
 
-    wire = deepcopy(wire)
-    wire["selected_counter_ids"].remove("counter.structure.opening_blocked")
-    with pytest.raises(review.ReviewValidationError, match="structure"):
-        review.validate_wire_response(snapshot, wire,
-                                      review_input=review.build_review_input(snapshot, research_only=True))
+    # the counter is no longer required: a response without it validates
+    review.validate_wire_response(snapshot, deepcopy(wire),
+                                  review_input=review.build_review_input(snapshot, research_only=True))

@@ -191,14 +191,14 @@ def test_failed_space_gate_keeps_review_and_execution_disabled_even_with_map(tmp
     view = wb.refresh(now_ms=fx.T, record_daily=False)
 
     assert calls == [fx.T]
-    assert view["space_gate"]["eligible"] is False
+    # the producer's closed gate is shown but no longer gates (2026-10-13); execution stays off
+    assert view["space_gate"]["producer_state"] == "STRUCTURE_BLOCKED" and view["space_gate"]["gating"] is False
     assert view["btc_map"]["display_reference_ids"]
     for item in view["candidates"]:
         snapshot = item["snapshot"]
         assert snapshot["data_identity"]["btc_map"]["policy_link"]["region_liability_rows"]
         assert snapshot["execution_allowed"] is False
-        assert item["review_gate"]["enabled"] is False
-        assert "structure_gate_not_eligible" in item["review_gate"]["reasons"]
+        assert "structure_gate_not_eligible" not in item["review_gate"]["reasons"]
 
 
 def test_stale_source_degrades_without_promoting_cp_reference(tmp_path):

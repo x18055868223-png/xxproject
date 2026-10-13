@@ -81,10 +81,6 @@ def test_preview_wire_stub_uses_required_bounded_ids():
             "counter": "counter.compensation.nonpositive_margin",
             "reassess": "reassess.compensation_reprice",
         },
-        "W5": {
-            "counter": "counter.structure.opening_blocked",
-            "reassess": "reassess.structure_new_snapshot",
-        },
         "MISSING_MU": {
             "gap": "gap.compensation.mu_reference_missing",
             "reassess": "reassess.risk_reference_available",

@@ -53,11 +53,11 @@ def test_nonpositive_blocked_and_missing_mu_keep_priority():
     assert "放弃这份冻结账" in w4_call["q2"]["summary_cn"]
     assert "c > 0.00020000 BTC" in w4_call["q2"]["observable_changes_cn"][0]
 
+    # Since 2026-10-13 the space structure is evaluated, not gated: a closed producer gate
+    # no longer forces deferral or the opening-blocked counter.
     w5_call, _ = _review(_candidate("W5", "call"))
-    assert w5_call["q2"]["disposition"] == "defer_reassess"
-    assert w5_call["q2"]["strongest_counter"]["id"] == "counter.structure.opening_blocked"
-    assert "结构门" in w5_call["q2"]["summary_cn"]
-    assert "原生结构门恢复" in w5_call["q2"]["observable_changes_cn"][0]
+    assert w5_call["q2"]["disposition"] != "defer_reassess"
+    assert "counter.structure.opening_blocked" not in w5_call["selected_counter_ids"]
 
     missing_mu, _ = _review(_candidate("MISSING_MU", "put"), applicability="UNABLE_TO_JUDGE")
     assert missing_mu["q2"]["disposition"] == "information_gap"

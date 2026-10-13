@@ -174,11 +174,13 @@ def test_missing_mu_gate_and_horizon_mismatch_stay_fail_closed():
     assert "gap.compensation.mu_reference_missing" in missing_result["selected_gap_ids"]
     assert "没有可用整体μ" in missing_result["q2"]["coverage_cn"]
 
+    # Since 2026-10-13 the space structure is evaluated, not gated: a closed producer gate
+    # no longer forces deferral or the opening-blocked counter.
     gate = _candidate("W5", "put")
     gate_wire, gate_projection = _wire(gate)
     gate_result = review.validate_wire_response(gate, gate_wire, review_input=gate_projection)
-    assert gate_result["q2"]["disposition"] == "defer_reassess"
-    assert gate_result["q2"]["strongest_counter"]["id"] == "counter.structure.opening_blocked"
+    assert gate_result["q2"]["disposition"] != "defer_reassess"
+    assert "counter.structure.opening_blocked" not in gate_result["selected_counter_ids"]
 
     payload = sample()
     payload["risk"]["horizon_hours"] = 12

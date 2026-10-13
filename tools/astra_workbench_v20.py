@@ -2131,9 +2131,9 @@ class AstraWorkbench:
         else:
             native_state = str(native.get("state") or SPACE_BLOCKED)
         rule = underwriting_core.structure_gate(native)
-        if not rule["eligible"]:
-            gaps.extend(rule["blocking_codes"])
-        effective_state = SPACE_ELIGIBLE if not gaps and rule["eligible"] else SPACE_BLOCKED
+        # Evaluation only (2026-10-13): the space structure never blocks admission. Missing or
+        # stale producer facts stay visible as gap reasons, without gating.
+        effective_state = SPACE_ELIGIBLE
         anchor = deepcopy(native.get("anchor")) if isinstance(native, Mapping) and isinstance(native.get("anchor"), Mapping) else None
         net_gamma = deepcopy(native.get("net_gamma")) if isinstance(native, Mapping) and isinstance(native.get("net_gamma"), Mapping) else None
         body = {
@@ -2160,8 +2160,8 @@ class AstraWorkbench:
             "strategy_version": fmz_fact.get("strategy_version"),
             "valuation_ts_ms": valuation_ms,
             "gap_reasons": sorted(set(reason for reason in gaps if reason)),
-            "note_cn": ("空间门只看净 Gamma（为正、新鲜、体制不在转换或冲突）；锚点评分只作信息，不再是准入条件。"
-                        "放行仅表示可以继续核算当前保单，不代表补偿充分、LLM支持或交易批准。"),
+            "gating": False,
+            "note_cn": "空间结构只作评价（锚点评分、净 Gamma、Gamma 体制），不作准入门控；不代表补偿充分、LLM支持或交易批准。",
         }
         body["gate_hash"] = _hash({key: body[key] for key in (
             "state", "producer_state", "observed_at_ms", "since_ts_ms",
@@ -2286,6 +2286,10 @@ class AstraWorkbench:
             reasons.append("manual_review_service_not_configured")
         if gate.get("state") != SPACE_ELIGIBLE:
             reasons.append("structure_gate_not_eligible")
+        # The space structure no longer gates, but a non-current or wrong-version FMZ fact is a
+        # data qualification problem and still keeps review closed.
+        if gate.get("fmz_fact_status") != "current" or "space_gate_producer_version_mismatch" in (gate.get("gap_reasons") or []):
+            reasons.append("fmz_fact_not_current")
         if not isinstance(snapshot, Mapping):
             reasons.append("snapshot_missing")
             return {"enabled": False, "reasons": sorted(set(reasons))}

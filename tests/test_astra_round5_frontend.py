@@ -91,7 +91,6 @@ def test_selected_missing_or_changed_snapshot_never_promotes_global_receipt():
     ("W3", "put", "放弃这份冻结账"),
     ("W4", "call", "放弃这份冻结账"),
     ("MISSING_MU", "put", "资料不足"),
-    ("W5", "call", "结构门"),
 ])
 def test_overall_status_does_not_replace_environment_or_q2(scenario, side, expected):
     view = reviewed_view(scenario)

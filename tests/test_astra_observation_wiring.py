@@ -70,8 +70,8 @@ def test_observation_post_researches_when_main_gate_is_financially_closed(tmp_pa
     view = wb.refresh(now_ms=fx.T)
     item = view["candidates"][0]
     candidate_id = item["snapshot"]["candidate_id"]
-    assert item["review_gate"]["enabled"] is False
-    assert "structure_gate_not_eligible" in item["review_gate"]["reasons"]
+    # a closed producer gate no longer closes the main review (2026-10-13)
+    assert "structure_gate_not_eligible" not in item["review_gate"]["reasons"]
     assert "risk_reference_missing_or_unqualified" not in item["review_gate"]["reasons"]
     assert item["observation_review"] == {"enabled": True, "reasons": []}
 
