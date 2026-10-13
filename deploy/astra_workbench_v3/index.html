@@ -6,6 +6,8 @@
 <title>中性回路承保决策工作台</title>
 <script>/* relative assets need a trailing slash: /signal-audit/workbench-v3 -> /signal-audit/workbench-v3/ */
 if (!/\/$|\.html$/.test(location.pathname)) location.replace(location.pathname + "/" + location.search + location.hash);</script>
+<script>/* a chosen theme applies before first paint; with none the page follows the system */
+try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -13,13 +15,16 @@ if (!/\/$|\.html$/.test(location.pathname)) location.replace(location.pathname +
   <div class="strip-inner">
     <div class="brand"><b>中性回路承保决策工作台</b><span>BTC 末日轮垂直价差</span></div>
     <div class="spot"><span class="figure" id="spot">—</span><small id="spot-age"></small></div>
-    <div class="state" id="gate-state"><i class="lamp"></i><span>SpaceGate</span></div>
+    <div class="state" id="gate-state"><i class="lamp"></i><span>空间门</span></div>
     <div class="state" id="fact-state"><i class="lamp"></i><span>FMZ 事实</span></div>
     <a class="state" id="sources" href="#src-h"><i class="lamp"></i><span>来源</span></a>
     <a class="state" id="lock-state" href="#lock-h" hidden><i class="lamp"></i><span>追踪中</span></a>
     <div class="state" id="budget"><span>今日复核 —</span></div>
     <div class="state" id="refreshed"><span>—</span></div>
-    <button class="ghost" id="session-btn" type="button">登录</button>
+    <div class="strip-actions">
+      <button class="ghost" id="theme-btn" type="button">深色</button>
+      <button class="ghost" id="session-btn" type="button">登录</button>
+    </div>
   </div>
 </header>
 

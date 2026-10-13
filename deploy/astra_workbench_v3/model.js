@@ -68,6 +68,7 @@ const REASONS = {
   method_not_allowed: "请求方式不被接受",
   rate_limited: "尝试过于频繁，请稍等一分钟再试",
   network_error: "无法连接服务器，请检查网络或稍后再试",
+  upstream_unreachable: "页面没等到服务器答复（网络中断或等待超时）；操作可能已在服务器完成，请刷新查看",
   bad_json: "服务器返回了非预期的内容",
   not_found: "请求的内容不存在",
   refresh_failed: "工作台刷新失败",

@@ -439,3 +439,5 @@ ul.q li { font-size: 13.5px; line-height: 1.6; padding: 3px 0; }
 
 .banner.gate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .banner.gate .btn { margin-left: auto; }
+
+.strip-actions { display: flex; gap: 8px; flex: none; }

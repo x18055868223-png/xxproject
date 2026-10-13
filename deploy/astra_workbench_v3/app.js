@@ -431,8 +431,8 @@ function actions(m) {
     const b = get(state.view, "manual_review_state.daily_http_budget") || {};
     const text = pending.kind === "review"
       ? (production
-        ? `模型复核：用当时报价重新冻结本保单后调用一次模型（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 1–2 分钟；回执附着本快照，仍不构成交易许可。`
-        : `观察复核：调用一次模型解释本快照（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 1–2 分钟；空间门未放行，回执不附着生产。`)
+        ? `模型复核：用当时报价重新冻结本保单后调用一次模型（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；回执附着本快照，仍不构成交易许可。`
+        : `观察复核：调用一次模型解释本快照（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；空间门未放行，回执不附着生产。`)
       : "锁定后每分钟采样同一合同，直到到期或手动停止；锁定时与之后的赔付、代价变化在“锁定追踪”里查看。";
     wrap.append(h("span", { class: "confirm", text }),
       h("button", { class: "btn", type: "button", onclick: () => run(pending.kind, m) }, pending.kind === "review" ? "确认复核" : "确认锁定"),
@@ -1015,6 +1015,34 @@ $("login-form").addEventListener("submit", async (e) => {
     $("login-msg").textContent = loginFailure(err);
   }
 });
+
+// ── theme ────────────────────────────────────────
+const THEME_KEY = "astra-theme";
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+const systemTheme = () => (darkQuery.matches ? "dark" : "light");
+const effectiveTheme = () => document.documentElement.dataset.theme || systemTheme();
+
+function renderThemeBtn() {
+  const dark = effectiveTheme() === "dark";
+  const btn = $("theme-btn");
+  btn.textContent = dark ? "☀ 浅色" : "☾ 深色";
+  btn.title = dark ? "切换到浅色" : "切换到深色";
+}
+
+$("theme-btn").addEventListener("click", () => {
+  const next = effectiveTheme() === "dark" ? "light" : "dark";
+  // Picking the system's own theme goes back to following the system.
+  if (next === systemTheme()) delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = next;
+  try {
+    if (document.documentElement.dataset.theme) localStorage.setItem(THEME_KEY, next);
+    else localStorage.removeItem(THEME_KEY);
+  } catch { /* the choice then lasts for this page only */ }
+  renderThemeBtn();
+  if (state.view) renderMapBand();
+});
+darkQuery.addEventListener("change", renderThemeBtn);
+renderThemeBtn();
 
 // ── boot ─────────────────────────────────────────
 let resizeTimer = null;
