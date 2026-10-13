@@ -34,6 +34,7 @@ if __package__:
     from . import astra_underwriting_fact_context_v20 as fact_context
     from . import astra_underwriting_guidance_v20 as guidance
     from . import astra_decision_reduction_v1 as decision_reduction
+    from . import astra_spatial_position_v1 as spatial_position
     from . import astra_underwriting_public_quote_v20 as public_quote
     from . import astra_underwriting_review_v20 as review_core
     from . import astra_underwriting_store_v20 as store
@@ -59,6 +60,7 @@ else:  # direct CLI execution from tools/
     import astra_underwriting_fact_context_v20 as fact_context
     import astra_underwriting_guidance_v20 as guidance
     import astra_decision_reduction_v1 as decision_reduction
+    import astra_spatial_position_v1 as spatial_position
     import astra_underwriting_public_quote_v20 as public_quote
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_store_v20 as store
@@ -3681,6 +3683,12 @@ class AstraWorkbench:
                 item["decision_reduction"] = decision_reduction.reduce(item)
             except Exception as exc:
                 item["decision_reduction"] = {"schema": decision_reduction.SCHEMA, "error": type(exc).__name__}
+            if isinstance(item.get("snapshot"), Mapping):
+                # a pure function of the frozen snapshot, so any recorded snapshot can be re-read later
+                try:
+                    item["spatial_position"] = spatial_position.assess(item["snapshot"])
+                except Exception as exc:
+                    item["spatial_position"] = {"schema": spatial_position.SCHEMA, "error": type(exc).__name__}
         return view
 
     def _apply_current_review_availability(self, view: dict[str, Any], now_ms: int) -> dict[str, Any]:

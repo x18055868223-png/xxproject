@@ -96,7 +96,7 @@ def workbench_reading(view):
 _PAGE_CANDIDATE_KEYS = (
     "side", "status", "error", "snapshot", "discovery", "current_questions", "reading_guidance", "wpem_summary",
     "review_validity", "review_gate", "observation_review", "lock_availability", "current_usage",
-    "remaining_to_expiry_ms", "review_display", "evidence_url", "space_gate", "decision_reduction", "market_marks", "upstream", "error_type",
+    "remaining_to_expiry_ms", "review_display", "evidence_url", "space_gate", "decision_reduction", "market_marks", "upstream", "error_type", "spatial_position",
 )
 _PAGE_SNAPSHOT_DROP = {"data_identity", "origins", "llm_review"}
 _PAGE_DISPLAY_DROP = {"observation_lineage"}

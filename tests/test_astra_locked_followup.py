@@ -259,7 +259,7 @@ def test_locked_manual_review_rotated_target_retains_gates_and_baseline(tmp_path
 def test_locked_runtime_modules_are_in_both_packaging_lists():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    for name in ("astra_locked_candidate_store_v1.py", "astra_locked_candidate_compare_v1.py", "astra_decision_reduction_v1.py", "astra_observation_replay_v1.py",
+    for name in ("astra_locked_candidate_store_v1.py", "astra_locked_candidate_compare_v1.py", "astra_decision_reduction_v1.py", "astra_spatial_position_v1.py", "astra_observation_replay_v1.py",
                  "astra_chain_audit_v1.py"):
         for path in ("deploy/signal_audit/package_signal_audit.ps1", "deploy/signal_audit/install_or_update.sh"):
             assert name in (root / path).read_text(encoding="utf-8-sig")
