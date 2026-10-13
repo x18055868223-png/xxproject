@@ -19,6 +19,15 @@ const GAMMA_NOTE = {
 };
 const MACRO_CN = { "Mild Tailwind": "温和顺风", "Strong Tailwind": "强顺风", "Mild Headwind": "温和逆风", "Strong Headwind": "强逆风", Neutral: "中性" };
 const MACRO_KEY = { VOLQ: "纳指波动率 VXN", DXY: "美元指数 DXY", US10Y: "美债 10Y" };
+const GATE_WHY_CN = {
+  SPACE_GATE_NET_GAMMA_NOT_POSITIVE: "净 Gamma 不为正", NET_GAMMA_NON_POSITIVE: "净 Gamma 不为正",
+  SPACE_GATE_NET_GAMMA_NOT_FRESH: "数据不新鲜", SPACE_GATE_NET_GAMMA_MISSING: "缺数据",
+  SPACE_GATE_GGR_TRANSITION: "Gamma 体制过渡中", SPACE_GATE_GGR_CONFLICT: "体制与净 Gamma 冲突",
+  SPACE_GATE_GGR_DATA_NOT_OK: "体制数据异常", SPACE_GATE_NET_GAMMA_NOT_OK: "净 Gamma 未通过",
+  SPACE_GATE_ANCHOR_NOT_VALID: "锚点未成立", SPACE_GATE_ANCHOR_SCORE_LOW: "锚点评分低于 60",
+  SPACE_GATE_ANCHOR_NOT_FRESH: "锚点数据不新鲜", SPACE_GATE_ANCHOR_SCORE_MISSING: "锚点评分缺失",
+};
+const ANCHOR_LABEL_CN = { Strong: "强", Tight: "紧", Moderate: "中等", Loose: "松散", Weak: "弱", Lost: "失锚" };
 const SHAPE_CN = { NO_MOVE: "无明显移动", IMPULSE_SHIFT: "脉冲跳变", DRIFT_RUN: "持续推进", CHOPPY_DRIFT: "震荡漂移" };
 
 const sign = (v) => (v > 0 ? 1 : v < 0 ? -1 : 0);
@@ -53,20 +62,37 @@ export function coreFactors(view, spot) {
   }
   const flipOff = isNum(flip) && isNum(spot) ? (spot - flip) / flip * 100 : null;
   const reasons = [...(gate.reason_codes || [])];
+  // The flip anchor (spot on the flip axis within a radius), described as it is.
+  const netV = get(gate, "net_gamma.value");
+  const anchorLabel = ANCHOR_LABEL_CN[get(space, "anchor.anchor_gravity_ref_label")] || null;
+  const dev = get(space, "anchor.normalized_deviation");
+  const anchorText = isNum(anchor)
+    ? `${anchor.toFixed(1)} / 100${anchorLabel ? `（${anchorLabel}）` : ""}${isNum(dev) ? `，现价在翻转位${dev < 0 ? "下方" : "上方"}约 ${Math.abs(dev).toFixed(2)} 个锚定半径` : ""}`
+    : null;
+  // Evaluation only (2026-10-13): the space structure is described and scored, never gated.
+  // A transition near the flip is not a failure; it may as well be price pinned by the flip.
+  const nativeState = gate.producer_state;
+  const nativeWhy = [...new Set((gate.producer_reason_codes || []).map((c) => GATE_WHY_CN[c]).filter(Boolean))];
+  const regimeText = {
+    POSITIVE_GAMMA_PINNING: "正 Gamma 钉住（对冲逆势，波动倾向收敛）",
+    NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma 放大（对冲顺势，波动倾向放大）",
+    TRANSITION: "翻转位附近（可能被翻转位锚住，也可能正在切换体制）",
+  };
   const spaceF = {
     key: "space", title: "空间结构", lean: 0,
-    headline: gate.eligible ? "结构放行" : "结构关闭",
-    headCls: gate.eligible ? "ok" : "bad",
+    headline: isNum(anchor) ? `锚点 ${anchor.toFixed(0)} / 100` : "锚点缺失",
+    headCls: "",
     rows: [
       reasons.includes("SPACE_GATE_ANCHOR_SCORE_MISSING") && !isNum(anchor) ? pending("锚点评分", "预热中，重启后需积累样本")
-        : row("锚点评分", isNum(anchor) ? `${anchor.toFixed(1)}，需 ≥60` : null, isNum(anchor) ? gauge(anchor, 100, { threshold: 60 }) : null),
-      row("Gamma 体制", gamma.regime ? (GAMMA_CN[gamma.regime] || "其他状态") : null),
-      row("净 Gamma", isNum(get(gate, "net_gamma.value")) ? compactUsd(gate.net_gamma.value) : null),
-      row("距翻转位", isNum(flipOff) ? `${signed(flipOff)}%（${usd(flip)}）` : null, isNum(flipOff) ? diverging(flipOff, 3) : null),
+        : row("锚点评分", anchorText, isNum(anchor) ? gauge(anchor, 100) : null),
+      row("净 Gamma", isNum(netV) ? `${compactUsd(netV)}（${netV > 0 ? "为正" : netV < 0 ? "为负" : "为零"}）` : null),
+      row("Gamma 体制", gamma.regime ? (regimeText[gamma.regime] || GAMMA_CN[gamma.regime] || "其他状态") : null),
+      row("相对翻转位", isNum(flipOff) ? `现价在翻转位 ${usd(flip)} ${flipOff < 0 ? "下方" : "上方"} ${Math.abs(flipOff).toFixed(2)}%` : null,
+        isNum(flipOff) ? diverging(flipOff, 3) : null),
       row("最近墙位", nearUp.length || nearDown.length
         ? `上 ${nearUp.length ? usd(Math.min(...nearUp)) : "—"}，下 ${nearDown.length ? usd(Math.max(...nearDown)) : "—"}` : null),
     ],
-    note: `${GAMMA_NOTE[gamma.regime] || ""}空间不提供方向。`,
+    note: `空间结构只作评价，不作准入（2026-10-13 起）。锚点评分衡量现价被翻转位锚住的程度（越高越贴近）。${nativeState ? `FMZ 原生空间门此刻${nativeState === "STRUCTURE_ELIGIBLE" ? "放行" : `关闭${nativeWhy.length ? `（${nativeWhy.join("、")}）` : ""}`}，仅作参考。` : ""}空间不提供方向。`,
     missing: !gate.state,
   };
 
@@ -147,7 +173,27 @@ export function coreFactors(view, spot) {
     note: mp.data_status && mp.data_status !== "full_live" ? "宏观数据不完整，读数只作参考。" : "宏观环境只调整背景读数，不单独确认方向。绿色为风险压力下降。",
     missing: !regime,
   };
-  return [spaceF, pathF, flowF, macroF];
+  // Spatial position is per side: where each short leg sits on its own adverse path.
+  // Computed by the program from each frozen snapshot; Gamma decides, KPF is described only.
+  const STATE_SHORT = { favorable: "有利", unfavorable: "不利", unknown: "不明" };
+  const STATE_CLS = { favorable: "ok", unfavorable: "bad", unknown: "" };
+  const lines = ["put", "call"].map((side) => {
+    const sp = (view.candidates || []).find((c) => c.side === side)?.spatial_position;
+    if (!sp || sp.error) return null;
+    return { side, name: side === "put" ? "Put" : "Call", state: sp.state, cls: STATE_CLS[sp.state] ?? "",
+      text: STATE_SHORT[sp.state] || "不明", short: sp.short_strike_usd, reason: sp.reason_cn,
+      kpf: sp.kpf?.description_cn || null,
+      moves: isNum(sp.distance_in_moves) ? sp.distance_in_moves : null, distance: sp.distance_pct };
+  }).filter(Boolean);
+  const positionF = {
+    key: "position", title: "空间位置",
+    lean: null, perSide: Object.fromEntries(lines.map((l) => [l.side, l])),
+    headline: lines.length ? lines.map((l) => `${l.name} ${l.text}`).join(" · ") : "缺口",
+    lines, rows: [],
+    note: "沿各侧不利方向看价格先遇到什么：Gamma 结构（墙、Flip）决定判断，KPF 成交区只作描述，链上成本不进入。只描述保单责任位置，不预测方向；尚未经交割数据验证。",
+    missing: !lines.length,
+  };
+  return [spaceF, pathF, flowF, macroF, positionF];
 }
 
 export function backgroundItems(view, spot) {

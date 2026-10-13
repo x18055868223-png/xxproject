@@ -123,24 +123,12 @@ function render() {
  * or, with none recorded, the run of consecutive closed daily snapshots.
  */
 function gateClosed(view) {
+  // Admission is net gamma; its since comes with the gate. The transition log follows the
+  // flip anchor's utility and older daily snapshots used the anchor rule, so neither is used here.
   const gate = view?.space_gate || {};
   if (gate.eligible !== false) return null;
-  let since = isNum(gate.since_ts_ms) ? gate.since_ts_ms : null, atLeast = false;
-  const transitions = view.transitions || [];
-  const last = transitions[transitions.length - 1];
-  if (last && last.current_state === "STRUCTURE_BLOCKED" && isNum(last.transition_ts_ms)) {
-    since = Math.min(since ?? Infinity, last.transition_ts_ms);
-  } else if (!transitions.length) {
-    const days = (view.daily_snapshots || []).slice().reverse();
-    let earliest = null;
-    for (const d of days) {
-      if (get(d, "space_gate.state") !== "STRUCTURE_BLOCKED") break;
-      earliest = d.bjt_day;
-    }
-    const t = earliest ? Date.parse(`${earliest}T23:00:00+08:00`) : NaN;
-    if (isNum(t) && t < (since ?? Infinity)) { since = t; atLeast = true; }
-  }
-  return isNum(since) ? { since, atLeast, text: `${atLeast ? "至少" : ""}${dur(Date.now() - since)}` } : null;
+  const since = isNum(gate.since_ts_ms) ? gate.since_ts_ms : null;
+  return isNum(since) ? { since, atLeast: false, text: dur(Date.now() - since) } : null;
 }
 
 function gateSince(gate) {
@@ -155,10 +143,10 @@ function renderStrip() {
   $("spot-age").textContent = isNum(mc.age_ms) ? `事实 ${dur(mc.age_ms)}前` : "";
   const gate = v.space_gate || {};
   const gateReasons = [...new Set([...(gate.reason_codes || []), ...(gate.gap_reasons || [])])].map(reasonCn);
-  // A closed gate is the normal resting state, not an alarm: amber, with how long it has been closed.
-  setLamp($("gate-state"), gate.eligible ? "ok" : gate.state ? "warn" : "off",
-    gate.eligible ? "空间门放行" : gate.state
-      ? (gateClosed(v) ? `空间门已关闭 ${gateClosed(v).text}` : "空间门关闭") : "空间门未知");
+  // The space structure is evaluated, not gated: the strip shows the anchor score.
+  const anchorScore = get(gate, "anchor.score");
+  setLamp($("gate-state"), isNum(anchorScore) ? "ok" : "off",
+    isNum(anchorScore) ? `锚点 ${anchorScore.toFixed(0)} / 100` : "锚点缺失");
   $("gate-state").title = gateReasons.join("；");
   const fact = mc.status === "current" ? "ok" : mc.status ? "warn" : "off";
   // background_only: facts are fresh but the space input was rejected, so they only serve as background.
@@ -203,7 +191,7 @@ function renderBanners() {
     ` ${clock(fail.failed_at_ms)} 的刷新没有完成，候选与地图停留在 ${clock(v.updated_at_ms)}。`));
   const mc = v.market_context || {};
   if (mc.status === "background_only") box.append(h("div", { class: "banner info" }, h("b", { text: "FMZ 事实只作背景。" }),
-    ` 事实本身是新的，但空间输入未通过用途检查（${spaceInputWhy(v)}），空间门按关闭处理；四要素与背景读数仍可参考。`));
+    ` 事实本身是新的，但空间输入未通过用途检查（${spaceInputWhy(v)}），空间门按关闭处理；五要素与背景读数仍可参考。`));
   else if (mc.status && mc.status !== "current") box.append(h("div", { class: "banner" }, h("b", { text: "FMZ 事实不是当前状态。" }),
     ` ${(mc.gap_reasons || []).length ? `${mc.gap_reasons.map(reasonCn).join("、")}。` : ""}候选与地图只反映最后一次冻结。`));
   const errs = (v.candidates || []).filter((c) => c.status === "error");
@@ -299,12 +287,27 @@ function renderFactors() {
   const box = clear($("factors"));
   if (!state.view) return;
   for (const f of coreFactors(state.view, currentSpot())) {
-    const card = h("div", { class: `sheet factor${f.missing ? " missing" : ""}` },
+    const card = h("div", { class: `sheet factor${f.lines ? " wide" : ""}${f.missing ? " missing" : ""}` },
       h("div", { class: "factor-head" }, h("h4", { text: f.title }), h("b", { class: f.headCls || "", text: f.missing ? "数据缺口" : f.headline })));
-    card.append(metricRows(f.rows));
+    card.append(f.lines ? positionLines(f.lines) : metricRows(f.rows));
     if (f.note) card.append(h("p", { class: "factor-note", text: f.note }));
     box.append(card);
   }
+}
+
+/** Spatial position: one short sentence per side, with the KPF description beneath it. */
+function positionLines(lines) {
+  const box = h("div", { class: "position-lines" });
+  for (const l of lines) {
+    box.append(h("div", { class: "pos-line" },
+      h("div", { class: "pos-head" },
+        h("b", { text: `${l.name} 短腿 ${usd(l.short)}` }),
+        h("span", { class: "muted small", text: isNum(l.distance) ? `距现价 ${pct(l.distance, 2)}${isNum(l.moves) ? `，${l.moves.toFixed(1)} 倍预期波动` : ""}` : "" }),
+        h("span", { class: `chip ${l.cls}`, text: l.text })),
+      h("p", { class: "pos-reason", text: l.reason }),
+      l.kpf ? h("p", { class: "pos-kpf", text: `KPF（只描述）：${l.kpf}` }) : null));
+  }
+  return box;
 }
 
 /** label | inline chart | value. A gap is a missing value; pending is "not measurable yet". */
@@ -400,7 +403,7 @@ function reductionView(m) {
   box.append(h("div", { class: "reduce-head" },
     h("b", { text: "决策前要确认的 3 件事" }),
     h("span", { class: `reduce-rule${blocked ? " blocked" : ""}`,
-      text: blocked ? "空间门未放行：按规则本轮不承保，以下仅供观察" : "规则已放行，承保与否由你决定" })));
+      text: blocked ? "有硬门槛未通过：按规则本轮不承保，以下仅供观察" : "没有硬门槛阻止；承保与否由你决定" })));
   const ol = h("ol", { class: "reduce-q" });
   for (const q of r.questions) {
     const item = reductionItem(q, m);
@@ -449,6 +452,8 @@ function reductionItem(q, m) {
       const inside = isNum(move) && move > 0 ? (d < move ? `，在到期前预期波动 ±${pct(move, 2)} 之内` : `，在到期前预期波动 ±${pct(move, 2)} 之外`) : "";
       line(`短腿 ${k} 离现价 ${pct(d, 2)}${inside}${isNum(b.short_abs_delta) ? `；短腿 Delta ${b.short_abs_delta.toFixed(2)}（0.5 为平值）` : ""}。`, "reduce-main");
     }
+    const sp = m.candidate?.spatial_position;
+    if (sp && !sp.error && sp.reason_cn) line(`空间位置（未验证）：${{ favorable: "相对有利", unfavorable: "相对不利" }[sp.state] || "不明"}，${sp.reason_cn}`);
     const ev = q.evidence || [];
     if (ev.length) {
       line(`系统看到、价格未必已包含的读数：${ev.map((e) => `${e.label_cn}${e.detail_cn ? ` ${e.detail_cn}` : ""} → ${e.relation_cn}`).join("；")}${q.conflict ? "。两者方向相反，系统不替你合并" : ""}。`);
@@ -507,8 +512,10 @@ function distanceRule(m) {
 function sideFactors(m) {
   const box = h("div", { class: "side-factors", title: "方向对照是固定规则：偏多读数对 Put 有利、对 Call 不利；空间看结构门" });
   for (const f of coreFactors(state.view || {}, currentSpot())) {
+    const own = f.key === "position" ? f.perSide?.[m.side] : null;
     const rel = f.key === "space"
-      ? { cls: f.missing ? "gap" : f.headCls === "ok" ? "ok" : "warn", text: f.missing ? "缺口" : f.headline }
+      ? { cls: f.missing ? "gap" : "", text: f.missing ? "缺口" : f.headline.replace(" / 100", "") }
+      : f.key === "position" ? (own ? { cls: own.cls, text: own.text } : { cls: "gap", text: "缺口" })
       : relationFor(f.missing ? null : f.lean, m.side, { background: f.background });
     box.append(h("div", { class: "sf" }, h("span", { text: f.title }), h("span", { class: `chip ${rel.cls}`, text: rel.text })));
   }
@@ -933,7 +940,7 @@ function renderAuditLog() {
   box.append(h("h4", { text: "主链路审计日志" }));
   if (!a) { box.append(h("p", { class: "muted", text: FIXTURE ? "示例模式不读取审计日志。" : "正在读取…" })); return; }
   if (a.error) { box.append(h("p", { class: "muted", text: `读取失败：${reasonCn(a.error)}` })); return; }
-  box.append(h("p", { class: "muted small", text: `每 ${dur(a.interval_ms)}一条周期快照，另记空间门变迁、复核、锁定与停止；按北京时间分日存放，保留 ${a.retention_days} 天，每日 23:00 快照长期保留。每个文件开头附中文字段说明，可直接交给模型阅读。${a.last_error ? ` 最近一次写入失败（${a.last_error}）。` : ""}` }));
+  box.append(h("p", { class: "muted small", text: `每 ${dur(a.interval_ms)}一条周期快照，另记锚点效用变迁、复核、锁定与停止；按北京时间分日存放，保留 ${a.retention_days} 天，每日 23:00 快照长期保留。每个文件开头附中文字段说明，可直接交给模型阅读。${a.last_error ? ` 最近一次写入失败（${a.last_error}）。` : ""}` }));
   const t = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ...["文件", "记录", "其中事件", "哈希链", "时间范围"].map((x) => h("th", { text: x })))));
   const tb = h("tbody");
   for (const f of (a.files || []).slice(0, 10)) {
@@ -989,6 +996,8 @@ const KIND_NOTE = {
   idle: "登记在数据目录中，但当前没有进入任何读数或判断。",
 };
 const GATE_STATE_CN = { STRUCTURE_BLOCKED: "关闭", STRUCTURE_ELIGIBLE: "放行" };
+// anchor-utility transitions; older rows recorded the producer gate (anchor rule)
+const ANCHOR_STATE_CN = { ANCHOR_EFFECTIVE: "锚点有效", ANCHOR_INEFFECTIVE: "锚点失效" };
 const RUNTIME_CN = {
   USER_DEPLOYED_NATIVE_OBSERVED: "已部署，原生观察", NATIVE_OBSERVED: "原生观察", DEPLOYED_SEPARATE_DATA_SERVICE: "独立数据服务",
   LOCAL_CANDIDATE: "候选版本", LOCAL_NOT_DEPLOYED: "清单记为未部署", LOCAL_WPEM_PROFILE_NOT_DEPLOYED: "清单记为未部署",
@@ -1036,20 +1045,32 @@ function renderRecords() {
 
   const right = h("div", { class: "sheet pad" });
   const gate = v.space_gate || {};
-  right.append(h("h4", { text: "空间门" }),
-    h("p", { class: "muted", text: `${gate.eligible ? "放行" : "关闭"}，自 ${clock(gateClosed(v)?.since ?? gate.since_ts_ms)}${gateClosed(v)?.atLeast ? "（按每日快照推算的下限）" : ""}；锚点 ${isNum(get(gate, "anchor.score")) ? gate.anchor.score.toFixed(1) : "缺失"}，净 Gamma ${isNum(get(gate, "net_gamma.value")) ? compactUsd(gate.net_gamma.value) : "缺失"}${isNum(get(gate, "net_gamma.age_ms")) ? `（${dur(gate.net_gamma.age_ms)}前）` : ""}` }));
+  right.append(h("h4", { text: "空间结构（评价）" }),
+    h("p", { class: "muted", text: `只作评价，不作准入：锚点 ${isNum(get(gate, "anchor.score")) ? `${gate.anchor.score.toFixed(1)} / 100` : "缺失"}，净 Gamma ${isNum(get(gate, "net_gamma.value")) ? compactUsd(gate.net_gamma.value) : "缺失"}${isNum(get(gate, "net_gamma.age_ms")) ? `（${dur(gate.net_gamma.age_ms)}前）` : ""}；FMZ 原生空间门${gate.producer_state === "STRUCTURE_ELIGIBLE" ? "放行" : gate.producer_state ? "关闭" : "缺失"}（仅参考）` }));
+  // Anchor-utility rows (since 2026-10-13) and the older gate rows are different things: list them apart.
   const tr = v.transitions || [];
-  right.append(h("h4", { text: "空间门变迁" }), tr.length
-    ? h("ul", { class: "q" }, ...tr.slice(-8).reverse().map((x) => h("li", { text: `${clock(x.transition_ts_ms)}  ${GATE_STATE_CN[x.previous_state] || "未知"} → ${GATE_STATE_CN[x.current_state] || "未知"}` })))
-    : h("p", { class: "muted", text: "最近没有变迁。" }));
+  const anchorRows = tr.filter((x) => x.kind === "anchor_utility");
+  const oldRows = tr.filter((x) => x.kind !== "anchor_utility");
+  right.append(h("h4", { text: "锚点效用变迁" }), anchorRows.length
+    ? h("ul", { class: "q" }, ...anchorRows.slice(-8).reverse().map((x) => h("li", { text: `${clock(x.transition_ts_ms)}  ${ANCHOR_STATE_CN[x.previous_state] || "未知"} → ${ANCHOR_STATE_CN[x.current_state] || "未知"}${isNum(get(x, "anchor.score")) ? `（评分 ${x.anchor.score.toFixed(1)}）` : ""}` })))
+    : h("p", { class: "muted", text: "2026-10-13 起记录锚点从有效变为失效或反过来的时刻；目前还没有变化。" }),
+    h("p", { class: "muted small", text: "锚点只作参考，它的变化不影响准入。" }));
+  if (oldRows.length) right.append(h("details", { class: "old-gate" },
+    h("summary", { text: `此前的空间门变迁（旧口径，锚点曾是准入条件，${oldRows.length} 条）` }),
+    h("ul", { class: "q" }, ...oldRows.slice(-8).reverse().map((x) => h("li", { text: `${clock(x.transition_ts_ms)}  ${GATE_STATE_CN[x.previous_state] || "未知"} → ${GATE_STATE_CN[x.current_state] || "未知"}` })))));
   const days = v.daily_snapshots || [];
+  // evaluation-era days show the anchor score; earlier days kept the old gate state
+  const dayGate = (d) => (String(get(d, "space_gate.gate_basis") || "").startsWith("evaluation")
+    ? `锚点 ${isNum(get(d, "space_gate.anchor.score")) ? d.space_gate.anchor.score.toFixed(0) : "缺失"}`
+    : `空间门${GATE_STATE_CN[get(d, "space_gate.state")] || "未知"}（旧口径）`);
   const dayReview = (c) => (c.review?.status === "not_attached" ? "未复核" : c.review?.status === "attached" ? "已复核" : statusCn(c.review?.status));
   right.append(h("h4", { text: "每日快照（北京时间 23:00）" }), days.length
-    ? h("ul", { class: "q" }, ...days.slice(-7).reverse().map((d) => h("li", { text: `${d.bjt_day}  空间门${GATE_STATE_CN[get(d, "space_gate.state")] || "未知"}  ${(d.candidates || []).map((c) => `${c.side === "put" ? "Put" : "Call"} ${dayReview(c)}`).join("，")}` })))
+    ? h("div", {}, h("ul", { class: "q" }, ...days.slice(-7).reverse().map((d) => h("li", { text: `${d.bjt_day}  ${dayGate(d)} · ${(d.candidates || []).map((c) => `${c.side === "put" ? "Put" : "Call"} ${dayReview(c)}`).join(" · ")}` }))),
+      h("p", { class: "muted small", text: "“旧口径”指 2026-10-13 之前空间门还是准入条件时的记录；之后空间结构只作评价，这里记锚点评分。" }))
     : h("p", { class: "muted", text: "还没有每日快照。" }));
   const ns = v.notification_state || {};
   right.append(h("h4", { text: "邮件通知" }), h("p", { class: "muted",
-    text: get(ns, "last_attempt.attempted_at_ms") ? `最近一次 ${clock(ns.last_attempt.attempted_at_ms)}，${ns.last_attempt.status === "sent" ? "已发送" : ns.last_attempt.status ? "未发送成功" : "状态未记录"}` : "还没有发送过空间门变迁通知。" }));
+    text: get(ns, "last_attempt.attempted_at_ms") ? `最近一次 ${clock(ns.last_attempt.attempted_at_ms)}，${ns.last_attempt.status === "sent" ? "已发送" : ns.last_attempt.status ? "未发送成功" : "状态未记录"}` : "还没有发送过锚点效用变迁通知。" }));
   right.append(scheduleView(v.scheduled_review));
   right.append(versionsView(v));
   box.append(right);

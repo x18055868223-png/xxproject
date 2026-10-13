@@ -45,7 +45,7 @@ const TREND_CN = { strong_bullish_bias: "强偏多", bullish_bias: "偏多", neu
 const FLOW_DIR_CN = { bullish: "主动买方占优", bearish: "主动卖方占优", neutral: "均衡" };
 const GAMMA_CN = { POSITIVE_GAMMA_PINNING: "正 Gamma 钉住", NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma 放大", TRANSITION: "翻转位附近过渡", UNKNOWN: "未知" };
 const MACRO_CN = { "Mild Tailwind": "温和顺风", "Strong Tailwind": "强顺风", "Mild Headwind": "温和逆风", "Strong Headwind": "强逆风", Neutral: "中性" };
-const GATE_CN = { STRUCTURE_BLOCKED: "空间门关闭", STRUCTURE_ELIGIBLE: "空间门放行" };
+const GATE_CN = { STRUCTURE_BLOCKED: "FMZ 空间门关闭（仅参考）", STRUCTURE_ELIGIBLE: "FMZ 空间门放行（仅参考）" };
 
 const btcText = (v, d = 5) => (isNum(v) ? `${v < 0 ? "−" : ""}${Math.abs(v).toFixed(d).replace(/0+$/, "").replace(/\.$/, "")} BTC` : "—");
 const signedBtc = (v, d = 5) => (isNum(v) ? `${v > 0 ? "+" : ""}${btcText(v, d)}` : "—");
@@ -501,7 +501,7 @@ export function processView(series, c, { be }) {
 
   // lane 3: state strips
   const strips = [
-    ["空间门", (p) => (p.space_gate_state === "STRUCTURE_ELIGIBLE" ? "var(--ok)" : p.space_gate_state ? "var(--warn)" : null)],
+    ["FMZ 空间门", (p) => (p.space_gate_state === "STRUCTURE_ELIGIBLE" ? "var(--ok)" : p.space_gate_state ? "var(--warn)" : null)],
     ["主动成交", (p) => {
       if (p.flow_ready === false || !p.flow_direction) return null;
       const sgn = FLOW_SIGN[p.flow_direction];
@@ -548,7 +548,7 @@ export function processView(series, c, { be }) {
     tip.textContent = [mdhm.format(new Date(T(p))),
       `现价 ${usd(p.spot_usd)}，短腿距离 ${signedPct(p.short_distance_pct)}`,
       isNum(p.float_pnl_btc) ? `浮动盈亏 ${signedBtc(p.float_pnl_btc)}，剩余可赚 ${btcText(p.remaining_credit_btc)}` : "浮动盈亏无法计算（早期样本已精简或缺标记价）",
-      `空间门${gate}，${p.flow_ready === false ? "主动成交未就绪" : FLOW_DIR_CN[p.flow_direction] || "主动成交方向不明"}`].join("\n");
+      `FMZ 空间门${gate}（仅参考），${p.flow_ready === false ? "主动成交未就绪" : FLOW_DIR_CN[p.flow_direction] || "主动成交方向不明"}`].join("\n");
     tip.hidden = false;
     tip.style.left = `${Math.min(box.width - 230, Math.max(0, ev.clientX - box.left + 12))}px`;
     tip.style.top = `${ev.clientY - box.top + 12}px`;

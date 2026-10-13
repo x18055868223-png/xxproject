@@ -326,7 +326,7 @@ details.uncited > summary { cursor: pointer; color: var(--ink-2); font-size: 13p
 .factor .kv { grid-template-columns: max-content 1fr; font-size: 12.5px; }
 .kv dd.gap { color: var(--warn); }
 .factor-note { margin: 8px 0 0; color: var(--ink-3); font-size: 12px; line-height: 1.5; }
-.side-factors { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.side-factors { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
 .sf { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-3); }
 .sf .chip { align-self: flex-start; }
 .chip.gap { background: transparent; border: 1px dashed var(--warn); color: var(--warn); }
@@ -481,3 +481,11 @@ ul.q li { font-size: 13.5px; line-height: 1.6; padding: 3px 0; }
 .map-svg text.halo { paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; stroke-linejoin: round; }
 .lock-more-row td { text-align: center; padding: 8px; }
 button.link { background: none; border: 0; padding: 0; color: var(--depth); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; }
+/* spatial position factor */
+.factor.wide { grid-column: 1 / -1; }
+.position-lines { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; }
+@media (max-width: 760px) { .position-lines { grid-template-columns: 1fr; } }
+.pos-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.pos-head b { font-size: 13px; }
+.pos-reason { margin: 3px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+.pos-kpf { margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
