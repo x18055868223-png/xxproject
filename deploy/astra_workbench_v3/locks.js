@@ -20,6 +20,11 @@ const GAP_CN = {
   close_fee_unknown: "平仓费未知",
   close_fee_missing: "平仓费缺失",
   close_debit_missing: "平仓报价缺失",
+  entry_short_missing: "锁定时短腿成交价缺失",
+  entry_long_missing: "锁定时长腿成交价缺失",
+  short_mark_missing: "短腿标记价缺失",
+  long_mark_missing: "长腿标记价缺失",
+  quantity_missing: "数量缺失",
   long_depth_insufficient: "保护腿盘口深度不足",
   short_depth_insufficient: "短腿盘口深度不足",
   baseline_entry_after_fee_missing: "锁定时扣费后信用缺失",
@@ -43,6 +48,7 @@ const MACRO_CN = { "Mild Tailwind": "温和顺风", "Strong Tailwind": "强顺�
 const GATE_CN = { STRUCTURE_BLOCKED: "空间门关闭", STRUCTURE_ELIGIBLE: "空间门放行" };
 
 const btcText = (v, d = 5) => (isNum(v) ? `${v < 0 ? "−" : ""}${Math.abs(v).toFixed(d).replace(/0+$/, "").replace(/\.$/, "")} BTC` : "—");
+const signedBtc = (v, d = 5) => (isNum(v) ? `${v > 0 ? "+" : ""}${btcText(v, d)}` : "—");
 const signedPct = (v, d = 2) => (isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(d)}%` : "—");
 
 export function contractTitle(c = {}) {
@@ -152,18 +158,12 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   // 2. since lock
   const keyRows = ["liability.short_distance", "liability.protection_distance", "liability.baseline_breakeven_1_distance",
     "liability.baseline_breakeven_2_distance", "quote.visible_credit_btc", "quote.net_credit_after_entry_fee_btc",
-    "close.debit_btc", "close.net_debit_after_close_fee_btc", "fee.entry_fee_btc"].map((k) => rows[k]).filter(Boolean);
+    "fee.entry_fee_btc"].map((k) => rows[k]).filter(Boolean);
   const t = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ...["项目", "锁定时", "最新", "变化"].map((x) => h("th", { text: x })))));
   const tb = h("tbody");
   for (const r of keyRows) tb.append(changeRow(r));
   t.append(tb);
-  const result = h("div", { class: `ld-result${isNum(ref.reference_result_btc) ? (ref.reference_result_btc >= 0 ? " ok" : " bad") : ""}` },
-    h("b", { text: "按当前平仓报价估算的账面结果" }),
-    isNum(ref.reference_result_btc)
-      ? h("span", { class: "num", text: `${btcText(ref.reference_result_btc)}${isNum(t1Spot) ? `，约 ${ref.reference_result_btc < 0 ? "−" : ""}${usd(Math.abs(ref.reference_result_btc * t1Spot))} 美元` : ""}` })
-      : h("span", { text: `无法估算：${[...new Set((ref.gap_reasons || []).map(gapCn))].join("、") || "资料不足"}` }),
-    h("small", { text: "＝ 锁定时扣费后信用 − 当前平仓借记 − 平仓费；只是估算，不是成交盈亏。" }));
-  box.append(section("之后的变化", result, h("div", { class: "scroll-x" }, t)));
+  box.append(section("之后的变化", floatView(series, seriesError), h("div", { class: "scroll-x" }, t)));
 
   // 3. market context and the program's two-question summary
   const ctx = (d.rows || []).filter((r) => r.group === "context" || r.group === "opinion" || r.group === "risk");
@@ -195,10 +195,17 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
     e.gap_count ? `缺口 ${e.gap_count} 次${gapText ? `（${gapText}${e.gap_storage_truncated ? "，部分明细未保留" : ""}）` : ""}` : "没有缺口",
     get(d, "sampling.collector_error") ? "后台采样出错，最新点可能滞后" : null,
   ].filter(Boolean).join("；");
-  // Sampling rides on the background refresh: one cycle = the refresh itself plus the wait between cycles.
+  // With its own sampler thread the cadence is the setting; without it, sampling rides on the refresh cycle.
+  const every = dur(get(d, "sampling.interval_ms") ?? 60000);
   const cycleMs = isNum(refresh?.total_ms) ? refresh.total_ms + (refresh.loop_wait_s ?? 30) * 1000 : null;
-  const cadence = cycleMs ? `实际随后台刷新进行，最近一轮约 ${Math.round(cycleMs / 1000)} 秒，所以点距通常在 1–3 分钟` : "实际随后台刷新进行";
-  box.append(section("采样过程", h("p", { class: "muted", text: `${sampling}。设定最短每 ${dur(get(d, "sampling.interval_ms") ?? 60000)}一次，${cadence}。` })));
+  const cadence = get(d, "sampling.sampler_thread")
+    ? `由独立采样线程每 ${every}采一次（同时追踪多条或抓取较慢时会略长）`
+    : `设定最短每 ${every}一次，实际随后台刷新进行${cycleMs ? `，最近一轮约 ${Math.round(cycleMs / 1000)} 秒` : ""}`;
+  const r = get(d, "sampling.retention");
+  const keep = r ? `完整证据保留：最近 ${dur(r.full_window_ms)}逐个保留，更早每 ${dur(r.dense_bucket_ms)}留 1 个；结束后 ${dur(r.dense_until_ms)}内每 ${dur(r.dense_bucket_ms)}、${dur(r.sparse_until_ms)}内每 ${dur(r.sparse_bucket_ms)}留 1 个，之后只留锁定时与最后一点，${dur(r.drop_after_ms)}后移除。过程曲线保留每个采样点。`
+    : "";
+  box.append(section("采样过程", h("p", { class: "muted", text: `${sampling}。${cadence}。` }),
+    keep ? h("p", { class: "muted small", text: keep }) : null));
 
   // 5. how to read
   if ((d.limitations_cn || []).length) {
@@ -373,6 +380,33 @@ const GAMMA_TONE = { POSITIVE_GAMMA_PINNING: "var(--depth)", NEGATIVE_GAMMA_AMPL
 const hhmm = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 const mdhm = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 
+/**
+ * Floating PnL the way Deribit shows an open option position: per leg (mark − entry)
+ * × signed size, summed; no fees, no close cost (a held spread is settled, not closed).
+ * A credit spread's profit is capped at its entry credit, so what is left to earn is
+ * the spread's current mark value.
+ */
+function floatView(series, seriesError) {
+  const pts = series?.points || [];
+  const p = [...pts].reverse().find((x) => isNum(x.float_pnl_btc));
+  if (!p) {
+    const last = pts[pts.length - 1];
+    const why = last?.float_gaps?.length ? [...new Set(last.float_gaps.map(gapCn))].join("、")
+      : series ? "标记价不可用" : seriesError ? `过程读取失败：${seriesError}` : "正在读取…";
+    return h("div", { class: "ld-result" }, h("b", { text: "锁定以来浮动盈亏" }), h("span", { text: why }));
+  }
+  const v = p.float_pnl_btc, spot = p.spot_usd;
+  const captured = isNum(p.max_profit_btc) && p.max_profit_btc > 0 ? v / p.max_profit_btc : null;
+  return h("div", { class: `ld-result${v >= 0 ? " ok" : " bad"}` },
+    h("b", { text: "锁定以来浮动盈亏" }),
+    h("span", { class: "num", text: `${signedBtc(v)}${isNum(spot) ? `，约 ${v < 0 ? "−" : "+"}${usd(Math.abs(v * spot))} 美元` : ""}` }),
+    h("span", { class: "ld-cap", text: [
+      `最大盈利 ${btcText(p.max_profit_btc)}（锁定时开仓信用）`,
+      `剩余可赚 ${btcText(p.remaining_credit_btc)}`,
+      isNum(captured) ? `浮动盈亏占最大盈利 ${(captured * 100).toFixed(0)}%` : null].filter(Boolean).join(" · ") }),
+    h("small", { text: `＝ 每条腿（当前标记价 − 锁定时成交价）× 方向，相加；与 Deribit 组合浮动盈亏同口径，不含手续费和平仓价差。截至 ${clock(p.asof_ms ?? p.recorded_at_ms)}；持有到期按交割价结算。` }));
+}
+
 /** Median of the sampling intervals, so the page states the real cadence. */
 export function cadence(points) {
   const t = points.map((p) => p.asof_ms ?? p.recorded_at_ms).filter(isNum).sort((a, b) => a - b);
@@ -382,7 +416,7 @@ export function cadence(points) {
 
 /**
  * Three lanes sharing one time axis: price against the fixed liability lines,
- * the reference result (t0 credit − current close cost), and state strips
+ * the floating PnL (Deribit marks) under its capped maximum, and state strips
  * (space gate, active flow relative to this side, gamma regime).
  */
 export function processView(series, c, { be }) {
@@ -429,21 +463,23 @@ export function processView(series, c, { be }) {
 
   // lane 2: reference result
   const [ry0, ry1] = lanes.result;
-  const res = pts.filter((p) => isNum(p.reference_result_btc));
-  svg.append(s("text", { x: PL, y: ry0 - 4, class: "lane", text: "按当前平仓报价估算的账面结果（BTC，不是成交盈亏）" }));
+  const res = pts.filter((p) => isNum(p.float_pnl_btc));
+  const cap = res.map((p) => p.max_profit_btc).find(isNum);
+  svg.append(s("text", { x: PL, y: ry0 - 4, class: "lane", text: "锁定以来浮动盈亏（Deribit 标记价口径，BTC；虚线为最大盈利）" }));
   if (res.length) {
-    const rv = res.map((p) => p.reference_result_btc);
-    const rmax = Math.max(0, ...rv), rmin = Math.min(0, ...rv);
+    const rv = res.map((p) => p.float_pnl_btc);
+    const rmax = Math.max(0, ...rv, isNum(cap) ? cap : 0), rmin = Math.min(0, ...rv);
     const span = (rmax - rmin) || 0.001;
     const RY = (v) => ry1 - (v - rmin) / span * (ry1 - ry0);
     svg.append(s("line", { x1: PL, x2: W - PR, y1: RY(0), y2: RY(0), stroke: "var(--rule)" }));
+    if (isNum(cap)) svg.append(s("line", { x1: PL, x2: W - PR, y1: RY(cap), y2: RY(cap), stroke: "var(--ok)", "stroke-dasharray": "4 3" }));
     svg.append(s("text", { x: PL - 4, y: RY(rmax) + 3, "text-anchor": "end", class: "tick", text: rmax.toFixed(4) }));
     if (rmin < 0) svg.append(s("text", { x: PL - 4, y: RY(rmin) + 3, "text-anchor": "end", class: "tick", text: rmin.toFixed(4) }));
-    svg.append(s("path", { d: line(res, (p) => p.reference_result_btc, RY), fill: "none", stroke: "var(--ink-2)", "stroke-width": 1.4 }));
-    for (const p of res) svg.append(s("circle", { cx: X(T(p)), cy: RY(p.reference_result_btc), r: 1.7,
-      fill: p.reference_result_btc >= 0 ? "var(--ok)" : "var(--liability)" }));
+    svg.append(s("path", { d: line(res, (p) => p.float_pnl_btc, RY), fill: "none", stroke: "var(--ink-2)", "stroke-width": 1.4 }));
+    for (const p of res) svg.append(s("circle", { cx: X(T(p)), cy: RY(p.float_pnl_btc), r: 1.7,
+      fill: p.float_pnl_btc >= 0 ? "var(--ok)" : "var(--liability)" }));
   } else {
-    svg.append(s("text", { x: PL + 8, y: (ry0 + ry1) / 2, class: "tick", text: "平仓报价或费用不足，无法估算" }));
+    svg.append(s("text", { x: PL + 8, y: (ry0 + ry1) / 2, class: "tick", text: "两腿标记价不可用，无法计算浮动盈亏" }));
   }
 
   // lane 3: state strips
@@ -494,7 +530,7 @@ export function processView(series, c, { be }) {
     const gate = p.space_gate_state === "STRUCTURE_ELIGIBLE" ? "放行" : p.space_gate_state ? "关闭" : "未知";
     tip.textContent = [mdhm.format(new Date(T(p))),
       `现价 ${usd(p.spot_usd)}，短腿距离 ${signedPct(p.short_distance_pct)}`,
-      isNum(p.reference_result_btc) ? `账面结果 ${btcText(p.reference_result_btc)}` : "账面结果无法估算",
+      isNum(p.float_pnl_btc) ? `浮动盈亏 ${signedBtc(p.float_pnl_btc)}，剩余可赚 ${btcText(p.remaining_credit_btc)}` : "浮动盈亏无法计算（早期样本已精简或缺标记价）",
       `空间门${gate}，${p.flow_ready === false ? "主动成交未就绪" : FLOW_DIR_CN[p.flow_direction] || "主动成交方向不明"}`].join("\n");
     tip.hidden = false;
     tip.style.left = `${Math.min(box.width - 230, Math.max(0, ev.clientX - box.left + 12))}px`;

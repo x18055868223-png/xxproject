@@ -350,6 +350,8 @@ function deck(m, side, blockers) {
     fig(ratioPct(m.creditToWidth), "可见信用占宽度", "",
       isNum(m.netCredit) ? `净 ${btc(m.netCredit)} BTC ≈ ${usd(m.netCreditUsd)} 美元${m.feeAssumed ? "（费用按假设）" : ""}，${quoteAge}` : quoteAge),
   ));
+  const reduced = reductionView(m);
+  if (reduced) card.append(reduced);
   card.append(distanceRule(m));
   card.append(sideFactors(m));
 
@@ -359,6 +361,78 @@ function deck(m, side, blockers) {
   card.append(qa);
   card.append(actions(m));
   return card;
+}
+
+// Decision reduction: what is left for the user once Q1/Q2 are read. Built by the
+// program (no model): folded items need a reason code, opposite evidence is not
+// netted, nothing is concluded. Numbers already on the card are not repeated.
+const KIND_TAG = { belief: "你的判断", judgment: "你的判断", preference: "你的偏好" };
+
+function reductionView(m) {
+  const r = m.candidate?.decision_reduction;
+  if (!r || r.error || !Array.isArray(r.questions)) return null;
+  const box = h("section", { class: "reduce", onclick: (e) => e.stopPropagation() });
+  const rs = r.rule_state || {};
+  const blocked = rs.status === "blocked";
+  box.append(h("div", { class: `reduce-head${blocked ? " blocked" : ""}` },
+    h("b", { text: "决策收束" }),
+    h("span", { text: blocked
+      ? "空间门（结构门）未放行：按项目规则本轮不承保，以下问题仅供观察"
+      : "规则已放行；承保与否由你决定，以下是系统无权替你回答的问题" })));
+  const ol = h("ol", { class: "reduce-q" });
+  for (const q of r.questions) ol.append(reductionQuestion(q, m));
+  box.append(ol);
+
+  const cov = r.coverage || {};
+  const folded = (r.folded || []).filter((f) => f.count > 0);
+  const more = h("details", { class: "reduce-more" },
+    h("summary", { text: `已消化 ${cov.folded ?? 0} 条（共 ${cov.inputs ?? 0} 条程序事实；${cov.evidence ?? 0} 条作为证据留在问题 1）` }),
+    h("p", { class: "muted small", text: folded.map((f) => `${f.label_cn} ${f.count}`).join(" · ") }),
+    h("p", { class: "muted small", text: "折叠只依据规则或来源标注（重复、不投票、无方向、已在规则或数字中体现），不判断重要性；需要时可在下方 Q1/Q2 和推理审计中查看原条目。" }));
+  box.append(more);
+  if ((r.unclassified || []).length) {
+    box.append(h("p", { class: "reduce-left", title: r.unclassified.map((u) => u.ref).join(" · "),
+      text: `另有 ${r.unclassified.length} 条系统未能归类，原样留给你：${r.unclassified.map((u) => u.label_cn || reasonCn(u.code)).join("、")}` }));
+  }
+  box.append(h("p", { class: "muted small reduce-out", text: `模型外（请自行核对）：${(r.outside_model_cn || []).join(" · ")}` }));
+  return box;
+}
+
+function reductionQuestion(q, m) {
+  const li = h("li", {}, h("span", { class: "reduce-tag", text: KIND_TAG[q.kind] || "你的判断" }), h("b", { text: q.text_cn }));
+  const lines = [];
+  if (q.id === "R1") {
+    const b = q.boundary || {};
+    const d = b.short_distance_pct;
+    const ratio = isNum(d) && d >= 0 && isNum(m.sigmaPct) && m.sigmaPct > 0 ? d / m.sigmaPct : null;
+    const delta = isNum(b.short_abs_delta) ? `短腿 Delta 绝对值 ${b.short_abs_delta.toFixed(2)}（市场原始读数）` : "";
+    if (isNum(d) && d < 0) lines.push(`现价已进入短腿责任区${delta ? `；${delta}` : ""}`);
+    else if (isNum(ratio)) lines.push(`短腿距离约为到期前预期波动的 ${ratio.toFixed(1)} 倍${delta ? `；${delta}` : ""}`);
+    else if (delta) lines.push(delta);
+    const ev = q.evidence || [];
+    if (ev.length) {
+      lines.push(`系统看到的方向证据：${ev.map((e) => `${e.label_cn}：${e.relation_cn}`).join("；")}${q.conflict ? "（方向相反，未合并）" : ""}`);
+    } else {
+      lines.push("没有可用的方向证据，落点只能由你判断");
+    }
+  } else if (q.id === "R2") {
+    const n = q.numbers || {};
+    // Credit and its share of width are on the card above; only what it lacks is added here.
+    if ((n.missing_cn || []).length) lines.push(`补偿数字暂缺：缺${n.missing_cn.join("、")}，其余照常`);
+    if (isNum(n.loss_at_protection_btc)) lines.push(`到期在保护腿处净亏 ${btc(n.loss_at_protection_btc)} BTC（已含费用）`);
+    for (const f of q.flags_cn || []) lines.push(f);
+    if (isNum(q.m_ref_btc)) lines.push(`程序参照 M_ref ${btc(q.m_ref_btc)} BTC`);
+    if (q.tail_cn) lines.push(q.tail_cn);
+    if (q.premise_cn) lines.push(q.premise_cn);
+  } else if (q.id === "R3") {
+    const n = q.numbers || {};
+    if (isNum(n.payout_at_protection_btc)) {
+      lines.push(`到期在保护腿 ${usd(n.protection_usd)} 时赔 ${btc(n.payout_at_protection_btc)} BTC${isNum(n.payout_at_deep_btc) ? `；跌到 ${usd(n.deep_usd)} 时赔 ${btc(n.payout_at_deep_btc)} BTC` : ""}`);
+    }
+  }
+  for (const line of lines) li.append(h("span", { class: "reduce-line", text: line }));
+  if (q.why_user_cn) li.append(h("span", { class: "reduce-why", text: `为什么系统不回答：${q.why_user_cn}` }));
+  return li;
 }
 
 function fig(value, label, cls = "", sub = "") {
@@ -371,24 +445,24 @@ function chip(text, cls = "") { return h("span", { class: `chip ${cls}`, text })
 function distanceRule(m) {
   // From spot toward this book's adverse side, in % of price; the blue part is
   // the implied expected move, so a short leg inside it is within one move.
+  // Marks and labels are HTML placed by percent, so text is never stretched with the bar.
   const wrap = h("div", { class: "sigma-rule", title: "从现价朝本单不利方向的距离（%）；蓝色为到期前隐含预期波动范围" });
   if (!isNum(m.shortOutsidePct)) return wrap;
   const move = isNum(m.sigmaPct) ? m.sigmaPct : null;
   const max = Math.max(move ? 2 * move : 0, (m.beOutsidePct || 0) * 1.3, m.shortOutsidePct * 1.3, 1);
-  const svg = s("svg", { viewBox: "0 0 400 40", preserveAspectRatio: "none" });
-  const X = (v) => 8 + Math.max(0, Math.min(max, v)) / max * 384;
-  svg.append(s("rect", { x: 8, y: 16, width: 384, height: 6, rx: 3, fill: "var(--paper-2)" }));
-  if (move) svg.append(s("rect", { x: 8, y: 16, width: X(move) - 8, height: 6, rx: 3, fill: "var(--depth-soft)" }));
-  svg.append(s("rect", { x: X(Math.max(0, m.shortOutsidePct)), y: 16, width: Math.max(0, X(max) - X(Math.max(0, m.shortOutsidePct))), height: 6, fill: "var(--liability-soft)" }));
+  const P = (v) => `${(Math.max(0, Math.min(max, v)) / max * 100).toFixed(2)}%`;
+  const short = Math.max(0, m.shortOutsidePct);
+  const track = h("div", { class: "sr-track" },
+    move ? h("span", { class: "sr-move", style: `width:${P(move)}` }) : null,
+    h("span", { class: "sr-liab", style: `left:${P(short)}` }));
+  const marks = [h("span", { class: `sr-short ${m.side}`, style: `left:${P(short)}` }),
+    h("span", { class: `sr-short-label ${m.side}`, style: `left:${P(short)}`, text: "短腿" })];
+  if (isNum(m.beOutsidePct)) marks.push(h("span", { class: `sr-be ${m.side}`, style: `left:${P(m.beOutsidePct)}`, title: "盈亏平衡" }));
   const ticks = move ? [0, move / 2, move, 2 * move] : [0, max / 2, max];
-  for (const t of ticks) svg.append(s("text", { x: X(t), y: 36, "text-anchor": t === 2 * move ? "end" : "middle", "font-size": 9, fill: "var(--ink-3)",
+  const labels = ticks.map((t, i) => h("span", {
+    class: `sr-tick${i === 0 ? " first" : i === ticks.length - 1 ? " last" : ""}`, style: `left:${P(t)}`,
     text: t === 0 ? "现价" : move && Math.abs(t - move) < 1e-9 ? `${pct(t, 2)} 预期波动` : pct(t, 2) }));
-  svg.append(s("line", { x1: X(m.shortOutsidePct), x2: X(m.shortOutsidePct), y1: 8, y2: 26, stroke: `var(--${m.side})`, "stroke-width": 2.5 }));
-  svg.append(s("text", { x: X(m.shortOutsidePct), y: 7, "text-anchor": "middle", "font-size": 9, fill: `var(--${m.side})`, text: "短腿" }));
-  if (isNum(m.beOutsidePct)) {
-    svg.append(s("line", { x1: X(m.beOutsidePct), x2: X(m.beOutsidePct), y1: 12, y2: 26, stroke: `var(--${m.side})`, "stroke-dasharray": "2 2" }));
-  }
-  wrap.append(svg);
+  wrap.append(track, ...marks, ...labels);
   return wrap;
 }
 
