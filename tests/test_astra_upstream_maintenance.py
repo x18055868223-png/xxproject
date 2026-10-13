@@ -5,6 +5,7 @@ import urllib.error
 import pytest
 
 from tools import astra_underwriting_discovery_v20 as discovery
+from tools import astra_workbench_reading_v1 as reading
 from tools import astra_workbench_v20 as module
 from test_astra_locked_followup import setup
 
@@ -48,3 +49,5 @@ def test_candidates_carry_the_upstream_reason_through_both_cache_layers(tmp_path
             assert item["review_gate"]["reasons"] == ["discovery_refresh_error", "upstream_deribit_maintenance"]
             assert item["upstream"]["code"] == "deribit_maintenance"
             assert item["error_type"] and item["error_type"] not in item["review_gate"]["reasons"]
+    page = reading.workbench_page(wb.cached_view(reading_only=True))
+    assert all(item["upstream"]["code"] == "deribit_maintenance" for item in page["candidates"])
