@@ -35,6 +35,7 @@ if __package__:
     from . import astra_underwriting_guidance_v20 as guidance
     from . import astra_decision_reduction_v1 as decision_reduction
     from . import astra_spatial_position_v1 as spatial_position
+    from . import astra_cross_asset_v1 as cross_asset
     from . import astra_underwriting_public_quote_v20 as public_quote
     from . import astra_underwriting_review_v20 as review_core
     from . import astra_underwriting_store_v20 as store
@@ -61,6 +62,7 @@ else:  # direct CLI execution from tools/
     import astra_underwriting_guidance_v20 as guidance
     import astra_decision_reduction_v1 as decision_reduction
     import astra_spatial_position_v1 as spatial_position
+    import astra_cross_asset_v1 as cross_asset
     import astra_underwriting_public_quote_v20 as public_quote
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_store_v20 as store
@@ -1543,6 +1545,8 @@ class WorkbenchConfig:
     chain_audit_enabled: bool = True
     chain_audit_interval_ms: int = 900_000
     chain_audit_retention_days: int = 30
+    # BTC cross-asset reference (background card): Yahoo hourly bars after each US close.
+    cross_asset_enabled: bool = False
 
     @property
     def state_path(self) -> Path:
@@ -1717,6 +1721,15 @@ class AstraWorkbench:
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
+        # Cross-asset reference: fetched in its own thread after each US close, never on a page read.
+        self.cross_asset_get_json = cross_asset.default_get_json
+        self._cross_asset_thread: threading.Thread | None = None
+        self._cross_asset: dict[str, Any] | None = None
+        try:
+            loaded = json.loads((config.state_dir / "cross_asset.json").read_text(encoding="utf-8"))
+            self._cross_asset = loaded if isinstance(loaded, dict) and loaded.get("schema") == cross_asset.SCHEMA else None
+        except (OSError, ValueError):
+            self._cross_asset = None
         self._reconcile_interrupted_review()
         self._compact_state_once()
 
@@ -3357,6 +3370,44 @@ class AstraWorkbench:
                                                        "error_type": type(exc).__name__}
         self._research_pending_payloads.clear()
 
+    def refresh_cross_asset(self, now_ms: int | None = None, *, force: bool = False) -> dict[str, Any] | None:
+        now = self.clock_ms() if now_ms is None else now_ms
+        if not force and not cross_asset.due(self._cross_asset, now):
+            return self._cross_asset
+        result = cross_asset.collect(self.cross_asset_get_json, now)
+        try:
+            json.dumps(result, allow_nan=False)  # a non-finite value must never reach the page
+        except (TypeError, ValueError):
+            result = {"schema": cross_asset.SCHEMA, "status": "invalid_values", "computed_at_ms": now}
+        previous = self._cross_asset
+        if result.get("status") != "ok" and isinstance(previous, dict) and previous.get("status") == "ok":
+            # keep the last good reading on screen with its own clock; the failure is shown beside it
+            result = {**previous, "last_attempt": {"computed_at_ms": now, "status": result.get("status"),
+                                                   "error_type": result.get("error_type")}}
+        self._cross_asset = result
+        try:
+            _write_json_atomic(self.config.state_dir / "cross_asset.json", result)
+        except (OSError, TypeError, ValueError):
+            pass
+        return result
+
+    def cross_asset_view(self, candidates: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any] | None:
+        current = self._cross_asset
+        expiries = []
+        for item in candidates or []:
+            snapshot = item.get("snapshot") if isinstance(item, Mapping) else None
+            contract = snapshot.get("contract") if isinstance(snapshot, Mapping) else None
+            expiry = contract.get("expiry_ms") if isinstance(contract, Mapping) else None
+            if isinstance(expiry, int) and not isinstance(expiry, bool):
+                expiries.append(expiry)
+        try:
+            window = cross_asset.contract_window(now_ms, min(expiries)) if expiries else None
+        except Exception:  # a background card must never break the page
+            window = None
+        if current is None and window is None:
+            return None
+        return {**(current or {"schema": cross_asset.SCHEMA, "status": "not_collected"}), "contract_window": window}
+
     def cached_view(self, *, reading_only: bool = False) -> dict[str, Any]:
         """Read the collector's cache. Page reads never cause external requests."""
         now = self.clock_ms()
@@ -3374,7 +3425,7 @@ class AstraWorkbench:
                     "daily_snapshots": self.recent_daily_snapshots(),
                     "transitions": self.recent_transitions(),
                     "manual_review_state": self.manual_review_state(now), "llm_call_count": 0,
-                    "data_health": self._data_health(now)}
+                    "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now)}
             result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
         # Recheck facts and current use, without overwriting frozen candidate evidence.
@@ -3382,7 +3433,8 @@ class AstraWorkbench:
         gate = self.space_gate_view(fact, now)
         view.update({"served_at_ms": now, "market_context": fact, "space_gate": gate,
                      "locked_candidates": self.locked_candidate_list(),
-                     "manual_review_state": self.manual_review_state(now)})
+                     "manual_review_state": self.manual_review_state(now),
+                     "cross_asset": self.cross_asset_view(view.get("candidates") or [], now)})
         usage_engines: dict[Any, Any] = {}
         view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now, engines=usage_engines)
         # Global display is a current cache projection. Candidate MAPs stay frozen.
@@ -4188,6 +4240,19 @@ class AstraWorkbench:
                 if self._background_stop.wait(max(1.0, interval_s - (time.monotonic() - started))):
                     break
 
+        def cross() -> None:
+            while not self._background_stop.is_set():
+                try:
+                    self.refresh_cross_asset()
+                except Exception:  # a background card must never take the workbench down
+                    pass
+                if self._background_stop.wait(300):
+                    break
+
+        if self.config.cross_asset_enabled and not (self._cross_asset_thread and self._cross_asset_thread.is_alive()):
+            self._cross_asset_thread = threading.Thread(target=cross, name="astra-cross-asset", daemon=True)
+            self._cross_asset_thread.start()
+
         self._sampler_running = True
         if not (self._sampler_thread and self._sampler_thread.is_alive()):
             self._sampler_thread = threading.Thread(target=sample, name="astra-locked-sampler", daemon=True)
@@ -4195,7 +4260,7 @@ class AstraWorkbench:
 
     def stop_background(self) -> None:
         self._background_stop.set()
-        for thread in (self._background_thread, self._sampler_thread):
+        for thread in (self._background_thread, self._sampler_thread, self._cross_asset_thread):
             if thread:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
@@ -4568,6 +4633,7 @@ def config_from_env() -> WorkbenchConfig:
         chain_audit_enabled=os.environ.get("ASTRA_CHAIN_AUDIT_ENABLED", "1") == "1",
         chain_audit_interval_ms=int(os.environ.get("ASTRA_CHAIN_AUDIT_INTERVAL_MS") or "900000"),
         chain_audit_retention_days=int(os.environ.get("ASTRA_CHAIN_AUDIT_RETENTION_DAYS") or "30"),
+        cross_asset_enabled=os.environ.get("ASTRA_CROSS_ASSET_ENABLED", "1") == "1",
         map_sources_enabled=os.environ.get("ASTRA_MAP_SOURCES_ENABLED") == "1",
         map_source_mode=os.environ.get("ASTRA_MAP_SOURCE_MODE") or map_projection.SOURCE_MODE_COLLECTOR,
         map_producer_current_path=Path(producer_path) if producer_path else None,
