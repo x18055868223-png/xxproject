@@ -1108,13 +1108,13 @@
       ],
       "usage_policies": {
         "default": {
-          "ttl_ms": 345600000,
+          "ttl_ms": 432000000,
           "allowed_data_states": [
             "OK"
           ]
         },
         "health": {
-          "ttl_ms": 432000000,
+          "ttl_ms": 518400000,
           "allowed_data_states": [
             "OK",
             "PARTIAL"
@@ -1151,13 +1151,13 @@
       ],
       "usage_policies": {
         "default": {
-          "ttl_ms": 345600000,
+          "ttl_ms": 432000000,
           "allowed_data_states": [
             "OK"
           ]
         },
         "health": {
-          "ttl_ms": 432000000,
+          "ttl_ms": 518400000,
           "allowed_data_states": [
             "OK",
             "PARTIAL"
@@ -1201,13 +1201,13 @@
       ],
       "usage_policies": {
         "default": {
-          "ttl_ms": 345600000,
+          "ttl_ms": 432000000,
           "allowed_data_states": [
             "OK"
           ]
         },
         "health": {
-          "ttl_ms": 432000000,
+          "ttl_ms": 518400000,
           "allowed_data_states": [
             "OK",
             "PARTIAL"
@@ -1251,13 +1251,13 @@
       ],
       "usage_policies": {
         "default": {
-          "ttl_ms": 345600000,
+          "ttl_ms": 432000000,
           "allowed_data_states": [
             "OK"
           ]
         },
         "health": {
-          "ttl_ms": 432000000,
+          "ttl_ms": 518400000,
           "allowed_data_states": [
             "OK",
             "PARTIAL"
@@ -1380,13 +1380,13 @@
       ],
       "usage_policies": {
         "default": {
-          "ttl_ms": 345600000,
+          "ttl_ms": 432000000,
           "allowed_data_states": [
             "OK"
           ]
         },
         "health": {
-          "ttl_ms": 432000000,
+          "ttl_ms": 518400000,
           "allowed_data_states": [
             "OK",
             "PARTIAL"

@@ -566,14 +566,18 @@ def test_gex_and_fmz_freshness_matches_source_cadence():
         assert products[pid]["usage_policies"]["default"]["ttl_ms"] >= 600_000, pid
 
 
-def test_trading_day_series_survive_a_weekend():
-    # Friday's close must still be usable on Monday before the US session.
+def test_trading_day_series_survive_a_holiday_weekend():
+    # Friday's close (or a FRED rate published a day late) must still be usable on the
+    # Tuesday after a Monday US market holiday: about 4.85 days of age at worst.
     import json, pathlib
     registry = json.loads((pathlib.Path(__file__).resolve().parents[1] / "demo" / "shared" /
                            "data_product_registry_v23.json").read_text(encoding="utf-8"))
     products = {p["product_id"]: p for p in registry["products"]}
     for pid in ("btc.etf.flow.daily.v1", "macro.dxy.close.v1", "macro.us10y.nominal.v1",
                 "macro.us10y.real.v1", "macro.vxn.close.v1"):
-        assert products[pid]["usage_policies"]["default"]["ttl_ms"] >= 96 * 3_600_000, pid
+        policies = products[pid]["usage_policies"]
+        assert policies["default"]["ttl_ms"] >= 120 * 3_600_000, pid
+        # health warns no earlier than consumption stops
+        assert policies["health"]["ttl_ms"] >= policies["default"]["ttl_ms"], pid
     # Weekly-published broad USD index lags up to ~10 days.
     assert products["macro.usd.broad.close.v1"]["usage_policies"]["default"]["ttl_ms"] >= 264 * 3_600_000
