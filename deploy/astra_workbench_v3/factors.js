@@ -178,12 +178,24 @@ export function backgroundItems(view, spot) {
   const etfM = get(bg, "allocation.metrics") || {};
   const etf = isNum(etfM.f3_usd_m) ? etfM : (get(etfM, "source_values.metrics") || etfM);
   const etfSpan = Math.max(Math.abs(etf.f3_usd_m || 0), Math.abs(etf.f7_usd_m || 0), (etf.q_abs_usd_m_prior60 || 0) * 3, 1);
-  items.push({ title: "ETF 资金", state: isNum(etf.f3_usd_m) ? (etf.f3_usd_m < 0 ? "净流出" : "净流入") : null,
+  // Trading days, USD (Farside). The latest day is shown on its own, as data sites lead with it.
+  const etfRows = get(etfM, "source_values.rows") || [];
+  const lastDay = etfRows.find((r) => r.date === etf.latest_complete_date && isNum(r.total_usd_m));
+  // Farside publishes USD; BTC is converted at the current spot, so it is approximate.
+  const asBtc = (usdM) => (isNum(usdM) && isNum(spot) && spot > 0 ? usdM * 1e6 / spot : null);
+  const btcN = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${usd(Math.abs(v))}`;
+  const flow = (usdM) => (isNum(asBtc(usdM)) ? `约 ${btcN(asBtc(usdM))} BTC（${signed(usdM, 1)} 百万美元）` : `${signed(usdM, 1)} 百万美元`);
+  const perDay = (v) => (isNum(asBtc(v)) ? `，日均约 ${btcN(asBtc(v))} BTC` : isNum(v) ? `，日均 ${signed(v, 1)} 百万美元` : "");
+  items.push({ title: "美国现货 BTC ETF 资金", state: isNum(etf.f3_usd_m) ? (etf.f3_usd_m < 0 ? "近 3 个交易日净流出" : "近 3 个交易日净流入") : null,
     stale: bg.allocation && !usable(bg.allocation) ? `用途时效未通过，最新完整日 ${etf.latest_complete_date || "—"}` : null,
-    rows: [row("近 3 日", isNum(etf.f3_usd_m) ? `${signed(etf.f3_usd_m, 1)} 百万美元` : null, isNum(etf.f3_usd_m) ? diverging(etf.f3_usd_m, etfSpan) : null),
-      row("近 7 日", isNum(etf.f7_usd_m) ? `${signed(etf.f7_usd_m, 1)} 百万美元` : null, isNum(etf.f7_usd_m) ? diverging(etf.f7_usd_m, etfSpan) : null),
-      row("相对前 60 日常态", isNum(etf.u3) ? `3 日强度 ${signed(etf.u3)}` : null, isNum(etf.u3) ? diverging(etf.u3, 3) : null)],
-    note: etf.latest_complete_date ? `最新完整交易日 ${etf.latest_complete_date}。` : "" });
+    rows: [row(`最新交易日 ${String(etf.latest_complete_date || "").slice(5) || "—"}`, lastDay ? flow(lastDay.total_usd_m) : null,
+        lastDay ? diverging(lastDay.total_usd_m, etfSpan) : null),
+      row("近 3 个交易日", isNum(etf.f3_usd_m) ? `${flow(etf.f3_usd_m)}${perDay(etf.v3_usd_m_per_day)}` : null, isNum(etf.f3_usd_m) ? diverging(etf.f3_usd_m, etfSpan) : null),
+      row("近 7 个交易日", isNum(etf.f7_usd_m) ? `${flow(etf.f7_usd_m)}${perDay(etf.v7_usd_m_per_day)}` : null, isNum(etf.f7_usd_m) ? diverging(etf.f7_usd_m, etfSpan) : null),
+      row("比平时", isNum(etf.u3) && isNum(etf.q_abs_usd_m_prior60)
+        ? `近 3 日日均是平时的 ${Math.abs(etf.u3 * 100).toFixed(0)}%（平时日均约 ${isNum(asBtc(etf.q_abs_usd_m_prior60)) ? `${usd(asBtc(etf.q_abs_usd_m_prior60))} BTC` : `${etf.q_abs_usd_m_prior60.toFixed(0)} 百万美元`}）` : null,
+        isNum(etf.u3) ? diverging(etf.u3, 1.5) : null)],
+    note: "按美股交易日计。Farside 发布美元金额，BTC 数量按现价折算（约数，与 Coinglass 逐日按当日价格的数量相差通常在 2% 内）；平时 = 前 60 个交易日的日均流量规模。" });
 
   const cb = get(bg, "inventory.metrics.cost_basis") || {};
   const rel = (p) => (isNum(p) && isNum(spot) ? `${usd(p)}，现价${spot >= p ? "高" : "低"} ${Math.abs((spot - p) / p * 100).toFixed(1)}%` : null);
@@ -208,34 +220,41 @@ export function backgroundItems(view, spot) {
         w && isNum(w.net_flow_usd) ? diverging(w.net_flow_usd, 1e6) : null)],
     note: "PCR 以 1 为中线；PCR 与大宗没有历史基准，只读当前值。" });
 
-  // Each series shows its own latest published value and date. The 5-observation change is
-  // computed only on dates all three share; a series held back by its freshness rule is
-  // shown with its date and marked, never silently dropped.
+  // Each series is read on its own: latest published value and date, and the change over its
+  // own last 5 observations. A shared-date change would hold the daily rates back to the
+  // weekly dollar index and can show a direction the rates no longer have.
   const ext = bg.external_conditions || {};
   const em = ext.metrics || {};
   const blocked = new Set((ext.missing || []).map((r) => String(r).split(":")[0]));
   const shortDate = (d) => (d ? String(d).slice(5) : "—");
-  const extRow = (label, key, fmt, change, scale) => {
-    const src = get(em, `${key}_source_values.latest`) || {};
-    // the series' own newest value and date; the change is on the shared dates, so it names its end date
-    const own = isNum(src.value);
-    const latest = own ? src.value : get(em, `${key}.latest`);
-    if (!isNum(latest)) return row(label, null);
-    const date = own ? src.date : em.latest_date;
-    const delta = get(em, `${key}.${change}`);
-    const through = em.latest_date && em.latest_date !== date ? `（至 ${shortDate(em.latest_date)}）` : "";
-    const text = `${fmt(latest)}（${shortDate(date)}）${isNum(delta) ? `，5 期${through} ${change.endsWith("bp") ? `${signed(delta, 0)}bp` : `${signed(delta)}%`}` : ""}`;
-    return blocked.has(key)
-      ? row(label, `${text}，已超时效，不参与计算`)
-      : row(label, text, isNum(delta) ? diverging(delta, scale, { good: -1 }) : null);
+  const own = (key) => {
+    const obs = (get(em, `${key}_source_values.observations`) || []).filter((o) => isNum(o.value)).sort((a, b) => (a.date < b.date ? -1 : 1));
+    const last = obs[obs.length - 1];
+    const base = obs.length >= 6 ? obs[obs.length - 6] : null;
+    return last ? { value: last.value, date: last.date, base } : null;
   };
-  const anyRow = ["dollar", "nominal_10y", "real_10y"].some((k) => isNum(get(em, `${k}.latest`)) || isNum(get(em, `${k}_source_values.latest.value`)));
+  const extRow = (label, key, fmt, unit, scale) => {
+    const o = own(key);
+    if (!o) return row(label, null);
+    const d = o.base ? (unit === "bp" ? (o.value - o.base.value) * 100 : (o.value / o.base.value - 1) * 100) : null;
+    const change = isNum(d) ? `，比 ${shortDate(o.base.date)} ${unit === "bp" ? `${signed(d, 0)}bp` : `${signed(d)}%`}` : "";
+    const text = `${fmt(o.value)}（${shortDate(o.date)}）${change}`;
+    return blocked.has(key) ? row(label, `${text}，已超时效`) : row(label, text, isNum(d) ? diverging(d, scale, { good: -1 }) : null);
+  };
+  const dxy = (get(mf, "macro_pressure.component_summaries") || []).find((c) => c.key === "DXY") || {};
+  const dxyDate = isNum(dxy.current_ts_ms) ? new Date(dxy.current_ts_ms).toISOString().slice(0, 10) : null;
+  const dxyRow = isNum(dxy.current_close)
+    ? row("美元指数 DXY", `${dxy.current_close.toFixed(2)}（${shortDate(dxyDate)}）${isNum(dxy.change_pct_3d) ? `，3 个交易日 ${signed(dxy.change_pct_3d)}%` : ""}`,
+      isNum(dxy.change_pct_3d) ? diverging(dxy.change_pct_3d, 1, { good: -1 }) : null)
+    : row("美元指数 DXY", null);
+  const dates = [own("nominal_10y")?.date, dxyDate];
+  const anyRow = ["nominal_10y", "real_10y"].some((k) => own(k)) || isNum(dxy.current_close);
   items.push({ title: "外部资本条件",
-    state: em.latest_date ? `共同截至 ${em.latest_date}` : null,
-    stale: blocked.size ? "部分序列超出使用时效，只展示，不参与 5 期变化计算。" : null,
-    rows: anyRow ? [extRow("美元广义指数", "dollar", (v) => v.toFixed(2), "change_5obs_pct", 2),
-      extRow("美债 10Y 名义", "nominal_10y", (v) => `${v.toFixed(2)}%`, "change_5obs_bp", 30),
-      extRow("美债 10Y 实际", "real_10y", (v) => `${v.toFixed(2)}%`, "change_5obs_bp", 30)] : [row("美元与美债", null)],
-    note: "括号内为各序列最新发布的观测日：美元广义指数按周发布、约滞后一周，美债利率按日发布、约滞后一个工作日。5 期变化只在三者共有的日期上计算；绿色为资本条件放松。" });
+    state: anyRow ? `利率截至 ${shortDate(dates[0])} · 美元截至 ${shortDate(dates[1])}` : null,
+    stale: blocked.size ? "部分序列超出使用时效，只展示。" : null,
+    rows: anyRow ? [extRow("美债 10Y 名义", "nominal_10y", (v) => `${v.toFixed(2)}%`, "bp", 30),
+      extRow("美债 10Y 实际", "real_10y", (v) => `${v.toFixed(2)}%`, "bp", 30),
+      dxyRow] : [row("美元与美债", null)],
+    note: "美债利率来自 FRED，按日发布、约滞后一个工作日，变化为各自最近 5 个观测日；DXY 为 ICE 美元指数（Yahoo DX-Y.NYB，与宏观环境卡同源），变化为 3 个交易日。红色为收紧（利率或美元上升），绿色为放松。" });
   return items;
 }
