@@ -85,6 +85,11 @@ else:  # direct CLI execution from tools/
 SCHEMA = "astra_workbench@2.0.0"
 STATE_SCHEMA = "astra_workbench_state@2.0.0"
 TRANSITION_SCHEMA = "astra_workbench_space_gate_transition@2.0.0"
+# Since 2026-10-13 the transition log follows the flip anchor's utility (information only);
+# admission is net gamma and is tracked in memory with its own since.
+ANCHOR_TRANSITION_SCHEMA = "astra_workbench_anchor_utility_transition@1.0.0"
+ANCHOR_EFFECTIVE = "ANCHOR_EFFECTIVE"
+ANCHOR_INEFFECTIVE = "ANCHOR_INEFFECTIVE"
 DAILY_SNAPSHOT_SCHEMA = "astra_workbench_daily_snapshot@2.0.0"
 
 SPACE_ELIGIBLE = "STRUCTURE_ELIGIBLE"
@@ -1709,6 +1714,7 @@ class AstraWorkbench:
         self._wpem_pinned: set[str] = set()
         self._sampler_marks: dict[str, int] = {}
         self._discovery_upstream: tuple[str, int] | None = None
+        self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
         self._reconcile_interrupted_review()
@@ -2124,9 +2130,10 @@ class AstraWorkbench:
             native_state = SPACE_BLOCKED
         else:
             native_state = str(native.get("state") or SPACE_BLOCKED)
-            if native_state != SPACE_ELIGIBLE:
-                gaps.extend(str(item) for item in native.get("reason_codes") or [])
-        effective_state = SPACE_ELIGIBLE if not gaps and native_state == SPACE_ELIGIBLE else SPACE_BLOCKED
+        rule = underwriting_core.structure_gate(native)
+        if not rule["eligible"]:
+            gaps.extend(rule["blocking_codes"])
+        effective_state = SPACE_ELIGIBLE if not gaps and rule["eligible"] else SPACE_BLOCKED
         anchor = deepcopy(native.get("anchor")) if isinstance(native, Mapping) and isinstance(native.get("anchor"), Mapping) else None
         net_gamma = deepcopy(native.get("net_gamma")) if isinstance(native, Mapping) and isinstance(native.get("net_gamma"), Mapping) else None
         body = {
@@ -2136,11 +2143,15 @@ class AstraWorkbench:
             "source": ("producer_native_space_gate" if isinstance(native, Mapping)
                        else "producer_native_space_gate_missing"),
             "observed_at_ms": native.get("observed_at_ms") if isinstance(native, Mapping) else None,
-            "since_ts_ms": native.get("since_ts_ms") if isinstance(native, Mapping) else None,
+            "since_ts_ms": self._effective_since(effective_state, native_state, native, valuation_ms),
+            "producer_since_ts_ms": native.get("since_ts_ms") if isinstance(native, Mapping) else None,
             "previous_state": native.get("previous_state") if isinstance(native, Mapping) else None,
             "last_transition_ts_ms": native.get("last_transition_ts_ms") if isinstance(native, Mapping) else None,
-            "reason_codes": sorted(set(str(item) for item in ((native or {}).get("reason_codes") or [])))
+            "reason_codes": [] if effective_state == SPACE_ELIGIBLE else rule["blocking_codes"],
+            "producer_reason_codes": sorted(set(str(item) for item in ((native or {}).get("reason_codes") or [])))
             if isinstance(native, Mapping) else [],
+            "anchor_reason_codes": rule["anchor_codes"],
+            "gate_basis": rule["basis"],
             "anchor": anchor,
             "net_gamma": net_gamma,
             "fmz_fact_status": fmz_fact.get("status"),
@@ -2149,7 +2160,8 @@ class AstraWorkbench:
             "strategy_version": fmz_fact.get("strategy_version"),
             "valuation_ts_ms": valuation_ms,
             "gap_reasons": sorted(set(reason for reason in gaps if reason)),
-            "note_cn": "基础空间门通过仅表示可以继续核算当前保单，不代表补偿充分、LLM支持或交易批准。",
+            "note_cn": ("空间门只看净 Gamma（为正、新鲜、体制不在转换或冲突）；锚点评分只作信息，不再是准入条件。"
+                        "放行仅表示可以继续核算当前保单，不代表补偿充分、LLM支持或交易批准。"),
         }
         body["gate_hash"] = _hash({key: body[key] for key in (
             "state", "producer_state", "observed_at_ms", "since_ts_ms",
@@ -2158,7 +2170,33 @@ class AstraWorkbench:
         )})
         return body
 
+    def _effective_since(self, effective_state: str, native_state: str, native: Any, now_ms: int) -> int | None:
+        """When the net-gamma admission last changed. The producer's since applies only while
+        its state is the effective one; otherwise it is the first refresh that saw the change
+        (unknown after a restart until the next change)."""
+        native_since = native.get("since_ts_ms") if isinstance(native, Mapping) else None
+        if native_state == effective_state and isinstance(native_since, int):
+            self._gate_since = (effective_state, native_since)
+        elif self._gate_since is None:
+            self._gate_since = (effective_state, None)
+        elif self._gate_since[0] != effective_state:
+            self._gate_since = (effective_state, now_ms)
+        return self._gate_since[1]
+
     def _email_template(self, transition: Mapping[str, Any]) -> tuple[str, str]:
+        if transition.get("schema") == ANCHOR_TRANSITION_SCHEMA:
+            current = transition.get("current_state")
+            anchor = transition.get("anchor") if isinstance(transition.get("anchor"), Mapping) else {}
+            label = "有效" if current == ANCHOR_EFFECTIVE else "失效"
+            subject = f"[xxproject] 锚点效用：{label}（信息，不是准入）"
+            body = "\n".join([
+                f"时间：{_iso_utc(int(transition.get('transition_ts_ms') or self.clock_ms()))}",
+                f"锚点：评分 {anchor.get('score')}，状态 {anchor.get('state')}，新鲜度 {anchor.get('freshness')}",
+                f"准入（只看净 Gamma）：{'放行' if transition.get('admission_state') == SPACE_ELIGIBLE else '关闭'}",
+                "",
+                "说明：锚点评分描述现价相对 Flip 轴的贴近程度，自 2026-10-13 起只作信息，不再是准入条件。",
+            ])
+            return subject, body
         current = transition.get("current_state") or SPACE_BLOCKED
         gate = transition.get("space_gate") if isinstance(transition.get("space_gate"), Mapping) else {}
         anchor = gate.get("anchor") if isinstance(gate.get("anchor"), Mapping) else {}
@@ -2214,21 +2252,28 @@ class AstraWorkbench:
         email["pending_transition"] = None
 
     def _record_space_gate_transition(self, gate: Mapping[str, Any], now_ms: int) -> None:
+        anchor = gate.get("anchor") if isinstance(gate.get("anchor"), Mapping) else None
+        anchor_state = None if anchor is None else (ANCHOR_EFFECTIVE if anchor.get("ok") is True else ANCHOR_INEFFECTIVE)
+
         def update(state: dict[str, Any]) -> None:
             sg = state.setdefault("space_gate", {})
-            previous = sg.get("last_state")
-            current = gate.get("state")
-            sg["last_state"] = current
+            sg["last_state"] = gate.get("state")
             sg["last_gate_hash"] = gate.get("gate_hash")
             sg["last_seen_ts_ms"] = now_ms
-            if previous in {SPACE_ELIGIBLE, SPACE_BLOCKED} and current != previous:
+            previous = sg.get("last_anchor_state")
+            if anchor_state is not None:
+                sg["last_anchor_state"] = anchor_state
+            if previous in {ANCHOR_EFFECTIVE, ANCHOR_INEFFECTIVE} and anchor_state not in {None, previous}:
                 transition = {
-                    "schema": TRANSITION_SCHEMA,
-                    "transition_id": _hash({"previous": previous, "current": current,
+                    "schema": ANCHOR_TRANSITION_SCHEMA,
+                    "kind": "anchor_utility",
+                    "transition_id": _hash({"previous": previous, "current": anchor_state,
                                              "gate_hash": gate.get("gate_hash"), "ts": now_ms})[:24],
                     "transition_ts_ms": now_ms,
                     "previous_state": previous,
-                    "current_state": current,
+                    "current_state": anchor_state,
+                    "anchor": deepcopy(dict(anchor)),
+                    "admission_state": gate.get("state"),
                     "space_gate": deepcopy(dict(gate)),
                     "llm_call_count": 0,
                 }

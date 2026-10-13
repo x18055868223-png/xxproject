@@ -719,8 +719,12 @@ def _opening_blocked(snapshot: Mapping[str, Any]) -> bool:
     context = snapshot.get("fact_context") or {}
     facts = context.get("market_facts") or {}
     gate = facts.get("space_gate") or (facts.get("space_context") or {}).get("space_gate") or {}
-    return isinstance(gate, Mapping) and (gate.get("eligible") is False
-                                         or gate.get("state") == "STRUCTURE_BLOCKED")
+    if not isinstance(gate, Mapping) or not gate:
+        return False
+    if gate.get("state") in {"STRUCTURE_ELIGIBLE", "STRUCTURE_BLOCKED"}:
+        # net gamma only; the flip anchor is information (underwriting.structure_gate)
+        return not underwriting.structure_gate(gate)["eligible"]
+    return gate.get("eligible") is False
 
 
 def _build_claim_catalog(snapshot: Mapping[str, Any], review_input: Mapping[str, Any]) -> dict[str, Any]:

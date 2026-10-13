@@ -81,7 +81,7 @@ def fake_quote_capture(short_instrument, long_instrument, quantity_btc, *, now_m
     )
 
 
-def native_gate(state="STRUCTURE_ELIGIBLE", *, ts=T - 1000):
+def native_gate(state="STRUCTURE_ELIGIBLE", *, ts=T - 1000, anchor_ok=True):
     good = state == "STRUCTURE_ELIGIBLE"
     return {
         "state": state,
@@ -90,7 +90,8 @@ def native_gate(state="STRUCTURE_ELIGIBLE", *, ts=T - 1000):
         "previous_state": "STRUCTURE_BLOCKED" if good else "STRUCTURE_ELIGIBLE",
         "last_transition_ts_ms": ts - 60_000,
         "reason_codes": [] if good else ["NET_GAMMA_NON_POSITIVE"],
-        "anchor": {"state": "Valid", "ok": True, "score": 70.0, "source": "anchor"},
+        "anchor": {"state": "Valid" if anchor_ok else "Weak", "ok": anchor_ok, "score": 70.0 if anchor_ok else 20.0,
+                   "source": "anchor"},
         "net_gamma": {
             "ok": good,
             "valid": True,
@@ -282,7 +283,7 @@ def test_state_email_cooldown_pending_and_restart_recovery(tmp_path):
     sender = Sender()
     clock_now = {"value": T}
     wb, snapshots = make_workbench(tmp_path, sender=sender, clock=lambda: clock_now["value"])
-    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=T - 1000), now=T)
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=T - 1000, anchor_ok=False), now=T)
     wb.refresh(now_ms=T)
     assert sender.sent == []
 
@@ -290,34 +291,34 @@ def test_state_email_cooldown_pending_and_restart_recovery(tmp_path):
     write_fmz(snapshots, native_gate("STRUCTURE_ELIGIBLE", ts=clock_now["value"] - 1000), now=clock_now["value"])
     wb.refresh(now_ms=clock_now["value"])
     assert len(sender.sent) == 1
-    assert "可建立候选" in sender.sent[0]["subject"]
+    assert "锚点效用：有效" in sender.sent[0]["subject"]
     sent_view = wb.refresh(now_ms=clock_now["value"])
     assert sent_view["notification_state"]["last_status"] == "sent"
     assert sent_view["notification_state"]["last_attempt"]["transition_id"] == sent_view["transitions"][-1]["transition_id"]
 
     clock_now["value"] += 10_000
-    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock_now["value"] - 1000), now=clock_now["value"])
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock_now["value"] - 1000, anchor_ok=False), now=clock_now["value"])
     wb.refresh(now_ms=clock_now["value"])
     assert len(sender.sent) == 1
     pending_view = wb.refresh(now_ms=clock_now["value"])
     assert pending_view["notification_state"]["pending_transition_id"] == pending_view["transitions"][-1]["transition_id"]
 
     restarted, _ = make_workbench(tmp_path, sender=sender, clock=lambda: clock_now["value"])
-    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock_now["value"] - 1000), now=clock_now["value"])
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock_now["value"] - 1000, anchor_ok=False), now=clock_now["value"])
     restarted.refresh(now_ms=clock_now["value"])
     assert len(sender.sent) == 1
 
     clock_now["value"] += 14_400_001
-    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock_now["value"] - 1000), now=clock_now["value"])
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=clock_now["value"] - 1000, anchor_ok=False), now=clock_now["value"])
     restarted.refresh(now_ms=clock_now["value"])
     assert len(sender.sent) == 2
-    assert "当前不准入" in sender.sent[1]["subject"]
+    assert "锚点效用：失效" in sender.sent[1]["subject"]
 
 
 def test_email_failure_is_recorded_without_blocking_refresh_or_llm(tmp_path):
     sender = Sender(fail=True)
     wb, snapshots = make_workbench(tmp_path, sender=sender)
-    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED"), now=T)
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", anchor_ok=False), now=T)
     wb.refresh(now_ms=T)
     write_fmz(snapshots, native_gate("STRUCTURE_ELIGIBLE", ts=T + 1000), now=T + 2000)
 
@@ -708,3 +709,31 @@ def test_production_review_runs_end_to_end_without_mu_when_the_space_gate_is_ope
     assert result["purpose"] == "review" and result["status"] not in {"rejected", "ERROR"}
     assert result["review"]["status"] == result["status"]
     assert result.get("execution_allowed") in (None, False)
+
+
+def test_the_flip_anchor_informs_but_does_not_gate(tmp_path):
+    wb, snapshots = make_workbench(tmp_path)
+    blocked_by_anchor = native_gate("STRUCTURE_BLOCKED", anchor_ok=False)
+    blocked_by_anchor["reason_codes"] = ["SPACE_GATE_ANCHOR_NOT_VALID", "SPACE_GATE_ANCHOR_SCORE_LOW"]
+    blocked_by_anchor["net_gamma"]["ok"] = True
+    write_fmz(snapshots, blocked_by_anchor, now=T)
+    gate = wb.refresh(now_ms=T, record_daily=False)["space_gate"]
+    assert gate["state"] == "STRUCTURE_ELIGIBLE" and gate["eligible"] is True
+    assert gate["producer_state"] == "STRUCTURE_BLOCKED"
+    assert gate["anchor_reason_codes"] == ["SPACE_GATE_ANCHOR_NOT_VALID", "SPACE_GATE_ANCHOR_SCORE_LOW"]
+    assert gate["reason_codes"] == [] and gate["gate_basis"].startswith("net_gamma_only")
+    # net gamma still gates
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=T + 9_000), now=T + 10_000)
+    gate = wb.refresh(now_ms=T + 10_000, record_daily=False)["space_gate"]
+    assert gate["state"] == "STRUCTURE_BLOCKED" and gate["reason_codes"] == ["NET_GAMMA_NON_POSITIVE"]
+
+
+def test_the_transition_log_follows_the_anchors_utility(tmp_path):
+    wb, snapshots = make_workbench(tmp_path)
+    write_fmz(snapshots, native_gate("STRUCTURE_ELIGIBLE"), now=T)
+    wb.refresh(now_ms=T, record_daily=False)
+    write_fmz(snapshots, native_gate("STRUCTURE_BLOCKED", ts=T + 9_000, anchor_ok=False), now=T + 10_000)
+    wb.refresh(now_ms=T + 10_000, record_daily=False)
+    last = wb.recent_transitions()[-1]
+    assert (last["previous_state"], last["current_state"]) == ("ANCHOR_EFFECTIVE", "ANCHOR_INEFFECTIVE")
+    assert last["kind"] == "anchor_utility" and last["anchor"]["ok"] is False
