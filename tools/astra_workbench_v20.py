@@ -3933,6 +3933,13 @@ def make_handler(workbench: AstraWorkbench):
         def _get(self) -> None:
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
+            if parsed.path == "/api/workbench/session/check":
+                # For the public proxy's auth_request: 204 with a live session, 401 otherwise; never a body.
+                access = sessions.authorize("GET", self.headers, self.client_address[0])
+                self.send_response(204 if access.ok else 401)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             if parsed.path == "/api/workbench/session":
                 self._json(200, sessions.status(self.headers, self.client_address[0]))
                 return

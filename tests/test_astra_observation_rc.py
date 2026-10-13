@@ -135,6 +135,16 @@ def test_http_private_session_exact_evidence_and_no_cross_site_writes(tmp_path):
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         assert "HttpOnly" in headers["Set-Cookie"] and "SameSite=Strict" in headers["Set-Cookie"]
         assert call("/api/workbench/session", headers={"Cookie": cookie})[2]["authenticated"]
+        # The public proxy gates reads on this check: a live session passes, anything else is 401 with no body.
+        def check(headers):
+            try:
+                with urlopen(Request(origin + "/api/workbench/session/check", headers=headers), timeout=5) as response:
+                    return response.status, response.read()
+            except HTTPError as error:
+                return error.code, error.read()
+        assert check({"Cookie": cookie}) == (204, b"")
+        assert check({}) == (401, b"")
+        assert check({"Cookie": "astra_workbench_session=forged"}) == (401, b"")
         payload = {"candidate_id": snapshot["candidate_id"], "snapshot_id": snapshot["snapshot_id"], "idempotency_key": "session-lock"}
         assert call("/api/workbench/locked-candidates", method="POST", payload=payload,
                     headers={"Cookie": cookie, "Origin": "https://different.example"})[0] == 403
@@ -153,6 +163,7 @@ def test_http_private_session_exact_evidence_and_no_cross_site_writes(tmp_path):
         status, _, _ = call("/api/workbench/session", method="DELETE", headers={"Cookie": cookie, "Origin": origin})
         assert status == 200
         assert not call("/api/workbench/session", headers={"Cookie": cookie})[2]["authenticated"]
+        assert check({"Cookie": cookie})[0] == 401
         assert call("/api/workbench/locked-candidates", method="POST", payload=payload,
                     headers={"Cookie": cookie, "Origin": origin})[0] == 401
     finally:
