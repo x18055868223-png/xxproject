@@ -923,7 +923,10 @@ function scheduleView(sr) {
     const text = Object.entries(last.sides || {}).map(([side, o]) => {
       const kind = o.purpose === "review" ? "模型复核" : "观察复核";
       const res = o.status === "OK" || o.status === "RESEARCH_OK" ? "已通过校验"
-        : o.status === "rejected" ? `未执行（${reasonCn(o.reason)}）` : o.status === "skipped" ? "无候选，跳过"
+        // rejected after a model call = the explanation failed the citation/semantic check (kept on file);
+        // rejected with no call = the request itself was refused before any model call.
+        : o.status === "rejected" && o.llm_call_count > 0 ? "已调用模型，但解释未通过引用与语义核对，原文已留档"
+        : o.status === "rejected" ? `未执行（${o.reason ? reasonCn(o.reason) : "原因未记录"}）` : o.status === "skipped" ? "无候选，跳过"
         : o.status === "error" ? `失败（${reasonCn(o.reason)}）` : statusCn(o.status);
       return `${SIDE[side] || side} ${kind}${res}`;
     }).join("；");
