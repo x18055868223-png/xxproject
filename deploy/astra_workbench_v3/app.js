@@ -223,7 +223,7 @@ function renderMapBand() {
   if (!state.view) return;
   const model = mapModel(state.view, state.sides);
   renderMap($("map"), $("map-tip"), model, { focus: state.focus, onPick: (side) => select(side) });
-  legend($("map-legend"));
+  legend($("map-legend"), model);
   const scroller = $("map").parentElement;
   if (scroller.scrollWidth > scroller.clientWidth && !scroller.dataset.centered) {
     scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;
@@ -903,9 +903,9 @@ function renderRecords() {
       const tone = level === "ok" ? "ok" : level === "warn" ? "warn" : level === "bad" ? "bad" : "";
       const age = viaFmz ? fmzFact?.age : p.age;
       tb.append(h("tr", { class: collected || viaFmz ? "" : "muted-row",
-          title: kind === "idle" ? p.idleReason : p.reasons.map(reasonCn).join("；") },
+          title: p.idleReason || p.reasons.map(reasonCn).join("；") },
         h("td", { class: "src-id" }, h("span", { text: SOURCE_CN[p.id] || p.id }), SOURCE_CN[p.id] ? h("code", { class: "id", text: p.id }) : null),
-        h("td", {}, chip(text, tone), kind === "idle" && p.idleReason ? h("small", { class: "idle-why", text: p.idleReason }) : null),
+        h("td", {}, chip(text, tone), p.idleReason ? h("small", { class: "idle-why", text: p.idleReason }) : null),
         h("td", { class: "n", text: isNum(age) ? dur(age) : "—" }), h("td", { class: "n", text: viaFmz || kind === "idle" ? "—" : isNum(p.ttl) ? dur(p.ttl) : "—" }),
         h("td", { class: "small", text: [...new Set(p.consumers.map(consumerCn))].slice(0, 3).join("、") || "—" })));
     }

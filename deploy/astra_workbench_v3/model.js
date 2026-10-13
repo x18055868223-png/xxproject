@@ -240,6 +240,8 @@ const IDLE_REASON = {
   "risk.astra.frozen_mu.reference.v1": "风险均值 μ 没有生产来源；μ 门已移除，不消费",
   "risk.astra.qualified_model.domain.v1": "合格风险模型尚未建立，不消费",
   "macro.dxy.close.v1": "宏观采集适配器尚未接入；宏观读数由 FMZ 事实提供",
+  // not idle: explains how an old-looking but valid source is read
+  "btc.kpf.map.readonly.v1": "按已收盘的每日成交归档计算，数据截至最近一个完整 UTC 日；成交密集区一天内变化很小，7 天内正常消费",
   "macro.vxn.close.v1": "宏观采集适配器尚未接入；宏观读数由 FMZ 事实提供",
 };
 const CONSUMER_CN = {
@@ -357,9 +359,14 @@ export function mapModel(view, sides) {
     if (isNum(price)) model.markers.push({ price, label: costLabel[role], short: costShort[role], glyph: "diamond",
       color: "var(--ink-2)", track: "trade", note: `链上成本口径（${cb.latest_observation_date || "日期未知"}），与期权价格不同基准` });
   }
+  // KPF zones come from closed daily trade archives; their cutoff is the last closed UTC day.
+  const kpfEnd = Math.max(...pool.filter((r) => r.role === "KPF_BASIN" && isNum(r.observation_end_ms)).map((r) => r.observation_end_ms));
+  model.kpfAsOf = Number.isFinite(kpfEnd) ? kpfEnd : null;
+  const kpfDate = model.kpfAsOf ? new Date(model.kpfAsOf).toISOString().slice(5, 10) : null;
   for (const r of pool) {
     if (r.role === "KPF_BASIN" && isNum(r.raw_low) && isNum(r.raw_high)) {
-      model.zones.push({ lo: r.raw_low, hi: r.raw_high, label: "KPF 成交接受区", note: "Binance 永续成交口径，名义坐标",
+      model.zones.push({ lo: r.raw_low, hi: r.raw_high, label: "KPF 成交接受区",
+        note: `Binance 永续成交口径，名义坐标；成交数据截至 ${kpfDate || "未知"}（UTC 日终）`,
         containsShort: ["put", "call"].some((k) => model.sides[k] && model.sides[k].short >= r.raw_low && model.sides[k].short <= r.raw_high) });
     }
   }
@@ -407,6 +414,7 @@ export function sourceHealth(view) {
     const collected = kind === "continuous" || kind === "map_service";
     const shown = collected ? level : kind === "on_demand" ? "info" : "off";
     return { id, status: p.status, level: shown, kind, collected, age, ttl: ud.ttl_ms,
+      // idle rows say why they are not consumed; a few live rows carry a reading note instead
       idleReason: IDLE_REASON[id] || (kind === "idle" ? "采集方尚未接入，不消费" : null),
       reasons: ud.reason_codes || [], consumers: p.affected_consumers || [], observed: first && first.observation_end_ms };
   }).sort((a, b) => rank[a.level] - rank[b.level] || a.id.localeCompare(b.id));
