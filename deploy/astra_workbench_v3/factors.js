@@ -208,16 +208,34 @@ export function backgroundItems(view, spot) {
         w && isNum(w.net_flow_usd) ? diverging(w.net_flow_usd, 1e6) : null)],
     note: "PCR 以 1 为中线；PCR 与大宗没有历史基准，只读当前值。" });
 
+  // Each series shows its own latest published value and date. The 5-observation change is
+  // computed only on dates all three share; a series held back by its freshness rule is
+  // shown with its date and marked, never silently dropped.
   const ext = bg.external_conditions || {};
   const em = ext.metrics || {};
-  items.push({ title: "外部资本条件", state: usable(ext) ? `截至 ${em.latest_date || "—"}` : null,
-    stale: ext.fact_state && !usable(ext) ? (ext.summary_cn || "来源未形成共同观察端点") : null,
-    rows: [row("美元广义指数", isNum(get(em, "dollar.latest")) ? `${em.dollar.latest.toFixed(2)}，5 期 ${signed(em.dollar.change_5obs_pct)}%` : null,
-        isNum(get(em, "dollar.change_5obs_pct")) ? diverging(em.dollar.change_5obs_pct, 2, { good: -1 }) : null),
-      row("美债 10Y 名义", isNum(get(em, "nominal_10y.latest")) ? `${em.nominal_10y.latest.toFixed(2)}%，5 期 ${signed(em.nominal_10y.change_5obs_bp, 0)}bp` : null,
-        isNum(get(em, "nominal_10y.change_5obs_bp")) ? diverging(em.nominal_10y.change_5obs_bp, 30, { good: -1 }) : null),
-      row("美债 10Y 实际", isNum(get(em, "real_10y.latest")) ? `${em.real_10y.latest.toFixed(2)}%，5 期 ${signed(em.real_10y.change_5obs_bp, 0)}bp` : null,
-        isNum(get(em, "real_10y.change_5obs_bp")) ? diverging(em.real_10y.change_5obs_bp, 30, { good: -1 }) : null)],
-    note: "FRED 日频序列有发布延迟；绿色为资本条件放松。" });
+  const blocked = new Set((ext.missing || []).map((r) => String(r).split(":")[0]));
+  const shortDate = (d) => (d ? String(d).slice(5) : "—");
+  const extRow = (label, key, fmt, change, scale) => {
+    const src = get(em, `${key}_source_values.latest`) || {};
+    // the series' own newest value and date; the change is on the shared dates, so it names its end date
+    const own = isNum(src.value);
+    const latest = own ? src.value : get(em, `${key}.latest`);
+    if (!isNum(latest)) return row(label, null);
+    const date = own ? src.date : em.latest_date;
+    const delta = get(em, `${key}.${change}`);
+    const through = em.latest_date && em.latest_date !== date ? `（至 ${shortDate(em.latest_date)}）` : "";
+    const text = `${fmt(latest)}（${shortDate(date)}）${isNum(delta) ? `，5 期${through} ${change.endsWith("bp") ? `${signed(delta, 0)}bp` : `${signed(delta)}%`}` : ""}`;
+    return blocked.has(key)
+      ? row(label, `${text}，已超时效，不参与计算`)
+      : row(label, text, isNum(delta) ? diverging(delta, scale, { good: -1 }) : null);
+  };
+  const anyRow = ["dollar", "nominal_10y", "real_10y"].some((k) => isNum(get(em, `${k}.latest`)) || isNum(get(em, `${k}_source_values.latest.value`)));
+  items.push({ title: "外部资本条件",
+    state: em.latest_date ? `共同截至 ${em.latest_date}` : null,
+    stale: blocked.size ? "部分序列超出使用时效，只展示，不参与 5 期变化计算。" : null,
+    rows: anyRow ? [extRow("美元广义指数", "dollar", (v) => v.toFixed(2), "change_5obs_pct", 2),
+      extRow("美债 10Y 名义", "nominal_10y", (v) => `${v.toFixed(2)}%`, "change_5obs_bp", 30),
+      extRow("美债 10Y 实际", "real_10y", (v) => `${v.toFixed(2)}%`, "change_5obs_bp", 30)] : [row("美元与美债", null)],
+    note: "括号内为各序列最新发布的观测日：美元广义指数按周发布、约滞后一周，美债利率按日发布、约滞后一个工作日。5 期变化只在三者共有的日期上计算；绿色为资本条件放松。" });
   return items;
 }

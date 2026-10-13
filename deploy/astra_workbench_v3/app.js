@@ -213,7 +213,7 @@ function renderBanners() {
 
 /** Which space source the data engine refused, in words. */
 function spaceInputWhy(v) {
-  const bad = sourceHealth(v).filter((p) => p.kind === "continuous" && p.level !== "ok"
+  const bad = sourceHealth(v).filter((p) => p.collected && p.level !== "ok"
     && p.consumers.some((c) => c === "space_gate" || c === "gamma_regime" || c === "anchor"));
   return bad.length ? bad.map((p) => `${p.id} ${sourceStatusCn(p.status)}`).join("、") : "原因见数据与审计记录";
 }
@@ -325,7 +325,7 @@ function deck(m, side, blockers) {
     return card;
   }
   const src = m.review.kind === "current" ? ["模型解释：对应本快照", "ok"]
-    : m.review.kind === "historical" ? ["模型解释：仅有历史回执", "warn"] : ["模型解释：未请求", ""];
+    : m.review.kind === "historical" ? [`模型解释：${clock(reviewedAt(m.review))} 的回执`, "warn"] : ["模型解释：未请求", ""];
   card.append(h("div", { class: "deck-head" },
     h("h3", { text: name }),
     h("span", { class: "legs", text: `${(m.shortName || "").split("-")[1] || ""}  卖 ${usd(m.short)} / 买 ${usd(m.long)}，${remainingText(m)}` }),
@@ -520,7 +520,8 @@ function renderAudit() {
     return;
   }
 
-  if (r.kind === "historical") left.append(h("p", { class: "banner", text: "这是同一候选较早快照的回执，只作参考；当前快照尚未复核。" }));
+  if (r.kind === "historical") left.append(h("p", { class: "banner info", text:
+    `回执时间 ${clock(reviewedAt(r))}（${ago(reviewedAt(r))}）。之后报价已刷新，下面的解释对应当时的报价与证据，仅作参考；数字以当前卡片为准。` }));
   const ap = applicability(r.applicability);
   left.append(h("div", { class: "deck-head" }, h("h3", { text: `${m.name} 模型解释` }), h("span", { class: `seal ${ap.cls}`, text: ap.text })));
   for (const [title, pts, q] of [["Q1 风险质量", r.q1, "q1"], ["Q2 风险价格", r.q2, "q2"]]) {
@@ -639,6 +640,11 @@ function evidenceCard(row, activeRefs, labels) {
   card.append(keepOpen(h("details", { class: "raw", open: state.open.has(`raw:${ref}`) }, h("summary", { text: "原始证据与来源路径" }),
     h("pre", { text: JSON.stringify({ lineage: row.lineage, ...p }, null, 1) })), `raw:${ref}`));
   return card;
+}
+
+/** When the shown receipt was produced. */
+function reviewedAt(r) {
+  return get(r, "binding.reviewed_at_ms") ?? get(r, "review.decision_asof_ms") ?? get(r, "receipt.review.decision_asof_ms");
 }
 
 /** Remember which <details> the reader opened, across 30 s refreshes. */
@@ -857,7 +863,15 @@ function renderContext() {
 }
 
 // ── records ──────────────────────────────────────
-const KIND_CN = { continuous: "持续采集", on_demand: "按需记录（复核或锁定时写入）", elsewhere: "不在本机采集（FMZ 内部消费或尚未接入）", unused: "已登记但不消费" };
+const KIND_CN = {
+  continuous: "工作台持续采集", map_service: "地图数据服务采集（本机，约每 5 分钟）",
+  on_demand: "按需记录（复核或锁定时写入）", fmz: "由 FMZ 采集，经 FMZ 事实消费",
+  idle: "已登记、未消费（未接入或无来源）",
+};
+const KIND_NOTE = {
+  fmz: "这些原始行情在 FMZ 策略内部采集和计算，工作台不直接读取；量价路径、主动成交、TMV 等读数随 FMZ 事实送达，时效看 FMZ 事实本身。",
+  idle: "登记在数据目录中，但当前没有进入任何读数或判断。",
+};
 const GATE_STATE_CN = { STRUCTURE_BLOCKED: "关闭", STRUCTURE_ELIGIBLE: "放行" };
 const RUNTIME_CN = {
   USER_DEPLOYED_NATIVE_OBSERVED: "已部署，原生观察", NATIVE_OBSERVED: "原生观察", DEPLOYED_SEPARATE_DATA_SERVICE: "独立数据服务",
@@ -873,23 +887,33 @@ function renderRecords() {
   const v = state.view;
   const src = sourceHealth(v);
   const left = h("div", { class: "sheet pad" }, h("h4", { text: "数据来源时效" }));
-  for (const kind of ["continuous", "on_demand", "elsewhere", "unused"]) {
+  // FMZ-collected rows are consumed through FMZ's facts, so they carry the facts' own status and age.
+  const fmzFact = src.find((p) => p.id === "fmz.bridge.snapshots.v1");
+  for (const kind of ["continuous", "map_service", "on_demand", "fmz", "idle"]) {
     const rows = src.filter((p) => p.kind === kind);
     if (!rows.length) continue;
-    const t = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ...["来源", "状态", "距今", "时效", "用于"].map((x) => h("th", { text: x })))));
+    const t = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ...["来源", "消费情况", "距今", "时效", "用于"].map((x) => h("th", { text: x })))));
     const tb = h("tbody");
     for (const p of rows) {
-      const text = kind === "on_demand" ? "按需" : kind === "elsewhere" ? "本机不采集" : kind === "unused" ? "不消费" : sourceStatusCn(p.status);
-      const tone = kind !== "continuous" ? "" : p.level === "ok" ? "ok" : p.level === "warn" ? "warn" : p.level === "bad" ? "bad" : "";
-      tb.append(h("tr", { class: kind === "continuous" ? "" : "muted-row", title: p.reasons.map(reasonCn).join("；") },
+      const collected = kind === "continuous" || kind === "map_service";
+      const viaFmz = kind === "fmz";
+      const level = viaFmz ? fmzFact?.level : collected ? p.level : null;
+      const text = collected ? sourceStatusCn(p.status) : kind === "on_demand" ? "按需写入"
+        : viaFmz ? (fmzFact?.level === "ok" ? "经 FMZ 消费中" : "FMZ 事实异常") : "未消费";
+      const tone = level === "ok" ? "ok" : level === "warn" ? "warn" : level === "bad" ? "bad" : "";
+      const age = viaFmz ? fmzFact?.age : p.age;
+      tb.append(h("tr", { class: collected || viaFmz ? "" : "muted-row",
+          title: kind === "idle" ? p.idleReason : p.reasons.map(reasonCn).join("；") },
         h("td", { class: "src-id" }, h("span", { text: SOURCE_CN[p.id] || p.id }), SOURCE_CN[p.id] ? h("code", { class: "id", text: p.id }) : null),
-        h("td", {}, chip(text, tone)),
-        h("td", { class: "n", text: isNum(p.age) ? dur(p.age) : "—" }), h("td", { class: "n", text: isNum(p.ttl) ? dur(p.ttl) : "—" }),
+        h("td", {}, chip(text, tone), kind === "idle" && p.idleReason ? h("small", { class: "idle-why", text: p.idleReason }) : null),
+        h("td", { class: "n", text: isNum(age) ? dur(age) : "—" }), h("td", { class: "n", text: viaFmz || kind === "idle" ? "—" : isNum(p.ttl) ? dur(p.ttl) : "—" }),
         h("td", { class: "small", text: [...new Set(p.consumers.map(consumerCn))].slice(0, 3).join("、") || "—" })));
     }
     t.append(tb);
-    const det = keepOpen(h("details", { class: "src-group", open: kind === "continuous" || state.open.has(`src:${kind}`) },
-      h("summary", { text: `${KIND_CN[kind]}（${rows.length}）` }), h("div", { class: "scroll-x" }, t)), `src:${kind}`);
+    const det = keepOpen(h("details", { class: "src-group", open: kind === "continuous" || kind === "map_service" || state.open.has(`src:${kind}`) },
+      h("summary", { text: `${KIND_CN[kind]}（${rows.length}）` }),
+      KIND_NOTE[kind] ? h("p", { class: "muted small", text: KIND_NOTE[kind] }) : null,
+      h("div", { class: "scroll-x" }, t)), `src:${kind}`);
     left.append(det);
   }
   box.append(left);

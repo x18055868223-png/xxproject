@@ -171,6 +171,9 @@ const PHRASE_CN = [
   ["Review risk status", "复核风险状态"],
   ["source clock", "来源时钟"],
   ["Deribit option OI", "Deribit 期权持仓"],
+  ["源端 reason code，不反向改写 flip 关系", "源端原因码，不反向改写与翻转位的关系"],
+  ["Deribit live 冻结盘口报价", "Deribit 实时冻结盘口报价"],
+  ["gexmonitor ", "GEX 监测源的"], ["clean evidence", "清洗后的证据"],
   // a code echoed in brackets right after its own Chinese reading
   ["窗口不足（INSUFFICIENT_WINDOW）", "窗口不足"], ["窗口枚举INSUFFICIENT_WINDOW", "窗口状态为窗口不足"],
 ];

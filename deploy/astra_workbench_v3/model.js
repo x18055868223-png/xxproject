@@ -219,9 +219,29 @@ export function underwriting(view, sides) {
 // ── data sources ─────────────────────────────────
 // Deribit quote products are written only when a review or lock freezes a
 // quote; their age says when that last happened, not that a feed stopped.
-const ON_DEMAND_COLLECTORS = new Set(["server_deribit_public_quote"]);
+// Grouping follows who collects each product (its registry collector), not whether a
+// record happens to be present right now, so a restart or a late source cannot move a row.
+const COLLECTOR_KIND = {
+  server_deribit_public_discovery: "continuous", server_gex_cache: "continuous", fmz_snapshots_jsonl_bridge: "continuous",
+  server_deribit_public_quote: "on_demand",
+  astra_map_sources_v24: "map_service", astra_map_data_server_v24: "map_service",
+  "astra_map_projection_v24.collect_kpf_artifacts": "map_service",
+  fmz_binance_adapter: "fmz",
+};
 // Registered but deliberately not consumed (no public source exists).
 const NOT_CONSUMED = new Set(["cex.usdt.borrow_rate.v1"]);
+// Registered under a running collector that does not produce them today.
+const NOT_PRODUCED = new Set(["gex.pending.candidate.v1", "gex.raw.board.v1"]);
+// Why a registered product is not consumed.
+const IDLE_REASON = {
+  "cex.usdt.borrow_rate.v1": "没有可用的公开来源，已登记但不消费",
+  "gex.pending.candidate.v1": "GEX 缓存当前不产出该读数",
+  "gex.raw.board.v1": "GEX 缓存当前不产出原始看板",
+  "risk.astra.frozen_mu.reference.v1": "风险均值 μ 没有生产来源；μ 门已移除，不消费",
+  "risk.astra.qualified_model.domain.v1": "合格风险模型尚未建立，不消费",
+  "macro.dxy.close.v1": "宏观采集适配器尚未接入；宏观读数由 FMZ 事实提供",
+  "macro.vxn.close.v1": "宏观采集适配器尚未接入；宏观读数由 FMZ 事实提供",
+};
 const CONSUMER_CN = {
   anchor: "锚点", btc_background: "慢背景", candidate_discovery: "候选发现", candidate_meta: "合约元数据", candidate_quote: "候选报价",
   current_price: "现价", daily_snapshot: "每日快照", data_health: "健康检查", delta_filter: "Delta 选约", derivatives_context: "衍生品背景",
@@ -379,13 +399,15 @@ export function sourceHealth(view) {
       : st.includes("STALE") || st.includes("PARTIAL") ? "warn"
       : st.includes("NOT_CONNECTED") || st.includes("PLANNED") ? "off" : st ? "bad" : "off";
     const age = isNum(ud.age_ms) && ud.age_ms < 365 * 86_400_000 ? ud.age_ms : null;
-    // continuous: collected here on a schedule; on_demand: written when a quote is frozen;
-    // elsewhere: consumed inside FMZ or not built yet; unused: registered, deliberately not consumed.
-    const kind = NOT_CONSUMED.has(id) ? "unused"
-      : ON_DEMAND_COLLECTORS.has(p.collector_id) ? "on_demand"
-      : !first && (st === "MISSING" || st.includes("NOT_CONNECTED") || st.includes("PLANNED")) ? "elsewhere" : "continuous";
-    const shown = kind === "continuous" ? level : kind === "on_demand" ? "info" : "off";
-    return { id, status: p.status, level: shown, kind, collected: kind === "continuous", age, ttl: ud.ttl_ms,
+    // continuous: the workbench collects it; map_service: the map data service on this host;
+    // on_demand: written when a quote is frozen; fmz: collected inside FMZ and consumed through
+    // its facts; idle: registered but not consumed (not connected, not produced, or no source).
+    const kind = NOT_CONSUMED.has(id) || NOT_PRODUCED.has(id) || st.includes("NOT_CONNECTED") || st.includes("PLANNED") ? "idle"
+      : COLLECTOR_KIND[p.collector_id] || (first ? "continuous" : "idle");
+    const collected = kind === "continuous" || kind === "map_service";
+    const shown = collected ? level : kind === "on_demand" ? "info" : "off";
+    return { id, status: p.status, level: shown, kind, collected, age, ttl: ud.ttl_ms,
+      idleReason: IDLE_REASON[id] || (kind === "idle" ? "采集方尚未接入，不消费" : null),
       reasons: ud.reason_codes || [], consumers: p.affected_consumers || [], observed: first && first.observation_end_ms };
   }).sort((a, b) => rank[a.level] - rank[b.level] || a.id.localeCompare(b.id));
 }
