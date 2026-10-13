@@ -33,6 +33,7 @@ if __package__:
     from . import astra_underwriting_discovery_v20 as discovery
     from . import astra_underwriting_fact_context_v20 as fact_context
     from . import astra_underwriting_guidance_v20 as guidance
+    from . import astra_decision_reduction_v1 as decision_reduction
     from . import astra_underwriting_public_quote_v20 as public_quote
     from . import astra_underwriting_review_v20 as review_core
     from . import astra_underwriting_store_v20 as store
@@ -57,6 +58,7 @@ else:  # direct CLI execution from tools/
     import astra_underwriting_discovery_v20 as discovery
     import astra_underwriting_fact_context_v20 as fact_context
     import astra_underwriting_guidance_v20 as guidance
+    import astra_decision_reduction_v1 as decision_reduction
     import astra_underwriting_public_quote_v20 as public_quote
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_store_v20 as store
@@ -2813,11 +2815,11 @@ class AstraWorkbench:
                 index = self.locked_candidates.episode_observations(episode_id)
                 series = self.locked_candidates.read_series(episode_id)
                 rows = [r for r in index["observations"] if r.get("kind") == "point" and r.get("point_id")
-                        and not r.get("thinned") and r["point_id"] not in series]
+                        and not r.get("thinned") and not _current_metrics((series.get(r["point_id"]) or {}).get("metrics"))]
                 if not rows:
                     continue
                 cache = self._series_metrics_cache()
-                need = [r["point_id"] for r in rows if r["point_id"] not in cache]
+                need = [r["point_id"] for r in rows if not _current_metrics(cache.get(r["point_id"]))]
                 if need:
                     baseline = None
                     for point_id, point, _error in self.locked_candidates.iter_points([index["baseline_point_id"], *need]):
@@ -2833,7 +2835,7 @@ class AstraWorkbench:
                             with self._series_lock:
                                 cache[point_id] = metrics
                 out = [{"point_id": r["point_id"], "step": r.get("step"), "recorded_at_ms": r.get("recorded_at_ms"),
-                        "metrics": cache[r["point_id"]]} for r in rows if r["point_id"] in cache]
+                        "metrics": cache[r["point_id"]]} for r in rows if _current_metrics(cache.get(r["point_id"]))]
                 self.locked_candidates.append_series(episode_id, out)
                 report["backfilled"] += len(out)
             report.update(self.locked_candidates.compact(now_ms))
@@ -2934,8 +2936,9 @@ class AstraWorkbench:
         cache = self._series_metrics_cache()
         local = {pid: row["metrics"] for pid, row in stored_series.items()}
         with self._series_lock:
-            missing = [row["point_id"] for row in points
-                       if row["point_id"] not in local and row["point_id"] not in cache and not row.get("thinned")]
+            missing = [row["point_id"] for row in points if not row.get("thinned")
+                       and not _current_metrics(local.get(row["point_id"]))
+                       and not _current_metrics(cache.get(row["point_id"]))]
         computed: dict[str, dict[str, Any]] = {}
         if missing:
             baseline = None
@@ -2959,16 +2962,18 @@ class AstraWorkbench:
                         for key in list(cache)[: len(cache) - 20_000]:
                             cache.pop(key, None)
                     snapshot = dict(cache)
+                # A GET never writes the locked store; retention backfills the series file.
                 self._save_series_cache(snapshot)
-        local.update(computed)
         series, unreadable = [], 0
         for row in points:
-            metrics = local.get(row["point_id"]) or cache.get(row["point_id"])
+            pid = row["point_id"]
+            metrics = next((m for m in (computed.get(pid), local.get(pid), cache.get(pid)) if _current_metrics(m)),
+                           None) or local.get(pid) or cache.get(pid)
             if metrics is None:
                 unreadable += 1
                 continue
             series.append({"step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
-                           "point_id": row["point_id"], **metrics})
+                           "point_id": pid, **metrics})
         return {"schema": locked_compare.SERIES_SCHEMA, "episode": index["episode"],
                 "settlement": self.locked_settlements().get(episode_id),
                 "points": series, "gaps": gaps, "thinned": len(points) < total_points,
@@ -2980,7 +2985,7 @@ class AstraWorkbench:
         try:
             point_id = locked_store._hash(point)
             cache = self._series_metrics_cache()
-            if point_id in cache:
+            if _current_metrics(cache.get(point_id)):
                 return cache[point_id]
             baseline_id = episode["t0_baseline_point_id"]
             baseline = self._series_baselines.get(baseline_id)
@@ -3258,7 +3263,7 @@ class AstraWorkbench:
                     "transitions": self.recent_transitions(),
                     "manual_review_state": self.manual_review_state(now), "llm_call_count": 0,
                     "data_health": self._data_health(now)}
-            result = self._apply_current_review_availability(warm, now)
+            result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
         # Recheck facts and current use, without overwriting frozen candidate evidence.
         fact = self.latest_fact(now)
@@ -3309,7 +3314,7 @@ class AstraWorkbench:
             view["collector_failure"] = failure
             view["gaps"] = sorted(set(view.get("gaps", []) + ["data_collector_refresh_failed"]))
         view["scheduled_review"] = self.scheduled_review_status(now)
-        result = self._apply_current_review_availability(view, now)
+        result = self._attach_decision_reduction(self._apply_current_review_availability(view, now))
         return reading.workbench_reading(result) if reading_only else result
 
     def _map_current_usage(self, mapping: Mapping[str, Any] | None, now_ms: int, *,
@@ -3603,6 +3608,16 @@ class AstraWorkbench:
         if self.config.wpem_enabled and snapshot.get("snapshot_id") not in self._wpem_packages:
             reasons.append("wpem_evidence_unavailable")
         return {"enabled": not reasons, "reasons": sorted(set(reasons))}
+
+    @staticmethod
+    def _attach_decision_reduction(view: dict[str, Any]) -> dict[str, Any]:
+        """Read-time only (after the review gate is current); never stored with a point."""
+        for item in view.get("candidates") or []:
+            try:
+                item["decision_reduction"] = decision_reduction.reduce(item)
+            except Exception as exc:
+                item["decision_reduction"] = {"schema": decision_reduction.SCHEMA, "error": type(exc).__name__}
+        return view
 
     def _apply_current_review_availability(self, view: dict[str, Any], now_ms: int) -> dict[str, Any]:
         state = view.get("manual_review_state") if isinstance(view.get("manual_review_state"), Mapping) else None
@@ -4066,6 +4081,11 @@ class AstraWorkbench:
             if thread:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
+
+
+def _current_metrics(metrics: Any) -> bool:
+    """A metrics row of the current series version (older rows lack later readings)."""
+    return isinstance(metrics, Mapping) and (metrics.get("metrics_version") or 1) >= locked_compare.SERIES_METRICS_VERSION
 
 
 def make_handler(workbench: AstraWorkbench):

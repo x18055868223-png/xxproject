@@ -875,6 +875,51 @@ def _explanations(point: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 SERIES_SCHEMA = "locked_candidate_series@1.0.0"
+# 2: adds Deribit-style floating PnL from leg marks; rows of an older version are
+# recomputed while the point file still exists.
+SERIES_METRICS_VERSION = 2
+
+
+def _leg_marks(point: Mapping[str, Any]) -> dict[str, float | None]:
+    """Deribit mark price of each leg (BTC per contract) from the retained public books."""
+    market = _mapping(_mapping(_mapping(point.get("packet")).get("raw_payload")).get("market"))
+    return {leg: _number(_mapping(market.get(leg + "_book")).get("mark_price")) for leg in ("short", "long")}
+
+
+def floating_pnl(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
+    """Floating PnL the way Deribit shows it for an open option position: per leg
+    (mark - entry) x signed size, summed. Entry is the lock-time executable price of
+    each leg (short sold at the bid, long bought at the ask). No fees, no close cost:
+    a held position is settled at delivery, not closed."""
+    base = _point_snapshot(baseline)
+    quote = _mapping(_dig(base, ("market", "quote")))
+    quantity = _number(_dig(base, ("contract", "quantity_btc")))
+    entry_short = _number(quote.get("short_sale_btc"))
+    entry_long = _number(quote.get("long_purchase_btc"))
+    entry_basis = "lock_quote_depth"
+    if (entry_short is None or entry_long is None) and quantity is not None:
+        # The lock-time quote can be withheld for a quality gap (e.g. leg time skew) while
+        # both books are still there: use their top of book, as a fill at lock would have.
+        books = _mapping(_mapping(_mapping(baseline.get("packet")).get("raw_payload")).get("market"))
+        bid = _number(_mapping(books.get("short_book")).get("best_bid_price"))
+        ask = _number(_mapping(books.get("long_book")).get("best_ask_price"))
+        if bid is not None and ask is not None:
+            entry_short, entry_long, entry_basis = bid * quantity, ask * quantity, "lock_top_of_book"
+    marks = _leg_marks(point)
+    gaps = [name for name, value in (("entry_short_missing", entry_short), ("entry_long_missing", entry_long),
+                                     ("quantity_missing", quantity), ("short_mark_missing", marks["short"]),
+                                     ("long_mark_missing", marks["long"])) if value is None]
+    value = remaining = None
+    # A credit spread's profit is capped at the entry credit; what is still to be earned
+    # is the spread's current mark value, i.e. max profit minus the floating PnL.
+    max_profit = entry_short - entry_long if entry_short is not None and entry_long is not None else None
+    if not gaps:
+        remaining = (marks["short"] - marks["long"]) * quantity
+        value = max_profit - remaining
+    return {"float_pnl_btc": value, "short_mark_btc": marks["short"], "long_mark_btc": marks["long"],
+            "entry_short_btc": entry_short, "entry_long_btc": entry_long, "entry_basis": entry_basis,
+            "max_profit_btc": max_profit,
+            "remaining_credit_btc": remaining, "float_gaps": gaps}
 
 
 def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> Any:
@@ -928,6 +973,8 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
         "tmv_state": _reading(candidate, "context.tmv_price_path", ("tmv_state",)),
         "gamma_regime": _reading(candidate, "context.option_space", ("gamma_regime", "regime")),
         "macro_regime": _reading(candidate, "context.macro", ("macro_regime",)),
+        **floating_pnl(point, baseline),
+        "metrics_version": SERIES_METRICS_VERSION,
     }
 
 
