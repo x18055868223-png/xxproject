@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>中性回路承保决策工作台</title>
+<script>/* relative assets need a trailing slash: /signal-audit/workbench-v3 -> /signal-audit/workbench-v3/ */
+if (!/\/$|\.html$/.test(location.pathname)) location.replace(location.pathname + "/" + location.search + location.hash);</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="strip">
+  <div class="strip-inner">
+    <div class="brand"><b>中性回路承保决策工作台</b><span>BTC 末日轮垂直价差</span></div>
+    <div class="spot"><span class="figure" id="spot">—</span><small id="spot-age"></small></div>
+    <div class="state" id="gate-state"><i class="lamp"></i><span>SpaceGate</span></div>
+    <div class="state" id="fact-state"><i class="lamp"></i><span>FMZ 事实</span></div>
+    <a class="state" id="sources" href="#src-h"><i class="lamp"></i><span>来源</span></a>
+    <a class="state" id="lock-state" href="#lock-h" hidden><i class="lamp"></i><span>追踪中</span></a>
+    <div class="state" id="budget"><span>今日复核 —</span></div>
+    <div class="state" id="refreshed"><span>—</span></div>
+    <button class="ghost" id="session-btn" type="button">登录</button>
+  </div>
+</header>
+
+<main class="page">
+  <div id="banners"></div>
+
+  <section class="band" aria-labelledby="map-h">
+    <div class="band-head">
+      <h2 id="map-h">价格地图</h2>
+      <p id="map-sub">现价、两侧责任区与市场结构位放在同一价格轴上</p>
+      <div class="right" id="map-filters"></div>
+    </div>
+    <div class="sheet map-sheet">
+      <div class="map-scroll"><svg class="map-svg" id="map" role="img" aria-label="价格地图" viewBox="0 0 1400 260"></svg></div>
+      <div class="map-tip" id="map-tip" hidden></div>
+      <div class="map-legend" id="map-legend"></div>
+    </div>
+    <div class="verdict" id="verdict" role="status"></div>
+    <div class="decks" id="decks">
+      <div class="sheet deck skeleton"></div><div class="sheet deck skeleton"></div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="lock-h">
+    <div class="band-head">
+      <h2 id="lock-h">锁定追踪</h2>
+      <p id="lock-sum">锁定后按同一合同持续采样，比较锁定时与现在</p>
+    </div>
+    <div class="sheet" id="locks"></div>
+  </section>
+
+  <section class="band" aria-labelledby="factor-h">
+    <div class="band-head">
+      <h2 id="factor-h">四要素</h2>
+      <p>空间结构、量价路径、主动成交与宏观环境的当前读数；候选卡上的“有利/不利”由这里换算</p>
+    </div>
+    <div class="factors" id="factors" aria-label="四要素读数"></div>
+  </section>
+
+  <section class="band" aria-labelledby="audit-h">
+    <div class="band-head">
+      <h2 id="audit-h">推理审计</h2>
+      <p id="audit-sub">模型结论逐点对照它引用的程序证据</p>
+      <div class="right" id="audit-switch"></div>
+    </div>
+    <div class="sheet audit" id="audit"></div>
+  </section>
+
+  <section class="band" aria-labelledby="ctx-h">
+    <div class="band-head">
+      <h2 id="ctx-h">资金与慢背景</h2>
+      <p>资金费、持仓、ETF、链上成本与期权情绪；只作背景，不单独构成承保理由</p>
+    </div>
+    <div class="grid-3" id="context"></div>
+  </section>
+
+  <section class="band" aria-labelledby="src-h">
+    <div class="band-head">
+      <h2 id="src-h">数据与审计记录</h2>
+      <p>来源时效、空间门变迁、每日快照、通知与版本身份</p>
+    </div>
+    <div class="grid-2" id="records"></div>
+  </section>
+
+  <footer class="foot" id="foot"></footer>
+</main>
+
+<dialog class="login" id="login">
+  <form method="dialog" id="login-form">
+    <h3 style="margin-top:0">登录工作台</h3>
+    <p>令牌只发送给本工作台用于换取会话，不会保存在页面里。</p>
+    <input type="password" id="login-token" autocomplete="new-password" placeholder="工作台令牌" aria-label="工作台令牌">
+    <p id="login-msg" class="muted"></p>
+    <div class="actions">
+      <button class="btn" type="submit" value="login">登录</button>
+      <button class="btn secondary" type="button" id="login-cancel">取消</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
