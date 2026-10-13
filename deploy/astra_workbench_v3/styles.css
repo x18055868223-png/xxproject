@@ -426,18 +426,22 @@ tr.lock-detail-row > td { padding: 0 0 14px; background: var(--paper); }
 details.ld-more { margin-top: 14px; }
 /* decision reduction */
 .reduce { margin: 10px 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--paper-2);
-  border-left: 3px solid var(--ink-3); font-size: 13px; cursor: default; }
+  border-left: 3px solid var(--depth); font-size: 13px; cursor: default; }
+.reduce.observe { border-left-color: var(--ink-3); }
 .reduce-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
-.reduce-head.blocked span { color: var(--warn); }
-.reduce-q { margin: 8px 0 4px; padding-left: 20px; display: grid; gap: 8px; }
-.reduce-q li { display: flex; flex-direction: column; gap: 2px; }
-.reduce-q li > b { font-weight: 600; }
+.reduce-head b { font-size: 14px; }
+.reduce-rule { font-size: 12px; color: var(--ink-3); }
+.reduce-rule.blocked { color: var(--warn); }
+.reduce-q { margin: 8px 0 4px; padding-left: 20px; display: grid; gap: 10px; }
+.reduce-q li { display: flex; flex-direction: column; gap: 3px; }
 .reduce-tag { font-size: 11px; color: var(--ink-3); }
-.reduce-line { color: var(--ink-2); font-family: var(--font-num); }
-.reduce-why { color: var(--ink-3); font-size: 12px; }
+.reduce-main { color: var(--ink); line-height: 1.5; }
+.reduce-line { color: var(--ink-2); line-height: 1.5; }
+.reduce-ask { color: var(--ink); font-weight: 600; }
+.reduce-flag { color: var(--liability); }
 .reduce-more summary { cursor: pointer; color: var(--ink-2); font-size: 12px; }
+.reduce-more p { margin: 4px 0 0; }
 .reduce-left { color: var(--warn); font-size: 12px; margin: 4px 0 0; }
-.reduce-out { margin: 6px 0 0; }
 details.ld-more > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); }
 td.st.changed { color: var(--depth); }
 td.st.same_clock, td.st.not_precise, td.st.missing, td.st.latest_missing { color: var(--ink-3); }
@@ -475,3 +479,5 @@ ul.q li { font-size: 13.5px; line-height: 1.6; padding: 3px 0; }
 
 /* map labels keep a paper-coloured outline so a line or bar under them never cuts the glyphs */
 .map-svg text.halo { paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; stroke-linejoin: round; }
+.lock-more-row td { text-align: center; padding: 8px; }
+button.link { background: none; border: 0; padding: 0; color: var(--depth); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; }

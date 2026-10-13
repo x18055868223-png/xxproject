@@ -6,7 +6,7 @@ import { sideModel, mapModel, sourceHealth, reasonCn, statusCn, applicability, c
   consumerCn, sourceStatusCn } from "./model.js";
 import { renderMap, legend } from "./map.js";
 import { coreFactors, backgroundItems, relationFor } from "./factors.js";
-import { lockList, lockDetail } from "./locks.js";
+import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
@@ -363,75 +363,92 @@ function deck(m, side, blockers) {
   return card;
 }
 
-// Decision reduction: what is left for the user once Q1/Q2 are read. Built by the
-// program (no model): folded items need a reason code, opposite evidence is not
-// netted, nothing is concluded. Numbers already on the card are not repeated.
-const KIND_TAG = { belief: "你的判断", judgment: "你的判断", preference: "你的偏好" };
+// Decision reduction: what the user still has to settle before deciding, inside the
+// model's scope. Built by the program (no model): nothing is weighed or concluded.
+// The market's own price (the spread's mark value) is the reference, so no system
+// probability is needed: the only open question is whether you see it differently.
+const KIND_TAG = { judgment: "你的判断", belief: "你的判断", preference: "你的承受度" };
+const money = (v) => (isNum(v) ? `${v < 0 ? "−" : ""}${usd(Math.abs(v))} 美元` : "—");
+const signedMoney = (v) => (isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${usd(Math.abs(v))} 美元` : "—");
 
 function reductionView(m) {
   const r = m.candidate?.decision_reduction;
   if (!r || r.error || !Array.isArray(r.questions)) return null;
-  const box = h("section", { class: "reduce", onclick: (e) => e.stopPropagation() });
-  const rs = r.rule_state || {};
-  const blocked = rs.status === "blocked";
-  box.append(h("div", { class: `reduce-head${blocked ? " blocked" : ""}` },
-    h("b", { text: "决策收束" }),
-    h("span", { text: blocked
-      ? "空间门（结构门）未放行：按项目规则本轮不承保，以下问题仅供观察"
-      : "规则已放行；承保与否由你决定，以下是系统无权替你回答的问题" })));
+  const blocked = r.rule_state?.status === "blocked";
+  const box = h("section", { class: `reduce${blocked ? " observe" : ""}`, onclick: (e) => e.stopPropagation() });
+  box.append(h("div", { class: "reduce-head" },
+    h("b", { text: "决策前要确认的 3 件事" }),
+    h("span", { class: `reduce-rule${blocked ? " blocked" : ""}`,
+      text: blocked ? "空间门未放行：按规则本轮不承保，以下仅供观察" : "规则已放行，承保与否由你决定" })));
   const ol = h("ol", { class: "reduce-q" });
-  for (const q of r.questions) ol.append(reductionQuestion(q, m));
+  for (const q of r.questions) {
+    const item = reductionItem(q, m);
+    if (item) ol.append(item);
+  }
   box.append(ol);
 
   const cov = r.coverage || {};
   const folded = (r.folded || []).filter((f) => f.count > 0);
-  const more = h("details", { class: "reduce-more" },
-    h("summary", { text: `已消化 ${cov.folded ?? 0} 条（共 ${cov.inputs ?? 0} 条程序事实；${cov.evidence ?? 0} 条作为证据留在问题 1）` }),
-    h("p", { class: "muted small", text: folded.map((f) => `${f.label_cn} ${f.count}`).join(" · ") }),
-    h("p", { class: "muted small", text: "折叠只依据规则或来源标注（重复、不投票、无方向、已在规则或数字中体现），不判断重要性；需要时可在下方 Q1/Q2 和推理审计中查看原条目。" }));
-  box.append(more);
+  const why = r.questions.filter((q) => q.why_user_cn).map((q) => `${q.title_cn}：${q.why_user_cn}`);
+  box.append(h("details", { class: "reduce-more" },
+    h("summary", { text: `系统已替你消化 ${cov.folded ?? 0} 条程序事实；为什么这 3 件事要你来定` }),
+    h("p", { class: "muted small", text: `已消化：${folded.map((f) => `${f.label_cn} ${f.count}`).join(" · ")}。折叠只依据规则或来源标注，不判断重要性；原条目在下方 Q1/Q2 与推理审计中。` }),
+    ...why.map((t) => h("p", { class: "muted small", text: t })),
+    h("p", { class: "muted small", text: `模型口径之外，请自行核对：${(r.outside_model_cn || []).join(" · ")}。` })));
   if ((r.unclassified || []).length) {
     box.append(h("p", { class: "reduce-left", title: r.unclassified.map((u) => u.ref).join(" · "),
-      text: `另有 ${r.unclassified.length} 条系统未能归类，原样留给你：${r.unclassified.map((u) => u.label_cn || reasonCn(u.code)).join("、")}` }));
+      text: `另有 ${r.unclassified.length} 条系统未能归类，请自行查看：${r.unclassified.map((u) => u.label_cn || reasonCn(u.code)).join("、")}` }));
   }
-  box.append(h("p", { class: "muted small reduce-out", text: `模型外（请自行核对）：${(r.outside_model_cn || []).join(" · ")}` }));
   return box;
 }
 
-function reductionQuestion(q, m) {
-  const li = h("li", {}, h("span", { class: "reduce-tag", text: KIND_TAG[q.kind] || "你的判断" }), h("b", { text: q.text_cn }));
-  const lines = [];
-  if (q.id === "R1") {
+function reductionItem(q, m) {
+  const li = h("li", {}, h("span", { class: "reduce-tag", text: `${KIND_TAG[q.kind] || "你的判断"} · ${q.title_cn || ""}` }));
+  const line = (text, cls = "reduce-line") => li.append(h("span", { class: cls, text }));
+  if (q.key === "market_price") {
+    const n = q.numbers || {};
+    if (isNum(n.market_payout_usd) && isNum(n.net_usd)) {
+      line(`你净收 ${money(n.net_usd)}；按 Deribit 两腿标记价，市场估计这张单到期平均要赔 ${money(n.market_payout_usd)}。`, "reduce-main");
+      line(`按市场自己的估价，这张单约 ${signedMoney(n.edge_usd)}（成交价相对标记价 ${signedMoney(n.spread_cost_usd)}，手续费 ${signedMoney(-(n.fees_usd ?? 0))}）。`);
+      line(q.stance === "below_market"
+        ? "要承保，你得有理由认为它到期实际赔得比市场估计的少。"
+        : "补偿不低于市场估价；要承保，你至少不能比市场更担心。", "reduce-ask");
+    } else {
+      line(`市场估价暂缺（缺${(n.missing_cn || []).join("、") || "数据"}）${isNum(n.net_usd) ? `；你净收 ${money(n.net_usd)}` : ""}。`, "reduce-main");
+      line("没有市场估价时，只能凭下面的理由和最坏情况来判断。", "reduce-ask");
+    }
+    for (const f of q.flags_cn || []) line(f, "reduce-flag");
+    if (isNum(q.m_ref_btc)) line(`程序参照 M_ref ${btc(q.m_ref_btc)} BTC`);
+  } else if (q.key === "your_reason") {
     const b = q.boundary || {};
-    const d = b.short_distance_pct;
-    const ratio = isNum(d) && d >= 0 && isNum(m.sigmaPct) && m.sigmaPct > 0 ? d / m.sigmaPct : null;
-    const delta = isNum(b.short_abs_delta) ? `短腿 Delta 绝对值 ${b.short_abs_delta.toFixed(2)}（市场原始读数）` : "";
-    if (isNum(d) && d < 0) lines.push(`现价已进入短腿责任区${delta ? `；${delta}` : ""}`);
-    else if (isNum(ratio)) lines.push(`短腿距离约为到期前预期波动的 ${ratio.toFixed(1)} 倍${delta ? `；${delta}` : ""}`);
-    else if (delta) lines.push(delta);
+    const d = b.short_distance_pct, move = m.sigmaPct;
+    const k = isNum(b.short_strike_usd) ? usd(b.short_strike_usd) : "短腿";
+    if (isNum(d) && d < 0) line(`现价已经越过短腿 ${k}，进入责任区。`, "reduce-main");
+    else if (isNum(d)) {
+      const inside = isNum(move) && move > 0 ? (d < move ? `，在到期前预期波动 ±${pct(move, 2)} 之内` : `，在到期前预期波动 ±${pct(move, 2)} 之外`) : "";
+      line(`短腿 ${k} 离现价 ${pct(d, 2)}${inside}${isNum(b.short_abs_delta) ? `；短腿 Delta ${b.short_abs_delta.toFixed(2)}（0.5 为平值）` : ""}。`, "reduce-main");
+    }
     const ev = q.evidence || [];
     if (ev.length) {
-      lines.push(`系统看到的方向证据：${ev.map((e) => `${e.label_cn}：${e.relation_cn}`).join("；")}${q.conflict ? "（方向相反，未合并）" : ""}`);
+      line(`系统看到、价格未必已包含的读数：${ev.map((e) => `${e.label_cn}${e.detail_cn ? ` ${e.detail_cn}` : ""} → ${e.relation_cn}`).join("；")}${q.conflict ? "。两者方向相反，系统不替你合并" : ""}。`);
     } else {
-      lines.push("没有可用的方向证据，落点只能由你判断");
+      line("系统没有看到价格之外的方向读数，没有可以支持你比市场更有把握的系统依据。");
     }
-  } else if (q.id === "R2") {
+    line(`这些是否足以让你比市场更不担心${m.side === "put" ? "跌破" : "涨过"} ${k}？`, "reduce-ask");
+  } else if (q.key === "worst_case") {
     const n = q.numbers || {};
-    // Credit and its share of width are on the card above; only what it lacks is added here.
-    if ((n.missing_cn || []).length) lines.push(`补偿数字暂缺：缺${n.missing_cn.join("、")}，其余照常`);
-    if (isNum(n.loss_at_protection_btc)) lines.push(`到期在保护腿处净亏 ${btc(n.loss_at_protection_btc)} BTC（已含费用）`);
-    for (const f of q.flags_cn || []) lines.push(f);
-    if (isNum(q.m_ref_btc)) lines.push(`程序参照 M_ref ${btc(q.m_ref_btc)} BTC`);
-    if (q.tail_cn) lines.push(q.tail_cn);
-    if (q.premise_cn) lines.push(q.premise_cn);
-  } else if (q.id === "R3") {
-    const n = q.numbers || {};
-    if (isNum(n.payout_at_protection_btc)) {
-      lines.push(`到期在保护腿 ${usd(n.protection_usd)} 时赔 ${btc(n.payout_at_protection_btc)} BTC${isNum(n.payout_at_deep_btc) ? `；跌到 ${usd(n.deep_usd)} 时赔 ${btc(n.payout_at_deep_btc)} BTC` : ""}`);
+    const k = isNum(n.protection_usd) ? usd(n.protection_usd) : "保护腿";
+    if (isNum(n.loss_at_protection_btc)) {
+      line(m.side === "put"
+        ? `到期跌破 ${k}：净亏 ${btc(n.loss_at_protection_btc)} BTC（约 ${money(n.loss_at_protection_usd)}）；再往下按 BTC 计还会增加${isNum(n.payout_at_deep_btc) ? `，跌到 ${usd(n.deep_usd)} 时赔 ${btc(n.payout_at_deep_btc)} BTC` : ""}。`
+        : `到期涨过 ${k}：净亏 ${btc(n.loss_at_protection_btc)} BTC（约 ${money(n.loss_at_protection_usd)}），这是最坏情况，再涨不会更多。`, "reduce-main");
+    } else {
+      line("最坏情况暂缺（报价或费用不足）。", "reduce-main");
     }
+    line("这个亏损你能否承受？", "reduce-ask");
+  } else {
+    return null;
   }
-  for (const line of lines) li.append(h("span", { class: "reduce-line", text: line }));
-  if (q.why_user_cn) li.append(h("span", { class: "reduce-why", text: `为什么系统不回答：${q.why_user_cn}` }));
   return li;
 }
 
@@ -823,11 +840,15 @@ function renderLocks() {
   const list = get(state.view, "locked_candidates.episodes") || [];
   const sum = $("lock-sum");
   const active = list.filter((e) => e.status === "active").length;
-  sum.textContent = list.length ? `${active} 条追踪中，共 ${list.length} 条。点击一行展开锁定时的关键内容与之后的变化。` : "锁定后按同一合同持续采样，比较锁定时与现在";
+  sum.textContent = list.length
+    ? `${active} 条追踪中，共 ${list.length} 条（默认显示最近 ${LOCK_LIST_LIMIT} 条）。每条追踪到该期期权交割为止；点击一行展开锁定时与之后的变化。`
+    : "锁定后按同一合同持续采样到该期期权交割，比较锁定时与现在";
   if (!list.length) { box.append(h("p", { class: "empty pad", text: "还没有锁定的合同。在候选卡上选择“锁定追踪”开始。" })); return; }
   const L = state.lock;
   box.append(h("div", { class: "pad" }, lockList(list, {
     selected: L.id,
+    showAll: !!L.showAll,
+    onToggleAll: () => { L.showAll = !L.showAll; renderLocks(); },
     onOpen: (id) => { if (L.id === id) { L.id = null; renderLocks(); } else { L.id = id; L.confirm = null; renderLocks(); fetchLock(id); } },
     renderDetail: (e) => lockDetail(L.details[e.episode_id], {
       loading: L.loading === e.episode_id, error: L.errors[e.episode_id], session: state.session.authenticated && !FIXTURE,

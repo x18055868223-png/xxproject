@@ -64,8 +64,20 @@ function episodeState(e) {
 }
 
 // ── list ─────────────────────────────────────────
-export function lockList(episodes, { selected, onOpen, renderDetail }) {
-  const rows = episodes.slice().sort((a, b) => (b.created_at_ms || 0) - (a.created_at_ms || 0));
+/** Most recent first. By default only the latest `limit` are listed; a tracking (active)
+ * contract and the open one are always shown, so a long history never crowds the page. */
+export const LOCK_LIST_LIMIT = 5;
+
+export function visibleLocks(episodes, { selected, showAll = false, limit = LOCK_LIST_LIMIT } = {}) {
+  const all = episodes.slice().sort((a, b) => (b.created_at_ms || 0) - (a.created_at_ms || 0));
+  if (showAll || all.length <= limit) return { rows: all, hidden: 0 };
+  const recent = new Set(all.slice(0, limit).map((e) => e.episode_id));
+  const rows = all.filter((e) => recent.has(e.episode_id) || e.status === "active" || e.episode_id === selected);
+  return { rows, hidden: all.length - rows.length };
+}
+
+export function lockList(episodes, { selected, onOpen, renderDetail, showAll = false, onToggleAll }) {
+  const { rows, hidden } = visibleLocks(episodes, { selected, showAll });
   const t = h("table", { class: "t locks" }, h("thead", {}, h("tr", {},
     ...["合约", "到期", "状态", "锁定于", "采样", "最近一点"].map((x) => h("th", { text: x })))));
   const tb = h("tbody");
@@ -85,6 +97,11 @@ export function lockList(episodes, { selected, onOpen, renderDetail }) {
       h("td", { class: "n", text: clock(e.latest_decision_asof_ms) }));
     tb.append(tr);
     if (open) tb.append(h("tr", { class: "lock-detail-row" }, h("td", { colspan: 6 }, renderDetail(e))));
+  }
+  if (onToggleAll && (hidden || showAll) && episodes.length > LOCK_LIST_LIMIT) {
+    tb.append(h("tr", { class: "lock-more-row" }, h("td", { colspan: 6 },
+      h("button", { class: "link", type: "button", onclick: onToggleAll,
+        text: showAll ? `只看最近 ${LOCK_LIST_LIMIT} 条` : `还有 ${hidden} 条更早的记录，显示全部` }))));
   }
   t.append(tb);
   return h("div", { class: "scroll-x" }, t);
