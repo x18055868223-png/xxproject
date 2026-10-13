@@ -197,9 +197,10 @@ def reduce(candidate: Mapping[str, Any]) -> dict[str, Any]:
             edb = review_core._edb_relation(snapshot)
             relation = edb.get("relation") or "unknown"
             lean = review_core._edb_lean_cn(edb.get("lean"))
-            evidence.append({"ref": ref, "label_cn": "EDB 倾向（定性）", "relation": relation,
+            shown = lean if lean != "未知" else DIRECTION_CN.get(str(edb.get("direction") or ""))
+            evidence.append({"ref": ref, "label_cn": "EDB 倾向", "relation": relation,
                              "relation_cn": RELATION_CN.get(relation, "方向不明"), "source": "reading_guidance",
-                             "detail_cn": lean if lean != "未知" else DIRECTION_CN.get(str(edb.get("direction") or ""))})
+                             "detail_cn": f"{shown}（定性）" if shown else "（定性）"})
         else:
             fold(target[1], ref)
             if kind == "compensation_insufficient":
