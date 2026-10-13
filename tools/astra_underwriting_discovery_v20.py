@@ -12,6 +12,7 @@ import json
 import math
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -438,12 +439,40 @@ def _with_public_greeks(instruments: list[Any], short_candidate_names: set[str],
                       "requested_instruments": sorted(short_candidate_names)}
 
 
+class DeribitPublicError(ValueError):
+    """A Deribit public API error with the exchange's own reason, e.g. system maintenance."""
+
+    def __init__(self, code: str, message: str, *, status: int | None = None):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.status = status
+
+    @classmethod
+    def from_http(cls, exc: "urllib.error.HTTPError", path: str) -> "DeribitPublicError":
+        reason, error_code = None, None
+        try:
+            body = json.loads(exc.read(4096).decode("utf-8", "replace"))
+            error = body.get("error") if isinstance(body, Mapping) else None
+            if isinstance(error, Mapping):
+                reason, error_code = error.get("message"), error.get("code")
+        except Exception:  # noqa: BLE001 - the HTTP status is still reported
+            pass
+        if reason == "system_maintenance" or error_code == 11051:
+            code = "DERIBIT_MAINTENANCE"
+        else:
+            code = f"DERIBIT_HTTP_{exc.code}"
+        return cls(code, f"{reason or exc.reason} ({path}, HTTP {exc.code})", status=exc.code)
+
+
 def _public_get(base_url: str, path: str, params: Mapping[str, Any], timeout_s: float) -> dict[str, Any]:
     query = urllib.parse.urlencode(params)
     url = f"{base_url.rstrip('/')}{path}?{query}"
     request = urllib.request.Request(url, headers={"User-Agent": "astra-underwriting-discovery/2.0"})
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise DeribitPublicError.from_http(exc, path) from exc
     if not isinstance(payload, Mapping) or "result" not in payload:
         raise ValueError(f"unexpected Deribit response from {path}")
     return dict(payload)

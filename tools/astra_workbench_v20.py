@@ -102,6 +102,30 @@ OBSERVATION_PURPOSE = "observation"
 _REVIEW_PURPOSES = {REVIEW_PURPOSE, OBSERVATION_PURPOSE}
 
 
+class UpstreamUnavailable(ValueError):
+    """A data source has nothing current; `upstream` names the provider's own reason."""
+
+    def __init__(self, message: str, *, upstream: str | None, last_success_ms: int | None):
+        super().__init__(message)
+        self.upstream = upstream
+        self.last_success_ms = last_success_ms
+
+
+def _upstream_code(exc: BaseException | None) -> str | None:
+    """deribit_maintenance / deribit_unavailable from an exception chain, else None."""
+    texts, seen = [], set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        texts.append(f"{getattr(exc, 'code', '')} {type(exc).__name__} {exc}")
+        exc = exc.__cause__ or exc.__context__
+    text = " ".join(texts)
+    if "DERIBIT_MAINTENANCE" in text or "system_maintenance" in text:
+        return "deribit_maintenance"
+    if any(k in text for k in ("DERIBIT_HTTP_5", "URLError", "timed out", "TimeoutError", "ConnectionError")):
+        return "deribit_unavailable"
+    return None
+
+
 class WorkbenchError(Exception):
     def __init__(self, status_code: int, code: str, message: str, *, detail: Any | None = None):
         super().__init__(message)
@@ -1682,6 +1706,7 @@ class AstraWorkbench:
         self._wpem_lock = threading.RLock()
         self._wpem_pinned: set[str] = set()
         self._sampler_marks: dict[str, int] = {}
+        self._discovery_upstream: tuple[str, int] | None = None
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
         self._reconcile_interrupted_review()
@@ -1779,23 +1804,53 @@ class AstraWorkbench:
             record = self.data_engine.fetch(product, acquire, now_ms=self.clock_ms(), scope=scope)
             qualified = self.data_engine.read(product, now_ms=self.clock_ms(), usage="fetch", scope=scope)
             if not qualified.get("usage_decision", {}).get("can_use"):
-                raise ValueError("discovery input unavailable for current use")
+                code = (record.get("fetch_decision") or {}).get("error_code")
+                raise ValueError("discovery input unavailable for current use" + (f" ({code})" if code else ""))
             return {"result": deepcopy(record["content"]["values"]["result"]),
                     "data_engine_receipt": {"record_id": record["record_id"],
                                             "retrieved_at_ms": record["time"]["retrieved_at_ms"],
                                             "observation_end_ms": record["time"]["observation_end_ms"]}}
+        failure: dict[str, Exception] = {}
+
         def loader():
-            values = discovery.capture_public_deribit_discovery(captured_ts_ms=now_ms, transport=transport)
+            try:
+                values = discovery.capture_public_deribit_discovery(captured_ts_ms=now_ms, transport=transport)
+            except Exception as exc:
+                failure["error"] = exc
+                raise
             captured = values["captured_ts_ms"]
             return {"values": values, "observation_end_ms": captured,
                     "retrieved_at_ms": captured, "ingested_at_ms": captured}
-        record = self.data_engine.fetch(data_projection.DISCOVERY, loader, now_ms=now_ms,
-            scope={"asset": "BTC", "target_hours": 24, "width_usd": 2000,
-                   "quantity_btc": 1, "delta_target": .35, "delta_max": .5,
-                   "capture_contract": "complete_delta_population@1"})
+        scope = {"asset": "BTC", "target_hours": 24, "width_usd": 2000,
+                 "quantity_btc": 1, "delta_target": .35, "delta_max": .5,
+                 "capture_contract": "complete_delta_population@1"}
+        try:
+            record = self.data_engine.fetch(data_projection.DISCOVERY, loader, now_ms=now_ms, scope=scope)
+        except Exception as exc:
+            # e.g. retry backoff after a failure: the last known upstream reason still applies
+            raise self._discovery_unavailable(exc, None, now_ms, scope) from exc
         if not record.get("usage_decision", {"can_use": True}).get("can_use"):
-            raise ValueError("discovery cache unavailable for current use")
+            raise self._discovery_unavailable(failure.get("error"), record, now_ms, scope)
+        self._discovery_upstream = None
         return deepcopy(record["content"]["values"])
+
+    def _discovery_unavailable(self, exc: Exception | None, record: Mapping[str, Any] | None,
+                               now_ms: int, scope: Mapping[str, Any]) -> "UpstreamUnavailable":
+        """Name why discovery has nothing current: the exchange's own reason when known."""
+        upstream = _upstream_code(exc) if exc is not None else None
+        if upstream:
+            self._discovery_upstream = (upstream, now_ms)
+        elif self._discovery_upstream and now_ms - self._discovery_upstream[1] < 30 * 60_000:
+            upstream = self._discovery_upstream[0]
+        if record is None:
+            try:
+                record = self.data_engine.read(data_projection.DISCOVERY, now_ms=now_ms, usage="health", scope=scope)
+            except Exception:
+                record = None
+        last_ok = ((record or {}).get("time") or {}).get("observation_end_ms")
+        message = "discovery cache unavailable for current use"
+        return UpstreamUnavailable(message + (f" ({upstream})" if upstream else ""),
+                                   upstream=upstream, last_success_ms=last_ok if isinstance(last_ok, int) else None)
 
     def _default_quote_capture(
         self,
@@ -2368,12 +2423,18 @@ class AstraWorkbench:
                 mark("discovery")
             except Exception as exc:
                 gaps.append("discovery_refresh_error")
+                upstream = getattr(exc, "upstream", None) or _upstream_code(exc)
+                if upstream:
+                    gaps.append("upstream_" + upstream)
                 candidates = [
                     {"side": side, "status": "error", "snapshot": None,
                      "review": {"status": "not_attached"},
-                     "review_gate": {"enabled": False, "reasons": ["discovery_refresh_error", type(exc).__name__]},
+                     # reasons are readable codes; the exception type is kept apart
+                     "review_gate": {"enabled": False, "reasons": ["discovery_refresh_error"]
+                                     + (["upstream_" + upstream] if upstream else [])},
                      "reading_guidance": guidance.build_reading_guidance(None, fmz_fact),
-                     "error": str(exc)[:240]}
+                     "error": str(exc)[:240], "error_type": type(exc).__name__,
+                     "upstream": {"code": upstream, "last_success_ms": getattr(exc, "last_success_ms", None)}}
                     for side in ("put", "call")
                 ]
             if discovered is not None:
