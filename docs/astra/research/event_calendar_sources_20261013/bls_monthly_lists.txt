@@ -1,0 +1,45 @@
+# BLS "Schedule of Selected Releases" monthly list views, /schedule/<year>/<MM>_sched_list.htm
+# captured 2026-10-13 in a browser (BLS refuses non-browser clients). Months 2026-02/04/09/11
+# returned a bot check instead of the table; November 2026 is covered by bls_release_pages.txt.
+Friday, October 2, 2026 | 08:30 AM | Employment Situation for September 2026
+Wednesday, October 14, 2026 | 08:30 AM | Consumer Price Index for September 2026
+Thursday, October 15, 2026 | 08:30 AM | Producer Price Index for September 2026
+Friday, December 4, 2026 | 08:30 AM | Employment Situation for November 2026
+Thursday, December 10, 2026 | 08:30 AM | Consumer Price Index for November 2026
+Tuesday, December 15, 2026 | 08:30 AM | Producer Price Index for November 2026
+Friday, January 8, 2027 | 08:30 AM | Employment Situation for December 2026
+Wednesday, January 13, 2027 | 08:30 AM | Consumer Price Index for December 2026
+Thursday, January 14, 2027 | 08:30 AM | Producer Price Index for December 2026
+Friday, February 5, 2027 | 08:30 AM | Employment Situation for January 2027
+Thursday, February 11, 2027 | 08:30 AM | Consumer Price Index for January 2027
+Friday, February 12, 2027 | 08:30 AM | Producer Price Index for January 2027
+Friday, March 5, 2027 | 08:30 AM | Employment Situation for February 2027
+Wednesday, March 10, 2027 | 08:30 AM | Consumer Price Index for February 2027
+Friday, March 12, 2027 | 08:30 AM | Producer Price Index for February 2027
+Friday, April 2, 2027 | 08:30 AM | Employment Situation for March 2027
+Tuesday, April 13, 2027 | 08:30 AM | Consumer Price Index for March 2027
+Wednesday, April 14, 2027 | 08:30 AM | Producer Price Index for March 2027
+Friday, May 7, 2027 | 08:30 AM | Employment Situation for April 2027
+Wednesday, May 12, 2027 | 08:30 AM | Consumer Price Index for April 2027
+Thursday, May 13, 2027 | 08:30 AM | Producer Price Index for April 2027
+Friday, June 4, 2027 | 08:30 AM | Employment Situation for May 2027
+Thursday, June 10, 2027 | 08:30 AM | Consumer Price Index for May 2027
+Friday, June 11, 2027 | 08:30 AM | Producer Price Index for May 2027
+Friday, July 2, 2027 | 08:30 AM | Employment Situation for June 2027
+Wednesday, July 14, 2027 | 08:30 AM | Consumer Price Index for June 2027
+Thursday, July 15, 2027 | 08:30 AM | Producer Price Index for June 2027
+Friday, August 6, 2027 | 08:30 AM | Employment Situation for July 2027
+Tuesday, August 10, 2027 | 08:30 AM | Producer Price Index for July 2027
+Wednesday, August 11, 2027 | 08:30 AM | Consumer Price Index for July 2027
+Friday, September 3, 2027 | 08:30 AM | Employment Situation for August 2027
+Friday, September 10, 2027 | 08:30 AM | Producer Price Index for August 2027
+Tuesday, September 14, 2027 | 08:30 AM | Consumer Price Index for August 2027
+Friday, October 8, 2027 | 08:30 AM | Employment Situation for September 2027
+Thursday, October 14, 2027 | 08:30 AM | Consumer Price Index for September 2027
+Friday, October 15, 2027 | 08:30 AM | Producer Price Index for September 2027
+Friday, November 5, 2027 | 08:30 AM | Employment Situation for October 2027
+Wednesday, November 10, 2027 | 08:30 AM | Consumer Price Index for October 2027
+Friday, November 12, 2027 | 08:30 AM | Producer Price Index for October 2027
+Friday, December 3, 2027 | 08:30 AM | Employment Situation for November 2027
+Friday, December 10, 2027 | 08:30 AM | Consumer Price Index for November 2027
+Wednesday, December 15, 2027 | 08:30 AM | Producer Price Index for November 2027

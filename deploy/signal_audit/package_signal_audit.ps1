@@ -156,6 +156,7 @@ $workbenchModules = @(
     "astra_decision_reduction_v1.py",
     "astra_spatial_position_v1.py",
     "astra_cross_asset_v1.py",
+    "astra_event_calendar_v1.py",
     "astra_observation_replay_v1.py",
     "astra_chain_audit_v1.py",
     "astra_risk_qualification_v244.py",

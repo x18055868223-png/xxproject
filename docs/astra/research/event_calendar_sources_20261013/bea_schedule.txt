@@ -1,0 +1,7 @@
+# bea.gov/news/schedule/full, fetched 2026-10-13; upcoming GDP and Personal Income and Outlays rows (time | release | date)
+8:30 AM | GDP (Advance Estimate), 3rd Quarter 2026 | October 29
+8:30 AM | Personal Income and Outlays, September 2026 | November 4
+8:30 AM | GDP (Second Estimate) and Corporate Profits, 3rd Quarter 2026 | November 25
+8:30 AM | Personal Income and Outlays, October 2026 | December 2
+8:30 AM | GDP (Third Estimate), Industries, Corporate Profits, State GDP, and State Personal Income, 3rd Quarter 2026 | December 23
+8:30 AM | Personal Income and Outlays, November 2026 | To Be Announced

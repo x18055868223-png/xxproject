@@ -36,6 +36,7 @@ if __package__:
     from . import astra_decision_reduction_v1 as decision_reduction
     from . import astra_spatial_position_v1 as spatial_position
     from . import astra_cross_asset_v1 as cross_asset
+    from . import astra_event_calendar_v1 as event_calendar
     from . import astra_underwriting_public_quote_v20 as public_quote
     from . import astra_underwriting_review_v20 as review_core
     from . import astra_underwriting_store_v20 as store
@@ -63,6 +64,7 @@ else:  # direct CLI execution from tools/
     import astra_decision_reduction_v1 as decision_reduction
     import astra_spatial_position_v1 as spatial_position
     import astra_cross_asset_v1 as cross_asset
+    import astra_event_calendar_v1 as event_calendar
     import astra_underwriting_public_quote_v20 as public_quote
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_store_v20 as store
@@ -3408,6 +3410,23 @@ class AstraWorkbench:
             return None
         return {**(current or {"schema": cross_asset.SCHEMA, "status": "not_collected"}), "contract_window": window}
 
+    @staticmethod
+    def _attach_exogenous_events(view: dict[str, Any], now_ms: int) -> None:
+        """Scheduled US macro releases from the static calendar: the next two weeks for the page,
+        and per candidate the ones inside its remaining life. Pure lookup, display only."""
+        try:
+            view["exogenous_events"] = event_calendar.upcoming(now_ms)
+        except Exception as exc:  # a display module must never break the page
+            view["exogenous_events"] = {"schema": event_calendar.SCHEMA, "error_type": type(exc).__name__}
+        for item in view.get("candidates") or []:
+            snapshot = item.get("snapshot") if isinstance(item, Mapping) else None
+            contract = snapshot.get("contract") if isinstance(snapshot, Mapping) else None
+            expiry = contract.get("expiry_ms") if isinstance(contract, Mapping) else None
+            try:
+                item["exogenous_events"] = event_calendar.contract_events(now_ms, expiry)
+            except Exception:
+                item["exogenous_events"] = None
+
     def cached_view(self, *, reading_only: bool = False) -> dict[str, Any]:
         """Read the collector's cache. Page reads never cause external requests."""
         now = self.clock_ms()
@@ -3426,6 +3445,7 @@ class AstraWorkbench:
                     "transitions": self.recent_transitions(),
                     "manual_review_state": self.manual_review_state(now), "llm_call_count": 0,
                     "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now)}
+            self._attach_exogenous_events(warm, now)
             result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
         # Recheck facts and current use, without overwriting frozen candidate evidence.
@@ -3435,6 +3455,7 @@ class AstraWorkbench:
                      "locked_candidates": self.locked_candidate_list(),
                      "manual_review_state": self.manual_review_state(now),
                      "cross_asset": self.cross_asset_view(view.get("candidates") or [], now)})
+        self._attach_exogenous_events(view, now)
         usage_engines: dict[Any, Any] = {}
         view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now, engines=usage_engines)
         # Global display is a current cache projection. Candidate MAPs stay frozen.
