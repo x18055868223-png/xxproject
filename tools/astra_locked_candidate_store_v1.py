@@ -10,10 +10,12 @@ from __future__ import annotations
 from copy import deepcopy
 import gzip
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import threading
+import zlib
 from typing import Any, Mapping
 
 if __package__:
@@ -37,6 +39,24 @@ EXPIRED = "expired"
 MAX_REQUEST_KEY_BYTES = 256
 MAX_STORED_GAPS_PER_EPISODE = 128
 MAX_REQUEST_KEYS = 4096
+SERIES_SCHEMA = "astra_locked_candidate_series_row@1.0.0"
+
+# Retention of full evidence files. Every sampled point keeps its small metrics row in
+# series/<episode>.jsonl for the process chart; full point files are thinned by age:
+# all within FULL_WINDOW of the newest sample of an active policy, then one per DENSE
+# bucket; after a policy ends, one per DENSE bucket for DENSE_UNTIL, one per SPARSE
+# bucket until SPARSE_UNTIL, then only t0 and the last point. Thinned index rows of a
+# policy ended for COLLAPSE_AFTER are folded away; a policy ended for DROP_AFTER is
+# removed (its settlement and audit-log events are kept elsewhere).
+RETENTION_DEFAULTS = {
+    "full_window_ms": 2 * 3_600_000,
+    "dense_bucket_ms": 10 * 60_000,
+    "dense_until_ms": 3 * 86_400_000,
+    "sparse_bucket_ms": 60 * 60_000,
+    "sparse_until_ms": 30 * 86_400_000,
+    "collapse_after_ms": 7 * 86_400_000,
+    "drop_after_ms": 60 * 86_400_000,
+}
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _VALID_STATUSES = {ACTIVE, PAUSED, ERROR, STOPPED, EXPIRED}
 
@@ -295,6 +315,8 @@ class LockedCandidateStore:
                     self.max_samples, self.max_point_bytes)):
             raise LockedCandidateError("invalid_budget", "store budgets must be positive")
         self._cache_lock = threading.Lock()
+        self._series_lock = threading.Lock()
+        self.series_dir = self.root / "series"
         self._point_meta_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
         self._point_verified_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
 
@@ -321,7 +343,8 @@ class LockedCandidateStore:
                 raise LockedCandidateError("request_key_budget_exhausted", "durable request key budget exhausted")
             if source_episode_id:
                 source = self._episode(state, source_episode_id)
-                if not new_reference or not any(row.get("kind") == POINT_KIND and row.get("point_id") == checked["point_id"] for row in source["observations"]):
+                if not new_reference or not any(row.get("kind") == POINT_KIND and row.get("point_id") == checked["point_id"]
+                                                and not row.get("thinned") for row in source["observations"]):
                     raise LockedCandidateError("source_reference_mismatch", "explicit new reference must use a retained source point")
 
             if not new_reference:
@@ -559,9 +582,15 @@ class LockedCandidateStore:
         latest_step = None
         for row in episode["observations"]:
             if row.get("kind") == POINT_KIND and row.get("point_id") == latest_point_id:
+                if row.get("thinned"):
+                    raise LockedCandidateError("point_thinned",
+                                               "this sample's full evidence was thinned by retention; its metrics remain")
                 latest_step = row["step"]
                 break
         if latest_step is None:
+            if episode.get("collapsed") and latest_point_id in self.read_series(episode["episode_id"]):
+                raise LockedCandidateError("point_thinned",
+                                           "this sample's full evidence was thinned by retention; its metrics remain")
             raise LockedCandidateError("latest_point_not_retained", "latest point is not retained by this episode")
         baseline = self._read_point(baseline_point_id, include_point=True)["point"]
         latest = self._read_point(latest_point_id, include_point=True)["point"]
@@ -575,7 +604,7 @@ class LockedCandidateStore:
         for row in episode_for_pair["observations"]:
             compact = {key: deepcopy(row.get(key)) for key in (
                 "step", "kind", "recorded_at_ms", "decision_asof_ms",
-                "point_id", "snapshot_id", "gap"
+                "point_id", "snapshot_id", "gap", "thinned"
             ) if key in row}
             observations.append(compact)
         return {"episode": self._summary(episode_for_pair), "baseline": baseline,
@@ -589,7 +618,7 @@ class LockedCandidateStore:
         state = self._read_state()
         episode = self._episode(state, _text(episode_id, "invalid_episode_id"))
         for row in reversed(episode["observations"]):
-            if row.get("kind") == POINT_KIND and row.get("snapshot_id") == snapshot_id:
+            if row.get("kind") == POINT_KIND and row.get("snapshot_id") == snapshot_id and not row.get("thinned"):
                 return self._read_point(row["point_id"], include_point=True)["point"]
         return None
 
@@ -598,7 +627,7 @@ class LockedCandidateStore:
         state = self._read_state()
         episode = self._episode(state, _text(episode_id, "invalid_episode_id"))
         rows = [{key: deepcopy(row.get(key)) for key in (
-            "step", "kind", "recorded_at_ms", "decision_asof_ms", "point_id", "snapshot_id", "gap") if key in row}
+            "step", "kind", "recorded_at_ms", "decision_asof_ms", "point_id", "snapshot_id", "gap", "thinned") if key in row}
             for row in episode["observations"]]
         return {"episode": self._summary(episode), "baseline_point_id": episode["t0_baseline_point_id"],
                 "observations": rows}
@@ -629,6 +658,196 @@ class LockedCandidateStore:
                 yield point_id, point, None
             except LockedCandidateError as exc:
                 yield raw_id, None, exc.code
+
+    # ── metrics series and retention ─────────────────────
+    def _series_path(self, episode_id: str) -> Path:
+        if not re.fullmatch(r"lce_[0-9a-f]{24}", str(episode_id)):
+            raise LockedCandidateError("invalid_episode_id", "invalid episode id")
+        return self.series_dir / (episode_id + ".jsonl")
+
+    def append_series(self, episode_id: str, rows: list[Mapping[str, Any]]) -> None:
+        """Append metrics rows (point_id, step, recorded_at_ms, metrics); one JSON line each."""
+        if not rows:
+            return
+        path = self._series_path(episode_id)
+        lines = []
+        for row in rows:
+            entry = {"schema": SERIES_SCHEMA, "point_id": _point_id(row.get("point_id")),
+                     "step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
+                     "metrics": dict(row.get("metrics") or {})}
+            lines.append(json.dumps(entry, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
+        with self._series_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+
+    def read_series(self, episode_id: str) -> dict[str, dict[str, Any]]:
+        """point_id -> series row; a damaged line is skipped, the newest entry for a point wins."""
+        path = self._series_path(episode_id)
+        out: dict[str, dict[str, Any]] = {}
+        with self._series_lock:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return out
+        for line in text.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("schema") == SERIES_SCHEMA and isinstance(row.get("metrics"), dict):
+                out[str(row.get("point_id"))] = row
+        return out
+
+    def compact(self, now_ms: int, *, retention: Mapping[str, int] | None = None) -> dict[str, Any]:
+        """Thin, fold and drop by RETENTION_DEFAULTS. A point's full file is only removed once
+        its metrics row is in the series file; t0 and latest of every policy, and any delta
+        base still in use, are never removed. Index first, files after, so a crash can only
+        leave an orphan file (removed on the next pass), never a dangling reference."""
+        now_ms = _clock(now_ms, "invalid_now_ms")
+        policy = {**RETENTION_DEFAULTS, **dict(retention or {})}
+        report = {"thinned": 0, "folded_rows": 0, "dropped_episodes": [], "deleted_files": 0, "freed_bytes": 0}
+        with store._APPEND_LOCK, store._exclusive_file_lock(self.index_path):
+            state = self._read_state_unlocked()
+            next_state = deepcopy(state)
+            episodes = next_state["episodes"]
+            # 1. drop policies ended long ago
+            for episode_id in list(next_state["order"]):
+                episode = episodes.get(episode_id)
+                ended = episode.get("stopped_at_ms") if isinstance(episode, Mapping) else None
+                if (isinstance(episode, Mapping) and episode.get("status") in {STOPPED, EXPIRED}
+                        and isinstance(ended, int) and now_ms - ended > policy["drop_after_ms"]):
+                    del episodes[episode_id]
+                    next_state["order"].remove(episode_id)
+                    for key in [k for k, r in next_state["request_keys"].items() if r.get("episode_id") == episode_id]:
+                        del next_state["request_keys"][key]
+                    report["dropped_episodes"].append(episode_id)
+            # 2. thin and fold
+            for episode_id in next_state["order"]:
+                episode = episodes[episode_id]
+                try:
+                    self._validate_episode_index(episode)
+                except LockedCandidateError:
+                    continue
+                series = self.read_series(episode_id)
+                keep = self._retained_point_ids(episode, now_ms, policy)
+                for row in episode["observations"]:
+                    if (row.get("kind") == POINT_KIND and not row.get("thinned")
+                            and row["point_id"] not in keep and row["point_id"] in series):
+                        row["thinned"] = True
+                        report["thinned"] += 1
+                ended = episode.get("stopped_at_ms")
+                if (episode.get("status") in {STOPPED, EXPIRED} and isinstance(ended, int)
+                        and now_ms - ended > policy["collapse_after_ms"]):
+                    kept_rows = [row for row in episode["observations"]
+                                 if not (row.get("kind") == POINT_KIND and row.get("thinned"))]
+                    folded = len(episode["observations"]) - len(kept_rows)
+                    if folded:
+                        for index, row in enumerate(kept_rows):
+                            row.setdefault("original_step", row["step"])
+                            row["step"] = index
+                        episode["observations"] = kept_rows
+                        collapsed = episode.setdefault("collapsed", {"rows": 0, "points": 0})
+                        collapsed["rows"] = int(collapsed.get("rows") or 0) + folded
+                        collapsed["points"] = int(collapsed.get("points") or 0) + folded
+                        collapsed["at_ms"] = now_ms
+                        report["folded_rows"] += folded
+            try:
+                referenced = self._referenced_point_ids(next_state)
+            except LockedCandidateError:
+                referenced = None  # a kept file could not be read: delete nothing this pass
+            # No byte-budget check here: compaction is how an exhausted budget is relieved,
+            # and the index only changes by a few flags while the files below are removed.
+            _atomic_write_bytes(self.index_path, _state_bytes(next_state))
+            # 3. remove files nothing references any more (thinned, dropped, or orphaned)
+            if referenced is not None and self.points_dir.exists():
+                for path in self.points_dir.glob("*.json.gz"):
+                    point_id = path.name[:-len(".json.gz")]
+                    if point_id in referenced:
+                        continue
+                    try:
+                        size = path.stat().st_size
+                        path.unlink()
+                        report["deleted_files"] += 1
+                        report["freed_bytes"] += size
+                    except OSError:
+                        continue
+            for episode_id in report["dropped_episodes"]:
+                try:
+                    self._series_path(episode_id).unlink()
+                except (OSError, LockedCandidateError):
+                    pass
+        with self._cache_lock:
+            self._point_meta_cache.clear()
+            self._point_verified_cache.clear()
+        return report
+
+    @staticmethod
+    def _retained_point_ids(episode: Mapping[str, Any], now_ms: int, policy: Mapping[str, int]) -> set[str]:
+        rows = [row for row in episode["observations"] if row.get("kind") == POINT_KIND]
+        keep = {episode["t0_baseline_point_id"], episode["latest_point_id"]}
+        ended = episode.get("stopped_at_ms") if episode.get("status") in {STOPPED, EXPIRED} else None
+        if isinstance(ended, int):
+            since_end = now_ms - ended
+            bucket = (policy["dense_bucket_ms"] if since_end <= policy["dense_until_ms"]
+                      else policy["sparse_bucket_ms"] if since_end <= policy["sparse_until_ms"] else None)
+            newest = None
+        else:
+            bucket = policy["dense_bucket_ms"]
+            newest = max((int(row.get("recorded_at_ms") or 0) for row in rows), default=now_ms)
+        seen: set[int] = set()
+        for row in rows:
+            at = int(row.get("recorded_at_ms") or 0)
+            if newest is not None and newest - at <= policy["full_window_ms"]:
+                keep.add(row["point_id"])
+                continue
+            if bucket is None:
+                continue
+            slot = at // bucket
+            if slot not in seen:
+                seen.add(slot)
+                keep.add(row["point_id"])
+        return keep
+
+    def _referenced_point_ids(self, state: Mapping[str, Any]) -> set[str]:
+        """Every point file the index still needs, including the full base of a delta t0."""
+        referenced: set[str] = set()
+        for episode in state["episodes"].values():
+            if not isinstance(episode, Mapping):
+                continue
+            for key in ("t0_baseline_point_id", "latest_point_id"):
+                if isinstance(episode.get(key), str):
+                    referenced.add(episode[key])
+            for row in episode.get("observations") or []:
+                if isinstance(row, Mapping) and row.get("kind") == POINT_KIND and not row.get("thinned"):
+                    referenced.add(str(row.get("point_id")))
+        for request in state["request_keys"].values():
+            if isinstance(request, Mapping) and isinstance(request.get("point_id"), str) and request.get("episode_id") in state["episodes"]:
+                episode = state["episodes"][request["episode_id"]]
+                if isinstance(episode, Mapping) and request["point_id"] in {episode.get("t0_baseline_point_id"), episode.get("latest_point_id")}:
+                    referenced.add(request["point_id"])
+        # Point files are content-addressed and may be shared between policies, so a kept
+        # file can be a delta on another policy's point: keep the base of every kept delta.
+        return referenced | {base for point_id in referenced
+                             if (base := self._delta_base_id(point_id)) is not None}
+
+    def _delta_base_id(self, point_id: str) -> str | None:
+        """Base of a stored delta, read from the file head: a canonical delta envelope
+        starts with its sorted first key, base_point_id. A missing or corrupt file has no
+        usable base; any other read failure raises, so the caller deletes nothing."""
+        try:
+            path = self._point_path(_point_id(point_id))
+        except LockedCandidateError:
+            return None
+        try:
+            with gzip.open(path, "rb") as handle:
+                head = handle.read(96)
+        except (FileNotFoundError, EOFError, gzip.BadGzipFile, zlib.error):
+            return None
+        except OSError as exc:
+            raise LockedCandidateError("point_read_failed", str(exc)) from exc
+        match = re.match(rb'\{"base_point_id":"([0-9a-f]{64})"', head)
+        return match.group(1).decode("ascii") if match else None
 
     def read_point(self, point_id: str) -> dict[str, Any]:
         """One retained point, hash-checked (delta points are reconstructed)."""
@@ -991,7 +1210,8 @@ class LockedCandidateStore:
             rows = episode.get("observations")
             if not isinstance(rows, list):
                 continue
-            total += sum(1 for row in rows if isinstance(row, Mapping) and row.get("kind") == POINT_KIND)
+            total += sum(1 for row in rows if isinstance(row, Mapping) and row.get("kind") == POINT_KIND
+                         and not row.get("thinned"))
         return total
 
     @staticmethod
@@ -1084,7 +1304,8 @@ class LockedCandidateStore:
             "baseline_decision_asof_ms": points[0]["decision_asof_ms"],
             "latest_recorded_at_ms": latest_point["recorded_at_ms"],
             "latest_decision_asof_ms": latest_point["decision_asof_ms"],
-            "point_count": len(points),
+            "point_count": len(points) + int((episode.get("collapsed") or {}).get("points") or 0),
+            "retained_point_count": sum(1 for row in points if not row.get("thinned")),
             "gap_count": gap_count,
             "stored_gap_count": stored_gap_count,
             "first_gap": deepcopy(gap_stats.get("first")),

@@ -379,7 +379,7 @@ def test_i02_cooldown_source_failure_is_visible_without_http_or_new_review(tmp_p
     assert view["candidates"][0]["btc_map_current_usage"]["status"] == "REQUIRES_RECHECK"
     assert view["candidates"][0]["snapshot"]["data_identity"]["btc_map"] == frozen
     assert calls == [fx.T] and llm_calls == []
-    clock[0] += 345_600_001  # beyond the 96h trading-day TTL of ETF flows
+    clock[0] += 432_000_001  # beyond the 120h trading-day TTL of ETF flows (holiday weekend)
     stale = wb.cached_view()
     assert stale["btc_map"]["background"]["allocation"]["fact_state"] != "usable"
     assert calls == [fx.T] and llm_calls == []

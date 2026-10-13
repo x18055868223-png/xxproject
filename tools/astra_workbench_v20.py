@@ -1502,8 +1502,9 @@ class WorkbenchConfig:
     locked_sample_interval_ms: int = 60_000
     locked_max_active: int = 4
     locked_max_episodes: int = 64
-    locked_max_bytes: int = 268_435_456
-    locked_max_samples: int = 1440
+    locked_max_bytes: int = 536_870_912
+    locked_max_samples: int = 3000
+    locked_compact_interval_ms: int = 10 * 60_000
     scheduled_review_hours_utc: tuple[int, ...] = (2, 14)
     scheduled_review_window_ms: int = 45 * 60_000
     chain_audit_enabled: bool = True
@@ -1670,6 +1671,17 @@ class AstraWorkbench:
         self._last_refresh_error: dict[str, Any] | None = None
         self._background_stop = threading.Event()
         self._background_thread: threading.Thread | None = None
+        # Lock sampling runs in its own thread so a slow full refresh cannot stretch it.
+        # It never shares the refresh's payload buffers; WPEM package caches are mutated
+        # under _wpem_lock; one sampling pass at a time under _locked_sample_lock.
+        self._sampler_thread: threading.Thread | None = None
+        self._sampler_running = False
+        self._locked_sample_lock = threading.Lock()
+        self._wpem_lock = threading.RLock()
+        self._wpem_pinned: set[str] = set()
+        self._sampler_marks: dict[str, int] = {}
+        self._last_compaction: dict[str, Any] | None = None
+        self._last_compaction_ms = 0
         self._reconcile_interrupted_review()
         self._compact_state_once()
 
@@ -2210,6 +2222,7 @@ class AstraWorkbench:
         now_ms: int,
         btc_map_projection: Mapping[str, Any] | None = None,
         tracking: bool = False,
+        sink: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         candidate_info = ((discovered.get("candidates") or {}).get(side) or {})
         if candidate_info.get("status") != "candidate":
@@ -2281,11 +2294,15 @@ class AstraWorkbench:
                     or gate.get("state") != candidate_gate.get("state")):
                 review_gate["enabled"] = False
                 review_gate["reasons"] = sorted(set(review_gate["reasons"] + ["candidate_gate_version_changed_during_refresh"]))
-            if self.config.research_archive_enabled:
-                self._research_pending_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
-            if self.config.wpem_enabled:
-                self._wpem_pending_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
-            self._locked_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
+            if sink is not None:
+                # a lock sample keeps its raw payload private to its own thread
+                sink[snapshot["snapshot_id"]] = deepcopy(payload)
+            else:
+                if self.config.research_archive_enabled:
+                    self._research_pending_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
+                if self.config.wpem_enabled:
+                    self._wpem_pending_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
+                self._locked_payloads[snapshot["snapshot_id"]] = deepcopy(payload)
             return {
                 "side": side,
                 "status": "snapshot",
@@ -2400,7 +2417,8 @@ class AstraWorkbench:
             if self._wpem_archive is not None and isinstance(view.get("data_health"), dict):
                 view["data_health"]["wpem_archive"] = self._wpem_archive.usage()
             self._remember_lockable(view, finished_at_ms)
-            self._refresh_locked_candidates(view, finished_at_ms)
+            if not self._sampler_running:
+                self._refresh_locked_candidates(view, finished_at_ms)
             self._settle_expired_locks(finished_at_ms)
             view["locked_candidates"] = self.locked_candidate_list()
             mark("locked")
@@ -2457,7 +2475,9 @@ class AstraWorkbench:
                 return deepcopy(dict(entry))
         return deepcopy(dict(item))
 
-    def _attach_wpem(self, view: dict[str, Any], now_ms: int, *, prune: bool = True) -> None:
+    def _attach_wpem(self, view: dict[str, Any], now_ms: int, *, prune: bool = True,
+                     pending: dict[str, Any] | None = None, only: set[str] | None = None) -> None:
+        pending_payloads = self._wpem_pending_payloads if pending is None else pending
         if not isinstance(view.get("release_identity"), Mapping):
             view["release_identity"] = release_core.release_identity()
         if not self.config.wpem_enabled:
@@ -2467,15 +2487,18 @@ class AstraWorkbench:
             if not isinstance(snapshot, Mapping):
                 continue
             snapshot_id = snapshot["snapshot_id"]
+            if only is not None and snapshot_id not in only:
+                continue  # a peer of the composed candidate, not re-composed here
             prior = item.get("review") or {}
-            raw_payload = self._wpem_pending_payloads.pop(snapshot_id, None)
+            raw_payload = pending_payloads.pop(snapshot_id, None)
             cross_section = []
             excluded_peers = []
 
             def attach_package(package: Mapping[str, Any], isolated: Mapping[str, Any] | None = None) -> None:
-                self._wpem_packages[snapshot_id] = package
                 item["wpem_evidence"] = wpem_workbench.public_evidence(package)
-                self._wpem_display_packages[snapshot_id] = item["wpem_evidence"]
+                with self._wpem_lock:
+                    self._wpem_packages[snapshot_id] = package
+                    self._wpem_display_packages[snapshot_id] = item["wpem_evidence"]
                 summary = wpem_review.window_interpretation(package)
                 questions = wpem_workbench.program_questions(snapshot, package)
                 validity = {"status": wpem_review.review_status(
@@ -2546,9 +2569,10 @@ class AstraWorkbench:
                     attach_package(package, isolated=isolated)
             except Exception as exc:
                 block = wpem_workbench.replay_block(exc)
-                if snapshot_id in self._wpem_packages:
-                    del self._wpem_packages[snapshot_id]
-                self._wpem_display_packages.pop(snapshot_id, None)
+                with self._wpem_lock:
+                    if snapshot_id in self._wpem_packages:
+                        del self._wpem_packages[snapshot_id]
+                    self._wpem_display_packages.pop(snapshot_id, None)
                 item["wpem_evidence"] = {"status": "BLOCKED", "reason": block["code"], "error_code": block["code"]}
                 item["wpem_summary"] = wpem_workbench.blocked_summary(snapshot, exc)
                 item["current_questions"] = wpem_workbench.blocked_program_questions(snapshot, exc)
@@ -2557,16 +2581,19 @@ class AstraWorkbench:
                 item["review_validity"] = {"status": "STALE" if has_review else "NOT_RUN",
                                            "reason": "evidence_replay_failed",
                                            "error_code": block["code"]}
-        self._wpem_pending_payloads.clear()
+        pending_payloads.clear()
         current = {(item.get("snapshot") or {}).get("snapshot_id") for item in view.get("candidates") or []}
         if prune:
-            for key in list(self._wpem_packages):
-                if key not in current:
-                    del self._wpem_packages[key]
-                    self._wpem_display_packages.pop(key, None)
-            for key in list(self._wpem_display_packages):
-                if key not in self._wpem_packages:
-                    self._wpem_display_packages.pop(key, None)
+            with self._wpem_lock:
+                # keep packages a lock sample is still turning into a point
+                current |= self._wpem_pinned
+                for key in list(self._wpem_packages):
+                    if key not in current:
+                        del self._wpem_packages[key]
+                        self._wpem_display_packages.pop(key, None)
+                for key in list(self._wpem_display_packages):
+                    if key not in self._wpem_packages:
+                        self._wpem_display_packages.pop(key, None)
 
     def _display_wpem_package(self, snapshot_id: str | None, state: Mapping[str, Any], history: Sequence,
                               attached: Mapping[str, Any] | None = None) -> Any:
@@ -2588,7 +2615,9 @@ class AstraWorkbench:
             raise WorkbenchError(404, "wpem_evidence_not_current", "proof is no longer the current snapshot")
         return package if full else deepcopy(package)
 
-    def _remember_lockable(self, view: dict[str, Any], now_ms: int) -> None:
+    def _remember_lockable(self, view: dict[str, Any], now_ms: int, *,
+                           payloads: Mapping[str, Any] | None = None) -> None:
+        raw_payloads = self._locked_payloads if payloads is None else payloads
         """Keep a bounded set of exact displayed inputs across refresh races."""
         shown = self._apply_current_review_availability(
             {**view, "candidates": [dict(item) for item in view.get("candidates") or []]}, now_ms)
@@ -2606,7 +2635,7 @@ class AstraWorkbench:
                         self._lockable_points.touch(snapshot_id)
                 else:
                     packet = candidate_asof.build_packet(
-                        snapshot, raw_payload=self._locked_payloads.get(snapshot_id),
+                        snapshot, raw_payload=raw_payloads.get(snapshot_id),
                         source_receipts=candidate_asof.collect_source_receipts(snapshot, self.data_engine),
                         interval_ms=max(1, self.config.locked_sample_interval_ms))
                     point = {
@@ -2634,36 +2663,85 @@ class AstraWorkbench:
         contract = episode["contract"]
         fact = self.latest_fact(now_ms)
         gate = self.space_gate_view(fact, now_ms)
+        try:
+            # The producer map rotates every few minutes; a capture must not bind to the
+            # cached view's manifest once it has been replaced.
+            projection = self._build_btc_map_projection(now_ms, fact, collect_slow_sources=False)
+        except Exception:
+            projection = view.get("btc_map_projection")
+        sink: dict[str, Any] = {}
         item = self._capture_candidate(
             contract["side"], self._locked_binding(contract), fact, gate, now_ms,
-            btc_map_projection=view.get("btc_map_projection"), tracking=True)
+            btc_map_projection=projection, tracking=True, sink=sink)
         if (item.get("snapshot") or {}).get("candidate_id") != episode["candidate_id"]:
             raise WorkbenchError(409, "locked_quote_unavailable", "original contract capture is unavailable")
+        snapshot_id = item["snapshot"]["snapshot_id"]
         local_view = self._wpem_view_for_candidate(view, item)
         local_view["space_gate"] = gate
-        self._attach_wpem(local_view, max(now_ms, self.clock_ms()), prune=False)
-        self._remember_lockable(local_view, max(now_ms, self.clock_ms()))
-        snapshot_id = item["snapshot"]["snapshot_id"]
-        point = self._lockable_points.get(snapshot_id)
+        with self._view_lock:
+            had_point = snapshot_id in self._lockable_points
+        with self._wpem_lock:
+            self._wpem_pinned.add(snapshot_id)
+            had_package = snapshot_id in self._wpem_packages
+        try:
+            # Displayed candidates are cross-section peers only: never re-composed or
+            # re-packed from this capture's payloads.
+            self._attach_wpem(local_view, max(now_ms, self.clock_ms()), prune=False,
+                              pending=dict(sink), only={snapshot_id})
+            mine = self._candidate_from_view(local_view, item)
+            self._remember_lockable({**local_view, "candidates": [mine]}, max(now_ms, self.clock_ms()), payloads=sink)
+        finally:
+            with self._wpem_lock:
+                self._wpem_pinned.discard(snapshot_id)
+        # A capture that is not on the page must not crowd the bounded caches the page's
+        # lock and review buttons read.
+        with self._view_lock:
+            point = self._lockable_points.get(snapshot_id)
+            shown = {(entry.get("snapshot") or {}).get("snapshot_id")
+                     for entry in (self._current_view or {}).get("candidates") or [] if isinstance(entry, Mapping)}
+            if snapshot_id not in shown and not had_point and snapshot_id in self._lockable_points:
+                del self._lockable_points[snapshot_id]
+        if snapshot_id not in shown and not had_package:
+            with self._wpem_lock:
+                if snapshot_id in self._wpem_packages:
+                    del self._wpem_packages[snapshot_id]
+                self._wpem_display_packages.pop(snapshot_id, None)
         if point is None:
-            cause = (self._candidate_from_view(local_view, item).get("lock_availability") or {}).get("error_type")
+            cause = (mine.get("lock_availability") or {}).get("error_type")
             raise WorkbenchError(409, "locked_packet_unavailable" + (":" + cause if cause else ""),
                                  "original contract packet did not validate")
         return point
 
-    def _refresh_locked_candidates(self, view: dict[str, Any], now_ms: int) -> None:
+    def _refresh_locked_candidates(self, view: dict[str, Any], now_ms: int, *, from_refresh: bool = True) -> None:
         """Reuse the collector and exact contract; page reads never come here."""
         self._locked_refresh_error = None
         try:
-            episodes = self.locked_candidates.active()
+            listed = self.locked_candidates.list()
         except locked_store.LockedCandidateError as exc:
             self._locked_refresh_error = exc.code
             return
+        episodes = [summary for summary in listed if summary.get("status") == locked_store.ACTIVE]
+        # A paused or failed policy is not sampled, but it still ends at expiry, so it is
+        # settled and aged out by retention like any other.
+        for summary in listed:
+            expiry = (summary.get("contract") or {}).get("expiry_ms")
+            if (summary.get("status") in {locked_store.PAUSED, locked_store.ERROR}
+                    and isinstance(expiry, int) and now_ms >= expiry):
+                try:
+                    self.locked_candidates.record_gap(summary["episode_id"], now_ms=now_ms,
+                        reason="contract_expired_settlement_unverified", expired=True)
+                except Exception:
+                    pass
+        if not from_refresh:
+            active_ids = {summary["episode_id"] for summary in episodes}
+            self._sampler_marks = {k: v for k, v in self._sampler_marks.items() if k in active_ids}
         captured = {}
         for item in view.get("candidates") or []:
             snapshot = item.get("snapshot") or {}
-            point = self._lockable_points.get(snapshot.get("snapshot_id"))
-            if point:
+            with self._view_lock:
+                point = self._lockable_points.get(snapshot.get("snapshot_id"))
+            # a refresh point older than one interval is not a new sample for the sampler
+            if point and (from_refresh or now_ms - int(point.get("recorded_at_ms") or 0) < self.config.locked_sample_interval_ms):
                 captured[snapshot["candidate_id"]] = point
         for episode in episodes:
             episode_id = episode["episode_id"]
@@ -2672,21 +2750,107 @@ class AstraWorkbench:
                     self.locked_candidates.record_gap(episode_id, now_ms=now_ms,
                         reason="contract_expired_settlement_unverified", expired=True)
                     continue
-                if now_ms - episode["last_attempt_at_ms"] < max(1, self.config.locked_sample_interval_ms):
+                # The sampler wakes once per interval; allow it to run a little early so the
+                # time a capture itself takes does not push every sample to two intervals.
+                interval = max(1, self.config.locked_sample_interval_ms)
+                slack = 0 if from_refresh else min(15_000, interval // 4)
+                last = episode["last_attempt_at_ms"]
+                if not from_refresh:
+                    # Captures run one after another; gate on the pass start, not on when the
+                    # previous capture of this policy happened to finish.
+                    last = min(last, self._sampler_marks.get(episode_id, last))
+                if now_ms - last < interval - slack:
                     continue
+                if not from_refresh:
+                    self._sampler_marks[episode_id] = now_ms
                 point = captured.get(episode["candidate_id"])
                 if point is None:
                     point = self._capture_locked_point(episode, view, self.clock_ms())
                     captured[episode["candidate_id"]] = point
-                self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
-                self._warm_series_metrics(episode, point)
+                stored = self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
+                point_id = locked_store._hash(point)
+                if ((stored or {}).get("latest_point_id") != point_id
+                        or int((stored or {}).get("point_count") or 0) <= int(episode.get("point_count") or 0)):
+                    continue  # budget pause or write failure: a gap was recorded, no sample
+                metrics = self._warm_series_metrics(episode, point)
+                if metrics is not None:
+                    try:
+                        self.locked_candidates.append_series(episode_id, [{
+                            "point_id": point_id, "step": None,
+                            "recorded_at_ms": point.get("recorded_at_ms"), "metrics": metrics}])
+                    except Exception:
+                        pass  # the next retention pass backfills it before thinning
             except Exception as exc:
                 reason = getattr(exc, "code", None) or "locked_capture_failed:" + type(exc).__name__
                 try:
                     self.locked_candidates.record_gap(episode_id, now_ms=max(now_ms, self.clock_ms()), reason=reason)
                 except Exception as write_exc:
                     self._locked_refresh_error = "tracking_state_write_failed:" + type(write_exc).__name__
-        self._locked_payloads.clear()
+        if from_refresh:
+            self._locked_payloads.clear()
+
+    def sample_locked_once(self, now_ms: int | None = None) -> None:
+        """One sampling pass from the latest refreshed view, outside the refresh lock."""
+        now = self.clock_ms() if now_ms is None else int(now_ms)
+        with self._view_lock:
+            view = self._current_view
+        if not view:
+            return
+        with self._locked_sample_lock:
+            self._refresh_locked_candidates(view, now, from_refresh=False)
+            if now - self._last_compaction_ms >= self.config.locked_compact_interval_ms:
+                self._last_compaction_ms = now
+                self.compact_locked(now)
+
+    def compact_locked(self, now_ms: int) -> dict[str, Any]:
+        """Backfill missing metrics rows, then apply the store's retention. Never raises."""
+        report: dict[str, Any] = {"at_ms": now_ms, "backfilled": 0}
+        try:
+            for summary in self.locked_candidates.list():
+                episode_id = summary.get("episode_id")
+                if summary.get("index_error") or not episode_id:
+                    continue
+                index = self.locked_candidates.episode_observations(episode_id)
+                series = self.locked_candidates.read_series(episode_id)
+                rows = [r for r in index["observations"] if r.get("kind") == "point" and r.get("point_id")
+                        and not r.get("thinned") and r["point_id"] not in series]
+                if not rows:
+                    continue
+                cache = self._series_metrics_cache()
+                need = [r["point_id"] for r in rows if r["point_id"] not in cache]
+                if need:
+                    baseline = None
+                    for point_id, point, _error in self.locked_candidates.iter_points([index["baseline_point_id"], *need]):
+                        if point is None:
+                            continue
+                        if baseline is None and point_id == index["baseline_point_id"]:
+                            baseline = point
+                        if baseline is not None and point_id in need:
+                            try:
+                                metrics = locked_compare.point_metrics(point, baseline)
+                            except Exception:
+                                continue
+                            with self._series_lock:
+                                cache[point_id] = metrics
+                out = [{"point_id": r["point_id"], "step": r.get("step"), "recorded_at_ms": r.get("recorded_at_ms"),
+                        "metrics": cache[r["point_id"]]} for r in rows if r["point_id"] in cache]
+                self.locked_candidates.append_series(episode_id, out)
+                report["backfilled"] += len(out)
+            report.update(self.locked_candidates.compact(now_ms))
+        except Exception as exc:
+            report["error"] = type(exc).__name__
+        self._last_compaction = report
+        if self.chain_audit is not None and (report.get("deleted_files") or report.get("dropped_episodes") or report.get("error")):
+            try:
+                self.chain_audit.event("lock_retention", now_ms, report)
+            except Exception:
+                pass
+        return report
+
+    def locked_retention_policy(self) -> dict[str, Any]:
+        policy = dict(locked_store.RETENTION_DEFAULTS)
+        return {**policy, "compact_interval_ms": self.config.locked_compact_interval_ms,
+                "last_compaction": deepcopy(self._last_compaction)}
 
     def locked_candidate_list(self) -> dict[str, Any]:
         try:
@@ -2751,19 +2915,29 @@ class AstraWorkbench:
         except locked_store.LockedCandidateError as exc:
             raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
         observations = index["observations"]
+        stored_series = self.locked_candidates.read_series(episode_id)
         points = [row for row in observations if row.get("kind") == "point" and row.get("point_id")]
+        # rows folded out of the index after retention live on in the series file
+        known = {row["point_id"] for row in points}
+        points += [{"kind": "point", "point_id": pid, "recorded_at_ms": row.get("recorded_at_ms"),
+                    "step": row.get("step"), "thinned": True}
+                   for pid, row in stored_series.items() if pid not in known]
+        points.sort(key=lambda row: (int(row.get("recorded_at_ms") or 0), str(row.get("point_id"))))
         gaps = [{"recorded_at_ms": row.get("recorded_at_ms"), "reason": (row.get("gap") or {}).get("reason"),
                  "expired": bool((row.get("gap") or {}).get("expired"))}
                 for row in observations if row.get("kind") != "point"]
+        total_points = len(points)
         # Long episodes are thinned evenly; the first and last point are always kept.
         if len(points) > max_points:
             stride = (len(points) - 1) / (max_points - 1)
             points = [points[round(i * stride)] for i in range(max_points)]
         cache = self._series_metrics_cache()
+        local = {pid: row["metrics"] for pid, row in stored_series.items()}
         with self._series_lock:
-            missing = [row["point_id"] for row in points if row["point_id"] not in cache]
+            missing = [row["point_id"] for row in points
+                       if row["point_id"] not in local and row["point_id"] not in cache and not row.get("thinned")]
+        computed: dict[str, dict[str, Any]] = {}
         if missing:
-            computed: dict[str, dict[str, Any]] = {}
             baseline = None
             wanted = [index["baseline_point_id"], *[pid for pid in missing if pid != index["baseline_point_id"]]]
             for point_id, point, error in self.locked_candidates.iter_points(wanted):
@@ -2786,9 +2960,10 @@ class AstraWorkbench:
                             cache.pop(key, None)
                     snapshot = dict(cache)
                 self._save_series_cache(snapshot)
+        local.update(computed)
         series, unreadable = [], 0
         for row in points:
-            metrics = cache.get(row["point_id"])
+            metrics = local.get(row["point_id"]) or cache.get(row["point_id"])
             if metrics is None:
                 unreadable += 1
                 continue
@@ -2796,32 +2971,32 @@ class AstraWorkbench:
                            "point_id": row["point_id"], **metrics})
         return {"schema": locked_compare.SERIES_SCHEMA, "episode": index["episode"],
                 "settlement": self.locked_settlements().get(episode_id),
-                "points": series, "gaps": gaps, "thinned": len(points) < sum(1 for r in observations if r.get("kind") == "point"),
+                "points": series, "gaps": gaps, "thinned": len(points) < total_points,
+                "retention": self.locked_retention_policy(),
                 "unreadable_points": unreadable, "llm_call_count": 0, "execution_allowed": False}
 
-    def _warm_series_metrics(self, episode: Mapping[str, Any], point: Mapping[str, Any]) -> None:
+    def _warm_series_metrics(self, episode: Mapping[str, Any], point: Mapping[str, Any]) -> dict[str, Any] | None:
         """The appended point is in memory: compute its metrics now instead of re-reading it later."""
         try:
             point_id = locked_store._hash(point)
             cache = self._series_metrics_cache()
             if point_id in cache:
-                return
+                return cache[point_id]
             baseline_id = episode["t0_baseline_point_id"]
             baseline = self._series_baselines.get(baseline_id)
             if baseline is None:
                 found = next(self.locked_candidates.iter_points([baseline_id]), (None, None, "missing"))
                 if found[1] is None:
-                    return
+                    return None
                 baseline = self._series_baselines[baseline_id] = found[1]
                 if len(self._series_baselines) > 16:
                     self._series_baselines.pop(next(iter(self._series_baselines)))
             metrics = locked_compare.point_metrics(point, baseline)
             with self._series_lock:
                 cache[point_id] = metrics
-                snapshot = dict(cache)
-            self._save_series_cache(snapshot)
+            return metrics
         except Exception:
-            return  # the series endpoint computes it on demand instead
+            return None  # the series endpoint computes it on demand instead
 
     SETTLEMENT_SCHEMA = "locked_candidate_settlement@1.0.0"
     SETTLEMENT_RETRY_MS = 10 * 60_000
@@ -2966,6 +3141,8 @@ class AstraWorkbench:
         except locked_store.LockedCandidateError as exc:
             raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
         result["sampling"] = {"interval_ms": self.config.locked_sample_interval_ms,
+                              "sampler_thread": self._sampler_running,
+                              "retention": self.locked_retention_policy(),
                               "collector_error": self._locked_refresh_error or self._last_refresh_error,
                               "max_active": self.config.locked_max_active}
         latest = detail.get("latest") or {}
@@ -3866,10 +4043,29 @@ class AstraWorkbench:
         self._background_thread = threading.Thread(target=run, name="astra-workbench-v20", daemon=True)
         self._background_thread.start()
 
+        def sample() -> None:
+            interval_s = max(5.0, self.config.locked_sample_interval_ms / 1000)
+            while not self._background_stop.is_set():
+                started = time.monotonic()
+                try:
+                    self.sample_locked_once()
+                except Exception as exc:
+                    self._locked_refresh_error = "sampler_failed:" + type(exc).__name__
+                # wake once per interval, measured from the start of the previous pass
+                if self._background_stop.wait(max(1.0, interval_s - (time.monotonic() - started))):
+                    break
+
+        self._sampler_running = True
+        if not (self._sampler_thread and self._sampler_thread.is_alive()):
+            self._sampler_thread = threading.Thread(target=sample, name="astra-locked-sampler", daemon=True)
+            self._sampler_thread.start()
+
     def stop_background(self) -> None:
         self._background_stop.set()
-        if self._background_thread:
-            self._background_thread.join(timeout=5)
+        for thread in (self._background_thread, self._sampler_thread):
+            if thread:
+                thread.join(timeout=5)
+        self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
 
 
 def make_handler(workbench: AstraWorkbench):
@@ -4213,8 +4409,9 @@ def config_from_env() -> WorkbenchConfig:
         locked_sample_interval_ms=max(1000, int(os.environ.get("ASTRA_LOCKED_SAMPLE_INTERVAL_MS") or "60000")),
         locked_max_active=int(os.environ.get("ASTRA_LOCKED_MAX_ACTIVE") or "4"),
         locked_max_episodes=int(os.environ.get("ASTRA_LOCKED_MAX_EPISODES") or "64"),
-        locked_max_bytes=int(os.environ.get("ASTRA_LOCKED_MAX_BYTES") or "268435456"),
-        locked_max_samples=int(os.environ.get("ASTRA_LOCKED_MAX_SAMPLES") or "1440"),
+        locked_max_bytes=int(os.environ.get("ASTRA_LOCKED_MAX_BYTES") or "536870912"),
+        locked_max_samples=int(os.environ.get("ASTRA_LOCKED_MAX_SAMPLES") or "3000"),
+        locked_compact_interval_ms=int(os.environ.get("ASTRA_LOCKED_COMPACT_INTERVAL_MS") or "600000"),
         scheduled_review_hours_utc=tuple(int(h) for h in (os.environ.get("ASTRA_SCHEDULED_REVIEW_HOURS_UTC", "2,14") or "").split(",") if h.strip()),
         chain_audit_enabled=os.environ.get("ASTRA_CHAIN_AUDIT_ENABLED", "1") == "1",
         chain_audit_interval_ms=int(os.environ.get("ASTRA_CHAIN_AUDIT_INTERVAL_MS") or "900000"),

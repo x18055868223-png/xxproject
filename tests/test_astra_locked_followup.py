@@ -303,9 +303,14 @@ def test_series_skips_a_tampered_point_instead_of_showing_it(tmp_path):
     path.write_bytes(gzip.compress(json.dumps(stored).encode()))
     # Metrics already derived from the authentic content (keyed by its hash) stay as recorded.
     assert len(wb.locked_candidate_series(episode["episode_id"])["points"]) == 2
-    # Rebuilt from disk, the tampered point fails its hash check and is left out, not shown.
+    # The durable series row was written from the authentic point when it was sampled.
     wb._series_cache = {}
     wb._series_cache_path().unlink()
+    assert len(wb.locked_candidate_series(episode["episode_id"])["points"]) == 2
+    # Rebuilt from disk alone, the tampered point fails its hash check and is left out, not shown.
+    wb._series_cache = {}
+    wb._series_cache_path().unlink()
+    wb.locked_candidates._series_path(episode["episode_id"]).unlink()
     series = wb.locked_candidate_series(episode["episode_id"])
     assert [p["point_id"] for p in series["points"]] == [episode["t0_baseline_point_id"]]
     assert series["unreadable_points"] == 1
