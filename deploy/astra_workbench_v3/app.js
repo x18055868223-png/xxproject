@@ -7,6 +7,7 @@ import { sideModel, mapModel, sourceHealth, reasonCn, statusCn, applicability, c
 import { renderMap, legend } from "./map.js";
 import { coreFactors, backgroundItems, relationFor } from "./factors.js";
 import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
+import { eventBand, contractEvents } from "./events.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
@@ -110,6 +111,7 @@ function render() {
   renderVerdict();
   renderDecks();
   renderFactors();
+  renderEvents();
   renderAudit();
   renderLocks();
   renderContext();
@@ -374,6 +376,9 @@ function deck(m, side, blockers) {
     fig(ratioPct(m.creditToWidth), "可见信用占宽度", "",
       isNum(m.netCredit) ? `净 ${btc(m.netCredit)} BTC ≈ ${usd(m.netCreditUsd)} 美元${m.feeAssumed ? "（费用按假设）" : ""}，${quoteAge}` : quoteAge),
   ));
+  let events = null;
+  try { events = contractEvents(m.candidate); } catch { events = null; }
+  if (events) card.append(events);
   const reduced = reductionView(m);
   if (reduced) card.append(reduced);
   card.append(distanceRule(m));
@@ -970,12 +975,23 @@ function authFailed(err) {
   if (err && err.status === 401) { state.session = { authenticated: false }; renderSession(); }
 }
 
+// ── exogenous events ─────────────────────────────
+function renderEvents() {
+  const box = clear($("events"));
+  if (!state.view) return;
+  try {
+    box.append(eventBand(state.view));
+  } catch {  // a display module must never take the rest of the page down
+    box.append(h("p", { class: "empty", text: "事件日历暂不可用。" }));
+  }
+}
+
 // ── market background ────────────────────────────
 function renderContext() {
   const box = clear($("context"));
   if (!state.view) return;
   for (const it of backgroundItems(state.view, currentSpot())) {
-    const card = h("div", { class: `sheet pad ctx${it.stale ? " stale" : ""}` }, h("h4", { text: it.title }),
+    const card = h("div", { class: `sheet pad ctx${it.stale ? " stale" : ""}${it.span ? " span2" : ""}` }, h("h4", { text: it.title }),
       h("div", { class: "reading", text: it.state ?? "缺口" }));
     if (it.stale) card.append(h("p", { class: "stale-note", text: it.stale }));
     if (it.wide) card.append(h("div", { class: "wide-viz" }, it.wide));
@@ -1226,5 +1242,5 @@ if (SESSION_GATED) {
   loadSession();
 }
 setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
-setInterval(() => { renderStrip(); }, 10_000);
+setInterval(() => { renderStrip(); renderEvents(); }, 10_000);  // countdowns move between data refreshes
 setInterval(() => { if (!document.hidden) loadSession(); }, 5 * 60_000);

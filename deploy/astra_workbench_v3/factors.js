@@ -3,7 +3,7 @@
 // and the MAP background. The per-side relation is a fixed display rule:
 // an upward lean favours a Put book and works against a Call book.
 // Each metric row is {label, value, viz?, gap?}; viz is a small inline chart.
-import { get, isNum, usd, pct, compactUsd } from "./format.js";
+import { get, isNum, usd, pct, compactUsd, clock, dur } from "./format.js";
 import { diverging, gauge, split, positions } from "./viz.js";
 
 const TREND = { strong_bullish_bias: 2, bullish_bias: 1, neutral: 0, bearish_bias: -1, strong_bearish_bias: -2 };
@@ -302,5 +302,77 @@ export function backgroundItems(view, spot) {
       extRow("美债 10Y 实际", "real_10y", (v) => `${v.toFixed(2)}%`, "bp", 30),
       dxyRow] : [row("美元与美债", null)],
     note: "美债利率来自 FRED，按日发布、约滞后一个工作日，变化为各自最近 5 个观测日；DXY 为 ICE 美元指数（Yahoo DX-Y.NYB，与宏观环境卡同源），变化为 3 个交易日。红色为收紧（利率或美元上升），绿色为放松。" });
+  try {
+    items.push(crossAssetItem(view.cross_asset));
+  } catch {
+    items.push({ title: "跨资产参考", state: "暂不可用", rows: [] });
+  }
   return items;
+}
+
+// BTC cross-asset reference: who BTC has recently traded with, all assets taken at the US
+// close of each trading day. Same-day co-movement only; no direction, no lead.
+const XA_NAME = { qqq: "纳指 QQQ", gold: "黄金", dxy: "美元 DXY" };
+const XA_SHORT = { qqq: "纳指", gold: "黄金", dxy: "美元" };
+const XA_STATE = { positive: "同向", negative: "反向", weak: "基本无关", uncertain: "样本不足以区分" };
+const XA_TREND = { stable: "稳定", fading: "减弱", reversed: "转为反向", emerging: "新出现，未确认" };
+
+function crossAssetItem(xa) {
+  xa = xa || {};
+  const r2 = (v) => (isNum(v) ? signed(v, 2).replace("+", "") : "—");
+  const axes = xa.axes || [];
+  const axis = (k) => axes.find((a) => a.key === k) || {};
+  const verdict = xa.verdict || {};
+  const ok = xa.status === "ok";
+  const hm = (ms) => clock(ms).slice(-5);
+  const cw = xa.contract_window;
+  const windowRow = cw
+    ? row("本期合约（研究观察）", cw.covers_us_session
+      ? `经过美股交易时段 ${cw.sessions.map((x) => `${clock(x.open_ms)}–${hm(x.close_ms)}`).join("、")}（北京时间），重叠约 ${dur(cw.overlap_ms)}`
+      : "不经过美股交易时段：外部关系在本期没有传导时段")
+    : row("本期合约（研究观察）", null);
+  let state = null;
+  const rows = [];
+  if (ok) {
+    state = verdict.kind === "references"
+      ? `主要参考：${(verdict.main || []).map((k) => `${XA_SHORT[k] || k}${XA_STATE[axis(k).long?.state] || ""}`).join("、")}`
+      : verdict.kind === "independent" ? "相对独立运行" : "关系不确定";
+    if (verdict.kind === "independent") rows.push(row("含义", "外部资产近期解释不了 BTC 的日收益，BTC 自身的资金流、期权与持仓更值得看"));
+    if (verdict.kind === "uncertain") rows.push(row("含义", "样本还分不清有没有关系，暂不借外部资产解释 BTC"));
+    for (const a of axes) {
+      const L = a.long || {};
+      const S = a.short || {};
+      const trend = XA_TREND[a.trend] ? `（${XA_TREND[a.trend]}）` : "";
+      rows.push(row(XA_NAME[a.key] || "其他资产",
+        `${XA_STATE[L.state] || "—"}　相关 ${r2(L.r)}（区间 ${r2(L.lo)}~${r2(L.hi)}）　近 20 日 ${r2(S.r)}${trend}`,
+        isNum(L.r) ? diverging(L.r, 1) : null));
+    }
+    for (const o of verdict.overlaps || []) {
+      rows.push(row("信息重叠", `${o.axes.map((k) => XA_SHORT[k] || k).join("与")}彼此相关 ${r2(o.r)}，不是两份独立证据`));
+    }
+    rows.push(row("外部合计解释", isNum(xa.joint_r2) ? `近 60 个交易日，三者同期合计解释 BTC 日收益波动约 ${Math.round(xa.joint_r2 * 100)}%` : null,
+      isNum(xa.joint_r2) ? gauge(xa.joint_r2, 1) : null));
+    const att = xa.attribution;
+    rows.push(att
+      ? row(`上一交易日 ${String(att.date).slice(5)}`,
+        `BTC ${signed(att.btc_pct)}%：主要参考同期可解释 ${signed(att.explained_pct)}%，其余 ${signed(att.own_pct)}% 为 BTC 自身`)
+      : row("上一交易日", "没有主要参考，不做归因"));
+  } else if (xa.status === "insufficient_history") {
+    state = "积累中";
+    rows.push(pending("关系", `已有 ${xa.observations ?? 0} 个交易日，需要 61 个`));
+  }
+  rows.push(windowRow);
+  const failed = xa.last_attempt
+    ? `最近一次更新失败（${clock(xa.last_attempt.computed_at_ms)}），显示的是 ${String(xa.as_of_date || "").slice(5) || "上次"} 收盘的读数。`
+    : xa.status === "fetch_failed" ? "行情获取失败，稍后自动重试。" : null;
+  return {
+    title: "跨资产参考", span: true,
+    state: state ?? ({ fetch_failed: "获取失败", invalid_values: "数据异常", not_collected: "尚未采集" }[xa.status] || null),
+    stale: failed,
+    rows,
+    note: `${ok && xa.as_of_date ? `截至 ${xa.as_of_date.slice(5)} 美股收盘。` : ""}`
+      + "每个美股交易日在收盘时刻对齐各资产，用近 60 个交易日的日收益相关判断关系：区间（95%）不含 0 才算同向或反向，"
+      + "区间（90%）落在 ±0.35 以内才算基本无关；近 20 日只看变化。同期共动，不是因果，不预测方向；"
+      + "日频下外部资产对 BTC 没有领先性。数据：Yahoo 小时线。",
+  };
 }

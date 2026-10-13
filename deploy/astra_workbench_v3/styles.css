@@ -332,6 +332,8 @@ details.uncited > summary { cursor: pointer; color: var(--ink-2); font-size: 13p
 .chip.gap { background: transparent; border: 1px dashed var(--warn); color: var(--warn); }
 .deck-src { margin-left: auto; }
 .ctx.stale { border-style: dashed; }
+.ctx.span2 { grid-column: span 2; }
+@media (max-width: 640px) { .ctx.span2 { grid-column: auto; } }
 .stale-note { margin: 0 0 6px; color: var(--warn); font-size: 12px; }
 .ctx .kv { font-size: 12.5px; }
 @media (max-width: 1080px) { .factors { grid-template-columns: 1fr 1fr; } }
@@ -489,3 +491,24 @@ button.link { background: none; border: 0; padding: 0; color: var(--depth); curs
 .pos-head b { font-size: 13px; }
 .pos-reason { margin: 3px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink); }
 .pos-kpf { margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-3); }
+
+/* exogenous events */
+.deck-events { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 2px 0 12px; padding: 7px 10px;
+  border-radius: 8px; background: var(--paper-2); font-size: 12.5px; color: var(--ink-2); }
+.deck-events.has { background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--ink); }
+.deck-events .de-label { color: var(--ink-3); font-size: 12px; }
+.deck-events .de-item b { font-weight: 600; }
+.de-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--rule); border-radius: 999px; font-size: 11px; color: var(--ink-3); }
+.deck-events .de-gap { flex-basis: 100%; color: var(--warn); font-size: 12px; }
+.events .ev-sum { margin: 0 0 10px; font-size: 13px; color: var(--ink-2); }
+.events .ev-sum b.warn { color: var(--warn); }
+.ev-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 10px; }
+.ev-day { border: 1px solid var(--rule-2); border-radius: 10px; padding: 9px 12px 10px; background: var(--sheet); }
+.ev-day.in-life { border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--sheet)); }
+.ev-date { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px;
+  font-family: var(--font-num); font-size: 12.5px; color: var(--ink-2); }
+.ev-until { color: var(--ink-3); font-size: 12px; }
+.ev-item { display: grid; grid-template-columns: 3.2em 1fr; align-items: baseline; gap: 8px; font-size: 13.5px; }
+.ev-item + .ev-item { margin-top: 4px; }
+.ev-time { font-family: var(--font-num); font-weight: 600; }
+.ev-life { display: block; margin-top: 6px; color: var(--warn); font-size: 12px; }
