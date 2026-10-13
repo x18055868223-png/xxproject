@@ -95,6 +95,18 @@ def test_30_read_rounds_use_cached_projection_without_replaying_or_writing(tmp_p
     assert len(wb._locked_detail_cache) == 1
 
 
+def test_reading_detail_defers_row_raw_to_the_evidence_endpoint(tmp_path):
+    wb, _, _, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    reading = wb.locked_candidate_detail(episode["episode_id"], include_raw=False)
+    assert reading["rows"] and all("raw" not in row and row["raw_deferred"] for row in reading["rows"])
+    assert all("t0" in row and "label_cn" in row for row in reading["rows"])
+    exact = wb.locked_candidate_detail(episode["episode_id"], include_raw=True,
+                                       baseline_point_id=reading["baseline"]["point_id"],
+                                       latest_point_id=reading["latest"]["point_id"])
+    assert any("raw" in row for row in exact["rows"])
+
+
 def test_cache_does_not_hide_a_changed_point_file(tmp_path):
     wb, _, _, snapshot = setup(tmp_path)
     episode = lock(wb, snapshot)["episode"]

@@ -2918,6 +2918,11 @@ class AstraWorkbench:
         cached = self._locked_detail_cache.get(episode_id)
         if cached is None or cached[0] != signature:
             result = self._locked_candidate_projection(episode_id, include_raw=False)
+            # The page reads each row's text and values. Per-row raw sources (hundreds of KB for
+            # the context rows) stay behind the exact-pair evidence endpoint.
+            for row in result.get("rows") or []:
+                if isinstance(row, dict) and row.pop("raw", None) is not None:
+                    row["raw_deferred"] = True
             self._locked_detail_cache[episode_id] = (signature, result)
             while len(self._locked_detail_cache) > 4:
                 self._locked_detail_cache.pop(next(iter(self._locked_detail_cache)))
