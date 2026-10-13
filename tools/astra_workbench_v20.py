@@ -2171,13 +2171,10 @@ class AstraWorkbench:
         return body
 
     def _effective_since(self, effective_state: str, native_state: str, native: Any, now_ms: int) -> int | None:
-        """When the net-gamma admission last changed. The producer's since applies only while
-        its state is the effective one; otherwise it is the first refresh that saw the change
-        (unknown after a restart until the next change)."""
-        native_since = native.get("since_ts_ms") if isinstance(native, Mapping) else None
-        if native_state == effective_state and isinstance(native_since, int):
-            self._gate_since = (effective_state, native_since)
-        elif self._gate_since is None:
+        """When the net-gamma admission last changed, as this workbench saw it. The producer's
+        since follows its own anchor-inclusive rule, so it is not reused; after a restart the
+        since is unknown until the next change."""
+        if self._gate_since is None:
             self._gate_since = (effective_state, None)
         elif self._gate_since[0] != effective_state:
             self._gate_since = (effective_state, now_ms)
