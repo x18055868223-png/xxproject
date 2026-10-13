@@ -17,7 +17,7 @@ else:
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_v20 as core
 
-SCHEMA = "astra_decision_reduction@1.0.0"
+SCHEMA = "astra_decision_reduction@1.1.0"
 
 RULE_GATE_REASONS = {"space_gate_not_eligible", "structure_gate_not_eligible"}
 # Review-gate reasons by explicit list; anything else stays with the user.
@@ -102,6 +102,20 @@ def _item_direction(item: Mapping[str, Any]) -> Any:
     return readings.get("direction") or _m(readings.get("combined")).get("direction")
 
 
+DIRECTION_CN = {"UP": "偏多", "DOWN": "偏空", "NEUTRAL": "中性"}
+
+
+def _reading_cn(item: Mapping[str, Any]) -> str | None:
+    """The reading as the producer gave it: direction, plus the windows it holds over."""
+    readings = _m(item.get("readings"))
+    direction = DIRECTION_CN.get(review_core._normalized_direction(_item_direction(item)))
+    horizons = _m(readings.get("combined")).get("ready_horizons") or readings.get("ready_horizons")
+    windows = "/".join(str(h) for h in horizons) if isinstance(horizons, list) and horizons else None
+    if direction and windows:
+        return f"{windows} {direction}"
+    return direction
+
+
 def _distance(side: str, spot: Any, boundary: Any, kind: str) -> float | None:
     found = core.signed_boundary_distance(side, spot, boundary, boundary_kind=kind)
     return None if found is None else found["signed_distance_pct"]
@@ -165,8 +179,9 @@ def reduce(candidate: Mapping[str, Any]) -> dict[str, Any]:
             relation = _relation(side, _item_direction(item))
             if increment == "COUNTER_EVIDENCE" and relation in {"unknown", "neutral"}:
                 relation = "counter_non_directional"
-            evidence.append({"ref": ref, "label_cn": item.get("label_cn") or ref, "relation": relation,
-                             "relation_cn": RELATION_CN.get(relation, "方向不明"), "source": "research_context"})
+            evidence.append({"ref": ref, "label_cn": item.get("label_cn") or "未命名来源", "relation": relation,
+                             "relation_cn": RELATION_CN.get(relation, "方向不明"), "source": "research_context",
+                             "detail_cn": _reading_cn(item)})
         else:
             unclassified.append({"ref": ref, "label_cn": item.get("label_cn") or "未命名来源", "text_cn": None})
     for note in _m(candidate.get("reading_guidance")).get("notes") or []:
@@ -181,9 +196,10 @@ def reduce(candidate: Mapping[str, Any]) -> dict[str, Any]:
         elif target[1] == "evidence":
             edb = review_core._edb_relation(snapshot)
             relation = edb.get("relation") or "unknown"
+            lean = review_core._edb_lean_cn(edb.get("lean"))
             evidence.append({"ref": ref, "label_cn": "EDB 倾向（定性）", "relation": relation,
                              "relation_cn": RELATION_CN.get(relation, "方向不明"), "source": "reading_guidance",
-                             "text_cn": note.get("text_cn")})
+                             "detail_cn": lean if lean != "未知" else DIRECTION_CN.get(str(edb.get("direction") or ""))})
         else:
             fold(target[1], ref)
             if kind == "compensation_insufficient":
@@ -211,69 +227,76 @@ def reduce(candidate: Mapping[str, Any]) -> dict[str, Any]:
     relations = {e["relation"] for e in evidence}
     conflict = "adverse" in relations and "favorable" in relations
 
-    # 3. remaining questions; numbers come from fields only
+    # 3. what is left for the user; every number comes from a field of the candidate
     spot = _num(market.get("reference_price_usd")) or _num(economics.get("valuation_spot_usd"))
+    usd = (lambda v: v * spot if v is not None and spot else None)
     short_k, long_k = _num(contract.get("short_strike_usd")), _num(contract.get("long_strike_usd"))
+    quantity = _num(contract.get("quantity_btc")) or 1.0
     payout = [row for row in liability.get("payout_table") or [] if isinstance(row, Mapping)]
     protection = _num(liability.get("protection_at_usd")) or long_k
     protection_row = next((r for r in payout if _num(r.get("settlement_usd")) == protection), {})
     at_protection = _num(protection_row.get("payout_btc"))
     deepest = min(payout, key=lambda r: _num(r.get("settlement_usd")) or float("inf")) if payout else None
-    net = _num(economics.get("net_credit_after_entry_fee_btc"))
-    net_usd = _num(economics.get("net_credit_after_entry_fee_usd_at_spot"))
-    width = _num(liability.get("usd_intrinsic_cap")) or (abs(short_k - long_k) if short_k and long_k else None)
-    missing = [label for label, value in (("可见信用", economics.get("visible_credit_btc")),
-                                          ("入场费", _m(snapshot.get("fee")).get("entry_fee_btc"))) if value is None]
     m_ref = _num(economics.get("reference_margin_btc"))
+    credit = _num(economics.get("visible_credit_btc"))
     net_all_fees = _num(economics.get("net_credit_after_fee_btc"))
+    fees = (credit - net_all_fees) if credit is not None and net_all_fees is not None else None
+    marks = _m(candidate.get("market_marks"))
+    short_mark, long_mark = _num(marks.get("short_mark_btc")), _num(marks.get("long_mark_btc"))
+    # The spread's mark value is the market's own estimate of what it pays at expiry.
+    market_payout = (short_mark - long_mark) * quantity if short_mark is not None and long_mark is not None else None
+    spread_cost = (credit - market_payout) if credit is not None and market_payout is not None else None
+    edge = (net_all_fees - market_payout) if net_all_fees is not None and market_payout is not None else None
+    missing = [label for label, value in (("可见信用", credit), ("手续费", fees), ("两腿标记价", market_payout))
+               if value is None]
+    flags = ((["净信用不为正：权利金差不够覆盖入场费"] if "compensation_insufficient" in premise_flags else [])
+             + (["程序参照 M_ref 不为正或无效"] if {"m_ref_invalid", "m_ref_non_positive"} & set(premise_flags) else []))
 
     r1 = {
-        "id": "R1", "kind": "belief",
-        "text_cn": f"到期时价格会不会进入短腿 {short_k:,.0f} 的责任区？" if short_k else "到期时价格会不会进入短腿责任区？",
+        "id": "R1", "kind": "judgment", "key": "market_price",
+        "title_cn": "补偿对比市场估价",
+        "numbers": {
+            "credit_btc": credit, "fees_btc": fees, "net_btc": net_all_fees, "net_usd": usd(net_all_fees),
+            "market_payout_btc": market_payout, "market_payout_usd": usd(market_payout),
+            "spread_cost_btc": spread_cost, "spread_cost_usd": usd(spread_cost),
+            "fees_usd": usd(fees), "edge_btc": edge, "edge_usd": usd(edge),
+            "marks_observed_ms": marks.get("observed_ms"), "missing_cn": missing,
+        },
+        "stance": None if edge is None else ("below_market" if edge < 0 else "at_or_above_market"),
+        "flags_cn": flags,
+        "m_ref_btc": m_ref,
+        "why_user_cn": ("市场的估价已经包含了公开信息；系统没有独立的风险参照（μ_ref 无生产者），"
+                        "所以补偿够不够，只取决于你是否比市场更有把握。"),
+    }
+    r2 = {
+        "id": "R2", "kind": "belief", "key": "your_reason",
+        "title_cn": "你比市场更有把握的理由",
         "boundary": {
-            "spot_usd": spot,
+            "spot_usd": spot, "short_strike_usd": short_k,
             "short_distance_pct": _distance(side, spot, short_k, "short"),
             "protection_distance_pct": _distance(side, spot, long_k, "protection"),
             "short_abs_delta": _num(_m(candidate.get("discovery")).get("short_abs_delta")),
-            "source_cn": "合同与市场；预期波动见地图（同一来源）",
         },
         "evidence": evidence,
         "conflict": conflict,
-        "why_user_cn": "方向证据没有校准概率，项目不给概率；系统看到的不等于全部重要因素。",
+        "why_user_cn": "这些读数没有校准概率，项目不给概率；系统看到的也不等于全部重要因素。",
     }
     # The payout row's static net already includes every fee; fall back to net after all fees.
     static_net = _num(protection_row.get("static_net_btc"))
     loss_at_protection = (-static_net if static_net is not None
                           else (at_protection - net_all_fees) if at_protection is not None and net_all_fees is not None else None)
-    r2 = {
-        "id": "R2", "kind": "judgment",
-        "text_cn": "这份补偿够不够？",
-        "numbers": {
-            "net_credit_btc": net, "net_credit_usd": net_usd,
-            "credit_share_of_width": (net_usd / width) if net_usd is not None and width else None,
-            "loss_at_protection_btc": loss_at_protection,
-            "missing_cn": missing,
-        },
-        "flags_cn": (["净信用不为正：权利金差不够覆盖入场费"] if "compensation_insufficient" in premise_flags else [])
-        + (["程序参照 M_ref 不为正或无效"] if {"m_ref_invalid", "m_ref_non_positive"} & set(premise_flags) else []),
-        "m_ref_btc": m_ref,
-        "premise_cn": (None if m_ref is not None else
-                       "系统没有独立的风险参照（μ_ref 无生产者），这里唯一的参照是市场价格本身。"),
-        "why_user_cn": ("没有 μ_ref 就没有 M_ref，系统不能在自己的口径内判断补偿是否充分。" if m_ref is None
-                        else "M_ref 只覆盖程序口径内的风险；口径外的部分仍取决于你的判断。"),
+    r3 = {
+        "id": "R3", "kind": "preference", "key": "worst_case",
+        "title_cn": "能否接受最坏情况",
+        "numbers": {"protection_usd": protection, "loss_at_protection_btc": loss_at_protection,
+                    "loss_at_protection_usd": usd(loss_at_protection),
+                    "payout_at_protection_btc": at_protection,
+                    "deep_usd": _num(_m(deepest).get("settlement_usd")) if side == "put" else None,
+                    "payout_at_deep_btc": _num(_m(deepest).get("payout_btc")) if side == "put" else None},
+        "tail": "grows_in_btc" if side == "put" else "capped",
+        "why_user_cn": "这是承受度偏好，不是事实问题。",
     }
-    remaining = [r1, r2]
-    if side == "put":
-        remaining.append({
-            "id": "R3", "kind": "preference",
-            "text_cn": "是否接受保护腿以下按 BTC 计赔付继续增加？",
-            "numbers": {"protection_usd": protection, "payout_at_protection_btc": at_protection,
-                        "deep_usd": _num(_m(deepest).get("settlement_usd")),
-                        "payout_at_deep_btc": _num(_m(deepest).get("payout_btc"))},
-            "why_user_cn": "这是承受度偏好，不是事实问题。",
-        })
-    else:
-        r2["tail_cn"] = "Call 侧按 BTC 计的赔付在保护腿处最大，价格再上升反而减少，所以保护腿处亏损就是最大亏损。"
+    remaining = [r1, r2, r3]
 
     folded_rows = [{"code": code, "label_cn": FOLD_CN.get(code, code), "count": len(refs), "refs": refs}
                    for code, refs in folded.items()]

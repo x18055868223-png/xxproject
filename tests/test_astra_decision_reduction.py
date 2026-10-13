@@ -3,6 +3,8 @@ most three questions the system has no standing to answer; nothing is weighed or
 from copy import deepcopy
 import json
 
+import pytest
+
 from tools import astra_decision_reduction_v1 as reduction
 from tools import astra_workbench_reading_v1 as reading
 from test_astra_locked_followup import setup
@@ -33,6 +35,7 @@ def candidate(side="put", increments=("CONTEXT_ONLY", "INCONCLUSIVE", "NOVEL", "
             "contract": {"side": side, "short_strike_usd": short_k, "long_strike_usd": long_k},
             "market": {"reference_price_usd": 83_400.0},
             "economics": {"visible_credit_btc": credit, "net_credit_after_entry_fee_btc": None if credit is None else credit - 0.0004,
+                          "net_credit_after_fee_btc": None if credit is None else credit - 0.0004,
                           "net_credit_after_entry_fee_usd_at_spot": None if credit is None else (credit - 0.0004) * 83_400},
             "fee": {"entry_fee_btc": None if credit is None else 0.0004},
             "risk": {"mu_btc": None},
@@ -54,11 +57,12 @@ def test_every_input_lands_in_exactly_one_place():
             "in_boundary", "in_question_premise", "restates_evidence", "no_path_signal"} <= codes
 
 
-def test_at_most_three_questions_in_fixed_order_and_no_tail_question_for_call():
-    assert [q["id"] for q in reduction.reduce(candidate())["questions"]] == ["R1", "R2", "R3"]
-    call = reduction.reduce(candidate(side="call"))
-    assert [q["id"] for q in call["questions"]] == ["R1", "R2"]
-    assert call["questions"][1]["tail_cn"]
+def test_three_questions_in_fixed_order_with_the_tail_shape_per_side():
+    put = reduction.reduce(candidate())["questions"]
+    call = reduction.reduce(candidate(side="call"))["questions"]
+    assert [q["key"] for q in put] == [q["key"] for q in call] == ["market_price", "your_reason", "worst_case"]
+    assert put[2]["tail"] == "grows_in_btc" and put[2]["numbers"]["payout_at_deep_btc"]
+    assert call[2]["tail"] == "capped" and call[2]["numbers"]["payout_at_deep_btc"] is None
 
 
 def test_no_conclusion_words_and_no_llm():
@@ -72,15 +76,16 @@ def test_no_conclusion_words_and_no_llm():
 def test_opposite_directions_are_kept_side_by_side_not_netted():
     c = candidate(increments=("NOVEL", "COUNTER_EVIDENCE"))
     c["current_questions"]["research_context"]["items"][1]["readings"] = {"direction": "bearish"}
-    r1 = reduction.reduce(c)["questions"][0]
-    assert r1["conflict"] is True
-    assert sorted(e["relation"] for e in r1["evidence"]) == ["adverse", "favorable"]
+    reason = reduction.reduce(c)["questions"][1]
+    assert reason["conflict"] is True
+    assert sorted(e["relation"] for e in reason["evidence"]) == ["adverse", "favorable"]
 
 
 def test_missing_credit_is_named_and_the_block_still_renders():
-    r2 = reduction.reduce(candidate(credit=None))["questions"][1]
-    assert r2["numbers"]["net_credit_btc"] is None and "可见信用" in r2["numbers"]["missing_cn"]
-    assert "μ_ref" in r2["premise_cn"]
+    price = reduction.reduce(candidate(credit=None))["questions"][0]
+    assert price["numbers"]["net_btc"] is None and price["stance"] is None
+    assert {"可见信用", "两腿标记价"} <= set(price["numbers"]["missing_cn"])
+    assert "μ_ref" in price["why_user_cn"]
 
 
 def test_rule_state_follows_the_gates():
@@ -117,6 +122,9 @@ def test_the_page_view_carries_the_reduction(tmp_path):
     for item in page["candidates"]:
         assert item["decision_reduction"]["schema"] == reduction.SCHEMA
         assert "error" not in item["decision_reduction"]
+        # leg marks travel beside the frozen snapshot, never inside it
+        assert set(item["market_marks"]) >= {"short_mark_btc", "long_mark_btc", "observed_ms"}
+        assert "market_marks" not in item["snapshot"]
 
 
 def test_review_gate_reasons_go_by_explicit_list_and_unknown_ones_stay_with_the_user():
@@ -138,13 +146,13 @@ def test_every_guidance_kind_has_a_place_and_no_raw_kind_is_shown():
     for u in out["unclassified"]:
         assert u["label_cn"] and u["label_cn"] not in kinds
     assert {u["ref"] for u in out["unclassified"]} == {"reading_guidance.liability_gap", "reading_guidance.identity"}
-    assert "净信用不为正：权利金差不够覆盖入场费" in out["questions"][1]["flags_cn"]
+    assert "净信用不为正：权利金差不够覆盖入场费" in out["questions"][0]["flags_cn"]
 
 
 def test_counter_evidence_without_a_price_direction_is_named_as_such():
     c = candidate(increments=("COUNTER_EVIDENCE",))
     c["current_questions"]["research_context"]["items"][0]["readings"] = {"gamma_regime": "NEGATIVE"}
-    ev = reduction.reduce(c)["questions"][0]["evidence"]
+    ev = reduction.reduce(c)["questions"][1]["evidence"]
     assert [e["relation"] for e in ev] == ["counter_non_directional"]
 
 
@@ -152,10 +160,33 @@ def test_evidence_order_does_not_depend_on_input_order():
     a = candidate(increments=("NOVEL", "COUNTER_EVIDENCE"))
     b = deepcopy(a)
     b["current_questions"]["research_context"]["items"].reverse()
-    assert reduction.reduce(a)["questions"][0]["evidence"] == reduction.reduce(b)["questions"][0]["evidence"]
+    assert reduction.reduce(a)["questions"][1]["evidence"] == reduction.reduce(b)["questions"][1]["evidence"]
 
 
 def test_loss_at_protection_uses_the_payout_rows_all_fee_net():
     c = candidate()
     c["snapshot"]["liability"]["payout_table"][0]["static_net_btc"] = -0.0231
-    assert reduction.reduce(c)["questions"][1]["numbers"]["loss_at_protection_btc"] == 0.0231
+    assert reduction.reduce(c)["questions"][2]["numbers"]["loss_at_protection_btc"] == 0.0231
+
+
+def test_the_market_price_is_the_spread_mark_and_the_gap_is_net_credit_minus_it():
+    c = candidate(credit=0.0031)
+    c["snapshot"]["contract"]["quantity_btc"] = 1.0
+    c["market_marks"] = {"short_mark_btc": 0.0034, "long_mark_btc": 0.0005}
+    price = reduction.reduce(c)["questions"][0]
+    n = price["numbers"]
+    assert n["market_payout_btc"] == pytest.approx(0.0029)
+    assert n["fees_btc"] == pytest.approx(0.0004)
+    assert n["spread_cost_btc"] == pytest.approx(0.0031 - 0.0029)
+    assert n["edge_btc"] == pytest.approx(0.0027 - 0.0029) and price["stance"] == "below_market"
+    assert n["edge_usd"] == pytest.approx(n["edge_btc"] * 83_400)
+    c["market_marks"] = {"short_mark_btc": 0.0030, "long_mark_btc": 0.0008}
+    assert reduction.reduce(c)["questions"][0]["stance"] == "at_or_above_market"
+
+
+def test_evidence_carries_the_raw_reading_not_a_weight():
+    c = candidate(increments=("NOVEL",))
+    c["current_questions"]["research_context"]["items"][0]["readings"] = {
+        "combined": {"direction": "bullish", "ready_horizons": ["4h", "8h", "12h"]}}
+    ev = reduction.reduce(c)["questions"][1]["evidence"][0]
+    assert ev["detail_cn"] == "4h/8h/12h 偏多" and ev["relation"] == "favorable"

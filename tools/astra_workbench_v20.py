@@ -2318,6 +2318,9 @@ class AstraWorkbench:
                 "risk_consumption_diagnosis": risk_diagnosis,
                 "source_manifest": manifest,
                 "capture_gaps": deepcopy(payload.get("capture_gaps") or []),
+                # Deribit marks of both legs from the books this capture already read; kept
+                # beside the frozen snapshot so its identity and evidence are unchanged.
+                "market_marks": _market_marks(payload),
             }
         except Exception as exc:
             return {
@@ -4081,6 +4084,20 @@ class AstraWorkbench:
             if thread:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
+
+
+def _market_marks(payload: Mapping[str, Any]) -> dict[str, Any]:
+    market = payload.get("market") if isinstance(payload.get("market"), Mapping) else {}
+    out: dict[str, Any] = {"source": "deribit_public_order_book.mark_price"}
+    times = []
+    for leg in ("short", "long"):
+        book = market.get(leg + "_book") if isinstance(market.get(leg + "_book"), Mapping) else {}
+        mark = book.get("mark_price")
+        out[leg + "_mark_btc"] = float(mark) if isinstance(mark, (int, float)) and not isinstance(mark, bool) else None
+        if isinstance(book.get("timestamp"), int):
+            times.append(book["timestamp"])
+    out["observed_ms"] = max(times) if times else None
+    return out
 
 
 def _current_metrics(metrics: Any) -> bool:
