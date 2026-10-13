@@ -144,7 +144,7 @@ export function coreFactors(view, spot) {
         isNum(mp.macro_score) ? diverging(mp.macro_score, 1, { good: -1 }) : null),
       ...(mp.component_summaries || []).map(comp),
     ],
-    note: mp.data_status && mp.data_status !== "full_live" ? "宏观数据不完整，读数只作参考。" : "环境 beta：只调整背景，不单独确认方向。绿色为风险压力下降。",
+    note: mp.data_status && mp.data_status !== "full_live" ? "宏观数据不完整，读数只作参考。" : "宏观环境只调整背景读数，不单独确认方向。绿色为风险压力下降。",
     missing: !regime,
   };
   return [spaceF, pathF, flowF, macroF];

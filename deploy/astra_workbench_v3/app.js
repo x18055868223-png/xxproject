@@ -7,6 +7,7 @@ import { sideModel, mapModel, sourceHealth, reasonCn, statusCn, applicability, c
 import { renderMap, legend } from "./map.js";
 import { coreFactors, backgroundItems, relationFor } from "./factors.js";
 import { lockList, lockDetail } from "./locks.js";
+import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
 const POLL_MS = 30_000;
@@ -353,8 +354,8 @@ function deck(m, side, blockers) {
   card.append(sideFactors(m));
 
   const qa = h("div", { class: "qa" });
-  qa.append(question("Q1 风险质量", m.review.kind === "program" ? programLines(m.review.programQ1) : m.review.q1, m.review.kind));
-  qa.append(question("Q2 风险价格", m.review.kind === "program" ? programLines(m.review.programQ2) : m.review.q2, m.review.kind));
+  qa.append(question("Q1 风险质量", m.review.kind === "program" ? programLines(m.review.programQ1) : m.review.q1, m.review.kind, m.review.labels));
+  qa.append(question("Q2 风险价格", m.review.kind === "program" ? programLines(m.review.programQ2) : m.review.q2, m.review.kind, m.review.labels));
   card.append(qa);
   card.append(actions(m));
   return card;
@@ -407,11 +408,11 @@ function programLines(q) {
   return [q.summary_cn, ...(q.routing_observations_cn || []).slice(0, 2)].filter(Boolean).map((t) => ({ text_cn: t, evidence_refs: [] }));
 }
 
-function question(title, points, kind) {
+function question(title, points, kind, labels) {
   const box = h("div", { class: "q" }, h("h4", { text: title + (kind === "program" ? "（程序摘要，未经模型）" : "") }));
   if (!points.length) { box.append(h("p", { class: "muted", text: "暂无。" })); return box; }
   const ul = h("ul");
-  for (const p of points.slice(0, 3)) ul.append(h("li", { text: p.text_cn }));
+  for (const p of points.slice(0, 3)) ul.append(h("li", { text: humanize(p.text_cn, labels) }));
   box.append(ul);
   return box;
 }
@@ -530,14 +531,15 @@ function renderAudit() {
       const toggle = () => { state.auditPoint = on ? null : key; state.auditRef = null; renderAudit(); };
       const el = h("div", { class: `point${on ? " on" : ""}`, tabindex: 0, role: "button", "aria-pressed": String(on),
         onclick: toggle, onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === el) { e.preventDefault(); toggle(); } } },
-        h("p", { text: p.text_cn }),
-        h("div", { class: "refs" }, ...(p.evidence_refs || []).map((ref) => h("button", { class: `chip${state.auditRef === ref ? " on" : ""}`, type: "button",
-          onclick: (e) => { e.stopPropagation(); state.auditRef = state.auditRef === ref ? null : ref; state.auditPoint = null; renderAudit(); scrollToRef(ref); } }, ref))));
+        h("p", { text: humanize(p.text_cn, r.labels) }),
+        h("div", { class: "refs" }, ...(p.evidence_refs || []).map((ref) => h("button", { class: `chip${state.auditRef === ref ? " on" : ""}`, type: "button", title: ref,
+          onclick: (e) => { e.stopPropagation(); state.auditRef = state.auditRef === ref ? null : ref; state.auditPoint = null; renderAudit(); scrollToRef(ref); } }, evidenceName(ref, r.labels)))));
       left.append(el);
     });
   }
-  left.append(guardrails(r.review || {}));
+  left.append(guardrails(r.review || {}, r.labels));
   left.append(metaView(m, r));
+  state.labels = r.labels;
   box.append(traceView(r));
 
   const activeRefs = state.auditPoint
@@ -547,11 +549,11 @@ function renderAudit() {
   const cited = first(r.evidence.filter((x) => x.cited));
   const rest = first(r.evidence.filter((x) => !x.cited));
   right.append(h("h4", { text: `模型引用的证据（${cited.length} 项）` }));
-  for (const row of cited) right.append(evidenceCard(row, activeRefs));
+  for (const row of cited) right.append(evidenceCard(row, activeRefs, r.labels));
   if (rest.length) {
     const open = (activeRefs && rest.some((x) => activeRefs.has(x.ref))) || state.open.has("uncited");
     const more = keepOpen(h("details", { class: "uncited", open }, h("summary", { text: `收到但未引用（${rest.length} 项）` })), "uncited");
-    for (const row of rest) more.append(evidenceCard(row, activeRefs));
+    for (const row of rest) more.append(evidenceCard(row, activeRefs, r.labels));
     right.append(more);
   }
 }
@@ -563,7 +565,7 @@ function programAudit(m) {
   const NOTE = { liability_direction: "责任方向", compensation_reference: "补偿口径", risk_reference_gap: "风险参考", edb_conflict: "方向意见" };
   if (notes.length) {
     box.append(h("h4", { text: "程序读法" }));
-    box.append(h("dl", { class: "notes" }, ...notes.flatMap((n) => [h("dt", { text: NOTE[n.kind] || "说明" }), h("dd", { text: n.text_cn })])));
+    box.append(h("dl", { class: "notes" }, ...notes.flatMap((n) => [h("dt", { text: NOTE[n.kind] || "说明" }), h("dd", { text: humanize(n.text_cn) })])));
   }
   const q = m.review;
   const cq = get(m, "candidate.current_questions") || {};
@@ -572,21 +574,21 @@ function programAudit(m) {
     if (!body) continue;
     const items = [body.summary_cn, ...(body.routing_observations_cn || []),
       ...extra.flatMap((k) => (Array.isArray(body[k]) ? body[k] : body[k] ? [body[k]] : []))].filter(Boolean);
-    box.append(h("h4", { text: `${title}（程序摘要，未经模型）` }), h("ul", { class: "q" }, ...[...new Set(items)].map((t) => h("li", { text: t }))));
+    box.append(h("h4", { text: `${title}（程序摘要，未经模型）` }), h("ul", { class: "q" }, ...[...new Set(items)].map((t) => h("li", { text: humanize(t) }))));
   }
   const ws = get(m, "candidate.wpem_summary") || {};
   const path = [ws.path_cn, ws.compensation_cn, ...(ws.breaks_cn || [])].filter(Boolean);
-  if (path.length) box.append(h("h4", { text: "同一保单的窗口变化" }), h("ul", { class: "q" }, ...path.map((t) => h("li", { text: t }))));
+  if (path.length) box.append(h("h4", { text: "同一保单的窗口变化" }), h("ul", { class: "q" }, ...path.map((t) => h("li", { text: humanize(t) }))));
   if (!notes.length && !cq.q1) box.append(h("p", { class: "muted", text: "程序没有给出摘要。" }));
   return box;
 }
 
 /** The program guardrails that frame a receipt: its own summary, supports, counters, when to reassess. */
-function guardrails(rv) {
+function guardrails(rv, labels) {
   const box = h("div", { class: "guardrails" });
   const list = (title, items, cls) => {
     const xs = (items || []).map((x) => (typeof x === "string" ? x : x && x.claim_cn)).filter(Boolean);
-    if (xs.length) box.append(h("h4", { text: title }), h("ul", { class: `q ${cls}` }, ...xs.map((t) => h("li", { text: t }))));
+    if (xs.length) box.append(h("h4", { text: title }), h("ul", { class: `q ${cls}` }, ...xs.map((t) => h("li", { text: humanize(t, labels) }))));
   };
   list("支持", rv.supports, "pro");
   list("反证", rv.counters, "con");
@@ -607,20 +609,33 @@ function scrollToRef(ref) {
   requestAnimationFrame(() => document.querySelector(`[data-ref="${CSS.escape(ref)}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
 }
 
-function evidenceCard(row, activeRefs) {
+function evidenceCard(row, activeRefs, labels) {
   const p = row.provided || {};
   const ref = get(row, "lineage.ref") || p.ref;
   const cls = activeRefs ? (activeRefs.has(ref) ? " hl" : " cold") : "";
   const card = h("div", { class: `ev${cls}`, dataset: { ref } },
-    h("header", {}, h("b", { text: p.label_cn || ref }), h("code", { text: ref })));
-  if (p.basis) card.append(h("div", { class: "basis", text: p.basis }));
+    h("header", {}, h("b", { text: evidenceName(ref, labels) }), h("code", { text: ref })));
+  if (p.basis) card.append(h("div", { class: "basis", text: humanize(p.basis, labels) }));
+  // Only named fields are listed; the rest stay in the raw evidence below, never as bare field names.
   const kv = h("dl", { class: "kv" });
-  for (const [k, v] of flatFacts(p.facts).slice(0, 14)) kv.append(h("dt", { title: k, text: fieldLabel(k) }), h("dd", { text: v }));
-  const rel = flatFacts(p.relations).slice(0, 10);
-  if (rel.length) kv.append(h("dt", { class: "sub", text: "程序关系" }));
-  for (const [k, v] of rel) kv.append(h("dt", { title: k, text: fieldLabel(k) }), h("dd", { text: v }));
+  let unnamed = 0;
+  const addRows = (pairs, limit) => {
+    let shown = 0;
+    for (const [k, v] of pairs) {
+      const name = fieldName(k);
+      if (!name) { unnamed += 1; continue; }
+      if (shown >= limit) continue;
+      kv.append(h("dt", { title: k, text: name }), factValue(v));
+      shown += 1;
+    }
+  };
+  addRows(flatFacts(p.facts), 14);
+  const rel = flatFacts(p.relations);
+  if (rel.some(([k]) => fieldName(k))) kv.append(h("dt", { class: "sub", text: "程序关系" }));
+  addRows(rel, 10);
   card.append(kv);
-  for (const lim of p.limitations || []) card.append(h("div", { class: "basis", text: `限制：${lim}` }));
+  if (unnamed) card.append(h("div", { class: "basis muted", text: `另有 ${unnamed} 项细节字段，见下方原始证据。` }));
+  for (const lim of p.limitations || []) card.append(h("div", { class: "basis", text: `限制：${humanize(lim, labels)}` }));
   card.append(keepOpen(h("details", { class: "raw", open: state.open.has(`raw:${ref}`) }, h("summary", { text: "原始证据与来源路径" }),
     h("pre", { text: JSON.stringify({ lineage: row.lineage, ...p }, null, 1) })), `raw:${ref}`));
   return card;
@@ -663,6 +678,7 @@ function fmtVal(v, key = "") {
   }
   if (Array.isArray(v)) {
     if (!v.length) return "无";
+    if (v.every((x) => typeof x === "string" && /^[0-9a-f]{16,}$/.test(x))) return `${v.length} 个编号`;
     if (v.every((x) => typeof x !== "object")) return v.map((x) => (typeof x === "string" ? codeCn(x) : fmtVal(x, key))).join("，");
     return `${v.length} 项`;
   }
@@ -670,30 +686,11 @@ function fmtVal(v, key = "") {
   return codeCn(v);
 }
 
-const FIELD = {
-  side: "侧别", short_instrument: "卖出腿", long_instrument: "保护腿", short_strike_usd: "卖出腿行权价", long_strike_usd: "保护腿行权价",
-  expiry_ms: "到期", quantity_btc: "数量", remaining_horizon_hours: "剩余期限", adverse_direction_cn: "不利方向", liability_zone: "责任区关系",
-  kind: "类型", credit_btc: "可见信用", reference_price_usd: "参考价", reference_source: "参考价来源", executable_or_filled: "可成交或已成交",
-  amount_btc: "费用合计", entry_fee_btc: "入场费", delivery_fee_btc: "交割费", basis: "口径", assumption_basis: "假设依据",
-  status: "状态", mu_btc: "μ", overall_mu_status: "μ 状态", gap_reasons: "缺口", positive_ev_not_determinable: "正期望不可判定",
-  horizon_sigma_move_pct: "到期前隐含预期波动", short_strike_distance_in_sigma: "短腿距离（相对预期波动）", breakeven_distance_in_sigma: "盈亏平衡距离（相对预期波动）",
-  credit_to_width_at_spot: "信用占宽度", short_strike_distance_pct_outside_positive: "短腿距离（正值在外）",
-  breakeven_distance_pct_outside_positive: "盈亏平衡距离（正值在外）",
-  atm_iv_pct: "ATM IV", match: "匹配方式", days_to_expiry: "期限（天）", expiry: "到期", iv_percentile: "IV 分位", dvol: "DVOL",
-  put_25d_iv: "25d Put IV", call_25d_iv: "25d Call IV", rr: "风险逆转",
-  signed_distance_to_short_pct: "距卖出腿（原始符号）", signed_distance_to_long_pct: "距保护腿（原始符号）", dte_ms: "剩余期限",
-  pcr: "成交 PCR", pcr_oi: "持仓 PCR", effective_flip_point: "有效翻转位", reason_codes: "原因码", state: "状态",
-  atm_iv_for_horizon: "本期限 IV", rr_25d_front: "前端偏斜", all_expiry_walls: "全期限墙", near_term_walls: "近端墙",
-  support_walls: "支撑", resistance_walls: "阻力", magnet_price: "磁吸位", volatility_trigger: "波动触发", max_pain: "最大痛点",
-  next_expiry_max_pain: "下一到期痛点", weekly: "周度", zero_dte: "0DTE", walls: "", gex_usd: "GEX",
-  dealer_hedging_adverse_scenarios: "不利方向对冲情景", move_to_short_strike_pct: "到短腿所需涨跌", same_expiry_as_contract: "与本单同到期",
-  target_expiry: "目标到期", contains_spot: "包含现价", contains_short_strike: "包含卖出腿", contains_long_strike: "包含保护腿",
-  low: "下沿", high: "上沿", raw_low: "下沿", raw_high: "上沿", display_center: "中心",
-  frozen_quote_not_filled: "冻结报价未成交", covers: "覆盖", exit_policy: "退出方式", settlement_currency: "结算币种",
-};
-function fieldLabel(key) {
-  const parts = key.split(".").map((p) => (FIELD[p] ?? p)).filter(Boolean);
-  return parts.join(" ") || key;
+const RAW_CODE = /^[A-Za-z][A-Za-z0-9]*(?:[_.][A-Za-z0-9]+)+$|^[A-Z][A-Z0-9]{2,}$|^[0-9a-f]{16,}$/;
+
+function factValue(v) {
+  if (typeof v === "string" && RAW_CODE.test(v) && !termName(v)) return h("dd", {}, h("code", { class: "val", text: v }));
+  return h("dd", { text: humanize(v, state.labels) });
 }
 
 function traceView(r) {
@@ -712,8 +709,8 @@ function traceView(r) {
 
 function refChip(ref, cls) {
   return h("button", { class: `chip ${cls}${state.auditRef === ref ? " on" : ""}`, type: "button",
-    title: cls === "skip" ? "模型收到但未引用" : "模型引用",
-    onclick: () => { state.auditRef = state.auditRef === ref ? null : ref; state.auditPoint = null; renderAudit(); scrollToRef(ref); } }, ref);
+    title: `${cls === "skip" ? "模型收到但未引用" : "模型引用"}：${ref}`,
+    onclick: () => { state.auditRef = state.auditRef === ref ? null : ref; state.auditPoint = null; renderAudit(); scrollToRef(ref); } }, evidenceName(ref, state.labels));
 }
 
 function metaView(m, r) {
@@ -731,7 +728,7 @@ function metaView(m, r) {
   for (const [k, v] of rows) dl.append(h("dt", { text: k }), h("dd", { text: v }));
   const gaps = rv.gaps_cn || [];
   const box = h("div", {}, h("h4", { text: "回执身份" }), dl, evidenceLinks(m));
-  if (gaps.length) box.append(h("h4", { text: "程序标注的资料缺口" }), h("ul", { class: "q" }, ...gaps.map((g) => h("li", { text: g }))));
+  if (gaps.length) box.append(h("h4", { text: "程序标注的资料缺口" }), h("ul", { class: "q" }, ...gaps.map((g) => h("li", { text: humanize(g, r.labels) }))));
   return box;
 }
 
@@ -755,7 +752,7 @@ function renderLocks() {
     renderDetail: (e) => lockDetail(L.details[e.episode_id], {
       loading: L.loading === e.episode_id, error: L.errors[e.episode_id], session: state.session.authenticated && !FIXTURE,
       series: L.series[e.episode_id], seriesError: L.seriesErrors[e.episode_id],
-      confirm: L.confirm,
+      confirm: L.confirm, refresh: get(state.view, "refresh_timing"),
       onAskStop: () => { L.confirm = "stop"; renderLocks(); },
       onCancel: () => { L.confirm = null; renderLocks(); },
       onStop: () => stopLock(e.episode_id),
@@ -820,13 +817,22 @@ function renderAuditLog() {
   for (const f of (a.files || []).slice(0, 10)) {
     const events = Object.entries(f.kinds || {}).filter(([k]) => !["header", "periodic", "daily"].includes(k)).reduce((n, [, c]) => n + c, 0);
     tb.append(h("tr", {},
-      h("td", {}, h("a", { href: `/api/workbench/chain-audit/${encodeURIComponent(f.name)}`, target: "_blank", rel: "noopener", text: f.name })),
+      h("td", {}, h("a", { href: `/api/workbench/chain-audit/${encodeURIComponent(f.name)}`, target: "_blank", rel: "noopener", title: f.name,
+        text: auditFileName(f.name) })),
       h("td", { class: "n", text: String(f.records) }), h("td", { class: "n", text: String(events) }),
       h("td", {}, chip(f.chain_ok ? "完整" : "断裂", f.chain_ok ? "ok" : "bad")),
       h("td", { class: "small", text: `${clock(f.first_ts_ms)} – ${clock(f.last_ts_ms)}` })));
   }
   t.append(tb);
   box.append((a.files || []).length ? h("div", { class: "scroll-x" }, t) : h("p", { class: "muted", text: "还没有记录；后台下一轮刷新后写入第一条。" }));
+}
+
+/** chain-20261013.jsonl → 2026-10-13 日志；chain-daily.jsonl → 每日快照. */
+function auditFileName(name) {
+  const day = /^chain-(\d{4})(\d{2})(\d{2})\.jsonl$/.exec(name || "");
+  if (day) return `${day[1]}-${day[2]}-${day[3]} 日志`;
+  if (name === "chain-daily.jsonl") return "每日 23:00 快照（长期保留）";
+  return name;
 }
 
 function notice(text) { state.notices.push({ text, until: Date.now() + 60_000 }); renderBanners(); }
@@ -876,7 +882,8 @@ function renderRecords() {
       const text = kind === "on_demand" ? "按需" : kind === "elsewhere" ? "本机不采集" : kind === "unused" ? "不消费" : sourceStatusCn(p.status);
       const tone = kind !== "continuous" ? "" : p.level === "ok" ? "ok" : p.level === "warn" ? "warn" : p.level === "bad" ? "bad" : "";
       tb.append(h("tr", { class: kind === "continuous" ? "" : "muted-row", title: p.reasons.map(reasonCn).join("；") },
-        h("td", { class: "src-id", text: p.id }), h("td", {}, chip(text, tone)),
+        h("td", { class: "src-id" }, h("span", { text: SOURCE_CN[p.id] || p.id }), SOURCE_CN[p.id] ? h("code", { class: "id", text: p.id }) : null),
+        h("td", {}, chip(text, tone)),
         h("td", { class: "n", text: isNum(p.age) ? dur(p.age) : "—" }), h("td", { class: "n", text: isNum(p.ttl) ? dur(p.ttl) : "—" }),
         h("td", { class: "small", text: [...new Set(p.consumers.map(consumerCn))].slice(0, 3).join("、") || "—" })));
     }
@@ -945,7 +952,8 @@ function versionsView(v) {
   box.append(h("h4", { text: "版本身份" }));
   const dl = h("dl", { class: "meta-grid" });
   dl.append(h("dt", { text: "FMZ 运行中" }), h("dd", { text: observed || "未知" }));
-  dl.append(h("dt", { text: "读视图" }), h("dd", { text: `${v.schema || "—"} / ${v.display_projection || "—"}` }));
+  dl.append(h("dt", { text: "读视图" }), h("dd", { title: `${v.schema || "—"} / ${v.display_projection || "—"}`,
+    text: v.display_projection === "workbench_page" ? "工作台页面投影（精简读视图）" : "工作台完整读视图" }));
   if (observed && manifestFmz && observed !== manifestFmz) dl.append(h("dt", { text: "注意" }),
     h("dd", { class: "warn-text", text: `发布清单记的 FMZ 是 ${manifestFmz}，与运行中的 ${observed} 不一致；清单需要更新。` }));
   box.append(dl);
@@ -953,7 +961,9 @@ function versionsView(v) {
     h("summary", { text: `发布清单 ${rel.release_id || ""}（${comps.length} 个组件）` })), "versions");
   const t = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ...["组件", "版本", "清单状态"].map((x) => h("th", { text: x })))));
   const tb = h("tbody");
-  for (const c of comps) tb.append(h("tr", {}, h("td", { class: "src-id", text: c.component }), h("td", { class: "small", text: c.candidate_version || "—" }),
+  for (const c of comps) tb.append(h("tr", {}, h("td", { class: "src-id" }, h("span", { text: COMPONENT_CN[c.component] || c.component }),
+      COMPONENT_CN[c.component] ? h("code", { class: "id", text: c.component }) : null),
+    h("td", { class: "small" }, h("code", { text: c.candidate_version || "—" })),
     h("td", { class: "small", text: RUNTIME_CN[c.runtime_status] || "其他" })));
   t.append(tb);
   det.append(h("div", { class: "scroll-x" }, t));

@@ -1,6 +1,7 @@
 // Normalize the workbench reading view into what the page draws.
 // Display only: no value here is used for permission or accounting.
 import { get, isNum } from "./format.js";
+import { TERM_CN, evidenceLabels } from "./glossary.js";
 
 const REASONS = {
   space_gate_not_eligible: "空间门未放行",
@@ -246,6 +247,7 @@ export function reviewModel(candidate) {
       q1: get(r, "q1.llm_explanation.points") || [],
       q2: get(r, "q2.llm_explanation.points") || [],
       evidence: allEvidence(r),
+      labels: evidenceLabels(allEvidence(r).map((x) => ({ ref: x.ref, label_cn: get(x, "provided.label_cn") }))),
       trace: r.decision_trace || null,
       binding: receipt.display_binding || null,
       reason: d.reason_cn,
@@ -363,7 +365,7 @@ const CODES = {
   frozen_risk_reference_missing: "冻结风险参考缺失", risk_model_not_configured: "风险模型未配置", not_qualified: "未合格",
   delivery: "交割", entry: "入场", put: "Put", call: "Call", current: "当前", hold_to_expiry: "持有到期",
 };
-export const codeCn = (code) => (code == null ? "—" : CODES[code] || String(code));
+export const codeCn = (code) => (code == null ? "—" : CODES[code] || TERM_CN[code] || String(code));
 
 /** Each registry product with how it is collected here and whether it is healthy. */
 export function sourceHealth(view) {

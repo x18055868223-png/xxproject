@@ -441,3 +441,6 @@ ul.q li { font-size: 13.5px; line-height: 1.6; padding: 3px 0; }
 .banner.gate .btn { margin-left: auto; }
 
 .strip-actions { display: flex; gap: 8px; flex: none; }
+
+.src-id code.id { display: block; font-size: 11px; color: var(--ink-3); font-weight: 400; }
+.kv dd code.val { font-size: 11.5px; color: var(--ink-3); }

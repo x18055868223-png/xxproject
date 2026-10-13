@@ -99,7 +99,7 @@ function spotFrom(side, strike, dPct) {
   return side === "put" ? strike * (1 + k) : strike * (1 - k);
 }
 
-export function lockDetail(d, { loading, error, session, confirm, onStop, onAskStop, onCancel, onRelock, series, seriesError }) {
+export function lockDetail(d, { loading, error, session, confirm, onStop, onAskStop, onCancel, onRelock, series, seriesError, refresh }) {
   const box = h("div", { class: "lock-detail" });
   if (!d) { box.append(h("p", { class: "empty", text: loading ? "正在读取锁定对照…" : error ? `读取失败：${error}` : "" })); return box; }
   if (error) box.append(h("p", { class: "banner", text: `刷新失败，显示的是上一次读取的结果（${error}）。` }));
@@ -195,7 +195,10 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
     e.gap_count ? `缺口 ${e.gap_count} 次${gapText ? `（${gapText}${e.gap_storage_truncated ? "，部分明细未保留" : ""}）` : ""}` : "没有缺口",
     get(d, "sampling.collector_error") ? "后台采样出错，最新点可能滞后" : null,
   ].filter(Boolean).join("；");
-  box.append(section("采样过程", h("p", { class: "muted", text: `${sampling}。设定每 ${dur(get(d, "sampling.interval_ms") ?? 60000)}尝试一次，实际随后台刷新节奏（约 1 分钟一轮）。` })));
+  // Sampling rides on the background refresh: one cycle = the refresh itself plus the wait between cycles.
+  const cycleMs = isNum(refresh?.total_ms) ? refresh.total_ms + (refresh.loop_wait_s ?? 30) * 1000 : null;
+  const cadence = cycleMs ? `实际随后台刷新进行，最近一轮约 ${Math.round(cycleMs / 1000)} 秒，所以点距通常在 1–3 分钟` : "实际随后台刷新进行";
+  box.append(section("采样过程", h("p", { class: "muted", text: `${sampling}。设定最短每 ${dur(get(d, "sampling.interval_ms") ?? 60000)}一次，${cadence}。` })));
 
   // 5. how to read
   if ((d.limitations_cn || []).length) {
