@@ -2316,6 +2316,16 @@ class AstraWorkbench:
     def refresh(self, *, now_ms: int | None = None, record_daily: bool = True) -> dict[str, Any]:
         now = self.clock_ms() if now_ms is None else int(now_ms)
         with self._refresh_lock:
+            # Wall time per step, so a slow cycle (and the lock sampling cadence that rides
+            # on it) can be explained from the view and the audit log.
+            timing: dict[str, int] = {}
+            clock = [time.perf_counter()]
+
+            def mark(step: str) -> None:
+                current = time.perf_counter()
+                timing[step] = int((current - clock[0]) * 1000)
+                clock[0] = current
+
             self._research_pending_payloads.clear()
             self._locked_payloads.clear()
             gaps: list[str] = []
@@ -2328,10 +2338,12 @@ class AstraWorkbench:
                 collect_slow_sources=self.config.map_sources_enabled,
                 collect_local_artifacts=True,
             )
+            mark("fact_gate_map")
             discovered: Mapping[str, Any] | None = None
             candidates: list[dict[str, Any]] = []
             try:
                 discovered = self.discovery_capture(now_ms=now)
+                mark("discovery")
             except Exception as exc:
                 gaps.append("discovery_refresh_error")
                 candidates = [
@@ -2352,6 +2364,7 @@ class AstraWorkbench:
                         now,
                         btc_map_projection=btc_projection,
                     ))
+            mark("candidates")
             finished_at_ms = max(now, self.clock_ms())
             email_state = self._load_state().get("email") or {}
             last_attempt = email_state.get("last_attempt") or {}
@@ -2381,18 +2394,24 @@ class AstraWorkbench:
                 "llm_call_count": 0,
                 "data_health": self._data_health(finished_at_ms, btc_projection),
             }
+            mark("view_health")
             self._attach_wpem(view, finished_at_ms)
+            mark("wpem")
             if self._wpem_archive is not None and isinstance(view.get("data_health"), dict):
                 view["data_health"]["wpem_archive"] = self._wpem_archive.usage()
             self._remember_lockable(view, finished_at_ms)
             self._refresh_locked_candidates(view, finished_at_ms)
             self._settle_expired_locks(finished_at_ms)
             view["locked_candidates"] = self.locked_candidate_list()
+            mark("locked")
             if record_daily:
                 self._maybe_record_daily_snapshot(view, finished_at_ms)
                 view["daily_snapshots"] = self.recent_daily_snapshots(limit=self.config.daily_snapshot_limit)
             if self.config.research_archive_enabled:
                 self._record_research_samples(view, finished_at_ms)
+            mark("daily_research")
+            view["refresh_timing"] = {"steps_ms": dict(timing), "total_ms": sum(timing.values()),
+                                      "loop_wait_s": self.config.refresh_interval_s}
             with self._view_lock:
                 # Daily raw snapshots remain on disk and in the explicit full
                 # endpoint; do not retain repeated MAP bodies in the read cache.
@@ -3857,7 +3876,8 @@ def make_handler(workbench: AstraWorkbench):
     sessions = WorkbenchSessions(workbench.config.server_token, workbench.config.public_origin,
                                  now_ms=workbench.clock_ms,
                                  ttl_seconds=workbench.config.session_ttl_seconds,
-                                 max_sessions=workbench.config.max_sessions)
+                                 max_sessions=workbench.config.max_sessions,
+                                 store_path=workbench.config.state_dir / "sessions.json")
     proof_slots = threading.BoundedSemaphore(1)
 
     class Handler(BaseHTTPRequestHandler):

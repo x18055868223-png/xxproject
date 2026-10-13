@@ -68,3 +68,14 @@ def test_daily_snapshots_rotate_into_an_archive_and_keep_recent(tmp_path, monkey
     archives = list(path.parent.glob("daily_snapshots-archive-*.jsonl.gz"))
     assert len(archives) == 1
     assert [json.loads(line)["bjt_day"] for line in gzip.decompress(archives[0].read_bytes()).splitlines()] == [r["bjt_day"] for r in rows]
+
+
+def test_each_refresh_records_its_step_timing(tmp_path):
+    wb, _ = make_workbench(tmp_path, api_key=None)
+    view = wb.refresh(now_ms=T)
+    timing = view["refresh_timing"]
+    assert {"fact_gate_map", "candidates", "wpem", "locked"} <= set(timing["steps_ms"])
+    assert timing["total_ms"] == sum(timing["steps_ms"].values()) >= 0
+    from tools import astra_chain_audit_v1 as chain
+    record = chain.snapshot_record(view, kind="periodic", now_ms=T)
+    assert record["refresh"]["total_ms"] == timing["total_ms"]

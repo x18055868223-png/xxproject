@@ -5,7 +5,10 @@ from http.cookies import SimpleCookie
 import hashlib
 import hmac
 import ipaddress
+import json
 import math
+import os
+from pathlib import Path
 import secrets
 import threading
 import time
@@ -141,6 +144,7 @@ class WorkbenchSessions:
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         max_sessions: int = 32,
         now_ms: Callable[[], int] | None = None,
+        store_path: Path | str | None = None,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds_must_be_positive")
@@ -161,6 +165,11 @@ class WorkbenchSessions:
         self._sessions: dict[str, _SessionRecord] = {}
         self._lock = threading.RLock()
         self._sequence = 0
+        # Optional persistence so a service restart does not log every reader out. Only the
+        # HMAC key and session digests are stored, never a session token or the server token;
+        # a changed server token invalidates every stored session.
+        self._store_path = Path(store_path) if store_path else None
+        self._load_store()
 
     def status(
         self,
@@ -201,6 +210,7 @@ class WorkbenchSessions:
             self._sequence += 1
             self._sessions[self._digest(token)] = _SessionRecord(expires_at_ms, self._sequence)
             self._enforce_cap_locked()
+            self._save_store_locked()
         return self._response(
             200,
             "ok",
@@ -251,6 +261,7 @@ class WorkbenchSessions:
         if token:
             with self._lock:
                 self._sessions.pop(self._digest(token), None)
+                self._save_store_locked()
         return self._response(
             200,
             "ok",
@@ -422,6 +433,52 @@ class WorkbenchSessions:
                 self._sessions.pop(digest, None)
                 return None
             return _SessionRecord(record.expires_at_ms, record.sequence)
+
+    def _secret_fingerprint(self) -> str:
+        return hmac.new(self._hash_key, b"server-token:" + (self.secret or "").encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _load_store(self) -> None:
+        if self._store_path is None:
+            return
+        try:
+            data = json.loads(self._store_path.read_text(encoding="utf-8"))
+            key = bytes.fromhex(data["key"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return
+        if len(key) != 32:
+            return
+        self._hash_key = key
+        if data.get("secret_fingerprint") != self._secret_fingerprint():
+            self._sessions = {}
+            self._save_store_locked()
+            return
+        now = self.now_ms()
+        for digest, item in (data.get("sessions") or {}).items():
+            try:
+                expires_at_ms, sequence = int(item[0]), int(item[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if expires_at_ms > now:
+                self._sessions[str(digest)] = _SessionRecord(expires_at_ms, sequence)
+                self._sequence = max(self._sequence, sequence)
+        self._enforce_cap_locked()
+
+    def _save_store_locked(self) -> None:
+        if self._store_path is None:
+            return
+        payload = {"schema": "astra_workbench_session_store@1", "key": self._hash_key.hex(),
+                   "secret_fingerprint": self._secret_fingerprint(),
+                   "sessions": {d: [r.expires_at_ms, r.sequence] for d, r in self._sessions.items()}}
+        tmp = self._store_path.with_name(self._store_path.name + ".tmp")
+        try:
+            self._store_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, self._store_path)
+        except OSError:
+            # Persistence is a convenience; sessions keep working in memory.
+            pass
 
     def _digest(self, token: str) -> str:
         return hmac.new(self._hash_key, token.encode("utf-8"), hashlib.sha256).hexdigest()

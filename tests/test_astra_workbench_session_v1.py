@@ -205,3 +205,42 @@ def test_same_origin_fetch_metadata_can_refresh_cookie_without_origin_header():
 
     assert response.status_code == 200
     assert response.body["authenticated"] is True
+
+
+def _login_cookie(sessions, token):
+    response = sessions.login("POST", _headers(), "127.0.0.1", authorization=f"Bearer {token}")
+    assert response.status_code == 200
+    return f"{COOKIE_NAME}={_cookie_value(response.set_cookie)}"
+
+
+def test_sessions_survive_a_restart_and_store_no_secret(tmp_path):
+    store = tmp_path / "sessions.json"
+    first = WorkbenchSessions("server-token", now_ms=lambda: 1_000, store_path=store)
+    cookie = _login_cookie(first, "server-token")
+    text = store.read_text(encoding="utf-8")
+    assert "server-token" not in text and cookie.split("=", 1)[1] not in text
+    restarted = WorkbenchSessions("server-token", now_ms=lambda: 2_000, store_path=store)
+    assert restarted.status({"Host": "127.0.0.1:8919", "Cookie": cookie}, "127.0.0.1")["authenticated"]
+    # logout is persisted too
+    restarted.logout("DELETE", _headers(Cookie=cookie), "127.0.0.1")
+    again = WorkbenchSessions("server-token", now_ms=lambda: 3_000, store_path=store)
+    assert not again.status({"Host": "127.0.0.1:8919", "Cookie": cookie}, "127.0.0.1")["authenticated"]
+
+
+def test_a_changed_server_token_or_expiry_drops_stored_sessions(tmp_path):
+    store = tmp_path / "sessions.json"
+    first = WorkbenchSessions("old-token", ttl_seconds=10, now_ms=lambda: 1_000, store_path=store)
+    cookie = _login_cookie(first, "old-token")
+    rotated = WorkbenchSessions("new-token", ttl_seconds=10, now_ms=lambda: 2_000, store_path=store)
+    assert not rotated.status({"Host": "127.0.0.1:8919", "Cookie": cookie}, "127.0.0.1")["authenticated"]
+    second = WorkbenchSessions("new-token", ttl_seconds=10, now_ms=lambda: 2_000, store_path=store)
+    cookie = _login_cookie(second, "new-token")
+    expired = WorkbenchSessions("new-token", ttl_seconds=10, now_ms=lambda: 60_000, store_path=store)
+    assert not expired.status({"Host": "127.0.0.1:8919", "Cookie": cookie}, "127.0.0.1")["authenticated"]
+
+
+def test_an_unreadable_store_starts_empty(tmp_path):
+    store = tmp_path / "sessions.json"
+    store.write_text("not json", encoding="utf-8")
+    sessions = WorkbenchSessions("server-token", now_ms=lambda: 1_000, store_path=store)
+    assert _login_cookie(sessions, "server-token")
