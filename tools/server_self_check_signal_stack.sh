@@ -30,7 +30,8 @@ done
 
 # The private loopback listener serves the same static root without the public basic-auth layer.
 SERVER_BASE_URL="${SERVER_BASE_URL:-http://127.0.0.1:8896}"
-AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}/signal-audit}"
+# The workbench v3 page is the only served page (the previous audit page is retired).
+AUDIT_URL="${AUDIT_URL:-${SERVER_BASE_URL}}"
 GEX_URL="${GEX_URL:-http://127.0.0.1:8000}"
 GEX_REQUIRED="${GEX_REQUIRED:-1}"
 SYSTEMD_REQUIRED="${SYSTEMD_REQUIRED:-1}"
@@ -343,10 +344,11 @@ else
   warn "GEX_REQUIRED=0; skipped GEX Monitor API active checks"
 fi
 
-section "Signal audit frontend"
+section "Workbench frontend"
 if [ "$AUDIT_HTTP_REQUIRED" = "1" ]; then
-  http_head "audit page" "${AUDIT_URL%/}/"
-  http_head "audit manifest" "${AUDIT_URL%/}/signal_cards/index.json"
+  # Signal cards are no longer served over HTTP; their manifest is checked on disk below.
+  http_head "workbench page" "${AUDIT_URL%/}/"
+  http_head "workbench page script" "${AUDIT_URL%/}/app.js"
 else
   warn "AUDIT_HTTP_REQUIRED=0; skipped audit HTTP checks"
 fi
