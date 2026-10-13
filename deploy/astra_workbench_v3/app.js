@@ -207,8 +207,29 @@ function renderBanners() {
   else if (mc.status && mc.status !== "current") box.append(h("div", { class: "banner" }, h("b", { text: "FMZ 事实不是当前状态。" }),
     ` ${(mc.gap_reasons || []).length ? `${mc.gap_reasons.map(reasonCn).join("、")}。` : ""}候选与地图只反映最后一次冻结。`));
   const errs = (v.candidates || []).filter((c) => c.status === "error");
-  if (errs.length && !FIXTURE) box.append(h("div", { class: "banner" }, h("b", { text: "候选未生成。" }),
-    ` ${errs.map((c) => `${c.side === "put" ? "Put" : "Call"}：${reasonCn((get(c, "review_gate.reasons") || [])[0] || "discovery_refresh_error")}`).join("；")}`));
+  if (errs.length && !FIXTURE) box.append(candidateErrorBanner(errs));
+}
+
+/** Why no candidate was produced: the upstream's own reason when known, said once for both sides. */
+function candidateErrorBanner(errs) {
+  const why = (c) => {
+    const reasons = get(c, "review_gate.reasons") || [];
+    return reasons.find((r) => r.startsWith("upstream_")) || reasons[0] || "discovery_refresh_error";
+  };
+  const codes = [...new Set(errs.map(why))];
+  const lastOk = Math.max(...errs.map((c) => get(c, "upstream.last_success_ms")).filter(isNum), 0) || null;
+  const since = lastOk ? `上次成功抓取在 ${clock(lastOk)}，之后的报价与候选暂缺。` : "";
+  if (codes.length === 1 && codes[0] === "upstream_deribit_maintenance") {
+    return h("div", { class: "banner info" }, h("b", { text: "Deribit 交易所维护中。" }),
+      ` 官方接口暂停服务，两侧候选暂不生成；接口恢复后自动继续。${since}锁定追踪在维护期间记为采样缺口。`);
+  }
+  if (codes.length === 1 && codes[0] === "upstream_deribit_unavailable") {
+    return h("div", { class: "banner" }, h("b", { text: "Deribit 接口暂时不可用。" }),
+      ` 两侧候选暂不生成，后台会按退避间隔重试。${since}`);
+  }
+  const text = codes.length === 1 ? `两侧：${reasonCn(codes[0])}`
+    : errs.map((c) => `${c.side === "put" ? "Put" : "Call"}：${reasonCn(why(c))}`).join("；");
+  return h("div", { class: "banner" }, h("b", { text: "候选未生成。" }), ` ${text}。${since}`);
 }
 
 /** Which space source the data engine refused, in words. */

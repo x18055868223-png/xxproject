@@ -48,6 +48,8 @@ const REASONS = {
   risk_reference_missing_or_unqualified: "风险参考 μ 缺失",
   snapshot_not_reviewable: "快照不可用于生产复核",
   discovery_refresh_error: "候选发现失败",
+  upstream_deribit_maintenance: "Deribit 交易所维护中",
+  upstream_deribit_unavailable: "Deribit 接口暂时不可用",
   SPACE_GATE_ANCHOR_NOT_VALID: "锚点无效",
   SPACE_GATE_ANCHOR_SCORE_MISSING: "锚点评分缺失",
   SPACE_GATE_GGR_TRANSITION: "Gamma 处于翻转过渡",
@@ -198,12 +200,15 @@ export function underwriting(view, sides) {
   for (const side of ["put", "call"]) {
     const m = sides[side];
     const reasons = get(m, "candidate.review_gate.reasons") || [];
+    // An upstream reason (e.g. exchange maintenance) is the whole story; its consequences are not repeated.
+    const upstream = reasons.some((r) => r.startsWith("upstream_"));
     perSide[side] = [];
     for (const r of reasons) {
       if (SPACE.has(r)) spaceBlocked = true;
+      else if (upstream && r === "discovery_refresh_error") continue;
       else if (!CONSEQUENCE.has(r)) perSide[side].push(reasonCn(r));
     }
-    if (m && !m.snap) perSide[side].push(m.error ? "候选未生成" : "没有冻结快照");
+    if (m && !m.snap && !upstream) perSide[side].push(m.error ? "候选未生成" : "没有冻结快照");
   }
   if (spaceBlocked || gate.eligible === false) {
     const since = isNum(gate.since_ts_ms) ? gate.since_ts_ms : null;
