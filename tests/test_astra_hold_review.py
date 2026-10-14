@@ -133,20 +133,25 @@ def test_validator_allows_numbers_from_the_input_only():
         hold.validate({"summary": "短腿缓冲 2.5%。", "points": [], "watch": []}, review_input)
 
 
-@pytest.mark.parametrize("status,settled,metrics,verdict,basis", [
-    ("expired", {"status": "settled", "settlement_result_usd": 175.0}, None, "profit", "settlement"),
-    ("expired", {"status": "settled", "settlement_result_usd": -9.5}, None, "flat", "settlement"),
-    ("expired", {"status": "settled", "settlement_result_usd": -40.0}, None, "loss", "settlement"),
-    ("expired", {"status": "delivery_price_unavailable"}, None, None, "settlement"),
+@pytest.mark.parametrize("status,settled,metrics,start,verdict,basis", [
+    ("expired", {"status": "settled", "settlement_result_usd": 175.0}, None, None, "profit", "settlement"),
+    ("expired", {"status": "settled", "settlement_result_usd": -9.5}, None, None, "flat", "settlement"),
+    ("expired", {"status": "settled", "settlement_result_usd": -40.0}, None, None, "loss", "settlement"),
+    ("expired", {"status": "delivery_price_unavailable"}, None, None, None, "floating_at_expiry"),
     ("expired", {"status": "settled", "settlement_result_usd": None},
-     {"float_pnl_btc": 0.0034, "spot_usd": 83000.0}, "profit", "floating_at_expiry"),
-    ("stopped", {}, {"float_pnl_btc": -0.0026, "spot_usd": 83000.0}, "loss", "floating_at_stop"),
-    ("active", {}, {"float_pnl_btc": 0.0001, "spot_usd": 83000.0}, "flat", "floating_now"),
-    ("active", {}, {"float_pnl_btc": None, "spot_usd": 83000.0}, None, "floating_now"),
+     {"float_pnl_btc": 0.0034, "spot_usd": 83000.0}, -0.0005, "profit", "floating_at_expiry"),
+    ("stopped", {}, {"float_pnl_btc": -0.0026, "spot_usd": 83000.0}, -0.0003, "loss", "floating_at_stop"),
+    # a fresh lock: only the bid/ask spread paid at lock -> flat, not a loss
+    ("active", {}, {"float_pnl_btc": -0.0003, "spot_usd": 83000.0}, -0.0003, "flat", "floating_now"),
+    ("stopped", {}, {"float_pnl_btc": -0.00025, "spot_usd": 83000.0}, -0.00025, "flat", "floating_at_stop"),
+    ("active", {}, {"float_pnl_btc": -0.0005, "spot_usd": 83000.0}, -0.0003, "loss", "floating_now"),
+    ("active", {}, {"float_pnl_btc": 0.0001, "spot_usd": 83000.0}, -0.0003, "profit", "floating_now"),
+    ("active", {}, {"float_pnl_btc": 0.0001, "spot_usd": 83000.0}, None, None, "floating_now"),
 ])
-def test_lock_outcome_verdict(tmp_path, status, settled, metrics, verdict, basis):
+def test_lock_outcome_verdict(tmp_path, status, settled, metrics, start, verdict, basis):
     wb, _, episode_id, _ = setup(tmp_path)
     wb._series_tail_metrics = lambda _id: metrics
+    wb._series_head_float_pnl = lambda _id: start
     out = wb._lock_outcome({"episode_id": episode_id, "status": status}, {episode_id: settled})
     assert out["verdict"] == verdict and out["basis"] == basis and out["flat_band_usd"] == 10.0
 
@@ -157,6 +162,8 @@ def test_lock_list_carries_outcome_from_the_series_tail(tmp_path):
     assert tail is not None and "float_pnl_btc" in tail
     episode = next(e for e in wb.locked_candidate_list()["episodes"] if e["episode_id"] == episode_id)
     assert episode["outcome"]["basis"] == "floating_now"
+    if episode["outcome"]["verdict"] is not None:
+        assert episode["outcome"]["measured_from"] == "lock_time_floating_pnl"
 
 
 def test_review_waits_for_held_history(tmp_path):

@@ -3151,38 +3151,61 @@ class AstraWorkbench:
                 return row["metrics"]
         return None
 
+    def _series_head_float_pnl(self, episode_id: str) -> float | None:
+        """Floating PnL of the first series row that has one: the lock-time value, which is
+        already slightly negative (the bid/ask spread paid at lock). Cached once found."""
+        cache = self.__dict__.setdefault("_head_float_cache", {})
+        if episode_id in cache:
+            return cache[episode_id]
+        try:
+            with self.locked_candidates._series_path(episode_id).open("r", encoding="utf-8") as handle:
+                for _, line in zip(range(200), handle):
+                    try:
+                        metrics = (json.loads(line) or {}).get("metrics") or {}
+                    except (ValueError, AttributeError):
+                        continue
+                    value = metrics.get("float_pnl_btc")
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        cache[episode_id] = float(value)
+                        if len(cache) > 128:
+                            cache.pop(next(iter(cache)))
+                        return float(value)
+        except OSError:
+            pass
+        return None
+
     def _lock_outcome(self, episode: Mapping[str, Any], settlements: Mapping[str, Any]) -> dict[str, Any]:
-        """Profit / loss / flat of one lock, without the amount on the list. Expired: the
-        settlement result; stopped or active: the latest Deribit floating PnL in USD."""
+        """Profit / loss / flat of one lock, without the amount on the list.
+
+        Expired with a settlement result: that result (the final outcome). Otherwise the
+        latest Deribit floating PnL measured from the lock-time floating PnL, so the bid/ask
+        spread paid at lock does not read as a loss; in USD at the latest spot."""
+        episode_id = str(episode.get("episode_id") or "")
         settled = settlements.get(episode.get("episode_id")) or {}
-        usd_value, basis = None, None
-        if episode.get("status") == "expired":
-            basis = "settlement"
-            if settled.get("status") == "settled" and isinstance(settled.get("settlement_result_usd"), (int, float)):
-                usd_value = float(settled["settlement_result_usd"])
-            else:
-                # no settlement result yet or ever: fall back to the last floating PnL
-                # before expiry, labelled with the actual reason
-                metrics = self._series_tail_metrics(str(episode.get("episode_id") or "")) or {}
-                pnl, spot = metrics.get("float_pnl_btc"), metrics.get("spot_usd")
-                if isinstance(pnl, (int, float)) and isinstance(spot, (int, float)):
-                    usd_value, basis = float(pnl) * float(spot), "floating_at_expiry"
-                    fallback = ("credit_missing" if settled.get("status") == "settled"
-                                else "delivery_unavailable" if settled.get("status") else "settlement_pending")
-                    return {"verdict": ("flat" if abs(usd_value) <= self.LOCK_FLAT_USD
-                                        else "profit" if usd_value > 0 else "loss"),
-                            "basis": basis, "fallback_reason": fallback, "flat_band_usd": self.LOCK_FLAT_USD}
+        out: dict[str, Any] = {"verdict": None, "basis": None, "flat_band_usd": self.LOCK_FLAT_USD}
+        usd_value = None
+        if (episode.get("status") == "expired" and settled.get("status") == "settled"
+                and isinstance(settled.get("settlement_result_usd"), (int, float))):
+            out["basis"] = "settlement"
+            usd_value = float(settled["settlement_result_usd"])
         else:
-            basis = "floating_now" if episode.get("status") == "active" else "floating_at_stop"
-            metrics = self._series_tail_metrics(str(episode.get("episode_id") or "")) or {}
+            if episode.get("status") == "expired":
+                out["basis"] = "floating_at_expiry"
+                out["fallback_reason"] = ("credit_missing" if settled.get("status") == "settled"
+                                          else "delivery_unavailable" if settled.get("status")
+                                          else "settlement_pending")
+            else:
+                out["basis"] = "floating_now" if episode.get("status") == "active" else "floating_at_stop"
+            metrics = self._series_tail_metrics(episode_id) or {}
             pnl, spot = metrics.get("float_pnl_btc"), metrics.get("spot_usd")
-            if isinstance(pnl, (int, float)) and isinstance(spot, (int, float)):
-                usd_value = float(pnl) * float(spot)
-        verdict = None
+            start = self._series_head_float_pnl(episode_id)
+            if isinstance(pnl, (int, float)) and isinstance(spot, (int, float)) and start is not None:
+                usd_value = (float(pnl) - start) * float(spot)
+                out["measured_from"] = "lock_time_floating_pnl"
         if usd_value is not None:
-            verdict = ("flat" if abs(usd_value) <= self.LOCK_FLAT_USD
-                       else "profit" if usd_value > 0 else "loss")
-        return {"verdict": verdict, "basis": basis, "flat_band_usd": self.LOCK_FLAT_USD}
+            out["verdict"] = ("flat" if abs(usd_value) <= self.LOCK_FLAT_USD
+                              else "profit" if usd_value > 0 else "loss")
+        return out
 
     def locked_candidate_list(self) -> dict[str, Any]:
         try:

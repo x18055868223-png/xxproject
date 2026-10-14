@@ -114,8 +114,8 @@ export function lockList(episodes, { selected, onOpen, renderDetail, showAll = f
  * floating PnL (at stop, or now while tracking). Within ±10 USD counts as flat. */
 const OUTCOME_CN = { profit: "盈利", loss: "亏损", flat: "持平" };
 const OUTCOME_TONE = { profit: "ok", loss: "bad", flat: "" };
-const OUTCOME_BASIS = { settlement: "按到期结算", floating_at_stop: "按停止时浮动盈亏", floating_now: "按当前浮动盈亏（未到期）",
-  floating_at_expiry: "按到期前最后浮动盈亏" };
+const OUTCOME_BASIS = { settlement: "按到期结算", floating_at_stop: "按停止时浮动盈亏相对锁定时的变化",
+  floating_now: "按当前浮动盈亏相对锁定时的变化（未到期）", floating_at_expiry: "按到期前最后浮动盈亏相对锁定时的变化" };
 const FALLBACK_CN = { credit_missing: "到期结算无法计算（锁定时信用缺失）", delivery_unavailable: "交割价未取得",
   settlement_pending: "到期结算尚未完成" };
 function outcomeChip(o) {
