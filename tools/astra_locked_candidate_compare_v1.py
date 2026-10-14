@@ -877,7 +877,10 @@ def _explanations(point: Mapping[str, Any] | None) -> dict[str, Any] | None:
 SERIES_SCHEMA = "locked_candidate_series@1.0.0"
 # 2: adds Deribit-style floating PnL from leg marks; rows of an older version are
 # recomputed while the point file still exists.
-SERIES_METRICS_VERSION = 2
+# 3: thesis-ledger inputs read straight from the producer facts (anchor score, net gamma
+# sign, 4h/12h flow, M-DIE, time left); flow/TMV/gamma/macro no longer depend on WPEM's
+# research context (which also matched context.active_flow_unqualified by prefix).
+SERIES_METRICS_VERSION = 3
 
 
 def _leg_marks(point: Mapping[str, Any]) -> dict[str, float | None]:
@@ -931,6 +934,33 @@ def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> 
     return None
 
 
+def _producer_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Ledger inputs from S.fact_context.market_facts; None where the producer gave nothing."""
+    facts = _mapping(_dig(snapshot, ("fact_context", "market_facts")))
+    flow = _mapping(_dig(facts, ("volume_price", "micro_flow")))
+
+    def leg(name: str, key: str) -> Any:
+        return _mapping(flow.get(name)).get(key)
+
+    score = _number(_dig(facts, ("space_gate", "anchor", "score")))
+    if score is None:
+        score = _number(_dig(facts, ("anchor", "anchor_gravity_ref_score")))
+    return {
+        "anchor_score": score,
+        "net_gamma_sign": _dig(facts, ("space_gate", "net_gamma", "sign")),
+        "net_gamma_conflict": _dig(facts, ("space_gate", "net_gamma", "conflict")),
+        "gamma_regime": _dig(facts, ("gamma_regime", "regime")),
+        "flow_direction": leg("combined", "direction"),
+        "flow_ready": leg("combined", "data_ready"),
+        "flow_fast_4h": leg("fast_4h", "direction"),
+        "flow_slow_12h": leg("slow_12h", "direction"),
+        "tmv_state": _dig(facts, ("volume_price", "tmv_state")),
+        "macro_regime": _dig(facts, ("macro_pressure", "macro_regime")),
+        "mdie_direction": _dig(facts, ("m_die", "direction")),
+        "mdie_shape": _dig(facts, ("m_die", "move_shape")),
+    }
+
+
 def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
     """Compact, numbers-first reading of one retained point against the fixed t0.
 
@@ -954,8 +984,22 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
     reference = _reference_result(base, close)
     quote = _mapping(_dig(snapshot, ("market", "quote")))
     gate = _mapping(candidate.get("space_gate"))
+    produced = _producer_facts(snapshot)
+    # Older captures without producer facts keep the research-context readings.
+    fallback = {
+        "flow_direction": lambda: _reading(candidate, "context.active_flow", ("combined", "direction")),
+        "flow_ready": lambda: _reading(candidate, "context.active_flow", ("combined", "data_ready")),
+        "tmv_state": lambda: _reading(candidate, "context.tmv_price_path", ("tmv_state",)),
+        "gamma_regime": lambda: _reading(candidate, "context.option_space", ("gamma_regime", "regime")),
+        "macro_regime": lambda: _reading(candidate, "context.macro", ("macro_regime",)),
+    }
+    for key, read in fallback.items():
+        if produced.get(key) is None:
+            produced[key] = read()
+    asof = _point_asof(point, snapshot)
+    expiry = _number(contract.get("expiry_ms"))
     return {
-        "asof_ms": _point_asof(point, snapshot),
+        "asof_ms": asof,
         "spot_usd": spot,
         "short_distance_pct": distance(contract.get("short_strike_usd"), "short"),
         "protection_distance_pct": distance(contract.get("long_strike_usd"), "protection"),
@@ -971,11 +1015,8 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
         "space_gate_state": (gate.get("producer_state") if gate.get("gating") is False else gate.get("state"))
         or ("STRUCTURE_ELIGIBLE" if gate.get("eligible") is True
             else "STRUCTURE_BLOCKED" if gate.get("eligible") is False else None),
-        "flow_direction": _reading(candidate, "context.active_flow", ("combined", "direction")),
-        "flow_ready": _reading(candidate, "context.active_flow", ("combined", "data_ready")),
-        "tmv_state": _reading(candidate, "context.tmv_price_path", ("tmv_state",)),
-        "gamma_regime": _reading(candidate, "context.option_space", ("gamma_regime", "regime")),
-        "macro_regime": _reading(candidate, "context.macro", ("macro_regime",)),
+        **produced,
+        "remaining_ms": int(expiry - asof) if expiry is not None and isinstance(asof, int) else None,
         **floating_pnl(point, baseline),
         "metrics_version": SERIES_METRICS_VERSION,
     }

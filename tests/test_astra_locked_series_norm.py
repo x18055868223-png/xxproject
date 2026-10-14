@@ -1,6 +1,8 @@
 """Lock series files: one row per point in time order, latest never moves backwards, old files repaired once."""
 import json
 
+from tools import astra_locked_candidate_compare_v1 as compare
+
 from tools import astra_locked_candidate_store_v1 as locked_store
 from test_astra_locked_followup import lock, setup
 from test_astra_locked_retention import MINUTE, SMALL, sampled_episode
@@ -60,7 +62,7 @@ def test_normalize_repairs_an_old_file_once_with_a_backup(tmp_path):
     assert report["rewritten"] == 1 and report["removed"] == len(messy) - len(good)
     fixed = lines(store, episode_id)
     assert [r["point_id"] for r in fixed] == [r["point_id"] for r in sorted(good, key=lambda r: r["recorded_at_ms"])]
-    assert all(r["metrics"].get("metrics_version") == 2 for r in fixed)
+    assert all(r["metrics"].get("metrics_version") == compare.SERIES_METRICS_VERSION for r in fixed)
     backups = list(store.series_dir.glob(".bak-*/" + path.name))
     assert len(backups) == 1 and len(backups[0].read_text(encoding="utf-8").splitlines()) == len(messy)
     assert wb.normalize_locked_series_once() == {"files": 0, "removed": 0, "rewritten": 0}   # marker: once

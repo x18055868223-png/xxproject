@@ -51,6 +51,7 @@ if __package__:
     from . import astra_risk_qualification_v244 as risk_qualification
     from . import astra_candidate_asof_v1 as candidate_asof
     from . import astra_wpem_workbench_v1 as wpem_workbench
+    from . import astra_thesis_ledger_v1 as thesis_ledger
     from . import astra_wpem_product_review_v1 as wpem_review
     from . import astra_release_identity_v1 as release_core
     from . import astra_chain_audit_v1 as chain_audit
@@ -79,6 +80,7 @@ else:  # direct CLI execution from tools/
     import astra_risk_qualification_v244 as risk_qualification
     import astra_candidate_asof_v1 as candidate_asof
     import astra_wpem_workbench_v1 as wpem_workbench
+    import astra_thesis_ledger_v1 as thesis_ledger
     import astra_wpem_product_review_v1 as wpem_review
     import astra_release_identity_v1 as release_core
     import astra_chain_audit_v1 as chain_audit
@@ -3192,6 +3194,7 @@ class AstraWorkbench:
                  "expired": bool((row.get("gap") or {}).get("expired"))}
                 for row in observations if row.get("kind") != "point"]
         total_points = len(points)
+        all_points = list(points)
         # Long episodes are thinned evenly; the first and last point are always kept.
         if len(points) > max_points:
             stride = (len(points) - 1) / (max_points - 1)
@@ -3237,8 +3240,27 @@ class AstraWorkbench:
                 continue
             series.append({"step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
                            "point_id": pid, **metrics})
+        ledger_rows = []
+        for row in all_points:
+            pid = row["point_id"]
+            metrics = next((m for m in (computed.get(pid), local.get(pid), cache.get(pid)) if _current_metrics(m)),
+                           None) or local.get(pid) or cache.get(pid)
+            if metrics is not None:
+                ledger_rows.append({"point_id": pid, "recorded_at_ms": row.get("recorded_at_ms"), "metrics": metrics})
+        episode = index["episode"]
+        contract = episode.get("contract") if isinstance(episode.get("contract"), Mapping) else {}
+        try:
+            ledger = thesis_ledger.build(
+                ledger_rows, side=str(contract.get("side") or ""), now_ms=self.clock_ms(),
+                interval_ms=self.config.locked_sample_interval_ms,
+                baseline_point_id=episode.get("t0_baseline_point_id"),
+                expiry_ms=contract.get("expiry_ms"), active=episode.get("status") == "active")
+        except Exception as exc:
+            ledger = {"schema": thesis_ledger.SCHEMA, "status": "ERROR", "error_type": type(exc).__name__,
+                      "theses": [], "llm_call_count": 0}
         return {"schema": locked_compare.SERIES_SCHEMA, "episode": index["episode"],
                 "settlement": self.locked_settlements().get(episode_id),
+                "thesis_ledger": ledger,
                 "points": series, "gaps": gaps, "thinned": len(points) < total_points,
                 "retention": self.locked_retention_policy(),
                 "unreadable_points": unreadable, "llm_call_count": 0, "execution_allowed": False}

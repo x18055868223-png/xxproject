@@ -116,6 +116,7 @@ workbench_modules=(
   astra_spatial_position_v1.py
   astra_cross_asset_v1.py
   astra_event_calendar_v1.py
+  astra_thesis_ledger_v1.py
   astra_observation_replay_v1.py
   astra_chain_audit_v1.py
   astra_risk_qualification_v244.py
