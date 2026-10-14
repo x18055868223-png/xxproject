@@ -111,7 +111,7 @@ async function loadSession() {
   }
   if (isNum(state.session.expires_at_ms) && state.session.expires_at_ms <= Date.now()) state.session = { authenticated: false };
   renderSession();
-  renderDecision();
+  renderSides();  // the first view may have rendered before the session was known
   if (needsLogin()) renderBanners();
 }
 
@@ -344,10 +344,10 @@ function positionLines(lines) {
 function metricRows(rows) {
   const box = h("div", { class: "metrics" });
   for (const r of rows) {
-    box.append(h("div", { class: `metric${r.gap ? " gap" : r.pending ? " pending" : ""}` },
+    box.append(h("div", { class: `metric${r.gap ? " gap" : r.pending ? " pending" : ""}${r.viz ? " has-viz" : ""}` },
       h("span", { class: "m-label", text: r.label }),
-      h("span", { class: "m-viz" }, r.viz || ""),
-      h("span", { class: "m-value", text: r.value })));
+      h("span", { class: "m-value", text: r.value }),
+      r.viz ? h("span", { class: "m-viz" }, r.viz) : null));
   }
   return box;
 }
@@ -410,8 +410,8 @@ function deck(m, side, blockers) {
 }
 
 const FIG_TIP = {
-  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于比较两侧；金额、费用与市场估价在 Decision Path 的 Q2。",
-  "到期前事件": "合约有效期内已排期的美国宏观发布；时间与过滤在 Decision Path 的 D4。",
+  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于比较两侧；金额、费用与市场估价在核验路径的 Q2。",
+  "到期前事件": "合约有效期内已排期的美国宏观发布；时间与过滤在核验路径的 D4。",
 };
 function fig(value, label, cls = "", sub = "") {
   return h("div", { class: `fig ${cls}`, title: FIG_TIP[label] || null }, h("div", { class: "v", text: value }), h("div", { class: "k", text: label }),
@@ -690,7 +690,11 @@ async function dpPost(path, body, kind) {
     }
   }
   dp.busy = null; renderDecision();
-  if (kind === "step" && !body.lean) document.getElementById(`dp-${body.step}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (kind === "step" && !body.lean) {
+    const step = document.getElementById(`dp-${body.step}`);
+    step?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    step?.querySelector(".dp-step-head")?.focus({ preventScroll: true });
+  }
 }
 
 async function dpConclude(choice) {

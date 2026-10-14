@@ -4,10 +4,12 @@ import { s, isNum } from "./format.js";
 const W = 120, H = 14;
 
 /** Bar growing left/right from zero; |v| beyond `span` is clipped with a notch. */
+const STRETCH = { preserveAspectRatio: "none" };
+
 export function diverging(v, span, { good = 0 } = {}) {
-  const svg = s("svg", { class: "viz", viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true" });
-  svg.append(s("rect", { x: 0, y: 5, width: W, height: 4, rx: 2, fill: "var(--paper-2)" }));
-  svg.append(s("line", { x1: W / 2, x2: W / 2, y1: 1, y2: 13, stroke: "var(--ink-3)", "stroke-width": 1 }));
+  const svg = s("svg", { class: "viz", viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", ...STRETCH });
+  svg.append(s("rect", { x: 0, y: 5, width: W, height: 4, rx: 2, fill: "var(--rule)", "fill-opacity": 0.55 }));
+  svg.append(s("line", { x1: W / 2, x2: W / 2, y1: 1, y2: 13, stroke: "var(--ink-3)", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }));
   if (!isNum(v) || !isNum(span) || span <= 0) return svg;
   const k = Math.max(-1, Math.min(1, v / span));
   const w = Math.abs(k) * (W / 2);
@@ -19,8 +21,8 @@ export function diverging(v, span, { good = 0 } = {}) {
 
 /** 0..max fill with an optional pass threshold marker. */
 export function gauge(v, max, { threshold = null, invert = false } = {}) {
-  const svg = s("svg", { class: "viz", viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true" });
-  svg.append(s("rect", { x: 0, y: 4, width: W, height: 6, rx: 3, fill: "var(--paper-2)" }));
+  const svg = s("svg", { class: "viz", viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", ...STRETCH });
+  svg.append(s("rect", { x: 0, y: 4, width: W, height: 6, rx: 3, fill: "var(--rule)", "fill-opacity": 0.55 }));
   if (isNum(v) && isNum(max) && max > 0) {
     const w = Math.max(0, Math.min(1, v / max)) * W;
     const pass = threshold == null ? null : invert ? v <= threshold : v >= threshold;
@@ -29,16 +31,16 @@ export function gauge(v, max, { threshold = null, invert = false } = {}) {
   }
   if (isNum(threshold) && isNum(max)) {
     const tx = Math.max(0, Math.min(1, threshold / max)) * W;
-    svg.append(s("line", { x1: tx, x2: tx, y1: 0, y2: 14, stroke: "var(--ink)", "stroke-width": 1.5 }));
+    svg.append(s("line", { x1: tx, x2: tx, y1: 0, y2: 14, stroke: "var(--ink)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke" }));
   }
   return svg;
 }
 
 /** Two-part split, e.g. realized profit vs loss. */
 export function split(a, b, { aColor = "var(--ok)", bColor = "var(--liability)" } = {}) {
-  const svg = s("svg", { class: "viz", viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true" });
+  const svg = s("svg", { class: "viz", viewBox: `0 0 ${W} ${H}`, "aria-hidden": "true", ...STRETCH });
   if (!isNum(a) || !isNum(b) || a + b <= 0) {
-    svg.append(s("rect", { x: 0, y: 4, width: W, height: 6, rx: 3, fill: "var(--paper-2)" }));
+    svg.append(s("rect", { x: 0, y: 4, width: W, height: 6, rx: 3, fill: "var(--rule)", "fill-opacity": 0.55 }));
     return svg;
   }
   const wa = (a / (a + b)) * W;

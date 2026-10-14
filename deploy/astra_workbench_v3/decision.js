@@ -85,7 +85,7 @@ function stepView(session, step, i, ctx) {
   const start = session.readings?.start?.steps?.[step.id];
   const now = session.readings?.now?.steps?.[step.id];
   const box = h("li", { class: "dp-step", id: `dp-${step.id}` });
-  const head = h("div", { class: "dp-step-head" },
+  const head = h("div", { class: "dp-step-head", tabindex: -1 },
     h("span", { class: "dp-id", text: step.id }),
     h("b", { text: step.title }),
     h("span", { class: "dp-q", text: step.question }),

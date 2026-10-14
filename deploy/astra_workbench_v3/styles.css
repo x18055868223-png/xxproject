@@ -338,20 +338,16 @@ details.uncited > summary { cursor: pointer; color: var(--ink-2); font-size: 13p
 
 /* metric rows with inline charts */
 .metrics { display: grid; gap: 5px; }
-.metric { display: grid; grid-template-columns: minmax(78px, 0.9fr) 120px minmax(0, 1.4fr); align-items: center; gap: 10px; font-size: 12.5px; }
 .metric .m-label { color: var(--ink-3); }
 .metric .m-value { font-family: var(--font-num); font-variant-numeric: tabular-nums; color: var(--ink); }
 .metric.gap .m-value { color: var(--warn); }
-.metric .m-viz { display: block; height: 14px; }
 svg.viz { width: 120px; height: 14px; display: block; overflow: visible; }
 svg.viz.wide { width: 100%; height: 34px; }
 .wide-viz { margin: 2px 0 8px; }
 .ctx .reading { margin-bottom: 8px; }
-@media (max-width: 1280px) { .factors .metric { grid-template-columns: minmax(70px, 0.9fr) 80px minmax(0, 1.3fr); } .factors svg.viz { width: 80px; } }
 
 /* four tiles: 2 x 2 until the page is wide enough for one row */
-@media (max-width: 1599px) { .factors { grid-template-columns: repeat(2, minmax(0, 1fr)); } .factors svg.viz { width: 120px; }
-  .factors .metric { grid-template-columns: minmax(84px, 0.8fr) 120px minmax(0, 1.6fr); } }
+@media (max-width: 1599px) { .factors { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .factors { grid-template-columns: 1fr; } }
 
 table.t tr.muted-row td { color: var(--ink-3); }
@@ -508,8 +504,6 @@ section.band, [id$="-h"] { scroll-margin-top: 76px; }   /* anchors land below th
 @media (max-width: 900px) { .map-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; } }
 .qa-stale { grid-column: 1 / -1; margin: 0 0 4px; padding: 6px 10px; border-radius: 8px; font-size: 12.5px;
   background: var(--paper-2); color: var(--ink-2); }
-.ctx .metric { grid-template-columns: minmax(5.5em, auto) 72px minmax(0, 1fr); }
-.ctx svg.viz { width: 72px; }
 
 /* background: three labelled rows, equal-height cards, notes folded */
 .ctx-groups { display: grid; gap: 22px; }
@@ -523,8 +517,6 @@ section.band, [id$="-h"] { scroll-margin-top: 76px; }   /* anchors land below th
 .ctx-note { margin-top: auto; padding-top: 8px; font-size: 12px; color: var(--ink-3); }
 .ctx-note summary { cursor: pointer; width: max-content; }
 .ctx-note p { margin: 6px 0 0; font-size: 12px; line-height: 1.7; color: var(--ink-3); max-width: 46em; }
-.ctx .metric { grid-template-columns: 7.6em 60px minmax(0, 1fr); }
-.ctx svg.viz { width: 60px; }
 .ctx svg.viz.wide { width: 100%; height: 40px; }
 .ctx-source { margin: -2px 0 8px !important; font-size: 11.5px !important; line-height: 1.5; color: var(--ink-3) !important; }
 
@@ -601,3 +593,13 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
   border-top: 2px solid var(--rule); color: var(--ink-3); font-size: 12.5px; }
 #banners + .layer { margin-top: 8px; }
 .layer b { color: var(--ink); font-size: 13px; letter-spacing: .08em; white-space: nowrap; flex: none; }
+
+/* ── reading rows in factor and context cards: label | value, the bar under the value ── */
+.metrics { gap: 9px; }
+.metric { display: grid; grid-template-columns: minmax(5.5em, 7.5em) minmax(0, 1fr); column-gap: 14px; row-gap: 4px;
+  align-items: baseline; font-size: 12.5px; line-height: 1.5; }
+.metric .m-label { grid-column: 1; grid-row: 1 / span 2; align-self: start; }
+.metric .m-value { grid-column: 2; grid-row: 1; }
+.metric .m-viz { grid-column: 2; grid-row: 2; display: block; max-width: 240px; }
+.metric svg.viz { width: 100%; height: 10px; }
+.ctx .metric { grid-template-columns: minmax(5.5em, 7em) minmax(0, 1fr); }
