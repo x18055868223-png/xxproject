@@ -165,3 +165,106 @@ def test_chain_audit_periodic_record_carries_runtime_memory():
     body = chain.snapshot_record({"runtime": {"memory": {"level": "ok", "rss_mb": 512.0}, "threads": 7}},
                                  kind="periodic", now_ms=T)
     assert body["runtime"]["memory"]["rss_mb"] == 512.0
+
+
+def test_a_retry_uses_a_fresh_key_and_a_transient_failure_is_retried_once(tmp_path):
+    wb, _, _, _ = setup(tmp_path)
+    keys = []
+
+    def fake_review(candidate_id, key, **kw):
+        keys.append(key)
+        return {"status": "rejected", "reason": "leg_book_time_skew", "snapshot_id": "s"}
+
+    wb.review_candidate = fake_review
+    wb._scheduled_slot = lambda now: "2026-10-13T14"
+    real_run = wb._run_scheduled_review
+    assert wb._maybe_scheduled_review(T, wait=True) == "2026-10-13T14"
+    slot = lambda: json.loads(wb.config.state_path.read_text(encoding="utf-8"))["scheduled_review"]["slots"]["2026-10-13T14"]
+    assert slot()["status"] == "incomplete"                      # only transient failures
+    assert wb._maybe_scheduled_review(T + 1, wait=True) == "2026-10-13T14"
+    assert all(k.endswith("-r1") for k in keys[len(keys) // 2:]) and not any(k.endswith("-r1") for k in keys[:len(keys) // 2])
+    assert wb._maybe_scheduled_review(T + 2, wait=True) is None   # once
+    assert real_run is not None
+
+
+def test_view_rebuild_and_refresh_invalidation_cannot_deadlock(tmp_path):
+    import threading
+    import time
+    wb, _, _, _ = setup(tmp_path)
+    entered = threading.Event()
+    original = wb.cached_view
+
+    def slow(**kw):
+        entered.set()
+        time.sleep(0.2)
+        return original(**kw)
+
+    wb.cached_view = slow
+    done = {}
+
+    def reader():
+        done["r"] = len(wb.view_body("page")[0])
+
+    def refresher():
+        with wb._view_lock:               # what refresh() does while it replaces the view
+            entered.wait(2)
+            wb.invalidate_view_body()
+        done["f"] = True
+
+    threads = [threading.Thread(target=refresher), threading.Thread(target=reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert not any(t.is_alive() for t in threads) and done.get("f") and done.get("r")
+
+
+def test_sustained_hard_memory_stops_the_watchdog_ping(tmp_path, monkeypatch):
+    wb, _, _, _ = setup(tmp_path)
+    pings = []
+    monkeypatch.setattr(module, "_sd_notify", lambda message: pings.append(message) or True)
+    wb.rss_bytes = lambda: 4000 * 1_048_576
+    wb.refresh = lambda **kw: None
+    wb._maybe_scheduled_review = lambda now: None
+    passes = []
+    original_wait = wb._background_stop.wait
+
+    def wait(timeout):
+        passes.append(1)
+        return len(passes) >= module.HARD_PASSES_BEFORE_RESTART + 2
+
+    wb._background_stop.wait = wait
+    wb._sampler_running = True
+    wb.config.cross_asset_enabled = False
+    monkeypatch.setattr(module.threading, "Thread", lambda target, **kw: type("T", (), {"start": lambda self: target(), "is_alive": lambda self: False, "join": lambda self, timeout=None: None})() if kw.get("name") == "astra-workbench-v20" else type("N", (), {"start": lambda self: None, "is_alive": lambda self: False, "join": lambda self, timeout=None: None})())
+    wb.start_background()
+    assert pings.count("WATCHDOG=1") == module.HARD_PASSES_BEFORE_RESTART - 1
+    wb._background_stop.wait = original_wait
+
+
+def test_memory_eviction_keeps_the_current_candidates_proofs(tmp_path):
+    wb, _, _, _ = setup(tmp_path)
+    current = [item["snapshot"]["snapshot_id"] for item in wb._current_view["candidates"]]
+    for key in ("old-1", "old-2", *current):
+        wb._wpem_packages[key] = {"evidence_hash": key}
+    wb.rss_bytes = lambda: 2000 * 1_048_576
+    wb.memory_guard()
+    assert set(wb._wpem_packages) == set(current)
+
+
+def test_map_state_migrates_from_the_old_place(tmp_path):
+    wb, _, _, _ = setup(tmp_path)
+    wb.config.btc_map_state_path.unlink()
+    wb._locked_state_update(lambda s: s.update(btc_map={"schema": "x", "updated_at_ms": 5}))
+    fresh = module.AstraWorkbench(wb.config, clock_ms=lambda: T)
+    assert fresh._map_prior_state()["updated_at_ms"] == 5
+
+
+def test_one_broken_candidate_projection_does_not_fail_the_page(tmp_path):
+    wb, _, _, _ = setup(tmp_path)
+    wb._map_review_delta = lambda snapshot, state: (_ for _ in ()).throw(KeyError("boom"))
+    view = wb.cached_view()
+    item = view["candidates"][0]
+    assert item["projection_error"] == "KeyError"
+    assert "candidate_projection_failed" in item["review_gate"]["reasons"]
+    assert wb.view_body("page")[0]

@@ -107,6 +107,7 @@ VIEW_BODY_WAIT_S = 15.0           # a reader waits this long for the body being 
 MAX_ACTIVE_REQUESTS = 24          # concurrent HTTP handlers; more get an immediate 503
 REQUEST_SOCKET_TIMEOUT_S = 30     # a stalled client cannot pin a handler thread
 MEMORY_EVENT_INTERVAL_MS = 900_000
+HARD_PASSES_BEFORE_RESTART = 10   # ~5 min at hard level -> stop the watchdog ping -> restart
 EMAIL_COOLDOWN_MS = 14_400_000
 DEFAULT_DAILY_LIMIT = 15
 DEFAULT_HTTP_TIMEOUT = 180
@@ -1779,9 +1780,11 @@ class AstraWorkbench:
         self._map_state_cache: dict[str, Any] | None = None
         # One serialized page body per view kind, shared by readers for VIEW_BODY_TTL_MS and
         # rebuilt by one reader at a time; _view_version moves on every refresh and action.
-        self._body_lock = threading.Lock()
+        self._body_lock = threading.Lock()        # guards version + cache only; never held while waiting
+        self._body_build_lock = threading.Lock()  # one builder at a time; invalidators never take it
         self._body_cache: dict[str, tuple[int, int, bytes, bytes | None]] = {}
         self._view_version = 0
+        self._hard_passes = 0
         self.rss_bytes: Callable[[], int | None] = _process_rss_bytes
         self._memory: dict[str, Any] = {"level": "ok", "rss_mb": None, "peak_mb": None}
         self._memory_event_ms = 0
@@ -2001,8 +2004,9 @@ class AstraWorkbench:
         """Cached map state; the first read migrates it from the old place in workbench_state.json."""
         with self._map_state_lock:
             if self._map_state_cache is None:
-                loaded = _read_json(self.config.btc_map_state_path, None)
-                if not isinstance(loaded, Mapping):
+                path = self.config.btc_map_state_path
+                loaded = _read_json(path, None) if path.is_file() else None
+                if not isinstance(loaded, Mapping) or not loaded:
                     loaded = self._read_state_cached().get("btc_map")
                 self._map_state_cache = dict(loaded) if isinstance(loaded, Mapping) else {}
             return self._map_state_cache
@@ -2642,8 +2646,8 @@ class AstraWorkbench:
                 # endpoint; do not retain repeated MAP bodies in the read cache.
                 cached = {**view, "daily_snapshots": reading.daily_summaries(view.get("daily_snapshots"))}
                 self._current_view = deepcopy(cached)
-                self.invalidate_view_body()
                 self._last_refresh_error = None
+            self.invalidate_view_body()
             self._store_btc_map_state(btc_projection.get("btc_map"))
             result = self._apply_current_review_availability(view, finished_at_ms)
             if self.chain_audit is not None:
@@ -3507,31 +3511,53 @@ class AstraWorkbench:
                 item["exogenous_events"] = None
 
     def invalidate_view_body(self) -> None:
+        # Safe under any other lock: _body_lock is only ever held for a dict/int update.
         with self._body_lock:
             self._view_version += 1
             self._body_cache.clear()
 
+    def _cached_body(self, view_kind: str, now: int, *, allow_stale_ms: int = 0) -> tuple[bytes, bytes | None] | None:
+        with self._body_lock:
+            hit = self._body_cache.get(view_kind)
+            if hit is None:
+                return None
+            if hit[0] == self._view_version and 0 <= now - hit[1] < VIEW_BODY_TTL_MS:
+                return hit[2], hit[3]
+            if allow_stale_ms and 0 <= now - hit[1] < allow_stale_ms:
+                return hit[2], hit[3]
+            return None
+
     def view_body(self, view_kind: str) -> tuple[bytes, bytes | None]:
         """Serialized GET /api/workbench body (page or reading), built once per VIEW_BODY_TTL_MS
-        and shared; under memory shedding an older body is served rather than building one."""
-        if not self._body_lock.acquire(timeout=VIEW_BODY_WAIT_S):
+        and shared. Lock order: the builder takes _body_build_lock, then (inside cached_view)
+        _view_lock; it holds _body_lock only for the final store, never while waiting. Under
+        memory shedding a body up to 2 minutes old is served rather than building one."""
+        now = self.clock_ms()
+        hard = self._memory.get("level") == "hard"
+        hit = self._cached_body(view_kind, now, allow_stale_ms=120_000 if hard else 0)
+        if hit is not None:
+            return hit
+        if hard:
+            raise WorkbenchError(503, "memory_pressure", "工作台内存紧张，稍后自动重试")
+        if not self._body_build_lock.acquire(timeout=VIEW_BODY_WAIT_S):
             raise WorkbenchError(503, "server_busy", "工作台繁忙，稍后自动重试")
         try:
-            now = self.clock_ms()
-            hit = self._body_cache.get(view_kind)
-            fresh = hit is not None and hit[0] == self._view_version and 0 <= now - hit[1] < VIEW_BODY_TTL_MS
-            if fresh or (hit is not None and self._memory.get("level") == "hard"):
-                return hit[2], hit[3]
-            if self._memory.get("level") == "hard":
-                raise WorkbenchError(503, "memory_pressure", "工作台内存紧张，稍后自动重试")
+            hit = self._cached_body(view_kind, self.clock_ms())  # built while we waited
+            if hit is not None:
+                return hit
+            with self._body_lock:
+                version = self._view_version
+            built_at = self.clock_ms()
             result = self.cached_view(reading_only=True)
             payload = reading.workbench_page(result) if view_kind == "page" else result
             body = (_canonical(dict(payload)) + "\n").encode("utf-8")
             packed = gzip.compress(body, compresslevel=1, mtime=0) if len(body) > 65536 else None
-            self._body_cache[view_kind] = (self._view_version, now, body, packed)
+            with self._body_lock:
+                if version == self._view_version:  # not invalidated meanwhile
+                    self._body_cache[view_kind] = (version, built_at, body, packed)
             return body, packed
         finally:
-            self._body_lock.release()
+            self._body_build_lock.release()
 
     def memory_guard(self, now_ms: int | None = None) -> dict[str, Any]:
         """Called after every refresh pass. Soft: drop caches, collect, skip optional work.
@@ -3544,10 +3570,17 @@ class AstraWorkbench:
         level = "hard" if mb >= self.config.memory_hard_mb else "soft" if mb >= self.config.memory_soft_mb else "ok"
         previous = self._memory.get("level")
         if level != "ok":
+            with self._view_lock:
+                current = {((item.get("snapshot") or {}).get("snapshot_id"))
+                           for item in (self._current_view or {}).get("candidates") or []
+                           if isinstance(item, Mapping) and isinstance(item.get("snapshot"), Mapping)}
             with self._wpem_lock:
+                pinned = set(self._wpem_pinned)
+                for key in list(self._wpem_packages):
+                    if key not in current and key not in pinned:
+                        del self._wpem_packages[key]
+            with self._locked_detail_lock:
                 self._locked_detail_cache.clear()
-                for key in list(self._wpem_packages)[:-2]:  # keep the current pair of sides
-                    del self._wpem_packages[key]
             with self._series_lock:
                 self._series_baselines.clear()
             gc.collect()
@@ -3623,19 +3656,24 @@ class AstraWorkbench:
                 reasons.append("candidate_gate_version_changed_during_refresh")
             item["current_usage"] = {"checked_at_ms": now,
                                      "quote_current": isinstance(quoted_at, int) and 0 <= now - quoted_at <= 5_000}
-            item["btc_map_current_usage"] = self._map_current_usage(
-                (snapshot.get("data_identity") or {}).get("btc_map"), now, engines=usage_engines)
-            item["btc_map_review_delta"] = self._map_review_delta(snapshot, view["manual_review_state"])
-            prior=item.get('review') or {}
-            package=(self._wpem_packages.get(snapshot.get('snapshot_id'))
-                     if _receipt_needs_full_proof(snapshot.get('snapshot_id'), prior)
-                     else self._wpem_display_packages.get(snapshot.get('snapshot_id'))) if self.config.wpem_enabled else None
-            if package is not None:
+            # One candidate's broken receipt or map identity must not fail every reader's page.
+            try:
+                item["btc_map_current_usage"] = self._map_current_usage(
+                    (snapshot.get("data_identity") or {}).get("btc_map"), now, engines=usage_engines)
+                item["btc_map_review_delta"] = self._map_review_delta(snapshot, view["manual_review_state"])
                 prior=item.get('review') or {}
-                item['review_validity']={**(item.get('review_validity') or {}),
-                    'status':wpem_review.review_status(
-                        {**prior,'status':'OK' if prior.get('status')=='attached' else prior.get('status')},
-                        snapshot,package,model=self.config.model,now_ms=now),'checked_at_ms':now}
+                package=(self._wpem_packages.get(snapshot.get('snapshot_id'))
+                         if _receipt_needs_full_proof(snapshot.get('snapshot_id'), prior)
+                         else self._wpem_display_packages.get(snapshot.get('snapshot_id'))) if self.config.wpem_enabled else None
+                if package is not None:
+                    prior=item.get('review') or {}
+                    item['review_validity']={**(item.get('review_validity') or {}),
+                        'status':wpem_review.review_status(
+                            {**prior,'status':'OK' if prior.get('status')=='attached' else prior.get('status')},
+                            snapshot,package,model=self.config.model,now_ms=now),'checked_at_ms':now}
+            except Exception as exc:
+                item["projection_error"] = type(exc).__name__
+                reasons.append("candidate_projection_failed")
             if reasons:
                 item["review_gate"] = {"enabled": False, "reasons": sorted(set(reasons))}
         if failure:
@@ -4089,7 +4127,7 @@ class AstraWorkbench:
                     if not locked_episode_id:
                         with self._view_lock:
                             self._current_view = deepcopy(cached)
-                            self.invalidate_view_body()
+                        self.invalidate_view_body()
                     self._store_btc_map_state((btc_projection or {}).get("btc_map"))
         if item is None:
             result = {"schema": SCHEMA, "status": "rejected", **request_binding,
@@ -4339,7 +4377,7 @@ class AstraWorkbench:
             sched = state.setdefault("scheduled_review", {})
             slots = sched.setdefault("slots", {})
             prior = slots.get(slot)
-            if prior is not None and not (isinstance(prior, Mapping) and prior.get("status") == "interrupted"
+            if prior is not None and not (isinstance(prior, Mapping) and prior.get("status") in {"interrupted", "incomplete"}
                                           and int(prior.get("retries") or 0) < 1):
                 return False
             retries = int(prior.get("retries") or 0) + 1 if isinstance(prior, Mapping) else 0
@@ -4357,9 +4395,13 @@ class AstraWorkbench:
             worker.join()
         return slot
 
+    _SCHEDULE_RETRYABLE = re.compile(r"snapshot_missing|quote|book|skew|depth|stale|unavailable|busy|timeout|discovery")
+
     def _run_scheduled_review(self, slot: str) -> None:
         with self._view_lock:
             items = [dict(item) for item in (self._current_view or {}).get("candidates") or []]
+        entry_now = ((self._read_state_cached().get("scheduled_review") or {}).get("slots") or {}).get(slot) or {}
+        attempt = int(entry_now.get("retries") or 0) if isinstance(entry_now, Mapping) else 0
         outcomes: dict[str, Any] = {}
         for item in items:
             snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else None
@@ -4369,7 +4411,8 @@ class AstraWorkbench:
                 continue
             reasons = set((item.get("review_gate") or {}).get("reasons") or [])
             purpose = REVIEW_PURPOSE if reasons <= self._SCHEDULE_TRANSIENT else OBSERVATION_PURPOSE
-            key = f"sched-{slot.replace(':', '')}-{side}"
+            # a retry must not replay the first attempt's stored (interrupted) result
+            key = f"sched-{slot.replace(':', '')}-{side}" + (f"-r{attempt}" if attempt else "")
             try:
                 result = self.review_candidate(snapshot["candidate_id"], key, authorization=None,
                                                purpose=purpose, _scheduled=True)
@@ -4385,9 +4428,13 @@ class AstraWorkbench:
             except Exception as exc:  # the scheduler must never take the workbench down
                 outcomes[side] = {"status": "error", "purpose": purpose, "reason": type(exc).__name__, "idempotency_key": key}
 
+        transient = bool(outcomes) and all(
+            o.get("status") in {"skipped", "error", "rejected"}
+            and self._SCHEDULE_RETRYABLE.search(str(o.get("reason") or "")) for o in outcomes.values())
+
         def finish(state: dict[str, Any]) -> None:
             entry = state.setdefault("scheduled_review", {}).setdefault("slots", {}).setdefault(slot, {})
-            entry.update(status="done", finished_at_ms=self.clock_ms(), sides=outcomes)
+            entry.update(status="incomplete" if transient else "done", finished_at_ms=self.clock_ms(), sides=outcomes)
 
         self._locked_state_update(finish)
 
@@ -4406,11 +4453,15 @@ class AstraWorkbench:
                         self._last_refresh_error = {"failed_at_ms": self.clock_ms(),
                                                     "error_type": type(exc).__name__}
                 try:
-                    self.memory_guard()
+                    level = self.memory_guard().get("level")
                 except Exception:
-                    pass
-                # liveness, not success: a failing refresh still loops; a hung one stops pinging
-                _sd_notify("WATCHDOG=1")
+                    level = None
+                self._hard_passes = self._hard_passes + 1 if level == "hard" else 0
+                # liveness, not success: a failing refresh still loops; a hung one stops pinging.
+                # Memory that stays hard for HARD_PASSES_BEFORE_RESTART passes is treated as hung
+                # too: the page would otherwise keep serving old bodies or 503 indefinitely.
+                if self._hard_passes < HARD_PASSES_BEFORE_RESTART:
+                    _sd_notify("WATCHDOG=1")
                 if self._background_stop.wait(max(1.0, float(self.config.refresh_interval_s))):
                     break
 
