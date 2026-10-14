@@ -2987,6 +2987,10 @@ class AstraWorkbench:
                     point = self._capture_locked_point(episode, view, self.clock_ms())
                     captured[episode["candidate_id"]] = point
                 stored = self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
+                if (stored or {}).get("stale_point") and not from_refresh:
+                    # the refreshed point predates this policy's last sample: take a fresh one
+                    point = self._capture_locked_point(episode, view, self.clock_ms())
+                    stored = self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
                 point_id = locked_store._hash(point)
                 if ((stored or {}).get("latest_point_id") != point_id
                         or int((stored or {}).get("point_count") or 0) <= int(episode.get("point_count") or 0)):
@@ -3007,6 +3011,33 @@ class AstraWorkbench:
                     self._locked_refresh_error = "tracking_state_write_failed:" + type(write_exc).__name__
         if from_refresh:
             self._locked_payloads.clear()
+
+    def normalize_locked_series_once(self) -> dict[str, Any]:
+        """Dedupe and sort series files written before the upsert (2026-10-14). Runs once per
+        state dir (marker file); originals are copied to series/.bak-<ts>/ first."""
+        series_dir = self.locked_candidates.series_dir
+        marker = series_dir / ".normalized-20261014"
+        report: dict[str, Any] = {"files": 0, "removed": 0, "rewritten": 0}
+        if marker.exists() or not series_dir.is_dir():
+            return report
+        backup = series_dir / (".bak-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(self.clock_ms() / 1000)))
+        for path in sorted(series_dir.glob("lce_*.jsonl")):
+            try:
+                result = self.locked_candidates.normalize_series(path.stem, backup_dir=backup)
+            except Exception as exc:
+                report.setdefault("errors", []).append(path.stem + ":" + type(exc).__name__)
+                continue
+            report["files"] += 1
+            report["removed"] += result["removed"]
+            report["rewritten"] += result["rewritten"]
+        if not report.get("errors"):
+            marker.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        if self.chain_audit is not None:
+            try:
+                self.chain_audit.event("lock_series_normalized", self.clock_ms(), report)
+            except Exception:
+                pass
+        return report
 
     def sample_locked_once(self, now_ms: int | None = None) -> None:
         """One sampling pass from the latest refreshed view, outside the refresh lock."""
@@ -3055,7 +3086,8 @@ class AstraWorkbench:
                         "metrics": cache[r["point_id"]]} for r in rows if _current_metrics(cache.get(r["point_id"]))]
                 self.locked_candidates.append_series(episode_id, out)
                 report["backfilled"] += len(out)
-            report.update(self.locked_candidates.compact(now_ms))
+            report.update(self.locked_candidates.compact(
+                now_ms, series_current=lambda row: _current_metrics((row or {}).get("metrics"))))
         except Exception as exc:
             report["error"] = type(exc).__name__
         self._last_compaction = report
@@ -4476,6 +4508,10 @@ class AstraWorkbench:
         self._background_thread.start()
 
         def sample() -> None:
+            try:
+                self.normalize_locked_series_once()
+            except Exception:
+                pass
             interval_s = max(5.0, self.config.locked_sample_interval_ms / 1000)
             while not self._background_stop.is_set():
                 started = time.monotonic()

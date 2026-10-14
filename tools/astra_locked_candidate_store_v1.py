@@ -11,6 +11,7 @@ from copy import deepcopy
 import gzip
 import hashlib
 import json
+import shutil
 import os
 from pathlib import Path
 import re
@@ -451,6 +452,10 @@ class LockedCandidateStore:
             if any(row.get("kind") == POINT_KIND and row.get("point_id") == checked["point_id"]
                    for row in episode["observations"]):
                 return self._summary(episode)
+            newest = max((row.get("recorded_at_ms") for row in episode["observations"]
+                          if row.get("kind") == POINT_KIND and isinstance(row.get("recorded_at_ms"), int)), default=None)
+            if newest is not None and isinstance(checked.get("recorded_at_ms"), int) and checked["recorded_at_ms"] <= newest:
+                return {**self._summary(episode), "stale_point": True}
             write_plan = self._point_write_plan(checked, episode)
             reason = self._budget_gap_reason(state, checked, write_plan)
             next_state = deepcopy(state)
@@ -665,21 +670,99 @@ class LockedCandidateStore:
             raise LockedCandidateError("invalid_episode_id", "invalid episode id")
         return self.series_dir / (episode_id + ".jsonl")
 
+    @staticmethod
+    def _series_line(entry: Mapping[str, Any]) -> str:
+        return json.dumps(entry, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+    @staticmethod
+    def _series_version(row: Mapping[str, Any]) -> int:
+        version = (row.get("metrics") or {}).get("metrics_version")
+        return version if isinstance(version, int) and not isinstance(version, bool) else 0
+
+    @staticmethod
+    def _series_order(row: Mapping[str, Any]) -> tuple[int, str]:
+        ts = row.get("recorded_at_ms")
+        return (ts if isinstance(ts, int) else 0, str(row.get("point_id")))
+
+    def _series_rows_unlocked(self, path: Path) -> list[dict[str, Any]]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        rows = []
+        for line in text.splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("schema") == SERIES_SCHEMA and isinstance(row.get("metrics"), dict):
+                rows.append(row)
+        return rows
+
+    def _rewrite_series_unlocked(self, path: Path, by_id: Mapping[str, Mapping[str, Any]]) -> None:
+        ordered = sorted(by_id.values(), key=self._series_order)
+        tmp = path.with_suffix(".jsonl.tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write("".join(self._series_line(row) + "\n" for row in ordered))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+
     def append_series(self, episode_id: str, rows: list[Mapping[str, Any]]) -> None:
-        """Append metrics rows (point_id, step, recorded_at_ms, metrics); one JSON line each."""
+        """Upsert metrics rows (point_id, recorded_at_ms, metrics): one row per point, kept in time
+        order. The common case (a new point newer than the file's last row) is a plain append; a
+        metrics-version upgrade or an older row rewrites the file sorted. A row never replaces
+        one of a higher metrics version."""
         if not rows:
             return
         path = self._series_path(episode_id)
-        lines = []
-        for row in rows:
-            entry = {"schema": SERIES_SCHEMA, "point_id": _point_id(row.get("point_id")),
-                     "step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
-                     "metrics": dict(row.get("metrics") or {})}
-            lines.append(json.dumps(entry, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
+        entries = [{"schema": SERIES_SCHEMA, "point_id": _point_id(row.get("point_id")),
+                    "step": row.get("step"), "recorded_at_ms": row.get("recorded_at_ms"),
+                    "metrics": dict(row.get("metrics") or {})} for row in rows]
         with self._series_lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write("\n".join(lines) + "\n")
+            existing = self._series_rows_unlocked(path)
+            by_id: dict[str, dict[str, Any]] = {}
+            for row in existing:
+                prior = by_id.get(str(row.get("point_id")))
+                if prior is None or self._series_version(row) >= self._series_version(prior):
+                    by_id[str(row.get("point_id"))] = row
+            last = max((self._series_order(r) for r in existing), default=None)
+            entries.sort(key=self._series_order)
+            plain = (len(by_id) == len(existing)
+                     and all(e["point_id"] not in by_id for e in entries)
+                     and (last is None or self._series_order(entries[0]) > last))
+            if plain:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write("".join(self._series_line(e) + "\n" for e in entries))
+                return
+            for e in entries:
+                prior = by_id.get(e["point_id"])
+                if prior is None or self._series_version(e) >= self._series_version(prior):
+                    by_id[e["point_id"]] = e
+            self._rewrite_series_unlocked(path, by_id)
+
+    def normalize_series(self, episode_id: str, *, backup_dir: Path | None = None) -> dict[str, int]:
+        """One-time repair of a series file written by the old append: duplicates removed (the
+        highest metrics version wins, then the last written), rows sorted by time. A copy of the
+        original goes to backup_dir first. Idempotent: a clean file is left untouched."""
+        path = self._series_path(episode_id)
+        with self._series_lock:
+            existing = self._series_rows_unlocked(path)
+            by_id: dict[str, dict[str, Any]] = {}
+            for row in existing:
+                prior = by_id.get(str(row.get("point_id")))
+                if prior is None or self._series_version(row) >= self._series_version(prior):
+                    by_id[str(row.get("point_id"))] = row
+            ordered = [self._series_order(r) for r in existing]
+            clean = len(by_id) == len(existing) and ordered == sorted(ordered)
+            if clean or not existing:
+                return {"rows": len(existing), "removed": 0, "rewritten": 0}
+            if backup_dir is not None:
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, backup_dir / path.name)
+            self._rewrite_series_unlocked(path, by_id)
+            return {"rows": len(existing), "removed": len(existing) - len(by_id), "rewritten": 1}
 
     def read_series(self, episode_id: str) -> dict[str, dict[str, Any]]:
         """point_id -> series row; a damaged line is skipped, the newest entry for a point wins."""
@@ -699,7 +782,8 @@ class LockedCandidateStore:
                 out[str(row.get("point_id"))] = row
         return out
 
-    def compact(self, now_ms: int, *, retention: Mapping[str, int] | None = None) -> dict[str, Any]:
+    def compact(self, now_ms: int, *, retention: Mapping[str, int] | None = None,
+                series_current: Any = None) -> dict[str, Any]:
         """Thin, fold and drop by RETENTION_DEFAULTS. A point's full file is only removed once
         its metrics row is in the series file; t0 and latest of every policy, and any delta
         base still in use, are never removed. Index first, files after, so a crash can only
@@ -733,7 +817,8 @@ class LockedCandidateStore:
                 keep = self._retained_point_ids(episode, now_ms, policy)
                 for row in episode["observations"]:
                     if (row.get("kind") == POINT_KIND and not row.get("thinned")
-                            and row["point_id"] not in keep and row["point_id"] in series):
+                            and row["point_id"] not in keep and row["point_id"] in series
+                            and (series_current is None or series_current(series[row["point_id"]]))):
                         row["thinned"] = True
                         report["thinned"] += 1
                 ended = episode.get("stopped_at_ms")

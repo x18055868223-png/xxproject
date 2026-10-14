@@ -131,7 +131,9 @@ def assess(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     elif events:
         first = events[0]
         state = "favorable" if first["kind"] == "buffer" else "unfavorable"
-        reason = (f"从现价{direction_cn}到短腿 {_usd(short_k)}，先遇到{first['label_cn']}"
+        label = str(first["label_cn"])
+        # a space between Chinese and a leading Latin word or number ("先遇到 Flip 83,458")
+        reason = (f"从现价{direction_cn}到短腿 {_usd(short_k)}，先遇到{' ' if label[:1].isascii() else ''}{label}"
                   f"（{KIND_CN[first['kind']]}）。")
     elif regime_at_short is not None:
         state = "favorable" if regime_at_short == "positive" else "unfavorable"
