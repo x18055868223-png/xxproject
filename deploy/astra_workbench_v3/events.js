@@ -9,7 +9,7 @@ const SOURCE_CN = { BLS: "美国劳工统计局", Fed: "美联储", BEA: "美国
 
 const dayText = (ms) => {
   const p = Object.fromEntries(DAY.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
-  return `${p.month}-${p.day} ${p.weekday}`;
+  return `${p.month}/${p.day} ${p.weekday}`;
 };
 const hm = (ms) => HM.format(new Date(ms));
 const eventName = (e) => `${e.name_cn}${e.kind === "GDP" ? ` ${e.period_cn}` : `（${e.period_cn}）`}`;

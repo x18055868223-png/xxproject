@@ -146,6 +146,9 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   const settlement = d.settlement;
   if (settlement) box.append(settlementView(settlement, c));
 
+  // Now first: floating P&L, share of max profit and time left; the lock-time row follows.
+  box.append(section("现在", floatView(series, seriesError)));
+
   // 1. at lock (t0)
   const sd = rows["liability.short_distance"] || {};
   const t0Spot = spotFrom(side, c.short_strike_usd, get(sd, "t0.value"));
@@ -180,7 +183,7 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   const tb = h("tbody");
   for (const r of keyRows) tb.append(changeRow(r));
   t.append(tb);
-  box.append(section("之后的变化", floatView(series, seriesError), h("div", { class: "scroll-x" }, t)));
+  box.append(section("之后的变化（明细）", h("div", { class: "scroll-x" }, t)));
 
   // 3. market context and the program's two-question summary
   const ctx = (d.rows || []).filter((r) => r.group === "context" || r.group === "opinion" || r.group === "risk");
@@ -501,7 +504,7 @@ export function processView(series, c, { be }) {
 
   // lane 3: state strips
   const strips = [
-    ["FMZ 空间门", (p) => (p.space_gate_state === "STRUCTURE_ELIGIBLE" ? "var(--ok)" : p.space_gate_state ? "var(--warn)" : null)],
+    ["FMZ 原生门（参考）", (p) => (p.space_gate_state === "STRUCTURE_ELIGIBLE" ? "var(--ok)" : p.space_gate_state ? "var(--warn)" : null)],
     ["主动成交", (p) => {
       if (p.flow_ready === false || !p.flow_direction) return null;
       const sgn = FLOW_SIGN[p.flow_direction];
@@ -561,7 +564,7 @@ export function processView(series, c, { be }) {
     `${pts.length} 个点${series.thinned ? "（已均匀抽样显示）" : ""}`,
     isNum(med) ? `实测采样间隔中位数 ${dur(med)}` : null,
     (series.gaps || []).length ? `红色刻度为采样缺口（${series.gaps.length} 次）` : null,
-    "状态条：绿为放行或对本单有利，琥珀为关闭或过渡，红为对本单不利，灰为中性或缺数据",
+    "状态条：绿为 FMZ 原生空间门放行或对本单有利，琥珀为原生门关闭或过渡（只作参考，不是准入），红为对本单不利，灰为中性或缺数据",
   ].filter(Boolean).join("；") + "。" }));
   return wrap;
 }

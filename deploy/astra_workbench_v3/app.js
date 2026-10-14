@@ -2,7 +2,7 @@
 // (observation review, lock, stop, re-reference). Everything else is display only.
 import { api, idempotencyKey } from "./api.js";
 import { h, s, clear, get, isNum, usd, btc, pct, ratioPct, compactUsd, ago, dur, clock } from "./format.js";
-import { sideModel, mapModel, sourceHealth, reasonCn, statusCn, applicability, codeCn, underwriting, productionReady,
+import { sideModel, mapModel, sourceHealth, reasonCn, hasReason, statusCn, applicability, codeCn, underwriting, productionReady,
   consumerCn, sourceStatusCn } from "./model.js";
 import { renderMap, legend } from "./map.js";
 import { coreFactors, backgroundItems, relationFor } from "./factors.js";
@@ -29,6 +29,19 @@ const state = {
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
 const $ = (id) => document.getElementById(id);
+
+/** A failed request in words: a known code in Chinese, else the server's own Chinese message,
+ *  else the HTTP status; never a bare code or a browser's English network message. */
+function errorText(err) {
+  const code = err?.body?.code;
+  if (code && hasReason(code)) return reasonCn(code);
+  const message = err?.body?.message;
+  if (message && /[\u4e00-\u9fa5]/.test(message)) return message;
+  if (code) return reasonCn(code);
+  if (err?.status) return `服务器返回 HTTP ${err.status}`;
+  return /fetch|network/i.test(err?.message || "") ? "网络连接失败" : (err?.message || "未知错误");
+}
+const busy = (err) => err?.status === 503;
 
 // ── data ─────────────────────────────────────────
 function signatureOf(view) {
@@ -57,6 +70,10 @@ async function load(force = false) {
   } catch (err) {
     state.error = err;
     if (SESSION_GATED && err.status === 401) { state.error = null; state.session = { authenticated: false }; renderSession(); }
+    // Busy or memory-tight: retry when the server says, instead of waiting a whole poll.
+    if (busy(err) && !state.retryTimer) {
+      state.retryTimer = setTimeout(() => { state.retryTimer = null; load(); }, Math.min(60, Math.max(3, err.retryAfter || 5)) * 1000);
+    }
   } finally {
     state.busy = false;
   }
@@ -84,7 +101,10 @@ async function fetchFixture() {
 
 async function loadSession() {
   if (FIXTURE) return;
-  try { state.session = await api.session(); } catch { state.session = { authenticated: false }; }
+  // Only a 401 means logged out; a busy or unreachable server keeps the session it had.
+  try { state.session = await api.session(); } catch (err) {
+    if (err?.status === 401 || !state.session) state.session = { authenticated: false };
+  }
   if (isNum(state.session.expires_at_ms) && state.session.expires_at_ms <= Date.now()) state.session = { authenticated: false };
   renderSession();
   if (needsLogin()) renderBanners();
@@ -105,18 +125,11 @@ function watchReview() {
 
 // ── render root ──────────────────────────────────
 function render() {
-  renderStrip();
-  renderBanners();
-  renderMapBand();
-  renderVerdict();
-  renderDecks();
-  renderFactors();
-  renderEvents();
-  renderAudit();
-  renderLocks();
-  renderContext();
-  renderRecords();
-  renderFoot();
+  // one section's failure must not blank the rest of the page
+  for (const section of [renderStrip, renderBanners, renderMapBand, renderVerdict, renderDecks, renderFactors,
+    renderEvents, renderAudit, renderLocks, renderContext, renderRecords, renderFoot]) {
+    try { section(); } catch (err) { console.error(section.name, err); }
+  }
 }
 
 /**
@@ -147,9 +160,10 @@ function renderStrip() {
   const gateReasons = [...new Set([...(gate.reason_codes || []), ...(gate.gap_reasons || [])])].map(reasonCn);
   // The space structure is evaluated, not gated: the strip shows the anchor score.
   const anchorScore = get(gate, "anchor.score");
-  setLamp($("gate-state"), isNum(anchorScore) ? "ok" : "off",
+  const factCurrent = mc.status === "current";
+  setLamp($("gate-state"), isNum(anchorScore) ? (factCurrent ? "ok" : "warn") : "off",
     isNum(anchorScore) ? `锚点 ${anchorScore.toFixed(0)} / 100` : "锚点缺失");
-  $("gate-state").title = gateReasons.join("；");
+  $("gate-state").title = [factCurrent ? null : "FMZ 事实不是当前状态，锚点只作参考", ...gateReasons].filter(Boolean).join("；");
   const fact = mc.status === "current" ? "ok" : mc.status ? "warn" : "off";
   // background_only: facts are fresh but the space input was rejected, so they only serve as background.
   const factNote = !mc.status || mc.status === "current" ? "" : mc.status === "background_only" ? "，仅作背景" : "，事实不是当前";
@@ -166,7 +180,7 @@ function renderStrip() {
   if (activeLocks) setLamp(lk, "ok", `追踪中 ${activeLocks}`);
   const b = get(v, "manual_review_state.daily_http_budget") || {};
   $("budget").textContent = `今日复核 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}`;
-  $("refreshed").textContent = state.error ? "读取失败" : `更新于 ${ago(v.updated_at_ms)}`;
+  $("refreshed").textContent = state.error ? (busy(state.error) ? "繁忙，稍后重试" : "读取失败") : `更新于 ${ago(v.updated_at_ms)}`;
 }
 
 function setLamp(el, level, text) {
@@ -186,14 +200,16 @@ function renderBanners() {
   }
   if (FIXTURE && !state.error) box.append(h("div", { class: "banner info" }, h("b", { text: "示例数据。" }),
     " 页面使用 2026-10-12 的真实冻结快照与已通过校验的模型回执拼成，用于检查版式；数值不代表当前市场。"));
-  if (state.error) box.append(h("div", { class: "banner" }, h("b", { text: "读取失败。" }),
-    ` ${state.error.message}。${state.view ? "页面保留上一次成功读取的内容。" : ""}`));
+  if (state.error && busy(state.error)) box.append(h("div", { class: "banner info" }, h("b", { text: `${errorText(state.error)}。` }),
+    ` 约 ${Math.min(60, Math.max(3, state.error.retryAfter || 5))} 秒后自动重试${state.view ? "，页面保留上一次成功读取的内容" : ""}。`));
+  else if (state.error) box.append(h("div", { class: "banner" }, h("b", { text: "读取失败。" }),
+    ` ${errorText(state.error)}。${state.view ? "页面保留上一次成功读取的内容。" : ""}`));
   const fail = v.collector_failure;
   if (fail) box.append(h("div", { class: "banner" }, h("b", { text: "后台刷新失败。" }),
     ` ${clock(fail.failed_at_ms)} 的刷新没有完成，候选与地图停留在 ${clock(v.updated_at_ms)}。`));
   const mc = v.market_context || {};
   if (mc.status === "background_only") box.append(h("div", { class: "banner info" }, h("b", { text: "FMZ 事实只作背景。" }),
-    ` 事实本身是新的，但空间输入未通过用途检查（${spaceInputWhy(v)}），空间门按关闭处理；五要素与背景读数仍可参考。`));
+    ` 事实本身是新的，但空间输入未通过用途检查（${spaceInputWhy(v)}），空间结构的评价只作参考；五要素与背景读数仍可参考。`));
   else if (mc.status && mc.status !== "current") box.append(h("div", { class: "banner" }, h("b", { text: "FMZ 事实不是当前状态。" }),
     ` ${(mc.gap_reasons || []).length ? `${mc.gap_reasons.map(reasonCn).join("、")}。` : ""}候选与地图只反映最后一次冻结。`));
   const errs = (v.candidates || []).filter((c) => c.status === "error");
@@ -268,7 +284,7 @@ function renderVerdict() {
   const gate = state.view.space_gate || {};
   if (u.open) {
     box.className = "verdict open";
-    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "空间门放行，两侧快照可用；可做模型复核，是否承保由你按下面两张保单判断。" }));
+    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "两侧快照与报价可用，没有硬门槛阻止；可做模型复核，是否承保由你按下面两张保单判断。" }));
     return;
   }
   box.className = "verdict blocked";
@@ -276,6 +292,13 @@ function renderVerdict() {
   for (const item of u.shared) {
     box.append(h("span", { class: "why-item", title: item.title || "",
       text: item.key === "space" && gateSince(gate) ? `${item.text}，${gateSince(gate)}` : item.text }));
+  }
+  // nothing shared: say which side is held back and why, never a bare "不满足"
+  if (!u.shared.length) {
+    for (const side of ["put", "call"]) {
+      const why = u.perSide[side] || [];
+      if (why.length) box.append(h("span", { class: "why-item", text: `${side === "put" ? "Put" : "Call"}：${why.join("、")}` }));
+    }
   }
   box.append(h("span", { class: "then", text: "仍可做观察复核与锁定追踪，用于了解责任与补偿如何变化。" }));
 }
@@ -335,7 +358,7 @@ function renderDecks() {
 
 function remainingText(m) {
   if (!isNum(m.remainingMs)) return "—";
-  const left = m.remainingMs - (Date.now() - (m.servedAt || Date.now()));
+  const left = m.remainingMs - (Date.now() - (state.loadedAt || Date.now()));
   return left > 0 ? `剩余 ${(left / 3.6e6).toFixed(1)} 小时` : "已到期";
 }
 
@@ -367,14 +390,22 @@ function deck(m, side, blockers) {
   const beSub = m.breakevenState === "ok" ? `${usd(m.breakeven)} 美元` : m.breakevenState === "none" ? "净信用不为正，不存在盈亏平衡" : "费用或报价不足，未能计算";
   const quoteAge = (isNum(m.quoteAt) ? `报价 ${ago(m.quoteAt)}` : "报价时间未知")
     + (m.quoteGaps.length ? `，${[...new Set(m.quoteGaps.map((g) => (/depth/.test(g) ? "盘口深度不足" : "报价有缺口")))].join("、")}` : "");
+  const mp = (get(m, "candidate.decision_reduction.questions") || []).find((q) => q.key === "market_price")?.numbers || {};
+  const absDelta = isNum(m.delta) ? Math.abs(m.delta).toFixed(2) : null;
+  const distanceSub = !isNum(m.shortOutsidePct) ? "距离未能计算"
+    : `${usdOf(m.shortOutsidePct)} 美元，${m.shortOutsidePct >= 0 ? (tone === "bad" ? "贴近责任区" : "在责任区外") : "已进入责任区"}${absDelta ? `；短腿 Delta ${absDelta}` : ""}`;
   card.append(h("div", { class: "figures" },
-    fig(pct(m.shortOutsidePct, 2), "短腿距现价", tone,
-      `${usdOf(m.shortOutsidePct)} 美元，${m.shortOutsidePct >= 0 ? (tone === "bad" ? "贴近责任区" : "在责任区外") : "已进入责任区"}`),
+    fig(pct(m.shortOutsidePct, 2), "短腿距现价", tone, distanceSub),
     fig(beValue, "盈亏平衡距现价", "", beSub),
-    fig(isNum(m.delta) ? m.delta.toFixed(2) : "—", "短腿 Delta", "",
-      isNum(m.delta) ? `按 Delta ${m.deltaTarget ?? 0.35} 附近选约，宽 ${usd(m.width)} 美元` : "选约 Delta 未记录"),
-    fig(ratioPct(m.creditToWidth), "可见信用占宽度", "",
-      isNum(m.netCredit) ? `净 ${btc(m.netCredit)} BTC ≈ ${usd(m.netCreditUsd)} 美元${m.feeAssumed ? "（费用按假设）" : ""}，${quoteAge}` : quoteAge),
+    // The headline is what the book can earn at most; the market-mark comparison is a scaled reference.
+    fig(isNum(m.netCreditUsd) ? `${usd(m.netCreditUsd)} 美元` : "—", "理论最大净信用", "",
+      [isNum(m.netCredit) ? `${btc(m.netCredit)} BTC` : null,
+        isNum(mp.edge_usd) && isNum(m.width) && m.width > 0
+          ? `市场估价差 ${mp.edge_usd > 0 ? "+" : mp.edge_usd < 0 ? "−" : ""}${Math.abs(mp.edge_usd / m.width * 100).toFixed(1)}% 宽度`
+          : "市场估价暂缺"].filter(Boolean).join("；")),
+    fig(ratioPct(m.creditToWidth), "毛信用占宽度", "",
+      [isNum(m.credit) ? `毛 ${btc(m.credit)} BTC` : null,
+        isNum(m.fee) ? `费 ${btc(m.fee)}${m.feeAssumed ? "（假设）" : ""}` : null, quoteAge].filter(Boolean).join("，")),
   ));
   let events = null;
   try { events = contractEvents(m.candidate); } catch { events = null; }
@@ -385,6 +416,8 @@ function deck(m, side, blockers) {
   card.append(sideFactors(m));
 
   const qa = h("div", { class: "qa" });
+  if (m.review.kind === "historical") qa.append(h("p", { class: "qa-stale",
+    text: `以下是 ${clock(reviewedAt(m.review))} 快照的模型解释，之后报价已更新；数字以上方卡片为准。` }));
   qa.append(question("Q1 风险质量", m.review.kind === "program" ? programLines(m.review.programQ1) : m.review.q1, m.review.kind, m.review.labels));
   qa.append(question("Q2 风险价格", m.review.kind === "program" ? programLines(m.review.programQ2) : m.review.q2, m.review.kind, m.review.labels));
   card.append(qa);
@@ -438,7 +471,7 @@ function reductionItem(q, m) {
     const n = q.numbers || {};
     if (isNum(n.market_payout_usd) && isNum(n.net_usd)) {
       line(`你净收 ${money(n.net_usd)}；按 Deribit 两腿标记价，市场估计这张单到期平均要赔 ${money(n.market_payout_usd)}。`, "reduce-main");
-      line(`按市场自己的估价，这张单约 ${signedMoney(n.edge_usd)}（成交价相对标记价 ${signedMoney(n.spread_cost_usd)}，手续费 ${signedMoney(-(n.fees_usd ?? 0))}）。`);
+      line(`按市场自己的估价，这张单约 ${signedMoney(n.edge_usd)}（成交价相对标记价 ${signedMoney(n.spread_cost_usd)}，手续费 ${isNum(n.fees_usd) ? signedMoney(-n.fees_usd) : "未知"}）。`);
       line(q.stance === "below_market"
         ? "要承保，你得有理由认为它到期实际赔得比市场估计的少。"
         : "补偿不低于市场估价；要承保，你至少不能比市场更担心。", "reduce-ask");
@@ -483,8 +516,12 @@ function reductionItem(q, m) {
   return li;
 }
 
+const FIG_TIP = {
+  "理论最大净信用": "到期价在短腿外时全部收下的金额（已扣入场费）。下方“市场估价差”= 净收 − 按 Deribit 两腿标记价估计的平均赔付，按价差宽度标准化；它是对照，不是预计盈亏。",
+  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度；费用按公开 taker 上限假设。",
+};
 function fig(value, label, cls = "", sub = "") {
-  return h("div", { class: `fig ${cls}` }, h("div", { class: "v", text: value }), h("div", { class: "k", text: label }),
+  return h("div", { class: `fig ${cls}`, title: FIG_TIP[label] || null }, h("div", { class: "v", text: value }), h("div", { class: "k", text: label }),
     sub ? h("div", { class: "k", text: sub }) : null);
 }
 
@@ -515,7 +552,7 @@ function distanceRule(m) {
 }
 
 function sideFactors(m) {
-  const box = h("div", { class: "side-factors", title: "方向对照是固定规则：偏多读数对 Put 有利、对 Call 不利；空间看结构门" });
+  const box = h("div", { class: "side-factors", title: "方向对照是固定规则：偏多读数对 Put 有利、对 Call 不利；空间结构只作评价，不分有利不利" });
   for (const f of coreFactors(state.view || {}, currentSpot())) {
     const own = f.key === "position" ? f.perSide?.[m.side] : null;
     const rel = f.key === "space"
@@ -557,7 +594,7 @@ function actions(m) {
     const text = pending.kind === "review"
       ? (production
         ? `模型复核：用当时报价重新冻结本保单后调用一次模型（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；回执附着本快照，仍不构成交易许可。`
-        : `观察复核：调用一次模型解释本快照（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；空间门未放行，回执不附着生产。`)
+        : `观察复核：调用一次模型解释本快照（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；报价、费用或 FMZ 事实未达生产复核条件，回执不附着生产。`)
       : "锁定后每分钟采样同一合同，直到到期或手动停止；锁定时与之后的赔付、代价变化在“锁定追踪”里查看。";
     wrap.append(h("span", { class: "confirm", text }),
       h("button", { class: "btn", type: "button", onclick: () => run(pending.kind, m) }, pending.kind === "review" ? "确认复核" : "确认锁定"),
@@ -571,7 +608,7 @@ function actions(m) {
   const needLogin = !state.session.authenticated;
   const reviewOpen = production ? !(get(m, "candidate.review_gate.reasons") || []).some((r) => /cooldown|inflight|budget/.test(r)) : obs.enabled;
   const reviewBtn = h("button", { class: "btn", type: "button", disabled: !reviewOpen || needLogin || FIXTURE,
-    title: production ? "空间门放行：回执附着本快照，仍不构成交易许可" : "观察用途：模型只解释冻结快照，回执不附着生产",
+    title: production ? "生产复核：回执附着本快照，仍不构成交易许可" : "观察用途：模型只解释冻结快照，回执不附着生产",
     onclick: () => { state.pending = { side: m.side, kind: "review", stage: "confirm" }; renderDecks(); } }, production ? "模型复核" : "观察复核");
   const lockBtn = h("button", { class: "btn secondary", type: "button", disabled: !lock.enabled || needLogin || FIXTURE,
     onclick: () => { state.pending = { side: m.side, kind: "lock", stage: "confirm" }; renderDecks(); } }, "锁定追踪");
@@ -613,7 +650,7 @@ async function run(kind, m) {
     }
   } catch (err) {
     authFailed(err);
-    state.pending = { side: m.side, kind, stage: "done", message: `未完成：${err.body?.code ? reasonCn(err.body.code) : err.message}` };
+    state.pending = { side: m.side, kind, stage: "done", message: `未完成：${errorText(err)}` };
   }
   await load(true);
   if (kind === "lock" && state.lock.id) fetchLock(state.lock.id);
@@ -905,16 +942,16 @@ async function fetchLock(id, { quiet = false } = {}) {
   if (seq !== L.seq) return;  // a newer request (for any lock) supersedes this one
   L.loading = null;
   if (detail.status === "fulfilled") { L.details[id] = detail.value; delete L.errors[id]; }
-  else { authFailed(detail.reason); L.errors[id] = detail.reason.body?.code ? reasonCn(detail.reason.body.code) : detail.reason.message; }
+  else { authFailed(detail.reason); L.errors[id] = errorText(detail.reason); }
   if (series.status === "fulfilled") { L.series[id] = series.value; delete L.seriesErrors[id]; }
-  else L.seriesErrors[id] = series.reason.body?.code ? reasonCn(series.reason.body.code) : series.reason.message;
+  else L.seriesErrors[id] = errorText(series.reason);
   if (L.id === id) renderLocks();
 }
 
 async function stopLock(id) {
   state.lock.confirm = null;
   try { await api.post(`/locked-candidates/${encodeURIComponent(id)}/stop`, {}); notice("已停止追踪。"); }
-  catch (err) { authFailed(err); notice(`停止失败：${err.body?.code ? reasonCn(err.body.code) : err.message}`); }
+  catch (err) { authFailed(err); notice(`停止失败：${errorText(err)}`); }
   await load(true); await fetchLock(id);
 }
 
@@ -925,14 +962,14 @@ async function relock(e) {
       idempotency_key: idempotencyKey("ui-relock"), new_reference: true, source_episode_id: e.episode_id });
     notice("已开始新的追踪。");
     state.lock.id = get(res, "episode.episode_id") || state.lock.id;
-  } catch (err) { authFailed(err); notice(`重新追踪失败：${err.body?.code ? reasonCn(err.body.code) : err.message}`); }
+  } catch (err) { authFailed(err); notice(`重新追踪失败：${errorText(err)}`); }
   await load(true);
   if (state.lock.id) fetchLock(state.lock.id);
 }
 
 async function loadAudit() {
   state.auditAt = Date.now();
-  try { state.audit = await api.chainAudit(); } catch (err) { state.audit = { error: err.body?.code || err.message }; }
+  try { state.audit = await api.chainAudit(); } catch (err) { state.audit = { error: errorText(err) }; }
   renderAuditLog();
 }
 
@@ -990,14 +1027,24 @@ function renderEvents() {
 function renderContext() {
   const box = clear($("context"));
   if (!state.view) return;
-  for (const it of backgroundItems(state.view, currentSpot())) {
-    const card = h("div", { class: `sheet pad ctx${it.stale ? " stale" : ""}${it.span ? " span2" : ""}` }, h("h4", { text: it.title }),
-      h("div", { class: "reading", text: it.state ?? "缺口" }));
-    if (it.stale) card.append(h("p", { class: "stale-note", text: it.stale }));
-    if (it.wide) card.append(h("div", { class: "wide-viz" }, it.wide));
-    card.append(metricRows(it.rows));
-    if (it.note) card.append(h("p", { class: "factor-note", text: it.note }));
-    box.append(card);
+  // Three rows, each read on its own: derivatives positioning, holders and allocation, outside markets.
+  const GROUPS = [["derivs", "衍生品与资金"], ["holders", "持有者与配置"], ["macro", "宏观与跨资产"]];
+  const items = backgroundItems(state.view, currentSpot());
+  for (const [key, label] of GROUPS) {
+    const own = items.filter((it) => (it.group || "macro") === key);
+    if (!own.length) continue;
+    const grid = h("div", { class: "grid-3 ctx-row" });
+    for (const it of own) {
+      const card = h("div", { class: `sheet pad ctx${it.stale ? " stale" : ""}${it.span ? " span2" : ""}` },
+        h("div", { class: "ctx-head" }, h("h4", { text: it.title }), h("div", { class: "reading", text: it.state ?? "缺口" })));
+      if (it.source) card.append(h("p", { class: "ctx-source", text: `来源：${it.source}` }));
+      if (it.stale) card.append(h("p", { class: "stale-note", text: it.stale }));
+      if (it.wide) card.append(h("div", { class: "wide-viz" }, it.wide));
+      card.append(metricRows(it.rows));
+      if (it.note) card.append(h("details", { class: "ctx-note" }, h("summary", { text: "口径说明" }), h("p", { text: it.note })));
+      grid.append(card);
+    }
+    box.append(h("section", { class: "ctx-group" }, h("h3", { class: "ctx-group-title", text: label }), grid));
   }
 }
 
@@ -1086,7 +1133,9 @@ function renderRecords() {
     : h("p", { class: "muted", text: "还没有每日快照。" }));
   const ns = v.notification_state || {};
   right.append(h("h4", { text: "邮件通知" }), h("p", { class: "muted",
-    text: get(ns, "last_attempt.attempted_at_ms") ? `最近一次 ${clock(ns.last_attempt.attempted_at_ms)}，${ns.last_attempt.status === "sent" ? "已发送" : ns.last_attempt.status ? "未发送成功" : "状态未记录"}` : "还没有发送过锚点效用变迁通知。" }));
+    text: (ns.last_status === "not_configured" || get(ns, "last_attempt.status") === "not_configured")
+      ? "工作台邮件未配置；通知目前走 FMZ 推送。"
+      : get(ns, "last_attempt.attempted_at_ms") ? `最近一次 ${clock(ns.last_attempt.attempted_at_ms)}，${ns.last_attempt.status === "sent" ? "已发送" : ns.last_attempt.status ? "未发送成功" : "状态未记录"}` : "还没有发送过锚点效用变迁通知。" }));
   right.append(scheduleView(v.scheduled_review));
   right.append(versionsView(v));
   box.append(right);
@@ -1100,7 +1149,9 @@ function scheduleView(sr) {
   box.append(h("h4", { text: "定时模型复核" }));
   if (!sr || !(sr.hours_utc || []).length) { box.append(h("p", { class: "muted", text: "未启用定时复核，只有手动观察复核。" })); return box; }
   const hours = sr.hours_utc.map((x) => `UTC ${String(x).padStart(2, "0")}:00（北京 ${String((x + 8) % 24).padStart(2, "0")}:00）`).join("、");
-  box.append(h("p", { class: "muted", text: `每天 ${hours}，两侧各复核一次：空间门放行时为模型复核，否则为观察复核；另可随时手动观察复核。下一次 ${clock(sr.next_due_ms)}。` }));
+  box.append(h("p", { class: "muted", text: `每天 ${hours}，两侧各复核一次：报价、费用与 FMZ 事实当前时为模型复核，否则为观察复核；另可随时手动观察复核。下一次 ${clock(sr.next_due_ms)}。` }));
+  const missed = missedSlot(sr);
+  if (missed) box.append(h("p", { class: "muted", text: `${clock(missed)} 那一轮没有运行（服务当时不可用），已错过。` }));
   const last = sr.last;
   if (last) {
     const SIDE = { put: "Put", call: "Call" };
@@ -1111,12 +1162,32 @@ function scheduleView(sr) {
         // rejected with no call = the request itself was refused before any model call.
         : o.status === "rejected" && o.llm_call_count > 0 ? "已调用模型，但解释未通过引用与语义核对，原文已留档"
         : o.status === "rejected" ? `未执行（${o.reason ? reasonCn(o.reason) : "原因未记录"}）` : o.status === "skipped" ? "无候选，跳过"
-        : o.status === "error" ? `失败（${reasonCn(o.reason)}）` : statusCn(o.status);
+        : o.status === "error" ? `失败（${hasReason(o.reason) ? reasonCn(o.reason) : "程序异常"}）` : statusCn(o.status);
       return `${SIDE[side] || side} ${kind}${res}`;
     }).join("；");
-    box.append(h("p", { class: "muted", text: `上一轮 ${clock(last.started_at_ms)}${last.status === "running" ? "（进行中）" : ""}：${text || "无结果"}` }));
+    const SLOT = { running: "（进行中）", interrupted: "（服务重启时中断）", incomplete: "（只因报价等临时原因未完成）" };
+    const open = isNum(last.started_at_ms) && Date.now() < last.started_at_ms + (sr.window_ms || 45 * 60_000);
+    const retry = last.retries ? "，窗口内已重跑一次"
+      : (last.status === "interrupted" || last.status === "incomplete") ? (open ? "，窗口内会自动重跑一次" : "，窗口已过，未能重跑") : "";
+    box.append(h("p", { class: "muted", text: `上一轮 ${clock(last.started_at_ms)}${SLOT[last.status] || ""}${retry}：${text || "无结果"}` }));
   } else box.append(h("p", { class: "muted", text: "还没有定时复核记录。" }));
   return box;
+}
+
+/** The newest slot whose window has closed without any record (e.g. the service was down). */
+function missedSlot(sr) {
+  const now = Date.now();
+  const window = sr.window_ms || 45 * 60_000;
+  for (let back = 0; back < 2; back += 1) {
+    for (const hour of [...(sr.hours_utc || [])].sort((a, b) => b - a)) {
+      const d = new Date(now - back * 86_400_000);
+      const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour);
+      if (start + window > now) continue;
+      const key = new Date(start).toISOString().slice(0, 13);
+      return sr.last_slot && sr.last_slot >= key ? null : start;
+    }
+  }
+  return null;
 }
 
 /** Observed runtime first; the hand-kept release manifest second, with conflicts called out. */

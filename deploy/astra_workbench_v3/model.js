@@ -4,7 +4,22 @@ import { get, isNum } from "./format.js";
 import { TERM_CN, evidenceLabels } from "./glossary.js";
 
 const REASONS = {
-  space_gate_not_eligible: "空间门未放行",
+  space_gate_not_eligible: "空间门未放行（旧口径）",
+  server_busy: "工作台繁忙",
+  memory_pressure: "工作台内存紧张",
+  candidate_projection_failed: "本侧展示数据处理失败",
+  bad_lock_request: "锁定请求不完整",
+  bad_request: "请求不完整",
+  evidence_not_retained: "证据未保留",
+  exact_pair_required: "需要同时指定对照的两个点",
+  idempotency_race: "同一请求正在处理",
+  index_integrity_error: "锁定索引校验失败",
+  invalid_episode_id: "追踪编号无效",
+  locked_packet_unavailable: "锁定数据包不可用",
+  locked_review_target_changed: "锁定对象已变化",
+  snapshot_id_invalid: "快照编号无效",
+  wpem_evidence_not_current: "时间证据不是当前快照",
+  interrupted_no_automatic_recall: "服务重启时中断，未自动重调模型",
   SPACE_GATE_ANCHOR_SCORE_LOW: "锚点评分偏低",
   SPACE_GATE_NET_GAMMA_NOT_FRESH: "净 Gamma 不新鲜",
   cached_quote_not_current: "报价已过 5 秒",
@@ -21,7 +36,7 @@ const REASONS = {
   producer_map_background_incomplete: "MAP 背景不完整",
   data_collector_refresh_failed: "数据采集刷新失败",
   data_engine_space_input_usage_rejected: "空间输入未通过用途检查",
-  fmz_fact_not_current: "FMZ 事实不可用于空间判断",
+  fmz_fact_not_current: "FMZ 事实不是当前版本",
   SPACE_GATE_GGR_CONFLICT: "Gamma 体制来源冲突",
   contract_expired: "合同已到期",
   active_budget_exhausted: "锁定名额已满",
@@ -88,21 +103,25 @@ const REASONS = {
 };
 /** Unmapped codes are rare; they stay visible as a code, never passed off as prose. */
 export const reasonCn = (code) => REASONS[code] || (/^[A-Za-z0-9_.]+$/.test(String(code)) ? `其他原因（代码 ${code}）` : String(code));
+export const hasReason = (code) => Object.prototype.hasOwnProperty.call(REASONS, code);
 
 const STATUS_CN = {
   RESEARCH_OK: "已通过校验", OK: "已通过校验", rejected: "未执行", ERROR: "调用失败", SEMANTIC_REJECTED: "未通过程序校验",
   CURRENT: "对应当前快照", STALE: "已过期", REJECTED: "被拒绝", NOT_RUN: "未运行",
+  interrupted_no_automatic_recall: "服务重启时中断", interrupted: "已中断", incomplete: "未完成", running: "进行中", done: "已完成",
 };
-export const statusCn = (code) => STATUS_CN[code] || code || "—";
+// An unknown machine code is named as such, never shown raw in a reading area.
+export const statusCn = (code) => STATUS_CN[code] || (code ? (/^[A-Za-z0-9_.]+$/.test(String(code)) ? "其他状态" : String(code)) : "—");
 
 export function applicability(code) {
   const c = String(code || "").toUpperCase();
   if (!c) return { cls: "none", text: "尚无模型判断" };
+  if (c === "EXPLAINED") return { cls: "fit", text: "模型只排序有限支持项" };
   if (c.includes("CONTEST")) return { cls: "contested", text: "支持与反证并存" };
   if (c.includes("UNABLE") || c.includes("UNKNOWN")) return { cls: "none", text: "无法判断" };
   if (c.includes("NOT") || c.includes("UNFIT") || c.includes("INAPPLIC")) return { cls: "unfit", text: "不适配" };
   if (c.includes("FIT") || c.includes("APPLIC") || c.includes("SUPPORT")) return { cls: "fit", text: "适配" };
-  return { cls: "none", text: c };
+  return { cls: "none", text: "其他判断" };
 }
 
 function horizonIv(info, expiryToken, horizonDays) {
@@ -147,8 +166,8 @@ export function sideModel(view, candidate) {
   const quote = get(snap, "market.quote") || {};
   // Remaining time counts from the server read, not from the frozen valuation.
   const served = get(view, "served_at_ms");
-  const remainingMs = isNum(candidate.remaining_to_expiry_ms) ? candidate.remaining_to_expiry_ms
-    : isNum(c.expiry_ms) && isNum(served) ? c.expiry_ms - served : null;
+  const remainingMs = isNum(c.expiry_ms) && isNum(served) ? c.expiry_ms - served
+    : isNum(candidate.remaining_to_expiry_ms) ? candidate.remaining_to_expiry_ms : null;
   return {
     ...base,
     snap, spot, hours,
@@ -164,7 +183,7 @@ export function sideModel(view, candidate) {
     shortOutsidePct: outside(c.short_strike_usd), beOutsidePct: outside(be),
     iv, sigmaPct,
     beMovePct: isNum(sigmaPct) && sigmaPct > 0 && isNum(be) ? outside(be) / sigmaPct : null,
-    creditToWidth,
+    creditToWidth, credit,
     delta: isNum(disc.short_delta) ? disc.short_delta : null,
     deltaTarget: disc.short_delta_target_abs,
     quoteAt: quote.received_ts_ms,
@@ -210,13 +229,8 @@ export function underwriting(view, sides) {
     }
     if (m && !m.snap && !upstream) perSide[side].push(m.error ? "候选未生成" : "没有冻结快照");
   }
-  if (spaceBlocked || gate.eligible === false) {
-    const since = isNum(gate.since_ts_ms) ? gate.since_ts_ms : null;
-    const first = spaceReasons[0];
-    const detail = first === "SPACE_GATE_ANCHOR_SCORE_LOW" && isNum(anchor) ? `锚点 ${anchor.toFixed(1)}，需 ≥60` : first ? reasonCn(first) : "";
-    shared.push({ key: "space", text: `空间门关闭${detail ? `（${detail}）` : ""}`, since,
-      title: spaceReasons.map(reasonCn).join("；") });
-  }
+  // Since 2026-10-13 the space structure is evaluated, never gated; old codes are ignored here.
+  void spaceBlocked; void anchor; void spaceReasons;
   const open = !shared.length && ["put", "call"].every((k) => sides[k]?.snap && !perSide[k].length);
   return { open, shared, perSide };
 }

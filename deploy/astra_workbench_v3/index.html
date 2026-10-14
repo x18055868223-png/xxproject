@@ -15,7 +15,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
   <div class="strip-inner">
     <div class="brand"><b>中性回路承保决策工作台</b><span>BTC 末日轮垂直价差</span></div>
     <div class="spot"><span class="figure" id="spot">—</span><small id="spot-age"></small></div>
-    <div class="state" id="gate-state"><i class="lamp"></i><span>空间门</span></div>
+    <div class="state" id="gate-state"><i class="lamp"></i><span>锚点</span></div>
     <div class="state" id="fact-state"><i class="lamp"></i><span>FMZ 事实</span></div>
     <a class="state" id="sources" href="#src-h"><i class="lamp"></i><span>来源</span></a>
     <a class="state" id="lock-state" href="#lock-h" hidden><i class="lamp"></i><span>追踪中</span></a>
@@ -77,7 +77,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
       <h2 id="ctx-h">资金与慢背景</h2>
       <p>资金费、持仓、ETF、链上成本与期权情绪；只作背景，不单独构成承保理由</p>
     </div>
-    <div class="grid-3" id="context"></div>
+    <div class="ctx-groups" id="context"></div>
   </section>
 
   <section class="band" aria-labelledby="audit-h">
@@ -92,7 +92,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
   <section class="band" aria-labelledby="src-h">
     <div class="band-head">
       <h2 id="src-h">数据与审计记录</h2>
-      <p>来源时效、空间门变迁、每日快照、通知与版本身份</p>
+      <p>来源时效、锚点效用变迁、每日快照、通知与版本身份</p>
     </div>
     <div class="grid-2" id="records"></div>
   </section>

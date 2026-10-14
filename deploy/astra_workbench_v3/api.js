@@ -8,7 +8,9 @@ async function json(resp) {
   try { body = text ? JSON.parse(text) : null; } catch { body = { code: "bad_json", message: `服务器返回了非预期的内容（HTTP ${resp.status}）` }; }
   if (!resp.ok) {
     const err = new Error((body && (body.message || body.code)) || `HTTP ${resp.status}`);
-    err.status = resp.status; err.body = body; throw err;
+    err.status = resp.status; err.body = body;
+    err.retryAfter = Number(resp.headers.get("Retry-After")) || null;
+    throw err;
   }
   return body;
 }
