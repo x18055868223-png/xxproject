@@ -73,14 +73,14 @@ def test_eastern_time_follows_daylight_saving():
 
 def test_two_week_window_and_contract_window():
     now = ms("2026-10-13T14:00:00")
-    up = cal.upcoming(now)
+    up = cal.upcoming(now, days=14)
     assert [(e["kind"], e["date_et"]) for e in up["events"]] == [("CPI", "2026-10-14"), ("PPI", "2026-10-15")]
     assert up["gaps"] == []
     # a release of the last hour stays (shown as released); the horizon end is exclusive
     cpi = cal.event_ms("2026-10-14", "08:30")
-    assert cal.upcoming(cpi + 3_000_000)["events"][0]["kind"] == "CPI"
-    assert cal.upcoming(cpi + 3_700_000)["events"][0]["kind"] == "PPI"
-    assert all(e["at_ms"] < cpi for e in cal.upcoming(cpi - 14 * 86_400_000)["events"])
+    assert cal.upcoming(cpi + 3_000_000, days=14)["events"][0]["kind"] == "CPI"
+    assert cal.upcoming(cpi + 3_700_000, days=14)["events"][0]["kind"] == "PPI"
+    assert all(e["at_ms"] < cpi for e in cal.upcoming(cpi - 14 * 86_400_000, days=14)["events"])
     life = cal.contract_events(ms("2026-10-14T08:00:00"), ms("2026-10-15T08:00:00"))
     assert [e["kind"] for e in life["events"]] == ["CPI"]
     assert life["events"][0]["to_expiry_ms"] == ms("2026-10-15T08:00:00") - ms("2026-10-14T12:30:00")
@@ -91,13 +91,13 @@ def test_two_week_window_and_contract_window():
 def test_gaps_name_sources_past_their_schedule_and_undated_releases(monkeypatch):
     # every 2026 BEA date is published now; the undated mechanism is checked with a stand-in row
     monkeypatch.setattr(cal, "PENDING", (("PCE", "11 月", "BEA", "2026-12-18", "2027-01-31"),))
-    late = cal.upcoming(ms("2026-12-15T00:00:00"))
+    late = cal.upcoming(ms("2026-12-15T00:00:00"), days=14)
     assert {"source": "BEA", "through": "2026-12-31"} not in late["gaps"]       # BEA covers all of 2026
     assert any(g.get("undated") and g["kind"] == "PCE" for g in late["gaps"])
-    assert {"source": "BEA", "through": "2026-12-31"} in cal.upcoming(ms("2026-12-25T00:00:00"))["gaps"]
-    assert not any(g.get("undated") for g in cal.upcoming(ms("2026-11-20T00:00:00"))["gaps"])  # not due yet
-    assert not any(g.get("undated") for g in cal.upcoming(ms("2027-02-01T00:00:00"))["gaps"])  # stale entry expires
-    assert {g["source"] for g in cal.upcoming(ms("2027-12-20T00:00:00"))["gaps"] if "through" in g} == {"BLS", "Fed", "BEA"}
+    assert {"source": "BEA", "through": "2026-12-31"} in cal.upcoming(ms("2026-12-25T00:00:00"), days=14)["gaps"]
+    assert not any(g.get("undated") for g in cal.upcoming(ms("2026-11-20T00:00:00"), days=14)["gaps"])  # not due yet
+    assert not any(g.get("undated") for g in cal.upcoming(ms("2027-02-01T00:00:00"), days=14)["gaps"])  # stale entry expires
+    assert {g["source"] for g in cal.upcoming(ms("2027-12-20T00:00:00"), days=14)["gaps"] if "through" in g} == {"BLS", "Fed", "BEA"}
 
 
 def test_workbench_attaches_the_calendar_and_each_contract_window(tmp_path):
@@ -126,3 +126,11 @@ def test_bea_personal_income_dates_match_the_official_schedule():
     """Re-checked 2026-10-14 on bea.gov/news/schedule/full: PCE shares GDP's day in 2026 Q4."""
     pce = {p: d for k, d, _, p, _ in cal.EVENTS if k == "PCE" and d.startswith("2026")}
     assert pce == {"9 月": "2026-10-29", "10 月": "2026-11-25", "11 月": "2026-12-23"}
+
+
+def test_page_window_is_one_month():
+    up = cal.upcoming(ms("2026-10-14T15:00:00"))
+    assert cal.HORIZON_DAYS == 30
+    assert [(e["kind"], e["date_et"]) for e in up["events"]] == [
+        ("PPI", "2026-10-15"), ("FOMC", "2026-10-28"), ("GDP", "2026-10-29"), ("PCE", "2026-10-29"),
+        ("NFP", "2026-11-06"), ("CPI", "2026-11-10"), ("PPI", "2026-11-13")]

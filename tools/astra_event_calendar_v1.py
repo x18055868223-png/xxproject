@@ -12,6 +12,9 @@ Sources (all times US Eastern, as published):
 
 Annual maintenance: add the next year's rows, move COVERAGE forward, and re-run
 tests/test_astra_event_calendar.py (it checks weekdays, times, holidays and coverage).
+Every full audit also re-checks the next month and quarter row by row against the sources
+(docs/astra/FULL_AUDIT_20261014.md section 7). At BEA take only the rows titled
+"Personal Income and Outlays" and "GDP": other BEA releases share those days.
 """
 from __future__ import annotations
 
@@ -20,7 +23,8 @@ from typing import Any
 
 SCHEMA = "astra_event_calendar_v1@1.0.0"
 CALENDAR_VERSION = "2026-10-14"
-HORIZON_DAYS = 14
+# The page list: one month ahead (two weeks often held a single release, 2026-10-14).
+HORIZON_DAYS = 30
 
 KIND_CN = {
     "FOMC": "FOMC 利率决议",

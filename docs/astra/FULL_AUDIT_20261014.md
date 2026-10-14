@@ -254,3 +254,19 @@
 - 把 btc_map 从快照中移出，这一项涉及快照 schema，风险较高。
 
 根本问题仍是 10-11 那份评审里的结论：只有改成"每个对象每个时点一行精简数值"的时间序列，WPEM 的路径和变化输出才会真正有信息量。
+
+## 七、常设审计项（每轮全量审计都要做）
+
+用户 2026-10-14 要求：以后每轮全量审计都包含下面这些项目。
+
+1. **外源性事件日历维护**（`tools/astra_event_calendar_v1.py`）
+   - 把未来一个月（页面窗口 `HORIZON_DAYS = 30`）和下一季度的每一行，逐条与官方日程核对日期和时间：
+     - BLS 的 CPI、PPI、非农（`bls.gov/schedule/<年>/<月>_sched_list.htm`）；
+     - 美联储 FOMC（`federalreserve.gov/monetarypolicy/fomccalendars.htm`）；
+     - BEA 的 GDP、Personal Income and Outlays（`bea.gov/news/schedule/full`）。
+   - BEA 同一天常有多项发布，只认标题为 "Personal Income and Outlays" 和 "GDP" 的那几行。2026-10-14 曾把 International Trade、Personal Income by County 误记成 PCE。
+   - 核对 `COVERAGE`：每个来源的日程公布到哪天；`PENDING`：已列出但尚未定日期的发布。官方新公布了下一年的日程，就补上对应年份。
+   - 更新 `CALENDAR_VERSION`，运行 `tests/test_astra_event_calendar.py`。
+   - 在线上页面确认事件列表和本期合约的事件与日历一致。
+2. **核验路径到期链路**：核对 `decision_path/records.jsonl` 里到期未结论的记录、回填结果和会话清理是否成对出现；交割价与同期锁定结算一致；`episode_links.json` 仍能对上锁定。
+3. **本期墙数据**：在服务器上用 Deribit 公开数据独立重算一次本期墙、持仓墙和 Pin，与读视图对照。

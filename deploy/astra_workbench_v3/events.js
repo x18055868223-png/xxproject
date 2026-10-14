@@ -49,7 +49,7 @@ export function eventBand(view, now = Date.now()) {
       h("b", { class: inside.length ? "warn" : "", text: inside.length ? `有效期内有 ${inside.map(eventName).join("、")}` : "有效期内没有已排期的重要发布" })));
   }
   if (!list.length) {
-    box.append(h("p", { class: "empty", text: "未来两周没有已排期的重要宏观发布。" }));
+    box.append(h("p", { class: "empty", text: "未来一个月没有已排期的重要宏观发布。" }));
   } else {
     const days = new Map();
     for (const e of list) {
