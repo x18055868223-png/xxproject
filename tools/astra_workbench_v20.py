@@ -2230,6 +2230,7 @@ class AstraWorkbench:
         if fmz_fact.get("status") != "current":
             gaps.extend(str(item) for item in (fmz_fact.get("gap_reasons") or []))
             gaps.append("fmz_fact_not_current")
+        gaps.extend(str(item) for item in (fmz_fact.get("space_input_gap_reasons") or []))
         if not isinstance(native, Mapping):
             gaps.extend(str(item) for item in (fmz_fact.get("space_gate_gap_reasons") or []))
             gaps.append("producer_native_space_gate_missing")

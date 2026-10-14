@@ -44,9 +44,12 @@ def fmz_records(engine, fact: Mapping[str, Any], now: int) -> list[dict]:
         # the same response; a new bridge timestamp is not a GEX revision.
         stable_gamma = {key: gamma.get(key) for key in
                         ("value", "unit", "sign", "source", "source_ts_ms", "valid", "transition", "conflict")}
+        # A conflict (gexmonitor net GEX and the GGR proxy disagree) is a market reading the
+        # space evaluation reports, not invalid data: only an invalid value is INVALID.
         engine.ingest("gex.netgamma.proxy.v1", stable_gamma, observation_end_ms=gamma_ts,
                       retrieved_at_ms=None, ingested_at_ms=now,
-                      data_state="OK" if gamma.get("valid") and not gamma.get("conflict") else "INVALID")
+                      data_state="OK" if gamma.get("valid") else "INVALID",
+                      reason_codes=["SPACE_GATE_NET_GAMMA_CONFLICT"] if gamma.get("conflict") else [])
         records.append(engine.read("gex.netgamma.proxy.v1", now_ms=now, usage="space_gate"))
     anchor = (facts.get("space_context") or {}).get("anchor") or {}
     anchor_ts = _clock(anchor.get("gex_source_ts_ms"))
@@ -75,13 +78,19 @@ def qualify_fmz(engine, fact: Mapping[str, Any], now: int) -> dict:
     if projected.get("status") == "current" and not projected["data_engine_usage"].get("can_use"):
         projected["status"] = "background_only"
         projected["gap_reasons"] = sorted(set(projected.get("gap_reasons", []) + ["data_engine_fmz_usage_rejected"]))
-    if projected.get("status") == "current":
-        rejected = [record for record in records
-                    if record.get("identity", {}).get("product_id") in {GATE, "gex.netgamma.proxy.v1"}
-                    and not record.get("usage_decision", {}).get("can_use")]
-        if rejected:
-            projected["status"] = "background_only"
-            projected["gap_reasons"] = sorted(set(projected.get("gap_reasons", []) + ["data_engine_space_input_usage_rejected"]))
+    # The space structure is evaluation only (2026-10-13): a rejected space input (stale or
+    # invalid gate / net gamma) marks the space evaluation, never the fact. It used to turn
+    # the whole fact into background_only, which also closed model review.
+    rejected = [record for record in records
+                if record.get("identity", {}).get("product_id") in {GATE, "gex.netgamma.proxy.v1"}
+                and not record.get("usage_decision", {}).get("can_use")]
+    projected["space_input_gap_reasons"] = (
+        ["data_engine_space_input_usage_rejected"] if rejected else [])
+    projected["space_input_rejected"] = [
+        {"product_id": record.get("identity", {}).get("product_id"),
+         "status": record.get("usage_decision", {}).get("status"),
+         "reason_codes": list(record.get("usage_decision", {}).get("reason_codes") or [])}
+        for record in rejected]
     return projected
 
 

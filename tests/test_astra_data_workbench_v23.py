@@ -121,5 +121,24 @@ def test_stale_gamma_input_cannot_keep_native_gate_current(tmp_path):
     gate['net_gamma']['source_ts_ms'] = fixtures.T - 3 * 3600_000
     fixtures.write_fmz(path, gate)
     result = wb.latest_fact(fixtures.T)
-    assert result['status'] == 'background_only'
-    assert 'data_engine_space_input_usage_rejected' in result['gap_reasons']
+    # evaluation only: a stale space input marks the space evaluation, not the fact
+    assert result['status'] == 'current'
+    assert 'data_engine_space_input_usage_rejected' not in result.get('gap_reasons', [])
+    assert result['space_input_gap_reasons'] == ['data_engine_space_input_usage_rejected']
+    assert result['space_input_rejected'][0]['product_id'] == 'gex.netgamma.proxy.v1'
+    gate = wb.space_gate_view(result, fixtures.T)
+    assert 'data_engine_space_input_usage_rejected' in gate['gap_reasons']
+    assert 'fmz_fact_not_current' not in gate['gap_reasons']
+    assert gate['fmz_fact_status'] == 'current'
+
+
+def test_net_gamma_conflict_is_a_reading_not_invalid_data(tmp_path):
+    wb, path = fixtures.make_workbench(tmp_path)
+    gate = fixtures.native_gate()
+    gate['net_gamma']['conflict'] = True
+    fixtures.write_fmz(path, gate)
+    result = wb.latest_fact(fixtures.T)
+    assert result['status'] == 'current'
+    assert result['space_input_gap_reasons'] == []
+    assert result['space_input_rejected'] == []  # the conflicting net gamma is still usable
+    assert 'fmz_fact_not_current' not in wb._review_gate(None, wb.space_gate_view(result, fixtures.T))['reasons']
