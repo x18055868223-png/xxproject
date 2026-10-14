@@ -45,6 +45,9 @@ class DecisionPathStore:
         self.root = Path(root)
         self.sessions_dir = self.root / "sessions"
         self.records_path = self.root / "records.jsonl"
+        # episode -> verification links outlive the sessions (an expired session file is deleted)
+        self.links_path = self.root / "episode_links.json"
+        self._links: dict[str, str] | None = None
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] | None = None
         self._claims: dict[str, int] = {}
@@ -120,10 +123,12 @@ class DecisionPathStore:
                 raise DecisionPathError("verification_unreadable", 500) from None
             return session
 
-    def summaries(self) -> list[dict[str, Any]]:
+    def summaries(self, *, now_ms: int | None = None) -> list[dict[str, Any]]:
+        """Newest first; with now_ms only sessions whose contract has not expired yet."""
         with self._lock:
-            return sorted((dict(item) for item in self._load_index().values()),
-                          key=lambda item: -(item.get("started_at_ms") or 0))
+            items = [dict(item) for item in self._load_index().values()
+                     if now_ms is None or (isinstance(item.get("expiry_ms"), int) and item["expiry_ms"] > now_ms)]
+            return sorted(items, key=lambda item: -(item.get("started_at_ms") or 0))
 
     def open_for(self, candidate_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -131,16 +136,36 @@ class DecisionPathStore:
                      if item["status"] == OPEN and item.get("candidate_id") == candidate_id]
             return max(found, key=lambda item: item.get("started_at_ms") or 0) if found else None
 
+    def _load_links(self) -> dict[str, str]:
+        if self._links is None:
+            try:
+                loaded = json.loads(self.links_path.read_text(encoding="utf-8"))
+                self._links = {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
+            except (OSError, ValueError):
+                self._links = {}
+        return self._links
+
+    def _link(self, episode_id: str, vid: str) -> None:
+        links = self._load_links()
+        if episode_id in links:
+            return  # the first verification that concluded into a lock keeps the link
+        links[episode_id] = vid
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            tmp = self.links_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(links, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, self.links_path)
+        except OSError:
+            pass  # the session still carries the episode id until it is purged
+
     def verification_for_episode(self) -> dict[str, str]:
-        """Episode -> the first verification that concluded into it (a later lock conclusion on an
-        already-tracked contract links to the same episode)."""
+        """Episode -> the first verification that concluded into it."""
         with self._lock:
-            out: dict[str, tuple[int, str]] = {}
-            for item in self._load_index().values():
-                eid, at = item.get("episode_id"), item.get("concluded_at_ms") or 0
-                if eid and (eid not in out or at < out[eid][0]):
-                    out[eid] = (at, item["verification_id"])
-            return {eid: vid for eid, (_, vid) in out.items()}
+            out = dict(self._load_links())
+            for item in sorted(self._load_index().values(), key=lambda i: i.get("concluded_at_ms") or 0):
+                if item.get("episode_id") and item["episode_id"] not in out:
+                    out[item["episode_id"]] = item["verification_id"]
+            return out
 
     def claim(self, vid: str, *, now_ms: int) -> None:
         """Mark a conclusion in progress; a second conclusion of the same session is refused."""
@@ -224,6 +249,8 @@ class DecisionPathStore:
             session["conclusion"] = {"choice": choice, "at_ms": now_ms, "episode_id": episode_id,
                                      "lock_created": lock_created}
             self._write(session)
+            if episode_id:
+                self._link(episode_id, vid)
             self._record_or_keep(session, self._record(session, "concluded", now_ms))
             return session
 
@@ -247,10 +274,26 @@ class DecisionPathStore:
             for item in list(self._load_index().values()):
                 if item.get("records_pending"):
                     try:
-                        self._record_or_keep(self.get(item["verification_id"]))
+                        session = self.get(item["verification_id"])
+                        self._record_or_keep(session)
+                        self._purge_if_done(session)
                     except (DecisionPathError, OSError):
                         continue
         return closed
+
+    def _purge_if_done(self, session: Mapping[str, Any]) -> bool:
+        """An expired, settled session whose record rows are all written is deleted: the
+        experiment records keep everything the report needs."""
+        if session.get("status") != CLOSED or not session.get("outcome") or session.get("records_pending"):
+            return False
+        vid = session["verification_id"]
+        try:
+            self._path(vid).unlink()
+        except FileNotFoundError:
+            pass
+        self._load_index().pop(vid, None)
+        self._claims.pop(vid, None)
+        return True
 
     def settle(self, vid: str, outcome: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         with self._lock:
@@ -259,6 +302,7 @@ class DecisionPathStore:
             self._write(session)
             self._record_or_keep(session, {"event": "settled", "verification_id": vid, "at_ms": now_ms,
                                            "candidate_id": session.get("candidate_id"), "outcome": session["outcome"]})
+            self._purge_if_done(session)
             return session
 
     def unsettled_after(self, now_ms: int, *, delay_ms: int) -> list[dict[str, Any]]:

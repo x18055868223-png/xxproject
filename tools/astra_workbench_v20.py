@@ -3920,9 +3920,10 @@ class AstraWorkbench:
     DP_SETTLE_DELAY_MS = 2 * 60_000
 
     def decision_path_overview(self) -> dict[str, Any]:
-        """Small enough for every page read: the step order and which contracts have a session."""
+        """Small enough for every page read: the step order and the sessions of contracts that
+        have not expired yet, newest first (expired ones are closed, settled and deleted)."""
         try:
-            items = self.decision_paths.summaries()
+            items = self.decision_paths.summaries(now_ms=self.clock_ms())
         except Exception as exc:
             return {"path_version": decision_path.PATH_VERSION, "error_type": type(exc).__name__}
         open_by = {}
@@ -3931,7 +3932,7 @@ class AstraWorkbench:
                 open_by[item["candidate_id"]] = {k: item.get(k) for k in
                                                  ("verification_id", "side", "started_at_ms", "last_watch_at_ms")}
         return {"path_version": decision_path.PATH_VERSION, "steps": decision_path.steps_public(),
-                "open": open_by, "recent": items[:12]}
+                "open": open_by, "recent": items[:decision_path_store.MAX_OPEN]}
 
     def _dp_item(self, item: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
         """A candidate with the read-time program layers the page also shows."""

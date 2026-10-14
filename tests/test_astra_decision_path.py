@@ -345,3 +345,26 @@ def test_race_lock_and_decline(tmp_path):
     wb.decision_paths.release(vid)
     out = wb.decision_path_conclude(vid, "lock", "dp-lock-0003", authorization="Bearer secret")
     assert out["session"]["conclusion"]["lock_created"] is True
+
+
+def test_expired_sessions_are_purged_after_settlement_and_links_survive(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    s.conclude(vid, "lock", now_ms=NOW + 1, episode_id="lce_" + "a" * 24, lock_created=True)
+    assert [i["verification_id"] for i in s.summaries(now_ms=NOW + 2)] == [vid]
+    assert s.summaries(now_ms=EXPIRY) == []                       # the list keeps only unexpired contracts
+    s.settle(vid, {"status": "settled", "result_usd": 12.0}, now_ms=EXPIRY + 200_000)
+    with pytest.raises(store.DecisionPathError):
+        s.get(vid)                                                # deleted after settlement
+    assert not list((tmp_path / "sessions").glob("dpv_*.json"))
+    assert [r["event"] for r in s.records()] == ["concluded", "settled"]   # the report keeps everything
+    assert store.DecisionPathStore(tmp_path).verification_for_episode() == {"lce_" + "a" * 24: vid}
+
+
+def test_newest_first(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    ids = []
+    for i in range(3):
+        c = {**candidate(), "snapshot": {**candidate()["snapshot"], "candidate_id": f"n{i}"}}
+        ids.append(s.start(candidate=c, reading=dp.build(frame()), now_ms=NOW + i * 1000)[0]["verification_id"])
+    assert [i["verification_id"] for i in s.summaries(now_ms=NOW)] == ids[::-1]
