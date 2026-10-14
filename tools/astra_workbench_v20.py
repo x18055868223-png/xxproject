@@ -39,6 +39,9 @@ if __package__:
     from . import astra_spatial_position_v1 as spatial_position
     from . import astra_cross_asset_v1 as cross_asset
     from . import astra_event_calendar_v1 as event_calendar
+    from . import astra_expiry_gamma_v1 as expiry_gamma
+    from . import astra_decision_path_v1 as decision_path
+    from . import astra_decision_path_store_v1 as decision_path_store
     from . import astra_underwriting_public_quote_v20 as public_quote
     from . import astra_underwriting_review_v20 as review_core
     from . import astra_underwriting_store_v20 as store
@@ -69,6 +72,9 @@ else:  # direct CLI execution from tools/
     import astra_spatial_position_v1 as spatial_position
     import astra_cross_asset_v1 as cross_asset
     import astra_event_calendar_v1 as event_calendar
+    import astra_expiry_gamma_v1 as expiry_gamma
+    import astra_decision_path_v1 as decision_path
+    import astra_decision_path_store_v1 as decision_path_store
     import astra_underwriting_public_quote_v20 as public_quote
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_store_v20 as store
@@ -1599,6 +1605,8 @@ class WorkbenchConfig:
     chain_audit_retention_days: int = 30
     # BTC cross-asset reference (background card): Yahoo hourly bars after each US close.
     cross_asset_enabled: bool = False
+    # This-expiry walls / pin and realized volatility (Deribit public), every 5 minutes.
+    expiry_gamma_enabled: bool = False
     # Memory guard (RSS): above soft, drop caches and skip optional work; above hard, serve
     # only cached page bodies and refuse heavy reads with 503 until back under soft.
     memory_soft_mb: int = 1536
@@ -1805,6 +1813,18 @@ class AstraWorkbench:
             self._cross_asset = loaded if isinstance(loaded, dict) and loaded.get("schema") == cross_asset.SCHEMA else None
         except (OSError, ValueError):
             self._cross_asset = None
+        # This-expiry walls, pin and RV: Deribit public data, own thread, never on a page read.
+        self.expiry_gamma_get_json = cross_asset.default_get_json
+        self._expiry_gamma_thread: threading.Thread | None = None
+        self._expiry_gamma: dict[str, Any] | None = None
+        try:
+            loaded = json.loads((config.state_dir / "expiry_gamma.json").read_text(encoding="utf-8"))
+            self._expiry_gamma = loaded if isinstance(loaded, dict) and loaded.get("schema") == expiry_gamma.SCHEMA else None
+        except (OSError, ValueError):
+            self._expiry_gamma = None
+        # Decision Path verification sessions (docs/astra/DECISION_PATH_DESIGN_20261014.md).
+        self.decision_paths = decision_path_store.DecisionPathStore(config.state_dir / "decision_path")
+        self._dp_settle_attempts: dict[str, int] = {}
         self._reconcile_interrupted_review()
         self._reconcile_scheduled_reviews()
         self._compact_state_once()
@@ -2646,6 +2666,7 @@ class AstraWorkbench:
             if not self._sampler_running:
                 self._refresh_locked_candidates(view, finished_at_ms)
             self._settle_expired_locks(finished_at_ms)
+            self._decision_path_housekeeping(finished_at_ms)
             view["locked_candidates"] = self.locked_candidate_list()
             mark("locked")
             if record_daily:
@@ -3217,12 +3238,17 @@ class AstraWorkbench:
             settlements = self.locked_settlements()
         except Exception:
             settlements = {}
+        try:
+            verified = self.decision_paths.verification_for_episode()
+        except Exception:
+            verified = {}
         for episode in episodes:
             if isinstance(episode, dict):
                 try:
                     episode["outcome"] = self._lock_outcome(episode, settlements)
                 except Exception:
                     episode["outcome"] = {"verdict": None, "basis": None}
+                episode["verification_id"] = verified.get(episode.get("episode_id"))
         return {"schema": "locked_candidate_list@1.0.0", "episodes": episodes,
                 "error": error, "sample_interval_ms": self.config.locked_sample_interval_ms,
                 "max_active": self.config.locked_max_active, "max_samples": self.config.locked_max_samples,
@@ -3854,6 +3880,290 @@ class AstraWorkbench:
             except Exception:
                 item["exogenous_events"] = None
 
+    def refresh_expiry_gamma(self, now_ms: int | None = None, *, force: bool = False) -> dict[str, Any] | None:
+        now = self.clock_ms() if now_ms is None else now_ms
+        if not force and not expiry_gamma.due(self._expiry_gamma, now):
+            return self._expiry_gamma
+        result = expiry_gamma.collect(self.expiry_gamma_get_json, now)
+        try:
+            json.dumps(result, allow_nan=False)
+        except (TypeError, ValueError):
+            result = {"schema": expiry_gamma.SCHEMA, "status": "invalid_values", "computed_at_ms": now}
+        previous = self._expiry_gamma
+        if result.get("status") != "ok" and isinstance(previous, dict) and previous.get("status") == "ok":
+            # keep the last good walls with their own clock; the page marks them stale by age
+            result = {**previous, "last_attempt": {"computed_at_ms": now, "status": result.get("status"),
+                                                   "error_type": result.get("error_type")}}
+        self._expiry_gamma = result
+        try:
+            _write_json_atomic(self.config.state_dir / "expiry_gamma.json", result)
+        except (OSError, TypeError, ValueError):
+            pass
+        return result
+
+    def expiry_gamma_view(self, candidates: Sequence[Mapping[str, Any]], now_ms: int) -> dict[str, Any]:
+        """This-expiry walls for the candidates' expiries only, plus realized volatility."""
+        current = self._expiry_gamma
+        if not isinstance(current, Mapping):
+            return {"schema": expiry_gamma.SCHEMA, "status": "not_collected" if self.config.expiry_gamma_enabled else "disabled"}
+        by_expiry = {}
+        for item in candidates or []:
+            expiry = ((item.get("snapshot") or {}).get("contract") or {}).get("expiry_ms") if isinstance(item, Mapping) else None
+            profile = expiry_gamma.for_expiry(current, expiry, now_ms=now_ms)
+            if profile is not None:
+                by_expiry[profile["expiry"]] = profile
+        return {"schema": expiry_gamma.SCHEMA, "status": current.get("status"),
+                "computed_at_ms": current.get("computed_at_ms"), "last_attempt": current.get("last_attempt"),
+                "by_expiry": by_expiry, "realized_vol": current.get("realized_vol")}
+
+    # ---------------------------------------------------------------- Decision Path
+    DP_SETTLE_DELAY_MS = 2 * 60_000
+
+    def decision_path_overview(self) -> dict[str, Any]:
+        """Small enough for every page read: the step order and which contracts have a session."""
+        try:
+            items = self.decision_paths.summaries()
+        except Exception as exc:
+            return {"path_version": decision_path.PATH_VERSION, "error_type": type(exc).__name__}
+        open_by = {}
+        for item in items:
+            if item["status"] == decision_path_store.OPEN and item.get("candidate_id") not in open_by:
+                open_by[item["candidate_id"]] = {k: item.get(k) for k in
+                                                 ("verification_id", "side", "started_at_ms", "last_watch_at_ms")}
+        return {"path_version": decision_path.PATH_VERSION, "steps": decision_path.steps_public(),
+                "open": open_by, "recent": items[:12]}
+
+    def _dp_item(self, item: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+        """A candidate with the read-time program layers the page also shows."""
+        frame_view = {"candidates": [deepcopy(dict(item))]}
+        self._attach_exogenous_events(frame_view, now_ms)
+        self._attach_decision_reduction(frame_view)
+        return frame_view["candidates"][0]
+
+    def _dp_frame(self, item: Mapping[str, Any], now_ms: int, fact: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        fact = fact if fact is not None else self.latest_fact(now_ms)
+        expiry = ((item.get("snapshot") or {}).get("contract") or {}).get("expiry_ms")
+        try:
+            window = cross_asset.contract_window(now_ms, expiry) if isinstance(expiry, int) else None
+        except Exception:
+            window = None
+        return {"at_ms": now_ms, "candidate": item, "market_facts": fact.get("market_facts") or {},
+                "fmz_status": fact.get("status"),
+                "expiry_walls": expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=now_ms),
+                "realized_vol": (self._expiry_gamma or {}).get("realized_vol"),
+                "cross_window": window, "transitions": self.recent_transitions(limit=30)}
+
+    def _dp_current_candidate(self, candidate_id: str, snapshot_id: str | None = None) -> dict[str, Any] | None:
+        with self._view_lock:
+            for entry in (self._current_view or {}).get("candidates") or []:
+                snapshot = entry.get("snapshot") if isinstance(entry, Mapping) else None
+                if not isinstance(snapshot, Mapping) or snapshot.get("candidate_id") != candidate_id:
+                    continue
+                if snapshot_id is None or snapshot.get("snapshot_id") == snapshot_id:
+                    return deepcopy(dict(entry))
+        if snapshot_id is not None:
+            with self._view_lock:
+                point = self._lockable_points.get(snapshot_id)
+            if point and (point["candidate"].get("snapshot") or {}).get("candidate_id") == candidate_id:
+                return deepcopy(dict(point["candidate"]))
+        return None
+
+    def _dp_require(self, authorization: str | None) -> None:
+        if not self._authorized(authorization):
+            raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
+
+    @staticmethod
+    def _dp_error(exc: "decision_path_store.DecisionPathError") -> WorkbenchError:
+        return WorkbenchError(exc.status, exc.code, exc.code)
+
+    def decision_path_session(self, vid: str) -> dict[str, Any]:
+        try:
+            return self.decision_paths.get(vid)
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
+
+    def decision_path_start(self, candidate_id: str, snapshot_id: str, *, authorization: str | None) -> dict[str, Any]:
+        """Start (or continue) verifying the policy shown on the page. Read-only market access."""
+        self._dp_require(authorization)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", candidate_id or "") or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", snapshot_id or ""):
+            raise WorkbenchError(400, "bad_verification_request", "candidate_id and snapshot_id are required")
+        existing = self.decision_paths.open_for(candidate_id)
+        if existing is not None:
+            return {"session": self.decision_path_session(existing["verification_id"]), "created": False,
+                    "llm_call_count": 0, "execution_allowed": False}
+        item = self._dp_current_candidate(candidate_id, snapshot_id)
+        if item is None:
+            raise WorkbenchError(409, "candidate_not_current", "the displayed policy was replaced; reload and retry")
+        now = self.clock_ms()
+        expiry = ((item.get("snapshot") or {}).get("contract") or {}).get("expiry_ms")
+        if isinstance(expiry, int) and now >= expiry:
+            raise WorkbenchError(409, "contract_expired", "expired contract cannot be verified")
+        item = self._dp_item(item, now)
+        reading = decision_path.build(self._dp_frame(item, now))
+        try:
+            session, created = self.decision_paths.start(candidate=item, reading=reading, now_ms=now)
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
+        if self.chain_audit is not None and created:
+            self.chain_audit.event("decision_path_started", now, {"verification_id": session["verification_id"],
+                                   "candidate_id": candidate_id, "path_version": session["path_version"]})
+        return {"session": session, "created": created, "llm_call_count": 0, "execution_allowed": False}
+
+    def decision_path_refresh(self, vid: str, *, authorization: str | None) -> dict[str, Any]:
+        """Re-read the same contract now: the page's current capture if it is the same
+        contract, else one public quote capture of that contract (as lock sampling does)."""
+        self._dp_require(authorization)
+        session = self.decision_path_session(vid)
+        if session["status"] != decision_path_store.OPEN:
+            raise WorkbenchError(409, "verification_closed", "verification is closed")
+        now = self.clock_ms()
+        contract = session["contract"]
+        if now >= int(contract.get("expiry_ms") or 0):
+            raise WorkbenchError(409, "contract_expired", "contract expired")
+        item = self._dp_current_candidate(session["candidate_id"])
+        fact = self.latest_fact(now)
+        if item is None:
+            gate = self.space_gate_view(fact, now)
+            try:
+                projection = self._build_btc_map_projection(now, fact, collect_slow_sources=False)
+            except Exception:
+                projection = (self._current_view or {}).get("btc_map_projection")
+            item = self._capture_candidate(contract["side"], self._locked_binding(contract), fact, gate, now,
+                                           btc_map_projection=projection, tracking=True, sink={})
+            if (item.get("snapshot") or {}).get("candidate_id") != session["candidate_id"]:
+                raise WorkbenchError(409, "locked_quote_unavailable", "same-contract capture is unavailable")
+        now = max(now, self.clock_ms())
+        item = self._dp_item(item, now)
+        reading = decision_path.build(self._dp_frame(item, now, fact))
+        try:
+            session = self.decision_paths.set_now(vid, reading, now_ms=now)
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
+        return {"session": session, "llm_call_count": 0, "execution_allowed": False}
+
+    def decision_path_step(self, vid: str, step_id: str, lean: Any, *, authorization: str | None) -> dict[str, Any]:
+        self._dp_require(authorization)
+        try:
+            session = self.decision_paths.step(vid, str(step_id), lean=lean if lean is None else str(lean),
+                                               now_ms=self.clock_ms())
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
+        return {"session": session, "llm_call_count": 0, "execution_allowed": False}
+
+    def _dp_lock_point(self, session: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+        """The newest retained page point of this contract, or a fresh same-contract capture."""
+        candidate_id = session["candidate_id"]
+        fresh_ms = max(60_000, 2 * self.config.locked_sample_interval_ms)
+        with self._view_lock:
+            # Only the shown candidates of this contract: the cache decompresses on every read,
+            # so it is never scanned while _view_lock is held.
+            ids = [(entry.get("snapshot") or {}).get("snapshot_id")
+                   for entry in (self._current_view or {}).get("candidates") or []
+                   if isinstance(entry, Mapping) and (entry.get("snapshot") or {}).get("candidate_id") == candidate_id]
+            points = [p for p in (self._lockable_points.get(i) for i in ids if i) if p is not None]
+        points = [p for p in points if now_ms - int(p.get("recorded_at_ms") or 0) <= fresh_ms]
+        if points:
+            return max(points, key=lambda p: int(p.get("recorded_at_ms") or 0))
+        episode_like = {"contract": session["contract"], "candidate_id": candidate_id}
+        point = self._capture_locked_point(episode_like, self._current_view or {}, now_ms)
+        snapshot = point["candidate"].get("snapshot") or {}
+        # a tracking capture may be partial; it must not become a lock's t0 baseline
+        if (point["candidate"].get("capture_gaps")
+                or (snapshot.get("economics") or {}).get("net_credit_after_entry_fee_btc") is None):
+            raise WorkbenchError(409, "locked_quote_unavailable", "same-contract quote is incomplete; retry")
+        return point
+
+    def decision_path_conclude(self, vid: str, choice: str, request_key: str, *,
+                               authorization: str | None) -> dict[str, Any]:
+        """lock / decline / watch. Lock creates the tracking lock now (t0 = conclusion)."""
+        self._dp_require(authorization)
+        if choice not in decision_path.CONCLUSIONS:
+            raise WorkbenchError(400, "bad_conclusion", "choice must be lock, decline or watch")
+        session = self.decision_path_session(vid)
+        if session["status"] != decision_path_store.OPEN:
+            raise WorkbenchError(409, "verification_closed", "verification is closed")
+        now = self.clock_ms()
+        episode_id, lock_result = None, None
+        if choice == "lock":
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key or ""):
+                raise WorkbenchError(400, "bad_lock_request", "idempotency_key is required")
+            if now >= int(session["contract"].get("expiry_ms") or 0):
+                raise WorkbenchError(409, "contract_expired", "expired contract cannot start regular observation")
+        try:
+            # one conclusion at a time: a racing decline cannot leave a lock without its verification
+            self.decision_paths.claim(vid, now_ms=now)
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
+        try:
+            if choice == "lock":
+                point = self._dp_lock_point(session, now)
+                if point["candidate"]["snapshot"]["candidate_id"] != session["candidate_id"]:
+                    raise WorkbenchError(409, "lock_candidate_mismatch", "snapshot does not belong to verified contract")
+                try:
+                    lock_result = self.locked_candidates.lock(point, request_key=request_key, now_ms=self.clock_ms())
+                except locked_store.LockedCandidateError as exc:
+                    raise WorkbenchError(409, exc.code, exc.code) from exc
+                episode_id = (lock_result.get("episode") or {}).get("episode_id")
+            session = self.decision_paths.conclude(vid, choice, now_ms=self.clock_ms(), episode_id=episode_id,
+                                                   lock_created=None if lock_result is None else bool(lock_result.get("created")))
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
+        finally:
+            self.decision_paths.release(vid)
+        if self.chain_audit is not None:
+            self.chain_audit.event("decision_path_concluded", now, {"verification_id": vid, "choice": choice,
+                                   "episode_id": episode_id, "path_version": session.get("path_version")})
+        return {"session": session, "lock": lock_result, "llm_call_count": 0, "execution_allowed": False}
+
+    def _decision_path_housekeeping(self, now_ms: int) -> None:
+        """Close sessions still open at expiry, then backfill the static settlement result of
+        every verified policy (locked or not) from the exchange delivery price. Never raises."""
+        try:
+            self.decision_paths.expire_due(now_ms)
+            pending = self.decision_paths.unsettled_after(now_ms, delay_ms=self.DP_SETTLE_DELAY_MS)
+        except Exception:
+            return
+        deliveries: dict[int, Any] = {}
+        for item in pending:
+            vid = item["verification_id"]
+            if now_ms - self._dp_settle_attempts.get(vid, 0) < self.SETTLEMENT_RETRY_MS:
+                continue
+            self._dp_settle_attempts[vid] = now_ms
+            try:
+                session = self.decision_paths.get(vid)
+                if session["status"] == decision_path_store.OPEN:
+                    continue
+                contract = session["contract"]
+                expiry = contract["expiry_ms"]
+                if expiry not in deliveries:
+                    try:
+                        deliveries[expiry] = self.delivery_price_fetch(expiry)
+                    except Exception:
+                        deliveries[expiry] = None
+                delivery = deliveries[expiry]
+                if delivery is None:
+                    if now_ms - contract["expiry_ms"] >= self.SETTLEMENT_GIVE_UP_MS:
+                        self.decision_paths.settle(vid, {"status": "delivery_price_unavailable"}, now_ms=now_ms)
+                    continue
+                price = float(delivery["delivery_price_usd"])
+                payout = underwriting_core.inverse_spread_payout(
+                    contract["side"], contract["short_strike_usd"], contract["long_strike_usd"], price,
+                    float(contract.get("quantity_btc") or 1.0))
+                entry = session.get("entry_after_fee_btc")
+                result = decision_path.outcome(contract, entry if isinstance(entry, (int, float)) else None, payout, price)
+                self.decision_paths.settle(vid, {"status": "settled", "delivery_price_usd": price, "payout_btc": payout,
+                                                 "entry_basis": "verification_start_quote", **(result or {})},
+                                           now_ms=now_ms)
+            except Exception as exc:
+                # a session that cannot be settled stops being retried after the lock give-up window
+                expiry = item.get("expiry_ms")
+                if isinstance(expiry, int) and now_ms - expiry >= self.SETTLEMENT_GIVE_UP_MS:
+                    try:
+                        self.decision_paths.settle(vid, {"status": "settlement_failed",
+                                                         "error_type": type(exc).__name__}, now_ms=now_ms)
+                    except Exception:
+                        pass
+
     def invalidate_view_body(self) -> None:
         # Safe under any other lock: _body_lock is only ever held for a dict/int update.
         with self._body_lock:
@@ -3963,7 +4273,8 @@ class AstraWorkbench:
                     "daily_snapshots": self.recent_daily_snapshots(),
                     "transitions": self.recent_transitions(),
                     "manual_review_state": self.manual_review_state(now), "llm_call_count": 0,
-                    "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now)}
+                    "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now),
+                    "expiry_gamma": self.expiry_gamma_view([], now), "decision_path": self.decision_path_overview()}
             self._attach_exogenous_events(warm, now)
             result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
@@ -3974,6 +4285,8 @@ class AstraWorkbench:
                      "locked_candidates": self.locked_candidate_list(),
                      "manual_review_state": self.manual_review_state(now),
                      "cross_asset": self.cross_asset_view(view.get("candidates") or [], now),
+                     "expiry_gamma": self.expiry_gamma_view(view.get("candidates") or [], now),
+                     "decision_path": self.decision_path_overview(),
                      "runtime": {"memory": dict(self._memory), "threads": threading.active_count()}})
         self._attach_exogenous_events(view, now)
         usage_engines: dict[Any, Any] = {}
@@ -4841,6 +5154,19 @@ class AstraWorkbench:
             self._cross_asset_thread = threading.Thread(target=cross, name="astra-cross-asset", daemon=True)
             self._cross_asset_thread.start()
 
+        def walls() -> None:
+            while not self._background_stop.is_set():
+                try:
+                    self.refresh_expiry_gamma()
+                except Exception:  # a structure reading must never take the workbench down
+                    pass
+                if self._background_stop.wait(30):
+                    break
+
+        if self.config.expiry_gamma_enabled and not (self._expiry_gamma_thread and self._expiry_gamma_thread.is_alive()):
+            self._expiry_gamma_thread = threading.Thread(target=walls, name="astra-expiry-gamma", daemon=True)
+            self._expiry_gamma_thread.start()
+
         self._sampler_running = True
         if not (self._sampler_thread and self._sampler_thread.is_alive()):
             self._sampler_thread = threading.Thread(target=sample, name="astra-locked-sampler", daemon=True)
@@ -4848,7 +5174,8 @@ class AstraWorkbench:
 
     def stop_background(self) -> None:
         self._background_stop.set()
-        for thread in (self._background_thread, self._sampler_thread, self._cross_asset_thread):
+        for thread in (self._background_thread, self._sampler_thread, self._cross_asset_thread,
+                       self._expiry_gamma_thread):
             if thread:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
@@ -5050,6 +5377,16 @@ def make_handler(workbench: AstraWorkbench):
             if parsed.path == "/api/workbench/locked-candidates":
                 self._json(200, workbench.locked_candidate_list())
                 return
+            if parsed.path == "/api/workbench/decision-path":
+                self._json(200, workbench.decision_path_overview())
+                return
+            dp_get = re.fullmatch(r"/api/workbench/decision-path/(dpv_[0-9a-f]{16})", parsed.path)
+            if dp_get:
+                try:
+                    self._json(200, workbench.decision_path_session(dp_get.group(1)))
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                return
             if parsed.path == "/api/workbench/chain-audit":
                 if workbench.chain_audit is None:
                     self._json(404, {"schema": SCHEMA, "code": "chain_audit_disabled"})
@@ -5157,7 +5494,10 @@ def make_handler(workbench: AstraWorkbench):
             lock_path = "/api/workbench/locked-candidates"
             stop_match = re.fullmatch(re.escape(lock_path) + r"/(lce_[0-9a-f]{24})/stop", parsed.path)
             hold_match = re.fullmatch(re.escape(lock_path) + r"/(lce_[0-9a-f]{24})/hold-review", parsed.path)
-            if parsed.path not in {"/api/workbench/review", lock_path} and not stop_match and not hold_match:
+            dp_path = "/api/workbench/decision-path"
+            dp_match = re.fullmatch(re.escape(dp_path) + r"/(dpv_[0-9a-f]{16})/(refresh|step|conclude)", parsed.path)
+            if (parsed.path not in {"/api/workbench/review", lock_path, dp_path} and not stop_match and not hold_match
+                    and not dp_match):
                 self._json(404, {"schema": SCHEMA, "status": "ERROR", "code": "not_found"})
                 return
             body: dict[str, Any] = {}
@@ -5172,6 +5512,25 @@ def make_handler(workbench: AstraWorkbench):
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
                 if not isinstance(body, dict):
                     raise WorkbenchError(400, "bad_json", "request body must be an object")
+                if parsed.path == dp_path or dp_match:
+                    if parsed.path == dp_path:
+                        result = workbench.decision_path_start(str(body.get("candidate_id") or ""),
+                            str(body.get("snapshot_id") or ""), authorization=access.authorization_for_workbench)
+                    elif dp_match.group(2) == "refresh":
+                        result = workbench.decision_path_refresh(dp_match.group(1),
+                            authorization=access.authorization_for_workbench)
+                    elif dp_match.group(2) == "step":
+                        result = workbench.decision_path_step(dp_match.group(1), body.get("step"), body.get("lean"),
+                            authorization=access.authorization_for_workbench)
+                    else:
+                        result = workbench.decision_path_conclude(dp_match.group(1), str(body.get("choice") or ""),
+                            str(body.get("idempotency_key") or ""), authorization=access.authorization_for_workbench)
+                    workbench.invalidate_view_body()
+                    self._json(200, result)
+                    if not (dp_match and dp_match.group(2) == "step"):
+                        workbench.record_action("decision_path", {k: v for k, v in result.items() if k != "session"},
+                                                request={**body, "verification_id": dp_match.group(1) if dp_match else None})
+                    return
                 if parsed.path == lock_path:
                     if "new_reference" in body and not isinstance(body["new_reference"], bool):
                         raise WorkbenchError(400, "bad_lock_request", "new_reference must be boolean")
@@ -5205,6 +5564,8 @@ def make_handler(workbench: AstraWorkbench):
                 workbench.record_action(audit_kind, result, request={**body, "episode_id": episode_ref})
             except WorkbenchError as exc:
                 self._json(exc.status_code, exc.as_payload())
+                if parsed.path == dp_path or dp_match:
+                    return
                 if exc.status_code not in (401, 403):
                     audit_kind = ("lock" if parsed.path == lock_path else "lock_stop" if stop_match
                                   else "hold_review" if hold_match else "review")
@@ -5316,6 +5677,7 @@ def config_from_env() -> WorkbenchConfig:
         chain_audit_interval_ms=int(os.environ.get("ASTRA_CHAIN_AUDIT_INTERVAL_MS") or "900000"),
         chain_audit_retention_days=int(os.environ.get("ASTRA_CHAIN_AUDIT_RETENTION_DAYS") or "30"),
         cross_asset_enabled=os.environ.get("ASTRA_CROSS_ASSET_ENABLED", "1") == "1",
+        expiry_gamma_enabled=os.environ.get("ASTRA_EXPIRY_GAMMA_ENABLED", "1") == "1",
         memory_soft_mb=int(os.environ.get("ASTRA_WORKBENCH_MEMORY_SOFT_MB") or "1536"),
         memory_hard_mb=int(os.environ.get("ASTRA_WORKBENCH_MEMORY_HARD_MB") or "2560"),
         map_sources_enabled=os.environ.get("ASTRA_MAP_SOURCES_ENABLED") == "1",
