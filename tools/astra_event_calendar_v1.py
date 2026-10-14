@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 SCHEMA = "astra_event_calendar_v1@1.0.0"
-CALENDAR_VERSION = "2026-10-13"
+CALENDAR_VERSION = "2026-10-14"
 HORIZON_DAYS = 14
 
 KIND_CN = {
@@ -38,7 +38,9 @@ COVERAGE = {"BLS": "2027-12-31", "Fed": "2027-12-31", "BEA": "2026-12-31"}
 # Releases the source lists without a date yet: (kind, period, source, shown from, shown
 # until). Shown once the horizon reaches about when it would normally fall, and for a month
 # after that, so a forgotten entry cannot claim "undated" forever.
-PENDING = (("PCE", "11 月", "BEA", "2026-12-18", "2027-01-31"),)
+# 2026-10-14: BEA lists every 2026 Personal Income and Outlays date (re-checked against
+# bea.gov/news/schedule/full; the earlier 11-04 / 12-02 rows were other BEA releases).
+PENDING: tuple[tuple[str, str, str, str, str], ...] = ()
 
 # (kind, date ET, time ET, period in Chinese, flags). FOMC: the decision day (statement
 # 14:00 ET, press conference 14:30); "sep" = with economic projections; 2027 FOMC dates are
@@ -50,17 +52,18 @@ EVENTS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("PPI", "2026-10-15", "08:30", "9 月", ()),
     ("FOMC", "2026-10-28", "14:00", "10 月会议", ()),
     ("GDP", "2026-10-29", "08:30", "三季度初值", ()),
-    ("PCE", "2026-11-04", "08:30", "9 月", ()),
+    ("PCE", "2026-10-29", "08:30", "9 月", ()),
     ("NFP", "2026-11-06", "08:30", "10 月", ()),
     ("CPI", "2026-11-10", "08:30", "10 月", ()),
     ("PPI", "2026-11-13", "08:30", "10 月", ()),
     ("GDP", "2026-11-25", "08:30", "三季度修正值", ()),
-    ("PCE", "2026-12-02", "08:30", "10 月", ()),
+    ("PCE", "2026-11-25", "08:30", "10 月", ()),
     ("NFP", "2026-12-04", "08:30", "11 月", ()),
     ("FOMC", "2026-12-09", "14:00", "12 月会议", ("sep",)),
     ("CPI", "2026-12-10", "08:30", "11 月", ()),
     ("PPI", "2026-12-15", "08:30", "11 月", ()),
     ("GDP", "2026-12-23", "08:30", "三季度终值", ()),
+    ("PCE", "2026-12-23", "08:30", "11 月", ()),
     # ---- 2027 (BLS and Fed; BEA has not published 2027 yet)
     ("NFP", "2027-01-08", "08:30", "12 月", ()),
     ("CPI", "2027-01-13", "08:30", "12 月", ()),

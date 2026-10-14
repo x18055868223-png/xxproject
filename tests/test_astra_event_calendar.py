@@ -88,7 +88,9 @@ def test_two_week_window_and_contract_window():
     assert cal.contract_events(now, now - 1) is None and cal.contract_events(now, None) is None
 
 
-def test_gaps_name_sources_past_their_schedule_and_undated_releases():
+def test_gaps_name_sources_past_their_schedule_and_undated_releases(monkeypatch):
+    # every 2026 BEA date is published now; the undated mechanism is checked with a stand-in row
+    monkeypatch.setattr(cal, "PENDING", (("PCE", "11 月", "BEA", "2026-12-18", "2027-01-31"),))
     late = cal.upcoming(ms("2026-12-15T00:00:00"))
     assert {"source": "BEA", "through": "2026-12-31"} not in late["gaps"]       # BEA covers all of 2026
     assert any(g.get("undated") and g["kind"] == "PCE" for g in late["gaps"])
@@ -118,3 +120,9 @@ def test_a_calendar_failure_never_breaks_the_view(tmp_path, monkeypatch):
     view = {"candidates": [{"status": "error"}, {"snapshot": None}]}
     wb._attach_exogenous_events(view, ms("2026-10-13T14:00:00"))
     assert [c["exogenous_events"] for c in view["candidates"]] == [None, None]
+
+
+def test_bea_personal_income_dates_match_the_official_schedule():
+    """Re-checked 2026-10-14 on bea.gov/news/schedule/full: PCE shares GDP's day in 2026 Q4."""
+    pce = {p: d for k, d, _, p, _ in cal.EVENTS if k == "PCE" and d.startswith("2026")}
+    assert pce == {"9 月": "2026-10-29", "10 月": "2026-11-25", "11 月": "2026-12-23"}
