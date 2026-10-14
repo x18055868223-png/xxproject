@@ -141,6 +141,11 @@ def _effective(rows: Sequence[Mapping[str, Any]], raw: Sequence[str], persist: b
         if state == current:
             out.append(current)
             continue
+        if current == UNVERIFIABLE:
+            # first real reading after missing data is adopted at once; persistence only
+            # damps flicker between readings (and a reading briefly going missing)
+            out.append(state)
+            continue
         if raw[i - 1] != state:
             run_start = i
         lasted = rows[i]["t"] - rows[run_start]["t"] >= PERSIST_MS

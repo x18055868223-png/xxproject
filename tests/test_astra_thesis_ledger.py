@@ -150,3 +150,15 @@ def test_series_v3_reads_producer_facts_and_endpoint_carries_the_ledger(tmp_path
     assert [t["id"] for t in ledger["theses"]] == ["L1", "L2", "L3", "L4", "L5", "L6"]
     assert ledger["llm_call_count"] == 0 and ledger["probability_meaning"] is False
     assert ledger["projection_cn"]["note_cn"]
+
+
+def test_first_reading_after_missing_data_is_adopted_at_once():
+    rs = rows([1.0] * 40, anchor_score=None)
+    for r in rs[-3:]:
+        r["metrics"]["anchor_score"] = 35.0
+    assert thesis(build(rs), "L5")["state_now"] == "WEAKENED"
+    # a reading going missing for two samples does not flip it to unverifiable
+    rs = rows([1.0] * 40, anchor_score=70.0)
+    for r in rs[-2:]:
+        r["metrics"]["anchor_score"] = None
+    assert thesis(build(rs), "L5")["state_now"] == "HOLDS"
