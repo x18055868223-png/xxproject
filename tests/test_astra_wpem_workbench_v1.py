@@ -232,7 +232,7 @@ def test_program_q1_uses_the_same_distance_convention_as_locked_compare(tmp_path
 def test_full_wpem_archive_is_visible_in_data_health_not_silent(tmp_path):
     # P0: the archive hit its cap in production and stopped without any notice.
     original, snapshots = make_workbench(tmp_path)
-    config = replace(original.config, wpem_enabled=True, research_max_bytes=2000)
+    config = replace(original.config, wpem_enabled=True, wpem_history_replay=True, research_max_bytes=2000)
     wb = workbench.AstraWorkbench(config, discovery_capture=original.discovery_capture,
                                   quote_capture=original.quote_capture, clock_ms=original.clock_ms)
     write_fmz(snapshots, native_gate())

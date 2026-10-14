@@ -204,6 +204,52 @@ def compose(snapshot, archive, native_path, *, raw_payload=None, engine=None, re
                                          native_sources={key:value for key,value in sources.items() if key in needed})
 
 
+_SOURCES_CACHE={}
+
+
+def _sources_cached(path):
+    """_sources keyed by the file's (size, mtime_ns): the 2 MB tail is hashed once per change."""
+    try:
+        stat=Path(path).stat()
+    except OSError:
+        return {}
+    key=(str(path),stat.st_size,stat.st_mtime_ns)
+    hit=_SOURCES_CACHE.get(str(path))
+    if hit is not None and hit[0]==key:
+        return dict(hit[1])
+    sources=_sources(path)
+    _SOURCES_CACHE[str(path)]=(key,sources)
+    return dict(sources)
+
+
+def compose_current(snapshot, native_path, *, raw_payload=None, engine=None, release=None,
+                    cross_section=(), current_packet=None, native_cache=None):
+    """compose() for the current point only: no archive sample, no history replay.
+
+    The package has the same shape compose() gives a candidate with no archived history:
+    one current packet plus its native-producer qualification (source bytes from the
+    native file, else the read-only archive cache). Nothing is written.
+    """
+    receipts=packets.collect_source_receipts(snapshot,engine) if engine is not None else {}
+    packet=(current_packet if _reusable_current_packet(current_packet,snapshot,raw_payload,receipts)
+            else packets.build_packet(snapshot,raw_payload=raw_payload,source_receipts=receipts))
+    digest=packet['snapshot'].get('fact_context',{}).get('source_hash')
+    sources={}
+    if isinstance(digest,str) and len(digest)==64:
+        raw=_sources_cached(native_path).get(digest)
+        if raw is None and native_cache is not None:
+            saved=Path(native_cache)/(digest+'.json'); packed=Path(native_cache)/(digest+'.json.gz')
+            if packed.is_file() or saved.is_file():
+                raw=gzip.decompress(packed.read_bytes()) if packed.is_file() else saved.read_bytes()
+                if hashlib.sha256(raw).hexdigest()!=digest: raise ValueError('native_cache_hash_mismatch')
+        if raw is not None:
+            sources[digest]=raw
+    report=native.qualify_native(packet,sources.get(digest),
+        evidence_kind='native_producer' if packet['provenance']['source_kind']=='live_public_capture' else 'synthetic_fixture')
+    return evidence.build_review_evidence(snapshot,[packet],[report],release_identity=release,
+                                         cross_section=cross_section,native_sources=sources)
+
+
 def current_only_evidence(snapshot, *, current_packet=None, release=None, cross_section=()):
     """Build a valid package from the frozen current snapshot when history cannot replay."""
     # Preserve already verified current quote bytes; only historical rows are isolated.

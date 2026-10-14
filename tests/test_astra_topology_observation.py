@@ -68,6 +68,8 @@ def test_history_failure_uses_current_only_evidence_for_observation_input(tmp_pa
     wb, _snapshots = _wpem_workbench(tmp_path, transport=transport)
     monkeypatch.setattr(wpem_adapter, "compose", lambda *args, **kwargs: (_ for _ in ()).throw(
         RuntimeError("history archive corrupt")))
+    monkeypatch.setattr(wpem_adapter, "compose_current", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("history archive corrupt")))
     monkeypatch.setattr(workbench.review_core, "run_review", fake_run_review)
 
     view = wb.refresh(now_ms=T)
@@ -110,6 +112,7 @@ def test_corrupt_composed_package_is_discarded_before_cache(tmp_path, monkeypatc
         return package
 
     monkeypatch.setattr(wpem_adapter, "compose", corrupt_compose)
+    monkeypatch.setattr(wpem_adapter, "compose_current", corrupt_compose)
 
     item = wb.refresh(now_ms=T)["candidates"][0]
     proof = wb.wpem_evidence(item["snapshot"]["snapshot_id"])

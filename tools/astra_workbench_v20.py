@@ -1579,6 +1579,9 @@ class WorkbenchConfig:
     research_max_bytes: int = candidate_asof.DEFAULT_MAX_BYTES
     research_max_samples: int = candidate_asof.DEFAULT_MAX_SAMPLES
     wpem_enabled: bool = False
+    # Off: each refresh composes WPEM from the current point only (no archive sample, no
+    # history replay). The archive stays readable; the lock series is the time memory.
+    wpem_history_replay: bool = False
     locked_sample_interval_ms: int = 60_000
     locked_max_active: int = 4
     locked_max_episodes: int = 64
@@ -2089,7 +2092,8 @@ class AstraWorkbench:
         health = self.data_engine.health(now_ms)
         if self._wpem_archive is not None:
             # A full archive stops WPEM memory; surface it instead of failing silently.
-            health["wpem_archive"] = self._wpem_archive.usage()
+            health["wpem_archive"] = {**self._wpem_archive.usage(),
+                                      "sampling": bool(self.config.wpem_history_replay)}
         if self._map_source_mode() != map_projection.SOURCE_MODE_PRODUCER_MANIFEST:
             return health
         projection = projection or {}
@@ -2631,7 +2635,8 @@ class AstraWorkbench:
             self._attach_wpem(view, finished_at_ms)
             mark("wpem")
             if self._wpem_archive is not None and isinstance(view.get("data_health"), dict):
-                view["data_health"]["wpem_archive"] = self._wpem_archive.usage()
+                view["data_health"]["wpem_archive"] = {**self._wpem_archive.usage(),
+                                                       "sampling": bool(self.config.wpem_history_replay)}
             self._remember_lockable(view, finished_at_ms)
             if not self._sampler_running:
                 self._refresh_locked_candidates(view, finished_at_ms)
@@ -2769,10 +2774,18 @@ class AstraWorkbench:
                     except Exception as peer_exc:
                         excluded_peers.append(wpem_workbench.non_comparable_peer(peer_snapshot, peer_exc))
                 try:
-                    package = wpem_workbench.compose(snapshot, self._wpem_archive, self.config.snapshots_jsonl,
-                        raw_payload=raw_payload, engine=self.data_engine,
-                        release=view["release_identity"], now_ms=now_ms,
-                        cross_section=cross_section)
+                    if self.config.wpem_history_replay:
+                        package = wpem_workbench.compose(snapshot, self._wpem_archive, self.config.snapshots_jsonl,
+                            raw_payload=raw_payload, engine=self.data_engine,
+                            release=view["release_identity"], now_ms=now_ms,
+                            cross_section=cross_section)
+                    else:
+                        package = wpem_workbench.compose_current(
+                            snapshot, self.config.snapshots_jsonl, raw_payload=raw_payload,
+                            engine=self.data_engine, release=view["release_identity"],
+                            cross_section=cross_section, current_packet=current_packet,
+                            native_cache=(self._wpem_archive.path / "native_sources"
+                                          if self._wpem_archive is not None else None))
                     wpem_workbench.require_current_package_binding(snapshot, package)
                     attach_package(package)
                 except Exception as history_exc:
@@ -4987,6 +5000,7 @@ def config_from_env() -> WorkbenchConfig:
         review_timeout_s=int(os.environ.get("ASTRA_WORKBENCH_REVIEW_TIMEOUT_S") or str(DEFAULT_HTTP_TIMEOUT)),
         refresh_interval_s=float(os.environ.get("ASTRA_WORKBENCH_REFRESH_SECONDS") or "30"),
         wpem_enabled=os.environ.get("ASTRA_WORKBENCH_WPEM_ENABLED", "0") == "1",
+        wpem_history_replay=os.environ.get("ASTRA_WPEM_HISTORY_REPLAY", "0") == "1",
         locked_sample_interval_ms=max(1000, int(os.environ.get("ASTRA_LOCKED_SAMPLE_INTERVAL_MS") or "60000")),
         locked_max_active=int(os.environ.get("ASTRA_LOCKED_MAX_ACTIVE") or "4"),
         locked_max_episodes=int(os.environ.get("ASTRA_LOCKED_MAX_EPISODES") or "64"),
