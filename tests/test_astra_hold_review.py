@@ -136,6 +136,8 @@ def test_validator_allows_numbers_from_the_input_only():
     ("expired", {"status": "settled", "settlement_result_usd": -9.5}, None, "flat", "settlement"),
     ("expired", {"status": "settled", "settlement_result_usd": -40.0}, None, "loss", "settlement"),
     ("expired", {"status": "delivery_price_unavailable"}, None, None, "settlement"),
+    ("expired", {"status": "settled", "settlement_result_usd": None},
+     {"float_pnl_btc": 0.0034, "spot_usd": 83000.0}, "profit", "floating_at_expiry"),
     ("stopped", {}, {"float_pnl_btc": -0.0026, "spot_usd": 83000.0}, "loss", "floating_at_stop"),
     ("active", {}, {"float_pnl_btc": 0.0001, "spot_usd": 83000.0}, "flat", "floating_now"),
     ("active", {}, {"float_pnl_btc": None, "spot_usd": 83000.0}, None, "floating_now"),

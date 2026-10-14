@@ -3151,6 +3151,13 @@ class AstraWorkbench:
             basis = "settlement"
             if settled.get("status") == "settled" and isinstance(settled.get("settlement_result_usd"), (int, float)):
                 usd_value = float(settled["settlement_result_usd"])
+            else:
+                # no settlement result (e.g. the lock-time credit was never recorded):
+                # fall back to the last floating PnL before expiry, labelled as such
+                metrics = self._series_tail_metrics(str(episode.get("episode_id") or "")) or {}
+                pnl, spot = metrics.get("float_pnl_btc"), metrics.get("spot_usd")
+                if isinstance(pnl, (int, float)) and isinstance(spot, (int, float)):
+                    usd_value, basis = float(pnl) * float(spot), "floating_at_expiry"
         else:
             basis = "floating_now" if episode.get("status") == "active" else "floating_at_stop"
             metrics = self._series_tail_metrics(str(episode.get("episode_id") or "")) or {}
