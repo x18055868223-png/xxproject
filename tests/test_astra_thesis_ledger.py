@@ -37,7 +37,10 @@ def test_short_buffer_states_worst_and_recovery():
     l1 = thesis(led, "L1")
     assert l1["state_t0"] == "HOLDS" and l1["state_worst"] == "BROKEN"
     assert l1["state_now"] == "HOLDS"  # states recover; worst is kept separately
-    assert "持有以来最差失效" in " ".join(led["projection_cn"]["theses_cn"])
+    assert l1["state_now_cn"] == "缓冲充足"
+    assert l1["experience_cn"].startswith("最低 -0.50%")
+    assert "已进入责任区累计 2 分钟" in l1["experience_cn"]
+    assert "短腿缓冲" in led["projection_cn"]["headline_cn"]
 
 
 def test_numeric_hysteresis_stops_flicker_at_the_line():
@@ -79,7 +82,8 @@ def test_t0_adverse_lane_is_a_known_counter_tracked_for_easing():
     l4 = thesis(build(base), "L4")
     assert l4["t0_adverse"] is True and l4["state_t0"] == "BROKEN"
     assert l4["eased"] is True
-    assert "锁定时即不利" in " ".join(build(base)["projection_cn"]["theses_cn"])
+    assert l4["state_now_cn"] == "已缓解" and l4["claim_cn"].startswith("锁定时已不利")
+    assert "锁定时已不利：Gamma 体制（已缓解）" in build(base)["projection_cn"]["headline_cn"]
 
 
 def test_flow_persistent_pressure_and_call_mirror():
@@ -162,3 +166,18 @@ def test_first_reading_after_missing_data_is_adopted_at_once():
     for r in rs[-2:]:
         r["metrics"]["anchor_score"] = None
     assert thesis(build(rs), "L5")["state_now"] == "HOLDS"
+
+
+def test_pending_reading_is_said_not_hidden():
+    rs = rows([1.0] * 40)
+    rs[-1]["metrics"] = {**rs[-1]["metrics"], "gamma_regime": "NEGATIVE_GAMMA_AMPLIFYING"}
+    l4 = thesis(build(rs), "L4")
+    assert l4["state_now"] == "HOLDS" and "转为负 Gamma" in l4["pending_cn"]
+
+
+def test_headline_reads_as_one_sentence():
+    rs = rows([1.0] * 50, anchor_score=70.0)
+    for r in rs[5:]:
+        r["metrics"]["anchor_score"] = 40.0
+    head = build(rs)["projection_cn"]["headline_cn"]
+    assert "变化：锚定松动" in head and "锚定锚定" not in head

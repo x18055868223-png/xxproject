@@ -52,6 +52,7 @@ if __package__:
     from . import astra_candidate_asof_v1 as candidate_asof
     from . import astra_wpem_workbench_v1 as wpem_workbench
     from . import astra_thesis_ledger_v1 as thesis_ledger
+    from . import astra_hold_review_v1 as hold_review
     from . import astra_wpem_product_review_v1 as wpem_review
     from . import astra_release_identity_v1 as release_core
     from . import astra_chain_audit_v1 as chain_audit
@@ -81,6 +82,7 @@ else:  # direct CLI execution from tools/
     import astra_candidate_asof_v1 as candidate_asof
     import astra_wpem_workbench_v1 as wpem_workbench
     import astra_thesis_ledger_v1 as thesis_ledger
+    import astra_hold_review_v1 as hold_review
     import astra_wpem_product_review_v1 as wpem_review
     import astra_release_identity_v1 as release_core
     import astra_chain_audit_v1 as chain_audit
@@ -3119,12 +3121,64 @@ class AstraWorkbench:
         return {**policy, "compact_interval_ms": self.config.locked_compact_interval_ms,
                 "last_compaction": deepcopy(self._last_compaction)}
 
+    LOCK_FLAT_USD = 10.0
+
+    def _series_tail_metrics(self, episode_id: str) -> Mapping[str, Any] | None:
+        """Metrics of the newest series row, read from the file's tail only."""
+        try:
+            path = self.locked_candidates._series_path(episode_id)
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - 16_384))
+                lines = handle.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, Mapping) and isinstance(row.get("metrics"), Mapping):
+                return row["metrics"]
+        return None
+
+    def _lock_outcome(self, episode: Mapping[str, Any], settlements: Mapping[str, Any]) -> dict[str, Any]:
+        """Profit / loss / flat of one lock, without the amount on the list. Expired: the
+        settlement result; stopped or active: the latest Deribit floating PnL in USD."""
+        settled = settlements.get(episode.get("episode_id")) or {}
+        usd_value, basis = None, None
+        if episode.get("status") == "expired":
+            basis = "settlement"
+            if settled.get("status") == "settled" and isinstance(settled.get("settlement_result_usd"), (int, float)):
+                usd_value = float(settled["settlement_result_usd"])
+        else:
+            basis = "floating_now" if episode.get("status") == "active" else "floating_at_stop"
+            metrics = self._series_tail_metrics(str(episode.get("episode_id") or "")) or {}
+            pnl, spot = metrics.get("float_pnl_btc"), metrics.get("spot_usd")
+            if isinstance(pnl, (int, float)) and isinstance(spot, (int, float)):
+                usd_value = float(pnl) * float(spot)
+        verdict = None
+        if usd_value is not None:
+            verdict = ("flat" if abs(usd_value) <= self.LOCK_FLAT_USD
+                       else "profit" if usd_value > 0 else "loss")
+        return {"verdict": verdict, "basis": basis, "flat_band_usd": self.LOCK_FLAT_USD}
+
     def locked_candidate_list(self) -> dict[str, Any]:
         try:
             episodes = self.locked_candidates.list()
             error = self._locked_refresh_error
         except locked_store.LockedCandidateError as exc:
             episodes, error = [], exc.code
+        try:
+            settlements = self.locked_settlements()
+        except Exception:
+            settlements = {}
+        for episode in episodes:
+            if isinstance(episode, dict):
+                try:
+                    episode["outcome"] = self._lock_outcome(episode, settlements)
+                except Exception:
+                    episode["outcome"] = {"verdict": None, "basis": None}
         return {"schema": "locked_candidate_list@1.0.0", "episodes": episodes,
                 "error": error, "sample_interval_ms": self.config.locked_sample_interval_ms,
                 "max_active": self.config.locked_max_active, "max_samples": self.config.locked_max_samples,
@@ -3261,6 +3315,7 @@ class AstraWorkbench:
         return {"schema": locked_compare.SERIES_SCHEMA, "episode": index["episode"],
                 "settlement": self.locked_settlements().get(episode_id),
                 "thesis_ledger": ledger,
+                "hold_review": self.hold_review_state(episode_id, episode=episode),
                 "points": series, "gaps": gaps, "thinned": len(points) < total_points,
                 "retention": self.locked_retention_policy(),
                 "unreadable_points": unreadable, "llm_call_count": 0, "execution_allowed": False}
@@ -3507,6 +3562,127 @@ class AstraWorkbench:
         except locked_store.LockedCandidateError as exc:
             raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
         return {"episode": episode, "llm_call_count": 0, "execution_allowed": False}
+
+    HOLD_REVIEW_COOLDOWN_MS = 5 * 60_000
+    HOLD_REVIEW_INFLIGHT_MS = 5 * 60_000
+
+    def hold_review_state(self, episode_id: str, *, now_ms: int | None = None,
+                          episode: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Last hold review of one lock and whether a new one can run now (no model call)."""
+        now = self.clock_ms() if now_ms is None else now_ms
+        slot = ((self._read_state_cached().get("hold_review") or {}).get(episode_id) or {})
+        reasons = []
+        if not self.config.server_token or not self.config.api_key or not self._shared_budget_ready():
+            reasons.append("manual_review_service_not_configured")
+        if isinstance(episode, Mapping) and episode.get("status") != "active":
+            reasons.append("lock_not_active")
+        inflight = slot.get("inflight_since_ms")
+        if isinstance(inflight, int) and now - inflight < self.HOLD_REVIEW_INFLIGHT_MS:
+            reasons.append("hold_review_inflight")
+        last_ok = slot.get("last_ok_at_ms")
+        cooldown = max(0, self.HOLD_REVIEW_COOLDOWN_MS - (now - last_ok)) if isinstance(last_ok, int) else 0
+        if cooldown:
+            reasons.append("hold_review_cooldown")
+        return {"schema": hold_review.RESULT_SCHEMA, "last": deepcopy(slot.get("last")),
+                "last_failed": deepcopy(slot.get("last_failed")),
+                "enabled": not reasons, "reasons": reasons, "cooldown_remaining_ms": cooldown}
+
+    def hold_review_locked(self, episode_id: str, idempotency_key: str, *,
+                           authorization: str | None) -> dict[str, Any]:
+        """One model explanation of a held lock's ledger. Synchronous; one budgeted call."""
+        if not self._authorized(authorization):
+            raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", idempotency_key or ""):
+            raise WorkbenchError(400, "idempotency_key_invalid", "idempotency_key is required")
+        if not self.config.api_key or not self._shared_budget_ready():
+            raise WorkbenchError(503, "manual_review_service_not_configured", "model review is not configured")
+        series = self.locked_candidate_series(episode_id, max_points=2)
+        episode = series.get("episode") or {}
+        ledger = series.get("thesis_ledger") or {}
+        if episode.get("status") != "active":
+            raise WorkbenchError(409, "lock_not_active", "only a lock that is still held can be reviewed")
+        if ledger.get("status") != "OK":
+            raise WorkbenchError(409, "thesis_ledger_unavailable", "the lock has no ledger yet")
+        now = self.clock_ms()
+
+        def begin(state: dict[str, Any]) -> dict[str, Any] | None:
+            slots = state.setdefault("hold_review", {})
+            slot = slots.setdefault(episode_id, {})
+            done = (slot.get("keys") or {}).get(idempotency_key)
+            if done is not None:
+                return deepcopy(done)
+            inflight = slot.get("inflight_since_ms")
+            if isinstance(inflight, int) and now - inflight < self.HOLD_REVIEW_INFLIGHT_MS:
+                raise WorkbenchError(409, "hold_review_inflight", "a hold review of this lock is running")
+            last_ok = slot.get("last_ok_at_ms")
+            if isinstance(last_ok, int) and now - last_ok < self.HOLD_REVIEW_COOLDOWN_MS:
+                raise WorkbenchError(429, "hold_review_cooldown", "wait before reviewing this lock again")
+            slot["inflight_since_ms"] = now
+            for key in list(slots)[:-16]:  # keep the state small: at most 16 locks
+                slots.pop(key, None)
+            return None
+
+        replay = self._locked_state_update(begin)
+        if replay is not None:
+            return replay
+        contract = episode.get("contract") if isinstance(episode.get("contract"), Mapping) else {}
+        review_input = hold_review.build_input(
+            ledger, contract, now_ms=now,
+            events=event_calendar.contract_events(now, contract.get("expiry_ms")))
+        digest = hold_review.input_hash(review_input)
+        result: dict[str, Any] = {"schema": hold_review.RESULT_SCHEMA, "episode_id": episode_id,
+                                  "idempotency_key": idempotency_key, "requested_at_ms": now,
+                                  "input_hash": digest, "input_schema": hold_review.INPUT_SCHEMA,
+                                  "prompt_version": hold_review.PROMPT_VERSION, "model": self.config.model,
+                                  "ledger_at_ms": (ledger.get("coverage") or {}).get("latest_ms"),
+                                  "llm_call_count": 0, "execution_allowed": False}
+        try:
+            try:
+                reservation = self.budget.reserve(1, role="astra_hold_review", packet_hash=digest,
+                                                  model=self.config.model)
+            except signal_llm_review.DailyBudgetExceeded:
+                result.update(status="BUDGET_EXHAUSTED", reason="daily_budget_exhausted")
+                return result
+            send = self.llm_transport or signal_llm_review._post_chat_completion
+            result["llm_call_count"] = 1
+            try:
+                response = send(self.config.api_key, self.config.model,
+                                hold_review.build_request(review_input, self.config.model),
+                                self.config.review_timeout_s, endpoint=self.config.endpoint)
+            except Exception as exc:
+                self.budget.complete(reservation.get("reservation_id"), "ERROR")
+                result.update(status="CALL_FAILED", reason=type(exc).__name__)
+                return result
+            self.budget.complete(reservation.get("reservation_id"), "HTTP_OK",
+                                 signal_llm_review._response_usage(response))
+            try:
+                answer = signal_llm_review.parse_chat_response(response, strict_json_object=True)
+                result["answer"] = hold_review.validate(answer, review_input)
+                result["status"] = "OK"
+            except (ValueError, hold_review.HoldReviewInvalid) as exc:
+                result.update(status="INVALID_RESPONSE", reason=str(exc)[:80])
+            return result
+        finally:
+            result.setdefault("status", "ERROR")
+            result["finished_at_ms"] = self.clock_ms()
+
+            def finish(state: dict[str, Any]) -> None:
+                slot = state.setdefault("hold_review", {}).setdefault(episode_id, {})
+                slot["inflight_since_ms"] = None
+                keys = slot.setdefault("keys", {})
+                keys[idempotency_key] = deepcopy(result)
+                for key in list(keys)[:-8]:
+                    keys.pop(key, None)
+                if result["status"] == "OK":
+                    slot["last"] = deepcopy(result)
+                    slot["last_ok_at_ms"] = result["finished_at_ms"]
+                elif result.get("llm_call_count"):
+                    slot["last_failed"] = deepcopy(result)
+
+            try:
+                self._locked_state_update(finish)
+            except Exception:
+                pass
 
     def _record_research_samples(self, view: dict[str, Any], recorded_at_ms: int) -> None:
         """Optional local retention; failures do not erase the current contract view."""
@@ -4887,7 +5063,8 @@ def make_handler(workbench: AstraWorkbench):
                 return
             lock_path = "/api/workbench/locked-candidates"
             stop_match = re.fullmatch(re.escape(lock_path) + r"/(lce_[0-9a-f]{24})/stop", parsed.path)
-            if parsed.path not in {"/api/workbench/review", lock_path} and not stop_match:
+            hold_match = re.fullmatch(re.escape(lock_path) + r"/(lce_[0-9a-f]{24})/hold-review", parsed.path)
+            if parsed.path not in {"/api/workbench/review", lock_path} and not stop_match and not hold_match:
                 self._json(404, {"schema": SCHEMA, "status": "ERROR", "code": "not_found"})
                 return
             body: dict[str, Any] = {}
@@ -4914,6 +5091,10 @@ def make_handler(workbench: AstraWorkbench):
                 elif stop_match:
                     result = workbench.stop_locked_candidate(stop_match.group(1),
                         authorization=access.authorization_for_workbench)
+                elif hold_match:
+                    result = workbench.hold_review_locked(hold_match.group(1),
+                        str(body.get("idempotency_key") or ""),
+                        authorization=access.authorization_for_workbench)
                 else:
                     result = workbench.review_candidate(
                         str(body.get("candidate_id") or ""),
@@ -4925,15 +5106,19 @@ def make_handler(workbench: AstraWorkbench):
                     )
                 workbench.invalidate_view_body()
                 self._json(200, result)
-                audit_kind = "lock" if parsed.path == lock_path else "lock_stop" if stop_match else "review"
-                workbench.record_action(audit_kind, result, request={**body, "episode_id": stop_match.group(1) if stop_match else None})
+                audit_kind = ("lock" if parsed.path == lock_path else "lock_stop" if stop_match
+                              else "hold_review" if hold_match else "review")
+                episode_ref = (stop_match or hold_match).group(1) if (stop_match or hold_match) else None
+                workbench.record_action(audit_kind, result, request={**body, "episode_id": episode_ref})
             except WorkbenchError as exc:
                 self._json(exc.status_code, exc.as_payload())
                 if exc.status_code not in (401, 403):
-                    audit_kind = "lock" if parsed.path == lock_path else "lock_stop" if stop_match else "review"
+                    audit_kind = ("lock" if parsed.path == lock_path else "lock_stop" if stop_match
+                                  else "hold_review" if hold_match else "review")
+                    episode_ref = (stop_match or hold_match).group(1) if (stop_match or hold_match) else None
                     workbench.record_action(audit_kind + "_rejected", None,
                                             request={**(body if isinstance(body, dict) else {}),
-                                                     "episode_id": stop_match.group(1) if stop_match else None},
+                                                     "episode_id": episode_ref},
                                             error_code=exc.code)
             except (ValueError, UnicodeError):
                 self._json(400, {"schema": SCHEMA, "status": "ERROR", "code": "bad_json"})

@@ -25,6 +25,18 @@ PERSIST_MIN_SAMPLES = 10
 BAND = 0.10                      # numeric hysteresis: leaving a worse state needs 10% extra
 
 SCALES = (("15m", 15 * 60_000), ("1h", 3_600_000), ("3h", 3 * 3_600_000), ("since_t0", None))
+# Each lane says its state in its own words; the generic HOLDS/WEAKENED/BROKEN stay machine keys.
+STATUS_CN = {
+    "L1": {HOLDS: "缓冲充足", WEAKENED: "缓冲变薄", BROKEN: "已进入责任区"},
+    "L2": {HOLDS: "余量充足", WEAKENED: "余量变薄", BROKEN: "已越过"},
+    "L3": {HOLDS: "未被侵蚀", WEAKENED: "浮亏扩大", BROKEN: "浮亏超过入场信用"},
+    "L4": {HOLDS: "未变差", WEAKENED: "转为过渡", BROKEN: "转为负 Gamma"},
+    "L5": {HOLDS: "有效", WEAKENED: "松动", BROKEN: "脱锚"},
+    "L6": {HOLDS: "未压向卖出侧", WEAKENED: "出现不利流向", BROKEN: "持续不利流向"},
+}
+TONE = {HOLDS: "ok", WEAKENED: "warn", BROKEN: "bad", UNVERIFIABLE: "muted", NOT_RECORDED: "muted"}
+BJT_MS = 8 * 3_600_000
+
 SHAPE_CN = {"FLAT": "平稳", "JUMP": "单次跳变", "SUSTAINED": "持续单向", "CHOPPY": "反复", "INSUFFICIENT": "不足"}
 
 GAMMA_RANK = {"POSITIVE_GAMMA_PINNING": 2, "TRANSITION": 1, "NEGATIVE_GAMMA_AMPLIFYING": 0}
@@ -206,6 +218,32 @@ def _paths(rows: Sequence[Mapping[str, Any]], key: str, *, interval_ms: int, fla
 
 # ── the ledger ─────────────────────────────────────────────────────────────
 
+def _bjt(ms: int | None) -> str:
+    if not isinstance(ms, int):
+        return "—"
+    import time as _time
+    return _time.strftime("%m/%d %H:%M", _time.gmtime((ms + BJT_MS) / 1000))
+
+
+def _dur(ms: int) -> str:
+    minutes = int(round(ms / 60_000))
+    if minutes < 1:
+        return "不到 1 分钟"
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} 小时" + (f" {rest} 分" if rest else "")
+
+
+def _time_in(rows: Sequence[Mapping[str, Any]], effective: Sequence[str]) -> dict[str, int]:
+    """Time spent in each state: sample-to-sample intervals, never across a gap."""
+    out: dict[str, int] = {}
+    for i in range(len(rows) - 1):
+        step = rows[i + 1]["t"] - rows[i]["t"]
+        if step <= GAP_MS:
+            out[effective[i]] = out.get(effective[i], 0) + step
+    return out
+
 def _signed(value: float | None, digits: int = 2, unit: str = "%") -> str:
     return "—" if value is None else f"{value:+.{digits}f}{unit}"
 
@@ -216,7 +254,7 @@ def _btc(value: float | None) -> str:
 
 def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[Mapping[str, Any]],
            raw: Sequence[str], *, persist: bool, t0_value: Any, value_key: str | None,
-           fmt: Callable[[Any], str], stale: bool) -> dict[str, Any]:
+           fmt: Callable[[Any], str], stale: bool, claim: str, numeric: bool = False) -> dict[str, Any]:
     effective = _effective(rows, raw, persist)
     t0_state = effective[0]
     graded = [s for s in effective if s in SEVERITY]
@@ -239,8 +277,36 @@ def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[
         "eased": (t0_adverse and now in SEVERITY and SEVERITY[now] < SEVERITY[t0_state]) if t0_adverse else None,
         "samples": {state: raw.count(state) for state in sorted(set(raw))},
     }
-    entry["state_now_cn"] = STATE_CN[now]
-    entry["state_worst_cn"] = STATE_CN.get(worst, "无法核验")
+    words = STATUS_CN[thesis_id]
+    if not stale and persist and raw[-1] != now and raw[-1] in SEVERITY and now in SEVERITY:
+        entry["pending_cn"] = f"最新读数为“{words[raw[-1]]}”，未持续 30 分钟，暂不改判"
+    entry["state_now_cn"] = words.get(now) or ("暂无数据" if now == UNVERIFIABLE else STATE_CN[now])
+    if t0_adverse and now in SEVERITY:
+        # a known counter at lock: what matters is whether it eased, in absolute terms
+        entry["state_now_cn"] = "已缓解" if entry["eased"] else "仍不利"
+    entry["state_worst_cn"] = words.get(worst) or "暂无数据"
+    entry["tone"] = ("ok" if entry["eased"] else "warn") if t0_adverse and now in SEVERITY else TONE.get(now, "muted")
+    entry["claim_cn"] = (f"锁定时已不利：{claim}" if t0_adverse else claim)
+    # What happened while held: the extreme reading and the time spent in each worse state.
+    spent = _time_in(rows, effective)
+    entry["time_in_ms"] = {state: spent.get(state, 0) for state in (WEAKENED, BROKEN)}
+    bits = []
+    if numeric and value_key:
+        values = [(r["t"], _num(r["m"].get(value_key))) for r in rows]
+        values = [(t, v) for t, v in values if v is not None]
+        if values:
+            at, low = min(values, key=lambda tv: tv[1])
+            entry["extreme"] = {"value": low, "at_ms": at}
+            if _num(t0_value) is not None and low < _num(t0_value):
+                bits.append(f"最低 {fmt(low)}（{_bjt(at)}）")
+    for state in (BROKEN, WEAKENED):
+        if spent.get(state) and not (t0_adverse and SEVERITY.get(state, 0) <= SEVERITY[t0_state]):
+            bits.append(f"{words[state]}累计 {_dur(spent[state])}")
+    if t0_adverse:
+        bad = sum(v for k, v in spent.items() if k in {WEAKENED, BROKEN})
+        if bad:
+            bits.append(f"不利状态累计 {_dur(bad)}")
+    entry["experience_cn"] = "；".join(bits) or "期间没有变差"
     return entry
 
 
@@ -248,6 +314,7 @@ def _not_recorded(thesis_id: str, question: str, label: str, rule: str, why: str
     return {"id": thesis_id, "question": question, "label_cn": label, "rule_cn": rule,
             "state_t0": NOT_RECORDED, "state_now": NOT_RECORDED, "state_worst": NOT_RECORDED,
             "state_now_cn": STATE_CN[NOT_RECORDED], "state_worst_cn": STATE_CN[NOT_RECORDED],
+            "tone": "muted", "claim_cn": why, "experience_cn": "—",
             "t0_adverse": False, "eased": None, "not_recorded_reason_cn": why}
 
 
@@ -284,35 +351,38 @@ def build(points: Iterable[Mapping[str, Any]], *, side: str, now_ms: int,
         theses.append(_not_recorded("L1", "Q1", "短腿缓冲", l1_rule, "锁定时短腿已在责任区内或距离未知"))
     else:
         theses.append(_entry("L1", "Q1", "短腿缓冲", l1_rule, rows, raw, persist=False,
-                             t0_value=d0, value_key="short_distance_pct", fmt=pct, stale=stale))
+                             t0_value=d0, value_key="short_distance_pct", fmt=pct, stale=stale,
+                             claim=f"现价在短腿外 {d0:.2f}%", numeric=True))
 
     # L2 breakeven buffer
     b0 = _num(t0.get("breakeven_distance_pct"))
     l2_rule = "距盈亏平衡 ≥ 锁定时的一半为成立，越过（≤ 0）为失效"
     if b0 is None or b0 <= 0:
-        theses.append(_not_recorded("L2", "Q1", "盈亏平衡缓冲", l2_rule,
+        theses.append(_not_recorded("L2", "Q1", "盈亏平衡", l2_rule,
                                     "锁定时盈亏平衡未知（净信用 ≤ 0 或费用未知）"))
     else:
         prev, raw = None, []
         for r in rows:
             prev = _buffer_state(_num(r["m"].get("breakeven_distance_pct")), b0, prev)
             raw.append(prev)
-        theses.append(_entry("L2", "Q1", "盈亏平衡缓冲", l2_rule, rows, raw, persist=False,
-                             t0_value=b0, value_key="breakeven_distance_pct", fmt=pct, stale=stale))
+        theses.append(_entry("L2", "Q1", "盈亏平衡", l2_rule, rows, raw, persist=False,
+                             t0_value=b0, value_key="breakeven_distance_pct", fmt=pct, stale=stale,
+                             claim=f"现价在盈亏平衡外 {b0:.2f}%", numeric=True))
 
     # L3 collected credit (Deribit floating PnL)
     cap = next((_num(r["m"].get("max_profit_btc")) for r in rows if _num(r["m"].get("max_profit_btc"))), None)
     p0 = next((_num(r["m"].get("float_pnl_btc")) for r in rows if _num(r["m"].get("float_pnl_btc")) is not None), None)
     l3_rule = "浮动盈亏不差于锁定时减 10% 最大收益为成立，浮亏超过全部入场信用为失效"
     if cap is None or p0 is None:
-        theses.append(_not_recorded("L3", "Q2", "已收补偿", l3_rule, "采样行没有浮动盈亏（旧版采样）"))
+        theses.append(_not_recorded("L3", "Q2", "补偿", l3_rule, "采样行没有浮动盈亏（旧版采样）"))
     else:
         prev, raw = None, []
         for r in rows:
             prev = _credit_state(_num(r["m"].get("float_pnl_btc")), p0, cap, prev)
             raw.append(prev)
-        entry = _entry("L3", "Q2", "已收补偿", l3_rule, rows, raw, persist=False,
-                       t0_value=p0, value_key="float_pnl_btc", fmt=lambda v: _btc(_num(v)), stale=stale)
+        entry = _entry("L3", "Q2", "补偿", l3_rule, rows, raw, persist=False,
+                       t0_value=p0, value_key="float_pnl_btc", fmt=lambda v: _btc(_num(v)), stale=stale,
+                       claim=f"收下 {cap:.4f} BTC 信用（锁定时浮动 {p0:+.4f}，为买卖价差）", numeric=True)
         entry["max_profit_btc"] = cap
         theses.append(entry)
 
@@ -321,16 +391,21 @@ def build(points: Iterable[Mapping[str, Any]], *, side: str, now_ms: int,
     theses.append(_entry("L4", "Q1", "Gamma 体制",
                          "与锁定时相同或更有利为成立，正 → 过渡为减弱，转负（放大）为失效",
                          rows, [_gamma_state(r["m"].get("gamma_regime"), g0) for r in rows], persist=True,
-                         t0_value=g0, value_key="gamma_regime", fmt=lambda v: GAMMA_CN.get(v, "—"), stale=stale))
-    theses.append(_entry("L5", "Q1", "锚点评分", "≥ 60 成立，30–60 减弱，< 30（脱锚）失效",
+                         t0_value=g0, value_key="gamma_regime", fmt=lambda v: GAMMA_CN.get(v, "—"), stale=stale,
+                         claim=f"Gamma 体制为{GAMMA_CN.get(g0, '未知')}"))
+    theses.append(_entry("L5", "Q1", "锚定", "≥ 60 成立，30–60 减弱，< 30（脱锚）失效",
                          rows, [_anchor_state(_num(r["m"].get("anchor_score"))) for r in rows], persist=True,
                          t0_value=_num(t0.get("anchor_score")), value_key="anchor_score",
-                         fmt=lambda v: "—" if _num(v) is None else f"{_num(v):.0f}/100", stale=stale))
-    theses.append(_entry("L6", "Q1", "流向不压卖出侧",
+                         fmt=lambda v: "—" if _num(v) is None else f"{_num(v):.0f}/100", stale=stale,
+                         claim=("锚点评分（锁定时无数据）" if _num(t0.get("anchor_score")) is None
+                                else f"锚点评分 {_num(t0.get('anchor_score')):.0f}/100")))
+    theses.append(_entry("L6", "Q1", "流向",
                          "综合与 4h、12h 都朝不利方向（或 M-DIE 同向持续推进）为失效，任一不利为减弱",
                          rows, [_flow_state(r["m"], side) for r in rows], persist=True,
                          t0_value=t0.get("flow_direction"), value_key="flow_direction",
-                         fmt=lambda v: FLOW_CN.get(v, "—"), stale=stale))
+                         fmt=lambda v: FLOW_CN.get(v, "—"), stale=stale,
+                         claim=(f"主动流向{FLOW_CN[t0.get('flow_direction')]}" if t0.get("flow_direction") in FLOW_CN
+                                else "主动流向（锁定时无数据）")))
 
     # Paths of the numeric lanes
     paths = {
@@ -357,54 +432,75 @@ def build(points: Iterable[Mapping[str, Any]], *, side: str, now_ms: int,
 
 # ── five-question projection (draft §8) ─────────────────────────────────────
 
+def _rhythm(label: str, key: str, lane: Mapping[str, Any], unit: str) -> str | None:
+    shape, net = lane.get("shape"), lane.get("net")
+    if shape in {None, "INSUFFICIENT"}:
+        return None
+    if shape == "FLAT":
+        return f"{label}平稳"
+    amount = f"{abs(net):.2f} 个百分点" if unit == "pp" else f"{abs(net):.4f} BTC"
+    if key == "float_pnl_btc":
+        way = "回升" if net > 0 else "走低"
+    else:
+        way = "拉开" if net > 0 else "收窄"
+    if shape == "JUMP":
+        return f"{label}一次跳变{way} {amount}"
+    if shape == "SUSTAINED":
+        return f"{label}持续{way} {amount}"
+    return f"{label}来回波动，净{way} {amount}"
+
+
 def project(ledger: Mapping[str, Any]) -> dict[str, Any]:
-    by_id = {t["id"]: t for t in ledger.get("theses") or []}
+    theses = list(ledger.get("theses") or [])
+    by_id = {t["id"]: t for t in theses}
+    graded = [t for t in theses if t["state_now"] in SEVERITY]
+    held = [t["label_cn"] for t in graded if t["state_now"] == HOLDS and not t["t0_adverse"]]
+    moved = [f"{t['label_cn']}{t['state_now_cn']}" for t in graded
+             if t["state_now"] != HOLDS and not t["t0_adverse"]]
+    adverse = [f"{t['label_cn']}（{'已缓解' if t['eased'] else '未缓解'}）" for t in graded if t["t0_adverse"]]
+    blind = [t["label_cn"] for t in theses if t["state_now"] == UNVERIFIABLE]
+    parts = []
+    if held:
+        parts.append("、".join(held) + "仍成立")
+    if moved:
+        parts.append("变化：" + "，".join(moved))
+    headline = "；".join(parts) if parts else "暂无可判定的依据"
+    tail = []
+    if adverse:
+        tail.append("锁定时已不利：" + "、".join(adverse))
+    if blind:
+        tail.append("暂无数据：" + "、".join(blind))
     where = []
     for key, label in (("L1", "距短腿"), ("L2", "距盈亏平衡"), ("L3", "浮动盈亏")):
         t = by_id.get(key)
         if t and t.get("state_now") != NOT_RECORDED:
             where.append(f"{label} {t['now_value_cn']}（锁定时 {t['t0_value_cn']}）")
-    changed, theses_cn = [], []
-    for t in ledger.get("theses") or []:
-        if t["state_now"] == NOT_RECORDED:
-            theses_cn.append(f"{t['label_cn']}：未入账，{t.get('not_recorded_reason_cn', '')}")
-            continue
-        if t["t0_adverse"]:
-            line = (f"{t['label_cn']}：锁定时即不利（{STATE_CN[t['state_t0']]}），"
-                    + ("现已缓解" if t["eased"] else f"现在{t['state_now_cn']}"))
-        else:
-            line = f"{t['label_cn']}：现在{t['state_now_cn']}"
-            if t["state_worst"] != t["state_now"] and t["state_worst"] in SEVERITY and t["state_worst"] != HOLDS:
-                line += f"，持有以来最差{t['state_worst_cn']}"
-        theses_cn.append(line)
-        if t["state_now"] in SEVERITY and t["state_t0"] in SEVERITY and t["state_now"] != t["state_t0"]:
-            changed.append(f"{t['label_cn']} {STATE_CN[t['state_t0']]} → {t['state_now_cn']}")
-    shape = []
-    for label, key in (("短腿距离", "short_distance_pct"), ("浮动盈亏", "float_pnl_btc")):
+    rhythm = []
+    for label, key, unit in (("短腿距离", "short_distance_pct", "pp"), ("浮动盈亏", "float_pnl_btc", "btc")):
         lanes = (ledger.get("paths") or {}).get(key) or {}
-        bits = [f"{name} {SHAPE_CN[lanes[name]['shape']]}" for name in ("1h", "3h") if name in lanes]
-        if bits:
-            shape.append(f"{label}：" + "，".join(bits))
-    unknown = [t["label_cn"] for t in ledger.get("theses") or [] if t["state_now"] == UNVERIFIABLE]
-    gaps = ledger.get("gap_ledger") or {}
+        for name, span in (("1h", "近 1 小时"), ("3h", "近 3 小时")):
+            text = _rhythm(label, key, lanes.get(name) or {}, unit)
+            if text:
+                rhythm.append(f"{span}{text}")
     coverage = ledger.get("coverage") or {}
     unknown_cn = []
-    if unknown:
-        unknown_cn.append("无法核验：" + "、".join(unknown))
-    if gaps.get("new"):
-        unknown_cn.append(f"新增缺口 {len(gaps['new'])} 项")
-    if gaps.get("persisting"):
-        unknown_cn.append(f"锁定时的缺口仍在 {len(gaps['persisting'])} 项")
-    if coverage.get("gaps"):
-        longest = max(g["length_ms"] for g in coverage["gaps"]) / 60_000
-        unknown_cn.append(f"采样中断 {len(coverage['gaps'])} 次（最长 {longest:.0f} 分钟），中断期间不作判定")
+    if coverage.get("stale"):
+        unknown_cn.append("最近 10 分钟没有新采样，现在一栏暂无法核验")
     if not coverage.get("active", True):
         unknown_cn.append("锁定已结束，现在一栏为最后一次采样")
-    if coverage.get("stale"):
-        unknown_cn.append("最近 10 分钟没有新采样，当前状态无法核验")
-    return {"where_cn": "；".join(where) or "—",
-            "changed_cn": changed or ["论点状态与锁定时一致"],
-            "persistence_cn": shape,
+    if coverage.get("gaps"):
+        longest = max(g["length_ms"] for g in coverage["gaps"])
+        unknown_cn.append(f"采样中断 {len(coverage['gaps'])} 次（最长 {_dur(longest)}），中断期间不作判定")
+    theses_cn = [f"{t['label_cn']}：{t['claim_cn']} → 现在{t['state_now_cn']}"
+                 + (f"（{t['experience_cn']}）" if t.get("experience_cn") not in {None, "—", "期间没有变差"} else "")
+                 for t in theses if t["state_now"] != NOT_RECORDED]
+    return {"headline_cn": headline + ("。" + "；".join(tail) if tail else "") + "。",
+            "where_cn": "；".join(where) or "—",
+            "rhythm_cn": rhythm or ["采样不足以判断近 1–3 小时的节奏"],
             "theses_cn": theses_cn,
-            "unknown_cn": unknown_cn or ["无"],
-            "note_cn": "账本由程序按固定规则判定，是描述不是概率；阈值未经结算校准。"}
+            "unknown_cn": unknown_cn,
+            # kept for older readers
+            "changed_cn": [f"{t['label_cn']} → {t['state_now_cn']}" for t in graded
+                           if t["state_t0"] in SEVERITY and t["state_now"] != t["state_t0"]],
+            "persistence_cn": rhythm,
+            "note_cn": "依据由程序按固定规则判定，是描述不是概率；阈值未经结算校准。"}
