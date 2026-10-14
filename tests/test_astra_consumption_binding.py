@@ -27,7 +27,7 @@ def wpem_workbench(tmp_path, *, clock=lambda: T):
         clock=clock,
     )
     wb = workbench.AstraWorkbench(
-        replace(original.config, wpem_enabled=True),
+        replace(original.config, wpem_enabled=True, wpem_main_loop=True),
         discovery_capture=original.discovery_capture,
         quote_capture=original.quote_capture,
         risk_provider=original.risk_provider,

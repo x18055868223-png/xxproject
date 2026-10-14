@@ -41,7 +41,7 @@ def _research_response(snapshot):
 
 def _wpem_workbench(tmp_path, *, transport=None, risk_provider=None, quote_capture=None):
     original, snapshots = fx.make_workbench(tmp_path, risk_provider=risk_provider, transport=transport)
-    config = replace(original.config, wpem_enabled=True)
+    config = replace(original.config, wpem_enabled=True, wpem_main_loop=True)
     wb = fx.workbench.AstraWorkbench(
         config,
         discovery_capture=original.discovery_capture,

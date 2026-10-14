@@ -15,7 +15,7 @@ from test_astra_workbench_v20 import make_workbench, write_fmz, native_gate, T, 
 
 def wpem_workbench(tmp_path, transport=None, risk_provider=None, quote_capture=None):
     original, snapshots=make_workbench(tmp_path,risk_provider=risk_provider,transport=transport)
-    wb=workbench.AstraWorkbench(replace(original.config,wpem_enabled=True),
+    wb=workbench.AstraWorkbench(replace(original.config,wpem_enabled=True, wpem_main_loop=True),
         discovery_capture=original.discovery_capture,quote_capture=quote_capture or original.quote_capture,
         risk_provider=original.risk_provider,llm_transport=transport,clock_ms=original.clock_ms)
     write_fmz(snapshots,native_gate())
@@ -112,7 +112,7 @@ def test_public_summary_and_private_proof_do_not_refresh_or_call_llm(tmp_path):
 
 def test_wpem_archive_uses_explicit_config_budget(tmp_path):
     original,_=make_workbench(tmp_path)
-    config=replace(original.config,wpem_enabled=True,research_max_bytes=7000,research_max_samples=7,
+    config=replace(original.config,wpem_enabled=True, wpem_main_loop=True,research_max_bytes=7000,research_max_samples=7,
                    research_sample_interval_ms=12345)
     wb=workbench.AstraWorkbench(config)
     assert (wb._wpem_archive.max_bytes,wb._wpem_archive.max_samples,wb._wpem_archive.interval_ms)==(7000,7,12345)
@@ -232,7 +232,7 @@ def test_program_q1_uses_the_same_distance_convention_as_locked_compare(tmp_path
 def test_full_wpem_archive_is_visible_in_data_health_not_silent(tmp_path):
     # P0: the archive hit its cap in production and stopped without any notice.
     original, snapshots = make_workbench(tmp_path)
-    config = replace(original.config, wpem_enabled=True, wpem_history_replay=True, research_max_bytes=2000)
+    config = replace(original.config, wpem_enabled=True, wpem_main_loop=True, wpem_history_replay=True, research_max_bytes=2000)
     wb = workbench.AstraWorkbench(config, discovery_capture=original.discovery_capture,
                                   quote_capture=original.quote_capture, clock_ms=original.clock_ms)
     write_fmz(snapshots, native_gate())
@@ -268,7 +268,7 @@ def test_scheduled_reviews_run_once_per_utc_slot_for_both_sides(tmp_path):
         calls.append(request)
         return {'model':model,'choices':[{'finish_reason':'stop','message':{'content':json.dumps(points())}}]}
     original, snapshots=make_workbench(tmp_path,transport=transport)
-    config=replace(original.config,wpem_enabled=True,scheduled_review_hours_utc=(8,))
+    config=replace(original.config,wpem_enabled=True, wpem_main_loop=True,scheduled_review_hours_utc=(8,))
     wb=workbench.AstraWorkbench(config,discovery_capture=original.discovery_capture,quote_capture=original.quote_capture,
         llm_transport=transport,clock_ms=original.clock_ms)
     write_fmz(snapshots,native_gate())
@@ -295,3 +295,22 @@ def test_scheduled_review_rejects_http_shortcut(tmp_path):
     with pytest.raises(workbench.WorkbenchError) as failure:
         wb.review_candidate(item['snapshot']['candidate_id'],'x',authorization=None)
     assert failure.value.status_code==401
+
+
+def test_review_composes_on_demand_when_the_refresh_skips_wpem(tmp_path):
+    """Default scope (2026-10-14): no package from the refresh, the review builds its own."""
+    calls=[]
+    def transport(key,model,request,timeout,endpoint=None):
+        calls.append(request)
+        return {'model':model,'choices':[{'finish_reason':'stop','message':{'content':json.dumps(points())}}]}
+    original, snapshots=make_workbench(tmp_path,transport=transport)
+    wb=workbench.AstraWorkbench(replace(original.config,wpem_enabled=True),
+        discovery_capture=original.discovery_capture,quote_capture=original.quote_capture,
+        risk_provider=original.risk_provider,llm_transport=transport,clock_ms=original.clock_ms)
+    write_fmz(snapshots,native_gate())
+    item=wb.refresh(now_ms=T)['candidates'][0]
+    assert 'wpem_evidence' not in item
+    result=wb.review_candidate(item['snapshot']['candidate_id'],'ondemand-1',authorization='Bearer secret')
+    assert result['status']=='OK' and len(calls)==1
+    shown=[c for c in wb.cached_view(reading_only=True)['candidates'] if c['side']==item['side']][0]
+    assert shown['review_display']['current'] is not None, shown['review_display'].get('reason_cn')

@@ -1592,6 +1592,10 @@ class WorkbenchConfig:
     # Off: each refresh composes WPEM from the current point only (no archive sample, no
     # history replay). The archive stays readable; the lock series is the time memory.
     wpem_history_replay: bool = False
+    # WPEM on every refresh for both candidates (the old main-loop behaviour). Off: only the
+    # contracts under active lock tracking get a package each refresh; a model review builds
+    # its own on demand (2026-10-14: the main-loop output repeated Decision Path readings).
+    wpem_main_loop: bool = False
     locked_sample_interval_ms: int = 60_000
     locked_max_active: int = 4
     locked_max_episodes: int = 64
@@ -2659,7 +2663,11 @@ class AstraWorkbench:
                 "data_health": self._data_health(finished_at_ms, btc_projection),
             }
             mark("view_health")
-            self._attach_wpem(view, finished_at_ms)
+            if self.config.wpem_main_loop:
+                self._attach_wpem(view, finished_at_ms)
+                view["wpem_scope"] = {"mode": "main_loop"}
+            else:
+                view["wpem_scope"] = self._attach_wpem_for_locks(view, finished_at_ms)
             mark("wpem")
             if self._wpem_archive is not None and isinstance(view.get("data_health"), dict):
                 view["data_health"]["wpem_archive"] = {**self._wpem_archive.usage(),
@@ -2854,6 +2862,27 @@ class AstraWorkbench:
                 for key in list(self._wpem_display_packages):
                     if key not in self._wpem_packages:
                         self._wpem_display_packages.pop(key, None)
+
+    def _attach_wpem_for_locks(self, view: dict[str, Any], now_ms: int) -> dict[str, Any]:
+        """WPEM only for the displayed contracts that are under active lock tracking. The raw
+        payloads of the other displayed candidates are kept until the next refresh, so an
+        on-demand review composes its package from the same capture."""
+        try:
+            active = {e.get("candidate_id") for e in self.locked_candidates.list() if e.get("status") == "active"}
+        except Exception:
+            active = set()
+        shown, locked = set(), set()
+        for item in view.get("candidates") or []:
+            snapshot = item.get("snapshot") if isinstance(item, Mapping) else None
+            if isinstance(snapshot, Mapping):
+                shown.add(snapshot["snapshot_id"])
+                if snapshot.get("candidate_id") in active:
+                    locked.add(snapshot["snapshot_id"])
+        keep = {k: v for k, v in self._wpem_pending_payloads.items() if k in shown and k not in locked}
+        # with nothing to compose this still sets release_identity and prunes old packages
+        self._attach_wpem(view, now_ms, only=locked)
+        self._wpem_pending_payloads.update(keep)
+        return {"mode": "active_locks_only", "composed": len(locked)}
 
     def _display_wpem_package(self, snapshot_id: str | None, state: Mapping[str, Any], history: Sequence,
                               attached: Mapping[str, Any] | None = None) -> Any:
@@ -5680,6 +5709,7 @@ def config_from_env() -> WorkbenchConfig:
         refresh_interval_s=float(os.environ.get("ASTRA_WORKBENCH_REFRESH_SECONDS") or "30"),
         wpem_enabled=os.environ.get("ASTRA_WORKBENCH_WPEM_ENABLED", "0") == "1",
         wpem_history_replay=os.environ.get("ASTRA_WPEM_HISTORY_REPLAY", "0") == "1",
+        wpem_main_loop=os.environ.get("ASTRA_WPEM_MAIN_LOOP", "0") == "1",
         locked_sample_interval_ms=max(1000, int(os.environ.get("ASTRA_LOCKED_SAMPLE_INTERVAL_MS") or "60000")),
         locked_max_active=int(os.environ.get("ASTRA_LOCKED_MAX_ACTIVE") or "4"),
         locked_max_episodes=int(os.environ.get("ASTRA_LOCKED_MAX_EPISODES") or "64"),

@@ -25,7 +25,7 @@ def test_retained_trace_only_source_is_forward_reachable_without_inventing_manif
 def _wpem_workbench(tmp_path, *, transport=None, risk_provider=positive_risk):
     original, snapshots = make_workbench(tmp_path, risk_provider=risk_provider, transport=transport)
     wb = workbench.AstraWorkbench(
-        replace(original.config, wpem_enabled=True),
+        replace(original.config, wpem_enabled=True, wpem_main_loop=True),
         discovery_capture=original.discovery_capture,
         quote_capture=original.quote_capture,
         risk_provider=original.risk_provider,

@@ -9,7 +9,7 @@ from test_astra_workbench_v20 import make_workbench, write_fmz, native_gate, T
 
 def _wb(tmp_path, **overrides):
     original, snapshots = make_workbench(tmp_path)
-    wb = workbench.AstraWorkbench(replace(original.config, wpem_enabled=True, **overrides),
+    wb = workbench.AstraWorkbench(replace(original.config, wpem_enabled=True, wpem_main_loop=True, **overrides),
                                   discovery_capture=original.discovery_capture,
                                   quote_capture=original.quote_capture, clock_ms=original.clock_ms)
     write_fmz(snapshots, native_gate())
