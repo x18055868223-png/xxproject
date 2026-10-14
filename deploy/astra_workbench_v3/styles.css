@@ -268,7 +268,7 @@ details.raw pre { font-size: 11.5px; max-height: 260px; overflow: auto; backgrou
 table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.t th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--rule); }
 table.t td { padding: 6px 8px; border-bottom: 1px solid var(--rule-2); vertical-align: top; }
-table.t td.n { text-align: right; white-space: nowrap; }
+table.t td.n, table.t th.n { text-align: right; white-space: nowrap; }
 table.t tr.sel td { background: var(--depth-soft); }
 table.t tbody tr { cursor: default; }
 .scroll-x { overflow-x: auto; }
@@ -537,3 +537,20 @@ section.band, [id$="-h"] { scroll-margin-top: 76px; }   /* anchors land below th
 .ctx svg.viz { width: 60px; }
 .ctx svg.viz.wide { width: 100%; height: 40px; }
 .ctx-source { margin: -2px 0 8px !important; font-size: 11.5px !important; line-height: 1.5; color: var(--ink-3) !important; }
+
+/* lock-time reasons (thesis ledger) and hold review */
+.ledger-head { font-weight: 600; margin: 2px 0 6px; line-height: 1.6; }
+.ledger-t td:nth-child(2) { color: var(--ink-2, inherit); }
+.ledger-t tr.muted td { color: var(--ink-3); }
+.ledger-unknown { margin: 6px 0; padding-left: 1.2em; }
+.hold { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.hold h6 { margin: 0 0 6px; font-size: 13px; }
+.hold-sum { margin: 0 0 6px; line-height: 1.6; }
+.hold-points, .hold-watch ul { margin: 4px 0; padding-left: 1.2em; line-height: 1.6; }
+.hold-act { margin-top: 6px; }
+.ledger-qa { display: grid; grid-template-columns: 7em 1fr; gap: 4px 12px; margin: 4px 0 10px; font-size: 13px; }
+.ledger-qa dt { color: var(--ink-3); }
+.ledger-qa dd { margin: 0; }
+.ledger-t td { vertical-align: top; }
+.ledger-t td .small { margin-top: 2px; }
+@media (max-width: 600px) { .ledger-qa { grid-template-columns: 1fr; } .ledger-qa dt { margin-top: 6px; } }

@@ -79,7 +79,9 @@ export function visibleLocks(episodes, { selected, showAll = false, limit = LOCK
 export function lockList(episodes, { selected, onOpen, renderDetail, showAll = false, onToggleAll }) {
   const { rows, hidden } = visibleLocks(episodes, { selected, showAll });
   const t = h("table", { class: "t locks" }, h("thead", {}, h("tr", {},
-    ...["合约", "到期", "状态", "锁定于", "采样", "最近一点"].map((x) => h("th", { text: x })))));
+    // headers align with their cells: times and counts are right-aligned (td.n)
+    ...[["合约"], ["到期", "n"], ["状态"], ["盈亏"], ["锁定于", "n"], ["采样", "n"], ["最近一点", "n"]]
+      .map(([x, cls]) => h("th", { class: cls || null, text: x })))));
   const tb = h("tbody");
   for (const e of rows) {
     const c = e.contract || {};
@@ -92,19 +94,35 @@ export function lockList(episodes, { selected, onOpen, renderDetail, showAll = f
       h("td", {}, h("span", { class: `caret${open ? " open" : ""}`, "aria-hidden": "true" }), h("b", { text: contractTitle(c) })),
       h("td", { class: "n", text: clock(c.expiry_ms) }),
       h("td", {}, h("span", { class: `chip ${st.tone}`, text: st.text }), st.why ? h("span", { class: "muted small", text: ` ${st.why}` }) : null),
+      h("td", {}, outcomeChip(e.outcome)),
       h("td", { class: "n", text: clock(e.created_at_ms) }),
       h("td", { class: "n", text: `${e.point_count ?? 0} 点${e.gap_count ? `，缺口 ${e.gap_count}` : ""}` }),
       h("td", { class: "n", text: clock(e.latest_decision_asof_ms) }));
     tb.append(tr);
-    if (open) tb.append(h("tr", { class: "lock-detail-row" }, h("td", { colspan: 6 }, renderDetail(e))));
+    if (open) tb.append(h("tr", { class: "lock-detail-row" }, h("td", { colspan: 7 }, renderDetail(e))));
   }
   if (onToggleAll && (hidden || showAll) && episodes.length > LOCK_LIST_LIMIT) {
-    tb.append(h("tr", { class: "lock-more-row" }, h("td", { colspan: 6 },
+    tb.append(h("tr", { class: "lock-more-row" }, h("td", { colspan: 7 },
       h("button", { class: "link", type: "button", onclick: onToggleAll,
         text: showAll ? `只看最近 ${LOCK_LIST_LIMIT} 条` : `还有 ${hidden} 条更早的记录，显示全部` }))));
   }
   t.append(tb);
   return h("div", { class: "scroll-x" }, t);
+}
+
+/** Profit / loss / flat only, no amount: expired = settlement result, otherwise the latest
+ * floating PnL (at stop, or now while tracking). Within ±10 USD counts as flat. */
+const OUTCOME_CN = { profit: "盈利", loss: "亏损", flat: "持平" };
+const OUTCOME_TONE = { profit: "ok", loss: "bad", flat: "" };
+const OUTCOME_BASIS = { settlement: "按到期结算", floating_at_stop: "按停止时浮动盈亏", floating_now: "按当前浮动盈亏（未到期）",
+  floating_at_expiry: "按到期前最后浮动盈亏" };
+const FALLBACK_CN = { credit_missing: "到期结算无法计算（锁定时信用缺失）", delivery_unavailable: "交割价未取得",
+  settlement_pending: "到期结算尚未完成" };
+function outcomeChip(o) {
+  if (!o || !o.verdict) return h("span", { class: "muted small", text: "—", title: o?.basis === "settlement" ? "到期结算结果不可用" : "盈亏不可用" });
+  return h("span", {}, h("span", { class: `chip ${OUTCOME_TONE[o.verdict]}`, text: OUTCOME_CN[o.verdict],
+    title: `${o.fallback_reason ? `${FALLBACK_CN[o.fallback_reason] || ""}，` : ""}${OUTCOME_BASIS[o.basis] || ""}；±${o.flat_band_usd ?? 10} 美元以内算持平` }),
+    o.basis === "floating_now" ? h("span", { class: "muted small", text: " 浮动" }) : null);
 }
 
 // ── detail ───────────────────────────────────────
@@ -122,7 +140,7 @@ function spotFrom(side, strike, dPct) {
   return side === "put" ? strike * (1 + k) : strike * (1 - k);
 }
 
-export function lockDetail(d, { loading, error, session, confirm, onStop, onAskStop, onCancel, onRelock, series, seriesError, refresh }) {
+export function lockDetail(d, { loading, error, session, confirm, onStop, onAskStop, onCancel, onRelock, series, seriesError, refresh, onHoldReview, holdBusy }) {
   const box = h("div", { class: "lock-detail" });
   if (!d) { box.append(h("p", { class: "empty", text: loading ? "正在读取锁定对照…" : error ? `读取失败：${error}` : "" })); return box; }
   if (error) box.append(h("p", { class: "banner", text: `刷新失败，显示的是上一次读取的结果（${error}）。` }));
@@ -148,6 +166,10 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
 
   // Now first: floating P&L, share of max profit and time left; the lock-time row follows.
   box.append(section("现在", floatView(series, seriesError)));
+
+  // The lock-time reasons, re-decided by fixed rules at every sample, and the hold review.
+  if (series?.thesis_ledger) box.append(section("锁定时的依据，现在怎样",
+    ledgerView(series.thesis_ledger, series.hold_review, { session, busy: holdBusy, onHoldReview })));
 
   // 1. at lock (t0)
   const sd = rows["liability.short_distance"] || {};
@@ -267,6 +289,102 @@ function settlementView(st, c) {
     h("b", { text: "到期结算" }),
     h("span", { class: "num", text: isNum(res) ? `${btcText(res)}${usdText}` : "结果无法计算（锁定时信用缺失）" }),
     h("small", { text: `交割价 ${usd(st.delivery.delivery_price_usd)}（${st.delivery.date}，${where}）；到期赔付 ${btcText(st.payout_btc)}；锁定时扣费后信用 ${isNum(st.entry_after_fee_btc) ? btcText(st.entry_after_fee_btc) : "缺失"}。按交易所交割价计算的静态结果，不是成交记录。` }));
+}
+
+// ── lock-time reasons (thesis ledger) and the hold review ─────────
+const TONE_CLASS = { ok: "ok", warn: "warn", bad: "bad", muted: "skip" };
+const HOLD_BLOCK_CN = {
+  manual_review_service_not_configured: "模型复核未配置",
+  lock_not_active: "锁定已结束",
+  hold_review_inflight: "复核进行中",
+  hold_review_cooldown: "刚复核过",
+  hold_review_too_early: "锁定不足 15 分钟，过程太短",
+};
+const HOLD_FAIL_CN = {
+  ERROR: "复核出错，未完成",
+  INVALID_RESPONSE: "模型回答未通过校验，未采用",
+  CALL_FAILED: "模型调用失败",
+  BUDGET_EXHAUSTED: "今日模型额度已用完",
+};
+
+/** The lock-time reasons, each judged by fixed rules at every sample: what was assumed,
+ * where it stands now, and what happened in between (lowest point, time in a worse state). */
+export function ledgerView(led, hold, { session, busy, onHoldReview } = {}) {
+  const box = h("div", { class: "ledger" });
+  if (!led || led.status !== "OK") {
+    box.append(h("p", { class: "muted small", text: led?.status === "NO_SAMPLES" ? "还没有采样。" : "依据暂不可用。" }));
+    return box;
+  }
+  const p = led.projection_cn || {};
+  box.append(h("p", { class: "ledger-head", text: p.headline_cn || "" }));
+  const lines = [["位置", p.where_cn], ["节奏", (p.rhythm_cn || []).join("；")]].filter(([, v]) => v);
+  box.append(h("dl", { class: "ledger-qa" }, ...lines.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
+
+  const t = h("table", { class: "t compact ledger-t" }, h("thead", {}, h("tr", {},
+    ...["依据", "锁定时", "现在", "期间"].map((x) => h("th", { text: x })))));
+  const tb = h("tbody");
+  for (const th of led.theses || []) {
+    const recorded = th.state_now !== "NOT_RECORDED";
+    tb.append(h("tr", { class: recorded ? "" : "muted" },
+      h("td", { title: th.rule_cn || "" }, h("b", { text: th.label_cn })),
+      h("td", { text: th.claim_cn || "" }),
+      h("td", {},
+        h("span", { class: `chip ${TONE_CLASS[th.tone] || "skip"}`, text: th.state_now_cn || "—" }),
+        recorded && th.now_value_cn && th.now_value_cn !== "—" ? h("span", { class: "n small", text: ` ${th.now_value_cn}` }) : null,
+        th.pending_cn ? h("div", { class: "muted small", text: th.pending_cn }) : null),
+      h("td", { class: "small", text: recorded ? th.experience_cn || "" : "" })));
+  }
+  t.append(tb);
+  box.append(h("div", { class: "scroll-x" }, t));
+
+  const gaps = led.gap_ledger || {};
+  const unknown = [...(p.unknown_cn || [])];
+  if ((gaps.new || []).length) unknown.push(`锁定后新出现的数据缺口：${gaps.new.map(gapCn).join("、")}`);
+  if (unknown.length) box.append(h("ul", { class: "ledger-unknown muted small" }, ...unknown.map((x) => h("li", { text: x }))));
+  const rules = (led.theses || []).filter((x) => x.rule_cn);
+  box.append(h("details", { class: "ctx-note" }, h("summary", { text: "判定规则" }),
+    h("ul", { class: "small" }, ...rules.map((x) => h("li", { text: `${x.label_cn}：${x.rule_cn}` }))),
+    h("p", { class: "small", text: `${p.note_cn || ""} 分类依据（Gamma、锚定、流向）的新状态需持续 30 分钟才改判；数值依据回到更好状态需多越过 10%。` })));
+
+  if (hold) box.append(holdView(led, hold, { session, busy, onHoldReview }));
+  return box;
+}
+
+function holdView(led, hold, { session, busy, onHoldReview }) {
+  const box = h("div", { class: "hold" });
+  box.append(h("h6", { text: "持有中复核（模型解读）" }));
+  const last = hold.last;
+  if (last && last.answer) {
+    const a = last.answer;
+    const byId = Object.fromEntries((led.theses || []).map((x) => [x.id, x.label_cn]));
+    box.append(h("p", { class: "hold-sum", text: a.summary }));
+    if ((a.points || []).length) box.append(h("ul", { class: "hold-points" },
+      ...a.points.map((pt) => h("li", {}, h("b", { text: `${byId[pt.thesis_id] || pt.thesis_id}：` }), pt.text))));
+    if ((a.watch || []).length) box.append(h("div", { class: "hold-watch" }, h("span", { class: "muted small", text: "到期前盯住" }),
+      h("ul", {}, ...a.watch.map((w) => h("li", { text: w })))));
+    const moved = isNum(last.ledger_at_ms) && isNum(get(led, "coverage.latest_ms")) && led.coverage.latest_ms - last.ledger_at_ms > 10 * 60000;
+    box.append(h("p", { class: "muted small", text: `基于 ${clock(last.ledger_at_ms)} 的依据，${clock(last.finished_at_ms)} 生成。${moved ? "之后依据已有更新。" : ""}只解读上面的判定，不改判、不给概率或交易建议。` }));
+  } else if ((hold.reasons || []).includes("lock_not_active")) {
+    box.append(h("p", { class: "muted small", text: "锁定已结束；持有中复核只用于仍在追踪的锁定。" }));
+  } else {
+    box.append(h("p", { class: "muted small", text: "还没有复核。复核让模型用几句话说明上面的依据现在怎样、到期前要盯什么，每次消耗 1 次模型额度。" }));
+  }
+  const failed = hold.last_failed;
+  if (failed && (!last || (failed.finished_at_ms || 0) > (last.finished_at_ms || 0))) {
+    box.append(h("p", { class: "muted small", text: `${clock(failed.finished_at_ms)} 的复核：${HOLD_FAIL_CN[failed.status] || "未完成"}。` }));
+  }
+  const reasons = hold.reasons || [];
+  if (reasons.includes("lock_not_active")) return box;
+  const why = !session ? "登录后可复核" : busy ? "复核中…（约半分钟）"
+    : reasons.includes("hold_review_too_early") ? `锁定满 15 分钟后可复核（还差约 ${Math.max(1, Math.ceil((hold.history_needed_ms || 0) / 60000))} 分钟）`
+    : reasons.includes("hold_review_cooldown") ? `${Math.max(1, Math.ceil((hold.cooldown_remaining_ms || 0) / 60000))} 分钟后可再次复核`
+    : reasons.map((r) => HOLD_BLOCK_CN[r] || "暂不可用").join("、");
+  const enabled = session && !busy && hold.enabled;
+  box.append(h("div", { class: "hold-act" },
+    h("button", { class: "btn", type: "button", disabled: !enabled, onclick: () => onHoldReview && onHoldReview(),
+      text: last ? "重新复核" : "请求持有中复核" }),
+    !enabled && why ? h("span", { class: "muted small", text: ` ${why}` }) : null));
+  return box;
 }
 
 function section(title, ...children) {

@@ -927,6 +927,7 @@ function renderLocks() {
       onAskStop: () => { L.confirm = "stop"; renderLocks(); },
       onCancel: () => { L.confirm = null; renderLocks(); },
       onStop: () => stopLock(e.episode_id),
+      onHoldReview: () => holdReview(e.episode_id), holdBusy: !!(L.holdBusy || {})[e.episode_id],
       onRelock: (ask) => { if (ask === "ask") { L.confirm = "relock"; renderLocks(); } else relock(e); },
     }),
   })));
@@ -953,6 +954,19 @@ async function stopLock(id) {
   try { await api.post(`/locked-candidates/${encodeURIComponent(id)}/stop`, {}); notice("已停止追踪。"); }
   catch (err) { authFailed(err); notice(`停止失败：${errorText(err)}`); }
   await load(true); await fetchLock(id);
+}
+
+async function holdReview(id) {
+  const L = state.lock;
+  L.holdBusy = { ...(L.holdBusy || {}), [id]: true }; renderLocks();
+  try {
+    const res = await api.post(`/locked-candidates/${encodeURIComponent(id)}/hold-review`,
+      { idempotency_key: idempotencyKey("ui-hold") });
+    if (res.status !== "OK") notice(res.status === "BUDGET_EXHAUSTED" ? "今日模型额度已用完。"
+      : res.status === "INVALID_RESPONSE" ? "模型回答未通过校验，未采用。" : "持有中复核未完成。");
+  } catch (err) { authFailed(err); notice(`持有中复核失败：${errorText(err)}`); }
+  const busy = { ...(L.holdBusy || {}) }; delete busy[id]; L.holdBusy = busy;
+  await fetchLock(id, { quiet: true });
 }
 
 async function relock(e) {
