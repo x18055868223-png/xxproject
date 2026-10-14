@@ -5,9 +5,10 @@ import { h, s, clear, get, isNum, usd, btc, pct, ratioPct, compactUsd, ago, dur,
 import { sideModel, mapModel, sourceHealth, reasonCn, hasReason, statusCn, applicability, codeCn, underwriting, productionReady,
   consumerCn, sourceStatusCn } from "./model.js";
 import { renderMap, legend } from "./map.js";
-import { coreFactors, backgroundItems, relationFor } from "./factors.js";
+import { coreFactors, backgroundItems } from "./factors.js";
 import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
-import { eventBand, contractEvents } from "./events.js";
+import { eventBand } from "./events.js";
+import { renderDecision as renderDecisionView } from "./decision.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
@@ -25,6 +26,8 @@ const state = {
   session: { authenticated: false },
   lock: { id: null, details: {}, series: {}, seriesErrors: {}, loading: null, errors: {}, confirm: null, seq: 0, autoOpened: false },
   audit: null, auditAt: 0,
+  // Decision Path: the session on screen (a frozen policy being verified)
+  dp: { session: null, busy: null, error: null, confirm: null },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
@@ -78,6 +81,7 @@ async function load(force = false) {
     state.busy = false;
   }
   if (needsLogin()) { renderBanners(); openLogin("会话已过期，请重新输入工作台令牌。"); return; }
+  // an unchanged view leaves the Decision Path alone, so a poll never re-draws under the cursor
   if (changed || state.error) render(); else { renderStrip(); renderBanners(); renderDecks(); }
   // The newest active lock opens by itself once; an open, active lock stays current with the page.
   const L = state.lock;
@@ -107,6 +111,7 @@ async function loadSession() {
   }
   if (isNum(state.session.expires_at_ms) && state.session.expires_at_ms <= Date.now()) state.session = { authenticated: false };
   renderSession();
+  renderDecision();
   if (needsLogin()) renderBanners();
 }
 
@@ -126,7 +131,7 @@ function watchReview() {
 // ── render root ──────────────────────────────────
 function render() {
   // one section's failure must not blank the rest of the page
-  for (const section of [renderStrip, renderBanners, renderMapBand, renderVerdict, renderDecks, renderFactors,
+  for (const section of [renderStrip, renderBanners, renderMapBand, renderVerdict, renderDecks, renderDecision, renderFactors,
     renderEvents, renderAudit, renderLocks, renderContext, renderRecords, renderFoot]) {
     try { section(); } catch (err) { console.error(section.name, err); }
   }
@@ -284,7 +289,7 @@ function renderVerdict() {
   const gate = state.view.space_gate || {};
   if (u.open) {
     box.className = "verdict open";
-    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "两侧快照与报价可用，没有硬门槛阻止；可做模型复核，是否承保由你按下面两张保单判断。" }));
+    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "两侧快照与报价可用，没有硬门槛阻止；是否承保由你在下面的保单与核验中判断。" }));
     return;
   }
   box.className = "verdict blocked";
@@ -300,7 +305,7 @@ function renderVerdict() {
       if (why.length) box.append(h("span", { class: "why-item", text: `${side === "put" ? "Put" : "Call"}：${why.join("、")}` }));
     }
   }
-  box.append(h("span", { class: "then", text: "仍可做观察复核与锁定追踪，用于了解责任与补偿如何变化。" }));
+  box.append(h("span", { class: "then", text: "仍可核验与锁定追踪，用于了解责任与补偿如何变化。" }));
 }
 
 // ── four core elements (shared market layer) ────
@@ -373,12 +378,9 @@ function deck(m, side, blockers) {
     card.append(h("p", { class: "empty", text: blockers.length ? `本轮没有可展示的候选：${blockers.join("、")}。` : "本轮没有可展示的候选。" }));
     return card;
   }
-  const src = m.review.kind === "current" ? ["模型解释：对应本快照", "ok"]
-    : m.review.kind === "historical" ? [`模型解释：${clock(reviewedAt(m.review))} 的回执`, "warn"] : ["模型解释：未请求", ""];
   card.append(h("div", { class: "deck-head" },
     h("h3", { text: name }),
-    h("span", { class: "legs", text: `${(m.shortName || "").split("-")[1] || ""}  卖 ${usd(m.short)} / 买 ${usd(m.long)}，${remainingText(m)}` }),
-    h("span", { class: `chip ${src[1]} deck-src`, text: src[0] })));
+    h("span", { class: "legs", text: `${(m.shortName || "").split("-")[1] || ""}  卖 ${usd(m.short)} / 买 ${usd(m.long)}，${remainingText(m)}` })));
   if (blockers.length) card.append(h("p", { class: "side-block", text: `本侧另有：${blockers.join("、")}` }));
 
   const move = m.sigmaPct;
@@ -390,135 +392,26 @@ function deck(m, side, blockers) {
   const beSub = m.breakevenState === "ok" ? `${usd(m.breakeven)} 美元` : m.breakevenState === "none" ? "净信用不为正，不存在盈亏平衡" : "费用或报价不足，未能计算";
   const quoteAge = (isNum(m.quoteAt) ? `报价 ${ago(m.quoteAt)}` : "报价时间未知")
     + (m.quoteGaps.length ? `，${[...new Set(m.quoteGaps.map((g) => (/depth/.test(g) ? "盘口深度不足" : "报价有缺口")))].join("、")}` : "");
-  const mp = (get(m, "candidate.decision_reduction.questions") || []).find((q) => q.key === "market_price")?.numbers || {};
   const absDelta = isNum(m.delta) ? Math.abs(m.delta).toFixed(2) : null;
   const distanceSub = !isNum(m.shortOutsidePct) ? "距离未能计算"
     : `${usdOf(m.shortOutsidePct)} 美元，${m.shortOutsidePct >= 0 ? (tone === "bad" ? "贴近责任区" : "在责任区外") : "已进入责任区"}${absDelta ? `；短腿 Delta ${absDelta}` : ""}`;
+  const events = get(m, "candidate.exogenous_events.events") || [];
+  // Premium amounts start at Decision Path Q2; the card keeps one ratio for comparing the two sides.
   card.append(h("div", { class: "figures" },
     fig(pct(m.shortOutsidePct, 2), "短腿距现价", tone, distanceSub),
     fig(beValue, "盈亏平衡距现价", "", beSub),
-    // The headline is what the book can earn at most; the market-mark comparison is a scaled reference.
-    fig(isNum(m.netCreditUsd) ? `${usd(m.netCreditUsd)} 美元` : "—", "理论最大净信用", "",
-      [isNum(m.netCredit) ? `${btc(m.netCredit)} BTC` : null,
-        isNum(mp.edge_usd) && isNum(m.width) && m.width > 0
-          ? `市场估价差 ${mp.edge_usd > 0 ? "+" : mp.edge_usd < 0 ? "−" : ""}${Math.abs(mp.edge_usd / m.width * 100).toFixed(1)}% 宽度`
-          : "市场估价暂缺"].filter(Boolean).join("；")),
-    fig(ratioPct(m.creditToWidth), "毛信用占宽度", "",
-      [isNum(m.credit) ? `毛 ${btc(m.credit)} BTC` : null,
-        isNum(m.fee) ? `费 ${btc(m.fee)}${m.feeAssumed ? "（假设）" : ""}` : null, quoteAge].filter(Boolean).join("，")),
+    fig(ratioPct(m.creditToWidth), "毛信用占宽度", "", quoteAge),
+    fig(get(m, "candidate.exogenous_events") ? `${events.length} 项` : "—", "到期前事件", events.length ? "warn" : "",
+      events.length ? events.map((e) => e.name_cn).join("、")
+        : (get(m, "candidate.exogenous_events.gaps") || []).length ? "日历未完全覆盖本期" : "无已排期的重要宏观发布"),
   ));
-  let events = null;
-  try { events = contractEvents(m.candidate); } catch { events = null; }
-  if (events) card.append(events);
-  const reduced = reductionView(m);
-  if (reduced) card.append(reduced);
-  card.append(distanceRule(m));
-  card.append(sideFactors(m));
-
-  const qa = h("div", { class: "qa" });
-  if (m.review.kind === "historical") qa.append(h("p", { class: "qa-stale",
-    text: `以下是 ${clock(reviewedAt(m.review))} 快照的模型解释，之后报价已更新；数字以上方卡片为准。` }));
-  qa.append(question("Q1 风险质量", m.review.kind === "program" ? programLines(m.review.programQ1) : m.review.q1, m.review.kind, m.review.labels));
-  qa.append(question("Q2 风险价格", m.review.kind === "program" ? programLines(m.review.programQ2) : m.review.q2, m.review.kind, m.review.labels));
-  card.append(qa);
   card.append(actions(m));
   return card;
 }
 
-// Decision reduction: what the user still has to settle before deciding, inside the
-// model's scope. Built by the program (no model): nothing is weighed or concluded.
-// The market's own price (the spread's mark value) is the reference, so no system
-// probability is needed: the only open question is whether you see it differently.
-const KIND_TAG = { judgment: "你的判断", belief: "你的判断", preference: "你的承受度" };
-const money = (v) => (isNum(v) ? `${v < 0 ? "−" : ""}${usd(Math.abs(v))} 美元` : "—");
-const signedMoney = (v) => (isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${usd(Math.abs(v))} 美元` : "—");
-
-function reductionView(m) {
-  const r = m.candidate?.decision_reduction;
-  if (!r || r.error || !Array.isArray(r.questions)) return null;
-  const blocked = r.rule_state?.status === "blocked";
-  const box = h("section", { class: `reduce${blocked ? " observe" : ""}`, onclick: (e) => e.stopPropagation() });
-  box.append(h("div", { class: "reduce-head" },
-    h("b", { text: "决策前要确认的 3 件事" }),
-    h("span", { class: `reduce-rule${blocked ? " blocked" : ""}`,
-      text: blocked ? "有硬门槛未通过：按规则本轮不承保，以下仅供观察" : "没有硬门槛阻止；承保与否由你决定" })));
-  const ol = h("ol", { class: "reduce-q" });
-  for (const q of r.questions) {
-    const item = reductionItem(q, m);
-    if (item) ol.append(item);
-  }
-  box.append(ol);
-
-  const cov = r.coverage || {};
-  const folded = (r.folded || []).filter((f) => f.count > 0);
-  const why = r.questions.filter((q) => q.why_user_cn).map((q) => `${q.title_cn}：${q.why_user_cn}`);
-  box.append(h("details", { class: "reduce-more" },
-    h("summary", { text: `系统已替你消化 ${cov.folded ?? 0} 条程序事实；为什么这 3 件事要你来定` }),
-    h("p", { class: "muted small", text: `已消化：${folded.map((f) => `${f.label_cn} ${f.count}`).join(" · ")}。折叠只依据规则或来源标注，不判断重要性；原条目在下方 Q1/Q2 与推理审计中。` }),
-    ...why.map((t) => h("p", { class: "muted small", text: t })),
-    h("p", { class: "muted small", text: `模型口径之外，请自行核对：${(r.outside_model_cn || []).join(" · ")}。` })));
-  if ((r.unclassified || []).length) {
-    box.append(h("p", { class: "reduce-left", title: r.unclassified.map((u) => u.ref).join(" · "),
-      text: `另有 ${r.unclassified.length} 条系统未能归类，请自行查看：${r.unclassified.map((u) => u.label_cn || reasonCn(u.code)).join("、")}` }));
-  }
-  return box;
-}
-
-function reductionItem(q, m) {
-  const li = h("li", {}, h("span", { class: "reduce-tag", text: `${KIND_TAG[q.kind] || "你的判断"} · ${q.title_cn || ""}` }));
-  const line = (text, cls = "reduce-line") => li.append(h("span", { class: cls, text }));
-  if (q.key === "market_price") {
-    const n = q.numbers || {};
-    if (isNum(n.market_payout_usd) && isNum(n.net_usd)) {
-      line(`你净收 ${money(n.net_usd)}；按 Deribit 两腿标记价，市场估计这张单到期平均要赔 ${money(n.market_payout_usd)}。`, "reduce-main");
-      line(`按市场自己的估价，这张单约 ${signedMoney(n.edge_usd)}（成交价相对标记价 ${signedMoney(n.spread_cost_usd)}，手续费 ${isNum(n.fees_usd) ? signedMoney(-n.fees_usd) : "未知"}）。`);
-      line(q.stance === "below_market"
-        ? "要承保，你得有理由认为它到期实际赔得比市场估计的少。"
-        : "补偿不低于市场估价；要承保，你至少不能比市场更担心。", "reduce-ask");
-    } else {
-      line(`市场估价暂缺（缺${(n.missing_cn || []).join("、") || "数据"}）${isNum(n.net_usd) ? `；你净收 ${money(n.net_usd)}` : ""}。`, "reduce-main");
-      line("没有市场估价时，只能凭下面的理由和最坏情况来判断。", "reduce-ask");
-    }
-    for (const f of q.flags_cn || []) line(f, "reduce-flag");
-    if (isNum(q.m_ref_btc)) line(`程序参照 M_ref ${btc(q.m_ref_btc)} BTC`);
-  } else if (q.key === "your_reason") {
-    const b = q.boundary || {};
-    const d = b.short_distance_pct, move = m.sigmaPct;
-    const k = isNum(b.short_strike_usd) ? usd(b.short_strike_usd) : "短腿";
-    if (isNum(d) && d < 0) line(`现价已经越过短腿 ${k}，进入责任区。`, "reduce-main");
-    else if (isNum(d)) {
-      const inside = isNum(move) && move > 0 ? (d < move ? `，在到期前预期波动 ±${pct(move, 2)} 之内` : `，在到期前预期波动 ±${pct(move, 2)} 之外`) : "";
-      line(`短腿 ${k} 离现价 ${pct(d, 2)}${inside}${isNum(b.short_abs_delta) ? `；短腿 Delta ${b.short_abs_delta.toFixed(2)}（0.5 为平值）` : ""}。`, "reduce-main");
-    }
-    const sp = m.candidate?.spatial_position;
-    if (sp && !sp.error && sp.reason_cn) line(`空间位置（未验证）：${{ favorable: "相对有利", unfavorable: "相对不利" }[sp.state] || "不明"}，${sp.reason_cn}`);
-    const ev = q.evidence || [];
-    if (ev.length) {
-      line(`系统看到、价格未必已包含的读数：${ev.map((e) => `${e.label_cn}${e.detail_cn ? ` ${e.detail_cn}` : ""} → ${e.relation_cn}`).join("；")}${q.conflict ? "。两者方向相反，系统不替你合并" : ""}。`);
-    } else {
-      line("系统没有看到价格之外的方向读数，没有可以支持你比市场更有把握的系统依据。");
-    }
-    line(`这些是否足以让你比市场更不担心${m.side === "put" ? "跌破" : "涨过"} ${k}？`, "reduce-ask");
-  } else if (q.key === "worst_case") {
-    const n = q.numbers || {};
-    const k = isNum(n.protection_usd) ? usd(n.protection_usd) : "保护腿";
-    if (isNum(n.loss_at_protection_btc)) {
-      line(m.side === "put"
-        ? `到期跌破 ${k}：净亏 ${btc(n.loss_at_protection_btc)} BTC（约 ${money(n.loss_at_protection_usd)}）；再往下按 BTC 计还会增加${isNum(n.payout_at_deep_btc) ? `，跌到 ${usd(n.deep_usd)} 时赔 ${btc(n.payout_at_deep_btc)} BTC` : ""}。`
-        : `到期涨过 ${k}：净亏 ${btc(n.loss_at_protection_btc)} BTC（约 ${money(n.loss_at_protection_usd)}），这是最坏情况，再涨不会更多。`, "reduce-main");
-    } else {
-      line("最坏情况暂缺（报价或费用不足）。", "reduce-main");
-    }
-    line("这个亏损你能否承受？", "reduce-ask");
-  } else {
-    return null;
-  }
-  return li;
-}
-
 const FIG_TIP = {
-  "理论最大净信用": "到期价在短腿外时全部收下的金额（已扣入场费）。下方“市场估价差”= 净收 − 按 Deribit 两腿标记价估计的平均赔付，按价差宽度标准化；它是对照，不是预计盈亏。",
-  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度；费用按公开 taker 上限假设。",
+  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于比较两侧；金额、费用与市场估价在 Decision Path 的 Q2。",
+  "到期前事件": "合约有效期内已排期的美国宏观发布；时间与过滤在 Decision Path 的 D4。",
 };
 function fig(value, label, cls = "", sub = "") {
   return h("div", { class: `fig ${cls}`, title: FIG_TIP[label] || null }, h("div", { class: "v", text: value }), h("div", { class: "k", text: label }),
@@ -551,19 +444,6 @@ function distanceRule(m) {
   return wrap;
 }
 
-function sideFactors(m) {
-  const box = h("div", { class: "side-factors", title: "方向对照是固定规则：偏多读数对 Put 有利、对 Call 不利；空间结构只作评价，不分有利不利" });
-  for (const f of coreFactors(state.view || {}, currentSpot())) {
-    const own = f.key === "position" ? f.perSide?.[m.side] : null;
-    const rel = f.key === "space"
-      ? { cls: f.missing ? "gap" : "", text: f.missing ? "缺口" : f.headline.replace(" / 100", "") }
-      : f.key === "position" ? (own ? { cls: own.cls, text: own.text } : { cls: "gap", text: "缺口" })
-      : relationFor(f.missing ? null : f.lean, m.side, { background: f.background });
-    box.append(h("div", { class: "sf" }, h("span", { text: f.title }), h("span", { class: `chip ${rel.cls}`, text: rel.text })));
-  }
-  return box;
-}
-
 function programLines(q) {
   if (!q) return [];
   return [q.summary_cn, ...(q.routing_observations_cn || []).slice(0, 2)].filter(Boolean).map((t) => ({ text_cn: t, evidence_refs: [] }));
@@ -583,36 +463,67 @@ function cooldownLeft() {
   return isNum(until) ? until - Date.now() : 0;
 }
 
+function verifyOf(m) {
+  const cid = m?.snap?.candidate_id;
+  return cid ? get(state.view, `decision_path.open.${cid}`) : null;
+}
+
+/** Card actions: start or continue verification, and the direct lock (both lead to tracking). */
 function actions(m) {
   const wrap = h("div", { class: "actions", onclick: (e) => e.stopPropagation() });
-  const obs = m.candidate.observation_review || {};
   const lock = m.candidate.lock_availability || {};
-  const pending = state.pending && state.pending.side === m.side ? state.pending : null;
-  const production = productionReady(m);
+  const pending = state.pending && state.pending.side === m.side && state.pending.kind === "lock" ? state.pending : null;
   if (pending && pending.stage === "confirm") {
-    const b = get(state.view, "manual_review_state.daily_http_budget") || {};
-    const text = pending.kind === "review"
-      ? (production
-        ? `模型复核：用当时报价重新冻结本保单后调用一次模型（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；回执附着本快照，仍不构成交易许可。`
-        : `观察复核：调用一次模型解释本快照（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；报价、费用或 FMZ 事实未达生产复核条件，回执不附着生产。`)
-      : "锁定后每分钟采样同一合同，直到到期或手动停止；锁定时与之后的赔付、代价变化在“锁定追踪”里查看。";
-    wrap.append(h("span", { class: "confirm", text }),
-      h("button", { class: "btn", type: "button", onclick: () => run(pending.kind, m) }, pending.kind === "review" ? "确认复核" : "确认锁定"),
+    wrap.append(h("span", { class: "confirm", text: "不经核验直接锁定：每分钟采样同一合同，直到到期或手动停止；锁定时与之后的变化在“锁定追踪”里查看。" }),
+      h("button", { class: "btn", type: "button", onclick: () => run("lock", m) }, "确认锁定"),
       h("button", { class: "btn secondary", type: "button", onclick: () => { state.pending = null; renderDecks(); } }, "取消"));
     return wrap;
   }
+  if (pending && pending.stage === "running") { wrap.append(h("span", { class: "confirm", text: "正在锁定…" })); return wrap; }
+  const needLogin = !state.session.authenticated;
+  const open = verifyOf(m);
+  const onScreen = state.dp.session && state.dp.session.candidate_id === m.snap.candidate_id;
+  wrap.append(h("button", { class: "btn", type: "button", disabled: needLogin || FIXTURE || state.dp.busy === "start",
+    title: "冻结这张保单，按固定读序逐步核验；结论可以是锁定追踪、不承保或继续观察",
+    onclick: () => (open ? openVerification(open.verification_id) : startVerification(m)) },
+  open ? (onScreen ? "查看核验" : "继续核验") : "开始核验"));
+  wrap.append(h("button", { class: "btn secondary", type: "button", disabled: !lock.enabled || needLogin || FIXTURE,
+    title: "不经核验直接锁定追踪",
+    onclick: () => { state.pending = { side: m.side, kind: "lock", stage: "confirm" }; renderDecks(); } }, "直接锁定"));
+  const why = [];
+  if (needLogin && !FIXTURE) why.push("登录后可操作");
+  if (!lock.enabled && lock.reason) why.push(`锁定：${reasonCn(lock.reason)}`);
+  if (open && !onScreen) why.push(`核验进行中，${ago(open.started_at_ms)}开始`);
+  if (pending && pending.stage === "done") why.unshift(pending.message);
+  if (why.length) wrap.append(h("span", { class: "why", text: [...new Set(why)].join("；") }));
+  return wrap;
+}
+
+/** The model review, now inside the Decision Path audit step (same request and states). */
+function reviewActions(m) {
+  const wrap = h("div", { class: "actions", onclick: (e) => e.stopPropagation() });
+  const obs = m.candidate.observation_review || {};
+  const pending = state.pending && state.pending.side === m.side && state.pending.kind === "review" ? state.pending : null;
+  const production = productionReady(m);
+  if (pending && pending.stage === "confirm") {
+    const b = get(state.view, "manual_review_state.daily_http_budget") || {};
+    const text = production
+      ? `模型复核：用当时报价重新冻结本保单后调用一次模型（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；回执附着本快照，仍不构成交易许可。`
+      : `观察复核：调用一次模型解释本快照（今日 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}），约 2–4 分钟，可离开页面，完成后自动刷新；报价、费用或 FMZ 事实未达生产复核条件，回执不附着生产。`;
+    wrap.append(h("span", { class: "confirm", text }),
+      h("button", { class: "btn", type: "button", onclick: () => run("review", m) }, "确认复核"),
+      h("button", { class: "btn secondary", type: "button", onclick: () => { state.pending = null; renderSides(); } }, "取消"));
+    return wrap;
+  }
   if (pending && pending.stage === "running") {
-    wrap.append(h("span", { class: "confirm", text: pending.kind === "review" ? "模型复核进行中，完成后自动刷新。" : "正在锁定…" }));
+    wrap.append(h("span", { class: "confirm", text: "模型复核进行中，完成后自动刷新。" }));
     return wrap;
   }
   const needLogin = !state.session.authenticated;
   const reviewOpen = production ? !(get(m, "candidate.review_gate.reasons") || []).some((r) => /cooldown|inflight|budget/.test(r)) : obs.enabled;
-  const reviewBtn = h("button", { class: "btn", type: "button", disabled: !reviewOpen || needLogin || FIXTURE,
+  wrap.append(h("button", { class: "btn secondary", type: "button", disabled: !reviewOpen || needLogin || FIXTURE,
     title: production ? "生产复核：回执附着本快照，仍不构成交易许可" : "观察用途：模型只解释冻结快照，回执不附着生产",
-    onclick: () => { state.pending = { side: m.side, kind: "review", stage: "confirm" }; renderDecks(); } }, production ? "模型复核" : "观察复核");
-  const lockBtn = h("button", { class: "btn secondary", type: "button", disabled: !lock.enabled || needLogin || FIXTURE,
-    onclick: () => { state.pending = { side: m.side, kind: "lock", stage: "confirm" }; renderDecks(); } }, "锁定追踪");
-  wrap.append(reviewBtn, lockBtn);
+    onclick: () => { state.pending = { side: m.side, kind: "review", stage: "confirm" }; renderSides(); } }, production ? "请求模型复核" : "请求观察复核"));
   const why = [];
   if (needLogin && !FIXTURE) why.push("登录后可操作");
   const gateReasons = production ? (get(m, "candidate.review_gate.reasons") || []).filter((r) => /cooldown|inflight|budget/.test(r))
@@ -621,15 +532,16 @@ function actions(m) {
     const left = cooldownLeft();
     why.push((r === "manual_review_cooldown_active" || r === "review_cooldown") && left > 0 ? `复核冷却中，还剩 ${dur(left)}` : reasonCn(r));
   }
-  if (!lock.enabled && lock.reason) why.push(`锁定：${reasonCn(lock.reason)}`);
   if (pending && pending.stage === "done") why.unshift(pending.message);
   if (why.length) wrap.append(h("span", { class: "why", text: [...new Set(why)].join("；") }));
   return wrap;
 }
 
+function renderSides() { renderDecks(); renderDecision(); }
+
 async function run(kind, m) {
   state.pending = { side: m.side, kind, stage: "running" };
-  renderDecks();
+  renderSides();
   try {
     if (kind === "review") {
       const purpose = productionReady(m) ? "review" : "observation";
@@ -654,6 +566,150 @@ async function run(kind, m) {
   }
   await load(true);
   if (kind === "lock" && state.lock.id) fetchLock(state.lock.id);
+}
+
+// ── Decision Path ────────────────────────────────
+/** The current card of the session's side, when it still shows the same contract. */
+function sameContractSide(session) {
+  const m = session && state.sides[session.side];
+  return m?.snap?.candidate_id === session?.candidate_id ? m : null;
+}
+
+/** The audit step: the model's reading of this contract and the review request, reused from the card era. */
+function auditExtra(session) {
+  const m = sameContractSide(session);
+  if (!m) return h("p", { class: "muted small", text: state.sides[session.side]?.snap
+    ? "保单卡已换为另一张合同；模型复核只对卡上当前这张保单发起。" : "这一侧当前没有保单，无法发起模型复核。" });
+  const box = h("div", { class: "dp-audit" });
+  const src = m.review.kind === "current" ? "模型解释：对应当前快照"
+    : m.review.kind === "historical" ? `模型解释：${clock(reviewedAt(m.review))} 的回执，之后报价已更新` : "模型解释：未请求（以下为程序摘要）";
+  box.append(h("p", { class: "muted small", text: src }));
+  box.append(question("模型解释 · 风险质量", m.review.kind === "program" ? programLines(m.review.programQ1) : m.review.q1, m.review.kind, m.review.labels));
+  box.append(question("模型解释 · 风险价格", m.review.kind === "program" ? programLines(m.review.programQ2) : m.review.q2, m.review.kind, m.review.labels));
+  box.append(reviewActions(m));
+  return box;
+}
+
+function renderDecision() {
+  const box = $("decision");
+  if (!box) return;
+  const dp = state.dp;
+  const session = dp.session;
+  const m = session ? state.sides[session.side] : null;
+  const same = sameContractSide(session);
+  syncDecision();
+  // Redraw only when something shown here changed: a poll must not rebuild buttons under the cursor.
+  const key = JSON.stringify([session && [session.verification_id, session.status, session.opened, session.marks,
+    session.readings?.now?.at_ms, session.decisions?.length, session.outcome?.status],
+  dp.busy, dp.error, dp.confirm, state.session.authenticated, m?.snap?.candidate_id, same?.review?.kind,
+  same && reviewedAt(same.review), state.pending, get(state.view, "decision_path.recent"),
+  get(state.view, "manual_review_state.inflight"), Math.floor(cooldownLeft() / 60_000), Math.floor(Date.now() / 60_000),
+  get(state.view, "decision_path.error_type"), get(state.view, "decision_path.unreadable_sessions")]);
+  if (key === dp.drawn) return;
+  dp.drawn = key;
+  renderDecisionView(box, {
+    session, overview: get(state.view, "decision_path"), busy: dp.busy, error: dp.error, confirm: dp.confirm,
+    canAct: state.session.authenticated && !FIXTURE,
+    replaced: session && m?.snap && !same ? `${(m.shortName || "").split("-")[1] || ""} 卖 ${usd(m.short)} / 买 ${usd(m.long)}` : null,
+    extras: session ? { D2: same ? distanceRule(same) : null, AU: auditExtra(session) } : null,
+    onStep: (step, lean) => dpPost(`/${session.verification_id}/step`, { step, ...(lean ? { lean } : {}) }, "step"),
+    onRefresh: () => dpPost(`/${session.verification_id}/refresh`, {}, "refresh"),
+    onAskLock: () => { dp.confirm = "lock"; renderDecision(); },
+    onCancel: () => { dp.confirm = null; renderDecision(); },
+    onConclude: (choice) => dpConclude(choice),
+    onClose: () => { dp.session = null; dp.error = null; dp.confirm = null; renderSides(); },
+    onOpen: (id) => openVerification(id),
+    onJump: (target, side) => { if (target === "map-h" || target === "audit-h") select(side); $(target)?.scrollIntoView({ behavior: "smooth", block: "start" }); },
+    onOpenLock: (id) => { state.lock.id = id; renderLocks(); fetchLock(id); $("lock-h").scrollIntoView({ behavior: "smooth", block: "start" }); },
+  });
+}
+
+function showDecision() {
+  renderSides();
+  $("decision-h").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function startVerification(m) {
+  const dp = state.dp;
+  dp.busy = "start"; dp.error = null; renderSides();
+  try {
+    const res = await api.post("/decision-path", { candidate_id: m.snap.candidate_id, snapshot_id: m.snap.snapshot_id });
+    dp.session = res.session; dp.confirm = null;
+    // the first step opens at once
+    if (!Object.keys(dp.session.opened || {}).length) {
+      dp.session = (await api.post(`/decision-path/${dp.session.verification_id}/step`, { step: dp.session.steps[0].id })).session;
+    }
+  } catch (err) { authFailed(err); dp.error = `未能开始核验：${errorText(err)}`; }
+  dp.busy = null;
+  await load(true);
+  showDecision();
+}
+
+async function openVerification(id, { scroll = true } = {}) {
+  const dp = state.dp;
+  const seq = (dp.seq = (dp.seq || 0) + 1);
+  dp.error = null;
+  try {
+    const session = await api.verification(id);
+    if (seq !== dp.seq) return;  // a later open wins
+    dp.session = session; dp.confirm = null;
+  } catch (err) {
+    if (seq !== dp.seq) return;
+    authFailed(err);
+    if (err?.status === 404) { dp.session = null; notice("这条核验的合约已到期，结果已回填并清理。"); }
+    else dp.error = `未能读取核验：${errorText(err)}`;
+  }
+  if (scroll) showDecision(); else renderSides();
+}
+
+/** The server closes sessions at expiry and deletes them after settlement: follow it. */
+function syncDecision() {
+  const s = state.dp.session;
+  if (!s || s.status !== "open" || state.dp.busy || FIXTURE) return;
+  const listed = (get(state.view, "decision_path.recent") || []).find((r) => r.verification_id === s.verification_id);
+  const key = `${s.verification_id}@${get(state.view, "served_at_ms") ?? get(state.view, "updated_at_ms")}`;
+  if (get(state.view, "decision_path.recent") && (!listed || listed.status !== "open") && state.dp.synced !== key) {
+    state.dp.synced = key;  // at most one re-read per view
+    openVerification(s.verification_id, { scroll: false });
+  }
+}
+
+async function dpPost(path, body, kind) {
+  const dp = state.dp;
+  if (dp.busy) return;
+  dp.busy = kind; dp.error = null; renderDecision();
+  try { dp.session = (await api.post(`/decision-path${path}`, body)).session; }
+  catch (err) {
+    authFailed(err);
+    dp.error = `${kind === "refresh" ? "刷新" : "记录"}未完成：${errorText(err)}`;
+    const code = err?.body?.code;
+    if (err?.status === 404 || ["verification_closed", "contract_expired"].includes(code)) {
+      dp.busy = null;
+      await openVerification(dp.session.verification_id, { scroll: false });
+      return;
+    }
+  }
+  dp.busy = null; renderDecision();
+  if (kind === "step" && !body.lean) document.getElementById(`dp-${body.step}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function dpConclude(choice) {
+  const dp = state.dp;
+  const session = dp.session;
+  if (dp.busy || !session) return;  // one conclusion at a time (the server refuses a second as well)
+  dp.busy = choice; dp.error = null; renderDecision();
+  try {
+    const res = await api.post(`/decision-path/${session.verification_id}/conclude`,
+      { choice, ...(choice === "lock" ? { idempotency_key: idempotencyKey("ui-dp-lock") } : {}) });
+    dp.session = res.session; dp.confirm = null;
+    const id = get(res, "lock.episode.episode_id");
+    if (id) { state.lock.id = id; notice(res.lock.created ? "核验结论：已锁定，在“锁定追踪”查看。" : "该合同已在追踪中，核验已关联到它。"); }
+    else notice(choice === "watch" ? "已记为继续观察，可从保单卡“继续核验”回来。" : "核验结论已记录：不承保。");
+  } catch (err) { authFailed(err); dp.error = `结论未记录：${errorText(err)}`; }
+  dp.busy = null;
+  await load(true);
+  renderDecision();
+  if (state.lock.id && choice === "lock") fetchLock(state.lock.id);
 }
 
 // ── reasoning audit ──────────────────────────────
@@ -913,7 +969,7 @@ function renderLocks() {
   sum.textContent = list.length
     ? `${active} 条追踪中，共 ${list.length} 条（默认显示最近 ${LOCK_LIST_LIMIT} 条）。每条追踪到该期期权交割为止；点击一行展开锁定时与之后的变化。`
     : "锁定后按同一合同持续采样到该期期权交割，比较锁定时与现在";
-  if (!list.length) { box.append(h("p", { class: "empty pad", text: "还没有锁定的合同。在候选卡上选择“锁定追踪”开始。" })); return; }
+  if (!list.length) { box.append(h("p", { class: "empty pad", text: "还没有锁定的合同。核验结论选“锁定追踪”，或在保单卡上直接锁定。" })); return; }
   const L = state.lock;
   box.append(h("div", { class: "pad" }, lockList(list, {
     selected: L.id,
@@ -1258,7 +1314,7 @@ $("session-btn").addEventListener("click", async () => {
     try { await api.logout(); } catch {}
     // On the public entry the data was read under this session; leave nothing behind on screen.
     if (SESSION_GATED) { location.reload(); return; }
-    await loadSession(); renderDecks(); renderLocks(); return;
+    await loadSession(); renderSides(); renderLocks(); return;
   }
   openLogin("");
 });
@@ -1282,7 +1338,7 @@ $("login-form").addEventListener("submit", async (e) => {
     $("login").close();
     await loadSession();
     if (SESSION_GATED && !state.view) await load(true);
-    renderDecks(); renderLocks();
+    renderSides(); renderLocks();
   } catch (err) {
     $("login-msg").textContent = loginFailure(err);
   }

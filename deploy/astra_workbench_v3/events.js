@@ -1,7 +1,7 @@
 // Exogenous events: scheduled US macro releases (FOMC, CPI, NFP, PCE, PPI, GDP) from the
 // static calendar kept in the repository. Display only: times in Beijing time, and for
 // each contract the releases inside its remaining life with the time left to expiry.
-import { h, isNum, dur } from "./format.js";
+import { h, isNum } from "./format.js";
 
 const DAY = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", weekday: "short" });
 const HM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -29,28 +29,6 @@ function gapsText(gaps) {
     ? `${g.name_cn}（${g.period_cn}）日期待${SOURCE_CN[g.source] || g.source}公布`
     : `${SOURCE_CN[g.source] || g.source}的日程只公布到 ${String(g.through).slice(5)}`));
   return parts.length ? `日历未覆盖：${parts.join("；")}。` : "";
-}
-
-/** One line for a contract card: the releases before this contract expires. */
-export function contractEvents(candidate) {
-  const ce = candidate?.exogenous_events;
-  if (!ce) return null;
-  const list = ce.events || [];
-  const box = h("div", { class: `deck-events${list.length ? " has" : ""}` },
-    h("span", { class: "de-label", text: "到期前事件" }));
-  if (!list.length) {
-    box.append(h("span", { class: "de-none", text: "无已排期的重要宏观发布" }));
-  } else {
-    for (const e of list) {
-      box.append(h("span", { class: "de-item" },
-        h("b", { text: eventName(e) }),
-        h("span", { text: ` ${dayText(e.at_ms).slice(0, 5)} ${hm(e.at_ms)}，距到期 ${dur(e.to_expiry_ms)}` }),
-        ...tags(e).map((t) => h("span", { class: "de-tag", text: t }))));
-    }
-  }
-  const gap = gapsText(ce.gaps);
-  if (gap) box.append(h("span", { class: "de-gap", text: gap }));
-  return box;
 }
 
 /** The two-week list, grouped by Beijing date; releases inside the current contract are marked. */

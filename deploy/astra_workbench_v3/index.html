@@ -31,6 +31,9 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
 <main class="page">
   <div id="banners"></div>
 
+  <!-- Three layers, read top to bottom: where the market is, what to do with one policy, what the data was. -->
+  <div class="layer"><b>背景层</b><span>市场现在在哪里：结构、读数、资金与外部事件</span></div>
+
   <section class="band" aria-labelledby="map-h">
     <div class="band-head">
       <h2 id="map-h">价格地图</h2>
@@ -42,34 +45,14 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
       <div class="map-tip" id="map-tip" hidden></div>
       <div class="map-legend" id="map-legend"></div>
     </div>
-    <div class="verdict" id="verdict" role="status"></div>
-    <div class="decks" id="decks">
-      <div class="sheet deck skeleton"></div><div class="sheet deck skeleton"></div>
-    </div>
-  </section>
-
-  <section class="band" aria-labelledby="lock-h">
-    <div class="band-head">
-      <h2 id="lock-h">锁定追踪</h2>
-      <p id="lock-sum">锁定后按同一合同持续采样，比较锁定时与现在</p>
-    </div>
-    <div class="sheet" id="locks"></div>
   </section>
 
   <section class="band" aria-labelledby="factor-h">
     <div class="band-head">
       <h2 id="factor-h">五要素</h2>
-      <p>空间结构、量价路径、主动成交、宏观环境与空间位置的当前读数；候选卡上的“有利/不利”由这里换算</p>
+      <p>空间结构、量价路径、主动成交、宏观环境与空间位置的当前读数；Decision Path 的位置、运动两步引用这里</p>
     </div>
     <div class="factors" id="factors" aria-label="五要素读数"></div>
-  </section>
-
-  <section class="band" aria-labelledby="event-h">
-    <div class="band-head">
-      <h2 id="event-h">外源性事件</h2>
-      <p>未来两周已排期的美国宏观发布；落在本期合约有效期内的会标出</p>
-    </div>
-    <div class="sheet pad events" id="events"></div>
   </section>
 
   <section class="band" aria-labelledby="ctx-h">
@@ -80,6 +63,43 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     <div class="ctx-groups" id="context"></div>
   </section>
 
+  <section class="band" aria-labelledby="event-h">
+    <div class="band-head">
+      <h2 id="event-h">外源性事件</h2>
+      <p>未来两周已排期的美国宏观发布；落在本期合约有效期内的会标出</p>
+    </div>
+    <div class="sheet pad events" id="events"></div>
+  </section>
+
+  <div class="layer"><b>业务层</b><span>这张保单怎么办：选保单、核验、锁定追踪、核对模型解释</span></div>
+
+  <section class="band" aria-labelledby="deck-h">
+    <div class="band-head">
+      <h2 id="deck-h">本期保单</h2>
+      <p>两侧各一张候选：在这里比较和选择，开始核验或直接锁定</p>
+    </div>
+    <div class="verdict" id="verdict" role="status"></div>
+    <div class="decks" id="decks">
+      <div class="sheet deck skeleton"></div><div class="sheet deck skeleton"></div>
+    </div>
+  </section>
+
+  <section class="band" aria-labelledby="decision-h">
+    <div class="band-head">
+      <h2 id="decision-h">Decision Path 核验</h2>
+      <p>按固定读序核验一张具体保单；锁定是核验的一种结论</p>
+    </div>
+    <div class="sheet pad decision" id="decision"></div>
+  </section>
+
+  <section class="band" aria-labelledby="lock-h">
+    <div class="band-head">
+      <h2 id="lock-h">锁定追踪</h2>
+      <p id="lock-sum">锁定后按同一合同持续采样，比较锁定时与现在</p>
+    </div>
+    <div class="sheet" id="locks"></div>
+  </section>
+
   <section class="band" aria-labelledby="audit-h">
     <div class="band-head">
       <h2 id="audit-h">推理审计</h2>
@@ -88,6 +108,8 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     </div>
     <div class="sheet audit" id="audit"></div>
   </section>
+
+  <div class="layer"><b>数据与审计层</b><span>数据从哪里来、是否新鲜，以及每一次动作的记录</span></div>
 
   <section class="band" aria-labelledby="src-h">
     <div class="band-head">

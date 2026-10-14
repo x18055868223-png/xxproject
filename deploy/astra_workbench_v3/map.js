@@ -240,9 +240,11 @@ export function renderMap(svg, tip, model, { focus = null, onPick = null } = {})
   for (const m of model.markers) {
     if (!isNum(m.price) || !inView(m.price)) continue;
     const px = x(m.price);
-    const yy = m.track === "trade" ? T.trade.y0 + 17 : markerY;
+    const yy = m.track === "trade" ? T.trade.y0 + 17 : m.lane === "top" ? G.y0 + 9 : markerY;
     if (m.glyph === "diamond") root.append(s("path", { d: `M${px} ${yy - 6} L${px + 6} ${yy} L${px} ${yy + 6} L${px - 6} ${yy} Z`, fill: m.color || "var(--ink)" }));
     else if (m.glyph === "ring") root.append(s("circle", { cx: px, cy: yy, r: 5, fill: "var(--sheet)", stroke: m.color || "var(--ink)", "stroke-width": 2 }));
+    else if (m.glyph === "square") root.append(s("rect", { x: px - 5, y: yy - 5, width: 10, height: 10, rx: 1.5, fill: m.color || "var(--ink)" }));
+    else if (m.glyph === "pin") root.append(s("path", { d: `M${px - 6} ${yy - 5} L${px + 6} ${yy - 5} L${px} ${yy + 6} Z`, fill: m.color || "var(--ink)" }));
     else root.append(s("path", { d: `M${px - 6} ${yy + 5} L${px + 6} ${yy + 5} L${px} ${yy - 6} Z`, fill: m.color || "var(--ink)" }));
     reserve(px - 7, yy - 7, px + 7, yy + 7);
     if (m.short) markerLabels.push([m.short, px, yy]);
@@ -324,6 +326,9 @@ export function legend(el, model) {
     ["color-mix(in srgb, var(--ink-3) 30%, transparent)",
       model?.kpfAsOf ? `KPF 成交接受区（成交数据截至 ${new Date(model.kpfAsOf).toISOString().slice(5, 10)}）` : "KPF 成交接受区"],
     ["var(--ink-3)", "◆ 链上持有者成本"],
+    ...(model?.expiry ? [["var(--put)", "■ 本期 Put 墙"], ["var(--call)", "■ 本期 Call 墙"],
+      ["var(--ink)", `▼ 本期 Pin（${model.expiry.expiry} 到期${model.expiry.stale ? "，数据偏旧" : ""}）`]]
+      : [["var(--ink-3)", "本期墙暂缺"]]),
   ];
   for (const [c, t] of items) {
     const span = document.createElement("span");

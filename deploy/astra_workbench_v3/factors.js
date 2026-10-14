@@ -36,14 +36,6 @@ const row = (label, value, viz = null) => ({ label, value: value ?? "缺口", vi
 /** A reading that is not wrong, only not available yet (warm-up, nothing to measure). */
 const pending = (label, value) => ({ label, value, viz: null, pending: true });
 
-/** Direction lean (+1 up, -1 down, 0 none) turned into a relation for one book. */
-export function relationFor(lean, side, { background = false } = {}) {
-  if (lean == null) return { cls: "gap", text: "缺口" };
-  if (lean === 0) return { cls: "", text: "中性" };
-  const good = (lean > 0) === (side === "put");
-  return { cls: good ? "ok" : "bad", text: `${good ? "有利" : "不利"}${background ? "（背景）" : ""}` };
-}
-
 export function coreFactors(view, spot) {
   const mf = get(view, "market_context.market_facts") || {};
   const vp = mf.volume_price || {};

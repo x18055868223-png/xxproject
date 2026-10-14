@@ -1,10 +1,26 @@
 // Normalize the workbench reading view into what the page draws.
 // Display only: no value here is used for permission or accounting.
-import { get, isNum } from "./format.js";
+import { get, isNum, kusd } from "./format.js";
 import { TERM_CN, evidenceLabels } from "./glossary.js";
 
 const REASONS = {
   space_gate_not_eligible: "空间门未放行（旧口径）",
+  // quote and fee qualification of a frozen snapshot (e.g. two legs' books read too far apart)
+  data_engine_quote_usage_rejected: "报价未通过用途检查",
+  data_engine_required_source_usage_rejected: "必需数据源未通过用途检查",
+  fee_missing_or_incomplete: "费用缺失或不完整",
+  quote_invalid_or_stale: "报价无效或过期",
+  leg_book_time_skew: "两腿盘口读取时间相差过大",
+  // Decision Path requests
+  verification_closed: "这条核验已结束",
+  verification_not_found: "这条核验已清理（合约到期）",
+  verification_concluding: "结论正在提交",
+  verification_unreadable: "核验记录读取失败",
+  too_many_open_verifications: "进行中的核验过多，请先给旧的下结论",
+  bad_step_request: "请求不完整",
+  bad_verification_request: "请求不完整",
+  bad_conclusion: "结论无效",
+  invalid_verification_id: "核验编号无效",
   server_busy: "工作台繁忙",
   memory_pressure: "工作台内存紧张",
   candidate_projection_failed: "本侧展示数据处理失败",
@@ -124,16 +140,23 @@ export function applicability(code) {
   return { cls: "none", text: "其他判断" };
 }
 
-function horizonIv(info, expiryToken, horizonDays) {
+function horizonIv(info, expiryToken, horizonDays, own = null) {
   const rows = (info.term_structure || []).filter((r) => isNum(r && r.atm_iv));
   const exact = rows.find((r) => expiryToken && String(r.expiry || "").toUpperCase() === expiryToken);
   if (exact) return { iv: exact.atm_iv, expiry: exact.expiry, match: "同到期" };
+  // gexmonitor's term structure can skip the nearest expiry; Deribit marks of that expiry do not
+  if (own && isNum(own.atm_iv_pct)) return { iv: own.atm_iv_pct, expiry: own.expiry, match: own.stale ? "同到期（Deribit 标记，数据偏旧）" : "同到期（Deribit 标记）" };
   if (rows.length && isNum(horizonDays) && rows.every((r) => isNum(r.days_to_expiry))) {
     const r = rows.reduce((a, b) => (Math.abs(b.days_to_expiry - horizonDays) < Math.abs(a.days_to_expiry - horizonDays) ? b : a));
     return { iv: r.atm_iv, expiry: r.expiry, match: "最近期限" };
   }
   if (isNum(info.atm_iv)) return { iv: info.atm_iv, expiry: null, match: "近月 ATM" };
   return null;
+}
+
+/** This-expiry walls, pin and ATM IV computed from Deribit marks and open interest. */
+export function expiryProfile(view, token) {
+  return token ? get(view, `expiry_gamma.by_expiry.${String(token).toUpperCase()}`) || null : null;
 }
 
 export function gexInfo(view, candidate) {
@@ -157,7 +180,7 @@ export function sideModel(view, candidate) {
   const be = (liab.breakeven_usd || []).find(isNum);
   const info = gexInfo(view, candidate);
   const token = String(c.short_instrument || "").split("-")[1];
-  const iv = horizonIv(info, token ? token.toUpperCase() : null, isNum(hours) ? hours / 24 : null);
+  const iv = horizonIv(info, token ? token.toUpperCase() : null, isNum(hours) ? hours / 24 : null, expiryProfile(view, token));
   const sigmaPct = iv && isNum(hours) && hours > 0 ? iv.iv * Math.sqrt(hours / 8760) : null;
   const width = isNum(c.width_usd) ? c.width_usd : (isNum(c.short_strike_usd) && isNum(c.long_strike_usd) ? Math.abs(c.short_strike_usd - c.long_strike_usd) : null);
   const credit = eco.visible_credit_btc;
@@ -363,7 +386,33 @@ export function mapModel(view, sides) {
   const flipPrice = flip ? (flip.raw_price ?? flip.display_center) : get(view, "market_context.market_facts.space_context.anchor.effective_flip_point");
   if (isNum(flipPrice)) model.markers.push({ price: flipPrice, label: "有效翻转位 Flip", short: "Flip", glyph: "ring", color: "var(--depth)",
     note: "价格在其上方为正 Gamma 区；名义坐标" });
-  if (isNum(info.magnet_price)) model.markers.push({ price: info.magnet_price, label: "Gamma 磁吸位", short: "磁吸", glyph: "triangle", color: "var(--ink-2)" });
+  if (isNum(info.magnet_price)) model.markers.push({ price: info.magnet_price, label: "全期限 Gamma 磁吸位（不是本期 Pin）", short: "全期限磁吸", glyph: "triangle", color: "var(--ink-3)" });
+  // This expiry's own structure: the levels a ~24h policy actually settles against.
+  const prof = expiryProfile(view, String(ref?.shortName || "").split("-")[1]);
+  model.expiry = prof ? { expiry: prof.expiry, stale: !!prof.stale, at: prof.computed_at_ms } : null;
+  if (prof) {
+    // One marker per role, never one glyph for several roles: the pin sits in its own lane at
+    // the top of the Gamma track; each side's walls share a square only when Gamma and OI agree.
+    const src = `Deribit 公开数据，${prof.expiry} 到期，${prof.stale ? "数据偏旧" : "5 分钟更新"}；Gamma 不区分做市商方向`;
+    const w = prof.walls || {};
+    if (isNum(w.pin)) model.markers.push({ price: w.pin, glyph: "pin", color: "var(--ink)", lane: "top",
+      label: `本期 Pin（${prof.expiry}）`, short: `Pin ${kusd(w.pin)}`,
+      note: `到期前预期波动范围内两侧合计 Gamma 最大的行权价；若做市商净多 Gamma，价格易在附近钉住。${src}` });
+    for (const [side, name] of [["put", "Put"], ["call", "Call"]]) {
+      const g = w[`gamma_${side}`], o = w[`oi_${side}`];
+      const at = new Map();
+      if (isNum(g)) at.set(g, ["gamma"]);
+      if (isNum(o)) at.set(o, [...(at.get(o) || []), "oi"]);
+      for (const [price, kinds] of at) {
+        const both = kinds.length === 2;
+        model.markers.push({ price, glyph: "square", color: `var(--${side})`,
+          label: `本期 ${name} ${both ? "墙（Gamma 与持仓量都最大）" : kinds[0] === "gamma" ? "Gamma 墙" : "持仓墙"}（${prof.expiry}）`,
+          short: `${name} ${both ? "墙" : kinds[0] === "gamma" ? "Gamma 墙" : "持仓墙"}`,
+          note: [kinds.includes("gamma") ? `美元 Gamma 最大的 ${name} 行权价：对冲压力所在` : null,
+            kinds.includes("oi") ? `持仓量最大的 ${name} 行权价：仓位堆积处` : null].filter(Boolean).join("；") + `。${src}` });
+      }
+    }
+  }
   if (isNum(info.max_pain_price)) model.markers.push({ price: info.max_pain_price, label: `最大痛点（${info.max_pain_target_expiry || "主到期"}）`, short: "痛点", glyph: "triangle", color: "var(--warn)" });
   const ne = info.next_expiry || {};
   if (isNum(ne.max_pain_price)) model.markers.push({ price: ne.max_pain_price, label: `下一到期最大痛点（${ne.expiry || ""}）`, short: "近痛点", glyph: "triangle", color: "var(--warn)",

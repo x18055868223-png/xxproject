@@ -28,6 +28,7 @@ export const api = {
   lockedSeries: (id) => fetch(`${BASE}/locked-candidates/${encodeURIComponent(id)}/series`, { credentials: "same-origin" }).then(json),
   chainAudit: () => fetch(`${BASE}/chain-audit`, { credentials: "same-origin" }).then(json),
   lockedDetail: (id) => fetch(`${BASE}/locked-candidates/${encodeURIComponent(id)}`, { credentials: "same-origin" }).then(json),
+  verification: (id) => fetch(`${BASE}/decision-path/${encodeURIComponent(id)}`, { credentials: "same-origin" }).then(json),
   post: (path, body) => fetch(`${BASE}${path}`, {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
