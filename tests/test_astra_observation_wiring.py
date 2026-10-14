@@ -231,7 +231,7 @@ def test_manual_review_state_preserves_routing_research_receipt_explanation(tmp_
     assert state["last_result"]["review"]["llm_explanation"]["q1"]["text_cn"] == "保留路由解释。"
 
 
-def test_manual_review_state_redacts_private_wpem_proof_without_rewriting_disk_receipt(tmp_path):
+def test_manual_review_state_redacts_private_wpem_proof_and_keeps_it_out_of_the_hot_state(tmp_path):
     wb, _snapshots = fx.make_workbench(tmp_path)
     full_evidence = {
         "evidence_hash": "e" * 64,
@@ -263,7 +263,10 @@ def test_manual_review_state_redacts_private_wpem_proof_without_rewriting_disk_r
     assert "composition_inputs" not in public_evidence
     assert "source_bindings" not in public_evidence
     assert displayed["review"]["llm_explanation"] == explanation
-    assert "composition_inputs" in disk["manual_review"]["last_result"]["review"]["wpem_evidence"]
+    # Since 2026-10-14 the hot state keeps the public evidence only (the full proof stays in
+    # review_state/ and wpem_evidence/): replay blobs made each receipt ~7.7 MB and the state 33 MB.
+    kept = disk["manual_review"]["last_result"]["review"]["wpem_evidence"]
+    assert kept["evidence_hash"] == "e" * 64 and "composition_inputs" not in kept and "source_bindings" not in kept
 
     unnested = fx.workbench._review_receipt_for_display({
         "status": "RESEARCH_OK",

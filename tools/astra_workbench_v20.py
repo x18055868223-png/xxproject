@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import smtplib
+import socket
 import ssl
 import threading
 import time
@@ -232,8 +233,42 @@ def _compact_receipt(result: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _slim_receipt(result: Any) -> Any:
+    """The receipt as kept in workbench_state.json: WPEM replay blobs (composition_inputs,
+    source_bindings; ~98% of a 7.7 MB receipt) are dropped. Nothing reads them back from the
+    state: validation replays the in-memory package, display uses the public evidence, and the
+    full proof stays in review_state/ and wpem_evidence/."""
+    if not isinstance(result, Mapping):
+        return deepcopy(result)
+    out = deepcopy(dict(result))
+    body = out.get("review") if isinstance(out.get("review"), Mapping) else None
+    if isinstance(body, dict) and isinstance(body.get("wpem_evidence"), Mapping):
+        body["wpem_evidence"] = wpem_workbench.public_evidence(body["wpem_evidence"])
+    return out
+
+
+def _receipt_has_blobs(result: Any) -> bool:
+    body = result.get("review") if isinstance(result, Mapping) and isinstance(result.get("review"), Mapping) else {}
+    evidence = body.get("wpem_evidence") if isinstance(body.get("wpem_evidence"), Mapping) else {}
+    return "composition_inputs" in evidence or "source_bindings" in evidence
+
+
+def _slim_review_state(review: dict[str, Any]) -> bool:
+    """Drop replay blobs from every receipt kept in the state; True when anything changed."""
+    changed = False
+    if _receipt_has_blobs(review.get("last_result")):
+        review["last_result"] = _slim_receipt(review["last_result"])
+        changed = True
+    for key, entry in list((review.get("idempotency") or {}).items()):
+        if isinstance(entry, Mapping) and _receipt_has_blobs(entry.get("result")):
+            review["idempotency"][key] = {**entry, "result": _slim_receipt(entry["result"])}
+            changed = True
+    return changed
+
+
 def _compact_review_history(review: dict[str, Any]) -> None:
     """Keep full receipts for the newest few settled entries only."""
+    _slim_review_state(review)
     idem = review.get("idempotency")
     if not isinstance(idem, dict):
         return
@@ -1555,6 +1590,12 @@ class WorkbenchConfig:
         return self.state_dir / "workbench_state.json"
 
     @property
+    def btc_map_state_path(self) -> Path:
+        # Map response state lives apart from workbench_state.json, so the 30 s refresh never
+        # parses or rewrites the review history just to persist it.
+        return self.state_dir / "btc_map_state.json"
+
+    @property
     def ledger_path(self) -> Path:
         return self.state_dir / "underwriting.jsonl"
 
@@ -1723,6 +1764,8 @@ class AstraWorkbench:
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
+        self._map_state_lock = threading.RLock()
+        self._map_state_cache: dict[str, Any] | None = None
         # Cross-asset reference: fetched in its own thread after each US close, never on a page read.
         self.cross_asset_get_json = cross_asset.default_get_json
         self._cross_asset_thread: threading.Thread | None = None
@@ -1733,6 +1776,7 @@ class AstraWorkbench:
         except (OSError, ValueError):
             self._cross_asset = None
         self._reconcile_interrupted_review()
+        self._reconcile_scheduled_reviews()
         self._compact_state_once()
 
     def _compact_state_once(self) -> None:
@@ -1743,7 +1787,10 @@ class AstraWorkbench:
         full = sum(1 for entry in (review.get("idempotency") or {}).values()
                    if isinstance(entry, Mapping) and isinstance(entry.get("result"), Mapping)
                    and not entry["result"].get("compacted"))
-        if full > FULL_RECEIPTS_KEPT:
+        heavy = _receipt_has_blobs(review.get("last_result")) or any(
+            isinstance(entry, Mapping) and _receipt_has_blobs(entry.get("result"))
+            for entry in (review.get("idempotency") or {}).values())
+        if full > FULL_RECEIPTS_KEPT or heavy:
             self._locked_state_update(lambda state: _compact_review_history(state.setdefault("manual_review", {})))
 
     def _read_state_cached(self) -> dict[str, Any]:
@@ -1804,10 +1851,10 @@ class AstraWorkbench:
             }
             review["inflight"] = None
             review["last_completed_ts_ms"] = self.clock_ms()
-            review["last_result"] = result
+            review["last_result"] = _slim_receipt(result)
             if key:
                 review.setdefault("idempotency", {})[key] = {
-                    "status": "settled", "result": deepcopy(result), "updated_at_ms": self.clock_ms()}
+                    "status": "settled", "result": _slim_receipt(result), "updated_at_ms": self.clock_ms()}
 
         self._locked_state_update(update)
 
@@ -1931,18 +1978,30 @@ class AstraWorkbench:
             self._save_state(state)
             return result
 
+    def _map_state(self) -> dict[str, Any]:
+        """Cached map state; the first read migrates it from the old place in workbench_state.json."""
+        with self._map_state_lock:
+            if self._map_state_cache is None:
+                loaded = _read_json(self.config.btc_map_state_path, None)
+                if not isinstance(loaded, Mapping):
+                    loaded = self._read_state_cached().get("btc_map")
+                self._map_state_cache = dict(loaded) if isinstance(loaded, Mapping) else {}
+            return self._map_state_cache
+
     def _map_prior_state(self) -> dict[str, Any]:
-        state = self._load_state().get("btc_map")
-        return deepcopy(dict(state)) if isinstance(state, Mapping) else {}
+        return deepcopy(self._map_state())
 
     def _store_btc_map_state(self, btc_map: Mapping[str, Any] | None) -> None:
         if not isinstance(btc_map, Mapping):
             return
-
-        def update(state: dict[str, Any]) -> None:
-            state["btc_map"] = map_projection.persistable_state(btc_map, state.get("btc_map"))
-
-        self._locked_state_update(update)
+        with self._map_state_lock:
+            prior = self._map_state()
+            updated = map_projection.persistable_state(btc_map, prior)
+            if updated == prior and self.config.btc_map_state_path.is_file():
+                return
+            self.config.state_dir.mkdir(parents=True, exist_ok=True)
+            _write_json_atomic(self.config.btc_map_state_path, updated)
+            self._map_state_cache = updated
 
     def _map_source_mode(self) -> str:
         mode = str(self.config.map_source_mode or map_projection.SOURCE_MODE_COLLECTOR).strip().lower()
@@ -4087,7 +4146,7 @@ class AstraWorkbench:
         def update(state: dict[str, Any]) -> None:
             review = state.setdefault("manual_review", {})
             idem = review.setdefault("idempotency", {})
-            idem[key] = {"status": "settled", "result": deepcopy(dict(result)),
+            idem[key] = {"status": "settled", "result": _slim_receipt(result),
                          "candidate_id": candidate_id or result.get("candidate_id"),
                          "purpose": purpose or result.get("purpose") or REVIEW_PURPOSE,
                          "updated_at_ms": self.clock_ms()}
@@ -4127,10 +4186,10 @@ class AstraWorkbench:
             review = state.setdefault("manual_review", {})
             review["inflight"] = None
             review["last_completed_ts_ms"] = now_ms
-            review["last_result"] = deepcopy(dict(result))
+            review["last_result"] = _slim_receipt(result)
             review.setdefault("idempotency", {})[key] = {
                 "status": "settled",
-                "result": deepcopy(dict(result)),
+                "result": _slim_receipt(result),
                 "candidate_id": result.get("candidate_id"),
                 "purpose": result.get("purpose") or REVIEW_PURPOSE,
                 "updated_at_ms": now_ms,
@@ -4169,6 +4228,20 @@ class AstraWorkbench:
                 "next_due_ms": min(upcoming) if upcoming else None,
                 "last_slot": last_key, "last": slots.get(last_key) if last_key else None}
 
+    def _reconcile_scheduled_reviews(self) -> None:
+        """On process start a slot still 'running' was cut off by the restart: say so (the
+        claim retries it once if its window is still open) instead of showing it forever."""
+        slots = (self._read_state_cached().get("scheduled_review") or {}).get("slots") or {}
+        if not any(isinstance(v, Mapping) and v.get("status") == "running" for v in slots.values()):
+            return
+
+        def update(state: dict[str, Any]) -> None:
+            for entry in ((state.get("scheduled_review") or {}).get("slots") or {}).values():
+                if isinstance(entry, dict) and entry.get("status") == "running":
+                    entry.update(status="interrupted", interrupted_at_ms=self.clock_ms())
+
+        self._locked_state_update(update)
+
     def _maybe_scheduled_review(self, now_ms: int, *, wait: bool = False) -> str | None:
         """Claim the current slot once (persisted, so restarts do not repeat it) and review both sides."""
         if not self.config.scheduled_review_hours_utc:
@@ -4180,9 +4253,13 @@ class AstraWorkbench:
         def claim(state: dict[str, Any]) -> bool:
             sched = state.setdefault("scheduled_review", {})
             slots = sched.setdefault("slots", {})
-            if slot in slots:
+            prior = slots.get(slot)
+            if prior is not None and not (isinstance(prior, Mapping) and prior.get("status") == "interrupted"
+                                          and int(prior.get("retries") or 0) < 1):
                 return False
-            slots[slot] = {"started_at_ms": now_ms, "status": "running", "sides": {}}
+            retries = int(prior.get("retries") or 0) + 1 if isinstance(prior, Mapping) else 0
+            slots[slot] = {"started_at_ms": now_ms, "status": "running", "sides": {},
+                           **({"retries": retries, "interrupted_at_ms": prior.get("interrupted_at_ms")} if retries else {})}
             for old in sorted(slots)[:-28]:
                 slots.pop(old, None)
             return True
@@ -4243,6 +4320,8 @@ class AstraWorkbench:
                     with self._view_lock:
                         self._last_refresh_error = {"failed_at_ms": self.clock_ms(),
                                                     "error_type": type(exc).__name__}
+                # liveness, not success: a failing refresh still loops; a hung one stops pinging
+                _sd_notify("WATCHDOG=1")
                 if self._background_stop.wait(max(1.0, float(self.config.refresh_interval_s))):
                     break
 
@@ -4285,6 +4364,22 @@ class AstraWorkbench:
             if thread:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
+
+
+def _sd_notify(message: str) -> bool:
+    """systemd notify protocol without the systemd package; a no-op outside systemd."""
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not address:
+        return False
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(address)
+            sock.sendall(message.encode("ascii"))
+        return True
+    except OSError:
+        return False
 
 
 def _market_marks(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -4681,6 +4776,7 @@ def serve(config: WorkbenchConfig, *, host: str = "127.0.0.1", port: int = 8890)
     workbench = AstraWorkbench(config, email_sender=_smtp_sender_from_env())
     workbench.start_background()
     server = ThreadingHTTPServer((host, int(port)), make_handler(workbench))
+    _sd_notify("READY=1")
     try:
         server.serve_forever()
     finally:
