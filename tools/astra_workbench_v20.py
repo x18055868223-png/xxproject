@@ -1778,6 +1778,7 @@ class AstraWorkbench:
         self._last_compaction_ms = 0
         self._map_state_lock = threading.RLock()
         self._map_state_cache: dict[str, Any] | None = None
+        self._map_state_migrated = False
         # One serialized page body per view kind, shared by readers for VIEW_BODY_TTL_MS and
         # rebuilt by one reader at a time; _view_version moves on every refresh and action.
         self._body_lock = threading.Lock()        # guards version + cache only; never held while waiting
@@ -1986,7 +1987,6 @@ class AstraWorkbench:
         state.setdefault("manual_review", {"idempotency": {}})
         state.setdefault("email", {})
         state.setdefault("daily_snapshots", {})
-        state.setdefault("btc_map", {})
         return state
 
     def _save_state(self, state: Mapping[str, Any]) -> None:
@@ -2025,6 +2025,11 @@ class AstraWorkbench:
             self.config.state_dir.mkdir(parents=True, exist_ok=True)
             _write_json_atomic(self.config.btc_map_state_path, updated)
             self._map_state_cache = updated
+        if not self._map_state_migrated:
+            # once the map state has its own file, drop the old copy from workbench_state.json
+            self._map_state_migrated = True
+            if self._read_state_cached().get("btc_map") is not None:
+                self._locked_state_update(lambda state: state.pop("btc_map", None))
 
     def _map_source_mode(self) -> str:
         mode = str(self.config.map_source_mode or map_projection.SOURCE_MODE_COLLECTOR).strip().lower()
@@ -2650,6 +2655,8 @@ class AstraWorkbench:
             self.invalidate_view_body()
             self._store_btc_map_state(btc_projection.get("btc_map"))
             result = self._apply_current_review_availability(view, finished_at_ms)
+            # the periodic chain-audit record reads memory from here (cached_view adds its own)
+            result["runtime"] = {"memory": dict(self._memory), "threads": threading.active_count()}
             if self.chain_audit is not None:
                 self.chain_audit.observe(result, finished_at_ms)
             return result

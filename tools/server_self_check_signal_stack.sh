@@ -141,7 +141,8 @@ systemd_state() {
   active="$(systemctl show "$unit" -p ActiveState --value 2>/dev/null || true)"
   result="$(systemctl show "$unit" -p Result --value 2>/dev/null || true)"
   sub="$(systemctl show "$unit" -p SubState --value 2>/dev/null || true)"
-  if [ "$active" = "active" ] || { [ "$active" = "inactive" ] && [ "${result:-success}" = "success" ]; }; then
+  # a timer-driven oneshot is "activating" for the few seconds it runs; that is not a failure
+  if [ "$active" = "active" ] || [ "$active" = "activating" ] || { [ "$active" = "inactive" ] && [ "${result:-success}" = "success" ]; }; then
     ok "$unit ActiveState=$active SubState=$sub Result=${result:-n/a}"
   else
     fail "$unit ActiveState=$active SubState=$sub Result=${result:-n/a}"

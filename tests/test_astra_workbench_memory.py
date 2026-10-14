@@ -268,3 +268,12 @@ def test_one_broken_candidate_projection_does_not_fail_the_page(tmp_path):
     assert item["projection_error"] == "KeyError"
     assert "candidate_projection_failed" in item["review_gate"]["reasons"]
     assert wb.view_body("page")[0]
+
+
+def test_refresh_result_carries_runtime_and_the_old_map_copy_leaves_the_state(tmp_path):
+    wb, _, clock, _ = setup(tmp_path)
+    wb._locked_state_update(lambda s: s.update(btc_map={"schema": "old"}))
+    wb._map_state_migrated = False
+    result = wb.refresh(now_ms=clock[0] + 1000, record_daily=False)
+    assert "memory" in result["runtime"]
+    assert "btc_map" not in json.loads(wb.config.state_path.read_text(encoding="utf-8"))
