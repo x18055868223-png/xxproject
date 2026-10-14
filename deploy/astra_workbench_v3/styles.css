@@ -603,3 +603,12 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
 .metric .m-viz { grid-column: 2; grid-row: 2; display: block; max-width: 240px; }
 .metric svg.viz { width: 100%; height: 10px; }
 .ctx .metric { grid-template-columns: minmax(5.5em, 7em) minmax(0, 1fr); }
+
+/* ── hold reviews in the reasoning audit ── */
+.hold-audit { margin: 0; padding: 16px 20px 18px; border-top: 1px solid var(--rule); display: grid; gap: 12px; }
+.hold-audit h4 { margin: 0; }
+.hold-audit-item { display: grid; gap: 6px; }
+.hold-audit-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.hold-audit-sum { margin: 0; font-size: 13px; line-height: 1.6; }
+.hold-audit .q li { margin: 3px 0; font-size: 13px; }
+.chip.locked { background: color-mix(in srgb, var(--depth) 14%, transparent); color: var(--depth); }

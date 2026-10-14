@@ -444,11 +444,6 @@ function distanceRule(m) {
   return wrap;
 }
 
-function programLines(q) {
-  if (!q) return [];
-  return [q.summary_cn, ...(q.routing_observations_cn || []).slice(0, 2)].filter(Boolean).map((t) => ({ text_cn: t, evidence_refs: [] }));
-}
-
 function question(title, points, kind, labels) {
   const box = h("div", { class: "q" }, h("h4", { text: title + (kind === "program" ? "（程序摘要，未经模型）" : "") }));
   if (!points.length) { box.append(h("p", { class: "muted", text: "暂无。" })); return box; }
@@ -582,10 +577,12 @@ function auditExtra(session) {
     ? "保单卡已换为另一张合同；模型复核只对卡上当前这张保单发起。" : "这一侧当前没有保单，无法发起模型复核。" });
   const box = h("div", { class: "dp-audit" });
   const src = m.review.kind === "current" ? "模型解释：对应当前快照"
-    : m.review.kind === "historical" ? `模型解释：${clock(reviewedAt(m.review))} 的回执，之后报价已更新` : "模型解释：未请求（以下为程序摘要）";
+    : m.review.kind === "historical" ? `模型解释：${clock(reviewedAt(m.review))} 的回执，之后报价已更新` : "还没有模型回执；程序读数见上面各步。";
   box.append(h("p", { class: "muted small", text: src }));
-  box.append(question("模型解释 · 风险质量", m.review.kind === "program" ? programLines(m.review.programQ1) : m.review.q1, m.review.kind, m.review.labels));
-  box.append(question("模型解释 · 风险价格", m.review.kind === "program" ? programLines(m.review.programQ2) : m.review.q2, m.review.kind, m.review.labels));
+  if (m.review.kind !== "program") {
+    box.append(question("模型解释 · 风险质量", m.review.q1, m.review.kind, m.review.labels));
+    box.append(question("模型解释 · 风险价格", m.review.q2, m.review.kind, m.review.labels));
+  }
   box.append(reviewActions(m));
   return box;
 }
@@ -717,7 +714,56 @@ async function dpConclude(choice) {
 }
 
 // ── reasoning audit ──────────────────────────────
+/** Whether this contract was under lock tracking at a moment (any episode covering it). */
+function lockStateAt(candidateId, atMs) {
+  if (!candidateId || !isNum(atMs)) return null;
+  const eps = (get(state.view, "locked_candidates.episodes") || []).filter((e) => e.candidate_id === candidateId);
+  const hit = eps.find((e) => {
+    const end = e.stopped_at_ms ?? (e.status === "active" ? Infinity : get(e, "contract.expiry_ms") ?? Infinity);
+    return isNum(e.created_at_ms) && e.created_at_ms <= atMs && atMs < end;
+  });
+  return { locked: !!hit, episode: hit || null };
+}
+
+function lockChip(ls) {
+  if (!ls) return null;
+  return h("span", { class: `chip ${ls.locked ? "locked" : ""}`, title: ls.locked ? "复核发生时这张合约正在锁定追踪" : "复核发生时这张合约没有被锁定",
+    text: ls.locked ? "复核时：已锁定" : "复核时：未锁定" });
+}
+
+const LANE_CN = { L1: "短腿缓冲", L2: "盈亏平衡", L3: "补偿", L4: "Gamma 体制", L5: "锚定", L6: "流向" };
+
+/** Hold reviews (made while locked) of the focused side, newest first. */
+function holdAudit(side) {
+  const rows = (get(state.view, "hold_reviews") || []).filter((r) => r.side === side).slice(0, 3);
+  if (!rows.length) return null;
+  const box = h("section", { class: "hold-audit" }, h("h4", { text: "持有中复核（锁定后，模型对照依据账本）" }));
+  for (const r of rows) {
+    const token = String(r.short_instrument || "").split("-")[1] || "";
+    const a = r.answer || {};
+    box.append(h("div", { class: "hold-audit-item" },
+      h("div", { class: "hold-audit-head" },
+        h("b", { text: `${token} ${side === "put" ? "Put" : "Call"} 卖 ${usd(r.short_strike_usd)} / 买 ${usd(r.long_strike_usd)}` }),
+        h("span", { class: "muted small", text: `${clock(r.finished_at_ms)} 复核（锁定于 ${clock(r.locked_at_ms)}）` }),
+        lockChip({ locked: true }),
+        h("a", { href: "#lock-h", class: "dp-jump", onclick: (e) => { e.preventDefault(); state.lock.id = r.episode_id; renderLocks(); fetchLock(r.episode_id);
+          $("lock-h").scrollIntoView({ behavior: "smooth", block: "start" }); } }, "锁定追踪")),
+      a.summary ? h("p", { class: "hold-audit-sum", text: a.summary }) : null,
+      (a.points || []).length ? h("ul", { class: "q" }, ...a.points.map((p) => h("li", {},
+        h("span", { class: "chip", title: "依据账本中的这条依据", text: `${p.thesis_id} ${LANE_CN[p.thesis_id] || ""}`.trim() }), " ", p.text))) : null,
+      (a.watch || []).length ? h("p", { class: "muted small", text: `到期前留意：${a.watch.join("；")}` }) : null));
+  }
+  return box;
+}
+
 function renderAudit() {
+  renderAuditMain();
+  const box = $("audit");
+  const hold = state.view ? holdAudit(state.focus) : null;
+  if (box && hold) box.append(hold);
+}
+
+function renderAuditMain() {
   const sw = clear($("audit-switch"));
   for (const side of ["put", "call"]) {
     const m = state.sides[side];
@@ -734,7 +780,7 @@ function renderAudit() {
   box.append(h("div", { class: "audit-main" }, left, right));
 
   if (r.kind === "program") {
-    left.append(h("p", { class: "muted", text: r.reason || "当前快照还没有通过校验的模型解释，下面是程序给出的读法与两问摘要。" }));
+    left.append(h("p", { class: "muted", text: r.reason || "当前快照还没有通过校验的模型解释，下面是程序读法。" }));
     left.append(programAudit(m));
     right.append(h("h4", { text: "证据" }), h("p", { class: "muted", text: "请求观察复核后，这里逐项列出模型收到并引用的证据。当前快照的程序证据可直接查看：" }),
       evidenceLinks(m));
@@ -744,7 +790,9 @@ function renderAudit() {
   if (r.kind === "historical") left.append(h("p", { class: "banner info", text:
     `回执时间 ${clock(reviewedAt(r))}（${ago(reviewedAt(r))}）。之后报价已刷新，下面的解释对应当时的报价与证据，仅作参考；数字以当前卡片为准。` }));
   const ap = applicability(r.applicability);
-  left.append(h("div", { class: "deck-head" }, h("h3", { text: `${m.name} 模型解释` }), h("span", { class: `seal ${ap.cls}`, text: ap.text })));
+  const rcid = get(r, "review.candidate_id") || get(r, "receipt.candidate_id") || m.snap.candidate_id;
+  left.append(h("div", { class: "deck-head" }, h("h3", { text: `${m.name} 模型解释` }), h("span", { class: `seal ${ap.cls}`, text: ap.text }),
+    lockChip(lockStateAt(rcid, reviewedAt(r)))));
   for (const [title, pts, q] of [["Q1 风险质量", r.q1, "q1"], ["Q2 风险价格", r.q2, "q2"]]) {
     left.append(h("h4", { text: title }));
     pts.forEach((p, i) => {
@@ -789,19 +837,10 @@ function programAudit(m) {
     box.append(h("h4", { text: "程序读法" }));
     box.append(h("dl", { class: "notes" }, ...notes.flatMap((n) => [h("dt", { text: NOTE[n.kind] || "说明" }), h("dd", { text: humanize(n.text_cn) })])));
   }
-  const q = m.review;
-  const cq = get(m, "candidate.current_questions") || {};
-  for (const [title, body, extra] of [["Q1 风险质量", q.programQ1, ["window_attribution_cn"]],
-    ["Q2 风险价格", q.programQ2, ["window_tradeoff_cn", "observable_changes_cn"]]]) {
-    if (!body) continue;
-    const items = [body.summary_cn, ...(body.routing_observations_cn || []),
-      ...extra.flatMap((k) => (Array.isArray(body[k]) ? body[k] : body[k] ? [body[k]] : []))].filter(Boolean);
-    box.append(h("h4", { text: `${title}（程序摘要，未经模型）` }), h("ul", { class: "q" }, ...[...new Set(items)].map((t) => h("li", { text: humanize(t) }))));
-  }
-  const ws = get(m, "candidate.wpem_summary") || {};
-  const path = [ws.path_cn, ws.compensation_cn, ...(ws.breaks_cn || [])].filter(Boolean);
-  if (path.length) box.append(h("h4", { text: "同一保单的窗口变化" }), h("ul", { class: "q" }, ...path.map((t) => h("li", { text: humanize(t) }))));
-  if (!notes.length && !cq.q1) box.append(h("p", { class: "muted", text: "程序没有给出摘要。" }));
+  // The program's two-question readings live in the Decision Path steps (D1–Q2); WPEM no
+  // longer runs on every refresh, so they are not repeated here.
+  box.append(h("p", { class: "muted small" }, "两问的程序读数见核验路径各步（D1 责任至 Q2 风险补偿）。",
+    h("a", { href: "#decision-h", class: "dp-jump", onclick: (e) => { e.preventDefault(); $("decision-h").scrollIntoView({ behavior: "smooth", block: "start" }); } }, "核验路径")));
   return box;
 }
 
