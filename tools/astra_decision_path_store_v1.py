@@ -51,6 +51,7 @@ class DecisionPathStore:
         self._lock = threading.RLock()
         self._index: dict[str, dict[str, Any]] | None = None
         self._claims: dict[str, int] = {}
+        self.unreadable = 0
 
     # ------------------------------------------------------------ files
     def _path(self, vid: str) -> Path:
@@ -69,6 +70,13 @@ class DecisionPathStore:
     def _append_record(self, row: Mapping[str, Any]) -> bool:
         try:
             self.root.mkdir(parents=True, exist_ok=True)
+            if self.records_path.exists() and self.records_path.stat().st_size:
+                with self.records_path.open("rb") as tail:
+                    tail.seek(-1, os.SEEK_END)
+                    cut = tail.read(1) != b"\n"
+                if cut:  # a row cut short by a full disk must not swallow the next one
+                    with self.records_path.open("ab") as fix:
+                        fix.write(b"\n")
             with self.records_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps({"schema": RECORD_SCHEMA, **row}, ensure_ascii=False, separators=(",", ":")) + "\n")
             return True
@@ -88,16 +96,22 @@ class DecisionPathStore:
     def _load_index(self) -> dict[str, dict[str, Any]]:
         if self._index is None:
             index: dict[str, dict[str, Any]] = {}
+            unreadable = 0
             if self.sessions_dir.exists():
                 for path in self.sessions_dir.glob("dpv_*.json"):
                     try:
                         session = json.loads(path.read_text(encoding="utf-8"))
                     except (OSError, ValueError):
+                        unreadable += 1
                         continue
+                    if not (isinstance(session, dict) and session.get("schema") == SCHEMA
+                            and isinstance(session.get("verification_id"), str)):
+                        unreadable += 1
                     if (isinstance(session, dict) and session.get("schema") == SCHEMA
                             and isinstance(session.get("verification_id"), str) and session.get("status") in {OPEN, CLOSED}):
                         index[session["verification_id"]] = self._summary(session)
             self._index = index
+            self.unreadable = unreadable  # damaged session files: counted, never silently lost
         return self._index
 
     @staticmethod
@@ -106,6 +120,7 @@ class DecisionPathStore:
         return {"verification_id": session["verification_id"], "status": session["status"],
                 "side": session.get("side"), "candidate_id": session.get("candidate_id"),
                 "expiry_ms": (session.get("contract") or {}).get("expiry_ms"),
+                "short_strike_usd": (session.get("contract") or {}).get("short_strike_usd"),
                 "started_at_ms": session.get("started_at_ms"), "path_version": session.get("path_version"),
                 "conclusion": conclusion.get("choice"), "episode_id": conclusion.get("episode_id"),
                 "concluded_at_ms": conclusion.get("at_ms"), "records_pending": bool(session.get("records_pending")),
@@ -170,7 +185,7 @@ class DecisionPathStore:
     def claim(self, vid: str, *, now_ms: int) -> None:
         """Mark a conclusion in progress; a second conclusion of the same session is refused."""
         with self._lock:
-            self._open_session(vid)
+            self._open_session(vid, now_ms=now_ms)
             started = self._claims.get(vid)
             if started is not None and now_ms - started < CLAIM_MS:
                 raise DecisionPathError("verification_concluding")
@@ -208,15 +223,20 @@ class DecisionPathStore:
             self._write(session)
             return session, True
 
-    def _open_session(self, vid: str) -> dict[str, Any]:
+    def _open_session(self, vid: str, *, now_ms: int | None = None) -> dict[str, Any]:
+        """An open session whose contract has not expired at now_ms: after expiry the outcome is
+        roughly known, so no mark or conclusion may enter the experiment records."""
         session = self.get(vid)
         if session["status"] != OPEN:
             raise DecisionPathError("verification_closed")
+        expiry = (session.get("contract") or {}).get("expiry_ms")
+        if now_ms is not None and isinstance(expiry, int) and now_ms >= expiry:
+            raise DecisionPathError("contract_expired")
         return session
 
     def set_now(self, vid: str, reading: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         with self._lock:
-            session = self._open_session(vid)
+            session = self._open_session(vid, now_ms=now_ms)
             session["readings"]["now"] = dict(reading)
             session["changes"] = dp.compare(session["readings"]["start"], reading)
             session["refreshed_at_ms"] = now_ms
@@ -227,7 +247,7 @@ class DecisionPathStore:
         if step_id not in dp.STEP_IDS or (lean is not None and lean not in dp.MARKS):
             raise DecisionPathError("bad_step_request", 400)
         with self._lock:
-            session = self._open_session(vid)
+            session = self._open_session(vid, now_ms=now_ms)
             session["opened"].setdefault(step_id, now_ms)
             if lean is not None:
                 session["marks"][step_id] = {"lean": lean, "at_ms": now_ms}
@@ -239,7 +259,8 @@ class DecisionPathStore:
         if choice not in dp.CONCLUSIONS:
             raise DecisionPathError("bad_conclusion", 400)
         with self._lock:
-            session = self._open_session(vid)
+            # a claimed conclusion is judged at its claim time (a lock capture may cross expiry)
+            session = self._open_session(vid, now_ms=min(now_ms, self._claims.get(vid, now_ms)))
             session["decisions"].append({"choice": choice, "at_ms": now_ms, "episode_id": episode_id})
             if choice == "watch":
                 session["last_watch_at_ms"] = now_ms
@@ -259,15 +280,17 @@ class DecisionPathStore:
         with self._lock:
             for item in list(self._load_index().values()):
                 expiry = item.get("expiry_ms")
-                if item["status"] != OPEN or not isinstance(expiry, int) or now_ms < expiry:
-                    continue
+                if (item["status"] != OPEN or not isinstance(expiry, int) or now_ms < expiry
+                        or item["verification_id"] in self._claims):
+                    continue  # a conclusion in flight finishes first
                 try:
                     session = self.get(item["verification_id"])
                     session["status"] = CLOSED
-                    session["conclusion"] = {"choice": "unconcluded", "at_ms": now_ms, "episode_id": None,
+                    # closed at expiry, not at the (possibly much later) pass that noticed it
+                    session["conclusion"] = {"choice": "unconcluded", "at_ms": min(now_ms, expiry), "episode_id": None,
                                              "after_watch": bool(session.get("last_watch_at_ms"))}
                     self._write(session)
-                    self._record_or_keep(session, self._record(session, "expired_open", now_ms))
+                    self._record_or_keep(session, self._record(session, "expired_open", min(now_ms, expiry)))
                     closed.append(session["verification_id"])
                 except (DecisionPathError, OSError):
                     continue  # one damaged session must not stop the others from closing

@@ -1819,12 +1819,14 @@ class AstraWorkbench:
         self._expiry_gamma: dict[str, Any] | None = None
         try:
             loaded = json.loads((config.state_dir / "expiry_gamma.json").read_text(encoding="utf-8"))
-            self._expiry_gamma = loaded if isinstance(loaded, dict) and loaded.get("schema") == expiry_gamma.SCHEMA else None
+            self._expiry_gamma = (loaded if isinstance(loaded, dict) and loaded.get("schema") == expiry_gamma.SCHEMA
+                                  and isinstance(loaded.get("expiries", {}), dict) else None)
         except (OSError, ValueError):
             self._expiry_gamma = None
         # Decision Path verification sessions (docs/astra/DECISION_PATH_DESIGN_20261014.md).
         self.decision_paths = decision_path_store.DecisionPathStore(config.state_dir / "decision_path")
         self._dp_settle_attempts: dict[str, int] = {}
+        self._dp_settle_first: dict[str, int] = {}
         self._reconcile_interrupted_review()
         self._reconcile_scheduled_reviews()
         self._compact_state_once()
@@ -3890,6 +3892,12 @@ class AstraWorkbench:
         except (TypeError, ValueError):
             result = {"schema": expiry_gamma.SCHEMA, "status": "invalid_values", "computed_at_ms": now}
         previous = self._expiry_gamma
+        rv = result.get("realized_vol") if isinstance(result.get("realized_vol"), Mapping) else {}
+        old_rv = (previous or {}).get("realized_vol") if isinstance(previous, dict) else None
+        if (result.get("status") == "ok" and rv.get("rv_24h_pct") is None and rv.get("rv_7d_pct") is None
+                and isinstance(old_rv, Mapping) and old_rv.get("last_bar_end_ms")):
+            # a failed chart request keeps the last good RV; its bar end time says how old it is
+            result = {**result, "realized_vol": {**old_rv, "last_attempt": rv.get("status") or "no_value"}}
         if result.get("status") != "ok" and isinstance(previous, dict) and previous.get("status") == "ok":
             # keep the last good walls with their own clock; the page marks them stale by age
             result = {**previous, "last_attempt": {"computed_at_ms": now, "status": result.get("status"),
@@ -3930,9 +3938,11 @@ class AstraWorkbench:
         for item in items:
             if item["status"] == decision_path_store.OPEN and item.get("candidate_id") not in open_by:
                 open_by[item["candidate_id"]] = {k: item.get(k) for k in
-                                                 ("verification_id", "side", "started_at_ms", "last_watch_at_ms")}
+                                                 ("verification_id", "side", "started_at_ms", "last_watch_at_ms",
+                                                  "short_strike_usd")}
         return {"path_version": decision_path.PATH_VERSION, "steps": decision_path.steps_public(),
-                "open": open_by, "recent": items[:decision_path_store.MAX_OPEN]}
+                "open": open_by, "recent": items[:decision_path_store.MAX_OPEN],
+                "unreadable_sessions": getattr(self.decision_paths, "unreadable", 0)}
 
     def _dp_item(self, item: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
         """A candidate with the read-time program layers the page also shows."""
@@ -4130,6 +4140,9 @@ class AstraWorkbench:
             if now_ms - self._dp_settle_attempts.get(vid, 0) < self.SETTLEMENT_RETRY_MS:
                 continue
             self._dp_settle_attempts[vid] = now_ms
+            # give up 48 h after the first attempt, not after expiry: a long outage must not
+            # turn one transient failure into a permanent "unavailable"
+            first = self._dp_settle_first.setdefault(vid, now_ms)
             try:
                 session = self.decision_paths.get(vid)
                 if session["status"] == decision_path_store.OPEN:
@@ -4143,7 +4156,7 @@ class AstraWorkbench:
                         deliveries[expiry] = None
                 delivery = deliveries[expiry]
                 if delivery is None:
-                    if now_ms - contract["expiry_ms"] >= self.SETTLEMENT_GIVE_UP_MS:
+                    if now_ms - first >= self.SETTLEMENT_GIVE_UP_MS:
                         self.decision_paths.settle(vid, {"status": "delivery_price_unavailable"}, now_ms=now_ms)
                     continue
                 price = float(delivery["delivery_price_usd"])
@@ -4157,8 +4170,7 @@ class AstraWorkbench:
                                            now_ms=now_ms)
             except Exception as exc:
                 # a session that cannot be settled stops being retried after the lock give-up window
-                expiry = item.get("expiry_ms")
-                if isinstance(expiry, int) and now_ms - expiry >= self.SETTLEMENT_GIVE_UP_MS:
+                if now_ms - self._dp_settle_first.get(vid, now_ms) >= self.SETTLEMENT_GIVE_UP_MS:
                     try:
                         self.decision_paths.settle(vid, {"status": "settlement_failed",
                                                          "error_type": type(exc).__name__}, now_ms=now_ms)
@@ -5110,6 +5122,7 @@ class AstraWorkbench:
                     with self._view_lock:
                         self._last_refresh_error = {"failed_at_ms": self.clock_ms(),
                                                     "error_type": type(exc).__name__}
+                    self._decision_path_housekeeping(self.clock_ms())  # never raises
                 try:
                     level = self.memory_guard().get("level")
                 except Exception:

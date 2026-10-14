@@ -165,6 +165,7 @@ def collect(get_json: Callable[[str, Mapping[str, Any]], Any], now_ms: int) -> d
         rows = get_json(BOOK_SUMMARY_URL, {"currency": "BTC", "kind": "option"})["result"]
         if not isinstance(rows, list):
             raise ValueError("book_summary_malformed")
+        rows = [row for row in rows if isinstance(row, Mapping)]
     except Exception as exc:
         return {**result, "status": "fetch_failed", "error_type": type(exc).__name__}
     expiries = sorted({m["expiry_ms"] for m in map(lambda r: parse_name(r.get("instrument_name")), rows)
@@ -200,7 +201,8 @@ def for_expiry(result: Mapping[str, Any] | None, expiry_ms: Any, *, now_ms: int)
     """The profile of one contract expiry with its age; None when it was not collected."""
     if not isinstance(result, Mapping) or not isinstance(expiry_ms, int):
         return None
-    item = (result.get("expiries") or {}).get(expiry_code(expiry_ms))
+    expiries = result.get("expiries")
+    item = expiries.get(expiry_code(expiry_ms)) if isinstance(expiries, Mapping) else None
     if not isinstance(item, Mapping):
         return None
     computed = result.get("computed_at_ms")

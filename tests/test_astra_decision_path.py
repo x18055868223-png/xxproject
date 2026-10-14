@@ -132,12 +132,12 @@ def test_put_reading_order_and_vocabulary():
     assert 1 <= len(q1["items"]) <= 3 and [i["step"] for i in q1["items"]] == sorted(
         (i["step"] for i in q1["items"]), key=dp.STEP_IDS.index)
     assert steps["Q2"]["verdict"]["code"] == "below_market"
-    assert "近 24h 实现 20.0%" in json.dumps(steps["Q2"], ensure_ascii=False)
+    assert "近 24 小时实现 20.0%" in json.dumps(steps["Q2"], ensure_ascii=False)
 
 
 def test_no_premium_before_q2():
     text = json.dumps({k: v for k, v in dp.build(frame())["steps"].items() if k not in {"Q2", "AU"}}, ensure_ascii=False)
-    for premium in ("161", "0.0019", "0.0023", "225", "64", "美元（"):
+    for premium in ("161", "0.0019", "0.0023", "225", "64", "BTC）", "净收"):
         assert premium not in text
 
 
@@ -308,13 +308,13 @@ def test_calendar_gaps_and_fading_and_weak_leans():
     assert steps["D5"]["verdict"]["code"] == "fading"
     weak = dp.build(frame())["steps"]["D3"]["lines"][0]
     assert weak["v"] == "朝责任区（弱）" and weak["tone"] == "warn"
-    assert dp.build(frame())["steps"]["Q1"]["verdict"]["cn"].startswith("需注意")
+    assert dp.build(frame())["steps"]["Q1"]["verdict"]["cn"].startswith("需关注")
 
 
 def test_old_realized_vol_says_its_age():
     f = frame()
     f["realized_vol"] = {"rv_24h_pct": 20.0, "rv_7d_pct": 30.0, "last_bar_end_ms": NOW - 5 * 3_600_000}
-    line = next(l for l in dp.build(f)["steps"]["Q2"]["lines"] if l["k"] == "RV 对 IV")
+    line = next(l for l in dp.build(f)["steps"]["Q2"]["lines"] if l["k"] == "隐含与实现波动")
     assert "截至 5.0 小时前" in line["v"] and line["tone"] == "warn"
 
 
@@ -368,3 +368,37 @@ def test_newest_first(tmp_path):
         c = {**candidate(), "snapshot": {**candidate()["snapshot"], "candidate_id": f"n{i}"}}
         ids.append(s.start(candidate=c, reading=dp.build(frame()), now_ms=NOW + i * 1000)[0]["verification_id"])
     assert [i["verification_id"] for i in s.summaries(now_ms=NOW)] == ids[::-1]
+
+
+# ------------------------------------------------------------------ full audit fixes
+
+def test_no_marks_or_conclusions_after_expiry(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    for call in (lambda: s.step(vid, "D0", lean=None, now_ms=EXPIRY + 60_000),
+                 lambda: s.conclude(vid, "decline", now_ms=EXPIRY + 60_000)):
+        with pytest.raises(store.DecisionPathError) as exc:
+            call()
+        assert exc.value.code == "contract_expired"
+    s.step(vid, "D0", lean=None, now_ms=NOW + 1000)
+    s.expire_due(EXPIRY + 6 * 3_600_000)                 # noticed six hours late
+    assert s.get(vid)["conclusion"]["at_ms"] == EXPIRY
+    assert s.records()[-1]["dwell_ms"]["D0"] == EXPIRY - NOW - 1000
+
+
+def test_old_walls_leave_d2_and_bad_rows_are_skipped():
+    f = frame()
+    f["expiry_walls"] = {**f["expiry_walls"], "age_ms": 3 * 3_600_000, "stale": True}
+    steps = dp.build(f)["steps"]
+    assert "本期 Put" not in json.dumps(steps["D2"], ensure_ascii=False)
+    assert steps["D0"]["verdict"]["code"] == "partial"
+    res = eg.collect(lambda u, p: {"result": ROWS + [None, "x"]} if "book" in u else {"result": {}}, NOW)
+    assert res["status"] == "ok"
+    assert eg.for_expiry({"expiries": ["bad"]}, EXPIRY, now_ms=NOW) is None
+
+
+def test_step_failure_reads_as_a_sentence():
+    broken = frame()
+    broken["candidate"] = {**candidate(), "exogenous_events": {"events": "not-a-list"}}
+    d4 = dp.build(broken)["steps"]["D4"]
+    assert "Error" not in json.dumps(d4["lines"], ensure_ascii=False)
