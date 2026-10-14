@@ -1,6 +1,7 @@
 """Read-only product evidence composition over the existing bounded archive."""
 from __future__ import annotations
 from copy import deepcopy
+import gzip
 import hashlib
 import os
 from pathlib import Path
@@ -11,13 +12,11 @@ if __package__:
     from . import astra_wpem_native_v1 as native
     from . import astra_wpem_review_evidence_v1 as evidence
     from . import astra_wpem_product_review_v1 as product
-    from . import astra_underwriting_store_v20 as store
 else:
     import astra_candidate_asof_v1 as packets
     import astra_wpem_native_v1 as native
     import astra_wpem_review_evidence_v1 as evidence
     import astra_wpem_product_review_v1 as product
-    import astra_underwriting_store_v20 as store
 
 
 def _safe_replay_reason(reason):
@@ -128,43 +127,77 @@ def _sources(path):
     return sources
 
 
-def _same_object_rows(rows, snapshot, cutoff, limit=24):
+LEGACY_WINDOW_ROWS=24
+
+
+def window_row_limit(interval_ms=packets.DEFAULT_INTERVAL_MS):
+    """History rows replayed per compose.
+
+    Default stays 24 so composed evidence (and its evidence_hash) is unchanged.
+    ASTRA_WPEM_MAX_WINDOW_ROWS lowers it, but never below what the 15/60-minute
+    windows need (boundary anchor + rows inside; 13 at the 5-minute interval).
+    The row count is a composition input: lowering it changes evidence_hash and
+    the dependency diagnostics, not window coverage, delta or path.
+    """
+    try:
+        configured=int(os.environ.get('ASTRA_WPEM_MAX_WINDOW_ROWS') or 0)
+    except ValueError:
+        configured=0
+    if configured<=0:
+        return LEGACY_WINDOW_ROWS
+    return max(configured,packets.window_rows_needed(interval_ms))
+
+
+def _same_object_rows(rows, snapshot, cutoff, limit=None):
     """WPEM remembers one risk object: select its own rows, never the side's."""
+    limit=window_row_limit() if limit is None else limit
     return [row for row in rows if row['decision_asof_ms']<=cutoff
             and row.get('candidate_id')==snapshot['candidate_id']][-limit:]
 
 
-def compose(snapshot, archive, native_path, *, raw_payload=None, engine=None, release=None, now_ms=None, cross_section=()):
+def _reusable_current_packet(packet, snapshot, raw_payload, receipts):
+    """True only for exactly build_packet(snapshot, raw_payload=..., source_receipts=receipts)."""
+    try:
+        return (isinstance(packet,Mapping) and packet.get('schema')==packets.SCHEMA
+                and packet['snapshot']==snapshot and packet.get('raw_payload')==raw_payload
+                and packet['sources']['acquisition_receipts']==dict(receipts or {})
+                and packet['versions']['sampling_interval_ms']==packets.DEFAULT_INTERVAL_MS
+                and packet['versions']['feature_catalog_hash'] is None
+                and packet['model_input'].get('status')=='risk_asset_not_configured'
+                and 'candidate_history_method_boundary' not in packet['gaps']
+                and all(window['sample_count']==1 for window in packet['window']['coverage']))
+    except (KeyError, TypeError):
+        return False
+
+
+def compose(snapshot, archive, native_path, *, raw_payload=None, engine=None, release=None, now_ms=None,
+            cross_section=(), current_packet=None):
     cutoff=snapshot['market']['valuation_ts_ms']
     receipts=packets.collect_source_receipts(snapshot,engine) if engine is not None else {}
     archive.sample(snapshot,recorded_at_ms=max(cutoff,now_ms or cutoff),raw_payload=raw_payload,source_receipts=receipts)
-    rows=archive.rows()
-    selected=_same_object_rows(rows,snapshot,cutoff)
+    rows=archive.index_rows() if hasattr(archive,'index_rows') else archive.rows()
+    selected=_same_object_rows(rows,snapshot,cutoff,window_row_limit(getattr(archive,'interval_ms',packets.DEFAULT_INTERVAL_MS)))
     sequence=[archive.replay(row['snapshot_id']) for row in selected]
     if not any(p['snapshot']['snapshot_id']==snapshot['snapshot_id'] for p in sequence):
-        sequence.append(packets.build_packet(snapshot,raw_payload=raw_payload,source_receipts=receipts))
+        # A packet the caller already built for this exact input is reused, not rebuilt.
+        sequence.append(current_packet if _reusable_current_packet(current_packet,snapshot,raw_payload,receipts)
+                        else packets.build_packet(snapshot,raw_payload=raw_payload,source_receipts=receipts))
     cache=archive.path/'native_sources'
     sources=_sources(native_path)
     needed={p['snapshot'].get('fact_context',{}).get('source_hash') for p in sequence}
     for digest in needed:
         if not isinstance(digest,str) or len(digest)!=64: continue
-        saved=cache/(digest+'.json')
-        if digest not in sources and saved.is_file():
-            raw=saved.read_bytes()
+        # New copies are gzip of the exact source bytes; legacy plain copies stay readable.
+        saved=cache/(digest+'.json'); packed=cache/(digest+'.json.gz')
+        if digest not in sources and (packed.is_file() or saved.is_file()):
+            raw=gzip.decompress(packed.read_bytes()) if packed.is_file() else saved.read_bytes()
             if hashlib.sha256(raw).hexdigest()!=digest: raise ValueError('native_cache_hash_mismatch')
             sources[digest]=raw
-        if digest in sources and not saved.exists():
-            with store._APPEND_LOCK, store._exclusive_file_lock(archive.index_path):
-                used=sum(p.stat().st_size for p in archive.path.rglob('*') if p.is_file())
-                if used+len(sources[digest])<=archive.max_bytes:
-                    cache.mkdir(parents=True,exist_ok=True)
-                    temporary=saved.with_suffix('.tmp')
-                    with temporary.open('wb') as handle:
-                        handle.write(sources[digest]); handle.flush(); os.fsync(handle.fileno())
-                    os.replace(temporary,saved)
-                else:
-                    # No durable source proof within the same archive budget.
-                    sources.pop(digest,None)
+        if digest in sources and not saved.exists() and not packed.exists():
+            # Running byte count, not a directory rescan per source.
+            if not archive.write_within_budget(packed,gzip.compress(sources[digest],compresslevel=6,mtime=0)):
+                # No durable source proof within the same archive budget.
+                sources.pop(digest,None)
     reports=[native.qualify_native(p,sources.get(p['snapshot'].get('fact_context',{}).get('source_hash')),
              evidence_kind='native_producer' if p['provenance']['source_kind']=='live_public_capture' else 'synthetic_fixture') for p in sequence]
     return evidence.build_review_evidence(snapshot,sequence,reports,release_identity=release,cross_section=cross_section,

@@ -6,13 +6,18 @@ does not participate in the workbench's day/manual ledger or review policy.
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
+import contextlib
 from copy import deepcopy
+import gzip
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import threading
 from typing import Any, Mapping, Sequence
+import zlib
 
 if __package__:
     from . import astra_underwriting_v20 as core
@@ -34,6 +39,48 @@ DEFAULT_MAX_SAMPLES = 4096
 WINDOWS_MS = (900_000, 3_600_000)
 IDENTITY_KEYS = ("venue", "underlying", "settlement_currency", "short_instrument",
                  "long_instrument", "side", "quantity_btc", "expiry_ms")
+# Storage-only envelope: the packet inside, its packet_hash and every review
+# binding are unchanged; large repeated sub-objects live once in blob files.
+STORE_SCHEMA = "astra_candidate_asof_packet_store@1"
+BLOB_REF_KEY = "$astra_blob_sha256"
+BLOB_MIN_BYTES = 32 * 1024
+_BLOB_PREFIX = "blob-"
+_GZ_SUFFIX = ".json.gz"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+class _LRU:
+    """Small thread-safe LRU; values are immutable bytes or small result dicts."""
+    def __init__(self, max_items: int):
+        self.max_items = max_items
+        self._items: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: Any) -> Any:
+        with self._lock:
+            if key not in self._items:
+                return None
+            self._items.move_to_end(key)
+            return self._items[key]
+
+    def put(self, key: Any, value: Any) -> None:
+        with self._lock:
+            self._items[key] = value
+            self._items.move_to_end(key)
+            while len(self._items) > self.max_items:
+                self._items.popitem(last=False)
+
+
+# Successful replay results keyed by the verified content hash. A hit still
+# recomputes the packet's content hash, so it applies only to identical bytes.
+_REPLAY_MEMO = _LRU(_env_int("ASTRA_PACKET_REPLAY_MEMO_ITEMS", 2048))
 
 
 def _clock(value: Any) -> int:
@@ -107,7 +154,11 @@ def _source_records(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             if identity_hash in identities and identities[identity_hash] != basis_hash:
                 raise ValueError("source_identity_version_conflict")
             identities[identity_hash] = basis_hash
-            records.setdefault(record_id, deepcopy(row))
+            # First record per ID wins (as setdefault did). Shallow copy: every
+            # caller (build/replay here, WPEM native/shadow) reads records only,
+            # and deep-copying ~1 MB source content per read dominated replay.
+            if record_id not in records:
+                records[record_id] = dict(row)
     return records
 
 
@@ -386,6 +437,28 @@ def build_packet(snapshot: Mapping[str, Any], *, feature_catalog: Mapping[str, A
 
 
 def replay_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a packet offline.
+
+    The result is a pure function of the packet's content. A packet whose
+    recomputed content hash equals one that already passed full validation in
+    this process returns that memoized result; anything else is fully checked.
+    """
+    memo_key = packet.get("packet_hash") if isinstance(packet, Mapping) else None
+    memo = _REPLAY_MEMO.get(memo_key) if isinstance(memo_key, str) else None
+    if memo is not None:
+        try:
+            same = packet.get("schema") == SCHEMA and core._hash(
+                {key: value for key, value in packet.items() if key != "packet_hash"}) == memo_key
+        except Exception:
+            same = False
+        if same:
+            return deepcopy(memo)
+    result = _replay_packet_full(packet)
+    _REPLAY_MEMO.put(packet["packet_hash"], deepcopy(result))
+    return result
+
+
+def _replay_packet_full(packet: Mapping[str, Any]) -> dict[str, Any]:
     _assert_packet_safe_value(packet)
     if packet.get("schema") != SCHEMA or packet.get("packet_hash") != core._hash({
             key: value for key, value in packet.items() if key != "packet_hash"}):
@@ -407,28 +480,193 @@ def replay_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _contains_ref_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return BLOB_REF_KEY in value or any(_contains_ref_key(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_ref_key(child) for child in value)
+    return False
+
+
+def encode_stored_packet(packet: Mapping[str, Any], min_blob_bytes: int | None = None) -> tuple[bytes, dict[str, bytes]]:
+    """Split a packet into a small envelope plus content-addressed blobs.
+
+    Bottom-up, every JSON container below the top level whose canonical form is
+    at least ``min_blob_bytes`` (after its own large children were replaced) is
+    stored once as canonical JSON keyed by its sha256 and referenced as
+    ``{BLOB_REF_KEY: sha}``. Returns (envelope canonical bytes, {sha: blob bytes}).
+    A packet that already uses the reserved key is stored whole, without blobs.
+    """
+    blobs: dict[str, bytes] = {}
+    min_blob_bytes = BLOB_MIN_BYTES if min_blob_bytes is None else min_blob_bytes
+
+    def encode(node: Any) -> Any:
+        if not isinstance(node, (dict, list)) or len(store._canonical(node).encode("utf-8")) < min_blob_bytes:
+            return node
+        stored: Any = ({key: encode(child) for key, child in node.items()} if isinstance(node, dict)
+                       else [encode(child) for child in node])
+        data = store._canonical(stored).encode("utf-8")
+        if len(data) < min_blob_bytes:
+            return stored
+        digest = hashlib.sha256(data).hexdigest()
+        blobs[digest] = data
+        return {BLOB_REF_KEY: digest}
+
+    body = dict(packet) if _contains_ref_key(packet) else {key: encode(child) for key, child in packet.items()}
+    envelope = {"schema": STORE_SCHEMA, "packet_hash": packet["packet_hash"], "packet": body, "blobs": sorted(blobs)}
+    return store._canonical(envelope).encode("utf-8"), blobs
+
+
+def decode_stored_packet(envelope: Mapping[str, Any], read_blob) -> dict[str, Any]:
+    """Restore the exact original packet object from an envelope and its blobs."""
+    if envelope.get("schema") != STORE_SCHEMA or not isinstance(envelope.get("blobs"), list):
+        raise ValueError("research_packet_store_schema_mismatch")
+    declared = set(envelope["blobs"])
+    if not declared:
+        packet = envelope["packet"]
+    else:
+        def restore(node: Any) -> Any:
+            if isinstance(node, dict):
+                if len(node) == 1 and BLOB_REF_KEY in node:
+                    if node[BLOB_REF_KEY] not in declared:
+                        raise ValueError("research_blob_reference_undeclared")
+                    return restore(read_blob(node[BLOB_REF_KEY]))
+                return {key: restore(child) for key, child in node.items()}
+            if isinstance(node, list):
+                return [restore(child) for child in node]
+            return node
+        packet = restore(envelope["packet"])
+    if not isinstance(packet, dict) or packet.get("packet_hash") != envelope.get("packet_hash"):
+        raise ValueError("research_index_packet_mismatch")
+    return packet
+
+
+def _gzip(data: bytes) -> bytes:
+    return gzip.compress(data, compresslevel=6, mtime=0)
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def window_rows_needed(interval_ms: int) -> int:
+    """Rows the longest window needs: its boundary anchor plus every row inside.
+
+    Same-candidate rows are at least ``interval_ms`` apart (sampling rule), so
+    the newest ceil(W / interval) + 1 rows always contain the latest row at or
+    before cutoff - W (13 rows at the default 5-minute interval).
+    """
+    return -(-max(WINDOWS_MS) // max(1, int(interval_ms))) + 1
+
+
 class CandidateResearchArchive:
     """Content-deduplicated packets and a capped append-only reference ledger.
 
     Budget exhaustion stops new evidence; it never deletes existing samples.
     A failed/partial index is rejected, and refresh callers isolate this error.
+
+    Storage: new packets are gzip envelopes whose large sub-objects live once in
+    content-addressed ``blob-<sha256>.json.gz`` files; legacy ``<hash>.json``
+    packets stay readable. Reading restores the byte-identical packet.
     """
     def __init__(self, path: str | Path, *, interval_ms: int = DEFAULT_INTERVAL_MS,
-                 max_bytes: int = DEFAULT_MAX_BYTES, max_samples: int = DEFAULT_MAX_SAMPLES):
+                 max_bytes: int = DEFAULT_MAX_BYTES, max_samples: int = DEFAULT_MAX_SAMPLES,
+                 replay_cache_items: int | None = None):
         self.path = Path(path)
         self.interval_ms, self.max_bytes, self.max_samples = map(_clock, (interval_ms, max_bytes, max_samples))
         if not all((self.interval_ms, self.max_bytes, self.max_samples)):
             raise ValueError("research_budgets_must_be_positive")
         self.index_path = self.path / "index.jsonl"
+        self._state_lock = threading.RLock()
+        self._rows_cache: list[dict[str, Any]] = []
+        self._rows_by_snapshot: dict[str, dict[str, Any]] = {}
+        self._rows_signature: tuple[int, int] | None | bool = False  # False = never read
+        self._used_bytes: int | None = None
+        self._used_signature: tuple[int, int] | None | bool = False
+        self._exhausted_reason: str | None = None
+        self._lock_file_counted = False
+        # Verified packets as zlib-compressed canonical bytes, keyed by packet_hash.
+        self._packets = _LRU(replay_cache_items or _env_int("ASTRA_WPEM_REPLAY_CACHE_ITEMS", 256))
+
+    @contextlib.contextmanager
+    def _locked(self):
+        with store._APPEND_LOCK, store._exclusive_file_lock(self.index_path):
+            if not self._lock_file_counted:
+                # Taking the file lock may have just created its lock file.
+                with self._state_lock:
+                    self._used_bytes = None
+                    self._lock_file_counted = True
+            yield
+
+    # -- index ---------------------------------------------------------------
+    def _index_signature(self) -> tuple[int, int] | None:
+        try:
+            stat = self.index_path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_size, stat.st_mtime_ns)
+
+    def index_rows(self) -> list[dict[str, Any]]:
+        """Verified index rows, shared and read-only; re-read only when the file changed."""
+        with self._state_lock:
+            signature = self._index_signature()
+            if signature != self._rows_signature:
+                rows = store.read_jsonl(self.index_path)
+                for row in rows:
+                    if row.get("schema") != INDEX_SCHEMA or row.get("entry_hash") != core._hash({
+                            key: value for key, value in row.items() if key != "entry_hash"}):
+                        raise ValueError("research_index_integrity_error")
+                self._rows_cache = rows
+                self._rows_by_snapshot = {row["snapshot_id"]: row for row in rows}
+                self._rows_signature = signature
+            return self._rows_cache
 
     def rows(self) -> list[dict[str, Any]]:
-        rows = store.read_jsonl(self.index_path)
-        for row in rows:
-            if row.get("schema") != INDEX_SCHEMA or row.get("entry_hash") != core._hash({
-                    key: value for key, value in row.items() if key != "entry_hash"}):
-                raise ValueError("research_index_integrity_error")
-        return rows
+        return deepcopy(self.index_rows())
 
+    # -- byte budget ---------------------------------------------------------
+    def used_bytes(self) -> int:
+        """On-disk bytes: one directory scan, then a count kept on every write.
+
+        Rescanned only when the index changed without this instance writing it
+        (for example another archive instance on the same path).
+        """
+        with self._state_lock:
+            signature = self._index_signature()
+            if self._used_bytes is None or signature != self._used_signature:
+                self._used_bytes = (sum(item.stat().st_size for item in self.path.rglob('*') if item.is_file())
+                                    if self.path.exists() else 0)
+                self._used_signature = signature
+            return self._used_bytes
+
+    def _account(self, added: int, *, index_signature_before: Any = None) -> None:
+        with self._state_lock:
+            if self._used_bytes is not None and self._used_signature == index_signature_before:
+                self._used_bytes += int(added)
+                self._used_signature = self._index_signature()
+            else:
+                self._used_bytes = None
+                self.used_bytes()
+
+    def write_within_budget(self, destination: str | Path, data: bytes) -> bool:
+        """Atomically add an auxiliary file (e.g. native source bytes) inside the byte budget."""
+        destination = Path(destination)
+        with self._locked():
+            if destination.exists():
+                return True
+            if self.used_bytes() + len(data) > self.max_bytes:
+                return False
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(destination, data)
+            self._account(len(data), index_signature_before=self._index_signature())
+            return True
+
+    # -- sampling ------------------------------------------------------------
     def sample(self, snapshot: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
         """Record the outcome so a stopped archive is visible, never silent."""
         result = self._sample(snapshot, **kwargs)
@@ -436,7 +674,7 @@ class CandidateResearchArchive:
         return result
 
     def usage(self) -> dict[str, Any]:
-        used = sum(item.stat().st_size for item in self.path.rglob('*') if item.is_file()) if self.path.exists() else 0
+        used = self.used_bytes()
         last = getattr(self, "last_sample_status", None) or {}
         return {"used_bytes": int(used), "max_bytes": self.max_bytes,
                 "status": last.get("status"), "reason": last.get("reason")}
@@ -445,26 +683,34 @@ class CandidateResearchArchive:
                feature_catalog: Mapping[str, Any] | None = None,
                feature_catalog_error: str | None = None,
                raw_payload: Mapping[str, Any] | None = None, source_receipts: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        # Budgets never free (samples are never deleted): once this instance has
+        # seen one exhausted, it builds no further packets in this process.
+        if self._exhausted_reason is not None:
+            return {"status": "stopped", "reason": self._exhausted_reason}
         _validate_snapshot(snapshot)
         recorded_at_ms = _clock(recorded_at_ms)
         cutoff = snapshot["market"]["valuation_ts_ms"]
         if recorded_at_ms < cutoff:
             raise ValueError("research_recorded_before_asof")
-        with store._APPEND_LOCK, store._exclusive_file_lock(self.index_path):
-            rows = self.rows()
+        with self._locked():
+            rows = self.index_rows()
             same = [row for row in rows if row["candidate_id"] == snapshot["candidate_id"]]
-            if any(row["snapshot_id"] == snapshot["snapshot_id"] for row in rows):
+            if snapshot["snapshot_id"] in self._rows_by_snapshot:
                 return {"status": "skipped", "reason": "snapshot_already_archived"}
             if same and cutoff < max(row["decision_asof_ms"] for row in same):
                 return {"status": "skipped", "reason": "asof_not_monotonic"}
             if same and cutoff - max(row["decision_asof_ms"] for row in same) < self.interval_ms:
                 return {"status": "skipped", "reason": "sampling_interval_not_elapsed"}
             if len(rows) >= self.max_samples:
-                return {"status": "stopped", "reason": "research_sample_budget_exhausted"}
+                self._exhausted_reason = "research_sample_budget_exhausted"
+                return {"status": "stopped", "reason": self._exhausted_reason}
+            if self.used_bytes() >= self.max_bytes:
+                self._exhausted_reason = "research_byte_budget_exhausted"
+                return {"status": "stopped", "reason": self._exhausted_reason}
             packet = build_packet(snapshot, feature_catalog=feature_catalog, raw_payload=raw_payload,
                                   feature_catalog_error=feature_catalog_error,
                                   source_receipts=source_receipts, history=same, interval_ms=self.interval_ms)
-            destination = self.path / (packet["packet_hash"] + ".json")
+            destination = self.path / (packet["packet_hash"] + _GZ_SUFFIX)
             prior = next((row for row in reversed(rows) if row["side"] == snapshot["contract"]["side"]), None)
             known_sources = {record_id for row in same for record_id in row["source_record_ids"]}
             record_ids = packet["sources"]["record_ids"]
@@ -477,36 +723,73 @@ class CandidateResearchArchive:
                      "rotated_from_candidate_id": prior["candidate_id"] if prior and prior["candidate_id"] != snapshot["candidate_id"] else None,
                      "trigger": "background_refresh_after_verified_snapshot", "sampling_interval_ms": self.interval_ms}
             event["entry_hash"] = core._hash(event)
-            raw = (store._canonical(packet) + "\n").encode("utf-8")
-            event_bytes = len((store._canonical(event) + "\n").encode("utf-8"))
-            used = sum(item.stat().st_size for item in self.path.rglob('*') if item.is_file())
-            if used + (0 if destination.exists() else len(raw)) + event_bytes > self.max_bytes:
-                return {"status": "stopped", "reason": "research_byte_budget_exhausted"}
-            if destination.exists():
-                if destination.read_bytes() != raw:
+            envelope, blobs = encode_stored_packet(packet)
+            packet_bytes = _gzip(envelope)
+            # Each distinct blob is stored, and counted, once.
+            new_blobs = {digest: _gzip(data) for digest, data in blobs.items()
+                         if not self._blob_path(digest).exists()}
+            event_line = (store._canonical(event) + "\n").encode("utf-8")
+            exists = destination.exists()
+            written = 0 if exists else len(packet_bytes) + sum(len(data) for data in new_blobs.values())
+            if self.used_bytes() + written + len(event_line) > self.max_bytes:
+                self._exhausted_reason = "research_byte_budget_exhausted"
+                return {"status": "stopped", "reason": self._exhausted_reason}
+            if exists:
+                # Left by an interrupted write of this same packet.
+                if store._canonical(self._read_packet_file(destination.name)) != store._canonical(packet):
                     raise ValueError("research_blob_hash_collision")
             else:
-                tmp = destination.with_suffix(".tmp")
-                with tmp.open("wb") as handle:
-                    handle.write(raw)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(tmp, destination)
+                self.path.mkdir(parents=True, exist_ok=True)
+                for digest, data in new_blobs.items():
+                    _atomic_write(self._blob_path(digest), data)
+                _atomic_write(destination, packet_bytes)
+            before = self._index_signature()
             store._append_jsonl_unlocked(self.index_path, [event])
+            with self._state_lock:
+                if self._rows_signature == before:
+                    self._rows_cache = self._rows_cache + [event]
+                    self._rows_by_snapshot = {**self._rows_by_snapshot, event["snapshot_id"]: event}
+                    self._rows_signature = self._index_signature()
+                self._account(written + len(event_line), index_signature_before=before)
             return {"status": "recorded", "packet_hash": packet["packet_hash"], "snapshot_id": snapshot["snapshot_id"],
                     "new_source_count": len(event["new_source_record_ids"]),
                     "repeated_source_count": event["repeated_source_count"]}
 
+    # -- reading -------------------------------------------------------------
+    def _blob_path(self, digest: str) -> Path:
+        return self.path / (_BLOB_PREFIX + digest + _GZ_SUFFIX)
+
+    def _read_blob(self, digest: str) -> Any:
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("research_blob_path_invalid")
+        data = gzip.decompress(self._blob_path(digest).read_bytes())
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("research_blob_hash_mismatch")
+        return json.loads(data.decode("utf-8"))
+
+    def _read_packet_file(self, name: str) -> dict[str, Any]:
+        path = self.path / name
+        if name.endswith(_GZ_SUFFIX):
+            return decode_stored_packet(json.loads(gzip.decompress(path.read_bytes()).decode("utf-8")), self._read_blob)
+        return store.read_json(path)  # legacy uncompressed packet
+
     def replay(self, snapshot_id: str) -> dict[str, Any]:
-        row = next((row for row in self.rows() if row["snapshot_id"] == snapshot_id), None)
+        """Return a fresh verified packet; verified (immutable) packets are cached by hash."""
+        self.index_rows()
+        row = self._rows_by_snapshot.get(snapshot_id)
         if row is None:
             raise ValueError("research_snapshot_not_found")
-        if row["packet_file"] != row["packet_hash"] + ".json" or len(row["packet_hash"]) != 64:
+        if (len(row["packet_hash"]) != 64
+                or row["packet_file"] not in {row["packet_hash"] + ".json", row["packet_hash"] + _GZ_SUFFIX}):
             raise ValueError("research_blob_path_invalid")
-        packet = store.read_json(self.path / row["packet_file"])
+        cached = self._packets.get(row["packet_hash"])
+        if cached is not None:
+            return json.loads(zlib.decompress(cached).decode("utf-8"))
+        packet = self._read_packet_file(row["packet_file"])
         replay_packet(packet)
         if packet["packet_hash"] != row["packet_hash"] or packet["identity"]["snapshot_id"] != snapshot_id:
             raise ValueError("research_index_packet_mismatch")
+        self._packets.put(row["packet_hash"], zlib.compress(store._canonical(packet).encode("utf-8"), 1))
         return packet
 
 
@@ -514,7 +797,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--packet", type=Path, required=True, help="Verify a saved packet offline; does not collect or call a model")
     args = parser.parse_args(argv)
-    print(json.dumps(replay_packet(store.read_json(args.packet)), ensure_ascii=False, indent=2))
+    packet = (CandidateResearchArchive(args.packet.parent)._read_packet_file(args.packet.name)
+              if args.packet.name.endswith(_GZ_SUFFIX) else store.read_json(args.packet))
+    print(json.dumps(replay_packet(packet), ensure_ascii=False, indent=2))
     return 0
 
 
