@@ -17,6 +17,31 @@ def _clock(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
+# FMZ gate codes that say the net gamma value itself is unusable (missing, wrong asset,
+# unknown / future / old clock). Any other reason for valid=false is a market reading.
+NET_GAMMA_DATA_CODES = frozenset({
+    "SPACE_GATE_GEX_INFO_MISSING", "SPACE_GATE_GEX_INFO_ASSET_MISMATCH",
+    "SPACE_GATE_NET_GAMMA_MISSING", "SPACE_GATE_NET_GAMMA_SOURCE_TS_MISSING",
+    "SPACE_GATE_NET_GAMMA_SOURCE_TS_FUTURE", "SPACE_GATE_NET_GAMMA_NOT_FRESH",
+})
+NET_GAMMA_READING_CODES = ("SPACE_GATE_NET_GAMMA_NOT_POSITIVE",)
+
+
+def _net_gamma_quality(gamma: Mapping[str, Any], gate_codes: Any) -> tuple[str, list[str]]:
+    codes = {str(code) for code in gate_codes or [] if code} if isinstance(gate_codes, (list, tuple)) else set()
+    readings = [code for code in NET_GAMMA_READING_CODES if code in codes]
+    if gamma.get("conflict"):
+        readings.append("SPACE_GATE_NET_GAMMA_CONFLICT")
+    if gamma.get("valid"):
+        return "OK", readings
+    value = gamma.get("value")
+    numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+    data_codes = sorted(codes & NET_GAMMA_DATA_CODES)
+    if numeric and value <= 0 and not data_codes:
+        return "OK", sorted(set(readings) | {"SPACE_GATE_NET_GAMMA_NOT_POSITIVE"})
+    return "INVALID", data_codes or ["SPACE_GATE_NET_GAMMA_NOT_VALID"]
+
+
 def fmz_records(engine, fact: Mapping[str, Any], now: int) -> list[dict]:
     ts = _clock(fact.get("snapshot_ts_ms"))
     if ts is None:
@@ -44,12 +69,13 @@ def fmz_records(engine, fact: Mapping[str, Any], now: int) -> list[dict]:
         # the same response; a new bridge timestamp is not a GEX revision.
         stable_gamma = {key: gamma.get(key) for key in
                         ("value", "unit", "sign", "source", "source_ts_ms", "valid", "transition", "conflict")}
-        # A conflict (gexmonitor net GEX and the GGR proxy disagree) is a market reading the
-        # space evaluation reports, not invalid data: only an invalid value is INVALID.
+        # A conflict (gexmonitor net GEX and the GGR proxy disagree) and a non-positive value
+        # (a negative gamma regime) are market readings the space evaluation reports, not
+        # invalid data. FMZ's "valid" folds the sign in, so its gate codes separate the two.
+        state, codes = _net_gamma_quality(gamma, gate.get("reason_codes"))
         engine.ingest("gex.netgamma.proxy.v1", stable_gamma, observation_end_ms=gamma_ts,
                       retrieved_at_ms=None, ingested_at_ms=now,
-                      data_state="OK" if gamma.get("valid") else "INVALID",
-                      reason_codes=["SPACE_GATE_NET_GAMMA_CONFLICT"] if gamma.get("conflict") else [])
+                      data_state=state, reason_codes=codes)
         records.append(engine.read("gex.netgamma.proxy.v1", now_ms=now, usage="space_gate"))
     anchor = (facts.get("space_context") or {}).get("anchor") or {}
     anchor_ts = _clock(anchor.get("gex_source_ts_ms"))

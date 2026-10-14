@@ -142,3 +142,36 @@ def test_net_gamma_conflict_is_a_reading_not_invalid_data(tmp_path):
     assert result['space_input_gap_reasons'] == []
     assert result['space_input_rejected'] == []  # the conflicting net gamma is still usable
     assert 'fmz_fact_not_current' not in wb._review_gate(None, wb.space_gate_view(result, fixtures.T))['reasons']
+
+
+def test_negative_net_gamma_is_a_reading_not_invalid_data(tmp_path):
+    from astra_data_projection_v23 import _net_gamma_quality
+    negative = {'value': -6104053.48, 'valid': False, 'conflict': False}
+    assert _net_gamma_quality(negative, ['SPACE_GATE_ANCHOR_SCORE_LOW', 'SPACE_GATE_NET_GAMMA_NOT_POSITIVE']) == (
+        'OK', ['SPACE_GATE_NET_GAMMA_NOT_POSITIVE'])
+    assert _net_gamma_quality({'value': 5.0, 'valid': True, 'conflict': True}, []) == (
+        'OK', ['SPACE_GATE_NET_GAMMA_CONFLICT'])
+    wb, path = fixtures.make_workbench(tmp_path)
+    gate = fixtures.native_gate()
+    gate['net_gamma'].update(value=-6104053.48, sign='NEGATIVE', valid=False, ok=False)
+    gate['state'] = 'STRUCTURE_BLOCKED'
+    gate['reason_codes'] = sorted(set(gate.get('reason_codes') or []) | {'SPACE_GATE_NET_GAMMA_NOT_POSITIVE'})
+    fixtures.write_fmz(path, gate)
+    assert wb.latest_fact(fixtures.T)['space_input_rejected'] == []
+
+
+def test_net_gamma_data_problems_stay_invalid(tmp_path):
+    from astra_data_projection_v23 import _net_gamma_quality
+    negative = {'value': -1.0, 'valid': False}
+    assert _net_gamma_quality(negative, ['SPACE_GATE_NET_GAMMA_NOT_POSITIVE', 'SPACE_GATE_NET_GAMMA_SOURCE_TS_FUTURE']) == (
+        'INVALID', ['SPACE_GATE_NET_GAMMA_SOURCE_TS_FUTURE'])
+    assert _net_gamma_quality({'value': None, 'valid': False}, None) == ('INVALID', ['SPACE_GATE_NET_GAMMA_NOT_VALID'])
+    wb, path = fixtures.make_workbench(tmp_path)
+    gate = fixtures.native_gate()
+    gate['net_gamma'].update(value=-1.0, sign='NEGATIVE', valid=False, ok=False)
+    gate['state'] = 'STRUCTURE_BLOCKED'
+    gate['reason_codes'] = sorted(set(gate.get('reason_codes') or []) | {
+        'SPACE_GATE_NET_GAMMA_NOT_POSITIVE', 'SPACE_GATE_NET_GAMMA_SOURCE_TS_FUTURE'})
+    fixtures.write_fmz(path, gate)
+    rejected = wb.latest_fact(fixtures.T)['space_input_rejected']
+    assert rejected[0]['product_id'] == 'gex.netgamma.proxy.v1'
