@@ -104,7 +104,7 @@ def test_routing_evidence_builds_261_input_with_compact_catalog_and_request_cont
 
     assert current["schema"] == product.ROUTING_REVIEW_INPUT_SCHEMA_263
     assert current["request_contract"]["prompt_version"] == product.ROUTING_PROMPT_VERSION
-    assert current["claim_catalog_schema"] == product.ROUTING_CATALOG_SCHEMA
+    assert current["claim_catalog_schema"] == product.ROUTING_CATALOG_SCHEMA_112
     assert current["request_contract"]["routing_schema"] == "evidence_routing@1.0.0"
     assert current["request_contract"]["routing_hash"] == current["routing_identity"]["routing_hash"]
     assert current["evidence_routing"]["routing_hash"] == current["routing_identity"]["routing_hash"]

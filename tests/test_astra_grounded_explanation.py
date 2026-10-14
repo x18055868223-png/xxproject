@@ -311,7 +311,7 @@ def test_263_current_validated_input_restores_compact_map_context_and_grounding(
     assert "map_context" not in old_rebuilt
     assert current["schema"] == product.ROUTING_REVIEW_INPUT_SCHEMA_263
     assert current["response_protocol"] == product.ROUTING_RESPONSE_PROTOCOL
-    assert current["claim_catalog_schema"] == product.ROUTING_CATALOG_SCHEMA
+    assert current["claim_catalog_schema"] == product.ROUTING_CATALOG_SCHEMA_112
     assert current["request_contract"]["output_protocol"] == product.ROUTING_RESPONSE_PROTOCOL
     assert current["request_contract"]["prompt_version"] == product.ROUTING_PROMPT_VERSION
 

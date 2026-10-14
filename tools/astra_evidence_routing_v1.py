@@ -1374,6 +1374,27 @@ def build_routing(snapshot: Mapping[str, Any], evidence: Mapping[str, Any]) -> d
     return body
 
 
+def routing_view_without_dependency_groups(routing: Mapping[str, Any], dependency_groups: Iterable[str]) -> dict[str, Any]:
+    """Derive a review-side view of a sealed routing without some dependency groups.
+
+    The sealed routing (and its hash) is unchanged; this only recomputes the
+    dependency blocks and selection summary from the remaining units, so that a
+    group with no producer (e.g. RISK_REFERENCE when mu has no producer) neither
+    consumes a gap slot nor contributes a limitation row to the review catalog.
+    """
+    excluded = {str(group) for group in dependency_groups}
+    units = [
+        unit for unit in _lst(routing.get("units"))
+        if isinstance(unit, Mapping) and str(unit.get("dependency_group")) not in excluded
+    ]
+    blocks = _dependency_blocks(units)
+    view = dict(routing)
+    view["units"] = units
+    view["dependency_blocks"] = blocks
+    view["selection_summary"] = _selection_summary(units, blocks)
+    return view
+
+
 def validate_routing(snapshot: Mapping[str, Any], evidence: Mapping[str, Any], routing: Mapping[str, Any]) -> dict[str, Any]:
     """Replay build_routing and fail closed if any field changed."""
     if not isinstance(routing, Mapping):

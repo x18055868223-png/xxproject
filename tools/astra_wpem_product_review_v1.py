@@ -28,7 +28,8 @@ EVIDENCE_SYNTHESIS_PROMPT_VERSION_265 = "evidence_synthesis_prompt@1.0.2"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_266 = "evidence_synthesis_prompt@1.0.3"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_267 = "evidence_synthesis_prompt@1.0.4"
 EVIDENCE_SYNTHESIS_PROMPT_VERSION_268 = "evidence_synthesis_prompt@1.0.5"
-EVIDENCE_SYNTHESIS_PROMPT_VERSION = "evidence_synthesis_prompt@2.3-candidate"
+EVIDENCE_SYNTHESIS_PROMPT_VERSION_269 = "evidence_synthesis_prompt@2.3-candidate"
+EVIDENCE_SYNTHESIS_PROMPT_VERSION = "evidence_synthesis_prompt@2.4-candidate"
 PROVIDER_CONFIG_VERSION = "wpem_json_delivery@1.0.1"
 ROUTING_SCHEMA = "evidence_routing@1.0.0"
 REVIEW_INPUT_SCHEMA = "review_input@2.5.2"
@@ -41,7 +42,10 @@ ROUTING_REVIEW_INPUT_SCHEMA_265 = "review_input@2.6.5"
 ROUTING_REVIEW_INPUT_SCHEMA_266 = "review_input@2.6.6"
 ROUTING_REVIEW_INPUT_SCHEMA_267 = "review_input@2.6.7"
 ROUTING_REVIEW_INPUT_SCHEMA_268 = "review_input@2.6.8"
-ROUTING_REVIEW_INPUT_SCHEMA = "review_input@2.6.9"
+ROUTING_REVIEW_INPUT_SCHEMA_269 = "review_input@2.6.9"
+# 2.7.0 = 2.6.9 minus dead inputs (no mu/M_ref without a risk producer, space
+# structure evaluation-only); see legacy.DEAD_INPUT_PRUNED_REVIEW_INPUT_SCHEMA.
+ROUTING_REVIEW_INPUT_SCHEMA = legacy.DEAD_INPUT_PRUNED_REVIEW_INPUT_SCHEMA
 ROUTING_REVIEW_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_260,
     ROUTING_REVIEW_INPUT_SCHEMA_261,
@@ -52,6 +56,7 @@ ROUTING_REVIEW_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_266,
     ROUTING_REVIEW_INPUT_SCHEMA_267,
     ROUTING_REVIEW_INPUT_SCHEMA_268,
+    ROUTING_REVIEW_INPUT_SCHEMA_269,
     ROUTING_REVIEW_INPUT_SCHEMA,
 }
 LEGACY_REVIEW_INPUT_SCHEMAS = {"review_input@2.5.0"}
@@ -67,7 +72,8 @@ ROUTING_RESEARCH_REVIEW_SCHEMA = "research_review@2.6.2"
 CATALOG_SCHEMA = "wpem_product_claim_catalog@1.0.0"
 ROUTING_CATALOG_SCHEMA_260 = "wpem_product_claim_catalog@1.1.0"
 ROUTING_CATALOG_SCHEMA_261 = "wpem_product_claim_catalog@1.1.1"
-ROUTING_CATALOG_SCHEMA = "wpem_product_claim_catalog@1.1.2"
+ROUTING_CATALOG_SCHEMA_112 = "wpem_product_claim_catalog@1.1.2"
+ROUTING_CATALOG_SCHEMA = "wpem_product_claim_catalog@1.2.0"
 ROLE = "candidate_not_deployed"
 EXTENSION_FIELDS = {"wpem_evidence", "review_validity"}
 EXACT_OUTPUT_KEYS = [
@@ -121,13 +127,18 @@ _EVIDENCE_POINT_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_266,
     ROUTING_REVIEW_INPUT_SCHEMA_267,
     ROUTING_REVIEW_INPUT_SCHEMA_268,
+    ROUTING_REVIEW_INPUT_SCHEMA_269,
     ROUTING_REVIEW_INPUT_SCHEMA,
 }
+_SEMANTIC_CONTRACT_CLOSURE_INPUT_SCHEMAS = {ROUTING_REVIEW_INPUT_SCHEMA_269, ROUTING_REVIEW_INPUT_SCHEMA}
+# Schemas whose builders leave out inputs that have no producer (see 2.7.0 note).
+_DEAD_INPUT_PRUNED_INPUT_SCHEMAS = {ROUTING_REVIEW_INPUT_SCHEMA}
 _RELATION_OWNED_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_265,
     ROUTING_REVIEW_INPUT_SCHEMA_266,
     ROUTING_REVIEW_INPUT_SCHEMA_267,
     ROUTING_REVIEW_INPUT_SCHEMA_268,
+    ROUTING_REVIEW_INPUT_SCHEMA_269,
     ROUTING_REVIEW_INPUT_SCHEMA,
 }
 _CONTEXTUAL_INPUT_SCHEMAS = {
@@ -139,6 +150,7 @@ _CONTEXTUAL_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_266,
     ROUTING_REVIEW_INPUT_SCHEMA_267,
     ROUTING_REVIEW_INPUT_SCHEMA_268,
+    ROUTING_REVIEW_INPUT_SCHEMA_269,
     ROUTING_REVIEW_INPUT_SCHEMA,
 }
 _CONTEXTUAL_REF_INPUT_SCHEMAS = {
@@ -149,6 +161,7 @@ _CONTEXTUAL_REF_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_266,
     ROUTING_REVIEW_INPUT_SCHEMA_267,
     ROUTING_REVIEW_INPUT_SCHEMA_268,
+    ROUTING_REVIEW_INPUT_SCHEMA_269,
     ROUTING_REVIEW_INPUT_SCHEMA,
 }
 _MAP_CONTEXT_INPUT_SCHEMAS = {
@@ -158,6 +171,7 @@ _MAP_CONTEXT_INPUT_SCHEMAS = {
     ROUTING_REVIEW_INPUT_SCHEMA_266,
     ROUTING_REVIEW_INPUT_SCHEMA_267,
     ROUTING_REVIEW_INPUT_SCHEMA_268,
+    ROUTING_REVIEW_INPUT_SCHEMA_269,
     ROUTING_REVIEW_INPUT_SCHEMA,
 }
 
@@ -222,6 +236,8 @@ def prompt_version_for_input(review_input: Mapping[str, Any]) -> str:
         return EVIDENCE_SYNTHESIS_PROMPT_VERSION_267
     if schema == ROUTING_REVIEW_INPUT_SCHEMA_268:
         return EVIDENCE_SYNTHESIS_PROMPT_VERSION_268
+    if schema == ROUTING_REVIEW_INPUT_SCHEMA_269:
+        return EVIDENCE_SYNTHESIS_PROMPT_VERSION_269
     if schema in _EVIDENCE_POINT_INPUT_SCHEMAS:
         return EVIDENCE_SYNTHESIS_PROMPT_VERSION
     if schema in {ROUTING_REVIEW_INPUT_SCHEMA_262, ROUTING_REVIEW_INPUT_SCHEMA_263}:
@@ -243,6 +259,7 @@ def review_state_schema_for_input(review_input: Mapping[str, Any]) -> str:
         ROUTING_REVIEW_INPUT_SCHEMA_266,
         ROUTING_REVIEW_INPUT_SCHEMA_267,
         ROUTING_REVIEW_INPUT_SCHEMA_268,
+        ROUTING_REVIEW_INPUT_SCHEMA_269,
         ROUTING_REVIEW_INPUT_SCHEMA,
     }:
         return ROUTING_REVIEW_STATE_SCHEMA
@@ -263,6 +280,7 @@ def research_review_schema_for_input(review_input: Mapping[str, Any]) -> str:
         ROUTING_REVIEW_INPUT_SCHEMA_266,
         ROUTING_REVIEW_INPUT_SCHEMA_267,
         ROUTING_REVIEW_INPUT_SCHEMA_268,
+        ROUTING_REVIEW_INPUT_SCHEMA_269,
         ROUTING_REVIEW_INPUT_SCHEMA,
     }:
         return ROUTING_RESEARCH_REVIEW_SCHEMA
@@ -274,6 +292,8 @@ def research_review_schema_for_input(review_input: Mapping[str, Any]) -> str:
 
 
 def _routing_catalog_schema_for_input_schema(schema: Any) -> str:
+    if schema == ROUTING_REVIEW_INPUT_SCHEMA:
+        return ROUTING_CATALOG_SCHEMA
     if schema in {
         ROUTING_REVIEW_INPUT_SCHEMA_262,
         ROUTING_REVIEW_INPUT_SCHEMA_263,
@@ -282,9 +302,10 @@ def _routing_catalog_schema_for_input_schema(schema: Any) -> str:
         ROUTING_REVIEW_INPUT_SCHEMA_266,
         ROUTING_REVIEW_INPUT_SCHEMA_267,
         ROUTING_REVIEW_INPUT_SCHEMA_268,
+        ROUTING_REVIEW_INPUT_SCHEMA_269,
         ROUTING_REVIEW_INPUT_SCHEMA,
     }:
-        return ROUTING_CATALOG_SCHEMA
+        return ROUTING_CATALOG_SCHEMA_112
     if schema == ROUTING_REVIEW_INPUT_SCHEMA_261:
         return ROUTING_CATALOG_SCHEMA_261
     if schema == ROUTING_REVIEW_INPUT_SCHEMA_260:
@@ -351,19 +372,19 @@ def _rebuilt_review_input_for_schema(
         if evidence.get("schema") not in evidence_core.LEGACY_SCHEMAS:
             raise legacy.ReviewValidationError("legacy WPEM review input requires legacy evidence shape")
         rebuilt = _build_review_input(snapshot, evidence, research_only=research_only, model=model,
-                                      routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA)
+                                      routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA_269)
         return _retarget_review_input_schema(_without_request_contract(rebuilt), str(schema))
     if schema == "review_input@2.5.1":
         if has_routing(evidence):
             raise legacy.ReviewValidationError("routing evidence cannot replay legacy WPEM review input")
         rebuilt = _build_review_input(snapshot, evidence, research_only=research_only, model=model,
-                                      routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA)
+                                      routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA_269)
         return _retarget_review_input_schema(_without_request_contract(rebuilt), str(schema))
     if schema == REVIEW_INPUT_SCHEMA:
         if has_routing(evidence):
             raise legacy.ReviewValidationError("routing evidence cannot replay non-routing WPEM review input")
         rebuilt = _build_review_input(snapshot, evidence, research_only=research_only, model=model,
-                                      routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA)
+                                      routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA_269)
         return _retarget_review_input_schema(rebuilt, str(schema))
     if schema in ROUTING_REVIEW_INPUT_SCHEMAS:
         if not has_routing(evidence):
@@ -373,7 +394,7 @@ def _rebuilt_review_input_for_schema(
     if schema != REVIEW_INPUT_SCHEMA:
         raise legacy.ReviewValidationError("WPEM review input schema mismatch")
     return _build_review_input(snapshot, evidence, research_only=research_only, model=model,
-                               routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA)
+                               routing_review_input_schema=ROUTING_REVIEW_INPUT_SCHEMA_269)
 
 
 def _entry(identifier, ref, text):
@@ -1081,10 +1102,20 @@ def _append_contextual_catalog_entry(catalog: dict[str, Any], evidence: Mapping[
 
 
 def _compact_routing_projection(evidence: Mapping[str, Any], *, include_contextual: bool = False,
-                                contextual_market_reads: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+                                contextual_market_reads: Mapping[str, Any] | None = None,
+                                drop_dependency_groups: tuple[str, ...] = ()) -> dict[str, Any] | None:
     identity = routing_identity(evidence)
     if identity is None:
         return None
+    if drop_dependency_groups:
+        # Review-side view only: the sealed routing and its hash stay intact.
+        if __package__:
+            from . import astra_evidence_routing_v1 as routing_core
+        else:
+            import astra_evidence_routing_v1 as routing_core
+        evidence = dict(evidence)
+        evidence["evidence_routing"] = routing_core.routing_view_without_dependency_groups(
+            _routing(evidence) or {}, drop_dependency_groups)
     catalog = _routing_catalog(evidence)
     if include_contextual:
         routing = _routing(evidence) or {}
@@ -1624,6 +1655,9 @@ def _compact_source_facts_for_routing(source_facts: Mapping[str, Any], routing_p
             for item in routing_projection.get("dependency_representatives") or []
         ],
     }
+    if "risk" not in (source_facts or {}):
+        # review_input@2.7.0 without a risk producer: no constant null row.
+        result.pop("risk")
     if contextual_market_reads is not None:
         result["contextual_market_reads"] = deepcopy(contextual_market_reads)
     return result
@@ -1896,6 +1930,7 @@ def _is_semantic_scope_schema(review_input: Mapping[str, Any]) -> bool:
         ROUTING_REVIEW_INPUT_SCHEMA_266,
         ROUTING_REVIEW_INPUT_SCHEMA_267,
         ROUTING_REVIEW_INPUT_SCHEMA_268,
+        ROUTING_REVIEW_INPUT_SCHEMA_269,
         ROUTING_REVIEW_INPUT_SCHEMA,
     }
 
@@ -2050,6 +2085,30 @@ def _clean_observed_point(point: Mapping[str, Any]) -> dict[str, Any]:
             "fee_gap_reasons", "risk_status", "risk_gap_reasons",
         )),
     }
+
+
+def _without_absent_risk_qualification(point: Mapping[str, Any]) -> dict[str, Any]:
+    """2.7.0 clean fragment: drop the no-producer risk status row of a point.
+
+    Only a point whose own risk status is "missing" is touched; its
+    information_gap status then only restates the absent producer.
+    """
+    out = deepcopy(dict(point))
+    qualification = out.get("qualification") if isinstance(out.get("qualification"), dict) else None
+    if qualification is None or qualification.get("risk_status") != "missing":
+        return out
+    qualification.pop("risk_status", None)
+    qualification.pop("risk_gap_reasons", None)
+    if isinstance(qualification.get("snapshot_gap_reasons"), list):
+        qualification["snapshot_gap_reasons"] = [
+            reason for reason in qualification["snapshot_gap_reasons"]
+            if reason not in legacy._RISK_REFERENCE_GAP_REASONS
+        ]
+    economics = out.get("economics") if isinstance(out.get("economics"), Mapping) else {}
+    if (qualification.get("snapshot_status") == "information_gap"
+            and economics.get("net_credit_after_fee_btc") is not None):
+        qualification.pop("snapshot_status")
+    return out
 
 
 def _change_relation(prev: Any, curr: Any) -> str | None:
@@ -2254,7 +2313,7 @@ def _program_fact_relations(review_input: Mapping[str, Any]) -> dict[str, dict[s
     side = str(contract.get("side") or "").lower()
     adverse_direction = geometry.get("adverse_direction_cn") or ("上涨" if side == "call" else "下跌" if side == "put" else "未知")
     flow_relation = _strip_catalog_ids(decision_relations.get("flow")) if isinstance(decision_relations.get("flow"), Mapping) else {}
-    return {
+    relations = {
         "contract": {
             "adverse_direction_cn": adverse_direction,
             "liability_zone": responsibility.get("liability_zone"),
@@ -2266,6 +2325,9 @@ def _program_fact_relations(review_input: Mapping[str, Any]) -> dict[str, dict[s
             "relation_cn": flow_relation.get("relation_cn"),
         },
     }
+    if review_input.get("schema") in _DEAD_INPUT_PRUNED_INPUT_SCHEMAS and "risk" not in source_facts:
+        relations.pop("risk")
+    return relations
 
 
 def compose_decision_evidence(
@@ -2286,7 +2348,7 @@ def compose_decision_evidence(
             if isinstance(point, Mapping)
         ],
         same_window,
-        semantic_contract_closure=review_input.get("schema") == ROUTING_REVIEW_INPUT_SCHEMA,
+        semantic_contract_closure=review_input.get("schema") in _SEMANTIC_CONTRACT_CLOSURE_INPUT_SCHEMAS,
     ) if same_window.get("observed_points") else None
     if fragment_relations is not None:
         relations["wpem.fragments"] = fragment_relations
@@ -2338,7 +2400,11 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
     map_context = review_input.get("map_context") if isinstance(review_input.get("map_context"), Mapping) else {}
     records_by_id = _map_source_records_by_id(map_context)
     semantic_scope = _is_semantic_scope_schema(review_input)
-    semantic_contract_closure = review_input.get("schema") == ROUTING_REVIEW_INPUT_SCHEMA
+    semantic_contract_closure = review_input.get("schema") in _SEMANTIC_CONTRACT_CLOSURE_INPUT_SCHEMAS
+    # review_input@2.7.0: structure is evaluation-only; without a risk producer
+    # (source_facts.risk already left out) no mu/M item or field is sent.
+    prune = review_input.get("schema") in _DEAD_INPUT_PRUNED_INPUT_SCHEMAS
+    prune_mu = prune and "risk" not in source_facts
 
     items: list[dict[str, Any]] = []
     lineage: dict[str, dict[str, Any]] = {}
@@ -2413,24 +2479,25 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
     )
     risk_source = source_facts.get("risk") if isinstance(source_facts.get("risk"), Mapping) else {}
     risk = risk_source.get("risk") if isinstance(risk_source.get("risk"), Mapping) else {}
-    _clean_add(
-        items, lineage, ref="risk", group="program_facts", label_cn="风险参考状态",
-        source_path="source_facts.risk/decision_relations.risk_coverage",
-        facts={
-            "status": risk.get("status"),
-            "mu_btc": risk.get("mu_btc"),
-            "overall_mu_status": (relations.get("risk_coverage") or {}).get("overall_mu_status")
-            if isinstance(relations.get("risk_coverage"), Mapping) else None,
-            "gap_reasons": deepcopy(risk.get("gap_reasons") or []),
-        },
-        relations=_relation_for_ref(
-            review_input,
-            "risk",
-            lambda: {"positive_ev_not_determinable": risk.get("mu_btc") is None},
-        ),
-        qualification=deepcopy(relations.get("risk_coverage") if isinstance(relations.get("risk_coverage"), Mapping) else {}),
-        limitations=["μ/M 缺失只限制补偿/正期望结论，不删除其他已给事实。"],
-    )
+    if not prune_mu:
+        _clean_add(
+            items, lineage, ref="risk", group="program_facts", label_cn="风险参考状态",
+            source_path="source_facts.risk/decision_relations.risk_coverage",
+            facts={
+                "status": risk.get("status"),
+                "mu_btc": risk.get("mu_btc"),
+                "overall_mu_status": (relations.get("risk_coverage") or {}).get("overall_mu_status")
+                if isinstance(relations.get("risk_coverage"), Mapping) else None,
+                "gap_reasons": deepcopy(risk.get("gap_reasons") or []),
+            },
+            relations=_relation_for_ref(
+                review_input,
+                "risk",
+                lambda: {"positive_ev_not_determinable": risk.get("mu_btc") is None},
+            ),
+            qualification=deepcopy(relations.get("risk_coverage") if isinstance(relations.get("risk_coverage"), Mapping) else {}),
+            limitations=["μ/M 缺失只限制补偿/正期望结论，不删除其他已给事实。"],
+        )
     flow_relation = _strip_catalog_ids(relations.get("flow")) if isinstance(relations.get("flow"), Mapping) else {}
     _clean_add(
         items, lineage, ref="flow", group="market_context", label_cn="方向流与本单责任关系",
@@ -2481,6 +2548,8 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
             for point in same_window.get("observed_points") or []
             if isinstance(point, Mapping)
         ]
+        if prune_mu:
+            clean_points = [_without_absent_risk_qualification(point) for point in clean_points]
         single_observation_scope = semantic_contract_closure and len(clean_points) < 2
         _clean_add(
             items, lineage, ref="wpem.fragments", group="wpem", label_cn="同保单历史观察片段",
@@ -2589,7 +2658,8 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
                 shared_dependency="space_gate_gamma_regime",
             )
             _clean_add(
-                items, lineage, ref="space.gate", group="market_context", label_cn="SpaceGate结构门",
+                items, lineage, ref="space.gate", group="market_context",
+                label_cn=SPACE_STRUCTURE_EVALUATION_LABEL_CN if prune else "SpaceGate结构门",
                 source_path="source_facts.contextual_market_reads.items.context.option_space.readings.space_gate",
                 facts=deepcopy(space_gate),
                 relations=_relation_for_ref(
@@ -2598,6 +2668,11 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
                     lambda: _context_item_relations({"items": [item]}).get("space.gate", {}),
                 ),
                 asof={"asof_ms": item.get("asof_ms"), "source_observed_ms": item.get("source_observed_ms")},
+                basis=(
+                    legacy.STRUCTURE_EVALUATION_ONLY_BASIS
+                    + "：空间结构只作评估读数，不是开仓门禁，不产生否决或阻断。"
+                    if prune else None
+                ),
                 qualification={key: value for key, value in _source_lineage_for_context_item(item).items() if key != "evidence_id"},
                 source_refs=[_source_lineage_for_context_item(item)],
                 shared_dependency="space_gate_gamma_regime",
@@ -2689,7 +2764,11 @@ def _clean_evidence_package(snapshot: Mapping[str, Any], review_input: Mapping[s
             relations=_relation_for_ref(review_input, "map.funding", lambda: _funding_window_relations(funding)),
             asof={"cutoff_at_ms": financing.get("cutoff_at_ms"), "known_at_ms": financing.get("known_at_ms")},
             scope=("只读已结算Funding窗口；不覆盖funding.current当前last_rate或funding的TMVF语义窗口。" if semantic_scope else None),
-            basis="仅比较相邻同长度窗口内观察到的实际Funding结算和，不假定完整结算频率；借款缺口不删除已有结算事实。",
+            basis=(
+                "仅比较相邻同长度窗口内观察到的实际Funding结算和，不假定完整结算频率。"
+                if prune else
+                "仅比较相邻同长度窗口内观察到的实际Funding结算和，不假定完整结算频率；借款缺口不删除已有结算事实。"
+            ),
             qualification={"fact_state": financing.get("fact_state"), "missing": deepcopy(financing.get("missing") or [])},
             limitations=deepcopy(financing.get("limitations") or []),
             source_refs=_map_source_refs(financing, records_by_id),
@@ -2777,6 +2856,59 @@ def window_interpretation(evidence: Mapping[str, Any]) -> dict[str, Any]:
             "win_probability": None, "financial_values_changed": False}
 
 
+SPACE_STRUCTURE_EVALUATION_LABEL_CN = "空间结构评估（仅评估，不是开仓门禁）"
+_NULL_MU_FIELD_NAMES = {
+    "mu_ref_btc", "M_ref_btc", "m_ref_btc", "mu_ref_btc_delta", "M_ref_btc_delta",
+    "production_mu_ref_btc", "production_M_ref_btc", "source_shadow_mu_ref_btc",
+    "source_shadow_M_ref_btc", "mu_M_null_reason",
+}
+
+
+def _without_null_mu_fields(value: Any) -> Any:
+    """Drop mu/M_ref keys whose value is null (no producer); keep any real value."""
+    if isinstance(value, Mapping):
+        return {
+            key: _without_null_mu_fields(item)
+            for key, item in value.items()
+            if not (key in _NULL_MU_FIELD_NAMES and (item is None or key == "mu_M_null_reason"))
+        }
+    if isinstance(value, list):
+        return [_without_null_mu_fields(item) for item in value]
+    return deepcopy(value)
+
+
+def _without_gate_fields(value: Any) -> Any:
+    """Drop space-structure gate/veto flags: the structure is evaluation-only."""
+    if isinstance(value, Mapping):
+        return {key: _without_gate_fields(item) for key, item in value.items()
+                if key not in {"gate_action", "veto"}}
+    if isinstance(value, list):
+        return [_without_gate_fields(item) for item in value]
+    return deepcopy(value)
+
+
+def _evaluation_only_space_reads(contextual_market_reads: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Since 2026-10-13 the space structure is evaluation-only: no gate/veto fields."""
+    if not isinstance(contextual_market_reads, Mapping):
+        return contextual_market_reads
+    out = deepcopy(dict(contextual_market_reads))
+    if isinstance(out.get("scope_cn"), str):
+        out["scope_cn"] = out["scope_cn"].replace("空间门", "空间结构")
+    for item in out.get("items") or []:
+        if not isinstance(item, dict) or item.get("id") != "context.option_space":
+            continue
+        item["label_cn"] = SPACE_STRUCTURE_EVALUATION_LABEL_CN
+        if isinstance(item.get("text_cn"), str):
+            item["text_cn"] = item["text_cn"].replace("空间门原读数", "空间结构评估读数（仅评估）", 1)
+        item["evaluation_basis"] = legacy.STRUCTURE_EVALUATION_ONLY_BASIS
+        readings = item.get("readings") if isinstance(item.get("readings"), dict) else {}
+        gamma = readings.get("space_context_gamma")
+        if isinstance(gamma, dict):
+            gamma.pop("gate_action", None)
+            gamma.pop("veto", None)
+    return out
+
+
 def build_review_input(snapshot: Mapping[str, Any], evidence: Mapping[str, Any], *, research_only=False, model=None):
     return _build_review_input(
         snapshot,
@@ -2791,9 +2923,14 @@ def _build_review_input(snapshot: Mapping[str, Any], evidence: Mapping[str, Any]
                         routing_review_input_schema: str = ROUTING_REVIEW_INPUT_SCHEMA):
     _validate_review_evidence(evidence, snapshot)
     current_relation_owned_path = routing_review_input_schema in _RELATION_OWNED_INPUT_SCHEMAS and has_routing(evidence)
+    # 2.7.0 only: leave out inputs without a producer. Every older schema takes
+    # the untouched calls below so its replay stays byte-identical.
+    prune = routing_review_input_schema in _DEAD_INPUT_PRUNED_INPUT_SCHEMAS and has_routing(evidence)
+    prune_mu = prune and legacy.risk_reference_absent(snapshot)
     if current_relation_owned_path:
         try:
-            result = legacy._build_review_facts(snapshot, research_only=research_only)
+            result = (legacy._build_review_facts(snapshot, research_only=research_only, prune_dead_inputs=True)
+                      if prune else legacy._build_review_facts(snapshot, research_only=research_only))
         except AttributeError as exc:
             raise legacy.ReviewValidationError("current review input requires canonical review facts builder") from exc
     else:
@@ -2802,10 +2939,13 @@ def _build_review_input(snapshot: Mapping[str, Any], evidence: Mapping[str, Any]
     contextual_reads = _contextual_market_reads(snapshot, evidence) if include_contextual else None
     if routing_review_input_schema in _CONTEXTUAL_REF_INPUT_SCHEMAS:
         contextual_reads = _with_contextual_item_refs(contextual_reads)
+    if prune:
+        contextual_reads = _evaluation_only_space_reads(contextual_reads)
     routing_projection = _compact_routing_projection(
         evidence,
         include_contextual=include_contextual,
         contextual_market_reads=contextual_reads,
+        drop_dependency_groups=("RISK_REFERENCE",) if prune_mu else (),
     )
     routed = routing_projection is not None
     result["schema"] = routing_review_input_schema if routed else REVIEW_INPUT_SCHEMA
@@ -2834,6 +2974,10 @@ def _build_review_input(snapshot: Mapping[str, Any], evidence: Mapping[str, Any]
         "window_evidence_hash": w["window_evidence_hash"],
         "interpretation": interpretation,
     }
+    if prune:
+        result["wpem"] = _without_gate_fields(result["wpem"])
+    if prune_mu:
+        result["wpem"] = _without_null_mu_fields(result["wpem"])
     if routed:
         result["evidence_routing"] = routing_projection
         result["routing_identity"] = {
@@ -3815,6 +3959,7 @@ def required_selection_payload(review_input):
     fields = (("claims", "claim_ids", "selected_claim_ids"), ("counterclaims", "counter_ids", "selected_counter_ids"),
               ("gaps", "gap_ids", "selected_gap_ids"), ("reassess_conditions", "reassess_condition_ids", "selected_reassess_condition_ids"))
     applicability = "UNABLE_TO_JUDGE"
+    pruned = review_input.get("schema") in _DEAD_INPUT_PRUNED_INPUT_SCHEMAS
     if _supports_evidence_points(review_input):
         catalog_ids = {
             item.get("id")
@@ -3828,11 +3973,15 @@ def required_selection_payload(review_input):
             "gap.compensation.mu_reference_missing",
         }
         facts = review_input.get("source_facts") or {}
+        if pruned:
+            # Structure is evaluation-only; the mu items stay hard boundaries
+            # only when a delivered risk reference put them in the catalog.
+            hard_boundary_ids.discard("counter.structure.opening_blocked")
         material_gap = legacy._material_gap({
             "market": facts.get("quote") or {},
             "fee": (facts.get("fee") or {}).get("fee") or {},
             "risk": (facts.get("risk") or {}).get("risk") or {},
-        })
+        }, include_risk=not (pruned and "risk" not in facts))
         applicability = "CONTESTED" if material_gap or catalog_ids.intersection(hard_boundary_ids) else "EXPLAINED"
     result = {"response_protocol": review_input.get("response_protocol", RESPONSE_PROTOCOL),
               "reviewed_snapshot_id": review_input["snapshot_id"],
@@ -3840,9 +3989,12 @@ def required_selection_payload(review_input):
     for role, key, output in fields:
         ids = list(dict.fromkeys([*requirements.get(key, []), *wpem.get(key, []), *(routing.get(key, []) or [])]))
         existing = {r["id"] for r in catalog[role]}
-        mandatory = {"gaps": ["gap.compensation.mu_reference_missing"],
-                     "counterclaims": ["counter.structure.opening_blocked", "counter.compensation.nonpositive_margin"],
-                     "reassess_conditions": ["reassess.structure_new_snapshot", "reassess.compensation_reprice"]}.get(role, [])
+        mandatory = ({"gaps": ["gap.compensation.mu_reference_missing"],
+                      "counterclaims": ["counter.compensation.nonpositive_margin"],
+                      "reassess_conditions": ["reassess.compensation_reprice"]} if pruned else
+                     {"gaps": ["gap.compensation.mu_reference_missing"],
+                      "counterclaims": ["counter.structure.opening_blocked", "counter.compensation.nonpositive_margin"],
+                      "reassess_conditions": ["reassess.structure_new_snapshot", "reassess.compensation_reprice"]}).get(role, [])
         ids = list(dict.fromkeys([*ids, *(identifier for identifier in mandatory if identifier in existing)]))
         if not ids and catalog[role]: ids.append(catalog[role][0]["id"])
         if not _supports_evidence_points(review_input) and len(ids) > legacy.MAX_SELECTED_IDS:
