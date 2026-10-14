@@ -278,15 +278,19 @@ def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[
         "samples": {state: raw.count(state) for state in sorted(set(raw))},
     }
     words = STATUS_CN[thesis_id]
+    if stale:
+        # no fresh sample: never show the last reading as if it were current
+        entry["now_value_cn"] = f"{entry['now_value_cn']}（最后读数）" if entry["now_value_cn"] not in {None, "—"} else "—"
     if not stale and persist and raw[-1] != now and raw[-1] in SEVERITY and now in SEVERITY:
-        latest = entry["now_value_cn"] if entry["now_value_cn"] not in {None, "—"} else words[raw[-1]]
-        entry["pending_cn"] = f"最新读数已是{latest}，持续未满 30 分钟，暂按“{words[now]}”"
+        entry["pending_cn"] = f"最新读数已是“{words[raw[-1]]}”，持续未满 30 分钟，暂不改判"
     entry["state_now_cn"] = words.get(now) or ("暂无数据" if now == UNVERIFIABLE else STATE_CN[now])
     if t0_adverse and now in SEVERITY:
-        # a known counter at lock: what matters is whether it eased, in absolute terms
-        entry["state_now_cn"] = "已缓解" if entry["eased"] else "仍不利"
+        # a known counter at lock: whether it eased, held or got worse
+        entry["worsened"] = SEVERITY[now] > SEVERITY[t0_state]
+        entry["state_now_cn"] = "已缓解" if entry["eased"] else "进一步恶化" if entry["worsened"] else "仍不利"
     entry["state_worst_cn"] = words.get(worst) or "暂无数据"
-    entry["tone"] = ("ok" if entry["eased"] else "warn") if t0_adverse and now in SEVERITY else TONE.get(now, "muted")
+    entry["tone"] = (("ok" if entry["eased"] else "bad" if entry.get("worsened") else "warn")
+                     if t0_adverse and now in SEVERITY else TONE.get(now, "muted"))
     entry["claim_cn"] = (f"锁定时已不利：{claim}" if t0_adverse else claim)
     # What happened while held: the extreme reading and the time spent in each worse state.
     spent = _time_in(rows, effective)
@@ -458,7 +462,8 @@ def project(ledger: Mapping[str, Any]) -> dict[str, Any]:
     held = [t["label_cn"] for t in graded if t["state_now"] == HOLDS and not t["t0_adverse"]]
     moved = [f"{t['label_cn']}{t['state_now_cn']}" for t in graded
              if t["state_now"] != HOLDS and not t["t0_adverse"]]
-    adverse = [f"{t['label_cn']}（{'已缓解' if t['eased'] else '未缓解'}）" for t in graded if t["t0_adverse"]]
+    adverse = [f"{t['label_cn']}（{'已缓解' if t['eased'] else '进一步恶化' if t.get('worsened') else '未缓解'}）"
+               for t in graded if t["t0_adverse"]]
     blind = [t["label_cn"] for t in theses if t["state_now"] == UNVERIFIABLE]
     parts = []
     if held:

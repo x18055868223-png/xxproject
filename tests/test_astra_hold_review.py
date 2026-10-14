@@ -33,8 +33,9 @@ def setup(tmp_path, answer=None, fail=None):
     snapshot = view["candidates"][0]["snapshot"]
     episode = wb.lock_candidate(snapshot["candidate_id"], snapshot["snapshot_id"], "lock-once",
                                 authorization="Bearer secret")["episode"]
-    clock[0] += 120_000
-    wb.refresh(now_ms=clock[0], record_daily=False)
+    for _ in range(4):  # 20 minutes of held history: a review needs at least 15
+        clock[0] += 5 * 60_000
+        wb.refresh(now_ms=clock[0], record_daily=False)
     return wb, clock, episode["episode_id"], calls
 
 
@@ -76,7 +77,8 @@ def test_invalid_answers_are_kept_out(tmp_path, answer, reason):
     assert out["status"] == "INVALID_RESPONSE" and out["reason"] == reason and "answer" not in out
     state = wb.hold_review_state(episode_id)
     assert state["last"] is None and state["last_failed"]["reason"] == reason
-    assert state["enabled"] is True  # a failed answer does not start the cooldown
+    # a failed paid call starts only a short cooldown (no rapid re-clicks)
+    assert state["enabled"] is False and 0 < state["cooldown_remaining_ms"] <= 60_000
 
 
 def test_call_failure_and_guards(tmp_path):
@@ -155,3 +157,51 @@ def test_lock_list_carries_outcome_from_the_series_tail(tmp_path):
     assert tail is not None and "float_pnl_btc" in tail
     episode = next(e for e in wb.locked_candidate_list()["episodes"] if e["episode_id"] == episode_id)
     assert episode["outcome"]["basis"] == "floating_now"
+
+
+def test_review_waits_for_held_history(tmp_path):
+    calls = []
+    clock = [T]
+    wb, snapshots = make_workbench(tmp_path, clock=lambda: clock[0],
+                                   transport=lambda *a, **k: calls.append(a) or reply(GOOD))
+    write_fmz(snapshots, native_gate())
+    snapshot = wb.refresh(now_ms=T, record_daily=False)["candidates"][0]["snapshot"]
+    episode_id = wb.lock_candidate(snapshot["candidate_id"], snapshot["snapshot_id"], "lock-once",
+                                   authorization="Bearer secret")["episode"]["episode_id"]
+    clock[0] += 120_000
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    state = wb.locked_candidate_series(episode_id)["hold_review"]
+    assert "hold_review_too_early" in state["reasons"] and state["history_needed_ms"] > 0
+    with pytest.raises(workbench.WorkbenchError) as exc:
+        wb.hold_review_locked(episode_id, "hold-key-0001", authorization="Bearer secret")
+    assert exc.value.code == "hold_review_too_early" and calls == []
+
+
+def test_malformed_answer_is_invalid_not_a_crash(tmp_path):
+    bad = {**GOOD, "points": [{"thesis_id": ["L1"], "text": "列表 id。"}]}
+    wb, _, episode_id, _ = setup(tmp_path, answer=bad)
+    out = wb.hold_review_locked(episode_id, "hold-key-0001", authorization="Bearer secret")
+    assert out["status"] == "INVALID_RESPONSE" and out["reason"] == "point_thesis_id"
+    assert wb.hold_review_state(episode_id)["reasons"] == ["hold_review_cooldown"]  # not stuck in flight
+
+
+def test_input_failure_clears_the_inflight_flag(tmp_path, monkeypatch):
+    wb, clock, episode_id, calls = setup(tmp_path)
+    monkeypatch.setattr(hold, "build_input", lambda *a, **k: (_ for _ in ()).throw(KeyError("x")))
+    out = wb.hold_review_locked(episode_id, "hold-key-0001", authorization="Bearer secret")
+    assert out["status"] == "ERROR" and out["llm_call_count"] == 0 and calls == []
+    assert "hold_review_inflight" not in wb.hold_review_state(episode_id)["reasons"]
+    # replay of a key returns the stored result even after the lock stopped
+    wb.stop_locked_candidate(episode_id, authorization="Bearer secret")
+    assert wb.hold_review_locked(episode_id, "hold-key-0001", authorization="Bearer secret")["status"] == "ERROR"
+
+
+def test_validator_normalizes_numbers_and_words():
+    review_input = {"依据账本": {"逐条": [{"id": "L1", "现值": "+1.23%"}]}, "合约": {"卖出腿": 85000.0}}
+    ok = hold.validate({"summary": "短腿 85,000，缓冲 1.23%，保证金无变化。", "points": [], "watch": []}, review_input)
+    assert ok["summary"]
+    with pytest.raises(hold.HoldReviewInvalid):  # 8500 is not 85000
+        hold.validate({"summary": "短腿 8500。", "points": [], "watch": []}, review_input)
+    for word in ("建议离场。", "可考虑对冲。", "可能性不大。"):
+        with pytest.raises(hold.HoldReviewInvalid):
+            hold.validate({"summary": word, "points": [], "watch": []}, review_input)

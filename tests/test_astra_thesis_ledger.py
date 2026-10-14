@@ -173,7 +173,7 @@ def test_pending_reading_is_said_not_hidden():
     rs[-1]["metrics"] = {**rs[-1]["metrics"], "gamma_regime": "NEGATIVE_GAMMA_AMPLIFYING"}
     l4 = thesis(build(rs), "L4")
     assert l4["state_now"] == "HOLDS"
-    assert l4["pending_cn"] == "最新读数已是负 Gamma（放大），持续未满 30 分钟，暂按“未变差”"
+    assert l4["pending_cn"] == "最新读数已是“转为负 Gamma”，持续未满 30 分钟，暂不改判"
 
 
 def test_headline_reads_as_one_sentence():
@@ -182,3 +182,16 @@ def test_headline_reads_as_one_sentence():
         r["metrics"]["anchor_score"] = 40.0
     head = build(rs)["projection_cn"]["headline_cn"]
     assert "变化：锚定松动" in head and "锚定锚定" not in head
+
+
+def test_stale_value_is_marked_and_worsened_adverse_lane_is_said():
+    rs = rows([1.0, 0.9])
+    led = build(rs, now_ms=rs[-1]["recorded_at_ms"] + 30 * MIN)
+    assert thesis(led, "L1")["now_value_cn"] == "+0.90%（最后读数）"
+    base = rows([1.0] * 50, gamma_regime="TRANSITION")
+    base[0]["metrics"]["gamma_regime"] = "POSITIVE_GAMMA_PINNING"
+    flow = rows([1.0] * 50, flow_direction="neutral_to_bearish")
+    for r in flow[10:]:
+        r["metrics"].update(flow_direction="bearish", flow_fast_4h="bearish", flow_slow_12h="bearish")
+    l6 = thesis(build(flow), "L6")
+    assert l6["t0_adverse"] and l6["state_now_cn"] == "进一步恶化" and l6["tone"] == "bad"
