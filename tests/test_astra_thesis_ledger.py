@@ -172,7 +172,8 @@ def test_pending_reading_is_said_not_hidden():
     rs = rows([1.0] * 40)
     rs[-1]["metrics"] = {**rs[-1]["metrics"], "gamma_regime": "NEGATIVE_GAMMA_AMPLIFYING"}
     l4 = thesis(build(rs), "L4")
-    assert l4["state_now"] == "HOLDS" and "转为负 Gamma" in l4["pending_cn"]
+    assert l4["state_now"] == "HOLDS"
+    assert l4["pending_cn"] == "最新读数已是负 Gamma（放大），持续未满 30 分钟，暂按“未变差”"
 
 
 def test_headline_reads_as_one_sentence():

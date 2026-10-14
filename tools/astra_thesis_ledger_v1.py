@@ -279,7 +279,8 @@ def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[
     }
     words = STATUS_CN[thesis_id]
     if not stale and persist and raw[-1] != now and raw[-1] in SEVERITY and now in SEVERITY:
-        entry["pending_cn"] = f"最新读数为“{words[raw[-1]]}”，未持续 30 分钟，暂不改判"
+        latest = entry["now_value_cn"] if entry["now_value_cn"] not in {None, "—"} else words[raw[-1]]
+        entry["pending_cn"] = f"最新读数已是{latest}，持续未满 30 分钟，暂按“{words[now]}”"
     entry["state_now_cn"] = words.get(now) or ("暂无数据" if now == UNVERIFIABLE else STATE_CN[now])
     if t0_adverse and now in SEVERITY:
         # a known counter at lock: what matters is whether it eased, in absolute terms
