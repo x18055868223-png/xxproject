@@ -74,3 +74,94 @@ def test_sd_notify_talks_to_the_systemd_socket_and_is_silent_without_it(tmp_path
         assert server.recv(64) == b"WATCHDOG=1"
     finally:
         server.close()
+
+
+def test_page_reads_share_one_body_until_the_view_changes(tmp_path):
+    wb, _, clock, _ = setup(tmp_path)
+    calls = []
+    original = wb.cached_view
+    wb.cached_view = lambda **kw: calls.append(kw) or original(**kw)
+    first = wb.view_body("page")
+    second = wb.view_body("page")
+    assert first[0] is second[0] and len(calls) == 1
+    json.loads(first[0])                                  # a complete JSON document
+    clock[0] += module.VIEW_BODY_TTL_MS + 1
+    wb.view_body("page")
+    assert len(calls) == 2                                # expired
+    wb.invalidate_view_body()
+    wb.view_body("page")
+    assert len(calls) == 3                                # refresh or action moves the version
+
+
+def test_memory_guard_levels_shed_load_and_record_changes(tmp_path):
+    wb, _, clock, _ = setup(tmp_path)
+    events = []
+    wb.chain_audit = type("A", (), {"event": lambda self, kind, now, detail, view=None: events.append(kind)})()
+    rss = [500 * 1_048_576]
+    wb.rss_bytes = lambda: rss[0]
+    assert wb.memory_guard()["level"] == "ok" and events == []
+    body, _ = wb.view_body("page")
+    rss[0] = 3000 * 1_048_576
+    assert wb.memory_guard()["level"] == "hard" and events == ["memory_hard"]
+    clock[0] += 60_000
+    assert wb.view_body("page")[0] is body                # stale body rather than a rebuild
+    wb.invalidate_view_body()
+    try:
+        wb.view_body("page")
+        raise AssertionError("expected 503")
+    except module.WorkbenchError as exc:
+        assert exc.status_code == 503
+    rss[0] = 400 * 1_048_576
+    clock[0] += module.MEMORY_EVENT_INTERVAL_MS
+    assert wb.memory_guard()["level"] == "ok" and events == ["memory_hard", "memory_ok"]
+    view = wb.cached_view()
+    assert view["runtime"]["memory"]["level"] == "ok" and view["runtime"]["threads"] >= 1
+
+
+def test_busy_server_answers_503_instead_of_queueing_and_ignores_hangups():
+    import http.client
+    import threading
+    from http.server import BaseHTTPRequestHandler
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    class Slow(BaseHTTPRequestHandler):
+        def do_GET(self):
+            entered.set()
+            release.wait(5)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    server = module.WorkbenchHTTPServer(("127.0.0.1", 0), Slow, max_active=1)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        first = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        first.request("GET", "/")
+        assert entered.wait(5)
+        second = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        second.request("GET", "/")
+        busy = second.getresponse()
+        assert busy.status == 503 and json.loads(busy.read())["code"] == "server_busy"
+        release.set()
+        assert first.getresponse().status == 200
+        try:
+            raise BrokenPipeError()
+        except BrokenPipeError:
+            server.handle_error(None, ("127.0.0.1", 1))  # silent
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_chain_audit_periodic_record_carries_runtime_memory():
+    from tools import astra_chain_audit_v1 as chain
+    body = chain.snapshot_record({"runtime": {"memory": {"level": "ok", "rss_mb": 512.0}, "threads": 7}},
+                                 kind="periodic", now_ms=T)
+    assert body["runtime"]["memory"]["rss_mb"] == 512.0

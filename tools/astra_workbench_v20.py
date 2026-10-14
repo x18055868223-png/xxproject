@@ -13,6 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from email.message import EmailMessage
 import argparse
+import gc
 import gzip
 import hashlib
 import hmac
@@ -100,6 +101,12 @@ DAILY_SNAPSHOT_SCHEMA = "astra_workbench_daily_snapshot@2.0.0"
 SPACE_ELIGIBLE = "STRUCTURE_ELIGIBLE"
 SPACE_BLOCKED = "STRUCTURE_BLOCKED"
 REVIEW_COOLDOWN_MS = 600_000
+# Load and memory control (2026-10-14, after an 11 h hang under a 1G cgroup limit).
+VIEW_BODY_TTL_MS = 5_000          # page reads within this share one serialized body
+VIEW_BODY_WAIT_S = 15.0           # a reader waits this long for the body being built, then 503
+MAX_ACTIVE_REQUESTS = 24          # concurrent HTTP handlers; more get an immediate 503
+REQUEST_SOCKET_TIMEOUT_S = 30     # a stalled client cannot pin a handler thread
+MEMORY_EVENT_INTERVAL_MS = 900_000
 EMAIL_COOLDOWN_MS = 14_400_000
 DEFAULT_DAILY_LIMIT = 15
 DEFAULT_HTTP_TIMEOUT = 180
@@ -1584,6 +1591,10 @@ class WorkbenchConfig:
     chain_audit_retention_days: int = 30
     # BTC cross-asset reference (background card): Yahoo hourly bars after each US close.
     cross_asset_enabled: bool = False
+    # Memory guard (RSS): above soft, drop caches and skip optional work; above hard, serve
+    # only cached page bodies and refuse heavy reads with 503 until back under soft.
+    memory_soft_mb: int = 1536
+    memory_hard_mb: int = 2560
 
     @property
     def state_path(self) -> Path:
@@ -1766,6 +1777,14 @@ class AstraWorkbench:
         self._last_compaction_ms = 0
         self._map_state_lock = threading.RLock()
         self._map_state_cache: dict[str, Any] | None = None
+        # One serialized page body per view kind, shared by readers for VIEW_BODY_TTL_MS and
+        # rebuilt by one reader at a time; _view_version moves on every refresh and action.
+        self._body_lock = threading.Lock()
+        self._body_cache: dict[str, tuple[int, int, bytes, bytes | None]] = {}
+        self._view_version = 0
+        self.rss_bytes: Callable[[], int | None] = _process_rss_bytes
+        self._memory: dict[str, Any] = {"level": "ok", "rss_mb": None, "peak_mb": None}
+        self._memory_event_ms = 0
         # Cross-asset reference: fetched in its own thread after each US close, never on a page read.
         self.cross_asset_get_json = cross_asset.default_get_json
         self._cross_asset_thread: threading.Thread | None = None
@@ -2623,6 +2642,7 @@ class AstraWorkbench:
                 # endpoint; do not retain repeated MAP bodies in the read cache.
                 cached = {**view, "daily_snapshots": reading.daily_summaries(view.get("daily_snapshots"))}
                 self._current_view = deepcopy(cached)
+                self.invalidate_view_body()
                 self._last_refresh_error = None
             self._store_btc_map_state(btc_projection.get("btc_map"))
             result = self._apply_current_review_availability(view, finished_at_ms)
@@ -3486,6 +3506,69 @@ class AstraWorkbench:
             except Exception:
                 item["exogenous_events"] = None
 
+    def invalidate_view_body(self) -> None:
+        with self._body_lock:
+            self._view_version += 1
+            self._body_cache.clear()
+
+    def view_body(self, view_kind: str) -> tuple[bytes, bytes | None]:
+        """Serialized GET /api/workbench body (page or reading), built once per VIEW_BODY_TTL_MS
+        and shared; under memory shedding an older body is served rather than building one."""
+        if not self._body_lock.acquire(timeout=VIEW_BODY_WAIT_S):
+            raise WorkbenchError(503, "server_busy", "工作台繁忙，稍后自动重试")
+        try:
+            now = self.clock_ms()
+            hit = self._body_cache.get(view_kind)
+            fresh = hit is not None and hit[0] == self._view_version and 0 <= now - hit[1] < VIEW_BODY_TTL_MS
+            if fresh or (hit is not None and self._memory.get("level") == "hard"):
+                return hit[2], hit[3]
+            if self._memory.get("level") == "hard":
+                raise WorkbenchError(503, "memory_pressure", "工作台内存紧张，稍后自动重试")
+            result = self.cached_view(reading_only=True)
+            payload = reading.workbench_page(result) if view_kind == "page" else result
+            body = (_canonical(dict(payload)) + "\n").encode("utf-8")
+            packed = gzip.compress(body, compresslevel=1, mtime=0) if len(body) > 65536 else None
+            self._body_cache[view_kind] = (self._view_version, now, body, packed)
+            return body, packed
+        finally:
+            self._body_lock.release()
+
+    def memory_guard(self, now_ms: int | None = None) -> dict[str, Any]:
+        """Called after every refresh pass. Soft: drop caches, collect, skip optional work.
+        Hard: page reads get the last body (or 503), heavy reads 503. Events are rate-limited."""
+        now = self.clock_ms() if now_ms is None else now_ms
+        rss = self.rss_bytes()
+        if rss is None:
+            return self._memory
+        mb = rss / 1_048_576
+        level = "hard" if mb >= self.config.memory_hard_mb else "soft" if mb >= self.config.memory_soft_mb else "ok"
+        previous = self._memory.get("level")
+        if level != "ok":
+            with self._wpem_lock:
+                self._locked_detail_cache.clear()
+                for key in list(self._wpem_packages)[:-2]:  # keep the current pair of sides
+                    del self._wpem_packages[key]
+            with self._series_lock:
+                self._series_baselines.clear()
+            gc.collect()
+            after = self.rss_bytes()
+            mb_after = after / 1_048_576 if after is not None else mb
+            level = "hard" if mb_after >= self.config.memory_hard_mb else "soft" if mb_after >= self.config.memory_soft_mb else "ok"
+        peak = max(mb, self._memory.get("peak_mb") or 0)
+        self._memory = {"level": level, "rss_mb": round(mb, 1), "peak_mb": round(peak, 1),
+                        "soft_mb": self.config.memory_soft_mb, "hard_mb": self.config.memory_hard_mb,
+                        "checked_at_ms": now}
+        # level changes are recorded; flapping is limited to one record per interval (hard always)
+        if level != previous and (level == "hard" or now - self._memory_event_ms >= MEMORY_EVENT_INTERVAL_MS):
+            self._memory_event_ms = now
+            audit = getattr(self, "chain_audit", None)
+            if audit is not None:
+                try:
+                    audit.event("memory_" + level, now, dict(self._memory))
+                except Exception:
+                    pass
+        return self._memory
+
     def cached_view(self, *, reading_only: bool = False) -> dict[str, Any]:
         """Read the collector's cache. Page reads never cause external requests."""
         now = self.clock_ms()
@@ -3513,7 +3596,8 @@ class AstraWorkbench:
         view.update({"served_at_ms": now, "market_context": fact, "space_gate": gate,
                      "locked_candidates": self.locked_candidate_list(),
                      "manual_review_state": self.manual_review_state(now),
-                     "cross_asset": self.cross_asset_view(view.get("candidates") or [], now)})
+                     "cross_asset": self.cross_asset_view(view.get("candidates") or [], now),
+                     "runtime": {"memory": dict(self._memory), "threads": threading.active_count()}})
         self._attach_exogenous_events(view, now)
         usage_engines: dict[Any, Any] = {}
         view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now, engines=usage_engines)
@@ -4005,6 +4089,7 @@ class AstraWorkbench:
                     if not locked_episode_id:
                         with self._view_lock:
                             self._current_view = deepcopy(cached)
+                            self.invalidate_view_body()
                     self._store_btc_map_state((btc_projection or {}).get("btc_map"))
         if item is None:
             result = {"schema": SCHEMA, "status": "rejected", **request_binding,
@@ -4320,6 +4405,10 @@ class AstraWorkbench:
                     with self._view_lock:
                         self._last_refresh_error = {"failed_at_ms": self.clock_ms(),
                                                     "error_type": type(exc).__name__}
+                try:
+                    self.memory_guard()
+                except Exception:
+                    pass
                 # liveness, not success: a failing refresh still loops; a hung one stops pinging
                 _sd_notify("WATCHDOG=1")
                 if self._background_stop.wait(max(1.0, float(self.config.refresh_interval_s))):
@@ -4364,6 +4453,57 @@ class AstraWorkbench:
             if thread:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
+
+
+def _process_rss_bytes() -> int | None:
+    """Resident set size of this process (Linux /proc); None elsewhere."""
+    try:
+        with open("/proc/self/statm", "rb") as handle:
+            pages = int(handle.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+class WorkbenchHTTPServer(ThreadingHTTPServer):
+    """At most MAX_ACTIVE_REQUESTS handlers at once; the rest get an immediate 503 instead of
+    queueing threads behind a stuck one. Clients that hang up are not logged as errors."""
+
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, *args: Any, max_active: int = MAX_ACTIVE_REQUESTS, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._active = threading.BoundedSemaphore(max_active)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._active.acquire(blocking=False):
+            body = json.dumps({"code": "server_busy", "message": "工作台繁忙，稍后自动重试"}).encode("ascii") + b"\n"
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\n"
+                                b"Retry-After: 5\r\nCache-Control: no-store\r\nConnection: close\r\n"
+                                b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._active.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._active.release()
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        import sys  # noqa: PLC0415
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def _sd_notify(message: str) -> bool:
@@ -4411,6 +4551,7 @@ def make_handler(workbench: AstraWorkbench):
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "AstraWorkbenchV20/1.0"
+        timeout = REQUEST_SOCKET_TIMEOUT_S
 
         def _json(self, status: int, payload: Mapping[str, Any], *, headers: Mapping[str, str] | None = None) -> None:
             body = (_canonical(dict(payload)) + "\n").encode("utf-8")
@@ -4474,6 +4615,10 @@ def make_handler(workbench: AstraWorkbench):
             heavy = (parsed.path.endswith("/evidence")
                      or parsed.path.startswith(("/api/workbench/candidate-evidence/", "/api/workbench/wpem-proof/"))
                      or parse_qs(parsed.query).get("view") == ["full"])
+            if heavy and workbench._memory.get("level") == "hard":
+                self._json(503, {"schema": SCHEMA, "code": "memory_pressure", "message": "工作台内存紧张，稍后自动重试"},
+                           headers={"Retry-After": "30"})
+                return
             if heavy and not proof_slots.acquire(blocking=False):
                 self._json(429, {"schema": SCHEMA, "code": "evidence_export_busy",
                                  "message": "An evidence read is in progress; retry explicitly."})
@@ -4564,8 +4709,16 @@ def make_handler(workbench: AstraWorkbench):
             if parsed.path == "/api/workbench":
                 try:
                     view_kind = (query.get("view") or ["reading"])[0]
-                    result = workbench.cached_view(reading_only=view_kind != "full")
-                    self._json(200, reading.workbench_page(result) if view_kind == "page" else result)
+                    if view_kind == "full":
+                        self._json(200, workbench.cached_view(reading_only=False))
+                    else:
+                        body, packed = workbench.view_body("page" if view_kind == "page" else "reading")
+                        if packed is not None and self._accepts_gzip():
+                            self._send_json_body(200, packed, content_encoding="gzip")
+                        else:
+                            self._send_json_body(200, body)
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload(), headers={"Retry-After": "5"})
                 except Exception as exc:
                     self._json(500, {"schema": SCHEMA, "status": "ERROR",
                                      "code": "refresh_failed", "message": str(exc)[:240]})
@@ -4640,6 +4793,7 @@ def make_handler(workbench: AstraWorkbench):
                         locked_episode_id=body.get("locked_episode_id"),
                         snapshot_id=body.get("snapshot_id"),
                     )
+                workbench.invalidate_view_body()
                 self._json(200, result)
                 audit_kind = "lock" if parsed.path == lock_path else "lock_stop" if stop_match else "review"
                 workbench.record_action(audit_kind, result, request={**body, "episode_id": stop_match.group(1) if stop_match else None})
@@ -4750,6 +4904,8 @@ def config_from_env() -> WorkbenchConfig:
         chain_audit_interval_ms=int(os.environ.get("ASTRA_CHAIN_AUDIT_INTERVAL_MS") or "900000"),
         chain_audit_retention_days=int(os.environ.get("ASTRA_CHAIN_AUDIT_RETENTION_DAYS") or "30"),
         cross_asset_enabled=os.environ.get("ASTRA_CROSS_ASSET_ENABLED", "1") == "1",
+        memory_soft_mb=int(os.environ.get("ASTRA_WORKBENCH_MEMORY_SOFT_MB") or "1536"),
+        memory_hard_mb=int(os.environ.get("ASTRA_WORKBENCH_MEMORY_HARD_MB") or "2560"),
         map_sources_enabled=os.environ.get("ASTRA_MAP_SOURCES_ENABLED") == "1",
         map_source_mode=os.environ.get("ASTRA_MAP_SOURCE_MODE") or map_projection.SOURCE_MODE_COLLECTOR,
         map_producer_current_path=Path(producer_path) if producer_path else None,
@@ -4775,7 +4931,7 @@ def config_from_env() -> WorkbenchConfig:
 def serve(config: WorkbenchConfig, *, host: str = "127.0.0.1", port: int = 8890) -> None:
     workbench = AstraWorkbench(config, email_sender=_smtp_sender_from_env())
     workbench.start_background()
-    server = ThreadingHTTPServer((host, int(port)), make_handler(workbench))
+    server = WorkbenchHTTPServer((host, int(port)), make_handler(workbench))
     _sd_notify("READY=1")
     try:
         server.serve_forever()
