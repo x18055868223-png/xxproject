@@ -3828,6 +3828,34 @@ class AstraWorkbench:
             except Exception:
                 pass
 
+    def hold_review_overview(self, locked: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+        """The last valid hold review of each lock, for the reasoning audit (newest first).
+        Every one was made while the contract was locked; the episode says which contract."""
+        try:
+            slots = (self._read_state_cached().get("hold_review") or {})
+            episodes = {e.get("episode_id"): e for e in (locked or {}).get("episodes") or [] if isinstance(e, Mapping)}
+        except Exception:
+            return []
+        out = []
+        for episode_id, slot in slots.items():
+            last = (slot or {}).get("last") if isinstance(slot, Mapping) else None
+            episode = episodes.get(episode_id)
+            if not isinstance(last, Mapping) or last.get("status") != "OK" or episode is None:
+                continue
+            contract = episode.get("contract") or {}
+            out.append({
+                "episode_id": episode_id, "candidate_id": episode.get("candidate_id"),
+                "side": contract.get("side"), "short_instrument": contract.get("short_instrument"),
+                "short_strike_usd": contract.get("short_strike_usd"), "long_strike_usd": contract.get("long_strike_usd"),
+                "expiry_ms": contract.get("expiry_ms"), "episode_status": episode.get("status"),
+                "locked_at_ms": episode.get("created_at_ms"), "finished_at_ms": last.get("finished_at_ms"),
+                "ledger_at_ms": last.get("ledger_at_ms"), "answer": last.get("answer"),
+                "model": last.get("model"), "prompt_version": last.get("prompt_version"),
+                "input_hash": last.get("input_hash"), "lock_state": "locked",
+            })
+        out.sort(key=lambda r: -(r.get("finished_at_ms") or 0))
+        return out[:8]
+
     def _complete_budget(self, reservation: Mapping[str, Any] | None, status: str, usage: Any = None) -> None:
         try:
             self.budget.complete((reservation or {}).get("reservation_id"), status, usage)
@@ -4318,6 +4346,7 @@ class AstraWorkbench:
                     "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now),
                     "expiry_gamma": self.expiry_gamma_view([], now), "decision_path": self.decision_path_overview()}
             self._attach_exogenous_events(warm, now)
+            warm["hold_reviews"] = self.hold_review_overview(warm["locked_candidates"])
             result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
         # Recheck facts and current use, without overwriting frozen candidate evidence.
@@ -4331,6 +4360,7 @@ class AstraWorkbench:
                      "decision_path": self.decision_path_overview(),
                      "runtime": {"memory": dict(self._memory), "threads": threading.active_count()}})
         self._attach_exogenous_events(view, now)
+        view["hold_reviews"] = self.hold_review_overview(view["locked_candidates"])
         usage_engines: dict[Any, Any] = {}
         view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now, engines=usage_engines)
         # Global display is a current cache projection. Candidate MAPs stay frozen.

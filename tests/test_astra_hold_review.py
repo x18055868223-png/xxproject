@@ -212,3 +212,13 @@ def test_validator_normalizes_numbers_and_words():
     for word in ("建议离场。", "可考虑对冲。", "可能性不大。"):
         with pytest.raises(hold.HoldReviewInvalid):
             hold.validate({"summary": word, "points": [], "watch": []}, review_input)
+
+
+def test_hold_reviews_reach_the_reasoning_audit_view(tmp_path):
+    wb, _, episode_id, _ = setup(tmp_path)
+    assert wb.cached_view(reading_only=True)["hold_reviews"] == []
+    wb.hold_review_locked(episode_id, "hold-key-0001", authorization="Bearer secret")
+    rows = wb.cached_view(reading_only=True)["hold_reviews"]
+    assert len(rows) == 1 and rows[0]["episode_id"] == episode_id and rows[0]["lock_state"] == "locked"
+    assert rows[0]["answer"]["points"][0]["thesis_id"] == "L1" and rows[0]["side"] in {"put", "call"}
+    assert rows[0]["finished_at_ms"] >= rows[0]["locked_at_ms"]
