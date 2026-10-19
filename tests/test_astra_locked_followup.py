@@ -176,7 +176,7 @@ def test_partial_quote_retains_other_facts_without_price_substitution(tmp_path):
     assert detail["episode"]["point_count"] == 2
     assert latest["snapshot"]["market"]["reference_price_usd"] == 100200
     assert latest["snapshot"]["market"]["quote"]["credit_btc"] is None
-    assert latest["capture_gaps"] == ["short_book_unavailable"]
+    assert latest["capture_gaps"] == ["short_book_unavailable:ValueError"]
     payload = detail["latest"]["packet"]["raw_payload"]
     assert payload["market"]["short_book"] == {}
     assert payload["market"]["long_book"]["instrument_name"] == snapshot["contract"]["long_instrument"]
@@ -400,3 +400,17 @@ def test_settlement_waits_for_publication_then_gives_up(tmp_path):
     assert len(calls) == 2 and episode["episode_id"] not in wb.locked_settlements()
     wb._settle_expired_locks(EXPIRY + 49 * 3_600_000)
     assert wb.locked_settlements()[episode["episode_id"]]["status"] == "delivery_price_unavailable"
+
+
+def test_tracking_gap_keeps_why_a_whole_capture_failed(tmp_path):
+    wb, _, clock, snapshot = setup(tmp_path)
+    episode = lock(wb, snapshot)["episode"]
+    def capture(short, long, qty, *, now_ms, allow_partial=False):
+        raise ConnectionResetError("deribit reset")
+    wb.quote_capture = capture
+    wb.discovery_capture = lambda **kwargs: {"candidates": {}}
+    clock[0] += 60_000
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    detail = wb.locked_candidates.detail(episode["episode_id"])
+    reasons = [row["gap"]["reason"] for row in detail["observations"] if row.get("gap")]
+    assert "locked_quote_unavailable:ConnectionResetError" in reasons

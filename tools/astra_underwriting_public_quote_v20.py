@@ -1,7 +1,7 @@
 """Opt-in, read-only Deribit capture for one explicitly selected BTC vertical.
 
-Only four public GET requests are possible: one instrument metadata and one
-order book request for each supplied leg. No private endpoint, chain scan,
+Only public GET requests are possible: one instrument metadata and one order
+book request for each supplied leg (a failed book read is retried once). No private endpoint, chain scan,
 account access, order placement, or automatic timer is present.
 """
 
@@ -23,6 +23,14 @@ else:
 
 BASE_URL = "https://www.deribit.com/api/v2"
 PUBLIC_PATHS = frozenset({"public/get_instrument", "public/get_order_book", "public/get_delivery_prices"})
+BOOK_ATTEMPTS = 2
+
+
+def failure_code(exc: BaseException) -> str:
+    """A short machine code for why a read failed: the error's own code when it carries
+    one (data engine, workbench transport), else the exception type."""
+    code = getattr(exc, "code", None)
+    return str(code) if isinstance(code, str) and code else type(exc).__name__
 
 
 def public_transport(path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -82,19 +90,27 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
             raise ValueError(f"{leg} instrument metadata is missing or mismatched")
         metadata[leg] = meta
     for leg, name in (("short", short_instrument), ("long", long_instrument)):
-        try:
-            book = fetch("public/get_order_book", {"instrument_name": name, "depth": 5})
-            if not isinstance(book, dict) or book.get("instrument_name") != name:
-                raise ValueError(f"{leg} order book is missing or mismatched")
-            receipts[leg] = int(now())
-            books[leg] = book
-        except Exception:
+        failure: Exception | None = None
+        # One immediate retry: a single book read occasionally fails (2026-10-15/16: five
+        # one-minute holes in lock tracking, each fine on the next read).
+        for _ in range(BOOK_ATTEMPTS):
+            try:
+                book = fetch("public/get_order_book", {"instrument_name": name, "depth": 5})
+                if not isinstance(book, dict) or book.get("instrument_name") != name:
+                    raise ValueError(f"{leg} order book is missing or mismatched")
+                receipts[leg] = int(now())
+                books[leg] = book
+                failure = None
+                break
+            except Exception as exc:
+                failure = exc
+        if failure is not None:
             if not allow_partial:
-                raise
+                raise failure
             # No substitute book or zero price. A surviving leg can still carry
             # the same named index; the missing book keeps all quote math closed.
             books[leg] = {}
-            capture_gaps.append(f"{leg}_book_unavailable")
+            capture_gaps.append(f"{leg}_book_unavailable:{failure_code(failure)}")
     valuation_ms = int(now())
     reference_leg = "long" if allow_partial and not books["short"].get("index_price") else "short"
     reference_price = books[reference_leg].get("index_price")

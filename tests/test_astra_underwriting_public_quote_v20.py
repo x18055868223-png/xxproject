@@ -87,3 +87,58 @@ def test_public_daily_fee_is_a_capped_taker_assumption_not_an_account_fee():
     non_daily = q.capture_candidate(names["short"], names["long"], 0.1,
                                     transport=fetch, clock_ms=lambda: T)
     assert non_daily["fee"]["basis"] == "unknown"
+
+
+def _retry_fixture():
+    fixture = sample(risk=False)
+    names = {"short": fixture["candidate"]["short_instrument"],
+             "long": fixture["candidate"]["long_instrument"]}
+    return fixture, names
+
+
+def test_a_failed_book_read_is_retried_once():
+    fixture, names = _retry_fixture()
+    failures = {"long": 1}
+    calls = []
+
+    def fetch(path, params):
+        leg = "short" if params["instrument_name"] == names["short"] else "long"
+        calls.append((path, leg))
+        if path == "public/get_instrument":
+            return copy.deepcopy(fixture["metadata"][leg])
+        if failures.get(leg):
+            failures[leg] -= 1
+            raise TimeoutError("read timed out")
+        book = copy.deepcopy(fixture["market"][leg + "_book"])
+        book["index_price"] = 100000
+        return book
+
+    payload = q.capture_candidate(names["short"], names["long"], 0.1, transport=fetch,
+                                  clock_ms=lambda: T, allow_partial=True)
+    assert "capture_gaps" not in payload or payload["capture_gaps"] == []
+    assert calls.count(("public/get_order_book", "long")) == 2
+    assert payload["market"]["long_book"]["instrument_name"] == names["long"]
+
+
+def test_a_book_that_fails_twice_is_a_gap_with_its_cause():
+    fixture, names = _retry_fixture()
+
+    class Rejected(ValueError):
+        code = "fetch_stale"
+
+    def fetch(path, params):
+        leg = "short" if params["instrument_name"] == names["short"] else "long"
+        if path == "public/get_instrument":
+            return copy.deepcopy(fixture["metadata"][leg])
+        if leg == "long":
+            raise Rejected("book too old")
+        book = copy.deepcopy(fixture["market"][leg + "_book"])
+        book["index_price"] = 100000
+        return book
+
+    payload = q.capture_candidate(names["short"], names["long"], 0.1, transport=fetch,
+                                  clock_ms=lambda: T, allow_partial=True)
+    assert payload["capture_gaps"] == ["long_book_unavailable:fetch_stale"]
+    assert payload["market"]["long_book"] == {}
+    with pytest.raises(Rejected):
+        q.capture_candidate(names["short"], names["long"], 0.1, transport=fetch, clock_ms=lambda: T)

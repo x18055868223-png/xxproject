@@ -235,6 +235,9 @@ def _read_json(path: str | Path, default: Mapping[str, Any] | None = None) -> di
 FULL_RECEIPTS_KEPT = 6
 DAILY_SNAPSHOT_ROTATE_BYTES = 64 * 1024 * 1024
 DAILY_SNAPSHOT_KEEP_AFTER_ROTATE = 15
+# 2026-10-17: 13 rows of ~5.8 MB stayed above 64 MB after each rotation, so every refresh
+# of the snapshot hour archived the whole file again (~250 MB of archives a day).
+DAILY_SNAPSHOT_KEEP_FRACTION = 0.75
 
 
 def _compact_receipt(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -2001,8 +2004,13 @@ class AstraWorkbench:
                         "retrieved_at_ms": received, "ingested_at_ms": received}
             record = self.data_engine.fetch(product, loader, now_ms=self.clock_ms(), scope=scope)
             qualified = self.data_engine.read(product, now_ms=self.clock_ms(), usage="fetch", scope=scope)
-            if not qualified.get("usage_decision", {}).get("can_use"):
-                raise ValueError("public data unavailable for requested quote use")
+            decision = qualified.get("usage_decision", {})
+            if not decision.get("can_use"):
+                error = ValueError("public data unavailable for requested quote use")
+                # e.g. fetch_stale: the book's exchange clock was already older than the
+                # fetch TTL when it arrived; kept on the capture gap for the series.
+                error.code = "fetch_" + str(decision.get("status") or "rejected").lower()
+                raise error
             if path == "public/get_instrument":
                 metadata_clocks[params["instrument_name"]] = record["time"]["retrieved_at_ms"]
             return deepcopy(record["content"]["values"])
@@ -2963,7 +2971,12 @@ class AstraWorkbench:
             contract["side"], self._locked_binding(contract), fact, gate, now_ms,
             btc_map_projection=projection, tracking=True, sink=sink)
         if (item.get("snapshot") or {}).get("candidate_id") != episode["candidate_id"]:
-            raise WorkbenchError(409, "locked_quote_unavailable", "original contract capture is unavailable")
+            # Why (the capture's error type) rides in detail; the sampler appends it to the
+            # gap reason, the HTTP code stays the stable one the page maps.
+            why = [r for r in ((item.get("review_gate") or {}).get("reasons") or [])
+                   if r != "candidate_refresh_error"][:1]
+            raise WorkbenchError(409, "locked_quote_unavailable", "original contract capture is unavailable",
+                                 detail={"cause": why[0]} if why else None)
         snapshot_id = item["snapshot"]["snapshot_id"]
         local_view = self._wpem_view_for_candidate(view, item)
         local_view["space_gate"] = gate
@@ -3075,6 +3088,10 @@ class AstraWorkbench:
                         pass  # the next retention pass backfills it before thinning
             except Exception as exc:
                 reason = getattr(exc, "code", None) or "locked_capture_failed:" + type(exc).__name__
+                detail = getattr(exc, "detail", None)
+                cause = detail.get("cause") if isinstance(detail, Mapping) else None
+                if cause and ":" not in reason:
+                    reason = f"{reason}:{cause}"  # the page maps the part before ":"
                 try:
                     self.locked_candidates.record_gap(episode_id, now_ms=max(now_ms, self.clock_ms()), reason=reason)
                 except Exception as write_exc:
@@ -4572,6 +4589,11 @@ class AstraWorkbench:
             if path.stat().st_size <= DAILY_SNAPSHOT_ROTATE_BYTES:
                 return
             keep = _read_jsonl_tail(path, DAILY_SNAPSHOT_KEEP_AFTER_ROTATE)
+            lines = [json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in keep]
+            # What stays must fit well under the threshold, or every later call rotates again.
+            budget = int(DAILY_SNAPSHOT_ROTATE_BYTES * DAILY_SNAPSHOT_KEEP_FRACTION)
+            while len(lines) > 1 and sum(len(line.encode("utf-8")) for line in lines) > budget:
+                lines.pop(0)
             archive = path.with_name(f"daily_snapshots-archive-{self.clock_ms()}.jsonl.gz")
             with path.open("rb") as source, gzip.open(archive, "wb", compresslevel=6) as target:
                 while True:
@@ -4581,8 +4603,7 @@ class AstraWorkbench:
                     target.write(block)
             tmp = path.with_suffix(".tmp")
             with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-                for row in keep:
-                    handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+                handle.writelines(lines)
             os.replace(tmp, path)
         except OSError:
             return

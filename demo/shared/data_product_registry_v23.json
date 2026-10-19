@@ -1071,7 +1071,7 @@
           ]
         },
         "health": {
-          "ttl_ms": 86400000,
+          "ttl_ms": 345600000,
           "allowed_data_states": [
             "OK",
             "PARTIAL"

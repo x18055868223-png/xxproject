@@ -581,3 +581,18 @@ def test_trading_day_series_survive_a_holiday_weekend():
         assert policies["health"]["ttl_ms"] >= policies["default"]["ttl_ms"], pid
     # Weekly-published broad USD index lags up to ~10 days.
     assert products["macro.usd.broad.close.v1"]["usage_policies"]["default"]["ttl_ms"] >= 264 * 3_600_000
+
+
+def test_macro_health_survives_a_weekend_while_default_use_stays_strict(tmp_path):
+    engine = DataEngine(tmp_path / "state")
+    # Macro components are trading-day closes: Friday's close is the newest until Monday.
+    # Health must not turn stale over a weekend (2026-10-17/18 flagged it every Saturday).
+    friday = 1_792_157_400_000  # 2026-10-16 13:30 UTC (Fri)
+    monday = friday + 71 * 3_600_000 + 30 * 60_000  # 2026-10-19 13:00 UTC
+    engine.ingest("macro.risk_state.components.v1", {"risk_state": "neutral"},
+                  observation_end_ms=friday, retrieved_at_ms=None, ingested_at_ms=friday,
+                  data_state="PARTIAL")
+    assert engine.read("macro.risk_state.components.v1", now_ms=monday, usage="health")["usage_decision"]["can_use"]
+    assert not engine.read("macro.risk_state.components.v1", now_ms=monday, usage="default")["usage_decision"]["can_use"]
+    week_later = friday + 5 * 86_400_000
+    assert not engine.read("macro.risk_state.components.v1", now_ms=week_later, usage="health")["usage_decision"]["can_use"]

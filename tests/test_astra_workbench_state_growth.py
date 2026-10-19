@@ -58,7 +58,7 @@ def test_tail_reader_matches_full_parse(tmp_path):
 
 def test_daily_snapshots_rotate_into_an_archive_and_keep_recent(tmp_path, monkeypatch):
     wb, _ = make_workbench(tmp_path, api_key=None)
-    monkeypatch.setattr(module, "DAILY_SNAPSHOT_ROTATE_BYTES", 2000)
+    monkeypatch.setattr(module, "DAILY_SNAPSHOT_ROTATE_BYTES", 6000)
     rows = [{"bjt_day": f"d{i}", "pad": "z" * 200} for i in range(30)]
     path = wb.config.daily_snapshots_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +68,34 @@ def test_daily_snapshots_rotate_into_an_archive_and_keep_recent(tmp_path, monkey
     archives = list(path.parent.glob("daily_snapshots-archive-*.jsonl.gz"))
     assert len(archives) == 1
     assert [json.loads(line)["bjt_day"] for line in gzip.decompress(archives[0].read_bytes()).splitlines()] == [r["bjt_day"] for r in rows]
+
+
+def test_daily_snapshot_rotation_does_not_repeat_when_rows_are_large(tmp_path, monkeypatch):
+    # 2026-10-17: 13 rows of ~5.8 MB stayed above the 64 MB threshold after every rotation,
+    # so each refresh in the snapshot hour archived the whole file again.
+    wb, _ = make_workbench(tmp_path, api_key=None)
+    monkeypatch.setattr(module, "DAILY_SNAPSHOT_ROTATE_BYTES", 10_000)
+    rows = [{"bjt_day": f"d{i}", "pad": "z" * 1_500} for i in range(13)]
+    path = wb.config.daily_snapshots_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    for _ in range(5):
+        wb._rotate_daily_snapshots()
+    assert len(list(path.parent.glob("daily_snapshots-archive-*.jsonl.gz"))) == 1
+    assert path.stat().st_size <= 7_500
+    kept = [r["bjt_day"] for r in wb.recent_daily_snapshots(limit=100)]
+    assert kept and kept == [f"d{i}" for i in range(13 - len(kept), 13)]
+
+
+def test_daily_snapshot_rotation_keeps_one_oversized_row(tmp_path, monkeypatch):
+    wb, _ = make_workbench(tmp_path, api_key=None)
+    monkeypatch.setattr(module, "DAILY_SNAPSHOT_ROTATE_BYTES", 1_000)
+    path = wb.config.daily_snapshots_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps({"bjt_day": f"d{i}", "pad": "z" * 2_000}) + "\n" for i in range(3)),
+                    encoding="utf-8")
+    wb._rotate_daily_snapshots()
+    assert [r["bjt_day"] for r in wb.recent_daily_snapshots(limit=100)] == ["d2"]
 
 
 def test_each_refresh_records_its_step_timing(tmp_path):
