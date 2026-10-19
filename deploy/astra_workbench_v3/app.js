@@ -170,8 +170,10 @@ function renderStrip() {
     isNum(anchorScore) ? `锚点 ${anchorScore.toFixed(0)} / 100` : "锚点缺失");
   $("gate-state").title = [factCurrent ? null : "FMZ 事实不是当前状态，锚点只作参考", ...gateReasons].filter(Boolean).join("；");
   const fact = mc.status === "current" ? "ok" : mc.status ? "warn" : "off";
-  // background_only: facts are fresh but the space input was rejected, so they only serve as background.
-  const factNote = !mc.status || mc.status === "current" ? "" : mc.status === "background_only" ? "，仅作背景" : "，事实不是当前";
+  // background_only: the FMZ fact has a gap (a stale snapshot most often), so it only serves as background.
+  const factNote = !mc.status || mc.status === "current" ? ""
+    : (mc.gap_reasons || []).includes("fmz_snapshot_stale") && isNum(mc.age_ms) ? `，快照已停 ${dur(mc.age_ms)}`
+    : mc.status === "background_only" ? "，仅作背景" : "，事实不是当前";
   setLamp($("fact-state"), fact, `FMZ ${mc.strategy_version || "—"}${factNote}`);
   const health = sourceHealth(v).filter((p) => p.collected);
   const okCount = health.filter((p) => p.level === "ok").length;
@@ -213,8 +215,13 @@ function renderBanners() {
   if (fail) box.append(h("div", { class: "banner" }, h("b", { text: "后台刷新失败。" }),
     ` ${clock(fail.failed_at_ms)} 的刷新没有完成，候选与地图停留在 ${clock(v.updated_at_ms)}。`));
   const mc = v.market_context || {};
-  if (mc.status === "background_only") box.append(h("div", { class: "banner info" }, h("b", { text: "FMZ 事实只作背景。" }),
-    ` 事实本身是新的，但空间输入未通过用途检查（${spaceInputWhy(v)}），空间结构的评价只作参考；五要素与背景读数仍可参考。`));
+  const factGaps = mc.gap_reasons || [];
+  if (factGaps.includes("fmz_snapshot_stale")) box.append(h("div", { class: "banner" },
+    h("b", { text: `FMZ 快照停在 ${clock(mc.snapshot_ts_ms)}（已 ${dur(mc.age_ms)}）。` }),
+    " FMZ 策略可能没有在运行（例如服务器重启后机器人未恢复），请到 FMZ 检查机器人状态。"
+    + "经 FMZ 转发的读数（锚点与空间结构、GEX、宏观）一同停更；候选与地图按最后一次冻结的事实核算。"));
+  else if (mc.status === "background_only") box.append(h("div", { class: "banner info" }, h("b", { text: "FMZ 事实只作背景。" }),
+    ` ${factGaps.length ? `${factGaps.map(reasonCn).join("、")}。` : ""}候选照常核算，涉及 FMZ 的读数只作参考。`));
   else if (mc.status && mc.status !== "current") box.append(h("div", { class: "banner" }, h("b", { text: "FMZ 事实不是当前状态。" }),
     ` ${(mc.gap_reasons || []).length ? `${mc.gap_reasons.map(reasonCn).join("、")}。` : ""}候选与地图只反映最后一次冻结。`));
   const errs = (v.candidates || []).filter((c) => c.status === "error");
@@ -241,13 +248,6 @@ function candidateErrorBanner(errs) {
   const text = codes.length === 1 ? `两侧：${reasonCn(codes[0])}`
     : errs.map((c) => `${c.side === "put" ? "Put" : "Call"}：${reasonCn(why(c))}`).join("；");
   return h("div", { class: "banner" }, h("b", { text: "候选未生成。" }), ` ${text}。${since}`);
-}
-
-/** Which space source the data engine refused, in words. */
-function spaceInputWhy(v) {
-  const bad = sourceHealth(v).filter((p) => p.collected && p.level !== "ok"
-    && p.consumers.some((c) => c === "space_gate" || c === "gamma_regime" || c === "anchor"));
-  return bad.length ? bad.map((p) => `${p.id} ${sourceStatusCn(p.status)}`).join("、") : "原因见数据与审计记录";
 }
 
 // ── map band ─────────────────────────────────────

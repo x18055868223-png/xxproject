@@ -25,8 +25,9 @@ const GAP_CN = {
   short_mark_missing: "短腿标记价缺失",
   long_mark_missing: "长腿标记价缺失",
   quantity_missing: "数量缺失",
-  long_depth_insufficient: "保护腿盘口深度不足",
-  short_depth_insufficient: "短腿盘口深度不足",
+  // near expiry a deep OTM leg often has no book at all; holding to expiry does not need it
+  long_depth_insufficient: "保护腿盘口深度不足（临近到期的深度价外期权常见，做市商撤单；持有到期不受影响）",
+  short_depth_insufficient: "短腿盘口深度不足（临近到期常见；持有到期不受影响）",
   baseline_entry_after_fee_missing: "锁定时扣费后信用缺失",
   baseline_entry_credit_missing: "锁定时信用缺失",
   baseline_entry_fee_missing: "锁定时入场费缺失",
