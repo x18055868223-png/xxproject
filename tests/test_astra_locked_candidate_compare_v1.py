@@ -411,3 +411,67 @@ def test_real_initial_public_view_context_refs_keep_missing_source_clock_none():
     assert "data_identity" in output["baseline"]["public_candidate"]["snapshot"]
     assert output["process"]["observed_count"] == 1
     assert len(output["process"]["gaps"]) == 1
+
+
+def test_protection_leg_without_bid_gives_a_zero_valued_close_upper_bound():
+    # 2026-10-15/16: near expiry the deep OTM protection leg had no bid at all.
+    payload = payload_with_components()
+    payload["market"]["long_book"]["bids"] = []
+    snapshot = core.evaluate(payload)
+    fee = {"basis": "configured_assumption", "close_fee_btc": 0.00002, "covers": ["early_exit"]}
+    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T, fee=fee)
+    assert quote["debit_btc"] is None and quote["quote_gap_reasons"] == ["long_depth_insufficient"]
+    bound = quote["upper_bound"]
+    assert bound["basis"] == "long_bid_shortfall_valued_zero"
+    assert bound["debit_upper_bound_btc"] == pytest.approx(0.0008)  # short ask, protection leg at 0
+    assert bound["net_debit_upper_bound_after_close_fee_btc"] == pytest.approx(0.00082)
+    assert bound["long_bid_filled_btc"] == 0 and bound["executable_or_filled"] is False
+
+
+def test_partial_protection_bids_count_and_only_the_shortfall_is_zero():
+    payload = payload_with_components()
+    quantity = core.evaluate(payload)["contract"]["quantity_btc"]
+    payload["market"]["long_book"]["bids"] = [[0.002, quantity / 2]]
+    snapshot = core.evaluate(payload)
+    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T)
+    assert quote["upper_bound"]["long_sale_partial_btc"] == pytest.approx(0.002 * quantity / 2)
+    assert quote["upper_bound"]["debit_upper_bound_btc"] == pytest.approx(0.0008 - 0.002 * quantity / 2)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p["market"]["short_book"].update(asks=[]),
+    lambda p: (p["market"]["long_book"].update(bids=[]), p["market"]["short_book"].update(timestamp=T - 6000)),
+])
+def test_no_upper_bound_when_any_other_gap_remains(mutate):
+    payload = payload_with_components()
+    mutate(payload)
+    snapshot = core.evaluate(payload)
+    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T)
+    assert quote["debit_btc"] is None and quote["upper_bound"] is None
+
+
+def test_followup_reports_a_lower_bound_result_when_the_protection_leg_has_no_bid():
+    # The close fee is unavailable for the same reason (no bids to sell into); the bound
+    # carries the fee of its own trades: short bought back in full, protection leg unsold.
+    base_payload = payload_with_components()
+    latest_payload = payload_with_components()
+    for payload in (base_payload, latest_payload):
+        for leg in ("short", "long"):
+            payload["metadata"][leg].update(taker_commission=0.0003, settlement_period="day")
+    latest_payload["market"]["long_book"]["bids"] = []
+    baseline = point_from_payload(base_payload, point_id="t0", recorded_at_ms=T + 10)
+    latest = point_from_payload(latest_payload, point_id="t1", recorded_at_ms=T + 20)
+    output = followup.build_followup({"episode": {"id": "ep"}, "baseline": baseline, "latest": latest, "observations": []},
+                                     now_ms=T + 30)
+    reference = output["overview"]["reference_result"]
+    assert reference["reference_result_btc"] is None and reference["close_fee_btc"] is None
+    short_ask = 0.0008 / core.evaluate(latest_payload)["contract"]["quantity_btc"]
+    commission = latest_payload["metadata"]["short"]["taker_commission"]
+    fee = min(commission, 0.125 * short_ask) * core.evaluate(latest_payload)["contract"]["quantity_btc"]
+    assert reference["close_net_debit_upper_bound_btc"] == pytest.approx(0.0008 + fee)
+    assert reference["reference_result_lower_bound_btc"] == pytest.approx(
+        reference["entry_after_fee_btc"] - 0.0008 - fee)
+    assert reference["bound_basis"] == "long_bid_shortfall_valued_zero"
+    assert any("保守估计" in line for line in output["limitations_cn"])
+    row = row_by_key(output, "reference.reference_result_btc")
+    assert row["status"] == "unknown" and "不低于" in row["change_cn"]

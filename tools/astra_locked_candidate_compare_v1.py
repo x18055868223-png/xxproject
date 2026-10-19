@@ -487,7 +487,33 @@ def _close_fee(point: Mapping[str, Any]) -> dict[str, Any]:
             "detail": detail,
         }
     except (KeyError, TypeError, ValueError):
-        return {"basis": "unknown", "gap_reasons": ["close_fee_unavailable"]}
+        return {"basis": "unknown", "gap_reasons": ["close_fee_unavailable"],
+                "bound_close_fee_btc": _close_fee_bound(candidate, metadata, market)}
+
+
+def _close_fee_bound(candidate: Mapping[str, Any], metadata: Mapping[str, Any],
+                     market: Mapping[str, Any]) -> float | None:
+    """Fee of the close upper bound: buy the whole short back, sell only what the protection
+    leg's bids take (the unsold rest trades nothing and pays nothing). None if the short
+    side itself cannot be bought back."""
+    try:
+        quantity = float(candidate["quantity_btc"])
+        short_fee, _ = real_replay._consume_fee(
+            _mapping(market.get("short_book")).get("asks"), quantity,
+            real_replay._number("short taker_commission", _mapping(metadata.get("short")).get("taker_commission")),
+            bid=False)
+        bids = [level for level in _mapping(market.get("long_book")).get("bids") or []
+                if isinstance(level, (list, tuple)) and len(level) == 2]
+        sellable = min(quantity, sum(float(amount) for _, amount in bids if float(amount) > 0))
+        long_fee = 0.0
+        if sellable > 1e-12:
+            long_fee, _ = real_replay._consume_fee(
+                bids, sellable,
+                real_replay._number("long taker_commission", _mapping(metadata.get("long")).get("taker_commission")),
+                bid=True)
+        return short_fee + long_fee
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _close_quote(point: Mapping[str, Any]) -> dict[str, Any]:
@@ -648,6 +674,14 @@ def _reference_result(baseline: Mapping[str, Any], close_quote: Mapping[str, Any
     result = None
     if entry_after_fee is not None and close_debit is not None and close_fee is not None:
         result = entry_after_fee - close_debit - close_fee
+    # No exact close because the protection leg has no bid: the close upper bound (that leg
+    # valued at zero) gives the result a conservative lower bound, never a fill.
+    bound = close_quote.get("upper_bound") if isinstance(close_quote.get("upper_bound"), Mapping) else {}
+    bound_debit = _number(bound.get("debit_upper_bound_btc"))
+    bound_net = _number(bound.get("net_debit_upper_bound_after_close_fee_btc"))
+    lower_bound = None
+    if result is None and entry_after_fee is not None and bound_net is not None:
+        lower_bound = entry_after_fee - bound_net
     return public_replay.scrub_public({
         "kind": "entry_minus_reference_close_estimate",
         "formula": "t0_entry_credit_btc - t0_entry_fee_btc - reference_close_debit_btc - reference_close_fee_btc",
@@ -657,6 +691,10 @@ def _reference_result(baseline: Mapping[str, Any], close_quote: Mapping[str, Any
         "close_debit_btc": close_debit,
         "close_fee_btc": close_fee,
         "reference_result_btc": result,
+        "close_debit_upper_bound_btc": bound_debit if lower_bound is not None else None,
+        "close_net_debit_upper_bound_btc": bound_net if lower_bound is not None else None,
+        "reference_result_lower_bound_btc": lower_bound,
+        "bound_basis": bound.get("basis") if lower_bound is not None else None,
         "asof_ms": _quote_clock_from_quote(close_quote),
         "source_book_hash": close_quote.get("source_book_hash"),
         "gap_reasons": sorted(set([*gaps, *(close_quote.get("gap_reasons") or [])])),
@@ -686,6 +724,9 @@ def _reference_result_row(reference: Mapping[str, Any]) -> dict[str, Any]:
     )
     row["status"] = "reference_only" if reference.get("reference_result_btc") is not None else "unknown"
     row["change_cn"] = "按 t0 入场信用 - 入场费 - 参考平仓借记 - 平仓费计算；未记录实际成交。"
+    lower = reference.get("reference_result_lower_bound_btc")
+    if lower is not None:
+        row["change_cn"] += f"保护腿无足够买盘时按 0 计，参考结果不低于 {_format_value(lower, 'BTC')}（保守下界，不是可成交价）。"
     return row
 
 
@@ -1008,6 +1049,8 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
         "close_debit_btc": _number(close.get("debit_btc")),
         "close_fee_btc": _number(close.get("close_fee_btc")),
         "reference_result_btc": _number(reference.get("reference_result_btc")),
+        # protection leg without bid valued at zero: a conservative bound, null otherwise
+        "reference_result_lower_bound_btc": _number(reference.get("reference_result_lower_bound_btc")),
         "reference_gaps": list(reference.get("gap_reasons") or []),
         "quote_gaps": list(quote.get("gap_reasons") or []),
         # The workbench gate stopped gating on 2026-10-13; the producer's native state keeps the
@@ -1098,5 +1141,11 @@ def build_followup(detail: Mapping[str, Any], *, now_ms: int, include_raw: bool 
         output["limitations_cn"].append("尚无后续观察点。")
     if close_estimate.get("gap_reasons"):
         output["limitations_cn"].append("平仓估计存在报价或费用缺口：" + "、".join(close_estimate["gap_reasons"]))
+    if reference_result.get("reference_result_lower_bound_btc") is not None:
+        output["limitations_cn"].append(
+            "保护腿没有足够买盘，平仓借记按保护腿未成交部分计 0 给出上界（含平仓费）"
+            f"{_format_value(reference_result.get('close_net_debit_upper_bound_btc'), 'BTC')}，"
+            f"对应参考结果下界 {_format_value(reference_result.get('reference_result_lower_bound_btc'), 'BTC')}；"
+            "这是保守估计，不是可成交价。")
     return public_replay.scrub_public(output)
 
