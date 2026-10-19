@@ -34,9 +34,12 @@ else:
     import astra_market_baseline_v1 as market_baseline
 
 SCHEMA = "case_file@0.1"
+BUILDER_VERSION = "astra_case_file_v1@0.1.1"
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 DROP_KEYS = {"source_records", "source_manifest", "source_bindings", "debug", "_debug", "raw_payload"}
-DROP_SUFFIXES = ("_hash", "_sha256", "sha256")
+DROP_SUFFIXES = ("_hash", "sha256")
+# never let credential-shaped keys reach an external reader
+SECRET_MARKERS = ("token", "api_key", "apikey", "password", "secret", "authorization", "cookie")
 TRANSITION_LOOKBACK_MS = 72 * 3_600_000
 DAILY_DAYS = 7
 GEX_VOL_KEYS = ("atm_iv", "dvol", "iv_percentile", "rr_skew", "term_structure", "volatility_trigger")
@@ -54,13 +57,25 @@ def clean(value: Any) -> Any:
         out = {}
         for key, item in value.items():
             name = str(key)
-            if name in DROP_KEYS or name.endswith(DROP_SUFFIXES):
+            lowered = name.lower()
+            if name in DROP_KEYS or name.endswith(DROP_SUFFIXES) or any(m in lowered for m in SECRET_MARKERS):
                 continue
             out[name] = clean(item)
         return out
     if isinstance(value, (list, tuple)):
         return [clean(item) for item in value]
     return value
+
+
+def _empty(value: Any) -> bool:
+    """True when every leaf is None or an empty container (a dict of Nones says nothing)."""
+    if value is None:
+        return True
+    if isinstance(value, Mapping):
+        return all(_empty(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return len(value) == 0
+    return False
 
 
 def _pick(source: Mapping[str, Any] | None, keys: Iterable[str]) -> dict[str, Any]:
@@ -79,8 +94,7 @@ class _Case:
         if layer not in self.layers:
             raise ValueError("unknown layer in ref " + ref)
         if quality is None:
-            empty = values is None or values == {} or values == []
-            quality = "missing" if empty else "ok"
+            quality = "missing" if _empty(values) else "ok"
         self.layers[layer].append({
             "ref": ref, "label_cn": label_cn, "values": clean(values),
             "relations": clean(dict(relations)) if relations else {},
@@ -131,7 +145,8 @@ def _contract_cn(contract: Mapping[str, Any]) -> str:
 def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms: int,
           item: Mapping[str, Any] | None = None, view: Mapping[str, Any] | None = None,
           dp_reading: Mapping[str, Any] | None = None,
-          history: Iterable[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+          history: Iterable[Mapping[str, Any]] | None = None,
+          built_at_ms: int | None = None) -> dict[str, Any]:
     view = view or {}
     snapshot_id = snapshot.get("snapshot_id")
     if item is not None and (item.get("snapshot") or {}).get("snapshot_id") != snapshot_id:
@@ -196,8 +211,8 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
     # L2 quote, greeks, baseline
     case.add("L2.quote", "两腿盘口报价估计（非成交）", quote, lineage=["deribit.order_book"],
              source="snapshot.market.quote", asof_ms=quote.get("valuation_ts_ms"),
-             quality="stale" if quote.get("gap_reasons") else None,
-             quality_reason=",".join(quote.get("gap_reasons") or []) or None)
+             quality="stale" if quote.get("quote_gap_reasons") else None,
+             quality_reason=",".join(quote.get("quote_gap_reasons") or []) or None)
     case.add("L2.fee", "费用口径", snapshot.get("fee"), lineage=["deribit.fee_schedule"], source="snapshot.fee")
     for leg in ("short", "long"):
         book = raw_market.get(leg + "_book") or {}
@@ -252,7 +267,7 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
                     "anchor": ((t.get("space_gate") or {}).get("anchor") or {}).get("score"),
                     "net_gamma": (t.get("space_gate") or {}).get("net_gamma")}
                    for t in (view.get("transitions") or []) if isinstance(t, Mapping)]
-    transitions = [t for t in transitions if not isinstance(t["at_ms"], int) or since <= t["at_ms"] <= asof_ms]
+    transitions = [t for t in transitions if isinstance(t["at_ms"], int) and since <= t["at_ms"] <= asof_ms]
     case.add("L3.space.transitions", "近 72 小时 Space 门 / 锚定迁移", transitions, lineage=["fmz.space_gate"],
              source="view.transitions", quality="ok")
     case.add("L3.space.anchor", "锚定与 Gamma 体制（信号层）",
@@ -368,8 +383,10 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
         "refs": case.refs(),
     }
     encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    body["build"] = {"builder": "astra_case_file_v1", "bytes": len(encoded),
-                     "content_sha256": hashlib.sha256(encoded).hexdigest()}
+    # built_at_ms stays outside the content hash: the same inputs give the same content
+    body["build"] = {"builder": BUILDER_VERSION, "bytes": len(encoded), "built_at_ms": built_at_ms,
+                     "content_sha256": hashlib.sha256(encoded).hexdigest(),
+                     "time_note_cn": "asof_ms 是报价估值时刻；L0 健康、Space 门、跨资产、本期墙、事件取自 built_at_ms 时的读视图"}
     return body
 
 
@@ -378,4 +395,5 @@ def for_inquirer(case_file: Mapping[str, Any]) -> dict[str, Any]:
     out = deepcopy(dict(case_file))
     out["layers"] = {k: v for k, v in out["layers"].items() if k != "L9"}
     out["refs"] = {k: v for k, v in out["refs"].items() if v["layer"] != "L9"}
+    out["build"] = {**out.get("build", {}), "variant": "inquirer_without_l9", "bytes": None, "content_sha256": None}
     return out

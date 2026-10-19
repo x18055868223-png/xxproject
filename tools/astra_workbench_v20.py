@@ -25,6 +25,7 @@ import re
 import smtplib
 import socket
 import ssl
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -4050,37 +4051,51 @@ class AstraWorkbench:
                 "realized_vol": (self._expiry_gamma or {}).get("realized_vol"),
                 "cross_window": window, "transitions": self.recent_transitions(limit=30)}
 
+    _case_file_lock = threading.Lock()
+
     def case_file(self, snapshot_id: str) -> dict[str, Any]:
         """The frozen case file of one displayed capture (docs/opus/03). Built once from the
-        exact lockable point (snapshot + raw books), the read view and the program reading,
-        then stored; later reads return the stored bytes' content unchanged."""
+        exact lockable point (snapshot + raw books), the served view and the program reading,
+        then stored; later reads return the stored case. A case whose program reading failed
+        is returned but not stored, so a transient failure is not frozen."""
         if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id or ""):
             raise WorkbenchError(400, "bad_snapshot_id", "a 64-hex snapshot id is required")
         path = self.config.state_dir / "case_files" / (snapshot_id + ".json")
-        if path.exists():
+        with self._case_file_lock:   # one build per snapshot; concurrent first reads wait
+            if path.exists():
+                return json.loads(path.read_text(encoding="utf-8"))
+            with self._view_lock:
+                point = deepcopy(self._lockable_points.get(snapshot_id))
+            if not point:
+                raise WorkbenchError(404, "case_snapshot_unavailable", "this capture is no longer held; use a current one")
+            packet = point.get("packet") or {}
+            snapshot = packet.get("snapshot") or {}
+            raw_market = ((packet.get("raw_payload") or {}).get("market")) or {}
+            # the served view: read-time layers (events, decision reduction, spatial position,
+            # expiry walls, cross asset) are attached when the view is served, not in the cache
+            view = self.cached_view() or {}
+            view["transitions"] = self.recent_transitions(limit=1000)
+            now = self.clock_ms()
+            item = next((c for c in view.get("candidates") or []
+                         if ((c.get("snapshot") or {}).get("snapshot_id")) == snapshot_id), None)
+            if item is None:
+                item = self._dp_item(point.get("candidate") or {}, now)
+            try:
+                dp_reading = decision_path.build(self._dp_frame(self._dp_item(item, now), now))
+            except Exception:
+                dp_reading = None
+            body = case_file_core.build(snapshot=snapshot, raw_market=raw_market,
+                                        asof_ms=int((snapshot.get("market") or {}).get("valuation_ts_ms") or now),
+                                        item=item, view=view, dp_reading=dp_reading, built_at_ms=now)
+            if dp_reading is None:
+                body["build"]["stored"] = False
+                return body
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=snapshot_id + ".", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_canonical(dict(body)) + "\n")
+            os.replace(tmp, path)
             return json.loads(path.read_text(encoding="utf-8"))
-        with self._view_lock:
-            point = deepcopy(self._lockable_points.get(snapshot_id))
-        # the served view: read-time layers (events, decision reduction, spatial position,
-        # expiry walls, cross asset) are attached when the view is served, not in the cache
-        view = self.cached_view() or {}
-        if not point:
-            raise WorkbenchError(404, "case_snapshot_unavailable", "this capture is no longer held; use a current one")
-        packet = point.get("packet") or {}
-        snapshot = packet.get("snapshot") or {}
-        raw_market = ((packet.get("raw_payload") or {}).get("market")) or {}
-        item = next((c for c in view.get("candidates") or []
-                     if ((c.get("snapshot") or {}).get("snapshot_id")) == snapshot_id), None) or point.get("candidate")
-        now = self.clock_ms()
-        try:
-            dp_reading = decision_path.build(self._dp_frame(self._dp_item(item, now), now))
-        except Exception:
-            dp_reading = None
-        body = case_file_core.build(snapshot=snapshot, raw_market=raw_market,
-                                    asof_ms=int((snapshot.get("market") or {}).get("valuation_ts_ms") or now),
-                                    item=item, view=view, dp_reading=dp_reading)
-        _write_json_atomic(path, body)
-        return json.loads(path.read_text(encoding="utf-8"))
 
     def _dp_current_candidate(self, candidate_id: str, snapshot_id: str | None = None) -> dict[str, Any] | None:
         with self._view_lock:
@@ -5498,7 +5513,8 @@ def make_handler(workbench: AstraWorkbench):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             heavy = (parsed.path.endswith("/evidence")
-                     or parsed.path.startswith(("/api/workbench/candidate-evidence/", "/api/workbench/wpem-proof/"))
+                     or parsed.path.startswith(("/api/workbench/candidate-evidence/", "/api/workbench/wpem-proof/",
+                                                "/api/workbench/case-file/"))
                      or parse_qs(parsed.query).get("view") == ["full"])
             if heavy and workbench._memory.get("level") == "hard":
                 self._json(503, {"schema": SCHEMA, "code": "memory_pressure", "message": "工作台内存紧张，稍后自动重试"},
@@ -5640,6 +5656,9 @@ def make_handler(workbench: AstraWorkbench):
                     self._json(200, workbench.case_file(unquote(parsed.path.rsplit("/", 1)[-1])))
                 except WorkbenchError as exc:
                     self._json(exc.status_code, exc.as_payload())
+                except Exception as exc:
+                    self._json(500, {"schema": SCHEMA, "status": "ERROR", "code": "case_file_failed",
+                                     "message": type(exc).__name__})
                 return
             if parsed.path.startswith("/api/workbench/wpem-proof/"):
                 if not sessions.authorize("GET", self.headers, self.client_address[0]).ok:

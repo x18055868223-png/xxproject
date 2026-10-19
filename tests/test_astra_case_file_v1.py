@@ -103,3 +103,56 @@ def test_workbench_case_file_is_built_from_the_held_capture_and_frozen(tmp_path)
     with pytest.raises(workbench.WorkbenchError) as bad:
         wb.case_file("../etc/passwd")
     assert bad.value.status_code == 400
+
+
+def test_dict_of_nones_is_missing_and_secret_keys_are_dropped():
+    snap = _snapshot()
+    snap["fact_context"]["market_facts"]["space_context"]["anchor"] = None
+    snap["fact_context"]["market_facts"]["macro_pressure"] = {"score": 0.4, "api_key": "sk-x", "auth_token": "t"}
+    case = cf.build(snapshot=snap, raw_market=_raw_market(), asof_ms=0)
+    assert case["layers"]["L3"][case["refs"]["L3.space.anchor"]["index"]]["quality"] == "missing"
+    assert case["layers"]["L7"][case["refs"]["L7.macro"]["index"]]["values"] == {"score": 0.4}
+
+
+def test_fee_gap_does_not_mark_the_quote_stale():
+    snap = _snapshot()
+    snap["market"]["quote"].update({"gap_reasons": ["fee_unknown"], "quote_gap_reasons": []})
+    case = cf.build(snapshot=snap, raw_market=_raw_market(), asof_ms=0)
+    assert case["layers"]["L2"][case["refs"]["L2.quote"]["index"]]["quality"] == "ok"
+
+
+def _held_workbench(tmp_path):
+    original, snapshots = make_workbench(tmp_path)
+    wb = workbench.AstraWorkbench(replace(original.config, wpem_enabled=True, wpem_main_loop=True),
+                                  discovery_capture=original.discovery_capture,
+                                  quote_capture=original.quote_capture, clock_ms=original.clock_ms)
+    write_fmz(snapshots, native_gate())
+    return wb, wb.refresh(now_ms=T)["candidates"][0]["snapshot"]["snapshot_id"]
+
+
+def test_concurrent_first_reads_build_once_and_agree(tmp_path):
+    import threading
+    wb, snapshot_id = _held_workbench(tmp_path)
+    results, errors = [], []
+    def read():
+        try:
+            results.append(wb.case_file(snapshot_id))
+        except Exception as exc:   # pragma: no cover - the failure being guarded against
+            errors.append(exc)
+    threads = [threading.Thread(target=read) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors and len(results) == 4 and all(r == results[0] for r in results)
+    assert [p.name for p in (wb.config.state_dir / "case_files").iterdir()] == [snapshot_id + ".json"]
+
+
+def test_failed_program_reading_is_returned_but_not_frozen(tmp_path, monkeypatch):
+    wb, snapshot_id = _held_workbench(tmp_path)
+    monkeypatch.setattr(workbench.decision_path, "build", lambda frame: (_ for _ in ()).throw(RuntimeError("x")))
+    case = wb.case_file(snapshot_id)
+    assert case["build"]["stored"] is False
+    assert not (wb.config.state_dir / "case_files" / (snapshot_id + ".json")).exists()
+    monkeypatch.undo()
+    assert wb.case_file(snapshot_id)["layers"]["L8"][0]["quality"] == "ok"
