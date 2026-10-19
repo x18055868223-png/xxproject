@@ -17,7 +17,9 @@ Inputs:
 - history:    L9 rows (researcher only; the inquirer never receives L9)
 
 Pure; no I/O. Hashes, debug traces and raw source records are dropped; nothing is
-truncated by count.
+truncated by count. WPEM is deliberately absent (2026-10-20 decision): its level
+duplicates L2-L5, its delta/path never formed in production, and its only non-redundant
+part, the time memory of a locked contract, belongs to holding, not to underwriting.
 """
 from __future__ import annotations
 
@@ -320,8 +322,6 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
                              if isinstance(c, Mapping)]} for d in days]
     case.add("L6.daily", f"近 {DAILY_DAYS} 日每日快照摘要", daily, lineage=["workbench.daily_snapshots"],
              source="view.daily_snapshots")
-    case.add("L6.wpem", "WPEM 同候选窗口证据（水平、变化、路径）", None, lineage=["wpem"],
-             source="not wired in case_file@0.1", quality="unknown", quality_reason="not_in_case_file_v0_1")
 
     # L7 external
     case.add("L7.cross_asset", "动态跨资产参考（相关、β、归因）", view.get("cross_asset"),
