@@ -11,7 +11,7 @@ Environment=LLM_REVIEWS_SOURCE=/opt/signal-audit-tools/signal_llm_reviews.jsonl
 Environment=TRANSITION_LEDGER_SOURCE=/opt/signal-audit-tools/signal_transition_ledger.jsonl
 Environment=LLM_PROVIDER=deepseek
 Environment=LLM_BASE_URL=https://api.deepseek.com
-Environment=LLM_MODEL=deepseek-v4-flash
+Environment=LLM_MODEL=deepseek-flash
 Environment=LLM_REVIEW_LIMIT=4
 Environment=LLM_MAX_CONCURRENCY=4
 Environment=LLM_DAILY_HTTP_CAP=60

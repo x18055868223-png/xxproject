@@ -30,7 +30,7 @@ def main():
                 and entry.PROMPT_VERSION == "signal_llm_review_prompt@1.6.0",
                 "entry prompt mismatch")
     assert_true(entry.core.PROVIDER == "deepseek", "entry provider mismatch")
-    assert_true(entry.core.DEFAULT_MODEL == "deepseek-v4-flash", "entry model mismatch")
+    assert_true(entry.core.DEFAULT_MODEL == "deepseek-flash", "entry model mismatch")
     entry_params = inspect.signature(entry.build_llm_review).parameters
     assert_true("blind_payload" in entry_params
                 and "blind_completeness_repair" in entry_params,

@@ -1784,7 +1784,7 @@ def test_partial_batch_error_is_fail_loud(tool):
 
 def main():
     tool = load_tool()
-    assert_true(tool.DEFAULT_MODEL == "deepseek-v4-flash", "model mismatch")
+    assert_true(tool.DEFAULT_MODEL == "deepseek-flash", "model mismatch")
     assert_true(tool.PROVIDER == "deepseek", "provider mismatch")
     assert_true(tool.OUTPUT_SCHEMA_VERSION == "signal_llm_review@1.6.0", "schema mismatch")
     assert_true(tool.PROMPT_VERSION == "signal_llm_review_prompt@1.6.0", "prompt mismatch")

@@ -36,7 +36,7 @@ Do not commit these values to git and do not bake them into release tags.
 - `/etc/signal-audit/llm.env`
   - Set `LLM_API_KEY` to the server-only DeepSeek key.
   - Keep `LLM_PROVIDER=deepseek`, `LLM_BASE_URL=https://api.deepseek.com`,
-    and `LLM_MODEL=deepseek-v4-flash`.
+    and `LLM_MODEL=deepseek-flash`.
   - Keep mode `0600`.
 - `/etc/gexmonitorapi.env`
   - Set `API_TOKEN` if GEX is installed.

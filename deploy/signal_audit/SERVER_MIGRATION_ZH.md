@@ -32,7 +32,7 @@
   - `LLM_API_KEY`
   - `LLM_PROVIDER=deepseek`
   - `LLM_BASE_URL=https://api.deepseek.com`
-  - `LLM_MODEL=deepseek-v4-flash`
+  - `LLM_MODEL=deepseek-flash`
   - LLM 限速、超时、JSONL 路径配置
 - `/etc/gexmonitorapi.env`
   - `API_TOKEN`
@@ -91,7 +91,7 @@ sudo systemctl restart signal-audit-materialize.service
 LLM_PROVIDER=deepseek
 LLM_API_KEY=<仅保存在服务器的 DeepSeek key>
 LLM_BASE_URL=https://api.deepseek.com
-LLM_MODEL=deepseek-v4-flash
+LLM_MODEL=deepseek-flash
 LLM_REVIEW_LIMIT=4
 TRANSITION_REVIEW_LIMIT=4
 LLM_MAX_CONCURRENCY=4

@@ -23,7 +23,7 @@ _TOOL_DIR = str(Path(__file__).resolve().parent)
 if _TOOL_DIR not in sys.path:
     sys.path.insert(0, _TOOL_DIR)
 
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-flash"
 PROVIDER = "deepseek"
 LEGACY_OUTPUT_SCHEMA_VERSION = "signal_llm_review@2.0.0"
 OUTPUT_SCHEMA_VERSION_2_1 = "signal_llm_review@2.1.0"

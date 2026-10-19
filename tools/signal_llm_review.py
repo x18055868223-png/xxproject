@@ -35,7 +35,7 @@ from signal_fact_semantics import (  # noqa: E402
 )
 
 
-DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_REVIEWS = "signal_llm_reviews.jsonl"
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.deepseek.com/chat/completions"
 PROVIDER = "deepseek"

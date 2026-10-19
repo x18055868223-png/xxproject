@@ -14,7 +14,7 @@ import signal_review_v2  # noqa: E402
 DEPLOY = ROOT / "deploy" / "signal_audit"
 CANARY = ROOT / "tools" / "signal_llm_review_canary_release.sh"
 EXPECTED_LLM_PROVIDER = "deepseek"
-EXPECTED_LLM_MODEL = "deepseek-v4-flash"
+EXPECTED_LLM_MODEL = "deepseek-flash"
 EXPECTED_LLM_SCHEMA = "signal_llm_review@2.3.0"
 EXPECTED_LLM_PROMPT = "signal_llm_review_prompt@2.3.0"
 EXPECTED_LLM_MODE = "single_evidence_v2"
