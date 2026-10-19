@@ -4839,6 +4839,7 @@ class AstraWorkbench:
             discovered = (cached or {}).get("discovery") or {}
             btc_projection = (cached or {}).get("btc_map_projection") if isinstance(cached, Mapping) else None
             discovery_ts = discovered.get("captured_ts_ms")
+            refetched_discovery, refetch_error = False, None
             if locked_episode_id:
                 try:
                     locked = self.locked_candidates.detail(locked_episode_id)
@@ -4860,8 +4861,11 @@ class AstraWorkbench:
                 try:
                     discovered = self.discovery_capture(now_ms=now)
                     discovery_ts = discovered.get("captured_ts_ms")
-                except Exception:
-                    pass  # stays candidate_not_current
+                    refetched_discovery = True
+                    # the capture is stamped when it finished, after `now` was read
+                    now = self.clock_ms()
+                except Exception as exc:
+                    refetch_error = getattr(exc, "upstream", None) or _upstream_code(exc) or type(exc).__name__
             item = None
             if previous and isinstance(discovery_ts, int) and 0 <= now - discovery_ts <= discovery.DEFAULT_DELTA_MAX_AGE_MS:
                 fact = self.latest_fact(now)
@@ -4893,6 +4897,8 @@ class AstraWorkbench:
                     else:
                         cached["candidates"] = [item if entry.get("side") == item["side"] else entry
                                                  for entry in cached["candidates"]]
+                        if refetched_discovery:
+                            cached["discovery"] = deepcopy(discovered)
                     cached.update({"updated_at_ms": self.clock_ms(), "market_context": fact,
                                    "space_gate": gate, "btc_map_projection": deepcopy(btc_projection),
                                    "btc_map": deepcopy((btc_projection or {}).get("btc_map")),
@@ -4908,6 +4914,8 @@ class AstraWorkbench:
                       "candidate_id": candidate_id, "idempotency_key": idempotency_key,
                       "purpose": purpose,
                       "llm_call_count": 0}
+            if refetch_error:
+                result["discovery_refetch_error"] = str(refetch_error)[:80]
             self._store_idempotency(idempotency_key, result, candidate_id=candidate_id, purpose=purpose)
             return result
         now = self.clock_ms()

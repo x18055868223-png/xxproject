@@ -60,6 +60,7 @@ def test_credit_covering_the_width_gives_no_call_loss():
                       valuation_ms=EXPIRY - 20 * HOUR, expiry_ms=EXPIRY,
                       short_iv_pct=35.0, long_iv_pct=40.0, net_credit_btc=0.03, width_usd=2000.0)
     assert out["probabilities"]["p_loss"] == 0.0
+    assert out["probabilities"]["loss_boundaries_usd"] == []
 
 
 def test_missing_iv_or_expired_is_unknown_not_defaulted():
@@ -105,3 +106,35 @@ def test_from_capture_reads_greeks_from_raw_books_not_snapshot_market():
     assert out["status"] == "ok"
     assert out["probabilities"]["p_itm_short"] == pytest.approx(_put()["probabilities"]["p_itm_short"])
     assert out["delta_reference"]["long_abs_delta"] == pytest.approx(0.07184)
+
+
+def test_call_p_loss_equals_the_band_between_its_two_boundaries():
+    years = 20 * HOUR / mb.YEAR_MS
+    out = mb.baseline(side="call", short_strike=84000.0, long_strike=86000.0, forward_usd=83000.0,
+                      valuation_ms=EXPIRY - 20 * HOUR, expiry_ms=EXPIRY,
+                      short_iv_pct=35.0, long_iv_pct=40.0, net_credit_btc=0.002, width_usd=2000.0)
+    low, high = out["probabilities"]["loss_boundaries_usd"]
+    iv_low = 0.35 + (low - 84000.0) / 2000.0 * 0.05   # interpolated between the legs
+    expected = (1 - mb.prob_below(83000.0, low, iv_low, years)) - (1 - mb.prob_below(83000.0, high, 0.40, years))
+    assert out["probabilities"]["p_loss"] == pytest.approx(expected)
+
+
+def test_put_credit_covering_the_width_moves_breakeven_below_the_long_strike():
+    out = _put(net_credit_btc=0.03)      # W/Kl = 0.025, so no loss down to 80000
+    low = out["probabilities"]["loss_boundaries_usd"][0]
+    assert low == pytest.approx(2000.0 / 0.03) and low < 80000.0
+    assert out["probabilities"]["p_loss"] < out["probabilities"]["p_max_loss"]
+
+
+def test_valuation_at_expiry_is_unknown():
+    assert _put(valuation_ms=EXPIRY)["status"] == "unknown"
+
+
+def test_non_positive_mark_spread_leaves_compensation_unknown():
+    assert _put(short_mark_btc=0.0007, long_mark_btc=0.0007)["compensation"]["status"] == "unknown"
+
+
+def test_from_capture_with_missing_identity_is_unknown_not_an_exception():
+    out = mb.from_capture({"contract": {"side": "put"}}, {})
+    assert out["status"] == "unknown"
+    assert {"short_strike_missing", "expiry_missing", "valuation_missing"} <= set(out["reasons"])

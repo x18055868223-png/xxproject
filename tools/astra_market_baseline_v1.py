@@ -133,7 +133,8 @@ def baseline(*, side: str, short_strike: float, long_strike: float, forward_usd:
                 probs["p_loss"] = 0.0
                 probs["loss_boundaries_usd"] = []
     else:
-        out.setdefault("notes", []).append("net_credit_unknown_p_loss_not_computed")
+        out.setdefault("notes", []).append("net_credit_unknown_p_loss_not_computed" if not (credit and credit > 0)
+                                           else "width_unknown_p_loss_not_computed")
     out.update({"status": "ok", "reasons": [], "probabilities": probs})
     return out
 
@@ -156,14 +157,23 @@ def from_capture(snapshot: Mapping[str, Any], raw_market: Mapping[str, Any]) -> 
     """Baseline from a frozen snapshot plus its as-of packet raw_payload.market.
 
     snapshot.market has the books stripped; greeks, mark_iv and the expiry forward
-    are read from raw_payload.market.{short,long}_book.
+    are read from raw_payload.market.{short,long}_book. A capture missing its contract
+    identity or clock gives status "unknown", never an exception.
     """
     contract = snapshot.get("contract") or {}
+    valuation = raw_market.get("valuation_ts_ms") or (snapshot.get("market") or {}).get("valuation_ts_ms")
+    missing = [name for name, value in (("side", contract.get("side") if contract.get("side") in {"put", "call"} else None),
+                                        ("short_strike", _num(contract.get("short_strike_usd"))),
+                                        ("long_strike", _num(contract.get("long_strike_usd"))),
+                                        ("expiry", _num(contract.get("expiry_ms"))),
+                                        ("valuation", _num(valuation))) if value is None]
+    if missing:
+        return {"schema": SCHEMA, "basis_cn": BASIS_CN, "status": "unknown",
+                "reasons": [name + "_missing" for name in missing], "probabilities": None}
     economics = snapshot.get("economics") or {}
     short_book = raw_market.get("short_book") or {}
     long_book = raw_market.get("long_book") or {}
     forward = _num(short_book.get("underlying_price")) or _num(long_book.get("underlying_price"))
-    valuation = raw_market.get("valuation_ts_ms") or (snapshot.get("market") or {}).get("valuation_ts_ms")
     return baseline(
         side=str(contract.get("side")),
         short_strike=contract.get("short_strike_usd"), long_strike=contract.get("long_strike_usd"),

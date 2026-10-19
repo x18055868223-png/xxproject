@@ -301,23 +301,43 @@ def test_scheduled_review_refetches_discovery_older_than_max_age(tmp_path):
     original, snapshots=make_workbench(tmp_path,transport=transport)
     now=[T]; captures=[]
     def discovery_capture(*, now_ms):
-        # a real fetch observes deltas at fetch time
+        # a real fetch takes a while and is stamped when it finishes, after the caller's now
         captures.append(now_ms)
+        now[0]=now_ms+2000
         rows=instruments()
         for row in rows:
-            row['delta_observed_at_ms']=now_ms-1000
-        return discovery.discover(rows,100000,now_ms,quantity_btc=1.0,width_usd=2000.0)
+            row['delta_observed_at_ms']=now[0]-1000
+        return discovery.discover(rows,100000,now[0],quantity_btc=1.0,width_usd=2000.0)
     wb=workbench.AstraWorkbench(replace(original.config,wpem_enabled=True,wpem_main_loop=True),
         discovery_capture=discovery_capture,quote_capture=original.quote_capture,
         llm_transport=transport,clock_ms=lambda: now[0])
     write_fmz(snapshots,native_gate())
     candidate_id=wb.refresh(now_ms=T)['candidates'][0]['snapshot']['candidate_id']
-    now[0]=T+301_000
+    now[0]=T+305_000   # past the 5-minute max age of the T+2000 discovery
     manual=wb.review_candidate(candidate_id,'manual-aged',authorization='Bearer secret')
     assert manual['reason']=='candidate_not_current' and len(captures)==1   # manual path unchanged
     scheduled=wb.review_candidate(candidate_id,'sched-aged',authorization=None,_scheduled=True)
-    assert len(captures)==2 and captures[-1]==T+301_000
+    assert len(captures)==2 and captures[-1]==T+305_000
     assert scheduled.get('reason')!='candidate_not_current' and len(calls)==1, scheduled
+    assert wb.cached_view()['discovery']['captured_ts_ms']==T+307_000   # view matches its candidates
+
+
+def test_scheduled_review_keeps_the_discovery_refetch_error(tmp_path):
+    original, snapshots=make_workbench(tmp_path,transport=lambda *a,**k:pytest.fail('no LLM'))
+    now=[T]; fail=[False]
+    def discovery_capture(*, now_ms):
+        if fail[0]:
+            raise TimeoutError('deribit slow')
+        return original.discovery_capture(now_ms=now_ms)
+    wb=workbench.AstraWorkbench(replace(original.config,wpem_enabled=True,wpem_main_loop=True),
+        discovery_capture=discovery_capture,quote_capture=original.quote_capture,
+        llm_transport=lambda *a,**k:pytest.fail('no LLM'),clock_ms=lambda: now[0])
+    write_fmz(snapshots,native_gate())
+    candidate_id=wb.refresh(now_ms=T)['candidates'][0]['snapshot']['candidate_id']
+    now[0]=T+301_000; fail[0]=True
+    result=wb.review_candidate(candidate_id,'sched-fail',authorization=None,_scheduled=True)
+    assert result['reason']=='candidate_not_current' and result['llm_call_count']==0
+    assert result['discovery_refetch_error']=='deribit_unavailable'   # upstream code, as in refresh gaps
 
 
 def test_scheduled_review_rejects_http_shortcut(tmp_path):
