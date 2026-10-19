@@ -522,7 +522,53 @@ def _close_quote(point: Mapping[str, Any]) -> dict[str, Any]:
     raw = _mapping(packet.get("raw_payload"))
     market = _mapping(raw.get("market"))
     asof = _point_asof(point, snapshot) or _dig(snapshot, ("market", "valuation_ts_ms")) or 0
-    return core.reference_close_quote(_mapping(snapshot.get("contract")), market, int(asof), fee=_close_fee(point))
+    fee = _close_fee(point)
+    contract = _mapping(snapshot.get("contract"))
+    quote = core.reference_close_quote(contract, market, int(asof), fee=fee)
+    bound = _close_upper_bound(contract, market, quote, fee)
+    if bound is not None:
+        quote["upper_bound"] = bound
+    return quote
+
+
+def _close_upper_bound(contract: Mapping[str, Any], market: Mapping[str, Any],
+                       quote: Mapping[str, Any], fee: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Near expiry a deep OTM protection leg often has no bid at all. When that is the only
+    quote gap, the close cost still has a conservative upper bound: buy the short back at its
+    asks, sell what the protection bids take, value the rest of that leg at zero. Never a fill
+    price; the exact debit stays null. Kept here, not in the core module, whose source hash
+    is part of frozen review inputs."""
+    if list(quote.get("quote_gap_reasons") or []) != ["long_depth_insufficient"]:
+        return None
+    try:
+        quantity = float(contract["quantity_btc"])
+        short_buy, _ = core._consume_depth(_mapping(market.get("short_book")).get("asks"), quantity, bid=False)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if short_buy is None:
+        return None
+    long_bids = core._clean_depth_levels(_mapping(market.get("long_book")).get("bids"))
+    long_bids.sort(key=lambda item: item[0], reverse=True)
+    remaining, proceeds = quantity, 0.0
+    for price, amount in long_bids:
+        take = min(amount, remaining)
+        proceeds += take * price
+        remaining -= take
+    # The exact close fee is unknown for the same reason (no bids to sell into); the bound
+    # uses the fee of its own trades (short bought back, partial protection sale).
+    bound_fee = _number(quote.get("close_fee_btc"))
+    if bound_fee is None:
+        bound_fee = _number(fee.get("bound_close_fee_btc"))
+    debit = short_buy - proceeds
+    return {
+        "basis": "long_bid_shortfall_valued_zero",
+        "debit_upper_bound_btc": debit,
+        "close_fee_upper_bound_btc": bound_fee,
+        "net_debit_upper_bound_after_close_fee_btc": debit + bound_fee if bound_fee is not None else None,
+        "long_bid_filled_btc": quantity - max(remaining, 0.0),
+        "long_sale_partial_btc": proceeds,
+        "executable_or_filled": False,
+    }
 
 
 def _quote_clock_from_quote(quote: Mapping[str, Any]) -> int | None:
@@ -691,10 +737,10 @@ def _reference_result(baseline: Mapping[str, Any], close_quote: Mapping[str, Any
         "close_debit_btc": close_debit,
         "close_fee_btc": close_fee,
         "reference_result_btc": result,
-        "close_debit_upper_bound_btc": bound_debit if lower_bound is not None else None,
-        "close_net_debit_upper_bound_btc": bound_net if lower_bound is not None else None,
-        "reference_result_lower_bound_btc": lower_bound,
-        "bound_basis": bound.get("basis") if lower_bound is not None else None,
+        # bound fields only when a bound exists: frozen review inputs replay byte-identical
+        **({"close_debit_upper_bound_btc": bound_debit, "close_net_debit_upper_bound_btc": bound_net,
+            "reference_result_lower_bound_btc": lower_bound, "bound_basis": bound.get("basis")}
+           if lower_bound is not None else {}),
         "asof_ms": _quote_clock_from_quote(close_quote),
         "source_book_hash": close_quote.get("source_book_hash"),
         "gap_reasons": sorted(set([*gaps, *(close_quote.get("gap_reasons") or [])])),
@@ -1049,8 +1095,9 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
         "close_debit_btc": _number(close.get("debit_btc")),
         "close_fee_btc": _number(close.get("close_fee_btc")),
         "reference_result_btc": _number(reference.get("reference_result_btc")),
-        # protection leg without bid valued at zero: a conservative bound, null otherwise
-        "reference_result_lower_bound_btc": _number(reference.get("reference_result_lower_bound_btc")),
+        # protection leg without bid valued at zero: a conservative bound, only when present
+        **({"reference_result_lower_bound_btc": _number(reference["reference_result_lower_bound_btc"])}
+           if reference.get("reference_result_lower_bound_btc") is not None else {}),
         "reference_gaps": list(reference.get("gap_reasons") or []),
         "quote_gaps": list(quote.get("gap_reasons") or []),
         # The workbench gate stopped gating on 2026-10-13; the producer's native state keeps the

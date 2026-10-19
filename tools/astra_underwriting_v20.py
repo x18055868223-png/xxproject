@@ -442,37 +442,6 @@ def reference_close_quote(
     quote_reasons = sorted(set(reasons))
     debit = None if quote_reasons else leg_amounts["short"] - leg_amounts["long"]
     net_debit = debit + close_fee if debit is not None and close_fee is not None else None
-    # Near expiry a deep OTM protection leg often has no bid at all. When that is the only
-    # gap, the close cost still has a conservative upper bound: sell what the bids take and
-    # value the rest of the protection leg at zero. Never a fill price; the exact debit
-    # above stays null.
-    bound = None
-    if quote_reasons == ["long_depth_insufficient"] and leg_amounts.get("short") is not None:
-        long_bids = _clean_depth_levels(books["long"][0].get("bids"))
-        long_bids.sort(key=lambda item: item[0], reverse=True)
-        remaining, proceeds = quantity, 0.0
-        for price, amount in long_bids:
-            take = min(amount, remaining)
-            proceeds += take * price
-            remaining -= take
-        # The exact close fee is unknown here for the same reason (no bids to sell into); the
-        # caller may pass the fee of this bound's own trades (short bought back, partial sale).
-        bound_fee = close_fee
-        if bound_fee is None and isinstance(fee, Mapping):
-            try:
-                bound_fee = _number("bound_close_fee_btc", fee.get("bound_close_fee_btc"))
-            except ValueError:
-                bound_fee = None
-        bound = {
-            "basis": "long_bid_shortfall_valued_zero",
-            "debit_upper_bound_btc": leg_amounts["short"] - proceeds,
-            "close_fee_upper_bound_btc": bound_fee,
-            "net_debit_upper_bound_after_close_fee_btc": (
-                leg_amounts["short"] - proceeds + bound_fee if bound_fee is not None else None),
-            "long_bid_filled_btc": quantity - max(remaining, 0.0),
-            "long_sale_partial_btc": proceeds,
-            "executable_or_filled": False,
-        }
     return {
         "kind": "sequential_leg_book_close_estimate",
         "side": contract.get("side"),
@@ -493,7 +462,6 @@ def reference_close_quote(
         "quote_gap_reasons": quote_reasons,
         "fee_gap_reasons": sorted(set(fee_reasons)),
         "executable_or_filled": False,
-        "upper_bound": bound,
     }
 
 

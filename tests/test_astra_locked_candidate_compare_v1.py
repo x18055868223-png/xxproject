@@ -413,15 +413,20 @@ def test_real_initial_public_view_context_refs_keep_missing_source_clock_none():
     assert len(output["process"]["gaps"]) == 1
 
 
+def _bound(payload, fee=None):
+    snapshot = core.evaluate(payload)
+    fee = fee or {"basis": "unknown", "gap_reasons": ["close_fee_unavailable"]}
+    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T, fee=fee)
+    return quote, followup._close_upper_bound(snapshot["contract"], payload["market"], quote, fee)
+
+
 def test_protection_leg_without_bid_gives_a_zero_valued_close_upper_bound():
     # 2026-10-15/16: near expiry the deep OTM protection leg had no bid at all.
     payload = payload_with_components()
     payload["market"]["long_book"]["bids"] = []
-    snapshot = core.evaluate(payload)
     fee = {"basis": "configured_assumption", "close_fee_btc": 0.00002, "covers": ["early_exit"]}
-    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T, fee=fee)
+    quote, bound = _bound(payload, fee)
     assert quote["debit_btc"] is None and quote["quote_gap_reasons"] == ["long_depth_insufficient"]
-    bound = quote["upper_bound"]
     assert bound["basis"] == "long_bid_shortfall_valued_zero"
     assert bound["debit_upper_bound_btc"] == pytest.approx(0.0008)  # short ask, protection leg at 0
     assert bound["net_debit_upper_bound_after_close_fee_btc"] == pytest.approx(0.00082)
@@ -432,10 +437,10 @@ def test_partial_protection_bids_count_and_only_the_shortfall_is_zero():
     payload = payload_with_components()
     quantity = core.evaluate(payload)["contract"]["quantity_btc"]
     payload["market"]["long_book"]["bids"] = [[0.002, quantity / 2]]
-    snapshot = core.evaluate(payload)
-    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T)
-    assert quote["upper_bound"]["long_sale_partial_btc"] == pytest.approx(0.002 * quantity / 2)
-    assert quote["upper_bound"]["debit_upper_bound_btc"] == pytest.approx(0.0008 - 0.002 * quantity / 2)
+    _, bound = _bound(payload)
+    assert bound["long_sale_partial_btc"] == pytest.approx(0.002 * quantity / 2)
+    assert bound["debit_upper_bound_btc"] == pytest.approx(0.0008 - 0.002 * quantity / 2)
+    assert bound["net_debit_upper_bound_after_close_fee_btc"] is None  # no fee range known
 
 
 @pytest.mark.parametrize("mutate", [
@@ -445,9 +450,8 @@ def test_partial_protection_bids_count_and_only_the_shortfall_is_zero():
 def test_no_upper_bound_when_any_other_gap_remains(mutate):
     payload = payload_with_components()
     mutate(payload)
-    snapshot = core.evaluate(payload)
-    quote = core.reference_close_quote(snapshot["contract"], payload["market"], T)
-    assert quote["debit_btc"] is None and quote["upper_bound"] is None
+    quote, bound = _bound(payload)
+    assert quote["debit_btc"] is None and bound is None
 
 
 def test_followup_reports_a_lower_bound_result_when_the_protection_leg_has_no_bid():
