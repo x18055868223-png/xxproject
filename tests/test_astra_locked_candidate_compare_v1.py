@@ -475,3 +475,17 @@ def test_followup_reports_a_lower_bound_result_when_the_protection_leg_has_no_bi
     assert any("保守估计" in line for line in output["limitations_cn"])
     row = row_by_key(output, "reference.reference_result_btc")
     assert row["status"] == "unknown" and "不低于" in row["change_cn"]
+
+
+def test_bound_fee_covers_the_partial_protection_sale():
+    payload = payload_with_components()
+    for leg in ("short", "long"):
+        payload["metadata"][leg].update(taker_commission=0.0003, settlement_period="day")
+    quantity = core.evaluate(payload)["contract"]["quantity_btc"]
+    payload["market"]["long_book"]["bids"] = [[0.002, quantity / 2]]
+    short_ask = 0.0008 / quantity
+    expected = min(0.0003, 0.125 * short_ask) * quantity + min(0.0003, 0.125 * 0.002) * quantity / 2
+    fee = followup._close_fee_bound({"quantity_btc": quantity}, payload["metadata"], payload["market"])
+    assert fee == pytest.approx(expected)
+    payload["market"]["long_book"]["bids"] = [["bad", 1]]
+    assert followup._close_fee_bound({"quantity_btc": quantity}, payload["metadata"], payload["market"]) is None
