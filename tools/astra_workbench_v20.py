@@ -4851,6 +4851,17 @@ class AstraWorkbench:
                 previous = locked["latest"]["candidate"]
                 discovered = self._locked_binding(episode["contract"])
                 discovery_ts = now
+            elif (_scheduled and previous
+                  and not (isinstance(discovery_ts, int) and 0 <= now - discovery_ts <= discovery.DEFAULT_DELTA_MAX_AGE_MS)):
+                # The view's discovery can already be a cache hit near its 5-minute TTL, and the
+                # second side waits out the first side's LLM call (2026-10-14..19: 7 idle side
+                # slots). A scheduled run fetches discovery again; the candidate_id check below
+                # still rejects the run if the market moved to different legs.
+                try:
+                    discovered = self.discovery_capture(now_ms=now)
+                    discovery_ts = discovered.get("captured_ts_ms")
+                except Exception:
+                    pass  # stays candidate_not_current
             item = None
             if previous and isinstance(discovery_ts, int) and 0 <= now - discovery_ts <= discovery.DEFAULT_DELTA_MAX_AGE_MS:
                 fact = self.latest_fact(now)

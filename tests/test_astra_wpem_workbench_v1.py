@@ -10,7 +10,8 @@ from tools import astra_workbench_v20 as workbench
 from tools import astra_wpem_product_review_v1 as product
 from tools import astra_wpem_workbench_v1 as adapter
 from test_astra_auditable_observation_pipeline import points
-from test_astra_workbench_v20 import make_workbench, write_fmz, native_gate, T, positive_risk, fake_quote_capture
+from test_astra_workbench_v20 import make_workbench, write_fmz, native_gate, T, positive_risk, fake_quote_capture, instruments
+from tools import astra_underwriting_discovery_v20 as discovery
 
 
 def wpem_workbench(tmp_path, transport=None, risk_provider=None, quote_capture=None):
@@ -287,6 +288,36 @@ def test_scheduled_reviews_run_once_per_utc_slot_for_both_sides(tmp_path):
     status=wb.scheduled_review_status(T+60*60_000)
     assert status['hours_utc']==[8] and status['last_slot']=='2026-09-25T08'
     assert status['next_due_ms']==T+86_400_000
+
+
+def test_scheduled_review_refetches_discovery_older_than_max_age(tmp_path):
+    # 2026-10-14..19: the view's discovery was a cache hit near its 5-minute TTL and the
+    # second side waited out the first side's LLM call, so scheduled reviews came back
+    # candidate_not_current without any LLM call.
+    calls=[]
+    def transport(key,model,request,timeout,endpoint=None):
+        calls.append(request)
+        return {'model':model,'choices':[{'finish_reason':'stop','message':{'content':json.dumps(points())}}]}
+    original, snapshots=make_workbench(tmp_path,transport=transport)
+    now=[T]; captures=[]
+    def discovery_capture(*, now_ms):
+        # a real fetch observes deltas at fetch time
+        captures.append(now_ms)
+        rows=instruments()
+        for row in rows:
+            row['delta_observed_at_ms']=now_ms-1000
+        return discovery.discover(rows,100000,now_ms,quantity_btc=1.0,width_usd=2000.0)
+    wb=workbench.AstraWorkbench(replace(original.config,wpem_enabled=True,wpem_main_loop=True),
+        discovery_capture=discovery_capture,quote_capture=original.quote_capture,
+        llm_transport=transport,clock_ms=lambda: now[0])
+    write_fmz(snapshots,native_gate())
+    candidate_id=wb.refresh(now_ms=T)['candidates'][0]['snapshot']['candidate_id']
+    now[0]=T+301_000
+    manual=wb.review_candidate(candidate_id,'manual-aged',authorization='Bearer secret')
+    assert manual['reason']=='candidate_not_current' and len(captures)==1   # manual path unchanged
+    scheduled=wb.review_candidate(candidate_id,'sched-aged',authorization=None,_scheduled=True)
+    assert len(captures)==2 and captures[-1]==T+301_000
+    assert scheduled.get('reason')!='candidate_not_current' and len(calls)==1, scheduled
 
 
 def test_scheduled_review_rejects_http_shortcut(tmp_path):
