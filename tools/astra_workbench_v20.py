@@ -4061,7 +4061,9 @@ class AstraWorkbench:
             return json.loads(path.read_text(encoding="utf-8"))
         with self._view_lock:
             point = deepcopy(self._lockable_points.get(snapshot_id))
-            view = deepcopy(self._current_view or {})
+        # the served view: read-time layers (events, decision reduction, spatial position,
+        # expiry walls, cross asset) are attached when the view is served, not in the cache
+        view = self.cached_view() or {}
         if not point:
             raise WorkbenchError(404, "case_snapshot_unavailable", "this capture is no longer held; use a current one")
         packet = point.get("packet") or {}

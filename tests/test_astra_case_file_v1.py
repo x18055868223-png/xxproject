@@ -92,6 +92,9 @@ def test_workbench_case_file_is_built_from_the_held_capture_and_frozen(tmp_path)
     case = wb.case_file(snapshot_id)
     assert case["snapshot_id"] == snapshot_id and case["candidate_id"] == item["snapshot"]["candidate_id"]
     assert case["layers"]["L8"][case["refs"]["L8.decision_path"]["index"]]["quality"] == "ok"
+    # read-time layers of the served view are present, not missing
+    for ref in ("L2.decision_reduction", "L7.events", "L7.cross_asset"):
+        assert case["layers"][ref[:2]][case["refs"][ref]["index"]]["quality"] != "missing", ref
     assert wb.case_file(snapshot_id) == case                    # frozen: same content on re-read
     assert (wb.config.state_dir / "case_files" / (snapshot_id + ".json")).exists()
     with pytest.raises(workbench.WorkbenchError) as missing:
