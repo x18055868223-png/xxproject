@@ -107,3 +107,18 @@ def test_each_refresh_records_its_step_timing(tmp_path):
     from tools import astra_chain_audit_v1 as chain
     record = chain.snapshot_record(view, kind="periodic", now_ms=T)
     assert record["refresh"]["total_ms"] == timing["total_ms"]
+
+
+def test_a_single_oversized_row_is_not_archived_again_and_again(tmp_path, monkeypatch):
+    wb, _ = make_workbench(tmp_path, api_key=None)
+    monkeypatch.setattr(module, "DAILY_SNAPSHOT_ROTATE_BYTES", 1_000)
+    path = wb.config.daily_snapshots_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps({"bjt_day": f"d{i}", "pad": "z" * 2_000}) + "\n" for i in range(3)),
+                    encoding="utf-8")
+    archived = []
+    real_open = module.gzip.open
+    monkeypatch.setattr(module.gzip, "open", lambda *a, **k: archived.append(a[0]) or real_open(*a, **k))
+    for _ in range(4):
+        wb._rotate_daily_snapshots()
+    assert len(archived) == 1  # archive names repeat under a frozen clock, so count the writes

@@ -90,7 +90,7 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
             raise ValueError(f"{leg} instrument metadata is missing or mismatched")
         metadata[leg] = meta
     for leg, name in (("short", short_instrument), ("long", long_instrument)):
-        failure: Exception | None = None
+        failures: list[Exception] = []
         # One immediate retry: a single book read occasionally fails (2026-10-15/16: five
         # one-minute holes in lock tracking, each fine on the next read).
         for _ in range(BOOK_ATTEMPTS):
@@ -100,17 +100,18 @@ def capture_candidate(short_instrument: str, long_instrument: str, quantity_btc:
                     raise ValueError(f"{leg} order book is missing or mismatched")
                 receipts[leg] = int(now())
                 books[leg] = book
-                failure = None
+                failures = []
                 break
             except Exception as exc:
-                failure = exc
-        if failure is not None:
+                failures.append(exc)
+        if failures:
             if not allow_partial:
-                raise failure
+                raise failures[-1]
             # No substitute book or zero price. A surviving leg can still carry
             # the same named index; the missing book keeps all quote math closed.
+            # The first failure is the cause; a retry can only add a consequence of it.
             books[leg] = {}
-            capture_gaps.append(f"{leg}_book_unavailable:{failure_code(failure)}")
+            capture_gaps.append(f"{leg}_book_unavailable:{failure_code(failures[0])}")
     valuation_ms = int(now())
     reference_leg = "long" if allow_partial and not books["short"].get("index_price") else "short"
     reference_price = books[reference_leg].get("index_price")

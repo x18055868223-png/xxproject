@@ -175,3 +175,53 @@ def test_net_gamma_data_problems_stay_invalid(tmp_path):
     fixtures.write_fmz(path, gate)
     rejected = wb.latest_fact(fixtures.T)['space_input_rejected']
     assert rejected[0]['product_id'] == 'gex.netgamma.proxy.v1'
+
+
+def _book(name, ts):
+    return {'instrument_name': name, 'timestamp': ts, 'state': 'open', 'index_price': 100000,
+            'bids': [[.007, 1]], 'asks': [[.008, 1]]}
+
+
+def test_one_network_error_on_a_book_read_is_retried_inside_the_engine_loader(tmp_path, monkeypatch):
+    # A retry outside the loader would meet the engine's fetch backoff (3 s) and fail again.
+    clock = [fixtures.T]
+    wb, _ = fixtures.make_workbench(tmp_path, clock=lambda: clock[0])
+    names = [row['instrument_name'] for row in fixtures.instruments()][:2]
+    metas = {row['instrument_name']: row for row in fixtures.instruments()}
+    failures = {names[1]: 1}
+    def fetch(path, params):
+        name = params['instrument_name']
+        if path == 'public/get_instrument':
+            return metas[name]
+        if failures.get(name):
+            failures[name] -= 1
+            raise ConnectionResetError('reset by peer')
+        return _book(name, clock[0])
+    monkeypatch.setattr(fixtures.workbench.public_quote, 'public_transport', fetch)
+    payload = wb._default_quote_capture(*names, 1.0, now_ms=clock[0], allow_partial=True)
+    assert payload.get('capture_gaps', []) == []
+    assert payload['market']['long_book']['instrument_name'] == names[1]
+
+
+def test_a_book_read_that_keeps_failing_names_the_network_error_not_staleness(tmp_path, monkeypatch):
+    clock = [fixtures.T]
+    wb, _ = fixtures.make_workbench(tmp_path, clock=lambda: clock[0])
+    names = [row['instrument_name'] for row in fixtures.instruments()][:2]
+    metas = {row['instrument_name']: row for row in fixtures.instruments()}
+    broken = set()
+    def fetch(path, params):
+        name = params['instrument_name']
+        if path == 'public/get_instrument':
+            return metas[name]
+        if name in broken:
+            raise ConnectionResetError('reset by peer')
+        return _book(name, clock[0])
+    monkeypatch.setattr(fixtures.workbench.public_quote, 'public_transport', fetch)
+    wb._default_quote_capture(*names, 1.0, now_ms=clock[0])  # an older record now exists
+    clock[0] += 60_000
+    broken.add(names[1])
+    payload = wb._default_quote_capture(*names, 1.0, now_ms=clock[0], allow_partial=True)
+    assert len(payload['capture_gaps']) == 1
+    gap = payload['capture_gaps'][0]
+    assert gap.startswith('long_book_unavailable:') and 'fetch_stale' not in gap
+    assert 'BACKOFF' not in gap

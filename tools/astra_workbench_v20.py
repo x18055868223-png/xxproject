@@ -1997,7 +1997,12 @@ class AstraWorkbench:
             scope = {"instrument_name": params["instrument_name"], "depth": params.get("depth"),
                      "permission": "public_read_only"}
             def loader():
-                values = public_quote.public_transport(path, params)
+                try:
+                    values = public_quote.public_transport(path, params)
+                except Exception:
+                    # One retry for a transient network error, inside the loader: once the
+                    # engine records the failure, its backoff refuses an immediate re-fetch.
+                    values = public_quote.public_transport(path, params)
                 received = self.clock_ms()
                 observed = received if path == "public/get_instrument" else values.get("timestamp")
                 return {"values": values, "observation_end_ms": observed,
@@ -2007,9 +2012,13 @@ class AstraWorkbench:
             decision = qualified.get("usage_decision", {})
             if not decision.get("can_use"):
                 error = ValueError("public data unavailable for requested quote use")
-                # e.g. fetch_stale: the book's exchange clock was already older than the
-                # fetch TTL when it arrived; kept on the capture gap for the series.
-                error.code = "fetch_" + str(decision.get("status") or "rejected").lower()
+                fetched = record.get("fetch_decision") or {}
+                # A failed read that fell back to an old record carries the read's own error;
+                # otherwise e.g. fetch_stale: the book's exchange clock was already older
+                # than the fetch TTL when it arrived. Kept on the capture gap.
+                error.code = (str(fetched["error_code"]) if fetched.get("status") == "FETCH_ERROR_USING_CACHE"
+                              and fetched.get("error_code")
+                              else "fetch_" + str(decision.get("status") or "rejected").lower())
                 raise error
             if path == "public/get_instrument":
                 metadata_clocks[params["instrument_name"]] = record["time"]["retrieved_at_ms"]
@@ -2971,12 +2980,14 @@ class AstraWorkbench:
             contract["side"], self._locked_binding(contract), fact, gate, now_ms,
             btc_map_projection=projection, tracking=True, sink=sink)
         if (item.get("snapshot") or {}).get("candidate_id") != episode["candidate_id"]:
-            # Why (the capture's error type) rides in detail; the sampler appends it to the
-            # gap reason, the HTTP code stays the stable one the page maps.
-            why = [r for r in ((item.get("review_gate") or {}).get("reasons") or [])
-                   if r != "candidate_refresh_error"][:1]
-            raise WorkbenchError(409, "locked_quote_unavailable", "original contract capture is unavailable",
-                                 detail={"cause": why[0]} if why else None)
+            # When the capture itself failed, its error type rides on the exception (not in
+            # the HTTP payload); the sampler appends it to the gap reason.
+            error = WorkbenchError(409, "locked_quote_unavailable", "original contract capture is unavailable")
+            if item.get("status") == "error":
+                why = [r for r in ((item.get("review_gate") or {}).get("reasons") or [])
+                       if r != "candidate_refresh_error"][:1]
+                error.cause = why[0] if why else None
+            raise error
         snapshot_id = item["snapshot"]["snapshot_id"]
         local_view = self._wpem_view_for_candidate(view, item)
         local_view["space_gate"] = gate
@@ -3088,9 +3099,8 @@ class AstraWorkbench:
                         pass  # the next retention pass backfills it before thinning
             except Exception as exc:
                 reason = getattr(exc, "code", None) or "locked_capture_failed:" + type(exc).__name__
-                detail = getattr(exc, "detail", None)
-                cause = detail.get("cause") if isinstance(detail, Mapping) else None
-                if cause and ":" not in reason:
+                cause = getattr(exc, "cause", None)
+                if isinstance(cause, str) and cause and ":" not in reason:
                     reason = f"{reason}:{cause}"  # the page maps the part before ":"
                 try:
                     self.locked_candidates.record_gap(episode_id, now_ms=max(now_ms, self.clock_ms()), reason=reason)
@@ -4594,6 +4604,8 @@ class AstraWorkbench:
             budget = int(DAILY_SNAPSHOT_ROTATE_BYTES * DAILY_SNAPSHOT_KEEP_FRACTION)
             while len(lines) > 1 and sum(len(line.encode("utf-8")) for line in lines) > budget:
                 lines.pop(0)
+            if len(lines) <= 1 and len(_read_jsonl_tail(path, 2)) <= 1:
+                return  # one oversized row alone: archiving it again would change nothing
             archive = path.with_name(f"daily_snapshots-archive-{self.clock_ms()}.jsonl.gz")
             with path.open("rb") as source, gzip.open(archive, "wb", compresslevel=6) as target:
                 while True:
