@@ -62,6 +62,7 @@ if __package__:
     from . import astra_locked_candidate_store_v1 as locked_store
     from . import astra_locked_candidate_compare_v1 as locked_compare
     from . import astra_workbench_reading_v1 as reading
+    from . import astra_case_file_v1 as case_file_core
     from .astra_workbench_session_v1 import WorkbenchSessions
     from . import signal_llm_review
 else:  # direct CLI execution from tools/
@@ -95,6 +96,7 @@ else:  # direct CLI execution from tools/
     import astra_locked_candidate_store_v1 as locked_store
     import astra_locked_candidate_compare_v1 as locked_compare
     import astra_workbench_reading_v1 as reading
+    import astra_case_file_v1 as case_file_core
     from astra_workbench_session_v1 import WorkbenchSessions
     import signal_llm_review
 
@@ -4048,6 +4050,36 @@ class AstraWorkbench:
                 "realized_vol": (self._expiry_gamma or {}).get("realized_vol"),
                 "cross_window": window, "transitions": self.recent_transitions(limit=30)}
 
+    def case_file(self, snapshot_id: str) -> dict[str, Any]:
+        """The frozen case file of one displayed capture (docs/opus/03). Built once from the
+        exact lockable point (snapshot + raw books), the read view and the program reading,
+        then stored; later reads return the stored bytes' content unchanged."""
+        if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id or ""):
+            raise WorkbenchError(400, "bad_snapshot_id", "a 64-hex snapshot id is required")
+        path = self.config.state_dir / "case_files" / (snapshot_id + ".json")
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        with self._view_lock:
+            point = deepcopy(self._lockable_points.get(snapshot_id))
+            view = deepcopy(self._current_view or {})
+        if not point:
+            raise WorkbenchError(404, "case_snapshot_unavailable", "this capture is no longer held; use a current one")
+        packet = point.get("packet") or {}
+        snapshot = packet.get("snapshot") or {}
+        raw_market = ((packet.get("raw_payload") or {}).get("market")) or {}
+        item = next((c for c in view.get("candidates") or []
+                     if ((c.get("snapshot") or {}).get("snapshot_id")) == snapshot_id), None) or point.get("candidate")
+        now = self.clock_ms()
+        try:
+            dp_reading = decision_path.build(self._dp_frame(self._dp_item(item, now), now))
+        except Exception:
+            dp_reading = None
+        body = case_file_core.build(snapshot=snapshot, raw_market=raw_market,
+                                    asof_ms=int((snapshot.get("market") or {}).get("valuation_ts_ms") or now),
+                                    item=item, view=view, dp_reading=dp_reading)
+        _write_json_atomic(path, body)
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def _dp_current_candidate(self, candidate_id: str, snapshot_id: str | None = None) -> dict[str, Any] | None:
         with self._view_lock:
             for entry in (self._current_view or {}).get("candidates") or []:
@@ -5595,6 +5627,15 @@ def make_handler(workbench: AstraWorkbench):
                 try:
                     proof = workbench.wpem_evidence(unquote(parsed.path.rsplit("/", 1)[-1]), full=False)
                     self._json(200, wpem_workbench.public_evidence(proof))
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                return
+            if parsed.path.startswith("/api/workbench/case-file/"):
+                if not sessions.authorize("GET", self.headers, self.client_address[0]).ok:
+                    self._json(401, {"schema": SCHEMA, "code": "unauthorized"})
+                    return
+                try:
+                    self._json(200, workbench.case_file(unquote(parsed.path.rsplit("/", 1)[-1])))
                 except WorkbenchError as exc:
                     self._json(exc.status_code, exc.as_payload())
                 return
