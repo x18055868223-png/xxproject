@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/research_report@0.3",
+  "title": "research_report@0.3 — stage 2 research report (manual 07 §4.2)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "task_id", "case_id", "agent", "baseline_ack", "premise_audit", "answers",
+               "added_questions", "drivers", "rating", "synthesis"],
+  "$defs": {
+    "prob": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "sources": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "direction": {"enum": ["riskier", "safer", "unclear"]},
+    "text": {"type": "string", "minLength": 1, "maxLength": 2000}
+  },
+  "properties": {
+    "protocol": {"const": "research_report@0.3"},
+    "task_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "case_id": {"type": "string"},
+    "agent": {
+      "type": "object", "additionalProperties": false, "required": ["name", "model", "stage1_at", "stage2_at"],
+      "properties": {"name": {"type": "string"}, "model": {"type": "string"},
+                     "stage1_at": {"type": "string"}, "stage2_at": {"type": "string"}}
+    },
+    "baseline_ack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "p_itm_short", "p_touch_short", "p_loss", "p_max_loss", "compensation"],
+      "properties": {
+        "status": {"enum": ["ok", "unknown"]},
+        "p_itm_short": {"$ref": "#/$defs/prob"}, "p_touch_short": {"$ref": "#/$defs/prob"},
+        "p_loss": {"$ref": "#/$defs/prob"}, "p_max_loss": {"$ref": "#/$defs/prob"},
+        "compensation": {"enum": ["rich", "fair", "thin", null]}
+      }
+    },
+    "premise_audit": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["question_id", "premise_index", "verdict", "note_cn"],
+        "properties": {
+          "question_id": {"type": "string"}, "premise_index": {"type": "integer", "minimum": 0},
+          "verdict": {"enum": ["confirmed", "incorrect", "unverifiable"]}, "note_cn": {"type": "string"}
+        }
+      }
+    },
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["question_id", "answer_cn", "sources", "after_asof", "confidence", "residual_unknown_cn"],
+        "properties": {
+          "question_id": {"type": "string"}, "answer_cn": {"$ref": "#/$defs/text"},
+          "sources": {"$ref": "#/$defs/sources"}, "after_asof": {"type": "boolean"},
+          "confidence": {"$ref": "#/$defs/confidence"}, "residual_unknown_cn": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "added_questions": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "question_cn", "why_material_cn", "answer_cn", "sources", "confidence"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^G[0-9]+$"}, "question_cn": {"$ref": "#/$defs/text"},
+          "why_material_cn": {"$ref": "#/$defs/text"}, "answer_cn": {"$ref": "#/$defs/text"},
+          "sources": {"$ref": "#/$defs/sources"}, "confidence": {"$ref": "#/$defs/confidence"}
+        }
+      }
+    },
+    "drivers": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["finding_cn", "from", "bears_on", "direction", "basis_cn", "lineage"],
+        "properties": {
+          "finding_cn": {"$ref": "#/$defs/text"}, "from": {"type": "string"},
+          "bears_on": {"enum": ["touch_prob", "expiry_loss_prob", "tail_loss", "compensation"]},
+          "direction": {"$ref": "#/$defs/direction"}, "basis_cn": {"$ref": "#/$defs/text"},
+          "lineage": {"type": "string"}
+        }
+      }
+    },
+    "rating": {
+      "type": "object", "additionalProperties": false,
+      "required": ["risk_vs_baseline", "compensation", "grade", "confidence", "compensation_note_cn"],
+      "properties": {
+        "risk_vs_baseline": {"enum": ["much_safer", "safer", "in_line", "riskier", "much_riskier"]},
+        "compensation": {"enum": ["rich", "fair", "thin", null]},
+        "grade": {"enum": ["A", "B", "C", "D", "E", "U"]},
+        "confidence": {"$ref": "#/$defs/confidence"},
+        "compensation_note_cn": {"type": ["string", "null"]}
+      }
+    },
+    "synthesis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["q1_cn", "q2_cn", "counter_evidence_cn", "key_uncertainties_cn", "lean",
+                   "lean_deviation_reason_cn", "conditions_cn", "reassess_if_cn"],
+      "properties": {
+        "q1_cn": {"$ref": "#/$defs/text"}, "q2_cn": {"$ref": "#/$defs/text"},
+        "counter_evidence_cn": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "key_uncertainties_cn": {"type": "array", "items": {"type": "string"}},
+        "lean": {"enum": ["underwrite", "decline", "watch"]},
+        "lean_deviation_reason_cn": {"type": ["string", "null"]},
+        "conditions_cn": {"type": "string"},
+        "reassess_if_cn": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

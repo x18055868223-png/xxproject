@@ -96,6 +96,18 @@ class _Case:
         return index
 
 
+HEALTH_NOTE_CN = ("Deribit 报价类产品（order_book、two_leg_book、instrument、index 等）按需拉取，平时显示 STALE 或 MISSING "
+                  "属正常，本候选的报价新鲜度看 L2.quote 与两腿盘口时间；risk.* 目前没有生产者，属设计现状；"
+                  "NOT_CONNECTED 为尚未接入。判断某个缺口是否影响本保单，看 affected_consumers 与对应案卷条目的 quality。")
+
+
+def _by_status(health: Mapping[str, Mapping[str, Any]]) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {}
+    for pid, row in health.items():
+        groups.setdefault(str(row.get("status")), []).append(pid)
+    return {status: sorted(ids) for status, ids in sorted(groups.items())}
+
+
 def _stale_quality(meta: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
     meta = meta or {}
     if meta.get("stale") is True:
@@ -146,7 +158,7 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
     case.add("L0.health.products", "数据产品健康（状态、原因码、年龄、影响的消费者）", health,
              lineage=["workbench.data_health"], source="astra_workbench_v20._data_health",
              asof_ms=(view.get("data_health") or {}).get("generated_at_ms"),
-             relations={"not_ok": sorted(pid for pid, h in health.items() if h["status"] not in {"OK", "CURRENT"})})
+             relations={"by_status": _by_status(health), "note_cn": HEALTH_NOTE_CN})
     case.add("L0.gaps", "本次捕获与视图的缺口码",
              {"view": view.get("gaps") or [], "capture": item.get("capture_gaps") or [],
               "snapshot": snapshot.get("gap_reasons") or [], "quote": quote.get("gap_reasons") or [],
