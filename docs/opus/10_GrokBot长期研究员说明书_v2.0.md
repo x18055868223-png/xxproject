@@ -1,4 +1,4 @@
-# xxproject 长期研究员说明书 v2.2（致 GrokBot）
+# xxproject 长期研究员说明书 v2.3（致 GrokBot）
 
 日期：2026-10-20　本说明书取代 07 号（v0.1）与 09 号（v0.1）
 服务器副本：`/var/lib/xxproject/research_archive/MANUAL.md`
@@ -79,8 +79,8 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 | 路径 | 内容 | 频率 |
 |---|---|---|
 | `cases/<UTC日>/<时>_<侧>_<case_id>.json.gz` | 完整事实案卷 `case_file@0.1`（L0–L8） | 每小时两侧各一份 |
-| `ledger/<UTC日>.jsonl` | 合约路径账本 `ledger_row@0.1` | 每 30 分钟一行；实质变化时补一行；到期前 3 小时每 10 分钟一行；`trigger` 字段说明原因 |
-| `inquiry/<UTC日>/…json` | 提问者（内置 LLM）的事实底稿与问题单 | UTC 02、14 时两侧各一份 |
+| `ledger/<UTC日>.jsonl` | 合约路径账本 `ledger_row@0.1` | 每 30 分钟一行；实质变化时补一行；到期前 3 小时每 10 分钟一行；`trigger` 字段说明原因，`trigger_detail` 说明变了什么（只有 `state:*` 即仅状态变化，如 M-DIE 来回跳） |
+| `inquiry/<UTC日>/…json` | 提问者（内置 LLM）的事实底稿与问题单 | UTC 02、14 时两侧各一份；新合约首次出现后的第一份案卷也会立即运行一次 |
 | `outcomes/<到期日>.jsonl` | 到期结果：交割价、赔付、各冻结点的结果、1 分钟指数路径统计 | 到期后约 10 分钟 |
 | `decisions/<UTC日>.jsonl` | 用户侧决策事件：锁定、停止、旧核验路径结论 | 发生时 |
 | `protocols/versions.jsonl` | 现行版本：提问者 prompt、案卷生成器、记录格式、研究协议、评分规则 | 变化时 |
@@ -166,6 +166,8 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 
 **中断与补跑**：例程错过时，复盘、计分卡读取、周审在下一次运行时补做；判断不补（到期后提交会被拒）。补做的情况在下一份周报里写明。
 
+**案卷中的到期口径**：`L3.spatial_position` 的墙是周度 / 0DTE 市场口径，`L4.iv` 是最近到期或固定期限口径，二者不一定属于本合约到期日。每条的 `relations.expiry_alignment` 写明是否匹配，`quality_reason` 为 `walls_not_contract_expiry` 或 `iv_not_contract_expiry` 时不属于本期。本合约到期日自身的结构和波动以 `L3.expiry_walls`、`L4.expiry_vol` 为准；按本期 IV 换算的距离见 `expiry_alignment.distance_in_moves_contract_expiry`（案卷生成器 0.1.3 起）。
+
 **通知用户**：大量工作，少量打扰。只在以下情况主动通知：
 - 进行中的锁定保单出现实质反证；
 - 某假设进入新的验证阶段；
@@ -240,6 +242,7 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 
 ## 变更记录
 
+- v2.3（2026-10-20）：账本 `trigger_detail`；新合约即时提问；案卷到期口径标注（生成器 0.1.3）。
 - v2.2（2026-10-20）：§4 补首次判断（首次出现后 2 小时内）、进行中复查、提问者复核的产出、假设纪律、提问者改进、研究周报、中断与补跑、卡点通知；修正 §3 入场口径为 4 小时检查点。
 - v2.1（2026-10-20）：新增 §5.2 计分卡；research_note / protocol_proposal 可写 `supersedes`。
 - v2.0（2026-10-20）：长期研究员版。合并 07 号仍有效的部分与 09 号接口；新增决策事件、`episode_view`、派生索引、协议版本、历史回填、遍历约定与工作循环。

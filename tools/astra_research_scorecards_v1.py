@@ -41,6 +41,8 @@ RISK_ORDER = {"much_safer": -2, "safer": -1, "in_line": 0, "riskier": 1, "much_r
 GRADE_ORDER = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5}          # U is excluded from the ordering
 LEAN_ORDER = {"underwrite": -1, "watch": 0, "decline": 1}
 CONFIDENCE = ("high", "medium", "low")
+# one researcher, one name: early submissions were signed with the model name
+AGENT_ALIASES = {"GrokBot": "Cici", "grok-bot": "Cici", "grokbot": "Cici"}
 VERDICTS = ("pointed_to_realized_risk", "not_material", "wrong_premise", "unclear")
 # metric -> sign that turns "riskier" into positive
 METRICS = {"touched_short_after_entry": 1.0, "excess_touch": 1.0, "loss_at_expiry": 1.0, "excess_loss": 1.0,
@@ -110,6 +112,11 @@ def spearman(xs: list[float], ys: list[float]) -> float | None:
 
 # ---------------------------------------------------------------- views
 
+def _agent(doc: Mapping[str, Any]) -> Any:
+    name = (doc.get("agent") or {}).get("name")
+    return AGENT_ALIASES.get(name, name) or "unknown"
+
+
 def score_view(entry: Mapping[str, Any], ledger_by_contract: Mapping[str, list[Mapping[str, Any]]],
                outcomes: Mapping[str, Mapping[str, Any]], unavailable: set[str],
                paths: Mapping[str, list[list[float]]]) -> dict[str, Any]:
@@ -117,7 +124,8 @@ def score_view(entry: Mapping[str, Any], ledger_by_contract: Mapping[str, list[M
     view = doc.get("view") or {}
     key, registered = doc["contract_key"], int(entry["received_at_ms"])
     row: dict[str, Any] = {
-        "view_id": doc["id"], "submission_id": entry["submission_id"], "agent": (doc.get("agent") or {}).get("name"),
+        "view_id": doc["id"], "submission_id": entry["submission_id"], "agent": _agent(doc),
+        "agent_signed": (doc.get("agent") or {}).get("name"),
         "contract_key": key, "registered_at_ms": registered,
         **{k: view.get(k) for k in ("risk_vs_baseline", "grade", "lean", "confidence")}}
     outcome = outcomes.get(key)
@@ -214,7 +222,8 @@ def view_scorecard(root: Path, *, now_ms: int, all_outcomes: list[Mapping[str, A
     for v in views:
         counts[v["status"]] = counts.get(v["status"], 0) + 1
     return {**body, "views": views, "counts": counts,
-            "by": {"risk_vs_baseline": _group_means(scored, "risk_vs_baseline", RISK_ORDER),
+            "by": {"agent": _group_means(scored, "agent", sorted({v["agent"] for v in scored})),
+                   "risk_vs_baseline": _group_means(scored, "risk_vs_baseline", RISK_ORDER),
                    "grade": _group_means(scored, "grade", [*GRADE_ORDER, "U"]),
                    "lean": _group_means(scored, "lean", LEAN_ORDER),
                    "confidence": _group_means(scored, "confidence", CONFIDENCE)},

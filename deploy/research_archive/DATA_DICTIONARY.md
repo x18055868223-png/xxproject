@@ -62,7 +62,7 @@
 | `registry/hypotheses.jsonl` 等 | 登记包装（见 §10） | 追加行 | `submission` |
 | `registry/rejected.jsonl` | 被拒回执 | 追加行 | `submission_rejected` |
 | `legacy/…` | 存档上线前历史的一次性回填 | 新文件 | `legacy` |
-| `index/episodes.json` | `episode_index@0.1` | **每次 tick 重建覆盖，不入链** | — |
+| `index/episodes/<到期日>.json` | `episode_index@0.1` | **每次 tick 重建覆盖，不入链** | — |
 | `receipts/<文件名>.receipt.json` | 提交回执 | 覆盖写，不入链 | — |
 | `_state/` | 服务器内部状态 | 不供研究使用 | — |
 
@@ -71,7 +71,7 @@
 1. `chain.jsonl` 只追加。读者保存“已处理到第 N 行”的游标，每次只读第 N+1 行起的新行。
 2. 每一行告诉你 `kind` 和 `path`：文件类（`case`、`inquiry`、`legacy`）读整个文件；行类（`ledger`、`outcome`、`decision`、`protocol`、`submission`、`submission_rejected`）表示该 `path` 末尾新增了一行——同一 `path` 的第 k 条链记录对应该文件第 k 行（从 1 起计）。
 3. 可用链记录的 `content_sha256` 自行核对：文件类为整个文件字节的 sha256；行类为该行字节（含末尾 `\n`）的 sha256。
-4. `index/episodes.json` 是派生便利索引，其 `chain_lines` 说明它基于链的前多少行构建；它可能落后于链、可能被重建，**不得作为证据或冻结依据**。
+4. `index/episodes/<到期日>.json` 是派生便利索引，其 `chain_lines` 说明它基于链的前多少行构建；它可能落后于链、可能被重建，**不得作为证据或冻结依据**。
 
 ### 1.2 哈希链
 
@@ -145,6 +145,7 @@
 | `states` | | 程序状态：`space_gate`、`m_die_level`、`gamma_regime`、`gex_market_state`、`flip_usd`（USD）、`tmv_24h`、`tmv_48h`、`micro_flow`；整个对象 null = 读视图不可用 |
 | `view_available` | bool | 本行是否读到了工作台视图 |
 | `trigger` | | `first` / `base` / `change` / `near_expiry` |
+| `trigger_detail` | | 相对上一行的变化（2026-10-20 起，增量字段；所有 trigger 的行都带，base / near_expiry 行也可能非空）：`crossed_short` / `crossed_breakeven` / `crossed_long`（越过该价位）、`distance`（短腿距离变化超过 0.25pp）、`state:<名>`（space_gate / m_die_level / gamma_regime 切换）、`displayed`、`locked`；无变化为空列表。只有 `state:*` 的 `change` 行即“仅状态变化” |
 
 ## 5. `episode_outcome@0.1`（到期结果）
 
@@ -178,7 +179,7 @@
 
 ## 6. `astra_inquiry_result@0.1`（提问者输出）
 
-UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行（不含 L9）。文件 = `{case_id, asof_ms}` + `inquiry.run()` 输出：`schema`、`prompt_version`、`requested_model`、`effort`、`status`（`OK` / `PARTIAL` 有条目被丢弃 / `REJECTED` 结构不合格或传输失败 / `ERROR` 运行异常，此时只有 `error`，无 `schema`）、`attempts`（每次调用的模型、用量、finish_reason、是否修复）、`issues`（逐条校验记录）、`sheet`（`inquiry_sheet@0.2`，失败时 null）。
+UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外，合约首次出现后 2 小时内、尚无提问者输出的，在它的下一份新案卷上立即运行一次（2026-10-20 起；每个 UTC 日两侧合计最多 8 次；这次运行失败也算已提问，不再重试，等下一个 02/14 时段）。输入不含 L9。文件 = `{case_id, asof_ms}` + `inquiry.run()` 输出：`schema`、`prompt_version`、`requested_model`、`effort`、`status`（`OK` / `PARTIAL` 有条目被丢弃 / `REJECTED` 结构不合格或传输失败 / `ERROR` 运行异常，此时只有 `error`，无 `schema`）、`attempts`（每次调用的模型、用量、finish_reason、是否修复）、`issues`（逐条校验记录）、`sheet`（`inquiry_sheet@0.2`，失败时 null）。
 
 `sheet` 要点：`fact_brief.layers`（L0–L8 各层 `status` material/quiet/unknown 与带 refs 的事实）、`cross_layer`、`anomalies`、`questions[]`（`id`、`type`、`bears_on`、`priority`、`premises`、≥2 个 `hypotheses`（`direction` raises/lowers/unclear）、`answer_source`、可能的 `untraced_numbers` / `forbidden_wording` 标记）、`types_covered`。
 
@@ -197,9 +198,11 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行（不含 
 
 `at_ms`、`component`（`inquirer_prompt` `case_file_builder` `ledger_row` `episode_outcome` `submission_schemas` `research_protocol` `scoring_rules`）、`version`、`source`（`observed_in_code` 程序观察到 / `approved_by_user` 用户批准）、`note_cn`。研究时按 `at_ms` 把样本切到对应的组件版本。
 
-## 9. `episode_index@0.1`（index/episodes.json，派生）
+## 9. `episode_index@0.1`（index/episodes/<到期日>.json，派生）
 
 `built_at_ms`、`chain_lines`、`episodes[]`：`contract_key`、`side`、`short_strike_usd`、`long_strike_usd`、`expiry_ms`、`first_seen_ms`、`status`（`open` / `settled` / `outcome_unavailable`）、`cases[{case_id,path,asof_ms}]`、`inquiry`（文件路径）、`ledger_rows`（行数）、`last_row_at_ms`、`locked`、`decisions[]`、`outcome`（`{path,status}` 或 null）。每 tick 重建，不入链，只作导航。
+
+`first_seen_ms` 是服务器首次看到该合约的检查时刻，等于它第一行账本的 `at_ms`；案卷的 `asof_ms` 是行情估值时刻，通常略早几十秒。`inquiry` 与 `ledger_rows` 两项计数从 10-20 03:11 UTC 起才开始累计，此前的已于 10-20 用 `reconcile-state` 从存档补齐。
 
 ## 10. 提交、登记与回执
 
@@ -210,7 +213,7 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行（不含 
 - 被拒行（`registry/rejected.jsonl`）：`{file, received_at_ms, sha256, status:"rejected", errors[], schema}`。
 - 回执（`receipts/<文件名>.receipt.json`）：`file`、`received_at_ms`、`sha256`、`status`（`registered` / `rejected`）、`submission_id` 或 `errors`；假设被拒时附 `allowed_fields`、`allowed_metrics`。
 - 已登记 id 永不可改；修订用新 id + `supersedes`。
-- `episode_view@0.1` 的 `contract_key` 必须是服务器正在跟踪、尚未到期的合约（见 `index/episodes.json` 中 `status: open`），且在 `expiry_ms` 之前被服务器接收（以 `received_at_ms` 判定），否则拒收。
+- `episode_view@0.1` 的 `contract_key` 必须是服务器正在跟踪、尚未到期的合约（见 `index/episodes/<到期日>.json` 中 `status: open`），且在 `expiry_ms` 之前被服务器接收（以 `received_at_ms` 判定），否则拒收。
 - 前向验证只使用 `received_at_ms` 之后冻结的样本。
 
 ## 11. `legacy/`

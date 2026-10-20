@@ -28,6 +28,7 @@ import math
 import os
 import time
 import urllib.parse
+from contextlib import contextmanager
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -66,6 +67,8 @@ TRIGGER_STATES = ("space_gate", "m_die_level", "gamma_regime")
 INQUIRY_HOURS_UTC = (2, 14)
 INQUIRY_WINDOW_MS = 45 * 60_000
 INQUIRY_TIMEOUT_S = 240
+NEW_CONTRACT_INQUIRY_MS = 2 * HOUR_MS   # a contract with no questions yet gets them in its first hours
+NEW_CONTRACT_INQUIRY_DAILY_MAX = 8       # unscheduled runs per UTC day, both sides together
 OUTCOME_DELAY_MS = 10 * 60_000
 OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
 VALIDATION_AT_UTC = (9, 30)   # after the 08:00 settlement and its outcomes
@@ -273,6 +276,30 @@ def _crossed(prev: float | None, cur: float | None) -> bool:
     return prev is not None and cur is not None and (prev > 0) != (cur > 0)
 
 
+def change_detail(last: Mapping[str, Any] | None, row: Mapping[str, Any]) -> list[str]:
+    """What changed since the last written row: crossed_<leg>, distance, state:<name>,
+    displayed, locked. Empty when nothing material changed."""
+    if last is None:
+        return []
+    detail = []
+    for key, name in (("short_from_index_pct", "crossed_short"), ("breakeven_from_index_pct", "crossed_breakeven"),
+                      ("long_from_index_pct", "crossed_long")):
+        if _crossed(last.get(key), row.get(key)):
+            detail.append(name)
+    a, b = last.get("short_from_index_pct"), row.get("short_from_index_pct")
+    if a is not None and b is not None and abs(a - b) > DISTANCE_TRIGGER_PP:
+        detail.append("distance")
+    # program states and display only compare when both sides read the view
+    if last.get("states") is not None and row.get("states") is not None:
+        detail += [f"state:{k}" for k in TRIGGER_STATES if last["states"].get(k) != row["states"].get(k)]
+        if last.get("displayed") is not None and row.get("displayed") is not None \
+                and last["displayed"] != row["displayed"]:
+            detail.append("displayed")
+    if last.get("locked") is not None and row.get("locked") is not None and last["locked"] != row["locked"]:
+        detail.append("locked")
+    return detail
+
+
 def row_trigger(last: Mapping[str, Any] | None, row: Mapping[str, Any], *, now_ms: int) -> str | None:
     if last is None:
         return "first"
@@ -280,22 +307,7 @@ def row_trigger(last: Mapping[str, Any] | None, row: Mapping[str, Any], *, now_m
         return "near_expiry"
     if now_ms - int(last["at_ms"]) >= BASE_INTERVAL_MS:
         return "base"
-    for key in ("short_from_index_pct", "breakeven_from_index_pct", "long_from_index_pct"):
-        if _crossed(last.get(key), row.get(key)):
-            return "change"
-    a, b = last.get("short_from_index_pct"), row.get("short_from_index_pct")
-    if a is not None and b is not None and abs(a - b) > DISTANCE_TRIGGER_PP:
-        return "change"
-    # program states and display only compare when both sides read the view
-    if last.get("states") is not None and row.get("states") is not None:
-        if any(last["states"].get(k) != row["states"].get(k) for k in TRIGGER_STATES):
-            return "change"
-        if last.get("displayed") is not None and row.get("displayed") is not None \
-                and last["displayed"] != row["displayed"]:
-            return "change"
-    if last.get("locked") is not None and row.get("locked") is not None and last["locked"] != row["locked"]:
-        return "change"
-    return None
+    return "change" if change_detail(last, row) else None
 
 
 def path_stats(record: Mapping[str, Any], points: list[list[float]], delivery: float) -> dict[str, Any]:
@@ -420,6 +432,46 @@ def _episode_summary(record: Mapping[str, Any], status: str, outcome_path: str |
             "outcome": {"path": outcome_path, "status": status} if outcome_path else None}
 
 
+def reconcile_state(archive: Archive) -> dict[str, Any]:
+    """Recount ledger rows and relink inquiry files for the open contracts from the chained
+    files (counters that started after a contract was first seen lag behind). Idempotent."""
+    state = archive.load_state()
+    contracts = state.get("contracts") or {}
+    rows: dict[str, int] = {}
+    last_at: dict[str, int] = {}
+    for path in sorted((archive.root / "ledger").glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line) if line.strip() else None
+                key, at = (row.get("contract_key"), int(row["at_ms"])) if isinstance(row, dict) else (None, 0)
+            except (ValueError, KeyError, TypeError):
+                continue
+            if key in contracts:
+                rows[key] = rows.get(key, 0) + 1
+                last_at[key] = max(last_at.get(key, 0), at)
+    case_to_key = {c["case_id"]: c["contract_key"] for c in (state.get("cases") or {}).values()
+                   if c.get("case_id") and c.get("contract_key")}
+    for record in contracts.values():
+        for case in record.get("cases") or []:
+            case_to_key.setdefault(case.get("case_id"), record["key"])
+    links: dict[str, list[str]] = {}
+    for path in sorted((archive.root / "inquiry").glob("*/*.json")):
+        case_id = "cf_" + path.stem.rsplit("_cf_", 1)[-1] if "_cf_" in path.stem else None
+        key = case_to_key.get(case_id)
+        if key in contracts:
+            links.setdefault(key, []).append(str(path.relative_to(archive.root)).replace("\\", "/"))
+    changed = 0
+    for key, record in contracts.items():
+        new = {"ledger_rows": rows.get(key, 0), "inquiry": links.get(key, [])}
+        if key in last_at:
+            new["last_row_at_ms"] = last_at[key]
+        if any(record.get(k) != v for k, v in new.items()):
+            record.update(new)
+            changed += 1
+    archive.save_state(state)
+    return {"contracts": len(contracts), "changed": changed}
+
+
 def write_index(archive: Archive, state: Mapping[str, Any], *, now_ms: int) -> None:
     """Derived per-expiry-day index; rebuilt while a day has open or recently closed contracts.
     Not chained: it can always be rebuilt from the chained files."""
@@ -539,6 +591,7 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         trigger = row_trigger(record.get("last_row"), row, now_ms=now_ms)
         if trigger:
             row["trigger"] = trigger
+            row["trigger_detail"] = change_detail(record.get("last_row"), row)
             archive.append_line(f"ledger/{_utc(now_ms).strftime('%Y-%m-%d')}.jsonl", row, at_ms=now_ms, kind="ledger")
             record["last_row"] = {k: row.get(k) for k in ("at_ms", "expiry_ms", "short_from_index_pct",
                                                           "breakeven_from_index_pct", "long_from_index_pct",
@@ -598,11 +651,22 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         if outcome["status"] == "settled":
             report["outcomes"] += 1
 
-    if run_inquiry and _utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS:
+    scheduled = _utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS
+    if run_inquiry:
         for side, case in new_cases:
             ikey = f"{hour}|{side}"
             if ikey in state["inquiry"]:
                 continue
+            ckey = next((c["contract_key"] for c in state["cases"].values() if c.get("case_id") == case["case_id"]), None)
+            record = state["contracts"].get(ckey) or {}
+            fresh = not record.get("inquiry") and now_ms - int(record.get("first_seen_ms") or 0) <= NEW_CONTRACT_INQUIRY_MS
+            fresh_runs = state.setdefault("inquiry_fresh", {})
+            if not scheduled:
+                if not fresh or fresh_runs.get(day, 0) >= NEW_CONTRACT_INQUIRY_DAILY_MAX:
+                    continue
+                fresh_runs[day] = fresh_runs.get(day, 0) + 1
+                for old in sorted(fresh_runs)[:-7]:
+                    del fresh_runs[old]
             # recorded before the call: a slow or failed run is never repeated within the slot
             state["inquiry"][ikey] = "running"
             archive.save_state(state)
@@ -748,7 +812,7 @@ def _http_json(url: str, token: str | None = None, timeout: int = 180) -> Any:
 def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
     parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register",
-                                            "promote", "retire", "readings", "scorecards"])
+                                            "promote", "retire", "readings", "scorecards", "reconcile-state"])
     parser.add_argument("--hypothesis")
     parser.add_argument("--reading")
     parser.add_argument("--label", default="")
@@ -768,6 +832,29 @@ def main() -> None:
     if args.command == "verify":
         print(json.dumps(archive.verify(), ensure_ascii=False))
         return
+    if args.command != "tick":
+        # operator commands write the same state and chain as the timer tick: never alongside it
+        with operator_lock(archive):
+            return _operator(args, archive)
+    _tick_main(args, archive)
+
+
+@contextmanager
+def operator_lock(archive: Archive):
+    lock = archive.root / "_state" / "tick.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit("a tick or another command is running (_state/tick.lock); retry after it finishes")
+    os.close(fd)
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _operator(args: argparse.Namespace, archive: Archive) -> None:
     if args.command == "backfill-legacy":
         print(json.dumps(backfill_legacy(archive, args.workbench_dir, now_ms=int(time.time() * 1000))))
         return
@@ -779,6 +866,9 @@ def main() -> None:
     if args.command == "retire":
         print(json.dumps(research_promotion.retire(
             archive, args.reading, now_ms=int(time.time() * 1000), reason_cn=args.note), ensure_ascii=False))
+        return
+    if args.command == "reconcile-state":
+        print(json.dumps(reconcile_state(archive), ensure_ascii=False))
         return
     if args.command == "scorecards":
         print(json.dumps(research_scorecards.run(archive.root, now_ms=int(time.time() * 1000)), ensure_ascii=False))
@@ -795,6 +885,10 @@ def main() -> None:
             "source": "approved_by_user", "note_cn": args.note}, at_ms=now, kind="protocol")
         print("registered")
         return
+    raise SystemExit(f"unknown command {args.command}")
+
+
+def _tick_main(args: argparse.Namespace, archive: Archive) -> None:
     token = os.environ.get("ASTRA_WORKBENCH_TOKEN")
     key = os.environ.get("LLM_API_KEY") or os.environ.get("ASTRA_WORKBENCH_LLM_API_KEY")
     model = os.environ.get("ASTRA_WORKBENCH_LLM_MODEL") or "deepseek-flash"

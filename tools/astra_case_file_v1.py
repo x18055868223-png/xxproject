@@ -23,6 +23,7 @@ part, the time memory of a locked contract, belongs to holding, not to underwrit
 """
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from copy import deepcopy
@@ -34,7 +35,7 @@ else:
     import astra_market_baseline_v1 as market_baseline
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.2"
+BUILDER_VERSION = "astra_case_file_v1@0.1.3"
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 DROP_KEYS = {"source_records", "source_manifest", "source_bindings", "debug", "_debug", "raw_payload"}
 DROP_SUFFIXES = ("_hash", "sha256")
@@ -132,6 +133,74 @@ def _stale_quality(meta: Mapping[str, Any] | None) -> tuple[str | None, str | No
     if state in {"stale", "degraded"}:
         return "stale", "source_" + state
     return None, None
+
+
+MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+DAILY_EXPIRY_HOUR_UTC = 8
+
+
+def expiry_label(expiry_ms: Any) -> str | None:
+    """Deribit expiry code, e.g. 21OCT26 (day without a leading zero)."""
+    if not isinstance(expiry_ms, int) or isinstance(expiry_ms, bool):
+        return None
+    moment = dt.datetime.fromtimestamp(expiry_ms / 1000, dt.timezone.utc)
+    return f"{moment.day}{MONTHS[moment.month - 1]}{moment.strftime('%y')}"
+
+
+def next_daily_expiry_ms(asof_ms: int) -> int:
+    """The first 08:00 UTC strictly after asof: the expiry that market-level "0DTE" readings follow."""
+    moment = dt.datetime.fromtimestamp(asof_ms / 1000, dt.timezone.utc)
+    candidate = moment.replace(hour=DAILY_EXPIRY_HOUR_UTC, minute=0, second=0, microsecond=0)
+    if candidate <= moment:
+        candidate += dt.timedelta(days=1)
+    return int(candidate.timestamp() * 1000)
+
+
+def _same(a: Any, b: Any) -> bool | None:
+    return None if a is None or b is None else a == b
+
+
+def spatial_alignment(contract: Mapping[str, Any], asof_ms: int, spatial: Any,
+                      expiry_row: Mapping[str, Any] | None, walls_at_ms: Any = None) -> dict[str, Any]:
+    """The spatial reading uses market-level walls (weekly aggregate and the nearest expiry's
+    0DTE walls) and the nearest expiry's ATM IV; say whether they belong to this contract's
+    expiry and give the distance in this expiry's expected moves."""
+    expiry = contract.get("expiry_ms")
+    expiry = int(expiry) if isinstance(expiry, (int, float)) and not isinstance(expiry, bool) else None
+    # the walls belong to the nearest expiry at the time they were fetched, not at the case's asof
+    basis = int(walls_at_ms) if isinstance(walls_at_ms, (int, float)) and not isinstance(walls_at_ms, bool) else asof_ms
+    nearest = next_daily_expiry_ms(basis)
+    zero_dte_is_contract = None if expiry is None else nearest == expiry
+    distance = (spatial or {}).get("distance_pct") if isinstance(spatial, Mapping) else None
+    iv = (expiry_row or {}).get("atm_iv_pct")
+    hours = (expiry - asof_ms) / 3_600_000 if isinstance(expiry, int) else None
+    move = iv * (hours / 8760) ** 0.5 if isinstance(iv, (int, float)) and hours and hours > 0 else None
+    return {"contract_expiry": expiry_label(expiry), "nearest_daily_expiry": expiry_label(nearest),
+            "zero_dte_walls_are_contract_expiry": zero_dte_is_contract, "weekly_walls_are_aggregate": True,
+            "spatial_reading_move_basis": "nearest_expiry_atm_iv",
+            "expected_move_pct_contract_expiry": move,
+            "distance_in_moves_contract_expiry": distance / move if isinstance(distance, (int, float)) and move else None,
+            "note_cn": "本条的墙为市场口径（周度为多期汇总，0DTE 为最近一个到期日" +
+                       ("，此刻即本合约到期日）" if zero_dte_is_contract else
+                        "，此刻不是本合约到期日）" if zero_dte_is_contract is False else "，是否为本合约到期日不明）") +
+                       "，预期波动用的是最近到期的 ATM IV。本合约到期日自身的 Gamma/OI 结构以 L3.expiry_walls 为准，"
+                       "本期波动以 L4.expiry_vol 为准；按本期 IV 换算的距离见 distance_in_moves_contract_expiry。"}
+
+
+def iv_alignment(contract: Mapping[str, Any], gex: Mapping[str, Any]) -> dict[str, Any]:
+    """Which parts of the market-level IV reading belong to this contract's expiry."""
+    label = expiry_label(contract.get("expiry_ms"))
+    gex = gex if isinstance(gex, Mapping) else {}
+    terms = [t for t in (gex.get("term_structure") or []) if isinstance(t, Mapping)]
+    front = terms[0].get("expiry") if terms else None
+    own = next((t for t in terms if label and t.get("expiry") == label), None)
+    rr_1d = next((r for r in (gex.get("rr_skew") or []) if isinstance(r, Mapping) and r.get("tenor") == "1d"), None)
+    rr_expiry = (rr_1d or {}).get("expiry")
+    return {"contract_expiry": label, "term_front_expiry": front, "term_front_is_contract_expiry": _same(front, label),
+            "contract_expiry_term": own, "rr_1d_expiry": rr_expiry, "rr_1d_is_contract_expiry": _same(rr_expiry, label),
+            "note_cn": "atm_iv、dvol、iv_percentile 与 rr_skew 是市场口径（最近到期或固定期限）；atm_iv 推定对应期限结构最前一期 term_front_expiry。"
+                       "本合约到期日的 ATM IV 见 contract_expiry_term 与 L4.expiry_vol；"
+                       "rr_1d_is_contract_expiry 为 false 时，1d RR 属于另一个到期日；为 null 表示无法判断。"}
 
 
 def _contract_cn(contract: Mapping[str, Any]) -> str:
@@ -290,9 +359,21 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
              lineage=["deribit.book_summary"], source="view.expiry_gamma.by_expiry",
              asof_ms=(expiry_row or {}).get("computed_at_ms"),
              quality="stale" if (expiry_row or {}).get("stale") else None)
-    case.add("L3.spatial_position", "KPF 关键流动性密集区与空间接近度", item.get("spatial_position"),
+    spatial = item.get("spatial_position")
+    spatial_align = spatial_alignment(contract, asof_ms, spatial, expiry_row, gex.get("fetched_at_ms"))
+    if not item:
+        spatial_quality, spatial_reason = "unknown", "read_view_item_unavailable"
+    elif isinstance(spatial, Mapping) and spatial.get("error"):
+        spatial_quality, spatial_reason = "unknown", "spatial_error"
+    elif not isinstance(spatial, Mapping) or _empty(spatial):
+        spatial_quality, spatial_reason = None, None
+    else:
+        spatial_quality = None
+        spatial_reason = "walls_not_contract_expiry" if spatial_align["zero_dte_walls_are_contract_expiry"] is False else None
+    case.add("L3.spatial_position", "KPF 与空间接近度（墙为周度 / 0DTE 市场口径，不一定是本合约到期日）", spatial,
+             relations={"expiry_alignment": spatial_align},
              lineage=["btc_map.kpf"], source="item.spatial_position",
-             quality=None if item else "unknown", quality_reason=None if item else "read_view_item_unavailable")
+             quality=spatial_quality, quality_reason=spatial_reason)
     btc_map = ((snapshot.get("data_identity") or {}).get("btc_map")) or {}
     presentation = btc_map.get("presentation") or {}
     case.add("L3.map.references", "价格地图参考位（成本区、KPF、墙等）",
@@ -304,10 +385,12 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
              lineage=["btc_map"], source="snapshot.data_identity.btc_map", asof_ms=btc_map.get("cutoff_at_ms"))
 
     # L4 volatility
-    case.add("L4.iv", "隐含波动：ATM IV、DVOL、IV 分位、期限结构、RR skew", _pick(gex, GEX_VOL_KEYS),
-             relations=_pick(gex, GEX_META_KEYS), lineage=["gexmonitor.gex_info"],
-             source="market_facts.space_context.gex_info", asof_ms=gex_asof,
-             quality=gex_quality, quality_reason=gex_reason)
+    iv_align = iv_alignment(contract, gex)
+    case.add("L4.iv", "隐含波动（市场口径）：ATM IV、DVOL、IV 分位、期限结构、RR skew", _pick(gex, GEX_VOL_KEYS),
+             relations={**_pick(gex, GEX_META_KEYS), "expiry_alignment": iv_align}, lineage=["gexmonitor.gex_info"],
+             source="market_facts.space_context.gex_info", asof_ms=gex_asof, quality=gex_quality,
+             quality_reason=gex_reason or ("iv_not_contract_expiry" if not _empty(_pick(gex, GEX_VOL_KEYS)) and False in (
+                 iv_align["term_front_is_contract_expiry"], iv_align["rr_1d_is_contract_expiry"]) else None))
     eg = view.get("expiry_gamma") or {}
     case.add("L4.expiry_vol", "本期 ATM IV、预期波动与已实现波动",
              {"atm_iv_pct": (expiry_row or {}).get("atm_iv_pct"),
