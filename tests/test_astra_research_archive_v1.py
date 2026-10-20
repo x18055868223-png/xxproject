@@ -136,3 +136,51 @@ def test_chain_links_and_detects_a_changed_case(tmp_path):
 def test_only_audited_public_endpoints():
     with pytest.raises(ValueError):
         ar.Deribit._get("private/get_positions", {})
+
+
+def test_ledger_line_tamper_is_detected(tmp_path):
+    archive = ar.Archive(tmp_path)
+    _tick(archive, NOW, _view(), FakeDeribit())
+    ledger = next(tmp_path.glob("ledger/*.jsonl"))
+    ledger.write_text(ledger.read_text(encoding="utf-8").replace("STRUCTURE_BLOCKED", "STRUCTURE_ELIGIBLE"), encoding="utf-8")
+    assert archive.verify()["problems"][0]["problem"] == "line_changed_or_missing"
+
+
+def test_outcome_written_once_and_expired_candidate_not_reopened(tmp_path):
+    archive = ar.Archive(tmp_path)
+    _tick(archive, NOW, _view(), FakeDeribit())
+    deribit = FakeDeribit(delivery=82000.0, path=[[NOW, 81900.0], [EXPIRY, 82000.0]])
+    _tick(archive, EXPIRY + 15 * 60_000, _view(), deribit)   # the view still shows the expired contract
+    _tick(archive, EXPIRY + 25 * 60_000, _view(), deribit)
+    lines = next(tmp_path.glob("outcomes/*.jsonl")).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and json.loads(lines[0])["payout_btc"] == 0.0
+    assert archive.load_state()["contracts"] == {}
+
+
+def test_outcome_gives_up_after_twelve_hours_without_delivery(tmp_path):
+    archive = ar.Archive(tmp_path)
+    _tick(archive, NOW, _view(), FakeDeribit())
+    assert _tick(archive, EXPIRY + H, None, FakeDeribit())["outcomes"] == 0
+    _tick(archive, EXPIRY + 13 * H, None, FakeDeribit())
+    out = json.loads(next(tmp_path.glob("outcomes/*.jsonl")).read_text(encoding="utf-8"))
+    assert out["status"] == "outcome_unavailable" and out["reason"] == "LookupError"
+
+
+def test_view_failure_and_flip_moves_do_not_trigger_rows(tmp_path):
+    archive = ar.Archive(tmp_path)
+    _tick(archive, NOW, _view(), FakeDeribit())
+    assert _tick(archive, NOW + 10 * 60_000, None, FakeDeribit())["rows"] == 0        # view unavailable
+    moved = _view()
+    moved["market_context"]["market_facts"]["space_context"]["gex_info"]["flip_point"] = 83000
+    assert _tick(archive, NOW + 20 * 60_000, moved, FakeDeribit())["rows"] == 0       # flip alone
+    moved["market_context"]["market_facts"]["gamma_regime"]["regime"] = "NEGATIVE"
+    assert _tick(archive, NOW + 30 * 60_000 - 1, moved, FakeDeribit())["rows"] == 1   # regime change
+
+
+def test_call_path_and_time_weighted_volatility():
+    record = {"first_seen_ms": 0, "expiry_ms": 120_000, "short_strike_usd": 84000.0, "long_strike_usd": 86000.0,
+              "side": "call"}
+    stats = ar.path_stats(record, [[0, 83000.0], [60_000, 84500.0], [120_000, 83800.0]], 83800.0)
+    assert stats["touched_short"] and not stats["touched_long"] and stats["ms_beyond_short"] == 60_000
+    assert stats["settle_vs_short_pct"] == pytest.approx((83800 - 84000) / 84000 * 100)
+    assert stats["path_complete"] is True and stats["realized_vol_annual"] > 0

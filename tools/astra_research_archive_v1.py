@@ -1,17 +1,19 @@
 """Research archive E0: frozen samples for the long-horizon researcher (docs/opus/08, 2026-10-20).
 
-One tick (every 10 minutes from a systemd timer) does what is due:
+One tick (every 10 minutes from a systemd timer) does what is due, in this order:
 
 - cases:    once per UTC hour per side, the displayed candidate's frozen case file
-- inquiry:  at the scheduled hours (UTC 02, 14), the inquirer's output for that case
 - ledger:   for every contract seen since it first appeared until expiry, one compact row
             every 30 minutes, plus a row on a material change, plus every tick in the
             last 3 hours before expiry
 - outcomes: after expiry, the delivery price, the payout, each frozen case's result, and
             the 1-minute index path statistics from first sighting to expiry
+- inquiry:  at the scheduled hours (UTC 02, 14), the inquirer's output for that hour's case
+            (last, so a slow model call never costs the ledger or outcomes their tick)
+- inbox:    researcher submissions are validated, stamped and registered (E2)
 
-Everything is append-only. Each written file is recorded in chain.jsonl with its sha256
-and the previous entry's hash, so history can be verified and never silently rewritten.
+Everything is append-only. Each written file or line is recorded in chain.jsonl with its
+sha256 and the previous entry's hash; verify() re-walks the chain and every recorded line.
 A sample is one contract (two legs + expiry) from first sighting to expiry; contracts of
 one expiry share the delivery price, so statistics should cluster by expiry day.
 """
@@ -35,23 +37,30 @@ if __package__:
     from . import astra_commercial_math_v17 as commercial_math
     from . import astra_inquiry_v1 as inquiry
     from . import astra_market_baseline_v1 as market_baseline
+    from . import astra_research_inbox_v1 as research_inbox
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
     import astra_inquiry_v1 as inquiry
     import astra_market_baseline_v1 as market_baseline
+    import astra_research_inbox_v1 as research_inbox
 
 SCHEMA_ROW = "ledger_row@0.1"
 SCHEMA_OUTCOME = "episode_outcome@0.1"
 SCHEMA_CHAIN = "archive_chain@0.1"
 HOUR_MS = 3_600_000
+YEAR_MS = 365.0 * 24 * HOUR_MS
 BASE_INTERVAL_MS = 30 * 60_000
 NEAR_EXPIRY_MS = 3 * HOUR_MS
 DISTANCE_TRIGGER_PP = 0.25
+TRIGGER_STATES = ("space_gate", "m_die_level", "gamma_regime")
 INQUIRY_HOURS_UTC = (2, 14)
 INQUIRY_WINDOW_MS = 45 * 60_000
+INQUIRY_TIMEOUT_S = 240
 OUTCOME_DELAY_MS = 10 * 60_000
 OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
+LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected"}
+FILE_KINDS = {"case", "inquiry"}
 PUBLIC = "https://www.deribit.com/api/v2/"
 PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data"})
 
@@ -68,11 +77,12 @@ def _num(value: Any) -> float | None:
 
 
 class Archive:
-    """Append-only files under root, each recorded in a sha256 hash chain."""
+    """Append-only files under root, each file or line recorded in a sha256 hash chain."""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self.state_path = self.root / "_state" / "state.json"
+        self.head_path = self.root / "_state" / "chain_head"
         self.chain_path = self.root / "chain.jsonl"
 
     def load_state(self) -> dict[str, Any]:
@@ -86,15 +96,22 @@ class Archive:
         tmp.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         os.replace(tmp, self.state_path)
 
-    def _last_chain_hash(self) -> str:
-        if not self.chain_path.exists():
-            return "0" * 64
+    def _scan_head(self) -> str:
         last = None
-        with self.chain_path.open("rb") as handle:
-            for line in handle:
-                if line.strip():
-                    last = line
+        if self.chain_path.exists():
+            with self.chain_path.open("rb") as handle:
+                for line in handle:
+                    if line.strip():
+                        last = line
         return json.loads(last)["entry_sha256"] if last else "0" * 64
+
+    def _last_chain_hash(self) -> str:
+        # the head file is a cache of the chain's last entry; the chain itself stays authoritative
+        if self.head_path.exists() and self.chain_path.exists():
+            head = self.head_path.read_text(encoding="utf-8").split()
+            if len(head) == 2 and head[1] == str(self.chain_path.stat().st_size):
+                return head[0]
+        return self._scan_head()
 
     def _chain(self, rel: str, content_sha: str, at_ms: int, kind: str) -> None:
         prev = self._last_chain_hash()
@@ -104,18 +121,29 @@ class Archive:
         self.chain_path.parent.mkdir(parents=True, exist_ok=True)
         with self.chain_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        self.head_path.parent.mkdir(parents=True, exist_ok=True)
+        self.head_path.write_text(f"{entry['entry_sha256']} {self.chain_path.stat().st_size}", encoding="utf-8")
+
+    def _chained_paths(self) -> set[str]:
+        if not self.chain_path.exists():
+            return set()
+        return {json.loads(l)["path"] for l in self.chain_path.read_text(encoding="utf-8").splitlines() if l.strip()}
 
     def write_new(self, rel: str, data: bytes, *, at_ms: int, kind: str) -> str:
-        """Write a new file; an existing path is never overwritten."""
+        """Write a new file; an existing path is never overwritten. A file left unchained by a
+        crash between write and chain is adopted only when its bytes are identical."""
         path = self.root / rel
+        sha = hashlib.sha256(data).hexdigest()
         if path.exists():
+            if hashlib.sha256(path.read_bytes()).hexdigest() == sha and rel not in self._chained_paths():
+                self._chain(rel, sha, at_ms, kind)
+                return sha
             raise FileExistsError(rel)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_bytes(data)
         os.replace(tmp, path)
         os.chmod(path, 0o640)
-        sha = hashlib.sha256(data).hexdigest()
         self._chain(rel, sha, at_ms, kind)
         return sha
 
@@ -133,10 +161,11 @@ class Archive:
         return sha
 
     def verify(self) -> dict[str, Any]:
-        """Re-walk the chain: entry hashes link, files written once still match."""
+        """Re-walk the chain: links, entry hashes, whole files, and every appended line in order."""
         prev, count, bad = "0" * 64, 0, []
         if not self.chain_path.exists():
             return {"ok": True, "entries": 0, "problems": []}
+        expected_lines: dict[str, list[str]] = {}
         for line in self.chain_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -146,12 +175,23 @@ class Archive:
                 bad.append({"path": entry.get("path"), "problem": "broken_link"})
             if hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest() != entry.get("entry_sha256"):
                 bad.append({"path": entry.get("path"), "problem": "entry_hash"})
-            if entry.get("kind") in {"case", "inquiry"}:
+            if entry.get("kind") in FILE_KINDS:
                 path = self.root / entry["path"]
                 if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != entry["content_sha256"]:
                     bad.append({"path": entry["path"], "problem": "content_changed_or_missing"})
+            elif entry.get("kind") in LINE_KINDS:
+                expected_lines.setdefault(entry["path"], []).append(entry["content_sha256"])
             prev = entry.get("entry_sha256")
             count += 1
+        for rel, hashes in expected_lines.items():
+            path = self.root / rel
+            lines = path.read_bytes().splitlines(keepends=True) if path.exists() else []
+            for i, expected in enumerate(hashes):
+                if i >= len(lines) or hashlib.sha256(lines[i]).hexdigest() != expected:
+                    bad.append({"path": rel, "line": i, "problem": "line_changed_or_missing"})
+                    break
+            if len(lines) > len(hashes):
+                bad.append({"path": rel, "problem": "unchained_extra_lines", "count": len(lines) - len(hashes)})
         return {"ok": not bad, "entries": count, "problems": bad}
 
 
@@ -159,7 +199,15 @@ def contract_key(contract: Mapping[str, Any]) -> str:
     return f"{contract.get('short_instrument')}|{contract.get('long_instrument')}"
 
 
-def _program_states(view: Mapping[str, Any]) -> dict[str, Any]:
+def _valid_contract(contract: Mapping[str, Any]) -> bool:
+    return (contract.get("side") in {"put", "call"} and _num(contract.get("short_strike_usd"))
+            and _num(contract.get("long_strike_usd")) and isinstance(contract.get("expiry_ms"), int)
+            and bool(contract.get("short_instrument")) and bool(contract.get("long_instrument")))
+
+
+def _program_states(view: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if view is None:
+        return None
     facts = ((view.get("market_context") or {}).get("market_facts")) or {}
     gex = ((facts.get("space_context") or {}).get("gex_info")) or {}
     vp = facts.get("volume_price") or {}
@@ -174,7 +222,7 @@ def _program_states(view: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def ledger_row(record: Mapping[str, Any], short_book: Mapping[str, Any], long_book: Mapping[str, Any],
-               states: Mapping[str, Any], *, now_ms: int, displayed: bool) -> dict[str, Any]:
+               states: Mapping[str, Any] | None, *, now_ms: int, displayed: bool | None) -> dict[str, Any]:
     side, ks, kl = record["side"], float(record["short_strike_usd"]), float(record["long_strike_usd"])
     index = _num(short_book.get("index_price")) or _num(long_book.get("index_price"))
     forward = _num(short_book.get("underlying_price")) or _num(long_book.get("underlying_price"))
@@ -203,7 +251,8 @@ def ledger_row(record: Mapping[str, Any], short_book: Mapping[str, Any], long_bo
         "baseline_status": base.get("status"),
         "p_itm_short": probs.get("p_itm_short"), "p_touch_short": probs.get("p_touch_short"),
         "p_loss": probs.get("p_loss"), "p_max_loss": probs.get("p_max_loss"),
-        "states": dict(states),
+        "states": dict(states) if states is not None else None,
+        "view_available": states is not None,
     }
 
 
@@ -224,29 +273,40 @@ def row_trigger(last: Mapping[str, Any] | None, row: Mapping[str, Any], *, now_m
     a, b = last.get("short_from_index_pct"), row.get("short_from_index_pct")
     if a is not None and b is not None and abs(a - b) > DISTANCE_TRIGGER_PP:
         return "change"
-    if last.get("states") != row.get("states") or last.get("displayed") != row.get("displayed"):
-        return "change"
+    # program states and display only compare when both sides read the view
+    if last.get("states") is not None and row.get("states") is not None:
+        if any(last["states"].get(k) != row["states"].get(k) for k in TRIGGER_STATES):
+            return "change"
+        if last.get("displayed") is not None and row.get("displayed") is not None \
+                and last["displayed"] != row["displayed"]:
+            return "change"
     return None
 
 
 def path_stats(record: Mapping[str, Any], points: list[list[float]], delivery: float) -> dict[str, Any]:
-    """1-minute index from first sighting to expiry: touch, closest approach, adverse excursion, RV."""
+    """Index from first sighting to expiry: touch, closest approach, adverse excursion, RV."""
     start, end = int(record["first_seen_ms"]), int(record["expiry_ms"])
-    series = [(int(t), float(p)) for t, p in points if start <= int(t) <= end and p]
+    series = sorted((int(t), float(p)) for t, p in points if start <= int(t) <= end and p)
     if len(series) < 2:
         return {"status": "insufficient_path", "points": len(series)}
     ks, kl, side = float(record["short_strike_usd"]), float(record["long_strike_usd"]), record["side"]
     prices = [p for _, p in series]
     adverse = (lambda p: (ks - p) / ks * 100.0) if side == "put" else (lambda p: (p - ks) / ks * 100.0)
-    touched = [t for t, p in series if (p <= ks if side == "put" else p >= ks)]
-    rets = [math.log(b / a) for a, b in zip(prices, prices[1:]) if a > 0 and b > 0]
-    minutes = max(1, len(rets))
-    rv = math.sqrt(sum(r * r for r in rets) / minutes * 525_600) if rets else None
+    beyond = (lambda p, k: p <= k) if side == "put" else (lambda p, k: p >= k)
+    steps = [(b[0] - a[0], a, b) for a, b in zip(series, series[1:])]
+    touched = [t for t, p in series if beyond(p, ks)]
+    rets = [(math.log(b[1] / a[1]), d) for d, a, b in steps if a[1] > 0 and b[1] > 0 and d > 0]
+    span = sum(d for _, d in rets)
+    rv = math.sqrt(sum(r * r for r, _ in rets) / (span / YEAR_MS)) if rets and span else None
+    dts = sorted(d for d, _, _ in steps)
+    gap = series[0][0] - start
     return {"status": "ok", "points": len(series), "start_ms": series[0][0], "end_ms": series[-1][0],
+            "median_step_ms": dts[len(dts) // 2], "coverage_gap_ms": gap,
+            "path_complete": gap <= 2 * dts[len(dts) // 2] and end - series[-1][0] <= 2 * dts[len(dts) // 2],
             "min_usd": min(prices), "max_usd": max(prices),
             "touched_short": bool(touched), "first_touch_ms": touched[0] if touched else None,
-            "minutes_beyond_short": len(touched),
-            "touched_long": any((p <= kl if side == "put" else p >= kl) for p in prices),
+            "ms_beyond_short": sum(d for d, a, _ in steps if beyond(a[1], ks)),
+            "touched_long": any(beyond(p, kl) for p in prices),
             "max_adverse_vs_short_pct": max(adverse(p) for p in prices),
             "settle_vs_short_pct": adverse(delivery), "realized_vol_annual": rv}
 
@@ -286,25 +346,30 @@ class Deribit:
 
 def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
          fetch_case: Callable[[str], Mapping[str, Any]], deribit: Deribit,
-         run_inquiry: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None) -> dict[str, Any]:
+         run_inquiry: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+         inbox: tuple[Path, Path] | None = None) -> dict[str, Any]:
     state = archive.load_state()
+    done = set(state.get("outcomes_done") or [])
     report: dict[str, Any] = {"cases": 0, "inquiry": 0, "rows": 0, "outcomes": 0, "errors": []}
     displayed: dict[str, dict[str, Any]] = {}
     for item in (view or {}).get("candidates") or []:
         snap = item.get("snapshot") if isinstance(item, Mapping) else None
         contract = (snap or {}).get("contract") or {}
-        if not contract.get("short_instrument"):
+        if not _valid_contract(contract):
             continue
         key = contract_key(contract)
+        if key in done or contract["expiry_ms"] <= now_ms:
+            continue   # never re-open a settled or expired contract
         displayed[key] = item
         state["contracts"].setdefault(key, {
-            "key": key, "side": contract.get("side"), "short_instrument": contract.get("short_instrument"),
-            "long_instrument": contract.get("long_instrument"), "short_strike_usd": contract.get("short_strike_usd"),
-            "long_strike_usd": contract.get("long_strike_usd"), "expiry_ms": contract.get("expiry_ms"),
+            "key": key, "side": contract["side"], "short_instrument": contract["short_instrument"],
+            "long_instrument": contract["long_instrument"], "short_strike_usd": contract["short_strike_usd"],
+            "long_strike_usd": contract["long_strike_usd"], "expiry_ms": contract["expiry_ms"],
             "first_seen_ms": now_ms, "cases": [], "last_row": None})
 
     hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
     day = hour[:10]
+    new_cases: list[tuple[str, Mapping[str, Any]]] = []
     for key, item in displayed.items():
         side, snap = item.get("side"), item["snapshot"]
         slot_key = f"{hour}|{side}"
@@ -315,38 +380,23 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             data = gzip.compress(json.dumps(case, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
             rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
             archive.write_new(rel, data, at_ms=now_ms, kind="case")
-            credit = ((case_file_core_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc"))
+            credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
             state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
             state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
                                                      "net_credit_after_fee_btc": credit, "path": rel})
+            new_cases.append((side, case))
             report["cases"] += 1
         except Exception as exc:
             report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
-            continue
-        ikey = f"{hour}|{side}"
-        if (run_inquiry and _utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS
-                and ikey not in state["inquiry"]):
-            # recorded before the call: a slow or failed run is never repeated within the slot
-            state["inquiry"][ikey] = "running"
-            archive.save_state(state)
-            try:
-                result = dict(run_inquiry(case_file_core.for_inquirer(case)))
-            except Exception as exc:
-                result = {"status": "ERROR", "error": type(exc).__name__}
-            irel = f"inquiry/{day}/{hour[11:]}_{side}_{case['case_id']}.json"
-            archive.write_new(irel, json.dumps({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"), **result},
-                                               ensure_ascii=False, sort_keys=True).encode("utf-8"),
-                              at_ms=now_ms, kind="inquiry")
-            state["inquiry"][ikey] = result.get("status")
-            report["inquiry"] += 1
+    archive.save_state(state)
 
-    states = _program_states(view or {})
+    states = _program_states(view)
     for key, record in list(state["contracts"].items()):
         if int(record["expiry_ms"]) <= now_ms:
             continue
         try:
             row = ledger_row(record, deribit.book(record["short_instrument"]), deribit.book(record["long_instrument"]),
-                             states, now_ms=now_ms, displayed=key in displayed)
+                             states, now_ms=now_ms, displayed=(key in displayed) if view is not None else None)
         except Exception as exc:
             report["errors"].append({"step": "ledger", "contract": key, "error": type(exc).__name__})
             continue
@@ -357,6 +407,7 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             record["last_row"] = {k: row.get(k) for k in ("at_ms", "expiry_ms", "short_from_index_pct",
                                                           "breakeven_from_index_pct", "long_from_index_pct",
                                                           "states", "displayed")}
+            archive.save_state(state)   # a crash right after never re-appends this row
             report["rows"] += 1
 
     path_cache: list[list[float]] | None = None
@@ -365,18 +416,13 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         expiry = int(record["expiry_ms"])
         if now_ms < expiry + OUTCOME_DELAY_MS:
             continue
+        rel = f"outcomes/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl"
         try:
             if expiry not in delivery_cache:
                 delivery_cache[expiry] = deribit.delivery(expiry)
             delivery = delivery_cache[expiry]
             if delivery is None:
-                if now_ms > expiry + OUTCOME_GIVE_UP_MS:
-                    archive.append_line(f"outcomes/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl",
-                                        {"schema": SCHEMA_OUTCOME, "contract_key": key, "status": "delivery_unavailable",
-                                         "expiry_ms": expiry}, at_ms=now_ms, kind="outcome")
-                    state["outcomes_done"].append(key)
-                    del state["contracts"][key]
-                continue
+                raise LookupError("delivery price not published")
             if path_cache is None:
                 path_cache = deribit.index_path()
             payout = commercial_math.inverse_spread_payout(
@@ -389,13 +435,47 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                        "delivery_price_usd": delivery, "payout_btc": payout, "cases": cases,
                        "path": path_stats(record, path_cache, delivery),
                        "meaning_cn": "到期静态结果：各冻结点扣费后净信用 − 到期赔付（币本位）；不是实际成交"}
-            archive.append_line(f"outcomes/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl", outcome,
-                                at_ms=now_ms, kind="outcome")
-            state["outcomes_done"].append(key)
-            del state["contracts"][key]
-            report["outcomes"] += 1
         except Exception as exc:
-            report["errors"].append({"step": "outcome", "contract": key, "error": type(exc).__name__})
+            if now_ms <= expiry + OUTCOME_GIVE_UP_MS:
+                continue   # retry on a later tick
+            outcome = {"schema": SCHEMA_OUTCOME, "contract_key": key, "status": "outcome_unavailable",
+                       "reason": type(exc).__name__, "expiry_ms": expiry, "first_seen_ms": record["first_seen_ms"]}
+        archive.append_line(rel, outcome, at_ms=now_ms, kind="outcome")
+        state["outcomes_done"].append(key)
+        del state["contracts"][key]
+        archive.save_state(state)   # a crash right after never writes a second outcome
+        if outcome["status"] == "settled":
+            report["outcomes"] += 1
+
+    if run_inquiry and _utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS:
+        for side, case in new_cases:
+            ikey = f"{hour}|{side}"
+            if ikey in state["inquiry"]:
+                continue
+            # recorded before the call: a slow or failed run is never repeated within the slot
+            state["inquiry"][ikey] = "running"
+            archive.save_state(state)
+            try:
+                result = dict(run_inquiry(case_file_core.for_inquirer(case)))
+            except Exception as exc:
+                result = {"status": "ERROR", "error": type(exc).__name__}
+            try:
+                irel = f"inquiry/{day}/{hour[11:]}_{side}_{case['case_id']}.json"
+                archive.write_new(irel, json.dumps({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"), **result},
+                                                   ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                                  at_ms=now_ms, kind="inquiry")
+                report["inquiry"] += 1
+            except Exception as exc:
+                report["errors"].append({"step": "inquiry_write", "side": side, "error": type(exc).__name__})
+            state["inquiry"][ikey] = result.get("status")
+            archive.save_state(state)
+
+    if inbox is not None:
+        try:
+            report["inbox"] = research_inbox.ingest(archive, inbox[0], inbox[1], now_ms=now_ms)
+        except Exception as exc:
+            report["errors"].append({"step": "inbox", "error": type(exc).__name__})
+
     state["outcomes_done"] = state["outcomes_done"][-2000:]
     for name in ("cases", "inquiry"):   # slot keys sort by hour; keep the recent ones
         state[name] = dict(sorted(state[name].items())[-500:])
@@ -404,7 +484,7 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     return report
 
 
-def case_file_core_entry(case: Mapping[str, Any], ref: str) -> Any:
+def case_entry(case: Mapping[str, Any], ref: str) -> Any:
     at = (case.get("refs") or {}).get(ref)
     if not at:
         return None
@@ -423,6 +503,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
     parser.add_argument("command", choices=["tick", "verify"])
     parser.add_argument("--root", default=os.environ.get("ASTRA_RESEARCH_ARCHIVE", "/var/lib/xxproject/research_archive"))
+    parser.add_argument("--inbox", default=os.environ.get("ASTRA_RESEARCH_INBOX", "/var/lib/xxproject/research_inbox"))
+    parser.add_argument("--receipts", default=os.environ.get("ASTRA_RESEARCH_RECEIPTS",
+                                                             "/var/lib/xxproject/research_archive/receipts"))
     parser.add_argument("--workbench", default="http://127.0.0.1:8895")
     args = parser.parse_args()
     archive = Archive(args.root)
@@ -437,10 +520,14 @@ def main() -> None:
     try:
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
-        if time.time() - lock.stat().st_mtime < 3600:
+        try:
+            stale = time.time() - lock.stat().st_mtime >= 3 * 3600
+        except FileNotFoundError:
+            stale = True
+        if not stale:
             print(json.dumps({"skipped": "previous_tick_running"}))
             return
-        lock.unlink()
+        lock.unlink(missing_ok=True)
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
         os.close(fd)
@@ -450,9 +537,12 @@ def main() -> None:
             view = None
             print(json.dumps({"view_error": type(exc).__name__}))
         report = tick(archive, now_ms=int(time.time() * 1000), view=view,
-                      fetch_case=lambda sid: _http_json(args.workbench + "/api/workbench/case-file/" + sid, token),
+                      fetch_case=lambda sid: _http_json(
+                          args.workbench + "/api/workbench/case-file/" + urllib.parse.quote(sid, safe=""), token),
                       deribit=Deribit(),
-                      run_inquiry=(lambda case: inquiry.run(case, api_key=key, model=model)) if key else None)
+                      run_inquiry=(lambda case: inquiry.run(case, api_key=key, model=model, timeout=INQUIRY_TIMEOUT_S))
+                      if key else None,
+                      inbox=(Path(args.inbox), Path(args.receipts)))
         print(json.dumps(report, ensure_ascii=False))
     finally:
         lock.unlink(missing_ok=True)

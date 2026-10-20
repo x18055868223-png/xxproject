@@ -10,6 +10,8 @@ UMask=0027
 EnvironmentFile=/etc/signal-audit/llm.env
 EnvironmentFile=/etc/signal-audit/workbench-v20.env
 Environment=ASTRA_RESEARCH_ARCHIVE=/var/lib/xxproject/research_archive
+Environment=ASTRA_RESEARCH_INBOX=/var/lib/xxproject/research_inbox
+Environment=ASTRA_RESEARCH_RECEIPTS=/var/lib/xxproject/research_archive/receipts
 ExecStart=/usr/bin/python3 /opt/signal-audit-tools/astra_research_archive_v1.py tick
-TimeoutStartSec=1800
+TimeoutStartSec=2700
 Nice=10
