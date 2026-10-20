@@ -42,6 +42,7 @@ if __package__:
     from . import astra_research_validation_v1 as research_validation
     from . import astra_research_promotion_v1 as research_promotion
     from . import astra_research_scorecards_v1 as research_scorecards
+    from . import astra_event_calendar_v1 as event_calendar
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -51,8 +52,14 @@ else:
     import astra_research_validation_v1 as research_validation
     import astra_research_promotion_v1 as research_promotion
     import astra_research_scorecards_v1 as research_scorecards
+    import astra_event_calendar_v1 as event_calendar
 
 SCHEMA_ROW = "ledger_row@0.1"
+# research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
+LEDGER_FIELDS = "ledger_research_fields@0.1"
+TAKER_FEE_BTC = 0.0003            # Deribit BTC option taker fee per contract, capped at 12.5% of the price
+TAKER_FEE_PRICE_CAP = 0.125
+EVENT_LOOKAHEAD_MS = 7 * 24 * 3_600_000
 SCHEMA_OUTCOME = "episode_outcome@0.1"
 SCHEMA_CHAIN = "archive_chain@0.1"
 SCHEMA_DECISION = "decision_event@0.1"
@@ -272,6 +279,99 @@ def ledger_row(record: Mapping[str, Any], short_book: Mapping[str, Any], long_bo
     }
 
 
+def _m(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def market_context(view: Mapping[str, Any] | None, index_points: Any, *, now_ms: int | None = None) -> dict[str, Any]:
+    """View-level inputs shared by every contract's research fields in one tick; tolerant of
+    any shape (a malformed input only leaves its fields None)."""
+    view = _m(view)
+    facts = _m(_m(view.get("market_context")).get("market_facts"))
+    gex = _m(_m(facts.get("space_context")).get("gex_info"))
+    expiry_gamma = _m(view.get("expiry_gamma"))
+    by_expiry = {}
+    for row in _m(expiry_gamma.get("by_expiry")).values():
+        if isinstance(row, Mapping) and isinstance(row.get("expiry_ms"), int):
+            by_expiry[row["expiry_ms"]] = row
+    points = []
+    for point in index_points if isinstance(index_points, list) else []:
+        if isinstance(point, (list, tuple)) and len(point) == 2 and _num(point[0]) is not None and _num(point[1]):
+            points.append((int(point[0]), float(point[1])))
+    upcoming = [e for e in event_calendar.events() if now_ms is None or e["at_ms"] > now_ms]
+    return {"by_expiry": by_expiry, "realized_vol": _m(expiry_gamma.get("realized_vol")), "gex": gex,
+            "index_points": sorted(points), "upcoming_events": upcoming,
+            "calendar_complete_7d": not event_calendar.coverage_gaps(now_ms + EVENT_LOOKAHEAD_MS, now_ms)
+            if now_ms is not None else False}
+
+
+def _index_change(points: list[tuple[int, float]], now_ms: int, back_ms: int, current: float | None) -> float | None:
+    """Percent change of the index from back_ms ago to now; None without a point within 5 minutes."""
+    target = now_ms - back_ms
+    best = None
+    for t, p in points:
+        if abs(t - target) <= 5 * 60_000 and (best is None or abs(t - target) < abs(best[0] - target)):
+            best = (t, p)
+    return (current / best[1] - 1.0) * 100.0 if best and current else None
+
+
+def research_fields(record: Mapping[str, Any], row: Mapping[str, Any], ctx: Mapping[str, Any], *,
+                    now_ms: int) -> dict[str, Any]:
+    """Mechanism fields for hypotheses (σ distance, IV vs RV, compensation after fee, this
+    expiry's walls, macro events, recent index moves), all from data the tick already holds.
+    A field without its inputs is None."""
+    side, ks = record["side"], float(record["short_strike_usd"])
+    expiry = int(record["expiry_ms"])
+    adverse = 1.0 if side == "call" else -1.0
+    hours = (expiry - now_ms) / HOUR_MS
+    pct = row.get("short_from_index_pct")
+    cushion = adverse * pct if pct is not None else None          # > 0: the short leg is still out of the money
+    erow = ctx["by_expiry"].get(expiry) or {}
+    atm = _num(erow.get("atm_iv_pct"))
+    move = atm * math.sqrt(hours / 8760.0) if atm and hours > 0 else None
+    rv = ctx["realized_vol"]
+    rv24, rv7 = _num(rv.get("rv_24h_pct")), _num(rv.get("rv_7d_pct"))
+    gex = ctx["gex"]
+    label = case_file_core.expiry_label(expiry)
+    rr = next((_num(r.get("rr")) for r in gex.get("rr_skew") or []
+               if isinstance(r, Mapping) and label and r.get("expiry") == label), None)
+    short, long = row.get("short") or {}, row.get("long") or {}
+    bid, ask = _num(short.get("best_bid_price")), _num(long.get("best_ask_price"))
+    fee = (min(TAKER_FEE_BTC, TAKER_FEE_PRICE_CAP * bid) + min(TAKER_FEE_BTC, TAKER_FEE_PRICE_CAP * ask)) \
+        if bid is not None and ask is not None else None
+    credit, spread = row.get("credit_bid_ask_btc"), row.get("mark_spread_btc")
+    after_fee = credit - fee if credit is not None and fee is not None else None
+    # the case file's L2.compensation is only defined for a positive credit
+    ratio = after_fee / spread if after_fee is not None and after_fee > 0 and spread and spread > 0 else None
+    tier = None if ratio is None else "rich" if ratio >= market_baseline.COMPENSATION_RICH_AT else \
+        "thin" if ratio < market_baseline.COMPENSATION_THIN_BELOW else "fair"
+    walls = erow.get("walls") or {}
+    wall = _num(walls.get("gamma_call" if side == "call" else "gamma_put"))
+    pin, index = _num(walls.get("pin")), row.get("index_usd")
+    upcoming = [e for e in ctx.get("upcoming_events") or [] if e["at_ms"] > now_ms]
+    nxt = upcoming[0] if upcoming and upcoming[0]["at_ms"] - now_ms <= EVENT_LOOKAHEAD_MS else None
+    # nothing within 7 days of a complete calendar is a value (capped at 168 h, kind "none"), not missing
+    quiet = nxt is None and ctx.get("calendar_complete_7d")
+    gaps_to_expiry = event_calendar.coverage_gaps(expiry, now_ms)
+    return {
+        "fields_version": LEDGER_FIELDS,
+        "expiry_atm_iv_pct": atm, "expected_move_pct": move, "short_cushion_pct": cushion,
+        "distance_in_moves": cushion / move if cushion is not None and move else None,
+        "rv_24h_pct": rv24, "rv_7d_pct": rv7,
+        "iv_minus_rv_24h": atm - rv24 if atm is not None and rv24 is not None else None,
+        "dvol": _num(gex.get("dvol")), "iv_percentile": _num(gex.get("iv_percentile")), "rr_25d_expiry": rr,
+        "entry_fee_btc": fee, "credit_after_fee_btc": after_fee, "comp_ratio_after_fee": ratio, "comp_tier": tier,
+        "gamma_wall_usd": wall,
+        "gamma_wall_vs_short_pct": adverse * (wall - ks) / ks * 100.0 if wall else None,
+        "pin_from_index_pct": (pin / index - 1.0) * 100.0 if pin and index else None,
+        "hours_to_next_event": (nxt["at_ms"] - now_ms) / HOUR_MS if nxt else EVENT_LOOKAHEAD_MS / HOUR_MS if quiet else None,
+        "next_event_kind": nxt["kind"] if nxt else "none" if quiet else None,
+        "event_before_expiry": None if gaps_to_expiry else any(now_ms < e["at_ms"] < expiry for e in upcoming),
+        "index_chg_1h_pct": _index_change(ctx["index_points"], now_ms, HOUR_MS, index),
+        "index_chg_4h_pct": _index_change(ctx["index_points"], now_ms, 4 * HOUR_MS, index),
+    }
+
+
 def _crossed(prev: float | None, cur: float | None) -> bool:
     return prev is not None and cur is not None and (prev > 0) != (cur > 0)
 
@@ -418,7 +518,8 @@ def observed_versions() -> dict[str, str]:
             "ledger_row": SCHEMA_ROW, "episode_outcome": SCHEMA_OUTCOME,
             "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS)),
             "scoring_rules": research_validation.SCORING_RULES,
-            "scorecard_rules": research_scorecards.SCORECARD_RULES}
+            "scorecard_rules": research_scorecards.SCORECARD_RULES,
+            "ledger_fields": LEDGER_FIELDS}
 
 
 def _episode_summary(record: Mapping[str, Any], status: str, outcome_path: str | None = None) -> dict[str, Any]:
@@ -578,6 +679,17 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     archive.save_state(state)
 
     states = _program_states(view)
+    index_points: list[list[float]] | None = None
+    if any(int(r["expiry_ms"]) > now_ms for r in state["contracts"].values()):
+        try:
+            index_points = deribit.index_path()
+        except Exception as exc:
+            report["errors"].append({"step": "index_path", "error": type(exc).__name__})
+    try:
+        ctx = market_context(view, index_points, now_ms=now_ms)
+    except Exception as exc:
+        report["errors"].append({"step": "ledger_context", "error": type(exc).__name__})
+        ctx = market_context(None, None)
     for key, record in list(state["contracts"].items()):
         if int(record["expiry_ms"]) <= now_ms:
             continue
@@ -588,6 +700,10 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         except Exception as exc:
             report["errors"].append({"step": "ledger", "contract": key, "error": type(exc).__name__})
             continue
+        try:
+            row.update(research_fields(record, row, ctx, now_ms=now_ms))
+        except Exception as exc:   # the row is still written with its original fields
+            report["errors"].append({"step": "ledger_fields", "contract": key, "error": type(exc).__name__})
         trigger = row_trigger(record.get("last_row"), row, now_ms=now_ms)
         if trigger:
             row["trigger"] = trigger
@@ -603,7 +719,8 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             archive.save_state(state)   # a crash right after never re-appends this row
             report["rows"] += 1
 
-    path_cache: list[list[float]] | None = None
+    # the same 2-day path fetched for the ledger serves the outcomes of this tick
+    path_cache: list[list[float]] | None = index_points if isinstance(index_points, list) and len(index_points) >= 2 else None
     delivery_cache: dict[int, float | None] = {}
     for key, record in list(state["contracts"].items()):
         expiry = int(record["expiry_ms"])

@@ -146,6 +146,13 @@
 | `view_available` | bool | 本行是否读到了工作台视图 |
 | `trigger` | | `first` / `base` / `change` / `near_expiry` |
 | `trigger_detail` | | 相对上一行的变化（2026-10-20 起，增量字段；所有 trigger 的行都带，base / near_expiry 行也可能非空）：`crossed_short` / `crossed_breakeven` / `crossed_long`（越过该价位）、`distance`（短腿距离变化超过 0.25pp）、`state:<名>`（space_gate / m_die_level / gamma_regime 切换）、`displayed`、`locked`；无变化为空列表。只有 `state:*` 的 `change` 行即“仅状态变化” |
+| 研究字段（`fields_version` = `ledger_research_fields@0.1`，2026-10-20 起，增量） | | 定义与可用运算见 `schemas/condition_fields.json`；旧行没有这些字段，条件求值时按缺失排除 |
+| `expiry_atm_iv_pct`、`expected_move_pct`、`short_cushion_pct`、`distance_in_moves` | % / 倍 | 本期 ATM IV；到期前一倍预期波动；指数到短腿的不利方向距离（正 = 价外）；二者之比（σ 距离） |
+| `rv_24h_pct`、`rv_7d_pct`、`iv_minus_rv_24h`、`dvol`、`iv_percentile`、`rr_25d_expiry` | % | 程序口径已实现波动（永续 1 小时收盘）；本期 IV − RV24h；市场 DVOL 与 IV 分位；本期 25Δ RR（不属于本期时为 null） |
+| `entry_fee_btc`、`credit_after_fee_btc`、`comp_ratio_after_fee`、`comp_tier` | BTC / 比 | 每腿 min(0.0003, 12.5%×顶档价) 的入场费；扣费信用；扣费补偿比与档位（与 L2.compensation 同口径） |
+| `gamma_wall_usd`、`gamma_wall_vs_short_pct`、`pin_from_index_pct` | USD / % | 本期本侧 Gamma 最大集中价位及其相对短腿的不利方向距离（负 = 在现价一侧）；本期 pin 相对指数 |
+| `hours_to_next_event`、`next_event_kind`、`event_before_expiry` | h / 文本 / 布尔 | 下一宏观事件（7 天内无事件且日历完整时为 168 / none）；到期前是否有事件（日历不完整时 null） |
+| `index_chg_1h_pct`、`index_chg_4h_pct` | % | 近 1 / 4 小时指数涨跌（Deribit 公开 2 天分钟路径） |
 
 ## 5. `episode_outcome@0.1`（到期结果）
 

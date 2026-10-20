@@ -64,6 +64,47 @@
    "description_cn": "(第一个亏损边界 / 指数 − 1) × 100；p_loss 未算出时为 null"
   },
   {
+   "field": "ledger.comp_ratio_after_fee",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "credit_after_fee_btc ÷ mark_spread_btc，与案卷 L2.compensation 同口径；扣费后信用 ≤0 时为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.comp_tier",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "rich / fair / thin（扣费补偿比 ≥0.95 / 0.70–0.95 / <0.70，档位为草案）；比值为 null 时为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.credit_after_fee_btc",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "credit_bid_ask_btc − entry_fee_btc（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
    "field": "ledger.credit_bid_ask_btc",
    "type": "numeric",
    "allowed_ops": [
@@ -90,6 +131,92 @@
    "description_cn": "是否为当前显示候选；实际值为布尔 true/false/null，只能用 == != in not_in"
   },
   {
+   "field": "ledger.distance_in_moves",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "short_cushion_pct ÷ expected_move_pct，即“σ 距离”（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.dvol",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "Deribit DVOL（市场口径，gexmonitor）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.entry_fee_btc",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "两腿入场费估算：每腿 min(0.0003, 12.5% × 顶档价)，与案卷 L2.fee 同公式（只按顶档，1 BTC）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.event_before_expiry",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "到期前是否有日历内宏观事件；日历覆盖不到到期日时为 null。布尔值，只用 == != in not_in（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.expected_move_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "本期 ATM IV × √(剩余小时/8760)，到期前一倍预期波动（%）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.expiry_atm_iv_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "本合约到期日的 ATM IV（%，view.expiry_gamma.by_expiry；该到期日不在程序当前候选中时为 null）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
    "field": "ledger.forward_usd",
    "type": "numeric",
    "allowed_ops": [
@@ -105,6 +232,81 @@
    "description_cn": "该到期的 underlying_price（远期，USD）"
   },
   {
+   "field": "ledger.gamma_wall_usd",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "本期本侧 Gamma 最大集中价位（Call 取 gamma_call，Put 取 gamma_put；未定符号）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.gamma_wall_vs_short_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "本期墙相对短腿的不利方向距离（%）：正 = 墙在短腿之外，负 = 墙在现价与短腿之间（或现价一侧）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.hours_to_next_event",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "距下一个日历内宏观事件的小时数；日历完整且 7 天内没有事件时为 168（表示 ≥7 天）；日历不完整且 7 天内无已知事件时为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.index_chg_1h_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "近 1 小时指数涨跌（%）；路径缺点时为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.index_chg_4h_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "近 4 小时指数涨跌（%）；路径缺点时为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
    "field": "ledger.index_usd",
    "type": "numeric",
    "allowed_ops": [
@@ -118,6 +320,36 @@
     "not_in"
    ],
    "description_cn": "Deribit btc_usd 指数（USD）"
+  },
+  {
+   "field": "ledger.iv_minus_rv_24h",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "expiry_atm_iv_pct − rv_24h_pct（百分点）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.iv_percentile",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "IV 分位（市场口径，gexmonitor）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
   },
   {
    "field": "ledger.locked",
@@ -206,6 +438,17 @@
    "description_cn": "短腿 mark − 长腿 mark（BTC）"
   },
   {
+   "field": "ledger.next_event_kind",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "下一个宏观事件类型（如 FOMC、CPI、GDP）；日历完整且 7 天内没有事件时为 none；未知为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
    "field": "ledger.p_itm_short",
    "type": "numeric",
    "allowed_ops": [
@@ -266,6 +509,66 @@
    "description_cn": "市场隐含触及短腿概率 = min(1, 2×p_itm_short)"
   },
   {
+   "field": "ledger.pin_from_index_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "本期 pin 价位相对指数（%）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.rr_25d_expiry",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "本合约到期日的 25Δ RR；gexmonitor 的 1d RR 不属于本期时为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.rv_24h_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "已实现波动 24h（%，年化；BTC-PERPETUAL 1 小时收盘，程序 view 口径）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.rv_7d_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "已实现波动 7d（%，年化，同上）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
    "field": "ledger.short.delta",
    "type": "numeric",
    "allowed_ops": [
@@ -309,6 +612,21 @@
     "not_in"
    ],
    "description_cn": "短腿 mark 价（BTC）"
+  },
+  {
+   "field": "ledger.short_cushion_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "指数到短腿的不利方向距离（%），正数 = 短腿仍在价外（ledger_research_fields@0.1，2026-10-20 起的行才有）"
   },
   {
    "field": "ledger.short_from_index_pct",

@@ -187,3 +187,21 @@ def test_free_text_traces_against_the_whole_case_but_flags_invented_numbers():
     sheet, issues, _ = inquiry.validate(s, _case())
     assert "untraced_numbers" not in sheet["questions"][0]
     assert any(i["where"].endswith("hypotheses[1].mechanism_cn") and "0.048989" in i["numbers"] for i in issues)
+
+
+def test_prompt_0_3_asks_for_answerable_testable_questions_and_expiry_aware_citations():
+    assert inquiry.PROMPT_VERSION == "inquiry_prompt@0.3"
+    for phrase in ("walls_not_contract_expiry", "iv_not_contract_expiry", "至少一半问题", "可检验", "交割价"):
+        assert phrase in inquiry.SYSTEM_PROMPT
+
+
+def test_mostly_external_questions_are_flagged_but_kept_and_status_stays_ok():
+    sheet, issues, error = inquiry.validate(_sheet(), _case())       # its only question is external
+    assert error is None and len(sheet["questions"]) == 1
+    flag = next(i for i in issues if i["code"] == "answer_source_mostly_external")
+    assert flag["answerable"] == 0 and flag["total"] == 1
+    assert inquiry._status([flag]) == "OK"
+    s = _sheet()
+    s["questions"][0]["answer_source"] = "case_file"
+    _, issues, _ = inquiry.validate(s, _case())
+    assert not any(i["code"] == "answer_source_mostly_external" for i in issues)

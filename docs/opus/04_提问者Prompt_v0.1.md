@@ -145,3 +145,10 @@ fact_brief.layers 必须恰好覆盖 L0–L8 九层。每个问题至少 2 个 h
   - 自由文本按全案卷追溯；
   - 截断与传输失败的处理；
   - 禁止措辞降为 PARTIAL。
+
+- inquiry_prompt@0.2（2026-10-20）：加入 L8.research_readings 的提问规则。
+- inquiry_prompt@0.3（2026-10-20，用户批准 Cici 提案 pp-inquirer-timing 第 2、3 条）：
+  - 规则 3 补充：`quality_reason` 为 `walls_not_contract_expiry` / `iv_not_contract_expiry` 的条目属市场口径或另一到期日，引用须写明口径；本期以 L3.expiry_walls、L4.expiry_vol 为准；
+  - “五条判定”改为六条：可回答要求整张单至少一半问题的 answer_source 为 case_file 或 history，external 问题在 question_cn 末尾写明所需外部数据；新增“可检验”，每题至少一个假设的支持或推翻条件写成到期前可在指数路径或交割价上看到的现象；
+  - 校验新增软检查 `answer_source_mostly_external`：只记录，不丢题，不降为 PARTIAL；
+  - 输出格式 `inquiry_sheet@0.2` 不变。当前 prompt 原文以 `tools/astra_inquiry_v1.py` 为准，本文 §3 为 v0.1 原文。

@@ -31,11 +31,18 @@ NUMERIC_FIELDS = {
     "ledger.short.mark_iv", "ledger.long.mark_iv", "ledger.short.delta", "ledger.long.delta",
     "ledger.short.mark_price", "ledger.long.mark_price", "ledger.states.flip_usd",
     "calendar.hours_to_expiry", "calendar.hour_utc", "calendar.weekday",
+    # ledger_research_fields@0.1 (rows from 2026-10-20; older rows lack them and are excluded)
+    "ledger.expiry_atm_iv_pct", "ledger.expected_move_pct", "ledger.short_cushion_pct", "ledger.distance_in_moves",
+    "ledger.rv_24h_pct", "ledger.rv_7d_pct", "ledger.iv_minus_rv_24h", "ledger.dvol", "ledger.iv_percentile",
+    "ledger.rr_25d_expiry", "ledger.entry_fee_btc", "ledger.credit_after_fee_btc", "ledger.comp_ratio_after_fee",
+    "ledger.gamma_wall_usd", "ledger.gamma_wall_vs_short_pct", "ledger.pin_from_index_pct",
+    "ledger.hours_to_next_event", "ledger.index_chg_1h_pct", "ledger.index_chg_4h_pct",
 }
 TEXT_FIELDS = {
     "ledger.side", "ledger.states.space_gate", "ledger.states.m_die_level", "ledger.states.gamma_regime",
     "ledger.states.gex_market_state", "ledger.states.tmv_24h", "ledger.states.tmv_48h", "ledger.states.micro_flow",
     "ledger.displayed", "ledger.locked",
+    "ledger.comp_tier", "ledger.next_event_kind", "ledger.event_before_expiry",
 }
 FIELDS = NUMERIC_FIELDS | TEXT_FIELDS
 # Fixed outcome metrics (evaluated by E3 from the entry row onward); the researcher picks one.

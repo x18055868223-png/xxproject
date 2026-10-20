@@ -21,7 +21,7 @@ else:
     import signal_llm_review as llm_core
 
 PROTOCOL = "inquiry_sheet@0.2"
-PROMPT_VERSION = "inquiry_prompt@0.2"
+PROMPT_VERSION = "inquiry_prompt@0.3"
 SCHEMA = "astra_inquiry_result@0.1"
 BRIEF_LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8")
 LAYER_STATUS = {"material", "quiet", "unknown"}
@@ -48,14 +48,16 @@ SYSTEM_PROMPT = """你是 xxproject 的证据提问者。研究对象是一张�
 1. 按 L0 到 L8 逐层写，每层都要写：status 取 material（有实质信息）/quiet（无实质信息）/unknown（缺数据或质量不可用）。
 2. 每条事实必须带 refs（案卷里的 ref）。数字取自案卷原值，为便于阅读可按显示精度四舍五入（如 0.6199、0.53%、81392），百分比可由小数乘 100 表示；不得换算成案卷里没有的新量。
 3. 案卷中 quality 为 stale/missing/unknown 的条目，不得当作已知事实陈述，只能写“缺失/过期”。
+   quality_reason 为 walls_not_contract_expiry 或 iv_not_contract_expiry 的条目属于市场口径或另一个到期日（见该条 relations.expiry_alignment）：引用时写明口径，不得当作本合约到期日的事实。本合约到期日的结构与波动以 L3.expiry_walls、L4.expiry_vol 为准。
 4. 只陈述，不推断。推断一律放进问题单的假设里。
 5. 写出跨层关系 cross_layer：哪些层互相印证（corroborate）、互相矛盾（conflict）、或其实同源（collinear，看 lineage）。
 
-【高价值问题的五条判定（每题必须全部满足）】
+【高价值问题的六条判定（每题必须全部满足）】
 - 有据：每个前提写成“陈述 + refs”，数字与案卷一致。
 - 材料性：写清它如何影响这张保单的触界概率、到期亏损概率、深尾损失或补偿是否充分（bears_on）。
 - 可判别：至少两个相互竞争的假设，每个写明机制、什么证据会支持、什么证据会推翻，以及它成立时风险升高还是降低。
-- 可回答：写明答案可能在哪找（案卷内 / 历史 / 外部联网 / 无法获得）。
+- 可回答：写明答案可能在哪找（案卷内 / 历史 / 外部联网 / 无法获得）。整张问题单中至少一半问题的 answer_source 为 case_file 或 history；answer_source 为 external 的，在 question_cn 末尾用括号写明需要哪一项外部数据。
+- 可检验：每题至少有一个假设，其 would_support_cn 或 would_refute_cn 写成到期前能在 BTC 指数路径或交割价上看到的现象（如到期前是否触及短腿、交割价落在盈亏平衡与保护腿之间还是之外、到期前是否越过某个本期墙位），使问题在到期后能用存档的指数路径与交割价检验。价位只用案卷已有的价位（短腿、保护腿、盈亏平衡、墙位、现价），不自设新价位。
 - 非冗余：不是事实底稿或 L8 程序读数的复述。L8 是可以被质疑的程序判读，与 L8 结论相同的问题不算关键问题；与 L8 冲突的证据优先提问。
   L8.research_readings 是经前向验证支持、并经用户批准的研究读数：写明它是否适用于本合约；当本合约的其他证据与它的方向冲突时，优先就此提问。
 
@@ -306,6 +308,10 @@ def validate(sheet: Any, case_file: Mapping[str, Any]) -> tuple[dict[str, Any] |
                                and a in {row["id"] for row in anomalies}], **flags})
     if not questions:
         return None, issues, "没有通过检查的问题（每题需合法类型/优先级/bears_on/答案来源、至少 2 个假设、至少 1 个有效引用的前提）"
+    answerable = sum(1 for q in questions if q["answer_source"] in {"case_file", "history"})
+    if answerable * 2 < len(questions):
+        issues.append({"where": "questions", "code": "answer_source_mostly_external",
+                       "answerable": answerable, "total": len(questions)})
     order = {"high": 0, "medium": 1, "low": 2}
     questions.sort(key=lambda q: order[q["priority"]])
     cleaned = {"protocol": PROTOCOL, "case_id": case_file.get("case_id"),
