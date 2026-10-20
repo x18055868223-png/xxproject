@@ -51,3 +51,13 @@ def test_holidays_gaps_progress_and_long_expiries():
     assert far["beyond_cycle"] is True and far["expiry_source"] == "contract" and far["hours_to_expiry"] == 48
     assert clock.reading(TUE_08)["expiry_source"] == "next_daily_expiry"
     assert clock.reading(1_830_000_000_000)["calendar_gaps"]   # 2027-12: the calendars end
+
+
+def test_hour_profile_gives_risk_and_value_per_hour():
+    r = clock.reading(TUE_08 + 6 * H)
+    prof = r["hour_profile"]
+    assert r["now_hour_utc"] == 14 and r["now_day_type"] == "weekday"
+    wd = prof["weekday"]
+    assert len(wd) == 24 and abs(wd[14]["risk_ratio"] - 2.357 * 1.193) < 1e-3
+    assert abs(wd[14]["value_ratio"] * wd[14]["risk_ratio"] - 1) < 1e-2
+    assert wd[5]["value_ratio"] > 1.4 and prof["weekend"][22]["risk_ratio"] > 1.1

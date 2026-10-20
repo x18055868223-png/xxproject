@@ -70,6 +70,17 @@ def variance_between(start_ms: int, end_ms: int) -> float:
     return total
 
 
+def hour_profile() -> dict[str, Any]:
+    """Each UTC hour's variance relative to the all-days hourly mean (1.0), for weekdays and
+    weekends, and the cost-performance of holding through it: time share / risk share =
+    1 / ratio (> 1: an hour of time decay costs less than an average hour of risk)."""
+    def rows(table, scale):
+        return [{"hour_utc": h, "risk_ratio": round(table[h] * scale, 3), "value_ratio": round(1 / (table[h] * scale), 3)}
+                for h in range(24)]
+    return {"weekday": rows(CLOCK_WEEKDAY, WEEKDAY_SCALE), "weekend": rows(CLOCK_WEEKEND, WEEKEND_SCALE),
+            "basis_cn": "相对全天每小时平均方差（=1）；性价比 = 1 ÷ 风险倍数，假设期权保费按时间均匀衰减"}
+
+
 def next_expiry_ms(now_ms: int) -> int:
     moment = _utc(now_ms)
     candidate = moment.replace(hour=EXPIRY_HOUR_UTC, minute=0, second=0, microsecond=0)
@@ -130,7 +141,10 @@ def reading(now_ms: int, expiry_ms: int | None = None) -> dict[str, Any]:
     gaps = event_calendar.coverage_gaps(expiry, now_ms)
     if _utc(expiry).date().isoformat() > HOLIDAYS_THROUGH:
         gaps = gaps + [{"source": "NYSE holidays", "through": HOLIDAYS_THROUGH}]
+    moment = _utc(now_ms)
     return {"schema": SCHEMA, "now_ms": now_ms, "expiry_ms": expiry, "hours_to_expiry": hours_left,
+            "now_hour_utc": moment.hour, "now_day_type": "weekend" if moment.weekday() >= 5 else "weekday",
+            "hour_profile": hour_profile(),
             "expiry_source": "contract" if given else "next_daily_expiry", "beyond_cycle": hours_left > 24.0,
             "calendar_gaps": gaps,
             "phase": phase(now_ms), "hour_ratio_now": now_ratio,
