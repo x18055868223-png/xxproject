@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-SCHEMAS = {"hypothesis@0.1", "postmortem@0.1", "protocol_proposal@0.1", "research_note@0.1"}
+SCHEMAS = {"hypothesis@0.1", "postmortem@0.1", "protocol_proposal@0.1", "research_note@0.1", "episode_view@0.1"}
 MAX_BYTES = 1_000_000
 ID = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
 FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,120}\.json$")
@@ -35,7 +35,7 @@ NUMERIC_FIELDS = {
 TEXT_FIELDS = {
     "ledger.side", "ledger.states.space_gate", "ledger.states.m_die_level", "ledger.states.gamma_regime",
     "ledger.states.gex_market_state", "ledger.states.tmv_24h", "ledger.states.tmv_48h", "ledger.states.micro_flow",
-    "ledger.displayed",
+    "ledger.displayed", "ledger.locked",
 }
 FIELDS = NUMERIC_FIELDS | TEXT_FIELDS
 # Fixed outcome metrics (evaluated by E3 from the entry row onward); the researcher picks one.
@@ -47,6 +47,8 @@ METRICS = {
     "result_btc_at_entry_credit": "入场信用（未扣费）减到期赔付（BTC）；与条件不成立组对照",
 }
 DIRECTIONS = {"riskier", "safer"}
+RISK_LEVELS = {"much_safer", "safer", "in_line", "riskier", "much_riskier"}
+CONTRACT_KEY = re.compile(r"^BTC-\d{1,2}[A-Z]{3}\d{2}-\d+-[PC]\|BTC-\d{1,2}[A-Z]{3}\d{2}-\d+-[PC]$")
 
 
 def check_condition(node: Any, path: str = "condition") -> list[str]:
@@ -169,6 +171,24 @@ def validate(doc: Any) -> list[str]:
         for key in ("proposal_cn", "evidence_cn"):
             if not _text(doc.get(key), 20000):
                 errors.append(f"{key}: 必填")
+    elif schema == "episode_view@0.1":
+        # the researcher's view on an open contract, counted only when it arrives before expiry
+        if not isinstance(doc.get("contract_key"), str) or not CONTRACT_KEY.match(doc["contract_key"]):
+            errors.append("contract_key: <短腿合约名>|<保护腿合约名>，见 index/episodes 或账本")
+        view = doc.get("view")
+        if not isinstance(view, Mapping):
+            errors.append("view: 必填对象")
+        else:
+            if view.get("risk_vs_baseline") not in RISK_LEVELS:
+                errors.append(f"view.risk_vs_baseline: {sorted(RISK_LEVELS)} 之一")
+            if view.get("grade") not in {"A", "B", "C", "D", "E", "U"}:
+                errors.append("view.grade: A–E 或 U")
+            if view.get("lean") not in {"underwrite", "decline", "watch"}:
+                errors.append("view.lean: underwrite / decline / watch")
+            if view.get("confidence") not in {"high", "medium", "low"}:
+                errors.append("view.confidence: high / medium / low")
+            if not _text(view.get("summary_cn"), 8000) or not isinstance(view.get("drivers_cn"), list):
+                errors.append("view.summary_cn 与 view.drivers_cn（列表）: 必填")
     elif schema == "research_note@0.1":
         if not _text(doc.get("title_cn"), 200) or not _text(doc.get("body_cn"), 50000):
             errors.append("title_cn 与 body_cn: 必填")
@@ -176,10 +196,12 @@ def validate(doc: Any) -> list[str]:
 
 
 REGISTRY = {"hypothesis@0.1": "registry/hypotheses.jsonl", "postmortem@0.1": "registry/postmortems.jsonl",
-            "protocol_proposal@0.1": "registry/proposals.jsonl", "research_note@0.1": "registry/notes.jsonl"}
+            "protocol_proposal@0.1": "registry/proposals.jsonl", "research_note@0.1": "registry/notes.jsonl",
+            "episode_view@0.1": "registry/episode_views.jsonl"}
 
 
-def ingest(archive: Any, inbox: str | Path, receipts: str | Path, *, now_ms: int) -> dict[str, Any]:
+def ingest(archive: Any, inbox: str | Path, receipts: str | Path, *, now_ms: int,
+           open_contracts: Mapping[str, int] | None = None) -> dict[str, Any]:
     """Validate, stamp and register every file in the inbox; write a receipt for each."""
     inbox, receipts = Path(inbox), Path(receipts)
     receipts.mkdir(parents=True, exist_ok=True)
@@ -207,6 +229,12 @@ def ingest(archive: Any, inbox: str | Path, receipts: str | Path, *, now_ms: int
             errors += validate(doc)
             if not errors and doc["id"] in registered_ids.get(doc["schema"], set()):
                 errors.append("id 已登记；已登记内容不可修改，修订请用新 id 并写 supersedes")
+            if not errors and doc["schema"] == "episode_view@0.1":
+                expiry = (open_contracts or {}).get(doc["contract_key"])
+                if expiry is None:
+                    errors.append("contract_key 不是进行中的合约（未跟踪或已到期）；判断须在到期前提交")
+                elif now_ms >= expiry:
+                    errors.append("合约已到期，判断不再计入")
         if errors:
             receipt.update({"status": "rejected", "errors": errors})
             archive.append_line("registry/rejected.jsonl", {**receipt, "schema": (doc or {}).get("schema")

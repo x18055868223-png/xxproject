@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/episode_view@0.1",
+  "title": "episode_view@0.1 — pre-expiry view on one contract (inbox submission)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "agent",
+    "contract_key",
+    "view"
+  ],
+  "properties": {
+    "schema": {
+      "const": "episode_view@0.1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "model"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "\\S"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "contract_key": {
+      "type": "string",
+      "pattern": "^BTC-\\d{1,2}[A-Z]{3}\\d{2}-\\d+-[PC]\\|BTC-\\d{1,2}[A-Z]{3}\\d{2}-\\d+-[PC]$"
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk_vs_baseline",
+        "grade",
+        "lean",
+        "confidence",
+        "drivers_cn",
+        "summary_cn"
+      ],
+      "properties": {
+        "risk_vs_baseline": {
+          "enum": [
+            "much_safer",
+            "safer",
+            "in_line",
+            "riskier",
+            "much_riskier"
+          ]
+        },
+        "grade": {
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "U"
+          ]
+        },
+        "lean": {
+          "enum": [
+            "underwrite",
+            "decline",
+            "watch"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "drivers_cn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "summary_cn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "pattern": "\\S"
+        }
+      }
+    }
+  },
+  "description": "Must be received (server received_at_ms) before the contract's expiry_ms; later views are rejected."
+}

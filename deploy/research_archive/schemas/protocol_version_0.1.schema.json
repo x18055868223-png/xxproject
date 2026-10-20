@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/protocol_version@0.1",
+  "title": "protocol_version@0.1 — component version announcement (protocols/versions.jsonl)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "at_ms",
+    "component",
+    "version",
+    "source"
+  ],
+  "properties": {
+    "schema": {
+      "const": "protocol_version@0.1"
+    },
+    "at_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "component": {
+      "enum": [
+        "inquirer_prompt",
+        "case_file_builder",
+        "ledger_row",
+        "episode_outcome",
+        "submission_schemas",
+        "research_protocol",
+        "scoring_rules"
+      ]
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "enum": [
+        "observed_in_code",
+        "approved_by_user"
+      ]
+    },
+    "note_cn": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

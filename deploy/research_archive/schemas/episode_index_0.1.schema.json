@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/episode_index@0.1",
+  "title": "episode_index@0.1 — derived per-contract index (index/episodes.json)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "built_at_ms",
+    "chain_lines",
+    "episodes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "episode_index@0.1"
+    },
+    "built_at_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "chain_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "chain.jsonl line count the index was built from"
+    },
+    "episodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/episode"
+      }
+    }
+  },
+  "description": "Rebuilt every tick, overwritten, NOT chained. Convenience only: the chained files are authoritative.",
+  "$defs": {
+    "episode": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "contract_key",
+        "side",
+        "expiry_ms",
+        "first_seen_ms",
+        "status",
+        "cases",
+        "inquiry",
+        "ledger_rows",
+        "last_row_at_ms",
+        "locked",
+        "decisions",
+        "outcome"
+      ],
+      "properties": {
+        "contract_key": {
+          "type": "string",
+          "pattern": "^[^|]+\\|[^|]+$",
+          "description": "<short_instrument>|<long_instrument>"
+        },
+        "side": {
+          "enum": [
+            "put",
+            "call"
+          ]
+        },
+        "short_strike_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "long_strike_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "expiry_ms": {
+          "type": "integer",
+          "description": "UTC epoch milliseconds"
+        },
+        "first_seen_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "settled",
+            "outcome_unavailable"
+          ]
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "case_id",
+              "path"
+            ],
+            "properties": {
+              "case_id": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "asof_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "UTC epoch milliseconds"
+              }
+            }
+          }
+        },
+        "inquiry": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ledger_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_row_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        },
+        "locked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "path",
+                "status"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "settled",
+                    "outcome_unavailable"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

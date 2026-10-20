@@ -48,6 +48,9 @@ else:
 SCHEMA_ROW = "ledger_row@0.1"
 SCHEMA_OUTCOME = "episode_outcome@0.1"
 SCHEMA_CHAIN = "archive_chain@0.1"
+SCHEMA_DECISION = "decision_event@0.1"
+SCHEMA_INDEX = "episode_index@0.1"
+SCHEMA_PROTOCOL = "protocol_version@0.1"
 HOUR_MS = 3_600_000
 YEAR_MS = 365.0 * 24 * HOUR_MS
 BASE_INTERVAL_MS = 30 * 60_000
@@ -59,8 +62,9 @@ INQUIRY_WINDOW_MS = 45 * 60_000
 INQUIRY_TIMEOUT_S = 240
 OUTCOME_DELAY_MS = 10 * 60_000
 OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
-LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected"}
-FILE_KINDS = {"case", "inquiry"}
+INDEX_KEEP_CLOSED_MS = 3 * 24 * HOUR_MS
+LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol"}
+FILE_KINDS = {"case", "inquiry", "legacy"}
 PUBLIC = "https://www.deribit.com/api/v2/"
 PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data"})
 
@@ -222,7 +226,8 @@ def _program_states(view: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 def ledger_row(record: Mapping[str, Any], short_book: Mapping[str, Any], long_book: Mapping[str, Any],
-               states: Mapping[str, Any] | None, *, now_ms: int, displayed: bool | None) -> dict[str, Any]:
+               states: Mapping[str, Any] | None, *, now_ms: int, displayed: bool | None,
+               locked: bool | None = None) -> dict[str, Any]:
     side, ks, kl = record["side"], float(record["short_strike_usd"]), float(record["long_strike_usd"])
     index = _num(short_book.get("index_price")) or _num(long_book.get("index_price"))
     forward = _num(short_book.get("underlying_price")) or _num(long_book.get("underlying_price"))
@@ -242,7 +247,7 @@ def ledger_row(record: Mapping[str, Any], short_book: Mapping[str, Any], long_bo
         "delta": (b.get("greeks") or {}).get("delta"), "timestamp": b.get("timestamp")}
     return {
         "schema": SCHEMA_ROW, "at_ms": now_ms, "contract_key": record["key"], "side": side,
-        "expiry_ms": record["expiry_ms"], "displayed": displayed,
+        "expiry_ms": record["expiry_ms"], "displayed": displayed, "locked": locked,
         "short": leg(short_book), "long": leg(long_book),
         "credit_bid_ask_btc": credit, "mark_spread_btc": (sm - lm) if sm is not None and lm is not None else None,
         "index_usd": index, "forward_usd": forward,
@@ -280,6 +285,8 @@ def row_trigger(last: Mapping[str, Any] | None, row: Mapping[str, Any], *, now_m
         if last.get("displayed") is not None and row.get("displayed") is not None \
                 and last["displayed"] != row["displayed"]:
             return "change"
+    if last.get("locked") is not None and row.get("locked") is not None and last["locked"] != row["locked"]:
+        return "change"
     return None
 
 
@@ -344,13 +351,108 @@ class Deribit:
         return list(self.transport("public/get_index_chart_data", {"index_name": "btc_usd", "range": "2d"}) or [])
 
 
+def instrument_key(contract: Mapping[str, Any]) -> str | None:
+    short, long = contract.get("short_instrument"), contract.get("long_instrument")
+    return f"{short}|{long}" if short and long else None
+
+
+def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """User-side decision events from the workbench: lock created / stopped, Decision Path rows."""
+    events: list[dict[str, Any]] = []
+    for ep in locked_episodes:
+        contract = ep.get("contract") or {}
+        key = instrument_key(contract)
+        if not key or not ep.get("episode_id"):
+            continue
+        base = {"source": "lock", "contract_key": key, "side": contract.get("side"), "ref_id": ep["episode_id"]}
+        if isinstance(ep.get("created_at_ms"), int):
+            events.append({**base, "event": "lock_created", "at_ms": ep["created_at_ms"],
+                           "detail": {"candidate_id": ep.get("candidate_id"),
+                                      "source_episode_id": ep.get("source_episode_id")}})
+        if ep.get("status") != "active" and isinstance(ep.get("stopped_at_ms"), int):
+            events.append({**base, "event": "lock_stopped", "at_ms": ep["stopped_at_ms"],
+                           "detail": {"status": ep.get("status"), "stop_reason": ep.get("stop_reason")}})
+    for row in dp_records:
+        contract = row.get("contract") or {}
+        key = instrument_key(contract)
+        if not key or not row.get("verification_id") or not isinstance(row.get("at_ms"), int):
+            continue
+        detail = {k: row.get(k) for k in ("conclusion", "verdicts_start", "verdicts_now", "q1_items", "marks",
+                                          "settled_after", "entry_after_fee_btc", "outcome", "path_version")
+                  if row.get(k) is not None}
+        events.append({"source": "decision_path", "contract_key": key, "side": contract.get("side"),
+                       "ref_id": row["verification_id"], "event": row.get("event"), "at_ms": row["at_ms"],
+                       "detail": detail})
+    return sorted(events, key=lambda e: (e["at_ms"], e["source"], e["ref_id"], e["event"] or ""))
+
+
+def active_locked_keys(locked_episodes: list[Mapping[str, Any]]) -> set[str]:
+    return {k for ep in locked_episodes if ep.get("status") == "active"
+            for k in [instrument_key(ep.get("contract") or {})] if k}
+
+
+def observed_versions() -> dict[str, str]:
+    """Versions that the code in force carries; recorded whenever one changes."""
+    return {"inquirer_prompt": inquiry.PROMPT_VERSION,
+            "case_file_builder": case_file_core.BUILDER_VERSION,
+            "ledger_row": SCHEMA_ROW, "episode_outcome": SCHEMA_OUTCOME,
+            "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS))}
+
+
+def _episode_summary(record: Mapping[str, Any], status: str, outcome_path: str | None = None) -> dict[str, Any]:
+    return {"contract_key": record["key"], "side": record["side"],
+            "short_strike_usd": record["short_strike_usd"], "long_strike_usd": record["long_strike_usd"],
+            "expiry_ms": record["expiry_ms"], "first_seen_ms": record["first_seen_ms"], "status": status,
+            "cases": [{k: c.get(k) for k in ("case_id", "path", "asof_ms")} for c in record.get("cases") or []],
+            "inquiry": list(record.get("inquiry") or []), "ledger_rows": record.get("ledger_rows", 0),
+            "last_row_at_ms": record.get("last_row_at_ms"), "locked": record.get("locked"),
+            "decisions": list(record.get("decisions") or []),
+            "outcome": {"path": outcome_path, "status": status} if outcome_path else None}
+
+
+def write_index(archive: Archive, state: Mapping[str, Any], *, now_ms: int) -> None:
+    """Derived per-expiry-day index; rebuilt while a day has open or recently closed contracts.
+    Not chained: it can always be rebuilt from the chained files."""
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for record in state["contracts"].values():
+        by_day.setdefault(_utc(int(record["expiry_ms"])).strftime("%Y-%m-%d"), []).append(_episode_summary(record, "open"))
+    for summary in (state.get("closed_recent") or {}).values():
+        by_day.setdefault(_utc(int(summary["expiry_ms"])).strftime("%Y-%m-%d"), []).append(summary)
+    chain_lines = 0
+    if archive.chain_path.exists():
+        with archive.chain_path.open("rb") as handle:
+            chain_lines = sum(1 for line in handle if line.strip())
+    for day, episodes in by_day.items():
+        path = archive.root / "index" / "episodes" / f"{day}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = {"schema": SCHEMA_INDEX, "expiry_day": day, "built_at_ms": now_ms, "chain_lines": chain_lines,
+                "derived": True, "episodes": sorted(episodes, key=lambda e: (e["first_seen_ms"], e["contract_key"]))}
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+
+
 def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
          fetch_case: Callable[[str], Mapping[str, Any]], deribit: Deribit,
          run_inquiry: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
-         inbox: tuple[Path, Path] | None = None) -> dict[str, Any]:
+         inbox: tuple[Path, Path] | None = None,
+         decision_source: Callable[[], tuple[list[Any], list[Any]]] | None = None) -> dict[str, Any]:
     state = archive.load_state()
+    state.setdefault("closed_recent", {})
+    state.setdefault("decisions_seen", [])
+    state.setdefault("protocol_versions", {})
     done = set(state.get("outcomes_done") or [])
-    report: dict[str, Any] = {"cases": 0, "inquiry": 0, "rows": 0, "outcomes": 0, "errors": []}
+    report: dict[str, Any] = {"cases": 0, "inquiry": 0, "rows": 0, "outcomes": 0, "decisions": 0, "errors": []}
+
+    for component, version in observed_versions().items():
+        if state["protocol_versions"].get(component) != version:
+            archive.append_line("protocols/versions.jsonl", {
+                "schema": SCHEMA_PROTOCOL, "at_ms": now_ms, "component": component, "version": version,
+                "source": "observed_in_code", "previous": state["protocol_versions"].get(component),
+                "note_cn": "运行中的代码所带版本；研究协议与评分规则的版本由用户批准后登记"}, at_ms=now_ms, kind="protocol")
+            state["protocol_versions"][component] = version
+    archive.save_state(state)
     displayed: dict[str, dict[str, Any]] = {}
     for item in (view or {}).get("candidates") or []:
         snap = item.get("snapshot") if isinstance(item, Mapping) else None
@@ -366,6 +468,29 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             "long_instrument": contract["long_instrument"], "short_strike_usd": contract["short_strike_usd"],
             "long_strike_usd": contract["long_strike_usd"], "expiry_ms": contract["expiry_ms"],
             "first_seen_ms": now_ms, "cases": [], "last_row": None})
+
+    locked_keys: set[str] | None = None
+    if decision_source is not None:
+        try:
+            locked_episodes, dp_records = decision_source()
+            locked_keys = active_locked_keys(locked_episodes)
+            seen = set(state["decisions_seen"])
+            for event in collect_decisions(locked_episodes, dp_records):
+                ident = f"{event['source']}|{event['ref_id']}|{event['event']}|{event['at_ms']}"
+                if ident in seen:
+                    continue
+                archive.append_line(f"decisions/{_utc(event['at_ms']).strftime('%Y-%m-%d')}.jsonl",
+                                    {"schema": SCHEMA_DECISION, **event}, at_ms=now_ms, kind="decision")
+                state["decisions_seen"].append(ident)
+                seen.add(ident)
+                record = state["contracts"].get(event["contract_key"])
+                if record is not None:
+                    record.setdefault("decisions", []).append(
+                        {k: event[k] for k in ("source", "event", "at_ms", "ref_id")})
+                report["decisions"] += 1
+            archive.save_state(state)
+        except Exception as exc:
+            report["errors"].append({"step": "decisions", "error": type(exc).__name__})
 
     hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
     day = hour[:10]
@@ -396,7 +521,8 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             continue
         try:
             row = ledger_row(record, deribit.book(record["short_instrument"]), deribit.book(record["long_instrument"]),
-                             states, now_ms=now_ms, displayed=(key in displayed) if view is not None else None)
+                             states, now_ms=now_ms, displayed=(key in displayed) if view is not None else None,
+                             locked=(key in locked_keys) if locked_keys is not None else None)
         except Exception as exc:
             report["errors"].append({"step": "ledger", "contract": key, "error": type(exc).__name__})
             continue
@@ -406,7 +532,11 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             archive.append_line(f"ledger/{_utc(now_ms).strftime('%Y-%m-%d')}.jsonl", row, at_ms=now_ms, kind="ledger")
             record["last_row"] = {k: row.get(k) for k in ("at_ms", "expiry_ms", "short_from_index_pct",
                                                           "breakeven_from_index_pct", "long_from_index_pct",
-                                                          "states", "displayed")}
+                                                          "states", "displayed", "locked")}
+            record["ledger_rows"] = record.get("ledger_rows", 0) + 1
+            record["last_row_at_ms"] = now_ms
+            if row.get("locked") is not None:
+                record["locked"] = row["locked"]
             archive.save_state(state)   # a crash right after never re-appends this row
             report["rows"] += 1
 
@@ -442,6 +572,7 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                        "reason": type(exc).__name__, "expiry_ms": expiry, "first_seen_ms": record["first_seen_ms"]}
         archive.append_line(rel, outcome, at_ms=now_ms, kind="outcome")
         state["outcomes_done"].append(key)
+        state["closed_recent"][key] = _episode_summary(record, outcome["status"], rel)
         del state["contracts"][key]
         archive.save_state(state)   # a crash right after never writes a second outcome
         if outcome["status"] == "settled":
@@ -458,12 +589,16 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             try:
                 result = dict(run_inquiry(case_file_core.for_inquirer(case)))
             except Exception as exc:
-                result = {"status": "ERROR", "error": type(exc).__name__}
+                result = {"schema": inquiry.SCHEMA, "status": "ERROR", "error": type(exc).__name__,
+                          "prompt_version": inquiry.PROMPT_VERSION}
             try:
                 irel = f"inquiry/{day}/{hour[11:]}_{side}_{case['case_id']}.json"
                 archive.write_new(irel, json.dumps({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"), **result},
                                                    ensure_ascii=False, sort_keys=True).encode("utf-8"),
                                   at_ms=now_ms, kind="inquiry")
+                ckey = next((c["contract_key"] for c in state["cases"].values() if c.get("case_id") == case["case_id"]), None)
+                if ckey in state["contracts"]:
+                    state["contracts"][ckey].setdefault("inquiry", []).append(irel)
                 report["inquiry"] += 1
             except Exception as exc:
                 report["errors"].append({"step": "inquiry_write", "side": side, "error": type(exc).__name__})
@@ -472,16 +607,75 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
 
     if inbox is not None:
         try:
-            report["inbox"] = research_inbox.ingest(archive, inbox[0], inbox[1], now_ms=now_ms)
+            report["inbox"] = research_inbox.ingest(
+                archive, inbox[0], inbox[1], now_ms=now_ms,
+                open_contracts={k: int(r["expiry_ms"]) for k, r in state["contracts"].items()})
         except Exception as exc:
             report["errors"].append({"step": "inbox", "error": type(exc).__name__})
 
     state["outcomes_done"] = state["outcomes_done"][-2000:]
+    state["decisions_seen"] = state["decisions_seen"][-5000:]
     for name in ("cases", "inquiry"):   # slot keys sort by hour; keep the recent ones
         state[name] = dict(sorted(state[name].items())[-500:])
+    state["closed_recent"] = {k: v for k, v in state["closed_recent"].items()
+                              if now_ms - int(v["expiry_ms"]) <= INDEX_KEEP_CLOSED_MS}
     state["last_tick_ms"] = now_ms
     archive.save_state(state)
+    try:
+        write_index(archive, state, now_ms=now_ms)
+    except Exception as exc:
+        report["errors"].append({"step": "index", "error": type(exc).__name__})
     return report
+
+
+LEGACY_SOURCES = (
+    ("locked_candidates/index.json", "legacy/locked_candidates/index.json"),
+    ("locked_settlements.json", "legacy/locked_settlements.json"),
+    ("decision_path/records.jsonl", "legacy/decision_path_records.jsonl"),
+    ("underwriting.jsonl", "legacy/underwriting.jsonl"),
+)
+LEGACY_NOTE = """# legacy/（存档上线前的历史，一次性导入）
+
+导入时间见 chain.jsonl 中 kind=legacy 的记录。这些数据产生于 2026-10-20 研究存档上线之前：
+- 格式与现行案卷、账本不同，冻结程度也不同（每日快照不含信号层市场事实；锁定点含完整冻结包）；
+- 只用于熟悉问题域、形成假设；**不能用于前向验证**（前向验证只使用假设登记之后冻结的样本）。
+
+内容：locked_candidates/（锁定库索引与冻结点）、locked_settlements.json（锁定到期静态结果）、
+decision_path_records.jsonl（旧人读核验路径记录）、underwriting.jsonl、daily_snapshots/（每日快照与归档）。
+"""
+
+
+def backfill_legacy(archive: Archive, workbench_dir: str | Path, *, now_ms: int) -> dict[str, Any]:
+    """One-time import of pre-archive history into legacy/, each file chained (kind legacy)."""
+    src = Path(workbench_dir)
+    if (archive.root / "legacy").exists():
+        return {"skipped": "legacy_exists"}
+    written = 0
+
+    def put(rel: str, data: bytes) -> None:
+        nonlocal written
+        archive.write_new(rel, data, at_ms=now_ms, kind="legacy")
+        written += 1
+
+    put("legacy/README.md", LEGACY_NOTE.encode("utf-8"))
+    for source, rel in LEGACY_SOURCES:
+        path = src / source
+        if path.exists():
+            put(rel + ".gz", gzip.compress(path.read_bytes(), mtime=0))
+    points = src / "locked_candidates" / "points"
+    if points.is_dir():
+        for path in sorted(points.iterdir()):
+            if path.is_file():
+                data = path.read_bytes()
+                put(f"legacy/locked_candidates/points/{path.name}" + ("" if path.suffix == ".gz" else ".gz"),
+                    data if path.suffix == ".gz" else gzip.compress(data, mtime=0))
+    for path in sorted(src.glob("daily_snapshots*.jsonl*")):
+        if path.name.endswith(".lock"):
+            continue
+        data = path.read_bytes()
+        put(f"legacy/daily_snapshots/{path.name}" + ("" if path.suffix == ".gz" else ".gz"),
+            data if path.suffix == ".gz" else gzip.compress(data, mtime=0))
+    return {"legacy_files": written}
 
 
 def case_entry(case: Mapping[str, Any], ref: str) -> Any:
@@ -489,6 +683,17 @@ def case_entry(case: Mapping[str, Any], ref: str) -> Any:
     if not at:
         return None
     return case["layers"][at["layer"]][at["index"]].get("values")
+
+
+def _workbench_decisions(workbench_dir: Path) -> tuple[list[Any], list[Any]]:
+    """Lock episodes and Decision Path rows, read from the workbench state the archiver can read."""
+    index = json.loads((workbench_dir / "locked_candidates" / "index.json").read_text(encoding="utf-8"))
+    episodes = index.get("episodes") or []
+    episodes = list(episodes.values()) if isinstance(episodes, Mapping) else list(episodes)
+    records_path = workbench_dir / "decision_path" / "records.jsonl"
+    records = [json.loads(line) for line in records_path.read_text(encoding="utf-8").splitlines() if line.strip()] \
+        if records_path.exists() else []
+    return episodes, records
 
 
 def _http_json(url: str, token: str | None = None, timeout: int = 180) -> Any:
@@ -501,7 +706,11 @@ def _http_json(url: str, token: str | None = None, timeout: int = 180) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
-    parser.add_argument("command", choices=["tick", "verify"])
+    parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register"])
+    parser.add_argument("--workbench-dir", default=os.environ.get("ASTRA_WORKBENCH_STATE_DIR", "/var/lib/xxproject/workbench"))
+    parser.add_argument("--component")
+    parser.add_argument("--version")
+    parser.add_argument("--note", default="")
     parser.add_argument("--root", default=os.environ.get("ASTRA_RESEARCH_ARCHIVE", "/var/lib/xxproject/research_archive"))
     parser.add_argument("--inbox", default=os.environ.get("ASTRA_RESEARCH_INBOX", "/var/lib/xxproject/research_inbox"))
     parser.add_argument("--receipts", default=os.environ.get("ASTRA_RESEARCH_RECEIPTS",
@@ -511,6 +720,18 @@ def main() -> None:
     archive = Archive(args.root)
     if args.command == "verify":
         print(json.dumps(archive.verify(), ensure_ascii=False))
+        return
+    if args.command == "backfill-legacy":
+        print(json.dumps(backfill_legacy(archive, args.workbench_dir, now_ms=int(time.time() * 1000))))
+        return
+    if args.command == "protocol-register":
+        if args.component not in {"research_protocol", "scoring_rules", "inquirer_prompt"} or not args.version:
+            raise SystemExit("--component research_protocol|scoring_rules|inquirer_prompt and --version are required")
+        now = int(time.time() * 1000)
+        archive.append_line("protocols/versions.jsonl", {
+            "schema": SCHEMA_PROTOCOL, "at_ms": now, "component": args.component, "version": args.version,
+            "source": "approved_by_user", "note_cn": args.note}, at_ms=now, kind="protocol")
+        print("registered")
         return
     token = os.environ.get("ASTRA_WORKBENCH_TOKEN")
     key = os.environ.get("LLM_API_KEY") or os.environ.get("ASTRA_WORKBENCH_LLM_API_KEY")
@@ -542,7 +763,8 @@ def main() -> None:
                       deribit=Deribit(),
                       run_inquiry=(lambda case: inquiry.run(case, api_key=key, model=model, timeout=INQUIRY_TIMEOUT_S))
                       if key else None,
-                      inbox=(Path(args.inbox), Path(args.receipts)))
+                      inbox=(Path(args.inbox), Path(args.receipts)),
+                      decision_source=lambda: _workbench_decisions(Path(args.workbench_dir)))
         print(json.dumps(report, ensure_ascii=False))
     finally:
         lock.unlink(missing_ok=True)

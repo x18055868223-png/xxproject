@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/hypothesis@0.1",
+  "title": "hypothesis@0.1 — computable research hypothesis (inbox submission)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "agent",
+    "statement_cn",
+    "rationale_cn",
+    "falsification_cn",
+    "condition",
+    "metric",
+    "expected_direction",
+    "formation",
+    "counterexamples",
+    "collinear_with"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hypothesis@0.1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "model"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "\\S"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "statement_cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "rationale_cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "falsification_cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "condition": {
+      "$ref": "#/$defs/condition"
+    },
+    "metric": {
+      "enum": [
+        "loss_at_expiry",
+        "max_adverse_after_entry_pct",
+        "result_btc_at_entry_credit",
+        "settle_vs_short_pct",
+        "touched_short_after_entry"
+      ]
+    },
+    "expected_direction": {
+      "enum": [
+        "riskier",
+        "safer"
+      ]
+    },
+    "formation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description_cn",
+        "samples"
+      ],
+      "properties": {
+        "description_cn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "\\S"
+        },
+        "samples": {
+          "type": "array"
+        }
+      }
+    },
+    "counterexamples": {
+      "type": "array"
+    },
+    "collinear_with": {
+      "type": "array"
+    },
+    "supersedes": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "all"
+          ],
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 12,
+              "items": {
+                "$ref": "#/$defs/condition"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "any"
+          ],
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 12,
+              "items": {
+                "$ref": "#/$defs/condition"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "not"
+          ],
+          "properties": {
+            "not": {
+              "$ref": "#/$defs/condition"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/leaf"
+        }
+      ]
+    },
+    "leaf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "properties": {
+        "field": {
+          "enum": [
+            "calendar.hour_utc",
+            "calendar.hours_to_expiry",
+            "calendar.weekday",
+            "ledger.breakeven_from_index_pct",
+            "ledger.credit_bid_ask_btc",
+            "ledger.displayed",
+            "ledger.forward_usd",
+            "ledger.index_usd",
+            "ledger.long.delta",
+            "ledger.long.mark_iv",
+            "ledger.long.mark_price",
+            "ledger.long_from_index_pct",
+            "ledger.mark_spread_btc",
+            "ledger.p_itm_short",
+            "ledger.p_loss",
+            "ledger.p_max_loss",
+            "ledger.p_touch_short",
+            "ledger.short.delta",
+            "ledger.short.mark_iv",
+            "ledger.short.mark_price",
+            "ledger.short_from_index_pct",
+            "ledger.side",
+            "ledger.states.flip_usd",
+            "ledger.states.gamma_regime",
+            "ledger.states.gex_market_state",
+            "ledger.states.m_die_level",
+            "ledger.states.micro_flow",
+            "ledger.states.space_gate",
+            "ledger.states.tmv_24h",
+            "ledger.states.tmv_48h"
+          ]
+        },
+        "op": {
+          "enum": [
+            "!=",
+            "<",
+            "<=",
+            "==",
+            ">",
+            ">=",
+            "in",
+            "not_in"
+          ]
+        },
+        "value": {}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "in",
+                  "not_in"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "<",
+                  "<=",
+                  ">",
+                  ">="
+                ]
+              },
+              "field": {
+                "enum": [
+                  "calendar.hour_utc",
+                  "calendar.hours_to_expiry",
+                  "calendar.weekday",
+                  "ledger.breakeven_from_index_pct",
+                  "ledger.credit_bid_ask_btc",
+                  "ledger.forward_usd",
+                  "ledger.index_usd",
+                  "ledger.long.delta",
+                  "ledger.long.mark_iv",
+                  "ledger.long.mark_price",
+                  "ledger.long_from_index_pct",
+                  "ledger.mark_spread_btc",
+                  "ledger.p_itm_short",
+                  "ledger.p_loss",
+                  "ledger.p_max_loss",
+                  "ledger.p_touch_short",
+                  "ledger.short.delta",
+                  "ledger.short.mark_iv",
+                  "ledger.short.mark_price",
+                  "ledger.short_from_index_pct",
+                  "ledger.states.flip_usd"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "<",
+                  "<=",
+                  ">",
+                  ">="
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "field": {
+                "enum": [
+                  "calendar.hour_utc",
+                  "calendar.hours_to_expiry",
+                  "calendar.weekday",
+                  "ledger.breakeven_from_index_pct",
+                  "ledger.credit_bid_ask_btc",
+                  "ledger.forward_usd",
+                  "ledger.index_usd",
+                  "ledger.long.delta",
+                  "ledger.long.mark_iv",
+                  "ledger.long.mark_price",
+                  "ledger.long_from_index_pct",
+                  "ledger.mark_spread_btc",
+                  "ledger.p_itm_short",
+                  "ledger.p_loss",
+                  "ledger.p_max_loss",
+                  "ledger.p_touch_short",
+                  "ledger.short.delta",
+                  "ledger.short.mark_iv",
+                  "ledger.short.mark_price",
+                  "ledger.short_from_index_pct",
+                  "ledger.states.flip_usd"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/protocol_proposal@0.1",
+  "title": "protocol_proposal@0.1 — protocol change proposal (inbox submission)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "agent",
+    "target",
+    "proposal_cn",
+    "evidence_cn"
+  ],
+  "properties": {
+    "schema": {
+      "const": "protocol_proposal@0.1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "model"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "\\S"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "target": {
+      "enum": [
+        "inquirer_prompt",
+        "research_protocol",
+        "ledger_fields",
+        "case_file",
+        "other"
+      ]
+    },
+    "proposal_cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "pattern": "\\S"
+    },
+    "evidence_cn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000,
+      "pattern": "\\S"
+    }
+  }
+}

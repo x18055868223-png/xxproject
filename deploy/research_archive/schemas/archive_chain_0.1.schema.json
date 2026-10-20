@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/archive_chain@0.1",
+  "title": "archive_chain@0.1 — one hash-chain entry in chain.jsonl",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "at_ms",
+    "kind",
+    "path",
+    "content_sha256",
+    "prev_sha256",
+    "entry_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "archive_chain@0.1"
+    },
+    "at_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "kind": {
+      "enum": [
+        "case",
+        "inquiry",
+        "ledger",
+        "outcome",
+        "decision",
+        "protocol",
+        "submission",
+        "submission_rejected",
+        "legacy"
+      ]
+    },
+    "path": {
+      "type": "string",
+      "description": "archive-relative path"
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prev_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "entry_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "description": "entry_sha256 = sha256(json.dumps(entry without entry_sha256, sort_keys=True)) with Python default separators and ensure_ascii. File kinds hash the whole file bytes; line kinds hash the appended line bytes including the trailing \\n. First entry has prev_sha256 = 64 zeros."
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/decision_event@0.1",
+  "title": "decision_event@0.1 — workbench lock / decision path event",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "at_ms",
+    "source",
+    "event",
+    "contract_key",
+    "side",
+    "ref_id",
+    "detail"
+  ],
+  "properties": {
+    "schema": {
+      "const": "decision_event@0.1"
+    },
+    "at_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "source": {
+      "enum": [
+        "lock",
+        "decision_path"
+      ]
+    },
+    "event": {
+      "type": "string",
+      "examples": [
+        "lock_created",
+        "lock_stopped",
+        "concluded",
+        "expired_open",
+        "settled"
+      ]
+    },
+    "contract_key": {
+      "type": "string",
+      "pattern": "^[^|]+\\|[^|]+$",
+      "description": "<short_instrument>|<long_instrument>"
+    },
+    "side": {
+      "enum": [
+        "put",
+        "call"
+      ]
+    },
+    "ref_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "lock episode_id or decision path verification_id"
+    },
+    "detail": {
+      "type": "object"
+    }
+  },
+  "description": "One line in decisions/<UTC day of at_ms>.jsonl."
+}

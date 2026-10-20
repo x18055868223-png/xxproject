@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/case_file@0.1",
+  "title": "case_file@0.1 — frozen fact world of one candidate",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "case_id",
+    "snapshot_id",
+    "asof_ms",
+    "layers",
+    "refs",
+    "build"
+  ],
+  "properties": {
+    "schema": {
+      "const": "case_file@0.1"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^cf_"
+    },
+    "snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "candidate_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "asof_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "contract_cn": {
+      "type": "string"
+    },
+    "basis_cn": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "L0": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L1": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L2": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L3": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L4": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L5": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L6": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L7": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L8": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        },
+        "L9": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        }
+      },
+      "required": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "L6",
+        "L7",
+        "L8",
+        "L9"
+      ]
+    },
+    "refs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "layer",
+          "index"
+        ],
+        "properties": {
+          "layer": {
+            "type": "string",
+            "pattern": "^L[0-9]$"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "builder",
+        "bytes",
+        "content_sha256"
+      ],
+      "properties": {
+        "builder": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "built_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        },
+        "content_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time_note_cn": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "description": "Archived gzip-compressed at cases/<UTC day>/<HH>_<side>_<case_id>.json.gz. Layers L0-L9 are always present (L9 usually empty). Entry values are free-form.",
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "ref",
+        "label_cn",
+        "values",
+        "relations",
+        "asof_ms",
+        "quality",
+        "quality_reason",
+        "lineage",
+        "source"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string",
+          "pattern": "^L[0-9]\\.[A-Za-z0-9_.]+$"
+        },
+        "label_cn": {
+          "type": "string"
+        },
+        "values": {
+          "description": "free-form original values; units in key suffixes (_usd/_btc/_pct/_ms)"
+        },
+        "relations": {
+          "type": "object"
+        },
+        "asof_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        },
+        "quality": {
+          "enum": [
+            "ok",
+            "stale",
+            "missing",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "quality_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

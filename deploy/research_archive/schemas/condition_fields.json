@@ -1,0 +1,478 @@
+{
+ "$comment": "Generated from tools/astra_research_inbox_v1.py (FIELDS, NUMERIC_FIELDS, TEXT_FIELDS, OPS, METRICS, DIRECTIONS). Server code is authoritative.",
+ "schema": "condition_fields@0.1",
+ "source_module": "tools/astra_research_inbox_v1.py",
+ "fields": [
+  {
+   "field": "calendar.hour_utc",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "行 at_ms 的 UTC 小时（0–23）"
+  },
+  {
+   "field": "calendar.hours_to_expiry",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "行 at_ms 到 expiry_ms 的小时数（E3 求值时计算）"
+  },
+  {
+   "field": "calendar.weekday",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "行 at_ms 的 UTC 星期（约定待 E3 写死，见 DATA_DICTIONARY）"
+  },
+  {
+   "field": "ledger.breakeven_from_index_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "(第一个亏损边界 / 指数 − 1) × 100；p_loss 未算出时为 null"
+  },
+  {
+   "field": "ledger.credit_bid_ask_btc",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "短腿买价 − 长腿卖价（BTC，未扣费；任一侧缺失为 null）"
+  },
+  {
+   "field": "ledger.displayed",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "是否为当前显示候选；实际值为布尔 true/false/null，只能用 == != in not_in"
+  },
+  {
+   "field": "ledger.forward_usd",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "该到期的 underlying_price（远期，USD）"
+  },
+  {
+   "field": "ledger.index_usd",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "Deribit btc_usd 指数（USD）"
+  },
+  {
+   "field": "ledger.locked",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "该合约当时是否有活跃的工作台锁定（布尔；null 表示决策来源不可读）"
+  },
+  {
+   "field": "ledger.long.delta",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "保护腿 delta（带符号）"
+  },
+  {
+   "field": "ledger.long.mark_iv",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "保护腿 mark IV（百分数）"
+  },
+  {
+   "field": "ledger.long.mark_price",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "保护腿 mark 价（BTC）"
+  },
+  {
+   "field": "ledger.long_from_index_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "(保护腿行权价 / 指数 − 1) × 100，带符号"
+  },
+  {
+   "field": "ledger.mark_spread_btc",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "短腿 mark − 长腿 mark（BTC）"
+  },
+  {
+   "field": "ledger.p_itm_short",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "市场隐含短腿到期实值概率（0–1）"
+  },
+  {
+   "field": "ledger.p_loss",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "市场隐含到期净亏概率（按未扣费信用）"
+  },
+  {
+   "field": "ledger.p_max_loss",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "市场隐含越过保护腿概率"
+  },
+  {
+   "field": "ledger.p_touch_short",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "市场隐含触及短腿概率 = min(1, 2×p_itm_short)"
+  },
+  {
+   "field": "ledger.short.delta",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "短腿 delta（交易所 greeks，带符号）"
+  },
+  {
+   "field": "ledger.short.mark_iv",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "短腿 mark IV（百分数，如 45.2）"
+  },
+  {
+   "field": "ledger.short.mark_price",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "短腿 mark 价（BTC）"
+  },
+  {
+   "field": "ledger.short_from_index_pct",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "(短腿行权价 / 指数 − 1) × 100，带符号"
+  },
+  {
+   "field": "ledger.side",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "put 或 call"
+  },
+  {
+   "field": "ledger.states.flip_usd",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "GEX flip point（USD）"
+  },
+  {
+   "field": "ledger.states.gamma_regime",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "Gamma 体制"
+  },
+  {
+   "field": "ledger.states.gex_market_state",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "gexmonitor market_state"
+  },
+  {
+   "field": "ledger.states.m_die_level",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "M-DIE 运动判读等级"
+  },
+  {
+   "field": "ledger.states.micro_flow",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "微观流效应"
+  },
+  {
+   "field": "ledger.states.space_gate",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "Space 门状态（producer_state 优先）"
+  },
+  {
+   "field": "ledger.states.tmv_24h",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "TMV 24h final_state"
+  },
+  {
+   "field": "ledger.states.tmv_48h",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "TMV 48h final_state"
+  }
+ ],
+ "ops": [
+  "!=",
+  "<",
+  "<=",
+  "==",
+  ">",
+  ">=",
+  "in",
+  "not_in"
+ ],
+ "combinators": {
+  "all": "1–12 个子条件全部成立",
+  "any": "1–12 个子条件任一成立",
+  "not": "取反"
+ },
+ "in_list_size": [
+  1,
+  20
+ ],
+ "missing_field": "任何所需字段为 null/缺失时整条条件求值为 null，该样本排除",
+ "metrics": [
+  {
+   "metric": "loss_at_expiry",
+   "description_cn": "按入场时（未扣费）信用计算，到期是否净亏；基线对照为入场时 p_loss"
+  },
+  {
+   "metric": "max_adverse_after_entry_pct",
+   "description_cn": "入场后到到期的最大不利偏离（%）；与条件不成立组对照"
+  },
+  {
+   "metric": "result_btc_at_entry_credit",
+   "description_cn": "入场信用（未扣费）减到期赔付（BTC）；与条件不成立组对照"
+  },
+  {
+   "metric": "settle_vs_short_pct",
+   "description_cn": "交割价相对短腿的不利距离（%，正数表示越过短腿）；与条件不成立组对照"
+  },
+  {
+   "metric": "touched_short_after_entry",
+   "description_cn": "到期前（入场后）是否触及短腿；基线对照为入场时 p_touch_short"
+  }
+ ],
+ "expected_directions": [
+  "riskier",
+  "safer"
+ ]
+}

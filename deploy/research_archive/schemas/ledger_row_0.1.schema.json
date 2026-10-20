@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/ledger_row@0.1",
+  "title": "ledger_row@0.1 — contract path ledger row",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "at_ms",
+    "contract_key",
+    "side",
+    "expiry_ms",
+    "short",
+    "long",
+    "trigger"
+  ],
+  "properties": {
+    "schema": {
+      "const": "ledger_row@0.1"
+    },
+    "at_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "contract_key": {
+      "type": "string",
+      "pattern": "^[^|]+\\|[^|]+$",
+      "description": "<short_instrument>|<long_instrument>"
+    },
+    "side": {
+      "enum": [
+        "put",
+        "call"
+      ]
+    },
+    "expiry_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "displayed": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "locked": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "short": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "best_bid_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "best_ask_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mark_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mark_iv": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "delta": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        }
+      }
+    },
+    "long": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "best_bid_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "best_ask_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mark_price": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mark_iv": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "delta": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        }
+      }
+    },
+    "credit_bid_ask_btc": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "mark_spread_btc": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "index_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "forward_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "short_from_index_pct": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "long_from_index_pct": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "breakeven_from_index_pct": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "baseline_status": {
+      "enum": [
+        "ok",
+        "unknown",
+        null
+      ]
+    },
+    "p_itm_short": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "p_touch_short": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "p_loss": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "p_max_loss": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "states": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "space_gate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "m_die_level": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gamma_regime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gex_market_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tmv_24h": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tmv_48h": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "micro_flow": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flip_usd": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "view_available": {
+      "type": "boolean"
+    },
+    "trigger": {
+      "enum": [
+        "first",
+        "base",
+        "change",
+        "near_expiry"
+      ]
+    }
+  },
+  "description": "One line in ledger/<UTC day of at_ms>.jsonl. `locked` added in the same 0.1 (additive); absent in older rows."
+}

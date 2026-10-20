@@ -184,3 +184,78 @@ def test_call_path_and_time_weighted_volatility():
     assert stats["touched_short"] and not stats["touched_long"] and stats["ms_beyond_short"] == 60_000
     assert stats["settle_vs_short_pct"] == pytest.approx((83800 - 84000) / 84000 * 100)
     assert stats["path_complete"] is True and stats["realized_vol_annual"] > 0
+
+
+def _lock(status="active", stopped=None):
+    return {"episode_id": "lce_" + "1" * 24, "status": status, "created_at_ms": NOW - H, "stopped_at_ms": stopped,
+            "candidate_id": "c", "contract": {"side": "put", "short_instrument": "BTC-20OCT26-81500-P",
+                                              "long_instrument": "BTC-20OCT26-79500-P"}}
+
+
+def test_decisions_locked_flag_and_index(tmp_path):
+    archive = ar.Archive(tmp_path)
+    dp = [{"verification_id": "dpv_1", "event": "concluded", "at_ms": NOW - 10, "conclusion": "lock",
+           "contract": {"side": "put", "short_instrument": "BTC-20OCT26-81500-P", "long_instrument": "BTC-20OCT26-79500-P"}}]
+    source = [([_lock()], dp)]
+    r1 = ar.tick(archive, now_ms=NOW, view=_view(), fetch_case=_case, deribit=ar.Deribit(FakeDeribit()),
+                 decision_source=lambda: source[0])
+    assert r1["decisions"] == 2
+    row = json.loads(next(tmp_path.glob("ledger/*.jsonl")).read_text(encoding="utf-8").splitlines()[0])
+    assert row["locked"] is True
+    # the same events are never appended twice; a stop is a new event and a change row
+    source[0] = ([_lock("stopped", NOW + 5 * 60_000)], dp)
+    r2 = ar.tick(archive, now_ms=NOW + 10 * 60_000, view=_view(), fetch_case=_case,
+                 deribit=ar.Deribit(FakeDeribit()), decision_source=lambda: source[0])
+    assert r2["decisions"] == 1 and r2["rows"] == 1
+    events = [json.loads(l) for f in tmp_path.glob("decisions/*.jsonl") for l in f.read_text(encoding="utf-8").splitlines()]
+    assert sorted(e["event"] for e in events) == ["concluded", "lock_created", "lock_stopped"]
+    index = json.loads((tmp_path / "index/episodes/2026-10-20.json").read_text(encoding="utf-8"))
+    ep = index["episodes"][0]
+    assert ep["status"] == "open" and ep["ledger_rows"] == 2 and ep["locked"] is False and len(ep["decisions"]) == 3
+    assert ep["cases"][0]["case_id"].startswith("cf_") and index["derived"] is True
+    assert archive.verify()["ok"] is True
+
+
+def test_protocol_versions_recorded_once_and_on_change(tmp_path, monkeypatch):
+    archive = ar.Archive(tmp_path)
+    _tick(archive, NOW, None, FakeDeribit())
+    _tick(archive, NOW + 600_000, None, FakeDeribit())
+    lines = (tmp_path / "protocols/versions.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(ar.observed_versions())
+    monkeypatch.setattr(ar.inquiry, "PROMPT_VERSION", "inquiry_prompt@0.2")
+    _tick(archive, NOW + 1_200_000, None, FakeDeribit())
+    last = json.loads((tmp_path / "protocols/versions.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert last["component"] == "inquirer_prompt" and last["previous"] == "inquiry_prompt@0.1"
+
+
+def test_episode_view_only_before_expiry(tmp_path):
+    archive = ar.Archive(tmp_path / "a")
+    box, receipts = tmp_path / "inbox", tmp_path / "r"
+    box.mkdir()
+    view = {"schema": "episode_view@0.1", "id": "ev-1", "agent": {"name": "GrokBot", "model": "GrokBot"},
+            "contract_key": "BTC-20OCT26-81500-P|BTC-20OCT26-79500-P",
+            "view": {"risk_vs_baseline": "riskier", "grade": "D", "lean": "watch", "confidence": "medium",
+                     "drivers_cn": ["x"], "summary_cn": "y"}}
+    (box / "ev-1.json").write_text(json.dumps(view), encoding="utf-8")
+    report = ar.tick(archive, now_ms=NOW, view=_view(), fetch_case=_case, deribit=ar.Deribit(FakeDeribit()),
+                     inbox=(box, receipts))
+    assert report["inbox"] == {"accepted": 1, "rejected": 0}
+    (box / "ev-2.json").write_text(json.dumps({**view, "id": "ev-2"}), encoding="utf-8")
+    deribit = FakeDeribit(delivery=82000.0, path=[[NOW, 81900.0], [EXPIRY, 82000.0]])
+    report = ar.tick(archive, now_ms=EXPIRY + 15 * 60_000, view=None, fetch_case=_case, deribit=ar.Deribit(deribit),
+                     inbox=(box, receipts))
+    assert report["inbox"] == {"accepted": 0, "rejected": 1}
+
+
+def test_backfill_legacy_once(tmp_path):
+    wb = tmp_path / "wb"
+    (wb / "locked_candidates" / "points").mkdir(parents=True)
+    (wb / "locked_candidates" / "index.json").write_text("{}", encoding="utf-8")
+    (wb / "locked_candidates" / "points" / "p1.json.gz").write_bytes(gzip.compress(b"{}"))
+    (wb / "daily_snapshots.jsonl").write_text("{}\n", encoding="utf-8")
+    (wb / "daily_snapshots.jsonl.lock").write_text("", encoding="utf-8")
+    archive = ar.Archive(tmp_path / "a")
+    assert ar.backfill_legacy(archive, wb, now_ms=1)["legacy_files"] == 4
+    assert ar.backfill_legacy(archive, wb, now_ms=2) == {"skipped": "legacy_exists"}
+    assert (tmp_path / "a/legacy/daily_snapshots/daily_snapshots.jsonl.gz").exists()
+    assert archive.verify()["ok"] is True

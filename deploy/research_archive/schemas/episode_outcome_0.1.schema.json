@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/episode_outcome@0.1",
+  "title": "episode_outcome@0.1 — settled result of one contract",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "contract_key",
+    "status",
+    "expiry_ms",
+    "first_seen_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "episode_outcome@0.1"
+    },
+    "contract_key": {
+      "type": "string",
+      "pattern": "^[^|]+\\|[^|]+$",
+      "description": "<short_instrument>|<long_instrument>"
+    },
+    "status": {
+      "enum": [
+        "settled",
+        "outcome_unavailable"
+      ]
+    },
+    "side": {
+      "enum": [
+        "put",
+        "call"
+      ]
+    },
+    "short_strike_usd": {
+      "type": "number"
+    },
+    "long_strike_usd": {
+      "type": "number"
+    },
+    "expiry_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "first_seen_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "delivery_price_usd": {
+      "type": "number"
+    },
+    "payout_btc": {
+      "type": "number"
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "case_id",
+          "path"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string"
+          },
+          "asof_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "UTC epoch milliseconds"
+          },
+          "net_credit_after_fee_btc": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "archive-relative path of the case file"
+          },
+          "result_btc": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "path": {
+      "$ref": "#/$defs/path"
+    },
+    "meaning_cn": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string",
+      "description": "exception class name when outcome_unavailable"
+    }
+  },
+  "description": "One line in outcomes/<UTC day of expiry>.jsonl, exactly one per contract_key.",
+  "$defs": {
+    "path": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "points"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "insufficient_path"
+          ]
+        },
+        "points": {
+          "type": "integer"
+        },
+        "start_ms": {
+          "type": "integer",
+          "description": "UTC epoch milliseconds"
+        },
+        "end_ms": {
+          "type": "integer",
+          "description": "UTC epoch milliseconds"
+        },
+        "median_step_ms": {
+          "type": "integer"
+        },
+        "coverage_gap_ms": {
+          "type": "integer"
+        },
+        "path_complete": {
+          "type": "boolean"
+        },
+        "min_usd": {
+          "type": "number"
+        },
+        "max_usd": {
+          "type": "number"
+        },
+        "touched_short": {
+          "type": "boolean"
+        },
+        "first_touch_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "UTC epoch milliseconds"
+        },
+        "ms_beyond_short": {
+          "type": "integer"
+        },
+        "touched_long": {
+          "type": "boolean"
+        },
+        "max_adverse_vs_short_pct": {
+          "type": "number"
+        },
+        "settle_vs_short_pct": {
+          "type": "number"
+        },
+        "realized_vol_annual": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "settled"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "side",
+          "short_strike_usd",
+          "long_strike_usd",
+          "delivery_price_usd",
+          "payout_btc",
+          "cases",
+          "path"
+        ]
+      },
+      "else": {
+        "required": [
+          "reason"
+        ]
+      }
+    }
+  ]
+}
