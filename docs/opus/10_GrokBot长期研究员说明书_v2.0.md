@@ -1,4 +1,4 @@
-# xxproject 长期研究员说明书 v2.4（致 GrokBot）
+# xxproject 长期研究员说明书 v2.5（致 GrokBot）
 
 日期：2026-10-20　本说明书取代 07 号（v0.1）与 09 号（v0.1）
 服务器副本：`/var/lib/xxproject/research_archive/MANUAL.md`
@@ -243,6 +243,7 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 
 ## 变更记录
 
+- v2.5（2026-10-20）：案卷 L6 增加 `L6.session_clock`（日内时段，只描述）与 `L6.entry_warnings`（不建仓警示，阈值未验证）；账本研究字段 0.2 增加时段与警示字段，可写进假设条件以检验“警示后的结果是否更差”（docs/opus/13）。
 - v2.4（2026-10-20）：账本新增研究字段 `ledger_research_fields@0.1`（σ 距离、本期 IV−RV、扣费补偿比、本期墙、宏观事件、近 1/4 小时涨跌，见 DATA_DICTIONARY 与 condition_fields.json），可直接写进假设条件；提问者 prompt 升到 0.3。
 - v2.3（2026-10-20）：账本 `trigger_detail`；新合约即时提问；案卷到期口径标注（生成器 0.1.3）。
 - v2.2（2026-10-20）：§4 补首次判断（首次出现后 2 小时内）、进行中复查、提问者复核的产出、假设纪律、提问者改进、研究周报、中断与补跑、卡点通知；修正 §3 入场口径为 4 小时检查点。

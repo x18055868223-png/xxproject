@@ -524,6 +524,21 @@
    "description_cn": "本期 pin 价位相对指数（%）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
   },
   {
+   "field": "ledger.remaining_clock_factor",
+   "type": "numeric",
+   "allowed_ops": [
+    "!=",
+    "<",
+    "<=",
+    "==",
+    ">",
+    ">=",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "到期前剩余时段的平均方差倍数（12 号文档日内节律，相对全天平均；>1 表示剩下的时段更忙）（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+  },
+  {
    "field": "ledger.rr_25d_expiry",
    "type": "numeric",
    "allowed_ops": [
@@ -567,6 +582,17 @@
     "not_in"
    ],
    "description_cn": "已实现波动 7d（%，年化，同上）（ledger_research_fields@0.1，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.session_phase",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "所处时段：quiet / pre_us / us_session / us_evening / weekend / weekend_cme / us_holiday（ledger_research_fields@0.2，2026-10-20 起的行才有）"
   },
   {
    "field": "ledger.short.delta",
@@ -745,6 +771,61 @@
     "not_in"
    ],
    "description_cn": "TMV 48h final_state"
+  },
+  {
+   "field": "ledger.warning_any",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "正在显示时是否有任一不建仓警示触发（true / false；有无法判断的项且无触发时为 null；不显示的合约为 null）。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.warning_busy_window",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "高波动窗口临近且 σ 距离 <0.5 警示：true / false / null。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.warning_premium_thickening",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "保费突然变厚警示（同一到期近 6 小时，本期 IV 或本侧偏斜上升 ≥3 点）：true / false / null。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.warning_rules",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "警示阈值版本（如 entry_warnings@0.1），用于区分不同版本的阈值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+  },
+  {
+   "field": "ledger.warning_term_inversion",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "近端倒挂警示（时钟校正后本期 IV 高于一周 ≥0.5 点）：true / false / null。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
   }
  ],
  "ops": [

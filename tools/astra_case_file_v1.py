@@ -31,11 +31,13 @@ from typing import Any, Iterable, Mapping
 
 if __package__:
     from . import astra_market_baseline_v1 as market_baseline
+    from . import astra_session_clock_v1 as session_clock
 else:
     import astra_market_baseline_v1 as market_baseline
+    import astra_session_clock_v1 as session_clock
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.3"
+BUILDER_VERSION = "astra_case_file_v1@0.1.4"
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 DROP_KEYS = {"source_records", "source_manifest", "source_bindings", "debug", "_debug", "raw_payload"}
 DROP_SUFFIXES = ("_hash", "sha256")
@@ -421,6 +423,21 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
                              if isinstance(c, Mapping)]} for d in days]
     case.add("L6.daily", f"近 {DAILY_DAYS} 日每日快照摘要", daily, lineage=["workbench.daily_snapshots"],
              source="view.daily_snapshots")
+    try:
+        clock_now = session_clock.reading(asof_ms, contract.get("expiry_ms") if isinstance(contract.get("expiry_ms"), int) else None)
+    except Exception:
+        clock_now = None
+    case.add("L6.session_clock", "日内时段：所处时段、到期前剩余时间与剩余风险、接下来的高波动窗口（只描述时段）", clock_now,
+             lineage=["docs/opus/12.intraday_variance_clock", "event_calendar"], source="astra_session_clock_v1.reading",
+             asof_ms=asof_ms, quality=None if clock_now else "unknown")
+    warnings = item.get("entry_warnings")
+    case.add("L6.entry_warnings", "不建仓警示（阈值未经验证，只作否决提醒）", warnings,
+             lineage=["gexmonitor.gex_info", "research_archive.ledger", "astra_session_clock_v1"],
+             source="item.entry_warnings",
+             asof_ms=warnings.get("at_ms") if isinstance(warnings, Mapping) and isinstance(warnings.get("at_ms"), int) else asof_ms,
+             quality="unknown" if not isinstance(warnings, Mapping) or warnings.get("error_type") else None,
+             quality_reason=None if isinstance(warnings, Mapping) and not warnings.get("error_type")
+             else "entry_warnings_unavailable")
 
     # L7 external
     case.add("L7.cross_asset", "动态跨资产参考（相关、β、归因）", view.get("cross_asset"),

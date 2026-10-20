@@ -153,6 +153,8 @@
 | `gamma_wall_usd`、`gamma_wall_vs_short_pct`、`pin_from_index_pct` | USD / % | 本期本侧 Gamma 最大集中价位及其相对短腿的不利方向距离（负 = 在现价一侧）；本期 pin 相对指数 |
 | `hours_to_next_event`、`next_event_kind`、`event_before_expiry` | h / 文本 / 布尔 | 下一宏观事件（7 天内无事件且日历完整时为 168 / none）；到期前是否有事件（日历不完整时 null） |
 | `index_chg_1h_pct`、`index_chg_4h_pct` | % | 近 1 / 4 小时指数涨跌（Deribit 公开 2 天分钟路径） |
+| `session_phase`、`remaining_clock_factor`、`session_clock`（0.2 起） | 文本 / 倍 | 所处时段与到期前剩余时段的平均方差倍数（时钟模块版本见 `session_clock`；docs/opus/12、13） |
+| `warning_any`、`warning_term_inversion`、`warning_premium_thickening`、`warning_busy_window`、`warning_rules`（0.2 起） | 布尔 / 文本 | 正在显示的合约在该时刻的不建仓警示（阈值未经验证，只作否决提醒；docs/opus/13）；不显示的合约为 null |
 
 ## 5. `episode_outcome@0.1`（到期结果）
 

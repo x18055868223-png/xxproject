@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import math
 import os
 from pathlib import Path
 import re
@@ -64,6 +65,8 @@ if __package__:
     from . import astra_locked_candidate_compare_v1 as locked_compare
     from . import astra_workbench_reading_v1 as reading
     from . import astra_case_file_v1 as case_file_core
+    from . import astra_session_clock_v1 as session_clock
+    from . import astra_entry_warnings_v1 as entry_warnings
     try:   # optional: a missing research module must never stop the workbench
         from . import astra_research_archive_v1 as research_archive_core
         from . import astra_research_promotion_v1 as research_promotion
@@ -103,6 +106,8 @@ else:  # direct CLI execution from tools/
     import astra_locked_candidate_compare_v1 as locked_compare
     import astra_workbench_reading_v1 as reading
     import astra_case_file_v1 as case_file_core
+    import astra_session_clock_v1 as session_clock
+    import astra_entry_warnings_v1 as entry_warnings
     try:   # optional: a missing research module must never stop the workbench
         import astra_research_archive_v1 as research_archive_core
         import astra_research_promotion_v1 as research_promotion
@@ -3962,6 +3967,60 @@ class AstraWorkbench:
             return None
         return {**(current or {"schema": cross_asset.SCHEMA, "status": "not_collected"}), "contract_window": window}
 
+    LEDGER_HISTORY_TTL_MS = 60_000
+
+    def _ledger_history(self, now_ms: int) -> list[dict[str, Any]] | None:
+        """Recent research-archive ledger rows (today and yesterday, UTC) for the entry
+        warnings; cached for a minute because page bodies are rebuilt every few seconds.
+        None when the archive cannot be read."""
+        cached = getattr(self, "_ledger_history_cache", None)
+        if cached and now_ms - cached[0] < self.LEDGER_HISTORY_TTL_MS:
+            return cached[1]
+        try:
+            root = Path(os.environ.get("ASTRA_RESEARCH_ARCHIVE") or "/var/lib/xxproject/research_archive") / "ledger"
+            if not root.is_dir():
+                rows = None
+            else:
+                rows = []
+                # the 6-hour lookback needs yesterday's file only in the first hours of a UTC day
+                backs = (1, 0) if time.gmtime(now_ms / 1000).tm_hour < 7 else (0,)
+                for back in backs:
+                    day = time.strftime("%Y-%m-%d", time.gmtime(now_ms / 1000 - back * 86_400))
+                    for r in _read_jsonl_tail(root / f"{day}.jsonl", 4000):
+                        if isinstance(r.get("at_ms"), int) and now_ms - r["at_ms"] <= 7 * 3_600_000:
+                            rows.append({"at_ms": r["at_ms"], "side": r.get("side"), "displayed": r.get("displayed"),
+                                         "contract_key": r.get("contract_key"),
+                                         "expiry_ms": r.get("expiry_ms"), "expiry_atm_iv_pct": r.get("expiry_atm_iv_pct"),
+                                         "short_mark_iv": (r.get("short") or {}).get("mark_iv")
+                                         if isinstance(r.get("short"), Mapping) else None})
+        except Exception:
+            rows = None
+        self._ledger_history_cache = (now_ms, rows)
+        return rows
+
+    def _attach_session_layers(self, view: dict[str, Any], now_ms: int) -> None:
+        """Session clock (docs/opus/12) for the page and, per candidate, the unvalidated
+        entry warnings (docs/opus/13). Display layers: a failure never breaks the view."""
+        candidates = [c for c in view.get("candidates") or [] if isinstance(c, Mapping)]
+        expiries = [((c.get("snapshot") or {}).get("contract") or {}).get("expiry_ms") for c in candidates]
+        expiry = next((e for e in expiries if isinstance(e, int) and e > now_ms), None)
+        try:
+            view["session_clock"] = session_clock.reading(now_ms, expiry)
+        except Exception as exc:
+            view["session_clock"] = {"schema": session_clock.SCHEMA, "error_type": type(exc).__name__}
+        if not candidates:
+            return
+        history = self._ledger_history(now_ms)
+        gex = ((((view.get("market_context") or {}).get("market_facts") or {}).get("space_context") or {})
+               .get("gex_info") or {})
+        by_expiry = (view.get("expiry_gamma") or {}).get("by_expiry") or {}
+        others = {c.get("side"): c for c in candidates}
+        for item in candidates:
+            try:
+                item["entry_warnings"] = _entry_warnings_for(item, now_ms, gex, by_expiry, others, history)
+            except Exception as exc:
+                item["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
+
     @staticmethod
     def _attach_exogenous_events(view: dict[str, Any], now_ms: int) -> None:
         """Scheduled US macro releases from the static calendar: the next two weeks for the page,
@@ -4460,6 +4519,7 @@ class AstraWorkbench:
                     "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now),
                     "expiry_gamma": self.expiry_gamma_view([], now), "decision_path": self.decision_path_overview()}
             self._attach_exogenous_events(warm, now)
+            self._attach_session_layers(warm, now)
             warm["hold_reviews"] = self.hold_review_overview(warm["locked_candidates"])
             result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
@@ -4474,6 +4534,7 @@ class AstraWorkbench:
                      "decision_path": self.decision_path_overview(),
                      "runtime": {"memory": dict(self._memory), "threads": threading.active_count()}})
         self._attach_exogenous_events(view, now)
+        self._attach_session_layers(view, now)
         view["hold_reviews"] = self.hold_review_overview(view["locked_candidates"])
         usage_engines: dict[Any, Any] = {}
         view["btc_map_current_usage"] = self._map_current_usage(view.get("btc_map"), now, engines=usage_engines)
@@ -5460,6 +5521,45 @@ def _sd_notify(message: str) -> bool:
         return False
 
 
+def _entry_warnings_for(item: Mapping[str, Any], now_ms: int, gex: Mapping[str, Any], by_expiry: Mapping[str, Any],
+                        others: Mapping[Any, Any], history: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    """The three entry warnings for one candidate, on the ledger's definitions."""
+    snapshot = item.get("snapshot") or {}
+    contract = snapshot.get("contract") or {}
+    side, expiry = contract.get("side"), contract.get("expiry_ms")
+    if side not in {"put", "call"} or not isinstance(expiry, int):
+        return None
+    marks = item.get("market_marks") or {}
+    label = case_file_core.expiry_label(expiry)
+    row = next((r for r in by_expiry.values() if isinstance(r, Mapping) and r.get("expiry_ms") == expiry), {})
+    spot = (snapshot.get("market") or {}).get("reference_price_usd")
+    strike = contract.get("short_strike_usd")
+    hours = (expiry - now_ms) / 3_600_000
+    atm = row.get("atm_iv_pct")
+    dim = None
+    if all(isinstance(v, (int, float)) and v > 0 for v in (spot, strike, atm)) and hours > 0:
+        cushion = (1.0 if side == "call" else -1.0) * (strike / spot - 1.0) * 100.0
+        dim = cushion / (atm * math.sqrt(hours / 8760.0))
+    # the other side counts only when it expires on the same day (its IV sits on the same smile)
+    other = (others or {}).get("call" if side == "put" else "put")
+    other = other if isinstance(other, Mapping) else {}
+    ocontract = (other.get("snapshot") or {}).get("contract") or {}
+    same_expiry = ocontract.get("expiry_ms") == expiry
+
+    def key(c: Mapping[str, Any]) -> str | None:
+        return f"{c['short_instrument']}|{c['long_instrument']}" if c.get("short_instrument") and c.get("long_instrument") else None
+
+    out = entry_warnings.evaluate(
+        side=side, now_ms=now_ms, contract_expiry_ms=expiry, contract_expiry_label=label,
+        term_structure=gex.get("term_structure"), expiry_atm_iv=atm, short_iv=marks.get("short_mark_iv"),
+        other_short_iv=(other.get("market_marks") or {}).get("short_mark_iv") if same_expiry else None,
+        distance_in_moves=dim, history=history if history is not None else [],
+        clock_reading=session_clock.reading(now_ms, expiry),
+        contract_key=key(contract), other_contract_key=key(ocontract) if same_expiry else None)
+    out["history_available"] = history is not None
+    return out
+
+
 def _market_marks(payload: Mapping[str, Any]) -> dict[str, Any]:
     market = payload.get("market") if isinstance(payload.get("market"), Mapping) else {}
     out: dict[str, Any] = {"source": "deribit_public_order_book.mark_price"}
@@ -5468,6 +5568,8 @@ def _market_marks(payload: Mapping[str, Any]) -> dict[str, Any]:
         book = market.get(leg + "_book") if isinstance(market.get(leg + "_book"), Mapping) else {}
         mark = book.get("mark_price")
         out[leg + "_mark_btc"] = float(mark) if isinstance(mark, (int, float)) and not isinstance(mark, bool) else None
+        iv = book.get("mark_iv")
+        out[leg + "_mark_iv"] = float(iv) if isinstance(iv, (int, float)) and not isinstance(iv, bool) else None
         if isinstance(book.get("timestamp"), int):
             times.append(book["timestamp"])
     out["observed_ms"] = max(times) if times else None

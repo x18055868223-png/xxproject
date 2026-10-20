@@ -66,7 +66,9 @@ KEEP_FIELDS = ("contract_key", "at_ms", "expiry_ms", "displayed", "locked", "sid
                "rv_7d_pct", "iv_minus_rv_24h", "dvol", "iv_percentile", "rr_25d_expiry", "entry_fee_btc",
                "credit_after_fee_btc", "comp_ratio_after_fee", "comp_tier", "gamma_wall_usd", "gamma_wall_vs_short_pct",
                "pin_from_index_pct", "hours_to_next_event", "next_event_kind", "event_before_expiry",
-               "index_chg_1h_pct", "index_chg_4h_pct", "fields_version")
+               "index_chg_1h_pct", "index_chg_4h_pct", "fields_version",
+               "session_phase", "remaining_clock_factor", "warning_any", "warning_term_inversion",
+               "warning_premium_thickening", "warning_busy_window", "warning_rules")
 
 
 def _utc(ms: int) -> dt.datetime:

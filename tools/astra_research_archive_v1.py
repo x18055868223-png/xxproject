@@ -43,6 +43,7 @@ if __package__:
     from . import astra_research_promotion_v1 as research_promotion
     from . import astra_research_scorecards_v1 as research_scorecards
     from . import astra_event_calendar_v1 as event_calendar
+    from . import astra_session_clock_v1 as session_clock
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -53,10 +54,11 @@ else:
     import astra_research_promotion_v1 as research_promotion
     import astra_research_scorecards_v1 as research_scorecards
     import astra_event_calendar_v1 as event_calendar
+    import astra_session_clock_v1 as session_clock
 
 SCHEMA_ROW = "ledger_row@0.1"
 # research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
-LEDGER_FIELDS = "ledger_research_fields@0.1"
+LEDGER_FIELDS = "ledger_research_fields@0.2"   # 0.2: session clock and entry warnings
 TAKER_FEE_BTC = 0.0003            # Deribit BTC option taker fee per contract, capped at 12.5% of the price
 TAKER_FEE_PRICE_CAP = 0.125
 EVENT_LOOKAHEAD_MS = 7 * 24 * 3_600_000
@@ -298,9 +300,14 @@ def market_context(view: Mapping[str, Any] | None, index_points: Any, *, now_ms:
     for point in index_points if isinstance(index_points, list) else []:
         if isinstance(point, (list, tuple)) and len(point) == 2 and _num(point[0]) is not None and _num(point[1]):
             points.append((int(point[0]), float(point[1])))
+    warnings = {}
+    for item in view.get("candidates") or []:
+        contract = _m(_m(_m(item).get("snapshot")).get("contract"))
+        if contract.get("short_instrument") and contract.get("long_instrument"):
+            warnings[f"{contract['short_instrument']}|{contract['long_instrument']}"] = _m(item).get("entry_warnings")
     upcoming = [e for e in event_calendar.events() if now_ms is None or e["at_ms"] > now_ms]
     return {"by_expiry": by_expiry, "realized_vol": _m(expiry_gamma.get("realized_vol")), "gex": gex,
-            "index_points": sorted(points), "upcoming_events": upcoming,
+            "index_points": sorted(points), "upcoming_events": upcoming, "warnings": warnings,
             "calendar_complete_7d": not event_calendar.coverage_gaps(now_ms + EVENT_LOOKAHEAD_MS, now_ms)
             if now_ms is not None else False}
 
@@ -369,7 +376,35 @@ def research_fields(record: Mapping[str, Any], row: Mapping[str, Any], ctx: Mapp
         "event_before_expiry": None if gaps_to_expiry else any(now_ms < e["at_ms"] < expiry for e in upcoming),
         "index_chg_1h_pct": _index_change(ctx["index_points"], now_ms, HOUR_MS, index),
         "index_chg_4h_pct": _index_change(ctx["index_points"], now_ms, 4 * HOUR_MS, index),
+        **_session_fields(now_ms, expiry),
+        **_warning_fields((ctx.get("warnings") or {}).get(record.get("key"))),
     }
+
+
+def _session_fields(now_ms: int, expiry: int) -> dict[str, Any]:
+    try:
+        clock = session_clock.reading(now_ms, expiry)
+        return {"session_phase": clock["phase"]["code"], "remaining_clock_factor": clock["remaining_clock_factor"],
+                "session_clock": session_clock.SCHEMA}
+    except Exception:
+        return {"session_phase": None, "remaining_clock_factor": None, "session_clock": None}
+
+
+def _warning_fields(block: Any) -> dict[str, Any]:
+    """The displayed candidate's entry warnings (docs/opus/13), copied from the read view;
+    contracts not on the page get nulls."""
+    out = {"warning_any": None, "warning_term_inversion": None, "warning_premium_thickening": None,
+           "warning_busy_window": None, "warning_rules": None}
+    if not isinstance(block, Mapping) or not isinstance(block.get("warnings"), list):
+        return out
+    out["warning_rules"] = block.get("rules")   # threshold versions stay separable in later validation
+    by_code = {w.get("code"): w.get("triggered") for w in block["warnings"] if isinstance(w, Mapping)}
+    out.update({"warning_term_inversion": by_code.get("term_inversion"),
+                "warning_premium_thickening": by_code.get("premium_thickening"),
+                "warning_busy_window": by_code.get("busy_window_thin_cushion")})
+    known = [v for v in by_code.values() if v is not None]
+    out["warning_any"] = True if any(known) else (False if len(known) == len(by_code) and by_code else None)
+    return out
 
 
 def _crossed(prev: float | None, cur: float | None) -> bool:
@@ -519,7 +554,19 @@ def observed_versions() -> dict[str, str]:
             "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS)),
             "scoring_rules": research_validation.SCORING_RULES,
             "scorecard_rules": research_scorecards.SCORECARD_RULES,
-            "ledger_fields": LEDGER_FIELDS}
+            "ledger_fields": LEDGER_FIELDS,
+            "entry_warnings": _entry_warnings_rules(), "session_clock": session_clock.SCHEMA}
+
+
+def _entry_warnings_rules() -> str | None:
+    try:
+        if __package__:
+            from . import astra_entry_warnings_v1 as warnings_core
+        else:
+            import astra_entry_warnings_v1 as warnings_core
+        return warnings_core.RULES
+    except ImportError:
+        return None
 
 
 def _episode_summary(record: Mapping[str, Any], status: str, outcome_path: str | None = None) -> dict[str, Any]:
