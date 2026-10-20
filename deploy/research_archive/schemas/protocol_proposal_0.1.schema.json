@@ -62,6 +62,17 @@
       "minLength": 1,
       "maxLength": 20000,
       "pattern": "\\S"
+    },
+    "supersedes": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{2,63}$"
+        }
+      ]
     }
   }
 }

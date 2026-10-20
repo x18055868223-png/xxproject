@@ -181,7 +181,7 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 | superseded | 被你用新 id 取代；原统计和原状态照常保留 |
 
 - 结果写在 `validation/<日>.jsonl`（每条入链），当前汇总在 `validation/status.json`（派生文件）。
-- `supersedes` 只能指向**更早登记**、且不是自身的 id。
+- `supersedes` 只能指向**更早登记**、且不是自身的**同类** id（写 id 本身，不带 `research_note:` 这类前缀）。hypothesis、research_note、protocol_proposal 都可以写 `supersedes`。
 - 被支持的结论，经用户批准后，才会成为程序读数或协议条款。
 
 ### 5.1 晋升（E4）

@@ -154,8 +154,6 @@ def validate(doc: Any) -> list[str]:
         for key in ("counterexamples", "collinear_with"):
             if not isinstance(doc.get(key), list):
                 errors.append(f"{key}: 需要列表（可以为空）")
-        if doc.get("supersedes") is not None and (not isinstance(doc["supersedes"], str) or not ID.match(doc["supersedes"])):
-            errors.append("supersedes: 被取代的假设 id")
     elif schema == "postmortem@0.1":
         if not isinstance(doc.get("expiry_date"), str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", doc["expiry_date"]):
             errors.append("expiry_date: YYYY-MM-DD")
@@ -192,8 +190,13 @@ def validate(doc: Any) -> list[str]:
     elif schema == "research_note@0.1":
         if not _text(doc.get("title_cn"), 200) or not _text(doc.get("body_cn"), 50000):
             errors.append("title_cn 与 body_cn: 必填")
+    if schema in SUPERSEDABLE and doc.get("supersedes") is not None             and (not isinstance(doc["supersedes"], str) or not ID.match(doc["supersedes"])):
+        errors.append("supersedes: 被取代的同类提交 id（不带类型前缀）")
     return errors
 
+
+# a revision is a new id that names the earlier registered submission of the same kind
+SUPERSEDABLE = {"hypothesis@0.1", "research_note@0.1", "protocol_proposal@0.1"}
 
 REGISTRY = {"hypothesis@0.1": "registry/hypotheses.jsonl", "postmortem@0.1": "registry/postmortems.jsonl",
             "protocol_proposal@0.1": "registry/proposals.jsonl", "research_note@0.1": "registry/notes.jsonl",
@@ -229,9 +232,9 @@ def ingest(archive: Any, inbox: str | Path, receipts: str | Path, *, now_ms: int
             errors += validate(doc)
             if not errors and doc["id"] in registered_ids.get(doc["schema"], set()):
                 errors.append("id 已登记；已登记内容不可修改，修订请用新 id 并写 supersedes")
-            if not errors and doc["schema"] == "hypothesis@0.1" and doc.get("supersedes") is not None:
-                if doc["supersedes"] == doc["id"] or doc["supersedes"] not in registered_ids.get("hypothesis@0.1", set()):
-                    errors.append("supersedes: 只能指向更早已登记、且不是自身的假设 id")
+            if not errors and doc["schema"] in SUPERSEDABLE and doc.get("supersedes") is not None:
+                if doc["supersedes"] == doc["id"] or doc["supersedes"] not in registered_ids.get(doc["schema"], set()):
+                    errors.append("supersedes: 只能指向更早已登记、且不是自身的同类提交 id")
             if not errors and doc["schema"] == "episode_view@0.1":
                 expiry = (open_contracts or {}).get(doc["contract_key"])
                 if expiry is None:

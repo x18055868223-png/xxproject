@@ -76,3 +76,24 @@ def test_supersedes_must_name_an_earlier_registered_other_id(tmp_path):
     inbox.ingest(archive, box, receipts, now_ms=2)
     (box / "d.json").write_text(json.dumps(_hypothesis(id="h-rev", supersedes="h-orig")), encoding="utf-8")
     assert inbox.ingest(archive, box, receipts, now_ms=3) == {"accepted": 1, "rejected": 0}
+
+
+def test_notes_and_proposals_can_supersede_only_their_own_kind(tmp_path):
+    archive, box, receipts = ar.Archive(tmp_path / "archive"), tmp_path / "inbox", tmp_path / "receipts"
+    box.mkdir()
+    note = {"schema": "research_note@0.1", "agent": AGENT, "title_cn": "运行清单", "body_cn": "v1"}
+    prop = {"schema": "protocol_proposal@0.1", "agent": AGENT, "target": "other", "proposal_cn": "x", "evidence_cn": "y"}
+    (box / "n1.json").write_text(json.dumps({**note, "id": "runbook-1"}), encoding="utf-8")
+    (box / "p1.json").write_text(json.dumps({**prop, "id": "pp-1"}), encoding="utf-8")
+    assert inbox.ingest(archive, box, receipts, now_ms=1) == {"accepted": 2, "rejected": 0}
+    # prefixed id, other kind, self-reference and a missing id are all refused
+    for name, doc in {"a": {**note, "id": "runbook-2", "supersedes": "research_note:runbook-1"},
+                      "b": {**note, "id": "runbook-3", "supersedes": "pp-1"},
+                      "c": {**prop, "id": "pp-2", "supersedes": "pp-2"},
+                      "d": {**prop, "id": "pp-3", "supersedes": "pp-missing"}}.items():
+        (box / f"{name}.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert inbox.ingest(archive, box, receipts, now_ms=2) == {"accepted": 0, "rejected": 4}
+    (box / "e.json").write_text(json.dumps({**note, "id": "runbook-4", "supersedes": "runbook-1"}), encoding="utf-8")
+    (box / "f.json").write_text(json.dumps({**prop, "id": "pp-4", "supersedes": "pp-1"}), encoding="utf-8")
+    assert inbox.ingest(archive, box, receipts, now_ms=3) == {"accepted": 2, "rejected": 0}
+    assert archive.verify()["ok"] is True
