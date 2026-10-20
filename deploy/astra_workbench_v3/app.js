@@ -8,6 +8,7 @@ import { renderMap, legend } from "./map.js";
 import { coreFactors, backgroundItems } from "./factors.js";
 import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
 import { eventBand } from "./events.js";
+import { sessionStrip, warningBlock } from "./session.js";
 import { renderDecision as renderDecisionView } from "./decision.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
@@ -253,6 +254,7 @@ function candidateErrorBanner(errs) {
 // ── map band ─────────────────────────────────────
 function renderMapBand() {
   if (!state.view) return;
+  renderSessionClock();   // before the map: a map failure must not hide the strip
   const model = mapModel(state.view, state.sides);
   renderMap($("map"), $("map-tip"), model, { focus: state.focus, onPick: (side) => select(side) });
   legend($("map-legend"), model);
@@ -265,6 +267,13 @@ function renderMapBand() {
   $("map-sub").textContent = isNum(model.sigmaPct)
     ? `到期前隐含预期波动 ±${pct(model.sigmaPct, 2)}，约 ±${usd(model.spot * model.sigmaPct / 100)} 美元（${ref?.iv?.expiry || "近月"} ATM IV ${pct(ref?.iv?.iv)}）`
     : "现价、两侧责任区与市场结构位放在同一价格轴上";
+}
+
+function renderSessionClock() {
+  const box = $("session-strip");
+  if (!box) return;
+  clear(box);
+  if (state.view) box.append(sessionStrip(state.view));
 }
 
 function select(side) {
@@ -381,6 +390,7 @@ function deck(m, side, blockers) {
   card.append(h("div", { class: "deck-head" },
     h("h3", { text: name }),
     h("span", { class: "legs", text: `${(m.shortName || "").split("-")[1] || ""}  卖 ${usd(m.short)} / 买 ${usd(m.long)}，${remainingText(m)}` })));
+  card.append(warningBlock(m.candidate, { isOpen: (key) => state.open.has(key), keepOpen }));
   if (blockers.length) card.append(h("p", { class: "side-block", text: `本侧另有：${blockers.join("、")}` }));
 
   const move = m.sigmaPct;
@@ -1426,5 +1436,5 @@ if (SESSION_GATED) {
   loadSession();
 }
 setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
-setInterval(() => { renderStrip(); renderEvents(); }, 10_000);  // countdowns move between data refreshes
+setInterval(() => { renderStrip(); renderEvents(); renderSessionClock(); }, 10_000);  // countdowns move between data refreshes
 setInterval(() => { if (!document.hidden) loadSession(); }, 5 * 60_000);

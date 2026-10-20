@@ -21,6 +21,16 @@ the archive; no trading rule is made here (intraday_exit_study@0.1).
   rows at most 40 minutes apart, per hour elapsed, attributed to the UTC hour where the
   interval starts and averaged. Fixed-strike IV also moves with spot, so this is a drift
   description, not a pure clock.
+- Holding measure (user, 2026-10-20: late quiet hours leave little premium against an
+  unchanged maximum loss): remaining premium = mark spread now; remaining maximum loss =
+  width in BTC at the index now minus that premium; hold_premium_to_max_loss = their ratio.
+- Entry measure: each displayed row as if opened then at its taker credit after fee:
+  result = credit - payout, result_to_max_loss = result / (width in BTC - credit), split by
+  the cycle's US equity open: ahead (not yet open, or opened less than an hour ago: the
+  opener carries the session where the day is priced), passed (more than an hour behind:
+  the legs were chosen after it), or none (weekends and NYSE holidays). Width in BTC uses
+  the index at that instant; the true inverse maximum loss is width / settlement, so the
+  ratio can fall below -1 when price falls through a put spread.
 Rows of one contract share a settlement and contracts of one day share the market, so
 every group reports rows, contracts and days, with medians and contract-weighted means;
 with few days everything is descriptive only.
@@ -33,8 +43,13 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-STUDY = "intraday_exit_study@0.1"
-SCHEMA = "intraday_exit_study_card@0.1"
+try:
+    from . import astra_session_clock_v1 as session_clock
+except ImportError:  # script-style import
+    import astra_session_clock_v1 as session_clock
+
+STUDY = "intraday_exit_study@0.2"   # 0.2: holding and entry measures (docs/opus/13 §8)
+SCHEMA = "intraday_exit_study_card@0.2"
 TAKER_FEE_BTC = 0.0003
 TAKER_FEE_PRICE_CAP = 0.125
 MIN_DAYS_FOR_READING = 20
@@ -151,7 +166,7 @@ def samples(ledger: Iterable[Mapping[str, Any]], outcomes: Mapping[str, Mapping[
             continue
         at = int(row["at_ms"])
         taker, mark = close_costs(row)
-        out.append({
+        out.append({**_hold_and_entry(row, outcome, at, expiry, payout, mark),
             "contract_key": row["contract_key"], "expiry_day": _day(expiry), "at_ms": at,
             "hour_utc": _utc(at).hour, "hours_to_expiry": (expiry - at) / HOUR_MS, "side": row.get("side"),
             "displayed": row.get("displayed"), "close_quote": taker is not None,
@@ -162,6 +177,60 @@ def samples(ledger: Iterable[Mapping[str, Any]], outcomes: Mapping[str, Mapping[
             "short_mark_iv": _num(_m(row.get("short")).get("mark_iv")),
         })
     return out
+
+
+def _hold_and_entry(row: Mapping[str, Any], outcome: Mapping[str, Any], at: int, expiry: int,
+                    payout: float, mark: float | None) -> dict[str, Any]:
+    ks, kl = _num(outcome.get("short_strike_usd")), _num(outcome.get("long_strike_usd"))
+    index = _num(row.get("index_usd"))
+    width_btc = abs(ks - kl) / index if ks is not None and kl is not None and index else None
+    hold_left = width_btc - mark if width_btc is not None and mark is not None else None
+    short, long = _m(row.get("short")), _m(row.get("long"))
+    bid, ask = _num(short.get("best_bid_price")), _num(long.get("best_ask_price"))
+    credit = None
+    if bid is not None and bid > 0 and ask is not None and ask > 0:    # no offer on the long: no entry
+        credit = bid - ask - _fee(bid) - _fee(ask)
+    entry_left = width_btc - credit if width_btc is not None and credit is not None else None
+    result = credit - payout if credit is not None else None
+    us_open = _us_open_state(at, expiry)
+    return {"width_btc": width_btc, "hold_premium_btc": mark,
+            "hold_premium_to_max_loss": mark / hold_left if mark is not None and hold_left and hold_left > 0 else None,
+            "entry_credit_btc": credit, "entry_result_btc": result,
+            "entry_result_to_max_loss": result / entry_left if result is not None and entry_left and entry_left > 0 else None,
+            "us_open": us_open}
+
+
+US_OPEN_CN = {"ahead": "美股开盘尚未经历", "passed": "美股开盘已经历", "none": "本周期无美股开盘", None: "未知"}
+
+
+def _us_open_state(at: int, expiry: int) -> str | None:
+    """The cycle's US open relative to the instant: ahead (or in its first hour), passed, none."""
+    try:
+        opens = [w["at_ms"] for w in session_clock.windows(expiry - 25 * HOUR_MS, expiry)
+                 if w["kind"] == "us_open" and w["at_ms"] >= expiry - 24 * HOUR_MS]
+    except Exception:
+        return None
+    if not opens:
+        return "none"
+    return "ahead" if any(o + HOUR_MS > at for o in opens) else "passed"
+
+
+def _entry_summary(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    scored = [r for r in rows if r.get("entry_result_btc") is not None and r.get("displayed") is True]
+    res = [r["entry_result_btc"] for r in scored]
+    ratio = [r["entry_result_to_max_loss"] for r in scored if r.get("entry_result_to_max_loss") is not None]
+    return {"rows": len(scored), "contracts": len({r["contract_key"] for r in scored}),
+            "days": len({r["expiry_day"] for r in scored}),
+            "mean_result_btc": sum(res) / len(res) if res else None, "median_result_btc": _median(res),
+            "share_positive": sum(1 for v in res if v > 0) / len(res) if res else None,
+            "worst_result_btc": min(res) if res else None,
+            "mean_result_to_max_loss": sum(ratio) / len(ratio) if ratio else None}
+
+
+def _hold_summary(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    vals = [r["hold_premium_to_max_loss"] for r in rows if r.get("hold_premium_to_max_loss") is not None]
+    return {"rows": len(vals), "median_hold_premium_to_max_loss": _median(vals),
+            "mean_hold_premium_to_max_loss": sum(vals) / len(vals) if vals else None}
 
 
 def _median(values: list[float]) -> float | None:
@@ -191,13 +260,17 @@ def _summary(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             "mean_close_advantage_mark_btc": sum(adv_mark) / len(adv_mark) if adv_mark else None}
 
 
-def _group(rows: list[Mapping[str, Any]], key) -> dict[str, Any]:
+def _members(rows: list[Mapping[str, Any]], key) -> dict[str, list[Mapping[str, Any]]]:
     groups: dict[str, list[Mapping[str, Any]]] = {}
     for r in rows:
         label = key(r)
         if label is not None:
             groups.setdefault(str(label), []).append(r)
-    return {label: _summary(members) for label, members in sorted(groups.items())}
+    return groups
+
+
+def _group(rows: list[Mapping[str, Any]], key) -> dict[str, Any]:
+    return {label: _summary(members) for label, members in sorted(_members(rows, key).items())}
 
 
 def iv_clock(ledger: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -236,6 +309,7 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
     ledger = [r for d in sorted(days) for r in _lines(root / "ledger" / f"{d}.jsonl")
               if isinstance(r.get("at_ms"), int) and r.get("contract_key") in outcomes]
     rows = samples(ledger, outcomes)
+    shown = [r for r in rows if r.get("displayed") is True]     # the entry measure: what the page offered
     overall = _summary(rows)
     recent_days = sorted({r["expiry_day"] for r in rows})[-RECENT_SAMPLE_DAYS:]
     return {"schema": SCHEMA, "study": STUDY, "built_at_ms": now_ms, "derived": True,
@@ -250,4 +324,13 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
                    "clock_factor": _group(rows, lambda r: _bucket("clock_factor", r["clock_factor"])),
                    "distance_in_moves": _group(rows, lambda r: _bucket("distance_in_moves", r["distance_in_moves"]))},
             "iv_clock": iv_clock(ledger),
+            "holding": {"by_hours_to_expiry": {
+                label: _hold_summary(members) for label, members in sorted(_members(rows, lambda r: _bucket(
+                    "hours_to_expiry", r["hours_to_expiry"])).items())},
+                "note_cn": "剩余保费（mark 价差）÷ 仍承担的最大亏损（宽度折 BTC − 剩余保费）：越接近交割越小"},
+            "entry": {"by_us_open": {US_OPEN_CN.get(k, "未知"): _entry_summary(v) for k, v in sorted(_members(
+                          shown, lambda r: r["us_open"] or "unknown").items())},
+                      "by_hours_to_expiry": {label: _entry_summary(members) for label, members in sorted(_members(
+                          shown, lambda r: _bucket("hours_to_expiry", r["hours_to_expiry"])).items())},
+                      "note_cn": "只计页面显示过的候选：若在该时点按对手价扣费开仓，持有到期的结果（BTC）及其占最大亏损的比例"},
             "recent_samples": [r for r in rows if r["expiry_day"] in recent_days]}

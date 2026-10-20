@@ -288,6 +288,9 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 | `clock_factor` | 剩余时段相对全天平均的方差倍数（12 号文档节律，工作日 ×1.193、周末 ×0.515 换算到同一刻度） |
 | `iv_clock.by_hour_utc` | 同一合约相邻两行（≤40 分钟）短腿 mark IV 的对数变化 ÷ 经过小时数，按发生的 UTC 小时平均；固定行权价 IV 也随现价变动，只作漂移描述 |
 | `recent_samples` | 最近 3 个到期日的逐行样本 |
+| `holding.by_hours_to_expiry`（0.2 起） | 持有口径：剩余保费（mark 价差）÷ 仍承担的最大亏损（宽度折 BTC − 剩余保费）的中位数与均值 |
+| `entry.by_us_open`、`entry.by_hours_to_expiry`（0.2 起） | 入场口径：页面显示过的候选若在该时点按对手价扣费开仓，持有到期结果（BTC）、结果 ÷ 最大亏损、为正比例、最差一笔；按本周期美股开盘“尚未经历（或开盘不足 1 小时）/ 已经历 / 本周期无开盘（周末、NYSE 休市）”和距到期分组；宽度按当时指数折 BTC，币本位真实最大亏损为宽度 ÷ 交割价，比例可能低于 −1 |
+| 逐行新增 | `width_btc`、`hold_premium_btc`、`hold_premium_to_max_loss`、`entry_credit_btc`、`entry_result_btc`、`entry_result_to_max_loss`、`us_open`（ahead / passed / none） |
 | `enough_days` | 满 20 个到期日为 true；之前只作描述 |
 
 ### inquiry_scorecard@0.1：`scorecards/inquiry.json`（派生，每天 09:30 后重建）

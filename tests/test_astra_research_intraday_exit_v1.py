@@ -88,3 +88,39 @@ def test_scorecards_keep_both_cards_when_the_study_fails(tmp_path, monkeypatch):
     assert report["intraday_exit_error"].startswith("ZeroDivisionError")
     assert (root / "scorecards" / "views.json").exists() and (root / "scorecards" / "inquiry.json").exists()
     assert not (root / "scorecards" / "intraday_exit.json").exists()
+
+
+def test_holding_and_entry_measures(tmp_path):
+    rows = [dict(_row(EXPIRY - 20 * H, 0.0030, 0.0004, 0.0028, 0.0005, 30.0), index_usd=82_000.0,
+                 short={"best_ask_price": 0.0030, "best_bid_price": 0.0028, "mark_price": 0.0028, "mark_iv": 30.0},
+                 long={"best_bid_price": 0.0004, "best_ask_price": 0.0006, "mark_price": 0.0005}),
+            dict(_row(EXPIRY - 3 * H, 0.0004, None, 0.0003, 0.0001, 27.0), index_usd=82_000.0,
+                 short={"best_ask_price": 0.0004, "best_bid_price": 0.0002, "mark_price": 0.0003, "mark_iv": 27.0},
+                 long={"best_bid_price": None, "best_ask_price": 0.0001, "mark_price": 0.0001})]
+    root = _archive(tmp_path, payout=0.0, rows=rows)
+    out = root / "outcomes" / "2026-10-21.jsonl"
+    o = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    o.update(short_strike_usd=82_000.0, long_strike_usd=84_000.0)
+    out.write_text(json.dumps(o) + "\n", encoding="utf-8")
+    card = ix.build(root, now_ms=EXPIRY + H)
+    s = {r["hour_utc"]: r for r in card["recent_samples"]}
+    width = 2000 / 82_000
+    assert abs(s[12]["hold_premium_to_max_loss"] - 0.0023 / (width - 0.0023)) < 1e-9
+    assert s[5]["hold_premium_to_max_loss"] < s[12]["hold_premium_to_max_loss"]        # late: little premium left
+    credit = 0.0028 - 0.0006 - 0.0003 - 0.000075
+    assert abs(s[12]["entry_credit_btc"] - credit) < 1e-12 and abs(s[12]["entry_result_btc"] - credit) < 1e-12
+    assert s[12]["us_open"] == "ahead" and s[5]["us_open"] == "passed"                   # Tue 12:00 vs Wed 05:00 UTC
+    assert set(card["entry"]["by_us_open"]) == {"美股开盘尚未经历", "美股开盘已经历"}
+    assert card["entry"]["by_us_open"]["美股开盘尚未经历"]["rows"] == 1
+    assert card["holding"]["by_hours_to_expiry"]["18-24h"]["rows"] == 1
+
+
+def test_us_open_state_has_three_cases():
+    sat_noon, sun_08, mon_08 = 1_792_843_200_000, 1_792_915_200_000, 1_793_001_600_000   # 2026-10-24/25/26
+    assert ix._us_open_state(sat_noon, sun_08) == "none"            # a weekend cycle has no US open
+    assert ix._us_open_state(sun_08 + 4 * 3_600_000, mon_08) == "none"
+    tue_open = 1_792_503_000_000                                     # Tue 2026-10-20 13:30 UTC
+    assert ix._us_open_state(tue_open + 30 * 60_000, EXPIRY) == "ahead"      # still in its first hour
+    assert ix._us_open_state(tue_open + 2 * H, EXPIRY) == "passed"
+    xmas, xmas_exp = 1_798_200_000_000, 1_798_243_200_000           # 2026-12-25 12:00 -> 12-26 08:00 UTC
+    assert ix._us_open_state(xmas, xmas_exp) == "none"

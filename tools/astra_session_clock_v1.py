@@ -41,7 +41,7 @@ US_MARKET_HOLIDAYS = frozenset({
     "2027-09-06", "2027-11-25", "2027-12-24"})
 HOLIDAYS_THROUGH = "2027-12-31"
 WINDOW_GRACE_MS = HOUR_MS   # a window that started within the last hour is still in progress
-BUSY_AT = 1.3      # an hour at least this busy (x all-days mean) counts as a high-variance hour
+BUSY_AT = 1.25   # the page's "波动集中" tier uses the same line      # an hour at least this busy (x all-days mean) counts as a high-variance hour
 QUIET_BELOW = 0.8
 PHASES_ET = (  # weekday phases on the US Eastern clock (daylight time handled), minutes from midnight
     (0, 8 * 60, "quiet", "安静时段（亚洲上午至欧洲上午）"), (8 * 60, 9 * 60 + 30, "pre_us", "美股开盘前（含 8:30 数据）"),
@@ -71,14 +71,14 @@ def variance_between(start_ms: int, end_ms: int) -> float:
 
 
 def hour_profile() -> dict[str, Any]:
-    """Each UTC hour's variance relative to the all-days hourly mean (1.0), for weekdays and
-    weekends, and the cost-performance of holding through it: time share / risk share =
-    1 / ratio (> 1: an hour of time decay costs less than an average hour of risk)."""
+    """Risk density: each UTC hour's price variance relative to the all-days hourly mean (1.0),
+    for weekdays and weekends. A fact about the hour, not a cost-performance verdict: the US
+    session is also where the day is priced, and late quiet hours leave little premium against
+    an unchanged maximum loss (docs/opus/13)."""
     def rows(table, scale):
-        return [{"hour_utc": h, "risk_ratio": round(table[h] * scale, 3), "value_ratio": round(1 / (table[h] * scale), 3)}
-                for h in range(24)]
+        return [{"hour_utc": h, "risk_ratio": round(table[h] * scale, 3)} for h in range(24)]
     return {"weekday": rows(CLOCK_WEEKDAY, WEEKDAY_SCALE), "weekend": rows(CLOCK_WEEKEND, WEEKEND_SCALE),
-            "basis_cn": "相对全天每小时平均方差（=1）；性价比 = 1 ÷ 风险倍数，假设期权保费按时间均匀衰减"}
+            "basis_cn": "风险密度：该小时过去两年的价格方差相对全天每小时平均（=1）；只描述时段，不评价入场或持有"}
 
 
 def next_expiry_ms(now_ms: int) -> int:
