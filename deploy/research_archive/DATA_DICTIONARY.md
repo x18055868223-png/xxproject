@@ -278,6 +278,16 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 | `ordering.<字段>` | 等级与各指标的 Spearman 相关（已统一为越危险越正，正值 = 排序与结果一致）；`days`、`enough_days`（≥30 天） |
 | `counts` | 各 status 的数量 |
 
+### intraday_exit_study_card@0.1：`scorecards/intraday_exit.json`（派生，每天 09:30 后重建；研究用，不是交易规则）
+日内平仓点研究（docs/opus/12 第二步）。每个已结算合约的账本时点（每合约每 30 分钟取第一行）：此刻按对手价平仓（买回短腿卖一价、卖出保护腿买一价，每腿 min(0.0003, 12.5%×价) 手续费）对比持有到期赔付。
+| 字段 | 含义 |
+|---|---|
+| `overall`、`by.<hour_utc / hours_to_expiry / clock_factor / distance_in_moves>` | `rows`、`rows_without_close_quote`、`contracts`、`days`、`mean/median_close_advantage_btc`、`contract_weighted_mean_close_advantage_btc`、`share_close_better`、`max/min_close_advantage_btc`、`mean_close_advantage_mark_btc`。close_advantage = 赔付 − 平仓成本，正 = 平掉更省 |
+| `clock_factor` | 剩余时段相对全天平均的方差倍数（12 号文档节律，工作日 ×1.193、周末 ×0.515 换算到同一刻度） |
+| `iv_clock.by_hour_utc` | 同一合约相邻两行（≤40 分钟）短腿 mark IV 的对数变化 ÷ 经过小时数，按发生的 UTC 小时平均；固定行权价 IV 也随现价变动，只作漂移描述 |
+| `recent_samples` | 最近 3 个到期日的逐行样本 |
+| `enough_days` | 满 20 个到期日为 true；之前只作描述 |
+
 ### inquiry_scorecard@0.1：`scorecards/inquiry.json`（派生，每天 09:30 后重建）
 | 字段 | 含义 |
 |---|---|

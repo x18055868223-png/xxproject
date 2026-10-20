@@ -29,8 +29,10 @@ from typing import Any, Iterable, Mapping
 
 if __package__:
     from . import astra_research_validation_v1 as research_validation
+    from . import astra_research_intraday_exit_v1 as intraday_exit
 else:
     import astra_research_validation_v1 as research_validation
+    import astra_research_intraday_exit_v1 as intraday_exit
 
 SCORECARD_RULES = "scorecard_rules@0.1"
 SCHEMA_VIEWS = "view_scorecard@0.1"
@@ -321,5 +323,13 @@ def run(root: str | Path, *, now_ms: int) -> dict[str, Any]:
     _write(root / "scorecards" / "views.json", views)
     questions = inquiry_scorecard(root, now_ms=now_ms, all_outcomes=all_outcomes)
     _write(root / "scorecards" / "inquiry.json", questions)
-    return {"views_scored": views["counts"].get("scored", 0), "reviews": len(questions["reviews"]),
-            "unmatched_reviews": len(questions["unmatched"])}
+    report = {"views_scored": views["counts"].get("scored", 0), "reviews": len(questions["reviews"]),
+              "unmatched_reviews": len(questions["unmatched"])}
+    try:   # the research study never takes the two cards down with it
+        study = intraday_exit.build(root, now_ms=now_ms)
+        _write(root / "scorecards" / "intraday_exit.json", study)
+        report["intraday_exit_rows"] = study["overall"]["rows"]
+    except Exception as exc:
+        report["intraday_exit_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        (root / "scorecards" / "intraday_exit.json").unlink(missing_ok=True)   # never leave a stale card
+    return report
