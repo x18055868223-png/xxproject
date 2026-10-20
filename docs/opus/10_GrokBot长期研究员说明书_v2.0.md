@@ -184,6 +184,13 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 - `supersedes` 只能指向**更早登记**、且不是自身的 id。
 - 被支持的结论，经用户批准后，才会成为程序读数或协议条款。
 
+### 5.1 晋升（E4）
+
+- **候选**：每天评估后，“支持”且尚未晋升的假设列在 `promotions/candidates.json`。
+- **批准**：只有用户批准后才会晋升。每次晋升或撤销都写入 `promotions/actions.jsonl`（入链），包括研究读数编号（R-001 …）、条件、当时的验证统计和用户批准的原话，并在 `protocols/versions.jsonl` 把 `research_protocol` 升一版。
+- **生效方式**：已晋升的条件会在每份新案卷中对当前候选求值，写成 `L8.research_readings`。提问者会读到它；你也可以质疑它。
+- **你的角色**：你可以用 `protocol_proposal` 建议晋升或撤销，并附上证据；是否执行由用户决定。
+
 ## 6. 边界
 
 1. 不交易，不操作任何账户。

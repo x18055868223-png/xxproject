@@ -64,6 +64,11 @@ if __package__:
     from . import astra_locked_candidate_compare_v1 as locked_compare
     from . import astra_workbench_reading_v1 as reading
     from . import astra_case_file_v1 as case_file_core
+    try:   # optional: a missing research module must never stop the workbench
+        from . import astra_research_archive_v1 as research_archive_core
+        from . import astra_research_promotion_v1 as research_promotion
+    except ImportError:
+        research_archive_core = research_promotion = None
     from .astra_workbench_session_v1 import WorkbenchSessions
     from . import signal_llm_review
 else:  # direct CLI execution from tools/
@@ -98,6 +103,11 @@ else:  # direct CLI execution from tools/
     import astra_locked_candidate_compare_v1 as locked_compare
     import astra_workbench_reading_v1 as reading
     import astra_case_file_v1 as case_file_core
+    try:   # optional: a missing research module must never stop the workbench
+        import astra_research_archive_v1 as research_archive_core
+        import astra_research_promotion_v1 as research_promotion
+    except ImportError:
+        research_archive_core = research_promotion = None
     from astra_workbench_session_v1 import WorkbenchSessions
     import signal_llm_review
 
@@ -4084,11 +4094,13 @@ class AstraWorkbench:
                 dp_reading = decision_path.build(self._dp_frame(self._dp_item(item, now), now))
             except Exception:
                 dp_reading = None
-            body = case_file_core.build(snapshot=snapshot, raw_market=raw_market,
-                                        asof_ms=int((snapshot.get("market") or {}).get("valuation_ts_ms") or now),
-                                        item=item, view=view, dp_reading=dp_reading, built_at_ms=now)
-            if dp_reading is None:
-                body["build"]["stored"] = False
+            asof = int((snapshot.get("market") or {}).get("valuation_ts_ms") or now)
+            body_readings = self._research_readings(snapshot, raw_market, view, asof)
+            body = case_file_core.build(snapshot=snapshot, raw_market=raw_market, asof_ms=asof,
+                                        item=item, view=view, dp_reading=dp_reading, built_at_ms=now,
+                                        research_readings=body_readings)
+            if dp_reading is None or body_readings is None:
+                body["build"]["stored"] = False   # a transient failure is returned, never frozen
                 return body
             path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=snapshot_id + ".", suffix=".tmp")
@@ -4096,6 +4108,32 @@ class AstraWorkbench:
                 handle.write(_canonical(dict(body)) + "\n")
             os.replace(tmp, path)
             return json.loads(path.read_text(encoding="utf-8"))
+
+    def _research_readings(self, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any],
+                           view: Mapping[str, Any], asof_ms: int) -> dict[str, Any] | None:
+        """User-approved research readings (E4) evaluated on this capture with the same
+        ledger-row fields the forward validation used. None when they cannot be read."""
+        if research_promotion is None or research_archive_core is None:
+            return None
+        try:
+            root = os.environ.get("ASTRA_RESEARCH_ARCHIVE") or "/var/lib/xxproject/research_archive"
+            readings = research_promotion.active_readings(root)
+            contract = snapshot.get("contract") or {}
+            key = research_archive_core.contract_key(contract)
+            active = {research_archive_core.instrument_key(e.get("contract") or {})
+                      for e in self.locked_candidates.list() if e.get("status") == "active"}
+            record = {"key": key, "side": contract.get("side"),
+                      "short_strike_usd": contract.get("short_strike_usd"),
+                      "long_strike_usd": contract.get("long_strike_usd"), "expiry_ms": contract.get("expiry_ms")}
+            row = research_archive_core.ledger_row(record, raw_market.get("short_book") or {},
+                                                   raw_market.get("long_book") or {},
+                                                   research_archive_core._program_states(view),
+                                                   now_ms=asof_ms, displayed=True, locked=key in active)
+            states_at = (view.get("market_context") or {}).get("snapshot_ts_ms")
+            return research_promotion.evaluate_readings(readings, row,
+                                                       states_at if isinstance(states_at, int) else None)
+        except Exception:
+            return None
 
     def _dp_current_candidate(self, candidate_id: str, snapshot_id: str | None = None) -> dict[str, Any] | None:
         with self._view_lock:

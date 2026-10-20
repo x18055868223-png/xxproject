@@ -238,3 +238,33 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行（不含 
 
 ### validation_status@0.2：`validation/status.json`（派生，不入链）
 当前每条假设的状态汇总，可由 `validation/*.jsonl` 重建。
+
+## 追加（2026-10-20，E4）
+
+### promotion_action@0.1：`promotions/actions.jsonl`（kind=promotion，入链）
+| 字段 | 含义 |
+|---|---|
+| `action` | `promote` 或 `retire` |
+| `reading_id` | 研究读数编号 R-001 … |
+| `hypothesis_id`、`submission_id` | 来源假设 |
+| `promoted_as` | `program_reading` 或 `protocol_item` |
+| `provisional` | 是否在 120 天最终结论之前晋升 |
+| `label_cn` | 读数名称 |
+| `approval_cn` | 用户批准的原话 |
+| `reason_cn` | 撤销原因（retire 时） |
+| `condition`、`metric`、`expected_direction`、`statement_cn` | 晋升时复制自假设，此后不变 |
+| `evaluation` | 晋升时依据的验证统计（effect、se、t、threshold、k、milestones、天数与样本数） |
+| `protocol_version` | 本次动作升级后的 `research_protocol` 版本 |
+
+### promotion_candidates@0.1：`promotions/candidates.json`（派生）
+“支持”且尚未晋升的假设，每天评估后重建。
+
+### research_reading@0.1：案卷 `L8.research_readings.values.readings[]`
+| 字段 | 含义 |
+|---|---|
+| `reading_id`、`label_cn` | 读数编号与名称 |
+| `applies` | 条件在本合约冻结时刻是否成立（true/false；null 表示字段缺失） |
+| `direction_if_applies` | 成立时风险相对对照组的方向 |
+| `metric`、`effect`、`t` | 晋升时的验证依据 |
+| `provisional` | 是否为暂定晋升 |
+| `protocol_version` | 读数所属的协议版本 |

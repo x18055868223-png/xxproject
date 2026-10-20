@@ -39,6 +39,7 @@ if __package__:
     from . import astra_market_baseline_v1 as market_baseline
     from . import astra_research_inbox_v1 as research_inbox
     from . import astra_research_validation_v1 as research_validation
+    from . import astra_research_promotion_v1 as research_promotion
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -46,6 +47,7 @@ else:
     import astra_market_baseline_v1 as market_baseline
     import astra_research_inbox_v1 as research_inbox
     import astra_research_validation_v1 as research_validation
+    import astra_research_promotion_v1 as research_promotion
 
 SCHEMA_ROW = "ledger_row@0.1"
 SCHEMA_OUTCOME = "episode_outcome@0.1"
@@ -66,7 +68,8 @@ OUTCOME_DELAY_MS = 10 * 60_000
 OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
 VALIDATION_AT_UTC = (9, 30)   # after the 08:00 settlement and its outcomes
 INDEX_KEEP_CLOSED_MS = 3 * 24 * HOUR_MS
-LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol", "validation"}
+LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol", "validation",
+              "promotion"}
 FILE_KINDS = {"case", "inquiry", "legacy", "path"}
 PUBLIC = "https://www.deribit.com/api/v2/"
 PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data"})
@@ -632,9 +635,14 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     if (moment.hour, moment.minute) >= VALIDATION_AT_UTC and state.get("validation_day") != today:
         try:
             report["validation"] = research_validation.run(archive, now_ms=now_ms)
-            state["validation_day"] = today
+            state["validation_day"] = today   # set at once: a later failure never repeats validation
+            archive.save_state(state)
         except Exception as exc:
             report["errors"].append({"step": "validation", "error": type(exc).__name__, "detail": str(exc)[:160]})
+        try:
+            report["promotion_candidates"] = research_promotion.write_candidates(archive.root, now_ms=now_ms)
+        except Exception as exc:
+            report["errors"].append({"step": "promotion_candidates", "error": type(exc).__name__})
 
     state["outcomes_done"] = state["outcomes_done"][-2000:]
     state["decisions_seen"] = state["decisions_seen"][-5000:]
@@ -729,7 +737,13 @@ def _http_json(url: str, token: str | None = None, timeout: int = 180) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
-    parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register"])
+    parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register",
+                                            "promote", "retire", "readings"])
+    parser.add_argument("--hypothesis")
+    parser.add_argument("--reading")
+    parser.add_argument("--label", default="")
+    parser.add_argument("--approval", default="", help="what the user approved, in their words")
+    parser.add_argument("--allow-provisional", action="store_true")
     parser.add_argument("--workbench-dir", default=os.environ.get("ASTRA_WORKBENCH_STATE_DIR", "/var/lib/xxproject/workbench"))
     parser.add_argument("--component")
     parser.add_argument("--version")
@@ -746,6 +760,18 @@ def main() -> None:
         return
     if args.command == "backfill-legacy":
         print(json.dumps(backfill_legacy(archive, args.workbench_dir, now_ms=int(time.time() * 1000))))
+        return
+    if args.command == "promote":
+        print(json.dumps(research_promotion.promote(
+            archive, args.hypothesis, now_ms=int(time.time() * 1000), label_cn=args.label,
+            approval_cn=args.approval, allow_provisional=args.allow_provisional), ensure_ascii=False))
+        return
+    if args.command == "retire":
+        print(json.dumps(research_promotion.retire(
+            archive, args.reading, now_ms=int(time.time() * 1000), reason_cn=args.note), ensure_ascii=False))
+        return
+    if args.command == "readings":
+        print(json.dumps(research_promotion.active_readings(archive.root), ensure_ascii=False, indent=1))
         return
     if args.command == "protocol-register":
         if args.component not in {"research_protocol", "scoring_rules", "inquirer_prompt"} or not args.version:

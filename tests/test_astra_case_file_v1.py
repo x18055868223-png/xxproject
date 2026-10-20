@@ -15,6 +15,14 @@ from test_astra_workbench_v20 import make_workbench, write_fmz, native_gate, T
 EXPIRY = 1_792_483_200_000
 
 
+@pytest.fixture(autouse=True)
+def _empty_research_archive(tmp_path, monkeypatch):
+    # an existing archive without promotions: readings resolve to an empty list, so cases freeze
+    root = tmp_path / "research_archive"
+    root.mkdir()
+    monkeypatch.setenv("ASTRA_RESEARCH_ARCHIVE", str(root))
+
+
 def _snapshot():
     return {
         "snapshot_id": "a" * 64, "candidate_id": "c" * 24,

@@ -222,10 +222,11 @@ def test_protocol_versions_recorded_once_and_on_change(tmp_path, monkeypatch):
     _tick(archive, NOW + 600_000, None, FakeDeribit())
     lines = (tmp_path / "protocols/versions.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == len(ar.observed_versions())
-    monkeypatch.setattr(ar.inquiry, "PROMPT_VERSION", "inquiry_prompt@0.2")
+    current = ar.inquiry.PROMPT_VERSION
+    monkeypatch.setattr(ar.inquiry, "PROMPT_VERSION", "inquiry_prompt@9.9")
     _tick(archive, NOW + 1_200_000, None, FakeDeribit())
     last = json.loads((tmp_path / "protocols/versions.jsonl").read_text(encoding="utf-8").splitlines()[-1])
-    assert last["component"] == "inquirer_prompt" and last["previous"] == "inquiry_prompt@0.1"
+    assert last["component"] == "inquirer_prompt" and last["previous"] == current and last["version"] == "inquiry_prompt@9.9"
 
 
 def test_episode_view_only_before_expiry(tmp_path):

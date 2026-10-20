@@ -21,7 +21,7 @@ else:
     import signal_llm_review as llm_core
 
 PROTOCOL = "inquiry_sheet@0.2"
-PROMPT_VERSION = "inquiry_prompt@0.1"
+PROMPT_VERSION = "inquiry_prompt@0.2"
 SCHEMA = "astra_inquiry_result@0.1"
 BRIEF_LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8")
 LAYER_STATUS = {"material", "quiet", "unknown"}
@@ -57,6 +57,7 @@ SYSTEM_PROMPT = """你是 xxproject 的证据提问者。研究对象是一张�
 - 可判别：至少两个相互竞争的假设，每个写明机制、什么证据会支持、什么证据会推翻，以及它成立时风险升高还是降低。
 - 可回答：写明答案可能在哪找（案卷内 / 历史 / 外部联网 / 无法获得）。
 - 非冗余：不是事实底稿或 L8 程序读数的复述。L8 是可以被质疑的程序判读，与 L8 结论相同的问题不算关键问题；与 L8 冲突的证据优先提问。
+  L8.research_readings 是经前向验证支持、并经用户批准的研究读数：写明它是否适用于本合约；当本合约的其他证据与它的方向冲突时，优先就此提问。
 
 【价值排序】priority 按“答案能在多大程度上让风险偏离市场基线”排序：能明显改变触界或亏损判断的为 high。
 

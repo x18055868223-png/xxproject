@@ -34,7 +34,7 @@ else:
     import astra_market_baseline_v1 as market_baseline
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.1"
+BUILDER_VERSION = "astra_case_file_v1@0.1.2"
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 DROP_KEYS = {"source_records", "source_manifest", "source_bindings", "debug", "_debug", "raw_payload"}
 DROP_SUFFIXES = ("_hash", "sha256")
@@ -146,7 +146,8 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
           item: Mapping[str, Any] | None = None, view: Mapping[str, Any] | None = None,
           dp_reading: Mapping[str, Any] | None = None,
           history: Iterable[Mapping[str, Any]] | None = None,
-          built_at_ms: int | None = None) -> dict[str, Any]:
+          built_at_ms: int | None = None,
+          research_readings: Mapping[str, Any] | None = None) -> dict[str, Any]:
     view = view or {}
     snapshot_id = snapshot.get("snapshot_id")
     if item is not None and (item.get("snapshot") or {}).get("snapshot_id") != snapshot_id:
@@ -363,6 +364,11 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
              quality=None if item else "unknown", quality_reason=None if item else "read_view_item_unavailable")
     case.add("L8.signal_recommendation", "信号层自身的策略建议", facts.get("strategy_recommendation"),
              lineage=["fmz.snapshot"], source="market_facts.strategy_recommendation", asof_ms=fmz_asof)
+    case.add("L8.research_readings", "研究读数（经前向验证支持并经用户批准；可被质疑）",
+             research_readings if research_readings is not None else {"readings": [], "note_cn": "研究读数未提供"},
+             lineage=["research_archive.promotions"], source="astra_research_promotion_v1.evaluate_readings",
+             asof_ms=asof_ms, quality="ok" if research_readings is not None else "unknown",
+             quality_reason=None if research_readings is not None else "research_readings_unavailable")
 
     # L9 history (researcher only)
     if history is not None:
