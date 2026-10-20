@@ -40,6 +40,7 @@ if __package__:
     from . import astra_research_inbox_v1 as research_inbox
     from . import astra_research_validation_v1 as research_validation
     from . import astra_research_promotion_v1 as research_promotion
+    from . import astra_research_scorecards_v1 as research_scorecards
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -48,6 +49,7 @@ else:
     import astra_research_inbox_v1 as research_inbox
     import astra_research_validation_v1 as research_validation
     import astra_research_promotion_v1 as research_promotion
+    import astra_research_scorecards_v1 as research_scorecards
 
 SCHEMA_ROW = "ledger_row@0.1"
 SCHEMA_OUTCOME = "episode_outcome@0.1"
@@ -403,7 +405,8 @@ def observed_versions() -> dict[str, str]:
             "case_file_builder": case_file_core.BUILDER_VERSION,
             "ledger_row": SCHEMA_ROW, "episode_outcome": SCHEMA_OUTCOME,
             "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS)),
-            "scoring_rules": research_validation.SCORING_RULES}
+            "scoring_rules": research_validation.SCORING_RULES,
+            "scorecard_rules": research_scorecards.SCORECARD_RULES}
 
 
 def _episode_summary(record: Mapping[str, Any], status: str, outcome_path: str | None = None) -> dict[str, Any]:
@@ -643,6 +646,13 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             report["promotion_candidates"] = research_promotion.write_candidates(archive.root, now_ms=now_ms)
         except Exception as exc:
             report["errors"].append({"step": "promotion_candidates", "error": type(exc).__name__})
+    if (moment.hour, moment.minute) >= VALIDATION_AT_UTC and state.get("scorecard_day") != today:
+        state["scorecard_day"] = today   # once a day; a failure waits for the next day or the CLI
+        archive.save_state(state)
+        try:
+            report["scorecards"] = research_scorecards.run(archive.root, now_ms=now_ms)
+        except Exception as exc:
+            report["errors"].append({"step": "scorecards", "error": type(exc).__name__, "detail": str(exc)[:160]})
 
     state["outcomes_done"] = state["outcomes_done"][-2000:]
     state["decisions_seen"] = state["decisions_seen"][-5000:]
@@ -738,7 +748,7 @@ def _http_json(url: str, token: str | None = None, timeout: int = 180) -> Any:
 def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
     parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register",
-                                            "promote", "retire", "readings"])
+                                            "promote", "retire", "readings", "scorecards"])
     parser.add_argument("--hypothesis")
     parser.add_argument("--reading")
     parser.add_argument("--label", default="")
@@ -769,6 +779,9 @@ def main() -> None:
     if args.command == "retire":
         print(json.dumps(research_promotion.retire(
             archive, args.reading, now_ms=int(time.time() * 1000), reason_cn=args.note), ensure_ascii=False))
+        return
+    if args.command == "scorecards":
+        print(json.dumps(research_scorecards.run(archive.root, now_ms=int(time.time() * 1000)), ensure_ascii=False))
         return
     if args.command == "readings":
         print(json.dumps(research_promotion.active_readings(archive.root), ensure_ascii=False, indent=1))

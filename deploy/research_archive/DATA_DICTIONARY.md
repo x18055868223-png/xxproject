@@ -259,6 +259,23 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行（不含 
 ### promotion_candidates@0.1：`promotions/candidates.json`（派生）
 “支持”且尚未晋升的假设，每天评估后重建。
 
+### view_scorecard@0.1：`scorecards/views.json`（派生，每天 09:30 后重建）
+| 字段 | 含义 |
+|---|---|
+| `views[]` | 每份 episode_view 一行：`status`（scored / pending_outcome / outcome_unavailable / no_entry_row / after_expiry）、`registered_at_ms`、`entry_row_at_ms`、`entry_gap_ms`、四个评级字段、入场基线 `p_touch_short` / `p_loss`、`metrics` |
+| `metrics` | `touched_short_after_entry`、`loss_at_expiry`、`excess_touch`、`excess_loss`（相对入场基线）、`max_adverse_after_entry_pct`、`settle_vs_short_pct`、`result_btc_at_entry_credit`；口径同前向验证 |
+| `by.<字段>[]` | 按等级分组：`level`、`n`（判断份数）、`days`、`contracts`（合约数）、`mean.<指标>`（各指标均值） |
+| `ordering.<字段>` | 等级与各指标的 Spearman 相关（已统一为越危险越正，正值 = 排序与结果一致）；`days`、`enough_days`（≥30 天） |
+| `counts` | 各 status 的数量 |
+
+### inquiry_scorecard@0.1：`scorecards/inquiry.json`（派生，每天 09:30 后重建）
+| 字段 | 含义 |
+|---|---|
+| `by_prompt_version` / `by_type` / `by_priority` | 每组的 `reviewed`、四种 verdict 计数、`pointed_rate`、`wrong_premise_rate`（分母不含 unclear）；后两者的键为 `<prompt 版本>|<类型或优先级>` |
+| `coverage.<prompt 版本>` | 已结算合约案卷的 `cases`、`cases_without_questions`（提问者失败或无问题单，不计入覆盖率）、`questions_asked`、`questions_reviewed`、`coverage` |
+| `reviews[]` | 逐题评定（同一问题以最后一次为准），带问题的类型、优先级、answer_source、bears_on |
+| `unmatched[]` | 找不到对应案卷或问题的评定 |
+
 ### research_reading@0.1：案卷 `L8.research_readings.values.readings[]`
 | 字段 | 含义 |
 |---|---|
