@@ -1,0 +1,68 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "xxproject/hypothesis_evaluation@0.2",
+ "type": "object",
+ "additionalProperties": true,
+ "required": [
+  "schema",
+  "scoring_rules",
+  "hypothesis_id",
+  "registered_at_ms",
+  "evaluated_at_ms",
+  "metric",
+  "expected_direction",
+  "threshold",
+  "k",
+  "status",
+  "status_basis",
+  "milestones"
+ ],
+ "properties": {
+  "schema": {
+   "const": "hypothesis_evaluation@0.2"
+  },
+  "scoring_rules": {
+   "type": "string"
+  },
+  "status": {
+   "enum": [
+    "candidate",
+    "observing",
+    "weakened",
+    "supported",
+    "rejected",
+    "superseded"
+   ]
+  },
+  "status_basis": {
+   "enum": [
+    "candidate",
+    "observing",
+    "weakened",
+    "supported",
+    "rejected"
+   ]
+  },
+  "effect": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "se": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "t": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "milestones": {
+   "type": "object"
+  }
+ }
+}

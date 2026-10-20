@@ -229,6 +229,9 @@ def ingest(archive: Any, inbox: str | Path, receipts: str | Path, *, now_ms: int
             errors += validate(doc)
             if not errors and doc["id"] in registered_ids.get(doc["schema"], set()):
                 errors.append("id 已登记；已登记内容不可修改，修订请用新 id 并写 supersedes")
+            if not errors and doc["schema"] == "hypothesis@0.1" and doc.get("supersedes") is not None:
+                if doc["supersedes"] == doc["id"] or doc["supersedes"] not in registered_ids.get("hypothesis@0.1", set()):
+                    errors.append("supersedes: 只能指向更早已登记、且不是自身的假设 id")
             if not errors and doc["schema"] == "episode_view@0.1":
                 expiry = (open_contracts or {}).get(doc["contract_key"])
                 if expiry is None:

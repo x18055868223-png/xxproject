@@ -216,3 +216,25 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行（不含 
 ## 11. `legacy/`
 
 存档上线前历史的一次性回填（锁定候选索引与点位、结算、Decision Path 记录、每日快照归档、承保台账），每个文件以 kind `legacy` 入链。其内容是事后收集的，**不满足“登记后冻结”，不得用于前向验证**，只能用于形成假设或描述性分析，且需在 `formation.samples` 中注明。
+
+## 追加（2026-10-20，E3）
+
+### index_path@0.1：`paths/<到期日>.json.gz`（kind=path，入链）
+| 字段 | 含义 |
+|---|---|
+| `index_name` | `btc_usd`（Deribit 交割所用指数） |
+| `expiry_ms` | 该到期日的交割时刻（UTC 毫秒） |
+| `fetched_at_ms` | 抓取时刻 |
+| `points` | `[[t_ms, price_usd], ...]`，Deribit `get_index_chart_data` 2 天范围，约 1 分钟一个点 |
+
+### hypothesis_evaluation@0.2：`validation/<日>.jsonl`（kind=validation，入链）
+每次评估每条假设一行。主要字段：
+- `hypothesis_id`、`submission_id`、`registered_at_ms`、`evaluated_at_ms`、`metric`、`expected_direction`；
+- `scoring_rules`（`scoring_rules@0.2`）、`threshold`、`k`（累计登记假设数）；
+- `n_condition`、`n_control`、`days_condition`、`days_control`、`n_samples`、`pending_samples`（尚未结算的样本数）；
+- `effect`（正值 = 更危险）、`se`（按到期日聚类）、`t`、`mean_condition`、`mean_control`；
+- `milestones`：`{"60"|"90"|"120": {t, effect, days, at_ms, pass, against}}`，一经记录不再重算；
+- `status_basis`（按规则得出的状态）与 `status`（被取代时为 `superseded`）。
+
+### validation_status@0.2：`validation/status.json`（派生，不入链）
+当前每条假设的状态汇总，可由 `validation/*.jsonl` 重建。

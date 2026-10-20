@@ -259,3 +259,20 @@ def test_backfill_legacy_once(tmp_path):
     assert ar.backfill_legacy(archive, wb, now_ms=2) == {"skipped": "legacy_exists"}
     assert (tmp_path / "a/legacy/daily_snapshots/daily_snapshots.jsonl.gz").exists()
     assert archive.verify()["ok"] is True
+
+
+def test_validation_runs_once_per_day_after_0930_utc(tmp_path, monkeypatch):
+    archive, calls = ar.Archive(tmp_path), []
+    monkeypatch.setattr(ar.research_validation, "run", lambda a, now_ms: calls.append(now_ms) or {"evaluated": 0})
+    day0 = EXPIRY + H                                       # 2026-10-20 09:00 UTC
+    _tick(archive, day0, None, FakeDeribit())               # before 09:30
+    _tick(archive, day0 + 40 * 60_000, None, FakeDeribit())  # 09:40: runs
+    _tick(archive, day0 + 50 * 60_000, None, FakeDeribit())  # same day: not again
+    assert len(calls) == 1
+
+
+def test_empty_index_path_is_retried_not_written(tmp_path):
+    archive = ar.Archive(tmp_path)
+    _tick(archive, NOW, _view(), FakeDeribit())
+    assert _tick(archive, EXPIRY + 15 * 60_000, None, FakeDeribit(delivery=82000.0, path=[]))["outcomes"] == 0
+    assert not list(tmp_path.glob("paths/*")) and archive.load_state()["contracts"]

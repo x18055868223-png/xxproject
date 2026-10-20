@@ -64,3 +64,15 @@ def test_other_submission_kinds():
     assert inbox.validate({"schema": "protocol_proposal@0.1", "id": "pp-1", "agent": AGENT,
                            "target": "ledger_fields", "proposal_cn": "增加字段", "evidence_cn": "h1"}) == []
     assert inbox.validate({"schema": "unknown"})
+
+
+def test_supersedes_must_name_an_earlier_registered_other_id(tmp_path):
+    archive, box, receipts = ar.Archive(tmp_path / "archive"), tmp_path / "inbox", tmp_path / "receipts"
+    box.mkdir()
+    (box / "a.json").write_text(json.dumps(_hypothesis(id="h-new", supersedes="h-missing")), encoding="utf-8")
+    (box / "b.json").write_text(json.dumps(_hypothesis(id="h-self", supersedes="h-self")), encoding="utf-8")
+    assert inbox.ingest(archive, box, receipts, now_ms=1) == {"accepted": 0, "rejected": 2}
+    (box / "c.json").write_text(json.dumps(_hypothesis(id="h-orig")), encoding="utf-8")
+    inbox.ingest(archive, box, receipts, now_ms=2)
+    (box / "d.json").write_text(json.dumps(_hypothesis(id="h-rev", supersedes="h-orig")), encoding="utf-8")
+    assert inbox.ingest(archive, box, receipts, now_ms=3) == {"accepted": 1, "rejected": 0}

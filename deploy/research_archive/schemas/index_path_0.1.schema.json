@@ -1,0 +1,37 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "xxproject/index_path@0.1",
+ "type": "object",
+ "required": [
+  "schema",
+  "index_name",
+  "expiry_ms",
+  "fetched_at_ms",
+  "points"
+ ],
+ "properties": {
+  "schema": {
+   "const": "index_path@0.1"
+  },
+  "index_name": {
+   "const": "btc_usd"
+  },
+  "expiry_ms": {
+   "type": "integer"
+  },
+  "fetched_at_ms": {
+   "type": "integer"
+  },
+  "points": {
+   "type": "array",
+   "items": {
+    "type": "array",
+    "minItems": 2,
+    "maxItems": 2,
+    "items": {
+     "type": "number"
+    }
+   }
+  }
+ }
+}

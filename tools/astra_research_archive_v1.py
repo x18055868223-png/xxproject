@@ -38,12 +38,14 @@ if __package__:
     from . import astra_inquiry_v1 as inquiry
     from . import astra_market_baseline_v1 as market_baseline
     from . import astra_research_inbox_v1 as research_inbox
+    from . import astra_research_validation_v1 as research_validation
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
     import astra_inquiry_v1 as inquiry
     import astra_market_baseline_v1 as market_baseline
     import astra_research_inbox_v1 as research_inbox
+    import astra_research_validation_v1 as research_validation
 
 SCHEMA_ROW = "ledger_row@0.1"
 SCHEMA_OUTCOME = "episode_outcome@0.1"
@@ -62,9 +64,10 @@ INQUIRY_WINDOW_MS = 45 * 60_000
 INQUIRY_TIMEOUT_S = 240
 OUTCOME_DELAY_MS = 10 * 60_000
 OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
+VALIDATION_AT_UTC = (9, 30)   # after the 08:00 settlement and its outcomes
 INDEX_KEEP_CLOSED_MS = 3 * 24 * HOUR_MS
-LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol"}
-FILE_KINDS = {"case", "inquiry", "legacy"}
+LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol", "validation"}
+FILE_KINDS = {"case", "inquiry", "legacy", "path"}
 PUBLIC = "https://www.deribit.com/api/v2/"
 PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data"})
 
@@ -396,7 +399,8 @@ def observed_versions() -> dict[str, str]:
     return {"inquirer_prompt": inquiry.PROMPT_VERSION,
             "case_file_builder": case_file_core.BUILDER_VERSION,
             "ledger_row": SCHEMA_ROW, "episode_outcome": SCHEMA_OUTCOME,
-            "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS))}
+            "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS)),
+            "scoring_rules": research_validation.SCORING_RULES}
 
 
 def _episode_summary(record: Mapping[str, Any], status: str, outcome_path: str | None = None) -> dict[str, Any]:
@@ -555,6 +559,16 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                 raise LookupError("delivery price not published")
             if path_cache is None:
                 path_cache = deribit.index_path()
+                if len(path_cache) < 2:
+                    path_cache = None
+                    raise LookupError("index path empty")
+            path_rel = f"paths/{_utc(expiry).strftime('%Y-%m-%d')}.json.gz"
+            if not (archive.root / path_rel).exists():
+                # the minute index path is kept so outcomes after any entry time can be recomputed (E3)
+                archive.write_new(path_rel, gzip.compress(json.dumps(
+                    {"schema": "index_path@0.1", "index_name": "btc_usd", "expiry_ms": expiry,
+                     "fetched_at_ms": now_ms, "points": path_cache}, separators=(",", ":")).encode(), mtime=0),
+                    at_ms=now_ms, kind="path")
             payout = commercial_math.inverse_spread_payout(
                 record["side"], float(record["short_strike_usd"]), float(record["long_strike_usd"]), delivery, 1.0)
             cases = [{**c, "result_btc": (c["net_credit_after_fee_btc"] - payout)
@@ -612,6 +626,15 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                 open_contracts={k: int(r["expiry_ms"]) for k, r in state["contracts"].items()})
         except Exception as exc:
             report["errors"].append({"step": "inbox", "error": type(exc).__name__})
+
+    moment = _utc(now_ms)
+    today = moment.strftime("%Y-%m-%d")
+    if (moment.hour, moment.minute) >= VALIDATION_AT_UTC and state.get("validation_day") != today:
+        try:
+            report["validation"] = research_validation.run(archive, now_ms=now_ms)
+            state["validation_day"] = today
+        except Exception as exc:
+            report["errors"].append({"step": "validation", "error": type(exc).__name__, "detail": str(exc)[:160]})
 
     state["outcomes_done"] = state["outcomes_done"][-2000:]
     state["decisions_seen"] = state["decisions_seen"][-5000:]
