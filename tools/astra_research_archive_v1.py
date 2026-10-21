@@ -533,7 +533,8 @@ def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list
         if not key or not row.get("verification_id") or not isinstance(row.get("at_ms"), int):
             continue
         detail = {k: row.get(k) for k in ("conclusion", "verdicts_start", "verdicts_now", "q1_items", "marks",
-                                          "settled_after", "entry_after_fee_btc", "outcome", "path_version")
+                                          "settled_after", "entry_after_fee_btc", "outcome", "path_version",
+                                          "au_mode", "step_context")
                   if row.get(k) is not None}
         events.append({"source": "decision_path", "contract_key": key, "side": contract.get("side"),
                        "ref_id": row["verification_id"], "event": row.get("event"), "at_ms": row["at_ms"],
@@ -841,7 +842,8 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                           "prompt_version": inquiry.PROMPT_VERSION}
             try:
                 irel = f"inquiry/{day}/{hour[11:]}_{side}_{case['case_id']}.json"
-                archive.write_new(irel, json.dumps({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"), **result},
+                archive.write_new(irel, json.dumps({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
+                                                    "trigger": "scheduled" if scheduled else "new_contract", **result},
                                                    ensure_ascii=False, sort_keys=True).encode("utf-8"),
                                   at_ms=now_ms, kind="inquiry")
                 ckey = next((c["contract_key"] for c in state["cases"].values() if c.get("case_id") == case["case_id"]), None)

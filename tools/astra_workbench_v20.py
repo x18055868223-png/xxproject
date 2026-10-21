@@ -67,6 +67,7 @@ if __package__:
     from . import astra_case_file_v1 as case_file_core
     from . import astra_session_clock_v1 as session_clock
     from . import astra_entry_warnings_v1 as entry_warnings
+    from . import astra_inquiry_view_v1 as inquiry_view
     try:   # optional: a missing research module must never stop the workbench
         from . import astra_research_archive_v1 as research_archive_core
         from . import astra_research_promotion_v1 as research_promotion
@@ -108,6 +109,7 @@ else:  # direct CLI execution from tools/
     import astra_case_file_v1 as case_file_core
     import astra_session_clock_v1 as session_clock
     import astra_entry_warnings_v1 as entry_warnings
+    import astra_inquiry_view_v1 as inquiry_view
     try:   # optional: a missing research module must never stop the workbench
         import astra_research_archive_v1 as research_archive_core
         import astra_research_promotion_v1 as research_promotion
@@ -3654,6 +3656,47 @@ class AstraWorkbench:
         result["llm_call_count"] = 0
         return result
 
+    def _inquiry_reader(self) -> Any:
+        """The research archive's question sheets (docs/opus/14), read-only."""
+        reader = getattr(self, "_inquiry_reader_obj", None)
+        if reader is None:
+            root = os.environ.get("ASTRA_RESEARCH_ARCHIVE") or "/var/lib/xxproject/research_archive"
+            hours = getattr(research_archive_core, "INQUIRY_HOURS_UTC", inquiry_view.SCHEDULED_HOURS_UTC)
+            reader = self._inquiry_reader_obj = inquiry_view.InquiryReader(root, scheduled_hours=tuple(hours))
+        return reader
+
+    def inquiry(self, short: Any, long: Any, file: Any = None, *, summary: bool = False) -> dict[str, Any]:
+        try:
+            return self._inquiry_reader().view(short, long, file, summary=summary)
+        except inquiry_view.InquiryViewError as exc:
+            raise WorkbenchError(exc.status, exc.code, "question sheet request rejected") from exc
+        except Exception as exc:   # noqa: BLE001 - an unreadable archive is a 503, never a dropped connection
+            raise WorkbenchError(503, "research_archive_unreadable", type(exc).__name__) from exc
+
+    def _au_context(self, session: Mapping[str, Any], shown: Any) -> dict[str, Any]:
+        """What the audit step showed when it was opened or marked: the question sheet the page
+        reported (checked against the contract's list) and the newest one the server sees, plus
+        the model review the page reported. A failed archive read never fails the mark."""
+        contract = session.get("contract") or {}
+        shown = shown if isinstance(shown, Mapping) else {}
+        review: dict[str, Any] = {}
+        if shown.get("review_kind") in {"current", "historical", "program"}:
+            review["review_kind"] = shown["review_kind"]
+        at = shown.get("review_at_ms")
+        if isinstance(at, int) and not isinstance(at, bool) and 0 <= at < 10 ** 14:
+            review["review_at_ms"] = at
+        out: dict[str, Any] = {"review_shown": review or None}
+        try:
+            key = inquiry_view.contract_key(contract.get("short_instrument"), contract.get("long_instrument"))
+            reader = self._inquiry_reader()
+            listed = {s["file"] for s in reader.sheets(key)}
+            file = shown.get("inquiry_file")
+            out["inquiry_shown"] = None if file is None else (file if file in listed else "unlisted")
+            out["inquiry_latest"] = reader.latest_ref(key)
+        except Exception as exc:   # noqa: BLE001 - recorded, never raised
+            out["inquiry"] = {"unavailable": type(exc).__name__}
+        return out
+
     def candidate_evidence(self, snapshot_id: str) -> dict[str, Any]:
         with self._view_lock:
             point = self._lockable_points.get(snapshot_id)
@@ -4282,11 +4325,17 @@ class AstraWorkbench:
             raise self._dp_error(exc) from exc
         return {"session": session, "llm_call_count": 0, "execution_allowed": False}
 
-    def decision_path_step(self, vid: str, step_id: str, lean: Any, *, authorization: str | None) -> dict[str, Any]:
+    def decision_path_step(self, vid: str, step_id: str, lean: Any, *, authorization: str | None,
+                           shown: Any = None) -> dict[str, Any]:
         self._dp_require(authorization)
         try:
+            context = None
+            if str(step_id) == "AU":
+                current = self.decision_paths.get(vid)
+                if current.get("au_mode"):
+                    context = self._au_context(current, shown)
             session = self.decision_paths.step(vid, str(step_id), lean=lean if lean is None else str(lean),
-                                               now_ms=self.clock_ms())
+                                               now_ms=self.clock_ms(), context=context)
         except decision_path_store.DecisionPathError as exc:
             raise self._dp_error(exc) from exc
         return {"session": session, "llm_call_count": 0, "execution_allowed": False}
@@ -5692,6 +5741,14 @@ def make_handler(workbench: AstraWorkbench):
             if parsed.path == "/api/workbench/locked-candidates":
                 self._json(200, workbench.locked_candidate_list())
                 return
+            if parsed.path == "/api/workbench/inquiry":
+                try:
+                    one = lambda name: (query.get(name) or [None])[0]  # noqa: E731
+                    self._json(200, workbench.inquiry(one("short"), one("long"), one("file"),
+                                                      summary=one("summary") == "1"))
+                except WorkbenchError as exc:
+                    self._json(exc.status_code, exc.as_payload())
+                return
             if parsed.path == "/api/workbench/decision-path":
                 self._json(200, workbench.decision_path_overview())
                 return
@@ -5848,7 +5905,7 @@ def make_handler(workbench: AstraWorkbench):
                             authorization=access.authorization_for_workbench)
                     elif dp_match.group(2) == "step":
                         result = workbench.decision_path_step(dp_match.group(1), body.get("step"), body.get("lean"),
-                            authorization=access.authorization_for_workbench)
+                            authorization=access.authorization_for_workbench, shown=body.get("shown"))
                     else:
                         result = workbench.decision_path_conclude(dp_match.group(1), str(body.get("choice") or ""),
                             str(body.get("idempotency_key") or ""), authorization=access.authorization_for_workbench)

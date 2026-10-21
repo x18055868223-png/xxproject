@@ -74,8 +74,14 @@ def report(sessions: list[Mapping[str, Any]]) -> dict[str, Any]:
     for version, items in sorted(by_version.items()):
         steps: dict[str, Any] = {}
         order = [sid for sid in dp.STEP_IDS if sid != "AU"]
+        # the audit step counts only in sessions where it takes marks (au_mode) and was opened,
+        # so "seen, no change" and "never opened" stay apart (docs/opus/14 §3.2)
+        au_items = [s for s in items if s.get("au_mode") and "AU" in (s.get("opened_order") or [])]
+        if au_items:
+            order.append("AU")
         for i, sid in enumerate(order):
-            marks = [((s.get("marks") or {}).get(sid) or "unchanged") for s in items]
+            members = au_items if sid == "AU" else items
+            marks = [((s.get("marks") or {}).get(sid) or "unchanged") for s in members]
             moved = sum(m in MOVED for m in marks)
             same = total = 0
             if i > 0:
@@ -88,15 +94,17 @@ def report(sessions: list[Mapping[str, Any]]) -> dict[str, Any]:
                         same += a == b
             groups: dict[str, list[float]] = defaultdict(list)
             breaches: Counter = Counter()
-            for s in items:
+            for s in members:
                 o = s.get("outcome") or {}
                 if o.get("status") != "settled" or not isinstance(o.get("result_usd"), (int, float)):
                     continue
-                code = (s.get("verdicts_start") or {}).get(sid) or "—"
+                # the audit step has no program verdict: its results are grouped by the mark
+                code = (((s.get("marks") or {}).get(sid) or "unchanged") if sid == "AU"
+                        else (s.get("verdicts_start") or {}).get(sid)) or "—"
                 groups[code].append(float(o["result_usd"]))
                 breaches[code] += bool(o.get("short_breached"))
             steps[sid] = {
-                "n": len(items), "change_rate": moved / len(items) if items else None,
+                "n": len(members), "change_rate": moved / len(members) if members else None,
                 "collinear_rate": same / total if total else None, "collinear_n": total,
                 "outcomes": {code: {"n": len(v), "mean_usd": sum(v) / len(v), "breached": breaches[code]}
                              for code, v in sorted(groups.items())},
@@ -104,7 +112,7 @@ def report(sessions: list[Mapping[str, Any]]) -> dict[str, Any]:
             big = [sum(g) / len(g) for g in groups.values() if len(g) >= SEPARATION_MIN_GROUP]
             separated = len(big) >= 2 and max(big) - min(big) >= SEPARATION_USD
             steps[sid]["thinning_candidate"] = bool(
-                len(items) >= MIN_SAMPLES and steps[sid]["change_rate"] is not None
+                len(members) >= MIN_SAMPLES and steps[sid]["change_rate"] is not None
                 and steps[sid]["change_rate"] < LOW_CHANGE and not separated)
         source = Counter(s.get("settled_after") or "none" for s in items)
         conclusions = Counter(s.get("conclusion") for s in items)

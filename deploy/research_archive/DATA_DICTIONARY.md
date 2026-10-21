@@ -120,6 +120,8 @@
 | `lineage` | 上游数据产品 id（排序去重），用于判断同源 |
 | `source` | 取值位置 |
 
+空间门口径（案卷生成器 0.1.5 起，2026-10-21）：`L3.space.gate` 不再含工作台自身的 `state`、`eligible`、`since_ts_ms`、`reason_codes`。自 2026-10-13 起空间门只作评估、不阻断，这四个字段恒为“放行”，与生产端状态并列时会被误读为冲突。结构状态看 `producer_state`（FMZ 生产端）；“不阻断”由 `gating: false` 与 `note_cn` 表达。`L6.daily` 每日的 `space_gate` 同样改取 `producer_state`，没有该字段的旧快照退回 `state`。0.1.4 及以前的案卷仍含这四个字段，读取时以 `producer_state` 为准。
+
 层主题：L0 证据质量、L1 合约与责任、L2 报价/希腊值/市场基线/补偿、L3 结构（Space 门、GEX、本期墙、地图）、L4 波动、L5 运动与流、L6 时间演化、L7 外部（跨资产、宏观、事件、慢背景）、L8 程序判读（Decision Path、guidance、信号层建议，可被质疑）、L9 历史。注意：L0 健康、Space 门、跨资产、本期墙、事件取自 `built_at_ms` 时的读视图，不是 `asof_ms`。
 
 ## 4. `ledger_row@0.1`（合约路径账本）
@@ -188,7 +190,7 @@
 
 ## 6. `astra_inquiry_result@0.1`（提问者输出）
 
-UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外，合约首次出现后 2 小时内、尚无提问者输出的，在它的下一份新案卷上立即运行一次（2026-10-20 起；每个 UTC 日两侧合计最多 8 次；这次运行失败也算已提问，不再重试，等下一个 02/14 时段）。输入不含 L9。文件 = `{case_id, asof_ms}` + `inquiry.run()` 输出：`schema`、`prompt_version`、`requested_model`、`effort`、`status`（`OK` / `PARTIAL` 有条目被丢弃 / `REJECTED` 结构不合格或传输失败 / `ERROR` 运行异常，此时只有 `error`，无 `schema`）、`attempts`（每次调用的模型、用量、finish_reason、是否修复）、`issues`（逐条校验记录）、`sheet`（`inquiry_sheet@0.2`，失败时 null）。
+UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外，合约首次出现后 2 小时内、尚无提问者输出的，在它的下一份新案卷上立即运行一次（2026-10-20 起；每个 UTC 日两侧合计最多 8 次；这次运行失败也算已提问，不再重试，等下一个 02/14 时段）。输入不含 L9。文件 = `{case_id, asof_ms, trigger}` + `inquiry.run()` 输出（`trigger` 为 `scheduled` 定时 / `new_contract` 新合约即时，2026-10-21 起；更早的文件没有，按文件名小时是否为 02、14 推断）：`schema`、`prompt_version`、`requested_model`、`effort`、`status`（`OK` / `PARTIAL` 有条目被丢弃 / `REJECTED` 结构不合格或传输失败 / `ERROR` 运行异常，此时只有 `error`，无 `schema`）、`attempts`（每次调用的模型、用量、finish_reason、是否修复）、`issues`（逐条校验记录）、`sheet`（`inquiry_sheet@0.2`，失败时 null）。
 
 `sheet` 要点：`fact_brief.layers`（L0–L8 各层 `status` material/quiet/unknown 与带 refs 的事实）、`cross_layer`、`anomalies`、`questions[]`（`id`、`type`、`bears_on`、`priority`、`premises`、≥2 个 `hypotheses`（`direction` raises/lowers/unclear）、`answer_source`、可能的 `untraced_numbers` / `forbidden_wording` 标记）、`types_covered`。
 

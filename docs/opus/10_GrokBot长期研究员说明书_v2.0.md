@@ -1,6 +1,6 @@
-# xxproject 长期研究员说明书 v2.5（致 GrokBot）
+# xxproject 长期研究员说明书 v2.6（致 GrokBot）
 
-日期：2026-10-20　本说明书取代 07 号（v0.1）与 09 号（v0.1）
+日期：2026-10-21　本说明书取代 07 号（v0.1）与 09 号（v0.1）
 服务器副本：`/var/lib/xxproject/research_archive/MANUAL.md`
 格式定义：`research_archive/schemas/`（JSON Schema）、`DATA_DICTIONARY.md`、`COMPATIBILITY.md`
 
@@ -80,7 +80,7 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 |---|---|---|
 | `cases/<UTC日>/<时>_<侧>_<case_id>.json.gz` | 完整事实案卷 `case_file@0.1`（L0–L8） | 每小时两侧各一份 |
 | `ledger/<UTC日>.jsonl` | 合约路径账本 `ledger_row@0.1` | 每 30 分钟一行；实质变化时补一行；到期前 3 小时每 10 分钟一行；`trigger` 字段说明原因，`trigger_detail` 说明变了什么（只有 `state:*` 即仅状态变化，如 M-DIE 来回跳） |
-| `inquiry/<UTC日>/…json` | 提问者（内置 LLM）的事实底稿与问题单 | UTC 02、14 时两侧各一份；新合约首次出现后的第一份案卷也会立即运行一次 |
+| `inquiry/<UTC日>/…json` | 提问者（内置 LLM）的事实底稿与问题单；`trigger` 字段写明定时或新合约即时（2026-10-21 起） | UTC 02、14 时两侧各一份；新合约首次出现后的第一份案卷也会立即运行一次 |
 | `outcomes/<到期日>.jsonl` | 到期结果：交割价、赔付、各冻结点的结果、1 分钟指数路径统计 | 到期后约 10 分钟 |
 | `decisions/<UTC日>.jsonl` | 用户侧决策事件：锁定、停止、旧核验路径结论 | 发生时 |
 | `protocols/versions.jsonl` | 现行版本：提问者 prompt、案卷生成器、记录格式、研究协议、评分规则 | 变化时 |
@@ -243,6 +243,7 @@ Deribit BTC 币本位垂直信用价差，Put 侧、Call 侧各一：
 
 ## 变更记录
 
+- v2.6（2026-10-21）：案卷生成器 0.1.5：`L3.space.gate` 去掉恒为放行的工作台字段（`state`、`eligible`、`since_ts_ms`、`reason_codes`），结构状态只看 `producer_state`；`L6.daily` 的空间门改取生产端状态（此前提问者把两个状态当成冲突，见 docs/opus/14 §6）。提问单文件增加 `trigger`。工作台的推理审计与 Decision Path 审计步开始展示提问单（只读，未验证）；`decisions/` 中 Decision Path 事件的 detail 增加 `au_mode`、`step_context`（审计步当时看到的提问单与模型复核）。
 - v2.5（2026-10-20）：案卷 L6 增加 `L6.session_clock`（日内时段，只描述）与 `L6.entry_warnings`（不建仓警示，阈值未验证）；账本研究字段 0.2 增加时段与警示字段，可写进假设条件以检验“警示后的结果是否更差”（docs/opus/13）。
 - v2.4（2026-10-20）：账本新增研究字段 `ledger_research_fields@0.1`（σ 距离、本期 IV−RV、扣费补偿比、本期墙、宏观事件、近 1/4 小时涨跌，见 DATA_DICTIONARY 与 condition_fields.json），可直接写进假设条件；提问者 prompt 升到 0.3。
 - v2.3（2026-10-20）：账本 `trigger_detail`；新合约即时提问；案卷到期口径标注（生成器 0.1.3）。

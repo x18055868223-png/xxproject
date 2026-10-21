@@ -25,7 +25,10 @@
    - 结论：锁定追踪（锁定记录附带核验）、不承保、继续观察。模型复核按钮在 AU 步。
    - 列表只显示合约未到期的核验，最新在前；到期后服务端回填结果并删除会话，实验记录留在 `decision_path/records.jsonl`。
 7. **锁定追踪**：经核验的锁定标“经核验”；展开后为锁定时、锁定后过程、依据账本、持有中复核与盈亏。
-8. **推理审计**：模型逐点结论 ↔ 证据账本。
+8. **推理审计**：两个页签。
+   - **模型复核**：模型逐点结论 ↔ 证据账本。
+   - **提问单**（docs/opus/14）：提问者对该合约的问题、竞争假设与到期前判别现象 ↔ 所引案卷条目。标注“未验证，只作参考”。正文中的案卷 ref、字段名和枚举码由 `inquiry_terms.js` 读成中文，原文在悬停提示里。默认跟随保单卡；从 AU 步跳来时固定为核验中的合约。核验进行中、尚未到审计步时默认收起，以防锚定。
+   - Decision Path 的 AU 步同时显示前 3 问，可一键标记（新会话 `au_mode`），服务端记录当时看到的提问单。
 
 ### 数据与审计层
 
@@ -36,6 +39,7 @@
 | 用途 | 方法与路径 |
 |---|---|
 | 页面主数据 | `GET /api/workbench?view=page`（含 `expiry_gamma` 本期墙与实现波动、`decision_path` 核验概览；每 30 秒轮询，标签页隐藏时暂停） |
+| 提问单 | `GET /api/workbench/inquiry?short=&long=[&file=][&summary=1]`（只读，读研究存档） |
 | 核验 | `GET /api/workbench/decision-path[/<id>]`；`POST /api/workbench/decision-path`（开始 / 继续）、`.../<id>/refresh`、`.../<id>/step`、`.../<id>/conclude` |
 | 锁定过程 / 对照 | `GET /api/workbench/locked-candidates/<id>/series`、`GET /api/workbench/locked-candidates/<id>` |
 | 审计日志 | `GET /api/workbench/chain-audit`、`GET /api/workbench/chain-audit/<文件名>` |

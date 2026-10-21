@@ -212,7 +212,7 @@ class DecisionPathStore:
             economics = snapshot.get("economics") or {}
             session = {
                 "schema": SCHEMA, "verification_id": "dpv_" + secrets.token_hex(8), "status": OPEN,
-                "path_version": dp.PATH_VERSION, "steps": dp.steps_public(),
+                "path_version": dp.PATH_VERSION, "steps": dp.steps_public(), "au_mode": dp.AU_MODE,
                 "side": candidate.get("side") or contract.get("side"), "candidate_id": candidate_id,
                 "contract": contract, "start_snapshot_id": snapshot.get("snapshot_id"),
                 "entry_after_fee_btc": economics.get("net_credit_after_entry_fee_btc"),
@@ -243,12 +243,25 @@ class DecisionPathStore:
             self._write(session)
             return session
 
-    def step(self, vid: str, step_id: str, *, lean: str | None, now_ms: int) -> dict[str, Any]:
+    def step(self, vid: str, step_id: str, *, lean: str | None, now_ms: int,
+             context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Open a step (and mark it). `context` is what the page showed at that moment (the
+        audit step: which question sheet and model review), kept at the first opening and
+        at the latest mark."""
         if step_id not in dp.STEP_IDS or (lean is not None and lean not in dp.MARKS):
             raise DecisionPathError("bad_step_request", 400)
         with self._lock:
             session = self._open_session(vid, now_ms=now_ms)
+            if lean is not None and not dp.markable(session.get("steps") or dp.steps_public(), step_id):
+                raise DecisionPathError("step_not_markable", 400)
+            first = step_id not in session["opened"]
             session["opened"].setdefault(step_id, now_ms)
+            if context is not None:
+                kept = session.setdefault("step_context", {}).setdefault(step_id, {})
+                if first or "opened" not in kept:
+                    kept["opened"] = {**context, "at_ms": now_ms}
+                if lean is not None:
+                    kept["marked"] = {**context, "at_ms": now_ms, "lean": lean}
             if lean is not None:
                 session["marks"][step_id] = {"lean": lean, "at_ms": now_ms}
             self._write(session)
@@ -349,7 +362,8 @@ class DecisionPathStore:
         return {
             "event": event, "verification_id": session["verification_id"], "at_ms": now_ms,
             "path_version": session.get("path_version"), "side": session.get("side"),
-            "candidate_id": session.get("candidate_id"),
+            "candidate_id": session.get("candidate_id"), "au_mode": session.get("au_mode"),
+            "step_context": session.get("step_context") or {},
             "contract": {k: (session.get("contract") or {}).get(k) for k in
                          ("side", "short_strike_usd", "long_strike_usd", "expiry_ms", "short_instrument", "long_instrument")},
             "started_at_ms": session.get("started_at_ms"), "entry_after_fee_btc": session.get("entry_after_fee_btc"),

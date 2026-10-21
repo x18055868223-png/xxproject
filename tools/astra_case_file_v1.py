@@ -37,7 +37,9 @@ else:
     import astra_session_clock_v1 as session_clock
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.4"
+BUILDER_VERSION = "astra_case_file_v1@0.1.5"   # 0.1.5: L3.space.gate without the constant admission fields
+# The workbench's admission fields, constant while the space gate only evaluates (since 2026-10-13).
+GATE_ADMISSION_KEYS = ("state", "eligible", "since_ts_ms", "reason_codes")
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 DROP_KEYS = {"source_records", "source_manifest", "source_bindings", "debug", "_debug", "raw_payload"}
 DROP_SUFFIXES = ("_hash", "sha256")
@@ -331,7 +333,11 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
 
     # L3 structure
     gate = view.get("space_gate") or {}
-    case.add("L3.space.gate", "Space 门（自 2026-10-13 起只作评估参考，不阻断）", gate, lineage=["fmz.space_gate"],
+    # The workbench's own state is always STRUCTURE_ELIGIBLE while the gate only evaluates; beside
+    # the producer's state it read as a conflict (docs/opus/14 §6). Only the producer's structure
+    # state stays; `gating: false` and `note_cn` already say it does not block.
+    gate_values = {k: v for k, v in gate.items() if k not in GATE_ADMISSION_KEYS}
+    case.add("L3.space.gate", "Space 门（自 2026-10-13 起只作评估参考，不阻断）", gate_values, lineage=["fmz.space_gate"],
              source="view.space_gate", asof_ms=gate.get("observed_at_ms"))
     since = asof_ms - TRANSITION_LOOKBACK_MS
     transitions = [{"at_ms": t.get("transition_ts_ms") or t.get("at_ms") or t.get("recorded_at_ms"),
@@ -418,7 +424,8 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
 
     # L6 time evolution
     days = [d for d in (view.get("daily_snapshots") or []) if isinstance(d, Mapping)][-DAILY_DAYS:]
-    daily = [{"bjt_day": d.get("bjt_day"), "space_gate": (d.get("space_gate") or {}).get("state"),
+    daily = [{"bjt_day": d.get("bjt_day"),   # the producer's state (the workbench's is constant, §6)
+              "space_gate": (d.get("space_gate") or {}).get("producer_state") or (d.get("space_gate") or {}).get("state"),
               "candidates": [{k: c.get(k) for k in ("side", "candidate_id")} for c in d.get("candidates") or []
                              if isinstance(c, Mapping)]} for d in days]
     case.add("L6.daily", f"近 {DAILY_DAYS} 日每日快照摘要", daily, lineage=["workbench.daily_snapshots"],

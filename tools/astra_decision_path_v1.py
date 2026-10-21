@@ -28,8 +28,11 @@ STEPS: tuple[dict[str, Any], ...] = (
     {"id": "D5", "title": "变化", "question": "怎么变到现在的？"},
     {"id": "Q1", "title": "风险质量", "question": "合起来风险是什么样？"},
     {"id": "Q2", "title": "风险补偿", "question": "给的钱够不够看？", "premium": True},
-    {"id": "AU", "title": "审计", "question": "模型认同吗？还剩什么要你判断？", "on_demand": True},
+    # AU shows the model review and the inquirer's questions (docs/opus/14) and is marked like the others.
+    {"id": "AU", "title": "审计", "question": "模型认同吗？还剩什么要你判断？", "on_demand": True, "markable": True},
 )
+# What the audit step holds in sessions started from now on; older sessions have no au_mode.
+AU_MODE = "review_inquiry"
 STEP_IDS = tuple(step["id"] for step in STEPS)
 MARKS = ("toward_underwrite", "unchanged", "toward_decline")
 CONCLUSIONS = ("lock", "decline", "watch")
@@ -542,6 +545,16 @@ def steps_public() -> list[dict[str, Any]]:
 
 def validate_mark(step_id: Any, lean: Any) -> bool:
     return step_id in STEP_IDS and lean in MARKS
+
+
+def markable(steps: Sequence[Mapping[str, Any]], step_id: str) -> bool:
+    """Whether a session's step takes marks, by the steps the session started with: an
+    on-demand step only when it says so (older sessions' audit step does not)."""
+    step = next((s for s in steps or [] if isinstance(s, Mapping) and s.get("id") == step_id), None)
+    if step is None:
+        return False
+    flag = step.get("markable")
+    return flag if isinstance(flag, bool) else not step.get("on_demand")
 
 
 def outcome(contract: Mapping[str, Any], entry_btc: float | None, payout_btc: float | None,

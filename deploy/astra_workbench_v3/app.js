@@ -10,6 +10,7 @@ import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
 import { eventBand } from "./events.js";
 import { sessionStrip, warningBlock } from "./session.js";
 import { renderDecision as renderDecisionView } from "./decision.js";
+import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
@@ -29,6 +30,8 @@ const state = {
   audit: null, auditAt: 0,
   // Decision Path: the session on screen (a frozen policy being verified)
   dp: { session: null, busy: null, error: null, confirm: null },
+  // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
+  iq: { cache: {}, last: {}, mode: "review", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
@@ -279,7 +282,7 @@ function renderSessionClock() {
 function select(side) {
   if (!state.sides[side]) return;
   state.focus = side;
-  state.auditRef = null; state.auditPoint = null;
+  state.auditRef = null; state.auditPoint = null; state.iq.q = null; state.iq.ref = null;
   renderMapBand(); renderDecks(); renderAudit();
 }
 
@@ -583,18 +586,87 @@ function sameContractSide(session) {
 /** The audit step: the model's reading of this contract and the review request, reused from the card era. */
 function auditExtra(session) {
   const m = sameContractSide(session);
-  if (!m) return h("p", { class: "muted small", text: state.sides[session.side]?.snap
-    ? "保单卡已换为另一张合同；模型复核只对卡上当前这张保单发起。" : "这一侧当前没有保单，无法发起模型复核。" });
   const box = h("div", { class: "dp-audit" });
-  const src = m.review.kind === "current" ? "模型解释：对应当前快照"
-    : m.review.kind === "historical" ? `模型解释：${clock(reviewedAt(m.review))} 的回执，之后报价已更新` : "还没有模型回执；程序读数见上面各步。";
-  box.append(h("p", { class: "muted small", text: src }));
-  if (m.review.kind !== "program") {
-    box.append(question("模型解释 · 风险质量", m.review.q1, m.review.kind, m.review.labels));
-    box.append(question("模型解释 · 风险价格", m.review.q2, m.review.kind, m.review.labels));
+  if (!m) {
+    box.append(h("p", { class: "muted small", text: state.sides[session.side]?.snap
+      ? "保单卡已换为另一张合同；模型复核只对卡上当前这张保单发起。" : "这一侧当前没有保单，无法发起模型复核。" }));
+  } else {
+    const src = m.review.kind === "current" ? "模型解释：对应当前快照"
+      : m.review.kind === "historical" ? `模型解释：${clock(reviewedAt(m.review))} 的回执，之后报价已更新` : "还没有模型回执；程序读数见上面各步。";
+    box.append(h("p", { class: "muted small", text: src }));
+    if (m.review.kind !== "program") {
+      box.append(question("模型解释 · 风险质量", m.review.q1, m.review.kind, m.review.labels));
+      box.append(question("模型解释 · 风险价格", m.review.q2, m.review.kind, m.review.labels));
+    }
+    box.append(reviewActions(m));
   }
-  box.append(reviewActions(m));
+  // the inquirer's questions on the frozen contract (sessions started before them do not show it)
+  if (session.au_mode) {
+    const got = iqEntry(session.contract, { summary: true });
+    box.append(auSummary(got?.data || null, { error: got?.error, onOpen: (file) => openInquiryAudit(session, file) }));
+  }
   return box;
+}
+
+// ── question sheets (docs/opus/14) ───────────────
+const IQ_TTL_MS = 5 * 60_000;   // sheets change only at 10:00 / 22:00 and on a new contract
+const IQ_RETRY_MS = 30_000;      // a failed read is retried sooner
+const iqCacheKey = (contract, { file = null, summary = false } = {}) => `${contractKey(contract)}|${summary ? "s" : "f"}|${file || ""}`;
+const iqEntry = (contract, opts) => (contractKey(contract) ? state.iq.cache[iqCacheKey(contract, opts)] : null);
+
+/** Read a contract's sheets once per few minutes; redraw the parts that show them. */
+async function ensureInquiry(contract, opts = {}) {
+  if (!contractKey(contract)) return;
+  const key = iqCacheKey(contract, opts);
+  const got = state.iq.cache[key];
+  if (got && (got.loading || Date.now() - got.at < (got.error ? IQ_RETRY_MS : IQ_TTL_MS))) return;
+  state.iq.cache[key] = { ...(got || {}), loading: true, at: Date.now() };
+  let entry;
+  try {
+    const data = FIXTURE ? await fetchInquiryFixture(opts) : await api.inquiry(contract, opts);
+    entry = { data, at: Date.now() };
+  } catch (err) {
+    authFailed(err);
+    // a chosen sheet that left the list (closed contracts are kept three days) falls back to the newest
+    if (opts.file && err?.body?.code === "inquiry_file_not_listed") {
+      delete state.iq.cache[key];
+      const ck = contractKey(contract);
+      if (state.iq.file[ck] === opts.file) delete state.iq.file[ck];
+      renderAudit();
+      return;
+    }
+    entry = { data: got?.data || null, error: errorText(err), at: Date.now() };
+  }
+  state.iq.cache[key] = entry;
+  if (opts.summary) renderDecision(); else renderAudit();   // only the part that shows this response
+}
+
+async function fetchInquiryFixture({ summary = false } = {}) {
+  const r = await fetch("fixtures/inquiry.json");
+  if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+  const data = await r.json();
+  return summary ? toSummary(data) : data;
+}
+
+/** What the audit step showed, sent with its opening and marks (the server checks the file). */
+function auShown(session) {
+  const m = sameContractSide(session);
+  const file = iqEntry(session.contract, { summary: true })?.data?.selected?.file || null;
+  const out = { inquiry_file: file };
+  if (m) { out.review_kind = m.review.kind; const at = reviewedAt(m.review); if (isNum(at)) out.review_at_ms = at; }
+  return out;
+}
+
+/** From the audit step to the full sheet of the session's contract. */
+function openInquiryAudit(session, file) {
+  const key = contractKey(session.contract);
+  state.iq.mode = "inquiry";
+  state.iq.pin = { side: session.side, contract: session.contract, key };
+  if (file) state.iq.file[key] = file;
+  state.iq.reveal.add(session.verification_id);   // reached from the audit step: D0–Q2 were read first
+  state.iq.q = null; state.iq.ref = null;
+  select(session.side);
+  $("audit-h")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderDecision() {
@@ -611,7 +683,10 @@ function renderDecision() {
   dp.busy, dp.error, dp.confirm, state.session.authenticated, m?.snap?.candidate_id, same?.review?.kind,
   same && reviewedAt(same.review), state.pending, get(state.view, "decision_path.recent"),
   get(state.view, "manual_review_state.inflight"), Math.floor(cooldownLeft() / 60_000), Math.floor(Date.now() / 60_000),
-  get(state.view, "decision_path.error_type"), get(state.view, "decision_path.unreadable_sessions")]);
+  get(state.view, "decision_path.error_type"), get(state.view, "decision_path.unreadable_sessions"),
+  session?.au_mode ? iqEntry(session.contract, { summary: true })?.at : null]);
+  // fetched once Q2 is open (shown only when AU is), so the audit step's opening records the sheet on screen
+  if (session?.au_mode && session.opened && ("Q2" in session.opened || "AU" in session.opened)) ensureInquiry(session.contract, { summary: true });
   if (key === dp.drawn) return;
   dp.drawn = key;
   renderDecisionView(box, {
@@ -619,7 +694,8 @@ function renderDecision() {
     canAct: state.session.authenticated && !FIXTURE,
     replaced: session && m?.snap && !same ? `${(m.shortName || "").split("-")[1] || ""} 卖 ${usd(m.short)} / 买 ${usd(m.long)}` : null,
     extras: session ? { D2: same ? distanceRule(same) : null, AU: auditExtra(session) } : null,
-    onStep: (step, lean) => dpPost(`/${session.verification_id}/step`, { step, ...(lean ? { lean } : {}) }, "step"),
+    onStep: (step, lean) => dpPost(`/${session.verification_id}/step`, { step, ...(lean ? { lean } : {}),
+      ...(step === "AU" && session.au_mode ? { shown: auShown(session) } : {}) }, "step"),
     onRefresh: () => dpPost(`/${session.verification_id}/refresh`, {}, "refresh"),
     onAskLock: () => { dp.confirm = "lock"; renderDecision(); },
     onCancel: () => { dp.confirm = null; renderDecision(); },
@@ -769,12 +845,18 @@ function holdAudit(side) {
 function renderAudit() {
   renderAuditMain();
   const box = $("audit");
-  const hold = state.view ? holdAudit(state.focus) : null;
+  const hold = state.view && state.iq.mode !== "inquiry" ? holdAudit(state.focus) : null;
   if (box && hold) box.append(hold);
 }
 
 function renderAuditMain() {
   const sw = clear($("audit-switch"));
+  for (const [mode, text] of [["review", "模型复核"], ["inquiry", "提问单"]]) {
+    sw.append(h("button", { class: `chip${state.iq.mode === mode ? " on" : ""}`, type: "button", "aria-pressed": String(state.iq.mode === mode),
+      title: mode === "inquiry" ? "提问者对这张合约提出的问题（定时 10:00 / 22:00 与新合约），未验证，只作参考" : "模型对冻结快照的逐点解释",
+      onclick: () => { state.iq.mode = mode; renderAudit(); } }, text));
+  }
+  sw.append(h("span", { class: "sep" }));
   for (const side of ["put", "call"]) {
     const m = state.sides[side];
     sw.append(h("button", { class: `chip${state.focus === side ? " on" : ""}`, type: "button", disabled: !m?.snap,
@@ -782,6 +864,7 @@ function renderAuditMain() {
   }
   const box = clear($("audit"));
   if (!state.view) return;
+  if (state.iq.mode === "inquiry") { renderInquiryAudit(box); return; }
   const m = state.sides[state.focus];
   if (!m || !m.snap) { box.append(h("p", { class: "empty pad", text: "没有可审计的候选。" })); return; }
   const r = m.review;
@@ -836,6 +919,56 @@ function renderAuditMain() {
     for (const row of rest) more.append(evidenceCard(row, activeRefs, r.labels));
     right.append(more);
   }
+}
+
+/** The question sheet tab: the card's contract, or the one pinned from the audit step. */
+function renderInquiryAudit(box) {
+  const m = state.sides[state.focus];
+  const card = m?.snap?.contract || null;
+  const pin = state.iq.pin && state.iq.pin.side === state.focus ? state.iq.pin : null;
+  const contract = pin?.contract || card;
+  const key = contractKey(contract);
+  if (!key) { box.append(h("p", { class: "empty pad", text: "这一侧当前没有保单，没有可显示的提问单。" })); return; }
+  const tokenOf = (c) => `${String(c?.short_instrument || "").split("-")[1] || ""} 卖 ${usd(c?.short_strike_usd)} / 买 ${usd(c?.long_strike_usd)}`;
+  let pinNote = null;
+  if (pin && contractKey(card) !== key) {
+    pinNote = h("p", { class: "banner warn" }, `这是核验中的合约 ${tokenOf(pin.contract)}${card ? `；保单卡已换为 ${tokenOf(card)}` : ""}。`,
+      card ? h("button", { class: "btn secondary", type: "button", onclick: () => { state.iq.pin = null; state.iq.q = null; state.iq.ref = null; renderAudit(); } },
+        "回到卡上合约") : null);
+  }
+  // Anchoring guard: a verification of this contract still before its audit step keeps the sheet folded.
+  // (remembered per verification: a later verification of the same contract folds it again)
+  const dps = state.dp.session;
+  const loaded = dps && contractKey(dps.contract) === key ? dps : null;
+  const elsewhere = !loaded && m?.snap?.candidate_id && contractKey(card) === key
+    ? get(state.view, `decision_path.open.${m.snap.candidate_id}`) : null;
+  const vid = loaded?.verification_id || elsewhere?.verification_id || null;
+  const before = (loaded && loaded.status === "open" && !("AU" in (loaded.opened || {}))) || !!elsewhere;
+  if (before && vid && !state.iq.reveal.has(vid)) {
+    box.append(h("div", { class: "pad" }, pinNote,
+      h("p", { class: "muted", text: "这张合约的核验正在进行，还没到审计步。先读完 D0–Q2 再看提问单，可避免被模型的假设锚定。" }),
+      h("button", { class: "btn secondary", type: "button", onclick: () => { state.iq.reveal.add(vid); renderAudit(); } }, "仍然展开")));
+    return;
+  }
+  const opts = { file: state.iq.file[key] || null };
+  const got = iqEntry(contract, opts);
+  ensureInquiry(contract, opts);
+  // while another sheet of the same contract loads, the one on screen stays (no jump in the page)
+  const data = got?.data || state.iq.last[key] || null;
+  if (got?.data) state.iq.last[key] = got.data;
+  if (!data) {
+    box.append(h("div", { class: "pad" }, pinNote, h("p", { class: "muted", text: got?.error ? `提问单读取失败：${got.error}` : "正在读取提问单…" })));
+    return;
+  }
+  const { left, right } = inquiryAudit(data, {
+    pinNote, activeQuestion: state.iq.q, activeRef: state.iq.ref,
+    anomaliesOpen: state.open.has("iq:anomalies"), restOpen: state.open.has("iq:rest"),
+    onToggle: (part, open) => { if (open) state.open.add(`iq:${part}`); else state.open.delete(`iq:${part}`); },
+    onQuestion: (id) => { state.iq.q = state.iq.q === id ? null : id; state.iq.ref = null; renderAudit(); },
+    onRef: (ref) => { state.iq.ref = state.iq.ref === ref ? null : ref; state.iq.q = null; renderAudit(); scrollToRef(ref); },
+    onPick: (file) => { state.iq.file[key] = file; state.iq.q = null; state.iq.ref = null; renderAudit(); },
+  });
+  box.append(h("div", { class: "audit-main" }, left, right));
 }
 
 /** Program reading when no model receipt applies: guidance notes, then the two questions in full. */

@@ -19,6 +19,8 @@ const TONE = { bad: "bad", warn: "warn", ok: "ok" };
 const CHIP_PREFIX = { D2: "缓冲" };
 
 const stepsOf = (session) => session?.steps || [];
+/** Whether a step takes marks, by the steps the session started with (server rule, docs/opus/14). */
+const markable = (step) => (typeof step.markable === "boolean" ? step.markable : !step.on_demand);
 const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 /** Deribit expiry code (15OCT26) from an expiry time, so a session reads like its instruments. */
 const expiryCode = (ms) => {
@@ -105,7 +107,7 @@ function stepView(session, step, i, ctx) {
       ...links.map(([target, text]) => h("a", { href: `#${target}`, class: "dp-jump", title: `跳到“${text}”查看完整内容`,
         onclick: (e) => { e.preventDefault(); ctx.onJump(target, session.side); } }, text))));
   }
-  if (step.id !== "AU") box.append(marksView(session, step.id, ctx));
+  if (markable(step)) box.append(marksView(session, step.id, ctx));
   return box;
 }
 

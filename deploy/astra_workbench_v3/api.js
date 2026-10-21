@@ -28,6 +28,13 @@ export const api = {
   lockedSeries: (id) => fetch(`${BASE}/locked-candidates/${encodeURIComponent(id)}/series`, { credentials: "same-origin" }).then(json),
   chainAudit: () => fetch(`${BASE}/chain-audit`, { credentials: "same-origin" }).then(json),
   lockedDetail: (id) => fetch(`${BASE}/locked-candidates/${encodeURIComponent(id)}`, { credentials: "same-origin" }).then(json),
+  // The inquirer's question sheets of one contract (docs/opus/14); summary=1 for the audit step.
+  inquiry: (contract, { file = null, summary = false } = {}) => {
+    const q = new URLSearchParams({ short: contract.short_instrument, long: contract.long_instrument });
+    if (file) q.set("file", file);
+    if (summary) q.set("summary", "1");
+    return fetch(`${BASE}/inquiry?${q}`, { credentials: "same-origin" }).then(json);
+  },
   verification: (id) => fetch(`${BASE}/decision-path/${encodeURIComponent(id)}`, { credentials: "same-origin" }).then(json),
   post: (path, body) => fetch(`${BASE}${path}`, {
     method: "POST", credentials: "same-origin",
