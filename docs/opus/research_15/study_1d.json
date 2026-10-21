@@ -1,0 +1,720 @@
+{
+ "entry_24h_before": {
+  "n": 722,
+  "rv_over_iv": 0.924,
+  "touch_put": 0.576,
+  "touch_call": 0.584,
+  "settle_put": 0.259,
+  "settle_call": 0.307
+ },
+ "entry_18h_before": {
+  "n": 722,
+  "rv_over_iv": 0.903,
+  "touch_put": 0.55,
+  "touch_call": 0.589,
+  "settle_put": 0.271,
+  "settle_call": 0.294
+ },
+ "entry_16h_before": {
+  "n": 722,
+  "rv_over_iv": 0.84,
+  "touch_put": 0.564,
+  "touch_call": 0.591,
+  "settle_put": 0.249,
+  "settle_call": 0.284
+ },
+ "entry_12h_before": {
+  "n": 722,
+  "rv_over_iv": 0.851,
+  "touch_put": 0.54,
+  "touch_call": 0.576,
+  "settle_put": 0.255,
+  "settle_call": 0.307
+ },
+ "entry_6h_before": {
+  "n": 722,
+  "rv_over_iv": 0.925,
+  "touch_put": 0.54,
+  "touch_call": 0.56,
+  "settle_put": 0.27,
+  "settle_call": 0.288
+ },
+ "h24_iv_rank7": {
+  "0-20%": {
+   "n": 253,
+   "rv_over_iv": 0.805,
+   "touch_put": 0.498,
+   "touch_call": 0.565,
+   "settle_put": 0.241,
+   "settle_call": 0.281
+  },
+  "20-40%": {
+   "n": 115,
+   "rv_over_iv": 0.913,
+   "touch_put": 0.574,
+   "touch_call": 0.583,
+   "settle_put": 0.304,
+   "settle_call": 0.252
+  },
+  "40-60%": {
+   "n": 104,
+   "rv_over_iv": 0.719,
+   "touch_put": 0.654,
+   "touch_call": 0.596,
+   "settle_put": 0.24,
+   "settle_call": 0.327
+  },
+  "60-80%": {
+   "n": 102,
+   "rv_over_iv": 0.877,
+   "touch_put": 0.588,
+   "touch_call": 0.588,
+   "settle_put": 0.235,
+   "settle_call": 0.324
+  },
+  "80-100%": {
+   "n": 148,
+   "rv_over_iv": 1.233,
+   "touch_put": 0.649,
+   "touch_call": 0.608,
+   "settle_put": 0.284,
+   "settle_call": 0.372
+  }
+ },
+ "h24_iv_rank14": {
+  "0-20%": {
+   "n": 264,
+   "rv_over_iv": 0.83,
+   "touch_put": 0.511,
+   "touch_call": 0.561,
+   "settle_put": 0.258,
+   "settle_call": 0.265
+  },
+  "20-40%": {
+   "n": 125,
+   "rv_over_iv": 0.733,
+   "touch_put": 0.568,
+   "touch_call": 0.64,
+   "settle_put": 0.184,
+   "settle_call": 0.368
+  },
+  "40-60%": {
+   "n": 85,
+   "rv_over_iv": 0.966,
+   "touch_put": 0.565,
+   "touch_call": 0.553,
+   "settle_put": 0.294,
+   "settle_call": 0.306
+  },
+  "60-80%": {
+   "n": 97,
+   "rv_over_iv": 0.754,
+   "touch_put": 0.732,
+   "touch_call": 0.505,
+   "settle_put": 0.309,
+   "settle_call": 0.237
+  },
+  "80-100%": {
+   "n": 147,
+   "rv_over_iv": 1.256,
+   "touch_put": 0.605,
+   "touch_call": 0.653,
+   "settle_put": 0.272,
+   "settle_call": 0.381
+  }
+ },
+ "h24_vrp7_quintiles": {
+  "cuts": [
+   -2.9,
+   2.75,
+   6.55,
+   10.71
+  ],
+  "buckets": {
+   "Q1 低": {
+    "n": 144,
+    "rv_over_iv": 1.05,
+    "touch_put": 0.611,
+    "touch_call": 0.66,
+    "settle_put": 0.271,
+    "settle_call": 0.389
+   },
+   "Q2": {
+    "n": 145,
+    "rv_over_iv": 0.932,
+    "touch_put": 0.579,
+    "touch_call": 0.579,
+    "settle_put": 0.303,
+    "settle_call": 0.269
+   },
+   "Q3": {
+    "n": 144,
+    "rv_over_iv": 0.865,
+    "touch_put": 0.632,
+    "touch_call": 0.549,
+    "settle_put": 0.285,
+    "settle_call": 0.257
+   },
+   "Q4": {
+    "n": 145,
+    "rv_over_iv": 0.935,
+    "touch_put": 0.566,
+    "touch_call": 0.566,
+    "settle_put": 0.241,
+    "settle_call": 0.317
+   },
+   "Q5 高": {
+    "n": 144,
+    "rv_over_iv": 0.822,
+    "touch_put": 0.493,
+    "touch_call": 0.569,
+    "settle_put": 0.194,
+    "settle_call": 0.306
+   }
+  }
+ },
+ "h24_vrp24_quintiles": {
+  "cuts": [
+   -4.61,
+   3.34,
+   9.16,
+   15.67
+  ],
+  "buckets": {
+   "Q1 低": {
+    "n": 144,
+    "rv_over_iv": 1.12,
+    "touch_put": 0.66,
+    "touch_call": 0.583,
+    "settle_put": 0.34,
+    "settle_call": 0.306
+   },
+   "Q2": {
+    "n": 145,
+    "rv_over_iv": 0.867,
+    "touch_put": 0.524,
+    "touch_call": 0.641,
+    "settle_put": 0.248,
+    "settle_call": 0.338
+   },
+   "Q3": {
+    "n": 144,
+    "rv_over_iv": 0.817,
+    "touch_put": 0.562,
+    "touch_call": 0.549,
+    "settle_put": 0.243,
+    "settle_call": 0.299
+   },
+   "Q4": {
+    "n": 145,
+    "rv_over_iv": 0.796,
+    "touch_put": 0.566,
+    "touch_call": 0.552,
+    "settle_put": 0.241,
+    "settle_call": 0.269
+   },
+   "Q5 高": {
+    "n": 144,
+    "rv_over_iv": 0.985,
+    "touch_put": 0.569,
+    "touch_call": 0.597,
+    "settle_put": 0.222,
+    "settle_call": 0.326
+   }
+  }
+ },
+ "h24_iv_chg_24h_quintiles": {
+  "cuts": [
+   -1.21,
+   -0.44,
+   0.27,
+   1.12
+  ],
+  "buckets": {
+   "Q1 低": {
+    "n": 144,
+    "rv_over_iv": 0.744,
+    "touch_put": 0.535,
+    "touch_call": 0.542,
+    "settle_put": 0.25,
+    "settle_call": 0.264
+   },
+   "Q2": {
+    "n": 142,
+    "rv_over_iv": 0.848,
+    "touch_put": 0.472,
+    "touch_call": 0.62,
+    "settle_put": 0.218,
+    "settle_call": 0.331
+   },
+   "Q3": {
+    "n": 147,
+    "rv_over_iv": 0.872,
+    "touch_put": 0.619,
+    "touch_call": 0.537,
+    "settle_put": 0.306,
+    "settle_call": 0.218
+   },
+   "Q4": {
+    "n": 144,
+    "rv_over_iv": 0.969,
+    "touch_put": 0.597,
+    "touch_call": 0.632,
+    "settle_put": 0.229,
+    "settle_call": 0.382
+   },
+   "Q5 高": {
+    "n": 145,
+    "rv_over_iv": 1.139,
+    "touch_put": 0.655,
+    "touch_call": 0.593,
+    "settle_put": 0.29,
+    "settle_call": 0.345
+   }
+  }
+ },
+ "h24_weekend_expiry": {
+  "Sat/Sun/Mon 到期": {
+   "n": 309,
+   "rv_over_iv": 0.93,
+   "touch_put": 0.528,
+   "touch_call": 0.599,
+   "settle_put": 0.214,
+   "settle_call": 0.314
+  },
+  "Tue-Fri 到期": {
+   "n": 413,
+   "rv_over_iv": 0.921,
+   "touch_put": 0.613,
+   "touch_call": 0.574,
+   "settle_put": 0.293,
+   "settle_call": 0.303
+  }
+ },
+ "h24_prior24h_move": {
+  "涨超1%": {
+   "n": 203,
+   "rv_over_iv": 0.909,
+   "touch_put": 0.542,
+   "touch_call": 0.631,
+   "settle_put": 0.286,
+   "settle_call": 0.325
+  },
+  "跌超1%": {
+   "n": 182,
+   "rv_over_iv": 0.859,
+   "touch_put": 0.566,
+   "touch_call": 0.61,
+   "settle_put": 0.231,
+   "settle_call": 0.308
+  },
+  "±1%内": {
+   "n": 337,
+   "rv_over_iv": 0.967,
+   "touch_put": 0.602,
+   "touch_call": 0.543,
+   "settle_put": 0.258,
+   "settle_call": 0.297
+  },
+  "continuation_rate_big_moves": 0.475
+ },
+ "h18_iv_rank7": {
+  "0-20%": {
+   "n": 219,
+   "rv_over_iv": 0.791,
+   "touch_put": 0.498,
+   "touch_call": 0.548,
+   "settle_put": 0.26,
+   "settle_call": 0.247
+  },
+  "20-40%": {
+   "n": 107,
+   "rv_over_iv": 0.861,
+   "touch_put": 0.477,
+   "touch_call": 0.607,
+   "settle_put": 0.234,
+   "settle_call": 0.308
+  },
+  "40-60%": {
+   "n": 133,
+   "rv_over_iv": 0.791,
+   "touch_put": 0.602,
+   "touch_call": 0.586,
+   "settle_put": 0.308,
+   "settle_call": 0.308
+  },
+  "60-80%": {
+   "n": 86,
+   "rv_over_iv": 0.879,
+   "touch_put": 0.616,
+   "touch_call": 0.558,
+   "settle_put": 0.326,
+   "settle_call": 0.233
+  },
+  "80-100%": {
+   "n": 177,
+   "rv_over_iv": 1.122,
+   "touch_put": 0.588,
+   "touch_call": 0.644,
+   "settle_put": 0.254,
+   "settle_call": 0.362
+  }
+ },
+ "h18_iv_rank14": {
+  "0-20%": {
+   "n": 220,
+   "rv_over_iv": 0.783,
+   "touch_put": 0.473,
+   "touch_call": 0.55,
+   "settle_put": 0.245,
+   "settle_call": 0.255
+  },
+  "20-40%": {
+   "n": 144,
+   "rv_over_iv": 0.854,
+   "touch_put": 0.528,
+   "touch_call": 0.646,
+   "settle_put": 0.229,
+   "settle_call": 0.312
+  },
+  "40-60%": {
+   "n": 108,
+   "rv_over_iv": 0.847,
+   "touch_put": 0.574,
+   "touch_call": 0.583,
+   "settle_put": 0.287,
+   "settle_call": 0.315
+  },
+  "60-80%": {
+   "n": 92,
+   "rv_over_iv": 0.711,
+   "touch_put": 0.641,
+   "touch_call": 0.587,
+   "settle_put": 0.326,
+   "settle_call": 0.272
+  },
+  "80-100%": {
+   "n": 155,
+   "rv_over_iv": 1.204,
+   "touch_put": 0.6,
+   "touch_call": 0.606,
+   "settle_put": 0.297,
+   "settle_call": 0.335
+  }
+ },
+ "h18_vrp7_quintiles": {
+  "cuts": [
+   -2.79,
+   2.77,
+   6.58,
+   10.7
+  ],
+  "buckets": {
+   "Q1 低": {
+    "n": 144,
+    "rv_over_iv": 1.002,
+    "touch_put": 0.618,
+    "touch_call": 0.646,
+    "settle_put": 0.292,
+    "settle_call": 0.326
+   },
+   "Q2": {
+    "n": 145,
+    "rv_over_iv": 0.856,
+    "touch_put": 0.634,
+    "touch_call": 0.566,
+    "settle_put": 0.31,
+    "settle_call": 0.248
+   },
+   "Q3": {
+    "n": 144,
+    "rv_over_iv": 0.949,
+    "touch_put": 0.549,
+    "touch_call": 0.576,
+    "settle_put": 0.306,
+    "settle_call": 0.306
+   },
+   "Q4": {
+    "n": 145,
+    "rv_over_iv": 0.826,
+    "touch_put": 0.497,
+    "touch_call": 0.579,
+    "settle_put": 0.214,
+    "settle_call": 0.303
+   },
+   "Q5 高": {
+    "n": 144,
+    "rv_over_iv": 0.872,
+    "touch_put": 0.451,
+    "touch_call": 0.576,
+    "settle_put": 0.236,
+    "settle_call": 0.285
+   }
+  }
+ },
+ "h18_vrp24_quintiles": {
+  "cuts": [
+   -3.79,
+   3.53,
+   9.59,
+   16.28
+  ],
+  "buckets": {
+   "Q1 低": {
+    "n": 144,
+    "rv_over_iv": 1.11,
+    "touch_put": 0.646,
+    "touch_call": 0.639,
+    "settle_put": 0.292,
+    "settle_call": 0.299
+   },
+   "Q2": {
+    "n": 145,
+    "rv_over_iv": 0.72,
+    "touch_put": 0.593,
+    "touch_call": 0.593,
+    "settle_put": 0.303,
+    "settle_call": 0.283
+   },
+   "Q3": {
+    "n": 144,
+    "rv_over_iv": 0.937,
+    "touch_put": 0.542,
+    "touch_call": 0.562,
+    "settle_put": 0.292,
+    "settle_call": 0.299
+   },
+   "Q4": {
+    "n": 145,
+    "rv_over_iv": 0.716,
+    "touch_put": 0.455,
+    "touch_call": 0.566,
+    "settle_put": 0.241,
+    "settle_call": 0.297
+   },
+   "Q5 高": {
+    "n": 144,
+    "rv_over_iv": 0.97,
+    "touch_put": 0.514,
+    "touch_call": 0.583,
+    "settle_put": 0.229,
+    "settle_call": 0.292
+   }
+  }
+ },
+ "h18_iv_chg_24h_quintiles": {
+  "cuts": [
+   -1.27,
+   -0.44,
+   0.25,
+   1.11
+  ],
+  "buckets": {
+   "Q1 低": {
+    "n": 141,
+    "rv_over_iv": 0.72,
+    "touch_put": 0.574,
+    "touch_call": 0.56,
+    "settle_put": 0.27,
+    "settle_call": 0.255
+   },
+   "Q2": {
+    "n": 148,
+    "rv_over_iv": 0.79,
+    "touch_put": 0.507,
+    "touch_call": 0.554,
+    "settle_put": 0.25,
+    "settle_call": 0.284
+   },
+   "Q3": {
+    "n": 144,
+    "rv_over_iv": 0.965,
+    "touch_put": 0.5,
+    "touch_call": 0.569,
+    "settle_put": 0.278,
+    "settle_call": 0.236
+   },
+   "Q4": {
+    "n": 145,
+    "rv_over_iv": 0.885,
+    "touch_put": 0.538,
+    "touch_call": 0.607,
+    "settle_put": 0.283,
+    "settle_call": 0.324
+   },
+   "Q5 高": {
+    "n": 144,
+    "rv_over_iv": 1.104,
+    "touch_put": 0.632,
+    "touch_call": 0.653,
+    "settle_put": 0.278,
+    "settle_call": 0.368
+   }
+  }
+ },
+ "h18_weekend_expiry": {
+  "Sat/Sun/Mon 到期": {
+   "n": 309,
+   "rv_over_iv": 0.897,
+   "touch_put": 0.511,
+   "touch_call": 0.566,
+   "settle_put": 0.22,
+   "settle_call": 0.262
+  },
+  "Tue-Fri 到期": {
+   "n": 413,
+   "rv_over_iv": 0.908,
+   "touch_put": 0.579,
+   "touch_call": 0.605,
+   "settle_put": 0.31,
+   "settle_call": 0.317
+  }
+ },
+ "h18_prior24h_move": {
+  "涨超1%": {
+   "n": 213,
+   "rv_over_iv": 0.991,
+   "touch_put": 0.554,
+   "touch_call": 0.624,
+   "settle_put": 0.305,
+   "settle_call": 0.277
+  },
+  "跌超1%": {
+   "n": 196,
+   "rv_over_iv": 0.826,
+   "touch_put": 0.592,
+   "touch_call": 0.587,
+   "settle_put": 0.276,
+   "settle_call": 0.337
+  },
+  "±1%内": {
+   "n": 313,
+   "rv_over_iv": 0.886,
+   "touch_put": 0.521,
+   "touch_call": 0.565,
+   "settle_put": 0.246,
+   "settle_call": 0.278
+  },
+  "continuation_rate_big_moves": 0.489
+ },
+ "h24_put_after_touch": {
+  "touch with >12h left": {
+   "touched": 343,
+   "settled_beyond": 154,
+   "reached_long": 88,
+   "settle_beyond_rate": 0.449,
+   "reach_long_rate": 0.257
+  },
+  "6-12h left": {
+   "touched": 50,
+   "settled_beyond": 23,
+   "reached_long": 8,
+   "settle_beyond_rate": 0.46,
+   "reach_long_rate": 0.16
+  },
+  "2-6h left": {
+   "touched": 13,
+   "settled_beyond": 8,
+   "reached_long": 1,
+   "settle_beyond_rate": 0.615,
+   "reach_long_rate": 0.077
+  },
+  "<2h left": {
+   "touched": 10,
+   "settled_beyond": 2,
+   "reached_long": 0,
+   "settle_beyond_rate": 0.2,
+   "reach_long_rate": 0.0
+  }
+ },
+ "h24_call_after_touch": {
+  "touch with >12h left": {
+   "touched": 332,
+   "settled_beyond": 171,
+   "reached_long": 81,
+   "settle_beyond_rate": 0.515,
+   "reach_long_rate": 0.244
+  },
+  "2-6h left": {
+   "touched": 25,
+   "settled_beyond": 14,
+   "reached_long": 2,
+   "settle_beyond_rate": 0.56,
+   "reach_long_rate": 0.08
+  },
+  "6-12h left": {
+   "touched": 56,
+   "settled_beyond": 31,
+   "reached_long": 6,
+   "settle_beyond_rate": 0.554,
+   "reach_long_rate": 0.107
+  },
+  "<2h left": {
+   "touched": 9,
+   "settled_beyond": 6,
+   "reached_long": 0,
+   "settle_beyond_rate": 0.667,
+   "reach_long_rate": 0.0
+  }
+ },
+ "h16_put_after_touch": {
+  "touch with >12h left": {
+   "touched": 227,
+   "settled_beyond": 102,
+   "reached_long": 49,
+   "settle_beyond_rate": 0.449,
+   "reach_long_rate": 0.216
+  },
+  "2-6h left": {
+   "touched": 45,
+   "settled_beyond": 21,
+   "reached_long": 2,
+   "settle_beyond_rate": 0.467,
+   "reach_long_rate": 0.044
+  },
+  "<2h left": {
+   "touched": 17,
+   "settled_beyond": 6,
+   "reached_long": 0,
+   "settle_beyond_rate": 0.353,
+   "reach_long_rate": 0.0
+  },
+  "6-12h left": {
+   "touched": 118,
+   "settled_beyond": 51,
+   "reached_long": 18,
+   "settle_beyond_rate": 0.432,
+   "reach_long_rate": 0.153
+  }
+ },
+ "h16_call_after_touch": {
+  "touch with >12h left": {
+   "touched": 227,
+   "settled_beyond": 102,
+   "reached_long": 32,
+   "settle_beyond_rate": 0.449,
+   "reach_long_rate": 0.141
+  },
+  "6-12h left": {
+   "touched": 139,
+   "settled_beyond": 64,
+   "reached_long": 12,
+   "settle_beyond_rate": 0.46,
+   "reach_long_rate": 0.086
+  },
+  "<2h left": {
+   "touched": 18,
+   "settled_beyond": 11,
+   "reached_long": 0,
+   "settle_beyond_rate": 0.611,
+   "reach_long_rate": 0.0
+  },
+  "2-6h left": {
+   "touched": 43,
+   "settled_beyond": 28,
+   "reached_long": 2,
+   "settle_beyond_rate": 0.651,
+   "reach_long_rate": 0.047
+  }
+ }
+}
