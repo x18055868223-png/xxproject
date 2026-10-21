@@ -1,0 +1,288 @@
+{
+ "note": "entry at 09:30 open; short strikes at open*exp(+-0.4 sigma); sigma = Cboe VIX1D OPEN of the same day /sqrt(252) (known at 09:30). Touch bucket = bar of first touch. reach_Xs = after touch (from the touch bar on) price reached X sigma from open (1.4s = ~1 sigma beyond the short strike). Within-bar ordering unknown: hourly bars can mark a same-bar reach.",
+ "hourly_GSPC": {
+  "days": 717,
+  "call|any": {
+   "n": 442,
+   "settle_beyond": 0.577,
+   "reach_1.0s": 0.387,
+   "reach_1.4s": 0.113
+  },
+  "call|first_hour": {
+   "n": 266,
+   "settle_beyond": 0.598,
+   "reach_1.0s": 0.47,
+   "reach_1.4s": 0.147
+  },
+  "call|late(14:30-16:00)": {
+   "n": 21,
+   "settle_beyond": 0.333,
+   "reach_1.0s": 0.048,
+   "reach_1.4s": 0.0
+  },
+  "call|mid(10:30-14:30)": {
+   "n": 155,
+   "settle_beyond": 0.574,
+   "reach_1.0s": 0.29,
+   "reach_1.4s": 0.071
+  },
+  "call|no_touch": {
+   "n": 275
+  },
+  "put|any": {
+   "n": 427,
+   "settle_beyond": 0.475,
+   "reach_1.0s": 0.457,
+   "reach_1.4s": 0.265
+  },
+  "put|first_hour": {
+   "n": 263,
+   "settle_beyond": 0.494,
+   "reach_1.0s": 0.525,
+   "reach_1.4s": 0.308
+  },
+  "put|late(14:30-16:00)": {
+   "n": 23,
+   "settle_beyond": 0.478,
+   "reach_1.0s": 0.217,
+   "reach_1.4s": 0.087
+  },
+  "put|mid(10:30-14:30)": {
+   "n": 141,
+   "settle_beyond": 0.44,
+   "reach_1.0s": 0.369,
+   "reach_1.4s": 0.213
+  },
+  "put|no_touch": {
+   "n": 290
+  },
+  "range": [
+   "2023-11-22",
+   "2026-10-20"
+  ]
+ },
+ "5m_GSPC": {
+  "days": 59,
+  "call|any": {
+   "n": 33,
+   "settle_beyond": 0.515,
+   "reach_1.0s": 0.424,
+   "reach_1.4s": 0.212
+  },
+  "call|first_hour": {
+   "n": 22,
+   "settle_beyond": 0.636,
+   "reach_1.0s": 0.591,
+   "reach_1.4s": 0.318
+  },
+  "call|last_2h(14:00-16:00)": {
+   "n": 1,
+   "settle_beyond": 0.0,
+   "reach_1.0s": 0.0,
+   "reach_1.4s": 0.0
+  },
+  "call|mid(10:30-14:00)": {
+   "n": 10,
+   "settle_beyond": 0.3,
+   "reach_1.0s": 0.1,
+   "reach_1.4s": 0.0
+  },
+  "call|no_touch": {
+   "n": 26
+  },
+  "put|any": {
+   "n": 36,
+   "settle_beyond": 0.5,
+   "reach_1.0s": 0.472,
+   "reach_1.4s": 0.194
+  },
+  "put|first_hour": {
+   "n": 24,
+   "settle_beyond": 0.542,
+   "reach_1.0s": 0.583,
+   "reach_1.4s": 0.208
+  },
+  "put|last_2h(14:00-16:00)": {
+   "n": 4,
+   "settle_beyond": 0.5,
+   "reach_1.0s": 0.25,
+   "reach_1.4s": 0.25
+  },
+  "put|mid(10:30-14:00)": {
+   "n": 8,
+   "settle_beyond": 0.375,
+   "reach_1.0s": 0.25,
+   "reach_1.4s": 0.125
+  },
+  "put|no_touch": {
+   "n": 23
+  },
+  "range": [
+   "2026-07-29",
+   "2026-10-20"
+  ]
+ },
+ "hourly_GSPC_sigmaVIX": {
+  "days": 717,
+  "call|any": {
+   "n": 381,
+   "settle_beyond": 0.583,
+   "reach_1.0s": 0.213,
+   "reach_1.4s": 0.055
+  },
+  "call|first_hour": {
+   "n": 187,
+   "settle_beyond": 0.604,
+   "reach_1.0s": 0.283,
+   "reach_1.4s": 0.086
+  },
+  "call|late(14:30-16:00)": {
+   "n": 31,
+   "settle_beyond": 0.581,
+   "reach_1.0s": 0.065,
+   "reach_1.4s": 0.0
+  },
+  "call|mid(10:30-14:30)": {
+   "n": 163,
+   "settle_beyond": 0.558,
+   "reach_1.0s": 0.16,
+   "reach_1.4s": 0.031
+  },
+  "call|no_touch": {
+   "n": 336
+  },
+  "put|any": {
+   "n": 366,
+   "settle_beyond": 0.459,
+   "reach_1.0s": 0.339,
+   "reach_1.4s": 0.15
+  },
+  "put|first_hour": {
+   "n": 183,
+   "settle_beyond": 0.459,
+   "reach_1.0s": 0.443,
+   "reach_1.4s": 0.202
+  },
+  "put|late(14:30-16:00)": {
+   "n": 29,
+   "settle_beyond": 0.483,
+   "reach_1.0s": 0.103,
+   "reach_1.4s": 0.034
+  },
+  "put|mid(10:30-14:30)": {
+   "n": 154,
+   "settle_beyond": 0.455,
+   "reach_1.0s": 0.26,
+   "reach_1.4s": 0.11
+  },
+  "put|no_touch": {
+   "n": 351
+  }
+ },
+ "variance_clock_remaining_share_by_hour_start(in-sample)": {
+  "09:30": 1.0,
+  "10:30": 0.7455,
+  "11:30": 0.5972,
+  "12:30": 0.4772,
+  "13:30": 0.303,
+  "14:30": 0.183,
+  "15:30": 0.0889
+ },
+ "entry_timing": {
+  "09:30": {
+   "A_vix1d_at_entry_linear_time": {
+    "n": 691,
+    "rv_iv": 0.939,
+    "gt1": 0.255,
+    "med_abs_z": 0.615
+   },
+   "B_vix_prevclose_variance_clock": {
+    "n": 717,
+    "rv_iv": 0.729,
+    "gt1": 0.131,
+    "med_abs_z": 0.449
+   }
+  },
+  "10:30": {
+   "A_vix1d_at_entry_linear_time": {
+    "n": 691,
+    "rv_iv": 0.867,
+    "gt1": 0.181,
+    "med_abs_z": 0.52
+   },
+   "B_vix_prevclose_variance_clock": {
+    "n": 717,
+    "rv_iv": 0.725,
+    "gt1": 0.112,
+    "med_abs_z": 0.394
+   }
+  },
+  "11:30": {
+   "A_vix1d_at_entry_linear_time": {
+    "n": 691,
+    "rv_iv": 0.794,
+    "gt1": 0.171,
+    "med_abs_z": 0.456
+   },
+   "B_vix_prevclose_variance_clock": {
+    "n": 717,
+    "rv_iv": 0.712,
+    "gt1": 0.116,
+    "med_abs_z": 0.373
+   }
+  },
+  "12:30": {
+   "A_vix1d_at_entry_linear_time": {
+    "n": 691,
+    "rv_iv": 0.776,
+    "gt1": 0.151,
+    "med_abs_z": 0.403
+   },
+   "B_vix_prevclose_variance_clock": {
+    "n": 717,
+    "rv_iv": 0.741,
+    "gt1": 0.123,
+    "med_abs_z": 0.349
+   }
+  },
+  "13:30": {
+   "A_vix1d_at_entry_linear_time": {
+    "n": 691,
+    "rv_iv": 0.708,
+    "gt1": 0.107,
+    "med_abs_z": 0.355
+   },
+   "B_vix_prevclose_variance_clock": {
+    "n": 717,
+    "rv_iv": 0.77,
+    "gt1": 0.121,
+    "med_abs_z": 0.354
+   }
+  },
+  "14:30": {
+   "A_vix1d_at_entry_linear_time": {
+    "n": 691,
+    "rv_iv": 0.666,
+    "gt1": 0.103,
+    "med_abs_z": 0.37
+   },
+   "B_vix_prevclose_variance_clock": {
+    "n": 717,
+    "rv_iv": 0.772,
+    "gt1": 0.131,
+    "med_abs_z": 0.379
+   }
+  }
+ },
+ "vix1d_level_rel_to_0930_by_bar": {
+  "9:30": 1.0,
+  "10:24": 1.097,
+  "10:30": 1.002,
+  "11:30": 1.029,
+  "12:30": 1.091,
+  "13:00": 0.959,
+  "13:30": 1.169,
+  "14:30": 1.231,
+  "15:30": 1.273
+ }
+}

@@ -1,0 +1,202 @@
+COVERAGE {'24h': {'windows': 730, 'with_atm_iv': 730, 'usable': 729, 'with_skew': 706, 'median_atm_trades': 107.0, 'p10_atm_trades': 56.0, 'missing': 0}, '18h': {'windows': 730, 'with_atm_iv': 730, 'usable': 729, 'with_skew': 638, 'median_atm_trades': 78.0, 'p10_atm_trades': 26.0, 'missing': 0}, '16h': {'windows': 730, 'with_atm_iv': 728, 'usable': 727, 'with_skew': 626, 'median_atm_trades': 78.5, 'p10_atm_trades': 20.0, 'missing': 2}}
+missing {'24h': [], '18h': [], '16h': ['2025-09-22', '2025-12-14']}
+
+A by half
+H1 24-10..25-03 {'24h': {'iv_med': 46.2, 'mark_iv_med': 47.5, 'dvol_med': 56.8, 'iv_over_dvol_med': 0.82, 'skew_med': 0.45}, '18h': {'iv_med': 49.3, 'mark_iv_med': 49.4, 'dvol_med': 57.1, 'iv_over_dvol_med': 0.874, 'skew_med': 1.19}, '16h': {'iv_med': 48.2, 'mark_iv_med': 48.5, 'dvol_med': 57.1, 'iv_over_dvol_med': 0.859, 'skew_med': 0.97}}
+H2 25-04..25-09 {'24h': {'iv_med': 32.4, 'mark_iv_med': 33.1, 'dvol_med': 39.5, 'iv_over_dvol_med': 0.816, 'skew_med': 2.13}, '18h': {'iv_med': 33.5, 'mark_iv_med': 33.7, 'dvol_med': 39.8, 'iv_over_dvol_med': 0.834, 'skew_med': 2.18}, '16h': {'iv_med': 32.2, 'mark_iv_med': 32.4, 'dvol_med': 39.8, 'iv_over_dvol_med': 0.798, 'skew_med': 2.46}}
+H3 25-10..26-03 {'24h': {'iv_med': 43.0, 'mark_iv_med': 43.1, 'dvol_med': 46.4, 'iv_over_dvol_med': 0.939, 'skew_med': 5.63}, '18h': {'iv_med': 45.7, 'mark_iv_med': 45.5, 'dvol_med': 46.7, 'iv_over_dvol_med': 0.974, 'skew_med': 5.82}, '16h': {'iv_med': 45.2, 'mark_iv_med': 45.4, 'dvol_med': 46.7, 'iv_over_dvol_med': 0.958, 'skew_med': 6.37}}
+H4 26-04..26-09 {'24h': {'iv_med': 33.4, 'mark_iv_med': 34.3, 'dvol_med': 38.7, 'iv_over_dvol_med': 0.864, 'skew_med': 2.87}, '18h': {'iv_med': 34.6, 'mark_iv_med': 35.0, 'dvol_med': 38.8, 'iv_over_dvol_med': 0.9, 'skew_med': 2.25}, '16h': {'iv_med': 32.1, 'mark_iv_med': 32.6, 'dvol_med': 38.8, 'iv_over_dvol_med': 0.83, 'skew_med': 2.54}}
+
+B 24h zdirect {'n': 729, 'rv_over_iv': 1.088, 'share_abs_z_gt1': 0.257, 'median_abs_z': 0.576} zclock {'n': 729, 'rv_over_iv': 1.147, 'share_abs_z_gt1': 0.262, 'median_abs_z': 0.59} zdvol {'n': 729, 'rv_over_iv': 0.922, 'share_abs_z_gt1': 0.218, 'median_abs_z': 0.484}
+  credit {'straddle_credit': 0.01648, 'put_flat_credit': 0.00417, 'call_flat_credit': 0.00396, 'put_skew_credit': 0.00373, 'call_skew_credit': 0.00368} delta {'put': 0.351, 'call': 0.347}
+  straddle_pnl  n=729 mean=+6.5 med=+39.4 hit=0.639 worst10=-340.6 se=+5.6
+  put_flat      n=729 mean=+5.4 med=+35.1 hit=0.765 worst10=-175.6 se=+2.6
+  call_flat     n=729 mean=+3.3 med=+32.9 hit=0.749 worst10=-169.4 se=+2.5
+  both_flat     n=729 mean=+8.7 med=+34.8 hit=0.642 worst10=-156.0 se=+3.1
+  put_skew      n=729 mean=+1.3 med=+30.9 hit=0.761 worst10=-180.4 se=+2.6
+  call_skew     n=729 mean=+0.2 med=+30.0 hit=0.738 worst10=-172.4 se=+2.5
+  both_skew     n=729 mean=+1.5 med=+29.6 hit=0.612 worst10=-164.4 se=+3.1
+  H1 24-10..25-03: n=181 rv/iv=1.075 clk=1.146 |z|>1=0.249 strad=+4.8 put=+8.1 call=-1.3 both=+6.8±+6.4 bothskew=+0.4
+  H2 25-04..25-09: n=183 rv/iv=0.946 clk=0.993 |z|>1=0.235 strad=+18.0 put=+11.5 call=+2.6 both=+14.1±+5.1 bothskew=+6.1
+  H3 25-10..26-03: n=182 rv/iv=1.201 clk=1.306 |z|>1=0.297 strad=-4.2 put=-3.5 call=+9.4 both=+5.8±+6.9 bothskew=-2.4
+  H4 26-04..26-09: n=183 rv/iv=1.115 clk=1.121 |z|>1=0.246 strad=+7.2 put=+5.7 call=+2.4 both=+8.1±+6.2 bothskew=+1.8
+
+B 18h zdirect {'n': 729, 'rv_over_iv': 1.041, 'share_abs_z_gt1': 0.252, 'median_abs_z': 0.531} zclock {'n': 729, 'rv_over_iv': 1.04, 'share_abs_z_gt1': 0.24, 'median_abs_z': 0.537} zdvol {'n': 729, 'rv_over_iv': 0.901, 'share_abs_z_gt1': 0.188, 'median_abs_z': 0.461}
+  credit {'straddle_credit': 0.01506, 'put_flat_credit': 0.00395, 'call_flat_credit': 0.00376, 'put_skew_credit': 0.00352, 'call_skew_credit': 0.00352} delta {'put': 0.352, 'call': 0.349}
+  straddle_pnl  n=729 mean=+11.6 med=+39.8 hit=0.656 worst10=-297.2 se=+5.1
+  put_flat      n=729 mean=+6.8 med=+32.8 hit=0.768 worst10=-161.2 se=+2.4
+  call_flat     n=729 mean=+6.6 med=+30.7 hit=0.767 worst10=-150.8 se=+2.3
+  both_flat     n=729 mean=+13.5 med=+39.8 hit=0.66 worst10=-143.9 se=+2.8
+  put_skew      n=729 mean=+3.0 med=+28.4 hit=0.76 worst10=-165.5 se=+2.4
+  call_skew     n=729 mean=+4.0 med=+28.4 hit=0.756 worst10=-152.7 se=+2.3
+  both_skew     n=729 mean=+7.0 med=+32.4 hit=0.641 worst10=-149.6 se=+2.8
+  H1 24-10..25-03: n=181 rv/iv=1.044 clk=1.054 |z|>1=0.238 strad=+10.1 put=+10.5 call=+3.9 both=+14.4±+5.9 bothskew=+7.7
+  H2 25-04..25-09: n=183 rv/iv=0.953 clk=0.947 |z|>1=0.235 strad=+18.6 put=+10.9 call=+5.0 both=+15.9±+5.0 bothskew=+9.3
+  H3 25-10..26-03: n=182 rv/iv=1.174 clk=1.177 |z|>1=0.308 strad=+0.7 put=-3.3 call=+10.4 both=+7.1±+6.3 bothskew=+0.2
+  H4 26-04..26-09: n=183 rv/iv=0.981 clk=0.967 |z|>1=0.23 strad=+16.9 put=+9.2 call=+7.3 both=+16.5±+5.5 bothskew=+10.8
+
+B 16h zdirect {'n': 727, 'rv_over_iv': 0.932, 'share_abs_z_gt1': 0.223, 'median_abs_z': 0.507} zclock {'n': 727, 'rv_over_iv': 0.987, 'share_abs_z_gt1': 0.235, 'median_abs_z': 0.52} zdvol {'n': 727, 'rv_over_iv': 0.836, 'share_abs_z_gt1': 0.165, 'median_abs_z': 0.448}
+  credit {'straddle_credit': 0.01375, 'put_flat_credit': 0.00369, 'call_flat_credit': 0.00354, 'put_skew_credit': 0.00333, 'call_skew_credit': 0.00328} delta {'put': 0.351, 'call': 0.348}
+  straddle_pnl  n=727 mean=+20.8 med=+43.3 hit=0.696 worst10=-230.6 se=+4.2
+  put_flat      n=727 mean=+9.1 med=+30.2 hit=0.785 worst10=-145.7 se=+2.2
+  call_flat     n=727 mean=+8.5 med=+28.2 hit=0.774 worst10=-134.3 se=+2.0
+  both_flat     n=727 mean=+17.6 med=+39.8 hit=0.7 worst10=-135.1 se=+2.6
+  put_skew      n=726 mean=+5.6 med=+27.4 hit=0.785 worst10=-149.9 se=+2.2
+  call_skew     n=725 mean=+5.9 med=+25.2 hit=0.767 worst10=-136.7 se=+2.0
+  both_skew     n=724 mean=+11.4 med=+34.9 hit=0.684 worst10=-142.7 se=+2.6
+  H1 24-10..25-03: n=181 rv/iv=0.953 clk=1.018 |z|>1=0.193 strad=+28.1 put=+12.7 call=+7.8 both=+20.5±+5.6 bothskew=+14.0
+  H2 25-04..25-09: n=182 rv/iv=0.967 clk=0.997 |z|>1=0.269 strad=+9.5 put=+8.5 call=+2.0 both=+10.5±+4.8 bothskew=+4.8
+  H3 25-10..26-03: n=181 rv/iv=0.958 clk=1.04 |z|>1=0.232 strad=+22.5 put=+6.0 call=+14.0 both=+20.0±+5.6 bothskew=+12.4
+  H4 26-04..26-09: n=183 rv/iv=0.844 clk=0.886 |z|>1=0.197 strad=+23.1 put=+9.3 call=+10.3 both=+19.6±+4.8 bothskew=+14.5
+
+pooled day-clustered {'straddle_pnl': ('+12.9', '+4.5', 729), 'put_flat': ('+7.1', '+2.2', 729), 'call_flat': ('+6.1', '+2.0', 729), 'both_flat': ('+13.3', '+2.5', 729), 'put_skew': ('+3.3', '+2.2', 729), 'call_skew': ('+3.4', '+2.0', 729), 'both_skew': ('+6.6', '+2.5', 729)}
+
+C 24h n_common=724
+ iv_rank7 cuts=[0.2, 0.8]
+   1 low (<p20)    n=190 rv/iv=1.05 |z|>1=0.232 put=+5.0 call=+3.9 both=+8.9±+5.3 hit=0.711 worst10=-150.9 | halves |z|>1: 0.286(42) 0.12(50) 0.326(43) 0.218(55) both: +3.2 +27.4 -8.7 +10.2
+   2 mid           n=370 rv/iv=1.145 |z|>1=0.27 put=+6.0 call=+1.1 both=+7.2±+4.4 hit=0.614 worst10=-152.1 | halves |z|>1: 0.242(91) 0.297(91) 0.309(94) 0.234(94) both: +4.8 +6.4 +6.8 +10.5
+   3 high (>=p80)  n=164 rv/iv=1.004 |z|>1=0.256 put=+4.8 call=+6.2 both=+11.0±+7.3 hit=0.622 worst10=-166.7 | halves |z|>1: 0.233(43) 0.238(42) 0.244(45) 0.324(34) both: +10.5 +15.0 +17.6 -2.1
+ iv_chg_vs_prev_day cuts=[-9.18, 10.19]
+   1 low (<p20)    n=144 rv/iv=0.932 |z|>1=0.188 put=+9.3 call=+7.7 both=+17.0±+5.6 hit=0.743 worst10=-136.9 | halves |z|>1: 0.209(43) 0.083(36) 0.303(33) 0.156(32) both: +15.0 +35.8 -3.6 +19.9
+   2 mid           n=435 rv/iv=1.12 |z|>1=0.269 put=+5.1 call=+3.0 both=+8.0±+4.1 hit=0.63 worst10=-158.4 | halves |z|>1: 0.256(82) 0.269(119) 0.282(110) 0.266(124) both: +9.5 +9.5 +10.2 +3.7
+   3 high (>=p80)  n=145 rv/iv=1.142 |z|>1=0.29 put=+2.9 call=-1.6 both=+1.4±+7.6 hit=0.572 worst10=-159.6 | halves |z|>1: 0.275(51) 0.286(28) 0.333(39) 0.259(27) both: -7.9 +5.7 +1.6 +14.0
+ iv_minus_rv24 cuts=[-10.509, 8.538]
+   1 low (<p20)    n=144 rv/iv=1.093 |z|>1=0.229 put=+0.9 call=+6.2 both=+7.1±+6.6 hit=0.674 worst10=-161.7 | halves |z|>1: 0.304(46) 0.0(23) 0.234(47) 0.286(28) both: -2.9 +42.7 +8.2 -7.5
+   2 mid           n=435 rv/iv=1.077 |z|>1=0.251 put=+7.8 call=+5.0 both=+12.8±+3.9 hit=0.653 worst10=-149.3 | halves |z|>1: 0.229(83) 0.252(127) 0.287(101) 0.234(124) both: +12.1 +13.0 +11.4 +14.3
+   3 high (>=p80)  n=145 rv/iv=1.125 |z|>1=0.303 put=+3.1 call=-6.3 both=-3.2±+7.4 hit=0.572 worst10=-164.1 | halves |z|>1: 0.234(47) 0.333(33) 0.412(34) 0.258(31) both: +3.3 -1.5 -14.0 -2.7
+ dvol_rank7 cuts=[0.2, 0.8]
+   1 low (<p20)    n=253 rv/iv=1.028 |z|>1=0.229 put=+5.9 call=+5.4 both=+11.3±+4.8 hit=0.668 worst10=-154.0 | halves |z|>1: 0.19(63) 0.226(62) 0.302(53) 0.213(75) both: +10.9 +16.0 -0.6 +16.0
+   2 mid           n=323 rv/iv=1.039 |z|>1=0.257 put=+7.3 call=+4.2 both=+11.5±+4.6 hit=0.653 worst10=-146.2 | halves |z|>1: 0.239(71) 0.22(91) 0.284(81) 0.287(80) both: +14.3 +17.3 +12.4 +1.7
+   3 high (>=p80)  n=148 rv/iv=1.283 |z|>1=0.304 put=+0.8 call=-3.7 both=-2.9±+7.8 hit=0.568 worst10=-176.7 | halves |z|>1: 0.357(42) 0.3(30) 0.312(48) 0.214(28) both: -16.0 +0.6 +1.8 +5.1
+ dvol_chg_24h cuts=[-1.21, 1.12]
+   1 low (<p20)    n=144 rv/iv=0.887 |z|>1=0.201 put=+7.0 call=+10.4 both=+17.5±+6.7 hit=0.694 worst10=-156.0 | halves |z|>1: 0.225(40) 0.094(32) 0.297(37) 0.171(35) both: +14.0 +37.2 +5.2 +16.3
+   2 mid           n=434 rv/iv=1.132 |z|>1=0.267 put=+7.4 call=+1.3 both=+8.7±+3.8 hit=0.643 worst10=-145.9 | halves |z|>1: 0.258(93) 0.248(121) 0.317(104) 0.25(116) both: +7.9 +11.9 +2.4 +11.6
+   3 high (>=p80)  n=146 rv/iv=1.141 |z|>1=0.281 put=-1.7 call=+0.8 both=-0.9±+7.9 hit=0.582 worst10=-177.9 | halves |z|>1: 0.256(43) 0.333(30) 0.244(41) 0.312(32) both: -6.2 -1.4 +15.0 -13.7
+ dvol_minus_rv24 cuts=[-4.545, 15.841]
+   1 low (<p20)    n=144 rv/iv=1.127 |z|>1=0.278 put=-0.3 call=+9.6 both=+9.4±+7.7 hit=0.611 worst10=-159.0 | halves |z|>1: 0.39(41) 0.235(17) 0.255(55) 0.194(31) both: -12.4 +16.7 +16.2 +21.9
+   2 mid           n=435 rv/iv=1.046 |z|>1=0.239 put=+8.7 call=+2.7 both=+11.4±+3.8 hit=0.667 worst10=-155.3 | halves |z|>1: 0.149(67) 0.223(130) 0.286(105) 0.263(133) both: +22.2 +18.1 +4.1 +5.0
+   3 high (>=p80)  n=145 rv/iv=1.176 |z|>1=0.29 put=+1.6 call=-2.6 both=-1.0±+6.8 hit=0.593 worst10=-149.2 | halves |z|>1: 0.265(68) 0.278(36) 0.455(22) 0.211(19) both: +0.6 -1.5 -11.9 +6.9
+ dvol_rank7__z_dvol cuts=[0.2, 0.8]
+   1 low (<p20)    n=253 rv/iv=0.805 |z|>1=0.166 put=+5.9 call=+5.4 both=+11.3±+4.8 hit=0.668 worst10=-154.0 | halves |z|>1: 0.159(63) 0.129(62) 0.264(53) 0.133(75) both: +10.9 +16.0 -0.6 +16.0
+   2 mid           n=323 rv/iv=0.843 |z|>1=0.214 put=+7.3 call=+4.2 both=+11.5±+4.6 hit=0.653 worst10=-146.2 | halves |z|>1: 0.211(71) 0.176(91) 0.272(81) 0.2(80) both: +14.3 +17.3 +12.4 +1.7
+   3 high (>=p80)  n=148 rv/iv=1.233 |z|>1=0.318 put=+0.8 call=-3.7 both=-2.9±+7.8 hit=0.568 worst10=-176.7 | halves |z|>1: 0.262(42) 0.3(30) 0.396(48) 0.286(28) both: -16.0 +0.6 +1.8 +5.1
+ dvol_chg_24h__z_dvol cuts=[-1.21, 1.12]
+   1 low (<p20)    n=144 rv/iv=0.744 |z|>1=0.174 put=+7.0 call=+10.4 both=+17.5±+6.7 hit=0.694 worst10=-156.0 | halves |z|>1: 0.15(40) 0.062(32) 0.324(37) 0.143(35) both: +14.0 +37.2 +5.2 +16.3
+   2 mid           n=434 rv/iv=0.898 |z|>1=0.207 put=+7.4 call=+1.3 both=+8.7±+3.8 hit=0.643 worst10=-145.9 | halves |z|>1: 0.215(93) 0.174(121) 0.288(104) 0.164(116) both: +7.9 +11.9 +2.4 +11.6
+   3 high (>=p80)  n=146 rv/iv=1.137 |z|>1=0.295 put=-1.7 call=+0.8 both=-0.9±+7.9 hit=0.582 worst10=-177.9 | halves |z|>1: 0.233(43) 0.333(30) 0.317(41) 0.312(32) both: -6.2 -1.4 +15.0 -13.7
+ dvol_minus_rv24__z_dvol cuts=[-4.545, 15.841]
+   1 low (<p20)    n=144 rv/iv=1.12 |z|>1=0.285 put=-0.3 call=+9.6 both=+9.4±+7.7 hit=0.611 worst10=-159.0 | halves |z|>1: 0.317(41) 0.235(17) 0.309(55) 0.226(31) both: -12.4 +16.7 +16.2 +21.9
+   2 mid           n=435 rv/iv=0.826 |z|>1=0.186 put=+8.7 call=+2.7 both=+11.4±+3.8 hit=0.667 worst10=-155.3 | halves |z|>1: 0.134(67) 0.154(130) 0.267(105) 0.18(133) both: +22.2 +18.1 +4.1 +5.0
+   3 high (>=p80)  n=145 rv/iv=0.986 |z|>1=0.248 put=+1.6 call=-2.6 both=-1.0±+6.8 hit=0.593 worst10=-149.2 | halves |z|>1: 0.206(68) 0.25(36) 0.455(22) 0.158(19) both: +0.6 -1.5 -11.9 +6.9
+ count:
+   0 n=360 rv/iv=1.096 |z|>1=0.253 both=+10.3±+4.2
+   1 n=287 rv/iv=1.1 |z|>1=0.268 both=+5.4±+4.9
+   2 n=65 rv/iv=0.962 |z|>1=0.215 both=+18.3±+11.0
+   3 n=12 rv/iv=1.28 |z|>1=0.333 both=-24.8±+34.4
+
+C 18h n_common=724
+ iv_rank7 cuts=[0.2, 0.8]
+   1 low (<p20)    n=207 rv/iv=0.948 |z|>1=0.242 put=+7.4 call=+8.0 both=+15.4±+4.4 hit=0.725 worst10=-133.7 | halves |z|>1: 0.237(38) 0.148(61) 0.385(52) 0.214(56) both: +14.3 +27.0 -1.5 +19.2
+   2 mid           n=344 rv/iv=1.086 |z|>1=0.262 put=+7.7 call=+3.8 both=+11.5±+4.1 hit=0.619 worst10=-139.8 | halves |z|>1: 0.219(96) 0.312(80) 0.297(74) 0.234(94) both: +17.5 +3.2 +8.5 +14.9
+   3 high (>=p80)  n=173 rv/iv=1.067 |z|>1=0.254 put=+3.7 call=+10.0 both=+13.8±+6.8 hit=0.659 worst10=-161.7 | halves |z|>1: 0.31(42) 0.214(42) 0.25(56) 0.242(33) both: +2.1 +24.2 +13.2 +16.4
+ iv_chg_vs_prev_day cuts=[-9.59, 10.3]
+   1 low (<p20)    n=144 rv/iv=0.974 |z|>1=0.208 put=+14.3 call=+8.5 both=+22.9±+4.7 hit=0.764 worst10=-101.1 | halves |z|>1: 0.171(41) 0.111(36) 0.265(34) 0.303(33) both: +33.0 +31.8 +4.3 +19.7
+   2 mid           n=435 rv/iv=1.04 |z|>1=0.257 put=+4.3 call=+9.8 both=+14.0±+3.8 hit=0.655 worst10=-148.2 | halves |z|>1: 0.224(85) 0.273(121) 0.314(105) 0.218(124) both: +20.2 +13.5 +9.5 +14.0
+   3 high (>=p80)  n=145 rv/iv=1.12 |z|>1=0.29 put=+6.4 call=-5.3 both=+1.0±+7.1 hit=0.566 worst10=-151.4 | halves |z|>1: 0.34(50) 0.231(26) 0.326(43) 0.192(26) both: -15.2 +5.2 +3.4 +24.3
+ iv_minus_rv24 cuts=[-8.499, 9.573]
+   1 low (<p20)    n=144 rv/iv=0.992 |z|>1=0.271 put=+9.4 call=+6.9 both=+16.3±+6.6 hit=0.674 worst10=-146.5 | halves |z|>1: 0.317(41) 0.107(28) 0.267(45) 0.367(30) both: +10.2 +35.4 +16.6 +6.3
+   2 mid           n=435 rv/iv=1.028 |z|>1=0.234 put=+4.9 call=+11.2 both=+16.2±+3.5 hit=0.678 worst10=-140.0 | halves |z|>1: 0.16(81) 0.238(126) 0.311(103) 0.216(125) both: +26.5 +17.2 +3.2 +19.1
+   3 high (>=p80)  n=145 rv/iv=1.137 |z|>1=0.297 put=+9.2 call=-8.1 both=+1.1±+6.8 hit=0.586 worst10=-153.2 | halves |z|>1: 0.315(54) 0.345(29) 0.353(34) 0.143(28) both: -4.6 -8.3 +6.3 +15.8
+ dvol_rank7 cuts=[0.2, 0.8]
+   1 low (<p20)    n=219 rv/iv=1.024 |z|>1=0.237 put=+3.4 call=+12.2 both=+15.6±+4.7 hit=0.717 worst10=-139.8 | halves |z|>1: 0.22(50) 0.226(62) 0.359(39) 0.191(68) both: +20.3 +17.7 -2.5 +20.8
+   2 mid           n=328 rv/iv=1.002 |z|>1=0.247 put=+7.9 call=+4.5 both=+12.4±+4.2 hit=0.64 worst10=-143.2 | halves |z|>1: 0.205(78) 0.247(89) 0.256(86) 0.28(75) both: +18.7 +10.6 +11.0 +9.6
+   3 high (>=p80)  n=177 rv/iv=1.14 |z|>1=0.288 put=+8.4 call=+3.1 both=+11.6±+6.5 hit=0.621 worst10=-151.4 | halves |z|>1: 0.333(48) 0.219(32) 0.351(57) 0.2(40) both: -3.3 +27.3 +7.8 +22.2
+ dvol_chg_24h cuts=[-1.27, 1.1]
+   1 low (<p20)    n=141 rv/iv=0.843 |z|>1=0.206 put=+9.6 call=+13.6 both=+23.2±+6.3 hit=0.702 worst10=-134.7 | halves |z|>1: 0.146(41) 0.125(24) 0.302(43) 0.212(33) both: +34.2 +24.8 +13.3 +21.2
+   2 mid           n=438 rv/iv=1.103 |z|>1=0.272 put=+4.3 call=+6.0 both=+10.3±+3.5 hit=0.66 worst10=-142.5 | halves |z|>1: 0.305(95) 0.25(132) 0.319(94) 0.231(117) both: +5.6 +14.8 -0.9 +17.9
+   3 high (>=p80)  n=145 rv/iv=1.036 |z|>1=0.248 put=+11.0 call=+1.2 both=+12.2±+7.3 hit=0.614 worst10=-158.1 | halves |z|>1: 0.2(40) 0.259(27) 0.289(45) 0.242(33) both: +9.4 +13.8 +17.8 +6.8
+ dvol_minus_rv24 cuts=[-3.708, 16.321]
+   1 low (<p20)    n=144 rv/iv=1.042 |z|>1=0.278 put=+6.9 call=+11.3 both=+18.3±+7.7 hit=0.632 worst10=-153.3 | halves |z|>1: 0.278(36) 0.056(18) 0.305(59) 0.355(31) both: +18.6 +39.3 +11.6 +18.3
+   2 mid           n=435 rv/iv=1.012 |z|>1=0.237 put=+7.2 call=+7.4 both=+14.6±+3.4 hit=0.676 worst10=-136.4 | halves |z|>1: 0.214(70) 0.244(135) 0.273(99) 0.214(131) both: +11.4 +17.9 +8.7 +17.3
+   3 high (>=p80)  n=145 rv/iv=1.136 |z|>1=0.283 put=+4.8 call=-0.9 both=+3.9±+6.4 hit=0.634 worst10=-148.4 | halves |z|>1: 0.257(70) 0.3(30) 0.458(24) 0.143(21) both: +12.1 -7.0 -10.4 +8.7
+ dvol_rank7__z_dvol cuts=[0.2, 0.8]
+   1 low (<p20)    n=219 rv/iv=0.791 |z|>1=0.151 put=+3.4 call=+12.2 both=+15.6±+4.7 hit=0.717 worst10=-139.8 | halves |z|>1: 0.16(50) 0.129(62) 0.282(39) 0.088(68) both: +20.3 +17.7 -2.5 +20.8
+   2 mid           n=328 rv/iv=0.838 |z|>1=0.174 put=+7.9 call=+4.5 both=+12.4±+4.2 hit=0.64 worst10=-143.2 | halves |z|>1: 0.103(78) 0.135(89) 0.221(86) 0.24(75) both: +18.7 +10.6 +11.0 +9.6
+   3 high (>=p80)  n=177 rv/iv=1.122 |z|>1=0.266 put=+8.4 call=+3.1 both=+11.6±+6.5 hit=0.621 worst10=-151.4 | halves |z|>1: 0.312(48) 0.188(32) 0.298(57) 0.225(40) both: -3.3 +27.3 +7.8 +22.2
+ dvol_chg_24h__z_dvol cuts=[-1.27, 1.1]
+   1 low (<p20)    n=141 rv/iv=0.72 |z|>1=0.163 put=+9.6 call=+13.6 both=+23.2±+6.3 hit=0.702 worst10=-134.7 | halves |z|>1: 0.122(41) 0.083(24) 0.256(43) 0.152(33) both: +34.2 +24.8 +13.3 +21.2
+   2 mid           n=438 rv/iv=0.882 |z|>1=0.174 put=+4.3 call=+6.0 both=+10.3±+3.5 hit=0.66 worst10=-142.5 | halves |z|>1: 0.179(95) 0.136(132) 0.245(94) 0.154(117) both: +5.6 +14.8 -0.9 +17.9
+   3 high (>=p80)  n=145 rv/iv=1.104 |z|>1=0.262 put=+11.0 call=+1.2 both=+12.2±+7.3 hit=0.614 worst10=-158.1 | halves |z|>1: 0.225(40) 0.222(27) 0.289(45) 0.303(33) both: +9.4 +13.8 +17.8 +6.8
+ dvol_minus_rv24__z_dvol cuts=[-3.708, 16.321]
+   1 low (<p20)    n=144 rv/iv=1.11 |z|>1=0.306 put=+6.9 call=+11.3 both=+18.3±+7.7 hit=0.632 worst10=-153.3 | halves |z|>1: 0.361(36) 0.111(18) 0.339(59) 0.29(31) both: +18.6 +39.3 +11.6 +18.3
+   2 mid           n=435 rv/iv=0.797 |z|>1=0.147 put=+7.2 call=+7.4 both=+14.6±+3.4 hit=0.676 worst10=-136.4 | halves |z|>1: 0.114(70) 0.126(135) 0.182(99) 0.16(131) both: +11.4 +17.9 +8.7 +17.3
+   3 high (>=p80)  n=145 rv/iv=0.971 |z|>1=0.2 put=+4.8 call=-0.9 both=+3.9±+6.4 hit=0.634 worst10=-148.4 | halves |z|>1: 0.143(70) 0.233(30) 0.375(24) 0.143(21) both: +12.1 -7.0 -10.4 +8.7
+ count:
+   0 n=356 rv/iv=1.028 |z|>1=0.242 both=+14.9±+3.8
+   1 n=287 rv/iv=1.075 |z|>1=0.265 both=+12.1±+4.5
+   2 n=68 rv/iv=0.892 |z|>1=0.25 both=+13.3±+11.5
+   3 n=13 rv/iv=1.437 |z|>1=0.385 both=-10.0±+32.8
+
+C 16h n_common=720
+ iv_rank7 cuts=[0.2, 0.8]
+   1 low (<p20)    n=222 rv/iv=0.916 |z|>1=0.212 put=+7.4 call=+8.3 both=+15.7±+3.8 hit=0.716 worst10=-119.7 | halves |z|>1: 0.2(45) 0.206(63) 0.291(55) 0.153(59) both: +11.9 +16.8 +8.9 +24.0
+   2 mid           n=322 rv/iv=0.914 |z|>1=0.227 put=+11.0 call=+7.3 both=+18.3±+4.0 hit=0.693 worst10=-133.0 | halves |z|>1: 0.18(89) 0.299(77) 0.206(68) 0.227(88) both: +23.8 +5.0 +28.4 +16.6
+   3 high (>=p80)  n=176 rv/iv=0.995 |z|>1=0.239 put=+7.0 call=+10.1 both=+17.1±+6.2 hit=0.682 worst10=-148.7 | halves |z|>1: 0.238(42) 0.317(41) 0.211(57) 0.194(36) both: +18.2 +10.2 +19.7 +19.6
+ iv_chg_vs_prev_day cuts=[-9.034, 9.37]
+   1 low (<p20)    n=144 rv/iv=0.86 |z|>1=0.188 put=+16.5 call=+3.6 both=+20.1±+4.9 hit=0.722 worst10=-118.8 | halves |z|>1: 0.125(48) 0.2(30) 0.25(36) 0.2(30) both: +30.3 +19.6 +14.5 +11.0
+   2 mid           n=432 rv/iv=0.906 |z|>1=0.213 put=+6.7 call=+13.9 both=+20.7±+3.3 hit=0.722 worst10=-133.4 | halves |z|>1: 0.218(78) 0.25(124) 0.187(107) 0.195(123) both: +21.9 +13.9 +28.0 +20.4
+   3 high (>=p80)  n=144 rv/iv=1.082 |z|>1=0.299 put=+7.8 call=-3.9 both=+4.0±+7.0 hit=0.597 worst10=-146.4 | halves |z|>1: 0.24(50) 0.444(27) 0.351(37) 0.2(30) both: +5.2 -16.8 +0.6 +24.8
+ iv_minus_rv24 cuts=[-8.573, 7.516]
+   1 low (<p20)    n=144 rv/iv=0.933 |z|>1=0.229 put=+15.4 call=+7.3 both=+22.7±+6.1 hit=0.694 worst10=-139.8 | halves |z|>1: 0.278(36) 0.25(24) 0.222(45) 0.179(39) both: +21.4 +20.7 +29.3 +17.3
+   2 mid           n=432 rv/iv=0.89 |z|>1=0.215 put=+7.0 call=+11.6 both=+18.7±+3.2 hit=0.718 worst10=-129.4 | halves |z|>1: 0.157(89) 0.258(128) 0.223(103) 0.205(112) both: +26.3 +11.6 +20.2 +19.2
+   3 high (>=p80)  n=144 rv/iv=1.06 |z|>1=0.25 put=+8.0 call=-0.5 both=+7.5±+6.6 hit=0.639 worst10=-146.9 | halves |z|>1: 0.216(51) 0.345(29) 0.281(32) 0.188(32) both: +6.1 -4.4 +4.4 +23.6
+ dvol_rank7 cuts=[0.2, 0.8]
+   1 low (<p20)    n=226 rv/iv=0.914 |z|>1=0.195 put=+5.1 call=+13.0 both=+18.1±+4.0 hit=0.735 worst10=-120.2 | halves |z|>1: 0.214(56) 0.18(61) 0.225(40) 0.174(69) both: +11.9 +21.3 +10.9 +24.5
+   2 mid           n=323 rv/iv=0.89 |z|>1=0.251 put=+11.2 call=+6.1 both=+17.3±+4.1 hit=0.684 worst10=-136.6 | halves |z|>1: 0.151(73) 0.337(89) 0.224(85) 0.276(76) both: +31.2 +2.9 +28.7 +8.0
+   3 high (>=p80)  n=171 rv/iv=1.04 |z|>1=0.216 put=+9.7 call=+6.3 both=+15.9±+5.9 hit=0.673 worst10=-147.3 | halves |z|>1: 0.255(47) 0.258(31) 0.255(55) 0.079(38) both: +10.1 +9.9 +12.1 +33.7
+ dvol_chg_24h cuts=[-1.25, 1.096]
+   1 low (<p20)    n=143 rv/iv=0.841 |z|>1=0.182 put=+17.6 call=+9.4 both=+27.0±+5.7 hit=0.741 worst10=-129.0 | halves |z|>1: 0.139(36) 0.152(33) 0.231(39) 0.2(35) both: +35.4 +30.7 +22.7 +19.9
+   2 mid           n=433 rv/iv=0.922 |z|>1=0.229 put=+5.4 call=+9.9 both=+15.2±+3.2 hit=0.704 worst10=-131.4 | halves |z|>1: 0.218(101) 0.264(121) 0.226(93) 0.203(118) both: +14.5 +10.3 +19.3 +17.7
+   3 high (>=p80)  n=144 rv/iv=1.056 |z|>1=0.257 put=+10.9 call=+2.6 both=+13.5±+6.8 hit=0.632 worst10=-150.2 | halves |z|>1: 0.205(39) 0.444(27) 0.25(48) 0.167(30) both: +17.3 -14.6 +18.0 +26.6
+ dvol_minus_rv24 cuts=[-4.705, 17.44]
+   1 low (<p20)    n=144 rv/iv=0.906 |z|>1=0.264 put=+9.1 call=+10.9 both=+20.0±+6.9 hit=0.667 worst10=-142.6 | halves |z|>1: 0.278(36) 0.316(19) 0.267(60) 0.207(29) both: +14.1 +14.3 +21.3 +28.5
+   2 mid           n=432 rv/iv=0.904 |z|>1=0.213 put=+9.0 call=+10.7 both=+19.7±+3.2 hit=0.706 worst10=-126.2 | halves |z|>1: 0.19(84) 0.258(128) 0.181(94) 0.206(126) both: +26.8 +12.2 +24.9 +18.6
+   3 high (>=p80)  n=144 rv/iv=1.047 |z|>1=0.222 put=+8.5 call=-1.4 both=+7.0±+5.8 hit=0.701 worst10=-153.1 | halves |z|>1: 0.161(56) 0.294(34) 0.346(26) 0.143(28) both: +11.8 +0.6 -2.9 +14.4
+ dvol_rank7__z_dvol cuts=[0.2, 0.8]
+   1 low (<p20)    n=226 rv/iv=0.713 |z|>1=0.106 put=+5.1 call=+13.0 both=+18.1±+4.0 hit=0.735 worst10=-120.2 | halves |z|>1: 0.161(56) 0.049(61) 0.175(40) 0.072(69) both: +11.9 +21.3 +10.9 +24.5
+   2 mid           n=323 rv/iv=0.78 |z|>1=0.186 put=+11.2 call=+6.1 both=+17.3±+4.1 hit=0.684 worst10=-136.6 | halves |z|>1: 0.11(73) 0.202(89) 0.188(85) 0.237(76) both: +31.2 +2.9 +28.7 +8.0
+   3 high (>=p80)  n=171 rv/iv=1.067 |z|>1=0.211 put=+9.7 call=+6.3 both=+15.9±+5.9 hit=0.673 worst10=-147.3 | halves |z|>1: 0.213(47) 0.258(31) 0.273(55) 0.079(38) both: +10.1 +9.9 +12.1 +33.7
+ dvol_chg_24h__z_dvol cuts=[-1.25, 1.096]
+   1 low (<p20)    n=143 rv/iv=0.702 |z|>1=0.112 put=+17.6 call=+9.4 both=+27.0±+5.7 hit=0.741 worst10=-129.0 | halves |z|>1: 0.083(36) 0.061(33) 0.179(39) 0.114(35) both: +35.4 +30.7 +22.7 +19.9
+   2 mid           n=433 rv/iv=0.768 |z|>1=0.157 put=+5.4 call=+9.9 both=+15.2±+3.2 hit=0.704 worst10=-131.4 | halves |z|>1: 0.158(101) 0.149(121) 0.183(93) 0.144(118) both: +14.5 +10.3 +19.3 +17.7
+   3 high (>=p80)  n=144 rv/iv=1.119 |z|>1=0.25 put=+10.9 call=+2.6 both=+13.5±+6.8 hit=0.632 worst10=-150.2 | halves |z|>1: 0.205(39) 0.333(27) 0.292(48) 0.167(30) both: +17.3 -14.6 +18.0 +26.6
+ dvol_minus_rv24__z_dvol cuts=[-4.705, 17.44]
+   1 low (<p20)    n=144 rv/iv=1.009 |z|>1=0.25 put=+9.1 call=+10.9 both=+20.0±+6.9 hit=0.667 worst10=-142.6 | halves |z|>1: 0.333(36) 0.211(19) 0.267(60) 0.138(29) both: +14.1 +14.3 +21.3 +28.5
+   2 mid           n=432 rv/iv=0.77 |z|>1=0.141 put=+9.0 call=+10.7 both=+19.7±+3.2 hit=0.706 worst10=-126.2 | halves |z|>1: 0.107(84) 0.141(128) 0.16(94) 0.151(126) both: +26.8 +12.2 +24.9 +18.6
+   3 high (>=p80)  n=144 rv/iv=0.849 |z|>1=0.16 put=+8.5 call=-1.4 both=+7.0±+5.8 hit=0.701 worst10=-153.1 | halves |z|>1: 0.107(56) 0.206(34) 0.269(26) 0.107(28) both: +11.8 +0.6 -2.9 +14.4
+ count:
+   0 n=363 rv/iv=0.828 |z|>1=0.196 both=+21.2±+3.2
+   1 n=259 rv/iv=1.072 |z|>1=0.255 both=+11.4±+4.7
+   2 n=89 rv/iv=0.936 |z|>1=0.258 both=+15.6±+9.0
+   3 n=9 rv/iv=0.722 |z|>1=0.222 both=+41.3±+32.8
+
+D 24h cuts [27.7, 35.0, 41.0, 50.5]
+  Q1 n=145 rv/iv=1.262 |z|>1=0.221 credit p/c=+27.1/+25.8 put=+5.3 call=-1.4 both=+3.9±+5.7 skew=-1.9 worst10=-160.3
+  Q2 n=145 rv/iv=1.101 |z|>1=0.269 credit p/c=+36.1/+34.3 put=+5.4 call=+1.6 both=+7.0±+6.2 skew=+0.3 worst10=-145.4
+  Q3 n=147 rv/iv=1.021 |z|>1=0.286 credit p/c=+41.6/+40.5 put=+1.4 call=+6.6 both=+8.1±+6.9 skew=+0.8 worst10=-155.2
+  Q4 n=146 rv/iv=1.016 |z|>1=0.247 credit p/c=+47.2/+44.9 put=+7.0 call=+8.3 both=+15.2±+7.1 skew=+8.1 worst10=-152.0
+  Q5 n=146 rv/iv=1.02 |z|>1=0.26 credit p/c=+56.1/+52.5 put=+8.1 call=+1.3 both=+9.4±+8.3 skew=+0.1 worst10=-168.5
+
+D 18h cuts [28.6, 36.1, 43.0, 53.2]
+  Q1 n=145 rv/iv=1.058 |z|>1=0.228 credit p/c=+24.6/+23.9 put=+7.4 call=+2.0 both=+9.4±+4.9 skew=+4.9 worst10=-142.3
+  Q2 n=145 rv/iv=1.175 |z|>1=0.276 credit p/c=+33.8/+32.9 put=+4.7 call=+6.7 both=+11.4±+6.0 skew=+5.3 worst10=-145.1
+  Q3 n=147 rv/iv=0.985 |z|>1=0.252 credit p/c=+39.1/+37.2 put=+2.9 call=+9.8 both=+12.8±+5.9 skew=+6.6 worst10=-135.5
+  Q4 n=147 rv/iv=1.023 |z|>1=0.293 credit p/c=+45.9/+43.4 put=+5.5 call=+3.5 both=+9.0±+7.0 skew=+1.9 worst10=-148.8
+  Q5 n=145 rv/iv=0.952 |z|>1=0.214 credit p/c=+53.8/+50.3 put=+13.8 call=+11.1 both=+25.0±+7.6 skew=+16.4 worst10=-148.6
+
+D 16h cuts [27.9, 34.2, 42.1, 51.6]
+  Q1 n=145 rv/iv=0.943 |z|>1=0.234 credit p/c=+22.9/+22.1 put=+7.1 call=+2.0 both=+9.1±+4.2 skew=+5.1 worst10=-113.8
+  Q2 n=146 rv/iv=0.976 |z|>1=0.205 credit p/c=+31.0/+29.5 put=+2.2 call=+11.6 both=+13.8±+5.0 skew=+8.9 worst10=-131.5
+  Q3 n=145 rv/iv=0.919 |z|>1=0.214 credit p/c=+36.1/+34.9 put=+12.0 call=+7.0 both=+19.0±+5.7 skew=+13.0 worst10=-134.4
+  Q4 n=146 rv/iv=0.928 |z|>1=0.247 credit p/c=+43.1/+41.6 put=+12.3 call=+10.5 both=+22.8±+6.6 skew=+15.4 worst10=-140.9
+  Q5 n=145 rv/iv=0.89 |z|>1=0.214 credit p/c=+51.4/+48.7 put=+12.0 call=+11.5 both=+23.5±+7.1 skew=+14.5 worst10=-144.7
