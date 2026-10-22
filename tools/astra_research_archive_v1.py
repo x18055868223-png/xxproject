@@ -550,6 +550,7 @@ def active_locked_keys(locked_episodes: list[Mapping[str, Any]]) -> set[str]:
 def observed_versions() -> dict[str, str]:
     """Versions that the code in force carries; recorded whenever one changes."""
     return {"inquirer_prompt": inquiry.PROMPT_VERSION,
+            "inquirer_reading_view": f"{inquiry.reading.VERSION}+terms:{inquiry.reading.terms_digest()}",
             "case_file_builder": case_file_core.BUILDER_VERSION,
             "ledger_row": SCHEMA_ROW, "episode_outcome": SCHEMA_OUTCOME,
             "submission_schemas": ",".join(sorted(research_inbox.SCHEMAS)),

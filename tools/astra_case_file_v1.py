@@ -37,7 +37,7 @@ else:
     import astra_session_clock_v1 as session_clock
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.5"   # 0.1.5: L3.space.gate without the constant admission fields
+BUILDER_VERSION = "astra_case_file_v1@0.1.6"   # 0.1.6: annotate() — price cross-section, stale propagation, 0DTE expiry time, payout note (docs/opus/18 §3)
 # The workbench's admission fields, constant while the space gate only evaluates (since 2026-10-13).
 GATE_ADMISSION_KEYS = ("state", "eligible", "since_ts_ms", "reason_codes")
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
@@ -175,12 +175,14 @@ def spatial_alignment(contract: Mapping[str, Any], asof_ms: int, spatial: Any,
     basis = int(walls_at_ms) if isinstance(walls_at_ms, (int, float)) and not isinstance(walls_at_ms, bool) else asof_ms
     nearest = next_daily_expiry_ms(basis)
     zero_dte_is_contract = None if expiry is None else nearest == expiry
+    zero_dte_before = (nearest < expiry) if expiry else None
     distance = (spatial or {}).get("distance_pct") if isinstance(spatial, Mapping) else None
     iv = (expiry_row or {}).get("atm_iv_pct")
     hours = (expiry - asof_ms) / 3_600_000 if isinstance(expiry, int) else None
     move = iv * (hours / 8760) ** 0.5 if isinstance(iv, (int, float)) and hours and hours > 0 else None
     return {"contract_expiry": expiry_label(expiry), "nearest_daily_expiry": expiry_label(nearest),
             "zero_dte_walls_are_contract_expiry": zero_dte_is_contract, "weekly_walls_are_aggregate": True,
+            "zero_dte_expiry_ms": nearest, "zero_dte_expires_before_contract": zero_dte_before,
             "spatial_reading_move_basis": "nearest_expiry_atm_iv",
             "expected_move_pct_contract_expiry": move,
             "distance_in_moves_contract_expiry": distance / move if isinstance(distance, (int, float)) and move else None,
@@ -188,7 +190,12 @@ def spatial_alignment(contract: Mapping[str, Any], asof_ms: int, spatial: Any,
                        ("，此刻即本合约到期日）" if zero_dte_is_contract else
                         "，此刻不是本合约到期日）" if zero_dte_is_contract is False else "，是否为本合约到期日不明）") +
                        "，预期波动用的是最近到期的 ATM IV。本合约到期日自身的 Gamma/OI 结构以 L3.expiry_walls 为准，"
-                       "本期波动以 L4.expiry_vol 为准；按本期 IV 换算的距离见 distance_in_moves_contract_expiry。"}
+                       "本期波动以 L4.expiry_vol 为准；按本期 IV 换算的距离见 distance_in_moves_contract_expiry。" +
+                       (_zero_dte_note(nearest) if zero_dte_before else "")}
+
+
+def _zero_dte_note(nearest_ms: int) -> str:
+    return f"0DTE 墙所属到期日（{expiry_label(nearest_ms)} 08:00 UTC）在本合约到期之前结算，此后不再存在。"
 
 
 def iv_alignment(contract: Mapping[str, Any], gex: Mapping[str, Any]) -> dict[str, Any]:
@@ -258,7 +265,8 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
              quality="ok")
     case.add("L0.fmz_fact", "信号层（FMZ）事实的新鲜度与来源质量",
              _pick(fact, ("status", "age_ms", "strategy_version", "producer_schema_version", "runtime_mode",
-                          "source_quality", "export_health", "snapshot_ts_ms")),
+                          "source_quality", "export_health", "snapshot_ts_ms", "current_price_usd",
+                          "price_observed_ms")),
              lineage=["fmz.snapshot"], source="snapshot.fact_context", asof_ms=fmz_asof)
     components = [{k: c.get(k) for k in ("component", "candidate_version", "runtime_status", "production_status")}
                   for c in ((view.get("release_identity") or {}).get("components") or []) if isinstance(c, Mapping)]
@@ -495,11 +503,168 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
         "layers": case.layers,
         "refs": case.refs(),
     }
+    body = annotate(body)
     encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     # built_at_ms stays outside the content hash: the same inputs give the same content
     body["build"] = {"builder": BUILDER_VERSION, "bytes": len(encoded), "built_at_ms": built_at_ms,
                      "content_sha256": hashlib.sha256(encoded).hexdigest(),
                      "time_note_cn": "asof_ms 是报价估值时刻；L0 健康、Space 门、跨资产、本期墙、事件取自 built_at_ms 时的读视图"}
+    return body
+
+
+FMZ_CURRENT_MAX_AGE_MS = 600_000
+GEX_CURRENT_MAX_AGE_MS = 3_600_000
+FMZ_STALE_GAPS = ("fmz_snapshot_stale", "fmz_price_stale")
+# entries read from the signal-layer (FMZ) snapshot; L0.fmz_fact itself states its own status
+FMZ_DERIVED_REFS = ("L3.space.anchor", "L4.skew", "L5.volume_price", "L5.flow", "L5.m_die", "L5.conflicts",
+                    "L5.edb", "L5.edb_reasoning", "L7.macro", "L8.signal_recommendation")
+GEX_REFS = ("L3.gex.structure", "L4.iv", "L5.options_flow")
+GEX_STALE_NOTE_CN = ("本条的 age_ms、stale 等是信号层快照读取 GEX 时的状态；到报价估值时刻它已过去 age_at_asof_ms，"
+                     "按估值时刻算已过期。")
+CROSS_SECTION_NOTE_CN = "现价以锚（报价估值时的 Deribit 指数）为准；不是当前的来源，其价格以及由它算出的距离、方向读数不代表现在。"
+PAYOUT_NOTE_CN = ("表中 kl/2（Put）或 kl×2（Call）一点只用来示意币本位赔付形状，一天内不可达（需约 50% 或 100% 的单日波动）。"
+                  "按 BTC 计：Put 跌破保护腿后赔付随价格下降继续增加；Call 越过保护腿后赔付按 宽度/价格 递减。按 USD 计赔付封顶于宽度。")
+
+
+def _int(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _price(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+
+def _index(layers: Mapping[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    case = _Case()
+    case.layers = dict(layers)
+    return case.refs()
+
+
+def annotate(case_body: Mapping[str, Any]) -> dict[str, Any]:
+    """0.1.6 annotations from the entries already in a built case (docs/opus/18 §3), so the same
+    pass applies to archived 0.1.5 cases. Pure and idempotent; the input is not changed.
+
+    - L0.cross_section: the valuation-time Deribit index as the price anchor, and each other
+      price source's time, age at asof, deviation from the anchor and whether it is current;
+    - entries read from a non-current FMZ snapshot, and GEX readings older than 1h at asof,
+      become stale (an existing quality_reason is kept);
+    - L3.spatial_position states when the 0DTE walls' expiry settles;
+    - L1.payout_table says which rows are only illustrative.
+    """
+    body = deepcopy(dict(case_body))
+    layers = body.get("layers") or {}
+    refs = _index(layers)
+    asof = _int(body.get("asof_ms"))
+
+    def entry(ref: str) -> dict[str, Any] | None:
+        at = refs.get(ref)
+        return layers[at["layer"]][at["index"]] if at else None
+
+    def values(ref: str) -> dict[str, Any]:
+        found = entry(ref)
+        return found["values"] if found and isinstance(found.get("values"), dict) else {}
+
+    def age(at_ms: Any) -> int | None:
+        at_ms = _int(at_ms)
+        return asof - at_ms if asof is not None and at_ms is not None else None
+
+    fact = values("L0.fmz_fact")
+    # capture-time gaps only: the view's gaps describe the read view at build time, not this capture
+    gaps = values("L0.gaps")
+    gap_codes = {code for part in ("fmz_fact", "snapshot") if isinstance(gaps.get(part), list) for code in gaps[part]}
+    fmz_current = fact.get("status") == "current" and not gap_codes.intersection(FMZ_STALE_GAPS)
+    fmz_reason = next((code for code in FMZ_STALE_GAPS if code in gap_codes), "fmz_fact_not_current")
+
+    # 1. price cross-section
+    anchor = _price(values("L1.economics").get("valuation_spot_usd"))
+    space = values("L3.space.anchor")
+    fmz_price = _price(fact.get("current_price_usd"))
+    for part in ("anchor", "gamma_regime"):   # 0.1.5 cases: the FMZ price is only inside the space context
+        if fmz_price is None and isinstance(space.get(part), Mapping):
+            fmz_price = _price(space[part].get("asset_price"))
+    fmz_at = (_int(fact.get("price_observed_ms")) or _int(fact.get("snapshot_ts_ms"))
+              or _int((entry("L0.fmz_fact") or {}).get("asof_ms")))
+    gex_entry = entry("L3.gex.structure") or {}
+    walls_entry = entry("L3.expiry_walls") or {}
+    candidates = (
+        ("信号层（FMZ）快照价", fmz_price, fmz_at, "fmz.snapshot",
+         lambda a: fmz_current and a is not None and a <= FMZ_CURRENT_MAX_AGE_MS),
+        ("GEX 现价", _price(values("L3.gex.structure").get("spot_price")), _int(gex_entry.get("asof_ms")),
+         "gexmonitor.gex_info", lambda a: a is not None and a <= GEX_CURRENT_MAX_AGE_MS),
+        ("本期 forward（不是现价）", _price(values("L3.expiry_walls").get("forward_usd")),
+         _int(walls_entry.get("asof_ms")), "deribit.book_summary",
+         lambda a: a is not None and a <= GEX_CURRENT_MAX_AGE_MS),
+    )
+    sources: list[dict[str, Any]] = []
+    lineage = ["deribit.index"] if anchor is not None else []
+    for name_cn, price, at_ms, origin, is_current in candidates:
+        if price is None:
+            continue
+        source_age = age(at_ms)
+        sources.append({"name_cn": name_cn, "price_usd": price, "at_ms": at_ms, "age_ms": source_age,
+                        "deviation_pct": round(100 * (price / anchor - 1), 3) + 0.0 if anchor else None,  # no -0.0
+                        "current": bool(is_current(source_age))})
+        lineage.append(origin)
+    section = {"ref": "L0.cross_section", "label_cn": "价格截面：现价锚与各来源价格的时刻、年龄、偏离",
+               "values": {"anchor": {"name_cn": "报价估值时的 Deribit 指数", "price_usd": anchor, "at_ms": asof},
+                          "sources": sources},
+               "relations": {"note_cn": CROSS_SECTION_NOTE_CN}, "asof_ms": asof,
+               "quality": "ok" if anchor is not None else "unknown",
+               "quality_reason": None if anchor is not None else "valuation_spot_unavailable",
+               "lineage": sorted(set(lineage)) or ["astra_case_file_v1"], "source": "astra_case_file_v1.annotate"}
+    if "L0.cross_section" in refs:
+        at = refs["L0.cross_section"]
+        layers[at["layer"]][at["index"]] = section
+    else:
+        layers.setdefault("L0", []).append(section)
+
+    # 2. stale propagation (an existing, more specific quality_reason is kept)
+    if not fmz_current:
+        for ref in FMZ_DERIVED_REFS:
+            found = entry(ref)
+            if found and found.get("quality") == "ok" and "fmz.snapshot" in (found.get("lineage") or []):
+                found["quality"] = "stale"
+                found["quality_reason"] = found.get("quality_reason") or fmz_reason
+    for ref in GEX_REFS:
+        found = entry(ref)
+        gex_age = age(found.get("asof_ms")) if found else None
+        if found and found.get("quality") == "ok" and gex_age is not None and gex_age > GEX_CURRENT_MAX_AGE_MS:
+            found["quality"] = "stale"
+            found["quality_reason"] = found.get("quality_reason") or "gex_older_than_1h_at_asof"
+            # the source's own age/stale fields were taken when the FMZ snapshot read it, not at asof
+            relations = found["relations"] if isinstance(found.get("relations"), dict) else {}
+            relations["age_at_asof_ms"] = gex_age
+            relations["stale_note_cn"] = GEX_STALE_NOTE_CN
+            found["relations"] = relations
+
+    # 3. when the 0DTE walls' expiry settles (0.1.5 cases lack these keys)
+    spatial = entry("L3.spatial_position")
+    alignment = ((spatial or {}).get("relations") or {}).get("expiry_alignment")
+    if isinstance(alignment, dict) and "zero_dte_expiry_ms" not in alignment:
+        expiry = _int(values("L1.contract").get("expiry_ms"))
+        basis = _int(gex_entry.get("asof_ms")) or asof
+        if basis is not None:
+            nearest = next_daily_expiry_ms(basis)
+            before = (nearest < expiry) if expiry else None
+            alignment["zero_dte_expiry_ms"] = nearest
+            alignment["zero_dte_expires_before_contract"] = before
+            note = _zero_dte_note(nearest)
+            if before and note not in str(alignment.get("note_cn") or ""):
+                alignment["note_cn"] = str(alignment.get("note_cn") or "") + note
+
+    # 4. which payout rows are reachable
+    payout = entry("L1.payout_table")
+    if payout is not None:
+        if not isinstance(payout.get("relations"), dict):
+            payout["relations"] = {}
+        payout["relations"].setdefault("note_cn", PAYOUT_NOTE_CN)
+
+    body["layers"] = layers
+    body["refs"] = _index(layers)
+    build_info = body.get("build")
+    if isinstance(build_info, dict) and build_info.get("builder") != BUILDER_VERSION:
+        # an archived case annotated after the fact: its content hash covers the pre-annotation body
+        build_info["annotated_by"] = BUILDER_VERSION
     return body
 
 

@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 
 import pytest
+from copy import deepcopy
 from dataclasses import replace
 
 from tools import astra_case_file_v1 as cf
@@ -164,3 +165,188 @@ def test_failed_program_reading_is_returned_but_not_frozen(tmp_path, monkeypatch
     assert not (wb.config.state_dir / "case_files" / (snapshot_id + ".json")).exists()
     monkeypatch.undo()
     assert wb.case_file(snapshot_id)["layers"]["L8"][0]["quality"] == "ok"
+
+
+# --- 0.1.6 annotate (docs/opus/18 §3) ---
+
+ASOF = EXPIRY - 18 * 3_600_000
+
+
+def _entry(case, ref):
+    at = case["refs"][ref]
+    return case["layers"][at["layer"]][at["index"]]
+
+
+def _stale_snapshot():
+    """FMZ fact 5.6h old and not current; GEX fetched with it; the anchor and forward are current."""
+    snap = _snapshot()
+    fmz_at = ASOF - 20_369_188
+    snap["economics"]["valuation_spot_usd"] = 82748.25
+    snap["fact_context"] = {
+        "status": "stale", "snapshot_ts_ms": fmz_at, "current_price_usd": 84275.48, "price_observed_ms": fmz_at,
+        "gap_reasons": ["fmz_snapshot_stale", "fmz_price_stale"],
+        "market_facts": {"m_die": {"state": "NO_MOVE"}, "skew": {"rr": 1.0}, "flow": {"cvd": 2.0},
+                         "macro_pressure": {"score": 0.4},
+                         "space_context": {"gamma_regime": {"asset_price": 84275.48},
+                                           "gex_info": {"flip_point": 81000, "spot_price": 84220.6, "atm_iv": 30.1,
+                                                        "pcr": 0.8, "fetched_at_ms": fmz_at - 533_628}}}}
+    return snap
+
+
+def _stale_view():
+    return {"expiry_gamma": {"by_expiry": {"20OCT26": {"expiry_ms": EXPIRY, "forward_usd": 82739.44,
+                                                       "computed_at_ms": ASOF - 61_983, "atm_iv_pct": 40.0}}}}
+
+
+def _stale_case():
+    return cf.build(snapshot=_stale_snapshot(), raw_market=_raw_market(), asof_ms=ASOF, view=_stale_view())
+
+
+def test_cross_section_anchor_sources_and_deviation():
+    case = _stale_case()
+    section = _entry(case, "L0.cross_section")
+    assert section["quality"] == "ok" and section["source"] == "astra_case_file_v1.annotate"
+    assert section["values"]["anchor"] == {"name_cn": "报价估值时的 Deribit 指数", "price_usd": 82748.25, "at_ms": ASOF}
+    fmz, gex, forward = section["values"]["sources"]
+    assert fmz["name_cn"] == "信号层（FMZ）快照价" and fmz["price_usd"] == 84275.48
+    assert fmz["age_ms"] == 20_369_188 and fmz["deviation_pct"] == 1.846 and fmz["current"] is False
+    assert gex["name_cn"] == "GEX 现价" and gex["age_ms"] == 20_369_188 + 533_628 and gex["current"] is False
+    assert forward["name_cn"] == "本期 forward（不是现价）" and forward["deviation_pct"] == -0.011
+    assert forward["age_ms"] == 61_983 and forward["current"] is True
+    assert set(section["lineage"]) == {"deribit.index", "fmz.snapshot", "gexmonitor.gex_info", "deribit.book_summary"}
+    assert "不是当前的来源" in section["relations"]["note_cn"]
+    # new cases carry the FMZ price directly
+    assert _entry(case, "L0.fmz_fact")["values"]["current_price_usd"] == 84275.48
+
+
+def test_cross_section_without_anchor_is_unknown_and_skips_missing_prices():
+    section = _entry(cf.build(snapshot=_snapshot(), raw_market=_raw_market(), asof_ms=ASOF), "L0.cross_section")
+    assert section["quality"] == "unknown" and section["values"]["sources"] == []
+
+
+def test_stale_fmz_fact_and_old_gex_propagate():
+    case = _stale_case()
+    for ref in ("L3.space.anchor", "L4.skew", "L5.flow", "L5.m_die", "L7.macro"):
+        entry = _entry(case, ref)
+        assert (entry["quality"], entry["quality_reason"]) == ("stale", "fmz_snapshot_stale"), ref
+    assert _entry(case, "L5.edb")["quality"] == "missing"          # not provided: stays missing
+    fact = _entry(case, "L0.fmz_fact")                             # the fact states its own status
+    assert (fact["quality"], fact["quality_reason"]) == ("ok", None)
+    for ref in ("L3.gex.structure", "L5.options_flow", "L4.iv"):
+        entry = _entry(case, ref)
+        assert (entry["quality"], entry["quality_reason"]) == ("stale", "gex_older_than_1h_at_asof"), ref
+
+
+def test_existing_reason_is_kept_when_an_entry_turns_stale():
+    archived = _stale_case()
+    for ref, reason in (("L4.iv", "iv_not_contract_expiry"), ("L5.flow", "producer_note")):
+        entry = _entry(archived, ref)
+        entry["quality"], entry["quality_reason"] = "ok", reason
+    out = cf.annotate(archived)
+    assert (_entry(out, "L4.iv")["quality"], _entry(out, "L4.iv")["quality_reason"]) == ("stale", "iv_not_contract_expiry")
+    assert (_entry(out, "L5.flow")["quality"], _entry(out, "L5.flow")["quality_reason"]) == ("stale", "producer_note")
+
+
+def test_current_fact_and_fresh_gex_change_nothing():
+    snap = _stale_snapshot()
+    fresh = ASOF - 60_000
+    snap["fact_context"].update({"status": "current", "gap_reasons": [], "snapshot_ts_ms": fresh,
+                                 "price_observed_ms": fresh})
+    snap["fact_context"]["market_facts"]["space_context"]["gex_info"]["fetched_at_ms"] = fresh
+    case = cf.build(snapshot=snap, raw_market=_raw_market(), asof_ms=ASOF, view=_stale_view())
+    for ref in cf.FMZ_DERIVED_REFS + cf.GEX_REFS:
+        assert _entry(case, ref)["quality"] in {"ok", "missing"}, ref
+        assert _entry(case, ref)["quality_reason"] in {None, "iv_not_contract_expiry"}, ref
+    assert [s["current"] for s in _entry(case, "L0.cross_section")["values"]["sources"]] == [True, True, True]
+
+
+def test_annotate_is_idempotent_pure_and_keeps_refs_valid():
+    case = _stale_case()
+    before = deepcopy(case)
+    again = cf.annotate(case)
+    assert case == before                                          # input not mutated
+    assert again == case and cf.annotate(again) == again           # build() already annotated; idempotent
+    for ref, at in again["refs"].items():
+        assert again["layers"][at["layer"]][at["index"]]["ref"] == ref
+    assert case["build"]["builder"] == "astra_case_file_v1@0.1.6" and "annotated_by" not in again["build"]
+
+
+def test_annotate_upgrades_an_archived_015_case():
+    old = _stale_case()
+    # strip the 0.1.6 additions to get a 0.1.5-shaped body
+    old["layers"]["L0"] = [e for e in old["layers"]["L0"] if e["ref"] != "L0.cross_section"]
+    for key in ("current_price_usd", "price_observed_ms"):
+        _entry(old, "L0.fmz_fact")["values"].pop(key)
+    for entries in old["layers"].values():
+        for e in entries:
+            if e["quality"] == "stale":
+                e["quality"], e["quality_reason"] = "ok", None
+    _entry(old, "L1.payout_table")["relations"] = {}
+    alignment = _entry(old, "L3.spatial_position")["relations"]["expiry_alignment"]
+    for key in ("zero_dte_expiry_ms", "zero_dte_expires_before_contract"):
+        alignment.pop(key)
+    old["refs"] = cf._index(old["layers"])
+    old["build"]["builder"] = "astra_case_file_v1@0.1.5"
+    out = cf.annotate(old)
+    assert out["build"]["annotated_by"] == "astra_case_file_v1@0.1.6"
+    fmz = _entry(out, "L0.cross_section")["values"]["sources"][0]
+    assert fmz["price_usd"] == 84275.48 and fmz["current"] is False   # read from the space context
+    assert _entry(out, "L5.flow")["quality_reason"] == "fmz_snapshot_stale"
+    new_alignment = _entry(out, "L3.spatial_position")["relations"]["expiry_alignment"]
+    assert new_alignment["zero_dte_expiry_ms"] == cf.next_daily_expiry_ms(_entry(out, "L3.gex.structure")["asof_ms"])
+    assert "note_cn" in _entry(out, "L1.payout_table")["relations"]
+    assert cf.annotate(out) == out
+
+
+def test_spatial_alignment_states_the_zero_dte_expiry():
+    contract = {"expiry_ms": EXPIRY}
+    two_days_before = EXPIRY - 40 * 3_600_000
+    align = cf.spatial_alignment(contract, two_days_before, {"distance_pct": 1.0}, {"atm_iv_pct": 40.0})
+    assert align["zero_dte_expiry_ms"] == cf.next_daily_expiry_ms(two_days_before) < EXPIRY
+    assert align["zero_dte_expires_before_contract"] is True
+    assert "此后不再存在" in align["note_cn"] and "08:00 UTC" in align["note_cn"]
+    same_day = cf.spatial_alignment(contract, EXPIRY - 3_600_000, None, None)
+    assert same_day["zero_dte_expiry_ms"] == EXPIRY and same_day["zero_dte_expires_before_contract"] is False
+    assert "此后不再存在" not in same_day["note_cn"]
+    assert cf.spatial_alignment({}, EXPIRY, None, None)["zero_dte_expires_before_contract"] is None
+
+
+def test_payout_table_says_which_rows_are_illustrative():
+    note = _entry(cf.build(snapshot=_snapshot(), raw_market=_raw_market(), asof_ms=ASOF),
+                  "L1.payout_table")["relations"]["note_cn"]
+    assert "一天内不可达" in note and "宽度/价格" in note and "封顶于宽度" in note
+
+
+def test_stale_gex_entry_says_its_own_age_fields_are_from_the_snapshot_time():
+    body = {"asof_ms": 10 * 3_600_000, "layers": {"L3": [{"ref": "L3.gex.structure", "values": {"spot_price": 1.0},
+                                                         "relations": {"age_ms": 540_000, "stale": False},
+                                                         "asof_ms": 1 * 3_600_000, "quality": "ok",
+                                                         "quality_reason": None, "lineage": ["gexmonitor.gex_info"]}]},
+            "refs": {}}
+    out = cf.annotate(body)
+    gex = next(e for e in out["layers"]["L3"] if e["ref"] == "L3.gex.structure")
+    assert gex["quality"] == "stale" and gex["relations"]["age_at_asof_ms"] == 9 * 3_600_000
+    assert gex["relations"]["age_ms"] == 540_000 and "估值时刻" in gex["relations"]["stale_note_cn"]
+    assert cf.annotate(out) == out
+
+
+def _fmz_body(status, fact_gaps=(), view_gaps=()):
+    return {"asof_ms": 2 * 3_600_000, "layers": {
+        "L0": [{"ref": "L0.fmz_fact", "values": {"status": status}, "quality": "ok", "lineage": ["fmz.snapshot"]},
+               {"ref": "L0.gaps", "values": {"fmz_fact": list(fact_gaps), "snapshot": [], "view": list(view_gaps)},
+                "quality": "ok", "lineage": []}],
+        "L5": [{"ref": "L5.m_die", "values": {"state": "x"}, "quality": "ok", "quality_reason": None,
+                "lineage": ["fmz.snapshot"]}]}, "refs": {}}
+
+
+def test_view_time_gaps_do_not_mark_a_current_capture_stale():
+    out = cf.annotate(_fmz_body("current", view_gaps=["fmz_snapshot_stale"]))
+    assert _entry(out, "L5.m_die")["quality"] == "ok"
+
+
+def test_stale_reason_follows_the_fact_gap_that_caused_it():
+    out = cf.annotate(_fmz_body("background_only", fact_gaps=["fmz_price_stale"]))
+    assert _entry(out, "L5.m_die")["quality_reason"] == "fmz_price_stale"
+    out = cf.annotate(_fmz_body("background_only", fact_gaps=["fmz_runtime_not_live_public"]))
+    assert _entry(out, "L5.m_die")["quality"] == "stale"
+    assert _entry(out, "L5.m_die")["quality_reason"] == "fmz_fact_not_current"
