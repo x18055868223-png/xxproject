@@ -1,0 +1,604 @@
+[
+ {
+  "qid": "sheets/06_call_cf_18383ae2434fba339e687ffc.B.json#K3",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/16_put_cf_eb31377c2c895841d37b2a2b.json#K2",
+  "primary": "data_gap",
+  "secondary": [
+   "iv_vs_rv"
+  ],
+  "note": "IV source dispute; could be iv_vs_rv"
+ },
+ {
+  "qid": "arch/2026-10-21/14_call_cf_31281198035d92dbe25a5c42.json#K3",
+  "primary": "execution",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": "credit vs mark basis dispute"
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K5",
+  "primary": "direction",
+  "secondary": [
+   "touch_path",
+   "session"
+  ],
+  "note": "drift vs shock path shape"
+ },
+ {
+  "qid": "arch/2026-10-21/02_call_cf_1df86765eb3f6897dba05b4d.json#K6",
+  "primary": "gamma_pin",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K1",
+  "primary": "gamma_pin",
+  "secondary": [
+   "zero_dte"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/03_put_cf_6f60c265eed9c2046606bb71.B.json#K1",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/02_call_cf_1df86765eb3f6897dba05b4d.json#K1",
+  "primary": "iv_vs_rv",
+  "secondary": [
+   "touch_path"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K4",
+  "primary": "execution",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": "which reference for fair"
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K4",
+  "primary": "data_gap",
+  "secondary": [
+   "gamma_pin",
+   "deep_tail"
+  ],
+  "note": "missing dealer gamma sign"
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K1",
+  "primary": "gamma_pin",
+  "secondary": [
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets/06_call_cf_18383ae2434fba339e687ffc.A.json#K1",
+  "primary": "gamma_pin",
+  "secondary": [
+   "touch_path",
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K6",
+  "primary": "gamma_pin",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K7",
+  "primary": "data_gap",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/21_call_cf_9eea2047a5dfa1a815bdcecd.json#K5",
+  "primary": "iv_vs_rv",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/08_call_cf_f45bb9075409f7eb50125d3c.json#K2",
+  "primary": "session",
+  "secondary": [
+   "touch_path"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K6",
+  "primary": "data_gap",
+  "secondary": [
+   "iv_vs_rv"
+  ],
+  "note": "IV source dispute"
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K7",
+  "primary": "gamma_pin",
+  "secondary": [
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K3",
+  "primary": "execution",
+  "secondary": [
+   "iv_vs_rv"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/02_call_cf_49e1d86ee7ccbf13b5ab19a1.json#K9",
+  "primary": "gamma_pin",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": "level coincidence vs coordinate basis"
+ },
+ {
+  "qid": "arch/2026-10-21/15_call_cf_e6cd15a6b7eb188a5272d616.json#K2",
+  "primary": "iv_vs_rv",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K8",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K2",
+  "primary": "data_gap",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K4",
+  "primary": "data_gap",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/02_call_cf_49e1d86ee7ccbf13b5ab19a1.json#K4",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/02_call_cf_49e1d86ee7ccbf13b5ab19a1.json#K8",
+  "primary": "deep_tail",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/03_call_cf_6534c2cb53abe991fe56a840.B.json#K1",
+  "primary": "direction",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/21_call_cf_9eea2047a5dfa1a815bdcecd.json#K6",
+  "primary": "touch_path",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/15_call_cf_3ff07d5ca81d17424b9526a4.json#K4",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/04_put_cf_427551d8a51015e19b5c5865.json#K4",
+  "primary": "deep_tail",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/15_put_cf_3c4160a812a7a993bf1f437e.json#K3",
+  "primary": "execution",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": "fee missing plus fill cost"
+ },
+ {
+  "qid": "arch/2026-10-20/16_call_cf_2142ef03e85861f7cf202d14.json#K2",
+  "primary": "data_gap",
+  "secondary": [
+   "iv_vs_rv"
+  ],
+  "note": "IV source dispute"
+ },
+ {
+  "qid": "arch/2026-10-22/00_put_cf_bd037b492c0d592cb0056160.json#K6",
+  "primary": "session",
+  "secondary": [
+   "touch_path"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K2",
+  "primary": "gamma_pin",
+  "secondary": [
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K3",
+  "primary": "gamma_pin",
+  "secondary": [
+   "zero_dte"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.A.json#K4",
+  "primary": "direction",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/14_put_cf_606335a85f43cf2f3b49ddcc.json#K7",
+  "primary": "session",
+  "secondary": [
+   "touch_path",
+   "deep_tail"
+  ],
+  "note": "three paths; session density central"
+ },
+ {
+  "qid": "sheets/04_put_cf_427551d8a51015e19b5c5865.B.json#K5",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K6",
+  "primary": "deep_tail",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/21_put_cf_8d5a54857e4d766cb4372515.json#K4",
+  "primary": "deep_tail",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K3",
+  "primary": "iv_vs_rv",
+  "secondary": [
+   "execution"
+  ],
+  "note": "asks IV discount vs pin vs fill"
+ },
+ {
+  "qid": "arch/2026-10-22/00_put_cf_bd037b492c0d592cb0056160.json#K3",
+  "primary": "direction",
+  "secondary": [
+   "touch_path"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K2",
+  "primary": "zero_dte",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K3",
+  "primary": "direction",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/22_put_cf_a6442e9274ee149a7d822147.json#K6",
+  "primary": "touch_path",
+  "secondary": [
+   "session",
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/06_call_cf_18383ae2434fba339e687ffc.B.json#K3",
+  "primary": "gamma_pin",
+  "secondary": [
+   "touch_path",
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.B.json#K3",
+  "primary": "data_gap",
+  "secondary": [
+   "touch_path"
+  ],
+  "note": "delta selection anomaly"
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K4",
+  "primary": "session",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": "session vs pin dominance"
+ },
+ {
+  "qid": "sheets2/03_call_cf_6534c2cb53abe991fe56a840.B.json#K3",
+  "primary": "execution",
+  "secondary": [
+   "iv_vs_rv"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/14_put_cf_606335a85f43cf2f3b49ddcc.json#K3",
+  "primary": "iv_vs_rv",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets/03_call_cf_6534c2cb53abe991fe56a840.B.json#K2",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/14_put_cf_c07b4e3b6fb1c742fe3e01a7.json#K5",
+  "primary": "gamma_pin",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": "GEX signal collinearity"
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.A.json#K3",
+  "primary": "gamma_pin",
+  "secondary": [
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K6",
+  "primary": "execution",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/10_put_cf_38e0aff3e66fdaa188625b28.json#K7",
+  "primary": "data_gap",
+  "secondary": [
+   "deep_tail",
+   "events"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.A.json#K2",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K5",
+  "primary": "data_gap",
+  "secondary": [
+   "execution"
+  ],
+  "note": "fees missing vs credit sufficiency"
+ },
+ {
+  "qid": "arch/2026-10-20/14_call_cf_7f2dd4c170fe02522af7942b.json#K5",
+  "primary": "iv_vs_rv",
+  "secondary": [
+   "execution"
+  ],
+  "note": "protection-leg IV/skew vs thin book"
+ },
+ {
+  "qid": "arch/2026-10-22/03_put_cf_6f60c265eed9c2046606bb71.json#K4",
+  "primary": "data_gap",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K3",
+  "primary": "gamma_pin",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/10_put_cf_38e0aff3e66fdaa188625b28.json#K8",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/16_call_cf_2142ef03e85861f7cf202d14.json#K1",
+  "primary": "execution",
+  "secondary": [
+   "data_gap"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K5",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K2",
+  "primary": "direction",
+  "secondary": [
+   "touch_path"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/15_call_cf_e6cd15a6b7eb188a5272d616.json#K4",
+  "primary": "touch_path",
+  "secondary": [
+   "direction",
+   "session"
+  ],
+  "note": "no-drift touch approximation"
+ },
+ {
+  "qid": "arch/2026-10-22/02_put_cf_177b8dc3a07a73cc79a07233.json#K2",
+  "primary": "data_gap",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/14_call_cf_7f2dd4c170fe02522af7942b.json#K1",
+  "primary": "data_gap",
+  "secondary": [
+   "iv_vs_rv"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-22/00_put_cf_bd037b492c0d592cb0056160.json#K4",
+  "primary": "data_gap",
+  "secondary": [
+   "execution"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K4",
+  "primary": "gamma_pin",
+  "secondary": [
+   "session"
+  ],
+  "note": "pin vs US session break"
+ },
+ {
+  "qid": "arch/2026-10-21/10_put_cf_38e0aff3e66fdaa188625b28.json#K4",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.B.json#K1",
+  "primary": "gamma_pin",
+  "secondary": [
+   "deep_tail",
+   "touch_path"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.B.json#K4",
+  "primary": "execution",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/14_call_cf_7f2dd4c170fe02522af7942b.json#K3",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/02_put_cf_1f1d50000a7ae5b307cf3cfe.json#K2",
+  "primary": "zero_dte",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/22_put_cf_a6442e9274ee149a7d822147.json#K3",
+  "primary": "gamma_pin",
+  "secondary": [
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/22_put_cf_a6442e9274ee149a7d822147.json#K2",
+  "primary": "iv_vs_rv",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "sheets2/03_put_cf_6f60c265eed9c2046606bb71.B.json#K2",
+  "primary": "zero_dte",
+  "secondary": [
+   "gamma_pin"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-21/14_put_cf_606335a85f43cf2f3b49ddcc.json#K1",
+  "primary": "gamma_pin",
+  "secondary": [
+   "touch_path",
+   "deep_tail"
+  ],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K8",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K8",
+  "primary": "direction",
+  "secondary": [],
+  "note": ""
+ }
+]

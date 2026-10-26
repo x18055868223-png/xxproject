@@ -37,7 +37,7 @@ else:
     import astra_session_clock_v1 as session_clock
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.6"   # 0.1.6: annotate() — price cross-section, stale propagation, 0DTE expiry time, payout note (docs/opus/18 §3)
+BUILDER_VERSION = "astra_case_file_v1@0.1.7"   # 0.1.7: L8.decision_path label names no fixed steps (path v2, docs/opus/20)
 # The workbench's admission fields, constant while the space gate only evaluates (since 2026-10-13).
 GATE_ADMISSION_KEYS = ("state", "eligible", "since_ts_ms", "reason_codes")
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
@@ -470,7 +470,7 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
                      asof_ms=btc_map.get("cutoff_at_ms"))
 
     # L8 program readings
-    case.add("L8.decision_path", "程序固定判读（原 Decision Path D0–Q2，可被质疑）", dp_reading,
+    case.add("L8.decision_path", "程序固定判读（核验路径，版本见 path_version；可被质疑）", dp_reading,
              lineage=["astra_decision_path_v1"], source="astra_decision_path_v1.build",
              quality=None if dp_reading else "unknown",
              quality_reason=None if dp_reading else "decision_path_reading_unavailable")

@@ -59,7 +59,7 @@ def test_case_space_gate_keeps_only_the_producer_state():
     assert not set(cf.GATE_ADMISSION_KEYS) & set(gate)
     daily = case["layers"]["L6"][case["refs"]["L6.daily"]["index"]]["values"]
     assert [d["space_gate"] for d in daily] == ["STRUCTURE_BLOCKED", "STRUCTURE_BLOCKED"]   # old snapshots fall back
-    assert case["build"]["builder"] == "astra_case_file_v1@0.1.6"
+    assert case["build"]["builder"] == "astra_case_file_v1@0.1.7"
 
 
 # ------------------------------------------------------------------ Decision Path: marks and context

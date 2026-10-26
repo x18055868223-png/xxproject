@@ -194,3 +194,20 @@ def test_state_rewrite_within_one_mtime_is_seen(tmp_path):
     state.write_text(json.dumps({"contracts": {KEY: {"inquiry": []}}}), encoding="utf-8")
     os.utime(state, ns=(before.st_atime_ns, before.st_mtime_ns))                   # same mtime, different size
     assert reader.sheets(KEY) == []
+
+
+def test_full_view_carries_the_experience_reading_and_summary_does_not(tmp_path):
+    files = [f"inquiry/2026-10-20/22_put_{CASE}.json"]
+    write_archive(tmp_path, files)
+    path = tmp_path / files[0]
+    body = json.loads(path.read_text(encoding="utf-8"))
+    out = iv.InquiryReader(tmp_path).view(SHORT, LONG)
+    assert out["selected"]["lens"]["enabled"] is False          # 0.3 sheets get no reading
+    body["prompt_version"] = "inquiry_prompt@0.4"
+    body["sheet"]["questions"][0]["question_cn"] = "短腿 82500 的本期 Gamma 集中会钉住还是加速？"
+    path.write_text(json.dumps(body), encoding="utf-8")
+    out = iv.InquiryReader(tmp_path).view(SHORT, LONG)
+    reading = out["selected"]["lens"]
+    assert reading["enabled"] is True and reading["questions"]["K1"]["card"] == "gamma_pin"
+    summary = iv.InquiryReader(tmp_path).view(SHORT, LONG, summary=True)
+    assert "lens" not in summary["selected"] and "lens" not in json.dumps(summary["selected"]["summary"])

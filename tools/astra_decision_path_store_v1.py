@@ -33,6 +33,11 @@ CLAIM_MS = 120_000   # a conclusion in progress (a lock capture can take a while
 OPEN, CLOSED = "open", "closed"
 
 
+def _ids(session: Mapping[str, Any]) -> list[str]:
+    """The step ids of the path version a session started on (docs/opus/20)."""
+    return [s.get("id") for s in session.get("steps") or [] if isinstance(s, Mapping) and s.get("id")] or list(dp.STEP_IDS)
+
+
 class DecisionPathError(Exception):  # not ValueError: the HTTP layer maps ValueError to bad_json
     def __init__(self, code: str, status: int = 409):
         super().__init__(code)
@@ -248,10 +253,14 @@ class DecisionPathStore:
         """Open a step (and mark it). `context` is what the page showed at that moment (the
         audit step: which question sheet and model review), kept at the first opening and
         at the latest mark."""
-        if step_id not in dp.STEP_IDS or (lean is not None and lean not in dp.MARKS):
+        if not isinstance(step_id, str) or (lean is not None and lean not in dp.MARKS):
             raise DecisionPathError("bad_step_request", 400)
         with self._lock:
             session = self._open_session(vid, now_ms=now_ms)
+            # a session keeps the steps of the path version it started on (docs/opus/20): a v1
+            # session still opens and marks D5 after the v2 deploy, and a v2 one has T and H
+            if step_id not in _ids(session):
+                raise DecisionPathError("bad_step_request", 400)
             if lean is not None and not dp.markable(session.get("steps") or dp.steps_public(), step_id):
                 raise DecisionPathError("step_not_markable", 400)
             first = step_id not in session["opened"]
@@ -369,8 +378,8 @@ class DecisionPathStore:
             "started_at_ms": session.get("started_at_ms"), "entry_after_fee_btc": session.get("entry_after_fee_btc"),
             "verdicts_start": verdicts(start), "verdicts_now": verdicts(now) if now else None,
             "q1_items": [i.get("step") for i in ((start.get("steps") or {}).get("Q1") or {}).get("items") or []],
-            "marks": dp.summarize_marks(session.get("marks") or {}),
-            "settled_after": dp.first_settled_step(session.get("marks") or {}),
+            "marks": dp.summarize_marks(session.get("marks") or {}, _ids(session)),
+            "settled_after": dp.first_settled_step(session.get("marks") or {}, _ids(session)),
             "opened_order": order, "dwell_ms": dwell,
             "conclusion": conclusion.get("choice"), "episode_id": conclusion.get("episode_id"),
             "decisions": session.get("decisions") or [],

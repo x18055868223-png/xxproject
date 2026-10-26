@@ -9,7 +9,11 @@ this-expiry walls, events) and says them in a fixed vocabulary. Nothing here wei
 forecasts or decides; no model is called. D1 to Q1 never show a premium number.
 
 Pure functions. The workbench builds the frame; the session store keeps the readings.
-Design: docs/astra/DECISION_PATH_DESIGN_20261014.md.
+Design: docs/astra/DECISION_PATH_DESIGN_20261014.md; v2 (docs/opus/20, 2026-10-26) re-bases the
+steps on the graded experience of docs/opus/16-17: one positive judgement only (Q2 price and
+execution), everything else describes or vetoes; time (T) and the holding plan (H) are new;
+direction readings are one line, same-source, never votes. Each line may carry `basis`
+(grade and source); X/C readings and "no veto" never take the green tone.
 """
 from __future__ import annotations
 
@@ -17,17 +21,23 @@ import math
 import time
 from typing import Any, Mapping, Sequence
 
-SCHEMA = "astra_decision_path_reading@1.0.0"
-PATH_VERSION = "dp-2026-10-14.1"
+if __package__:
+    from . import astra_path_stats_v1 as path_stats
+else:
+    import astra_path_stats_v1 as path_stats
+
+SCHEMA = "astra_decision_path_reading@2.0.0"
+PATH_VERSION = "dp-2026-10-26.2"
 STEPS: tuple[dict[str, Any], ...] = (
     {"id": "D0", "title": "资料", "question": "能读吗？"},
     {"id": "D1", "title": "责任", "question": "这张保单承担什么？"},
-    {"id": "D2", "title": "位置", "question": "现价离责任区在结构上多远，途中有什么？"},
-    {"id": "D3", "title": "运动", "question": "正往哪动？会不会被放大？"},
-    {"id": "D4", "title": "外部", "question": "这期哪些外部信息值得看？"},
-    {"id": "D5", "title": "变化", "question": "怎么变到现在的？"},
-    {"id": "Q1", "title": "风险质量", "question": "合起来风险是什么样？"},
-    {"id": "Q2", "title": "风险补偿", "question": "给的钱够不够看？", "premium": True},
+    {"id": "T", "title": "时间", "question": "现在承担的是哪段时间的风险？"},
+    {"id": "D2", "title": "位置", "question": "离责任区多远（按本期预期波动）？"},
+    {"id": "D3", "title": "运动", "question": "是否正朝短腿快速移动？"},
+    {"id": "D4", "title": "事件", "question": "持有期内有哪些外生窗口？"},
+    {"id": "Q1", "title": "否决汇总", "question": "有没有不做的理由？"},
+    {"id": "Q2", "title": "价格与执行", "question": "给的钱够不够？能不能成交到？", "premium": True},
+    {"id": "H", "title": "持有计划", "question": "锁定后怎么盯？"},
     # AU shows the model review and the inquirer's questions (docs/opus/14) and is marked like the others.
     {"id": "AU", "title": "审计", "question": "模型认同吗？还剩什么要你判断？", "on_demand": True, "markable": True},
 )
@@ -46,6 +56,9 @@ _GAP_CN = {
     "walls_stale": "本期墙数据偏旧", "snapshot_gaps": "快照另有缺口", "quote_old": "报价超过 2 分钟",
     "snapshot": "没有冻结快照", "expired": "合约已到期",
 }
+# D2: a standard 0.35Δ short leg sits near 0.4 expected moves (docs/opus/17 §3.2); "narrow" is
+# clearly closer than that (unvalidated, veto only)
+NARROW_MOVES = 0.25
 # Walls older than this are left out of D2 (D0 already says they are stale).
 WALLS_MAX_AGE_MS = 2 * 3_600_000
 _REGIME = {"POSITIVE_GAMMA_PINNING": ("正 Gamma，波动倾向收敛", "ok"), "POSITIVE_GAMMA": ("正 Gamma，波动倾向收敛", "ok"),
@@ -90,8 +103,43 @@ def _hours(ms: float | None) -> str:
     return f"{ms / 3_600_000:.1f} 小时"
 
 
-def _line(label: str, text: str, tone: str = "") -> dict[str, str]:
-    return {"k": label, "v": text, "tone": tone}
+def _line(label: str, text: str, tone: str = "", basis: str | None = None) -> dict[str, str]:
+    out = {"k": label, "v": text, "tone": tone}
+    if basis:
+        out["basis"] = basis
+    return out
+
+
+# grades and sources of the readings (docs/opus/16, 17), shown under each line
+B_CLOCK = "A · 17 号 §2.1（风险按时段分布）"
+B_ENTRY_HOUR = "B · 17 号 §3.1 / 附录 A（只有“16:00 优于 08:00”达到 B；其余时点与 08:00 相近；扣成本后的绝对优势取决于成本）"
+B_VETO = "未验证，只作否决 · 13 号 / 17 号 §3.2"
+B_SAME_SOURCE = "A/C · 17 号 §2.4（方向不能逐日外推；趋势与成交类读数多为同源）"
+B_UNSIGNED = "口径 · 17 号 §7.2（GEX 不带符号，无法判定钉住还是加速）"
+B_SPATIAL_X = "X · 17 号 §3.4（空间位置不能当缓冲）"
+B_EVENTS = "B · 17 号 §2.2（公开事件已计入一天期报价；落在持有期内即为高波动窗口）"
+B_EXECUTION = "B/C · 17 号 §6（优势与成本同量级；挂单接近中间价是唯一不依赖预测的改进，可成交性未验证）"
+B_IV_RV = "X · 16 号第 4 条（“隐含低于实现 = 危险”已撤回；一天期 IV 与实现之差没有检验过的结论）"
+B_EARLY_TOUCH = "A（方向）/ C（幅度）· 17 号 §4.2"
+B_STATE = "回测支持（边缘，t 2.56）、未前向验证 · 21 号 §6"
+B_THIN_CUSHION = ("未验证，只作否决 · 13 号；17 号 §3.2：标准 0.35Δ 短腿约在 0.4 倍预期波动，"
+                  "工作日 11:30–19:00 UTC（夏令时）这条几乎必然触发，与 16:00 较好时段冲突，修订待用户决定")
+# docs/opus/21 §6: four states from realized-vol direction and implied minus realized; only one
+# passed, as a timing interaction (16:00 beat 08:00 by +14.8, all cycles +8.8); no state's 08:00
+# result differed from the rest
+STATE_BACKTEST = {("扩张", "低于"): "此状态回测中 16:00 建仓比 08:00 多 +14.8（单位 1e-4 BTC，t 2.56，边缘；"
+                                   "未证明大于其他状态，全体为 +8.8；一个半年反向）；08:00 本身与其他状态无差异",
+                  ("扩张", "高于"): "此状态回测无显著差异", ("收敛", "高于"): "此状态回测无显著差异",
+                  ("收敛", "低于"): "此状态回测无显著差异"}
+
+
+def market_state(frame: Mapping[str, Any], g: Mapping[str, Any]) -> tuple[str, str] | None:
+    """(S1, S2) of docs/opus/21: realized-vol direction (RV24 / RV7) and implied minus realized."""
+    rv = frame.get("realized_vol") or {}
+    rv24, rv7, iv = _num(rv.get("rv_24h_pct")), _num(rv.get("rv_7d_pct")), g.get("iv")
+    if rv24 is None or rv7 is None or not rv7 or iv is None or g.get("iv_basis") != "本期 ATM 标记 IV":
+        return None     # the registration needs this contract's own IV, not a term-structure fallback
+    return ("扩张" if rv24 / rv7 >= 1 else "收敛"), ("高于" if iv - rv24 >= 0 else "低于")
 
 
 def _weak(state: Any) -> bool:
@@ -196,7 +244,10 @@ def _d0(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     fact_status = frame.get("fmz_status")
     if fact_status != "current":
         gaps.append("fmz")
-    lines.append(_line("FMZ 事实", "当前" if fact_status == "current" else "不是当前版本", "" if fact_status == "current" else "warn"))
+    fact_age = _num(frame.get("fmz_age_ms"))
+    lines.append(_line("FMZ 事实", "当前" if fact_status == "current" else
+                       "不是当前" + (f"（{fact_age / 3_600_000:.1f} 小时前）" if fact_age is not None else ""),
+                       "" if fact_status == "current" else "warn"))
     walls = frame.get("expiry_walls")
     if not walls:
         gaps.append("walls")
@@ -224,10 +275,64 @@ def _d1(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
         _line("方向", f"到期价{'跌破' if side == 'put' else '涨过'} {_usd(short)} 美元开始赔"),
         _line("责任区", f"{_usd(short)} → {_usd(long_)} 美元（宽 {_usd(width)} 美元）"),
         _line("最坏形状", "跌破保护腿后按 BTC 计赔付仍增加（币本位）" if side == "put"
-              else "涨过保护腿后赔付封顶，不再增加"),
+              else "涨过保护腿后按 USD 计封顶，按 BTC 计随价格上涨递减"),
         _line("剩余", _hours(g["hours"] * 3_600_000 if g["hours"] is not None else None)),
     ]
     return {"verdict": {"code": "described", "cn": f"{name} 价差，持有到期", "tone": ""}, "lines": lines}
+
+
+def _t(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
+    clock = frame.get("session_clock") or {}
+    lines = []
+    phase = _get(clock, "phase.label_cn")
+    ratio = _num(clock.get("hour_ratio_now"))
+    hour = clock.get("now_hour_utc")
+    if phase or ratio is not None:
+        lines.append(_line("当前时段", (phase or "—") + (f"，本小时风险约为全天平均的 {ratio:.2f} 倍" if ratio is not None else ""),
+                           "", B_CLOCK))
+    daily, _why = path_stats.daily_basis(clock)
+    better = False
+    if daily and isinstance(hour, int) and not isinstance(hour, bool):
+        better = 15 <= hour <= 17
+        lines.append(_line("建仓时点", f"现在 {hour:02d} 时（UTC）："
+                           + ("处在 16:00 前后的较好建仓时段（意义主要是避开较差时点）" if better
+                              else "不在 16:00 前后的较好时段；其余时点与 08:00 相近"), "", B_ENTRY_HOUR))
+    window = next((w for w in clock.get("windows") or []
+                   if isinstance(w, Mapping) and _num(w.get("in_hours")) is not None), None)
+    near = False
+    if window:
+        in_h = _num(window.get("in_hours"))
+        near = bool(window.get("in_progress")) or in_h <= 2
+        lines.append(_line("下一个高波动窗口", f"{window.get('label_cn') or '窗口'}，"
+                           + ("进行中" if window.get("in_progress") else f"{in_h:.1f} 小时后"), "warn" if near else "", B_CLOCK))
+    state = market_state(frame, g) if daily else None
+    if state:
+        lines.append(_line("本期状态", f"波动{state[0]}、隐含{state[1]}实现：{STATE_BACKTEST[state]}"
+                           "（口径近似：永续 1 小时实现波动与本期 mark IV）", "",
+                           B_STATE if state == ("扩张", "低于") else "回测无差异 · 21 号 §6"))
+    factor = _num(clock.get("remaining_clock_factor"))
+    if factor is not None:
+        lines.append(_line("剩余时段", f"到期前剩下的时段约为全天平均忙碌度的 {factor:.2f} 倍", "", B_CLOCK))
+    warn = _get(frame, "candidate.entry_warnings") or {}
+    items = [w for w in warn.get("warnings") or [] if isinstance(w, Mapping)] if isinstance(warn, Mapping) else []
+    fired = [w for w in items if w.get("triggered") is True]
+    for w in items:
+        status = "触发" if w.get("triggered") is True else "未触发" if w.get("triggered") is False else "无法判断"
+        thin = "cushion" in str(w.get("code") or "") or "缓冲" in str(w.get("label_cn") or "")
+        lines.append(_line("否决层", f"{w.get('label_cn') or w.get('code')}：{status}",
+                           "bad" if w.get("triggered") is True else "", B_THIN_CUSHION if thin else B_VETO))
+    if not items:
+        lines.append(_line("否决层", "不可用", "warn"))
+    if fired:
+        verdict = {"code": "veto", "cn": f"否决层触发 {len(fired)} 项", "tone": "bad"}
+    elif near:
+        verdict = {"code": "window_near", "cn": "高波动窗口临近", "tone": "warn"}
+    elif better:
+        verdict = {"code": "better_hours", "cn": "较好建仓时段", "tone": ""}
+    else:
+        verdict = {"code": "ordinary", "cn": "未见时段否决", "tone": ""}
+    return {"verdict": verdict, "lines": lines, "fired": [w.get("code") for w in fired], "better_hours": better,
+            "market_state": "/".join(state) if state else None}
 
 
 def _levels(frame: Mapping[str, Any], g: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -256,12 +361,12 @@ def _d2(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
         buffer = {"code": "inside", "cn": "已进入", "tone": "bad"}
     elif ratio is None:
         buffer = {"code": "unknown", "cn": "未知", "tone": "warn"}
-    elif ratio < 0.5:
+    elif ratio < NARROW_MOVES:
         buffer = {"code": "narrow", "cn": "窄", "tone": "bad"}
-    elif ratio < 1.0:
-        buffer = {"code": "medium", "cn": "中等", "tone": "warn"}
+    elif ratio < 0.55:
+        buffer = {"code": "standard", "cn": "标准附近", "tone": ""}
     else:
-        buffer = {"code": "wide", "cn": "宽", "tone": "ok"}
+        buffer = {"code": "wide", "cn": "较远", "tone": ""}     # a distance, not a reason to take the contract
     if dist is None:
         text = f"{buffer['cn']}：距离未能计算"
     else:
@@ -270,7 +375,8 @@ def _d2(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
         text = f"{buffer['cn']}：短腿在现价{outward if dist >= 0 else inward} {abs(dist):.2f}%"
         if ratio is not None and move is not None and g["iv"] is not None:
             text += f"，约 {ratio:.2f} 倍到期前预期波动（±{move:.2f}%，{g['iv_basis']} {g['iv']:.1f}%）"
-    lines = [_line("缓冲", text, buffer["tone"])]
+    lines = [_line("缓冲", text, buffer["tone"],
+                   "距离 · 本期 ATM IV 折算；标准 0.35Δ 短腿约 0.4 倍（17 号 §3.2）；窄（< 0.25 倍）只作否决，阈值未验证")]
     spot, short = g["spot"], g["short"]
     on_way, beyond = [], []
     if spot is not None and short is not None:
@@ -283,26 +389,31 @@ def _d2(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
                 beyond.append({**level, "offset": offset})
     on_way.sort(key=lambda lv: lv["offset"])
     first = on_way[0] if on_way else None
-    lines.append(_line("途中先遇到（本期口径）", f"{first['label']}，在现价{'下方' if g['adverse'] < 0 else '上方'} {first['offset'] / spot * 100:.2f}%"
-                       if first else "现价到短腿之间没有本期墙、Pin 或 Flip"))
-    if len(on_way) > 1:
-        lines.append(_line("途中另有", "、".join(lv["label"] for lv in on_way[1:])))
+    if first:
+        text = (f"{first['label']}，在现价{'下方' if g['adverse'] < 0 else '上方'} {first['offset'] / spot * 100:.2f}%"
+                + (f"；另有 {'、'.join(lv['label'] for lv in on_way[1:])}" if len(on_way) > 1 else ""))
+    else:
+        text = "现价到短腿之间没有本期墙、Pin 或 Flip"
+    lines.append(_line("途中价位（本期口径）", text, "", B_UNSIGNED))
     if beyond:
-        lines.append(_line("短腿外侧", "、".join(lv["label"] for lv in sorted(beyond, key=lambda lv: lv["offset"])[:2])))
+        lines.append(_line("短腿外侧", "、".join(lv["label"] for lv in sorted(beyond, key=lambda lv: lv["offset"])[:2]), "", B_UNSIGNED))
     regime = _get(frame, "market_facts.gamma_regime.regime")
-    word, tone = _REGIME.get(regime, ("未知", "warn"))
-    lines.append(_line("Gamma 体制", word, tone))
+    word = _REGIME.get(regime, ("未知", ""))[0]
+    lines.append(_line("Gamma 体制（信号层）", word + "；只作描述，不判定钉住或加速", "", B_UNSIGNED))
     sp = (frame.get("candidate") or {}).get("spatial_position") or {}
-    at_short = _get(sp, "gamma.regime_at_short")
-    if at_short in {"negative", "positive"}:
-        lines.append(_line("短腿处", "负 Gamma（对冲顺势）" if at_short == "negative" else "正 Gamma（对冲逆势）",
-                           "bad" if at_short == "negative" else "ok"))
     if sp.get("state") in {"favorable", "unfavorable"}:
-        lines.append(_line("空间位置（周度 / 0DTE 墙口径，未验证）", ("相对有利" if sp["state"] == "favorable" else "相对不利")
-                           + (f"：{sp['reason_cn']}" if sp.get("reason_cn") else ""),
-                           "ok" if sp["state"] == "favorable" else "bad"))
+        lines.append(_line("空间位置（周度 / 0DTE 墙）", "程序判读为" + ("相对有利" if sp["state"] == "favorable" else "相对不利")
+                           + "；不作缓冲，也不计入否决", "", B_SPATIAL_X))
+    at = frame.get("at_ms")
+    recent = [t for t in frame.get("transitions") or [] if isinstance(t, Mapping)
+              and isinstance(t.get("transition_ts_ms"), int) and isinstance(at, int)
+              and 0 <= at - t["transition_ts_ms"] <= TRANSITION_WINDOW_MS]
+    if recent:
+        last = max(recent, key=lambda t: t["transition_ts_ms"])
+        lines.append(_line("锚点效用变迁", f"近 24 小时 {len(recent)} 次，最近 {_bjt(last['transition_ts_ms'])}"
+                           f"（{_STATE_CN.get(last.get('previous_state'), '前态')} → {_STATE_CN.get(last.get('current_state'), '现态')}）"))
     return {"verdict": buffer, "lines": lines, "first_on_way": first and first["kind"],
-            "regime": word, "short_regime": at_short, "spatial": sp.get("state")}
+            "regime": word, "spatial": sp.get("state"), "transitions_24h": len(recent)}
 
 
 def _d3(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
@@ -310,47 +421,40 @@ def _d3(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     vp = mf.get("volume_price") or {}
     adverse = g["adverse"]
 
-    def rel(lean: int | None, weak: bool) -> tuple[str, str]:
+    def word(lean: int | None, weak: bool) -> str:
         if lean is None:
-            return "未就绪", ""
+            return "未就绪"
         if lean == 0:
-            return "无方向", ""
-        word, tone = ("朝责任区", "bad") if lean == adverse else ("背离责任区", "ok")
-        return (word + "（弱）", "warn" if tone == "bad" else "") if weak else (word, tone)
+            return "无方向"
+        return ("朝责任区" if lean == adverse else "背离责任区") + ("（弱）" if weak else "")
 
-    reads = []
-    for label, path in (("量价 24 小时", "tmvf_24h"), ("量价 48 小时", "tmvf_48h")):
+    parts = []
+    for label, path in (("量价 24h", "tmvf_24h"), ("量价 48h", "tmvf_48h")):
         block = vp.get(path) or {}
         lean = _lean(block.get("final_state")) if block.get("data_ready") else None
-        reads.append((label, lean, _weak(block.get("final_state"))))
+        parts.append(f"{label} {word(lean, _weak(block.get('final_state')))}")
     comb = _get(vp, "micro_flow.combined") or {}
-    reads.append(("主动成交", _lean(comb.get("direction")) if comb.get("data_ready") else None, _weak(comb.get("state"))))
+    lean = _lean(comb.get("direction")) if comb.get("data_ready") else None
+    parts.append(f"主动成交 {word(lean, _weak(comb.get('state')))}")
+    lines = [_line("方向读数（同源，不计票）", "、".join(parts) + "；不用于选边，也不当作远离责任区的缓冲", "", B_SAME_SOURCE)]
     mdie = mf.get("m_die") or {}
     no_move = mdie.get("level") == "NO_DIRECTIONAL_MOVE" or mdie.get("move_shape") == "NO_MOVE"
     mlean = 0 if no_move else {"UP": 1, "DOWN": -1}.get(mdie.get("direction"))
-    reads.append(("近 15 分钟走势", mlean, False))
-    lines = []
-    toward = away = 0
-    for label, lean, weak in reads:
-        word, tone = rel(lean, weak)
-        lines.append(_line(label, word, tone))
-        if label != "近 15 分钟走势" and lean is not None and lean != 0:
-            toward += lean == adverse
-            away += lean == -adverse
+    lines.append(_line("近 15 分钟走势", word(mlean, False)))
     regime = _get(mf, "gamma_regime.regime")
     short_negative = _get(frame, "candidate.spatial_position.gamma.regime_at_short") == "negative"
-    amplifying = str(regime or "").startswith("NEGATIVE") or short_negative
-    if toward > away:
-        verdict = ({"code": "toward_amplified", "cn": "朝责任区，易放大", "tone": "bad"} if amplifying
-                   else {"code": "toward", "cn": "朝责任区", "tone": "warn"})
-    elif away > toward:
-        verdict = {"code": "away", "cn": "背离责任区", "tone": "ok"}
+    if str(regime or "").startswith("NEGATIVE") or short_negative:
+        lines.append(_line("负 Gamma", "信号层读数为负 Gamma" + ("（短腿处）" if short_negative else "")
+                           + "：若朝责任区移动可能被放大；只作说明", "", B_UNSIGNED))
+    hours = g["hours"]
+    early = mlean is not None and mlean == adverse and hours is not None and hours > 12
+    if early:
+        lines.append(_line("早段朝短腿", "剩余时间超过 12 小时，近 15 分钟正朝短腿移动：若早段被触及，约四分之一会走到保护腿",
+                           "warn", B_EARLY_TOUCH + "；15 分钟走势本身没有检验过的预测力"))
+        verdict = {"code": "toward_early", "cn": "早段朝短腿（说明，不计否决）", "tone": "warn"}
     else:
-        verdict = {"code": "none", "cn": "无方向", "tone": ""}
-    if amplifying:
-        lines.append(_line("放大", "负 Gamma 下对冲顺势，若朝责任区移动会被放大"
-                           + ("（短腿处为负 Gamma）" if short_negative else ""), "warn"))
-    return {"verdict": verdict, "lines": lines, "toward": toward, "away": away}
+        verdict = {"code": "no_veto", "cn": "方向不作承保理由", "tone": ""}
+    return {"verdict": verdict, "lines": lines}
 
 
 def _d4(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
@@ -362,91 +466,41 @@ def _d4(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
         to_expiry = _num(e.get("to_expiry_ms"))
         text = f"{e.get('name_cn') or '宏观发布'}" + (f"（{e['period_cn']}）" if e.get("period_cn") else "")
         text += f"，北京时间 {_bjt(e.get('at_ms')) or '—'}" + (f"，距到期 {_hours(to_expiry)}" if to_expiry else "")
-        lines.append(_line("事件", text + ("（日期待定）" if e.get("tentative") else ""), "warn"))
+        lines.append(_line("事件窗口", text + ("（日期待定）" if e.get("tentative") else "") + "；看时段，不看方向", "warn", B_EVENTS))
         listed.append("event")
     window = frame.get("cross_window") or {}
     if window.get("covers_us_session"):
         lines.append(_line("跨资产", "合约期内跨过美股交易时段（只作背景，不进入判断）"))
-    regime = str(_get(frame, "market_facts.macro_pressure.macro_regime") or "")
-    toward_put, toward_call = "Headwind" in regime, "Tailwind" in regime
-    if (g["side"] == "put" and toward_put) or (g["side"] == "call" and toward_call):
-        strength = "强" if "Strong" in regime else "温和"
-        lines.append(_line("宏观", f"{strength}{'偏空（逆风）' if toward_put else '偏多（顺风）'}，朝 {'Put' if toward_put else 'Call'} 责任区", "warn"))
-        listed.append("macro")
     calendar_gaps = _get(frame, "candidate.exogenous_events.gaps") or []
     if calendar_gaps:
         lines.append(_line("日历", "事件日历未完全覆盖本期（有日期待公布或日程未发布），未列出不等于没有", "warn"))
     if not listed:
-        lines.append(_line("其余", "到期前没有需关注的外部项" if not calendar_gaps else "已知日程内没有需关注项"))
-    verdict = ({"code": "listed", "cn": f"需关注 {len(listed)} 项", "tone": "warn"} if listed
+        lines.append(_line("其余", "到期前没有已知的外生事件" if not calendar_gaps else "已知日程内没有外生事件"))
+    verdict = ({"code": "listed", "cn": f"持有期内事件 {len(listed)} 个", "tone": "warn"} if listed
                else {"code": "calendar_partial", "cn": "日历不完整", "tone": "warn"} if calendar_gaps
-               else {"code": "none", "cn": "本期不必参考", "tone": "ok"})
+               else {"code": "none", "cn": "无已知事件", "tone": ""})
     return {"verdict": verdict, "lines": lines, "listed": listed}
-
-
-def _d5(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
-    vp = _get(frame, "market_facts.volume_price") or {}
-    l24 = _lean(_get(vp, "tmvf_24h.final_state")) if _get(vp, "tmvf_24h.data_ready") else None
-    l48 = _lean(_get(vp, "tmvf_48h.final_state")) if _get(vp, "tmvf_48h.data_ready") else None
-    if l24 is None or l48 is None:
-        pattern = {"code": "unknown", "cn": "未就绪", "tone": ""}
-    elif vp.get("window_conflict") or (l24 and l48 and l24 != l48):
-        pattern = {"code": "back_and_forth", "cn": "反复", "tone": "warn"}
-    elif l24 and l24 == l48:
-        pattern = {"code": "persistent", "cn": "持续", "tone": "bad" if l24 == g["adverse"] else ""}
-    elif l24 and not l48:
-        pattern = {"code": "recent", "cn": "新近", "tone": "warn" if l24 == g["adverse"] else ""}
-    elif l48 and not l24:
-        pattern = {"code": "fading", "cn": "消退", "tone": ""}
-    else:
-        pattern = {"code": "flat", "cn": "平稳", "tone": "ok"}
-    lines = [_line("多窗口", f"24 小时{_lean_cn(l24)} / 48 小时{_lean_cn(l48)}：{pattern['cn']}", pattern["tone"])]
-    at = frame.get("at_ms")
-    recent = [t for t in frame.get("transitions") or [] if isinstance(t, Mapping)
-              and isinstance(t.get("transition_ts_ms"), int) and isinstance(at, int)
-              and 0 <= at - t["transition_ts_ms"] <= TRANSITION_WINDOW_MS]
-    if recent:
-        last = max(recent, key=lambda t: t["transition_ts_ms"])
-        lines.append(_line("锚点效用变迁", f"近 24 小时 {len(recent)} 次，最近 {_bjt(last['transition_ts_ms'])}"
-                           f"（{_STATE_CN.get(last.get('previous_state'), '前态')} → {_STATE_CN.get(last.get('current_state'), '现态')}）",
-                           "warn" if len(recent) >= 3 else ""))
-    else:
-        lines.append(_line("锚点效用变迁", "近 24 小时没有变化"))
-    return {"verdict": pattern, "lines": lines, "transitions_24h": len(recent)}
 
 
 _STATE_CN = {"ANCHOR_EFFECTIVE": "锚点有效", "ANCHOR_INEFFECTIVE": "锚点失效",
              "STRUCTURE_ELIGIBLE": "结构放行", "STRUCTURE_BLOCKED": "结构关闭"}
 
 
-def _lean_cn(lean: int | None) -> str:
-    return {None: "未就绪", 0: "中性", 1: "偏多", -1: "偏空"}[lean]
-
-
 def _q1(steps: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
+    """Every veto, in reading order. No veto is said plainly and never as a reason to take it."""
     items = []
-    d0, d2, d3, d4, d5 = (steps[k] for k in ("D0", "D2", "D3", "D4", "D5"))
+    d0, t, d2 = (steps[k] for k in ("D0", "T", "D2"))
     if d0["verdict"]["code"] != "readable":
         items.append({"step": "D0", "text": f"资料{d0['verdict']['cn']}：" + "、".join(_GAP_CN.get(c, c) for c in d0.get("gaps") or [])})
+    if t["verdict"]["code"] == "veto":
+        items.append({"step": "T", "text": t["verdict"]["cn"]})
     if d2["verdict"]["code"] in {"inside", "narrow"}:
         items.append({"step": "D2", "text": f"缓冲{d2['verdict']['cn']}：" + d2["lines"][0]["v"].split("：", 1)[-1]})
-    if d3["verdict"]["code"] in {"toward", "toward_amplified"}:
-        items.append({"step": "D3", "text": f"价格{d3['verdict']['cn']}"})
-    if d4["verdict"]["code"] == "listed":
-        items.append({"step": "D4", "text": "到期前有需关注的外部项：" + "；".join(
-            line["v"].split("，北京时间")[0] for line in d4["lines"] if line["k"] in {"事件", "宏观"})})
-    if d5["verdict"]["code"] in {"back_and_forth"} or (d5["verdict"]["code"] in {"persistent", "recent"} and d5["verdict"]["tone"]):
-        items.append({"step": "D5", "text": f"多窗口方向{d5['verdict']['cn']}"})
-    if d2.get("spatial") == "unfavorable" and not any(i["step"] == "D2" for i in items):
-        items.append({"step": "D2", "text": "空间位置相对不利（程序，未验证）"})
-    adverse = len(items)
-    # first three by priority, shown in reading order
-    items = sorted(items[:3], key=lambda i: STEP_IDS.index(i["step"]))
-    verdict = ({"code": "attention", "cn": f"需关注 {adverse} 项" + ("（列出前 3 项）" if adverse > 3 else ""),
-                "tone": "bad" if adverse >= 2 else "warn"} if adverse
-               else {"code": "clear", "cn": "D1–D5 未见指向责任区的读数", "tone": "ok"})
-    return {"verdict": verdict, "items": items, "adverse_count": adverse,
-            "lines": [_line(i["step"], i["text"]) for i in items]}
+    verdict = ({"code": "veto", "cn": f"否决 {len(items)} 项", "tone": "bad"} if items
+               else {"code": "no_veto", "cn": "未见否决项（这不是做的理由）", "tone": ""})
+    lines = ([_line(i["step"], i["text"], "bad") for i in items] if items
+             else [_line("结论", "未见否决项；是否做，看 Q2 的价格与执行")])
+    return {"verdict": verdict, "items": items, "adverse_count": len(items), "lines": lines}
 
 
 def _q2(frame: Mapping[str, Any], g: Mapping[str, Any], q1: Mapping[str, Any]) -> dict[str, Any]:
@@ -459,12 +513,33 @@ def _q2(frame: Mapping[str, Any], g: Mapping[str, Any], q1: Mapping[str, Any]) -
     lines = [_line("净信用（扣入场费）", f"{_usd(net_usd)} 美元（{net_btc:.4f} BTC）" if net_usd is not None and net_btc is not None else "—"),
              _line("毛信用占宽度", f"{ratio:.1f}%" if ratio is not None else "—")]
     questions = {q.get("key"): q for q in _get(cand, "decision_reduction.questions") or [] if isinstance(q, Mapping)}
+    market = (questions.get("market_price") or {}).get("numbers") or {}
+    mark_btc = _num(market.get("market_payout_btc"))
+    if mark_btc and mark_btc > 0:
+        if net_btc is not None:
+            lines.append(_line("净信用 ÷ 两腿 mark 价差", f"{net_btc / mark_btc:.0%}（前 14 张案卷范围 69–86%，未复核，不作基准）",
+                               "", B_EXECUTION))
+        elif visible is not None:
+            lines.append(_line("可见信用 ÷ 两腿 mark 价差（扣费前）", f"{visible / mark_btc:.0%}（费用未知，不能与 69–86% 比较）",
+                               "", B_EXECUTION))
+    spread_cost = _num(market.get("spread_cost_usd"))
+    if spread_cost is not None:
+        lines.append(_line("成交口径成本", (f"按买卖价成交比按 mark 少收约 {_usd(abs(spread_cost))} 美元；"
+                                            "挂单接近中间价可能收回一部分（可成交性未验证）") if spread_cost < 0
+                           else f"按买卖价成交不低于按 mark（多 {_usd(spread_cost)} 美元）"))
+    book = frame.get("long_book_top") or {}
+    bid, ask = _num(book.get("bid")), _num(book.get("ask"))
+    if ask is not None and ask > 0 and bid is not None and 0 <= bid <= ask:
+        wide = (ask - bid) / ((ask + bid) / 2)
+        lines.append(_line("保护腿盘口点差 ÷ 中间价", ("买价为 0（点差为中间价的 200%）" if bid == 0 else f"{wide:.0%}")
+                           + ("；达到约 50%，补偿读数要打折" if wide >= 0.5 else ""), "warn" if wide >= 0.5 else "",
+                           "推论（无等级）· 17 号 §6"))
     worst = (questions.get("worst_case") or {}).get("numbers") or {}
     loss_btc, loss_usd = _num(worst.get("loss_at_protection_btc")), _num(worst.get("loss_at_protection_usd"))
     if loss_btc is not None:
         lines.append(_line("保护腿处净亏", f"{loss_btc:.4f} BTC（约 {_usd(loss_usd)} 美元）"
-                           + ("，再往下按 BTC 计还会增加" if g["side"] == "put" else "，为最坏情况")))
-    market = (questions.get("market_price") or {}).get("numbers") or {}
+                           + ("，再往下按 BTC 计还会增加" if g["side"] == "put" else "；按 USD 计封顶，按 BTC 计越过后递减"),
+                           "", "B · 17 号 §2.3（一次大亏约抵四次全额收信用）"))
     edge, payout = _num(market.get("edge_usd")), _num(market.get("market_payout_usd"))
     if edge is not None and payout is not None:
         lines.append(_line("市场估价", f"按两腿标记价，到期平均赔付约 {_usd(payout)} 美元；净收比它"
@@ -485,15 +560,35 @@ def _q2(frame: Mapping[str, Any], g: Mapping[str, Any], q1: Mapping[str, Any]) -
             parts.append(f"近 24 小时实现 {rv24:.1f}%")
         if rv7 is not None:
             parts.append(f"近 7 天实现 {rv7:.1f}%")
-        gap = iv - (rv24 if rv24 is not None else rv7)
         old = rv_age is not None and rv_age > 3 * 3_600_000
-        lines.append(_line("隐含与实现波动", " · ".join(parts) + f"；IV {'高于' if gap > 0 else '低于' if gap < 0 else '等于'}近期实现 {abs(gap):.1f} 个点"
-                           + (f"（实现波动截至 {_hours(rv_age)}前）" if old else ""),
-                           "warn" if gap < 0 or old else ""))
+        lines.append(_line("隐含与实现波动（只列数）", " · ".join(parts) + (f"（实现波动截至 {_hours(rv_age)}前）" if old else ""),
+                           "warn" if old else "", B_IV_RV))
     else:
         lines.append(_line("隐含与实现波动", "暂缺"))
-    lines.append(_line("对照风险质量", f"{q1['verdict']['cn']}；以上补偿是否够看由你判断（不给概率）"))
+    lines.append(_line("对照否决汇总", f"{q1['verdict']['cn']}；补偿是否够、能否挂到接近中间价，由你判断（不给概率）"))
     return {"verdict": stance, "lines": lines, "credit_to_width_pct": ratio, "edge_usd": edge}
+
+
+def _h(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
+    clock = frame.get("session_clock") or {}
+    lines = []
+    window = next((w for w in clock.get("windows") or []
+                   if isinstance(w, Mapping) and isinstance(w.get("at_ms"), int) and not w.get("in_progress")), None)
+    if window:
+        lines.append(_line("检查点", f"{window.get('label_cn') or '高波动窗口'}（北京时间 {_bjt(window['at_ms'])}）之前检查一次", "", B_CLOCK))
+    ok, why = path_stats.daily_basis(clock)
+    left = _num(clock.get("hours_to_expiry"))
+    row = path_stats.next_survival(left, g["side"]) if ok and left is not None else None
+    if row:
+        h, later, beyond = row
+        lines.append(_line(f"若到 {h:02d}:00 UTC 仍未触及", f"之后触及约 {later}%，到期越过约 {beyond}%（{path_stats.SURVIVAL_NOTE_CN}）",
+                           "", "B · 17 号 §4.1"))
+    if ok and left is not None:
+        lines.append(_line(f"若此刻被触及（剩余约 {left:.1f} 小时）", path_stats.touch_text(left), "", B_EARLY_TOUCH))
+    elif why:
+        lines.append(_line("路径统计", f"不给：{why}"))
+    lines.append(_line("说明", "观察点不是平仓点；日内平仓规则约 20 个到期日后再议（17 号 §5）"))
+    return {"verdict": {"code": "plan", "cn": "持有观察点", "tone": ""}, "lines": lines}
 
 
 def _failed(exc: Exception) -> dict[str, Any]:
@@ -505,7 +600,7 @@ def build(frame: Mapping[str, Any]) -> dict[str, Any]:
     """Readings of every step for one frame (start or now)."""
     g = _geometry(frame)
     steps: dict[str, Any] = {}
-    for step_id, fn in (("D0", _d0), ("D1", _d1), ("D2", _d2), ("D3", _d3), ("D4", _d4), ("D5", _d5)):
+    for step_id, fn in (("D0", _d0), ("D1", _d1), ("T", _t), ("D2", _d2), ("D3", _d3), ("D4", _d4)):
         try:
             steps[step_id] = fn(frame, g)
         except Exception as exc:  # one step's bad input must not lose the others
@@ -518,6 +613,10 @@ def build(frame: Mapping[str, Any]) -> dict[str, Any]:
         steps["Q2"] = _q2(frame, g, steps["Q1"])
     except Exception as exc:
         steps["Q2"] = _failed(exc)
+    try:
+        steps["H"] = _h(frame, g)
+    except Exception as exc:
+        steps["H"] = _failed(exc)
     steps["AU"] = {"verdict": None, "lines": [], "note": "按需触发：模型只对照程序读数，不改数、不授权"}
     return {"schema": SCHEMA, "path_version": PATH_VERSION, "at_ms": frame.get("at_ms"),
             "snapshot_id": _get(frame, "candidate.snapshot.snapshot_id"),
@@ -526,9 +625,15 @@ def build(frame: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def compare(start: Mapping[str, Any], now: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Which step verdicts changed between the start and the "now" reading."""
+    """Which step verdicts changed between the start and the "now" reading. Readings of two
+    path versions compare only the steps both have, and say that the version changed."""
     out = []
-    for step_id in STEP_IDS:
+    ids = STEP_IDS
+    if start.get("path_version") != now.get("path_version"):
+        shared = set((start.get("steps") or {})) & set((now.get("steps") or {}))
+        ids = tuple(sid for sid in (now.get("steps") or {}) if sid in shared)
+        out.append({"step": "path_version", "from": start.get("path_version"), "to": now.get("path_version")})
+    for step_id in ids:
         a = _get(start, f"steps.{step_id}.verdict") or {}
         b = _get(now, f"steps.{step_id}.verdict") or {}
         if a.get("code") != b.get("code") and (a or b):
@@ -569,8 +674,9 @@ def outcome(contract: Mapping[str, Any], entry_btc: float | None, payout_btc: fl
              else delivery_usd > contract["short_strike_usd"])}
 
 
-def summarize_marks(marks: Mapping[str, Any]) -> dict[str, str]:
-    return {step: (marks.get(step) or {}).get("lean", "unchanged") for step in STEP_IDS}
+def summarize_marks(marks: Mapping[str, Any], order: Sequence[str] = STEP_IDS) -> dict[str, str]:
+    """Marks of the steps a session has (its own path version's order)."""
+    return {step: (marks.get(step) or {}).get("lean", "unchanged") for step in order}
 
 
 def first_settled_step(marks: Mapping[str, Any], order: Sequence[str] = STEP_IDS) -> str | None:

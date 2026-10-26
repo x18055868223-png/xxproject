@@ -1,7 +1,7 @@
 """Scorecards: the two short feedback lines of the research loop (docs/opus/08 §6, 2026-10-20).
 
 Both are derived files, rebuilt from the chained archive once a day after the validation; no
-judgment is made here beyond fixed arithmetic (scorecard_rules@0.1).
+judgment is made here beyond fixed arithmetic (scorecard_rules@0.2).
 
 - View scorecard (scorecards/views.json): every registered episode_view is joined to the
   settled outcome of its contract. The entry is the latest ledger row of that contract at or
@@ -30,11 +30,13 @@ from typing import Any, Iterable, Mapping
 if __package__:
     from . import astra_research_validation_v1 as research_validation
     from . import astra_research_intraday_exit_v1 as intraday_exit
+    from . import astra_inquiry_lens_v1 as lens_core
 else:
     import astra_research_validation_v1 as research_validation
     import astra_research_intraday_exit_v1 as intraday_exit
+    import astra_inquiry_lens_v1 as lens_core
 
-SCORECARD_RULES = "scorecard_rules@0.1"
+SCORECARD_RULES = "scorecard_rules@0.2"   # 0.2: inquiry by_card (docs/opus/19), research only
 SCHEMA_VIEWS = "view_scorecard@0.1"
 SCHEMA_INQUIRY = "inquiry_scorecard@0.1"
 ENTRY_LOOKBACK_MS = 40 * 60_000      # ledger rows are written at least every 30 minutes
@@ -251,6 +253,19 @@ def _inquiries(root: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _case_expiry(root: Path, inquiry_file: str) -> str | None:
+    """The contract expiry date of the case an inquiry ran on (cases/<same path>.gz)."""
+    try:
+        path = root / ("cases/" + inquiry_file[len("inquiry/"):] + ".gz")
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            case = json.load(handle)
+        at = case["refs"]["L1.contract"]
+        expiry = case["layers"][at["layer"]][at["index"]]["values"]["expiry_ms"]
+        return dt.datetime.fromtimestamp(int(expiry) / 1000, dt.timezone.utc).date().isoformat()
+    except Exception:
+        return None
+
+
 def _bucket(counter: dict[str, dict[str, Any]], key: str, verdict: str) -> None:
     slot = counter.setdefault(key, {"reviewed": 0, **{v: 0 for v in VERDICTS}})
     slot["reviewed"] += 1
@@ -281,6 +296,8 @@ def inquiry_scorecard(root: Path, *, now_ms: int, all_outcomes: list[Mapping[str
     by_version: dict[str, dict[str, Any]] = {}
     by_type: dict[str, dict[str, Any]] = {}
     by_priority: dict[str, dict[str, Any]] = {}
+    by_card: dict[str, dict[str, Any]] = {}
+    by_card_error = None
     for (case_id, qid), review in sorted(latest.items()):
         run = inquiries.get(case_id)
         question = (run or {}).get("questions", {}).get(qid)
@@ -294,6 +311,14 @@ def inquiry_scorecard(root: Path, *, now_ms: int, all_outcomes: list[Mapping[str
         _bucket(by_version, version, review["verdict"])
         _bucket(by_type, f"{version}|{question.get('type')}", review["verdict"])
         _bucket(by_priority, f"{version}|{question.get('priority')}", review["verdict"])
+        try:   # research only: a broken lens never takes the card down
+            lens = lens_core.classify(question)
+            card_key = f"{lens_core.VERSION}|{version}|{lens['card'] if lens else 'unclassified'}"
+        except Exception as exc:
+            by_card_error = type(exc).__name__
+        else:
+            _bucket(by_card, card_key, review["verdict"])
+            by_card[card_key].setdefault("_expiries", set()).add(_case_expiry(root, run["file"]))
     coverage: dict[str, dict[str, Any]] = {}
     reviewed_keys = {(r["case_id"], r["question_id"]) for r in rows}
     for case_id, run in inquiries.items():
@@ -313,6 +338,11 @@ def inquiry_scorecard(root: Path, *, now_ms: int, all_outcomes: list[Mapping[str
             "note_cn": "复盘对提问者问题的逐题评定汇总；pointed_rate = 指向已兑现风险的问题 ÷（已评定 − unclear）；"
                        "coverage = 已结算合约案卷上的问题中被复盘评定的比例",
             "by_prompt_version": _rates(by_version), "by_type": _rates(by_type), "by_priority": _rates(by_priority),
+            # research only, not on the page (docs/opus/19 §5): questions re-read with the experience lens;
+            # expiry_days = distinct contract expiries behind a slot (questions on one expiry share one settlement)
+            "by_card": {k: {**v, "expiry_days": len({e for e in by_card[k]["_expiries"] if e})} for k, v in _rates(
+                {k: {kk: vv for kk, vv in slot.items() if kk != "_expiries"} for k, slot in by_card.items()}).items()},
+            **({"by_card_error": by_card_error} if by_card_error else {}),
             "coverage": coverage, "reviews": rows, "unmatched": unmatched}
 
 

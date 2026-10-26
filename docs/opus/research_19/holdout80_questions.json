@@ -1,0 +1,1236 @@
+[
+ {
+  "qid": "sheets/06_call_cf_18383ae2434fba339e687ffc.B.json#K3",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0044 BTC 与程序记录的市场估价赔付 0.0048 BTC 之间的 0.0004 BTC（约 33.1 美元）差额，是过价差的流动性成本，还是市场给这一侧上行风险打的折价？",
+  "why_material_cn": "若差额只是流动性成本，用挂单在中价附近成交即可把补偿提高约 9%，决定不变，只是执行方式要改；若这是市场对上行风险的折价，声明信用本身已被压低，应缩短持有意图、换更远的短腿或不做。它只作用于补偿，不改变触界概率；费用与净信用的缺失在本单中作为已声明缺口处理。",
+  "refs": [
+   "L1.economics",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.quote",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/16_put_cf_eb31377c2c895841d37b2a2b.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "本期 ATM IV 究竟是 24.52/24.56（Deribit 簿口径，L4.expiry_vol 与短腿 mark IV）还是 27.61（gexmonitor 期限结构 21OCT26）？约 3 vol 点的差异直接改变 expected move 与 L2 基线（后者用 24.56），哪一个是本合约到期日的真实隐含波动？",
+  "why_material_cn": "基线概率与触界判断的输入就是这两个 IV 之一。若 27.61 才是本期真实 IV，当前基线（用 24.56）会低估 16 小时窗口的波动尺度，p_touch 与 p_loss 被系统性压低；若 24.52/24.56 才是可交易 mark，则基线成立。term_inversion 的未触发结论也依赖 27.61。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_touch_short",
+   "L2.book.short",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L6.entry_warnings"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/14_call_cf_31281198035d92dbe25a5c42.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "L2.compensation 说 fair（net_credit_to_mark=0.8585），L8.Q2 说 below_market（edge_usd=-48.6119）；这是可成交口径与 mark 口径的差异，还是市场估价确实高于本单净信用？",
+  "why_material_cn": "补偿是否充分不改变合同赔付上限，但决定这张保单是否被市场定价过低；若可成交净信用低于账面或市场平均赔付高于净信用，补偿与风险就不匹配。",
+  "refs": [
+   "L1.liability",
+   "L1.payout_table",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K5",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "方向读数在不同尺度上相互冲突：15m M-DIE 为 NO_MOVE（score=0.0）、fast_4h 为 micro_bearish_lean（score=-0.28064945677881925）、slow_12h 为 micro_bullish_pressure（score=0.5224638915262451）、24h/48h TMV 偏多（0.3653646788707445 / 0.4687701673040174），且 EDB 的两个 CVD 证据被排除（CVD_HISTORY_WARMING）、coverage 仅 0.3823529411764707。到期前这段是缓慢漂移还是瞬时冲击？这决定触界是「时间换空间」还是「单次穿越」。",
+  "why_material_cn": "若为缓慢漂移，剩余 29 小时足以让价格走完到 83500 的距离，触界概率更接近基线；若为瞬时冲击型，则结果更依赖少数时段，可能显著偏离基线并影响深尾形状。",
+  "refs": [
+   "L0.fmz_fact",
+   "L1.economics",
+   "L1.liability",
+   "L2.baseline.p_touch_short",
+   "L3.spatial_position",
+   "L5.edb_reasoning",
+   "L5.flow",
+   "L5.m_die",
+   "L5.volume_price"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/02_call_cf_1df86765eb3f6897dba05b4d.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "近 72 小时锚点/Gamma 体制有 4 条迁移记录、2 次往返，每条 net_gamma 都标 conflict=true，值在 6409 万至 1.34 亿美元之间跳动，且最新 producer 状态为 STRUCTURE_BLOCKED（anchor ok=false、score 0.8017），视图却给 STRUCTURE_ELIGIBLE。这是短时噪声，还是结构本身不稳？若不稳，用正 Gamma 钉住去支撑「0.41 倍预期波动缓冲」的判断就不可靠。",
+  "why_material_cn": "D2 的「缓冲窄」结论部分依赖正 Gamma 收敛与钉住；若锚点与净 Gamma 结构在期内继续翻转，钉住假设失效，0.7054% 的缓冲更容易被穿透，触界与到期亏损判断都会变化。",
+  "refs": [
+   "L3.space.anchor",
+   "L3.space.gate",
+   "L3.space.transitions",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K1",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "L8 D2 说现价到短腿之间没有本期墙，但 L3.gex.structure 的 zero_dte 墙把 82750 列为 wall（gex_usd=14958720.5932），且 L3.spatial_position 称 82750 是周度正 Gamma 墙、可作为缓冲（并注明周度汇总、未验证）。82750 到底是不是本合约到期日有效的下行缓冲？如果是，下探到 82750–82500 会被吸收而降低触界；如果不是，短腿前没有缓冲，触及概率与深尾更高。",
+  "why_material_cn": "82750 位于现价 83230.48 与短腿 82500 之间；它是否吸收决定 p_touch_short=0.4853 是否低估/高估，并影响跌破 82500 后向 81500/80500 的深尾速度。",
+  "refs": [
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.spatial_position",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets2/03_put_cf_6f60c265eed9c2046606bb71.B.json#K1",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0039 BTC 比按两腿标记价计的 0.0044 BTC 低 0.0005 BTC，这是我们把两腿当成顺序估算、跨了买卖价的成交口径吃亏，还是市场本来就没给这一侧风险加价？",
+  "why_material_cn": "若差额来自我们自己的成交口径（跨价差、按买价卖短腿、按卖价买保护腿），补救只是改为在标记价附近挂单，风险不变；若市场对“短腿 Delta 0.40、距到期 29 小时、距离 0.39%”这一侧只肯给 0.0039 的信用，那么当前补偿低于市场估价，应改选更远的短腿、更窄的宽度或不做。它只作用于补偿项，但会直接决定做不做与短腿位置。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/02_call_cf_1df86765eb3f6897dba05b4d.json#K1",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "基线 p_touch_short 0.6876 与 p_loss 0.2926 由各行权价自身的 mark IV（29.75 / 35.49）推出，而本期 ATM 标记 IV 29.23% 明显低于已实现波动 rv_24h 37.32%、rv_7d 33.82%；同时 L6 三条警示都未触发（含 premium_thickening，本期 IV 时钟校正后 27.84、jump 1.99 vol 点）。未来 30 小时内，决定「是否触及短腿 83500」的是隐含侧（约 29%）还是实现侧（约 34–37%）？两个方向给出的触界概率不同，基线该以哪一侧为准？",
+  "why_material_cn": "触界概率与到期亏损概率的整条基线都架在 mark IV 上；若实现侧才是未来 30h 的真实波动，触界概率与保护腿外的深尾都会被市场隐含低估，补偿判断随之改变；反过来若波动已收敛，基线可用甚至偏保守。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_touch_short",
+   "L2.book.long",
+   "L2.book.short",
+   "L4.expiry_vol",
+   "L6.entry_warnings",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "L2.compensation 把净信用 0.00115 / mark 价差 0.0016 = 0.71875 评为 fair（tier_provisional=true），但 L8 Q2 的 edge_usd=-37.453716（净收 95.715052 对市场 payout 133.168768）显示按两腿 mark 价预期赔付高于净收。fair 是用可见信用 0.0014 还是用市场 mark 价差 0.0016 作参照？两者会改变补偿是否足够。",
+  "why_material_cn": "补偿参照决定 fair 是否成立；若按市场 mark 价，当前净收低于市场预期赔付，补偿不足；若按可成交可见信用，fair 可能成立。补偿不足会提高到期净亏概率（BE 82405.23398 的有效性）。",
+  "refs": [
+   "L1.economics",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "本期 strike 级 gamma 明确标注“unsigned（dealer side unknown）”，deribit.btc.option.greeks_oi、gex.raw.board、gex.pending.candidate 均为 MISSING，净 gamma 符号只来自代理产品（gex.netgamma.proxy/gex.effective.accepted 为 POSITIVE 238976112.36）。这个符号缺失会不会改变“短腿处正 Gamma”的结论，从而改变深尾判断？",
+  "why_material_cn": "若真实 dealer 净 gamma 在 82000 一带为负，则“跌破后加速”成立，深尾损失与到期亏损概率都被低估；若代理符号正确，则短腿附近的逆势对冲确实压低下探的持续性。",
+  "refs": [
+   "L0.health.products",
+   "L3.expiry_walls",
+   "L3.space.gate",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K1",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "conflict",
+  "question_cn": "短腿 82000 处的本期 Put Gamma 集中（8489365.68，Put 侧次位）到底是做市商对冲逆势的正 Gamma 钉住、跌破后减速，还是买方集中形成的负 Gamma 加速带、穿越后加速下行？程序把短腿处判为正 Gamma 与正常，案卷只写做市方向未知，这一点需要外部核实。",
+  "why_material_cn": "若 82000 是正 Gamma 钉住，跌破短腿后下跌减速、赔付更多停在卖出腿与保护腿之间，可维持当前短腿距离与宽度；若 82000 是负 Gamma 集中，穿越后顺势对冲会加速，深尾损失与到期净亏损概率上升，应缩短短腿距离、改变宽度或不做。它通过深尾损失与到期亏损概率起作用。",
+  "refs": [
+   "L0.cross_section",
+   "L1.liability",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L3.expiry_walls",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets/06_call_cf_18383ae2434fba339e687ffc.A.json#K1",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "conflict",
+  "question_cn": "短腿 83000 处的本期 Gamma 集中，在到期前是钉住价格，还是被穿越后加速？（需要一项外部数据：83000 行权价上做市商净 Gamma 的符号或持仓方向。）",
+  "why_material_cn": "若 83000 是钉住，价格被压在短腿下方，短腿距离可维持、深尾损失低，可继续持有这一侧；若是加速，穿越 83000 后价格可能快速走向保护腿 85000，BTC 赔付从 0.0119 升向 0.02353，应改用更远的短腿或不卖这一侧。它通过触及概率与深尾损失两项改变决定，并影响持有中是否提前处理。",
+  "refs": [
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L3.expiry_walls",
+   "L3.spatial_position",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "L3.space.gate 的 state=STRUCTURE_ELIGIBLE（evaluation_only，gating=false），但 producer_state=STRUCTURE_BLOCKED、anchor ok=false/score=1.5639198/Weak，且近 72 小时迁移多次、L8 D5 记 transitions_24h=4。这个空间结构是持续恶化还是评价层噪声？若持续恶化，正 Gamma 钉住的可靠性下降，下探 82500 时更容易穿透。",
+  "why_material_cn": "如果空间结构只是评价层且正 Gamma 持续，短腿前缓冲可能成立；如果锚点反复失效代表结构不稳，p_touch_short=0.4853 与深尾可能被低估。",
+  "refs": [
+   "L3.space.anchor",
+   "L3.space.gate",
+   "L3.space.transitions",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K7",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "净亏损概率这一层目前是空的：L2.baseline.p_loss=null（quality_reason=net_credit_unknown、loss_boundaries_usd=null）、breakeven_usd=null、L2.fee 为 unknown（fee_unknown）、deribit.btc.option.fee_schedule 产品为 MISSING、L1.economics 扣费净信用全为 null、L6.entry_warnings 为 null。若补齐两腿实际成交与费用后重算盈亏平衡，它相对短腿 83500 的位置会不会显著改变「到期亏损概率」的判断？还是费用与滑点相对信用可忽略，p_loss 与 p_itm_short=0.32065654555122525 基本同量级？（需要 Deribit BTC 期权费率表与该笔实际成交/交割费账单）",
+  "why_material_cn": "到期亏损概率与盈亏平衡位置是这张保单与市场基线偏离的主要来源之一；若费用与滑点把盈亏平衡推到明显高于 83500 的位置，则 p_loss 会显著高于 p_itm_short，补偿判断随之改变。",
+  "refs": [
+   "L0.gaps",
+   "L0.health.products",
+   "L1.economics",
+   "L1.liability",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L6.entry_warnings",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_call_cf_9eea2047a5dfa1a815bdcecd.json#K5",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "L4.expiry_vol 的 22OCT26 ATM IV 为 26.95%，近 24h 实现 37.5%、近 7d 实现 33.93%；L8 Q2 说 IV 低于近期实现 10.6 个点。但 L4.iv 的 atm_iv=20.36 属于 21OCT26 市场口径，本合约 22OCT26 的 skew_25d=null。本合约 IV 是低估了实现波动，还是正 Gamma 钉住下的合理定价？",
+  "why_material_cn": "若 IV 低于真实实现波动，基线 p_touch 与 p_loss 可能低估，信用补偿也可能不足；若实现波动是短暂尖峰、正 Gamma 钉住仍在，IV 可能并不低，基线反而合理。",
+  "refs": [
+   "L2.baseline.basis",
+   "L4.expiry_vol",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/08_call_cf_f45bb9075409f7eb50125d3c.json#K2",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "scenario",
+  "question_cn": "按日内时段，剩余风险集中在距到期还有十几个小时的美股时段（13 至 18 UTC 小时倍数 1.4 至 2.8），而到期所在的 08 UTC 小时倍数只有 0.76：这波风险更可能只造成盘中触及 82500、交割时回到短腿下方，还是会定下一个保留到交割的价位？",
+  "why_material_cn": "本合约持有到期、按交割价以 BTC 赔付：若风险只是盘中触及，提前减仓或移腿会白付成本，维持原短腿距离即可；若美股时段会把价位留在短腿之上，就必须在 2026-10-22 13:30 UTC 之前决定缩短宽度、移腿或不做。",
+  "refs": [
+   "L1.contract",
+   "L1.liability",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L6.session_clock",
+   "L7.cross_asset",
+   "L7.events"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "本合约到期日的 ATM IV 应取 L4.expiry_vol 的 30.3%，还是 L4.iv 的 contract_expiry_term 28.64%？0.68118% 的短腿距离在 30.3% 下约为 0.38408 倍预期波动；若真实 ATM IV 是 28.64%，同一距离对应的波动倍数会不同，触界判断是否应改？",
+  "why_material_cn": "ATM IV 直接决定预期波动与距离-in-moves；28.64 与 30.3 的选择会改变短腿缓冲的 sigma 读数和触界判断，也会影响 entry_warnings 的 term_inversion 结论。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L3.spatial_position",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L6.entry_warnings"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K7",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "mechanism",
+  "question_cn": "短腿与保护腿之间的历史成交接受区（KPF 83250–83600、83600–84100）在赔付区内会起滞留还是加速作用？L3.spatial_position 的 kpf 只说“通往短腿的路上无成交密集区、短腿不在密集区内”，但地图上两个被选中的 KPF 接受区正落在 83000–85000 的赔付区里；同时 co_location 把 KPF 与合同腿全部标为 NOT_COMPARABLE（coordinate_basis_not_qualified）。若价格上穿 83000 进入 83250–84100，是停留（降低深尾）还是穿越后加速（提高深尾）？",
+  "why_material_cn": "赔付区内的停留与加速决定深尾：若 83250–84100 吸收价格，到期价更可能停在赔付区中段（部分赔付、不触保护腿）；若穿越后加速，则 85000 的深亏路径被放大。",
+  "refs": [
+   "L3.expiry_walls",
+   "L3.map.liability_regions",
+   "L3.map.references",
+   "L3.spatial_position"
+  ]
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K3",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0019 BTC 比两腿标记价差 0.0022 BTC 低 0.0003（24.86 美元），这笔差额是我们的成交口径吃亏，还是市场对短腿这一侧风险加价（保护腿按 38.53 的标记 IV 买入偏贵）？（需要 Deribit 同一到期日两腿的中间价与近期成交明细）",
+  "why_material_cn": "若差额只是跨越半价差的执行成本，改用限价挂单可把信用从 0.0019 提到接近 0.0022，补偿改善约一成半，方向仍是做；若是市场对这一侧风险加价，则可见信用薄反映风险被低估，应缩短短腿距离或不做。它只通过补偿起作用，不替代风险质量判断。",
+  "refs": [
+   "L1.economics",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.decision_reduction",
+   "L2.quote",
+   "L4.expiry_vol"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/02_call_cf_49e1d86ee7ccbf13b5ab19a1.json#K9",
+  "prompt": "inquiry_prompt@0.1",
+  "type": "collinear",
+  "question_cn": "flip 82266.0113、合同近端 breakeven 82258.0847、链上 cp_all 82294.41 三个数值非常接近，短腿 82000 就在其下方；这是多个独立机制共同形成的 82.2–82.3k 阻力/磁吸，还是坐标基准不同造成的数值巧合？",
+  "why_material_cn": "若三者是同一区域，价格接近 82.2–82.3k 时可能遇到阻力/磁吸：被挡住会降低深尾，但该区已在 breakeven 上方，触及即亏损概率增加；若只是数值巧合，不能叠加，基线不应因这个“共振”调整。",
+  "refs": [
+   "L1.liability",
+   "L3.gex.structure",
+   "L3.map.references",
+   "L3.space.anchor",
+   "L3.spatial_position",
+   "L7.background.inventory"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/15_call_cf_e6cd15a6b7eb188a5272d616.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "卖出的是 mark IV 29.78 的 85000 Call（bid_iv 28.23 / ask_iv 30.14），本期 ATM IV 为 29.63，而近 24 小时与近 7 天已实现波动为 34.8 / 33.07，dvol 37.5 落在 20 分位；同时保护腿 mark_iv 37.54。到底是本期 IV 相对剩余 17 小时的实现波动偏低（即 0.00175 BTC 的净信用对风险定价不足），还是这个 29.63/29.78 的本期标记口径本身滞后（L0 显示 deribit.btc.index.v1、option.order_book、option.instrument、vertical.two_leg_book 均 STALE，L3.map.references 也注明当前价指数源未通过同版资格）？",
+  "why_material_cn": "如果本期 IV 系统性低于剩余时段的实现波动，则 0.00175 BTC 的净信用对真实赔付分布定价不足，L2.baseline 的 p_loss 0.275972 会低估到期亏损概率，深尾一侧尤其明显；如果只是本期标记口径滞后，则补偿是够的，问题只在成交口径。这两条对“风险是否被低估”给出相反答案。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L6.entry_warnings",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K8",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "collinear",
+  "question_cn": "L5 与 L8 的多个“偏多”信号（EDB 0.66、tmv 24h/48h 偏多、macro Mild Tailwind、ETF 净流入、D3/D5 朝责任区）是同一驱动还是独立证据？EDB 的投票里 TMV 权重 1.0、MACRO 权重 0.3、CVD 两窗被排除、coverage 仅 0.38；ETF 流量是 2026-10-21 的实际数据、macro 是 10-22 live。若多数读数同源，L8 的“朝责任区”是否被高估？",
+  "why_material_cn": "若偏多读数多数同源，L8 的“朝责任区”只是同一批数据的重复表述，不应作为独立的风险加权；若 ETF 与 macro 是独立证据，上冲风险更实。",
+  "refs": [
+   "L5.edb_reasoning",
+   "L5.volume_price",
+   "L7.background.allocation",
+   "L7.macro",
+   "L8.decision_path",
+   "L8.research_readings",
+   "L8.signal_recommendation"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "现价到底是 82748.25 还是 84200 附近？L2 报价与 L1 估值用 deribit_index 82748.25（短腿距离 0.304%），而 L3/L5 的 FMZ 快照用 84220.6–84275.48（若为当前价，83000 已在价内）。L3.map.references 同时记录该指数价“源钟未提供或未通过同版资格”、source_record_id=null，L0 把 deribit.btc.index.v1 标 STALE。距离相差 1.8% 决定触界概率的起点。",
+  "why_material_cn": "全部距离与触界概率都以现价为原点。若 82748.25 才是报价时刻的真实价，短腿只在 0.304% 之外；若 84200 附近为真实价，83000 已在价内、责任区已被进入，p_itm 与 p_max_loss 的基线含义完全不同。",
+  "refs": [
+   "L0.fmz_fact",
+   "L0.health.products",
+   "L1.economics",
+   "L1.liability",
+   "L2.baseline.basis",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.quote",
+   "L3.gex.structure",
+   "L3.map.references",
+   "L3.space.anchor",
+   "L5.volume_price"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "费用缺失是否让“到期净亏损概率”从可算变成不可算？L2.fee 的 basis=unknown、所有金额 null，L1.economics 的 net_credit_after_fee_btc、theoretical_two_leg_fee_btc、delivery_fee_usd_at_spot 均为 null，导致 breakeven_usd=null、p_loss=null（quality_reason=net_credit_unknown）。信用只有 0.0044 BTC，费用相对信用是“可忽略”还是“足以改变档位”？",
+  "why_material_cn": "若费用可忽略，p_loss 与 breakeven 可从 83000 与 credit 直接定位，档位不变；若两腿费与交割费相对 0.0044 BTC 不可忽略，净信用与盈亏平衡点会移动，p_loss 边界随之改变，并影响补偿是否足的判断。",
+  "refs": [
+   "L1.economics",
+   "L1.liability",
+   "L2.baseline.p_loss",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.selection",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/02_call_cf_49e1d86ee7ccbf13b5ab19a1.json#K4",
+  "prompt": "inquiry_prompt@0.1",
+  "type": "temporal",
+  "question_cn": "L5 的 TMV 24h/48h 均为 strong_bearish_bias，EDB lean BEARISH，但 M-DIE 15m 为 NO_MOVE，EDB confidence 只有 45、agreement 55%、calibration_state=UNCALIBRATED，L8.signal_recommendation 又是 Neutral；这个偏空方向是可持续的趋势（价格下跌远离 82000），还是已经衰减的噪声（价格可能反弹回 82000）？",
+  "why_material_cn": "若偏空持续，价格下跌远离 82000，触界概率应低于基线 0.730802；若偏空已衰减或只是未校准噪声，基线更可信甚至反弹风险更高。EDB 未校准，不能直接当概率，但方向会改变对触界风险的判断。",
+  "refs": [
+   "L5.edb_reasoning",
+   "L5.m_die",
+   "L5.volume_price",
+   "L8.decision_path",
+   "L8.signal_recommendation"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/02_call_cf_49e1d86ee7ccbf13b5ab19a1.json#K8",
+  "prompt": "inquiry_prompt@0.1",
+  "type": "scenario",
+  "question_cn": "币本位下 84000 处净亏 0.020672 BTC 最大，而 168000 处净亏反而缩小到 0.008767 BTC，L1.liability 另有远端 breakeven 637450.1992；L2.baseline.p_max_loss 0.048824 的标签是“越过保护腿概率”。在剩余 29 小时内，p_max_loss 是否高估了真正达到最大亏损的概率？",
+  "why_material_cn": "若最大亏损只在 84000 附近，价格越过 84000 后损失反而下降，则 4.88% 的“越过保护腿概率”不等于“最大亏损概率”，tail_loss 可能被高估；若 29 小时内越过 84000 后通常停留在 84000–86000，损失仍接近最大，则不算高估。",
+  "refs": [
+   "L1.liability",
+   "L1.payout_table",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "sheets2/03_call_cf_6534c2cb53abe991fe56a840.B.json#K1",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "temporal",
+  "question_cn": "信号层快照在 2026-10-22 00:20 UTC 时价格为 84275.48 美元，已在短腿 83500 上方；到报价估值时现价锚 82841.05 美元，已在短腿下方。程序仍把 24 小时与 48 小时量价读为朝责任区。这个偏多方向在价格已回落 1.732% 后仍持续，还是已随快照过期？",
+  "why_material_cn": "若偏多方向仍持续，到期前触及短腿与到期落在卖出腿上方概率偏高，应考虑更远短腿或不做；若只是过期快照，程序判读中的朝责任区警示应降级，持有判断回到本期 Gamma 结构与价格位置。",
+  "refs": [
+   "L0.cross_section",
+   "L1.liability",
+   "L5.edb",
+   "L5.volume_price",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_call_cf_9eea2047a5dfa1a815bdcecd.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "L2.baseline 的 p_touch_short=59.8%，但 p_itm_short=29.9%、p_loss=25.98%、p_max_loss=5.13%；近端盈亏平衡为 83680.65，短腿为 83500。正 Gamma pin 与 M-DIE NO_MOVE 又指向路径压缩。高触界概率到底会转化为到期亏损，还是只是盘中触及后回落？",
+  "why_material_cn": "若触界多由盘中噪声造成、到期仍低于 83500，p_touch 会高估到期亏损；若 83000 被突破后转为趋势，触界会转化为到期实值亏损甚至保护腿附近的最大 BTC 亏损。",
+  "refs": [
+   "L1.liability",
+   "L1.payout_table",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L3.gex.structure",
+   "L5.m_die"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/15_call_cf_3ff07d5ca81d17424b9526a4.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "L8.decision_path.D5 判“多窗口方向持续、朝责任区”，但案卷内的方向证据并不同步：tmvf_24h 为 strong_bullish_bias（0.89639）而 tmvf_48h 只有 bullish_bias（0.25371），funding 24h 为 healthy_long_bias、48h 为 crowded_long；whale_24h net_flow 与 execution_net_flow 为负，M-DIE 为 NO_MOVE，EDB 的 next_action 是 WAIT_DIE_ANCHOR_WINDOW。这个偏多是剩余 17 小时里持续的上行压力，还是单一 24h 窗口的动量噪声？",
+  "why_material_cn": "若偏多是真实且持续，现价 83226.35 到短腿 84000 的 0.92957% 距离在 17 小时内被穿过的概率上升；若只是 24h 窗口动量、48h 已衰减且大单净流为负，则朝向责任区的判断被高估，到期亏损概率（基线 0.22545）可能偏高。",
+  "refs": [
+   "L5.edb_reasoning",
+   "L5.flow",
+   "L5.m_die",
+   "L5.options_flow",
+   "L5.volume_price",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/04_put_cf_427551d8a51015e19b5c5865.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "L2.baseline.p_max_loss=0.053878 只是越过保护腿 80000 的市场隐含概率，而币本位赔付在 80000 下方继续增加（L1.payout_table 在 80000 为 0.025 BTC，在 40000 为 0.05 BTC）。若真的越过 80000，路径更可能停在 78000-80000 的 OI 墙附近，还是继续向 40000 这样的深尾扩展？",
+  "why_material_cn": "p_max_loss 只回答是否越过 80000，不回答越过后 BTC 赔付会深到 0.025 还是 0.05；深尾损失与补偿是否充分取决于路径停在 78000-80000 还是继续向 40000 扩展。",
+  "refs": [
+   "L1.liability",
+   "L1.payout_table",
+   "L2.baseline.p_max_loss",
+   "L3.expiry_walls",
+   "L3.spatial_position",
+   "L4.expiry_vol"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/15_put_cf_3c4160a812a7a993bf1f437e.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "费用与执行口径的缺口会不会把已经 thin 的补偿进一步吃掉？L2.quote 是顺序分腿盘口估算且 executable_or_filled=false，短腿 best_bid 0.0026 / best_ask 0.0030，保护腿 best_bid 0.0002 / best_ask 0.0005；可成交信用 0.0021 低于两腿 mark 价差 0.0025。同时 deribit.btc.option.fee_schedule.v1 为 MISSING，L2.fee 的 0.0003625 BTC 是 configured_assumption。实际入场费、滑点或成交价差若高于假设，净信用 0.0017375 BTC 可能进一步下降。（需要 Deribit BTC 期权费率表与两腿实时盘口）",
+  "why_material_cn": "净信用越薄，盈亏平衡 83854.30 越靠近短腿 84000；费用或滑点每多一点，都会直接降低补偿并提高到期亏损概率。若实际费用高于假设，thin 可能进一步恶化。",
+  "refs": [
+   "L0.health.products",
+   "L1.economics",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.fee",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/16_call_cf_2142ef03e85861f7cf202d14.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "同一 21OCT26 到期，L4.expiry_vol 的 ATM IV 为 24.52、expected_move_usd=865.7；L4.iv 的 term_front 21OCT26 的 ATM IV 为 27.61，L6.term_inversion 也用 27.61；L2 短腿 mark_iv=25.14，L8 Q2 用 24.5。哪一个 ATM IV 更适合描述本合约剩余 16 小时的到期波动？若 24.52 低估，现价到短腿 83000 的距离是否比 L8 D2 的“约 0.58 倍预期波动”更紧？",
+  "why_material_cn": "ATM IV 决定预期波动与距离/触界判断；若真实 ATM IV 更接近 27.61，则同样 503 美元左右的短腿距离在波动尺度上更小，触界与到期亏损判断会偏高。",
+  "refs": [
+   "L2.book.short",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L6.entry_warnings",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/00_put_cf_bd037b492c0d592cb0056160.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "到期前剩余 32.0 小时，下一窗口为美股开盘（in_hours 13.51），remaining_clock_factor 1.1143；入场警示 busy_window_thin_cushion 已触发但阈值未经验证，短腿距离约 0.3611 倍预期波动。美股开盘窗口更可能成为触及 83500 的触发路径，还是当前 quiet 小时延续、价格在窗口前后仍保持在 83600 上方？判别点是 1792675800000 前后 BTC 指数是否触及 83500。",
+  "why_material_cn": "如果美股开盘窗口放大波动并推动价格测试 83500，短腿触界与到期实值亏损的概率上升；如果窗口没有带来方向性突破，正 Gamma 钉住与偏多量价更可能维持缓冲。",
+  "refs": [
+   "L6.entry_warnings",
+   "L6.session_clock",
+   "L7.cross_asset",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "mechanism",
+  "question_cn": "breakeven 81836.12、flip 81751.11/81750.02、短腿 82000 三线相邻；周度口径 support 墙 81500 与 80000 的 gex_usd 为负值，而 L5.options_flow 的对冲流情景在 -2% 与 -3% 之间从 +73047399.58 变为 -7438493.61。亏损区（81836.12 以下）到底落在“对冲放大”地带，还是仍被正 Gamma 钉住？",
+  "why_material_cn": "若亏损区落在放大带，则一旦跌破 81836.12，从 81836.12 到 80000 之间缺少减速结构，p_max_loss 0.0624 与保护腿处 0.0229975 BTC 的亏损会被路径放大；若正 Gamma 钉住仍有效，则下探更容易被吸回，深尾损失被压低。",
+  "refs": [
+   "L1.liability",
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.space.anchor",
+   "L5.options_flow",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "mechanism",
+  "question_cn": "短腿处的 84000 正 Gamma 墙究竟是缓冲（降低穿越与深尾）还是磁吸与 Pin（提高到期落在短腿附近、从而触发赔付的概率）？本合约到期日 pin 在 83000，而周度或 0DTE 墙在 84000 与 85000，应以哪一个机制解释到期前的路径？",
+  "why_material_cn": "若 84000 是缓冲，穿越到 85000 与深尾的概率下降；若 84000 是磁吸，价格更容易在短腿附近到期，赔付概率上升。两种机制对触界概率、到期亏损概率与尾损方向相反。",
+  "refs": [
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.spatial_position"
+  ]
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.A.json#K4",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "temporal",
+  "question_cn": "程序判读把量价 24/48 小时读为“背离责任区”、并把多窗口读为“持续”，但这些读数来自 2026-10-22 00:20 UTC 的信号层快照；现价锚在 2026-10-22 02:59 UTC 已比该快照价低 1.753%。这 1.753% 的下跌是把价格从“远离短腿”带到短腿附近的真实位移，还是只是快照价与指数价的口径差，原来的“背离”判断仍成立？",
+  "why_material_cn": "若下跌是真实位移，旧“背离”读数在现价附近已失效，短腿只差 0.3912%，风险高于程序判读；若只是口径差或短时波动，旧读数仍可作背景，风险较低。它通过触及概率和到期亏损概率起作用。",
+  "refs": [
+   "L0.cross_section",
+   "L0.fmz_fact",
+   "L5.volume_price",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/14_put_cf_606335a85f43cf2f3b49ddcc.json#K7",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "剩余 18.01 小时里 80.4% 的方差集中在 75.1% 的时间上（remaining_clock_factor 1.2787），美股时段风险密度 1.81 正在发生（us_open in_progress），而到期落在 08:00 UTC 这段 weekday 密度只有 0.76 的时段；L6 已经触发 busy_window_thin_cushion（缓冲 0.279 倍预期波动）。哪条路径会真正触发赔付：美股时段一次跌破 83500 后止步于 82500 上方，还是被 84000 pin 住到到期，还是夜里低流动性滑向 81500 以下？",
+  "why_material_cn": "同一张保单在三种路径下的结果差别极大：被钉在 84000 到期拿满净信用、美股时段破位后止步于 82500–83273 造成小额亏损、夜间薄流动性直接跌穿 81500 则进入币本位深尾。时段分布决定哪条路径更可能出现，也决定触界 0.7891 中有多少会转成到期亏损。",
+  "refs": [
+   "L1.payout_table",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L3.expiry_walls",
+   "L6.entry_warnings",
+   "L6.session_clock",
+   "L7.events"
+  ]
+ },
+ {
+  "qid": "sheets/04_put_cf_427551d8a51015e19b5c5865.B.json#K5",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0019 BTC 由短腿按买价 0.0025 卖出、保护腿按卖价 0.0006 买入得到，两腿标记价之差为 0.0022 BTC，价差成本 0.0003 BTC；保护腿一翼报价只有 0.0004/0.0006、最小跳动 0.0001。这 0.0003 是这一翼的结构性成本（在中间价挂单可以回收一部分），还是即时成交的合理代价？",
+  "why_material_cn": "若这 0.0003 是这一翼的结构性成本且可回收，单位风险的补偿改善，可以继续做这一侧但改为挂单；若只是即时成交的合理代价或挂单难以成交，补偿维持现状，决定取决于是否接受更低的单位补偿（或改选宽度、不做）。",
+  "refs": [
+   "L1.economics",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.quote",
+   "L2.selection"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "mechanism",
+  "question_cn": "这张保单是币本位：赔付表在 85500 处为 0.023391812865497075 BTC，在 171000 处反而降为 0.011695906432748537（L1.payout_table），btc_contract_cap=0.023391812865497075（L1.liability），而基线给出的 p_max_loss=0.045102903330387245 是「越过保护腿」概率（L2.baseline.p_max_loss）。那么在币本位下，真正的深尾损失峰值是否就发生在保护腿 85500，越过之后 BTC 赔付随价格继续上涨而递减？p_max_loss 是否被当成「最大损失概率」而高估了深尾？USD 口径的 2000 封顶与 BTC 口径的递减如何同时成立？",
+  "why_material_cn": "若深尾 BTC 损失在保护腿处见顶，则越过保护腿后的极端上涨对币本位卖方不再线性恶化，tail_loss 的上限与 p_max_loss 的含义需要分开理解；若 USD 口径的封顶与保证金/机会成本仍随价格上涨恶化，则深尾风险不能被简单视为封顶。这会改变补偿是否充分与最坏情形的判断口径。",
+  "refs": [
+   "L1.liability",
+   "L1.payout_table",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L2.decision_reduction",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/21_put_cf_8d5a54857e4d766cb4372515.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "保护腿 82000 下方紧邻 flip_point 81782.293（距现价 3.4037%），即一旦交割价跌破保护腿，价格同时进入负 Gamma 域；而本期 put 侧 Gamma 集中在 83000（5139025.85）与 82000（2705395.92），put 持仓墙在 78000（2037.5 BTC）。跌破 82000 后，深尾是按 BTC 继续加速放大，还是被 78000 一带的 OI/对冲减速？",
+  "why_material_cn": "这张保单的最坏情形在保护腿下方没有静态上限（币本位），尾部是否加速决定深尾亏损是“线性可承受”还是“非线性放大”；同时它决定 82000 保护腿作为保险是否真的买到了减速。",
+  "refs": [
+   "L1.payout_table",
+   "L2.baseline.p_max_loss",
+   "L3.expiry_walls",
+   "L3.space.anchor",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/06_call_cf_18383ae2434fba339e687ffc.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "卖出这份波动收到的补偿是否与风险错配？本期 ATM IV 30.58 低于近 24 小时实现 34.71、近 7 天实现 33.42（差 4.1 点），iv_percentile=18.0 偏低，且 call 翼 IV 向上倾斜（85000 腿 mark_iv 31.74 高于 83000 腿 30.11），等于卖短腿收低 IV、买保护腿付高 IV；同时 p_touch_short=0.858、p_itm_short=0.429、p_max_loss=0.0609。这是市场确实没给 call 侧加价，还是 30.58 已定价 pin 预期，还是我们成交口径吃亏（quote credit 0.0044 比 mark 价差 0.0048 低 0.0004 BTC）？",
+  "why_material_cn": "补偿充分与否决定这份卖波动是否被低估。若 IV 低于实现是市场折价，到期亏损概率与深尾的代价被低估；若 30.58 是 pin 定价，则实现走低时补偿反而够；若只是两腿半价差（0.0004 BTC 约 33.1 USD），则问题在成交而非风险。",
+  "refs": [
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/00_put_cf_bd037b492c0d592cb0056160.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "15m M-DIE 为 DOWN、朝责任区，但 24h/48h 量价为 bullish_bias 与 strong_bullish_bias，L8.D3 又判为 away。这个短周期下行是震荡噪声，还是触及 83500 的早期趋势？判别点是到期前价格是在 83600–83250 区间停留后回升，还是直接触及 83500 并收在其下方。",
+  "why_material_cn": "若短周期下行只是噪声，短腿 83500 的触界概率更接近正 Gamma 钉住叙事；若它是趋势起点，则 0.36 倍预期波动的窄缓冲会迅速被消耗，触及短腿和到期实值亏损的概率上升。",
+  "refs": [
+   "L5.m_die",
+   "L5.volume_price",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K2",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "scenario",
+  "question_cn": "0DTE 在 2026-10-22 08:00 UTC 结算、早于本合约到期，若价格在 08:00 UTC 前下探，82500 一带的 0DTE 负 Gamma 墙会把下跌加速送向短腿 82000，还是随 0DTE 结算消散、价格被 83000 的 Pin 拉回？",
+  "why_material_cn": "若加速机制成立，0.5377 的触及概率可能在最初几小时就兑现，持有中要考虑提前处理，或在建仓时选更远的短腿；若 0DTE 结算即消散并被 83000 钉住，则基线触及概率偏保守、可维持不动。它通过触及概率与深尾损失起作用。",
+  "refs": [
+   "L1.liability",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.spatial_position",
+   "L6.session_clock",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "collinear",
+  "question_cn": "「价格朝责任区」的三层证据（L8 的 D3 toward=2、L5 的 24h/48h TMV 偏多、L5 的 EDB lean=BULLISH）是否其实是同一驱动——同一 FMZ 快照（1792628408457）、同一价格 84270.68978261，且该快照 age_ms=9545445、价格与报价现价 82841.05 不一致？若同源，则这条偏多信号不构成对上行风险的独立确认，触界概率不应据此上调；若另有独立来源（ETF 净流入、宏观顺风、12h 主动成交上行）同向，则偏多是真实的。",
+  "why_material_cn": "若偏多是单一过期快照驱动，则 L8 的 toward 与 D5 persistent 不能作为上行风险的独立证据，触界概率应回到价格与结构本身；若确为多源同向，则 0.6413130911024505 的触界基线至少不应被下调。",
+  "refs": [
+   "L0.fmz_fact",
+   "L1.economics",
+   "L2.baseline.basis",
+   "L3.space.anchor",
+   "L5.edb_reasoning",
+   "L5.flow",
+   "L5.volume_price",
+   "L7.background.allocation",
+   "L7.macro",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/22_put_cf_a6442e9274ee149a7d822147.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "剩余约 34 小时、下一高波动窗口为 15.5 小时后美股开盘：到期前更可能先触及短腿 82500 后收回，还是直接跌破保护腿 80500 形成深尾？",
+  "why_material_cn": "市场隐含 p_touch 高而 p_max_loss 低，路径形状对结果很关键：若先触后收，亏损概率与深尾低于直接穿越；若美股开盘时段放大波动并直接跌破 80500，保护腿下方 BTC 赔付继续增加，深尾上升。",
+  "refs": [
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L3.expiry_walls",
+   "L4.expiry_vol",
+   "L6.session_clock",
+   "L7.events"
+  ]
+ },
+ {
+  "qid": "sheets2/06_call_cf_18383ae2434fba339e687ffc.B.json#K3",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "scenario",
+  "question_cn": "短腿 83000 上方紧贴两个成交接受区（83250–83600 与 83600–84100）。若价格越过短腿进入第一个区，接受区会把交割价吸在 83250–83600（对应赔付 0.003003 BTC，低于可见信用 0.0044 BTC），还是价格会一路走到 84100 一带（对应赔付 0.01308 BTC，明显高于可见信用）？",
+  "why_material_cn": "它决定“越过短腿是否必须提前处理”：若接受区能止住价格，越过 83000 后的小额赔付仍在信用之内，可以持有到期不做动作；若止不住，一旦触及就要考虑平仓或对冲，且穿过保护腿的赔付封顶 0.02353 BTC 的情景也要一并上调。",
+  "refs": [
+   "L1.economics",
+   "L3.expiry_walls",
+   "L3.map.liability_regions",
+   "L3.map.references",
+   "L3.spatial_position"
+  ]
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.B.json#K3",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "gap",
+  "question_cn": "短腿选取目标 |Delta| 是 0.35，实际选中的 82500 短腿 |Delta| 为 0.4049，已高于目标但低于上限 0.5；这是 2000 美元固定宽度下没有更接近目标的合约，还是为了让信用达标而接受更靠近现价的短腿？若存在 0.35 |Delta| 的替代短腿，当前短腿是否把触界概率与尾部损失抬高？（需要 Deribit 同到期日、同宽度 Put 价差在各行权价的 |Delta| 清单。）",
+  "why_material_cn": "若只是固定宽度约束，选择空间有限；若可换到 0.35 |Delta| 的短腿，当前短腿的触界概率与深尾损失更高，应调整短腿距离或不做。它通过触界概率与深尾损失改变决定。",
+  "refs": [
+   "L1.contract",
+   "L1.liability",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_touch_short",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.selection"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/03_call_cf_6534c2cb53abe991fe56a840.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "剩余 29.012805 小时跨 2026-10-22 的美股时段：session_clock 给出 us_open 在 1792675800000（in_hours=10.512805）、weekday 的 hour_utc 13/14/15/16 风险密度为 1.815/2.812/2.497/1.698、remaining_clock_factor=1.1054191920767398、remaining_variance_share=1.0；跨资产窗口也覆盖同一美股时段（overlap_ms=23400000），而事件日历为空。同时结构侧 flip_point 81764.16733787143 在现价下方 2.9798853262284153%、regime=POSITIVE_GAMMA_PINNING strength=1.0、pin=83000（但基于旧价）。到期前的触界究竟由高波动时段主导，还是由正 Gamma 钉住主导？",
+  "why_material_cn": "若到期前的高方差窗口产生单次方向性位移，触界概率会高于无漂移基线；若正 Gamma 钉住占上风，价格围绕 83000 收敛，触界与深尾都会下降。这是本合约唯一还能改变结果的时段机制。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_touch_short",
+   "L3.expiry_walls",
+   "L3.space.anchor",
+   "L4.expiry_vol",
+   "L5.conflicts",
+   "L6.session_clock",
+   "L7.cross_asset",
+   "L7.events"
+  ]
+ },
+ {
+  "qid": "sheets2/03_call_cf_6534c2cb53abe991fe56a840.B.json#K3",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0029 BTC 比两腿 mark 价差 0.0031 BTC 低 0.0002 BTC（约 16.57 美元）；短腿 mark IV 29.4%，保护腿 mark IV 32.39%。这个差额主要是我们按买价卖、按卖价买的成交口径成本，还是市场对保护腿尾部风险收取的额外溢价？",
+  "why_material_cn": "若差额主要是成交口径成本，改用挂单接近中间价可改善补偿，是否做这笔价差取决于执行而非风险被低估；若差额反映保护腿尾部风险溢价，可见信用偏薄，应降低数量、放宽宽度或不做。",
+  "refs": [
+   "L1.economics",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/14_put_cf_606335a85f43cf2f3b49ddcc.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "本期 ATM IV 30.04%（L4.iv 为 30.68）、iv_percentile 21，而近 24 小时实现 36.06%、7 天 33.15%，L8 Q2 也记“IV 低于近期实现 6.0 个点”。基线 0.7891 的触界与 0.3274 的到期亏损都是由 30.82/39.67 的 mark IV 推出的风险中性数：这是市场系统性低估了本期路径波动（真实触界与亏损应更高），还是正 Gamma 收敛体制 + 平坦前端期限结构（22OCT 30.68 / 23OCT 31.31 / 24OCT 30.98）说明 IV 合理、实现波动只是刚发生的一次性抬升？",
+  "why_material_cn": "触界 0.7891 与到期亏损 0.3274 是 IV 的函数；若 IV 相对实现低估，则案卷的基线概率偏低、这笔卖出波动（补偿 0.002725 BTC）实际承担的风险高于读数；若 IV 合理，则高频触界更多是噪声，深尾概率 0.0603 可信。",
+  "refs": [
+   "L2.baseline.basis",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L6.entry_warnings",
+   "L6.session_clock",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets/03_call_cf_6534c2cb53abe991fe56a840.B.json#K2",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0029 BTC 比程序给出的市场估价 0.0031 BTC 低 0.0002 BTC；这是我们按卖价买、买价卖造成的成交口径吃亏，还是市场对短腿这一侧风险要求了额外折价？",
+  "why_material_cn": "若只是成交口径，挂单接近中间价可多拿 0.0002 BTC，改变补偿；若市场在给短腿风险加价，说明可见信用未覆盖风险，应不做，或改宽、改远短腿。",
+  "refs": [
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/14_put_cf_c07b4e3b6fb1c742fe3e01a7.json#K5",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "collinear",
+  "question_cn": "L3 内多个看似有利的信号——正 Gamma、pin 81500、weekly 82000 缓冲——是否来自同一 GEX/期权 OI 结构而非独立确认？L3.space.gate 的 producer_state 又是 STRUCTURE_BLOCKED（anchor invalid、GGR conflict），net_gamma_conflict=true。若这些信号同源，就不能用它们叠加降低触界或深尾判断。",
+  "why_material_cn": "若正 Gamma、pin 与墙都来自同一 GEX 板，多个有利标签不是独立证据，可能高估缓冲；若它们分属全局 GEX、本期 OI 与 0DTE 墙，则可相互校验并对触界路径给出不同含义。",
+  "refs": [
+   "L3.gex.structure",
+   "L3.map.references",
+   "L3.space.anchor",
+   "L3.space.gate"
+  ]
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.A.json#K3",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "conflict",
+  "question_cn": "本期到期自身的 Gamma 最大在 83000，钉住位也在 83000；现价 82823.97 在 83000 下方，短腿 82500 在下方 0.3912%。这个 83000 的正 Gamma 是把价格吸回上方、降低触及 82500 的概率，还是因为现价已经在墙下，83000 只构成上方阻力，而 82500 到 82000 之间没有同等级的本期 Gamma 集中，跌破后反而更容易滑向保护腿 80500？",
+  "why_material_cn": "若 83000 的钉住效应能覆盖 82500，短腿距离可能够，深尾损失较低；若墙只在 83000 上方有效，跌破 82500 后可能直接看向 82000 和 80500，深尾损失更高，应改选更远短腿或不做。它通过触及概率和深尾损失起作用。",
+  "refs": [
+   "L0.cross_section",
+   "L1.liability",
+   "L3.expiry_walls",
+   "L3.spatial_position",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K6",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "补偿档位为 fair（net_credit_to_mark 0.7702、tier_provisional true），同一份净信用 0.0020025 却被程序记为 below_market（market_payout 0.0026、edge -0.0005975 BTC）；同时报价是顺序分腿估算、未成交，费用 0.0003875 为配置假设。补偿到底够不够，取决于把哪个口径当“市场价”？",
+  "why_material_cn": "若 fair 档只在说明口径差（价差与费用），则补偿问题的量级是 0.00021 与 0.0003875 BTC；若市场自身 mark 已定价 0.0026 的到期赔付而我们只收 0.0020025，则补偿在事前就低于市场公允价值，且币本位深尾（0.023–0.048 BTC）与 0.0020 BTC 的收取不对等。",
+  "refs": [
+   "L0.health.products",
+   "L1.payout_table",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/10_put_cf_38e0aff3e66fdaa188625b28.json#K7",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "冻结风险参照缺失、ETF 配置缺失、外部资本条件/融资/库存成本均为 partial，这些缺口是否掩盖了会在 22 小时内影响保护腿下方深尾的慢背景或持仓催化？若缺失数据对应真实的下行催化（如 ETF 流出、成本线失守），则当前深尾与补偿可能被低估；若这些数据在约 24 小时窗口内不构成可交易信息，则缺口不影响本保单。",
+  "why_material_cn": "深尾损失发生在保护腿 81000 下方；若缺失的 ETF/成本基础/融资数据对应真实的下行催化，当前 L2.baseline.p_max_loss 与净信用补偿都可能低估风险。若这些数据对 24 小时窗口不敏感，则缺口不改变判断。",
+  "refs": [
+   "L0.gaps",
+   "L0.health.products",
+   "L7.background.allocation",
+   "L7.background.external_conditions",
+   "L7.background.financing",
+   "L7.background.inventory",
+   "L7.events",
+   "L7.macro",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.A.json#K2",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0039 BTC 比程序读到的市场估价 0.0044 BTC 低 0.0005 BTC（41.41 美元）；短腿买价/卖价是 0.0047/0.0055，保护腿是 0.0006/0.0008。这个差额只是按卖价买保护、按买价卖短腿所付的两腿价差，还是市场对这一侧风险没有给足加价？",
+  "why_material_cn": "若只是成交口径，改用中间价或挂单可多拿 0.0005 BTC，补偿改善，做与不做可能改变；若是市场风险折价，0.0039 就是这一侧的实收补偿，风险可能被低估，应不做或缩小。它通过补偿和深尾损失起作用。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L2.decision_reduction",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K5",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "在费用、净信用与 breakeven 缺失的情况下，0.0033 BTC 的可见信用是否足以补偿 p_touch_short 0.69398 与 p_max_loss 0.05600 所刻画的风险？L2.decision_reduction 的 market_payout_btc 0.0037、spread_cost_btc -0.0004 与缺失费用之间，哪一边更接近可执行净补偿？",
+  "why_material_cn": "补偿是否充分取决于扣费后净信用与 breakeven；若费用与价差吃掉可见信用，p_loss 与亏损边界会显著恶化；若费用可忽略，毛信用 0.0033 更接近净补偿。",
+  "refs": [
+   "L1.economics",
+   "L1.liability",
+   "L2.baseline.p_loss",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.quote",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/14_call_cf_7f2dd4c170fe02522af7942b.json#K5",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "保护腿 mark IV 为 37.13（bid_iv 31.36 / ask_iv 37.75，best_bid 0.0001 挂 79.6、best_ask 0.0003 挂 66.3，OI 26.3 BTC），短腿 mark IV 只有 27.12（bid_iv 26.05 / ask_iv 28.5，OI 61.1）；同时 21OCT26 的 25d RR 为 −3.38（put 25d 31.76 高于 call 25d 28.38）。我们等于按约 10 个 vol 点的落差卖出近端上行、买入远端上行，而市场只给下行加价。净信用 0.0017625 BTC（占宽度 8.61%）是“贵买保险后的公平价”“稀薄盘口的报价噪声”，还是“上行风险未被定价”？",
+  "why_material_cn": "若保护腿的 37.13 是真实成本，则 8.61% 的信用与 fair 档就是市场价；若它只是稀薄盘口的噪声，则成交口径的补偿被系统性低估；若上行偏斜缺失是系统性现象，则 0.6372 / 0.2745 这两个概率本身就低估了这张保单的风险。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote",
+   "L4.iv",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/03_put_cf_6f60c265eed9c2046606bb71.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "净亏损概率 p_loss 因 net_credit_unknown 缺失，L1.economics 的 net_credit_after_fee、delivery_fee、loss_budget、breakeven 均为 null，L2.fee 为 fee_unknown；但 L2.selection 元数据给出两腿 maker/taker commission=0.0003，L2.decision_reduction 又给出 credit=0.0039、market_payout_btc=0.0044、spread_cost_btc=-0.0005。缺失的费用/净信用会不会改变“到期净亏”的判定？（需要 Deribit BTC option fee schedule / 两腿实际成交费用）",
+  "why_material_cn": "p_loss 是到期亏损概率的核心读数；若费用或成交价差把净信用压低，亏损边界会向短腿靠近，原本不亏的浅层路径可能变为净亏。该问题直接关系 expiry_loss_prob 与补偿是否充分。",
+  "refs": [
+   "L1.economics",
+   "L2.baseline.p_loss",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.selection",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "钉住位有两个候选：本合约到期日 structure 与本合约 walls.pin 为 82000（且 21OCT26 max_pain 也是 82000），体制读数 max_gamma_strike/pin_strike 为 83000（max_gamma_oi_share 0.3258）。这 35 小时里，结构是把价格吸向短腿 82000，还是吸向 83000 从而远离责任区？",
+  "why_material_cn": "若钉住位是 82000，结算大概率压在责任边界附近（触界概率高、但可能仍在 breakeven 之上）；若钉住位是 83000，价格被吸离短腿，触界与到期亏损概率都应低于基线 0.5985/0.2649。两种解释对这张保单的方向相反。",
+  "refs": [
+   "L1.liability",
+   "L2.quote",
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.map.references",
+   "L3.space.anchor"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/10_put_cf_38e0aff3e66fdaa188625b28.json#K8",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "L2.quote 是顺序分腿盘口估计、executable_or_filled=false；短腿 bid/ask 为 0.0033/0.0037，长腿 bid/ask 为 0.0003/0.0005。实际成交是否会把净信用从 0.0024375 BTC 压低到足以让“fair”补偿档不再成立？若实际只能按更差的腿成交，净信用与 mark 价差 0.0032 的差距会扩大，补偿更薄；若深度充足且能接近 mark 成交，当前补偿读数更可信。",
+  "why_material_cn": "补偿是否充分取决于实际可成交的净信用，而不是盘口顺序估计；若实际成交明显差于 mark，净信用下降，保护腿处净亏 0.0223 BTC 的相对补偿会更差。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/16_call_cf_2142ef03e85861f7cf202d14.json#K1",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "compensation",
+  "question_cn": "按案卷两腿 mark 价，扣费后净信用 0.0011675 BTC（96.31 美元）低于市场估价 0.0017 BTC（140.24 美元），edge_usd=-43.9294，net_credit_to_mark=0.6868 且 tier=thin；但 L2.quote 明确为顺序分腿盘口估计、未成交，长腿 bid=0.0001/ask=0.0003 很宽。这个负 edge 是成交口径/盘口估计造成的账面现象，还是市场确实没有为这张 Call 价差的风险给出足够补偿？到期前若指数触及 83000 或交割价落在 83097.0158 与 85000 之间，亏损概率判断是否应更多受成交口径影响还是受补偿不足影响？（需要 Deribit 21OCT26 两腿实时可成交盘口或成交回报）",
+  "why_material_cn": "若负 edge 是未成交盘口估计造成的，补偿不足的判断会减弱；若实际可成交净信用也在该水平，则薄补偿直接影响到期亏损概率与最大损失是否值得承担。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K5",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "collinear",
+  "question_cn": "程序判“背离责任区”所依据的方向读数（量价 24 小时、48 小时偏多，EDB 评分 0.6606，宏观评分 -0.1917，空间评价投票 -0.25）是同一次快照里的独立证据，还是同一个趋势窗口被切片后由合成器重复计票？",
+  "why_material_cn": "若方向读数是同一驱动的多次切分，它不构成对下跌风险的独立折扣，短腿距离与做不做应按市场基线；若确有独立成分，方向宽容可支持维持现有短腿距离而不缩短。它通过触及概率起作用。",
+  "refs": [
+   "L0.fmz_fact",
+   "L5.edb",
+   "L5.edb_reasoning",
+   "L5.flow",
+   "L5.volume_price",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/02_call_cf_75a35acd7a365c9319f694e1.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "scenario",
+  "question_cn": "L2.baseline 的 p_touch_short 0.69398 是无漂移风险中性口径；面对 L5 的 TMV 与 EDB 偏多、L7 的 Mild Tailwind 与 ETF 净流入，真实触界概率应高于基线，还是这些偏多信号只是同源、未校准、无可交易支持，因而不应上调？",
+  "why_material_cn": "p_touch_short 已接近 0.694，若偏多漂移有信息，真实触界与到期亏损概率应高于基线；若偏多信号只是同源噪声，则基线更可信。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_touch_short",
+   "L5.edb",
+   "L5.edb_reasoning",
+   "L5.m_die",
+   "L5.options_flow",
+   "L5.volume_price",
+   "L7.background.allocation",
+   "L7.macro"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/15_call_cf_e6cd15a6b7eb188a5272d616.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "程序基线把“到期前触及短腿概率”按无漂移反射原理取成 2× 到期实值概率（p_touch_short 0.636472 = 2 × p_itm_short 0.318236），而 L5 与 L7 的方向证据（tmv 0.720635、m_die UP、micro_bullish_pressure、EDB lean BULLISH 0.865333、宏观 Mild Tailwind）都指向现价（84488.79）朝短腿（85000）方向的漂移，且剩余时段全部落在走动最密的 weekday 美股时段（hour_ratio_now 2.811901、remaining_clock_factor 1.188278）。这个无漂移近似在 17 小时窗口里究竟是高估还是低估了触界，以及它如何传导到 p_loss 0.275972 与 p_max_loss 0.037192？",
+  "why_material_cn": "触界概率是这张保单风险叙述的核心（0.636472 已接近“大概率会被碰到”），但它是从同一批报价与一个无漂移假设推出来的；若漂移与时段使真实触界更高，则“短腿缓冲 0.46σ”的方向压力被低估；若正 Gamma 钉住使真实触界更低，则 D3“朝责任区”的证据强度被高估。两种情形对到期亏损概率与深尾损失的影响方向相反。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L3.map.liability_regions",
+   "L5.edb_reasoning",
+   "L5.m_die",
+   "L5.volume_price",
+   "L6.session_clock",
+   "L7.macro",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/02_put_cf_177b8dc3a07a73cc79a07233.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "当前价口径存在冲突：L1/L2/L3.expiry_walls 给出 83416–83420.63，而 L3.gex.structure 的 spot_price 为 84220.6、L3.space.anchor 为 84275.48、L5.volume_price 为 84270.68978261。短腿距离、触界概率与 83250/83000 墙的判断，应基于 83420 附近还是 84220 附近？",
+  "why_material_cn": "若 83420 是当前价，短腿缓冲约 0.50%，先遇到 83250 墙；若 84220 才是有效价，短腿距离与墙位距离都会更远，触界与深尾判断会显著缓和。",
+  "refs": [
+   "L0.fmz_fact",
+   "L0.gaps",
+   "L1.economics",
+   "L2.book.short",
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.space.anchor",
+   "L3.spatial_position",
+   "L5.volume_price",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/14_call_cf_7f2dd4c170fe02522af7942b.json#K1",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "同一个 21OCT26 到期日的 ATM IV 在案卷里有两个值：32.72（L4.iv 的 term_structure 与 contract_expiry_term）与 27.46（L4.expiry_vol、L3.expiry_walls）。以哪一口径换算，决定短腿 0.5777% 的缓冲是 0.46 倍还是约 0.39 倍到期前预期波动（后者对应约 1.48% 的预期波动），也决定 0.6372 的触界概率与 0.3186 的到期实值概率是否被同一条 IV 支撑。哪一个是本合约行权价上的真实波动口径？（需要外部数据：到期前同一时刻 Deribit BTC-21OCT26-82000-C 的 mark IV，以及 82500 / 84500 两腿的实时 IV 与逐档 IV。）",
+  "why_material_cn": "0.58% 的缓冲只有 0.4–0.5 倍到期前预期波动，任何 5 个 vol 点的 IV 口径差都会直接改变触界概率与亏损概率的量级，也会改变“缓冲窄”这一风险质量判断是否成立。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_itm_short",
+   "L2.baseline.p_touch_short",
+   "L2.book.short",
+   "L3.expiry_walls",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L6.entry_warnings",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-22/00_put_cf_bd037b492c0d592cb0056160.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "gap",
+  "question_cn": "可见信用 0.0033 BTC 已给出，但费用与扣费后净信用缺失；程序又给出市场估价 0.0036 BTC 与 spread_cost -0.0003 BTC。这个缺口只是小幅成本，还是足以把盈亏平衡明显推向短腿、使“小幅跌破 83500”更容易变成净亏损？判别点是实际两腿成交与费用记录，以及交割价落在 83500–81500 之间时账户净结果。",
+  "why_material_cn": "信用价差的盈亏平衡由扣费后净信用决定；若净信用明显低于可见信用，盈亏平衡更靠近短腿，交割价略低于 83500 就可能转为净亏损。若费用与执行滑点很小，则可见信用对补偿的判断更接近真实。",
+  "refs": [
+   "L1.economics",
+   "L2.baseline.p_loss",
+   "L2.compensation",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "sheets2/04_put_cf_427551d8a51015e19b5c5865.B.json#K4",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "temporal",
+  "question_cn": "现价 82854.92 紧贴 83000（本期首位 Gamma 墙、Pin 与 ATM 行权价，上方约 0.18%），而持有期内唯一的高波动窗口是 2026-10-22 13:30 UTC 美股开盘：这个钉住会持续到 2026-10-23 08:00 UTC 结算，还是会在美股时段被打破并向下触及 82000？",
+  "why_material_cn": "若钉住持续，到期落在 82000 之上、信用保留，持有中无需提前处理；若在美股时段被打破，触及短腿与深尾风险上升，持有中要考虑提前减仓，建仓时也应把短腿放远。它通过触及概率与到期亏损概率起作用。",
+  "refs": [
+   "L0.cross_section",
+   "L3.expiry_walls",
+   "L3.spatial_position",
+   "L6.session_clock",
+   "L7.cross_asset",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/10_put_cf_38e0aff3e66fdaa188625b28.json#K4",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "collinear",
+  "question_cn": "TMV 24h/48h、micro_flow、EDB 都偏多，但这些信号是否只是同一价格/成交驱动的不同投影？L8.guidance 明示 EDB 是同源市场意见、不构成独立确认；若“away from liability”只是单一驱动的重复计数，那么一旦价格反转，这些信号会同时翻转，触界与到期亏损概率会比表面更脆弱；若其中 SRD、GGR_SPATIAL 或 M-DIE 提供独立约束，away 才更可靠。",
+  "why_material_cn": "若看多信号高度共线，D3 的 away 不能降低触界风险，只反映一个驱动；若存在独立分量，away 更可能持续到到期。两者对短腿 83000 的触界与到期亏损概率方向相反。",
+  "refs": [
+   "L5.edb_reasoning",
+   "L5.flow",
+   "L5.m_die",
+   "L5.volume_price",
+   "L8.decision_path",
+   "L8.guidance"
+  ]
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.B.json#K1",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "mechanism",
+  "question_cn": "到期前若跌破短腿 82500，本合约到期日 Put Gamma 最集中的 82000 一带会成为缓冲（钉住 82000、压低深尾损失），还是穿越后加速（把价格推向保护腿 80500）？（需要 Deribit 82000 与 78000 Put 的做市商 Gamma 方向及历史到期钉住行为。）",
+  "why_material_cn": "若 82000 一带钉住，深尾损失较低，可维持当前短腿与保护腿距离；若穿越后加速，深尾损失较高，应选择更远短腿或不做。它通过深尾损失与到期亏损概率改变决定。",
+  "refs": [
+   "L0.cross_section",
+   "L1.liability",
+   "L3.expiry_walls",
+   "L3.spatial_position",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets/03_put_cf_6f60c265eed9c2046606bb71.B.json#K4",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "compensation",
+  "question_cn": "可见信用 0.0039 BTC 比两腿标记价差低 0.0005 BTC，这是盘口价差与顺序成交的成本（只影响执行，可挂单改善），还是市场对短 Put 尾部风险要求额外补偿（说明信用本身偏低）？",
+  "why_material_cn": "若只是执行成本，挂单接近中间价可改善补偿；若是风险加价，信用偏低，应不做或降低规模。它通过补偿改变决定。",
+  "refs": [
+   "L1.economics",
+   "L2.book.long",
+   "L2.book.short",
+   "L2.decision_reduction",
+   "L2.fee",
+   "L2.quote"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/14_call_cf_7f2dd4c170fe02522af7942b.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "上行才是这张 Call 信用价差的不利方向，但方向证据彼此相反：TMV 24h −0.3323、48h −0.4892（window_conflict=false）与 EDB −0.2114 偏空；micro_flow 合成 0.3688（4h 0.5346、12h 0.2980）与 M-DIE 15 分钟判读 UP（CLEAR_DIRECTIONAL_MOVE，CHOPPY_DRIFT）偏多；L8.D3 因此给“背离责任区”（away 2 / toward 1）。在剩余约 18 小时里，哪一套对 82026→82500 这段距离更有解释力？",
+  "why_material_cn": "本保单的赔付只在 82500 之上启动，方向判断直接决定 0.6372 的触界概率是被高估还是低估，也决定 p_loss 0.2745 是否可信。",
+  "refs": [
+   "L5.edb",
+   "L5.edb_reasoning",
+   "L5.m_die",
+   "L5.volume_price",
+   "L7.background.allocation",
+   "L7.background.financing",
+   "L7.macro",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/02_put_cf_1f1d50000a7ae5b307cf3cfe.json#K2",
+  "prompt": "inquiry_prompt@0.1",
+  "type": "temporal",
+  "question_cn": "20OCT26（0DTE）在约 5.4 小时后到期（notional 291,898,347、put_oi 2,151.3、max_pain 82,000、PCR_OI 1.509），本保单还有约 29.3 小时。滚落之后，81,000/80,000 的负 Gamma 墙是消失还是被 21OCT26 自身结构替代？也就是说，本保单最后约 24 小时的路径，是由“81,000 加速墙”主导，还是由“81,500 pin + 81,400–81,900 密集区”主导？",
+  "why_material_cn": "触界概率是按 29.27 小时整体算的风险中性读数（0.699136），但结构在 5.4 小时后会发生一次到期切换。若滚落后下档支撑变薄而 IV 又处于低分位（26.0），则同等价格路径下的实际触界高于基线；若滚落后由 81,500 高 Gamma 接棒，则短期波动收缩、触界下降。深尾（跌破 79,000）主要取决于 roll 后下档 OI 的厚度。",
+  "refs": [
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.spatial_position",
+   "L4.expiry_vol",
+   "L4.iv",
+   "L5.m_die"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/22_put_cf_a6442e9274ee149a7d822147.json#K3",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "mechanism",
+  "question_cn": "本期 Put Gamma/OI 集中在 81500/75000，而短腿 82500 自身 OI 仅 10.9 BTC：下探时 81500 一带是减速缓冲，还是加速穿越并放大保护腿下方的 BTC 深尾？",
+  "why_material_cn": "若 81500 是正 Gamma 缓冲，价格下探时对冲流可能减速下跌，降低深尾；若 dealer 侧为负或 OI 构成以买方为主，跌破 81500 后对冲可能加速，保护腿 80500 下方 BTC 赔付继续增加，深尾损失上升。",
+  "refs": [
+   "L2.book.long",
+   "L2.book.short",
+   "L3.expiry_walls",
+   "L3.gex.structure",
+   "L3.spatial_position"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/22_put_cf_a6442e9274ee149a7d822147.json#K2",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "本期 ATM 标记 IV 26.81% 低于近 24h 实现 37.75%、近 7d 实现 33.98%：这是持续的低估（实际波动更高、触界概率被市场隐含低估），还是已过去的高波动噪声？",
+  "why_material_cn": "若高实现波动持续，市场隐含的 p_touch/p_loss 可能低估真实触界与亏损概率；若只是过去时段噪声，26.8% 的本期 IV 与正 Gamma pinning 仍可支持较低延续。该问题直接影响触界、到期亏损与深尾判断。",
+  "refs": [
+   "L2.baseline.basis",
+   "L2.baseline.p_loss",
+   "L2.baseline.p_max_loss",
+   "L2.baseline.p_touch_short",
+   "L4.expiry_vol",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "sheets2/03_put_cf_6f60c265eed9c2046606bb71.B.json#K2",
+  "prompt": "inquiry_prompt@0.4",
+  "type": "scenario",
+  "question_cn": "本合约持有期内先遇到的是正好压在短腿 82,500 的 0DTE 负 Gamma 墙（该到期日 2026-10-22 08:00 UTC 结算后消失），还是本期 83,000 的双侧 Gamma 集中与 Pin 会把价格吸在短腿上方？换句话说，下探到短腿是会在 08:00 UTC 之前被加速穿越，还是之后被钉回 83,000 一带？（需要 22OCT26 当日 82,500 行权价的实时未平仓与 Gamma 集中度，以及该到期日结算后这一集中是否消失的盘口证据）",
+  "why_material_cn": "如果 08:00 UTC 之前的 0DTE 结构会放大下探，那么 0.39% 的短腿距离实际上是在一段加速地形上，应该选更远的短腿或不做这一侧；如果 08:00 之后只剩本期 83,000 的钉住，那么真正的持有风险主要落在剩下 24 小时能否被钉住，短腿距离可以维持。它通过触及概率与到期亏损概率起作用。",
+  "refs": [
+   "L1.liability",
+   "L3.expiry_walls",
+   "L3.spatial_position"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-21/14_put_cf_606335a85f43cf2f3b49ddcc.json#K1",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "conflict",
+  "question_cn": "卖出腿 83500 处的结构到底是什么？L8 D2 说现价到短腿之间没有本期墙、Pin 或 Flip，但 L3.expiry_walls 显示 22OCT26 的 call Gamma 第三大位正是 83500（2748849.88 USD/1%），而该行的 put 持仓只有 12.8 BTC；pin 与 gamma_call 墙在 84000。83500 这一带是会“钉住”（触界成为插针、深尾小），还是跌破后被对冲“加速”（触界变成深入保护腿）？",
+  "why_material_cn": "触界概率 0.7891、到期亏损 0.3274、越过保护腿 0.0603（L2.baseline）都取决于 83500 附近价格是被吸住还是被推穿；若该位由 call Gamma 主导并钉住，触界多为短时插针、深尾受 82500/81500 墙吸收；若跌破触发顺势对冲，则同一条 2000 美元宽度的保护带会被快速穿越，币本位赔付随价格继续放大。",
+  "refs": [
+   "L1.liability",
+   "L2.book.short",
+   "L3.expiry_walls",
+   "L3.spatial_position",
+   "L8.decision_path"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/15_put_cf_ddf3555db7416de22b168fc7.json#K8",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "collinear",
+  "question_cn": "L5 的看多读数（TMV strong_bullish_bias、EDB lean BULLISH、micro_flow bullish）与 L7 的 macro Mild Tailwind、ETF 净流入同时偏多，但 L5.edb_reasoning 显示 MACRO 是 EDB 证据之一、TMV 是同一量价源，CVD 被排除、FUNDING 非投票。这些偏多读数是否只是少数同源驱动，不能作为对短腿下行保护的独立确认？",
+  "why_material_cn": "如果看多读数同源，市场基线 p_touch_short=0.4853 不会因这些叙事而下降；若独立，则下探触界概率可能更低。",
+  "refs": [
+   "L5.edb_reasoning",
+   "L5.m_die",
+   "L5.volume_price",
+   "L7.background.allocation",
+   "L7.macro"
+  ]
+ },
+ {
+  "qid": "arch/2026-10-20/21_put_cf_bc13fd7e92566f0ecea5dd55.json#K8",
+  "prompt": "inquiry_prompt@0.3",
+  "type": "temporal",
+  "question_cn": "48h 资金费率已为 crowded_long（funding_norm 0.7557、6 笔结算全为正），但 4h 微观为中性、15m 为 NO_MOVE、原生 OI 24h 减少 953.006 BTC（-1.0004%）。这段偏多是会延续到到期，还是正在衰竭并回踩 82000？",
+  "why_material_cn": "若偏多趋势衰竭并回踩，触界概率会高于按“方向背离责任区”推断的路径；若趋势延续，价格远离短腿，触界概率可低于基线 0.5985。",
+  "refs": [
+   "L5.edb",
+   "L5.m_die",
+   "L5.volume_price",
+   "L7.background.financing"
+  ]
+ }
+]

@@ -6,7 +6,8 @@ state under `contracts[<short>|<long>].inquiry` (and, for three days after expir
 `closed_recent`); the case file it read sits next to it as `cases/<same name>.json.gz`.
 
 - `sheets(key)`: the sheets of one contract, oldest first, with slot, trigger and status;
-- `view(short, long, file, summary)`: one sheet in full plus the case entries its refs cite
+- `view(short, long, file, summary)`: one sheet in full plus the case entries its refs cite and
+  the experience reading of its questions (`lens`, docs/opus/19; the summary has none)
   (the audit), or only its first questions and counts (the Decision Path audit step);
 - `latest_ref(key)`: the sheet shown by default, recorded with Decision Path marks.
 
@@ -25,6 +26,14 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+
+try:   # the reading is optional: a deploy without it must not take the workbench down
+    if __package__:
+        from . import astra_inquiry_lens_v1 as lens_core
+    else:
+        import astra_inquiry_lens_v1 as lens_core
+except ImportError:
+    lens_core = None
 
 SCHEMA = "astra_inquiry_view@0.1"
 INSTRUMENT = re.compile(r"BTC-\d{1,2}[A-Z]{3}\d{2}-\d{3,7}-[PC]")
@@ -99,6 +108,16 @@ def _entry(case: Mapping[str, Any], ref: str) -> dict[str, Any] | None:
     else:
         out.update(values=e.get("values"), truncated=False)
     return out
+
+
+def _lens(sheet: Mapping[str, Any], case: Mapping[str, Any] | None, version: Any) -> dict[str, Any]:
+    """The experience reading (docs/opus/19); a failure says so rather than breaking the sheet."""
+    if lens_core is None:
+        return {"version": None, "error": "lens_unavailable"}
+    try:
+        return lens_core.sheet_lens(sheet, case, prompt_version=version)
+    except Exception as exc:
+        return {"version": getattr(lens_core, "VERSION", None), "error": type(exc).__name__}
 
 
 def summary_of(sheet: Mapping[str, Any]) -> dict[str, Any]:
@@ -182,7 +201,7 @@ class InquiryReader:
     def _sheet(self, rel: str) -> Mapping[str, Any]:
         return self._cached(self._sheets, rel, lambda: self._object(self._bounded(self._path(rel), SHEET_MAX_BYTES)))
 
-    def _case_entries(self, rel: str, sheet: Mapping[str, Any]) -> dict[str, Any]:
+    def _case_entries(self, rel: str, sheet: Mapping[str, Any], version: Any = None) -> dict[str, Any]:
         """The case file's identity and the entries the sheet cites (not the whole case)."""
         case_rel = "cases/" + rel[len("inquiry/"):] + ".gz"
 
@@ -199,7 +218,7 @@ class InquiryReader:
                     entries[ref] = entry
             return {"case": {"file": case_rel, "case_id": case.get("case_id"), "asof_ms": case.get("asof_ms"),
                              "contract_cn": case.get("contract_cn"), "builder": (case.get("build") or {}).get("builder")},
-                    "entries": entries}
+                    "entries": entries, "lens": _lens(sheet, case, version)}
 
         return self._cached(self._entries, rel, load)
 
@@ -260,8 +279,10 @@ class InquiryReader:
                         usage=[a.get("usage") for a in result.get("attempts") or [] if isinstance(a, Mapping)])
         if sheet:
             try:
-                selected.update(self._case_entries(pick, sheet))
+                selected.update(self._case_entries(pick, sheet, result.get("prompt_version")))
             except (OSError, ValueError, InquiryViewError) as exc:
                 selected["case_error"] = type(exc).__name__
+            if "lens" not in selected:      # without the case: categories only, no numbers
+                selected["lens"] = _lens(sheet, None, result.get("prompt_version"))
         body["selected"] = selected
         return body

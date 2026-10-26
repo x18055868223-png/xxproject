@@ -4144,11 +4144,31 @@ class AstraWorkbench:
                 "unreadable_sessions": getattr(self.decision_paths, "unreadable", 0)}
 
     def _dp_item(self, item: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
-        """A candidate with the read-time program layers the page also shows."""
+        """A candidate with the read-time program layers the page also shows, including the
+        entry warnings (docs/opus/13) that the Decision Path's time step reads (docs/opus/20)."""
         frame_view = {"candidates": [deepcopy(dict(item))]}
         self._attach_exogenous_events(frame_view, now_ms)
         self._attach_decision_reduction(frame_view)
-        return frame_view["candidates"][0]
+        out = frame_view["candidates"][0]
+        if not isinstance(out.get("entry_warnings"), Mapping):
+            try:
+                view = self.cached_view() or {}
+                sid = (out.get("snapshot") or {}).get("snapshot_id")
+                same = next((c for c in view.get("candidates") or [] if isinstance(c, Mapping)
+                             and (c.get("snapshot") or {}).get("snapshot_id") == sid), None)
+                if same is not None and isinstance(same.get("entry_warnings"), Mapping):
+                    out["entry_warnings"] = deepcopy(same["entry_warnings"])
+                else:
+                    gex = ((((view.get("market_context") or {}).get("market_facts") or {}).get("space_context") or {})
+                           .get("gex_info") or {})
+                    by_expiry = (view.get("expiry_gamma") or {}).get("by_expiry") or {}
+                    others = {c.get("side"): c for c in view.get("candidates") or [] if isinstance(c, Mapping)}
+                    others[out.get("side")] = out
+                    out["entry_warnings"] = _entry_warnings_for(out, now_ms, gex, by_expiry, others,
+                                                                self._ledger_history(now_ms))
+            except Exception as exc:
+                out["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
+        return out
 
     def _dp_frame(self, item: Mapping[str, Any], now_ms: int, fact: Mapping[str, Any] | None = None) -> dict[str, Any]:
         fact = fact if fact is not None else self.latest_fact(now_ms)
@@ -4157,11 +4177,26 @@ class AstraWorkbench:
             window = cross_asset.contract_window(now_ms, expiry) if isinstance(expiry, int) else None
         except Exception:
             window = None
+        try:
+            clock = session_clock.reading(now_ms, expiry if isinstance(expiry, int) else None)
+        except Exception:
+            clock = None
+        # the protection leg's top of book from the frozen capture (Q2: discount a wide wing, docs/opus/20)
+        top = None
+        try:
+            sid = (item.get("snapshot") or {}).get("snapshot_id")
+            with self._view_lock:
+                point = self._lockable_points.get(sid) if sid else None
+            book = ((((point or {}).get("packet") or {}).get("raw_payload") or {}).get("market") or {}).get("long_book") or {}
+            top = {"bid": book.get("best_bid_price"), "ask": book.get("best_ask_price")} if book else None
+        except Exception:
+            top = None
         return {"at_ms": now_ms, "candidate": item, "market_facts": fact.get("market_facts") or {},
-                "fmz_status": fact.get("status"),
+                "fmz_status": fact.get("status"), "fmz_age_ms": fact.get("age_ms"),
                 "expiry_walls": expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=now_ms),
                 "realized_vol": (self._expiry_gamma or {}).get("realized_vol"),
-                "cross_window": window, "transitions": self.recent_transitions(limit=30)}
+                "cross_window": window, "transitions": self.recent_transitions(limit=30),
+                "session_clock": clock, "long_book_top": top}
 
     _case_file_lock = threading.Lock()
 

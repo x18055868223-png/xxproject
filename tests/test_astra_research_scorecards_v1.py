@@ -100,6 +100,12 @@ def test_inquiry_reviews_are_joined_counted_and_the_latest_wins(tmp_path):
     assert version["pointed_rate"] == 0.5 and version["wrong_premise_rate"] == 0.5
     assert card["by_type"]["inquiry_prompt@0.2|gap"]["pointed_to_realized_risk"] == 1
     assert [u["question_id"] for u in card["unmatched"]] == ["K9"]
+    # research-only re-reading by experience card, with the days behind it
+    cards = card["by_card"]
+    assert sum(v["reviewed"] for v in cards.values()) == 2
+    assert all(k.startswith("inquiry_lens@0.1|inquiry_prompt@0.2|") for k in cards)
+    assert all(v["expiry_days"] == 0 for v in cards.values())      # the fixture archive has no case files
+    assert "by_card_error" not in card
     # only cases whose contract settled count toward coverage
     assert card["coverage"]["inquiry_prompt@0.2"] == {"cases": 1, "cases_without_questions": 0, "questions_asked": 3,
                                                       "questions_reviewed": 2,
@@ -180,3 +186,14 @@ def test_failed_inquiry_runs_and_bad_lines_do_not_break_the_card(tmp_path):
     assert card["coverage"]["inquiry_prompt@0.2"]["cases_without_questions"] == 1
     assert card["coverage"]["inquiry_prompt@0.2"]["coverage"] is None
     assert sc.run(root, now_ms=2)["views_scored"] == 4
+
+
+def test_a_broken_lens_never_takes_the_inquiry_card_down(tmp_path, monkeypatch):
+    root = _archive(tmp_path)
+    _inquiry(root, "cf_0", "inquiry_prompt@0.4", ["K1"])
+    _jsonl(root / "registry" / "postmortems.jsonl", [{"submission_id": "postmortem:p", "received_at_ms": 1, "document": {
+        "schema": "postmortem@0.1", "id": "p", "inquiry_review": [{"case_id": "cf_0", "question_id": "K1", "verdict": "unclear"}]}}])
+    monkeypatch.setattr(sc.lens_core, "classify", lambda q: 1 / 0)
+    card = sc.inquiry_scorecard(root, now_ms=5)
+    assert card["by_card_error"] == "ZeroDivisionError" and card["by_card"] == {}
+    assert card["by_prompt_version"]["inquiry_prompt@0.4"]["reviewed"] == 1

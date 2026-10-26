@@ -32,7 +32,10 @@ MOVED = {"toward_underwrite", "toward_decline"}
 # verdict codes that point toward the liability (+1) or away from it (-1); others 0
 ADVERSE = {"partial": 1, "stop": 1, "inside": 1, "narrow": 1, "medium": 0, "wide": -1, "toward": 1,
            "toward_amplified": 1, "away": -1, "listed": 1, "back_and_forth": 1, "persistent": 0, "recent": 0,
-           "flat": -1, "fading": 0, "calendar_partial": 0, "attention": 1, "clear": -1, "below_market": 1, "above_market": -1}
+           "flat": -1, "fading": 0, "calendar_partial": 0, "attention": 1, "clear": -1, "below_market": 1, "above_market": -1,
+           # path v2 (docs/opus/20)
+           "veto": 1, "window_near": 1, "ordinary": 0, "better_hours": 0, "standard": 0, "toward_early": 1,
+           "no_veto": 0, "none": 0, "plan": 0, "described": 0}
 LOW_CHANGE = 0.10
 MIN_SAMPLES = 8
 # two reading groups count as separated only with enough members each and a mean result gap
@@ -73,7 +76,9 @@ def report(sessions: list[Mapping[str, Any]]) -> dict[str, Any]:
         by_version[s.get("path_version") or "unknown"].append(s)
     for version, items in sorted(by_version.items()):
         steps: dict[str, Any] = {}
-        order = [sid for sid in dp.STEP_IDS if sid != "AU"]
+        # each version in its own step order (the order its sessions recorded)
+        recorded = next((list(s.get("verdicts_start") or {}) for s in items if s.get("verdicts_start")), None)
+        order = [sid for sid in (recorded or dp.STEP_IDS) if sid != "AU"]
         # the audit step counts only in sessions where it takes marks (au_mode) and was opened,
         # so "seen, no change" and "never opened" stay apart (docs/opus/14 §3.2)
         au_items = [s for s in items if s.get("au_mode") and "AU" in (s.get("opened_order") or [])]

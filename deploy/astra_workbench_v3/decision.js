@@ -9,10 +9,11 @@ export const MARK_CN = { toward_underwrite: "更倾向承保", unchanged: "没�
 const CHOICE_CN = { lock: "锁定追踪", decline: "不承保", watch: "继续观察", unconcluded: "到期未结论" };
 // Where each step's facts are drawn in full: [section heading id, label].
 const LINKS = {
-  D2: [["map-h", "价格地图"], ["factor-h", "空间位置"]],
+  T: [["map-h", "时段条"]],
+  D2: [["map-h", "价格地图"], ["factor-h", "空间位置"], ["src-h", "锚点效用变迁"]],
   D3: [["factor-h", "量价路径与主动成交"]],
-  D4: [["event-h", "外源性事件"], ["ctx-h", "资金与慢背景"]],
-  D5: [["src-h", "锚点效用变迁"]],
+  D4: [["event-h", "外源性事件"]],
+  D5: [["src-h", "锚点效用变迁"]],          // sessions started on path v1
   AU: [["audit-h", "推理审计"]],
 };
 const TONE = { bad: "bad", warn: "warn", ok: "ok" };
@@ -56,12 +57,16 @@ function linesView(session, id, start, now) {
     const r = rows.get(key);
     if (r) r.b = l; else rows.set(key, { k: l.k, a: null, b: l });
   }
-  const label = (k) => (id === "Q1" ? `${k} ${titleOf(session, k)}` : k);
+  const isStep = (k) => stepsOf(session).some((s) => s.id === k);
+  const label = (k) => (id === "Q1" && isStep(k) ? `${k} ${titleOf(session, k)}` : k);
   const table = h("div", { class: `dp-lines${now ? " two" : ""}` });
   if (now) table.append(h("span", { class: "dp-col", text: "" }), h("span", { class: "dp-col", text: "开始时" }), h("span", { class: "dp-col", text: "现在" }));
   for (const r of rows.values()) {
     table.append(h("span", { class: "dp-k", text: label(r.k) }));
-    table.append(h("span", { class: `dp-v ${TONE[r.a?.tone] || ""}`, text: r.a ? r.a.v : "—" }));
+    // the grade and source of a reading (path v2, docs/opus/20), under its value
+    const basis = (r.a || r.b)?.basis;
+    table.append(h("span", { class: `dp-v ${TONE[r.a?.tone] || ""}`, title: basis ? `依据：${basis}` : null },
+      r.a ? r.a.v : "—", basis && !now ? h("small", { class: "dp-basis", text: basis }) : null));
     if (now) {
       const same = r.a && r.b && r.a.v === r.b.v;
       table.append(h("span", { class: `dp-v ${TONE[r.b?.tone] || ""}${same ? " same" : ""}`, text: r.b ? (same ? "同左" : r.b.v) : "—" }));

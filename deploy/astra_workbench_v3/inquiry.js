@@ -113,6 +113,63 @@ export function auSummary(resp, ctx = {}) {
   return box;
 }
 
+// ── experience reading (docs/opus/19) ─────────────
+export const LENS_CATEGORY_CN = { execution: "执行相关", observe: "持有观察点", not_a_reason: "不构成承保理由",
+  scope: "口径说明", declared_gap: "已声明缺口", unclassified: "未归类" };
+const LENS_ORDER = ["execution", "observe", "not_a_reason", "scope", "declared_gap", "unclassified"];
+
+/** One line under a question: how this kind of question is used, on what graded basis, with this
+ *  contract's numbers where they share the basis's measurement. Null when there is no reading. */
+export function lensLine(reading) {
+  if (!reading) return null;
+  const box = h("div", { class: "iq-lens" });
+  box.append(h("div", { class: "iq-lens-head" }, h("span", { class: "iq-lens-tag", text: "经验读法" }),
+    chip(reading.category_cn || LENS_CATEGORY_CN[reading.category] || reading.category, "lens", reading.phrase_cn || ""),
+    h("b", { text: reading.title_cn || "" }),
+    (reading.also_cn || []).length ? h("span", { class: "muted small", text: `同时涉及：${reading.also_cn.join("、")}` }) : null));
+  box.append(h("p", { class: "iq-lens-read", text: reading.reading_cn || "" }));
+  const live = (reading.live || []).filter((r) => r && r.label_cn);
+  if (live.length) {
+    box.append(h("dl", { class: "iq-lens-live" }, ...live.flatMap((r) => [
+      h("dt", { text: r.label_cn }), h("dd", {}, h("span", { class: "num", text: r.value ?? "—" }),
+        r.note_cn ? h("span", { class: "muted small", text: ` ${r.note_cn}` }) : null)])));
+  }
+  const basis = reading.basis || [];
+  if (basis.length) {
+    box.append(h("details", { class: "iq-lens-basis" }, h("summary", { text: "依据" }),
+      h("ul", {}, ...basis.map((b) => h("li", {}, chip(b.grade || "—", "muted-chip", "证据等级（17 号经验体系）"), ` ${b.text_cn}`,
+        h("span", { class: "muted small", text: `（${b.source}）` }))))));
+  }
+  return box;
+}
+
+/** The sheet's reading at the top: counts by category and the suggested order, or why there is none. */
+export function lensHead(lens) {
+  if (!lens) return null;
+  if (lens.error) return h("p", { class: "muted small", text: "经验读法暂时无法生成。" });
+  if (!lens.enabled) return h("p", { class: "muted small", text: `经验读法：${lens.reason_cn || "不显示"}` });
+  const counts = lens.counts || {};
+  const parts = LENS_ORDER.filter((c) => counts[c]).map((c) => `${LENS_CATEGORY_CN[c]} ${counts[c]}`);
+  const order = (lens.order || []).map((c) => LENS_CATEGORY_CN[c]).join(" → ");
+  return h("div", { class: "iq-lens-sum" },
+    h("p", {}, h("b", { text: "本单读法：" }), parts.join(" · ") || "无", order ? `。建议阅读顺序：${order}。` : "。"),
+    h("p", { class: "muted small", text: lens.note_cn || "" }));
+}
+
+/** Holding observation points gathered from the sheet's "持有观察点" questions. */
+export function lensObserve(lens) {
+  const items = lens?.enabled ? lens.observe || [] : [];
+  if (!items.length) return null;
+  const ul = h("ul", { class: "iq-observe" });
+  for (const it of items) {
+    const pts = (it.points || []).map((p) => `${p.label_cn}：${p.value}`);
+    ul.append(h("li", {}, h("b", { text: `${it.question} ${it.title_cn}` }), pts.length ? `　${pts.join("；")}` : h("span", { class: "muted small", text: "　（这一类没有可给出的时刻或数字）" })));
+  }
+  return h("details", { class: "iq-brief", open: true },
+    h("summary", { text: `持有观察点（${items.length}）：观察点，不是平仓点` }), ul,
+    h("p", { class: "muted small", text: "日内平仓点约 20 个到期日后再议（17 号 §5）；持有与平仓的对照见研究存档 scorecards/intraday_exit.json。" }));
+}
+
 // ── the reasoning audit ───────────────────────────
 function refChip(ref, entries, ctx) {
   const e = entries?.[ref];
@@ -145,6 +202,7 @@ function questionCard(q, sel, ctx) {
     ...(q.from_anomalies || []).map((a) => chip(`来自 ${a}`, "muted-chip")))),
   h("p", { class: "iq-question", ...cn(q.question_cn, sel.entries) }), flagLine(q),
   q.why_material_cn ? h("p", { class: "iq-why", ...cn(q.why_material_cn, sel.entries, "为何重要：") }) : null,
+  sel.lens?.enabled ? lensLine(sel.lens.questions?.[q.id]) : null,
   hypotheses(q, sel.entries));
   const premises = (q.premises || []).filter((p) => p && typeof p === "object");
   if (premises.length) {
@@ -286,7 +344,11 @@ export function inquiryAudit(resp, ctx = {}) {
   // the questions are the product; the anomalies they come from follow, folded
   const questions = sheet.questions || [];
   left.append(h("h4", { text: `问题（${questions.length}，按提问者的优先级）` }));
+  const head = lensHead(sel.lens);
+  if (head) left.append(head);
   for (const q of questions) left.append(questionCard(q, sel, ctx));
+  const observe = lensObserve(sel.lens);
+  if (observe) left.append(observe);
   if (sheet.coverage_note_cn) left.append(h("p", { class: "muted small", ...cn(sheet.coverage_note_cn, sel.entries, "覆盖说明：") }));
   const anomalies = sheet.anomalies || [];
   if (anomalies.length) {
@@ -332,7 +394,7 @@ export function toSummary(resp) {
   const qs = (sel.sheet?.questions || []).filter((q) => q && typeof q === "object");
   const by = { high: 0, medium: 0, low: 0 };
   for (const q of qs) if (q.priority in by) by[q.priority] += 1;
-  const { sheet, entries, issues, usage, case: _case, ...rest } = sel;
+  const { sheet, entries, issues, usage, case: _case, lens: _lens, ...rest } = sel;   // the summary has no reading (docs/opus/19 §5)
   return { ...resp, selected: { ...rest, summary: sel.sheet ? {
     questions: qs.slice(0, 3).map(({ id, priority, type, bears_on, answer_source, question_cn }) => ({ id, priority, type, bears_on, answer_source, question_cn })),
     question_count: qs.length, by_priority: by, anomaly_count: (sel.sheet.anomalies || []).length } : null } };
