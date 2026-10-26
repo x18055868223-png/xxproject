@@ -4,7 +4,7 @@ import { api, idempotencyKey } from "./api.js";
 import { h, s, clear, get, isNum, usd, btc, pct, ratioPct, compactUsd, ago, dur, clock } from "./format.js";
 import { sideModel, mapModel, sourceHealth, reasonCn, hasReason, statusCn, applicability, codeCn, underwriting, productionReady,
   consumerCn, sourceStatusCn } from "./model.js";
-import { renderMap, legend } from "./map.js";
+import { renderMap, legend, ladderTable } from "./map.js";
 import { coreFactors, backgroundItems } from "./factors.js";
 import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
 import { eventBand } from "./events.js";
@@ -261,6 +261,7 @@ function renderMapBand() {
   const model = mapModel(state.view, state.sides);
   renderMap($("map"), $("map-tip"), model, { focus: state.focus, onPick: (side) => select(side) });
   legend($("map-legend"), model);
+  ladderTable($("map-ladder"), model);
   const scroller = $("map").parentElement;
   if (scroller.scrollWidth > scroller.clientWidth && !scroller.dataset.centered) {
     scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;

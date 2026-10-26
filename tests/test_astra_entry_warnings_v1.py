@@ -70,7 +70,27 @@ def test_whole_expiry_repricing_is_clock_adjusted():
     assert up["triggered"] is True and "整条到期" in up["reason_cn"]
 
 
+def test_the_busy_window_is_a_note_active_in_busy_hours_and_windows_in_progress_or_ahead():
+    busy_now = ew.busy_window_note({"hour_level": "busy", "windows": []}, 0.39)
+    assert busy_now["active"] is True and busy_now["role"] == "note" and busy_now["code"] == "busy_window"
+    assert busy_now["reason_cn"].startswith("当前处于高波动时段。") and "不是否决" in busy_now["reason_cn"]
+    assert busy_now["evidence"]["distance_in_moves"] == 0.39 and busy_now["validated"] is False
+    in_progress = ew.busy_window_note({"hour_level": "normal", "windows": [{"label_cn": "美股开盘", "in_hours": -0.2}]})
+    assert in_progress["active"] is True and in_progress["reason_cn"].startswith("美股开盘正在进行。")
+    assert in_progress["evidence"]["in_progress"] is True and in_progress["evidence"]["ahead"] is False
+    ahead = ew.busy_window_note({"hour_level": "normal", "windows": [{"label_cn": "美股开盘", "in_hours": 1.5}]}, 0.8)
+    assert ahead["active"] is True and ahead["reason_cn"].startswith("美股开盘约 1.5 小时后。")
+    assert ahead["evidence"]["ahead"] is True and ahead["evidence"]["in_progress"] is False
+    assert "35%" in ahead["reason_cn"] and "26%" in ahead["reason_cn"] and "22 号" in ahead["basis_cn"]
+    quiet = ew.busy_window_note({"hour_level": "quiet", "windows": [{"label_cn": "美股开盘", "in_hours": 5}]}, 0.1)
+    assert quiet["active"] is False and quiet["reason_cn"] == "2 小时内没有高波动窗口，当前也不在高波动时段。"
+    for missing in (None, {"error_type": "RuntimeError"}):
+        out = ew.busy_window_note(missing, 0.1)
+        assert out["active"] is None and out["reason_cn"] == "缺少时钟读数，无法判断。"
+
+
 def test_busy_window_counts_windows_in_progress_and_busy_hours():
+    # the @0.1 veto, kept for the backtest of docs/opus/22 (research_22); evaluate no longer calls it
     in_progress = {"hour_level": "busy", "windows": [{"label_cn": "美股开盘", "in_hours": -0.2}]}
     assert ew.busy_window_thin_cushion(in_progress, 0.2)["triggered"] is True
     assert "正在进行" in ew.busy_window_thin_cushion(in_progress, 0.2)["reason_cn"]
@@ -88,5 +108,22 @@ def test_evaluate_and_chinese_thresholds():
     out = ew.evaluate(side="call", now_ms=NOW, contract_expiry_ms=EXPIRY, contract_expiry_label="21OCT26",
                       term_structure=TERMS, expiry_atm_iv=31.9, short_iv=30.0, other_short_iv=33.0, distance_in_moves=0.3,
                       history=[], clock_reading=clock.reading(NOW, EXPIRY))
-    assert out["unknown"] == ["premium_thickening"] and out["rules"] == "entry_warnings@0.1"
+    assert out["unknown"] == ["premium_thickening"] and out["rules"] == "entry_warnings@0.2"
     assert all(k in ew.THRESHOLD_CN.values() for w in out["warnings"] for k in w["threshold_cn"])
+
+
+def test_evaluate_vetoes_only_inversion_and_thickening_and_the_note_never_counts():
+    # 2026-10-20 14:00 UTC, a busy weekday hour with the US open just behind: the note is on
+    busy = NOW + 4 * H
+    out = ew.evaluate(side="call", now_ms=busy, contract_expiry_ms=EXPIRY, contract_expiry_label="21OCT26",
+                      term_structure=TERMS, expiry_atm_iv=31.9, short_iv=30.0, other_short_iv=33.0, distance_in_moves=0.2,
+                      history=[], clock_reading=clock.reading(busy, EXPIRY))
+    assert [w["code"] for w in out["warnings"]] == ["term_inversion", "premium_thickening"]
+    assert [n["code"] for n in out["notes"]] == ["busy_window"] and out["notes"][0]["active"] is True
+    assert "busy_window" not in out["triggered"] + out["unknown"] and out["any_triggered"] is (out["triggered"] != [])
+    assert out["notes"][0]["evidence"]["distance_in_moves"] == 0.2
+    blind = ew.evaluate(side="call", now_ms=busy, contract_expiry_ms=EXPIRY, contract_expiry_label="21OCT26",
+                        term_structure=TERMS, expiry_atm_iv=31.9, short_iv=30.0, other_short_iv=33.0, distance_in_moves=None,
+                        history=[], clock_reading=None)
+    assert blind["notes"][0]["active"] is None and blind["unknown"] == ["premium_thickening"]
+    assert ew.WINDOW_HOURS == 2.0 and callable(ew.busy_window_thin_cushion)      # research_22 imports both

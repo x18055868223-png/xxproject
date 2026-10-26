@@ -1,5 +1,6 @@
-// Session strip and entry warnings (docs/opus/13). Facts about the intraday cycle and
-// veto-only warnings; nothing here recommends a trade. Times show Beijing time with UTC.
+// Session strip and entry warnings (docs/opus/13). Facts about the intraday cycle,
+// veto-only warnings and the busy-window holding note (entry_warnings@0.2, docs/opus/22);
+// nothing here recommends a trade. Times show Beijing time with UTC.
 import { h, isNum, get } from "./format.js";
 
 const BJ = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -110,36 +111,59 @@ export function warningEvidence(w) {
     return `本期 IV（时钟校正）较近 6 小时 ${signedPts(e.atm_jump_vol_pts)}，本侧偏斜 ${signedPts(e.skew_jump_vol_pts)}`
       + (isNum(e.other_side_skew_jump_vol_pts) ? `，另一侧偏斜 ${signedPts(e.other_side_skew_jump_vol_pts)}` : "，另一侧无数据");
   }
-  if (w.code === "busy_window_thin_cushion") {
-    const t = w.threshold_raw || {};
-    const within = isNum(t.window_within_hours) ? t.window_within_hours : 2;
-    const below = isNum(t.distance_in_moves_below) ? t.distance_in_moves_below : 0.5;
-    return `σ 距离 ${NUM(e.distance_in_moves)}（阈值：${within} 小时内有窗口或当前处于高波动时段，且 σ 距离 < ${below}）`;
-  }
   return "";
+}
+
+// entry_warnings@0.1 vetoed a busy window with a thin cushion; @0.2 made it a holding note
+// (docs/opus/22). Old blocks (cached views, sessions) read that item as the note, never a veto.
+const LEGACY_BUSY = "busy_window_thin_cushion";
+const BUSY_TAIL = "在这类时点按标准短腿建仓，2 小时内触及短腿约 35%（其他时点约 26%）；这是持有中的盯盘提示，不是否决。";
+
+// The busy-window note: { active: true / false / null, reason }, or null when the block has none.
+export function busyNote(block) {
+  const note = ((block && block.notes) || []).find((n) => n && n.code === "busy_window");
+  if (note) return { active: note.active == null ? null : note.active, reason: note.reason_cn || "" };
+  const old = ((block && block.warnings) || []).find((w) => w && w.code === LEGACY_BUSY);
+  if (!old) return null;
+  const e = old.evidence || {};
+  const win = e.next_window && typeof e.next_window === "object" ? e.next_window : null;
+  const active = win || e.busy_now || old.triggered === true ? true : old.triggered === false ? false : null;
+  if (!active) return { active, reason: "" };
+  const at = win && isNum(win.in_hours) && win.in_hours > 0 ? `约 ${win.in_hours.toFixed(1)} 小时后` : "正在进行";
+  return { active, reason: `${win ? `${win.label_cn || "窗口"}${at}` : "当前处于高波动时段"}。${BUSY_TAIL}` };
 }
 
 export function warningModel(candidate) {
   const block = candidate && candidate.entry_warnings;
   if (!block) return { available: false, text: "不建仓警示：读数尚未提供" };
   if (block.error_type) return { available: false, text: "不建仓警示：读数暂不可用" };
-  const items = (block.warnings || []).map((w) => ({ code: w.code, label: w.label_cn, triggered: w.triggered, reason: w.reason_cn,
-    evidence: warningEvidence({ ...w, threshold_raw: w.threshold }), threshold: w.threshold_cn || w.threshold }));
+  const items = (block.warnings || []).filter((w) => w && w.code !== LEGACY_BUSY)
+    .map((w) => ({ code: w.code, label: w.label_cn, triggered: w.triggered, reason: w.reason_cn,
+      evidence: warningEvidence({ ...w, threshold_raw: w.threshold }), threshold: w.threshold_cn || w.threshold }));
   const fired = items.filter((w) => w.triggered === true);
   const unknown = items.filter((w) => w.triggered == null);
-  return { available: true, fired, unknown, items, total: items.length, historyAvailable: block.history_available !== false };
+  return { available: true, fired, unknown, items, total: items.length, historyAvailable: block.history_available !== false,
+    note: busyNote(block) };
+}
+
+// The note as its own line, only while it is on: amber, and it says it is not a veto.
+function noteLine(note) {
+  if (!note || note.active !== true) return null;
+  return h("p", { class: "ew-note small warn-text", style: "margin: 4px 0 8px", text: `时段提示（不是否决）：${note.reason}` });
 }
 
 export function warningBlock(candidate, opts = {}) {
   const m = warningModel(candidate);
   if (!m.available) return h("p", { class: "ew-none muted small", text: m.text });
-  if (!m.total) return h("p", { class: "ew-none muted small", text: "不建仓警示：读数为空" });
+  const note = noteLine(m.note);
+  const quiet = (p) => (note ? h("div", { class: "ew-quiet" }, p, note) : p);
+  if (!m.total) return quiet(h("p", { class: "ew-none muted small", text: "不建仓警示：读数为空" }));
   const gap = m.unknown.length ? `，${m.unknown.length} 项数据不足` : "";
   if (!m.fired.length) {
     // never say "none" when nothing could be checked
     const text = m.unknown.length === m.total ? `不建仓警示：无法判断（${m.total} 项数据都不足）`
       : `不建仓警示：未触发 ${m.total - m.unknown.length} 项${gap}`;
-    return h("p", { class: "ew-none muted small", text });
+    return quiet(h("p", { class: "ew-none muted small", text }));
   }
   const key = `ew-${candidate.side}`;
   const more = h("details", { class: "ew-more", open: opts.isOpen ? opts.isOpen(key) : false }, h("summary", { text: "阈值与全部检查项" }),
@@ -155,5 +179,5 @@ export function warningBlock(candidate, opts = {}) {
       h("b", { text: w.label }), h("span", { class: "ew-reason", text: w.reason || "" }),
       h("span", { class: "ew-evidence num", text: w.evidence })))),
     gap ? h("p", { class: "small muted", text: `另有 ${m.unknown.length} 项数据不足：${m.unknown.map((w) => w.label).join("、")}。` }) : null,
-    more);
+    note, more);
 }

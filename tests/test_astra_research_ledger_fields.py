@@ -47,7 +47,7 @@ def test_fields_from_the_view_books_calendar_and_index_path():
     assert f["gamma_wall_usd"] == 82000.0 and f["gamma_wall_vs_short_pct"] < 0     # the wall sits before the short leg
     assert abs(f["index_chg_1h_pct"] - (81400 / 81000 - 1) * 100) < 1e-9
     assert abs(f["index_chg_4h_pct"] - (81400 / 80000 - 1) * 100) < 1e-9
-    assert f["fields_version"] == "ledger_research_fields@0.2"
+    assert f["fields_version"] == "ledger_research_fields@0.3"
 
 
 def test_put_side_and_missing_inputs_give_none_not_errors():
@@ -75,7 +75,7 @@ def test_new_fields_are_conditionable_and_survive_the_validation_slim_row():
 
 
 def test_versions_record_when_the_fields_started():
-    assert ar.observed_versions()["ledger_fields"] == "ledger_research_fields@0.2"
+    assert ar.observed_versions()["ledger_fields"] == "ledger_research_fields@0.3"
 
 
 def test_tick_writes_the_fields_and_survives_a_malformed_index_path(tmp_path):
@@ -87,7 +87,7 @@ def test_tick_writes_the_fields_and_survives_a_malformed_index_path(tmp_path):
         report = _tick(archive, E2 - 19 * H, view_of(), FakeDeribit(path=path))
         assert report["rows"] == 1 and not [e for e in report["errors"] if e["step"] == "ledger_context"]
         row = json.loads(next((archive.root / "ledger").glob("*.jsonl")).read_text(encoding="utf-8").splitlines()[0])
-        assert row["fields_version"] == "ledger_research_fields@0.2" and "distance_in_moves" in row
+        assert row["fields_version"] == "ledger_research_fields@0.3" and "distance_in_moves" in row
     assert row["index_chg_1h_pct"] is not None
 
 

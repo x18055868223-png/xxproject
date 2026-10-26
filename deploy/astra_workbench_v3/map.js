@@ -1,6 +1,8 @@
 // Price map: one horizontal price axis shared by both sides of the book.
 // Lower prices on the left (Put liability), higher on the right (Call liability).
-import { s, clear, usd, kusd, pct, compactUsd, isNum } from "./format.js";
+// Tracks by basis: the policy itself, this expiry's own option structure, then background
+// levels of other bases (all-expiry GEX, on-chain cost, trade zones). Only the spot crosses all.
+import { s, h, clear, usd, kusd, pct, compactUsd, isNum } from "./format.js";
 
 // The SVG is drawn at its on-screen width so labels keep their real pixel size;
 // below MIN_W the band scrolls sideways instead of shrinking text.
@@ -10,12 +12,12 @@ const PAD_L = 92;
 const PAD_R = 24;
 const TRACKS = [
   { id: "liability", label: "责任区", h: 92 },
-  { id: "gamma", label: "Gamma 结构", h: 116 },
-  { id: "trade", label: "成交与成本", h: 60 },
+  { id: "expiry", label: "本期结构", h: 124 },
+  { id: "back", label: "背景价位", h: 80 },
 ];
 const AXIS_H = 26;
-// Lane under the tracks for the expected-move percentages, so they never sit on track content.
-const SIGMA_LANE = 18;
+// Lane under the tracks: expected-move percentages, then a footnote row for levels outside the view.
+const SIGMA_LANE = 34;
 
 /** Rough rendered width: CJK glyphs about one em, digits and Latin about 0.6 em. */
 function textWidth(text, size = 11) {
@@ -60,6 +62,8 @@ function liabilityText(price, model) {
   }
   return parts.length ? parts.join("；") : "在两侧责任区之外";
 }
+
+const signed = (v, d = 2) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(d)}`;
 
 export function renderMap(svg, tip, model, { focus = null, onPick = null } = {}) {
   clear(svg);
@@ -120,6 +124,8 @@ export function renderMap(svg, tip, model, { focus = null, onPick = null } = {})
     }
     return false;
   };
+  // a glyph with its label beside it (right, then left, then above)
+  const besideSpots = (px, yy) => [{ x: px + 9, y: yy + 4, anchor: "start" }, { x: px - 9, y: yy + 4, anchor: "end" }, { x: px, y: yy - 10 }];
 
   const sx = x(model.spot);
   reserve(sx - 36, 0, sx + 36, 20);
@@ -186,95 +192,133 @@ export function renderMap(svg, tip, model, { focus = null, onPick = null } = {})
         isNum(b.beOutsidePct) ? `距现价 ${pct(b.beOutsidePct, 2)}${isNum(b.beMovePct) ? `，约为到期前预期波动的 ${Math.round(b.beMovePct * 100)}%` : ""}` : "");
     }
   }
+  // A side without a candidate keeps its half of the track, with the reason, instead of vanishing.
+  for (const side of ["put", "call"]) {
+    if (model.sides[side] || !model.missing || !model.missing[side]) continue;
+    const name = side === "put" ? "Put" : "Call";
+    const a = side === "put" ? PAD_L + 6 : Math.min(W - PAD_R - 60, sx + 46);
+    const z = side === "put" ? Math.max(PAD_L + 60, sx - 46) : W - PAD_R - 6;
+    root.append(s("rect", { class: "zone-missing", x: a, y: L.y0 + 10, width: Math.max(0, z - a), height: L.h - 20, rx: 3 }));
+    place(`${name} 本轮无候选`, [{ x: (a + z) / 2, y: L.mid - 2 }], { fill: "var(--ink-2)", "font-weight": 600 });
+    place(model.missing[side], [{ x: (a + z) / 2, y: L.mid + 14 }], { fill: "var(--ink-3)" });
+  }
   for (const [side, bx] of beLabels) {
     place("盈亏平衡", [{ x: bx, y: L.y1 - 12 }, { x: bx + 6, y: L.y1 - 12, anchor: "start" }, { x: bx - 6, y: L.y1 - 12, anchor: "end" },
       { x: bx, y: L.y0 + 40 }], { class: `be-${side}`, fill: `var(--${side})` });
   }
 
-  // ── gamma track: bars above and below the zero line, position markers in the bottom lane
-  const G = T.gamma;
-  root.append(s("line", { x1: PAD_L, x2: W - PAD_R, y1: G.mid, y2: G.mid, stroke: "var(--rule)" }));
-  const gexMax = Math.max(1, ...model.walls.filter((w) => isNum(w.gex)).map((w) => Math.abs(w.gex)));
-  const barUp = G.h / 2 - 16, barDown = G.h / 2 - 30;
-  const markerY = G.y1 - 9;
-  const outside = { left: [], right: [] };
-  const ordered = model.walls.slice().sort((a, b) => Math.abs(b.gex || 0) - Math.abs(a.gex || 0));
-  for (const w of model.walls) if (isNum(w.price) && !inView(w.price)) (w.price < lo ? outside.left : outside.right).push(w);
-  for (const m of model.markers) if (isNum(m.price) && !inView(m.price)) (m.price < lo ? outside.left : outside.right).push(m);
-  for (const z of model.zones) if (isNum(z.lo) && isNum(z.hi) && (z.hi < lo || z.lo > hi)) (z.hi < lo ? outside.left : outside.right).push({ ...z, price: (z.lo + z.hi) / 2 });
-
-  // Out-of-view levels first: compact arrows at the edges, nearest two named.
-  const edge = (items, left) => {
-    if (!items.length) return;
-    const sorted = items.slice().sort((a, b) => left ? b.price - a.price : a.price - b.price);
-    const shown = sorted.slice(0, 2).map((i) => `${i.short || i.label} ${kusd(i.price)}`);
-    const text = shown.join("  ") + (sorted.length > 2 ? `  等 ${sorted.length} 项` : "");
-    place(left ? `◂ ${text}` : `${text} ▸`, [{ x: left ? PAD_L + 4 : W - PAD_R - 4, y: G.y0 + 13, anchor: left ? "start" : "end" }],
-      { fill: "var(--ink-3)" });
-  };
-  edge(outside.left, true);
-  edge(outside.right, false);
-
-  const bars = [];
-  for (const w of ordered) {
-    if (!isNum(w.price) || !inView(w.price)) continue;
-    const px = x(w.price);
-    if (isNum(w.gex)) {
-      const up = w.gex >= 0;
-      const hgt = Math.max(4, Math.sqrt(Math.abs(w.gex) / gexMax) * (up ? barUp : barDown));
-      const width = 11;
-      const offset = w.kind === "zero_dte" ? 6.5 : -6.5;
-      const bx = px - width / 2 + offset, by = up ? G.mid - hgt : G.mid;
-      root.append(s("rect", { class: `${up ? "wall-pos" : "wall-neg"} ${w.kind}`, x: bx, y: by, width, height: hgt, rx: 2 }));
-      reserve(bx, by, bx + width, by + hgt);
-      bars.push({ w, up, hgt, lx: px + offset });
-    } else {
-      root.append(s("line", { x1: px, x2: px, y1: G.y0 + 18, y2: G.mid + barDown, stroke: "var(--depth)", "stroke-width": 1.5, "stroke-dasharray": "1 3" }));
+  // ── this expiry's structure: the top dollar-Gamma strikes of each side as bars (the deepest is
+  // the wall), the pin on top, open-interest peaks and this expiry's max pain on the bottom lane
+  const E = T.expiry;
+  const base = E.y1 - 30;
+  const barMax = base - (E.y0 + 40);
+  const pinY = E.y0 + 13;
+  const lowY = E.y1 - 15;
+  const pf = model.profile;
+  root.append(s("line", { x1: PAD_L, x2: W - PAD_R, y1: base, y2: base, stroke: "var(--rule)" }));
+  const later = [];   // labels placed after every glyph and bar has reserved its box
+  if (!pf) {
+    place("本期期权结构暂缺", [{ x: (PAD_L + W - PAD_R) / 2, y: E.mid }], { fill: "var(--ink-3)" });
+  } else {
+    const bars = [...pf.put.map((b) => ({ ...b, side: "put" })), ...pf.call.map((b) => ({ ...b, side: "call" }))];
+    const gmax = Math.max(1, ...bars.map((b) => b.gex));
+    const strikesOf = (side) => new Set(bars.filter((b) => b.side === side).map((b) => b.strike));
+    const both = new Set([...strikesOf("put")].filter((k) => strikesOf("call").has(k)));
+    for (const b of bars) {
+      if (!inView(b.strike)) continue;
+      const name = b.side === "put" ? "Put" : "Call";
+      const isWall = b.strike === pf.wall[b.side];
+      const px = x(b.strike) + (both.has(b.strike) ? (b.side === "put" ? -6.5 : 6.5) : 0);
+      const hgt = Math.max(4, Math.sqrt(b.gex / gmax) * barMax);
+      root.append(s("rect", { class: `pf-bar ${b.side}${isWall ? " wall" : ""}`, x: px - 5.5, y: base - hgt, width: 11, height: hgt, rx: 2 }));
+      reserve(px - 6, base - hgt, px + 6, base);
+      const oiSame = isWall && pf.oi[b.side] === b.strike;
+      addHit(px - 6, px + 6, base - hgt - 4, base + 2, `本期 ${name} Gamma ${usd(b.strike)}`,
+        [`每 1% 变动约 ${compactUsd(b.gex)} 美元 Gamma`, isWall ? `本侧最大，即本期 ${name} 墙${oiSame ? "；持仓量也在这里最大" : ""}` : null,
+          pf.note, liabilityText(b.strike, model)].filter(Boolean).join("；"));
+      if (isWall) later.push({ text: `${name} 墙 ${usd(b.strike)}${oiSame ? " · 持仓峰同位" : ""}`, px, ty: base - hgt - 5,
+        attrs: { fill: `var(--${b.side})`, "font-weight": 600 }, value: compactUsd(b.gex) });
+      else later.push({ text: compactUsd(b.gex), px, ty: base - hgt - 5, attrs: { fill: "var(--ink-3)", "font-size": 10 } });
     }
-    addHit(px - 6, px + 6, G.y0, G.y1, `${w.label} ${usd(w.price)}`,
-      [isNum(w.gex) ? `GEX ${compactUsd(w.gex)}` : null, liabilityText(w.price, model)].filter(Boolean).join("；"));
+    // pin: a marker on top with a faint guide down to the bars
+    if (isNum(pf.pin) && inView(pf.pin)) {
+      const px = x(pf.pin);
+      root.append(s("line", { class: "pf-guide", x1: px, x2: px, y1: pinY + 6, y2: base }));
+      root.append(s("path", { d: `M${px - 6} ${pinY - 5} L${px + 6} ${pinY - 5} L${px} ${pinY + 6} Z`, fill: "var(--ink)" }));
+      reserve(px - 7, pinY - 7, px + 7, pinY + 7);
+      later.unshift({ text: `Pin ${usd(pf.pin)}`, px, spots: besideSpots(px, pinY), attrs: { fill: "var(--ink)", "font-weight": 600 } });
+      addHit(px - 7, px + 7, pinY - 8, pinY + 8, `本期 Pin ${usd(pf.pin)}`,
+        `到期前预期波动范围内两侧合计 Gamma 最大的行权价；若做市商净多 Gamma，价格易在附近钉住。${pf.note}；${liabilityText(pf.pin, model)}`);
+    }
+    // open-interest peaks that are not at the wall, and this expiry's max pain, on the bottom lane
+    const low = [];
+    for (const side of ["put", "call"]) {
+      const k = pf.oi[side];
+      if (isNum(k) && k !== pf.wall[side]) low.push({ price: k, kind: "oi", side, text: `${side === "put" ? "Put" : "Call"} 持仓峰 ${kusd(k)}`,
+        title: `本期 ${side === "put" ? "Put" : "Call"} 持仓峰 ${usd(k)}`, body: `持仓量最大的行权价：仓位堆积处。${pf.note}` });
+    }
+    if (isNum(pf.maxPain)) low.push({ price: pf.maxPain, kind: "pain", text: `最大痛点 ${kusd(pf.maxPain)}`,
+      title: `本期最大痛点 ${usd(pf.maxPain)}`, body: "该到期所有期权买方合计价值最小的价格；gexmonitor 口径" });
+    for (const m of low) {
+      if (!inView(m.price)) continue;
+      const px = x(m.price);
+      if (m.kind === "oi") root.append(s("circle", { cx: px, cy: lowY, r: 4, fill: `var(--${m.side})` }));
+      else root.append(s("path", { d: `M${px - 5.5} ${lowY + 5} L${px + 5.5} ${lowY + 5} L${px} ${lowY - 5} Z`, fill: "var(--warn)" }));
+      reserve(px - 6, lowY - 6, px + 6, lowY + 6);
+      later.push({ text: m.text, px, spots: besideSpots(px, lowY), attrs: { fill: m.kind === "oi" ? `var(--${m.side})` : "var(--ink-2)" } });
+      addHit(px - 6, px + 6, lowY - 7, lowY + 7, m.title, `${m.body}；${liabilityText(m.price, model)}`);
+    }
   }
 
-  // Position markers: glyphs reserve their boxes before any value label is placed.
-  const markerLabels = [];
-  for (const m of model.markers) {
-    if (!isNum(m.price) || !inView(m.price)) continue;
-    const px = x(m.price);
-    const yy = m.track === "trade" ? T.trade.y0 + 17 : m.lane === "top" ? G.y0 + 9 : markerY;
-    if (m.glyph === "diamond") root.append(s("path", { d: `M${px} ${yy - 6} L${px + 6} ${yy} L${px} ${yy + 6} L${px - 6} ${yy} Z`, fill: m.color || "var(--ink)" }));
-    else if (m.glyph === "ring") root.append(s("circle", { cx: px, cy: yy, r: 5, fill: "var(--sheet)", stroke: m.color || "var(--ink)", "stroke-width": 2 }));
-    else if (m.glyph === "square") root.append(s("rect", { x: px - 5, y: yy - 5, width: 10, height: 10, rx: 1.5, fill: m.color || "var(--ink)" }));
-    else if (m.glyph === "pin") root.append(s("path", { d: `M${px - 6} ${yy - 5} L${px + 6} ${yy - 5} L${px} ${yy + 6} Z`, fill: m.color || "var(--ink)" }));
-    else root.append(s("path", { d: `M${px - 6} ${yy + 5} L${px + 6} ${yy + 5} L${px} ${yy - 6} Z`, fill: m.color || "var(--ink)" }));
-    reserve(px - 7, yy - 7, px + 7, yy + 7);
-    if (m.short) markerLabels.push([m.short, px, yy]);
-    addHit(px - 7, px + 7, yy - 9, yy + 9, `${m.label} ${usd(m.price)}`, [m.note, liabilityText(m.price, model)].filter(Boolean).join("；"));
-  }
-  for (const [text, px, yy] of markerLabels) {
-    place(text, [{ x: px + 9, y: yy + 4, anchor: "start" }, { x: px - 9, y: yy + 4, anchor: "end" }, { x: px, y: yy - 10 }],
-      { fill: "var(--ink-2)" });
-  }
-  // Value labels on the largest walls only, above a positive bar or below a negative one.
-  for (const { w, up, hgt, lx } of bars) {
-    if (Math.abs(w.gex) < gexMax * 0.35) continue;
-    const ty = up ? G.mid - hgt - 4 : G.mid + hgt + 11;
-    place(compactUsd(w.gex), [{ x: lx, y: ty }, { x: lx + 8, y: ty, anchor: "start" }, { x: lx - 8, y: ty, anchor: "end" }],
-      { fill: "var(--ink-3)", "font-size": 10 });
-  }
-
-  // ── trade track: cost diamonds in the upper lane (above), KPF zones in the lower lane
-  const R = T.trade;
+  // ── background levels: on-chain cost (top row), all-expiry GEX levels (middle row), KPF zones
+  const R = T.back;
+  const costY = R.y0 + 15, gexY = R.y0 + 35;
+  const backMarkers = model.markers.slice();
+  const flip = (model.levels || []).find((l) => l.role === "flip");
+  if (flip) backMarkers.push({ price: flip.price, label: flip.label, short: "翻转位", glyph: "ring", color: "var(--depth)", note: flip.note });
   for (const z of model.zones) {
     if (!isNum(z.lo) || !isNum(z.hi) || z.hi < lo || z.lo > hi) continue;
     const a = x(Math.max(lo, z.lo)), b = x(Math.min(hi, z.hi));
-    root.append(s("rect", { class: "kpf", x: a, y: R.y0 + 32, width: Math.max(3, b - a), height: R.h - 40, rx: 4 }));
-    addHit(a, Math.max(a + 6, b), R.y0 + 28, R.y1, `${z.label} ${usd(z.lo)}–${usd(z.hi)}`,
+    root.append(s("rect", { class: "kpf", x: a, y: R.y0 + 48, width: Math.max(3, b - a), height: R.h - 56, rx: 4 }));
+    reserve(a, R.y0 + 48, Math.max(a + 3, b), R.y1 - 8);
+    addHit(a, Math.max(a + 6, b), R.y0 + 46, R.y1, `${z.label} ${usd(z.lo)}–${usd(z.hi)}`,
       [z.note, z.containsShort ? "区间包含短腿" : null].filter(Boolean).join("；"));
+  }
+  for (const m of backMarkers) {
+    if (!isNum(m.price) || !inView(m.price)) continue;
+    const px = x(m.price);
+    const yy = m.track === "trade" ? costY : gexY;
+    if (m.glyph === "diamond") root.append(s("path", { d: `M${px} ${yy - 6} L${px + 6} ${yy} L${px} ${yy + 6} L${px - 6} ${yy} Z`, fill: m.color || "var(--ink)" }));
+    else if (m.glyph === "ring") root.append(s("circle", { cx: px, cy: yy, r: 5, fill: "var(--sheet)", stroke: m.color || "var(--ink)", "stroke-width": 2 }));
+    else root.append(s("path", { d: `M${px - 6} ${yy + 5} L${px + 6} ${yy + 5} L${px} ${yy - 6} Z`, fill: m.color || "var(--ink)" }));
+    reserve(px - 7, yy - 7, px + 7, yy + 7);
+    if (m.short) later.push({ text: m.short, px, spots: besideSpots(px, yy), attrs: { fill: "var(--ink-2)" } });
+    addHit(px - 7, px + 7, yy - 9, yy + 9, `${m.label} ${usd(m.price)}`, [m.note, liabilityText(m.price, model)].filter(Boolean).join("；"));
+  }
+
+  // labels after every glyph and bar: the wall labels first, each with its value above when it fits
+  for (const l of later) {
+    if (l.spots) { place(l.text, l.spots, l.attrs); continue; }
+    const ok = place(l.text, [{ x: l.px, y: l.ty }, { x: l.px + 8, y: l.ty, anchor: "start" }, { x: l.px - 8, y: l.ty, anchor: "end" }], l.attrs);
+    if (ok && l.value) place(l.value, [{ x: l.px, y: l.ty - 13 }], { fill: "var(--ink-3)", "font-size": 10 });
   }
 
   // σ percentages in their own lane below the tracks
   for (const [ex, text] of sigmaLabels) {
     place(text, [{ x: ex + 3, y: plotBottom + 13, anchor: "start" }, { x: ex - 3, y: plotBottom + 13, anchor: "end" }], { fill: "var(--ink-3)" });
+  }
+  // levels outside the view: the nearest one at each edge named with its distance, in the footnote row
+  const outside = { left: [], right: [] };
+  const pool = [...model.markers, ...(model.levels || []).map((l) => ({ ...l, short: l.label })),
+    ...model.zones.filter((z) => isNum(z.lo) && isNum(z.hi)).map((z) => ({ ...z, price: (z.lo + z.hi) / 2 }))];
+  for (const m of pool) if (isNum(m.price) && !inView(m.price)) (m.price < lo ? outside.left : outside.right).push(m);
+  for (const [items, left] of [[outside.left, true], [outside.right, false]]) {
+    if (!items.length) continue;
+    const near = items.slice().sort((a, b) => left ? b.price - a.price : a.price - b.price)[0];
+    const name = near.label && near.label.length <= 12 ? near.label : near.short || near.label;
+    const text = `${name} ${usd(near.price)}（${signed((near.price / model.spot - 1) * 100, 1)}%）${items.length > 1 ? `，另 ${items.length - 1} 项` : ""}`;
+    place(left ? `◂ 图外 ${text}` : `图外 ${text} ▸`, [{ x: left ? PAD_L : W - PAD_R, y: plotBottom + 29, anchor: left ? "start" : "end" }],
+      { fill: "var(--ink-3)" });
   }
 
   // Spot line and tag
@@ -317,21 +361,44 @@ export function renderMap(svg, tip, model, { focus = null, onPick = null } = {})
 
 export function legend(el, model) {
   el.innerHTML = "";
+  const exp = model?.profile ? `${model.profile.expiry}${model.profile.stale ? "，数据偏旧" : ""}` : null;
   const items = [
     ["var(--put-soft)", "Put 责任区（短腿至保护腿）"],
     ["var(--call-soft)", "Call 责任区"],
     ["var(--sigma)", "到期前隐含预期波动（虚线为 2 倍）"],
-    ["var(--depth)", "正 Gamma 墙"],
-    ["var(--neg-gamma)", "负 Gamma 墙"],
+    ...(exp ? [["var(--put)", `本期 Put / Call 美元 Gamma 前 3 档，最深为墙（${exp}）`], ["var(--ink)", "▼ 本期 Pin"],
+      ["var(--put)", "● 持仓峰（持仓量最大）"], ["var(--warn)", "▲ 最大痛点"]] : [["var(--ink-3)", "本期期权结构暂缺"]]),
+    ["var(--depth)", "○ Gamma 翻转位（全期限）"],
+    ["var(--ink-3)", "◆ 链上持有者成本"],
     ["color-mix(in srgb, var(--ink-3) 30%, transparent)",
       model?.kpfAsOf ? `KPF 成交接受区（成交数据截至 ${new Date(model.kpfAsOf).toISOString().slice(5, 10)}）` : "KPF 成交接受区"],
-    ["var(--ink-3)", "◆ 链上持有者成本"],
-    ...(model?.expiry ? [["var(--put)", "■ 本期 Put 墙"], ["var(--call)", "■ 本期 Call 墙"],
-      ["var(--ink)", `▼ 本期 Pin（${model.expiry.expiry} 到期${model.expiry.stale ? "，数据偏旧" : ""}）`]]
-      : [["var(--ink-3)", "本期墙暂缺"]]),
   ];
   for (const [c, t] of items) {
     const span = document.createElement("span");
     const em = document.createElement("em"); em.style.background = c; span.append(em, t); el.append(span);
   }
+  const more = document.createElement("span");
+  more.className = "legend-note";
+  more.textContent = "周度、0DTE 与全期限墙见下方价位表";
+  el.append(more);
+}
+
+/** All levels in one list, split at the spot: price, distance (% and expected moves), name, basis. */
+export function ladderTable(el, model) {
+  const wasOpen = el.querySelector("details") ? el.querySelector("details").open : false;   // keep the reader's choice across refreshes
+  el.innerHTML = "";
+  const lad = model && model.ladder;
+  if (!lad || !isNum(model.spot)) return;
+  const col = (title, rows) => h("div", { class: "ladder-col" },
+    h("div", { class: "ladder-head small muted", text: title }),
+    rows.length ? h("table", { class: "ladder" }, h("tbody", {}, ...rows.map((r) => h("tr", { class: r.key ? "key" : "" },
+      h("td", { class: "num", text: usd(r.price) }),
+      h("td", { class: "num muted", text: `${signed(r.distPct)}%${isNum(r.moves) ? ` · ${signed(r.moves)} 倍` : ""}` }),
+      h("td", { text: r.name }),
+      h("td", {}, h("span", { class: "basis", text: r.basisCn }))))))
+      : h("p", { class: "small muted", text: "无" }));
+  el.append(h("details", { class: "ladder-wrap", open: wasOpen },
+    h("summary", {}, h("b", { text: "全部关键价位" }),
+      h("span", { class: "muted", text: `　${lad.below.length + lad.above.length} 项，含图外；距现价 ${usd(model.spot)} 的百分比与预期波动倍数，加粗为本期期权` })),
+    h("div", { class: "ladder-cols" }, col("现价下方（由近到远）", lad.below), col("现价上方（由近到远）", lad.above))));
 }

@@ -449,6 +449,17 @@
    "description_cn": "下一个宏观事件类型（如 FOMC、CPI、GDP）；日历完整且 7 天内没有事件时为 none；未知为 null（ledger_research_fields@0.1，2026-10-20 起的行才有）"
   },
   {
+   "field": "ledger.note_busy_window",
+   "type": "text",
+   "allowed_ops": [
+    "!=",
+    "==",
+    "in",
+    "not_in"
+   ],
+   "description_cn": "高波动时段提示（不是否决）：当前为高波动小时，或有窗口落在 −1 至 +2 小时内，true / false；没有时钟读数或没有该提示为 null。布尔值（ledger_research_fields@0.3，entry_warnings@0.2 起的行才有；docs/opus/22）"
+  },
+  {
    "field": "ledger.p_itm_short",
    "type": "numeric",
    "allowed_ops": [
@@ -781,7 +792,7 @@
     "in",
     "not_in"
    ],
-   "description_cn": "正在显示时是否有任一不建仓警示触发（true / false；有无法判断的项且无触发时为 null；不显示的合约为 null）。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+   "description_cn": "正在显示时是否有任一不建仓警示（否决项）触发（true / false；有无法判断的项且无触发时为 null；不显示的合约为 null）。口径随 warning_rules 变：entry_warnings@0.1 含高波动窗口一项，@0.2 起只含期限倒挂与保费突然变厚（docs/opus/22），统计须按 warning_rules 分开。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
   },
   {
    "field": "ledger.warning_busy_window",
@@ -792,7 +803,7 @@
     "in",
     "not_in"
    ],
-   "description_cn": "高波动窗口临近且 σ 距离 <0.5 警示：true / false / null。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
+   "description_cn": "@0.1 的否决项：高波动窗口临近且 σ 距离 <0.5，true / false / null。entry_warnings@0.2 起移出否决层，此字段为 null，改看 ledger.note_busy_window（docs/opus/22）。布尔值（ledger_research_fields@0.2，2026-10-20 起的行才有）"
   },
   {
    "field": "ledger.warning_premium_thickening",

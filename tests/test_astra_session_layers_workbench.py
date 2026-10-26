@@ -17,7 +17,8 @@ def test_view_and_page_carry_the_clock_and_each_candidates_warnings(tmp_path, mo
     assert view["session_clock"]["expiry_ms"] == snapshot["contract"]["expiry_ms"]
     block = view["candidates"][0]["entry_warnings"]
     assert block["rules"] == ew.RULES and block["history_available"] is False
-    assert {w["code"] for w in block["warnings"]} == {"term_inversion", "premium_thickening", "busy_window_thin_cushion"}
+    assert [w["code"] for w in block["warnings"]] == ["term_inversion", "premium_thickening"]
+    assert [n["code"] for n in block["notes"]] == ["busy_window"] and "busy_window" not in block["unknown"]
     assert "premium_thickening" in block["unknown"]          # no archive: never shown as "no warning"
     page = reading.workbench_page(reading.workbench_reading(view))
     assert "session_clock" in page and "entry_warnings" in page["candidates"][0]
@@ -58,8 +59,21 @@ def test_ledger_rows_copy_the_displayed_candidates_warnings():
     block = {"warnings": [{"code": "term_inversion", "triggered": False}, {"code": "premium_thickening", "triggered": None},
                           {"code": "busy_window_thin_cushion", "triggered": True}]}
     out = ar._warning_fields(block)
-    assert out == {"warning_any": True, "warning_term_inversion": False, "warning_premium_thickening": None,
-                   "warning_busy_window": True, "warning_rules": None}
+    # an @0.1 block: the busy-window item keeps its column but no longer counts in warning_any
+    assert out == {"warning_any": None, "warning_term_inversion": False, "warning_premium_thickening": None,
+                   "warning_busy_window": True, "warning_rules": None, "note_busy_window": None}
+    v02 = {"rules": "entry_warnings@0.2", "warnings": [{"code": "term_inversion", "triggered": False},
+                                                     {"code": "premium_thickening", "triggered": False}],
+           "notes": [{"code": "busy_window", "role": "note", "active": True}]}
+    assert ar._warning_fields(v02) == {"warning_any": False, "warning_term_inversion": False,
+                                       "warning_premium_thickening": False, "warning_busy_window": None,
+                                       "warning_rules": "entry_warnings@0.2", "note_busy_window": True}
+    v02["notes"][0]["active"] = None
+    assert ar._warning_fields(v02)["note_busy_window"] is None and ar._warning_fields(v02)["warning_any"] is False
+    v02["warnings"][1]["triggered"] = True
+    assert ar._warning_fields(v02)["warning_any"] is True
+    # a block that says it is @0.1 keeps the @0.1 scope of warning_any, so rows stratify cleanly by warning_rules
+    assert ar._warning_fields({**block, "rules": "entry_warnings@0.1"})["warning_any"] is True
     quiet = ar._warning_fields({"warnings": [{"code": "term_inversion", "triggered": False},
                                              {"code": "premium_thickening", "triggered": None}]})
     assert quiet["warning_any"] is None                                     # one unknown: not "no warning"
@@ -86,7 +100,7 @@ def test_sigma_sign_and_same_expiry_other_side():
                 "market_marks": {"short_mark_iv": iv}}
     by_expiry = {"x": {"expiry_ms": expiry, "atm_iv_pct": 30.0}}
     put, call = item("put", 99_000), item("call", 101_000)
-    dim = lambda w: next(x for x in w["warnings"] if x["code"] == "busy_window_thin_cushion")["evidence"]["distance_in_moves"]
+    dim = lambda w: next(x for x in w["notes"] if x["code"] == "busy_window")["evidence"]["distance_in_moves"]
     a = wbm._entry_warnings_for(put, now, {}, by_expiry, {"put": put, "call": call}, [])
     b = wbm._entry_warnings_for(call, now, {}, by_expiry, {"put": put, "call": call}, [])
     assert dim(a) > 0 and abs(dim(a) - dim(b)) < 1e-9                       # both out of the money, symmetric

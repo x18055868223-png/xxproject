@@ -46,6 +46,7 @@ TEXT_FIELDS = {
     "ledger.comp_tier", "ledger.next_event_kind", "ledger.event_before_expiry",
     "ledger.session_phase", "ledger.warning_any", "ledger.warning_term_inversion",
     "ledger.warning_premium_thickening", "ledger.warning_busy_window", "ledger.warning_rules",
+    "ledger.note_busy_window",   # ledger_research_fields@0.3
 }
 FIELDS = NUMERIC_FIELDS | TEXT_FIELDS
 # Fixed outcome metrics (evaluated by E3 from the entry row onward); the researcher picks one.

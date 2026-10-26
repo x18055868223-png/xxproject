@@ -37,7 +37,8 @@ else:
     import astra_session_clock_v1 as session_clock
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.7"   # 0.1.7: L8.decision_path label names no fixed steps (path v2, docs/opus/20)
+BUILDER_VERSION = "astra_case_file_v1@0.1.8"   # 0.1.7: L8.decision_path label names no fixed steps (path v2, docs/opus/20)
+                                                # 0.1.8: L6.entry_warnings label splits vetoes from holding notes (docs/opus/22)
 # The workbench's admission fields, constant while the space gate only evaluates (since 2026-10-13).
 GATE_ADMISSION_KEYS = ("state", "eligible", "since_ts_ms", "reason_codes")
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
@@ -446,7 +447,7 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
              lineage=["docs/opus/12.intraday_variance_clock", "event_calendar"], source="astra_session_clock_v1.reading",
              asof_ms=asof_ms, quality=None if clock_now else "unknown")
     warnings = item.get("entry_warnings")
-    case.add("L6.entry_warnings", "不建仓警示（阈值未经验证，只作否决提醒）", warnings,
+    case.add("L6.entry_warnings", "不建仓警示（warnings 只作否决提醒，阈值未经验证；notes 是持有中的盯盘提示，不是否决）", warnings,
              lineage=["gexmonitor.gex_info", "research_archive.ledger", "astra_session_clock_v1"],
              source="item.entry_warnings",
              asof_ms=warnings.get("at_ms") if isinstance(warnings, Mapping) and isinstance(warnings.get("at_ms"), int) else asof_ms,

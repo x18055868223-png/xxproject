@@ -5607,7 +5607,7 @@ def _sd_notify(message: str) -> bool:
 
 def _entry_warnings_for(item: Mapping[str, Any], now_ms: int, gex: Mapping[str, Any], by_expiry: Mapping[str, Any],
                         others: Mapping[Any, Any], history: list[dict[str, Any]] | None) -> dict[str, Any] | None:
-    """The three entry warnings for one candidate, on the ledger's definitions."""
+    """The entry warnings (vetoes) and the busy-window note for one candidate, on the ledger's definitions."""
     snapshot = item.get("snapshot") or {}
     contract = snapshot.get("contract") or {}
     side, expiry = contract.get("side"), contract.get("expiry_ms")

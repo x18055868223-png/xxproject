@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 if __package__:
+    from . import astra_decision_path_v1 as decision_path
     from . import astra_path_stats_v1 as path_stats
 else:
+    import astra_decision_path_v1 as decision_path
     import astra_path_stats_v1 as path_stats
 
 VERSION = "inquiry_lens@0.1"
@@ -161,19 +163,31 @@ def _session(case: Mapping[str, Any]) -> list[dict[str, Any]]:
         out.append({"label_cn": "未触及时的剩余风险", "value": "不给", "note_cn": why})
     warn = _entry(case, "L6.entry_warnings")
     out.append(_warnings(warn))
+    out.extend(_busy_note(warn))
     return out
+
+
+def _busy_note(entry: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """The busy-window holding note as its own row while it is on; never a veto row."""
+    note = decision_path.busy_note((entry or {}).get("values"))
+    if not note or not note["active"]:
+        return []
+    return [{"label_cn": "高波动时段提示（不是否决）", "value": note["reason_cn"].split("。")[0],
+             "note_cn": "2 小时内触及短腿约 35%（其他时点约 26%），平均结果不比其他时点差（22 号 §2.2–2.3，单一市场回测）"}]
 
 
 def _warnings(entry: Mapping[str, Any] | None) -> dict[str, Any]:
     values = (entry or {}).get("values")
     if not isinstance(values, Mapping) or (entry or {}).get("quality") not in (None, "ok"):
         return {"label_cn": "不建仓警示（否决层）", "value": "不可用", "note_cn": None}
-    items = [w for w in values.get("warnings") or [] if isinstance(w, Mapping)]
+    # the @0.1 busy-window item is a holding note now (docs/opus/22), never counted as a veto
+    items = [w for w in values.get("warnings") or [] if isinstance(w, Mapping)
+             and w.get("code") != decision_path.LEGACY_BUSY_CODE]
     fired = [str(w.get("label_cn") or w.get("code")) for w in items if w.get("triggered") is True]
     unknown = [w for w in items if w.get("triggered") is None]
     text = "、".join(fired) if fired else ("部分无法判断" if unknown else "未触发")
     return {"label_cn": "不建仓警示（否决层）", "value": text,
-            "note_cn": "阈值未验证，只作否决；工作日 11:30–19:00 UTC（夏令时），标准 0.35Δ 短腿几乎必然触发“高波动窗口且缓冲不足”（17 号 §3.2）",
+            "note_cn": "阈值未验证，只作否决；高波动时段已改为持有提示，不在否决层（22 号）",
             "veto": True}
 
 
@@ -219,7 +233,9 @@ def _events(case: Mapping[str, Any]) -> list[dict[str, Any]]:
     gaps = values.get("gaps")
     out = [{"label_cn": "到期前事件", "value": f"{len(events)} 个" if isinstance(events, list) else "不可用",
             "note_cn": "事件日历有覆盖缺口" if gaps else None}]
-    out.append(_warnings(_entry(case, "L6.entry_warnings")))
+    warn = _entry(case, "L6.entry_warnings")
+    out.append(_warnings(warn))
+    out.extend(_busy_note(warn))
     return out
 
 

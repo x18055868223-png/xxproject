@@ -52,6 +52,7 @@ export const IQ_TERMS = {
   expected_move_usd: "到期前预期波动（美元）", rv_24h: "近 24 小时实现波动", rv_7d: "近 7 日实现波动", rv_24h_pct: "近 24 小时实现波动（%）",
   rv_7d_pct: "近 7 日实现波动（%）", realized_vol: "实现波动", iv_percentile: "IV 分位", dvol: "DVOL", term_structure: "期限结构",
   term_front: "近端期限", term_inversion: "期限倒挂", premium_thickening: "保费突然变厚", busy_window_thin_cushion: "高波动窗口临近且缓冲不足",
+  busy_window: "高波动时段提示", in_progress: "进行中", ahead: "窗口即将到来",
   skew: "偏斜", skew_25d: "25Δ 偏斜", rr: "风险逆转", RR: "风险逆转", rr_skew: "风险逆转偏斜", delta_rr: "Delta 风险逆转", rr_blend: "风险逆转合成",
   rr_z: "风险逆转 Z 值", put_25d_iv: "25Δ Put IV", call_25d_iv: "25Δ Call IV", vol: "波动",
   hours_to_expiry: "距到期小时数", DTE: "剩余天数", remaining_clock_factor: "剩余时段风险倍数", remaining_variance_share: "剩余风险占比",

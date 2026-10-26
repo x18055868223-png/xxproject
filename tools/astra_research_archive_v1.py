@@ -58,7 +58,7 @@ else:
 
 SCHEMA_ROW = "ledger_row@0.1"
 # research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
-LEDGER_FIELDS = "ledger_research_fields@0.2"   # 0.2: session clock and entry warnings
+LEDGER_FIELDS = "ledger_research_fields@0.3"   # 0.2: session clock and entry warnings; 0.3: busy-window note
 TAKER_FEE_BTC = 0.0003            # Deribit BTC option taker fee per contract, capped at 12.5% of the price
 TAKER_FEE_PRICE_CAP = 0.125
 EVENT_LOOKAHEAD_MS = 7 * 24 * 3_600_000
@@ -392,9 +392,11 @@ def _session_fields(now_ms: int, expiry: int) -> dict[str, Any]:
 
 def _warning_fields(block: Any) -> dict[str, Any]:
     """The displayed candidate's entry warnings (docs/opus/13), copied from the read view;
-    contracts not on the page get nulls."""
+    contracts not on the page get nulls. warning_any counts the vetoes only: the busy window
+    is a holding note from entry_warnings@0.2 (docs/opus/22), recorded as note_busy_window;
+    warning_busy_window keeps the @0.1 veto and is null under @0.2."""
     out = {"warning_any": None, "warning_term_inversion": None, "warning_premium_thickening": None,
-           "warning_busy_window": None, "warning_rules": None}
+           "warning_busy_window": None, "warning_rules": None, "note_busy_window": None}
     if not isinstance(block, Mapping) or not isinstance(block.get("warnings"), list):
         return out
     out["warning_rules"] = block.get("rules")   # threshold versions stay separable in later validation
@@ -402,6 +404,10 @@ def _warning_fields(block: Any) -> dict[str, Any]:
     out.update({"warning_term_inversion": by_code.get("term_inversion"),
                 "warning_premium_thickening": by_code.get("premium_thickening"),
                 "warning_busy_window": by_code.get("busy_window_thin_cushion")})
+    if block.get("rules") != "entry_warnings@0.1":   # from @0.2 the busy window is a note, not a veto
+        by_code.pop("busy_window_thin_cushion", None)
+    note = next((n for n in block.get("notes") or [] if isinstance(n, Mapping) and n.get("code") == "busy_window"), None)
+    out["note_busy_window"] = note.get("active") if note is not None else None
     known = [v for v in by_code.values() if v is not None]
     out["warning_any"] = True if any(known) else (False if len(known) == len(by_code) and by_code else None)
     return out

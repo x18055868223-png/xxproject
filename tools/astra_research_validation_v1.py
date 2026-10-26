@@ -68,7 +68,8 @@ KEEP_FIELDS = ("contract_key", "at_ms", "expiry_ms", "displayed", "locked", "sid
                "pin_from_index_pct", "hours_to_next_event", "next_event_kind", "event_before_expiry",
                "index_chg_1h_pct", "index_chg_4h_pct", "fields_version",
                "session_phase", "remaining_clock_factor", "warning_any", "warning_term_inversion",
-               "warning_premium_thickening", "warning_busy_window", "warning_rules")
+               "warning_premium_thickening", "warning_busy_window", "warning_rules",
+               "note_busy_window")   # ledger_research_fields@0.3 (docs/opus/22)
 
 
 def _utc(ms: int) -> dt.datetime:

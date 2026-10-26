@@ -89,7 +89,21 @@ def test_session_gives_the_next_survival_row_by_side_only_for_a_daily_08_expiry(
     rows = lens.live("session", case)
     assert rows[0]["value"] == "10-22 14:30 UTC"
     assert rows[1]["label_cn"] == "若到 16:00 UTC 仍未触及" and rows[1]["value"] == "之后触及约 32%，到期越过约 16%"
-    assert rows[2]["value"] == "高波动窗口且缓冲不足" and "只作否决" in rows[2]["note_cn"]
+    # an @0.1 block's busy-window item is the holding note now: not a veto row, but a point to watch
+    assert rows[2]["value"] == "未触发" and rows[2]["veto"] is True and "只作否决" in rows[2]["note_cn"]
+    assert rows[3]["label_cn"] == "高波动时段提示（不是否决）" and "veto" not in rows[3] and "35%" in rows[3]["note_cn"]
+    note = {"code": "busy_window", "role": "note", "active": True,
+            "reason_cn": "美股开盘约 1.0 小时后。在这类时点按标准短腿建仓，2 小时内触及短腿约 35%（其他时点约 26%）；这是持有中的盯盘提示，不是否决。"}
+    v02 = _case(**{"L6.session_clock": (_clock(now, windows=[{"at_ms": now + H, "label_cn": "美股开盘"}]), {}),
+                   "L1.contract": ({"side": "call"}, {}),
+                   "L6.entry_warnings": ({"rules": "entry_warnings@0.2", "notes": [note],
+                                          "warnings": [{"code": "term_inversion", "label_cn": "近端倒挂", "triggered": False},
+                                                       {"code": "premium_thickening", "label_cn": "保费突然变厚", "triggered": None}]}, {})})
+    rows = lens.live("session", v02)
+    assert rows[2]["value"] == "部分无法判断" and rows[3]["value"] == "美股开盘约 1.0 小时后"
+    quiet = _case(**{"L6.session_clock": (_clock(now), {}), "L1.contract": ({"side": "call"}, {}),
+                     "L6.entry_warnings": ({"notes": [dict(note, active=False)], "warnings": []}, {})})
+    assert all("时段提示" not in r["label_cn"] for r in lens.live("session", quiet))
     far = _case(**{"L6.session_clock": (_clock(EXPIRY - 40 * H), {}), "L1.contract": ({"side": "put"}, {})})
     rows = lens.live("session", far)
     assert rows[0]["value"] == "不给" and "超过一天" in rows[0]["note_cn"]
@@ -208,3 +222,16 @@ def test_same_card_same_points_share_one_observation_line():
                            {"id": "K2", "question_cn": "本期墙会把价格吸住还是穿越后加速？"}]}
     out = lens.sheet_lens(sheet, case, prompt_version=V4)
     assert [o["question"] for o in out["observe"]] == ["K1、K2"]
+
+
+def test_events_card_shows_the_busy_window_note_it_points_to():
+    warn = {"rules": "entry_warnings@0.2", "warnings": [{"code": "term_inversion", "label_cn": "近端倒挂", "triggered": False}],
+            "notes": [{"code": "busy_window", "role": "note", "active": True, "reason_cn": "美股开盘约 1.5 小时后。在这类时点……"}]}
+    case = _case(**{"L7.events": ({"events": [], "gaps": []}, {}), "L6.entry_warnings": (warn, {})})
+    rows = lens.LIVE["events"](case)
+    veto = next(r for r in rows if r["label_cn"] == "不建仓警示（否决层）")
+    assert veto["value"] == "未触发"                                       # the note never shows as a veto
+    note = next(r for r in rows if r["label_cn"].startswith("高波动时段提示"))
+    assert note["value"] == "美股开盘约 1.5 小时后"
+    warn["notes"][0]["active"] = False
+    assert not any(r["label_cn"].startswith("高波动时段提示") for r in lens.LIVE["events"](case))

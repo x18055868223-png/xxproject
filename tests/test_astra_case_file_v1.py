@@ -268,7 +268,7 @@ def test_annotate_is_idempotent_pure_and_keeps_refs_valid():
     assert again == case and cf.annotate(again) == again           # build() already annotated; idempotent
     for ref, at in again["refs"].items():
         assert again["layers"][at["layer"]][at["index"]]["ref"] == ref
-    assert case["build"]["builder"] == "astra_case_file_v1@0.1.7" and "annotated_by" not in again["build"]
+    assert case["build"]["builder"] == "astra_case_file_v1@0.1.8" and "annotated_by" not in again["build"]
 
 
 def test_annotate_upgrades_an_archived_015_case():
@@ -288,7 +288,7 @@ def test_annotate_upgrades_an_archived_015_case():
     old["refs"] = cf._index(old["layers"])
     old["build"]["builder"] = "astra_case_file_v1@0.1.5"
     out = cf.annotate(old)
-    assert out["build"]["annotated_by"] == "astra_case_file_v1@0.1.7"
+    assert out["build"]["annotated_by"] == "astra_case_file_v1@0.1.8"
     fmz = _entry(out, "L0.cross_section")["values"]["sources"][0]
     assert fmz["price_usd"] == 84275.48 and fmz["current"] is False   # read from the space context
     assert _entry(out, "L5.flow")["quality_reason"] == "fmz_snapshot_stale"

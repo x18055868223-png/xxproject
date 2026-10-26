@@ -27,7 +27,7 @@ else:
     import astra_path_stats_v1 as path_stats
 
 SCHEMA = "astra_decision_path_reading@2.0.0"
-PATH_VERSION = "dp-2026-10-26.2"
+PATH_VERSION = "dp-2026-10-26.3"   # .3: busy window is a holding note, not a T veto (docs/opus/22)
 STEPS: tuple[dict[str, Any], ...] = (
     {"id": "D0", "title": "资料", "question": "能读吗？"},
     {"id": "D1", "title": "责任", "question": "这张保单承担什么？"},
@@ -113,7 +113,7 @@ def _line(label: str, text: str, tone: str = "", basis: str | None = None) -> di
 # grades and sources of the readings (docs/opus/16, 17), shown under each line
 B_CLOCK = "A · 17 号 §2.1（风险按时段分布）"
 B_ENTRY_HOUR = "B · 17 号 §3.1 / 附录 A（只有“16:00 优于 08:00”达到 B；其余时点与 08:00 相近；扣成本后的绝对优势取决于成本）"
-B_VETO = "未验证，只作否决 · 13 号 / 17 号 §3.2"
+B_VETO = "未验证，只作否决 · 13 号 / 17 号 §3.2（期限倒挂、保费突然变厚）"
 B_SAME_SOURCE = "A/C · 17 号 §2.4（方向不能逐日外推；趋势与成交类读数多为同源）"
 B_UNSIGNED = "口径 · 17 号 §7.2（GEX 不带符号，无法判定钉住还是加速）"
 B_SPATIAL_X = "X · 17 号 §3.4（空间位置不能当缓冲）"
@@ -122,8 +122,10 @@ B_EXECUTION = "B/C · 17 号 §6（优势与成本同量级；挂单接近中间
 B_IV_RV = "X · 16 号第 4 条（“隐含低于实现 = 危险”已撤回；一天期 IV 与实现之差没有检验过的结论）"
 B_EARLY_TOUCH = "A（方向）/ C（幅度）· 17 号 §4.2"
 B_STATE = "回测支持（边缘，t 2.56）、未前向验证 · 21 号 §6"
-B_THIN_CUSHION = ("未验证，只作否决 · 13 号；17 号 §3.2：标准 0.35Δ 短腿约在 0.4 倍预期波动，"
-                  "工作日 11:30–19:00 UTC（夏令时）这条几乎必然触发，与 16:00 较好时段冲突，修订待用户决定")
+B_BUSY_NOTE = "回测 · 22 号 §2.3"
+# entry_warnings@0.1 vetoed a busy window with a thin cushion; @0.2 (docs/opus/22) made it a
+# holding note. Blocks still carrying the old code (cached views, sessions) read it as the note.
+LEGACY_BUSY_CODE = "busy_window_thin_cushion"
 # docs/opus/21 §6: four states from realized-vol direction and implied minus realized; only one
 # passed, as a timing interaction (16:00 beat 08:00 by +14.8, all cycles +8.8); no state's 08:00
 # result differed from the rest
@@ -314,15 +316,19 @@ def _t(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     if factor is not None:
         lines.append(_line("剩余时段", f"到期前剩下的时段约为全天平均忙碌度的 {factor:.2f} 倍", "", B_CLOCK))
     warn = _get(frame, "candidate.entry_warnings") or {}
-    items = [w for w in warn.get("warnings") or [] if isinstance(w, Mapping)] if isinstance(warn, Mapping) else []
+    items = [w for w in warn.get("warnings") or [] if isinstance(w, Mapping)
+             and w.get("code") != LEGACY_BUSY_CODE] if isinstance(warn, Mapping) else []
     fired = [w for w in items if w.get("triggered") is True]
     for w in items:
         status = "触发" if w.get("triggered") is True else "未触发" if w.get("triggered") is False else "无法判断"
-        thin = "cushion" in str(w.get("code") or "") or "缓冲" in str(w.get("label_cn") or "")
         lines.append(_line("否决层", f"{w.get('label_cn') or w.get('code')}：{status}",
-                           "bad" if w.get("triggered") is True else "", B_THIN_CUSHION if thin else B_VETO))
+                           "bad" if w.get("triggered") is True else "", B_VETO))
     if not items:
         lines.append(_line("否决层", "不可用", "warn"))
+    note = busy_note(warn)
+    if note is not None:
+        lines.append(_line("时段提示", note["reason_cn"] if note["active"] else "未触发" if note["active"] is False
+                           else "无法判断", "warn" if note["active"] else "", B_BUSY_NOTE))
     if fired:
         verdict = {"code": "veto", "cn": f"否决层触发 {len(fired)} 项", "tone": "bad"}
     elif near:
@@ -333,6 +339,29 @@ def _t(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
         verdict = {"code": "ordinary", "cn": "未见时段否决", "tone": ""}
     return {"verdict": verdict, "lines": lines, "fired": [w.get("code") for w in fired], "better_hours": better,
             "market_state": "/".join(state) if state else None}
+
+
+def busy_note(block: Any) -> dict[str, Any] | None:
+    """The busy-window holding note of an entry-warnings block: {active, reason_cn}. An @0.1
+    block's busy_window_thin_cushion is read as this note (window or busy hour), never a veto."""
+    if not isinstance(block, Mapping):
+        return None
+    note = next((n for n in block.get("notes") or [] if isinstance(n, Mapping) and n.get("code") == "busy_window"), None)
+    if note is not None:
+        return {"active": note.get("active"), "reason_cn": str(note.get("reason_cn") or "")}
+    old = next((w for w in block.get("warnings") or [] if isinstance(w, Mapping) and w.get("code") == LEGACY_BUSY_CODE), None)
+    if old is None:
+        return None
+    ev = old.get("evidence") if isinstance(old.get("evidence"), Mapping) else {}
+    window = ev.get("next_window") if isinstance(ev.get("next_window"), Mapping) else None
+    active = True if window or ev.get("busy_now") or old.get("triggered") is True else False if old.get("triggered") is False else None
+    if not active:
+        return {"active": active, "reason_cn": ""}
+    in_h = _num((window or {}).get("in_hours"))
+    what = (f"{window.get('label_cn') or '窗口'}" + ("正在进行" if in_h is None or in_h <= 0 else f"约 {in_h:.1f} 小时后")
+            if window else "当前处于高波动时段")
+    return {"active": True, "reason_cn": f"{what}。在这类时点按标准短腿建仓，2 小时内触及短腿约 35%（其他时点约 26%）；"
+                                          "这是持有中的盯盘提示，不是否决。"}
 
 
 def _levels(frame: Mapping[str, Any], g: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -575,7 +604,9 @@ def _h(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     window = next((w for w in clock.get("windows") or []
                    if isinstance(w, Mapping) and isinstance(w.get("at_ms"), int) and not w.get("in_progress")), None)
     if window:
-        lines.append(_line("检查点", f"{window.get('label_cn') or '高波动窗口'}（北京时间 {_bjt(window['at_ms'])}）之前检查一次", "", B_CLOCK))
+        lines.append(_line("检查点", f"{window.get('label_cn') or '高波动窗口'}（北京时间 {_bjt(window['at_ms'])}）之前检查一次"
+                           "；窗口前后短腿更早被触及（在这类时点建仓，2 小时内触及约 35%，其他时点约 26%）", "",
+                           f"{B_CLOCK}；{B_BUSY_NOTE}"))
     ok, why = path_stats.daily_basis(clock)
     left = _num(clock.get("hours_to_expiry"))
     row = path_stats.next_survival(left, g["side"]) if ok and left is not None else None

@@ -416,32 +416,70 @@ def clock(now=NOW, expiry=EXPIRY, hour=11, windows=None):
             "windows": windows if windows is not None else [{"at_ms": now + 2.5 * H1, "in_hours": 2.5, "label_cn": "美股开盘"}]}
 
 
-def v2frame(cand=None, warnings=None, **kw):
+def v2frame(cand=None, warnings=None, notes=None, **kw):
     f = frame(cand)
     f["session_clock"] = clock(**kw)
     f["long_book_top"] = {"bid": 0.0004, "ask": 0.0008}
     if warnings is not None:
-        f["candidate"] = {**f["candidate"], "entry_warnings": {"warnings": warnings}}
+        f["candidate"] = {**f["candidate"], "entry_warnings": {"warnings": warnings, **({"notes": notes} if notes is not None else {})}}
     return f
 
 
 def test_v2_steps_and_version():
     assert dp.STEP_IDS == ("D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H", "AU")
-    assert dp.PATH_VERSION == "dp-2026-10-26.2"
+    assert dp.PATH_VERSION == "dp-2026-10-26.3"
 
 
 def test_time_step_veto_layer_goes_to_the_veto_summary_and_hours_are_described_only():
-    steps = dp.build(v2frame(hour=9, warnings=[{"code": "busy_window_thin_cushion", "label_cn": "高波动窗口且缓冲不足", "triggered": True},
+    steps = dp.build(v2frame(hour=9, warnings=[{"code": "premium_thickening", "label_cn": "保费突然变厚", "triggered": True},
                                                  {"code": "term", "label_cn": "期限倒挂", "triggered": False}]))["steps"]
     assert steps["T"]["verdict"]["code"] == "veto"
     assert [i["text"] for i in steps["Q1"]["items"] if i["step"] == "T"] == ["否决层触发 1 项"]
-    thin = next(l for l in steps["T"]["lines"] if "缓冲不足" in l["v"])
-    assert "与 16:00 较好时段冲突" in thin["basis"]
+    assert [l["v"] for l in steps["T"]["lines"] if l["k"] == "否决层"] == ["保费突然变厚：触发", "期限倒挂：未触发"]
     hours = next(l for l in steps["T"]["lines"] if l["k"] == "建仓时点")
     assert "与 08:00 相近" in hours["v"] and hours["tone"] == ""          # 08-12 is not a veto (17 号 附录 A)
     better = dp.build(v2frame(hour=16, warnings=[{"code": "x", "triggered": False}], windows=[]))["steps"]["T"]
     assert better["verdict"]["code"] == "better_hours" and better["verdict"]["tone"] == ""
     assert dp.build(v2frame(hour=16, windows=[{"in_hours": 1.0, "at_ms": NOW + H1}]))["steps"]["T"]["verdict"]["code"] == "window_near"
+
+
+BUSY_NOTE = {"code": "busy_window", "label_cn": "高波动时段提示", "role": "note", "active": True,
+             "reason_cn": "美股开盘约 1.5 小时后。在这类时点按标准短腿建仓，2 小时内触及短腿约 35%（其他时点约 26%）；"
+                          "这是持有中的盯盘提示，不是否决。"}
+QUIET_VETOES = [{"code": "term_inversion", "label_cn": "近端倒挂", "triggered": False},
+                {"code": "premium_thickening", "label_cn": "保费突然变厚", "triggered": False}]
+
+
+def test_a_busy_window_is_a_holding_note_never_a_time_veto():
+    # entry_warnings@0.2 (docs/opus/22): two veto lines, the note on its own line, no veto in T or Q1
+    steps = dp.build(v2frame(hour=12, warnings=QUIET_VETOES, notes=[BUSY_NOTE]))["steps"]
+    assert steps["T"]["verdict"]["code"] != "veto" and steps["T"]["fired"] == []
+    assert [i for i in steps["Q1"]["items"] if i["step"] == "T"] == []
+    assert len([l for l in steps["T"]["lines"] if l["k"] == "否决层"]) == 2
+    note = next(l for l in steps["T"]["lines"] if l["k"] == "时段提示")
+    assert note["v"] == BUSY_NOTE["reason_cn"] and note["tone"] == "warn" and "22 号" in note["basis"]
+    off = dp.build(v2frame(hour=12, warnings=QUIET_VETOES, notes=[{**BUSY_NOTE, "active": False}]))["steps"]["T"]
+    assert next(l for l in off["lines"] if l["k"] == "时段提示") == {"k": "时段提示", "v": "未触发", "tone": "",
+                                                                     "basis": dp.B_BUSY_NOTE}
+    assert "cushion" not in json.dumps(steps["T"], ensure_ascii=False) and not hasattr(dp, "B_THIN_CUSHION")
+
+
+def test_a_legacy_busy_window_veto_reads_as_the_note():
+    # an @0.1 block (cached view, saved session) whose busy-window item fired: shown as the note, not counted
+    old = {"code": "busy_window_thin_cushion", "label_cn": "高波动窗口临近、缓冲不足", "triggered": True,
+           "evidence": {"next_window": {"label_cn": "美股开盘", "in_hours": 1.5}, "busy_now": False, "distance_in_moves": 0.39}}
+    steps = dp.build(v2frame(hour=12, warnings=QUIET_VETOES + [old]))["steps"]
+    assert steps["T"]["verdict"]["code"] != "veto" and [i for i in steps["Q1"]["items"] if i["step"] == "T"] == []
+    assert [l["v"] for l in steps["T"]["lines"] if l["k"] == "否决层"] == ["近端倒挂：未触发", "保费突然变厚：未触发"]
+    note = next(l for l in steps["T"]["lines"] if l["k"] == "时段提示")
+    assert note["v"].startswith("美股开盘约 1.5 小时后。") and "不是否决" in note["v"] and note["tone"] == "warn"
+    assert dp.busy_note({"warnings": [dict(old, triggered=None, evidence={})]}) == {"active": None, "reason_cn": ""}
+
+
+def test_the_holding_plan_cites_the_two_hour_touch_rate_before_the_next_window():
+    f = v2frame(windows=[{"at_ms": NOW + 3 * H1, "in_hours": 3.0, "label_cn": "美股开盘"}])
+    check = next(l for l in dp.build(f)["steps"]["H"]["lines"] if l["k"] == "检查点")
+    assert "35%" in check["v"] and "26%" in check["v"] and "22 号" in check["basis"]
 
 
 def test_no_green_outside_data_readability_and_no_veto_is_not_a_reason():

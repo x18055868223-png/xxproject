@@ -12,6 +12,7 @@ const REASONS = {
   quote_invalid_or_stale: "报价无效或过期",
   leg_book_time_skew: "两腿盘口读取时间相差过大",
   // Decision Path requests
+  delta_population_capture_incomplete: "Delta 采集不完整，本轮没有选出候选",
   verification_closed: "这条核验已结束",
   verification_not_found: "这条核验已清理（合约到期）",
   verification_concluding: "结论正在提交",
@@ -363,10 +364,14 @@ export function mapModel(view, sides) {
     ?? sides.put?.spot ?? sides.call?.spot;
   const ref = sides.put?.snap ? sides.put : sides.call;
   const info = gexInfo(view, ref?.candidate);
-  const model = { spot, sigmaPct: ref?.sigmaPct ?? null, sides: {}, walls: [], markers: [], zones: [] };
+  const model = { spot, sigmaPct: ref?.sigmaPct ?? null, sides: {}, walls: [], markers: [], zones: [], levels: [] };
   for (const k of ["put", "call"]) {
     const sm = sides[k];
     if (sm && sm.snap) model.sides[k] = { short: sm.short, long: sm.long, breakeven: sm.breakeven, beOutsidePct: sm.beOutsidePct, beMovePct: sm.beMovePct };
+    else {
+      const gaps = get(sm, "candidate.discovery.gap_reasons") || [];
+      model.missing = { ...model.missing, [k]: gaps.length ? gaps.map(reasonCn).join("、") : "本轮没有可展示的候选" };
+    }
   }
   const near = info.near_term_walls || {};
   for (const [bucket, label] of [["weekly", "周度"], ["zero_dte", "0DTE"]]) {
@@ -382,41 +387,65 @@ export function mapModel(view, sides) {
     for (const p of info[list] || []) if (isNum(p) && !nearPrices.has(p)) model.walls.push({ price: p, gex: null, kind: "all", label, short: "全期" });
   }
   const pool = get(view, "btc_map.reference_pool") || [];
-  const flip = pool.find((r) => r.role === "EFFECTIVE_FLIP");
-  const flipPrice = flip ? (flip.raw_price ?? flip.display_center) : get(view, "market_context.market_facts.space_context.anchor.effective_flip_point");
-  if (isNum(flipPrice)) model.markers.push({ price: flipPrice, label: "有效翻转位 Flip", short: "Flip", glyph: "ring", color: "var(--depth)",
-    note: "价格在其上方为正 Gamma 区；名义坐标" });
-  if (isNum(info.magnet_price)) model.markers.push({ price: info.magnet_price, label: "全期限 Gamma 磁吸位（不是本期 Pin）", short: "全期限磁吸", glyph: "triangle", color: "var(--ink-3)" });
-  // This expiry's own structure: the levels a ~24h policy actually settles against.
+  // This expiry's own structure is drawn as full-height lines like the spot line (model.levels);
+  // the other bases stay as glyphs in their tracks. Names follow one convention: 墙 = the largest
+  // dollar Gamma strike of a side, 持仓峰 = the largest open-interest strike of a side.
   const prof = expiryProfile(view, String(ref?.shortName || "").split("-")[1]);
   model.expiry = prof ? { expiry: prof.expiry, stale: !!prof.stale, at: prof.computed_at_ms } : null;
+  model.levels = [];
   if (prof) {
-    // One marker per role, never one glyph for several roles: the pin sits in its own lane at
-    // the top of the Gamma track; each side's walls share a square only when Gamma and OI agree.
     const src = `Deribit 公开数据，${prof.expiry} 到期，${prof.stale ? "数据偏旧" : "5 分钟更新"}；Gamma 不区分做市商方向`;
     const w = prof.walls || {};
-    if (isNum(w.pin)) model.markers.push({ price: w.pin, glyph: "pin", color: "var(--ink)", lane: "top",
-      label: `本期 Pin（${prof.expiry}）`, short: `Pin ${kusd(w.pin)}`,
-      note: `到期前预期波动范围内两侧合计 Gamma 最大的行权价；若做市商净多 Gamma，价格易在附近钉住。${src}` });
+    if (isNum(w.pin)) model.levels.push({ price: w.pin, role: "pin", name: "Pin", label: `本期 Pin（${prof.expiry}）`,
+      note: `到期前预期波动范围内两侧合计 Gamma 最大的行权价；若做市商净多 Gamma，价格易在附近钉住。${src}`, basis: "本期" });
     for (const [side, name] of [["put", "Put"], ["call", "Call"]]) {
       const g = w[`gamma_${side}`], o = w[`oi_${side}`];
-      const at = new Map();
-      if (isNum(g)) at.set(g, ["gamma"]);
-      if (isNum(o)) at.set(o, [...(at.get(o) || []), "oi"]);
-      for (const [price, kinds] of at) {
-        const both = kinds.length === 2;
-        model.markers.push({ price, glyph: "square", color: `var(--${side})`,
-          label: `本期 ${name} ${both ? "墙（Gamma 与持仓量都最大）" : kinds[0] === "gamma" ? "Gamma 墙" : "持仓墙"}（${prof.expiry}）`,
-          short: `${name} ${both ? "墙" : kinds[0] === "gamma" ? "Gamma 墙" : "持仓墙"}`,
-          note: [kinds.includes("gamma") ? `美元 Gamma 最大的 ${name} 行权价：对冲压力所在` : null,
-            kinds.includes("oi") ? `持仓量最大的 ${name} 行权价：仓位堆积处` : null].filter(Boolean).join("；") + `。${src}` });
-      }
+      if (isNum(g)) model.levels.push({ price: g, role: `wall_${side}`, name: `${name} 墙${g === o ? "（持仓峰同位）" : ""}`,
+        label: `本期 ${name} 墙（${prof.expiry}）`, basis: "本期",
+        note: `美元 Gamma 最大的 ${name} 行权价：对冲压力所在${g === o ? "；持仓量也在这里最大" : ""}。${src}` });
+      if (isNum(o) && o !== g) model.levels.push({ price: o, role: `oi_${side}`, name: `${name} 持仓峰`,
+        label: `本期 ${name} 持仓峰（${prof.expiry}）`, basis: "本期", note: `持仓量最大的 ${name} 行权价：仓位堆积处。${src}` });
     }
   }
-  if (isNum(info.max_pain_price)) model.markers.push({ price: info.max_pain_price, label: `最大痛点（${info.max_pain_target_expiry || "主到期"}）`, short: "痛点", glyph: "triangle", color: "var(--warn)" });
+  // "This expiry" is judged against the contract's own token, so it holds even without a profile.
+  const token = String(ref?.shortName || "").split("-")[1]?.toUpperCase() || null;
+  const ofThis = (e) => !!token && String(e || "").toUpperCase() === token;
   const ne = info.next_expiry || {};
-  if (isNum(ne.max_pain_price)) model.markers.push({ price: ne.max_pain_price, label: `下一到期最大痛点（${ne.expiry || ""}）`, short: "近痛点", glyph: "triangle", color: "var(--warn)",
-    note: isNum(ne.hours_to_expiry) ? `${ne.hours_to_expiry} 小时后到期` : "" });
+  const thisExpiry = ofThis(ne.expiry);
+  if (isNum(ne.max_pain_price)) {
+    const item = { price: ne.max_pain_price, label: `${thisExpiry ? "本期" : "下一到期"}最大痛点（${ne.expiry || ""}）`,
+      note: `该到期所有期权买方合计价值最小的价格；gexmonitor 口径${isNum(ne.hours_to_expiry) ? `，${ne.hours_to_expiry} 小时后到期` : ""}` };
+    if (thisExpiry) model.levels.push({ ...item, role: "max_pain", name: "最大痛点", basis: "本期" });
+    else model.markers.push({ ...item, short: "近痛点", glyph: "triangle", color: "var(--warn)", basis: "下一到期" });
+  }
+  const flip = pool.find((r) => r.role === "EFFECTIVE_FLIP");
+  const flipPrice = flip ? (flip.raw_price ?? flip.display_center) : get(view, "market_context.market_facts.space_context.anchor.effective_flip_point");
+  if (isNum(flipPrice)) model.levels.push({ price: flipPrice, role: "flip", name: "Gamma 翻转位", basis: "全期限",
+    label: "Gamma 翻转位（全期限）", note: "全部到期合计净 Gamma 由负转正的价格，价格在其上方为正 Gamma 区；全期限口径，不是本期，名义坐标" });
+  if (isNum(info.magnet_price)) model.markers.push({ price: info.magnet_price, label: "全期限 Gamma 磁吸位（不是本期 Pin）", short: "全期限磁吸", glyph: "triangle", color: "var(--ink-3)", basis: "全期限" });
+  const target = info.max_pain_target_expiry;
+  if (isNum(info.max_pain_price) && ofThis(target)) {
+    // gexmonitor's main expiry is this contract's: one 本期 level, never a second marker
+    if (!model.levels.some((l) => l.role === "max_pain")) model.levels.push({ price: info.max_pain_price, role: "max_pain", name: "最大痛点",
+      basis: "本期", label: `本期最大痛点（${target}）`, note: "该到期所有期权买方合计价值最小的价格；gexmonitor 口径" });
+  } else if (isNum(info.max_pain_price)) {
+    const day = (String(target || "").match(/^\d{1,2}[A-Z]{3}/i) || [])[0];
+    model.markers.push({ price: info.max_pain_price, label: `最大痛点（${target || "主到期"}）`,
+      short: `${day ? `${day.toUpperCase()} ` : "主到期"}痛点`, glyph: "triangle", color: "var(--warn)",
+      note: "主到期（gexmonitor 选定）口径，不是本期", basis: "主到期" });
+  }
+  // This expiry's own profile for the map: the top dollar-Gamma strikes of each side (the largest
+  // is the wall), the open-interest peaks, the pin and this expiry's max pain.
+  model.profile = prof ? {
+    expiry: prof.expiry, stale: !!prof.stale,
+    put: (get(prof, "top.gamma_put") || []).filter((r) => isNum(r.strike) && isNum(r.value)).map((r) => ({ strike: r.strike, gex: r.value })),
+    call: (get(prof, "top.gamma_call") || []).filter((r) => isNum(r.strike) && isNum(r.value)).map((r) => ({ strike: r.strike, gex: r.value })),
+    wall: { put: get(prof, "walls.gamma_put"), call: get(prof, "walls.gamma_call") },
+    oi: { put: get(prof, "walls.oi_put"), call: get(prof, "walls.oi_call") },
+    pin: get(prof, "walls.pin"),
+    maxPain: (model.levels.find((l) => l.role === "max_pain") || {}).price ?? null,
+    note: `Deribit 公开数据，${prof.expiry} 到期，${prof.stale ? "数据偏旧" : "5 分钟更新"}；Gamma 不区分做市商方向`,
+  } : null;
   const costLabel = { CP_STH: "短期持有者成本", CP_LTH: "长期持有者成本", CP_ALL: "全体持有者成本" };
   const costShort = { CP_STH: "短期成本", CP_LTH: "长期成本", CP_ALL: "全体成本" };
   // MAP's display pool may select only some cost levels; the background carries all three.
@@ -425,7 +454,7 @@ export function mapModel(view, sides) {
   for (const r of pool) if (costLabel[r.role] && !isNum(cost[r.role])) cost[r.role] = r.raw_price ?? r.display_center;
   for (const [role, price] of Object.entries(cost)) {
     if (isNum(price)) model.markers.push({ price, label: costLabel[role], short: costShort[role], glyph: "diamond",
-      color: "var(--ink-2)", track: "trade", note: `链上成本口径（${cb.latest_observation_date || "日期未知"}），与期权价格不同基准` });
+      color: "var(--ink-2)", track: "trade", basis: "链上", note: `链上成本口径（${cb.latest_observation_date || "日期未知"}），与期权价格不同基准` });
   }
   // KPF zones come from closed daily trade archives; their cutoff is the last closed UTC day.
   const kpfEnd = Math.max(...pool.filter((r) => r.role === "KPF_BASIN" && isNum(r.observation_end_ms)).map((r) => r.observation_end_ms));
@@ -438,7 +467,39 @@ export function mapModel(view, sides) {
         containsShort: ["put", "call"].some((k) => model.sides[k] && model.sides[k].short >= r.raw_low && model.sides[k].short <= r.raw_high) });
     }
   }
+  model.ladder = ladder(model);
   return model;
+}
+
+const BASIS_CN = { 本期: "本期期权", 全期限: "全期限 GEX", 主到期: "主到期期权", 下一到期: "下一到期期权", 周度: "周度 GEX", "0DTE": "0DTE GEX", 链上: "链上（背景）", 成交: "成交（背景）" };
+
+/** Every level on one list, split at the spot, with its distance in % and in expected moves. */
+function ladder(model) {
+  const rows = [];
+  const add = (price, name, basis, extra = {}) => { if (isNum(price)) rows.push({ price, name, basis, basisCn: BASIS_CN[basis] || basis, ...extra }); };
+  for (const l of model.levels) add(l.price, l.label, l.basis, { key: l.basis === "本期" });
+  for (const m of model.markers) {
+    add(m.price, m.label, m.basis || "全期限");
+  }
+  for (const w of model.walls) if (w.kind === "all") add(w.price, w.label, "全期限");
+  // the largest weekly and 0DTE wall of each sign, the rest stay on the map
+  for (const kind of ["weekly", "zero_dte"]) {
+    for (const sign of [1, -1]) {
+      const best = model.walls.filter((w) => w.kind === kind && isNum(w.gex) && Math.sign(w.gex) === sign)
+        .sort((a, b) => Math.abs(b.gex) - Math.abs(a.gex))[0];
+      if (best) add(best.price, `${best.label}（最大）`, kind === "weekly" ? "周度" : "0DTE", { gex: best.gex });
+    }
+  }
+  for (const z of model.zones) add((z.lo + z.hi) / 2, `${z.label} ${kusd(z.lo)}–${kusd(z.hi)}`, "成交");
+  const sig = isNum(model.sigmaPct) && model.sigmaPct > 0 ? model.sigmaPct : null;
+  for (const r of rows) {
+    r.distPct = (r.price / model.spot - 1) * 100;
+    r.moves = sig ? r.distPct / sig : null;
+  }
+  return {
+    below: rows.filter((r) => r.price < model.spot).sort((a, b) => b.price - a.price),
+    above: rows.filter((r) => r.price >= model.spot).sort((a, b) => a.price - b.price),
+  };
 }
 
 const CODES = {

@@ -18,10 +18,19 @@ so a weekday daily is not "inverted" just because weekdays are busier than weeks
   skew is compared only within one contract: another strike sits elsewhere on the smile). A skew
   jump while the other side's skew moved less than OTHER_SIDE_FLAT_PTS either way is marked
   one-sided (possibly informed buying).
-- busy_window_thin_cushion: the market is in a busy hour now, or a high-variance window (US
-  open, macro release, Sunday CME reopen) starts within WINDOW_HOURS or started within the
-  last hour, and the short leg is less than CUSHION_MOVES expected moves away.
 Each warning is triggered true / false, or null when its inputs are missing.
+
+Holding notes (`notes`, entry_warnings@0.2, docs/opus/22) never veto and never count in
+`triggered` / `any_triggered` / `unknown`:
+- busy_window: the market is in a busy hour now, or a high-variance window (US open, macro
+  release, Sunday CME reopen) starts within WINDOW_HOURS or started within the last hour.
+  The short leg is touched sooner after such entries (35% vs 26% within 2 hours), but on two
+  years of one market the average result was no worse, so it is a note to watch while holding.
+  active true / false, or null without a clock reading.
+
+busy_window_thin_cushion is the @0.1 veto (busy window and the short leg less than
+CUSHION_MOVES expected moves away). It is kept as the documented old rule for the backtest
+of docs/opus/22 (research_22) and is no longer called by evaluate.
 """
 from __future__ import annotations
 
@@ -33,13 +42,13 @@ try:
 except ImportError:  # script-style import
     import astra_session_clock_v1 as session_clock
 
-RULES = "entry_warnings@0.1"
+RULES = "entry_warnings@0.2"   # 0.2: busy window moved from the veto list to a holding note (docs/opus/22)
 INVERSION_VOL_PTS = 0.5
 LOOKBACK_HOURS = 6
 IV_JUMP_PTS = 3.0
 OTHER_SIDE_FLAT_PTS = 1.0
 WINDOW_HOURS = 2.0
-CUSHION_MOVES = 0.5
+CUSHION_MOVES = 0.5                # @0.1 rule only (busy_window_thin_cushion)
 SLOT_MS = 30 * 60_000
 MIN_SLOTS = 4
 MIN_SPAN_HOURS = 2.0
@@ -51,8 +60,10 @@ THRESHOLD_CN = {
     "lookback_hours": "回看小时数",
     "other_side_flat_below_vol_pts": "另一侧变化小于（vol 点，判断单侧）",
     "window_within_hours": "窗口在多少小时内",
-    "distance_in_moves_below": "σ 距离低于",
+    "distance_in_moves_below": "σ 距离低于",   # @0.1 rule only
 }
+BUSY_BASIS_CN = ("回测：在这类时点建仓，2 小时内触及短腿约 35%（其他时点约 26%），到期越过保护腿多约 1 个百分点，"
+                 "平均结果不比其他时点差（22 号 §2.2–2.3，单一市场回测）")
 
 
 def _num(value: Any) -> float | None:
@@ -194,15 +205,38 @@ def premium_thickening(side: str, expiry_ms: int, now_ms: int, atm_iv: Any, shor
                      "other_side_flat_below_vol_pts": OTHER_SIDE_FLAT_PTS}, reason)
 
 
-def busy_window_thin_cushion(clock_reading: Mapping[str, Any] | None, distance_in_moves: Any) -> dict[str, Any]:
+def _busy(clock_reading: Mapping[str, Any] | None) -> tuple[bool, Mapping[str, Any] | None, bool]:
+    """(clock usable, the window in [-1 h, WINDOW_HOURS] or None, busy hour now)."""
     if not isinstance(clock_reading, Mapping) or clock_reading.get("error_type"):
-        near, busy_now = None, False
-        clock_ok = False
+        return False, None, False
+    near = next((w for w in clock_reading.get("windows") or []
+                 if _num(w.get("in_hours")) is not None and -1.0 <= w["in_hours"] <= WINDOW_HOURS), None)
+    return True, near, clock_reading.get("hour_level") == "busy"
+
+
+def busy_window_note(clock_reading: Mapping[str, Any] | None, distance_in_moves: Any = None) -> dict[str, Any]:
+    """Holding note, not a veto: busy hour now or a window within [-1 h, WINDOW_HOURS]. The
+    distance is recorded only; the backtest could not test it apart (docs/opus/22 §2.1), and a
+    too-narrow cushion is vetoed at any hour by the Decision Path (D2)."""
+    clock_ok, near, busy_now = _busy(clock_reading)
+    active = (near is not None or busy_now) if clock_ok else None
+    if near is not None:
+        what = f"{near['label_cn']}正在进行" if near["in_hours"] <= 0 else f"{near['label_cn']}约 {near['in_hours']:.1f} 小时后"
     else:
-        clock_ok = True
-        near = next((w for w in clock_reading.get("windows") or []
-                     if _num(w.get("in_hours")) is not None and -1.0 <= w["in_hours"] <= WINDOW_HOURS), None)
-        busy_now = clock_reading.get("hour_level") == "busy"
+        what = "当前处于高波动时段"
+    reason = (f"{what}。在这类时点按标准短腿建仓，2 小时内触及短腿约 35%（其他时点约 26%）；这是持有中的盯盘提示，不是否决。"
+              if active else "2 小时内没有高波动窗口，当前也不在高波动时段。" if active is False else "缺少时钟读数，无法判断。")
+    return {"code": "busy_window", "label_cn": "高波动时段提示", "role": "note", "active": active,
+            "evidence": {"next_window": near, "busy_now": busy_now,
+                         "in_progress": near is not None and near["in_hours"] <= 0,
+                         "ahead": near is not None and near["in_hours"] > 0,
+                         "distance_in_moves": _num(distance_in_moves)},
+            "reason_cn": reason, "basis_cn": BUSY_BASIS_CN, "validated": False}
+
+
+def busy_window_thin_cushion(clock_reading: Mapping[str, Any] | None, distance_in_moves: Any) -> dict[str, Any]:
+    """The @0.1 veto, kept as documented for the backtest (docs/opus/22); evaluate no longer calls it."""
+    clock_ok, near, busy_now = _busy(clock_reading)
     dim = _num(distance_in_moves)
     active = near is not None or busy_now
     if not clock_ok:
@@ -232,9 +266,8 @@ def evaluate(*, side: str, now_ms: int, contract_expiry_ms: int | None, contract
              premium_thickening(side, contract_expiry_ms, now_ms, expiry_atm_iv, short_iv, other_short_iv, history or [],
                                 contract_key, other_contract_key)
              if isinstance(contract_expiry_ms, int) else
-             _warning("premium_thickening", "保费突然变厚", None, {}, {}, "合约到期缺失，无法判断。"),
-             busy_window_thin_cushion(clock_reading, distance_in_moves)]
+             _warning("premium_thickening", "保费突然变厚", None, {}, {}, "合约到期缺失，无法判断。")]
     fired = [w["code"] for w in items if w["triggered"]]
     return {"rules": RULES, "side": side, "at_ms": now_ms, "warnings": items, "triggered": fired,
             "any_triggered": bool(fired), "unknown": [w["code"] for w in items if w["triggered"] is None],
-            "note_cn": UNVALIDATED_CN}
+            "notes": [busy_window_note(clock_reading, distance_in_moves)], "note_cn": UNVALIDATED_CN}
