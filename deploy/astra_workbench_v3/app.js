@@ -695,7 +695,7 @@ function renderDecision() {
   const same = sameContractSide(session);
   syncDecision();
   // Redraw only when something shown here changed: a poll must not rebuild buttons under the cursor.
-  const key = JSON.stringify([session && [session.verification_id, session.status, session.opened, session.marks,
+  const key = JSON.stringify([session && [session.verification_id, session.status, session.opened, session.marks, session.notes,
     session.readings?.now?.at_ms, session.decisions?.length, session.outcome?.status],
   dp.busy, dp.error, dp.confirm, state.session.authenticated, m?.snap?.candidate_id, same?.review?.kind,
   same && reviewedAt(same.review), state.pending, get(state.view, "decision_path.recent"),
@@ -711,8 +711,11 @@ function renderDecision() {
     canAct: state.session.authenticated && !FIXTURE,
     replaced: session && m?.snap && !same ? `${(m.shortName || "").split("-")[1] || ""} 卖 ${usd(m.short)} / 买 ${usd(m.long)}` : null,
     extras: session ? { D2: same ? distanceRule(same) : null, AU: auditExtra(session) } : null,
-    onStep: (step, lean) => dpPost(`/${session.verification_id}/step`, { step, ...(lean ? { lean } : {}),
+    onStep: (step, lean, extra = {}) => dpPost(`/${session.verification_id}/step`, { step, ...(lean ? { lean } : {}), ...extra,
       ...(step === "AU" && session.au_mode ? { shown: auShown(session) } : {}) }, "step"),
+    // a note post: note "" clears it; reasons are evidence keys; a choice that needs a reason comes with lean + choice.
+    // Resolves to {ok, code, message} so the narrative keeps the draft when the save fails.
+    onNote: (step, body) => dpPost(`/${session.verification_id}/step`, { step, ...body }, "note"),
     onRefresh: () => dpPost(`/${session.verification_id}/refresh`, {}, "refresh"),
     onAskLock: () => { dp.confirm = "lock"; renderDecision(); },
     onCancel: () => { dp.confirm = null; renderDecision(); },
@@ -776,17 +779,20 @@ function syncDecision() {
 
 async function dpPost(path, body, kind) {
   const dp = state.dp;
-  if (dp.busy) return;
+  if (dp.busy) return { ok: false, code: "busy", message: "上一个请求还在进行" };
   dp.busy = kind; dp.error = null; renderDecision();
+  let result = { ok: true };
   try { dp.session = (await api.post(`/decision-path${path}`, body)).session; }
   catch (err) {
     authFailed(err);
-    dp.error = `${kind === "refresh" ? "刷新" : "记录"}未完成：${errorText(err)}`;
     const code = err?.body?.code;
+    const text = code === "note_required" ? "这个选项需要写下理由" : errorText(err);
+    dp.error = `${kind === "refresh" ? "刷新" : "记录"}未完成：${text}`;
+    result = { ok: false, code, message: text };
     if (err?.status === 404 || ["verification_closed", "contract_expired"].includes(code)) {
       dp.busy = null;
       await openVerification(dp.session.verification_id, { scroll: false });
-      return;
+      return result;
     }
   }
   dp.busy = null; renderDecision();
@@ -795,6 +801,7 @@ async function dpPost(path, body, kind) {
     step?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     step?.querySelector(".dp-step-head")?.focus({ preventScroll: true });
   }
+  return result;
 }
 
 async function dpConclude(choice) {

@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 if __package__:
+    from . import astra_decision_path_narrative_v1 as narrative
     from . import astra_decision_path_v1 as dp
 else:  # direct CLI execution from tools/
+    import astra_decision_path_narrative_v1 as narrative
     import astra_decision_path_v1 as dp
 
 SCHEMA = "astra_decision_path_session@1.0.0"
@@ -31,6 +33,10 @@ ID_RE = re.compile(r"^dpv_[0-9a-f]{16}$")
 MAX_OPEN = 24
 CLAIM_MS = 120_000   # a conclusion in progress (a lock capture can take a while)
 OPEN, CLOSED = "open", "closed"
+# narrative view (docs/opus/24): per-step notes and the evidence keys they cite
+REASON_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
+NOTE_MAX = 300
+REASONS_MAX = 8
 
 
 def _ids(session: Mapping[str, Any]) -> list[str]:
@@ -249,12 +255,40 @@ class DecisionPathStore:
             return session
 
     def step(self, vid: str, step_id: str, *, lean: str | None, now_ms: int,
-             context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+             context: Mapping[str, Any] | None = None, choice: str | None = None,
+             note: str | None = None, reasons: list[Any] | None = None) -> dict[str, Any]:
         """Open a step (and mark it). `context` is what the page showed at that moment (the
         audit step: which question sheet and model review), kept at the first opening and
-        at the latest mark."""
+        at the latest mark. `choice` is the narrative option behind a mark (docs/opus/24): one
+        of the step's option keys, with that option's lean. `note` and `reasons` (keys of the
+        step's evidence catalogue, kept with their grading) are the user's note on the step;
+        a note may be saved without a mark on any step of the session, without opening it;
+        an empty note clears it."""
         if not isinstance(step_id, str) or (lean is not None and lean not in dp.MARKS):
             raise DecisionPathError("bad_step_request", 400)
+        option = None
+        if choice is not None:
+            option = narrative.OPTIONS.get(step_id, {}).get(choice) if isinstance(choice, str) else None
+            if lean is None or option is None or option[0] != lean:
+                raise DecisionPathError("bad_step_request", 400)
+        if note is not None:
+            if not isinstance(note, str) or len(note.strip()) > NOTE_MAX:
+                raise DecisionPathError("bad_step_request", 400)
+            note = note.strip()
+            try:
+                note.encode("utf-8")
+            except UnicodeEncodeError:   # a lone surrogate: refused before anything is written
+                raise DecisionPathError("bad_step_request", 400) from None
+        keys = None
+        if reasons is not None:
+            allowed = narrative.EVIDENCE_KEYS.get(step_id, frozenset())
+            if not isinstance(reasons, list) or len(reasons) > REASONS_MAX:
+                raise DecisionPathError("bad_step_request", 400)
+            keys = [r.get("key") if isinstance(r, Mapping) else r for r in reasons]
+            if not all(isinstance(k, str) and REASON_RE.fullmatch(k) and k in allowed for k in keys):
+                raise DecisionPathError("bad_step_request", 400)
+            keys = list(dict.fromkeys(keys))
+        note_only = lean is None and (note is not None or reasons is not None)
         with self._lock:
             session = self._open_session(vid, now_ms=now_ms)
             # a session keeps the steps of the path version it started on (docs/opus/20): a v1
@@ -263,18 +297,43 @@ class DecisionPathStore:
                 raise DecisionPathError("bad_step_request", 400)
             if lean is not None and not dp.markable(session.get("steps") or dp.steps_public(), step_id):
                 raise DecisionPathError("step_not_markable", 400)
-            first = step_id not in session["opened"]
-            session["opened"].setdefault(step_id, now_ms)
-            if context is not None:
-                kept = session.setdefault("step_context", {}).setdefault(step_id, {})
-                if first or "opened" not in kept:
-                    kept["opened"] = {**context, "at_ms": now_ms}
-                if lean is not None:
-                    kept["marked"] = {**context, "at_ms": now_ms, "lean": lean}
+            kept_note = (session.get("notes") or {}).get(step_id) or {}
+            if option is not None and option[1] and not (note if note is not None else str(kept_note.get("text") or "")):
+                raise DecisionPathError("note_required", 400)
+            if not note_only:
+                first = step_id not in session["opened"]
+                session["opened"].setdefault(step_id, now_ms)
+                if context is not None:
+                    kept = session.setdefault("step_context", {}).setdefault(step_id, {})
+                    if first or "opened" not in kept:
+                        kept["opened"] = {**context, "at_ms": now_ms}
+                    if lean is not None:
+                        kept["marked"] = {**context, "at_ms": now_ms, "lean": lean}
             if lean is not None:
-                session["marks"][step_id] = {"lean": lean, "at_ms": now_ms}
+                session["marks"][step_id] = {"lean": lean, "at_ms": now_ms, **({"choice": choice} if choice else {})}
+            if note is not None or keys is not None:
+                text = note if note is not None else str(kept_note.get("text") or "")
+                cited = self._graded(session, step_id, keys) if keys is not None else list(kept_note.get("reasons") or [])
+                notes = session.setdefault("notes", {})
+                if text or cited:
+                    notes[step_id] = {"text": text, "reasons": cited, "at_ms": now_ms}
+                else:
+                    notes.pop(step_id, None)
             self._write(session)
             return session
+
+    @staticmethod
+    def _graded(session: Mapping[str, Any], step_id: str, keys: list[str]) -> list[dict[str, Any]]:
+        """Cited evidence keys with the grading the start reading offered them under, so a
+        later change of grades cannot rewrite what the user cited (null when not offered)."""
+        start = (session.get("readings") or {}).get("start") or {}
+        steps = start.get("steps") if isinstance(start.get("steps"), Mapping) else {}
+        try:
+            offered = {e["key"]: e for e in narrative.narrate_step(step_id, steps.get(step_id), steps)["evidence"]}
+        except Exception:
+            offered = {}
+        return [{"key": k, "grade": (offered.get(k) or {}).get("grade"), "verdict_cn": (offered.get(k) or {}).get("verdict_cn"),
+                 "label": (offered.get(k) or {}).get("label")} for k in keys]
 
     def conclude(self, vid: str, choice: str, *, now_ms: int, episode_id: str | None = None,
                  lock_created: bool | None = None) -> dict[str, Any]:
@@ -383,6 +442,9 @@ class DecisionPathStore:
             "opened_order": order, "dwell_ms": dwell,
             "conclusion": conclusion.get("choice"), "episode_id": conclusion.get("episode_id"),
             "decisions": session.get("decisions") or [],
+            "notes": session.get("notes") or {},
+            "choices": {step: m["choice"] for step, m in (session.get("marks") or {}).items()
+                        if isinstance(m, Mapping) and m.get("choice")},
         }
 
     def records(self) -> list[dict[str, Any]]:

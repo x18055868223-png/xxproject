@@ -429,7 +429,7 @@ def _d2(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     on_way.sort(key=lambda lv: lv["offset"])
     first = on_way[0] if on_way else None
     if first:
-        text = (f"{first['label']}，在现价{'下方' if g['adverse'] < 0 else '上方'} {first['offset'] / spot * 100:.2f}%"
+        text = (f"{first['label']}，在现价{'下方' if g['adverse'] < 0 else '上方'} {abs(first['offset']) / spot * 100:.2f}%"
                 + (f"；另有 {'、'.join(lv['label'] for lv in on_way[1:])}" if len(on_way) > 1 else ""))
     else:
         text = "现价到短腿之间没有本期墙、Pin 或 Flip"

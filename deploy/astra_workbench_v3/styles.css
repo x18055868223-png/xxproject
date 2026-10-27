@@ -617,6 +617,63 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
 .dp-recent { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .dp-recent li { display: flex; gap: 6px; align-items: center; font-size: 13px; }
 .chip.verified { margin-left: 6px; }
+/* narrative view (叙述): the same readings as sentences; tone colours the text only, never a block */
+.dp-view { display: inline-flex; justify-self: start; border: 1px solid var(--rule); border-radius: var(--radius-chip); overflow: hidden; }
+.dp-view-btn { font: inherit; font-size: 12.5px; padding: 3px 14px; border: 0; background: transparent; color: var(--ink-2); cursor: pointer; }
+.dp-view-btn + .dp-view-btn { border-left: 1px solid var(--rule); }
+.dp-view-btn.on { background: var(--paper-2); color: var(--ink); font-weight: 600; }
+.dp-view-btn:focus-visible, .dp-fn:focus-visible, .dp-fn-all:focus-visible, .dp-opt:focus-visible, .dp-link:focus-visible {
+  outline: 2px solid var(--depth); outline-offset: 1px; }
+.dp-para { margin: 0; font-size: 14px; line-height: 1.75; color: var(--ink); max-width: 52em; overflow-wrap: anywhere; }
+.dp-lead { font-weight: 600; }
+.dp-sent.warn { color: var(--warn); } .dp-sent.bad { color: var(--liability); }
+.dp-fn { font: inherit; font-family: var(--font-num); font-size: 10.5px; line-height: 1; vertical-align: super;
+  margin: 0 1px; padding: 1px 3px; min-width: 1.4em; border: 1px solid var(--rule); border-radius: 4px;
+  background: transparent; color: var(--ink-3); cursor: pointer; }
+.dp-fn.on, .dp-fn:hover { border-color: var(--depth); color: var(--depth); }
+.dp-bg { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--ink-3); max-width: 52em; }
+.dp-fns { display: grid; gap: 4px; justify-items: start; }
+.dp-fn-all { font: inherit; font-size: 12px; padding: 0; border: 0; background: none; color: var(--ink-3); cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 3px; }
+.dp-fn-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 12px; line-height: 1.55; color: var(--ink-3); max-width: 52em; }
+.dp-fn-list sup { font-family: var(--font-num); margin-right: 2px; }
+.dp-rest { margin: 0; }
+.dp-now { margin: 0; font-size: 13px; line-height: 1.65; padding-left: 10px; border-left: 2px solid var(--rule); max-width: 52em; }
+.dp-now b { font-weight: 600; margin-right: 2px; }
+.dp-ask { display: grid; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--rule-2); }
+.dp-ask-q { font-size: 13.5px; }
+.dp-ask-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.dp-opt { font: inherit; font-size: 12.5px; padding: 4px 11px; border-radius: var(--radius-chip); border: 1px solid var(--rule);
+  background: transparent; color: var(--ink-2); cursor: pointer; text-align: left; white-space: normal; }
+.dp-opt:disabled { cursor: default; opacity: .55; }
+.dp-opt.on { background: var(--paper-2); color: var(--ink); font-weight: 600; opacity: 1; }
+.dp-opt.on.toward_underwrite { border-color: var(--ok); } .dp-opt.on.unchanged { border-color: var(--ink-2); }
+.dp-opt.on.toward_decline { border-color: var(--warn); }
+.dp-ask-hint { margin-top: -2px; }
+.dp-opt.pending { border-style: dashed; }  /* held until its reason is saved */
+.dp-now-box { display: grid; gap: 4px; }
+.dp-chg.removed { color: var(--ink-3); }
+.dp-evidence { display: grid; gap: 4px; }
+.dp-ev { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.dp-ev-item { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; font-size: 12.5px; line-height: 1.5;
+  padding: 3px 0; border-top: 1px dashed var(--rule-2); }
+.dp-ev-cite { display: inline-flex; gap: 3px; align-items: center; font-size: 12px; color: var(--ink-2); cursor: pointer; }
+.dp-ev-label { color: var(--ink); }
+.dp-ev-value { font-family: var(--font-num); color: var(--ink-2); }
+.dp-grade { font-family: var(--font-num); font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--rule); color: var(--ink-3); }
+.dp-grade.strong { border-color: var(--ink-2); color: var(--ink); font-weight: 600; }
+.dp-grade.c { border-color: var(--warn); color: var(--warn); }
+.dp-ev-verdict { color: var(--ink-2); }
+.dp-ev-verdict.no { color: var(--warn); font-weight: 600; }
+.dp-ev-item.unsupported .dp-ev-label { color: var(--ink-3); }
+.dp-ev-src { flex-basis: 100%; color: var(--ink-3); font-size: 11.5px; }
+.dp-notes { display: grid; gap: 6px; justify-items: start; }
+.dp-saved { margin: 0; display: grid; gap: 1px; font-size: 13px; max-width: 52em; overflow-wrap: anywhere; }
+.dp-link { font: inherit; font-size: 12px; padding: 0; border: 0; background: none; color: var(--depth); cursor: pointer; }
+.dp-note-input { font: inherit; font-size: 13px; width: 100%; max-width: 60ch; box-sizing: border-box; padding: 6px 8px;
+  border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); color: var(--ink); resize: vertical; }
+.dp-note-actions { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+@media (max-width: 480px) { .dp-para { font-size: 13.5px; } .dp-ev-item { gap: 2px 6px; } }
 @media (max-width: 700px) {
   .dp-lines { grid-template-columns: 1fr; }
   /* start and now stay side by side; the label takes its own row */

@@ -44,6 +44,7 @@ if __package__:
     from . import astra_expiry_gamma_v1 as expiry_gamma
     from . import astra_decision_path_v1 as decision_path
     from . import astra_decision_path_store_v1 as decision_path_store
+    from . import astra_decision_path_narrative_v1 as decision_path_narrative
     from . import astra_underwriting_public_quote_v20 as public_quote
     from . import astra_underwriting_review_v20 as review_core
     from . import astra_underwriting_store_v20 as store
@@ -88,6 +89,7 @@ else:  # direct CLI execution from tools/
     import astra_expiry_gamma_v1 as expiry_gamma
     import astra_decision_path_v1 as decision_path
     import astra_decision_path_store_v1 as decision_path_store
+    import astra_decision_path_narrative_v1 as decision_path_narrative
     import astra_underwriting_public_quote_v20 as public_quote
     import astra_underwriting_review_v20 as review_core
     import astra_underwriting_store_v20 as store
@@ -178,6 +180,24 @@ def _upstream_code(exc: BaseException | None) -> str | None:
     if any(k in text for k in ("DERIBIT_HTTP_5", "URLError", "timed out", "TimeoutError", "ConnectionError")):
         return "deribit_unavailable"
     return None
+
+
+def _dp_with_narrative(session: Mapping[str, Any]) -> dict[str, Any]:
+    """A served Decision Path session: a deep copy whose start and now readings carry the
+    narrative view (docs/opus/24). Computed on every serve and never persisted; a failure
+    leaves the reading without it (the page then shows the table)."""
+    out = deepcopy(dict(session))
+    readings = out.get("readings")
+    if isinstance(readings, dict):
+        start = readings.get("start")
+        for name in ("start", "now"):
+            reading = readings.get(name)
+            if isinstance(reading, dict):
+                try:   # the now reading also says what changed since the start (`changes` per step)
+                    reading["narrative"] = decision_path_narrative.narrate(reading, start if name == "now" else None)
+                except Exception:   # the narrative is a view; it must never break serving the session
+                    reading.pop("narrative", None)
+    return out
 
 
 class WorkbenchError(Exception):
@@ -4442,7 +4462,7 @@ class AstraWorkbench:
 
     def decision_path_session(self, vid: str) -> dict[str, Any]:
         try:
-            return self.decision_paths.get(vid)
+            return _dp_with_narrative(self.decision_paths.get(vid))
         except decision_path_store.DecisionPathError as exc:
             raise self._dp_error(exc) from exc
 
@@ -4471,7 +4491,7 @@ class AstraWorkbench:
         if self.chain_audit is not None and created:
             self.chain_audit.event("decision_path_started", now, {"verification_id": session["verification_id"],
                                    "candidate_id": candidate_id, "path_version": session["path_version"]})
-        return {"session": session, "created": created, "llm_call_count": 0, "execution_allowed": False}
+        return {"session": _dp_with_narrative(session), "created": created, "llm_call_count": 0, "execution_allowed": False}
 
     def decision_path_refresh(self, vid: str, *, authorization: str | None) -> dict[str, Any]:
         """Re-read the same contract now: the page's current capture if it is the same
@@ -4503,10 +4523,11 @@ class AstraWorkbench:
             session = self.decision_paths.set_now(vid, reading, now_ms=now)
         except decision_path_store.DecisionPathError as exc:
             raise self._dp_error(exc) from exc
-        return {"session": session, "llm_call_count": 0, "execution_allowed": False}
+        return {"session": _dp_with_narrative(session), "llm_call_count": 0, "execution_allowed": False}
 
     def decision_path_step(self, vid: str, step_id: str, lean: Any, *, authorization: str | None,
-                           shown: Any = None) -> dict[str, Any]:
+                           shown: Any = None, choice: Any = None, note: Any = None,
+                           reasons: Any = None) -> dict[str, Any]:
         self._dp_require(authorization)
         try:
             context = None
@@ -4515,10 +4536,11 @@ class AstraWorkbench:
                 if current.get("au_mode"):
                     context = self._au_context(current, shown)
             session = self.decision_paths.step(vid, str(step_id), lean=lean if lean is None else str(lean),
-                                               now_ms=self.clock_ms(), context=context)
+                                               now_ms=self.clock_ms(), context=context, choice=choice,
+                                               note=note, reasons=reasons)
         except decision_path_store.DecisionPathError as exc:
             raise self._dp_error(exc) from exc
-        return {"session": session, "llm_call_count": 0, "execution_allowed": False}
+        return {"session": _dp_with_narrative(session), "llm_call_count": 0, "execution_allowed": False}
 
     def _dp_lock_point(self, session: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
         """The newest retained page point of this contract, or a fresh same-contract capture."""
@@ -4583,7 +4605,7 @@ class AstraWorkbench:
         if self.chain_audit is not None:
             self.chain_audit.event("decision_path_concluded", now, {"verification_id": vid, "choice": choice,
                                    "episode_id": episode_id, "path_version": session.get("path_version")})
-        return {"session": session, "lock": lock_result, "llm_call_count": 0, "execution_allowed": False}
+        return {"session": _dp_with_narrative(session), "lock": lock_result, "llm_call_count": 0, "execution_allowed": False}
 
     def _decision_path_housekeeping(self, now_ms: int) -> None:
         """Close sessions still open at expiry, then backfill the static settlement result of
@@ -6103,7 +6125,8 @@ def make_handler(workbench: AstraWorkbench):
                             authorization=access.authorization_for_workbench)
                     elif dp_match.group(2) == "step":
                         result = workbench.decision_path_step(dp_match.group(1), body.get("step"), body.get("lean"),
-                            authorization=access.authorization_for_workbench, shown=body.get("shown"))
+                            authorization=access.authorization_for_workbench, shown=body.get("shown"),
+                            choice=body.get("choice"), note=body.get("note"), reasons=body.get("reasons"))
                     else:
                         result = workbench.decision_path_conclude(dp_match.group(1), str(body.get("choice") or ""),
                             str(body.get("idempotency_key") or ""), authorization=access.authorization_for_workbench)
