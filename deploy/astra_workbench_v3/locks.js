@@ -41,9 +41,13 @@ export const gapCn = (code) => {
 const ROW_STATUS_CN = {
   changed: "有变化", unchanged: "未变", same_clock: "来源未更新", not_precise: "口径不同，只并列",
   missing: "两端缺失", new_fact: "锁定后才出现", latest_missing: "最新缺失", reference_only: "参考估算", unknown: "无法估算",
+  not_recorded_at_lock: "锁定时未生成",
 };
+// A lock-time value recomputed from that point's own market facts (the WPEM layer was not composed then).
+const BACKFILL_HINT = "（由锁定时市场事实重算）";
 const TREND_CN = { strong_bullish_bias: "强偏多", bullish_bias: "偏多", neutral: "中性", bearish_bias: "偏空", strong_bearish_bias: "强偏空" };
-const FLOW_DIR_CN = { bullish: "主动买方占优", bearish: "主动卖方占优", neutral: "均衡" };
+const FLOW_DIR_CN = { bullish: "主动买方占优", bearish: "主动卖方占优", neutral: "均衡",
+  neutral_to_bullish: "略偏主动买方", neutral_to_bearish: "略偏主动卖方" };
 // Readings only, as in the fact layer (docs/opus/23 §1.1): no pinning, no tailwind / headwind.
 const GAMMA_CN = { POSITIVE_GAMMA_PINNING: "正 Gamma", NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma", TRANSITION: "过渡", UNKNOWN: "未知" };
 const GATE_CN = { STRUCTURE_BLOCKED: "FMZ 空间门关闭（仅参考）", STRUCTURE_ELIGIBLE: "FMZ 空间门放行（仅参考）" };
@@ -195,6 +199,11 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   box.append(section("锁定时", figs, payoffChart({ side, ks: c.short_strike_usd, kl: c.long_strike_usd, net: netT0, be, t0Spot, t1Spot,
     settle: settlement && settlement.status === "settled" ? settlement.delivery.delivery_price_usd : null })));
 
+  // 1a. what the Decision Path verification committed to (limit price, plan when touched)
+  const commit = commitmentView(d.verification_commitments, series, { t0: get(d, "baseline.asof_ms") ?? e.created_at_ms,
+    expiry: c.expiry_ms, error: seriesError });
+  if (commit) box.append(section("核验时的承诺", commit));
+
   // 1b. the whole path since lock, not just the two ends
   box.append(section("锁定后过程", series ? processView(series, c, { be })
     : h("p", { class: "muted small", text: seriesError ? `过程读取失败：${seriesError}` : "正在读取过程…" })));
@@ -209,6 +218,10 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   t.append(tb);
   box.append(section("之后的变化（明细）", h("div", { class: "scroll-x" }, t)));
 
+  // 2b. this expiry's structure at lock and now
+  const levelRows = (d.rows || []).filter((r) => r.group === "levels");
+  if (levelRows.length) box.append(section("本期结构（锁定时 vs 最新）", levelsView(levelRows)));
+
   // 3. market context and the program's two-question summary
   const ctx = (d.rows || []).filter((r) => r.group === "context" || r.group === "opinion" || r.group === "risk");
   if (ctx.length) {
@@ -219,7 +232,10 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
     for (const r of ctx) {
       const a = ctxValue(r.key, r.t0), b = ctxValue(r.key, r.t1);
       const st = r.status === "changed" && a === b ? "细节有变化" : ROW_STATUS_CN[r.status] || "—";
-      cb.append(h("tr", {}, h("td", { text: ctxLabel(r) }), h("td", { text: a }), h("td", { text: b }),
+      const t0Cell = get(r, "t0.compat_backfill_applied")
+        ? h("td", { title: "锁定时未组合证据层；该值由锁定时的市场事实按同一读法重算，来源时点未留存" }, a, h("span", { class: "bf-hint", text: BACKFILL_HINT }))
+        : h("td", { text: a });
+      cb.append(h("tr", {}, h("td", { text: ctxLabel(r) }), t0Cell, h("td", { text: b }),
         h("td", { class: `st ${r.status}`, text: st })));
     }
     ct.append(cb);
@@ -442,6 +458,76 @@ function holdView(led, hold, { session, busy, onHoldReview }) {
   return box;
 }
 
+// ── this expiry's structure and the verification's commitments ─────
+/** Lock-time vs latest levels of the contract's own expiry, with the distance to the short strike. */
+export function levelsView(rows) {
+  const t = h("table", { class: "t compact ld-levels" }, h("thead", {}, h("tr", {},
+    ...[["项目"], ["锁定时", "n"], ["最新", "n"], ["变化", "n"], ["距短腿（最新）", "n"]].map(([x, cls]) => h("th", { class: cls || null, text: x })))));
+  const tb = h("tbody");
+  let stale = false;
+  for (const r of rows) {
+    const a = get(r, "t0.value"), b = get(r, "t1.value");
+    const notAtLock = r.status === "not_recorded_at_lock";
+    const change = notAtLock ? "锁定时未记录"
+      : isNum(a) && isNum(b) ? (Math.round(b) === Math.round(a) ? "未变" : `${b > a ? "+" : "−"}${usd(Math.abs(b - a))}`)
+      : ROW_STATUS_CN[r.status] || "—";
+    const dt = get(r, "to_short_pct.t1"), d0 = get(r, "to_short_pct.t0");
+    if (get(r, "stale.t1") || get(r, "stale.t0")) stale = true;
+    tb.append(h("tr", { title: r.change_cn || "" },
+      h("td", { text: r.label_cn || "其他价位" }),
+      h("td", { class: "n", text: notAtLock ? "未记录" : isNum(a) ? usd(a) : "缺失" }),
+      h("td", { class: "n", text: r.t1 ? (isNum(b) ? usd(b) : "缺失") : "未记录" }),
+      h("td", { class: `n${notAtLock ? " muted" : ""}`, text: change }),
+      h("td", { class: "n", text: isNum(dt) ? `${signedPct(dt)}${isNum(d0) && d0 !== dt ? `（锁定时 ${signedPct(d0)}）` : ""}` : "—" })));
+  }
+  t.append(tb);
+  return h("div", {}, h("div", { class: "scroll-x" }, t),
+    h("p", { class: "muted small", text: `本期 = 本合约到期日的期权：Pin 与墙按 Deribit 公开数据计算（Gamma 不区分做市商方向），最大痛点为 gexmonitor 口径；翻转位为全期限口径，短期持有者成本为链上口径。距短腿 =（价位 − 短腿行权价）/ 短腿行权价。${stale ? "部分读数采集时数据偏旧。" : ""}` }));
+}
+
+/** Whether the market bid reached the committed limit price inside its validity, from the
+ * lock's 1-minute samples (visible credit = short bid − long ask): reached / open / missed. */
+export function commitmentFill(cm, points, { t0, expiry, now = Date.now() } = {}) {
+  const lim = cm && cm.limit;
+  if (!lim || !isNum(lim.credit_btc)) return null;
+  const until = isNum(expiry) && isNum(lim.valid_until_ms) ? Math.min(lim.valid_until_ms, expiry) : lim.valid_until_ms;
+  const setAt = lim.set_at_ms;
+  // from the lock's own t0, but never before the limit existed (a verification that joined an older
+  // lock); the lock point may be taken up to a minute before the conclusion, hence the minute of slack
+  const start = isNum(setAt) ? Math.max(isNum(t0) ? t0 : -Infinity, setAt - 60_000) : t0;
+  const T = (p) => p.asof_ms ?? p.recorded_at_ms;
+  const inWin = (points || []).filter((p) => isNum(T(p)) && isNum(p.visible_credit_btc)
+    && (!isNum(start) || T(p) >= start) && (!isNum(until) || T(p) <= until))
+    .sort((x, y) => T(x) - T(y));
+  const hit = inWin.find((p) => p.visible_credit_btc >= lim.credit_btc);
+  if (hit) return { state: "reached", at: T(hit), best: hit.visible_credit_btc };
+  const best = inWin.length ? Math.max(...inWin.map((p) => p.visible_credit_btc)) : null;
+  return { state: isNum(until) && now < until ? "open" : "missed", best, samples: inWin.length };
+}
+
+export function commitmentView(cm, series, { t0, expiry, now, error } = {}) {
+  if (!cm || (!cm.limit && !cm.plan)) return null;
+  const box = h("div", { class: "ld-commit" });
+  const lim = cm.limit;
+  if (lim && isNum(lim.credit_btc)) {
+    const extra = [isNum(lim.reservation_btc) ? `保留价 ${btcText(lim.reservation_btc)}` : null,
+      isNum(lim.valid_until_ms) ? `有效至 ${(isNum(lim.set_at_ms) && mdOf(lim.valid_until_ms) !== mdOf(lim.set_at_ms)
+        ? mdhm : hhmm).format(new Date(lim.valid_until_ms))}` : null].filter(Boolean).join("，");
+    box.append(h("p", { text: `挂单价 ${btcText(lim.credit_btc)}${extra ? `（${extra}）` : ""}` }));
+    const f = series ? commitmentFill(cm, series.points, { t0, expiry, now }) : null;
+    // a long episode's series is thinned for display: a brief touch may be missing from it
+    const thin = series && series.thinned ? "（采样已抽稀，短暂触及可能未显示）" : "";
+    const text = !series ? (error ? `采样读取失败：${error}` : "正在读取采样…")
+      : f.state === "reached" ? `按采样，市场买价在 ${hhmm.format(new Date(f.at))} 达到挂单价（按买价可成交）`
+      : f.state === "open" ? `有效期内，尚未达到${isNum(f.best) ? `（目前最高 ${btcText(f.best)}）` : ""}${thin}`
+      : isNum(f.best) ? `有效期内市场买价最高 ${btcText(f.best)}，未达到挂单价（被动成交无法确认）${thin}`
+      : "有效期内没有可读的采样，无法确认是否成交";
+    box.append(h("p", { class: f && f.state === "reached" ? "hit" : "muted small", text }));
+  }
+  if (cm.plan && cm.plan.label_cn) box.append(h("p", { text: `被触及时：${cm.plan.label_cn}` }));
+  return box;
+}
+
 function section(title, ...children) {
   return h("div", { class: "ld-sec" }, h("h5", { text: title }), ...children);
 }
@@ -571,6 +657,7 @@ function payoffChart({ side, ks, kl, net, be, t0Spot, t1Spot, settle }) {
 const FLOW_SIGN = { bullish: 1, neutral_to_bullish: 1, bearish: -1, neutral_to_bearish: -1 };
 const GAMMA_TONE = { POSITIVE_GAMMA_PINNING: "var(--depth)", NEGATIVE_GAMMA_AMPLIFYING: "var(--neg-gamma)", TRANSITION: "var(--ink-3)" };   // a regime word, not a caution (docs/opus/23 §1.1)
 const hhmm = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+const mdOf = (ms) => new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit" }).format(new Date(ms));
 const mdhm = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 
 /**

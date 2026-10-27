@@ -809,3 +809,47 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
   .iq-lens-live { grid-template-columns: 1fr; }
   .band-head { flex-wrap: wrap; }
 }
+
+/* ── lock detail: recomputed lock-time values, this expiry's structure, verification commitments ── */
+.bf-hint { margin-left: 4px; color: var(--ink-3); font-size: 11.5px; }
+.ld-levels td.muted { color: var(--ink-3); }
+.ld-commit p { margin: 2px 0; line-height: 1.6; }
+.ld-commit .hit { color: var(--ok); font-weight: 600; }
+/* ── end lock detail block ── */
+
+/* ── decision chain (dp-2026-10-27.1): card unsuitable block, V items, P reservation, lock limit ── */
+.entry-warnings.uv.veto { border-left-color: var(--liability); background: color-mix(in srgb, var(--liability) 6%, var(--paper-2)); }
+.entry-warnings.uv.veto .ew-head b { color: var(--liability); font-size: 14px; }
+.uv-list li { gap: 1px; }
+.uv-item.veto .uv-title { color: var(--liability); }
+.uv-item.caution .uv-title { color: var(--warn); }
+.uv-evidence { color: var(--ink); font-size: 12.5px; overflow-wrap: anywhere; }
+.uv-why { color: var(--ink-2); font-size: 12.5px; line-height: 1.5; }
+.uv-clears { font-size: 12px; }
+.uv-unknown { margin: 2px 0 4px; }
+.dp-veto { display: grid; gap: 6px; }
+.dp-veto-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.dp-veto-item { display: grid; gap: 2px; padding: 6px 10px; border-radius: 6px; border-left: 3px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 6%, transparent); font-size: 13px; }
+.dp-veto-item.bad { border-left-color: var(--liability); background: var(--liability-soft); }
+.dp-veto-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.dp-veto-item.bad .dp-veto-title { color: var(--liability); }
+.dp-veto-ev { color: var(--ink); overflow-wrap: anywhere; }
+.dp-veto-why { color: var(--ink-2); line-height: 1.5; }
+.dp-veto-none, .dp-veto-checks { margin: 0; }
+.dp-veto-none { font-size: 13px; }
+.dp-reserve { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper-2); font-size: 13px; }
+.dp-reserve p { margin: 0; overflow-wrap: anywhere; }
+.dp-reserve-main .num { font-weight: 600; }
+.dp-reserve .warn { color: var(--warn); }
+.dp-limit { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+.dp-limit-field { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 13px; color: var(--ink-2); min-width: 0; }
+.dp-limit-input { font: inherit; font-family: var(--font-num); font-size: 13px; width: 9em; max-width: 100%; padding: 3px 6px;
+  border: 1px solid var(--rule); border-radius: 4px; background: var(--sheet); color: var(--ink); }
+.dp-limit-input:focus-visible { outline: 2px solid var(--depth); outline-offset: 1px; }
+.dp-limit-warn { flex-basis: 100%; margin: 0; color: var(--warn); }
+.dp-conclude > .dp-error { flex-basis: 100%; }
+.dp-limit-line { font-size: 13px; color: var(--ink-2); }
+/* ── end decision chain block ── */
+/* ── round verdict: a vetoed side under met preconditions (docs/opus/25) ── */
+.verdict.has-veto .why-item.veto { color: var(--liability); font-weight: 600; }

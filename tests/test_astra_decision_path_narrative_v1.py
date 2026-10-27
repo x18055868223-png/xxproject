@@ -13,7 +13,7 @@ from tools import astra_decision_path_narrative_v1 as nv
 from tools import astra_decision_path_store_v1 as store
 from tools import astra_decision_path_v1 as dp
 from tools import astra_workbench_v20 as workbench
-from test_astra_decision_path import EXPIRY, H1, NOW, QUIET_VETOES, BUSY_NOTE, candidate, frame, setup_wb, v2frame
+from test_astra_decision_path import EXPIRY, H1, NOW, QUIET_VETOES, BUSY_NOTE, as_v2_session, candidate, frame, setup_wb, v2frame
 
 NUM = re.compile(r"\d+(?:[.,]\d+)*")
 U, S, D = "toward_underwrite", "unchanged", "toward_decline"
@@ -180,7 +180,7 @@ def test_options_table_is_the_union_of_the_variants():
     assert nv.OPTIONS["Q2"] == {"yes": (U, True), "no": (D, False), "mid": (S, False), "go": (S, False)}
     for sid, (_q, options) in ASKS.items():
         assert nv.OPTIONS[sid] == {k: (lean, needs) for k, _l, lean, needs in options}
-    assert set(nv.OPTIONS) == set(ASKS) | {"Q1", "Q2"} and "AU" not in nv.OPTIONS
+    assert set(nv.OPTIONS) == set(ASKS) | {"Q1", "Q2", "V", "R", "P", "PL"} and "AU" not in nv.OPTIONS
 
 
 NEVER_SUPPORT = {"direction_flow", "pin_walls_side", "spatial_position", "move_15m"}
@@ -199,7 +199,7 @@ def test_evidence_is_graded_honestly():
                     assert e["verdict_cn"] == "研究不支持作为依据" and e["direction"] == "neutral", e
                 if e["grade"] in ("X", "未检验"):
                     assert e["verdict_cn"] == "研究不支持作为依据"
-            if sid not in {"Q2", "D2", "D3", "T"}:
+            if sid not in {"Q2", "D2", "D3", "T", "V", "R", "P"}:
                 assert n["evidence"] == []
             assert {e["key"] for e in n["evidence"]} <= nv.EVIDENCE_KEYS.get(sid, frozenset())
     assert {"execution_mid", "events_priced", "iv_vs_rv24", "win_loss_asymmetry", "cushion_vs_standard",
@@ -240,14 +240,16 @@ def test_narrative_of_old_and_empty_readings():
     assert nv.narrate(None) is None
     v1 = {"steps": {"D5": {"verdict": {"code": "x", "cn": "变化"}, "lines": [{"k": "现价", "v": "83,000"}]}}}
     n = nv.narrate(v1)["steps"]["D5"]
-    assert n["sentences"] == [{"text": "现价：83,000。", "fn": [], "tone": ""}] and n["ask"] is None and n["lead"] == "变化。"
+    assert n["sentences"] == [{"text": "现价：83,000。", "fn": [], "tone": "", "keys": ["现价"]}] and n["ask"] is None and n["lead"] == "变化。"
 
 
 # ------------------------------------------------------------------ store
 
 def started(tmp_path):
+    """A session of dp-2026-10-26.3: its steps, options, evidence and notes keep working."""
     s = store.DecisionPathStore(tmp_path)
-    return s, s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    return as_v2_session(tmp_path, vid), vid
 
 
 def test_store_keeps_choices_and_notes(tmp_path):
@@ -368,22 +370,22 @@ def test_served_sessions_carry_the_narrative_and_the_file_does_not(tmp_path):
     vid = out["session"]["verification_id"]
     assert out["session"]["readings"]["start"]["narrative"]["schema"] == nv.SCHEMA
     refreshed = wb.decision_path_refresh(vid, authorization="Bearer secret")["session"]
-    assert refreshed["readings"]["now"]["narrative"]["steps"]["D2"]["ask"]["question"] == "这个缓冲距离，你觉得："
+    assert refreshed["readings"]["now"]["narrative"]["steps"]["R"]["ask"]["question"] == "这些风险，你愿意扛吗？"
     with pytest.raises(workbench.WorkbenchError) as exc:
-        wb.decision_path_step(vid, "D2", "toward_decline", authorization="Bearer wrong", choice="close")
+        wb.decision_path_step(vid, "R", "toward_decline", authorization="Bearer wrong", choice="heavy")
     assert exc.value.code == "unauthorized"
-    stepped = wb.decision_path_step(vid, "D2", "toward_decline", authorization="Bearer secret", choice="close",
+    stepped = wb.decision_path_step(vid, "R", "toward_decline", authorization="Bearer secret", choice="heavy",
                                     note="偏近", reasons=["cushion_vs_standard"])["session"]
-    assert stepped["marks"]["D2"]["choice"] == "close" and stepped["notes"]["D2"]["text"] == "偏近"
-    assert stepped["notes"]["D2"]["reasons"][0]["key"] == "cushion_vs_standard"
+    assert stepped["marks"]["R"]["choice"] == "heavy" and stepped["notes"]["R"]["text"] == "偏近"
+    assert stepped["notes"]["R"]["reasons"][0]["key"] == "cushion_vs_standard"
     with pytest.raises(workbench.WorkbenchError) as exc:
-        wb.decision_path_step(vid, "D3", "toward_underwrite", authorization="Bearer secret", choice="keen")
+        wb.decision_path_step(vid, "P", "toward_underwrite", authorization="Bearer secret", choice="below")
     assert (exc.value.code, exc.value.status_code) == ("note_required", 400)
-    assert isinstance(stepped["readings"]["now"]["narrative"]["steps"]["D2"]["changes"], list)
-    assert "changes" not in stepped["readings"]["start"]["narrative"]["steps"]["D2"]
+    assert isinstance(stepped["readings"]["now"]["narrative"]["steps"]["R"]["changes"], list)
+    assert "changes" not in stepped["readings"]["start"]["narrative"]["steps"]["R"]
     assert "narrative" in stepped["readings"]["start"]
     with pytest.raises(workbench.WorkbenchError) as exc:
-        wb.decision_path_step(vid, "D2", None, authorization="Bearer secret", reasons="x")
+        wb.decision_path_step(vid, "R", None, authorization="Bearer secret", reasons="x")
     assert exc.value.code == "bad_step_request" and exc.value.status_code == 400
     assert "narrative" in wb.decision_path_session(vid)["readings"]["now"]
     raw = (tmp_path / "state" / "decision_path" / "sessions" / f"{vid}.json")
@@ -415,17 +417,18 @@ def test_http_step_passes_choice_note_and_reasons(tmp_path):
         return json.loads(urlopen(req, timeout=20).read())
     try:
         vid = post(base, {"candidate_id": snap["candidate_id"], "snapshot_id": snap["snapshot_id"]})["session"]["verification_id"]
-        out = post(f"{base}/{vid}/step", {"step": "D3", "lean": U, "choice": "keen", "note": "理由", "reasons": ["direction_flow"]})
-        assert out["session"]["marks"]["D3"]["choice"] == "keen"
-        assert out["session"]["notes"]["D3"]["text"] == "理由"
-        assert out["session"]["notes"]["D3"]["reasons"][0]["key"] == "direction_flow"
-        req = Request(f"{base}/{vid}/step", data=json.dumps({"step": "Q1", "lean": S, "choice": "look"}).encode(),
+        out = post(f"{base}/{vid}/step", {"step": "P", "lean": U, "choice": "below", "note": "理由", "reasons": ["direction_flow"]})
+        assert out["session"]["marks"]["P"]["choice"] == "below"
+        assert out["session"]["notes"]["P"]["text"] == "理由"
+        assert out["session"]["notes"]["P"]["reasons"][0]["key"] == "direction_flow"
+        req = Request(f"{base}/{vid}/step", data=json.dumps({"step": "V", "lean": S, "choice": "look"}).encode(),
                       method="POST", headers={"Authorization": "Bearer secret", "Content-Type": "application/json"})
         with pytest.raises(HTTPError) as exc:
             urlopen(req, timeout=20)
         assert exc.value.code == 400 and json.loads(exc.value.read())["code"] == "note_required"
         got = json.loads(urlopen(f"{base}/{vid}", timeout=20).read())
-        assert got["readings"]["start"]["narrative"]["steps"]["D3"]["ask"]["options"][2]["needs_note"] is True
+        options = got["readings"]["start"]["narrative"]["steps"]["P"]["ask"]["options"]
+        assert next(o for o in options if o["key"] == "below")["needs_note"] is True
     finally:
         server.shutdown()
 
@@ -467,3 +470,119 @@ def test_clock_only_movements_are_not_changes():
     assert narrative._settled("距到期还剩 25.3 小时") == narrative._settled("距到期还剩 25.2 小时")
     assert narrative._settled("约 0.48 倍到期前预期波动") != narrative._settled("约 0.47 倍到期前预期波动")
     assert narrative._settled("净收 177 美元") != narrative._settled("净收 175 美元")
+
+
+# ------------------------------------------------------------------ the decision chain (dp-2026-10-27.1)
+
+from test_astra_decision_path import INVERSION, chain_frame  # noqa: E402
+
+
+def chain_readings():
+    return [dp.build(f) for f in (
+        chain_frame(), chain_frame([INVERSION, QUIET_VETOES[1]], {"bid": 0.006, "ask": 0.0066}, {"bid": 0.0, "ask": 0.0008}),
+        chain_frame(None, {"bid": 0.0058, "ask": 0.0062}, {"bid": 0.0034, "ask": 0.0038}),
+        chain_frame(cand=candidate(spot=82_400.0)), v2frame(), frame(), {"at_ms": NOW})]
+
+
+def test_composite_lines_reach_a_sentence_or_the_background_by_their_component():
+    for reading in chain_readings():
+        n = nv.narrate(reading)["steps"]
+        for sid in ("V", "R", "P", "PL"):
+            lines = reading["steps"][sid]["lines"]
+            assert n[sid]["covered"] == list(range(len(lines))), sid
+            body = " ".join([s["text"] for s in n[sid]["sentences"]] + [b["text"] for b in n[sid]["background"]])
+            told, where = nv._narrate_step(sid, reading["steps"][sid], reading["steps"])
+            for i, line in enumerate(lines):
+                for number in NUM.findall(line["v"]):
+                    assert number in body, (sid, line, number)
+                in_background = any(where[i] is b for b in told["background"])
+                assert in_background == (nv.background_grade(sid, line) in ("X", "C")), (sid, line)
+    n = nv.narrate(dp.build(chain_frame()))["steps"]
+    # graded as its component: D3's same-source direction line, D2's spatial position, Q2's IV/RV line
+    assert any(b["text"].startswith("背景（研究不支持作为依据）：方向读数彼此同源") for b in n["R"]["background"])
+    assert any("空间位置" in b["text"] for b in n["R"]["background"])
+    assert any(b["text"].startswith("背景（研究不支持作为依据）：隐含与实现波动只列数") for b in n["P"]["background"])
+    # templates by component: D2's cushion, the contract, the reservation price, H's "若…"
+    assert any(s["text"].startswith("缓冲在标准附近：短腿在现价下方") for s in n["R"]["sentences"])
+    assert n["R"]["sentences"][0]["text"].startswith("这张保单：到期价跌破 82,500 美元开始赔；")
+    assert any(s["text"].startswith("保留价是 0.0029 BTC") for s in n["P"]["sentences"])
+    assert any(s["text"].startswith("若此刻被触及") for s in n["PL"]["sentences"])
+    assert n["V"]["sentences"][-1]["text"].startswith("逐项检查：资料 可读；")
+    assert n["R"]["lead"].startswith("风险：缓冲标准附近") and n["V"]["lead"] == "未见否决项（这不是做的理由）。"
+
+
+def test_composite_asks_and_their_leans():
+    def ask(f, sid):
+        return nv.narrate(dp.build(f))["steps"][sid]["ask"]
+    veto = ask(chain_frame([INVERSION]), "V")
+    assert flat(veto) == ("这些否决项，你怎么处理？", [("stop", "按否决，不做", D, False), ("look", "仍想看价格（写下理由）", S, True)])
+    caution = ask(chain_frame(None, {"bid": 0.0058, "ask": 0.0062}, {"bid": 0.0034, "ask": 0.0038}), "V")
+    assert flat(caution) == ("这些提醒，对你：", [("noted", "知道了，继续", S, False), ("deter", "让我不想做", D, False)])
+    assert ask(chain_frame(), "V") is None                                # no veto, no caution: no question
+    assert flat(ask(chain_frame(), "R")) == ("这些风险，你愿意扛吗？", [("accept", "愿意扛", U, False), ("heavy", "偏重", D, False),
+                                                                   ("same", "没影响", S, False)])
+    assert flat(ask(chain_frame(), "P")) == ("你打算怎么挂单？", [
+        ("reserve", "按保留价或更高挂单", U, False), ("below", "低于保留价也愿意做（写下理由）", U, True),
+        ("pass", "价格不够，不做", D, False), ("later", "先不定", S, False)])
+    missing = candidate()
+    missing["decision_reduction"]["questions"] = []
+    assert flat(ask(v2frame(missing), "P"))[1][0] == ("below", "仍愿意做（写下理由）", U, True)
+    assert flat(ask(chain_frame(), "PL")) == ("若持有中短腿被触及，你会：", [
+        ("hold", "持有到期", S, False), ("close", "触及即平仓", S, False), ("half", "平一半", S, False),
+        ("away", "这段时间盯不了", D, False)])
+    failed = nv.narrate({"steps": {"V": {"verdict": {"code": "error", "cn": "读数失败"}, "items": [], "lines": [{"k": "说明", "v": "x"}]},
+                                   "P": {"verdict": {"code": "error", "cn": "读数失败"}, "lines": [{"k": "说明", "v": "x"}]}}})["steps"]
+    assert flat(failed["V"]["ask"])[1] == [("go", "继续", S, False)] and flat(failed["P"]["ask"])[1] == [("go", "继续", S, False)]
+    assert nv.OPTIONS["V"] == {"stop": (D, False), "look": (S, True), "noted": (S, False), "deter": (D, False), "go": (S, False)}
+    assert nv.OPTIONS["P"] == {"reserve": (U, False), "below": (U, True), "pass": (D, False), "later": (S, False), "go": (S, False)}
+    assert nv.OPTIONS["PL"] == {"hold": (S, False), "close": (S, False), "half": (S, False), "away": (D, False)}
+    assert nv.option_label("PL", "half") == "平一半" and nv.option_label("P", "below") == "低于保留价也愿意做（写下理由）"
+    assert nv.option_label("PL", "zz") is None and nv.option_label("ZZ", "half") is None
+    for reading in chain_readings():
+        for sid, n in nv.narrate(reading)["steps"].items():
+            for o in (n["ask"] or {}).get("options") or []:
+                assert nv.OPTIONS[sid][o["key"]] == (o["lean"], o["needs_note"])
+
+
+def test_composite_evidence_is_its_components_and_graded_honestly():
+    n = nv.narrate(dp.build(chain_frame(cand=candidate(spot=82_600.0), hour=16)))["steps"]
+    for sid in ("V", "R", "P"):
+        keys = [e["key"] for e in n[sid]["evidence"]]
+        assert keys and len(keys) == len(set(keys)) and set(keys) <= nv.EVIDENCE_KEYS[sid], sid
+        for e in n[sid]["evidence"]:
+            if e["key"] in NEVER_SUPPORT:
+                assert e["verdict_cn"] == "研究不支持作为依据" and e["direction"] == "neutral"
+    v = {e["key"]: e for e in n["V"]["evidence"]}
+    assert set(v) == {"cushion_vs_standard", "execution_mid"} and v["cushion_vs_standard"]["direction"] == "decline"
+    assert {e["key"] for e in n["P"]["evidence"]} == {e["key"] for e in n["Q2"]["evidence"]}
+    assert {"cushion_vs_standard", "direction_flow", "entry_hour_1600", "events_priced"} <= {e["key"] for e in n["R"]["evidence"]}
+    assert n["PL"]["evidence"] == [] and "PL" not in nv.EVIDENCE_KEYS
+
+
+def test_composite_notes_choices_and_needs_note_in_the_store(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    vid = s.start(candidate=candidate(), reading=dp.build(chain_frame([INVERSION])), now_ms=NOW)[0]["verification_id"]
+    with pytest.raises(store.DecisionPathError) as exc:
+        s.step(vid, "V", lean=S, choice="look", now_ms=NOW + 1)
+    assert exc.value.code == "note_required"
+    s.step(vid, "V", lean=S, choice="look", note="倒挂幅度小", now_ms=NOW + 2)
+    s.step(vid, "R", lean=U, choice="accept", reasons=["cushion_vs_standard", "events_priced"], now_ms=NOW + 3)
+    s.step(vid, "P", lean=U, choice="below", note="有理由", reasons=["execution_mid"], now_ms=NOW + 4)
+    for bad in ({"lean": U, "choice": "stop"}, {"lean": D, "choice": "half", "step": "PL"}, {"lean": None, "reasons": ["move_15m"]},
+                {"lean": U, "choice": "yes", "step": "P"}):
+        step = bad.pop("step", "V")
+        with pytest.raises(store.DecisionPathError):
+            s.step(vid, step, now_ms=NOW + 5, **bad)
+    got = s.get(vid)
+    assert {k: m["choice"] for k, m in got["marks"].items()} == {"V": "look", "R": "accept", "P": "below"}
+    assert [r["grade"] for r in got["notes"]["R"]["reasons"]] == ["C", "B"]
+
+
+def test_changes_of_composite_steps():
+    start = dp.build(chain_frame())
+    now = dp.build(chain_frame([INVERSION], cand=candidate(spot=83_000.0)))
+    n = nv.narrate(now, start)["steps"]
+    assert any(c["kind"] == "added" and c["text"].startswith("近端倒挂：") for c in n["V"]["changes"])
+    assert any(c["kind"] == "changed" and c["text"].startswith("逐项检查") for c in n["V"]["changes"])
+    assert any(c["kind"] == "changed" and c["text"].startswith("缓冲") for c in n["R"]["changes"])
+    assert nv.narrate(start, start)["steps"]["P"]["changes"] == []

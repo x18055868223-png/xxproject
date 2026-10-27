@@ -101,6 +101,9 @@ def test_workbench_case_file_is_built_from_the_held_capture_and_frozen(tmp_path)
     case = wb.case_file(snapshot_id)
     assert case["snapshot_id"] == snapshot_id and case["candidate_id"] == item["snapshot"]["candidate_id"]
     assert case["layers"]["L8"][case["refs"]["L8.decision_path"]["index"]]["quality"] == "ok"
+    # the inquirer reads the case as it is: the composites of dp-2026-10-27.1 (V/R/P/PL) stay out
+    steps = case["layers"]["L8"][case["refs"]["L8.decision_path"]["index"]]["values"]["steps"]
+    assert set(steps) <= {"D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H", "AU"} and "Q2" in steps
     # read-time layers of the served view are present, not missing
     for ref in ("L2.decision_reduction", "L7.events", "L7.cross_asset"):
         assert case["layers"][ref[:2]][case["refs"][ref]["index"]]["quality"] != "missing", ref

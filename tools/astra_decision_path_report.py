@@ -35,7 +35,9 @@ ADVERSE = {"partial": 1, "stop": 1, "inside": 1, "narrow": 1, "medium": 0, "wide
            "flat": -1, "fading": 0, "calendar_partial": 0, "attention": 1, "clear": -1, "below_market": 1, "above_market": -1,
            # path v2 (docs/opus/20)
            "veto": 1, "window_near": 1, "ordinary": 0, "better_hours": 0, "standard": 0, "toward_early": 1,
-           "no_veto": 0, "none": 0, "plan": 0, "described": 0}
+           "no_veto": 0, "none": 0, "plan": 0, "described": 0,
+           # dp-2026-10-27.1: V, R (the buffer codes), P
+           "caution": 1, "unknown": 0, "bid_covers": -1, "mid_covers": 0, "mid_short": 1, "market_missing": 0}
 LOW_CHANGE = 0.10
 MIN_SAMPLES = 8
 # two reading groups count as separated only with enough members each and a mean result gap
@@ -76,8 +78,9 @@ def report(sessions: list[Mapping[str, Any]]) -> dict[str, Any]:
         by_version[s.get("path_version") or "unknown"].append(s)
     for version, items in sorted(by_version.items()):
         steps: dict[str, Any] = {}
-        # each version in its own step order (the order its sessions recorded)
-        recorded = next((list(s.get("verdicts_start") or {}) for s in items if s.get("verdicts_start")), None)
+        # each version in its own step order: the steps its sessions were marked on (a reading also
+        # carries components that are not steps of dp-2026-10-27.1), else the verdicts they recorded
+        recorded = next((list(s.get(key) or {}) for key in ("marks", "verdicts_start") for s in items if s.get(key)), None)
         order = [sid for sid in (recorded or dp.STEP_IDS) if sid != "AU"]
         # the audit step counts only in sessions where it takes marks (au_mode) and was opened,
         # so "seen, no change" and "never opened" stay apart (docs/opus/14 §3.2)

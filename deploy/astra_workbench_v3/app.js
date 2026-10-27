@@ -9,7 +9,7 @@ import { coreFactors, backgroundItems } from "./factors.js";
 import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
 import { eventBand } from "./events.js";
 import { sessionStrip, warningBlock, timeLamp } from "./session.js";
-import { renderDecision as renderDecisionView } from "./decision.js";
+import { renderDecision as renderDecisionView, gateStepId } from "./decision.js";
 import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
@@ -296,12 +296,19 @@ function renderVerdict() {
   }
   const u = underwriting(state.view, state.sides);
   const gate = state.view.space_gate || {};
+  // a side that is unsuitable now says so here as well, whatever the preconditions (docs/opus/25)
+  const vetoed = ["put", "call"].map((side) => [side, state.sides[side]?.candidate?.unsuitable])
+    .filter(([, un]) => un && !un.error_type && un.veto_count > 0);
+  const vetoTitles = (un) => (un.items || []).filter((i) => i.kind === "veto" && i.title_cn).map((i) => i.title_cn).join("、");
+  const vetoLines = () => vetoed.map(([side, un]) => h("span", { class: "why-item veto",
+    text: `${side === "put" ? "Put" : "Call"} 现在不适合做${vetoTitles(un) ? `：${vetoTitles(un)}` : ""}（见保单卡）` }));
   if (u.open) {
-    box.className = "verdict open";
-    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "两侧快照与报价可用，没有硬门槛阻止；是否承保由你在下面的保单与核验中判断。" }));
+    box.className = vetoed.length ? "verdict open has-veto" : "verdict open";
+    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "两侧快照与报价可用，没有硬门槛阻止；是否承保由你在下面的保单与核验中判断。" }),
+      ...vetoLines());
     return;
   }
-  box.className = "verdict blocked";
+  box.className = vetoed.length ? "verdict blocked has-veto" : "verdict blocked";
   box.append(h("b", { text: "本轮不满足承保前置条件" }));
   for (const item of u.shared) {
     box.append(h("span", { class: "why-item", title: item.title || "",
@@ -311,9 +318,14 @@ function renderVerdict() {
   if (!u.shared.length) {
     for (const side of ["put", "call"]) {
       const why = u.perSide[side] || [];
-      if (why.length) box.append(h("span", { class: "why-item", text: `${side === "put" ? "Put" : "Call"}：${why.join("、")}` }));
+      // a side held back here also names its vetoes in the same line
+      const v = vetoed.find(([s]) => s === side);
+      if (why.length) box.append(h("span", { class: `why-item${v ? " veto" : ""}`, text: `${side === "put" ? "Put" : "Call"}：${[...new Set(why)].join("、")}`
+        + (v ? `；现在不适合做${vetoTitles(v[1]) ? `：${vetoTitles(v[1])}` : ""}` : "") }));
     }
   }
+  // a side already held back above is not repeated
+  box.append(...vetoLines().filter((_, i) => !(u.perSide[vetoed[i][0]] || []).length));
   box.append(h("span", { class: "then", text: "仍可核验与锁定追踪，用于了解责任与补偿如何变化。" }));
 }
 
@@ -440,8 +452,8 @@ function deckRowsView(rows) {
 }
 
 const FIG_TIP = {
-  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于比较两侧；金额、费用与市场估价在核验路径的 Q2。",
-  "到期前事件": "合约有效期内已排期的美国宏观发布；时间与过滤在核验路径的 D4。",
+  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于比较两侧；金额、费用、市场估价与保留价在核验路径的价格读数。",
+  "到期前事件": "合约有效期内已排期的美国宏观发布；时间与过滤在核验路径的事件读数。",
 };
 function fig(value, label, cls = "", sub = "") {
   return h("div", { class: `fig ${cls}`, title: FIG_TIP[label] || null }, h("div", { class: "v", text: value }), h("div", { class: "k", text: label }),
@@ -680,7 +692,7 @@ function openInquiryAudit(session, file) {
   state.iq.mode = "inquiry";
   state.iq.pin = { side: session.side, contract: session.contract, key };
   if (file) state.iq.file[key] = file;
-  state.iq.reveal.add(session.verification_id);   // reached from the audit step: D0–Q2 were read first
+  state.iq.reveal.add(session.verification_id);   // reached from the audit step: the steps before it were read first
   state.iq.q = null; state.iq.ref = null;
   select(session.side);
   $("audit-h")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -702,12 +714,15 @@ function renderDecision() {
   get(state.view, "manual_review_state.inflight"), Math.floor(cooldownLeft() / 60_000), Math.floor(Date.now() / 60_000),
   get(state.view, "decision_path.error_type"), get(state.view, "decision_path.unreadable_sessions"),
   session?.au_mode ? iqEntry(session.contract, { summary: true })?.at : null]);
-  // fetched once Q2 is open (shown only when AU is), so the audit step's opening records the sheet on screen
-  if (session?.au_mode && session.opened && ("Q2" in session.opened || "AU" in session.opened)) ensureInquiry(session.contract, { summary: true });
+  // fetched once the conclusion gate (P, or Q2 in older sessions) is open (shown only when AU is),
+  // so the audit step's opening records the sheet on screen
+  const gate = session ? gateStepId(session) : null;
+  if (session?.au_mode && session.opened && ((gate && gate in session.opened) || "AU" in session.opened)) ensureInquiry(session.contract, { summary: true });
   if (key === dp.drawn) return;
   dp.drawn = key;
   renderDecisionView(box, {
     session, overview: get(state.view, "decision_path"), busy: dp.busy, error: dp.error, confirm: dp.confirm,
+    clearError: () => { dp.error = null; },
     canAct: state.session.authenticated && !FIXTURE,
     replaced: session && m?.snap && !same ? `${(m.shortName || "").split("-")[1] || ""} 卖 ${usd(m.short)} / 买 ${usd(m.long)}` : null,
     extras: session ? { D2: same ? distanceRule(same) : null, AU: auditExtra(session) } : null,
@@ -719,7 +734,7 @@ function renderDecision() {
     onRefresh: () => dpPost(`/${session.verification_id}/refresh`, {}, "refresh"),
     onAskLock: () => { dp.confirm = "lock"; renderDecision(); },
     onCancel: () => { dp.confirm = null; renderDecision(); },
-    onConclude: (choice) => dpConclude(choice),
+    onConclude: (choice, extra) => dpConclude(choice, extra),
     onClose: () => { dp.session = null; dp.error = null; dp.confirm = null; renderSides(); },
     onOpen: (id) => openVerification(id),
     onJump: (target, side) => { if (target === "map-h" || target === "audit-h") select(side); $(target)?.scrollIntoView({ behavior: "smooth", block: "start" }); },
@@ -804,19 +819,23 @@ async function dpPost(path, body, kind) {
   return result;
 }
 
-async function dpConclude(choice) {
+async function dpConclude(choice, extra = {}) {
   const dp = state.dp;
   const session = dp.session;
   if (dp.busy || !session) return;  // one conclusion at a time (the server refuses a second as well)
   dp.busy = choice; dp.error = null; renderDecision();
   try {
     const res = await api.post(`/decision-path/${session.verification_id}/conclude`,
-      { choice, ...(choice === "lock" ? { idempotency_key: idempotencyKey("ui-dp-lock") } : {}) });
+      { choice, ...(choice === "lock" ? { idempotency_key: idempotencyKey("ui-dp-lock") } : {}),
+        ...(choice === "lock" && extra?.limit ? { limit: extra.limit } : {}) });
     dp.session = res.session; dp.confirm = null;
     const id = get(res, "lock.episode.episode_id");
     if (id) { state.lock.id = id; notice(res.lock.created ? "核验结论：已锁定，在“锁定追踪”查看。" : "该合同已在追踪中，核验已关联到它。"); }
     else notice(choice === "watch" ? "已记为继续观察，可从保单卡“继续核验”回来。" : "核验结论已记录：不承保。");
-  } catch (err) { authFailed(err); dp.error = `结论未记录：${errorText(err)}`; }
+  } catch (err) {
+    authFailed(err);
+    dp.error = `结论未记录：${err?.body?.code === "bad_conclusion_request" ? "挂单价或有效时长不合法" : errorText(err)}`;
+  }
   dp.busy = null;
   await load(true);
   renderDecision();
@@ -970,7 +989,7 @@ function renderInquiryAudit(box) {
   const before = (loaded && loaded.status === "open" && !("AU" in (loaded.opened || {}))) || !!elsewhere;
   if (before && vid && !state.iq.reveal.has(vid)) {
     box.append(h("div", { class: "pad" }, pinNote,
-      h("p", { class: "muted", text: "这张合约的核验正在进行，还没到审计步。先读完 D0–Q2 再看提问单，可避免被模型的假设锚定。" }),
+      h("p", { class: "muted", text: "这张合约的核验正在进行，还没到审计步。先读完审计之前的各步再看提问单，可避免被模型的假设锚定。" }),
       h("button", { class: "btn secondary", type: "button", onclick: () => { state.iq.reveal.add(vid); renderAudit(); } }, "仍然展开")));
     return;
   }
@@ -1004,9 +1023,9 @@ function programAudit(m) {
     box.append(h("h4", { text: "程序读法" }));
     box.append(h("dl", { class: "notes" }, ...notes.flatMap((n) => [h("dt", { text: NOTE[n.kind] || "说明" }), h("dd", { text: humanize(n.text_cn) })])));
   }
-  // The program's two-question readings live in the Decision Path steps (D1–Q2); WPEM no
+  // The program's two-question readings live in the Decision Path steps; WPEM no
   // longer runs on every refresh, so they are not repeated here.
-  box.append(h("p", { class: "muted small" }, "两问的程序读数见核验路径各步（D1 责任至 Q2 风险补偿）。",
+  box.append(h("p", { class: "muted small" }, "两问（风险质量与风险补偿）的程序读数见核验路径各步。",
     h("a", { href: "#decision-h", class: "dp-jump", onclick: (e) => { e.preventDefault(); $("decision-h").scrollIntoView({ behavior: "smooth", block: "start" }); } }, "核验路径")));
   return box;
 }

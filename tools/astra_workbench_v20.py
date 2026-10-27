@@ -42,6 +42,7 @@ if __package__:
     from . import astra_cross_asset_v1 as cross_asset
     from . import astra_event_calendar_v1 as event_calendar
     from . import astra_expiry_gamma_v1 as expiry_gamma
+    from . import astra_lock_levels_v1 as lock_levels
     from . import astra_decision_path_v1 as decision_path
     from . import astra_decision_path_store_v1 as decision_path_store
     from . import astra_decision_path_narrative_v1 as decision_path_narrative
@@ -69,6 +70,7 @@ if __package__:
     from . import astra_session_clock_v1 as session_clock
     from . import astra_entry_warnings_v1 as entry_warnings
     from . import astra_candidate_readings_v1 as candidate_readings
+    from . import astra_unsuitable_v1 as unsuitable
     from . import astra_path_stats_v1 as path_stats
     from . import astra_inquiry_view_v1 as inquiry_view
     try:   # optional: a missing research module must never stop the workbench
@@ -87,6 +89,7 @@ else:  # direct CLI execution from tools/
     import astra_cross_asset_v1 as cross_asset
     import astra_event_calendar_v1 as event_calendar
     import astra_expiry_gamma_v1 as expiry_gamma
+    import astra_lock_levels_v1 as lock_levels
     import astra_decision_path_v1 as decision_path
     import astra_decision_path_store_v1 as decision_path_store
     import astra_decision_path_narrative_v1 as decision_path_narrative
@@ -114,6 +117,7 @@ else:  # direct CLI execution from tools/
     import astra_session_clock_v1 as session_clock
     import astra_entry_warnings_v1 as entry_warnings
     import astra_candidate_readings_v1 as candidate_readings
+    import astra_unsuitable_v1 as unsuitable
     import astra_path_stats_v1 as path_stats
     import astra_inquiry_view_v1 as inquiry_view
     try:   # optional: a missing research module must never stop the workbench
@@ -3067,7 +3071,60 @@ class AstraWorkbench:
             cause = (mine.get("lock_availability") or {}).get("error_type")
             raise WorkbenchError(409, "locked_packet_unavailable" + (":" + cause if cause else ""),
                                  "original contract packet did not validate")
-        return point
+        return self._with_expiry_levels(point)
+
+    def _with_expiry_levels(self, point: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The point with this expiry's price structure (lock_levels@0.1) beside its frozen
+        snapshot, aged against the point's own clock so the same point stays the same point.
+        Never raises: without it the point is stored as before."""
+        try:
+            candidate = point.get("candidate")
+            if not isinstance(candidate, Mapping) or isinstance(candidate.get("expiry_levels"), Mapping):
+                return point
+            snapshot = candidate.get("snapshot") or {}
+            at = int(point.get("recorded_at_ms") or snapshot["market"]["valuation_ts_ms"])
+            expiry = (snapshot.get("contract") or {}).get("expiry_ms")
+            profile = expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=at)
+            # a profile computed well after this point is not what the market showed then
+            if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at + lock_levels.STALE_MS:
+                profile = None
+            facts = (snapshot.get("fact_context") or {}).get("market_facts") or {}
+            levels = lock_levels.compact(profile, (facts.get("space_context") or {}).get("gex_info"),
+                                         (snapshot.get("data_identity") or {}).get("btc_map"),
+                                         now_ms=at, expiry_ms=expiry)
+            return {**point, "candidate": {**candidate, "expiry_levels": levels}}
+        except Exception:
+            return point
+
+    def _lock_ready_point(self, point: Mapping[str, Any]) -> Mapping[str, Any]:
+        """The point a lock takes as t0. Since the refresh composes WPEM only for contracts
+        already locked (2026-10-15), a displayed point lacks the program's questions and research
+        context that every later sample has; compose them now for exactly this snapshot, from
+        the raw payload in its own packet. Packet, snapshot and identity stay as displayed. A
+        failed composition records nothing and never blocks the lock."""
+        candidate = point.get("candidate") if isinstance(point, Mapping) else None
+        if isinstance(candidate, Mapping) and "current_questions" not in candidate and self.config.wpem_enabled:
+            snapshot_id = (candidate.get("snapshot") or {}).get("snapshot_id")
+            try:
+                raw = (point.get("packet") or {}).get("raw_payload")
+                with self._view_lock:
+                    cached = self._current_view
+                local_view = self._wpem_view_for_candidate(cached, candidate)
+                with self._wpem_lock:
+                    self._wpem_pinned.add(snapshot_id)
+                try:
+                    self._attach_wpem(local_view, self.clock_ms(), prune=False,
+                                      pending={snapshot_id: deepcopy(raw)} if isinstance(raw, Mapping) else {},
+                                      only={snapshot_id})
+                finally:
+                    with self._wpem_lock:
+                        self._wpem_pinned.discard(snapshot_id)
+                composed = self._candidate_from_view(local_view, candidate)
+                if composed.get("snapshot") == candidate.get("snapshot") and "current_questions" in composed:
+                    point = {**point, "candidate": composed}
+            except Exception:
+                pass
+        return self._with_expiry_levels(point)
 
     def _refresh_locked_candidates(self, view: dict[str, Any], now_ms: int, *, from_refresh: bool = True) -> None:
         """Reuse the collector and exact contract; page reads never come here."""
@@ -3124,6 +3181,7 @@ class AstraWorkbench:
                 if point is None:
                     point = self._capture_locked_point(episode, view, self.clock_ms())
                     captured[episode["candidate_id"]] = point
+                point = self._with_expiry_levels(point)
                 stored = self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
                 if (stored or {}).get("stale_point") and not from_refresh:
                     # the refreshed point predates this policy's last sample: take a fresh one
@@ -3361,9 +3419,22 @@ class AstraWorkbench:
                                 latest_point_id: str | None = None) -> dict[str, Any]:
         if not include_raw:
             with self._locked_detail_lock:
-                return self._locked_candidate_reading(episode_id)
-        return self._locked_candidate_projection(episode_id, include_raw=include_raw,
-            baseline_point_id=baseline_point_id, latest_point_id=latest_point_id)
+                result = self._locked_candidate_reading(episode_id)
+        else:
+            result = self._locked_candidate_projection(episode_id, include_raw=include_raw,
+                baseline_point_id=baseline_point_id, latest_point_id=latest_point_id)
+        result["verification_commitments"] = self._lock_commitments(episode_id)
+        return result
+
+    def _lock_commitments(self, episode_id: str) -> dict[str, Any] | None:
+        """Limit price and plan recorded by the Decision Path verification this lock came from;
+        None for a lock without one. A read failure never breaks the detail."""
+        try:
+            reader = getattr(self.decision_paths, "commitments", None)
+            vid = self.decision_paths.verification_for_episode().get(episode_id) if reader else None
+            return reader(vid) if vid else None
+        except Exception:
+            return None
 
     def record_action(self, kind: str, result: Mapping[str, Any] | None = None, *,
                       request: Mapping[str, Any] | None = None, error_code: str | None = None) -> None:
@@ -3845,8 +3916,19 @@ class AstraWorkbench:
                 raise WorkbenchError(409, "lock_candidate_mismatch", "snapshot does not belong to selected contract")
             if self.clock_ms() >= point["candidate"]["snapshot"]["contract"]["expiry_ms"]:
                 raise WorkbenchError(409, "contract_expired", "expired contract cannot start regular observation")
-            result = self.locked_candidates.lock(point, request_key=request_key, now_ms=self.clock_ms(),
-                                                 new_reference=new_reference, source_episode_id=source_episode_id)
+            point = self._lock_ready_point(point)
+            try:
+                result = self.locked_candidates.lock(point, request_key=request_key, now_ms=self.clock_ms(),
+                                                     new_reference=new_reference, source_episode_id=source_episode_id)
+            except locked_store.LockedCandidateError as exc:
+                # the lock-time composition makes every attempt a new point: a retry of the same key
+                # that raced the first one gets the first result, not request_key_reused
+                existing = self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
+                    snapshot_id=snapshot_id, new_reference=new_reference,
+                    source_episode_id=source_episode_id) if exc.code == "request_key_reused" else None
+                if existing is None:
+                    raise
+                result = existing
         except locked_store.LockedCandidateError as exc:
             raise WorkbenchError(409, exc.code, exc.code) from exc
         return {**result, "llm_call_count": 0, "execution_allowed": False}
@@ -4205,12 +4287,18 @@ class AstraWorkbench:
             expiry_ms = ((item.get("snapshot") or {}).get("contract") or {}).get("expiry_ms")
             item["readings"] = candidate_readings.build(item, now_ms=now_ms, by_expiry=by_expiry, gex_info=gex,
                                                         realized_vol=realized,
-                                                        history=self._cycle_start_rows(expiry_ms, now_ms))
+                                                        history=self._cycle_start_rows(expiry_ms, now_ms),
+                                                        books=self._book_tops(item))
             try:
                 item["entry_warnings"] = _entry_warnings_for(item, now_ms, gex, by_expiry, others, history,
                                                              distance_in_moves=_readings_dim(item))
             except Exception as exc:
                 item["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
+            # what makes this contract unsuitable now (vetoes and cautions), the same builders as V
+            try:
+                item["unsuitable"] = unsuitable.card(item)
+            except Exception as exc:
+                item["unsuitable"] = {"schema": unsuitable.SCHEMA, "error_type": type(exc).__name__}
 
     @staticmethod
     def _attach_exogenous_events(view: dict[str, Any], now_ms: int) -> None:
@@ -4319,7 +4407,8 @@ class AstraWorkbench:
                             out, now_ms=now_ms, by_expiry=by_expiry, gex_info=gex,
                             realized_vol=(view.get("expiry_gamma") or {}).get("realized_vol"),
                             history=self._cycle_start_rows(((out.get("snapshot") or {}).get("contract") or {})
-                                                           .get("expiry_ms"), now_ms))
+                                                           .get("expiry_ms"), now_ms),
+                            books=self._book_tops(out))
                 if need_warnings:
                     if isinstance(same.get("entry_warnings"), Mapping):
                         out["entry_warnings"] = deepcopy(same["entry_warnings"])
@@ -4346,22 +4435,32 @@ class AstraWorkbench:
             clock = session_clock.reading(now_ms, expiry if isinstance(expiry, int) else None)
         except Exception:
             clock = None
-        # the protection leg's top of book from the frozen capture (Q2: discount a wide wing, docs/opus/20)
-        top = None
-        try:
-            sid = (item.get("snapshot") or {}).get("snapshot_id")
-            with self._view_lock:
-                point = self._lockable_points.get(sid) if sid else None
-            book = ((((point or {}).get("packet") or {}).get("raw_payload") or {}).get("market") or {}).get("long_book") or {}
-            top = {"bid": book.get("best_bid_price"), "ask": book.get("best_ask_price")} if book else None
-        except Exception:
-            top = None
+        # both legs' top of book from the frozen capture (Q2: discount a wide wing, docs/opus/20;
+        # P: the two-leg mid against the reservation price)
+        tops = self._book_tops(item) or {}
         return {"at_ms": now_ms, "candidate": item, "market_facts": fact.get("market_facts") or {},
                 "fmz_status": fact.get("status"), "fmz_age_ms": fact.get("age_ms"),
                 "expiry_walls": expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=now_ms),
                 "realized_vol": (self._expiry_gamma or {}).get("realized_vol"),
                 "cross_window": window, "transitions": self.recent_transitions(limit=30),
-                "session_clock": clock, "long_book_top": top}
+                "session_clock": clock, "long_book_top": tops.get("long"), "short_book_top": tops.get("short")}
+
+    def _book_tops(self, item: Mapping[str, Any]) -> dict[str, Any] | None:
+        """{"short": {bid, ask}, "long": {bid, ask}} in BTC from the frozen capture of this
+        candidate's snapshot; a leg without a book is left out, None when the capture is gone."""
+        try:
+            sid = (item.get("snapshot") or {}).get("snapshot_id")
+            with self._view_lock:
+                point = self._lockable_points.get(sid) if sid else None
+            market = (((point or {}).get("packet") or {}).get("raw_payload") or {}).get("market") or {}
+            out = {}
+            for leg in ("short", "long"):
+                book = market.get(f"{leg}_book") or {}
+                if book:
+                    out[leg] = {"bid": book.get("best_bid_price"), "ask": book.get("best_ask_price")}
+            return out or None
+        except Exception:
+            return None
 
     _case_file_lock = threading.Lock()
 
@@ -4394,6 +4493,10 @@ class AstraWorkbench:
                 item = self._dp_item(point.get("candidate") or {}, now)
             try:
                 dp_reading = decision_path.build(self._dp_frame(self._dp_item(item, now), now))
+                # the case keeps the component steps only (D0..H, AU): the composites of
+                # dp-2026-10-27.1 restate them, and the inquirer reads the case as it is
+                dp_reading["steps"] = {k: v for k, v in (dp_reading.get("steps") or {}).items()
+                                       if k in decision_path.COMPONENT_IDS or k == "AU"}
             except Exception:
                 dp_reading = None
             asof = int((snapshot.get("market") or {}).get("valuation_ts_ms") or now)
@@ -4566,11 +4669,16 @@ class AstraWorkbench:
         return point
 
     def decision_path_conclude(self, vid: str, choice: str, request_key: str, *,
-                               authorization: str | None) -> dict[str, Any]:
-        """lock / decline / watch. Lock creates the tracking lock now (t0 = conclusion)."""
+                               authorization: str | None, limit: Any = None) -> dict[str, Any]:
+        """lock / decline / watch. Lock creates the tracking lock now (t0 = conclusion); `limit` is
+        the user's own limit price kept with the conclusion (a record, never an order)."""
         self._dp_require(authorization)
         if choice not in decision_path.CONCLUSIONS:
             raise WorkbenchError(400, "bad_conclusion", "choice must be lock, decline or watch")
+        try:   # before any lock exists: a bad limit must not leave a lock without its conclusion
+            decision_path_store.check_limit(choice, limit)
+        except decision_path_store.DecisionPathError as exc:
+            raise self._dp_error(exc) from exc
         session = self.decision_path_session(vid)
         if session["status"] != decision_path_store.OPEN:
             raise WorkbenchError(409, "verification_closed", "verification is closed")
@@ -4591,13 +4699,15 @@ class AstraWorkbench:
                 point = self._dp_lock_point(session, now)
                 if point["candidate"]["snapshot"]["candidate_id"] != session["candidate_id"]:
                     raise WorkbenchError(409, "lock_candidate_mismatch", "snapshot does not belong to verified contract")
+                point = self._lock_ready_point(point)
                 try:
                     lock_result = self.locked_candidates.lock(point, request_key=request_key, now_ms=self.clock_ms())
                 except locked_store.LockedCandidateError as exc:
                     raise WorkbenchError(409, exc.code, exc.code) from exc
                 episode_id = (lock_result.get("episode") or {}).get("episode_id")
             session = self.decision_paths.conclude(vid, choice, now_ms=self.clock_ms(), episode_id=episode_id,
-                                                   lock_created=None if lock_result is None else bool(lock_result.get("created")))
+                                                   lock_created=None if lock_result is None else bool(lock_result.get("created")),
+                                                   limit=limit)
         except decision_path_store.DecisionPathError as exc:
             raise self._dp_error(exc) from exc
         finally:
@@ -5290,6 +5400,7 @@ class AstraWorkbench:
                         point = self._lockable_points.get(item["snapshot"]["snapshot_id"])
                         if point is None:
                             raise WorkbenchError(409, "locked_packet_unavailable", "current locked input did not validate")
+                        point = self._with_expiry_levels(point)
                         appended = self.locked_candidates.append(locked_episode_id, point, now_ms=self.clock_ms())
                         if appended["latest_snapshot_id"] != item["snapshot"]["snapshot_id"]:
                             raise WorkbenchError(409, "locked_sampling_paused", "current locked input was not retained")
@@ -6129,7 +6240,8 @@ def make_handler(workbench: AstraWorkbench):
                             choice=body.get("choice"), note=body.get("note"), reasons=body.get("reasons"))
                     else:
                         result = workbench.decision_path_conclude(dp_match.group(1), str(body.get("choice") or ""),
-                            str(body.get("idempotency_key") or ""), authorization=access.authorization_for_workbench)
+                            str(body.get("idempotency_key") or ""), authorization=access.authorization_for_workbench,
+                            limit=body.get("limit"))
                     workbench.invalidate_view_body()
                     self._json(200, result)
                     if not (dp_match and dp_match.group(2) == "step"):

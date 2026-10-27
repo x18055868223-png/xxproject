@@ -493,3 +493,130 @@ def test_bound_fee_covers_the_partial_protection_sale():
     assert fee == pytest.approx(expected)
     payload["market"]["long_book"]["bids"] = [["bad", 1]]
     assert followup._close_fee_bound({"quantity_btc": quantity}, payload["metadata"], payload["market"]) is None
+
+
+# ── lock t0 without a composed WPEM layer (2026-10-15 .. 10-27) and this expiry's levels ──
+from tools import astra_lock_levels_v1 as lock_levels  # noqa: E402
+from tools import astra_wpem_product_review_v1 as wpem_review  # noqa: E402
+
+MARKET_FACTS = {
+    "volume_price": {"direction": "Bearish", "tmv_blend": -0.5, "tmv_state": "bearish_bias",
+                     "micro_flow": {"combined": {"direction": "bearish", "data_ready": True, "score": -0.3}},
+                     "funding": {"last_rate": 0.0001, "effect": "neutral"}},
+    "skew": {"data_state": "OK", "rr_blend": -0.03},
+    "gamma_regime": {"regime": "TRANSITION", "data_state": "OK"},
+    "space_gate": {"state": "STRUCTURE_BLOCKED"},
+    "macro_pressure": {"macro_score": -0.15, "data_status": "full_live"},
+}
+
+
+def _with_market_facts(point, facts=MARKET_FACTS):
+    for snapshot in (point["candidate"]["snapshot"], point["packet"]["snapshot"]):
+        snapshot["fact_context"]["market_facts"] = copy.deepcopy(facts)
+    return point
+
+
+def _never_composed(point):
+    for key in ("current_questions", "wpem_summary", "wpem_evidence"):
+        point["candidate"].pop(key, None)
+    return point
+
+
+def _native_items(facts=MARKET_FACTS):
+    """Research-context items as WPEM writes them, with the active flow qualified as unqualified."""
+    out = []
+    for key, _, ids, asset, source_ref, reader in followup._CONTEXT_SPECS:
+        item_id, item_asset = (ids[-1], asset + "_unqualified") if key == "context.active_flow" else (ids[0], asset)
+        out.append({"id": item_id, "source_asset": item_asset, "source_ref": source_ref, "readings": reader(facts),
+                    "text_cn": "原读数", "source_clock_status": "RETAINED", "source_observed_ms": T})
+    return out
+
+
+def test_never_composed_t0_recomputes_context_from_market_facts_and_flags_it():
+    baseline = _never_composed(_with_market_facts(point_from_payload(payload_with_components(), point_id="t0")))
+    latest = _with_market_facts(point_from_payload(payload_with_components(), point_id="t1"))
+    latest["candidate"]["current_questions"]["research_context"] = {"items": _native_items()}
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []},
+                                     now_ms=T, include_raw=False)
+    for key in ("context.tmv_price_path", "context.funding", "context.skew", "context.active_flow",
+                "context.option_space", "context.macro"):
+        row = row_by_key(output, key)
+        assert row["t0"]["compat_backfill_applied"] is True, key
+        assert row["t0"]["backfill_source"] == "snapshot.fact_context.market_facts"
+        assert "compat_backfill_applied" not in row["t1"]           # the native end stays native
+        assert row["status"] == "unchanged", (key, row["status"], row["change_cn"])
+    flow = row_by_key(output, "context.active_flow")
+    assert flow["t0"]["value"]["combined"]["direction"] == "bearish"
+    assert flow["t0"]["value"] == wpem_review._context_flow_readings(MARKET_FACTS)
+    # rows only a composition produces: not generated at lock, never "appeared after lock"
+    for key in ("opinion.q1.direct_refs", "opinion.q2.direct_refs"):
+        row = row_by_key(output, key)
+        assert row["t0"] is None and row["status"] == "not_recorded_at_lock" and "锁定时未生成" in row["change_cn"]
+    assert all(r["status"] != "new_fact" for r in output["rows"] if r["group"] in {"context", "opinion"})
+
+
+def test_recomputed_context_reports_a_content_change_without_a_source_clock():
+    baseline = _never_composed(_with_market_facts(point_from_payload(payload_with_components(), point_id="t0")))
+    moved = copy.deepcopy(MARKET_FACTS)
+    moved["volume_price"]["micro_flow"]["combined"]["direction"] = "bullish"
+    latest = _with_market_facts(point_from_payload(payload_with_components(), point_id="t1"), moved)
+    latest["candidate"]["current_questions"]["research_context"] = {"items": _native_items(moved)}
+    row = row_by_key(followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []},
+                                             now_ms=T), "context.active_flow")
+    assert row["status"] == "changed" and "来源时点未留存" in row["change_cn"]
+    assert row["t0"]["asof_ms"] is None and row["t1"]["value"]["combined"]["direction"] == "bullish"
+
+
+def test_native_active_flow_unqualified_item_fills_the_active_flow_row():
+    baseline = _with_market_facts(point_from_payload(payload_with_components(), point_id="t0"))
+    latest = _with_market_facts(point_from_payload(payload_with_components(), point_id="t1"))
+    for point in (baseline, latest):
+        point["candidate"]["current_questions"]["research_context"] = {"items": _native_items()}
+    row = row_by_key(followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []},
+                                             now_ms=T), "context.active_flow")
+    assert row["t0"] and row["t1"] and "compat_backfill_applied" not in row["t0"]
+    assert row["status"] == "same_clock"
+
+
+def _levels(**walls):
+    profile = {"expiry": "30OCT26", "computed_at_ms": T, "walls": walls}
+    return lock_levels.compact(profile, {"max_pain_target_expiry": "30OCT26", "max_pain_price": 96000.0},
+                               {"reference_pool": [{"role": "EFFECTIVE_FLIP", "raw_price": 97500.0}]}, now_ms=T)
+
+
+def test_levels_rows_compare_lock_time_with_latest_and_measure_to_the_short_strike():
+    baseline = point_from_payload(payload_with_components(), point_id="t0")
+    latest = point_from_payload(payload_with_components(), point_id="t1")
+    baseline["candidate"]["expiry_levels"] = _levels(pin=98000.0, gamma_put=97000.0)
+    latest["candidate"]["expiry_levels"] = _levels(pin=99000.0, gamma_put=97000.0)
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []},
+                                     now_ms=T + 1)
+    rows = {r["key"]: r for r in output["rows"] if r["group"] == "levels"}
+    assert set(rows) == {key for key, *_ in followup._LEVEL_SPECS}
+    assert rows["levels.pin"]["t0"]["value"] == 98000.0 and rows["levels.pin"]["t1"]["value"] == 99000.0
+    assert rows["levels.pin"]["status"] == "same_clock"       # both read from the same profile clock
+    assert rows["levels.max_pain_this"]["t0"]["value"] == 96000.0
+    strike = baseline["candidate"]["snapshot"]["contract"]["short_strike_usd"]
+    assert rows["levels.flip"]["to_short_pct"]["t1"] == pytest.approx((97500.0 - strike) / strike * 100)
+    assert rows["levels.oi_call"]["t0"]["value"] is None       # missing stays missing
+
+
+def test_levels_absent_at_lock_are_not_recorded_and_absent_everywhere_add_no_rows():
+    baseline = point_from_payload(payload_with_components(), point_id="t0")
+    latest = point_from_payload(payload_with_components(), point_id="t1")
+    plain = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []}, now_ms=T)
+    assert not [r for r in plain["rows"] if r["group"] == "levels"]
+    latest["candidate"]["expiry_levels"] = _levels(pin=99000.0)
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []}, now_ms=T)
+    row = row_by_key(output, "levels.pin")
+    assert row["t0"] is None and row["t1"]["value"] == 99000.0 and row["status"] == "not_recorded_at_lock"
+
+
+def test_series_metrics_carry_the_compact_levels_only_when_present():
+    baseline = point_from_payload(payload_with_components(), point_id="t0")
+    latest = point_from_payload(payload_with_components(), point_id="t1")
+    assert "levels" not in followup.point_metrics(latest, baseline)
+    latest["candidate"]["expiry_levels"] = _levels(pin=99000.0, gamma_put=97000.0)
+    levels = followup.point_metrics(latest, baseline)["levels"]
+    assert levels == {"pin": 99000.0, "gamma_put": 97000.0, "gamma_call": None, "oi_put": None, "oi_call": None,
+                      "max_pain_this": 96000.0, "flip": 97500.0}

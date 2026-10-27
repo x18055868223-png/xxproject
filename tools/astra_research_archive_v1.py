@@ -540,7 +540,7 @@ def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list
             continue
         detail = {k: row.get(k) for k in ("conclusion", "verdicts_start", "verdicts_now", "q1_items", "marks",
                                           "settled_after", "entry_after_fee_btc", "outcome", "path_version",
-                                          "au_mode", "step_context")
+                                          "au_mode", "step_context", "v_items", "limit", "plan")
                   if row.get(k) is not None}
         events.append({"source": "decision_path", "contract_key": key, "side": contract.get("side"),
                        "ref_id": row["verification_id"], "event": row.get("event"), "at_ms": row["at_ms"],

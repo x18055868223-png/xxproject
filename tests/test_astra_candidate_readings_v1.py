@@ -242,3 +242,22 @@ def test_the_card_and_d2_read_the_same_ratio():
         g = dp._geometry(frame)
         move = build(it, by_expiry=rows, gex_info=gex)["expected_move"]
         assert move["iv_pct"] == pytest.approx(g["iv"]) and move["distance_in_moves"] == pytest.approx(g["ratio"])
+
+
+def test_pricing_restates_the_market_test_as_a_reservation_price():
+    # mark spread 0.0022 + fee 0.0003 = 0.0025; credit 0.0020 -> 0.0005 short at the bid (= -edge)
+    p = build(item())["pricing"]
+    assert set(p) >= set(R.RESERVATION_KEYS)
+    assert p["reservation_btc"] == pytest.approx(0.0025) and p["reservation_usd"] == pytest.approx(250.0)
+    assert p["bid_gap_usd"] == pytest.approx(-p["edge_usd"])
+    assert p["mid_credit_btc"] is None and p["mid_gap_btc"] is None and p["reservation_reliable"] is True
+    books = {"short": {"bid": 0.0028, "ask": 0.0034}, "long": {"bid": 0.0006, "ask": 0.0010}}
+    with_books = build(item(), books=books)["pricing"]
+    assert with_books["mid_credit_btc"] == pytest.approx(0.0031 - 0.0008)
+    assert with_books["mid_gap_usd"] == pytest.approx((0.0025 - 0.0023) * SPOT)
+    assert with_books["long_spread_to_mid"] == pytest.approx(0.5) and with_books["reservation_reliable"] is False
+    # every existing field is unchanged by the books
+    assert {k: v for k, v in with_books.items() if k not in R.RESERVATION_KEYS} == \
+        {k: v for k, v in p.items() if k not in R.RESERVATION_KEYS}
+    no_marks = build(item(marks={}))["pricing"]
+    assert no_marks["reservation_btc"] is None and no_marks["reservation_reliable"] is False

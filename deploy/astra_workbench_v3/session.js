@@ -178,8 +178,35 @@ function noteLine(note) {
   return h("p", { class: "ew-note small warn-text", style: "margin: 4px 0 8px", text: `时段提示（不是否决）：${note.reason}` });
 }
 
+// unsuitable@0.1 (tools/astra_unsuitable_v1.card): vetoes and cautions with their numbers, why and
+// what clears them. "No item" only means none of these checks fired; it is never a reason to trade.
+export function unsuitableModel(candidate) {
+  const u = candidate && candidate.unsuitable;
+  if (!u || typeof u !== "object" || u.error_type || !Array.isArray(u.items)) return null;
+  const items = u.items.filter((i) => i && typeof i === "object" && i.title_cn);
+  const vetoes = items.filter((i) => i.kind === "veto");
+  const cautions = items.filter((i) => i.kind !== "veto");
+  const unknown = (u.unknown_cn || []).filter(Boolean).map(String);
+  // the checks the card runs: data, each entry warning, the buffer, and the two price checks when priced
+  const w = warningModel(candidate);
+  const pricing = candidate.readings?.pricing;
+  const priced = !!pricing && typeof pricing === "object" && "reservation_btc" in pricing;
+  const total = 1 + (w.available && w.total ? w.total : 1) + 1 + (priced ? 2 : 0);
+  return { vetoes, cautions, items: [...vetoes, ...cautions], unknown, total, ran: Math.max(0, total - unknown.length) };
+}
+
+function unsuitableItem(i) {
+  return h("li", { class: `uv-item ${i.kind === "veto" ? "veto" : "caution"}`, title: i.basis ? `依据：${i.basis}` : null },
+    h("b", { class: "uv-title", text: i.title_cn }),
+    i.evidence_cn ? h("span", { class: "uv-evidence num", text: i.evidence_cn }) : null,
+    i.why_cn ? h("span", { class: "uv-why", text: i.why_cn }) : null,
+    i.clears_cn ? h("span", { class: "uv-clears muted", text: `解除条件：${i.clears_cn}` }) : null);
+}
+
 export function warningBlock(candidate, opts = {}) {
   const m = warningModel(candidate);
+  const u = unsuitableModel(candidate);
+  if (u) return unsuitableBlock(candidate, m, u, opts);
   if (!m.available) return h("p", { class: "ew-none muted small", text: m.text });
   const note = noteLine(m.note);
   const quiet = (p) => (note ? h("div", { class: "ew-quiet" }, p, note) : p);
@@ -205,5 +232,36 @@ export function warningBlock(candidate, opts = {}) {
       h("b", { text: w.label }), h("span", { class: "ew-reason", text: w.reason || "" }),
       h("span", { class: "ew-evidence num", text: w.evidence })))),
     gap ? h("p", { class: "small muted", text: `另有 ${m.unknown.length} 项数据不足：${m.unknown.map((w) => w.label).join("、")}。` }) : null,
+    note, more);
+}
+
+/** The card's unsuitable block: vetoes first and most prominent, then cautions, the checks that
+ * could not run, the busy-window note, and the entry warnings' thresholds folded below. */
+function unsuitableBlock(candidate, m, u, opts) {
+  const note = m.available ? noteLine(m.note) : null;
+  const unknownLine = u.unknown.length ? `${u.unknown.length} 项无法检查：${u.unknown.join("、")}` : "";
+  if (!u.items.length) {
+    const p = h("p", { class: "ew-none muted small",
+      text: `未见否决项（这不是做的理由）：已检查 ${u.ran} 项${unknownLine ? `，${unknownLine}` : ""}` });
+    return note ? h("div", { class: "ew-quiet" }, p, note) : p;
+  }
+  const veto = u.vetoes.length > 0;
+  const head = veto ? `不适合做 · 否决 ${u.vetoes.length} 项${u.cautions.length ? ` · 提醒 ${u.cautions.length} 项` : ""}`
+    : `提醒 ${u.cautions.length} 项`;
+  let more = null;
+  if (m.available && m.total) {
+    const key = `ew-${candidate.side}`;
+    more = h("details", { class: "ew-more", open: opts.isOpen ? opts.isOpen(key) : false }, h("summary", { text: "阈值与全部检查项" }),
+      h("ul", {}, ...m.items.map((w) => h("li", {},
+        h("b", { text: `${w.label}：${w.triggered === true ? "触发" : w.triggered === false ? "未触发" : "数据不足"}` }),
+        h("span", { class: "small", text: ` ${w.reason || ""}` }),
+        h("span", { class: "small muted", text: ` 阈值：${Object.entries(w.threshold || {}).map(([k, v]) => `${k} ${v}`).join("；")}` })))));
+    if (opts.keepOpen) opts.keepOpen(more, key);
+  }
+  return h("div", { class: `entry-warnings uv ${veto ? "veto" : "caution"}`, onclick: (e) => e.stopPropagation() },
+    h("div", { class: "ew-head" }, h("b", { text: head }),
+      veto ? h("span", { class: "ew-tag", text: "阈值未经验证，只作否决" }) : null),
+    h("ul", { class: "ew-list uv-list" }, ...u.items.map(unsuitableItem)),
+    unknownLine ? h("p", { class: "small muted uv-unknown", text: `${unknownLine}。` }) : null,
     note, more);
 }

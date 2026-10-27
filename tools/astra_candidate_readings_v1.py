@@ -8,6 +8,8 @@
 - pricing: net credit against the market's own price of the spread (the two legs' marks),
   split into the bid/ask cost and the fee (recoverable by execution or not), the skew cost of
   the protection leg (structural), and the worst case per unit of net credit (docs/opus/23 ①④).
+- pricing also restates the market-estimate test as a price (unsuitable.reservation): the reservation
+  price (mark spread + fee) against the credit at the bid and, with both legs' books, at the mid.
 - clock_price: the ATM IV per unit of remaining intraday clock, against the same expiry at its
   cycle start and the clock-adjusted realized vol (docs/opus/23 ②). Mechanism B, the reading
   itself is untested: description only.
@@ -24,17 +26,19 @@ if __package__:
     from . import astra_decision_path_v1 as decision_path
     from . import astra_entry_warnings_v1 as entry_warnings
     from . import astra_session_clock_v1 as session_clock
+    from . import astra_unsuitable_v1 as unsuitable
 else:  # script-style import
     import astra_decision_path_v1 as decision_path
     import astra_entry_warnings_v1 as entry_warnings
     import astra_session_clock_v1 as session_clock
+    import astra_unsuitable_v1 as unsuitable
 
 SCHEMA = "candidate_readings@0.1"
 HOUR_MS = 3_600_000
 YEAR_HOURS = 8760.0
 CYCLE_MS = 24 * HOUR_MS
 REF_WINDOW_MS = 60 * 60_000          # rows within the first hour of the expiry's 24-hour cycle
-NARROW_MOVES = decision_path.NARROW_MOVES
+NARROW_MOVES = unsuitable.NARROW_MOVES
 # D2 of the Decision Path writes this bound as a literal ("标准附近" below it, "较远" from it on);
 # mirrored here, keep the two equal.
 STANDARD_MOVES_MAX = 0.55
@@ -49,6 +53,10 @@ TAIL_CN = {"put": "跌破保护腿后按 BTC 计赔付仍增加（币本位）",
            "call": "涨过保护腿后按 USD 计封顶，按 BTC 计随价格上涨递减"}
 CLOCK_BASIS_CN = "机制 B（17 号 §3.1 附录 A：报价跟不上风险释放）；当期读数未检验，只作描述"
 CLOCK_MEANING_CN = "按剩余时段的平均波动强度折算后的隐含波动：数值越高，剩下每单位时钟风险收的保费越多"
+# the reservation fields pricing carries (unsuitable.reservation)
+RESERVATION_KEYS = ("reservation_btc", "reservation_usd", "bid_gap_btc", "bid_gap_usd", "mid_credit_btc", "mid_credit_usd",
+                    "mid_gap_btc", "mid_gap_usd", "long_bid_zero", "long_spread_to_mid", "long_book_wide",
+                    "reservation_reliable")
 _MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
 
@@ -181,7 +189,10 @@ def _fee_basis_cn(fee: Mapping[str, Any]) -> str:
     return "费用未知"
 
 
-def pricing(item: Mapping[str, Any], *, move: Mapping[str, Any], by_expiry_row: Mapping[str, Any]) -> dict[str, Any]:
+def pricing(item: Mapping[str, Any], *, move: Mapping[str, Any], by_expiry_row: Mapping[str, Any],
+            books: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """`books`: {"short": {"bid", "ask"}, "long": {"bid", "ask"}} in BTC (the capture's top of book);
+    without them the mid fields of the reservation price are None."""
     snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else {}
     contract = snapshot.get("contract") if isinstance(snapshot.get("contract"), Mapping) else {}
     eco = snapshot.get("economics") if isinstance(snapshot.get("economics"), Mapping) else {}
@@ -228,6 +239,8 @@ def pricing(item: Mapping[str, Any], *, move: Mapping[str, Any], by_expiry_row: 
     if loss is None and width is not None and net_usd is not None:
         loss = width * qty - net_usd
     assumed = fee.get("basis") == "configured_assumption" or bool(fee.get("assumption_basis"))
+    books = books if isinstance(books, Mapping) else {}
+    reserve = unsuitable.reservation(mark_spread, fee_btc, credit, books.get("short"), books.get("long"), qty, spot)
     return {"credit_btc": credit, "credit_usd": usd(credit), "fee_btc": fee_btc, "fee_usd": usd(fee_btc),
             "fee_assumed": assumed, "fee_basis_cn": _fee_basis_cn(fee),
             "net_credit_btc": net, "net_credit_usd": net_usd,
@@ -238,7 +251,7 @@ def pricing(item: Mapping[str, Any], *, move: Mapping[str, Any], by_expiry_row: 
             "skew_cost_usd": skew_cost_usd,
             "width_usd": width, "loss_at_protection_usd": loss,
             "worst_to_net_ratio": loss / net_usd if loss is not None and net_usd is not None and net_usd > 0 else None,
-            "tail_cn": TAIL_CN.get(side)}
+            "tail_cn": TAIL_CN.get(side), **{k: reserve[k] for k in RESERVATION_KEYS}}
 
 
 # ---------------------------------------------------------------- clock price
@@ -281,13 +294,13 @@ def clock_price(item: Mapping[str, Any], *, now_ms: int, iv: float | None,
 
 def build(item: Mapping[str, Any], *, now_ms: int, by_expiry: Mapping[str, Any] | None,
           gex_info: Mapping[str, Any] | None, realized_vol: Mapping[str, Any] | None,
-          history: Iterable[Mapping[str, Any]] | None) -> dict[str, Any]:
+          history: Iterable[Mapping[str, Any]] | None, books: Mapping[str, Any] | None = None) -> dict[str, Any]:
     try:
         move = expected_move(item, now_ms=now_ms, by_expiry=by_expiry, gex_info=gex_info)
         contract = _get(item, "snapshot.contract") or {}
         _iv, _source, row = own_iv(contract, by_expiry, gex_info, now_ms)
         return {"schema": SCHEMA, "at_ms": now_ms, "expected_move": move,
-                "pricing": pricing(item, move=move, by_expiry_row=row),
+                "pricing": pricing(item, move=move, by_expiry_row=row, books=books),
                 "clock_price": clock_price(item, now_ms=now_ms, iv=move["iv_pct"], realized_vol=realized_vol,
                                            history=history, iv_source=move["iv_source"])}
     except Exception as exc:  # a display layer never breaks the view

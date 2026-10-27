@@ -89,7 +89,7 @@ def candidate(side="put", spot=83_345.0, short=82_500.0, long_=80_500.0):
                        "quote": {"gap_reasons": [], "available_depth_btc": {"short": 10, "long": 10},
                                  "kind": "sequential_leg_book_estimate"}},
             "economics": {"net_credit_after_entry_fee_usd_at_spot": 160.86, "net_credit_after_entry_fee_btc": 0.00193,
-                          "visible_credit_btc": 0.00233},
+                          "net_credit_after_fee_btc": 0.00193, "visible_credit_btc": 0.00233},
         },
         "exogenous_events": {"events": [{"name_cn": "CPI", "at_ms": NOW + 3_600_000, "to_expiry_ms": 20 * 3_600_000}]},
         "spatial_position": {"state": "unfavorable", "reason_cn": "先遇到负 Gamma 墙", "gamma": {"regime_at_short": "negative"}},
@@ -121,7 +121,8 @@ def frame(cand=None, **kw):
 def test_put_reading_order_and_vocabulary():
     r = dp.build(frame())
     steps = r["steps"]
-    assert list(steps) == list(dp.STEP_IDS) and r["path_version"] == dp.PATH_VERSION
+    # every component of dp-2026-10-26.3 is still read, then the composite steps of this version
+    assert list(steps) == list(dp.COMPONENT_IDS) + ["V", "R", "P", "PL", "AU"] and r["path_version"] == dp.PATH_VERSION
     assert steps["D0"]["verdict"]["code"] == "readable"
     assert steps["D2"]["verdict"]["code"] in {"narrow", "standard"}
     assert "本期 Put Gamma 墙 83,000" in json.dumps(steps["D2"], ensure_ascii=False)
@@ -132,14 +133,15 @@ def test_put_reading_order_and_vocabulary():
     assert steps["D4"]["listed"] == ["event"]                  # macro direction is no longer read
     assert steps["D2"]["transitions_24h"] == 1
     q1 = steps["Q1"]
-    assert [i["step"] for i in q1["items"]] == sorted((i["step"] for i in q1["items"]), key=dp.STEP_IDS.index)
+    assert [i["step"] for i in q1["items"]] == sorted((i["step"] for i in q1["items"]), key=dp.COMPONENT_IDS.index)
     assert steps["Q2"]["verdict"]["code"] == "below_market"
     assert "近 24 小时实现 20.0%" in json.dumps(steps["Q2"], ensure_ascii=False)
     assert steps["H"]["verdict"]["code"] == "plan"
 
 
 def test_no_premium_before_q2():
-    text = json.dumps({k: v for k, v in dp.build(frame())["steps"].items() if k not in {"Q2", "AU"}}, ensure_ascii=False)
+    # V shows premium numbers only through its two price cautions, absent without books
+    text = json.dumps({k: v for k, v in dp.build(frame())["steps"].items() if k not in {"Q2", "P", "AU"}}, ensure_ascii=False)
     for premium in ("161", "0.0019", "0.0023", "225", "64", "BTC）", "净收"):
         assert premium not in text
 
@@ -162,7 +164,9 @@ def test_compare_lists_changed_verdicts():
     moved = candidate(spot=82_600.0)
     b = dp.build(frame(moved))
     changes = dp.compare(a, b)
-    assert any(c["step"] == "D2" for c in changes) and any(c["step"] == "spot" for c in changes)
+    assert any(c["step"] == "R" for c in changes) and any(c["step"] == "spot" for c in changes)
+    assert not any(c["step"] == "D2" for c in changes)                  # this version's steps only
+    assert any(c["step"] == "D2" for c in dp.compare(a, b, dp.COMPONENT_IDS))   # a session's own steps
 
 
 # ------------------------------------------------------------------ store
@@ -175,18 +179,19 @@ def test_store_session_lifecycle(tmp_path):
     assert created and session["status"] == "open" and session["entry_after_fee_btc"] == 0.00193
     again, created = s.start(candidate=candidate(), reading=reading, now_ms=NOW + 1)
     assert not created and again["verification_id"] == vid              # continue, not a second session
-    s.step(vid, "D0", lean=None, now_ms=NOW + 1000)
-    s.step(vid, "D2", lean="toward_decline", now_ms=NOW + 5000)
-    with pytest.raises(store.DecisionPathError):
-        s.step(vid, "D9", lean=None, now_ms=NOW)
+    s.step(vid, "V", lean=None, now_ms=NOW + 1000)
+    s.step(vid, "R", lean="toward_decline", now_ms=NOW + 5000)
+    for old in ("D9", "D2", "Q1"):                               # components are not steps of this version
+        with pytest.raises(store.DecisionPathError):
+            s.step(vid, old, lean=None, now_ms=NOW)
     assert s.conclude(vid, "watch", now_ms=NOW + 6000)["status"] == "open"
     closed = s.conclude(vid, "decline", now_ms=NOW + 9000)
     assert closed["status"] == "closed" and closed["conclusion"]["choice"] == "decline"
     with pytest.raises(store.DecisionPathError):
-        s.step(vid, "D3", lean=None, now_ms=NOW)
+        s.step(vid, "P", lean=None, now_ms=NOW)
     rec = s.records()[-1]
-    assert rec["event"] == "concluded" and rec["marks"]["D2"] == "toward_decline" and rec["settled_after"] == "D2"
-    assert rec["dwell_ms"] == {"D0": 4000, "D2": 4000} and rec["decisions"][0]["choice"] == "watch"
+    assert rec["event"] == "concluded" and rec["marks"]["R"] == "toward_decline" and rec["settled_after"] == "R"
+    assert rec["dwell_ms"] == {"V": 4000, "R": 4000} and rec["decisions"][0]["choice"] == "watch"
     # a fresh store reads the same index from disk
     assert store.DecisionPathStore(tmp_path).summaries()[0]["conclusion"] == "decline"
 
@@ -228,14 +233,15 @@ def test_verify_then_lock_and_direct_lock_coexist(tmp_path):
     out = wb.decision_path_start(snap["candidate_id"], snap["snapshot_id"], authorization="Bearer secret")
     vid = out["session"]["verification_id"]
     assert out["created"] and out["llm_call_count"] == 0 and out["execution_allowed"] is False
-    assert set(out["session"]["readings"]["start"]["steps"]) == set(dp.STEP_IDS)
+    assert set(out["session"]["readings"]["start"]["steps"]) == set(dp.STEP_IDS) | set(dp.COMPONENT_IDS)
+    assert [st["id"] for st in out["session"]["steps"]] == list(dp.STEP_IDS)
     overview = wb.cached_view()["decision_path"]
     assert overview["open"][snap["candidate_id"]]["verification_id"] == vid
     assert wb.decision_path_start(snap["candidate_id"], snap["snapshot_id"],
                                   authorization="Bearer secret")["created"] is False
     refreshed = wb.decision_path_refresh(vid, authorization="Bearer secret")["session"]
     assert refreshed["readings"]["now"] is not None
-    wb.decision_path_step(vid, "D2", "toward_underwrite", authorization="Bearer secret")
+    wb.decision_path_step(vid, "R", "toward_underwrite", authorization="Bearer secret")
     done = wb.decision_path_conclude(vid, "lock", "dp-lock-0001", authorization="Bearer secret")
     episode_id = done["session"]["conclusion"]["episode_id"]
     assert episode_id and done["lock"]["created"]
@@ -270,10 +276,10 @@ def test_http_routes(tmp_path):
     try:
         out = post(base, {"candidate_id": snap["candidate_id"], "snapshot_id": snap["snapshot_id"]})
         vid = out["session"]["verification_id"]
-        post(f"{base}/{vid}/step", {"step": "D0"})
+        post(f"{base}/{vid}/step", {"step": "V"})
         post(f"{base}/{vid}/conclude", {"choice": "decline"})
         got = json.loads(urlopen(f"{base}/{vid}", timeout=20).read())
-        assert got["status"] == "closed" and "D0" in got["opened"]
+        assert got["status"] == "closed" and "V" in got["opened"]
         assert json.loads(urlopen(base, timeout=20).read())["path_version"] == dp.PATH_VERSION
     finally:
         server.shutdown()
@@ -288,16 +294,17 @@ def test_report_joins_settlement_and_flags_thin_steps(tmp_path):
         vid = s.start(candidate={**candidate(), "snapshot": {**candidate()["snapshot"], "candidate_id": f"c{i}"}},
                       reading=dp.build(frame()), now_ms=NOW + i)[0]["verification_id"]
         if i < 3:
-            s.step(vid, "D2", lean="toward_decline", now_ms=NOW + 10)
+            s.step(vid, "R", lean="toward_decline", now_ms=NOW + 10)
         s.conclude(vid, "decline" if i % 2 else "lock", now_ms=NOW + 20)
         s.settle(vid, {"status": "settled", "result_usd": 100.0 - i * 30, "short_breached": i > 5}, now_ms=EXPIRY)
     result = rep.report(rep.join(rep.load(tmp_path / "records.jsonl")))
     r = result[dp.PATH_VERSION]
     assert r["sessions"] == 9 and r["settled"] == 9
-    assert abs(r["steps"]["D2"]["change_rate"] - 3 / 9) < 1e-9 and not r["steps"]["D2"]["thinning_candidate"]
-    assert r["steps"]["D1"]["change_rate"] == 0 and r["steps"]["D1"]["thinning_candidate"]
-    assert r["conclusion_source"]["D2"] == 3
-    assert "| D2 |" in rep.render(result)
+    assert abs(r["steps"]["R"]["change_rate"] - 3 / 9) < 1e-9 and not r["steps"]["R"]["thinning_candidate"]
+    assert r["steps"]["PL"]["change_rate"] == 0 and r["steps"]["PL"]["thinning_candidate"]
+    assert r["conclusion_source"]["R"] == 3
+    assert list(r["steps"]) == ["V", "R", "P", "PL"]        # the session's steps, not the reading's components
+    assert "| R |" in rep.render(result)
 
 
 # ------------------------------------------------------------------ review fixes
@@ -361,6 +368,64 @@ def test_expired_sessions_are_purged_after_settlement_and_links_survive(tmp_path
     assert store.DecisionPathStore(tmp_path).verification_for_episode() == {"lce_" + "a" * 24: vid}
 
 
+def test_commitments_survive_the_purge_of_a_settled_session(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    s.step(vid, "PL", lean="unchanged", choice="close", now_ms=NOW + 1)
+    s.conclude(vid, "lock", now_ms=NOW + 2, episode_id="lce_" + "c" * 24, lock_created=True,
+               limit={"credit_btc": 0.0031, "valid_minutes": 30})
+    before = s.commitments(vid)
+    s.settle(vid, {"status": "settled", "result_usd": 12.0}, now_ms=EXPIRY + 200_000)
+    with pytest.raises(store.DecisionPathError):
+        s.get(vid)                                                # the session file is gone
+    after = store.DecisionPathStore(tmp_path).commitments(vid)
+    assert after == before and after["limit"]["credit_btc"] == 0.0031 and after["plan"]["label_cn"] == "触及即平仓"
+    with pytest.raises(store.DecisionPathError):
+        s.commitments("dpv_" + "0" * 16)                          # unknown everywhere
+
+
+def test_workbench_refuses_a_bad_limit_before_any_lock(tmp_path):
+    wb, _, snap = setup_wb(tmp_path)
+    vid = wb.decision_path_start(snap["candidate_id"], snap["snapshot_id"], authorization="Bearer secret")["session"]["verification_id"]
+    for limit in ({"credit_btc": -1, "valid_minutes": 30}, {"credit_btc": 0.003, "valid_minutes": "30"}, "0.003"):
+        with pytest.raises(workbench.WorkbenchError) as exc:
+            wb.decision_path_conclude(vid, "lock", "dp-lock-0009", authorization="Bearer secret", limit=limit)
+        assert (exc.value.status_code, exc.value.code) == (400, "bad_conclusion_request")
+    with pytest.raises(workbench.WorkbenchError):
+        wb.decision_path_conclude(vid, "decline", "", authorization="Bearer secret", limit={"credit_btc": 0.003, "valid_minutes": 30})
+    assert wb.locked_candidate_list()["episodes"] == [] and wb.decision_paths.get(vid)["status"] == "open"
+    out = wb.decision_path_conclude(vid, "lock", "dp-lock-0010", authorization="Bearer secret",
+                                    limit={"credit_btc": 0.003, "valid_minutes": 30})
+    assert out["session"]["conclusion"]["limit"]["credit_btc"] == 0.003 and out["lock"]["created"]
+    detail = wb.locked_candidate_detail(out["session"]["conclusion"]["episode_id"], include_raw=False)
+    assert detail["verification_commitments"]["limit"]["credit_btc"] == 0.003
+
+
+def test_same_key_lock_retry_returns_the_first_lock(tmp_path):
+    wb, _, snap = setup_wb(tmp_path)
+    first = wb.lock_candidate(snap["candidate_id"], snap["snapshot_id"], "same-key-01", authorization="Bearer secret")
+    real_lookup, real_lock = wb.locked_candidates.lookup_request, wb.locked_candidates.lock
+    calls = []
+
+    def racing(*args, **kwargs):          # the retry passed its first lookup before the first lock landed
+        calls.append("lookup")
+        return None if calls.count("lookup") == 1 else real_lookup(*args, **kwargs)
+
+    def recomposed(*args, **kwargs):      # ... and its lock-time composition made a different point
+        calls.append("lock")
+        raise workbench.locked_store.LockedCandidateError("request_key_reused", "different lock point")
+
+    wb.locked_candidates.lookup_request, wb.locked_candidates.lock = racing, recomposed
+    again = wb.lock_candidate(snap["candidate_id"], snap["snapshot_id"], "same-key-01", authorization="Bearer secret")
+    assert again["created"] is False and again["episode"]["episode_id"] == first["episode"]["episode_id"]
+    assert calls == ["lookup", "lock", "lookup"]
+    wb.locked_candidates.lookup_request = lambda *a, **k: None   # a real reuse (nothing to return) still fails
+    with pytest.raises(workbench.WorkbenchError) as exc:
+        wb.lock_candidate(snap["candidate_id"], snap["snapshot_id"], "same-key-01", authorization="Bearer secret")
+    assert exc.value.code == "request_key_reused"
+    wb.locked_candidates.lock = real_lock
+
+
 def test_newest_first(tmp_path):
     s = store.DecisionPathStore(tmp_path)
     ids = []
@@ -375,15 +440,15 @@ def test_newest_first(tmp_path):
 def test_no_marks_or_conclusions_after_expiry(tmp_path):
     s = store.DecisionPathStore(tmp_path)
     vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
-    for call in (lambda: s.step(vid, "D0", lean=None, now_ms=EXPIRY + 60_000),
+    for call in (lambda: s.step(vid, "V", lean=None, now_ms=EXPIRY + 60_000),
                  lambda: s.conclude(vid, "decline", now_ms=EXPIRY + 60_000)):
         with pytest.raises(store.DecisionPathError) as exc:
             call()
         assert exc.value.code == "contract_expired"
-    s.step(vid, "D0", lean=None, now_ms=NOW + 1000)
+    s.step(vid, "V", lean=None, now_ms=NOW + 1000)
     s.expire_due(EXPIRY + 6 * 3_600_000)                 # noticed six hours late
     assert s.get(vid)["conclusion"]["at_ms"] == EXPIRY
-    assert s.records()[-1]["dwell_ms"]["D0"] == EXPIRY - NOW - 1000
+    assert s.records()[-1]["dwell_ms"]["V"] == EXPIRY - NOW - 1000
 
 
 def test_old_walls_leave_d2_and_bad_rows_are_skipped():
@@ -426,8 +491,23 @@ def v2frame(cand=None, warnings=None, notes=None, **kw):
 
 
 def test_v2_steps_and_version():
-    assert dp.STEP_IDS == ("D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H", "AU")
-    assert dp.PATH_VERSION == "dp-2026-10-26.3"
+    assert dp.STEP_IDS == ("V", "R", "P", "PL", "AU")
+    assert dp.PATH_VERSION == "dp-2026-10-27.1"
+    assert [st["id"] for st in dp.STEPS_V2] == ["D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H", "AU"]
+    assert dp.COMPONENT_IDS == ("D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H")
+    flags = {st["id"]: st for st in dp.steps_public()}
+    assert flags["V"]["veto_summary"] is True and flags["P"]["premium"] is True and flags["P"]["conclusion_gate"] is True
+    assert flags["AU"]["on_demand"] and flags["AU"]["markable"] and "H" not in flags
+
+
+def as_v2_session(root, vid):
+    """Rewrite a stored session as one started on dp-2026-10-26.3 (its own steps and version)."""
+    path = root / "sessions" / f"{vid}.json"
+    session = json.loads(path.read_text(encoding="utf-8"))
+    session["steps"] = [dict(st) for st in dp.STEPS_V2]
+    session["path_version"] = session["readings"]["start"]["path_version"] = "dp-2026-10-26.3"
+    path.write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+    return store.DecisionPathStore(root)
 
 
 def test_time_step_veto_layer_goes_to_the_veto_summary_and_hours_are_described_only():
@@ -615,3 +695,207 @@ def test_sessions_read_the_entry_warnings_the_page_shows(tmp_path):
     assert warned          # the session reads the same warnings as the page, not "unavailable"
     rows = [l for l in t["lines"] if l["k"] == "否决层"]
     assert len(rows) == len(warned) and not any(l["v"] == "不可用" for l in rows)
+
+
+# ------------------------------------------------------------------ the decision chain (dp-2026-10-27.1)
+
+INVERSION = {"code": "term_inversion", "label_cn": "近端倒挂", "triggered": True,
+             "evidence": {"contract_expiry": "15OCT26", "contract_atm_iv_clock_adjusted": 41.2, "week_expiry": "23OCT26",
+                          "week_atm_iv_clock_adjusted": 38.0, "gap_vol_pts": 3.2}}
+
+
+def chain_frame(warnings=None, short_book=None, long_book=None, cand=None, **kw):
+    cand = cand or candidate()
+    cand["decision_reduction"]["questions"][0]["numbers"].update(market_payout_btc=0.0025, spread_cost_usd=-33.0)
+    f = v2frame(cand, warnings=QUIET_VETOES if warnings is None else warnings, notes=[BUSY_NOTE], **kw)
+    f["short_book_top"] = short_book
+    f["long_book_top"] = long_book
+    return f
+
+
+def test_every_component_line_lands_in_one_composite():
+    for f in (chain_frame(), chain_frame([INVERSION, QUIET_VETOES[1]], {"bid": 0.006, "ask": 0.0066}, {"bid": 0.0, "ask": 0.0008}),
+              v2frame(candidate(spot=82_400.0)), frame(), {"at_ms": NOW}):
+        steps = dp.build(f)["steps"]
+        composite = [l for sid in ("R", "P", "PL") for l in steps[sid]["lines"]]
+        for sid in ("T", "D2", "D3", "D4", "Q2", "H"):
+            for line in steps[sid]["lines"]:
+                if sid == "T" and line["k"] == "否决层":                 # read in V's items and check line
+                    continue
+                if sid == "Q2" and line["k"] == "对照否决汇总":          # restated against V in P
+                    continue
+                same = [l for l in composite if l["src"] == sid and {**l, "src": None} == {**line, "src": None}]
+                assert len(same) == 1, (sid, line)
+        assert not any(l["src"] == "T" and l["k"] == "否决层" for l in composite)
+        assert all(l.get("src") for sid in ("V", "R", "P", "PL") for l in steps[sid]["lines"])
+        contract = next((l for l in steps["R"]["lines"] if l["k"] == "合约"), None)
+        if contract:
+            assert all(l["v"] in contract["v"] for l in steps["D1"]["lines"])
+        assert steps["V"]["lines"][-1]["k"] == "检查项"
+
+
+def test_v_vetoes_cautions_and_the_check_line():
+    quiet = dp.build(chain_frame())["steps"]["V"]
+    assert quiet["verdict"] == {"code": "no_veto", "cn": "未见否决项（这不是做的理由）", "tone": ""} and quiet["items"] == []
+    assert quiet["lines"] == [{"k": "检查项", "v": "资料 可读；近端倒挂 未触发；保费突然变厚 未触发；缓冲 标准附近；中间价对市场估价 无盘口",
+                               "tone": "", "src": "V"}]
+    steps = dp.build(chain_frame([INVERSION, {**QUIET_VETOES[1], "triggered": None}],
+                                 {"bid": 0.0060, "ask": 0.0066}, {"bid": 0.0, "ask": 0.0008}))["steps"]
+    v = steps["V"]
+    assert [(i["code"], i["kind"], i["src"]) for i in v["items"]] == [("term_inversion", "veto", "T"),
+                                                                        ("long_book", "caution", "P")]
+    assert v["verdict"] == {"code": "veto", "cn": "不适合做：否决 1 项", "tone": "bad"}
+    first = v["lines"][0]
+    assert first["k"] == "近端倒挂" and first["tone"] == "bad" and first["src"] == "T" and "差 3.2 点。" in first["v"]
+    assert "；倒挂消失" in first["v"] and "未验证" in first["basis"]
+    assert v["lines"][1]["tone"] == "warn"
+    assert v["lines"][-1]["v"].endswith("保费突然变厚 无法判断；缓冲 标准附近；中间价对市场估价 覆盖")
+    mid_short = dp.build(chain_frame(None, {"bid": 0.0058, "ask": 0.0062}, {"bid": 0.0034, "ask": 0.0038}))["steps"]
+    assert mid_short["V"]["verdict"] == {"code": "caution", "cn": "提醒 1 项", "tone": "warn"}
+    assert mid_short["V"]["items"][0]["code"] == "mid_short" and "少约" in mid_short["V"]["lines"][0]["v"]
+    narrow = dp.build(chain_frame(cand=candidate(spot=82_600.0)))["steps"]["V"]
+    assert [i["code"] for i in narrow["items"]] == ["narrow"] and narrow["items"][0]["src"] == "D2"
+    no_walls = frame()
+    no_walls["expiry_walls"] = None
+    assert dp.build(no_walls)["steps"]["V"]["items"][0]["code"] == "data"
+    assert "不建仓警示 不可用" in dp.build(frame())["steps"]["V"]["lines"][-1]["v"]
+
+
+def test_r_reads_the_risk_without_the_veto_layer():
+    steps = dp.build(chain_frame([INVERSION], windows=[{"at_ms": NOW + 2 * H1, "in_hours": 1.5, "label_cn": "美股开盘"}]))["steps"]
+    r = steps["R"]
+    assert steps["T"]["verdict"]["code"] == "veto"
+    assert r["verdict"] == {"code": "standard", "cn": "缓冲标准附近 · 窗口 1.5 小时后 · 事件 1 个", "tone": "warn"}
+    assert not any(l["k"] == "否决层" for l in r["lines"])
+    assert r["lines"][0]["k"] == "合约" and r["lines"][0]["tone"] == ""
+    srcs = [l["src"] for l in r["lines"]][1:]
+    assert srcs == sorted(srcs, key=["D2", "T", "D4", "D3"].index)
+    assert any(l["k"] == "时段提示" for l in r["lines"])                    # the holding note stays a description
+    far = dp.build(chain_frame(cand=candidate(spot=90_000.0), windows=[]))["steps"]["R"]["verdict"]
+    assert far["code"] == "wide" and far["cn"] == "缓冲较远 · 事件 1 个" and far["tone"] == "warn"
+    inside = dp.build(v2frame(candidate(spot=82_400.0)))["steps"]["R"]["verdict"]
+    assert inside["code"] == "inside" and inside["tone"] == "bad"
+    odd = dp.build(chain_frame(cand=candidate(long_=81_500.0)))["steps"]["R"]["lines"][0]
+    assert odd["tone"] == "warn" and "宽度不是常用的 2,000 美元" in odd["v"]
+
+
+def test_p_reservation_lines_and_verdicts():
+    def price(short_book=None, long_book=None, cand=None):
+        return dp.build(chain_frame(None, short_book, long_book, cand=cand))["steps"]["P"]
+    p = price()
+    assert p["verdict"] == {"code": "below_market", "cn": "按买价低于市场估价（中间价不可算）", "tone": "warn"}
+    assert p["reservation_btc"] == pytest.approx(0.0025 + 0.00233 - 0.00193)
+    assert p["visible_credit_btc"] == 0.00233 and p["mid_credit_btc"] is None
+    lines = {l["k"]: l for l in p["lines"]}
+    assert lines["保留价"]["v"].startswith("0.0029 BTC（约 242 美元）= 两腿标记价差 + 费用")
+    assert "12.5%" in lines["保留价"]["basis"] and lines["保留价"]["src"] == "P"
+    assert lines["现在可得"]["v"].endswith("比保留价少约 48 美元") and lines["现在可得"]["tone"] == "warn"
+    assert lines["两腿中间价"]["v"] == "缺对侧盘口，中间价不可算"
+    assert p["lines"][-1]["k"] == "对照否决" and p["lines"][-1]["src"] == "V"
+    assert not any(l["k"] == "对照否决汇总" for l in p["lines"])
+    assert price({"bid": 0.0062, "ask": 0.0070}, {"bid": 0.0034, "ask": 0.0036})["verdict"]["code"] == "mid_covers"
+    short = price({"bid": 0.0058, "ask": 0.0062}, {"bid": 0.0034, "ask": 0.0038})
+    assert short["verdict"] == {"code": "mid_short", "cn": "中间价也低于市场估价", "tone": "warn"}
+    rich = candidate()
+    rich["snapshot"]["economics"].update(visible_credit_btc=0.0035, net_credit_after_entry_fee_btc=0.0031,
+                                         net_credit_after_fee_btc=0.0031)   # fee 0.0004
+    covers = price(cand=rich)
+    assert covers["verdict"]["code"] == "bid_covers"
+    assert "不低于保留价（多" in next(l["v"] for l in covers["lines"] if l["k"] == "现在可得")
+    empty = price({"bid": 0.006, "ask": 0.0066}, {"bid": 0.0, "ask": 0.0008})
+    assert any(l["k"] == "保留价可靠性" and l["tone"] == "warn" for l in empty["lines"])
+    missing = candidate()
+    missing["decision_reduction"]["questions"] = []
+    gone = dp.build(v2frame(missing))["steps"]["P"]
+    assert gone["verdict"]["code"] == "market_missing" and gone["reservation_btc"] is None
+
+
+def test_a_failed_composite_does_not_lose_the_others(monkeypatch):
+    def boom(*args):
+        raise RuntimeError("x")
+    monkeypatch.setattr(dp.unsuitable, "warning_items", boom)
+    steps = dp.build(chain_frame())["steps"]
+    assert steps["V"]["verdict"]["code"] == "error" and steps["V"]["items"] == []
+    assert steps["P"]["lines"][-1]["v"].startswith("读数失败；") and steps["R"]["verdict"]["code"] == "standard"
+    assert "Error" not in json.dumps(steps["V"]["lines"], ensure_ascii=False)
+
+
+def test_pl_carries_the_holding_plan():
+    steps = dp.build(v2frame())["steps"]
+    assert steps["PL"]["verdict"] == {"code": "plan", "cn": "预案登记", "tone": ""}
+    assert [{**l, "src": None} for l in steps["PL"]["lines"]] == [{**l, "src": None} for l in steps["H"]["lines"]]
+
+
+def test_compare_over_the_session_steps():
+    a, b = dp.build(frame()), dp.build(frame(candidate(spot=82_600.0)))
+    old = {**a, "path_version": "dp-2026-10-26.3", "steps": {k: v for k, v in a["steps"].items() if k in dp.COMPONENT_IDS}}
+    changes = dp.compare(old, b, [st["id"] for st in dp.STEPS_V2])
+    assert changes[0] == {"step": "path_version", "from": "dp-2026-10-26.3", "to": dp.PATH_VERSION}
+    assert any(c["step"] == "D2" for c in changes) and not any(c["step"] in {"V", "R", "P"} for c in changes)
+    assert [c["step"] for c in dp.compare(a, b, ["R", "D2"]) if c["step"] != "spot"] == ["R", "D2"]
+
+
+def test_an_old_session_refreshed_by_this_builder_keeps_its_steps_options_and_notes(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    s = as_v2_session(tmp_path, vid)
+    now = s.set_now(vid, dp.build(frame(candidate(spot=82_600.0))), now_ms=NOW + 1)
+    assert now["changes"][0]["step"] == "path_version" and any(c["step"] == "D2" for c in now["changes"])
+    assert not any(c["step"] in {"V", "R", "P", "PL"} for c in now["changes"])
+    s.step(vid, "Q1", lean="unchanged", choice="look", note="仍想看", now_ms=NOW + 2)
+    s.step(vid, "Q2", lean="toward_underwrite", choice="yes", note="理由", reasons=["execution_mid"], now_ms=NOW + 3)
+    s.step(vid, "H", lean="toward_decline", choice="no", now_ms=NOW + 4)
+    for bad in ("V", "P", "PL"):
+        with pytest.raises(store.DecisionPathError):
+            s.step(vid, bad, lean=None, now_ms=NOW + 5)
+    s.conclude(vid, "decline", now_ms=NOW + 6)
+    rec = s.records()[-1]
+    assert rec["path_version"] == "dp-2026-10-26.3" and rec["choices"] == {"Q1": "look", "Q2": "yes", "H": "no"}
+    assert rec["plan"] is None and rec["limit"] is None and list(rec["marks"])[:3] == ["D0", "D1", "T"]
+    assert s.commitments(vid) == {"verification_id": vid, "path_version": "dp-2026-10-26.3", "limit": None, "plan": None}
+
+
+@pytest.mark.parametrize("choice,limit", [
+    ("decline", {"credit_btc": 0.003, "valid_minutes": 30}), ("watch", {"credit_btc": 0.003, "valid_minutes": 30}),
+    ("lock", {"credit_btc": 0, "valid_minutes": 30}), ("lock", {"credit_btc": 0.1001, "valid_minutes": 30}),
+    ("lock", {"credit_btc": float("nan"), "valid_minutes": 30}), ("lock", {"credit_btc": True, "valid_minutes": 30}),
+    ("lock", {"credit_btc": "0.003", "valid_minutes": 30}), ("lock", {"credit_btc": 0.003, "valid_minutes": 0}),
+    ("lock", {"credit_btc": 0.003, "valid_minutes": 1441}), ("lock", {"credit_btc": 0.003, "valid_minutes": 30.0}),
+    ("lock", {"credit_btc": 0.003}), ("lock", [0.003, 30]),
+])
+def test_bad_limits_are_refused(tmp_path, choice, limit):
+    s = store.DecisionPathStore(tmp_path)
+    vid = s.start(candidate=candidate(), reading=dp.build(frame()), now_ms=NOW)[0]["verification_id"]
+    with pytest.raises(store.DecisionPathError) as exc:
+        s.conclude(vid, choice, now_ms=NOW + 1, limit=limit)
+    assert (exc.value.code, exc.value.status) == ("bad_conclusion_request", 400)
+    assert s.get(vid)["status"] == "open" and s.get(vid)["decisions"] == [] and s.records() == []
+
+
+def test_lock_limit_plan_and_commitments(tmp_path):
+    s = store.DecisionPathStore(tmp_path)
+    reading = dp.build(chain_frame(None, {"bid": 0.0058, "ask": 0.0062}, {"bid": 0.0034, "ask": 0.0038}))
+    vid = s.start(candidate=candidate(), reading=reading, now_ms=NOW)[0]["verification_id"]
+    assert s.commitments(vid)["limit"] is None and s.commitments(vid)["plan"] is None
+    s.step(vid, "V", lean="unchanged", choice="noted", now_ms=NOW + 1)
+    s.step(vid, "P", lean="toward_underwrite", choice="reserve", now_ms=NOW + 2)
+    s.step(vid, "PL", lean="unchanged", choice="half", now_ms=NOW + 3)
+    with pytest.raises(store.DecisionPathError):
+        s.step(vid, "PL", lean="toward_decline", choice="half", now_ms=NOW + 4)          # the option's lean only
+    later = dp.build(chain_frame(None, {"bid": 0.0062, "ask": 0.0070}, {"bid": 0.0034, "ask": 0.0036}))
+    later["steps"]["P"]["reservation_btc"] = 0.0031
+    s.set_now(vid, later, now_ms=NOW + 5)
+    done = s.conclude(vid, "lock", now_ms=NOW + 6, episode_id="lce_" + "b" * 24, lock_created=True,
+                      limit={"credit_btc": 0.003, "valid_minutes": 45})
+    limit = {"credit_btc": 0.003, "valid_until_ms": NOW + 6 + 45 * 60_000, "reservation_btc": 0.0031, "set_at_ms": NOW + 6}
+    assert done["conclusion"]["limit"] == limit                         # the latest reading's reservation price
+    assert s.commitments(vid) == {"verification_id": vid, "path_version": dp.PATH_VERSION, "limit": limit,
+                                  "plan": {"choice": "half", "label_cn": "平一半"}}
+    rec = s.records()[-1]
+    assert rec["limit"] == limit and rec["plan"] == "half" and rec["v_items"] == ["mid_short"]
+    assert rec["choices"] == {"V": "noted", "P": "reserve", "PL": "half"} and rec["q1_items"] == []
+    other = store.DecisionPathStore(tmp_path / "b")
+    vid2 = other.start(candidate=candidate(), reading=reading, now_ms=NOW)[0]["verification_id"]
+    out = other.conclude(vid2, "lock", now_ms=NOW + 1, limit={"credit_btc": 0.1, "valid_minutes": 1440})
+    assert out["conclusion"]["limit"]["reservation_btc"] == pytest.approx(reading["steps"]["P"]["reservation_btc"])
+    assert store.check_limit("decline", None) is None

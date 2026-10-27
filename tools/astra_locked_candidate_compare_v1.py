@@ -13,14 +13,18 @@ from typing import Any, Mapping, Sequence
 
 if __package__:
     from .astra_workbench_reading_v1 import reading_value
+    from . import astra_lock_levels_v1 as lock_levels
     from . import astra_observation_replay_v1 as public_replay
     from . import astra_underwriting_real_replay_v20 as real_replay
     from . import astra_underwriting_v20 as core
+    from . import astra_wpem_product_review_v1 as wpem_review
 else:
     from astra_workbench_reading_v1 import reading_value
+    import astra_lock_levels_v1 as lock_levels
     import astra_observation_replay_v1 as public_replay
     import astra_underwriting_real_replay_v20 as real_replay
     import astra_underwriting_v20 as core
+    import astra_wpem_product_review_v1 as wpem_review
 
 
 SCHEMA = "locked_candidate_followup@1.0.0"
@@ -210,7 +214,11 @@ def _fact(value: Any, *, unit: str | None, asof_ms: int | None, text_cn: str | N
 def _wire_fact(item: dict[str, Any] | None) -> dict[str, Any] | None:
     if item is None:
         return None
-    return {key: deepcopy(item.get(key)) for key in ("text_cn", "value", "unit", "asof_ms")}
+    out = {key: deepcopy(item.get(key)) for key in ("text_cn", "value", "unit", "asof_ms")}
+    if item.get("compat_backfill_applied"):
+        out["compat_backfill_applied"] = True
+        out["backfill_source"] = item.get("backfill_source")
+    return out
 
 
 def _meta_compatible(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
@@ -241,6 +249,16 @@ def _change_cn(t0: dict[str, Any] | None, t1: dict[str, Any] | None) -> tuple[st
         return "基线该值缺失，最近首次可读；不按 0 计算。", "new_fact"
     if t1.get("value") is None:
         return "最近该值缺失，不能判断原值是否保持。", "latest_missing"
+    if t0.get("compat_backfill_applied") or t1.get("compat_backfill_applied"):
+        # Same reader on the same frozen market facts; the recomputed end has no retained
+        # source clock and no routing qualification, so only the content is compared.
+        left, right = _mapping(t0.get("meta")), _mapping(t1.get("meta"))
+        if any(left.get(key) is None or left.get(key) != right.get(key)
+               for key in ("semantic_key", "method", "source", "unit")):
+            return "来源或读法不同；两端可读，但不给精确 delta。", "not_precise"
+        if t0.get("value") == t1.get("value"):
+            return "内容未变化（重算端由当时市场事实按同一读法得出，来源时点未留存）。", "unchanged"
+        return "内容发生变化（重算端由当时市场事实按同一读法得出，来源时点未留存）；不推断支持强弱。", "changed"
     if not _meta_compatible(_mapping(t0.get("meta")), _mapping(t1.get("meta"))):
         return "来源、方法、产品、窗口或单位不同；两端可读，但不给精确 delta。", "not_precise"
     if t0.get("asof_ms") is not None and t0.get("asof_ms") == t1.get("asof_ms"):
@@ -383,6 +401,74 @@ def _research_context_fact(candidate: Mapping[str, Any], key: str, label: str,
         },
         raw=item,
     )
+
+
+# Row key, research-context item ids (the producer qualifies active flow as either), WPEM
+# source asset and source_ref, and the pure reader WPEM itself applies to the market facts
+# (astra_wpem_product_review_v1._contextual_market_reads).
+_CONTEXT_SPECS = (
+    ("context.tmv_price_path", "TMV 路径", ("context.tmv_price_path",), "tmv_price_path",
+     "fact_context.market_facts.volume_price", wpem_review._context_tmv_readings),
+    ("context.funding", "资金费率", ("context.funding",), "funding_context",
+     "fact_context.market_facts.volume_price.funding", wpem_review._context_funding_readings),
+    ("context.skew", "Skew", ("context.skew",), "srd_skew_aggregate",
+     "fact_context.market_facts.skew", wpem_review._context_skew_readings),
+    ("context.active_flow", "主动流", ("context.active_flow", "context.active_flow_unqualified"), "active_flow_cvd",
+     "fact_context.market_facts.volume_price.micro_flow.combined", wpem_review._context_flow_readings),
+    ("context.option_space", "期权空间/Gamma", ("context.option_space",), "space_gate_gamma_regime",
+     "fact_context.market_facts.gamma_regime", wpem_review._context_space_readings),
+    ("context.macro", "宏观压力", ("context.macro",), "macro_pressure",
+     "fact_context.market_facts.macro_pressure", wpem_review._context_macro_readings),
+)
+BACKFILL_SOURCE = "snapshot.fact_context.market_facts"
+
+
+def _has_content(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(_has_content(item) for item in value.values())
+    if isinstance(value, list):
+        return bool(value)
+    return value is not None
+
+
+def _backfilled_context_fact(snapshot: Mapping[str, Any], key: str, asset: str, source_ref: str,
+                             reader: Any) -> dict[str, Any] | None:
+    """A context reading recomputed from the point's own frozen market facts, for points whose
+    WPEM layer was never composed (lock t0 since 2026-10-15). Flagged; never a native item."""
+    facts = _mapping(_dig(snapshot, ("fact_context", "market_facts")))
+    if not facts:
+        return None
+    try:
+        readings = reader(facts)
+        text = wpem_review._context_text_for_asset(asset, readings)
+    except Exception:
+        return None
+    if not _has_content(readings):
+        return None
+    fact = _fact(
+        readings,
+        unit=None,
+        asof_ms=None,
+        text_cn=text,
+        meta={"semantic_key": key, "method": source_ref, "product": asset, "source": source_ref,
+              "window": "market_facts_backfill", "unit": "mixed"},
+        raw={"source_ref": source_ref, "readings": readings, "compat_backfill_applied": True},
+    )
+    fact["compat_backfill_applied"] = True
+    fact["backfill_source"] = BACKFILL_SOURCE
+    return fact
+
+
+def _context_facts(candidate: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict[str, dict[str, Any] | None]:
+    native = bool(_research_items(candidate))
+    out: dict[str, dict[str, Any] | None] = {}
+    for key, label, item_ids, asset, source_ref, reader in _CONTEXT_SPECS:
+        if native:
+            out[key] = next((fact for item_id in item_ids
+                             if (fact := _research_context_fact(candidate, key, label, item_id=item_id)) is not None), None)
+        else:
+            out[key] = _backfilled_context_fact(snapshot, key, asset, source_ref, reader)
+    return out
 
 
 def _routing_relations_fact(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -607,6 +693,7 @@ def _facts(point: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     fee = _mapping(snapshot.get("fee"))
     risk = _mapping(snapshot.get("risk"))
     close = _close_quote(point)
+    context = _context_facts(candidate, snapshot)
     out: dict[str, dict[str, Any]] = {}
     for key, fact in {
         "liability.short_distance": _distance_fact(snapshot, contract.get("short_strike_usd"), "short"),
@@ -620,12 +707,7 @@ def _facts(point: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         "close.debit_btc": _close_fact(close, "debit_btc", "close.debit_btc", "平仓借记估计"),
         "close.net_debit_after_close_fee_btc": _close_fact(close, "net_debit_after_close_fee_btc", "close.net_debit_after_close_fee_btc", "含平仓费借记估计"),
         "context.latest_window": _window_fact(candidate),
-        "context.tmv_price_path": _research_context_fact(candidate, "context.tmv_price_path", "TMV 路径", item_id="context.tmv_price_path"),
-        "context.funding": _research_context_fact(candidate, "context.funding", "资金费率", item_id="context.funding"),
-        "context.skew": _research_context_fact(candidate, "context.skew", "Skew", item_id="context.skew"),
-        "context.active_flow": _research_context_fact(candidate, "context.active_flow", "主动流", item_id="context.active_flow"),
-        "context.option_space": _research_context_fact(candidate, "context.option_space", "期权空间/Gamma", item_id="context.option_space"),
-        "context.macro": _research_context_fact(candidate, "context.macro", "宏观压力", item_id="context.macro"),
+        **context,
         "context.routing_relations": _routing_relations_fact(candidate),
         "opinion.q1.direct_refs": _question_fact(candidate, "q1", asof),
         "opinion.q2.direct_refs": _question_fact(candidate, "q2", asof),
@@ -798,6 +880,88 @@ _ROW_SPECS = (
     ("opinion.q1.direct_refs", "opinion", "原 Q1 观点与直接 refs", "只保留原观点和直接引用，不从中文情绪或数组位置推断支持变化。"),
     ("opinion.q2.direct_refs", "opinion", "原 Q2 观点与直接 refs", "只保留原观点和直接引用，不从中文情绪或数组位置推断支持变化。"),
 )
+
+
+# Built by WPEM composition only: a t0 point without it cannot be reconstructed.
+_COMPOSED_ONLY_KEYS = ("context.latest_window", "context.routing_relations",
+                       "opinion.q1.direct_refs", "opinion.q2.direct_refs")
+NOT_RECORDED_AT_LOCK = "not_recorded_at_lock"
+
+
+def _composed(candidate: Mapping[str, Any]) -> bool:
+    return isinstance(candidate.get("current_questions"), Mapping) or isinstance(candidate.get("wpem_evidence"), Mapping)
+
+
+def _mark_not_recorded_at_lock(rows: list[dict[str, Any]], baseline_candidate: Mapping[str, Any]) -> None:
+    """A lock whose t0 was never composed (2026-10-15 .. 10-27): rows that only a composition
+    produces are 'not generated at lock', not facts that appeared after it."""
+    if _composed(baseline_candidate):
+        return
+    for row in rows:
+        if row.get("t0") is None and row.get("group") in {"context", "opinion"}:
+            row["status"] = NOT_RECORDED_AT_LOCK
+            row["change_cn"] = ("锁定时未生成（当时未组合证据层），不与最新对比。" if row.get("key") in _COMPOSED_ONLY_KEYS
+                                else "锁定时未记录，也无法由当时市场事实重算；不与最新对比。")
+
+
+# key, label, levels field, product
+_LEVEL_SPECS = (
+    ("levels.pin", "本期 Pin", "pin", "expiry_profile"),
+    ("levels.gamma_put", "Put Gamma 墙", "gamma_put", "expiry_profile"),
+    ("levels.gamma_call", "Call Gamma 墙", "gamma_call", "expiry_profile"),
+    ("levels.oi_put", "Put 持仓墙", "oi_put", "expiry_profile"),
+    ("levels.oi_call", "Call 持仓墙", "oi_call", "expiry_profile"),
+    ("levels.max_pain_this", "本期最大痛点", "max_pain_this", "gexmonitor"),
+    ("levels.flip", "Gamma 翻转位", "flip", "btc_map"),
+    ("levels.cost_sth", "短期持有者成本", "cost_sth", "btc_map"),
+)
+
+
+def _levels(point: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    levels = _mapping(_mapping(_mapping(point).get("candidate")).get("expiry_levels"))
+    return levels if levels.get("schema") == lock_levels.SCHEMA else None
+
+
+def _level_fact(levels: Mapping[str, Any] | None, key: str, field: str, product: str,
+                label: str, short_strike: float | None) -> dict[str, Any] | None:
+    if levels is None:
+        return None
+    value = _number(levels.get(field))
+    clock = {"expiry_profile": "computed_at_ms", "gexmonitor": "gex_asof_ms", "btc_map": "map_asof_ms"}[product]
+    fact = _fact(
+        value,
+        unit="USD",
+        asof_ms=_int(levels.get(clock)),
+        text_cn=f"{label}：{_format_value(value, 'USD')}",
+        meta={"semantic_key": key, "method": "lock_levels", "product": product, "source": lock_levels.SCHEMA,
+              "window": levels.get("expiry") or "expiry_unknown", "unit": "USD"},
+        raw={"field": field, "value": value, "stale": levels.get("stale"), "age_ms": levels.get("age_ms")},
+    )
+    fact["to_short_pct"] = ((value - short_strike) / short_strike * 100
+                            if value is not None and short_strike else None)
+    return fact
+
+
+def _level_rows(baseline: Mapping[str, Any], latest: Mapping[str, Any] | None,
+                contract: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """This expiry's structure at lock and now. A t0 without the levels block (locks before
+    2026-10-27) is 'not recorded at lock'; nothing is reconstructed."""
+    t0_levels, t1_levels = _levels(baseline), _levels(latest)
+    if t0_levels is None and t1_levels is None:
+        return []
+    strike = _number(contract.get("short_strike_usd"))
+    rows = []
+    for key, label, field, product in _LEVEL_SPECS:
+        t0 = _level_fact(t0_levels, key, field, product, label, strike)
+        t1 = _level_fact(t1_levels, key, field, product, label, strike)
+        row = _row(key, "levels", label, t0, t1, "本期结构读数，锁定时与最新并列；距短腿为（价位 − 短腿行权价）/短腿行权价。")
+        row["to_short_pct"] = {"t0": t0.get("to_short_pct") if t0 else None, "t1": t1.get("to_short_pct") if t1 else None}
+        row["stale"] = {"t0": bool(t0_levels and t0_levels.get("stale")), "t1": bool(t1_levels and t1_levels.get("stale"))}
+        if t0_levels is None:
+            row["status"] = NOT_RECORDED_AT_LOCK
+            row["change_cn"] = "锁定时未记录本期结构（该功能上线前锁定），不与最新对比。"
+        rows.append(row)
+    return rows
 
 
 def _observation_point_id(item: Mapping[str, Any]) -> Any:
@@ -1085,6 +1249,7 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
             produced[key] = read()
     asof = _point_asof(point, snapshot)
     expiry = _number(contract.get("expiry_ms"))
+    levels = lock_levels.series_subset(candidate.get("expiry_levels"))
     return {
         "asof_ms": asof,
         "spot_usd": spot,
@@ -1108,6 +1273,8 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
         **produced,
         "remaining_ms": int(expiry - asof) if expiry is not None and isinstance(asof, int) else None,
         **floating_pnl(point, baseline),
+        # this expiry's structure, only on points that carry it (locks from 2026-10-27)
+        **({"levels": levels} if levels else {}),
         "metrics_version": SERIES_METRICS_VERSION,
     }
 
@@ -1142,8 +1309,10 @@ def build_followup(detail: Mapping[str, Any], *, now_ms: int, include_raw: bool 
         for key, group, label, meaning in _ROW_SPECS
         if key in t0_facts or key in t1_facts
     ]
+    _mark_not_recorded_at_lock(rows, _mapping(fact_baseline.get("candidate")))
     breakeven_rows, breakeven_distances = _breakeven_rows(baseline_snapshot, latest_snapshot)
     rows[2:2] = breakeven_rows
+    rows.extend(_level_rows(baseline, latest_point, _mapping(baseline_snapshot.get("contract"))))
 
     overview_snapshot = latest_snapshot or baseline_snapshot
     close_estimate = _close_quote(latest_point or baseline)

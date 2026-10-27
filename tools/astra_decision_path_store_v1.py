@@ -51,6 +51,26 @@ class DecisionPathError(Exception):  # not ValueError: the HTTP layer maps Value
         self.status = status
 
 
+LIMIT_MAX_CREDIT_BTC = 0.1
+LIMIT_MIN_CREDIT_BTC = 0.00001     # below one hundredth of a tick is a typing slip, not a price
+LIMIT_MAX_MINUTES = 1440
+
+
+def check_limit(choice: Any, limit: Any) -> None:
+    """A conclusion's limit price: only with "lock", {"credit_btc": 0 < x <= 0.1, "valid_minutes":
+    1..1440}; anything else is refused (400 bad_conclusion_request). The workbench may call this
+    before it creates a lock, so a bad limit cannot leave a lock without its conclusion."""
+    if limit is None:
+        return
+    credit = limit.get("credit_btc") if isinstance(limit, Mapping) else None
+    minutes = limit.get("valid_minutes") if isinstance(limit, Mapping) else None
+    ok = (choice == "lock" and isinstance(credit, (int, float)) and not isinstance(credit, bool)
+          and LIMIT_MIN_CREDIT_BTC <= credit <= LIMIT_MAX_CREDIT_BTC and isinstance(minutes, int) and not isinstance(minutes, bool)
+          and 1 <= minutes <= LIMIT_MAX_MINUTES)
+    if not ok:     # NaN fails the comparisons above
+        raise DecisionPathError("bad_conclusion_request", 400)
+
+
 class DecisionPathStore:
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -249,7 +269,8 @@ class DecisionPathStore:
         with self._lock:
             session = self._open_session(vid, now_ms=now_ms)
             session["readings"]["now"] = dict(reading)
-            session["changes"] = dp.compare(session["readings"]["start"], reading)
+            # over the session's own steps: an older session refreshed by this builder compares those
+            session["changes"] = dp.compare(session["readings"]["start"], reading, _ids(session))
             session["refreshed_at_ms"] = now_ms
             self._write(session)
             return session
@@ -336,9 +357,12 @@ class DecisionPathStore:
                  "label": (offered.get(k) or {}).get("label")} for k in keys]
 
     def conclude(self, vid: str, choice: str, *, now_ms: int, episode_id: str | None = None,
-                 lock_created: bool | None = None) -> dict[str, Any]:
+                 lock_created: bool | None = None, limit: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """`limit` (lock only): the user's own limit price, {"credit_btc", "valid_minutes"}, kept
+        with the reservation price of the latest reading. A record, not an order."""
         if choice not in dp.CONCLUSIONS:
             raise DecisionPathError("bad_conclusion", 400)
+        check_limit(choice, limit)
         with self._lock:
             # a claimed conclusion is judged at its claim time (a lock capture may cross expiry)
             session = self._open_session(vid, now_ms=min(now_ms, self._claims.get(vid, now_ms)))
@@ -350,11 +374,35 @@ class DecisionPathStore:
             session["status"] = CLOSED
             session["conclusion"] = {"choice": choice, "at_ms": now_ms, "episode_id": episode_id,
                                      "lock_created": lock_created}
+            if limit is not None:
+                readings = session.get("readings") or {}
+                latest = readings.get("now") or readings.get("start") or {}
+                session["conclusion"]["limit"] = {
+                    "credit_btc": float(limit["credit_btc"]), "valid_until_ms": now_ms + int(limit["valid_minutes"]) * 60_000,
+                    "reservation_btc": ((latest.get("steps") or {}).get("P") or {}).get("reservation_btc"), "set_at_ms": now_ms}
             self._write(session)
             if episode_id:
                 self._link(episode_id, vid)
             self._record_or_keep(session, self._record(session, "concluded", now_ms))
             return session
+
+    def commitments(self, vid: str) -> dict[str, Any]:
+        """What the user committed to in a session: the limit price of its lock conclusion and the
+        plan chosen at PL (None when not given)."""
+        try:
+            with self._lock:
+                session = self.get(vid)
+            choice = ((session.get("marks") or {}).get("PL") or {}).get("choice")
+            limit, version = (session.get("conclusion") or {}).get("limit"), session.get("path_version")
+        except DecisionPathError as exc:
+            # a settled session file is purged: its concluded record keeps the limit and the plan
+            row = next((r for r in reversed(self.records()) if r.get("verification_id") == vid
+                        and r.get("event") == "concluded"), None)
+            if row is None:
+                raise exc
+            choice, limit, version = row.get("plan"), row.get("limit"), row.get("path_version")
+        return {"verification_id": vid, "path_version": version, "limit": limit,
+                "plan": {"choice": choice, "label_cn": narrative.option_label("PL", choice)} if choice else None}
 
     def expire_due(self, now_ms: int) -> list[str]:
         closed = []
@@ -437,6 +485,11 @@ class DecisionPathStore:
             "started_at_ms": session.get("started_at_ms"), "entry_after_fee_btc": session.get("entry_after_fee_btc"),
             "verdicts_start": verdicts(start), "verdicts_now": verdicts(now) if now else None,
             "q1_items": [i.get("step") for i in ((start.get("steps") or {}).get("Q1") or {}).get("items") or []],
+            # dp-2026-10-27.1: the unsuitable items of the start reading, the limit and the plan when touched
+            "v_items": [i.get("code") for i in ((start.get("steps") or {}).get("V") or {}).get("items") or []
+                        if isinstance(i, Mapping)],
+            "limit": conclusion.get("limit"),
+            "plan": ((session.get("marks") or {}).get("PL") or {}).get("choice"),
             "marks": dp.summarize_marks(session.get("marks") or {}, _ids(session)),
             "settled_after": dp.first_settled_step(session.get("marks") or {}, _ids(session)),
             "opened_order": order, "dwell_ms": dwell,

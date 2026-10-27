@@ -80,3 +80,98 @@ def test_density_tiers_and_no_cost_performance_wording():
     assert run("[S.densityTier(1.25), S.densityTier(1.2), S.densityTier(0.8), S.densityTier(0.79), S.densityTier(null)]", {})         == ["busy", "mid", "mid", "quiet", "na"]
     source = (ROOT / "deploy" / "astra_workbench_v3" / "session.js").read_text(encoding="utf-8")
     assert "性价比" not in source
+
+
+# ── the card's unsuitable block (unsuitable@0.1, dp-2026-10-27.1) ──
+
+DOM = r"""
+class T { constructor(t) { this.text = String(t); } get textContent() { return this.text; } }
+class N {
+  constructor(tag) { this.tagName = tag.toUpperCase(); this.childNodes = []; this.attrs = {}; this.className = ""; this.dataset = {}; this.on = {}; }
+  append(...cs) { for (const c of cs) this.childNodes.push(c); }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+  set textContent(v) { this.childNodes = [new T(v)]; }
+  get textContent() { return this.childNodes.map((c) => c.textContent).join(""); }
+}
+globalThis.Node = N;
+globalThis.document = { createElement: (t) => new N(t), createTextNode: (t) => new T(t) };
+const walk = (n, out = []) => { if (n && n.attrs) { out.push(n); for (const c of n.childNodes) walk(c, out); } return out; };
+const byCls = (n, c) => walk(n).filter((x) => (x.className || "").split(" ").includes(c));
+const texts = (n, c) => byCls(n, c).map((x) => x.textContent);
+"""
+
+
+def run_dom(body, payload):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not available")
+    script = (DOM + f'const S = await import("{SESSION}");\n'
+              'import fs from "node:fs";\n'
+              'const p = JSON.parse(fs.readFileSync(0, "utf8"));\n'
+              f"const out = (() => {{ {body} }})();\nconsole.log(JSON.stringify(out));")
+    result = subprocess.run([node, "--input-type=module", "-e", script], input=json.dumps(payload),
+                            text=True, encoding="utf-8", capture_output=True, check=False, cwd=ROOT)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def uv_item(code, kind, title):
+    return {"code": code, "kind": kind, "title_cn": title, "evidence_cn": f"{title}的读数 0.18 倍",
+            "why_cn": f"{title}的原因", "clears_cn": f"{title}消失后，这一项才解除", "basis": "未验证，只作否决"}
+
+
+def card(unsuitable, **over):
+    c = {"side": "put", "entry_warnings": block(True, False, active=True),
+         "readings": {"pricing": {"reservation_btc": 0.0123}}}
+    if unsuitable is not None:
+        c["unsuitable"] = unsuitable
+    c.update(over)
+    return c
+
+
+BLOCK = """const b = S.warningBlock(p.c);
+  return { cls: b.className, head: texts(b, 'ew-head').join(''), titles: texts(b, 'uv-title'), ev: texts(b, 'uv-evidence'),
+    evNum: byCls(b, 'uv-evidence').every((x) => x.className.includes('num')), why: texts(b, 'uv-why'), clears: texts(b, 'uv-clears'),
+    items: byCls(b, 'uv-item').map((x) => x.className), unknown: texts(b, 'uv-unknown'), note: texts(b, 'ew-note'),
+    more: texts(b, 'ew-more').join(''), text: b.textContent };"""
+
+
+def test_vetoes_lead_the_card_with_numbers_why_and_what_clears_them():
+    u = {"schema": "unsuitable@0.1", "items": [uv_item("mid_short", "caution", "中间价也不够市场估价"),
+                                               uv_item("narrow", "veto", "缓冲窄")],
+         "veto_count": 1, "caution_count": 1, "unknown_cn": ["缓冲无法计算"]}
+    out = run_dom(BLOCK, {"c": card(u)})
+    assert "uv" in out["cls"] and "veto" in out["cls"]
+    assert out["head"].startswith("不适合做 · 否决 1 项 · 提醒 1 项")
+    assert out["titles"] == ["缓冲窄", "中间价也不够市场估价"]                 # vetoes first
+    assert out["ev"][0] == "缓冲窄的读数 0.18 倍" and out["evNum"]
+    assert out["why"][0] == "缓冲窄的原因" and out["clears"][0] == "解除条件：缓冲窄消失后，这一项才解除"
+    assert out["items"][0].endswith("veto") and out["items"][1].endswith("caution")
+    assert out["unknown"] == ["1 项无法检查：缓冲无法计算。"]
+    assert out["note"] and out["note"][0].startswith("时段提示（不是否决）")        # busy-window note kept
+    assert out["more"].startswith("阈值与全部检查项")                              # thresholds folded below
+    assert "默认不做" not in out["text"]
+
+
+def test_caution_only_is_a_reminder_not_a_veto():
+    u = {"items": [uv_item("long_book", "caution", "保护腿盘口空或过宽")], "veto_count": 0, "caution_count": 1, "unknown_cn": []}
+    out = run_dom(BLOCK, {"c": card(u)})
+    assert "caution" in out["cls"] and "veto" not in out["cls"].split()
+    assert out["head"] == "提醒 1 项" and out["unknown"] == []
+
+
+def test_no_item_is_never_a_reason_and_says_what_could_not_be_checked():
+    u = {"items": [], "veto_count": 0, "caution_count": 0, "unknown_cn": ["市场估价缺失，保留价无法计算"]}
+    out = run_dom("const b = S.warningBlock(p.c); return { cls: b.className, text: b.textContent, none: texts(b, 'ew-none') };",
+                  {"c": card(u, entry_warnings=block(False, False))})
+    # data, two warnings, buffer, two price checks = 6; one could not run
+    assert out["none"] == ["未见否决项（这不是做的理由）：已检查 5 项，1 项无法检查：市场估价缺失，保留价无法计算"]
+    assert out["cls"] == "ew-none muted small"
+
+
+def test_missing_or_failed_unsuitable_falls_back_to_the_entry_warnings():
+    old = run_dom(BLOCK, {"c": card(None)})
+    assert old["head"].startswith("不建仓警示 1 项") and old["titles"] == [] and "uv" not in old["cls"].split()
+    failed = run_dom(BLOCK, {"c": card({"items": [], "error_type": "KeyError"})})
+    assert failed == old

@@ -15,6 +15,8 @@ const LINKS = {
   D4: [["event-h", "外源性事件"]],
   D5: [["src-h", "锚点效用变迁"]],          // sessions started on path v1
   AU: [["audit-h", "推理审计"]],
+  // dp-2026-10-27.1: R reads D2, T, D4 and D3 (V and P read the card's own facts)
+  R: [["map-h", "价格地图"], ["map-h", "时段条"], ["factor-h", "量价路径与主动成交"], ["event-h", "外源性事件"]],
 };
 const TONE = { bad: "bad", warn: "warn", ok: "ok" };
 const CHIP_PREFIX = { D2: "缓冲" };
@@ -30,6 +32,19 @@ const expiryCode = (ms) => {
   return `${d.getUTCDate()}${MON[d.getUTCMonth()]}${String(d.getUTCFullYear()).slice(2)}`;
 };
 const titleOf = (session, id) => stepsOf(session).find((s) => s.id === id)?.title || id;
+/** The step after which a conclusion can be given: flagged by the server (dp-2026-10-27.1 on), Q2 before. */
+export function gateStepId(session) {
+  const steps = stepsOf(session);
+  return (steps.find((s) => s.conclusion_gate) || steps.find((s) => s.id === "Q2"))?.id || null;
+}
+const latestReading = (session) => session?.readings?.now || session?.readings?.start || null;
+const BJ_HM = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+const hm = (ms) => (isNum(ms) ? BJ_HM.format(new Date(ms)) : "—");
+const BJ_DAY = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit" });
+// HH:MM, with the Beijing date when it is not the day of `from`
+const until = (ms, from) => (isNum(ms) && isNum(from) && BJ_DAY.format(new Date(ms)) !== BJ_DAY.format(new Date(from))
+  ? `${BJ_DAY.format(new Date(ms))} ${hm(ms)}` : hm(ms));
+const btc4 = (v) => (isNum(v) ? `${v.toFixed(4)} BTC` : "—");
 
 /** Index of the last step the user has opened (steps open one after another). */
 export function revealedIndex(session) {
@@ -45,15 +60,19 @@ function chip(verdict, prefix = "") {
   return h("span", { class: `chip ${TONE[verdict.tone] || ""}`, text: prefix + verdict.cn });
 }
 
+// the lines the P box already shows (保留价 against the bid and the mid)
+const BOX_KEYS = new Set(["保留价", "现在可得", "两腿中间价", "保留价可靠性"]);
+const boxed = (lines, drop) => (drop ? (lines || []).filter((l) => !BOX_KEYS.has(l?.k)) : lines);
+
 /** One step's lines; with a "now" reading, start and now side by side, matched by label. */
-function linesView(session, id, start, now) {
+function linesView(session, id, start, now, drop = false) {
   const rows = new Map();
   const keyed = (lines) => {
     const seen = {};
     return (lines || []).map((l) => [`${l.k}#${(seen[l.k] = (seen[l.k] ?? -1) + 1)}`, l]);
   };
-  for (const [key, l] of keyed(start?.lines)) rows.set(key, { k: l.k, a: l, b: null });
-  for (const [key, l] of keyed(now?.lines)) {
+  for (const [key, l] of keyed(boxed(start?.lines, drop))) rows.set(key, { k: l.k, a: l, b: null });
+  for (const [key, l] of keyed(boxed(now?.lines, drop))) {
     const r = rows.get(key);
     if (r) r.b = l; else rows.set(key, { k: l.k, a: null, b: l });
   }
@@ -120,7 +139,7 @@ let pressing = false;
 let deferred = false;
 const typing = () => {
   const el = typeof document !== "undefined" ? document.activeElement : null;
-  return composing || (!!el?.dataset?.dpNote && el.tagName === "TEXTAREA");
+  return composing || (!!el?.dataset?.dpNote && el.tagName === "TEXTAREA") || (!!el?.dataset?.dpLimit && el.tagName === "INPUT");
 };
 const watched = new WeakSet();
 function watchTyping(box) {
@@ -130,9 +149,10 @@ function watchTyping(box) {
   box.addEventListener("compositionend", () => { composing = false; });
   // a press inside the section is followed by its own click handler, which redraws if it needs to
   box.addEventListener("pointerdown", () => { pressing = true; });
+  box.addEventListener("pointercancel", () => { pressing = false; });
   box.addEventListener("click", () => { pressing = false; if (deferred && !typing()) setTimeout(() => deferred && redraw(), 0); });
   box.addEventListener("focusout", (e) => {
-    if (!e.target?.dataset?.dpNote || pressing) return;
+    if (!(e.target?.dataset?.dpNote || e.target?.dataset?.dpLimit) || pressing) return;
     setTimeout(() => { if (deferred && !typing()) redraw(); }, 0);
   });
 }
@@ -351,11 +371,13 @@ function askView(session, id, n, st, ctx) {
 }
 
 /** One step as a paragraph; returns null when the server sent no narrative for it. */
-function narrativeBody(session, step, start, now, ctx) {
+function narrativeBody(session, step, start, now, ctx, drop = false) {
   const n = narrativeOf(session, "start", step.id);
   if (!n) return null;
   const st = uiOf(session, step.id);
-  const read = [h("p", { class: "dp-para" }, ...sentencesOf(n, st))];
+  // sentences made only of lines the P box shows are left to the box
+  const only = drop ? (s) => !(s.keys?.length && s.keys.every((k) => BOX_KEYS.has(k))) : null;
+  const read = [h("p", { class: "dp-para" }, ...sentencesOf(n, st, only))];
   if (n.background?.length) {
     // each background item already says what kind of background it is ("背景（研究不支持作为依据）：…")
     read.push(h("p", { class: "dp-bg" },
@@ -368,6 +390,73 @@ function narrativeBody(session, step, start, now, ctx) {
   act.push(evidenceView(session, step.id, n, st, ctx));
   if (markable(step) || n.ask || n.evidence?.length) act.push(noteView(session, step.id, n, st, ctx, n.ask));
   return { read: read.filter(Boolean), act: act.filter(Boolean) };
+}
+
+// ── V (veto summary) and P (reservation price), dp-2026-10-27.1 ──
+/** Whether a step's reading is the unsuitable list (a failed V keeps its own lines). */
+const isVetoList = (step, r) => !!step.veto_summary && Array.isArray(r?.items) && r?.verdict?.code !== "error";
+const itemCodes = (r) => (r?.items || []).map((i) => `${i.kind}:${i.code}`).join(",");
+
+/** One reading's unsuitable items, prominent; then the checks line. No item: the plain sentence. */
+function vetoItems(r) {
+  const box = h("div", { class: "dp-veto" });
+  const items = (r?.items || []).filter((i) => i && i.title_cn);
+  if (items.length) {
+    box.append(h("ul", { class: "dp-veto-list" }, ...items.map((i) => h("li", {
+      class: `dp-veto-item ${i.kind === "veto" ? "bad" : "warn"}` },
+    h("div", { class: "dp-veto-head" }, h("span", { class: `chip ${i.kind === "veto" ? "bad" : "warn"}`, text: i.kind === "veto" ? "否决" : "提醒" }),
+      h("b", { class: "dp-veto-title", text: i.title_cn })),
+    i.evidence_cn ? h("span", { class: "dp-veto-ev num", text: i.evidence_cn }) : null,
+    i.why_cn ? h("span", { class: "dp-veto-why", text: i.why_cn }) : null,
+    i.clears_cn ? h("span", { class: "dp-veto-clears muted small", text: `解除条件：${i.clears_cn}` }) : null,
+    i.basis ? h("small", { class: "dp-basis", text: i.basis }) : null))));
+  } else {
+    box.append(h("p", { class: "dp-veto-none", text: r?.verdict?.cn || "未见否决项（这不是做的理由）" }));
+  }
+  const checks = (r?.lines || []).find((l) => l && l.k === "检查项");
+  if (checks) box.append(h("p", { class: "dp-veto-checks muted small", text: `检查项：${checks.v}` }));
+  const unknown = (r?.unknown_cn || []).filter(Boolean);
+  if (unknown.length) box.append(h("p", { class: "dp-veto-checks muted small", text: `无法判断：${unknown.join("、")}` }));
+  return box;
+}
+
+function vetoView(start, now) {
+  const out = [vetoItems(start)];
+  if (!now) return out;
+  if (itemCodes(now) === itemCodes(start) && now.verdict?.code === start?.verdict?.code) {
+    out.push(h("p", { class: "dp-now muted small", text: "现在：与开始时相同。" }));
+  } else {
+    out.push(h("div", { class: "dp-now-box" }, h("p", { class: "dp-now" }, h("b", { text: "现在：" })), vetoItems(now)));
+  }
+  return out;
+}
+
+/** The reservation price against the credit at the bid and at the two legs' mid (latest reading). */
+function reservationBox(session, step) {
+  const latest = latestReading(session);
+  const res = latest?.steps?.[step.id]?.reservation;
+  if (!res || typeof res !== "object") return null;
+  const amount = (btc, u) => (isNum(u) ? `约 ${usd(Math.abs(u))} 美元` : isNum(btc) ? `${Math.abs(btc).toFixed(4)} BTC` : "—");
+  const gap = (g, gu) => (!isNum(g) ? "" : g > 0 ? `（差 ${amount(g, gu)}）` : `（不低于保留价，多 ${amount(g, gu)}）`);
+  const reserve = res.reservation_btc;
+  const box = h("div", { class: "dp-reserve", title: "保留价 = 两腿标记价差 + 费用：挂单不低于它，净收才不低于市场估价" });
+  if (!isNum(reserve)) {
+    box.append(h("p", { class: "dp-reserve-main warn" }, h("b", { text: "保留价" }), " 算不出（两腿标记价或费用缺失）"));
+    return box;
+  }
+  box.append(h("p", { class: "dp-reserve-main" }, h("b", { text: "保留价" }), " ",
+    h("span", { class: "num", text: btc4(reserve) }), isNum(res.reservation_usd) ? `（约 ${usd(res.reservation_usd)} 美元）` : "",
+    session.readings?.now ? h("span", { class: "muted small", text: "　现在的读数" }) : null));
+  const bid = res.visible_credit_btc;
+  box.append(h("p", { class: `dp-reserve-row${isNum(res.bid_gap_btc) && res.bid_gap_btc > 0 ? " warn" : ""}` },
+    "按买价可得 ", h("span", { class: "num", text: btc4(bid) }), gap(res.bid_gap_btc, res.bid_gap_usd)));
+  const mid = res.mid_credit_btc;
+  box.append(h("p", { class: `dp-reserve-row${isNum(res.mid_gap_btc) && res.mid_gap_btc > 0 ? " warn" : ""}` },
+    "两腿中间价 ", isNum(mid) ? h("span", { class: "num", text: btc4(mid) }) : "不可算（缺对侧盘口）", isNum(mid) ? gap(res.mid_gap_btc, res.mid_gap_usd) : ""));
+  if (res.reservation_reliable === false) {
+    box.append(h("p", { class: "dp-reserve-row warn", text: "保护腿盘口空或过宽，标记价可能失真，保留价仅供参考。" }));
+  }
+  return box;
 }
 
 function stepView(session, step, i, ctx) {
@@ -385,10 +474,16 @@ function stepView(session, step, i, ctx) {
   if (step.id === "AU") {
     box.append(h("p", { class: "muted small", text: start?.note || "按需触发" }));
     if (ctx.extras?.AU) box.append(ctx.extras.AU);
-  } else {
-    // the paragraph replaces the table; the question, reasons and note replace the three lean buttons
+  } else if (isVetoList(step, start)) {
+    // the items are the reading in both views; the narrative adds only its question, evidence and note
     told = ctx.mode === "narrative" ? narrativeBody(session, step, start, now, ctx) : null;
-    box.append(...(told ? told.read : [linesView(session, step.id, start, now)]));
+    box.append(...vetoView(start, now));
+  } else {
+    const reserve = step.premium ? reservationBox(session, step) : null;   // only readings that carry one (P)
+    if (reserve) box.append(reserve);
+    // the paragraph replaces the table; the question, reasons and note replace the three lean buttons
+    told = ctx.mode === "narrative" ? narrativeBody(session, step, start, now, ctx, !!reserve) : null;
+    box.append(...(told ? told.read : [linesView(session, step.id, start, now, !!reserve)]));
     if (step.id === "D2" && ctx.extras?.D2) box.append(ctx.extras.D2);
   }
   const links = LINKS[step.id];
@@ -433,12 +528,85 @@ function header(session, ctx) {
   return box;
 }
 
+// ── the lock conclusion's own limit price (dp-2026-10-27.1): a record kept with the conclusion, not an order ──
+const LIMIT_MAX_BTC = 0.1;
+const LIMIT_MAX_MINUTES = 1440;
+const LIMIT_MINUTES = 60;
+const hasGateFlag = (session) => stepsOf(session).some((s) => s.conclusion_gate);
+/** Rounded up to 4 decimals, so a prefilled price is never below the reservation price. */
+export const ceil4 = (v) => (isNum(v) && v > 0 ? Math.ceil(v * 1e4 - 1e-7) / 1e4 : null);
+
+/** {ok, limit} from the two inputs; an empty price is a lock without a limit. */
+export function parseLimit(priceText, minutesText) {
+  const p = String(priceText ?? "").trim();
+  if (!p) return { ok: true, limit: null };
+  const price = Number(p);
+  if (!Number.isFinite(price) || price < 0.00001 || price > LIMIT_MAX_BTC) return { ok: false, error: "挂单价需在 0.00001 到 0.1 BTC 之间" };
+  const m = String(minutesText ?? "").trim();
+  const minutes = Number(m);
+  if (!m || !Number.isInteger(minutes) || minutes < 1 || minutes > LIMIT_MAX_MINUTES) {
+    return { ok: false, error: "有效时长需为 1–1440 分钟的整数" };
+  }
+  return { ok: true, limit: { credit_btc: price, valid_minutes: minutes } };
+}
+
+function limitConfirm(session, ctx, box) {
+  const st = uiOf(session, "#limit");
+  const gate = gateStepId(session);
+  const reserve = latestReading(session)?.steps?.[gate]?.reservation_btc;
+  if (st.price == null) { const r = ceil4(reserve); st.price = r != null ? r.toFixed(4) : ""; }
+  if (st.minutes == null) st.minutes = String(LIMIT_MINUTES);
+  const warn = h("p", { class: "dp-limit-warn small" });
+  const err = h("p", { class: "dp-error", role: "alert" });
+  let go = null;
+  const update = () => {
+    const parsed = parseLimit(st.price, st.minutes);
+    const below = parsed.ok && !!parsed.limit && isNum(reserve) && parsed.limit.credit_btc < reserve;
+    warn.textContent = below ? "低于保留价：即使成交，净收也低于市场估价" : "";
+    warn.hidden = !below;
+    const text = parsed.ok ? (ctx.error || "") : parsed.error;
+    err.textContent = text;
+    err.hidden = !text;
+    if (go) go.disabled = !parsed.ok || !!ctx.busy;
+    return parsed;
+  };
+  const input = (key, label, value, attrs) => {
+    const el = h("input", { type: "text", class: "dp-limit-input", "aria-label": label, dataset: { dpLimit: key, fk: `limit:${key}` },
+      readOnly: !!ctx.busy, oninput: (e) => { st[key] = e.target.value; ctx.clearError?.(); update(); }, ...attrs });
+    el.value = value;
+    return el;
+  };
+  const price = input("price", "挂单价（两腿合计信用，BTC）", st.price, { inputmode: "decimal", placeholder: "留空 = 不记挂单价" });
+  const minutes = input("minutes", "有效（分钟）", st.minutes, { inputmode: "numeric" });
+  go = h("button", { class: "btn", type: "button", onclick: () => {
+    price.blur?.(); minutes.blur?.();
+    const parsed = update();
+    if (!parsed.ok) return;
+    ctx.onConclude("lock", parsed.limit ? { limit: parsed.limit } : {});
+  } }, ctx.busy === "lock" ? "锁定中…" : "确认锁定");
+  box.append(h("span", { class: "confirm", text: "以现在的报价为锁定起点，每分钟采样同一合同直到到期；锁定记录附带本次核验和你的挂单价。页面不下单。" }),
+    h("div", { class: "dp-limit" },
+      h("label", { class: "dp-limit-field" }, h("span", { text: "挂单价（两腿合计信用，BTC）" }), price),
+      h("label", { class: "dp-limit-field" }, h("span", { text: "有效（分钟）" }), minutes),
+      h("span", { class: "muted small", text: `${isNum(reserve) ? `保留价 ${btc4(reserve)}（已向上取整填入）` : "保留价未知"}；清空挂单价则只锁定、不记挂单价。` })),
+    warn, err, go,
+    h("button", { class: "btn secondary", type: "button", onclick: () => { Object.assign(st, { price: null, minutes: null }); ctx.onCancel(); } }, "取消"));
+  update();
+  return box;
+}
+
 function conclusionView(session, ctx) {
   const box = h("div", { class: "dp-conclude" });
   if (session.status !== "open") {
     const c = session.conclusion || {};
     box.append(h("b", { text: `结论：${CHOICE_CN[c.choice] || "—"}` }),
       h("span", { class: "muted small", text: c.at_ms ? `${clock(c.at_ms)}` : "" }));
+    if (c.limit && isNum(c.limit.credit_btc)) {
+      const expired = isNum(c.limit.valid_until_ms) && c.limit.valid_until_ms <= Date.now();
+      box.append(h("span", { class: "dp-limit-line" }, "挂单价 ", h("span", { class: "num", text: btc4(c.limit.credit_btc) }),
+        `，有效至 ${until(c.limit.valid_until_ms, c.limit.set_at_ms)}${expired ? "（已过期）" : ""}`,
+        `（保留价 ${isNum(c.limit.reservation_btc) ? btc4(c.limit.reservation_btc) : "未知"}）`));
+    }
     if (c.episode_id) box.append(h("a", { href: "#lock-h", class: "dp-jump", onclick: (e) => { e.preventDefault(); ctx.onOpenLock(c.episode_id); } }, "在锁定追踪查看"));
     if (session.outcome?.status === "settled") {
       const r = session.outcome.result_usd;
@@ -447,6 +615,7 @@ function conclusionView(session, ctx) {
     }
     return box;
   }
+  if (ctx.confirm === "lock" && hasGateFlag(session)) return limitConfirm(session, ctx, box);
   if (ctx.confirm === "lock") {
     box.append(h("span", { class: "confirm", text: "以现在的报价为锁定起点，每分钟采样同一合同直到到期；锁定记录附带本次核验。页面不下单。" }),
       h("button", { class: "btn", type: "button", disabled: ctx.busy, onclick: () => ctx.onConclude("lock") }, ctx.busy === "lock" ? "锁定中…" : "确认锁定"),
@@ -491,19 +660,22 @@ function restoreFocus(box, key) {
   if (!want) return;
   want.removeAttribute?.("data-focus");
   want.focus?.({ preventScroll: true });
-  if (want.tagName === "TEXTAREA") want.setSelectionRange?.(want.value.length, want.value.length);
+  if (want.tagName === "TEXTAREA" || want.tagName === "INPUT") want.setSelectionRange?.(want.value.length, want.value.length);
 }
 
 export function renderDecision(box, ctx, { force = false } = {}) {
   last = { box, ctx };
   watchTyping(box);
-  if (!force && typing()) { deferred = true; return; }   // never rebuild under a half-typed note
+  // never rebuild under a half-typed note; a session that just closed always redraws
+  if (!force && typing() && ctx?.session?.status === "open") { deferred = true; return; }
   deferred = false;
   const keep = focusKey();
   clear(box);
   const session = ctx.session;
   if (session) ctx = { ...ctx, mode: hasNarrative(session) ? currentMode() : "table" };
-  if (ctx.error) box.append(h("p", { class: "dp-error", role: "alert", text: ctx.error }));
+  // with the limit inputs open, the error is shown next to them (a refused limit is about those inputs)
+  const nearLimit = session?.status === "open" && ctx.confirm === "lock" && hasGateFlag(session);
+  if (ctx.error && !nearLimit) box.append(h("p", { class: "dp-error", role: "alert", text: ctx.error }));
   if (!session) {
     if (ctx.overview?.error_type) box.append(h("p", { class: "dp-error", role: "alert", text: "核验列表暂时读取失败，稍后自动重试。" }));
     if (ctx.overview?.unreadable_sessions) box.append(h("p", { class: "dp-error", text: `有 ${ctx.overview.unreadable_sessions} 条核验记录文件损坏，已跳过。` }));
@@ -522,9 +694,11 @@ export function renderDecision(box, ctx, { force = false } = {}) {
     box.append(h("div", { class: "dp-next" },
       h("button", { class: "btn secondary", type: "button", disabled: !ctx.canAct || !!ctx.busy,
         onclick: () => ctx.onStep(next.id, null) }, `下一步：${next.id} ${next.title}${next.on_demand ? "（按需）" : ""}`),
-      next.premium ? h("span", { class: "muted small", text: "从这一步起才出现权利金金额。" }) : null));
+      // old paths kept every premium number for Q2; from dp-2026-10-27.1 V may already show one (mid vs reservation)
+      next.premium && !next.conclusion_gate ? h("span", { class: "muted small", text: "从这一步起才出现权利金金额。" }) : null));
   }
-  const q2 = steps.findIndex((s) => s.id === "Q2");
-  if (session.status !== "open" || shown >= q2) box.append(conclusionView(session, ctx));
+  // the conclusion opens with the gate step (P from dp-2026-10-27.1, Q2 before; none found: always)
+  const gate = steps.findIndex((s) => s.id === gateStepId(session));
+  if (session.status !== "open" || shown >= gate) box.append(conclusionView(session, ctx));
   restoreFocus(box, keep);
 }

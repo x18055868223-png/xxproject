@@ -6,7 +6,8 @@ records say which version every verification used.
 
 Each step reads program facts that already exist elsewhere (snapshot, FMZ facts, map,
 this-expiry walls, events) and says them in a fixed vocabulary. Nothing here weighs,
-forecasts or decides; no model is called. D1 to Q1 never show a premium number.
+forecasts or decides; no model is called. D1 to Q1 never show a premium number (V's two price
+cautions are the exception: they read P's reservation price).
 
 Pure functions. The workbench builds the frame; the session store keeps the readings.
 Design: docs/astra/DECISION_PATH_DESIGN_20261014.md; v2 (docs/opus/20, 2026-10-26) re-bases the
@@ -14,6 +15,12 @@ steps on the graded experience of docs/opus/16-17: one positive judgement only (
 execution), everything else describes or vetoes; time (T) and the holding plan (H) are new;
 direction readings are one line, same-source, never votes. Each line may carry `basis`
 (grade and source); X/C readings and "no veto" never take the green tone.
+
+dp-2026-10-27.1 is the minimal decision chain: the user reads and marks four composite steps,
+V (unsuitable situations, astra_unsuitable_v1), R (the risk to carry), P (the price worth
+taking, with the reservation price) and PL (the plan when touched), then AU. The components
+D0-H are still read into every reading (case files, q1_items, sessions of older versions) and
+each composite line keeps `src`, the component it came from.
 """
 from __future__ import annotations
 
@@ -23,12 +30,24 @@ from typing import Any, Mapping, Sequence
 
 if __package__:
     from . import astra_path_stats_v1 as path_stats
+    from . import astra_unsuitable_v1 as unsuitable
 else:
     import astra_path_stats_v1 as path_stats
+    import astra_unsuitable_v1 as unsuitable
 
 SCHEMA = "astra_decision_path_reading@2.0.0"
-PATH_VERSION = "dp-2026-10-26.3"   # .3: busy window is a holding note, not a T veto (docs/opus/22)
+PATH_VERSION = "dp-2026-10-27.1"   # minimal decision chain V R P PL (components D0-H still read)
 STEPS: tuple[dict[str, Any], ...] = (
+    {"id": "V", "title": "否决", "question": "有没有不适合做的理由？", "veto_summary": True},
+    {"id": "R", "title": "风险", "question": "要扛多少、什么时候来？"},
+    {"id": "P", "title": "价格", "question": "什么价格才值得做？", "premium": True, "conclusion_gate": True},
+    {"id": "PL", "title": "预案", "question": "被触及时你会怎么做？"},
+    # AU shows the model review and the inquirer's questions (docs/opus/14) and is marked like the others.
+    {"id": "AU", "title": "审计", "question": "模型认同吗？还剩什么要你判断？", "on_demand": True, "markable": True},
+)
+# The steps of dp-2026-10-26.3 (docs/opus/20, 22): still read as components of every reading;
+# sessions of that version keep these in their own `steps`.
+STEPS_V2: tuple[dict[str, Any], ...] = (
     {"id": "D0", "title": "资料", "question": "能读吗？"},
     {"id": "D1", "title": "责任", "question": "这张保单承担什么？"},
     {"id": "T", "title": "时间", "question": "现在承担的是哪段时间的风险？"},
@@ -44,6 +63,7 @@ STEPS: tuple[dict[str, Any], ...] = (
 # What the audit step holds in sessions started from now on; older sessions have no au_mode.
 AU_MODE = "review_inquiry"
 STEP_IDS = tuple(step["id"] for step in STEPS)
+COMPONENT_IDS = tuple(step["id"] for step in STEPS_V2 if step["id"] != "AU")
 MARKS = ("toward_underwrite", "unchanged", "toward_decline")
 CONCLUSIONS = ("lock", "decline", "watch")
 BJT_MS = 8 * 3_600_000
@@ -57,8 +77,8 @@ _GAP_CN = {
     "snapshot": "没有冻结快照", "expired": "合约已到期",
 }
 # D2: a standard 0.35Δ short leg sits near 0.4 expected moves (docs/opus/17 §3.2); "narrow" is
-# clearly closer than that (unvalidated, veto only)
-NARROW_MOVES = 0.25
+# clearly closer than that (unvalidated, veto only). One constant, defined in astra_unsuitable_v1.
+NARROW_MOVES = unsuitable.NARROW_MOVES
 # Walls older than this are left out of D2 (D0 already says they are stale).
 WALLS_MAX_AGE_MS = 2 * 3_600_000
 _REGIME = {"POSITIVE_GAMMA_PINNING": ("正 Gamma，波动倾向收敛", "ok"), "POSITIVE_GAMMA": ("正 Gamma，波动倾向收敛", "ok"),
@@ -348,7 +368,9 @@ def _t(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     else:
         verdict = {"code": "ordinary", "cn": "未见时段否决", "tone": ""}
     return {"verdict": verdict, "lines": lines, "fired": [w.get("code") for w in fired], "better_hours": better,
-            "market_state": "/".join(state) if state else None}
+            "market_state": "/".join(state) if state else None,
+            "next_window": None if not window else {"label_cn": window.get("label_cn"), "in_hours": _num(window.get("in_hours")),
+                                                    "in_progress": bool(window.get("in_progress")), "near": near}}
 
 
 def busy_note(block: Any) -> dict[str, Any] | None:
@@ -632,6 +654,173 @@ def _h(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
     return {"verdict": {"code": "plan", "cn": "持有观察点", "tone": ""}, "lines": lines}
 
 
+# ---------------------------------------------------------------- the decision chain (dp-2026-10-27.1)
+
+_TONE_RANK = ("", "warn", "bad")
+
+
+def _worst(*tones: Any) -> str:
+    return max((t if t in _TONE_RANK else "" for t in tones), key=_TONE_RANK.index, default="")
+
+
+def _src(line: Mapping[str, Any], src: str) -> dict[str, Any]:
+    """A component's line as a composite line: unchanged, with the component it came from."""
+    return {**dict(line), "src": src}
+
+
+def _amount(btc: float | None, usd: float | None) -> str:
+    return f"约 {_usd(abs(usd))} 美元" if usd is not None else f"{abs(btc):.4f} BTC" if btc is not None else "—"
+
+
+def _reservation(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, Any]:
+    """The reservation price of the frame: the two legs' mark spread (decision_reduction R1, else the
+    marks) plus the fee (credit minus net, as readings.pricing), against the capture's books."""
+    cand = frame.get("candidate") or {}
+    eco = _get(cand, "snapshot.economics") or {}
+    credit = _num(eco.get("visible_credit_btc"))
+    net = _num(eco.get("net_credit_after_fee_btc"))
+    # all hold fees, never the entry fee alone (readings.pricing): an incomplete fee is unknown
+    fee = credit - net if credit is not None and net is not None else _num(_get(cand, "snapshot.fee.amount_btc"))
+    questions = {q.get("key"): q for q in _get(cand, "decision_reduction.questions") or [] if isinstance(q, Mapping)}
+    mark = _num(((questions.get("market_price") or {}).get("numbers") or {}).get("market_payout_btc"))
+    qty = g["contract"]["quantity_btc"]
+    if mark is None:
+        marks = cand.get("market_marks") or {}
+        short_mark, long_mark = _num(marks.get("short_mark_btc")), _num(marks.get("long_mark_btc"))
+        mark = (short_mark - long_mark) * qty if short_mark is not None and long_mark is not None else None
+    return unsuitable.reservation(mark, fee, credit, frame.get("short_book_top"), frame.get("long_book_top"), qty, g["spot"])
+
+
+def _mid_status(res: Mapping[str, Any]) -> str:
+    if res.get("reservation_btc") is None:
+        return "市场估价缺失"
+    gap = res.get("mid_gap_btc")
+    return "无盘口" if gap is None else "覆盖" if gap <= 0 else "不足"
+
+
+def _v(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any], res: Mapping[str, Any]) -> dict[str, Any]:
+    """Every unsuitable situation (astra_unsuitable_v1), vetoes first, then one line listing every
+    check and its status, so "no veto" is substantiated. No veto is never a reason to take it."""
+    items: list[dict[str, Any]] = []
+    checks = []
+    d0 = steps.get("D0") or {}
+    d0v = d0.get("verdict") or {}
+    if d0v.get("code") != "readable":
+        items.append({**unsuitable.data_item([_GAP_CN.get(c, c) for c in d0.get("gaps") or []] or ["资料读数失败"]),
+                      "src": "D0"})
+    checks.append(f"资料 {d0v.get('cn') or '未知'}")
+    warn = unsuitable.warning_items(_get(frame, "candidate.entry_warnings"))
+    items += [{**i, "src": "T"} for i in warn["items"]]
+    checks += [f"{c['label_cn']} {c['status_cn']}" for c in warn["checks"]] or ["不建仓警示 不可用"]
+    buffer = unsuitable.buffer_item(g["dist_pct"], g["ratio"], g["move_pct"], g["side"])
+    if buffer:
+        items.append({**buffer, "src": "D2"})
+    checks.append(f"缓冲 {((steps.get('D2') or {}).get('verdict') or {}).get('cn') or '未知'}")
+    for caution in (unsuitable.mid_item(res), unsuitable.long_book_item(res)):
+        if caution:
+            items.append({**caution, "src": "P"})
+    checks.append(f"中间价对市场估价 {_mid_status(res)}")
+    lines = [_src(_line(i["title_cn"], f"{i['evidence_cn']}。{i['why_cn']}；{i['clears_cn']}",
+                        "bad" if i["kind"] == "veto" else "warn", i["basis"]), i["src"]) for i in items]
+    lines.append(_src(_line("检查项", "；".join(checks)), "V"))
+    vetoes = sum(i["kind"] == "veto" for i in items)
+    cautions = len(items) - vetoes
+    verdict = ({"code": "veto", "cn": f"不适合做：否决 {vetoes} 项", "tone": "bad"} if vetoes
+               else {"code": "caution", "cn": f"提醒 {cautions} 项", "tone": "warn"} if cautions
+               else {"code": "no_veto", "cn": "未见否决项（这不是做的理由）", "tone": ""})
+    return {"verdict": verdict, "lines": lines, "items": items, "unknown_cn": warn["unknown_cn"]}
+
+
+def _contract_lines(d1: Mapping[str, Any], g: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """D1 as one line: the liability zone, the worst shape and the time left; a width other than
+    the usual 2,000 USD is flagged."""
+    by = {l.get("k"): l.get("v") for l in d1.get("lines") or [] if isinstance(l, Mapping)}
+    if not {"方向", "责任区"} <= set(by):          # a failed D1: its own lines
+        return [_src(l, "D1") for l in d1.get("lines") or [] if isinstance(l, Mapping)]
+    width = abs(g["short"] - g["long"]) if g["short"] is not None and g["long"] is not None else None
+    odd = width is not None and abs(width - unsuitable.STANDARD_WIDTH_USD) > 0.5
+    text = f"{by['方向']}；责任区 {by['责任区']}；最坏形状：{by.get('最坏形状') or '—'}；剩余 {by.get('剩余') or '—'}"
+    if odd:
+        text += f"；宽度不是常用的 {_usd(unsuitable.STANDARD_WIDTH_USD)} 美元"
+    return [_src(_line("合约", text, "warn" if odd else ""), "D1")]
+
+
+def _r(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any]) -> dict[str, Any]:
+    """The risk to carry: the contract, then D2, T (without its veto layer, read in V), D4 and D3,
+    each line as its component wrote it."""
+    d1, t, d2, d3, d4 = (steps.get(k) or {} for k in ("D1", "T", "D2", "D3", "D4"))
+    lines = _contract_lines(d1, g)
+    for sid, step in (("D2", d2), ("T", t), ("D4", d4), ("D3", d3)):
+        lines += [_src(l, sid) for l in step.get("lines") or []
+                  if isinstance(l, Mapping) and not (sid == "T" and l.get("k") == "否决层")]
+    buffer = d2.get("verdict") or {}
+    parts = [f"缓冲{buffer.get('cn') or '未知'}"]
+    window = t.get("next_window") or {}
+    if window.get("near"):
+        parts.append("窗口进行中" if window.get("in_progress") or window.get("in_hours") is None
+                     else f"窗口 {window['in_hours']:.1f} 小时后")
+    d4v = d4.get("verdict") or {}
+    if d4v.get("code") == "listed":
+        parts.append(f"事件 {len(d4.get('listed') or [])} 个")
+    elif d4v.get("code") == "calendar_partial":
+        parts.append("日历不完整")
+    # a T veto is read in V, never here
+    tone = _worst(buffer.get("tone"), "warn" if window.get("near") else "", d4v.get("tone"))
+    return {"verdict": {"code": buffer.get("code") or "unknown", "cn": " · ".join(parts), "tone": tone}, "lines": lines}
+
+
+def _p(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any], res: Mapping[str, Any]) -> dict[str, Any]:
+    """The price worth taking: Q2's lines, then the reservation price against the credit at the bid
+    and at the two legs' mid, then the veto summary."""
+    q2 = steps.get("Q2") or {}
+    lines = [_src(l, "Q2") for l in q2.get("lines") or [] if isinstance(l, Mapping) and l.get("k") != "对照否决汇总"]
+    reserve, visible, mid = res.get("reservation_btc"), res.get("visible_credit_btc"), res.get("mid_credit_btc")
+    bid_gap, mid_gap = res.get("bid_gap_btc"), res.get("mid_gap_btc")
+    if reserve is None:
+        lines.append(_src(_line("保留价", "两腿标记价或费用缺失，保留价算不出", "warn", unsuitable.B_RESERVATION), "P"))
+    else:
+        lines.append(_src(_line("保留价", f"{reserve:.4f} BTC（{_amount(reserve, res.get('reservation_usd'))}）= 两腿标记价差 + 费用",
+                                "", unsuitable.B_RESERVATION), "P"))
+        if visible is not None:
+            short = bid_gap > 0
+            lines.append(_src(_line("现在可得", f"按买价两腿毛信用 {visible:.4f} BTC（{_amount(visible, res.get('visible_credit_usd'))}），"
+                                    + (f"比保留价少{_amount(bid_gap, res.get('bid_gap_usd'))}" if short
+                                       else f"不低于保留价（多{_amount(bid_gap, res.get('bid_gap_usd'))}）"),
+                                    "warn" if short else ""), "P"))
+        if mid is None:
+            lines.append(_src(_line("两腿中间价", "缺对侧盘口，中间价不可算"), "P"))
+        else:
+            short = mid_gap > 0
+            lines.append(_src(_line("两腿中间价", f"按两腿中间价毛信用 {mid:.4f} BTC（{_amount(mid, res.get('mid_credit_usd'))}），"
+                                    + (f"比保留价少{_amount(mid_gap, res.get('mid_gap_usd'))}" if short
+                                       else f"不低于保留价（多{_amount(mid_gap, res.get('mid_gap_usd'))}）"),
+                                    "warn" if short else "", unsuitable.B_MID), "P"))
+        if not res.get("reservation_reliable"):
+            lines.append(_src(_line("保留价可靠性", "保护腿盘口空或过宽，标记价可能失真，保留价仅供参考", "warn",
+                                    unsuitable.B_LONG_BOOK), "P"))
+    v = (steps.get("V") or {}).get("verdict") or {}
+    lines.append(_src(_line("对照否决", f"{v.get('cn') or '否决读数缺失'}；补偿是否够、挂在什么价，由你判断（不给概率）"), "V"))
+    if reserve is None or (bid_gap is None and mid_gap is None):
+        verdict = {"code": "market_missing", "cn": "市场估价缺失" if reserve is None else "现价信用缺失", "tone": "warn"}
+    elif bid_gap is not None and bid_gap <= 0:
+        verdict = {"code": "bid_covers", "cn": "按买价即不低于市场估价", "tone": ""}
+    elif mid_gap is not None and mid_gap <= 0:
+        verdict = {"code": "mid_covers", "cn": "若按中间价成交可覆盖市场估价", "tone": ""}
+    elif mid_gap is not None:
+        verdict = {"code": "mid_short", "cn": "中间价也低于市场估价", "tone": "warn"}
+    else:
+        verdict = {"code": "below_market", "cn": "按买价低于市场估价（中间价不可算）", "tone": "warn"}
+    return {"verdict": verdict, "lines": lines, "reservation": dict(res), "reservation_btc": reserve,
+            "mid_credit_btc": mid, "visible_credit_btc": visible,
+            "credit_to_width_pct": q2.get("credit_to_width_pct"), "edge_usd": q2.get("edge_usd")}
+
+
+def _pl(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any]) -> dict[str, Any]:
+    """The plan when touched: H's holding checkpoints and path statistics."""
+    lines = [_src(l, "H") for l in (steps.get("H") or {}).get("lines") or [] if isinstance(l, Mapping)]
+    return {"verdict": {"code": "plan", "cn": "预案登记", "tone": ""}, "lines": lines}
+
+
 def _failed(exc: Exception) -> dict[str, Any]:
     return {"verdict": {"code": "error", "cn": "读数失败", "tone": "warn"}, "error_type": type(exc).__name__,
             "lines": [_line("说明", "这一步读数失败，未影响其他步骤", "warn")]}
@@ -658,6 +847,17 @@ def build(frame: Mapping[str, Any]) -> dict[str, Any]:
         steps["H"] = _h(frame, g)
     except Exception as exc:
         steps["H"] = _failed(exc)
+    try:
+        res = _reservation(frame, g)
+    except Exception:
+        res = unsuitable.reservation(None, None, None)
+    # V first: P's last line reads V's verdict
+    for step_id, fn in (("V", lambda: _v(frame, g, steps, res)), ("R", lambda: _r(frame, g, steps)),
+                        ("P", lambda: _p(frame, g, steps, res)), ("PL", lambda: _pl(frame, g, steps))):
+        try:
+            steps[step_id] = fn()
+        except Exception as exc:
+            steps[step_id] = {**_failed(exc), **({"items": []} if step_id == "V" else {})}
     steps["AU"] = {"verdict": None, "lines": [], "note": "按需触发：模型只对照程序读数，不改数、不授权"}
     return {"schema": SCHEMA, "path_version": PATH_VERSION, "at_ms": frame.get("at_ms"),
             "snapshot_id": _get(frame, "candidate.snapshot.snapshot_id"),
@@ -665,16 +865,17 @@ def build(frame: Mapping[str, Any]) -> dict[str, Any]:
             "steps": steps}
 
 
-def compare(start: Mapping[str, Any], now: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Which step verdicts changed between the start and the "now" reading. Readings of two
-    path versions compare only the steps both have, and say that the version changed."""
+def compare(start: Mapping[str, Any], now: Mapping[str, Any], ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+    """Which step verdicts changed between the start and the "now" reading, over `ids` (a
+    session's own steps; this version's by default). Readings of two path versions compare
+    only the steps both have, and say that the version changed."""
     out = []
-    ids = STEP_IDS
+    order = tuple(ids) if ids is not None else STEP_IDS
     if start.get("path_version") != now.get("path_version"):
         shared = set((start.get("steps") or {})) & set((now.get("steps") or {}))
-        ids = tuple(sid for sid in (now.get("steps") or {}) if sid in shared)
+        order = tuple(sid for sid in (order if ids is not None else (now.get("steps") or {})) if sid in shared)
         out.append({"step": "path_version", "from": start.get("path_version"), "to": now.get("path_version")})
-    for step_id in ids:
+    for step_id in order:
         a = _get(start, f"steps.{step_id}.verdict") or {}
         b = _get(now, f"steps.{step_id}.verdict") or {}
         if a.get("code") != b.get("code") and (a or b):

@@ -27,7 +27,9 @@ export const REF_CN = {
 const LAYER_WORD = { L0: "资料层", L1: "合同层", L2: "报价与补偿层", L3: "结构层", L4: "波动层", L5: "运动层", L6: "时间层",
   L7: "外部层", L8: "程序读数层", L9: "历史层" };
 const STEP_WORD = { D0: "D0 资料", D1: "D1 责任", D2: "D2 位置", D3: "D3 运动", D4: "D4 外部", D5: "D5 变化",
-  Q1: "Q1 风险质量", Q2: "Q2 风险补偿" };
+  Q1: "Q1 风险质量", Q2: "Q2 风险补偿",
+  // dp-2026-10-27.1 steps; single letters only where the text names them as steps (see CHAIN_RE)
+  V: "V 否决", R: "R 风险", P: "P 价格", PL: "PL 预案" };
 
 /** Field names and codes the inquirer writes (on top of the page glossary). */
 export const IQ_TERMS = {
@@ -199,6 +201,9 @@ export function refWord(ref, entries) {
 const REF_RE = /(?<![A-Za-z0-9_.])L[0-9](?:\.[A-Za-z0-9_]+)+/g;
 const LAYER_RE = /(?<![A-Za-z0-9_.])L[0-9](?![A-Za-z0-9_.])/g;
 const STEP_RE = /(?<![A-Za-z0-9_.-])(D[0-5]|Q[12])(?![A-Za-z0-9_.])/g;
+// V / R / P / PL are words too often ("P&L", "R:R", "V 形"): only "PL", or a letter followed by "步",
+// reads as a step
+const CHAIN_RE = /(?<![A-Za-z0-9_.&\/-])(?:PL(?![A-Za-z0-9_.&\/=-])|[VRP]\s*步)/g;
 const PAIR_RE = /(?<![A-Za-z0-9_.])([A-Za-z][A-Za-z0-9_.]*)=([A-Za-z0-9_.\-]+)/g;
 const TOKEN_RE = /(?<![A-Za-z0-9_.\-])[A-Za-z][A-Za-z0-9_]*(?:[.\-][A-Za-z0-9_]+)*(?![A-Za-z0-9_])/g;
 
@@ -235,6 +240,8 @@ export function cnText(text, entries) {
   let out = text.replace(REF_RE, (ref) => `「${refWord(ref, entries)}」`);
   out = out.replace(LAYER_RE, (l) => LAYER_WORD[l] || l);
   out = out.replace(STEP_RE, (s) => STEP_WORD[s] || s);
+  // "P 步" reads "P 价格步", not "P 价格 步"; "PL=…" stays a key=value pair for PAIR_RE
+  out = out.replace(CHAIN_RE, (s) => { const id = s.replace(/\s*步$/, ""); return STEP_WORD[id] ? STEP_WORD[id] + (id === s ? "" : "步") : s; });
   out = out.replace(PAIR_RE, (all, k, v) => {
     const kk = lookup(k);
     const vv = lookup(v);

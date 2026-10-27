@@ -77,7 +77,7 @@ def test_audit_step_marks_follow_the_session_steps(tmp_path):
     # a session started before the change: its audit step stays unmarked, the program steps do not
     old_steps = [{k: v for k, v in step.items() if k != "markable"} for step in dp.steps_public()]
     assert not dp.markable([{"id": "AU", "on_demand": True, "markable": None}], "AU")   # only a real boolean opens it
-    assert not dp.markable(old_steps, "AU") and dp.markable(old_steps, "D2") and not dp.markable(old_steps, "D9")
+    assert not dp.markable(old_steps, "AU") and dp.markable(old_steps, "R") and not dp.markable(old_steps, "D9")
     other = {**candidate(), "snapshot": {**candidate()["snapshot"], "candidate_id": "cand2"}}
     vid2 = s.start(candidate=other, reading=dp.build(frame()), now_ms=DP_NOW)[0]["verification_id"]
     path = s._path(vid2)
@@ -88,7 +88,7 @@ def test_audit_step_marks_follow_the_session_steps(tmp_path):
         s.step(vid2, "AU", lean="toward_decline", now_ms=DP_NOW + 3)
     assert err.value.code == "step_not_markable"
     s.step(vid2, "AU", lean=None, now_ms=DP_NOW + 3)                              # opening still works
-    s.step(vid2, "D2", lean="toward_decline", now_ms=DP_NOW + 4)
+    s.step(vid2, "R", lean="toward_decline", now_ms=DP_NOW + 4)
     s.conclude(vid, "decline", now_ms=DP_NOW + 5)
     rec = s.records()[-1]
     assert rec["au_mode"] == dp.AU_MODE and rec["marks"]["AU"] == "toward_decline"
@@ -100,7 +100,7 @@ def test_report_counts_the_audit_step_only_where_it_was_opened(tmp_path):
     for i in range(4):
         cand = {**candidate(), "snapshot": {**candidate()["snapshot"], "candidate_id": f"c{i}"}}
         vid = s.start(candidate=cand, reading=dp.build(frame()), now_ms=DP_NOW + i)[0]["verification_id"]
-        s.step(vid, "Q2", lean=None, now_ms=DP_NOW + 10)
+        s.step(vid, "P", lean=None, now_ms=DP_NOW + 10)
         if i < 2:   # two opened the audit step, one of them changed its lean there
             s.step(vid, "AU", lean="toward_decline" if i == 0 else None, now_ms=DP_NOW + 20)
         s.conclude(vid, "decline", now_ms=DP_NOW + 30)
@@ -108,7 +108,7 @@ def test_report_counts_the_audit_step_only_where_it_was_opened(tmp_path):
     r = rep.report(rep.join(rep.load(tmp_path / "records.jsonl")))[dp.PATH_VERSION]
     assert r["steps"]["AU"]["n"] == 2 and r["steps"]["AU"]["change_rate"] == 0.5
     assert set(r["steps"]["AU"]["outcomes"]) == {"toward_decline", "unchanged"}
-    assert r["steps"]["D2"]["n"] == 4 and "| AU |" in rep.render({dp.PATH_VERSION: r})
+    assert r["steps"]["R"]["n"] == 4 and "| AU |" in rep.render({dp.PATH_VERSION: r})
 
 
 # ------------------------------------------------------------------ workbench endpoint and context

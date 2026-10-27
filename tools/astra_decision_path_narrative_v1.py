@@ -9,6 +9,8 @@ Evidence grades are honest (docs/opus/17, 21, 22, 24 §3): direction and pin-sid
 are listed when relevant, always as "研究不支持作为依据", never as support.
 
 Computed when a session is served, never stored; the path version is unchanged.
+The composite steps of dp-2026-10-27.1 (V R P PL) read each line by its component's (`src`)
+template and grading, and offer their components' evidence.
 """
 from __future__ import annotations
 
@@ -53,6 +55,7 @@ def background_grade(step_id: str, line: Mapping[str, Any]) -> str | None:
     if grade:
         return grade
     key = line.get("k")
+    step_id = str(line.get("src") or step_id)    # a composite line is graded as its component's
     if step_id == "D3" and key == "方向读数（同源，不计票）":
         return "X"
     if step_id == "T" and key == "本期状态" and str(line.get("basis") or "").startswith("回测无差异"):
@@ -137,17 +140,35 @@ TEMPLATES: dict[str, dict[str, tuple[Template, str | None]]] = {
         "检查点": (lambda v: f"在{v}", None),
         "路径统计": (lambda v: f"路径统计{v}", None),
     },
+    # dp-2026-10-27.1: composite lines not listed here read by their component's (`src`) template;
+    # V's unsuitable items read "title：evidence。why；clears"
+    "V": {
+        "检查项": (lambda v: f"逐项检查：{v}", None),
+    },
+    "R": {
+        "合约": (lambda v: f"这张保单：{v}", None),
+    },
+    "P": {
+        "保留价": (lambda v: f"保留价是 {v}", None),
+        "现在可得": (lambda v: v, None),
+        "两腿中间价": (lambda v: v, None),
+        "保留价可靠性": (lambda v: v, None),
+        "对照否决": (lambda v: f"对照否决：{v}", None),
+    },
 }
 _COMMON = {"说明": (lambda v: v, None)}   # also the line of a failed step
+# the step ids a Q1 veto line may be keyed by (every component of every path version)
+_VETO_KEYS = frozenset(dp.COMPONENT_IDS) | {"D5"}
 
 
-def _template(step_id: str, key: str) -> tuple[Template, str | None]:
-    found = TEMPLATES.get(step_id, {}).get(key) or _COMMON.get(key)
+def _template(step_id: str, key: str, src: str | None = None) -> tuple[Template, str | None]:
+    found = (TEMPLATES.get(step_id, {}).get(key) or (TEMPLATES.get(src, {}).get(key) if src else None)
+             or _COMMON.get(key))
     if found:
         return found
-    if step_id == "H" and key.startswith("若"):           # "若到 16:00 UTC 仍未触及", "若此刻被触及（…）"
+    if "H" in (step_id, src) and key.startswith("若"):    # "若到 16:00 UTC 仍未触及", "若此刻被触及（…）"
         return (lambda v, k=key: f"{k}，{v}"), None
-    if step_id == "Q1" and key in dp.STEP_IDS:             # one veto item per line, keyed by its step
+    if step_id == "Q1" and key in _VETO_KEYS:              # one veto item per line, keyed by its step
         return (lambda v, k=key: f"来自 {k} 的否决项：{v}"), None
     return (lambda v, k=key: f"{k}：{v}"), None
 
@@ -174,6 +195,8 @@ def _lead(step_id: str, verdict: Any) -> str:
         return _sentence(f"资料{cn}")
     if step_id == "D1":
         return _sentence(f"这是 {cn}")
+    if step_id == "R":
+        return _sentence("风险：" + cn.replace(" · ", "，"))
     return _sentence(cn)
 
 
@@ -199,14 +222,50 @@ _ASKS: dict[str, dict[str, Any]] = {
            "options": [_opt("fine", "可以接受", U), _opt("hesitant", "让我更犹豫", D), _opt("same", "没影响", S)]},
     "H": {"question": "这个盯盘安排，你做得到吗？",
           "options": [_opt("yes", "做得到", U), _opt("no", "做不到", D), _opt("same", "没影响", S)]},
+    # dp-2026-10-27.1
+    "R": {"question": "这些风险，你愿意扛吗？",
+          "options": [_opt("accept", "愿意扛", U), _opt("heavy", "偏重", D), _opt("same", "没影响", S)]},
+    # every answer is a plan, not a lean, except "cannot watch" (docs/opus/17 §5: no exit rule yet)
+    "PL": {"question": "若持有中短腿被触及，你会：",
+           "options": [_opt("hold", "持有到期", S), _opt("close", "触及即平仓", S), _opt("half", "平一半", S),
+                       _opt("away", "这段时间盯不了", D)]},
 }
+# V and P: the question depends on the verdict
+_ASK_V = {
+    "veto": {"question": "这些否决项，你怎么处理？",
+             "options": [_opt("stop", "按否决，不做", D), _opt("look", "仍想看价格（写下理由）", S, True)]},
+    "caution": {"question": "这些提醒，对你：",
+                "options": [_opt("noted", "知道了，继续", S), _opt("deter", "让我不想做", D)]},
+    "error": {"question": "否决读数失败，请回看明细再继续。", "options": [_opt("go", "继续", S)]},
+}
+_ASK_P = {
+    "price": {"question": "你打算怎么挂单？",
+              # "below" keeps the old Q2 "有更好的理由" semantics: a price under the market's own estimate
+              "options": [_opt("reserve", "按保留价或更高挂单", U), _opt("below", "低于保留价也愿意做（写下理由）", U, True),
+                          _opt("pass", "价格不够，不做", D), _opt("later", "先不定", S)]},
+    "market_missing": {"question": "市场估价或现价缺失，算不出保留价。你打算：",
+                       "options": [_opt("below", "仍愿意做（写下理由）", U, True), _opt("pass", "价格无法判断，不做", D),
+                                   _opt("later", "先不定", S)]},
+    "error": {"question": "价格读数失败，请回看明细再判断。", "options": [_opt("go", "继续", S)]},
+}
+
+
+def _copy(ask: Mapping[str, Any]) -> dict[str, Any]:
+    return {"question": ask["question"], "options": [dict(o) for o in ask["options"]]}
 
 
 def _ask(step_id: str, step: Mapping[str, Any]) -> dict[str, Any] | None:
     code = (step.get("verdict") or {}).get("code") if isinstance(step.get("verdict"), Mapping) else None
     if step_id in _ASKS:
-        base = _ASKS[step_id]
-        return {"question": base["question"], "options": [dict(o) for o in base["options"]]}
+        return _copy(_ASKS[step_id])
+    if step_id == "V":
+        if code == "error" or not step.get("lines"):
+            return _copy(_ASK_V["error"])
+        return _copy(_ASK_V[code]) if code in _ASK_V else None     # no veto, no caution: no question
+    if step_id == "P":
+        if code == "error" or not step.get("lines"):
+            return _copy(_ASK_P["error"])
+        return _copy(_ASK_P["market_missing" if code == "market_missing" else "price"])
     if step_id == "Q1":
         if code == "veto" or step.get("items"):
             return {"question": "有否决项。", "options": [_opt("stop", "按否决，不做", D),
@@ -231,7 +290,15 @@ OPTIONS: dict[str, dict[str, tuple[str, bool]]] = {
     **{sid: {o["key"]: (o["lean"], o["needs_note"]) for o in ask["options"]} for sid, ask in _ASKS.items()},
     "Q1": {"stop": (D, False), "look": (S, True), "go": (S, False)},
     "Q2": {"yes": (U, True), "no": (D, False), "mid": (S, False), "go": (S, False)},
+    **{sid: {o["key"]: (o["lean"], o["needs_note"]) for ask in asks.values() for o in ask["options"]}
+       for sid, asks in (("V", _ASK_V), ("P", _ASK_P))},
 }
+
+
+def option_label(step_id: str, key: str) -> str | None:
+    """The label an option key of a step is shown with (its first variant's)."""
+    variants = [_ASKS[step_id]] if step_id in _ASKS else list({"V": _ASK_V, "P": _ASK_P}.get(step_id, {}).values())
+    return next((o["label"] for ask in variants for o in ask["options"] if o["key"] == key), None)
 
 
 # ---------------------------------------------------------------- evidence
@@ -318,6 +385,17 @@ def _iv_rv_item(steps: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _evidence(step_id: str, steps: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The graded evidence a step offers. The composites (dp-2026-10-27.1) offer their components':
+    P = Q2's, R = D2's, T's and D3's plus events, V = the cushion and the execution item."""
+    if step_id in ("P", "R", "V"):
+        parts = {"P": ("Q2",), "R": ("D2", "T", "D3", "Q2"), "V": ("D2", "Q2")}[step_id]
+        keep = EVIDENCE_KEYS[step_id]
+        out: dict[str, dict[str, Any]] = {}
+        for sid in parts:
+            for e in _evidence(sid, steps):
+                if e["key"] in keep:
+                    out.setdefault(e["key"], e)
+        return list(out.values())
     items: list[dict[str, Any] | None] = []
     if step_id == "Q2":
         items = [
@@ -374,6 +452,13 @@ EVIDENCE_KEYS: dict[str, frozenset[str]] = {
     "D3": frozenset({"direction_flow", "early_touch", "move_15m"}),
     "T": frozenset({"busy_window_note", "entry_hour_1600", "market_state"}),
 }
+# dp-2026-10-27.1: no evidence item exists for the entry warnings themselves (unvalidated vetoes);
+# R also offers the events item, whose lines (D4) it reads
+EVIDENCE_KEYS.update({
+    "V": frozenset({"cushion_vs_standard", "execution_mid"}),
+    "R": EVIDENCE_KEYS["T"] | EVIDENCE_KEYS["D2"] | EVIDENCE_KEYS["D3"] | {"events_priced"},
+    "P": EVIDENCE_KEYS["Q2"],
+})
 
 
 # ---------------------------------------------------------------- one step
@@ -412,7 +497,8 @@ def _narrate_step(step_id: str, step: Any, steps: Mapping[str, Any]) -> tuple[di
         if group is not None:
             parts = group["parts"]
             text = _veto_join(parts) if group["name"] == "veto" else "，".join(p.rstrip(_END) for p in parts)
-            sentences.append({"text": _sentence(text), "fn": sorted(set(group["fn"])), "tone": group["tone"]})
+            sentences.append({"text": _sentence(text), "fn": sorted(set(group["fn"])), "tone": group["tone"],
+                              "keys": [str(lines[i].get("k") or "") for i in group["lines"]]})
             for i in group["lines"]:
                 where[i] = sentences[-1]
             group = None
@@ -421,7 +507,7 @@ def _narrate_step(step_id: str, step: Any, steps: Mapping[str, Any]) -> tuple[di
         if not isinstance(line, Mapping):
             continue
         key, value = str(line.get("k") or ""), str(line.get("v") if line.get("v") is not None else "")
-        template, name = _template(step_id, key)
+        template, name = _template(step_id, key, str(line.get("src") or "") or None)
         text = template(value)
         refs = fn(line.get("basis"))
         covered.append(index)
@@ -442,7 +528,7 @@ def _narrate_step(step_id: str, step: Any, steps: Mapping[str, Any]) -> tuple[di
         if name is not None:
             group = {"name": name, "parts": [text], "fn": list(refs), "tone": tone, "lines": [index]}
         else:
-            sentences.append({"text": _sentence(text), "fn": refs, "tone": tone})
+            sentences.append({"text": _sentence(text), "fn": refs, "tone": tone, "keys": [key]})
             where[index] = sentences[-1]
     flush()
     return ({"lead": _lead(step_id, step.get("verdict")), "sentences": sentences, "background": background,
