@@ -1,6 +1,6 @@
 // Normalize the workbench reading view into what the page draws.
 // Display only: no value here is used for permission or accounting.
-import { get, isNum, kusd } from "./format.js";
+import { get, isNum, kusd, usd, pct } from "./format.js";
 import { TERM_CN, evidenceLabels } from "./glossary.js";
 
 const REASONS = {
@@ -181,8 +181,17 @@ export function sideModel(view, candidate) {
   const be = (liab.breakeven_usd || []).find(isNum);
   const info = gexInfo(view, candidate);
   const token = String(c.short_instrument || "").split("-")[1];
-  const iv = horizonIv(info, token ? token.toUpperCase() : null, isNum(hours) ? hours / 24 : null, expiryProfile(view, token));
-  const sigmaPct = iv && isNum(hours) && hours > 0 ? iv.iv * Math.sqrt(hours / 8760) : null;
+  // candidate_readings@0.1 states one expected move for this contract (its own ATM IV) with its
+  // source; the old per-page computation stays for cached views without it (docs/opus/23 §1.3).
+  const readings = candidate.readings && typeof candidate.readings === "object" ? candidate.readings : null;
+  const em = (readings && readings.expected_move) || {};
+  let iv = horizonIv(info, token ? token.toUpperCase() : null, isNum(hours) ? hours / 24 : null, expiryProfile(view, token));
+  let sigmaPct = iv && isNum(hours) && hours > 0 ? iv.iv * Math.sqrt(hours / 8760) : null;
+  if (isNum(em.move_pct) && em.move_pct > 0) {
+    sigmaPct = em.move_pct;
+    iv = { iv: isNum(em.iv_pct) ? em.iv_pct : iv?.iv ?? null, expiry: token ? token.toUpperCase() : iv?.expiry ?? null,
+      match: "readings", source: em.iv_source_cn || null };
+  }
   const width = isNum(c.width_usd) ? c.width_usd : (isNum(c.short_strike_usd) && isNum(c.long_strike_usd) ? Math.abs(c.short_strike_usd - c.long_strike_usd) : null);
   const credit = eco.visible_credit_btc;
   const creditToWidth = isNum(credit) && isNum(spot) && isNum(width) && width > 0 ? (credit * spot) / width : null;
@@ -206,7 +215,9 @@ export function sideModel(view, candidate) {
     mu: eco.mu_ref_btc,
     shortOutsidePct: outside(c.short_strike_usd), beOutsidePct: outside(be),
     iv, sigmaPct,
-    beMovePct: isNum(sigmaPct) && sigmaPct > 0 && isNum(be) ? outside(be) / sigmaPct : null,
+    beMovePct: isNum(em.breakeven_in_moves) ? em.breakeven_in_moves
+      : isNum(sigmaPct) && sigmaPct > 0 && isNum(be) ? outside(be) / sigmaPct : null,
+    readings,
     creditToWidth, credit,
     delta: isNum(disc.short_delta) ? disc.short_delta : null,
     deltaTarget: disc.short_delta_target_abs,
@@ -358,13 +369,96 @@ function dedupeEvidence(rows) {
   return [...seen.values()];
 }
 
+/** Where the σ of the map comes from, said in words: "本期 Deribit 标记 ATM IV 35.6%". */
+export function sigmaSource(m) {
+  const iv = m && m.iv;
+  if (!iv || !isNum(m.sigmaPct)) return null;
+  const value = isNum(iv.iv) ? ` ${pct(iv.iv)}` : "";
+  return iv.source ? `${iv.source}${value}` : `${iv.expiry || "近月"} ATM IV${value}`;
+}
+
+const signedUsd = (v) => (isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${usd(Math.abs(v))}` : "—");
+// the reference is the median of the first readings of the cycle, named by its hour ("08:00")
+const hhUtc = (ms) => (isNum(ms) ? `${String(new Date(ms).getUTCHours()).padStart(2, "0")}:00` : null);
+
+/**
+ * The card's four rows from candidate_readings@0.1 (docs/opus/23 §2.2 ① ② ④): buffer in expected
+ * moves, compensation against the market's own price split into what execution can and cannot
+ * recover, the worst case against the compensation, and the price of a unit of remaining risk.
+ * Each row is {key, label, big, chip?, chipCls?, subs: [{text, muted?}], title?}; a part the
+ * backend did not provide is left out. null when the candidate carries no readings (old views).
+ */
+export function deckRows(m) {
+  const rd = m && m.readings;
+  if (!rd || typeof rd !== "object") return null;
+  const rows = [];
+  const em = rd.expected_move;
+  if (em && (isNum(em.distance_in_moves) || isNum(em.short_distance_pct))) {
+    const short = [isNum(em.short_distance_pct) ? `短腿 ${pct(em.short_distance_pct, 2)}` : null,
+      isNum(em.short_distance_usd) ? `${usd(Math.abs(em.short_distance_usd))} 美元` : null,
+      isNum(m.delta) ? `Delta ${Math.abs(m.delta).toFixed(2)}` : null].filter(Boolean).join(" · ");
+    const be = isNum(em.breakeven_distance_pct)
+      ? `盈亏平衡 ${pct(em.breakeven_distance_pct, 2)}${isNum(em.breakeven_in_moves) ? `（${em.breakeven_in_moves.toFixed(1)} 倍）` : ""}`
+      : m.breakevenState === "none" ? "盈亏平衡：无（净信用不为正）" : null;
+    const source = (em.iv_source_cn || isNum(em.iv_pct)) ? `σ 来源：${em.iv_source_cn || "ATM IV"}${isNum(em.iv_pct) ? ` ${pct(em.iv_pct)}` : ""}` : null;
+    rows.push({ key: "buffer", label: "缓冲",
+      big: isNum(em.distance_in_moves) ? `${em.distance_in_moves.toFixed(2)} 倍预期波动` : `短腿距现价 ${pct(em.short_distance_pct, 2)}`,
+      chip: em.band_cn || null, chipCls: em.band === "narrow" || em.band === "inside" ? "warn" : "",
+      subs: [{ text: [short, be, source].filter(Boolean).join("；") }].filter((x) => x.text) });
+  }
+  const p = rd.pricing;
+  if (p && typeof p === "object") {
+    if (!isNum(p.net_credit_usd)) {
+      const feeUnknown = !isNum(p.fee_usd) && !isNum(p.fee_btc);
+      rows.push({ key: "compensation", label: "补偿", big: feeUnknown ? "费用未知" : "净信用未能计算",
+        subs: [{ text: (feeUnknown ? "费用未知，补偿不计算" : "报价不足，补偿不计算")
+          + (isNum(p.credit_usd) ? `；可见信用 ${usd(p.credit_usd)} 美元（未扣费）` : "") }] });
+    } else {
+      const subs = [];
+      if (isNum(p.edge_usd)) {
+        const parts = isNum(p.spread_cost_usd) && isNum(p.fee_cost_usd)
+          ? ` = 买卖价差 ${signedUsd(p.spread_cost_usd)}（挂单接近中间价可部分收回）+ 费用 ${signedUsd(p.fee_cost_usd)}${p.fee_assumed ? "（费用按公开上限假设）" : ""}`
+          : p.fee_assumed ? "（费用按公开上限假设）" : "";
+        subs.push({ text: `比市场估价 ${signedUsd(p.edge_usd)} 美元${parts}` });
+      } else {
+        subs.push({ text: `两腿标记价缺失，市场估价不计算${p.fee_assumed ? "（费用按公开上限假设）" : ""}` });
+      }
+      if (isNum(p.skew_cost_usd)) {
+        const pts = isNum(p.skew_vol_pts) ? `保护腿 mark IV 比短腿${p.skew_vol_pts >= 0 ? "高" : "低"} ${Math.abs(p.skew_vol_pts).toFixed(1)} 点` : "两腿 mark IV 不同";
+        subs.push({ text: p.skew_cost_usd > 0
+          ? `市场估价已含偏斜：${pts}，约 ${usd(p.skew_cost_usd)} 美元（结构性，执行收不回，不在上面的差额里）`
+          : `市场估价已含偏斜：${pts}，没有带来额外的保护成本` });
+      }
+      rows.push({ key: "compensation", label: "补偿", big: `净信用 ${usd(p.net_credit_usd)} 美元`, subs,
+        title: p.fee_basis_cn || null });
+    }
+    if (isNum(p.loss_at_protection_usd)) {
+      const text = [isNum(p.worst_to_net_ratio) ? `约为净信用的 ${Math.abs(p.worst_to_net_ratio).toFixed(1)} 倍` : null, p.tail_cn || null]
+        .filter(Boolean).join("；");
+      rows.push({ key: "worst", label: "最坏", big: `保护腿处亏 ${usd(Math.abs(p.loss_at_protection_usd))} 美元`,
+        subs: text ? [{ text }] : [] });
+    }
+  }
+  const cp = rd.clock_price;
+  if (cp && isNum(cp.iv_clock_adjusted)) {
+    const ref = isNum(cp.ref_cycle_start) ? `本周期 ${hhUtc(cp.ref_at_ms) || "08:00"} UTC 为 ${pct(cp.ref_cycle_start)}` : null;
+    const rv = isNum(cp.rv24_clock_adjusted) ? `近 24 小时实现（同口径）${pct(cp.rv24_clock_adjusted)}`
+      : isNum(cp.rv24_pct) ? `近 24 小时实现 ${pct(cp.rv24_pct)}（未经时钟校正）` : null;
+    const subs = [];
+    if (ref || rv) subs.push({ text: [ref, rv].filter(Boolean).join("；") });
+    if (cp.basis_cn) subs.push({ text: cp.basis_cn, muted: true });
+    rows.push({ key: "clock", label: "单位风险价格", big: `时钟校正 IV ${pct(cp.iv_clock_adjusted)}`, subs, title: cp.meaning_cn || null });
+  }
+  return rows.length ? rows : null;
+}
+
 /** Map model: spot, both books, σ, walls, markers and zones on one price axis. */
 export function mapModel(view, sides) {
   const spot = get(view, "market_context.current_price_usd") ?? get(view, "btc_map.current_price_usd")
     ?? sides.put?.spot ?? sides.call?.spot;
   const ref = sides.put?.snap ? sides.put : sides.call;
   const info = gexInfo(view, ref?.candidate);
-  const model = { spot, sigmaPct: ref?.sigmaPct ?? null, sides: {}, walls: [], markers: [], zones: [], levels: [] };
+  const model = { spot, sigmaPct: ref?.sigmaPct ?? null, sigmaSource: sigmaSource(ref), sides: {}, walls: [], markers: [], zones: [], levels: [] };
   for (const k of ["put", "call"]) {
     const sm = sides[k];
     if (sm && sm.snap) model.sides[k] = { short: sm.short, long: sm.long, breakeven: sm.breakeven, beOutsidePct: sm.beOutsidePct, beMovePct: sm.beMovePct };

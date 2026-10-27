@@ -104,6 +104,7 @@ a.state { text-decoration: none; }
 .lamp.ok { background: var(--ok); }
 .lamp.warn { background: var(--warn); }
 .lamp.bad { background: var(--liability); }
+.lamp.time { background: var(--depth); }
 .sources { display: flex; gap: 3px; align-items: center; }
 .sources i { width: 6px; height: 14px; border-radius: 2px; background: var(--off); display: block; }
 .sources i.ok { background: var(--ok); }
@@ -215,6 +216,16 @@ section.band { margin-top: 28px; }
 .fig .k { color: var(--ink-3); font-size: 12.5px; margin-top: 2px; }
 .fig.warn .v { color: var(--warn); }
 .fig.bad .v { color: var(--liability); }
+/* deck rows (docs/opus/23): buffer, compensation, worst case, price of a unit of remaining risk */
+.deck-rows { display: grid; gap: 10px; margin: 14px 0 6px; }
+.drow { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); column-gap: 12px; align-items: baseline; }
+.drow-k { color: var(--ink-3); font-size: 12.5px; }
+.drow-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.drow-v { font-family: var(--font-num); font-variant-numeric: tabular-nums; font-size: var(--step-1); font-weight: 650; line-height: 1.25; }
+.drow-sub { font-size: 12.5px; line-height: 1.55; color: var(--ink-2); margin-top: 2px; }
+.drow-sub.muted { color: var(--ink-3); font-size: 12px; }
+.deck-note { margin: 4px 0 0; }
+@media (max-width: 520px) { .drow { grid-template-columns: 1fr; } }
 
 .sigma-rule { position: relative; height: 44px; margin: 10px 8px 4px; }
 .sigma-rule .sr-track { position: absolute; left: 0; right: 0; top: 18px; height: 6px; border-radius: 3px; background: var(--paper-2); overflow: hidden; }
@@ -669,6 +680,8 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
 .ss-key { display: inline-block; flex: none; width: 12px; height: 10px; border-radius: 2px; }
 .ss-key.now-key { outline: 2px solid var(--ink); background: transparent; }
 .ss-key.held-key { box-shadow: inset 0 -3px 0 var(--ink-2); background: var(--paper-2); }
+.ss-cell.win::after, .ss-key.win-key::after { content: ""; position: absolute; top: 2px; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--ink); }
+.ss-key.win-key { position: relative; background: var(--paper-2); }
 .ss-basis { margin: 4px 0 0; color: var(--ink-3); line-height: 1.5; }
 .entry-warnings { margin: 8px 0 10px; padding: 9px 12px; border-radius: 8px; background: var(--paper-2);
   border-left: 3px solid var(--warn); font-size: 13px; cursor: default; }

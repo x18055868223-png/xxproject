@@ -36,6 +36,19 @@ export function clockModel(view, now = Date.now()) {
   };
 }
 
+// The top strip's time lamp: how much of the cycle's risk is still ahead and the next
+// high-variance window. A fact about the clock, never a verdict (docs/opus/23 §3 P1).
+export function timeLamp(view, now = Date.now()) {
+  const m = clockModel(view, now);
+  if (!m.available) return { level: "off", text: "时段读数缺失", title: m.reason };
+  const next = m.windows[0];
+  const risk = `剩余风险 ${share(m.riskLeft)}`;
+  const win = next ? `${next.label} ${next.until}` : "交割前无高波动窗口";   // short: the strip stays one line
+  const title = ["剩余风险 = 到交割前还剩下的日内方差占一个完整持仓周期的比例（近两年 BTC 日内节律）",
+    ...m.windows.map((w) => `${w.label}：北京 ${w.bj}（UTC ${w.utc}），${w.until}`)].join("\n");
+  return { level: "time", text: `${risk} · ${win}`, title };
+}
+
 // Risk density of each hour: its historical price variance relative to the all-days hourly mean.
 // A fact about the hour, not a verdict: the US session is also where the day is priced, and a
 // quiet late hour leaves little premium against an unchanged maximum loss.
@@ -43,12 +56,20 @@ export const densityTier = (r) => (!isNum(r) ? "na" : r >= 1.25 ? "busy" : r < 0
 const TIER_CN = { busy: "波动集中", mid: "接近平均", quiet: "安静", na: "—" };
 
 // The 24 hours of one holding cycle, starting at the 08:00 UTC expiry (16:00 Beijing), with
-// the current hour and the contract's remaining hours marked.
+// the current hour, the contract's remaining hours and the high-variance windows (US open,
+// CME reopen, macro releases) marked in the hour they fall in.
 export function cycleCells(c, now) {
   const profile = c.hour_profile || {};
   const start = new Date(c.expiry_ms).getUTCHours();
   const nowHour = c.now_hour_utc;
   const hoursLeft = isNum(c.hours_to_expiry) ? Math.min(24, Math.ceil(c.hours_to_expiry)) : 0;
+  const cycleStart = isNum(c.expiry_ms) ? c.expiry_ms - 24 * 3.6e6 : null;
+  const wins = Array.from({ length: 24 }, () => []);
+  for (const w of c.windows || []) {
+    if (!w || !isNum(w.at_ms) || !isNum(cycleStart)) continue;
+    const i = Math.floor((w.at_ms - cycleStart) / 3.6e6);
+    if (i >= 0 && i < 24) wins[i].push({ label: w.label_cn + (w.tentative ? "（日期待确认）" : ""), bj: bj(w.at_ms), utc: utc(w.at_ms), kind: w.kind });
+  }
   const cells = [];
   for (let i = 0; i < 24; i += 1) {
     const hourUtc = (start + i) % 24;
@@ -57,7 +78,7 @@ export function cycleCells(c, now) {
     // hours left until expiry: the last `hoursLeft` columns of the cycle
     const held = i >= 24 - hoursLeft;
     cells.push({ hourUtc, hourBj: (hourUtc + 8) % 24, current: hourUtc === nowHour && held,
-      held, weekday: { risk: wd.risk_ratio, tier: densityTier(wd.risk_ratio) },
+      held, windows: wins[i], weekday: { risk: wd.risk_ratio, tier: densityTier(wd.risk_ratio) },
       weekend: { risk: we.risk_ratio, tier: densityTier(we.risk_ratio) } });
   }
   return cells;
@@ -69,10 +90,14 @@ export function sessionStrip(view, now = Date.now()) {
   const c = get(view, "session_clock");
   const cells = cycleCells(c, now);
   const today = c.now_day_type === "weekend" ? "weekend" : "weekday";
-  const cell = (x, type) => h("td", {
-    class: `ss-cell ${x[type].tier}${x.current && type === today ? " now" : ""}${x.held && type === today ? " held" : ""}`,
-    title: `北京 ${String(x.hourBj).padStart(2, "0")}:00（UTC ${String(x.hourUtc).padStart(2, "0")}:00）`
-      + `：波动为全天平均的 ${NUM(x[type].risk)} 倍（${TIER_CN[x[type].tier]}）` });
+  const cell = (x, type) => {
+    const win = type === today && x.windows.length ? x.windows : null;
+    return h("td", {
+      class: `ss-cell ${x[type].tier}${x.current && type === today ? " now" : ""}${x.held && type === today ? " held" : ""}${win ? " win" : ""}`,
+      title: `北京 ${String(x.hourBj).padStart(2, "0")}:00（UTC ${String(x.hourUtc).padStart(2, "0")}:00）`
+        + `：波动为全天平均的 ${NUM(x[type].risk)} 倍（${TIER_CN[x[type].tier]}）`
+        + (win ? `；高波动窗口：${win.map((w) => `${w.label} 北京 ${w.bj}`).join("、")}` : "") });
+  };
   const row = (type, label) => h("tr", { class: type === today ? "today" : "" },
     h("th", { scope: "row", text: label, title: type === today ? "今天" : "" }), ...cells.map((x) => cell(x, type)));
   const head = h("tr", {}, h("th", {}), ...cells.map((x, i) => h("th", {
@@ -91,7 +116,8 @@ export function sessionStrip(view, now = Date.now()) {
       h("tbody", {}, row("weekday", "工作日"), row("weekend", "周末")))),
     h("ul", { class: "ss-legend small" },
       ...[["busy", "波动集中（≥ 平均 1.25 倍，工作日美股开盘前后）"], ["mid", "接近平均"],
-        ["quiet", "安静（< 平均 0.8 倍，工作日亚洲上午）"], ["now-key", "现在"], ["held-key", "本合约剩余持仓时段"]]
+        ["quiet", "安静（< 平均 0.8 倍，工作日亚洲上午）"], ["now-key", "现在"], ["held-key", "本合约剩余持仓时段"],
+        ["win-key", "高波动窗口所在小时（美股开盘、CME 周日开盘、宏观发布；悬停看名称）"]]
         .map(([cls, text]) => h("li", {}, h("span", { class: `ss-key ${cls}` }), h("span", { text })))),
     h("p", { class: "ss-rows small muted", text: `上一行是工作日，下一行是周末；${today === "weekend" ? "今天是周末" : "今天是工作日"}，对应的一行更深。` }),
     h("p", { class: "ss-basis small", text: "说明：颜色只表示该小时过去两年的波动强度。美股开盘前后是全天关键定价窗口，选腿的主要证据来自这里；"

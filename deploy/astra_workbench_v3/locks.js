@@ -44,8 +44,8 @@ const ROW_STATUS_CN = {
 };
 const TREND_CN = { strong_bullish_bias: "强偏多", bullish_bias: "偏多", neutral: "中性", bearish_bias: "偏空", strong_bearish_bias: "强偏空" };
 const FLOW_DIR_CN = { bullish: "主动买方占优", bearish: "主动卖方占优", neutral: "均衡" };
-const GAMMA_CN = { POSITIVE_GAMMA_PINNING: "正 Gamma 钉住", NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma 放大", TRANSITION: "翻转位附近过渡", UNKNOWN: "未知" };
-const MACRO_CN = { "Mild Tailwind": "温和顺风", "Strong Tailwind": "强顺风", "Mild Headwind": "温和逆风", "Strong Headwind": "强逆风", Neutral: "中性" };
+// Readings only, as in the fact layer (docs/opus/23 §1.1): no pinning, no tailwind / headwind.
+const GAMMA_CN = { POSITIVE_GAMMA_PINNING: "正 Gamma", NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma", TRANSITION: "过渡", UNKNOWN: "未知" };
 const GATE_CN = { STRUCTURE_BLOCKED: "FMZ 空间门关闭（仅参考）", STRUCTURE_ELIGIBLE: "FMZ 空间门放行（仅参考）" };
 
 const btcText = (v, d = 5) => (isNum(v) ? `${v < 0 ? "−" : ""}${Math.abs(v).toFixed(d).replace(/0+$/, "").replace(/\.$/, "")} BTC` : "—");
@@ -167,7 +167,7 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   if (settlement) box.append(settlementView(settlement, c));
 
   // Now first: floating P&L, share of max profit and time left; the lock-time row follows.
-  box.append(section("现在", floatView(series, seriesError)));
+  box.append(section("现在", floatView(series, seriesError), pathNowView(ov.path_now)));
 
   // The lock-time reasons, re-decided by fixed rules at every sample, and the hold review.
   if (series?.thesis_ledger) box.append(section("锁定时的依据，现在怎样",
@@ -293,6 +293,31 @@ function settlementView(st, c) {
     h("small", { text: `交割价 ${usd(st.delivery.delivery_price_usd)}（${st.delivery.date}，${where}）；到期赔付 ${btcText(st.payout_btc)}；锁定时扣费后信用 ${isNum(st.entry_after_fee_btc) ? btcText(st.entry_after_fee_btc) : "缺失"}。按交易所交割价计算的静态结果，不是成交记录。` }));
 }
 
+// ── conditional remaining risk while held (docs/opus/23 §2.2 ③) ───
+const hh = (x) => String(((Math.round(x) % 24) + 24) % 24).padStart(2, "0");
+const pctText = (v) => (isNum(v) ? `${v < 10 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)}%` : "—");
+
+/** overview.path_now in words: {text, muted, basis}, or null when the detail has none. */
+export function pathNowModel(pn) {
+  if (!pn || typeof pn !== "object") return null;
+  const basis = pn.basis_cn || null;
+  if (pn.applicable === false) return { text: pn.why_cn || "条件剩余风险不适用于本合约", muted: true, basis };
+  if (pn.touched) return { text: pn.touch_cn ? `已触及短腿：${pn.touch_cn}` : "短腿已被触及", muted: false, basis };
+  const sv = pn.survival;
+  if (sv && isNum(sv.hour_utc)) {
+    return { text: `若到 ${hh(sv.hour_utc)}:00 UTC（北京 ${hh(sv.hour_utc + 8)}:00）仍未触及：之后触及约 ${pctText(sv.later_touch_pct)}，到期越过约 ${pctText(sv.beyond_pct)}`,
+      muted: false, basis };
+  }
+  return { text: `尚未触及短腿；${pn.why_cn || "条件剩余风险读数暂缺"}`, muted: true, basis };
+}
+
+function pathNowView(pn) {
+  const m = pathNowModel(pn);
+  if (!m) return null;
+  return h("div", { class: "ld-pathnow" }, h("p", { class: m.muted ? "muted small" : "", text: m.text }),
+    m.basis ? h("p", { class: "muted small", text: m.basis }) : null);
+}
+
 // ── lock-time reasons (thesis ledger) and the hold review ─────────
 const TONE_CLASS = { ok: "ok", warn: "warn", bad: "bad", muted: "skip" };
 const HOLD_BLOCK_CN = {
@@ -309,6 +334,29 @@ const HOLD_FAIL_CN = {
   BUDGET_EXHAUSTED: "今日模型额度已用完",
 };
 
+// Only the reasons with evidence (buffer, breakeven, compensation) are lock-time reasons; Gamma,
+// anchor and flow are background (C/X readings, docs/opus/23 §1.1). Ledgers without roles read
+// L1–L3 as the basis and L4–L6 as background.
+const BASIS_IDS = new Set(["L1", "L2", "L3"]);
+export const thesisRole = (t) => (t && (t.role === "basis" || t.role === "background") ? t.role : BASIS_IDS.has(t && t.id) ? "basis" : "background");
+
+/** {basis, background, headline, backgroundCn} from a ledger, old or new. */
+export function splitTheses(led) {
+  const theses = (led && led.theses) || [];
+  const p = (led && led.projection_cn) || {};
+  const basis = theses.filter((t) => thesisRole(t) === "basis");
+  const background = theses.filter((t) => thesisRole(t) === "background");
+  const legacy = !theses.some((t) => t && t.role);
+  // an old headline speaks for every lane, so it is rebuilt from the basis alone
+  const headline = !legacy && p.headline_cn ? p.headline_cn
+    : basis.length ? basis.map((t) => `${t.label_cn}：${t.state_now_cn || "—"}`).join("；") + "。" : "";
+  // a 1.1 ledger lists only the background lanes that moved; an older one lists them all
+  const backgroundCn = Array.isArray(p.background_cn)
+    ? (p.background_cn.length ? p.background_cn : background.length ? ["锁定以来背景读数没有变化"] : [])
+    : background.map((t) => `${t.label_cn}：锁定时${String(t.claim_cn || "—").replace(/^锁定时已不利：/, "")} → 现在${t.state_now_cn || "—"}`);
+  return { basis, background, headline, backgroundCn };
+}
+
 /** The lock-time reasons, each judged by fixed rules at every sample: what was assumed,
  * where it stands now, and what happened in between (lowest point, time in a worse state). */
 export function ledgerView(led, hold, { session, busy, onHoldReview } = {}) {
@@ -318,14 +366,15 @@ export function ledgerView(led, hold, { session, busy, onHoldReview } = {}) {
     return box;
   }
   const p = led.projection_cn || {};
-  box.append(h("p", { class: "ledger-head", text: p.headline_cn || "" }));
+  const split = splitTheses(led);
+  box.append(h("p", { class: "ledger-head", text: split.headline }));
   const lines = [["位置", p.where_cn], ["节奏", (p.rhythm_cn || []).join("；")]].filter(([, v]) => v);
   box.append(h("dl", { class: "ledger-qa" }, ...lines.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
 
   const t = h("table", { class: "t compact ledger-t" }, h("thead", {}, h("tr", {},
     ...["依据", "锁定时", "现在", "期间"].map((x) => h("th", { text: x })))));
   const tb = h("tbody");
-  for (const th of led.theses || []) {
+  for (const th of split.basis) {
     const recorded = th.state_now !== "NOT_RECORDED";
     tb.append(h("tr", { class: recorded ? "" : "muted" },
       h("td", { title: th.rule_cn || "" }, h("b", { text: th.label_cn })),
@@ -343,10 +392,14 @@ export function ledgerView(led, hold, { session, busy, onHoldReview } = {}) {
   const unknown = [...(p.unknown_cn || [])];
   if ((gaps.new || []).length) unknown.push(`锁定后新出现的数据缺口：${gaps.new.map(gapCn).join("、")}`);
   if (unknown.length) box.append(h("ul", { class: "ledger-unknown muted small" }, ...unknown.map((x) => h("li", { text: x }))));
-  const rules = (led.theses || []).filter((x) => x.rule_cn);
+  if (split.backgroundCn.length) box.append(h("details", { class: "ctx-note ledger-bg" },
+    h("summary", { text: "背景变化（不作依据）" }),
+    h("ul", { class: "small" }, ...split.backgroundCn.map((x) => h("li", { text: x }))),
+    h("p", { class: "small muted", text: "Gamma 体制、锚定与流向是 C/X 级读数（17 号），只记录变化，不作锁定依据；新状态需持续 30 分钟才记为变化。" })));
+  const rules = split.basis.filter((x) => x.rule_cn);
   box.append(h("details", { class: "ctx-note" }, h("summary", { text: "判定规则" }),
     h("ul", { class: "small" }, ...rules.map((x) => h("li", { text: `${x.label_cn}：${x.rule_cn}` }))),
-    h("p", { class: "small", text: `${p.note_cn || ""} 分类依据（Gamma、锚定、流向）的新状态需持续 30 分钟才改判；数值依据回到更好状态需多越过 10%。` })));
+    h("p", { class: "small", text: `${p.note_cn || ""} 数值依据回到更好状态需多越过 10%。` })));
 
   if (hold) box.append(holdView(led, hold, { session, busy, onHoldReview }));
   return box;
@@ -453,7 +506,7 @@ function ctxValue(key, point) {
       const g = GAMMA_CN[get(v, "gamma_regime.regime")]; const gate = GATE_CN[get(v, "space_gate.state")];
       return [gate, g].filter(Boolean).join("，") || "—";
     }
-    case "context.macro": return MACRO_CN[v.macro_regime] || (isNum(v.macro_score) ? `得分 ${v.macro_score.toFixed(2)}` : "—");
+    case "context.macro": return isNum(v.macro_score) ? `得分 ${v.macro_score.toFixed(2)}` : "—";
     case "context.skew": return isNum(v.rr_blend) ? (v.rr_blend < 0 ? "看跌期权更贵" : v.rr_blend > 0 ? "看涨期权更贵" : "均衡") : "—";
     case "risk.status": return v === "missing" ? "缺失" : v === "qualified" ? "合格" : "其他状态";
     case "opinion.q1.direct_refs": case "opinion.q2.direct_refs": return (v.summary_cn || "—").replace(/(\d+\.\d{4})\d+/g, "$1");
@@ -516,7 +569,7 @@ function payoffChart({ side, ks, kl, net, be, t0Spot, t1Spot, settle }) {
 
 // ── process over time ────────────────────────────
 const FLOW_SIGN = { bullish: 1, neutral_to_bullish: 1, bearish: -1, neutral_to_bearish: -1 };
-const GAMMA_TONE = { POSITIVE_GAMMA_PINNING: "var(--depth)", NEGATIVE_GAMMA_AMPLIFYING: "var(--neg-gamma)", TRANSITION: "var(--warn)" };
+const GAMMA_TONE = { POSITIVE_GAMMA_PINNING: "var(--depth)", NEGATIVE_GAMMA_AMPLIFYING: "var(--neg-gamma)", TRANSITION: "var(--ink-3)" };   // a regime word, not a caution (docs/opus/23 §1.1)
 const hhmm = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 const mdhm = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 
@@ -628,8 +681,7 @@ export function processView(series, c, { be }) {
     ["主动成交", (p) => {
       if (p.flow_ready === false || !p.flow_direction) return null;
       const sgn = FLOW_SIGN[p.flow_direction];
-      if (!sgn) return "var(--ink-3)";
-      return (sgn > 0) === (side === "put") ? "var(--ok)" : "var(--liability)";
+      return !sgn ? "var(--ink-3)" : sgn > 0 ? "var(--depth)" : "var(--ink-2)";
     }],
     ["Gamma", (p) => GAMMA_TONE[p.gamma_regime] || (p.gamma_regime ? "var(--ink-3)" : null)],
   ];
@@ -684,7 +736,7 @@ export function processView(series, c, { be }) {
     `${pts.length} 个点${series.thinned ? "（已均匀抽样显示）" : ""}`,
     isNum(med) ? `实测采样间隔中位数 ${dur(med)}` : null,
     (series.gaps || []).length ? `红色刻度为采样缺口（${series.gaps.length} 次）` : null,
-    "状态条：绿为 FMZ 原生空间门放行或对本单有利，琥珀为原生门关闭或过渡（只作参考，不是准入），红为对本单不利，灰为中性或缺数据",
+    "状态条只记读数：FMZ 原生门绿为放行、琥珀为关闭（只作参考，不是准入）；主动成交蓝为买方占优、深灰为卖方占优、浅灰为均衡；Gamma 蓝为正、紫为负、琥珀为过渡；空白为缺数据",
   ].filter(Boolean).join("；") + "。" }));
   return wrap;
 }

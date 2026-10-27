@@ -3,12 +3,12 @@
 import { api, idempotencyKey } from "./api.js";
 import { h, s, clear, get, isNum, usd, btc, pct, ratioPct, compactUsd, ago, dur, clock } from "./format.js";
 import { sideModel, mapModel, sourceHealth, reasonCn, hasReason, statusCn, applicability, codeCn, underwriting, productionReady,
-  consumerCn, sourceStatusCn } from "./model.js";
+  consumerCn, sourceStatusCn, deckRows } from "./model.js";
 import { renderMap, legend, ladderTable } from "./map.js";
 import { coreFactors, backgroundItems } from "./factors.js";
 import { lockList, lockDetail, LOCK_LIST_LIMIT } from "./locks.js";
 import { eventBand } from "./events.js";
-import { sessionStrip, warningBlock } from "./session.js";
+import { sessionStrip, warningBlock, timeLamp } from "./session.js";
 import { renderDecision as renderDecisionView } from "./decision.js";
 import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
@@ -165,14 +165,11 @@ function renderStrip() {
   const mc = v.market_context || {};
   $("spot").textContent = usd(mc.current_price_usd ?? get(v, "btc_map.current_price_usd"));
   $("spot-age").textContent = isNum(mc.age_ms) ? `事实 ${dur(mc.age_ms)}前` : "";
-  const gate = v.space_gate || {};
-  const gateReasons = [...new Set([...(gate.reason_codes || []), ...(gate.gap_reasons || [])])].map(reasonCn);
-  // The space structure is evaluated, not gated: the strip shows the anchor score.
-  const anchorScore = get(gate, "anchor.score");
-  const factCurrent = mc.status === "current";
-  setLamp($("gate-state"), isNum(anchorScore) ? (factCurrent ? "ok" : "warn") : "off",
-    isNum(anchorScore) ? `锚点 ${anchorScore.toFixed(0)} / 100` : "锚点缺失");
-  $("gate-state").title = [factCurrent ? null : "FMZ 事实不是当前状态，锚点只作参考", ...gateReasons].filter(Boolean).join("；");
+  // The time lamp: remaining risk of the cycle and the next high-variance window. The anchor
+  // (evaluation only since 10-13) stays in 五要素 and the records, not on the strip.
+  const tl = timeLamp(v);
+  setLamp($("time-state"), tl.level, tl.text);
+  $("time-state").title = tl.title || "";
   const fact = mc.status === "current" ? "ok" : mc.status ? "warn" : "off";
   // background_only: the FMZ fact has a gap (a stale snapshot most often), so it only serves as background.
   const factNote = !mc.status || mc.status === "current" ? ""
@@ -267,9 +264,8 @@ function renderMapBand() {
     scroller.scrollLeft = (scroller.scrollWidth - scroller.clientWidth) / 2;
     scroller.dataset.centered = "1";
   }
-  const ref = state.sides[state.focus];
   $("map-sub").textContent = isNum(model.sigmaPct)
-    ? `到期前隐含预期波动 ±${pct(model.sigmaPct, 2)}，约 ±${usd(model.spot * model.sigmaPct / 100)} 美元（${ref?.iv?.expiry || "近月"} ATM IV ${pct(ref?.iv?.iv)}）`
+    ? `到期前隐含预期波动 ±${pct(model.sigmaPct, 2)}，约 ±${usd(model.spot * model.sigmaPct / 100)} 美元${model.sigmaSource ? `（${model.sigmaSource}）` : ""}`
     : "现价、两侧责任区与市场结构位放在同一价格轴上";
 }
 
@@ -338,16 +334,17 @@ function renderFactors() {
   }
 }
 
-/** Spatial position: one short sentence per side, with the KPF description beneath it. */
+/** Spatial position: per side, the distance in expected moves and what lies on the way (no verdict). */
 function positionLines(lines) {
   const box = h("div", { class: "position-lines" });
   for (const l of lines) {
+    const dist = [isNum(l.distance) ? `距现价 ${pct(l.distance, 2)}` : null,
+      isNum(l.moves) ? `${l.moves.toFixed(2)} 倍预期波动${l.band ? `（${l.band}）` : ""}` : null].filter(Boolean).join("，");
     box.append(h("div", { class: "pos-line" },
       h("div", { class: "pos-head" },
         h("b", { text: `${l.name} 短腿 ${usd(l.short)}` }),
-        h("span", { class: "muted small", text: isNum(l.distance) ? `距现价 ${pct(l.distance, 2)}${isNum(l.moves) ? `，${l.moves.toFixed(1)} 倍预期波动` : ""}` : "" }),
-        h("span", { class: `chip ${l.cls}`, text: l.text })),
-      h("p", { class: "pos-reason", text: l.reason }),
+        h("span", { class: "muted small", text: dist })),
+      h("p", { class: "pos-reason", text: l.way }),
       l.kpf ? h("p", { class: "pos-kpf", text: `KPF（只描述）：${l.kpf}` }) : null));
   }
   return box;
@@ -410,7 +407,17 @@ function deck(m, side, blockers) {
   const distanceSub = !isNum(m.shortOutsidePct) ? "距离未能计算"
     : `${usdOf(m.shortOutsidePct)} 美元，${m.shortOutsidePct >= 0 ? (tone === "bad" ? "贴近责任区" : "在责任区外") : "已进入责任区"}${absDelta ? `；短腿 Delta ${absDelta}` : ""}`;
   const events = get(m, "candidate.exogenous_events.events") || [];
-  // Premium amounts start at Decision Path Q2; the card keeps one ratio for comparing the two sides.
+  const rows = deckRows(m);
+  if (rows) {
+    card.append(deckRowsView(rows));
+    const eventText = !get(m, "candidate.exogenous_events") ? "—" : events.length ? events.map((e) => e.name_cn).join("、")
+      : (get(m, "candidate.exogenous_events.gaps") || []).length ? "日历未完全覆盖本期" : "无";
+    card.append(h("p", { class: "deck-note muted small", title: FIG_TIP["到期前事件"] },
+      `到期前事件：${eventText}　·　${quoteAge}`));
+    card.append(actions(m));
+    return card;
+  }
+  // Older cached views have no readings: the previous four figures.
   card.append(h("div", { class: "figures" },
     fig(pct(m.shortOutsidePct, 2), "短腿距现价", tone, distanceSub),
     fig(beValue, "盈亏平衡距现价", "", beSub),
@@ -421,6 +428,15 @@ function deck(m, side, blockers) {
   ));
   card.append(actions(m));
   return card;
+}
+
+/** 缓冲 / 补偿 / 最坏 / 单位风险价格: label, the reading, then its parts and basis. */
+function deckRowsView(rows) {
+  return h("div", { class: "deck-rows" }, ...rows.map((r) => h("div", { class: `drow ${r.key}`, title: r.title || null },
+    h("div", { class: "drow-k", text: r.label }),
+    h("div", { class: "drow-body" },
+      h("div", { class: "drow-main" }, h("span", { class: "drow-v", text: r.big }), r.chip ? chip(r.chip, r.chipCls || "") : null),
+      ...(r.subs || []).map((x) => h("div", { class: `drow-sub${x.muted ? " muted" : ""}`, text: x.text }))))));
 }
 
 const FIG_TIP = {

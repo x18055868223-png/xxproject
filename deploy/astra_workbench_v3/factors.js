@@ -1,8 +1,9 @@
-// Four core elements of the underwriting decision, plus slow background.
+// Five core elements of the market, plus slow background: the fact layer.
 // Readings come from the FMZ producer's own models (TMV, CVD, M-DIE, macro)
-// and the MAP background. The per-side relation is a fixed display rule:
-// an upward lean favours a Put book and works against a Call book.
-// Each metric row is {label, value, viz?, gap?}; viz is a small inline chart.
+// and the MAP background. They are stated as readings with their basis, never
+// as verdicts: no favourable / unfavourable, no tailwind / headwind, no good or
+// bad colours (docs/opus/23 §1.1; the research behind it is 16, 17 and 20).
+// Each metric row is {label, value, viz?, gap?}; viz is a small neutral chart.
 import { get, isNum, usd, pct, compactUsd, clock, dur, s } from "./format.js";
 import { diverging, gauge, split, positions } from "./viz.js";
 
@@ -10,14 +11,10 @@ const TREND = { strong_bullish_bias: 2, bullish_bias: 1, neutral: 0, bearish_bia
 const TREND_CN = { strong_bullish_bias: "强偏多", bullish_bias: "偏多", neutral: "中性", bearish_bias: "偏空", strong_bearish_bias: "强偏空" };
 const FLOW_CN = { micro_bullish_pressure: "主动买压", micro_bullish_lean: "买方略强", micro_neutral: "均衡",
   micro_bearish_lean: "卖方略强", micro_bearish_pressure: "主动卖压" };
-const GAMMA_CN = { POSITIVE_GAMMA_PINNING: "正 Gamma 钉住", NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma 放大", NEGATIVE_GAMMA: "负 Gamma 放大",
-  POSITIVE_GAMMA: "正 Gamma", TRANSITION: "翻转位附近过渡", UNKNOWN: "未知" };
-const GAMMA_NOTE = {
-  POSITIVE_GAMMA_PINNING: "正 Gamma 下做市商反向对冲，抑制波动。",
-  NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma 下做市商顺向对冲，放大波动。",
-  TRANSITION: "现价贴近翻转位，Gamma 方向不稳定，波动特征可能切换。",
-};
-const MACRO_CN = { "Mild Tailwind": "温和顺风", "Strong Tailwind": "强顺风", "Mild Headwind": "温和逆风", "Strong Headwind": "强逆风", Neutral: "中性" };
+// GEX carries no dealer sign, so pinning or accelerating cannot be told (17 §7.2): the regime is named only.
+export const GAMMA_CN = { POSITIVE_GAMMA_PINNING: "正 Gamma", NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma", NEGATIVE_GAMMA: "负 Gamma",
+  POSITIVE_GAMMA: "正 Gamma", TRANSITION: "过渡", UNKNOWN: "未知" };
+const GAMMA_BASIS = "信号层口径，不区分做市商方向";
 const MACRO_KEY = { VOLQ: "纳指波动率 VXN", DXY: "美元指数 DXY", US10Y: "美债 10Y" };
 const GATE_WHY_CN = {
   SPACE_GATE_NET_GAMMA_NOT_POSITIVE: "净 Gamma 不为正", NET_GAMMA_NON_POSITIVE: "净 Gamma 不为正",
@@ -65,11 +62,6 @@ export function coreFactors(view, spot) {
   // A transition near the flip is not a failure; it may as well be price pinned by the flip.
   const nativeState = gate.producer_state;
   const nativeWhy = [...new Set((gate.producer_reason_codes || []).map((c) => GATE_WHY_CN[c]).filter(Boolean))];
-  const regimeText = {
-    POSITIVE_GAMMA_PINNING: "正 Gamma 钉住（对冲逆势，波动倾向收敛）",
-    NEGATIVE_GAMMA_AMPLIFYING: "负 Gamma 放大（对冲顺势，波动倾向放大）",
-    TRANSITION: "翻转位附近（可能被翻转位锚住，也可能正在切换体制）",
-  };
   const spaceF = {
     key: "space", title: "空间结构", lean: 0,
     headline: isNum(anchor) ? `锚点 ${anchor.toFixed(0)} / 100` : "锚点缺失",
@@ -78,7 +70,7 @@ export function coreFactors(view, spot) {
       reasons.includes("SPACE_GATE_ANCHOR_SCORE_MISSING") && !isNum(anchor) ? pending("锚点评分", "预热中，重启后需积累样本")
         : row("锚点评分", anchorText, isNum(anchor) ? gauge(anchor, 100) : null),
       row("净 Gamma", isNum(netV) ? `${compactUsd(netV)} 美元（${netV > 0 ? "为正" : netV < 0 ? "为负" : "为零"}）` : null),
-      row("Gamma 体制", gamma.regime ? (regimeText[gamma.regime] || GAMMA_CN[gamma.regime] || "其他状态") : null),
+      row("Gamma 体制", gamma.regime ? `${GAMMA_CN[gamma.regime] || "其他状态"}（${GAMMA_BASIS}）` : null),
       row("相对翻转位", isNum(flipOff) ? `现价在翻转位 ${usd(flip)} ${flipOff < 0 ? "下方" : "上方"} ${Math.abs(flipOff).toFixed(2)}%` : null,
         isNum(flipOff) ? diverging(flipOff, 3) : null),
       row("最近墙位", nearUp.length || nearDown.length
@@ -100,7 +92,7 @@ export function coreFactors(view, spot) {
   const pathF = {
     key: "path", title: "量价路径",
     lean: tLean.length ? sign(tLean.reduce((a, b) => a + b, 0)) : null,
-    headline: `${TREND_CN[t24.final_state] || "未就绪"} / ${TREND_CN[t48.final_state] || "未就绪"}`,
+    headline: `TMV 24h ${TREND_CN[t24.final_state] || "未就绪"} · 48h ${TREND_CN[t48.final_state] || "未就绪"}（同源，不计票）`,
     rows: [
       row("TMV 24h", isNum(tmv(t24)) ? signed(tmv(t24)) : null, isNum(tmv(t24)) ? diverging(tmv(t24), 1) : null),
       row("TMV 48h", isNum(tmv(t48)) ? signed(tmv(t48)) : null, isNum(tmv(t48)) ? diverging(tmv(t48), 1) : null),
@@ -108,13 +100,13 @@ export function coreFactors(view, spot) {
         isNum(mSigned) ? diverging(mSigned, 1) : null),
       // M-DIE measures path shape only after a move; with no move there is nothing to measure.
       noMove ? pending("路径效率", "近 15 分钟无明显移动，不计算")
-        : row("路径效率", isNum(pe) ? `${(pe * 100).toFixed(0)}%${pe < 0.35 ? "，来回多" : pe > 0.85 ? "，单向干净" : ""}` : null,
-          isNum(pe) ? gauge(pe, 1, { threshold: 0.35 }) : null),
+        : row("路径效率", isNum(pe) ? `${(pe * 100).toFixed(0)}%` : null, isNum(pe) ? gauge(pe, 1) : null),
       noMove ? pending("同向占比", "无移动，不计算")
-        : row("同向占比", isNum(persist) ? `${(persist * 100).toFixed(0)}%` : null, isNum(persist) ? gauge(persist, 1, { threshold: 0.7 }) : null),
+        : row("同向占比", isNum(persist) ? `${(persist * 100).toFixed(0)}%` : null, isNum(persist) ? gauge(persist, 1) : null),
     ],
     note: vp.window_conflict ? "24h 与 48h 窗口方向冲突。"
-      : (isNum(mSigned) && tLean.length && sign(mSigned) !== sign(tLean[0]) && sign(mSigned) !== 0 ? "短线 15 分钟动量与 24/48h 趋势方向相反。" : "路径效率 = 15 分钟净位移 ÷ 路径总长。"),
+      : (isNum(mSigned) && tLean.length && sign(mSigned) !== sign(tLean[0]) && sign(mSigned) !== 0 ? "短线 15 分钟动量与 24/48h 读数方向相反。" : "路径效率 = 15 分钟净位移 ÷ 路径总长。")
+      + "只列读数：24h、48h 与主动成交同源，合起来不算多份证据；15 分钟走势没有检验过的预测力（17 §2.4，20 §6.2）。",
     missing: !t24.data_ready && !t48.data_ready,
   };
 
@@ -131,7 +123,7 @@ export function coreFactors(view, spot) {
   const flowF = {
     key: "flow", title: "主动成交",
     lean: comb.data_ready ? (flowDir.includes("bull") ? 1 : flowDir.includes("bear") ? -1 : 0) : null,
-    headline: comb.data_ready ? (FLOW_CN[comb.state] || "方向不明") : "积累中",
+    headline: comb.data_ready ? `${FLOW_CN[comb.state] || "方向不明"}（与量价同源，不计票）` : "积累中",
     rows: [
       flowRow("4h 主动净买", f4, 4, () => `${signed(f4.cvd_sum, 0)} BTC`, () => diverging(f4.cvd_sum, cvdSpan)),
       flowRow("4h 价格", f4, 4, () => `${signed(f4.momentum_return_pct)}% ${backed(f4)}`, () => diverging(f4.momentum_return_pct, 1.5), true),
@@ -142,7 +134,7 @@ export function coreFactors(view, spot) {
       && sign(f4.cvd_sum) === sign(f12.cvd_sum) && sign(f4.cvd_sum) !== 0
       && (flowDir.includes("bull") ? -1 : flowDir.includes("bear") ? 1 : 0) === sign(f4.cvd_sum))
       ? "标题是 FMZ 的综合判定（含更短窗口与强度），与下方 4h/12h 净额方向相反；以原始净额核对。"
-      : "永续主动成交净额；与价格同向表示推动有成交支撑，背离表示价格走在成交前面。",
+      : "永续主动成交净额与同窗价格变化，只列数；与量价路径同源，不作方向证据。",
     missing: !comb.data_ready && !isNum(f4.coverage_hours),
   };
 
@@ -154,42 +146,65 @@ export function coreFactors(view, spot) {
     const v = bps ? c.scoring_value : c.change_pct_3d;
     return row(MACRO_KEY[c.key] || c.key,
       `${isNum(c.current_close) ? c.current_close.toFixed(2) : "—"}，3 日 ${bps ? `${signed(v, 1)}bp` : `${signed(v)}%`}`,
-      isNum(v) ? diverging(v, bps ? 15 : c.key === "DXY" ? 1 : 5, { good: -1 }) : null);
+      isNum(v) ? diverging(v, bps ? 15 : c.key === "DXY" ? 1 : 5) : null);
   };
   const macroF = {
     key: "macro", title: "宏观环境",
     lean: regime ? (regime.includes("Tailwind") ? 1 : regime.includes("Headwind") ? -1 : 0) : null,
     background: true,
-    headline: MACRO_CN[regime] || (regime ? "其他状态" : "缺口"),
+    headline: isNum(mp.macro_score) ? `综合得分 ${signed(mp.macro_score)}` : (regime ? "得分缺失" : "缺口"),
     rows: [
       row("综合得分", isNum(mp.macro_score) ? `${signed(mp.macro_score)}，负值为压力缓和` : null,
-        isNum(mp.macro_score) ? diverging(mp.macro_score, 1, { good: -1 }) : null),
+        isNum(mp.macro_score) ? diverging(mp.macro_score, 1) : null),
       ...(mp.component_summaries || []).filter((c) => MACRO_KEY[c.key]).map(comp),
     ],
-    note: mp.data_status && mp.data_status !== "full_live" ? "宏观数据不完整，读数只作参考。" : "宏观环境只调整背景读数，不单独确认方向。绿色为风险压力下降。",
+    note: mp.data_status && mp.data_status !== "full_live" ? "宏观数据不完整，读数只作参考。" : "只列读数：公开的宏观信息已计入一天期报价，宏观方向不作承保依据（17 §2.2）。条形只表示升降，不分利好利空。",
     missing: !regime,
   };
-  // Spatial position is per side: where each short leg sits on its own adverse path.
-  // Computed by the program from each frozen snapshot; Gamma decides, KPF is described only.
-  const STATE_SHORT = { favorable: "有利", unfavorable: "不利", unknown: "不明" };
-  const STATE_CLS = { favorable: "ok", unfavorable: "bad", unknown: "" };
+  // Spatial position is per side: what lies on each short leg's adverse path, and on what basis.
+  // Walls and the flip are market-wide bases (weekly / 0DTE, all expiries), not this contract,
+  // and GEX has no dealer sign, so nothing here is called favourable or not (17 §3.4, §7.2).
   const lines = ["put", "call"].map((side) => {
-    const sp = (view.candidates || []).find((c) => c.side === side)?.spatial_position;
-    if (!sp || sp.error) return null;
-    return { side, name: side === "put" ? "Put" : "Call", state: sp.state, cls: STATE_CLS[sp.state] ?? "",
-      text: STATE_SHORT[sp.state] || "不明", short: sp.short_strike_usd, reason: sp.reason_cn,
-      kpf: sp.kpf?.description_cn || null,
-      moves: isNum(sp.distance_in_moves) ? sp.distance_in_moves : null, distance: sp.distance_pct };
+    const cand = (view.candidates || []).find((c) => c.side === side);
+    const sp = cand?.spatial_position;
+    const em = get(cand, "readings.expected_move") || null;
+    const usable = sp && !sp.error;
+    if (!usable && !em) return null;
+    const moves = isNum(em?.distance_in_moves) ? em.distance_in_moves : isNum(sp?.distance_in_moves) ? sp.distance_in_moves : null;
+    return { side, name: side === "put" ? "Put" : "Call",
+      short: em?.short_strike_usd ?? sp?.short_strike_usd,
+      distance: isNum(em?.short_distance_pct) ? em.short_distance_pct : sp?.distance_pct,
+      moves, band: em?.band_cn || null, ivSource: em?.iv_source_cn || null,
+      way: usable ? wayText(sp, side) : "地形读数暂缺。",
+      kpf: usable ? sp.kpf?.description_cn || null : null };
   }).filter(Boolean);
   const positionF = {
     key: "position", title: "空间位置",
     lean: null, perSide: Object.fromEntries(lines.map((l) => [l.side, l])),
-    headline: lines.length ? lines.map((l) => `${l.name} ${l.text}`).join(" · ") : "缺口",
+    headline: lines.length ? lines.map((l) => `${l.name} ${isNum(l.moves) ? `${l.moves.toFixed(2)} 倍预期波动` : isNum(l.distance) ? pct(l.distance, 2) : "—"}`).join(" · ") : "缺口",
     lines, rows: [],
-    note: "沿各侧不利方向看价格先遇到什么：Gamma 结构（墙、Flip）决定判断，KPF 成交区只作描述，链上成本不进入。只描述保单责任位置，不预测方向；尚未经交割数据验证。",
+    note: "沿各侧责任方向（Put 向下、Call 向上），列出现价到短腿之间先后遇到的结构位与口径：周度 / 0DTE 墙和 Flip 是市场口径，不属于本合约；"
+      + "GEX 不带做市商方向，不判断缓冲还是加速（17 §3.4、§7.2）。KPF 成交区只作描述，链上成本不进入。距离以本期 ATM IV 的到期前预期波动为单位。",
     missing: !lines.length,
   };
   return [spaceF, pathF, flowF, macroF, positionF];
+}
+
+/** What lies between spot and the short leg, in order, with no buffer / accelerate reading. */
+export function wayText(sp, side) {
+  const k = usd(sp.short_strike_usd);
+  const g = sp.gamma;
+  // older records carry only the producer's sentence: keep its facts, drop the reading in brackets
+  if (!g) return String(sp.reason_cn || "").replace(/（(缓冲|加速)）/g, "").replace(/（对冲[^）]*）/g, "") || "地形读数暂缺。";
+  if (isNum(sp.distance_pct) && sp.distance_pct <= 0) return `现价已越过短腿 ${k}，处在责任区内。`;
+  const stale = g.fresh === false ? "Gamma 数据不新鲜，只作参考。" : "";
+  const events = (g.events || []).map((e) => e && e.label_cn).filter(Boolean);
+  const dir = side === "put" ? "下跌" : "上涨";
+  if (events.length) return `从现价${dir}到短腿 ${k}，路上先后是：${events.join("、")}。${stale}`;
+  if (isNum(g.flip_usd)) {
+    return `现价到短腿 ${k} 之间没有周度 / 0DTE 墙或 Flip；短腿在 Flip ${usd(g.flip_usd)} ${g.regime_at_short === "positive" ? "上方（正 Gamma 区）" : "下方（负 Gamma 区）"}。${stale}`;
+  }
+  return `现价到短腿 ${k} 之间没有周度 / 0DTE 墙，也没有 Flip 读数。${stale}`;
 }
 
 export function backgroundItems(view, spot) {
@@ -293,12 +308,11 @@ export function backgroundItems(view, spot) {
 
   const w = info.whale_24h;
   items.push({ group: "derivs", title: "期权情绪", source: "Deribit BTC 期权，经 gexmonitor 汇总：ATM IV、IV 分位、DVOL、PCR、大宗成交", state: isNum(info.atm_iv) ? `ATM IV ${pct(info.atm_iv)}` : null,
-    rows: [row("IV 分位", isNum(info.iv_percentile) ? `${info.iv_percentile}，DVOL ${info.dvol ?? "—"}` : null,
-        isNum(info.iv_percentile) ? gauge(info.iv_percentile, 100) : null),
+    rows: [row("IV 分位", isNum(info.iv_percentile) ? `${info.iv_percentile}，DVOL ${info.dvol ?? "—"}` : null),
       row("成交 PCR", isNum(info.pcr) ? `${info.pcr}，持仓 ${info.pcr_oi ?? "—"}` : null, isNum(info.pcr) ? diverging(info.pcr - 1, 0.6) : null),
       row("24h 大宗", w ? `${w.trade_count} 笔，净 ${compactUsd(w.net_flow_usd)}，活跃 ${usd(w.active_strike)}` : null,
         w && isNum(w.net_flow_usd) ? diverging(w.net_flow_usd, 1e6) : null)],
-    note: "PCR 以 1 为中线；PCR 与大宗没有历史基准，只读当前值。" });
+    note: "PCR 以 1 为中线；PCR 与大宗没有历史基准，只读当前值。IV 分位对一天期合约没有区分度，只列数（16 号第 8 条）。" });
 
   // Each series is read on its own: latest published value and date, and the change over its
   // own last 5 observations. A shared-date change would hold the daily rates back to the
@@ -319,13 +333,13 @@ export function backgroundItems(view, spot) {
     const d = o.base ? (unit === "bp" ? (o.value - o.base.value) * 100 : (o.value / o.base.value - 1) * 100) : null;
     const change = isNum(d) ? `，比 ${shortDate(o.base.date)} ${unit === "bp" ? `${signed(d, 0)}bp` : `${signed(d)}%`}` : "";
     const text = `${fmt(o.value)}（${shortDate(o.date)}）${change}`;
-    return blocked.has(key) ? row(label, `${text}，已超时效`) : row(label, text, isNum(d) ? diverging(d, scale, { good: -1 }) : null);
+    return blocked.has(key) ? row(label, `${text}，已超时效`) : row(label, text, isNum(d) ? diverging(d, scale) : null);
   };
   const dxy = (get(mf, "macro_pressure.component_summaries") || []).find((c) => c.key === "DXY") || {};
   const dxyDate = isNum(dxy.current_ts_ms) ? new Date(dxy.current_ts_ms).toISOString().slice(0, 10) : null;
   const dxyRow = isNum(dxy.current_close)
     ? row("美元指数 DXY", `${dxy.current_close.toFixed(2)}（${shortDate(dxyDate)}）${isNum(dxy.change_pct_3d) ? `，3 个交易日 ${signed(dxy.change_pct_3d)}%` : ""}`,
-      isNum(dxy.change_pct_3d) ? diverging(dxy.change_pct_3d, 1, { good: -1 }) : null)
+      isNum(dxy.change_pct_3d) ? diverging(dxy.change_pct_3d, 1) : null)
     : row("美元指数 DXY", null);
   const dates = [own("nominal_10y")?.date, dxyDate];
   const anyRow = ["nominal_10y", "real_10y"].some((k) => own(k)) || isNum(dxy.current_close);
@@ -335,7 +349,7 @@ export function backgroundItems(view, spot) {
     rows: anyRow ? [extRow("美债 10Y 名义", "nominal_10y", (v) => `${v.toFixed(2)}%`, "bp", 30),
       extRow("美债 10Y 实际", "real_10y", (v) => `${v.toFixed(2)}%`, "bp", 30),
       dxyRow] : [row("美元与美债", null)],
-    note: "美债利率来自 FRED，按日发布、约滞后一个工作日，变化为各自最近 5 个观测日；DXY 为 ICE 美元指数（Yahoo DX-Y.NYB，与宏观环境卡同源），变化为 3 个交易日。红色为收紧（利率或美元上升），绿色为放松。" });
+    note: "美债利率来自 FRED，按日发布、约滞后一个工作日，变化为各自最近 5 个观测日；DXY 为 ICE 美元指数（Yahoo DX-Y.NYB，与宏观环境卡同源），变化为 3 个交易日。条形向右为上升、向左为下降，只表示升降。" });
   try {
     items.push(crossAssetItem(view.cross_asset));
   } catch {

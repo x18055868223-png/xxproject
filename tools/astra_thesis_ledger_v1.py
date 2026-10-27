@@ -4,12 +4,18 @@ At lock (t0) the reasons a policy looked acceptable are written as rules a progr
 decide; every later sample re-decides them. Pure functions over the lock series rows
 (locked_candidate_series metrics); no LLM, no market access, no probability meaning.
 Design: docs/astra/WPEM_THESIS_LEDGER_DRAFT_20261014.md.
+
+Roles (1.1.0, docs/opus/23 §1.1): only the evidence-backed lanes are the basis of a lock --
+L1 cushion, L2 breakeven room, L3 floating PnL against the credit (docs/opus/17 §4, §2.3).
+Gamma regime, anchor and flow (L4-L6) are X/C readings (17 §3.4, §2.4, §7.2: GEX is unsigned,
+the anchor is spatial, flow is same-source) and stay as background: still judged and shown,
+never in the headline and never "adverse at lock".
 """
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-SCHEMA = "astra_thesis_ledger@1.0.0"
+SCHEMA = "astra_thesis_ledger@1.1.0"   # 1.1: L4-L6 are background, not grounds (docs/opus/23 §1.1)
 
 HOLDS, WEAKENED, BROKEN = "HOLDS", "WEAKENED", "BROKEN"
 UNVERIFIABLE, NOT_RECORDED = "UNVERIFIABLE", "NOT_RECORDED"
@@ -30,18 +36,24 @@ STATUS_CN = {
     "L1": {HOLDS: "缓冲充足", WEAKENED: "缓冲变薄", BROKEN: "已进入责任区"},
     "L2": {HOLDS: "余量充足", WEAKENED: "余量变薄", BROKEN: "已越过"},
     "L3": {HOLDS: "未被侵蚀", WEAKENED: "浮亏扩大", BROKEN: "浮亏超过入场信用"},
-    "L4": {HOLDS: "未变差", WEAKENED: "转为过渡", BROKEN: "转为负 Gamma"},
+    # background lanes (L4-L6) describe, never judge (docs/opus/23 §1.1)
+    "L4": {HOLDS: "未变", WEAKENED: "转为过渡", BROKEN: "转为负 Gamma"},
     "L5": {HOLDS: "有效", WEAKENED: "松动", BROKEN: "脱锚"},
-    "L6": {HOLDS: "未压向卖出侧", WEAKENED: "出现不利流向", BROKEN: "持续不利流向"},
+    "L6": {HOLDS: "未朝短腿方向", WEAKENED: "出现朝短腿方向的流向", BROKEN: "持续朝短腿方向"},
 }
+# the headline joins a lane's name to its state; L1's state already says 缓冲
+HEADLINE_LABEL = {"L1": "短腿"}
+BASIS_LANES = ("L1", "L2", "L3")
+BACKGROUND_NOTE_CN = "背景，不作依据"
 TONE = {HOLDS: "ok", WEAKENED: "warn", BROKEN: "bad", UNVERIFIABLE: "muted", NOT_RECORDED: "muted"}
 BJT_MS = 8 * 3_600_000
 
 SHAPE_CN = {"FLAT": "平稳", "JUMP": "单次跳变", "SUSTAINED": "持续单向", "CHOPPY": "反复", "INSUFFICIENT": "不足"}
 
 GAMMA_RANK = {"POSITIVE_GAMMA_PINNING": 2, "TRANSITION": 1, "NEGATIVE_GAMMA_AMPLIFYING": 0}
-GAMMA_CN = {"POSITIVE_GAMMA_PINNING": "正 Gamma（钉住）", "TRANSITION": "过渡",
-            "NEGATIVE_GAMMA_AMPLIFYING": "负 Gamma（放大）"}
+# signal-layer regime words only: GEX is unsigned, pinning vs amplifying cannot be told (17 §7.2)
+GAMMA_CN = {"POSITIVE_GAMMA_PINNING": "正 Gamma", "TRANSITION": "过渡",
+            "NEGATIVE_GAMMA_AMPLIFYING": "负 Gamma"}
 FLOW_CN = {"bullish": "偏买", "neutral_to_bullish": "中性偏买", "neutral": "中性",
            "neutral_to_bearish": "中性偏卖", "bearish": "偏卖"}
 ADVERSE_FLOW = {"put": {"bearish", "neutral_to_bearish"}, "call": {"bullish", "neutral_to_bullish"}}
@@ -51,6 +63,10 @@ ADVERSE_MDIE = {"put": "DOWN", "call": "UP"}
 
 def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def role_of(thesis_id: str) -> str:
+    return "basis" if thesis_id in BASIS_LANES else "background"
 
 
 def _rows(points: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -267,8 +283,9 @@ def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[
             i -= 1
         since = rows[i]["t"]
     t0_adverse = t0_state in {WEAKENED, BROKEN}
+    role = role_of(thesis_id)
     entry = {
-        "id": thesis_id, "question": question, "label_cn": label, "rule_cn": rule,
+        "id": thesis_id, "role": role, "question": question, "label_cn": label, "rule_cn": rule,
         "t0_value": t0_value, "now_value": rows[-1]["m"].get(value_key) if value_key else None,
         "t0_value_cn": fmt(t0_value), "now_value_cn": fmt(rows[-1]["m"].get(value_key)) if value_key else "—",
         "state_t0": t0_state, "state_now": now, "state_worst": worst, "state_since_ms": since,
@@ -291,7 +308,8 @@ def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[
     entry["state_worst_cn"] = words.get(worst) or "暂无数据"
     entry["tone"] = (("ok" if entry["eased"] else "bad" if entry.get("worsened") else "warn")
                      if t0_adverse and now in SEVERITY else TONE.get(now, "muted"))
-    entry["claim_cn"] = (f"锁定时已不利：{claim}" if t0_adverse else claim)
+    # a background lane is not a reason of the lock, so it is never "adverse at lock" in words
+    entry["claim_cn"] = (f"锁定时已不利：{claim}" if t0_adverse and role == "basis" else claim)
     # What happened while held: the extreme reading and the time spent in each worse state.
     spent = _time_in(rows, effective)
     entry["time_in_ms"] = {state: spent.get(state, 0) for state in (WEAKENED, BROKEN)}
@@ -316,7 +334,7 @@ def _entry(thesis_id: str, question: str, label: str, rule: str, rows: Sequence[
 
 
 def _not_recorded(thesis_id: str, question: str, label: str, rule: str, why: str) -> dict[str, Any]:
-    return {"id": thesis_id, "question": question, "label_cn": label, "rule_cn": rule,
+    return {"id": thesis_id, "role": role_of(thesis_id), "question": question, "label_cn": label, "rule_cn": rule,
             "state_t0": NOT_RECORDED, "state_now": NOT_RECORDED, "state_worst": NOT_RECORDED,
             "state_now_cn": STATE_CN[NOT_RECORDED], "state_worst_cn": STATE_CN[NOT_RECORDED],
             "tone": "muted", "claim_cn": why, "experience_cn": "—",
@@ -458,13 +476,26 @@ def _rhythm(label: str, key: str, lane: Mapping[str, Any], unit: str) -> str | N
 def project(ledger: Mapping[str, Any]) -> dict[str, Any]:
     theses = list(ledger.get("theses") or [])
     by_id = {t["id"]: t for t in theses}
-    graded = [t for t in theses if t["state_now"] in SEVERITY]
+    # the headline and "adverse at lock" read the basis lanes only (docs/opus/23 §1.1)
+    basis = [t for t in theses if (t.get("role") or role_of(t["id"])) == "basis"]
+    background = [t for t in theses if (t.get("role") or role_of(t["id"])) == "background"]
+    graded = [t for t in basis if t["state_now"] in SEVERITY]
     held = [t["label_cn"] for t in graded if t["state_now"] == HOLDS and not t["t0_adverse"]]
-    moved = [f"{t['label_cn']}{t['state_now_cn']}" for t in graded
+    moved = [f"{HEADLINE_LABEL.get(t['id'], t['label_cn'])}{t['state_now_cn']}" for t in graded
              if t["state_now"] != HOLDS and not t["t0_adverse"]]
     adverse = [f"{t['label_cn']}（{'已缓解' if t['eased'] else '进一步恶化' if t.get('worsened') else '未缓解'}）"
                for t in graded if t["t0_adverse"]]
-    blind = [t["label_cn"] for t in theses if t["state_now"] == UNVERIFIABLE]
+    blind = [t["label_cn"] for t in basis if t["state_now"] == UNVERIFIABLE]
+    background_cn = []
+    for t in background:
+        if t["state_now"] not in SEVERITY:
+            continue
+        changed = t.get("state_t0") in SEVERITY and t["state_now"] != t["state_t0"]
+        if not (changed or t.get("t0_adverse") or t["state_now"] != HOLDS):
+            continue
+        then, now = t.get("t0_value_cn") or "—", t.get("now_value_cn") or "—"
+        reading = f"{then} → 现在{now}" if then != now else f"{now}（{t['state_now_cn']}）"
+        background_cn.append(f"{t['label_cn']}：{reading}（{BACKGROUND_NOTE_CN}）")
     parts = []
     if held:
         parts.append("、".join(held) + "仍成立")
@@ -499,11 +530,13 @@ def project(ledger: Mapping[str, Any]) -> dict[str, Any]:
         unknown_cn.append(f"采样中断 {len(coverage['gaps'])} 次（最长 {_dur(longest)}），中断期间不作判定")
     theses_cn = [f"{t['label_cn']}：{t['claim_cn']} → 现在{t['state_now_cn']}"
                  + (f"（{t['experience_cn']}）" if t.get("experience_cn") not in {None, "—", "期间没有变差"} else "")
+                 + ("（背景）" if (t.get("role") or role_of(t["id"])) == "background" else "")
                  for t in theses if t["state_now"] != NOT_RECORDED]
     return {"headline_cn": headline + ("。" + "；".join(tail) if tail else "") + "。",
             "where_cn": "；".join(where) or "—",
             "rhythm_cn": rhythm or ["采样不足以判断近 1–3 小时的节奏"],
             "theses_cn": theses_cn,
+            "background_cn": background_cn,
             "unknown_cn": unknown_cn,
             # kept for older readers
             "changed_cn": [f"{t['label_cn']} → {t['state_now_cn']}" for t in graded

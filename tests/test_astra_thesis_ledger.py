@@ -82,8 +82,21 @@ def test_t0_adverse_lane_is_a_known_counter_tracked_for_easing():
     l4 = thesis(build(base), "L4")
     assert l4["t0_adverse"] is True and l4["state_t0"] == "BROKEN"
     assert l4["eased"] is True
-    assert l4["state_now_cn"] == "已缓解" and l4["claim_cn"].startswith("锁定时已不利")
-    assert "锁定时已不利：Gamma 体制（已缓解）" in build(base)["projection_cn"]["headline_cn"]
+    assert l4["state_now_cn"] == "已缓解" and l4["role"] == "background"
+    # a background lane is never "adverse at lock" in words or in the headline (docs/opus/23 §1.1)
+    assert not l4["claim_cn"].startswith("锁定时已不利")
+    projection = build(base)["projection_cn"]
+    assert "锁定时已不利" not in projection["headline_cn"] and "Gamma" not in projection["headline_cn"]
+    assert "Gamma 体制：负 Gamma → 现在过渡（背景，不作依据）" in projection["background_cn"]
+
+
+def test_basis_and_background_roles():
+    led = build(rows([1.0] * 3))
+    assert [t["role"] for t in led["theses"]] == ["basis"] * 3 + ["background"] * 3
+    assert L.SCHEMA == "astra_thesis_ledger@1.1.0"
+    cn = led["projection_cn"]["theses_cn"]
+    assert all(line.endswith("（背景）") for line in cn[3:]) and not any(line.endswith("（背景）") for line in cn[:3])
+    assert led["projection_cn"]["background_cn"] == []          # unchanged and holding: nothing to say
 
 
 def test_flow_persistent_pressure_and_call_mirror():
@@ -180,8 +193,12 @@ def test_headline_reads_as_one_sentence():
     rs = rows([1.0] * 50, anchor_score=70.0)
     for r in rs[5:]:
         r["metrics"]["anchor_score"] = 40.0
-    head = build(rs)["projection_cn"]["headline_cn"]
-    assert "变化：锚定松动" in head and "锚定锚定" not in head
+    projection = build(rs)["projection_cn"]
+    head = projection["headline_cn"]
+    assert head == "短腿缓冲、盈亏平衡、补偿仍成立。"            # background lanes stay out of the headline
+    assert projection["background_cn"] == ["锚定：70/100 → 现在40/100（背景，不作依据）"]
+    moved = rows([1.0, 0.4] + [0.4] * 3)
+    assert "变化：短腿缓冲变薄" in build(moved)["projection_cn"]["headline_cn"]   # no "缓冲缓冲" stutter
 
 
 def test_stale_value_is_marked_and_worsened_adverse_lane_is_said():

@@ -67,6 +67,8 @@ if __package__:
     from . import astra_case_file_v1 as case_file_core
     from . import astra_session_clock_v1 as session_clock
     from . import astra_entry_warnings_v1 as entry_warnings
+    from . import astra_candidate_readings_v1 as candidate_readings
+    from . import astra_path_stats_v1 as path_stats
     from . import astra_inquiry_view_v1 as inquiry_view
     try:   # optional: a missing research module must never stop the workbench
         from . import astra_research_archive_v1 as research_archive_core
@@ -109,6 +111,8 @@ else:  # direct CLI execution from tools/
     import astra_case_file_v1 as case_file_core
     import astra_session_clock_v1 as session_clock
     import astra_entry_warnings_v1 as entry_warnings
+    import astra_candidate_readings_v1 as candidate_readings
+    import astra_path_stats_v1 as path_stats
     import astra_inquiry_view_v1 as inquiry_view
     try:   # optional: a missing research module must never stop the workbench
         import astra_research_archive_v1 as research_archive_core
@@ -3620,8 +3624,92 @@ class AstraWorkbench:
         expiry = result.get("fixed_contract", {}).get("expiry_ms")
         if isinstance(expiry, int):
             result["overview"]["remaining_to_expiry_ms"] = max(0, expiry - self.clock_ms())
+        result["overview"]["path_now"] = self._lock_path_now(episode_id, result, self.clock_ms())
         result["sampling"]["collector_error"] = self._locked_refresh_error or self._last_refresh_error
         return result
+
+    PATH_SAMPLE_FRESH_MS = 10 * 60_000   # the thesis ledger's gap rule
+    PATH_TOUCH_BASIS_CN = "按锁定后的采样点判断（约每分钟一个）：两次采样之间的短暂触及看不到"
+
+    def _lock_first_touch(self, episode_id: str, overview: Mapping[str, Any]) -> tuple[int | None, int]:
+        """(time of the first sample since lock with the short leg reached, samples read). Reads the
+        series metrics already on disk or in the cache (the thesis ledger's L1 key short_distance_pct);
+        points whose metrics were never computed are skipped, the detail's latest distance is checked too."""
+        index = self.locked_candidates.episode_observations(episode_id)
+        stored = self.locked_candidates.read_series(episode_id)
+        cache = self._series_metrics_cache()
+        times = {row["point_id"]: row.get("recorded_at_ms") for row in index["observations"]
+                 if row.get("kind") == "point" and row.get("point_id")}
+        for pid, row in stored.items():
+            times.setdefault(pid, row.get("recorded_at_ms"))
+        start = times.get(index.get("baseline_point_id"))
+        checked = 0
+        for pid, at in sorted(((p, t) for p, t in times.items() if isinstance(t, int)), key=lambda pt: pt[1]):
+            if isinstance(start, int) and at < start:
+                continue
+            metrics = (stored.get(pid) or {}).get("metrics") or cache.get(pid) or {}
+            distance = metrics.get("short_distance_pct") if isinstance(metrics, Mapping) else None
+            if isinstance(distance, (int, float)) and not isinstance(distance, bool):
+                checked += 1
+                if distance <= 0:
+                    return at, checked
+        latest = (overview.get("short_distance") or {}) if isinstance(overview.get("short_distance"), Mapping) else {}
+        value = latest.get("value")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            checked += 1
+            if value <= 0:
+                at = latest.get("asof_ms")
+                return (at if isinstance(at, int) else self.clock_ms()), checked
+        return None, checked
+
+    def _lock_path_now(self, episode_id: str, result: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+        """Conditional remaining risk of a locked policy (docs/opus/23 §2.2 ③, path statistics of
+        docs/opus/16 §3.3-3.4): untouched since lock -> the next survival row; touched -> what a touch
+        at that many hours left has led to. Only 08:00 UTC expiries with <= 24.5 hours left."""
+        contract = result.get("fixed_contract") or {}
+        side, expiry = contract.get("side"), contract.get("expiry_ms")
+        out: dict[str, Any] = {"applicable": False, "why_cn": None, "side": side, "hours_left": None,
+                               "touched": None, "survival": None, "touch_cn": None, "basis_cn": None,
+                               "first_touch_ms": None, "samples_checked": 0, "touch_basis_cn": self.PATH_TOUCH_BASIS_CN}
+        try:
+            if side not in {"put", "call"} or not isinstance(expiry, int):
+                out["why_cn"] = "合约方向或到期缺失"
+                return out
+            # frozen samples cannot say "not touched yet": only a live lock with a fresh sample
+            if (result.get("episode") or {}).get("status") != "active":
+                out["why_cn"] = "锁定已结束，不再给剩余路径的读数"
+                return out
+            latest_at = (result.get("latest") or {}).get("recorded_at_ms") or (result.get("latest") or {}).get("asof_ms")
+            if not isinstance(latest_at, int) or now_ms - latest_at > self.PATH_SAMPLE_FRESH_MS:
+                out["why_cn"] = "最近 10 分钟没有新采样，暂不判断是否触及"
+                return out
+            clock = session_clock.reading(now_ms, expiry)
+            out["hours_left"] = clock.get("hours_to_expiry")
+            ok, why = path_stats.daily_basis(clock)
+            if not ok:
+                out["why_cn"] = why
+                return out
+            first, checked = self._lock_first_touch(episode_id, result.get("overview") or {})
+            out["samples_checked"] = checked
+            if checked == 0:
+                out["why_cn"] = "锁定后没有可读的采样，无法判断是否触及"
+                return out
+            out["applicable"] = True
+            out["touched"] = first is not None
+            if first is not None:
+                out["first_touch_ms"] = first
+                out["touch_cn"] = path_stats.touch_text((expiry - first) / 3_600_000)
+                out["basis_cn"] = path_stats.TOUCH_NOTE_CN
+            else:
+                row = path_stats.next_survival(float(out["hours_left"]), side)
+                if row is None:
+                    out["why_cn"] = "已过最后一个统计时点（02:00 UTC）"
+                else:
+                    out["survival"] = {"hour_utc": row[0], "later_touch_pct": row[1], "beyond_pct": row[2]}
+                out["basis_cn"] = path_stats.SURVIVAL_NOTE_CN
+        except Exception as exc:  # a display reading never breaks the detail
+            out.update({"applicable": False, "why_cn": "读数失败", "error_type": type(exc).__name__})
+        return out
 
     def _locked_candidate_projection(self, episode_id: str, *, include_raw: bool,
                                      baseline_point_id: str | None = None,
@@ -4011,6 +4099,8 @@ class AstraWorkbench:
         return {**(current or {"schema": cross_asset.SCHEMA, "status": "not_collected"}), "contract_window": window}
 
     LEDGER_HISTORY_TTL_MS = 60_000
+    CYCLE_REF_WINDOW_MS = 60 * 60_000     # the first hour of an expiry's 24-hour cycle
+    CYCLE_REF_KEEP = 4                    # expiries whose cycle-start rows stay cached
 
     def _ledger_history(self, now_ms: int) -> list[dict[str, Any]] | None:
         """Recent research-archive ledger rows (today and yesterday, UTC) for the entry
@@ -4041,6 +4131,37 @@ class AstraWorkbench:
         self._ledger_history_cache = (now_ms, rows)
         return rows
 
+    def _cycle_start_rows(self, expiry_ms: Any, now_ms: int) -> list[dict[str, Any]] | None:
+        """Ledger rows of one expiry in the first hour of its 24-hour cycle, for the readings'
+        cycle-start reference (docs/opus/23 §2.2 ②). Once that hour is over the rows never
+        change, so they are cached per expiry; before then they are re-read with the history."""
+        if not isinstance(expiry_ms, int):
+            return None
+        start = expiry_ms - 24 * 3_600_000
+        cache = getattr(self, "_cycle_ref_cache", None)
+        if cache is None:
+            cache = self._cycle_ref_cache = {}
+        if expiry_ms in cache:
+            return cache[expiry_ms]
+        if now_ms < start:
+            return None
+        try:
+            root = Path(os.environ.get("ASTRA_RESEARCH_ARCHIVE") or "/var/lib/xxproject/research_archive") / "ledger"
+            day = time.strftime("%Y-%m-%d", time.gmtime(start / 1000))
+            path = root / f"{day}.jsonl"
+            rows = [] if not path.is_file() else [
+                {"at_ms": r["at_ms"], "expiry_ms": r.get("expiry_ms"), "expiry_atm_iv_pct": r.get("expiry_atm_iv_pct")}
+                for r in _read_jsonl_tail(path, 50_000)
+                if isinstance(r.get("at_ms"), int) and r.get("expiry_ms") == expiry_ms
+                and start <= r["at_ms"] <= start + self.CYCLE_REF_WINDOW_MS]
+        except Exception:
+            return None
+        if now_ms > start + self.CYCLE_REF_WINDOW_MS + self.LEDGER_HISTORY_TTL_MS:
+            cache[expiry_ms] = rows
+            while len(cache) > self.CYCLE_REF_KEEP:
+                cache.pop(next(iter(cache)))
+        return rows
+
     def _attach_session_layers(self, view: dict[str, Any], now_ms: int) -> None:
         """Session clock (docs/opus/12) for the page and, per candidate, the unvalidated
         entry warnings (docs/opus/13). Display layers: a failure never breaks the view."""
@@ -4057,10 +4178,17 @@ class AstraWorkbench:
         gex = ((((view.get("market_context") or {}).get("market_facts") or {}).get("space_context") or {})
                .get("gex_info") or {})
         by_expiry = (view.get("expiry_gamma") or {}).get("by_expiry") or {}
+        realized = (view.get("expiry_gamma") or {}).get("realized_vol")
         others = {c.get("side"): c for c in candidates}
         for item in candidates:
+            # the readings first: the busy-window note records the same distance the card shows
+            expiry_ms = ((item.get("snapshot") or {}).get("contract") or {}).get("expiry_ms")
+            item["readings"] = candidate_readings.build(item, now_ms=now_ms, by_expiry=by_expiry, gex_info=gex,
+                                                        realized_vol=realized,
+                                                        history=self._cycle_start_rows(expiry_ms, now_ms))
             try:
-                item["entry_warnings"] = _entry_warnings_for(item, now_ms, gex, by_expiry, others, history)
+                item["entry_warnings"] = _entry_warnings_for(item, now_ms, gex, by_expiry, others, history,
+                                                             distance_in_moves=_readings_dim(item))
             except Exception as exc:
                 item["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
 
@@ -4150,24 +4278,41 @@ class AstraWorkbench:
         self._attach_exogenous_events(frame_view, now_ms)
         self._attach_decision_reduction(frame_view)
         out = frame_view["candidates"][0]
-        if not isinstance(out.get("entry_warnings"), Mapping):
+        need_warnings = not isinstance(out.get("entry_warnings"), Mapping)
+        if need_warnings or not isinstance(out.get("readings"), Mapping):
+            # blocks already on the item are kept; a missing one comes from the page's own candidate
+            # (same snapshot) or is computed now, the readings first (the note records their distance)
             try:
                 view = self.cached_view() or {}
                 sid = (out.get("snapshot") or {}).get("snapshot_id")
                 same = next((c for c in view.get("candidates") or [] if isinstance(c, Mapping)
-                             and (c.get("snapshot") or {}).get("snapshot_id") == sid), None)
-                if same is not None and isinstance(same.get("entry_warnings"), Mapping):
-                    out["entry_warnings"] = deepcopy(same["entry_warnings"])
-                else:
-                    gex = ((((view.get("market_context") or {}).get("market_facts") or {}).get("space_context") or {})
-                           .get("gex_info") or {})
-                    by_expiry = (view.get("expiry_gamma") or {}).get("by_expiry") or {}
-                    others = {c.get("side"): c for c in view.get("candidates") or [] if isinstance(c, Mapping)}
-                    others[out.get("side")] = out
-                    out["entry_warnings"] = _entry_warnings_for(out, now_ms, gex, by_expiry, others,
-                                                                self._ledger_history(now_ms))
+                             and (c.get("snapshot") or {}).get("snapshot_id") == sid), None) or {}
+                gex = ((((view.get("market_context") or {}).get("market_facts") or {}).get("space_context") or {})
+                       .get("gex_info") or {})
+                by_expiry = (view.get("expiry_gamma") or {}).get("by_expiry") or {}
+                history = None
+                if not isinstance(out.get("readings"), Mapping):
+                    if isinstance(same.get("readings"), Mapping):
+                        out["readings"] = deepcopy(same["readings"])
+                    else:
+                        out["readings"] = candidate_readings.build(
+                            out, now_ms=now_ms, by_expiry=by_expiry, gex_info=gex,
+                            realized_vol=(view.get("expiry_gamma") or {}).get("realized_vol"),
+                            history=self._cycle_start_rows(((out.get("snapshot") or {}).get("contract") or {})
+                                                           .get("expiry_ms"), now_ms))
+                if need_warnings:
+                    if isinstance(same.get("entry_warnings"), Mapping):
+                        out["entry_warnings"] = deepcopy(same["entry_warnings"])
+                    else:
+                        others = {c.get("side"): c for c in view.get("candidates") or [] if isinstance(c, Mapping)}
+                        others[out.get("side")] = out
+                        out["entry_warnings"] = _entry_warnings_for(
+                            out, now_ms, gex, by_expiry, others,
+                            history if history is not None else self._ledger_history(now_ms),
+                            distance_in_moves=_readings_dim(out))
             except Exception as exc:
-                out["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
+                if need_warnings:
+                    out["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
         return out
 
     def _dp_frame(self, item: Mapping[str, Any], now_ms: int, fact: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -5605,9 +5750,27 @@ def _sd_notify(message: str) -> bool:
         return False
 
 
+# _entry_warnings_for computes the distance itself (no readings block on the item)
+OWN_DISTANCE: Any = object()
+
+
+def _readings_dim(item: Mapping[str, Any]) -> Any:
+    """The candidate readings' short-leg distance in expected moves (None when they could not
+    compute it), or OWN_DISTANCE when the item has no usable readings block."""
+    readings = item.get("readings")
+    move = readings.get("expected_move") if isinstance(readings, Mapping) and not readings.get("error_type") else None
+    if not isinstance(move, Mapping):
+        return OWN_DISTANCE
+    value = move.get("distance_in_moves")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _entry_warnings_for(item: Mapping[str, Any], now_ms: int, gex: Mapping[str, Any], by_expiry: Mapping[str, Any],
-                        others: Mapping[Any, Any], history: list[dict[str, Any]] | None) -> dict[str, Any] | None:
-    """The entry warnings (vetoes) and the busy-window note for one candidate, on the ledger's definitions."""
+                        others: Mapping[Any, Any], history: list[dict[str, Any]] | None,
+                        distance_in_moves: Any = OWN_DISTANCE) -> dict[str, Any] | None:
+    """The entry warnings (vetoes) and the busy-window note for one candidate, on the ledger's definitions.
+    The note records `distance_in_moves` (the candidate readings' number, None included, so the note
+    and the card agree); without it, its own computation from this expiry's Deribit ATM IV."""
     snapshot = item.get("snapshot") or {}
     contract = snapshot.get("contract") or {}
     side, expiry = contract.get("side"), contract.get("expiry_ms")
@@ -5620,8 +5783,8 @@ def _entry_warnings_for(item: Mapping[str, Any], now_ms: int, gex: Mapping[str, 
     strike = contract.get("short_strike_usd")
     hours = (expiry - now_ms) / 3_600_000
     atm = row.get("atm_iv_pct")
-    dim = None
-    if all(isinstance(v, (int, float)) and v > 0 for v in (spot, strike, atm)) and hours > 0:
+    dim = None if distance_in_moves is OWN_DISTANCE else distance_in_moves
+    if distance_in_moves is OWN_DISTANCE and all(isinstance(v, (int, float)) and v > 0 for v in (spot, strike, atm)) and hours > 0:
         cushion = (1.0 if side == "call" else -1.0) * (strike / spot - 1.0) * 100.0
         dim = cushion / (atm * math.sqrt(hours / 8760.0))
     # the other side counts only when it expires on the same day (its IV sits on the same smile)

@@ -185,10 +185,8 @@ def _geometry(frame: Mapping[str, Any]) -> dict[str, Any]:
     expiry = contract["expiry_ms"]
     at = frame.get("at_ms")
     hours = (expiry - at) / 3_600_000 if isinstance(expiry, int) and isinstance(at, int) else None
-    walls = _usable_walls(frame)
-    iv, iv_basis = _num(walls.get("atm_iv_pct")), "本期 ATM 标记 IV"
-    if iv is None:
-        iv, iv_basis = _term_iv(frame, contract, hours), "期限结构 ATM IV"
+    iv, code = resolve_iv(_usable_walls(frame), _get(frame, "market_facts.space_context.gex_info") or {}, contract, hours)
+    iv_basis = IV_BASIS_CN.get(code)
     move = iv * math.sqrt(hours / 8760) if iv is not None and hours is not None and hours > 0 else None
     return {"contract": contract, "side": side, "spot": spot, "adverse": adverse, "short": short,
             "long": contract["long_strike_usd"], "dist_pct": dist, "hours": hours, "iv": iv, "iv_basis": iv_basis,
@@ -201,18 +199,30 @@ def _usable_walls(frame: Mapping[str, Any]) -> dict[str, Any]:
     return {} if isinstance(age, (int, float)) and age > WALLS_MAX_AGE_MS else dict(walls)
 
 
-def _term_iv(frame: Mapping[str, Any], contract: Mapping[str, Any], hours: float | None) -> float | None:
-    info = _get(frame, "market_facts.space_context.gex_info") or {}
+IV_BASIS_CN = {"deribit_mark_own_expiry": "本期 ATM 标记 IV", "gexmonitor_term": "期限结构 ATM IV",
+               "gexmonitor_term_nearest": "期限结构 ATM IV", "gexmonitor_atm": "期限结构 ATM IV"}
+
+
+def resolve_iv(walls: Mapping[str, Any], gex_info: Mapping[str, Any], contract: Mapping[str, Any],
+               hours: float | None) -> tuple[float | None, str | None]:
+    """The contract's ATM IV and its source code, one rule for the Decision Path and the page:
+    this expiry's own Deribit mark IV (walls already passed the age rule), else the gexmonitor
+    term row of this expiry, else the nearest term row, else gexmonitor's ATM IV."""
+    iv = _num((walls or {}).get("atm_iv_pct"))
+    if iv is not None and iv > 0:
+        return iv, "deribit_mark_own_expiry"
+    info = gex_info if isinstance(gex_info, Mapping) else {}
     token = str(contract.get("short_instrument") or "").split("-")
     token = token[1].upper() if len(token) > 1 else None
     rows = [r for r in info.get("term_structure") or [] if isinstance(r, Mapping) and _num(r.get("atm_iv")) is not None]
     exact = next((r for r in rows if token and str(r.get("expiry") or "").upper() == token), None)
     if exact:
-        return _num(exact["atm_iv"])
+        return _num(exact["atm_iv"]), "gexmonitor_term"
     if rows and all(_num(r.get("days_to_expiry")) is not None for r in rows):
         days = hours / 24 if hours is not None and hours > 0 else 1.0
-        return _num(min(rows, key=lambda r: abs(r["days_to_expiry"] - days))["atm_iv"])
-    return _num(info.get("atm_iv"))
+        return _num(min(rows, key=lambda r: abs(r["days_to_expiry"] - days))["atm_iv"]), "gexmonitor_term_nearest"
+    atm = _num(info.get("atm_iv"))
+    return (atm, "gexmonitor_atm") if atm is not None else (None, None)
 
 
 # ---------------------------------------------------------------- steps

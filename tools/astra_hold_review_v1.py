@@ -13,9 +13,9 @@ import re
 import time
 from typing import Any, Mapping, Sequence
 
-INPUT_SCHEMA = "hold_review_input@1.0.0"
+INPUT_SCHEMA = "hold_review_input@1.1.0"   # 1.1: each thesis says basis or background
 RESULT_SCHEMA = "hold_review@1.0.0"
-PROMPT_VERSION = "hold_review_prompt@1.0.1"
+PROMPT_VERSION = "hold_review_prompt@1.0.2"
 ANSWER_KEYS = {"summary", "points", "watch"}
 MAX_POINTS, MAX_WATCH = 3, 3
 SUMMARY_MAX, POINT_MAX, WATCH_MAX = 90, 70, 50
@@ -37,6 +37,7 @@ SYSTEM_PROMPT = """你是承保工作台的持有中复核员。对象是一张�
 2. 状态以账本为准，不得改判，不得说某条依据"其实没问题"或"其实已失效"。
 3. 不给概率、胜率或预测，不给任何交易建议（平仓、加仓、止损等），页面不下单。
 4. 收束：只写真正有变化、待定或需要盯住的内容；没变化的依据不要逐条复述。
+5. "角色"为"背景"的条目（Gamma 体制、锚定、流向）不是锁定的依据，研究上不支持据此判断；只可作为背景提及，不得说成依据成立或失效的理由。
 
 只输出一个 JSON 对象，键恰好为：
 - "summary"：一句话（不超过 90 字），说清当初的依据现在整体怎样。
@@ -68,7 +69,8 @@ def build_input(ledger: Mapping[str, Any], contract: Mapping[str, Any], *, now_m
     for t in ledger.get("theses") or []:
         if t.get("state_now") == "NOT_RECORDED":
             continue
-        item = {"id": t["id"], "依据": t.get("label_cn"), "锁定时": t.get("claim_cn"),
+        item = {"id": t["id"], "角色": "背景" if t.get("role") == "background" else "依据",
+                "依据": t.get("label_cn"), "锁定时": t.get("claim_cn"),
                 "现在": t.get("state_now_cn"), "现值": t.get("now_value_cn"),
                 "期间": t.get("experience_cn")}
         if t.get("pending_cn"):
@@ -87,7 +89,7 @@ def build_input(ledger: Mapping[str, Any], contract: Mapping[str, Any], *, now_m
                  "剩余": _dur(expiry - now_ms) if isinstance(expiry, int) else None},
         "依据账本": {"概览": projection.get("headline_cn"), "位置": projection.get("where_cn"),
                      "节奏": projection.get("rhythm_cn") or [], "未知": projection.get("unknown_cn") or [],
-                     "逐条": theses},
+                     "背景": projection.get("background_cn") or [], "逐条": theses},
         "到期前事件": upcoming,
         "账本时刻": _bjt((ledger.get("coverage") or {}).get("latest_ms")),
     }

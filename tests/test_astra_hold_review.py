@@ -53,6 +53,10 @@ def test_review_explains_the_ledger_with_one_budgeted_call(tmp_path):
     assert request["response_format"] == {"type": "json_object"} and request["max_tokens"] == 800
     sent = json.loads(request["messages"][1]["content"])
     assert sent["schema"] == hold.INPUT_SCHEMA and sent["依据账本"]["逐条"][0]["id"] == "L1"
+    # basis lanes and background lanes are both sent, each labelled (docs/opus/23 §1.1)
+    roles = {t["id"]: t["角色"] for t in sent["依据账本"]["逐条"]}
+    assert roles["L1"] == "依据" and all(roles[k] == "背景" for k in ("L4", "L5", "L6") if k in roles)
+    assert isinstance(sent["依据账本"]["背景"], list) and "背景" in hold.SYSTEM_PROMPT
     # the series endpoint shows it; a second call within 5 minutes is refused, a replay is free
     state = wb.locked_candidate_series(episode_id)["hold_review"]
     assert state["last"]["answer"]["summary"] == GOOD["summary"]
