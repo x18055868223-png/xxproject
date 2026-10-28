@@ -389,6 +389,18 @@ function remainingText(m) {
   return left > 0 ? `剩余 ${(left / 3.6e6).toFixed(1)} 小时` : "已到期";
 }
 
+/** The held reading of a card (tools/astra_workbench_v20 _hold_transient_quote_gaps), or null. */
+function heldCapture(candidate) {
+  const held = candidate && candidate.held_capture;
+  return held && typeof held === "object" && isNum(held.age_ms) ? held : null;
+}
+
+/** The held reading's age now: from the server's read plus the time this page has been open. */
+function heldAgeText(held) {
+  const ms = held.age_ms + Math.max(0, Date.now() - (state.loadedAt || Date.now()));
+  return `${Math.max(0, Math.round(ms / 1000))} 秒`;
+}
+
 function deck(m, side, blockers) {
   const card = h("article", { class: `sheet deck ${side}${state.focus === side ? " selected" : ""}`, tabindex: 0,
     "aria-label": `${side === "put" ? "Put" : "Call"} 候选，选中后地图与推理审计跟随`, "aria-pressed": String(state.focus === side),
@@ -404,6 +416,8 @@ function deck(m, side, blockers) {
     h("h3", { text: name }),
     h("span", { class: "legs", text: `${(m.shortName || "").split("-")[1] || ""}  卖 ${usd(m.short)} / 买 ${usd(m.long)}，${remainingText(m)}` })));
   card.append(warningBlock(m.candidate, { isOpen: (key) => state.open.has(key), keepOpen }));
+  // a held reading (the newest capture is only out of step): the card's caution and the age tag below
+  const held = heldCapture(m.candidate);
   if (blockers.length) card.append(h("p", { class: "side-block", text: `本侧另有：${blockers.join("、")}` }));
 
   const move = m.sigmaPct;
@@ -413,7 +427,8 @@ function deck(m, side, blockers) {
   const usdOf = (p) => (isNum(p) && isNum(m.spot) ? usd(m.spot * p / 100) : "—");
   const beValue = m.breakevenState === "ok" ? pct(m.beOutsidePct, 2) : m.breakevenState === "none" ? "无" : "未知";
   const beSub = m.breakevenState === "ok" ? `${usd(m.breakeven)} 美元` : m.breakevenState === "none" ? "净信用不为正，不存在盈亏平衡" : "费用或报价不足，未能计算";
-  const quoteAge = (isNum(m.quoteAt) ? `报价 ${ago(m.quoteAt)}` : "报价时间未知")
+  const quoteAge = held ? `报价 ${heldAgeText(held)}前（最新一次两腿未同步，暂用这次读数）`
+    : (isNum(m.quoteAt) ? `报价 ${ago(m.quoteAt)}` : "报价时间未知")
     + (m.quoteGaps.length ? `，${[...new Set(m.quoteGaps.map((g) => (/depth/.test(g) ? "盘口深度不足" : "报价有缺口")))].join("、")}` : "");
   const absDelta = isNum(m.delta) ? Math.abs(m.delta).toFixed(2) : null;
   const distanceSub = !isNum(m.shortOutsidePct) ? "距离未能计算"
@@ -425,7 +440,7 @@ function deck(m, side, blockers) {
     const eventText = !get(m, "candidate.exogenous_events") ? "—" : events.length ? events.map((e) => e.name_cn).join("、")
       : (get(m, "candidate.exogenous_events.gaps") || []).length ? "日历未完全覆盖本期" : "无";
     card.append(h("p", { class: "deck-note muted small", title: FIG_TIP["到期前事件"] },
-      `到期前事件：${eventText}　·　${quoteAge}`));
+      `到期前事件：${eventText}　·　`, held ? h("span", { class: "quote-held-tag", text: quoteAge }) : quoteAge));
     card.append(actions(m));
     return card;
   }
@@ -529,7 +544,8 @@ function actions(m) {
     onclick: () => { state.pending = { side: m.side, kind: "lock", stage: "confirm" }; renderDecks(); } }, "直接锁定"));
   const why = [];
   if (needLogin && !FIXTURE) why.push("登录后可操作");
-  if (!lock.enabled && lock.reason) why.push(`锁定：${reasonCn(lock.reason)}`);
+  if (!lock.enabled && lock.reason) why.push(lock.reason === "quote_held_not_current"
+    ? "锁定：报价暂时不同步，两腿再次同步读到后可锁定" : `锁定：${reasonCn(lock.reason)}`);
   if (open && !onScreen) why.push(`核验进行中，${ago(open.started_at_ms)}开始`);
   if (pending && pending.stage === "done") why.unshift(pending.message);
   if (why.length) wrap.append(h("span", { class: "why", text: [...new Set(why)].join("；") }));

@@ -703,7 +703,8 @@ def _facts(point: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         "fee.entry_fee_btc": _value_fact(snapshot, ("fee", "entry_fee_btc"), "fee.entry_fee_btc", "入场费", "BTC", asof_ms=quote_clock, source=str(fee.get("basis") or "snapshot.fee"), window=",".join(sorted(str(item) for item in fee.get("covers") or [])) or str(quote_window)),
         "risk.mu_ref_btc": _value_fact(snapshot, ("economics", "mu_ref_btc"), "risk.mu_ref_btc", "冻结 μ_ref", "BTC", asof_ms=_int(risk.get("input_ts_ms")), source=str(risk.get("source_kind") or "snapshot.risk"), window=str(risk.get("model_hash") or risk.get("source_fact_hash") or "risk_identity_missing")),
         "risk.reference_margin_btc": _value_fact(snapshot, ("economics", "reference_margin_btc"), "risk.reference_margin_btc", "冻结 M_ref", "BTC", asof_ms=_int(risk.get("input_ts_ms")), source=str(risk.get("source_kind") or "snapshot.risk"), window=str(risk.get("model_hash") or risk.get("source_fact_hash") or "risk_identity_missing")),
-        "risk.status": _value_fact(snapshot, ("risk", "status"), "risk.status", "风险参考状态", None, asof_ms=_int(risk.get("input_ts_ms")), source=str(risk.get("source_kind") or "snapshot.risk"), window=str(risk.get("model_hash") or risk.get("source_fact_hash") or "risk_identity_missing")),
+        # A risk reference never computed here (no risk model configured) says nothing at either end.
+        "risk.status": None if risk.get("status") == "missing" else _value_fact(snapshot, ("risk", "status"), "risk.status", "风险参考状态", None, asof_ms=_int(risk.get("input_ts_ms")), source=str(risk.get("source_kind") or "snapshot.risk"), window=str(risk.get("model_hash") or risk.get("source_fact_hash") or "risk_identity_missing")),
         "close.debit_btc": _close_fact(close, "debit_btc", "close.debit_btc", "平仓借记估计"),
         "close.net_debit_after_close_fee_btc": _close_fact(close, "net_debit_after_close_fee_btc", "close.net_debit_after_close_fee_btc", "含平仓费借记估计"),
         "context.latest_window": _window_fact(candidate),
@@ -904,6 +905,26 @@ def _mark_not_recorded_at_lock(rows: list[dict[str, Any]], baseline_candidate: M
                                 else "锁定时未记录，也无法由当时市场事实重算；不与最新对比。")
 
 
+TRACE_ONLY = "trace"
+
+
+def _window_insufficient(point: Any) -> bool:
+    """No covered same-candidate window at this end (absent, or every window INSUFFICIENT_WINDOW)."""
+    windows = _dig(_mapping(_mapping(point).get("value")), ("coverage_summary", "windows"))
+    statuses = {_mapping(item).get("status") for item in windows} if isinstance(windows, list) else set()
+    return statuses <= {"INSUFFICIENT_WINDOW"}
+
+
+def _mark_trace_only(rows: list[dict[str, Any]]) -> None:
+    """Rows kept in the contract for traceability but not read on the page: the evidence-routing
+    graph (ids and dependency groups), and the observation window while it has no coverage."""
+    for row in rows:
+        if row.get("key") == "context.routing_relations" or (
+                row.get("key") == "context.latest_window"
+                and _window_insufficient(row.get("t0")) and _window_insufficient(row.get("t1"))):
+            row["display"] = TRACE_ONLY
+
+
 # key, label, levels field, product
 _LEVEL_SPECS = (
     ("levels.pin", "本期 Pin", "pin", "expiry_profile"),
@@ -912,9 +933,16 @@ _LEVEL_SPECS = (
     ("levels.oi_put", "Put 持仓墙", "oi_put", "expiry_profile"),
     ("levels.oi_call", "Call 持仓墙", "oi_call", "expiry_profile"),
     ("levels.max_pain_this", "本期最大痛点", "max_pain_this", "gexmonitor"),
+    ("levels.magnet", "磁吸位（全期限）", "magnet", "gexmonitor"),
     ("levels.flip", "Gamma 翻转位", "flip", "btc_map"),
     ("levels.cost_sth", "短期持有者成本", "cost_sth", "btc_map"),
+    ("levels.cost_lth", "长期持有者成本", "cost_lth", "btc_map"),
 )
+# Levels a lock taken before 2026-10-27 can still recompute from its own snapshot (gexmonitor
+# gex_info and the BTC MAP are frozen in it); the expiry profile was never saved.
+_LEVEL_RECOVERABLE = ("max_pain_this", "magnet", "flip", "cost_sth", "cost_lth")
+_LEVEL_BACKFILL_SOURCE = {"gexmonitor": "snapshot.fact_context.market_facts.space_context.gex_info",
+                          "btc_map": "snapshot.data_identity.btc_map"}
 
 
 def _levels(point: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -942,24 +970,55 @@ def _level_fact(levels: Mapping[str, Any] | None, key: str, field: str, product:
     return fact
 
 
+def _backfilled_levels(point: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The recoverable levels of a point stored without its levels block, recomputed by the
+    same pure function from the gexmonitor and BTC MAP inputs frozen in its snapshot."""
+    snapshot = _point_snapshot(point)
+    gex = _dig(snapshot, ("fact_context", "market_facts", "space_context", "gex_info"))
+    btc_map = _dig(snapshot, ("data_identity", "btc_map"))
+    if not isinstance(gex, Mapping) and not isinstance(btc_map, Mapping):
+        return None
+    try:
+        levels = lock_levels.compact(None, _mapping(gex), _mapping(btc_map),
+                                     now_ms=_point_recorded(point) or _point_asof(point, snapshot) or 0,
+                                     expiry_ms=_int(_dig(snapshot, ("contract", "expiry_ms"))))
+    except Exception:
+        return None
+    return levels if any(levels.get(field) is not None for field in _LEVEL_RECOVERABLE) else None
+
+
 def _level_rows(baseline: Mapping[str, Any], latest: Mapping[str, Any] | None,
                 contract: Mapping[str, Any]) -> list[dict[str, Any]]:
     """This expiry's structure at lock and now. A t0 without the levels block (locks before
-    2026-10-27) is 'not recorded at lock'; nothing is reconstructed."""
+    2026-10-27) recomputes the levels its snapshot still holds (flagged compat backfill); the
+    expiry-profile levels (pin, walls) stay 'not recorded at lock'."""
     t0_levels, t1_levels = _levels(baseline), _levels(latest)
     if t0_levels is None and t1_levels is None:
         return []
+    backfill = _backfilled_levels(baseline) if t0_levels is None else None
     strike = _number(contract.get("short_strike_usd"))
     rows = []
     for key, label, field, product in _LEVEL_SPECS:
-        t0 = _level_fact(t0_levels, key, field, product, label, strike)
+        recomputed = backfill is not None and field in _LEVEL_RECOVERABLE
+        t0 = _level_fact(t0_levels if t0_levels is not None else backfill if recomputed else None,
+                         key, field, product, label, strike)
+        if recomputed and t0 is not None:
+            t0["compat_backfill_applied"] = True
+            t0["backfill_source"] = _LEVEL_BACKFILL_SOURCE[product]
         t1 = _level_fact(t1_levels, key, field, product, label, strike)
         row = _row(key, "levels", label, t0, t1, "本期结构读数，锁定时与最新并列；距短腿为（价位 − 短腿行权价）/短腿行权价。")
         row["to_short_pct"] = {"t0": t0.get("to_short_pct") if t0 else None, "t1": t1.get("to_short_pct") if t1 else None}
         row["stale"] = {"t0": bool(t0_levels and t0_levels.get("stale")), "t1": bool(t1_levels and t1_levels.get("stale"))}
-        if t0_levels is None:
+        if t0_levels is None and (t0 is None or t0.get("value") is None):
             row["status"] = NOT_RECORDED_AT_LOCK
-            row["change_cn"] = "锁定时未记录本期结构（该功能上线前锁定），不与最新对比。"
+            if product == "expiry_profile":
+                row["t0_missing_reason"] = "expiry_profile_not_saved"
+                row["change_cn"] = "锁定时未保存本期期权分布，无法重算；不与最新对比。"
+            elif t0 is not None and field == "max_pain_this":
+                row["t0_missing_reason"] = "source_not_covering_expiry"
+                row["change_cn"] = "锁定时数据源只给出相邻到期日的最大痛点，未覆盖本到期日；不与最新对比。"
+            else:
+                row["change_cn"] = "锁定时未记录本期结构（该功能上线前锁定），不与最新对比。"
         rows.append(row)
     return rows
 
@@ -1310,6 +1369,7 @@ def build_followup(detail: Mapping[str, Any], *, now_ms: int, include_raw: bool 
         if key in t0_facts or key in t1_facts
     ]
     _mark_not_recorded_at_lock(rows, _mapping(fact_baseline.get("candidate")))
+    _mark_trace_only(rows)
     breakeven_rows, breakeven_distances = _breakeven_rows(baseline_snapshot, latest_snapshot)
     rows[2:2] = breakeven_rows
     rows.extend(_level_rows(baseline, latest_point, _mapping(baseline_snapshot.get("contract"))))

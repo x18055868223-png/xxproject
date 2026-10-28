@@ -8,7 +8,9 @@ direction readings. Every item carries its numbers, an honest "why" and its grad
 - veto: fired entry warnings (term inversion, premium thickening; thresholds unvalidated,
   veto only), a buffer inside or narrow against this expiry's expected move, incomplete data.
 - caution: even the two legs' mid does not reach the market's own estimate (the reservation
-  price below), or the protection leg's book is empty or wide (its mark may be unreliable).
+  price below), or the protection leg's book is empty or wide (its mark may be unreliable),
+  or the quote is only briefly out of step (the two books read too far apart, a book read
+  that failed once): plumbing, not market, while it lasts at most QUOTE_HOLD_MS.
 
 The reservation price restates the existing "net credit >= the two legs' mark spread" test as
 a price: the lowest two-leg gross credit whose net (after fees) is not below the market's mark
@@ -30,6 +32,13 @@ STANDARD_WIDTH_USD = 2000.0
 # a protection leg whose bid/ask spread reaches this share of its mid: its mark may be unreliable
 WIDE_BOOK = 0.5
 LEGACY_BUSY_CODE = "busy_window_thin_cushion"   # @0.1 busy item: a holding note, never a veto here
+# Quote gaps of the capture plumbing, not of the market: the two books landed too far apart or
+# too old, the index of the two reads differs (it moved between them), a book read failed. They
+# clear on the next read. The workbench holds the last good reading of the same contract for
+# QUOTE_HOLD_MS; past that (or with any other gap) they are a data veto again.
+TRANSIENT_QUOTE_CODES = frozenset({"leg_book_time_skew", "short_book_stale_or_future", "long_book_stale_or_future",
+                                   "local_receipt_outside_freshness", "leg_index_mismatch"})
+QUOTE_HOLD_MS = 180_000
 
 B_WARNING = "未验证，只作否决 · 13 号 / 17 号 §3.2（阈值为 2026-10-20 初值）"
 B_BUFFER = "距离 · 本期 ATM IV 折算；标准 0.35Δ 短腿约 0.4 倍（17 号 §3.2）；窄（< 0.25 倍）只作否决，阈值未验证"
@@ -145,6 +154,56 @@ def buffer_item(dist_pct: float | None, ratio: float | None, move_pct: float | N
                 f"不到 {NARROW_MOVES} 倍预期波动的正常波动就会触及短腿；这个阈值未验证，只作否决", clears, B_BUFFER)
 
 
+def split_quote_gaps(quote_reasons: Sequence[Any], capture_gaps: Sequence[Any] = ()) -> tuple[list[str], list[str]]:
+    """(transient, genuine) quote gap codes. A leg whose book read failed (capture gap
+    "<leg>_book_unavailable:...") has an empty book; its derived "<leg>_book_*" codes and the
+    missing index are consequences of that failure, so they go with it."""
+    unavailable = {str(g).split("_book_unavailable", 1)[0] for g in capture_gaps or []
+                   if "_book_unavailable" in str(g)}
+    transient, genuine = [], []
+    for code in [str(c) for c in quote_reasons or [] if c]:
+        derived = any(code.startswith(leg + "_book_") for leg in unavailable) or (unavailable and code == "leg_index_missing")
+        (transient if code in TRANSIENT_QUOTE_CODES or derived else genuine).append(code)
+    transient += [str(g) for g in capture_gaps or [] if "_book_unavailable" in str(g)]
+    return transient, genuine
+
+
+_GENUINE_CN = (("depth_insufficient", "盘口深度不足"), ("not_open", "合约未开放交易"), ("crossed_book", "盘口交叉"),
+               ("instrument_mismatch", "合约与盘口不符"))
+
+
+def _genuine_label(code: str) -> str:
+    return next((label for key, label in _GENUINE_CN if key in code), "报价缺口")
+
+
+def _secs(ms: Any) -> str:
+    ms = _num(ms)
+    return "—" if ms is None else f"{max(0, round(ms / 1000))} 秒"
+
+
+def quote_sync_item(held: Mapping[str, Any] | None, transient: Sequence[str], unsynced_ms: Any = None) -> dict[str, Any]:
+    """A caution while the quote is only briefly out of step: with the held reading's age when
+    the last good reading of the same contract is shown, else without a reading."""
+    why = ("两腿盘口是分开读取的，时间没对齐或一次读取失败时，这一轮算不出可成交的信用；"
+           "这是读取管道的问题，不是市场的读数，下一次读取通常就恢复")
+    latest = "最新一次读取：" + ("、".join(_TRANSIENT_CN.get(c.split(":")[0], c.split(":")[0]) for c in transient)
+                                if transient else "未同步")
+    if isinstance(held, Mapping):
+        return item("quote_held", "caution", f"报价暂时不同步（{_secs(held.get('age_ms'))}前的读数）",
+                    latest + f"；卡上展示的是同一合约 {_secs(held.get('age_ms'))}前的完整读数",
+                    why + "；旧读数不能用来锁定或存档，那些操作会重新读取",
+                    f"两腿再次同步读到后解除；超过 {QUOTE_HOLD_MS // 1000} 秒仍不同步，改为资料不完整", B_DATA)
+    return item("quote_unsynced", "caution", "报价暂时不同步（暂无可用读数）",
+                latest + (f"，已 {_secs(unsynced_ms)}" if _num(unsynced_ms) is not None else ""),
+                why, f"两腿再次同步读到后解除；超过 {QUOTE_HOLD_MS // 1000} 秒仍不同步，改为资料不完整", B_DATA)
+
+
+_TRANSIENT_CN = {"leg_book_time_skew": "两腿盘口读取时间相差过大", "short_book_stale_or_future": "短腿盘口过旧",
+                 "long_book_stale_or_future": "保护腿盘口过旧", "local_receipt_outside_freshness": "本地接收时间过旧",
+                 "leg_index_mismatch": "两次读取的指数不一致", "short_book_unavailable": "短腿盘口读取失败",
+                 "long_book_unavailable": "保护腿盘口读取失败"}
+
+
 def data_item(gap_labels_cn: Sequence[str]) -> dict[str, Any] | None:
     labels = [str(x) for x in gap_labels_cn or [] if x]
     if not labels:
@@ -224,6 +283,33 @@ _QUOTE_GAP_CN = "报价缺口"
 _DEPTH_CN = "盘口深度不足"
 
 
+def quote_gap_brief(cand: Mapping[str, Any]) -> dict[str, Any]:
+    """The quote gap of a page candidate under the one rule the card and the V step share:
+    {"item": caution item or None, "labels": data-gap labels (vetoes), "transient", "genuine"}.
+    Out of step only, and not longer than the hold window: a caution. Longer: a data gap named
+    for what keeps failing (out of step, or a book that cannot be read)."""
+    snap = cand.get("snapshot") if isinstance(cand.get("snapshot"), Mapping) else {}
+    quote = _get(snap, "market.quote") or {}
+    held = cand.get("held_capture") if isinstance(cand.get("held_capture"), Mapping) else None
+    transient, genuine = split_quote_gaps(quote.get("gap_reasons") if isinstance(quote, Mapping) else [],
+                                          cand.get("capture_gaps") or [])
+    persistence = cand.get("quote_gap_persistence") if isinstance(cand.get("quote_gap_persistence"), Mapping) else {}
+    unsynced_ms = _num(persistence.get("unsynced_ms"))
+    brief = bool(transient) and not genuine and (unsynced_ms is None or unsynced_ms <= QUOTE_HOLD_MS)
+    item_, labels = None, []
+    if held:
+        item_ = quote_sync_item(held, [str(c) for c in held.get("reason_codes") or []])
+    elif brief:
+        item_ = quote_sync_item(None, transient, unsynced_ms)
+    elif transient and not genuine:
+        failed = [c for c in transient if "_book_unavailable" in c]
+        labels.append(f"{_TRANSIENT_CN[failed[0].split(':')[0]]}，已持续 {_secs(unsynced_ms)}" if failed
+                      and failed[0].split(":")[0] in _TRANSIENT_CN else f"报价持续不同步（{_secs(unsynced_ms)}）")
+    if genuine:
+        labels += list(dict.fromkeys(_genuine_label(c) for c in genuine))
+    return {"item": item_, "labels": labels, "transient": transient, "genuine": genuine}
+
+
 def card(candidate: Any) -> dict[str, Any]:
     """The unsuitable items of one page candidate: warnings, buffer, quote gaps and depth, then the
     cautions of its readings' reservation price. Never raises."""
@@ -235,15 +321,19 @@ def card(candidate: Any) -> dict[str, Any]:
         gaps = []
         if not snap:
             gaps.append("没有冻结快照")
-        if isinstance(quote, Mapping) and quote.get("gap_reasons"):
-            gaps.append(_QUOTE_GAP_CN)
+        # out of step only, and not for longer than the hold window: a caution, never "资料不完整"
+        brief = quote_gap_brief(cand)
+        if brief["item"]:
+            items.append(brief["item"])
+        gaps += brief["labels"]
         depth = quote.get("available_depth_btc") if isinstance(quote, Mapping) else None
         need = _num(_get(snap, "contract.quantity_btc")) or 1.0
-        if isinstance(depth, Mapping) and any((_num(depth.get(leg)) or 0) < need for leg in ("short", "long")):
+        if (isinstance(depth, Mapping) and _DEPTH_CN not in gaps
+                and any((_num(depth.get(leg)) or 0) < need for leg in ("short", "long"))):
             gaps.append(_DEPTH_CN)
         data = data_item(gaps)
         if data:
-            items.append(data)
+            items.insert(0, data)
         warn = warning_items(cand.get("entry_warnings"))
         items += warn["items"]
         unknown += warn["unknown_cn"]
@@ -261,7 +351,7 @@ def card(candidate: Any) -> dict[str, Any]:
                 if caution:
                     items.append(caution)
             if pricing.get("reservation_btc") is None:
-                unknown.append("市场估价缺失，保留价无法计算")
+                unknown.append("报价暂时不同步，保留价暂缺" if brief["item"] and not cand.get("held_capture") else "市场估价缺失，保留价无法计算")
         return {"schema": SCHEMA, "items": items, "veto_count": sum(i["kind"] == "veto" for i in items),
                 "caution_count": sum(i["kind"] == "caution" for i in items), "unknown_cn": unknown}
     except Exception as exc:   # a display layer never breaks the view

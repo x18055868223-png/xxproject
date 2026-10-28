@@ -165,3 +165,100 @@ def test_lock_detail_places_levels_after_changes_marks_backfill_and_not_generate
     assert secs.index("核验时的承诺") == secs.index("锁定时") + 1
     assert "主动卖方占优（由锁定时市场事实重算）" in out["text"]
     assert "锁定时未生成" in out["text"] and "锁定后才出现" not in out["text"]
+
+
+# ── market background: reading · key numbers, the change of the headline numbers ──
+TMV = lambda blend, h24, h48, state: {"tmv_state": state, "tmv_blend": blend, "tmvf_24h": {"tmv_final": h24, "core": {"trend_strength_pct": 0.166}},
+                                      "tmvf_48h": {"tmv_final": h48}}
+FLOW = lambda score, cvd12, cvd4, d: {"combined": {"direction": d, "data_ready": True, "score": score},
+                                      "slow_12h": {"cvd_sum": cvd12, "momentum_return_pct": -1.013}, "fast_4h": {"cvd_sum": cvd4, "direction": "neutral"}}
+SPACE = lambda score, gamma, flip, regime: {"space_gate": {"state": "STRUCTURE_BLOCKED"}, "gamma_regime": {"regime": regime},
+                                            "space_gate_anchor": {"score": score}, "space_gate_net_gamma": {"value": gamma, "unit": "USD"},
+                                            "space_context_anchor": {"effective_flip_point": flip},
+                                            "space_context_gamma": {"distance_to_flip_pct": 0.118}}
+BF = {"compat_backfill_applied": True, "backfill_source": "snapshot.fact_context.market_facts"}
+
+
+def ctx(row, extra=None):
+    return run("return L.contextRow(p.r, p.x || {});", {"r": row, "x": extra})
+
+
+def test_context_cells_carry_numbers_and_the_change_column_the_headline_delta():
+    tmv = ctx({"key": "context.tmv_price_path", "status": "changed",
+               "t0": {"value": TMV(-0.5545, -0.567, -0.546, "strong_bearish_bias"), **BF},
+               "t1": {"value": TMV(0.5216, 0.464, 0.560, "strong_bullish_bias")}})
+    assert tmv["t0"] == "强偏空 · 综合 −0.55（24h −0.57 / 48h −0.55），24h 趋势强度 0.17%"
+    assert tmv["t1"].startswith("强偏多 · 综合 +0.52（24h +0.46 / 48h +0.56）")
+    assert tmv["status"] == "综合 +1.08" and tmv["backfilled"] and tmv["moved"]
+    flow = ctx({"key": "context.active_flow", "status": "changed", "t0": {"value": FLOW(-0.399, 1089.9, 199.8, "bearish")},
+                "t1": {"value": FLOW(0.476, 1739.2, 41.9, "bullish")}})
+    assert flow["t0"] == "主动卖方占优 · 综合 −0.40，12h CVD +1,090 BTC（价格 −1.01%），4h CVD +200 BTC（均衡）"
+    assert flow["status"] == "综合 +0.88；12h CVD +649 BTC"
+    funding = ctx({"key": "context.funding", "status": "changed",
+                   "t0": {"value": {"last_rate": 0.0001, "semantics": {"crowding_state": "NOT_CROWDED"},
+                                    "tmvf_24h": {"funding_cum": 0.00027945}, "tmvf_48h": {"funding_state": "crowded_long"}}},
+                   "t1": {"value": {"last_rate": 0.00005008, "semantics": {"crowding_state": "NOT_CROWDED"}}}})
+    assert funding["t0"] == "费率未拥挤 · 最新 +0.0100%，24h 累计 +0.0279%，48h 多头拥挤"
+    assert funding["t1"] == "费率未拥挤 · 最新 +0.0050%" and funding["status"] == "最新费率 −0.50 bp"
+    skew = ctx({"key": "context.skew", "status": "changed", "t0": {"value": {"rr_blend": -0.0324, "rr_z": -0.32, "delta_rr": -0.00084}},
+                "t1": {"value": {"rr_blend": 0.0114}}})
+    assert skew["t0"] == "看跌期权更贵 · RR −0.032，z −0.32，较基线 −0.0008" and skew["status"] == "RR +0.044"
+    macro = ctx({"key": "context.macro", "status": "changed",
+                 "t0": {"value": {"macro_score": -0.172, "component_summaries": [
+                     {"key": "VOLQ", "scoring_value": -6.71, "scoring_unit": "pct"}, {"key": "US10Y", "scoring_value": -0.2, "scoring_unit": "bps"},
+                     {"key": "weird_code", "scoring_value": 1, "scoring_unit": "pct"}]}},
+                 "t1": {"value": {"macro_score": -0.132}}})
+    assert macro["t0"] == "得分 −0.17 · 纳指波动率 −6.71%，美债 10 年 −0.20 bp" and macro["status"] == "得分 +0.04"
+
+
+def test_space_row_uses_the_structure_flip_and_arrows_the_anchor_score():
+    row = {"key": "context.option_space", "status": "changed",
+           "t0": {"value": SPACE(48.86, 9974865.24, 79818.1, "TRANSITION"), **BF},
+           "t1": {"value": SPACE(2.68, 109375932.35, 79783.4, "POSITIVE_GAMMA_PINNING")}}
+    out = ctx(row, {"t0": {"flip": 79819.26, "spot": 79592.22}, "t1": {"flip": 79783.38, "spot": 80915.47}})
+    assert out["t0"] == "FMZ 空间门关闭（仅参考），过渡 · 锚定分 48.9，净 Gamma +9.97M 美元，翻转位 79,819（现价在下方 0.28%）"
+    assert out["t1"].endswith("净 Gamma +109M 美元，翻转位 79,783（现价在上方 1.42%）")
+    assert out["status"] == "锚定分 48.9 → 2.7；净 Gamma +99.4M 美元"
+    # without the structure flip: the anchor's flip is labelled, its unsigned distance gets no direction
+    alone = ctx(row)
+    assert "翻转位（锚点口径） 79,818（相距 0.12%）" in alone["t0"] and "上方" not in alone["t0"]
+
+
+def test_equal_headline_numbers_read_unchanged_and_missing_fields_never_print_raw():
+    same = ctx({"key": "context.tmv_price_path", "status": "changed",
+                "t0": {"value": TMV(-0.551, None, None, "bearish_bias"), **BF}, "t1": {"value": TMV(-0.549, None, None, "strong_bearish_bias")}})
+    assert same["status"] == "主读数未变" and not same["moved"]
+    assert same["t0"] == "偏空 · 综合 −0.55，24h 趋势强度 0.17%"
+    sparse = ctx({"key": "context.option_space", "status": "changed", "t0": {"value": {"space_gate": {"state": "SOMETHING_NEW"}}},
+                  "t1": {"value": {"gamma_regime": {"regime": "TRANSITION"}}}})
+    assert sparse["t0"] == "—" and sparse["t1"] == "过渡" and sparse["status"] == "有变化"
+    missing = ctx({"key": "context.funding", "status": "latest_missing", "t0": {"value": {"last_rate": 0.0001}}, "t1": None})
+    assert missing["t1"] == "未记录" and missing["status"] == "最新缺失"
+    q = ctx({"key": "opinion.q1.direct_refs", "status": "not_recorded_at_lock", "t0": None, "t1": {"value": {"summary_cn": "Q1 摘要"}}})
+    assert q["t0"] == "—" and q["t1"] == "Q1 摘要" and q["status"] == "锁定时未生成"
+
+
+def test_trace_rows_and_a_never_computed_risk_reference_are_not_shown():
+    shown = lambda r: run("return L.ctxShown(p.r);", {"r": r})
+    assert not shown({"key": "context.routing_relations", "display": "trace"})
+    assert not shown({"key": "risk.status", "t0": {"value": "missing"}, "t1": {"value": "missing"}})
+    assert not shown({"key": "risk.status", "t0": None, "t1": {"value": "missing"}})
+    assert shown({"key": "risk.status", "t0": {"value": "missing"}, "t1": {"value": "supported"}})
+    assert shown({"key": "context.macro", "t0": None, "t1": {"value": {}}})
+
+
+def test_levels_view_words_why_a_lock_time_level_is_absent_and_marks_recomputed_values():
+    rows = [
+        {"key": "levels.pin", "group": "levels", "label_cn": "本期 Pin", "status": "not_recorded_at_lock",
+         "t0_missing_reason": "expiry_profile_not_saved", "t0": None, "t1": {"value": 80500.0}, "to_short_pct": {"t1": 1.9}},
+        {"key": "levels.max_pain_this", "group": "levels", "label_cn": "本期最大痛点", "status": "not_recorded_at_lock",
+         "t0_missing_reason": "source_not_covering_expiry", "t0": {"value": None, **BF}, "t1": {"value": 80000.0}, "to_short_pct": {}},
+        {"key": "levels.flip", "group": "levels", "label_cn": "Gamma 翻转位", "status": "changed",
+         "t0": {"value": 79819.26, **BF}, "t1": {"value": 79783.38}, "to_short_pct": {"t0": 1.04, "t1": 0.99}},
+    ]
+    out = run("const v = L.levelsView(p.rows); return { rows: walk(v).filter((x) => x.tagName === 'tr').slice(1).map((r) => r.childNodes.map((c) => c.textContent)), text: v.textContent };",
+              {"rows": rows})
+    assert out["rows"][0][:4] == ["本期 Pin", "未保存", "80,500", "锁定时未保存本期期权分布，无法重算"]
+    assert out["rows"][1][:4] == ["本期最大痛点", "未覆盖", "80,000", "当时数据源未覆盖本到期日"]
+    assert out["rows"][2] == ["Gamma 翻转位", "79,819（重算）", "79,783", "−36", "+0.99%（锁定时 +1.04%）"]
+    assert "标“重算”的锁定时读数" in out["text"]

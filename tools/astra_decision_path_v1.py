@@ -706,8 +706,17 @@ def _v(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any],
     d0 = steps.get("D0") or {}
     d0v = d0.get("verdict") or {}
     if d0v.get("code") != "readable":
-        items.append({**unsuitable.data_item([_GAP_CN.get(c, c) for c in d0.get("gaps") or []] or ["资料读数失败"]),
-                      "src": "D0"})
+        gaps = list(d0.get("gaps") or [])
+        # a quote gap that is only the two legs read out of step is a caution, not missing data
+        # (the card's rule: only within the hold window; past it the gap is named, a veto)
+        brief = unsuitable.quote_gap_brief(frame.get("candidate") or {})
+        if "quote" in gaps and brief["item"]:
+            gaps.remove("quote")
+            items.append({**brief["item"], "src": "D0"})
+        elif "quote" in gaps and brief["labels"]:
+            gaps = [g for g in gaps if g != "quote"] + brief["labels"]
+        if gaps or not brief["transient"]:
+            items.append({**unsuitable.data_item([_GAP_CN.get(c, c) for c in gaps] or ["资料读数失败"]), "src": "D0"})
     checks.append(f"资料 {d0v.get('cn') or '未知'}")
     warn = unsuitable.warning_items(_get(frame, "candidate.entry_warnings"))
     items += [{**i, "src": "T"} for i in warn["items"]]

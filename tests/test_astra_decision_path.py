@@ -899,3 +899,25 @@ def test_lock_limit_plan_and_commitments(tmp_path):
     out = other.conclude(vid2, "lock", now_ms=NOW + 1, limit={"credit_btc": 0.1, "valid_minutes": 1440})
     assert out["conclusion"]["limit"]["reservation_btc"] == pytest.approx(reading["steps"]["P"]["reservation_btc"])
     assert store.check_limit("decline", None) is None
+
+
+def test_v_reads_a_transient_quote_gap_as_a_caution_not_missing_data():
+    skewed = candidate()
+    skewed["snapshot"]["market"]["quote"]["gap_reasons"] = ["leg_book_time_skew"]
+    v = dp.build(frame(skewed))["steps"]["V"]
+    codes = {i["code"]: i["kind"] for i in v["items"]}
+    assert codes.get("quote_unsynced") == "caution" and "data" not in codes
+    deep = candidate()
+    deep["snapshot"]["market"]["quote"]["gap_reasons"] = ["short_depth_insufficient"]
+    v = dp.build(frame(deep))["steps"]["V"]
+    assert any(i["code"] == "data" and i["kind"] == "veto" for i in v["items"])
+
+
+def test_v_follows_the_card_past_the_hold_window():
+    late = candidate()
+    late["snapshot"]["market"]["quote"]["gap_reasons"] = ["leg_book_time_skew"]
+    late["quote_gap_persistence"] = {"unsynced_ms": 200_000}
+    v = dp.build(frame(late))["steps"]["V"]
+    data = next(i for i in v["items"] if i["code"] == "data")
+    assert data["kind"] == "veto" and "报价持续不同步" in data["evidence_cn"]
+    assert not any(i["code"].startswith("quote_") for i in v["items"])

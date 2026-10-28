@@ -180,8 +180,34 @@ def _empty_state() -> dict[str, Any]:
 
 
 def rebuild_state(path: str | Path) -> dict[str, Any]:
-    state = _empty_state()
-    for row in read_jsonl(path):
+    return _advance_state(_empty_state(), read_jsonl(path))
+
+
+def _advance_state(base: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Apply ledger rows on top of an already replayed state.
+
+    `base` is never mutated: containers are copied and an entry is copied before
+    it changes, so readers still holding `base` keep a consistent object. Frozen
+    snapshot bodies are shared. Replaying rows A then rows B equals replaying A+B.
+    """
+    state = {
+        "schema": STATE_SCHEMA,
+        "snapshots": dict(base["snapshots"]),
+        "order": list(base["order"]),
+        "candidate_order": {key: list(value) for key, value in base["candidate_order"].items()},
+        "active_by_candidate": dict(base["active_by_candidate"]),
+    }
+    copied: set[str] = set()
+
+    def _entry(snapshot_id: Any) -> dict[str, Any] | None:
+        entry = state["snapshots"].get(snapshot_id)
+        if entry is not None and snapshot_id not in copied:
+            entry = {**entry, "origins": set(entry["origins"])}
+            state["snapshots"][snapshot_id] = entry
+            copied.add(snapshot_id)
+        return entry
+
+    for row in rows:
         if row.get("schema") != EVENT_SCHEMA:
             raise ValueError("unsupported underwriting ledger event schema")
         event_type = row.get("event_type")
@@ -189,7 +215,7 @@ def rebuild_state(path: str | Path) -> dict[str, Any]:
             snapshot = _validate_snapshot(row.get("snapshot") or {})
             snapshot_id = snapshot["snapshot_id"]
             origins = set(row.get("origins") or _origins(snapshot))
-            entry = state["snapshots"].get(snapshot_id)
+            entry = _entry(snapshot_id)
             if entry is None:
                 candidate_id = snapshot["candidate_id"]
                 candidate_order = state["candidate_order"].setdefault(candidate_id, [])
@@ -209,20 +235,21 @@ def rebuild_state(path: str | Path) -> dict[str, Any]:
                     "review": None,
                 }
                 state["snapshots"][snapshot_id] = entry
+                copied.add(snapshot_id)
                 state["order"].append(snapshot_id)
                 state["active_by_candidate"][candidate_id] = snapshot_id
             entry["origins"].update(origins)
             entry["latest_event_id"] = row.get("event_id")
             entry["latest_recorded_ts_ms"] = row.get("recorded_ts_ms")
         elif event_type == ORIGIN_EVENT:
-            entry = state["snapshots"].get(row.get("snapshot_id"))
+            entry = _entry(row.get("snapshot_id"))
             if entry is None:
                 raise ValueError("origin merge references an unknown snapshot")
             entry["origins"].update(row.get("origins") or [])
             entry["latest_event_id"] = row.get("event_id")
             entry["latest_recorded_ts_ms"] = row.get("recorded_ts_ms")
         elif event_type == INVALIDATION_EVENT:
-            entry = state["snapshots"].get(row.get("snapshot_id"))
+            entry = _entry(row.get("snapshot_id"))
             if entry is None:
                 raise ValueError("invalidation references an unknown snapshot")
             entry["invalidated_by_snapshot_id"] = row.get("invalidated_by_snapshot_id")
@@ -231,7 +258,7 @@ def rebuild_state(path: str | Path) -> dict[str, Any]:
             entry["latest_event_id"] = row.get("event_id")
             entry["latest_recorded_ts_ms"] = row.get("recorded_ts_ms")
         elif event_type == REVIEW_EVENT:
-            entry = state["snapshots"].get(row.get("snapshot_id"))
+            entry = _entry(row.get("snapshot_id"))
             if entry is None:
                 raise ValueError("review references an unknown snapshot")
             entry["review"] = {
@@ -435,12 +462,78 @@ def _validate_same_snapshot_review(snapshot: Mapping[str, Any], review: Mapping[
             raise ValueError("review normalized fields do not match the bounded catalog")
 
 
+_TAIL_CHECK_BYTES = 256
+
+
 class UnderwritingLedger:
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        # (file identity, consumed offset, consumed line count, bytes before offset, state)
+        self._cache: tuple[Any, int, int, bytes, dict[str, Any]] | None = None
+        self._cache_lock = threading.Lock()
+
+    def drop_cache(self) -> None:
+        with self._cache_lock:
+            self._cache = None
 
     def state(self) -> dict[str, Any]:
-        return rebuild_state(self.path)
+        """The replayed ledger. Append-only growth is replayed incrementally (only the new
+        complete lines); any other change of the file replays it whole. The returned state is
+        shared: callers only read it."""
+        with self._cache_lock:
+            try:
+                st = self.path.stat()
+            except FileNotFoundError:
+                self._cache = None
+                return _empty_state()
+            identity = (st.st_dev, st.st_ino)
+            cache = self._cache
+            with self.path.open("rb") as handle:
+                if (cache is not None and cache[0] == identity and st.st_size >= cache[1]
+                        and self._tail_matches(handle, cache[1], cache[3])):
+                    _identity, offset, line_no, _tail, state = cache
+                else:
+                    offset, line_no, state = 0, 0, _empty_state()
+                handle.seek(offset)
+                rows: list[dict[str, Any]] = []
+                unterminated: dict[str, Any] | None = None
+                while True:
+                    line = handle.readline()
+                    if not line:
+                        break
+                    text = line.decode("utf-8-sig" if offset == 0 else "utf-8").strip()
+                    if not line.endswith(b"\n"):
+                        # The last line without its newline: used when it already parses (as the
+                        # full replay did), but never cached, so it is replayed again once complete.
+                        try:
+                            value = json.loads(text) if text else None
+                        except json.JSONDecodeError:
+                            value = None  # still being written
+                        unterminated = value if isinstance(value, dict) else None
+                        break
+                    line_no += 1
+                    offset += len(line)
+                    if not text:
+                        continue
+                    try:
+                        value = json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(f"{self.path} line {line_no} is not valid JSON") from exc
+                    if not isinstance(value, dict):
+                        raise ValueError(f"{self.path} line {line_no} is not a JSON object")
+                    rows.append(value)
+                if rows:
+                    state = _advance_state(state, rows)
+                start = max(0, offset - _TAIL_CHECK_BYTES)
+                handle.seek(start)
+                tail = handle.read(offset - start)
+            self._cache = (identity, offset, line_no, tail, state)
+            return _advance_state(state, [unterminated]) if unterminated is not None else state
+
+    @staticmethod
+    def _tail_matches(handle: Any, offset: int, tail: bytes) -> bool:
+        handle.seek(offset - len(tail))
+        return handle.read(len(tail)) == tail
 
     def record_payload(self, payload: Mapping[str, Any], now_ms: int | None = None) -> dict[str, Any]:
         snapshot = core.evaluate(payload)

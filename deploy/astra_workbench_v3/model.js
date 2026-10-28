@@ -10,6 +10,7 @@ const REASONS = {
   data_engine_required_source_usage_rejected: "必需数据源未通过用途检查",
   fee_missing_or_incomplete: "费用缺失或不完整",
   quote_invalid_or_stale: "报价无效或过期",
+  quote_held_not_current: "展示的是暂用读数，锁定需要最新报价",
   leg_book_time_skew: "两腿盘口读取时间相差过大",
   // Decision Path requests
   delta_population_capture_incomplete: "Delta 采集不完整，本轮没有选出候选",
@@ -612,6 +613,7 @@ const CODES = {
   NO_STRICT_DELTA: "无严格变化", NO_PATH_DUE_TO_WINDOW_GAP: "窗口缺口，无完整路径", INSUFFICIENT: "窗口不足",
   sequential_leg_book_estimate: "顺序腿盘口估算", deribit_index: "Deribit 指数",
   configured_assumption: "配置假设", public_taker_capped_daily_delivery_zero: "公开 taker 费率（有上限），交割费按 0",
+  public_taker_capped_daily_delivery_zero_at_mark: "公开 taker 费率（有上限，按标记价估算），交割费按 0",
   frozen_risk_reference_missing: "冻结风险参考缺失", risk_model_not_configured: "风险模型未配置", not_qualified: "未合格",
   delivery: "交割", entry: "入场", put: "Put", call: "Call", current: "当前", hold_to_expiry: "持有到期",
 };

@@ -30,6 +30,8 @@ export const TERM_CN = {
   qualified_window_not_covered: "合格窗口未覆盖", qualified_same_candidate_path_missing: "缺少同保单合格路径",
   unqualified_or_mixed: "未合格或混合", insufficient_window: "窗口不足", configured_assumption: "配置假设",
   sequential_leg_book_estimate: "分腿盘口顺序估算", public_taker_capped_daily_delivery_zero: "按公开吃单费率封顶，日交割费为 0",
+  public_taker_capped_daily_delivery_zero_at_mark: "按标记价估算的公开吃单费率（封顶），日交割费为 0",
+  quote_held_not_current: "展示的是暂用读数，锁定需要最新报价",
   deribit_index: "Deribit 指数", exchange_time: "交易所时间", source_defined: "按来源定义", producer_top_level: "生产端顶层",
   current_fact: "当前事实", full_live: "全部实时", nearest_listed_tenor: "最近挂牌期限",
   official_expiry_last_30m_observation_window: "官方到期前 30 分钟观察窗", deribit_official_expiry_observation_rule: "Deribit 官方到期观察规则",

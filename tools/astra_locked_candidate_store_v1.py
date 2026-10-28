@@ -320,6 +320,8 @@ class LockedCandidateStore:
         self.series_dir = self.root / "series"
         self._point_meta_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
         self._point_verified_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+        # validated full t0 bases for delta writes, keyed by point id + file stat (one per episode)
+        self._delta_base_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
 
     def lock(self, point: Mapping[str, Any], *, request_key: str, now_ms: int,
              new_reference: bool = False, source_episode_id: str | None = None) -> dict[str, Any]:
@@ -443,6 +445,9 @@ class LockedCandidateStore:
         episode_id = _text(episode_id, "invalid_episode_id")
         now_ms = _clock(now_ms, "invalid_now_ms")
         checked = _prepare_point_for_write(point)
+        return {**self._append_checked(episode_id, checked, now_ms=now_ms), "point_id": checked["point_id"]}
+
+    def _append_checked(self, episode_id: str, checked: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         with store._APPEND_LOCK, store._exclusive_file_lock(self.index_path):
             state = self._read_state_unlocked()
             episode = self._episode(state, episode_id)
@@ -1009,15 +1014,22 @@ class LockedCandidateStore:
 
     def _delta_write_plan(self, checked: Mapping[str, Any], base_point_id: str) -> dict[str, Any] | None:
         base_point_id = _point_id(base_point_id)
-        try:
-            base_payload, _base_stat = self._read_stored_json(base_point_id)
-        except LockedCandidateError:
-            raise
-        if _is_delta_envelope(base_payload):
-            return None
-        base_checked = validate_point(base_payload)
-        if base_checked["point_id"] != base_point_id:
-            raise LockedCandidateError("point_hash_mismatch", "stored base point validates to a different point_id")
+        base_stat = self._point_file_stat(base_point_id)
+        with self._cache_lock:
+            cached = self._delta_base_cache.get(base_point_id)
+        if cached is not None and cached[0] == base_stat:
+            base_checked = cached[1]
+        else:
+            base_payload, base_stat = self._read_stored_json(base_point_id)
+            if _is_delta_envelope(base_payload):
+                return None
+            base_checked = validate_point(base_payload)
+            if base_checked["point_id"] != base_point_id:
+                raise LockedCandidateError("point_hash_mismatch", "stored base point validates to a different point_id")
+            with self._cache_lock:
+                self._delta_base_cache[base_point_id] = (base_stat, base_checked)
+                while len(self._delta_base_cache) > 4:
+                    self._delta_base_cache.pop(next(iter(self._delta_base_cache)))
         if (base_checked["candidate_id"] != checked["candidate_id"]
                 or base_checked["contract_key"] != checked["contract_key"]):
             return None
@@ -1031,11 +1043,8 @@ class LockedCandidateStore:
             "patch": {"set": sets, "delete": deletes},
         }
         reconstructed = _apply_delta_patch(base_checked["point"], envelope["patch"])
+        # Same content hash as the point just validated: validating it again proves nothing new.
         if _hash(reconstructed) != checked["point_id"]:
-            return None
-        verify = validate_point(reconstructed)
-        if (verify["candidate_id"] != checked["candidate_id"]
-                or verify["contract_key"] != checked["contract_key"]):
             return None
         raw = _canonical_bytes(envelope)
         gz = gzip.compress(raw, compresslevel=9, mtime=0)

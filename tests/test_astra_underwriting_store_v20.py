@@ -247,3 +247,91 @@ def test_cli_writes_ledger_annex_and_packet_without_llm_usage(tmp_path: Path, ca
     assert packet["schema"] == "astra_underwriting_llm_packet@2.0.0"
     assert packet["snapshot_id"] == annex["snapshot"]["snapshot_id"]
     assert not list(tmp_path.glob("*usage*"))
+
+
+def _plain(state):
+    return json.loads(json.dumps(state, sort_keys=True, default=sorted))
+
+
+def _versions():
+    first = payload("manual")
+    second = payload("fixed_round")
+    changed = payload("natural_nr")
+    changed["market"]["short_book"]["bids"] = [[0.039, 0.5]]
+    again = payload("state_refresh")
+    again["market"]["short_book"]["bids"] = [[0.038, 0.5]]
+    return [first, second, changed, again]
+
+
+def test_incremental_replay_equals_a_full_replay_after_every_append(tmp_path: Path) -> None:
+    ledger = store.UnderwritingLedger(tmp_path / "underwriting.jsonl")
+    held = []
+    for step, item in enumerate(_versions(), start=1):
+        card = ledger.record_payload(item, now_ms=step)
+        state = ledger.state()
+        held.append((_plain(state), state))
+        assert _plain(state) == _plain(store.rebuild_state(ledger.path))
+        assert card == store.build_card_annex(store.rebuild_state(ledger.path), card["snapshot"]["snapshot_id"])
+    # copy-on-write: a state handed out earlier never changes under its reader
+    for plain, state in held:
+        assert _plain(state) == plain
+    assert held[0][1]["snapshots"] is not held[-1][1]["snapshots"]
+
+
+def test_record_snapshot_replays_only_the_new_rows(tmp_path: Path, monkeypatch) -> None:
+    ledger = store.UnderwritingLedger(tmp_path / "underwriting.jsonl")
+    items = _versions()
+    for step, item in enumerate(items[:3], start=1):
+        ledger.record_payload(item, now_ms=step)
+    snapshot = core.evaluate(items[3])
+    calls = []
+    real = store._validate_snapshot
+    monkeypatch.setattr(store, "_validate_snapshot", lambda value: calls.append(1) or real(value))
+    ledger.state(), ledger.state()
+    assert calls == []  # unchanged file: no replay at all
+    ledger.record_snapshot(snapshot, now_ms=9)
+    ledger.state()
+    # the input itself once, the one new snapshot row once (was: a full replay before and after)
+    assert len(calls) == 2
+    # another ledger object on the same file replays it whole, once
+    calls.clear()
+    other = store.UnderwritingLedger(ledger.path)
+    assert _plain(other.state()) == _plain(ledger.state())
+    assert len(calls) == 3  # one per snapshot row (the first two items share a snapshot)
+
+
+def test_a_rewritten_or_truncated_ledger_is_replayed_whole(tmp_path: Path) -> None:
+    path = tmp_path / "underwriting.jsonl"
+    ledger = store.UnderwritingLedger(path)
+    for step, item in enumerate(_versions(), start=1):
+        ledger.record_payload(item, now_ms=step)
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(b"".join(lines[:2]))  # truncated in place
+    assert _plain(ledger.state()) == _plain(store.rebuild_state(path))
+    ledger.state()
+    replaced = tmp_path / "other.jsonl"
+    replaced.write_bytes(b"".join(lines[:1] + lines[3:4]))
+    import os
+    os.replace(replaced, path)  # same size class, different file
+    assert _plain(ledger.state()) == _plain(store.rebuild_state(path))
+
+
+def test_a_line_still_being_written_is_not_cached_and_a_bad_line_still_fails(tmp_path: Path) -> None:
+    path = tmp_path / "underwriting.jsonl"
+    ledger = store.UnderwritingLedger(path)
+    items = _versions()
+    ledger.record_payload(items[0], now_ms=1)
+    before = _plain(ledger.state())
+    other = store.UnderwritingLedger(tmp_path / "scratch.jsonl")
+    other.record_payload(items[2], now_ms=2)
+    row = other.path.read_bytes()
+    with path.open("ab") as handle:
+        handle.write(row[: len(row) // 2])  # half a row
+    assert _plain(ledger.state()) == before
+    with path.open("ab") as handle:
+        handle.write(row[len(row) // 2:])
+    assert len(ledger.state()["snapshots"]) == 2
+    with path.open("ab") as handle:
+        handle.write(b"not json\n")
+    with pytest.raises(ValueError, match="line 3 is not valid JSON"):
+        ledger.state()

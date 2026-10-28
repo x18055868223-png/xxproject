@@ -73,7 +73,9 @@ def test_supported_native_export_version_preserves_old_gate_checks(tmp_path):
     assert result["status"] == "background_only"
 
 
-def test_quote_cache_keeps_real_metadata_clocks_and_stale_book_is_rejected(tmp_path, monkeypatch):
+def test_quote_cache_keeps_real_metadata_clocks_and_books_are_always_read_fresh(tmp_path, monkeypatch):
+    # 2026-10-28: candidate books bypass the engine cache (a cached leg beside a fresh one
+    # is how pairs fell out of step); metadata still comes from the cache.
     clock = [fixtures.T]
     wb, _ = fixtures.make_workbench(tmp_path, clock=lambda: clock[0])
     names = [row['instrument_name'] for row in fixtures.instruments()][:2]
@@ -89,13 +91,17 @@ def test_quote_cache_keeps_real_metadata_clocks_and_stale_book_is_rejected(tmp_p
     first = wb._default_quote_capture(*names, 1.0, now_ms=clock[0])
     clock[0] += 1000
     second = wb._default_quote_capture(*names, 1.0, now_ms=clock[0])
-    assert len(calls) == 4
+    assert calls.count('public/get_instrument') == 2
     assert second['metadata_received_ts_ms'] == first['metadata_received_ts_ms']
-    assert second['market']['short_book']['timestamp'] == fixtures.T
+    assert second['market']['short_book']['timestamp'] == fixtures.T + 1000
     clock[0] += 5000
     wb._default_quote_capture(*names, 1.0, now_ms=clock[0])
     assert calls.count('public/get_instrument') == 2
-    assert calls.count('public/get_order_book') == 4
+    assert calls.count('public/get_order_book') == 6
+    # the books actually used are recorded afterwards under the per-leg scope
+    record = wb.data_engine.read('deribit.btc.option.order_book.v1', now_ms=clock[0], usage='health',
+                                 scope={'instrument_name': names[0], 'depth': 5, 'permission': 'public_read_only'})
+    assert record['content']['values']['timestamp'] == clock[0]
 
 
 def test_manual_lock_fetches_only_chosen_side_and_never_rediscovers(tmp_path):

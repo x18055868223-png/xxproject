@@ -223,20 +223,23 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   if (levelRows.length) box.append(section("本期结构（锁定时 vs 最新）", levelsView(levelRows)));
 
   // 3. market context and the program's two-question summary
-  const ctx = (d.rows || []).filter((r) => r.group === "context" || r.group === "opinion" || r.group === "risk");
+  const ctx = (d.rows || []).filter((r) => (r.group === "context" || r.group === "opinion" || r.group === "risk") && ctxShown(r));
   if (ctx.length) {
-    const changed = ctx.filter((r) => r.status === "changed").length;
+    // the space/Gamma row names the same flip as the structure table (BTC MAP effective flip)
+    const flipRow = rows["levels.flip"] || {};
+    const extra = { t0: { flip: get(flipRow, "t0.value"), spot: t0Spot }, t1: { flip: get(flipRow, "t1.value"), spot: t1Spot } };
+    const cells = ctx.map((r) => contextRow(r, extra));
+    const changed = cells.filter((x) => x.moved).length;
     const det = h("details", { class: "ld-more" }, h("summary", { text: `市场背景与两问摘要（${changed} 项有变化）` }));
-    const ct = h("table", { class: "t compact" }, h("thead", {}, h("tr", {}, ...["项目", "锁定时", "最新", "状态"].map((x) => h("th", { text: x })))));
+    const ct = h("table", { class: "t compact ld-ctx" }, h("thead", {}, h("tr", {}, ...["项目", "锁定时", "最新", "变化"].map((x) => h("th", { text: x })))));
     const cb = h("tbody");
-    for (const r of ctx) {
-      const a = ctxValue(r.key, r.t0), b = ctxValue(r.key, r.t1);
-      const st = r.status === "changed" && a === b ? "细节有变化" : ROW_STATUS_CN[r.status] || "—";
-      const t0Cell = get(r, "t0.compat_backfill_applied")
-        ? h("td", { title: "锁定时未组合证据层；该值由锁定时的市场事实按同一读法重算，来源时点未留存" }, a, h("span", { class: "bf-hint", text: BACKFILL_HINT }))
-        : h("td", { text: a });
-      cb.append(h("tr", {}, h("td", { text: ctxLabel(r) }), t0Cell, h("td", { text: b }),
-        h("td", { class: `st ${r.status}`, text: st })));
+    for (const [i, r] of ctx.entries()) {
+      const x = cells[i];
+      const t0Cell = x.backfilled
+        ? h("td", { title: "锁定时未组合证据层；该值由锁定时的市场事实按同一读法重算，来源时点未留存" }, x.t0, h("span", { class: "bf-hint", text: BACKFILL_HINT }))
+        : h("td", { text: x.t0 });
+      cb.append(h("tr", { title: r.meaning_cn || "" }, h("td", { text: x.label }), t0Cell, h("td", { text: x.t1 }),
+        h("td", { class: `st ${r.status}`, text: x.status })));
     }
     ct.append(cb);
     det.append(h("div", { class: "scroll-x" }, ct));
@@ -464,26 +467,35 @@ export function levelsView(rows) {
   const t = h("table", { class: "t compact ld-levels" }, h("thead", {}, h("tr", {},
     ...[["项目"], ["锁定时", "n"], ["最新", "n"], ["变化", "n"], ["距短腿（最新）", "n"]].map(([x, cls]) => h("th", { class: cls || null, text: x })))));
   const tb = h("tbody");
-  let stale = false;
+  let stale = false, backfilled = false;
   for (const r of rows) {
     const a = get(r, "t0.value"), b = get(r, "t1.value");
     const notAtLock = r.status === "not_recorded_at_lock";
-    const change = notAtLock ? "锁定时未记录"
+    const why = LEVEL_MISSING_CN[r.t0_missing_reason];
+    const change = notAtLock ? (why ? why[1] : "锁定时未记录")
       : isNum(a) && isNum(b) ? (Math.round(b) === Math.round(a) ? "未变" : `${b > a ? "+" : "−"}${usd(Math.abs(b - a))}`)
       : ROW_STATUS_CN[r.status] || "—";
     const dt = get(r, "to_short_pct.t1"), d0 = get(r, "to_short_pct.t0");
     if (get(r, "stale.t1") || get(r, "stale.t0")) stale = true;
+    const bf = !notAtLock && get(r, "t0.compat_backfill_applied") && isNum(a);
+    if (bf) backfilled = true;
     tb.append(h("tr", { title: r.change_cn || "" },
       h("td", { text: r.label_cn || "其他价位" }),
-      h("td", { class: "n", text: notAtLock ? "未记录" : isNum(a) ? usd(a) : "缺失" }),
+      bf ? h("td", { class: "n", title: "锁定时未记录本期结构；由锁定时快照里的同源数据按同一方法重算" }, usd(a), h("span", { class: "bf-hint", text: "（重算）" }))
+        : h("td", { class: "n", text: notAtLock ? (why ? why[0] : "未记录") : isNum(a) ? usd(a) : "缺失" }),
       h("td", { class: "n", text: r.t1 ? (isNum(b) ? usd(b) : "缺失") : "未记录" }),
       h("td", { class: `n${notAtLock ? " muted" : ""}`, text: change }),
       h("td", { class: "n", text: isNum(dt) ? `${signedPct(dt)}${isNum(d0) && d0 !== dt ? `（锁定时 ${signedPct(d0)}）` : ""}` : "—" })));
   }
   t.append(tb);
   return h("div", {}, h("div", { class: "scroll-x" }, t),
-    h("p", { class: "muted small", text: `本期 = 本合约到期日的期权：Pin 与墙按 Deribit 公开数据计算（Gamma 不区分做市商方向），最大痛点为 gexmonitor 口径；翻转位为全期限口径，短期持有者成本为链上口径。距短腿 =（价位 − 短腿行权价）/ 短腿行权价。${stale ? "部分读数采集时数据偏旧。" : ""}` }));
+    h("p", { class: "muted small", text: `本期 = 本合约到期日的期权：Pin 与墙按 Deribit 公开数据计算（Gamma 不区分做市商方向），最大痛点与磁吸位为 gexmonitor 口径；翻转位为 BTC MAP 全期限有效翻转位，持有者成本为链上口径。距短腿 =（价位 − 短腿行权价）/ 短腿行权价。${backfilled ? "标“重算”的锁定时读数：该锁定早于本期结构记录，由锁定时快照里的 gexmonitor 与 BTC MAP 数据按同一方法重算。" : ""}${stale ? "部分读数采集时数据偏旧。" : ""}` }));
 }
+// t0 cell, change cell for a level the lock time cannot give
+const LEVEL_MISSING_CN = {
+  expiry_profile_not_saved: ["未保存", "锁定时未保存本期期权分布，无法重算"],
+  source_not_covering_expiry: ["未覆盖", "当时数据源未覆盖本到期日"],
+};
 
 /** Whether the market bid reached the committed limit price inside its validity, from the
  * lock's 1-minute samples (visible credit = short bid − long ask): reached / open / missed. */
@@ -579,26 +591,136 @@ const CTX_LABEL = {
 };
 const ctxLabel = (r) => CTX_LABEL[r.key] || r.label_cn || "其他背景";
 
-/** Plain-language reading of one context value; unknown shapes show nothing rather than raw fields. */
-function ctxValue(key, point) {
-  if (!point) return "未记录";
+// ── market background: "reading · key numbers" per end, the change of the headline numbers ──
+const NEG = "−";
+const sgnOf = (v) => (v > 0 ? "+" : v < 0 ? NEG : "");
+const sn = (v, d = 2) => (isNum(v) ? `${sgnOf(v)}${Math.abs(v).toFixed(d)}` : "—");
+const plain = (v, d = 1) => (isNum(v) ? `${v < 0 ? NEG : ""}${Math.abs(v).toFixed(d)}` : "—");
+const btcInt = (v) => (isNum(v) ? `${sgnOf(Math.round(v))}${usd(Math.abs(v))} BTC` : "—");
+const musd = (v) => {
+  if (!isNum(v)) return "—";
+  const a = Math.abs(v) / 1e6;
+  return `${sgnOf(v)}${a.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : 2)}M 美元`;
+};
+const parts = (...xs) => xs.filter((x) => x && !/—/.test(x)).join("，");
+const FUND_STATE_CN = { crowded_long: "多头拥挤", extreme_crowded_long: "多头极度拥挤", healthy_long_bias: "多头温和",
+  crowded_short: "空头拥挤", extreme_crowded_short: "空头极度拥挤", healthy_short_bias: "空头温和", neutral: "中性" };
+// the latest rate against the crowding threshold; the 24h/48h states read the cumulative rate
+const CROWD_CN = { NOT_CROWDED: "费率未拥挤", MILD_CROWDED: "费率轻度拥挤", CROWDED_LONGS: "费率多头拥挤", CROWDED_LONG: "费率多头拥挤",
+  CROWDED_SHORTS: "费率空头拥挤", CROWDED_SHORT: "费率空头拥挤" };
+const FAST_CN = { bullish: "偏买", bearish: "偏卖", neutral: "均衡", neutral_to_bullish: "略偏买", neutral_to_bearish: "略偏卖" };
+const MACRO_CN = { VOLQ: "纳指波动率", VIX: "VIX", DXY: "美元指数", US10Y: "美债 10 年", US2Y: "美债 2 年" };
+const macroName = (k) => MACRO_CN[k] || (/^[A-Z0-9]{2,8}$/.test(k || "") ? k : null);
+
+/** One end of a context row: {label, nums, head}. head = headline numbers the change column compares. */
+const CTX_READ = {
+  "context.tmv_price_path": (v) => ({
+    label: TREND_CN[v.tmv_state] || TREND_CN[get(v, "tmvf_24h.final_state")],
+    nums: parts(isNum(v.tmv_blend) ? `综合 ${sn(v.tmv_blend)}${isNum(get(v, "tmvf_24h.tmv_final")) || isNum(get(v, "tmvf_48h.tmv_final"))
+      ? `（24h ${sn(get(v, "tmvf_24h.tmv_final"))} / 48h ${sn(get(v, "tmvf_48h.tmv_final"))}）` : ""}` : "",
+    isNum(get(v, "tmvf_24h.core.trend_strength_pct")) ? `24h 趋势强度 ${plain(v.tmvf_24h.core.trend_strength_pct, 2)}%` : ""),
+    head: [{ name: "综合", v: v.tmv_blend, d: 2 }],
+  }),
+  "context.funding": (v) => ({
+    label: CROWD_CN[get(v, "semantics.crowding_state")],
+    nums: parts(isNum(v.last_rate) ? `最新 ${signedPct(v.last_rate * 100, 4)}` : "",
+      isNum(get(v, "tmvf_24h.funding_cum")) ? `24h 累计 ${signedPct(v.tmvf_24h.funding_cum * 100, 4)}` : "",
+      FUND_STATE_CN[get(v, "tmvf_48h.funding_state")] ? `48h ${FUND_STATE_CN[v.tmvf_48h.funding_state]}` : ""),
+    head: [{ name: "最新费率", v: isNum(v.last_rate) ? v.last_rate * 1e4 : null, d: 2, unit: " bp" }],
+  }),
+  "context.skew": (v) => ({
+    label: isNum(v.rr_blend) ? (v.rr_blend < 0 ? "看跌期权更贵" : v.rr_blend > 0 ? "看涨期权更贵" : "均衡") : null,
+    nums: parts(isNum(v.rr_blend) ? `RR ${sn(v.rr_blend, 3)}` : "", isNum(v.rr_z) ? `z ${sn(v.rr_z)}` : "",
+      isNum(v.delta_rr) ? `较基线 ${sn(v.delta_rr, 4)}` : ""),
+    head: [{ name: "RR", v: v.rr_blend, d: 3 }],
+  }),
+  "context.active_flow": (v) => {
+    const fast = v.fast_4h || {}, slow = v.slow_12h || {};
+    return {
+      label: get(v, "combined.data_ready") === false ? "未就绪" : FLOW_DIR_CN[get(v, "combined.direction")],
+      nums: parts(isNum(get(v, "combined.score")) ? `综合 ${sn(v.combined.score)}` : "",
+        isNum(slow.cvd_sum) ? `12h CVD ${btcInt(slow.cvd_sum)}${isNum(slow.momentum_return_pct) ? `（价格 ${signedPct(slow.momentum_return_pct)}）` : ""}` : "",
+        isNum(fast.cvd_sum) ? `4h CVD ${btcInt(fast.cvd_sum)}${FAST_CN[fast.direction] ? `（${FAST_CN[fast.direction]}）` : ""}` : ""),
+      head: [{ name: "综合", v: get(v, "combined.score"), d: 2 }, { name: "12h CVD", v: slow.cvd_sum, fmt: btcInt }],
+    };
+  },
+  "context.option_space": (v, x = {}) => {
+    const anchorFlip = get(v, "space_context_anchor.effective_flip_point");
+    const flip = isNum(x.flip) ? x.flip : anchorFlip;
+    // signed from the page's own spot; the producer's distance_to_flip_pct is unsigned and on its own price
+    const dist = isNum(flip) && isNum(x.spot) ? (x.spot - flip) / flip * 100 : null;
+    const loose = get(v, "space_context_gamma.distance_to_flip_pct");
+    const gamma = get(v, "space_gate_net_gamma.value");
+    return {
+      label: [GATE_CN[get(v, "space_gate.state")], GAMMA_CN[get(v, "gamma_regime.regime")]].filter(Boolean).join("，"),
+      nums: parts(isNum(get(v, "space_gate_anchor.score")) ? `锚定分 ${plain(v.space_gate_anchor.score)}` : "",
+        isNum(gamma) ? `净 Gamma ${musd(gamma)}` : "",
+        isNum(flip) ? `翻转位${isNum(x.flip) ? "" : "（锚点口径）"} ${usd(flip)}${isNum(dist) ? `（现价在${dist >= 0 ? "上方" : "下方"} ${Math.abs(dist).toFixed(2)}%）`
+          : isNum(loose) ? `（相距 ${Math.abs(loose).toFixed(2)}%）` : ""}` : ""),
+      head: [{ name: "锚定分", v: get(v, "space_gate_anchor.score"), d: 1, arrow: true }, { name: "净 Gamma", v: gamma, fmt: musd }],
+    };
+  },
+  "context.macro": (v) => {
+    const comps = (Array.isArray(v.component_summaries) ? v.component_summaries : [])
+      .filter((c) => c && macroName(c.key) && isNum(c.scoring_value)).slice(0, 4)
+      .map((c) => `${macroName(c.key)} ${c.scoring_unit === "bps" ? `${sn(c.scoring_value)} bp` : signedPct(c.scoring_value)}`);
+    return { label: isNum(v.macro_score) ? `得分 ${sn(v.macro_score)}` : null, nums: comps.join("，"),
+      head: [{ name: "得分", v: v.macro_score, d: 2 }] };
+  },
+};
+
+/** Context rows shown on the page: not trace-only rows, not a risk reference missing at both ends. */
+export function ctxShown(r) {
+  if (r.display === "trace") return false;
+  if (r.key === "risk.status") return [r.t0, r.t1].some((p) => p && p.value != null && p.value !== "missing");
+  return true;
+}
+
+function ctxEnd(key, point, x) {
+  if (!point) return { text: "未记录" };
   const v = point.value;
-  if (v == null) return "缺失";
-  switch (key) {
-    case "context.tmv_price_path": return TREND_CN[v.tmv_state] || TREND_CN[get(v, "tmvf_24h.final_state")] || "—";
-    case "context.funding": return isNum(v.last_rate) ? `${signedPct(v.last_rate * 100, 4)}${get(v, "semantics.is_crowded") ? "，拥挤" : ""}` : "—";
-    case "context.active_flow": { const dir = get(v, "combined.direction"); return get(v, "combined.data_ready") === false ? "未就绪" : FLOW_DIR_CN[dir] || "—"; }
-    case "context.option_space": {
-      const g = GAMMA_CN[get(v, "gamma_regime.regime")]; const gate = GATE_CN[get(v, "space_gate.state")];
-      return [gate, g].filter(Boolean).join("，") || "—";
-    }
-    case "context.macro": return isNum(v.macro_score) ? `得分 ${v.macro_score.toFixed(2)}` : "—";
-    case "context.skew": return isNum(v.rr_blend) ? (v.rr_blend < 0 ? "看跌期权更贵" : v.rr_blend > 0 ? "看涨期权更贵" : "均衡") : "—";
-    case "risk.status": return v === "missing" ? "缺失" : v === "qualified" ? "合格" : "其他状态";
-    case "opinion.q1.direct_refs": case "opinion.q2.direct_refs": return (v.summary_cn || "—").replace(/(\d+\.\d{4})\d+/g, "$1");
-    case "context.latest_window": return point.text_cn && !/[=_]/.test(point.text_cn) ? point.text_cn : "—";
-    default: return "—";
+  if (v == null) return { text: "缺失" };
+  const read = CTX_READ[key];
+  if (read && typeof v === "object") {
+    const o = read(v, x || {});
+    return { text: [o.label, o.nums].filter(Boolean).join(" · ") || "—", head: o.head };
   }
+  switch (key) {
+    case "risk.status": return { text: v === "missing" ? "缺失" : v === "qualified" ? "合格" : "其他状态" };
+    case "opinion.q1.direct_refs": case "opinion.q2.direct_refs": return { text: (v.summary_cn || "—").replace(/(\d+\.\d{4})\d+/g, "$1") };
+    case "context.latest_window": return { text: point.text_cn && !/[=_]/.test(point.text_cn) ? point.text_cn : "—" };
+    default: return { text: "—" };
+  }
+}
+
+const shown = (item, v) => (item.fmt ? item.fmt(v) : sn(v, item.d) + (item.unit || ""));
+const sameShown = (item, a, b) => (item.fmt ? item.fmt(a) === item.fmt(b) : sn(a, item.d) === sn(b, item.d));
+
+/** The change column from the headline numbers: deltas (or a → b), "主读数未变", or the row status. */
+function headChange(h0, h1) {
+  if (!h0 || !h1) return null;
+  const out = [];
+  let compared = 0;
+  h0.forEach((item, i) => {
+    const a = item.v, b = h1[i] && h1[i].v;
+    if (!isNum(a) || !isNum(b)) return;
+    compared += 1;
+    if (sameShown(item, a, b)) return;
+    out.push(item.arrow ? `${item.name} ${plain(a, item.d)} → ${plain(b, item.d)}` : `${item.name} ${shown(item, b - a)}`);
+  });
+  if (!compared) return null;
+  return out.length ? out.join("；") : "主读数未变";
+}
+
+/** {label, t0, t1, status, moved, backfilled} for one context / opinion / risk row. */
+export function contextRow(r, extra = {}) {
+  const notAtLock = r.status === "not_recorded_at_lock";
+  const a = notAtLock && !r.t0 ? { text: "—" } : ctxEnd(r.key, r.t0, extra.t0);
+  const b = ctxEnd(r.key, r.t1, extra.t1);
+  const change = notAtLock ? null : headChange(a.head, b.head);
+  const status = change || (r.status === "changed" && a.text === b.text ? "主读数未变" : ROW_STATUS_CN[r.status] || "—");
+  return { label: ctxLabel(r), t0: a.text, t1: b.text, status, backfilled: !!get(r, "t0.compat_backfill_applied"),
+    moved: !!change && change !== "主读数未变" };
 }
 
 /** Static payout at expiry for the locked book: x = settlement price, y = net BTC. */

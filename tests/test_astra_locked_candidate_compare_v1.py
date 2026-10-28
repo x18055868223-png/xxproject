@@ -620,3 +620,83 @@ def test_series_metrics_carry_the_compact_levels_only_when_present():
     levels = followup.point_metrics(latest, baseline)["levels"]
     assert levels == {"pin": 99000.0, "gamma_put": 97000.0, "gamma_call": None, "oi_put": None, "oi_call": None,
                       "max_pain_this": 96000.0, "flip": 97500.0}
+
+
+def _old_lock_with_sources(point, *, this_pain=False):
+    """A t0 stored before the levels block: gexmonitor and the BTC MAP are still in its snapshot."""
+    expiry = point["candidate"]["snapshot"]["contract"]["expiry_ms"]
+    token = lock_levels.expiry_token(expiry)
+    gex = {"magnet_price": 97000.0, "max_pain_target_expiry": token if this_pain else "01JAN99", "max_pain_price": 96500.0,
+           "next_expiry": {"expiry": "31DEC98", "max_pain_price": 95000.0}, "fetched_at_ms": T}
+    btc_map = {"cutoff_at_ms": T, "reference_pool": [{"role": "EFFECTIVE_FLIP", "raw_price": 97400.0},
+                                                     {"role": "CP_STH", "raw_price": 90000.0}]}
+    for snapshot in (point["candidate"]["snapshot"], point["packet"]["snapshot"]):
+        snapshot["fact_context"]["market_facts"] = {"space_context": {"gex_info": copy.deepcopy(gex)}}
+        snapshot["data_identity"]["btc_map"] = copy.deepcopy(btc_map)
+    return point
+
+
+def test_old_lock_recomputes_recoverable_levels_from_its_snapshot_and_flags_them():
+    baseline = _old_lock_with_sources(point_from_payload(payload_with_components(), point_id="t0"))
+    latest = point_from_payload(payload_with_components(), point_id="t1")
+    latest["candidate"]["expiry_levels"] = _levels(pin=99000.0)
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []}, now_ms=T)
+    rows = {r["key"]: r for r in output["rows"] if r["group"] == "levels"}
+    for key, value, source in (("levels.flip", 97400.0, "snapshot.data_identity.btc_map"),
+                               ("levels.cost_sth", 90000.0, "snapshot.data_identity.btc_map"),
+                               ("levels.magnet", 97000.0, "snapshot.fact_context.market_facts.space_context.gex_info")):
+        t0 = rows[key]["t0"]
+        assert t0["value"] == value and t0["compat_backfill_applied"] is True and t0["backfill_source"] == source, key
+        assert "compat_backfill_applied" not in (rows[key]["t1"] or {})
+        assert rows[key]["status"] != "not_recorded_at_lock"
+    assert rows["levels.flip"]["status"] == "changed"               # 97,400 recomputed vs 97,500 native
+    assert rows["levels.flip"]["to_short_pct"]["t0"] is not None
+    for key in ("levels.pin", "levels.gamma_put", "levels.oi_call"):      # the expiry profile was never saved
+        assert rows[key]["t0"] is None and rows[key]["status"] == "not_recorded_at_lock"
+        assert rows[key]["t0_missing_reason"] == "expiry_profile_not_saved" and "无法重算" in rows[key]["change_cn"]
+    pain = rows["levels.max_pain_this"]                                     # gexmonitor covered other expiries only
+    assert pain["t0"]["value"] is None and pain["status"] == "not_recorded_at_lock"
+    assert pain["t0_missing_reason"] == "source_not_covering_expiry"
+    covered = _old_lock_with_sources(point_from_payload(payload_with_components(), point_id="t0b"), this_pain=True)
+    row = row_by_key(followup.build_followup({"episode": {}, "baseline": covered, "latest": latest, "observations": []},
+                                             now_ms=T), "levels.max_pain_this")
+    assert row["t0"]["value"] == 96500.0 and row["t0"]["compat_backfill_applied"] is True and "t0_missing_reason" not in row
+
+
+def test_old_lock_without_level_sources_stays_not_recorded():
+    baseline = point_from_payload(payload_with_components(), point_id="t0")
+    latest = point_from_payload(payload_with_components(), point_id="t1")
+    latest["candidate"]["expiry_levels"] = _levels(pin=99000.0)
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []}, now_ms=T)
+    rows = [r for r in output["rows"] if r["group"] == "levels"]
+    assert rows and all(r["t0"] is None and r["status"] == "not_recorded_at_lock" for r in rows)
+
+
+def test_risk_status_missing_at_both_ends_adds_no_row_and_a_real_status_still_shows():
+    plain = point_from_payload(payload_with_components(risk=False), point_id="a")
+    output = followup.build_followup({"episode": {}, "baseline": plain, "latest": copy.deepcopy(plain), "observations": []}, now_ms=T)
+    assert not [r for r in output["rows"] if r["key"] == "risk.status"]
+    supported = point_from_payload(payload_with_components(risk=True), point_id="b")
+    row = row_by_key(followup.build_followup({"episode": {}, "baseline": plain, "latest": supported, "observations": []},
+                                             now_ms=T), "risk.status")
+    assert row["t0"] is None and row["t1"]["value"] == "supported"
+
+
+def _window(status):
+    return {"same_candidate_window": {"coverage_summary": {"windows": [{"status": status}, {"status": status}]},
+                                      "LevelDeltaPath": {"path": {"status": "NO_PATH_DUE_TO_WINDOW_GAP"}}},
+            "evidence_routing": {"schema": "routing@1", "selection_summary": {"n": 1}}, "decision_asof_ms": T}
+
+
+def test_routing_graph_and_an_uncovered_window_are_trace_only_rows():
+    baseline = point_from_payload(payload_with_components(), point_id="t0")
+    latest = point_from_payload(payload_with_components(), point_id="t1")
+    for point in (baseline, latest):
+        point["candidate"]["wpem_evidence"] = _window("INSUFFICIENT_WINDOW")
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []}, now_ms=T)
+    assert row_by_key(output, "context.routing_relations")["display"] == "trace"
+    assert row_by_key(output, "context.latest_window")["display"] == "trace"
+    latest["candidate"]["wpem_evidence"] = _window("OK")
+    output = followup.build_followup({"episode": {}, "baseline": baseline, "latest": latest, "observations": []}, now_ms=T)
+    assert "display" not in row_by_key(output, "context.latest_window")
+    assert row_by_key(output, "context.routing_relations")["display"] == "trace"

@@ -411,30 +411,42 @@ def _with_public_greeks(instruments: list[Any], short_candidate_names: set[str],
     receipts: dict[str, int] = {}
     hashes: dict[str, str] = {}
     errors: dict[str, str] = {}
+    retried: list[str] = []
     for raw in instruments:
         item = dict(raw) if isinstance(raw, Mapping) else raw
         if isinstance(item, dict):
             name = item.get("instrument_name")
             if isinstance(name, str) and name in short_candidate_names:
-                try:
-                    response = get(base_url, "/public/get_order_book",
-                                   {"instrument_name": name, "depth": 1}, timeout)
-                    receipts[name] = (response.get("data_engine_receipt") or {}).get("retrieved_at_ms") or int(now() * 1000)
-                    result = response.get("result") if isinstance(response, Mapping) else None
-                    if not isinstance(result, Mapping) or result.get("instrument_name") != name:
-                        raise ValueError("unexpected order book result")
-                    hashes[name] = _hash(response)
-                    greeks = result.get("greeks") if isinstance(result.get("greeks"), Mapping) else {}
-                    item["greeks"] = dict(greeks)
-                    item["delta_observed_at_ms"] = result.get("timestamp")
-                    item["delta_source"] = "public/get_order_book.greeks.delta"
-                    item["delta_book_received_ms"] = receipts[name]
-                except Exception as exc:
-                    errors[name] = type(exc).__name__
+                # One immediate retry: a single failed read would otherwise blank the whole
+                # side (delta_population_capture_incomplete) for this refresh.
+                for attempt in range(2):
+                    try:
+                        response = get(base_url, "/public/get_order_book",
+                                       {"instrument_name": name, "depth": 1}, timeout)
+                        result = response.get("result") if isinstance(response, Mapping) else None
+                        if not isinstance(result, Mapping) or result.get("instrument_name") != name:
+                            raise ValueError("unexpected order book result")
+                        receipts[name] = (response.get("data_engine_receipt") or {}).get("retrieved_at_ms") or int(now() * 1000)
+                        hashes[name] = _hash(response)
+                        greeks = result.get("greeks") if isinstance(result.get("greeks"), Mapping) else {}
+                        item["greeks"] = dict(greeks)
+                        item["delta_observed_at_ms"] = result.get("timestamp")
+                        item["delta_source"] = "public/get_order_book.greeks.delta"
+                        item["delta_book_received_ms"] = receipts[name]
+                        errors.pop(name, None)
+                        if attempt:
+                            retried.append(name)
+                        break
+                    except Exception as exc:
+                        # the first failure is the cause; keep it if the retry fails too
+                        errors.setdefault(name, type(exc).__name__)
+                        if isinstance(exc, DeribitPublicError) and exc.code == "DERIBIT_MAINTENANCE":
+                            break
         enriched.append(item)
     return enriched, {"order_book_received_ms": receipts,
                       "order_book_response_hashes": hashes,
                       "order_book_errors": errors,
+                      "order_book_retried": sorted(retried),
                       "requested_count": len(short_candidate_names),
                       "requested_instruments": sorted(short_candidate_names)}
 

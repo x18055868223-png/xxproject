@@ -182,6 +182,8 @@ def _fee_basis_cn(fee: Mapping[str, Any]) -> str:
     basis, assumption = fee.get("basis"), fee.get("assumption_basis")
     if basis == "actual" and not assumption:
         return "实际费用"
+    if assumption == "public_taker_capped_daily_delivery_zero_at_mark":
+        return "按公开 taker 费率估算（按两腿标记价，入场两腿；日期权交割费为 0），非账户实际费用"
     if assumption == "public_taker_capped_daily_delivery_zero":
         return "按公开 taker 费率估算（含入场两腿；日期权交割费为 0），非账户实际费用"
     if basis == "configured_assumption" or assumption:

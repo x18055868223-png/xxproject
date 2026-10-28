@@ -86,16 +86,6 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
-def _read_json(path: Path, default: Mapping[str, Any]) -> dict[str, Any]:
-    if not path.exists():
-        return dict(default)
-    try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return dict(default)
-    return dict(value) if isinstance(value, Mapping) else dict(default)
-
-
 def _read_registry(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise DataEngineError("REGISTRY_MISSING", f"data product registry is missing: {path}")
@@ -116,11 +106,53 @@ def _read_registry(path: Path) -> dict[str, Any]:
     return registry
 
 
-def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
+def _write_json_atomic(path: Path, value: Mapping[str, Any], *, sort_keys: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(_canonical(dict(value)) + "\n", encoding="utf-8")
+    text = _canonical(dict(value)) if sort_keys else json.dumps(
+        dict(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    tmp.write_text(text + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _empty_state() -> dict[str, Any]:
+    return {
+        "schema": ENGINE_SCHEMA,
+        "current": {},
+        "known_records": {},
+        "health_events": [],
+        "fetch_status": {},
+        "fetch_budget": {},
+    }
+
+
+def _working_copy(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy every container a mutation path writes into. Records themselves are
+    never mutated in place (ingest replaces them), so they stay shared."""
+    out = dict(state)
+    for key, value in out.items():
+        if isinstance(value, dict):
+            out[key] = dict(value)
+        elif isinstance(value, list):
+            out[key] = list(value)
+    budgets = out.get("fetch_budget")
+    if isinstance(budgets, dict):
+        for key, value in budgets.items():
+            if isinstance(value, dict):
+                budgets[key] = dict(value)
+    return out
+
+
+# Parsed state per state file, keyed by the file's (inode, size, mtime_ns) and
+# only consulted while the state file lock is held. Every writer replaces the
+# file atomically (a new inode), so a save by any other process changes the key.
+_STATE_CACHE: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+_STATE_CACHE_GUARD = threading.Lock()
+_STATE_CACHE_MAX = 8
+
+
+def _stat_key(st: os.stat_result) -> tuple[int, int, int]:
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 def _require_int_ms(name: str, value: Any, *, required: bool = True) -> int | None:
@@ -217,6 +249,7 @@ class DataEngine:
         self.products = _registry_products(self.registry)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._state_lock = threading.RLock()
+        self._cache_id = str(self.state_path.resolve())
 
     def ingest(
         self,
@@ -236,6 +269,7 @@ class DataEngine:
         is_final: bool | None = None,
         historical_import: bool = False,
         ingested_at_ms: int | None = None,
+        _fetch_success: tuple[str, int] | None = None,
     ) -> dict[str, Any]:
         product = self._product(product_id)
         if not isinstance(values, Mapping):
@@ -330,6 +364,7 @@ class DataEngine:
                         first_seen_source_ms,
                         {"record_id": merged["record_id"], "payload_hash": payload_hash},
                     )
+                    self._mark_fetch_success(state, merged, _fetch_success)
                     self._save_state_unlocked(state)
                     return deepcopy(merged)
                 current_obs = int(current.get("time", {}).get("observation_end_ms") or -1)
@@ -357,6 +392,7 @@ class DataEngine:
                 first_seen_source_ms,
                 {"record_id": record["record_id"], "payload_hash": payload_hash},
             )
+            self._mark_fetch_success(state, record, _fetch_success)
             self._save_state_unlocked(state)
             return deepcopy(record)
 
@@ -364,7 +400,7 @@ class DataEngine:
         product = self._product(product_id)
         now_ms = _require_int_ms("now_ms", now_ms) or 0
         with self._state_guard():
-            state = self._load_state_unlocked()
+            state = self._load_state_unlocked(mutable=False)
             state_key = _state_key(product_id, scope)
             record = state.get("current", {}).get(state_key)
         if not isinstance(record, Mapping):
@@ -380,7 +416,7 @@ class DataEngine:
     def health(self, now_ms: int) -> dict[str, Any]:
         now_ms = _require_int_ms("now_ms", now_ms) or 0
         with self._state_guard():
-            state = self._load_state_unlocked()
+            state = self._load_state_unlocked(mutable=False)
             current = state.get("current", {}) if isinstance(state.get("current"), Mapping) else {}
         products: dict[str, Any] = {}
         for product_id, product in sorted(self.products.items()):
@@ -507,15 +543,17 @@ class DataEngine:
             "usage_qualification": usage_qualification,
         }
 
-    def reserve_request(self, product_id: str, *, now_ms: int) -> None:
-        """Charge an additional wire request inside an already-budgeted loader."""
+    def reserve_request(self, product_id: str, *, now_ms: int, count: int = 1) -> None:
+        """Charge additional wire requests (all or none) inside an already-budgeted loader,
+        or ahead of reads a caller makes outside fetch()."""
         product = self._product(product_id)
         now_ms = _require_int_ms("now_ms", now_ms) or 0
         if product.get("connection_status") == "PLANNED_NOT_CONNECTED":
             raise DataEngineError("PRODUCT_NOT_CONNECTED", "source is not connected")
         with self._state_guard():
             state = self._load_state_unlocked()
-            self._consume_fetch_budget(state, product, now_ms)
+            for _ in range(max(1, int(count))):
+                self._consume_fetch_budget(state, product, now_ms)
             self._save_state_unlocked(state)
 
     def fetch(
@@ -538,7 +576,7 @@ class DataEngine:
                 cached["fetch_decision"] = {"status": "CACHE_HIT", "loader_called": False}
                 return cached
             with self._state_guard():
-                state = self._load_state_unlocked()
+                state = self._load_state_unlocked(mutable=False)
                 # Polling cadence and economic observation age are different.
                 # Reusing a daily record never refreshes its usage qualification.
                 interval = self._fetch_policy(product).get("min_fetch_interval_ms", 0)
@@ -549,6 +587,7 @@ class DataEngine:
                                                 "next_check_at_ms": last_success + interval}
                     return cached
                 self._check_fetch_backoff(state, product, lock_key, now_ms)
+                state = _working_copy(state)
                 self._consume_fetch_budget(state, product, now_ms)
                 self._save_state_unlocked(state)
             try:
@@ -563,9 +602,9 @@ class DataEngine:
                 if not isinstance(values, Mapping):
                     raise DataEngineError("LOADER_RESULT_INVALID", "loader result must include mapping values")
                 payload.pop("product_id", None)
-                record = self.ingest(product_id, values, scope=scope, **payload)
+                # One save: the accepted record and the cleared fetch error land together.
+                record = self.ingest(product_id, values, scope=scope, _fetch_success=(lock_key, now_ms), **payload)
                 record["fetch_decision"] = {"status": "FETCHED", "loader_called": True}
-                self._clear_fetch_error(lock_key, max(now_ms, int(record.get("time", {}).get("retrieved_at_ms") or now_ms)))
                 return record
             except Exception as exc:
                 self._record_fetch_error(product_id, scope, lock_key, product, now_ms, exc)
@@ -624,23 +663,58 @@ class DataEngine:
                     raise DataEngineError("STATE_LOCK_TIMEOUT", "timed out waiting for data engine state lock")
                 time.sleep(0.01)
 
-    def _load_state_unlocked(self) -> dict[str, Any]:
-        return _read_json(
-            self.state_path,
-            {
-                "schema": ENGINE_SCHEMA,
-                "current": {},
-                "known_records": {},
-                "health_events": [],
-                "fetch_status": {},
-                "fetch_budget": {},
-            },
-        )
+    def _load_state_unlocked(self, *, mutable: bool = True) -> dict[str, Any]:
+        """Return the state, reparsing the file only when it changed on disk.
+
+        mutable=False hands out the shared cached object, which callers must not
+        modify; mutable=True returns a working copy that is safe to modify and
+        save. Call only with the state file lock held.
+        """
+        try:
+            fh = open(self.state_path, "rb")
+        except OSError:
+            return _empty_state()
+        with fh:
+            try:
+                key = _stat_key(os.fstat(fh.fileno()))
+            except OSError:
+                key = None
+            with _STATE_CACHE_GUARD:
+                cached = _STATE_CACHE.get(self._cache_id)
+            if key is not None and cached is not None and cached[0] == key:
+                state = cached[1]
+            else:
+                try:
+                    value = json.loads(fh.read().decode("utf-8-sig"))
+                except (OSError, json.JSONDecodeError):
+                    return _empty_state()
+                if not isinstance(value, Mapping):
+                    return _empty_state()
+                state = dict(value)
+                self._remember_state(key, state)
+        return _working_copy(state) if mutable else state
+
+    def _remember_state(self, key: tuple[int, int, int] | None, state: dict[str, Any]) -> None:
+        with _STATE_CACHE_GUARD:
+            _STATE_CACHE.pop(self._cache_id, None)
+            if key is None:
+                return
+            while len(_STATE_CACHE) >= _STATE_CACHE_MAX:
+                _STATE_CACHE.pop(next(iter(_STATE_CACHE)))
+            _STATE_CACHE[self._cache_id] = (key, state)
 
     def _save_state_unlocked(self, state: Mapping[str, Any]) -> None:
         state = dict(state)
         self._prune_state(state)
-        _write_json_atomic(self.state_path, state)
+        try:
+            # Nothing hashes the state file bytes, so skip key sorting (loaded
+            # dicts keep the file's order anyway).
+            _write_json_atomic(self.state_path, state, sort_keys=False)
+            key = _stat_key(os.stat(self.state_path))
+        except BaseException:
+            self._remember_state(None, state)
+            raise
+        self._remember_state(key, state)
 
     def _prune_state(self, state: dict[str, Any]) -> None:
         known = state.get("known_records")
@@ -1100,13 +1174,16 @@ class DataEngine:
             )
             self._save_state_unlocked(state)
 
-    def _clear_fetch_error(self, lock_key: str, now_ms: int) -> None:
-        with self._state_guard():
-            state = self._load_state_unlocked()
-            status = dict(state.setdefault("fetch_status", {}).get(lock_key) or {})
-            status.update({"attempts": 0, "next_retry_at_ms": None, "last_success_at_ms": now_ms})
-            state["fetch_status"][lock_key] = status
-            self._save_state_unlocked(state)
+    def _mark_fetch_success(
+        self, state: dict[str, Any], record: Mapping[str, Any], fetch_success: tuple[str, int] | None
+    ) -> None:
+        if fetch_success is None:
+            return
+        lock_key, now_ms = fetch_success
+        now_ms = max(now_ms, int(record.get("time", {}).get("retrieved_at_ms") or now_ms))
+        status = dict(state.setdefault("fetch_status", {}).get(lock_key) or {})
+        status.update({"attempts": 0, "next_retry_at_ms": None, "last_success_at_ms": now_ms})
+        state["fetch_status"][lock_key] = status
 
 
 __all__ = ["DataEngine", "DataEngineError", "default_registry_path"]

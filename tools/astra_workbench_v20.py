@@ -142,6 +142,7 @@ SPACE_ELIGIBLE = "STRUCTURE_ELIGIBLE"
 SPACE_BLOCKED = "STRUCTURE_BLOCKED"
 REVIEW_COOLDOWN_MS = 600_000
 # Load and memory control (2026-10-14, after an 11 h hang under a 1G cgroup limit).
+SERIES_BASELINE_LIMIT = 4         # full t0 points kept for warm series metrics (~10 MB each)
 VIEW_BODY_TTL_MS = 5_000          # page reads within this share one serialized body
 VIEW_BODY_WAIT_S = 15.0           # a reader waits this long for the body being built, then 503
 MAX_ACTIVE_REQUESTS = 24          # concurrent HTTP handlers; more get an immediate 503
@@ -377,6 +378,25 @@ def _read_jsonl_tail(path: str | Path, limit: int) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             rows.append(value)
     return rows
+
+
+_MALLOC_TRIM: list[Any] = []
+
+
+def _release_memory() -> None:
+    """Collect cycles, then hand freed heap back to the OS (glibc keeps it otherwise)."""
+    gc.collect()
+    try:
+        if not _MALLOC_TRIM:
+            import ctypes
+            import ctypes.util
+
+            name = ctypes.util.find_library("c")
+            _MALLOC_TRIM.append(getattr(ctypes.CDLL(name), "malloc_trim", None) if name else None)
+        if _MALLOC_TRIM[0] is not None:
+            _MALLOC_TRIM[0](0)
+    except Exception:
+        pass  # not glibc (Windows, musl, macOS): collection alone
 
 
 def _append_jsonl(path: str | Path, row: Mapping[str, Any]) -> None:
@@ -1761,6 +1781,10 @@ class AstraWorkbench:
         self._wpem_packages = reading.CompressedPoints(max_items=8, max_bytes=48 * 1024 * 1024)
         self._wpem_display_packages = {}
         self._locked_payloads: dict[str, Any] = {}
+        # per side: the last good capture of the shown contract, and the current run of quote gaps
+        self._quote_holds: dict[str, dict[str, Any]] = {}
+        self._quote_gap_runs: dict[str, dict[str, Any]] = {}
+        self._held_snapshot_ids: set[str] = set()
         self._lockable_points = reading.CompressedPoints()
         self._locked_detail_cache: dict[str, Any] = {}
         self._locked_detail_lock = threading.RLock()
@@ -1817,6 +1841,7 @@ class AstraWorkbench:
         # Retained lock points are immutable, so their compact metrics are cached by point id.
         self._series_cache: dict[str, dict[str, Any]] | None = None
         self._series_baselines: dict[str, Any] = {}
+        self._daily_cache: tuple[Any, list[dict[str, Any]]] | None = None
         # Settlement of expired locks: exchange delivery price, fetched in the background only.
         self.delivery_price_fetch = public_quote.delivery_price
         self._settlement_attempts: dict[str, int] = {}
@@ -1972,7 +1997,14 @@ class AstraWorkbench:
                        "/public/get_order_book": "deribit.btc.option.order_book.v1"}[path]
             scope = {**params, "permission": "public_read_only"}
             def acquire():
-                body = discovery._public_get(base, path, params, timeout)
+                try:
+                    body = discovery._public_get(base, path, params, timeout)
+                except discovery.DeribitPublicError:
+                    raise   # the exchange's own answer (e.g. maintenance) is not retried
+                except Exception:
+                    # One retry for a transient network error, inside the loader: once the
+                    # engine records the failure, its backoff refuses an immediate re-fetch.
+                    body = discovery._public_get(base, path, params, timeout)
                 received = self.clock_ms()
                 values = body["result"]
                 observed = values.get("timestamp") if path == "/public/get_order_book" else received
@@ -2039,9 +2071,26 @@ class AstraWorkbench:
         allow_partial: bool = False,
     ) -> Mapping[str, Any]:
         metadata_clocks = {}
+        book_product = "deribit.btc.option.order_book.v1"
+        book_requests = [0]
+        # The two books are judged together (exchange clocks within 2 s, each within 5 s), so
+        # they are read directly and back to back: no engine state load/save, cache hit or
+        # lock wait runs between the legs (2026-10-28: ~39% of captures failed the skew check
+        # when each leg went through fetch/ingest of the shared engine state). The pair's
+        # budget is charged before the reads, the books are recorded after them.
+        try:
+            self.data_engine.reserve_request(book_product, now_ms=self.clock_ms(), count=2)
+            budget_error = None
+        except data_engine.DataEngineError as exc:
+            budget_error = exc
+
         def transport(path, params):
-            product = ("deribit.btc.option.instrument.v1" if path == "public/get_instrument"
-                       else "deribit.btc.option.order_book.v1")
+            if path == "public/get_order_book":
+                if budget_error is not None:
+                    raise budget_error
+                book_requests[0] += 1
+                return public_quote.public_transport(path, params)
+            product = "deribit.btc.option.instrument.v1"
             scope = {"instrument_name": params["instrument_name"], "depth": params.get("depth"),
                      "permission": "public_read_only"}
             def loader():
@@ -2052,11 +2101,12 @@ class AstraWorkbench:
                     # engine records the failure, its backoff refuses an immediate re-fetch.
                     values = public_quote.public_transport(path, params)
                 received = self.clock_ms()
-                observed = received if path == "public/get_instrument" else values.get("timestamp")
-                return {"values": values, "observation_end_ms": observed,
+                return {"values": values, "observation_end_ms": received,
                         "retrieved_at_ms": received, "ingested_at_ms": received}
             record = self.data_engine.fetch(product, loader, now_ms=self.clock_ms(), scope=scope)
-            qualified = self.data_engine.read(product, now_ms=self.clock_ms(), usage="fetch", scope=scope)
+            # a cache hit was qualified for this use just now; anything else is read back
+            qualified = (record if (record.get("fetch_decision") or {}).get("status") == "CACHE_HIT"
+                         else self.data_engine.read(product, now_ms=self.clock_ms(), usage="fetch", scope=scope))
             decision = qualified.get("usage_decision", {})
             if not decision.get("can_use"):
                 error = ValueError("public data unavailable for requested quote use")
@@ -2068,15 +2118,44 @@ class AstraWorkbench:
                               and fetched.get("error_code")
                               else "fetch_" + str(decision.get("status") or "rejected").lower())
                 raise error
-            if path == "public/get_instrument":
-                metadata_clocks[params["instrument_name"]] = record["time"]["retrieved_at_ms"]
+            metadata_clocks[params["instrument_name"]] = record["time"]["retrieved_at_ms"]
             return deepcopy(record["content"]["values"])
-        payload = public_quote.capture_candidate(short_instrument, long_instrument, quantity_btc,
-                                                  transport=transport, clock_ms=self.clock_ms,
-                                                  allow_partial=allow_partial)
-        payload["metadata_received_ts_ms"] = {"short": metadata_clocks[short_instrument],
-                                               "long": metadata_clocks[long_instrument]}
+        payload = None
+        try:
+            payload = public_quote.capture_candidate(short_instrument, long_instrument, quantity_btc,
+                                                      transport=transport, clock_ms=self.clock_ms,
+                                                      allow_partial=allow_partial)
+            payload["metadata_received_ts_ms"] = {"short": metadata_clocks[short_instrument],
+                                                   "long": metadata_clocks[long_instrument]}
+        finally:
+            # every request sent is charged, also when the capture raised after a re-read
+            self._record_quote_books(payload or {}, book_product, extra_requests=book_requests[0] - 2)
         return payload
+
+    def _record_quote_books(self, payload: Mapping[str, Any], product: str, *, extra_requests: int) -> None:
+        """Bookkeeping after a direct pair read: the books actually used become the per-leg
+        cache records (same scope as before), and retries are charged to the budget. Never
+        changes the capture; a failure here is only a missing cache record."""
+        market = payload.get("market") or {}
+        receipts = market.get("leg_received_ts_ms") or {}
+        names = payload.get("candidate") or {}
+        if extra_requests > 0:
+            try:
+                self.data_engine.reserve_request(product, now_ms=self.clock_ms(), count=extra_requests)
+            except data_engine.DataEngineError:
+                pass  # already sent; the budget only shapes later reads
+        for leg in ("short", "long"):
+            book = market.get(leg + "_book")
+            received = receipts.get(leg)
+            if not book or not isinstance(received, int) or not isinstance(book.get("timestamp"), int):
+                continue
+            try:
+                self.data_engine.ingest(product, book, observation_end_ms=book["timestamp"],
+                                        retrieved_at_ms=received, ingested_at_ms=received,
+                                        scope={"instrument_name": names.get(leg + "_instrument"), "depth": 5,
+                                               "permission": "public_read_only"})
+            except Exception:
+                pass
 
     def _load_state(self) -> dict[str, Any]:
         state = _read_json(self.config.state_path, {"schema": STATE_SCHEMA})
@@ -2752,11 +2831,16 @@ class AstraWorkbench:
             mark("daily_research")
             view["refresh_timing"] = {"steps_ms": dict(timing), "total_ms": sum(timing.values()),
                                       "loop_wait_s": self.config.refresh_interval_s}
+            # The page may show the last good capture of the same contract while the newest one
+            # is only out of step; everything above (locks, research, daily, audit) used the newest.
+            shown, held_ids = self._hold_transient_quote_gaps(view.get("candidates") or [], finished_at_ms)
             with self._view_lock:
                 # Daily raw snapshots remain on disk and in the explicit full
                 # endpoint; do not retain repeated MAP bodies in the read cache.
-                cached = {**view, "daily_snapshots": reading.daily_summaries(view.get("daily_snapshots"))}
+                cached = {**view, "candidates": shown,
+                          "daily_snapshots": reading.daily_summaries(view.get("daily_snapshots"))}
                 self._current_view = deepcopy(cached)
+                self._held_snapshot_ids = held_ids
                 self._last_refresh_error = None
             self.invalidate_view_body()
             self._store_btc_map_state(btc_projection.get("btc_map"))
@@ -2969,6 +3053,97 @@ class AstraWorkbench:
             raise WorkbenchError(404, "wpem_evidence_not_current", "proof is no longer the current snapshot")
         return package if full else deepcopy(package)
 
+    QUOTE_HOLD_MS = unsuitable.QUOTE_HOLD_MS
+    # capture exceptions of the transport, not of the contract (a failed book read raises
+    # one of these when the refresh capture is not partial)
+    TRANSIENT_CAPTURE_ERRORS = frozenset({"URLError", "HTTPError", "TimeoutError", "timeout", "ConnectionError",
+                                          "ConnectionResetError", "ConnectionAbortedError", "RemoteDisconnected",
+                                          "IncompleteRead", "OSError", "DataEngineError"})
+
+    @staticmethod
+    def _quote_hold_key(item: Mapping[str, Any]) -> tuple | None:
+        raw = ((item.get("discovery") or {}).get("candidate") or {}) if isinstance(item, Mapping) else {}
+        if not raw.get("short_instrument") or not raw.get("long_instrument"):
+            return None
+        return (item.get("side"), raw["short_instrument"], raw["long_instrument"], raw.get("quantity_btc"))
+
+    def _transient_quote_gap(self, item: Mapping[str, Any]) -> tuple[bool, list[str]]:
+        """(only transient, codes) of a capture's quote problem; (False, []) for a good capture."""
+        if item.get("status") == "error":
+            kind = next((r for r in (item.get("review_gate") or {}).get("reasons") or []
+                         if r != "candidate_refresh_error"), None)
+            return kind in self.TRANSIENT_CAPTURE_ERRORS, ["capture_error:" + str(kind)]
+        snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), Mapping) else None
+        if item.get("status") != "snapshot" or snapshot is None:
+            return False, ["snapshot_missing"]
+        quote = (snapshot.get("market") or {}).get("quote") or {}
+        transient, genuine = unsuitable.split_quote_gaps(quote.get("gap_reasons") or [], item.get("capture_gaps") or [])
+        return (bool(transient) and not genuine), sorted(set(transient + genuine))
+
+    def _hold_transient_quote_gaps(self, candidates: Sequence[Mapping[str, Any]],
+                                   now_ms: int) -> tuple[list[dict[str, Any]], set[str]]:
+        """The candidates the page shows, and the snapshot ids shown from a held capture.
+
+        A capture whose only problem is plumbing (books read out of step, a failed read) is
+        replaced, for display only, by the last good capture of the same contract while that
+        is at most QUOTE_HOLD_MS old, marked `held_capture`. A held capture is never locked,
+        sampled, or frozen into a case file or a verification: those paths refuse or read
+        afresh (as a review request does anyway). Past the window, or with any other gap, the
+        newest capture is shown as it is; a plumbing-only gap says how long the quote has been
+        out of step (`quote_gap_persistence`), from the last good reading of the contract."""
+        shown: list[dict[str, Any]] = []
+        held_ids: set[str] = set()
+        sides = set()
+        for item in candidates:
+            item = dict(item)
+            side = item.get("side")
+            sides.add(side)
+            key = self._quote_hold_key(item)
+            hold, run = self._quote_holds.get(side), self._quote_gap_runs.get(side)
+            if hold is not None and hold["key"] != key:
+                self._quote_holds.pop(side)  # the shown contract changed
+                hold = None
+            if run is not None and run["key"] != key:
+                self._quote_gap_runs.pop(side)
+                run = None
+            transient, codes = self._transient_quote_gap(item)
+            if not codes:
+                valued = ((item.get("snapshot") or {}).get("market") or {}).get("valuation_ts_ms")
+                if key is not None and isinstance(valued, int) and not isinstance(valued, bool):
+                    self._quote_holds[side] = {"key": key, "item": deepcopy(item), "valuation_ms": valued}
+                self._quote_gap_runs.pop(side, None)
+                shown.append(item)
+                continue
+            if run is None:
+                run = {"key": key, "since_ms": now_ms,
+                       "last_good_ms": hold["valuation_ms"] if hold is not None else None}
+                if key is not None:
+                    self._quote_gap_runs[side] = run
+            age = now_ms - hold["valuation_ms"] if hold is not None else None
+            if transient and age is not None and 0 <= age <= self.QUOTE_HOLD_MS:
+                held = deepcopy(hold["item"])
+                held["held_capture"] = {"age_ms": age, "since_ms": run["since_ms"], "reason_codes": codes,
+                                        "valuation_ts_ms": hold["valuation_ms"], "hold_window_ms": self.QUOTE_HOLD_MS}
+                # a review request reads the contract afresh (review_candidate), so the held
+                # review gate stays as it was; locking would take this point and is refused
+                held["lock_availability"] = {"enabled": False, "reason": "quote_held_not_current"}
+                held_ids.add(held["snapshot"]["snapshot_id"])
+                shown.append(held)
+                continue
+            if hold is not None:
+                # a real gap, or plumbing past the window: the old reading is no longer shown
+                self._quote_holds.pop(side, None)
+            if transient:
+                start = run["last_good_ms"] if run["last_good_ms"] is not None else run["since_ms"]
+                item["quote_gap_persistence"] = {"unsynced_ms": max(0, now_ms - start), "since_ms": run["since_ms"],
+                                                 "last_good_ms": run["last_good_ms"], "reason_codes": codes,
+                                                 "hold_window_ms": self.QUOTE_HOLD_MS}
+            shown.append(item)
+        for store_ in (self._quote_holds, self._quote_gap_runs):
+            for side in [s for s in store_ if s not in sides]:
+                store_.pop(side, None)
+        return shown, held_ids
+
     def _remember_lockable(self, view: dict[str, Any], now_ms: int, *,
                            payloads: Mapping[str, Any] | None = None) -> None:
         raw_payloads = self._locked_payloads if payloads is None else payloads
@@ -3150,8 +3325,13 @@ class AstraWorkbench:
             active_ids = {summary["episode_id"] for summary in episodes}
             self._sampler_marks = {k: v for k, v in self._sampler_marks.items() if k in active_ids}
         captured = {}
+        locked_ids = {summary.get("candidate_id") for summary in episodes}
         for item in view.get("candidates") or []:
             snapshot = item.get("snapshot") or {}
+            if item.get("held_capture"):
+                continue   # an earlier reading shown while the newest is out of step: never a new sample
+            if snapshot.get("candidate_id") not in locked_ids:
+                continue   # no active lock samples it: do not decode the stored point
             with self._view_lock:
                 point = self._lockable_points.get(snapshot.get("snapshot_id"))
             # a refresh point older than one interval is not a new sample for the sampler
@@ -3187,11 +3367,11 @@ class AstraWorkbench:
                     # the refreshed point predates this policy's last sample: take a fresh one
                     point = self._capture_locked_point(episode, view, self.clock_ms())
                     stored = self.locked_candidates.append(episode_id, point, now_ms=max(now_ms, self.clock_ms()))
-                point_id = locked_store._hash(point)
+                point_id = (stored or {}).get("point_id") or locked_store._hash(point)
                 if ((stored or {}).get("latest_point_id") != point_id
                         or int((stored or {}).get("point_count") or 0) <= int(episode.get("point_count") or 0)):
                     continue  # budget pause or write failure: a gap was recorded, no sample
-                metrics = self._warm_series_metrics(episode, point)
+                metrics = self._warm_series_metrics(episode, point, point_id=point_id)
                 if metrics is not None:
                     try:
                         self.locked_candidates.append_series(episode_id, [{
@@ -3563,10 +3743,11 @@ class AstraWorkbench:
                 "retention": self.locked_retention_policy(),
                 "unreadable_points": unreadable, "llm_call_count": 0, "execution_allowed": False}
 
-    def _warm_series_metrics(self, episode: Mapping[str, Any], point: Mapping[str, Any]) -> dict[str, Any] | None:
+    def _warm_series_metrics(self, episode: Mapping[str, Any], point: Mapping[str, Any], *,
+                             point_id: str | None = None) -> dict[str, Any] | None:
         """The appended point is in memory: compute its metrics now instead of re-reading it later."""
         try:
-            point_id = locked_store._hash(point)
+            point_id = point_id or locked_store._hash(point)
             cache = self._series_metrics_cache()
             if _current_metrics(cache.get(point_id)):
                 return cache[point_id]
@@ -3577,7 +3758,7 @@ class AstraWorkbench:
                 if found[1] is None:
                     return None
                 baseline = self._series_baselines[baseline_id] = found[1]
-                if len(self._series_baselines) > 16:
+                if len(self._series_baselines) > SERIES_BASELINE_LIMIT:
                     self._series_baselines.pop(next(iter(self._series_baselines)))
             metrics = locked_compare.point_metrics(point, baseline)
             with self._series_lock:
@@ -3909,6 +4090,9 @@ class AstraWorkbench:
                 point = self.locked_candidates.retained_point(source_episode_id, snapshot_id)
             else:
                 with self._view_lock:
+                    if snapshot_id in self._held_snapshot_ids:
+                        raise WorkbenchError(409, "quote_held_not_current",
+                                             "the shown quote is an earlier reading; lock after the next synced read")
                     point = self._lockable_points.get(snapshot_id)
             if point is None or point["candidate"]["snapshot"]["snapshot_id"] != snapshot_id:
                 raise WorkbenchError(409, "lock_snapshot_not_retained", "displayed input is no longer retained; refresh explicitly")
@@ -4476,6 +4660,9 @@ class AstraWorkbench:
             if path.exists():
                 return json.loads(path.read_text(encoding="utf-8"))
             with self._view_lock:
+                if snapshot_id in self._held_snapshot_ids:
+                    # frozen only while it is the newest reading; a held one is never frozen late
+                    raise WorkbenchError(409, "quote_held_not_current", "this capture is shown as an earlier reading")
                 point = deepcopy(self._lockable_points.get(snapshot_id))
             if not point:
                 raise WorkbenchError(404, "case_snapshot_unavailable", "this capture is no longer held; use a current one")
@@ -4546,6 +4733,8 @@ class AstraWorkbench:
                 snapshot = entry.get("snapshot") if isinstance(entry, Mapping) else None
                 if not isinstance(snapshot, Mapping) or snapshot.get("candidate_id") != candidate_id:
                     continue
+                if entry.get("held_capture"):
+                    continue   # an earlier reading: a verification starts or refreshes on a current one
                 if snapshot_id is None or snapshot.get("snapshot_id") == snapshot_id:
                     return deepcopy(dict(entry))
         if snapshot_id is not None:
@@ -4578,6 +4767,10 @@ class AstraWorkbench:
         if existing is not None:
             return {"session": self.decision_path_session(existing["verification_id"]), "created": False,
                     "llm_call_count": 0, "execution_allowed": False}
+        with self._view_lock:
+            held = snapshot_id in self._held_snapshot_ids
+        if held:
+            raise WorkbenchError(409, "quote_held_not_current", "the shown quote is an earlier reading; retry after the next read")
         item = self._dp_current_candidate(candidate_id, snapshot_id)
         if item is None:
             raise WorkbenchError(409, "candidate_not_current", "the displayed policy was replaced; reload and retry")
@@ -4654,7 +4847,8 @@ class AstraWorkbench:
             # so it is never scanned while _view_lock is held.
             ids = [(entry.get("snapshot") or {}).get("snapshot_id")
                    for entry in (self._current_view or {}).get("candidates") or []
-                   if isinstance(entry, Mapping) and (entry.get("snapshot") or {}).get("candidate_id") == candidate_id]
+                   if isinstance(entry, Mapping) and (entry.get("snapshot") or {}).get("candidate_id") == candidate_id
+                   and not entry.get("held_capture")]
             points = [p for p in (self._lockable_points.get(i) for i in ids if i) if p is not None]
         points = [p for p in points if now_ms - int(p.get("recorded_at_ms") or 0) <= fresh_ms]
         if points:
@@ -4841,7 +5035,14 @@ class AstraWorkbench:
                 self._locked_detail_cache.clear()
             with self._series_lock:
                 self._series_baselines.clear()
-            gc.collect()
+            self._daily_cache = None
+            if previous not in {"soft", "hard"}:
+                # Once per entry into pressure: the replayed ledger is the largest cache, and
+                # rebuilding it on every pass would only trade memory for a full replay each time.
+                with self._ledger_cache_lock:
+                    self._ledger_cache = None
+                self.ledger.drop_cache()
+            _release_memory()
             after = self.rss_bytes()
             mb_after = after / 1_048_576 if after is not None else mb
             level = "hard" if mb_after >= self.config.memory_hard_mb else "soft" if mb_after >= self.config.memory_soft_mb else "ok"
@@ -4894,6 +5095,11 @@ class AstraWorkbench:
                      "expiry_gamma": self.expiry_gamma_view(view.get("candidates") or [], now),
                      "decision_path": self.decision_path_overview(),
                      "runtime": {"memory": dict(self._memory), "threads": threading.active_count()}})
+        for item in view.get("candidates") or []:
+            held = item.get("held_capture")
+            if isinstance(held, Mapping) and isinstance(held.get("valuation_ts_ms"), int):
+                # the age of the shown reading at this read, not at the refresh that chose it
+                item["held_capture"] = {**held, "age_ms": max(0, now - held["valuation_ts_ms"])}
         self._attach_exogenous_events(view, now)
         self._attach_session_layers(view, now)
         view["hold_reviews"] = self.hold_review_overview(view["locked_candidates"])
@@ -5099,7 +5305,20 @@ class AstraWorkbench:
         return rows[-max(0, int(limit)):]
 
     def recent_daily_snapshots(self, *, limit: int = DEFAULT_DAILY_LIMIT) -> list[dict[str, Any]]:
-        return _read_jsonl_tail(self.config.daily_snapshots_path, max(0, int(limit)))
+        """Parsed once per file change and limit; callers only read the rows."""
+        limit = max(0, int(limit))
+        path = self.config.daily_snapshots_path
+        try:
+            st = Path(path).stat()
+            key: Any = (str(path), limit, st.st_size, st.st_mtime_ns, st.st_ino)
+        except OSError:
+            key = None
+        cached = self._daily_cache
+        if key is not None and cached is not None and cached[0] == key:
+            return list(cached[1])
+        rows = _read_jsonl_tail(path, limit)
+        self._daily_cache = (key, rows) if key is not None else None
+        return list(rows)
 
     def _rotate_daily_snapshots(self) -> None:
         """Move older daily snapshots to a gzip archive once the live file grows large."""
@@ -5728,6 +5947,8 @@ class AstraWorkbench:
             entry.update(status="incomplete" if transient else "done", finished_at_ms=self.clock_ms(), sides=outcomes)
 
         self._locked_state_update(finish)
+        # a review builds large transient objects (packets, prompts, annexes): return them now
+        _release_memory()
 
     def start_background(self) -> None:
         if self._background_thread and self._background_thread.is_alive():
