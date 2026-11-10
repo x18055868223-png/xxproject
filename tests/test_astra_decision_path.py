@@ -492,7 +492,7 @@ def v2frame(cand=None, warnings=None, notes=None, **kw):
 
 def test_v2_steps_and_version():
     assert dp.STEP_IDS == ("V", "R", "P", "PL", "AU")
-    assert dp.PATH_VERSION == "dp-2026-10-27.1"
+    assert dp.PATH_VERSION == "dp-2026-11-10.1"
     assert [st["id"] for st in dp.STEPS_V2] == ["D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H", "AU"]
     assert dp.COMPONENT_IDS == ("D0", "D1", "T", "D2", "D3", "D4", "Q1", "Q2", "H")
     flags = {st["id"]: st for st in dp.steps_public()}

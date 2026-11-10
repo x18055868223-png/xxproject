@@ -22,12 +22,24 @@
     "component": {
       "enum": [
         "inquirer_prompt",
+        "inquirer_reading_view",
+        "inquiry_lens",
         "case_file_builder",
         "ledger_row",
         "episode_outcome",
         "submission_schemas",
         "research_protocol",
-        "scoring_rules"
+        "scoring_rules",
+        "scorecard_rules",
+        "ledger_fields",
+        "entry_warnings",
+        "session_clock",
+        "unsuitable",
+        "decision_path",
+        "round_info",
+        "rulebook",
+        "player_prompt",
+        "selection_scorecard"
       ]
     },
     "version": {

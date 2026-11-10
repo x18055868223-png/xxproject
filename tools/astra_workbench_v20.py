@@ -4411,7 +4411,8 @@ class AstraWorkbench:
                                          "contract_key": r.get("contract_key"),
                                          "expiry_ms": r.get("expiry_ms"), "expiry_atm_iv_pct": r.get("expiry_atm_iv_pct"),
                                          "short_mark_iv": (r.get("short") or {}).get("mark_iv")
-                                         if isinstance(r.get("short"), Mapping) else None})
+                                         if isinstance(r.get("short"), Mapping) else None,
+                                         "rv_24h_pct": r.get("rv_24h_pct")})
         except Exception:
             rows = None
         self._ledger_history_cache = (now_ms, rows)
@@ -4475,7 +4476,7 @@ class AstraWorkbench:
                                                         books=self._book_tops(item))
             try:
                 item["entry_warnings"] = _entry_warnings_for(item, now_ms, gex, by_expiry, others, history,
-                                                             distance_in_moves=_readings_dim(item))
+                                                             distance_in_moves=_readings_dim(item), realized=realized)
             except Exception as exc:
                 item["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
             # what makes this contract unsuitable now (vetoes and cautions), the same builders as V
@@ -4602,7 +4603,8 @@ class AstraWorkbench:
                         out["entry_warnings"] = _entry_warnings_for(
                             out, now_ms, gex, by_expiry, others,
                             history if history is not None else self._ledger_history(now_ms),
-                            distance_in_moves=_readings_dim(out))
+                            distance_in_moves=_readings_dim(out),
+                            realized=(view.get("expiry_gamma") or {}).get("realized_vol"))
             except Exception as exc:
                 if need_warnings:
                     out["entry_warnings"] = {"rules": entry_warnings.RULES, "error_type": type(exc).__name__}
@@ -4678,8 +4680,12 @@ class AstraWorkbench:
                          if ((c.get("snapshot") or {}).get("snapshot_id")) == snapshot_id), None)
             if item is None:
                 item = self._dp_item(point.get("candidate") or {}, now)
+            selection = None
             try:
                 dp_reading = decision_path.build(self._dp_frame(self._dp_item(item, now), now))
+                # the hard rules (V) and the round numbers (P) of this capture, kept outside the
+                # layers: the scorecard and the player read them, the inquirer never does
+                selection = decision_path.selection(dp_reading)
                 # the case keeps the component steps only (D0..H, AU): the composites of
                 # dp-2026-10-27.1 restate them, and the inquirer reads the case as it is
                 dp_reading["steps"] = {k: v for k, v in (dp_reading.get("steps") or {}).items()
@@ -4690,7 +4696,7 @@ class AstraWorkbench:
             body_readings = self._research_readings(snapshot, raw_market, view, asof)
             body = case_file_core.build(snapshot=snapshot, raw_market=raw_market, asof_ms=asof,
                                         item=item, view=view, dp_reading=dp_reading, built_at_ms=now,
-                                        research_readings=body_readings)
+                                        research_readings=body_readings, selection=selection)
             if dp_reading is None or body_readings is None:
                 body["build"]["stored"] = False   # a transient failure is returned, never frozen
                 return body
@@ -6119,9 +6125,22 @@ def _readings_dim(item: Mapping[str, Any]) -> Any:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def _warning_context(row: Mapping[str, Any], spot: Any, hours: float, realized: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What the premium-thickening kind is read against (entry_warnings@0.3, docs/opus/27 §3A): the
+    realized vol of the ledger's own source, and this expiry's pin and walls against the spot."""
+    # stale walls (expiry_gamma STALE_MS) describe an old book: no level is read from them
+    walls = row.get("walls") if isinstance(row.get("walls"), Mapping) and not row.get("stale") else {}
+    levels = [{"kind": k, "strike": walls[k]} for k in ("pin", "gamma_call", "gamma_put", "oi_call", "oi_put")
+              if isinstance(walls.get(k), (int, float)) and not isinstance(walls.get(k), bool)]
+    rv = (realized or {}).get("rv_24h_pct") if isinstance(realized, Mapping) else None
+    return {"rv_24h_pct": rv, "spot_usd": spot, "expected_move_usd": row.get("expected_move_usd"),
+            "hours_left": hours, "levels": levels}
+
+
 def _entry_warnings_for(item: Mapping[str, Any], now_ms: int, gex: Mapping[str, Any], by_expiry: Mapping[str, Any],
                         others: Mapping[Any, Any], history: list[dict[str, Any]] | None,
-                        distance_in_moves: Any = OWN_DISTANCE) -> dict[str, Any] | None:
+                        distance_in_moves: Any = OWN_DISTANCE,
+                        realized: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """The entry warnings (vetoes) and the busy-window note for one candidate, on the ledger's definitions.
     The note records `distance_in_moves` (the candidate readings' number, None included, so the note
     and the card agree); without it, its own computation from this expiry's Deribit ATM IV."""
@@ -6156,7 +6175,8 @@ def _entry_warnings_for(item: Mapping[str, Any], now_ms: int, gex: Mapping[str, 
         other_short_iv=(other.get("market_marks") or {}).get("short_mark_iv") if same_expiry else None,
         distance_in_moves=dim, history=history if history is not None else [],
         clock_reading=session_clock.reading(now_ms, expiry),
-        contract_key=key(contract), other_contract_key=key(ocontract) if same_expiry else None)
+        contract_key=key(contract), other_contract_key=key(ocontract) if same_expiry else None,
+        context=_warning_context(row, spot, hours, realized))
     out["history_available"] = history is not None
     return out
 

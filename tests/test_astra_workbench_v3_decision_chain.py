@@ -2,6 +2,8 @@
 the lock conclusion's limit price, and older sessions unchanged."""
 import copy
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -115,6 +117,97 @@ def test_p_reservation_box_and_the_conclusion_opens_at_the_gate_step():
     out = run(body, {"s": unreliable})
     assert out["rows"][1][1] == "两腿中间价 不可算（缺对侧盘口）"
     assert out["rows"][2] == ["dp-reserve-row warn", "保护腿盘口空或过宽，标记价可能失真，保留价仅供参考。"]
+
+
+EDGE = {"required_edge_bid": 0.18, "required_edge_mid": 0.0, "required_edge_note_cn": None,
+        "max_loss_btc": 0.0112, "max_loss_usd": 952.0}
+# the round block is read against the page's clock (Date.now): the fixtures sit around the real now
+NOW_MS = int(time.time() * 1000)
+WINDOW_AT = NOW_MS - 10 * 60_000                       # a round window opened 10 minutes ago
+NEXT_AT = WINDOW_AT + 12 * 3_600_000
+
+
+def bjt(ms, ref):
+    """decision.js until(): HH:MM in Beijing time, with MM/DD when the day is not the reference's."""
+    a, b = (datetime.fromtimestamp(x / 1000, timezone(timedelta(hours=8))) for x in (ms, ref))
+    return a.strftime("%H:%M") if a.date() == b.date() else a.strftime("%m/%d %H:%M")
+
+
+def round_at(current_at, nxt, current=1, **over):
+    return {"rounds_utc": [2, 14], "current": current, "current_at_ms": current_at,
+            "next": {"round": 2, "at_ms": nxt, "same_expiry": True, "hours_left_at": 18.0},
+            "pass_cost": {"premium_btc": 0.0012, "premium_usd": 102.0, "variance_share": 0.42},
+            "note_cn": "两轮按 UTC 2 点与 14 点", **over}
+
+
+ROUND = round_at(WINDOW_AT, NEXT_AT)
+P_ROWS = """const box = new N('div'); D.renderDecision(box, mkctx(p.s)); const pStep = step(box, 'P');
+  return { rows: byCls(pStep, 'dp-reserve-row').map((x) => x.textContent), round: byCls(pStep, 'dp-round').map((x) => x.textContent) };"""
+
+
+def p_with(res_over=None, round_=None, at=None):
+    s = at_p()
+    p = s["readings"]["start"]["steps"]["P"]
+    p["reservation"] = {**RES, **(res_over or {})}
+    if round_ is not None:
+        p["round"] = round_
+    if at is not None:
+        s["readings"]["start"]["at_ms"] = at
+    return s
+
+
+def test_p_box_shows_required_edge_max_loss_and_the_rounds():
+    out = run(P_ROWS, {"s": p_with(EDGE, ROUND, at=WINDOW_AT + 60_000)})
+    rows = out["rows"]
+    assert rows[2] == "所需优势：按买价 18%，按中间价 0（不低于保留价）　真实预期赔付要比市场估价低这么多，这一局才不亏（已含费用）"
+    assert rows[3] == "计分单位（按现价折算的最大损失）约 0.0112 BTC（约 952 美元）"
+    assert rows[4:] == ["现在是第 1 轮出手时窗",
+                        f"下一轮：第 2 轮，北京时间 {bjt(NEXT_AT, WINDOW_AT + 60_000)}，届时剩余约 18 小时",
+                        "等到第二轮前，这段时间约占剩余风险的 42%；保费按平方根粗算约减少 0.0012 BTC（约 102 美元）（偏低，价外价差衰减更快）"]
+    assert out["round"] and out["round"][0].endswith("两轮按 UTC 2 点与 14 点")
+    # outside a window, next round on the next expiry; no pass cost shown
+    later = NOW_MS + 30 * 3_600_000
+    other = round_at(None, later, current=None, pass_cost=None,
+                     next={"round": 1, "at_ms": later, "same_expiry": False, "hours_left_at": None})
+    rows = run(P_ROWS, {"s": p_with(EDGE, other, at=NOW_MS)})["rows"]
+    assert rows[4:] == [f"下一轮：第 1 轮，北京时间 {bjt(later, NOW_MS)}（届时为下一期合约）"]
+    assert not any("现在是第" in r or "等到第二轮" in r for r in rows)
+
+
+def test_p_box_says_when_its_round_reading_is_out_of_date():
+    # the reading was taken in round 1's window, which closed two hours ago: no "now", no pass cost
+    closed = round_at(NOW_MS - 3 * 3_600_000, NOW_MS + 9 * 3_600_000)
+    rows = run(P_ROWS, {"s": p_with(EDGE, closed, at=NOW_MS - 3 * 3_600_000 + 60_000)})["rows"]
+    assert "读数时处在第 1 轮出手时窗（该时窗已结束）" in rows
+    assert not any(r.startswith("现在是第") or "平方根" in r for r in rows)
+    # the next round itself has passed: the block says it is out of date
+    stale = round_at(NOW_MS - 14 * 3_600_000, NOW_MS - 2 * 3_600_000)
+    rows = run(P_ROWS, {"s": p_with(EDGE, stale, at=NOW_MS - 14 * 3_600_000)})["rows"]
+    assert rows[4] == "以下轮次按读数时刻计算，已过时；刷新“现在”的读数后再看。"
+
+
+def test_p_box_degrades_without_edge_loss_or_round():
+    out = run(P_ROWS, {"s": p_with({"required_edge_bid": None, "required_edge_mid": None,
+                                    "required_edge_note_cn": "标记价差不大于 0", "max_loss_btc": None, "max_loss_usd": None})})
+    assert out["rows"][2] == "所需优势：不可算（标记价差不大于 0）"
+    assert not any(r.startswith("计分单位") for r in out["rows"]) and out["round"] == []
+    out = run(P_ROWS, {"s": p_with({"required_edge_bid": None, "required_edge_mid": 0.075})})
+    assert out["rows"][2].startswith("所需优势：按买价 不可算，按中间价 7.5%")
+    # old readings with none of the new fields: the box is as before
+    out = run(P_ROWS, {"s": at_p()})
+    assert len(out["rows"]) == 2 and out["round"] == []
+
+
+def test_box_keys_hide_the_new_p_lines_from_the_table():
+    s = p_with(EDGE, ROUND)
+    s["readings"]["start"]["steps"]["P"]["lines"] += [{"k": "所需优势", "v": "按买价 18%"}, {"k": "最大损失", "v": "0.0112 BTC"},
+                                                      {"k": "轮次", "v": "第 1 轮"}, {"k": "其他", "v": "保留"}]
+    out = run("localStorage.setItem('astra.dp.view', 'table'); const box = new N('div'); D.renderDecision(box, mkctx(p.s));"
+              "return texts(step(box, 'P'), 'dp-lines');", {"s": s})
+    assert "其他" in out[0] and not any(k in out[0] for k in ("所需优势", "最大损失", "轮次"))
+    src = (Path(__file__).resolve().parents[1] / "deploy" / "astra_workbench_v3" / "decision.js").read_text(encoding="utf-8")
+    assert all(f'"{k}"' in src.split("const BOX_KEYS")[1].split("\n")[0] for k in ("所需优势", "最大损失", "轮次"))
+    assert "概率" not in src
 
 
 def test_gate_falls_back_to_q2_for_older_sessions():

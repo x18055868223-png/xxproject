@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
-SCHEMA = "unsuitable@0.1"
+SCHEMA = "unsuitable@0.2"   # 0.2: net-income veto, reasons without counterparty attribution, unknown fee (docs/opus/27, 28)
 # a standard 0.35 delta short leg sits near 0.4 expected moves (docs/opus/17 §3.2); "narrow" is
 # clearly closer than that (unvalidated, veto only). The Decision Path and the readings use this.
 NARROW_MOVES = 0.25
@@ -45,6 +45,7 @@ B_BUFFER = "距离 · 本期 ATM IV 折算；标准 0.35Δ 短腿约 0.4 倍（1
 B_DATA = "口径 · 读数前提（不是研究结论）"
 B_RESERVATION = ("定义 · 保留价 = 两腿标记价差 + 费用（净收不低于市场估价的最低两腿毛信用）；把标记价当公允价是假设；"
                  "费用每腿封顶 min(0.0003, 12.5% × 腿价)，随成交价略有变化")
+B_CREDIT = "定义 · 规则书 27 号 §9（2026-11-10 起）"
 B_MID = "B/C · 17 号 §6（成本差 B；中间价能否成交 C，未验证）"
 B_LONG_BOOK = "推论（无等级）· 17 号 §6"
 
@@ -99,13 +100,41 @@ def warning_evidence(w: Mapping[str, Any]) -> str:
     return ""
 
 
+# docs/opus/27 §2, §3A: a premium that moves is the market repricing this risk in public; the
+# reasons say what the readings show and never who is trading or what they know
 _WHY = {
-    "term_inversion": ("按日内时钟校正后，市场给近端的报价仍高于一周期限。一种解释是近端风险已被定价，"
-                       "或有人在急买近端保护（未检验）",
+    "term_inversion": ("按日内时钟校正后，市场给近端风险的报价仍高于一周期限。可能是持有期内有已排期事件，"
+                       "或近端风险刚被重新定价（未检验）",
                        "倒挂消失（时钟校正后本期不再高于一周期限）后，这一项才解除"),
-    "premium_thickening": ("保费突然变厚，首先是有人在买保护的警告，不是多收保费的机会",
+    "premium_thickening": ("保费变厚是市场上调了这份风险的报价：多出的保费对应更高的公允成本，不是多收保费的机会。"
+                           "状态变了，之前的读数要重读",
                            "保费回到近 6 小时的水平后，这一项才解除"),
 }
+# what kind of thickening it was (entry_warnings@0.3 evidence.kind; @0.2 had only one_sided)
+_THICKENING_KIND = {
+    "one_sided": "；只有本侧变厚，这一侧的报价被单独上调，本侧的墙不能当缓冲读（机制假设，未检验）",
+    "both_sides": "；两侧同步变厚，更像普遍的风险重估",
+    "skew_other_unknown": "；另一侧无数据，无法判断是否只有本侧变厚",
+}
+_THICKENING_RV = {
+    True: "；同期已实现波动也在上升，波动状态变了，缓冲要按新的预期波动重读",
+    False: "；已实现波动没有同步上升，市场在为尚未发生的波动付费，先查持有期内的已排期事件",
+}
+_NEAR_LEVEL = "；现价贴近本期关键价位且临近到期，短腿的距离比读数显示的更脆弱"
+
+
+def thickening_why(w: Mapping[str, Any]) -> str:
+    """The premium_thickening reason by kind: one sentence, then what the kind adds."""
+    e = w.get("evidence") if isinstance(w.get("evidence"), Mapping) else {}
+    kind = e.get("kind") or ("one_sided" if e.get("one_sided") else None)
+    why = _WHY["premium_thickening"][0]
+    if kind in _THICKENING_KIND:
+        why += _THICKENING_KIND[kind]
+    elif e.get("rv_rising") in _THICKENING_RV:   # the whole expiry repriced
+        why += _THICKENING_RV[e["rv_rising"]]
+    if e.get("near_level"):
+        why += _NEAR_LEVEL
+    return why
 
 
 def warning_items(block: Any) -> dict[str, Any]:
@@ -125,8 +154,8 @@ def warning_items(block: Any) -> dict[str, Any]:
         if fired is not True:
             continue
         why, clears = _WHY.get(w.get("code"), ("这项警示已触发，先当警告", "警示不再触发后，这一项才解除"))
-        if w.get("code") == "premium_thickening" and _get(w, "evidence.one_sided"):
-            why += "；只有本侧变厚、另一侧没动，一种解释是有人在专门买这一侧的保护（未检验）"
+        if w.get("code") == "premium_thickening":
+            why = thickening_why(w)
         items.append(item(str(w.get("code") or "warning"), "veto", label, warning_evidence(w) or str(w.get("reason_cn") or ""),
                           why, clears, B_WARNING))
     if not warnings:
@@ -152,6 +181,19 @@ def buffer_item(dist_pct: float | None, ratio: float | None, move_pct: float | N
                 f"短腿距现价 {dist:.2f}%，约 {ratio:.2f} 倍到期前预期波动"
                 + (f"（±{move:.2f}%）" if move is not None else "") + f"；标准 0.35Δ 短腿约 {STANDARD_MOVES} 倍",
                 f"不到 {NARROW_MOVES} 倍预期波动的正常波动就会触及短腿；这个阈值未验证，只作否决", clears, B_BUFFER)
+
+
+def credit_item(net_income_btc: Any, net_income_usd: Any = None) -> dict[str, Any] | None:
+    """A veto when the net income (gross credit minus every hold fee) is not positive: even if the
+    liability never pays, holding to expiry does not earn (docs/opus/27 rulebook §9)."""
+    net = _num(net_income_btc)
+    if net is None or net > 0:
+        return None
+    usd = _num(net_income_usd)
+    return item("credit", "veto", "净收入不为正",
+                f"扣全部费用后净收入 {net:.4f} BTC" + (f"（约 {_usd(usd)} 美元）" if usd is not None else ""),
+                "就算责任不兑现、持有到期也赚不到钱：成交价连费用都覆盖不了",
+                "成交价提高到费用以上（净收入为正）后，这一项才解除", B_CREDIT)
 
 
 def split_quote_gaps(quote_reasons: Sequence[Any], capture_gaps: Sequence[Any] = ()) -> tuple[list[str], list[str]]:
@@ -331,12 +373,20 @@ def card(candidate: Any) -> dict[str, Any]:
         if (isinstance(depth, Mapping) and _DEPTH_CN not in gaps
                 and any((_num(depth.get(leg)) or 0) < need for leg in ("short", "long"))):
             gaps.append(_DEPTH_CN)
+        pricing = _get(cand, "readings.pricing")
+        if (isinstance(pricing, Mapping) and _num(pricing.get("credit_btc")) is not None
+                and _num(pricing.get("fee_btc")) is None):
+            gaps.append("费用未知")   # no net income can be read: the V step's data check vetoes it too
         data = data_item(gaps)
         if data:
             items.insert(0, data)
         warn = warning_items(cand.get("entry_warnings"))
         items += warn["items"]
         unknown += warn["unknown_cn"]
+        if isinstance(pricing, Mapping):
+            credit = credit_item(pricing.get("net_credit_btc"), pricing.get("net_credit_usd"))
+            if credit:
+                items.append(credit)
         move = _get(cand, "readings.expected_move")
         move = move if isinstance(move, Mapping) else {}
         side = _get(snap, "contract.side") or cand.get("side")

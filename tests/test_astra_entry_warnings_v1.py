@@ -67,7 +67,7 @@ def test_history_must_be_the_same_expiry_and_span_two_hours():
 def test_whole_expiry_repricing_is_clock_adjusted():
     hist = _hist("call", 30.0, 29.0)
     up = ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, hist)
-    assert up["triggered"] is True and "整条到期" in up["reason_cn"]
+    assert up["triggered"] is True and up["evidence"]["kind"] == "overall" and "整体 IV" in up["reason_cn"]
 
 
 def test_the_busy_window_is_a_note_active_in_busy_hours_and_windows_in_progress_or_ahead():
@@ -108,7 +108,7 @@ def test_evaluate_and_chinese_thresholds():
     out = ew.evaluate(side="call", now_ms=NOW, contract_expiry_ms=EXPIRY, contract_expiry_label="21OCT26",
                       term_structure=TERMS, expiry_atm_iv=31.9, short_iv=30.0, other_short_iv=33.0, distance_in_moves=0.3,
                       history=[], clock_reading=clock.reading(NOW, EXPIRY))
-    assert out["unknown"] == ["premium_thickening"] and out["rules"] == "entry_warnings@0.2"
+    assert out["unknown"] == ["premium_thickening"] and out["rules"] == "entry_warnings@0.3"
     assert all(k in ew.THRESHOLD_CN.values() for w in out["warnings"] for k in w["threshold_cn"])
 
 
@@ -127,3 +127,105 @@ def test_evaluate_vetoes_only_inversion_and_thickening_and_the_note_never_counts
                         history=[], clock_reading=None)
     assert blind["notes"][0]["active"] is None and blind["unknown"] == ["premium_thickening"]
     assert ew.WINDOW_HOURS == 2.0 and callable(ew.busy_window_thin_cushion)      # research_22 imports both
+
+
+# @0.3 (docs/opus/27 §3A): thickening described by type, never attributed to anyone's intent
+BANNED = ("有人", "知道些什么", "内情", "知情", "买保护", "急需")
+
+
+def _rv(rows, rv):
+    return [dict(r, rv_24h_pct=rv) for r in rows]
+
+
+def _put_hist(rv=None):
+    rows = _hist("put", 30.0, 32.0) + _hist("call", 30.0, 29.0)
+    return _rv(rows, rv) if rv is not None else rows
+
+
+def _pt(atm, short, oshort, hist, okey=KC, **k):
+    return ew.premium_thickening("put", EXPIRY, NOW, atm, short, oshort, hist, KP, okey, **k)
+
+
+def test_thickening_kinds():
+    h = _put_hist()
+    assert _pt(30.0, 32.5, 29.2, h)["evidence"]["kind"] is None                       # not triggered
+    assert _pt(30.0, 36.0, 29.3, h)["evidence"]["kind"] == "one_sided"
+    assert _pt(30.0, 36.0, 24.0, h)["evidence"]["kind"] == "both_sides"
+    assert _pt(30.0, 36.0, None, h, okey=None)["evidence"]["kind"] == "skew_other_unknown"
+    overall = ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, _hist("call", 30.0, 29.0))
+    assert overall["evidence"]["kind"] == "overall" and overall["label_cn"] == "保费突然变厚"
+    assert ew.premium_thickening("put", EXPIRY, NOW, 30.0, 40.0, 29.0, [])["evidence"]["kind"] is None   # unknown
+    # overall and skew both fire: the skew type wins, the overall rise is kept and told
+    both = _pt(36.0, 42.0, 35.0, h)
+    assert both["evidence"]["kind"] == "one_sided" and both["evidence"]["atm_jump_vol_pts"] >= ew.IV_JUMP_PTS
+    assert "整体 IV" in both["reason_cn"] and "同时上升" in both["reason_cn"] and both["label_cn"] == "保费突然变厚（单侧）"
+
+
+def test_realized_volatility_rise_is_described_not_triggering():
+    call_hist = _rv(_hist("call", 30.0, 29.0), 40.0)
+    up = lambda rv, hist=call_hist: ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, hist,
+                                                           context={"rv_24h_pct": rv})
+    rising = up(45.0)
+    assert rising["evidence"]["rv_rise_vol_pts"] == 5.0 and rising["evidence"]["rv_rising"] is True
+    assert "已实现波动也上升 5.0 点" in rising["reason_cn"] and "重新定价" in rising["reason_cn"]
+    flat = up(41.0)
+    assert flat["evidence"]["rv_rising"] is False and "尚未发生的波动" in flat["reason_cn"] and "已排期事件" in flat["reason_cn"]
+    for none in (up(None), up(45.0, _hist("call", 30.0, 29.0)),          # no current rv / old rows without rv
+                 ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, call_hist)):
+        assert none["evidence"]["rv_rise_vol_pts"] is None and none["evidence"]["rv_rising"] is None
+        assert "已实现波动记录不足" in none["reason_cn"]
+    short = _rv(_hist("call", 30.0, 29.0, n=8, step=10 * 60_000), 40.0)   # under two hours: not enough
+    assert up(45.0, short)["evidence"]["rv_rise_vol_pts"] is None
+    assert all(w["triggered"] is True for w in (rising, flat))
+    assert not ew.premium_thickening("call", EXPIRY, NOW, 30.0, 29.0, None, call_hist, context={"rv_24h_pct": 60.0})["triggered"]
+
+
+def test_near_level_only_close_to_expiry_and_within_a_quarter_move():
+    base = {"spot_usd": 100_000.0, "expected_move_usd": 2_000.0, "hours_left": 6.0,
+            "levels": [{"kind": "gamma_call", "strike": 100_450.0}, {"kind": "pin", "strike": 99_700.0},
+                       {"kind": "oi_put", "strike": 95_000.0}]}
+    near = ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, _hist("call", 30.0, 29.0), context=base)
+    assert near["evidence"]["near_level"] == {"kind": "pin", "strike": 99_700.0, "distance_usd": 300.0}
+    assert "现价距本期 Pin 99700 约 300 美元、距到期不足 12 小时" in near["reason_cn"]
+    for ctx in (dict(base, hours_left=13.0), dict(base, expected_move_usd=None), dict(base, hours_left=None),
+                dict(base, levels=[{"kind": "oi_put", "strike": 95_000.0}]), dict(base, spot_usd=None), {}):
+        out = ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, _hist("call", 30.0, 29.0), context=ctx)
+        assert out["evidence"]["near_level"] is None and "现价距本期" not in out["reason_cn"]
+
+
+def test_context_never_changes_the_trigger():
+    ctx = {"rv_24h_pct": 80.0, "spot_usd": 100_000.0, "expected_move_usd": 2_000.0, "hours_left": 1.0,
+           "levels": [{"kind": "pin", "strike": 100_000.0}]}
+    h = _put_hist(rv=40.0)
+    for args in ((30.0, 32.5, 29.2), (30.0, 36.0, 29.3), (30.0, 36.0, 24.0), (36.0, 32.0, 29.0), (31.0, 33.0, 29.5)):
+        plain, with_ctx = _pt(*args, h), _pt(*args, h, context=ctx)
+        assert plain["triggered"] == with_ctx["triggered"] and plain["label_cn"] == with_ctx["label_cn"]
+    kw = dict(side="put", now_ms=NOW, contract_expiry_ms=EXPIRY, contract_expiry_label="21OCT26", term_structure=TERMS,
+              expiry_atm_iv=30.0, short_iv=36.0, other_short_iv=29.3, distance_in_moves=0.3, history=h,
+              clock_reading=None, contract_key=KP, other_contract_key=KC)
+    a, b = ew.evaluate(**kw), ew.evaluate(**kw, context=ctx)
+    assert a["triggered"] == b["triggered"] and a["unknown"] == b["unknown"] and set(a) == set(b)
+    assert b["warnings"][1]["evidence"]["near_level"]["kind"] == "pin" and a["warnings"][1]["evidence"]["near_level"] is None
+
+
+def test_triggered_reasons_attribute_no_intent():
+    h = _put_hist(rv=40.0)
+    ctx = {"rv_24h_pct": 45.0, "spot_usd": 100_000.0, "expected_move_usd": 2_000.0, "hours_left": 2.0,
+           "levels": [{"kind": "gamma_put", "strike": 99_900.0}]}
+    fired = [_pt(30.0, 36.0, 29.3, h, context=ctx), _pt(30.0, 36.0, 24.0, h), _pt(30.0, 36.0, None, h, okey=None),
+             _pt(36.0, 42.0, 35.0, h, context=ctx),
+             ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, _rv(_hist("call", 30.0, 29.0), 40.0), context=ctx),
+             ew.premium_thickening("call", EXPIRY, NOW, 36.0, 35.0, None, _rv(_hist("call", 30.0, 29.0), 40.0),
+                                   context={"rv_24h_pct": 40.5}),
+             ew.term_inversion([dict(t, atm_iv=40.0) if t["expiry"] == "21OCT26" else t for t in TERMS], "21OCT26", None, NOW, EXPIRY)]
+    assert all(w["triggered"] is True for w in fired)
+    for w in fired:
+        assert not [b for b in BANNED if b in w["reason_cn"]], w["reason_cn"]
+    for w in fired[:-1]:
+        assert w["reason_cn"].endswith("这是“状态变了”的否决提醒，不是多收保费的机会。")
+    assert "机制假设，未检验" in fired[0]["reason_cn"] and "墙不能当缓冲读" in fired[0]["reason_cn"]
+    assert "整条微笑被上调" in fired[1]["reason_cn"] and "另一侧无数据" in fired[2]["reason_cn"]
+    assert "Put Gamma 墙 99900" in fired[0]["reason_cn"]
+    assert "未检验" in fired[-1]["reason_cn"] and "否决提醒" in fired[-1]["reason_cn"]
+    assert ew.RULES == "entry_warnings@0.3" and ew.RV_RISE_PTS == 2.0
+    assert ew.NEAR_LEVEL_HOURS == 12 and ew.NEAR_LEVEL_MOVES == 0.25

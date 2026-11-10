@@ -37,8 +37,10 @@ else:
     import astra_session_clock_v1 as session_clock
 
 SCHEMA = "case_file@0.1"
-BUILDER_VERSION = "astra_case_file_v1@0.1.8"   # 0.1.7: L8.decision_path label names no fixed steps (path v2, docs/opus/20)
+BUILDER_VERSION = "astra_case_file_v1@0.1.9"   # 0.1.7: L8.decision_path label names no fixed steps (path v2, docs/opus/20)
                                                 # 0.1.8: L6.entry_warnings label splits vetoes from holding notes (docs/opus/22)
+                                                # 0.1.9: top-level `selection` (hard rules, required edge, rounds;
+                                                #        docs/opus/28 G10), outside the layers and never shown to the inquirer
 # The workbench's admission fields, constant while the space gate only evaluates (since 2026-10-13).
 GATE_ADMISSION_KEYS = ("state", "eligible", "since_ts_ms", "reason_codes")
 LAYERS = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
@@ -228,7 +230,8 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
           dp_reading: Mapping[str, Any] | None = None,
           history: Iterable[Mapping[str, Any]] | None = None,
           built_at_ms: int | None = None,
-          research_readings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+          research_readings: Mapping[str, Any] | None = None,
+          selection: Mapping[str, Any] | None = None) -> dict[str, Any]:
     view = view or {}
     snapshot_id = snapshot.get("snapshot_id")
     if item is not None and (item.get("snapshot") or {}).get("snapshot_id") != snapshot_id:
@@ -504,6 +507,10 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
         "layers": case.layers,
         "refs": case.refs(),
     }
+    if selection is not None:
+        # program facts for the selection scorecard and the player (docs/opus/28): not evidence
+        # layers, so they carry no ref and the inquirer's copy drops them (for_inquirer)
+        body["selection"] = clean(selection)
     body = annotate(body)
     encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     # built_at_ms stays outside the content hash: the same inputs give the same content
@@ -674,5 +681,6 @@ def for_inquirer(case_file: Mapping[str, Any]) -> dict[str, Any]:
     out = deepcopy(dict(case_file))
     out["layers"] = {k: v for k, v in out["layers"].items() if k != "L9"}
     out["refs"] = {k: v for k, v in out["refs"].items() if v["layer"] != "L9"}
+    out.pop("selection", None)   # the hard-rule verdict and round numbers are for the player, not the inquirer
     out["build"] = {**out.get("build", {}), "variant": "inquirer_without_l9", "bytes": None, "content_sha256": None}
     return out

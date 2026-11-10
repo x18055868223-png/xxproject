@@ -9,15 +9,23 @@ an IV is divided by the square root of the average variance ratio of the time it
 so a weekday daily is not "inverted" just because weekdays are busier than weeks.
 
 - term_inversion: the contract's own clock-adjusted ATM IV exceeds the clock-adjusted IV of
-  the expiry nearest one week by at least INVERSION_VOL_PTS (near-dated protection is
-  being bought now).
+  the expiry nearest one week by at least INVERSION_VOL_PTS (the market quotes near-dated
+  risk above the farther one: a scheduled event in the holding period, or near-dated risk
+  just repriced; not tested).
 - premium_thickening: against the median of the last LOOKBACK hours of the same expiry
   (one row per 30-minute slot, at least MIN_SLOTS slots over MIN_SPAN hours), either the
   clock-adjusted ATM IV of the expiry rose by IV_JUMP_PTS (the whole expiry repriced), or
   this side's skew (short-leg IV minus ATM IV) of the same contract rose by IV_JUMP_PTS (the
   skew is compared only within one contract: another strike sits elsewhere on the smile). A skew
   jump while the other side's skew moved less than OTHER_SIDE_FLAT_PTS either way is marked
-  one-sided (possibly informed buying).
+  one-sided.
+  @0.3 (docs/opus/27 §2, §3A): the premium is a fair price, quoted mostly by market makers who
+  must quote; a thickening is a public repricing and is never read as someone knowing or buying
+  something. Its type is described in the evidence: `kind` (overall / one_sided / both_sides /
+  skew_other_unknown), whether realized volatility rose with it (`rv_rise_vol_pts`, `rv_rising`)
+  and whether spot sits near this expiry's pin or a large-position strike close to expiry
+  (`near_level`). The types are mechanism hypotheses, untested, used to describe a veto only,
+  never as a reason to accept; the trigger and its thresholds are unchanged.
 Each warning is triggered true / false, or null when its inputs are missing.
 
 Holding notes (`notes`, entry_warnings@0.2, docs/opus/22) never veto and never count in
@@ -42,7 +50,8 @@ try:
 except ImportError:  # script-style import
     import astra_session_clock_v1 as session_clock
 
-RULES = "entry_warnings@0.2"   # 0.2: busy window moved from the veto list to a holding note (docs/opus/22)
+RULES = "entry_warnings@0.3"   # 0.2: busy window moved from the veto list to a holding note (docs/opus/22)
+# 0.3: thickening described by type, no attribution of intent to buyers (docs/opus/27 §3A)
 INVERSION_VOL_PTS = 0.5
 LOOKBACK_HOURS = 6
 IV_JUMP_PTS = 3.0
@@ -53,6 +62,11 @@ SLOT_MS = 30 * 60_000
 MIN_SLOTS = 4
 MIN_SPAN_HOURS = 2.0
 HOUR_MS = 3_600_000
+RV_RISE_PTS = 2.0                  # description only, not part of the trigger; threshold not validated
+NEAR_LEVEL_HOURS = 12.0            # description only; threshold not validated
+NEAR_LEVEL_MOVES = 0.25            # description only (distance in expected moves); threshold not validated
+LEVEL_CN = {"pin": "Pin", "gamma_call": "Call Gamma 墙", "gamma_put": "Put Gamma 墙",
+            "oi_call": "Call 持仓墙", "oi_put": "Put 持仓墙"}
 UNVALIDATED_CN = "阈值未经验证（2026-10-20 初值），只作否决提醒"
 THRESHOLD_CN = {
     "gap_vol_pts_at_least": "时钟校正后本期高于一周至少（vol 点）",
@@ -120,7 +134,8 @@ def term_inversion(term_structure: Any, contract_expiry_label: str | None, own_a
                      "week_expiry": (week or {}).get("expiry"), "week_atm_iv": week_iv, "week_atm_iv_clock_adjusted": week_adj,
                      "gap_vol_pts": gap},
                     {"gap_vol_pts_at_least": INVERSION_VOL_PTS},
-                    "按日内时钟校正后，本期 IV 仍高于一周期限：有人急需近端保护，先当警告。" if triggered else
+                    ("按日内时钟校正后，本期 IV 仍高于一周期限：市场给近端风险的报价高于远端。"
+                     "可能是持有期内有已排期事件，或近端风险刚被重新定价（未检验）；先当否决提醒。") if triggered else
                     "按日内时钟校正后，期限结构正常。" if triggered is False else "期限结构数据缺失，无法判断。")
 
 
@@ -146,7 +161,8 @@ def _slots(history: Iterable[Mapping[str, Any]], side: str, expiry_ms: int, now_
         if short is None and isinstance(r.get("short"), Mapping):   # a full ledger row
             short = _num(r["short"].get("mark_iv"))
         out.append({"at_ms": r["at_ms"], "atm_adj": clock_adjusted(atm, r["at_ms"], expiry_ms),
-                    "skew": short - atm if short is not None and atm is not None else None})
+                    "skew": short - atm if short is not None and atm is not None else None,
+                    "rv": _num(r.get("rv_24h_pct"))})
     return out
 
 
@@ -157,10 +173,23 @@ def _enough(slots: list[Mapping[str, Any]], key: str) -> list[float] | None:
     return [v for _, v in values]
 
 
+def _near_level(context: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The level nearest spot when expiry is within NEAR_LEVEL_HOURS and that level is within
+    NEAR_LEVEL_MOVES expected moves of spot; None otherwise or when inputs are missing."""
+    spot, move, hours = _num(context.get("spot_usd")), _num(context.get("expected_move_usd")), _num(context.get("hours_left"))
+    if spot is None or move is None or hours is None or hours > NEAR_LEVEL_HOURS:
+        return None
+    near = [{"kind": lv.get("kind"), "strike": _num(lv.get("strike")), "distance_usd": abs(_num(lv.get("strike")) - spot)}
+            for lv in context.get("levels") or [] if isinstance(lv, Mapping) and _num(lv.get("strike")) is not None]
+    near = [lv for lv in near if lv["distance_usd"] <= NEAR_LEVEL_MOVES * move]
+    return min(near, key=lambda lv: lv["distance_usd"]) if near else None
+
+
 def premium_thickening(side: str, expiry_ms: int, now_ms: int, atm_iv: Any, short_iv: Any, other_short_iv: Any,
                        history: Iterable[Mapping[str, Any]], contract_key: str | None = None,
-                       other_contract_key: str | None = None) -> dict[str, Any]:
+                       other_contract_key: str | None = None, *, context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     rows = list(history or [])
+    ctx = context if isinstance(context, Mapping) else {}
     other = "call" if side == "put" else "put"
     mine = _slots(rows, side, expiry_ms, now_ms)                    # the whole expiry's ATM IV
     mine_contract = _slots(rows, side, expiry_ms, now_ms, contract_key) if contract_key else mine
@@ -178,7 +207,17 @@ def premium_thickening(side: str, expiry_ms: int, now_ms: int, atm_iv: Any, shor
     else:
         triggered = (atm_jump is not None and atm_jump >= IV_JUMP_PTS) or (skew_jump is not None and skew_jump >= IV_JUMP_PTS)
     skew_fired = skew_jump is not None and skew_jump >= IV_JUMP_PTS
+    atm_fired = atm_jump is not None and atm_jump >= IV_JUMP_PTS
     one_sided = bool(skew_fired and other_jump is not None and abs(other_jump) < OTHER_SIDE_FLAT_PTS)
+    # the type of the thickening (docs/opus/27 §3A): description only, the trigger above does not depend on it
+    if skew_fired:
+        kind = "one_sided" if one_sided else "skew_other_unknown" if other_jump is None else "both_sides"
+    else:
+        kind = "overall" if atm_fired else None
+    rv_now, rv_hist = _num(ctx.get("rv_24h_pct")), _enough(mine, "rv")
+    rv_rise = rv_now - _median(rv_hist) if rv_now is not None and rv_hist else None
+    rv_rising = None if rv_rise is None else rv_rise >= RV_RISE_PTS
+    near_level = _near_level(ctx)
     if not triggered:
         if triggered is None:
             reason = "近 6 小时同一到期的记录不足，无法判断。"
@@ -188,19 +227,37 @@ def premium_thickening(side: str, expiry_ms: int, now_ms: int, atm_iv: Any, shor
             reason = "与近 6 小时相比，本侧偏斜没有异常上升（整体 IV 记录不足，未检查）。"
         else:
             reason = "与近 6 小时相比，本期 IV（时钟校正）与本侧偏斜都没有异常上升。"
-
-    elif skew_fired and one_sided:
-        reason = "本侧偏斜突然变厚而另一侧没动：可能有人知道些什么，先当警告。"
-    elif skew_fired and other_jump is None:
-        reason = "本侧偏斜突然变厚；另一侧无数据，无法判断是否单侧。先当警告。"
-    elif skew_fired:
-        reason = "两侧偏斜同步变厚，更像普遍的风险重估。先当警告。"
     else:
-        reason = "本期整体 IV（时钟校正后）突然抬升：整条到期在被重新定价，先当警告。"
+        if kind == "overall":
+            reason = f"本期整体 IV（时钟校正）较近 6 小时中位上升 {atm_jump:.1f} 点"
+            if rv_rising:
+                reason += (f"，同期已实现波动也上升 {rv_rise:.1f} 点：波动状态变了，市场在重新定价。"
+                           "多出的保费对应更高的公允成本，缓冲要按新的预期波动重读。")
+            elif rv_rising is False:
+                reason += ("，而已实现波动没有同步上升：市场在为尚未发生的波动付费。"
+                           "先查持有期内的已排期事件；没有事件就记为无法解释。")
+            else:
+                reason += "；已实现波动记录不足，无法比较波动状态是否同步变化。"
+        else:
+            if kind == "one_sided":
+                reason = (f"本侧偏斜较近 6 小时中位上升 {skew_jump:.1f} 点，另一侧几乎没动：这一侧的报价被单独上调。"
+                          "机制上常见于这一侧被持续净买、做市商在这一侧更偏空 Gamma（机制假设，未检验）；本侧的墙不能当缓冲读。")
+            elif kind == "both_sides":
+                reason = f"本侧偏斜较近 6 小时中位上升 {skew_jump:.1f} 点，两侧偏斜同步上升：整条微笑被上调，更像普遍的风险重估。"
+            else:
+                reason = f"本侧偏斜较近 6 小时中位上升 {skew_jump:.1f} 点；另一侧无数据，无法判断是否单侧。"
+            if atm_fired:
+                reason += f"本期整体 IV（时钟校正）同时上升 {atm_jump:.1f} 点。"
+        if near_level is not None:
+            reason += (f"现价距本期 {LEVEL_CN.get(near_level['kind'], near_level['kind'])} {near_level['strike']:g} "
+                       f"约 {near_level['distance_usd']:.0f} 美元、距到期不足 {NEAR_LEVEL_HOURS:g} 小时：平值附近的报价对小幅移动更敏感。")
+        reason += "这是“状态变了”的否决提醒，不是多收保费的机会。"
     return _warning("premium_thickening", "保费突然变厚" + ("（单侧）" if one_sided else ""), triggered,
                     {"atm_iv": atm, "atm_iv_clock_adjusted": atm_adj, "atm_jump_vol_pts": atm_jump,
                      "skew_vol_pts": skew, "skew_jump_vol_pts": skew_jump, "other_side_skew_jump_vol_pts": other_jump,
-                     "one_sided": one_sided, "slots": len(mine), "checked": [k for k, v in (("atm", atm_jump), ("skew", skew_jump)) if v is not None]},
+                     "one_sided": one_sided, "kind": kind, "rv_24h_pct": rv_now, "rv_rise_vol_pts": rv_rise,
+                     "rv_rising": rv_rising, "near_level": near_level,
+                     "slots": len(mine), "checked": [k for k, v in (("atm", atm_jump), ("skew", skew_jump)) if v is not None]},
                     {"jump_vol_pts_at_least": IV_JUMP_PTS, "lookback_hours": LOOKBACK_HOURS,
                      "other_side_flat_below_vol_pts": OTHER_SIDE_FLAT_PTS}, reason)
 
@@ -261,10 +318,11 @@ def busy_window_thin_cushion(clock_reading: Mapping[str, Any] | None, distance_i
 def evaluate(*, side: str, now_ms: int, contract_expiry_ms: int | None, contract_expiry_label: str | None,
              term_structure: Any, expiry_atm_iv: Any, short_iv: Any, other_short_iv: Any, distance_in_moves: Any,
              history: Iterable[Mapping[str, Any]] | None, clock_reading: Mapping[str, Any] | None,
-             contract_key: str | None = None, other_contract_key: str | None = None) -> dict[str, Any]:
+             contract_key: str | None = None, other_contract_key: str | None = None,
+             context: Mapping[str, Any] | None = None) -> dict[str, Any]:
     items = [term_inversion(term_structure, contract_expiry_label, expiry_atm_iv, now_ms, contract_expiry_ms),
              premium_thickening(side, contract_expiry_ms, now_ms, expiry_atm_iv, short_iv, other_short_iv, history or [],
-                                contract_key, other_contract_key)
+                                contract_key, other_contract_key, context=context)
              if isinstance(contract_expiry_ms, int) else
              _warning("premium_thickening", "保费突然变厚", None, {}, {}, "合约到期缺失，无法判断。")]
     fired = [w["code"] for w in items if w["triggered"]]

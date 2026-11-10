@@ -22,9 +22,9 @@ def test_fired_warnings_are_vetoes_with_their_numbers():
     inv, thick = out["items"]
     assert set(inv) == KEYS and inv["kind"] == "veto" and inv["code"] == "term_inversion"
     assert inv["evidence_cn"] == "时钟校正后：本期 28OCT26 41.2%，一周 06NOV26 38.0%，差 3.2 点"
-    assert "一种解释" in inv["why_cn"] and "未检验" in inv["why_cn"] and "未验证" in inv["basis"] and "只作否决" in inv["basis"]
+    assert "可能是" in inv["why_cn"] and "未检验" in inv["why_cn"] and "未验证" in inv["basis"] and "只作否决" in inv["basis"]
     assert thick["evidence_cn"] == "本期 IV（时钟校正）较近 6 小时 +0.4 点，本侧偏斜 +3.6 点，另一侧偏斜 -0.2 点"
-    assert thick["why_cn"].startswith("保费突然变厚，首先是有人在买保护的警告，不是") and "另一侧没动" in thick["why_cn"]
+    assert thick["why_cn"].startswith("保费变厚是市场上调了这份风险的报价") and "本侧的墙不能当缓冲读" in thick["why_cn"]
     assert [c["status_cn"] for c in out["checks"]] == ["触发", "触发", "未触发"] and out["unknown_cn"] == []
 
 
@@ -100,7 +100,7 @@ def test_card_reads_the_page_candidate():
                          "pricing": un.reservation(0.0025, 0.0004, 0.0023, {"bid": 0.006, "ask": 0.0066},
                                                    {"bid": 0.0, "ask": 0.0008}, spot=80_000.0)}}
     card = un.card(cand)
-    assert card["schema"] == "unsuitable@0.1"
+    assert card["schema"] == "unsuitable@0.2"
     assert [i["code"] for i in card["items"]] == ["data", "term_inversion", "narrow", "long_book"]
     assert card["items"][0]["evidence_cn"] == "缺口：报价缺口、盘口深度不足"
     assert (card["veto_count"], card["caution_count"]) == (3, 1)
@@ -108,4 +108,4 @@ def test_card_reads_the_page_candidate():
     quiet = un.card({"snapshot": {"contract": {}}, "entry_warnings": {"warnings": [{**INVERSION, "triggered": False}]}})
     assert quiet["items"] == [] and quiet["unknown_cn"] == ["缓冲无法计算"]
     assert un.card(None)["items"][0]["code"] == "data"
-    assert un.card({"snapshot": {"market": {"quote": "bad"}}})["schema"] == "unsuitable@0.1"
+    assert un.card({"snapshot": {"market": {"quote": "bad"}}})["schema"] == "unsuitable@0.2"

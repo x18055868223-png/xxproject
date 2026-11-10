@@ -846,6 +846,7 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
 .dp-reserve p { margin: 0; overflow-wrap: anywhere; }
 .dp-reserve-main .num { font-weight: 600; }
 .dp-reserve .warn { color: var(--warn); }
+.dp-round { display: grid; gap: 2px; margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--rule); }
 .dp-limit { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
 .dp-limit-field { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 13px; color: var(--ink-2); min-width: 0; }
 .dp-limit-input { font: inherit; font-family: var(--font-num); font-size: 13px; width: 9em; max-width: 100%; padding: 3px 6px;

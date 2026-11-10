@@ -61,7 +61,7 @@ function chip(verdict, prefix = "") {
 }
 
 // the lines the P box already shows (保留价 against the bid and the mid)
-const BOX_KEYS = new Set(["保留价", "现在可得", "两腿中间价", "保留价可靠性"]);
+const BOX_KEYS = new Set(["保留价", "现在可得", "两腿中间价", "保留价可靠性", "所需优势", "最大损失", "轮次"]);
 const boxed = (lines, drop) => (drop ? (lines || []).filter((l) => !BOX_KEYS.has(l?.k)) : lines);
 
 /** One step's lines; with a "now" reading, start and now side by side, matched by label. */
@@ -333,8 +333,9 @@ function noteView(session, id, n, st, ctx, ask) {
   box.append(area, h("div", { class: "dp-note-actions" },
     h("button", { type: "button", class: "btn", disabled: !!ctx.busy, onclick: save }, pending ? "保存选择与理由" : "保存备注"),
     h("button", { type: "button", class: "btn secondary", onclick: () => { area.blur?.(); resetNote(st); redraw(true); } }, "取消"),
-    count, cite),
-  st.error ? h("p", { class: "dp-error", role: "alert", text: st.error }) : null);
+    count, cite));
+  // native append writes a null child as the text "null": only an error that exists is added
+  if (st.error) box.append(h("p", { class: "dp-error", role: "alert", text: st.error }));
   if (st.focus) { st.focus = false; area.dataset.focus = "1"; }
   return box;
 }
@@ -442,6 +443,7 @@ function reservationBox(session, step) {
   const box = h("div", { class: "dp-reserve", title: "保留价 = 两腿标记价差 + 费用：挂单不低于它，净收才不低于市场估价" });
   if (!isNum(reserve)) {
     box.append(h("p", { class: "dp-reserve-main warn" }, h("b", { text: "保留价" }), " 算不出（两腿标记价或费用缺失）"));
+    box.append(...edgeRows(res), ...roundRows(latest?.steps?.[step.id]?.round, latest?.at_ms));
     return box;
   }
   box.append(h("p", { class: "dp-reserve-main" }, h("b", { text: "保留价" }), " ",
@@ -453,10 +455,73 @@ function reservationBox(session, step) {
   const mid = res.mid_credit_btc;
   box.append(h("p", { class: `dp-reserve-row${isNum(res.mid_gap_btc) && res.mid_gap_btc > 0 ? " warn" : ""}` },
     "两腿中间价 ", isNum(mid) ? h("span", { class: "num", text: btc4(mid) }) : "不可算（缺对侧盘口）", isNum(mid) ? gap(res.mid_gap_btc, res.mid_gap_usd) : ""));
+  box.append(...edgeRows(res));
   if (res.reservation_reliable === false) {
     box.append(h("p", { class: "dp-reserve-row warn", text: "保护腿盘口空或过宽，标记价可能失真，保留价仅供参考。" }));
   }
+  box.append(...roundRows(latest?.steps?.[step.id]?.round, latest?.at_ms));
   return box;
+}
+
+// a ratio as a percent: one decimal, trailing ".0" dropped (0.18 → 18%, 0.075 → 7.5%)
+const pct1 = (v) => `${String(Number((v * 100).toFixed(1)))}%`;
+const num1 = (v) => String(Number(v.toFixed(1)));
+const btcUsd = (btc, u) => (isNum(btc) ? `${btc4(btc)}${isNum(u) ? `（约 ${usd(u)} 美元）` : ""}` : isNum(u) ? `约 ${usd(u)} 美元` : "—");
+
+/** Required edge at the bid and at the mid, and the maximum loss (rows of the P box). */
+function edgeRows(res) {
+  const out = [];
+  const eb = res.required_edge_bid, em = res.required_edge_mid;
+  const edge = (v) => (!isNum(v) ? "不可算" : v <= 0 ? "0（不低于保留价）" : pct1(v));
+  if (isNum(eb) || isNum(em)) {
+    out.push(h("p", { class: "dp-reserve-row dp-reserve-edge" }, "所需优势：按买价 ", h("span", { class: "num", text: edge(eb) }),
+      "，按中间价 ", h("span", { class: "num", text: edge(em) }),
+      h("span", { class: "muted small", text: "　真实预期赔付要比市场估价低这么多，这一局才不亏（已含费用）" })));
+  } else if (res.required_edge_note_cn) {
+    out.push(h("p", { class: "dp-reserve-row dp-reserve-edge muted", text: `所需优势：不可算（${res.required_edge_note_cn}）` }));
+  }
+  if (isNum(res.max_loss_btc) || isNum(res.max_loss_usd)) {
+    const z = isNum(res.max_loss_btc) ? `约 ${Math.abs(res.max_loss_btc).toFixed(4)} BTC` : "";
+    const u = isNum(res.max_loss_usd) ? `约 ${usd(Math.abs(res.max_loss_usd))} 美元` : "";
+    out.push(h("p", { class: "dp-reserve-row dp-reserve-loss", text: `计分单位（按现价折算的最大损失）${z && u ? `${z}（${u}）` : z || u}`,
+      title: "宽度按现价折成 BTC 再减净收入，出手时即固定，结果按它的倍数计；到期落在保护腿时的实际亏损见下文" }));
+  }
+  return out;
+}
+
+/** The two daily rounds (P step `round`): the current window, the next round, the cost of waiting. */
+const ROUND_WINDOW_MS = 45 * 60_000;   // astra_round_info_v1.ROUND_WINDOW_MS
+
+function roundRows(round, from) {
+  if (!round || typeof round !== "object") return [];
+  const sec = h("div", { class: "dp-round" });
+  const nowMs = Date.now();
+  const nx = round.next;
+  // the reading's own time decides "current"; once that window (or the next round) has passed, say so
+  const windowOpen = isNum(round.current_at_ms) && nowMs < round.current_at_ms + ROUND_WINDOW_MS;
+  const passed = nx && isNum(nx.at_ms) && nowMs >= nx.at_ms;
+  if (passed) {
+    sec.append(h("p", { class: "dp-reserve-row muted", text: "以下轮次按读数时刻计算，已过时；刷新“现在”的读数后再看。" }));
+  }
+  if ((round.current === 1 || round.current === 2) && windowOpen) {
+    sec.append(h("p", { class: "dp-reserve-row", text: `现在是第 ${round.current} 轮出手时窗` }));
+  } else if (round.current === 1 || round.current === 2) {
+    sec.append(h("p", { class: "dp-reserve-row muted", text: `读数时处在第 ${round.current} 轮出手时窗（该时窗已结束）` }));
+  }
+  if (nx && isNum(nx.at_ms)) {
+    const ref = isNum(from) ? from : Date.now();
+    sec.append(h("p", { class: "dp-reserve-row", text: `下一轮：${isNum(nx.round) ? `第 ${nx.round} 轮，` : ""}北京时间 ${until(nx.at_ms, ref)}`
+      + (nx.same_expiry === false ? "（届时为下一期合约）" : "")
+      + (isNum(nx.hours_left_at) ? `，届时剩余约 ${num1(nx.hours_left_at)} 小时` : "") }));
+  }
+  const pc = round.pass_cost;
+  if (round.current === 1 && windowOpen && pc && (isNum(pc.premium_btc) || isNum(pc.premium_usd))) {
+    sec.append(h("p", { class: "dp-reserve-row", text: (isNum(pc.variance_share)
+      ? `等到第二轮前，这段时间约占剩余风险的 ${pct1(pc.variance_share)}；` : "等到第二轮：")
+      + `保费按平方根粗算约减少 ${btcUsd(pc.premium_btc, pc.premium_usd)}（偏低，价外价差衰减更快）` }));
+  }
+  if (round.note_cn) sec.append(h("p", { class: "muted small", text: round.note_cn }));
+  return sec.childNodes.length ? [sec] : [];
 }
 
 function stepView(session, step, i, ctx) {

@@ -164,6 +164,7 @@
 | `session_phase`、`remaining_clock_factor`、`session_clock`（0.2 起） | 文本 / 倍 | 所处时段与到期前剩余时段的平均方差倍数（时钟模块版本见 `session_clock`；docs/opus/12、13） |
 | `warning_any`、`warning_term_inversion`、`warning_premium_thickening`、`warning_busy_window`、`warning_rules`（0.2 起） | 布尔 / 文本 | 正在显示的合约在该时刻的不建仓警示（阈值未经验证，只作否决提醒；docs/opus/13）；不显示的合约为 null。`entry_warnings@0.2` 起高波动窗口移出否决层：`warning_busy_window` 为 null，`warning_any` 只含期限倒挂与保费突然变厚，统计须按 `warning_rules` 分开（docs/opus/22） |
 | `note_busy_window`（0.3 起） | 布尔 | 高波动时段提示（不是否决）：当前为高波动小时，或有窗口落在 −1 至 +2 小时内；没有时钟读数为 null（docs/opus/22） |
+| `veto_any`、`veto_codes`、`caution_codes`、`veto_rules`（0.4 起） | 布尔 / 列表 / 文本 | 正在显示的合约在该时刻页面卡片（`unsuitable@0.2`）的否决项与提醒项代码：`data` 资料不完整、`term_inversion`、`premium_thickening`、`inside` 已越过短腿、`narrow` 缓冲窄、`credit` 净收入不为正；提醒如 `quote_held`、`mid_short`。不显示的合约为 null。冻结案卷的 `selection` 用核验路径 V 步（资料检查更宽），以它为选择记分卡的口径（docs/opus/28） |
 
 ## 5. `episode_outcome@0.1`（到期结果）
 

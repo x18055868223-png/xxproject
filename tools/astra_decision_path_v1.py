@@ -30,13 +30,16 @@ from typing import Any, Mapping, Sequence
 
 if __package__:
     from . import astra_path_stats_v1 as path_stats
+    from . import astra_round_info_v1 as round_info
     from . import astra_unsuitable_v1 as unsuitable
 else:
     import astra_path_stats_v1 as path_stats
+    import astra_round_info_v1 as round_info
     import astra_unsuitable_v1 as unsuitable
 
 SCHEMA = "astra_decision_path_reading@2.0.0"
-PATH_VERSION = "dp-2026-10-27.1"   # minimal decision chain V R P PL (components D0-H still read)
+PATH_VERSION = "dp-2026-11-10.1"   # V vetoes a non-positive net income; P adds required edge, max loss, rounds
+# dp-2026-10-27.1: minimal decision chain V R P PL (components D0-H still read)
 STEPS: tuple[dict[str, Any], ...] = (
     {"id": "V", "title": "否决", "question": "有没有不适合做的理由？", "veto_summary": True},
     {"id": "R", "title": "风险", "question": "要扛多少、什么时候来？"},
@@ -141,6 +144,8 @@ B_EVENTS = "B · 17 号 §2.2（公开事件已计入一天期报价；落在持
 B_EXECUTION = "B/C · 17 号 §6（优势与成本同量级；挂单接近中间价是唯一不依赖预测的改进，可成交性未验证）"
 B_IV_RV = "X · 16 号第 4 条（“隐含低于实现 = 危险”已撤回；一天期 IV 与实现之差没有检验过的结论）"
 B_EARLY_TOUCH = "A（方向）/ C（幅度）· 17 号 §4.2"
+B_EDGE = "定义 · 规则书 27 号 §6–§7（所需优势 = 摩擦门槛 ÷ 两腿标记价差；最大损失按现价折算）"
+B_ROUND = "定义 · 规则书 27 号 §5（两轮：UTC 02:00、14:00）"
 B_STATE = "回测支持（边缘，t 2.56）、未前向验证 · 21 号 §6"
 B_BUSY_NOTE = "回测 · 22 号 §2.3"
 # entry_warnings@0.1 vetoed a busy window with a thin cushion; @0.2 (docs/opus/22) made it a
@@ -691,6 +696,11 @@ def _reservation(frame: Mapping[str, Any], g: Mapping[str, Any]) -> dict[str, An
     return unsuitable.reservation(mark, fee, credit, frame.get("short_book_top"), frame.get("long_book_top"), qty, g["spot"])
 
 
+def _net_income(frame: Mapping[str, Any]) -> float | None:
+    """Gross credit minus every hold fee (snapshot economics; None when the fee is incomplete)."""
+    return _num(_get(frame.get("candidate") or {}, "snapshot.economics.net_credit_after_fee_btc"))
+
+
 def _mid_status(res: Mapping[str, Any]) -> str:
     if res.get("reservation_btc") is None:
         return "市场估价缺失"
@@ -724,6 +734,9 @@ def _v(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any],
     buffer = unsuitable.buffer_item(g["dist_pct"], g["ratio"], g["move_pct"], g["side"])
     if buffer:
         items.append({**buffer, "src": "D2"})
+    credit = unsuitable.credit_item(_net_income(frame))
+    if credit:
+        items.append({**credit, "src": "P"})
     checks.append(f"缓冲 {((steps.get('D2') or {}).get('verdict') or {}).get('cn') or '未知'}")
     for caution in (unsuitable.mid_item(res), unsuitable.long_book_item(res)):
         if caution:
@@ -734,9 +747,11 @@ def _v(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any],
     lines.append(_src(_line("检查项", "；".join(checks)), "V"))
     vetoes = sum(i["kind"] == "veto" for i in items)
     cautions = len(items) - vetoes
+    # a warning that could not be judged is not "no warning": the verdict says how many
+    unknown = f"，{len(warn['unknown_cn'])} 项无法判断" if warn["unknown_cn"] else ""
     verdict = ({"code": "veto", "cn": f"不适合做：否决 {vetoes} 项", "tone": "bad"} if vetoes
-               else {"code": "caution", "cn": f"提醒 {cautions} 项", "tone": "warn"} if cautions
-               else {"code": "no_veto", "cn": "未见否决项（这不是做的理由）", "tone": ""})
+               else {"code": "caution", "cn": f"提醒 {cautions} 项{unknown}", "tone": "warn"} if cautions
+               else {"code": "no_veto", "cn": f"未见否决项{unknown}（这不是做的理由）", "tone": "warn" if unknown else ""})
     return {"verdict": verdict, "lines": lines, "items": items, "unknown_cn": warn["unknown_cn"]}
 
 
@@ -807,6 +822,34 @@ def _p(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any],
         if not res.get("reservation_reliable"):
             lines.append(_src(_line("保留价可靠性", "保护腿盘口空或过宽，标记价可能失真，保留价仅供参考", "warn",
                                     unsuitable.B_LONG_BOOK), "P"))
+    # rulebook v0.2 §6-§7 (docs/opus/27): required edge, max loss, the rounds
+    edge = round_info.required_edge(res)
+    width = g["contract"].get("width_usd")
+    if width is None and g["short"] is not None and g["long"] is not None:
+        width = abs(g["short"] - g["long"])
+    loss = round_info.max_loss(g["contract"]["quantity_btc"], width, g["spot"], _net_income(frame))
+    rounds = round_info.rounds(frame.get("at_ms"), g["contract"].get("expiry_ms"),
+                               mark_spread_btc=res.get("mark_spread_btc"), spot_usd=g["spot"])
+    res = {**res, "required_edge_bid": edge["bid"], "required_edge_mid": edge["mid"],
+           "required_edge_note_cn": edge["note_cn"], "max_loss_btc": loss["btc"], "max_loss_usd": loss["usd"]}
+    if edge["bid"] is None and edge["mid"] is None:
+        lines.append(_src(_line("所需优势", edge["note_cn"] or "算不出", "warn", B_EDGE), "P"))
+    else:
+        pct = (lambda x: "不可算" if x is None else "0（不低于保留价）" if x == 0 else f"{x * 100:.0f}%")
+        lines.append(_src(_line("所需优势", f"按买价 {pct(edge['bid'])}，按中间价 {pct(edge['mid'])}："
+                                "真实预期赔付要比市场估价低这么多，这一局才不亏（已含费用）", "", B_EDGE), "P"))
+    if loss["btc"] is not None:
+        lines.append(_src(_line("最大损失", f"{loss['btc']:.4f} BTC（{_amount(loss['btc'], loss['usd'])}）"
+                                "= 宽度按现价折成 BTC − 净收入；这是计分单位，结果按它的倍数计，不是到期落在保护腿时的亏损", "", B_EDGE), "P"))
+    if rounds:
+        nxt = rounds["next"]
+        text = (f"现在是第 {rounds['current']} 轮出手时窗；" if rounds["current"] else "") + \
+            f"下一轮：第 {nxt['round']} 轮，北京时间 {_bjt(nxt['at_ms'])}" + ("" if nxt["same_expiry"] else "（届时为下一期合约）")
+        cost = rounds.get("pass_cost") or {}
+        if cost.get("premium_btc") is not None and cost.get("variance_share") is not None:
+            text += (f"；等到第二轮前，这段时间约占剩余风险的 {cost['variance_share'] * 100:.0f}%，"
+                     f"保费按平方根粗算约减少 {_amount(cost['premium_btc'], cost.get('premium_usd'))}（偏低，价外价差衰减更快）")
+        lines.append(_src(_line("轮次", text, "", B_ROUND), "P"))
     v = (steps.get("V") or {}).get("verdict") or {}
     lines.append(_src(_line("对照否决", f"{v.get('cn') or '否决读数缺失'}；补偿是否够、挂在什么价，由你判断（不给概率）"), "V"))
     if reserve is None or (bid_gap is None and mid_gap is None):
@@ -819,7 +862,7 @@ def _p(frame: Mapping[str, Any], g: Mapping[str, Any], steps: Mapping[str, Any],
         verdict = {"code": "mid_short", "cn": "中间价也低于市场估价", "tone": "warn"}
     else:
         verdict = {"code": "below_market", "cn": "按买价低于市场估价（中间价不可算）", "tone": "warn"}
-    return {"verdict": verdict, "lines": lines, "reservation": dict(res), "reservation_btc": reserve,
+    return {"verdict": verdict, "lines": lines, "reservation": dict(res), "round": rounds, "reservation_btc": reserve,
             "mid_credit_btc": mid, "visible_credit_btc": visible,
             "credit_to_width_pct": q2.get("credit_to_width_pct"), "edge_usd": q2.get("edge_usd")}
 
@@ -872,6 +915,31 @@ def build(frame: Mapping[str, Any]) -> dict[str, Any]:
             "snapshot_id": _get(frame, "candidate.snapshot.snapshot_id"),
             "spot_usd": g["spot"], "short_distance_pct": g["dist_pct"], "move_pct": g["move_pct"],
             "steps": steps}
+
+
+SELECTION_SCHEMA = "selection@0.1"
+
+
+def selection(reading: Mapping[str, Any]) -> dict[str, Any]:
+    """The hard-rule verdict (V) and the round numbers (P) of one reading, for the frozen case
+    (docs/opus/28 G10, step 3 and step 5): eligible = no veto. Never raises."""
+    steps = reading.get("steps") if isinstance(reading.get("steps"), Mapping) else {}
+    v, p = steps.get("V") or {}, steps.get("P") or {}
+    v_ok = (v.get("verdict") or {}).get("code") not in {None, "error"}
+    items = [i for i in v.get("items") or [] if isinstance(i, Mapping)]
+    res = p.get("reservation") if isinstance(p.get("reservation"), Mapping) else {}
+    keep = ("reservation_btc", "mark_spread_btc", "fee_btc", "visible_credit_btc", "mid_credit_btc", "bid_gap_btc",
+            "mid_gap_btc", "reservation_reliable", "required_edge_bid", "required_edge_mid", "required_edge_note_cn",
+            "max_loss_btc", "max_loss_usd")
+    return {"schema": SELECTION_SCHEMA, "path_version": reading.get("path_version"), "at_ms": reading.get("at_ms"),
+            "eligible": (not any(i.get("kind") == "veto" for i in items)) if v_ok else None,
+            "vetoes": [{"code": i.get("code"), "title_cn": i.get("title_cn"), "src": i.get("src")}
+                       for i in items if i.get("kind") == "veto"],
+            "cautions": [{"code": i.get("code"), "title_cn": i.get("title_cn"), "src": i.get("src")}
+                         for i in items if i.get("kind") == "caution"],
+            "unknown_cn": list(v.get("unknown_cn") or []),
+            "pricing": {k: res.get(k) for k in keep} if (p.get("verdict") or {}).get("code") != "error" else None,
+            "round": p.get("round")}
 
 
 def compare(start: Mapping[str, Any], now: Mapping[str, Any], ids: Sequence[str] | None = None) -> list[dict[str, Any]]:

@@ -23,6 +23,7 @@ import argparse
 import datetime as dt
 import gzip
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -58,7 +59,11 @@ else:
 
 SCHEMA_ROW = "ledger_row@0.1"
 # research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
-LEDGER_FIELDS = "ledger_research_fields@0.3"   # 0.2: session clock and entry warnings; 0.3: busy-window note
+LEDGER_FIELDS = "ledger_research_fields@0.4"   # 0.2: session clock and entry warnings; 0.3: busy-window note
+# 0.4: the page card's vetoes and cautions (astra_unsuitable_v1.card; docs/opus/28 G10)
+# components the user may register by hand (protocol-register): the research protocol and the rules
+# of the selection game (docs/opus/27, 28); code versions are observed, never registered by hand
+REGISTRABLE = ("research_protocol", "scoring_rules", "inquirer_prompt", "rulebook", "player_prompt", "selection_scorecard")
 TAKER_FEE_BTC = 0.0003            # Deribit BTC option taker fee per contract, capped at 12.5% of the price
 TAKER_FEE_PRICE_CAP = 0.125
 EVENT_LOOKAHEAD_MS = 7 * 24 * 3_600_000
@@ -300,14 +305,16 @@ def market_context(view: Mapping[str, Any] | None, index_points: Any, *, now_ms:
     for point in index_points if isinstance(index_points, list) else []:
         if isinstance(point, (list, tuple)) and len(point) == 2 and _num(point[0]) is not None and _num(point[1]):
             points.append((int(point[0]), float(point[1])))
-    warnings = {}
+    warnings, cards = {}, {}
     for item in view.get("candidates") or []:
         contract = _m(_m(_m(item).get("snapshot")).get("contract"))
         if contract.get("short_instrument") and contract.get("long_instrument"):
-            warnings[f"{contract['short_instrument']}|{contract['long_instrument']}"] = _m(item).get("entry_warnings")
+            key = f"{contract['short_instrument']}|{contract['long_instrument']}"
+            warnings[key] = _m(item).get("entry_warnings")
+            cards[key] = _m(item).get("unsuitable")
     upcoming = [e for e in event_calendar.events() if now_ms is None or e["at_ms"] > now_ms]
     return {"by_expiry": by_expiry, "realized_vol": _m(expiry_gamma.get("realized_vol")), "gex": gex,
-            "index_points": sorted(points), "upcoming_events": upcoming, "warnings": warnings,
+            "index_points": sorted(points), "upcoming_events": upcoming, "warnings": warnings, "unsuitable": cards,
             "calendar_complete_7d": not event_calendar.coverage_gaps(now_ms + EVENT_LOOKAHEAD_MS, now_ms)
             if now_ms is not None else False}
 
@@ -378,7 +385,21 @@ def research_fields(record: Mapping[str, Any], row: Mapping[str, Any], ctx: Mapp
         "index_chg_4h_pct": _index_change(ctx["index_points"], now_ms, 4 * HOUR_MS, index),
         **_session_fields(now_ms, expiry),
         **_warning_fields((ctx.get("warnings") or {}).get(record.get("key"))),
+        **_veto_fields((ctx.get("unsuitable") or {}).get(record.get("key"))),
     }
+
+
+def _veto_fields(card: Any) -> dict[str, Any]:
+    """The displayed candidate's page card (astra_unsuitable_v1.card): its veto and caution codes.
+    Contracts not on the page, and a failed card, get nulls. The frozen case's `selection` is the
+    Decision Path's V (a wider data check); this is the page card, recorded on every row."""
+    if not isinstance(card, Mapping) or card.get("error_type") or not isinstance(card.get("items"), list):
+        return {"veto_any": None, "veto_codes": None, "caution_codes": None, "veto_rules": None}
+    items = [i for i in card["items"] if isinstance(i, Mapping)]
+    vetoes = [str(i.get("code")) for i in items if i.get("kind") == "veto"]
+    return {"veto_any": bool(vetoes), "veto_codes": vetoes,
+            "caution_codes": [str(i.get("code")) for i in items if i.get("kind") == "caution"],
+            "veto_rules": card.get("schema")}
 
 
 def _session_fields(now_ms: int, expiry: int) -> dict[str, Any]:
@@ -564,7 +585,22 @@ def observed_versions() -> dict[str, str]:
             "scoring_rules": research_validation.SCORING_RULES,
             "scorecard_rules": research_scorecards.SCORECARD_RULES,
             "ledger_fields": LEDGER_FIELDS,
-            "entry_warnings": _entry_warnings_rules(), "session_clock": session_clock.SCHEMA}
+            "entry_warnings": _entry_warnings_rules(), "session_clock": session_clock.SCHEMA,
+            "unsuitable": _module_attr("astra_unsuitable_v1", "SCHEMA"),
+            "decision_path": _module_attr("astra_decision_path_v1", "PATH_VERSION"),
+            "round_info": _module_attr("astra_round_info_v1", "SCHEMA")}
+
+
+def _module_attr(name: str, attr: str) -> str | None:
+    """A version constant of a workbench module, None when it cannot be imported here."""
+    try:
+        if __package__:
+            module = importlib.import_module(f"{__package__}.{name}")
+        else:
+            module = importlib.import_module(name)
+        return str(getattr(module, attr))
+    except Exception:
+        return None
 
 
 def _entry_warnings_rules() -> str | None:
@@ -665,6 +701,8 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     report: dict[str, Any] = {"cases": 0, "inquiry": 0, "rows": 0, "outcomes": 0, "decisions": 0, "errors": []}
 
     for component, version in observed_versions().items():
+        if version is None:
+            continue   # a module this process cannot import: nothing observed, nothing recorded
         if state["protocol_versions"].get(component) != version:
             archive.append_line("protocols/versions.jsonl", {
                 "schema": SCHEMA_PROTOCOL, "at_ms": now_ms, "component": component, "version": version,
@@ -1051,8 +1089,8 @@ def _operator(args: argparse.Namespace, archive: Archive) -> None:
         print(json.dumps(research_promotion.active_readings(archive.root), ensure_ascii=False, indent=1))
         return
     if args.command == "protocol-register":
-        if args.component not in {"research_protocol", "scoring_rules", "inquirer_prompt"} or not args.version:
-            raise SystemExit("--component research_protocol|scoring_rules|inquirer_prompt and --version are required")
+        if args.component not in REGISTRABLE or not args.version:
+            raise SystemExit(f"--component {'|'.join(REGISTRABLE)} and --version are required")
         now = int(time.time() * 1000)
         archive.append_line("protocols/versions.jsonl", {
             "schema": SCHEMA_PROTOCOL, "at_ms": now, "component": args.component, "version": args.version,
