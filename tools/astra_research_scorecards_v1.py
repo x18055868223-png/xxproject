@@ -32,11 +32,13 @@ if __package__:
     from . import astra_research_intraday_exit_v1 as intraday_exit
     from . import astra_inquiry_lens_v1 as lens_core
     from . import astra_research_selection_v1 as selection
+    from . import astra_level_behaviour_v1 as level_behaviour
 else:
     import astra_research_validation_v1 as research_validation
     import astra_research_intraday_exit_v1 as intraday_exit
     import astra_inquiry_lens_v1 as lens_core
     import astra_research_selection_v1 as selection
+    import astra_level_behaviour_v1 as level_behaviour
 
 SCORECARD_RULES = "scorecard_rules@0.2"   # 0.2: inquiry by_card (docs/opus/19), research only
 SCHEMA_VIEWS = "view_scorecard@0.1"
@@ -375,4 +377,31 @@ def run(root: str | Path, *, now_ms: int) -> dict[str, Any]:
         report["selection_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         for name in ("selection.json", "selection_summary.txt"):
             (root / "scorecards" / name).unlink(missing_ok=True)
+    try:   # the phenomena ledger (docs/opus/32 §3.4, §4): every level card joined to its review
+        body = level_behaviour.phenomena(level_pairs(root), now_ms=now_ms)
+        _write(root / "scorecards" / "phenomena.json", body)
+        text = root / "scorecards" / "phenomena_summary.txt"
+        text.with_name(text.name + ".tmp").write_text(level_behaviour.phenomena_text(body), encoding="utf-8")
+        text.with_name(text.name + ".tmp").replace(text)
+        report["phenomena_pairs"] = body["pairs"]
+    except Exception as exc:
+        report["phenomena_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        for name in ("phenomena.json", "phenomena_summary.txt"):
+            (root / "scorecards" / name).unlink(missing_ok=True)
     return report
+
+
+def level_pairs(root: Path) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """(card, review) pairs from levels/, joined on (expiry, round, side); cards still without a
+    review are left out."""
+    pairs = []
+    for path in sorted((root / "levels").glob("*.jsonl")):
+        rows = _lines(path)
+        reviews = {(r.get("expiry_ms"), r.get("round"), r.get("side")): r for r in rows
+                   if isinstance(r, dict) and r.get("schema") == level_behaviour.REVIEW_SCHEMA}
+        for r in rows:
+            key = (r.get("expiry_ms"), r.get("round"), r.get("side")) if isinstance(r, dict) else None
+            # one rules version only: counts under other level rules are never merged (docs/opus/32 §4)
+            if key and r.get("schema") == level_behaviour.CARD_SCHEMA and key in reviews and r.get("rules") == level_behaviour.RULES:
+                pairs.append((r, reviews[key]))
+    return pairs

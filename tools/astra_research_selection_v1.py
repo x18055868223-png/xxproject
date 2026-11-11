@@ -45,7 +45,7 @@ except ImportError:  # script-style import
     import astra_research_validation_v1 as research_validation
     import astra_round_info_v1 as round_info
 
-RULES = "selection_rules@0.1"
+RULES = "selection_rules@0.2"   # 0.2: mechanical control B from the level cards (docs/opus/34 §4)
 SCHEMA = "selection_scorecard@0.1"
 HOUR_MS = 3_600_000
 ROUND_HOURS_LEFT = {"r1": 30, "r2": 18}    # astra_round_info_v1: 02:00 and 14:00 UTC for an 08:00 expiry
@@ -58,13 +58,18 @@ STATUSES = ("ok", "missing_case", "expiry_mismatch", "outside_window", "round_mi
             "no_outcome", "no_credit", "no_max_loss", "unreadable")
 GROUPS = (("eligible_all", "可接受的全体一律接受", lambda s: s["verdict"] == "eligible"),
           ("all_incl_vetoed", "全部样本一律接受（含被否决与未判定）", lambda s: True),
-          ("vetoed", "被硬规则否决的样本", lambda s: s["verdict"] == "vetoed"))
+          ("vetoed", "被硬规则否决的样本", lambda s: s["verdict"] == "vetoed"),
+          # mechanical control B (docs/opus/33 §4.2): withdraw an acceptable hand whose short leg is one of
+          # its side's open-interest top three, read from that round's level card
+          ("mech_oi_short_keep", "机械对照乙·维持：可接受且短腿不是同侧持仓前三",
+           lambda s: s["verdict"] == "eligible" and s.get("short_is_oi_level") is False),
+          ("mech_oi_short_withdraw", "机械对照乙·撤回：可接受且短腿是同侧持仓前三",
+           lambda s: s["verdict"] == "eligible" and s.get("short_is_oi_level") is True))
 PENDING_GROUPS = (
     ("player_accept", "AI 牌手接受", "第 6 步开跑"), ("player_reject", "AI 牌手拒绝", "第 6 步开跑"),
     ("player_pass", "AI 牌手第一轮过牌", "第 6 步开跑"),
     ("screen_keep", "可接受 ∩ 位置筛维持", "第 7 步开跑"), ("screen_withdraw", "可接受 ∩ 位置筛撤回", "第 7 步开跑"),
     ("mech_distance", "机械对照甲：按短腿距离撤回", "第 7 步开跑"),
-    ("mech_oi_short", "机械对照乙：短腿是同侧持仓前三即撤回", "第 4 步位置卡上线"),
     ("player_accept_screen_keep", "牌手接受 ∩ 位置筛维持", "第 7 步开跑"),
     ("player_accept_screen_withdraw", "牌手接受 ∩ 位置筛撤回", "第 7 步开跑"))
 NOTE_CN = "描述，不判定；判定只在登记的判定时点进行（33 号 §4.3）。结果按冻结案卷的立即成交、扣全部费用、持有到期，单位是最大损失倍数。"
@@ -263,7 +268,8 @@ def _empty_sample(expiry_ms: int, side: str, rnd: str) -> dict[str, Any]:
             "veto_codes": None, "caution_codes": None, "required_edge_bid": None,
             "required_edge_mid": None, "distance_in_moves": None, "iv_change_6h_pp": None,
             "result_btc": None, "result_x": None, "expected_x": None, "luck_x": None,
-            "touched_short": None, "crossed_long": None, "max_adverse_pct": None, "max_loss_basis": None}
+            "touched_short": None, "crossed_long": None, "max_adverse_pct": None, "max_loss_basis": None,
+            "short_is_oi_level": None}
 
 
 def round_sample(root: Path, expiry_ms: int, side: str, rnd: str, outcomes_by_case: Mapping[str, Mapping[str, Any]],
@@ -394,12 +400,22 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
         for r in _lines(p):
             if r.get("contract_key"):
                 ledger.setdefault(r["contract_key"], []).append(r)
+    # the round's level card gives mechanical control B; a card of another case is not this hand's
+    cards = {}
+    for e in expiries:
+        for r in _lines(root / "levels" / f"{_day(e)}.jsonl"):
+            if r.get("schema") == "level_card@0.1" and isinstance(r.get("short"), Mapping):
+                cards[(r.get("expiry_ms"), r.get("round"), r.get("side"))] = r
     samples = []
     for e in expiries:
         for side in ("put", "call"):
             for rnd in ROUND_HOURS_LEFT:
                 try:   # one bad record never takes the card down
-                    samples.append(round_sample(root, e, side, rnd, by_case, paths, ledger))
+                    sample = round_sample(root, e, side, rnd, by_case, paths, ledger)
+                    card = cards.get((e, rnd, side))
+                    if card and sample["case_id"] and card.get("case_id") == sample["case_id"]:
+                        sample["short_is_oi_level"] = card["short"].get("is_oi_level")
+                    samples.append(sample)
                 except Exception:
                     samples.append({**_empty_sample(e, side, rnd), "status": "unreadable"})
     scored = [s for s in samples if s["status"] == "ok"]

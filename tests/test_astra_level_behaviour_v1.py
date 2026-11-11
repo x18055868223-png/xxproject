@@ -238,3 +238,185 @@ def test_a_card_without_its_review_gets_the_review_on_the_next_run(tmp_path, mon
     r = ar.backfill_levels(archive, now_ms=E + H)
     assert r["cards"] == 0 and r["reviews"] == 4 and r["errors"] == []
     assert ar.backfill_levels(archive, now_ms=E + H)["skipped"] == 4 and archive.verify()["ok"] is True
+
+
+# ---------------------------------------------------------------- step 4: cards at their rounds, phenomena
+
+
+def _live_seed(root):
+    """Cases at the r2 hour, structure snapshots for E; no outcome yet."""
+    _seed(root)
+    (root / "outcomes" / "2026-11-12.jsonl").unlink()
+    snaps = [{"schema": "structure_snapshot@0.1", "at_ms": t, "expiry_ms": E, "expected_move_usd": 1900.0,
+              "profile": {"walls": {"pin": 80500.0}, "top": WALLS["top"]},
+              "strikes": [{"k": k, "c_oi": 1.0, "p_oi": 10.0} for k in (78500.0, 79000.0, 79500.0)]}
+             for t in range(E - 40 * H, E, 30 * M)]
+    (root / "structure").mkdir()
+    (root / "structure" / "2026-11-12.jsonl").write_text("".join(json.dumps(x) + "\n" for x in snaps), encoding="utf-8")
+
+
+def _levels(root):
+    path = root / "levels" / "2026-11-12.jsonl"
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
+
+
+def test_round_card_waits_for_its_case_then_reads_at_the_freeze(tmp_path):
+    _live_seed(tmp_path)
+    archive = ar.Archive(tmp_path)
+    pts = lambda: _path(E - 47 * H, R2 + 45 * M)
+    # r2 put has a case frozen at R2+10s: written at the first tick; r2 call has none yet: waits
+    assert ar.write_level_cards(archive, now_ms=R2 + 10 * M, points_fn=pts) == 1
+    put = next(c for c in _levels(tmp_path) if c["side"] == "put")
+    assert put["round"] == "r2" and put["read_at_ms"] == R2 + 10_000 and put["case_id"] == "cf_r2"
+    assert "strike_grid" not in put["data_gaps"] and any(l["role_class"] == "control" for l in put["levels"])
+    # the tolerance runs out with no call case: a card without a contract, read now, walls from the snapshot
+    assert ar.write_level_cards(archive, now_ms=R2 + 41 * M, points_fn=pts) == 1
+    call = next(c for c in _levels(tmp_path) if c["side"] == "call")
+    assert call["case_id"] is None and call["read_at_ms"] == R2 + 41 * M and "no_case" in call["data_gaps"]
+    assert call["expected_move_usd"] == 1900.0 and any("oi_put#1" in l["roles"] for l in call["levels"])
+    # once written, never again; after the hour, nothing
+    assert ar.write_level_cards(archive, now_ms=R2 + 50 * M, points_fn=pts) == 0
+    assert ar.write_level_cards(archive, now_ms=R2 + 2 * H, points_fn=pts) == 0
+    assert archive.verify()["ok"] is True
+
+
+def test_late_looks_and_their_reviews(tmp_path):
+    _live_seed(tmp_path)
+    archive = ar.Archive(tmp_path)
+    assert ar.write_level_cards(archive, now_ms=E - 4 * H + 5 * M,
+                                points_fn=lambda: _path(E - 47 * H, E - 4 * H + 5 * M)) == 1
+    assert ar.write_level_cards(archive, now_ms=E - H + 5 * M, points_fn=lambda: _path(E - 47 * H, E - H + 5 * M)) == 1
+    late = [c for c in _levels(tmp_path) if c["schema"] == "level_card@0.1"]
+    assert {(c["round"], c["side"]) for c in late} == {("late4h", "structure"), ("late1h", "structure")}
+    assert all(c["short"] is None and c["contract_key"] is None for c in late)
+    o = {"contract_key": f"{CONTRACT['short_instrument']}|{CONTRACT['long_instrument']}", "status": "settled",
+         "expiry_ms": E, "delivery_price_usd": 80600.0, "payout_btc": 0.0, "side": "put", "cases": []}
+    (tmp_path / "outcomes" / "2026-11-12.jsonl").write_text(json.dumps(o) + "\n", encoding="utf-8")
+    r = ar.backfill_levels(archive, now_ms=E + H, since_ms=E - 3 * 24 * H)
+    assert r["errors"] == [] and r["reviews"] == 4 + 2          # the two rounds backfilled, the late looks reviewed
+    reviews = {(x["round"], x["side"]) for x in _levels(tmp_path) if x["schema"] == "level_review@0.1"}
+    assert ("late4h", "structure") in reviews and ("late1h", "structure") in reviews
+    assert ar.backfill_levels(archive, now_ms=E + H, since_ms=E + 1)["reviews"] == 0   # outside since_ms
+
+
+def test_tick_writes_level_cards_and_isolates_their_failure(tmp_path, monkeypatch):
+    from test_astra_research_archive_v1 import FakeDeribit
+    _live_seed(tmp_path)
+    archive = ar.Archive(tmp_path)
+    monkeypatch.setattr(ar, "collect_structure", lambda *a, **k: (0, []))
+    monkeypatch.setattr(ar, "collect_flow", lambda *a, **k: 0)
+    deribit = FakeDeribit(path=_path(E - 47 * H, R2 + 10 * M))
+    r = ar.tick(archive, now_ms=R2 + 10 * M, view=None, fetch_case=None, deribit=ar.Deribit(deribit))
+    assert r["levels"] == 1 and not [e for e in r["errors"] if e["step"].startswith("level")]
+    monkeypatch.setattr(ar, "write_level_cards", lambda *a, **k: 1 / 0)
+    r = ar.tick(archive, now_ms=R2 + 20 * M, view=None, fetch_case=None, deribit=ar.Deribit(deribit))
+    assert any(e["step"] == "levels" for e in r["errors"]) and archive.verify()["ok"] is True
+
+
+def _pair(side="put", index=80600.0, oi1=80000.0, after_oi1=None, short_before=None, short_after=None,
+          oi_change=None, flow=None, controls=(), day=0):
+    def lv(k, roles, cls, before=None, change=None, fl=None):
+        return {"k": k, "roles": roles, "role_class": cls, "before_24h": before, "oi_change": change, "flow": fl}
+    levels = [lv(oi1, [f"oi_{side}#1"], "oi", change={"24h": oi_change} if oi_change else None,
+                 fl={"24h": flow} if flow else None),
+              lv(79000.0, ["short"], "leg", before=short_before)] + [lv(k, ["control"], "control") for k, _ in controls]
+    card = {"expiry_day": f"2026-11-{12 + day}", "expiry_ms": E + day * 24 * H, "round": "r2", "side": side, "index_usd": index, "expected_move_usd": 2000.0,
+            "short": {"k": 79000.0}, "levels": levels, "backfilled": False}
+
+    def rv(k, a):
+        return {"k": k, "after": a, "approach_no_cross": bool(a) and a["crossings"] == 0 and a["closest_usd"] <= 200}
+    review = {"delivery_price_usd": 80000.0,
+              "levels": [rv(oi1, after_oi1), rv(79000.0, short_after)] + [rv(k, a) for k, a in controls]}
+    return card, review
+
+
+def test_phenomena_count_for_against_and_controls():
+    quiet = {"crossings": 0, "closest_usd": 50.0}
+    through = {"crossings": 1, "closest_usd": 0.0, "end_beyond": True, "back_within_60m": False, "beyond_60m_usd": 1500.0}
+    pairs = [_pair(after_oi1=quiet, controls=[(79500.0, through), (80500.0, quiet)]),
+             _pair(after_oi1=through, short_before={"crossings": 0}, short_after=through,
+                   oi_change={"p": -5.0, "gap": False}, flow={"p_buy": 9.0, "p_sell": 1.0, "gap": False, "truncated": False},
+                   day=1),
+             _pair(oi1=82000.0, after_oi1=quiet, day=2)]                                 # inside the spot: P1 n/a
+    body = lb.phenomena(pairs, now_ms=1)
+    it = {i["id"]: i for i in body["items"]}
+    assert (it["P1"]["applies"], it["P1"]["for"], it["P1"]["against"], it["P1"]["not_applicable"]) == (2, 1, 1, 1)
+    assert it["P1"]["control"] == {"applies": 2, "for": 1, "against": 1, "not_applicable": 0, "missing": 0}
+    assert (it["P3"]["applies"], it["P3"]["for"]) == (1, 1)                          # 1500 > 0.5 x 2000
+    assert (it["P4"]["applies"], it["P4"]["against"]) == (1, 1) and it["P4"]["control"]["applies"] == 1
+    assert (it["P5"]["applies"], it["P5"]["for"]) == (1, 1)                          # decreasing and crossed
+    assert it["P6"]["groups"]["buy_heavy"] == {"n": 1, "crossed": 1} and it["P6"]["applies"] == 1
+    assert body["expiry_days"] == 3 and "不下结论" in body["note_cn"]
+    assert "P6" in lb.phenomena_text(body)
+
+
+def test_scorecards_write_the_phenomena_and_survive_their_failure(tmp_path, monkeypatch):
+    import astra_research_scorecards_v1 as sc
+    _seed(tmp_path)
+    ar.backfill_levels(ar.Archive(tmp_path), now_ms=E + H)
+    report = sc.run(tmp_path, now_ms=E + H)
+    body = json.loads((tmp_path / "scorecards" / "phenomena.json").read_text(encoding="utf-8"))
+    assert report["phenomena_pairs"] == 4 and body["schema"] == "phenomena@0.1" and body["derived"] is True
+    assert (tmp_path / "scorecards" / "phenomena_summary.txt").exists()
+    monkeypatch.setattr(sc.level_behaviour, "phenomena", lambda *a, **k: 1 / 0)
+    report = sc.run(tmp_path, now_ms=E + H)
+    assert "phenomena_error" in report and not (tmp_path / "scorecards" / "phenomena.json").exists()
+    assert (tmp_path / "scorecards" / "selection.json").exists()
+
+
+def test_phenomena_p4_once_per_round_strike_and_legs_count_as_oi():
+    through = {"crossings": 1, "closest_usd": 0.0, "end_beyond": True, "back_within_60m": True, "beyond_60m_usd": 10.0}
+    put, review = _pair(after_oi1=through)
+    put["levels"][1]["roles"] = ["oi_put#2", "short"]                # a leg that is also an OI level
+    put["levels"][1]["role_class"] = "leg"
+    review["levels"][1]["after"] = through
+    call = {**put, "side": "call"}                                    # the call card lists the same levels
+    it = {i["id"]: i for i in lb.phenomena([(put, review), (call, review)], now_ms=1)["items"]}
+    assert it["P4"]["applies"] == 2 and it["P4"]["for"] == 2          # 80000 and 79000, once each
+
+
+def test_phenomena_missing_is_not_not_applicable_and_truncated_flow_is_missing():
+    p, r = _pair(after_oi1=None, flow={"p_buy": 9.0, "p_sell": 1.0, "gap": False, "truncated": True},
+                 oi_change={"p": 0.0, "gap": False})
+    it = {i["id"]: i for i in lb.phenomena([(p, r)], now_ms=1)["items"]}
+    assert it["P1"]["missing"] == 1 and it["P1"]["not_applicable"] == 0
+    assert it["P6"]["missing"] == 1 and it["P6"]["groups"]["buy_heavy"]["n"] == 0
+    quiet = {"crossings": 0, "closest_usd": 50.0}
+    p, r = _pair(after_oi1=quiet, oi_change={"p": 0.0, "gap": False},
+                 flow={"p_buy": 1.0, "p_sell": 9.0, "gap": False, "truncated": False})
+    it = {i["id"]: i for i in lb.phenomena([(p, r)], now_ms=1)["items"]}
+    assert it["P5"]["not_applicable"] == 1 and it["P6"]["groups"]["sell_heavy"] == {"n": 1, "crossed": 0}
+
+
+def test_phenomena_p2_pin_and_spot_control():
+    walls = {**WALLS, "walls": {"pin": 80500.0}}
+    pts = _path(E - 30 * H, E - 4 * H, 80600.0)
+    late = lb.build_card(expiry_ms=E, rnd="late4h", side="structure", read_at_ms=E - 4 * H, walls=walls, points=pts,
+                         strikes=[80000.0, 80500.0, 81000.0])
+    assert "spot_control" in next(l for l in late["levels"] if l["k"] == 81000.0)["roles"]   # nearest non-pin strike
+    assert not any("spot_control" in l["roles"] for l in late["levels"] if l["k"] != 81000.0)
+    review = lb.build_review(late, pts + _path(E - 4 * H + M, E, 80550.0), delivery_price_usd=80550.0)
+    it = {i["id"]: i for i in lb.phenomena([(late, review)], now_ms=1)["items"]}
+    assert (it["P2"]["applies"], it["P2"]["for"]) == (1, 1)            # 50 from the pin, nearer than 100
+    assert (it["P2"]["control"]["applies"], it["P2"]["control"]["against"]) == (1, 1)   # 450 from 81000, was 400
+
+
+def test_write_level_cards_waits_for_the_index_and_isolates_a_bad_card(tmp_path, monkeypatch):
+    _live_seed(tmp_path)
+    archive = ar.Archive(tmp_path)
+    assert ar.write_level_cards(archive, now_ms=R2 + 10 * M, points_fn=lambda: []) == 0     # failed fetch: wait
+    assert _levels(tmp_path) == []
+    errors = []
+    real = ar.level_behaviour.build_card
+    monkeypatch.setattr(ar.level_behaviour, "build_card",
+                        lambda **k: (_ for _ in ()).throw(KeyError("x")) if k["side"] == "put" else real(**k))
+    n = ar.write_level_cards(archive, now_ms=R2 + 41 * M, points_fn=lambda: _path(E - 47 * H, R2 + 45 * M), errors=errors)
+    assert n == 1 and errors and errors[0]["side"] == "put"           # the call card is still written
+
+
+def test_phenomena_matches_its_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    quiet = {"crossings": 0, "closest_usd": 50.0}
+    body = lb.phenomena([_pair(after_oi1=quiet)], now_ms=1)
+    jsonschema.validate(body, json.loads((SCHEMAS / "phenomena_0.1.schema.json").read_text(encoding="utf-8")))
+

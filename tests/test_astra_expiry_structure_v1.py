@@ -419,3 +419,8 @@ def test_fetch_stops_at_its_time_budget(monkeypatch):
 
 def test_collection_requests_use_the_short_timeout():
     assert ar.COLLECT_PATHS <= ar.PUBLIC_PATHS and es.REQUEST_TIMEOUT_S < 15
+
+
+def test_gap_tolerance_matches_the_scorecards():
+    import astra_research_scorecards_v1 as sc
+    assert es.GAP_MS == sc.ENTRY_LOOKBACK_MS

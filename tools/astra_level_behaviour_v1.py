@@ -129,8 +129,8 @@ def levels_for(walls: Mapping[str, Any], contract: Mapping[str, Any] | None,
 
 
 def role_class(roles: Iterable[str]) -> str:
-    classes = {"leg" if r in ("short", "long") else "derived" if r == "pin" else "control" if r == "control"
-               else KIND_ROLES[r.split("#")[0]] for r in roles}
+    classes = {"leg" if r in ("short", "long") else "derived" if r == "pin"
+               else "control" if r in ("control", "spot_control") else KIND_ROLES[r.split("#")[0]] for r in roles}
     return next(c for c in ROLE_ORDER if c in classes)
 
 
@@ -205,6 +205,13 @@ def build_card(*, expiry_ms: int, rnd: str, side: str, read_at_ms: int, walls: M
     if not strikes:
         gaps.append("strike_grid")
     roles = levels_for(walls, contract, strikes)
+    if side == "structure" and strikes and index is not None:
+        # a late look's control for the pin: the listed strike nearest the spot that is not the pin
+        pin = _num((walls.get("walls") or {}).get("pin"))
+        near = [float(k) for k in strikes if _num(k) is not None and float(k) != pin]
+        if near:
+            k = min(near, key=lambda x: abs(x - index))
+            roles.setdefault(k, []).append("spot_control")
     oi_live = bool(snapshots)
     if not oi_live:
         gaps.append("oi_change")
@@ -275,3 +282,218 @@ def build_review(card: Mapping[str, Any], points: Sequence[Sequence[float]], *, 
             "range_in_moves": {"up": ratio(max(seg) - index), "down": ratio(index - min(seg))}
             if seg and index is not None and complete else None,
             "path_complete": complete, "short": short, "levels": levels, "backfilled": card.get("backfilled", False)}
+
+
+# ---------------------------------------------------------------- phenomena ledger (docs/opus/32 §4)
+
+PHENOMENA_SCHEMA = "phenomena@0.1"
+PIN_NEAR_SHARE = 0.25          # P2: late4h spot within 0.25 expected moves of the pin
+FAR_SHARE = 0.5                # P3: the first crossing went past the short by more than 0.5 moves
+HEAVY_RATIO = 2.0              # P6: aggressor buy above twice the sell, or the reverse
+PHENOMENA = (
+    ("P1", "持仓最大的行权价像边界",
+     "该侧持仓第一在现价外侧、距离不超过 1 个预期波动；正例：事后接近但未穿越；反例：被穿过且到期仍在另一侧"),
+    ("P2", "临近到期钉住",
+     "到期前 4 小时现价离 Pin 不超过 0.25 个预期波动；正例：交割价离 Pin 比当时现价更近；反例：更远；相等为不适用。"
+     "对照：离现价最近的普通行权价（非 Pin），同一条件"),
+    ("P3", "安静之后的第一次穿越走得远",
+     "短腿读牌前 24 小时没有被穿过、读牌后被穿过；正例：首次穿越后 60 分钟内越过短腿超过 0.5 个预期波动；反例：不超过"),
+    ("P4", "被穿过后多数会折回",
+     "任一持仓集中位（含兼作腿的）读牌后被穿过；正例：60 分钟内回到原来一侧；反例：没有。同一到期日同一轮同一行权价只计一次"),
+    ("P5", "持仓在减少的集中位更容易被穿过",
+     "P1 的适用条件，且读牌前 24 小时该位该类型持仓变化可得；正例：减少且被穿过，或增加且未被穿过；反例：其余；不变为不适用"),
+    ("P6", "主动买量偏向一侧的集中位",
+     "P1 的适用条件，且读牌前 24 小时该位该类型的成交完整（无缺口、未截断）；主动买超过主动卖两倍或相反时按偏向分组记录是否被穿过，不预设方向"),
+)
+RESULTS = ("for", "against", "n/a", "missing")
+
+
+def _outside(k: float, index: float, side: str) -> bool:
+    return k < index if side == "put" else k > index
+
+
+def _is_oi(level: Mapping[str, Any]) -> bool:
+    return any(r.startswith("oi_") for r in level.get("roles") or [])
+
+
+def _p1_level(card: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, str]:
+    """The card side's open-interest #1 level and why it is or is not read: ok / n/a / missing."""
+    side, index, move = card.get("side"), card.get("index_usd"), card.get("expected_move_usd")
+    level = next((l for l in card.get("levels") or [] if f"oi_{side}#1" in l["roles"]), None)
+    if index is None or not move or level is None:
+        return None, "missing"
+    if _outside(level["k"], index, side) and abs(level["k"] - index) <= move:
+        return level, "ok"
+    return None, "n/a"
+
+
+def _controls_near(card: Mapping[str, Any], k: float) -> list[Mapping[str, Any]]:
+    """The control levels next to k: the nearest control below and above."""
+    ctl = [l for l in card.get("levels") or [] if "control" in l["roles"]]
+    below = [l for l in ctl if l["k"] < k]
+    above = [l for l in ctl if l["k"] > k]
+    return ([max(below, key=lambda l: l["k"])] if below else []) + ([min(above, key=lambda l: l["k"])] if above else [])
+
+
+def _p1_result(review_level: Mapping[str, Any] | None) -> str:
+    a = (review_level or {}).get("after")
+    if not a or review_level.get("approach_no_cross") is None:
+        return "missing"
+    if review_level["approach_no_cross"]:
+        return "for"
+    return "against" if a["crossings"] and a.get("end_beyond") else "n/a"
+
+
+def _p5_result(level: Mapping[str, Any], after: Mapping[str, Any] | None, kind: str) -> str:
+    change = (level.get("oi_change") or {}).get("24h") or {}
+    if not after or change.get("gap") is not False or change.get(kind) is None:
+        return "missing"
+    if change[kind] == 0:
+        return "n/a"
+    return "for" if (change[kind] < 0) == (after["crossings"] > 0) else "against"
+
+
+def _p6_group(level: Mapping[str, Any], after: Mapping[str, Any] | None, kind: str) -> str:
+    flow = (level.get("flow") or {}).get("24h") or {}
+    if not after or flow.get("gap") is not False or flow.get("truncated") is not False:
+        return "missing"
+    buy, sell = flow.get(f"{kind}_buy") or 0.0, flow.get(f"{kind}_sell") or 0.0
+    return "buy_heavy" if buy > HEAVY_RATIO * sell else "sell_heavy" if sell > HEAVY_RATIO * buy else "n/a"
+
+
+def _tally() -> dict[str, int]:
+    return {"applies": 0, "for": 0, "against": 0, "not_applicable": 0, "missing": 0}
+
+
+def _count(t: dict[str, int], result: str) -> None:
+    if result in ("for", "against"):
+        t["applies"] += 1
+        t[result] += 1
+    elif result == "missing":
+        t["missing"] += 1
+    else:
+        t["not_applicable"] += 1
+
+
+def phenomena(pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *, now_ms: int) -> dict[str, Any]:
+    """Mechanical counts over every (card, review) pair: for / against / not applicable, with data that
+    were missing counted apart, and the same rule at the adjacent control strikes. r1 and r2 (and the
+    late looks) are separate readings of one expiry: their cards are counted separately, so expiry_days
+    is the number of independent settlements behind the counts. No thresholds, conclusions or signals."""
+    items = {pid: {"id": pid, "title_cn": t, "definition_cn": d, **_tally(), "control": _tally(), "cases": []}
+             for pid, t, d in PHENOMENA}
+    items["P6"]["groups"] = {g: {"n": 0, "crossed": 0} for g in ("buy_heavy", "sell_heavy")}
+    items["P6"]["control"]["groups"] = {g: {"n": 0, "crossed": 0} for g in ("buy_heavy", "sell_heavy")}
+    days, p4_seen = set(), set()
+
+    def note(pid: str, card: Mapping[str, Any], result: str, k: float | None) -> None:
+        _count(items[pid], result)
+        items[pid]["cases"].append({"expiry_day": card["expiry_day"], "round": card["round"], "side": card["side"],
+                                    "k": k, "result": result, "backfilled": card.get("backfilled", False)})
+
+    def p6(target: dict[str, Any], group: str, after: Mapping[str, Any] | None) -> None:
+        if group in ("buy_heavy", "sell_heavy"):
+            target["groups"][group]["n"] += 1
+            target["groups"][group]["crossed"] += int(after["crossings"] > 0)
+            target["applies"] += 1
+        elif group == "missing":
+            target["missing"] += 1
+        else:
+            target["not_applicable"] += 1
+
+    for card, review in pairs:
+        days.add(card["expiry_day"])
+        after = {lv["k"]: lv for lv in review.get("levels") or []}
+        side, index, move = card.get("side"), card.get("index_usd"), card.get("expected_move_usd")
+        if side in ("put", "call"):
+            kind = "c" if side == "call" else "p"
+            p1, why = _p1_level(card)
+            note("P1", card, _p1_result(after.get(p1["k"])) if p1 else why, p1["k"] if p1 else None)
+            if p1:
+                a = (after.get(p1["k"]) or {}).get("after")
+                note("P5", card, _p5_result(p1, a, kind), p1["k"])
+                group = _p6_group(p1, a, kind)
+                p6(items["P6"], group, a)
+                items["P6"]["cases"].append({"expiry_day": card["expiry_day"], "round": card["round"], "side": side,
+                                             "k": p1["k"], "result": group, "backfilled": card.get("backfilled", False)})
+                # the controls next to the P1 level, read by the same rules when they meet the same condition
+                for c in _controls_near(card, p1["k"]):
+                    if not (_outside(c["k"], index, side) and abs(c["k"] - index) <= move):
+                        continue
+                    ca = (after.get(c["k"]) or {}).get("after")
+                    _count(items["P1"]["control"], _p1_result(after.get(c["k"])))
+                    _count(items["P5"]["control"], _p5_result(c, ca, kind))
+                    p6(items["P6"]["control"], _p6_group(c, ca, kind), ca)
+            # P3: the short leg quiet before, crossed after; the controls next to it the same way
+            ks = (card.get("short") or {}).get("k")
+            if ks is not None:
+                lv = next((l for l in card["levels"] if l["k"] == ks), {})
+                b, a = lv.get("before_24h"), (after.get(ks) or {}).get("after")
+                if b is None or a is None or not move:
+                    res = "missing"
+                elif b["crossings"] == 0 and a["crossings"] > 0:
+                    res = "for" if a["beyond_60m_usd"] > FAR_SHARE * move else "against"
+                else:
+                    res = "n/a"
+                note("P3", card, res, ks)
+                for c in _controls_near(card, ks):
+                    cb, ca = c.get("before_24h"), (after.get(c["k"]) or {}).get("after")
+                    if cb is None or ca is None or not move:
+                        _count(items["P3"]["control"], "missing")
+                    elif cb["crossings"] == 0 and ca["crossings"] > 0:
+                        _count(items["P3"]["control"], "for" if ca["beyond_60m_usd"] > FAR_SHARE * move else "against")
+                    else:
+                        _count(items["P3"]["control"], "n/a")
+        # P2: the late look four hours before expiry; its control is the listed strike nearest the spot
+        if card.get("round") == "late4h":
+            pin = next((l for l in card.get("levels") or [] if "pin" in l["roles"]), None)
+            delivery = review.get("delivery_price_usd")
+            if pin is None or index is None or not move or delivery is None:
+                res = "missing"
+            elif abs(index - pin["k"]) > PIN_NEAR_SHARE * move:
+                res = "n/a"
+            else:
+                d0, d1 = abs(index - pin["k"]), abs(delivery - pin["k"])
+                res = "for" if d1 < d0 else "against" if d1 > d0 else "n/a"
+            note("P2", card, res, pin["k"] if pin else None)
+            spot = next((l for l in card.get("levels") or [] if "spot_control" in l["roles"]), None)
+            if spot and index is not None and move and delivery is not None:
+                if abs(index - spot["k"]) > PIN_NEAR_SHARE * move:
+                    _count(items["P2"]["control"], "n/a")
+                else:
+                    d0, d1 = abs(index - spot["k"]), abs(delivery - spot["k"])
+                    _count(items["P2"]["control"], "for" if d1 < d0 else "against" if d1 > d0 else "n/a")
+        # P4: open-interest levels (legs included) crossed after the reading; once per expiry, round, strike
+        for lv in card.get("levels") or []:
+            key = (card.get("expiry_ms"), card.get("round"), lv["k"])
+            is_oi, is_ctl = _is_oi(lv), lv["role_class"] == "control"
+            if not (is_oi or is_ctl) or key in p4_seen:
+                continue
+            p4_seen.add(key)
+            a = (after.get(lv["k"]) or {}).get("after")
+            res = "missing" if a is None else "n/a" if not a["crossings"] else "for" if a["back_within_60m"] else "against"
+            if is_oi:
+                note("P4", card, res, lv["k"])
+            else:
+                _count(items["P4"]["control"], res)
+    return {"schema": PHENOMENA_SCHEMA, "rules": RULES, "derived": True, "built_at_ms": now_ms,
+            "expiry_days": len(days), "pairs": len(pairs), "items": list(items.values()),
+            "note_cn": "机械计数：正例、反例、不适用，以及对照位上的同口径计数；数据缺失单独计为“缺数据”，不算不适用。"
+                       "同一到期日的两轮与晚读是同一次交割的不同读牌，各自计数，独立交割数看到期日数。"
+                       "不设门槛、不下结论、不产生信号；要把某条现象变成可用读数，须按 26 号 §4.1 登记假设并走前向验证。"}
+
+
+def phenomena_text(body: Mapping[str, Any]) -> str:
+    lines = [f"现象台账（{body['rules']}）", body["note_cn"], "",
+             f"到期日 {body['expiry_days']} 个，卡与对谱 {body['pairs']} 对。", ""]
+    for it in body["items"]:
+        c = it["control"]
+        lines.append(f"{it['id']} {it['title_cn']}：适用 {it['applies']}（正例 {it['for']}，反例 {it['against']}），"
+                     f"不适用 {it['not_applicable']}，缺数据 {it['missing']}；"
+                     f"对照位 适用 {c['applies']}（正例 {c['for']}，反例 {c['against']}），缺数据 {c['missing']}")
+        if it["id"] == "P6":
+            for label, g in (("", it["groups"]), ("对照位 ", c["groups"])):
+                lines.append(f"    {label}主动买偏多 {g['buy_heavy']['n']} 次（其后被穿过 {g['buy_heavy']['crossed']}），"
+                             f"主动卖偏多 {g['sell_heavy']['n']} 次（其后被穿过 {g['sell_heavy']['crossed']}）")
+        lines.append(f"    定义：{it['definition_cn']}")
+    return "\n".join(lines) + "\n"

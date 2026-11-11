@@ -395,3 +395,36 @@ def test_empty_archive_builds_an_empty_card(tmp_path):
     card = sel.build(tmp_path, now_ms=E)
     assert card["coverage"]["samples"] == 0 and card["human_locks"]["n"] == 0
     assert "到期日 0 个" in sel.summary_text(card)
+
+
+def test_mechanical_control_b_reads_the_rounds_level_card(tmp_path):
+    rel, c = _write_case(tmp_path, R1, "put", "cf_a")
+    _write_outcome(tmp_path, c, [{"case_id": "cf_a", "asof_ms": R1, "path": rel}], 0.0)
+    _write_path(tmp_path, _flat_path())
+    lv = tmp_path / "levels" / "2026-11-12.jsonl"
+    lv.parent.mkdir(parents=True)
+    card = {"schema": "level_card@0.1", "expiry_ms": E, "round": "r1", "side": "put", "case_id": "cf_a",
+            "short": {"is_oi_level": True}}
+    other = {**card, "side": "call", "case_id": "cf_other", "short": {"is_oi_level": False}}   # another hand
+    lv.write_text(json.dumps(card) + "\n" + json.dumps(other) + "\n", encoding="utf-8")
+    built = sel.build(tmp_path, now_ms=E + H)
+    groups = {g["id"]: g for g in built["groups"]}
+    assert groups["mech_oi_short_withdraw"]["n"] == 1 and groups["mech_oi_short_keep"]["n"] == 0
+    assert _sample(built)["short_is_oi_level"] is True and _sample(built, side="call")["short_is_oi_level"] is None
+    assert built["rules"] == "selection_rules@0.2"
+
+
+def test_mechanical_control_b_ignores_a_card_of_another_case_or_without_a_contract(tmp_path):
+    rel, c = _write_case(tmp_path, R1, "put", "cf_a")
+    _write_outcome(tmp_path, c, [{"case_id": "cf_a", "asof_ms": R1, "path": rel}], 0.0)
+    _write_path(tmp_path, _flat_path())
+    lv = tmp_path / "levels" / "2026-11-12.jsonl"
+    lv.parent.mkdir(parents=True)
+    same_side_other_case = {"schema": "level_card@0.1", "expiry_ms": E, "round": "r1", "side": "put",
+                            "case_id": "cf_z", "short": {"is_oi_level": True}}
+    lv.write_text(json.dumps(same_side_other_case) + "\n", encoding="utf-8")
+    assert _sample(sel.build(tmp_path, now_ms=E + H))["short_is_oi_level"] is None
+    no_contract = {**same_side_other_case, "case_id": "cf_a", "short": None}
+    lv.write_text(json.dumps(no_contract) + "\n", encoding="utf-8")
+    assert _sample(sel.build(tmp_path, now_ms=E + H))["short_is_oi_level"] is None
+

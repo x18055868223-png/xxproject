@@ -29,10 +29,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 try:
     from . import astra_expiry_gamma_v1 as expiry_gamma
-    from . import astra_research_scorecards_v1 as research_scorecards
 except ImportError:  # script-style import
     import astra_expiry_gamma_v1 as expiry_gamma
-    import astra_research_scorecards_v1 as research_scorecards
 
 SNAPSHOT_SCHEMA = "structure_snapshot@0.1"
 FLOW_SCHEMA = "strike_flow@0.1"
@@ -48,7 +46,9 @@ PAGE_COUNT = 1000                   # the endpoint's maximum
 MAX_PAGES = 10
 HISTORY_MS = 24 * HOUR_MS           # how far back the trades endpoint reaches (observed)
 OVERLAP_MS = 5 * 60_000             # each fetch re-reads this much; trade ids de-duplicate it
-GAP_MS = research_scorecards.ENTRY_LOOKBACK_MS   # 40 min: the same sampling tolerance as the scorecards
+# 40 min: = astra_research_scorecards_v1.ENTRY_LOOKBACK_MS (tested); not imported, the scorecards read the
+# level cards, which read this module
+GAP_MS = 40 * 60_000
 EDGE_MS = 15 * 60_000               # a flow sum may start or end this far inside its window (one tick)
 MAX_FETCH_S = 20.0                  # one tick's trade fetch stops here (truncated); the next tick continues
 REQUEST_TIMEOUT_S = 8               # per request, for the two collection endpoints

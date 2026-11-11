@@ -615,19 +615,112 @@ def _merged_path(root: Path, expiry_ms: int) -> list[list[float]]:
     return [[t, points[t]] for t in sorted(points)]
 
 
-def backfill_levels(archive: "Archive", *, now_ms: int) -> dict[str, Any]:
+LEVEL_ROUND_HOURS = {"r1": 30, "r2": 18, "late4h": 4, "late1h": 1}
+LEVEL_WRITE_MS = 60 * 60_000   # a card is written within an hour of its round; later only the backfill fills it
+
+
+def _expiry_rows(root: Path, folder: str, expiry_ms: int, field: str) -> list[dict[str, Any]]:
+    sel = research_scorecards.selection
+    rows = [r for r in sel._lines(root / folder / f"{_utc(expiry_ms).strftime('%Y-%m-%d')}.jsonl")
+            if isinstance(r.get(field), int) and r.get("expiry_ms") == expiry_ms]
+    return sorted(rows, key=lambda r: r[field])
+
+
+def write_level_cards(archive: "Archive", *, now_ms: int, points_fn: Callable[[], list[list[float]] | None],
+                      errors: list[dict[str, Any]] | None = None) -> int:
+    """Level cards at their rounds (docs/opus/34 §4). A round card waits for its side's case, frozen
+    within 40 minutes of the round hour, and reads at the freeze instant; when the tolerance runs out
+    with no case of this expiry it reads now, with the structure snapshot's walls and no contract.
+    A late look (4 h and 1 h before expiry) reads now from the latest snapshot. Data are cut to the
+    reading; one card per (expiry, round, side), never rewritten. With no index point within 10 minutes
+    before the reading (a failed fetch) the card waits for the next tick inside its hour: a chained card
+    is permanent. One card failing never stops the others; its error goes to `errors`."""
+    root, sel = archive.root, research_scorecards.selection
+    written = 0
+    day0 = now_ms // DAY_MS * DAY_MS
+    expiries = [e for e in (day0 + d * DAY_MS + 8 * HOUR_MS for d in range(3)) if now_ms < e <= now_ms + 31 * HOUR_MS]
+    for expiry in expiries:
+        rel = f"levels/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl"
+        done = {(r.get("round"), r.get("side")) for r in sel._lines(root / rel)
+                if r.get("schema") == level_behaviour.CARD_SCHEMA}
+        cache: dict[str, Any] = {}
+        for rnd, hours in LEVEL_ROUND_HOURS.items():
+            slot = expiry - hours * HOUR_MS
+            if not slot <= now_ms < slot + LEVEL_WRITE_MS:
+                continue
+            for side in (("put", "call") if rnd in ("r1", "r2") else ("structure",)):
+                if (rnd, side) in done:
+                    continue
+                try:
+                    written += _write_level_card(archive, rel, expiry, rnd, side, slot, now_ms, points_fn, cache)
+                    done.add((rnd, side))
+                except _CardNotDue:
+                    continue
+                except Exception as exc:
+                    if errors is not None:
+                        errors.append({"step": "levels", "round": rnd, "side": side,
+                                       "error": type(exc).__name__, "detail": str(exc)[:160]})
+    return written
+
+
+class _CardNotDue(Exception):
+    """The card waits: its case may still be frozen, or the index path is not there yet."""
+
+
+def _write_level_card(archive: "Archive", rel: str, expiry: int, rnd: str, side: str, slot: int, now_ms: int,
+                      points_fn: Callable[[], list[list[float]] | None], cache: dict[str, Any]) -> int:
+    root, sel = archive.root, research_scorecards.selection
+    if "snapshots" not in cache:
+        cache["snapshots"] = _expiry_rows(root, "structure", expiry, "at_ms")
+        cache["flow"] = _expiry_rows(root, "flow", expiry, "to_ms")
+    if "points" not in cache:
+        cache["points"] = points_fn() or []   # the 2-day index path, fetched only when a card is due
+    snapshots, flow_rows, points = cache["snapshots"], cache["flow"], cache["points"]
+    case = contract = None
+    if side != "structure":
+        found = sel._slot_case(root, slot, side)
+        walls = case_entry(found, "L3.expiry_walls") if found else None
+        built = ((found or {}).get("build") or {}).get("built_at_ms")
+        if (isinstance(walls, Mapping) and walls.get("expiry_ms") == expiry and isinstance(built, int)
+                and slot <= built <= slot + research_scorecards.ENTRY_LOOKBACK_MS):
+            case, contract, read = found, case_entry(found, "L1.contract"), built
+        elif now_ms < slot + research_scorecards.ENTRY_LOOKBACK_MS:
+            raise _CardNotDue()   # the side's case may still be frozen in this hour
+    if case is None:
+        read = now_ms
+        snap = expiry_structure._at_or_before(snapshots, read)
+        walls = ({**(snap.get("profile") or {}), "expected_move_usd": snap.get("expected_move_usd"),
+                  "expiry_ms": expiry} if snap else {})
+    cut = [p for p in points if p[0] <= read]
+    if not cut or read - cut[-1][0] > level_behaviour.PATH_EDGE_MS:
+        raise _CardNotDue()   # no index at the reading: retry next tick, never a permanent gap
+    snaps = [s for s in snapshots if s["at_ms"] <= read]
+    grid = (snaps[-1].get("strikes") or []) if snaps else []
+    card = level_behaviour.build_card(
+        expiry_ms=expiry, rnd=rnd, side=side, read_at_ms=read, walls=walls,
+        points=cut, case=case, contract=contract,
+        strikes=[g["k"] for g in grid if isinstance(g, Mapping) and g.get("k") is not None],
+        snapshots=snaps, flow_rows=[r for r in flow_rows if r["to_ms"] <= read])
+    archive.append_line(rel, card, at_ms=now_ms, kind="level")
+    return 1
+
+
+def backfill_levels(archive: "Archive", *, now_ms: int, since_ms: int | None = None) -> dict[str, Any]:
     """Level cards and their expiry reviews written after the fact for settled expiries (docs/opus/34
     §3.3), rows marked backfilled. The structure comes from the round's frozen case (L3.expiry_walls,
     same expiry only); open interest, flow and the strike grid (controls) come from structure/ and
     flow/ when collection already covered the reading, cut to the reading; otherwise they are absent
     and data_gaps says before_collection. Written once per (expiry, round, side); a card whose review
-    is missing (a crash in between) gets its review from the stored card."""
+    is missing (a crash in between) gets its review from the stored card, late looks included. The
+    tick runs it over the last days (since_ms) to write the reviews of the cards it wrote live."""
     root = archive.root
     sel = research_scorecards.selection
-    outcomes = [o for p in sorted((root / "outcomes").glob("*.jsonl")) for o in sel._lines(p)]
+    since_day = _utc(since_ms).strftime("%Y-%m-%d") if since_ms is not None else ""
+    outcomes = [o for p in sorted((root / "outcomes").glob("*.jsonl")) if p.stem >= since_day for o in sel._lines(p)]
     settled = {}
     for o in outcomes:
-        if o.get("status") == "settled" and isinstance(o.get("expiry_ms"), int) and o["expiry_ms"] <= now_ms:
+        if (o.get("status") == "settled" and isinstance(o.get("expiry_ms"), int) and o["expiry_ms"] <= now_ms
+                and (since_ms is None or o["expiry_ms"] >= since_ms)):
             settled.setdefault(o["expiry_ms"], {})[o.get("contract_key")] = o
     report: dict[str, Any] = {"cards": 0, "reviews": 0, "skipped": 0, "no_case": 0, "errors": []}
     for expiry in sorted(settled):
@@ -636,6 +729,9 @@ def backfill_levels(archive: "Archive", *, now_ms: int) -> dict[str, Any]:
         stored = sel._lines(root / rel)
         cards = {(r.get("round"), r.get("side")): r for r in stored if r.get("schema") == level_behaviour.CARD_SCHEMA}
         reviewed = {(r.get("round"), r.get("side")) for r in stored if r.get("schema") == level_behaviour.REVIEW_SCHEMA}
+        if all((rnd, side) in cards for rnd in BACKFILL_ROUND_HOURS for side in ("put", "call")) and set(cards) <= reviewed:
+            report["skipped"] += len(cards)   # everything written: nothing to load
+            continue
         points = _merged_path(root, expiry)
         snapshots = sorted((r for r in sel._lines(root / "structure" / f"{day}.jsonl") if isinstance(r.get("at_ms"), int)),
                            key=lambda r: r["at_ms"])
@@ -654,11 +750,16 @@ def backfill_levels(archive: "Archive", *, now_ms: int) -> dict[str, Any]:
                         case = sel._slot_case(root, slot, side)
                         walls = case_entry(case, "L3.expiry_walls") if case else None
                         if not isinstance(walls, Mapping) or walls.get("expiry_ms") != expiry:
-                            case, walls = None, {}
-                            report["no_case"] += 1
+                            case, report["no_case"] = None, report["no_case"] + 1
+                            # as the live writer: the structure snapshot's walls when one is near the slot
+                            snap = expiry_structure._at_or_before(snapshots, slot + research_scorecards.ENTRY_LOOKBACK_MS)
+                            walls = ({**(snap.get("profile") or {}), "expected_move_usd": snap.get("expected_move_usd"),
+                                      "expiry_ms": expiry} if snap else {})
                         contract = case_entry(case, "L1.contract") if case else None
                         built = ((case or {}).get("build") or {}).get("built_at_ms")
-                        read = int(built if isinstance(built, int) else (case or {}).get("asof_ms") or slot)
+                        # no case: read where the live writer would, when the 40-minute tolerance ran out
+                        read = int(built if isinstance(built, int) else (case or {}).get("asof_ms")
+                                   or slot + research_scorecards.ENTRY_LOOKBACK_MS)
                         snaps = [r for r in snapshots if r["at_ms"] <= read]
                         grid = next((r for r in reversed(snaps)), {}).get("strikes") or []
                         card = level_behaviour.build_card(
@@ -678,6 +779,17 @@ def backfill_levels(archive: "Archive", *, now_ms: int) -> dict[str, Any]:
                 except Exception as exc:
                     report["errors"].append({"expiry": day, "round": rnd, "side": side,
                                              "error": type(exc).__name__, "detail": str(exc)[:160]})
+        for key, card in cards.items():   # the other stored cards (late looks) still without a review
+            if key in reviewed or key[0] in BACKFILL_ROUND_HOURS:
+                continue
+            try:
+                review = level_behaviour.build_review(card, points, delivery_price_usd=delivery,
+                                                      snapshots=snapshots, flow_rows=flow_rows)
+                archive.append_line(rel, review, at_ms=now_ms, kind="level")
+                report["reviews"] += 1
+            except Exception as exc:
+                report["errors"].append({"expiry": day, "round": key[0], "side": key[1],
+                                         "error": type(exc).__name__, "detail": str(exc)[:160]})
     return report
 
 
@@ -1053,6 +1165,20 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         report["flow"] = collect_flow(archive, state, deribit, now_ms, names)
     except Exception as exc:
         report["errors"].append({"step": "flow", "error": type(exc).__name__, "detail": str(exc)[:160]})
+    # level cards at their rounds, then the reviews of settled expiries (docs/opus/34 §4); on its own
+    try:
+        report["levels"] = write_level_cards(
+            archive, now_ms=now_ms, points_fn=lambda: path_cache if path_cache is not None else deribit.index_path(),
+            errors=report["errors"])
+    except Exception as exc:
+        report["errors"].append({"step": "levels", "error": type(exc).__name__, "detail": str(exc)[:160]})
+    try:
+        filled = backfill_levels(archive, now_ms=now_ms, since_ms=now_ms - 3 * DAY_MS)
+        report["level_reviews"] = filled["reviews"]
+        for err in filled["errors"]:
+            report["errors"].append({"step": "level_reviews", **err})
+    except Exception as exc:
+        report["errors"].append({"step": "level_reviews", "error": type(exc).__name__, "detail": str(exc)[:160]})
 
     scheduled = _utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS
     if run_inquiry:

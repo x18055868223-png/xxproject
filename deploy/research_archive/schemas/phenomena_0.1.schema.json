@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/phenomena@0.1",
+  "title": "phenomena@0.1 — scorecards/phenomena.json (derived, rebuilt daily, not chained)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "rules",
+    "derived",
+    "built_at_ms",
+    "expiry_days",
+    "pairs",
+    "items",
+    "note_cn"
+  ],
+  "properties": {
+    "schema": {
+      "const": "phenomena@0.1"
+    },
+    "derived": {
+      "const": true
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title_cn",
+          "definition_cn",
+          "applies",
+          "for",
+          "against",
+          "not_applicable",
+          "control",
+          "cases"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "P1",
+              "P2",
+              "P3",
+              "P4",
+              "P5",
+              "P6"
+            ]
+          },
+          "control": {
+            "type": "object",
+            "required": [
+              "applies",
+              "for",
+              "against"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "description": "Mechanical counts only: no thresholds, no conclusions, no signals."
+}
