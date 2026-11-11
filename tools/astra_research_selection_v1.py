@@ -238,6 +238,9 @@ def score_case(case: Mapping[str, Any], outcome: Mapping[str, Any] | None, path:
         return {**out, "status": "no_credit"}
     paid = q * float(outcome["payout_btc"])
     out["result_btc"] = credit - paid
+    visible = _num(econ.get("visible_credit_btc"))
+    # for the limit basis: the hold fee (gross credit minus net income) and the payout, both as the case has them
+    out["_fee_btc"], out["_paid_btc"] = (visible - credit if visible is not None else None), paid
     built = (case.get("build") or {}).get("built_at_ms")
     built = built if isinstance(built, int) else int(case["asof_ms"])
     metrics = research_validation.sample_metrics({"at_ms": built, "credit_bid_ask_btc": None}, outcome, path)
@@ -258,7 +261,7 @@ def score_case(case: Mapping[str, Any], outcome: Mapping[str, Any] | None, path:
         basis = "case_l1"
     if ml is None or ml <= 0:
         return {**out, "status": "no_max_loss"}
-    out["result_x"], out["max_loss_basis"] = out["result_btc"] / ml, basis
+    out["result_x"], out["max_loss_basis"], out["_ml_btc"] = out["result_btc"] / ml, basis, ml
     if mark is not None:
         out["expected_x"] = (credit - mark) / ml
         out["luck_x"] = (mark - paid) / ml
@@ -306,6 +309,7 @@ def round_sample(root: Path, expiry_ms: int, side: str, rnd: str, outcomes_by_ca
                       required_edge_bid=pricing.get("required_edge_bid"),
                       required_edge_mid=pricing.get("required_edge_mid"))
     key = f"{contract.get('short_instrument')}|{contract.get('long_instrument')}"
+    sample["contract_key"] = key
     rows = ledger.get(key) or []
     row = _ledger_row(rows, built)
     sample["distance_in_moves"] = (row or {}).get("distance_in_moves")
@@ -414,11 +418,11 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
             if r.get("schema") == "level_card@0.1" and isinstance(r.get("short"), Mapping):
                 cards[(r.get("expiry_ms"), r.get("round"), r.get("side"))] = r
     # the AI player's decision on the round's own case (actor player in decisions/)
-    played = {}
+    played, played_rows = {}, {}
     for path in sorted((root / "decisions").glob("*.jsonl")):
         for r in _lines(path):
             if r.get("actor") == "player" and r.get("case_id"):
-                played[r["case_id"]] = r.get("action")
+                played[r["case_id"]], played_rows[r["case_id"]] = r.get("action"), r
     samples = []
     for e in expiries:
         for side in ("put", "call"):
@@ -429,6 +433,10 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
                     if card and sample["case_id"] and card.get("case_id") == sample["case_id"]:
                         sample["short_is_oi_level"] = card["short"].get("is_oi_level")
                     sample["player_action"] = played.get(sample["case_id"]) if sample["case_id"] else None
+                    if sample["case_id"] in played_rows:
+                        sample.update(player_fields(played_rows[sample["case_id"]], sample, ledger))
+                    for k in [k for k in sample if k.startswith("_")]:
+                        del sample[k]
                     samples.append(sample)
                 except Exception:
                     samples.append({**_empty_sample(e, side, rnd), "status": "unreadable"})
@@ -445,9 +453,115 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
                        for gid, title, keep in GROUPS],
             "pending_groups": [{"id": gid, "title_cn": title, "starts_at": when} for gid, title, when in PENDING_GROUPS],
             "human_locks": {"n": len(locks), "scored": sum(1 for i in locks if i["status"] == "ok"), "items": locks},
+            "player": player_summary(samples, played_rows),
             "secondary": {"iv_change_6h": _secondary(scored, "iv_change_6h_pp"),
                           "result_x": _secondary(scored, "result_x")},
             "samples": samples, "note_cn": NOTE_CN}
+
+
+# ---------------------------------------------------------------- the AI player (docs/opus/35)
+
+def player_fields(row: Mapping[str, Any], sample: Mapping[str, Any], ledger: Mapping[str, list]) -> dict[str, Any]:
+    """The player's decision on this sample, and for an accept the limit basis (rulebook §12, secondary):
+    filled when a ledger row inside the validity (from the decision, not after expiry) shows a taker
+    gross credit at or above the limit. Ledger rows are about 30 minutes apart, so fills are a lower
+    bound. A filled limit is scored at the limit after the same hold fee, held to expiry."""
+    d = (row.get("detail") or {}).get("decision") or {}
+    out: dict[str, Any] = {"player_reason_types": list(row.get("reason_types") or []), "player_at_ms": row.get("at_ms"),
+                           "player_limit_btc": None, "limit_filled": None, "limit_fill_ms": None, "result_limit_x": None}
+    if row.get("action") != "accept":
+        return out
+    limit, minutes, at = _num(d.get("limit_btc")), d.get("valid_minutes"), row.get("at_ms")
+    out["player_limit_btc"] = limit
+    if limit is None or not isinstance(minutes, (int, float)) or not isinstance(at, int):
+        return out
+    until = min(at + int(minutes) * 60_000, sample["expiry_ms"])
+    fill = next((r for r in sorted(ledger.get(sample.get("contract_key") or "", []), key=lambda r: r.get("at_ms", 0))
+                 if isinstance(r.get("at_ms"), int) and at <= r["at_ms"] <= until
+                 and (_num(r.get("credit_bid_ask_btc")) or -1.0) >= limit), None)
+    out["limit_filled"] = fill is not None
+    out["limit_fill_ms"] = fill["at_ms"] if fill else None
+    fee, paid, ml = sample.get("_fee_btc"), sample.get("_paid_btc"), sample.get("_ml_btc")
+    if fill and fee is not None and paid is not None and ml:
+        out["result_limit_x"] = (limit - fee - paid) / ml
+    return out
+
+
+def player_summary(samples: Sequence[Mapping[str, Any]], rows: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Attribution: the player's groups split by reason type (for a reject: what accepting would have
+    done), the limit basis, and one log line per decision."""
+    scored = [s for s in samples if s["status"] == "ok" and s["verdict"] == "eligible" and s.get("player_action")]
+
+    def stats(group: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        xs = [(s["result_x"], s["expiry_day"]) for s in group]
+        st = mean_stats(xs)
+        return {"n": st["n"], "expiry_days": st["expiry_days"], "mean_x": st["mean"], "se_cluster_x": st["se_cluster"],
+                "win_share": (sum(1 for s in group if s["result_x"] > 0) / len(group)) if group else None,
+                "sum_result_btc": sum(s["result_btc"] for s in group) if group else None}
+    by_reason: dict[str, dict[str, Any]] = {}
+    for action in ("accept", "reject", "pass"):
+        group = [s for s in scored if s["player_action"] == action]
+        types = sorted({t for s in group for t in s.get("player_reason_types") or []}) or []
+        by_reason[action] = {"all": stats(group),
+                             **{t: stats([s for s in group if t in (s.get("player_reason_types") or [])]) for t in types},
+                             **({"untyped": stats([s for s in group if not s.get("player_reason_types")])}
+                                if action == "accept" else {})}
+    accepted = [s for s in scored if s["player_action"] == "accept"]
+    filled = [s for s in accepted if s.get("limit_filled")]
+    limit = {"accepted": len(accepted), "filled": len(filled),
+             "fill_share": len(filled) / len(accepted) if accepted else None,
+             "mean_limit_x": (sum(s["result_limit_x"] for s in filled if s.get("result_limit_x") is not None)
+                              / len(filled)) if filled else None,
+             "note_cn": "限价口径：有效期内账本采样（约 30 分钟一行）的对手价毛信用达到限价才算成交，是下界"}
+    log = []
+    for s in sorted((s for s in samples if s.get("case_id") in rows), key=lambda s: (s["expiry_ms"], s["round"], s["side"])):
+        d = (rows[s["case_id"]].get("detail") or {}).get("decision") or {}
+        basis = [b for b in d.get("basis") or [] if isinstance(b, Mapping)]
+        log.append({"expiry_day": s["expiry_day"], "round": s["round"], "side": s["side"], "case_id": s["case_id"],
+                    "action": s.get("player_action"), "reason_types": s.get("player_reason_types"),
+                    "limit_btc": s.get("player_limit_btc"), "status": s["status"], "result_x": s.get("result_x"),
+                    "result_limit_x": s.get("result_limit_x"), "limit_filled": s.get("limit_filled"),
+                    "touched_short": s.get("touched_short"), "luck_x": s.get("luck_x"),
+                    "key_evidence": str((basis[0].get("reading") if basis else "") or "")[:200],
+                    "edge_why": str(d.get("edge_why") or "")[:200], "counter": str(d.get("counter") or "")[:200]})
+    return {"by_reason": by_reason, "limit": limit, "log": log}
+
+
+ACTION_CN = {"accept": "接受", "reject": "拒绝", "pass": "过牌", "invalid": "无效", "missing": "缺失"}
+
+
+def player_log_text(card: Mapping[str, Any]) -> str:
+    """The AI player's hand log, for people: one block per decision, newest last."""
+    def f(v: Any, nd: int = 2) -> str:
+        return "—" if v is None else f"{v:+.{nd}f}"
+    pl = card.get("player") or {}
+    lines = [f"AI 牌手牌谱（{card['rules']}）", "每局：动作与原因、限价、到期结果（立即成交口径与限价口径，最大损失倍数）、当时写下的关键证据与反面。", ""]
+    for a in ("accept", "reject", "pass"):
+        g = ((pl.get("by_reason") or {}).get(a) or {}).get("all") or {}
+        if g.get("n"):
+            win = "—" if g["win_share"] is None else f"{g['win_share'] * 100:.0f}%"
+            lines.append(f"{ACTION_CN[a]}：{g['n']} 局，胜率 {win}，"
+                         f"平均 {f(g['mean_x'])} 倍，模拟盈亏合计 {f(g['sum_result_btc'], 4)} BTC")
+    lim = pl.get("limit") or {}
+    if lim.get("accepted"):
+        lines.append(f"限价口径：接受 {lim['accepted']} 局，有效期内成交 {lim['filled']} 局；成交局平均 {f(lim['mean_limit_x'])} 倍（成交率是下界）")
+    lines.append("")
+    for e in pl.get("log") or []:
+        head = (f"{e['expiry_day']} {e['round']} {e['side']}：{ACTION_CN.get(e['action'], e['action'])}"
+                + (f"（{'、'.join(e['reason_types'])}）" if e.get("reason_types") else "")
+                + (f"，限价 {e['limit_btc']}" if e.get("limit_btc") is not None else ""))
+        if e["status"] == "ok":
+            tail = (f"结果 {f(e['result_x'])} 倍（运气 {f(e['luck_x'])}）"
+                    + ("" if e["action"] != "accept" else
+                       f"，限价{'成交 ' + f(e['result_limit_x']) + ' 倍' if e.get('limit_filled') else '未成交'}")
+                    + ("，触及短腿" if e.get("touched_short") else ""))
+        else:
+            tail = "尚未结算" if e["status"] == "no_outcome" else f"不计分（{e['status']}）"
+        lines.append(head + "；" + tail)
+        for label, k in (("关键证据", "key_evidence"), ("为什么接受这份摩擦", "edge_why"), ("反面", "counter")):
+            if e.get(k):
+                lines.append(f"    {label}：{e[k]}")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------- text

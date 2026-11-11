@@ -437,3 +437,53 @@ def test_groups_report_win_rate_and_simulated_pnl(tmp_path):
     assert g["win_share"] == 1.0 and g["sum_result_btc"] == pytest.approx(0.003)
     assert "胜率" in sel.summary_text(sel.build(tmp_path, now_ms=E + H))
 
+
+def _player_row(case_id, action, at, **decision):
+    reasons = decision.pop("reason_types", [])
+    return {"actor": "player", "case_id": case_id, "action": action, "at_ms": at, "reason_types": reasons,
+            "detail": {"decision": {"action": action, "basis": [{"ref": "本轮", "reading": "关键读数 x"}],
+                                    "counter": "反面 y", "edge_why": "摩擦可接受", **decision}}}
+
+
+def _ledger(tmp_path, key, rows):
+    p = tmp_path / "ledger" / "2026-11-11.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(json.dumps({"contract_key": key, **r}) + "\n" for r in rows), encoding="utf-8")
+
+
+def test_player_limit_basis_fills_inside_its_validity_only(tmp_path):
+    # visible 0.0036 gross, 0.003 net: hold fee 0.0006; payout 0; max loss 0.022
+    rel, c = _write_case(tmp_path, R1, "put", "cf_a", credit=0.003)
+    case_path = tmp_path / rel
+    case = json.loads(gzip.decompress(case_path.read_bytes()))
+    case["layers"]["L1"][1]["values"]["visible_credit_btc"] = 0.0036
+    case_path.write_bytes(gzip.compress(json.dumps(case).encode("utf-8")))
+    rel2, c2 = _write_case(tmp_path, R1, "call", "cf_b", contract=_contract("call", 84000.0, 86000.0), credit=0.003)
+    _write_outcome(tmp_path, c, [{"case_id": "cf_a", "asof_ms": R1, "path": rel}], 0.0)
+    _write_outcome(tmp_path, c2, [{"case_id": "cf_b", "asof_ms": R1, "path": rel2}], 0.0)
+    _write_path(tmp_path, _flat_path())
+    at = R1 + 15 * 60_000
+    _ledger(tmp_path, _key(c), [{"at_ms": at + 20 * 60_000, "credit_bid_ask_btc": 0.0035},
+                                {"at_ms": at + 50 * 60_000, "credit_bid_ask_btc": 0.0040}])
+    d = tmp_path / "decisions" / "2026-11-11.jsonl"
+    d.parent.mkdir(parents=True)
+    rows = [_player_row("cf_a", "accept", at, limit_btc=0.0040, valid_minutes=60, reason_types=["fill"]),
+            _player_row("cf_b", "reject", at, reason_types=["state_unfavourable"])]
+    d.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    card = sel.build(tmp_path, now_ms=E + H)
+    s = _sample(card)
+    assert s["limit_filled"] is True and s["limit_fill_ms"] == at + 50 * 60_000
+    assert s["result_limit_x"] == pytest.approx((0.0040 - 0.0006 - 0.0) / 0.022)
+    by = card["player"]["by_reason"]
+    assert by["accept"]["all"]["n"] == 1 and by["accept"]["fill"]["n"] == 1
+    assert by["reject"]["state_unfavourable"]["n"] == 1 and by["reject"]["state_unfavourable"]["win_share"] == 1.0
+    assert card["player"]["limit"]["fill_share"] == 1.0
+    text = sel.player_log_text(card)
+    assert "接受（fill）" in text and "限价成交" in text and "关键证据：关键读数 x" in text and "拒绝" in text
+    # a validity that ends before the price is reached: not filled
+    rows[0] = _player_row("cf_a", "accept", at, limit_btc=0.0040, valid_minutes=30)
+    d.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    s = _sample(sel.build(tmp_path, now_ms=E + H))
+    assert s["limit_filled"] is False and s["result_limit_x"] is None
+    assert not any(k.startswith("_") for k in s)
+

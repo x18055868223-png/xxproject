@@ -372,10 +372,13 @@ def run(root: str | Path, *, now_ms: int) -> dict[str, Any]:
         text = root / "scorecards" / "selection_summary.txt"
         text.with_name(text.name + ".tmp").write_text(selection.summary_text(card), encoding="utf-8")
         text.with_name(text.name + ".tmp").replace(text)
+        log = root / "scorecards" / "player_log.txt"
+        log.with_name(log.name + ".tmp").write_text(selection.player_log_text(card), encoding="utf-8")
+        log.with_name(log.name + ".tmp").replace(log)
         report["selection_samples"] = card["coverage"]["samples"]
     except Exception as exc:
         report["selection_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
-        for name in ("selection.json", "selection_summary.txt"):
+        for name in ("selection.json", "selection_summary.txt", "player_log.txt"):
             (root / "scorecards" / name).unlink(missing_ok=True)
     try:   # the phenomena ledger (docs/opus/32 §3.4, §4): every level card joined to its review
         body = level_behaviour.phenomena(level_pairs(root), now_ms=now_ms)
