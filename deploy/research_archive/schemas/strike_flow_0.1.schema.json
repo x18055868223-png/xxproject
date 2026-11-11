@@ -1,0 +1,96 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "xxproject/strike_flow@0.1",
+ "type": "object",
+ "required": [
+  "schema",
+  "from_ms",
+  "to_ms",
+  "expiry_ms",
+  "expiry",
+  "truncated",
+  "gap_from_ms",
+  "skipped_trades",
+  "rows"
+ ],
+ "properties": {
+  "schema": {
+   "const": "strike_flow@0.1"
+  },
+  "from_ms": {
+   "type": "integer"
+  },
+  "to_ms": {
+   "type": "integer"
+  },
+  "expiry_ms": {
+   "type": "integer"
+  },
+  "expiry": {
+   "type": "string"
+  },
+  "truncated": {
+   "type": "boolean"
+  },
+  "gap_from_ms": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "skipped_trades": {
+   "type": "integer"
+  },
+  "rows": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "k",
+     "kind"
+    ],
+    "properties": {
+     "k": {
+      "type": "number"
+     },
+     "kind": {
+      "enum": [
+       "call",
+       "put"
+      ]
+     },
+     "buy_btc": {
+      "type": "number"
+     },
+     "sell_btc": {
+      "type": "number"
+     },
+     "block_buy_btc": {
+      "type": "number"
+     },
+     "block_sell_btc": {
+      "type": "number"
+     },
+     "combo_buy_btc": {
+      "type": "number"
+     },
+     "combo_sell_btc": {
+      "type": "number"
+     },
+     "max_trade_btc": {
+      "type": "number"
+     },
+     "n": {
+      "type": "integer"
+     },
+     "n_block": {
+      "type": "integer"
+     },
+     "n_combo": {
+      "type": "integer"
+     }
+    }
+   }
+  }
+ }
+}

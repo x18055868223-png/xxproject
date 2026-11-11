@@ -39,7 +39,8 @@
         "round_info",
         "rulebook",
         "player_prompt",
-        "selection_scorecard"
+        "selection_scorecard",
+        "expiry_structure"
       ]
     },
     "version": {

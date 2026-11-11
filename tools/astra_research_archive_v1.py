@@ -8,6 +8,8 @@ One tick (every 10 minutes from a systemd timer) does what is due, in this order
             last 3 hours before expiry
 - outcomes: after expiry, the delivery price, the payout, each frozen case's result, and
             the 1-minute index path statistics from first sighting to expiry
+- structure / flow: every expiry within 48 hours, each strike's open interest and quotes, and the
+            trades since the last tick summed per strike (docs/opus/32 step 1)
 - inquiry:  at the scheduled hours (UTC 02, 14), the inquirer's output for that hour's case
             (last, so a slow model call never costs the ledger or outcomes their tick)
 - inbox:    researcher submissions are validated, stamped and registered (E2)
@@ -45,6 +47,7 @@ if __package__:
     from . import astra_research_scorecards_v1 as research_scorecards
     from . import astra_event_calendar_v1 as event_calendar
     from . import astra_session_clock_v1 as session_clock
+    from . import astra_expiry_structure_v1 as expiry_structure
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -56,6 +59,7 @@ else:
     import astra_research_scorecards_v1 as research_scorecards
     import astra_event_calendar_v1 as event_calendar
     import astra_session_clock_v1 as session_clock
+    import astra_expiry_structure_v1 as expiry_structure
 
 SCHEMA_ROW = "ledger_row@0.1"
 # research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
@@ -88,10 +92,12 @@ OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
 VALIDATION_AT_UTC = (9, 30)   # after the 08:00 settlement and its outcomes
 INDEX_KEEP_CLOSED_MS = 3 * 24 * HOUR_MS
 LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol", "validation",
-              "promotion"}
+              "promotion", "structure", "flow"}
 FILE_KINDS = {"case", "inquiry", "legacy", "path"}
 PUBLIC = "https://www.deribit.com/api/v2/"
-PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data"})
+PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data",
+                          "public/get_book_summary_by_currency", "public/get_last_trades_by_currency_and_time"})
+COLLECT_PATHS = frozenset({"public/get_book_summary_by_currency", "public/get_last_trades_by_currency_and_time"})
 
 
 def _utc(ms: int) -> dt.datetime:
@@ -510,7 +516,8 @@ class Deribit:
             raise ValueError("only audited public read endpoints")
         url = PUBLIC + path + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as response:
+        timeout = expiry_structure.REQUEST_TIMEOUT_S if path in COLLECT_PATHS else 15
+        with urllib.request.urlopen(req, timeout=timeout) as response:
             body = json.load(response)
         if not isinstance(body, dict) or body.get("error") or "result" not in body:
             raise ValueError("deribit public " + path + " invalid result")
@@ -531,6 +538,17 @@ class Deribit:
 
     def index_path(self) -> list[list[float]]:
         return list(self.transport("public/get_index_chart_data", {"index_name": "btc_usd", "range": "2d"}) or [])
+
+    def book_summary(self) -> list[dict[str, Any]]:
+        rows = self.transport("public/get_book_summary_by_currency", {"currency": "BTC", "kind": "option"})
+        if not isinstance(rows, list):
+            raise ValueError("book summary malformed")
+        return [r for r in rows if isinstance(r, dict)]
+
+    def last_trades(self, start_ms: int, end_ms: int, count: int) -> Any:
+        return self.transport("public/get_last_trades_by_currency_and_time", {
+            "currency": "BTC", "kind": "option", "start_timestamp": start_ms, "end_timestamp": end_ms,
+            "count": count, "sorting": "asc"})
 
 
 def instrument_key(contract: Mapping[str, Any]) -> str | None:
@@ -588,7 +606,8 @@ def observed_versions() -> dict[str, str]:
             "entry_warnings": _entry_warnings_rules(), "session_clock": session_clock.SCHEMA,
             "unsuitable": _module_attr("astra_unsuitable_v1", "SCHEMA"),
             "decision_path": _module_attr("astra_decision_path_v1", "PATH_VERSION"),
-            "round_info": _module_attr("astra_round_info_v1", "SCHEMA")}
+            "round_info": _module_attr("astra_round_info_v1", "SCHEMA"),
+            "expiry_structure": f"{expiry_structure.SNAPSHOT_SCHEMA}+{expiry_structure.FLOW_SCHEMA}"}
 
 
 def _module_attr(name: str, attr: str) -> str | None:
@@ -686,6 +705,70 @@ def write_index(archive: Archive, state: Mapping[str, Any], *, now_ms: int) -> N
         tmp.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         os.chmod(tmp, 0o640)
         os.replace(tmp, path)
+
+
+def collect_structure(archive: Archive, state: dict[str, Any], deribit: Deribit, now_ms: int) -> tuple[int, list[str]]:
+    """Structure snapshots of the expiries within 48 hours that are due; (lines written, instrument names)."""
+    rows = deribit.book_summary()
+    names = [str(r.get("instrument_name")) for r in rows]
+    last = state.setdefault("structure_last_ms", {})
+    written = 0
+    for expiry in expiry_structure.expiries_in_window(names, now_ms):
+        if not expiry_structure.snapshot_due(last.get(str(expiry)), expiry, now_ms):
+            continue
+        snap = expiry_structure.snapshot(rows, expiry_ms=expiry, now_ms=now_ms)
+        if snap is None:
+            continue
+        archive.append_line(f"structure/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl", snap, at_ms=now_ms, kind="structure")
+        last[str(expiry)] = now_ms
+        written += 1
+    for key in [k for k in last if int(k) <= now_ms]:
+        del last[key]
+    archive.save_state(state)
+    return written, names
+
+
+def collect_flow(archive: Archive, state: dict[str, Any], deribit: Deribit, now_ms: int, names: list[str]) -> int:
+    """Trades since the cursor, one strike_flow row per expiry (empty rows too), for every expiry after
+    the cursor and within 48 hours: one that settled since the last tick still gets its last minutes,
+    its row ending at expiry. The first run only sets the cursor: no history is fetched back. Each
+    expiry's written end is saved with its line, so a crash in between never writes a window twice."""
+    cursor = state.get("flow_cursor_ms")
+    if not isinstance(cursor, int):
+        state["flow_cursor_ms"], state["flow_recent_ids"], state["flow_written"] = now_ms, [], {}
+        archive.save_state(state)
+        return 0
+    written = state.setdefault("flow_written", {})
+    start, gap_from = expiry_structure.flow_window(cursor, now_ms)
+    seen = state.get("flow_recent_ids") or []
+    got = expiry_structure.fetch_trades(deribit.last_trades, start, now_ms, seen)
+    covered = got["covered_to_ms"]
+    if covered <= cursor:
+        raise RuntimeError("flow cursor did not advance")   # reported every tick until it moves
+    expiries = sorted(set(expiry_structure.expiries_in_window(
+        names + [t["instrument_name"] for t in got["trades"]], now_ms, after_ms=cursor))
+        | {int(e) for e in written if cursor < int(e) <= now_ms + expiry_structure.WINDOW_MS})
+    lines = 0
+    for expiry in expiries:
+        frm, to = max(cursor, written.get(str(expiry), cursor)), min(covered, expiry)
+        if to <= frm:
+            continue
+        # after a crash this expiry's line may already reach past the cursor: only what follows it counts
+        trades = [t for t in got["trades"] if t["timestamp"] <= to and (frm == cursor or t["timestamp"] > frm)]
+        archive.append_line(f"flow/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl", expiry_structure.flow_row(
+            expiry, expiry_structure.aggregate(trades, [expiry])[expiry], from_ms=frm, to_ms=to, truncated=got["truncated"],
+            gap_from_ms=gap_from, skipped=got["skipped"]), at_ms=now_ms, kind="flow")
+        written[str(expiry)] = to
+        archive.save_state(state)
+        lines += 1
+    state["flow_cursor_ms"] = covered
+    # ids the next fetch re-reads in its overlap; old ones are kept only if this fetch did not reach them
+    state["flow_recent_ids"] = sorted(set(got["tail_ids"]) | (set(seen) if covered - expiry_structure.OVERLAP_MS < start
+                                                               else set()))
+    for key in [k for k in written if int(k) <= covered]:
+        del written[key]
+    archive.save_state(state)
+    return lines
 
 
 def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
@@ -861,6 +944,18 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         archive.save_state(state)   # a crash right after never writes a second outcome
         if outcome["status"] == "settled":
             report["outcomes"] += 1
+
+    # this expiry's structure and per-strike trades until expiry (docs/opus/32 step 1); each part on
+    # its own, a failure is only reported and never costs the ledger or the outcomes their tick
+    names: list[str] = []
+    try:
+        report["structure"], names = collect_structure(archive, state, deribit, now_ms)
+    except Exception as exc:
+        report["errors"].append({"step": "structure", "error": type(exc).__name__, "detail": str(exc)[:160]})
+    try:
+        report["flow"] = collect_flow(archive, state, deribit, now_ms, names)
+    except Exception as exc:
+        report["errors"].append({"step": "flow", "error": type(exc).__name__, "detail": str(exc)[:160]})
 
     scheduled = _utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS
     if run_inquiry:

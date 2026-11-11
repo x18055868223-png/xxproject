@@ -1,0 +1,128 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "xxproject/structure_snapshot@0.1",
+ "type": "object",
+ "required": [
+  "schema",
+  "at_ms",
+  "expiry_ms",
+  "expiry",
+  "hours_to_expiry",
+  "strikes",
+  "profile"
+ ],
+ "properties": {
+  "schema": {
+   "const": "structure_snapshot@0.1"
+  },
+  "at_ms": {
+   "type": "integer"
+  },
+  "expiry_ms": {
+   "type": "integer"
+  },
+  "expiry": {
+   "type": "string"
+  },
+  "forward_usd": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "atm_iv_pct": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "expected_move_usd": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "hours_to_expiry": {
+   "type": "number"
+  },
+  "strikes": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "k"
+    ],
+    "properties": {
+     "k": {
+      "type": "number"
+     },
+     "c_oi": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "c_iv": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "c_vol24h": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "c_mark": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "p_oi": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "p_iv": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "p_vol24h": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "p_mark": {
+      "type": [
+       "number",
+       "null"
+      ]
+     }
+    }
+   }
+  },
+  "profile": {
+   "type": [
+    "object",
+    "null"
+   ],
+   "properties": {
+    "walls": {
+     "type": "object"
+    },
+    "top": {
+     "type": "object"
+    },
+    "totals": {
+     "type": "object"
+    }
+   }
+  }
+ }
+}

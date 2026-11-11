@@ -58,6 +58,8 @@
 | `inquiry/<UTC日>/<HH>_<side>_<case_id>.json` | `astra_inquiry_result@0.1` | 新文件 | `inquiry` |
 | `outcomes/<到期 UTC 日>.jsonl` | `episode_outcome@0.1` | 追加行，每张合约一行 | `outcome` |
 | `decisions/<UTC日>.jsonl` | `decision_event@0.1` | 追加行 | `decision` |
+| `structure/<到期 UTC 日>.jsonl` | `structure_snapshot@0.1`（2026-11-11 起） | 追加行 | `structure` |
+| `flow/<到期 UTC 日>.jsonl` | `strike_flow@0.1`（2026-11-11 起） | 追加行 | `flow` |
 | `protocols/versions.jsonl` | `protocol_version@0.1` | 追加行 | `protocol` |
 | `registry/hypotheses.jsonl` 等 | 登记包装（见 §10） | 追加行 | `submission` |
 | `registry/rejected.jsonl` | 被拒回执 | 追加行 | `submission_rejected` |
@@ -69,7 +71,7 @@
 ### 1.1 变更流（推荐读法）
 
 1. `chain.jsonl` 只追加。读者保存“已处理到第 N 行”的游标，每次只读第 N+1 行起的新行。
-2. 每一行告诉你 `kind` 和 `path`：文件类（`case`、`inquiry`、`legacy`）读整个文件；行类（`ledger`、`outcome`、`decision`、`protocol`、`submission`、`submission_rejected`）表示该 `path` 末尾新增了一行——同一 `path` 的第 k 条链记录对应该文件第 k 行（从 1 起计）。
+2. 每一行告诉你 `kind` 和 `path`：文件类（`case`、`inquiry`、`legacy`）读整个文件；行类（`ledger`、`outcome`、`decision`、`protocol`、`submission`、`submission_rejected`、`structure`、`flow`）表示该 `path` 末尾新增了一行——同一 `path` 的第 k 条链记录对应该文件第 k 行（从 1 起计）。
 3. 可用链记录的 `content_sha256` 自行核对：文件类为整个文件字节的 sha256；行类为该行字节（含末尾 `\n`）的 sha256。
 4. `index/episodes/<到期日>.json` 是派生便利索引，其 `chain_lines` 说明它基于链的前多少行构建；它可能落后于链、可能被重建，**不得作为证据或冻结依据**。
 
@@ -326,3 +328,36 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 | `metric`、`effect`、`t` | 晋升时的验证依据 |
 | `provisional` | 是否为暂定晋升 |
 | `protocol_version` | 读数所属的协议版本 |
+
+## 追加（2026-11-11，义务地图第 1 步：docs/opus/32）
+
+两种新记录都只写直接观察到的东西，缺的数留 null，不估计。做市商是哪一方、强平价位都不知道，这里不记。行文件只追加、逐行入链；**不压缩**（压缩会破坏逐行校验）。
+
+### structure_snapshot@0.1：`structure/<到期 UTC 日>.jsonl`（kind=structure，入链）
+
+来源 Deribit `public/get_book_summary_by_currency`（`currency=BTC&kind=option`），一次请求覆盖全部到期日。范围：`at_ms < expiry_ms ≤ at_ms + 48 小时` 的每一期。频率：到期前 6 小时内每个存档轮次（10 分钟）一行，更早每 30 分钟一行。
+
+| 字段 | 含义 |
+|---|---|
+| `at_ms`、`expiry_ms`、`expiry`、`hours_to_expiry` | 快照时刻、到期时刻（08:00 UTC）、合约代码、剩余小时 |
+| `forward_usd`、`atm_iv_pct`、`expected_move_usd` | 取自 `profile`：远期（各行 `underlying_price` 中位数）、平值隐含波动、到期预期波动（远期 × IV × √年）；算不出为 null |
+| `strikes[]` | 每个行权价一项：`k`；`c_`/`p_` 前缀分别为 Call/Put 的 `oi`（持仓，BTC）、`iv`（标记隐含波动，%）、`vol24h`（交易所 24 小时滚动成交量，BTC）、`mark`（标记价，BTC）。该行权价没有某类合约或字段缺失为 null |
+| `profile` | 工作台 `astra_expiry_gamma_v1.profile()` 的 `walls`、`top`、`totals`，与页面和案卷 `L3.expiry_walls` 同口径。Gamma 前三与 Pin 是**派生读数**（按 BS 与标记 IV 计算，不分方向）；持仓前三是直接观察。`profile` 丢弃没有 IV 的行，因此它的持仓合计可能小于 `strikes` 之和 |
+
+### strike_flow@0.1：`flow/<到期 UTC 日>.jsonl`（kind=flow，入链）
+
+来源 Deribit `public/get_last_trades_by_currency_and_time`（`currency=BTC&kind=option&sorting=asc&count=1000`）。2026-11-11 实测：返回 `{trades, has_more}`，没有翻页游标，下一页从上一页最后一笔的时间戳（含）开始，按 `trade_id` 去重；**只能回溯约 24 小时**。每笔成交有 `trade_id`、`timestamp`、`instrument_name`、`direction`（主动方方向）、`amount`（BTC，= `contracts`）、`price`、`mark_price`、`iv`、`index_price`；大宗另有 `block_trade_id`、`block_trade_leg_count`、`block_rfq_id`；组合单的腿另有 `combo_id`、`combo_trade_id`。
+
+每个存档轮次、上一轮游标之后到 48 小时内到期的每一期各一行，**没有成交也写空行**：缺行表示那一轮没有采集，不表示没有成交。到期后的第一轮（08:00 那一轮）仍为刚到期的一期写最后一行，`to_ms` 截到到期时刻。同一期的相邻行首尾相接（上一行的 `to_ms` 等于下一行的 `from_ms`）。
+
+| 字段 | 含义 |
+|---|---|
+| `from_ms`、`to_ms` | 本行覆盖的成交时段 (`from_ms`, `to_ms`]：上一轮游标到本轮取到的位置，到期那一期截到到期时刻 |
+| `truncated` | 本轮最多取 10 页仍未取完；`to_ms` 只到已取到的最后一笔，下一轮接着取 |
+| `gap_from_ms` | 存档停机超过接口可回溯的 24 小时：从这个时刻到约 24 小时前的成交没有记录，不回补；否则为 null |
+| `skipped_trades` | 本轮读到的字段缺失或无法解析的成交笔数（按读取次数计，重叠区会重复读到） |
+| `rows[]` | 每个行权价 × Call/Put 一项：`buy_btc`、`sell_btc`、`n` 为普通单腿成交的**主动买**、**主动卖**量与笔数；`block_buy_btc`、`block_sell_btc`、`n_block` 为大宗；`combo_buy_btc`、`combo_sell_btc`、`n_combo` 为组合单的腿（方向属于整个组合，不并入单腿）；`max_trade_btc` 为最大单笔 |
+
+读法约束：`direction` 只说明主动方的方向，**不等于客户或做市商**；做市商之间、做市商主动对冲的成交同样计入。首次上线时游标设为上线时刻，不回补历史。每轮重读最近 5 分钟、按 `trade_id` 去重；发布时间晚于此的迟到成交可能漏记。
+
+`_state/state.json` 中的 `structure_last_ms`、`flow_cursor_ms`、`flow_recent_ids`、`flow_written` 是采集游标，不供研究使用；每写一行即保存该期已写到的位置，进程中途退出后不会重复写同一时段。单轮成交最多取 10 页或 20 秒，两个采集接口单次请求超时 8 秒；游标连续不前进时，本轮报告的 `errors` 记 `flow`。协议版本组件 `expiry_structure` 记录两种记录的版本。

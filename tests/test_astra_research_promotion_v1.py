@@ -140,7 +140,7 @@ def test_candidate_failure_does_not_repeat_validation(tmp_path, monkeypatch):
     deribit = ar.Deribit(lambda path, params: {"data": []})
     r1 = ar.tick(archive, now_ms=t0, view=None, fetch_case=lambda s: {}, deribit=deribit)
     ar.tick(archive, now_ms=t0 + 600_000, view=None, fetch_case=lambda s: {}, deribit=deribit)
-    assert len(runs) == 1 and r1["errors"][0]["step"] == "promotion_candidates"
+    assert len(runs) == 1 and "promotion_candidates" in [e["step"] for e in r1["errors"]]
 
 
 def test_case_not_frozen_when_readings_unavailable_and_locked_evaluated(tmp_path, monkeypatch):
