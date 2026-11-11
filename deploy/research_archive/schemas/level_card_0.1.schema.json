@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/level_card@0.1",
+  "title": "level_card@0.1 — levels/<expiry UTC day>.jsonl (chained, kind=level)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "rules",
+    "expiry_ms",
+    "expiry_day",
+    "round",
+    "side",
+    "read_at_ms",
+    "case_id",
+    "contract_key",
+    "index_usd",
+    "expected_move_usd",
+    "hours_to_expiry",
+    "short",
+    "levels",
+    "unknown",
+    "data_gaps",
+    "backfilled"
+  ],
+  "properties": {
+    "schema": {
+      "const": "level_card@0.1"
+    },
+    "rules": {
+      "type": "string"
+    },
+    "round": {
+      "enum": [
+        "r1",
+        "r2",
+        "late4h",
+        "late1h"
+      ]
+    },
+    "side": {
+      "enum": [
+        "put",
+        "call",
+        "structure"
+      ]
+    },
+    "read_at_ms": {
+      "type": "integer"
+    },
+    "expiry_ms": {
+      "type": "integer"
+    },
+    "case_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "contract_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "index_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "expected_move_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "short": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "k",
+        "distance_usd",
+        "distance_in_moves",
+        "is_oi_level",
+        "oi_levels_between",
+        "nearest_oi_between"
+      ]
+    },
+    "levels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "k",
+          "roles",
+          "role_class",
+          "distance_usd",
+          "distance_in_moves",
+          "before_24h",
+          "oi",
+          "oi_change",
+          "flow"
+        ],
+        "properties": {
+          "role_class": {
+            "enum": [
+              "leg",
+              "oi",
+              "derived",
+              "control"
+            ]
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "unknown": {
+      "const": [
+        "dealer_side",
+        "liquidation_levels"
+      ]
+    },
+    "data_gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "backfilled": {
+      "type": "boolean"
+    }
+  },
+  "description": "A level card: data at or before read_at_ms only. Dealer side and liquidation levels are unknown on every card."
+}

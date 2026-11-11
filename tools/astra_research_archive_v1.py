@@ -48,6 +48,7 @@ if __package__:
     from . import astra_event_calendar_v1 as event_calendar
     from . import astra_session_clock_v1 as session_clock
     from . import astra_expiry_structure_v1 as expiry_structure
+    from . import astra_level_behaviour_v1 as level_behaviour
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -60,6 +61,7 @@ else:
     import astra_event_calendar_v1 as event_calendar
     import astra_session_clock_v1 as session_clock
     import astra_expiry_structure_v1 as expiry_structure
+    import astra_level_behaviour_v1 as level_behaviour
 
 SCHEMA_ROW = "ledger_row@0.1"
 # research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
@@ -77,6 +79,7 @@ SCHEMA_DECISION = "decision_event@0.2"   # 0.2: actor, expiry, round, case, acti
 SCHEMA_INDEX = "episode_index@0.1"
 SCHEMA_PROTOCOL = "protocol_version@0.1"
 HOUR_MS = 3_600_000
+DAY_MS = 24 * HOUR_MS
 YEAR_MS = 365.0 * 24 * HOUR_MS
 BASE_INTERVAL_MS = 30 * 60_000
 NEAR_EXPIRY_MS = 3 * HOUR_MS
@@ -92,7 +95,7 @@ OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
 VALIDATION_AT_UTC = (9, 30)   # after the 08:00 settlement and its outcomes
 INDEX_KEEP_CLOSED_MS = 3 * 24 * HOUR_MS
 LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol", "validation",
-              "promotion", "structure", "flow"}
+              "promotion", "structure", "flow", "level"}
 FILE_KINDS = {"case", "inquiry", "legacy", "path"}
 PUBLIC = "https://www.deribit.com/api/v2/"
 PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data",
@@ -591,6 +594,93 @@ def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list
     return sorted(events, key=lambda e: (e["at_ms"], e["source"], e["ref_id"], e["event"] or ""))
 
 
+# backfill covers the two rounds only: from 20:00 UTC the day before expiry the candidate (and so every
+# frozen case) is already on the next expiry, so the late looks have no structure before collection
+BACKFILL_ROUND_HOURS = {"r1": 30, "r2": 18}
+
+
+def _merged_path(root: Path, expiry_ms: int) -> list[list[float]]:
+    """The minute index path of this expiry joined with the previous day's: each file holds the two
+    days before its own expiry, and round 1's 24 hours before the reading reach 54 hours back."""
+    points: dict[int, float] = {}
+    for e in (expiry_ms - DAY_MS, expiry_ms):
+        p = root / "paths" / f"{_utc(e).strftime('%Y-%m-%d')}.json.gz"
+        if p.exists():
+            try:
+                for t, v in json.loads(gzip.decompress(p.read_bytes()))["points"]:
+                    if v:
+                        points[int(t)] = float(v)
+            except Exception:
+                continue
+    return [[t, points[t]] for t in sorted(points)]
+
+
+def backfill_levels(archive: "Archive", *, now_ms: int) -> dict[str, Any]:
+    """Level cards and their expiry reviews written after the fact for settled expiries (docs/opus/34
+    §3.3), rows marked backfilled. The structure comes from the round's frozen case (L3.expiry_walls,
+    same expiry only); open interest, flow and the strike grid (controls) come from structure/ and
+    flow/ when collection already covered the reading, cut to the reading; otherwise they are absent
+    and data_gaps says before_collection. Written once per (expiry, round, side); a card whose review
+    is missing (a crash in between) gets its review from the stored card."""
+    root = archive.root
+    sel = research_scorecards.selection
+    outcomes = [o for p in sorted((root / "outcomes").glob("*.jsonl")) for o in sel._lines(p)]
+    settled = {}
+    for o in outcomes:
+        if o.get("status") == "settled" and isinstance(o.get("expiry_ms"), int) and o["expiry_ms"] <= now_ms:
+            settled.setdefault(o["expiry_ms"], {})[o.get("contract_key")] = o
+    report: dict[str, Any] = {"cards": 0, "reviews": 0, "skipped": 0, "no_case": 0, "errors": []}
+    for expiry in sorted(settled):
+        day = _utc(expiry).strftime("%Y-%m-%d")
+        rel = f"levels/{day}.jsonl"
+        stored = sel._lines(root / rel)
+        cards = {(r.get("round"), r.get("side")): r for r in stored if r.get("schema") == level_behaviour.CARD_SCHEMA}
+        reviewed = {(r.get("round"), r.get("side")) for r in stored if r.get("schema") == level_behaviour.REVIEW_SCHEMA}
+        points = _merged_path(root, expiry)
+        snapshots = sorted((r for r in sel._lines(root / "structure" / f"{day}.jsonl") if isinstance(r.get("at_ms"), int)),
+                           key=lambda r: r["at_ms"])
+        flow_rows = [r for r in sel._lines(root / "flow" / f"{day}.jsonl") if isinstance(r.get("to_ms"), int)]
+        delivery = next((o.get("delivery_price_usd") for o in settled[expiry].values()), None)
+        for rnd, hours in BACKFILL_ROUND_HOURS.items():
+            for side in ("put", "call"):
+                key = (rnd, side)
+                if key in cards and key in reviewed:
+                    report["skipped"] += 1
+                    continue
+                try:
+                    card = cards.get(key)
+                    if card is None:
+                        slot = expiry - hours * HOUR_MS
+                        case = sel._slot_case(root, slot, side)
+                        walls = case_entry(case, "L3.expiry_walls") if case else None
+                        if not isinstance(walls, Mapping) or walls.get("expiry_ms") != expiry:
+                            case, walls = None, {}
+                            report["no_case"] += 1
+                        contract = case_entry(case, "L1.contract") if case else None
+                        built = ((case or {}).get("build") or {}).get("built_at_ms")
+                        read = int(built if isinstance(built, int) else (case or {}).get("asof_ms") or slot)
+                        snaps = [r for r in snapshots if r["at_ms"] <= read]
+                        grid = next((r for r in reversed(snaps)), {}).get("strikes") or []
+                        card = level_behaviour.build_card(
+                            expiry_ms=expiry, rnd=rnd, side=side, read_at_ms=read, walls=walls,
+                            points=[p for p in points if p[0] <= read], case=case, contract=contract,
+                            strikes=[g["k"] for g in grid if isinstance(g, Mapping) and g.get("k") is not None],
+                            snapshots=snaps, flow_rows=[r for r in flow_rows if r["to_ms"] <= read],
+                            backfilled=True, extra_gaps=[] if snaps else ["before_collection"])
+                        archive.append_line(rel, card, at_ms=now_ms, kind="level")
+                        report["cards"] += 1
+                    outcome = settled[expiry].get(card["contract_key"]) if card.get("contract_key") else None
+                    review = level_behaviour.build_review(card, points, delivery_price_usd=delivery,
+                                                          payout_btc=(outcome or {}).get("payout_btc"),
+                                                          snapshots=snapshots, flow_rows=flow_rows)
+                    archive.append_line(rel, review, at_ms=now_ms, kind="level")
+                    report["reviews"] += 1
+                except Exception as exc:
+                    report["errors"].append({"expiry": day, "round": rnd, "side": side,
+                                             "error": type(exc).__name__, "detail": str(exc)[:160]})
+    return report
+
+
 def active_locked_keys(locked_episodes: list[Mapping[str, Any]]) -> set[str]:
     return {k for ep in locked_episodes if ep.get("status") == "active"
             for k in [instrument_key(ep.get("contract") or {})] if k}
@@ -613,6 +703,7 @@ def observed_versions() -> dict[str, str]:
             "round_info": _module_attr("astra_round_info_v1", "SCHEMA"),
             # the selection scorecard's rules; registered by the user as component selection_scorecard
             "selection_rules": research_scorecards.selection.RULES,
+            "level_rules": level_behaviour.RULES,
             "expiry_structure": f"{expiry_structure.SNAPSHOT_SCHEMA}+{expiry_structure.FLOW_SCHEMA}"}
 
 
@@ -1126,7 +1217,8 @@ def _http_json(url: str, token: str | None = None, timeout: int = 180) -> Any:
 def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
     parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register",
-                                            "promote", "retire", "readings", "scorecards", "reconcile-state"])
+                                            "promote", "retire", "readings", "scorecards", "reconcile-state",
+                                            "backfill-levels"])
     parser.add_argument("--hypothesis")
     parser.add_argument("--reading")
     parser.add_argument("--label", default="")
@@ -1183,6 +1275,9 @@ def _operator(args: argparse.Namespace, archive: Archive) -> None:
         return
     if args.command == "reconcile-state":
         print(json.dumps(reconcile_state(archive), ensure_ascii=False))
+        return
+    if args.command == "backfill-levels":
+        print(json.dumps(backfill_levels(archive, now_ms=int(time.time() * 1000)), ensure_ascii=False))
         return
     if args.command == "scorecards":
         print(json.dumps(research_scorecards.run(archive.root, now_ms=int(time.time() * 1000)), ensure_ascii=False))

@@ -60,6 +60,7 @@
 | `decisions/<UTC日>.jsonl` | `decision_event@0.1`；2026-11-11 起 `@0.2` | 追加行 | `decision` |
 | `structure/<到期 UTC 日>.jsonl` | `structure_snapshot@0.1`（2026-11-11 起） | 追加行 | `structure` |
 | `flow/<到期 UTC 日>.jsonl` | `strike_flow@0.1`（2026-11-11 起） | 追加行 | `flow` |
+| `levels/<到期 UTC 日>.jsonl` | `level_card@0.1` 与 `level_review@0.1`（同一文件两种行） | 追加行，写入后不改 | `level` |
 | `protocols/versions.jsonl` | `protocol_version@0.1` | 追加行 | `protocol` |
 | `registry/hypotheses.jsonl` 等 | 登记包装（见 §10） | 追加行 | `submission` |
 | `registry/rejected.jsonl` | 被拒回执 | 追加行 | `submission_rejected` |
@@ -391,3 +392,34 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 - §3 案卷顶层另有 `selection`（构建 0.1.9 起，2026-11-11 03:00 UTC 起的案卷）：`eligible`、`vetoes`、`cautions`、`unknown_cn`、`pricing`（保留价、两腿标记价差、费用、所需优势、最大损失等）、`round`（`astra_round_info_v1` 的轮次信息）。提问者看不到这一块。
 - §8 的组件另有 `inquirer_reading_view`、`inquiry_lens`、`scorecard_rules`、`ledger_fields`、`entry_warnings`、`session_clock`、`unsuitable`、`decision_path`、`round_info`、`expiry_structure`、`selection_rules`，以及仅由用户登记的 `rulebook`、`player_prompt`、`selection_scorecard`；`level_rules` 已在枚举里，位置卡上线（义务地图第 2 步）后由代码观察记录。
 - `episode_index_0.1.schema.json` 的标题路径已改为 `index/episodes/<到期 UTC 日>.json`。
+
+## 追加（2026-11-11，位置卡与到期对谱：docs/opus/34 §3、32 号 §3.3）
+
+规则版本 `level_rules@0.1`（`tools/astra_level_behaviour_v1.py`）。只写直接观察到的东西：**做市商方向与强平价位每张卡都列为未知**（`unknown`）；Gamma 前三与 Pin 是派生读数（`role_class: derived`）；成交只说主动买、主动卖。
+
+### 位置卡 `level_card@0.1`
+
+每个到期日每轮每侧一行（`round`：`r1` 剩约 30 小时、`r2` 剩约 18 小时；晚读 `late4h`、`late1h` 只看结构，`side: "structure"`，不关联保单）。
+
+| 字段 | 含义 |
+|---|---|
+| `read_at_ms` | 读牌时刻：轮次卡取该轮案卷的冻结时刻 `build.built_at_ms`；**卡上只用这一刻及之前的数据** |
+| `case_id`、`contract_key` | 该轮案卷与它的合约；没有案卷时为 null，`data_gaps` 含 `no_case` |
+| `index_usd`、`expected_move_usd`、`hours_to_expiry` | 读牌时的指数、本期预期波动（案卷 `L3.expiry_walls`）、剩余小时 |
+| `short` | 短腿：`k`；`distance_usd`、`distance_in_moves`（价外为正）；`is_oi_level`（短腿是否同侧持仓前三）；`oi_levels_between`（严格位于现价与短腿之间的持仓集中位个数，两侧持仓前三合并去重）；`nearest_oi_between`（其中离现价最近的一个） |
+| `levels[]` | 每个位置：`k`、`roles`（全部角色：`short` `long` `oi_call#n` `oi_put#n` `gamma_call#n` `gamma_put#n` `pin` `control`）、`role_class`（按 `leg > oi > derived > control` 取最高）、`distance_usd`/`distance_in_moves`（`k − 指数`，上方为正）、`before_24h`（读牌前 24 小时的行为）、`oi`（读牌时持仓 BTC）、`oi_change.{6h,24h}`、`flow.{6h,24h}` |
+| `unknown` | 固定 `["dealer_side", "liquidation_levels"]` |
+| `data_gaps` | 缺了什么：`no_case`、`strike_grid`（无行权价网格，故无对照位）、`oi_change`、`oi_at_read`（有快照但读牌前 40 分钟内没有）、`flow`、`path_before_24h`、`before_collection`、`index_at_read`、`expected_move` |
+| `backfilled` | 回算行为 true |
+
+位置上的行为（`before_24h`，对谱里的 `after`）：`crossings` 穿越次数；`closest_usd` 最近距离；`minutes_within_100usd`；`first_cross_ms`、`first_cross_dir`；`beyond_60m_usd` 首次穿越后 60 分钟内沿穿越方向最远；`back_within_60m`；`end_beyond`。定义与 `research_30/hands_extract.py` 一致（42 局 766 处逐字段核对相同）。指数路径到不了窗口两端 10 分钟内时为 null。
+
+对照位：每个短腿、保护腿或持仓集中位，上下各取最近一个既不是腿也不是持仓集中位的挂牌行权价。需要本期的行权价网格，只有结构快照记录（2026-11-11 起）；**回算卡没有对照位**。
+
+### 到期对谱 `level_review@0.1`
+
+每张卡一行：`delivery_price_usd`、`settle_in_moves`（交割价 − 读牌指数，以读牌时预期波动为单位）、`range_in_moves.{up,down}`、`path_complete`、`short.{touched, first_touch_ms, payout_btc}`（`payout_btc` 按 1 BTC）；`levels[]` 带 `after`（读牌到到期的行为）、`approach_no_cross`（没有穿越且最近距离不超过读牌时预期波动的 10%）、`oi_change_to_expiry`、`flow_to_expiry`。
+
+### 回算
+
+`backfill-levels` 命令为已结算的到期日一次性写 `r1`、`r2` 两轮的卡与对谱（不回算晚读：到期前一天 20:00 UTC 起候选已切到下一期，案卷里没有这一期的结构），行标 `backfilled: true`，已有的 `(round, side)` 跳过。结构取该轮案卷的 `L3.expiry_walls`（须是同一期）；读牌时已有采集的到期日，持仓、持仓变化、成交与行权价网格（对照位）从 `structure/`、`flow/` 截到读牌时刻取用，否则为空且 `data_gaps` 含 `before_collection`。卡已写而对谱缺失（中途退出）时，下次运行按已存的卡补写对谱。缺失一律留空：没有持仓前三时 `is_oi_level`、`oi_levels_between` 为 null，没有预期波动时 `approach_no_cross` 为 null。读牌前 24 小时的路径拼接前一天的 `paths/` 文件。

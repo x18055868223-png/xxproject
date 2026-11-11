@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/level_review@0.1",
+  "title": "level_review@0.1 — levels/<expiry UTC day>.jsonl (chained, kind=level)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "rules",
+    "expiry_ms",
+    "expiry_day",
+    "round",
+    "side",
+    "card_read_at_ms",
+    "case_id",
+    "delivery_price_usd",
+    "settle_in_moves",
+    "range_in_moves",
+    "path_complete",
+    "short",
+    "levels",
+    "backfilled"
+  ],
+  "properties": {
+    "schema": {
+      "const": "level_review@0.1"
+    },
+    "round": {
+      "enum": [
+        "r1",
+        "r2",
+        "late4h",
+        "late1h"
+      ]
+    },
+    "side": {
+      "enum": [
+        "put",
+        "call",
+        "structure"
+      ]
+    },
+    "delivery_price_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "settle_in_moves": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "path_complete": {
+      "type": "boolean"
+    },
+    "levels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "k",
+          "roles",
+          "role_class",
+          "after",
+          "approach_no_cross",
+          "oi_change_to_expiry",
+          "flow_to_expiry"
+        ]
+      }
+    }
+  },
+  "description": "What the index did after the card's reading, at the same levels, until expiry."
+}
