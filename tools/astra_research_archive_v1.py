@@ -49,6 +49,7 @@ if __package__:
     from . import astra_session_clock_v1 as session_clock
     from . import astra_expiry_structure_v1 as expiry_structure
     from . import astra_level_behaviour_v1 as level_behaviour
+    from . import astra_player_v1 as player
 else:
     import astra_case_file_v1 as case_file_core
     import astra_commercial_math_v17 as commercial_math
@@ -62,6 +63,7 @@ else:
     import astra_session_clock_v1 as session_clock
     import astra_expiry_structure_v1 as expiry_structure
     import astra_level_behaviour_v1 as level_behaviour
+    import astra_player_v1 as player
 
 SCHEMA_ROW = "ledger_row@0.1"
 # research fields added to ledger rows (user-approved 2026-10-20, Cici's pp-ledger-fields); additive
@@ -88,6 +90,7 @@ TRIGGER_STATES = ("space_gate", "m_die_level", "gamma_regime")
 INQUIRY_HOURS_UTC = (2, 14)
 INQUIRY_WINDOW_MS = 45 * 60_000
 INQUIRY_TIMEOUT_S = 240
+PLAYER_TIMEOUT_S = 300
 NEW_CONTRACT_INQUIRY_MS = 2 * HOUR_MS   # a contract with no questions yet gets them in its first hours
 NEW_CONTRACT_INQUIRY_DAILY_MAX = 8       # unscheduled runs per UTC day, both sides together
 OUTCOME_DELAY_MS = 10 * 60_000
@@ -793,6 +796,143 @@ def backfill_levels(archive: "Archive", *, now_ms: int, since_ms: int | None = N
     return report
 
 
+PLAYER_ROUND_HOURS = {"r1": 30, "r2": 18}
+PLAYER_ROUND_TOLERANCE_MS = HOUR_MS     # the case's hours to expiry must be within an hour of 30 / 18
+
+
+def _player_row(decisions_dir: Path, expiry_ms: int, side: str, rnd: str) -> dict[str, Any] | None:
+    """The player's stored decision for (expiry, side, round), from decisions/ (latest wins)."""
+    sel = research_scorecards.selection
+    found = None
+    for path in sorted(decisions_dir.glob("*.jsonl"))[-5:]:
+        for r in sel._lines(path):
+            if (r.get("actor") == "player" and r.get("expiry_ms") == expiry_ms and r.get("side") == side
+                    and r.get("round") == rnd):
+                found = r
+    return found
+
+
+def run_players(archive: "Archive", state: dict[str, Any], *, now_ms: int,
+                run_player: Callable[[Mapping[str, Any], str, Mapping[str, Any] | None], Mapping[str, Any] | None],
+                report: dict[str, Any]) -> int:
+    """The AI player on this round hour's frozen cases (docs/opus/35 §4): only cases the hard rules
+    let through (selection.eligible), at round 1 (02:00 UTC, about 30 h left) or round 2 (14:00 UTC,
+    about 18 h left); one call per case, marked running before the call; in round 2 not after a
+    round-1 accept of the same expiry and side. Each decision is one decision_event@0.2 row,
+    actor player, source shadow. A slot left over by a slow tick is taken by the next tick inside
+    the 45-minute window."""
+    if not (_utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS):
+        return 0
+    done = state.setdefault("player", {})
+    hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
+    written = 0
+    for slot_key, info in sorted(state.get("cases", {}).items()):
+        if not slot_key.startswith(hour + "|") or slot_key in done:
+            continue
+        side = slot_key.split("|")[1]
+        case = json.loads(gzip.decompress((archive.root / info["path"]).read_bytes()))
+        sel = case.get("selection") if isinstance(case.get("selection"), Mapping) else {}
+        contract = case_entry(case, "L1.contract") or {}
+        expiry, built = contract.get("expiry_ms"), (case.get("build") or {}).get("built_at_ms")
+        if sel.get("eligible") is not True:
+            done[slot_key] = "not_eligible"       # vetoed or undetermined: never sent to the model
+            continue
+        if not isinstance(expiry, int) or not isinstance(built, int):
+            done[slot_key] = "no_contract"
+            continue
+        rnd = "r1" if (expiry - built) >= 24 * HOUR_MS else "r2"
+        current = (sel.get("round") or {}).get("current")
+        asof = case.get("asof_ms")
+        # the same checks as the selection scorecard: a case it would drop is never played
+        off_round = abs((expiry - built) - PLAYER_ROUND_HOURS[rnd] * HOUR_MS) > PLAYER_ROUND_TOLERANCE_MS
+        if off_round or (current is not None and f"r{current}" != rnd):
+            done[slot_key] = "not_a_round"         # e.g. a non-daily candidate at this hour
+            continue
+        if not isinstance(asof, int) or built - asof > research_scorecards.selection.QUOTE_STALE_MS:
+            done[slot_key] = "stale_quote"
+            continue
+        previous = None
+        if rnd == "r2":
+            first = _player_row(archive.root / "decisions", expiry, side, "r1")
+            if first is not None:
+                previous = {"action": first.get("action"), "contract_key": first.get("contract_key"),
+                            "next_round_needs": ((first.get("detail") or {}).get("decision") or {}).get("next_round_needs")}
+                if first.get("action") == "accept":
+                    done[slot_key] = "accepted_in_round_1"
+                    continue
+        done[slot_key] = "running"
+        archive.save_state(state)
+        try:
+            result = run_player(case, rnd, previous)
+        except Exception as exc:
+            result = {"status": "ERROR", "issues": [{"code": "exception", "detail": type(exc).__name__}],
+                      "rulebook": player.RULEBOOK_VERSION, "prompt_version": player.PROMPT_VERSION}
+        if result is None:          # no key: the whole step is skipped, the slot stays open
+            done.pop(slot_key, None)
+            archive.save_state(state)
+            return written
+        decision = result.get("decision") if isinstance(result.get("decision"), Mapping) else {}
+        status = result.get("status")
+        action = decision.get("action") if status == "OK" else "invalid" if status == "INVALID" else "missing"
+        reason_types = (list(decision.get("deviation_types") or []) if action == "accept"
+                        else [decision.get("reject_reason")] if action == "reject" and decision.get("reject_reason") else [])
+        row = {"schema": SCHEMA_DECISION, "at_ms": now_ms, "source": "shadow", "actor": "player", "event": action,
+               "contract_key": f"{contract.get('short_instrument')}|{contract.get('long_instrument')}",
+               "side": side, "expiry_ms": expiry, "round": rnd, "case_id": case.get("case_id"), "action": action,
+               "reason_types": reason_types,
+               "rule_versions": {"rulebook": result.get("rulebook"), "selection": sel.get("path_version")},
+               "model": ((result.get("attempt") or {}).get("response_model") or result.get("requested_model")),
+               "prompt_version": result.get("prompt_version"), "ref_id": f"player:{case.get('case_id')}",
+               "detail": {"status": status, "decision": result.get("decision"), "issues": result.get("issues"),
+                          "usage": (result.get("attempt") or {}).get("usage"), "effort": result.get("effort"),
+                          "requested_model": result.get("requested_model")}}
+        archive.append_line(f"decisions/{_utc(now_ms).strftime('%Y-%m-%d')}.jsonl", row, at_ms=now_ms, kind="decision")
+        done[slot_key] = status or "unknown"
+        archive.save_state(state)
+        written += 1
+    return written
+
+
+def player_canary(root: Path, *, limit: int, run_player: Callable[[Mapping[str, Any], str, None], Mapping[str, Any]],
+                  out: Path) -> dict[str, Any]:
+    """The isolation test (docs/opus/35 §5): the player on the latest eligible cases, results written
+    to `out` only, never to the archive. Round-hour cases come first; other hours fill up the set
+    (their round is read from the hours left; their 本轮 block has no pass cost), alternating sides."""
+    eligible: list[tuple[int, Path, str, str]] = []
+    for path in sorted((root / "cases").glob("*/*.json.gz"), reverse=True):
+        case = json.loads(gzip.decompress(path.read_bytes()))
+        if ((case.get("selection") or {}).get("eligible")) is not True:
+            continue
+        expiry = (case_entry(case, "L1.contract") or {}).get("expiry_ms")
+        built = (case.get("build") or {}).get("built_at_ms") or case.get("asof_ms")
+        if not isinstance(expiry, int) or not isinstance(built, int) or expiry <= built:
+            continue
+        rnd = "r1" if expiry - built >= 24 * HOUR_MS else "r2"
+        priority = 0 if path.name[:2] in ("02", "14") else 1
+        eligible.append((priority, path, rnd, path.name.split("_")[1]))
+        if len(eligible) >= 4 * limit:
+            break
+    eligible.sort(key=lambda x: x[0])
+    picked, sides = [], {"put": 0, "call": 0}
+    for item in eligible:      # alternate sides so neither dominates the set
+        if len(picked) < limit and sides.get(item[3], 0) <= min(sides.values()) + 1:
+            picked.append(item)
+            sides[item[3]] = sides.get(item[3], 0) + 1
+    results = []
+    for priority, path, rnd, _ in picked:
+        try:   # one bad case never loses the others
+            case = json.loads(gzip.decompress(path.read_bytes()))
+            result = dict(run_player(case, rnd, None) or {})
+        except Exception as exc:
+            result = {"status": "ERROR", "issues": [{"code": "exception", "detail": type(exc).__name__}]}
+        result["case_path"] = str(path.relative_to(root))
+        result["off_round"] = bool(priority)      # not a round-hour case: no pass cost in its 本轮 block
+        results.append(result)
+    body = {"schema": "player_canary@0.1", "cases": len(results), "metrics": player.metrics(results), "results": results}
+    out.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+    return body["metrics"]
+
+
 def active_locked_keys(locked_episodes: list[Mapping[str, Any]]) -> set[str]:
     return {k for ep in locked_episodes if ep.get("status") == "active"
             for k in [instrument_key(ep.get("contract") or {})] if k}
@@ -816,6 +956,8 @@ def observed_versions() -> dict[str, str]:
             # the selection scorecard's rules; registered by the user as component selection_scorecard
             "selection_rules": research_scorecards.selection.RULES,
             "level_rules": level_behaviour.RULES,
+            # the AI player's rulebook and prompt (docs/opus/35); registered by the user before scoring
+            "rulebook": player.RULEBOOK_VERSION, "player_prompt": player.PROMPT_VERSION,
             "expiry_structure": f"{expiry_structure.SNAPSHOT_SCHEMA}+{expiry_structure.FLOW_SCHEMA}"}
 
 
@@ -984,7 +1126,9 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
          fetch_case: Callable[[str], Mapping[str, Any]], deribit: Deribit,
          run_inquiry: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
          inbox: tuple[Path, Path] | None = None,
-         decision_source: Callable[[], tuple[list[Any], list[Any]]] | None = None) -> dict[str, Any]:
+         decision_source: Callable[[], tuple[list[Any], list[Any]]] | None = None,
+         run_player: Callable[[Mapping[str, Any], str, Mapping[str, Any] | None], Mapping[str, Any] | None] | None = None
+         ) -> dict[str, Any]:
     state = archive.load_state()
     state.setdefault("closed_recent", {})
     state.setdefault("decisions_seen", [])
@@ -1219,6 +1363,13 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             state["inquiry"][ikey] = result.get("status")
             archive.save_state(state)
 
+    # the AI player's shadow track at the round hours (docs/opus/35); on its own like the inquirer
+    if run_player is not None:
+        try:
+            report["player"] = run_players(archive, state, now_ms=now_ms, run_player=run_player, report=report)
+        except Exception as exc:
+            report["errors"].append({"step": "player", "error": type(exc).__name__, "detail": str(exc)[:160]})
+
     if inbox is not None:
         try:
             report["inbox"] = research_inbox.ingest(
@@ -1344,7 +1495,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="research archive tick")
     parser.add_argument("command", choices=["tick", "verify", "backfill-legacy", "protocol-register",
                                             "promote", "retire", "readings", "scorecards", "reconcile-state",
-                                            "backfill-levels"])
+                                            "backfill-levels", "player-canary"])
     parser.add_argument("--hypothesis")
     parser.add_argument("--reading")
     parser.add_argument("--label", default="")
@@ -1354,6 +1505,8 @@ def main() -> None:
     parser.add_argument("--component")
     parser.add_argument("--version")
     parser.add_argument("--note", default="")
+    parser.add_argument("--limit", type=int, default=12)
+    parser.add_argument("--out", default="/tmp/player_canary.json")
     parser.add_argument("--root", default=os.environ.get("ASTRA_RESEARCH_ARCHIVE", "/var/lib/xxproject/research_archive"))
     parser.add_argument("--inbox", default=os.environ.get("ASTRA_RESEARCH_INBOX", "/var/lib/xxproject/research_inbox"))
     parser.add_argument("--receipts", default=os.environ.get("ASTRA_RESEARCH_RECEIPTS",
@@ -1363,6 +1516,17 @@ def main() -> None:
     archive = Archive(args.root)
     if args.command == "verify":
         print(json.dumps(archive.verify(), ensure_ascii=False))
+        return
+    if args.command == "player-canary":
+        # reads the archive, writes only --out; never chained, never scored (docs/opus/33 §6), so it runs
+        # outside the operator lock and never holds up the timer's ticks
+        key = os.environ.get("LLM_API_KEY") or os.environ.get("ASTRA_WORKBENCH_LLM_API_KEY")
+        model = os.environ.get("ASTRA_WORKBENCH_LLM_MODEL") or "deepseek-flash"
+        if not key:
+            raise SystemExit("no LLM key in the environment")
+        print(json.dumps(player_canary(archive.root, limit=args.limit, out=Path(args.out), run_player=lambda case, rnd, prev:
+              player.run(case, rnd=rnd, previous=prev, api_key=key, model=model, timeout=PLAYER_TIMEOUT_S)),
+              ensure_ascii=False))
         return
     if args.command != "tick":
         # operator commands write the same state and chain as the timer tick: never alongside it
@@ -1455,7 +1619,11 @@ def _tick_main(args: argparse.Namespace, archive: Archive) -> None:
                       run_inquiry=(lambda case: inquiry.run(case, api_key=key, model=model, timeout=INQUIRY_TIMEOUT_S))
                       if key else None,
                       inbox=(Path(args.inbox), Path(args.receipts)),
-                      decision_source=lambda: _workbench_decisions(Path(args.workbench_dir)))
+                      decision_source=lambda: _workbench_decisions(Path(args.workbench_dir)),
+                      run_player=(lambda case, rnd, prev: player.run(case, rnd=rnd, previous=prev, api_key=key,
+                                                                     model=model, timeout=PLAYER_TIMEOUT_S))
+                      # the shadow track starts only when the user has seen the isolation test (docs/opus/35 §5)
+                      if key and os.environ.get("ASTRA_PLAYER_ENABLED") == "1" else None)
         print(json.dumps(report, ensure_ascii=False))
     finally:
         lock.unlink(missing_ok=True)

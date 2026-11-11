@@ -45,7 +45,7 @@ except ImportError:  # script-style import
     import astra_research_validation_v1 as research_validation
     import astra_round_info_v1 as round_info
 
-RULES = "selection_rules@0.2"   # 0.2: mechanical control B from the level cards (docs/opus/34 §4)
+RULES = "selection_rules@0.3"   # 0.3: the AI player's groups from decisions/ (docs/opus/35); 0.2: control B
 SCHEMA = "selection_scorecard@0.1"
 HOUR_MS = 3_600_000
 ROUND_HOURS_LEFT = {"r1": 30, "r2": 18}    # astra_round_info_v1: 02:00 and 14:00 UTC for an 08:00 expiry
@@ -64,10 +64,13 @@ GROUPS = (("eligible_all", "可接受的全体一律接受", lambda s: s["verdic
           ("mech_oi_short_keep", "机械对照乙·维持：可接受且短腿不是同侧持仓前三",
            lambda s: s["verdict"] == "eligible" and s.get("short_is_oi_level") is False),
           ("mech_oi_short_withdraw", "机械对照乙·撤回：可接受且短腿是同侧持仓前三",
-           lambda s: s["verdict"] == "eligible" and s.get("short_is_oi_level") is True))
+           lambda s: s["verdict"] == "eligible" and s.get("short_is_oi_level") is True),
+          # the AI player's shadow actions on the same frozen case (docs/opus/35); invalid and missing
+          # actions are counted in coverage, never as a reject
+          ("player_accept", "AI 牌手接受", lambda s: s["verdict"] == "eligible" and s.get("player_action") == "accept"),
+          ("player_reject", "AI 牌手拒绝", lambda s: s["verdict"] == "eligible" and s.get("player_action") == "reject"),
+          ("player_pass", "AI 牌手第一轮过牌", lambda s: s["verdict"] == "eligible" and s.get("player_action") == "pass"))
 PENDING_GROUPS = (
-    ("player_accept", "AI 牌手接受", "第 6 步开跑"), ("player_reject", "AI 牌手拒绝", "第 6 步开跑"),
-    ("player_pass", "AI 牌手第一轮过牌", "第 6 步开跑"),
     ("screen_keep", "可接受 ∩ 位置筛维持", "第 7 步开跑"), ("screen_withdraw", "可接受 ∩ 位置筛撤回", "第 7 步开跑"),
     ("mech_distance", "机械对照甲：按短腿距离撤回", "第 7 步开跑"),
     ("player_accept_screen_keep", "牌手接受 ∩ 位置筛维持", "第 7 步开跑"),
@@ -269,7 +272,7 @@ def _empty_sample(expiry_ms: int, side: str, rnd: str) -> dict[str, Any]:
             "required_edge_mid": None, "distance_in_moves": None, "iv_change_6h_pp": None,
             "result_btc": None, "result_x": None, "expected_x": None, "luck_x": None,
             "touched_short": None, "crossed_long": None, "max_adverse_pct": None, "max_loss_basis": None,
-            "short_is_oi_level": None}
+            "short_is_oi_level": None, "player_action": None}
 
 
 def round_sample(root: Path, expiry_ms: int, side: str, rnd: str, outcomes_by_case: Mapping[str, Mapping[str, Any]],
@@ -406,6 +409,12 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
         for r in _lines(root / "levels" / f"{_day(e)}.jsonl"):
             if r.get("schema") == "level_card@0.1" and isinstance(r.get("short"), Mapping):
                 cards[(r.get("expiry_ms"), r.get("round"), r.get("side"))] = r
+    # the AI player's decision on the round's own case (actor player in decisions/)
+    played = {}
+    for path in sorted((root / "decisions").glob("*.jsonl")):
+        for r in _lines(path):
+            if r.get("actor") == "player" and r.get("case_id"):
+                played[r["case_id"]] = r.get("action")
     samples = []
     for e in expiries:
         for side in ("put", "call"):
@@ -415,6 +424,7 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
                     card = cards.get((e, rnd, side))
                     if card and sample["case_id"] and card.get("case_id") == sample["case_id"]:
                         sample["short_is_oi_level"] = card["short"].get("is_oi_level")
+                    sample["player_action"] = played.get(sample["case_id"]) if sample["case_id"] else None
                     samples.append(sample)
                 except Exception:
                     samples.append({**_empty_sample(e, side, rnd), "status": "unreadable"})
@@ -424,7 +434,9 @@ def build(root: str | Path, *, now_ms: int) -> dict[str, Any]:
     locks = human_locks(root, by_key)
     return {"schema": SCHEMA, "rules": RULES, "derived": True, "built_at_ms": now_ms,
             "coverage": {"expiry_days": len(expiries), "samples": len(samples), "by_status": by_status,
-                         "by_verdict": by_verdict},
+                         "by_verdict": by_verdict,
+                         "player": {a: sum(1 for s in samples if s["player_action"] == a)
+                                    for a in ("accept", "reject", "pass", "invalid", "missing")}},
             "groups": [{"id": gid, "title_cn": title, **_group([s for s in scored if keep(s)])}
                        for gid, title, keep in GROUPS],
             "pending_groups": [{"id": gid, "title_cn": title, "starts_at": when} for gid, title, when in PENDING_GROUPS],

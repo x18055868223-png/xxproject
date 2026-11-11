@@ -446,3 +446,24 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 ### 选择记分卡的机械对照乙（`selection_rules@0.2`）
 
 样本带 `short_is_oi_level`（取自同一轮、同一案卷的位置卡）；新增两组 `mech_oi_short_keep`（可接受且短腿不是同侧持仓前三）与 `mech_oi_short_withdraw`（可接受且短腿是同侧持仓前三）。机械对照甲（按短腿距离撤回、数量与位置筛相同）要等位置筛开跑，仍列在 `pending_groups`。
+
+## 追加（2026-11-11，AI 牌手影子轨：docs/opus/35）
+
+### 牌手的决策行（`decisions/`，`decision_event@0.2`，`actor: "player"`，`source: "shadow"`）
+
+- 何时写：02:00、14:00 UTC 轮次小时、整点后 45 分钟内，对这一小时冻结、且案卷 `selection.eligible` 为真的每一侧案卷调用一次牌手（被硬规则否决或未判定的不调用，不写行）；第一轮已接受的同一到期日同一侧，第二轮不再调用。开关为环境变量 `ASTRA_PLAYER_ENABLED=1`，没有密钥时整段跳过。
+- `round`：`r1`（案卷冻结时剩余约 30 小时）、`r2`（约 18 小时）。`case_id` 是牌手读的那份冻结案卷，选择记分卡按它连接样本。
+- `action`：`accept`、`reject`、`pass`（只在第一轮）；`invalid`（输出违反规则书或格式约定，不重试改写）；`missing`（没有得到回答：接口失败、超时、输出被截断或无法解析）。`invalid` 与 `missing` 不算拒绝。
+- `reason_types`：接受时为偏离理由类型（`timing` 时点、`fill` 成交、`structure` 结构、`state` 状态）；拒绝时为拒绝原因（`edge_too_high` 所需优势过高、`state_unfavourable` 状态不利、`no_deviation` 没有够得上的偏离理由、`cannot_judge` 无法判断、`veto_or_missing` 否决项或资料不足）。
+- `rule_versions.rulebook`：规则书版本（`rulebook@1.0`）；`prompt_version`：`player_prompt@0.1`；`model`：接口返回的模型名。
+- `detail`：`status`（`OK` `INVALID` `ERROR`）、`decision`（牌手的完整输出 `player_decision@0.1`：动作、原因、限价与有效期、所需优势、与保留价之差、依据（引用的案卷条目或「本轮」与读数、等级）、反面、失效条件、不知道的）、`issues`（校验问题；`untraced_number_flagged` 只是标记：文字里的数字在引用条目、「本轮」与自定限价中都查不到）、`usage`。
+
+牌手读到的是提问者同一读视图的案卷，去掉 `L8.guidance`（旧的程序解读）与 `L8.signal_recommendation`（信号层的策略建议），加「本轮」块（保留价、标记价差、费用、按对手价与中间价的毛信用、摩擦门槛、所需优势、保留价是否可靠、最大损失、提醒项、不知道的；第一轮另有过到下一轮的代价，第二轮另有第一轮的动作）。
+
+### 选择记分卡（`selection_rules@0.3`）
+
+样本带 `player_action`（同一 `case_id` 的牌手动作）；新增 `player_accept`、`player_reject`、`player_pass` 三组（都限于可接受的样本）；`coverage.player` 按动作计数（含 `invalid`、`missing`）。
+
+### 隔离测试
+
+`player-canary` 命令只读存档，结果写到 `--out` 指定的文件，不入链、不计分；不占操作锁，不挡定时任务。

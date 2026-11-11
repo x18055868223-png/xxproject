@@ -411,7 +411,7 @@ def test_mechanical_control_b_reads_the_rounds_level_card(tmp_path):
     groups = {g["id"]: g for g in built["groups"]}
     assert groups["mech_oi_short_withdraw"]["n"] == 1 and groups["mech_oi_short_keep"]["n"] == 0
     assert _sample(built)["short_is_oi_level"] is True and _sample(built, side="call")["short_is_oi_level"] is None
-    assert built["rules"] == "selection_rules@0.2"
+    assert built["rules"] == sel.RULES
 
 
 def test_mechanical_control_b_ignores_a_card_of_another_case_or_without_a_contract(tmp_path):
