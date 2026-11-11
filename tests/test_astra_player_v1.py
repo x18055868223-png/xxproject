@@ -46,7 +46,7 @@ def _case(cid="cf_p", side="put", built=R1 + 10_000, eligible=True, expiry=E):
 
 
 def _reject(**over):
-    d = {"action": "reject", "reject_reason": "edge_too_high", "deviation_types": [], "limit_btc": None,
+    d = {"action": "reject", "reject_reason": "pricing_unfavourable", "deviation_types": [], "limit_btc": None,
          "valid_minutes": None, "required_edge": None, "limit_minus_reservation_btc": None,
          "below_reservation_why": None, "pass_cost": None, "next_round_needs": None,
          "basis": [{"ref": "本轮", "reading": "所需优势按对手价 0.2059", "grade": "-"}],
@@ -82,6 +82,7 @@ def test_prompt_is_the_rulebook_word_for_word():
     body = doc[doc.index("## 4. 你的角色"):doc.index("# 第三部分 尚未落地的部分")].rstrip().rstrip("-").rstrip() + "\n"
     assert pl.rulebook().replace("\r\n", "\n") == body
     assert "判断顺序" in body and "程序的否决层目前没有这一条" not in body and "有人急需" not in body
+    assert "基本打法是承保" in body and "基本打法是拒绝" not in body
 
 
 def test_view_drops_strategy_advice_and_selection_and_adds_the_round_block():
@@ -119,8 +120,7 @@ def test_valid_reject_and_accept():
     (_accept(limit_minus_reservation_btc=0.0), "r1", "limit_gap_mismatch"),
     (_accept(valid_minutes=30), "r1", "valid_minutes_invalid"),
     (_accept(below_reservation_why=None), "r1", "below_reservation_unexplained"),
-    (_accept(deviation_types=[]), "r1", "accept_without_deviation_type"),
-    (_accept(basis=[{"ref": "L3.expiry_walls", "reading": "Pin 80500", "grade": "-"}]), "r1", "forbidden_accept_basis"),
+    (_accept(deviation_types=["vibes"]), "r1", "deviation_type_invalid"),
     (_reject(reject_reason="vibes"), "r1", "reject_reason_invalid"),
     (_accept(edge_why=""), "r1", "accept_without_edge_why"),
     (_reject(basis=[]), "r1", "basis_count"),
@@ -202,7 +202,7 @@ def test_players_run_once_on_eligible_round_cases_and_write_shadow_rows(tmp_path
     assert ar.run_players(archive, state, now_ms=R1 + 25 * M, run_player=run_player, report=report) == 0
     row = _rows(tmp_path)[0]
     assert (row["actor"], row["source"], row["action"], row["round"], row["case_id"]) == ("player", "shadow", "reject", "r1", "cf_put")
-    assert row["reason_types"] == ["edge_too_high"] and row["model"] == "deepseek-flash"
+    assert row["reason_types"] == ["pricing_unfavourable"] and row["model"] == "deepseek-flash"
     assert row["prompt_version"] == pl.PROMPT_VERSION and row["rule_versions"]["rulebook"] == pl.RULEBOOK_VERSION
     assert state["player"] == {"2026-11-11T02|put": "OK", "2026-11-11T02|call": "not_eligible"}
     assert archive.verify()["ok"] is True
@@ -337,4 +337,17 @@ def test_rulebook_grade_labels_with_notes_are_valid():
         assert pl.run(_case(), rnd="r1", api_key="k", model="m", transport=_transport(d))["status"] == "OK"
     d = _reject(basis=[{"ref": "本轮", "reading": "所需优势按对手价 0.2059", "grade": "高"}])
     assert pl.run(_case(), rnd="r1", api_key="k", model="m", transport=_transport(d))["status"] == "INVALID"
+
+
+def test_accept_needs_no_reason_type_under_the_default_to_underwrite():
+    r = pl.run(_case(), rnd="r1", api_key="k", model="m", transport=_transport(_accept(deviation_types=[])))
+    assert r["status"] == "OK" and pl.RULEBOOK_VERSION == "rulebook@1.1"
+    old = pl.run(_case(), rnd="r1", api_key="k", model="m", transport=_transport(_reject(reject_reason="no_deviation")))
+    assert old["status"] == "INVALID"                                # 1.0's reasons are gone
+
+
+def test_a_section_8_reading_in_an_accepts_grounds_is_flagged_only():
+    d = _accept(basis=[{"ref": "L3.expiry_walls", "reading": "Pin 80500", "grade": "-"}])
+    r = pl.run(_case(), rnd="r1", api_key="k", model="m", transport=_transport(d))
+    assert r["status"] == "OK" and any(i["code"] == "forbidden_accept_basis" for i in r["issues"])
 

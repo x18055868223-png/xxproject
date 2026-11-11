@@ -7,6 +7,8 @@ the page, never an order.
   entries (docs/opus/28 C6), plus a 本轮 block from the case's selection (round, the round-1
   action in round 2, reservation price, friction, required edge, pass cost, max loss). Hard rules
   run before: the archive sends only cases whose selection says eligible.
+- The play is to underwrite (rulebook 1.1): every side is accepted by default; a reject names the key
+  adverse evidence. The player stops at the decision and its limit (the lock); no exits.
 - Output: one player_decision@0.1. The program checks it and never asks for a rewrite (docs/opus/28
   step 5): enums, the action's required fields, refs that exist, no accept grounded on a reading
   rulebook §8 forbids, the limit price's required edge recomputed with the same formula
@@ -36,8 +38,8 @@ except ImportError:  # script-style import
     import astra_round_info_v1 as round_info
     import signal_llm_review as llm_core
 
-PROMPT_VERSION = "player_prompt@0.1"
-RULEBOOK_VERSION = "rulebook@1.0"
+PROMPT_VERSION = "player_prompt@0.2"   # 0.2: default to underwrite (rulebook 1.1)
+RULEBOOK_VERSION = "rulebook@1.1"
 SCHEMA = "player_decision@0.1"
 RESULT_SCHEMA = "astra_player_result@0.1"
 RULEBOOK_PATH = Path(__file__).with_name("astra_player_rulebook.md")
@@ -45,7 +47,7 @@ ROUND_BLOCK = "本轮"
 HIDDEN_REFS = ("L8.guidance", "L8.signal_recommendation")      # strategy advice, old program readings (C6)
 ACCEPT_FORBIDDEN = ("L3.", "L5.", "L2.baseline.")               # rulebook §8: never a reason to accept
 ACTIONS = ("accept", "reject", "pass")
-REJECT_REASONS = ("edge_too_high", "state_unfavourable", "no_deviation", "cannot_judge", "veto_or_missing")
+REJECT_REASONS = ("state_unfavourable", "pricing_unfavourable", "cannot_judge", "veto_or_missing")
 DEVIATIONS = ("timing", "fill", "structure", "state")
 GRADES = ("A", "B", "C", "X", "-")
 MIN_VALID_MINUTES = 60
@@ -53,20 +55,22 @@ EDGE_TOLERANCE = 0.01             # required edge, as a share
 LIMIT_GAP_TOLERANCE_BTC = 0.00002
 TEXT_FIELDS = ("counter", "invalid_if", "below_reservation_why", "pass_cost", "next_round_needs", "edge_why")
 # flagged, never invalid: they do not change what the player decided (untraced numbers, stray fields)
-SOFT_CODES = {"untraced_number_flagged", "stray_fields_flagged", "edge_as_percent_flagged"}
+# forbidden_accept_basis: under the default to underwrite an accept needs no reason, so citing a §8 reading in
+# its grounds describes the state; it is kept for attribution, never voids the decision (rulebook 1.1)
+SOFT_CODES = {"untraced_number_flagged", "stray_fields_flagged", "edge_as_percent_flagged", "forbidden_accept_basis"}
 DASHES = (None, "", "—", "–", "－", "-")
 REF_SPLIT = re.compile(r"\s*[/、,，]\s*")   # one basis may cite several entries: "L2.quote / 本轮"
 
 OUTPUT_SPEC = """【输出】只输出一个 JSON 对象，字段如下（键名照抄，值用中文；不要输出 JSON 之外的文字）：
 {
  "action": "accept | reject | pass",
- "reject_reason": "拒绝时必填，五选一：edge_too_high（所需优势过高） | state_unfavourable（状态不利） | no_deviation（没有够得上的偏离理由） | cannot_judge（无法判断） | veto_or_missing（否决项或资料不足）；其他动作为 null",
- "deviation_types": ["接受时至少一类：timing（时点） | fill（成交） | structure（结构） | state（状态）；其他动作为空列表"],
+ "reject_reason": "拒绝时必填，四选一：state_unfavourable（状态不利） | pricing_unfavourable（定价不利） | cannot_judge（无法判断） | veto_or_missing（否决项或资料不足）；其他动作为 null",
+ "deviation_types": ["接受时可选的接受理由类型：timing（时点） | fill（成交） | structure（结构） | state（状态）；不填为空列表；其他动作为空列表"],
  "limit_btc": "接受时必填：限价，毛信用，BTC（数字）；其他动作为 null",
  "valid_minutes": "接受时必填：限价有效期，分钟，不少于 60（整数）；其他动作为 null",
  "required_edge": "接受时必填：这个限价下的所需优势，按规则书 §7 第 5 条的公式算，用小数（0.18 表示 18%），限价不低于保留价时为 0；其他动作为 null",
  "limit_minus_reservation_btc": "接受时必填：限价 − 保留价，BTC（数字，可为负）；其他动作为 null",
- "edge_why": "接受时必填：证据为什么够得上这个限价下的所需优势（这一局最核心的判断）；其他动作为 null",
+ "edge_why": "接受时必填：一句话说明你为什么接受这个限价下的摩擦（所需优势）；其他动作为 null",
  "below_reservation_why": "接受且限价低于保留价时必填：为什么愿意低于市场估价成交；否则为 null",
  "pass_cost": "过牌时必填：等待的代价（用「本轮」给出的数）；否则为 null",
  "next_round_needs": "过牌时必填：第二轮要看到什么具体读数才接受；否则为 null",
@@ -186,8 +190,6 @@ def validate(decision: Any, view: Mapping[str, Any], rnd: str,
         stray.append("reject_reason")
     if not isinstance(devs, list) or any(t not in DEVIATIONS for t in devs):
         bad("deviation_type_invalid", value=devs)
-    elif action == "accept" and not devs:
-        bad("accept_without_deviation_type")
     elif action != "accept" and devs:
         stray.append("deviation_types")
     limit, minutes = _num(d.get("limit_btc")), d.get("valid_minutes")

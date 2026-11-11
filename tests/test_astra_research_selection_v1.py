@@ -428,3 +428,12 @@ def test_mechanical_control_b_ignores_a_card_of_another_case_or_without_a_contra
     lv.write_text(json.dumps(no_contract) + "\n", encoding="utf-8")
     assert _sample(sel.build(tmp_path, now_ms=E + H))["short_is_oi_level"] is None
 
+
+def test_groups_report_win_rate_and_simulated_pnl(tmp_path):
+    rel, c = _write_case(tmp_path, R1, "put", "cf_a", credit=0.003)
+    _write_outcome(tmp_path, c, [{"case_id": "cf_a", "asof_ms": R1, "path": rel}], 0.0)
+    _write_path(tmp_path, _flat_path())
+    g = {x["id"]: x for x in sel.build(tmp_path, now_ms=E + H)["groups"]}["eligible_all"]
+    assert g["win_share"] == 1.0 and g["sum_result_btc"] == pytest.approx(0.003)
+    assert "胜率" in sel.summary_text(sel.build(tmp_path, now_ms=E + H))
+

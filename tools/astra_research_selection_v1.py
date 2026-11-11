@@ -328,6 +328,10 @@ def _group(samples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         return {"n": x["n"], "expiry_days": x["expiry_days"], "mean_x": x["mean"], "sd_x": x["sd"],
                 "se_cluster_x": x["se_cluster"], "mean_expected_x": mean("expected_x"), "mean_luck_x": mean("luck_x"),
                 "loss_share": (sum(1 for r in rows if r["result_x"] < 0) / len(rows)) if rows else None,
+                # win rate and the simulated profit and loss at the immediate fill, held to expiry, after fees
+                "win_share": (sum(1 for r in rows if r["result_x"] > 0) / len(rows)) if rows else None,
+                "sum_result_btc": sum(r["result_btc"] for r in rows) if rows else None,
+                "sum_x": sum(r["result_x"] for r in rows) if rows else None,
                 "touched_short_share": share("touched_short"), "crossed_long_share": share("crossed_long")}
     return {**stats(samples),
             "by_round": {r: stats([s for s in samples if s["round"] == r]) for r in ROUND_HOURS_LEFT},
@@ -470,6 +474,7 @@ def summary_text(card: Mapping[str, Any]) -> str:
     for g in card["groups"]:
         lines.append(f"【{g['title_cn']}】n={g['n']}，到期日 {g['expiry_days']} 个")
         if g["n"]:
+            lines.append(f"  胜率 {pct(g['win_share'])}，模拟盈亏合计 {f(g['sum_result_btc'], 4)} BTC（{f(g['sum_x'])} 倍最大损失）")
             lines.append(f"  平均 {f(g['mean_x'])} 倍最大损失（聚类标准误 {f(g['se_cluster_x'])}），"
                          f"其中市场估价预期 {f(g['mean_expected_x'])}、运气 {f(g['mean_luck_x'])}；"
                          f"亏损局 {pct(g['loss_share'])}，触及短腿 {pct(g['touched_short_share'])}，"
