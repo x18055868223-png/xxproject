@@ -40,7 +40,9 @@
         "rulebook",
         "player_prompt",
         "selection_scorecard",
-        "expiry_structure"
+        "expiry_structure",
+        "selection_rules",
+        "level_rules"
       ]
     },
     "version": {

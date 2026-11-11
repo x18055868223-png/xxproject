@@ -57,7 +57,7 @@
 | `ledger/<UTC日>.jsonl` | `ledger_row@0.1` | 追加行 | `ledger` |
 | `inquiry/<UTC日>/<HH>_<side>_<case_id>.json` | `astra_inquiry_result@0.1` | 新文件 | `inquiry` |
 | `outcomes/<到期 UTC 日>.jsonl` | `episode_outcome@0.1` | 追加行，每张合约一行 | `outcome` |
-| `decisions/<UTC日>.jsonl` | `decision_event@0.1` | 追加行 | `decision` |
+| `decisions/<UTC日>.jsonl` | `decision_event@0.1`；2026-11-11 起 `@0.2` | 追加行 | `decision` |
 | `structure/<到期 UTC 日>.jsonl` | `structure_snapshot@0.1`（2026-11-11 起） | 追加行 | `structure` |
 | `flow/<到期 UTC 日>.jsonl` | `strike_flow@0.1`（2026-11-11 起） | 追加行 | `flow` |
 | `protocols/versions.jsonl` | `protocol_version@0.1` | 追加行 | `protocol` |
@@ -65,6 +65,7 @@
 | `registry/rejected.jsonl` | 被拒回执 | 追加行 | `submission_rejected` |
 | `legacy/…` | 存档上线前历史的一次性回填 | 新文件 | `legacy` |
 | `index/episodes/<到期日>.json` | `episode_index@0.1` | **每次 tick 重建覆盖，不入链** | — |
+| `scorecards/*.json`、`scorecards/*.txt` | 记分卡（含 2026-11-11 起的 `selection_scorecard@0.1`） | **每日重建覆盖，不入链** | — |
 | `receipts/<文件名>.receipt.json` | 提交回执 | 覆盖写，不入链 | — |
 | `_state/` | 服务器内部状态 | 不供研究使用 | — |
 
@@ -361,3 +362,32 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 读法约束：`direction` 只说明主动方的方向，**不等于客户或做市商**；做市商之间、做市商主动对冲的成交同样计入。首次上线时游标设为上线时刻，不回补历史。每轮重读最近 5 分钟、按 `trade_id` 去重；发布时间晚于此的迟到成交可能漏记。
 
 `_state/state.json` 中的 `structure_last_ms`、`flow_cursor_ms`、`flow_recent_ids`、`flow_written` 是采集游标，不供研究使用；每写一行即保存该期已写到的位置，进程中途退出后不会重复写同一时段。单轮成交最多取 10 页或 20 秒，两个采集接口单次请求超时 8 秒；游标连续不前进时，本轮报告的 `errors` 记 `flow`。协议版本组件 `expiry_structure` 记录两种记录的版本。
+
+## 追加（2026-11-11，选择记分卡与决策行 0.2：docs/opus/34 §2）
+
+### 选择记分卡 `scorecards/selection.json`（`selection_scorecard@0.1`）与 `selection_summary.txt`
+
+派生文件，与其他记分卡同一时点每日重建（09:30 UTC 之后），不入链；规则版本 `selection_rules@0.1`（协议登记的组件名为 `selection_scorecard`，代码观察到的组件名为 `selection_rules`，两者是同一套规则）。只描述，不判定。
+
+- 样本：每个已结算到期日 E × 侧 × 轮次。`r1` 取 `E − 30h` 所在 UTC 小时（02 点）冻结的该侧案卷，`r2` 取 `E − 18h`（14 点）。时间窗按冻结时刻 `build.built_at_ms` 判（整点后 40 分钟内）；`asof_ms` 是报价估值时刻，常在整点前几十秒，只要求不早于冻结 5 分钟。
+- `status`：`ok`；`missing_case`（该小时没有案卷）；`expiry_mismatch`；`outside_window`；`round_mismatch`（案卷 `selection.round.current` 与本轮不符）；`no_outcome`；`no_credit`（扣费净信用为空，如周五到期费用未知）；`no_max_loss`；`unreadable`（记录读不出，不影响其余样本）。只有 `ok` 的样本进组。`coverage.by_status` 按状态计数，`coverage.by_verdict` 按判定计数（两者独立）。同一小时有两份案卷时（只在状态丢失后可能出现），取窗内最早冻结的一份。
+- `verdict`：`eligible`（案卷 `selection.eligible` 为真）、`vetoed`、`undetermined`（无 `selection` 或判定为空；0.1.9 之前的案卷一律如此，不重建）。
+- 读数（按冻结案卷的立即成交、扣全部费用、持有到期）：`credit` = 案卷 `L1.economics.net_credit_after_fee_btc`（按数量 q）；`payout_btc` 按 1 BTC；`ML` = 案卷 `selection.pricing.max_loss_btc`（`q × 宽度 / S0 − 净收入`）；`mark` = `selection.pricing.mark_spread_btc`（按 q）。没有 `selection` 的案卷（0.1.9 之前，或建卷时核验路径失败）用同一个 `astra_round_info_v1.max_loss`、同样的输入（`L1.contract` 的数量与宽度、`L1.economics.valuation_spot_usd` 与扣费净信用）算 `ML`，`mark` 取两腿 `L2.book.*.mark_price` 之差乘 q（核验路径自身的兜底口径）；样本的 `max_loss_basis` 为 `selection` 或 `case_l1`。
+  - `result_btc = credit − q × payout_btc`；`result_x = result_btc / ML`（最大损失倍数，主口径）；
+  - `expected_x = (credit − mark) / ML`：出手时按市场估价的预期；`luck_x = (mark − q × payout_btc) / ML`：运气；`result_x = expected_x + luck_x`；
+  - `touched_short`、`crossed_long`、`max_adverse_pct`：冻结时刻到到期的指数路径，口径同前向验证（`_complete_after`，路径不完整为 null）；
+  - `iv_change_6h_pp`：同一合约（两条腿都相同的账本行）在冻结时刻与 6 小时后（各取该时刻及之前 40 分钟内最近的账本行）的短腿 `mark_iv` 之差，**隐含波动下降为正**（对卖方有利）。
+- `groups`：`eligible_all`（可接受的全体一律接受，主要对照）、`all_incl_vetoed`（全部可计分样本，只衡量硬规则的贡献）、`vetoed`；每组含 `n`、`expiry_days`、`mean_x`、`sd_x`、`se_cluster_x`（按到期日聚类的 CR1 标准误）、`mean_expected_x`、`mean_luck_x`、`loss_share`、`touched_short_share`、`crossed_long_share`，以及 `by_round`、`by_side`。`pending_groups` 列出牌手、位置筛、机械对照各组及其开始条件。
+- `human_locks`：每次 `lock_created`，取该合约在锁定时刻及之前 65 分钟内（案卷每小时冻结一次，一个间隔加余量）最近一份冻结案卷计分，`case_age_min` 记它早于锁定多少分钟；没有则 `no_case_at_lock`。窗口按到期结果里案卷的报价时刻 `asof_ms` 判（轮次样本按冻结时刻），两者都只取锁定之前的价格。`scored` 为可计分次数。不并入轮次样本。
+- `secondary`：在全部可计分样本（即 `all_incl_vetoed` 的样本）上，`iv_change_6h` 与 `result_x` 各自的 `n`、均值、聚类 t 值、按到期日顺序对半分后两半均值是否同号；供里程碑评审决定次级指标的删留。
+
+### 决策行 `decision_event@0.2`
+
+在 0.1 字段之外：`actor`（`human` `rule_veto` `player` `level_screen` `mech_distance` `mech_oi_short`）、`expiry_ms`、`round`（`r1` `r2` 或 null）、`case_id`、`action`、`reason_types`、`rule_versions`、`model`、`prompt_version`。`source` 增加 `shadow`（影子轨的模型行用）。锁定与 Decision Path 的行一律 `actor: "human"`，`round`、`case_id`、`action` 为 null：人的锁定按锁定时刻单独计分。**0.1 的旧行没有 `actor`，读作 `human`。** 到期日索引的决策摘要增加 `actor`。`_state` 的已见集合不再截断（工作台每轮交出全部历史决策，截断会让最旧的事件被反复重写）。
+
+### 勘误
+
+- §2 的 `kind` 另有 `validation`、`promotion`、`structure`、`flow`、`path`。
+- §3 案卷顶层另有 `selection`（构建 0.1.9 起，2026-11-11 03:00 UTC 起的案卷）：`eligible`、`vetoes`、`cautions`、`unknown_cn`、`pricing`（保留价、两腿标记价差、费用、所需优势、最大损失等）、`round`（`astra_round_info_v1` 的轮次信息）。提问者看不到这一块。
+- §8 的组件另有 `inquirer_reading_view`、`inquiry_lens`、`scorecard_rules`、`ledger_fields`、`entry_warnings`、`session_clock`、`unsuitable`、`decision_path`、`round_info`、`expiry_structure`、`selection_rules`，以及仅由用户登记的 `rulebook`、`player_prompt`、`selection_scorecard`；`level_rules` 已在枚举里，位置卡上线（义务地图第 2 步）后由代码观察记录。
+- `episode_index_0.1.schema.json` 的标题路径已改为 `index/episodes/<到期 UTC 日>.json`。

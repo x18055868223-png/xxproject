@@ -31,10 +31,12 @@ if __package__:
     from . import astra_research_validation_v1 as research_validation
     from . import astra_research_intraday_exit_v1 as intraday_exit
     from . import astra_inquiry_lens_v1 as lens_core
+    from . import astra_research_selection_v1 as selection
 else:
     import astra_research_validation_v1 as research_validation
     import astra_research_intraday_exit_v1 as intraday_exit
     import astra_inquiry_lens_v1 as lens_core
+    import astra_research_selection_v1 as selection
 
 SCORECARD_RULES = "scorecard_rules@0.2"   # 0.2: inquiry by_card (docs/opus/19), research only
 SCHEMA_VIEWS = "view_scorecard@0.1"
@@ -362,4 +364,15 @@ def run(root: str | Path, *, now_ms: int) -> dict[str, Any]:
     except Exception as exc:
         report["intraday_exit_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         (root / "scorecards" / "intraday_exit.json").unlink(missing_ok=True)   # never leave a stale card
+    try:   # the selection scorecard (docs/opus/34 §2) never takes the other cards down either
+        card = selection.build(root, now_ms=now_ms)
+        _write(root / "scorecards" / "selection.json", card)
+        text = root / "scorecards" / "selection_summary.txt"
+        text.with_name(text.name + ".tmp").write_text(selection.summary_text(card), encoding="utf-8")
+        text.with_name(text.name + ".tmp").replace(text)
+        report["selection_samples"] = card["coverage"]["samples"]
+    except Exception as exc:
+        report["selection_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        for name in ("selection.json", "selection_summary.txt"):
+            (root / "scorecards" / name).unlink(missing_ok=True)
     return report

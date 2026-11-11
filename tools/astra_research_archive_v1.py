@@ -73,7 +73,7 @@ TAKER_FEE_PRICE_CAP = 0.125
 EVENT_LOOKAHEAD_MS = 7 * 24 * 3_600_000
 SCHEMA_OUTCOME = "episode_outcome@0.1"
 SCHEMA_CHAIN = "archive_chain@0.1"
-SCHEMA_DECISION = "decision_event@0.1"
+SCHEMA_DECISION = "decision_event@0.2"   # 0.2: actor, expiry, round, case, action (docs/opus/34 §2.4)
 SCHEMA_INDEX = "episode_index@0.1"
 SCHEMA_PROTOCOL = "protocol_version@0.1"
 HOUR_MS = 3_600_000
@@ -557,14 +557,18 @@ def instrument_key(contract: Mapping[str, Any]) -> str | None:
 
 
 def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """User-side decision events from the workbench: lock created / stopped, Decision Path rows."""
+    """User-side decision events from the workbench: lock created / stopped, Decision Path rows.
+    All are the human's (decision_event@0.2): a lock is scored at its own instant, not as a round,
+    so round, case and action stay empty."""
     events: list[dict[str, Any]] = []
+    human = {"actor": "human", "round": None, "case_id": None, "action": None}
     for ep in locked_episodes:
         contract = ep.get("contract") or {}
         key = instrument_key(contract)
         if not key or not ep.get("episode_id"):
             continue
-        base = {"source": "lock", "contract_key": key, "side": contract.get("side"), "ref_id": ep["episode_id"]}
+        base = {**human, "source": "lock", "contract_key": key, "side": contract.get("side"),
+                "expiry_ms": contract.get("expiry_ms"), "ref_id": ep["episode_id"]}
         if isinstance(ep.get("created_at_ms"), int):
             events.append({**base, "event": "lock_created", "at_ms": ep["created_at_ms"],
                            "detail": {"candidate_id": ep.get("candidate_id"),
@@ -581,8 +585,8 @@ def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list
                                           "settled_after", "entry_after_fee_btc", "outcome", "path_version",
                                           "au_mode", "step_context", "v_items", "limit", "plan")
                   if row.get(k) is not None}
-        events.append({"source": "decision_path", "contract_key": key, "side": contract.get("side"),
-                       "ref_id": row["verification_id"], "event": row.get("event"), "at_ms": row["at_ms"],
+        events.append({**human, "source": "decision_path", "contract_key": key, "side": contract.get("side"),
+                       "expiry_ms": contract.get("expiry_ms"), "ref_id": row["verification_id"], "event": row.get("event"), "at_ms": row["at_ms"],
                        "detail": detail})
     return sorted(events, key=lambda e: (e["at_ms"], e["source"], e["ref_id"], e["event"] or ""))
 
@@ -607,6 +611,8 @@ def observed_versions() -> dict[str, str]:
             "unsuitable": _module_attr("astra_unsuitable_v1", "SCHEMA"),
             "decision_path": _module_attr("astra_decision_path_v1", "PATH_VERSION"),
             "round_info": _module_attr("astra_round_info_v1", "SCHEMA"),
+            # the selection scorecard's rules; registered by the user as component selection_scorecard
+            "selection_rules": research_scorecards.selection.RULES,
             "expiry_structure": f"{expiry_structure.SNAPSHOT_SCHEMA}+{expiry_structure.FLOW_SCHEMA}"}
 
 
@@ -826,7 +832,7 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
                 record = state["contracts"].get(event["contract_key"])
                 if record is not None:
                     record.setdefault("decisions", []).append(
-                        {k: event[k] for k in ("source", "event", "at_ms", "ref_id")})
+                        {k: event[k] for k in ("source", "event", "at_ms", "ref_id", "actor")})
                 report["decisions"] += 1
             archive.save_state(state)
         except Exception as exc:
@@ -1026,7 +1032,8 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
             report["errors"].append({"step": "scorecards", "error": type(exc).__name__, "detail": str(exc)[:160]})
 
     state["outcomes_done"] = state["outcomes_done"][-2000:]
-    state["decisions_seen"] = state["decisions_seen"][-5000:]
+    # decisions_seen is never trimmed: the workbench hands over every past decision each tick, so a
+    # trimmed set would rewrite the oldest ones forever (decisions are few: tens a month)
     for name in ("cases", "inquiry"):   # slot keys sort by hour; keep the recent ones
         state[name] = dict(sorted(state[name].items())[-500:])
     state["closed_recent"] = {k: v for k, v in state["closed_recent"].items()

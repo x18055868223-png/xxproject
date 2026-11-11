@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/decision_event@0.2",
+  "title": "decision_event@0.2 — one decision by one actor (human lock / decision path; shadow actors later)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "at_ms",
+    "source",
+    "event",
+    "contract_key",
+    "side",
+    "ref_id",
+    "detail",
+    "actor",
+    "expiry_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "decision_event@0.2"
+    },
+    "at_ms": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "source": {
+      "enum": [
+        "lock",
+        "decision_path",
+        "shadow"
+      ]
+    },
+    "event": {
+      "type": "string",
+      "examples": [
+        "lock_created",
+        "lock_stopped",
+        "concluded",
+        "expired_open",
+        "settled"
+      ]
+    },
+    "contract_key": {
+      "type": "string",
+      "pattern": "^[^|]+\\|[^|]+$",
+      "description": "<short_instrument>|<long_instrument>"
+    },
+    "side": {
+      "enum": [
+        "put",
+        "call"
+      ]
+    },
+    "ref_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "lock episode_id, decision path verification_id, or <actor>:<case_id> for shadow rows"
+    },
+    "detail": {
+      "type": "object"
+    },
+    "actor": {
+      "enum": [
+        "human",
+        "rule_veto",
+        "player",
+        "level_screen",
+        "mech_distance",
+        "mech_oi_short"
+      ],
+      "description": "who decided; lock and decision_path rows are human. 0.1 rows (no actor) read as human"
+    },
+    "expiry_ms": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "contract expiry, UTC epoch ms"
+    },
+    "round": {
+      "enum": [
+        "r1",
+        "r2",
+        null
+      ],
+      "description": "r1 = 02:00 UTC round (about 30 h left), r2 = 14:00 UTC (about 18 h); null for human locks, scored at their own instant"
+    },
+    "case_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "the frozen case the decision read; null for human rows"
+    },
+    "action": {
+      "enum": [
+        "accept",
+        "reject",
+        "pass",
+        "keep",
+        "withdraw",
+        "cannot_read",
+        "missing",
+        "invalid",
+        null
+      ]
+    },
+    "reason_types": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "rule_versions": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "rule versions in force for this actor"
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "model rows only"
+    },
+    "prompt_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "model rows only"
+    }
+  },
+  "description": "One line in decisions/<UTC day of at_ms>.jsonl. Dedup key source|ref_id|event|at_ms; shadow writers dedup by (actor, case_id)."
+}

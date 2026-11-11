@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xxproject/selection_scorecard@0.1",
+  "title": "selection_scorecard@0.1 — scorecards/selection.json (derived, rebuilt daily, not chained)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "rules",
+    "derived",
+    "built_at_ms",
+    "coverage",
+    "groups",
+    "pending_groups",
+    "human_locks",
+    "secondary",
+    "samples",
+    "note_cn"
+  ],
+  "properties": {
+    "schema": {
+      "const": "selection_scorecard@0.1"
+    },
+    "rules": {
+      "type": "string"
+    },
+    "derived": {
+      "const": true
+    },
+    "built_at_ms": {
+      "type": "integer"
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "expiry_days",
+        "samples",
+        "by_status",
+        "by_verdict"
+      ]
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title_cn",
+          "n",
+          "expiry_days",
+          "mean_x",
+          "se_cluster_x",
+          "by_round",
+          "by_side"
+        ]
+      }
+    },
+    "pending_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title_cn",
+          "starts_at"
+        ]
+      }
+    },
+    "human_locks": {
+      "type": "object",
+      "required": [
+        "n",
+        "scored",
+        "items"
+      ]
+    },
+    "secondary": {
+      "type": "object"
+    },
+    "samples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "expiry_day",
+          "expiry_ms",
+          "side",
+          "round",
+          "case_id",
+          "status",
+          "verdict",
+          "result_x"
+        ],
+        "properties": {
+          "side": {
+            "enum": [
+              "put",
+              "call"
+            ]
+          },
+          "round": {
+            "enum": [
+              "r1",
+              "r2"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "missing_case",
+              "expiry_mismatch",
+              "outside_window",
+              "round_mismatch",
+              "no_outcome",
+              "no_credit",
+              "no_max_loss",
+              "unreadable"
+            ]
+          },
+          "verdict": {
+            "enum": [
+              "eligible",
+              "vetoed",
+              "undetermined",
+              null
+            ]
+          },
+          "result_x": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "expected_x": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "luck_x": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "note_cn": {
+      "type": "string"
+    }
+  }
+}

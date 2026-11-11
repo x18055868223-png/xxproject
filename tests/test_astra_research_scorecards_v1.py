@@ -116,7 +116,7 @@ def test_run_writes_both_cards_and_empty_archive_is_fine(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
     assert sc.run(empty, now_ms=1) == {"views_scored": 0, "reviews": 0, "unmatched_reviews": 0,
-                                      "intraday_exit_rows": 0}
+                                      "intraday_exit_rows": 0, "selection_samples": 0}
     root = _archive(tmp_path)
     assert sc.run(root, now_ms=2)["views_scored"] == 4
     assert json.loads((root / "scorecards" / "views.json").read_text(encoding="utf-8"))["schema"] == "view_scorecard@0.1"

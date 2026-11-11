@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "xxproject/episode_index@0.1",
-  "title": "episode_index@0.1 — derived per-contract index (index/episodes.json)",
+  "title": "episode_index@0.1 — derived per-contract index (index/episodes/<expiry UTC day>.json)",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -143,7 +143,8 @@
           "type": "array",
           "items": {
             "type": "object"
-          }
+          },
+          "description": "summaries {source, event, at_ms, ref_id, actor}; actor absent on summaries written before decision_event@0.2 (read as human)"
         },
         "outcome": {
           "oneOf": [
