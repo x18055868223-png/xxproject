@@ -335,7 +335,7 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 
 ### structure_snapshot@0.1：`structure/<到期 UTC 日>.jsonl`（kind=structure，入链）
 
-来源 Deribit `public/get_book_summary_by_currency`（`currency=BTC&kind=option`），一次请求覆盖全部到期日。范围：`at_ms < expiry_ms ≤ at_ms + 48 小时` 的每一期。频率：到期前 6 小时内每个存档轮次（10 分钟）一行，更早每 30 分钟一行。
+来源 Deribit `public/get_book_summary_by_currency`（`currency=BTC&kind=option`），一次请求覆盖全部到期日。范围：`at_ms < expiry_ms ≤ at_ms + 56 小时` 的每一期（2026-11-11 起；此前为 48 小时。第一轮在到期前约 30 小时，56 小时保证它往回有完整的 24 小时；日度合约在到期前 96 小时挂牌）。频率：到期前 6 小时内每个存档轮次（10 分钟）一行，更早每 30 分钟一行。
 
 | 字段 | 含义 |
 |---|---|
@@ -348,7 +348,7 @@ UTC 02、14 时（前 45 分钟内）对该小时新冻结案卷运行；另外�
 
 来源 Deribit `public/get_last_trades_by_currency_and_time`（`currency=BTC&kind=option&sorting=asc&count=1000`）。2026-11-11 实测：返回 `{trades, has_more}`，没有翻页游标，下一页从上一页最后一笔的时间戳（含）开始，按 `trade_id` 去重；**只能回溯约 24 小时**。每笔成交有 `trade_id`、`timestamp`、`instrument_name`、`direction`（主动方方向）、`amount`（BTC，= `contracts`）、`price`、`mark_price`、`iv`、`index_price`；大宗另有 `block_trade_id`、`block_trade_leg_count`、`block_rfq_id`；组合单的腿另有 `combo_id`、`combo_trade_id`。
 
-每个存档轮次、上一轮游标之后到 48 小时内到期的每一期各一行，**没有成交也写空行**：缺行表示那一轮没有采集，不表示没有成交。到期后的第一轮（08:00 那一轮）仍为刚到期的一期写最后一行，`to_ms` 截到到期时刻。同一期的相邻行首尾相接（上一行的 `to_ms` 等于下一行的 `from_ms`）。
+每个存档轮次、上一轮游标之后到 56 小时内到期的每一期各一行，**没有成交也写空行**：缺行表示那一轮没有采集，不表示没有成交。到期后的第一轮（08:00 那一轮）仍为刚到期的一期写最后一行，`to_ms` 截到到期时刻。同一期的相邻行首尾相接（上一行的 `to_ms` 等于下一行的 `from_ms`）。
 
 | 字段 | 含义 |
 |---|---|

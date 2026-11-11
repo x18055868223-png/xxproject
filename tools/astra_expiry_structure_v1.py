@@ -2,7 +2,7 @@
 
 Two records, both direct observations, kept until each expiry settles:
 
-- structure snapshot: every expiry within the next 48 hours, each strike's open interest, mark IV,
+- structure snapshot: every expiry within the next 56 hours, each strike's open interest, mark IV,
   24h volume and mark price (one public book-summary request covers all expiries), plus the
   workbench's own profile() of that expiry so walls and pin use the same definition as the page.
   Every archive tick in the last 6 hours before an expiry, every 30 minutes before that.
@@ -37,7 +37,10 @@ except ImportError:  # script-style import
 SNAPSHOT_SCHEMA = "structure_snapshot@0.1"
 FLOW_SCHEMA = "strike_flow@0.1"
 HOUR_MS = 3_600_000
-WINDOW_MS = 48 * HOUR_MS            # expiries recorded: now < expiry <= now + 48h
+# expiries recorded: now < expiry <= now + 56h. Round 1 sits about 30 h before expiry; its 24 h
+# windows need data from 54 h out, plus the 40 min snapshot tolerance (docs/opus/33 §7.10).
+# Daily expiries are listed 96 h ahead (measured 2026-11-11), so the data exists.
+WINDOW_MS = 56 * HOUR_MS
 LATE_MS = 6 * HOUR_MS               # inside this, a snapshot every tick
 EARLY_EVERY_MS = 30 * 60_000        # before it, one every 30 minutes
 JITTER_MS = 60_000                  # timer slack: a tick 29.5 minutes after the last still counts
@@ -85,7 +88,7 @@ def strike_table(rows: Sequence[Mapping[str, Any]], *, expiry_ms: int) -> list[d
 
 
 def expiries_in_window(names: Iterable[Any], now_ms: int, *, after_ms: int | None = None) -> list[int]:
-    """Expiries (ms) among instrument names with after < expiry <= now + 48h, ascending; `after`
+    """Expiries (ms) among instrument names with after < expiry <= now + 56h, ascending; `after`
     defaults to now. The flow passes its cursor, so an expiry that settled since the last tick still
     gets its last minutes."""
     low = now_ms if after_ms is None else after_ms

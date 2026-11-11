@@ -14,7 +14,7 @@ import astra_research_archive_v1 as ar
 H = 3_600_000
 E1 = 1_794_470_400_000            # 2026-11-12 08:00 UTC
 E2 = E1 + 24 * H                  # 2026-11-13 08:00 UTC
-E9 = E1 + 7 * 24 * H              # outside the 48h window
+E9 = E1 + 7 * 24 * H              # outside the 56h window
 NOW = E1 - 20 * H                 # 2026-11-11 12:00 UTC
 
 
@@ -73,6 +73,10 @@ def test_strike_table_keeps_a_row_profile_drops_and_leaves_missing_numbers_empty
 def test_window_and_cadence():
     names = [r["instrument_name"] for r in _rows()]
     assert es.expiries_in_window(names, NOW) == [E1, E2]
+    # 56 h: round 1 (30 h before expiry) has a full 24 h window behind it (docs/opus/33 §7.10)
+    assert es.WINDOW_MS == 56 * H
+    assert es.expiries_in_window(names, E2 - 56 * H) == [E1, E2]
+    assert es.expiries_in_window(names, E2 - 56 * H - 1) == [E1]
     assert es.snapshot_due(None, E2, NOW)
     assert not es.snapshot_due(NOW - 20 * 60_000, E2, NOW)
     assert es.snapshot_due(NOW - 29 * 60_000 - 30_000, E2, NOW)          # timer slack

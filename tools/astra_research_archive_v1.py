@@ -8,7 +8,7 @@ One tick (every 10 minutes from a systemd timer) does what is due, in this order
             last 3 hours before expiry
 - outcomes: after expiry, the delivery price, the payout, each frozen case's result, and
             the 1-minute index path statistics from first sighting to expiry
-- structure / flow: every expiry within 48 hours, each strike's open interest and quotes, and the
+- structure / flow: every expiry within 56 hours, each strike's open interest and quotes, and the
             trades since the last tick summed per strike (docs/opus/32 step 1)
 - inquiry:  at the scheduled hours (UTC 02, 14), the inquirer's output for that hour's case
             (last, so a slow model call never costs the ledger or outcomes their tick)
@@ -708,7 +708,7 @@ def write_index(archive: Archive, state: Mapping[str, Any], *, now_ms: int) -> N
 
 
 def collect_structure(archive: Archive, state: dict[str, Any], deribit: Deribit, now_ms: int) -> tuple[int, list[str]]:
-    """Structure snapshots of the expiries within 48 hours that are due; (lines written, instrument names)."""
+    """Structure snapshots of the expiries within 56 hours that are due; (lines written, instrument names)."""
     rows = deribit.book_summary()
     names = [str(r.get("instrument_name")) for r in rows]
     last = state.setdefault("structure_last_ms", {})
@@ -730,7 +730,7 @@ def collect_structure(archive: Archive, state: dict[str, Any], deribit: Deribit,
 
 def collect_flow(archive: Archive, state: dict[str, Any], deribit: Deribit, now_ms: int, names: list[str]) -> int:
     """Trades since the cursor, one strike_flow row per expiry (empty rows too), for every expiry after
-    the cursor and within 48 hours: one that settled since the last tick still gets its last minutes,
+    the cursor and within 56 hours: one that settled since the last tick still gets its last minutes,
     its row ending at expiry. The first run only sets the cursor: no history is fetched back. Each
     expiry's written end is saved with its line, so a crash in between never writes a window twice."""
     cursor = state.get("flow_cursor_ms")
