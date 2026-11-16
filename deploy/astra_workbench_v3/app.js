@@ -32,7 +32,7 @@ const state = {
   // Decision Path: the session on screen (a frozen policy being verified)
   dp: { session: null, busy: null, error: null, confirm: null },
   // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
-  iq: { cache: {}, last: {}, mode: "review", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
+  iq: { cache: {}, last: {}, mode: "player", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
   player: { cards: [], ref: null, detail: null, originals: null, expanded: new Set(), seq: 0, version: 0 },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
@@ -199,8 +199,7 @@ function renderStrip() {
   const lk = $("lock-state");
   lk.hidden = !activeLocks;
   if (activeLocks) setLamp(lk, "ok", `追踪中 ${activeLocks}`);
-  const b = get(v, "manual_review_state.daily_http_budget") || {};
-  $("budget").textContent = `今日复核 ${b.http_calls_used ?? 0}/${b.http_calls_limit ?? "—"}`;
+  if ($("budget")) $("budget").hidden = true;
   $("refreshed").textContent = state.error ? (busy(state.error) ? "繁忙，稍后重试" : "读取失败") : `更新于 ${ago(v.updated_at_ms)}`;
 }
 
@@ -890,101 +889,24 @@ function holdAudit(side) {
 
 function renderAudit() {
   renderAuditMain();
-  const box = $("audit");
-  const hold = state.view && state.iq.mode === "review" ? holdAudit(state.focus) : null;
-  if (box && hold) box.append(hold);
 }
 
 function renderAuditMain() {
-  const sw = clear($("audit-switch"));
-  const available = state.view?.player_audit_available;
-  if (available && !state.player.explicitMode) {
-    state.iq.mode = "player";
-  }
-  if (!available) {
-    for (const [mode, text] of [["review", "模型复核"], ["inquiry", "提问单"]]) {
-      sw.append(h("button", { class: `chip${state.iq.mode === mode ? " on" : ""}`, type: "button", "aria-pressed": String(state.iq.mode === mode),
-        onclick: () => { state.iq.mode = mode; state.player.explicitMode = true; renderAudit(); } }, text));
-    }
-  }
+  clear($("audit-switch"));
+  const available = Boolean(state.view?.player_audit_available);
+  state.iq.mode = "player";
   const audit = $("audit");
-  if (state.iq.mode === "player") {
-    $("audit-sub").textContent = "按期查阅当时冻结牌面、AI 牌手公开裁决、事中检查与到期判卷";
-    const P = state.player;
-    const tag = `${P.version}:${state.session.authenticated}`;
-    if (audit.dataset.playerVersion !== tag) {
-      audit.dataset.playerVersion = tag;
-      renderPlayerAudit(clear(audit), P, { authenticated: state.session.authenticated,
-        onSelect: (ref) => showPlayerHand(ref), onLogin: () => openLogin(""), onTracker: openTracker,
-        onOriginals: showPlayerOriginals, onRefresh: () => loadPlayerIndex(true) });
-    }
-    return;
+  $("audit-sub").textContent = "按期查阅当时冻结牌面、AI 牌手公开裁决、事中检查与到期判卷";
+  const P = state.player;
+  const tag = `${P.version}:${state.session.authenticated}:${state.view ? available : "pending"}`;
+  if (audit.dataset.playerVersion !== tag) {
+    audit.dataset.playerVersion = tag;
+    renderPlayerAudit(clear(audit), P, { available: state.view ? available : true,
+      authenticated: state.session.authenticated, onSelect: (ref) => showPlayerHand(ref),
+      onLogin: () => openLogin(""), onTracker: openTracker, onOriginals: showPlayerOriginals,
+      onRefresh: () => loadPlayerIndex(true) });
   }
-  delete audit.dataset.playerVersion;
-  $("audit-sub").textContent = "模型结论逐点对照它引用的程序证据";
-  sw.append(h("span", { class: "sep" }));
-  for (const side of ["put", "call"]) {
-    const m = state.sides[side];
-    sw.append(h("button", { class: `chip${state.focus === side ? " on" : ""}`, type: "button", disabled: !m?.snap,
-      onclick: () => select(side) }, side === "put" ? "Put" : "Call"));
-  }
-  const box = clear($("audit"));
-  if (!state.view) return;
-  if (state.iq.mode === "inquiry") { renderInquiryAudit(box); return; }
-  const m = state.sides[state.focus];
-  if (!m || !m.snap) { box.append(h("p", { class: "empty pad", text: "没有可审计的候选。" })); return; }
-  const r = m.review;
-  const left = h("div", { class: "points" });
-  const right = h("div", { class: "ledger" });
-  box.append(h("div", { class: "audit-main" }, left, right));
-
-  if (r.kind === "program") {
-    left.append(h("p", { class: "muted", text: r.reason || "当前快照还没有通过校验的模型解释，下面是程序读法。" }));
-    left.append(programAudit(m));
-    right.append(h("h4", { text: "证据" }), h("p", { class: "muted", text: "请求观察复核后，这里逐项列出模型收到并引用的证据。当前快照的程序证据可直接查看：" }),
-      evidenceLinks(m));
-    return;
-  }
-
-  if (r.kind === "historical") left.append(h("p", { class: "banner info", text:
-    `回执时间 ${clock(reviewedAt(r))}（${ago(reviewedAt(r))}）。之后报价已刷新，下面的解释对应当时的报价与证据，仅作参考；数字以当前卡片为准。` }));
-  const ap = applicability(r.applicability);
-  const rcid = get(r, "review.candidate_id") || get(r, "receipt.candidate_id") || m.snap.candidate_id;
-  left.append(h("div", { class: "deck-head" }, h("h3", { text: `${m.name} 模型解释` }), h("span", { class: `seal ${ap.cls}`, text: ap.text }),
-    lockChip(lockStateAt(rcid, reviewedAt(r)))));
-  for (const [title, pts, q] of [["Q1 风险质量", r.q1, "q1"], ["Q2 风险价格", r.q2, "q2"]]) {
-    left.append(h("h4", { text: title }));
-    pts.forEach((p, i) => {
-      const key = `${q}.${i}`;
-      const on = state.auditPoint === key;
-      const toggle = () => { state.auditPoint = on ? null : key; state.auditRef = null; renderAudit(); };
-      const el = h("div", { class: `point${on ? " on" : ""}`, tabindex: 0, role: "button", "aria-pressed": String(on),
-        onclick: toggle, onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === el) { e.preventDefault(); toggle(); } } },
-        h("p", { text: humanize(p.text_cn, r.labels) }),
-        h("div", { class: "refs" }, ...(p.evidence_refs || []).map((ref) => h("button", { class: `chip${state.auditRef === ref ? " on" : ""}`, type: "button", title: ref,
-          onclick: (e) => { e.stopPropagation(); state.auditRef = state.auditRef === ref ? null : ref; state.auditPoint = null; renderAudit(); scrollToRef(ref); } }, evidenceName(ref, r.labels)))));
-      left.append(el);
-    });
-  }
-  left.append(guardrails(r.review || {}, r.labels));
-  left.append(metaView(m, r));
-  state.labels = r.labels;
-  box.append(traceView(r));
-
-  const activeRefs = state.auditPoint
-    ? new Set(get(r, state.auditPoint.startsWith("q1") ? "q1" : "q2")[Number(state.auditPoint.split(".")[1])]?.evidence_refs || [])
-    : state.auditRef ? new Set([state.auditRef]) : null;
-  const first = (rows) => (activeRefs ? rows.slice().sort((a, b) => Number(activeRefs.has(b.ref)) - Number(activeRefs.has(a.ref))) : rows);
-  const cited = first(r.evidence.filter((x) => x.cited));
-  const rest = first(r.evidence.filter((x) => !x.cited));
-  right.append(h("h4", { text: `模型引用的证据（${cited.length} 项）` }));
-  for (const row of cited) right.append(evidenceCard(row, activeRefs, r.labels));
-  if (rest.length) {
-    const open = (activeRefs && rest.some((x) => activeRefs.has(x.ref))) || state.open.has("uncited");
-    const more = keepOpen(h("details", { class: "uncited", open }, h("summary", { text: `收到但未引用（${rest.length} 项）` })), "uncited");
-    for (const row of rest) more.append(evidenceCard(row, activeRefs, r.labels));
-    right.append(more);
-  }
+  return;
 }
 
 const PLAYER_HAND_REF = /^Deribit_BTC_\d{8}T\d{6}Z\/hand_[0-9a-f]{24}$/;
@@ -1560,9 +1482,8 @@ function renderRecords() {
   const dayGate = (d) => (String(get(d, "space_gate.gate_basis") || "").startsWith("evaluation")
     ? `锚点 ${isNum(get(d, "space_gate.anchor.score")) ? d.space_gate.anchor.score.toFixed(0) : "缺失"}`
     : `空间门${GATE_STATE_CN[get(d, "space_gate.state")] || "未知"}（旧口径）`);
-  const dayReview = (c) => (c.review?.status === "not_attached" ? "未复核" : c.review?.status === "attached" ? "已复核" : statusCn(c.review?.status));
   right.append(h("h4", { text: "每日快照（北京时间 23:00）" }), days.length
-    ? h("div", {}, h("ul", { class: "q" }, ...days.slice(-7).reverse().map((d) => h("li", { text: `${d.bjt_day}  ${dayGate(d)} · ${(d.candidates || []).map((c) => `${c.side === "put" ? "Put" : "Call"} ${dayReview(c)}`).join(" · ")}` }))),
+    ? h("div", {}, h("ul", { class: "q" }, ...days.slice(-7).reverse().map((d) => h("li", { text: `${d.bjt_day}  ${dayGate(d)}` }))),
       h("p", { class: "muted small", text: "“旧口径”指 2026-10-13 之前空间门还是准入条件时的记录；之后空间结构只作评价，这里记锚点评分。" }))
     : h("p", { class: "muted", text: "还没有每日快照。" }));
   const ns = v.notification_state || {};
@@ -1570,7 +1491,6 @@ function renderRecords() {
     text: (ns.last_status === "not_configured" || get(ns, "last_attempt.status") === "not_configured")
       ? "工作台邮件未配置；通知目前走 FMZ 推送。"
       : get(ns, "last_attempt.attempted_at_ms") ? `最近一次 ${clock(ns.last_attempt.attempted_at_ms)}，${ns.last_attempt.status === "sent" ? "已发送" : ns.last_attempt.status ? "未发送成功" : "状态未记录"}` : "还没有发送过锚点效用变迁通知。" }));
-  right.append(scheduleView(v.scheduled_review));
   right.append(versionsView(v));
   box.append(right);
   box.append(h("div", { class: "sheet pad audit-log", id: "audit-log" }));

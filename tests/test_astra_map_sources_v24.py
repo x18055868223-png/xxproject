@@ -503,6 +503,53 @@ def test_bitview_cost_uses_string_id_search_and_integer_day1_sample_bounds():
     assert all(item[1] == {"start": str(expected_start), "end": str(expected_end)} for item in sample_calls)
 
 
+def test_bitview_cost_stays_ok_when_optional_phase_series_is_absent():
+    expected_start = (date(2026, 9, 1) - map24.BITVIEW_DAY1_EPOCH).days
+    expected_end = (date(2026, 9, 3) - map24.BITVIEW_DAY1_EPOCH).days
+    metadata = {
+        "capitalized_price": {"id": "capitalized_price", "name": "Capitalized Price", "description": "all capitalized price", "indexes": ["day1"], "unit": "Dollars"},
+        "lth_capitalized_price": {"id": "lth_capitalized_price", "name": "LTH Capitalized Price", "description": "long-term holder capitalized price", "indexes": ["day1"], "unit": "Dollars"},
+        "sth_capitalized_price": {"id": "sth_capitalized_price", "name": "STH Capitalized Price", "description": "short-term holder capitalized price", "indexes": ["day1"], "unit": "Dollars"},
+        "source_price": {"id": "source_price", "name": "Source Price", "description": "bitcoin source price", "indexes": ["day1"], "unit": "Dollars"},
+    }
+    values = {
+        "capitalized_price": [90, 91],
+        "lth_capitalized_price": [80, 81],
+        "sth_capitalized_price": [100, 101],
+        "source_price": [110, 111],
+    }
+
+    def transport(url, params=None, response_type="json"):
+        if url.endswith("/api/series/search"):
+            q = (params.get("q") or "").lower()
+            if "phase" in q or "sentiment" in q:
+                return []
+            if "short" in q or "sth" in q:
+                return ["sth_capitalized_price"]
+            if "long" in q or "lth" in q:
+                return ["lth_capitalized_price"]
+            if "price" in q and "capitalized" not in q:
+                return ["source_price"]
+            return ["capitalized_price"]
+        series_id = url.rstrip("/").split("/")[-1]
+        if series_id == "day1":
+            real_id = url.rstrip("/").split("/")[-2]
+            return {"index": "day1", "start": expected_start, "end": expected_end, "data": values[real_id]}
+        return metadata[series_id]
+
+    loaded = map24._load_bitview_cost(
+        transport,
+        {"bitview_start": "2026-09-01", "bitview_end": "2026-09-03", "clock_ms": lambda: T + 1},
+    )
+    assert loaded["data_state"] == "OK"
+    assert loaded["reason_codes"] == []
+    assert loaded["values"]["optional_missing"] == ["bitview_search_empty:phase"]
+    assert loaded["values"]["source_phase"] is None
+    assert loaded["values"]["cp_sth_usd"] == 101
+    assert loaded["values"]["cp_all_usd"] == 91
+    assert loaded["values"]["cp_lth_usd"] == 81
+
+
 def test_bitview_default_day_sample_window_excludes_current_utc_day():
     current_day = date(2026, 9, 26)
     params, missing = map24._bitview_sample_params(

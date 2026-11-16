@@ -19,7 +19,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     <div class="state" id="fact-state"><i class="lamp"></i><span>FMZ 事实</span></div>
     <a class="state" id="sources" href="#src-h"><i class="lamp"></i><span>来源</span></a>
     <a class="state" id="lock-state" href="#lock-h" hidden><i class="lamp"></i><span>追踪中</span></a>
-    <div class="state" id="budget"><span>今日复核 —</span></div>
+    <div class="state" id="budget" hidden><span>今日复核 —</span></div>
     <div class="state" id="refreshed"><span>—</span></div>
     <div class="strip-actions">
       <button class="ghost" id="theme-btn" type="button">深色</button>
@@ -52,7 +52,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
   <section class="band" aria-labelledby="factor-h">
     <div class="band-head">
       <h2 id="factor-h">五要素</h2>
-      <p>空间结构、量价路径、主动成交、宏观环境与空间位置的当前读数；核验路径的位置、运动两步引用这里</p>
+      <p>空间结构、量价路径、主动成交、宏观环境与空间位置的当前读数</p>
     </div>
     <div class="factors" id="factors" aria-label="五要素读数"></div>
   </section>

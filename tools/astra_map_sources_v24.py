@@ -801,16 +801,20 @@ def _load_bitview_cost(transport: Any, config: Mapping[str, Any]) -> Mapping[str
         return _blocked_values("bitview_cost_basis_blocked", retrieved, str(exc))
     found_missing = list(found["missing"])
     found_missing.extend(_filter_bitview_complete_daily_points(found["series"], retrieved))
+    optional_keys = {"phase"}
+    blocking_missing = sorted({item for item in found_missing if item.rsplit(":", 1)[-1] not in optional_keys})
+    optional_missing = sorted({item for item in found_missing if item.rsplit(":", 1)[-1] in optional_keys})
     flat = _bitview_cost_flat_fields(found["series"])
     values = {
         "schema": "bitview_cost_basis@2.4.0",
         "series": found["series"],
-        "missing": sorted(set(found_missing)),
+        "missing": blocking_missing,
+        "optional_missing": optional_missing,
         "request_audit": found["request_audit"],
         **flat,
     }
     latest_ms = _latest_series_ms(found["series"]) or 0
-    reason_codes = list(values["missing"])
+    reason_codes = list(blocking_missing)
     if latest_ms == 0:
         reason_codes.append("BITVIEW_SOURCE_TIMESTAMP_MISSING")
     return {

@@ -115,10 +115,15 @@ function renderStructuredBoard(boardText) {
   return wrap;
 }
 
-export function renderPlayerAudit(box, player, { onSelect, onTracker, onOriginals, onLogin, onRefresh, authenticated }) {
+export function renderPlayerAudit(box, player, { available = true, onSelect, onTracker, onOriginals, onLogin, onRefresh, authenticated }) {
   if (!authenticated) {
     box.append(h("div", { class: "pad" }, para("登录后按期查阅每日交割卷宗、冻结牌面与 AI 牌手推理审计。", "muted"),
       h("button", { class: "btn secondary", type: "button", onclick: onLogin }, "登录")));
+    return;
+  }
+  if (available === false) {
+    box.append(h("div", { class: "pad" },
+      para("本服务实例尚未挂载 AI 牌手卷宗目录（需在服务端配置 ASTRA_AI_SHADOW_DOSSIER_ROOT 并同步 08:00Z / 14:00Z 牌局卷宗）；旧版「模型复核 / 提问单」已退役，不再以此占位。", "muted")));
     return;
   }
   const cards = player.cards.some((c) => playerRef(c) === player.ref) || !player.detail
