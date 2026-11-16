@@ -4213,7 +4213,7 @@ class AstraWorkbench:
             with self._view_lock:
                 point = self._lockable_points.get(snap["snapshot_id"])
             if isinstance(point, Mapping):
-                ready_point = self._lock_ready_point(point)
+                ready_point = self._with_expiry_levels(point)
                 with self._view_lock:
                     if snap["snapshot_id"] in self._lockable_points:
                         self._lockable_points[snap["snapshot_id"]] = ready_point
@@ -4357,7 +4357,9 @@ class AstraWorkbench:
                 raise WorkbenchError(409, "contract_expired", "expired contract cannot start regular observation")
             if _shadow:
                 player_tracking.confirm_quote(point["candidate"]["snapshot"], self.clock_ms())
-            point = self._lock_ready_point(point)
+                point = self._with_expiry_levels(point)
+            else:
+                point = self._lock_ready_point(point)
             at = self.clock_ms()
             if _shadow:
                 proof, request = _shadow
