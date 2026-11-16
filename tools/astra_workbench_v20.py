@@ -73,6 +73,10 @@ if __package__:
     from . import astra_unsuitable_v1 as unsuitable
     from . import astra_path_stats_v1 as path_stats
     from . import astra_inquiry_view_v1 as inquiry_view
+    try:
+        from . import astra_player_tracking_v13 as player_tracking
+    except ImportError:
+        player_tracking = None
     try:   # optional: a missing research module must never stop the workbench
         from . import astra_research_archive_v1 as research_archive_core
         from . import astra_research_promotion_v1 as research_promotion
@@ -120,6 +124,10 @@ else:  # direct CLI execution from tools/
     import astra_unsuitable_v1 as unsuitable
     import astra_path_stats_v1 as path_stats
     import astra_inquiry_view_v1 as inquiry_view
+    try:
+        import astra_player_tracking_v13 as player_tracking
+    except ImportError:
+        player_tracking = None
     try:   # optional: a missing research module must never stop the workbench
         import astra_research_archive_v1 as research_archive_core
         import astra_research_promotion_v1 as research_promotion
@@ -1656,6 +1664,9 @@ class WorkbenchConfig:
     risk_model_path: Path | None = None
     risk_protocol_path: Path | None = None
     research_archive_enabled: bool = False
+    shadow_dossier_root: Path | None = None
+    shadow_service_token: str | None = None
+    shadow_experiment: bool = False
     research_sample_interval_ms: int = candidate_asof.DEFAULT_INTERVAL_MS
     research_max_bytes: int = candidate_asof.DEFAULT_MAX_BYTES
     research_max_samples: int = candidate_asof.DEFAULT_MAX_SAMPLES
@@ -1768,6 +1779,8 @@ class AstraWorkbench:
         clock_ms: Callable[[], int] | None = None,
         map_source_capture: Callable[..., Any] | None = None,
     ):
+        if config.shadow_dossier_root is not None and player_tracking is None:
+            raise ValueError("shadow dossier integration modules required for configured archive")
         self.config = config
         self.discovery_capture = discovery_capture or self._default_discovery_capture
         self.quote_capture = quote_capture or self._default_quote_capture
@@ -3263,6 +3276,14 @@ class AstraWorkbench:
             # a profile computed well after this point is not what the market showed then
             if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at + lock_levels.STALE_MS:
                 profile = None
+            if (profile is None or profile.get("stale")) and self.config.expiry_gamma_enabled and expiry is not None:
+                try:
+                    self.refresh_expiry_gamma(now_ms=at, force=True)
+                    profile = expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=at)
+                    if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at + lock_levels.STALE_MS:
+                        profile = None
+                except Exception:
+                    pass
             facts = (snapshot.get("fact_context") or {}).get("market_facts") or {}
             levels = lock_levels.compact(profile, (facts.get("space_context") or {}).get("gex_info"),
                                          (snapshot.get("data_identity") or {}).get("btc_map"),
@@ -3466,7 +3487,9 @@ class AstraWorkbench:
                 self.locked_candidates.append_series(episode_id, out)
                 report["backfilled"] += len(out)
             report.update(self.locked_candidates.compact(
-                now_ms, series_current=lambda row: _current_metrics((row or {}).get("metrics"))))
+                now_ms, series_current=lambda row: _current_metrics((row or {}).get("metrics")),
+                shadow_archived=lambda episode: self.config.shadow_dossier_root is not None
+                and player_tracking.ensure_terminal_archive(self.config.shadow_dossier_root, episode)))
         except Exception as exc:
             report["error"] = type(exc).__name__
         self._last_compaction = report
@@ -3584,6 +3607,8 @@ class AstraWorkbench:
             verified = {}
         for episode in episodes:
             if isinstance(episode, dict):
+                if episode.get("ai_shadow"):
+                    episode["ai_shadow"].pop("counter_excerpt", None)
                 try:
                     episode["outcome"] = self._lock_outcome(episode, settlements)
                 except Exception:
@@ -3784,7 +3809,8 @@ class AstraWorkbench:
         try:
             settled = self.locked_settlements()
             pending = [e for e in self.locked_candidates.list()
-                       if e.get("status") == "expired" and e["episode_id"] not in settled
+                       if (e.get("status") == "expired" or (e.get("status") == "stopped" and e.get("ai_shadow")))
+                       and e["episode_id"] not in settled
                        and isinstance((e.get("contract") or {}).get("expiry_ms"), int)
                        and now_ms >= e["contract"]["expiry_ms"] + 2 * 60_000]
         except Exception:
@@ -3990,6 +4016,42 @@ class AstraWorkbench:
             detail = (self.locked_candidates.detail_pair(episode_id, baseline_point_id, latest_point_id)
                       if baseline_point_id is not None and latest_point_id is not None
                       else self.locked_candidates.detail(episode_id))
+            ai_shadow = (detail.get("episode") or {}).get("ai_shadow") or {}
+            base_cand = ((detail.get("baseline") or {}).get("candidate") or {}) if isinstance(detail.get("baseline"), Mapping) else {}
+            base_levels = base_cand.get("expiry_levels") if isinstance(base_cand, Mapping) else None
+            if (self.config.shadow_dossier_root is not None and player_tracking is not None
+                    and ai_shadow.get("dossier_id") and ai_shadow.get("hand_id")
+                    and (not isinstance(base_levels, Mapping) or base_levels.get("computed_at_ms") is None)):
+                try:
+                    pd = player_tracking.dossier
+                    src_path = (self.config.shadow_dossier_root / "dossiers"
+                                / pd.key(ai_shadow["dossier_id"]) / "hands"
+                                / pd.key(ai_shadow["hand_id"]) / "evidence" / "source.json")
+                    if src_path.is_file():
+                        src = pd.read(src_path)
+                        side = ((detail.get("episode") or {}).get("contract") or {}).get("side")
+                        for case in src.get("cases") or []:
+                            if (pd.player.values(case, "L1.contract") or {}).get("side") == side:
+                                ew = pd.player.values(case, "L3.expiry_walls") or {}
+                                walls = ew.get("walls")
+                                if isinstance(walls, Mapping):
+                                    detail = {
+                                        **detail,
+                                        "baseline": {
+                                            **detail["baseline"],
+                                            "candidate": {
+                                                **base_cand,
+                                                "expiry_levels_backfill": {
+                                                    "walls": dict(walls),
+                                                    "asof_ms": ew.get("computed_at_ms") or (case.get("build") or {}).get("built_at_ms"),
+                                                    "source": "shadow_dossier.evidence.source.L3.expiry_walls",
+                                                },
+                                            },
+                                        },
+                                    }
+                                break
+                except Exception:
+                    pass
             result = locked_compare.build_followup(detail, now_ms=self.clock_ms(), include_raw=include_raw)
         except locked_store.LockedCandidateError as exc:
             raise WorkbenchError(404 if exc.code == "episode_not_found" else 409, exc.code, exc.code) from exc
@@ -4064,10 +4126,77 @@ class AstraWorkbench:
             raise WorkbenchError(409, "evidence_not_retained", "this exact displayed input is no longer retained")
         return locked_compare._public_point(point)
 
+    def shadow_tracking(self, action: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        root = self.config.shadow_dossier_root
+        if root is None:
+            raise WorkbenchError(404, "shadow_dossiers_disabled", "shadow dossier storage is not configured")
+        if action == "readiness":
+            episodes = self.locked_candidates.list()
+            with self._view_lock:
+                candidates = list((self._current_view or {}).get("candidates") or [])
+            ready = []
+            for row in candidates:
+                snapshot = row.get("snapshot")
+                if snapshot:
+                    try:
+                        player_tracking.confirm_quote(snapshot, self.clock_ms())
+                    except player_tracking.Blocked:
+                        continue
+                    ready.append(player_tracking.contract_fields(snapshot["contract"]))
+            return {"enabled": self.config.shadow_experiment, "synced_contracts": ready,
+                    "active": sum(e.get("status") == locked_store.ACTIVE for e in episodes),
+                    "episodes": len(episodes), "max_active": self.config.locked_max_active,
+                    "max_episodes": self.config.locked_max_episodes, "execution_allowed": False}
+        hand = player_tracking.hand_path(root, body.get("dossier_id"), body.get("hand_id"))
+        proof, request = player_tracking.request_proof(hand)
+        origin = proof["origin"]
+        key = origin["request_key"]
+        try:
+            result = self.locked_candidates.lookup_shadow_request(key, origin)
+            if result is None and action == "lock":
+                now = self.clock_ms()
+                if not self.config.shadow_experiment:
+                    raise player_tracking.Blocked("shadow_experiment_disabled")
+                if not request["requested_at_ms"] <= now < proof["deadline_ms"]:
+                    raise player_tracking.Blocked("shadow_handoff_expired")
+                if not self.locked_candidates.claim_shadow_request(key):
+                    return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
+                with self._view_lock:
+                    candidates = (self._current_view or {}).get("candidates") or []
+                    choices = [c["snapshot"] for c in candidates if c.get("snapshot")
+                               and player_tracking.contract_fields(c["snapshot"]["contract"])
+                               == player_tracking.contract_fields(proof["contract"])]
+                if len(choices) != 1:
+                    raise player_tracking.Blocked("exact_current_contract_not_found")
+                snap = choices[0]
+                result = self.lock_candidate(snap["candidate_id"], snap["snapshot_id"], key,
+                                             authorization=None, _shadow=(proof, request))
+            if result is None:
+                return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
+            episode = result["episode"]
+            try:
+                point = self.locked_candidates.read_point(episode["t0_baseline_point_id"])
+                t0 = player_tracking.tracker_t0(origin, episode, point)
+            except (locked_store.LockedCandidateError, player_tracking.Blocked) as exc:
+                raise WorkbenchError(503, "native_commit_unconfirmed", "observe existing request via recover") from exc
+            output = {"state": "SHADOW_LOCK_CREATED" if result["created"] else "ALREADY_LINKED",
+                      "episode": episode, "t0": t0, "point": point, "execution_allowed": False}
+            if action == "export":
+                series = self.locked_candidate_series(episode["episode_id"], max_points=max(2, self.config.locked_max_samples))
+                # Capture the authoritative version of the episode used by the series reader.
+                output["episode"] = series["episode"]
+                if series["settlement"]:
+                    # The ordinary tracker computes this through native BTC commercial math.
+                    output["settlement"] = series["settlement"]
+                output.update({k: series[k] for k in ("points", "gaps", "thinned", "unreadable_points")})
+            return output
+        except locked_store.LockedCandidateError as exc:
+            raise WorkbenchError(409, exc.code, exc.code) from exc
+
     def lock_candidate(self, candidate_id: str, snapshot_id: str, request_key: str, *,
                        authorization: str | None, new_reference: bool = False,
-                       source_episode_id: str | None = None) -> dict[str, Any]:
-        if not self._authorized(authorization):
+                       source_episode_id: str | None = None, _shadow: tuple | None = None) -> dict[str, Any]:
+        if _shadow is None and not self._authorized(authorization):
             raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
         if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", snapshot_id)
                 or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_key)):
@@ -4082,8 +4211,10 @@ class AstraWorkbench:
         try:
             if source_episode_id and not candidate_id:
                 candidate_id = self.locked_candidates.detail(source_episode_id)["episode"]["candidate_id"]
-            existing = self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
-                snapshot_id=snapshot_id, new_reference=new_reference, source_episode_id=source_episode_id)
+            origin = _shadow[0]["origin"] if _shadow else None
+            existing = (self.locked_candidates.lookup_shadow_request(request_key, origin) if _shadow else
+                        self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
+                            snapshot_id=snapshot_id, new_reference=new_reference, source_episode_id=source_episode_id))
             if existing is not None:
                 return {**existing, "llm_call_count": 0, "execution_allowed": False}
             if source_episode_id:
@@ -4100,16 +4231,33 @@ class AstraWorkbench:
                 raise WorkbenchError(409, "lock_candidate_mismatch", "snapshot does not belong to selected contract")
             if self.clock_ms() >= point["candidate"]["snapshot"]["contract"]["expiry_ms"]:
                 raise WorkbenchError(409, "contract_expired", "expired contract cannot start regular observation")
+            if _shadow:
+                player_tracking.confirm_quote(point["candidate"]["snapshot"], self.clock_ms())
             point = self._lock_ready_point(point)
+            at = self.clock_ms()
+            if _shadow:
+                proof, request = _shadow
+                snapshot = point["candidate"]["snapshot"]
+                with self._view_lock:
+                    current = self._current_view or {}
+                    still_current = any((c.get("snapshot") or {}).get("snapshot_id") == snapshot_id
+                                        for c in current.get("candidates", ())) and snapshot_id not in self._held_snapshot_ids
+                if not still_current:
+                    raise player_tracking.Blocked("tracking_snapshot_rotated")
+                if not request["requested_at_ms"] <= at < proof["deadline_ms"]:
+                    raise player_tracking.Blocked("shadow_handoff_expired")
+                player_tracking.confirm_quote(snapshot, at)
+                player_tracking.condition_at_t0(proof, request["condition"], snapshot, at)
             try:
-                result = self.locked_candidates.lock(point, request_key=request_key, now_ms=self.clock_ms(),
-                                                     new_reference=new_reference, source_episode_id=source_episode_id)
+                result = self.locked_candidates.lock(point, request_key=request_key, now_ms=at,
+                                                     new_reference=new_reference, source_episode_id=source_episode_id,
+                                                     shadow_origin=origin)
             except locked_store.LockedCandidateError as exc:
                 # the lock-time composition makes every attempt a new point: a retry of the same key
                 # that raced the first one gets the first result, not request_key_reused
                 existing = self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
                     snapshot_id=snapshot_id, new_reference=new_reference,
-                    source_episode_id=source_episode_id) if exc.code == "request_key_reused" else None
+                    source_episode_id=source_episode_id) if not _shadow and exc.code == "request_key_reused" else None
                 if existing is None:
                     raise
                 result = existing
@@ -5157,6 +5305,7 @@ class AstraWorkbench:
             view["collector_failure"] = failure
             view["gaps"] = sorted(set(view.get("gaps", []) + ["data_collector_refresh_failed"]))
         view["scheduled_review"] = self.scheduled_review_status(now)
+        view["player_audit_available"] = self.config.shadow_dossier_root is not None
         result = self._attach_decision_reduction(self._apply_current_review_availability(view, now))
         return reading.workbench_reading(result) if reading_only else result
 
@@ -5550,6 +5699,8 @@ class AstraWorkbench:
         _scheduled: bool = False,
     ) -> dict[str, Any]:
         # _scheduled is set only by this process's own scheduler, never from HTTP.
+        if _scheduled and self.config.shadow_experiment:
+            raise WorkbenchError(409, "legacy_schedule_disabled", "formal shadow experiment uses AI Player v1")
         if not _scheduled and not self._authorized(authorization):
             raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
         if not candidate_id or not idempotency_key:
@@ -5842,6 +5993,8 @@ class AstraWorkbench:
 
     def _scheduled_slot(self, now_ms: int) -> str | None:
         """The UTC slot ('YYYY-MM-DDTHH') whose window contains now, if any."""
+        if self.config.shadow_experiment:
+            return None
         from datetime import datetime, timezone
         moment = datetime.fromtimestamp(now_ms / 1000, timezone.utc)
         for hour in self.config.scheduled_review_hours_utc:
@@ -5853,7 +6006,7 @@ class AstraWorkbench:
     def scheduled_review_status(self, now_ms: int | None = None) -> dict[str, Any]:
         from datetime import datetime, timedelta, timezone
         now = self.clock_ms() if now_ms is None else int(now_ms)
-        hours = sorted({int(h) % 24 for h in self.config.scheduled_review_hours_utc})
+        hours = [] if self.config.shadow_experiment else sorted({int(h) % 24 for h in self.config.scheduled_review_hours_utc})
         moment = datetime.fromtimestamp(now / 1000, timezone.utc)
         upcoming = []
         for day in (0, 1):
@@ -5864,6 +6017,7 @@ class AstraWorkbench:
         slots = (self._read_state_cached().get("scheduled_review") or {}).get("slots") or {}
         last_key = max(slots) if slots else None
         return {"hours_utc": hours, "window_ms": self.config.scheduled_review_window_ms,
+                "paused_for_shadow_experiment": self.config.shadow_experiment,
                 "next_due_ms": min(upcoming) if upcoming else None,
                 "last_slot": last_key, "last": slots.get(last_key) if last_key else None}
 
@@ -6274,6 +6428,8 @@ def make_handler(workbench: AstraWorkbench):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             heavy = (parsed.path.endswith("/evidence")
+                     or (player_tracking is not None and (parsed.path == player_tracking.AUDIT_PATH
+                         or parsed.path.startswith(player_tracking.AUDIT_PATH + "/")))
                      or parsed.path.startswith(("/api/workbench/candidate-evidence/", "/api/workbench/wpem-proof/",
                                                 "/api/workbench/case-file/"))
                      or parse_qs(parsed.query).get("view") == ["full"])
@@ -6294,6 +6450,10 @@ def make_handler(workbench: AstraWorkbench):
         def _get(self) -> None:
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
+            if player_tracking is not None and (parsed.path == player_tracking.AUDIT_PATH
+                    or parsed.path.startswith(player_tracking.AUDIT_PATH + "/")):
+                self._player_audit(parsed.path)
+                return
             if parsed.path == "/api/workbench/session/check":
                 # For the public proxy's auth_request: 204 with a live session, 401 otherwise; never a body.
                 access = sessions.authorize("GET", self.headers, self.client_address[0])
@@ -6359,7 +6519,8 @@ def make_handler(workbench: AstraWorkbench):
                 return
             if parsed.path.startswith("/api/workbench/locked-candidates/") and parsed.path.endswith("/series"):
                 try:
-                    self._json(200, workbench.locked_candidate_series(unquote(parsed.path.split("/")[-2])))
+                    result = workbench.locked_candidate_series(unquote(parsed.path.split("/")[-2]))
+                    self._json(200, self._locked_public_proof(result))
                 except WorkbenchError as exc:
                     self._json(exc.status_code, exc.as_payload())
                 except Exception as exc:
@@ -6379,7 +6540,7 @@ def make_handler(workbench: AstraWorkbench):
                             baseline_point_id=baseline_id, latest_point_id=latest_id)
                     else:
                         result = workbench.locked_candidate_detail(episode_id, include_raw=False)
-                    self._json(200, result)
+                    self._json(200, self._locked_public_proof(result))
                 except WorkbenchError as exc:
                     self._json(exc.status_code, exc.as_payload())
                 except Exception as exc:
@@ -6441,8 +6602,96 @@ def make_handler(workbench: AstraWorkbench):
                 return
             self._serve_static(parsed.path)
 
+        def _player_audit(self, path: str) -> None:
+            if not sessions.authorize("GET", self.headers, self.client_address[0]).ok:
+                self._json(401, {"code": "unauthorized"})
+                return
+            root = workbench.config.shadow_dossier_root
+            if root is None:
+                self._json(404, {"code": "shadow_dossiers_disabled"})
+                return
+            try:
+                if path.endswith(("/originals", "/trajectory")):
+                    dossier_id, hand_id, kind = path[len(player_tracking.AUDIT_PATH) + 1:].split("/")
+                    hand = player_tracking.hand_path(root, dossier_id, hand_id)
+                    if kind == "trajectory":
+                        _, trajectory = player_tracking.terminal_trajectory(hand)
+                        self._send_json_body(200, trajectory)
+                        return
+                    data = player_tracking.audit_originals(hand)
+                else:
+                    ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
+                    now = workbench.clock_ms()
+                    if path == player_tracking.AUDIT_PATH:
+                        data = player_tracking.audit_index(root, now, ids)
+                    else:
+                        dossier_id, hand_id = path[len(player_tracking.AUDIT_PATH) + 1:].split("/")
+                        hand = player_tracking.hand_path(root, dossier_id, hand_id)
+                        data = player_tracking.audit_record(hand, now, ids, detail=True)
+                self._shadow_json(data)
+            except FileNotFoundError:
+                self._json(404, {"code": "shadow_evidence_not_found"})
+            except (OSError, ValueError, KeyError, TypeError, locked_store.LockedCandidateError):
+                self._json(409, {"code": "shadow_evidence_unavailable"})
+
+        def _locked_public_proof(self, result: Mapping[str, Any]) -> Mapping[str, Any]:
+            episode = result.get("episode") or {}
+            origin = episode.get("ai_shadow") or {}
+            if "counter_excerpt" not in origin or sessions.authorize("GET", self.headers, self.client_address[0]).ok:
+                return result
+            return {**result, "episode": {**episode, "ai_shadow": {
+                key: value for key, value in origin.items() if key != "counter_excerpt"}}}
+
+        def _shadow_json(self, data: Mapping[str, Any]) -> None:
+            encoded = (_canonical(dict(data)) + "\n").encode("utf-8")
+            if len(encoded) > player_tracking.MAX_BYTES:
+                self._json(413, {"code": "shadow_evidence_size_limit"})
+            else:
+                self._send_json_body(200, encoded)
+
+        def _shadow_service(self, action: str) -> None:
+            token = workbench.config.shadow_service_token
+            auth = self.headers.get("Authorization", "")
+            if (self.client_address[0] not in {"127.0.0.1", "::1"}
+                    or any(self.headers.get(k) for k in ("Origin", "Forwarded", "X-Forwarded-For"))
+                    or not token or token == workbench.config.server_token
+                    or not hmac.compare_digest(auth.encode(), ("Bearer " + token).encode())):
+                self._json(401, {"code": "shadow_service_credential_required"})
+                return
+            if action not in {"lock", "recover", "export", "readiness"}:
+                self._json(404, {"code": "not_found"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise WorkbenchError(413, "request_size_invalid", "shadow service request too large")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict) or (set(body) != (set() if action == "readiness" else {"dossier_id", "hand_id"})):
+                    raise WorkbenchError(400, "invalid_shadow_request", "send only dossier_id and hand_id")
+                result = workbench.shadow_tracking(action, body)
+                if action in {"lock", "recover"} and result.get("episode"):
+                    workbench.invalidate_view_body()
+                self._shadow_json(result)
+            except WorkbenchError as exc:
+                self._json(exc.status_code, exc.as_payload())
+            except player_tracking.Blocked as exc:
+                self._json(409, {"code": exc.code})
+            except FileNotFoundError:
+                self._json(404, {"code": "shadow_evidence_not_found"})
+            except (OSError, ValueError, KeyError, TypeError, StopIteration):
+                self._json(503, {"code": "shadow_service_unverified"})
+
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if player_tracking is not None and parsed.path.startswith(player_tracking.SERVICE_PATH + "/"):
+                if not proof_slots.acquire(blocking=False):
+                    self._json(429, {"code": "evidence_export_busy"})
+                    return
+                try:
+                    self._shadow_service(parsed.path[len(player_tracking.SERVICE_PATH) + 1:])
+                finally:
+                    proof_slots.release()
+                return
             if parsed.path == "/api/workbench/session":
                 result = sessions.login("POST", self.headers, self.client_address[0])
                 self._json(result.status_code, result.body, headers=result.headers)
@@ -6646,6 +6895,10 @@ def config_from_env() -> WorkbenchConfig:
         risk_model_path=Path(os.environ["ASTRA_RISK_MODEL_PATH"]) if os.environ.get("ASTRA_RISK_MODEL_PATH") else None,
         risk_protocol_path=Path(os.environ["ASTRA_RISK_PROTOCOL_PATH"]) if os.environ.get("ASTRA_RISK_PROTOCOL_PATH") else None,
         research_archive_enabled=os.environ.get("ASTRA_RESEARCH_ARCHIVE_ENABLED") == "1",
+        shadow_dossier_root=(Path(os.environ["ASTRA_AI_SHADOW_DOSSIER_ROOT"])
+                            if os.environ.get("ASTRA_AI_SHADOW_DOSSIER_ROOT") else None),
+        shadow_service_token=os.environ.get("ASTRA_AI_SHADOW_LOCK_TOKEN"),
+        shadow_experiment=os.environ.get("ASTRA_AI_SHADOW_EXPERIMENT") == "1",
         research_sample_interval_ms=int(os.environ.get("ASTRA_RESEARCH_SAMPLE_INTERVAL_MS") or str(candidate_asof.DEFAULT_INTERVAL_MS)),
         research_max_bytes=int(os.environ.get("ASTRA_RESEARCH_MAX_BYTES") or str(candidate_asof.DEFAULT_MAX_BYTES)),
         research_max_samples=int(os.environ.get("ASTRA_RESEARCH_MAX_SAMPLES") or str(candidate_asof.DEFAULT_MAX_SAMPLES)),

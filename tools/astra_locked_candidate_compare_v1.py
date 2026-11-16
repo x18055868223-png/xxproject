@@ -996,6 +996,8 @@ def _level_rows(baseline: Mapping[str, Any], latest: Mapping[str, Any] | None,
     if t0_levels is None and t1_levels is None:
         return []
     backfill = _backfilled_levels(baseline) if t0_levels is None else None
+    profile_bf = _mapping(_mapping(_mapping(baseline).get("candidate")).get("expiry_levels_backfill"))
+    profile_walls = _mapping(profile_bf.get("walls"))
     strike = _number(contract.get("short_strike_usd"))
     rows = []
     for key, label, field, product in _LEVEL_SPECS:
@@ -1005,11 +1007,22 @@ def _level_rows(baseline: Mapping[str, Any], latest: Mapping[str, Any] | None,
         if recomputed and t0 is not None:
             t0["compat_backfill_applied"] = True
             t0["backfill_source"] = _LEVEL_BACKFILL_SOURCE[product]
+        elif product == "expiry_profile" and (t0 is None or t0.get("value") is None) and _number(profile_walls.get(field)) is not None:
+            bf_levels = {
+                **(dict(t0_levels) if isinstance(t0_levels, Mapping) else {"schema": lock_levels.SCHEMA}),
+                field: _number(profile_walls.get(field)),
+                "computed_at_ms": _int(profile_bf.get("asof_ms")),
+            }
+            t0 = _level_fact(bf_levels, key, field, product, label, strike)
+            if t0 is not None:
+                t0["compat_backfill_applied"] = True
+                t0["backfill_source"] = str(profile_bf.get("source") or "shadow_dossier.evidence.source.L3.expiry_walls")
         t1 = _level_fact(t1_levels, key, field, product, label, strike)
         row = _row(key, "levels", label, t0, t1, "本期结构读数，锁定时与最新并列；距短腿为（价位 − 短腿行权价）/短腿行权价。")
         row["to_short_pct"] = {"t0": t0.get("to_short_pct") if t0 else None, "t1": t1.get("to_short_pct") if t1 else None}
         row["stale"] = {"t0": bool(t0_levels and t0_levels.get("stale")), "t1": bool(t1_levels and t1_levels.get("stale"))}
-        if t0_levels is None and (t0 is None or t0.get("value") is None):
+        profile_missing = t0_levels is None or (product == "expiry_profile" and t0_levels.get("computed_at_ms") is None)
+        if profile_missing and (t0 is None or t0.get("value") is None):
             row["status"] = NOT_RECORDED_AT_LOCK
             if product == "expiry_profile":
                 row["t0_missing_reason"] = "expiry_profile_not_saved"

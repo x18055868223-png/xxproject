@@ -36,3 +36,4 @@ Thumbs.db
 .worktrees/
 .claude/*
 !.claude/skills/
+_archive_history/

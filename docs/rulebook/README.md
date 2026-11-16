@@ -1,4 +1,7 @@
-# 当前 ARD 影子牌手入口
+# 当前 ARD 影子牌手与 v1.3 追踪入口
+
+- **单一事实来源基线**：[PROJECT_BASELINE.md](../../../../PROJECT_BASELINE.md)（根目录唯一权威总纲：认知基线、数据流、L1–L6 漏洞修改方案、九段式牌手契约与 11-16/17 命令单）
+- **v1.3 影子追踪操作说明**：[AI_PLAYER_SHADOW_TRACKING_V1_3.md](AI_PLAYER_SHADOW_TRACKING_V1_3.md)
 
 每日 14:00 UTC 发牌、人工回复交接、影子责任续查及到期判卷见[每日交割卷宗与影子运行](15_每日交割卷宗与影子运行.md)。
 

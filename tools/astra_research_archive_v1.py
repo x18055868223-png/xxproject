@@ -1625,7 +1625,8 @@ def _tick_main(args: argparse.Namespace, archive: Archive) -> None:
                       run_player=(lambda case, rnd, prev: player.run(case, rnd=rnd, previous=prev, api_key=key,
                                                                      model=model, timeout=PLAYER_TIMEOUT_S))
                       # the shadow track starts only when the user has seen the isolation test (docs/opus/35 §5)
-                      if key and os.environ.get("ASTRA_PLAYER_ENABLED") == "1" else None)
+                      if key and os.environ.get("ASTRA_PLAYER_ENABLED") == "1"
+                      and os.environ.get("ASTRA_AI_SHADOW_EXPERIMENT") != "1" else None)
         print(json.dumps(report, ensure_ascii=False))
     finally:
         lock.unlink(missing_ok=True)

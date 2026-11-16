@@ -146,12 +146,57 @@ def schedule(plan, at):
     return range(first, at + 1, DAY)
 
 
-def seal_source(cases, cards, index_path, history, instruments=None, *, received_at_ms=None, source='local archive'):
-    return dict(cases=cases, cards=cards, index_path=index_path, history=history, instruments=instruments,
-                received_at_ms=received_at_ms, source=source)
+def seal_source(cases, cards, index_path, history, instruments=None, *, received_at_ms=None,
+                source='local archive', band_snapshot=None):
+    out = dict(cases=cases, cards=cards, index_path=index_path, history=history, instruments=instruments,
+               received_at_ms=received_at_ms, source=source)
+    if band_snapshot is not None:
+        out['band_snapshot'] = band_snapshot
+    return out
 
 
-def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms):
+def _normalize_legacy_structure_row(r):
+    if r.get('schema') == 'structure_snapshot@0.1' and ('available_at_ms' not in r or r.get('available_at_ms') is None):
+        at = r.get('at_ms')
+        if player.ard.clock(at):
+            pin = player.ard.num(((r.get('profile') or {}).get('walls') or {}).get('pin'))
+            return {
+                **r,
+                'available_at_ms': at,
+                'pin_source': r.get('pin_source') or archive.expiry_structure.PIN_SOURCE,
+                'pin_method': r.get('pin_method') or archive.expiry_structure.PIN_METHOD,
+                'pin_status': r.get('pin_status') or ('ok' if pin is not None and pin > 0 else 'unavailable'),
+                'compat_backfill_applied': True,
+                'backfill_source': 'structure_snapshot.at_ms',
+            }
+    return r
+
+
+def _resolve_band_snapshot(archive_root, cutoff_ms, band_snapshot=None):
+    if band_snapshot is not None:
+        return band_snapshot
+    start = cutoff_ms - 4 * 60 * MINUTE
+    direct = Path(archive_root) / 'band_snapshot.json'
+    if direct.is_file():
+        try:
+            cand = read(direct)
+            if player.ard.frozen_band(cand, start) is not None:
+                return cand
+        except Exception:
+            pass
+    fmz_env = os.environ.get('ASTRA_WORKBENCH_SNAPSHOTS_JSONL')
+    for candidate_path in ([Path(fmz_env)] if fmz_env else []) + [Path(archive_root).parent / 'native-fmz.jsonl']:
+        if candidate_path.is_file():
+            try:
+                for row in reversed(rows(candidate_path)):
+                    if player.ard.frozen_band(row, start) is not None:
+                        return row
+            except Exception:
+                pass
+    return None
+
+
+def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None):
     """Use the existing archive's native cases. Public reads fill the current path and expiry proof."""
     day = utc(expiry).date().isoformat()
     case_dir = archive_root / 'cases' / utc(slot).date().isoformat()
@@ -175,7 +220,7 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms):
         raise LookupError('Deribit 未核实四条原生腿和目标到期')
     points = archive.Deribit().index_path()
     received = clock()
-    history = [r for r in rows(archive_root / 'structure' / f'{day}.jsonl')
+    history = [_normalize_legacy_structure_row(r) for r in rows(archive_root / 'structure' / f'{day}.jsonl')
                if r.get('expiry_ms') == expiry and r['at_ms'] <= max(reads)]
     known = [r for r in history if r.get('available_at_ms') is not None and r['available_at_ms'] <= max(reads)]
     cards = []
@@ -186,26 +231,30 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms):
         if len(native) == 1:
             cards.append(native[0])
             continue
-        if not startup:
+        late_scheduled = not startup and clock() >= slot + 15 * MINUTE
+        if not startup and not late_scheduled:
             raise LookupError(f"等待 {c['side']} 原生 r2 位置卡")
         cut = [p for p in points if p[0] <= tick]
         if not cut or tick - cut[-1][0] > levels.PATH_EDGE_MS:
             raise LookupError('候选读取时的指数路径未覆盖')
         snaps = [r for r in known if r['available_at_ms'] <= tick]
+        gap = 'startup_card_from_native_case' if startup else 'scheduled_card_from_native_case'
         cards.append(levels.build_card(expiry_ms=expiry, rnd='r2', side=c['side'], read_at_ms=tick,
                                      walls=player.values(case, 'L3.expiry_walls'), points=cut, case=case,
-                                     contract=c, snapshots=snaps, extra_gaps=['startup_card_from_native_case']))
+                                     contract=c, snapshots=snaps, extra_gaps=[gap]))
     path = dict(schema='index_path@0.1', index_name='btc_usd', expiry_ms=expiry, fetched_at_ms=received,
                 points=[p for p in points if p[0] <= max(reads)])
+    resolved_band = _resolve_band_snapshot(archive_root, max(reads), band_snapshot=band_snapshot)
     return seal_source(candidates, cards, path, history, instrument_proof, received_at_ms=received,
-                       source='native research archive + Deribit public read')
+                       source='native research archive + Deribit public read', band_snapshot=resolved_band)
 
 
 class Dossiers:
     """Every public mutation runs under writer(root) in the CLI."""
 
-    def __init__(self, root, clock=now_ms):
+    def __init__(self, root, clock=now_ms, *, require_reply_provenance=False):
         self.root, self.clock = Path(root), clock
+        self.require_reply_provenance = require_reply_provenance
 
     def path(self, expiry):
         return self.root / 'dossiers' / f'Deribit_BTC_{utc(expiry):%Y%m%dT%H%M%SZ}'
@@ -376,6 +425,9 @@ class Dossiers:
             else:
                 deadline = self.reply_deadline(exp, meta)
                 status = 'LATE' if deadline is not None and at >= deadline else 'VALID'
+                if (status == 'VALID' and deadline is not None and self.require_reply_provenance
+                        and not (requested is not None and decided is not None and model_identity(model))):
+                    status, error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
         elif status not in {'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED'} or raw is not None:
             raise ValueError('invalid response status or raw payload')
         if payload_hash is not None and any(r['status'] == 'VALID' and r['raw_sha256'] == payload_hash for r in siblings):
@@ -389,7 +441,7 @@ class Dossiers:
         self.select(hand)
         return record
 
-    def episode(self, hand, frozen, entry_path=None):
+    def episode(self, hand, frozen, entry_path=None, *, tracking=None):
         decision = self.select(hand)
         if not decision or decision['judgment']['action'] != 'Accept':
             raise ValueError('only a selected valid Accept can freeze a shadow episode')
@@ -401,7 +453,21 @@ class Dossiers:
         if any(frozen['contract'].get(k) != contract.get(k) for k in condition.CONTRACT_FIELDS):
             raise ValueError('frozen legs differ from evidence')
         exp = read(hand / 'expected.json')
-        if exp['sample'] not in {'HISTORICAL_REPLAY', 'FIXTURE'}:
+        if tracking is not None:
+            if __package__:
+                from . import astra_player_tracking_v13 as tracking_core
+            else:
+                import astra_player_tracking_v13 as tracking_core
+            proof, request = tracking_core.request_proof(hand)
+            origin, tracker, point = tracking
+            t0 = tracking_core.tracker_t0(origin, tracker, point)
+            if (entry_path is not None or origin != proof['origin'] or
+                    not request['requested_at_ms'] <= t0['locked_at_ms'] < proof['deadline_ms'] or
+                    frozen != tracking_core.condition_at_t0(proof, request['condition'],
+                                                           point['candidate']['snapshot'], t0['locked_at_ms'])):
+                raise ValueError('shadow tracking t0 does not match frozen authority')
+            entry_path = dict(source='native workbench tracker t0', **t0)
+        elif exp['sample'] not in {'HISTORICAL_REPLAY', 'FIXTURE'}:
             at = frozen['entry_at_ms']
             if (not decision['recorded_at_ms'] <= at <= self.clock() or not entry_path
                     or entry_path.get('expiry_ms') != exp['expiry_ms'] or entry_path.get('index_name') != 'btc_usd'
@@ -517,8 +583,20 @@ class Dossiers:
                                   executable_net_return_btc=None)
             put, call = (pair[x]['delivery_payout_btc'] for x in ('put', 'call'))
             better = None if put is None else ('tie' if put == call else 'put' if put < call else 'call')
+            chosen = decision['judgment']['side'] if decision else None
+            t0_credit, shadow_net = None, None
+            link_path = hand / 'tracking' / 'link.json'
+            if chosen and link_path.is_file():
+                link_rec = read(link_path)
+                raw_credit = ((link_rec.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc')
+                if player.number(raw_credit) is not None:
+                    t0_credit = raw_credit
+                    if pair[chosen]['delivery_payout_btc'] is not None:
+                        shadow_net = round(t0_credit - pair[chosen]['delivery_payout_btc'], 8)
             hands.append(dict(hand_id=hand.name, sample=exp['sample'], decision=decision and decision['judgment']['action'],
-                              chosen_side=decision and decision['judgment']['side'], sides=pair, lower_payout_side=better))
+                              chosen_side=chosen, sides=pair, lower_payout_side=better,
+                              t0_net_credit_after_entry_fee_btc=t0_credit,
+                              hold_to_expiry_shadow_net_btc=shadow_net))
         if management is not None:
             if not fixture:
                 raise ValueError('simulated cashflow fixture is isolated from official outcomes')
@@ -617,6 +695,22 @@ class Dossiers:
                 lines[-1] += f' · [原始牌面]({prefix}/evidence/input.md) · [身份与来源]({prefix}/evidence/identity.json)'
             if decision:
                 lines[-1] += f" · [正式判断]({prefix}/decision.json) · [原始回复]({prefix}/{decision['response']})"
+            tracking = hand / 'tracking'
+            link = read(tracking / 'link.json') if (tracking / 'link.json').is_file() else None
+            if link:
+                lines[-1] += f" · [AI 推理审计](/#player-hand/{folder.name}/{hand.name})"
+                terminal = tracking / 'terminal.json'
+                if terminal.is_file():
+                    export = key(read(terminal)['export_id'])
+                    archive = f"{prefix}/tracking/exports/{export}"
+                    lines[-1] += f" · [追踪归档身份]({archive}/manifest.json) · [完整轨迹、缺口与结算]({archive}/trajectory.json)"
+                else:
+                    lines[-1] += f" · [打开锁定追踪](/#lock-{link['t0']['tracker_episode_id']})"
+                lines[-1] += f" · [锁定回执]({prefix}/tracking/link.json)"
+            if (tracking / 'request.json').is_file():
+                lines.append(f"  - [影子锁定申请]({prefix}/tracking/request.json)")
+            if (tracking / 'blocked.json').is_file():
+                lines.append(f"  - [锁定阻塞回执]({prefix}/tracking/blocked.json)")
             for item in replies + notes:
                 rec = read(item)
                 lines.append(f"  - {rec.get('status', rec.get('state'))} · [记录]({item.relative_to(folder).as_posix()})")
@@ -668,14 +762,20 @@ def managed_cashflow(frozen, settlement, events, record):
                 managed_net_btc=managed, original_hold_net_btc=baseline, delta_btc=managed - baseline)
 
 
+def model_identity(model):
+    return isinstance(model, str) and bool(model.strip()) and len(model) <= 120 and model.isprintable()
+
+
 def parse(raw, annotation):
     text = raw.decode('utf-8')
-    approved = []
+    headings, fallback = [], []
     for line in text.splitlines():
         body = line.strip().lstrip('#* ').rstrip('* ').strip()
-        match = re.match(r'^(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?(?=$|[。：:.\s])', body, re.I)
-        if match:
-            approved.append((match[1].title(), match[2].lower() if match[2] else None))
+        if match := re.match(r'^(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?\s*[。.:：]?$', body, re.I):
+            headings.append((match[1].title(), match[2].lower() if match[2] else None))
+        elif match := re.match(r'^(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?(?=$|[。：:.\s])', body, re.I):
+            fallback.append((match[1].title(), match[2].lower() if match[2] else None))
+    approved = headings or fallback
     if len(set(approved)) != 1:
         raise ValueError('require one unambiguous public decision heading')
     action, side = approved[0]
@@ -754,7 +854,7 @@ def main():
     review.add_argument('--reason')
     command('summary')
     args = parser.parse_args()
-    d = Dossiers(args.root)
+    d = Dossiers(args.root, require_reply_provenance=os.environ.get('ASTRA_AI_SHADOW_EXPERIMENT') == '1')
     with writer(d.root):
         if args.command == 'tick':
             hands = d.tick(read(args.plan), (lambda expiry, slot: collect(args.archive, expiry, slot)) if args.archive else None)

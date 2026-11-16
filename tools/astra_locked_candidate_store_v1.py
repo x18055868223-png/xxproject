@@ -10,6 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 import gzip
 import hashlib
+import os
 import json
 import shutil
 import os
@@ -324,7 +325,8 @@ class LockedCandidateStore:
         self._delta_base_cache: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
 
     def lock(self, point: Mapping[str, Any], *, request_key: str, now_ms: int,
-             new_reference: bool = False, source_episode_id: str | None = None) -> dict[str, Any]:
+             new_reference: bool = False, source_episode_id: str | None = None,
+             shadow_origin: Mapping[str, Any] | None = None) -> dict[str, Any]:
         request_key = _request_key(request_key)
         now_ms = _clock(now_ms, "invalid_now_ms")
         checked = _prepare_point_for_write(point)
@@ -332,6 +334,11 @@ class LockedCandidateStore:
             state = self._read_state_unlocked()
             prior = state["request_keys"].get(request_key)
             if prior is not None:
+                episode = self._episode(state, prior["episode_id"])
+                if shadow_origin is not None:
+                    if episode.get("ai_shadow") != shadow_origin or episode["request_key"] != request_key:
+                        raise LockedCandidateError("request_key_reused", "request key has a different decision")
+                    return {"created": False, "episode": self._summary(episode)}
                 if prior.get("source_episode_id") != source_episode_id:
                     raise LockedCandidateError("request_key_reused", "request_key belongs to a different source episode")
                 if prior.get("operation") != "lock" or prior.get("contract_key") != checked["contract_key"]:
@@ -351,19 +358,34 @@ class LockedCandidateStore:
                     raise LockedCandidateError("source_reference_mismatch", "explicit new reference must use a retained source point")
 
             if not new_reference:
-                existing = self._latest_active_for_contract(state, checked["contract_key"])
+                active_same = self._active_for_contract(state, checked["contract_key"])
+                existing = active_same[0] if active_same else None
                 if existing is not None:
-                    state["request_keys"][request_key] = {
-                        "operation": "lock",
-                        "contract_key": checked["contract_key"],
-                        "episode_id": existing["episode_id"],
-                        "point_id": checked["point_id"],
-                        "candidate_id": checked["candidate_id"],
-                        "snapshot_id": checked["snapshot_id"],
-                        "new_reference": False,
-                    }
-                    self._save_state_with_budget_unlocked(state, extra_point_bytes=self._control_reserve_bytes)
-                    return {"created": False, "episode": self._summary(existing)}
+                    if shadow_origin is not None:
+                        can_coexist = (
+                            shadow_origin.get("plan_id") is not None
+                            and all(
+                                isinstance(ep.get("ai_shadow"), Mapping)
+                                and ep["ai_shadow"].get("plan_id") is None
+                                and ep["ai_shadow"].get("hand_id") != shadow_origin.get("hand_id")
+                                for ep in active_same
+                            )
+                        )
+                        if not can_coexist:
+                            raise LockedCandidateError("active_tracking_exists",
+                                                       "existing tracker cannot acquire a new AI identity or t0")
+                    else:
+                        state["request_keys"][request_key] = {
+                            "operation": "lock",
+                            "contract_key": checked["contract_key"],
+                            "episode_id": existing["episode_id"],
+                            "point_id": checked["point_id"],
+                            "candidate_id": checked["candidate_id"],
+                            "snapshot_id": checked["snapshot_id"],
+                            "new_reference": False,
+                        }
+                        self._save_state_with_budget_unlocked(state, extra_point_bytes=self._control_reserve_bytes)
+                        return {"created": False, "episode": self._summary(existing)}
 
             if len(state["episodes"]) >= self.max_episodes:
                 raise LockedCandidateError("episode_budget_exhausted", "locked candidate episode budget exhausted")
@@ -407,6 +429,8 @@ class LockedCandidateStore:
                 "observations": [event],
                 "last_gap_reason": None,
             }
+            if shadow_origin is not None:
+                episode["ai_shadow"] = deepcopy(dict(shadow_origin))
             state["episodes"][episode_id] = episode
             state["order"].append(episode_id)
             state["request_keys"][request_key] = {
@@ -421,6 +445,32 @@ class LockedCandidateStore:
             }
             self._save_point_and_state_unlocked(checked, state)
             return {"created": True, "episode": self._summary(episode)}
+
+    def lookup_shadow_request(self, request_key: str, origin: Mapping[str, Any]) -> dict[str, Any] | None:
+        request_key = _request_key(request_key)
+        state = self._read_state()
+        prior = state["request_keys"].get(request_key)
+        if prior is None:
+            return None
+        episode = self._episode(state, prior["episode_id"])
+        if (prior["operation"] != "lock" or episode["request_key"] != request_key
+                or episode.get("ai_shadow") != origin):
+            raise LockedCandidateError("request_key_reused", "request key has a different decision")
+        return {"created": False, "episode": self._summary(episode)}
+
+    def claim_shadow_request(self, request_key: str) -> bool:
+        """One attempt to create a tracker. A crash is recovered by lookup only."""
+        if not re.fullmatch(r"shadow_[0-9a-f]{24}", request_key):
+            raise LockedCandidateError("invalid_request_key", "invalid shadow request key")
+        marker = self.root / "shadow_requests" / request_key
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with marker.open("xb") as stream:
+                stream.flush()
+                os.fsync(stream.fileno())
+            return True
+        except FileExistsError:
+            return False
 
     def lookup_request(self, request_key: str, *, candidate_id: str, snapshot_id: str,
                        new_reference: bool = False, source_episode_id: str | None = None) -> dict[str, Any] | None:
@@ -788,7 +838,7 @@ class LockedCandidateStore:
         return out
 
     def compact(self, now_ms: int, *, retention: Mapping[str, int] | None = None,
-                series_current: Any = None) -> dict[str, Any]:
+                series_current: Any = None, shadow_archived: Any = None) -> dict[str, Any]:
         """Thin, fold and drop by RETENTION_DEFAULTS. A point's full file is only removed once
         its metrics row is in the series file; t0 and latest of every policy, and any delta
         base still in use, are never removed. Index first, files after, so a crash can only
@@ -806,6 +856,8 @@ class LockedCandidateStore:
                 ended = episode.get("stopped_at_ms") if isinstance(episode, Mapping) else None
                 if (isinstance(episode, Mapping) and episode.get("status") in {STOPPED, EXPIRED}
                         and isinstance(ended, int) and now_ms - ended > policy["drop_after_ms"]):
+                    if episode.get("ai_shadow") and not (shadow_archived and shadow_archived(episode)):
+                        continue
                     del episodes[episode_id]
                     next_state["order"].remove(episode_id)
                     for key in [k for k, r in next_state["request_keys"].items() if r.get("episode_id") == episode_id]:
@@ -1359,7 +1411,8 @@ class LockedCandidateStore:
         self._validate_episode_index(episode)
         return episode
 
-    def _latest_active_for_contract(self, state: Mapping[str, Any], contract_key: str) -> dict[str, Any] | None:
+    def _active_for_contract(self, state: Mapping[str, Any], contract_key: str) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
         for episode_id in reversed(state["order"]):
             episode = state["episodes"][episode_id]
             try:
@@ -1367,8 +1420,12 @@ class LockedCandidateStore:
             except LockedCandidateError:
                 continue
             if episode["contract_key"] == contract_key and episode["status"] == ACTIVE:
-                return episode
-        return None
+                matches.append(episode)
+        return matches
+
+    def _latest_active_for_contract(self, state: Mapping[str, Any], contract_key: str) -> dict[str, Any] | None:
+        matches = self._active_for_contract(state, contract_key)
+        return matches[0] if matches else None
 
     def _summary(self, episode: Mapping[str, Any]) -> dict[str, Any]:
         self._validate_episode_index(episode)
@@ -1380,6 +1437,8 @@ class LockedCandidateStore:
         stored_gap_count = int(gap_stats.get("stored_count") if gap_stats else len(gaps))
         return {
             "episode_id": episode["episode_id"],
+            "lock_actor": "AI_SHADOW" if episode.get("ai_shadow") else "USER",
+            "ai_shadow": deepcopy(episode.get("ai_shadow")),
             "status": episode["status"],
             "candidate_id": episode["candidate_id"],
             "contract_key": episode["contract_key"],

@@ -92,11 +92,13 @@ export function lockList(episodes, { selected, onOpen, renderDetail, showAll = f
     const c = e.contract || {};
     const st = episodeState(e);
     const open = selected === e.episode_id;
-    const tr = h("tr", { class: `lock-row${open ? " sel" : ""}`, tabindex: 0, "aria-expanded": String(open),
+    const tr = h("tr", { id: `lock-${e.episode_id}`, class: `lock-row${open ? " sel" : ""}`, tabindex: 0, "aria-expanded": String(open),
       "aria-label": `${contractTitle(c)}，${open ? "收起" : "展开"}锁定对照`,
       onclick: () => onOpen(e.episode_id),
       onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onOpen(e.episode_id); } } },
       h("td", {}, h("span", { class: `caret${open ? " open" : ""}`, "aria-hidden": "true" }), h("b", { text: contractTitle(c) }),
+        h("span", { class: "chip lock-actor", title: e.ai_shadow?.model,
+          text: e.ai_shadow ? (e.ai_shadow.model ? `AI · ${e.ai_shadow.model}` : "AI") : "用户" }),
         e.verification_id ? h("span", { class: "chip verified", title: "由 Decision Path 核验结论创建", text: "经核验" }) : null),
       h("td", { class: "n", text: clock(c.expiry_ms) }),
       h("td", {}, h("span", { class: `chip ${st.tone}`, text: st.text }), st.why ? h("span", { class: "muted small", text: ` ${st.why}` }) : null),
@@ -146,7 +148,7 @@ function spotFrom(side, strike, dPct) {
   return side === "put" ? strike * (1 + k) : strike * (1 - k);
 }
 
-export function lockDetail(d, { loading, error, session, confirm, onStop, onAskStop, onCancel, onRelock, series, seriesError, refresh, onHoldReview, holdBusy }) {
+export function lockDetail(d, { loading, error, session, confirm, onStop, onAskStop, onCancel, onRelock, series, seriesError, refresh, onHoldReview, holdBusy, onPlayerAudit }) {
   const box = h("div", { class: "lock-detail" });
   if (!d) { box.append(h("p", { class: "empty", text: loading ? "正在读取锁定对照…" : error ? `读取失败：${error}` : "" })); return box; }
   if (error) box.append(h("p", { class: "banner", text: `刷新失败，显示的是上一次读取的结果（${error}）。` }));
@@ -165,6 +167,17 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
     h("h4", { text: `${contractTitle(c)}，宽 ${usd(c.width_usd)} 美元，${c.quantity_btc ?? 1} BTC` }),
     h("span", { class: "muted", text: `锁定 ${clock(get(d, "baseline.asof_ms"))} → 最新 ${clock(get(d, "latest.asof_ms"))}，${remaining}` }),
     loading ? h("span", { class: "muted", text: "更新中…" }) : null));
+  if (e.ai_shadow) {
+    const a = e.ai_shadow;
+    const hand = `#player-hand/${encodeURIComponent(a.dossier_id)}/${encodeURIComponent(a.hand_id)}`;
+    const counter = a.counter_excerpt;
+    const actor = a.model ? `AI · ${a.model}` : "AI";
+    box.append(h("div", { class: "ld-sec small" },
+      h("p", { class: "muted", text: `${actor} · Accept · 发牌 ${clock(a.hand_frozen_at_ms)} · 作答 ${clock(a.decided_at_ms)}` }),
+      counter ? h("p", { class: "muted", text: `最强反证摘录：${counter}` }) : null,
+      h("p", { class: "muted", text: "理论信用与浮动估值，实际成交未发生。停止追踪只停止观察。" }),
+      h("a", { href: hand, class: "dp-jump", onclick: onPlayerAudit ? (ev) => { ev.preventDefault(); onPlayerAudit(a); } : null }, "本局推理审计与卷宗")));
+  }
 
   // 0. settlement at expiry, from the exchange delivery price
   const settlement = d.settlement;
@@ -174,7 +187,7 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   box.append(section("现在", floatView(series, seriesError), pathNowView(ov.path_now)));
 
   // The lock-time reasons, re-decided by fixed rules at every sample, and the hold review.
-  if (series?.thesis_ledger) box.append(section("锁定时的依据，现在怎样",
+  if (series?.thesis_ledger) box.append(section(e.ai_shadow ? "工作台对照 · 人工复核" : "锁定时的依据，现在怎样",
     ledgerView(series.thesis_ledger, series.hold_review, { session, busy: holdBusy, onHoldReview })));
 
   // 1. at lock (t0)
@@ -481,7 +494,7 @@ export function levelsView(rows) {
     if (bf) backfilled = true;
     tb.append(h("tr", { title: r.change_cn || "" },
       h("td", { text: r.label_cn || "其他价位" }),
-      bf ? h("td", { class: "n", title: "锁定时未记录本期结构；由锁定时快照里的同源数据按同一方法重算" }, usd(a), h("span", { class: "bf-hint", text: "（重算）" }))
+      bf ? h("td", { class: "n", title: "由锁定时同源快照或本局冻结案卷按同一方法回填重算" }, usd(a), h("span", { class: "bf-hint", text: "（重算）" }))
         : h("td", { class: "n", text: notAtLock ? (why ? why[0] : "未记录") : isNum(a) ? usd(a) : "缺失" }),
       h("td", { class: "n", text: r.t1 ? (isNum(b) ? usd(b) : "缺失") : "未记录" }),
       h("td", { class: `n${notAtLock ? " muted" : ""}`, text: change }),
@@ -489,7 +502,7 @@ export function levelsView(rows) {
   }
   t.append(tb);
   return h("div", {}, h("div", { class: "scroll-x" }, t),
-    h("p", { class: "muted small", text: `本期 = 本合约到期日的期权：Pin 与墙按 Deribit 公开数据计算（Gamma 不区分做市商方向），最大痛点与磁吸位为 gexmonitor 口径；翻转位为 BTC MAP 全期限有效翻转位，持有者成本为链上口径。距短腿 =（价位 − 短腿行权价）/ 短腿行权价。${backfilled ? "标“重算”的锁定时读数：该锁定早于本期结构记录，由锁定时快照里的 gexmonitor 与 BTC MAP 数据按同一方法重算。" : ""}${stale ? "部分读数采集时数据偏旧。" : ""}` }));
+    h("p", { class: "muted small", text: `本期 = 本合约到期日的期权：Pin 与墙按 Deribit 公开数据计算（Gamma 不区分做市商方向），最大痛点与磁吸位为 gexmonitor 口径；翻转位为 BTC MAP 全期限有效翻转位，持有者成本为链上口径。距短腿 =（价位 − 短腿行权价）/ 短腿行权价。${backfilled ? "标“重算”的锁定时读数：由锁定时同源快照或本局冻结案卷数据按同一方法回填重算。" : ""}${stale ? "部分读数采集时数据偏旧。" : ""}` }));
 }
 // t0 cell, change cell for a level the lock time cannot give
 const LEVEL_MISSING_CN = {

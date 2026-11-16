@@ -1,5 +1,12 @@
 # Project Memory
 
+## 2026-11-16 Gemini 4 认知基线与 AI 影子牌手 v1.3 接手状态
+
+- **认知基线与配套入口**：全仓单一事实来源为根目录 [PROJECT_BASELINE.md](../../PROJECT_BASELINE.md)，牌手契约与 v1.3 桥接以 [AI_PLAYER_SHADOW_TRACKING_V1_3.md](docs/rulebook/AI_PLAYER_SHADOW_TRACKING_V1_3.md) 为准（历史演进草稿与合并前文档已迁入根目录 `_archive_history/01_过程交接与旧规则草稿/`）。文末 `2026-11-10 (docs/opus/26)` 保留为前序认知记录，现行规则与实现以本节及 `PROJECT_BASELINE.md` 为准。
+- **核心定位**：市场给价，工作台看牌面，AI 牌手在封闭规则下做条件承保选择（检验 $E_P[\Pi_{\text{net}}\mid \text{Accept}] > E_P[\Pi_{\text{net}}\mid \text{Eligible}] > 0$）。已废除旧单侧 `-2..+2` 因子打分（`astra_player_v1.py` / `rulebook@1.1–1.3` 保留为独立 Legacy 路径），全面切换至 `astra_player_input_v1.py` 生成的双侧一阶责任路径 + 4h 无前视 ARD + 4h/12h 同向现货流反证护栏 + 入场/持仓同标准条件冻结（`astra_player_condition_v1.py`）。
+- **代码树与最新实现**：权威远端 `xxproject/claude/astra` 已推 `163ff9b3`（含规则书 `00–15`、ARD、每日卷宗 v1.1 `astra_player_dossier_v1.py`）。当前续作在本工作树 `.worktrees/player-dossier-v13`，持有本地未提交的 v1.3 影子追踪桥接（`astra_player_tracking_v13.py`、`player-audit.js` 等 12 个代码/文档改动），打通作答后 120s 内工作台原生锁定（`lce_*`）、双时钟记录、60 天清理前终局轨迹强制封存及 `ASTRA_AI_SHADOW_EXPERIMENT=1` 对两处旧自动 LLM 入口的隔离。全程 `execution_allowed=false`。
+- **真实牌局与近期时序**：11-15 `08:00 UTC` 历史回放局已按官方交割 `63,993.30 USD` 结案（Call 赔付 0 BTC vs Put 赔付 `0.031253 BTC`）；两局真实 `STARTUP_AD_HOC` 分别于 `2026-11-16 08:00 UTC` 与 `2026-11-17 08:00 UTC` 到期（后者已锁定 `lce_601740dcd1a5443b245cd9f1`，卖 `66000-C` / 买 `68000-C`）；正式计划 `daily-deribit-btc-r2@1` 首槽为 `2026-11-16 14:00 UTC`。
+
 ## 2026-10-12 中性回路承保决策工作台 v3 阶段封版
 
 - 当前工作流：信号层逐卡 LLM 复核已停用且不恢复；模型复核只在工作台进行，每天 UTC 02:00 / 14:00 两侧各一次（空间门放行时为生产用途，否则观察用途；时段先落盘，重启不重复；额度与单任务照常，只跳过两次点击间冷却），另有手动观察复核。`ASTRA_SCHEDULED_REVIEW_HOURS_UTC` 可调。

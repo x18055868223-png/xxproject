@@ -73,12 +73,12 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     <div class="sheet pad events" id="events"></div>
   </section>
 
-  <div class="layer"><b>业务层</b><span>这张保单怎么办：选保单、核验、锁定追踪、核对模型解释</span></div>
+  <div class="layer"><b>业务层</b><span>这张保单怎么办：本期双侧候选对照、锁定追踪、每日交割卷宗与 AI 牌手审计</span></div>
 
   <section class="band" aria-labelledby="deck-h">
     <div class="band-head">
       <h2 id="deck-h">本期保单</h2>
-      <p>两侧各一张候选：在这里比较和选择，开始核验或直接锁定</p>
+      <p>两侧各一张候选：比较短腿责任边界、距现价缓冲、费后补偿与到期前事件，直接锁定追踪</p>
     </div>
     <div class="verdict" id="verdict" role="status"></div>
     <div class="decks" id="decks">
@@ -86,7 +86,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     </div>
   </section>
 
-  <section class="band" aria-labelledby="decision-h">
+  <section class="band" aria-labelledby="decision-h" hidden>
     <div class="band-head">
       <h2 id="decision-h" title="Decision Path">核验路径</h2>
       <p>Decision Path：按固定读序核验一张具体保单；锁定是核验的一种结论</p>
@@ -104,8 +104,8 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
 
   <section class="band" aria-labelledby="audit-h">
     <div class="band-head">
-      <h2 id="audit-h">推理审计</h2>
-      <p id="audit-sub">模型结论逐点对照它引用的程序证据</p>
+      <h2 id="audit-h">每日交割卷宗与 AI 牌手审计</h2>
+      <p id="audit-sub">按期查阅冻结牌面、AI 牌手公开裁决、事中检查与到期判卷</p>
       <div class="right" id="audit-switch"></div>
     </div>
     <div class="sheet audit" id="audit"></div>

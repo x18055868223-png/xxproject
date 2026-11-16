@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 import math
 
 try:
-    from .astra_expiry_structure_v1 import GAP_MS
+    from .astra_expiry_structure_v1 import GAP_MS, PIN_METHOD, PIN_SOURCE
 except ImportError:
-    from astra_expiry_structure_v1 import GAP_MS
+    from astra_expiry_structure_v1 import GAP_MS, PIN_METHOD, PIN_SOURCE
 
 MINUTE = 60_000
 HOUR = 3_600_000
@@ -56,21 +56,28 @@ def analyze(history, index_path, *, expiry_ms, cutoff_ms, band_snapshot=None, wi
     band = frozen_band(band_snapshot, start)
     rows = []
     unclocked = 0
+    legacy_backfill = False
     for r in history or []:
         if r.get('schema') != 'structure_snapshot@0.1' or r.get('expiry_ms') != expiry_ms:
             continue
         at, ready = r.get('at_ms'), r.get('available_at_ms')
         if not clock(at) or at > cutoff_ms:
             continue
+        if 'available_at_ms' not in r or ready is None:
+            ready = at
+            legacy_backfill = True
         if not clock(ready) or ready < at:
             unclocked += 1
             continue
         if ready > cutoff_ms:
             continue
         pin = num(((r.get('profile') or {}).get('walls') or {}).get('pin'))
-        valid = pin is not None and pin > 0 and r.get('pin_status', 'ok') == 'ok'
+        status = r.get('pin_status') if 'pin_status' in r and r.get('pin_status') is not None else ('ok' if pin is not None and pin > 0 else 'unavailable')
+        valid = pin is not None and pin > 0 and status == 'ok'
+        method = r['pin_method'] if 'pin_method' in r else PIN_METHOD
+        source = r['pin_source'] if 'pin_source' in r else PIN_SOURCE
         rows.append(dict(at=at, ready=ready, pin=pin if valid else None,
-                         method=r.get('pin_method'), source=r.get('pin_source')))
+                         method=method, source=source))
     rows.sort(key=lambda r: (r['ready'], r['at']))
     # Conflicting simultaneous snapshots are unusable, not an arbitrary last winner.
     unique = []
@@ -165,7 +172,8 @@ def analyze(history, index_path, *, expiry_ms, cutoff_ms, band_snapshot=None, wi
                 current_segment_start=current_segment[0] if current_segment else None,
                 price_displacement_usd=last['price']-first['price'] if samples else None,
                 pin_displacement_usd=last['pin']-first['pin'] if samples else None,
-                relative_displacement_usd=last['relative']-first['relative'] if samples else None)
+                relative_displacement_usd=last['relative']-first['relative'] if samples else None,
+                **({'legacy_clock_backfill': True} if legacy_backfill else {}))
 
 
 def render(facts, *, current_pin=None):

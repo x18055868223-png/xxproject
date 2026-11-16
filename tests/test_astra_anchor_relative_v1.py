@@ -115,9 +115,12 @@ def test_late_availability_and_future_rows_do_not_leak():
 
 
 def test_source_tick_time_alone_is_not_availability():
-    old=anchor();old.pop('available_at_ms')
-    r=compute([101,102],[old])
-    assert r['valid_samples']==0 and r['unclocked_rows']==1
+    bad=anchor(ready=T-2*M)
+    r_bad=compute([101,102],[bad])
+    assert r_bad['valid_samples']==0 and r_bad['unclocked_rows']==1
+    legacy=anchor();legacy.pop('available_at_ms');legacy.pop('pin_source');legacy.pop('pin_method')
+    r_leg=compute([101,102],[legacy])
+    assert r_leg['valid_samples']==2 and r_leg['legacy_clock_backfill'] is True
 
 
 @pytest.mark.parametrize('field',['expiry','index'])

@@ -11,6 +11,7 @@ import { eventBand } from "./events.js";
 import { sessionStrip, warningBlock, timeLamp } from "./session.js";
 import { renderDecision as renderDecisionView, gateStepId } from "./decision.js";
 import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
+import { playerRef, renderPlayerAudit } from "./player-audit.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
@@ -32,6 +33,7 @@ const state = {
   dp: { session: null, busy: null, error: null, confirm: null },
   // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
   iq: { cache: {}, last: {}, mode: "review", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
+  player: { cards: [], ref: null, detail: null, originals: null, expanded: new Set(), seq: 0, version: 0 },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
@@ -87,6 +89,8 @@ async function load(force = false) {
   if (needsLogin()) { renderBanners(); openLogin("会话已过期，请重新输入工作台令牌。"); return; }
   // an unchanged view leaves the Decision Path alone, so a poll never re-draws under the cursor
   if (changed || state.error) render(); else { renderStrip(); renderBanners(); renderDecks(); }
+  applyPlayerRoute();
+  loadPlayerIndex();
   // The newest active lock opens by itself once; an open, active lock stays current with the page.
   const L = state.lock;
   if (!L.autoOpened && state.view && !FIXTURE) {
@@ -116,6 +120,15 @@ async function loadSession() {
   if (isNum(state.session.expires_at_ms) && state.session.expires_at_ms <= Date.now()) state.session = { authenticated: false };
   renderSession();
   renderSides();  // the first view may have rendered before the session was known
+  if (state.view?.player_audit_available) {
+    if (state.session.authenticated) loadPlayerIndex();
+    else {
+      const P = state.player;
+      Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null,
+        error: null, indexError: null, loading: false, version: P.version + 1, seq: P.seq + 1 });
+      renderAudit();
+    }
+  }
   if (needsLogin()) renderBanners();
 }
 
@@ -290,43 +303,26 @@ function renderVerdict() {
   const box = clear($("verdict"));
   if (!state.view) return;
   if (warming(state.view)) {
+    box.hidden = false;
     box.className = "verdict blocked";
-    box.append(h("b", { text: "后台采集预热中" }), h("span", { text: "服务刚重启，首轮刷新完成前（约 1 分钟）还没有候选与前置条件判断。" }));
+    box.append(h("b", { text: "后台采集预热中" }), h("span", { text: "服务刚重启，首轮刷新完成前（约 1 分钟）还没有候选与数据快照。" }));
     return;
   }
+  const hasPut = Boolean(state.sides.put?.snap);
+  const hasCall = Boolean(state.sides.call?.snap);
+  if (hasPut && hasCall) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
   const u = underwriting(state.view, state.sides);
-  const gate = state.view.space_gate || {};
-  // a side that is unsuitable now says so here as well, whatever the preconditions (docs/opus/25)
-  const vetoed = ["put", "call"].map((side) => [side, state.sides[side]?.candidate?.unsuitable])
-    .filter(([, un]) => un && !un.error_type && un.veto_count > 0);
-  const vetoTitles = (un) => (un.items || []).filter((i) => i.kind === "veto" && i.title_cn).map((i) => i.title_cn).join("、");
-  const vetoLines = () => vetoed.map(([side, un]) => h("span", { class: "why-item veto",
-    text: `${side === "put" ? "Put" : "Call"} 现在不适合做${vetoTitles(un) ? `：${vetoTitles(un)}` : ""}（见保单卡）` }));
-  if (u.open) {
-    box.className = vetoed.length ? "verdict open has-veto" : "verdict open";
-    box.append(h("b", { text: "满足承保前置条件" }), h("span", { text: "两侧快照与报价可用，没有硬门槛阻止；是否承保由你在下面的保单与核验中判断。" }),
-      ...vetoLines());
-    return;
+  box.className = "verdict blocked";
+  box.append(h("b", { text: "部分候选暂未生成" }));
+  for (const side of ["put", "call"]) {
+    if (state.sides[side]?.snap) continue;
+    const why = (u.perSide[side] || []).filter((x) => !x.includes("复核服务"));
+    if (why.length) box.append(h("span", { class: "why-item", text: `${side === "put" ? "Put" : "Call"}：${[...new Set(why)].join("、")}` }));
   }
-  box.className = vetoed.length ? "verdict blocked has-veto" : "verdict blocked";
-  box.append(h("b", { text: "本轮不满足承保前置条件" }));
-  for (const item of u.shared) {
-    box.append(h("span", { class: "why-item", title: item.title || "",
-      text: item.key === "space" && gateSince(gate) ? `${item.text}，${gateSince(gate)}` : item.text }));
-  }
-  // nothing shared: say which side is held back and why, never a bare "不满足"
-  if (!u.shared.length) {
-    for (const side of ["put", "call"]) {
-      const why = u.perSide[side] || [];
-      // a side held back here also names its vetoes in the same line
-      const v = vetoed.find(([s]) => s === side);
-      if (why.length) box.append(h("span", { class: `why-item${v ? " veto" : ""}`, text: `${side === "put" ? "Put" : "Call"}：${[...new Set(why)].join("、")}`
-        + (v ? `；现在不适合做${vetoTitles(v[1]) ? `：${vetoTitles(v[1])}` : ""}` : "") }));
-    }
-  }
-  // a side already held back above is not repeated
-  box.append(...vetoLines().filter((_, i) => !(u.perSide[vetoed[i][0]] || []).length));
-  box.append(h("span", { class: "then", text: "仍可核验与锁定追踪，用于了解责任与补偿如何变化。" }));
 }
 
 // ── four core elements (shared market layer) ────
@@ -415,10 +411,8 @@ function deck(m, side, blockers) {
   card.append(h("div", { class: "deck-head" },
     h("h3", { text: name }),
     h("span", { class: "legs", text: `${(m.shortName || "").split("-")[1] || ""}  卖 ${usd(m.short)} / 买 ${usd(m.long)}，${remainingText(m)}` })));
-  card.append(warningBlock(m.candidate, { isOpen: (key) => state.open.has(key), keepOpen }));
-  // a held reading (the newest capture is only out of step): the card's caution and the age tag below
+  // a held reading (the newest capture is only out of step): the age tag below
   const held = heldCapture(m.candidate);
-  if (blockers.length) card.append(h("p", { class: "side-block", text: `本侧另有：${blockers.join("、")}` }));
 
   const move = m.sigmaPct;
   // How close the short leg is, relative to the move the market prices until expiry.
@@ -467,8 +461,8 @@ function deckRowsView(rows) {
 }
 
 const FIG_TIP = {
-  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于比较两侧；金额、费用、市场估价与保留价在核验路径的价格读数。",
-  "到期前事件": "合约有效期内已排期的美国宏观发布；时间与过滤在核验路径的事件读数。",
+  "毛信用占宽度": "未扣费的可见信用 ÷ 价差宽度，用于横向比较两侧权利金厚度。",
+  "到期前事件": "合约有效期内已排期的美国宏观发布。",
 };
 function fig(value, label, cls = "", sub = "") {
   return h("div", { class: `fig ${cls}`, title: FIG_TIP[label] || null }, h("div", { class: "v", text: value }), h("div", { class: "k", text: label }),
@@ -520,33 +514,26 @@ function verifyOf(m) {
   return cid ? get(state.view, `decision_path.open.${cid}`) : null;
 }
 
-/** Card actions: start or continue verification, and the direct lock (both lead to tracking). */
+/** Card actions: direct shadow lock tracking for the selected candidate. */
 function actions(m) {
   const wrap = h("div", { class: "actions", onclick: (e) => e.stopPropagation() });
   const lock = m.candidate.lock_availability || {};
   const pending = state.pending && state.pending.side === m.side && state.pending.kind === "lock" ? state.pending : null;
   if (pending && pending.stage === "confirm") {
-    wrap.append(h("span", { class: "confirm", text: "不经核验直接锁定：每分钟采样同一合同，直到到期或手动停止；锁定时与之后的变化在“锁定追踪”里查看。" }),
+    wrap.append(h("span", { class: "confirm", text: "锁定当前候选：每分钟采样同一合同，直到到期或手动停止；锁定时与之后的变化在“锁定追踪”里查看。" }),
       h("button", { class: "btn", type: "button", onclick: () => run("lock", m) }, "确认锁定"),
       h("button", { class: "btn secondary", type: "button", onclick: () => { state.pending = null; renderDecks(); } }, "取消"));
     return wrap;
   }
   if (pending && pending.stage === "running") { wrap.append(h("span", { class: "confirm", text: "正在锁定…" })); return wrap; }
   const needLogin = !state.session.authenticated;
-  const open = verifyOf(m);
-  const onScreen = state.dp.session && state.dp.session.candidate_id === m.snap.candidate_id;
-  wrap.append(h("button", { class: "btn", type: "button", disabled: needLogin || FIXTURE || state.dp.busy === "start",
-    title: "冻结这张保单，按固定读序逐步核验；结论可以是锁定追踪、不承保或继续观察",
-    onclick: () => (open ? openVerification(open.verification_id) : startVerification(m)) },
-  open ? (onScreen ? "查看核验" : "继续核验") : "开始核验"));
-  wrap.append(h("button", { class: "btn secondary", type: "button", disabled: !lock.enabled || needLogin || FIXTURE,
-    title: "不经核验直接锁定追踪",
-    onclick: () => { state.pending = { side: m.side, kind: "lock", stage: "confirm" }; renderDecks(); } }, "直接锁定"));
+  wrap.append(h("button", { class: "btn", type: "button", disabled: !lock.enabled || needLogin || FIXTURE,
+    title: "锁定当前候选并按同一合同持续采样追踪",
+    onclick: () => { state.pending = { side: m.side, kind: "lock", stage: "confirm" }; renderDecks(); } }, "直接锁定追踪"));
   const why = [];
   if (needLogin && !FIXTURE) why.push("登录后可操作");
   if (!lock.enabled && lock.reason) why.push(lock.reason === "quote_held_not_current"
     ? "锁定：报价暂时不同步，两腿再次同步读到后可锁定" : `锁定：${reasonCn(lock.reason)}`);
-  if (open && !onScreen) why.push(`核验进行中，${ago(open.started_at_ms)}开始`);
   if (pending && pending.stage === "done") why.unshift(pending.message);
   if (why.length) wrap.append(h("span", { class: "why", text: [...new Set(why)].join("；") }));
   return wrap;
@@ -904,17 +891,37 @@ function holdAudit(side) {
 function renderAudit() {
   renderAuditMain();
   const box = $("audit");
-  const hold = state.view && state.iq.mode !== "inquiry" ? holdAudit(state.focus) : null;
+  const hold = state.view && state.iq.mode === "review" ? holdAudit(state.focus) : null;
   if (box && hold) box.append(hold);
 }
 
 function renderAuditMain() {
   const sw = clear($("audit-switch"));
-  for (const [mode, text] of [["review", "模型复核"], ["inquiry", "提问单"]]) {
-    sw.append(h("button", { class: `chip${state.iq.mode === mode ? " on" : ""}`, type: "button", "aria-pressed": String(state.iq.mode === mode),
-      title: mode === "inquiry" ? "提问者对这张合约提出的问题（定时 10:00 / 22:00 与新合约），未验证，只作参考" : "模型对冻结快照的逐点解释",
-      onclick: () => { state.iq.mode = mode; renderAudit(); } }, text));
+  const available = state.view?.player_audit_available;
+  if (available && !state.player.explicitMode) {
+    state.iq.mode = "player";
   }
+  if (!available) {
+    for (const [mode, text] of [["review", "模型复核"], ["inquiry", "提问单"]]) {
+      sw.append(h("button", { class: `chip${state.iq.mode === mode ? " on" : ""}`, type: "button", "aria-pressed": String(state.iq.mode === mode),
+        onclick: () => { state.iq.mode = mode; state.player.explicitMode = true; renderAudit(); } }, text));
+    }
+  }
+  const audit = $("audit");
+  if (state.iq.mode === "player") {
+    $("audit-sub").textContent = "按期查阅当时冻结牌面、AI 牌手公开裁决、事中检查与到期判卷";
+    const P = state.player;
+    const tag = `${P.version}:${state.session.authenticated}`;
+    if (audit.dataset.playerVersion !== tag) {
+      audit.dataset.playerVersion = tag;
+      renderPlayerAudit(clear(audit), P, { authenticated: state.session.authenticated,
+        onSelect: (ref) => showPlayerHand(ref), onLogin: () => openLogin(""), onTracker: openTracker,
+        onOriginals: showPlayerOriginals, onRefresh: () => loadPlayerIndex(true) });
+    }
+    return;
+  }
+  delete audit.dataset.playerVersion;
+  $("audit-sub").textContent = "模型结论逐点对照它引用的程序证据";
   sw.append(h("span", { class: "sep" }));
   for (const side of ["put", "call"]) {
     const m = state.sides[side];
@@ -978,6 +985,109 @@ function renderAuditMain() {
     for (const row of rest) more.append(evidenceCard(row, activeRefs, r.labels));
     right.append(more);
   }
+}
+
+const PLAYER_HAND_REF = /^Deribit_BTC_\d{8}T\d{6}Z\/hand_[0-9a-f]{24}$/;
+async function loadPlayerIndex(force = false) {
+  const P = state.player;
+  if (FIXTURE || !state.view?.player_audit_available || !state.session.authenticated || P.busy) return;
+  P.busy = true;
+  try {
+    const { hands } = await api.playerHands();
+    if (!state.session.authenticated) return;
+    const old = P.cards.find((c) => playerRef(c) === P.ref);
+    const changed = JSON.stringify(hands) !== JSON.stringify(P.cards) || P.indexError;
+    P.cards = hands; P.indexError = null;
+    const first = hands.find((c) => c.frozen_at_ms);
+    if (first && !P.explicitMode) state.iq.mode = "player";
+    const ref = P.ref || ((first || hands[0]) ? playerRef(first || hands[0]) : null);
+    const current = hands.find((c) => playerRef(c) === ref);
+    if (ref && (force || (!P.detail && !P.loading) || JSON.stringify(old) !== JSON.stringify(current))) {
+      await showPlayerHand(ref);
+    } else if (changed) {
+      P.version++; renderAudit();
+    }
+  } catch (err) {
+    authFailed(err); P.indexError = errorText(err); P.version++; renderAudit();
+  } finally { P.busy = false; }
+}
+
+async function showPlayerHand(ref, navigate = false) {
+  if (!PLAYER_HAND_REF.test(ref)) return;
+  const P = state.player;
+  if (navigate) {
+    state.iq.mode = "player"; P.explicitMode = true;
+    routedHash = `#player-hand/${ref}`;
+    history.replaceState(null, "", routedHash);
+  }
+  const cached = navigate && P.ref === ref && P.detail && !P.error;
+  if (P.ref !== ref) {
+    P.ref = ref; P.detail = null; P.originals = null; P.originalsPending = null; P.expanded.clear();
+  }
+  P.error = null; P.version++; renderAudit();
+  if (navigate) $("audit-h").scrollIntoView({ block: "start" });
+  if (cached || !state.session.authenticated) return;
+  const seq = ++P.seq;
+  P.loading = true;
+  try {
+    const row = await api.playerHand(...ref.split("/"));
+    if (seq === P.seq && state.session.authenticated) {
+      if (P.detail?.decision?.raw_sha256 !== row.decision?.raw_sha256 || P.detail?.state !== row.state) {
+        P.originals = null; P.originalsPending = null;
+      }
+      P.detail = row;
+    }
+  } catch (err) {
+    authFailed(err);
+    if (seq === P.seq) P.error = err.status === 404 ? "这一局的卷宗证据暂不可读。" : errorText(err);
+  } finally {
+    if (seq === P.seq) { P.loading = false; P.version++; renderAudit(); }
+  }
+}
+
+async function showPlayerOriginals(box) {
+  const P = state.player, ref = P.ref;
+  if (!state.session.authenticated || !PLAYER_HAND_REF.test(ref) || box.dataset.loading === "true") return;
+  box.dataset.loading = "true";
+  clear(box).append(h("p", { class: "muted", text: "正在核对原文…" }));
+  const revision = P.detail?.decision?.raw_sha256 || P.detail?.state;
+  const pending = P.originals || (P.originalsPending ||= api.playerHand(...ref.split("/"), true));
+  try {
+    const raw = await pending;
+    if (P.ref !== ref || !state.session.authenticated || revision !== (P.detail?.decision?.raw_sha256 || P.detail?.state)) return;
+    P.originals = raw;
+    clear(box).append(h("h4", { text: "AI 收到的完整输入" }), h("pre", { text: raw.input }),
+      h("h4", { text: raw.selected ? "正式回复原文" : "最近的未入选回复" }),
+      raw.response === null ? h("p", { class: "muted", text: "没有可读回复。" }) : h("pre", { text: raw.response }));
+  } catch (err) {
+    authFailed(err);
+    clear(box).append(h("p", { class: "muted", text: `原文暂不可读（${errorText(err)}）。` }));
+  } finally {
+    if (P.originalsPending === pending) P.originalsPending = null;
+    delete box.dataset.loading;
+  }
+}
+
+async function openTracker(id) {
+  if (!/^lce_[0-9a-f]{24}$/.test(id)) return;
+  routedHash = `#lock-${id}`;
+  history.replaceState(null, "", routedHash);
+  const L = state.lock;
+  L.id = id; L.confirm = null; L.linkMissing = false;
+  if (!openEpisode()) await load(true);
+  L.linkMissing = !openEpisode();
+  renderLocks();
+  if (!L.linkMissing) await fetchLock(id);
+  ($(`lock-${id}`) || $("lock-h")).scrollIntoView({ block: "start" });
+}
+
+let routedHash;
+function applyPlayerRoute() {
+  const hash = location.hash;
+  if (!state.view || routedHash === hash) return;
+  routedHash = hash;
+  if (hash.startsWith("#player-hand/") && state.view.player_audit_available) showPlayerHand(hash.slice(13), true);
+  if (/^#lock-lce_[0-9a-f]{24}$/.test(hash)) openTracker(hash.slice(6));
 }
 
 /** The question sheet tab: the card's contract, or the one pinned from the audit step. */
@@ -1214,6 +1324,8 @@ function renderLocks() {
   sum.textContent = list.length
     ? `${active} 条追踪中，共 ${list.length} 条（默认显示最近 ${LOCK_LIST_LIMIT} 条）。每条追踪到该期期权交割为止；点击一行展开锁定时与之后的变化。`
     : "锁定后按同一合同持续采样到该期期权交割，比较锁定时与现在";
+  if (state.lock.linkMissing) box.append(h("p", { class: "empty pad", text: "本条追踪暂未出现在列表中。已归档的证据可在原手牌中查看。" }),
+    h("button", { class: "chip", type: "button", onclick: () => openTracker(state.lock.id) }, "重新检查列表"));
   if (!list.length) { box.append(h("p", { class: "empty pad", text: "还没有锁定的合同。核验结论选“锁定追踪”，或在保单卡上直接锁定。" })); return; }
   const L = state.lock;
   box.append(h("div", { class: "pad" }, lockList(list, {
@@ -1229,6 +1341,7 @@ function renderLocks() {
       onCancel: () => { L.confirm = null; renderLocks(); },
       onStop: () => stopLock(e.episode_id),
       onHoldReview: () => holdReview(e.episode_id), holdBusy: !!(L.holdBusy || {})[e.episode_id],
+      onPlayerAudit: (origin) => showPlayerHand(playerRef(origin), true),
       onRelock: (ask) => { if (ask === "ask") { L.confirm = "relock"; renderLocks(); } else relock(e); },
     }),
   })));
@@ -1324,7 +1437,13 @@ function auditFileName(name) {
 function notice(text) { state.notices.push({ text, until: Date.now() + 60_000 }); renderBanners(); }
 
 function authFailed(err) {
-  if (err && err.status === 401) { state.session = { authenticated: false }; renderSession(); }
+  if (err && err.status === 401) {
+    state.session = { authenticated: false };
+    const P = state.player;
+    Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null, loading: false,
+      seq: P.seq + 1, version: P.version + 1 });
+    renderSession(); renderAudit();
+  }
 }
 
 // ── exogenous events ─────────────────────────────
@@ -1620,6 +1739,7 @@ renderThemeBtn();
 // ── boot ─────────────────────────────────────────
 let resizeTimer = null;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderMapBand, 150); });
+window.addEventListener("hashchange", applyPlayerRoute);
 $("banners").append(h("div", { class: "banner info" }, "正在读取工作台数据…"));
 if (SESSION_GATED) {
   loadSession().then(() => (needsLogin() ? openLogin("") : load()));

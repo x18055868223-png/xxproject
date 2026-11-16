@@ -229,3 +229,56 @@ def test_recovery_ignores_stage_and_rebuilds_selected_decision(active):
     (hand / 'decision.json').unlink()  # simulate interruption after publishing the attempt
     assert dossier.Dossiers(d.root, clock).select(hand)['attempt_id'] == 'published'
     assert (hand / 'decision.json').read_bytes() == selected
+
+
+def test_parse_prioritizes_standalone_decision_heading_over_body_prefixes():
+    body_with_prefixes = (
+        '**Accept / Call**\n'
+        + '\n'.join(EXCERPTS.values())
+        + '\nUnknown 仅用于关键缺口，不阻塞判断。\n'
+        + 'Reject 仅在双侧均不利时出现。\n'
+        + 'Accept 条件如下：现价位于责任外。'
+    ).encode('utf-8')
+    parsed = dossier.parse(body_with_prefixes, EXCERPTS)
+    assert parsed['action'] == 'Accept' and parsed['side'] == 'call'
+
+    conflicting_headings = ('**Accept / Call**\n**Reject**\n' + '\n'.join(EXCERPTS.values())).encode('utf-8')
+    with pytest.raises(ValueError, match='unambiguous public decision heading'):
+        dossier.parse(conflicting_headings, EXCERPTS)
+
+    prefix_fallback = ('Accept / Call：满足条件。\n' + '\n'.join(EXCERPTS.values())).encode('utf-8')
+    assert dossier.parse(prefix_fallback, EXCERPTS)['side'] == 'call'
+
+    conflicting_prefixes = ('Accept 条件。\nReject 理由。\n' + '\n'.join(EXCERPTS.values())).encode('utf-8')
+    with pytest.raises(ValueError, match='unambiguous public decision heading'):
+        dossier.parse(conflicting_prefixes, EXCERPTS)
+
+
+def test_collect_scheduled_derives_missing_r2_card_in_last_five_minutes(tmp_path, monkeypatch):
+    import shutil
+    archive_root = tmp_path / 'archive'
+    shutil.copytree(SRC / 'cases', archive_root / 'cases')
+    cases = [dossier.player.read_json(next((SRC / 'cases/2026-11-14').glob(f'14_{s}_*.gz'))) for s in ('put', 'call')]
+    instruments = [dict(instrument_name=dossier.player.values(c, 'L1.contract')[leg], expiration_timestamp=EXPIRY,
+                        settlement_currency='BTC', is_active=True) for c in cases for leg in ('short_instrument', 'long_instrument')]
+    path = dossier.player.read_json(SRC / 'paths/2026-11-15.json.gz')
+    monkeypatch.setattr(dossier, 'public', lambda *_a, **_k: instruments)
+    monkeypatch.setattr(dossier.archive.Deribit, 'index_path', lambda _self: path['points'])
+
+    with pytest.raises(LookupError, match='原生 r2 位置卡'):
+        dossier.collect(archive_root, EXPIRY, SLOT, startup=False, clock=Clock(SLOT + 10 * M))
+
+    derived = dossier.collect(archive_root, EXPIRY, SLOT, startup=False, clock=Clock(SLOT + 15 * M))
+    assert len(derived['cards']) == 2
+    assert all('scheduled_card_from_native_case' in card['data_gaps'] for card in derived['cards'])
+
+
+def test_settle_leaves_t0_credit_none_without_tracking_link(active, monkeypatch):
+    d, clock, hand = active
+    d.respond(hand, 'accepted', 'RECEIVED', raw(), EXCERPTS)
+    clock.ms = EXPIRY + M
+    monkeypatch.setattr(dossier, 'public', lambda *_a, **_k: {'data': [{'date': '2026-11-15', 'delivery_price': 64000.0}]})
+    monkeypatch.setattr(dossier.archive.Deribit, 'index_path', lambda _self: [])
+    result = dossier.read(d.official(EXPIRY) / 'outcome.json')
+    assert result['hands'][0]['t0_net_credit_after_entry_fee_btc'] is None
+    assert result['hands'][0]['hold_to_expiry_shadow_net_btc'] is None
