@@ -299,10 +299,22 @@ button.chip:hover, button.chip.on { border-color: var(--depth); color: var(--dep
 .pa-cond-kv { margin-top: 4px; border-top: 1px solid var(--rule-2); }
 .pa-cond-kv dd { font-family: var(--font); line-height: 1.62; color: var(--ink); }
 .pa-cond-kv dd.num { font-family: var(--font-num); }
-.pa-events-table { margin-top: 10px; border-top: 1px solid var(--rule); }
+.pa-events-table { margin-top: 8px; border-top: 1px solid var(--rule); }
+.pa-grid-sum { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--rule-2); line-height: 1.55; }
+.pa-trigger-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.pa-shadow-note { margin: 4px 0 8px; line-height: 1.58; }
+.pa-hold-item { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.pa-hold-item:first-of-type { margin-top: 6px; }
+.pa-hold-head { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: 6px; }
+.pa-hold-ts { margin-left: auto; }
+.pa-hold-affected { margin: 4px 0; line-height: 1.55; }
+.pa-hold-reply { margin: 4px 0 6px; font-size: 13.5px; line-height: 1.65; color: var(--ink); overflow-wrap: anywhere; }
 .pa-jump-row { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--rule-2); }
 .pa-contracts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-@media (max-width: 640px) { .pa-contracts { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .pa-contracts { grid-template-columns: 1fr; }
+  .pa-hold-ts { margin-left: 0; }
+}
 .pa-contract-card p { margin: 4px 0 0; line-height: 1.5; }
 .pa-board { display: grid; gap: 10px; margin-bottom: 10px; }
 .pa-board-sec header,
@@ -310,8 +322,16 @@ button.chip:hover, button.chip.on { border-color: var(--depth); color: var(--dep
 .pa-side-card header,
 .pa-track-card header,
 .pa-cond-card header,
+.pa-hold-card header,
 .pa-outcome-card header,
 .pa-contract-card header { padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--rule-2); }
+.ld-mgmt-chip { margin-left: 6px; }
+.ld-ai-head { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.ld-ai-head .ld-mgmt-chip { margin-left: 0; }
+.ld-ai-mgmt { padding-top: 8px; border-top: 1px solid var(--rule-2); }
+.ld-ai-mgmt p { margin: 4px 0; line-height: 1.55; }
+.ld-ai-rev { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--rule); background: var(--sheet); }
+.ld-ai-reply { margin: 6px 0 0; font-size: 13px; line-height: 1.6; color: var(--ink); overflow-wrap: anywhere; }
 .pa-board-p { margin: 4px 0; font-size: 13px; line-height: 1.65; color: var(--ink); }
 .pa-station-list { margin: 6px 0 2px; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; line-height: 1.64; color: var(--ink); }
 .pa-rule-note { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--rule-2); }
@@ -376,9 +396,9 @@ dialog.login input { width: 100%; padding: 8px 10px; border: 1px solid var(--rul
 dialog.login p { color: var(--ink-2); font-size: 13px; }
 
 @media (max-width: 1080px) {
-  .decks, .audit-main, .grid-2 { grid-template-columns: 1fr; }
+  .decks, .audit-main, .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .audit .ledger { position: static; max-height: none; }
-  .grid-3 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .audit .points { border-right: 0; border-bottom: 1px solid var(--rule-2); }
 }
 .band-head { flex-wrap: wrap; }
@@ -388,9 +408,13 @@ dialog.login p { color: var(--ink-2); font-size: 13px; }
   .strip { position: static; }
   .brand span { display: none; }
   .map-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .sheet, .ev, .player-audit, .player-audit .points, .player-audit .ledger { min-width: 0; max-width: 100%; }
+  .player-audit pre { max-width: 100%; overflow-x: auto; }
+  .pa-events-table td:first-child { overflow-wrap: anywhere; word-break: break-word; }
+  .lock-detail { max-width: calc(100vw - 34px); padding: 12px 12px 6px; }
 
   .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .qa, .grid-3 { grid-template-columns: 1fr; }
+  .qa, .grid-3 { grid-template-columns: minmax(0, 1fr); }
   .strip-inner { gap: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

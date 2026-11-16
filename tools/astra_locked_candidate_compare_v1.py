@@ -1203,7 +1203,8 @@ SERIES_SCHEMA = "locked_candidate_series@1.0.0"
 # 3: thesis-ledger inputs read straight from the producer facts (anchor score, net gamma
 # sign, 4h/12h flow, M-DIE, time left); flow/TMV/gamma/macro no longer depend on WPEM's
 # research context (which also matched context.active_flow_unqualified by prefix).
-SERIES_METRICS_VERSION = 3
+# 4: adds decoupled short_buyback_quote, expected_move_usd, and 4h/12h flow CVD/momentum/asof.
+SERIES_METRICS_VERSION = 4
 
 
 def _leg_marks(point: Mapping[str, Any]) -> dict[str, float | None]:
@@ -1257,10 +1258,115 @@ def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> 
     return None
 
 
+def _flow_asof_ms(facts: Mapping[str, Any], vp: Mapping[str, Any], flow: Mapping[str, Any]) -> int | None:
+    """Resolve the newest retained timestamp attached to volume_price / micro_flow."""
+    for candidate in (
+        vp.get("asof_ms"),
+        vp.get("ts_ms"),
+        vp.get("observed_at_ms"),
+        vp.get("source_ts_ms"),
+        vp.get("window_end_time"),
+        vp.get("kline_close_time"),
+        vp.get("kline_open_time"),
+    ):
+        if (ts := _int(candidate)) is not None:
+            return ts
+    for leg_name in ("combined", "fast_4h", "slow_12h"):
+        leg_map = _mapping(flow.get(leg_name))
+        for key in ("asof_ms", "window_end_time", "source_ts_ms", "ts_ms", "last_closed_bar_time"):
+            if (ts := _int(leg_map.get(key))) is not None:
+                return ts
+    for candidate in (
+        _dig(vp, ("tmvf_24h", "core", "kline_open_time")),
+        _dig(vp, ("funding", "window_end_time")),
+        _dig(facts, ("source_trace", "decision_ts_ms")),
+    ):
+        if (ts := _int(candidate)) is not None and (flow or vp):
+            return ts
+    return None
+
+
+def short_buyback_quote(point: Mapping[str, Any]) -> dict[str, Any]:
+    """Quote buying back ONLY the short leg at public asks, independent of long_book."""
+    snapshot = _point_snapshot(point)
+    packet = _mapping(point.get("packet"))
+    raw = _mapping(packet.get("raw_payload"))
+    market = _mapping(raw.get("market"))
+    short_book = _mapping(market.get("short_book"))
+    metadata = _mapping(raw.get("metadata"))
+    short_meta = _mapping(metadata.get("short"))
+    contract = _mapping(snapshot.get("contract"))
+
+    quantity = _number(contract.get("quantity_btc"))
+    if quantity is None:
+        quantity = _number(_dig(raw, ("candidate", "quantity_btc")))
+    short_instrument = contract.get("short_instrument") or _dig(raw, ("candidate", "short_instrument"))
+    asof = _point_asof(point, snapshot) or _int(_dig(snapshot, ("market", "valuation_ts_ms")))
+    short_quote_asof_ms = _int(short_book.get("timestamp"))
+
+    gaps: list[str] = []
+    if not short_book:
+        gaps.append("short_book_missing")
+    else:
+        if short_instrument and "instrument_name" in short_book and short_book.get("instrument_name") != short_instrument:
+            gaps.append("short_book_instrument_mismatch")
+        if "state" in short_book and short_book.get("state") != "open":
+            gaps.append("short_book_not_open")
+        if short_quote_asof_ms is None:
+            gaps.append("short_book_timestamp_missing")
+        else:
+            leg_received = _int(_dig(market, ("leg_received_ts_ms", "short")))
+            if leg_received is None:
+                leg_received = _int(market.get("received_ts_ms"))
+            if (leg_received is not None and short_quote_asof_ms > leg_received) or (
+                asof is not None and (short_quote_asof_ms > asof or asof - short_quote_asof_ms > core.MAX_BOOK_AGE_MS)
+            ):
+                gaps.append("short_book_stale")
+        best_bid = core._best_book_price(short_book.get("bids"), bid=True)
+        best_ask = core._best_book_price(short_book.get("asks"), bid=False)
+        if best_bid is not None and best_ask is not None and best_bid > best_ask:
+            gaps.append("short_crossed_book")
+
+    if quantity is None or quantity <= 0:
+        gaps.append("quantity_missing")
+
+    short_ask: float | None = None
+    if short_book and quantity is not None and quantity > 0:
+        short_ask, _ = core._consume_depth(short_book.get("asks"), quantity, bid=False)
+        if short_ask is None:
+            gaps.append("short_depth_insufficient")
+
+    commission = _number(short_meta.get("taker_commission"))
+    if commission is None or commission < 0:
+        gaps.append("missing_taker_commission")
+
+    blocking_quote_gaps = [g for g in gaps if g != "missing_taker_commission"]
+    short_fee: float | None = None
+    if not blocking_quote_gaps and short_ask is not None and commission is not None and commission >= 0:
+        try:
+            clean_asks = [list(level) for level in core._clean_depth_levels(short_book.get("asks"))]
+            short_fee, _ = real_replay._consume_fee(clean_asks, quantity, commission, bid=False)
+        except (KeyError, TypeError, ValueError):
+            gaps.append("missing_taker_commission")
+            short_fee = None
+
+    ask_out = short_ask if not blocking_quote_gaps else None
+    fee_out = short_fee if (ask_out is not None and short_fee is not None) else None
+    total_out = (ask_out + fee_out) if (ask_out is not None and fee_out is not None) else None
+    return {
+        "short_buyback_ask_btc": ask_out,
+        "short_buyback_fee_btc": fee_out,
+        "short_buyback_total_btc": total_out,
+        "short_quote_asof_ms": short_quote_asof_ms,
+        "short_buyback_gaps": sorted(set(gaps)),
+    }
+
+
 def _producer_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """Ledger inputs from S.fact_context.market_facts; None where the producer gave nothing."""
     facts = _mapping(_dig(snapshot, ("fact_context", "market_facts")))
-    flow = _mapping(_dig(facts, ("volume_price", "micro_flow")))
+    vp = _mapping(facts.get("volume_price"))
+    flow = _mapping(vp.get("micro_flow"))
 
     def leg(name: str, key: str) -> Any:
         return _mapping(flow.get(name)).get(key)
@@ -1277,7 +1383,12 @@ def _producer_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "flow_ready": leg("combined", "data_ready"),
         "flow_fast_4h": leg("fast_4h", "direction"),
         "flow_slow_12h": leg("slow_12h", "direction"),
-        "tmv_state": _dig(facts, ("volume_price", "tmv_state")),
+        "flow_cvd_4h": _number(leg("fast_4h", "cvd_sum")),
+        "flow_cvd_12h": _number(leg("slow_12h", "cvd_sum")),
+        "flow_momentum_4h_pct": _number(leg("fast_4h", "momentum_return_pct")),
+        "flow_momentum_12h_pct": _number(leg("slow_12h", "momentum_return_pct")),
+        "flow_asof_ms": _flow_asof_ms(facts, vp, flow),
+        "tmv_state": vp.get("tmv_state"),
         "macro_regime": _dig(facts, ("macro_pressure", "macro_regime")),
         "mdie_direction": _dig(facts, ("m_die", "direction")),
         "mdie_shape": _dig(facts, ("m_die", "move_shape")),
@@ -1305,6 +1416,7 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
     breakevens = _baseline_breakevens(base)
     close = _close_quote(point)
     reference = _reference_result(base, close)
+    short_buyback = short_buyback_quote(point)
     quote = _mapping(_dig(snapshot, ("market", "quote")))
     gate = _mapping(candidate.get("space_gate"))
     produced = _producer_facts(snapshot)
@@ -1322,15 +1434,24 @@ def point_metrics(point: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict
     asof = _point_asof(point, snapshot)
     expiry = _number(contract.get("expiry_ms"))
     levels = lock_levels.series_subset(candidate.get("expiry_levels"))
+    expected_move = _number(_dig(candidate, ("expiry_levels", "expected_move_usd")))
+    if expected_move is None:
+        expected_move = _number(candidate.get("expected_move_usd"))
     return {
         "asof_ms": asof,
         "spot_usd": spot,
+        "expected_move_usd": expected_move,
         "short_distance_pct": distance(contract.get("short_strike_usd"), "short"),
         "protection_distance_pct": distance(contract.get("long_strike_usd"), "protection"),
         "breakeven_distance_pct": distance(breakevens[0], "breakeven") if breakevens else None,
         "visible_credit_btc": _number(_dig(snapshot, ("economics", "visible_credit_btc"))),
         "close_debit_btc": _number(close.get("debit_btc")),
         "close_fee_btc": _number(close.get("close_fee_btc")),
+        "short_buyback_ask_btc": short_buyback["short_buyback_ask_btc"],
+        "short_buyback_fee_btc": short_buyback["short_buyback_fee_btc"],
+        "short_buyback_total_btc": short_buyback["short_buyback_total_btc"],
+        "short_quote_asof_ms": short_buyback["short_quote_asof_ms"],
+        "short_buyback_gaps": list(short_buyback["short_buyback_gaps"]),
         "reference_result_btc": _number(reference.get("reference_result_btc")),
         # protection leg without bid valued at zero: a conservative bound, only when present
         **({"reference_result_lower_bound_btc": _number(reference["reference_result_lower_bound_btc"])}

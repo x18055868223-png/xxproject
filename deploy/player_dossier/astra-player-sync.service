@@ -1,0 +1,14 @@
+[Unit]
+Description=xxproject AI Player 5m fixed-grid checks, trigger coalescing & hold review (SHADOW_ONLY)
+After=network-online.target astra-workbench-v20.service
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=research
+UMask=0027
+EnvironmentFile=/etc/signal-audit/llm.env
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
+ExecStart=/usr/bin/python3 /opt/signal-audit-tools/astra_player_tracking_v13.py --url http://127.0.0.1:8895 sync-open --root /var/lib/xxproject/workbench/shadow_dossiers --check-due --review --archive /var/lib/xxproject/research_archive
+TimeoutStartSec=600
+Nice=10

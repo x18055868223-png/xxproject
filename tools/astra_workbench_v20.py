@@ -3609,6 +3609,7 @@ class AstraWorkbench:
             if isinstance(episode, dict):
                 if episode.get("ai_shadow"):
                     episode["ai_shadow"].pop("counter_excerpt", None)
+                    episode["ai_dossier_management"] = self._ai_dossier_management(episode, detail=False)
                 try:
                     episode["outcome"] = self._lock_outcome(episode, settlements)
                 except Exception:
@@ -3618,6 +3619,20 @@ class AstraWorkbench:
                 "error": error, "sample_interval_ms": self.config.locked_sample_interval_ms,
                 "max_active": self.config.locked_max_active, "max_samples": self.config.locked_max_samples,
                 "max_bytes": self.config.locked_max_bytes, "llm_call_count": 0}
+
+    def _ai_dossier_management(self, episode: Mapping[str, Any] | None, *, detail: bool = False) -> dict[str, Any] | None:
+        root = self.config.shadow_dossier_root
+        shadow = episode.get("ai_shadow") if isinstance(episode, Mapping) else None
+        if root is None or not isinstance(shadow, Mapping):
+            return None
+        try:
+            reader = getattr(player_tracking, "episode_management_summary", None)
+            if reader is None:
+                return None
+            return reader(root, shadow.get("dossier_id"), shadow.get("hand_id"),
+                          shadow.get("dossier_episode_id"), include_reply=detail)
+        except Exception:
+            return None
 
     def locked_candidate_detail(self, episode_id: str, *, include_raw: bool = True,
                                 baseline_point_id: str | None = None,
@@ -3629,6 +3644,7 @@ class AstraWorkbench:
             result = self._locked_candidate_projection(episode_id, include_raw=include_raw,
                 baseline_point_id=baseline_point_id, latest_point_id=latest_point_id)
         result["verification_commitments"] = self._lock_commitments(episode_id)
+        result["ai_dossier_management"] = self._ai_dossier_management(result.get("episode"), detail=True)
         return result
 
     def _lock_commitments(self, episode_id: str) -> dict[str, Any] | None:
@@ -4188,6 +4204,12 @@ class AstraWorkbench:
                 if series["settlement"]:
                     # The ordinary tracker computes this through native BTC commercial math.
                     output["settlement"] = series["settlement"]
+                latest_id = (series["episode"] or {}).get("latest_point_id")
+                if latest_id:
+                    try:
+                        output["latest_point"] = self.locked_candidates.read_point(latest_id)
+                    except locked_store.LockedCandidateError:
+                        output["latest_point"] = None
                 output.update({k: series[k] for k in ("points", "gaps", "thinned", "unreadable_points")})
             return output
         except locked_store.LockedCandidateError as exc:
@@ -5237,6 +5259,7 @@ class AstraWorkbench:
             self._attach_exogenous_events(warm, now)
             self._attach_session_layers(warm, now)
             warm["hold_reviews"] = self.hold_review_overview(warm["locked_candidates"])
+            warm["player_audit_available"] = self.config.shadow_dossier_root is not None
             result = self._attach_decision_reduction(self._apply_current_review_availability(warm, now))
             return reading.workbench_reading(result) if reading_only else result
         # Recheck facts and current use, without overwriting frozen candidate evidence.

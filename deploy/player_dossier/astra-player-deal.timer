@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AI Player daily formal deal with bounded retries inside 16:00-16:30 UTC window
+
+[Timer]
+OnCalendar=*-*-* 16:02,05,10,15:00 UTC
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -31,7 +31,8 @@ DAY, MINUTE = 86_400_000, 60_000
 RESEARCH = 'AI Player v1 / ARD closeout 2026-11-15'
 PARSER = 'public-excerpts@1'
 EVENTS = {'OBSERVATION', 'REVIEW_REQUIRED', 'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED',
-          'CONDITION_UNKNOWN', 'AI_HOLD', 'AI_REVOKE', 'SHADOW_ACTION', 'SIMULATED_ORDER', 'CORRECTION'}
+          'CONDITION_UNKNOWN', 'AI_HOLD', 'AI_REVOKE', 'AI_HOLD_UNKNOWN',
+          'HOLD_REVIEW_FAILED', 'HOLD_REVIEW_QUEUED', 'SHADOW_ACTION', 'SIMULATED_ORDER', 'CORRECTION'}
 MANUAL_EVENTS = {kind for kind in EVENTS if not kind.startswith('CONDITION_')}
 KINDS = {'SCHEDULED', 'STARTUP_AD_HOC', 'AD_HOC', 'HISTORICAL_REPLAY', 'FIXTURE'}
 
@@ -135,12 +136,20 @@ def public(method, **params):
     return result['result']
 
 
+DAILY_SCHEDULES = {
+    'r2': (14 * 60 * MINUTE, 18 * 60 * MINUTE),
+    'r16': (16 * 60 * MINUTE, 16 * 60 * MINUTE),
+}
+
+
 def schedule(plan, at):
     if plan['research'] != RESEARCH or plan['mode'] != 'SHADOW_ONLY':
         raise ValueError('invalid shadow plan')
     first = plan['effective_at_ms']
-    if (first % DAY != 14 * 60 * MINUTE or plan['candidate_round'] != 'r2'
-            or plan['expiry_offset_ms'] != 18 * 60 * MINUTE or not 0 < plan['deal_grace_ms'] <= 40 * MINUTE
+    expected = DAILY_SCHEDULES.get(plan.get('candidate_round'))
+    if (expected is None or first % DAY != expected[0]
+            or plan['expiry_offset_ms'] != expected[1]
+            or not 0 < plan['deal_grace_ms'] <= 40 * MINUTE
             or not 0 < plan['reply_grace_ms'] <= DAY):
         raise ValueError('invalid daily r2 schedule')
     return range(first, at + 1, DAY)
@@ -176,7 +185,8 @@ def _resolve_band_snapshot(archive_root, cutoff_ms, band_snapshot=None):
     if band_snapshot is not None:
         return band_snapshot
     start = cutoff_ms - 4 * 60 * MINUTE
-    direct = Path(archive_root) / 'band_snapshot.json'
+    root = Path(archive_root)
+    direct = root / 'band_snapshot.json'
     if direct.is_file():
         try:
             cand = read(direct)
@@ -184,8 +194,15 @@ def _resolve_band_snapshot(archive_root, cutoff_ms, band_snapshot=None):
                 return cand
         except Exception:
             pass
+    band_days = []
+    for ts in (start, cutoff_ms):
+        day_str = utc(ts).date().isoformat()
+        if day_str not in band_days:
+            band_days.append(day_str)
+    archived_paths = [root / 'band_snapshots' / f'{day_str}.jsonl' for day_str in band_days]
     fmz_env = os.environ.get('ASTRA_WORKBENCH_SNAPSHOTS_JSONL')
-    for candidate_path in ([Path(fmz_env)] if fmz_env else []) + [Path(archive_root).parent / 'native-fmz.jsonl']:
+    extra_paths = ([Path(fmz_env)] if fmz_env else []) + [root.parent / 'native-fmz.jsonl']
+    for candidate_path in archived_paths + extra_paths:
         if candidate_path.is_file():
             try:
                 for row in reversed(rows(candidate_path)):
@@ -196,7 +213,7 @@ def _resolve_band_snapshot(archive_root, cutoff_ms, band_snapshot=None):
     return None
 
 
-def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None):
+def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_snapshot=None, candidate_round='r2'):
     """Use the existing archive's native cases. Public reads fill the current path and expiry proof."""
     day = utc(expiry).date().isoformat()
     case_dir = archive_root / 'cases' / utc(slot).date().isoformat()
@@ -226,25 +243,25 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
     cards = []
     existing = rows(archive_root / 'levels' / f'{day}.jsonl')
     for case, c, tick in zip(candidates, contracts, reads):
-        native = [r for r in existing if r.get('schema') == levels.CARD_SCHEMA and r.get('round') == 'r2'
+        native = [r for r in existing if r.get('schema') == levels.CARD_SCHEMA and r.get('round') == candidate_round
                   and r.get('case_id') == case['case_id'] and r.get('backfilled') is False]
         if len(native) == 1:
             cards.append(native[0])
             continue
         late_scheduled = not startup and clock() >= slot + 15 * MINUTE
         if not startup and not late_scheduled:
-            raise LookupError(f"等待 {c['side']} 原生 r2 位置卡")
+            raise LookupError(f"等待 {c['side']} 原生 {candidate_round} 位置卡")
         cut = [p for p in points if p[0] <= tick]
         if not cut or tick - cut[-1][0] > levels.PATH_EDGE_MS:
             raise LookupError('候选读取时的指数路径未覆盖')
         snaps = [r for r in known if r['available_at_ms'] <= tick]
         gap = 'startup_card_from_native_case' if startup else 'scheduled_card_from_native_case'
-        cards.append(levels.build_card(expiry_ms=expiry, rnd='r2', side=c['side'], read_at_ms=tick,
+        cards.append(levels.build_card(expiry_ms=expiry, rnd=candidate_round, side=c['side'], read_at_ms=tick,
                                      walls=player.values(case, 'L3.expiry_walls'), points=cut, case=case,
                                      contract=c, snapshots=snaps, extra_gaps=[gap]))
     path = dict(schema='index_path@0.1', index_name='btc_usd', expiry_ms=expiry, fetched_at_ms=received,
                 points=[p for p in points if p[0] <= max(reads)])
-    resolved_band = _resolve_band_snapshot(archive_root, max(reads), band_snapshot=band_snapshot)
+    resolved_band = _resolve_band_snapshot(archive_root, min(reads), band_snapshot=band_snapshot)
     return seal_source(candidates, cards, path, history, instrument_proof, received_at_ms=received,
                        source='native research archive + Deribit public read', band_snapshot=resolved_band)
 
@@ -584,7 +601,7 @@ class Dossiers:
             put, call = (pair[x]['delivery_payout_btc'] for x in ('put', 'call'))
             better = None if put is None else ('tie' if put == call else 'put' if put < call else 'call')
             chosen = decision['judgment']['side'] if decision else None
-            t0_credit, shadow_net = None, None
+            t0_credit, shadow_net, managed_shadow = None, None, None
             link_path = hand / 'tracking' / 'link.json'
             if chosen and link_path.is_file():
                 link_rec = read(link_path)
@@ -593,10 +610,23 @@ class Dossiers:
                     t0_credit = raw_credit
                     if pair[chosen]['delivery_payout_btc'] is not None:
                         shadow_net = round(t0_credit - pair[chosen]['delivery_payout_btc'], 8)
-            hands.append(dict(hand_id=hand.name, sample=exp['sample'], decision=decision and decision['judgment']['action'],
-                              chosen_side=chosen, sides=pair, lower_payout_side=better,
-                              t0_net_credit_after_entry_fee_btc=t0_credit,
-                              hold_to_expiry_shadow_net_btc=shadow_net))
+                ep_id = (link_rec.get('origin') or {}).get('dossier_episode_id')
+                ep_dir = (folder / 'episodes' / key(ep_id)) if ep_id else None
+                if not fixture and ep_dir is not None and (ep_dir / 'condition.json').is_file():
+                    ep_events = sorted((read(p) for p in (ep_dir / 'events').glob('*.json')),
+                                       key=lambda e: (e['recorded_at_ms'], e['event_id']))
+                    managed_shadow = _shadow_managed_cashflow(
+                        read(ep_dir / 'condition.json'), delivery, ep_events, link_rec,
+                        t0_credit=t0_credit, hold_shadow_net=shadow_net)
+                    if managed_shadow is not None:
+                        episodes.append(dict(episode_id=ep_id, hand_id=hand.name, **managed_shadow))
+            hand_row = dict(hand_id=hand.name, sample=exp['sample'], decision=decision and decision['judgment']['action'],
+                            chosen_side=chosen, sides=pair, lower_payout_side=better,
+                            t0_net_credit_after_entry_fee_btc=t0_credit,
+                            hold_to_expiry_shadow_net_btc=shadow_net)
+            if managed_shadow is not None:
+                hand_row['managed_cashflow'] = managed_shadow
+            hands.append(hand_row)
         if management is not None:
             if not fixture:
                 raise ValueError('simulated cashflow fixture is isolated from official outcomes')
@@ -762,6 +792,51 @@ def managed_cashflow(frozen, settlement, events, record):
                 managed_net_btc=managed, original_hold_net_btc=baseline, delta_btc=managed - baseline)
 
 
+def _shadow_managed_cashflow(frozen, settlement, events, link_rec, *, t0_credit=None, hold_shadow_net=None):
+    """Non-fixture shadow accounting for AI_REVOKE: short buyback at ask (preserving long) or unpriced revoke."""
+    revokes = [e for e in events if e.get('kind') == 'AI_REVOKE']
+    flow = [e for e in events if e.get('kind') == 'SIMULATED_ORDER' and (e.get('body') or {}).get('action') == 'BUY_BACK_SHORT']
+    no_quotes = [e for e in events if e.get('kind') == 'SHADOW_ACTION' and (e.get('body') or {}).get('action') == 'REVOKE_RECORDED_NO_QUOTE']
+    if not revokes and not flow and not no_quotes:
+        return None
+    c = frozen['contract']
+    q = c['quantity_btc']
+    if flow and settlement is not None and player.number(t0_credit) is not None:
+        fill = flow[-1]['body']
+        if fill.get('instrument') != c['short_instrument'] or fill.get('quantity_btc') != q:
+            return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+                        long_instrument=c['long_instrument'], unpriced_reason='short_fill_contract_mismatch')
+        buyback = fill.get('cost_btc')
+        buyback_fee = fill.get('fee_btc', 0.0)
+        if any(type(x) not in (int, float) or not 0 <= x < float('inf') for x in (buyback, buyback_fee)):
+            return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+                        long_instrument=c['long_instrument'], unpriced_reason='invalid_buyback_quote')
+        long_payout = cash.inverse_leg_payout(c['side'], c['long_strike_usd'], settlement, q)
+        long_fee = fill.get('long_delivery_fee_btc', 0.0)
+        managed = round(t0_credit - buyback - buyback_fee + long_payout - long_fee, 8)
+        economy = ((link_rec or {}).get('t0') or {}).get('economy') or {}
+        return dict(mode='SHADOW_MANAGED', simulated_short_fill_event=flow[-1]['event_id'],
+                    short_remaining=0, long_instrument=c['long_instrument'],
+                    long_remaining_before_expiry_btc=q, long_settlement_credit_btc=long_payout,
+                    long_remaining_after_expiry=0,
+                    entry_credit_btc=economy.get('visible_credit_btc'),
+                    t0_net_credit_after_entry_fee_btc=t0_credit,
+                    fees_btc=dict(entry=economy.get('theoretical_two_leg_fee_btc'), buyback=buyback_fee, delivery=long_fee),
+                    short_buyback_cost_btc=buyback, quoted_at_ms=fill.get('quoted_at_ms'),
+                    managed_net_btc=managed, original_hold_net_btc=hold_shadow_net,
+                    delta_btc=round(managed - hold_shadow_net, 8) if hold_shadow_net is not None else None)
+    if flow and settlement is None:
+        return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+                    long_instrument=c['long_instrument'], long_remaining_before_expiry_btc=q,
+                    revoked_at_ms=revokes[-1].get('observed_at_ms') or revokes[-1].get('recorded_at_ms') if revokes else None,
+                    unpriced_reason='settlement_price_missing')
+    reason = ((no_quotes[-1].get('body') or {}).get('quote_gap_reasons') if no_quotes else None) or ['no_reliable_short_buyback_quote']
+    return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+                long_instrument=c['long_instrument'], long_remaining_before_expiry_btc=q,
+                revoked_at_ms=revokes[-1].get('observed_at_ms') or revokes[-1].get('recorded_at_ms') if revokes else None,
+                unpriced_reason=reason[0] if isinstance(reason, list) and reason else reason)
+
+
 def model_identity(model):
     return isinstance(model, str) and bool(model.strip()) and len(model) <= 120 and model.isprintable()
 
@@ -857,7 +932,10 @@ def main():
     d = Dossiers(args.root, require_reply_provenance=os.environ.get('ASTRA_AI_SHADOW_EXPERIMENT') == '1')
     with writer(d.root):
         if args.command == 'tick':
-            hands = d.tick(read(args.plan), (lambda expiry, slot: collect(args.archive, expiry, slot)) if args.archive else None)
+            plan_doc = read(args.plan)
+            rnd = plan_doc.get('candidate_round', 'r2')
+            hands = d.tick(plan_doc, (lambda expiry, slot: collect(args.archive, expiry, slot, candidate_round=rnd))
+                           if args.archive else None)
             graded = list(d.settle_due()) if args.settle_due else []
             print(json.dumps([str(p) for p in [*(d.summary(read(h / 'expected.json')['expiry_ms']) for h in hands), *graded]], ensure_ascii=False))
             return

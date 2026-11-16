@@ -42,7 +42,7 @@ NEAR_USD = 100.0                  # minutes_within_100usd
 APPROACH_SHARE = 0.10             # approach_no_cross: no crossing and closest <= 10% of the expected move
 WINDOWS = {"6h": 6 * H, "24h": DAY}
 PATH_EDGE_MS = 10 * 60_000        # a behaviour window needs index points this close to both ends
-ROUNDS = ("r1", "r2", "late4h", "late1h")
+ROUNDS = ("r1", "r2", "r16", "late4h", "late1h")
 ROLE_ORDER = ("leg", "oi", "derived", "control")
 UNKNOWN = ["dealer_side", "liquidation_levels"]
 KIND_ROLES = {"oi_call": "oi", "oi_put": "oi", "gamma_call": "derived", "gamma_put": "derived"}

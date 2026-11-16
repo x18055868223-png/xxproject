@@ -10,13 +10,17 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 try:
-    from . import astra_player_dossier_v1 as dossier
-    from . import astra_underwriting_v20 as underwriting
+    from . import astra_locked_candidate_compare_v1 as locked_compare
     from . import astra_locked_candidate_store_v1 as store
+    from . import astra_player_dossier_v1 as dossier
+    from . import astra_player_review_v1 as review
+    from . import astra_underwriting_v20 as underwriting
 except ImportError:
-    import astra_player_dossier_v1 as dossier
-    import astra_underwriting_v20 as underwriting
+    import astra_locked_candidate_compare_v1 as locked_compare
     import astra_locked_candidate_store_v1 as store
+    import astra_player_dossier_v1 as dossier
+    import astra_player_review_v1 as review
+    import astra_underwriting_v20 as underwriting
 
 
 AUDIT_PATH = '/api/workbench/player-audit'
@@ -392,7 +396,78 @@ def link(d, hand, service, plan=None):
     return dict(state='LINK_UNVERIFIED', reason=reason)
 
 
-def _run_due_checks(d, episode, at, *, index_path=None, check_due=False):
+def _merge_index_points(archive_root, expiry_ms, at, *, exported_points=None, public_fn=None):
+    by_ts = {}
+    if archive_root is not None:
+        root = Path(archive_root)
+        for day_ms in (expiry_ms - dossier.DAY, expiry_ms):
+            p = root / 'paths' / f'{dossier.utc(day_ms).date().isoformat()}.json.gz'
+            if p.is_file():
+                try:
+                    import gzip
+                    data = json.loads(gzip.decompress(p.read_bytes()))
+                    for t, v in data.get('points') or ():
+                        if isinstance(t, int) and t <= min(at, expiry_ms) and dossier.player.number(v) and v > 0:
+                            by_ts[t] = float(v)
+                except Exception:
+                    pass
+    for row in exported_points or ():
+        if not isinstance(row, dict):
+            continue
+        m = row.get('metrics') if isinstance(row.get('metrics'), dict) else row
+        ts = row.get('recorded_at_ms') or m.get('asof_ms')
+        spot = m.get('spot_usd')
+        if isinstance(ts, int) and dossier.player.number(spot) and spot > 0:
+            minute_ts = ts - (ts % dossier.MINUTE)
+            if minute_ts <= min(at, expiry_ms):
+                by_ts.setdefault(minute_ts, float(spot))
+    try:
+        points = public_fn() if public_fn is not None else dossier.archive.Deribit().index_path()
+        for item in points or ():
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                t, v = item
+                if isinstance(t, int) and t <= min(at, expiry_ms) and dossier.player.number(v) and v > 0:
+                    by_ts[t] = float(v)
+    except Exception:
+        pass
+    return dict(index_name='btc_usd', expiry_ms=expiry_ms, points=[[t, by_ts[t]] for t in sorted(by_ts)])
+
+
+def _episode_ard_state(frozen, episode, archive_root, index_path, tick):
+    """Build current ARD facts + strict same-measure comparison at a check_clock tick."""
+    if not frozen.get('ard_basis') or archive_root is None:
+        return None
+    expiry = frozen['contract']['expiry_ms']
+    struct_path = Path(archive_root) / 'structure' / f'{dossier.utc(expiry).date().isoformat()}.jsonl'
+    if not struct_path.is_file():
+        return None
+    band_snap = None
+    ep_meta = optional(episode / 'episode.json')
+    if ep_meta and ep_meta.get('hand_id'):
+        ev_src = optional(episode.parent.parent / 'hands' / dossier.key(ep_meta['hand_id']) / 'evidence' / 'source.json')
+        if isinstance(ev_src, dict):
+            band_snap = ev_src.get('band_snapshot')
+    if band_snap is None:
+        band_snap = dossier._resolve_band_snapshot(archive_root, tick)
+    old_start = (frozen['ard_basis'].get('facts') or {}).get('start_ms')
+    win_ms = (tick - old_start) if isinstance(old_start, int) and tick > old_start else 4 * 3_600_000
+    history = [dossier._normalize_legacy_structure_row(r) for r in dossier.rows(struct_path)
+               if r.get('expiry_ms') == expiry and isinstance(r.get('at_ms'), int) and r['at_ms'] <= tick]
+    try:
+        current = dossier.player.ard.analyze(history, index_path, expiry_ms=expiry, cutoff_ms=tick,
+                                            band_snapshot=band_snap, window_ms=win_ms)
+        comparison = dossier.condition.compare_ard_basis(episode / 'condition.json', current, tick)
+        comparison['same_measure'] = comparison.get('new_neighborhood_events') is not None
+        pin_status = next((r.get('pin_status') for r in reversed(history)
+                           if r.get('available_at_ms') is not None and r['available_at_ms'] <= tick and r.get('pin_status')), None)
+        if pin_status:
+            comparison['pin_status'] = pin_status
+        return dict(facts=current, comparison=comparison)
+    except Exception:
+        return None
+
+
+def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive_root=None):
     """Run due grid condition checks idempotently without duplicating existing ticks."""
     if index_path is None and not check_due:
         return None, None
@@ -401,15 +476,12 @@ def _run_due_checks(d, episode, at, *, index_path=None, check_due=False):
         return [], None
     if index_path is None:
         try:
-            points = dossier.archive.Deribit().index_path()
+            expiry = frozen['contract']['expiry_ms']
+            index_path = _merge_index_points(archive_root, expiry, at)
+            if not index_path['points']:
+                return [], 'index_path_unavailable'
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return [], type(exc).__name__
-        expiry = frozen['contract']['expiry_ms']
-        index_path = dict(
-            index_name='btc_usd',
-            expiry_ms=expiry,
-            points=[p for p in points if isinstance(p, (list, tuple)) and len(p) == 2 and p[0] <= min(at, expiry)],
-        )
     clock_cfg = frozen['check_clock']
     limit = min(at, frozen['contract']['expiry_ms'] - 1)
     done_ticks = {
@@ -418,16 +490,260 @@ def _run_due_checks(d, episode, at, *, index_path=None, check_due=False):
         if (ev := optional(p)) and ev.get('kind') in {'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED'}
     }
     checked_events = []
+    ard_state = None
     for tick in range(clock_cfg['first_at_ms'], limit + 1, clock_cfg['interval_ms']):
         if tick in done_ticks:
             continue
-        ev = d.check(episode, index_path, tick, available=at)
+        ard_state = _episode_ard_state(frozen, episode, archive_root, index_path, tick)
+        ev = d.check(episode, index_path, tick, available=at,
+                     ard=(ard_state['facts'] if ard_state and ard_state['comparison'].get('same_measure') else None))
         checked_events.append(dict(event_id=ev['event_id'], kind=ev['kind'], observed_at_ms=ev['observed_at_ms']))
     return checked_events, None
 
 
-def sync(d, hand, service, *, index_path=None, check_due=False):
-    """Copy the native tracker evidence; optionally run due fixed-clock checks."""
+def _llm_settings(llm_config=None):
+    cfg = dict(llm_config or {})
+    api_key = cfg.get('api_key') or os.environ.get('ASTRA_WORKBENCH_LLM_API_KEY') or os.environ.get('LLM_API_KEY')
+    model = cfg.get('model') or os.environ.get('ASTRA_PLAYER_MODEL') or os.environ.get('ASTRA_WORKBENCH_LLM_MODEL') or os.environ.get('LLM_MODEL') or 'deepseek-flash'
+    endpoint = cfg.get('endpoint') or os.environ.get('LLM_BASE_URL') or os.environ.get('ASTRA_WORKBENCH_LLM_ENDPOINT')
+    timeout_s = float(cfg.get('timeout_s') or os.environ.get('LLM_TIMEOUT_SEC') or 180)
+    return dict(api_key=api_key, model=model, endpoint=endpoint, timeout_s=timeout_s, transport=cfg.get('transport'))
+
+
+def _record_revoke_shadow_action(d, episode, frozen, latest_point, at, *, review_id=None):
+    """Record SIMULATED_ORDER(BUY_BACK_SHORT) from real short_book asks, else REVOKE_RECORDED_NO_QUOTE."""
+    c = frozen['contract']
+    quote = locked_compare.short_buyback_quote(latest_point) if latest_point else {
+        'short_buyback_ask_btc': None, 'short_buyback_fee_btc': None,
+        'short_buyback_total_btc': None, 'short_quote_asof_ms': None,
+        'short_buyback_gaps': ['latest_point_unavailable'],
+    }
+    gaps = list(quote.get('short_buyback_gaps') or [])
+    q_ts = quote.get('short_quote_asof_ms')
+    if q_ts is None or not (0 <= at - q_ts <= underwriting.MAX_BOOK_AGE_MS):
+        if 'short_quote_stale_at_revoke' not in gaps:
+            gaps.append('short_quote_stale_at_revoke')
+    ask_btc = quote.get('short_buyback_ask_btc')
+    fee_btc = quote.get('short_buyback_fee_btc') or 0.0
+    if ask_btc is not None and not gaps:
+        body = dict(
+            action='BUY_BACK_SHORT',
+            instrument=c['short_instrument'],
+            long_instrument=c['long_instrument'],
+            long_retained=True,
+            quantity_btc=c['quantity_btc'],
+            cost_btc=ask_btc,
+            fee_btc=fee_btc,
+            total_cost_btc=quote.get('short_buyback_total_btc') or (ask_btc + fee_btc),
+            quoted_at_ms=quote.get('short_quote_asof_ms') or at,
+            review_id=review_id,
+            simulated=True,
+            execution_allowed=False,
+            assumption='ask_depth_fill_short_only_hold_long_to_expiry',
+        )
+        ev_id = dossier.identity('sim_buyback', review_id, body)
+        return d.event(episode, ev_id, 'SIMULATED_ORDER', body, observed=quote.get('short_quote_asof_ms') or at, available=at)
+    body = dict(
+        action='REVOKE_RECORDED_NO_QUOTE',
+        revoked_at_ms=at,
+        short_instrument=c['short_instrument'],
+        long_instrument=c['long_instrument'],
+        long_retained=True,
+        quote_gap_reasons=gaps or ['short_buyback_quote_unavailable'],
+        review_id=review_id,
+        simulated=True,
+        execution_allowed=False,
+    )
+    ev_id = dossier.identity('revoke_no_quote', review_id, body)
+    return d.event(episode, ev_id, 'SHADOW_ACTION', body, observed=at, available=at)
+
+
+def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path=None, llm_config=None,
+                           debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS):
+    """Detect A/B/C/D triggers, debounce/coalesce calls, run incremental HOLD/REVOKE/UNKNOWN review & shadow exit."""
+    root = hand / 'tracking'
+    link_record = load(root / 'link.json')
+    origin = link_record['origin']
+    episode = hand.parent.parent / 'episodes' / origin['dossier_episode_id']
+    frozen = optional(episode / 'condition.json')
+    decision = optional(hand / 'decision.json')
+    if frozen is None or decision is None:
+        return None
+    at = d.clock()
+    ep_events = sorted((load(p) for p in (episode / 'events').glob('*.json')),
+                       key=lambda e: (e['recorded_at_ms'], e['event_id']))
+    t0_point = optional(root / 't0' / 'point.json')
+    series_rows = list(exported.get('points') or [])
+    t0_metrics = (locked_compare.point_metrics(t0_point, t0_point) if t0_point
+                  else (series_rows[0] if series_rows else {}))
+    ep_index = index_path or _merge_index_points(archive_root, frozen['contract']['expiry_ms'], at, exported_points=series_rows)
+    cc = frozen['check_clock']
+    cap = min(at, frozen['contract']['expiry_ms'] - 1)
+    ard_state = None
+    if cap >= cc['first_at_ms']:
+        ard_tick = cc['first_at_ms'] + ((cap - cc['first_at_ms']) // cc['interval_ms']) * cc['interval_ms']
+        ard_state = _episode_ard_state(frozen, episode, archive_root, ep_index, ard_tick)
+    ard_comparison = ard_state['comparison'] if ard_state else None
+    triggers = review.detect_hold_triggers(
+        frozen_condition=frozen,
+        side=frozen['contract']['side'],
+        short_strike_usd=frozen['contract']['short_strike_usd'],
+        entry_at_ms=frozen['entry_at_ms'],
+        t0_metrics=t0_metrics,
+        series_rows=series_rows,
+        condition_events=ep_events,
+        ard_comparison=ard_comparison,
+        now_ms=at,
+    )
+    state_path = episode / 'trigger_state.json'
+    prior_state = optional(state_path) or {}
+    next_state, action = review.schedule_review_action(
+        prior_state, triggers, now_ms=at, debounce_ms=debounce_ms, cooldown_ms=cooldown_ms)
+    dossier.write(state_path, dossier.encode(next_state), replace=True)
+    if next_state.get('pending') and action is None:
+        queued_cats = sorted({t.get('category') for t in next_state['pending'] if t.get('category')})
+        q_body = dict(pending_since_ms=next_state.get('pending_since_ms'), trigger_categories=queued_cats,
+                      triggers=[{k: t.get(k) for k in ('category', 'code', 'signature', 'observed_at_ms', 'summary_cn')}
+                                for t in next_state['pending']])
+        q_id = dossier.identity('queued', next_state.get('pending_since_ms'), queued_cats)
+        if not (episode / 'events' / f'{q_id}.json').exists():
+            d.event(episode, q_id, 'HOLD_REVIEW_QUEUED', q_body, observed=at, available=at)
+    if not action or not action.get('should_call'):
+        return dict(triggers=triggers, action='QUEUED' if next_state.get('pending') else 'NO_TRIGGER',
+                    pending=len(next_state.get('pending') or []))
+
+    cfg = _llm_settings(llm_config)
+    batch = action['triggers']
+    cats = sorted({t.get('category') for t in batch if t.get('category')})
+    if not cfg.get('api_key') and cfg.get('transport') is None:
+        done_state = review.complete_review_action(next_state, now_ms=at, success=False, cooldown_ms=cooldown_ms)
+        dossier.write(state_path, dossier.encode(done_state), replace=True)
+        err_id = dossier.identity('rev_fail', at, cats, 'llm_not_configured')
+        d.event(episode, err_id, 'HOLD_REVIEW_FAILED',
+                dict(error='llm_not_configured', trigger_categories=cats, model=cfg.get('model')),
+                observed=at, available=at)
+        return dict(triggers=triggers, action='FAILED', error='llm_not_configured')
+
+    prior_reviews = []
+    for rfile in sorted((episode / 'reviews').glob('rev_*/decision.json')):
+        try:
+            prior_reviews.append(load(rfile))
+        except Exception:
+            pass
+    prog_triggered = any(e.get('kind') == 'CONDITION_TRIGGERED' for e in ep_events)
+    post_spots = [(row.get('metrics') or row).get('spot_usd') for row in series_rows if isinstance(row, dict)]
+    post_spots = [s for s in post_spots if dossier.player.number(s)]
+    post_dists = [(row.get('metrics') or row).get('short_distance_pct') for row in series_rows if isinstance(row, dict)]
+    post_dists = [x for x in post_dists if dossier.player.number(x)]
+    latest_m = ((series_rows[-1].get('metrics') if isinstance(series_rows[-1].get('metrics'), dict) else series_rows[-1])
+                if series_rows else {})
+    latest_pt = exported.get('latest_point')
+    quote_info = locked_compare.short_buyback_quote(latest_pt) if latest_pt else {'short_buyback_gaps': ['latest_point_unavailable']}
+    input_md = review.build_hold_review_input(
+        contract=frozen['contract'],
+        entry_at_ms=frozen['entry_at_ms'],
+        initial_decision=decision,
+        frozen_condition=frozen,
+        triggers=batch,
+        t0_summary=dict(
+            locked_at=frozen['entry_at_ms'],
+            entry_index_usd=frozen.get('entry_index_usd'),
+            short_distance_pct=t0_metrics.get('short_distance_pct'),
+            expected_move_usd=t0_metrics.get('expected_move_usd'),
+            net_credit_after_fee_btc=((link_record.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc'),
+        ),
+        post_entry_summary=dict(
+            sample_count=len(series_rows),
+            latest_spot_usd=post_spots[-1] if post_spots else None,
+            min_short_distance_pct=min(post_dists) if post_dists else None,
+            latest_short_distance_pct=post_dists[-1] if post_dists else None,
+        ),
+        condition_summary=dict(
+            program_triggered=prog_triggered,
+            checks_count=sum(1 for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')),
+        ),
+        ard_summary=ard_comparison or '未开启或无可比同口径 ARD 数据',
+        flow_summary=dict(
+            flow_ready=latest_m.get('flow_ready'),
+            flow_direction=latest_m.get('flow_direction'),
+            flow_fast_4h=latest_m.get('flow_fast_4h'),
+            flow_slow_12h=latest_m.get('flow_slow_12h'),
+            flow_cvd_4h=latest_m.get('flow_cvd_4h'),
+            flow_momentum_4h_pct=latest_m.get('flow_momentum_4h_pct'),
+        ),
+        quote_summary=quote_info,
+        prior_reviews=prior_reviews,
+    )
+    req_ms = d.clock()
+    rev_id = dossier.identity('rev', req_ms, cats, dossier.sha(input_md.encode('utf-8')))
+    try:
+        messages = [
+            {'role': 'system', 'content': '你是中性回路影子持仓复核 AI。只可基于增量牌面输出 HOLD、REVOKE 或 UNKNOWN，严禁改选 Put/Call，严禁推翻已触发的 CONDITION_TRIGGERED。'},
+            {'role': 'user', 'content': input_md},
+        ]
+        llm_res = review.call_chat_llm(
+            messages, api_key=cfg['api_key'] or 'test-key', model=cfg['model'],
+            endpoint=cfg.get('endpoint'), timeout_s=cfg.get('timeout_s', 180),
+            transport=cfg.get('transport'),
+        )
+        raw_reply = llm_res['text']
+        actual_model = llm_res.get('model') or cfg['model']
+        parsed = review.parse_hold_review_response(raw_reply, frozen_condition=frozen, program_triggered=prog_triggered)
+        fin_ms = d.clock()
+        raw_bytes = raw_reply.encode('utf-8')
+        input_bytes = input_md.encode('utf-8')
+        rev_decision = dict(
+            review_id=rev_id,
+            status='VALID',
+            verdict=parsed['verdict'],
+            trigger_categories=cats,
+            triggers=batch,
+            reason=action['reason'],
+            affected_conditions=parsed['affected_conditions'],
+            public_reply=parsed['public_reply'],
+            key_facts=parsed['key_facts'],
+            notes=parsed.get('notes') or [],
+            program_triggered=prog_triggered,
+            model=actual_model,
+            requested_at_ms=req_ms,
+            decided_at_ms=fin_ms,
+            input_sha256=dossier.sha(input_bytes),
+            raw_sha256=dossier.sha(raw_bytes),
+        )
+        attempt_rec = dict(
+            review_id=rev_id, status='VALID', model=actual_model,
+            requested_at_ms=req_ms, decided_at_ms=fin_ms,
+            usage=llm_res.get('usage'), http_status=llm_res.get('http_status'),
+        )
+        dossier.publish(episode / 'reviews' / rev_id, {
+            'input.md': input_bytes,
+            'response.raw': raw_bytes,
+            'attempt.json': dossier.encode(attempt_rec),
+            'decision.json': dossier.encode(rev_decision),
+        })
+        ev_kind = 'AI_HOLD' if parsed['verdict'] == 'HOLD' else 'AI_REVOKE' if parsed['verdict'] == 'REVOKE' else 'AI_HOLD_UNKNOWN'
+        ev_body = {k: rev_decision[k] for k in ('review_id', 'verdict', 'trigger_categories', 'affected_conditions',
+                                                'public_reply', 'model', 'input_sha256', 'raw_sha256')}
+        d.event(episode, dossier.identity('ai_rev', rev_id), ev_kind, ev_body, observed=req_ms, available=fin_ms, decided=fin_ms)
+        done_state = review.complete_review_action(next_state, now_ms=fin_ms, success=True, verdict=parsed['verdict'], cooldown_ms=cooldown_ms)
+        dossier.write(state_path, dossier.encode(done_state), replace=True)
+        if parsed['verdict'] == 'REVOKE':
+            _record_revoke_shadow_action(d, episode, frozen, latest_pt, fin_ms, review_id=rev_id)
+        return dict(triggers=triggers, action='REVIEWED', review_id=rev_id, verdict=parsed['verdict'])
+    except Exception as exc:
+        fin_ms = d.clock()
+        done_state = review.complete_review_action(next_state, now_ms=fin_ms, success=False, cooldown_ms=cooldown_ms)
+        dossier.write(state_path, dossier.encode(done_state), replace=True)
+        err_id = dossier.identity('rev_fail', fin_ms, cats, type(exc).__name__)
+        d.event(episode, err_id, 'HOLD_REVIEW_FAILED',
+                dict(review_id=rev_id, error=type(exc).__name__, detail=str(exc)[:180], trigger_categories=cats, model=cfg['model']),
+                observed=req_ms, available=fin_ms)
+        return dict(triggers=triggers, action='FAILED', review_id=rev_id, error=str(exc))
+
+
+def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=None,
+         run_review=False, llm_config=None, debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS):
+    """Copy the native tracker evidence; optionally run due fixed-clock checks and event-triggered hold reviews."""
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
     if (terminal := optional(root / 'terminal.json')) is not None:
@@ -475,7 +791,15 @@ def sync(d, hand, service, *, index_path=None, check_due=False):
                                   (ep['last_gap'] or {}).get('recorded_at_ms'),
                                   (settlement or {}).get('settled_at_ms')) if t is not None), default=None),
         available=at)
-    checks, check_error = _run_due_checks(d, episode, at, index_path=index_path, check_due=check_due)
+    ep_index = index_path
+    if ep_index is None and check_due:
+        ep_index = _merge_index_points(archive_root, ep['contract']['expiry_ms'], at, exported_points=exported['points'])
+    checks, check_error = _run_due_checks(d, episode, at, index_path=ep_index, check_due=check_due, archive_root=archive_root)
+    review_result = None
+    if run_review and not archived:
+        review_result = evaluate_hold_management(
+            d, hand, exported, archive_root=archive_root, index_path=ep_index,
+            llm_config=llm_config, debounce_ms=debounce_ms, cooldown_ms=cooldown_ms)
     if archived and completed and settlement_state in {'settled', 'delivery_price_unavailable'}:
         dossier.write(root / 'terminal.json', dossier.encode(dict(export_id=archive_id)))
     out = dict(state=ep['status'], event_id=event['event_id'], full_series=completed, settlement=settlement_state)
@@ -483,6 +807,231 @@ def sync(d, hand, service, *, index_path=None, check_due=False):
         out['checks'] = checks
     if check_error is not None:
         out['check_error'] = check_error
+    if review_result is not None:
+        out['hold_review'] = review_result
+    return out
+
+
+def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.now_ms):
+    """Run scheduled initial deal -> AI decision -> shadow tracking link when Accept."""
+    cand_round = plan.get('candidate_round', 'r2')
+    hands = d.tick(plan, source_for=lambda expiry, slot: dossier.collect(
+        archive_root, expiry, slot, clock=d.clock, candidate_round=cand_round))
+    cfg = _llm_settings(llm_config)
+    results = []
+    for hand in hands:
+        exp = load(hand / 'expected.json')
+        now = d.clock()
+        if (hand / 'decision.json').is_file():
+            decision = load(hand / 'decision.json')
+            action = decision['judgment']['action']
+            link_res = None
+            if action == 'Accept' and not (hand / 'tracking' / 'link.json').is_file() and not (hand / 'tracking' / 'blocked.json').is_file():
+                req = optional(hand / 'tracking' / 'request.json')
+                if req and req.get('condition'):
+                    link_res = link(d, hand, service, req['condition'])
+            results.append(dict(hand_id=hand.name, status='ALREADY_DECIDED', decision=action, link=link_res))
+            continue
+        if not (hand / 'evidence' / 'input.md').is_file():
+            results.append(dict(hand_id=hand.name, status='NO_EVIDENCE'))
+            continue
+        meta = d.verify_evidence(hand)
+        deadline = dossier.Dossiers.reply_deadline(exp, meta)
+        if deadline is not None and now >= deadline:
+            results.append(dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED'))
+            continue
+        existing_auto = [load(p) for p in (hand / 'responses').glob('*/attempt.json')
+                         if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO']
+        if any(a.get('status') in {'VALID', 'RECEIVED'} for a in existing_auto) or len(existing_auto) >= 2:
+            results.append(dict(hand_id=hand.name, status='AUTO_ATTEMPTED', last_status=existing_auto[-1].get('status')))
+            continue
+        if not cfg.get('api_key') and cfg.get('transport') is None:
+            d.note(hand, 'LLM_NOT_CONFIGURED', 'missing_api_key')
+            results.append(dict(hand_id=hand.name, status='LLM_NOT_CONFIGURED'))
+            continue
+        _, input_bytes, source = evidence(hand)
+        contracts_pair = [contract_fields(dossier.player.bind(case, card, card['side']))
+                          for case, card in zip(source['cases'], source['cards'])]
+        req_ms = d.clock()
+        attempt_id = dossier.identity('auto', req_ms, cfg['model'])
+        try:
+            ai_res = review.decide_initial_hand(
+                input_bytes.decode('utf-8'),
+                contract_pair=contracts_pair,
+                api_key=cfg['api_key'] or 'test-key',
+                model=cfg['model'],
+                endpoint=cfg.get('endpoint'),
+                timeout_s=cfg.get('timeout_s', 180),
+                transport=cfg.get('transport'),
+            )
+            dec_ms = d.clock()
+            att = d.respond(
+                hand, attempt_id, 'RECEIVED', ai_res['raw_bytes'], ai_res['annotation'],
+                model=ai_res.get('model') or cfg['model'],
+                configuration=dict(reasoning_effort=os.environ.get('LLM_RECON_EFFORT'),
+                                   usage=ai_res.get('usage'), http_status=ai_res.get('http_status')),
+                requested=req_ms, decided=dec_ms, channel='API_AUTO',
+            )
+            verdict = (att.get('judgment') or {}).get('action')
+            link_res = None
+            if att.get('status') == 'VALID' and verdict == 'Accept':
+                link_res = link(d, hand, service, ai_res.get('condition_plan'))
+            results.append(dict(hand_id=hand.name, status=att.get('status'), decision=verdict,
+                                error=att.get('error'), link=link_res))
+        except Exception as exc:
+            dec_ms = d.clock()
+            try:
+                d.respond(hand, attempt_id, 'REQUEST_FAILED', None, None, model=cfg['model'],
+                          configuration=dict(error=type(exc).__name__, detail=str(exc)[:180]),
+                          requested=req_ms, decided=dec_ms, channel='API_AUTO')
+            except Exception:
+                pass
+            results.append(dict(hand_id=hand.name, status='REQUEST_FAILED', error=str(exc)))
+        d.summary(exp['expiry_ms'])
+    return results
+
+
+def _event_projection(ev):
+    body = ev.get('body') if isinstance(ev.get('body'), dict) else {}
+    kind = ev['kind']
+    item = dict(event_id=ev.get('event_id'), kind=kind,
+                observed_at_ms=ev.get('observed_at_ms'), recorded_at_ms=ev.get('recorded_at_ms'))
+    if kind in {'AI_HOLD', 'AI_REVOKE', 'AI_HOLD_UNKNOWN'}:
+        item.update(review_id=body.get('review_id'), verdict=body.get('verdict'),
+                    trigger_categories=body.get('trigger_categories'),
+                    model=body.get('model'), summary=body.get('public_reply'))
+    elif kind == 'HOLD_REVIEW_FAILED':
+        item.update(review_id=body.get('review_id'), verdict='FAILED',
+                    trigger_categories=body.get('trigger_categories'),
+                    summary=body.get('detail') or body.get('error'))
+    elif kind == 'HOLD_REVIEW_QUEUED':
+        item.update(trigger_categories=body.get('trigger_categories'),
+                    summary='等待去抖合并窗口完成')
+    elif kind == 'SIMULATED_ORDER':
+        item.update(summary=f"买回 {body.get('instrument')} · 成本 {body.get('cost_btc')} BTC")
+    elif kind == 'SHADOW_ACTION':
+        item.update(summary=f"{body.get('action')} · {', '.join(body.get('quote_gap_reasons') or [])}")
+    elif kind == 'CONDITION_TRIGGERED':
+        res = body.get('result') if isinstance(body.get('result'), dict) else {}
+        item.update(summary=res.get('rule') or '原冻结条件已触发')
+    return item
+
+
+def _episode_management_data(ep, frozen, sorted_events, *, contract=None, include_reply=True):
+    check_events = [e for e in sorted_events if str(e.get('kind', '')).startswith('CONDITION_')]
+    trig_events = [e for e in sorted_events if e.get('kind') == 'CONDITION_TRIGGERED']
+    rev_events = [e for e in sorted_events if e.get('kind') == 'AI_REVOKE']
+    buybacks = [e for e in sorted_events if e.get('kind') == 'SIMULATED_ORDER'
+                and (e.get('body') or {}).get('action') == 'BUY_BACK_SHORT']
+    no_quotes = [e for e in sorted_events if e.get('kind') == 'SHADOW_ACTION'
+                 and (e.get('body') or {}).get('action') == 'REVOKE_RECORDED_NO_QUOTE']
+
+    reviews = []
+    seen_ids = set()
+    if ep is not None and (ep / 'reviews').is_dir():
+        for folder in sorted((ep / 'reviews').glob('rev_*')):
+            dec = optional(folder / 'decision.json')
+            if not dec:
+                continue
+            rev_id = dec.get('review_id') or folder.name
+            seen_ids.add(rev_id)
+            rec = {k: dec.get(k) for k in (
+                'review_id', 'status', 'verdict', 'trigger_categories', 'affected_conditions',
+                'model', 'requested_at_ms', 'decided_at_ms', 'input_sha256', 'raw_sha256')}
+            if include_reply:
+                rec['public_reply'] = dec.get('public_reply')
+                in_path, raw_path = folder / 'input.md', folder / 'response.raw'
+                rec['input_md'] = bounded(in_path).decode('utf-8') if in_path.is_file() else None
+                rec['raw_reply'] = bounded(raw_path).decode('utf-8') if raw_path.is_file() else None
+            reviews.append(rec)
+    for ev in sorted_events:
+        if ev.get('kind') == 'HOLD_REVIEW_FAILED':
+            b = ev.get('body') or {}
+            reviews.append(dict(
+                review_id=b.get('review_id') or ev.get('event_id'),
+                status='FAILED',
+                verdict=None,
+                trigger_categories=b.get('trigger_categories') or [],
+                model=b.get('model'),
+                requested_at_ms=ev.get('observed_at_ms') or ev.get('recorded_at_ms'),
+                decided_at_ms=ev.get('recorded_at_ms'),
+                error=b.get('detail') or b.get('error') or 'HOLD_REVIEW_FAILED',
+            ))
+    reviews.sort(key=lambda r: (r.get('decided_at_ms') or r.get('requested_at_ms') or 0, str(r.get('review_id') or '')), reverse=True)
+
+    c = (frozen or {}).get('contract') or contract or {}
+    if buybacks:
+        fill = buybacks[-1].get('body') or {}
+        exit_status = 'SIMULATED_BUY_BACK_SHORT'
+        shadow_mgmt = dict(
+            condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
+            ai_revoked_at_ms=(rev_events[-1].get('observed_at_ms') or rev_events[-1].get('recorded_at_ms')) if rev_events else None,
+            exit_status=exit_status,
+            buyback_cost_btc=fill.get('cost_btc'),
+            buyback_fee_btc=fill.get('fee_btc'),
+            buyback_quote_at_ms=fill.get('quoted_at_ms'),
+            retained_long_instrument=fill.get('long_instrument') or c.get('long_instrument'),
+            long_retained=True,
+        )
+    elif no_quotes or rev_events:
+        nq = (no_quotes[-1].get('body') or {}) if no_quotes else {}
+        shadow_mgmt = dict(
+            condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
+            ai_revoked_at_ms=(rev_events[-1].get('observed_at_ms') or rev_events[-1].get('recorded_at_ms')) if rev_events else None,
+            exit_status='REVOKE_NO_QUOTE',
+            quote_gap_reasons=nq.get('quote_gap_reasons') or ['short_buyback_quote_unavailable'],
+            retained_long_instrument=nq.get('long_instrument') or c.get('long_instrument'),
+            long_retained=True,
+        )
+    else:
+        shadow_mgmt = dict(
+            condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
+            ai_revoked_at_ms=None,
+            exit_status='NONE',
+            retained_long_instrument=c.get('long_instrument'),
+            long_retained=True,
+        )
+    return dict(
+        hold_reviews=reviews,
+        shadow_management=shadow_mgmt,
+        check_count=len(check_events),
+    )
+
+
+def episode_management_summary(root, dossier_id, hand_id, dossier_episode_id=None, *, include_reply=False):
+    """Lightweight read-only projection of dossier condition checks, AI hold reviews & shadow exit for locks view."""
+    if not dossier_id or not hand_id:
+        return None
+    hand = hand_path(root, dossier_id, hand_id)
+    link_rec = optional(hand / 'tracking' / 'link.json')
+    ep_id = dossier_episode_id or ((link_rec or {}).get('origin') or {}).get('dossier_episode_id')
+    if not ep_id:
+        return None
+    ep = hand.parent.parent / 'episodes' / dossier.key(ep_id)
+    if not ep.is_dir():
+        return None
+    frozen = optional(ep / 'condition.json')
+    sorted_events = sorted((load(p) for p in (ep / 'events').glob('*.json')),
+                           key=lambda e: (e['recorded_at_ms'], e['event_id']))
+    mgmt = _episode_management_data(ep, frozen, sorted_events, include_reply=include_reply)
+    latest = mgmt['hold_reviews'][0] if mgmt['hold_reviews'] else None
+    out = dict(
+        frozen_check_count=mgmt['check_count'],
+        condition_triggered=mgmt['shadow_management']['condition_triggered_at_ms'] is not None,
+        condition_triggered_at_ms=mgmt['shadow_management']['condition_triggered_at_ms'],
+        ai_revoked_at_ms=mgmt['shadow_management']['ai_revoked_at_ms'],
+        exit_status=mgmt['shadow_management']['exit_status'],
+        shadow_management=mgmt['shadow_management'],
+        review_count=len(mgmt['hold_reviews']),
+    )
+    if latest:
+        out['latest_verdict'] = latest.get('verdict') or latest.get('status')
+        out['latest_trigger_categories'] = latest.get('trigger_categories') or []
+        out['latest_reviewed_at_ms'] = latest.get('decided_at_ms') or latest.get('requested_at_ms')
+        if include_reply:
+            out['latest_review'] = {k: latest.get(k) for k in (
+                'review_id', 'verdict', 'status', 'trigger_categories', 'model',
+                'requested_at_ms', 'decided_at_ms', 'public_reply', 'affected_conditions', 'error')}
     return out
 
 
@@ -543,17 +1092,23 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     if ep is None and decision and frozen:
         ep = next((p.parent for p in (hand.parent.parent / 'episodes').glob('episode_*/episode.json')
                    if load(p).get('hand_id') == hand.name), None)
-    events = (load(p) for p in (ep / 'events').glob('*.json')) if ep else ()
-    recent = sorted(events, key=lambda e: (e['recorded_at_ms'], e['event_id']))[-8:]
+    sorted_events = sorted((load(p) for p in (ep / 'events').glob('*.json')),
+                           key=lambda e: (e['recorded_at_ms'], e['event_id'])) if ep else []
+    recent = sorted_events[-64:]
+    frozen_cond = optional(ep / 'condition.json') if ep else None
+    mgmt = _episode_management_data(ep, frozen_cond, sorted_events, include_reply=True) if ep else None
     result.update(decision=decision, requested_at_ms=(attempt or {}).get('requested_at_ms'),
                   reasoning_effort=((attempt or {}).get('configuration') or {}).get('reasoning_effort'),
                   lock_requested_at_ms=(req or {}).get('requested_at_ms'), receipt=receipt and receipt['t0'],
-                  condition=optional(ep / 'condition.json') if ep else None,
-                  events=[dict(kind=e['kind'], observed_at_ms=e['observed_at_ms'], recorded_at_ms=e['recorded_at_ms'])
-                          for e in recent], archive=terminal_meta,
+                  condition=frozen_cond,
+                  events=[_event_projection(e) for e in recent], archive=terminal_meta,
                   attempts=[{k: a.get(k) for k in ('status', 'model', 'requested_at_ms', 'decided_at_ms',
                                                    'recorded_at_ms', 'error')} for a in attempts[-8:]],
                   notes=notes[-8:], lock_reason=(blocked or {}).get('reason'))
+    if mgmt and (mgmt['hold_reviews'] or mgmt['shadow_management']['condition_triggered_at_ms'] is not None
+                 or mgmt['shadow_management']['ai_revoked_at_ms'] is not None):
+        result['hold_reviews'] = mgmt['hold_reviews']
+        result['shadow_management'] = mgmt['shadow_management']
     outcomes = [(path, load(path)) for path in (hand.parent.parent / 'outcomes').glob('outcome_*/outcome.json')]
     if outcomes:
         out = max(outcomes, key=lambda pair: pair[1]['recorded_at_ms'])[1]
@@ -562,7 +1117,7 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         if grade:
             result['outcome']['liability_btc'] = {
                 side: row['delivery_payout_btc'] for side, row in grade['sides'].items()}
-            for extra in ('t0_net_credit_after_entry_fee_btc', 'hold_to_expiry_shadow_net_btc'):
+            for extra in ('t0_net_credit_after_entry_fee_btc', 'hold_to_expiry_shadow_net_btc', 'managed_cashflow'):
                 if extra in grade:
                     result['outcome'][extra] = grade[extra]
     return result
@@ -602,7 +1157,8 @@ def audit_originals(hand):
 
 def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.public, dry_run=False):
     now = clock()
-    slot = now - now % dossier.DAY + 14 * 60 * dossier.MINUTE
+    slot_offset = plan['effective_at_ms'] % dossier.DAY
+    slot = now - now % dossier.DAY + slot_offset
     if not dry_run:
         if not slot - 10 * dossier.MINUTE <= now < slot or slot not in dossier.schedule(plan, slot):
             raise Blocked('outside_plan_prewarm_window')
@@ -613,10 +1169,19 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
             slot = plan['effective_at_ms']
         dossier.schedule(plan, slot)
     expiry = slot + plan['expiry_offset_ms']
+    cfg = _llm_settings()
     report = dict(state='PREWARM_DRY_RUN' if dry_run else 'PREWARM', plan_id=plan['plan_id'],
+                  candidate_round=plan.get('candidate_round', 'r2'),
                   checked_at_ms=now, scheduled_at_ms=slot,
-                  target_expiry_ms=expiry, response_channel='MANUAL_IMPORT',
-                  archive_readable=(archive / 'cases').is_dir() and (archive / 'levels').is_dir())
+                  target_expiry_ms=expiry,
+                  response_channel='API_AUTO' if cfg.get('api_key') else 'MANUAL_IMPORT',
+                  llm_configured=bool(cfg.get('api_key')),
+                  llm_model=cfg.get('model'),
+                  archive_readable=(archive / 'cases').is_dir() and (archive / 'levels').is_dir(),
+                  structure_readable=(archive / 'structure').is_dir(),
+                  band_snapshots_readable=((archive / 'band_snapshots').is_dir()
+                                           or bool(os.environ.get('ASTRA_WORKBENCH_SNAPSHOTS_JSONL'))),
+                  execution_allowed=False)
     if dry_run:
         report['dry_run'] = True
     try:
@@ -634,12 +1199,16 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--url', default='http://127.0.0.1:8787', help='private loopback workbench listener')
+    parser.add_argument('--url', default='http://127.0.0.1:8895', help='private loopback workbench listener')
     sub = parser.add_subparsers(dest='command', required=True)
     warm = sub.add_parser('prewarm')
     warm.add_argument('--plan', type=Path, required=True)
     warm.add_argument('--archive', type=Path, required=True)
     warm.add_argument('--dry-run', action='store_true')
+    deal = sub.add_parser('auto-deal')
+    deal.add_argument('--root', type=Path, required=True)
+    deal.add_argument('--plan', type=Path, required=True)
+    deal.add_argument('--archive', type=Path, required=True)
     for name in ('link', 'sync'):
         command = sub.add_parser(name)
         command.add_argument('--root', type=Path, required=True)
@@ -649,9 +1218,13 @@ def main():
             command.add_argument('--condition', type=Path)
         else:
             command.add_argument('--check-due', action='store_true')
+            command.add_argument('--review', action='store_true')
+            command.add_argument('--archive', type=Path)
     follow = sub.add_parser('sync-open')
     follow.add_argument('--root', type=Path, required=True)
     follow.add_argument('--check-due', action='store_true')
+    follow.add_argument('--review', action='store_true')
+    follow.add_argument('--archive', type=Path)
     args = parser.parse_args()
     try:
         try:
@@ -662,16 +1235,29 @@ def main():
         if args.command == 'prewarm':
             out = prewarm(dossier.read(args.plan), args.archive, service, dry_run=args.dry_run)
         else:
+            import time as _time
             d = dossier.Dossiers(args.root)
-            with dossier.writer(d.root):
-                if args.command == 'sync-open':
+            for _attempt in range(20):
+                try:
+                    lock_ctx = dossier.writer(d.root)
+                    lock_ctx.__enter__()
+                    break
+                except BlockingIOError:
+                    if _attempt == 19:
+                        raise
+                    _time.sleep(0.5)
+            try:
+                if args.command == 'auto-deal':
+                    out = auto_deal(d, dossier.read(args.plan), args.archive, service)
+                elif args.command == 'sync-open':
                     out = []
                     for link_file in (d.root / 'dossiers').glob('*/hands/hand_*/tracking/link.json'):
                         if (link_file.parent / 'terminal.json').exists():
                             continue
                         hand = link_file.parent.parent
                         try:
-                            out.append(sync(d, hand, service, check_due=args.check_due))
+                            out.append(sync(d, hand, service, check_due=args.check_due,
+                                            archive_root=args.archive, run_review=args.review))
                         except (OSError, ValueError, KeyError, TypeError) as exc:
                             d.note(hand, 'TRACKER_EXPORT_UNAVAILABLE', getattr(exc, 'code', type(exc).__name__))
                             out.append(dict(state='TRACKER_EXPORT_UNAVAILABLE', hand_id=hand.name))
@@ -679,8 +1265,12 @@ def main():
                 else:
                     hand = hand_path(args.root, args.dossier, args.hand)
                     out = (link(d, hand, service, dossier.read(args.condition) if args.condition else None)
-                           if args.command == 'link' else sync(d, hand, service, check_due=args.check_due))
+                           if args.command == 'link'
+                           else sync(d, hand, service, check_due=args.check_due,
+                                     archive_root=args.archive, run_review=args.review))
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
+            finally:
+                lock_ctx.__exit__(None, None, None)
         print(dossier.encode(out).decode('utf-8'), end='')
     except (OSError, ValueError, KeyError) as exc:
         parser.exit(2, f'{getattr(exc, "code", type(exc).__name__)}\n')

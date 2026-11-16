@@ -1,0 +1,14 @@
+[Unit]
+Description=xxproject AI Player 16:00 UTC initial underwriting deal & shadow lock (SHADOW_ONLY)
+After=network-online.target astra-workbench-v20.service astra-research-archive.service
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=research
+UMask=0027
+EnvironmentFile=/etc/signal-audit/llm.env
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
+ExecStart=/usr/bin/python3 /opt/signal-audit-tools/astra_player_tracking_v13.py --url http://127.0.0.1:8895 auto-deal --root /var/lib/xxproject/workbench/shadow_dossiers --plan /etc/signal-audit/player-plan.json --archive /var/lib/xxproject/research_archive
+TimeoutStartSec=600
+Nice=10

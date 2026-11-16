@@ -1,6 +1,6 @@
 import { btc, h, isNum, usd } from "./format.js";
 
-const states = {
+const LABELS = {
   AWAITING_RESPONSE: "等待正式回复", NO_RESPONSE: "回复窗口已结束", EXPECTED: "待发牌",
   DATA_BLOCKED: "资料阻塞", MISSED: "错过采样窗口", PARSE_FAILED: "回复未通过解析",
   PROVENANCE_MISSING: "回复缺模型或作答时钟",
@@ -10,9 +10,21 @@ const states = {
   LOCK_BLOCKED: "锁定受阻", LINK_UNVERIFIED: "锁定回执待核对", SHADOW_LOCK_REQUESTED: "已提交锁定申请",
   OBSERVATION: "锁定追踪采样同步", CONDITION_UNKNOWN: "网格检查：资料待补齐",
   CONDITION_TRIGGERED: "网格检查：已触发破坏条件", CONDITION_NOT_TRIGGERED: "网格检查：未触发破坏条件",
-  REVIEW_REQUIRED: "ARD 变化需复核", AI_HOLD: "AI 续判：继续持有观察",
-  AI_REVOKE: "AI 续判：撤销原承担条件", SHADOW_ACTION: "影子管理事件",
+  REVIEW_REQUIRED: "ARD 变化需复核",
+  AI_HOLD: "AI 续持 · HOLD",
+  AI_REVOKE: "AI 建议撤销 · REVOKE",
+  AI_HOLD_UNKNOWN: "AI 复核无法判断 · UNKNOWN",
+  HOLD_REVIEW_FAILED: "持仓复核调用失败",
+  HOLD_REVIEW_QUEUED: "已入复核去抖队列",
+  SIMULATED_ORDER: "影子模拟买回短腿",
+  SHADOW_ACTION: "影子撤销记录",
   active: "观察中", stopped: "已停止观察", expired: "已到期", error: "追踪异常", paused: "追踪暂停",
+};
+const TRIGGER_CATEGORIES = {
+  A: "A · 责任边界变化",
+  B: "B · 责任余量恶化",
+  C: "C · ARD/结构实质变化",
+  D: "D · 量价反转",
 };
 const samples = {
   SCHEDULED: "正式局", STARTUP_AD_HOC: "启动观察", AD_HOC: "追加观察",
@@ -26,13 +38,33 @@ const outcomeClass = {
   OFFICIAL: "官方交割判卷", FIXTURE: "测试样本判卷", UNVERIFIED: "待核验判卷",
 };
 
-const label = (status) => states[status] || status;
+const label = (status) => LABELS[status] || status;
 const sideName = (side) => side === "put" ? "Put" : side === "call" ? "Call" : "";
 export const playerRef = (card) => `${card.dossier_id}/${card.hand_id}`;
 export const utc = (t) => isNum(t) ? new Date(t).toISOString().slice(0, 19).replace("T", " ") + " UTC" : "—";
 const utcShort = (t) => isNum(t) ? new Date(t).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "—";
 const para = (text, cls) => h("p", { text, class: cls || null });
 const pre = (text) => h("pre", { text });
+const signedBtc = (v, digits = 6) => isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${btc(Math.abs(v), digits)} BTC` : "—";
+
+function holdVerdictMeta(verdict) {
+  const v = String(verdict || "").toUpperCase();
+  if (v === "HOLD" || v === "AI_HOLD") return { text: LABELS.AI_HOLD, tone: "ok" };
+  if (v === "REVOKE" || v === "AI_REVOKE") return { text: LABELS.AI_REVOKE, tone: "bad" };
+  if (v === "HOLD_REVIEW_FAILED" || v === "FAILED" || v === "ERROR" || v === "TIMEOUT") {
+    return { text: LABELS.HOLD_REVIEW_FAILED, tone: "warn" };
+  }
+  return { text: LABELS.AI_HOLD_UNKNOWN, tone: "warn" };
+}
+
+function formatAffectedConditions(val) {
+  if (!val) return null;
+  if (Array.isArray(val)) {
+    const items = val.map((x) => typeof x === "string" ? x : x?.label || x?.condition || x?.id || "").filter(Boolean);
+    return items.length ? items.join("；") : null;
+  }
+  return typeof val === "string" && val.trim() ? val.trim() : null;
+}
 
 function verdictText(c) {
   return [label(c.state), sideName(c.side)].filter(Boolean).join(" / ");
@@ -123,7 +155,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   }
   if (available === false) {
     box.append(h("div", { class: "pad" },
-      para("本服务实例尚未挂载 AI 牌手卷宗目录（需在服务端配置 ASTRA_AI_SHADOW_DOSSIER_ROOT 并同步 08:00Z / 14:00Z 牌局卷宗）；旧版「模型复核 / 提问单」已退役，不再以此占位。", "muted")));
+      para("本服务实例尚未挂载 AI 牌手卷宗目录（需在服务端配置 ASTRA_AI_SHADOW_DOSSIER_ROOT 并同步 16:00Z / 08:00Z 牌局卷宗）；旧版「模型复核 / 提问单」已退役，不再以此占位。", "muted")));
     return;
   }
   const cards = player.cards.some((c) => playerRef(c) === player.ref) || !player.detail
@@ -219,10 +251,12 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
         text: [label(d.tracking_state), label(d.tracker_status)].filter(Boolean).join(" · ") }) : null));
   if (receipt) {
     const credit = receipt.economy?.net_credit_after_entry_fee_btc;
+    const t0Contract = receipt.contract?.short_instrument ? receipt.contract : d.contracts?.find((c) => c.side === d.side)?.contract;
+    const t0Index = receipt.market?.index_price_usd ?? receipt.index_usd;
     const t0Rows = [
       ["锁定与盘口时钟", `锁定 ${utc(receipt.locked_at_ms)} · 盘口读数 ${utc(receipt.tracking_asof_ms)}`],
-      ["锁定合约", `${receipt.contract?.short_instrument || "—"} / ${receipt.contract?.long_instrument || "—"} · ${receipt.contract?.quantity_btc ?? 1} BTC`],
-      ["入场当时指数", isNum(receipt.market?.index_price_usd) ? `${usd(receipt.market.index_price_usd, 2)} USD` : "—"],
+      ["锁定合约", `${t0Contract?.short_instrument || "—"} / ${t0Contract?.long_instrument || "—"} · ${t0Contract?.quantity_btc ?? 1} BTC`],
+      ["入场当时指数", isNum(t0Index) ? `${usd(t0Index, 2)} USD` : "—"],
       ["费后净信用估计", isNum(credit) ? `${btc(credit, 6)} BTC（影子估值，非实盘成交）` : "—"],
     ];
     trackCard.append(h("dl", { class: "kv pa-meta" },
@@ -245,7 +279,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   left.append(trackCard);
 
   if (condition) {
-    const ruleType = condition.invalidation_rule?.type;
+    const ruleType = condition.invalidation_rule?.type ?? condition.invalidation;
     const condCard = h("div", { class: "ev pa-cond-card" },
       h("header", {},
         h("b", { text: "冻结承担条件与事中检查" }),
@@ -257,14 +291,101 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
         h("dt", { text: "固定检查时钟" }), h("dd", { class: "num",
           text: `首检 ${utc(condition.check_clock?.first_at_ms)} · 每 ${(condition.check_clock?.interval_ms || 300000) / 60000} 分钟固定网格复核` })));
     if (d.events?.length) {
+      const gridChecks = d.events.filter((ev) =>
+        ev.kind === "CONDITION_TRIGGERED" || ev.kind === "CONDITION_NOT_TRIGGERED" || ev.kind === "CONDITION_UNKNOWN");
+      if (gridChecks.length) {
+        const triggered = gridChecks.filter((ev) => ev.kind === "CONDITION_TRIGGERED").length;
+        const untriggered = gridChecks.filter((ev) => ev.kind === "CONDITION_NOT_TRIGGERED").length;
+        const unknown = gridChecks.length - triggered - untriggered;
+        const latestCheckTs = Math.max(...gridChecks.map((ev) => ev.observed_at_ms ?? ev.recorded_at_ms ?? 0));
+        condCard.append(para(
+          `固定网格检查共 ${gridChecks.length} 次（未触发 ${untriggered} · 已触发 ${triggered}${unknown ? ` · 待补齐 ${unknown}` : ""}）· 最近 ${utc(latestCheckTs > 0 ? latestCheckTs : null)}`,
+          "muted small num pa-grid-sum"));
+      }
+      const lastNotTrigIdx = d.events.findLastIndex((ev) => ev.kind === "CONDITION_NOT_TRIGGERED");
+      const lastObsIdx = d.events.findLastIndex((ev) => ev.kind === "OBSERVATION");
+      const shownEvents = d.events.filter((ev, idx) =>
+        (ev.kind !== "CONDITION_NOT_TRIGGERED" && ev.kind !== "OBSERVATION") || idx === lastNotTrigIdx || idx === lastObsIdx);
       const tbl = h("table", { class: "t compact pa-events-table" },
         h("thead", {}, h("tr", {}, h("th", { text: "事件 / 网格检查结果" }), h("th", { class: "n", text: "观测 / 记录时刻" }))),
-        h("tbody", {}, ...d.events.map((ev) => h("tr", {},
-          h("td", { text: label(ev.kind) }),
-          h("td", { class: "n num", text: utc(ev.observed_at_ms || ev.recorded_at_ms) })))));
+        h("tbody", {}, ...shownEvents.map((ev) => {
+          const note = ev.summary || ev.verdict;
+          const shortNote = note ? String(note).trim().slice(0, 72) : "";
+          return h("tr", {},
+            h("td", {},
+              h("span", { text: label(ev.kind) }),
+              shortNote ? h("span", { class: "muted small", text: ` · ${shortNote}` }) : null),
+            h("td", { class: "n num", text: utc(ev.observed_at_ms ?? ev.recorded_at_ms ?? ev.created_at_ms) }));
+        })));
       condCard.append(tbl);
     }
     left.append(condCard);
+  }
+
+  if (d.hold_reviews?.length || d.shadow_management) {
+    const holdCard = h("div", { class: "ev pa-hold-card" },
+      h("header", {}, h("b", { text: "持仓复核与影子管理轨迹" })));
+    const sm = d.shadow_management;
+    if (sm) {
+      const trigChip = isNum(sm.condition_triggered_at_ms)
+        ? h("span", { class: "chip bad", text: `原规则已触发 · ${utc(sm.condition_triggered_at_ms)}` })
+        : h("span", { class: "chip ok", text: "原冻结规则未触发" });
+      const revChip = isNum(sm.ai_revoked_at_ms)
+        ? h("span", { class: "chip bad", text: `AI 建议撤销 · ${utc(sm.ai_revoked_at_ms)}` })
+        : h("span", { class: "chip muted-chip", text: "AI 未建议撤销" });
+      let exitChip;
+      let exitNote = null;
+      if (sm.exit_status === "SIMULATED_BUY_BACK_SHORT") {
+        exitChip = h("span", { class: "chip warn", text: "影子退出：模拟买回短腿" });
+        const cost = sm.buyback_cost_btc ?? sm.short_buyback_cost_btc ?? sm.simulated_order?.cost_btc;
+        const fee = sm.buyback_fee_btc ?? sm.simulated_order?.fee_btc ?? sm.fees_btc?.buyback;
+        const quoteTs = sm.buyback_quote_at_ms ?? sm.quote_at_ms ?? sm.quoted_at_ms ?? sm.simulated_order?.quoted_at_ms ?? sm.simulated_order?.recorded_at_ms;
+        exitNote = `买回短腿成本 ${isNum(cost) ? `${btc(cost, 6)} BTC` : "—"}${isNum(fee) ? ` · 手续费 ${btc(fee, 6)} BTC` : ""}${isNum(quoteTs) ? ` · 报价 ${utc(quoteTs)}` : ""} · 保留保护腿至到期（影子模拟，非实盘成交）`;
+      } else if (sm.exit_status === "REVOKE_NO_QUOTE") {
+        exitChip = h("span", { class: "chip warn", text: "影子退出：撤销无报价" });
+        exitNote = "REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益；保留保护腿至到期。";
+      } else {
+        exitChip = h("span", { class: "chip muted-chip", text: "影子退出：无（继续观察）" });
+      }
+      holdCard.append(h("div", { class: "pa-trigger-row pa-shadow-state" }, trigChip, revChip, exitChip));
+      if (exitNote) holdCard.append(para(exitNote, "small muted num pa-shadow-note"));
+    }
+    if (d.hold_reviews?.length) {
+      const reviews = d.hold_reviews.slice().sort((a, b) => {
+        const ta = a.reviewed_at_ms ?? a.decided_at_ms ?? a.recorded_at_ms ?? a.observed_at_ms ?? 0;
+        const tb = b.reviewed_at_ms ?? b.decided_at_ms ?? b.recorded_at_ms ?? b.observed_at_ms ?? 0;
+        return tb - ta;
+      });
+      for (const r of reviews) {
+        const cats = Array.isArray(r.trigger_categories) ? r.trigger_categories
+          : Array.isArray(r.triggers) ? r.triggers
+          : r.trigger_category ? [r.trigger_category] : [];
+        const vm = holdVerdictMeta(r.verdict || r.status || r.action);
+        const mTag = modelTag(r.model, r.reasoning_effort);
+        const ts = r.reviewed_at_ms ?? r.decided_at_ms ?? r.recorded_at_ms ?? r.observed_at_ms;
+        const aff = formatAffectedConditions(r.affected_conditions);
+        const rawInput = r.input_md ?? r.prompt_md;
+        const rawReply = r.raw_reply ?? r.raw ?? r.response;
+        const item = h("div", { class: "pa-hold-item" },
+          h("div", { class: "pa-hold-head" },
+            ...cats.map((c) => h("span", { class: "chip", text: TRIGGER_CATEGORIES[c] || c })),
+            h("span", { class: `chip ${vm.tone}`, text: vm.text }),
+            mTag ? h("span", { class: "chip muted-chip", text: mTag }) : null,
+            h("span", { class: "muted small num pa-hold-ts", text: utc(ts) })),
+          aff ? para(`涉及原条件：${aff}`, "small muted pa-hold-affected") : null,
+          r.public_reply ? para(r.public_reply, "pa-hold-reply") : (r.error ? para(String(r.error), "small warn-text pa-hold-reply") : null));
+        if (rawInput || rawReply) {
+          const rawBlocks = [];
+          if (rawInput) rawBlocks.push(para("增量复核输入（input_md）", "small muted"), pre(String(rawInput)));
+          if (rawReply) rawBlocks.push(para("AI 原始复核回复", "small muted"), pre(String(rawReply)));
+          item.append(h("details", { class: "raw" },
+            h("summary", { text: "展开增量牌面与 AI 原始复核回复" }),
+            ...rawBlocks));
+        }
+        holdCard.append(item);
+      }
+    }
+    left.append(holdCard);
   }
 
   const outCard = h("div", { class: "ev pa-outcome-card" });
@@ -283,6 +404,19 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     }
     if (isNum(o.hold_to_expiry_shadow_net_btc)) {
       outRows.push(["持有到期影子净结果", `${o.hold_to_expiry_shadow_net_btc > 0 ? "+" : ""}${btc(o.hold_to_expiry_shadow_net_btc, 6)} BTC`]);
+    }
+    if (o.managed_cashflow) {
+      const mc = o.managed_cashflow;
+      if (mc.mode === "UNPRICED_REVOKE") {
+        outRows.push(["提前买回短腿影子净结果（保留保护腿）", "REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益"]);
+      } else if (isNum(mc.managed_net_btc)) {
+        const delta = isNum(mc.delta_btc) ? mc.delta_btc
+          : (isNum(o.hold_to_expiry_shadow_net_btc) ? mc.managed_net_btc - o.hold_to_expiry_shadow_net_btc : null);
+        outRows.push([
+          "提前买回短腿影子净结果（保留保护腿）",
+          `${signedBtc(mc.managed_net_btc, 6)}${isNum(delta) ? `（相对持有到期 ${signedBtc(delta, 6)}）` : ""}`,
+        ]);
+      }
     }
     outCard.append(h("dl", { class: "kv pa-meta" },
       ...outRows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));

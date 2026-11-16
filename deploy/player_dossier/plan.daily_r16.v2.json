@@ -1,0 +1,17 @@
+{
+  "plan_id": "daily_r16@2",
+  "version": "2.0.0",
+  "supersedes": "daily_r2@1",
+  "research": "AI Player v1 / ARD closeout 2026-11-15",
+  "mode": "SHADOW_ONLY",
+  "candidate_round": "r16",
+  "effective_at_ms": 1794844800000,
+  "effective_at_utc": "2026-11-16T16:00:00Z",
+  "expiry_offset_ms": 57600000,
+  "deal_grace_ms": 1800000,
+  "reply_grace_ms": 1800000,
+  "prewarm_window_ms": 600000,
+  "debounce_ms": 720000,
+  "cooldown_ms": 1800000,
+  "execution_allowed": false
+}

@@ -68,6 +68,40 @@ function episodeState(e) {
   return { text, tone, why };
 }
 
+const TRIGGER_CAT_CN = {
+  A: "A · 责任边界变化",
+  B: "B · 责任余量恶化",
+  C: "C · ARD/结构实质变化",
+  D: "D · 量价反转",
+};
+
+function aiVerdictChip(verdict, extraCls = "") {
+  const v = String(verdict || "").toUpperCase();
+  const cls = extraCls ? ` ${extraCls}` : "";
+  if (v === "HOLD" || v === "AI_HOLD") return h("span", { class: `chip ok${cls}`, text: "AI · HOLD" });
+  if (v === "REVOKE" || v === "AI_REVOKE") return h("span", { class: `chip bad${cls}`, text: "AI · REVOKE" });
+  if (v === "HOLD_REVIEW_FAILED" || v === "FAILED" || v === "ERROR" || v === "TIMEOUT") {
+    return h("span", { class: `chip warn${cls}`, text: "AI · 复核失败" });
+  }
+  if (v === "UNKNOWN" || v === "AI_HOLD_UNKNOWN") {
+    return h("span", { class: `chip warn${cls}`, text: "AI · UNKNOWN" });
+  }
+  return null;
+}
+
+function aiMgmtChips(mgmt) {
+  if (!mgmt) return [];
+  const chips = [];
+  const v = mgmt.latest_verdict ?? mgmt.latest_review?.verdict ?? mgmt.verdict
+    ?? (isNum(mgmt.ai_revoked_at_ms) || mgmt.ai_revoked ? "REVOKE" : null);
+  const vChip = aiVerdictChip(v, "ld-mgmt-chip");
+  if (vChip) chips.push(vChip);
+  if (mgmt.condition_triggered || isNum(mgmt.condition_triggered_at_ms)) {
+    chips.push(h("span", { class: "chip bad ld-mgmt-chip", text: "规则已触发" }));
+  }
+  return chips;
+}
+
 // ── list ─────────────────────────────────────────
 /** Most recent first. By default only the latest `limit` are listed; a tracking (active)
  * contract and the open one are always shown, so a long history never crowds the page. */
@@ -101,7 +135,7 @@ export function lockList(episodes, { selected, onOpen, renderDetail, showAll = f
           text: e.ai_shadow ? (e.ai_shadow.model ? `AI · ${e.ai_shadow.model}` : "AI") : "用户" }),
         e.verification_id ? h("span", { class: "chip verified", title: "由 Decision Path 核验结论创建", text: "经核验" }) : null),
       h("td", { class: "n", text: clock(c.expiry_ms) }),
-      h("td", {}, h("span", { class: `chip ${st.tone}`, text: st.text }), st.why ? h("span", { class: "muted small", text: ` ${st.why}` }) : null),
+      h("td", {}, h("span", { class: `chip ${st.tone}`, text: st.text }), st.why ? h("span", { class: "muted small", text: ` ${st.why}` }) : null, ...aiMgmtChips(e.ai_dossier_management)),
       h("td", {}, outcomeChip(e.outcome)),
       h("td", { class: "n", text: clock(e.created_at_ms) }),
       h("td", { class: "n", text: `${e.point_count ?? 0} 点${e.gap_count ? `，缺口 ${e.gap_count}` : ""}` }),
@@ -172,11 +206,57 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
     const hand = `#player-hand/${encodeURIComponent(a.dossier_id)}/${encodeURIComponent(a.hand_id)}`;
     const counter = a.counter_excerpt;
     const actor = a.model ? `AI · ${a.model}` : "AI";
+    const mgmtChips = aiMgmtChips(d.ai_dossier_management || e.ai_dossier_management);
     box.append(h("div", { class: "ld-sec small" },
-      h("p", { class: "muted", text: `${actor} · Accept · 发牌 ${clock(a.hand_frozen_at_ms)} · 作答 ${clock(a.decided_at_ms)}` }),
+      h("div", { class: "ld-ai-head" },
+        h("span", { class: "muted", text: `${actor} · Accept · 发牌 ${clock(a.hand_frozen_at_ms)} · 作答 ${clock(a.decided_at_ms)}` }),
+        ...mgmtChips),
       counter ? h("p", { class: "muted", text: `最强反证摘录：${counter}` }) : null,
       h("p", { class: "muted", text: "理论信用与浮动估值，实际成交未发生。停止追踪只停止观察。" }),
       h("a", { href: hand, class: "dp-jump", onclick: onPlayerAudit ? (ev) => { ev.preventDefault(); onPlayerAudit(a); } : null }, "本局推理审计与卷宗")));
+  }
+  const mgmtDetail = d.ai_dossier_management;
+  if (mgmtDetail) {
+    const checkCount = mgmtDetail.frozen_check_count ?? mgmtDetail.grid_check_count ?? mgmtDetail.check_count ?? 0;
+    const trigAt = mgmtDetail.condition_triggered_at_ms;
+    const trigFlag = mgmtDetail.condition_triggered || isNum(trigAt);
+    const latest = mgmtDetail.latest_review || mgmtDetail;
+    const verdict = latest.verdict ?? mgmtDetail.latest_verdict;
+    const cats = Array.isArray(latest.trigger_categories) ? latest.trigger_categories
+      : Array.isArray(latest.triggers) ? latest.triggers
+      : Array.isArray(mgmtDetail.latest_trigger_categories) ? mgmtDetail.latest_trigger_categories
+      : latest.trigger_category ? [latest.trigger_category] : [];
+    const revAt = latest.reviewed_at_ms ?? latest.decided_at_ms ?? latest.recorded_at_ms ?? mgmtDetail.latest_reviewed_at_ms;
+    const reply = latest.public_reply ?? mgmtDetail.latest_public_reply;
+    const revErr = latest.error ?? mgmtDetail.latest_error;
+    const sm = mgmtDetail.shadow_management || mgmtDetail;
+    const exitStatus = sm.exit_status;
+    const mgmtBox = h("div", { class: "ld-sec small ld-ai-mgmt" },
+      h("h5", { text: "AI 持仓复核与影子管理摘要" }),
+      h("p", { class: "muted num",
+        text: `冻结规则固定检查：${checkCount} 次${isNum(trigAt) ? ` · 已触发于 ${clock(trigAt)}` : trigFlag ? " · 规则已触发" : " · 未触发"}` }));
+    const vChip = aiVerdictChip(verdict);
+    if (vChip || cats.length || isNum(revAt) || reply || revErr) {
+      mgmtBox.append(h("div", { class: "ld-ai-rev" },
+        h("div", { class: "ld-ai-head" },
+          vChip,
+          ...cats.map((cat) => h("span", { class: "chip", text: TRIGGER_CAT_CN[cat] || cat })),
+          isNum(revAt) ? h("span", { class: "muted small num", text: clock(revAt) }) : null),
+        reply ? h("p", { class: "ld-ai-reply", text: reply }) : (revErr ? h("p", { class: "ld-ai-reply muted", text: `复核失败：${revErr}` }) : null)));
+    }
+    if (exitStatus === "SIMULATED_BUY_BACK_SHORT") {
+      const cost = sm.buyback_cost_btc ?? sm.short_buyback_cost_btc ?? sm.simulated_order?.cost_btc;
+      const fee = sm.buyback_fee_btc ?? sm.simulated_order?.fee_btc ?? sm.fees_btc?.buyback;
+      const qAt = sm.buyback_quote_at_ms ?? sm.quote_at_ms ?? sm.quoted_at_ms ?? sm.simulated_order?.quoted_at_ms;
+      const longInst = sm.retained_long_instrument ?? sm.long_instrument ?? c.long_instrument;
+      mgmtBox.append(h("p", { class: "muted num",
+        text: `影子模拟买回短腿（非实盘成交）：买回成本 ${isNum(cost) ? btcText(cost, 6) : "—"}${isNum(fee) ? `，手续费 ${btcText(fee, 6)}` : ""}${isNum(qAt) ? `，报价 ${clock(qAt)}` : ""}；保留保护腿${longInst ? `（${longInst}）` : ""}至到期。` }));
+    } else if (exitStatus === "REVOKE_NO_QUOTE") {
+      const longInst = sm.retained_long_instrument ?? sm.long_instrument ?? c.long_instrument;
+      mgmtBox.append(h("p", { class: "muted",
+        text: `REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益；保留保护腿${longInst ? `（${longInst}）` : ""}至到期。` }));
+    }
+    box.append(mgmtBox);
   }
 
   // 0. settlement at expiry, from the exchange delivery price

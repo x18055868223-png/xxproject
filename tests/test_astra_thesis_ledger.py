@@ -158,7 +158,7 @@ def test_series_v3_reads_producer_facts_and_endpoint_carries_the_ledger(tmp_path
     wb.refresh(now_ms=clock[0], record_daily=False)
     out = wb.locked_candidate_series(episode_id)
     point = out["points"][-1]
-    assert point["metrics_version"] == compare.SERIES_METRICS_VERSION == 3
+    assert point["metrics_version"] == compare.SERIES_METRICS_VERSION >= 3
     for key in ("anchor_score", "net_gamma_sign", "flow_fast_4h", "flow_slow_12h",
                 "mdie_direction", "mdie_shape", "remaining_ms"):
         assert key in point

@@ -98,7 +98,7 @@ OUTCOME_GIVE_UP_MS = 12 * HOUR_MS
 VALIDATION_AT_UTC = (9, 30)   # after the 08:00 settlement and its outcomes
 INDEX_KEEP_CLOSED_MS = 3 * 24 * HOUR_MS
 LINE_KINDS = {"ledger", "outcome", "submission", "submission_rejected", "decision", "protocol", "validation",
-              "promotion", "structure", "flow", "level"}
+              "promotion", "structure", "flow", "level", "band_snapshot"}
 FILE_KINDS = {"case", "inquiry", "legacy", "path"}
 PUBLIC = "https://www.deribit.com/api/v2/"
 PUBLIC_PATHS = frozenset({"public/get_order_book", "public/get_delivery_prices", "public/get_index_chart_data",
@@ -618,7 +618,7 @@ def _merged_path(root: Path, expiry_ms: int) -> list[list[float]]:
     return [[t, points[t]] for t in sorted(points)]
 
 
-LEVEL_ROUND_HOURS = {"r1": 30, "r2": 18, "late4h": 4, "late1h": 1}
+LEVEL_ROUND_HOURS = {"r1": 30, "r2": 18, "r16": 16, "late4h": 4, "late1h": 1}
 LEVEL_WRITE_MS = 60 * 60_000   # a card is written within an hour of its round; later only the backfill fills it
 
 
@@ -651,7 +651,7 @@ def write_level_cards(archive: "Archive", *, now_ms: int, points_fn: Callable[[]
             slot = expiry - hours * HOUR_MS
             if not slot <= now_ms < slot + LEVEL_WRITE_MS:
                 continue
-            for side in (("put", "call") if rnd in ("r1", "r2") else ("structure",)):
+            for side in (("put", "call") if rnd in ("r1", "r2", "r16") else ("structure",)):
                 if (rnd, side) in done:
                     continue
                 try:
@@ -1124,12 +1124,76 @@ def collect_flow(archive: Archive, state: dict[str, Any], deribit: Deribit, now_
     return lines
 
 
+def archive_band_snapshots(archive: Archive, snapshots_path: Path | None, *, now_ms: int | None = None) -> int:
+    """Persist compact FMZ anchor/flow snapshots to band_snapshots/<YYYY-MM-DD>.jsonl, deduplicated by snapshot_exported_ms."""
+    if snapshots_path is None:
+        return 0
+    src = Path(snapshots_path)
+    if not src.is_file():
+        return 0
+    by_rel: dict[str, dict[int, dict[str, Any]]] = {}
+    for line in src.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, Mapping):
+            continue
+        exported = row.get("snapshot_exported_ms")
+        available = row.get("source_available_at_ms")
+        fs = row.get("factor_snapshot")
+        if (not isinstance(exported, int) or isinstance(exported, bool)
+                or not isinstance(available, int) or isinstance(available, bool)
+                or not isinstance(fs, Mapping) or not isinstance(fs.get("anchor"), Mapping)):
+            continue
+        compact_fs: dict[str, Any] = {"anchor": dict(fs["anchor"])}
+        if "flow" in fs and fs["flow"] is not None:
+            compact_fs["flow"] = fs["flow"]
+        compact: dict[str, Any] = {
+            "snapshot_exported_ms": exported,
+            "source_available_at_ms": available,
+            "factor_snapshot": compact_fs,
+        }
+        for key in ("ingested_at_ms", "snapshot_exported_utc8"):
+            if row.get(key) is not None:
+                compact[key] = row[key]
+        rel = f"band_snapshots/{_utc(exported).strftime('%Y-%m-%d')}.jsonl"
+        by_rel.setdefault(rel, {})[exported] = compact
+    appended = 0
+    for rel in sorted(by_rel):
+        dest = archive.root / rel
+        seen: set[int] = set()
+        if dest.exists():
+            for line in dest.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    existing = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(existing, Mapping):
+                    ts = existing.get("snapshot_exported_ms")
+                    if isinstance(ts, int) and not isinstance(ts, bool):
+                        seen.add(ts)
+        for exported in sorted(by_rel[rel]):
+            if exported in seen:
+                continue
+            archive.append_line(rel, by_rel[rel][exported],
+                                at_ms=now_ms if now_ms is not None else exported, kind="band_snapshot")
+            seen.add(exported)
+            appended += 1
+    return appended
+
+
 def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
          fetch_case: Callable[[str], Mapping[str, Any]], deribit: Deribit,
          run_inquiry: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
          inbox: tuple[Path, Path] | None = None,
          decision_source: Callable[[], tuple[list[Any], list[Any]]] | None = None,
-         run_player: Callable[[Mapping[str, Any], str, Mapping[str, Any] | None], Mapping[str, Any] | None] | None = None
+         run_player: Callable[[Mapping[str, Any], str, Mapping[str, Any] | None], Mapping[str, Any] | None] | None = None,
+         snapshots_path: Path | None = None
          ) -> dict[str, Any]:
     state = archive.load_state()
     state.setdefault("closed_recent", {})
@@ -1311,6 +1375,11 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
         report["flow"] = collect_flow(archive, state, deribit, now_ms, names)
     except Exception as exc:
         report["errors"].append({"step": "flow", "error": type(exc).__name__, "detail": str(exc)[:160]})
+    if snapshots_path is not None:
+        try:
+            report["band_snapshots"] = archive_band_snapshots(archive, snapshots_path, now_ms=now_ms)
+        except Exception as exc:
+            report["errors"].append({"step": "band_snapshots", "error": type(exc).__name__, "detail": str(exc)[:160]})
     # level cards at their rounds, then the reviews of settled expiries (docs/opus/34 §4); on its own
     try:
         report["levels"] = write_level_cards(
@@ -1593,6 +1662,8 @@ def _tick_main(args: argparse.Namespace, archive: Archive) -> None:
     token = os.environ.get("ASTRA_WORKBENCH_TOKEN")
     key = os.environ.get("LLM_API_KEY") or os.environ.get("ASTRA_WORKBENCH_LLM_API_KEY")
     model = os.environ.get("ASTRA_WORKBENCH_LLM_MODEL") or "deepseek-flash"
+    snapshots_env = (os.environ.get("ASTRA_WORKBENCH_SNAPSHOTS_JSONL") or "").strip()
+    snapshots_path = Path(snapshots_env) if snapshots_env else None
     lock = archive.root / "_state" / "tick.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1626,7 +1697,8 @@ def _tick_main(args: argparse.Namespace, archive: Archive) -> None:
                                                                      model=model, timeout=PLAYER_TIMEOUT_S))
                       # the shadow track starts only when the user has seen the isolation test (docs/opus/35 §5)
                       if key and os.environ.get("ASTRA_PLAYER_ENABLED") == "1"
-                      and os.environ.get("ASTRA_AI_SHADOW_EXPERIMENT") != "1" else None)
+                      and os.environ.get("ASTRA_AI_SHADOW_EXPERIMENT") != "1" else None,
+                      snapshots_path=snapshots_path)
         print(json.dumps(report, ensure_ascii=False))
     finally:
         lock.unlink(missing_ok=True)
