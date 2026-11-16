@@ -68,6 +68,8 @@ def test_known_lifetime_event_prevents_dealing_not_reject(hand,at):
 def test_past_later_or_unobserved_events_do_not_veto(hand):
     player.values(hand[0],'L7.events')['events']=[{'at_ms':CUT-1},{'at_ms':E+1}]
     assert player.build_input(*hand)
+    advisory_text = player.build_input(*hand,events={'from_ms':CUT,'events':[{'at_ms':CUT+H,'kind':'CPI','name_cn':'CPI 公布','blocking':False}]})
+    assert '到期前已知常规日程（供牌手审查）：CPI 公布' in advisory_text
     assert player.build_input(*hand,events={'from_ms':CUT+1,'events':[{'at_ms':CUT+H}]})
     with pytest.raises(player.HandNotDealt):
         player.build_input(*hand,events={'from_ms':CUT,'events':[{'at_ms':CUT+H,'kind':'known_interference'}]})

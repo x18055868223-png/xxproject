@@ -178,8 +178,7 @@ def confirm_quote(snapshot, now):
 
 def condition_plan(proof, plan):
     required = ('historical_facts', 'accepted_conditions', 'confirmation_excerpt')
-    if (not isinstance(plan, dict) or any(not isinstance(plan.get(k), str) or not plan[k].strip()
-            or plan[k] not in proof['raw'] for k in required)
+    if (not isinstance(plan, dict) or any(not dossier.excerpt_in_text(plan.get(k), proof['raw']) for k in required)
             or type(plan.get('check_interval_ms')) is not int
             or not 0 < plan['check_interval_ms'] <= dossier.DAY
             or plan['check_interval_ms'] % dossier.MINUTE
@@ -187,7 +186,7 @@ def condition_plan(proof, plan):
         raise Blocked('condition_plan_missing_or_unverifiable')
     depends = proof['decision']['judgment']['depends_on_ard']
     keys = ('ard_responsibility_meaning', 'ard_review_on')
-    if depends and any(not isinstance(plan.get(k), str) or not plan[k].strip() or plan[k] not in proof['raw'] for k in keys):
+    if depends and any(not dossier.excerpt_in_text(plan.get(k), proof['raw']) for k in keys):
         raise Blocked('ard_condition_excerpt_missing')
     outside = plan.get('require_outside_at_t0', False)
     if not isinstance(outside, bool):
@@ -506,8 +505,10 @@ def _llm_settings(llm_config=None):
     api_key = cfg.get('api_key') or os.environ.get('ASTRA_WORKBENCH_LLM_API_KEY') or os.environ.get('LLM_API_KEY')
     model = cfg.get('model') or os.environ.get('ASTRA_PLAYER_MODEL') or os.environ.get('ASTRA_WORKBENCH_LLM_MODEL') or os.environ.get('LLM_MODEL') or 'deepseek-flash'
     endpoint = cfg.get('endpoint') or os.environ.get('LLM_BASE_URL') or os.environ.get('ASTRA_WORKBENCH_LLM_ENDPOINT')
-    timeout_s = float(cfg.get('timeout_s') or os.environ.get('LLM_TIMEOUT_SEC') or 180)
-    return dict(api_key=api_key, model=model, endpoint=endpoint, timeout_s=timeout_s, transport=cfg.get('transport'))
+    timeout_s = float(cfg.get('timeout_s') or os.environ.get('LLM_TIMEOUT_SEC') or 300)
+    effort = cfg.get('reasoning_effort') or os.environ.get('ASTRA_PLAYER_REASONING_EFFORT') or os.environ.get('LLM_RECON_EFFORT')
+    return dict(api_key=api_key, model=model, endpoint=endpoint, timeout_s=timeout_s,
+                reasoning_effort=effort, transport=cfg.get('transport'))
 
 
 def _record_revoke_shadow_action(d, episode, frozen, latest_point, at, *, review_id=None):
@@ -630,7 +631,25 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             prior_reviews.append(load(rfile))
         except Exception:
             pass
-    prog_triggered = any(e.get('kind') == 'CONDITION_TRIGGERED' for e in ep_events)
+    check_ev_list = [e for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')]
+    prog_triggered = any(e.get('kind') == 'CONDITION_TRIGGERED' for e in check_ev_list)
+    mech_state = ('TRIGGERED' if prog_triggered
+                  else 'DATA_GAP' if (check_ev_list and check_ev_list[-1].get('kind') == 'CONDITION_UNKNOWN')
+                  else 'INTACT')
+    latest_chk_ms = ((check_ev_list[-1].get('observed_at_ms') or check_ev_list[-1].get('recorded_at_ms'))
+                     if check_ev_list else None)
+    basis_path = episode / 'entry_basis.json'
+    entry_basis = optional(basis_path)
+    if entry_basis is None:
+        entry_basis = review.build_entry_decision_basis(
+            hand_id=hand.name,
+            episode_id=episode.name,
+            initial_decision=decision,
+            frozen_condition=frozen,
+            raw_sha256=decision.get('raw_sha256'),
+        )
+        dossier.write(basis_path, dossier.encode(entry_basis))
+
     post_spots = [(row.get('metrics') or row).get('spot_usd') for row in series_rows if isinstance(row, dict)]
     post_spots = [s for s in post_spots if dossier.player.number(s)]
     post_dists = [(row.get('metrics') or row).get('short_distance_pct') for row in series_rows if isinstance(row, dict)]
@@ -660,11 +679,14 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         ),
         condition_summary=dict(
             program_triggered=prog_triggered,
-            checks_count=sum(1 for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')),
+            mechanical_condition_state=mech_state,
+            checks_count=len(check_ev_list),
+            latest_check_at_ms=latest_chk_ms,
         ),
         ard_summary=ard_comparison or '未开启或无可比同口径 ARD 数据',
         flow_summary=dict(
             flow_ready=latest_m.get('flow_ready'),
+            flow_asof_ms=latest_m.get('flow_asof_ms'),
             flow_direction=latest_m.get('flow_direction'),
             flow_fast_4h=latest_m.get('flow_fast_4h'),
             flow_slow_12h=latest_m.get('flow_slow_12h'),
@@ -673,6 +695,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         ),
         quote_summary=quote_info,
         prior_reviews=prior_reviews,
+        entry_basis=entry_basis,
     )
     req_ms = d.clock()
     rev_id = dossier.identity('rev', req_ms, cats, dossier.sha(input_md.encode('utf-8')))
@@ -683,23 +706,43 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         ]
         llm_res = review.call_chat_llm(
             messages, api_key=cfg['api_key'] or 'test-key', model=cfg['model'],
-            endpoint=cfg.get('endpoint'), timeout_s=cfg.get('timeout_s', 180),
-            transport=cfg.get('transport'),
+            endpoint=cfg.get('endpoint'), timeout_s=cfg.get('timeout_s', 300),
+            reasoning_effort=cfg.get('reasoning_effort'), transport=cfg.get('transport'),
         )
         raw_reply = llm_res['text']
         actual_model = llm_res.get('model') or cfg['model']
-        parsed = review.parse_hold_review_response(raw_reply, frozen_condition=frozen, program_triggered=prog_triggered)
+        parsed = review.parse_hold_review_response(
+            raw_reply,
+            frozen_condition=frozen,
+            program_triggered=prog_triggered,
+            mechanical_state=mech_state,
+            valid_condition_ids=entry_basis.get('valid_condition_ids'),
+        )
         fin_ms = d.clock()
         raw_bytes = raw_reply.encode('utf-8')
         input_bytes = input_md.encode('utf-8')
+        shadow_action = (
+            'FROZEN_RULE_TRIGGERED_CONFLICT' if parsed['protocol_status'] == 'CONFLICT_WITH_FROZEN_INVALIDATION'
+            else 'REVOKE_DISCRETIONARY' if parsed['protocol_status'] == 'DISCRETIONARY_REVOKE'
+            else 'REVOKE_ALIGNED' if parsed['verdict'] == 'REVOKE'
+            else 'HOLD_SHADOW_CONTINUE' if parsed['verdict'] == 'HOLD'
+            else 'HOLD_UNKNOWN_OBSERVE'
+        )
         rev_decision = dict(
             review_id=rev_id,
             status='VALID',
             verdict=parsed['verdict'],
+            ai_management_verdict=parsed['ai_management_verdict'],
+            mechanical_condition_state=parsed['mechanical_condition_state'],
+            protocol_status=parsed['protocol_status'],
+            shadow_action=shadow_action,
             trigger_categories=cats,
             triggers=batch,
             reason=action['reason'],
             affected_conditions=parsed['affected_conditions'],
+            mapped_condition_ids=parsed['mapped_condition_ids'],
+            unmapped_condition_ids=parsed['unmapped_condition_ids'],
+            condition_id_mapping_status=parsed['condition_id_mapping_status'],
             public_reply=parsed['public_reply'],
             key_facts=parsed['key_facts'],
             notes=parsed.get('notes') or [],
@@ -722,14 +765,18 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             'decision.json': dossier.encode(rev_decision),
         })
         ev_kind = 'AI_HOLD' if parsed['verdict'] == 'HOLD' else 'AI_REVOKE' if parsed['verdict'] == 'REVOKE' else 'AI_HOLD_UNKNOWN'
-        ev_body = {k: rev_decision[k] for k in ('review_id', 'verdict', 'trigger_categories', 'affected_conditions',
-                                                'public_reply', 'model', 'input_sha256', 'raw_sha256')}
+        ev_body = {k: rev_decision[k] for k in (
+            'review_id', 'verdict', 'ai_management_verdict', 'mechanical_condition_state',
+            'protocol_status', 'shadow_action', 'trigger_categories', 'affected_conditions',
+            'condition_id_mapping_status', 'public_reply', 'model', 'input_sha256', 'raw_sha256')}
         d.event(episode, dossier.identity('ai_rev', rev_id), ev_kind, ev_body, observed=req_ms, available=fin_ms, decided=fin_ms)
         done_state = review.complete_review_action(next_state, now_ms=fin_ms, success=True, verdict=parsed['verdict'], cooldown_ms=cooldown_ms)
         dossier.write(state_path, dossier.encode(done_state), replace=True)
         if parsed['verdict'] == 'REVOKE':
             _record_revoke_shadow_action(d, episode, frozen, latest_pt, fin_ms, review_id=rev_id)
-        return dict(triggers=triggers, action='REVIEWED', review_id=rev_id, verdict=parsed['verdict'])
+        return dict(triggers=triggers, action='REVIEWED', review_id=rev_id, verdict=parsed['verdict'],
+                    mechanical_condition_state=parsed['mechanical_condition_state'],
+                    protocol_status=parsed['protocol_status'], shadow_action=shadow_action)
     except Exception as exc:
         fin_ms = d.clock()
         done_state = review.complete_review_action(next_state, now_ms=fin_ms, success=False, cooldown_ms=cooldown_ms)
@@ -861,14 +908,15 @@ def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.
                 api_key=cfg['api_key'] or 'test-key',
                 model=cfg['model'],
                 endpoint=cfg.get('endpoint'),
-                timeout_s=cfg.get('timeout_s', 180),
+                timeout_s=cfg.get('timeout_s', 300),
+                reasoning_effort=cfg.get('reasoning_effort'),
                 transport=cfg.get('transport'),
             )
             dec_ms = d.clock()
             att = d.respond(
                 hand, attempt_id, 'RECEIVED', ai_res['raw_bytes'], ai_res['annotation'],
                 model=ai_res.get('model') or cfg['model'],
-                configuration=dict(reasoning_effort=os.environ.get('LLM_RECON_EFFORT'),
+                configuration=dict(reasoning_effort=ai_res.get('reasoning_effort') or cfg.get('reasoning_effort'),
                                    usage=ai_res.get('usage'), http_status=ai_res.get('http_status')),
                 requested=req_ms, decided=dec_ms, channel='API_AUTO',
             )
@@ -936,7 +984,9 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             rev_id = dec.get('review_id') or folder.name
             seen_ids.add(rev_id)
             rec = {k: dec.get(k) for k in (
-                'review_id', 'status', 'verdict', 'trigger_categories', 'affected_conditions',
+                'review_id', 'status', 'verdict', 'ai_management_verdict', 'mechanical_condition_state',
+                'protocol_status', 'shadow_action', 'trigger_categories', 'affected_conditions',
+                'mapped_condition_ids', 'unmapped_condition_ids', 'condition_id_mapping_status',
                 'model', 'requested_at_ms', 'decided_at_ms', 'input_sha256', 'raw_sha256')}
             if include_reply:
                 rec['public_reply'] = dec.get('public_reply')
@@ -959,11 +1009,22 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             ))
     reviews.sort(key=lambda r: (r.get('decided_at_ms') or r.get('requested_at_ms') or 0, str(r.get('review_id') or '')), reverse=True)
 
+    mech_state = ('TRIGGERED' if trig_events
+                  else 'DATA_GAP' if (check_events and check_events[-1].get('kind') == 'CONDITION_UNKNOWN')
+                  else 'INTACT')
+    latest_rev = reviews[0] if reviews else {}
+    protocol_status = latest_rev.get('protocol_status') or ('DISCRETIONARY_REVOKE' if (not trig_events and rev_events) else 'ALIGNED')
+    shadow_action = latest_rev.get('shadow_action') or ('REVOKE_DISCRETIONARY' if (not trig_events and rev_events) else 'HOLD_SHADOW_CONTINUE' if latest_rev.get('verdict') == 'HOLD' else 'NONE')
+
     c = (frozen or {}).get('contract') or contract or {}
     if buybacks:
         fill = buybacks[-1].get('body') or {}
         exit_status = 'SIMULATED_BUY_BACK_SHORT'
         shadow_mgmt = dict(
+            mechanical_condition_state=mech_state,
+            ai_management_verdict=latest_rev.get('verdict'),
+            protocol_status=protocol_status,
+            shadow_action=shadow_action,
             condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
             ai_revoked_at_ms=(rev_events[-1].get('observed_at_ms') or rev_events[-1].get('recorded_at_ms')) if rev_events else None,
             exit_status=exit_status,
@@ -976,6 +1037,10 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
     elif no_quotes or rev_events:
         nq = (no_quotes[-1].get('body') or {}) if no_quotes else {}
         shadow_mgmt = dict(
+            mechanical_condition_state=mech_state,
+            ai_management_verdict=latest_rev.get('verdict'),
+            protocol_status=protocol_status,
+            shadow_action=shadow_action,
             condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
             ai_revoked_at_ms=(rev_events[-1].get('observed_at_ms') or rev_events[-1].get('recorded_at_ms')) if rev_events else None,
             exit_status='REVOKE_NO_QUOTE',
@@ -985,6 +1050,10 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
         )
     else:
         shadow_mgmt = dict(
+            mechanical_condition_state=mech_state,
+            ai_management_verdict=latest_rev.get('verdict'),
+            protocol_status=protocol_status,
+            shadow_action=shadow_action,
             condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
             ai_revoked_at_ms=None,
             exit_status='NONE',
@@ -1017,6 +1086,9 @@ def episode_management_summary(root, dossier_id, hand_id, dossier_episode_id=Non
     latest = mgmt['hold_reviews'][0] if mgmt['hold_reviews'] else None
     out = dict(
         frozen_check_count=mgmt['check_count'],
+        mechanical_condition_state=mgmt['shadow_management']['mechanical_condition_state'],
+        protocol_status=mgmt['shadow_management']['protocol_status'],
+        shadow_action=mgmt['shadow_management']['shadow_action'],
         condition_triggered=mgmt['shadow_management']['condition_triggered_at_ms'] is not None,
         condition_triggered_at_ms=mgmt['shadow_management']['condition_triggered_at_ms'],
         ai_revoked_at_ms=mgmt['shadow_management']['ai_revoked_at_ms'],
@@ -1030,8 +1102,10 @@ def episode_management_summary(root, dossier_id, hand_id, dossier_episode_id=Non
         out['latest_reviewed_at_ms'] = latest.get('decided_at_ms') or latest.get('requested_at_ms')
         if include_reply:
             out['latest_review'] = {k: latest.get(k) for k in (
-                'review_id', 'verdict', 'status', 'trigger_categories', 'model',
-                'requested_at_ms', 'decided_at_ms', 'public_reply', 'affected_conditions', 'error')}
+                'review_id', 'verdict', 'ai_management_verdict', 'mechanical_condition_state',
+                'protocol_status', 'shadow_action', 'status', 'trigger_categories', 'model',
+                'requested_at_ms', 'decided_at_ms', 'public_reply', 'affected_conditions',
+                'condition_id_mapping_status', 'error')}
     return out
 
 

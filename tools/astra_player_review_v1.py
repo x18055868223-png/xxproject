@@ -114,6 +114,7 @@ def call_chat_llm(
     retries: int = 1,
     max_tokens: int = 16384,
     thinking: bool = True,
+    reasoning_effort: str | None = None,
     transport: Any = None,
 ) -> dict[str, Any]:
     """Call OpenAI-compatible chat completions with endpoint normalization and transient retries."""
@@ -127,6 +128,8 @@ def call_chat_llm(
         "max_tokens": int(max_tokens),
         "thinking": {"type": "enabled" if thinking else "disabled"},
     }
+    if reasoning_effort and str(reasoning_effort).strip():
+        request_body["reasoning_effort"] = str(reasoning_effort).strip()
     poster = transport or signal_llm_review._post_chat_completion
     total_attempts = 1 + max(0, int(retries))
     response: Any = None
@@ -159,12 +162,15 @@ def call_chat_llm(
     if not text:
         raise ValueError("LLM response content is empty")
     http_status = response.get("_http_status") or response.get("http_status") or 200
+    reasoning_text = message.get("reasoning_content")
     return {
         "text": text,
+        "reasoning_content": str(reasoning_text) if reasoning_text else None,
         "usage": signal_llm_review._response_usage(dict(response)),
         "finish_reason": finish_reason,
         "http_status": int(http_status),
         "model": str(response.get("model") or model),
+        "reasoning_effort": reasoning_effort,
         "endpoint": url,
         "attempts": attempts_used,
     }
@@ -222,19 +228,24 @@ def decide_initial_hand(
     model: str,
     endpoint: str | None = None,
     timeout_s: float = 180,
+    max_tokens: int = 24576,
+    reasoning_effort: str | None = None,
     transport: Any = None,
 ) -> dict[str, Any]:
     """Send frozen input.md to the LLM, parse public Chinese prose + verbatim annotation + condition_plan."""
     system_prompt = (
         "你是承保影子牌手。请完整阅读冻结牌面并用中文作答。\n"
-        "作答要求：\n"
+        "【核心术语公理】\n"
+        "- 责任区：卖方短腿与保护腿之间的亏损承受区间（触及边界不算入区，越过短腿进入区间才算严格入区）。\n"
+        "- 本期尺度：指本期到期隐含波动给出的 `expected_move_usd` 预期波动尺度。\n"
+        "- Pin / 墙：仅作当前空间结构位置参照，不带方向性，不构成价格吸附保证。\n"
+        "- ARD：仅衡量过去 4 小时围绕同到期已知 Pin 的历史贴近、离返与迁移事实，不做未来方向预测。\n"
+        "【作答与规则锁定】\n"
         "1. 在正文开头或明确独立标题行写出唯一结论：`## Accept / Put`、`## Accept / Call`、`## Reject` 或 `## Unknown`。\n"
         "2. 正文必须分别给出 Put 路径判断、Call 路径判断、Put 最强反证、Call 最强反证与两侧对比择优，并冻结历史事实、承担条件与破坏确认口径。\n"
-        "3. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`，其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` "
-        "必须是从上方中文正文中原字逐字摘录的非空片段；`depends_on_ard` 必须是显式布尔值。\n"
-        "4. 若结论为 Accept，必须给出 `condition_plan` 对象，包含：`invalidation`（仅限 `\"new_entry\"` 或 `\"entry_not_returned\"`）、"
-        "`check_interval_ms`（默认 300000，整分钟毫秒）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须原字摘录自上方正文），"
-        "以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，还须提供原字摘录的 `ard_responsibility_meaning` 与 `ard_review_on`。"
+        "3. 系统的机械有效破坏规则仅支持两选一：`\"new_entry\"`（入场后出现严格进入责任区的分钟采样即触发）或 `\"entry_not_returned\"`（入场后严格进入责任区且至固定检查点仍未严格返回责任外才触发）；固定检查钟默认每 5 分钟（`check_interval_ms = 300000`）按 UTC 网格执行。正文书写破坏确认口径时必须直接对齐该两选一规则与 5 分钟网格，严禁自行编造“每 60 分钟整点锚点”等其他检查时钟。\n"
+        "4. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`，其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` 必须摘录自上方中文正文；`depends_on_ard` 必须是显式布尔值。\n"
+        "5. 若结论为 Accept，必须给出 `condition_plan` 对象，包含：`invalidation`（仅限 `\"new_entry\"` 或 `\"entry_not_returned\"`）、`check_interval_ms`（默认 `300000`，整分钟毫秒）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须摘录自上方正文），以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，还须提供摘录自正文的 `ard_responsibility_meaning` 与 `ard_review_on`。"
     )
     pair_summary = _format_contract_pair(contract_pair)
     user_content = f"候选合约对：\n{pair_summary}\n\n{input_md_text}" if pair_summary else input_md_text
@@ -244,6 +255,8 @@ def decide_initial_hand(
         model=model,
         endpoint=endpoint,
         timeout_s=timeout_s,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
         transport=transport,
     )
     public_text, payload = _split_tagged_json(llm_result["text"], "ANNOTATION_JSON")
@@ -282,18 +295,20 @@ def decide_initial_hand(
         }
         for key in required_excerpts:
             val = raw_plan.get(key)
-            if not isinstance(val, str) or not val.strip() or val not in public_text:
+            if not dossier.excerpt_in_text(val, public_text):
                 raise ValueError(f"condition_plan.{key} must be a verbatim excerpt from public text")
-            parsed_plan[key] = val
+            parsed_plan[key] = val.strip()
 
     return {
         "raw_bytes": raw_bytes,
         "raw_text": public_text,
+        "reasoning_content": llm_result.get("reasoning_content"),
         "annotation": annotation,
         "condition_plan": parsed_plan,
         "decision": decision,
         "usage": llm_result["usage"],
         "model": llm_result["model"],
+        "reasoning_effort": llm_result.get("reasoning_effort"),
         "finish_reason": llm_result["finish_reason"],
     }
 
@@ -610,6 +625,20 @@ def _detect_category_d(
     if not matched:
         return None
 
+    non_overlapping_confirmed = (
+        latest_ts - entry_at_ms >= 4 * 3_600_000
+        and t0_flow_asof is not None
+        and flow_asof is not None
+        and flow_asof - t0_flow_asof >= 4 * 3_600_000
+        and reversed_from_t0
+        and mom_shift
+    )
+    summary_text = (
+        f"相邻不重叠窗口确认主动流转呈{latest_dir}，同步伴随价格向短腿收缩 {coincident_shrink:.2f} 个百分点。"
+        if non_overlapping_confirmed
+        else f"滚动窗口状态变化（反转未获相邻不重叠窗口确认，仅作复核提醒），现读 {latest_dir} 且价格向短腿收缩 {coincident_shrink:.2f} 个百分点。"
+    )
+
     return {
         "category": "D",
         "code": "FLOW_REVERSAL",
@@ -623,8 +652,9 @@ def _detect_category_d(
             "flow_momentum_4h_pct": m4,
             "short_distance_shrink_pct_pts": round(coincident_shrink, 4),
             "short_strike_usd": short_strike_usd,
+            "reversal_confirmed": bool(non_overlapping_confirmed),
         },
-        "summary_cn": f"主动流转呈{latest_dir}且同步伴随价格向短腿收缩 {coincident_shrink:.2f} 个百分点。",
+        "summary_cn": summary_text,
     }
 
 
@@ -843,6 +873,166 @@ def _kv_lines(data: Any) -> list[str]:
     return [f"- {data}"]
 
 
+def _fmt_num(value: Any, decimals: int = 2, suffix: str = "") -> str:
+    n = _num(value)
+    if n is None:
+        return "未提供"
+    return f"{n:,.{decimals}f}{suffix}"
+
+
+def _fmt_bool_cn(value: Any, true_text: str = "是", false_text: str = "否", none_text: str = "未提供") -> str:
+    if value is None:
+        return none_text
+    return true_text if bool(value) else false_text
+
+
+def build_entry_decision_basis(
+    *,
+    hand_id: str | None = None,
+    episode_id: str | None = None,
+    initial_decision: Mapping[str, Any] | None,
+    frozen_condition: Mapping[str, Any],
+    raw_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Build lightweight deterministic `entry_decision_basis@1` with stable IDs (M1/C1..Cn/H1/S1/R1)."""
+    dec = initial_decision if isinstance(initial_decision, Mapping) else {}
+    judgment = dec.get("judgment") if isinstance(dec.get("judgment"), Mapping) else dec
+    contract = frozen_condition.get("contract") if isinstance(frozen_condition.get("contract"), Mapping) else {}
+    chosen_side = str(judgment.get("side") or contract.get("side") or "").lower()
+    raw_conds = frozen_condition.get("accepted_conditions")
+    if isinstance(raw_conds, str) and raw_conds.strip():
+        cond_list = [raw_conds.strip()]
+    elif isinstance(raw_conds, Sequence) and not isinstance(raw_conds, (bytes, bytearray)):
+        cond_list = [str(x).strip() for x in raw_conds if isinstance(x, str) and x.strip()] or ["NOT_RECORDED"]
+    else:
+        cond_list = ["NOT_RECORDED"]
+    conditions = {f"C{i + 1}": text for i, text in enumerate(cond_list)}
+
+    interval_ms = ((frozen_condition.get("check_clock") or {}).get("interval_ms")
+                   if isinstance(frozen_condition.get("check_clock"), Mapping) else None)
+    counter_key = f"{chosen_side}_counter" if chosen_side in {"put", "call"} else None
+    choice_reason = str(judgment.get("comparison") or "").strip() or "NOT_RECORDED"
+    strongest_counter = (str(judgment.get(counter_key) or "").strip() if counter_key else "") or "NOT_RECORDED"
+    hist_facts = str(frozen_condition.get("historical_facts") or "").strip() or "NOT_RECORDED"
+
+    basis: dict[str, Any] = {
+        "schema": "entry_decision_basis@1",
+        "hand_id": hand_id,
+        "episode_id": episode_id,
+        "decision_id": dec.get("attempt_id"),
+        "raw_response_hash": raw_sha256 or dec.get("raw_sha256"),
+        "selected_side": chosen_side or None,
+        "contract": dict(contract),
+        "M1": {
+            "id": "M1",
+            "invalidation": frozen_condition.get("invalidation") or "NOT_RECORDED",
+            "invalidation_meaning": frozen_condition.get("invalidation_meaning") or "NOT_RECORDED",
+            "check_interval_ms": interval_ms,
+        },
+        "C": conditions,
+        "H1": {"id": "H1", "historical_facts": hist_facts},
+        "S1": {
+            "id": "S1",
+            "original_choice_reason": choice_reason,
+            "original_strongest_counterevidence": strongest_counter,
+        },
+    }
+    ard_basis = frozen_condition.get("ard_basis") if isinstance(frozen_condition.get("ard_basis"), Mapping) else None
+    valid_ids = ["M1", *conditions.keys(), "H1", "S1"]
+    if ard_basis:
+        basis["R1"] = {
+            "id": "R1",
+            "ard_responsibility_meaning": ard_basis.get("responsibility_meaning") or "NOT_RECORDED",
+            "ard_review_on": ard_basis.get("review_on") or "NOT_RECORDED",
+        }
+        valid_ids.append("R1")
+    basis["valid_condition_ids"] = valid_ids
+    return basis
+
+
+def _format_t0_lines(data: Any) -> list[str]:
+    if not isinstance(data, Mapping):
+        return _kv_lines(data)
+    return [
+        f"- 锁定时刻：{_utc(data.get('locked_at')) if data.get('locked_at') is not None else '未提供'}；入场指数：{_fmt_num(data.get('entry_index_usd'), 2, ' USD')}",
+        f"- 入场短腿安全余量：{_fmt_num(data.get('short_distance_pct'), 2, '%')}；本期预期波动尺度：{_fmt_num(data.get('expected_move_usd'), 1, ' USD')}",
+    ]
+
+
+def _format_post_entry_lines(data: Any) -> list[str]:
+    if not isinstance(data, Mapping):
+        return _kv_lines(data)
+    return [
+        f"- 入场后连续样本数：{data.get('sample_count', 0)} 个；最新指数：{_fmt_num(data.get('latest_spot_usd'), 2, ' USD')}",
+        f"- 入场后短腿安全余量：最低 {_fmt_num(data.get('min_short_distance_pct'), 2, '%')} / 最新 {_fmt_num(data.get('latest_short_distance_pct'), 2, '%')}",
+    ]
+
+
+def _format_condition_lines(data: Any) -> list[str]:
+    if not isinstance(data, Mapping):
+        return _kv_lines(data)
+    trig = bool(data.get("program_triggered"))
+    state_label = str(data.get("mechanical_condition_state") or ("TRIGGERED" if trig else "INTACT"))
+    lines = [
+        f"- 程序机械边界状态（mechanical_condition_state）：{state_label}（{'原冻结破坏规则已由程序确认触发，CONDITION_TRIGGERED 不可改判' if trig else '原冻结破坏规则尚未触发'}）；已完成固定网格检查 {data.get('checks_count', 0)} 次。",
+    ]
+    if data.get("latest_check_at_ms") is not None:
+        lines.append(f"- 最近检查钟时刻：{_utc(data.get('latest_check_at_ms'))}")
+    return lines
+
+
+def _format_ard_lines(data: Any) -> list[str]:
+    if not isinstance(data, Mapping):
+        return _kv_lines(data)
+    same = data.get("same_measure")
+    if same is None:
+        same = data.get("new_neighborhood_events") is not None
+    pin_changed = data.get("pin_price_changed")
+    frozen_pin = (data.get("frozen_anchor") or {}).get("pin") if isinstance(data.get("frozen_anchor"), Mapping) else None
+    cur_pin = (data.get("current_anchor") or {}).get("pin") if isinstance(data.get("current_anchor"), Mapping) else None
+    events = data.get("new_neighborhood_events")
+    ev_count = len(events) if isinstance(events, list) else 0
+    return [
+        f"- 同口径可比性：{_fmt_bool_cn(same, '同口径可比', '口径/窗口不可比（不作为结构变化触发依据）')}",
+        f"- Pin 对照：入场参考 Pin {_fmt_num(frozen_pin, 1, ' USD')} -> 最新 Pin {_fmt_num(cur_pin, 1, ' USD')}（是否迁移：{_fmt_bool_cn(pin_changed)}）",
+        f"- 现价距入场 Pin 距离：{_fmt_num(data.get('current_distance_to_frozen_pin_usd'), 1, ' USD')}；位于入场邻域内：{_fmt_bool_cn(data.get('current_inside_frozen_neighborhood'))}；入场后新增同口径邻域事件：{ev_count} 次",
+    ]
+
+
+def _format_flow_lines(data: Any) -> list[str]:
+    if not isinstance(data, Mapping):
+        return _kv_lines(data)
+    dir_cn = {"bullish": "偏买", "neutral_to_bullish": "中性偏买", "neutral": "中性",
+              "neutral_to_bearish": "中性偏卖", "bearish": "偏卖"}
+    cur_dir = dir_cn.get(str(data.get("flow_direction") or "").lower(), str(data.get("flow_direction") or "未提供"))
+    fast4 = dir_cn.get(str(data.get("flow_fast_4h") or "").lower(), str(data.get("flow_fast_4h") or "未提供"))
+    slow12 = dir_cn.get(str(data.get("flow_slow_12h") or "").lower(), str(data.get("flow_slow_12h") or "未提供"))
+    return [
+        f"- 现货主动流就绪：{_fmt_bool_cn(data.get('flow_ready'))}（流向源时钟：{_utc(data.get('flow_asof_ms')) if data.get('flow_asof_ms') else '随最新样本同步'}）",
+        f"- 综合方向：{cur_dir}（近 4h：{fast4} / 近 12h：{slow12}）；注意：4h/12h 为滚动窗，旧柱滑出不直接等同近期相邻不重叠窗口真实反转",
+        f"- 近 4h CVD 净额：{_fmt_num(data.get('flow_cvd_4h'), 2)}；近 4h 动量变化：{_fmt_num(data.get('flow_momentum_4h_pct'), 2, '%')}",
+    ]
+
+
+def _format_economics_lines(t0_summary: Any, quote_summary: Any) -> list[str]:
+    lines = []
+    if isinstance(t0_summary, Mapping) and t0_summary.get("net_credit_after_fee_btc") is not None:
+        lines.append(f"- 锁定时费后净信用估计：{_fmt_num(t0_summary.get('net_credit_after_fee_btc'), 6, ' BTC')}（影子基准，不单独作退出理由）")
+    if isinstance(quote_summary, Mapping):
+        ask = quote_summary.get("short_buyback_ask_btc")
+        fee = quote_summary.get("short_buyback_fee_btc")
+        tot = quote_summary.get("short_buyback_total_btc")
+        gaps = [str(g) for g in (quote_summary.get("short_buyback_gaps") or ()) if g]
+        q_at = quote_summary.get("short_quote_asof_ms")
+        if ask is not None and not gaps:
+            lines.append(f"- 当前单买回短腿 Ask 估算：{_fmt_num(ask, 6, ' BTC')}（含预估手续费 {_fmt_num(fee, 6, ' BTC')}，合计 {_fmt_num(tot, 6, ' BTC')}；报价时钟 {_utc(q_at)}；假设保留保护腿至到期）")
+        else:
+            lines.append(f"- 当前单买回短腿报价：暂不可靠成交（缺口：{', '.join(gaps) if gaps else '盘口不足'}；若 REVOKE 将仅记录撤销事实，不虚构止损收益）")
+    elif quote_summary is not None:
+        lines.extend(_kv_lines(quote_summary))
+    return lines or ["- 暂无新增经济与盘口估值"]
+
+
 def build_hold_review_input(
     *,
     contract: Mapping[str, Any],
@@ -857,22 +1047,37 @@ def build_hold_review_input(
     flow_summary: Any,
     quote_summary: Any,
     prior_reviews: Sequence[Mapping[str, Any]] | None = None,
+    entry_basis: Mapping[str, Any] | None = None,
 ) -> str:
-    """Render a crisp incremental hold-review Markdown card with exact 4-section headings."""
+    """Render a pure-Chinese, decision-ready incremental hold-review card with stable condition IDs."""
     side_text = str(contract.get("side") or "").upper()
     judgment = initial_decision.get("judgment") if isinstance(initial_decision.get("judgment"), Mapping) else initial_decision
-    accepted_conds = frozen_condition.get("accepted_conditions") or []
-    if isinstance(accepted_conds, str):
-        accepted_conds = [accepted_conds]
+    basis = dict(entry_basis) if isinstance(entry_basis, Mapping) else build_entry_decision_basis(
+        initial_decision=initial_decision,
+        frozen_condition=frozen_condition,
+    )
+    m1 = basis["M1"]
+    s1 = basis["S1"]
+    h1 = basis["H1"]
+    c_items = basis.get("C") or {"C1": "NOT_RECORDED"}
+    r1 = basis.get("R1")
+    prog_trig = bool(isinstance(condition_summary, Mapping) and condition_summary.get("program_triggered"))
 
     lines = [
         "# 持仓增量复核牌面",
         "",
         "## 原始承诺",
-        f"- 锁定责任：{side_text} 短腿 {contract.get('short_strike_usd')} / 保护腿 {contract.get('long_strike_usd')}（到期 {_utc(contract.get('expiry_ms'))}），入场时间 {_utc(entry_at_ms)}。",
-        f"- 原判断：{judgment.get('action') or 'Accept'} / {judgment.get('side') or side_text}；入场指数 {frozen_condition.get('entry_index_usd')}。",
-        f"- 原失效规则：{frozen_condition.get('invalidation')}（{frozen_condition.get('invalidation_meaning')}）。",
-        *[f"- 原接受条件：{c}" for c in accepted_conds],
+        f"- 锁定责任：{side_text} 短腿 {_fmt_num(contract.get('short_strike_usd'), 0)} / 保护腿 {_fmt_num(contract.get('long_strike_usd'), 0)}（到期 {_utc(contract.get('expiry_ms'))}），入场时间 {_utc(entry_at_ms)}。",
+        f"- 原判断：{judgment.get('action') or 'Accept'} / {judgment.get('side') or side_text}；入场指数：{_fmt_num(frozen_condition.get('entry_index_usd'), 2, ' USD')}。",
+        f"- [M1] 机械有效破坏规则：{m1['invalidation']}（{m1['invalidation_meaning']}；固定检查间隔：{m1.get('check_interval_ms') or 300000} 毫秒）。",
+        f"- [S1] 当初选边依据：{s1['original_choice_reason']}",
+        f"- [S1] 入场时已承认并承担的最强反证：{s1['original_strongest_counterevidence']}（入场前旧事实，不得直接当作入场后新暴雷）。",
+        *[f"- [{cid}] 持续承担条件：{ctext}" for cid, ctext in c_items.items()],
+        f"- [H1] 入场前历史基线：{h1['historical_facts']}（历史基线，不作为退出触发器）。",
+    ]
+    if r1:
+        lines.append(f"- [R1] ARD 复核约定：{r1['ard_responsibility_meaning']}；复核触发：{r1['ard_review_on']}。")
+    lines.extend([
         f"- 确认口径：{frozen_condition.get('confirmation_excerpt') or frozen_condition.get('sampling')}",
         "",
         "## 新增事实",
@@ -881,38 +1086,40 @@ def build_hold_review_input(
             f"- [{t.get('category')}:{t.get('code')}] {t.get('summary_cn')}（观测 {_utc(t.get('observed_at_ms'))}）"
             for t in (triggers or ())
         ],
-        "### t0 基线与入场后路径",
-        "- t0 基线：",
-        *_kv_lines(t0_summary),
-        "- 入场后路径：",
-        *_kv_lines(post_entry_summary),
-        "### 程序条件、ARD、主动流与单腿买回报价",
-        "- 程序条件状态：",
-        *_kv_lines(condition_summary),
-        "- ARD 结构对照：",
-        *_kv_lines(ard_summary),
-        "- 主动流：",
-        *_kv_lines(flow_summary),
-        "- 短腿单独买回报价：",
-        *_kv_lines(quote_summary),
-    ]
+        "### 入场基线与入场后路径",
+        *_format_t0_lines(t0_summary),
+        *_format_post_entry_lines(post_entry_summary),
+        "### 程序条件、ARD 同口径结构与主动流",
+        *_format_condition_lines(condition_summary),
+        *_format_ard_lines(ard_summary),
+        *_format_flow_lines(flow_summary),
+        "",
+        "## 影子管理经济观察（仅作参考，不替代原条件承保结构判断）",
+        *_format_economics_lines(t0_summary, quote_summary),
+    ])
     if prior_reviews:
-        lines.extend(["### 既往复核摘要"])
+        lines.extend(["", "### 既往持仓复核摘要"])
         for rev in prior_reviews:
-            lines.append(f"- {rev.get('verdict')}: {rev.get('public_reply') or rev.get('summary') or ''}")
+            lines.append(f"- {rev.get('verdict')}（{rev.get('protocol_status') or 'RECORDED'}）：{rev.get('public_reply') or rev.get('summary') or ''}")
 
     lines.extend([
         "",
         "## 条件对照",
-        "- 请逐项核对上述新增事实对应到哪一条原始接受条件或原失效规则：哪些条件仍完整成立、哪些条件已被实质削弱或触发。",
+        f"- 当前稳定条件 ID 列表：{', '.join(basis.get('valid_condition_ids') or ['M1', 'C1', 'S1'])}。",
+        "- 请逐项核对上述新增事实相对 [S1] 入场最强反证、[C1..] 原承担条件及 [M1] 有效破坏规则的实质变化。",
         "- 已冻结且已触发的 `CONDITION_TRIGGERED` 为不可变程序事实，只能如实承接，严禁改写为未触发或以旧窗口事实抵消。",
+    ])
+    if prog_trig:
+        lines.append("- **【重要硬约束】程序已确认 `mechanical_condition_state = TRIGGERED`（[M1] 已被打破）：你若核验数据完整应输出 `REVOKE`，若关键数据阻塞缺损应输出 `UNKNOWN`；禁止输出声称原条件仍完整成立的正常 `HOLD`。**")
+
+    lines.extend([
         "",
         "## 更新判断要求",
         "- 只能输出唯一明确结论：`HOLD`、`REVOKE` 或 `UNKNOWN`。",
-        "- 公开说明必须点明哪条原始条件发生改变或仍然完整成立。",
+        "- `affected_conditions` 必须准确填写所涉条件 ID（如 `[\"M1\", \"C1\", \"S1\"]`）。",
         "- 严禁重新选择 Put/Call 或改边（不得输出 Accept / Put、Accept / Call 或建议切换方向）。",
         "- 严禁推翻或否认不可变的程序事实 `CONDITION_TRIGGERED`。",
-        "- 回复末尾必须附 `<HOLD_REVIEW_JSON>{\"verdict\": \"HOLD|REVOKE|UNKNOWN\", \"affected_conditions\": [...], \"public_reply\": \"...\", \"key_facts\": [...]}</HOLD_REVIEW_JSON>`。",
+        "- 回复末尾必须附 `<HOLD_REVIEW_JSON>{\"verdict\": \"HOLD|REVOKE|UNKNOWN\", \"affected_conditions\": [\"M1\", \"C1\"], \"public_reply\": \"...\", \"key_facts\": [...]}</HOLD_REVIEW_JSON>`。",
     ])
     return "\n".join(lines) + "\n"
 
@@ -922,9 +1129,10 @@ def parse_hold_review_response(
     *,
     frozen_condition: Mapping[str, Any],
     program_triggered: bool = False,
+    mechanical_state: str | None = None,
+    valid_condition_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Parse HOLD/REVOKE/UNKNOWN verdict + structured JSON, guarding against reselection and overturning triggers."""
-    del frozen_condition
+    """Parse HOLD/REVOKE/UNKNOWN verdict + structured JSON, separating mechanical vs AI states."""
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise ValueError("empty hold review response")
     if _RESELECTION_RE.search(raw_text):
@@ -946,6 +1154,8 @@ def parse_hold_review_response(
     affected = payload.get("affected_conditions")
     if not isinstance(affected, list) or not all(isinstance(x, str) and x.strip() for x in affected):
         raise ValueError("affected_conditions must be a list of non-empty strings")
+    cleaned_affected = [x.strip() for x in affected]
+
     public_reply = payload.get("public_reply")
     if not isinstance(public_reply, str) or not public_reply.strip():
         raise ValueError("public_reply must be a non-empty string")
@@ -954,17 +1164,41 @@ def parse_hold_review_response(
     if "key_facts" not in payload or not isinstance(payload.get("key_facts"), (list, Mapping)):
         raise ValueError("key_facts must be a list or mapping")
 
+    if valid_condition_ids is None:
+        derived = build_entry_decision_basis(initial_decision={}, frozen_condition=frozen_condition)
+        allowed_ids = set(derived.get("valid_condition_ids") or ())
+    else:
+        allowed_ids = {str(x).strip() for x in valid_condition_ids if str(x).strip()}
+    mapped_ids = [cid for cid in cleaned_affected if cid in allowed_ids]
+    unmapped_ids = [cid for cid in cleaned_affected if cid not in allowed_ids]
+    mapping_status = "UNMAPPED_CONDITION_ID" if unmapped_ids else "MAPPED"
+
+    mech_state = mechanical_state or ("TRIGGERED" if program_triggered else "INTACT")
     notes: list[str] = []
     if program_triggered:
         if payload.get("program_triggered") is False or _UNTRIGGERED_CLAIM_RE.search(raw_text):
             raise ValueError("cannot_overturn_program_triggered")
         notes.append("程序边界条件已触发（CONDITION_TRIGGERED 不可逆转，不可标为未触发）。")
         if verdict == "HOLD":
-            notes.append("模型输出 HOLD，但程序冻结条件已触发记录仍保持有效。")
+            protocol_status = "CONFLICT_WITH_FROZEN_INVALIDATION"
+            notes.append("模型输出 HOLD，但与已触发的程序冻结破坏规则冲突（标记 CONFLICT_WITH_FROZEN_INVALIDATION）。")
+        else:
+            protocol_status = "ALIGNED"
+    elif verdict == "REVOKE":
+        protocol_status = "DISCRETIONARY_REVOKE"
+        notes.append("程序机械边界未触发，模型依据新增反证主动建议影子撤销（DISCRETIONARY_REVOKE）。")
+    else:
+        protocol_status = "ALIGNED"
 
     return {
         "verdict": verdict,
-        "affected_conditions": [x.strip() for x in affected],
+        "ai_management_verdict": verdict,
+        "mechanical_condition_state": mech_state,
+        "protocol_status": protocol_status,
+        "affected_conditions": cleaned_affected,
+        "mapped_condition_ids": mapped_ids,
+        "unmapped_condition_ids": unmapped_ids,
+        "condition_id_mapping_status": mapping_status,
         "public_reply": public_reply.strip(),
         "key_facts": deepcopy(payload["key_facts"]),
         "public_text": public_text,

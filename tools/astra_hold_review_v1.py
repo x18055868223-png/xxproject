@@ -73,6 +73,8 @@ def build_input(ledger: Mapping[str, Any], contract: Mapping[str, Any], *, now_m
                 "依据": t.get("label_cn"), "锁定时": t.get("claim_cn"),
                 "现在": t.get("state_now_cn"), "现值": t.get("now_value_cn"),
                 "期间": t.get("experience_cn")}
+        if t.get("rule_cn"):
+            item["规则"] = t.get("rule_cn")
         if t.get("pending_cn"):
             item["待定"] = t["pending_cn"]
         theses.append(item)

@@ -99,6 +99,7 @@ def check_events(case, cutoff, expiry, additional):
     batches = [event_values] if isinstance(event_values, dict) else []
     if additional:
         batches.append(additional)
+    advisories = []
     for batch in batches:
         # Existing event_calendar contract_events format, also usable by an operator
         # supplying a known external interference. A future observation is not evidence.
@@ -108,7 +109,12 @@ def check_events(case, cutoff, expiry, additional):
         for event in batch.get("events") or []:
             at = number(event.get("at_ms"))
             if at is not None and cutoff <= at <= expiry:
+                if event.get("blocking") is False:
+                    label = event.get("name_cn") or event.get("kind") or "外源日程"
+                    advisories.append(f"{label}（{stamp(at)}）")
+                    continue
                 raise HandNotDealt(f"不发牌：已知外源事件位于剩余寿命内（{stamp(at)}）。")
+    return advisories
 
 
 def expiry_scale(case, cutoff, expiry):
@@ -444,8 +450,11 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
     # Native archive freezes the two candidates serially, normally seconds apart.
     if abs(cards['put']['read_at_ms'] - cards['call']['read_at_ms']) > 60_000:
         raise ValueError("pair readings more than one minute apart")
+    advisory_events = []
     for s in cases:
-        check_events(cases[s], cards[s]["read_at_ms"], contracts[s]["expiry_ms"], events)
+        for note in check_events(cases[s], cards[s]["read_at_ms"], contracts[s]["expiry_ms"], events):
+            if note not in advisory_events:
+                advisory_events.append(note)
     scales = {s: expiry_scale(cases[s], cards[s]["read_at_ms"], contracts[s]["expiry_ms"]) for s in cases}
     groups = {s: stations(cases[s], cards[s], contracts[s]) for s in cases}
     responsibility = []
@@ -462,6 +471,8 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         scale_text = "本期到期隐含波动剩余尺度：" + "；".join(f"{s.title()} {fmt(scales[s])}" + (" USD" if scales[s] else "") for s in cases) + "。"
     if not all(scales.values()):
         scale_text += "未提供尺度的一侧不按美元距离判断松紧，继续判断路径。"
+    if advisory_events:
+        scale_text += f"到期前已知常规日程（供牌手审查）：{'、'.join(advisory_events)}。"
     cutoff = put_card['read_at_ms']
     g = entry(put_case, 'L3.gex.structure')
     net = number((g.get('values') or {}).get('total_net_gex')) if usable(g, cutoff, HOUR) else None

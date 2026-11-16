@@ -587,3 +587,122 @@ def test_build_hold_review_input_and_parse_response_protocol():
     )
     assert flagged["program_triggered"] is True
     assert flagged["notes"]
+
+
+def test_closure_contract_conflict_discretionary_and_excerpt_whitespace_tolerance():
+    # (d) Whitespace & full/half-width punctuation normalization in initial parse & condition_plan
+    excerpts = {
+        "put": "Put 路径：97,000（下方）尚未触及，短腿距离 3,000 USD。",
+        "call": "Call 路径：103,000（上方）尚未触及，短腿距离 3,000 USD。",
+        "comparison": "两侧相比，Call 距离更宽松且无紧贴反证，选 Call。",
+        "put_counter": "Put 反证：近 4h 下方跌破过前支撑。",
+        "call_counter": "Call 反证：上方 102,500 存在卖压待观察。",
+        "hist": "历史事实：前窗未进入责任区。",
+        "cond": "持续条件：维持 103,000 下方运行，每 5 分钟检查。",
+        "conf": "确认口径：采用 entry_not_returned（300000 ms 固定 UTC 网格）。",
+    }
+    raw_body = (
+        "## Accept / Call\n\n"
+        + "Put 路径：97,000\n  (下方)  尚未触及,  短腿距离 3,000 USD.\n"
+        + "Call 路径：103,000\n  (上方) 尚未触及，短腿距离 3,000 USD。\n"
+        + excerpts["comparison"] + "\n"
+        + excerpts["put_counter"] + "\n"
+        + "Call\t反证: 上方 102,500 存在卖压待观察。\n"
+        + "历史事实:  前窗\n未进入责任区。\n"
+        + "持续条件：维持\n103,000 下方运行，每 5 分钟检查。\n"
+        + "确认口径: 采用 entry_not_returned (300000 ms\n固定 UTC 网格)。\n"
+    )
+    ann_payload = {
+        "put": excerpts["put"],
+        "call": excerpts["call"],
+        "comparison": excerpts["comparison"],
+        "put_counter": excerpts["put_counter"],
+        "call_counter": excerpts["call_counter"],
+        "depends_on_ard": False,
+        "condition_plan": {
+            "invalidation": "entry_not_returned",
+            "check_interval_ms": 300_000,
+            "historical_facts": excerpts["hist"],
+            "accepted_conditions": excerpts["cond"],
+            "confirmation_excerpt": excerpts["conf"],
+        },
+    }
+    res_init = review.decide_initial_hand(
+        "# input",
+        contract_pair={},
+        api_key="k",
+        model="m",
+        transport=lambda *a, **k: {
+            "choices": [{"finish_reason": "stop", "message": {"content": raw_body + f"<ANNOTATION_JSON>{json.dumps(ann_payload, ensure_ascii=False)}</ANNOTATION_JSON>"}}]
+        },
+    )
+    assert res_init["decision"]["action"] == "Accept" and res_init["decision"]["side"] == "call"
+
+    # (a) entry_decision_basis@1 inheritance & zero-English-key pure Chinese hold-review card
+    frozen = {
+        "contract": {"side": "call", "short_strike_usd": 103_000, "long_strike_usd": 105_000, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "entry_not_returned",
+        "invalidation_meaning": "入场后严格进入责任区且至检查点未严格返回。",
+        "check_clock": {"first_at_ms": T + 5 * M, "interval_ms": 5 * M},
+        "historical_facts": excerpts["hist"],
+        "accepted_conditions": excerpts["cond"],
+        "confirmation_excerpt": excerpts["conf"],
+        "entry_index_usd": 100_000.0,
+    }
+    basis = review.build_entry_decision_basis(
+        hand_id="hand_1", episode_id="ep_1", initial_decision=res_init["decision"], frozen_condition=frozen,
+    )
+    assert basis["schema"] == "entry_decision_basis@1"
+    assert basis["M1"]["invalidation"] == "entry_not_returned"
+    assert basis["C"]["C1"] == excerpts["cond"]
+    assert basis["S1"]["original_choice_reason"] == excerpts["comparison"]
+    assert basis["S1"]["original_strongest_counterevidence"] == excerpts["call_counter"]
+    assert basis["valid_condition_ids"] == ["M1", "C1", "H1", "S1"]
+
+    md_cn = review.build_hold_review_input(
+        contract=frozen["contract"],
+        entry_at_ms=T,
+        initial_decision=res_init["decision"],
+        frozen_condition=frozen,
+        triggers=[{"category": "B", "code": "MARGIN_DETERIORATION", "summary_cn": "短腿缓冲已缩减至入场 45%。", "observed_at_ms": T + 15 * M}],
+        t0_summary={"locked_at": T, "entry_index_usd": 100_000.0, "short_distance_pct": 3.0, "expected_move_usd": 1800.0, "net_credit_after_fee_btc": 0.0042},
+        post_entry_summary={"sample_count": 15, "latest_spot_usd": 101_600.0, "min_short_distance_pct": 1.35, "latest_short_distance_pct": 1.38},
+        condition_summary={"program_triggered": False, "mechanical_condition_state": "INTACT", "checks_count": 3, "latest_check_at_ms": T + 15 * M},
+        ard_summary={"same_measure": True, "pin_price_changed": False, "frozen_anchor": {"pin": 100_000}, "current_anchor": {"pin": 100_000}, "current_distance_to_frozen_pin_usd": 1600.0, "current_inside_frozen_neighborhood": False, "new_neighborhood_events": []},
+        flow_summary={"flow_ready": True, "flow_asof_ms": T + 15 * M, "flow_direction": "neutral_to_bullish", "flow_fast_4h": "neutral_to_bullish", "flow_slow_12h": "neutral", "flow_cvd_4h": 42.5, "flow_momentum_4h_pct": 0.31},
+        quote_summary={"short_buyback_ask_btc": 0.0055, "short_buyback_fee_btc": 0.0003, "short_buyback_total_btc": 0.0058, "short_quote_asof_ms": T + 15 * M, "short_buyback_gaps": []},
+        entry_basis=basis,
+    )
+    assert "## 影子管理经济观察（仅作参考，不替代原条件承保结构判断）" in md_cn
+    assert "[S1] 入场时已承认并承担的最强反证" in md_cn
+    assert "{'same_measure'" not in md_cn and "latest_spot_usd:" not in md_cn
+
+    # (b) program_triggered=True yet AI insists HOLD -> CONFLICT_WITH_FROZEN_INVALIDATION without altering text
+    conflict_reply = (
+        "## HOLD\n\n程序规则虽已达触发条件，但我主观建议暂时观察。\n"
+        "<HOLD_REVIEW_JSON>{\"verdict\": \"HOLD\", \"affected_conditions\": [\"M1\", \"C1\"], "
+        "\"public_reply\": \"程序虽已记触发，模型主观主张观察。\", \"key_facts\": [\"M1\"]}</HOLD_REVIEW_JSON>"
+    )
+    parsed_conflict = review.parse_hold_review_response(
+        conflict_reply, frozen_condition=frozen, program_triggered=True, valid_condition_ids=basis["valid_condition_ids"],
+    )
+    assert parsed_conflict["mechanical_condition_state"] == "TRIGGERED"
+    assert parsed_conflict["ai_management_verdict"] == "HOLD"
+    assert parsed_conflict["protocol_status"] == "CONFLICT_WITH_FROZEN_INVALIDATION"
+    assert parsed_conflict["condition_id_mapping_status"] == "MAPPED"
+    assert "我主观建议暂时观察" in parsed_conflict["public_text"]
+
+    # (c) program_triggered=False + AI outputs REVOKE -> DISCRETIONARY_REVOKE + INTACT
+    disc_reply = (
+        "## REVOKE\n\n入场后新增流向与余量双重恶化，建议主动撤销承保。\n"
+        "<HOLD_REVIEW_JSON>{\"verdict\": \"REVOKE\", \"affected_conditions\": [\"C1\", \"S1\"], "
+        "\"public_reply\": \"余量与流向已不足以支持继续持有，主动建议 REVOKE。\", \"key_facts\": [\"B\"]}</HOLD_REVIEW_JSON>"
+    )
+    parsed_disc = review.parse_hold_review_response(
+        disc_reply, frozen_condition=frozen, program_triggered=False, valid_condition_ids=basis["valid_condition_ids"],
+    )
+    assert parsed_disc["mechanical_condition_state"] == "INTACT"
+    assert parsed_disc["ai_management_verdict"] == "REVOKE"
+    assert parsed_disc["protocol_status"] == "DISCRETIONARY_REVOKE"
+    assert parsed_disc["condition_id_mapping_status"] == "MAPPED"
+

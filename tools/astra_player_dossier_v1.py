@@ -371,7 +371,7 @@ class Dossiers:
                 try:
                     self.deal(hand, source_for(expiry, slot))
                 except (OSError, LookupError, ValueError, player.HandNotDealt, KeyError) as error:
-                    self.note(hand, 'DATA_BLOCKED', str(error))
+                    self.note(hand, 'POLICY_BLOCKED' if isinstance(error, player.HandNotDealt) else 'DATA_BLOCKED', str(error))
             output.append(hand)
         return output
 
@@ -841,6 +841,24 @@ def model_identity(model):
     return isinstance(model, str) and bool(model.strip()) and len(model) <= 120 and model.isprintable()
 
 
+_PUNCT_TRANS = str.maketrans('，。：；（）【】“”‘’　', ',.:;()[]""\'\' ')
+
+
+def _norm_excerpt(value):
+    collapsed = re.sub(r'\s+', ' ', value.translate(_PUNCT_TRANS)).strip()
+    cjk_joined = re.sub(r'(?<=[^\x00-\x7f])\s+|\s+(?=[^\x00-\x7f])', '', collapsed)
+    return re.sub(r'\s*([,.:;()\[\]"/])\s*', r'\1', cjk_joined)
+
+
+def excerpt_in_text(excerpt, text):
+    if not isinstance(excerpt, str) or not excerpt.strip() or not isinstance(text, str):
+        return False
+    if excerpt in text:
+        return True
+    norm_ex = _norm_excerpt(excerpt)
+    return bool(norm_ex) and norm_ex in _norm_excerpt(text)
+
+
 def parse(raw, annotation):
     text = raw.decode('utf-8')
     headings, fallback = [], []
@@ -859,7 +877,7 @@ def parse(raw, annotation):
     if not isinstance(annotation, dict):
         raise ValueError('provide verbatim public excerpts for both sides and comparison')
     keys = ('put', 'call', 'comparison', 'put_counter', 'call_counter')
-    if any(not isinstance(annotation.get(k), str) or not annotation[k].strip() or annotation[k] not in text for k in keys):
+    if any(not excerpt_in_text(annotation.get(k), text) for k in keys):
         raise ValueError('both sides, strongest counterevidence and comparison must point to verbatim excerpts')
     if type(annotation.get('depends_on_ard', False)) is not bool:
         raise ValueError('ARD dependence must be an explicit boolean')
