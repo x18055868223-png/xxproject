@@ -4164,6 +4164,51 @@ class AstraWorkbench:
                     "episodes": len(episodes), "max_active": self.config.locked_max_active,
                     "max_episodes": self.config.locked_max_episodes, "execution_allowed": False}
         hand = player_tracking.hand_path(root, body.get("dossier_id"), body.get("hand_id"))
+        if action == "refresh_quote":
+            if not self.config.shadow_experiment:
+                raise player_tracking.Blocked("shadow_experiment_disabled")
+            proof = player_tracking.accepted(hand)
+            now = self.clock_ms()
+            if now >= proof["deadline_ms"]:
+                raise player_tracking.Blocked("shadow_handoff_expired")
+            contract = player_tracking.contract_fields(proof["contract"])
+            with self._view_lock:
+                view = deepcopy(self._current_view or {})
+            fact = self.latest_fact(now)
+            gate = self.space_gate_view(fact, now)
+            try:
+                projection = self._build_btc_map_projection(now, fact, collect_slow_sources=False)
+            except Exception:
+                projection = view.get("btc_map_projection")
+            sink: dict[str, Any] = {}
+            try:
+                item = self._capture_candidate(
+                    contract["side"], self._locked_binding(contract), fact, gate, now,
+                    btc_map_projection=projection, tracking=False, sink=sink)
+            except Exception as exc:
+                return {"state": "QUOTE_UNAVAILABLE", "error": type(exc).__name__, "execution_allowed": False}
+            snap = item.get("snapshot")
+            if not isinstance(snap, Mapping) or player_tracking.contract_fields(snap["contract"]) != contract:
+                return {"state": "QUOTE_UNAVAILABLE", "error": "contract_mismatch", "execution_allowed": False}
+            refreshed_at = max(now, self.clock_ms())
+            self._remember_lockable({**view, "candidates": [item]}, refreshed_at, payloads=sink)
+            with self._view_lock:
+                current = self._current_view
+                if isinstance(current, dict):
+                    updated_candidates = []
+                    replaced = False
+                    for entry in current.get("candidates") or []:
+                        entry_snap = entry.get("snapshot") if isinstance(entry, Mapping) else None
+                        if (isinstance(entry_snap, Mapping)
+                                and player_tracking.contract_fields(entry_snap["contract"]) == contract):
+                            updated_candidates.append(deepcopy(item))
+                            replaced = True
+                        else:
+                            updated_candidates.append(entry)
+                    if not replaced:
+                        updated_candidates.append(deepcopy(item))
+                    current["candidates"] = updated_candidates
+            return {"state": "QUOTE_REFRESHED", "snapshot_id": snap["snapshot_id"], "execution_allowed": False}
         proof, request = player_tracking.request_proof(hand)
         origin = proof["origin"]
         key = origin["request_key"]
@@ -6715,7 +6760,7 @@ def make_handler(workbench: AstraWorkbench):
                     or not hmac.compare_digest(auth.encode(), ("Bearer " + token).encode())):
                 self._json(401, {"code": "shadow_service_credential_required"})
                 return
-            if action not in {"lock", "recover", "export", "readiness", "quote"}:
+            if action not in {"lock", "recover", "export", "readiness", "quote", "refresh_quote"}:
                 self._json(404, {"code": "not_found"})
                 return
             try:

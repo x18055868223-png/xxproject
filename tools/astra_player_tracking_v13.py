@@ -345,6 +345,16 @@ def save_link(d, hand, proof, request, result):
     return link
 
 
+def _link_with_fresh_quote(d, hand, service, plan=None):
+    root = hand / 'tracking'
+    if not (optional(root / 'link.json') or optional(root / 'blocked.json')):
+        try:
+            service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        except (Blocked, OSError, ValueError, KeyError, TypeError):
+            pass
+    return link(d, hand, service, plan)
+
+
 def link(d, hand, service, plan=None):
     root = hand / 'tracking'
     saved = optional(root / 'link.json') or optional(root / 'blocked.json')
@@ -958,7 +968,7 @@ def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.
             if action == 'Accept' and not (hand / 'tracking' / 'link.json').is_file() and not (hand / 'tracking' / 'blocked.json').is_file():
                 req = optional(hand / 'tracking' / 'request.json')
                 if req and req.get('condition'):
-                    link_res = link(d, hand, service, req['condition'])
+                    link_res = _link_with_fresh_quote(d, hand, service, req['condition'])
             results.append(dict(hand_id=hand.name, status='ALREADY_DECIDED', decision=action, link=link_res))
             continue
         if not (hand / 'evidence' / 'input.md').is_file():
@@ -1018,7 +1028,7 @@ def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.
             verdict = (att.get('judgment') or {}).get('action')
             link_res = None
             if att.get('status') == 'VALID' and verdict == 'Accept':
-                link_res = link(d, hand, service, ai_res.get('condition_plan'))
+                link_res = _link_with_fresh_quote(d, hand, service, ai_res.get('condition_plan'))
             results.append(dict(hand_id=hand.name, status=att.get('status'), decision=verdict,
                                 error=att.get('error'), link=link_res))
         except signal_llm_review.DailyBudgetExceeded as exc:
@@ -1526,7 +1536,7 @@ def main():
                         d.summary(load(hand / 'expected.json')['expiry_ms'])
                 else:
                     hand = hand_path(args.root, args.dossier, args.hand)
-                    out = (link(d, hand, service, dossier.read(args.condition) if args.condition else None)
+                    out = (_link_with_fresh_quote(d, hand, service, dossier.read(args.condition) if args.condition else None)
                            if args.command == 'link'
                            else sync(d, hand, service, check_due=args.check_due,
                                      archive_root=args.archive, run_review=args.review))

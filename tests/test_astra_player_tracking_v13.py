@@ -714,3 +714,24 @@ def test_reviewer_guards_unauth_redaction_deduped_checks_and_revoke_isolation(tm
         auth_raw = get(base, f'/api/workbench/locked-candidates/{lce_id}', 'secret')
         assert auth_raw['ai_dossier_management']['latest_review']['public_reply'] == 'PRIVATE_REPLY_SECRET'
 
+
+def test_auto_deal_refreshes_stale_cached_quote_before_link(tmp_path):
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    # Advance clock by 20s so cached _current_view quote (>5s) would fail confirm_quote without refresh_quote
+    now[0] += 20_000
+    with serving(wb) as base:
+        receipt = tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)
+    assert receipt['state'] == 'SHADOW_LOCK_CREATED'
+    assert now[0] - receipt['t0']['quote']['valuation_ts_ms'] <= 5_000
+
+
+def test_refresh_quote_failure_still_blocks_lock_without_relaxing_age(tmp_path):
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    now[0] += 20_000
+    wb.quote_capture = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('exchange_down'))
+    with serving(wb) as base:
+        receipt = tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)
+    assert receipt['state'] == 'LOCK_BLOCKED'
+    assert receipt['reason'] == 'tracking_quote_stale_or_unsynced'
+
+
