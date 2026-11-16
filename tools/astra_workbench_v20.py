@@ -3170,12 +3170,14 @@ class AstraWorkbench:
                 continue
             snapshot_id = snapshot["snapshot_id"]
             try:
-                if snapshot_id in self._lockable_points:
-                    # An unchanged market repeats the same snapshot id; keep it newest so the
-                    # bounded cache does not evict a point a lock is about to sample.
-                    with self._view_lock:
+                touched = False
+                with self._view_lock:
+                    if snapshot_id in self._lockable_points:
+                        # An unchanged market repeats the same snapshot id; keep it newest so the
+                        # bounded cache does not evict a point a lock is about to sample.
                         self._lockable_points.touch(snapshot_id)
-                else:
+                        touched = True
+                if not touched:
                     packet = candidate_asof.build_packet(
                         snapshot, raw_payload=raw_payloads.get(snapshot_id),
                         source_receipts=candidate_asof.collect_source_receipts(snapshot, self.data_engine),
@@ -4191,16 +4193,25 @@ class AstraWorkbench:
             if not isinstance(snap, Mapping) or player_tracking.contract_fields(snap["contract"]) != contract:
                 return {"state": "QUOTE_UNAVAILABLE", "error": "contract_mismatch", "execution_allowed": False}
             refreshed_at = max(now, self.clock_ms())
+            try:
+                player_tracking.confirm_quote(snap, refreshed_at)
+            except player_tracking.Blocked as exc:
+                return {"state": "QUOTE_UNAVAILABLE", "error": exc.code, "execution_allowed": False}
             self._remember_lockable({**view, "candidates": [item]}, refreshed_at, payloads=sink)
             with self._view_lock:
+                self._held_snapshot_ids.discard(snap["snapshot_id"])
                 current = self._current_view
                 if isinstance(current, dict):
                     updated_candidates = []
                     replaced = False
                     for entry in current.get("candidates") or []:
                         entry_snap = entry.get("snapshot") if isinstance(entry, Mapping) else None
-                        if (isinstance(entry_snap, Mapping)
-                                and player_tracking.contract_fields(entry_snap["contract"]) == contract):
+                        entry_side = (entry.get("side") if isinstance(entry, Mapping) else None)
+                        same_contract = (
+                            isinstance(entry_snap, Mapping)
+                            and player_tracking.contract_fields(entry_snap["contract"]) == contract
+                        )
+                        if same_contract or (entry_side == contract["side"] and not replaced):
                             updated_candidates.append(deepcopy(item))
                             replaced = True
                         else:
@@ -4208,6 +4219,7 @@ class AstraWorkbench:
                     if not replaced:
                         updated_candidates.append(deepcopy(item))
                     current["candidates"] = updated_candidates
+            self.invalidate_view_body()
             return {"state": "QUOTE_REFRESHED", "snapshot_id": snap["snapshot_id"], "execution_allowed": False}
         proof, request = player_tracking.request_proof(hand)
         origin = proof["origin"]
@@ -6786,13 +6798,7 @@ def make_handler(workbench: AstraWorkbench):
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             if player_tracking is not None and parsed.path.startswith(player_tracking.SERVICE_PATH + "/"):
-                if not proof_slots.acquire(blocking=False):
-                    self._json(429, {"code": "evidence_export_busy"})
-                    return
-                try:
-                    self._shadow_service(parsed.path[len(player_tracking.SERVICE_PATH) + 1:])
-                finally:
-                    proof_slots.release()
+                self._shadow_service(parsed.path[len(player_tracking.SERVICE_PATH) + 1:])
                 return
             if parsed.path == "/api/workbench/session":
                 result = sessions.login("POST", self.headers, self.client_address[0])

@@ -55,7 +55,7 @@ _RESELECTION_RE = re.compile(
     re.IGNORECASE,
 )
 _RESELECTION_PROHIBITION_RE = re.compile(
-    r"(?:严禁|禁止|不得|不可|不能|切勿|不予).{0,16}(?:Accept\s*[/／]\s*(?:Put|Call)|改选|切换为|重新选择|改为承接|switch\s+to|re-?select)",
+    r"(?:严禁|禁止|不得|不可|不能|切勿|不予|不要|无需|不必|不会|并未|并非|未|维持|保持|继续|不)[^，,;；。\n]{0,24}(?:Accept\s*[/／]\s*(?:Put|Call)|(?:改选|切换为|重新选择|改为承接|switch\s+to|re-?select)(?:\s*(?:Accept\s*[/／]\s*)?(?:Put|Call))?)",
     re.IGNORECASE,
 )
 _UNTRIGGERED_CLAIM_RE = re.compile(
@@ -63,27 +63,26 @@ _UNTRIGGERED_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _UNTRIGGERED_NEGATION_RE = re.compile(
-    r"(?:并非|不是|不能|不得|绝非|不可|不可标为|不认为|并非指).{0,8}(?:条件未触发|规则未触发|边界规则未触发|并未触发|没有触发|not_triggered)",
+    r"(?:并非|不是|不能|不得|绝非|不可|不可标为|不认为|并非指|此前|入场时|锁定前|原本|当时)[^，,;；。\n]{0,12}(?:条件未触发|规则未触发|边界规则未触发|并未触发|没有触发|not_triggered)",
     re.IGNORECASE,
 )
 
 
 def _has_forbidden_reselection(public_text: str, public_reply: str) -> bool:
-    if _RESELECTION_RE.search(public_reply):
-        return True
-    for line in public_text.splitlines():
-        if _RESELECTION_RE.search(line) and not _RESELECTION_PROHIBITION_RE.search(line):
-            return True
+    for text in (public_reply, public_text):
+        for seg in re.split(r"[\r\n。；;，,]+", text):
+            cleaned = _RESELECTION_PROHIBITION_RE.sub("", seg)
+            if _RESELECTION_RE.search(cleaned):
+                return True
     return False
 
 
 def _has_untriggered_claim(public_text: str, public_reply: str) -> bool:
-    if _UNTRIGGERED_CLAIM_RE.search(public_reply) and not _UNTRIGGERED_NEGATION_RE.search(public_reply):
-        return True
-    for line in public_text.splitlines():
-        cleaned = _UNTRIGGERED_NEGATION_RE.sub("", line)
-        if _UNTRIGGERED_CLAIM_RE.search(cleaned):
-            return True
+    for text in (public_reply, public_text):
+        for seg in re.split(r"[\r\n。；;，,]+", text):
+            cleaned = _UNTRIGGERED_NEGATION_RE.sub("", seg)
+            if _UNTRIGGERED_CLAIM_RE.search(cleaned):
+                return True
     return False
 
 
@@ -150,7 +149,7 @@ def call_chat_llm(
     endpoint: str | None = None,
     timeout_s: float = 180,
     retries: int = 1,
-    max_tokens: int = 16384,
+    max_tokens: int = 24576,
     thinking: bool = True,
     reasoning_effort: str | None = None,
     transport: Any = None,
@@ -224,6 +223,8 @@ def call_chat_llm(
     else:
         text = str(raw_content or "").strip()
     if not text:
+        if finish_reason == "length":
+            raise ValueError("LLM response content is empty (finish_reason=length)")
         raise ValueError("LLM response content is empty")
     http_status = response.get("_http_status") or response.get("http_status") or 200
     reasoning_text = message.get("reasoning_content")
@@ -247,15 +248,17 @@ def _strip_code_fence(text: str) -> str:
 
 
 def _split_tagged_json(text: str, tag_name: str) -> tuple[str, dict[str, Any]]:
-    pattern = re.compile(rf"<{tag_name}>\s*([\s\S]*?)\s*</{tag_name}>\s*$", re.IGNORECASE)
-    match = pattern.search(text)
-    if match:
+    pattern = re.compile(rf"<{tag_name}>\s*([\s\S]*?)\s*</{tag_name}>", re.IGNORECASE)
+    matches = list(pattern.finditer(text))
+    if matches:
+        match = matches[-1]
         public_text = text[:match.start()].rstrip()
         payload_text = _strip_code_fence(match.group(1))
     else:
-        fence_match = re.search(r"```json\s*([\s\S]*?)\s*```\s*$", text, re.IGNORECASE)
-        if not fence_match:
+        fence_matches = list(re.finditer(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE))
+        if not fence_matches:
             raise ValueError(f"missing {tag_name} or trailing json block")
+        fence_match = fence_matches[-1]
         public_text = text[:fence_match.start()].rstrip()
         payload_text = fence_match.group(1).strip()
     parsed = json.loads(payload_text)

@@ -735,3 +735,34 @@ def test_refresh_quote_failure_still_blocks_lock_without_relaxing_age(tmp_path):
     assert receipt['reason'] == 'tracking_quote_stale_or_unsynced'
 
 
+def test_writer_lock_released_during_hold_review_llm_call(tmp_path):
+    wb, d, hand, now, expiry = sample(tmp_path, 'Accept / Call')
+    with serving(wb) as base:
+        service = post(base, wb)
+        tracking.link(d, hand, service, RULE)
+        exported = service('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        ep_dir = hand.parent.parent / 'episodes' / tracking.accepted(hand)['origin']['dossier_episode_id']
+        exported['points'] = [
+            {'metrics': {'asof_ms': now[0] - 2 * M, 'spot_usd': 101_000.0, 'short_distance_pct': 0.98, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now[0] - M, 'spot_usd': 102_500.0, 'short_distance_pct': -0.49, 'flow_ready': False}},
+        ]
+        d.event(ep_dir, dossier.identity('chk', now[0] - M), 'CONDITION_TRIGGERED',
+                dict(result={'rule': 'entry_not_returned'}), observed=now[0] - M, available=now[0])
+        lock_acquired_during_llm = []
+
+        def concurrent_writer_transport(*_a, **_k):
+            # Another process / writer must NOT hit BlockingIOError while LLM call is in flight!
+            with dossier.writer(d.root, timeout_s=0.2):
+                lock_acquired_during_llm.append(True)
+            return {'choices': [{'finish_reason': 'stop', 'message': {
+                'content': "## REVOKE\n\n确认触发。\n<HOLD_REVIEW_JSON>{\"verdict\":\"REVOKE\",\"affected_conditions\":[\"M1\"],\"public_reply\":\"确认撤销\",\"key_facts\":[\"M1\"]}</HOLD_REVIEW_JSON>"
+            }}]}
+
+        res = tracking.evaluate_hold_management(
+            d, hand, exported, service=lambda *_: {'state': 'QUOTE_UNAVAILABLE', 'latest_point': None},
+            llm_config={'api_key': 'k', 'model': 'm', 'transport': concurrent_writer_transport},
+        )
+        assert lock_acquired_during_llm == [True]
+        assert res['action'] == 'REVIEWED' and res['verdict'] == 'REVOKE'
+
+

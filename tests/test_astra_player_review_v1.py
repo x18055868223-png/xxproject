@@ -1008,4 +1008,50 @@ def test_parse_hold_review_allows_negated_prohibition_commentary():
     assert parsed["protocol_status"] == "ALIGNED"
 
 
+def test_parse_hold_review_tolerates_trailing_text_and_historical_untriggered():
+    frozen = {
+        "contract": {"side": "call", "short_strike_usd": 103_000, "long_strike_usd": 105_000, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "new_entry",
+        "invalidation_meaning": "入场后严格进入责任区即触发。",
+        "accepted_conditions": ["保持 103,000 下方运行。"],
+        "confirmation_excerpt": "每 5 分钟检查。",
+        "entry_index_usd": 100_000.0,
+    }
+    reply = (
+        "## REVOKE\n\n此前条件未触发，现已确认突破并触发规则；维持原判断，不重新选择 Put。\n\n"
+        "<HOLD_REVIEW_JSON>{\"verdict\": \"REVOKE\", \"affected_conditions\": [\"M1\"], "
+        "\"public_reply\": \"维持原 Call 路径判断，不重新选择 Accept / Put，确认 REVOKE。\", \"key_facts\": [\"M1\"]}</HOLD_REVIEW_JSON>\n。"
+    )
+    parsed = review.parse_hold_review_response(reply, frozen_condition=frozen, program_triggered=True)
+    assert parsed["verdict"] == "REVOKE"
+    assert parsed["protocol_status"] == "ALIGNED"
+
+    # Mixed-clause bypass attempts must STILL fail
+    bypass_reselect = (
+        "## REVOKE\n\n严禁改选 Put，建议改选 Call。\n\n"
+        "<HOLD_REVIEW_JSON>{\"verdict\": \"REVOKE\", \"affected_conditions\": [\"M1\"], "
+        "\"public_reply\": \"禁止改选 Put，建议重新选择 Call\", \"key_facts\": [\"M1\"]}</HOLD_REVIEW_JSON>"
+    )
+    with pytest.raises(ValueError, match="side_reselection_forbidden"):
+        review.parse_hold_review_response(bypass_reselect, frozen_condition=frozen)
+
+    bypass_untriggered = (
+        "## HOLD\n\n程序规则并非未触发，但目前仍认为条件未触发。\n\n"
+        "<HOLD_REVIEW_JSON>{\"verdict\": \"HOLD\", \"affected_conditions\": [\"M1\"], "
+        "\"public_reply\": \"此前条件未触发，目前仍认为条件未触发。\", \"key_facts\": [\"M1\"]}</HOLD_REVIEW_JSON>"
+    )
+    with pytest.raises(ValueError, match="cannot_overturn_program_triggered"):
+        review.parse_hold_review_response(bypass_untriggered, frozen_condition=frozen, program_triggered=True)
+
+
+def test_call_chat_llm_raises_clear_length_reason_when_empty():
+    with pytest.raises(ValueError, match="finish_reason=length"):
+        review.call_chat_llm(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            model="deepseek-v4-pro",
+            transport=lambda *a, **k: {"choices": [{"finish_reason": "length", "message": {"content": ""}}]},
+        )
+
+
 

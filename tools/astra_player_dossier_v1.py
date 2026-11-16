@@ -692,14 +692,19 @@ class Dossiers:
 
     def settle_due(self):
         for folder in sorted((self.root / 'dossiers').glob('Deribit_BTC_*')):
-            hands = [read(p) for p in (folder / 'hands').glob('*/expected.json')]
-            if not hands or all(h['sample'] == 'FIXTURE' for h in hands):
+            try:
+                hands = [read(p) for p in (folder / 'hands').glob('*/expected.json')]
+                if not hands or all(h['sample'] == 'FIXTURE' for h in hands):
+                    continue
+                expiry = hands[0]['expiry_ms']
+                if self.clock() >= expiry and not any(read(p)['classification'] == 'OFFICIAL' for p in
+                                                      (folder / 'outcomes').glob('outcome_*/outcome.json')):
+                    self.official(expiry)
+                    yield self.summary(expiry)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                import sys
+                sys.stderr.write(f'settle_due skipped {folder.name}: {type(exc).__name__}: {exc}\n')
                 continue
-            expiry = hands[0]['expiry_ms']
-            if self.clock() >= expiry and not any(read(p)['classification'] == 'OFFICIAL' for p in
-                                                  (folder / 'outcomes').glob('outcome_*/outcome.json')):
-                self.official(expiry)
-                yield self.summary(expiry)
 
     def summary(self, expiry):
         folder = self.path(expiry)
@@ -876,9 +881,9 @@ def parse(raw, annotation):
     headings, fallback = [], []
     for line in text.splitlines():
         body = line.strip().lstrip('#* ').rstrip('* ').strip()
-        if match := re.match(r'^(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?\s*[。.:：]?$', body, re.I):
+        if match := re.match(r'^(?:(?:最终|当前)?(?:结论|决策|判断)\s*[：:]\s*)?(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?\s*[。.:：]?$', body, re.I):
             headings.append((match[1].title(), match[2].lower() if match[2] else None))
-        elif match := re.match(r'^(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?(?=$|[。：:.\s])', body, re.I):
+        elif match := re.match(r'^(?:(?:最终|当前)?(?:结论|决策|判断)\s*[：:]\s*)?(Accept|Reject|Unknown)(?:\s*[/／]\s*(Put|Call))?(?=$|[。：:.\s])', body, re.I):
             fallback.append((match[1].title(), match[2].lower() if match[2] else None))
     approved = headings or fallback
     if len(set(approved)) != 1:
