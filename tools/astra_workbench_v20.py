@@ -1806,6 +1806,7 @@ class AstraWorkbench:
             max_episodes=config.locked_max_episodes, max_bytes=config.locked_max_bytes,
             max_samples=config.locked_max_samples)
         self._locked_refresh_error: str | None = None
+        self._last_valid_producer_engine: Any = None
         self._wpem_archive = candidate_asof.CandidateResearchArchive(
             config.state_dir / "wpem_evidence", interval_ms=config.research_sample_interval_ms,
             max_bytes=config.research_max_bytes, max_samples=config.research_max_samples) if config.wpem_enabled else None
@@ -2319,6 +2320,11 @@ class AstraWorkbench:
             None, now_ms=now_ms, fmz_fact=fmz_fact, source_records=[],
             config=self._map_source_config(), prior_state=self._map_prior_state(),
             presentation_mode="LIVE")
+        if self._last_valid_producer_engine is not None:
+            try:
+                projection["producer_health"] = self._last_valid_producer_engine.health(now_ms)
+            except Exception:
+                pass
         consumer = {
             "status": "ERROR", "mode": map_projection.SOURCE_MODE_PRODUCER_MANIFEST,
             "checked_at_ms": now_ms, "current_path": str(self.config.map_producer_current_path),
@@ -2350,6 +2356,7 @@ class AstraWorkbench:
                 if exc.code in {"PRODUCER_SOURCE_SLOW_COLLECTION_CONFLICT", "PRODUCER_CURRENT_PATH_MISSING"}:
                     raise
                 return self._producer_failure_projection(now_ms, fmz_fact, exc)
+            self._last_valid_producer_engine = producer_engine
             records = map_projection.read_cached_sources(producer_engine, now_ms, cfg)
             projection = map_projection.build_projection(
                 producer_engine,
@@ -4174,6 +4181,8 @@ class AstraWorkbench:
             if now >= proof["deadline_ms"]:
                 raise player_tracking.Blocked("shadow_handoff_expired")
             contract = player_tracking.contract_fields(proof["contract"])
+            # Pre-warm heavy caches BEFORE grabbing the live orderbook so total book age stays << 5000ms.
+            self._ledger_state()
             with self._view_lock:
                 view = deepcopy(self._current_view or {})
             fact = self.latest_fact(now)
@@ -4182,22 +4191,39 @@ class AstraWorkbench:
                 projection = self._build_btc_map_projection(now, fact, collect_slow_sources=False)
             except Exception:
                 projection = view.get("btc_map_projection")
+            if self.config.expiry_gamma_enabled:
+                try:
+                    self.refresh_expiry_gamma(now_ms=now, force=False)
+                except Exception:
+                    pass
+            capture_now = self.clock_ms()
             sink: dict[str, Any] = {}
             try:
                 item = self._capture_candidate(
-                    contract["side"], self._locked_binding(contract), fact, gate, now,
+                    contract["side"], self._locked_binding(contract), fact, gate, capture_now,
                     btc_map_projection=projection, tracking=False, sink=sink)
             except Exception as exc:
                 return {"state": "QUOTE_UNAVAILABLE", "error": type(exc).__name__, "execution_allowed": False}
             snap = item.get("snapshot")
             if not isinstance(snap, Mapping) or player_tracking.contract_fields(snap["contract"]) != contract:
                 return {"state": "QUOTE_UNAVAILABLE", "error": "contract_mismatch", "execution_allowed": False}
-            refreshed_at = max(now, self.clock_ms())
+            refreshed_at = max(capture_now, self.clock_ms())
+            self._remember_lockable({"candidates": [item], "space_gate": gate, "market_context": fact},
+                                    refreshed_at, payloads=sink)
+            with self._view_lock:
+                point = self._lockable_points.get(snap["snapshot_id"])
+            if isinstance(point, Mapping):
+                ready_point = self._lock_ready_point(point)
+                with self._view_lock:
+                    if snap["snapshot_id"] in self._lockable_points:
+                        self._lockable_points[snap["snapshot_id"]] = ready_point
+                if isinstance((ready_point.get("candidate") or {}).get("snapshot"), Mapping):
+                    item = dict(ready_point["candidate"])
+            post_ready_at = max(refreshed_at, self.clock_ms())
             try:
-                player_tracking.confirm_quote(snap, refreshed_at)
+                player_tracking.confirm_quote(snap, post_ready_at)
             except player_tracking.Blocked as exc:
                 return {"state": "QUOTE_UNAVAILABLE", "error": exc.code, "execution_allowed": False}
-            self._remember_lockable({**view, "candidates": [item]}, refreshed_at, payloads=sink)
             with self._view_lock:
                 self._held_snapshot_ids.discard(snap["snapshot_id"])
                 current = self._current_view
@@ -5323,6 +5349,12 @@ class AstraWorkbench:
             failure = deepcopy(self._last_refresh_error)
         if view is None:
             fact = self.latest_fact(now)
+            warm_proj: Mapping[str, Any] | None = None
+            if self._map_source_mode() == map_projection.SOURCE_MODE_PRODUCER_MANIFEST:
+                try:
+                    warm_proj = self._build_btc_map_projection(now, fact, collect_slow_sources=False)
+                except Exception:
+                    warm_proj = None
             warm = {"schema": SCHEMA, "updated_at_ms": None, "served_at_ms": now,
                     "locked_candidates": self.locked_candidate_list(),
                     "market_context": fact, "space_gate": self.space_gate_view(fact, now),
@@ -5330,7 +5362,10 @@ class AstraWorkbench:
                     "daily_snapshots": self.recent_daily_snapshots(),
                     "transitions": self.recent_transitions(),
                     "manual_review_state": self.manual_review_state(now), "llm_call_count": 0,
-                    "data_health": self._data_health(now), "cross_asset": self.cross_asset_view([], now),
+                    "data_health": self._data_health(now, warm_proj),
+                    "btc_map": deepcopy((warm_proj or {}).get("btc_map")) if warm_proj else None,
+                    "btc_map_projection": deepcopy(warm_proj) if warm_proj else None,
+                    "cross_asset": self.cross_asset_view([], now),
                     "expiry_gamma": self.expiry_gamma_view([], now), "decision_path": self.decision_path_overview()}
             self._attach_exogenous_events(warm, now)
             self._attach_session_layers(warm, now)
@@ -6215,6 +6250,10 @@ class AstraWorkbench:
         self._background_stop.clear()
 
         def run() -> None:
+            try:
+                self._ledger_state()
+            except Exception:
+                pass
             while not self._background_stop.is_set():
                 try:
                     self.refresh()

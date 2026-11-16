@@ -743,3 +743,44 @@ def test_the_transition_log_follows_the_anchors_utility(tmp_path):
     last = wb.recent_transitions()[-1]
     assert (last["previous_state"], last["current_state"]) == ("ANCHOR_EFFECTIVE", "ANCHOR_INEFFECTIVE")
     assert last["kind"] == "anchor_utility" and last["anchor"]["ok"] is False
+
+
+def test_producer_health_preserved_during_transient_failure_or_warmup(tmp_path):
+    wb, _ = make_workbench(tmp_path)
+    wb.config.map_source_mode = "producer_manifest"
+    wb.config.map_sources_enabled = False
+    wb.config.map_producer_current_path = tmp_path / "missing_current_map.json"
+    calls = [0]
+
+    class FakeProducerEngine:
+        def health(self, now_ms):
+            return {
+                "schema": "astra_producer_source_health@2.4.4",
+                "generated_at_ms": now_ms,
+                "products": {
+                    "btc.etf.flow.daily.v1": {"status": "USAGE_LIMITED", "can_use": True, "current": []},
+                },
+            }
+
+        def source_summary(self, now_ms):
+            return {"status": "OK", "checked_at_ms": now_ms}
+
+        def read(self, product_id, *, now_ms, usage, scope=None):
+            return wb.data_engine.read(product_id, now_ms=now_ms, usage=usage, scope=scope)
+
+    def fake_producer(now_ms, *, expected_manifest_hash=None):
+        calls[0] += 1
+        if calls[0] <= 1:
+            return FakeProducerEngine()
+        raise wb_mod.map_projection.SourceConsumerError("PRODUCER_CURRENT_STALE", "stale envelope")
+
+    import tools.astra_workbench_v20 as wb_mod
+    wb._producer_source_engine = fake_producer
+    # Warm-up frame (view is None) gets valid producer health without waiting for refresh()
+    warm = wb.cached_view()
+    assert warm["data_health"]["products"]["btc.etf.flow.daily.v1"]["status"] == "USAGE_LIMITED"
+    # Even when producer envelope later raises PRODUCER_CURRENT_STALE, cached producer health stays intact
+    proj = wb._build_btc_map_projection(T, wb.latest_fact(T), collect_slow_sources=False)
+    assert proj["source_consumer"]["status"] == "ERROR"
+    assert proj["producer_health"]["products"]["btc.etf.flow.daily.v1"]["status"] == "USAGE_LIMITED"
+    assert wb._data_health(T, proj)["products"]["btc.etf.flow.daily.v1"]["status"] == "USAGE_LIMITED"
