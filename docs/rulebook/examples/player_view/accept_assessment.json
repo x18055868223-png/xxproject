@@ -1,0 +1,27 @@
+{
+  "schema": "structural_player_assessment@0.1",
+  "view_sha256": "4be603e1f8ca7263fa07a583335cf8cf4b214570523f74f78995f3b1d3353dc4",
+  "decision": "Accept",
+  "at_least_one_acceptable": true,
+  "selected_side": "put",
+  "side_assessments": {
+    "put": {
+      "state": "acceptable",
+      "phenomenon_refs": [
+        "p2",
+        "p3"
+      ],
+      "reason": "短腿76000/保护腿74000，指数80600位于责任外侧；到短腿之间已有多处本期结构和对应OI可读，允许承担穿越这些空间位置后才进入的责任。无须等待做市商方向或因果确认。"
+    },
+    "call": {
+      "state": "acceptable",
+      "phenomenon_refs": [
+        "p5",
+        "p6"
+      ],
+      "reason": "短腿84000/保护腿86000，指数80600位于责任外侧；82000本期OI位于指数至短腿之间。该侧也具有可陈述的空间承保条件，本示范选择Put，不作涨跌预测。"
+    }
+  },
+  "scope": "structure_only",
+  "execution_authorized": false
+}

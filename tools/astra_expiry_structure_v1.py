@@ -33,6 +33,8 @@ except ImportError:  # script-style import
     import astra_expiry_gamma_v1 as expiry_gamma
 
 SNAPSHOT_SCHEMA = "structure_snapshot@0.1"
+PIN_SOURCE = "deribit_public/get_book_summary_by_currency"
+PIN_METHOD = "astra_expiry_gamma_v1@1.0.0:profile.expected_move_max_unsigned_gamma"
 FLOW_SCHEMA = "strike_flow@0.1"
 HOUR_MS = 3_600_000
 # expiries recorded: now < expiry <= now + 56h. Round 1 sits about 30 h before expiry; its 24 h
@@ -113,6 +115,8 @@ def snapshot(rows: Sequence[Mapping[str, Any]], *, expiry_ms: int, now_ms: int) 
         return None
     prof = expiry_gamma.profile(rows, expiry_ms=expiry_ms, now_ms=now_ms) or {}
     return {"schema": SNAPSHOT_SCHEMA, "at_ms": now_ms, "expiry_ms": expiry_ms,
+            "pin_source": PIN_SOURCE, "pin_method": PIN_METHOD,
+            "pin_status": "ok" if (prof.get("walls") or {}).get("pin") is not None else "unavailable",
             "expiry": expiry_gamma.expiry_code(expiry_ms),
             "forward_usd": prof.get("forward_usd"), "atm_iv_pct": prof.get("atm_iv_pct"),
             "expected_move_usd": prof.get("expected_move_usd"),

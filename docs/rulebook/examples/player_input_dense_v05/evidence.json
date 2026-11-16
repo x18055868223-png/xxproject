@@ -1,0 +1,3948 @@
+{
+  "example_kind": "real_frozen_market_with_explicit_illustrative_boundaries",
+  "note": "Boundaries are constructed for this example, not historical workbench selections or recommended legs. Original case/card identities retained only as market-data provenance. No altered native case IDs or hashes.",
+  "illustrative_boundaries": {
+    "put": {
+      "short_usd": 70000,
+      "protection_usd": 68000
+    },
+    "call": {
+      "short_usd": 75500,
+      "protection_usd": 77500
+    }
+  },
+  "source_excerpt": {
+    "note": "Native frozen archive excerpts. No model decisions or outcomes included. Per-side reading clocks are retained, not an atomic shared cutoff.",
+    "cases": {
+      "put": {
+        "case_id": "cf_26c54d0c331e452d0114866e",
+        "asof_ms": 1794405596463,
+        "built_at_ms": 1794405610205,
+        "refs": {
+          "L1.contract": {
+            "asof_ms": 1794405596463,
+            "label_cn": "合约",
+            "lineage": [
+              "deribit.instrument"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L1.contract",
+            "relations": {},
+            "source": "snapshot.contract",
+            "values": {
+              "exit_policy": "hold_to_expiry",
+              "expiry_ms": 1794470400000,
+              "long_instrument": "BTC-12NOV26-71000-P",
+              "long_strike_usd": 71000.0,
+              "quantity_btc": 1.0,
+              "settlement_currency": "BTC",
+              "short_instrument": "BTC-12NOV26-73000-P",
+              "short_strike_usd": 73000.0,
+              "side": "put",
+              "underlying": "BTC",
+              "venue": "Deribit",
+              "width_usd": 2000.0
+            }
+          },
+          "L3.space.anchor": {
+            "asof_ms": 1794405331701,
+            "label_cn": "锚定与 Gamma 体制（信号层）",
+            "lineage": [
+              "fmz.snapshot"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L3.space.anchor",
+            "relations": {},
+            "source": "market_facts.space_context",
+            "values": {
+              "anchor": {
+                "anchor_gravity_ref_label": "Detached",
+                "anchor_gravity_ref_score": 0.0038064400094040213,
+                "anchor_gravity_warming": false,
+                "anchor_gravity_window_count": 144,
+                "effective_flip_point": 76371.86703801832,
+                "freshness": "FRESH",
+                "gex_freshness": "FRESH",
+                "gex_source_ts_ms": 1794405047341,
+                "normalized_deviation": -8.64017178479408,
+                "raw_flip_point": 76371.86703801832,
+                "ready": true
+              },
+              "gamma_regime": {
+                "asset_price": 73906.0,
+                "confidence_multiplier": 0.0,
+                "data_state": "OK",
+                "distance_to_flip_pct": 3.336490999402373,
+                "flip_point": 76371.86703801832,
+                "gate_action": "VETO",
+                "gex_info_agrees": true,
+                "gex_info_market_state": "negative_gamma",
+                "max_gamma_oi_share": 0.35887581215820186,
+                "max_gamma_strike": 74000.0,
+                "net_gamma_notional": -0.901404,
+                "net_gex_sign": "-",
+                "pin_strike": 74000.0,
+                "reason_codes": [
+                  "STRONG_NEGATIVE_GAMMA_VETO"
+                ],
+                "regime": "NEGATIVE_GAMMA_AMPLIFYING",
+                "regime_strength": 1.0,
+                "spatial_vote": 0.0,
+                "spatial_weight": 0.0,
+                "veto": true
+              },
+              "producer_gate": {
+                "space_gate_anchor": {
+                  "freshness": "FRESH",
+                  "ok": false,
+                  "score": 0.0038064400094040213,
+                  "source_ts_ms": 1794405047341,
+                  "state": "Weak"
+                },
+                "space_gate_net_gamma": {
+                  "age_ms": 884368,
+                  "conflict": false,
+                  "ok": false,
+                  "sign": "NEGATIVE",
+                  "source": "gexmonitorapi.gex_board.total_net_gex",
+                  "source_ts_ms": 1794404447330,
+                  "transition": false,
+                  "unit": "USD",
+                  "valid": false,
+                  "value": -99782987.84
+                },
+                "space_gate_reasons": [
+                  "SPACE_GATE_ANCHOR_NOT_VALID",
+                  "SPACE_GATE_ANCHOR_SCORE_LOW",
+                  "SPACE_GATE_NET_GAMMA_NOT_POSITIVE"
+                ],
+                "space_gate_since_ts_ms": 1793771368945,
+                "space_gate_state": "STRUCTURE_BLOCKED"
+              }
+            }
+          },
+          "L3.gex.structure": {
+            "asof_ms": 1794404557203,
+            "label_cn": "GEX 结构：Flip、墙、Max Pain、净 GEX",
+            "lineage": [
+              "gexmonitor.gex_info"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L3.gex.structure",
+            "relations": {
+              "age_ms": 319900,
+              "availability": "ready",
+              "data_state": "live",
+              "fetched_at_ms": 1794404557203,
+              "quality": "OK",
+              "stale": false
+            },
+            "source": "market_facts.space_context.gex_info",
+            "values": {
+              "flip_point": 76371.97921799499,
+              "magnet_price": 72000.0,
+              "market_state": "negative_gamma",
+              "max_pain_price": 79000.0,
+              "max_pain_target_expiry": "27NOV26",
+              "n1": 72000.0,
+              "n2": 74000.0,
+              "near_term_walls": {
+                "weekly": {
+                  "magnet_price": 74000.0,
+                  "resistance_walls": [
+                    77000.0,
+                    81000.0
+                  ],
+                  "support_walls": [
+                    74000.0,
+                    72000.0
+                  ],
+                  "volatility_trigger": 74000.0,
+                  "walls": {
+                    "n1": {
+                      "distance_pct": 0.43544193019547006,
+                      "gex_usd": -19272821.022004183,
+                      "strike": 74000.0
+                    },
+                    "n2": {
+                      "distance_pct": -2.2790294733233263,
+                      "gex_usd": -14892445.77721489,
+                      "strike": 72000.0
+                    },
+                    "p1": {
+                      "distance_pct": 9.936091842511258,
+                      "gex_usd": 4352796.145475379,
+                      "strike": 81000.0
+                    },
+                    "p2": {
+                      "distance_pct": 4.507149035473665,
+                      "gex_usd": 2075741.4948619106,
+                      "strike": 77000.0
+                    }
+                  }
+                },
+                "zero_dte": {
+                  "magnet_price": 74000.0,
+                  "resistance_walls": [
+                    73500.0,
+                    75000.0
+                  ],
+                  "support_walls": [
+                    74000.0,
+                    71000.0
+                  ],
+                  "volatility_trigger": 74000.0,
+                  "walls": {
+                    "n1": {
+                      "distance_pct": 0.43544193019547006,
+                      "gex_usd": -2391549.399517722,
+                      "strike": 74000.0
+                    },
+                    "n2": {
+                      "distance_pct": -3.636265175082724,
+                      "gex_usd": -831503.3404235969,
+                      "strike": 71000.0
+                    },
+                    "p1": {
+                      "distance_pct": 1.7926776319548685,
+                      "gex_usd": 2149799.5224005985,
+                      "strike": 75000.0
+                    },
+                    "p2": {
+                      "distance_pct": -0.24317592068422902,
+                      "gex_usd": 619306.3122136085,
+                      "strike": 73500.0
+                    }
+                  }
+                }
+              },
+              "next_expiry": {
+                "call_oi": 1127.2,
+                "expires_at": "2026-11-12T08:00:00.000Z",
+                "expiry": "12NOV26",
+                "expiry_oi_share_pct": 0.7,
+                "hours_to_expiry": 18.3,
+                "max_pain_price": 74500.0,
+                "notional_usd": 175383167.0,
+                "put_call_ratio_oi": 1.112,
+                "put_oi": 1252.9,
+                "spot_to_max_pain_pct": -1.1
+              },
+              "p1": 80000.0,
+              "p2": 90000.0,
+              "resistance_walls": [
+                80000.0,
+                90000.0
+              ],
+              "spot_price": 73679.17,
+              "support_walls": [
+                74000.0,
+                72000.0
+              ],
+              "total_net_gex": -99782987.84
+            }
+          },
+          "L3.expiry_walls": {
+            "asof_ms": 1794405409738,
+            "label_cn": "本期到期合约自身的 Gamma/OI 集中与 Pin",
+            "lineage": [
+              "deribit.book_summary"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L3.expiry_walls",
+            "relations": {},
+            "source": "view.expiry_gamma.by_expiry",
+            "values": {
+              "age_ms": 197332,
+              "atm_iv_pct": 42.71,
+              "atm_strike": 73500.0,
+              "computed_at_ms": 1794405409738,
+              "expected_move_usd": 1429.5,
+              "expiry": "12NOV26",
+              "expiry_ms": 1794470400000,
+              "forward_usd": 73727.91,
+              "hours_to_expiry": 18.05,
+              "stale": false,
+              "strike_count": 27,
+              "top": {
+                "gamma_call": [
+                  {
+                    "strike": 75000.0,
+                    "value": 2585608.02
+                  },
+                  {
+                    "strike": 74500.0,
+                    "value": 1134768.46
+                  },
+                  {
+                    "strike": 73500.0,
+                    "value": 910708.41
+                  }
+                ],
+                "gamma_put": [
+                  {
+                    "strike": 74000.0,
+                    "value": 2959748.76
+                  },
+                  {
+                    "strike": 74500.0,
+                    "value": 1471248.42
+                  },
+                  {
+                    "strike": 71000.0,
+                    "value": 797757.08
+                  }
+                ],
+                "oi_call": [
+                  {
+                    "strike": 75000.0,
+                    "value": 247.4
+                  },
+                  {
+                    "strike": 78000.0,
+                    "value": 136.4
+                  },
+                  {
+                    "strike": 81000.0,
+                    "value": 121.6
+                  }
+                ],
+                "oi_put": [
+                  {
+                    "strike": 71000.0,
+                    "value": 213.4
+                  },
+                  {
+                    "strike": 74000.0,
+                    "value": 193.2
+                  },
+                  {
+                    "strike": 71500.0,
+                    "value": 131.2
+                  }
+                ]
+              },
+              "totals": {
+                "call_gex_usd_1pct": 6160260.13,
+                "call_oi_btc": 1128.2,
+                "put_gex_usd_1pct": 8578000.92,
+                "put_oi_btc": 1252.9
+              },
+              "units": {
+                "gex": "USD per 1% move, unsigned (dealer side unknown)",
+                "oi": "BTC"
+              },
+              "walls": {
+                "gamma_call": 75000.0,
+                "gamma_put": 74000.0,
+                "oi_call": 75000.0,
+                "oi_put": 71000.0,
+                "pin": 74000.0
+              }
+            }
+          },
+          "L5.volume_price": {
+            "asof_ms": 1794405331701,
+            "label_cn": "量价形态（TMV 等）",
+            "lineage": [
+              "fmz.snapshot"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L5.volume_price",
+            "relations": {},
+            "source": "market_facts.volume_price",
+            "values": {
+              "direction": "Bearish",
+              "funding": {
+                "count": 105,
+                "effect": "neutral",
+                "last_rate": 6.394e-05,
+                "semantics": {
+                  "canonical_text_cn": "资金费率 +0.0080%：温和多头费率倾向；未超过 ±0.0100% 拥挤阈值；反身性影响可忽略；EDB 不计票。",
+                  "compat_backfill_applied": false,
+                  "crowding_state": "NOT_CROWDED",
+                  "crowding_threshold_abs": 0.0001,
+                  "crowding_threshold_pct": 0.01,
+                  "edb_participation": "NON_VOTING",
+                  "edb_vote_allowed": false,
+                  "fee_bias": "LONG_FEE_BIAS",
+                  "fee_bias_cn": "温和多头费率倾向",
+                  "is_crowded": false,
+                  "raw_available": true,
+                  "raw_funding_rate": 8.011e-05
+                },
+                "tmvf_24h": {
+                  "age_ms": 21599999,
+                  "data_ready": true,
+                  "funding_count": 3,
+                  "funding_cum": 0.00021935,
+                  "funding_interval_hours": 8,
+                  "funding_norm": 0.07023900862560224,
+                  "funding_state": "neutral",
+                  "horizon_hours": 24,
+                  "last_funding_rate": 8.011e-05,
+                  "window_end_time": 1794384000000,
+                  "window_start_time": 1794326400002
+                },
+                "tmvf_48h": {
+                  "age_ms": 21599999,
+                  "data_ready": true,
+                  "funding_count": 7,
+                  "funding_cum": 0.0006193500000000001,
+                  "funding_interval_hours": 8,
+                  "funding_norm": 0.48100086475980236,
+                  "funding_state": "healthy_long_bias",
+                  "horizon_hours": 48,
+                  "last_funding_rate": 8.011e-05,
+                  "window_end_time": 1794384000000,
+                  "window_start_time": 1794211200001
+                }
+              },
+              "index_price": 73902.62065217,
+              "kline_count": 160,
+              "mark_price": 73875.1,
+              "market_state": "Directional Drift",
+              "micro_flow": {
+                "combined": {
+                  "data_ready": true,
+                  "direction": "neutral",
+                  "max_coverage_hours": 11.985889166666666,
+                  "ready_horizons": [
+                    "4h",
+                    "8h",
+                    "12h"
+                  ],
+                  "score": 0.09546942770609865,
+                  "state": "micro_neutral"
+                },
+                "fast_4h": {
+                  "bar_count": 150,
+                  "confidence": 0.9951388888888889,
+                  "coverage_frac": 0.9951388888888889,
+                  "coverage_hours": 3.9805555555555556,
+                  "cvd_norm": -0.03821797333397206,
+                  "cvd_per_bar": -0.3821797333397206,
+                  "cvd_sum": -57.32696000095809,
+                  "cvd_unit": "BTC",
+                  "data_ready": true,
+                  "direction": "neutral_to_bullish",
+                  "horizon_hours": 4.0,
+                  "momentum": 0.0026054388536069046,
+                  "momentum_norm": 0.26054388536069045,
+                  "momentum_return_pct": 0.26054388536069045,
+                  "score": 0.15597723481755857,
+                  "state": "micro_bullish_lean",
+                  "window_role": "fast"
+                },
+                "slow_12h": {
+                  "bar_count": 695,
+                  "confidence": 0.9988240972222222,
+                  "coverage_frac": 0.9988240972222222,
+                  "coverage_hours": 11.985889166666666,
+                  "cvd_norm": 0.03275470503596909,
+                  "cvd_per_bar": 0.3275470503596909,
+                  "cvd_sum": 227.64519999998518,
+                  "cvd_unit": "BTC",
+                  "data_ready": true,
+                  "direction": "neutral_to_bullish",
+                  "horizon_hours": 12.0,
+                  "momentum": 0.0025049054001668207,
+                  "momentum_norm": 0.2504905400166821,
+                  "momentum_return_pct": 0.2504905400166821,
+                  "score": 0.17428299777343254,
+                  "state": "micro_bullish_lean",
+                  "window_role": "slow"
+                }
+              },
+              "micro_flow_effect": "micro_neutral",
+              "tmv_blend": -0.25855934488483623,
+              "tmv_state": "bearish_bias",
+              "tmvf_24h": {
+                "core": {
+                  "data_ready": true,
+                  "horizon_hours": 24,
+                  "kline_open_time": 1794402000000,
+                  "label": "24h",
+                  "price": 73789.6,
+                  "state": "neutral",
+                  "tmv_core": 0.0005505021691558894,
+                  "tmv_core_raw": 0.0005505021691558894,
+                  "trend_direction": 0,
+                  "trend_strength_pct": 0.02010956529804834
+                },
+                "data_ready": true,
+                "final_state": "neutral",
+                "funding_adjustment": 0.0,
+                "funding_effect": "neutral",
+                "funding_state": "neutral",
+                "label": "24h",
+                "tmv_core": 0.0005505021691558894,
+                "tmv_final": 0.0005505021691558894,
+                "warning": "funding_raw_reflexivity_noise"
+              },
+              "tmvf_48h": {
+                "core": {
+                  "data_ready": true,
+                  "horizon_hours": 48,
+                  "kline_open_time": 1794402000000,
+                  "label": "48h",
+                  "price": 73789.6,
+                  "state": "bearish_bias",
+                  "tmv_core": -0.43129924292083094,
+                  "tmv_core_raw": -0.43129924292083094,
+                  "trend_direction": -1,
+                  "trend_strength_pct": 0.2505139046449824
+                },
+                "data_ready": true,
+                "final_state": "bearish_bias",
+                "funding_adjustment": 0.0,
+                "funding_effect": "neutral",
+                "funding_state": "healthy_long_bias",
+                "label": "48h",
+                "tmv_core": -0.43129924292083094,
+                "tmv_final": -0.43129924292083094,
+                "warning": "funding_raw_reflexivity_noise"
+              },
+              "window_conflict": false
+            }
+          }
+        }
+      },
+      "call": {
+        "case_id": "cf_29e3ec290898bab4202d6b64",
+        "asof_ms": 1794405598294,
+        "built_at_ms": 1794405618234,
+        "refs": {
+          "L1.contract": {
+            "asof_ms": 1794405598294,
+            "label_cn": "合约",
+            "lineage": [
+              "deribit.instrument"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L1.contract",
+            "relations": {},
+            "source": "snapshot.contract",
+            "values": {
+              "exit_policy": "hold_to_expiry",
+              "expiry_ms": 1794470400000,
+              "long_instrument": "BTC-12NOV26-76500-C",
+              "long_strike_usd": 76500.0,
+              "quantity_btc": 1.0,
+              "settlement_currency": "BTC",
+              "short_instrument": "BTC-12NOV26-74500-C",
+              "short_strike_usd": 74500.0,
+              "side": "call",
+              "underlying": "BTC",
+              "venue": "Deribit",
+              "width_usd": 2000.0
+            }
+          },
+          "L3.space.anchor": {
+            "asof_ms": 1794405331701,
+            "label_cn": "锚定与 Gamma 体制（信号层）",
+            "lineage": [
+              "fmz.snapshot"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L3.space.anchor",
+            "relations": {},
+            "source": "market_facts.space_context",
+            "values": {
+              "anchor": {
+                "anchor_gravity_ref_label": "Detached",
+                "anchor_gravity_ref_score": 0.0038064400094040213,
+                "anchor_gravity_warming": false,
+                "anchor_gravity_window_count": 144,
+                "effective_flip_point": 76371.86703801832,
+                "freshness": "FRESH",
+                "gex_freshness": "FRESH",
+                "gex_source_ts_ms": 1794405047341,
+                "normalized_deviation": -8.64017178479408,
+                "raw_flip_point": 76371.86703801832,
+                "ready": true
+              },
+              "gamma_regime": {
+                "asset_price": 73906.0,
+                "confidence_multiplier": 0.0,
+                "data_state": "OK",
+                "distance_to_flip_pct": 3.336490999402373,
+                "flip_point": 76371.86703801832,
+                "gate_action": "VETO",
+                "gex_info_agrees": true,
+                "gex_info_market_state": "negative_gamma",
+                "max_gamma_oi_share": 0.35887581215820186,
+                "max_gamma_strike": 74000.0,
+                "net_gamma_notional": -0.901404,
+                "net_gex_sign": "-",
+                "pin_strike": 74000.0,
+                "reason_codes": [
+                  "STRONG_NEGATIVE_GAMMA_VETO"
+                ],
+                "regime": "NEGATIVE_GAMMA_AMPLIFYING",
+                "regime_strength": 1.0,
+                "spatial_vote": 0.0,
+                "spatial_weight": 0.0,
+                "veto": true
+              },
+              "producer_gate": {
+                "space_gate_anchor": {
+                  "freshness": "FRESH",
+                  "ok": false,
+                  "score": 0.0038064400094040213,
+                  "source_ts_ms": 1794405047341,
+                  "state": "Weak"
+                },
+                "space_gate_net_gamma": {
+                  "age_ms": 884368,
+                  "conflict": false,
+                  "ok": false,
+                  "sign": "NEGATIVE",
+                  "source": "gexmonitorapi.gex_board.total_net_gex",
+                  "source_ts_ms": 1794404447330,
+                  "transition": false,
+                  "unit": "USD",
+                  "valid": false,
+                  "value": -99782987.84
+                },
+                "space_gate_reasons": [
+                  "SPACE_GATE_ANCHOR_NOT_VALID",
+                  "SPACE_GATE_ANCHOR_SCORE_LOW",
+                  "SPACE_GATE_NET_GAMMA_NOT_POSITIVE"
+                ],
+                "space_gate_since_ts_ms": 1793771368945,
+                "space_gate_state": "STRUCTURE_BLOCKED"
+              }
+            }
+          },
+          "L3.gex.structure": {
+            "asof_ms": 1794404557203,
+            "label_cn": "GEX 结构：Flip、墙、Max Pain、净 GEX",
+            "lineage": [
+              "gexmonitor.gex_info"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L3.gex.structure",
+            "relations": {
+              "age_ms": 319900,
+              "availability": "ready",
+              "data_state": "live",
+              "fetched_at_ms": 1794404557203,
+              "quality": "OK",
+              "stale": false
+            },
+            "source": "market_facts.space_context.gex_info",
+            "values": {
+              "flip_point": 76371.97921799499,
+              "magnet_price": 72000.0,
+              "market_state": "negative_gamma",
+              "max_pain_price": 79000.0,
+              "max_pain_target_expiry": "27NOV26",
+              "n1": 72000.0,
+              "n2": 74000.0,
+              "near_term_walls": {
+                "weekly": {
+                  "magnet_price": 74000.0,
+                  "resistance_walls": [
+                    77000.0,
+                    81000.0
+                  ],
+                  "support_walls": [
+                    74000.0,
+                    72000.0
+                  ],
+                  "volatility_trigger": 74000.0,
+                  "walls": {
+                    "n1": {
+                      "distance_pct": 0.43544193019547006,
+                      "gex_usd": -19272821.022004183,
+                      "strike": 74000.0
+                    },
+                    "n2": {
+                      "distance_pct": -2.2790294733233263,
+                      "gex_usd": -14892445.77721489,
+                      "strike": 72000.0
+                    },
+                    "p1": {
+                      "distance_pct": 9.936091842511258,
+                      "gex_usd": 4352796.145475379,
+                      "strike": 81000.0
+                    },
+                    "p2": {
+                      "distance_pct": 4.507149035473665,
+                      "gex_usd": 2075741.4948619106,
+                      "strike": 77000.0
+                    }
+                  }
+                },
+                "zero_dte": {
+                  "magnet_price": 74000.0,
+                  "resistance_walls": [
+                    73500.0,
+                    75000.0
+                  ],
+                  "support_walls": [
+                    74000.0,
+                    71000.0
+                  ],
+                  "volatility_trigger": 74000.0,
+                  "walls": {
+                    "n1": {
+                      "distance_pct": 0.43544193019547006,
+                      "gex_usd": -2391549.399517722,
+                      "strike": 74000.0
+                    },
+                    "n2": {
+                      "distance_pct": -3.636265175082724,
+                      "gex_usd": -831503.3404235969,
+                      "strike": 71000.0
+                    },
+                    "p1": {
+                      "distance_pct": 1.7926776319548685,
+                      "gex_usd": 2149799.5224005985,
+                      "strike": 75000.0
+                    },
+                    "p2": {
+                      "distance_pct": -0.24317592068422902,
+                      "gex_usd": 619306.3122136085,
+                      "strike": 73500.0
+                    }
+                  }
+                }
+              },
+              "next_expiry": {
+                "call_oi": 1127.2,
+                "expires_at": "2026-11-12T08:00:00.000Z",
+                "expiry": "12NOV26",
+                "expiry_oi_share_pct": 0.7,
+                "hours_to_expiry": 18.3,
+                "max_pain_price": 74500.0,
+                "notional_usd": 175383167.0,
+                "put_call_ratio_oi": 1.112,
+                "put_oi": 1252.9,
+                "spot_to_max_pain_pct": -1.1
+              },
+              "p1": 80000.0,
+              "p2": 90000.0,
+              "resistance_walls": [
+                80000.0,
+                90000.0
+              ],
+              "spot_price": 73679.17,
+              "support_walls": [
+                74000.0,
+                72000.0
+              ],
+              "total_net_gex": -99782987.84
+            }
+          },
+          "L3.expiry_walls": {
+            "asof_ms": 1794405409738,
+            "label_cn": "本期到期合约自身的 Gamma/OI 集中与 Pin",
+            "lineage": [
+              "deribit.book_summary"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L3.expiry_walls",
+            "relations": {},
+            "source": "view.expiry_gamma.by_expiry",
+            "values": {
+              "age_ms": 202537,
+              "atm_iv_pct": 42.71,
+              "atm_strike": 73500.0,
+              "computed_at_ms": 1794405409738,
+              "expected_move_usd": 1429.5,
+              "expiry": "12NOV26",
+              "expiry_ms": 1794470400000,
+              "forward_usd": 73727.91,
+              "hours_to_expiry": 18.05,
+              "stale": false,
+              "strike_count": 27,
+              "top": {
+                "gamma_call": [
+                  {
+                    "strike": 75000.0,
+                    "value": 2585608.02
+                  },
+                  {
+                    "strike": 74500.0,
+                    "value": 1134768.46
+                  },
+                  {
+                    "strike": 73500.0,
+                    "value": 910708.41
+                  }
+                ],
+                "gamma_put": [
+                  {
+                    "strike": 74000.0,
+                    "value": 2959748.76
+                  },
+                  {
+                    "strike": 74500.0,
+                    "value": 1471248.42
+                  },
+                  {
+                    "strike": 71000.0,
+                    "value": 797757.08
+                  }
+                ],
+                "oi_call": [
+                  {
+                    "strike": 75000.0,
+                    "value": 247.4
+                  },
+                  {
+                    "strike": 78000.0,
+                    "value": 136.4
+                  },
+                  {
+                    "strike": 81000.0,
+                    "value": 121.6
+                  }
+                ],
+                "oi_put": [
+                  {
+                    "strike": 71000.0,
+                    "value": 213.4
+                  },
+                  {
+                    "strike": 74000.0,
+                    "value": 193.2
+                  },
+                  {
+                    "strike": 71500.0,
+                    "value": 131.2
+                  }
+                ]
+              },
+              "totals": {
+                "call_gex_usd_1pct": 6160260.13,
+                "call_oi_btc": 1128.2,
+                "put_gex_usd_1pct": 8578000.92,
+                "put_oi_btc": 1252.9
+              },
+              "units": {
+                "gex": "USD per 1% move, unsigned (dealer side unknown)",
+                "oi": "BTC"
+              },
+              "walls": {
+                "gamma_call": 75000.0,
+                "gamma_put": 74000.0,
+                "oi_call": 75000.0,
+                "oi_put": 71000.0,
+                "pin": 74000.0
+              }
+            }
+          },
+          "L5.volume_price": {
+            "asof_ms": 1794405331701,
+            "label_cn": "量价形态（TMV 等）",
+            "lineage": [
+              "fmz.snapshot"
+            ],
+            "quality": "ok",
+            "quality_reason": null,
+            "ref": "L5.volume_price",
+            "relations": {},
+            "source": "market_facts.volume_price",
+            "values": {
+              "direction": "Bearish",
+              "funding": {
+                "count": 105,
+                "effect": "neutral",
+                "last_rate": 6.394e-05,
+                "semantics": {
+                  "canonical_text_cn": "资金费率 +0.0080%：温和多头费率倾向；未超过 ±0.0100% 拥挤阈值；反身性影响可忽略；EDB 不计票。",
+                  "compat_backfill_applied": false,
+                  "crowding_state": "NOT_CROWDED",
+                  "crowding_threshold_abs": 0.0001,
+                  "crowding_threshold_pct": 0.01,
+                  "edb_participation": "NON_VOTING",
+                  "edb_vote_allowed": false,
+                  "fee_bias": "LONG_FEE_BIAS",
+                  "fee_bias_cn": "温和多头费率倾向",
+                  "is_crowded": false,
+                  "raw_available": true,
+                  "raw_funding_rate": 8.011e-05
+                },
+                "tmvf_24h": {
+                  "age_ms": 21599999,
+                  "data_ready": true,
+                  "funding_count": 3,
+                  "funding_cum": 0.00021935,
+                  "funding_interval_hours": 8,
+                  "funding_norm": 0.07023900862560224,
+                  "funding_state": "neutral",
+                  "horizon_hours": 24,
+                  "last_funding_rate": 8.011e-05,
+                  "window_end_time": 1794384000000,
+                  "window_start_time": 1794326400002
+                },
+                "tmvf_48h": {
+                  "age_ms": 21599999,
+                  "data_ready": true,
+                  "funding_count": 7,
+                  "funding_cum": 0.0006193500000000001,
+                  "funding_interval_hours": 8,
+                  "funding_norm": 0.48100086475980236,
+                  "funding_state": "healthy_long_bias",
+                  "horizon_hours": 48,
+                  "last_funding_rate": 8.011e-05,
+                  "window_end_time": 1794384000000,
+                  "window_start_time": 1794211200001
+                }
+              },
+              "index_price": 73902.62065217,
+              "kline_count": 160,
+              "mark_price": 73875.1,
+              "market_state": "Directional Drift",
+              "micro_flow": {
+                "combined": {
+                  "data_ready": true,
+                  "direction": "neutral",
+                  "max_coverage_hours": 11.985889166666666,
+                  "ready_horizons": [
+                    "4h",
+                    "8h",
+                    "12h"
+                  ],
+                  "score": 0.09546942770609865,
+                  "state": "micro_neutral"
+                },
+                "fast_4h": {
+                  "bar_count": 150,
+                  "confidence": 0.9951388888888889,
+                  "coverage_frac": 0.9951388888888889,
+                  "coverage_hours": 3.9805555555555556,
+                  "cvd_norm": -0.03821797333397206,
+                  "cvd_per_bar": -0.3821797333397206,
+                  "cvd_sum": -57.32696000095809,
+                  "cvd_unit": "BTC",
+                  "data_ready": true,
+                  "direction": "neutral_to_bullish",
+                  "horizon_hours": 4.0,
+                  "momentum": 0.0026054388536069046,
+                  "momentum_norm": 0.26054388536069045,
+                  "momentum_return_pct": 0.26054388536069045,
+                  "score": 0.15597723481755857,
+                  "state": "micro_bullish_lean",
+                  "window_role": "fast"
+                },
+                "slow_12h": {
+                  "bar_count": 695,
+                  "confidence": 0.9988240972222222,
+                  "coverage_frac": 0.9988240972222222,
+                  "coverage_hours": 11.985889166666666,
+                  "cvd_norm": 0.03275470503596909,
+                  "cvd_per_bar": 0.3275470503596909,
+                  "cvd_sum": 227.64519999998518,
+                  "cvd_unit": "BTC",
+                  "data_ready": true,
+                  "direction": "neutral_to_bullish",
+                  "horizon_hours": 12.0,
+                  "momentum": 0.0025049054001668207,
+                  "momentum_norm": 0.2504905400166821,
+                  "momentum_return_pct": 0.2504905400166821,
+                  "score": 0.17428299777343254,
+                  "state": "micro_bullish_lean",
+                  "window_role": "slow"
+                }
+              },
+              "micro_flow_effect": "micro_neutral",
+              "tmv_blend": -0.25855934488483623,
+              "tmv_state": "bearish_bias",
+              "tmvf_24h": {
+                "core": {
+                  "data_ready": true,
+                  "horizon_hours": 24,
+                  "kline_open_time": 1794402000000,
+                  "label": "24h",
+                  "price": 73789.6,
+                  "state": "neutral",
+                  "tmv_core": 0.0005505021691558894,
+                  "tmv_core_raw": 0.0005505021691558894,
+                  "trend_direction": 0,
+                  "trend_strength_pct": 0.02010956529804834
+                },
+                "data_ready": true,
+                "final_state": "neutral",
+                "funding_adjustment": 0.0,
+                "funding_effect": "neutral",
+                "funding_state": "neutral",
+                "label": "24h",
+                "tmv_core": 0.0005505021691558894,
+                "tmv_final": 0.0005505021691558894,
+                "warning": "funding_raw_reflexivity_noise"
+              },
+              "tmvf_48h": {
+                "core": {
+                  "data_ready": true,
+                  "horizon_hours": 48,
+                  "kline_open_time": 1794402000000,
+                  "label": "48h",
+                  "price": 73789.6,
+                  "state": "bearish_bias",
+                  "tmv_core": -0.43129924292083094,
+                  "tmv_core_raw": -0.43129924292083094,
+                  "trend_direction": -1,
+                  "trend_strength_pct": 0.2505139046449824
+                },
+                "data_ready": true,
+                "final_state": "bearish_bias",
+                "funding_adjustment": 0.0,
+                "funding_effect": "neutral",
+                "funding_state": "healthy_long_bias",
+                "label": "48h",
+                "tmv_core": -0.43129924292083094,
+                "tmv_final": -0.43129924292083094,
+                "warning": "funding_raw_reflexivity_noise"
+              },
+              "window_conflict": false
+            }
+          }
+        }
+      }
+    },
+    "level_cards": {
+      "put": {
+        "backfilled": false,
+        "case_id": "cf_26c54d0c331e452d0114866e",
+        "contract_key": "BTC-12NOV26-73000-P|BTC-12NOV26-71000-P",
+        "data_gaps": [],
+        "expected_move_usd": 1429.5,
+        "expiry_day": "2026-11-12",
+        "expiry_ms": 1794470400000,
+        "hours_to_expiry": 18.0,
+        "index_usd": 73721.107667,
+        "levels": [
+          {
+            "before_24h": {
+              "closest_usd": 2723.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -2.603,
+            "distance_usd": -3721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 16,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 57.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 3.9,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 11,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 57.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 1.1,
+                "truncated": false
+              }
+            },
+            "k": 70000.0,
+            "oi": {
+              "c": 0.0,
+              "p": 82.8
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.7
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 1723.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -1.904,
+            "distance_usd": -2721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 13,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 4.3,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 14.1,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 10,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 4.3,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 7.9,
+                "truncated": false
+              }
+            },
+            "k": 71000.0,
+            "oi": {
+              "c": 0.0,
+              "p": 213.4
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 6.2
+              }
+            },
+            "role_class": "leg",
+            "roles": [
+              "oi_put#1",
+              "gamma_put#3",
+              "long"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 1223.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -1.554,
+            "distance_usd": -2221.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 21,
+                "p_block_buy": 40.0,
+                "p_block_sell": 97.5,
+                "p_buy": 1.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 17.2,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 20,
+                "p_block_buy": 40.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 17.2,
+                "truncated": false
+              }
+            },
+            "k": 71500.0,
+            "oi": {
+              "c": 0.0,
+              "p": 131.2
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 17.5
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_put#3"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 723.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -1.204,
+            "distance_usd": -1721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 26,
+                "p_block_buy": 0.0,
+                "p_block_sell": 10.0,
+                "p_buy": 3.5,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 21.7,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 20,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 3.1,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 16.5,
+                "truncated": false
+              }
+            },
+            "k": 72000.0,
+            "oi": {
+              "c": 0.0,
+              "p": 82.7
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 25.5
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 223.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -0.854,
+            "distance_usd": -1221.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 16,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 8.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 11.7,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 14,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 8.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 9.9,
+                "truncated": false
+              }
+            },
+            "k": 72500.0,
+            "oi": {
+              "c": 1.3,
+              "p": 15.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 1.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": true,
+              "beyond_60m_usd": 248.6,
+              "closest_usd": 0.4,
+              "crossings": 12,
+              "end_beyond": false,
+              "first_cross_dir": "down",
+              "first_cross_ms": 1794325500000,
+              "minutes_within_100usd": 56
+            },
+            "distance_in_moves": -0.504,
+            "distance_usd": -721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 52,
+                "p_block_buy": 10.0,
+                "p_block_sell": 0.0,
+                "p_buy": 20.4,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 95.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 45,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 15.8,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 91.8,
+                "truncated": false
+              }
+            },
+            "k": 73000.0,
+            "oi": {
+              "c": 7.4,
+              "p": 53.6
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 29.9
+              }
+            },
+            "role_class": "leg",
+            "roles": [
+              "short"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": false,
+              "beyond_60m_usd": 748.6,
+              "closest_usd": 0.4,
+              "crossings": 32,
+              "end_beyond": false,
+              "first_cross_dir": "down",
+              "first_cross_ms": 1794325080000,
+              "minutes_within_100usd": 253
+            },
+            "distance_in_moves": -0.155,
+            "distance_usd": -221.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 40.0,
+                "c_buy": 3.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.2,
+                "gap": true,
+                "n_c": 13,
+                "n_p": 23,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 16.6,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 22.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 40.0,
+                "c_buy": 1.7,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.2,
+                "gap": false,
+                "n_c": 10,
+                "n_p": 22,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 16.6,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 21.5,
+                "truncated": false
+              }
+            },
+            "k": 73500.0,
+            "oi": {
+              "c": 60.9,
+              "p": 19.3
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 3.2,
+                "gap": false,
+                "p": 3.3
+              }
+            },
+            "role_class": "derived",
+            "roles": [
+              "gamma_call#3",
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": true,
+              "beyond_60m_usd": 615.4,
+              "closest_usd": 0.9,
+              "crossings": 22,
+              "end_beyond": false,
+              "first_cross_dir": "up",
+              "first_cross_ms": 1794321360000,
+              "minutes_within_100usd": 162
+            },
+            "distance_in_moves": 0.195,
+            "distance_usd": 278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 34.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 6.6,
+                "gap": true,
+                "n_c": 18,
+                "n_p": 8,
+                "p_block_buy": 60.0,
+                "p_block_sell": 140.0,
+                "p_buy": 9.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 4.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 34.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 6.6,
+                "gap": false,
+                "n_c": 18,
+                "n_p": 7,
+                "p_block_buy": 60.0,
+                "p_block_sell": 140.0,
+                "p_buy": 9.6,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 4.0,
+                "truncated": false
+              }
+            },
+            "k": 74000.0,
+            "oi": {
+              "c": 33.3,
+              "p": 193.2
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 1.7,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_put#2",
+              "gamma_put#1",
+              "pin"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": true,
+              "beyond_60m_usd": 115.4,
+              "closest_usd": 5.7,
+              "crossings": 4,
+              "end_beyond": false,
+              "first_cross_dir": "up",
+              "first_cross_ms": 1794322920000,
+              "minutes_within_100usd": 14
+            },
+            "distance_in_moves": 0.545,
+            "distance_usd": 778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 12.5,
+                "c_block_sell": 10.0,
+                "c_buy": 68.3,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 32.0,
+                "gap": true,
+                "n_c": 54,
+                "n_p": 0,
+                "p_block_buy": 45.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 67.3,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 31.6,
+                "gap": false,
+                "n_c": 50,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 74500.0,
+            "oi": {
+              "c": 82.3,
+              "p": 108.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 27.6,
+                "gap": false,
+                "p": -30.1
+              }
+            },
+            "role_class": "derived",
+            "roles": [
+              "gamma_call#2",
+              "gamma_put#2",
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 0.895,
+            "distance_usd": 1278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 280.0,
+                "c_block_sell": 0.0,
+                "c_buy": 61.9,
+                "c_combo_buy": 0.3,
+                "c_combo_sell": 0.0,
+                "c_sell": 28.4,
+                "gap": true,
+                "n_c": 58,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 100.0,
+                "c_block_sell": 0.0,
+                "c_buy": 56.7,
+                "c_combo_buy": 0.3,
+                "c_combo_sell": 0.0,
+                "c_sell": 28.4,
+                "gap": false,
+                "n_c": 55,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 75000.0,
+            "oi": {
+              "c": 247.4,
+              "p": 33.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": -184.9,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_call#1",
+              "gamma_call#1"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 1.244,
+            "distance_usd": 1778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 22.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.8,
+                "gap": true,
+                "n_c": 41,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 22.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.8,
+                "gap": false,
+                "n_c": 41,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 75500.0,
+            "oi": {
+              "c": 8.7,
+              "p": 29.3
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 2884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 2.644,
+            "distance_usd": 3778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.4,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 17.0,
+                "gap": true,
+                "n_c": 11,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.4,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 14.0,
+                "gap": false,
+                "n_c": 10,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 77500.0,
+            "oi": {
+              "c": 45.8,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 3384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 2.993,
+            "distance_usd": 4278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 3.1,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 5.2,
+                "gap": true,
+                "n_c": 13,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 1.1,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 3.2,
+                "gap": false,
+                "n_c": 10,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 78000.0,
+            "oi": {
+              "c": 136.4,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_call#2"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 3884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 3.343,
+            "distance_usd": 4778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.5,
+                "gap": true,
+                "n_c": 4,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 1,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 78500.0,
+            "oi": {
+              "c": 21.3,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.4,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 5384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 4.392,
+            "distance_usd": 6278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 80000.0,
+            "oi": {
+              "c": 59.0,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 6384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 5.092,
+            "distance_usd": 7278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.4,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 2,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 81000.0,
+            "oi": {
+              "c": 121.6,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": -0.1,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_call#3"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 7384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 5.791,
+            "distance_usd": 8278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 82000.0,
+            "oi": {
+              "c": 60.4,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          }
+        ],
+        "read_at_ms": 1794405610205,
+        "round": "r2",
+        "rules": "level_rules@0.1",
+        "schema": "level_card@0.1",
+        "short": {
+          "distance_in_moves": 0.504,
+          "distance_usd": 721.1,
+          "is_oi_level": false,
+          "k": 73000.0,
+          "nearest_oi_between": null,
+          "oi_levels_between": 0
+        },
+        "side": "put",
+        "unknown": [
+          "dealer_side",
+          "liquidation_levels"
+        ]
+      },
+      "call": {
+        "backfilled": false,
+        "case_id": "cf_29e3ec290898bab4202d6b64",
+        "contract_key": "BTC-12NOV26-74500-C|BTC-12NOV26-76500-C",
+        "data_gaps": [],
+        "expected_move_usd": 1429.5,
+        "expiry_day": "2026-11-12",
+        "expiry_ms": 1794470400000,
+        "hours_to_expiry": 17.99,
+        "index_usd": 73721.107667,
+        "levels": [
+          {
+            "before_24h": {
+              "closest_usd": 2723.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -2.603,
+            "distance_usd": -3721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 16,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 57.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 3.9,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 11,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 57.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 1.1,
+                "truncated": false
+              }
+            },
+            "k": 70000.0,
+            "oi": {
+              "c": 0.0,
+              "p": 82.8
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.7
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 1723.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -1.904,
+            "distance_usd": -2721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 13,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 4.3,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 14.1,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 10,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 4.3,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 7.9,
+                "truncated": false
+              }
+            },
+            "k": 71000.0,
+            "oi": {
+              "c": 0.0,
+              "p": 213.4
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 6.2
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_put#1",
+              "gamma_put#3"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 1223.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -1.554,
+            "distance_usd": -2221.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 21,
+                "p_block_buy": 40.0,
+                "p_block_sell": 97.5,
+                "p_buy": 1.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 17.2,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 20,
+                "p_block_buy": 40.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 17.2,
+                "truncated": false
+              }
+            },
+            "k": 71500.0,
+            "oi": {
+              "c": 0.0,
+              "p": 131.2
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 17.5
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_put#3"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 723.0,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": -1.204,
+            "distance_usd": -1721.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 26,
+                "p_block_buy": 0.0,
+                "p_block_sell": 10.0,
+                "p_buy": 3.5,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 21.7,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 19,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 3.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 16.5,
+                "truncated": false
+              }
+            },
+            "k": 72000.0,
+            "oi": {
+              "c": 0.0,
+              "p": 82.7
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 25.5
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": false,
+              "beyond_60m_usd": 748.6,
+              "closest_usd": 0.4,
+              "crossings": 32,
+              "end_beyond": false,
+              "first_cross_dir": "down",
+              "first_cross_ms": 1794325080000,
+              "minutes_within_100usd": 253
+            },
+            "distance_in_moves": -0.155,
+            "distance_usd": -221.1,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 40.0,
+                "c_buy": 3.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.2,
+                "gap": true,
+                "n_c": 13,
+                "n_p": 23,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 16.6,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 22.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 40.0,
+                "c_buy": 1.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.2,
+                "gap": false,
+                "n_c": 9,
+                "n_p": 17,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 5.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 21.5,
+                "truncated": false
+              }
+            },
+            "k": 73500.0,
+            "oi": {
+              "c": 60.9,
+              "p": 19.3
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 3.2,
+                "gap": false,
+                "p": 3.3
+              }
+            },
+            "role_class": "derived",
+            "roles": [
+              "gamma_call#3",
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": true,
+              "beyond_60m_usd": 615.4,
+              "closest_usd": 0.9,
+              "crossings": 22,
+              "end_beyond": false,
+              "first_cross_dir": "up",
+              "first_cross_ms": 1794321360000,
+              "minutes_within_100usd": 162
+            },
+            "distance_in_moves": 0.195,
+            "distance_usd": 278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 34.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 6.6,
+                "gap": true,
+                "n_c": 18,
+                "n_p": 8,
+                "p_block_buy": 60.0,
+                "p_block_sell": 140.0,
+                "p_buy": 9.7,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 4.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 19.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 6.6,
+                "gap": false,
+                "n_c": 16,
+                "n_p": 5,
+                "p_block_buy": 60.0,
+                "p_block_sell": 140.0,
+                "p_buy": 6.6,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 4.0,
+                "truncated": false
+              }
+            },
+            "k": 74000.0,
+            "oi": {
+              "c": 33.3,
+              "p": 193.2
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 1.7,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_put#2",
+              "gamma_put#1",
+              "pin"
+            ]
+          },
+          {
+            "before_24h": {
+              "back_within_60m": true,
+              "beyond_60m_usd": 115.4,
+              "closest_usd": 5.7,
+              "crossings": 4,
+              "end_beyond": false,
+              "first_cross_dir": "up",
+              "first_cross_ms": 1794322920000,
+              "minutes_within_100usd": 14
+            },
+            "distance_in_moves": 0.545,
+            "distance_usd": 778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 12.5,
+                "c_block_sell": 10.0,
+                "c_buy": 68.3,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 32.0,
+                "gap": true,
+                "n_c": 54,
+                "n_p": 0,
+                "p_block_buy": 45.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 66.3,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 31.6,
+                "gap": false,
+                "n_c": 49,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 74500.0,
+            "oi": {
+              "c": 82.3,
+              "p": 108.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 27.6,
+                "gap": false,
+                "p": -30.1
+              }
+            },
+            "role_class": "leg",
+            "roles": [
+              "gamma_call#2",
+              "gamma_put#2",
+              "short"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 0.895,
+            "distance_usd": 1278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 280.0,
+                "c_block_sell": 0.0,
+                "c_buy": 61.9,
+                "c_combo_buy": 0.3,
+                "c_combo_sell": 0.0,
+                "c_sell": 28.4,
+                "gap": true,
+                "n_c": 58,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 100.0,
+                "c_block_sell": 0.0,
+                "c_buy": 56.7,
+                "c_combo_buy": 0.3,
+                "c_combo_sell": 0.0,
+                "c_sell": 28.4,
+                "gap": false,
+                "n_c": 55,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 75000.0,
+            "oi": {
+              "c": 247.4,
+              "p": 33.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": -184.9,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_call#1",
+              "gamma_call#1"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 1.244,
+            "distance_usd": 1778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 22.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.8,
+                "gap": true,
+                "n_c": 41,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 22.2,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 11.8,
+                "gap": false,
+                "n_c": 41,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 75500.0,
+            "oi": {
+              "c": 8.7,
+              "p": 29.3
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 1384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 1.594,
+            "distance_usd": 2278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 15.3,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.3,
+                "c_sell": 41.0,
+                "gap": true,
+                "n_c": 42,
+                "n_p": 1,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.1,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 12.1,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.3,
+                "c_sell": 36.2,
+                "gap": false,
+                "n_c": 33,
+                "n_p": 1,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.1,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 76000.0,
+            "oi": {
+              "c": 37.7,
+              "p": 3.6
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 1884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 1.944,
+            "distance_usd": 2778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 40.0,
+                "c_block_sell": 0.0,
+                "c_buy": 1.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 29.3,
+                "gap": true,
+                "n_c": 5,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 40.0,
+                "c_block_sell": 0.0,
+                "c_buy": 1.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 29.2,
+                "gap": false,
+                "n_c": 4,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 76500.0,
+            "oi": {
+              "c": 64.7,
+              "p": 3.2
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "leg",
+            "roles": [
+              "long"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 2384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 2.294,
+            "distance_usd": 3278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 1.8,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 16.1,
+                "gap": true,
+                "n_c": 13,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 1.8,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 16.1,
+                "gap": false,
+                "n_c": 13,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 77000.0,
+            "oi": {
+              "c": 95.0,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 2884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 2.644,
+            "distance_usd": 3778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.4,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 17.0,
+                "gap": true,
+                "n_c": 11,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.4,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 14.0,
+                "gap": false,
+                "n_c": 10,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 77500.0,
+            "oi": {
+              "c": 45.8,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 3384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 2.993,
+            "distance_usd": 4278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 3.1,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 5.2,
+                "gap": true,
+                "n_c": 13,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 1.1,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 3.2,
+                "gap": false,
+                "n_c": 10,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 78000.0,
+            "oi": {
+              "c": 136.4,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_call#2"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 3884.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 3.343,
+            "distance_usd": 4778.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.5,
+                "gap": true,
+                "n_c": 4,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.9,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 1,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 78500.0,
+            "oi": {
+              "c": 21.3,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.4,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 5384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 4.392,
+            "distance_usd": 6278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 80000.0,
+            "oi": {
+              "c": 59.0,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 6384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 5.092,
+            "distance_usd": 7278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.4,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 2,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 81000.0,
+            "oi": {
+              "c": 121.6,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": -0.1,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "oi",
+            "roles": [
+              "oi_call#3"
+            ]
+          },
+          {
+            "before_24h": {
+              "closest_usd": 7384.6,
+              "crossings": 0,
+              "first_cross_ms": null,
+              "minutes_within_100usd": 0
+            },
+            "distance_in_moves": 5.791,
+            "distance_usd": 8278.9,
+            "flow": {
+              "24h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": true,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              },
+              "6h": {
+                "c_block_buy": 0.0,
+                "c_block_sell": 0.0,
+                "c_buy": 0.0,
+                "c_combo_buy": 0.0,
+                "c_combo_sell": 0.0,
+                "c_sell": 0.0,
+                "gap": false,
+                "n_c": 0,
+                "n_p": 0,
+                "p_block_buy": 0.0,
+                "p_block_sell": 0.0,
+                "p_buy": 0.0,
+                "p_combo_buy": 0.0,
+                "p_combo_sell": 0.0,
+                "p_sell": 0.0,
+                "truncated": false
+              }
+            },
+            "k": 82000.0,
+            "oi": {
+              "c": 60.4,
+              "p": 0.0
+            },
+            "oi_change": {
+              "24h": {
+                "c": null,
+                "gap": true,
+                "p": null
+              },
+              "6h": {
+                "c": 0.0,
+                "gap": false,
+                "p": 0.0
+              }
+            },
+            "role_class": "control",
+            "roles": [
+              "control"
+            ]
+          }
+        ],
+        "read_at_ms": 1794405618234,
+        "round": "r2",
+        "rules": "level_rules@0.1",
+        "schema": "level_card@0.1",
+        "short": {
+          "distance_in_moves": 0.545,
+          "distance_usd": 778.9,
+          "is_oi_level": false,
+          "k": 74500.0,
+          "nearest_oi_between": 74000.0,
+          "oi_levels_between": 1
+        },
+        "side": "call",
+        "unknown": [
+          "dealer_side",
+          "liquidation_levels"
+        ]
+      }
+    },
+    "original_files": {
+      "put": {
+        "local_path": ".artifacts\\player-input-real-20261114\\14_put_cf_26c54d0c331e452d0114866e.json.gz",
+        "server_path": "/var/lib/xxproject/research_archive/cases/2026-11-11/14_put_cf_26c54d0c331e452d0114866e.json.gz",
+        "sha256": "8c9f4b6e854da65b04fc9ef233145599f5178dd5863450e35aed111b469932ff"
+      },
+      "call": {
+        "local_path": ".artifacts\\player-input-real-20261114\\14_call_cf_29e3ec290898bab4202d6b64.json.gz",
+        "server_path": "/var/lib/xxproject/research_archive/cases/2026-11-11/14_call_cf_29e3ec290898bab4202d6b64.json.gz",
+        "sha256": "205af6014dd10a1315e7ebacb75ad06bc7023c3a19c0f7c1e3d506300d0fbad6"
+      },
+      "levels": {
+        "server_path": "/var/lib/xxproject/research_archive/levels/2026-11-12.jsonl",
+        "local_path": ".artifacts\\player-input-real-20261114\\2026-11-12.jsonl",
+        "sha256": "a0b9f356ea61da61472447c6e9325e33d7051226d1a9fefd75e01f9305893d09"
+      }
+    }
+  },
+  "listed_strike_snapshot": {
+    "at_ms": 1794404403131,
+    "atm_iv_pct": 42.85,
+    "expected_move_usd": 1443.5,
+    "expiry": "12NOV26",
+    "expiry_ms": 1794470400000,
+    "forward_usd": 73638.18,
+    "hours_to_expiry": 18.33,
+    "profile": {
+      "top": {
+        "gamma_call": [
+          {
+            "strike": 75000.0,
+            "value": 2424721.96
+          },
+          {
+            "strike": 74500.0,
+            "value": 1063964.64
+          },
+          {
+            "strike": 73500.0,
+            "value": 907609.25
+          }
+        ],
+        "gamma_put": [
+          {
+            "strike": 74000.0,
+            "value": 2871438.2
+          },
+          {
+            "strike": 74500.0,
+            "value": 1396211.19
+          },
+          {
+            "strike": 71000.0,
+            "value": 853948.62
+          }
+        ],
+        "oi_call": [
+          {
+            "strike": 75000.0,
+            "value": 247.4
+          },
+          {
+            "strike": 78000.0,
+            "value": 136.4
+          },
+          {
+            "strike": 81000.0,
+            "value": 121.6
+          }
+        ],
+        "oi_put": [
+          {
+            "strike": 71000.0,
+            "value": 213.4
+          },
+          {
+            "strike": 74000.0,
+            "value": 193.2
+          },
+          {
+            "strike": 71500.0,
+            "value": 131.2
+          }
+        ]
+      },
+      "totals": {
+        "call_gex_usd_1pct": 5867346.92,
+        "call_oi_btc": 1127.2,
+        "put_gex_usd_1pct": 8553142.9,
+        "put_oi_btc": 1252.9
+      },
+      "walls": {
+        "gamma_call": 75000.0,
+        "gamma_put": 74000.0,
+        "oi_call": 75000.0,
+        "oi_put": 71000.0,
+        "pin": 74000.0
+      }
+    },
+    "schema": "structure_snapshot@0.1",
+    "strikes": [
+      {
+        "c_iv": 78.83,
+        "c_mark": 0.1037837,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 66000.0,
+        "p_iv": 78.83,
+        "p_mark": 1.14e-05,
+        "p_oi": 27.4,
+        "p_vol24h": 20.7
+      },
+      {
+        "c_iv": 78.83,
+        "c_mark": 0.09024016,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 67000.0,
+        "p_iv": 78.83,
+        "p_mark": 4.706e-05,
+        "p_oi": 56.3,
+        "p_vol24h": 34.1
+      },
+      {
+        "c_iv": 77.97,
+        "c_mark": 0.0767656,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 68000.0,
+        "p_iv": 77.97,
+        "p_mark": 0.00015171,
+        "p_oi": 121.2,
+        "p_vol24h": 84.3
+      },
+      {
+        "c_iv": 67.9,
+        "c_mark": 0.06323134,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 69000.0,
+        "p_iv": 67.9,
+        "p_mark": 0.00019666,
+        "p_oi": 79.7,
+        "p_vol24h": 41.5
+      },
+      {
+        "c_iv": 62.08,
+        "c_mark": 0.04986492,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 70000.0,
+        "p_iv": 62.08,
+        "p_mark": 0.00040944,
+        "p_oi": 82.8,
+        "p_vol24h": 117.2
+      },
+      {
+        "c_iv": 54.94,
+        "c_mark": 0.0366797,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 71000.0,
+        "p_iv": 54.94,
+        "p_mark": 0.00080344,
+        "p_oi": 213.4,
+        "p_vol24h": 62.4
+      },
+      {
+        "c_iv": 52.24,
+        "c_mark": 0.03031534,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 71500.0,
+        "p_iv": 52.24,
+        "p_mark": 0.00122868,
+        "p_oi": 131.2,
+        "p_vol24h": 262.8
+      },
+      {
+        "c_iv": 49.57,
+        "c_mark": 0.02418525,
+        "c_oi": 0.0,
+        "c_vol24h": 0.0,
+        "k": 72000.0,
+        "p_iv": 49.57,
+        "p_mark": 0.00188819,
+        "p_oi": 82.7,
+        "p_vol24h": 106.2
+      },
+      {
+        "c_iv": 46.7,
+        "c_mark": 0.01837685,
+        "c_oi": 1.3,
+        "c_vol24h": 1.3,
+        "k": 72500.0,
+        "p_iv": 46.7,
+        "p_mark": 0.0028694,
+        "p_oi": 15.0,
+        "p_vol24h": 46.6
+      },
+      {
+        "c_iv": 44.4,
+        "c_mark": 0.01316431,
+        "c_oi": 7.4,
+        "c_vol24h": 7.4,
+        "k": 73000.0,
+        "p_iv": 44.4,
+        "p_mark": 0.00444645,
+        "p_oi": 53.6,
+        "p_vol24h": 160.1
+      },
+      {
+        "c_iv": 42.85,
+        "c_mark": 0.00881425,
+        "c_oi": 60.9,
+        "c_vol24h": 62.8,
+        "k": 73500.0,
+        "p_iv": 42.85,
+        "p_mark": 0.006886,
+        "p_oi": 19.3,
+        "p_vol24h": 51.0
+      },
+      {
+        "c_iv": 41.92,
+        "c_mark": 0.00548243,
+        "c_oi": 33.3,
+        "c_vol24h": 53.5,
+        "k": 74000.0,
+        "p_iv": 41.92,
+        "p_mark": 0.01034379,
+        "p_oi": 193.2,
+        "p_vol24h": 199.0
+      },
+      {
+        "c_iv": 41.35,
+        "c_mark": 0.00314558,
+        "c_oi": 82.3,
+        "c_vol24h": 177.4,
+        "k": 74500.0,
+        "p_iv": 41.35,
+        "p_mark": 0.01479654,
+        "p_oi": 108.0,
+        "p_vol24h": 45.0
+      },
+      {
+        "c_iv": 41.5,
+        "c_mark": 0.00171351,
+        "c_oi": 247.4,
+        "c_vol24h": 483.6,
+        "k": 75000.0,
+        "p_iv": 41.5,
+        "p_mark": 0.02015407,
+        "p_oi": 33.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 42.4,
+        "c_mark": 0.00092424,
+        "c_oi": 8.7,
+        "c_vol24h": 41.3,
+        "k": 75500.0,
+        "p_iv": 42.4,
+        "p_mark": 0.0261544,
+        "p_oi": 29.3,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 44.58,
+        "c_mark": 0.00054687,
+        "c_oi": 37.7,
+        "c_vol24h": 70.1,
+        "k": 76000.0,
+        "p_iv": 44.58,
+        "p_mark": 0.03256665,
+        "p_oi": 3.6,
+        "p_vol24h": 0.2
+      },
+      {
+        "c_iv": 48.47,
+        "c_mark": 0.00039645,
+        "c_oi": 64.7,
+        "c_vol24h": 52.6,
+        "k": 76500.0,
+        "p_iv": 48.47,
+        "p_mark": 0.03920583,
+        "p_oi": 3.2,
+        "p_vol24h": 1.0
+      },
+      {
+        "c_iv": 51.73,
+        "c_mark": 0.00027855,
+        "c_oi": 95.0,
+        "c_vol24h": 108.1,
+        "k": 77000.0,
+        "p_iv": 51.73,
+        "p_mark": 0.04587753,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 55.43,
+        "c_mark": 0.00021301,
+        "c_oi": 45.8,
+        "c_vol24h": 62.9,
+        "k": 77500.0,
+        "p_iv": 55.43,
+        "p_mark": 0.05260159,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 55.97,
+        "c_mark": 0.00011304,
+        "c_oi": 136.4,
+        "c_vol24h": 9.3,
+        "k": 78000.0,
+        "p_iv": 55.97,
+        "p_mark": 0.05929122,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.32,
+        "c_mark": 7.617e-05,
+        "c_oi": 21.3,
+        "c_vol24h": 1.5,
+        "k": 78500.0,
+        "p_iv": 58.32,
+        "p_mark": 0.06604396,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.46,
+        "c_mark": 3.733e-05,
+        "c_oi": 43.6,
+        "c_vol24h": 34.5,
+        "k": 79000.0,
+        "p_iv": 58.46,
+        "p_mark": 0.07279472,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.48,
+        "c_mark": 7.58e-06,
+        "c_oi": 59.0,
+        "c_vol24h": 30.0,
+        "k": 80000.0,
+        "p_iv": 58.48,
+        "p_mark": 0.08634419,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.48,
+        "c_mark": 1.29e-06,
+        "c_oi": 121.6,
+        "c_vol24h": 0.6,
+        "k": 81000.0,
+        "p_iv": 58.48,
+        "p_mark": 0.0999171,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.49,
+        "c_mark": 1.9e-07,
+        "c_oi": 60.4,
+        "c_vol24h": 0.0,
+        "k": 82000.0,
+        "p_iv": 58.49,
+        "p_mark": 0.1134952,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.49,
+        "c_mark": 2e-08,
+        "c_oi": 0.3,
+        "c_vol24h": 0.0,
+        "k": 83000.0,
+        "p_iv": 58.49,
+        "p_mark": 0.12707425,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      },
+      {
+        "c_iv": 58.66,
+        "c_mark": 0.0,
+        "c_oi": 0.1,
+        "c_vol24h": 0.0,
+        "k": 84000.0,
+        "p_iv": 58.66,
+        "p_mark": 0.14065343,
+        "p_oi": 0.0,
+        "p_vol24h": 0.0
+      }
+    ]
+  },
+  "main_levels": {
+    "put": [
+      73500,
+      71500,
+      71000
+    ],
+    "call": [
+      74000,
+      74500,
+      75000
+    ]
+  }
+}

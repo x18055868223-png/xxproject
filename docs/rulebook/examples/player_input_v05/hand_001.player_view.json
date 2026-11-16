@@ -1,0 +1,312 @@
+{
+  "schema": "structural_player_view@0.1",
+  "mode": "frozen_observation",
+  "cutoff_ms": 1794405600000,
+  "sides": {
+    "put": {
+      "status": "assessable",
+      "boundary": {
+        "venue": "Deribit",
+        "underlying": "BTC",
+        "side": "put",
+        "short_instrument": "BTC-12NOV26-76000-P",
+        "long_instrument": "BTC-12NOV26-74000-P",
+        "short_usd": 76000.0,
+        "protection_usd": 74000.0,
+        "expiry_ms": 1794470400000,
+        "quantity_btc": 1.0,
+        "responsibility_interval_usd": [
+          74000.0,
+          76000.0
+        ],
+        "settlement_currency": "BTC"
+      },
+      "boundary_id": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e",
+      "board_sha256": "f7d41aa57bc152b603df1e003820655f032b140450ae6652bd1a6de214738d94",
+      "qualification_failure": null
+    },
+    "call": {
+      "status": "assessable",
+      "boundary": {
+        "venue": "Deribit",
+        "underlying": "BTC",
+        "side": "call",
+        "short_instrument": "BTC-12NOV26-84000-C",
+        "long_instrument": "BTC-12NOV26-86000-C",
+        "short_usd": 84000.0,
+        "protection_usd": 86000.0,
+        "expiry_ms": 1794470400000,
+        "quantity_btc": 1.0,
+        "responsibility_interval_usd": [
+          84000.0,
+          86000.0
+        ],
+        "settlement_currency": "BTC"
+      },
+      "boundary_id": "ed9ffb9ccd0fd785ebfed9ebcc9eb59e6926b177bcbbfd67a3027a1ba7368b64",
+      "board_sha256": "8dd4398d52c23d9986e4fa7f4021bb3381a6a19259d64b369f0a771110bd8e85",
+      "qualification_failure": null
+    }
+  },
+  "phenomena": [
+    {
+      "id": "p1",
+      "kind": "responsibility",
+      "sides": [
+        "put",
+        "call"
+      ],
+      "boundary_ids": {
+        "put": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e",
+        "call": "ed9ffb9ccd0fd785ebfed9ebcc9eb59e6926b177bcbbfd67a3027a1ba7368b64"
+      },
+      "measurements": {
+        "hours_to_expiry": 18.0
+      },
+      "source_observation_refs": {},
+      "description": "PUT 短腿76000/保护腿74000 USD；CALL 短腿84000/保护腿86000 USD，距到期18h。净对冲义务的方向与强度未识别；采用已观测空间、OI与路径作条件判断。"
+    },
+    {
+      "id": "p2",
+      "kind": "position",
+      "sides": [
+        "put"
+      ],
+      "boundary_ids": {
+        "put": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e"
+      },
+      "measurements": {
+        "index_usd": 80600.0,
+        "index_zone": "outside_liability",
+        "short_distance_usd": 4600.0,
+        "protection_distance_usd": 6600.0
+      },
+      "source_observation_refs": {
+        "put": [
+          "o1"
+        ]
+      },
+      "description": "PUT 76000/74000：指数80600 USD，距短腿4600 USD，位置为责任外侧。 相对PUT短腿，TMV 24h远离、48h远离；两窗价格运动均向上，仅描述已观测窗口。"
+    },
+    {
+      "id": "p3",
+      "kind": "structures",
+      "sides": [
+        "put"
+      ],
+      "boundary_ids": {
+        "put": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e"
+      },
+      "measurements": {
+        "near_radius_usd": 200.0,
+        "groups": [
+          {
+            "region": "outside_liability",
+            "level_count": 6,
+            "range_usd": [
+              78000.0,
+              82000.0
+            ],
+            "between_index_and_short_count": 4,
+            "oi_structure_levels": 3,
+            "derived_structure_levels": 3,
+            "nearest_short_distance_usd": 2000.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 612.0,
+            "oi_put_btc_known": 4812.0,
+            "oi_call_levels": 6,
+            "oi_put_levels": 6,
+            "path_levels": 6,
+            "crossed_levels": 2
+          }
+        ]
+      },
+      "source_observation_refs": {
+        "put": [
+          "o11",
+          "o12",
+          "o13",
+          "o14",
+          "o15",
+          "o16",
+          "o29",
+          "o3",
+          "o30",
+          "o31",
+          "o32",
+          "o33",
+          "o34",
+          "o4",
+          "o5",
+          "o6",
+          "o7",
+          "o8"
+        ]
+      },
+      "description": "PUT 76000/74000：入区前依次经过80500、80000、79000、78000 USD；前24h已穿越80500与80000，未见穿越79000与78000。责任外侧78000–82000的PUT OI合计4812 BTC，含不在入区前路径上的81000–82000，不能将合计当成路径库存。"
+    },
+    {
+      "id": "p4",
+      "kind": "flow",
+      "sides": [
+        "put"
+      ],
+      "boundary_ids": {
+        "put": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e"
+      },
+      "measurements": {
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "groups": [
+          {
+            "region": "outside_liability",
+            "observed_levels": 6,
+            "structure_levels": 6,
+            "c_buy_btc": 0.0,
+            "c_sell_btc": 0.0,
+            "p_buy_btc": 36.0,
+            "p_sell_btc": 72.0,
+            "c_net_buy_btc": 0.0,
+            "p_net_buy_btc": -36.0
+          }
+        ]
+      },
+      "source_observation_refs": {
+        "put": [
+          "o37",
+          "o38",
+          "o39",
+          "o40",
+          "o41",
+          "o42"
+        ]
+      },
+      "description": "PUT 76000/74000前24h，短腿责任外侧的79000 USD结构位：Put普通净主动卖36 BTC（总量108 BTC）。与同组路径并读，不推导标的方向。"
+    },
+    {
+      "id": "p5",
+      "kind": "position",
+      "sides": [
+        "call"
+      ],
+      "boundary_ids": {
+        "call": "ed9ffb9ccd0fd785ebfed9ebcc9eb59e6926b177bcbbfd67a3027a1ba7368b64"
+      },
+      "measurements": {
+        "index_usd": 80600.0,
+        "index_zone": "outside_liability",
+        "short_distance_usd": 3400.0,
+        "protection_distance_usd": 5400.0
+      },
+      "source_observation_refs": {
+        "call": [
+          "o1"
+        ]
+      },
+      "description": "CALL 84000/86000：指数80600 USD，距短腿3400 USD，位置为责任外侧。 相对CALL短腿，TMV 24h靠近、48h靠近；两窗价格运动均向上，仅描述已观测窗口。"
+    },
+    {
+      "id": "p6",
+      "kind": "structures",
+      "sides": [
+        "call"
+      ],
+      "boundary_ids": {
+        "call": "ed9ffb9ccd0fd785ebfed9ebcc9eb59e6926b177bcbbfd67a3027a1ba7368b64"
+      },
+      "measurements": {
+        "near_radius_usd": 200.0,
+        "groups": [
+          {
+            "region": "outside_liability",
+            "level_count": 6,
+            "range_usd": [
+              78000.0,
+              82000.0
+            ],
+            "between_index_and_short_count": 2,
+            "oi_structure_levels": 3,
+            "derived_structure_levels": 3,
+            "nearest_short_distance_usd": 2000.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 612.0,
+            "oi_put_btc_known": 4812.0,
+            "oi_call_levels": 6,
+            "oi_put_levels": 6,
+            "path_levels": 6,
+            "crossed_levels": 2
+          }
+        ]
+      },
+      "source_observation_refs": {
+        "call": [
+          "o10",
+          "o11",
+          "o12",
+          "o13",
+          "o14",
+          "o27",
+          "o28",
+          "o29",
+          "o3",
+          "o30",
+          "o31",
+          "o32",
+          "o4",
+          "o5",
+          "o6",
+          "o7",
+          "o8",
+          "o9"
+        ]
+      },
+      "description": "CALL 84000/86000：入区前经过81000、82000 USD，前24h均未见穿越。责任外侧78000–82000的CALL OI合计612 BTC，含现价下方位置；80000与80500的既有穿越不属于本侧入区前反馈。"
+    },
+    {
+      "id": "p7",
+      "kind": "flow",
+      "sides": [
+        "call"
+      ],
+      "boundary_ids": {
+        "call": "ed9ffb9ccd0fd785ebfed9ebcc9eb59e6926b177bcbbfd67a3027a1ba7368b64"
+      },
+      "measurements": {
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "groups": [
+          {
+            "region": "outside_liability",
+            "observed_levels": 6,
+            "structure_levels": 6,
+            "c_buy_btc": 0.0,
+            "c_sell_btc": 0.0,
+            "p_buy_btc": 36.0,
+            "p_sell_btc": 72.0,
+            "c_net_buy_btc": 0.0,
+            "p_net_buy_btc": -36.0
+          }
+        ]
+      },
+      "source_observation_refs": {
+        "call": [
+          "o35",
+          "o36",
+          "o37",
+          "o38",
+          "o39",
+          "o40"
+        ]
+      },
+      "description": "CALL 84000/86000：79000 USD的Put净主动卖36 BTC发生在现价下方，不在本侧入区前路径；与PUT牌面是同一成交事实，不是额外确认。"
+    }
+  ],
+  "critical_gaps": [],
+  "coverage": {
+    "assessable_sides": [
+      "put",
+      "call"
+    ],
+    "at_least_one_side_assessable": true
+  }
+}

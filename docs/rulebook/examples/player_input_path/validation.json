@@ -1,0 +1,10 @@
+{
+  "tests": "39 passed (test_astra_player_input_v1.py + test_astra_level_behaviour_v1.py)",
+  "native_replay_equal": true,
+  "visible_copy_equal": true,
+  "native_candidate_legs_preserved": true,
+  "body_contains_no_TMV_scores_schema_hashes": true,
+  "deployment": "not performed",
+  "agent_review": "fixed gpt-5.5 explorer and reviewer unavailable; main agent performed code and fixture verification",
+  "body_sha256": "8a3cfce7d5a424088241dd34bd179244d6a748083780c4137be3fdad995fa4d8"
+}

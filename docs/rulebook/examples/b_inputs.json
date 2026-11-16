@@ -1,0 +1,250 @@
+{
+  "case": {
+    "schema": "case_file@0.1",
+    "case_id": "synthetic_b_put",
+    "asof_ms": 1794405540000,
+    "build": {
+      "built_at_ms": 1794405600000
+    },
+    "layers": {
+      "L1": [
+        {
+          "ref": "L1.contract",
+          "values": {
+            "side": "put",
+            "underlying": "BTC",
+            "settlement_currency": "BTC",
+            "venue": "Deribit",
+            "short_instrument": "BTC-12NOV26-76000-P",
+            "long_instrument": "BTC-12NOV26-74000-P",
+            "short_strike_usd": 76000.0,
+            "long_strike_usd": 74000.0,
+            "quantity_btc": 1.0,
+            "expiry_ms": 1794470400000
+          },
+          "quality": "ok",
+          "asof_ms": 1794405540000
+        },
+        {
+          "ref": "L1.liability",
+          "values": {
+            "starts_at_usd": 76000.0,
+            "protection_at_usd": 74000.0,
+            "usd_intrinsic_cap": 2000.0,
+            "btc_contract_cap": null
+          },
+          "quality": "ok",
+          "asof_ms": 1794405540000
+        }
+      ],
+      "L3": [
+        {
+          "ref": "L3.expiry_walls",
+          "values": {
+            "expiry_ms": 1794470400000,
+            "expected_move_usd": 2000.0,
+            "computed_at_ms": 1794405540000,
+            "stale": false,
+            "top": {
+              "oi_put": [
+                {
+                  "strike": 78000.0
+                },
+                {
+                  "strike": 79000.0
+                }
+              ],
+              "oi_call": [
+                {
+                  "strike": 82000.0
+                }
+              ],
+              "gamma_put": [
+                {
+                  "strike": 80000.0
+                }
+              ],
+              "gamma_call": [
+                {
+                  "strike": 81000.0
+                }
+              ]
+            },
+            "walls": {
+              "pin": 80500.0
+            }
+          },
+          "quality": "stale",
+          "asof_ms": 1794405540000
+        },
+        {
+          "ref": "L3.gex.structure",
+          "values": {
+            "flip_point": 80000.0,
+            "total_net_gex": 1200000.0
+          },
+          "quality": "ok",
+          "asof_ms": 1794405600001
+        }
+      ]
+    },
+    "refs": {
+      "L1.contract": {
+        "layer": "L1",
+        "index": 0
+      },
+      "L1.liability": {
+        "layer": "L1",
+        "index": 1
+      },
+      "L3.expiry_walls": {
+        "layer": "L3",
+        "index": 0
+      },
+      "L3.gex.structure": {
+        "layer": "L3",
+        "index": 1
+      }
+    }
+  },
+  "level_card": {
+    "schema": "level_card@0.1",
+    "rules": "level_rules@0.1",
+    "expiry_ms": 1794470400000,
+    "expiry_day": "2026-11-12",
+    "round": "r2",
+    "side": "put",
+    "read_at_ms": 1794405600000,
+    "case_id": "synthetic_b_put",
+    "contract_key": "BTC-12NOV26-76000-P|BTC-12NOV26-74000-P",
+    "index_usd": 80600.0,
+    "expected_move_usd": 2000.0,
+    "hours_to_expiry": 18.0,
+    "short": {
+      "k": 76000.0,
+      "distance_usd": 4600.0,
+      "distance_in_moves": 2.3,
+      "is_oi_level": false,
+      "oi_levels_between": 2,
+      "nearest_oi_between": 79000.0
+    },
+    "levels": [
+      {
+        "k": 74000.0,
+        "roles": [
+          "long"
+        ],
+        "role_class": "leg",
+        "distance_usd": -6600.0,
+        "distance_in_moves": -3.3,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 76000.0,
+        "roles": [
+          "short"
+        ],
+        "role_class": "leg",
+        "distance_usd": -4600.0,
+        "distance_in_moves": -2.3,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 78000.0,
+        "roles": [
+          "oi_put#1"
+        ],
+        "role_class": "oi",
+        "distance_usd": -2600.0,
+        "distance_in_moves": -1.3,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 79000.0,
+        "roles": [
+          "oi_put#2"
+        ],
+        "role_class": "oi",
+        "distance_usd": -1600.0,
+        "distance_in_moves": -0.8,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 80000.0,
+        "roles": [
+          "gamma_put#1",
+          "control"
+        ],
+        "role_class": "derived",
+        "distance_usd": -600.0,
+        "distance_in_moves": -0.3,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 80500.0,
+        "roles": [
+          "pin"
+        ],
+        "role_class": "derived",
+        "distance_usd": -100.0,
+        "distance_in_moves": -0.05,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 81000.0,
+        "roles": [
+          "gamma_call#1",
+          "control"
+        ],
+        "role_class": "derived",
+        "distance_usd": 400.0,
+        "distance_in_moves": 0.2,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      },
+      {
+        "k": 82000.0,
+        "roles": [
+          "oi_call#1"
+        ],
+        "role_class": "oi",
+        "distance_usd": 1400.0,
+        "distance_in_moves": 0.7,
+        "before_24h": null,
+        "oi": null,
+        "oi_change": null,
+        "flow": null
+      }
+    ],
+    "unknown": [
+      "dealer_side",
+      "liquidation_levels"
+    ],
+    "data_gaps": [
+      "flow",
+      "oi_change",
+      "path_before_24h"
+    ],
+    "backfilled": true
+  }
+}

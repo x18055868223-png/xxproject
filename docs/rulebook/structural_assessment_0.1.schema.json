@@ -1,0 +1,113 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "structural_assessment@0.1"
+    },
+    "board_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "boundary_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "decision": {
+      "enum": [
+        "Accept",
+        "Reject",
+        "Unknown"
+      ]
+    },
+    "scope": {
+      "const": "structure_only"
+    },
+    "execution_authorized": {
+      "const": false
+    },
+    "observation_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^o[1-9][0-9]*$"
+      },
+      "uniqueItems": true
+    },
+    "structural_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "counterevidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "board_sha256",
+    "boundary_id",
+    "decision",
+    "scope",
+    "execution_authorized",
+    "observation_refs",
+    "structural_conditions",
+    "counterevidence",
+    "unknowns"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "Unknown"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "unknowns": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "enum": [
+              "Accept",
+              "Reject"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observation_refs": {
+            "minItems": 1
+          },
+          "structural_conditions": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Separate structural assessment protocol v0.1"
+}

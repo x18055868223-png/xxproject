@@ -1,0 +1,50 @@
+{
+  "synthetic": true,
+  "ard": {
+    "frozen_anchor": {
+      "at": 1794650400000,
+      "ready": 1794650400000,
+      "pin": 100.0,
+      "method": "fixture-v1",
+      "source": "synthetic fixture"
+    },
+    "current_anchor": {
+      "at": 1794650760000,
+      "ready": 1794650760000,
+      "pin": 98.0,
+      "method": "fixture-v1",
+      "source": "synthetic fixture"
+    },
+    "current_sample_available": true,
+    "pin_price_changed": true,
+    "source_method_comparable": true,
+    "newly_available_anchor_observations": [
+      {
+        "at": 1794650760000,
+        "ready": 1794650760000,
+        "pin": 98.0,
+        "method": "fixture-v1",
+        "source": "synthetic fixture"
+      }
+    ],
+    "new_neighborhood_events": [],
+    "entry_distance_to_frozen_pin_usd": 0.0,
+    "current_distance_to_frozen_pin_usd": 3.0,
+    "current_inside_frozen_neighborhood": false,
+    "entry_responsibility_margin_usd": 5,
+    "current_responsibility_margin_usd": 2,
+    "current_zone": "在责任区外",
+    "review_on": [
+      "Pin改变、价格离开原100±2邻域并向95收缩余量时复核；仅原短腿破坏规则可机械判定。"
+    ],
+    "note": "以入场Pin作固定参照；新增指入场后才可得，观测早于入场的不冒充新迁移。不同窗/半宽/口径不比较停留率或离返；复核事实不自动触发Revoke，破坏仍由原冻结规则判断。"
+  },
+  "boundary": {
+    "status": "not_triggered",
+    "check_at_ms": 1794650760000,
+    "reason": "这条冻结边界规则未触发；不自动等同于全部承担条件成立或Hold。",
+    "current_zone": "在责任区外",
+    "latest_new_entry_ms": null,
+    "return_after_latest_entry_ms": null
+  }
+}

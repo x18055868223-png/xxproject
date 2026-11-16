@@ -1,0 +1,998 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "structural_player_view@0.1"
+    },
+    "mode": {
+      "const": "frozen_observation"
+    },
+    "cutoff_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "put": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "assessable",
+                "blocked",
+                "unavailable"
+              ]
+            },
+            "boundary": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "side": {
+                      "enum": [
+                        "put",
+                        "call"
+                      ]
+                    },
+                    "short_instrument": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "long_instrument": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "short_usd": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "protection_usd": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "expiry_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "quantity_btc": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "responsibility_interval_usd": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "settlement_currency": {
+                      "const": "BTC"
+                    },
+                    "venue": {
+                      "const": "Deribit"
+                    },
+                    "underlying": {
+                      "const": "BTC"
+                    }
+                  },
+                  "required": [
+                    "side",
+                    "short_instrument",
+                    "long_instrument",
+                    "short_usd",
+                    "protection_usd",
+                    "expiry_ms",
+                    "quantity_btc",
+                    "responsibility_interval_usd",
+                    "settlement_currency",
+                    "venue",
+                    "underlying"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "boundary_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "board_sha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "qualification_failure": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "reason": {
+                      "enum": [
+                        "no_matching_instruments",
+                        "no_common_expiry",
+                        "no_valid_vertical",
+                        "no_positive_credit"
+                      ]
+                    },
+                    "asof_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "evidence_ref": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source_sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "side": {
+                      "enum": [
+                        "put",
+                        "call"
+                      ]
+                    },
+                    "venue": {
+                      "const": "Deribit"
+                    },
+                    "underlying": {
+                      "const": "BTC"
+                    },
+                    "expiry_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": [
+                    "reason",
+                    "asof_ms",
+                    "evidence_ref",
+                    "source_sha256",
+                    "side",
+                    "venue",
+                    "underlying",
+                    "expiry_ms"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "boundary",
+            "boundary_id",
+            "board_sha256",
+            "qualification_failure"
+          ]
+        },
+        "call": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "enum": [
+                "assessable",
+                "blocked",
+                "unavailable"
+              ]
+            },
+            "boundary": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "side": {
+                      "enum": [
+                        "put",
+                        "call"
+                      ]
+                    },
+                    "short_instrument": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "long_instrument": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "short_usd": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "protection_usd": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "expiry_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "quantity_btc": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "responsibility_interval_usd": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "settlement_currency": {
+                      "const": "BTC"
+                    },
+                    "venue": {
+                      "const": "Deribit"
+                    },
+                    "underlying": {
+                      "const": "BTC"
+                    }
+                  },
+                  "required": [
+                    "side",
+                    "short_instrument",
+                    "long_instrument",
+                    "short_usd",
+                    "protection_usd",
+                    "expiry_ms",
+                    "quantity_btc",
+                    "responsibility_interval_usd",
+                    "settlement_currency",
+                    "venue",
+                    "underlying"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "boundary_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "board_sha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "qualification_failure": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "reason": {
+                      "enum": [
+                        "no_matching_instruments",
+                        "no_common_expiry",
+                        "no_valid_vertical",
+                        "no_positive_credit"
+                      ]
+                    },
+                    "asof_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "evidence_ref": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source_sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "side": {
+                      "enum": [
+                        "put",
+                        "call"
+                      ]
+                    },
+                    "venue": {
+                      "const": "Deribit"
+                    },
+                    "underlying": {
+                      "const": "BTC"
+                    },
+                    "expiry_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": [
+                    "reason",
+                    "asof_ms",
+                    "evidence_ref",
+                    "source_sha256",
+                    "side",
+                    "venue",
+                    "underlying",
+                    "expiry_ms"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "boundary",
+            "boundary_id",
+            "board_sha256",
+            "qualification_failure"
+          ]
+        }
+      },
+      "required": [
+        "put",
+        "call"
+      ]
+    },
+    "phenomena": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^p[1-8]$"
+              },
+              "sides": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "put",
+                    "call"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 2,
+                "uniqueItems": true
+              },
+              "boundary_ids": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "call": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "source_observation_refs": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  },
+                  "call": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  }
+                }
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "responsibility"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "hours_to_expiry": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "required": [
+                  "hours_to_expiry"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "sides",
+              "boundary_ids",
+              "source_observation_refs",
+              "description",
+              "kind",
+              "measurements"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^p[1-8]$"
+              },
+              "sides": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "put",
+                    "call"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 2,
+                "uniqueItems": true
+              },
+              "boundary_ids": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "call": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "source_observation_refs": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  },
+                  "call": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  }
+                }
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "position"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "index_usd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "index_zone": {
+                    "enum": [
+                      "outside_liability",
+                      "within_responsibility",
+                      "beyond_protection"
+                    ]
+                  },
+                  "short_distance_usd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "protection_distance_usd": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "index_usd",
+                  "index_zone",
+                  "short_distance_usd",
+                  "protection_distance_usd"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "sides",
+              "boundary_ids",
+              "source_observation_refs",
+              "description",
+              "kind",
+              "measurements"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^p[1-8]$"
+              },
+              "sides": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "put",
+                    "call"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 2,
+                "uniqueItems": true
+              },
+              "boundary_ids": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "call": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "source_observation_refs": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  },
+                  "call": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  }
+                }
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "structures"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "near_radius_usd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "region": {
+                          "enum": [
+                            "near_boundary",
+                            "outside_liability",
+                            "inside_liability"
+                          ]
+                        },
+                        "level_count": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "range_usd": {
+                          "type": "array",
+                          "items": {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          "minItems": 2,
+                          "maxItems": 2
+                        },
+                        "between_index_and_short_count": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "oi_structure_levels": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "derived_structure_levels": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "nearest_short_distance_usd": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "beyond_protection_count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "oi_call_btc_known": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "oi_put_btc_known": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "oi_call_levels": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "oi_put_levels": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "path_levels": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "crossed_levels": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "region",
+                        "level_count",
+                        "range_usd",
+                        "between_index_and_short_count",
+                        "oi_structure_levels",
+                        "derived_structure_levels",
+                        "nearest_short_distance_usd",
+                        "beyond_protection_count",
+                        "oi_call_btc_known",
+                        "oi_put_btc_known",
+                        "oi_call_levels",
+                        "oi_put_levels",
+                        "path_levels",
+                        "crossed_levels"
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 3
+                  }
+                },
+                "required": [
+                  "near_radius_usd",
+                  "groups"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "sides",
+              "boundary_ids",
+              "source_observation_refs",
+              "description",
+              "kind",
+              "measurements"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^p[1-8]$"
+              },
+              "sides": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "put",
+                    "call"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 2,
+                "uniqueItems": true
+              },
+              "boundary_ids": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "call": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "source_observation_refs": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "put": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  },
+                  "call": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^o[1-9][0-9]*$"
+                    },
+                    "uniqueItems": true
+                  }
+                }
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "flow"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "window_start_ms": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "window_end_ms": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "region": {
+                          "enum": [
+                            "near_boundary",
+                            "outside_liability",
+                            "inside_liability"
+                          ]
+                        },
+                        "observed_levels": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "structure_levels": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "c_buy_btc": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "c_sell_btc": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "p_buy_btc": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "p_sell_btc": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "c_net_buy_btc": {
+                          "type": "number"
+                        },
+                        "p_net_buy_btc": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "region",
+                        "observed_levels",
+                        "structure_levels",
+                        "c_buy_btc",
+                        "c_sell_btc",
+                        "p_buy_btc",
+                        "p_sell_btc",
+                        "c_net_buy_btc",
+                        "p_net_buy_btc"
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 3
+                  }
+                },
+                "required": [
+                  "window_start_ms",
+                  "window_end_ms",
+                  "groups"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "sides",
+              "boundary_ids",
+              "source_observation_refs",
+              "description",
+              "kind",
+              "measurements"
+            ]
+          }
+        ]
+      },
+      "maxItems": 8
+    },
+    "critical_gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "side": {
+            "enum": [
+              "put",
+              "call"
+            ]
+          },
+          "code": {
+            "enum": [
+              "candidate_missing",
+              "index_missing",
+              "spatial_geometry_missing"
+            ]
+          },
+          "blocks_this_side": {
+            "const": true
+          },
+          "blocks_all_sides": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "side",
+          "code",
+          "blocks_this_side",
+          "blocks_all_sides"
+        ]
+      },
+      "maxItems": 4
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "assessable_sides": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "put",
+              "call"
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 2
+        },
+        "at_least_one_side_assessable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "assessable_sides",
+        "at_least_one_side_assessable"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "mode",
+    "cutoff_ms",
+    "sides",
+    "phenomena",
+    "critical_gaps",
+    "coverage"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Paired compact structural player observations"
+}

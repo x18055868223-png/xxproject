@@ -1070,6 +1070,8 @@ def collect_structure(archive: Archive, state: dict[str, Any], deribit: Deribit,
         snap = expiry_structure.snapshot(rows, expiry_ms=expiry, now_ms=now_ms)
         if snap is None:
             continue
+        # The archive tick starts before this snapshot is ready.
+        snap["available_at_ms"] = int(time.time() * 1000)
         archive.append_line(f"structure/{_utc(expiry).strftime('%Y-%m-%d')}.jsonl", snap, at_ms=now_ms, kind="structure")
         last[str(expiry)] = now_ms
         written += 1

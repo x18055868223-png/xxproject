@@ -1,0 +1,180 @@
+{
+  "contract": {
+    "side": "put",
+    "short_instrument": "SYNTHETIC-P95",
+    "long_instrument": "SYNTHETIC-P85",
+    "short_strike_usd": 95,
+    "long_strike_usd": 85,
+    "expiry_ms": 1794729600000
+  },
+  "entry_at_ms": 1794650700000,
+  "entry_index_usd": 100,
+  "historical_facts": [
+    "合成：Pin100外出后两次返回，Put95未进入。"
+  ],
+  "accepted_conditions": [
+    "已观察的局部返回位于Put95责任外；不假定将来必然返回。"
+  ],
+  "invalidation": "entry_not_returned",
+  "invalidation_meaning": "入场后出现严格进入责任区的采样，且至固定检查点没有后续严格返回责任外的采样。",
+  "check_clock": {
+    "first_at_ms": 1794650760000,
+    "interval_ms": 60000
+  },
+  "sampling": "btc_usd UTC一分钟采样；严格越过短腿才进入，严格回到外侧才返回；触及不进入也不返回，不推断采样间路径。",
+  "ard_basis": {
+    "facts": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": {
+        "anchor": {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        "frozen_at_ms": 1794650400000,
+        "valid_samples": 5,
+        "first": {
+          "t": 1794650460000,
+          "price": 100,
+          "relative": 0.0
+        },
+        "last": {
+          "t": 1794650700000,
+          "price": 100,
+          "relative": 0.0
+        }
+      },
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [
+        {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        }
+      ],
+      "changes": [],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 5,
+      "full": true,
+      "method_comparable": true,
+      "first": {
+        "t": 1794650460000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "last": {
+        "t": 1794650700000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "occupancy_pct": 60.0,
+      "events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650520000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "leave",
+          "at_ms": 1794650640000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650700000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "current_events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650520000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "leave",
+          "at_ms": 1794650640000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650700000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "relation": "repeated_returns",
+      "current_segment_start": {
+        "t": 1794650460000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "price_displacement_usd": 0,
+      "pin_displacement_usd": 0.0,
+      "relative_displacement_usd": 0.0
+    },
+    "responsibility_meaning": "依赖已观测的责任外局部返回作为有限背景，非阻断保证。",
+    "review_on": [
+      "Pin改变、价格离开原100±2邻域并向95收缩余量时复核；仅原短腿破坏规则可机械判定。"
+    ]
+  }
+}

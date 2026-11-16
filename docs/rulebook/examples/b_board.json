@@ -1,0 +1,87 @@
+{
+  "schema": "structural_board@0.1",
+  "case_id": "synthetic_b_put",
+  "cutoff_ms": 1794405600000,
+  "mode": "frozen_observation",
+  "boundary_id": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e",
+  "boundary": {
+    "venue": "Deribit",
+    "underlying": "BTC",
+    "side": "put",
+    "short_instrument": "BTC-12NOV26-76000-P",
+    "long_instrument": "BTC-12NOV26-74000-P",
+    "short_usd": 76000.0,
+    "protection_usd": 74000.0,
+    "expiry_ms": 1794470400000,
+    "quantity_btc": 1.0,
+    "responsibility_interval_usd": [
+      74000.0,
+      76000.0
+    ],
+    "settlement_currency": "BTC"
+  },
+  "observations": [
+    {
+      "id": "o1",
+      "kind": "position",
+      "boundary_id": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e",
+      "level_usd": 80600.0,
+      "short_offset_usd": 4600.0,
+      "protection_offset_usd": 6600.0,
+      "measurements": {
+        "index_usd": 80600.0
+      },
+      "source_ref": "level_card.index_usd",
+      "observed_at_ms": null,
+      "window_start_ms": null,
+      "window_end_ms": null,
+      "source_sha256": "9223d96b8645cce46fa68b3e17c5d0f15dc5590c7143ab8160a124241f5b1696",
+      "description": "短腿 76000、保护腿 74000 USD；冻结指数 80600 USD。"
+    },
+    {
+      "id": "o2",
+      "kind": "contract_terms",
+      "boundary_id": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e",
+      "level_usd": 76000.0,
+      "short_offset_usd": 0.0,
+      "protection_offset_usd": 2000.0,
+      "measurements": {
+        "usd_intrinsic_cap": 2000.0,
+        "btc_contract_cap": null
+      },
+      "source_ref": "L1.liability",
+      "observed_at_ms": 1794405540000,
+      "window_start_ms": null,
+      "window_end_ms": null,
+      "source_sha256": "f7c90cde6f0a7ac6713c5db0007d546a5f86f48a3c017acbd8c107604f242e3f",
+      "description": "短腿 76000、保护腿 74000 USD；复用合同责任核算；BTC赔付上界与USD内在值上界分列，不视为实际成交或净损失。"
+    }
+  ],
+  "background": [],
+  "obligation_state": {
+    "inventory_coverage": "unknown",
+    "dealer_gamma": "unknown",
+    "stability": "unknown",
+    "movement": "unknown",
+    "path_feedback": "unknown"
+  },
+  "unknowns": [
+    "causal_flow_confirmation",
+    "contract_expiry_structure_missing_stale_or_mismatched",
+    "dealer_position_direction",
+    "level_source_clocks_not_exported",
+    "local_hedging_feedback",
+    "market_gamma_context_unavailable",
+    "obligation_inventory_incomplete",
+    "path_window_unavailable",
+    "structure_movement"
+  ],
+  "provenance": {
+    "case_sha256": "c3f620042a5a2c207c3bd7af79183918c05f7bc48278a1bb5613384f2ccc4d31",
+    "contract_source_ref": "L1.contract",
+    "contract_asof_ms": 1794405540000,
+    "contract_sha256": "f26b8ce6f0ddc563c720b080de11c5c9c011f399c35dce20c22cc50ed42d075a",
+    "level_card_sha256": "9223d96b8645cce46fa68b3e17c5d0f15dc5590c7143ab8160a124241f5b1696",
+    "backfilled": true
+  }
+}

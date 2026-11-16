@@ -1,0 +1,774 @@
+[
+  {
+    "name": "稳定Pin反复返回",
+    "synthetic": true,
+    "put_legs": [
+      95,
+      85
+    ],
+    "call_legs": [
+      110,
+      120
+    ],
+    "prices": [
+      100,
+      104,
+      100,
+      96,
+      100
+    ],
+    "spot_flow_btc_same_5min": null,
+    "ard": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": {
+        "anchor": {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        "frozen_at_ms": 1794650400000,
+        "valid_samples": 5,
+        "first": {
+          "t": 1794650460000,
+          "price": 100,
+          "relative": 0.0
+        },
+        "last": {
+          "t": 1794650700000,
+          "price": 100,
+          "relative": 0.0
+        }
+      },
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [
+        {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        }
+      ],
+      "changes": [],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 5,
+      "full": true,
+      "method_comparable": true,
+      "first": {
+        "t": 1794650460000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "last": {
+        "t": 1794650700000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "occupancy_pct": 60.0,
+      "events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650520000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "leave",
+          "at_ms": 1794650640000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650700000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "current_events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650520000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "leave",
+          "at_ms": 1794650640000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650700000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "relation": "repeated_returns",
+      "current_segment_start": {
+        "t": 1794650460000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "price_displacement_usd": 0,
+      "pin_displacement_usd": 0.0,
+      "relative_displacement_usd": 0.0
+    },
+    "text": "**锚相对动态ARD（11-14 10:00:00 UTC—11-14 10:05:00 UTC）。** 可用截面中的本期Pin均为100；只表示所见截面未变，不代表每次刷新都未迁移。按最近已知锚对齐分钟价，有效5/5个采样，并非逐次刷新历史完整；超过40分钟的旧锚、缺价或缺口不补齐。覆盖端点：价格位移+0.0、Pin位移+0.0，价格减Pin由+0.0变为+0.0 USD。末个有效分钟11-14 10:05:00 UTC距当时Pin 0 USD。半宽固定为窗前已知的2 USD，中心取历史逐点已知Pin；有效采样停留率60.0%。当前可比片段最近离开邻域：11-14 10:04:00 UTC。当前可比片段最近返回邻域：11-14 10:05:00 UTC。末个有效采样在邻域内。同一已知Pin片段观察到反复离开后返回，不证明吸附。"
+  },
+  {
+    "name": "稳定Pin采样持续迁离",
+    "synthetic": true,
+    "put_legs": [
+      95,
+      85
+    ],
+    "call_legs": [
+      110,
+      120
+    ],
+    "prices": [
+      101,
+      102,
+      103,
+      104,
+      105
+    ],
+    "spot_flow_btc_same_5min": 2,
+    "ard": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": {
+        "anchor": {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        "frozen_at_ms": 1794650400000,
+        "valid_samples": 5,
+        "first": {
+          "t": 1794650460000,
+          "price": 101,
+          "relative": 1.0
+        },
+        "last": {
+          "t": 1794650700000,
+          "price": 105,
+          "relative": 5.0
+        }
+      },
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [
+        {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        }
+      ],
+      "changes": [],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 5,
+      "full": true,
+      "method_comparable": true,
+      "first": {
+        "t": 1794650460000,
+        "price": 101,
+        "pin": 100.0,
+        "relative": 1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "last": {
+        "t": 1794650700000,
+        "price": 105,
+        "pin": 100.0,
+        "relative": 5.0,
+        "distance": 5.0,
+        "inside": false,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "occupancy_pct": 40.0,
+      "events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "current_events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "relation": "sampled_distance_increasing",
+      "current_segment_start": {
+        "t": 1794650460000,
+        "price": 101,
+        "pin": 100.0,
+        "relative": 1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "price_displacement_usd": 4,
+      "pin_displacement_usd": 0.0,
+      "relative_displacement_usd": 4.0
+    },
+    "text": "**锚相对动态ARD（11-14 10:00:00 UTC—11-14 10:05:00 UTC）。** 可用截面中的本期Pin均为100；只表示所见截面未变，不代表每次刷新都未迁移。按最近已知锚对齐分钟价，有效5/5个采样，并非逐次刷新历史完整；超过40分钟的旧锚、缺价或缺口不补齐。覆盖端点：价格位移+4.0、Pin位移+0.0，价格减Pin由+1.0变为+5.0 USD。末个有效分钟11-14 10:05:00 UTC距当时Pin 5 USD。半宽固定为窗前已知的2 USD，中心取历史逐点已知Pin；有效采样停留率40.0%。当前可比片段最近离开邻域：11-14 10:03:00 UTC。最近离开后，本可比片段采样未见返回。末个有效采样在邻域外。可比分钟采样中的相对距离持续扩大，不预测随后方向。"
+  },
+  {
+    "name": "Pin与价格共同上移",
+    "synthetic": true,
+    "put_legs": [
+      95,
+      85
+    ],
+    "call_legs": [
+      130,
+      140
+    ],
+    "prices": [
+      101,
+      102,
+      111,
+      112,
+      121
+    ],
+    "spot_flow_btc_same_5min": null,
+    "ard": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": {
+        "anchor": {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        "frozen_at_ms": 1794650400000,
+        "valid_samples": 5,
+        "first": {
+          "t": 1794650460000,
+          "price": 101,
+          "relative": 1.0
+        },
+        "last": {
+          "t": 1794650700000,
+          "price": 121,
+          "relative": 21.0
+        }
+      },
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [
+        {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        {
+          "at": 1794650580000,
+          "ready": 1794650580000,
+          "pin": 110.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        {
+          "at": 1794650700000,
+          "ready": 1794650700000,
+          "pin": 120.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        }
+      ],
+      "changes": [
+        {
+          "from_pin": 100.0,
+          "to_pin": 110.0,
+          "observed_at_ms": 1794650580000,
+          "confirmed_at_ms": 1794650580000,
+          "comparable": true
+        },
+        {
+          "from_pin": 110.0,
+          "to_pin": 120.0,
+          "observed_at_ms": 1794650700000,
+          "confirmed_at_ms": 1794650700000,
+          "comparable": true
+        }
+      ],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 5,
+      "full": true,
+      "method_comparable": true,
+      "first": {
+        "t": 1794650460000,
+        "price": 101,
+        "pin": 100.0,
+        "relative": 1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "last": {
+        "t": 1794650700000,
+        "price": 121,
+        "pin": 120.0,
+        "relative": 1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 3,
+        "identity": [
+          120.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "occupancy_pct": 100.0,
+      "events": [],
+      "current_events": [],
+      "relation": "same_direction_endpoint_changes",
+      "current_segment_start": {
+        "t": 1794650700000,
+        "price": 121,
+        "pin": 120.0,
+        "relative": 1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 3,
+        "identity": [
+          120.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "price_displacement_usd": 20,
+      "pin_displacement_usd": 20.0,
+      "relative_displacement_usd": 0.0
+    },
+    "text": "**锚相对动态ARD（11-14 10:00:00 UTC—11-14 10:05:00 UTC）。** 本期Pin观测值100→120 USD；最近一次变化110→120，观测于11-14 10:05:00 UTC、至11-14 10:05:00 UTC已确认。按最近已知锚对齐分钟价，有效5/5个采样，并非逐次刷新历史完整；超过40分钟的旧锚、缺价或缺口不补齐。覆盖端点：价格位移+20.0、Pin位移+20.0，价格减Pin由+1.0变为+1.0 USD。最近同价已知Pin片段自11-14 10:05:00 UTC起，价格减Pin由+1.0变为+1.0 USD。末个有效分钟11-14 10:05:00 UTC距当时Pin 1 USD。另以窗初已知Pin 100固定参照，价格减该锚由+1.0变为+21.0 USD（有效5/5个分钟）；参照不随Pin迁移。半宽固定为窗前已知的2 USD，中心取历史逐点已知Pin；有效采样停留率100.0%。当前可比片段没有可确认的邻域离返事件。末个有效采样在邻域内。价格与锚端点同向变化，不能证明Pin驱动价格。"
+  },
+  {
+    "name": "Pin与Call短腿同位",
+    "synthetic": true,
+    "put_legs": [
+      95,
+      85
+    ],
+    "call_legs": [
+      110,
+      120
+    ],
+    "prices": [
+      109,
+      111,
+      109,
+      111,
+      109
+    ],
+    "spot_flow_btc_same_5min": null,
+    "ard": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": {
+        "anchor": {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 110.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        "frozen_at_ms": 1794650400000,
+        "valid_samples": 5,
+        "first": {
+          "t": 1794650460000,
+          "price": 109,
+          "relative": -1.0
+        },
+        "last": {
+          "t": 1794650700000,
+          "price": 109,
+          "relative": -1.0
+        }
+      },
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [
+        {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 110.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        }
+      ],
+      "changes": [],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 5,
+      "full": true,
+      "method_comparable": true,
+      "first": {
+        "t": 1794650460000,
+        "price": 109,
+        "pin": 110.0,
+        "relative": -1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          110.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "last": {
+        "t": 1794650700000,
+        "price": 109,
+        "pin": 110.0,
+        "relative": -1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          110.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "occupancy_pct": 100.0,
+      "events": [],
+      "current_events": [],
+      "relation": "endpoint_only",
+      "current_segment_start": {
+        "t": 1794650460000,
+        "price": 109,
+        "pin": 110.0,
+        "relative": -1.0,
+        "distance": 1.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          110.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "price_displacement_usd": 0,
+      "pin_displacement_usd": 0.0,
+      "relative_displacement_usd": 0.0
+    },
+    "text": "**锚相对动态ARD（11-14 10:00:00 UTC—11-14 10:05:00 UTC）。** 可用截面中的本期Pin均为110；只表示所见截面未变，不代表每次刷新都未迁移。按最近已知锚对齐分钟价，有效5/5个采样，并非逐次刷新历史完整；超过40分钟的旧锚、缺价或缺口不补齐。覆盖端点：价格位移+0.0、Pin位移+0.0，价格减Pin由-1.0变为-1.0 USD。末个有效分钟11-14 10:05:00 UTC距当时Pin 1 USD。半宽固定为窗前已知的2 USD，中心取历史逐点已知Pin；有效采样停留率100.0%。当前可比片段没有可确认的邻域离返事件。末个有效采样在邻域内。仅作端点比较，不据此声称持续迁离或吸附。"
+  },
+  {
+    "name": "Pin历史缺失",
+    "synthetic": true,
+    "put_legs": [
+      95,
+      85
+    ],
+    "call_legs": [
+      110,
+      120
+    ],
+    "prices": [
+      100,
+      101,
+      100,
+      99,
+      100
+    ],
+    "spot_flow_btc_same_5min": null,
+    "ard": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": null,
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [],
+      "changes": [],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 0,
+      "full": false,
+      "method_comparable": false,
+      "first": null,
+      "last": null,
+      "occupancy_pct": null,
+      "events": [],
+      "current_events": [],
+      "relation": "coverage_or_method_limited",
+      "current_segment_start": null,
+      "price_displacement_usd": null,
+      "pin_displacement_usd": null,
+      "relative_displacement_usd": null
+    },
+    "text": "**锚相对动态ARD（11-14 10:00:00 UTC—11-14 10:05:00 UTC）。** 缺可按当时可用时间对齐的本期Pin历史，迁移未确认；不拿当前Pin回看历史，也不据此弃权。"
+  },
+  {
+    "name": "历史回归与当前同向净卖须并读",
+    "synthetic": true,
+    "put_legs": [
+      95,
+      85
+    ],
+    "call_legs": [
+      110,
+      120
+    ],
+    "prices": [
+      100,
+      104,
+      100,
+      99,
+      98
+    ],
+    "spot_flow_btc_same_5min": -2,
+    "ard": {
+      "expiry_ms": 1794729600000,
+      "index_name": "btc_usd",
+      "start_ms": 1794650400000,
+      "end_ms": 1794650700000,
+      "fixed_reference": {
+        "anchor": {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        },
+        "frozen_at_ms": 1794650400000,
+        "valid_samples": 5,
+        "first": {
+          "t": 1794650460000,
+          "price": 100,
+          "relative": 0.0
+        },
+        "last": {
+          "t": 1794650700000,
+          "price": 98,
+          "relative": -2.0
+        }
+      },
+      "band": {
+        "half_width_usd": 2.0,
+        "band_clamped": null,
+        "frozen_at_ms": 1794650400000,
+        "source_at_ms": 1794650340000,
+        "available_at_ms": 1794650340000,
+        "source": "factor_snapshot.anchor.band_half"
+      },
+      "observations": [
+        {
+          "at": 1794650400000,
+          "ready": 1794650400000,
+          "pin": 100.0,
+          "method": "fixture-v1",
+          "source": "synthetic fixture"
+        }
+      ],
+      "changes": [],
+      "unclocked_rows": 0,
+      "expected_samples": 5,
+      "valid_samples": 5,
+      "full": true,
+      "method_comparable": true,
+      "first": {
+        "t": 1794650460000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "last": {
+        "t": 1794650700000,
+        "price": 98,
+        "pin": 100.0,
+        "relative": -2.0,
+        "distance": 2.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "occupancy_pct": 80.0,
+      "events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650520000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "current_events": [
+        {
+          "kind": "leave",
+          "at_ms": 1794650520000,
+          "segment": 1,
+          "pin": 100.0
+        },
+        {
+          "kind": "return",
+          "at_ms": 1794650580000,
+          "segment": 1,
+          "pin": 100.0
+        }
+      ],
+      "relation": "departed_then_returned",
+      "current_segment_start": {
+        "t": 1794650460000,
+        "price": 100,
+        "pin": 100.0,
+        "relative": 0.0,
+        "distance": 0.0,
+        "inside": true,
+        "segment": 1,
+        "identity": [
+          100.0,
+          "fixture-v1",
+          "synthetic fixture"
+        ]
+      },
+      "price_displacement_usd": -2,
+      "pin_displacement_usd": 0.0,
+      "relative_displacement_usd": -2.0
+    },
+    "text": "**锚相对动态ARD（11-14 10:00:00 UTC—11-14 10:05:00 UTC）。** 可用截面中的本期Pin均为100；只表示所见截面未变，不代表每次刷新都未迁移。按最近已知锚对齐分钟价，有效5/5个采样，并非逐次刷新历史完整；超过40分钟的旧锚、缺价或缺口不补齐。覆盖端点：价格位移-2.0、Pin位移+0.0，价格减Pin由+0.0变为-2.0 USD。末个有效分钟11-14 10:05:00 UTC距当时Pin 2 USD。半宽固定为窗前已知的2 USD，中心取历史逐点已知Pin；有效采样停留率80.0%。当前可比片段最近离开邻域：11-14 10:02:00 UTC。当前可比片段最近返回邻域：11-14 10:03:00 UTC。末个有效采样在邻域内。同一已知Pin片段观察到偏离后返回，不保证仍在围绕。"
+  }
+]

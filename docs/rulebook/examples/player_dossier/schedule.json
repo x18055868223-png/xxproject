@@ -1,0 +1,15 @@
+{
+  "plan_id": "daily-deribit-btc-r2@1",
+  "research": "AI Player v1 / ARD closeout 2026-11-15",
+  "mode": "SHADOW_ONLY",
+  "effective_at_ms": 1794837600000,
+  "scheduled_at_utc": "14:00",
+  "target_expiry_utc": "next day 08:00",
+  "candidate_round": "r2",
+  "candidate_source": "existing workbench native pair and archived r2 cards",
+  "expiry_offset_ms": 64800000,
+  "deal_grace_ms": 1200000,
+  "reply_grace_ms": 1200000,
+  "response_channel": "MANUAL_IMPORT",
+  "selection": "first valid full response persisted before deadline, no retrospective replacement"
+}

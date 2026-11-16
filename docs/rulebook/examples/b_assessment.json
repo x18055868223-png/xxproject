@@ -1,0 +1,14 @@
+{
+  "schema": "structural_assessment@0.1",
+  "board_sha256": "44fc78bb6f13fea06aa406ea284e6d551cd4658654f7702574d2ecfb252179d0",
+  "boundary_id": "bccf56830a9638ba99c4a1cd35c9ec809ab192ad68c36ef39335c2fbd8909e8e",
+  "decision": "Unknown",
+  "scope": "structure_only",
+  "execution_authorized": false,
+  "observation_refs": [],
+  "structural_conditions": [],
+  "counterevidence": [],
+  "unknowns": [
+    "短腿76000、保护腿74000的本期空间与义务关系缺少合格墙位及OI；完整路径与成交证据不可读。"
+  ]
+}

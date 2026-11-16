@@ -1,0 +1,305 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "structural_player_assessment@0.1"
+    },
+    "view_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "decision": {
+      "enum": [
+        "Accept",
+        "Reject",
+        "Unknown"
+      ]
+    },
+    "at_least_one_acceptable": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "selected_side": {
+      "enum": [
+        "put",
+        "call",
+        null
+      ]
+    },
+    "side_assessments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "put": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "acceptable",
+                "unfavorable",
+                "unassessable",
+                "no_qualified_vertical"
+              ]
+            },
+            "phenomenon_refs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^p[1-8]$"
+              },
+              "uniqueItems": true
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "state",
+            "phenomenon_refs",
+            "reason"
+          ]
+        },
+        "call": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "enum": [
+                "acceptable",
+                "unfavorable",
+                "unassessable",
+                "no_qualified_vertical"
+              ]
+            },
+            "phenomenon_refs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^p[1-8]$"
+              },
+              "uniqueItems": true
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "state",
+            "phenomenon_refs",
+            "reason"
+          ]
+        }
+      },
+      "required": [
+        "put",
+        "call"
+      ]
+    },
+    "scope": {
+      "const": "structure_only"
+    },
+    "execution_authorized": {
+      "const": false
+    }
+  },
+  "required": [
+    "schema",
+    "view_sha256",
+    "decision",
+    "at_least_one_acceptable",
+    "selected_side",
+    "side_assessments",
+    "scope",
+    "execution_authorized"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "Accept"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "at_least_one_acceptable": {
+            "const": true
+          },
+          "selected_side": {
+            "enum": [
+              "put",
+              "call"
+            ]
+          }
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "selected_side": {
+                "const": "put"
+              },
+              "side_assessments": {
+                "properties": {
+                  "put": {
+                    "properties": {
+                      "state": {
+                        "const": "acceptable"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "selected_side": {
+                "const": "call"
+              },
+              "side_assessments": {
+                "properties": {
+                  "call": {
+                    "properties": {
+                      "state": {
+                        "const": "acceptable"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "Reject"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "at_least_one_acceptable": {
+            "const": false
+          },
+          "selected_side": {
+            "type": "null"
+          },
+          "side_assessments": {
+            "properties": {
+              "put": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "unfavorable",
+                      "no_qualified_vertical"
+                    ]
+                  }
+                }
+              },
+              "call": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "unfavorable",
+                      "no_qualified_vertical"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "Unknown"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "at_least_one_acceptable": {
+            "const": null
+          },
+          "selected_side": {
+            "type": "null"
+          },
+          "side_assessments": {
+            "properties": {
+              "put": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "unfavorable",
+                      "unassessable",
+                      "no_qualified_vertical"
+                    ]
+                  }
+                }
+              },
+              "call": {
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "unfavorable",
+                      "unassessable",
+                      "no_qualified_vertical"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "side_assessments": {
+                "properties": {
+                  "put": {
+                    "properties": {
+                      "state": {
+                        "const": "unassessable"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "side_assessments": {
+                "properties": {
+                  "call": {
+                    "properties": {
+                      "state": {
+                        "const": "unassessable"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Active paired structural assessment, separate from observations"
+}

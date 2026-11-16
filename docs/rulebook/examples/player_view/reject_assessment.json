@@ -1,0 +1,27 @@
+{
+  "schema": "structural_player_assessment@0.1",
+  "view_sha256": "2c75a50612e5305ba30e0c02211fe22209e0ee1d74b7431f7697de422295d954",
+  "decision": "Reject",
+  "at_least_one_acceptable": false,
+  "selected_side": null,
+  "side_assessments": {
+    "put": {
+      "state": "unfavorable",
+      "phenomenon_refs": [
+        "p2",
+        "p3"
+      ],
+      "reason": "本示范采用新承保时尚未进入责任区间的条件；Put短腿81000/保护腿79000，指数80600已在责任区间内，且已有区间穿越观察，此侧不满足该条件。"
+    },
+    "call": {
+      "state": "unfavorable",
+      "phenomenon_refs": [
+        "p4",
+        "p5"
+      ],
+      "reason": "同一冻结状态下Call短腿80000/保护腿82000，指数80600也已在责任区间内，且已有区间穿越观察；该侧同样不满足本示范的新承保条件。两侧均有具体反证才Reject。"
+    }
+  },
+  "scope": "structure_only",
+  "execution_authorized": false
+}

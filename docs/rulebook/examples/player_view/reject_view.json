@@ -1,0 +1,312 @@
+{
+  "schema": "structural_player_view@0.1",
+  "mode": "frozen_observation",
+  "cutoff_ms": 1794405600000,
+  "sides": {
+    "put": {
+      "status": "assessable",
+      "boundary": {
+        "venue": "Deribit",
+        "underlying": "BTC",
+        "side": "put",
+        "short_instrument": "BTC-12NOV26-81000-P",
+        "long_instrument": "BTC-12NOV26-79000-P",
+        "short_usd": 81000.0,
+        "protection_usd": 79000.0,
+        "expiry_ms": 1794470400000,
+        "quantity_btc": 1.0,
+        "responsibility_interval_usd": [
+          79000.0,
+          81000.0
+        ],
+        "settlement_currency": "BTC"
+      },
+      "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+      "board_sha256": "10362c8d69737acead319b5e5a95412ce787a34977e2c437aca0311be87201ef",
+      "qualification_failure": null
+    },
+    "call": {
+      "status": "assessable",
+      "boundary": {
+        "venue": "Deribit",
+        "underlying": "BTC",
+        "side": "call",
+        "short_instrument": "BTC-12NOV26-80000-C",
+        "long_instrument": "BTC-12NOV26-82000-C",
+        "short_usd": 80000.0,
+        "protection_usd": 82000.0,
+        "expiry_ms": 1794470400000,
+        "quantity_btc": 1.0,
+        "responsibility_interval_usd": [
+          80000.0,
+          82000.0
+        ],
+        "settlement_currency": "BTC"
+      },
+      "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+      "board_sha256": "bc44e47904e022c6268eb5ed3e86307361404e8e3a328cd1adc4bb6f1dd28f89",
+      "qualification_failure": null
+    }
+  },
+  "phenomena": [
+    {
+      "id": "p1",
+      "kind": "responsibility",
+      "sides": [
+        "put",
+        "call"
+      ],
+      "boundary_ids": {
+        "put": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "call": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1"
+      },
+      "measurements": {
+        "hours_to_expiry": 18.0
+      },
+      "source_observation_refs": {},
+      "description": "PUT 短腿81000/保护腿79000 USD；CALL 短腿80000/保护腿82000 USD，距到期18h。净对冲义务的方向与强度未识别；采用已观测空间、OI与路径作条件判断。"
+    },
+    {
+      "id": "p2",
+      "kind": "position",
+      "sides": [
+        "put"
+      ],
+      "boundary_ids": {
+        "put": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0"
+      },
+      "measurements": {
+        "index_usd": 80600.0,
+        "index_zone": "within_responsibility",
+        "short_distance_usd": 400.0,
+        "protection_distance_usd": 1600.0
+      },
+      "source_observation_refs": {
+        "put": [
+          "o1"
+        ]
+      },
+      "description": "PUT 81000/79000：指数80600 USD，距短腿400 USD，位置为两腿责任区间内。"
+    },
+    {
+      "id": "p3",
+      "kind": "structures",
+      "sides": [
+        "put"
+      ],
+      "boundary_ids": {
+        "put": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0"
+      },
+      "measurements": {
+        "near_radius_usd": 200.0,
+        "groups": [
+          {
+            "region": "near_boundary",
+            "level_count": 2,
+            "range_usd": [
+              79000.0,
+              81000.0
+            ],
+            "between_index_and_short_count": 0,
+            "oi_structure_levels": 1,
+            "derived_structure_levels": 1,
+            "nearest_short_distance_usd": 0.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 400.0,
+            "oi_put_btc_known": 1000.0,
+            "oi_call_levels": 2,
+            "oi_put_levels": 2,
+            "path_levels": 2,
+            "crossed_levels": 2
+          },
+          {
+            "region": "outside_liability",
+            "level_count": 1,
+            "range_usd": [
+              82000.0,
+              82000.0
+            ],
+            "between_index_and_short_count": 0,
+            "oi_structure_levels": 1,
+            "derived_structure_levels": 0,
+            "nearest_short_distance_usd": 1000.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 200.0,
+            "oi_put_btc_known": 500.0,
+            "oi_call_levels": 1,
+            "oi_put_levels": 1,
+            "path_levels": 1,
+            "crossed_levels": 0
+          },
+          {
+            "region": "inside_liability",
+            "level_count": 3,
+            "range_usd": [
+              78000.0,
+              80500.0
+            ],
+            "between_index_and_short_count": 0,
+            "oi_structure_levels": 1,
+            "derived_structure_levels": 2,
+            "nearest_short_distance_usd": 500.0,
+            "beyond_protection_count": 1,
+            "oi_call_btc_known": 600.0,
+            "oi_put_btc_known": 1500.0,
+            "oi_call_levels": 3,
+            "oi_put_levels": 3,
+            "path_levels": 3,
+            "crossed_levels": 2
+          }
+        ]
+      },
+      "source_observation_refs": {
+        "put": [
+          "o10",
+          "o11",
+          "o12",
+          "o13",
+          "o14",
+          "o23",
+          "o24",
+          "o25",
+          "o26",
+          "o27",
+          "o28",
+          "o3",
+          "o4",
+          "o5",
+          "o6",
+          "o7",
+          "o8",
+          "o9"
+        ]
+      },
+      "description": "PUT 81000/79000：两腿边界附近79000–81000 USD，PUT OI 1000 BTC；短腿责任外侧82000 USD，PUT OI 500 BTC；短腿责任内侧78000–80500 USD，PUT OI 1500 BTC。前24h，其余位置结构部分有穿越记录。"
+    },
+    {
+      "id": "p4",
+      "kind": "position",
+      "sides": [
+        "call"
+      ],
+      "boundary_ids": {
+        "call": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1"
+      },
+      "measurements": {
+        "index_usd": 80600.0,
+        "index_zone": "within_responsibility",
+        "short_distance_usd": 600.0,
+        "protection_distance_usd": 1400.0
+      },
+      "source_observation_refs": {
+        "call": [
+          "o1"
+        ]
+      },
+      "description": "CALL 80000/82000：指数80600 USD，距短腿600 USD，位置为两腿责任区间内。"
+    },
+    {
+      "id": "p5",
+      "kind": "structures",
+      "sides": [
+        "call"
+      ],
+      "boundary_ids": {
+        "call": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1"
+      },
+      "measurements": {
+        "near_radius_usd": 200.0,
+        "groups": [
+          {
+            "region": "near_boundary",
+            "level_count": 2,
+            "range_usd": [
+              80000.0,
+              82000.0
+            ],
+            "between_index_and_short_count": 0,
+            "oi_structure_levels": 1,
+            "derived_structure_levels": 1,
+            "nearest_short_distance_usd": 0.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 400.0,
+            "oi_put_btc_known": 1000.0,
+            "oi_call_levels": 2,
+            "oi_put_levels": 2,
+            "path_levels": 2,
+            "crossed_levels": 1
+          },
+          {
+            "region": "outside_liability",
+            "level_count": 2,
+            "range_usd": [
+              78000.0,
+              79000.0
+            ],
+            "between_index_and_short_count": 0,
+            "oi_structure_levels": 2,
+            "derived_structure_levels": 0,
+            "nearest_short_distance_usd": 1000.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 400.0,
+            "oi_put_btc_known": 1000.0,
+            "oi_call_levels": 2,
+            "oi_put_levels": 2,
+            "path_levels": 2,
+            "crossed_levels": 1
+          },
+          {
+            "region": "inside_liability",
+            "level_count": 2,
+            "range_usd": [
+              80500.0,
+              81000.0
+            ],
+            "between_index_and_short_count": 1,
+            "oi_structure_levels": 0,
+            "derived_structure_levels": 2,
+            "nearest_short_distance_usd": 500.0,
+            "beyond_protection_count": 0,
+            "oi_call_btc_known": 400.0,
+            "oi_put_btc_known": 1000.0,
+            "oi_call_levels": 2,
+            "oi_put_levels": 2,
+            "path_levels": 2,
+            "crossed_levels": 2
+          }
+        ]
+      },
+      "source_observation_refs": {
+        "call": [
+          "o10",
+          "o11",
+          "o12",
+          "o13",
+          "o14",
+          "o23",
+          "o24",
+          "o25",
+          "o26",
+          "o27",
+          "o28",
+          "o3",
+          "o4",
+          "o5",
+          "o6",
+          "o7",
+          "o8",
+          "o9"
+        ]
+      },
+      "description": "CALL 80000/82000：两腿边界附近80000–82000 USD，CALL OI 400 BTC；短腿责任外侧78000–79000 USD，CALL OI 400 BTC；短腿责任内侧80500–81000 USD，CALL OI 400 BTC。前24h，指数至短腿间结构均有穿越记录；其余位置结构部分有穿越记录。"
+    }
+  ],
+  "critical_gaps": [],
+  "coverage": {
+    "assessable_sides": [
+      "put",
+      "call"
+    ],
+    "at_least_one_side_assessable": true
+  }
+}

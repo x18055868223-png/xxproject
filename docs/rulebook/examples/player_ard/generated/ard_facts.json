@@ -1,0 +1,126 @@
+{
+  "start_ms": 1794650418743,
+  "end_ms": 1794664818743,
+  "band": null,
+  "observations": [
+    {
+      "at": 1794650405366,
+      "ready": 1794650411959,
+      "pin": 68000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794652225446,
+      "ready": 1794652226811,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794654024844,
+      "ready": 1794654036039,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794655801993,
+      "ready": 1794655805586,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794657603792,
+      "ready": 1794657613532,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794659403414,
+      "ready": 1794659405702,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794661203459,
+      "ready": 1794661223453,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    },
+    {
+      "at": 1794663010761,
+      "ready": 1794663012735,
+      "pin": 67000.0,
+      "method": null,
+      "source": "deribit_public/get_book_summary_by_currency"
+    }
+  ],
+  "changes": [
+    {
+      "from_pin": 68000.0,
+      "to_pin": 67000.0,
+      "observed_at_ms": 1794652225446,
+      "confirmed_at_ms": 1794652226811,
+      "comparable": false
+    }
+  ],
+  "unclocked_rows": 0,
+  "expected_samples": 240,
+  "valid_samples": 240,
+  "full": true,
+  "method_comparable": false,
+  "first": {
+    "t": 1794650460000,
+    "price": 67335.830667,
+    "pin": 68000.0,
+    "relative": -664.169332999998,
+    "distance": 664.169332999998,
+    "inside": null,
+    "segment": 1,
+    "identity": [
+      68000.0,
+      null,
+      "deribit_public/get_book_summary_by_currency"
+    ]
+  },
+  "last": {
+    "t": 1794664800000,
+    "price": 66767.575667,
+    "pin": 67000.0,
+    "relative": -232.42433300000266,
+    "distance": 232.42433300000266,
+    "inside": null,
+    "segment": 2,
+    "identity": [
+      67000.0,
+      null,
+      "deribit_public/get_book_summary_by_currency"
+    ]
+  },
+  "occupancy_pct": null,
+  "events": [],
+  "current_events": [],
+  "relation": "coverage_or_method_limited",
+  "current_segment_start": {
+    "t": 1794652260000,
+    "price": 67207.1725,
+    "pin": 67000.0,
+    "relative": 207.17250000000058,
+    "distance": 207.17250000000058,
+    "inside": null,
+    "segment": 2,
+    "identity": [
+      67000.0,
+      null,
+      "deribit_public/get_book_summary_by_currency"
+    ]
+  },
+  "price_displacement_usd": -568.2550000000047,
+  "pin_displacement_usd": -1000.0,
+  "relative_displacement_usd": 431.74499999999534
+}

@@ -1,0 +1,32 @@
+{
+  "contract": {
+    "venue": "Deribit",
+    "underlying": "BTC",
+    "settlement_currency": "BTC",
+    "quantity_btc": 1.0,
+    "side": "call",
+    "short_instrument": "BTC-15NOV26-67000-C",
+    "long_instrument": "BTC-15NOV26-69000-C",
+    "short_strike_usd": 67000.0,
+    "long_strike_usd": 69000.0,
+    "expiry_ms": 1794729600000
+  },
+  "entry_at_ms": 1794664827197,
+  "entry_index_usd": 66767.575667,
+  "historical_facts": [
+    "窗口首样在保护腿外，该段进入时刻未覆盖。",
+    "最近进入2026-11-14 09:03 UTC；09:58指数67398.926667，入区398.926667 USD；12:59返回责任外。",
+    "冻结读取2026-11-14 14:00:27 UTC仍在短腿67000下方；上述路径都早于假定入场。"
+  ],
+  "accepted_conditions": [
+    "允许触及与检查间出现后已回收的严格进入；入场后新进入且固定检查点未严格返回责任外时撤销。",
+    "不以卖压持续或Pin阻挡作为必要条件。"
+  ],
+  "invalidation": "entry_not_returned",
+  "invalidation_meaning": "入场后出现严格进入责任区的采样，且至固定检查点没有后续严格返回责任外的采样。",
+  "check_clock": {
+    "first_at_ms": 1794664860000,
+    "interval_ms": 60000
+  },
+  "sampling": "btc_usd UTC一分钟采样；严格越过短腿才进入，严格回到外侧才返回；触及不进入也不返回，不推断采样间路径。"
+}

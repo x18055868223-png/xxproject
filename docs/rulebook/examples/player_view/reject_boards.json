@@ -1,0 +1,1118 @@
+{
+  "put": {
+    "schema": "structural_board@0.1",
+    "case_id": "synthetic_both_inside_put",
+    "cutoff_ms": 1794405600000,
+    "mode": "frozen_observation",
+    "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+    "boundary": {
+      "venue": "Deribit",
+      "underlying": "BTC",
+      "side": "put",
+      "short_instrument": "BTC-12NOV26-81000-P",
+      "long_instrument": "BTC-12NOV26-79000-P",
+      "short_usd": 81000.0,
+      "protection_usd": 79000.0,
+      "expiry_ms": 1794470400000,
+      "quantity_btc": 1.0,
+      "responsibility_interval_usd": [
+        79000.0,
+        81000.0
+      ],
+      "settlement_currency": "BTC"
+    },
+    "observations": [
+      {
+        "id": "o1",
+        "kind": "position",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80600.0,
+        "short_offset_usd": -400.0,
+        "protection_offset_usd": 1600.0,
+        "measurements": {
+          "index_usd": 80600.0
+        },
+        "source_ref": "level_card.index_usd",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；冻结指数 80600 USD。"
+      },
+      {
+        "id": "o2",
+        "kind": "contract_terms",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 81000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": 2000.0,
+        "measurements": {
+          "usd_intrinsic_cap": 2000.0,
+          "btc_contract_cap": null
+        },
+        "source_ref": "L1.liability",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "ac96357ec0a9d8d2aaeff6106bd2d5182da6294c82b196a231a27d2321b0b43e",
+        "description": "短腿 81000、保护腿 79000 USD；复用合同责任核算；BTC赔付上界与USD内在值上界分列，不视为实际成交或净损失。"
+      },
+      {
+        "id": "o3",
+        "kind": "space",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 78000.0,
+        "short_offset_usd": -3000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "roles": [
+            "oi_put#1"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 81000、保护腿 79000 USD；本期结构位 78000 USD，记录类型 oi_put#1。"
+      },
+      {
+        "id": "o4",
+        "kind": "space",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 79000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "roles": [
+            "oi_put#2",
+            "long"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 81000、保护腿 79000 USD；本期结构位 79000 USD，记录类型 oi_put#2 / long。"
+      },
+      {
+        "id": "o5",
+        "kind": "space",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": 1000.0,
+        "measurements": {
+          "roles": [
+            "gamma_put#1"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 81000、保护腿 79000 USD；本期结构位 80000 USD，记录类型 gamma_put#1。"
+      },
+      {
+        "id": "o6",
+        "kind": "space",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80500.0,
+        "short_offset_usd": -500.0,
+        "protection_offset_usd": 1500.0,
+        "measurements": {
+          "roles": [
+            "pin"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 81000、保护腿 79000 USD；本期结构位 80500 USD，记录类型 pin。"
+      },
+      {
+        "id": "o7",
+        "kind": "space",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 81000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": 2000.0,
+        "measurements": {
+          "roles": [
+            "gamma_call#1",
+            "short"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 81000、保护腿 79000 USD；本期结构位 81000 USD，记录类型 gamma_call#1 / short。"
+      },
+      {
+        "id": "o8",
+        "kind": "space",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 82000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": 3000.0,
+        "measurements": {
+          "roles": [
+            "oi_call#1"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 81000、保护腿 79000 USD；本期结构位 82000 USD，记录类型 oi_call#1。"
+      },
+      {
+        "id": "o9",
+        "kind": "obligation_inventory",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 78000.0,
+        "short_offset_usd": -3000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 78000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o10",
+        "kind": "obligation_inventory",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 79000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 79000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o11",
+        "kind": "obligation_inventory",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": 1000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 80000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o12",
+        "kind": "obligation_inventory",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80500.0,
+        "short_offset_usd": -500.0,
+        "protection_offset_usd": 1500.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 80500 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o13",
+        "kind": "obligation_inventory",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 81000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": 2000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 81000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o14",
+        "kind": "obligation_inventory",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 82000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": 3000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 82000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o15",
+        "kind": "inventory_change",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 78000.0,
+        "short_offset_usd": -3000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 78000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o16",
+        "kind": "inventory_change",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 79000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 79000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o17",
+        "kind": "inventory_change",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": 1000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 80000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o18",
+        "kind": "inventory_change",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80500.0,
+        "short_offset_usd": -500.0,
+        "protection_offset_usd": 1500.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 80500 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o19",
+        "kind": "inventory_change",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 81000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": 2000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 81000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o20",
+        "kind": "inventory_change",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 82000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": 3000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；行权价 82000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o21",
+        "kind": "market_structure",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": 1000.0,
+        "measurements": {
+          "flip_point": 80000.0
+        },
+        "source_ref": "L3.gex.structure",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "71fbec8b7c69470a838e5e8de45bc22d9ddc0ffe37382289858264580b9fc8b8",
+        "description": "短腿 81000、保护腿 79000 USD；市场口径 flip_point=80000；与本期行权价义务的对应关系未知。"
+      },
+      {
+        "id": "o22",
+        "kind": "market_structure",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": null,
+        "short_offset_usd": null,
+        "protection_offset_usd": null,
+        "measurements": {
+          "total_net_gex": 1200000.0
+        },
+        "source_ref": "L3.gex.structure",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "71fbec8b7c69470a838e5e8de45bc22d9ddc0ffe37382289858264580b9fc8b8",
+        "description": "短腿 81000、保护腿 79000 USD；市场口径 total_net_gex=1.2e+06；与本期行权价义务的对应关系未知。"
+      },
+      {
+        "id": "o23",
+        "kind": "path",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 78000.0,
+        "short_offset_usd": -3000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "crossings": 0.0,
+          "closest_usd": 900.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；前24小时路径穿越 78000 共 0 次，最近距离 900 USD。"
+      },
+      {
+        "id": "o24",
+        "kind": "path",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 79000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "crossings": 1.0,
+          "closest_usd": 100.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；前24小时路径穿越 79000 共 1 次，最近距离 100 USD。"
+      },
+      {
+        "id": "o25",
+        "kind": "path",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": 1000.0,
+        "measurements": {
+          "crossings": 1.0,
+          "closest_usd": 600.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；前24小时路径穿越 80000 共 1 次，最近距离 600 USD。"
+      },
+      {
+        "id": "o26",
+        "kind": "path",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 80500.0,
+        "short_offset_usd": -500.0,
+        "protection_offset_usd": 1500.0,
+        "measurements": {
+          "crossings": 1.0,
+          "closest_usd": 100.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；前24小时路径穿越 80500 共 1 次，最近距离 100 USD。"
+      },
+      {
+        "id": "o27",
+        "kind": "path",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 81000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": 2000.0,
+        "measurements": {
+          "crossings": 2.0,
+          "closest_usd": 300.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；前24小时路径穿越 81000 共 2 次，最近距离 300 USD。"
+      },
+      {
+        "id": "o28",
+        "kind": "path",
+        "boundary_id": "b116cd10d0f4c1306ce93f14f56920cd67559a4ecd1d51d8f2d11d3c34413fd0",
+        "level_usd": 82000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": 3000.0,
+        "measurements": {
+          "crossings": 0.0,
+          "closest_usd": 700.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+        "description": "短腿 81000、保护腿 79000 USD；前24小时路径穿越 82000 共 0 次，最近距离 700 USD。"
+      }
+    ],
+    "background": [],
+    "obligation_state": {
+      "inventory_coverage": "observed",
+      "dealer_gamma": "unknown",
+      "stability": "unknown",
+      "movement": "unknown",
+      "path_feedback": "unknown"
+    },
+    "unknowns": [
+      "causal_flow_confirmation",
+      "dealer_position_direction",
+      "flow_unavailable_or_incomplete",
+      "level_source_clocks_not_exported",
+      "local_hedging_feedback",
+      "structure_movement"
+    ],
+    "provenance": {
+      "case_sha256": "780cd022b16fe3eacf64b14737c200c1032c957299eca15ecb714125403f2ef8",
+      "contract_source_ref": "L1.contract",
+      "contract_asof_ms": 1794405540000,
+      "contract_sha256": "f45fc8e2779d8f4543fea2623910ada13ccc914d09e87aaa3e3dfec6c8a19472",
+      "level_card_sha256": "12e892057500b846e0d93054ee11289d1e451d8067196a9c3ce7e63d5c0e32c2",
+      "backfilled": false
+    }
+  },
+  "call": {
+    "schema": "structural_board@0.1",
+    "case_id": "synthetic_both_inside_call",
+    "cutoff_ms": 1794405600000,
+    "mode": "frozen_observation",
+    "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+    "boundary": {
+      "venue": "Deribit",
+      "underlying": "BTC",
+      "side": "call",
+      "short_instrument": "BTC-12NOV26-80000-C",
+      "long_instrument": "BTC-12NOV26-82000-C",
+      "short_usd": 80000.0,
+      "protection_usd": 82000.0,
+      "expiry_ms": 1794470400000,
+      "quantity_btc": 1.0,
+      "responsibility_interval_usd": [
+        80000.0,
+        82000.0
+      ],
+      "settlement_currency": "BTC"
+    },
+    "observations": [
+      {
+        "id": "o1",
+        "kind": "position",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80600.0,
+        "short_offset_usd": 600.0,
+        "protection_offset_usd": -1400.0,
+        "measurements": {
+          "index_usd": 80600.0
+        },
+        "source_ref": "level_card.index_usd",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；冻结指数 80600 USD。"
+      },
+      {
+        "id": "o2",
+        "kind": "contract_terms",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": -2000.0,
+        "measurements": {
+          "usd_intrinsic_cap": 2000.0,
+          "btc_contract_cap": 0.024390243902439025
+        },
+        "source_ref": "L1.liability",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19a21903df124ad6a9fb6b9aa668c8b93c2e851b2e07318cccf2604e511d6ec7",
+        "description": "短腿 80000、保护腿 82000 USD；复用合同责任核算；BTC赔付上界与USD内在值上界分列，不视为实际成交或净损失。"
+      },
+      {
+        "id": "o3",
+        "kind": "space",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 78000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": -4000.0,
+        "measurements": {
+          "roles": [
+            "oi_put#1"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 80000、保护腿 82000 USD；本期结构位 78000 USD，记录类型 oi_put#1。"
+      },
+      {
+        "id": "o4",
+        "kind": "space",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 79000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": -3000.0,
+        "measurements": {
+          "roles": [
+            "oi_put#2"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 80000、保护腿 82000 USD；本期结构位 79000 USD，记录类型 oi_put#2。"
+      },
+      {
+        "id": "o5",
+        "kind": "space",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": -2000.0,
+        "measurements": {
+          "roles": [
+            "gamma_put#1",
+            "short"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 80000、保护腿 82000 USD；本期结构位 80000 USD，记录类型 gamma_put#1 / short。"
+      },
+      {
+        "id": "o6",
+        "kind": "space",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80500.0,
+        "short_offset_usd": 500.0,
+        "protection_offset_usd": -1500.0,
+        "measurements": {
+          "roles": [
+            "pin"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 80000、保护腿 82000 USD；本期结构位 80500 USD，记录类型 pin。"
+      },
+      {
+        "id": "o7",
+        "kind": "space",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 81000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "roles": [
+            "gamma_call#1"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 80000、保护腿 82000 USD；本期结构位 81000 USD，记录类型 gamma_call#1。"
+      },
+      {
+        "id": "o8",
+        "kind": "space",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 82000.0,
+        "short_offset_usd": 2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "roles": [
+            "oi_call#1",
+            "long"
+          ]
+        },
+        "source_ref": "L3.expiry_walls",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "95c885291bfcc3d08f4ba884719f6cabe9a514df897be5acff38596f0ef158cd",
+        "description": "短腿 80000、保护腿 82000 USD；本期结构位 82000 USD，记录类型 oi_call#1 / long。"
+      },
+      {
+        "id": "o9",
+        "kind": "obligation_inventory",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 78000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": -4000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 78000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o10",
+        "kind": "obligation_inventory",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 79000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": -3000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 79000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o11",
+        "kind": "obligation_inventory",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": -2000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 80000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o12",
+        "kind": "obligation_inventory",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80500.0,
+        "short_offset_usd": 500.0,
+        "protection_offset_usd": -1500.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 80500 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o13",
+        "kind": "obligation_inventory",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 81000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 81000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o14",
+        "kind": "obligation_inventory",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 82000.0,
+        "short_offset_usd": 2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "c": 200.0,
+          "p": 500.0
+        },
+        "source_ref": "level_card.levels.oi",
+        "observed_at_ms": null,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 82000 的Call/Put未平仓量分别为 200.0 / 500.0；持仓方身份与净对冲方向未知。"
+      },
+      {
+        "id": "o15",
+        "kind": "inventory_change",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 78000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": -4000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 78000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o16",
+        "kind": "inventory_change",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 79000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": -3000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 79000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o17",
+        "kind": "inventory_change",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": -2000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 80000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o18",
+        "kind": "inventory_change",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80500.0,
+        "short_offset_usd": 500.0,
+        "protection_offset_usd": -1500.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 80500 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o19",
+        "kind": "inventory_change",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 81000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 81000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o20",
+        "kind": "inventory_change",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 82000.0,
+        "short_offset_usd": 2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "oi_change_c": 0.0,
+          "oi_change_p": 0.0
+        },
+        "source_ref": "level_card.levels.oi_change.24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；行权价 82000 前24小时Call/Put持仓变化 0.0 / 0.0。"
+      },
+      {
+        "id": "o21",
+        "kind": "market_structure",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": -2000.0,
+        "measurements": {
+          "flip_point": 80000.0
+        },
+        "source_ref": "L3.gex.structure",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "71fbec8b7c69470a838e5e8de45bc22d9ddc0ffe37382289858264580b9fc8b8",
+        "description": "短腿 80000、保护腿 82000 USD；市场口径 flip_point=80000；与本期行权价义务的对应关系未知。"
+      },
+      {
+        "id": "o22",
+        "kind": "market_structure",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": null,
+        "short_offset_usd": null,
+        "protection_offset_usd": null,
+        "measurements": {
+          "total_net_gex": 1200000.0
+        },
+        "source_ref": "L3.gex.structure",
+        "observed_at_ms": 1794405540000,
+        "window_start_ms": null,
+        "window_end_ms": null,
+        "source_sha256": "71fbec8b7c69470a838e5e8de45bc22d9ddc0ffe37382289858264580b9fc8b8",
+        "description": "短腿 80000、保护腿 82000 USD；市场口径 total_net_gex=1.2e+06；与本期行权价义务的对应关系未知。"
+      },
+      {
+        "id": "o23",
+        "kind": "path",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 78000.0,
+        "short_offset_usd": -2000.0,
+        "protection_offset_usd": -4000.0,
+        "measurements": {
+          "crossings": 0.0,
+          "closest_usd": 900.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；前24小时路径穿越 78000 共 0 次，最近距离 900 USD。"
+      },
+      {
+        "id": "o24",
+        "kind": "path",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 79000.0,
+        "short_offset_usd": -1000.0,
+        "protection_offset_usd": -3000.0,
+        "measurements": {
+          "crossings": 1.0,
+          "closest_usd": 100.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；前24小时路径穿越 79000 共 1 次，最近距离 100 USD。"
+      },
+      {
+        "id": "o25",
+        "kind": "path",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80000.0,
+        "short_offset_usd": 0.0,
+        "protection_offset_usd": -2000.0,
+        "measurements": {
+          "crossings": 1.0,
+          "closest_usd": 600.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；前24小时路径穿越 80000 共 1 次，最近距离 600 USD。"
+      },
+      {
+        "id": "o26",
+        "kind": "path",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 80500.0,
+        "short_offset_usd": 500.0,
+        "protection_offset_usd": -1500.0,
+        "measurements": {
+          "crossings": 1.0,
+          "closest_usd": 100.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；前24小时路径穿越 80500 共 1 次，最近距离 100 USD。"
+      },
+      {
+        "id": "o27",
+        "kind": "path",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 81000.0,
+        "short_offset_usd": 1000.0,
+        "protection_offset_usd": -1000.0,
+        "measurements": {
+          "crossings": 2.0,
+          "closest_usd": 300.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；前24小时路径穿越 81000 共 2 次，最近距离 300 USD。"
+      },
+      {
+        "id": "o28",
+        "kind": "path",
+        "boundary_id": "25361747866323577d70c312344b45d25f194c1b444697a1862f9f9c3229cab1",
+        "level_usd": 82000.0,
+        "short_offset_usd": 2000.0,
+        "protection_offset_usd": 0.0,
+        "measurements": {
+          "crossings": 0.0,
+          "closest_usd": 700.0
+        },
+        "source_ref": "level_card.levels.before_24h",
+        "observed_at_ms": null,
+        "window_start_ms": 1794319200000,
+        "window_end_ms": 1794405600000,
+        "source_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+        "description": "短腿 80000、保护腿 82000 USD；前24小时路径穿越 82000 共 0 次，最近距离 700 USD。"
+      }
+    ],
+    "background": [],
+    "obligation_state": {
+      "inventory_coverage": "observed",
+      "dealer_gamma": "unknown",
+      "stability": "unknown",
+      "movement": "unknown",
+      "path_feedback": "unknown"
+    },
+    "unknowns": [
+      "causal_flow_confirmation",
+      "dealer_position_direction",
+      "flow_unavailable_or_incomplete",
+      "level_source_clocks_not_exported",
+      "local_hedging_feedback",
+      "structure_movement"
+    ],
+    "provenance": {
+      "case_sha256": "c8706f478e4497036c71032059d414baf25786c027eec53a67697d1fa4e404b1",
+      "contract_source_ref": "L1.contract",
+      "contract_asof_ms": 1794405540000,
+      "contract_sha256": "fbba1cc28216c240b00248c31b00d69c1d3ebad42a8d461e3f93dacf92da2900",
+      "level_card_sha256": "19be4fecf0332e2e67c251eff03ac466b150e9305c91e79b2b3d8486a1161bb7",
+      "backfilled": false
+    }
+  }
+}

@@ -1,0 +1,904 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "structural_board@0.1"
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cutoff_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mode": {
+      "const": "frozen_observation"
+    },
+    "boundary_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "side": {
+          "enum": [
+            "put",
+            "call"
+          ]
+        },
+        "short_instrument": {
+          "type": "string",
+          "minLength": 1
+        },
+        "long_instrument": {
+          "type": "string",
+          "minLength": 1
+        },
+        "short_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "protection_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "expiry_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "quantity_btc": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "responsibility_interval_usd": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "settlement_currency": {
+          "const": "BTC"
+        },
+        "venue": {
+          "const": "Deribit"
+        },
+        "underlying": {
+          "const": "BTC"
+        }
+      },
+      "required": [
+        "side",
+        "short_instrument",
+        "long_instrument",
+        "short_usd",
+        "protection_usd",
+        "expiry_ms",
+        "quantity_btc",
+        "responsibility_interval_usd",
+        "settlement_currency",
+        "venue",
+        "underlying"
+      ]
+    },
+    "obligation_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inventory_coverage": {
+          "enum": [
+            "observed",
+            "partial",
+            "unknown"
+          ]
+        },
+        "dealer_gamma": {
+          "const": "unknown"
+        },
+        "stability": {
+          "const": "unknown"
+        },
+        "movement": {
+          "const": "unknown"
+        },
+        "path_feedback": {
+          "const": "unknown"
+        }
+      },
+      "required": [
+        "inventory_coverage",
+        "dealer_gamma",
+        "stability",
+        "movement",
+        "path_feedback"
+      ]
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "contract_terms"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "usd_intrinsic_cap": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "btc_contract_cap": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "usd_intrinsic_cap",
+                  "btc_contract_cap"
+                ]
+              },
+              "source_ref": {
+                "const": "L1.liability"
+              },
+              "observed_at_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "window_start_ms": {
+                "type": "null"
+              },
+              "window_end_ms": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "space"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^(short|long|pin|((oi|gamma)_(call|put)#[1-9][0-9]*))$"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  }
+                },
+                "required": [
+                  "roles"
+                ]
+              },
+              "source_ref": {
+                "const": "L3.expiry_walls"
+              },
+              "observed_at_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "window_start_ms": {
+                "type": "null"
+              },
+              "window_end_ms": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "short_offset_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "protection_offset_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "market_structure"
+              },
+              "measurements": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "flip_point": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "required": [
+                      "flip_point"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "total_net_gex": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "total_net_gex"
+                    ]
+                  }
+                ]
+              },
+              "source_ref": {
+                "const": "L3.gex.structure"
+              },
+              "observed_at_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "window_start_ms": {
+                "type": "null"
+              },
+              "window_end_ms": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "position"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "index_usd": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "required": [
+                  "index_usd"
+                ]
+              },
+              "source_ref": {
+                "const": "level_card.index_usd"
+              },
+              "observed_at_ms": {
+                "type": "null"
+              },
+              "window_start_ms": {
+                "type": "null"
+              },
+              "window_end_ms": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "obligation_inventory"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "c": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "p": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "c",
+                  "p"
+                ]
+              },
+              "source_ref": {
+                "const": "level_card.levels.oi"
+              },
+              "observed_at_ms": {
+                "type": "null"
+              },
+              "window_start_ms": {
+                "type": "null"
+              },
+              "window_end_ms": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "inventory_change"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "oi_change_c": {
+                    "type": "number"
+                  },
+                  "oi_change_p": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "oi_change_c",
+                  "oi_change_p"
+                ]
+              },
+              "source_ref": {
+                "const": "level_card.levels.oi_change.24h"
+              },
+              "observed_at_ms": {
+                "type": "null"
+              },
+              "window_start_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "window_end_ms": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "path"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "crossings": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "closest_usd": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "crossings",
+                  "closest_usd"
+                ]
+              },
+              "source_ref": {
+                "const": "level_card.levels.before_24h"
+              },
+              "observed_at_ms": {
+                "type": "null"
+              },
+              "window_start_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "window_end_ms": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^o[1-9][0-9]*$"
+              },
+              "boundary_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "level_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "short_offset_usd": {
+                "type": "number"
+              },
+              "protection_offset_usd": {
+                "type": "number"
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "flow_at_structure"
+              },
+              "measurements": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "c_buy": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "c_sell": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "p_buy": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "p_sell": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "closest_usd": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "crossings": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "c_buy",
+                  "c_sell",
+                  "p_buy",
+                  "p_sell",
+                  "closest_usd",
+                  "crossings"
+                ]
+              },
+              "source_ref": {
+                "const": "level_card.levels.flow.24h+before_24h"
+              },
+              "observed_at_ms": {
+                "type": "null"
+              },
+              "window_start_ms": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "window_end_ms": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "id",
+              "boundary_id",
+              "level_usd",
+              "short_offset_usd",
+              "protection_offset_usd",
+              "source_sha256",
+              "description",
+              "kind",
+              "measurements",
+              "source_ref",
+              "observed_at_ms",
+              "window_start_ms",
+              "window_end_ms"
+            ]
+          }
+        ]
+      }
+    },
+    "background": {
+      "type": "array",
+      "maxItems": 0
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "contract_expiry_structure_missing_stale_or_mismatched",
+          "market_gamma_context_unavailable",
+          "flow_unavailable_or_incomplete",
+          "path_window_unavailable",
+          "same_case_level_card_unavailable",
+          "dealer_position_direction",
+          "local_hedging_feedback",
+          "causal_flow_confirmation",
+          "structure_movement",
+          "contract_terms_unavailable_or_mismatched",
+          "level_source_clocks_not_exported",
+          "index_at_read_unavailable",
+          "obligation_inventory_incomplete"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "case_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "level_card_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backfilled": {
+          "type": "boolean"
+        },
+        "contract_source_ref": {
+          "const": "L1.contract"
+        },
+        "contract_asof_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "case_sha256",
+        "level_card_sha256",
+        "backfilled",
+        "contract_source_ref",
+        "contract_asof_ms",
+        "contract_sha256"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "case_id",
+    "cutoff_ms",
+    "mode",
+    "boundary_id",
+    "boundary",
+    "obligation_state",
+    "observations",
+    "background",
+    "unknowns",
+    "provenance"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Boundary-anchored frozen structural observations v0.1"
+}
