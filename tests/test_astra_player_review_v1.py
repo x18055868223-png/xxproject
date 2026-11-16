@@ -1,6 +1,8 @@
 """Tests for Track 2: short buyback quote, flow/EM metrics, 4-category triggers, debounce scheduler, and hold review AI protocol."""
 from copy import deepcopy
+import datetime as dt
 import json
+import urllib.error
 
 import pytest
 
@@ -763,5 +765,247 @@ def test_decide_initial_hand_tolerates_markdown_markers_in_verbatim_excerpts():
                 "choices": [{"finish_reason": "stop", "message": {"content": raw_body + f"<ANNOTATION_JSON>{json.dumps(bad_payload, ensure_ascii=False)}</ANNOTATION_JSON>"}}]
             },
         )
+
+
+def test_scheduler_stale_inflight_recovery_and_fresh_guard():
+    trig_b = {"category": "B", "code": "MARGIN_DETERIORATION", "signature": "MARGIN_DETERIORATION:step_4", "depth_step": 4, "severity": 2, "observed_at_ms": T}
+    trig_d = {"category": "D", "code": "FLOW_REVERSAL", "signature": "FLOW_REVERSAL:bearish", "severity": 2, "observed_at_ms": T + M}
+    trig_c = {"category": "C", "code": "ARD_STRUCTURE_SHIFT", "signature": "ARD_PIN:100000->99000", "severity": 2, "observed_at_ms": T + 13 * M}
+
+    st, _ = review.schedule_review_action({}, [trig_b, trig_d], now_ms=T)
+    st, act = review.schedule_review_action(st, [], now_ms=T + 12 * M)
+    assert act is not None and st["inflight"] is True
+    assert st["inflight_started_at_ms"] == T + 12 * M
+
+    # Fresh inflight (< 25m): buffers trig_c, clears stale recovery marker, returns None
+    st_fresh, act_fresh = review.schedule_review_action({**st, "stale_inflight_recovered_at_ms": 1}, [trig_c], now_ms=T + 36 * M)
+    assert act_fresh is None
+    assert st_fresh["inflight"] is True
+    assert st_fresh["inflight_started_at_ms"] == T + 12 * M
+    assert [t["category"] for t in st_fresh["pending"]] == ["C"]
+    assert "stale_inflight_recovered_at_ms" not in st_fresh
+
+    # Stale inflight (>= 25m) blocked by cooldown: recovers inflight_batch to front in order, pops dispatched keys, sets pending_since_ms
+    cooldown_st = {**st_fresh, "pending": [trig_b, trig_c], "pending_since_ms": None, "cooldown_until_ms": T + 50 * M}
+    st_rec, act_rec = review.schedule_review_action(cooldown_st, [], now_ms=T + 37 * M)
+    assert act_rec is None
+    assert st_rec["inflight"] is False
+    assert st_rec["inflight_started_at_ms"] is None
+    assert st_rec["inflight_batch"] == []
+    assert [t["category"] for t in st_rec["pending"]] == ["B", "D", "C"]
+    assert "B:MARGIN_DETERIORATION:step_4" not in st_rec["dispatched_signatures"]
+    assert "D:FLOW_REVERSAL:bearish" not in st_rec["dispatched_signatures"]
+    assert st_rec["pending_since_ms"] == T + 37 * M - review.MAX_DEBOUNCE_MS
+    assert st_rec["stale_inflight_recovered_at_ms"] == T + 37 * M
+
+    # Stale legacy inflight without inflight_started_at_ms and no cooldown: self-heals & re-dispatches immediately
+    legacy_stuck = {
+        "revoked": False,
+        "inflight": True,
+        "inflight_batch": [trig_b, trig_d],
+        "pending": [trig_c],
+        "dispatched_signatures": {"B:MARGIN_DETERIORATION:step_4": {"severity": 2, "at_ms": T}},
+    }
+    st_healed, act_healed = review.schedule_review_action(legacy_stuck, [], now_ms=T + 40 * M)
+    assert act_healed is not None and act_healed["should_call"] is True
+    assert [t["category"] for t in act_healed["triggers"]] == ["B", "D", "C"]
+    assert st_healed["inflight"] is True and st_healed["inflight_started_at_ms"] == T + 40 * M
+    assert st_healed["stale_inflight_recovered_at_ms"] == T + 40 * M
+
+    # complete_review_action clears inflight_started_at_ms on both success and failure
+    st_done = review.complete_review_action(st_healed, now_ms=T + 41 * M, success=True, verdict="HOLD")
+    assert st_done["inflight"] is False and st_done["inflight_started_at_ms"] is None
+    st_fail = review.complete_review_action(st_healed, now_ms=T + 41 * M, success=False)
+    assert st_fail["inflight"] is False and st_fail["inflight_started_at_ms"] is None
+
+
+def test_call_chat_llm_budget_reserve_complete_and_non_retryable_exhaustion(tmp_path):
+    fixed_now = dt.datetime(2026, 11, 16, 12, 0, 0, tzinfo=dt.timezone.utc)
+    budget = signal_llm_review.DailyHttpBudget(tmp_path / "budget.json", limit=3, now_fn=lambda: fixed_now)
+
+    assert review._is_transient_transport_error(signal_llm_review.DailyBudgetExceeded("exhausted")) is False
+
+    def ok_transport(api_key, model, body, timeout, endpoint=None):
+        return {
+            "model": model,
+            "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        }
+
+    res = review.call_chat_llm(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        model="deepseek-chat",
+        transport=ok_transport,
+        budget=budget,
+        budget_role="astra_player_hold",
+        packet_hash="pkt_ok",
+    )
+    assert res["text"] == "ok"
+    snap1 = budget.snapshot()
+    assert snap1["http_calls_used"] == 1
+    assert snap1["events"][-1]["role"] == "astra_player_hold"
+    assert snap1["events"][-1]["card_hash"] == "pkt_ok"
+    assert snap1["events"][-1]["provider"] == "deepseek"
+    assert snap1["events"][-1]["status_category"] == "HTTP_OK"
+    assert snap1["events"][-1]["usage"] == {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+
+    # Attempt 1 times out (URLError wrapping TimeoutError), attempt 2 fails with 503 LlmApiError -> TIMEOUT then HTTP_ERROR
+    seq = [0]
+
+    def failing_transport(*args, **kwargs):
+        seq[0] += 1
+        if seq[0] == 1:
+            raise urllib.error.URLError(TimeoutError("read timed out"))
+        raise signal_llm_review.LlmApiError(503, "upstream busy")
+
+    with pytest.raises(signal_llm_review.LlmApiError):
+        review.call_chat_llm(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            model="deepseek-chat",
+            retries=1,
+            transport=failing_transport,
+            budget=budget,
+            budget_role="astra_player_hold",
+            packet_hash="pkt_fail",
+        )
+    snap2 = budget.snapshot()
+    assert snap2["http_calls_used"] == 3
+    assert [ev["status_category"] for ev in snap2["events"][-2:]] == ["TIMEOUT", "HTTP_ERROR"]
+
+    # Budget is now exhausted (3/3): raises DailyBudgetExceeded immediately without invoking transport or retrying
+    called = [0]
+    with pytest.raises(signal_llm_review.DailyBudgetExceeded):
+        review.call_chat_llm(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            model="deepseek-chat",
+            retries=2,
+            transport=lambda *a, **k: called.__setitem__(0, called[0] + 1),
+            budget=budget,
+        )
+    assert called[0] == 0
+    assert budget.snapshot()["http_calls_used"] == 3
+
+
+def test_decide_initial_hand_timeout_300_single_attempt_default_and_budget(tmp_path):
+    fixed_now = dt.datetime(2026, 11, 16, 12, 0, 0, tzinfo=dt.timezone.utc)
+    budget = signal_llm_review.DailyHttpBudget(tmp_path / "init_budget.json", limit=5, now_fn=lambda: fixed_now)
+
+    # timeout_s >= 300 defaults to retries=0 (single attempt)
+    attempts_300 = [0]
+
+    def timeout_transport(*args, **kwargs):
+        attempts_300[0] += 1
+        raise TimeoutError("slow deepseek")
+
+    with pytest.raises(TimeoutError):
+        review.decide_initial_hand(
+            "# input",
+            contract_pair={},
+            api_key="k",
+            model="deepseek-reasoner",
+            timeout_s=300,
+            transport=timeout_transport,
+            budget=budget,
+            packet_hash="hand_hash_1",
+        )
+    assert attempts_300[0] == 1
+    snap = budget.snapshot()
+    assert snap["http_calls_used"] == 1
+    assert snap["events"][0]["role"] == "astra_player_initial"
+    assert snap["events"][0]["card_hash"] == "hand_hash_1"
+    assert snap["events"][0]["status_category"] == "TIMEOUT"
+
+    # timeout_s < 300 still defaults to retries=1 (2 attempts)
+    attempts_180 = [0]
+    reject_reply = (
+        "## Reject\n\n"
+        "Put路径：安全。\nCall路径：较近。\n对比结论：均观望。\nPut反证：存在回踩。\nCall反证：上方承压。\n"
+        "<ANNOTATION_JSON>"
+        + json.dumps({
+            "put": "Put路径：安全。",
+            "call": "Call路径：较近。",
+            "comparison": "对比结论：均观望。",
+            "put_counter": "Put反证：存在回踩。",
+            "call_counter": "Call反证：上方承压。",
+            "depends_on_ard": False,
+        }, ensure_ascii=False)
+        + "</ANNOTATION_JSON>"
+    )
+
+    def flaky_180(*args, **kwargs):
+        attempts_180[0] += 1
+        if attempts_180[0] == 1:
+            raise TimeoutError("first timeout")
+        return {"choices": [{"finish_reason": "stop", "message": {"content": reject_reply}}], "usage": {"total_tokens": 50}}
+
+    res = review.decide_initial_hand(
+        "# input",
+        contract_pair={},
+        api_key="k",
+        model="deepseek-chat",
+        timeout_s=180,
+        transport=flaky_180,
+    )
+    assert attempts_180[0] == 2
+    assert res["decision"]["action"] == "Reject"
+
+
+def test_build_hold_review_input_renders_both_4h_and_12h_flow():
+    frozen = {
+        "contract": {"side": "put", "short_strike_usd": 97_000, "long_strike_usd": 95_000, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "entry_not_returned",
+        "invalidation_meaning": "入场后严格进入责任区且至检查点未严格返回。",
+        "accepted_conditions": ["保持 97,000 上方运行。"],
+        "confirmation_excerpt": "每 5 分钟检查。",
+        "entry_index_usd": 100_000.0,
+    }
+    md = review.build_hold_review_input(
+        contract=frozen["contract"],
+        entry_at_ms=T,
+        initial_decision={"judgment": {"action": "Accept", "side": "put", "comparison": "选 Put", "put_counter": "下方曾回踩"}},
+        frozen_condition=frozen,
+        triggers=[{"category": "D", "code": "FLOW_REVERSAL", "summary_cn": "主动流转弱。", "observed_at_ms": T + 5 * M}],
+        t0_summary={"short_distance_pct": 3.0},
+        post_entry_summary={"sample_count": 2, "latest_spot_usd": 99_200.0, "min_short_distance_pct": 2.2, "latest_short_distance_pct": 2.2},
+        condition_summary={"program_triggered": False, "mechanical_condition_state": "INTACT", "checks_count": 1},
+        ard_summary="同口径未迁移",
+        flow_summary={
+            "flow_ready": True,
+            "flow_asof_ms": T + 5 * M,
+            "flow_direction": "bearish",
+            "flow_fast_4h": "bearish",
+            "flow_slow_12h": "neutral_to_bearish",
+            "flow_cvd_4h": -42.5,
+            "flow_momentum_4h_pct": -0.31,
+            "flow_cvd_12h": -128.75,
+            "flow_momentum_12h_pct": -0.88,
+        },
+        quote_summary={"short_buyback_ask_btc": 0.0012, "short_buyback_fee_btc": 0.0001, "short_buyback_total_btc": 0.0013, "short_quote_asof_ms": T + 5 * M, "short_buyback_gaps": []},
+    )
+    assert "近 4h CVD 净额：-42.50" in md and "近 4h 动量变化：-0.31%" in md
+    assert "近 12h CVD 净额：-128.75" in md and "近 12h 动量变化：-0.88%" in md
+
+
+def test_parse_hold_review_allows_negated_prohibition_commentary():
+    frozen = {
+        "contract": {"side": "call", "short_strike_usd": 103_000, "long_strike_usd": 105_000, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "entry_not_returned",
+        "invalidation_meaning": "入场后严格进入责任区且至检查点未严格返回。",
+        "accepted_conditions": ["保持 103,000 下方运行。"],
+        "confirmation_excerpt": "每 5 分钟检查。",
+        "entry_index_usd": 100_000.0,
+    }
+    nuanced = (
+        "## REVOKE\n\n程序规则并非未触发，严禁改选 Put 侧（原入场为禁止重新选择 Accept / Put）。确认撤销当前 Call 承保。\n\n"
+        "<HOLD_REVIEW_JSON>{\"verdict\": \"REVOKE\", \"affected_conditions\": [\"M1\"], "
+        "\"public_reply\": \"程序状态不可标为条件未触发，维持既定边界并建议 REVOKE。\", \"key_facts\": [\"M1\"]}</HOLD_REVIEW_JSON>"
+    )
+    parsed = review.parse_hold_review_response(nuanced, frozen_condition=frozen, program_triggered=True)
+    assert parsed["verdict"] == "REVOKE"
+    assert parsed["protocol_status"] == "ALIGNED"
+
 
 

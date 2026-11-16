@@ -2,16 +2,21 @@
 import datetime as dt
 import gzip
 import json
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import astra_anchor_relative_v1 as ard
 import astra_level_behaviour_v1 as lb
+import astra_player_dossier_v1 as dossier
 import astra_research_archive_v1 as ar
 from test_astra_level_behaviour_v1 import CONTRACT, E, H, M, WALLS, _levels, _path
+from test_astra_player_dossier_v1 import Clock, EXPIRY, SLOT, plan, source
 from test_astra_research_archive_v1 import FakeDeribit
 
 R2 = E - 18 * H     # 2026-11-11 14:00 UTC
@@ -239,4 +244,75 @@ def test_tick_main_resolves_snapshots_env_var(tmp_path, monkeypatch):
     captured.clear()
     ar._tick_main(ns, archive)
     assert captured["snapshots_path"] is None
+
+
+def test_dossier_respond_error_provenance_and_settle_due_cli(tmp_path, monkeypatch, capsys):
+    clock = Clock(SLOT + M)
+    d = dossier.Dossiers(tmp_path, clock)
+    hand = d.expect(EXPIRY, "SCHEDULED", plan=plan(), slot=SLOT)
+    d.deal(hand, source(clock))
+
+    long_err = "TimeoutError: " + ("x" * 300)
+    rec = d.respond(hand, "attempt-timeout", "TIMEOUT", error=long_err)
+    assert rec["status"] == "TIMEOUT"
+    assert rec["error"] == long_err[:240] and len(rec["error"]) == 240
+    # Idempotent replay without passing error remains backward-compatible
+    assert d.respond(hand, "attempt-timeout", "TIMEOUT") == rec
+    assert d.respond(hand, "attempt-failed", "REQUEST_FAILED", error="HTTP 502")["error"] == "HTTP 502"
+    assert d.respond(hand, "attempt-blank", "NO_RESPONSE", error="   ")["error"] is None
+
+    # CLI settle-due executes settle_due inside writer lock without invoking tick()
+    clock.ms = EXPIRY + 5 * M
+    monkeypatch.setattr(dossier, "now_ms", clock)
+    monkeypatch.setattr(dossier, "public", lambda method, **params: {"data": [{"date": "2026-11-15", "delivery_price": 64250.0}]})
+    monkeypatch.setattr(dossier.archive.Deribit, "index_path", lambda _: [])
+    monkeypatch.setattr(dossier.Dossiers, "tick", lambda *a, **k: pytest.fail("settle-due must not call tick()"))
+    monkeypatch.setattr(sys, "argv", ["astra_player_dossier_v1.py", "--root", str(tmp_path), "settle-due"])
+
+    dossier.main()
+    printed = json.loads(capsys.readouterr().out)
+    expected_summary = d.path(EXPIRY) / "summary.md"
+    assert printed == [str(expected_summary)]
+    outcomes = list((d.path(EXPIRY) / "outcomes").glob("outcome_*/outcome.json"))
+    assert len(outcomes) == 1 and dossier.read(outcomes[0])["classification"] == "OFFICIAL"
+
+    # Real subprocess smoke test when nothing remains due
+    repo_root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "tools" / "astra_player_dossier_v1.py"), "--root", str(tmp_path), "settle-due"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(proc.stdout) == []
+
+
+def test_player_dossier_deploy_settle_timeout_and_deal_timer_assets():
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+
+    deal_timer = (deploy_dir / "astra-player-deal.timer").read_text(encoding="utf-8")
+    assert "OnCalendar=*-*-* 16:02,07,12,17:00 UTC" in deal_timer
+    assert "16:02,05,10,15:00 UTC" not in deal_timer
+
+    timeout_conf = (deploy_dir / "50-timeout.conf").read_text(encoding="utf-8")
+    assert "[Service]" in timeout_conf
+    assert "TimeoutStartSec=900" in timeout_conf
+
+    settle_service = (deploy_dir / "astra-player-settle.service").read_text(encoding="utf-8")
+    for required in (
+        "Type=oneshot",
+        "User=bitnami",
+        "Group=research",
+        "UMask=0027",
+        "EnvironmentFile=/etc/signal-audit/llm.env",
+        "EnvironmentFile=/etc/signal-audit/workbench-v20.env",
+        "ExecStart=/usr/bin/python3 /opt/signal-audit-tools/astra_player_dossier_v1.py --root /var/lib/xxproject/workbench/shadow_dossiers settle-due",
+        "TimeoutStartSec=300",
+    ):
+        assert required in settle_service
+
+    settle_timer = (deploy_dir / "astra-player-settle.timer").read_text(encoding="utf-8")
+    assert "OnCalendar=*-*-* 08:06,16,31:00 UTC" in settle_timer
+    assert "Persistent=true" in settle_timer
+    assert "WantedBy=timers.target" in settle_timer
 

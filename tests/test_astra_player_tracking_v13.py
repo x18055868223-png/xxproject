@@ -6,6 +6,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 import json
 import threading
+import urllib.error
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -15,8 +16,9 @@ from tools import astra_player_dossier_v1 as dossier
 from tools import astra_player_tracking_v13 as tracking
 from tools import astra_research_archive_v1 as archive
 from tools import astra_workbench_v20 as workbench
+from tools import signal_llm_review
 from test_astra_locked_followup import lock, setup
-from test_astra_player_dossier_v1 import plan
+from test_astra_player_dossier_v1 import Clock, SLOT, plan, source as fixture_source
 
 
 M = dossier.MINUTE
@@ -454,3 +456,261 @@ def test_legacy_structure_clock_backfill_and_band_snapshot_in_seal_source():
     assert norm['compat_backfill_applied'] is True
     sealed = dossier.seal_source([], [], {}, [norm], band_snapshot={'factor_snapshot': {'anchor': {'band_half': 500.0}}})
     assert sealed['band_snapshot']['factor_snapshot']['anchor']['band_half'] == 500.0
+
+
+def test_llm_settings_retries_and_shared_budget_resolution(tmp_path, monkeypatch):
+    for key in (
+        'ASTRA_PLAYER_LLM_RETRIES', 'ASTRA_PLAYER_USAGE_LEDGER', 'ASTRA_WORKBENCH_USAGE_LEDGER',
+        'ASTRA_PLAYER_DAILY_HTTP_LIMIT', 'ASTRA_WORKBENCH_DAILY_HTTP_LIMIT',
+        'LLM_DAILY_HTTP_CAP', 'LLM_TIMEOUT_SEC',
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    assert tracking._llm_settings({'timeout_s': 300})['retries'] == 0
+    assert tracking._llm_settings({'timeout_s': 120})['retries'] == 1
+
+    monkeypatch.setenv('ASTRA_PLAYER_LLM_RETRIES', '2')
+    assert tracking._llm_settings({'timeout_s': 300})['retries'] == 2
+    assert tracking._llm_settings({'timeout_s': 120, 'retries': 0})['retries'] == 0
+
+    wb_ledger = tmp_path / 'wb_ledger.json'
+    player_ledger = tmp_path / 'player_ledger.json'
+    monkeypatch.setenv('ASTRA_WORKBENCH_USAGE_LEDGER', str(wb_ledger))
+    monkeypatch.setenv('LLM_DAILY_HTTP_CAP', '11')
+    cfg_wb = tracking._llm_settings()
+    assert isinstance(cfg_wb['budget'], signal_llm_review.DailyHttpBudget)
+    assert cfg_wb['budget'].state_path == wb_ledger and cfg_wb['budget'].limit == 11
+
+    monkeypatch.setenv('ASTRA_PLAYER_USAGE_LEDGER', str(player_ledger))
+    monkeypatch.setenv('ASTRA_WORKBENCH_DAILY_HTTP_LIMIT', '7')
+    monkeypatch.setenv('ASTRA_PLAYER_DAILY_HTTP_LIMIT', '4')
+    cfg_player = tracking._llm_settings()
+    assert cfg_player['budget'].state_path == player_ledger and cfg_player['budget'].limit == 4
+
+    # Transport suppresses env-auto budget construction, while explicit budget is preserved.
+    assert tracking._llm_settings({'transport': lambda *_: {}})['budget'] is None
+    explicit = signal_llm_review.DailyHttpBudget(tmp_path / 'explicit.json', limit=9)
+    assert tracking._llm_settings({'transport': lambda *_: {}, 'budget': explicit})['budget'] is explicit
+
+
+def test_auto_deal_budget_exhausted_timeout_attempts_and_audit_states(tmp_path, monkeypatch):
+    for key in ('LLM_API_KEY', 'ASTRA_WORKBENCH_LLM_API_KEY', 'ASTRA_PLAYER_USAGE_LEDGER', 'ASTRA_WORKBENCH_USAGE_LEDGER'):
+        monkeypatch.delenv(key, raising=False)
+
+    clk = Clock(SLOT + M)
+    monkeypatch.setattr(dossier, 'collect', lambda *_a, **_kw: fixture_source(clk))
+
+    # 1. LLM_NOT_CONFIGURED surfaces instead of AWAITING_RESPONSE when attempts is empty
+    d_unconf = dossier.Dossiers(tmp_path / 'unconfigured', clock=clk)
+    res_unconf = tracking.auto_deal(d_unconf, plan(), tmp_path, lambda *_: {}, llm_config={'api_key': ''})
+    assert res_unconf[0]['status'] == 'LLM_NOT_CONFIGURED'
+    unconf_hand = next((tmp_path / 'unconfigured' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
+    assert tracking.audit_record(unconf_hand, clk(), {})['state'] == 'LLM_NOT_CONFIGURED'
+
+    # 2. POLICY_BLOCKED note on undealt hand surfaces cleanly
+    d_pol = dossier.Dossiers(tmp_path / 'policy', clock=clk)
+    monkeypatch.setattr(dossier, 'collect', lambda *_a, **_kw: (_ for _ in ()).throw(dossier.player.HandNotDealt('blocked_by_policy')))
+    tracking.auto_deal(d_pol, plan(), tmp_path, lambda *_: {}, llm_config={'api_key': 'k'})
+    pol_hand = next((tmp_path / 'policy' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
+    assert tracking.audit_record(pol_hand, clk(), {})['state'] == 'POLICY_BLOCKED'
+
+    # 3. TIMEOUT classification + error provenance + up to 3 attempts + DailyBudgetExceeded lock-out
+    monkeypatch.setattr(dossier, 'collect', lambda *_a, **_kw: fixture_source(clk))
+    d_run = dossier.Dossiers(tmp_path / 'runtime', clock=clk)
+    calls = [0]
+
+    def timeout_transport(*_a, **_kw):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise urllib.error.URLError(TimeoutError('connect timed out'))
+        raise TimeoutError('read timed out')
+
+    # Attempt 1: URLError(TimeoutError) -> TIMEOUT with reasoning_effort and error saved
+    r1 = tracking.auto_deal(
+        d_run, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'model': 'm-test', 'reasoning_effort': 'high', 'retries': 0, 'transport': timeout_transport},
+    )
+    assert r1[0]['status'] == 'TIMEOUT'
+    assert 'URLError' in r1[0]['error']
+    hand = next((tmp_path / 'runtime' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
+    aud = tracking.audit_record(hand, clk(), {}, detail=True)
+    assert aud['state'] == 'TIMEOUT'
+    assert len(aud['attempts']) == 1
+    assert aud['attempts'][0]['status'] == 'TIMEOUT'
+    assert aud['attempts'][0]['reasoning_effort'] == 'high'
+    assert 'URLError' in aud['attempts'][0]['error']
+
+    # Attempt 2: TimeoutError -> TIMEOUT
+    clk.ms += 1_000
+    r2 = tracking.auto_deal(
+        d_run, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'model': 'm-test', 'reasoning_effort': 'high', 'retries': 0, 'transport': timeout_transport},
+    )
+    assert r2[0]['status'] == 'TIMEOUT'
+    assert len(tracking.audit_record(hand, clk(), {}, detail=True)['attempts']) == 2
+
+    # Attempt 3 allowed (< 3), hits DailyBudgetExceeded -> notes DAILY_BUDGET_EXHAUSTED, skips attempt 4 immediately
+    clk.ms += 1_000
+    zero_budget = signal_llm_review.DailyHttpBudget(tmp_path / 'zero_budget.json', limit=0)
+    r3 = tracking.auto_deal(
+        d_run, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'budget': zero_budget, 'transport': timeout_transport},
+    )
+    assert r3[0]['status'] == 'DAILY_BUDGET_EXHAUSTED'
+    assert calls[0] == 2  # budget checked before transport
+
+    clk.ms += 1_000
+    r4 = tracking.auto_deal(
+        d_run, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'transport': timeout_transport},
+    )
+    assert r4[0]['status'] == 'DAILY_BUDGET_EXHAUSTED'
+    assert calls[0] == 2
+
+    # Fresh hand with 0 attempts hitting DailyBudgetExceeded surfaces DAILY_BUDGET_EXHAUSTED on audit_record
+    d_bud = dossier.Dossiers(tmp_path / 'budget_zero', clock=clk)
+    r_bud = tracking.auto_deal(
+        d_bud, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'budget': zero_budget, 'transport': timeout_transport},
+    )
+    assert r_bud[0]['status'] == 'DAILY_BUDGET_EXHAUSTED'
+    bud_hand = next((tmp_path / 'budget_zero' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
+    assert tracking.audit_record(bud_hand, clk(), {})['state'] == 'DAILY_BUDGET_EXHAUSTED'
+
+    # Hand with 3 failed attempts stops at AUTO_ATTEMPTED on 4th call
+    d_max = dossier.Dossiers(tmp_path / 'max_attempts', clock=clk)
+    for _ in range(3):
+        clk.ms += 1_000
+        tracking.auto_deal(
+            d_max, plan(), tmp_path, lambda *_: {},
+            llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'transport': timeout_transport},
+        )
+    before_calls = calls[0]
+    r_stop = tracking.auto_deal(
+        d_max, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'transport': timeout_transport},
+    )
+    assert r_stop[0]['status'] == 'AUTO_ATTEMPTED' and r_stop[0]['last_status'] == 'TIMEOUT'
+    assert calls[0] == before_calls
+
+
+def test_shadow_quote_endpoint_lazy_entry_basis_and_ard_band_window(tmp_path, monkeypatch):
+    wb, d, hand, now, expiry = sample(tmp_path, 'Accept / Call')
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d, hand, svc, RULE)
+        ep = receipt['t0']['tracker_episode_id']
+        ep_dir = hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id']
+
+        # Before any hold review runs: audit_record lazily builds entry_basis without writing & populates shadow_management
+        assert not (ep_dir / 'entry_basis.json').exists()
+        aud = tracking.audit_record(hand, now[0], {ep: 'active'}, detail=True)
+        assert not (ep_dir / 'entry_basis.json').exists()
+        assert aud['entry_basis']['schema'] == 'entry_decision_basis@1'
+        assert aud['entry_basis']['M1']['invalidation'] == RULE['invalidation']
+        assert aud['hold_reviews'] == []
+        assert aud['shadow_management']['exit_status'] == 'NONE'
+
+        # Live shadow quote endpoint captures a fresh point and validates payload/token
+        now[0] += 30_000
+        q_res = svc('quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        assert q_res['state'] == 'QUOTE_CAPTURED'
+        assert q_res['execution_allowed'] is False
+        assert q_res['latest_point']['candidate']['snapshot']['market']['valuation_ts_ms'] == now[0]
+
+        with pytest.raises(tracking.Blocked, match='invalid_shadow_request'):
+            svc('quote', dict(dossier_id=hand.parent.parent.name))
+        with pytest.raises(tracking.Blocked, match='credential_required'):
+            tracking.local_service(base, 'wrong-token')('quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+
+        # Capture failure returns QUOTE_UNAVAILABLE without crashing HTTP handler
+        monkeypatch.setattr(wb, 'quote_capture', lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError('book_down')))
+        q_fail = svc('quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        assert q_fail['state'] == 'QUOTE_UNAVAILABLE'
+        assert q_fail['latest_point'] is None
+        assert q_fail['error'] == 'WorkbenchError'
+        assert q_fail['execution_allowed'] is False
+
+    # _episode_ard_state searches band_snapshot at old_start + 4h rather than tick when source.json omits band_snapshot
+    arch_root = tmp_path / 'ard_arch'
+    struct_dir = arch_root / 'structure'
+    struct_dir.mkdir(parents=True)
+    exp_day = dossier.utc(expiry).date().isoformat()
+    (struct_dir / f'{exp_day}.jsonl').write_text(json.dumps({
+        'schema': 'structure_snapshot@0.1', 'expiry_ms': expiry, 'at_ms': now[0] - 10 * M,
+        'available_at_ms': now[0] - 9 * M, 'pin_source': 'deribit_gex', 'pin_method': 'gamma_peak',
+        'pin_status': 'ok', 'profile': {'walls': {'pin': 100_000.0}},
+    }) + '\n', encoding='utf-8')
+    old_start = now[0] - 8 * 3_600_000
+    tick = now[0]
+    seen_cutoffs = []
+    monkeypatch.setattr(dossier, '_resolve_band_snapshot', lambda _root, cutoff: seen_cutoffs.append(cutoff) or None)
+    frozen_ard = {
+        'contract': receipt['origin'] and dossier.read(ep_dir / 'condition.json')['contract'],
+        'entry_at_ms': dossier.read(ep_dir / 'condition.json')['entry_at_ms'],
+        'ard_basis': {'facts': {'start_ms': old_start, 'anchor': {'pin': 100_000.0}, 'counts': {}}},
+    }
+    tracking._episode_ard_state(frozen_ard, ep_dir, arch_root, {'index_name': 'btc_usd', 'expiry_ms': expiry, 'points': [[tick, 100_000.0]]}, tick)
+    assert seen_cutoffs == [old_start + 4 * 3_600_000]
+
+
+def test_reviewer_guards_unauth_redaction_deduped_checks_and_revoke_isolation(tmp_path, monkeypatch):
+    # 1) _condition_check_summary orders by observed_at_ms & deduplicates healed CONDITION_UNKNOWN
+    checks = [
+        {'event_id': 'ev_z', 'kind': 'CONDITION_NOT_TRIGGERED', 'observed_at_ms': SLOT + 10 * M, 'recorded_at_ms': SLOT + 11 * M},
+        {'event_id': 'ev_a', 'kind': 'CONDITION_UNKNOWN', 'observed_at_ms': SLOT + 5 * M, 'recorded_at_ms': SLOT + 11 * M},
+        {'event_id': 'ev_b', 'kind': 'CONDITION_NOT_TRIGGERED', 'observed_at_ms': SLOT + 5 * M, 'recorded_at_ms': SLOT + 11 * M},
+    ]
+    summary = tracking._condition_check_summary(checks)
+    assert summary['total'] == 2
+    assert summary['unknown'] == 0
+    assert summary['not_triggered'] == 2
+    assert summary['mechanical_condition_state'] == 'INTACT'
+    assert summary['latest_at_ms'] == SLOT + 10 * M
+
+    # 2) Unauthenticated locked-candidates detail redacts private AI public_reply & hold_reviews
+    wb, d, hand, now, _ = sample(tmp_path)
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d, hand, svc, RULE)
+        lce_id = receipt['t0']['tracker_episode_id']
+        ep_dir = hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id']
+        now[0] += 5 * M
+        exported = svc('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        # Seed continuous <10m points + CONDITION_TRIGGERED to bypass debounce (Priority A)
+        exported['points'] = [
+            {'metrics': {'asof_ms': now[0] - 2 * M, 'spot_usd': 102_000.0, 'short_distance_pct': 0.98, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now[0] - M, 'spot_usd': 103_200.0, 'short_distance_pct': -0.19, 'flow_ready': False}},
+        ]
+        d.event(ep_dir, dossier.identity('chk', now[0] - M), 'CONDITION_TRIGGERED',
+                dict(result={'rule': 'entry_not_returned'}), observed=now[0] - M, available=now[0])
+        seen_revoke_pts = []
+        def boom_revoke(_d, _ep, _fr, q_pt, _at, **_kw):
+            seen_revoke_pts.append(q_pt)
+            raise RuntimeError('quote_io_boom')
+        monkeypatch.setattr(tracking, '_record_revoke_shadow_action', boom_revoke)
+        res = tracking.evaluate_hold_management(
+            d, hand, exported, service=lambda action, _b: {'state': 'QUOTE_UNAVAILABLE', 'latest_point': None},
+            llm_config={
+                'api_key': 'k', 'model': 'm', 'reasoning_effort': 'high',
+                'transport': lambda *a, **k: {'choices': [{'finish_reason': 'stop', 'message': {
+                    'content': "## REVOKE\n\n突破短腿边界。\n<HOLD_REVIEW_JSON>{\"verdict\":\"REVOKE\",\"affected_conditions\":[\"M1\"],\"public_reply\":\"PRIVATE_REPLY_SECRET\",\"key_facts\":[\"M1\"]}</HOLD_REVIEW_JSON>"
+                }}]},
+            },
+        )
+        assert res['action'] == 'REVIEWED' and res['verdict'] == 'REVOKE'
+        assert 'shadow_action_error' in res
+        # QUOTE_UNAVAILABLE preserved exported['latest_point'] fallback instead of overwriting with None
+        assert seen_revoke_pts == [exported['latest_point']]
+        st_saved = dossier.read(ep_dir / 'trigger_state.json')
+        assert st_saved['revoked'] is True and st_saved['inflight'] is False
+
+        unauth_raw = get(base, f'/api/workbench/locked-candidates/{lce_id}')
+        latest_unauth = unauth_raw['ai_dossier_management']['latest_review']
+        assert 'public_reply' not in latest_unauth
+        assert latest_unauth['verdict'] == 'REVOKE'
+        assert 'hold_reviews' not in unauth_raw['ai_dossier_management']
+
+        auth_raw = get(base, f'/api/workbench/locked-candidates/{lce_id}', 'secret')
+        assert auth_raw['ai_dossier_management']['latest_review']['public_reply'] == 'PRIVATE_REPLY_SECRET'
+

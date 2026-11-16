@@ -15,6 +15,7 @@ from tools import astra_research_archive_v1 as archive
 from tools import astra_underwriting_discovery_v20 as discovery
 from tools import astra_underwriting_public_quote_v20 as public_quote
 from tools import astra_workbench_v20 as workbench
+from tools import signal_llm_review
 from test_astra_locked_followup import setup
 from test_astra_player_tracking_v13 import EXCERPTS, M, RULE, post, serving
 from test_astra_workbench_v20 import instruments, native_gate, write_fmz
@@ -238,11 +239,20 @@ def test_full_closed_loop_r16_deal_grid_debounce_revoke_and_settlement(tmp_path,
         rows = [{**r, "delta_observed_at_ms": now_ms - 1000} for r in instruments()]
         return discovery.discover(rows, spot_box[0], now_ms, quantity_btc=1.0, width_usd=2000.0)
 
+    def write_fmz_with_flow(ts_ms: int):
+        row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        row["factor_snapshot"]["flow"]["micro_flow"] = {
+            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
+            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
+            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+        }
+        snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+
     def advance_market(ts_ms: int, idx: float | None = None):
         now[0] = ts_ms
         if idx is not None:
             spot_box[0] = idx
-        write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        write_fmz_with_flow(ts_ms)
         wb.refresh(now_ms=ts_ms, record_daily=False)
 
     wb.discovery_capture = dynamic_discovery
@@ -464,11 +474,20 @@ def test_unpriced_revoke_and_llm_failure_backoff_keeps_grid_monitoring_alive(tmp
         rows = [{**r, "delta_observed_at_ms": now_ms - 1000} for r in instruments()]
         return discovery.discover(rows, spot_box[0], now_ms, quantity_btc=1.0, width_usd=2000.0)
 
+    def write_fmz_with_flow(ts_ms: int):
+        row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        row["factor_snapshot"]["flow"]["micro_flow"] = {
+            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
+            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
+            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+        }
+        snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+
     def advance_market(ts_ms: int, idx: float | None = None):
         now[0] = ts_ms
         if idx is not None:
             spot_box[0] = idx
-        write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        write_fmz_with_flow(ts_ms)
         wb.refresh(now_ms=ts_ms, record_daily=False)
 
     wb.discovery_capture = dynamic_discovery
@@ -601,11 +620,20 @@ def test_ard_depends_category_c_and_priority_a_backfill_safety(tmp_path, monkeyp
         rows = [{**r, "delta_observed_at_ms": now_ms - 1000} for r in instruments()]
         return discovery.discover(rows, spot_box[0], now_ms, quantity_btc=1.0, width_usd=2000.0)
 
+    def write_fmz_with_flow(ts_ms: int):
+        row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        row["factor_snapshot"]["flow"]["micro_flow"] = {
+            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
+            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
+            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+        }
+        snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+
     def advance_market(ts_ms: int, idx: float | None = None):
         now[0] = ts_ms
         if idx is not None:
             spot_box[0] = idx
-        write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        write_fmz_with_flow(ts_ms)
         wb.refresh(now_ms=ts_ms, record_daily=False)
 
     wb.discovery_capture = dynamic_discovery
@@ -737,5 +765,168 @@ def test_ard_depends_category_c_and_priority_a_backfill_safety(tmp_path, monkeyp
             now_ms=t_chk + M,
         )
         assert not any(t["code"] == "BOUNDARY_BREACH" for t in trigs_touch)
+
+
+def test_slow_llm_revoke_captures_live_quote_flow_12h_and_stale_recovery(tmp_path, monkeypatch):
+    """Verify slow LLM REVOKE (>5s clock jump) still records SIMULATED_ORDER(BUY_BACK_SHORT) via live
+    shadow-tracking/quote, forwards 12h flow, recovers stale inflight state, and projects all audit fields."""
+    wb, snapshots, now, first = setup(tmp_path / "tracker")
+    expiry = first["contract"]["expiry_ms"]
+    slot_r16 = expiry - 16 * HOUR
+    spot_box = [100_000.0]
+    metas = {row["instrument_name"]: row for row in instruments()}
+
+    def dynamic_quote(short_instrument, long_instrument, quantity_btc=1.0, **_kw):
+        now_ms = now[0]
+        idx = spot_box[0]
+
+        def fetch(path, params):
+            name = params["instrument_name"]
+            if path == "public/get_instrument":
+                return dict(metas[name])
+            return {
+                "instrument_name": name,
+                "state": "open",
+                "timestamp": now_ms,
+                "index_price": idx,
+                "bids": [[0.007 if name == short_instrument else 0.002, 1.0]],
+                "asks": [[0.008 if name == short_instrument else 0.003, 1.0]],
+            }
+
+        return public_quote.capture_candidate(
+            short_instrument, long_instrument, quantity_btc, transport=fetch, clock_ms=lambda: now_ms
+        )
+
+    def dynamic_discovery(*, now_ms):
+        rows = [{**r, "delta_observed_at_ms": now_ms - 1000} for r in instruments()]
+        return discovery.discover(rows, spot_box[0], now_ms, quantity_btc=1.0, width_usd=2000.0)
+
+    def write_fmz_with_flow(ts_ms: int):
+        row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        row["factor_snapshot"]["flow"]["micro_flow"] = {
+            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
+            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
+            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+        }
+        snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def advance_market(ts_ms: int, idx: float | None = None):
+        now[0] = ts_ms
+        if idx is not None:
+            spot_box[0] = idx
+        write_fmz_with_flow(ts_ms)
+        wb.refresh(now_ms=ts_ms, record_daily=False)
+
+    wb.discovery_capture = dynamic_discovery
+    wb.quote_capture = dynamic_quote
+    wb.config.shadow_experiment = True
+    wb.config.shadow_dossier_root = tmp_path / "dossier"
+    wb.config.shadow_service_token = "tok"
+    wb.config.frontend_dir = Path(__file__).resolve().parents[1] / "deploy/astra_workbench_v3"
+    advance_market(slot_r16, 100_000.0)
+
+    arch_root = tmp_path / "archive"
+    points = [[t, 100_000.0] for t in range(slot_r16 - DAY, slot_r16 + M + 1, M)]
+    _seed_r16_archive(wb, arch_root, slot_r16, expiry, points)
+
+    contracts_proof = []
+    for item in wb._current_view["candidates"]:
+        c = item["snapshot"]["contract"]
+        contracts_proof.extend([
+            {"instrument_name": c["short_instrument"], "expiration_timestamp": expiry, "settlement_currency": "BTC", "is_active": True},
+            {"instrument_name": c["long_instrument"], "expiration_timestamp": expiry, "settlement_currency": "BTC", "is_active": True},
+        ])
+    monkeypatch.setattr(dossier, "public", lambda method, **kw: contracts_proof if method == "get_instruments" else {"timestamps": [], "prices": []})
+    monkeypatch.setattr(dossier.archive, "Deribit", lambda *a, **kw: SimpleNamespace(index_path=lambda *x, **y: points))
+
+    d = dossier.Dossiers(wb.config.shadow_dossier_root, clock=lambda: now[0])
+    _, init_transport = _mock_initial_llm("Call")
+    budget = signal_llm_review.DailyHttpBudget(tmp_path / "shared_budget.json", limit=5)
+
+    with serving(wb) as base:
+        svc = post(base, wb)
+        advance_market(slot_r16 + 2 * M, 100_000.0)
+        dealt = tracking.auto_deal(
+            d,
+            _plan_r16(slot_r16),
+            arch_root,
+            svc,
+            llm_config={"api_key": "k", "model": "deepseek-v4.1-test", "reasoning_effort": "medium", "budget": budget, "transport": init_transport},
+        )
+        assert dealt[0]["decision"] == "Accept"
+        assert budget.snapshot()["http_calls_used"] == 1
+        hand = next((wb.config.shadow_dossier_root / "dossiers").glob("Deribit_BTC_*/hands/hand_*"))
+        ep_dir = next((hand.parent.parent / "episodes").glob("episode_*"))
+        lce_id = json.loads((hand / "tracking" / "link.json").read_text(encoding="utf-8"))["t0"]["tracker_episode_id"]
+
+        # Seed a stale inflight state from 30m earlier to verify stale_inflight_recovered recovery
+        t_breach = slot_r16 + 40 * M
+        for m in range(points[-1][0] + M, t_breach + 1, M):
+            points.append([m, 103_450.0])
+        advance_market(t_breach, 103_450.0)
+        stale_state = {
+            "revoked": False,
+            "inflight": True,
+            "inflight_started_at_ms": t_breach - 30 * M,
+            "inflight_batch": [{"category": "B", "code": "BUFFER_EROSION", "signature": "BUFFER_EROSION:stale", "severity": 1, "observed_at_ms": t_breach - 30 * M, "summary_cn": "stale"}],
+            "pending": [],
+            "dispatched_signatures": {},
+        }
+        (ep_dir / "trigger_state.json").write_text(json.dumps(stale_state), encoding="utf-8")
+
+        def slow_revoke_transport(api_key, model, request_body, timeout_s, endpoint=None):
+            del api_key, model, request_body, timeout_s, endpoint
+            # Simulate a 90s slow LLM call without calling wb.refresh -> exported['latest_point'] becomes 90s stale!
+            now[0] += 90_000
+            write_fmz(snapshots, native_gate(ts=now[0] - 1000), now=now[0])
+            content = (
+                "### REVOKE\n\n短腿已入区且未回收，建议撤销。\n<HOLD_REVIEW_JSON>"
+                + json.dumps({
+                    "verdict": "REVOKE",
+                    "affected_conditions": ["M1", "C1"],
+                    "public_reply": "短腿已破位，建议 REVOKE。",
+                    "key_facts": ["CONDITION_TRIGGERED"],
+                }, ensure_ascii=False)
+                + "</HOLD_REVIEW_JSON>"
+            )
+            return {"choices": [{"message": {"content": content}, "finish_reason": "stop"}], "usage": {"total_tokens": 77}, "_http_status": 200}
+
+        res_rev = tracking.sync(
+            d,
+            hand,
+            svc,
+            check_due=True,
+            archive_root=arch_root,
+            run_review=True,
+            llm_config={"api_key": "k", "model": "deepseek-v4.1-hold", "reasoning_effort": "high", "budget": budget, "transport": slow_revoke_transport},
+        )
+        assert res_rev["hold_review"]["action"] == "REVIEWED"
+        assert res_rev["hold_review"]["verdict"] == "REVOKE"
+        assert budget.snapshot()["http_calls_used"] == 2
+
+        audit = tracking.audit_record(hand, now[0], {lce_id: "active"}, detail=True)
+        assert audit["shadow_management"]["exit_status"] == "SIMULATED_BUY_BACK_SHORT"
+        assert audit["shadow_management"]["buyback_cost_btc"] == pytest.approx(0.008)
+        assert audit["shadow_management"]["buyback_quote_at_ms"] > t_breach
+        assert audit["entry_basis"]["schema"] == "entry_decision_basis@1"
+
+        valid_rev = next(r for r in audit["hold_reviews"] if r["status"] == "VALID")
+        assert valid_rev["reasoning_effort"] == "high"
+        assert valid_rev["triggers"] and all({"category", "code", "summary_cn", "observed_at_ms"} <= set(t) for t in valid_rev["triggers"])
+        assert "18.00" in valid_rev["input_md"] and "0.10%" in valid_rev["input_md"]
+
+        failed_rev = next(r for r in audit["hold_reviews"] if r["status"] == "FAILED")
+        assert failed_rev["error"] == "inflight_stale_recovered"
+        assert failed_rev["reasoning_effort"] == "high"
+
+        revoke_ev = next(e for e in audit["events"] if e["kind"] == "AI_REVOKE")
+        assert revoke_ev["reasoning_effort"] == "high"
+        assert revoke_ev["protocol_status"] == "ALIGNED"
+        assert revoke_ev["shadow_action"] == "REVOKE_ALIGNED"
+        assert revoke_ev["triggers"] and all({"category", "code", "summary_cn"} <= set(t) for t in revoke_ev["triggers"])
+
+        detail_view = wb.locked_candidate_detail(lce_id)
+        assert detail_view["ai_dossier_management"]["latest_review"]["reasoning_effort"] == "high"
+
 
 

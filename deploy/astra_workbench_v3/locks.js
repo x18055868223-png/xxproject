@@ -89,16 +89,34 @@ function aiVerdictChip(verdict, extraCls = "") {
   return null;
 }
 
+function protocolChip(status, extraCls = "") {
+  const cls = extraCls ? ` ${extraCls}` : "";
+  if (status === "CONFLICT_WITH_FROZEN_INVALIDATION") {
+    return h("span", { class: `chip bad${cls}`, text: "与冻结规则冲突" });
+  }
+  if (status === "DISCRETIONARY_REVOKE") {
+    return h("span", { class: `chip warn${cls}`, text: "主动撤销" });
+  }
+  return null;
+}
+
 function aiMgmtChips(mgmt) {
   if (!mgmt) return [];
   const chips = [];
+  const sm = mgmt.shadow_management || {};
   const v = mgmt.latest_verdict ?? mgmt.latest_review?.verdict ?? mgmt.verdict
     ?? (isNum(mgmt.ai_revoked_at_ms) || mgmt.ai_revoked ? "REVOKE" : null);
   const vChip = aiVerdictChip(v, "ld-mgmt-chip");
   if (vChip) chips.push(vChip);
-  if (mgmt.condition_triggered || isNum(mgmt.condition_triggered_at_ms)) {
+  const mechState = mgmt.mechanical_condition_state ?? sm.mechanical_condition_state;
+  if (mechState === "TRIGGERED" || mgmt.condition_triggered || isNum(mgmt.condition_triggered_at_ms) || isNum(sm.condition_triggered_at_ms)) {
     chips.push(h("span", { class: "chip bad ld-mgmt-chip", text: "规则已触发" }));
+  } else if (mechState === "DATA_GAP") {
+    chips.push(h("span", { class: "chip warn ld-mgmt-chip", text: "网格缺口" }));
   }
+  const protoStatus = mgmt.protocol_status ?? sm.protocol_status ?? mgmt.latest_review?.protocol_status;
+  const pChip = protocolChip(protoStatus, "ld-mgmt-chip");
+  if (pChip) chips.push(pChip);
   return chips;
 }
 
@@ -218,30 +236,70 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   const mgmtDetail = d.ai_dossier_management;
   if (mgmtDetail) {
     const checkCount = mgmtDetail.frozen_check_count ?? mgmtDetail.grid_check_count ?? mgmtDetail.check_count ?? 0;
-    const trigAt = mgmtDetail.condition_triggered_at_ms;
-    const trigFlag = mgmtDetail.condition_triggered || isNum(trigAt);
+    const sm = mgmtDetail.shadow_management || mgmtDetail;
+    const mechState = mgmtDetail.mechanical_condition_state ?? sm.mechanical_condition_state;
+    const trigAt = mgmtDetail.condition_triggered_at_ms ?? sm.condition_triggered_at_ms;
+    const trigFlag = mechState === "TRIGGERED" || mgmtDetail.condition_triggered || isNum(trigAt);
     const latest = mgmtDetail.latest_review || mgmtDetail;
     const verdict = latest.verdict ?? mgmtDetail.latest_verdict;
-    const cats = Array.isArray(latest.trigger_categories) ? latest.trigger_categories
-      : Array.isArray(latest.triggers) ? latest.triggers
+    const rawCats = Array.isArray(latest.trigger_categories) ? latest.trigger_categories
+      : Array.isArray(latest.triggers) ? latest.triggers.map((t) => (typeof t === "string" ? t : t?.category)).filter(Boolean)
       : Array.isArray(mgmtDetail.latest_trigger_categories) ? mgmtDetail.latest_trigger_categories
       : latest.trigger_category ? [latest.trigger_category] : [];
+    const cats = [...new Set(rawCats)];
+    const trigItems = Array.isArray(latest.triggers)
+      ? latest.triggers.filter((t) => t && (typeof t === "string" || t.summary_cn || t.code))
+      : [];
     const revAt = latest.reviewed_at_ms ?? latest.decided_at_ms ?? latest.recorded_at_ms ?? mgmtDetail.latest_reviewed_at_ms;
     const reply = latest.public_reply ?? mgmtDetail.latest_public_reply;
     const revErr = latest.error ?? mgmtDetail.latest_error;
-    const sm = mgmtDetail.shadow_management || mgmtDetail;
     const exitStatus = sm.exit_status;
+    const checkStateText = isNum(trigAt)
+      ? ` · 已触发于 ${clock(trigAt)}`
+      : trigFlag
+        ? " · 规则已触发"
+        : mechState === "DATA_GAP"
+          ? " · 网格检查存在数据缺口"
+          : " · 未触发";
     const mgmtBox = h("div", { class: "ld-sec small ld-ai-mgmt" },
       h("h5", { text: "AI 持仓复核与影子管理摘要" }),
       h("p", { class: "muted num",
-        text: `冻结规则固定检查：${checkCount} 次${isNum(trigAt) ? ` · 已触发于 ${clock(trigAt)}` : trigFlag ? " · 规则已触发" : " · 未触发"}` }));
+        text: `冻结规则固定检查：${checkCount} 次${checkStateText}` }));
     const vChip = aiVerdictChip(verdict);
-    if (vChip || cats.length || isNum(revAt) || reply || revErr) {
+    const revProto = latest.protocol_status ?? (mgmtDetail.latest_review ? null : mgmtDetail.protocol_status ?? sm.protocol_status);
+    const revProtoChip = revProto === "CONFLICT_WITH_FROZEN_INVALIDATION"
+      ? h("span", { class: "chip bad", text: "与冻结规则冲突" })
+      : revProto === "DISCRETIONARY_REVOKE"
+        ? h("span", { class: "chip warn", text: "规则外主动撤销" })
+        : revProto && revProto !== "ALIGNED"
+          ? h("span", { class: "chip warn", text: revProto })
+          : null;
+    const revUnmappedChip = latest.condition_id_mapping_status === "UNMAPPED_CONDITION_ID"
+      ? h("span", { class: "chip warn", text: "条件 ID 未映射" })
+      : null;
+    const revModel = latest.model
+      ? `AI · ${latest.model}${latest.reasoning_effort ? ` · ${latest.reasoning_effort}` : ""}`
+      : null;
+    const hasReview = Boolean(
+      mgmtDetail.latest_review || vChip || cats.length || trigItems.length || isNum(revAt) || reply || revErr,
+    );
+    if (hasReview && (vChip || revProtoChip || revUnmappedChip || cats.length || trigItems.length || revModel || isNum(revAt) || reply || revErr)) {
       mgmtBox.append(h("div", { class: "ld-ai-rev" },
         h("div", { class: "ld-ai-head" },
           vChip,
+          revProtoChip,
+          revUnmappedChip,
           ...cats.map((cat) => h("span", { class: "chip", text: TRIGGER_CAT_CN[cat] || cat })),
+          revModel ? h("span", { class: "chip muted-chip", text: revModel }) : null,
           isNum(revAt) ? h("span", { class: "muted small num", text: clock(revAt) }) : null),
+        trigItems.length ? h("ul", { class: "pa-trig-list" }, ...trigItems.map((t) => {
+          if (typeof t === "string") return h("li", { text: t });
+          const codeText = t.code || t.category || "";
+          const summaryText = t.summary_cn || t.summary || "";
+          return h("li", {},
+            codeText ? h("span", { text: codeText }) : null,
+            summaryText ? h("span", { text: summaryText }) : null);
+        })) : null,
         reply ? h("p", { class: "ld-ai-reply", text: reply }) : (revErr ? h("p", { class: "ld-ai-reply muted", text: `复核失败：${revErr}` }) : null)));
     }
     if (exitStatus === "SIMULATED_BUY_BACK_SHORT") {

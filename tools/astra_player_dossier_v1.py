@@ -111,20 +111,28 @@ def write(path, data, *, replace=False):
 
 
 @contextmanager
-def writer(root):
+def writer(root, *, timeout_s: float = 0.0):
     root.mkdir(parents=True, exist_ok=True)
     if (root / 'chain.jsonl').exists() or (root / '_state' / 'state.json').exists():
         raise ValueError('choose a separate local dossier directory')
     with (root / '.writer.lock').open('a+b') as lock:
-        if os.name == 'nt':
-            import msvcrt
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
 
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
+                    lock.seek(0)
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
 
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
         yield  # closing the descriptor also releases the lock after process failure
 
 
@@ -416,7 +424,7 @@ class Dossiers:
         return path
 
     def respond(self, hand, attempt, status, raw=None, annotation=None, *, model=None, configuration=None,
-                requested=None, decided=None, channel='MANUAL_IMPORT'):
+                requested=None, decided=None, channel='MANUAL_IMPORT', error=None):
         meta, at = self.verify_evidence(hand), self.clock()
         exp = read(hand / 'expected.json')
         folder = hand / 'responses' / key(attempt)
@@ -433,27 +441,29 @@ class Dossiers:
         if any(type(t) is not int or not meta['hand_frozen_at_ms'] <= t <= at for t in known) or known != sorted(known):
             raise ValueError('invalid response clocks')
         siblings = [read(p) for p in attempts(hand)]
-        judgment, error = None, None
+        judgment, record_error = None, None
         if status == 'RECEIVED' and raw is not None:
             try:
                 judgment = parse(raw, annotation)
             except (UnicodeError, ValueError, TypeError) as exc:
-                status, error = 'PARSE_FAILED', str(exc)
+                status, record_error = 'PARSE_FAILED', str(exc)
             else:
                 deadline = self.reply_deadline(exp, meta)
                 status = 'LATE' if deadline is not None and at >= deadline else 'VALID'
                 if (status == 'VALID' and deadline is not None and self.require_reply_provenance
                         and not (requested is not None and decided is not None and model_identity(model))):
-                    status, error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
+                    status, record_error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
         elif status not in {'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED'} or raw is not None:
             raise ValueError('invalid response status or raw payload')
+        elif isinstance(error, str) and error.strip():
+            record_error = str(error)[:240]
         if payload_hash is not None and any(r['status'] == 'VALID' and r['raw_sha256'] == payload_hash for r in siblings):
             status = 'DUPLICATE'
         config_id = identity('config', RESEARCH, exp['plan'] and exp['plan']['plan_id'],
                              meta['generator'], meta['rules_sha256'], model, configuration, channel)
         record = dict(declared, status=status, attempt_id=attempt, ordinal=len(siblings) + 1,
                       recorded_at_ms=at, input_sha256=meta['input_sha256'], parser=PARSER,
-                      configuration_id=config_id, judgment=judgment, error=error, hand_id=hand.name)
+                      configuration_id=config_id, judgment=judgment, error=record_error, hand_id=hand.name)
         publish(folder, {'attempt.json': encode(record), **({'response.raw': raw} if raw is not None else {})})
         self.select(hand)
         return record
@@ -903,6 +913,7 @@ def main():
     tick.add_argument('--plan', type=Path, required=True)
     tick.add_argument('--archive', type=Path)
     tick.add_argument('--settle-due', action='store_true')
+    sub.add_parser('settle-due')
     startup = command('startup')
     startup.add_argument('--archive', type=Path, required=True)
     startup.add_argument('--reference', required=True)
@@ -919,6 +930,7 @@ def main():
     response.add_argument('--requested-ms', type=int)
     response.add_argument('--decided-ms', type=int)
     response.add_argument('--channel', default='MANUAL_IMPORT')
+    response.add_argument('--error')
     reparse = command('reparse', hand=True)
     reparse.add_argument('--attempt', required=True)
     reparse.add_argument('--annotation', type=Path, required=True)
@@ -950,7 +962,7 @@ def main():
     command('summary')
     args = parser.parse_args()
     d = Dossiers(args.root, require_reply_provenance=os.environ.get('ASTRA_AI_SHADOW_EXPERIMENT') == '1')
-    with writer(d.root):
+    with writer(d.root, timeout_s=30.0):
         if args.command == 'tick':
             plan_doc = read(args.plan)
             rnd = plan_doc.get('candidate_round', 'r2')
@@ -958,6 +970,9 @@ def main():
                            if args.archive else None)
             graded = list(d.settle_due()) if args.settle_due else []
             print(json.dumps([str(p) for p in [*(d.summary(read(h / 'expected.json')['expiry_ms']) for h in hands), *graded]], ensure_ascii=False))
+            return
+        if args.command == 'settle-due':
+            print(json.dumps([str(p) for p in d.settle_due()], ensure_ascii=False))
             return
         expiry, cmd = args.expiry_ms, args.command
         folder = d.path(expiry)
@@ -980,7 +995,8 @@ def main():
             result = d.respond(hand, args.attempt, args.status, args.raw.read_bytes() if args.raw else None,
                                read(args.annotation) if args.annotation else None, model=args.model,
                                configuration=read(args.configuration) if args.configuration else None,
-                               requested=args.requested_ms, decided=args.decided_ms, channel=args.channel)
+                               requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
+                               error=args.error)
             result = {k: result[k] for k in ('hand_id', 'attempt_id', 'status', 'error')}
         elif cmd == 'reparse':
             result = d.reparse(hand, args.attempt, read(args.annotation), args.reason)

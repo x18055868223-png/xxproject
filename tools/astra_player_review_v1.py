@@ -23,6 +23,7 @@ MAX_DEBOUNCE_MS = 15 * 60_000
 DEFAULT_COOLDOWN_MS = 30 * 60_000
 RETRY_BACKOFF_MS = 5 * 60_000
 FRESH_SAMPLE_GAP_MS = 10 * 60_000
+STALE_INFLIGHT_MS = 25 * 60_000
 HOLD_VERDICTS = ("HOLD", "REVOKE", "UNKNOWN")
 DEFAULT_CHAT_ENDPOINT = signal_llm_review.OPENAI_CHAT_COMPLETIONS_ENDPOINT
 
@@ -53,10 +54,37 @@ _RESELECTION_RE = re.compile(
     r"(?:Accept\s*[/／]\s*(?:Put|Call)|(?:改选|切换为|重新选择|改为承接|switch\s+to|re-?select)\s*(?:Put|Call))",
     re.IGNORECASE,
 )
+_RESELECTION_PROHIBITION_RE = re.compile(
+    r"(?:严禁|禁止|不得|不可|不能|切勿|不予).{0,16}(?:Accept\s*[/／]\s*(?:Put|Call)|改选|切换为|重新选择|改为承接|switch\s+to|re-?select)",
+    re.IGNORECASE,
+)
 _UNTRIGGERED_CLAIM_RE = re.compile(
     r"(?:条件未触发|规则未触发|边界规则未触发|并未触发|没有触发|not_triggered)",
     re.IGNORECASE,
 )
+_UNTRIGGERED_NEGATION_RE = re.compile(
+    r"(?:并非|不是|不能|不得|绝非|不可|不可标为|不认为|并非指).{0,8}(?:条件未触发|规则未触发|边界规则未触发|并未触发|没有触发|not_triggered)",
+    re.IGNORECASE,
+)
+
+
+def _has_forbidden_reselection(public_text: str, public_reply: str) -> bool:
+    if _RESELECTION_RE.search(public_reply):
+        return True
+    for line in public_text.splitlines():
+        if _RESELECTION_RE.search(line) and not _RESELECTION_PROHIBITION_RE.search(line):
+            return True
+    return False
+
+
+def _has_untriggered_claim(public_text: str, public_reply: str) -> bool:
+    if _UNTRIGGERED_CLAIM_RE.search(public_reply) and not _UNTRIGGERED_NEGATION_RE.search(public_reply):
+        return True
+    for line in public_text.splitlines():
+        cleaned = _UNTRIGGERED_NEGATION_RE.sub("", line)
+        if _UNTRIGGERED_CLAIM_RE.search(cleaned):
+            return True
+    return False
 
 
 def _num(value: Any) -> float | None:
@@ -84,6 +112,8 @@ def _normalize_endpoint(endpoint: str | None) -> str:
 
 
 def _is_transient_transport_error(exc: Exception) -> bool:
+    if isinstance(exc, signal_llm_review.DailyBudgetExceeded):
+        return False
     if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, TimeoutError, socket.timeout)):
         return True
     if isinstance(exc, urllib.error.HTTPError):
@@ -93,6 +123,14 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     if isinstance(exc, signal_llm_review.LlmApiError):
         return exc.status_code in signal_llm_review.RETRYABLE_LLM_HTTP_CODES
     return isinstance(exc, OSError)
+
+
+def _budget_error_category(exc: Exception) -> str:
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "TIMEOUT"
+    if isinstance(exc, urllib.error.URLError) and isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)):
+        return "TIMEOUT"
+    return "HTTP_ERROR"
 
 
 def _invoke_transport(poster: Any, api_key: str, model: str, request_body: dict[str, Any], timeout_s: float, url: str) -> Any:
@@ -116,6 +154,9 @@ def call_chat_llm(
     thinking: bool = True,
     reasoning_effort: str | None = None,
     transport: Any = None,
+    budget: Any = None,
+    budget_role: str = "astra_player",
+    packet_hash: str | None = None,
 ) -> dict[str, Any]:
     """Call OpenAI-compatible chat completions with endpoint normalization and transient retries."""
     if not api_key and transport is None:
@@ -136,12 +177,35 @@ def call_chat_llm(
     attempts_used = 0
     for attempt in range(total_attempts):
         attempts_used = attempt + 1
+        res_id: str | None = None
+        if budget is not None:
+            res = budget.reserve(
+                count=1,
+                role=budget_role,
+                packet_hash=packet_hash,
+                provider="deepseek",
+                model=model,
+            )
+            res_id = res.get("reservation_id") if isinstance(res, Mapping) else None
         try:
             response = _invoke_transport(poster, api_key, model, request_body, timeout_s, url)
-            break
         except Exception as exc:
-            if attempt + 1 >= total_attempts or not _is_transient_transport_error(exc):
+            if budget is not None and not isinstance(exc, signal_llm_review.DailyBudgetExceeded):
+                budget.complete(res_id, _budget_error_category(exc), usage={})
+            if (
+                isinstance(exc, signal_llm_review.DailyBudgetExceeded)
+                or attempt + 1 >= total_attempts
+                or not _is_transient_transport_error(exc)
+            ):
                 raise
+        else:
+            if budget is not None:
+                if isinstance(response, Mapping):
+                    usage = signal_llm_review._response_usage(dict(response))
+                    budget.complete(res_id, "HTTP_OK", usage=usage)
+                else:
+                    budget.complete(res_id, "HTTP_ERROR", usage={})
+            break
     if not isinstance(response, Mapping):
         raise ValueError("LLM response must be a JSON object")
     choices = response.get("choices")
@@ -228,9 +292,13 @@ def decide_initial_hand(
     model: str,
     endpoint: str | None = None,
     timeout_s: float = 180,
+    retries: int | None = None,
     max_tokens: int = 24576,
     reasoning_effort: str | None = None,
     transport: Any = None,
+    budget: Any = None,
+    budget_role: str = "astra_player_initial",
+    packet_hash: str | None = None,
 ) -> dict[str, Any]:
     """Send frozen input.md to the LLM, parse public Chinese prose + verbatim annotation + condition_plan."""
     system_prompt = (
@@ -250,15 +318,20 @@ def decide_initial_hand(
     )
     pair_summary = _format_contract_pair(contract_pair)
     user_content = f"候选合约对：\n{pair_summary}\n\n{input_md_text}" if pair_summary else input_md_text
+    effective_retries = (0 if float(timeout_s) >= 300 else 1) if retries is None else retries
     llm_result = call_chat_llm(
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
         api_key=api_key,
         model=model,
         endpoint=endpoint,
         timeout_s=timeout_s,
+        retries=effective_retries,
         max_tokens=max_tokens,
         reasoning_effort=reasoning_effort,
         transport=transport,
+        budget=budget,
+        budget_role=budget_role,
+        packet_hash=packet_hash,
     )
     public_text, payload = _split_tagged_json(llm_result["text"], "ANNOTATION_JSON")
     if not public_text.strip():
@@ -746,6 +819,7 @@ def schedule_review_action(
     debounce_ms: int = DEFAULT_DEBOUNCE_MS,
     cooldown_ms: int = DEFAULT_COOLDOWN_MS,
     retry_backoff_ms: int = RETRY_BACKOFF_MS,
+    stale_inflight_ms: int = STALE_INFLIGHT_MS,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Pure debounce/coalescing scheduler transition for hold-review AI calls."""
     del cooldown_ms, retry_backoff_ms  # applied when completing/failing a dispatched review
@@ -753,6 +827,8 @@ def schedule_review_action(
     state: dict[str, Any] = {
         "revoked": bool(raw.get("revoked", False)),
         "inflight": bool(raw.get("inflight", False)),
+        "inflight_started_at_ms": _int(raw.get("inflight_started_at_ms")),
+        "inflight_batch": [deepcopy(dict(t)) for t in (raw.get("inflight_batch") or []) if isinstance(t, Mapping)],
         "pending": [deepcopy(dict(t)) for t in (raw.get("pending") or []) if isinstance(t, Mapping)],
         "pending_since_ms": _int(raw.get("pending_since_ms")),
         "last_trigger_ms": _int(raw.get("last_trigger_ms")),
@@ -764,8 +840,36 @@ def schedule_review_action(
     if state["revoked"]:
         return state, None
 
-    effective_debounce_ms = max(MIN_DEBOUNCE_MS, min(MAX_DEBOUNCE_MS, int(debounce_ms)))
     dispatched = state["dispatched_signatures"]
+    if state["inflight"]:
+        started = state.get("inflight_started_at_ms")
+        if not isinstance(started, int) or isinstance(started, bool) or (now_ms - started >= int(stale_inflight_ms)):
+            recovered: list[dict[str, Any]] = []
+            seen_recovered: set[str] = set()
+            for item in state["inflight_batch"]:
+                sig_key = _trigger_sig_key(item)
+                dispatched.pop(sig_key, None)
+                if sig_key not in seen_recovered:
+                    recovered.append(item)
+                    seen_recovered.add(sig_key)
+            for item in state["pending"]:
+                sig_key = _trigger_sig_key(item)
+                if sig_key not in seen_recovered:
+                    recovered.append(item)
+                    seen_recovered.add(sig_key)
+            state["pending"] = recovered
+            state["inflight"] = False
+            state["inflight_started_at_ms"] = None
+            state["inflight_batch"] = []
+            if state["pending"] and state.get("pending_since_ms") is None:
+                state["pending_since_ms"] = max(0, now_ms - MAX_DEBOUNCE_MS)
+            state["stale_inflight_recovered_at_ms"] = now_ms
+        else:
+            state.pop("stale_inflight_recovered_at_ms", None)
+    else:
+        state.pop("stale_inflight_recovered_at_ms", None)
+
+    effective_debounce_ms = max(MIN_DEBOUNCE_MS, min(MAX_DEBOUNCE_MS, int(debounce_ms)))
     pending_by_key = {_trigger_sig_key(t): idx for idx, t in enumerate(state["pending"])}
 
     for item in triggers or ():
@@ -786,9 +890,9 @@ def schedule_review_action(
             state["pending_since_ms"] = now_ms
         state["last_trigger_ms"] = max(state["last_trigger_ms"] or now_ms, now_ms)
 
-    if not state["pending"]:
-        return state, None
     if state["inflight"]:
+        return state, None
+    if not state["pending"]:
         return state, None
     if state["backoff_until_ms"] is not None and now_ms < state["backoff_until_ms"]:
         return state, None
@@ -817,6 +921,7 @@ def schedule_review_action(
     state["pending"] = []
     state["pending_since_ms"] = None
     state["inflight"] = True
+    state["inflight_started_at_ms"] = now_ms
     action = {
         "should_call": True,
         "triggers": batch,
@@ -838,6 +943,7 @@ def complete_review_action(
     state = deepcopy(dict(scheduler_state))
     batch = [deepcopy(dict(t)) for t in (state.pop("inflight_batch", None) or []) if isinstance(t, Mapping)]
     state["inflight"] = False
+    state["inflight_started_at_ms"] = None
     if success:
         state["last_review_at_ms"] = now_ms
         state["cooldown_until_ms"] = now_ms + int(cooldown_ms)
@@ -1008,11 +1114,16 @@ def _format_flow_lines(data: Any) -> list[str]:
     cur_dir = dir_cn.get(str(data.get("flow_direction") or "").lower(), str(data.get("flow_direction") or "未提供"))
     fast4 = dir_cn.get(str(data.get("flow_fast_4h") or "").lower(), str(data.get("flow_fast_4h") or "未提供"))
     slow12 = dir_cn.get(str(data.get("flow_slow_12h") or "").lower(), str(data.get("flow_slow_12h") or "未提供"))
-    return [
+    lines = [
         f"- 现货主动流就绪：{_fmt_bool_cn(data.get('flow_ready'))}（流向源时钟：{_utc(data.get('flow_asof_ms')) if data.get('flow_asof_ms') else '随最新样本同步'}）",
         f"- 综合方向：{cur_dir}（近 4h：{fast4} / 近 12h：{slow12}）；注意：4h/12h 为滚动窗，旧柱滑出不直接等同近期相邻不重叠窗口真实反转",
         f"- 近 4h CVD 净额：{_fmt_num(data.get('flow_cvd_4h'), 2)}；近 4h 动量变化：{_fmt_num(data.get('flow_momentum_4h_pct'), 2, '%')}",
     ]
+    if _num(data.get("flow_cvd_12h")) is not None or _num(data.get("flow_momentum_12h_pct")) is not None:
+        lines.append(
+            f"- 近 12h CVD 净额：{_fmt_num(data.get('flow_cvd_12h'), 2)}；近 12h 动量变化：{_fmt_num(data.get('flow_momentum_12h_pct'), 2, '%')}"
+        )
+    return lines
 
 
 def _format_economics_lines(t0_summary: Any, quote_summary: Any) -> list[str]:
@@ -1136,8 +1247,6 @@ def parse_hold_review_response(
     """Parse HOLD/REVOKE/UNKNOWN verdict + structured JSON, separating mechanical vs AI states."""
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise ValueError("empty hold review response")
-    if _RESELECTION_RE.search(raw_text):
-        raise ValueError("side_reselection_forbidden")
 
     public_text, payload = _split_tagged_json(raw_text, "HOLD_REVIEW_JSON")
     verdict = str(payload.get("verdict") or "").strip().upper()
@@ -1160,7 +1269,7 @@ def parse_hold_review_response(
     public_reply = payload.get("public_reply")
     if not isinstance(public_reply, str) or not public_reply.strip():
         raise ValueError("public_reply must be a non-empty string")
-    if _RESELECTION_RE.search(public_reply):
+    if _has_forbidden_reselection(public_text, public_reply):
         raise ValueError("side_reselection_forbidden")
     if "key_facts" not in payload or not isinstance(payload.get("key_facts"), (list, Mapping)):
         raise ValueError("key_facts must be a list or mapping")
@@ -1177,7 +1286,7 @@ def parse_hold_review_response(
     mech_state = mechanical_state or ("TRIGGERED" if program_triggered else "INTACT")
     notes: list[str] = []
     if program_triggered:
-        if payload.get("program_triggered") is False or _UNTRIGGERED_CLAIM_RE.search(raw_text):
+        if payload.get("program_triggered") is False or _has_untriggered_claim(public_text, public_reply):
             raise ValueError("cannot_overturn_program_triggered")
         notes.append("程序边界条件已触发（CONDITION_TRIGGERED 不可逆转，不可标为未触发）。")
         if verdict == "HOLD":

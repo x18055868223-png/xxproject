@@ -4190,6 +4190,25 @@ class AstraWorkbench:
             if result is None:
                 return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
             episode = result["episode"]
+            if action == "quote":
+                with self._view_lock:
+                    view = self._current_view or {}
+                try:
+                    point = self._capture_locked_point(episode, view, self.clock_ms())
+                    return {
+                        "state": "QUOTE_CAPTURED",
+                        "episode": episode,
+                        "latest_point": point,
+                        "execution_allowed": False,
+                    }
+                except Exception as exc:
+                    return {
+                        "state": "QUOTE_UNAVAILABLE",
+                        "episode": episode,
+                        "latest_point": None,
+                        "error": type(exc).__name__,
+                        "execution_allowed": False,
+                    }
             try:
                 point = self.locked_candidates.read_point(episode["t0_baseline_point_id"])
                 t0 = player_tracking.tracker_t0(origin, episode, point)
@@ -6658,12 +6677,27 @@ def make_handler(workbench: AstraWorkbench):
                 self._json(409, {"code": "shadow_evidence_unavailable"})
 
         def _locked_public_proof(self, result: Mapping[str, Any]) -> Mapping[str, Any]:
-            episode = result.get("episode") or {}
-            origin = episode.get("ai_shadow") or {}
-            if "counter_excerpt" not in origin or sessions.authorize("GET", self.headers, self.client_address[0]).ok:
+            if sessions.authorize("GET", self.headers, self.client_address[0]).ok:
                 return result
-            return {**result, "episode": {**episode, "ai_shadow": {
-                key: value for key, value in origin.items() if key != "counter_excerpt"}}}
+            out = dict(result)
+            episode = out.get("episode") or {}
+            origin = episode.get("ai_shadow") or {}
+            if "counter_excerpt" in origin:
+                out["episode"] = {**episode, "ai_shadow": {
+                    key: value for key, value in origin.items() if key != "counter_excerpt"}}
+            mgmt = out.get("ai_dossier_management")
+            if isinstance(mgmt, Mapping):
+                redacted = dict(mgmt)
+                latest = redacted.get("latest_review")
+                if isinstance(latest, Mapping):
+                    redacted["latest_review"] = {
+                        key: value for key, value in latest.items()
+                        if key not in {"public_reply", "error", "input_sha256", "raw_sha256"}
+                    }
+                if "hold_reviews" in redacted:
+                    redacted["hold_reviews"] = []
+                out["ai_dossier_management"] = redacted
+            return out
 
         def _shadow_json(self, data: Mapping[str, Any]) -> None:
             encoded = (_canonical(dict(data)) + "\n").encode("utf-8")
@@ -6681,7 +6715,7 @@ def make_handler(workbench: AstraWorkbench):
                     or not hmac.compare_digest(auth.encode(), ("Bearer " + token).encode())):
                 self._json(401, {"code": "shadow_service_credential_required"})
                 return
-            if action not in {"lock", "recover", "export", "readiness"}:
+            if action not in {"lock", "recover", "export", "readiness", "quote"}:
                 self._json(404, {"code": "not_found"})
                 return
             try:

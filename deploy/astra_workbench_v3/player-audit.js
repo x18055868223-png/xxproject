@@ -5,6 +5,9 @@ const LABELS = {
   DATA_BLOCKED: "资料阻塞", MISSED: "错过采样窗口", PARSE_FAILED: "回复未通过解析",
   PROVENANCE_MISSING: "回复缺模型或作答时钟",
   REQUEST_FAILED: "请求失败", TIMEOUT: "模型超时", LATE: "回复超时到达",
+  LLM_NOT_CONFIGURED: "模型密钥未配置", DAILY_BUDGET_EXHAUSTED: "今日调用上限已用尽",
+  POLICY_BLOCKED: "策略受阻", TRACKER_EXPORT_UNAVAILABLE: "轨迹导出暂不可用",
+  VALID: "解析有效", DUPLICATE: "重复回复",
   EVIDENCE_UNAVAILABLE: "证据暂不可读", TRACKING: "已关联锁定追踪",
   ARCHIVED: "归档证据可读（实时追踪已过保留期）", TRACKER_UNAVAILABLE: "追踪暂不可读",
   LOCK_BLOCKED: "锁定受阻", LINK_UNVERIFIED: "锁定回执待核对", SHADOW_LOCK_REQUESTED: "已提交锁定申请",
@@ -72,9 +75,94 @@ function verdictText(c) {
 
 function verdictTone(state) {
   if (state === "Accept") return "ok";
-  if (state === "Reject") return "warn";
-  if (state === "PARSE_FAILED" || state === "LOCK_BLOCKED" || state === "DATA_BLOCKED") return "bad";
+  if (state === "Reject" || state === "DAILY_BUDGET_EXHAUSTED" || state === "LLM_NOT_CONFIGURED"
+    || state === "TIMEOUT" || state === "POLICY_BLOCKED") return "warn";
+  if (state === "PARSE_FAILED" || state === "LOCK_BLOCKED" || state === "DATA_BLOCKED"
+    || state === "REQUEST_FAILED" || state === "PROVENANCE_MISSING") return "bad";
   return "";
+}
+
+const SHADOW_ACTION_CN = {
+  HOLD_SHADOW_CONTINUE: "影子动作：继续持有",
+  REVOKE_ALIGNED: "影子动作：依规撤销",
+  REVOKE_DISCRETIONARY: "影子动作：主动撤销",
+  FROZEN_RULE_TRIGGERED_CONFLICT: "影子动作：冲突待复核",
+  HOLD_UNKNOWN_OBSERVE: "影子动作：待判继续观察",
+  NONE: "影子动作：无",
+};
+
+function protocolStatusChip(status) {
+  if (status === "CONFLICT_WITH_FROZEN_INVALIDATION") {
+    return h("span", { class: "chip bad", text: "与冻结规则冲突" });
+  }
+  if (status === "DISCRETIONARY_REVOKE") {
+    return h("span", { class: "chip warn", text: "规则外主动撤销" });
+  }
+  if (status === "ALIGNED") {
+    return h("span", { class: "chip muted-chip", text: "口径一致" });
+  }
+  return status ? h("span", { class: "chip warn", text: status }) : null;
+}
+
+function triggerListView(triggers) {
+  const rows = Array.isArray(triggers)
+    ? triggers.filter((t) => t && (typeof t === "string" || t.code || t.summary_cn || t.summary))
+    : [];
+  if (!rows.length) return null;
+  return h("ul", { class: "pa-trig-list" }, ...rows.map((t) => {
+    if (typeof t === "string") return h("li", { text: t });
+    const codeText = t.code || t.category || "";
+    const summaryText = t.summary_cn || t.summary || "";
+    return h("li", {},
+      codeText ? h("span", { text: codeText }) : null,
+      summaryText ? h("span", { text: summaryText }) : null);
+  }));
+}
+
+function entryBasisView(eb) {
+  if (!eb || typeof eb !== "object") return null;
+  const rows = [];
+  if (eb.M1) {
+    const ruleName = ruleTypes[eb.M1.invalidation] || eb.M1.invalidation;
+    const interval = isNum(eb.M1.check_interval_ms) ? `每 ${eb.M1.check_interval_ms / 60000} 分钟` : null;
+    const meaning = eb.M1.invalidation_meaning && eb.M1.invalidation_meaning !== "NOT_RECORDED"
+      ? eb.M1.invalidation_meaning : null;
+    const text = [ruleName, interval, meaning].filter(Boolean).join(" · ");
+    if (text) rows.push(["M1 机械边界", text]);
+  }
+  if (eb.C && typeof eb.C === "object") {
+    for (const [cid, val] of Object.entries(eb.C)) {
+      const text = typeof val === "string" ? val : val?.meaning || val?.text || val?.condition || "";
+      if (text && text !== "NOT_RECORDED") rows.push([`${cid} 持续条件`, text]);
+    }
+  }
+  if (eb.S1) {
+    const nodes = [];
+    const choice = eb.S1.original_choice_reason;
+    const counter = eb.S1.original_strongest_counterevidence;
+    if (choice && choice !== "NOT_RECORDED") nodes.push(h("div", { text: choice }));
+    if (counter && counter !== "NOT_RECORDED") {
+      nodes.push(h("div", { text: `最强反证：${stripCounterPrefix(counter)}` }));
+    }
+    if (nodes.length) rows.push(["S1 入场锚点", nodes]);
+  }
+  if (eb.R1) {
+    const rParts = [
+      eb.R1.ard_responsibility_meaning && eb.R1.ard_responsibility_meaning !== "NOT_RECORDED"
+        ? eb.R1.ard_responsibility_meaning : null,
+      eb.R1.ard_review_on && eb.R1.ard_review_on !== "NOT_RECORDED"
+        ? `复核触发：${eb.R1.ard_review_on}` : null,
+    ].filter(Boolean);
+    if (rParts.length) rows.push(["R1 ARD 责任", rParts.join(" · ")]);
+  }
+  if (!rows.length) return null;
+  return h("div", { class: "pa-basis" },
+    h("b", { text: "契约锚定 ID（M1 / C1 / S1）" }),
+    h("dl", { class: "kv pa-cond-kv" },
+      ...rows.flatMap(([k, v]) => [
+        h("dt", { text: k }),
+        Array.isArray(v) ? h("dd", {}, ...v) : h("dd", { text: v }),
+      ])));
 }
 
 function modelTag(model, effort) {
@@ -240,6 +328,33 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       h("header", {}, h("b", { text: "本局状态说明" })),
       para(d.notes.at(-1).reason, "muted small")));
   }
+  const attempts = Array.isArray(d.attempts) ? d.attempts : [];
+  const latestAttempt = attempts.at(-1);
+  const latestAttemptFailed = Boolean(
+    latestAttempt && latestAttempt.status && !["VALID", "RECEIVED"].includes(latestAttempt.status),
+  );
+  if ((!judgment && attempts.length) || latestAttemptFailed) {
+    const recentAttempts = attempts.slice(-4).reverse();
+    const countLabel = attempts.length > recentAttempts.length
+      ? `最近 ${recentAttempts.length} / 共 ${attempts.length} 次`
+      : `共 ${attempts.length} 次`;
+    left.append(h("div", { class: "ev" },
+      h("header", {},
+        h("b", { text: "作答尝试与失败状态" }),
+        h("span", { class: "muted small num", text: countLabel })),
+      h("ul", { class: "pa-attempt-list" }, ...recentAttempts.map((a) => {
+        const st = a.status || "UNKNOWN";
+        const tone = verdictTone(st) || (st === "NO_RESPONSE" || st === "LATE" ? "warn" : "");
+        const mTag = modelTag(a.model, a.reasoning_effort);
+        const ts = a.decided_at_ms ?? a.recorded_at_ms ?? a.requested_at_ms;
+        return h("li", {},
+          h("div", {},
+            h("span", { class: `chip ${tone}`, text: LABELS[st] ? `${LABELS[st]}（${st}）` : st }),
+            mTag ? h("span", { class: "chip muted-chip", text: mTag }) : null,
+            ts ? h("span", { class: "muted small num pa-hold-ts", text: utc(ts) }) : null),
+          a.error ? para(String(a.error), "small warn-text") : null);
+      }))));
+  }
 
   // ── Left Lower: 事中持续追踪与到期判卷 ──
   left.append(h("h4", { class: "pa-sec-title", text: "事中持续追踪与到期判卷" }));
@@ -290,18 +405,36 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
         h("dt", { text: "有效破坏标准" }), h("dd", { text: condition.invalidation_meaning || "—" }),
         h("dt", { text: "固定检查时钟" }), h("dd", { class: "num",
           text: `首检 ${utc(condition.check_clock?.first_at_ms)} · 每 ${(condition.check_clock?.interval_ms || 300000) / 60000} 分钟固定网格复核` })));
-    if (d.events?.length) {
-      const gridChecks = d.events.filter((ev) =>
-        ev.kind === "CONDITION_TRIGGERED" || ev.kind === "CONDITION_NOT_TRIGGERED" || ev.kind === "CONDITION_UNKNOWN");
-      if (gridChecks.length) {
-        const triggered = gridChecks.filter((ev) => ev.kind === "CONDITION_TRIGGERED").length;
-        const untriggered = gridChecks.filter((ev) => ev.kind === "CONDITION_NOT_TRIGGERED").length;
-        const unknown = gridChecks.length - triggered - untriggered;
-        const latestCheckTs = Math.max(...gridChecks.map((ev) => ev.observed_at_ms ?? ev.recorded_at_ms ?? 0));
+    if (d.entry_basis) {
+      condCard.append(entryBasisView(d.entry_basis));
+    }
+    if (d.grid_check_summary || d.events?.length) {
+      const gs = d.grid_check_summary;
+      if (gs && gs.total) {
         condCard.append(para(
-          `固定网格检查共 ${gridChecks.length} 次（未触发 ${untriggered} · 已触发 ${triggered}${unknown ? ` · 待补齐 ${unknown}` : ""}）· 最近 ${utc(latestCheckTs > 0 ? latestCheckTs : null)}`,
+          `固定网格检查共 ${gs.total} 次（未触发 ${gs.not_triggered ?? 0} · 已触发 ${gs.triggered ?? 0}${gs.unknown ? ` · 待补齐 ${gs.unknown}` : ""}）· 最近 ${utc(gs.latest_at_ms)}`,
           "muted small num pa-grid-sum"));
+      } else if (d.events?.length) {
+        const byTs = new Map();
+        for (const ev of d.events) {
+          if (ev.kind !== "CONDITION_TRIGGERED" && ev.kind !== "CONDITION_NOT_TRIGGERED" && ev.kind !== "CONDITION_UNKNOWN") continue;
+          const tsKey = ev.observed_at_ms ?? ev.recorded_at_ms ?? ev.event_id;
+          const prev = byTs.get(tsKey);
+          if (!prev || (prev.kind === "CONDITION_UNKNOWN" && ev.kind !== "CONDITION_UNKNOWN")) byTs.set(tsKey, ev);
+        }
+        const gridChecks = [...byTs.values()];
+        if (gridChecks.length) {
+          const triggered = gridChecks.filter((ev) => ev.kind === "CONDITION_TRIGGERED").length;
+          const untriggered = gridChecks.filter((ev) => ev.kind === "CONDITION_NOT_TRIGGERED").length;
+          const unknown = gridChecks.length - triggered - untriggered;
+          const latestCheckTs = Math.max(...gridChecks.map((ev) => ev.observed_at_ms ?? ev.recorded_at_ms ?? 0));
+          condCard.append(para(
+            `固定网格检查共 ${gridChecks.length} 次（未触发 ${untriggered} · 已触发 ${triggered}${unknown ? ` · 待补齐 ${unknown}` : ""}）· 最近 ${utc(latestCheckTs > 0 ? latestCheckTs : null)}`,
+            "muted small num pa-grid-sum"));
+        }
       }
+    }
+    if (d.events?.length) {
       const lastNotTrigIdx = d.events.findLastIndex((ev) => ev.kind === "CONDITION_NOT_TRIGGERED");
       const lastObsIdx = d.events.findLastIndex((ev) => ev.kind === "OBSERVATION");
       const shownEvents = d.events.filter((ev, idx) =>
@@ -327,12 +460,24 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       h("header", {}, h("b", { text: "持仓复核与影子管理轨迹" })));
     const sm = d.shadow_management;
     if (sm) {
-      const trigChip = isNum(sm.condition_triggered_at_ms)
-        ? h("span", { class: "chip bad", text: `原规则已触发 · ${utc(sm.condition_triggered_at_ms)}` })
-        : h("span", { class: "chip ok", text: "原冻结规则未触发" });
+      const trigChip = sm.mechanical_condition_state === "TRIGGERED" || isNum(sm.condition_triggered_at_ms)
+        ? h("span", {
+            class: "chip bad",
+            text: isNum(sm.condition_triggered_at_ms) ? `原规则已触发 · ${utc(sm.condition_triggered_at_ms)}` : "原规则已触发",
+          })
+        : sm.mechanical_condition_state === "DATA_GAP"
+          ? h("span", { class: "chip warn", text: "网格检查存在数据缺口" })
+          : h("span", { class: "chip ok", text: "原冻结规则未触发" });
       const revChip = isNum(sm.ai_revoked_at_ms)
         ? h("span", { class: "chip bad", text: `AI 建议撤销 · ${utc(sm.ai_revoked_at_ms)}` })
         : h("span", { class: "chip muted-chip", text: "AI 未建议撤销" });
+      const protoChip = protocolStatusChip(sm.protocol_status);
+      const actionChip = sm.shadow_action && sm.shadow_action !== "NONE"
+        ? h("span", {
+            class: `chip ${sm.shadow_action === "FROZEN_RULE_TRIGGERED_CONFLICT" ? "bad" : sm.shadow_action.startsWith("REVOKE") ? "warn" : "muted-chip"}`,
+            text: SHADOW_ACTION_CN[sm.shadow_action] || sm.shadow_action,
+          })
+        : null;
       let exitChip;
       let exitNote = null;
       if (sm.exit_status === "SIMULATED_BUY_BACK_SHORT") {
@@ -347,7 +492,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       } else {
         exitChip = h("span", { class: "chip muted-chip", text: "影子退出：无（继续观察）" });
       }
-      holdCard.append(h("div", { class: "pa-trigger-row pa-shadow-state" }, trigChip, revChip, exitChip));
+      holdCard.append(h("div", { class: "pa-trigger-row pa-shadow-state" }, trigChip, revChip, exitChip, protoChip, actionChip));
       if (exitNote) holdCard.append(para(exitNote, "small muted num pa-shadow-note"));
     }
     if (d.hold_reviews?.length) {
@@ -357,22 +502,37 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
         return tb - ta;
       });
       for (const r of reviews) {
-        const cats = Array.isArray(r.trigger_categories) ? r.trigger_categories
-          : Array.isArray(r.triggers) ? r.triggers
+        const rawCats = Array.isArray(r.trigger_categories) ? r.trigger_categories
+          : Array.isArray(r.triggers) ? r.triggers.map((t) => (typeof t === "string" ? t : t?.category)).filter(Boolean)
           : r.trigger_category ? [r.trigger_category] : [];
+        const cats = [...new Set(rawCats)];
         const vm = holdVerdictMeta(r.verdict || r.status || r.action);
-        const mTag = modelTag(r.model, r.reasoning_effort);
+        const revProtoChip = r.protocol_status && r.protocol_status !== "ALIGNED"
+          ? protocolStatusChip(r.protocol_status) : null;
+        const unmappedChip = r.condition_id_mapping_status === "UNMAPPED_CONDITION_ID"
+          ? h("span", {
+              class: "chip warn",
+              text: "条件 ID 未映射",
+              title: Array.isArray(r.unmapped_condition_ids) && r.unmapped_condition_ids.length
+                ? `未映射 ID：${r.unmapped_condition_ids.join("、")}` : null,
+            })
+          : null;
+        const mTag = modelTag(r.model, r.reasoning_effort ?? r.configuration?.reasoning_effort);
         const ts = r.reviewed_at_ms ?? r.decided_at_ms ?? r.recorded_at_ms ?? r.observed_at_ms;
         const aff = formatAffectedConditions(r.affected_conditions);
+        const trigView = triggerListView(r.triggers);
         const rawInput = r.input_md ?? r.prompt_md;
         const rawReply = r.raw_reply ?? r.raw ?? r.response;
         const item = h("div", { class: "pa-hold-item" },
           h("div", { class: "pa-hold-head" },
             ...cats.map((c) => h("span", { class: "chip", text: TRIGGER_CATEGORIES[c] || c })),
             h("span", { class: `chip ${vm.tone}`, text: vm.text }),
+            revProtoChip,
+            unmappedChip,
             mTag ? h("span", { class: "chip muted-chip", text: mTag }) : null,
             h("span", { class: "muted small num pa-hold-ts", text: utc(ts) })),
           aff ? para(`涉及原条件：${aff}`, "small muted pa-hold-affected") : null,
+          trigView,
           r.public_reply ? para(r.public_reply, "pa-hold-reply") : (r.error ? para(String(r.error), "small warn-text pa-hold-reply") : null));
         if (rawInput || rawReply) {
           const rawBlocks = [];
@@ -408,7 +568,10 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     if (o.managed_cashflow) {
       const mc = o.managed_cashflow;
       if (mc.mode === "UNPRICED_REVOKE") {
-        outRows.push(["提前买回短腿影子净结果（保留保护腿）", "REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益"]);
+        const unpricedCopy = mc.unpriced_reason === "settlement_price_missing"
+          ? "官方交割价尚未取得，影子买回止损净结果暂不可算"
+          : "REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益";
+        outRows.push(["提前买回短腿影子净结果（保留保护腿）", unpricedCopy]);
       } else if (isNum(mc.managed_net_btc)) {
         const delta = isNum(mc.delta_btc) ? mc.delta_btc
           : (isNum(o.hold_to_expiry_shadow_net_btc) ? mc.managed_net_btc - o.hold_to_expiry_shadow_net_btc : null);
@@ -469,6 +632,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
             hand_id: d.hand_id, dossier_id: d.dossier_id, schedule: d.scheduled_at_ms,
             requested_at_ms: d.requested_at_ms, lock_requested_at_ms: d.lock_requested_at_ms,
             contracts: d.contracts, source: d.source, input: d.identity, decision: d.decision,
+            entry_basis: d.entry_basis, shadow_management: d.shadow_management,
             attempts: d.attempts, receipt, archive: d.archive,
           }, null, 2))),
       ], null, "pa-provenance"));

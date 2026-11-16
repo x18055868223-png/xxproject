@@ -300,6 +300,9 @@ button.chip:hover, button.chip.on { border-color: var(--depth); color: var(--dep
 .pa-cond-kv dd { font-family: var(--font); line-height: 1.62; color: var(--ink); }
 .pa-cond-kv dd.num { font-family: var(--font-num); }
 .pa-events-table { margin-top: 8px; border-top: 1px solid var(--rule); }
+.pa-basis { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.pa-basis > b { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; letter-spacing: 0.02em; }
+.pa-basis .kv dd > div + div { margin-top: 3px; color: var(--ink-2); font-size: var(--step--1); }
 .pa-grid-sum { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--rule-2); line-height: 1.55; }
 .pa-trigger-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
 .pa-shadow-note { margin: 4px 0 8px; line-height: 1.58; }
@@ -308,6 +311,14 @@ button.chip:hover, button.chip.on { border-color: var(--depth); color: var(--dep
 .pa-hold-head { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin-bottom: 6px; }
 .pa-hold-ts { margin-left: auto; }
 .pa-hold-affected { margin: 4px 0; line-height: 1.55; }
+.pa-trig-list { list-style: none; margin: 4px 0 6px; padding: 0 0 0 10px; border-left: 1.5px solid var(--rule); display: grid; gap: 3px; font-size: 12.5px; line-height: 1.55; color: var(--ink-2); }
+.pa-trig-list li { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; overflow-wrap: anywhere; }
+.pa-trig-list li > span:first-child:not(:last-child) { font-family: var(--font-num); font-size: 11.5px; color: var(--ink-3); font-weight: 600; letter-spacing: 0.02em; }
+.pa-attempt-list { list-style: none; margin: 6px 0 0; padding: 6px 0 0; border-top: 1px solid var(--rule-2); display: grid; gap: 8px; }
+.pa-attempt-list li { padding-top: 8px; border-top: 1px dashed var(--rule-2); font-size: var(--step--1); line-height: 1.55; color: var(--ink-2); }
+.pa-attempt-list li:first-child { padding-top: 2px; border-top: 0; }
+.pa-attempt-list li > div { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.pa-attempt-list li > p { margin: 4px 0 0; overflow-wrap: anywhere; line-height: 1.55; }
 .pa-hold-reply { margin: 4px 0 6px; font-size: 13.5px; line-height: 1.65; color: var(--ink); overflow-wrap: anywhere; }
 .pa-jump-row { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--rule-2); }
 .pa-contracts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
