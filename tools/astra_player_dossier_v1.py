@@ -845,7 +845,9 @@ _PUNCT_TRANS = str.maketrans('，。：；（）【】“”‘’　', ',.:;()[
 
 
 def _norm_excerpt(value):
-    collapsed = re.sub(r'\s+', ' ', value.translate(_PUNCT_TRANS)).strip()
+    cleaned = re.sub(r'(?m)^\s*(?:[-*•]|\d+[.)])\s+', '', value)
+    cleaned = cleaned.replace('**', '').replace('`', '')
+    collapsed = re.sub(r'\s+', ' ', cleaned.translate(_PUNCT_TRANS)).strip()
     cjk_joined = re.sub(r'(?<=[^\x00-\x7f])\s+|\s+(?=[^\x00-\x7f])', '', collapsed)
     return re.sub(r'\s*([,.:;()\[\]"/])\s*', r'\1', cjk_joined)
 

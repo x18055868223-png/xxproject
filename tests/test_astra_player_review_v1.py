@@ -706,3 +706,62 @@ def test_closure_contract_conflict_discretionary_and_excerpt_whitespace_toleranc
     assert parsed_disc["protocol_status"] == "DISCRETIONARY_REVOKE"
     assert parsed_disc["condition_id_mapping_status"] == "MAPPED"
 
+
+def test_decide_initial_hand_tolerates_markdown_markers_in_verbatim_excerpts():
+    raw_body = (
+        "## Accept / Call\n\n"
+        "- **Put路径**：现价 99,000 在 Put 责任区外，空间缓冲充足。\n"
+        "- **Call路径**：现价距 Call 短腿 `103,000` 尚有 4,000 USD。\n"
+        "对比结论：Call 路径阻力更小，因此选择 Call。\n"
+        "1. Put 最强反证：下方 96,000 成交偏薄。\n"
+        "2. Call 最强反证：上方 `102,500` 存在卖压待观察。\n"
+        "- 冻结历史事实：前窗未进入责任区。\n"
+        "- 承担条件：维持 `103,000` 下方运行。\n"
+        "- 破坏口径：采用 `entry_not_returned`，每 5 分钟检查。\n"
+    )
+    ann_payload = {
+        "put": "Put路径：现价 99,000 在 Put 责任区外，空间缓冲充足。",
+        "call": "Call路径：现价距 Call 短腿 103,000 尚有 4,000 USD。",
+        "comparison": "Call 路径阻力更小，因此选择 Call。",
+        "put_counter": "Put 最强反证：下方 96,000 成交偏薄。",
+        "call_counter": "Call 最强反证：上方 102,500 存在卖压待观察。",
+        "depends_on_ard": False,
+        "condition_plan": {
+            "invalidation": "entry_not_returned",
+            "check_interval_ms": 300_000,
+            "historical_facts": "冻结历史事实：前窗未进入责任区。",
+            "accepted_conditions": "承担条件：维持 103,000 下方运行。",
+            "confirmation_excerpt": "破坏口径：采用 entry_not_returned，每 5 分钟检查。",
+        },
+    }
+    captured = {}
+
+    def fake_transport(api_key, model, payload, timeout_s, **_):
+        captured["system"] = payload["messages"][0]["content"]
+        return {
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": raw_body + f"<ANNOTATION_JSON>{json.dumps(ann_payload, ensure_ascii=False)}</ANNOTATION_JSON>"},
+            }]
+        }
+
+    res = review.decide_initial_hand("# input", contract_pair={}, api_key="k", model="m", transport=fake_transport)
+    assert res["decision"]["action"] == "Accept"
+    assert res["condition_plan"]["invalidation"] == "entry_not_returned"
+    assert "原封不动逐字复制" in captured["system"]
+    assert "不要删改" in captured["system"]
+
+    bad_payload = deepcopy(ann_payload)
+    bad_payload["put"] = "Put路径摘要：完全改写了原句内容。"
+    with pytest.raises(ValueError, match="verbatim excerpts"):
+        review.decide_initial_hand(
+            "# input",
+            contract_pair={},
+            api_key="k",
+            model="m",
+            transport=lambda *a, **k: {
+                "choices": [{"finish_reason": "stop", "message": {"content": raw_body + f"<ANNOTATION_JSON>{json.dumps(bad_payload, ensure_ascii=False)}</ANNOTATION_JSON>"}}]
+            },
+        )
+
+

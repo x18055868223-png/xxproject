@@ -244,8 +244,9 @@ def decide_initial_hand(
         "1. 在正文开头或明确独立标题行写出唯一结论：`## Accept / Put`、`## Accept / Call`、`## Reject` 或 `## Unknown`。\n"
         "2. 正文必须分别给出 Put 路径判断、Call 路径判断、Put 最强反证、Call 最强反证与两侧对比择优，并冻结历史事实、承担条件与破坏确认口径。\n"
         "3. 系统的机械有效破坏规则仅支持两选一：`\"new_entry\"`（入场后出现严格进入责任区的分钟采样即触发）或 `\"entry_not_returned\"`（入场后严格进入责任区且至固定检查点仍未严格返回责任外才触发）；固定检查钟默认每 5 分钟（`check_interval_ms = 300000`）按 UTC 网格执行。正文书写破坏确认口径时必须直接对齐该两选一规则与 5 分钟网格，严禁自行编造“每 60 分钟整点锚点”等其他检查时钟。\n"
-        "4. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`，其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` 必须摘录自上方中文正文；`depends_on_ard` 必须是显式布尔值。\n"
-        "5. 若结论为 Accept，必须给出 `condition_plan` 对象，包含：`invalidation`（仅限 `\"new_entry\"` 或 `\"entry_not_returned\"`）、`check_interval_ms`（默认 `300000`，整分钟毫秒）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须摘录自上方正文），以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，还须提供摘录自正文的 `ard_responsibility_meaning` 与 `ard_review_on`。"
+        "4. 为便于程序做逐字子串核验，建议正文中 Put 路径、Call 路径、Put 最强反证、Call 最强反证、两侧对比择优，以及（若 Accept）冻结历史事实、承担条件、破坏确认口径（与 ARD 判读）各自先写一段连贯完整的中文整句段落，尽量不在摘录段落内使用分点列表或反引号。\n"
+        "5. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`（必须是合法 JSON 对象）。其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` 必须是**从上方中文正文原封不动逐字复制（verbatim substring）的非空连续片段**——不要删改、浓缩、跨段拼接或替换任何字词、数字、标点或符号；`depends_on_ard` 必须是显式布尔值。\n"
+        "6. 若结论为 Accept，`<ANNOTATION_JSON>` 中必须包含 `condition_plan` 对象（不能是字符串），含：`invalidation`（仅限 `\"new_entry\"` 或 `\"entry_not_returned\"`）、`check_interval_ms`（默认 `300000`，整分钟毫秒）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须是**从上方中文正文原封不动逐字复制的连续片段**，任意改写或浓缩都会导致解析失败作废），以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，还须提供逐字复制自正文的 `ard_responsibility_meaning` 与 `ard_review_on`。"
     )
     pair_summary = _format_contract_pair(contract_pair)
     user_content = f"候选合约对：\n{pair_summary}\n\n{input_md_text}" if pair_summary else input_md_text
