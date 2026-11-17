@@ -255,7 +255,9 @@ def _micro_window_context(value: Any) -> dict[str, Any]:
         "coverage_frac", "momentum", "momentum_return_pct", "momentum_norm",
         "cvd_sum", "cvd_unit", "cvd_per_bar", "cvd_norm", "score", "state",
         "confidence", "direction", "window_role", "reason",
-        "price_open", "price_close", "price_return_pct"))
+        "price_open", "price_close", "price_return_pct",
+        "first_ts_ms", "end_ts_ms", "complete_ts_ms", "window_end_ms",
+        "source", "symbol", "cvd_degraded", "gap", "truncated"))
 
 
 def _volume_price_context(flow: Any) -> dict[str, Any]:
@@ -271,6 +273,16 @@ def _volume_price_context(flow: Any) -> dict[str, Any]:
         "tmv_blend": flow.get("tmv_blend"),
         "tmv_state": flow.get("tmv_state"),
         "window_conflict": flow.get("window_conflict"),
+        "asof_ms": flow.get("asof_ms"),
+        "end_ts_ms": flow.get("end_ts_ms"),
+        "source_quality": (
+            _project_json_safe(flow.get("source_quality"))
+            if flow.get("source_quality") is not None else None
+        ),
+        "bar_backfill": (
+            _project_json_safe(flow.get("bar_backfill"))
+            if flow.get("bar_backfill") is not None else None
+        ),
         "tmvf_24h": _tmvf_window_context(tmvf_24h),
         "tmvf_48h": _tmvf_window_context(tmvf_48h),
         "micro_flow_effect": flow.get("micro_flow_effect"),
@@ -279,7 +291,8 @@ def _volume_price_context(flow: Any) -> dict[str, Any]:
             "slow_12h": _micro_window_context(micro.get("slow_12h")),
             "combined": _fields(micro.get("combined"), (
                 "score", "state", "direction", "ready_horizons",
-                "max_coverage_hours", "data_ready")),
+                "max_coverage_hours", "data_ready",
+                "asof_ms", "end_ts_ms", "complete_ts_ms", "window_end_ms")),
         }),
         "funding": _clean({
             "last_rate": _first_non_none(

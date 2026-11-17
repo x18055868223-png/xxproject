@@ -392,7 +392,8 @@ def test_frozen_real_hand_time_identity_and_counterevidence_without_chosen_side(
     assert '深入责任398.9 USD' in call and '深入责任2,469.7' not in call
     assert '61,300' not in body and '**本期Pin** 67,000' in body
     assert '净主动卖390.7 BTC' in body and '净主动卖1,186.1 BTC' in body
-    assert '4h包含于12h，不是两份独立证据' in body and '尚不能确认压力缓和或增强' in body
+    assert '前8小时不重叠窗口' in body and '净主动卖795.4 BTC' in body and '延续净主动卖与下行' in body
+    assert '须明确作为当前已成立的反证' in body and '尚不能确认压力缓和或增强' not in body
     assert '69,469.7，已越过保护腿，该段进入时刻未覆盖' in call and '读取时指数在责任区外' in call
     assert '须纳入该侧最强反证审查' in body and '旧越界不单独构成Reject' in body
     assert 'Binance 现货量柱首末收盘价' in body and 'Deribit BTC/USD 指数分钟价' in body
@@ -410,3 +411,35 @@ def test_historical_protection_touch_remains_visible(hand, incomplete):
     call = section(player.build_input(*hand, index_path=path), 'call')
     expected = '86,000，正处保护腿边界' if incomplete else '曾恰好触及保护腿'
     assert expected in call
+
+
+def test_derive_non_overlapping_spot_windows_and_boundary(hand):
+    case = copy.deepcopy(hand[0])
+    add(case, 'L5.volume_price', {
+        'spot_cvd_4h': 767.6,
+        'spot_cvd_12h': 396.4,
+        'spot_price_change_pct_4h': 1.43,
+        'spot_price_change_pct_12h': 0.31,
+        'micro_flow': {
+            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 767.6, 'momentum_return_pct': 1.43, 'source': 'binance', 'symbol': 'BTCUSDT'},
+            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 396.4, 'momentum_return_pct': 0.31, 'source': 'binance', 'symbol': 'BTCUSDT'},
+        },
+    })
+    derived = player.derive_non_overlapping_spot_windows(player.entry(case, 'L5.volume_price'), cutoff=CUT)
+    assert derived['comparable'] is True
+    assert derived['previous_8h']['cvd_sum'] == pytest.approx(-371.2, abs=1e-6)
+    expected_ret = ((1.0 + 0.0031) / (1.0 + 0.0143) - 1.0) * 100.0
+    assert derived['previous_8h']['return_pct'] == pytest.approx(expected_ret, abs=1e-4)
+    assert '由卖转买' in derived['direction_transition']['summary']
+
+    # Source mismatch blocks previous_8h derivation rather than guessing
+    mismatch = copy.deepcopy(hand[0])
+    add(mismatch, 'L5.volume_price', {
+        'micro_flow': {
+            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 10.0, 'momentum_return_pct': 0.5, 'source': 'binance'},
+            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 20.0, 'momentum_return_pct': 1.0, 'source': 'okx'},
+        },
+    })
+    bad = player.derive_non_overlapping_spot_windows(player.entry(mismatch, 'L5.volume_price'), cutoff=CUT)
+    assert bad['comparable'] is False and 'previous_8h' not in bad
+

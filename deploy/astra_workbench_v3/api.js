@@ -32,6 +32,15 @@ export const api = {
   playerHand: (dossier, hand, originals = false) => fetch(
     `${BASE}/player-audit/${encodeURIComponent(dossier)}/${encodeURIComponent(hand)}${originals ? "/originals" : ""}`,
     { credentials: "same-origin" }).then(json),
+  playerModelInputUrl: (dossier, hand, kind = "model-input", reviewId = null) => {
+    const safeKind = ["model-input", "model-input.md", "request.json"].includes(kind) ? kind : "model-input";
+    const url = `${BASE}/player-audit/${encodeURIComponent(dossier)}/${encodeURIComponent(hand)}/${safeKind}`;
+    if (!reviewId) return url;
+    return `${url}?${new URLSearchParams({ review_id: reviewId })}`;
+  },
+  playerModelInput: (dossier, hand, reviewId = null) => fetch(
+    api.playerModelInputUrl(dossier, hand, "model-input", reviewId),
+    { credentials: "same-origin" }).then(json),
   // The inquirer's question sheets of one contract (docs/opus/14); summary=1 for the audit step.
   inquiry: (contract, { file = null, summary = false } = {}) => {
     const q = new URLSearchParams({ short: contract.short_instrument, long: contract.long_instrument });

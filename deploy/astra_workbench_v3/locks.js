@@ -325,8 +325,8 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   box.append(section("现在", floatView(series, seriesError), pathNowView(ov.path_now)));
 
   // The lock-time reasons, re-decided by fixed rules at every sample, and the hold review.
-  if (series?.thesis_ledger) box.append(section(e.ai_shadow ? "工作台对照 · 人工复核" : "锁定时的依据，现在怎样",
-    ledgerView(series.thesis_ledger, series.hold_review, { session, busy: holdBusy, onHoldReview })));
+  if (series?.thesis_ledger) box.append(section(e.ai_shadow ? "工作台对照 · 仅作参考" : "锁定时的依据，现在怎样",
+    ledgerView(series.thesis_ledger, series.hold_review, { session, busy: holdBusy, onHoldReview, aiShadow: Boolean(e.ai_shadow) })));
 
   // 1. at lock (t0)
   const sd = rows["liability.short_distance"] || {};
@@ -491,6 +491,7 @@ function pathNowView(pn) {
 // ── lock-time reasons (thesis ledger) and the hold review ─────────
 const TONE_CLASS = { ok: "ok", warn: "warn", bad: "bad", muted: "skip" };
 const HOLD_BLOCK_CN = {
+  ai_shadow_hold_review_unified: "已统一由 AI 事件门按需复核",
   manual_review_service_not_configured: "模型复核未配置",
   lock_not_active: "锁定已结束",
   hold_review_inflight: "复核进行中",
@@ -529,7 +530,7 @@ export function splitTheses(led) {
 
 /** The lock-time reasons, each judged by fixed rules at every sample: what was assumed,
  * where it stands now, and what happened in between (lowest point, time in a worse state). */
-export function ledgerView(led, hold, { session, busy, onHoldReview } = {}) {
+export function ledgerView(led, hold, { session, busy, onHoldReview, aiShadow = false } = {}) {
   const box = h("div", { class: "ledger" });
   if (!led || led.status !== "OK") {
     box.append(h("p", { class: "muted small", text: led?.status === "NO_SAMPLES" ? "还没有采样。" : "依据暂不可用。" }));
@@ -571,14 +572,16 @@ export function ledgerView(led, hold, { session, busy, onHoldReview } = {}) {
     h("ul", { class: "small" }, ...rules.map((x) => h("li", { text: `${x.label_cn}：${x.rule_cn}` }))),
     h("p", { class: "small", text: `${p.note_cn || ""} 数值依据回到更好状态需多越过 10%。` })));
 
-  if (hold) box.append(holdView(led, hold, { session, busy, onHoldReview }));
+  if (hold) box.append(holdView(led, hold, { session, busy, onHoldReview, aiShadow }));
   return box;
 }
 
-function holdView(led, hold, { session, busy, onHoldReview }) {
+function holdView(led, hold, { session, busy, onHoldReview, aiShadow = false }) {
   const box = h("div", { class: "hold" });
   box.append(h("h6", { text: "持有中复核（模型解读）" }));
   const last = hold.last;
+  const reasons = hold.reasons || [];
+  const unified = Boolean(aiShadow || reasons.includes("ai_shadow_hold_review_unified"));
   if (last && last.answer) {
     const a = last.answer;
     const byId = Object.fromEntries((led.theses || []).map((x) => [x.id, x.label_cn]));
@@ -589,16 +592,19 @@ function holdView(led, hold, { session, busy, onHoldReview }) {
       h("ul", {}, ...a.watch.map((w) => h("li", { text: w })))));
     const moved = isNum(last.ledger_at_ms) && isNum(get(led, "coverage.latest_ms")) && led.coverage.latest_ms - last.ledger_at_ms > 10 * 60000;
     box.append(h("p", { class: "muted small", text: `基于 ${clock(last.ledger_at_ms)} 的依据，${clock(last.finished_at_ms)} 生成。${moved ? "之后依据已有更新。" : ""}只解读上面的判定，不改判、不给概率或交易建议。` }));
-  } else if ((hold.reasons || []).includes("lock_not_active")) {
+  } else if (reasons.includes("lock_not_active")) {
     box.append(h("p", { class: "muted small", text: "锁定已结束；持有中复核只用于仍在追踪的锁定。" }));
-  } else {
+  } else if (!unified) {
     box.append(h("p", { class: "muted small", text: "还没有复核。复核让模型用几句话说明上面的依据现在怎样、到期前要盯什么，每次消耗 1 次模型额度。" }));
   }
   const failed = hold.last_failed;
   if (failed && (!last || (failed.finished_at_ms || 0) > (last.finished_at_ms || 0))) {
     box.append(h("p", { class: "muted small", text: `${clock(failed.finished_at_ms)} 的复核：${HOLD_FAIL_CN[failed.status] || "未完成"}。` }));
   }
-  const reasons = hold.reasons || [];
+  if (unified) {
+    box.append(h("p", { class: "muted small ld-ai-unified-note", text: "由 AI 事件门统一按需复核；请前往「每日交割卷宗与 AI 牌手审计」查看，不再从旧工作台重复触发。" }));
+    return box;
+  }
   if (reasons.includes("lock_not_active")) return box;
   const why = !session ? "登录后可复核" : busy ? "复核中…（约半分钟）"
     : reasons.includes("hold_review_too_early") ? `锁定满 15 分钟后可复核（还差约 ${Math.max(1, Math.ceil((hold.history_needed_ms || 0) / 60000))} 分钟）`

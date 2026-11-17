@@ -73,7 +73,15 @@ def test_data_failure_retry_keeps_same_hand_and_eligibility(tmp_path):
     hand = d.tick(plan(), unavailable)[0]
     assert dossier.read(next((hand / 'issuance').glob('*.json')))['state'] == 'DATA_BLOCKED'
     assert d.tick(plan(), lambda *_: source(clock)) == [hand]
-    assert (hand / 'evidence' / 'input.md').read_text(encoding='utf-8') == (ROOT / 'player_ard_closeout/generated/ai_input.md').read_text(encoding='utf-8')
+    actual_input = (hand / 'evidence' / 'input.md').read_text(encoding='utf-8')
+    src = dossier.read(hand / 'evidence' / 'source.json')
+    assert actual_input == dossier.player.build_input(
+        *src['cases'], *src['cards'],
+        index_path=src['index_path'], ard_history=src['history'], ard_band_snapshot=src.get('band_snapshot'),
+    )
+    archived = (ROOT / 'player_ard_closeout/generated/ai_input.md').read_text(encoding='utf-8')
+    assert actual_input.split('## 本局牌面', 1)[1].split('5. **', 1)[0] == archived.split('## 本局牌面', 1)[1].split('5. **', 1)[0]
+    assert '5. **现货量价与主动流。**' in actual_input and '不能仅因“增强未确认”淡化既成反证' in actual_input
 
 
 @pytest.mark.parametrize('action', ['Accept / Call', 'Reject', 'Unknown'])

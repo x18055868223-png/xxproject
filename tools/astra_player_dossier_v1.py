@@ -32,7 +32,8 @@ RESEARCH = 'AI Player v1 / ARD closeout 2026-11-15'
 PARSER = 'public-excerpts@1'
 EVENTS = {'OBSERVATION', 'REVIEW_REQUIRED', 'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED',
           'CONDITION_UNKNOWN', 'AI_HOLD', 'AI_REVOKE', 'AI_HOLD_UNKNOWN',
-          'HOLD_REVIEW_FAILED', 'HOLD_REVIEW_QUEUED', 'SHADOW_ACTION', 'SIMULATED_ORDER', 'CORRECTION'}
+          'HOLD_REVIEW_FAILED', 'HOLD_REVIEW_QUEUED', 'HOLD_REVIEW_SKIPPED',
+          'SHADOW_ACTION', 'SIMULATED_ORDER', 'CORRECTION'}
 MANUAL_EVENTS = {kind for kind in EVENTS if not kind.startswith('CONDITION_')}
 KINDS = {'SCHEDULED', 'STARTUP_AD_HOC', 'AD_HOC', 'HISTORICAL_REPLAY', 'FIXTURE'}
 
@@ -189,6 +190,52 @@ def _normalize_legacy_structure_row(r):
     return r
 
 
+def collect_live_structure_rows(candidates, expiry, max_read_ms):
+    """Build native structure_snapshot@0.1 rows from usable L3.expiry_walls without backfilling gaps."""
+    out = []
+    seen = set()
+    for case in candidates or ():
+        row = player.entry(case, 'L3.expiry_walls')
+        asof = row.get('asof_ms')
+        if not player.ard.clock(asof) or not player.usable(row, max_read_ms, archive.expiry_structure.GAP_MS):
+            continue
+        wall = row.get('values') or {}
+        if wall.get('expiry_ms') != expiry or wall.get('stale') is True:
+            continue
+        pin = player.number((wall.get('walls') or {}).get('pin'))
+        if pin is None or pin <= 0:
+            continue
+        pin_method = row.get('pin_method') or wall.get('pin_method') or archive.expiry_structure.PIN_METHOD
+        pin_source = row.get('pin_source') or wall.get('pin_source') or archive.expiry_structure.PIN_SOURCE
+        pin_status = row.get('pin_status') or wall.get('pin_status') or 'ok'
+        dedup_key = (asof, pin, pin_method, pin_source)
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        profile = {'walls': dict(wall.get('walls') or {'pin': pin})}
+        for k in ('top', 'totals'):
+            if isinstance(wall.get(k), dict):
+                profile[k] = wall[k]
+        snap = {
+            'schema': archive.expiry_structure.SNAPSHOT_SCHEMA,
+            'expiry_ms': expiry,
+            'at_ms': asof,
+            'available_at_ms': asof,
+            'pin_source': pin_source,
+            'pin_method': pin_method,
+            'pin_status': pin_status,
+            'source_layer': 'L3.expiry_walls',
+            'profile': profile,
+        }
+        for k in ('atm_iv_pct', 'expected_move_usd', 'forward_usd'):
+            val = player.number(wall.get(k))
+            if val is not None:
+                snap[k] = val
+        out.append(snap)
+    out.sort(key=lambda r: r['at_ms'])
+    return out
+
+
 def _resolve_band_snapshot(archive_root, cutoff_ms, band_snapshot=None):
     if band_snapshot is not None:
         return band_snapshot
@@ -247,6 +294,13 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
     received = clock()
     history = [_normalize_legacy_structure_row(r) for r in rows(archive_root / 'structure' / f'{day}.jsonl')
                if r.get('expiry_ms') == expiry and r['at_ms'] <= max(reads)]
+    covered_at = {r.get('at_ms') for r in history if isinstance(r.get('at_ms'), int)}
+    for live_row in collect_live_structure_rows(candidates, expiry, max(reads)):
+        if live_row['at_ms'] not in covered_at:
+            history.append(live_row)
+            covered_at.add(live_row['at_ms'])
+    history.sort(key=lambda r: (r.get('available_at_ms') if isinstance(r.get('available_at_ms'), int) else r.get('at_ms') or 0,
+                                r.get('at_ms') or 0))
     known = [r for r in history if r.get('available_at_ms') is not None and r['available_at_ms'] <= max(reads)]
     cards = []
     existing = rows(archive_root / 'levels' / f'{day}.jsonl')
@@ -424,16 +478,20 @@ class Dossiers:
         return path
 
     def respond(self, hand, attempt, status, raw=None, annotation=None, *, model=None, configuration=None,
-                requested=None, decided=None, channel='MANUAL_IMPORT', error=None):
+                requested=None, decided=None, channel='MANUAL_IMPORT', error=None, request_payload=None):
         meta, at = self.verify_evidence(hand), self.clock()
         exp = read(hand / 'expected.json')
         folder = hand / 'responses' / key(attempt)
         payload_hash = sha(raw) if raw is not None else None
+        request_bytes = encode(request_payload) if request_payload is not None else None
+        request_hash = sha(request_bytes) if request_bytes is not None else None
         declared = dict(raw_sha256=payload_hash, annotation=annotation, input_status=status, model=model,
                         configuration=configuration, channel=channel, requested_at_ms=requested, decided_at_ms=decided)
+        if request_hash is not None:
+            declared['request_sha256'] = request_hash
         if folder.exists():
             old = read(folder / 'attempt.json')
-            if any(old[k] != v for k, v in declared.items()):
+            if any(old.get(k) != v for k, v in declared.items()):
                 raise ValueError('attempt identity reused with different reply or metadata')
             self.select(hand)
             return old
@@ -464,7 +522,11 @@ class Dossiers:
         record = dict(declared, status=status, attempt_id=attempt, ordinal=len(siblings) + 1,
                       recorded_at_ms=at, input_sha256=meta['input_sha256'], parser=PARSER,
                       configuration_id=config_id, judgment=judgment, error=record_error, hand_id=hand.name)
-        publish(folder, {'attempt.json': encode(record), **({'response.raw': raw} if raw is not None else {})})
+        publish(folder, {
+            'attempt.json': encode(record),
+            **({'response.raw': raw} if raw is not None else {}),
+            **({'request.json': request_bytes} if request_bytes is not None else {}),
+        })
         self.select(hand)
         return record
 

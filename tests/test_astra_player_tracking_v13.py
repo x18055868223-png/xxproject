@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from tools import astra_player_dossier_v1 as dossier
+from tools import astra_player_review_v1 as review
 from tools import astra_player_tracking_v13 as tracking
 from tools import astra_research_archive_v1 as archive
 from tools import astra_workbench_v20 as workbench
@@ -764,5 +765,380 @@ def test_writer_lock_released_during_hold_review_llm_call(tmp_path):
         )
         assert lock_acquired_during_llm == [True]
         assert res['action'] == 'REVIEWED' and res['verdict'] == 'REVOKE'
+
+
+def test_v11_unified_entry_gate_and_skip_telemetry(tmp_path):
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    wb.config.shadow_experiment = True
+    wb.config.server_token = 'tok'
+    wb.config.api_key = 'k'
+    with serving(wb) as base:
+        service = post(base, wb)
+        link_rec = tracking.link(d, hand, service, RULE)
+        lce_id = link_rec['t0']['tracker_episode_id']
+        state = wb.hold_review_state(lce_id)
+        assert 'ai_shadow_hold_review_unified' in state['reasons'] and state['enabled'] is False
+        with pytest.raises(workbench.WorkbenchError, match='统一由事件门驱动'):
+            wb.hold_review_locked(lce_id, 'idem_12345678', authorization='Bearer tok')
+
+        # Idle tick with 0 triggers must NOT spam HOLD_REVIEW_SKIPPED
+        exported = service('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        exported['points'] = [{'metrics': {'asof_ms': now[0] - M, 'spot_usd': 100_000.0, 'short_distance_pct': 2.0, 'flow_ready': False}}]
+        idle_res = tracking.evaluate_hold_management(d, hand, exported, llm_config={'api_key': 'k'})
+        assert idle_res['action'] == 'NO_TRIGGER' and 'skip' not in idle_res
+
+        # Cooldown-blocked B trigger emits HOLD_REVIEW_SKIPPED + skip summary
+        ep_dir = hand.parent.parent / 'episodes' / tracking.accepted(hand)['origin']['dossier_episode_id']
+        now[0] += 10 * M
+        dossier.write(ep_dir / 'trigger_state.json', dossier.encode({'cooldown_until_ms': now[0] + 600_000}), replace=True)
+        exported['points'] = [
+            {'metrics': {'asof_ms': now[0] - 2 * M, 'spot_usd': 101_000.0, 'short_distance_pct': 0.98, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now[0] - M, 'spot_usd': 101_500.0, 'short_distance_pct': 0.48, 'flow_ready': False}},
+        ]
+        skip_res = tracking.evaluate_hold_management(d, hand, exported, llm_config={'api_key': 'k'})
+        assert skip_res['action'] == 'QUEUED' and skip_res['skip']['reason'] == 'COOLDOWN'
+        rec = tracking.audit_record(hand, now[0], {lce_id: 'active'}, detail=True)
+        assert rec['hold_skip_summary']['total_skips'] >= 1
+        assert rec['hold_skip_summary']['by_reason'].get('COOLDOWN', 0) >= 1
+        assert rec['management_telemetry']['skip_count'] >= 1
+
+
+def _raw_get(base, route, token=None):
+    headers = {'Authorization': f'Bearer {token}'} if token else {}
+    with urlopen(Request(base + route, headers=headers), timeout=8) as resp:
+        return resp.status, dict(resp.headers.items()), resp.read()
+
+
+def test_auto_deal_and_hold_review_persist_exact_request_json_and_export(tmp_path, monkeypatch):
+    clk = Clock(SLOT + M)
+    monkeypatch.setattr(dossier, 'collect', lambda *_a, **_kw: fixture_source(clk))
+
+    # 1) auto_deal success saves EXACT request.json & request_sha256, including normalized endpoint
+    d_ok = dossier.Dossiers(tmp_path / 'auto_ok', clock=clk)
+    sent_initial = []
+    reject_reply = (
+        '## Reject\n\n'
+        'Put路径：97000 距现价偏近。\n'
+        'Call路径：103000 上方波动尚在。\n'
+        '对比结论：两侧均不承接。\n'
+        'Put反证：存在回踩穿破路径。\n'
+        'Call反证：上方仍存冲高路径。\n'
+        '<ANNOTATION_JSON>'
+        + json.dumps({
+            'put': 'Put路径：97000 距现价偏近。',
+            'call': 'Call路径：103000 上方波动尚在。',
+            'comparison': '两侧均不承接。',
+            'put_counter': 'Put反证：存在回踩穿破路径。',
+            'call_counter': 'Call反证：上方仍存冲高路径。',
+            'depends_on_ard': False,
+        }, ensure_ascii=False)
+        + '</ANNOTATION_JSON>'
+    )
+
+    def ok_transport(api_key, model, body, timeout, endpoint=None):
+        sent_initial.append((endpoint, json.loads(json.dumps(body))))
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': reject_reply}}],
+                'usage': {'prompt_tokens': 10, 'completion_tokens': 20, 'total_tokens': 30}}
+
+    res_ok = tracking.auto_deal(
+        d_ok, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'secret-key-01', 'model': 'deepseek-reasoner',
+                    'endpoint': 'https://example.invalid/v1', 'reasoning_effort': 'high',
+                    'retries': 0, 'transport': ok_transport},
+    )
+    assert res_ok[0]['status'] == 'VALID' and res_ok[0]['decision'] == 'Reject'
+    ok_hand = next((tmp_path / 'auto_ok' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
+    ok_attempt = tracking.load(next((ok_hand / 'responses').glob('*/attempt.json')))
+    ok_req_file = ok_hand / 'responses' / ok_attempt['attempt_id'] / 'request.json'
+    assert ok_req_file.is_file()
+    assert ok_attempt['request_sha256'] == dossier.sha(ok_req_file.read_bytes())
+    saved_req = tracking.load(ok_req_file)
+    assert saved_req['fidelity'] == 'EXACT'
+    assert saved_req['stage'] == 'initial'
+    assert saved_req['endpoint'] == 'https://example.invalid/v1/chat/completions'
+    assert saved_req['messages'] == sent_initial[0][1]['messages']
+    assert 'secret-key-01' not in ok_req_file.read_text(encoding='utf-8')
+
+    exported_ok = tracking.export_model_input(ok_hand)
+    assert exported_ok['fidelity'] == 'EXACT'
+    assert exported_ok['fidelity_reason'] is None
+    assert exported_ok['stage'] == 'initial'
+    assert exported_ok['request'] == saved_req
+    assert '来源保真度：EXACT\n' in exported_ok['full_model_input_md']
+    assert exported_ok['single_box_text'].index('【SYSTEM】\n' + review.INITIAL_SYSTEM_PROMPT) == 0
+    assert '【USER】\n候选合约对：' in exported_ok['single_box_text']
+
+    # 2) auto_deal timeout/failure branch also persists EXACT outgoing request.json
+    d_fail = dossier.Dossiers(tmp_path / 'auto_fail', clock=clk)
+    res_fail = tracking.auto_deal(
+        d_fail, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'secret-key-02', 'model': 'deepseek-chat',
+                    'endpoint': 'https://fail.invalid/v1', 'retries': 0,
+                    'transport': lambda *a, **k: (_ for _ in ()).throw(TimeoutError('read timed out'))},
+    )
+    assert res_fail[0]['status'] == 'TIMEOUT'
+    fail_hand = next((tmp_path / 'auto_fail' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
+    fail_attempt = tracking.load(next((fail_hand / 'responses').glob('*/attempt.json')))
+    fail_req_file = fail_hand / 'responses' / fail_attempt['attempt_id'] / 'request.json'
+    assert fail_req_file.is_file()
+    assert fail_attempt['request_sha256'] == dossier.sha(fail_req_file.read_bytes())
+    exported_fail = tracking.export_model_input(fail_hand)
+    assert exported_fail['fidelity'] == 'EXACT'
+    assert exported_fail['request']['endpoint'] == 'https://fail.invalid/v1/chat/completions'
+
+    # 3) evaluate_hold_management persists EXACT reviews/<rev_id>/request.json atomically
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d, hand, svc, RULE)
+        ep_dir = hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id']
+        now[0] += 5 * M
+        exported = svc('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        exported['points'] = [
+            {'metrics': {'asof_ms': now[0] - 2 * M, 'spot_usd': 102_000.0, 'short_distance_pct': 0.98, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now[0] - M, 'spot_usd': 103_200.0, 'short_distance_pct': -0.19, 'flow_ready': False}},
+        ]
+        d.event(ep_dir, dossier.identity('chk', now[0] - M), 'CONDITION_TRIGGERED',
+                dict(result={'rule': 'entry_not_returned'}), observed=now[0] - M, available=now[0])
+        sent_hold = []
+
+        def hold_transport(api_key, model, body, timeout, endpoint=None):
+            sent_hold.append((endpoint, json.loads(json.dumps(body))))
+            return {'choices': [{'finish_reason': 'stop', 'message': {
+                'content': '## REVOKE\n\n已突破短腿。\n<HOLD_REVIEW_JSON>{"verdict":"REVOKE","affected_conditions":["M1"],"public_reply":"确认撤销","key_facts":["M1"]}</HOLD_REVIEW_JSON>'
+            }}]}
+
+        hold_res = tracking.evaluate_hold_management(
+            d, hand, exported, service=lambda *_a: {'state': 'QUOTE_UNAVAILABLE', 'latest_point': None},
+            llm_config={'api_key': 'hold-secret', 'model': 'deepseek-reasoner',
+                        'endpoint': 'https://hold.invalid/v1', 'reasoning_effort': 'medium',
+                        'transport': hold_transport},
+        )
+        assert hold_res['action'] == 'REVIEWED'
+        rev_id = hold_res['review_id']
+        hold_req_file = ep_dir / 'reviews' / rev_id / 'request.json'
+        assert hold_req_file.is_file()
+        saved_hold_req = tracking.load(hold_req_file)
+        assert saved_hold_req['fidelity'] == 'EXACT'
+        assert saved_hold_req['stage'] == 'hold_review'
+        assert saved_hold_req['endpoint'] == 'https://hold.invalid/v1/chat/completions'
+        assert saved_hold_req['messages'] == sent_hold[0][1]['messages']
+        assert 'hold-secret' not in hold_req_file.read_text(encoding='utf-8')
+
+        exported_hold = tracking.export_model_input(hand, review_id=rev_id)
+        assert exported_hold['fidelity'] == 'EXACT'
+        assert exported_hold['stage'] == 'hold_review'
+        assert exported_hold['request'] == saved_hold_req
+        assert rev_id in exported_hold['full_model_input_md']
+
+
+def test_historical_scheduled_and_adhoc_export_reconstructed_without_leakage_or_llm(tmp_path, monkeypatch):
+    def forbid_llm(*_a, **_kw):
+        raise AssertionError('export_model_input must never invoke LLM')
+
+    monkeypatch.setattr(review, 'call_chat_llm', forbid_llm)
+    monkeypatch.setattr(review, 'decide_initial_hand', forbid_llm)
+
+    # 1) Historical SCHEDULED hand without request.json (with decision, condition, outcome)
+    clk = Clock(SLOT + M)
+    d_sched = dossier.Dossiers(tmp_path / 'hist_sched', clock=clk)
+    sched_hand = d_sched.tick(plan(), lambda *_a: fixture_source(clk))[0]
+    src = tracking.load(sched_hand / 'evidence' / 'source.json')
+    raw_accept = (
+        '**Accept / Call**\n' + '\n'.join(EXCERPTS.values()) + '\n'
+        + '\n'.join(RULE[k] for k in ('historical_facts', 'accepted_conditions', 'confirmation_excerpt'))
+        + '\nCANARY_POST_DECISION_REPLY'
+    ).encode('utf-8')
+    req_t = clk()
+    clk.ms += 100
+    d_sched.respond(
+        sched_hand, 'hist-sched-1', 'RECEIVED', raw_accept, EXCERPTS,
+        model='hist-model-sched', requested=req_t, decided=clk(),
+        configuration={'reasoning_effort': 'high', 'usage': {'total_tokens': 999}},
+    )
+    assert not (sched_hand / 'responses' / 'hist-sched-1' / 'request.json').exists()
+    dossier_dir = sched_hand.parent.parent
+    dossier.write(dossier_dir / 'outcomes' / 'outcome_hist' / 'outcome.json', dossier.encode({
+        'classification': 'CANARY_OUTCOME_CLASS',
+        'delivery': {'delivery_price_usd': 101_000.0},
+        'verification_gap': None,
+        'recorded_at_ms': clk() + 10_000,
+        'hands': [{'hand_id': sched_hand.name, 'sides': {'call': {'delivery_payout_btc': 0.01}}}],
+    }))
+
+    exp_sched = tracking.export_model_input(sched_hand)
+    assert exp_sched['fidelity'] == 'RECONSTRUCTED'
+    assert exp_sched['fidelity_reason']
+    assert exp_sched['stage'] == 'initial'
+    req_s = exp_sched['request']
+    assert req_s['messages'][0]['content'] == review.INITIAL_SYSTEM_PROMPT
+    user_s = req_s['messages'][1]['content']
+    assert '候选合约对：' in user_s
+    assert (sched_hand / 'evidence' / 'input.md').read_bytes().decode('utf-8') in user_s
+    assert req_s['metadata'] == {
+        'dossier_id': dossier_dir.name,
+        'hand_id': sched_hand.name,
+        'sample': 'SCHEDULED',
+        'expiry_ms': tracking.load(sched_hand / 'expected.json')['expiry_ms'],
+        'frozen_at_ms': tracking.load(sched_hand / 'evidence' / 'identity.json')['hand_frozen_at_ms'],
+        'input_sha256': tracking.load(sched_hand / 'evidence' / 'identity.json')['input_sha256'],
+        'rules_sha256': tracking.load(sched_hand / 'evidence' / 'identity.json')['rules_sha256'],
+        'generator': tracking.load(sched_hand / 'evidence' / 'identity.json')['generator'],
+        'attempt_id': 'hist-sched-1',
+        'channel': 'MANUAL_IMPORT',
+    }
+    for forbidden_key in ('judgment', 'annotation', 'verdict', 'raw_sha256', 'usage', 'decided_at_ms',
+                          'condition', 'outcome', 'locked_series'):
+        assert forbidden_key not in req_s
+        assert forbidden_key not in req_s['metadata']
+    for leak in ('CANARY_POST_DECISION_REPLY', 'CANARY_OUTCOME_CLASS', 'Accept / Call', 'side=call', 'HOLD', 'REVOKE', 'outcome', 'condition'):
+        assert leak not in user_s
+    serialized_sched = json.dumps(exp_sched, ensure_ascii=False)
+    for canary in ('CANARY_POST_DECISION_REPLY', 'CANARY_OUTCOME_CLASS', 'side=call', 'delivery_payout_btc', 'locked_series'):
+        assert canary not in serialized_sched
+
+    # 2) Historical AD_HOC hand + legacy hold review without request.json
+    wb, d_ah, ah_hand, now, expiry = sample(tmp_path / 'hist_adhoc', 'Accept / Call')
+    assert not (ah_hand / 'responses' / 'fixture-reply' / 'request.json').exists()
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d_ah, ah_hand, svc, RULE)
+        ep_dir = ah_hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id']
+        rev_id = 'rev_' + 'a1b2c3d4' * 3
+        legacy_rev_input = '# 持仓增量复核牌面\n\n## 1. 原承诺\n- 锁定责任：CALL 短腿 102000\n'
+        rev_bytes = legacy_rev_input.encode('utf-8')
+        dossier.publish(ep_dir / 'reviews' / rev_id, {
+            'input.md': rev_bytes,
+            'response.raw': b'CANARY_HOLD_RAW_REPLY',
+            'attempt.json': dossier.encode({
+                'review_id': rev_id,
+                'status': 'VALID',
+                'verdict': 'REVOKE',
+                'model': 'legacy-hold-model',
+                'reasoning_effort': 'low',
+                'requested_at_ms': now[0] + 60_000,
+                'decided_at_ms': now[0] + 65_000,
+                'usage': {'total_tokens': 321},
+            }),
+            'decision.json': dossier.encode({
+                'review_id': rev_id,
+                'verdict': 'REVOKE',
+                'public_reply': 'CANARY_PRIVATE_HOLD_REPLY',
+                'shadow_action': 'REVOKE_ALIGNED',
+            }),
+            'review_snapshot.json': dossier.encode({'review_id': rev_id, 'verdict': 'REVOKE'}),
+        })
+
+    exp_ah_init = tracking.export_model_input(ah_hand)
+    assert exp_ah_init['fidelity'] == 'RECONSTRUCTED'
+    assert exp_ah_init['stage'] == 'initial'
+    assert exp_ah_init['request']['metadata']['sample'] == 'AD_HOC'
+    assert 'side=call' not in json.dumps(exp_ah_init, ensure_ascii=False)
+    assert 'Accept / Call' not in exp_ah_init['request']['messages'][1]['content']
+    assert RULE['confirmation_excerpt'] not in json.dumps(exp_ah_init, ensure_ascii=False)
+    assert EXCERPTS['comparison'] not in json.dumps(exp_ah_init, ensure_ascii=False)
+
+    exp_ah_hold = tracking.export_model_input(ah_hand, review_id=rev_id)
+    assert exp_ah_hold['fidelity'] == 'RECONSTRUCTED'
+    assert exp_ah_hold['fidelity_reason']
+    assert exp_ah_hold['stage'] == 'hold_review'
+    assert exp_ah_hold['request']['model'] == 'legacy-hold-model'
+    assert exp_ah_hold['request']['parameters']['reasoning_effort'] == 'low'
+    assert exp_ah_hold['request']['packet_hash'] == dossier.sha(rev_bytes)
+    assert exp_ah_hold['request']['messages'] == [
+        {'role': 'system', 'content': review.HOLD_REVIEW_SYSTEM_PROMPT},
+        {'role': 'user', 'content': legacy_rev_input},
+    ]
+    serialized_hold = json.dumps(exp_ah_hold, ensure_ascii=False)
+    for canary in ('CANARY_HOLD_RAW_REPLY', 'CANARY_PRIVATE_HOLD_REPLY', 'REVOKE_ALIGNED', 'total_tokens', '321'):
+        assert canary not in serialized_hold
+    assert 'Accept' not in exp_ah_hold['request']['messages'][1]['content']
+    assert 'REVOKE' not in exp_ah_hold['request']['messages'][1]['content']
+    assert 'HOLD' not in exp_ah_hold['request']['messages'][1]['content']
+
+
+def test_workbench_model_input_http_endpoints_and_guards(tmp_path, monkeypatch):
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d, hand, svc, RULE)
+        ep_dir = hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id']
+        rev_id = 'rev_' + '12345678' * 3
+        hold_input = '# 持仓增量复核牌面\n\n## 1. 原承诺\n- 锁定责任：CALL 短腿 102000\n'
+        hold_req = review.build_hold_review_request_payload(
+            hold_input, model='m-http', reasoning_effort='high',
+            endpoint='https://example.invalid/v1', packet_hash=dossier.sha(hold_input.encode('utf-8')),
+            requested_at_ms=now[0] + 1000, fidelity='EXACT',
+        )
+        dossier.publish(ep_dir / 'reviews' / rev_id, {
+            'input.md': hold_input.encode('utf-8'),
+            'request.json': dossier.encode(hold_req),
+            'response.raw': b'ok',
+            'attempt.json': dossier.encode({'review_id': rev_id, 'status': 'VALID', 'model': 'm-http', 'requested_at_ms': now[0] + 1000}),
+            'decision.json': dossier.encode({'review_id': rev_id, 'verdict': 'HOLD', 'public_reply': 'ok'}),
+            'review_snapshot.json': dossier.encode({'review_id': rev_id, 'verdict': 'HOLD'}),
+        })
+
+        audit_base = tracking.AUDIT_PATH + '/' + case_ref(hand)
+        # 1) Unauthorized (401)
+        for suffix in ('/model-input', '/model-input.md', '/request.json', f'/model-input?review_id={rev_id}'):
+            with pytest.raises(HTTPError) as exc:
+                _raw_get(base, audit_base + suffix)
+            assert exc.value.code == 401
+
+        # 2) Initial hand 200 endpoints & headers
+        expected_init = tracking.export_model_input(hand)
+        st_j, hdr_j, raw_j = _raw_get(base, audit_base + '/model-input', 'secret')
+        assert st_j == 200
+        assert hdr_j.get('Cache-Control') == 'no-store'
+        assert json.loads(raw_j) == expected_init
+
+        st_md, hdr_md, raw_md = _raw_get(base, audit_base + '/model-input.md', 'secret')
+        assert st_md == 200
+        assert hdr_md.get('Content-Type', '').startswith('text/markdown')
+        assert hdr_md.get('Cache-Control') == 'no-store'
+        assert hdr_md.get('X-Content-Type-Options') == 'nosniff'
+        assert hdr_md.get('Content-Disposition') == f'attachment; filename="{expected_init["filename_md"]}"'
+        assert raw_md.decode('utf-8') == expected_init['full_model_input_md']
+
+        st_rq, hdr_rq, raw_rq = _raw_get(base, audit_base + '/request.json', 'secret')
+        assert st_rq == 200
+        assert hdr_rq.get('Content-Type', '').startswith('application/json')
+        assert hdr_rq.get('Cache-Control') == 'no-store'
+        assert hdr_rq.get('X-Content-Type-Options') == 'nosniff'
+        assert hdr_rq.get('Content-Disposition') == f'attachment; filename="{expected_init["filename_json"]}"'
+        assert json.loads(raw_rq) == expected_init['request']
+
+        # 3) Hold review ?review_id=... 200 endpoints
+        expected_hold = tracking.export_model_input(hand, review_id=rev_id)
+        st_hj, _, raw_hj = _raw_get(base, audit_base + f'/model-input?review_id={rev_id}', 'secret')
+        assert st_hj == 200 and json.loads(raw_hj) == expected_hold
+
+        st_hmd, hdr_hmd, raw_hmd = _raw_get(base, audit_base + f'/model-input.md?review_id={rev_id}', 'secret')
+        assert st_hmd == 200
+        assert hdr_hmd.get('Content-Disposition') == f'attachment; filename="{expected_hold["filename_md"]}"'
+        assert raw_hmd.decode('utf-8') == expected_hold['full_model_input_md']
+
+        st_hrq, hdr_hrq, raw_hrq = _raw_get(base, audit_base + f'/request.json?review_id={rev_id}', 'secret')
+        assert st_hrq == 200
+        assert hdr_hrq.get('Content-Disposition') == f'attachment; filename="{expected_hold["filename_json"]}"'
+        assert json.loads(raw_hrq) == expected_hold['request']
+
+        # 4) Bad / missing review_id -> 409 / 404
+        with pytest.raises(HTTPError) as bad_rev:
+            _raw_get(base, audit_base + '/model-input?review_id=not_a_review', 'secret')
+        assert bad_rev.value.code == 409
+
+        with pytest.raises(HTTPError) as missing_rev:
+            _raw_get(base, audit_base + '/model-input?review_id=rev_' + '0' * 24, 'secret')
+        assert missing_rev.value.code == 404
+
+        # 5) Size limit -> 413
+        monkeypatch.setattr(tracking, 'MAX_BYTES', 64)
+        with pytest.raises(HTTPError) as too_big:
+            _raw_get(base, audit_base + '/model-input.md', 'secret')
+        assert too_big.value.code == 413
+
+
 
 

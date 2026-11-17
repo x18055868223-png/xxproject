@@ -4045,7 +4045,7 @@ class AstraWorkbench:
             base_cand = ((detail.get("baseline") or {}).get("candidate") or {}) if isinstance(detail.get("baseline"), Mapping) else {}
             base_levels = base_cand.get("expiry_levels") if isinstance(base_cand, Mapping) else None
             if (self.config.shadow_dossier_root is not None and player_tracking is not None
-                    and ai_shadow.get("dossier_id") and ai_shadow.get("hand_id")
+                    and isinstance(ai_shadow, Mapping) and ai_shadow.get("dossier_id") and ai_shadow.get("hand_id")
                     and (not isinstance(base_levels, Mapping) or base_levels.get("computed_at_ms") is None)):
                 try:
                     pd = player_tracking.dossier
@@ -4428,7 +4428,15 @@ class AstraWorkbench:
         """Last hold review of one lock and whether a new one can run now (no model call)."""
         now = self.clock_ms() if now_ms is None else now_ms
         slot = ((self._read_state_cached().get("hold_review") or {}).get(episode_id) or {})
+        if episode is None and re.fullmatch(r"lce_[0-9a-f]{24}", str(episode_id or "")):
+            try:
+                episode = (self.locked_candidates.episode_observations(episode_id) or {}).get("episode")
+            except Exception:
+                episode = None
         reasons = []
+        if (isinstance(episode, Mapping) and episode.get("ai_shadow")
+                and (self.config.shadow_experiment or self.config.shadow_dossier_root is not None)):
+            reasons.append("ai_shadow_hold_review_unified")
         if not self.config.server_token or not self.config.api_key or not self._shared_budget_ready():
             reasons.append("manual_review_service_not_configured")
         if isinstance(episode, Mapping) and episode.get("status") != "active":
@@ -4456,6 +4464,17 @@ class AstraWorkbench:
             raise WorkbenchError(401, "unauthorized", "valid Authorization: Bearer token is required")
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", idempotency_key or ""):
             raise WorkbenchError(400, "idempotency_key_invalid", "idempotency_key is required")
+        if (self.config.shadow_experiment or self.config.shadow_dossier_root is not None) and re.fullmatch(r"lce_[0-9a-f]{24}", str(episode_id or "")):
+            try:
+                target_ep = (self.locked_candidates.episode_observations(episode_id) or {}).get("episode")
+            except locked_store.LockedCandidateError:
+                target_ep = None
+            if isinstance(target_ep, Mapping) and target_ep.get("ai_shadow"):
+                raise WorkbenchError(
+                    409,
+                    "ai_shadow_hold_review_unified",
+                    "AI 影子合约持仓复核已统一由事件门驱动，请前往「每日交割卷宗与 AI 牌手审计」查看，不再从旧工作台通道重复触发",
+                )
         if not self.config.api_key or not self._shared_budget_ready():
             raise WorkbenchError(503, "manual_review_service_not_configured", "model review is not configured")
         # A replayed key returns its stored result even after the lock has ended.
@@ -4466,6 +4485,12 @@ class AstraWorkbench:
         series = self.locked_candidate_series(episode_id, max_points=2)
         episode = series.get("episode") or {}
         ledger = series.get("thesis_ledger") or {}
+        if episode.get("ai_shadow") and (self.config.shadow_experiment or self.config.shadow_dossier_root is not None):
+            raise WorkbenchError(
+                409,
+                "ai_shadow_hold_review_unified",
+                "AI 影子合约持仓复核已统一由事件门驱动，请前往「每日交割卷宗与 AI 牌手审计」查看，不再从旧工作台通道重复触发",
+            )
         if episode.get("status") != "active":
             raise WorkbenchError(409, "lock_not_active", "only a lock that is still held can be reviewed")
         if ledger.get("status") != "OK":
@@ -6529,6 +6554,19 @@ def make_handler(workbench: AstraWorkbench):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_raw_download(self, status: int, body: bytes, *, content_type: str,
+                               filename: str | None = None) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            if filename:
+                safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(filename)).strip("._") or "download"
+                self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+            self.end_headers()
+            self.wfile.write(body)
+
         def _accepts_gzip(self) -> bool:
             for token in (self.headers.get("Accept-Encoding") or "").split(","):
                 name, *parameters = token.lower().split(";")
@@ -6592,7 +6630,7 @@ def make_handler(workbench: AstraWorkbench):
             query = parse_qs(parsed.query)
             if player_tracking is not None and (parsed.path == player_tracking.AUDIT_PATH
                     or parsed.path.startswith(player_tracking.AUDIT_PATH + "/")):
-                self._player_audit(parsed.path)
+                self._player_audit(parsed.path, query)
                 return
             if parsed.path == "/api/workbench/session/check":
                 # For the public proxy's auth_request: 204 with a live session, 401 otherwise; never a body.
@@ -6742,7 +6780,7 @@ def make_handler(workbench: AstraWorkbench):
                 return
             self._serve_static(parsed.path)
 
-        def _player_audit(self, path: str) -> None:
+        def _player_audit(self, path: str, query: Mapping[str, list[str]] | None = None) -> None:
             if not sessions.authorize("GET", self.headers, self.client_address[0]).ok:
                 self._json(401, {"code": "unauthorized"})
                 return
@@ -6751,24 +6789,63 @@ def make_handler(workbench: AstraWorkbench):
                 self._json(404, {"code": "shadow_dossiers_disabled"})
                 return
             try:
-                if path.endswith(("/originals", "/trajectory")):
-                    dossier_id, hand_id, kind = path[len(player_tracking.AUDIT_PATH) + 1:].split("/")
+                if path == player_tracking.AUDIT_PATH:
+                    ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
+                    now = workbench.clock_ms()
+                    data = player_tracking.audit_index(root, now, ids)
+                    self._shadow_json(data)
+                    return
+                parts = [unquote(part) for part in path[len(player_tracking.AUDIT_PATH) + 1:].split("/")]
+                if len(parts) == 2:
+                    dossier_id, hand_id = parts
+                    hand = player_tracking.hand_path(root, dossier_id, hand_id)
+                    ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
+                    now = workbench.clock_ms()
+                    data = player_tracking.audit_record(hand, now, ids, detail=True)
+                    self._shadow_json(data)
+                    return
+                if len(parts) == 3:
+                    dossier_id, hand_id, kind = parts
                     hand = player_tracking.hand_path(root, dossier_id, hand_id)
                     if kind == "trajectory":
                         _, trajectory = player_tracking.terminal_trajectory(hand)
                         self._send_json_body(200, trajectory)
                         return
-                    data = player_tracking.audit_originals(hand)
-                else:
-                    ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
-                    now = workbench.clock_ms()
-                    if path == player_tracking.AUDIT_PATH:
-                        data = player_tracking.audit_index(root, now, ids)
-                    else:
-                        dossier_id, hand_id = path[len(player_tracking.AUDIT_PATH) + 1:].split("/")
-                        hand = player_tracking.hand_path(root, dossier_id, hand_id)
-                        data = player_tracking.audit_record(hand, now, ids, detail=True)
-                self._shadow_json(data)
+                    if kind == "originals":
+                        self._shadow_json(player_tracking.audit_originals(hand))
+                        return
+                    if kind in {"model-input", "model-input.md", "request.json"}:
+                        raw_rev = ((query or {}).get("review_id") or [None])[0]
+                        review_id = raw_rev.strip() if raw_rev is not None else None
+                        exported = player_tracking.export_model_input(hand, review_id=review_id)
+                        if kind == "model-input":
+                            self._shadow_json(exported)
+                        elif kind == "model-input.md":
+                            body = exported["full_model_input_md"].encode("utf-8")
+                            if len(body) > player_tracking.MAX_BYTES:
+                                self._json(413, {"code": "shadow_evidence_size_limit"})
+                            else:
+                                self._send_raw_download(
+                                    200,
+                                    body,
+                                    content_type="text/markdown; charset=utf-8",
+                                    filename=exported["filename_md"],
+                                )
+                        else:
+                            body = (json.dumps(
+                                exported["request"], ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False
+                            ) + "\n").encode("utf-8")
+                            if len(body) > player_tracking.MAX_BYTES:
+                                self._json(413, {"code": "shadow_evidence_size_limit"})
+                            else:
+                                self._send_raw_download(
+                                    200,
+                                    body,
+                                    content_type="application/json; charset=utf-8",
+                                    filename=exported["filename_json"],
+                                )
+                        return
+                self._json(404, {"code": "shadow_evidence_not_found"})
             except FileNotFoundError:
                 self._json(404, {"code": "shadow_evidence_not_found"})
             except (OSError, ValueError, KeyError, TypeError, locked_store.LockedCandidateError):

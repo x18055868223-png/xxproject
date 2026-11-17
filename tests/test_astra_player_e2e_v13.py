@@ -97,6 +97,9 @@ def _seed_r16_archive(wb, arch_root: Path, slot_ms: int, expiry_ms: int, points:
         dossier.player.entry(case, "L3.expiry_walls").update(
             values={
                 "expiry_ms": expiry_ms,
+                "pin_source": "deribit_gex",
+                "pin_method": "gamma_peak",
+                "pin_status": "ok",
                 "walls": {"pin": 100_000.0},
                 "top": {"oi_put": [{"strike": 98_000.0}], "oi_call": [{"strike": 102_000.0}]},
             },

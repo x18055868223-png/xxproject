@@ -41,6 +41,7 @@ DECISION_FIELDS = ('attempt_id', 'raw_sha256', 'parser', 'judgment', 'configurat
 DOSSIER_ID = r'Deribit_BTC_\d{8}T\d{6}Z'
 HAND_ID = r'hand_[0-9a-f]{24}'
 TRACKER_ID = r'lce_[0-9a-f]{24}'
+REVIEW_ID = r'rev_[0-9a-f]{24}'
 
 
 class Blocked(ValueError):
@@ -341,6 +342,90 @@ def local_service(base, token):
     return post
 
 
+def _normalize_usage(raw_usage):
+    if not isinstance(raw_usage, dict):
+        return None
+    out = {}
+    for k in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+        v = raw_usage.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+            out[k] = v
+    if not out:
+        return None
+    if 'total_tokens' not in out and 'prompt_tokens' in out and 'completion_tokens' in out:
+        out['total_tokens'] = out['prompt_tokens'] + out['completion_tokens']
+    return out
+
+
+def _source_entry_context(hand, *, side=None, expiry_ms=None):
+    """Read-only extraction of L3.expiry_walls expected_move_usd and entry_pin_snapshot from source.json."""
+    src = optional(hand / 'evidence' / 'source.json')
+    if not isinstance(src, dict):
+        return {'expected_move_usd': None, 'entry_pin_snapshot': None}
+    cases = src.get('cases') if isinstance(src.get('cases'), list) else []
+    ordered_cases = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        c_side = (dossier.player.values(case, 'L1.contract') or {}).get('side')
+        if side and c_side == side:
+            ordered_cases.insert(0, case)
+        else:
+            ordered_cases.append(case)
+    expected_move = None
+    entry_pin = None
+    history = src.get('history') if isinstance(src.get('history'), list) else []
+    default_source = dossier.archive.expiry_structure.PIN_SOURCE
+    default_method = dossier.archive.expiry_structure.PIN_METHOD
+
+    for case in ordered_cases:
+        try:
+            ew_entry = dossier.player.entry(case, 'L3.expiry_walls')
+        except Exception:
+            continue
+        if not isinstance(ew_entry, dict):
+            continue
+        ew = ew_entry.get('values') if isinstance(ew_entry.get('values'), dict) else {}
+        ew_exp = ew.get('expiry_ms')
+        if expiry_ms is not None and ew_exp is not None and ew_exp != expiry_ms:
+            continue
+        if expected_move is None:
+            em_val = dossier.player.number(ew.get('expected_move_usd'))
+            if em_val is not None and em_val > 0:
+                expected_move = float(em_val)
+        if entry_pin is None and not ew.get('stale'):
+            walls = ew.get('walls') if isinstance(ew.get('walls'), dict) else {}
+            pin_val = dossier.player.number(walls.get('pin'))
+            pin_status = ew.get('pin_status')
+            if pin_val is not None and pin_val > 0 and pin_status in (None, 'ok'):
+                at_ms = ew.get('computed_at_ms') or ew_entry.get('asof_ms') or (case.get('build') or {}).get('built_at_ms')
+                hist_match = next(
+                    (
+                        r for r in reversed(history)
+                        if isinstance(r, dict)
+                        and (expiry_ms is None or r.get('expiry_ms') == expiry_ms)
+                        and r.get('pin_status') in (None, 'ok')
+                        and (not isinstance(at_ms, int) or not isinstance(r.get('at_ms'), int) or r['at_ms'] <= at_ms)
+                    ),
+                    None,
+                )
+                pin_method = ew.get('pin_method') or (hist_match or {}).get('pin_method') or default_method
+                pin_source = ew.get('pin_source') or (hist_match or {}).get('pin_source') or default_source
+                entry_pin = {
+                    'expiry_ms': expiry_ms if expiry_ms is not None else ew_exp,
+                    'pin': float(pin_val),
+                    'at_ms': at_ms if isinstance(at_ms, int) else None,
+                    'ready_at_ms': ew_entry.get('asof_ms') if isinstance(ew_entry.get('asof_ms'), int) else at_ms,
+                    'pin_method': pin_method,
+                    'pin_source': pin_source,
+                    'pin_status': pin_status or 'ok',
+                    'source': 'shadow_dossier.evidence.source.L3.expiry_walls',
+                }
+        if expected_move is not None and entry_pin is not None:
+            break
+    return {'expected_move_usd': expected_move, 'entry_pin_snapshot': entry_pin}
+
+
 def save_link(d, hand, proof, request, result):
     origin = proof['origin']
     if result.get('execution_allowed') is not False:
@@ -364,6 +449,21 @@ def save_link(d, hand, proof, request, result):
     episode = d.episode(hand, frozen, tracking=(origin, ep, point))
     if episode.name != origin['dossier_episode_id']:
         raise Blocked('dossier_episode_identity_mismatch')
+    source_ctx = _source_entry_context(
+        hand, side=proof['contract'].get('side'), expiry_ms=proof['contract'].get('expiry_ms')
+    )
+    ep_meta_path = episode / 'episode.json'
+    ep_meta = optional(ep_meta_path)
+    if isinstance(ep_meta, dict):
+        changed = False
+        if source_ctx.get('entry_pin_snapshot') and not ep_meta.get('entry_pin_snapshot'):
+            ep_meta['entry_pin_snapshot'] = source_ctx['entry_pin_snapshot']
+            changed = True
+        if source_ctx.get('expected_move_usd') is not None and ep_meta.get('entry_expected_move_usd') is None:
+            ep_meta['entry_expected_move_usd'] = source_ctx['expected_move_usd']
+            changed = True
+        if changed:
+            dossier.write(ep_meta_path, dossier.encode(ep_meta), replace=True)
     link = dict(state=result['state'], origin=origin, t0=t0, recorded_at_ms=d.clock(),
                 t0_sha256=dossier.sha(t0_files['point.json']), execution_allowed=False)
     dossier.write(root / 'link.json', dossier.encode(link))
@@ -483,36 +583,124 @@ def _merge_index_points(archive_root, expiry_ms, at, *, exported_points=None, pu
     return dict(index_name='btc_usd', expiry_ms=expiry_ms, points=[[t, by_ts[t]] for t in sorted(by_ts)])
 
 
-def _episode_ard_state(frozen, episode, archive_root, index_path, tick):
-    """Build current ARD facts + strict same-measure comparison at a check_clock tick."""
-    if not frozen.get('ard_basis') or archive_root is None:
+def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry_pin_snapshot=None):
+    """Build current ARD facts + strict same-measure comparison at a check_clock tick.
+
+    Supports both `depends_on_ard=True` (`frozen['ard_basis']`) and read-only
+    same-measure Pin comparison via `entry_pin_snapshot` when `depends_on_ard=False`.
+    """
+    if archive_root is None:
         return None
     expiry = frozen['contract']['expiry_ms']
+    has_ard_basis = bool(frozen.get('ard_basis'))
+    ep_meta = optional(episode / 'episode.json') if episode is not None else None
+    ev_src = None
+    if isinstance(ep_meta, dict) and ep_meta.get('hand_id') and episode is not None:
+        hand_dir = episode.parent.parent / 'hands' / dossier.key(ep_meta['hand_id'])
+        ev_src = optional(hand_dir / 'evidence' / 'source.json')
+    else:
+        hand_dir = None
+
+    pin_snap = entry_pin_snapshot
+    if not has_ard_basis:
+        if not isinstance(pin_snap, dict) and isinstance(ep_meta, dict):
+            pin_snap = ep_meta.get('entry_pin_snapshot')
+        if not isinstance(pin_snap, dict) and hand_dir is not None:
+            pin_snap = _source_entry_context(
+                hand_dir, side=(frozen.get('contract') or {}).get('side'), expiry_ms=expiry
+            ).get('entry_pin_snapshot')
+        if not isinstance(pin_snap, dict):
+            return None
+        snap_exp = pin_snap.get('expiry_ms')
+        snap_pin = dossier.player.number(pin_snap.get('pin'))
+        snap_method = pin_snap.get('pin_method')
+        snap_source = pin_snap.get('pin_source')
+        if (snap_pin is None or snap_pin <= 0 or not snap_method or not snap_source
+                or (snap_exp is not None and snap_exp != expiry)):
+            return None
+
     struct_path = Path(archive_root) / 'structure' / f'{dossier.utc(expiry).date().isoformat()}.jsonl'
     if not struct_path.is_file():
         return None
-    old_start = (frozen['ard_basis'].get('facts') or {}).get('start_ms')
-    band_snap = None
-    ep_meta = optional(episode / 'episode.json')
-    if ep_meta and ep_meta.get('hand_id'):
-        ev_src = optional(episode.parent.parent / 'hands' / dossier.key(ep_meta['hand_id']) / 'evidence' / 'source.json')
-        if isinstance(ev_src, dict):
-            band_snap = ev_src.get('band_snapshot')
+    old_start = (frozen['ard_basis'].get('facts') or {}).get('start_ms') if has_ard_basis else None
+    band_snap = ev_src.get('band_snapshot') if isinstance(ev_src, dict) else None
     if band_snap is None:
-        band_cutoff = (old_start + 4 * 3_600_000) if isinstance(old_start, int) else tick
+        if isinstance(old_start, int):
+            band_cutoff = old_start + 4 * 3_600_000
+        elif isinstance(frozen.get('entry_at_ms'), int):
+            band_cutoff = frozen['entry_at_ms']
+        else:
+            band_cutoff = tick
         band_snap = dossier._resolve_band_snapshot(archive_root, band_cutoff)
-    win_ms = (tick - old_start) if isinstance(old_start, int) and tick > old_start else 4 * 3_600_000
+    if isinstance(old_start, int) and tick > old_start:
+        win_ms = tick - old_start
+    elif isinstance(frozen.get('entry_at_ms'), int) and tick > frozen['entry_at_ms']:
+        win_ms = max(4 * 3_600_000, tick - frozen['entry_at_ms'])
+    else:
+        win_ms = 4 * 3_600_000
     history = [dossier._normalize_legacy_structure_row(r) for r in dossier.rows(struct_path)
                if r.get('expiry_ms') == expiry and isinstance(r.get('at_ms'), int) and r['at_ms'] <= tick]
     try:
         current = dossier.player.ard.analyze(history, index_path, expiry_ms=expiry, cutoff_ms=tick,
                                             band_snapshot=band_snap, window_ms=win_ms)
-        comparison = dossier.condition.compare_ard_basis(episode / 'condition.json', current, tick)
-        comparison['same_measure'] = comparison.get('new_neighborhood_events') is not None
         pin_status = next((r.get('pin_status') for r in reversed(history)
                            if r.get('available_at_ms') is not None and r['available_at_ms'] <= tick and r.get('pin_status')), None)
-        if pin_status:
-            comparison['pin_status'] = pin_status
+        if has_ard_basis:
+            comparison = dossier.condition.compare_ard_basis(episode / 'condition.json', current, tick)
+            comparison['same_measure'] = comparison.get('new_neighborhood_events') is not None
+            if comparison.get('old_pin') is None and isinstance(comparison.get('frozen_anchor'), dict):
+                comparison['old_pin'] = comparison['frozen_anchor'].get('pin')
+            if comparison.get('new_pin') is None and isinstance(comparison.get('current_anchor'), dict):
+                comparison['new_pin'] = comparison['current_anchor'].get('pin')
+            if comparison.get('check_at_ms') is None:
+                comparison['check_at_ms'] = tick
+            if pin_status:
+                comparison['pin_status'] = pin_status
+            return dict(facts=current, comparison=comparison)
+
+        latest = current['observations'][-1] if current.get('observations') else None
+        price = current.get('last')
+        old_pin = float(snap_pin)
+        new_pin = float(latest['pin']) if (latest and latest.get('pin') is not None and pin_status in (None, 'ok')) else None
+        comparable = bool(
+            snap_method and snap_source and latest
+            and (snap_method, snap_source) == (latest.get('method'), latest.get('source'))
+        )
+        same_measure = bool(
+            comparable
+            and current.get('method_comparable')
+            and new_pin is not None
+            and pin_status in (None, 'ok')
+        )
+        fresh = bool(price and price.get('t') == tick and latest and price.get('pin') == latest.get('pin'))
+        pin_recent = bool(latest and latest.get('pin') is not None and isinstance(latest.get('at'), int)
+                          and tick - latest['at'] <= dossier.archive.expiry_structure.GAP_MS)
+        sample_avail = bool(fresh or (new_pin is not None and pin_recent and not price))
+        pin_changed = (new_pin != old_pin) if (sample_avail and same_measure and new_pin is not None) else None
+        band_half = ((current.get('band') or {}).get('half_width_usd')
+                     if isinstance(current.get('band'), dict) else None)
+        comparison = dict(
+            mode='READ_ONLY_ENTRY_PIN',
+            frozen_anchor=dict(
+                pin=old_pin,
+                at=pin_snap.get('at_ms'),
+                ready=pin_snap.get('ready_at_ms') or pin_snap.get('at_ms'),
+                method=snap_method,
+                source=snap_source,
+            ),
+            current_anchor=latest,
+            old_pin=old_pin,
+            new_pin=new_pin,
+            band_half=band_half,
+            check_at_ms=tick,
+            current_sample_available=sample_avail,
+            pin_price_changed=pin_changed,
+            same_measure=same_measure,
+            pin_status=pin_status or ('ok' if new_pin is not None else 'unavailable'),
+            source_method_comparable=comparable,
+            new_neighborhood_events=None,
+            note='入场未依赖ARD；以入场L3有效Pin作同口径只读对比，不事后新增ARD承担条件或改写原冻结规则。',
+        )
         return dict(facts=current, comparison=comparison)
     except Exception:
         return None
@@ -547,7 +735,7 @@ def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive
             continue
         ard_state = _episode_ard_state(frozen, episode, archive_root, index_path, tick)
         ev = d.check(episode, index_path, tick, available=at,
-                     ard=(ard_state['facts'] if ard_state and ard_state['comparison'].get('same_measure') else None))
+                     ard=(ard_state['facts'] if frozen.get('ard_basis') and ard_state and ard_state['comparison'].get('same_measure') else None))
         checked_events.append(dict(event_id=ev['event_id'], kind=ev['kind'], observed_at_ms=ev['observed_at_ms']))
     return checked_events, None
 
@@ -640,8 +828,162 @@ def _record_revoke_shadow_action(d, episode, frozen, latest_point, at, *, review
     return d.event(episode, ev_id, 'SHADOW_ACTION', body, observed=at, available=at)
 
 
+def _load_prior_reviews_and_context(episode):
+    """Load prior valid hold reviews chronologically and build `last_review` incremental context."""
+    items = []
+    if episode is not None and (episode / 'reviews').is_dir():
+        for folder in (episode / 'reviews').glob('rev_*'):
+            dec = optional(folder / 'decision.json')
+            if not isinstance(dec, dict) or dec.get('status') not in (None, 'VALID'):
+                continue
+            snap = optional(folder / 'review_snapshot.json')
+            snap_dict = snap if isinstance(snap, dict) else {}
+            merged = dict(snap_dict)
+            merged.update(dec)
+            for key in ('spot_usd', 'short_distance_pct', 'expected_move_usd', 'expected_move_ratio',
+                        'flow_asof_ms', 'flow_direction', 'flow_cvd_4h', 'flow_cvd_12h',
+                        'flow_momentum_4h_pct', 'flow_momentum_12h_pct', 'pin',
+                        'evidence_asof_ms', 'cutoff_at_ms'):
+                if merged.get(key) is None and snap_dict.get(key) is not None:
+                    merged[key] = snap_dict[key]
+            sort_ts = dec.get('decided_at_ms') or dec.get('requested_at_ms') or 0
+            items.append((sort_ts, str(dec.get('review_id') or folder.name), merged, snap_dict))
+    items.sort(key=lambda row: (row[0], row[1]))
+    prior_reviews = [{**row[2], 'evidence_snapshot': row[3]} if row[3] else dict(row[2]) for row in items]
+    if not items:
+        return prior_reviews, None
+    _, _, latest_dec, latest_snap = items[-1]
+    last_review = dict(
+        review_id=latest_dec.get('review_id'),
+        reviewed_at_ms=latest_dec.get('decided_at_ms') or latest_dec.get('requested_at_ms'),
+        evidence_asof_ms=latest_snap.get('evidence_asof_ms') or latest_snap.get('cutoff_at_ms'),
+        review_count=len(prior_reviews),
+        verdict=latest_dec.get('verdict'),
+        public_reply=latest_dec.get('public_reply'),
+        key_facts=list(latest_dec.get('key_facts') or []),
+        spot_usd=latest_snap.get('spot_usd'),
+        short_distance_pct=latest_snap.get('short_distance_pct'),
+        expected_move_usd=latest_snap.get('expected_move_usd'),
+        expected_move_ratio=latest_snap.get('expected_move_ratio'),
+        flow_asof_ms=latest_snap.get('flow_asof_ms'),
+        flow_direction=latest_snap.get('flow_direction'),
+        flow_cvd_4h=latest_snap.get('flow_cvd_4h'),
+        flow_cvd_12h=latest_snap.get('flow_cvd_12h'),
+        flow_momentum_4h_pct=latest_snap.get('flow_momentum_4h_pct'),
+        flow_momentum_12h_pct=latest_snap.get('flow_momentum_12h_pct'),
+        pin=latest_snap.get('pin'),
+        mechanical_condition_state=latest_snap.get('mechanical_condition_state') or latest_dec.get('mechanical_condition_state'),
+    )
+    return prior_reviews, last_review
+
+
+def _normalize_skip_info(raw_skip, at):
+    if isinstance(raw_skip, dict):
+        reason = str(raw_skip.get('reason') or raw_skip.get('code') or '').strip().upper()
+        if not reason or reason in {'NO_TRIGGER', 'NONE'}:
+            return None
+        out = dict(raw_skip)
+        out['reason'] = reason
+        if not out.get('summary_cn') and out.get('reason_cn'):
+            out['summary_cn'] = out['reason_cn']
+        if not isinstance(out.get('at_ms'), int):
+            out['at_ms'] = at
+        return out
+    if isinstance(raw_skip, str):
+        reason = raw_skip.strip().upper()
+        if not reason or reason in {'NO_TRIGGER', 'NONE'}:
+            return None
+        return dict(reason=reason, at_ms=at)
+    return None
+
+
+_ROUTINE_IDLE_SKIP_CODES = frozenset({'NO_TRIGGER', 'NONE', 'COALESCED'})
+_MEANINGFUL_SKIP_CODES = frozenset({
+    'COOLDOWN', 'BELOW_MATERIALITY', 'DUPLICATE_EVENT', 'BUDGET_DEFERRED',
+    'DATA_UNVERIFIED', 'NO_NEW_EVIDENCE', 'BACKOFF',
+})
+
+
+def _update_skip_and_telemetry(prior_state, next_state, triggers, action, at):
+    """Preserve or accumulate meaningful skip counts, recent skips, and telemetry counters on trigger_state."""
+    prior_pending = bool(isinstance(prior_state, dict) and prior_state.get('pending'))
+    prior_revoked = bool(isinstance(prior_state, dict) and prior_state.get('revoked'))
+    skip_info = _normalize_skip_info(next_state.get('last_skip'), at)
+    prior_skip = _normalize_skip_info(prior_state.get('last_skip'), at) if isinstance(prior_state, dict) else None
+    idle_or_debounce = bool(
+        skip_info is not None
+        and (
+            skip_info['reason'] in _ROUTINE_IDLE_SKIP_CODES
+            or (
+                skip_info['reason'] == 'NO_NEW_EVIDENCE'
+                and (not triggers or prior_revoked)
+                and not prior_pending
+            )
+        )
+    )
+    if idle_or_debounce:
+        skip_info = None
+        if prior_skip is not None:
+            next_state['last_skip'] = prior_state.get('last_skip')
+        else:
+            next_state.pop('last_skip', None)
+
+    is_new_skip = bool(
+        skip_info is not None
+        and (
+            prior_skip is None
+            or skip_info.get('at_ms') == at
+            or skip_info.get('reason') != prior_skip.get('reason')
+            or skip_info.get('signature') != prior_skip.get('signature')
+        )
+    )
+    raw_prior_counts = prior_state.get('skip_counts') if isinstance(prior_state, dict) else None
+    prior_counts = ({str(k): int(v) for k, v in raw_prior_counts.items()
+                     if str(k) not in {'NO_TRIGGER', 'NONE', 'COALESCED', ''} and isinstance(v, int) and v > 0}
+                    if isinstance(raw_prior_counts, dict) else {})
+    if idle_or_debounce:
+        skip_counts = prior_counts
+    elif isinstance(next_state.get('skip_counts'), dict):
+        skip_counts = {str(k): int(v) for k, v in next_state['skip_counts'].items()
+                       if str(k) not in {'NO_TRIGGER', 'NONE', 'COALESCED', ''} and isinstance(v, int) and v > 0}
+    else:
+        skip_counts = dict(prior_counts)
+        if is_new_skip:
+            r = skip_info['reason']
+            skip_counts[r] = int(skip_counts.get(r) or 0) + 1
+    next_state['skip_counts'] = skip_counts
+
+    if isinstance(next_state.get('recent_skips'), list):
+        recent = [s for s in next_state['recent_skips']
+                  if isinstance(s, dict) and str(s.get('reason') or s.get('code') or '').upper() not in {'NO_TRIGGER', 'NONE', 'COALESCED', ''}]
+    else:
+        raw_recent = prior_state.get('recent_skips') if isinstance(prior_state, dict) else None
+        recent = ([dict(s) for s in raw_recent
+                   if isinstance(s, dict) and str(s.get('reason') or s.get('code') or '').upper() not in {'NO_TRIGGER', 'NONE', 'COALESCED', ''}]
+                  if isinstance(raw_recent, list) else [])
+        if is_new_skip:
+            compact = {k: skip_info.get(k) for k in ('reason', 'category', 'code', 'signature', 'at_ms', 'summary_cn', 'detail')
+                       if skip_info.get(k) is not None}
+            recent.append(compact)
+    next_state['recent_skips'] = recent[-20:]
+
+    raw_tel = next_state.get('telemetry') if isinstance(next_state.get('telemetry'), dict) else (
+        prior_state.get('telemetry') if isinstance(prior_state, dict) and isinstance(prior_state.get('telemetry'), dict) else {}
+    )
+    tel = dict(raw_tel)
+    tel['eval_count'] = int(tel.get('eval_count') or 0) + 1
+    tel['candidate_triggers_seen'] = int(tel.get('candidate_triggers_seen') or 0) + len(triggers or ())
+    if triggers and (not action or not action.get('should_call')) and next_state.get('pending'):
+        tel['coalesced_debounce_count'] = int(tel.get('coalesced_debounce_count') or 0) + 1
+    elif action and action.get('should_call') and len(action.get('triggers') or ()) > 1:
+        tel['coalesced_debounce_count'] = int(tel.get('coalesced_debounce_count') or 0) + (len(action['triggers']) - 1)
+    next_state['telemetry'] = tel
+    return skip_info if (is_new_skip and skip_info['reason'] in _MEANINGFUL_SKIP_CODES) else None
+
+
 def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path=None, service=None, llm_config=None,
-                           debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS):
+                           debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS,
+                           soft_budget=2):
     """Detect A/B/C/D triggers, debounce/coalesce calls, run incremental HOLD/REVOKE/UNKNOWN review & shadow exit."""
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
@@ -652,21 +994,41 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     if frozen is None or decision is None:
         return None
     at = d.clock()
+    ep_meta = optional(episode / 'episode.json') or {}
+    source_ctx = _source_entry_context(
+        hand, side=frozen['contract'].get('side'), expiry_ms=frozen['contract'].get('expiry_ms')
+    )
+    entry_pin_snapshot = ep_meta.get('entry_pin_snapshot') if isinstance(ep_meta, dict) else None
+    if not isinstance(entry_pin_snapshot, dict):
+        entry_pin_snapshot = source_ctx.get('entry_pin_snapshot')
+    fallback_em = (
+        ep_meta.get('entry_expected_move_usd')
+        if isinstance(ep_meta, dict) and dossier.player.number(ep_meta.get('entry_expected_move_usd')) is not None
+        else source_ctx.get('expected_move_usd')
+    )
+
     ep_events = sorted((load(p) for p in (episode / 'events').glob('*.json')),
                        key=lambda e: (e['recorded_at_ms'], e['event_id']))
     t0_point = optional(root / 't0' / 'point.json')
     series_rows = list(exported.get('points') or [])
     t0_metrics = (locked_compare.point_metrics(t0_point, t0_point) if t0_point
-                  else (series_rows[0] if series_rows else {}))
+                  else (dict(series_rows[0]) if series_rows else {}))
+    if t0_metrics.get('expected_move_usd') is None and fallback_em is not None:
+        t0_metrics = {**t0_metrics, 'expected_move_usd': fallback_em}
+
+    prior_reviews, last_review = _load_prior_reviews_and_context(episode)
     ep_index = index_path or _merge_index_points(archive_root, frozen['contract']['expiry_ms'], at, exported_points=series_rows)
     cc = frozen['check_clock']
     cap = min(at, frozen['contract']['expiry_ms'] - 1)
     ard_state = None
     if cap >= cc['first_at_ms']:
         ard_tick = cc['first_at_ms'] + ((cap - cc['first_at_ms']) // cc['interval_ms']) * cc['interval_ms']
-        ard_state = _episode_ard_state(frozen, episode, archive_root, ep_index, ard_tick)
+        ard_state = _episode_ard_state(
+            frozen, episode, archive_root, ep_index, ard_tick, entry_pin_snapshot=entry_pin_snapshot
+        )
     ard_comparison = ard_state['comparison'] if ard_state else None
-    triggers = review.detect_hold_triggers(
+    triggers = _call_with_supported_kwargs(
+        review.detect_hold_triggers,
         frozen_condition=frozen,
         side=frozen['contract']['side'],
         short_strike_usd=frozen['contract']['short_strike_usd'],
@@ -676,6 +1038,9 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         condition_events=ep_events,
         ard_comparison=ard_comparison,
         now_ms=at,
+        last_review=last_review,
+        entry_pin_snapshot=entry_pin_snapshot,
+        expected_move_usd=t0_metrics.get('expected_move_usd'),
     )
     cfg = _llm_settings(llm_config)
     stale_inflight_ms = max(8 * dossier.MINUTE, int(cfg.get('timeout_s', 300) * 1000) + 60_000)
@@ -686,7 +1051,9 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             review.schedule_review_action,
             prior_state, triggers, now_ms=at, debounce_ms=debounce_ms,
             cooldown_ms=cooldown_ms, stale_inflight_ms=stale_inflight_ms,
+            max_ordinary_reviews=soft_budget,
         )
+        new_skip = _update_skip_and_telemetry(prior_state, next_state, triggers, action, at)
         dossier.write(state_path, dossier.encode(next_state), replace=True)
         if next_state.get('stale_inflight_recovered_at_ms') == at:
             stale_trigs = next_state.get('pending') or (action.get('triggers') if action else None) or []
@@ -699,6 +1066,25 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                          model=cfg.get('model'), reasoning_effort=cfg.get('reasoning_effort')),
                     observed=at, available=at,
                 )
+        if new_skip is not None and 'HOLD_REVIEW_SKIPPED' in getattr(dossier, 'EVENTS', set()):
+            skip_sig = str(new_skip.get('signature') or new_skip.get('code') or new_skip['reason'])
+            hour_bucket = at // 3_600_000
+            skip_id = dossier.identity('rev_skip', hour_bucket, new_skip['reason'], skip_sig)
+            if not (episode / 'events' / f'{dossier.key(skip_id)}.json').exists():
+                skip_trigs = _compact_triggers(
+                    triggers if isinstance(triggers, list) else [],
+                    keys=('category', 'code', 'summary_cn', 'observed_at_ms'),
+                )
+                skip_cats = sorted({t.get('category') for t in skip_trigs if t.get('category')})
+                skip_body = dict(
+                    reason=new_skip['reason'],
+                    signature=skip_sig,
+                    trigger_categories=skip_cats,
+                    triggers=skip_trigs,
+                    summary_cn=new_skip.get('summary_cn') or new_skip.get('reason_cn') or new_skip.get('detail'),
+                )
+                skip_obs = new_skip.get('at_ms') if isinstance(new_skip.get('at_ms'), int) and new_skip['at_ms'] <= at else at
+                d.event(episode, skip_id, 'HOLD_REVIEW_SKIPPED', skip_body, observed=skip_obs, available=at)
         if next_state.get('pending') and action is None:
             queued_cats = sorted({t.get('category') for t in next_state['pending'] if t.get('category')})
             q_body = dict(pending_since_ms=next_state.get('pending_since_ms'), trigger_categories=queued_cats,
@@ -708,8 +1094,11 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             if not (episode / 'events' / f'{q_id}.json').exists():
                 d.event(episode, q_id, 'HOLD_REVIEW_QUEUED', q_body, observed=at, available=at)
         if not action or not action.get('should_call'):
-            return dict(triggers=triggers, action='QUEUED' if next_state.get('pending') else 'NO_TRIGGER',
-                        pending=len(next_state.get('pending') or []))
+            out_idle = dict(triggers=triggers, action='QUEUED' if next_state.get('pending') else 'NO_TRIGGER',
+                            pending=len(next_state.get('pending') or []))
+            if new_skip is not None:
+                out_idle['skip'] = new_skip
+            return out_idle
 
         batch = action['triggers']
         batch_triggers = _compact_triggers(batch, keys=('category', 'code', 'summary_cn', 'observed_at_ms'))
@@ -726,12 +1115,6 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                     observed=at, available=at)
             return dict(triggers=triggers, action='FAILED', error='llm_not_configured')
 
-        prior_reviews = []
-        for rfile in sorted((episode / 'reviews').glob('rev_*/decision.json')):
-            try:
-                prior_reviews.append(load(rfile))
-            except Exception:
-                pass
         check_ev_list = [e for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')]
         cond_summary = _condition_check_summary(check_ev_list)
         prog_triggered = cond_summary['triggered'] > 0
@@ -757,7 +1140,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                 if series_rows else {})
     latest_pt = exported.get('latest_point')
     quote_info = locked_compare.short_buyback_quote(latest_pt) if latest_pt else {'short_buyback_gaps': ['latest_point_unavailable']}
-    input_md = review.build_hold_review_input(
+    input_md = _call_with_supported_kwargs(
+        review.build_hold_review_input,
         contract=frozen['contract'],
         entry_at_ms=frozen['entry_at_ms'],
         initial_decision=decision,
@@ -768,6 +1152,10 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             entry_index_usd=frozen.get('entry_index_usd'),
             short_distance_pct=t0_metrics.get('short_distance_pct'),
             expected_move_usd=t0_metrics.get('expected_move_usd'),
+            flow_direction=t0_metrics.get('flow_direction'),
+            flow_asof_ms=t0_metrics.get('flow_asof_ms'),
+            flow_cvd_4h=t0_metrics.get('flow_cvd_4h'),
+            flow_cvd_12h=t0_metrics.get('flow_cvd_12h'),
             net_credit_after_fee_btc=((link_record.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc'),
         ),
         post_entry_summary=dict(
@@ -775,6 +1163,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             latest_spot_usd=post_spots[-1] if post_spots else None,
             min_short_distance_pct=min(post_dists) if post_dists else None,
             latest_short_distance_pct=post_dists[-1] if post_dists else None,
+            expected_move_usd=latest_m.get('expected_move_usd'),
         ),
         condition_summary=dict(
             program_triggered=prog_triggered,
@@ -797,19 +1186,37 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         quote_summary=quote_info,
         prior_reviews=prior_reviews,
         entry_basis=entry_basis,
+        entry_pin_snapshot=entry_pin_snapshot,
+        last_review_context=last_review,
     )
     req_ms = d.clock()
     input_bytes = input_md.encode('utf-8')
     packet_hash = dossier.sha(input_bytes)
     rev_id = dossier.identity('rev', req_ms, cats, packet_hash)
+    hold_req_payload = review.build_hold_review_request_payload(
+        input_md,
+        model=cfg['model'],
+        reasoning_effort=cfg.get('reasoning_effort'),
+        endpoint=review._normalize_endpoint(cfg.get('endpoint')),
+        packet_hash=packet_hash,
+        requested_at_ms=req_ms,
+        fidelity='EXACT',
+    )
+    if 'AI_REVIEW_REQUESTED' in getattr(dossier, 'EVENTS', set()):
+        with _short_writer(d):
+            req_ev_id = dossier.identity('ai_req', rev_id)
+            if not (episode / 'events' / f'{dossier.key(req_ev_id)}.json').exists():
+                d.event(
+                    episode, req_ev_id, 'AI_REVIEW_REQUESTED',
+                    dict(review_id=rev_id, trigger_categories=cats, triggers=batch_triggers,
+                         model=cfg['model'], reasoning_effort=cfg.get('reasoning_effort'),
+                         input_sha256=packet_hash),
+                    observed=req_ms, available=req_ms,
+                )
     try:
-        messages = [
-            {'role': 'system', 'content': '你是中性回路影子持仓复核 AI。只可基于增量牌面输出 HOLD、REVOKE 或 UNKNOWN，严禁改选 Put/Call，严禁推翻已触发的 CONDITION_TRIGGERED。'},
-            {'role': 'user', 'content': input_md},
-        ]
         llm_res = _call_with_supported_kwargs(
             review.call_chat_llm,
-            messages, api_key=cfg['api_key'] or 'test-key', model=cfg['model'],
+            hold_req_payload['messages'], api_key=cfg['api_key'] or 'test-key', model=cfg['model'],
             endpoint=cfg.get('endpoint'), timeout_s=cfg.get('timeout_s', 300),
             retries=cfg.get('retries'),
             reasoning_effort=cfg.get('reasoning_effort'),
@@ -818,9 +1225,12 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             packet_hash=packet_hash,
             transport=cfg.get('transport'),
         )
+        if llm_res.get('endpoint'):
+            hold_req_payload['endpoint'] = llm_res['endpoint']
         raw_reply = llm_res['text']
         actual_model = llm_res.get('model') or cfg['model']
         effort = llm_res.get('reasoning_effort') or cfg.get('reasoning_effort')
+        usage_dict = _normalize_usage(llm_res.get('usage'))
         parsed = review.parse_hold_review_response(
             raw_reply,
             frozen_condition=frozen,
@@ -858,6 +1268,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             program_triggered=prog_triggered,
             model=actual_model,
             reasoning_effort=effort,
+            usage=usage_dict,
             requested_at_ms=req_ms,
             decided_at_ms=fin_ms,
             input_sha256=packet_hash,
@@ -866,22 +1277,57 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         attempt_rec = dict(
             review_id=rev_id, status='VALID', model=actual_model, reasoning_effort=effort,
             requested_at_ms=req_ms, decided_at_ms=fin_ms,
-            usage=llm_res.get('usage'), http_status=llm_res.get('http_status'),
+            usage=usage_dict, http_status=llm_res.get('http_status'),
+        )
+        snap_spot = latest_m.get('spot_usd') if dossier.player.number(latest_m.get('spot_usd')) is not None else (post_spots[-1] if post_spots else None)
+        snap_dist = latest_m.get('short_distance_pct') if dossier.player.number(latest_m.get('short_distance_pct')) is not None else (post_dists[-1] if post_dists else None)
+        snap_em = latest_m.get('expected_move_usd') if dossier.player.number(latest_m.get('expected_move_usd')) is not None else t0_metrics.get('expected_move_usd')
+        short_k = dossier.player.number(frozen['contract'].get('short_strike_usd'))
+        snap_em_ratio = (
+            round(abs(float(snap_spot) - float(short_k)) / float(snap_em), 6)
+            if (dossier.player.number(snap_spot) is not None and short_k is not None
+                and dossier.player.number(snap_em) is not None and float(snap_em) > 0)
+            else None
+        )
+        snap_pin = (ard_comparison or {}).get('new_pin')
+        if snap_pin is None:
+            snap_pin = (ard_comparison or {}).get('old_pin')
+        review_snapshot = dict(
+            review_id=rev_id,
+            reviewed_at_ms=fin_ms,
+            evidence_asof_ms=latest_m.get('asof_ms') or fin_ms,
+            cutoff_at_ms=latest_m.get('asof_ms') or fin_ms,
+            verdict=parsed['verdict'],
+            spot_usd=snap_spot,
+            short_distance_pct=snap_dist,
+            expected_move_usd=snap_em,
+            expected_move_ratio=snap_em_ratio,
+            flow_asof_ms=latest_m.get('flow_asof_ms'),
+            flow_direction=latest_m.get('flow_direction'),
+            flow_cvd_4h=latest_m.get('flow_cvd_4h'),
+            flow_cvd_12h=latest_m.get('flow_cvd_12h'),
+            flow_momentum_4h_pct=latest_m.get('flow_momentum_4h_pct'),
+            flow_momentum_12h_pct=latest_m.get('flow_momentum_12h_pct'),
+            pin=snap_pin,
+            mechanical_condition_state=mech_state,
+            trigger_categories=cats,
         )
         ev_kind = 'AI_HOLD' if parsed['verdict'] == 'HOLD' else 'AI_REVOKE' if parsed['verdict'] == 'REVOKE' else 'AI_HOLD_UNKNOWN'
         ev_body = {k: rev_decision[k] for k in (
             'review_id', 'verdict', 'ai_management_verdict', 'mechanical_condition_state',
             'protocol_status', 'shadow_action', 'trigger_categories', 'affected_conditions',
             'condition_id_mapping_status', 'public_reply', 'model', 'reasoning_effort',
-            'input_sha256', 'raw_sha256')}
+            'usage', 'input_sha256', 'raw_sha256')}
         ev_body['triggers'] = batch_triggers
         with _short_writer(d):
             fresh_state = optional(state_path) or next_state
             dossier.publish(episode / 'reviews' / rev_id, {
                 'input.md': input_bytes,
+                'request.json': dossier.encode(review.sanitize_model_request(hold_req_payload)),
                 'response.raw': raw_bytes,
                 'attempt.json': dossier.encode(attempt_rec),
                 'decision.json': dossier.encode(rev_decision),
+                'review_snapshot.json': dossier.encode(review_snapshot),
             })
             d.event(episode, dossier.identity('ai_rev', rev_id), ev_kind, ev_body, observed=req_ms, available=fin_ms, decided=fin_ms)
             done_state = review.complete_review_action(fresh_state, now_ms=fin_ms, success=True, verdict=parsed['verdict'], cooldown_ms=cooldown_ms)
@@ -890,6 +1336,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             triggers=triggers, action='REVIEWED', review_id=rev_id, verdict=parsed['verdict'],
             mechanical_condition_state=parsed['mechanical_condition_state'],
             protocol_status=parsed['protocol_status'], shadow_action=shadow_action,
+            usage=usage_dict,
         )
     except Exception as exc:
         fin_ms = d.clock()
@@ -926,7 +1373,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
 
 
 def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=None,
-         run_review=False, llm_config=None, debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS):
+         run_review=False, llm_config=None, debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS,
+         soft_budget=2):
     """Copy the native tracker evidence; optionally run due fixed-clock checks and event-triggered hold reviews."""
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
@@ -984,7 +1432,8 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
     if run_review and not archived:
         review_result = evaluate_hold_management(
             d, hand, exported, archive_root=archive_root, index_path=ep_index,
-            service=service, llm_config=llm_config, debounce_ms=debounce_ms, cooldown_ms=cooldown_ms)
+            service=service, llm_config=llm_config, debounce_ms=debounce_ms, cooldown_ms=cooldown_ms,
+            soft_budget=soft_budget)
     if archived and settlement_state in {'settled', 'delivery_price_unavailable'}:
         with _short_writer(d):
             dossier.write(root / 'terminal.json', dossier.encode(dict(export_id=archive_id, full_series=completed)))
@@ -1080,6 +1529,16 @@ def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.
         meta, input_bytes, contracts_pair = llm_input
         req_ms = d.clock()
         attempt_id = dossier.identity('auto', req_ms, cfg['model'])
+        req_payload = review.build_initial_request_payload(
+            input_bytes.decode('utf-8'),
+            contract_pair=contracts_pair,
+            model=cfg['model'],
+            reasoning_effort=cfg.get('reasoning_effort'),
+            endpoint=review._normalize_endpoint(cfg.get('endpoint')) if cfg.get('endpoint') else None,
+            packet_hash=meta['input_sha256'],
+            requested_at_ms=req_ms,
+            fidelity='EXACT',
+        )
         try:
             ai_res = _call_with_supported_kwargs(
                 review.decide_initial_hand,
@@ -1096,13 +1555,19 @@ def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.
                 transport=cfg.get('transport'),
             )
             dec_ms = d.clock()
+            raw_req = ai_res.get('request_payload')
+            actual_req = dict(raw_req) if isinstance(raw_req, dict) else dict(req_payload)
+            actual_req['requested_at_ms'] = req_ms
+            clean_req_payload = review.sanitize_model_request(actual_req)
             with _short_writer(d):
-                att = d.respond(
+                att = _call_with_supported_kwargs(
+                    d.respond,
                     hand, attempt_id, 'RECEIVED', ai_res['raw_bytes'], ai_res['annotation'],
                     model=ai_res.get('model') or cfg['model'],
                     configuration=dict(reasoning_effort=ai_res.get('reasoning_effort') or cfg.get('reasoning_effort'),
                                        usage=ai_res.get('usage'), http_status=ai_res.get('http_status')),
                     requested=req_ms, decided=dec_ms, channel='API_AUTO',
+                    request_payload=clean_req_payload,
                 )
                 verdict = (att.get('judgment') or {}).get('action')
                 if att.get('status') == 'VALID' and verdict == 'Accept' and ai_res.get('condition_plan'):
@@ -1134,6 +1599,7 @@ def auto_deal(d, plan, archive_root, service, *, llm_config=None, clock=dossier.
                                            reasoning_effort=cfg.get('reasoning_effort')),
                         requested=req_ms, decided=dec_ms, channel='API_AUTO',
                         error=err_text,
+                        request_payload=review.sanitize_model_request(req_payload),
                     )
             except Exception:
                 pass
@@ -1189,9 +1655,17 @@ def _event_projection(ev):
                     triggers=_compact_triggers(body.get('triggers')),
                     model=body.get('model'),
                     reasoning_effort=body.get('reasoning_effort'),
+                    usage=_normalize_usage(body.get('usage')),
                     protocol_status=body.get('protocol_status'),
                     shadow_action=body.get('shadow_action'),
                     summary=body.get('public_reply'))
+    elif kind == 'AI_REVIEW_REQUESTED':
+        item.update(review_id=body.get('review_id'),
+                    trigger_categories=body.get('trigger_categories'),
+                    triggers=_compact_triggers(body.get('triggers')),
+                    model=body.get('model'),
+                    reasoning_effort=body.get('reasoning_effort'),
+                    summary='已发起 AI 持仓复核')
     elif kind == 'HOLD_REVIEW_FAILED':
         item.update(review_id=body.get('review_id'), verdict='FAILED',
                     trigger_categories=body.get('trigger_categories'),
@@ -1203,6 +1677,11 @@ def _event_projection(ev):
         item.update(trigger_categories=body.get('trigger_categories'),
                     triggers=_compact_triggers(body.get('triggers')),
                     summary='等待去抖合并窗口完成')
+    elif kind == 'HOLD_REVIEW_SKIPPED':
+        item.update(reason=body.get('reason'),
+                    trigger_categories=body.get('trigger_categories'),
+                    triggers=_compact_triggers(body.get('triggers')),
+                    summary=body.get('summary_cn') or body.get('detail') or body.get('reason'))
     elif kind == 'SIMULATED_ORDER':
         item.update(summary=f"买回 {body.get('instrument')} · 成本 {body.get('cost_btc')} BTC")
     elif kind == 'SHADOW_ACTION':
@@ -1236,10 +1715,10 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
                 'protocol_status', 'shadow_action', 'trigger_categories', 'affected_conditions',
                 'mapped_condition_ids', 'unmapped_condition_ids', 'condition_id_mapping_status',
                 'model', 'reasoning_effort', 'requested_at_ms', 'decided_at_ms', 'input_sha256', 'raw_sha256')}
-            if rec.get('reasoning_effort') is None:
-                att_dec = optional(folder / 'attempt.json')
-                if isinstance(att_dec, dict) and att_dec.get('reasoning_effort') is not None:
-                    rec['reasoning_effort'] = att_dec.get('reasoning_effort')
+            att_dec = optional(folder / 'attempt.json')
+            if rec.get('reasoning_effort') is None and isinstance(att_dec, dict) and att_dec.get('reasoning_effort') is not None:
+                rec['reasoning_effort'] = att_dec.get('reasoning_effort')
+            rec['usage'] = _normalize_usage(dec.get('usage')) or _normalize_usage((att_dec or {}).get('usage'))
             rec['triggers'] = _compact_triggers(
                 dec.get('triggers'), keys=('category', 'code', 'summary_cn', 'observed_at_ms'))
             if include_reply:
@@ -1266,11 +1745,109 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             ))
     reviews.sort(key=lambda r: (r.get('decided_at_ms') or r.get('requested_at_ms') or 0, str(r.get('review_id') or '')), reverse=True)
 
+    trig_state = optional(ep / 'trigger_state.json') if ep is not None else None
+    trig_state = trig_state if isinstance(trig_state, dict) else {}
+    skip_events = [e for e in sorted_events if e.get('kind') == 'HOLD_REVIEW_SKIPPED']
+    by_reason = {}
+    raw_counts = trig_state.get('skip_counts')
+    if isinstance(raw_counts, dict):
+        for k, v in raw_counts.items():
+            rk = str(k).strip().upper()
+            if rk and rk not in {'NO_TRIGGER', 'NONE'} and isinstance(v, int) and v > 0:
+                by_reason[rk] = v
+    ev_counts = {}
+    ev_skips = []
+    for ev in skip_events:
+        b = ev.get('body') if isinstance(ev.get('body'), dict) else {}
+        r = str(b.get('reason') or '').strip().upper()
+        if not r or r in {'NO_TRIGGER', 'NONE'}:
+            continue
+        ev_counts[r] = ev_counts.get(r, 0) + 1
+        ev_skips.append(dict(
+            reason=r,
+            signature=b.get('signature'),
+            trigger_categories=b.get('trigger_categories') or [],
+            at_ms=ev.get('observed_at_ms') or ev.get('recorded_at_ms'),
+            recorded_at_ms=ev.get('recorded_at_ms'),
+            summary_cn=b.get('summary_cn') or b.get('detail'),
+        ))
+    for r, cnt in ev_counts.items():
+        if cnt > by_reason.get(r, 0):
+            by_reason[r] = cnt
+
+    state_recent = []
+    if isinstance(trig_state.get('recent_skips'), list):
+        for s in trig_state['recent_skips']:
+            norm_s = _normalize_skip_info(s, s.get('at_ms') if isinstance(s, dict) else None)
+            if norm_s is not None:
+                state_recent.append(norm_s)
+    state_last = _normalize_skip_info(trig_state.get('last_skip'), None)
+    recent_skips = state_recent or ev_skips[-10:]
+    if state_last is not None and not any(
+        s.get('reason') == state_last.get('reason') and s.get('at_ms') == state_last.get('at_ms')
+        for s in recent_skips
+    ):
+        recent_skips.append(state_last)
+    recent_skips = sorted(recent_skips, key=lambda s: int(s.get('at_ms') or s.get('recorded_at_ms') or 0))[-10:]
+    last_skip = None
+    if ev_skips and state_last:
+        ev_ts = int(ev_skips[-1].get('at_ms') or 0)
+        st_ts = int(state_last.get('at_ms') or 0)
+        last_skip = ev_skips[-1] if ev_ts >= st_ts else state_last
+    else:
+        last_skip = ev_skips[-1] if ev_skips else (state_last or (recent_skips[-1] if recent_skips else None))
+    total_skips = sum(by_reason.values())
+    hold_skip_summary = dict(
+        total_skips=total_skips,
+        by_reason=by_reason,
+        last_skip=last_skip,
+        recent_skips=recent_skips,
+    )
+
     cond_summary = _condition_check_summary(check_events)
     mech_state = cond_summary['mechanical_condition_state']
     latest_rev = reviews[0] if reviews else {}
     protocol_status = latest_rev.get('protocol_status') or ('DISCRETIONARY_REVOKE' if (not trig_events and rev_events) else 'ALIGNED')
     shadow_action = latest_rev.get('shadow_action') or ('REVOKE_DISCRETIONARY' if (not trig_events and rev_events) else 'HOLD_SHADOW_CONTINUE' if latest_rev.get('verdict') == 'HOLD' else 'NONE')
+
+    valid_reviews = [r for r in reviews if r.get('status') == 'VALID']
+    failed_reviews = [r for r in reviews if r.get('status') == 'FAILED']
+    queued_events = [e for e in sorted_events if e.get('kind') == 'HOLD_REVIEW_QUEUED']
+    tel_raw = trig_state.get('telemetry') if isinstance(trig_state.get('telemetry'), dict) else {}
+    coalesced_debounce_count = (
+        int(tel_raw['coalesced_debounce_count'])
+        if isinstance(tel_raw.get('coalesced_debounce_count'), int)
+        else len(queued_events) + sum(max(0, len(r.get('triggers') or []) - 1) for r in valid_reviews)
+    )
+    candidate_trigger_count = (
+        int(tel_raw['candidate_triggers_seen'])
+        if isinstance(tel_raw.get('candidate_triggers_seen'), int)
+        else max(len(valid_reviews) + len(failed_reviews) + total_skips,
+                 len(queued_events) + sum(len(r.get('triggers') or []) for r in valid_reviews))
+    )
+    tok_totals = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    has_tokens = False
+    for r in valid_reviews:
+        u = r.get('usage')
+        if isinstance(u, dict) and any(isinstance(u.get(k), int) for k in tok_totals):
+            has_tokens = True
+            pt = u.get('prompt_tokens') if isinstance(u.get('prompt_tokens'), int) else 0
+            ct = u.get('completion_tokens') if isinstance(u.get('completion_tokens'), int) else 0
+            tt = u.get('total_tokens') if isinstance(u.get('total_tokens'), int) else (pt + ct)
+            tok_totals['prompt_tokens'] += pt
+            tok_totals['completion_tokens'] += ct
+            tok_totals['total_tokens'] += tt
+    management_telemetry = dict(
+        grid_check_count=cond_summary['total'],
+        candidate_trigger_count=candidate_trigger_count,
+        coalesced_debounce_count=coalesced_debounce_count,
+        skip_count=total_skips,
+        skip_and_debounce_count=total_skips + coalesced_debounce_count,
+        ai_review_count=len(valid_reviews),
+        ai_failed_count=len(failed_reviews),
+        ai_call_count=len(valid_reviews) + len(failed_reviews),
+        usage=tok_totals if has_tokens else None,
+    )
 
     c = (frozen or {}).get('contract') or contract or {}
     if buybacks:
@@ -1321,6 +1898,8 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
         shadow_management=shadow_mgmt,
         check_count=cond_summary['total'],
         grid_check_summary=cond_summary,
+        hold_skip_summary=hold_skip_summary,
+        management_telemetry=management_telemetry,
     )
 
 
@@ -1352,6 +1931,8 @@ def episode_management_summary(root, dossier_id, hand_id, dossier_episode_id=Non
         exit_status=mgmt['shadow_management']['exit_status'],
         shadow_management=mgmt['shadow_management'],
         review_count=len(mgmt['hold_reviews']),
+        hold_skip_summary=mgmt.get('hold_skip_summary'),
+        management_telemetry=mgmt.get('management_telemetry'),
     )
     if latest:
         out['latest_verdict'] = latest.get('verdict') or latest.get('status')
@@ -1361,7 +1942,7 @@ def episode_management_summary(root, dossier_id, hand_id, dossier_episode_id=Non
             latest_view = {k: latest.get(k) for k in (
                 'review_id', 'verdict', 'ai_management_verdict', 'mechanical_condition_state',
                 'protocol_status', 'shadow_action', 'status', 'trigger_categories', 'triggers',
-                'model', 'requested_at_ms', 'decided_at_ms', 'public_reply', 'affected_conditions',
+                'model', 'usage', 'requested_at_ms', 'decided_at_ms', 'public_reply', 'affected_conditions',
                 'unmapped_condition_ids', 'condition_id_mapping_status', 'error')}
             if latest.get('reasoning_effort') is not None:
                 latest_view['reasoning_effort'] = latest.get('reasoning_effort')
@@ -1378,6 +1959,7 @@ def _attempt_projection(attempt_rec):
         'status': attempt_rec.get('status'),
         'model': attempt_rec.get('model'),
         'reasoning_effort': cfg.get('reasoning_effort') or attempt_rec.get('reasoning_effort'),
+        'usage': _normalize_usage(cfg.get('usage')),
         'requested_at_ms': attempt_rec.get('requested_at_ms'),
         'decided_at_ms': attempt_rec.get('decided_at_ms'),
         'recorded_at_ms': attempt_rec.get('recorded_at_ms'),
@@ -1391,6 +1973,8 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         raise Blocked('invalid_hand_identity')
     root = hand / 'tracking'
     decision, attempt, _ = selected(hand) if detail else (optional(hand / 'decision.json'), None, None)
+    if not detail and decision and decision.get('attempt_id'):
+        attempt = optional(hand / 'responses' / dossier.key(decision['attempt_id']) / 'attempt.json')
     frozen = optional(hand / 'evidence' / 'identity.json')
     req = optional(root / 'request.json')
     receipt = optional(root / 'link.json')
@@ -1416,10 +2000,12 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                   if tracker else 'LOCK_BLOCKED' if blocked or any(n['state'] == 'LOCK_BLOCKED' for n in notes)
                   else 'LINK_UNVERIFIED' if any(n['state'] == 'LINK_UNVERIFIED' for n in notes)
                   else req['state'] if req else None)
+    initial_usage = _normalize_usage(((attempt or {}).get('configuration') or {}).get('usage'))
     result = dict(dossier_id=exp['dossier_id'], hand_id=hand.name, sample=exp['sample'], state=state,
                   expiry_ms=exp['expiry_ms'], frozen_at_ms=(frozen or {}).get('hand_frozen_at_ms'),
                   scheduled_at_ms=exp['scheduled_at_ms'], side=(decision or {}).get('judgment', {}).get('side'),
                   model=(decision or {}).get('model') or (attempts[-1].get('model') if attempts else None),
+                  usage=initial_usage,
                   tracker_episode_id=tracker if tracker in tracker_status else None,
                   tracker_status=tracker_status.get(tracker),
                   tracking_state=lock_state)
@@ -1466,6 +2052,7 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     )
     result.update(decision=decision, requested_at_ms=(attempt or {}).get('requested_at_ms'),
                   reasoning_effort=top_cfg.get('reasoning_effort'),
+                  usage=initial_usage or _normalize_usage(top_cfg.get('usage')),
                   lock_requested_at_ms=(req or {}).get('requested_at_ms'), receipt=receipt and receipt['t0'],
                   condition=frozen_cond, entry_basis=entry_basis,
                   events=[_event_projection(e) for e in recent], archive=terminal_meta,
@@ -1475,6 +2062,8 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         result['hold_reviews'] = mgmt['hold_reviews']
         result['shadow_management'] = mgmt['shadow_management']
         result['grid_check_summary'] = mgmt.get('grid_check_summary')
+        result['hold_skip_summary'] = mgmt.get('hold_skip_summary')
+        result['management_telemetry'] = mgmt.get('management_telemetry')
     outcomes = [(path, load(path)) for path in (hand.parent.parent / 'outcomes').glob('outcome_*/outcome.json')]
     if outcomes:
         out = max(outcomes, key=lambda pair: pair[1]['recorded_at_ms'])[1]
@@ -1519,6 +2108,168 @@ def audit_originals(hand):
                 raise Blocked('reply_identity_mismatch')
     return dict(input=input_bytes.decode('utf-8'), response=response.decode('utf-8') if response is not None else None,
                 selected=decision is not None, response_status=(attempt or {}).get('status'))
+
+
+def export_model_input(hand, *, review_id=None):
+    """Strictly read-only, leakage-free export of exact or reconstructed model input."""
+    hand = Path(hand)
+    exp = load(hand / 'expected.json')
+    if exp['hand_id'] != hand.name or exp['dossier_id'] != hand.parent.parent.name:
+        raise Blocked('invalid_hand_identity')
+
+    if review_id is None:
+        meta, input_bytes, source = evidence(hand)
+        _, selected_attempt, _ = selected(hand)
+        attempt = selected_attempt
+        if attempt is None:
+            candidates = [
+                load(p) for p in (hand / 'responses').glob('*/attempt.json')
+                if not p.parent.name.startswith('.')
+            ]
+            attempt = max(
+                candidates,
+                key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
+                default=None,
+            )
+        precall_attempt = {}
+        if isinstance(attempt, dict):
+            cfg = attempt.get('configuration') if isinstance(attempt.get('configuration'), dict) else {}
+            precall_attempt = {
+                'attempt_id': attempt.get('attempt_id'),
+                'model': attempt.get('model'),
+                'channel': attempt.get('channel'),
+                'requested_at_ms': attempt.get('requested_at_ms'),
+                'reasoning_effort': cfg.get('reasoning_effort'),
+            }
+        precall_meta = {
+            'dossier_id': exp['dossier_id'],
+            'hand_id': hand.name,
+            'sample': exp.get('sample'),
+            'expiry_ms': exp.get('expiry_ms'),
+            'frozen_at_ms': meta.get('hand_frozen_at_ms'),
+            'input_sha256': meta.get('input_sha256'),
+            'rules_sha256': meta.get('rules_sha256'),
+            'generator': meta.get('generator'),
+            'attempt_id': precall_attempt.get('attempt_id'),
+            'channel': precall_attempt.get('channel'),
+        }
+        attempt_id = precall_attempt.get('attempt_id')
+        req_path = (hand / 'responses' / dossier.key(attempt_id) / 'request.json') if attempt_id else None
+        if req_path is not None and req_path.is_file():
+            req_bytes = bounded(req_path)
+            if isinstance(attempt, dict) and attempt.get('request_sha256') and dossier.sha(req_bytes) != attempt['request_sha256']:
+                raise Blocked('request_identity_mismatch')
+            req_payload = json.loads(req_bytes)
+            if not isinstance(req_payload, dict):
+                raise Blocked('request_payload_invalid')
+            req_payload['fidelity'] = 'EXACT'
+            req_payload['fidelity_reason'] = None
+        else:
+            contracts_pair = [
+                contract_fields(dossier.player.bind(case, card, card['side']))
+                for case, card in zip(source['cases'], source['cards'])
+            ]
+            reason = (
+                '历史手牌未落盘原生 request.json，按冻结证据 evidence/input.md、候选合约对与固定初始系统提示词重建'
+                if attempt_id else
+                '手牌尚未产生实发请求快照 request.json，按冻结证据 evidence/input.md、候选合约对与固定初始系统提示词重建'
+            )
+            req_payload = review.build_initial_request_payload(
+                input_bytes.decode('utf-8'),
+                contract_pair=contracts_pair,
+                model=precall_attempt.get('model'),
+                reasoning_effort=precall_attempt.get('reasoning_effort'),
+                endpoint=None,
+                packet_hash=meta.get('input_sha256'),
+                requested_at_ms=precall_attempt.get('requested_at_ms'),
+                fidelity='RECONSTRUCTED',
+                fidelity_reason=reason,
+                metadata=precall_meta,
+            )
+        md_context = {
+            **precall_meta,
+            **({'requested_at_ms': precall_attempt['requested_at_ms']}
+               if precall_attempt.get('requested_at_ms') is not None else {}),
+        }
+        filename_md = f'{hand.name}-model-input.md'
+        filename_json = f'{hand.name}-request.json'
+    else:
+        rev_id = str(review_id)
+        if not re.fullmatch(REVIEW_ID, rev_id):
+            raise ValueError('invalid review id')
+        link_rec = optional(hand / 'tracking' / 'link.json')
+        ep_id = (link_rec.get('origin') or {}).get('dossier_episode_id') if isinstance(link_rec, dict) else None
+        episode = (hand.parent.parent / 'episodes' / dossier.key(ep_id)) if ep_id else None
+        if episode is not None and not episode.is_dir():
+            episode = None
+        if episode is None:
+            episode = next(
+                (p.parent for p in sorted((hand.parent.parent / 'episodes').glob('episode_*/episode.json'))
+                 if load(p).get('hand_id') == hand.name),
+                None,
+            )
+        if episode is None:
+            raise FileNotFoundError(rev_id)
+        rev_dir = episode / 'reviews' / dossier.key(rev_id)
+        if not rev_dir.is_dir():
+            raise FileNotFoundError(str(rev_dir))
+        rev_attempt = optional(rev_dir / 'attempt.json')
+        precall_rev = {}
+        if isinstance(rev_attempt, dict):
+            precall_rev = {
+                'review_id': rev_attempt.get('review_id') or rev_id,
+                'model': rev_attempt.get('model'),
+                'reasoning_effort': rev_attempt.get('reasoning_effort'),
+                'requested_at_ms': rev_attempt.get('requested_at_ms'),
+            }
+        rev_meta = {
+            'dossier_id': exp['dossier_id'],
+            'hand_id': hand.name,
+            'review_id': precall_rev.get('review_id') or rev_id,
+            'sample': exp.get('sample'),
+            'expiry_ms': exp.get('expiry_ms'),
+        }
+        rev_req_path = rev_dir / 'request.json'
+        if rev_req_path.is_file():
+            req_payload = json.loads(bounded(rev_req_path))
+            if not isinstance(req_payload, dict):
+                raise Blocked('request_payload_invalid')
+            req_payload['fidelity'] = 'EXACT'
+            req_payload['fidelity_reason'] = None
+        else:
+            rev_bytes = bounded(rev_dir / 'input.md')
+            req_payload = review.build_hold_review_request_payload(
+                rev_bytes.decode('utf-8'),
+                model=precall_rev.get('model'),
+                reasoning_effort=precall_rev.get('reasoning_effort'),
+                endpoint=None,
+                packet_hash=dossier.sha(rev_bytes),
+                requested_at_ms=precall_rev.get('requested_at_ms'),
+                fidelity='RECONSTRUCTED',
+                fidelity_reason='历史持仓复核未落盘原生 request.json，按冻结复核牌面 reviews/<review_id>/input.md 与固定复核系统提示词重建',
+                metadata=rev_meta,
+            )
+        md_context = {
+            **rev_meta,
+            **({'requested_at_ms': precall_rev['requested_at_ms']}
+               if precall_rev.get('requested_at_ms') is not None else {}),
+        }
+        filename_md = f'{hand.name}-{rev_id}-model-input.md'
+        filename_json = f'{hand.name}-{rev_id}-request.json'
+
+    clean_req = review.sanitize_model_request(req_payload)
+    full_model_input_md = review.format_model_input_markdown(clean_req, context=md_context)
+    single_box_text = review.format_single_box_input(clean_req)
+    return {
+        'request': clean_req,
+        'full_model_input_md': full_model_input_md,
+        'single_box_text': single_box_text,
+        'fidelity': clean_req['fidelity'],
+        'fidelity_reason': clean_req.get('fidelity_reason'),
+        'stage': clean_req['stage'],
+        'filename_md': filename_md,
+        'filename_json': filename_json,
+    }
 
 
 def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.public, dry_run=False):

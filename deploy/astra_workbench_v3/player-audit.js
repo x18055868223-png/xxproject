@@ -17,11 +17,24 @@ const LABELS = {
   AI_HOLD: "AI 续持 · HOLD",
   AI_REVOKE: "AI 建议撤销 · REVOKE",
   AI_HOLD_UNKNOWN: "AI 复核无法判断 · UNKNOWN",
+  AI_REVIEW_REQUESTED: "已发起 AI 持仓复核",
   HOLD_REVIEW_FAILED: "持仓复核调用失败",
   HOLD_REVIEW_QUEUED: "已入复核去抖队列",
+  HOLD_REVIEW_SKIPPED: "持仓复核已跳过",
   SIMULATED_ORDER: "影子模拟买回短腿",
   SHADOW_ACTION: "影子撤销记录",
   active: "观察中", stopped: "已停止观察", expired: "已到期", error: "追踪异常", paused: "追踪暂停",
+};
+const SKIP_REASONS = {
+  COOLDOWN: "冷却顺延",
+  BELOW_MATERIALITY: "低于重大性阈值",
+  DUPLICATE_EVENT: "同签名事件去重",
+  BUDGET_DEFERRED: "软预算限制顺延",
+  DATA_UNVERIFIED: "数据未核验暂缓",
+  NO_NEW_EVIDENCE: "无实质新增证据",
+  BACKOFF: "失败退避期顺延",
+  INFLIGHT: "已有复核进行中",
+  REVOKED: "已建议撤销",
 };
 const TRIGGER_CATEGORIES = {
   A: "A · 责任边界变化",
@@ -49,6 +62,194 @@ const utcShort = (t) => isNum(t) ? new Date(t).toISOString().slice(0, 16).replac
 const para = (text, cls) => h("p", { text, class: cls || null });
 const pre = (text) => h("pre", { text });
 const signedBtc = (v, digits = 6) => isNum(v) ? `${v > 0 ? "+" : v < 0 ? "−" : ""}${btc(Math.abs(v), digits)} BTC` : "—";
+const isValidReviewId = (id) => typeof id === "string" && /^rev_[A-Za-z0-9_-]+$/.test(id);
+
+function legacyCopyText(text) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    ta.style.left = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus({ preventScroll: true });
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = typeof document.execCommand === "function" && document.execCommand("copy");
+    ta.remove();
+    return Boolean(ok);
+  } catch {
+    return false;
+  }
+}
+
+export function renderModelInputActions({
+  dossierId,
+  handId,
+  reviewId = null,
+  compact = false,
+  onModelInput,
+  modelInputUrl,
+}) {
+  if (!dossierId || !handId || typeof modelInputUrl !== "function") return null;
+  const defaultLabel = compact ? "复制复核输入" : "复制完整输入";
+  const filePrefix = `${handId}${reviewId ? `-${reviewId}` : ""}`;
+  const statusNote = h("span", { class: "pa-export-note muted small" });
+  const copyBtn = typeof onModelInput === "function"
+    ? h("button", { class: "chip pa-export-btn", type: "button", text: defaultLabel })
+    : null;
+  const bar = h("div", { class: `pa-export-bar${compact ? " compact" : ""}` },
+    compact ? null : h("span", { class: "pa-export-label", text: "完整模型输入" }),
+    copyBtn,
+    h("a", {
+      class: "chip pa-export-link",
+      href: modelInputUrl(dossierId, handId, "model-input.md", reviewId),
+      download: `${filePrefix}-model-input.md`,
+      text: "下载完整输入",
+    }),
+    h("a", {
+      class: "chip muted-chip pa-export-link",
+      href: modelInputUrl(dossierId, handId, "request.json", reviewId),
+      download: `${filePrefix}-request.json`,
+      text: "request.json",
+    }),
+    statusNote);
+
+  if (!copyBtn) return bar;
+
+  let busy = false;
+  let resetTimer = null;
+  const clearFeedback = () => {
+    bar.querySelectorAll(".pa-copy-fallback").forEach((n) => n.remove());
+    statusNote.textContent = "";
+    statusNote.removeAttribute("title");
+    statusNote.className = "pa-export-note muted small";
+  };
+  const markCopied = (res) => {
+    if (resetTimer) clearTimeout(resetTimer);
+    const reconstructed = res?.fidelity === "RECONSTRUCTED";
+    copyBtn.textContent = reconstructed ? "已复制（重建）✓" : "已复制 ✓";
+    copyBtn.classList.add("ok");
+    if (reconstructed) {
+      statusNote.textContent = "按冻结卷宗重建";
+      if (res?.fidelity_reason) statusNote.title = res.fidelity_reason;
+    }
+    resetTimer = setTimeout(() => {
+      copyBtn.textContent = defaultLabel;
+      copyBtn.classList.remove("ok");
+      resetTimer = null;
+    }, 2000);
+  };
+  const showManualFallback = (text) => {
+    statusNote.textContent = "浏览器限制了自动剪贴板写入";
+    statusNote.className = "pa-export-note warn-text small";
+    const ta = h("textarea", { class: "pa-copy-fallback-ta", readonly: true, rows: "4" });
+    ta.value = text;
+    let fallbackBox;
+    const closeBtn = h("button", {
+      class: "chip muted-chip",
+      type: "button",
+      text: "收起",
+      onclick: () => { fallbackBox.remove(); clearFeedback(); },
+    });
+    fallbackBox = h("div", { class: "pa-copy-fallback" },
+      h("div", { class: "pa-copy-fallback-head" },
+        h("span", { class: "small muted", text: "请按 Ctrl/Cmd+C 复制下方完整模型输入：" }),
+        closeBtn),
+      ta);
+    bar.append(fallbackBox);
+    ta.focus({ preventScroll: true });
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+  };
+  const writeTextOrFallback = async (text, res) => {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        markCopied(res);
+        return true;
+      } catch {
+        // Fall through to execCommand / manual textarea
+      }
+    }
+    if (legacyCopyText(text)) {
+      markCopied(res);
+      return true;
+    }
+    showManualFallback(text);
+    return false;
+  };
+
+  copyBtn.addEventListener("click", async () => {
+    if (busy) return;
+    if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+    copyBtn.classList.remove("ok");
+    clearFeedback();
+    let resultOrPromise;
+    try {
+      resultOrPromise = onModelInput(dossierId, handId, reviewId);
+    } catch (err) {
+      statusNote.textContent = `读取失败：${err?.message || "请重试"}`;
+      statusNote.className = "pa-export-note warn-text small";
+      return;
+    }
+    if (resultOrPromise && typeof resultOrPromise.then !== "function") {
+      const text = String(resultOrPromise?.single_box_text || "");
+      if (!text) {
+        statusNote.textContent = "模型输入内容为空";
+        statusNote.className = "pa-export-note warn-text small";
+        return;
+      }
+      await writeTextOrFallback(text, resultOrPromise);
+      return;
+    }
+    busy = true;
+    copyBtn.disabled = true;
+    copyBtn.textContent = "读取中…";
+    let fetched = null;
+    const dataPromise = Promise.resolve(resultOrPromise).then((res) => {
+      fetched = res;
+      return res;
+    });
+    try {
+      if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+        try {
+          const item = new ClipboardItem({
+            "text/plain": dataPromise.then((x) => {
+              const txt = String(x?.single_box_text || "");
+              if (!txt) throw new Error("EMPTY_MODEL_INPUT");
+              return new Blob([txt], { type: "text/plain" });
+            }),
+          });
+          await navigator.clipboard.write([item]);
+          markCopied(fetched);
+          return;
+        } catch {
+          // Fall through to await dataPromise and try writeText / execCommand / manual fallback
+        }
+      }
+      const res = fetched || await dataPromise;
+      const text = String(res?.single_box_text || "");
+      if (!text) {
+        statusNote.textContent = "模型输入内容为空";
+        statusNote.className = "pa-export-note warn-text small";
+        return;
+      }
+      await writeTextOrFallback(text, res);
+    } catch (err) {
+      statusNote.textContent = `读取失败：${err?.message || "请重试"}`;
+      statusNote.className = "pa-export-note warn-text small";
+    } finally {
+      busy = false;
+      copyBtn.disabled = false;
+      if (copyBtn.textContent === "读取中…") copyBtn.textContent = defaultLabel;
+    }
+  });
+
+  return bar;
+}
 
 function holdVerdictMeta(verdict) {
   const v = String(verdict || "").toUpperCase();
@@ -170,6 +371,31 @@ function modelTag(model, effort) {
   return `AI · ${model}${effort ? ` · ${effort}` : ""}`;
 }
 
+function usageTotalTokens(u) {
+  if (!u || typeof u !== "object") return null;
+  if (isNum(u.total_tokens)) return u.total_tokens;
+  if (isNum(u.prompt_tokens) && isNum(u.completion_tokens)) return u.prompt_tokens + u.completion_tokens;
+  return null;
+}
+
+function formatUsageText(u) {
+  if (!u || typeof u !== "object") return "—";
+  const pt = isNum(u.prompt_tokens) ? u.prompt_tokens : null;
+  const ct = isNum(u.completion_tokens) ? u.completion_tokens : null;
+  const tt = usageTotalTokens(u);
+  if (pt === null && ct === null && tt === null) return "—";
+  const parts = [];
+  if (pt !== null) parts.push(`输入 ${pt.toLocaleString("en-US")}`);
+  if (ct !== null) parts.push(`输出 ${ct.toLocaleString("en-US")}`);
+  if (tt !== null) parts.push(`总计 ${tt.toLocaleString("en-US")}`);
+  return `${parts.join(" / ")} tokens`;
+}
+
+function skipReasonLabel(reason) {
+  const key = String(reason || "").trim().toUpperCase();
+  return SKIP_REASONS[key] || reason || "已跳过";
+}
+
 function stripCounterPrefix(text) {
   if (!text) return "—";
   return String(text).replace(/^\s*(?:(?:Put|Call)\s*(?:侧)?\s*)?最强反证\s*[：:]\s*/i, "").trim();
@@ -235,7 +461,7 @@ function renderStructuredBoard(boardText) {
   return wrap;
 }
 
-export function renderPlayerAudit(box, player, { available = true, onSelect, onTracker, onOriginals, onLogin, onRefresh, authenticated }) {
+export function renderPlayerAudit(box, player, { available = true, onSelect, onTracker, onOriginals, onModelInput, modelInputUrl, onLogin, onRefresh, authenticated }) {
   if (!authenticated) {
     box.append(h("div", { class: "pad" }, para("登录后按期查阅每日交割卷宗、冻结牌面与 AI 牌手推理审计。", "muted"),
       h("button", { class: "btn secondary", type: "button", onclick: onLogin }, "登录")));
@@ -297,14 +523,28 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     h("span", { class: `chip ${verdictTone(d.state)}`, text: verdictText(d) }),
     actorBadge ? h("span", { class: "chip", text: actorBadge }) : null));
 
+  if (d.frozen_at_ms || d.board) {
+    const exportBar = renderModelInputActions({
+      dossierId: d.dossier_id,
+      handId: d.hand_id,
+      onModelInput,
+      modelInputUrl,
+    });
+    if (exportBar) left.append(exportBar);
+  }
+
   const metaRows = [
     ["交割到期", `${utc(d.expiry_ms)}（${samples[d.sample] || d.sample}）`],
     ["发牌与作答", `发牌 ${utc(d.frozen_at_ms)} · 作答 ${utc(d.decision?.decided_at_ms)}`],
     ["牌手模型", d.model ? `${d.model}${d.reasoning_effort ? `（推理强度 ${d.reasoning_effort}）` : ""}` : "未记录"],
+    ["本手牌 Token 消耗", formatUsageText(d.usage)],
     ["ARD 依赖", judgment ? (judgment.depends_on_ard ? "原回复声明依赖锚相对动态（ARD）" : "仅按一阶责任路径成立，不依赖 ARD") : "—"],
   ];
   left.append(h("dl", { class: "kv pa-meta" },
     ...metaRows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
+  if (d.sample === "AD_HOC" || d.sample === "STARTUP_AD_HOC") {
+    left.append(para(`独立研究/追加手牌（${samples[d.sample] || d.sample}），不替代正式日局。`, "muted small pa-sample-note"));
+  }
 
   if (judgment) {
     left.append(h("div", { class: "ev pa-comparison" },
@@ -442,7 +682,9 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       const tbl = h("table", { class: "t compact pa-events-table" },
         h("thead", {}, h("tr", {}, h("th", { text: "事件 / 网格检查结果" }), h("th", { class: "n", text: "观测 / 记录时刻" }))),
         h("tbody", {}, ...shownEvents.map((ev) => {
-          const note = ev.summary || ev.verdict;
+          const note = ev.kind === "HOLD_REVIEW_SKIPPED"
+            ? (ev.summary && ev.summary !== ev.reason ? `${skipReasonLabel(ev.reason)}：${ev.summary}` : skipReasonLabel(ev.reason))
+            : (ev.summary || ev.verdict);
           const shortNote = note ? String(note).trim().slice(0, 72) : "";
           return h("tr", {},
             h("td", {},
@@ -455,9 +697,47 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     left.append(condCard);
   }
 
-  if (d.hold_reviews?.length || d.shadow_management) {
+  if (d.hold_reviews?.length || d.shadow_management || d.management_telemetry || d.hold_skip_summary?.total_skips) {
     const holdCard = h("div", { class: "ev pa-hold-card" },
       h("header", {}, h("b", { text: "持仓复核与影子管理轨迹" })));
+    const tel = d.management_telemetry || {};
+    const skipSum = d.hold_skip_summary || {};
+    const validReviews = (d.hold_reviews || []).filter((r) => !r.status || r.status === "VALID");
+    const gridChecks = isNum(tel.grid_check_count) ? tel.grid_check_count : (d.grid_check_summary?.total ?? 0);
+    const skipDebounce = isNum(tel.skip_and_debounce_count)
+      ? tel.skip_and_debounce_count
+      : ((skipSum.total_skips ?? 0) + (tel.coalesced_debounce_count ?? 0));
+    const aiCount = isNum(tel.ai_review_count) ? tel.ai_review_count : validReviews.length;
+    let totalTokens = usageTotalTokens(tel.usage);
+    if (totalTokens === null && validReviews.length) {
+      let sum = 0;
+      let anyTok = false;
+      for (const r of validReviews) {
+        const t = usageTotalTokens(r.usage);
+        if (t !== null) { sum += t; anyTok = true; }
+      }
+      if (anyTok) totalTokens = sum;
+    }
+    holdCard.append(para(
+      `网格检查 ${gridChecks} 次 · 跳过/去重 ${skipDebounce} 次 · 实际 AI 复核 ${aiCount} 次 · 合计 Token ${isNum(totalTokens) ? totalTokens.toLocaleString("en-US") : "0"}`,
+      "small num pa-tel-line"));
+    const skipEvents = (d.events || []).filter((ev) => ev.kind === "HOLD_REVIEW_SKIPPED");
+    const lastSkip = skipSum.last_skip || (skipEvents.length ? skipEvents[skipEvents.length - 1] : null);
+    if (lastSkip && String(lastSkip.reason || "").toUpperCase() !== "NO_TRIGGER") {
+      const skipTs = lastSkip.at_ms ?? lastSkip.observed_at_ms ?? lastSkip.recorded_at_ms;
+      const reasonTxt = skipReasonLabel(lastSkip.reason);
+      const detailTxt = lastSkip.summary_cn || (lastSkip.summary && lastSkip.summary !== lastSkip.reason ? lastSkip.summary : "");
+      holdCard.append(para(
+        `最近跳过：${reasonTxt}${detailTxt ? `（${detailTxt}）` : ""}${isNum(skipTs) ? ` · ${utc(skipTs)}` : ""}`,
+        "muted small num pa-skip-line"));
+      const reasonEntries = Object.entries(skipSum.by_reason || {}).filter(([k, v]) => k !== "NO_TRIGGER" && isNum(v) && v > 0);
+      if (reasonEntries.length > 1 || (skipSum.total_skips ?? 0) > 1) {
+        holdCard.append(h("details", { class: "pa-skip-more" },
+          h("summary", { text: `跳过原因分布（共 ${skipSum.total_skips ?? reasonEntries.reduce((a, [, v]) => a + v, 0)} 次）` }),
+          h("ul", { class: "pa-trig-list" }, ...reasonEntries.map(([k, v]) =>
+            h("li", {}, h("span", { text: skipReasonLabel(k) }), h("span", { class: "num", text: `${v} 次` }))))));
+      }
+    }
     const sm = d.shadow_management;
     if (sm) {
       const trigChip = sm.mechanical_condition_state === "TRIGGERED" || isNum(sm.condition_triggered_at_ms)
@@ -518,6 +798,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
             })
           : null;
         const mTag = modelTag(r.model, r.reasoning_effort ?? r.configuration?.reasoning_effort);
+        const revTokens = usageTotalTokens(r.usage);
         const ts = r.reviewed_at_ms ?? r.decided_at_ms ?? r.recorded_at_ms ?? r.observed_at_ms;
         const aff = formatAffectedConditions(r.affected_conditions);
         const trigView = triggerListView(r.triggers);
@@ -530,10 +811,22 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
             revProtoChip,
             unmappedChip,
             mTag ? h("span", { class: "chip muted-chip", text: mTag }) : null,
+            revTokens !== null ? h("span", { class: "chip muted-chip num", text: `${revTokens.toLocaleString("en-US")} tok` }) : null,
             h("span", { class: "muted small num pa-hold-ts", text: utc(ts) })),
           aff ? para(`涉及原条件：${aff}`, "small muted pa-hold-affected") : null,
           trigView,
           r.public_reply ? para(r.public_reply, "pa-hold-reply") : (r.error ? para(String(r.error), "small warn-text pa-hold-reply") : null));
+        if (isValidReviewId(r.review_id) && r.status !== "FAILED") {
+          const holdExportBar = renderModelInputActions({
+            dossierId: d.dossier_id,
+            handId: d.hand_id,
+            reviewId: r.review_id,
+            compact: true,
+            onModelInput,
+            modelInputUrl,
+          });
+          if (holdExportBar) item.append(holdExportBar);
+        }
         if (rawInput || rawReply) {
           const rawBlocks = [];
           if (rawInput) rawBlocks.push(para("增量复核输入（input_md）", "small muted"), pre(String(rawInput)));

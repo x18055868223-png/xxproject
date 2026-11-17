@@ -7,9 +7,11 @@ import urllib.error
 import pytest
 
 from tools import astra_locked_candidate_compare_v1 as compare
+from tools import astra_player_dossier_v1 as dossier
 from tools import astra_player_review_v1 as review
 from tools import signal_llm_review
 from tests.test_astra_locked_candidate_compare_v1 import payload_with_components, point_from_payload
+from tests.test_astra_player_dossier_v1 import Clock, EXCERPTS as DOSSIER_EXCERPTS, M as DOSSIER_M, SLOT, plan as dossier_plan, raw as dossier_raw, source as dossier_source
 from tests.test_astra_underwriting_v20 import T
 
 M = 60_000
@@ -1052,6 +1054,347 @@ def test_call_chat_llm_raises_clear_length_reason_when_empty():
             model="deepseek-v4-pro",
             transport=lambda *a, **k: {"choices": [{"finish_reason": "length", "message": {"content": ""}}]},
         )
+
+
+def test_v11_category_d_anchor_flow_asof_and_continuation():
+    frozen = {
+        "contract": {"side": "call", "short_strike_usd": 65_500.0, "long_strike_usd": 67_500.0, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "new_entry",
+        "invalidation_meaning": "严格入区即破坏",
+        "accepted_conditions": ["保持 65,500 下方"],
+        "entry_index_usd": 64_908.38,
+    }
+    t0_metrics = {
+        "asof_ms": T,
+        "spot_usd": 64_908.38,
+        "short_distance_pct": 0.90,
+        "flow_ready": True,
+        "flow_asof_ms": T - 1_800_000,
+        "flow_direction": "bullish",
+        "flow_cvd_4h": 767.6,
+        "flow_momentum_4h_pct": 1.43,
+    }
+    # 1. Spot is safer than t0 despite intrawindow bounce -> must NOT fire D!
+    safer_rows = [
+        {"asof_ms": T + 60_000, "spot_usd": 64_600.0, "short_distance_pct": 1.38, "flow_ready": True, "flow_asof_ms": T + 1_200_000, "flow_direction": "bullish", "flow_cvd_4h": 600.0, "flow_momentum_4h_pct": 0.50},
+        {"asof_ms": T + 120_000, "spot_usd": 64_768.86, "short_distance_pct": 1.12, "flow_ready": True, "flow_asof_ms": T + 1_200_000, "flow_direction": "bullish", "flow_cvd_4h": 620.0, "flow_momentum_4h_pct": 0.65},
+    ]
+    assert review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics=t0_metrics, series_rows=safer_rows, now_ms=T + 180_000,
+    ) == []
+
+    # 2. Same flow_asof_ms after last_review -> must NOT refire D!
+    stale_flow_rows = [
+        {"asof_ms": T + 2_400_000, "spot_usd": 65_150.0, "short_distance_pct": 0.53, "flow_ready": True, "flow_asof_ms": T + 1_200_000, "flow_direction": "neutral_to_bullish", "flow_cvd_4h": 800.0, "flow_momentum_4h_pct": 1.50},
+    ]
+    trigs_stale = review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics=t0_metrics, series_rows=stale_flow_rows, now_ms=T + 2_500_000,
+        last_review={"flow_asof_ms": T + 1_200_000, "flow_direction": "neutral_to_bullish", "flow_cvd_4h": 800.0, "spot_usd": 65_100.0, "short_distance_pct": 0.61},
+    )
+    assert all(t["category"] != "D" for t in trigs_stale)
+
+    # 3. Genuine adverse continuation with advancing flow_asof_ms + >=0.25pp push -> FLOW_ADVERSE_CONTINUATION
+    cont_rows = [
+        {"asof_ms": T + 4_800_000, "spot_usd": 65_200.0, "short_distance_pct": 0.46, "flow_ready": True, "flow_asof_ms": T + 4_800_000, "flow_direction": "bullish", "flow_cvd_4h": 950.0, "flow_momentum_4h_pct": 1.80},
+    ]
+    trigs_cont = review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics=t0_metrics, series_rows=cont_rows, now_ms=T + 4_860_000,
+    )
+    d_cont = next(t for t in trigs_cont if t["category"] == "D")
+    assert d_cont["code"] == "FLOW_ADVERSE_CONTINUATION"
+    assert d_cont["signature"] == "FLOW_ADVERSE_CONTINUATION"
+
+
+def test_v11_category_c_depends_on_ard_false_and_soft_budget():
+    frozen = {
+        "contract": {"side": "call", "short_strike_usd": 65_500.0, "long_strike_usd": 67_500.0, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "new_entry",
+        "invalidation_meaning": "严格入区即破坏",
+        "accepted_conditions": ["保持 65,500 下方"],
+        "entry_index_usd": 64_908.38,
+    }
+    trigs = review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics={"asof_ms": T, "spot_usd": 64_908.38, "short_distance_pct": 0.90},
+        series_rows=[{"asof_ms": T + 60_000, "spot_usd": 64_950.0, "short_distance_pct": 0.84}],
+        ard_comparison={"old_pin": 64_000.0, "new_pin": 66_000.0, "pin_price_changed": True, "same_measure": True, "pin_status": "ok", "band_half": 400.0, "check_at_ms": T + 60_000},
+        entry_pin_snapshot={"pin": 64_000.0, "pin_source": "deribit", "pin_method": "gex", "pin_status": "ok"},
+        now_ms=T + 60_000,
+    )
+    assert [t["signature"] for t in trigs] == ["ARD_STRUCTURE_SHIFT:PIN"]
+
+    # Soft budget=2 blocks ordinary trigger at count=2 -> BUDGET_DEFERRED; Priority A bypasses!
+    trig_b = {"category": "B", "code": "MARGIN_DETERIORATION", "signature": "MARGIN_DETERIORATION", "depth_step": 5, "severity": 2, "observed_at_ms": T + 60_000, "summary_cn": "shrink"}
+    st_deferred, act_deferred = review.schedule_review_action(
+        {"ordinary_review_count": 2, "pending": [trig_b], "pending_since_ms": T},
+        [], now_ms=T + 700_000, debounce_ms=600_000, cooldown_ms=0, max_ordinary_reviews=2,
+    )
+    assert act_deferred is None and st_deferred["last_skip"]["code"] == "BUDGET_DEFERRED"
+
+    trig_a = {"category": "A", "code": "CONDITION_TRIGGERED", "signature": "CONDITION_TRIGGERED", "severity": 3, "observed_at_ms": T + 710_000, "summary_cn": "breach"}
+    _, act_a = review.schedule_review_action(st_deferred, [trig_a], now_ms=T + 710_000, max_ordinary_reviews=2)
+    assert act_a is not None and act_a["should_call"] is True and act_a["is_priority_a"] is True
+
+    # Five-section prompt structure + M1=INTACT anti-boilerplate instruction
+    md = review.build_hold_review_input(
+        contract=frozen["contract"], entry_at_ms=T,
+        initial_decision={"judgment": {"action": "Accept", "side": "call", "comparison": "选 Call", "call_counter": "反证"}},
+        frozen_condition=frozen, triggers=trigs,
+        t0_summary={"entry_index_usd": 64_908.38, "short_distance_pct": 0.90, "expected_move_usd": 1256.3},
+        post_entry_summary={"sample_count": 2, "latest_spot_usd": 65_122.8, "min_short_distance_pct": 0.45, "latest_short_distance_pct": 0.58},
+        condition_summary={"program_triggered": False, "mechanical_condition_state": "INTACT", "checks_count": 3},
+        ard_summary={"old_pin": 64_000.0, "new_pin": 66_000.0, "pin_price_changed": True, "same_measure": True},
+        flow_summary={"flow_ready": True, "flow_asof_ms": T, "flow_direction": "bullish", "flow_cvd_4h": 741.75, "flow_momentum_4h_pct": -0.49},
+        quote_summary={"short_buyback_gaps": []},
+        prior_reviews=[{"verdict": "HOLD", "spot_usd": 64_947.49, "short_distance_pct": 0.84, "requested_at_ms": T + 30_000, "public_reply": "ok"}],
+    )
+    for sec_title in ("## 1. 原承诺", "## 2. 上次 AI 已评估什么", "## 3. 这次真正新在哪里", "## 4. 程序的不可改写事实", "## 5. 唯一管理问题"):
+        assert sec_title in md
+    assert "禁止仅以“M1 未触发”或“D 仅作提醒”作为 `HOLD` 理由" in md
+
+
+def test_canonical_prompt_constants_and_versions():
+    assert review.MODEL_REQUEST_SCHEMA == "astra_player_model_request@1.0"
+    assert review.INITIAL_SYSTEM_PROMPT_VERSION == "player_initial_system@1.0"
+    assert review.HOLD_REVIEW_SYSTEM_PROMPT_VERSION == "player_hold_system@1.0"
+    expected_initial = (
+        "你是承保影子牌手。请完整阅读冻结牌面并用中文作答。\n"
+        "【核心术语公理】\n"
+        "- 责任区：卖方短腿与保护腿之间的亏损承受区间（触及边界不算入区，越过短腿进入区间才算严格入区）。\n"
+        "- 本期尺度：指本期到期隐含波动给出的 `expected_move_usd` 预期波动尺度。\n"
+        "- Pin / 墙：仅作当前空间结构位置参照，不带方向性，不构成价格吸附保证。\n"
+        "- ARD：仅衡量过去 4 小时围绕同到期已知 Pin 的历史贴近、离返与迁移事实，不做未来方向预测。\n"
+        "【作答与规则锁定】\n"
+        "1. 在正文开头或明确独立标题行写出唯一结论：`## Accept / Put`、`## Accept / Call`、`## Reject` 或 `## Unknown`。\n"
+        "2. 正文必须分别给出 Put 路径判断、Call 路径判断、Put 最强反证、Call 最强反证与两侧对比择优，并冻结历史事实、承担条件与破坏确认口径。\n"
+        "3. 系统的机械有效破坏规则仅支持两选一：`\"new_entry\"`（入场后出现严格进入责任区的分钟采样即触发）或 `\"entry_not_returned\"`（入场后严格进入责任区且至固定检查点仍未严格返回责任外才触发）；固定检查钟默认每 5 分钟（`check_interval_ms = 300000`）按 UTC 网格执行。正文书写破坏确认口径时必须直接对齐该两选一规则与 5 分钟网格，严禁自行编造“每 60 分钟整点锚点”等其他检查时钟。\n"
+        "4. 为便于程序做逐字子串核验，建议正文中 Put 路径、Call 路径、Put 最强反证、Call 最强反证、两侧对比择优，以及（若 Accept）冻结历史事实、承担条件、破坏确认口径（与 ARD 判读）各自先写一段连贯完整的中文整句段落，尽量不在摘录段落内使用分点列表或反引号。\n"
+        "5. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`（必须是合法 JSON 对象）。其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` 必须是**从上方中文正文原封不动逐字复制（verbatim substring）的非空连续片段**——不要删改、浓缩、跨段拼接或替换任何字词、数字、标点或符号；`depends_on_ard` 必须是显式布尔值。\n"
+        "6. 若结论为 Accept，`<ANNOTATION_JSON>` 中必须包含 `condition_plan` 对象（不能是字符串），含：`invalidation`（仅限 `\"new_entry\"` 或 `\"entry_not_returned\"`）、`check_interval_ms`（默认 `300000`，整分钟毫秒）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须是**从上方中文正文原封不动逐字复制的连续片段**，任意改写或浓缩都会导致解析失败作废），以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，还须提供逐字复制自正文的 `ard_responsibility_meaning` 与 `ard_review_on`。"
+    )
+    assert review.INITIAL_SYSTEM_PROMPT == expected_initial
+    assert review.HOLD_REVIEW_SYSTEM_PROMPT == (
+        "你是中性回路影子持仓复核 AI。只可基于增量牌面输出 HOLD、REVOKE 或 UNKNOWN，严禁改选 Put/Call，严禁推翻已触发的 CONDITION_TRIGGERED。"
+    )
+
+
+def test_decide_initial_hand_returns_leakage_free_exact_request_payload():
+    sent_bodies = []
+    reject_reply = (
+        "## Reject\n\n"
+        "Put路径：安全。\nCall路径：较近。\n对比结论：均观望。\nPut反证：存在回踩。\nCall反证：上方承压。\n"
+        "<ANNOTATION_JSON>"
+        + json.dumps({
+            "put": "Put路径：安全。",
+            "call": "Call路径：较近。",
+            "comparison": "对比结论：均观望。",
+            "put_counter": "Put反证：存在回踩。",
+            "call_counter": "Call反证：上方承压。",
+            "depends_on_ard": False,
+        }, ensure_ascii=False)
+        + "</ANNOTATION_JSON>"
+    )
+
+    def transport(api_key, model, body, timeout, endpoint=None):
+        sent_bodies.append((endpoint, deepcopy(body)))
+        return {"choices": [{"finish_reason": "stop", "message": {"content": reject_reply}}], "usage": {"total_tokens": 42}}
+
+    res = review.decide_initial_hand(
+        "# Frozen Hand\nBody text",
+        contract_pair={"put": {"short_strike_usd": 97000}, "call": {"short_strike_usd": 103000}},
+        api_key="super-secret-api-key",
+        model="deepseek-reasoner",
+        endpoint="https://example.invalid/v1",
+        reasoning_effort="high",
+        packet_hash="pkt_123",
+        transport=transport,
+    )
+    assert len(sent_bodies) == 1
+    req = res["request_payload"]
+    assert req["schema"] == review.MODEL_REQUEST_SCHEMA
+    assert req["stage"] == "initial"
+    assert req["fidelity"] == "EXACT"
+    assert req["prompt_version"] == review.INITIAL_SYSTEM_PROMPT_VERSION
+    assert req["endpoint"] == "https://example.invalid/v1/chat/completions"
+    assert req["packet_hash"] == "pkt_123"
+    assert req["messages"] == sent_bodies[0][1]["messages"]
+    assert req["messages"][0] == {"role": "system", "content": review.INITIAL_SYSTEM_PROMPT}
+    assert "候选合约对：" in req["messages"][1]["content"]
+    assert "# Frozen Hand\nBody text" in req["messages"][1]["content"]
+    assert req["parameters"] == {
+        "stream": False,
+        "max_tokens": 24576,
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+    }
+
+    serialized = json.dumps(req, ensure_ascii=False)
+    assert "super-secret-api-key" not in serialized
+    banned_keys = {
+        "decision", "judgment", "action", "side", "raw_reply", "response",
+        "public_reply", "verdict", "outcome", "condition", "locked_series", "api_key",
+    }
+    assert banned_keys.isdisjoint(req.keys())
+    assert banned_keys.isdisjoint(req["metadata"].keys())
+
+    # call_chat_llm also returns request_body without api_key
+    chat_res = review.call_chat_llm(
+        [{"role": "user", "content": "ping"}],
+        api_key="secret-k",
+        model="deepseek-chat",
+        transport=lambda *a, **k: {"choices": [{"finish_reason": "stop", "message": {"content": "pong"}}], "usage": {}},
+    )
+    assert chat_res["request_body"]["messages"] == [{"role": "user", "content": "ping"}]
+    assert "api_key" not in chat_res["request_body"]
+
+
+def test_format_single_box_and_markdown_preserve_order_fencing_and_fidelity():
+    payload = review.build_hold_review_request_payload(
+        "牌面内容包含代码块：\n```json\n{\"k\": 1}\n```\n以及四反引号 ````fence```` 示例。",
+        model="deepseek-reasoner",
+        reasoning_effort="medium",
+        endpoint="https://api.deepseek.com",
+        packet_hash="hold_hash_1",
+        requested_at_ms=T,
+        fidelity="RECONSTRUCTED",
+        fidelity_reason="早期试运行未落盘原生 request.json，按冻结牌面重建",
+        metadata={
+            "dossier_id": "Deribit_BTC_20261115T080000Z",
+            "hand_id": "hand_abc",
+            "review_id": "rev_01",
+            "sample": "SCHEDULED",
+            "expiry_ms": T + 16 * 3_600_000,
+            "decision": "LEAK_DECISION",
+            "verdict": "LEAK_VERDICT",
+            "api_key": "LEAK_API_KEY",
+            "nested": {"outcome": "LEAK_OUTCOME", "safe": "keep_me"},
+        },
+    )
+    assert "decision" not in payload["metadata"]
+    assert "verdict" not in payload["metadata"]
+    assert "api_key" not in payload["metadata"]
+    assert payload["metadata"]["nested"] == {"safe": "keep_me"}
+
+    # Multi-turn (>2 messages) dynamic rendering
+    multi = deepcopy(payload)
+    multi["messages"].append({"role": "assistant", "content": "第一轮分析内容"})
+    multi["messages"].append({"role": "user", "content": "补充追问内容"})
+
+    single_box = review.format_single_box_input(multi)
+    assert single_box.endswith("\n")
+    idx_sys = single_box.index("【SYSTEM】\n" + review.HOLD_REVIEW_SYSTEM_PROMPT)
+    idx_u1 = single_box.index("【USER】\n牌面内容包含代码块：")
+    idx_ast = single_box.index("【ASSISTANT】\n第一轮分析内容")
+    idx_u2 = single_box.index("【USER】\n补充追问内容")
+    assert idx_sys < idx_u1 < idx_ast < idx_u2
+
+    md = review.format_model_input_markdown(
+        multi,
+        context={"action": "LEAK_ACTION", "side": "LEAK_SIDE", "hand_id": "hand_abc"},
+    )
+    assert md.startswith("# AI 牌手完整模型输入\n")
+    assert "RECONSTRUCTED（早期试运行未落盘原生 request.json，按冻结牌面重建）" in md
+    assert "hold_review（持仓复核）" in md
+    assert "Deribit_BTC_20261115T080000Z" in md
+    assert "hand_abc" in md
+    assert "rev_01" in md
+    assert "SCHEDULED" in md
+    assert "## 消息 1 · 系统提示词 (`role: system`)" in md
+    assert "## 消息 2 · 用户牌面输入 (`role: user`)" in md
+    assert "## 消息 3 · 历史助手消息 (`role: assistant`)" in md
+    assert "## 消息 4 · 用户牌面输入 (`role: user`)" in md
+    assert "## DeepSeek 官方网页单输入框可复制区块" in md
+    # Body has 4 backticks ````fence````, so outer fence must use at least 5 backticks
+    assert "\n`````text\n" in md
+    assert "\n`````\n" in md
+    for leak in ("LEAK_DECISION", "LEAK_VERDICT", "LEAK_API_KEY", "LEAK_OUTCOME", "LEAK_ACTION", "LEAK_SIDE"):
+        assert leak not in md
+
+    # EXACT fidelity label check
+    exact_payload = review.build_initial_request_payload(
+        "# Exact Hand",
+        contract_pair={},
+        model="deepseek-chat",
+        fidelity="EXACT",
+    )
+    exact_md = review.format_model_input_markdown(exact_payload)
+    assert "- 来源保真度：EXACT\n" in exact_md
+    assert "````text\n" in exact_md
+
+
+def test_dossier_respond_atomically_persists_request_json_and_preserves_compat(tmp_path):
+    clock = Clock(SLOT + DOSSIER_M)
+    d = dossier.Dossiers(tmp_path, clock)
+    hand = d.tick(dossier_plan(), lambda *_: dossier_source(clock))[0]
+
+    # Backward compatibility when request_payload is None
+    rec_compat = d.respond(hand, "compat-1", "RECEIVED", dossier_raw(), DOSSIER_EXCERPTS)
+    assert "request_sha256" not in rec_compat
+    assert not (hand / "responses" / "compat-1" / "request.json").exists()
+
+    # Persists request.json atomically and records request_sha256 when request_payload is provided
+    req_payload = review.build_initial_request_payload(
+        (hand / "evidence" / "input.md").read_text(encoding="utf-8"),
+        contract_pair={"put": {"short_strike_usd": 97000}, "call": {"short_strike_usd": 103000}},
+        model="deepseek-reasoner",
+        requested_at_ms=clock(),
+        fidelity="EXACT",
+        metadata={"dossier_id": hand.parent.parent.name, "hand_id": hand.name, "sample": "SCHEDULED"},
+    )
+    rec = d.respond(
+        hand,
+        "with-req-1",
+        "RECEIVED",
+        dossier_raw("Reject"),
+        DOSSIER_EXCERPTS,
+        model="deepseek-reasoner",
+        requested=clock(),
+        decided=clock(),
+        channel="API_AUTO",
+        request_payload=req_payload,
+    )
+    req_file = hand / "responses" / "with-req-1" / "request.json"
+    assert req_file.is_file()
+    expected_bytes = dossier.encode(req_payload)
+    assert req_file.read_bytes() == expected_bytes
+    assert rec["request_sha256"] == dossier.sha(expected_bytes)
+    assert dossier.read(hand / "responses" / "with-req-1" / "attempt.json")["request_sha256"] == rec["request_sha256"]
+
+    # Idempotent retry with identical request_payload succeeds
+    assert d.respond(
+        hand,
+        "with-req-1",
+        "RECEIVED",
+        dossier_raw("Reject"),
+        DOSSIER_EXCERPTS,
+        model="deepseek-reasoner",
+        requested=clock(),
+        decided=clock(),
+        channel="API_AUTO",
+        request_payload=req_payload,
+    ) == rec
+
+    # Reusing attempt identity with different request_payload raises
+    changed_payload = deepcopy(req_payload)
+    changed_payload["model"] = "deepseek-chat"
+    with pytest.raises(ValueError, match="attempt identity reused"):
+        d.respond(
+            hand,
+            "with-req-1",
+            "RECEIVED",
+            dossier_raw("Reject"),
+            DOSSIER_EXCERPTS,
+            model="deepseek-reasoner",
+            requested=clock(),
+            decided=clock(),
+            channel="API_AUTO",
+            request_payload=changed_payload,
+        )
+
+
 
 
 

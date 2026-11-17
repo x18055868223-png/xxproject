@@ -297,6 +297,19 @@ button.chip:hover, button.chip.on { border-color: var(--depth); color: var(--dep
   border: 1px solid var(--rule); border-radius: var(--radius-chip); padding: 4px 10px; }
 .player-audit pre { white-space: pre-wrap; max-height: 420px; overflow: auto; padding: 10px 12px; font-family: var(--font-num); font-size: 13px; line-height: 1.65; background: var(--paper); border: 1px solid var(--rule-2); }
 .pa-head { padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--rule); }
+.pa-export-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--rule-2); }
+.pa-export-bar.compact { margin: 4px 0 8px; padding-bottom: 0; border-bottom: 0; }
+.pa-export-bar + .pa-meta { margin-top: 0; border-top: 0; }
+.pa-export-label { font-size: 12px; color: var(--ink-3); margin-right: 4px; }
+a.chip.pa-export-link { text-decoration: none; color: var(--ink-2); transition: border-color .15s, color .15s; }
+a.chip.pa-export-link.muted-chip { color: var(--ink-3); }
+a.chip.pa-export-link:hover, a.chip.pa-export-link:focus-visible { border-color: var(--depth); color: var(--depth); }
+.pa-export-btn { transition: border-color .15s, color .15s; }
+.pa-export-btn:disabled { opacity: 0.6; cursor: wait; }
+.pa-export-note { margin-left: 4px; }
+.pa-copy-fallback { flex-basis: 100%; display: grid; gap: 4px; margin-top: 4px; padding: 8px; border: 1px solid var(--rule-2); border-radius: 6px; background: var(--paper); }
+.pa-copy-fallback-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pa-copy-fallback-ta { width: 100%; font-family: var(--font-num); font-size: 12px; line-height: 1.5; color: var(--ink); background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 6px 8px; resize: vertical; }
 .pa-meta { margin: 6px 0 14px; border-top: 1px solid var(--rule-2); }
 .pa-sample-note { margin: -8px 0 12px; }
 .pa-tel-line { margin: 4px 0 6px; color: var(--ink-2); }

@@ -1260,8 +1260,23 @@ def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> 
 
 def _flow_asof_ms(facts: Mapping[str, Any], vp: Mapping[str, Any], flow: Mapping[str, Any]) -> int | None:
     """Resolve the newest retained timestamp attached to volume_price / micro_flow."""
+    for leg_name in ("combined", "fast_4h", "slow_12h"):
+        leg_map = _mapping(flow.get(leg_name))
+        for key in (
+            "end_ts_ms",
+            "complete_ts_ms",
+            "window_end_ms",
+            "asof_ms",
+            "window_end_time",
+            "source_ts_ms",
+            "last_closed_bar_time",
+            "ts_ms",
+        ):
+            if (ts := _int(leg_map.get(key))) is not None:
+                return ts
     for candidate in (
         vp.get("asof_ms"),
+        vp.get("end_ts_ms"),
         vp.get("ts_ms"),
         vp.get("observed_at_ms"),
         vp.get("source_ts_ms"),
@@ -1271,11 +1286,6 @@ def _flow_asof_ms(facts: Mapping[str, Any], vp: Mapping[str, Any], flow: Mapping
     ):
         if (ts := _int(candidate)) is not None:
             return ts
-    for leg_name in ("combined", "fast_4h", "slow_12h"):
-        leg_map = _mapping(flow.get(leg_name))
-        for key in ("asof_ms", "window_end_time", "source_ts_ms", "ts_ms", "last_closed_bar_time"):
-            if (ts := _int(leg_map.get(key))) is not None:
-                return ts
     for candidate in (
         _dig(vp, ("tmvf_24h", "core", "kline_open_time")),
         _dig(vp, ("funding", "window_end_time")),

@@ -6,6 +6,7 @@ Known lifetime events prevent issuance. Missing auxiliary data do not select an 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import gzip
 import json
 from datetime import datetime, timezone
@@ -439,6 +440,159 @@ def path_section(case, card, contract, scale, roles, zones, index_path, *, repor
     return "\n".join(lines)
 
 
+def _spot_dir(value, pos_label, neg_label, flat_label='持平'):
+    if value > 0:
+        return pos_label
+    if value < 0:
+        return neg_label
+    return flat_label
+
+
+def derive_non_overlapping_spot_windows(row, *, cutoff=None):
+    """Verify same-source/same-cutoff/no-gap spot windows and derive the non-overlapping [-12h, -4h] slice."""
+    if not isinstance(row, Mapping):
+        return {'comparable': False, 'reason': '未提供现货量价数据'}
+    if cutoff is not None and not usable(row, cutoff, HOUR):
+        return {'comparable': False, 'reason': '量价行不在可用时钟或质量未就绪'}
+    vals = row.get('values')
+    micro = vals.get('micro_flow') if isinstance(vals, Mapping) else None
+    if not isinstance(vals, Mapping) or not isinstance(micro, Mapping):
+        return {'comparable': False, 'reason': '缺少micro_flow现货窗口'}
+    fast = micro.get('fast_4h')
+    slow = micro.get('slow_12h')
+    if not isinstance(fast, Mapping) or not isinstance(slow, Mapping):
+        return {'comparable': False, 'reason': '缺少4h或12h现货窗口，未作12h减4h相减'}
+
+    bad_flags = ('gap', 'truncated', 'cvd_degraded', 'backfill_mixed', 'window_backfill')
+    for scope in (row, vals, micro, fast, slow):
+        for flag in bad_flags:
+            if scope.get(flag) is True:
+                return {'comparable': False, 'reason': f'存在缺口/降级/回填标记({flag})，未作12h减4h相减'}
+
+    parsed = {}
+    for name, w in (('fast_4h', fast), ('slow_12h', slow)):
+        if w.get('data_ready') is not True or w.get('cvd_unit') != 'BTC':
+            return {'comparable': False, 'reason': f'{name}未就绪或单位非BTC，未作12h减4h相减'}
+        cvd = number(w.get('cvd_sum'))
+        ret = number(w.get('momentum_return_pct'))
+        if ret is None:
+            ret = number(w.get('price_return_pct'))
+        if cvd is None or ret is None:
+            return {'comparable': False, 'reason': f'{name}净主动量或涨跌幅缺失，未作12h减4h相减'}
+        parsed[name] = (cvd, ret)
+
+    for key in ('end_ts_ms', 'complete_ts_ms', 'window_end_ms', 'end_ms'):
+        fv, sv = fast.get(key), slow.get(key)
+        if (fv is not None) != (sv is not None) or (fv is not None and fv != sv):
+            return {'comparable': False, 'reason': f'两窗截止时间({key})不一致或单侧缺失，未作12h减4h相减'}
+
+    for key in ('source', 'bar_source', 'symbol', 'price_source'):
+        fv, sv = fast.get(key), slow.get(key)
+        if (fv is not None) != (sv is not None) or (fv is not None and fv != sv):
+            return {'comparable': False, 'reason': f'两窗来源口径({key})不一致，未作12h减4h相减'}
+
+    for name, w in (('fast_4h', fast), ('slow_12h', slow)):
+        if 'coverage_frac' in w and w['coverage_frac'] is not None:
+            cf = number(w['coverage_frac'])
+            if cf is None or cf < 0.85:
+                return {'comparable': False, 'reason': f'{name}覆盖率不足0.85，未作12h减4h相减'}
+
+    fast_hours = 4.0
+    if 'coverage_hours' in fast and fast['coverage_hours'] is not None:
+        fh = number(fast['coverage_hours'])
+        if fh is None or not (3.0 <= fh <= 4.5):
+            return {'comparable': False, 'reason': 'fast_4h覆盖时长超出[3.0, 4.5]h，未作12h减4h相减'}
+        fast_hours = fh
+
+    slow_hours = 12.0
+    if 'coverage_hours' in slow and slow['coverage_hours'] is not None:
+        sh = number(slow['coverage_hours'])
+        if sh is None or not (10.0 <= sh <= 12.5):
+            return {'comparable': False, 'reason': 'slow_12h覆盖时长超出[10.0, 12.5]h，未作12h减4h相减'}
+        slow_hours = sh
+
+    if slow_hours - fast_hours < 4.0:
+        return {'comparable': False, 'reason': '12h与4h覆盖时长差不足4.0h，未作12h减4h相减'}
+
+    if fast.get('bar_count') is not None and slow.get('bar_count') is not None:
+        fb, sb = number(fast['bar_count']), number(slow['bar_count'])
+        if fb is None or sb is None or not (sb > fb > 0):
+            return {'comparable': False, 'reason': 'bar_count不满足12h大于4h且为正，未作12h减4h相减'}
+
+    fast_cvd, fast_ret = parsed['fast_4h']
+    slow_cvd, slow_ret = parsed['slow_12h']
+    prev_hours = round(slow_hours - fast_hours, 4)
+    prev_cvd = slow_cvd - fast_cvd
+    prev_rate = prev_cvd / prev_hours
+    fast_rate = fast_cvd / fast_hours
+    slow_rate = slow_cvd / slow_hours
+
+    f_open, f_close = number(fast.get('price_open')), number(fast.get('price_close'))
+    s_open, s_close = number(slow.get('price_open')), number(slow.get('price_close'))
+    if (f_open is not None and f_open > 0 and f_close is not None and f_close > 0
+            and s_open is not None and s_open > 0 and s_close is not None and s_close > 0
+            and f_close == s_close):
+        prev_ret = (f_open / s_open - 1.0) * 100.0
+        return_method = 'endpoints'
+    else:
+        denom = 1.0 + fast_ret / 100.0
+        if denom <= 0:
+            return {'comparable': False, 'reason': '近4小时收益分母非正，无法推导前8小时价格变化'}
+        prev_ret = ((1.0 + slow_ret / 100.0) / denom - 1.0) * 100.0
+        return_method = 'compound'
+
+    prev_flow_dir = _spot_dir(prev_cvd, 'buy', 'sell', 'flat')
+    fast_flow_dir = _spot_dir(fast_cvd, 'buy', 'sell', 'flat')
+    prev_price_dir = _spot_dir(prev_ret, 'up', 'down', 'flat')
+    fast_price_dir = _spot_dir(fast_ret, 'up', 'down', 'flat')
+
+    if prev_flow_dir == fast_flow_dir and prev_flow_dir != 'flat':
+        flow_cn = '买' if fast_flow_dir == 'buy' else '卖'
+        if prev_price_dir == fast_price_dir and prev_price_dir != 'flat':
+            price_cn = '上行' if fast_price_dir == 'up' else '下行'
+            summary = f'延续净主动{flow_cn}与{price_cn}（前后两段均价流同向）'
+        else:
+            summary = (f'延续净主动{flow_cn}（价格由{_spot_dir(prev_ret, "涨", "跌", "平")}'
+                       f'转{_spot_dir(fast_ret, "涨", "跌", "平")}）')
+    elif prev_flow_dir != fast_flow_dir:
+        summary = (f'净主动流由{_spot_dir(prev_cvd, "买", "卖", "持平")}'
+                   f'转{_spot_dir(fast_cvd, "买", "卖", "持平")}')
+    else:
+        summary = '两段净主动流均持平'
+
+    return {
+        'comparable': True,
+        'fast': {
+            'hours': fast_hours,
+            'cvd_sum': fast_cvd,
+            'cvd_rate_btc_per_h': fast_rate,
+            'return_pct': fast_ret,
+        },
+        'previous_8h': {
+            'hours': prev_hours,
+            'cvd_sum': prev_cvd,
+            'cvd_rate_btc_per_h': prev_rate,
+            'return_pct': prev_ret,
+            'return_method': return_method,
+        },
+        'slow': {
+            'hours': slow_hours,
+            'cvd_sum': slow_cvd,
+            'cvd_rate_btc_per_h': slow_rate,
+            'return_pct': slow_ret,
+        },
+        'direction_transition': {
+            'flow': f'{prev_flow_dir}_to_{fast_flow_dir}',
+            'price': f'{prev_price_dir}_to_{fast_price_dir}',
+            'flow_continued': prev_flow_dir == fast_flow_dir and prev_flow_dir != 'flat',
+            'flow_switched': prev_flow_dir != fast_flow_dir,
+            'price_continued': prev_price_dir == fast_price_dir and prev_price_dir != 'flat',
+            'price_switched': prev_price_dir != fast_price_dir,
+            'summary': summary,
+        },
+    }
+
+
 def build_input(put_case, call_case, put_card, call_card, *, events=None, index_path=None,
                 ard_history=None, ard_band_snapshot=None, include_ard=True):
     """Return player-facing Markdown. Raises HandNotDealt before rendering on known events."""
@@ -512,19 +666,47 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
     spot = []
     row = entry(put_case, 'L5.volume_price')
     micro = (row.get('values') or {}).get('micro_flow') or {}
+    derived = derive_non_overlapping_spot_windows(row, cutoff=cutoff)
     if usable(row, cutoff, HOUR):
-        for key,label in [('fast_4h','近4小时'),('slow_12h','近12小时')]:
-            f=micro.get(key) or {}; cvd,ret=number(f.get('cvd_sum')),number(f.get('momentum_return_pct'))
-            if f.get('data_ready') is True and f.get('cvd_unit')=='BTC' and cvd is not None and ret is not None:
-                same='同向' if cvd*ret>0 else '不一致' if cvd*ret<0 else '无明确同向'
-                flow = '净主动成交持平' if cvd==0 else f"净主动{'买' if cvd>0 else '卖'}{fmt(abs(cvd))} BTC"
-                spot.append(f"{label}现货成交柱{flow}、价格变化{ret:+.2f}%，价流{same}")
-    spot_text=('；'.join(spot)+"。4h包含于12h，不是两份独立证据；本输入没有可核验的相邻不重叠现货窗口，尚不能确认压力缓和或增强。"
-               if spot else '现货成交限定未提供；继续依据位置与路径判断。')
-    if spot and include_ard:
-        spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
-                      f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
-                      "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+        for key, label in [('fast_4h', '近4小时'), ('slow_12h', '近12小时')]:
+            f = micro.get(key) or {}
+            cvd = number(f.get('cvd_sum'))
+            ret = number(f.get('momentum_return_pct'))
+            if ret is None:
+                ret = number(f.get('price_return_pct'))
+            if f.get('data_ready') is True and f.get('cvd_unit') == 'BTC' and cvd is not None and ret is not None:
+                same = '同向' if cvd * ret > 0 else '不一致' if cvd * ret < 0 else '无明确同向'
+                flow = '净主动成交持平' if cvd == 0 else f"净主动{'买' if cvd > 0 else '卖'}{fmt(abs(cvd))} BTC"
+                rate_text = ''
+                if derived.get('comparable'):
+                    rate_val = derived['fast' if key == 'fast_4h' else 'slow']['cvd_rate_btc_per_h']
+                    rate_text = f"（{rate_val:+.1f} BTC/h）"
+                spot.append(f"{label}现货成交柱{flow}{rate_text}、价格变化{ret:+.2f}%，价流{same}")
+        if derived.get('comparable'):
+            prev = derived['previous_8h']
+            prev_cvd, prev_ret, prev_rate = prev['cvd_sum'], prev['return_pct'], prev['cvd_rate_btc_per_h']
+            prev_same = '同向' if prev_cvd * prev_ret > 0 else '不一致' if prev_cvd * prev_ret < 0 else '无明确同向'
+            prev_flow = '净主动成交持平' if prev_cvd == 0 else f"净主动{'买' if prev_cvd > 0 else '卖'}{fmt(abs(prev_cvd))} BTC"
+            ret_basis = '两端价差' if prev['return_method'] == 'endpoints' else '复合'
+            spot.append(
+                f"前8小时不重叠窗口（相对读牌[-12h, -4h]，约{prev['hours']:.1f}h，同源推导）"
+                f"{prev_flow}（{prev_rate:+.1f} BTC/h）、{ret_basis}价格变化{prev_ret:+.2f}%，价流{prev_same}；"
+                f"与近4小时对照：{derived['direction_transition']['summary']}"
+            )
+        elif spot:
+            spot.append(f"未作12h减4h不重叠相减（{derived['reason']}）")
+    if spot:
+        spot_text = (
+            '；'.join(spot)
+            + '。区分三点：近4小时若存在可核验的不利价流同向压力，须明确作为当前已成立的反证（不因“增强未确认”或近5分钟小幅回落自动抵消）；'
+            + '可比不重叠前8h→近4h反映历史阶段切换或延续；最近更短窗口是否继续增强才需要更高频新窗确认。'
+        )
+        if include_ard:
+            spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
+                          f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
+                          "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+    else:
+        spot_text = '现货成交限定未提供；继续依据位置与路径判断。'
     # The without-ARD mode is a replay of the frozen first-order baseline.
     decision_policy = (
         '至少一侧责任路径条件可接受时，必须Accept并选侧。只有Put和Call分别有足以排除其承担条件的具体不利事实，才Reject。'
@@ -553,7 +735,7 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 现象≠结论。两侧须按同一标准审完，展示顺序不代表优先级，不能在先读一侧勉强可接受后停止。{decision_policy}
 双方都可建立时必须择优：围绕本次交割前的责任路径，比较入区前结构、测试与回收、当前所在侧，以及在剩余期限和本期尺度下哪侧更少依赖尚未出现的阻断或回收。指出具体相对优势及最强反证；不能用“这侧也能接受”代替比较，也不能给两侧设置不同的宽严标准。距离、OI、穿越次数不单独决定选侧；确无可证实优势时如实说明，仍作有条件的Accept选择，不编造优势或因平局弃权。接受只表示路径条件可接受，不表示已授权交易。{protection_review}
-关键反证须正面审查：价格净路径向该侧短腿靠近、余量收缩，且同窗现货主动流同向时，检查较近窗口是否有可验证缓和、责任是否真正回收。Put的下行/净卖与Call的上行/净买分别是不利组合，反向流不能照搬；若另有已观测的归一化距离紧缩、重复进入或仍留区内，进一步判断是否与本侧承担条件不相容。关键反证候选不自动排除，但充分排除后不能靠历史未进入、另一侧不完美或维持Accept比例强行承保。一侧被排除而另一侧可接受就选另一侧，两侧被排除才Reject；未进入也不等于当前路径有利。
+关键反证须正面审查：价格净路径向该侧短腿靠近、余量收缩，且同窗现货主动流同向时，检查较近窗口是否有可验证缓和、责任是否真正回收。Put的下行/净卖与Call的上行/净买分别是不利组合，反向流不能照搬；若另有已观测的归一化距离紧缩、重复进入或仍留区内，进一步判断是否与本侧承担条件不相容。反复穿过的Gamma位或同位属性，不得仅因地理上介于现价与短腿之间就被赋予“可靠阻挡力”；若因距离或余量更大而选择承受不利现货流的一侧，必须正面解释为何该责任仍可承担，不能仅因“增强未确认”淡化既成反证。关键反证候选不自动排除，但充分排除后不能靠历史未进入、另一侧不完美或维持Accept比例强行承保。一侧被排除而另一侧可接受就选另一侧，两侧被排除才Reject；未进入也不等于当前路径有利。
 
 ## 本局牌面
 
@@ -565,15 +747,15 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 4. **Call责任路径，入区前由近到远。** {sections[1]}
 
-5. **现货成交只作限定。** {spot_text}
+5. **现货量价与主动流。** {spot_text}
 
 路径窗为读取前24小时，指数按一分钟采样；时刻是采样确认，不是精确触价，缺分钟不补齐。短腿深度绑定具体入区片段，站点的首小时偏离不代替入区深度；未进入侧的最近接近与读取距离仅作端点比较。每站成交注明自身窗口，仅普通单腿，跨窗并读不证明穿过瞬间因果。
 
 ## 读完后另写
 
 先用两侧各一小段给出可核查的责任路径判断，包含到本次交割前对该责任有利与不利的具体路径；再给Accept、Reject或Unknown及选侧，说明相对另一侧胜在哪里、最强反证是什么，最后冻结承担条件与有效破坏标准。理由须能沿“责任边界→入区前位置→穿越与当前所在侧→承担条件”追溯；无中间站直接审短腿。不要只复述事实、用“保持责任外”循环解释选择，或用过去24小时替未来剩余寿命作预测；不能为了支持预选侧才倒定承担条件。条件与破坏标准是独立评估，不回填现象。
-零站与历史未进入不构成已证实的结构缓冲。若价格沿通向该侧责任的方向接近已列Pin，且同窗现货主动净流与该接近同向，把剩余路径余量收缩列为承担条件的复核提醒；不把Pin视为吸附保证，也不新增独立Accept/Reject或退出触发。期权Put净主动卖不等于标的下行净流，4h/12h净流不能确认最近5分钟同向运动。
-压力变化只用同源、同口径、可核验的相邻不重叠窗口比较；不等长窗口不能直接比净流绝对额。资料不足就写“目前没有确认压力已经缓和”，不改写成“已证明增强”。小幅反弹、Pin或同位多个属性不能自动抵消较长窗口反证。后续新低只能进后续截面，不能倒灌旧牌面，也不自动成为承保机会。
+零站与历史未进入不构成已证实的结构缓冲；反复穿过的Gamma位或同位属性，不得仅因地理上介于现价与短腿之间就被赋予“可靠阻挡力”。若价格沿通向该侧责任的方向接近已列Pin，且同窗现货主动净流与该接近同向，把剩余路径余量收缩列为承担条件的复核提醒；不把Pin视为吸附保证，也不新增独立Accept/Reject或退出触发；若入场后出现新增重大反证或安全余量实质消耗，将由事中事件门独立审查原承担条件是否仍成立（并不必等到机械越界才退出）。期权Put净主动卖不等于标的下行净流，4h/12h净流不能确认最近5分钟同向运动。
+压力变化只用同源、同口径、可核验的相邻不重叠窗口比较；不等长窗口不能直接比净流绝对额。若存在可核验的近4小时不利价流同向压力，须作为当前已成立反证正面处理；选择承受不利现货流的一侧时，必须正面解释为何该责任仍可承担，不以“增强未确认”或近5分钟小幅回落淡化。资料不足就写“目前没有确认压力已经缓和”，不改写成“已证明增强”。小幅反弹、Pin或同位多个属性不能自动抵消较长窗口反证。后续新低只能进后续截面，不能倒灌旧牌面，也不自动成为承保机会。
 {rejection_output}；Unknown仅写真正阻塞项。不用后来的盈亏改写牌面。
 
 ## 若已经持有

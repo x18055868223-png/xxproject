@@ -256,13 +256,25 @@ def test_real_ard_replays_identical_A_without_hindsight(tmp_path):
     if not script.exists():pytest.skip('local frozen-example reproduction is not distributed with code')
     spec=importlib.util.spec_from_file_location('ard_example',script)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-    r=module.generate(tmp_path)
+    history_path=module.HERE.parent/'player_ard/generated/pin_history.jsonl'
+    history=[json.loads(line) for line in history_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    cases=[module.player.read_json(next((module.SOURCE/'cases/2026-11-14').glob(f'*_{side}_*.json.gz'))) for side in ('put','call')]
+    cards=[json.loads(line) for line in (module.SOURCE/'levels/2026-11-15.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
+    cards=[next(c for c in cards if c['side']==side and c['round']=='r2') for side in ('put','call')]
+    path=module.player.read_json(module.SOURCE/'paths/2026-11-15.json.gz')
+    r=ard.analyze(history,path,expiry_ms=cards[0]['expiry_ms'],cutoff_ms=min(c['read_at_ms'] for c in cards))
+    prev_facts=json.loads((module.HERE.parent/'player_ard_responsibility/generated/ard_facts.json').read_text(encoding='utf-8'))
+    assert json.loads(json.dumps(r))==prev_facts
     assert r['valid_samples']==r['expected_samples']==240
     assert r['observations'][0]['pin']==68000 and r['observations'][-1]['pin']==67000
     assert r['changes'][-1]['observed_at_ms']==1794652225446
     assert r['pin_displacement_usd']==-1000 and r['price_displacement_usd']==pytest.approx(-568.255)
     assert r['band'] is None and r['occupancy_pct'] is None and not r['method_comparable']
-    body=(tmp_path/'ai_input.md').read_text(encoding='utf-8')
+    first_order=module.player.build_input(*cases,*cards,index_path=path,include_ard=False)
+    orig_first=(module.HERE.parent/'player_first_order_guard/ai_input.md').read_text(encoding='utf-8')
+    assert first_order.split('## 本局牌面',1)[1].split('5. **',1)[0]==orig_first.split('## 本局牌面',1)[1].split('5. **',1)[0]
+    body=module.player.build_input(*cases,*cards,index_path=path,ard_history=history)
+    (tmp_path/'ai_input.md').write_text(body,encoding='utf-8')
     assert '61,300' not in body
     assert 'Pin输出位置由68,000变为67,000' in body
     assert '不能确认是同口径结构迁移' in body

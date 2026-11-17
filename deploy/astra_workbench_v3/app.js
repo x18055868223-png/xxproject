@@ -33,7 +33,7 @@ const state = {
   dp: { session: null, busy: null, error: null, confirm: null },
   // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
   iq: { cache: {}, last: {}, mode: "player", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
-  player: { cards: [], ref: null, detail: null, originals: null, expanded: new Set(), seq: 0, version: 0 },
+  player: { cards: [], ref: null, detail: null, originals: null, modelInputs: new Map(), modelInputsPending: new Map(), expanded: new Set(), seq: 0, version: 0 },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
@@ -124,6 +124,7 @@ async function loadSession() {
     if (state.session.authenticated) loadPlayerIndex();
     else {
       const P = state.player;
+      P.modelInputs?.clear(); P.modelInputsPending?.clear();
       Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null,
         error: null, indexError: null, loading: false, version: P.version + 1, seq: P.seq + 1 });
       renderAudit();
@@ -904,6 +905,7 @@ function renderAuditMain() {
     renderPlayerAudit(clear(audit), P, { available: state.view ? available : true,
       authenticated: state.session.authenticated, onSelect: (ref) => showPlayerHand(ref),
       onLogin: () => openLogin(""), onTracker: openTracker, onOriginals: showPlayerOriginals,
+      onModelInput: fetchPlayerModelInput, modelInputUrl: api.playerModelInputUrl,
       onRefresh: () => loadPlayerIndex(true) });
   }
   return;
@@ -944,7 +946,8 @@ async function showPlayerHand(ref, navigate = false) {
   }
   const cached = navigate && P.ref === ref && P.detail && !P.error;
   if (P.ref !== ref) {
-    P.ref = ref; P.detail = null; P.originals = null; P.originalsPending = null; P.expanded.clear();
+    P.ref = ref; P.detail = null; P.originals = null; P.originalsPending = null;
+    P.modelInputs.clear(); P.modelInputsPending.clear(); P.expanded.clear();
   }
   P.error = null; P.version++; renderAudit();
   if (navigate) $("audit-h").scrollIntoView({ block: "start" });
@@ -956,6 +959,7 @@ async function showPlayerHand(ref, navigate = false) {
     if (seq === P.seq && state.session.authenticated) {
       if (P.detail?.decision?.raw_sha256 !== row.decision?.raw_sha256 || P.detail?.state !== row.state) {
         P.originals = null; P.originalsPending = null;
+        P.modelInputs.clear(); P.modelInputsPending.clear();
       }
       P.detail = row;
     }
@@ -988,6 +992,26 @@ async function showPlayerOriginals(box) {
     if (P.originalsPending === pending) P.originalsPending = null;
     delete box.dataset.loading;
   }
+}
+
+/** Read-only fetch & per-hand cache for frozen model input payloads; never triggers any LLM call. */
+function fetchPlayerModelInput(dossier, hand, reviewId = null) {
+  const P = state.player;
+  const key = `${dossier}/${hand}${reviewId ? `/${reviewId}` : ""}`;
+  if (P.modelInputs.has(key)) return P.modelInputs.get(key);
+  if (P.modelInputsPending.has(key)) return P.modelInputsPending.get(key);
+  const targetRef = `${dossier}/${hand}`;
+  const pending = api.playerModelInput(dossier, hand, reviewId).then((res) => {
+    if (P.ref === targetRef && state.session.authenticated) P.modelInputs.set(key, res);
+    return res;
+  }).catch((err) => {
+    authFailed(err);
+    throw err;
+  }).finally(() => {
+    if (P.modelInputsPending.get(key) === pending) P.modelInputsPending.delete(key);
+  });
+  P.modelInputsPending.set(key, pending);
+  return pending;
 }
 
 async function openTracker(id) {
@@ -1362,6 +1386,7 @@ function authFailed(err) {
   if (err && err.status === 401) {
     state.session = { authenticated: false };
     const P = state.player;
+    P.modelInputs?.clear(); P.modelInputsPending?.clear();
     Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null, loading: false,
       seq: P.seq + 1, version: P.version + 1 });
     renderSession(); renderAudit();
