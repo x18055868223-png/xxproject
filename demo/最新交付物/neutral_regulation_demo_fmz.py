@@ -9428,7 +9428,10 @@ class GexAnchorState:
 
         if self.effective is None:
             if guarded:
-                self.last_acceptance_event = "SPOT_GUARD_BLOCKED_COLD_START"
+                self._open_or_extend_pending(
+                    raw, now, "SPOT_GUARD_COLD_START_PENDING", guarded=True)
+                if self.effective is not None:
+                    return self.snapshot()
                 return self.snapshot(reasons=["GEX_SPOT_GUARD_PENDING"])
             self._accept_effective(raw, now, "INITIAL")
             return self.snapshot()
@@ -9549,6 +9552,11 @@ class GexAnchorState:
         else:
             drift = abs(raw_flip - self.pending["flip_point"]) / band_est
             if drift <= candidate_tol:
+                prev_ts = safe_int(self.pending["last_raw"].get("source_ts_ms"))
+                cur_ts = safe_int(raw.get("source_ts_ms"))
+                if prev_ts is not None and cur_ts is not None and cur_ts <= prev_ts:
+                    self.last_acceptance_event = event
+                    return
                 self.pending["count"] += 1
                 self.pending["last_raw"] = raw
                 self.pending["guarded"] = (
