@@ -1258,40 +1258,10 @@ def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> 
     return None
 
 
-def _flow_asof_ms(facts: Mapping[str, Any], vp: Mapping[str, Any], flow: Mapping[str, Any]) -> int | None:
-    """Resolve the newest retained timestamp attached to volume_price / micro_flow."""
-    for leg_name in ("combined", "fast_4h", "slow_12h"):
-        leg_map = _mapping(flow.get(leg_name))
-        for key in (
-            "end_ts_ms",
-            "complete_ts_ms",
-            "window_end_ms",
-            "asof_ms",
-            "window_end_time",
-            "source_ts_ms",
-            "last_closed_bar_time",
-            "ts_ms",
-        ):
-            if (ts := _int(leg_map.get(key))) is not None:
-                return ts
-    for candidate in (
-        vp.get("asof_ms"),
-        vp.get("end_ts_ms"),
-        vp.get("ts_ms"),
-        vp.get("observed_at_ms"),
-        vp.get("source_ts_ms"),
-        vp.get("window_end_time"),
-        vp.get("kline_close_time"),
-        vp.get("kline_open_time"),
-    ):
-        if (ts := _int(candidate)) is not None:
-            return ts
-    for candidate in (
-        _dig(vp, ("tmvf_24h", "core", "kline_open_time")),
-        _dig(vp, ("funding", "window_end_time")),
-        _dig(facts, ("source_trace", "decision_ts_ms")),
-    ):
-        if (ts := _int(candidate)) is not None and (flow or vp):
+def _flow_asof_ms(fast: Mapping[str, Any]) -> int | None:
+    """Resolve the closing clock of the same fast window that provided CVD."""
+    for key in ("end_ts_ms", "complete_ts_ms", "window_end_ms", "window_end_time", "last_closed_bar_time"):
+        if (ts := _int(fast.get(key))) is not None:
             return ts
     return None
 
@@ -1397,7 +1367,12 @@ def _producer_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "flow_cvd_12h": _number(leg("slow_12h", "cvd_sum")),
         "flow_momentum_4h_pct": _number(leg("fast_4h", "momentum_return_pct")),
         "flow_momentum_12h_pct": _number(leg("slow_12h", "momentum_return_pct")),
-        "flow_asof_ms": _flow_asof_ms(facts, vp, flow),
+        "flow_asof_ms": _flow_asof_ms(_mapping(flow.get("fast_4h"))),
+        "flow_window_basis": ({
+            "source": leg("fast_4h", "source"), "symbol": leg("fast_4h", "symbol"),
+            "start_ms": _int(leg("fast_4h", "first_ts_ms")),
+        } if (leg("fast_4h", "data_ready") is True and leg("fast_4h", "cvd_unit") == "BTC"
+              and not any(leg("fast_4h", flag) for flag in ("gap", "truncated", "cvd_degraded"))) else None),
         "tmv_state": vp.get("tmv_state"),
         "macro_regime": _dig(facts, ("macro_pressure", "macro_regime")),
         "mdie_direction": _dig(facts, ("m_die", "direction")),

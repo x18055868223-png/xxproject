@@ -185,13 +185,19 @@ def test_real_gate_keeps_accept_without_substituting_contract(tmp_path, gate, re
     with serving(wb) as base:
         service = post(base, wb)
         first = tracking.link(d, hand, service, RULE)
-        assert first['state'] == 'LOCK_BLOCKED' and first['reason'] == reason
+        assert first['reason'] == reason
+        assert first['state'] == ('LOCK_BLOCKED' if has_manual else 'LINK_UNVERIFIED')
         now[0] += M
         wb.refresh(now_ms=now[0], record_daily=False)
-        assert tracking.link(d, hand, lambda *_: pytest.fail('retry would resample'), RULE) == first
-        assert service('lock', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))['state'] == 'LINK_UNVERIFIED'
+        if has_manual:
+            assert tracking.link(d, hand, lambda *_: pytest.fail('permanent block should not retry'), RULE) == first
+            assert service('lock', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))['state'] == 'LINK_UNVERIFIED'
+        else:
+            receipt = tracking._link_with_fresh_quote(d, hand, service)
+            assert receipt['state'] == 'SHADOW_LOCK_CREATED'
+            assert tracking.contract_fields(wb.locked_candidates.list()[0]['contract']) == tracking.contract_fields(tracking.accepted(hand)['contract'])
         assert dossier.read(hand / 'decision.json')['judgment']['action'] == 'Accept'
-        assert [r['lock_actor'] for r in wb.locked_candidates.list()] == (['USER'] if has_manual else [])
+        assert [r['lock_actor'] for r in wb.locked_candidates.list()] == (['USER'] if has_manual else ['AI_SHADOW'])
 
 
 def test_half_commit_is_recovered_after_restart_without_a_fresh_quote(tmp_path):
@@ -232,12 +238,19 @@ def test_manual_stop_no_revoke_and_archive_survives_retention(tmp_path, monkeypa
         wb.stop_locked_candidate(ep, authorization='Bearer secret')
         assert tracking.sync(d, hand, service)['state'] == 'stopped'
         assert not wb.locked_candidates.compact(now[0] + 1, retention={'drop_after_ms': 0})['dropped_episodes']
+        wb.delivery_price_fetch = lambda _: None
+        now[0] = expiry + 49 * 3_600_000
+        wb._settle_expired_locks(now[0])
+        assert tracking.sync(d, hand, service)['settlement'] == 'delivery_price_unavailable'
+        unavailable = tracking.load(hand / 'tracking' / 'terminal.json')
         price = 104_000
-        now[0] = expiry + 3 * M
+        now[0] += 3_600_000
         wb.delivery_price_fetch = lambda _: dict(delivery_price_usd=price, source='Deribit fixture')
         wb._settle_expired_locks(now[0])
         assert tracking.sync(d, hand, service)['settlement'] == 'settled'
         seal = tracking.load(hand / 'tracking' / 'terminal.json')
+        assert seal['export_id'] != unavailable['export_id']
+        assert (hand / 'tracking' / 'exports' / unavailable['export_id'] / 'trajectory.json').is_file()
         trajectory = tracking.load(hand / 'tracking' / 'exports' / seal['export_id'] / 'trajectory.json')
         assert len(trajectory['points']) == 2 and trajectory['gaps'][0]['reason'] == 'fixture_feed_gap'
         monkeypatch.setattr(dossier, 'public', lambda *_args, **_kw:
@@ -376,6 +389,9 @@ def test_sync_check_due_backfills_grid_checks_idempotently(tmp_path, monkeypatch
         wb.refresh(now_ms=now[0], record_daily=False)
         points = [[t, 103_500 if t >= first_tick + 5 * M else 100_000]
                   for t in range((entry_ms // M + 1) * M, now[0] + 1, M)]
+        monkeypatch.setattr(archive.Deribit, 'index_path', lambda _self: [r for r in points if r[0] != first_tick])
+        missing = tracking.sync(d, hand, service, check_due=True)
+        assert [c['kind'] for c in missing['checks']] == ['CONDITION_UNKNOWN', 'CONDITION_UNKNOWN']
         monkeypatch.setattr(archive.Deribit, 'index_path', lambda _self: points)
 
         synced = tracking.sync(d, hand, service, check_due=True)
@@ -387,7 +403,7 @@ def test_sync_check_due_backfills_grid_checks_idempotently(tmp_path, monkeypatch
         wb.refresh(now_ms=now[0], record_daily=False)
         resynced = tracking.sync(d, hand, service, check_due=True)
         assert resynced['checks'] == []
-        assert len(list((ep_dir / 'events').glob('check_*.json'))) == 2
+        assert len(list((ep_dir / 'events').glob('check_*.json'))) == 4
 
 
 def test_settle_merges_tracking_t0_net_credit_and_shadow_net(tmp_path, monkeypatch):
@@ -668,6 +684,10 @@ def test_reviewer_guards_unauth_redaction_deduped_checks_and_revoke_isolation(tm
     assert summary['not_triggered'] == 2
     assert summary['mechanical_condition_state'] == 'INTACT'
     assert summary['latest_at_ms'] == SLOT + 10 * M
+    clock = {'first_at_ms': SLOT + 5 * M, 'interval_ms': 5 * M}
+    assert tracking._condition_check_summary([], asof_ms=SLOT, check_clock=clock)['mechanical_condition_state'] == 'NOT_DUE'
+    assert tracking._condition_check_summary([], asof_ms=SLOT + 5 * M, check_clock=clock)['mechanical_condition_state'] == 'DATA_GAP'
+    assert tracking._condition_check_summary(checks, asof_ms=SLOT + 15 * M, check_clock=clock)['mechanical_condition_state'] == 'DATA_GAP'
 
     # 2) Unauthenticated locked-candidates detail redacts private AI public_reply & hold_reviews
     wb, d, hand, now, _ = sample(tmp_path)
@@ -689,6 +709,7 @@ def test_reviewer_guards_unauth_redaction_deduped_checks_and_revoke_isolation(tm
         def boom_revoke(_d, _ep, _fr, q_pt, _at, **_kw):
             seen_revoke_pts.append(q_pt)
             raise RuntimeError('quote_io_boom')
+        write_revoke = tracking._record_revoke_shadow_action
         monkeypatch.setattr(tracking, '_record_revoke_shadow_action', boom_revoke)
         res = tracking.evaluate_hold_management(
             d, hand, exported, service=lambda action, _b: {'state': 'QUOTE_UNAVAILABLE', 'latest_point': None},
@@ -702,9 +723,16 @@ def test_reviewer_guards_unauth_redaction_deduped_checks_and_revoke_isolation(tm
         assert res['action'] == 'REVIEWED' and res['verdict'] == 'REVOKE'
         assert 'shadow_action_error' in res
         # QUOTE_UNAVAILABLE preserved exported['latest_point'] fallback instead of overwriting with None
-        assert seen_revoke_pts == [exported['latest_point']]
+        assert seen_revoke_pts == [tracking.locked_compare.short_buyback_quote(exported['latest_point'])]
         st_saved = dossier.read(ep_dir / 'trigger_state.json')
         assert st_saved['revoked'] is True and st_saved['inflight'] is False
+
+        monkeypatch.setattr(tracking, '_record_revoke_shadow_action', write_revoke)
+        for _ in range(2):
+            tracking.sync(d, hand, svc, run_review=False)
+        actions = [tracking.load(p) for p in (ep_dir / 'events').glob('*.json')
+                   if tracking.load(p)['kind'] in {'SIMULATED_ORDER', 'SHADOW_ACTION'}]
+        assert len(actions) == 1 and actions[0]['body']['review_id'] == res['review_id']
 
         unauth_raw = get(base, f'/api/workbench/locked-candidates/{lce_id}')
         latest_unauth = unauth_raw['ai_dossier_management']['latest_review']
@@ -732,7 +760,7 @@ def test_refresh_quote_failure_still_blocks_lock_without_relaxing_age(tmp_path):
     wb.quote_capture = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('exchange_down'))
     with serving(wb) as base:
         receipt = tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)
-    assert receipt['state'] == 'LOCK_BLOCKED'
+    assert receipt['state'] == 'LINK_UNVERIFIED'
     assert receipt['reason'] == 'tracking_quote_stale_or_unsynced'
 
 
@@ -807,6 +835,31 @@ def _raw_get(base, route, token=None):
     headers = {'Authorization': f'Bearer {token}'} if token else {}
     with urlopen(Request(base + route, headers=headers), timeout=8) as resp:
         return resp.status, dict(resp.headers.items()), resp.read()
+
+
+def test_initial_request_is_already_frozen_and_parse_failure_is_recoverable(tmp_path, monkeypatch):
+    clk = Clock(SLOT + M)
+    d = dossier.Dossiers(tmp_path / 'runtime', clock=clk)
+    monkeypatch.setattr(dossier, 'collect', lambda *_a, **_kw: fixture_source(clk))
+    raw = '  模型实际回复，缺决策头。\n'
+    usage = {'prompt_tokens': 20, 'completion_tokens': 11, 'total_tokens': 31, 'prompt_cache_hit_tokens': 8}
+
+    def transport(*a, **kw):
+        call = next(d.root.glob('dossiers/*/hands/*/api_calls/*/request.json'))
+        assert dossier.read(call)['stage'] == 'initial'
+        nested = tracking.auto_deal(d, plan(), tmp_path, lambda *_: {})
+        assert nested == [{'status': 'AUTO_IN_FLIGHT'}]
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': raw}}], 'usage': usage}
+
+    args = (d, plan(), tmp_path, lambda *_: {})
+    config = {'api_key': 'synthetic', 'model': 'fixture-model', 'retries': 0, 'transport': transport}
+    result = tracking.auto_deal(*args, llm_config=config)
+    assert result[0]['status'] == 'PARSE_FAILED'
+    hand = next(d.root.glob('dossiers/*/hands/hand_*'))
+    assert tracking.audit_originals(hand)['response'] == raw
+    attempt = next(hand.glob('responses/*/attempt.json'))
+    assert dossier.read(attempt)['configuration']['usage']['total_tokens'] == 31
+    assert tracking.export_model_input(hand)['request']['fidelity'] == 'EXACT'
 
 
 def test_auto_deal_and_hold_review_persist_exact_request_json_and_export(tmp_path, monkeypatch):

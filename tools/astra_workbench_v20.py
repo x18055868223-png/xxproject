@@ -3835,7 +3835,7 @@ class AstraWorkbench:
             settled = self.locked_settlements()
             pending = [e for e in self.locked_candidates.list()
                        if (e.get("status") == "expired" or (e.get("status") == "stopped" and e.get("ai_shadow")))
-                       and e["episode_id"] not in settled
+                       and settled.get(e["episode_id"], {}).get("status") != "settled"
                        and isinstance((e.get("contract") or {}).get("expiry_ms"), int)
                        and now_ms >= e["contract"]["expiry_ms"] + 2 * 60_000]
         except Exception:
@@ -3843,7 +3843,10 @@ class AstraWorkbench:
         changed = False
         for episode in pending:
             episode_id = episode["episode_id"]
-            if now_ms - self._settlement_attempts.get(episode_id, 0) < self.SETTLEMENT_RETRY_MS:
+            previous = settled.get(episode_id)
+            retry_ms = 60 * 60_000 if previous else self.SETTLEMENT_RETRY_MS
+            last_attempt = max(self._settlement_attempts.get(episode_id, 0), (previous or {}).get("settled_at_ms", 0))
+            if now_ms - last_attempt < retry_ms:
                 continue
             self._settlement_attempts[episode_id] = now_ms
             contract = episode["contract"]
@@ -3854,7 +3857,7 @@ class AstraWorkbench:
             except Exception as exc:
                 delivery, row["fetch_error"] = None, type(exc).__name__
             if delivery is None:
-                if now_ms - contract["expiry_ms"] < self.SETTLEMENT_GIVE_UP_MS:
+                if previous or now_ms - contract["expiry_ms"] < self.SETTLEMENT_GIVE_UP_MS:
                     continue  # not published yet; retry later
                 row.update(status="delivery_price_unavailable")
             else:
@@ -3871,6 +3874,8 @@ class AstraWorkbench:
                            settlement_result_btc=None if entry is None else entry - payout,
                            settlement_result_usd=None if entry is None else (entry - payout) * delivery["delivery_price_usd"],
                            meaning_cn="按交易所交割价计算的到期静态结果：锁定时扣入场费后信用减去到期赔付（币本位）；交割费按 0；不是实际成交记录。")
+                if previous:
+                    row["prior_unavailable"] = previous
             settled[episode_id] = row
             changed = True
             if self.chain_audit is not None:
@@ -4253,13 +4258,13 @@ class AstraWorkbench:
         try:
             result = self.locked_candidates.lookup_shadow_request(key, origin)
             if result is None and action == "lock":
+                if player_tracking._link_blocked(hand / "tracking"):
+                    return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
                 now = self.clock_ms()
                 if not self.config.shadow_experiment:
                     raise player_tracking.Blocked("shadow_experiment_disabled")
                 if not request["requested_at_ms"] <= now < proof["deadline_ms"]:
                     raise player_tracking.Blocked("shadow_handoff_expired")
-                if not self.locked_candidates.claim_shadow_request(key):
-                    return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
                 with self._view_lock:
                     candidates = (self._current_view or {}).get("candidates") or []
                     choices = [c["snapshot"] for c in candidates if c.get("snapshot")
@@ -4381,9 +4386,12 @@ class AstraWorkbench:
             except locked_store.LockedCandidateError as exc:
                 # the lock-time composition makes every attempt a new point: a retry of the same key
                 # that raced the first one gets the first result, not request_key_reused
-                existing = self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
-                    snapshot_id=snapshot_id, new_reference=new_reference,
-                    source_episode_id=source_episode_id) if not _shadow and exc.code == "request_key_reused" else None
+                if exc.code != "request_key_reused":
+                    raise
+                existing = (self.locked_candidates.lookup_shadow_request(request_key, origin) if _shadow else
+                            self.locked_candidates.lookup_request(request_key, candidate_id=candidate_id,
+                                snapshot_id=snapshot_id, new_reference=new_reference,
+                                source_episode_id=source_episode_id))
                 if existing is None:
                     raise
                 result = existing

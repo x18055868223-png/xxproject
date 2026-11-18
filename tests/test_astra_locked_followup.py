@@ -400,6 +400,13 @@ def test_settlement_waits_for_publication_then_gives_up(tmp_path):
     assert len(calls) == 2 and episode["episode_id"] not in wb.locked_settlements()
     wb._settle_expired_locks(EXPIRY + 49 * 3_600_000)
     assert wb.locked_settlements()[episode["episode_id"]]["status"] == "delivery_price_unavailable"
+    retry_at = EXPIRY + 50 * 3_600_000
+    wb.delivery_price_fetch = lambda expiry_ms: {"date": "d", "delivery_price_usd": 100_000.0, "source": "test"}
+    wb._settle_expired_locks(retry_at)
+    recovered = wb.locked_settlements()[episode["episode_id"]]
+    assert recovered["status"] == "settled"
+    assert recovered["prior_unavailable"]["status"] == "delivery_price_unavailable"
+    assert recovered["settled_at_ms"] == retry_at
 
 
 def test_tracking_gap_keeps_why_a_whole_capture_failed(tmp_path):

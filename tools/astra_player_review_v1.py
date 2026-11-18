@@ -208,6 +208,7 @@ def call_chat_llm(
     budget: Any = None,
     budget_role: str = "astra_player",
     packet_hash: str | None = None,
+    on_response: Any = None,
 ) -> dict[str, Any]:
     """Call OpenAI-compatible chat completions with endpoint normalization and transient retries."""
     if not api_key and transport is None:
@@ -260,9 +261,7 @@ def call_chat_llm(
     if not isinstance(response, Mapping):
         raise ValueError("LLM response must be a JSON object")
     choices = response.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("LLM response missing choices")
-    choice = choices[0] if isinstance(choices[0], Mapping) else {}
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
     finish_reason = choice.get("finish_reason")
     message = choice.get("message") if isinstance(choice.get("message"), Mapping) else {}
     raw_content = message.get("content")
@@ -271,17 +270,23 @@ def call_chat_llm(
             str(part.get("text") or "")
             for part in raw_content
             if isinstance(part, Mapping)
-        ).strip()
+        )
     else:
-        text = str(raw_content or "").strip()
-    if not text:
+        text = str(raw_content or "")
+    http_status = response.get("_http_status") or response.get("http_status") or 200
+    if on_response is not None:
+        on_response(dict(text=text, usage=signal_llm_review._response_usage(dict(response)),
+                         model=str(response.get("model") or model), http_status=int(http_status),
+                         finish_reason=finish_reason, endpoint=url, reasoning_effort=reasoning_effort))
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("LLM response missing choices")
+    if not text.strip():
         if finish_reason == "length":
             raise ValueError("LLM response content is empty (finish_reason=length)")
         raise ValueError("LLM response content is empty")
-    http_status = response.get("_http_status") or response.get("http_status") or 200
     reasoning_text = message.get("reasoning_content")
     return {
-        "text": text,
+        "text": text.strip(),
         "reasoning_content": str(reasoning_text) if reasoning_text else None,
         "usage": signal_llm_review._response_usage(dict(response)),
         "finish_reason": finish_reason,
@@ -612,6 +617,7 @@ def decide_initial_hand(
     budget: Any = None,
     budget_role: str = "astra_player_initial",
     packet_hash: str | None = None,
+    on_response: Any = None,
 ) -> dict[str, Any]:
     """Send frozen input.md to the LLM, parse public Chinese prose + verbatim annotation + condition_plan."""
     req_payload = build_initial_request_payload(
@@ -638,7 +644,12 @@ def decide_initial_hand(
         budget=budget,
         budget_role=budget_role,
         packet_hash=packet_hash,
+        on_response=on_response,
     )
+    return parse_initial_reply(llm_result, req_payload)
+
+
+def parse_initial_reply(llm_result: Mapping[str, Any], req_payload: dict[str, Any]) -> dict[str, Any]:
     req_payload["endpoint"] = llm_result.get("endpoint") or req_payload.get("endpoint")
     public_text, payload = _split_tagged_json(llm_result["text"], "ANNOTATION_JSON")
     if not public_text.strip():
@@ -687,10 +698,11 @@ def decide_initial_hand(
         "annotation": annotation,
         "condition_plan": parsed_plan,
         "decision": decision,
-        "usage": llm_result["usage"],
-        "model": llm_result["model"],
+        "usage": llm_result.get("usage"),
+        "model": llm_result.get("model") or req_payload["model"],
+        "http_status": llm_result.get("http_status"),
         "reasoning_effort": llm_result.get("reasoning_effort"),
-        "finish_reason": llm_result["finish_reason"],
+        "finish_reason": llm_result.get("finish_reason"),
         "request_payload": req_payload,
     }
 
@@ -803,7 +815,7 @@ def _extract_last_review_metrics(last_review: Mapping[str, Any] | None) -> dict[
             if flow_direction == "":
                 flow_direction = str(facts.get("flow_direction") or "").strip().lower()
             if flow_asof_ms is None:
-                flow_asof_ms = _int(facts.get("flow_asof_ms")) or _int(trig.get("observed_at_ms"))
+                flow_asof_ms = _int(facts.get("flow_asof_ms"))
             if flow_cvd_4h is None:
                 flow_cvd_4h = _num(facts.get("flow_cvd_4h"))
             if flow_mom_4h is None:
@@ -822,6 +834,8 @@ def _extract_last_review_metrics(last_review: Mapping[str, Any] | None) -> dict[
         "short_distance_pct": short_distance_pct,
         "expected_move_usd": expected_move_usd,
         "flow_asof_ms": flow_asof_ms,
+        "flow_window_basis": next((src['flow_window_basis'] for src in sources
+                                   if isinstance(src.get('flow_window_basis'), Mapping)), None),
         "flow_direction": flow_direction,
         "flow_fast_4h": flow_fast_4h,
         "flow_slow_12h": flow_slow_12h,
@@ -858,15 +872,18 @@ def _detect_category_a(
             key=lambda ev: (_int(ev.get("observed_at_ms")) or _int(ev.get("recorded_at_ms")) or 0, str(ev.get("event_id") or "")),
         )
         obs_ms = _int(latest_trig.get("observed_at_ms")) or _int(latest_trig.get("recorded_at_ms")) or entry_at_ms
+        result = (latest_trig.get("body") or {}).get("result") if isinstance(latest_trig.get("body"), Mapping) else None
+        new_entry_ms = _int(result.get("latest_new_entry_ms")) if isinstance(result, Mapping) else None
         return {
             "category": "A",
             "code": "CONDITION_TRIGGERED",
             "signature": "CONDITION_TRIGGERED",
             "severity": 3,
             "observed_at_ms": obs_ms,
+            "evidence_at_ms": new_entry_ms if new_entry_ms and entry_at_ms < new_entry_ms <= obs_ms else None,
             "facts": {
                 "event_id": latest_trig.get("event_id"),
-                "result": (latest_trig.get("body") or {}).get("result") if isinstance(latest_trig.get("body"), Mapping) else None,
+                "result": result,
             },
             "summary_cn": f"程序冻结边界条件已触发（CONDITION_TRIGGERED @ {_utc(obs_ms)}）。",
         }
@@ -884,15 +901,26 @@ def _detect_category_a(
     if latest_ts - prev_ts >= FRESH_SAMPLE_GAP_MS:
         return None
     d0 = _num(t0.get("short_distance_pct"))
-    was_outside = (d0 is None or d0 > 0) or any((_num(m.get("short_distance_pct")) or 0) > 0 for ts, m in all_rows if ts < latest_ts)
+    was_outside = (d0 is not None and d0 > 0) or any(
+        (_num(m.get("short_distance_pct")) or 0) > 0 for ts, m in all_rows if entry_at_ms < ts < latest_ts)
     if not was_outside:
         return None
+    last_outside_at = max(
+        (ts for ts, m in all_rows if entry_at_ms < ts < latest_ts
+         and (_num(m.get("short_distance_pct")) or 0) > 0),
+        default=entry_at_ms,
+    )
+    entry_sample_at = next(
+        ts for ts, m in all_rows if last_outside_at < ts <= latest_ts
+        and (_num(m.get("short_distance_pct")) or 0) < 0
+    )
     return {
         "category": "A",
         "code": "BOUNDARY_BREACH",
         "signature": "BOUNDARY_BREACH",
         "severity": 3,
         "observed_at_ms": latest_ts,
+        "evidence_at_ms": entry_sample_at,
         "facts": {
             "short_distance_pct": d_now,
             "spot_usd": _num(latest_m.get("spot_usd")),
@@ -1147,6 +1175,15 @@ def _detect_category_c(
     }
 
 
+def _comparable_disjoint_flow(current: Mapping[str, Any], previous: Mapping[str, Any]) -> bool:
+    basis = current.get("flow_window_basis") or {}
+    prior = previous.get("flow_window_basis") or {}
+    start = _int(basis.get("start_ms"))
+    end = _int(previous.get("flow_asof_ms"))
+    return (start is not None and end is not None and start > end
+            and all(basis.get(key) and basis[key] == prior.get(key) for key in ("source", "symbol")))
+
+
 def _detect_category_d(
     *,
     side: str,
@@ -1181,28 +1218,8 @@ def _detect_category_d(
     t0_cvd4 = _num(t0.get("flow_cvd_4h"))
     latest_cvd4 = _num(latest_m.get("flow_cvd_4h"))
 
-    if flow_asof is not None:
-        if flow_asof <= entry_at_ms or now_ms - flow_asof > 60 * 60_000:
-            return None
-        if last_rev_flow_asof is not None and flow_asof <= last_rev_flow_asof:
-            flow_changed_vs_rev = (
-                (bool(last_rev_dir) and latest_dir != last_rev_dir)
-                or (latest_cvd4 is not None and last_rev_cvd4 is not None and abs(latest_cvd4 - last_rev_cvd4) > 1e-6)
-            )
-            if not flow_changed_vs_rev:
-                return None
-        if t0_flow_asof is not None:
-            if flow_asof < t0_flow_asof:
-                return None
-            if flow_asof == t0_flow_asof:
-                adverse_cvd_update = (
-                    latest_cvd4 is not None
-                    and t0_cvd4 is not None
-                    and ((latest_cvd4 < t0_cvd4) if side == "put" else (latest_cvd4 > t0_cvd4))
-                )
-                if not adverse_cvd_update:
-                    return None
-    elif last_rev_flow_asof is not None:
+    if (flow_asof is None or flow_asof > latest_ts or flow_asof <= max(entry_at_ms, last_rev_flow_asof or 0, t0_flow_asof or 0)
+            or not 0 <= now_ms - flow_asof <= 60 * 60_000):
         return None
 
     t0_dir = str(t0.get("flow_direction") or "").strip().lower()
@@ -1219,14 +1236,10 @@ def _detect_category_d(
         mom_shift = (m4 is not None and m4 < 0 and (ref_m4 is None or m4 < ref_m4)) or (
             m12 is not None and m12 < 0 and (ref_m12 is None or m12 < ref_m12)
         )
-        mom_same_or_stronger = m4 is not None and m4 < 0 and (ref_m4 is None or m4 <= ref_m4)
-        cvd_stronger = latest_cvd4 is not None and latest_cvd4 < 0 and (ref_cvd4 is None or latest_cvd4 < ref_cvd4)
     else:
         mom_shift = (m4 is not None and m4 > 0 and (ref_m4 is None or m4 > ref_m4)) or (
             m12 is not None and m12 > 0 and (ref_m12 is None or m12 > ref_m12)
         )
-        mom_same_or_stronger = m4 is not None and m4 > 0 and (ref_m4 is None or m4 >= ref_m4)
-        cvd_stronger = latest_cvd4 is not None and latest_cvd4 > 0 and (ref_cvd4 is None or latest_cvd4 > ref_cvd4)
 
     is_reversal = (bool(prior_dir) and prior_dir not in adverse_dirs) or (not prior_dir and mom_shift)
     if is_reversal:
@@ -1238,9 +1251,20 @@ def _detect_category_d(
         if prior_dir not in adverse_dirs:
             return None
         clock_floor = last_rev_flow_asof or t0_flow_asof or entry_at_ms
-        if flow_asof is None or flow_asof <= clock_floor:
+        basis = latest_m.get("flow_window_basis") or {}
+        ref_basis = (rev.get("flow_window_basis") if last_rev_flow_asof else t0.get("flow_window_basis")) or {}
+        if not all(basis.get(key) and basis[key] == ref_basis.get(key) for key in ("source", "symbol")):
             return None
-        if not (mom_same_or_stronger or cvd_stronger):
+        start, ref_start = _int(basis.get("start_ms")), _int(ref_basis.get("start_ms"))
+        if start is None or not start <= flow_asof or latest_cvd4 is None:
+            return None
+        if start > clock_floor:
+            incremental_cvd = latest_cvd4
+        elif start == ref_start and ref_cvd4 is not None and (last_rev_flow_asof or t0_flow_asof) is not None:
+            incremental_cvd = latest_cvd4 - ref_cvd4
+        else:
+            return None
+        if not (incremental_cvd < 0 if side == "put" else incremental_cvd > 0):
             return None
         code = "FLOW_ADVERSE_CONTINUATION"
         mode = "continuation"
@@ -1271,10 +1295,7 @@ def _detect_category_d(
 
     non_overlapping_confirmed = (
         is_reversal
-        and latest_ts - entry_at_ms >= 4 * 3_600_000
-        and t0_flow_asof is not None
-        and flow_asof is not None
-        and flow_asof - t0_flow_asof >= 4 * 3_600_000
+        and _comparable_disjoint_flow(latest_m, rev if last_rev_flow_asof else t0)
         and mom_shift
     )
     if code == "FLOW_REVERSAL":
@@ -1294,12 +1315,14 @@ def _detect_category_d(
         "signature": code,
         "severity": 2,
         "observed_at_ms": flow_asof or latest_ts,
+        "evidence_at_ms": flow_asof,
         "facts": {
             "mode": mode,
             "flow_direction": latest_dir,
             "t0_flow_direction": t0_dir or None,
             "last_reviewed_flow_direction": last_rev_dir or None,
             "flow_asof_ms": flow_asof,
+            "incremental_flow_cvd_btc": incremental_cvd if mode == "continuation" else None,
             "t0_flow_asof_ms": t0_flow_asof,
             "last_reviewed_flow_asof_ms": last_rev_flow_asof,
             "flow_cvd_4h": latest_cvd4,
@@ -1401,6 +1424,10 @@ def _trigger_sig_key(trigger: Mapping[str, Any]) -> str:
 
 def _is_escalated(trigger: Mapping[str, Any], prev: Mapping[str, Any]) -> bool:
     if int(trigger.get("severity") or 0) > int(prev.get("severity") or 0):
+        return True
+    new_evidence = _int(trigger.get("evidence_at_ms"))
+    prior_evidence = _int(prev.get("evidence_at_ms")) or _int(prev.get("at_ms"))
+    if new_evidence is not None and prior_evidence is not None and new_evidence > prior_evidence:
         return True
     cur_step = _int(trigger.get("depth_step"))
     prev_step = _int(prev.get("depth_step"))
@@ -1644,6 +1671,7 @@ def schedule_review_action(
             "severity": int(item.get("severity") or 0),
             "depth_step": _int(item.get("depth_step")),
             "at_ms": now_ms,
+            "evidence_at_ms": _int(item.get("evidence_at_ms")),
         }
     state["pending"] = []
     state["pending_since_ms"] = None
@@ -1837,15 +1865,20 @@ def _format_condition_lines(data: Any) -> list[str]:
     if not isinstance(data, Mapping):
         text = str(data).strip() if data is not None else "未提供"
         trig_hint = ("TRIGGERED" in text.upper() or "已触发" in text) and "未触发" not in text
-        state_label = "TRIGGERED" if trig_hint else "INTACT"
+        state_label = "TRIGGERED" if trig_hint else "DATA_GAP"
         return [
             f"- 程序机械边界状态（M1）：{state_label}（{text or '未提供'}）；已完成固定网格检查次数未提供。",
             "- **M1 = INTACT 仅表示机械边界尚未越过，不代表原承担条件仍然完整，也不得作为自动 HOLD 的唯一理由。**",
         ]
     trig = bool(data.get("program_triggered"))
-    state_label = str(data.get("mechanical_condition_state") or ("TRIGGERED" if trig else "INTACT"))
+    state_label = str(data.get("mechanical_condition_state") or ("TRIGGERED" if trig else "DATA_GAP"))
+    description = {
+        "TRIGGERED": "原冻结破坏规则已由程序确认触发，CONDITION_TRIGGERED 不可改判",
+        "INTACT": "已有检查未触发原冻结破坏规则",
+        "NOT_DUE": "尚未到首次固定检查钟",
+    }.get(state_label, "缺少可用的固定检查结果")
     lines = [
-        f"- 程序机械边界状态（M1 / mechanical_condition_state）：**{state_label}**（{'原冻结破坏规则已由程序确认触发，CONDITION_TRIGGERED 不可改判' if trig else '原冻结破坏规则尚未触发'}）；已完成固定网格检查 {data.get('checks_count', 0)} 次。",
+        f"- 程序机械边界状态（M1 / mechanical_condition_state）：**{state_label}**（{description}）；已记录固定网格检查 {data.get('checks_count', 0)} 次。",
     ]
     if data.get("latest_check_at_ms") is not None:
         lines.append(f"- 最近固定检查钟时刻：{_utc(data.get('latest_check_at_ms'))}")
@@ -1888,7 +1921,7 @@ def _format_flow_lines(data: Any, *, triggers: Sequence[Mapping[str, Any]] = ())
     else:
         mode_note = "未触发 D 类新流向事件；4h/12h 为滚动窗，旧柱滑出不直接等同相邻不重叠窗口真实反转。"
     lines = [
-        f"- 现货主动流就绪：{_fmt_bool_cn(data.get('flow_ready'))}（流向源时钟：{_utc(data.get('flow_asof_ms')) if data.get('flow_asof_ms') else '随最新样本同步'}）",
+        f"- 现货主动流就绪：{_fmt_bool_cn(data.get('flow_ready'))}（流向源时钟：{_utc(data.get('flow_asof_ms')) if data.get('flow_asof_ms') else '未核实'}）",
         f"- 综合方向：{cur_dir}（近 4h：{fast4} / 近 12h：{slow12}）；定性：{mode_note}",
         f"- 近 4h CVD 净额：{_fmt_num(data.get('flow_cvd_4h'), 2)}；近 4h 动量变化：{_fmt_num(data.get('flow_momentum_4h_pct'), 2, '%')}",
     ]
@@ -2208,7 +2241,7 @@ def parse_hold_review_response(
             protocol_status = "ALIGNED"
     elif verdict == "REVOKE":
         protocol_status = "DISCRETIONARY_REVOKE"
-        notes.append("程序机械边界未触发，模型依据新增反证主动建议影子撤销（DISCRETIONARY_REVOKE）。")
+        notes.append("模型依据新增反证主动建议影子撤销，程序没有确认机械触发（DISCRETIONARY_REVOKE）。")
     else:
         protocol_status = "ALIGNED"
 

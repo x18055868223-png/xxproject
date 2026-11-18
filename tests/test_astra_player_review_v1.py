@@ -70,6 +70,7 @@ def _make_series_point(
         "asof_ms": flow_asof_ms if flow_asof_ms is not None else asof_ms - 10_000,
         "micro_flow": {
             "fast_4h": {
+                "end_ts_ms": flow_asof_ms if flow_asof_ms is not None else asof_ms - 10_000,
                 "direction": flow_direction,
                 "cvd_sum": flow_cvd_4h,
                 "momentum_return_pct": flow_mom_4h,
@@ -518,6 +519,24 @@ def test_debounce_scheduler_coalescing_inflight_cooldown_priority_a_and_revoke()
     assert st_revoked["revoked"] is True
     _, act = review.schedule_review_action(st_revoked, [trig_a], now_ms=T + 100 * M)
     assert act is None
+
+
+def test_same_boundary_check_does_not_repeat_but_new_entry_is_eligible():
+    def boundary(entered, checked):
+        return review._detect_category_a(
+            entry_at_ms=T, short_strike_usd=103_000, t0={}, all_rows=[], fresh_run=[],
+            condition_events=[{'kind': 'CONDITION_TRIGGERED', 'observed_at_ms': checked,
+                               'body': {'result': {'latest_new_entry_ms': entered}}}],
+        )
+
+    first = boundary(T + M, T + 5 * M)
+    state, action = review.schedule_review_action({}, [first], now_ms=T + 5 * M)
+    assert action['should_call']
+    state = review.complete_review_action(state, now_ms=T + 6 * M, success=True, verdict='HOLD')
+    state, action = review.schedule_review_action(state, [boundary(T + M, T + 10 * M)], now_ms=T + 10 * M)
+    assert action is None
+    _, action = review.schedule_review_action(state, [boundary(T + 12 * M, T + 15 * M)], now_ms=T + 15 * M)
+    assert action['should_call']
 
 
 def test_build_hold_review_input_and_parse_response_protocol():
@@ -1096,9 +1115,11 @@ def test_v11_category_d_anchor_flow_asof_and_continuation():
     assert all(t["category"] != "D" for t in trigs_stale)
 
     # 3. Genuine adverse continuation with advancing flow_asof_ms + >=0.25pp push -> FLOW_ADVERSE_CONTINUATION
+    t0_metrics["flow_window_basis"] = {"source": "spot", "symbol": "BTCUSDT", "start_ms": T - 5 * 3_600_000}
     cont_rows = [
         {"asof_ms": T + 4_800_000, "spot_usd": 65_200.0, "short_distance_pct": 0.46, "flow_ready": True, "flow_asof_ms": T + 4_800_000, "flow_direction": "bullish", "flow_cvd_4h": 950.0, "flow_momentum_4h_pct": 1.80},
     ]
+    cont_rows[0]["flow_window_basis"] = dict(t0_metrics["flow_window_basis"])
     trigs_cont = review.detect_hold_triggers(
         frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
         t0_metrics=t0_metrics, series_rows=cont_rows, now_ms=T + 4_860_000,
@@ -1106,6 +1127,12 @@ def test_v11_category_d_anchor_flow_asof_and_continuation():
     d_cont = next(t for t in trigs_cont if t["category"] == "D")
     assert d_cont["code"] == "FLOW_ADVERSE_CONTINUATION"
     assert d_cont["signature"] == "FLOW_ADVERSE_CONTINUATION"
+    cont_rows[0]["flow_window_basis"]["start_ms"] += M
+    rolled = review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics=t0_metrics, series_rows=cont_rows, now_ms=T + 4_860_000,
+    )
+    assert all(t["category"] != "D" for t in rolled)
 
 
 def test_v11_category_c_depends_on_ard_false_and_soft_budget():

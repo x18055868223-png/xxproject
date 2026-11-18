@@ -360,7 +360,7 @@ def test_full_closed_loop_r16_deal_grid_debounce_revoke_and_settlement(tmp_path,
         assert hold_calls[0] == 0
 
         # Repeated B sample within 12m debounce still waits -> 0 calls
-        points.extend([[t_trig + i * M, 102_020.0] for i in range(2, 6)])
+        points.extend([[t_trig + i * M, 102_020.0] for i in range(1, 6)])
         advance_market(t_trig + 5 * M, 102_020.0)
         res_still_queued = tracking.sync(
             d, hand, svc, check_due=True, archive_root=arch_root, run_review=True,
@@ -406,7 +406,7 @@ def test_full_closed_loop_r16_deal_grid_debounce_revoke_and_settlement(tmp_path,
             llm_config={"api_key": "k", "model": "deepseek-v4.1-hold", "transport": hold_transport},
         )
         assert hold_calls[0] == 2
-        assert res_after["hold_review"]["action"] == "NO_TRIGGER"
+        assert res_after["hold_review"]["action"] == "ALREADY_REVOKED"
 
         # Step 6: Inspect enriched Workbench v3 projections BEFORE expiry settlement
         audit = tracking.audit_record(hand, now[0], {lce_id: "active"}, detail=True)

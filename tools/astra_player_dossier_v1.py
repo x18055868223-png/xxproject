@@ -478,7 +478,8 @@ class Dossiers:
         return path
 
     def respond(self, hand, attempt, status, raw=None, annotation=None, *, model=None, configuration=None,
-                requested=None, decided=None, channel='MANUAL_IMPORT', error=None, request_payload=None):
+                requested=None, decided=None, channel='MANUAL_IMPORT', error=None, request_payload=None,
+                full_raw=None, condition_plan=None):
         meta, at = self.verify_evidence(hand), self.clock()
         exp = read(hand / 'expected.json')
         folder = hand / 'responses' / key(attempt)
@@ -489,6 +490,8 @@ class Dossiers:
                         configuration=configuration, channel=channel, requested_at_ms=requested, decided_at_ms=decided)
         if request_hash is not None:
             declared['request_sha256'] = request_hash
+        if full_raw is not None:
+            declared['full_raw_sha256'] = sha(full_raw)
         if folder.exists():
             old = read(folder / 'attempt.json')
             if any(old.get(k) != v for k, v in declared.items()):
@@ -511,7 +514,7 @@ class Dossiers:
                 if (status == 'VALID' and deadline is not None and self.require_reply_provenance
                         and not (requested is not None and decided is not None and model_identity(model))):
                     status, record_error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
-        elif status not in {'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED'} or raw is not None:
+        elif status not in {'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED', 'PARSE_FAILED'} or raw is not None:
             raise ValueError('invalid response status or raw payload')
         elif isinstance(error, str) and error.strip():
             record_error = str(error)[:240]
@@ -525,6 +528,8 @@ class Dossiers:
         publish(folder, {
             'attempt.json': encode(record),
             **({'response.raw': raw} if raw is not None else {}),
+            **({'response.full.raw': full_raw} if full_raw is not None else {}),
+            **({'condition_plan.json': encode(condition_plan)} if condition_plan is not None else {}),
             **({'request.json': request_bytes} if request_bytes is not None else {}),
         })
         self.select(hand)
