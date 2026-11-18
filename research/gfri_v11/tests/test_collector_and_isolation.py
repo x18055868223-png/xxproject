@@ -15,7 +15,7 @@ WORKTREE_ROOT = Path(__file__).resolve().parents[3]
 if str(WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_ROOT))
 
-from deploy.gfri_v11.preflight_check import parse_env_file, verify_env_safety
+from deploy.gfri_v11.preflight_check import parse_env_file, run_host_checks, verify_env_safety
 from research.gfri_v11 import collector
 from research.gfri_v11.config import DEFAULT_CONFIG, ShadowFlags
 from research.gfri_v11.history import ShadowLedger
@@ -220,6 +220,8 @@ class TestCollectorAndIsolation(unittest.TestCase):
                 os.environ["GFRI_CONFIRM_SAMPLES"] = "4"
                 os.environ["GFRI_CONFIRM_INTERVAL_SEC"] = "5"
                 os.environ["GFRI_OB_SKEW_MAX_MS"] = "300000"
+                os.environ["GFRI_OB_AGE_MAX_MS"] = "45000"
+                os.environ["GFRI_OB_RECV_LAG_MAX_MS"] = "25000"
                 os.environ["GFRI_SOURCE_AGE_MAX_MS"] = "1800000"
                 os.environ["GFRI_STATE_DIR"] = str(state_dir)
                 os.environ["GFRI_RAW_CAPTURE_DIR"] = str(raw_dir)
@@ -229,6 +231,8 @@ class TestCollectorAndIsolation(unittest.TestCase):
                 self.assertEqual(resolved_cfg.confirm_sample_count, 4)
                 self.assertEqual(resolved_cfg.confirm_interval_sec, 5.0)
                 self.assertEqual(resolved_cfg.max_ob_skew_ms, 300_000)
+                self.assertEqual(resolved_cfg.max_ob_age_ms, 45_000)
+                self.assertEqual(resolved_cfg.max_ob_receive_lag_ms, 25_000)
                 self.assertEqual(resolved_cfg.max_source_age_ms, 1_800_000)
                 self.assertEqual(res_state, state_dir)
                 self.assertEqual(res_raw, raw_dir)
@@ -267,6 +271,204 @@ class TestCollectorAndIsolation(unittest.TestCase):
         self.assertLess(enable_sh.index('if [ ! -f "$ENV_FILE" ]'), enable_sh.index("preflight_check.py"))
         self.assertIn("chown -R bitnami:bitnami /opt/gfri-shadow/state /opt/gfri-shadow/raw_captures", enable_sh)
         self.assertIn("Environment=PYTHONPATH=/opt/gfri-shadow/current", service_txt)
+
+    def test_p01_spec_cache_fallback_and_expired_cache_fails_closed(self) -> None:
+        base_ts_ms = 1_795_010_400_000
+        gex_raw = _make_raw_gex()
+        inst_raw = _make_deribit_inst()
+        inst_should_fail = {"flag": False}
+
+        def fetcher(url: str) -> dict:
+            if "get_instrument" in url:
+                if inst_should_fail["flag"]:
+                    raise ConnectionError("instrument_endpoint_down")
+                raw = json.dumps(inst_raw).encode()
+                return {"status": 200, "received_at_ms": base_ts_ms, "raw_bytes": raw, "sha256": hashlib.sha256(raw).hexdigest(), "byte_len": len(raw), "payload": inst_raw}
+            payload = gex_raw if "gex-latest" in url else _make_deribit_book(base_ts_ms)
+            raw = json.dumps(payload).encode()
+            return {"status": 200, "received_at_ms": base_ts_ms, "raw_bytes": raw, "sha256": hashlib.sha256(raw).hexdigest(), "byte_len": len(raw), "payload": payload}
+
+        cfg = replace(DEFAULT_CONFIG, confirm_interval_sec=0.0, instrument_cache_ttl_ms=3600_000)
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            # 1. Missing instrument with empty cache -> UNKNOWN
+            inst_should_fail["flag"] = True
+            out_no_cache = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_no_cache["audit_record"]["data_quality"], "UNKNOWN")
+            self.assertIn("missing_or_unverified_deribit_instrument", out_no_cache["audit_record"]["failure_reasons"])
+
+            # 2. Succeed live -> writes deribit_spec_cache.json
+            inst_should_fail["flag"] = False
+            out_ok = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_ok["audit_record"]["data_quality"], "DEGRADED")
+            self.assertTrue((state_dir / "deribit_spec_cache.json").exists())
+
+            # 3. ConnectionError within TTL -> verified_cache works
+            inst_should_fail["flag"] = True
+            out_cached = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_cached["observations"][0]["provenance"]["deribit_spec_source"], "verified_cache")
+            self.assertEqual(out_cached["audit_record"]["data_quality"], "DEGRADED")
+
+            # 4. Expired cache -> fails closed UNKNOWN
+            cache_obj = json.loads((state_dir / "deribit_spec_cache.json").read_text(encoding="utf-8"))
+            cache_obj["expires_at_ms"] = base_ts_ms - 1
+            (state_dir / "deribit_spec_cache.json").write_text(json.dumps(cache_obj), encoding="utf-8")
+            out_expired = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_expired["audit_record"]["data_quality"], "UNKNOWN")
+            self.assertIn("deribit_instrument_cache_expired", out_expired["audit_record"]["failure_reasons"])
+
+    def test_p07_raw_archive_hashes_manifest_and_failure_statuses(self) -> None:
+        base_ts_ms = 1_795_010_400_000
+        gex_raw = _make_raw_gex()
+        inst_raw = _make_deribit_inst()
+
+        # Deliberately non-canonical whitespace so raw_http_sha256 != reserialized_json_sha256
+        def wire_fetcher(url: str) -> dict:
+            payload = gex_raw if "gex-latest" in url else (inst_raw if "get_instrument" in url else _make_deribit_book(base_ts_ms))
+            raw_bytes = (json.dumps(payload, indent=4) + "\n").encode("utf-8")
+            return {"status": 200, "received_at_ms": base_ts_ms, "raw_bytes": raw_bytes, "sha256": hashlib.sha256(raw_bytes).hexdigest(), "byte_len": len(raw_bytes), "payload": payload}
+
+        cfg = replace(DEFAULT_CONFIG, confirm_interval_sec=0.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Case A: Clean write preserves exact wire bytes & manifest
+            out_ok = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s1", raw_capture_dir=root / "raw_ok", include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
+            arc = out_ok["audit_record"]["raw_archive_status"]
+            self.assertEqual(arc["status"], "SAVED")
+            self.assertTrue(arc["complete_replayable"])
+            gex_meta = arc["files"]["gex_latest"]
+            self.assertEqual(gex_meta["verified_disk_sha256"], gex_meta["raw_http_sha256"])
+            self.assertNotEqual(gex_meta["raw_http_sha256"], gex_meta["reserialized_json_sha256"])
+            manifest = json.loads((Path(arc["cycle_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["computed_summary"]["put_gfri_confirmed"], out_ok["audit_record"]["put"]["gfri_confirmed"])
+
+            # Case B: Unwritable target (regular file blocking cycle dir) -> FAILED, complete_replayable=False
+            bad_raw = root / "blocked_file"
+            bad_raw.write_text("not_a_dir", encoding="utf-8")
+            out_fail = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s2", raw_capture_dir=bad_raw, include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_fail["audit_record"]["raw_archive_status"]["status"], "FAILED")
+            self.assertFalse(out_fail["audit_record"]["raw_archive_status"]["complete_replayable"])
+            self.assertTrue(any(r.startswith("raw_archive_write_failed:") for r in out_fail["audit_record"]["failure_reasons"]))
+
+            # Case C: Partial failure (one expected book file blocked by existing directory) -> PARTIAL
+            freeze_expected = base_ts_ms + 50
+            partial_dir = root / "raw_partial"
+            (partial_dir / f"cycle_{freeze_expected}" / "deribit_book_2.json").mkdir(parents=True, exist_ok=True)
+            out_part = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s3", raw_capture_dir=partial_dir, include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_part["audit_record"]["raw_archive_status"]["status"], "PARTIAL")
+            self.assertFalse(out_part["audit_record"]["raw_archive_status"]["complete_replayable"])
+            self.assertTrue(any("deribit_book_2" in r for r in out_part["audit_record"]["failure_reasons"]))
+
+            # Case D: manifest.json write blocked by directory -> audit_record["raw_archive_status"] synced to PARTIAL/complete_replayable=False
+            manifest_block_dir = root / "raw_manifest_fail"
+            (manifest_block_dir / f"cycle_{freeze_expected}" / "manifest.json").mkdir(parents=True, exist_ok=True)
+            out_mf = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s4", raw_capture_dir=manifest_block_dir, include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
+            self.assertEqual(out_mf["audit_record"]["raw_archive_status"]["status"], "PARTIAL")
+            self.assertFalse(out_mf["audit_record"]["raw_archive_status"]["complete_replayable"])
+            self.assertTrue(any(r.startswith("raw_archive_manifest_failed:") for r in out_mf["audit_record"]["failure_reasons"]))
+
+    def test_p02_end_to_end_single_side_truncation_preserves_valid_side_policy(self) -> None:
+        base_ts_ms = 1_795_010_400_000
+        inst_raw = _make_deribit_inst()
+        mode = {"truncate_put": False, "call_depth": 80_000_000.0}  # 1.5x -> 3.0x when halved
+
+        def e2e_fetcher(ts_ref: list[int]):
+            def _f(url: str) -> dict:
+                t = ts_ref[0]
+                if "gex-latest" in url:
+                    p = _make_raw_gex()
+                    p["data_timestamp"] = t - 2_000
+                    p["timestamp"] = t - 2_000
+                    p["computed_at"] = t - 1_000
+                elif "get_instrument" in url:
+                    p = inst_raw
+                else:
+                    p = _make_deribit_book(t, depth_total_usd=mode["call_depth"])
+                    if mode["truncate_put"]:
+                        # Truncate bids to within -0.2% only while asks cover >1%
+                        p["result"]["bids"] = [[64000.0 - (i + 1) * 5.0, 1_000_000.0] for i in range(15)]
+                raw = json.dumps(p).encode()
+                return {"status": 200, "received_at_ms": t, "raw_bytes": raw, "sha256": hashlib.sha256(raw).hexdigest(), "byte_len": len(raw), "payload": p}
+            return _f
+
+        cfg = replace(DEFAULT_CONFIG, confirm_interval_sec=0.0, max_source_age_ms=86_400_000)
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            ts_holder = [base_ts_ms]
+            fetcher = e2e_fetcher(ts_holder)
+
+            # 4 warmup baseline cycles (CALL ~1.5x)
+            for step in range(4):
+                ts_holder[0] = base_ts_ms + step * 600_000
+                collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+
+            # Cycle 5: PUT truncated -> UNKNOWN while CALL thin -> 3.0x (SHADOW_PAUSE on CALL via rapid jump)
+            mode["truncate_put"] = True
+            mode["call_depth"] = 40_000_000.0
+            ts_holder[0] = base_ts_ms + 4 * 600_000
+            out_p02 = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            audit = out_p02["audit_record"]
+            self.assertEqual(audit["global_data_quality"], "DEGRADED")
+            self.assertEqual(audit["data_quality"], "UNKNOWN")
+            self.assertEqual(audit["partial_valid_side"], "CALL")
+            self.assertEqual(audit["put"]["status"], "UNKNOWN")
+            self.assertEqual(audit["call"]["status"], "VALID")
+            self.assertAlmostEqual(audit["call"]["gfri_confirmed"], 3.75, places=4)
+            self.assertEqual(audit["policy_result"]["put_decision"], "UNKNOWN")
+            self.assertEqual(audit["policy_result"]["call_decision"], "SHADOW_PAUSE")
+            self.assertEqual(audit["policy_result"]["partial_pause_side"], "CALL")
+            self.assertEqual(audit["shadow_decision"], "UNKNOWN")
+            self.assertIn("+3.75x", out_p02["console_text"])
+            self.assertIn("候选暂缓", out_p02["console_text"])
+
+    def test_p11_crash_recovery_and_p13_host_preflight(self) -> None:
+        base_ts_ms = 1_795_010_400_000
+        gex_raw = _make_raw_gex()
+        inst_raw = _make_deribit_inst()
+
+        # High pressure (~3.0x) across cycles
+        def make_fetcher(ts_ref: list[int]):
+            def _f(url: str) -> dict:
+                t = ts_ref[0]
+                if "gex-latest" in url:
+                    p = _make_raw_gex(ts_iso="2026-11-18T14:00:00Z")
+                    p["data_timestamp"] = t - 2_000
+                    p["timestamp"] = t - 2_000
+                    p["computed_at"] = t - 1_000
+                elif "get_instrument" in url:
+                    p = inst_raw
+                else:
+                    p = _make_deribit_book(t, depth_total_usd=40_000_000.0)
+                raw = json.dumps(p).encode()
+                return {"status": 200, "received_at_ms": t, "raw_bytes": raw, "sha256": hashlib.sha256(raw).hexdigest(), "byte_len": len(raw), "payload": p}
+            return _f
+
+        cfg = replace(DEFAULT_CONFIG, confirm_interval_sec=0.0, max_source_age_ms=86_400_000)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            ts_holder = [base_ts_ms]
+            fetcher = make_fetcher(ts_holder)
+
+            # 4 warmup cycles + 2 high cycles -> triggers SHADOW_PAUSE_BOTH
+            for step in range(6):
+                ts_holder[0] = base_ts_ms + step * 600_000
+                collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+
+            # Simulate crash AFTER ledger append by corrupting gfri_policy_state.json to stale pre-pause state
+            (state_dir / "gfri_policy_state.json").write_text('{"last_freeze_at_ms": 1, "put": {"active_pause": false, "pause_consecutive": 0}, "call": {"active_pause": false, "pause_consecutive": 0}}', encoding="utf-8")
+
+            ts_holder[0] = base_ts_ms + 6 * 600_000
+            out_rec = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertTrue(out_rec["recovered_policy_state"])
+            self.assertEqual(out_rec["audit_record"]["shadow_decision"], "SHADOW_PAUSE_BOTH")
+
+            # Host preflight check (P1-3)
+            env_vals = parse_env_file(WORKTREE_ROOT / "deploy" / "gfri_v11" / "gfri_v11.env.example")
+            host_res = run_host_checks(env_vals, state_dir=state_dir, raw_dir=root / "raw", probe_network=False)
+            self.assertTrue(host_res["ok"])
+            self.assertTrue(host_res["checks"]["python_version"]["ok"])
+            self.assertTrue(host_res["checks"]["module_imports"]["ok"])
 
 
 if __name__ == "__main__":

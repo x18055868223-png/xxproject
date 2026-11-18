@@ -126,6 +126,8 @@ def check_deribit_instrument_unit(
         return False, None, "missing_deribit_instrument"
 
     reasons: list[str] = []
+    if inst.get("instrument_name") is not None and inst.get("instrument_name") != "BTC-PERPETUAL":
+        reasons.append("unsupported_instrument_name")
     if inst.get("quote_currency") != "USD":
         reasons.append("unsupported_quote_currency")
     if inst.get("instrument_type") != "reversed":
@@ -139,12 +141,53 @@ def check_deribit_instrument_unit(
     return True, "usd", None
 
 
+def validate_verified_spec_cache(
+    cache: dict[str, Any] | None,
+    *,
+    freeze_at_ms: int,
+    cfg: GfriConfig = DEFAULT_CONFIG,
+) -> tuple[bool, str | None, str | None]:
+    """Validate versioned, TTL-bounded verified Deribit BTC-PERPETUAL spec cache."""
+    if not isinstance(cache, dict):
+        return False, None, "missing_deribit_instrument_cache"
+
+    sv = cache.get("schema_version")
+    cs = cache.get("contract_size")
+    spec_ok = (
+        not isinstance(sv, bool)
+        and sv == cfg.deribit_spec_schema_version
+        and cache.get("instrument_name") == "BTC-PERPETUAL"
+        and cache.get("quote_currency") == "USD"
+        and cache.get("instrument_type") == "reversed"
+        and _is_finite_number(cs)
+        and float(cs) == 10.0
+        and cache.get("depth_unit") == "usd"
+    )
+    if not spec_ok:
+        return False, None, "invalid_deribit_instrument_cache_spec"
+
+    freeze_ms = _parse_ts_ms(freeze_at_ms)
+    verified_at_ms = _parse_ts_ms(cache.get("verified_at_ms"))
+    expires_at_ms = _parse_ts_ms(cache.get("expires_at_ms"))
+    if freeze_ms is None or verified_at_ms is None or expires_at_ms is None:
+        return False, None, "invalid_deribit_instrument_cache_timestamps"
+    if verified_at_ms > freeze_ms + cfg.max_future_drift_ms:
+        return False, None, "deribit_instrument_cache_future_timestamp"
+    if expires_at_ms <= freeze_ms:
+        return False, None, "deribit_instrument_cache_expired"
+    return True, "usd", None
+
+
 def _unknown_depth(
     *,
     reason: str,
+    reasons: list[str] | None = None,
     depth_unit: Any,
     ob_timestamp_ms: int | None = None,
     skew_ms: int | None = None,
+    ob_age_ms: int | None = None,
+    ob_received_age_ms: int | None = None,
+    ob_exchange_to_recv_ms: int | None = None,
     ref_price: float | None = None,
     spread_pct: float | None = None,
     price_divergence_pct: float | None = None,
@@ -155,10 +198,12 @@ def _unknown_depth(
     bids_count: int | None = None,
     asks_count: int | None = None,
 ) -> dict[str, Any]:
+    deduped = _dedupe_reasons(reasons if reasons is not None else [reason])
     return {
         "status": "UNKNOWN",
-        "reason": reason,
-        "reasons": [reason],
+        "global_status": "UNKNOWN",
+        "reason": ";".join(deduped) if deduped else reason,
+        "reasons": deduped,
         "down_status": "UNKNOWN",
         "up_status": "UNKNOWN",
         "down_reason": reason,
@@ -177,6 +222,9 @@ def _unknown_depth(
         "depth_unit": depth_unit,
         "ob_timestamp_ms": ob_timestamp_ms,
         "skew_ms": skew_ms,
+        "ob_age_ms": ob_age_ms,
+        "ob_received_age_ms": ob_received_age_ms,
+        "ob_exchange_to_recv_ms": ob_exchange_to_recv_ms,
     }
 
 
@@ -222,36 +270,43 @@ def _compute_bands_from_parsed_book(
     skew_ms: int | None,
     depth_unit: str,
     cfg: GfriConfig,
+    ob_age_ms: int | None = None,
+    ob_received_age_ms: int | None = None,
+    ob_exchange_to_recv_ms: int | None = None,
 ) -> dict[str, Any]:
     """Compute exact Decimal band bounds, spread/basis checks, and DOWN/UP USD depth."""
+    timing_meta = {
+        "ob_timestamp_ms": ob_ts_ms,
+        "skew_ms": skew_ms,
+        "ob_age_ms": ob_age_ms,
+        "ob_received_age_ms": ob_received_age_ms,
+        "ob_exchange_to_recv_ms": ob_exchange_to_recv_ms,
+    }
     best_bid = _to_decimal(best_bid_raw)
     best_ask = _to_decimal(best_ask_raw)
     if best_bid is None or best_ask is None:
         return _unknown_depth(
             reason="invalid_best_bid_ask",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
             bids_count=len(bids),
             asks_count=len(asks),
+            **timing_meta,
         )
     if best_bid <= Decimal("0") or best_ask <= Decimal("0"):
         return _unknown_depth(
             reason="non_positive_best_bid_ask",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
             bids_count=len(bids),
             asks_count=len(asks),
+            **timing_meta,
         )
     if best_bid > best_ask:
         return _unknown_depth(
             reason="crossed_order_book",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
             bids_count=len(bids),
             asks_count=len(asks),
+            **timing_meta,
         )
 
     ref_price_dec = (best_bid + best_ask) / Decimal("2")
@@ -259,10 +314,9 @@ def _compute_bands_from_parsed_book(
         return _unknown_depth(
             reason="invalid_ref_price",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
             bids_count=len(bids),
             asks_count=len(asks),
+            **timing_meta,
         )
 
     spread_pct_dec = (best_ask - best_bid) / ref_price_dec
@@ -271,12 +325,11 @@ def _compute_bands_from_parsed_book(
         return _unknown_depth(
             reason="spread_exceeds_max_threshold",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
             ref_price=float(ref_price_dec),
             spread_pct=float(spread_pct_dec),
             bids_count=len(bids),
             asks_count=len(asks),
+            **timing_meta,
         )
 
     price_div_pct: float | None = None
@@ -288,12 +341,11 @@ def _compute_bands_from_parsed_book(
             return _unknown_depth(
                 reason="invalid_gex_spot_usd",
                 depth_unit=depth_unit,
-                ob_timestamp_ms=ob_ts_ms,
-                skew_ms=skew_ms,
                 ref_price=float(ref_price_dec),
                 spread_pct=float(spread_pct_dec),
                 bids_count=len(bids),
                 asks_count=len(asks),
+                **timing_meta,
             )
         div_dec = abs(ref_price_dec - gex_spot_dec) / gex_spot_dec
         price_div_pct = float(div_dec)
@@ -303,13 +355,12 @@ def _compute_bands_from_parsed_book(
             return _unknown_depth(
                 reason="price_basis_divergence_exceeded",
                 depth_unit=depth_unit,
-                ob_timestamp_ms=ob_ts_ms,
-                skew_ms=skew_ms,
                 ref_price=float(ref_price_dec),
                 spread_pct=float(spread_pct_dec),
                 price_divergence_pct=price_div_pct,
                 bids_count=len(bids),
                 asks_count=len(asks),
+                **timing_meta,
             )
         if deg_dec is not None and div_dec > deg_dec:
             basis_status = "DEGRADED"
@@ -354,6 +405,7 @@ def _compute_bands_from_parsed_book(
     deduped = _dedupe_reasons(all_reasons)
     return {
         "status": overall_status,
+        "global_status": basis_status,
         "reason": ";".join(deduped) if deduped else None,
         "reasons": deduped,
         "down_status": side_results["down"]["status"],
@@ -372,8 +424,7 @@ def _compute_bands_from_parsed_book(
         "bids_count": len(bids),
         "asks_count": len(asks),
         "depth_unit": depth_unit,
-        "ob_timestamp_ms": ob_ts_ms,
-        "skew_ms": skew_ms,
+        **timing_meta,
     }
 
 
@@ -384,6 +435,7 @@ def compute_directional_depth(
     gex_spot_usd: float | None = None,
     gex_asof_ms: int | None = None,
     freeze_at_ms: int | None = None,
+    ob_received_at_ms: int | None = None,
     requested_depth: int = 1000,
     depth_unit: str = "usd",
     cfg: GfriConfig = DEFAULT_CONFIG,
@@ -408,30 +460,53 @@ def compute_directional_depth(
         return _unknown_depth(reason="missing_order_book_timestamp", depth_unit=depth_unit)
 
     freeze_ms = _parse_ts_ms(freeze_at_ms) if freeze_at_ms is not None else None
+    ob_rec_ms = _parse_ts_ms(ob_received_at_ms) if ob_received_at_ms is not None else None
+    ob_age_ms = (freeze_ms - ob_ts_ms) if freeze_ms is not None else None
+    ob_received_age_ms = (freeze_ms - ob_rec_ms) if (freeze_ms is not None and ob_rec_ms is not None) else None
+    ob_exchange_to_recv_ms = (ob_rec_ms - ob_ts_ms) if ob_rec_ms is not None else None
+
+    timing_reasons: list[str] = []
+    if ob_received_at_ms is not None and ob_rec_ms is None:
+        timing_reasons.append("invalid_ob_received_at_ms")
     if freeze_ms is not None and ob_ts_ms > freeze_ms + cfg.max_future_drift_ms:
-        return _unknown_depth(
-            reason="ob_future_timestamp_exceeds_freeze",
-            depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-        )
+        timing_reasons.append("ob_future_timestamp_exceeds_freeze")
+    if freeze_ms is not None and ob_rec_ms is not None and ob_rec_ms > freeze_ms + cfg.max_future_drift_ms:
+        timing_reasons.append("ob_received_at_future_timestamp")
+    if ob_age_ms is not None and ob_age_ms > cfg.max_ob_age_ms:
+        timing_reasons.append("order_book_expired")
+    if ob_exchange_to_recv_ms is not None and (
+        ob_exchange_to_recv_ms > cfg.max_ob_receive_lag_ms
+        or ob_exchange_to_recv_ms < -cfg.max_future_drift_ms
+    ):
+        timing_reasons.append("order_book_receive_lag_exceeded")
+    if ob_received_age_ms is not None and ob_received_age_ms > cfg.max_ob_age_ms:
+        timing_reasons.append("order_book_received_expired")
 
     skew_ms: int | None = None
     if gex_asof_ms is not None:
         gex_ms = _parse_ts_ms(gex_asof_ms)
         if gex_ms is None:
-            return _unknown_depth(
-                reason="invalid_gex_asof_ms",
-                depth_unit=depth_unit,
-                ob_timestamp_ms=ob_ts_ms,
-            )
-        skew_ms = ob_ts_ms - gex_ms
-        if abs(skew_ms) > cfg.max_ob_skew_ms:
-            return _unknown_depth(
-                reason="order_book_time_mismatch",
-                depth_unit=depth_unit,
-                ob_timestamp_ms=ob_ts_ms,
-                skew_ms=skew_ms,
-            )
+            timing_reasons.append("invalid_gex_asof_ms")
+        else:
+            skew_ms = ob_ts_ms - gex_ms
+            if abs(skew_ms) > cfg.max_ob_skew_ms:
+                timing_reasons.append("order_book_time_mismatch")
+
+    timing_meta = {
+        "ob_timestamp_ms": ob_ts_ms,
+        "skew_ms": skew_ms,
+        "ob_age_ms": ob_age_ms,
+        "ob_received_age_ms": ob_received_age_ms,
+        "ob_exchange_to_recv_ms": ob_exchange_to_recv_ms,
+    }
+    if timing_reasons:
+        deduped_timing = _dedupe_reasons(timing_reasons)
+        return _unknown_depth(
+            reason=deduped_timing[0],
+            reasons=deduped_timing,
+            depth_unit=depth_unit,
+            **timing_meta,
+        )
 
     bids = _parse_book_levels_decimal(book.get("bids"), notional_mode=depth_unit)
     asks = _parse_book_levels_decimal(book.get("asks"), notional_mode=depth_unit)
@@ -439,17 +514,15 @@ def compute_directional_depth(
         return _unknown_depth(
             reason="empty_or_invalid_order_book_levels",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
+            **timing_meta,
         )
     if len(bids) < cfg.min_book_levels_per_side or len(asks) < cfg.min_book_levels_per_side:
         return _unknown_depth(
             reason="insufficient_book_levels",
             depth_unit=depth_unit,
-            ob_timestamp_ms=ob_ts_ms,
-            skew_ms=skew_ms,
             bids_count=len(bids),
             asks_count=len(asks),
+            **timing_meta,
         )
 
     best_bid_raw = book["best_bid_price"] if "best_bid_price" in book else max(p for p, _ in bids)
@@ -465,6 +538,9 @@ def compute_directional_depth(
         skew_ms=skew_ms,
         depth_unit=depth_unit,
         cfg=cfg,
+        ob_age_ms=ob_age_ms,
+        ob_received_age_ms=ob_received_age_ms,
+        ob_exchange_to_recv_ms=ob_exchange_to_recv_ms,
     )
 
 
@@ -707,14 +783,22 @@ def extract_gex_snapshot(
     raw_total_gex = gex_payload["total_gex"] if gex_payload.get("total_gex") is not None else hf_dict.get("total_gamma")
     total_net_gex = float(raw_total_gex) if (total_gamma_unit_ok and _is_finite_number(raw_total_gex)) else None
 
-    # Tier 1: Native price_only_curve (iv_mode == "fixed", time_forward_hours == 0, units.hedging_usd == "usd_notional")
+    # Tier 1: Native price_only_curve (scenario_sets.price_only must be present with iv_mode == "fixed",
+    # time_forward_hours == 0, and units.hedging_usd == "usd_notional")
     scenario_sets = hf_dict.get("scenario_sets") if isinstance(hf_dict.get("scenario_sets"), dict) else {}
-    po_meta = scenario_sets.get("price_only") if isinstance(scenario_sets.get("price_only"), dict) else {}
-    po_meta_ok = True
-    if po_meta:
-        po_meta_ok = po_meta.get("iv_mode") == "fixed" and po_meta.get("time_forward_hours") == 0
-        if not po_meta_ok:
-            reasons.append("invalid_price_only_curve_metadata")
+    po_meta = scenario_sets.get("price_only")
+    po_tfh = po_meta.get("time_forward_hours") if isinstance(po_meta, dict) else None
+    po_meta_ok = (
+        isinstance(po_meta, dict)
+        and len(po_meta) > 0
+        and po_meta.get("iv_mode") == "fixed"
+        and not isinstance(po_tfh, bool)
+        and _is_finite_number(po_tfh)
+        and float(po_tfh) == 0.0
+        and hedging_usd_unit_ok
+    )
+    if not po_meta_ok:
+        reasons.append("missing_or_invalid_price_only_metadata")
 
     po_points: dict[float, float] = {}
     if hedging_usd_unit_ok and po_meta_ok:
@@ -947,6 +1031,7 @@ def evaluate_single_observation(
     gex_sha256: str | None = None,
     ob_sha256: str | None = None,
     deribit_instrument: dict[str, Any] | None = None,
+    verified_spec_cache: dict[str, Any] | None = None,
     okx_book: dict[str, Any] | None = None,
     okx_instrument: dict[str, Any] | None = None,
     okx_sha256: str | None = None,
@@ -962,9 +1047,11 @@ def evaluate_single_observation(
 
     reasons: list[str] = []
     effective_depth_unit = depth_unit
-    inst_verified: bool | None = None
+    inst_verified = False
     inst_error: str | None = None
+    deribit_spec_source: str | None = None
     if deribit_instrument is not None:
+        deribit_spec_source = "live_instrument"
         inst_ok, inst_unit, inst_reason = check_deribit_instrument_unit(deribit_instrument)
         inst_verified = inst_ok
         if inst_ok and inst_unit is not None:
@@ -972,6 +1059,23 @@ def evaluate_single_observation(
         else:
             inst_error = inst_reason or "invalid_deribit_instrument"
             reasons.append(inst_error)
+    elif verified_spec_cache is not None:
+        deribit_spec_source = "verified_cache"
+        cache_ok, cache_unit, cache_reason = validate_verified_spec_cache(
+            verified_spec_cache,
+            freeze_at_ms=freeze_ms,
+            cfg=cfg,
+        )
+        inst_verified = cache_ok
+        if cache_ok and cache_unit is not None:
+            effective_depth_unit = cache_unit
+        else:
+            inst_error = cache_reason or "invalid_deribit_instrument_cache"
+            reasons.append(inst_error)
+    else:
+        inst_verified = False
+        inst_error = "missing_or_unverified_deribit_instrument"
+        reasons.append(inst_error)
 
     gex_snap = extract_gex_snapshot(
         gex_payload,
@@ -991,15 +1095,20 @@ def evaluate_single_observation(
     if ob_rec_err:
         reasons.append(ob_rec_err)
 
-    depth_1pct = compute_directional_depth(
-        order_book,
-        shock_pct=0.01,
-        gex_spot_usd=gex_snap.get("spot_usd"),
-        gex_asof_ms=gex_snap.get("gex_data_ts_ms"),
-        freeze_at_ms=freeze_ms,
-        requested_depth=requested_depth,
-        depth_unit=effective_depth_unit,
-        cfg=cfg,
+    depth_1pct = (
+        compute_directional_depth(
+            order_book,
+            shock_pct=0.01,
+            gex_spot_usd=gex_snap.get("spot_usd"),
+            gex_asof_ms=gex_snap.get("gex_data_ts_ms"),
+            freeze_at_ms=freeze_ms,
+            ob_received_at_ms=ob_received_at_ms,
+            requested_depth=requested_depth,
+            depth_unit=effective_depth_unit,
+            cfg=cfg,
+        )
+        if inst_verified
+        else _unknown_depth(reason=inst_error or "missing_or_unverified_deribit_instrument", depth_unit=None)
     )
     reasons.extend(depth_1pct.get("reasons") or [])
 
@@ -1018,15 +1127,20 @@ def evaluate_single_observation(
         )
 
     # Segregated 0.5% research submetrics
-    depth_0p5 = compute_directional_depth(
-        order_book,
-        shock_pct=0.005,
-        gex_spot_usd=gex_snap.get("spot_usd"),
-        gex_asof_ms=gex_snap.get("gex_data_ts_ms"),
-        freeze_at_ms=freeze_ms,
-        requested_depth=requested_depth,
-        depth_unit=effective_depth_unit,
-        cfg=cfg,
+    depth_0p5 = (
+        compute_directional_depth(
+            order_book,
+            shock_pct=0.005,
+            gex_spot_usd=gex_snap.get("spot_usd"),
+            gex_asof_ms=gex_snap.get("gex_data_ts_ms"),
+            freeze_at_ms=freeze_ms,
+            ob_received_at_ms=ob_received_at_ms,
+            requested_depth=requested_depth,
+            depth_unit=effective_depth_unit,
+            cfg=cfg,
+        )
+        if inst_verified
+        else _unknown_depth(reason=inst_error or "missing_or_unverified_deribit_instrument", depth_unit=None)
     )
     sub_raw = gex_snap.get("research_submetrics") or {}
     sub_out: dict[str, Any] = {"zero_dte_share": sub_raw.get("zero_dte_share")}
@@ -1082,18 +1196,39 @@ def evaluate_single_observation(
             else None
         )
 
-    overall_quality = _worst_quality(
+    depth_global_status = depth_1pct.get("global_status", "UNKNOWN")
+    global_data_quality = _worst_quality(
         "UNKNOWN" if forced_fail else "VALID",
         gex_snap.get("data_quality"),
+        depth_global_status,
+    )
+    down_ok = side_evals["down_1pct"]["status"] in ("VALID", "DEGRADED")
+    up_ok = side_evals["up_1pct"]["status"] in ("VALID", "DEGRADED")
+    partial_valid_side = "PUT" if (down_ok and not up_ok) else ("CALL" if (up_ok and not down_ok) else None)
+    overall_quality = _worst_quality(
+        global_data_quality,
         side_evals["down_1pct"]["status"],
         side_evals["up_1pct"]["status"],
     )
+
+    ob_ts_ms = depth_1pct.get("ob_timestamp_ms")
+    ob_age_ms = depth_1pct.get("ob_age_ms")
+    if ob_age_ms is None and ob_ts_ms is not None:
+        ob_age_ms = freeze_ms - ob_ts_ms
+    ob_received_age_ms = depth_1pct.get("ob_received_age_ms")
+    if ob_received_age_ms is None and ob_rec_ms is not None:
+        ob_received_age_ms = freeze_ms - ob_rec_ms
+    ob_exchange_to_recv_ms = depth_1pct.get("ob_exchange_to_recv_ms")
+    if ob_exchange_to_recv_ms is None and ob_rec_ms is not None and ob_ts_ms is not None:
+        ob_exchange_to_recv_ms = ob_rec_ms - ob_ts_ms
 
     return {
         "schema": SCHEMA_EVAL,
         "code_version": CODE_VERSION,
         "decision_authority": cfg.flags.decision_authority,
         "data_quality": overall_quality,
+        "global_data_quality": global_data_quality,
+        "partial_valid_side": partial_valid_side,
         "reasons": _dedupe_reasons(reasons),
         "gfri_down_1pct": side_evals["down_1pct"]["gfri"] if not forced_fail else None,
         "gfri_up_1pct": side_evals["up_1pct"]["gfri"] if not forced_fail else None,
@@ -1114,7 +1249,9 @@ def evaluate_single_observation(
             "oi_source_lag_hours": gex_snap.get("oi_source_lag_hours"),
             "oi_lag_note": gex_snap.get("oi_lag_note"),
             "method_tier": gex_snap.get("method_tier"),
-            "depth_unit": effective_depth_unit,
+            "depth_unit": effective_depth_unit if inst_verified else None,
+            "deribit_spec_source": deribit_spec_source,
+            "deribit_instrument_verified": inst_verified,
             "requested_depth": requested_depth,
             "price_divergence_pct": depth_1pct.get("price_divergence_pct"),
         },
@@ -1124,9 +1261,12 @@ def evaluate_single_observation(
             "gex_computed_at_ms": gex_snap.get("computed_at_ms"),
             "gex_received_at_ms": gex_snap.get("received_at_ms"),
             "gex_age_ms": gex_snap.get("age_ms"),
-            "ob_timestamp_ms": depth_1pct.get("ob_timestamp_ms"),
-            "ob_exchange_ts_ms": depth_1pct.get("ob_timestamp_ms"),
+            "ob_timestamp_ms": ob_ts_ms,
+            "ob_exchange_ts_ms": ob_ts_ms,
             "ob_received_at_ms": ob_rec_ms,
+            "ob_age_ms": ob_age_ms,
+            "ob_received_age_ms": ob_received_age_ms,
+            "ob_exchange_to_recv_ms": ob_exchange_to_recv_ms,
             "ob_skew_ms": depth_1pct.get("skew_ms"),
             "oi_source_lag_hours": gex_snap.get("oi_source_lag_hours"),
             "oi_lag_note": gex_snap.get("oi_lag_note"),
@@ -1158,6 +1298,7 @@ def evaluate_single_observation(
             "gex_quality_status": gex_snap.get("quality_status"),
             "gex_stale": gex_snap.get("stale"),
             "deribit_instrument_verified": inst_verified,
+            "deribit_spec_source": deribit_spec_source,
         },
     }
 
@@ -1258,8 +1399,18 @@ def _confirm_side(
     latest_raw = valid_gfri[-1]
     spread_ratio = (fast_max / fast_min) if fast_min > 0.0 else None
 
-    if count < cfg.min_confirm_valid_samples:
-        side_reasons.append("insufficient_confirmations")
+    two_sample_conflict = count == 2 and (
+        (
+            fast_min > 0.0
+            and spread_ratio is not None
+            and spread_ratio > cfg.max_two_sample_divergence_ratio
+        )
+        or (fast_min == 0.0 and fast_max >= cfg.elevated_abs_gfri)
+    )
+    if count < cfg.min_confirm_valid_samples or two_sample_conflict:
+        side_reasons.append(
+            "two_sample_severe_divergence" if two_sample_conflict else "insufficient_confirmations"
+        )
         rep_flow = float(median(valid_flows)) if valid_flows else None
         rep_signed = float(median(valid_signed)) if valid_signed else None
         return {
@@ -1371,6 +1522,8 @@ def confirm_cycle_observations(
             "decision_authority": cfg.flags.decision_authority,
             "freeze_at_ms": freeze_ms,
             "data_quality": "UNKNOWN",
+            "global_data_quality": "UNKNOWN",
+            "partial_valid_side": None,
             "confirmation_status": "UNKNOWN",
             "reasons": ["no_observations"],
             "sample_count": 0,
@@ -1450,13 +1603,34 @@ def confirm_cycle_observations(
     call_res = _confirm_side(ordered_obs, obs_key="up_1pct", cfg=cfg, forced_unknown_reason=forced_reason)
     reasons.extend(put_res["reasons"])
     reasons.extend(call_res["reasons"])
-    for obs in ordered_obs:
-        if isinstance(obs, dict) and obs.get("data_quality") in ("VALID", "DEGRADED"):
+    valid_obs_list = [
+        obs
+        for obs in ordered_obs
+        if isinstance(obs, dict)
+        and obs.get("global_data_quality", obs.get("data_quality")) in ("VALID", "DEGRADED")
+        and any(
+            isinstance(obs.get(k), dict) and obs[k].get("status") in ("VALID", "DEGRADED")
+            for k in ("down_1pct", "up_1pct")
+        )
+    ]
+    for obs in (valid_obs_list or ordered_obs):
+        if isinstance(obs, dict):
             reasons.extend(obs.get("reasons") or [])
 
-    valid_obs_list = [
-        obs for obs in ordered_obs if isinstance(obs, dict) and obs.get("data_quality") in ("VALID", "DEGRADED")
-    ]
+    if forced_reason or not valid_obs_list:
+        global_data_quality = "UNKNOWN"
+    else:
+        global_data_quality = _worst_quality(
+            *(obs.get("global_data_quality", obs.get("data_quality")) for obs in valid_obs_list)
+        )
+
+    put_valid_ok = put_res["status"] in ("VALID", "DEGRADED") and _is_finite_number(put_res.get("gfri_confirmed"))
+    call_valid_ok = call_res["status"] in ("VALID", "DEGRADED") and _is_finite_number(call_res.get("gfri_confirmed"))
+    partial_valid_side = (
+        "PUT" if (put_valid_ok and not call_valid_ok)
+        else ("CALL" if (call_valid_ok and not put_valid_ok) else None)
+    )
+
     if forced_reason or put_res["status"] == "UNKNOWN" or call_res["status"] == "UNKNOWN":
         overall_quality = "UNKNOWN"
     elif (
@@ -1465,7 +1639,7 @@ def confirm_cycle_observations(
     ):
         overall_quality = "UNKNOWN"
     else:
-        obs_qualities = [obs.get("data_quality") for obs in valid_obs_list]
+        obs_qualities = [obs.get("global_data_quality", obs.get("data_quality")) for obs in valid_obs_list]
         overall_quality = _worst_quality(put_res["status"], call_res["status"], *obs_qualities)
 
     side_conf_states = {put_res["confirmation_status"], call_res["confirmation_status"]}
@@ -1486,6 +1660,7 @@ def confirm_cycle_observations(
             "ob_timestamp_ms": (obs.get("timestamps") or {}).get("ob_timestamp_ms"),
             "ob_sha256": (obs.get("provenance") or {}).get("ob_sha256"),
             "data_quality": obs.get("data_quality"),
+            "global_data_quality": obs.get("global_data_quality"),
             "gfri_down_1pct": obs.get("gfri_down_1pct"),
             "gfri_up_1pct": obs.get("gfri_up_1pct"),
             "reasons": obs.get("reasons", []),
@@ -1500,6 +1675,8 @@ def confirm_cycle_observations(
         "decision_authority": cfg.flags.decision_authority,
         "freeze_at_ms": freeze_ms,
         "data_quality": overall_quality,
+        "global_data_quality": global_data_quality,
+        "partial_valid_side": partial_valid_side,
         "confirmation_status": cycle_conf_status,
         "reasons": _dedupe_reasons(reasons),
         "sample_count": len(observations),

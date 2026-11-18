@@ -1,49 +1,32 @@
-# GFRI v1.1 独立验收与预运行裁定报告
+# GFRI v1.1 外部验收反馈修复与最终预运行裁定报告
 
-## 最终裁定：`READY_WITH_MINOR_LIMITATIONS`
+## 最终裁定：`READY_FOR_SHADOW_COLLECTION`
 
-> **权限与运行状态锁**：`collector_enabled = false`、`decision_authority = SHADOW_ONLY`、`player_integration_enabled = false`、`live_veto_enabled = false`。本轮已完成全部工程实现、独立审查修复、全量回归与默认关闭的运维包交付，未启动任何长期定时采集任务，未改动生产 Prompt A、AI 牌手正式输入及交割卷宗。等待外部独立审查通过后再行授权启用。
-
----
-
-## 一、独立 Reviewer 审查与修复闭环
-
-由独立 `reviewer` 子 agent（`a491f4bb`）对全部代码、公式、测试、部署脚本及实盘脱敏样本执行审查。初审裁定 `CHANGES REQUIRED`（发现 4 项 High 与 3 项 Medium 缺陷），主 agent 已全部修复并补充回归单测：
-
-| 严重度 | 发现问题 | 修复与复验结果 |
-| :--- | :--- | :--- |
-| **High #1** | `policy.py` 使用全周期 `confirmation_status` 判定 `SINGLE_BLIP_FILTERED`，PUT 单次脉冲会静默压制 CALL 侧已确认的 `SHADOW_PAUSE` | 修复为读取分方向 `side_data["confirmation_status"]`；新增 `test_cross_side_blip_does_not_suppress_confirmed_opposite_pause` 验证通过 |
-| **High #2** | `core.py` `ratio_blip` 条件仅判断 `spread_ratio > 2.0 and confirmed < fast_max`，会把 `[0.5x, 4.0x, 4.1x]`（2/3 持续高压）误判为单次脉冲 | 增加 `upper_outliers == 1` 与 `confirmed <= fast_min * 2.0` 约束；新增 `test_missing_spot_fails_closed_and_two_of_three_high_is_not_ratio_blip` 通过 |
-| **High #3** | `collector.py` 未捕获 `gex-latest` / `get_instrument` / `get_order_book` 网络或 JSON 异常，故障时会崩溃退出现有定时任务而非记录 `UNKNOWN` | 新增 `_safe_fetch`，断网/超时写入 `UNKNOWN` 审计记录并 `exit 0`；单次盘口超时仍支持剩余 `2/3` 确认；已单测验证 |
-| **High #4** | `enable_collector.sh` 以 root 创建 `/opt/gfri-shadow/state` 未移交 `bitnami:bitnami` 所有权，会导致 `ProtectSystem=strict` 服务报 `PermissionError` | 补充 `chown -R bitnami:bitnami` 与 `install -o bitnami -g bitnami`，并在 `gfri-shadow-collector.service` 显式声明 `PYTHONPATH=/opt/gfri-shadow/current` |
-| **Medium #5** | `gfri_v11.env.example` 中 6 项采集/窗口/OKX 环境变量未被 `collector.py` 读取 | 新增 `resolve_runtime_from_env()` 与 `_save_raw_cycle_bundle()` 完整接入并经单元测试验证 |
-| **Medium #6** | GEX `asset_price` 缺失或非正时未 fail-closed，导致跳过 `0.2% / 0.5%` 价基对齐检查仍返回 `VALID` | `extract_gex_snapshot` 缺 `spot_usd` 时强制 fail-closed 为 `UNKNOWN` |
-| **Medium #7** | `enable_collector.sh` 在检查 `$ENV_FILE` 存在性之前执行 `preflight_check.py` | 调换顺序使缺失 env 提示生效，并在 `preflight_check.py` 接入 `--require-shadow-only` |
-
-**修复后验证（最终提交前实测）**：
-- `pytest .worktrees/gfri-v11/research/gfri_v11/tests -v`：**`35 passed in 0.95s`**（0 failed, 0 skipped）。
-- `deploy/gfri_v11/preflight_check.py --require-shadow-only --require-disabled`：**`PREFLIGHT_OK`**。
-- `python -m research.gfri_v11.collector --scheduled`：**`COLLECTOR_DISABLED (GFRI_COLLECTOR_ENABLED=0; SHADOW_ONLY)`**，exit 0。
-- Git Bash `bash -n` 校验 `enable_collector.sh`、`disable_collector.sh`、`rollback_gfri_v11.sh`：**`EXIT=0`**。
+> **锁定隔离与运行态**：`collector_enabled = false`、`decision_authority = SHADOW_ONLY`、`player_integration_enabled = false`、`live_veto_enabled = false`。全部 P0-1～P0-7 与 P1-1～P1-3 已关闭并通过独立复核与全量测试，现严格保持**默认关闭、等待外部复审批准**状态；未修改生产 `.worktrees/player-dossier-v13`、Prompt A、AI 牌手正式输入及交割卷宗。
 
 ---
 
-## 二、五大验收核心问题回答
+## 一、P0 / P1 修复位置、测试名称与验证结果清单
 
-### Q1. 现在是否已经有一个无需历史分位即可运行、数值含义明确的 GFRI？
-**是。** v1.1 主指标 `gfri_down_1pct`（Put 风险）与 `gfri_up_1pct`（Call 风险）在第一天即可独立算出精确无量纲比值 $\max(0, H_d \cdot \operatorname{sign}(\Delta S)) / L_d$（`price_only_curve ±1%` 名义对冲流 ÷ Deribit `BTC-PERPETUAL depth=1000` 冲击区可见深度），已修复 v1.0 的浮点边界截断、现货偏离漏检和 `ERROR` 状态穿透，实盘截面验证算得 PUT `+4.75x` / CALL `+7.00x`。
+| 问题编号 | 修复位置 | 回归测试名称 | 实测结果 |
+| :--- | :--- | :--- | :--- |
+| **P0-1 合约单位失效** | `core.py` (`check_deribit_instrument_unit`, `validate_verified_spec_cache`, `evaluate_single_observation`), `collector.py` (`_save_verified_deribit_spec_cache`, `deribit_spec_cache.json`) | `test_p0_1_deribit_instrument_and_verified_spec_cache_fail_closed`; `test_p01_spec_cache_fallback_and_expired_cache_fails_closed` | **PASS**（无合约/错规格/过期缓存均 fail-closed 为 `UNKNOWN`；24h 签名缓存可复用） |
+| **P0-2 单侧隔离不遮蔽** | `core.py` (`global_data_quality`, `partial_valid_side` in both `evaluate_single_observation` & `confirm_cycle_observations`), `policy.py` (`_evaluate_side_policy`, `_compute_partial_valid_side`) | `test_p0_2_partial_side_validity_call_valid_while_put_truncated`; `test_p02_side_independence_during_partial_unknown_and_audit_archive`; `test_p02_end_to_end_single_side_truncation_preserves_valid_side_policy` | **PASS**（PUT 截断为 `UNKNOWN` 时 CALL `3.75x` 保持 `VALID` 与 `SHADOW_PAUSE`，端到端保真） |
+| **P0-3 盘口独立时效门禁** | `config.py` (`max_ob_age_ms=60000`, `max_ob_receive_lag_ms=30000`, `confirm_interval_sec=15.0`), `core.py` (`compute_directional_depth`, `timestamps.ob_age_ms/ob_received_age_ms/ob_exchange_to_recv_ms`) | `test_p0_3_order_book_age_and_receive_lag_gates` | **PASS**（`ob_skew_ms=0` 且双源同落后 20 分钟必失败；超 30s 接收延迟失败） |
+| **P0-4 两样本冲突保护** | `core.py` (`_confirm_side`: `two_sample_severe_divergence` + `upper_outliers` 孤立异常判定) | `test_p0_4_two_sample_divergence_and_confirmation_sequences`; `test_missing_spot_fails_closed_and_two_of_three_high_is_not_ratio_blip` | **PASS**（`[0.5,8.0]`/`[1.0,5.0]` -> `INSUFFICIENT_CONFIRMATIONS` 且保留 `gfri_fast_max`；`[4.0,4.1]`/`[0.5,4.0,4.1]` -> `CONFIRMED`, `single_blip_detected=False`） |
+| **P0-5 原生元数据严格举证** | `core.py` (`extract_gex_snapshot` 强制 `scenario_sets.price_only` 存在且 `iv_mode="fixed"`、`time_forward_hours=0`、`units.hedging_usd="usd_notional"`) | `test_p0_5_missing_price_only_metadata_rejects_native_tier` | **PASS**（删元数据拒绝 `NATIVE_PRICE_ONLY`，退化为 `NET_GEX_LINEAR / DEGRADED` 或 `UNKNOWN`，绝不冒充 `spot_linked_12h`） |
+| **P0-6 有界历史索引与容量** | `history.py` (`gfri_history_index.jsonl`, `extract_index_entry`, `ShadowLedger.load_history_window`), `collector.py` (`load_history_window`) | `test_p06_bounded_memory_index_and_bit_identical_refs` | **PASS**（8,640 条 115.71 MiB 全量记录实测峰值内存 **`8.44 MiB`** << `128M`；4h/60d 计算与全量加载 bit-identical；原始 `gfri_shadow_ledger.jsonl` 永久追写不删历史） |
+| **P0-7 归档显式状态与双哈希** | `collector.py` (`_write_archive_entry` `os.O_BINARY`, 落盘 SHA-256 回读核验, `raw_http_sha256` vs `reserialized_json_sha256`, `manifest.json`), `policy.py` (`raw_archive_status`) | `test_p07_raw_archive_hashes_manifest_and_failure_statuses` | **PASS**（覆盖正常、阻塞目录 `FAILED`、单文件/manifest 失败 `PARTIAL`；`complete_replayable=False` 与 `failure_reasons` 同步） |
+| **P1-1 崩溃恢复与防死锁** | `history.py` (`fcntl.flock` / Windows PID+60s 过期锁恢复), `policy.py` (`reconstruct_policy_state_from_ledger`), `collector.py` (`_load_tail_audit_records`, `load_or_recover_policy_state`) | `test_p11_crash_recovery_from_ledger_and_stale_lock_recovery`; `test_p11_crash_recovery_and_p13_host_preflight` | **PASS**（追加账本后 `policy_state` 损坏或陈旧可无损重建连击计数；过期 `.lock` 可自愈） |
+| **P1-2 冻结时钟语义区分** | `policy.py` (`cycle_asof_ms`, `clock_role="SHADOW_HIGH_FREQ_CYCLE"`), `history.py` (`select_snapshot_asof_episode`) | `test_p12_select_snapshot_asof_episode_excludes_future_and_honors_archive` | **PASS**（10 分钟影子节奏与 14:00 UTC `episode_freeze` 严格分离，绝不事后回填未来快照） |
+| **P1-3 宿主机预检与演练** | `deploy/gfri_v11/preflight_check.py` (`--host-check --network-probe`), `deploy/gfri_v11/gfri_v11.env.example` | `test_p11_crash_recovery_and_p13_host_preflight`; CLI `--host-check --network-probe` | **PASS**（校验 Python 3.12、导入、权限、磁盘、Linux 内存/NTP 与三端公网联通，不启 timer） |
 
-### Q2. GFRI 是否真正增加了 Gamma 反馈压力与盘口承载力关系的信息，而没有重复 AI 牌手推理？
-**是，但仅限于“流动性承载比”与“方向不对称性”增量，不代表独立做市商真实库存。** 在 `2026-11-18T14:46Z` 实盘急跌（spot 降至 `$63,138.64`）期间，Deribit ±1% 买盘/卖盘深度收缩至 `$26.90M` / `$17.90M`（同期 OKX `BTC-USDT-SWAP` 仍有 `$104.91M` / `$86.92M`），直接将压力倍率从早先 `~3.0x` 推升至 `+4.75x / +7.00x`；这提供了传统 `total_net_gex` 与 AI 牌手 Pin/责任路径推理之外的盘口脆弱性信息，同时严格避免输出任何 Pin、墙位或承保长文解释。
+---
 
-### Q3. 极值过滤、时间门禁、冷启动和结构漂移是否已具有健壮设计？
-**是。** (1) **极值过滤**：3 样本确认通道（中位数）仅剔除孤立单次盘口闪烁，双样本以上持续恶化原样通过，Fast 通道永久保留未裁剪极值 `gfri_fast_max`；(2) **时间门禁**：强制所有源时间戳与盘口时间 `<= freeze_at_ms + 5s`，严格限制 15m 跨源偏差与 60m 上游有效期，并将 Deribit 公开 OI 的 `8h` 已知延迟写入元信息；(3) **冷启动与漂移**：4h 近期窗口不足 4 点保持 `WARMING_UP`，60 天窗口采用 14 天半衰期 + 按 UTC 日样本数归一化（防止单日高频刷屏），不足 30 天或 `n_eff < 30` 时不输出伪精确 `Pxx`，并在高 GFRI 常态期触发 `regime_drift_warning` 防止历史分位下降掩盖绝对高压。
+## 二、独立 Reviewer 复核与验证证据
 
-### Q4. Put/Call 影子暂缓能否完全由确定性规则产生？哪些阈值尚未经验证？
-**可以完全由纯 Python 确定性规则产生**（支持 `NO_VETO / SHADOW_PAUSE_PUT / SHADOW_PAUSE_CALL / SHADOW_PAUSE_BOTH / WARMING_UP / UNKNOWN` 及 2 周期确认 + 滞回释放，`UNKNOWN` 绝不误报安全）。当前全部经验参数均带 `UNVALIDATED_CANDIDATE_PARAMS` 标记、未经经济校准：绝对阈值（`2.50x`、`2.00x`、`3.50x`）、4h 急剧恶化比（`1.50x`）、2 周期连续确认/释放、4h 近期与 60d/14d 长期窗口及 `10%` 驱动分解阈值，均需在积累 `30–50` 局带官方交割 `outcome.json` 的前瞻样本后再作检验。
-
-### Q5. 现在是否已经达到“可以开始长期影子数据积累”的工程标准？
-**达到带有明确前提边界的试积累标准（`READY_WITH_MINOR_LIMITATIONS`）。** 代码、隔离、追写账本、断网降级、脱敏审计及运维开关均已就绪；但仍存在三项需外部审查知悉的现实限制：
-1. 上游 `gex-latest` 当前仍以全期限 `oi_proxy_call_long_put_short` 计算（`0dte` 仅占 `4.23%`），受 Deribit `8h` 公开 OI 延迟影响，且目前因 `bybit/okx/binance` 次级源不可用处于 `DEGRADED`；
-2. 单所 Deribit 永续盘口深度仅为 OKX 同刻深度的 `~17%–26%`（`3.92x–5.96x` 反比），绝对倍率阈值受交易所深度分布约束；
-3. `systemd` service/timer 已通过本地静态语法和预检校验，尚未在目标 Linux 主机做真实 `systemctl` 运行演练。
+- **Reviewer 一审（`4256a8da`）**：检出 `confirm_cycle_observations` 未透传 `global_data_quality` / `partial_valid_side`（High #1）、`_write_cycle_manifest` 失败未同步 `audit_record["raw_archive_status"]`（Medium #2）及 3 项 Low 细节。
+- **Reviewer 二审（`4256a8da`）**：逐行核对全部修复后正式给出 **`APPROVED`**（零 High / Medium 遗留阻塞）。
+- **核心数值复算一致性**：修复前后对 `2026-11-18` Snap1 实盘快照复算结果完全一致（`gfri_down_1pct = 3.034746`，`gfri_up_1pct = 3.201071`，`data_quality = DEGRADED`）。
+- **端到端最新实盘干跑（`2026-11-18T16:59Z`）**：产出 [`samples/gfri_v11_real_audit_sanitized.json`](samples/gfri_v11_real_audit_sanitized.json)（PUT `+5.33x` / CALL `+5.34x`，`ob_age_ms = 4,453`，`ob_exchange_to_recv_ms = 772`，实测抓到 Spot 与盘口中价 `0.293%` 偏离触发 `price_basis_divergence_degraded`）。
+- **目标 Linux 主机待办（批准启用前）**：在目标服务器一次性运行 `python3 deploy/gfri_v11/preflight_check.py --env-file /opt/gfri-shadow/gfri_v11.env --require-shadow-only --require-disabled --host-check --network-probe` 实测 POSIX `fcntl.flock`、`timedatectl` NTP 与 `bitnami` 目录权限；未获外部批准前严禁运行 `enable_collector.sh` 或接入 AI 牌手。

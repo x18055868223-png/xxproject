@@ -11,12 +11,19 @@ import math
 import os
 from pathlib import Path
 import statistics
+import sys
 import time
 from typing import Any
+
+try:
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None  # type: ignore[assignment]
 
 from research.gfri_v11.config import DEFAULT_CONFIG, GfriConfig
 
 MS_PER_DAY = 86_400_000
+INDEX_SCHEMA = "gfri_history_index_v11"
 COMPARABILITY_KEYS = (
     "methodology_version",
     "universe_policy",
@@ -26,6 +33,104 @@ COMPARABILITY_KEYS = (
 )
 DRIVER_CHANGE_THRESHOLD = 0.10
 VALID_QUALITIES = ("VALID", "DEGRADED")
+
+
+def extract_index_entry(record: dict[str, Any]) -> dict[str, Any]:
+    """Project a full audit/eval record into the compact ~350B history index entry."""
+    comp_raw = record.get("comparability")
+    if isinstance(comp_raw, dict) and comp_raw:
+        comparability = {
+            k: sys.intern(val) if isinstance(val, str) else val
+            for k in COMPARABILITY_KEYS
+            for val in (comp_raw.get(k),)
+        }
+    else:
+        comparability = {}
+
+    def _compact_side(side_key: str) -> dict[str, Any]:
+        sb = record.get(side_key)
+        if not isinstance(sb, dict):
+            return {
+                "status": "UNKNOWN",
+                "gfri_confirmed": None,
+                "liquidity_depth_usd": None,
+                "raw_hedge_flow_usd": None,
+            }
+        status_raw = sb.get("status", "UNKNOWN")
+        status = sys.intern(status_raw) if isinstance(status_raw, str) else status_raw
+        return {
+            "status": status,
+            "gfri_confirmed": sb.get("gfri_confirmed"),
+            "liquidity_depth_usd": sb.get("liquidity_depth_usd"),
+            "raw_hedge_flow_usd": sb.get("raw_hedge_flow_usd"),
+        }
+
+    freeze_val = record.get("freeze_at_ms")
+    if isinstance(freeze_val, int) and not isinstance(freeze_val, bool):
+        freeze_at_ms: int | None = freeze_val
+    elif _is_finite_number(freeze_val):
+        freeze_at_ms = int(freeze_val)
+    else:
+        freeze_at_ms = None
+
+    dq_raw = record.get("data_quality")
+    if isinstance(dq_raw, str):
+        data_quality = sys.intern(dq_raw)
+    elif dq_raw is None:
+        data_quality = "UNKNOWN"
+    else:
+        data_quality = str(dq_raw)
+
+    gdq_raw = record.get("global_data_quality")
+    if gdq_raw is None:
+        global_data_quality: str | None = None
+    elif isinstance(gdq_raw, str):
+        global_data_quality = sys.intern(gdq_raw)
+    else:
+        global_data_quality = str(gdq_raw)
+
+    return {
+        "schema": INDEX_SCHEMA,
+        "freeze_at_ms": freeze_at_ms,
+        "data_quality": data_quality,
+        "global_data_quality": global_data_quality,
+        "comparability": comparability,
+        "put": _compact_side("put"),
+        "call": _compact_side("call"),
+    }
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            process_query_limited = 0x1000
+            still_active = 259
+            handle = kernel32.OpenProcess(process_query_limited, False, int(pid))
+            if not handle:
+                return kernel32.GetLastError() == 5
+            try:
+                exit_code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == still_active
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 class _LoadRecordsDescriptor:
@@ -42,33 +147,177 @@ class _LoadRecordsDescriptor:
         return _bound_load
 
 
+class _LoadHistoryWindowDescriptor:
+    """Allow both `ShadowLedger.load_history_window(path, ...)` and `ledger.load_history_window(...)`."""
+
+    def __get__(self, instance: ShadowLedger | None, owner: type[ShadowLedger]):
+        if instance is None:
+            def _class_load(
+                path_or_index: str | Path | None = None,
+                *,
+                reference_ms: int | None = None,
+                max_age_ms: int | None = None,
+            ) -> list[dict[str, Any]]:
+                if path_or_index is None:
+                    return []
+                return owner._load_history_window_from_path(
+                    path_or_index,
+                    reference_ms=reference_ms,
+                    max_age_ms=max_age_ms,
+                )
+
+            return _class_load
+
+        def _bound_load(
+            path_or_index: str | Path | None = None,
+            *,
+            reference_ms: int | None = None,
+            max_age_ms: int | None = None,
+        ) -> list[dict[str, Any]]:
+            if path_or_index is not None:
+                target: str | Path = path_or_index
+            elif instance.index_path.exists() and instance.index_path.stat().st_size > 0:
+                target = instance.index_path
+            else:
+                target = instance.path
+            return owner._load_history_window_from_path(
+                target,
+                reference_ms=reference_ms,
+                max_age_ms=max_age_ms,
+            )
+
+        return _bound_load
+
+
 class ShadowLedger:
-    """Pure append-only JSONL ledger reader/writer with lockfile + fsync discipline."""
+    """Pure append-only JSONL ledger reader/writer with companion index, flock/stale-lock & fsync."""
 
     load_records = _LoadRecordsDescriptor()
+    load_history_window = _LoadHistoryWindowDescriptor()
 
-    def __init__(self, path: str | Path, lock_timeout_sec: float = 5.0) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        lock_timeout_sec: float = 5.0,
+        *,
+        index_path: str | Path | None = None,
+        stale_lock_timeout_ms: int = DEFAULT_CONFIG.stale_lock_timeout_ms,
+    ) -> None:
         self.path = Path(path)
+        self.index_path = (
+            Path(index_path)
+            if index_path is not None
+            else self.path.with_name("gfri_history_index.jsonl")
+        )
         self.lock_path = Path(f"{self.path}.lock")
         self.lock_timeout_sec = lock_timeout_sec
+        self.stale_lock_timeout_ms = int(stale_lock_timeout_ms)
+
+    def _is_stale_lockfile(self) -> bool:
+        try:
+            stat = self.lock_path.stat()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+        now_ms = int(time.time() * 1000)
+        mtime_age_ms = now_ms - int(stat.st_mtime * 1000)
+        if mtime_age_ms > self.stale_lock_timeout_ms:
+            return True
+
+        try:
+            raw_text = self.lock_path.read_text(encoding="utf-8", errors="replace").strip()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+        if not raw_text:
+            return False
+
+        try:
+            payload = json.loads(raw_text)
+        except (json.JSONDecodeError, ValueError):
+            return False
+
+        if isinstance(payload, dict):
+            created_at_ms = payload.get("created_at_ms")
+            if _is_finite_number(created_at_ms) and (
+                now_ms - int(created_at_ms) > self.stale_lock_timeout_ms
+            ):
+                return True
+            pid = payload.get("pid")
+            if (
+                isinstance(pid, int)
+                and not isinstance(pid, bool)
+                and pid > 0
+                and not _is_pid_alive(pid)
+            ):
+                return True
+        return False
 
     def _acquire_lock(self) -> int:
         deadline = time.monotonic() + self.lock_timeout_sec
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if fcntl is not None:
+            fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(f"Timed out acquiring ledger lock: {self.lock_path}")
+                        time.sleep(0.01)
+                try:
+                    os.ftruncate(fd, 0)
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    meta = json.dumps(
+                        {"pid": os.getpid(), "created_at_ms": int(time.time() * 1000)}
+                    ).encode("ascii")
+                    os.write(fd, meta)
+                except OSError:
+                    pass
+                return fd
+            except Exception:
+                os.close(fd)
+                raise
+
         while True:
             try:
                 fd = os.open(
                     str(self.lock_path),
                     os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
                 )
-                os.write(fd, f"{os.getpid()}".encode("ascii"))
+                meta = json.dumps(
+                    {"pid": os.getpid(), "created_at_ms": int(time.time() * 1000)}
+                ).encode("ascii")
+                os.write(fd, meta)
                 return fd
             except FileExistsError:
+                if self._is_stale_lockfile():
+                    try:
+                        os.unlink(self.lock_path)
+                        continue
+                    except FileNotFoundError:
+                        continue
+                    except PermissionError:
+                        pass
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f"Timed out acquiring ledger lock: {self.lock_path}")
                 time.sleep(0.01)
 
     def _release_lock(self, fd: int) -> None:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+            return
         try:
             os.close(fd)
         finally:
@@ -77,26 +326,84 @@ class ShadowLedger:
             except FileNotFoundError:
                 pass
 
+    @staticmethod
+    def _append_bytes(target: Path, payload: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        fd = os.open(str(target), flags, 0o644)
+        try:
+            written = 0
+            while written < len(payload):
+                written += os.write(fd, payload[written:])
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def _backfill_index_if_needed(self) -> None:
+        if self.index_path.exists() or not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+        idx_fd = os.open(str(self.index_path), flags, 0o644)
+        try:
+            with self.path.open("r", encoding="utf-8", errors="replace") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    entry = (
+                        parsed
+                        if parsed.get("schema") == INDEX_SCHEMA
+                        else extract_index_entry(parsed)
+                    )
+                    line_bytes = (
+                        json.dumps(
+                            entry,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            allow_nan=False,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                    written = 0
+                    while written < len(line_bytes):
+                        written += os.write(idx_fd, line_bytes[written:])
+            os.fsync(idx_fd)
+        finally:
+            os.close(idx_fd)
+
     def append_record(self, record: dict[str, Any]) -> None:
-        """Strictly append a single JSONL record without ever rewriting existing lines."""
+        """Strictly append a single JSONL record and its compact companion index entry."""
         if not isinstance(record, dict):
             raise TypeError("ShadowLedger record must be a dict")
         payload = (
             json.dumps(record, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n"
         ).encode("utf-8")
+        index_entry = extract_index_entry(record)
+        index_payload = (
+            json.dumps(
+                index_entry,
+                ensure_ascii=False,
+                sort_keys=True,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_fd = self._acquire_lock()
         try:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-            fd = os.open(str(self.path), flags, 0o644)
-            try:
-                written = 0
-                while written < len(payload):
-                    written += os.write(fd, payload[written:])
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            self._backfill_index_if_needed()
+            self._append_bytes(self.path, payload)
+            self._append_bytes(self.index_path, index_payload)
         finally:
             self._release_lock(lock_fd)
 
@@ -120,6 +427,71 @@ class ShadowLedger:
                     records.append(parsed)
         return records
 
+    @staticmethod
+    def _load_history_window_from_path(
+        path: str | Path,
+        *,
+        reference_ms: int | None = None,
+        max_age_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Stream JSONL line-by-line into bounded index entries, filtering old records early."""
+        target = Path(path)
+        if not target.exists():
+            return []
+        cutoff_ms: int | None = (
+            reference_ms - max_age_ms
+            if reference_ms is not None and max_age_ms is not None
+            else None
+        )
+        entries: list[dict[str, Any]] = []
+        with target.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                ts = parsed.get("freeze_at_ms")
+                if cutoff_ms is not None:
+                    if not isinstance(ts, int) or isinstance(ts, bool) or ts < cutoff_ms:
+                        continue
+                entry = (
+                    parsed
+                    if parsed.get("schema") == INDEX_SCHEMA
+                    else extract_index_entry(parsed)
+                )
+                entries.append(entry)
+        return entries
+
+
+def select_snapshot_asof_episode(
+    records: list[dict[str, Any]],
+    episode_freeze_ms: int,
+    *,
+    require_replayable_archive: bool = False,
+) -> dict[str, Any] | None:
+    """Return latest snapshot strictly with freeze_at_ms <= episode_freeze_ms."""
+    best: dict[str, Any] | None = None
+    best_ts: int | None = None
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        ts = rec.get("freeze_at_ms")
+        if not isinstance(ts, int) or isinstance(ts, bool) or ts > episode_freeze_ms:
+            continue
+        if require_replayable_archive:
+            archive = rec.get("raw_archive_status")
+            if not isinstance(archive, dict) or archive.get("complete_replayable") is not True:
+                continue
+        if best_ts is None or ts >= best_ts:
+            best = rec
+            best_ts = ts
+    return best
+
 
 def _is_finite_number(val: Any) -> bool:
     return isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(float(val))
@@ -140,7 +512,9 @@ def _extract_side_block(record: dict[str, Any], side: str) -> dict[str, Any] | N
 
 
 def _is_usable_side_record(record: dict[str, Any], side: str) -> tuple[bool, float | None]:
-    if record.get("data_quality") not in VALID_QUALITIES:
+    global_dq = record.get("global_data_quality")
+    eff_quality = global_dq if global_dq is not None else record.get("data_quality")
+    if eff_quality not in VALID_QUALITIES:
         return False, None
     side_block = _extract_side_block(record, side)
     if side_block is None:

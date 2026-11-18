@@ -6,6 +6,7 @@ hard-locked to SHADOW_ONLY (live_veto_enabled=False, player_integration_enabled=
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any
 
@@ -86,6 +87,12 @@ def _evaluate_side_policy(
 ) -> dict[str, Any]:
     side_data = confirmed_cycle.get(side_key)
     data_quality = confirmed_cycle.get("data_quality", "UNKNOWN")
+    global_quality = confirmed_cycle.get("global_data_quality")
+    global_unknown = (
+        global_quality == "UNKNOWN"
+        if global_quality is not None
+        else data_quality == "UNKNOWN"
+    )
     confirmation_status = confirmed_cycle.get("confirmation_status", "UNKNOWN")
 
     if not isinstance(side_data, dict):
@@ -100,11 +107,11 @@ def _evaluate_side_policy(
     reasons: list[str] = []
 
     if (
-        data_quality == "UNKNOWN"
+        global_unknown
         or side_status == "UNKNOWN"
         or not _is_finite_number(gfri_raw)
     ):
-        if data_quality == "UNKNOWN":
+        if global_unknown:
             reasons.append("DATA_QUALITY_UNKNOWN")
         if side_status == "UNKNOWN":
             reasons.append(f"{side_key.upper()}_STATUS_UNKNOWN")
@@ -297,6 +304,14 @@ def _evaluate_side_policy(
     }
 
 
+def _compute_partial_valid_side(put_decision: str, call_decision: str) -> str | None:
+    if put_decision == "UNKNOWN" and call_decision != "UNKNOWN":
+        return "CALL"
+    if call_decision == "UNKNOWN" and put_decision != "UNKNOWN":
+        return "PUT"
+    return None
+
+
 def _combine_decisions(
     put_decision: str,
     call_decision: str,
@@ -363,6 +378,10 @@ def evaluate_shadow_policy(
         put_eval["decision"],
         call_eval["decision"],
     )
+    partial_valid_side = _compute_partial_valid_side(
+        put_eval["decision"],
+        call_eval["decision"],
+    )
     assert shadow_decision in VALID_TOP_DECISIONS
 
     prior_sens = (
@@ -401,6 +420,7 @@ def evaluate_shadow_policy(
             cfg=cfg,
         )
         p_top, p_partial = _combine_decisions(p_res["decision"], c_res["decision"])
+        p_valid_side = _compute_partial_valid_side(p_res["decision"], c_res["decision"])
         sensitivity_comparison["presets"][preset_name] = {
             "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
             "trigger_abs_gfri": t_abs,
@@ -409,6 +429,7 @@ def evaluate_shadow_policy(
             "put_decision": p_res["decision"],
             "call_decision": c_res["decision"],
             "partial_pause_side": p_partial,
+            "partial_valid_side": p_valid_side,
         }
         next_sens_state[preset_name] = {
             "put": p_res["next_state"],
@@ -437,16 +458,38 @@ def evaluate_shadow_policy(
         "put_decision": put_eval["decision"],
         "call_decision": call_eval["decision"],
         "partial_pause_side": partial_pause_side,
+        "partial_valid_side": partial_valid_side,
         "candidate_reason_codes": candidate_reason_codes,
         "no_veto_does_not_imply_safe": True,
         "caveats": caveats,
         "sensitivity_comparison": sensitivity_comparison,
         "next_policy_state": {
+            "last_freeze_at_ms": confirmed_cycle.get("freeze_at_ms"),
             "put": put_eval["next_state"],
             "call": call_eval["next_state"],
             "sensitivity": next_sens_state,
         },
     }
+
+
+def reconstruct_policy_state_from_ledger(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Scan backwards in ledger records to recover the latest valid policy state after a crash."""
+    for rec in reversed(records):
+        if not isinstance(rec, dict):
+            continue
+        pol = rec.get("policy_result")
+        if not isinstance(pol, dict):
+            continue
+        next_state = pol.get("next_policy_state")
+        if not isinstance(next_state, dict):
+            continue
+        if not isinstance(next_state.get("put"), dict) or not isinstance(next_state.get("call"), dict):
+            continue
+        recovered = copy.deepcopy(next_state)
+        if recovered.get("last_freeze_at_ms") is None and rec.get("freeze_at_ms") is not None:
+            recovered["last_freeze_at_ms"] = rec.get("freeze_at_ms")
+        return recovered
+    return None
 
 
 def _side_ratio_summary(side_data: dict[str, Any]) -> dict[str, Any]:
@@ -469,6 +512,7 @@ def build_audit_record(
     long_ref: dict[str, Any],
     policy_result: dict[str, Any],
     *,
+    raw_archive_status: dict[str, Any] | None = None,
     git_commit: str | None = None,
     cfg: GfriConfig = DEFAULT_CONFIG,
 ) -> dict[str, Any]:
@@ -531,6 +575,39 @@ def build_audit_record(
     }
 
     reasons = list(confirmed_cycle.get("reasons", []))
+    failure_reasons = list(reasons)
+    archive_status = (
+        copy.deepcopy(raw_archive_status)
+        if isinstance(raw_archive_status, dict)
+        else {
+            "status": "NOT_CONFIGURED",
+            "complete_replayable": False,
+            "errors": [],
+            "files": {},
+        }
+    )
+    if archive_status.get("status") in ("FAILED", "PARTIAL"):
+        archive_errors = archive_status.get("errors")
+        if isinstance(archive_errors, list):
+            for err in archive_errors:
+                if err is not None and str(err) not in failure_reasons:
+                    failure_reasons.append(str(err))
+        if not archive_errors:
+            fallback_err = f"raw_archive_{str(archive_status.get('status')).lower()}"
+            if fallback_err not in failure_reasons:
+                failure_reasons.append(fallback_err)
+        if archive_status.get("complete_replayable") is True:
+            archive_status["complete_replayable"] = False
+
+    global_dq = confirmed_cycle.get("global_data_quality")
+    if global_dq is None:
+        global_dq = confirmed_cycle.get("data_quality", "UNKNOWN")
+
+    partial_valid_side = confirmed_cycle.get("partial_valid_side")
+    if partial_valid_side is None and isinstance(policy_result, dict):
+        partial_valid_side = policy_result.get("partial_valid_side")
+
+    freeze_at_ms = confirmed_cycle.get("freeze_at_ms")
 
     return {
         "schema": SCHEMA_AUDIT,
@@ -541,10 +618,13 @@ def build_audit_record(
         "player_integration_enabled": LOCKED_PLAYER_INTEGRATION_ENABLED,
         "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
         "config_snapshot": cfg.to_audit_dict(),
-        "freeze_at_ms": confirmed_cycle.get("freeze_at_ms"),
+        "freeze_at_ms": freeze_at_ms,
+        "cycle_asof_ms": freeze_at_ms,
+        "clock_role": "SHADOW_HIGH_FREQ_CYCLE",
         "primary_method": confirmed_cycle.get("primary_method", "UNKNOWN"),
         "comparability": confirmed_cycle.get("comparability"),
         "raw_input_hashes": raw_input_hashes,
+        "raw_archive_status": archive_status,
         "units": dict(UNITS_METADATA),
         "timestamps": confirmed_cycle.get("timestamps", {}),
         "hedge_flows": hedge_flows,
@@ -560,8 +640,10 @@ def build_audit_record(
         "no_veto_does_not_imply_safe": policy_result.get("no_veto_does_not_imply_safe", True),
         "policy_result": policy_result,
         "data_quality": confirmed_cycle.get("data_quality", "UNKNOWN"),
+        "global_data_quality": global_dq,
+        "partial_valid_side": partial_valid_side,
         "confirmation_status": confirmed_cycle.get("confirmation_status", "UNKNOWN"),
-        "failure_reasons": reasons,
+        "failure_reasons": failure_reasons,
         "reasons": reasons,
         # Direct side mirrors so audit records stored in ShadowLedger can be re-read by history.py.
         "put": dict(put_data),

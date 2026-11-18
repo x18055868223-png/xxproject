@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
+import time
+import tracemalloc
 
 import pytest
 
@@ -17,14 +20,18 @@ from research.gfri_v11.config import (
     ShadowFlags,
 )
 from research.gfri_v11.history import (
+    INDEX_SCHEMA,
     MS_PER_DAY,
     ShadowLedger,
     compute_long_term_ref,
     compute_near_term_ref,
+    extract_index_entry,
+    select_snapshot_asof_episode,
 )
 from research.gfri_v11.policy import (
     build_audit_record,
     evaluate_shadow_policy,
+    reconstruct_policy_state_from_ledger,
     render_minimal_console,
 )
 
@@ -670,3 +677,241 @@ def test_cross_side_blip_does_not_suppress_confirmed_opposite_pause() -> None:
     assert pol["put_decision"] == "NO_VETO"
     assert pol["call_decision"] == "SHADOW_PAUSE"
     assert pol["shadow_decision"] == "SHADOW_PAUSE_CALL"
+
+
+def test_p02_side_independence_during_partial_unknown_and_audit_archive() -> None:
+    now = BASE_TS_MS
+    near_hist = _make_ready_near_history(now, put_gfri=2.3, call_gfri=2.3)
+    long_hist = _make_ready_long_history(now, days=35, samples_per_day=2, put_gfri=1.0, call_gfri=1.0)
+
+    # PUT truncated (UNKNOWN) while global_data_quality is VALID and CALL is VALID at 3.0769x
+    cycle = _make_cycle(
+        now,
+        put_gfri=None,
+        call_gfri=3.0769,
+        data_quality="UNKNOWN",
+        put_status="UNKNOWN",
+        call_status="VALID",
+    )
+    cycle["global_data_quality"] = "VALID"
+    cycle["partial_valid_side"] = "CALL"
+
+    near_ref = compute_near_term_ref(near_hist, cycle)
+    long_ref = compute_long_term_ref(long_hist, cycle)
+
+    # 1st spike on CALL -> CALL preserves NO_VETO (not coerced to UNKNOWN), PUT is UNKNOWN, top-level UNKNOWN
+    pol_first = evaluate_shadow_policy(cycle, near_ref, long_ref)
+    assert pol_first["put_decision"] == "UNKNOWN"
+    assert pol_first["call_decision"] == "NO_VETO"
+    assert pol_first["shadow_decision"] == "UNKNOWN"
+    assert pol_first["partial_valid_side"] == "CALL"
+    assert pol_first["partial_pause_side"] is None
+
+    # Sustained spike on CALL -> CALL triggers SHADOW_PAUSE while PUT remains UNKNOWN
+    prior_sustained = {
+        "put": {"active_pause": False, "pause_consecutive": 0, "release_consecutive": 0},
+        "call": {"active_pause": False, "pause_consecutive": 1, "release_consecutive": 0},
+    }
+    pol_sustained = evaluate_shadow_policy(cycle, near_ref, long_ref, prior_state=prior_sustained)
+    assert pol_sustained["put_decision"] == "UNKNOWN"
+    assert pol_sustained["call_decision"] == "SHADOW_PAUSE"
+    assert pol_sustained["shadow_decision"] == "UNKNOWN"
+    assert pol_sustained["partial_valid_side"] == "CALL"
+    assert pol_sustained["partial_pause_side"] == "CALL"
+    assert pol_sustained["next_policy_state"]["last_freeze_at_ms"] == now
+
+    # Audit record includes clock_role, cycle_asof_ms, global_data_quality, partial_valid_side, raw_archive_status
+    audit_failed_archive = build_audit_record(
+        cycle,
+        near_ref,
+        long_ref,
+        pol_sustained,
+        raw_archive_status={
+            "status": "FAILED",
+            "complete_replayable": True,  # must be sanitized to False
+            "errors": ["disk_full_on_raw_capture"],
+            "files": {},
+        },
+    )
+    assert audit_failed_archive["cycle_asof_ms"] == now
+    assert audit_failed_archive["clock_role"] == "SHADOW_HIGH_FREQ_CYCLE"
+    assert audit_failed_archive["global_data_quality"] == "VALID"
+    assert audit_failed_archive["partial_valid_side"] == "CALL"
+    assert audit_failed_archive["raw_archive_status"]["complete_replayable"] is False
+    assert "disk_full_on_raw_capture" in audit_failed_archive["failure_reasons"]
+
+    # If global_data_quality itself is UNKNOWN, both sides must be UNKNOWN
+    cycle_global_bad = dict(cycle, global_data_quality="UNKNOWN")
+    pol_global_bad = evaluate_shadow_policy(cycle_global_bad, near_ref, long_ref)
+    assert pol_global_bad["put_decision"] == "UNKNOWN"
+    assert pol_global_bad["call_decision"] == "UNKNOWN"
+    assert pol_global_bad["shadow_decision"] == "UNKNOWN"
+
+
+def test_p06_bounded_memory_index_and_bit_identical_refs(tmp_path: Path) -> None:
+    now = BASE_TS_MS
+    ledger_path = tmp_path / "gfri_shadow_ledger.jsonl"
+    padding_blob = "x" * 16_500  # ~17KB+ per serialized audit record (~150MB total for 8,640 lines)
+
+    total_records = 8_640  # 60 days at 10-minute intervals
+    start_ts = now - total_records * 10 * 60_000
+
+    # Write 8,640 realistic heavyweight gfri_audit_v11-sized JSONL lines directly
+    template_cycle = _make_cycle(start_ts, put_gfri=1.2, call_gfri=0.6)
+    template_cycle["research_submetrics"] = {"padding": padding_blob}
+    sample_index = extract_index_entry(template_cycle)
+    assert set(sample_index.keys()) == {
+        "schema",
+        "freeze_at_ms",
+        "data_quality",
+        "global_data_quality",
+        "comparability",
+        "put",
+        "call",
+    }
+    assert sample_index["schema"] == INDEX_SCHEMA
+    assert len(json.dumps(sample_index, separators=(",", ":"))) < 600
+
+    with ledger_path.open("w", encoding="utf-8") as fh:
+        for i in range(total_records):
+            ts = start_ts + i * 10 * 60_000
+            put_val = 1.0 + (i % 5) * 0.25
+            call_val = 0.5 + (i % 4) * 0.15
+            rec = {
+                "schema": SCHEMA_AUDIT,
+                "freeze_at_ms": ts,
+                "data_quality": "VALID",
+                "global_data_quality": "VALID",
+                "comparability": template_cycle["comparability"],
+                "put": {
+                    "status": "VALID",
+                    "gfri_confirmed": put_val,
+                    "liquidity_depth_usd": 1_000_000.0,
+                    "raw_hedge_flow_usd": -(put_val * 1_000_000.0),
+                },
+                "call": {
+                    "status": "VALID",
+                    "gfri_confirmed": call_val,
+                    "liquidity_depth_usd": 1_000_000.0,
+                    "raw_hedge_flow_usd": -(call_val * 1_000_000.0),
+                },
+                "config_snapshot": DEFAULT_CONFIG.to_audit_dict(),
+                "sensitivity_comparison": {"presets": {"baseline": {"shadow_decision": "NO_VETO"}}},
+                "sample_refs": [{"sample_idx": 0, "ob_sha256": "abc", "raw_blob": padding_blob}],
+            }
+            fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+
+    assert ledger_path.stat().st_size > 140_000_000
+
+    # Measure peak Python traced memory when streaming via load_history_window
+    tracemalloc.start()
+    try:
+        window_entries = ShadowLedger.load_history_window(
+            ledger_path,
+            reference_ms=now,
+            max_age_ms=60 * MS_PER_DAY,
+        )
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(window_entries) == total_records
+    assert peak_bytes < 32 * 1024 * 1024  # well under 32 MiB budget (vs 128M systemd cap)
+
+    # Verify companion index creation & bit-identical near/long ref vs full load_records
+    small_ledger = ShadowLedger(tmp_path / "compact_test" / "gfri_shadow_ledger.jsonl")
+    for idx in range(20):
+        ts = now - (20 - idx) * 30 * 60_000
+        small_ledger.append_record(_make_cycle(ts, put_gfri=1.0 + idx * 0.05, call_gfri=0.6))
+
+    assert small_ledger.index_path.exists()
+    curr = _make_cycle(now, put_gfri=2.1, call_gfri=0.7)
+    full_recs = small_ledger.load_records()
+    indexed_recs = small_ledger.load_history_window(reference_ms=now, max_age_ms=60 * MS_PER_DAY)
+
+    assert compute_near_term_ref(indexed_recs, curr) == compute_near_term_ref(full_recs, curr)
+    assert compute_long_term_ref(indexed_recs, curr) == compute_long_term_ref(full_recs, curr)
+
+
+def test_p11_crash_recovery_from_ledger_and_stale_lock_recovery(tmp_path: Path) -> None:
+    now = BASE_TS_MS
+    ledger_path = tmp_path / "gfri_shadow_ledger.jsonl"
+    ledger = ShadowLedger(ledger_path, lock_timeout_sec=0.25, stale_lock_timeout_ms=500)
+
+    long_hist = _make_ready_long_history(now, days=35, samples_per_day=2, put_gfri=1.0, call_gfri=0.5)
+    near_hist = _make_ready_near_history(now, put_gfri=1.0, call_gfri=0.5)
+
+    # Cycle 1: first spike -> pause_consecutive becomes 1
+    c1 = _make_cycle(now - 10 * 60_000, put_gfri=2.7, call_gfri=0.5)
+    n1 = compute_near_term_ref(near_hist, c1)
+    l1 = compute_long_term_ref(long_hist, c1)
+    p1 = evaluate_shadow_policy(c1, n1, l1)
+    a1 = build_audit_record(c1, n1, l1, p1)
+    ledger.append_record(a1)
+
+    # Simulate crash BEFORE gfri_policy_state.json is written: recover state solely from ledger
+    recovered = reconstruct_policy_state_from_ledger(ledger.load_records())
+    assert recovered is not None
+    assert recovered["last_freeze_at_ms"] == c1["freeze_at_ms"]
+    assert recovered["put"]["pause_consecutive"] == 1
+
+    # Cycle 2 using recovered state triggers SHADOW_PAUSE_PUT cleanly
+    c2 = _make_cycle(now, put_gfri=2.8, call_gfri=0.5)
+    n2 = compute_near_term_ref(near_hist + [c1], c2)
+    l2 = compute_long_term_ref(long_hist, c2)
+    p2 = evaluate_shadow_policy(c2, n2, l2, prior_state=recovered)
+    assert p2["put_decision"] == "SHADOW_PAUSE"
+    assert p2["shadow_decision"] == "SHADOW_PAUSE_PUT"
+
+    # Simulate stale lockfile older than stale_lock_timeout_ms (500ms)
+    stale_ms = int(time.time() * 1000) - 5_000
+    ledger.lock_path.write_text(
+        json.dumps({"pid": os.getpid(), "created_at_ms": stale_ms}),
+        encoding="utf-8",
+    )
+    old_sec = time.time() - 5.0
+    os.utime(ledger.lock_path, (old_sec, old_sec))
+
+    # append_record must recover the stale lock instead of timing out
+    a2 = build_audit_record(c2, n2, l2, p2)
+    ledger.append_record(a2)
+    assert len(ledger.load_records()) == 2
+
+
+def test_p12_select_snapshot_asof_episode_excludes_future_and_honors_archive() -> None:
+    t_1350 = 1_760_017_800_000  # 13:50 UTC
+    t_1400 = 1_760_018_400_000  # 14:00 UTC (episode freeze)
+    t_1410 = 1_760_019_000_000  # 14:10 UTC (post-freeze)
+
+    records = [
+        {
+            "freeze_at_ms": t_1350,
+            "id": "snap_1350_replayable",
+            "raw_archive_status": {"status": "COMPLETE", "complete_replayable": True},
+        },
+        {
+            "freeze_at_ms": t_1400,
+            "id": "snap_1400_non_replayable",
+            "raw_archive_status": {"status": "PARTIAL", "complete_replayable": False},
+        },
+        {
+            "freeze_at_ms": t_1410,
+            "id": "snap_1410_future",
+            "raw_archive_status": {"status": "COMPLETE", "complete_replayable": True},
+        },
+    ]
+
+    picked_any = select_snapshot_asof_episode(records, t_1400)
+    assert picked_any is not None
+    assert picked_any["id"] == "snap_1400_non_replayable"
+
+    picked_replayable = select_snapshot_asof_episode(
+        records,
+        t_1400,
+        require_replayable_archive=True,
+    )
+    assert picked_replayable is not None
+    assert picked_replayable["id"] == "snap_1350_replayable"
+    assert picked_replayable["freeze_at_ms"] <= t_1400
+
+    assert select_snapshot_asof_episode(records, t_1350 - 1) is None

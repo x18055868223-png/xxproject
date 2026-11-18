@@ -57,19 +57,28 @@ class GfriConfig:
     requested_deribit_depth: int = 1000
     min_deribit_depth_param: int = 1000
     min_book_levels_per_side: int = 10
-    max_ob_skew_ms: int = 15 * 60_000          # 900,000 ms (15 min)
-    max_source_age_ms: int = 60 * 60_000       # 3,600,000 ms (60 min)
-    max_future_drift_ms: int = 5_000           # 5,000 ms NTP allowance vs freeze_at_ms
+    instrument_cache_ttl_ms: int = 24 * 3600_000    # 24h versioned verified spec cache TTL
+    deribit_spec_schema_version: int = 1
+    max_ob_skew_ms: int = 15 * 60_000               # 900,000 ms (15 min GEX vs OB skew)
+    max_ob_age_ms: int = 60_000                     # 60,000 ms (60s candidate OB age vs freeze; UNVALIDATED)
+    max_ob_receive_lag_ms: int = 30_000             # 30,000 ms (30s candidate exchange->HTTP receive lag; UNVALIDATED)
+    max_source_age_ms: int = 60 * 60_000            # 3,600,000 ms (60 min GEX source age)
+    max_future_drift_ms: int = 5_000                # 5,000 ms NTP allowance vs freeze_at_ms
     max_price_divergence_degraded_pct: float = 0.002   # 0.20%
     max_price_divergence_fail_pct: float = 0.005       # 0.50%
-    max_spread_pct: float = 0.01               # 1.00% corrupt/dislocated spread guard
+    max_spread_pct: float = 0.01                    # 1.00% corrupt/dislocated spread guard
 
-    # Confirmation channel (G2.3) - 3 pre-freeze OB samples spaced ~20s apart
+    # Confirmation channel (G2.3) - 3 pre-freeze OB samples spaced ~15s apart (<60s OB age)
     confirm_sample_count: int = 3
-    confirm_interval_sec: float = 20.0
-    confirm_window_ms: int = 180_000           # 3 min max span across confirmation samples
+    confirm_interval_sec: float = 15.0
+    confirm_window_ms: int = 180_000                # 3 min max span across confirmation samples
     min_confirm_valid_samples: int = 2
-    max_confirm_spread_ratio: float = 2.0      # max/min flag threshold inside confirmation trio
+    max_confirm_spread_ratio: float = 2.0           # max/min flag threshold inside confirmation trio
+    max_two_sample_divergence_ratio: float = 2.0    # conflict guard when only 2 valid samples exist
+
+    # Bounded storage & crash-recovery locks (P0-6 / P1-1)
+    stale_lock_timeout_ms: int = 60_000             # Break stale lockfiles older than 60s
+    raw_capture_retention_days: int = 7             # Non-destructive cold compression / archive horizon
 
     # History reference & cold start (G3) - UNVALIDATED_CANDIDATE_PARAMS
     near_window_ms: int = 4 * 3600_000         # 4 hours

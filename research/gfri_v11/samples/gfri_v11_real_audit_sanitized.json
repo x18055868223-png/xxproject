@@ -1,7 +1,7 @@
 {
   "schema": "gfri_audit_v11",
   "code_version": "1.1.0",
-  "git_commit": "f3911c06c7e5",
+  "git_commit": "20a2bbc7cdc3",
   "decision_authority": "SHADOW_ONLY",
   "live_veto_enabled": false,
   "player_integration_enabled": false,
@@ -15,17 +15,24 @@
     "requested_deribit_depth": 1000,
     "min_deribit_depth_param": 1000,
     "min_book_levels_per_side": 10,
+    "instrument_cache_ttl_ms": 86400000,
+    "deribit_spec_schema_version": 1,
     "max_ob_skew_ms": 900000,
+    "max_ob_age_ms": 60000,
+    "max_ob_receive_lag_ms": 30000,
     "max_source_age_ms": 3600000,
     "max_future_drift_ms": 5000,
     "max_price_divergence_degraded_pct": 0.002,
     "max_price_divergence_fail_pct": 0.005,
     "max_spread_pct": 0.01,
     "confirm_sample_count": 3,
-    "confirm_interval_sec": 20.0,
+    "confirm_interval_sec": 15.0,
     "confirm_window_ms": 180000,
     "min_confirm_valid_samples": 2,
     "max_confirm_spread_ratio": 2.0,
+    "max_two_sample_divergence_ratio": 2.0,
+    "stale_lock_timeout_ms": 60000,
+    "raw_capture_retention_days": 7,
     "near_window_ms": 14400000,
     "min_near_samples": 4,
     "long_window_days": 60,
@@ -68,7 +75,9 @@
     },
     "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS"
   },
-  "freeze_at_ms": 1795013209448,
+  "freeze_at_ms": 1795021161079,
+  "cycle_asof_ms": 1795021161079,
+  "clock_role": "SHADOW_HIGH_FREQ_CYCLE",
   "primary_method": "HEDGE_FLOW_NATIVE",
   "comparability": {
     "methodology_version": "deribit_coin_only_v1",
@@ -78,42 +87,52 @@
     "code_version": "1.1.0"
   },
   "raw_input_hashes": {
-    "gex_sha256": "9d2142eaaaea4d87b6aad79597c5ea22277cce5c661f514728e70b97b5ba3643",
-    "ob_sha256": "f6cf09456b20d5d33ef93a0524bcec98856d5810ae1761c2fe2e5f432423917e",
-    "gex_snapshot_id": "gex:deribit:btc:7371b254a877fd055b66d740",
-    "gex_universe_hash": "a9ae64eeba6a42423a1ec3f130e2706fb8cabd5d99b1383d7b8638fcc33f67de",
+    "gex_sha256": "d88b65f075dc84ee6e902195ddb282db08d9ef1d2becad0e0066cd589c34008a",
+    "ob_sha256": "5cc779a8d39719e2d09be78228917dc320f44e73f4c5f633846abd1d9c0518ed",
+    "gex_snapshot_id": "gex:deribit:btc:5744d800bf600f31535ffccc",
+    "gex_universe_hash": "95de2acc3011e489cf06d29e5a3c643a422a4438b2a9f88f2c5cadfda341526f",
     "sample_refs": [
       {
-        "ob_timestamp_ms": 1795013190972,
-        "ob_sha256": "3261bbc731c816f02650c20744254458d62bad2fbbb970030114704e8ebbd1cb",
+        "ob_timestamp_ms": 1795021138972,
+        "ob_sha256": "c5f58134f841cf441ef2f8a022ca2dac5471e49cc53b07ef6153355a5fa5753c",
         "data_quality": "DEGRADED",
-        "gfri_down_1pct": 4.71565801419493,
-        "gfri_up_1pct": 6.775054368124708,
+        "gfri_down_1pct": 5.546690284184934,
+        "gfri_up_1pct": 5.324354565586437,
         "reasons": [
-          "secondary_venues_unavailable:bybit,okx,binance"
+          "secondary_venues_unavailable:bybit,okx,binance",
+          "price_basis_divergence_degraded"
         ]
       },
       {
-        "ob_timestamp_ms": 1795013197730,
-        "ob_sha256": "80b1f4d538b53e2e7f0ae651c0937efecf203dfadc28a688c4f2b09bfdc63dde",
+        "ob_timestamp_ms": 1795021147258,
+        "ob_sha256": "556fbc2204c8a23288e5543d8d4c07c70263c1585816921963f90d61e8cb846f",
         "data_quality": "DEGRADED",
-        "gfri_down_1pct": 4.745420097666525,
-        "gfri_up_1pct": 6.998988487366655,
+        "gfri_down_1pct": 5.147290305557255,
+        "gfri_up_1pct": 5.337645414651487,
         "reasons": [
-          "secondary_venues_unavailable:bybit,okx,binance"
+          "secondary_venues_unavailable:bybit,okx,binance",
+          "price_basis_divergence_degraded"
         ]
       },
       {
-        "ob_timestamp_ms": 1795013206917,
-        "ob_sha256": "f6cf09456b20d5d33ef93a0524bcec98856d5810ae1761c2fe2e5f432423917e",
+        "ob_timestamp_ms": 1795021156626,
+        "ob_sha256": "5cc779a8d39719e2d09be78228917dc320f44e73f4c5f633846abd1d9c0518ed",
         "data_quality": "DEGRADED",
-        "gfri_down_1pct": 4.7735974315304155,
-        "gfri_up_1pct": 8.596479462129023,
+        "gfri_down_1pct": 5.328423608393869,
+        "gfri_up_1pct": 5.371208633610025,
         "reasons": [
-          "secondary_venues_unavailable:bybit,okx,binance"
+          "secondary_venues_unavailable:bybit,okx,binance",
+          "price_basis_divergence_degraded"
         ]
       }
     ]
+  },
+  "raw_archive_status": {
+    "status": "NOT_CONFIGURED",
+    "complete_replayable": false,
+    "errors": [],
+    "files": {},
+    "cycle_dir": null
   },
   "units": {
     "gfri": "ratio_x",
@@ -123,152 +142,163 @@
     "oi_lag": "hours"
   },
   "timestamps": {
-    "freeze_at_ms": 1795013209448,
-    "gex_data_ts_ms": 1795012929336,
-    "gex_computed_at_ms": 1795013186923,
-    "gex_received_at_ms": 1795013187867,
-    "gex_age_ms": 280112,
-    "ob_timestamp_ms": 1795013206917,
-    "ob_exchange_ts_ms": 1795013206917,
-    "ob_received_at_ms": 1795013207216,
-    "ob_skew_ms": 277581,
+    "freeze_at_ms": 1795021161079,
+    "gex_data_ts_ms": 1795021084760,
+    "gex_computed_at_ms": 1795021132550,
+    "gex_received_at_ms": 1795021134912,
+    "gex_age_ms": 76319,
+    "ob_timestamp_ms": 1795021156626,
+    "ob_exchange_ts_ms": 1795021156626,
+    "ob_received_at_ms": 1795021157398,
+    "ob_age_ms": 4453,
+    "ob_received_age_ms": 3681,
+    "ob_exchange_to_recv_ms": 772,
+    "ob_skew_ms": 71866,
     "oi_source_lag_hours": 8,
     "oi_lag_note": "deribit_public_oi_reported_with_8h_delay_per_docs"
   },
   "hedge_flows": {
     "down_1pct": {
       "side": "PUT",
-      "raw_hedge_flow_usd": -127640648.89,
-      "signed_ratio": 4.745420097666525,
+      "raw_hedge_flow_usd": -127871456.47,
+      "signed_ratio": 5.328423608393869,
       "is_amplifying": true
     },
     "up_1pct": {
       "side": "CALL",
-      "raw_hedge_flow_usd": 125308560.07,
-      "signed_ratio": 6.998988487366655,
+      "raw_hedge_flow_usd": 127933112.31,
+      "signed_ratio": 5.337645414651487,
       "is_amplifying": true
     }
   },
   "order_book": {
-    "put_liquidity_depth_usd": 26897650.0,
-    "call_liquidity_depth_usd": 17903810.0,
+    "put_liquidity_depth_usd": 23997990.0,
+    "call_liquidity_depth_usd": 23968080.0,
     "put_sample_depths_usd": [
-      27067410.0,
-      26897650.0,
-      26738880.0
+      23053650.0,
+      24842480.0,
+      23997990.0
     ],
     "call_sample_depths_usd": [
-      18495580.0,
-      17903810.0,
-      14576730.0
+      24027910.0,
+      23968080.0,
+      23818310.0
     ],
-    "gex_spot_usd": 63138.64,
-    "ob_ref_price_usd": 63138.75,
-    "total_open_interest": 394356.6,
+    "gex_spot_usd": 62439.79,
+    "ob_ref_price_usd": 62622.75,
+    "total_open_interest": 394951.7,
     "depth_coverage": {
-      "bid_levels": 675,
-      "ask_levels": 984,
-      "deribit_depth_param": 1000
+      "bid_levels": 592,
+      "ask_levels": 952,
+      "deribit_depth_param": 1000,
+      "ob_bid_coverage_pct": 89.27067239940757,
+      "ob_ask_coverage_pct": 379.05912787285774
     }
   },
   "ratios": {
     "put": {
-      "status": "VALID",
-      "gfri_confirmed": 4.745420097666525,
-      "gfri_fast_max": 4.7735974315304155,
-      "gfri_fast_min": 4.71565801419493,
-      "gfri_latest_raw": 4.7735974315304155,
-      "spread_ratio": 1.0122866028794026,
+      "status": "DEGRADED",
+      "gfri_confirmed": 5.328423608393869,
+      "gfri_fast_max": 5.546690284184934,
+      "gfri_fast_min": 5.147290305557255,
+      "gfri_latest_raw": 5.328423608393869,
+      "spread_ratio": 1.0775942204379785,
       "single_blip_detected": false,
       "valid_count": 3,
       "sample_count": 3
     },
     "call": {
-      "status": "VALID",
-      "gfri_confirmed": 6.998988487366655,
-      "gfri_fast_max": 8.596479462129023,
-      "gfri_fast_min": 6.775054368124708,
-      "gfri_latest_raw": 8.596479462129023,
-      "spread_ratio": 1.2688428749109026,
+      "status": "DEGRADED",
+      "gfri_confirmed": 5.337645414651487,
+      "gfri_fast_max": 5.371208633610025,
+      "gfri_fast_min": 5.324354565586437,
+      "gfri_latest_raw": 5.371208633610025,
+      "spread_ratio": 1.0087999526414761,
       "single_blip_detected": false,
       "valid_count": 3,
       "sample_count": 3
     }
   },
   "cross_venue_ref": {
-    "status": "VALID",
-    "reason": null,
-    "reasons": [],
-    "down_status": "VALID",
-    "up_status": "VALID",
-    "down_reason": null,
-    "up_reason": null,
-    "down_usd": 104908462.44095,
-    "up_usd": 86917816.13607,
-    "ref_price": 63178.35,
-    "spread_pct": 1.5828206972800017e-06,
-    "price_divergence_pct": 0.000628933407498166,
-    "down_bound_usd": 62546.5665,
-    "up_bound_usd": 63810.1335,
-    "min_bid_usd": 62445.0,
-    "max_ask_usd": 64069.8,
+    "status": "DEGRADED",
+    "global_status": "DEGRADED",
+    "reason": "price_basis_divergence_degraded",
+    "reasons": [
+      "price_basis_divergence_degraded"
+    ],
+    "down_status": "DEGRADED",
+    "up_status": "DEGRADED",
+    "down_reason": "price_basis_divergence_degraded",
+    "up_reason": "price_basis_divergence_degraded",
+    "down_usd": 80530294.693,
+    "up_usd": 88709723.28184,
+    "ref_price": 62669.55,
+    "spread_pct": 1.5956712629977398e-06,
+    "price_divergence_pct": 0.0036797048804936726,
+    "down_bound_usd": 62042.8545,
+    "up_bound_usd": 63296.2455,
+    "min_bid_usd": 61849.3,
+    "max_ask_usd": 63533.7,
     "bids_count": 5000,
     "asks_count": 5000,
     "depth_unit": "usd_okx_linear_ctval",
-    "ob_timestamp_ms": 1795013208003,
+    "ob_timestamp_ms": 1795021159002,
     "skew_ms": null,
+    "ob_age_ms": null,
+    "ob_received_age_ms": null,
+    "ob_exchange_to_recv_ms": null,
     "venue": "okx",
     "non_blocking": true,
     "inst_id": "BTC-USDT-SWAP",
     "ct_val": 0.01,
     "ct_val_ccy": "BTC",
     "ct_type": "linear",
-    "okx_sha256": "db89083114a1f85979e6b09763d45e87071e348a29d4839ce7970a3231a41f38",
-    "ratio_okx_to_deribit_down": 3.923442658815553,
-    "ratio_okx_to_deribit_up": 5.962778766984776,
-    "gfri_down_1pct_okx": 1.2166859176097953,
-    "gfri_up_1pct_okx": 1.4416901579053623
+    "okx_sha256": "b2dfabd80f79e9984f3742f6da786034b8cc4a4eb7a777cf736c658041477ddf",
+    "ratio_okx_to_deribit_down": 3.3557099862530153,
+    "ratio_okx_to_deribit_up": 3.7244339872073207,
+    "gfri_down_1pct_okx": 1.5878677329752162,
+    "gfri_up_1pct_okx": 1.4421543386348217
   },
   "research_submetrics": {
     "zero_dte_share": {
-      "zero_dte_gex_usd": -5371139.795635984,
-      "total_net_gex_usd": -126838138.53,
-      "share_signed": 0.04234640982503533,
-      "share_abs_pct": 4.234640982503533
+      "zero_dte_gex_usd": -7095208.8824655805,
+      "total_net_gex_usd": -128302945.93,
+      "share_signed": 0.05530043625293382,
+      "share_abs_pct": 5.5300436252933824
     },
     "down_0p5pct": {
       "status": "DEGRADED",
-      "reason": null,
+      "reason": "price_basis_divergence_degraded",
       "sign_ds": -1,
       "method": "NET_GEX_LINEAR",
       "method_tier": "RESEARCH_LINEAR_0P5PCT",
       "curve_used": "total_net_gex_linear",
-      "raw_hedge_flow_usd": -63419069.265,
-      "signed_ratio": 3.361901037423035,
-      "amplifying_pressure_usd": 63419069.265,
-      "liquidity_depth_usd": 18864050.0,
-      "gfri": 3.361901037423035,
+      "raw_hedge_flow_usd": -64151472.965,
+      "signed_ratio": 3.3230410159517847,
+      "amplifying_pressure_usd": 64151472.965,
+      "liquidity_depth_usd": 19305050.0,
+      "gfri": 3.3230410159517847,
       "is_amplifying": true
     },
     "up_0p5pct": {
       "status": "DEGRADED",
-      "reason": null,
+      "reason": "price_basis_divergence_degraded",
       "sign_ds": 1,
       "method": "NET_GEX_LINEAR",
       "method_tier": "RESEARCH_LINEAR_0P5PCT",
       "curve_used": "total_net_gex_linear",
-      "raw_hedge_flow_usd": 63419069.265,
-      "signed_ratio": 4.612899817066961,
-      "amplifying_pressure_usd": 63419069.265,
-      "liquidity_depth_usd": 13748200.0,
-      "gfri": 4.612899817066961,
+      "raw_hedge_flow_usd": 64151472.965,
+      "signed_ratio": 2.8682996879594094,
+      "amplifying_pressure_usd": 64151472.965,
+      "liquidity_depth_usd": 22365680.0,
+      "gfri": 2.8682996879594094,
       "is_amplifying": true
     }
   },
   "near_ref": {
     "schema_version": "gfri_near_ref_v11",
     "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
-    "freeze_at_ms": 1795013209448,
+    "freeze_at_ms": 1795021161079,
     "window_ms": 14400000,
     "min_near_samples": 4,
     "put": {
@@ -277,7 +307,7 @@
       "insufficient_history": true,
       "sample_count": 0,
       "min_near_samples": 4,
-      "current_gfri": 4.745420097666525,
+      "current_gfri": 5.328423608393869,
       "recent_median": null,
       "delta_abs": null,
       "delta_ratio": null,
@@ -296,7 +326,7 @@
       "insufficient_history": true,
       "sample_count": 0,
       "min_near_samples": 4,
-      "current_gfri": 6.998988487366655,
+      "current_gfri": 5.337645414651487,
       "recent_median": null,
       "delta_abs": null,
       "delta_ratio": null,
@@ -313,7 +343,7 @@
   "long_ref": {
     "schema_version": "gfri_long_ref_v11",
     "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
-    "freeze_at_ms": 1795013209448,
+    "freeze_at_ms": 1795021161079,
     "window_days": 60,
     "half_life_days": 14.0,
     "put": {
@@ -364,6 +394,7 @@
     "put_decision": "WARMING_UP",
     "call_decision": "WARMING_UP",
     "partial_pause_side": null,
+    "partial_valid_side": null,
     "candidate_reason_codes": {
       "put": [
         "NEAR_HISTORY_WARMING_UP"
@@ -387,7 +418,8 @@
           "shadow_decision": "WARMING_UP",
           "put_decision": "WARMING_UP",
           "call_decision": "WARMING_UP",
-          "partial_pause_side": null
+          "partial_pause_side": null,
+          "partial_valid_side": null
         },
         "baseline": {
           "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
@@ -396,7 +428,8 @@
           "shadow_decision": "WARMING_UP",
           "put_decision": "WARMING_UP",
           "call_decision": "WARMING_UP",
-          "partial_pause_side": null
+          "partial_pause_side": null,
+          "partial_valid_side": null
         },
         "conservative": {
           "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
@@ -405,11 +438,13 @@
           "shadow_decision": "WARMING_UP",
           "put_decision": "WARMING_UP",
           "call_decision": "WARMING_UP",
-          "partial_pause_side": null
+          "partial_pause_side": null,
+          "partial_valid_side": null
         }
       }
     },
     "next_policy_state": {
+      "last_freeze_at_ms": 1795021161079,
       "put": {
         "active_pause": false,
         "pause_consecutive": 0,
@@ -469,84 +504,92 @@
     }
   },
   "data_quality": "DEGRADED",
+  "global_data_quality": "DEGRADED",
+  "partial_valid_side": null,
   "confirmation_status": "CONFIRMED",
   "failure_reasons": [
+    "price_basis_divergence_degraded",
     "secondary_venues_unavailable:bybit,okx,binance"
   ],
   "reasons": [
+    "price_basis_divergence_degraded",
     "secondary_venues_unavailable:bybit,okx,binance"
   ],
   "put": {
     "side": "PUT",
     "shock": "down_1pct",
     "direction": "down_1pct",
-    "status": "VALID",
+    "status": "DEGRADED",
     "confirmation_status": "CONFIRMED",
     "valid_sample_count": 3,
     "valid_count": 3,
     "sample_count": 3,
-    "gfri_confirmed": 4.745420097666525,
-    "gfri_fast_max": 4.7735974315304155,
-    "gfri_fast_min": 4.71565801419493,
-    "gfri_latest_raw": 4.7735974315304155,
-    "raw_hedge_flow_usd": -127640648.89,
-    "liquidity_depth_usd": 26897650.0,
-    "signed_ratio": 4.745420097666525,
+    "gfri_confirmed": 5.328423608393869,
+    "gfri_fast_max": 5.546690284184934,
+    "gfri_fast_min": 5.147290305557255,
+    "gfri_latest_raw": 5.328423608393869,
+    "raw_hedge_flow_usd": -127871456.47,
+    "liquidity_depth_usd": 23997990.0,
+    "signed_ratio": 5.328423608393869,
     "is_amplifying": true,
-    "spread_ratio": 1.0122866028794026,
+    "spread_ratio": 1.0775942204379785,
     "single_blip_detected": false,
     "samples_gfri": [
-      4.71565801419493,
-      4.745420097666525,
-      4.7735974315304155
+      5.546690284184934,
+      5.147290305557255,
+      5.328423608393869
     ],
     "sample_values": [
-      4.71565801419493,
-      4.745420097666525,
-      4.7735974315304155
+      5.546690284184934,
+      5.147290305557255,
+      5.328423608393869
     ],
     "sample_depths_usd": [
-      27067410.0,
-      26897650.0,
-      26738880.0
+      23053650.0,
+      24842480.0,
+      23997990.0
     ],
-    "reasons": []
+    "reasons": [
+      "price_basis_divergence_degraded"
+    ]
   },
   "call": {
     "side": "CALL",
     "shock": "up_1pct",
     "direction": "up_1pct",
-    "status": "VALID",
+    "status": "DEGRADED",
     "confirmation_status": "CONFIRMED",
     "valid_sample_count": 3,
     "valid_count": 3,
     "sample_count": 3,
-    "gfri_confirmed": 6.998988487366655,
-    "gfri_fast_max": 8.596479462129023,
-    "gfri_fast_min": 6.775054368124708,
-    "gfri_latest_raw": 8.596479462129023,
-    "raw_hedge_flow_usd": 125308560.07,
-    "liquidity_depth_usd": 17903810.0,
-    "signed_ratio": 6.998988487366655,
+    "gfri_confirmed": 5.337645414651487,
+    "gfri_fast_max": 5.371208633610025,
+    "gfri_fast_min": 5.324354565586437,
+    "gfri_latest_raw": 5.371208633610025,
+    "raw_hedge_flow_usd": 127933112.31,
+    "liquidity_depth_usd": 23968080.0,
+    "signed_ratio": 5.337645414651487,
     "is_amplifying": true,
-    "spread_ratio": 1.2688428749109026,
+    "spread_ratio": 1.0087999526414761,
     "single_blip_detected": false,
     "samples_gfri": [
-      6.775054368124708,
-      6.998988487366655,
-      8.596479462129023
+      5.324354565586437,
+      5.337645414651487,
+      5.371208633610025
     ],
     "sample_values": [
-      6.775054368124708,
-      6.998988487366655,
-      8.596479462129023
+      5.324354565586437,
+      5.337645414651487,
+      5.371208633610025
     ],
     "sample_depths_usd": [
-      18495580.0,
-      17903810.0,
-      14576730.0
+      24027910.0,
+      23968080.0,
+      23818310.0
     ],
-    "reasons": []
+    "reasons": [
+      "price_basis_divergence_degraded"
+    ]
   },
   "sanitized": true,
   "sanitization_note": "Derived purely from public market feeds and computed audit fields; no credentials or secrets."

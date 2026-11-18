@@ -25,6 +25,7 @@ from research.gfri_v11.core import (
     confirm_cycle_observations,
     evaluate_single_observation,
     extract_gex_snapshot,
+    validate_verified_spec_cache,
 )
 
 # Resolve shared raw_captures from sibling gfri-v1-research worktree if present
@@ -140,14 +141,41 @@ def _make_gex_payload(
     }
 
 
-def _make_deribit_instrument() -> dict:
+def _make_deribit_instrument(
+    *,
+    quote_currency: str = "USD",
+    instrument_type: str = "reversed",
+    contract_size: float = 10.0,
+) -> dict:
     return {
         "result": {
             "instrument_name": "BTC-PERPETUAL",
-            "quote_currency": "USD",
-            "instrument_type": "reversed",
-            "contract_size": 10.0,
+            "quote_currency": quote_currency,
+            "instrument_type": instrument_type,
+            "contract_size": contract_size,
         }
+    }
+
+
+def _make_verified_spec_cache(
+    *,
+    verified_at_ms: int,
+    expires_at_ms: int,
+    schema_version: int = 1,
+    quote_currency: str = "USD",
+    instrument_type: str = "reversed",
+    contract_size: float = 10.0,
+    depth_unit: str = "usd",
+) -> dict:
+    return {
+        "schema_version": schema_version,
+        "instrument_name": "BTC-PERPETUAL",
+        "quote_currency": quote_currency,
+        "instrument_type": instrument_type,
+        "contract_size": contract_size,
+        "depth_unit": depth_unit,
+        "verified_at_ms": verified_at_ms,
+        "expires_at_ms": expires_at_ms,
     }
 
 
@@ -235,7 +263,12 @@ class TestGfriCoreV11(unittest.TestCase):
             po_up_1pct=-90_000_000.0,   # Dealer sells on +1% rally (dampening)
         )
         ob = _make_deribit_book(ts_ms=ts_ob)
-        res = evaluate_single_observation(gex, ob, freeze_at_ms=ts_ob + 100)
+        res = evaluate_single_observation(
+            gex,
+            ob,
+            freeze_at_ms=ts_ob + 100,
+            deribit_instrument=_make_deribit_instrument(),
+        )
         self.assertEqual(res["data_quality"], "VALID")
         self.assertEqual(res["gfri_down_1pct"], 0.0)
         self.assertEqual(res["gfri_up_1pct"], 0.0)
@@ -251,8 +284,9 @@ class TestGfriCoreV11(unittest.TestCase):
         gex = _make_gex_payload(ts_ms=ts_ob - 10_000, computed_at_ms=ts_ob - 9_000)
         ob_full = _make_deribit_book(ts_ms=ts_ob, bid_amount=10_000.0, ask_amount=10_000.0)
         ob_half = _make_deribit_book(ts_ms=ts_ob, bid_amount=5_000.0, ask_amount=5_000.0)
-        res_full = evaluate_single_observation(gex, ob_full, freeze_at_ms=ts_ob + 100)
-        res_half = evaluate_single_observation(gex, ob_half, freeze_at_ms=ts_ob + 100)
+        inst = _make_deribit_instrument()
+        res_full = evaluate_single_observation(gex, ob_full, freeze_at_ms=ts_ob + 100, deribit_instrument=inst)
+        res_half = evaluate_single_observation(gex, ob_half, freeze_at_ms=ts_ob + 100, deribit_instrument=inst)
         self.assertAlmostEqual(res_half["gfri_down_1pct"], 2.0 * res_full["gfri_down_1pct"], places=9)
         self.assertAlmostEqual(res_half["gfri_up_1pct"], 2.0 * res_full["gfri_up_1pct"], places=9)
 
@@ -260,7 +294,12 @@ class TestGfriCoreV11(unittest.TestCase):
         ts_ob = 1_795_006_275_000
         gex = _make_gex_payload(ts_ms=ts_ob - 10_000, computed_at_ms=ts_ob - 9_000)
         ob_zero = _make_deribit_book(ts_ms=ts_ob, bid_amount=0.0, ask_amount=0.0)
-        res = evaluate_single_observation(gex, ob_zero, freeze_at_ms=ts_ob + 100)
+        res = evaluate_single_observation(
+            gex,
+            ob_zero,
+            freeze_at_ms=ts_ob + 100,
+            deribit_instrument=_make_deribit_instrument(),
+        )
         self.assertEqual(res["data_quality"], "UNKNOWN")
         self.assertIsNone(res["gfri_down_1pct"])
         self.assertIsNone(res["gfri_up_1pct"])
@@ -442,11 +481,13 @@ class TestGfriCoreV11(unittest.TestCase):
             po_up_1pct=150_000.0,
         )
         # Sustained halved bids -> 20 levels * 5k = 100k -> GFRI = 300k / 100k = 3.0 >= 2.5
+        inst = _make_deribit_instrument()
         sustained_obs = [
             evaluate_single_observation(
                 gex,
                 _make_deribit_book(ts_ms=base_ob_ts + i * 20_000, bid_amount=5_000.0, ask_amount=15_000.0),
                 freeze_at_ms=freeze,
+                deribit_instrument=inst,
             )
             for i in range(3)
         ]
@@ -465,16 +506,19 @@ class TestGfriCoreV11(unittest.TestCase):
                 gex,
                 _make_deribit_book(ts_ms=base_ob_ts + 0, bid_amount=10_000.0, ask_amount=15_000.0),
                 freeze_at_ms=freeze,
+                deribit_instrument=inst,
             ),
             evaluate_single_observation(
                 gex,
                 _make_deribit_book(ts_ms=base_ob_ts + 20_000, bid_amount=5_000.0, ask_amount=15_000.0),
                 freeze_at_ms=freeze,
+                deribit_instrument=inst,
             ),
             evaluate_single_observation(
                 gex,
                 _make_deribit_book(ts_ms=base_ob_ts + 40_000, bid_amount=10_000.0, ask_amount=15_000.0),
                 freeze_at_ms=freeze,
+                deribit_instrument=inst,
             ),
         ]
         c_blip = confirm_cycle_observations(blip_obs, freeze_at_ms=freeze)
@@ -489,9 +533,17 @@ class TestGfriCoreV11(unittest.TestCase):
         freeze = base_ob_ts + 50_000
         gex1 = _make_gex_payload(ts_ms=base_ob_ts - 60_000, snapshot_id="snap_1")
         gex2 = _make_gex_payload(ts_ms=base_ob_ts - 30_000, snapshot_id="snap_2")
+        inst = _make_deribit_instrument()
 
         # 1 valid observation only -> < min_confirm_valid_samples on BOTH sides -> UNKNOWN
-        obs_one = [evaluate_single_observation(gex1, _make_deribit_book(ts_ms=base_ob_ts), freeze_at_ms=freeze)]
+        obs_one = [
+            evaluate_single_observation(
+                gex1,
+                _make_deribit_book(ts_ms=base_ob_ts),
+                freeze_at_ms=freeze,
+                deribit_instrument=inst,
+            )
+        ]
         c_one = confirm_cycle_observations(obs_one, freeze_at_ms=freeze)
         self.assertEqual(c_one["data_quality"], "UNKNOWN")
         self.assertEqual(c_one["put"]["confirmation_status"], "INSUFFICIENT_CONFIRMATIONS")
@@ -502,7 +554,12 @@ class TestGfriCoreV11(unittest.TestCase):
         # Keep bids full, truncate asks to 10 levels inside 50250 (< 50500)
         trunc_asks_book["result"]["asks"] = trunc_asks_book["result"]["asks"][:10]
         obs_partial = [
-            evaluate_single_observation(gex1, copy.deepcopy(trunc_asks_book), freeze_at_ms=freeze),
+            evaluate_single_observation(
+                gex1,
+                copy.deepcopy(trunc_asks_book),
+                freeze_at_ms=freeze,
+                deribit_instrument=inst,
+            ),
             evaluate_single_observation(
                 gex2,
                 {
@@ -512,6 +569,7 @@ class TestGfriCoreV11(unittest.TestCase):
                     }
                 },
                 freeze_at_ms=freeze,
+                deribit_instrument=inst,
             ),
         ]
         c_partial = confirm_cycle_observations(obs_partial, freeze_at_ms=freeze)
@@ -523,8 +581,18 @@ class TestGfriCoreV11(unittest.TestCase):
 
         # Confirm window exceeded (> 180s) -> UNKNOWN
         obs_wide = [
-            evaluate_single_observation(gex1, _make_deribit_book(ts_ms=base_ob_ts), freeze_at_ms=freeze + 200_000),
-            evaluate_single_observation(gex1, _make_deribit_book(ts_ms=base_ob_ts + 200_000), freeze_at_ms=freeze + 200_000),
+            evaluate_single_observation(
+                gex1,
+                _make_deribit_book(ts_ms=base_ob_ts),
+                freeze_at_ms=freeze + 200_000,
+                deribit_instrument=inst,
+            ),
+            evaluate_single_observation(
+                gex1,
+                _make_deribit_book(ts_ms=base_ob_ts + 200_000),
+                freeze_at_ms=freeze + 200_000,
+                deribit_instrument=inst,
+            ),
         ]
         c_wide = confirm_cycle_observations(obs_wide, freeze_at_ms=freeze + 200_000)
         self.assertEqual(c_wide["data_quality"], "UNKNOWN")
@@ -550,6 +618,7 @@ class TestGfriCoreV11(unittest.TestCase):
             gex,
             ob,
             freeze_at_ms=freeze,
+            deribit_instrument=_make_deribit_instrument(),
             okx_book={"code": "50000", "data": []},
             okx_instrument=okx_inst,
         )
@@ -595,10 +664,11 @@ class TestGfriCoreV11(unittest.TestCase):
     def test_missing_spot_fails_closed_and_two_of_three_high_is_not_ratio_blip(self) -> None:
         ts_ob = 1_795_010_000_000
         freeze = ts_ob + 100
+        inst = _make_deribit_instrument()
         gex_no_spot = _make_gex_payload(ts_ms=ts_ob - 10_000)
         gex_no_spot["asset_price"] = None
         ob = _make_deribit_book(ts_ms=ts_ob)
-        res_no_spot = evaluate_single_observation(gex_no_spot, ob, freeze_at_ms=freeze)
+        res_no_spot = evaluate_single_observation(gex_no_spot, ob, freeze_at_ms=freeze, deribit_instrument=inst)
         self.assertEqual(res_no_spot["data_quality"], "UNKNOWN")
         self.assertIn("missing_or_invalid_spot_usd", res_no_spot["reasons"])
 
@@ -608,21 +678,328 @@ class TestGfriCoreV11(unittest.TestCase):
             gex,
             _make_deribit_book(ts_ms=ts_ob - 40_000, bid_amount=12_000_000.0, ask_amount=12_000_000.0),
             freeze_at_ms=freeze,
+            deribit_instrument=inst,
         )
         obs_h1 = evaluate_single_observation(
             gex,
             _make_deribit_book(ts_ms=ts_ob - 20_000, bid_amount=1_500_000.0, ask_amount=1_500_000.0),
             freeze_at_ms=freeze,
+            deribit_instrument=inst,
         )
         obs_h2 = evaluate_single_observation(
             gex,
             _make_deribit_book(ts_ms=ts_ob, bid_amount=1_463_415.0, ask_amount=1_463_415.0),
             freeze_at_ms=freeze,
+            deribit_instrument=inst,
         )
         confirmed = confirm_cycle_observations([obs_low, obs_h1, obs_h2], freeze_at_ms=freeze)
         self.assertEqual(confirmed["put"]["confirmation_status"], "CONFIRMED")
         self.assertFalse(confirmed["put"]["single_blip_detected"])
         self.assertGreaterEqual(confirmed["put"]["gfri_confirmed"], 3.99)
+
+    # --- P0-1 through P0-5 regression tests ---
+
+    def test_p0_1_deribit_instrument_and_verified_spec_cache_fail_closed(self) -> None:
+        ts_ob = 1_795_006_275_000
+        freeze = ts_ob + 100
+        gex = _make_gex_payload(ts_ms=ts_ob - 10_000, computed_at_ms=ts_ob - 9_000)
+        ob = _make_deribit_book(ts_ms=ts_ob)
+
+        # Both deribit_instrument and verified_spec_cache omitted -> strict fail closed
+        res_missing = evaluate_single_observation(
+            gex,
+            ob,
+            freeze_at_ms=freeze,
+            deribit_instrument=None,
+            verified_spec_cache=None,
+        )
+        self.assertEqual(res_missing["data_quality"], "UNKNOWN")
+        self.assertFalse(res_missing["provenance"]["deribit_instrument_verified"])
+        self.assertFalse(res_missing["comparability"]["deribit_instrument_verified"])
+        self.assertIn("missing_or_unverified_deribit_instrument", res_missing["reasons"])
+        self.assertIsNone(res_missing["gfri_down_1pct"])
+        self.assertIsNone(res_missing["gfri_up_1pct"])
+
+        # Wrong contract_size (5.0) -> UNKNOWN
+        res_bad_cs = evaluate_single_observation(
+            gex,
+            ob,
+            freeze_at_ms=freeze,
+            deribit_instrument=_make_deribit_instrument(contract_size=5.0),
+        )
+        self.assertEqual(res_bad_cs["data_quality"], "UNKNOWN")
+        self.assertFalse(res_bad_cs["provenance"]["deribit_instrument_verified"])
+        self.assertIn("unsupported_contract_size", res_bad_cs["reasons"])
+        self.assertIsNone(res_bad_cs["gfri_down_1pct"])
+        self.assertIsNone(res_bad_cs["gfri_up_1pct"])
+
+        # Wrong quote_currency (!= "USD") -> UNKNOWN
+        res_bad_qc = evaluate_single_observation(
+            gex,
+            ob,
+            freeze_at_ms=freeze,
+            deribit_instrument=_make_deribit_instrument(quote_currency="USDT"),
+        )
+        self.assertEqual(res_bad_qc["data_quality"], "UNKNOWN")
+        self.assertFalse(res_bad_qc["provenance"]["deribit_instrument_verified"])
+        self.assertIn("unsupported_quote_currency", res_bad_qc["reasons"])
+        self.assertIsNone(res_bad_qc["gfri_down_1pct"])
+        self.assertIsNone(res_bad_qc["gfri_up_1pct"])
+
+        # Valid versioned verified_spec_cache -> passes with deribit_spec_source == "verified_cache"
+        valid_cache = _make_verified_spec_cache(
+            verified_at_ms=freeze - 60_000,
+            expires_at_ms=freeze + 3_600_000,
+        )
+        ok_cache, unit_cache, err_cache = validate_verified_spec_cache(valid_cache, freeze_at_ms=freeze)
+        self.assertTrue(ok_cache)
+        self.assertEqual(unit_cache, "usd")
+        self.assertIsNone(err_cache)
+
+        res_cache_ok = evaluate_single_observation(
+            gex,
+            ob,
+            freeze_at_ms=freeze,
+            deribit_instrument=None,
+            verified_spec_cache=valid_cache,
+        )
+        self.assertEqual(res_cache_ok["data_quality"], "VALID")
+        self.assertTrue(res_cache_ok["provenance"]["deribit_instrument_verified"])
+        self.assertEqual(res_cache_ok["provenance"]["deribit_spec_source"], "verified_cache")
+        self.assertEqual(res_cache_ok["comparability"]["deribit_spec_source"], "verified_cache")
+        self.assertIsNotNone(res_cache_ok["gfri_down_1pct"])
+        self.assertIsNotNone(res_cache_ok["gfri_up_1pct"])
+
+        # Expired verified_spec_cache (expires_at_ms <= freeze_at_ms) -> fails closed
+        expired_cache = _make_verified_spec_cache(
+            verified_at_ms=freeze - 120_000,
+            expires_at_ms=freeze,
+        )
+        res_cache_exp = evaluate_single_observation(
+            gex,
+            ob,
+            freeze_at_ms=freeze,
+            deribit_instrument=None,
+            verified_spec_cache=expired_cache,
+        )
+        self.assertEqual(res_cache_exp["data_quality"], "UNKNOWN")
+        self.assertFalse(res_cache_exp["provenance"]["deribit_instrument_verified"])
+        self.assertIn("deribit_instrument_cache_expired", res_cache_exp["reasons"])
+        self.assertIsNone(res_cache_exp["gfri_down_1pct"])
+        self.assertIsNone(res_cache_exp["gfri_up_1pct"])
+
+    def test_p0_2_partial_side_validity_call_valid_while_put_truncated(self) -> None:
+        ts_ob = 1_795_006_275_000
+        freeze = ts_ob + 100
+        inst = _make_deribit_instrument()
+        gex = _make_gex_payload(
+            ts_ms=ts_ob - 10_000,
+            computed_at_ms=ts_ob - 9_000,
+            po_down_1pct=-400_000.0,
+            po_up_1pct=400_000.0,
+        )
+        # step_usd=40: 13 ask levels inside (50000, 50500] -> 130k USD -> GFRI = 400k / 130k = 3.076923...
+        # Truncate bids to 10 levels (min_bid = 49639.5 > 49500) so >= min_book_levels_per_side (10)
+        # while failing -1% coverage only on PUT side.
+        def _make_partial_book(ob_ts: int) -> dict:
+            book = _make_deribit_book(
+                mid=50_000.0,
+                spread=1.0,
+                ts_ms=ob_ts,
+                levels_per_side=20,
+                step_usd=40.0,
+                bid_amount=10_000.0,
+                ask_amount=10_000.0,
+            )
+            book["result"]["bids"] = book["result"]["bids"][:10]
+            return book
+
+        res = evaluate_single_observation(
+            gex,
+            _make_partial_book(ts_ob),
+            freeze_at_ms=freeze,
+            deribit_instrument=inst,
+        )
+        self.assertEqual(res["data_quality"], "UNKNOWN")
+        self.assertEqual(res["global_data_quality"], "VALID")
+        self.assertEqual(res["partial_valid_side"], "CALL")
+        self.assertEqual(res["down_1pct"]["status"], "UNKNOWN")
+        self.assertIsNone(res["gfri_down_1pct"])
+        self.assertEqual(res["up_1pct"]["status"], "VALID")
+        self.assertIsNotNone(res["gfri_up_1pct"])
+        self.assertAlmostEqual(res["gfri_up_1pct"], 400_000.0 / 130_000.0, places=4)
+
+        obs_list = [
+            evaluate_single_observation(
+                gex,
+                _make_partial_book(ts_ob - 30_000),
+                freeze_at_ms=freeze,
+                deribit_instrument=inst,
+            ),
+            evaluate_single_observation(
+                gex,
+                _make_partial_book(ts_ob - 15_000),
+                freeze_at_ms=freeze,
+                deribit_instrument=inst,
+            ),
+            res,
+        ]
+        confirmed = confirm_cycle_observations(obs_list, freeze_at_ms=freeze)
+        self.assertEqual(confirmed["put"]["status"], "UNKNOWN")
+        self.assertIsNone(confirmed["gfri_put_confirmed"])
+        self.assertEqual(confirmed["call"]["status"], "VALID")
+        self.assertEqual(confirmed["call"]["confirmation_status"], "CONFIRMED")
+        self.assertIsNotNone(confirmed["gfri_call_confirmed"])
+        self.assertAlmostEqual(confirmed["gfri_call_confirmed"], 400_000.0 / 130_000.0, places=4)
+
+    def test_p0_3_order_book_age_and_receive_lag_gates(self) -> None:
+        freeze = 1_795_006_275_100
+        inst = _make_deribit_instrument()
+
+        # GEX and OB both 20 minutes behind freeze_at_ms (ob_skew_ms == 0) -> fail closed with order_book_expired
+        stale_ts = freeze - 20 * 60_000
+        gex_stale = _make_gex_payload(ts_ms=stale_ts, computed_at_ms=stale_ts + 1_000)
+        ob_stale = _make_deribit_book(ts_ms=stale_ts)
+        res_expired = evaluate_single_observation(
+            gex_stale,
+            ob_stale,
+            freeze_at_ms=freeze,
+            deribit_instrument=inst,
+        )
+        self.assertEqual(res_expired["timestamps"]["ob_skew_ms"], 0)
+        self.assertEqual(res_expired["data_quality"], "UNKNOWN")
+        self.assertIn("order_book_expired", res_expired["reasons"])
+        self.assertIsNone(res_expired["gfri_down_1pct"])
+        self.assertIsNone(res_expired["gfri_up_1pct"])
+
+        # OB exchange->HTTP receive lag ob_received_at_ms - ob_ts > max_ob_receive_lag_ms (45_000 > 30_000)
+        ob_ts = freeze - 50_000
+        ob_recv_ms = ob_ts + 45_000
+        gex_fresh = _make_gex_payload(ts_ms=ob_ts - 5_000, computed_at_ms=ob_ts - 4_000)
+        ob_lagged = _make_deribit_book(ts_ms=ob_ts)
+        res_lagged = evaluate_single_observation(
+            gex_fresh,
+            ob_lagged,
+            freeze_at_ms=freeze,
+            ob_received_at_ms=ob_recv_ms,
+            deribit_instrument=inst,
+        )
+        self.assertEqual(res_lagged["timestamps"]["ob_exchange_to_recv_ms"], 45_000)
+        self.assertEqual(res_lagged["data_quality"], "UNKNOWN")
+        self.assertIn("order_book_receive_lag_exceeded", res_lagged["reasons"])
+        self.assertIsNone(res_lagged["gfri_down_1pct"])
+        self.assertIsNone(res_lagged["gfri_up_1pct"])
+
+    def test_p0_4_two_sample_divergence_and_confirmation_sequences(self) -> None:
+        base_ob_ts = 1_795_020_000_000
+        freeze = base_ob_ts + 45_000
+        inst = _make_deribit_instrument()
+        # 20 bid levels in [49500, 50000] -> down_usd = 20 * bid_amount
+        # With po_down_1pct = -820_000.0:
+        # gfri = 0.5 -> bid_amount = 82_000.0
+        # gfri = 1.0 -> bid_amount = 41_000.0
+        # gfri = 4.0 -> bid_amount = 10_250.0
+        # gfri = 4.1 -> bid_amount = 10_000.0
+        # gfri = 5.0 -> bid_amount = 8_200.0
+        # gfri = 8.0 -> bid_amount = 5_125.0
+        gex = _make_gex_payload(
+            ts_ms=base_ob_ts - 10_000,
+            computed_at_ms=base_ob_ts - 9_000,
+            po_down_1pct=-820_000.0,
+            po_up_1pct=820_000.0,
+        )
+        bid_for_gfri = {
+            0.5: 82_000.0,
+            1.0: 41_000.0,
+            4.0: 10_250.0,
+            4.1: 10_000.0,
+            5.0: 8_200.0,
+            8.0: 5_125.0,
+        }
+
+        def _obs(idx: int, gfri_val: float | None) -> dict:
+            ts = base_ob_ts + idx * 15_000
+            amt = 0.0 if gfri_val is None else bid_for_gfri[gfri_val]
+            return evaluate_single_observation(
+                gex,
+                _make_deribit_book(ts_ms=ts, bid_amount=amt, ask_amount=10_000.0),
+                freeze_at_ms=freeze,
+                deribit_instrument=inst,
+            )
+
+        # 1) [0.5, 8.0] (2 valid samples + 1 failed) -> INSUFFICIENT_CONFIRMATIONS + two_sample_severe_divergence
+        c_div_1 = confirm_cycle_observations([_obs(0, 0.5), _obs(1, 8.0), _obs(2, None)], freeze_at_ms=freeze)
+        self.assertEqual(c_div_1["put"]["confirmation_status"], "INSUFFICIENT_CONFIRMATIONS")
+        self.assertIsNone(c_div_1["put"]["gfri_confirmed"])
+        self.assertAlmostEqual(c_div_1["put"]["gfri_fast_max"], 8.0, places=9)
+        self.assertIn("two_sample_severe_divergence", c_div_1["put"]["reasons"])
+
+        # 2) [1.0, 5.0] -> INSUFFICIENT_CONFIRMATIONS, gfri_confirmed is None, gfri_fast_max == 5.0
+        c_div_2 = confirm_cycle_observations([_obs(0, 1.0), _obs(1, 5.0)], freeze_at_ms=freeze)
+        self.assertEqual(c_div_2["put"]["confirmation_status"], "INSUFFICIENT_CONFIRMATIONS")
+        self.assertIsNone(c_div_2["put"]["gfri_confirmed"])
+        self.assertAlmostEqual(c_div_2["put"]["gfri_fast_max"], 5.0, places=9)
+
+        # 3) [4.0, 4.1] -> CONFIRMED, gfri_confirmed ~ 4.05, single_blip_detected is False
+        c_ok_2 = confirm_cycle_observations([_obs(0, 4.0), _obs(1, 4.1)], freeze_at_ms=freeze)
+        self.assertEqual(c_ok_2["put"]["confirmation_status"], "CONFIRMED")
+        self.assertAlmostEqual(c_ok_2["put"]["gfri_confirmed"], 4.05, places=6)
+        self.assertFalse(c_ok_2["put"]["single_blip_detected"])
+
+        # 4) [0.5, 4.0, 4.1] -> CONFIRMED, gfri_confirmed ~ 4.0, single_blip_detected is False
+        c_ok_3 = confirm_cycle_observations([_obs(0, 0.5), _obs(1, 4.0), _obs(2, 4.1)], freeze_at_ms=freeze)
+        self.assertEqual(c_ok_3["put"]["confirmation_status"], "CONFIRMED")
+        self.assertAlmostEqual(c_ok_3["put"]["gfri_confirmed"], 4.0, places=6)
+        self.assertFalse(c_ok_3["put"]["single_blip_detected"])
+
+    def test_p0_5_missing_price_only_metadata_rejects_native_tier(self) -> None:
+        ts_ob = 1_795_006_275_000
+        freeze = ts_ob + 100
+        inst = _make_deribit_instrument()
+        ob = _make_deribit_book(ts_ms=ts_ob)
+
+        # Payload has price_only_curve and spot_linked_12h, but scenario_sets["price_only"] is deleted
+        gex_no_meta = _make_gex_payload(
+            ts_ms=ts_ob - 10_000,
+            computed_at_ms=ts_ob - 9_000,
+            total_net_gex=-100_000_000.0,
+            po_down_1pct=-110_000_000.0,
+            po_up_1pct=120_000_000.0,
+            sl_down_1pct=-199_000_000.0,
+            sl_up_1pct=199_000_000.0,
+        )
+        del gex_no_meta["hedging_flows"]["scenario_sets"]["price_only"]
+
+        snap = extract_gex_snapshot(gex_no_meta, freeze_at_ms=freeze)
+        self.assertTrue(snap["valid"])
+        self.assertEqual(snap["data_quality"], "DEGRADED")
+        self.assertEqual(snap["method_tier"], "LINEAR_PROXY_FALLBACK")
+        self.assertIn("missing_or_invalid_price_only_metadata", snap["reasons"])
+        self.assertNotEqual(snap["primary_1pct"]["down_1pct"]["method_tier"], "NATIVE_PRICE_ONLY")
+        self.assertEqual(snap["primary_1pct"]["down_1pct"]["method"], "NET_GEX_LINEAR")
+        self.assertEqual(snap["primary_1pct"]["down_1pct"]["h_usd"], -100_000_000.0)
+        self.assertEqual(snap["primary_1pct"]["up_1pct"]["h_usd"], 100_000_000.0)
+
+        res = evaluate_single_observation(gex_no_meta, ob, freeze_at_ms=freeze, deribit_instrument=inst)
+        self.assertEqual(res["data_quality"], "DEGRADED")
+        self.assertIn("missing_or_invalid_price_only_metadata", res["reasons"])
+        self.assertEqual(res["down_1pct"]["method"], "NET_GEX_LINEAR")
+        self.assertEqual(res["down_1pct"]["method_tier"], "LINEAR_PROXY_FALLBACK")
+        self.assertEqual(res["up_1pct"]["method"], "NET_GEX_LINEAR")
+        self.assertEqual(res["up_1pct"]["method_tier"], "LINEAR_PROXY_FALLBACK")
+        # 100M / 200k = 500.0 (not 110M/200k=550 from price_only_curve and not 199M/200k=995 from spot_linked_12h)
+        self.assertAlmostEqual(res["gfri_down_1pct"], 500.0, places=9)
+        self.assertAlmostEqual(res["gfri_up_1pct"], 500.0, places=9)
+
+        # If total_net_gex is also missing, must fail closed UNKNOWN (never NATIVE_PRICE_ONLY, never spot_linked_12h)
+        gex_no_meta_no_gex = copy.deepcopy(gex_no_meta)
+        gex_no_meta_no_gex["total_gex"] = None
+        gex_no_meta_no_gex["hedging_flows"]["total_gamma"] = None
+        res_unk = evaluate_single_observation(gex_no_meta_no_gex, ob, freeze_at_ms=freeze, deribit_instrument=inst)
+        self.assertEqual(res_unk["data_quality"], "UNKNOWN")
+        self.assertIn("missing_or_invalid_price_only_metadata", res_unk["reasons"])
+        self.assertIsNone(res_unk["gfri_down_1pct"])
+        self.assertIsNone(res_unk["gfri_up_1pct"])
 
 
 if __name__ == "__main__":
