@@ -1162,5 +1162,23 @@ def test_workbench_model_input_http_endpoints_and_guards(tmp_path, monkeypatch):
         assert too_big.value.code == 413
 
 
+def test_player_audit_current_preserves_403_and_401_status_codes(tmp_path):
+    wb, _, _, _, _ = sample(tmp_path, 'Accept / Call')
+    wb.config.server_token = 'secret-token'
+    wb.config.public_origin = 'https://audit.example.com'
+    with serving(wb) as base:
+        req_403 = Request(base + tracking.AUDIT_PATH + '/current', headers={'Host': 'evil.example.com', 'Authorization': 'Bearer secret-token'})
+        with pytest.raises(HTTPError) as err_403:
+            urlopen(req_403, timeout=8)
+        assert err_403.value.code == 403
+        assert json.loads(err_403.value.read().decode('utf-8'))['code'] == 'host_not_allowed'
+
+        req_401 = Request(base + tracking.AUDIT_PATH + '/current', headers={'Host': 'audit.example.com'})
+        with pytest.raises(HTTPError) as err_401:
+            urlopen(req_401, timeout=8)
+        assert err_401.value.code == 401
+        assert json.loads(err_401.value.read().decode('utf-8'))['code'] == 'unauthorized'
+
+
 
 

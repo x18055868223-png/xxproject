@@ -6790,8 +6790,9 @@ def make_handler(workbench: AstraWorkbench):
             self._serve_static(parsed.path)
 
         def _player_audit(self, path: str, query: Mapping[str, list[str]] | None = None) -> None:
-            if not sessions.authorize("GET", self.headers, self.client_address[0]).ok:
-                self._json(401, {"code": "unauthorized"})
+            access = sessions.authorize("GET", self.headers, self.client_address[0])
+            if not access.ok:
+                self._json(access.status_code, {"code": access.reason})
                 return
             root = workbench.config.shadow_dossier_root
             if root is None:
