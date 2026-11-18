@@ -1,0 +1,10 @@
+# Never commit raw exchange captures, local state ledgers, or logs
+raw_captures/
+*.raw.json
+*.json.gz
+state/
+logs/
+*.jsonl
+*.log
+__pycache__/
+*.py[cod]

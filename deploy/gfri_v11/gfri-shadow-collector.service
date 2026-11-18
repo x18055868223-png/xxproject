@@ -1,0 +1,26 @@
+[Unit]
+Description=GFRI v1.1 Shadow Collector (disabled unless GFRI_COLLECTOR_ENABLED=1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=bitnami
+WorkingDirectory=/opt/gfri-shadow/current
+EnvironmentFile=/opt/gfri-shadow/gfri_v11.env
+Environment=PYTHONPATH=/opt/gfri-shadow/current
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m research.gfri_v11.collector --scheduled
+Nice=10
+CPUQuota=25%
+MemoryMax=128M
+TimeoutStartSec=180
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/gfri-shadow/state /opt/gfri-shadow/raw_captures
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,553 @@
+{
+  "schema": "gfri_audit_v11",
+  "code_version": "1.1.0",
+  "git_commit": "f3911c06c7e5",
+  "decision_authority": "SHADOW_ONLY",
+  "live_veto_enabled": false,
+  "player_integration_enabled": false,
+  "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+  "config_snapshot": {
+    "gex_latest_url": "https://gexmonitor.com/api/gex-latest?asset=BTC&exchange=all&lite=true",
+    "deribit_instrument_url": "https://www.deribit.com/api/v2/public/get_instrument?instrument_name=BTC-PERPETUAL",
+    "deribit_book_url": "https://www.deribit.com/api/v2/public/get_order_book?instrument_name=BTC-PERPETUAL&depth=1000",
+    "okx_instrument_url": "https://www.okx.com/api/v5/public/instruments?instType=SWAP&instId=BTC-USDT-SWAP",
+    "okx_book_url": "https://www.okx.com/api/v5/market/books-full?instId=BTC-USDT-SWAP&sz=5000",
+    "requested_deribit_depth": 1000,
+    "min_deribit_depth_param": 1000,
+    "min_book_levels_per_side": 10,
+    "max_ob_skew_ms": 900000,
+    "max_source_age_ms": 3600000,
+    "max_future_drift_ms": 5000,
+    "max_price_divergence_degraded_pct": 0.002,
+    "max_price_divergence_fail_pct": 0.005,
+    "max_spread_pct": 0.01,
+    "confirm_sample_count": 3,
+    "confirm_interval_sec": 20.0,
+    "confirm_window_ms": 180000,
+    "min_confirm_valid_samples": 2,
+    "max_confirm_spread_ratio": 2.0,
+    "near_window_ms": 14400000,
+    "min_near_samples": 4,
+    "long_window_days": 60,
+    "long_half_life_days": 14.0,
+    "min_days_for_band": 7,
+    "min_days_for_percentile": 30,
+    "min_effective_samples_for_percentile": 30,
+    "regime_drift_high_floor": 2.5,
+    "band_thresholds": [
+      1.0,
+      2.0,
+      3.0
+    ],
+    "policy_version": "gfri_shadow_policy_v11_candidate_1",
+    "trigger_abs_gfri": 2.5,
+    "elevated_abs_gfri": 2.0,
+    "trigger_deterioration_ratio": 1.5,
+    "trigger_consecutive_cycles": 2,
+    "release_abs_gfri": 2.0,
+    "release_consecutive_cycles": 2,
+    "sensitivity_presets": {
+      "sensitive": {
+        "trigger_abs_gfri": 2.0,
+        "release_abs_gfri": 1.6
+      },
+      "baseline": {
+        "trigger_abs_gfri": 2.5,
+        "release_abs_gfri": 2.0
+      },
+      "conservative": {
+        "trigger_abs_gfri": 3.5,
+        "release_abs_gfri": 2.8
+      }
+    },
+    "flags": {
+      "collector_enabled": false,
+      "decision_authority": "SHADOW_ONLY",
+      "player_integration_enabled": false,
+      "live_veto_enabled": false
+    },
+    "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS"
+  },
+  "freeze_at_ms": 1795013209448,
+  "primary_method": "HEDGE_FLOW_NATIVE",
+  "comparability": {
+    "methodology_version": "deribit_coin_only_v1",
+    "universe_policy": "coin_margined_only",
+    "primary_method": "HEDGE_FLOW_NATIVE",
+    "depth_venue": "deribit_btc_perpetual",
+    "code_version": "1.1.0"
+  },
+  "raw_input_hashes": {
+    "gex_sha256": "9d2142eaaaea4d87b6aad79597c5ea22277cce5c661f514728e70b97b5ba3643",
+    "ob_sha256": "f6cf09456b20d5d33ef93a0524bcec98856d5810ae1761c2fe2e5f432423917e",
+    "gex_snapshot_id": "gex:deribit:btc:7371b254a877fd055b66d740",
+    "gex_universe_hash": "a9ae64eeba6a42423a1ec3f130e2706fb8cabd5d99b1383d7b8638fcc33f67de",
+    "sample_refs": [
+      {
+        "ob_timestamp_ms": 1795013190972,
+        "ob_sha256": "3261bbc731c816f02650c20744254458d62bad2fbbb970030114704e8ebbd1cb",
+        "data_quality": "DEGRADED",
+        "gfri_down_1pct": 4.71565801419493,
+        "gfri_up_1pct": 6.775054368124708,
+        "reasons": [
+          "secondary_venues_unavailable:bybit,okx,binance"
+        ]
+      },
+      {
+        "ob_timestamp_ms": 1795013197730,
+        "ob_sha256": "80b1f4d538b53e2e7f0ae651c0937efecf203dfadc28a688c4f2b09bfdc63dde",
+        "data_quality": "DEGRADED",
+        "gfri_down_1pct": 4.745420097666525,
+        "gfri_up_1pct": 6.998988487366655,
+        "reasons": [
+          "secondary_venues_unavailable:bybit,okx,binance"
+        ]
+      },
+      {
+        "ob_timestamp_ms": 1795013206917,
+        "ob_sha256": "f6cf09456b20d5d33ef93a0524bcec98856d5810ae1761c2fe2e5f432423917e",
+        "data_quality": "DEGRADED",
+        "gfri_down_1pct": 4.7735974315304155,
+        "gfri_up_1pct": 8.596479462129023,
+        "reasons": [
+          "secondary_venues_unavailable:bybit,okx,binance"
+        ]
+      }
+    ]
+  },
+  "units": {
+    "gfri": "ratio_x",
+    "hedge_flow": "USD",
+    "liquidity_depth": "USD",
+    "timestamps": "epoch_ms",
+    "oi_lag": "hours"
+  },
+  "timestamps": {
+    "freeze_at_ms": 1795013209448,
+    "gex_data_ts_ms": 1795012929336,
+    "gex_computed_at_ms": 1795013186923,
+    "gex_received_at_ms": 1795013187867,
+    "gex_age_ms": 280112,
+    "ob_timestamp_ms": 1795013206917,
+    "ob_exchange_ts_ms": 1795013206917,
+    "ob_received_at_ms": 1795013207216,
+    "ob_skew_ms": 277581,
+    "oi_source_lag_hours": 8,
+    "oi_lag_note": "deribit_public_oi_reported_with_8h_delay_per_docs"
+  },
+  "hedge_flows": {
+    "down_1pct": {
+      "side": "PUT",
+      "raw_hedge_flow_usd": -127640648.89,
+      "signed_ratio": 4.745420097666525,
+      "is_amplifying": true
+    },
+    "up_1pct": {
+      "side": "CALL",
+      "raw_hedge_flow_usd": 125308560.07,
+      "signed_ratio": 6.998988487366655,
+      "is_amplifying": true
+    }
+  },
+  "order_book": {
+    "put_liquidity_depth_usd": 26897650.0,
+    "call_liquidity_depth_usd": 17903810.0,
+    "put_sample_depths_usd": [
+      27067410.0,
+      26897650.0,
+      26738880.0
+    ],
+    "call_sample_depths_usd": [
+      18495580.0,
+      17903810.0,
+      14576730.0
+    ],
+    "gex_spot_usd": 63138.64,
+    "ob_ref_price_usd": 63138.75,
+    "total_open_interest": 394356.6,
+    "depth_coverage": {
+      "bid_levels": 675,
+      "ask_levels": 984,
+      "deribit_depth_param": 1000
+    }
+  },
+  "ratios": {
+    "put": {
+      "status": "VALID",
+      "gfri_confirmed": 4.745420097666525,
+      "gfri_fast_max": 4.7735974315304155,
+      "gfri_fast_min": 4.71565801419493,
+      "gfri_latest_raw": 4.7735974315304155,
+      "spread_ratio": 1.0122866028794026,
+      "single_blip_detected": false,
+      "valid_count": 3,
+      "sample_count": 3
+    },
+    "call": {
+      "status": "VALID",
+      "gfri_confirmed": 6.998988487366655,
+      "gfri_fast_max": 8.596479462129023,
+      "gfri_fast_min": 6.775054368124708,
+      "gfri_latest_raw": 8.596479462129023,
+      "spread_ratio": 1.2688428749109026,
+      "single_blip_detected": false,
+      "valid_count": 3,
+      "sample_count": 3
+    }
+  },
+  "cross_venue_ref": {
+    "status": "VALID",
+    "reason": null,
+    "reasons": [],
+    "down_status": "VALID",
+    "up_status": "VALID",
+    "down_reason": null,
+    "up_reason": null,
+    "down_usd": 104908462.44095,
+    "up_usd": 86917816.13607,
+    "ref_price": 63178.35,
+    "spread_pct": 1.5828206972800017e-06,
+    "price_divergence_pct": 0.000628933407498166,
+    "down_bound_usd": 62546.5665,
+    "up_bound_usd": 63810.1335,
+    "min_bid_usd": 62445.0,
+    "max_ask_usd": 64069.8,
+    "bids_count": 5000,
+    "asks_count": 5000,
+    "depth_unit": "usd_okx_linear_ctval",
+    "ob_timestamp_ms": 1795013208003,
+    "skew_ms": null,
+    "venue": "okx",
+    "non_blocking": true,
+    "inst_id": "BTC-USDT-SWAP",
+    "ct_val": 0.01,
+    "ct_val_ccy": "BTC",
+    "ct_type": "linear",
+    "okx_sha256": "db89083114a1f85979e6b09763d45e87071e348a29d4839ce7970a3231a41f38",
+    "ratio_okx_to_deribit_down": 3.923442658815553,
+    "ratio_okx_to_deribit_up": 5.962778766984776,
+    "gfri_down_1pct_okx": 1.2166859176097953,
+    "gfri_up_1pct_okx": 1.4416901579053623
+  },
+  "research_submetrics": {
+    "zero_dte_share": {
+      "zero_dte_gex_usd": -5371139.795635984,
+      "total_net_gex_usd": -126838138.53,
+      "share_signed": 0.04234640982503533,
+      "share_abs_pct": 4.234640982503533
+    },
+    "down_0p5pct": {
+      "status": "DEGRADED",
+      "reason": null,
+      "sign_ds": -1,
+      "method": "NET_GEX_LINEAR",
+      "method_tier": "RESEARCH_LINEAR_0P5PCT",
+      "curve_used": "total_net_gex_linear",
+      "raw_hedge_flow_usd": -63419069.265,
+      "signed_ratio": 3.361901037423035,
+      "amplifying_pressure_usd": 63419069.265,
+      "liquidity_depth_usd": 18864050.0,
+      "gfri": 3.361901037423035,
+      "is_amplifying": true
+    },
+    "up_0p5pct": {
+      "status": "DEGRADED",
+      "reason": null,
+      "sign_ds": 1,
+      "method": "NET_GEX_LINEAR",
+      "method_tier": "RESEARCH_LINEAR_0P5PCT",
+      "curve_used": "total_net_gex_linear",
+      "raw_hedge_flow_usd": 63419069.265,
+      "signed_ratio": 4.612899817066961,
+      "amplifying_pressure_usd": 63419069.265,
+      "liquidity_depth_usd": 13748200.0,
+      "gfri": 4.612899817066961,
+      "is_amplifying": true
+    }
+  },
+  "near_ref": {
+    "schema_version": "gfri_near_ref_v11",
+    "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+    "freeze_at_ms": 1795013209448,
+    "window_ms": 14400000,
+    "min_near_samples": 4,
+    "put": {
+      "side": "PUT",
+      "state": "WARMING_UP",
+      "insufficient_history": true,
+      "sample_count": 0,
+      "min_near_samples": 4,
+      "current_gfri": 4.745420097666525,
+      "recent_median": null,
+      "delta_abs": null,
+      "delta_ratio": null,
+      "persistence_count_elevated": 1,
+      "persistence_count_trigger": 1,
+      "depth_change_pct": null,
+      "abs_flow_change_pct": null,
+      "driver": "STABLE",
+      "coincided_with_liquidity_drop": false,
+      "baseline_depth_usd": null,
+      "baseline_abs_flow_usd": null
+    },
+    "call": {
+      "side": "CALL",
+      "state": "WARMING_UP",
+      "insufficient_history": true,
+      "sample_count": 0,
+      "min_near_samples": 4,
+      "current_gfri": 6.998988487366655,
+      "recent_median": null,
+      "delta_abs": null,
+      "delta_ratio": null,
+      "persistence_count_elevated": 1,
+      "persistence_count_trigger": 1,
+      "depth_change_pct": null,
+      "abs_flow_change_pct": null,
+      "driver": "STABLE",
+      "coincided_with_liquidity_drop": false,
+      "baseline_depth_usd": null,
+      "baseline_abs_flow_usd": null
+    }
+  },
+  "long_ref": {
+    "schema_version": "gfri_long_ref_v11",
+    "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+    "freeze_at_ms": 1795013209448,
+    "window_days": 60,
+    "half_life_days": 14.0,
+    "put": {
+      "side": "PUT",
+      "state": "ACCUMULATING",
+      "distinct_days": 0,
+      "sample_count": 0,
+      "n_eff": 0.0,
+      "percentile": null,
+      "coarse_band": null,
+      "weighted_median": null,
+      "regime_drift_warning": false,
+      "regime_drift_note": null,
+      "display_label": "积累中 (0/30天)"
+    },
+    "call": {
+      "side": "CALL",
+      "state": "ACCUMULATING",
+      "distinct_days": 0,
+      "sample_count": 0,
+      "n_eff": 0.0,
+      "percentile": null,
+      "coarse_band": null,
+      "weighted_median": null,
+      "regime_drift_warning": false,
+      "regime_drift_note": null,
+      "display_label": "积累中 (0/30天)"
+    }
+  },
+  "policy_version": "gfri_shadow_policy_v11_candidate_1",
+  "shadow_decision": "WARMING_UP",
+  "candidate_reason_codes": {
+    "put": [
+      "NEAR_HISTORY_WARMING_UP"
+    ],
+    "call": [
+      "NEAR_HISTORY_WARMING_UP"
+    ]
+  },
+  "no_veto_does_not_imply_safe": true,
+  "policy_result": {
+    "policy_version": "gfri_shadow_policy_v11_candidate_1",
+    "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+    "decision_authority": "SHADOW_ONLY",
+    "live_veto_enabled": false,
+    "player_integration_enabled": false,
+    "shadow_decision": "WARMING_UP",
+    "put_decision": "WARMING_UP",
+    "call_decision": "WARMING_UP",
+    "partial_pause_side": null,
+    "candidate_reason_codes": {
+      "put": [
+        "NEAR_HISTORY_WARMING_UP"
+      ],
+      "call": [
+        "NEAR_HISTORY_WARMING_UP"
+      ]
+    },
+    "no_veto_does_not_imply_safe": true,
+    "caveats": [
+      "no_veto_does_not_imply_safe",
+      "unvalidated_candidate_params_shadow_only"
+    ],
+    "sensitivity_comparison": {
+      "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+      "presets": {
+        "sensitive": {
+          "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+          "trigger_abs_gfri": 2.0,
+          "release_abs_gfri": 1.6,
+          "shadow_decision": "WARMING_UP",
+          "put_decision": "WARMING_UP",
+          "call_decision": "WARMING_UP",
+          "partial_pause_side": null
+        },
+        "baseline": {
+          "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+          "trigger_abs_gfri": 2.5,
+          "release_abs_gfri": 2.0,
+          "shadow_decision": "WARMING_UP",
+          "put_decision": "WARMING_UP",
+          "call_decision": "WARMING_UP",
+          "partial_pause_side": null
+        },
+        "conservative": {
+          "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
+          "trigger_abs_gfri": 3.5,
+          "release_abs_gfri": 2.8,
+          "shadow_decision": "WARMING_UP",
+          "put_decision": "WARMING_UP",
+          "call_decision": "WARMING_UP",
+          "partial_pause_side": null
+        }
+      }
+    },
+    "next_policy_state": {
+      "put": {
+        "active_pause": false,
+        "pause_consecutive": 0,
+        "release_consecutive": 0,
+        "last_decision": "WARMING_UP"
+      },
+      "call": {
+        "active_pause": false,
+        "pause_consecutive": 0,
+        "release_consecutive": 0,
+        "last_decision": "WARMING_UP"
+      },
+      "sensitivity": {
+        "sensitive": {
+          "put": {
+            "active_pause": false,
+            "pause_consecutive": 0,
+            "release_consecutive": 0,
+            "last_decision": "WARMING_UP"
+          },
+          "call": {
+            "active_pause": false,
+            "pause_consecutive": 0,
+            "release_consecutive": 0,
+            "last_decision": "WARMING_UP"
+          }
+        },
+        "baseline": {
+          "put": {
+            "active_pause": false,
+            "pause_consecutive": 0,
+            "release_consecutive": 0,
+            "last_decision": "WARMING_UP"
+          },
+          "call": {
+            "active_pause": false,
+            "pause_consecutive": 0,
+            "release_consecutive": 0,
+            "last_decision": "WARMING_UP"
+          }
+        },
+        "conservative": {
+          "put": {
+            "active_pause": false,
+            "pause_consecutive": 0,
+            "release_consecutive": 0,
+            "last_decision": "WARMING_UP"
+          },
+          "call": {
+            "active_pause": false,
+            "pause_consecutive": 0,
+            "release_consecutive": 0,
+            "last_decision": "WARMING_UP"
+          }
+        }
+      }
+    }
+  },
+  "data_quality": "DEGRADED",
+  "confirmation_status": "CONFIRMED",
+  "failure_reasons": [
+    "secondary_venues_unavailable:bybit,okx,binance"
+  ],
+  "reasons": [
+    "secondary_venues_unavailable:bybit,okx,binance"
+  ],
+  "put": {
+    "side": "PUT",
+    "shock": "down_1pct",
+    "direction": "down_1pct",
+    "status": "VALID",
+    "confirmation_status": "CONFIRMED",
+    "valid_sample_count": 3,
+    "valid_count": 3,
+    "sample_count": 3,
+    "gfri_confirmed": 4.745420097666525,
+    "gfri_fast_max": 4.7735974315304155,
+    "gfri_fast_min": 4.71565801419493,
+    "gfri_latest_raw": 4.7735974315304155,
+    "raw_hedge_flow_usd": -127640648.89,
+    "liquidity_depth_usd": 26897650.0,
+    "signed_ratio": 4.745420097666525,
+    "is_amplifying": true,
+    "spread_ratio": 1.0122866028794026,
+    "single_blip_detected": false,
+    "samples_gfri": [
+      4.71565801419493,
+      4.745420097666525,
+      4.7735974315304155
+    ],
+    "sample_values": [
+      4.71565801419493,
+      4.745420097666525,
+      4.7735974315304155
+    ],
+    "sample_depths_usd": [
+      27067410.0,
+      26897650.0,
+      26738880.0
+    ],
+    "reasons": []
+  },
+  "call": {
+    "side": "CALL",
+    "shock": "up_1pct",
+    "direction": "up_1pct",
+    "status": "VALID",
+    "confirmation_status": "CONFIRMED",
+    "valid_sample_count": 3,
+    "valid_count": 3,
+    "sample_count": 3,
+    "gfri_confirmed": 6.998988487366655,
+    "gfri_fast_max": 8.596479462129023,
+    "gfri_fast_min": 6.775054368124708,
+    "gfri_latest_raw": 8.596479462129023,
+    "raw_hedge_flow_usd": 125308560.07,
+    "liquidity_depth_usd": 17903810.0,
+    "signed_ratio": 6.998988487366655,
+    "is_amplifying": true,
+    "spread_ratio": 1.2688428749109026,
+    "single_blip_detected": false,
+    "samples_gfri": [
+      6.775054368124708,
+      6.998988487366655,
+      8.596479462129023
+    ],
+    "sample_values": [
+      6.775054368124708,
+      6.998988487366655,
+      8.596479462129023
+    ],
+    "sample_depths_usd": [
+      18495580.0,
+      17903810.0,
+      14576730.0
+    ],
+    "reasons": []
+  },
+  "sanitized": true,
+  "sanitization_note": "Derived purely from public market feeds and computed audit fields; no credentials or secrets."
+}

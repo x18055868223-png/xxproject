@@ -1,0 +1,12 @@
+[Unit]
+Description=Run GFRI v1.1 Shadow Collector every 10 minutes (install ONLY after external acceptance)
+
+[Timer]
+OnBootSec=180
+OnUnitInactiveSec=600
+AccuracySec=5
+Persistent=false
+Unit=gfri-shadow-collector.service
+
+[Install]
+WantedBy=timers.target
