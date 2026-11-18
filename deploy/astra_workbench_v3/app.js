@@ -11,8 +11,17 @@ import { eventBand } from "./events.js";
 import { sessionStrip, warningBlock, timeLamp } from "./session.js";
 import { renderDecision as renderDecisionView, gateStepId } from "./decision.js";
 import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
+import { startupSession, initialView, loadCurrent, setSession, setUnauthorizedHandler } from "./current-hand.js";
 import { playerRef, renderPlayerAudit } from "./player-audit.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
+
+setUnauthorizedHandler(() => {
+  authFailed({ status: 401 });
+  if (needsLogin() && !state.busy) {
+    renderBanners();
+    openLogin("会话已过期，请重新输入工作台令牌。");
+  }
+});
 
 const FIXTURE = new URLSearchParams(location.search).has("fixture");
 const POLL_MS = 30_000;
@@ -33,7 +42,7 @@ const state = {
   dp: { session: null, busy: null, error: null, confirm: null },
   // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
   iq: { cache: {}, last: {}, mode: "player", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
-  player: { cards: [], ref: null, detail: null, originals: null, modelInputs: new Map(), modelInputsPending: new Map(), expanded: new Set(), seq: 0, version: 0 },
+  player: { cards: [], ref: null, detail: null, originals: null, modelInputs: new Map(), modelInputsPending: new Map(), expanded: new Set(), seq: 0, indexSeq: 0, indexInFlight: 0, version: 0 },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
@@ -48,6 +57,7 @@ function errorText(err) {
   if (message && /[\u4e00-\u9fa5]/.test(message)) return message;
   if (code) return reasonCn(code);
   if (err?.status) return `服务器返回 HTTP ${err.status}`;
+  if (err?.name === "TimeoutError" || /timed?\s*out/i.test(err?.message || "")) return "请求超时";
   return /fetch|network/i.test(err?.message || "") ? "网络连接失败" : (err?.message || "未知错误");
 }
 const busy = (err) => err?.status === 503;
@@ -67,7 +77,7 @@ async function load(force = false) {
   state.busy = true;
   let changed = true;
   try {
-    const view = FIXTURE ? await fetchFixture() : await api.view();
+    const view = FIXTURE ? await fetchFixture() : await (initialView() || api.view());
     const sig = signatureOf(view);
     changed = force || sig !== state.signature || !!state.error;
     state.signature = sig;
@@ -78,7 +88,7 @@ async function load(force = false) {
     state.loadedAt = Date.now();
   } catch (err) {
     state.error = err;
-    if (SESSION_GATED && err.status === 401) { state.error = null; state.session = { authenticated: false }; renderSession(); }
+    if (SESSION_GATED && err.status === 401) { state.error = null; authFailed(err); }
     // Busy or memory-tight: retry when the server says, instead of waiting a whole poll.
     if (busy(err) && !state.retryTimer) {
       state.retryTimer = setTimeout(() => { state.retryTimer = null; load(); }, Math.min(60, Math.max(3, err.retryAfter || 5)) * 1000);
@@ -111,22 +121,24 @@ async function fetchFixture() {
   return r.json();
 }
 
-async function loadSession() {
+async function loadSession(initial = false) {
   if (FIXTURE) return;
   // Only a 401 means logged out; a busy or unreachable server keeps the session it had.
-  try { state.session = await api.session(); } catch (err) {
+  try { state.session = initial && startupSession ? await startupSession : await api.session(); } catch (err) {
     if (err?.status === 401 || !state.session) state.session = { authenticated: false };
   }
   if (isNum(state.session.expires_at_ms) && state.session.expires_at_ms <= Date.now()) state.session = { authenticated: false };
   renderSession();
+  setSession(state.session.authenticated);
   renderSides();  // the first view may have rendered before the session was known
-  if (state.view?.player_audit_available) {
+  if (state.view?.player_audit_available !== false) {
     if (state.session.authenticated) loadPlayerIndex();
     else {
       const P = state.player;
       P.modelInputs?.clear(); P.modelInputsPending?.clear();
       Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null,
-        error: null, indexError: null, loading: false, version: P.version + 1, seq: P.seq + 1 });
+        error: null, indexError: null, indexAt: 0, indexInFlight: 0, loading: false,
+        version: P.version + 1, seq: P.seq + 1, indexSeq: P.indexSeq + 1 });
       renderAudit();
     }
   }
@@ -914,14 +926,16 @@ function renderAuditMain() {
 const PLAYER_HAND_REF = /^Deribit_BTC_\d{8}T\d{6}Z\/hand_[0-9a-f]{24}$/;
 async function loadPlayerIndex(force = false) {
   const P = state.player;
-  if (FIXTURE || !state.view?.player_audit_available || !state.session.authenticated || P.busy) return;
-  P.busy = true;
+  if (FIXTURE || state.view?.player_audit_available === false || !state.session.authenticated) return;
+  if (!force && (P.indexInFlight || Date.now() - (P.indexAt || 0) < 5_000)) return;
+  const seq = ++P.indexSeq;
+  P.indexInFlight = seq;
   try {
     const { hands } = await api.playerHands();
-    if (!state.session.authenticated) return;
+    if (!state.session.authenticated || seq !== P.indexSeq) return;
     const old = P.cards.find((c) => playerRef(c) === P.ref);
     const changed = JSON.stringify(hands) !== JSON.stringify(P.cards) || P.indexError;
-    P.cards = hands; P.indexError = null;
+    P.cards = hands; P.indexError = null; P.indexAt = Date.now();
     const first = hands.find((c) => c.frozen_at_ms);
     if (first && !P.explicitMode) state.iq.mode = "player";
     const ref = P.ref || ((first || hands[0]) ? playerRef(first || hands[0]) : null);
@@ -932,8 +946,12 @@ async function loadPlayerIndex(force = false) {
       P.version++; renderAudit();
     }
   } catch (err) {
-    authFailed(err); P.indexError = errorText(err); P.version++; renderAudit();
-  } finally { P.busy = false; }
+    if (seq !== P.indexSeq) return;
+    if (err?.status === 401 || !state.session.authenticated) { authFailed(err); return; }
+    P.indexError = errorText(err); P.version++; renderAudit();
+  } finally {
+    if (P.indexInFlight === seq) P.indexInFlight = 0;
+  }
 }
 
 async function showPlayerHand(ref, navigate = false) {
@@ -1385,10 +1403,12 @@ function notice(text) { state.notices.push({ text, until: Date.now() + 60_000 })
 function authFailed(err) {
   if (err && err.status === 401) {
     state.session = { authenticated: false };
+    setSession(false);
     const P = state.player;
     P.modelInputs?.clear(); P.modelInputsPending?.clear();
     Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null, loading: false,
-      seq: P.seq + 1, version: P.version + 1 });
+      error: null, indexError: null, indexAt: 0, indexInFlight: 0,
+      seq: P.seq + 1, indexSeq: P.indexSeq + 1, version: P.version + 1 });
     renderSession(); renderAudit();
   }
 }
@@ -1687,11 +1707,11 @@ window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer
 window.addEventListener("hashchange", applyPlayerRoute);
 $("banners").append(h("div", { class: "banner info" }, "正在读取工作台数据…"));
 if (SESSION_GATED) {
-  loadSession().then(() => (needsLogin() ? openLogin("") : load()));
+  loadSession(true).then(() => (needsLogin() ? openLogin("") : load()));
 } else {
   load();
   loadSession();
 }
-setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
+setInterval(() => { if (!document.hidden) { loadCurrent(); load(); } }, POLL_MS);
 setInterval(() => { renderStrip(); renderEvents(); renderSessionClock(); }, 10_000);  // countdowns move between data refreshes
 setInterval(() => { if (!document.hidden) loadSession(); }, 5 * 60_000);

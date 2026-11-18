@@ -15,23 +15,28 @@ async function json(resp) {
   return body;
 }
 
+function read(url) {
+  return fetch(url, { credentials: "same-origin", signal: AbortSignal.timeout(15000) }).then(json);
+}
+
 export const api = {
+  currentHand: () => read(`${BASE}/player-audit/current`),
   // The page projection: only what this page draws (the reading view stays at BASE).
-  view: () => fetch(`${BASE}?view=page`, { credentials: "same-origin" }).then(json),
-  session: () => fetch(`${BASE}/session`, { credentials: "same-origin" }).then(json),
+  view: () => read(`${BASE}?view=page`),
+  session: () => read(`${BASE}/session`),
   login: (token) => fetch(`${BASE}/session`, {
     method: "POST", credentials: "same-origin",
     headers: { Authorization: `Bearer ${token}` },
   }).then(json),
   logout: () => fetch(`${BASE}/session`, { method: "DELETE", credentials: "same-origin" }).then(json),
-  reviewState: () => fetch(`${BASE}/review-state`, { credentials: "same-origin" }).then(json),
-  lockedSeries: (id) => fetch(`${BASE}/locked-candidates/${encodeURIComponent(id)}/series`, { credentials: "same-origin" }).then(json),
-  chainAudit: () => fetch(`${BASE}/chain-audit`, { credentials: "same-origin" }).then(json),
-  lockedDetail: (id) => fetch(`${BASE}/locked-candidates/${encodeURIComponent(id)}`, { credentials: "same-origin" }).then(json),
-  playerHands: () => fetch(`${BASE}/player-audit`, { credentials: "same-origin" }).then(json),
+  reviewState: () => read(`${BASE}/review-state`),
+  lockedSeries: (id) => read(`${BASE}/locked-candidates/${encodeURIComponent(id)}/series`),
+  chainAudit: () => read(`${BASE}/chain-audit`),
+  lockedDetail: (id) => read(`${BASE}/locked-candidates/${encodeURIComponent(id)}`),
+  playerHands: () => read(`${BASE}/player-audit`),
   playerHand: (dossier, hand, originals = false) => fetch(
     `${BASE}/player-audit/${encodeURIComponent(dossier)}/${encodeURIComponent(hand)}${originals ? "/originals" : ""}`,
-    { credentials: "same-origin" }).then(json),
+    { credentials: "same-origin", signal: AbortSignal.timeout(15000) }).then(json),
   playerModelInputUrl: (dossier, hand, kind = "model-input", reviewId = null) => {
     const safeKind = ["model-input", "model-input.md", "request.json"].includes(kind) ? kind : "model-input";
     const url = `${BASE}/player-audit/${encodeURIComponent(dossier)}/${encodeURIComponent(hand)}/${safeKind}`;
@@ -40,15 +45,15 @@ export const api = {
   },
   playerModelInput: (dossier, hand, reviewId = null) => fetch(
     api.playerModelInputUrl(dossier, hand, "model-input", reviewId),
-    { credentials: "same-origin" }).then(json),
+    { credentials: "same-origin", signal: AbortSignal.timeout(15000) }).then(json),
   // The inquirer's question sheets of one contract (docs/opus/14); summary=1 for the audit step.
   inquiry: (contract, { file = null, summary = false } = {}) => {
     const q = new URLSearchParams({ short: contract.short_instrument, long: contract.long_instrument });
     if (file) q.set("file", file);
     if (summary) q.set("summary", "1");
-    return fetch(`${BASE}/inquiry?${q}`, { credentials: "same-origin" }).then(json);
+    return read(`${BASE}/inquiry?${q}`);
   },
-  verification: (id) => fetch(`${BASE}/decision-path/${encodeURIComponent(id)}`, { credentials: "same-origin" }).then(json),
+  verification: (id) => read(`${BASE}/decision-path/${encodeURIComponent(id)}`),
   post: (path, body) => fetch(`${BASE}${path}`, {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

@@ -8,6 +8,10 @@
 if (!/\/$|\.html$/.test(location.pathname)) location.replace(location.pathname + "/" + location.search + location.hash);</script>
 <script>/* a chosen theme applies before first paint; with none the page follows the system */
 try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+<link rel="modulepreload" href="api.js">
+<link rel="modulepreload" href="format.js">
+<link rel="modulepreload" href="current-hand.js">
+<script type="module" src="current-hand.js"></script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -30,6 +34,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
 
 <main class="page">
   <div id="banners"></div>
+  <div id="current-hand" class="session-wrap" aria-live="polite" hidden></div>
 
   <!-- Three layers, read top to bottom: where the market is, what to do with one policy, what the data was. -->
   <div class="layer"><b>背景层</b><span>市场现在在哪里：结构、读数、资金与外部事件</span></div>

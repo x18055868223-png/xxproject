@@ -1,30 +1,7 @@
 import { btc, h, isNum, usd } from "./format.js";
 
-const LABELS = {
-  AWAITING_RESPONSE: "等待正式回复", NO_RESPONSE: "回复窗口已结束", EXPECTED: "待发牌",
-  DATA_BLOCKED: "资料阻塞", MISSED: "错过采样窗口", PARSE_FAILED: "回复未通过解析",
-  PROVENANCE_MISSING: "回复缺模型或作答时钟",
-  REQUEST_FAILED: "请求失败", TIMEOUT: "模型超时", LATE: "回复超时到达",
-  LLM_NOT_CONFIGURED: "模型密钥未配置", DAILY_BUDGET_EXHAUSTED: "今日调用上限已用尽",
-  POLICY_BLOCKED: "策略受阻", TRACKER_EXPORT_UNAVAILABLE: "轨迹导出暂不可用",
-  VALID: "解析有效", DUPLICATE: "重复回复",
-  EVIDENCE_UNAVAILABLE: "证据暂不可读", TRACKING: "已关联锁定追踪",
-  ARCHIVED: "归档证据可读（实时追踪已过保留期）", TRACKER_UNAVAILABLE: "追踪暂不可读",
-  LOCK_BLOCKED: "锁定受阻", LINK_UNVERIFIED: "锁定回执待核对", SHADOW_LOCK_REQUESTED: "已提交锁定申请",
-  OBSERVATION: "锁定追踪采样同步", CONDITION_UNKNOWN: "网格检查：资料待补齐",
-  CONDITION_TRIGGERED: "网格检查：已触发破坏条件", CONDITION_NOT_TRIGGERED: "网格检查：未触发破坏条件",
-  REVIEW_REQUIRED: "ARD 变化需复核",
-  AI_HOLD: "AI 续持 · HOLD",
-  AI_REVOKE: "AI 建议撤销 · REVOKE",
-  AI_HOLD_UNKNOWN: "AI 复核无法判断 · UNKNOWN",
-  AI_REVIEW_REQUESTED: "已发起 AI 持仓复核",
-  HOLD_REVIEW_FAILED: "持仓复核调用失败",
-  HOLD_REVIEW_QUEUED: "已入复核去抖队列",
-  HOLD_REVIEW_SKIPPED: "持仓复核已跳过",
-  SIMULATED_ORDER: "影子模拟买回短腿",
-  SHADOW_ACTION: "影子撤销记录",
-  active: "观察中", stopped: "已停止观察", expired: "已到期", error: "追踪异常", paused: "追踪暂停",
-};
+import { LABELS, stageText } from "./current-hand.js";
+
 const SKIP_REASONS = {
   COOLDOWN: "冷却顺延",
   BELOW_MATERIALITY: "低于重大性阈值",
@@ -534,6 +511,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   }
 
   const metaRows = [
+    ["运行阶段", `${stageText(d)} · 更新 ${utc(d.last_update_ms)}`],
     ["交割到期", `${utc(d.expiry_ms)}（${samples[d.sample] || d.sample}）`],
     ["发牌与作答", `发牌 ${utc(d.frozen_at_ms)} · 作答 ${utc(d.decision?.decided_at_ms)}`],
     ["牌手模型", d.model ? `${d.model}${d.reasoning_effort ? `（推理强度 ${d.reasoning_effort}）` : ""}` : "未记录"],

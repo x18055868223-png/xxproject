@@ -804,7 +804,8 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
 /* ── page layers: background → business → audit ── */
 .layer { display: flex; align-items: baseline; gap: 12px; margin: 34px 0 -6px; padding-top: 12px;
   border-top: 2px solid var(--rule); color: var(--ink-3); font-size: 13px; }
-#banners + .layer { margin-top: 8px; }
+#banners + .layer, #banners + #current-hand[hidden] + .layer { margin-top: 8px; }
+#banners + #current-hand + .layer { margin-top: 14px; }
 .layer b { color: var(--ink); font-size: 13px; letter-spacing: .08em; white-space: nowrap; flex: none; }
 
 /* ── reading rows in factor and context cards: label | value, the bar under the value ── */
@@ -831,6 +832,13 @@ a.dp-jump:hover, a.dp-jump:focus-visible { border-color: var(--depth); color: va
 
 /* session strip and entry warnings (docs/opus/13) */
 .session-wrap { margin: 0 0 10px; }
+#current-hand {
+  margin: 4px 0 10px; padding: 9px 14px; border: 1px solid var(--rule-2);
+  border-radius: var(--radius-sheet); background: var(--sheet);
+  color: var(--ink); font-size: 13px; line-height: 1.55;
+  font-family: var(--font-num); font-variant-numeric: tabular-nums;
+}
+#current-hand[data-state="error"] { border-left: 3px solid var(--warn); color: var(--warn); }
 .session-strip { padding: 10px 14px 8px; border: 1px solid var(--rule-2); border-radius: var(--radius-sheet); background: var(--sheet); font-size: 13px; }
 .ss-top { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
 .ss-now-line { margin: 4px 0 8px; color: var(--ink-2); line-height: 1.6; }

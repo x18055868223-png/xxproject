@@ -192,3 +192,76 @@ def test_player_audit_model_input_urls_and_copy_download_controls():
         "/api/workbench/player-audit/Deribit_BTC_20261117T080000Z/hand_4e0efb992e4e459cca46d497/model-input.md?review_id=rev_1e61af69aea5679ea554232e",
         "/api/workbench/player-audit/Deribit_BTC_20261117T080000Z/hand_4e0efb992e4e459cca46d497/request.json?review_id=rev_1e61af69aea5679ea554232e",
     ]
+
+
+def test_current_hand_banner_labels_and_error_handling():
+    current_hand_js = (ROOT / "deploy" / "astra_workbench_v3" / "current-hand.js").as_uri()
+    body = f"""
+    const box = document.createElement("div");
+    box.id = "current-hand";
+    box.hidden = true;
+    document.getElementById = (id) => (id === "current-hand" ? box : null);
+    let mode = "ok";
+    globalThis.fetch = async () => {{
+      if (mode === "404_disabled") {{
+        return {{
+          ok: false, status: 404, headers: {{ get: () => null }},
+          text: async () => JSON.stringify({{ code: "shadow_dossiers_disabled" }}),
+        }};
+      }}
+      if (mode === "bad_json") {{
+        return {{
+          ok: true, status: 200, headers: {{ get: () => null }},
+          text: async () => "<html>proxy</html>",
+        }};
+      }}
+      if (mode === "403") {{
+        return {{
+          ok: false, status: 403, headers: {{ get: () => null }},
+          text: async () => JSON.stringify({{ code: "insecure_transport" }}),
+        }};
+      }}
+      return {{
+        ok: true, status: 200, headers: {{ get: () => null }},
+        text: async () => JSON.stringify({{ hand: {{ state: "Reject", expiry_ms: 1794902400000 }} }}),
+      }};
+    }};
+    const mod = await import("{current_hand_js}");
+    const labelsCheck = {{
+      accept: mod.LABELS.Accept,
+      reject: mod.LABELS.Reject,
+      unknown: mod.LABELS.Unknown,
+      missingStage: mod.stageText({{}}),
+    }};
+    mod.setSession(true);
+    await new Promise((r) => setTimeout(r, 20));
+    const rejectText = box.textContent;
+    const rejectHidden = box.hidden;
+
+    mode = "404_disabled";
+    await mod.loadCurrent();
+    const disabledHidden = box.hidden;
+    const disabledText = box.textContent;
+
+    mode = "bad_json";
+    await mod.loadCurrent();
+    const badJsonText = box.textContent;
+    const badJsonHidden = box.hidden;
+    const badJsonState = box.dataset.state;
+
+    mode = "403";
+    await mod.loadCurrent();
+    const err403Text = box.textContent;
+
+    return {{ labelsCheck, rejectText, rejectHidden, disabledHidden, disabledText, badJsonText, badJsonHidden, badJsonState, err403Text }};
+    """
+    out = _run_node(body, {})
+    assert out["labelsCheck"]["accept"] == "已接受 · Accept"
+    assert out["labelsCheck"]["reject"] == "已拒绝 · Reject"
+    assert out["labelsCheck"]["unknown"] == "暂不判定 · Unknown"
+    assert out["labelsCheck"]["missingStage"] == "状态未知"
+    assert out["rejectHidden"] is False
+    assert "已拒绝 · Reject" in out["rejectText"]
+    assert out["disabledHidden"] is True and out["disabledText"] == ""
+    assert out["badJsonHidden"] is False and "响应格式异常" in out["badJsonText"] and out["badJsonState"] == "error"
+    assert "HTTP 403" in out["err403Text"]
