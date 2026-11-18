@@ -1,12 +1,32 @@
-# GFRI v1.1 外部验收反馈修复与最终预运行裁定报告
+# GFRI v1.1 第二轮外部验收最终收口与启动验收单
 
 ## 最终裁定：`READY_FOR_SHADOW_COLLECTION`
 
-> **锁定隔离与运行态**：`collector_enabled = false`、`decision_authority = SHADOW_ONLY`、`player_integration_enabled = false`、`live_veto_enabled = false`。全部 P0-1～P0-7 与 P1-1～P1-3 已关闭并通过独立复核与全量测试，现严格保持**默认关闭、等待外部复审批准**状态；未修改生产 `.worktrees/player-dossier-v13`、Prompt A、AI 牌手正式输入及交割卷宗。
+> **可连续 60 天运行结论**：**可以**。在目标 Linux 主机 `xx-eu` (`vmi3648530`) 实测 `bitnami` 沙箱权限、`Python 3.12.3`、NTP 同步、公网三端连通、单轮实时采样 Peak RSS **`36.8 MiB`**、8,640 条（60 天）重索引/流式读取 Peak RSS **`47.9 MiB`**（远低于 `MemoryMax=128M`）、原始 HTTP 与磁盘 SHA-256 逐文件一致、`ShadowLedger` 账本/索引故障自愈零重复，以及 `enable_collector.sh` 失败自动回滚。
+> **当前安全锁**：`collector_enabled = false`、`decision_authority = SHADOW_ONLY`、`player_integration_enabled = false`、`live_veto_enabled = false`、`systemd timer` 保持未安装/未启用，待最终人工启动指令。
 
 ---
 
-## 一、P0 / P1 修复位置、测试名称与验证结果清单
+## 一、第二轮最终收口项（A / B / C）核验清单
+
+| 收口项 | 核心实现 | 测试与实机证据 | 结论 |
+| :--- | :--- | :--- | :--- |
+| **A. 主账本与轻量索引一致性** | `history.py` 增加 `.meta.json` 偏移/计数检查点与行级 `entry_id`，支持 O(tail) 增量补洞与流式原子重建，绝不改写 append-only 主账本 | `test_section_a_ledger_index_consistency_and_fault_recovery`、`test_section_a_b_end_to_end_index_fault_injection_and_archive_status` | **PASS**（账本成功+索引注入故障+重启补洞零重复，损坏索引自愈） |
+| **B. 监控样本与可回放研究样本分离** | `history.py` / `policy.py` / `collector.py` 持久化 `raw_archive_status_label`、`complete_replayable`、`sample_replay_class` (`REPLAYABLE` / `NON_REPLAYABLE`)；`require_replayable_only=True` 严格过滤研究样本 | `test_section_b_replayable_vs_non_replayable_samples` | **PASS**（覆盖 `SAVED`/`PARTIAL`/`FAILED`/`NOT_CONFIGURED`，索引重建标签不丢，监控披露完整） |
+| **C. 目标 Linux 主机实机预检** | `deploy/gfri_v11/enable_collector.sh` 增加 `ERR` trap 自动回滚；在 `xx-eu` 通过 `systemd-run` (`User=bitnami`, `MemoryMax=128M`, `ProtectSystem=strict`) 实机验证 | `xx-eu` preflight、9 文件 SHA-256 实盘回放、`enable_collector.sh` 回滚脚本演练 | **PASS**（NTP `SYNCED`、`56,070.1 MiB` 可用空间、Live RSS `36.8 MiB`、60d RSS `47.9 MiB`、回滚 `GFRI_COLLECTOR_ENABLED=0`） |
+
+---
+
+## 二、启动验收单（Startup Acceptance Sheet）
+
+- **测试结果**：`pytest research/gfri_v11/tests -v` -> **`51 passed`**；Snap1 基准复算一致（`3.034746 / 3.201071`）；`bash -n deploy/gfri_v11/enable_collector.sh` 通过。
+- **实盘样本证据**：[`samples/gfri_v11_real_audit_sanitized.json`](samples/gfri_v11_real_audit_sanitized.json)（`2026-11-18T17:36Z` `xx-eu` 沙箱实跑，PUT `+5.40x` / CALL `+5.11x`，`raw_archive_status_label=SAVED`，`sample_replay_class=REPLAYABLE`，`shadow_decision=WARMING_UP`）。
+- **主机安全态**：`xx-eu` 已清理临时验证目录，`systemctl list-unit-files '*gfri*'` 为 `0 unit files`；生产 `.worktrees/player-dossier-v13` 与 Prompt A 无任何改动。
+- **启动授权步骤**：外部复审确认后，在 `xx-eu` 按 [`GFRI_V11_DEPLOYMENT.md`](GFRI_V11_DEPLOYMENT.md) 安装 `/opt/gfri-shadow/gfri_v11.env` 并执行 `sudo bash deploy/gfri_v11/enable_collector.sh` 开启 10 分钟只读影子采集。
+
+---
+
+## 三、第一轮 P0 / P1 修复矩阵（已关闭）
 
 | 问题编号 | 修复位置 | 回归测试名称 | 实测结果 |
 | :--- | :--- | :--- | :--- |
@@ -23,10 +43,8 @@
 
 ---
 
-## 二、独立 Reviewer 复核与验证证据
+## 四、独立 Reviewer 复核与基线核验
 
-- **Reviewer 一审（`4256a8da`）**：检出 `confirm_cycle_observations` 未透传 `global_data_quality` / `partial_valid_side`（High #1）、`_write_cycle_manifest` 失败未同步 `audit_record["raw_archive_status"]`（Medium #2）及 3 项 Low 细节。
-- **Reviewer 二审（`4256a8da`）**：逐行核对全部修复后正式给出 **`APPROVED`**（零 High / Medium 遗留阻塞）。
-- **核心数值复算一致性**：修复前后对 `2026-11-18` Snap1 实盘快照复算结果完全一致（`gfri_down_1pct = 3.034746`，`gfri_up_1pct = 3.201071`，`data_quality = DEGRADED`）。
-- **端到端最新实盘干跑（`2026-11-18T16:59Z`）**：产出 [`samples/gfri_v11_real_audit_sanitized.json`](samples/gfri_v11_real_audit_sanitized.json)（PUT `+5.33x` / CALL `+5.34x`，`ob_age_ms = 4,453`，`ob_exchange_to_recv_ms = 772`，实测抓到 Spot 与盘口中价 `0.293%` 偏离触发 `price_basis_divergence_degraded`）。
-- **目标 Linux 主机待办（批准启用前）**：在目标服务器一次性运行 `python3 deploy/gfri_v11/preflight_check.py --env-file /opt/gfri-shadow/gfri_v11.env --require-shadow-only --require-disabled --host-check --network-probe` 实测 POSIX `fcntl.flock`、`timedatectl` NTP 与 `bitnami` 目录权限；未获外部批准前严禁运行 `enable_collector.sh` 或接入 AI 牌手。
+- **第一轮 Reviewer（`4256a8da`）**：二审逐行复核并给出 **`APPROVED`**；第二轮最终收口（A/B/C 改动）提交前由独立 `reviewer` 复审 `7f7577eb..HEAD`。
+- **核心数值复算一致性**：对 `2026-11-18` Snap1 实盘快照复算结果完全一致（`gfri_down_1pct = 3.034746`，`gfri_up_1pct = 3.201071`，`data_quality = DEGRADED`）。
+- **上线约束**：未获外部书面/明确启动批准前，严禁在生产环境启用 `gfri-shadow-collector.timer` 或将 `decision_authority` 切换出 `SHADOW_ONLY`。

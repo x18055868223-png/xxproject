@@ -766,11 +766,14 @@ def test_p06_bounded_memory_index_and_bit_identical_refs(tmp_path: Path) -> None
         "data_quality",
         "global_data_quality",
         "comparability",
+        "raw_archive_status_label",
+        "complete_replayable",
+        "sample_replay_class",
         "put",
         "call",
     }
     assert sample_index["schema"] == INDEX_SCHEMA
-    assert len(json.dumps(sample_index, separators=(",", ":"))) < 600
+    assert len(json.dumps(sample_index, separators=(",", ":"))) < 700
 
     with ledger_path.open("w", encoding="utf-8") as fh:
         for i in range(total_records):
@@ -915,3 +918,149 @@ def test_p12_select_snapshot_asof_episode_excludes_future_and_honors_archive() -
     assert picked_replayable["freeze_at_ms"] <= t_1400
 
     assert select_snapshot_asof_episode(records, t_1350 - 1) is None
+
+
+def test_section_a_ledger_index_consistency_and_fault_recovery(tmp_path: Path, monkeypatch) -> None:
+    now = BASE_TS_MS
+    ledger_path = tmp_path / "gfri_shadow_ledger.jsonl"
+    ledger = ShadowLedger(ledger_path)
+
+    # Seed 2 baseline records cleanly
+    for idx in range(2):
+        rec = _make_cycle(now - (4 - idx) * 600_000, put_gfri=round(1.1 + idx * 0.1, 2), call_gfri=0.5)
+        rec["raw_archive_status"] = {"status": "SAVED", "complete_replayable": True}
+        ledger.append_record(rec)
+
+    assert ledger.verify_consistency()["consistent"] is True
+
+    # Fault 1: simulate ledger append succeeding followed by index write failure (crash mid-commit)
+    rec_crash = _make_cycle(now - 2 * 600_000, put_gfri=1.55, call_gfri=0.65)
+    rec_crash["raw_archive_status"] = {"status": "SAVED", "complete_replayable": True}
+
+    orig_append_bytes = ledger._append_bytes
+
+    def _boom_on_index(target_path: Path, data: bytes) -> None:
+        if target_path == ledger.index_path:
+            raise OSError("simulated disk write fault on index")
+        orig_append_bytes(target_path, data)
+
+    monkeypatch.setattr(ledger, "_append_bytes", _boom_on_index)
+    try:
+        ledger.append_record(rec_crash)
+        raise AssertionError("expected OSError from simulated index write fault")
+    except OSError:
+        pass
+    monkeypatch.undo()
+
+    # Main append-only ledger must preserve all 3 records without damage; consistency check detects drift
+    assert len(ledger.load_records()) == 3
+    pre_heal = ledger.verify_consistency()
+    assert pre_heal["consistent"] is False
+    assert pre_heal["ledger_count"] == 3
+    assert pre_heal["index_count"] == 2
+
+    # Simulated process restart + next cycle append heals missed tail deterministically without duplicates
+    restarted_ledger = ShadowLedger(ledger_path)
+    rec_next = _make_cycle(now - 600_000, put_gfri=1.75, call_gfri=0.7)
+    rec_next["raw_archive_status"] = {"status": "NOT_CONFIGURED", "complete_replayable": False}
+    restarted_ledger.append_record(rec_next)
+
+    post_heal = restarted_ledger.verify_consistency()
+    assert post_heal["consistent"] is True
+    assert post_heal["ledger_count"] == 4
+    assert post_heal["index_count"] == 4
+
+    ledger_bytes_before_corrupt = ledger_path.read_bytes()
+
+    # Fault 2: partial/corrupt write in lightweight index triggers deterministic rebuild on load_history_window
+    with restarted_ledger.index_path.open("a", encoding="utf-8") as fh:
+        fh.write('{"schema":"broken_partial_line"')
+    assert restarted_ledger.verify_consistency()["consistent"] is False
+
+    window_healed = restarted_ledger.load_history_window(reference_ms=now, max_age_ms=60 * MS_PER_DAY)
+    assert len(window_healed) == 4
+    assert [r["freeze_at_ms"] for r in window_healed] == [r["freeze_at_ms"] for r in restarted_ledger.load_records()]
+    assert [r["put"]["gfri_confirmed"] for r in window_healed] == [1.1, 1.2, 1.55, 1.75]
+    assert restarted_ledger.verify_consistency()["consistent"] is True
+    assert ledger_path.read_bytes() == ledger_bytes_before_corrupt
+
+
+def test_section_b_replayable_vs_non_replayable_samples(tmp_path: Path) -> None:
+    now = BASE_TS_MS
+    ledger_path = tmp_path / "gfri_shadow_ledger.jsonl"
+    ledger = ShadowLedger(ledger_path)
+
+    # 38-day window with all 4 archive statuses interleaved across days (3 samples/day):
+    # 90 SAVED (1.0x), 10 PARTIAL (3.5x), 10 FAILED (3.6x), 10 NOT_CONFIGURED (3.8x) -> 120 total
+    pattern = (
+        [("SAVED", True, 1.0)] * 9
+        + [("PARTIAL", False, 3.5)]
+        + [("FAILED", False, 3.6)]
+        + [("NOT_CONFIGURED", False, 3.8)]
+    )
+    statuses = pattern * 10
+    start_ts = now - 38 * MS_PER_DAY
+    step_ms = (37 * MS_PER_DAY) // (len(statuses) - 1)
+    for idx, (st_label, replayable, put_gfri) in enumerate(statuses):
+        rec = _make_cycle(start_ts + idx * step_ms, put_gfri=put_gfri, call_gfri=0.5)
+        rec["raw_archive_status"] = {"status": st_label, "complete_replayable": replayable}
+        rec["raw_archive_status_label"] = st_label
+        rec["sample_replay_class"] = "REPLAYABLE" if st_label == "SAVED" and replayable else "NON_REPLAYABLE"
+        ledger.append_record(rec)
+
+    # Verify index rebuild preserves replay classification and archive status labels
+    ledger.index_path.unlink()
+    ledger.index_meta_path.unlink()
+    rebuilt_window = ledger.load_history_window(reference_ms=now, max_age_ms=60 * MS_PER_DAY)
+    assert len(rebuilt_window) == 120
+    replay_classes = [r["sample_replay_class"] for r in rebuilt_window]
+    status_labels = [r["raw_archive_status_label"] for r in rebuilt_window]
+    assert replay_classes.count("REPLAYABLE") == 90
+    assert replay_classes.count("NON_REPLAYABLE") == 30
+    assert status_labels.count("SAVED") == 90
+    assert status_labels.count("PARTIAL") == 10
+    assert status_labels.count("FAILED") == 10
+    assert status_labels.count("NOT_CONFIGURED") == 10
+
+    curr = _make_cycle(now, put_gfri=2.2, call_gfri=0.6)
+
+    # Monitoring mode (default): valid NON_REPLAYABLE points retained with explicit disclosure & breakdown
+    long_monitoring = compute_long_term_ref(rebuilt_window, curr, require_replayable_only=False)
+    assert long_monitoring["put"]["state"] == "READY"
+    assert long_monitoring["put"]["sample_count"] == 120
+    assert long_monitoring["put"]["contains_non_replayable_samples"] is True
+    assert long_monitoring["put"]["non_replayable_disclosure"] == "NON_REPLAYABLE_INCLUDED_MONITORING_ONLY"
+    assert long_monitoring["put"]["sample_quality_breakdown"]["replayable_count"] == 90
+    assert long_monitoring["put"]["sample_quality_breakdown"]["non_replayable_count"] == 30
+    assert long_monitoring["put"]["sample_quality_breakdown"]["by_archive_status"] == {
+        "SAVED": 90,
+        "PARTIAL": 10,
+        "FAILED": 10,
+        "NOT_CONFIGURED": 10,
+        "UNKNOWN": 0,
+    }
+
+    # Research / strict replayable mode: excludes all PARTIAL/FAILED/NOT_CONFIGURED samples
+    long_research = compute_long_term_ref(rebuilt_window, curr, require_replayable_only=True)
+    assert long_research["put"]["state"] == "READY"
+    assert long_research["put"]["sample_count"] == 90
+    assert long_research["put"]["contains_non_replayable_samples"] is False
+    assert long_research["put"]["non_replayable_disclosure"] is None
+    assert long_research["put"]["sample_quality_breakdown"]["replayable_count"] == 90
+    assert long_research["put"]["sample_quality_breakdown"]["non_replayable_count"] == 0
+    assert long_research["put"]["sample_quality_breakdown"]["non_replayable_excluded_count"] == 30
+    # Monitoring includes 25% weight at 3.5..3.8 so 2.2 sits at P75; research excludes them -> 2.2 sits at P100
+    assert long_monitoring["put"]["percentile"] < 85.0
+    assert long_research["put"]["percentile"] == 100.0
+
+    # Near-term window also distinguishes replayable-only vs monitoring mode cleanly
+    near_records = [
+        {**_make_cycle(now - 2 * 3600_000, put_gfri=1.0, call_gfri=0.5), "raw_archive_status": {"status": "SAVED", "complete_replayable": True}},
+        {**_make_cycle(now - 3600_000, put_gfri=1.0, call_gfri=0.5), "raw_archive_status": {"status": "FAILED", "complete_replayable": False}},
+    ]
+    near_mon = compute_near_term_ref(near_records, curr, require_replayable_only=False)
+    near_res = compute_near_term_ref(near_records, curr, require_replayable_only=True)
+    assert near_mon["put"]["sample_count"] == 2
+    assert near_mon["put"]["contains_non_replayable_samples"] is True
+    assert near_res["put"]["sample_count"] == 1
+    assert near_res["put"]["sample_quality_breakdown"]["non_replayable_excluded_count"] == 1

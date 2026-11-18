@@ -11,14 +11,14 @@
 | `gfri-shadow-collector.service` | Bounded systemd `oneshot` service (`MemoryMax=128M`, `CPUQuota=25%`, `ProtectSystem=strict`, `NoNewPrivileges=true`, `PYTHONPATH=/opt/gfri-shadow/current`) |
 | `gfri-shadow-collector.timer` | 10-minute cycle (`OnUnitInactiveSec=600`, `Persistent=false`) — **not installed until external approval** |
 | `preflight_check.py` | Verifies env safety locks AND `--host-check --network-probe` (Python `>=3.12`, module imports, writable dirs, disk capacity, Linux NTP sync, upstream HTTP) |
-| `enable_collector.sh` / `disable_collector.sh` / `rollback_gfri_v11.sh` | Idempotent lifecycle scripts with `bitnami:bitnami` directory ownership |
+| `enable_collector.sh` / `disable_collector.sh` / `rollback_gfri_v11.sh` | Idempotent lifecycle scripts with `bitnami:bitnami` directory ownership; `enable_collector.sh` arms an `ERR` trap rollback so partial failures restore `GFRI_COLLECTOR_ENABLED=0` and remove new unit files |
 
-## 2. Storage Budget, Retention & Crash Recovery (P0-6, P0-7, P1-1)
+## 2. Storage Budget, Retention & Crash Recovery (P0-6, P0-7, P1-1, Section A/B)
 
 | Artifact | Size / Rate (10-min cadence) | Budget & Policy |
 | :--- | :--- | :--- |
-| `gfri_shadow_ledger.jsonl` | `~12–17 KB/cycle` (`~1.8 MB/day`, `~115 MB / 60d`) | **Append-only permanent audit ledger**; never auto-deleted. |
-| `gfri_history_index.jsonl` | `~350 B/cycle` (`~50 KB/day`, `~3 MB / 60d`) | Streaming 60d read keeps process RAM `< 10 MiB` inside `MemoryMax=128M` (`8.44 MiB` peak measured for 8,640 full records). |
+| `gfri_shadow_ledger.jsonl` | `~12–17 KB/cycle` (`~1.8 MB/day`, `~115–145 MB / 60d`) | **Append-only permanent audit ledger**; never auto-deleted. |
+| `gfri_history_index.jsonl` + `.meta.json` | `~620 B/cycle` (`~90 KB/day`, `~5.3 MB / 60d`) | Preserves `raw_archive_status_label` & `sample_replay_class`; `.meta.json` detects ledger/index drift and triggers O(tail) heal or atomic rebuild. Real Linux `/usr/bin/python3` streaming Peak RSS for 8,640 heavyweight records: **`47.9 MiB`** (`< 38%` of `128M` cap); single live cycle Peak RSS: **`36.8 MiB`**. |
 | `raw_captures/cycle_*/` | `~0.6 MB/cycle` uncompressed (`~85 MB/day`, `~8–12 MB/day` gzip) | External to Git; non-destructive gzip rotation after 7 days (`raw_capture_retention_days=7`). Write failure emits explicit `FAILED`/`PARTIAL` in `raw_archive_status`, never swallowed. |
 | `deribit_spec_cache.json` | `< 500 B` | Versioned (`schema_version=1`), `24h` TTL verified contract cache (`BTC-PERPETUAL`, `contract_size=10.0`, `usd`). |
 | Locking & Crash Recovery | POSIX `fcntl.flock` / Windows PID+age stale break (`60s`) | On crash between ledger append and `gfri_policy_state.json` write, `load_or_recover_policy_state()` reconstructs streaks from the latest ledger audit tail. |

@@ -348,6 +348,8 @@ class TestCollectorAndIsolation(unittest.TestCase):
             out_fail = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s2", raw_capture_dir=bad_raw, include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
             self.assertEqual(out_fail["audit_record"]["raw_archive_status"]["status"], "FAILED")
             self.assertFalse(out_fail["audit_record"]["raw_archive_status"]["complete_replayable"])
+            self.assertEqual(out_fail["audit_record"]["raw_archive_status_label"], "FAILED")
+            self.assertEqual(out_fail["audit_record"]["sample_replay_class"], "NON_REPLAYABLE")
             self.assertTrue(any(r.startswith("raw_archive_write_failed:") for r in out_fail["audit_record"]["failure_reasons"]))
 
             # Case C: Partial failure (one expected book file blocked by existing directory) -> PARTIAL
@@ -357,6 +359,8 @@ class TestCollectorAndIsolation(unittest.TestCase):
             out_part = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s3", raw_capture_dir=partial_dir, include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
             self.assertEqual(out_part["audit_record"]["raw_archive_status"]["status"], "PARTIAL")
             self.assertFalse(out_part["audit_record"]["raw_archive_status"]["complete_replayable"])
+            self.assertEqual(out_part["audit_record"]["raw_archive_status_label"], "PARTIAL")
+            self.assertEqual(out_part["audit_record"]["sample_replay_class"], "NON_REPLAYABLE")
             self.assertTrue(any("deribit_book_2" in r for r in out_part["audit_record"]["failure_reasons"]))
 
             # Case D: manifest.json write blocked by directory -> audit_record["raw_archive_status"] synced to PARTIAL/complete_replayable=False
@@ -365,6 +369,8 @@ class TestCollectorAndIsolation(unittest.TestCase):
             out_mf = collector.run_shadow_cycle(cfg=cfg, state_dir=root / "s4", raw_capture_dir=manifest_block_dir, include_okx=False, interval_sec=0.0, fetcher=wire_fetcher, sleeper=lambda _: None)
             self.assertEqual(out_mf["audit_record"]["raw_archive_status"]["status"], "PARTIAL")
             self.assertFalse(out_mf["audit_record"]["raw_archive_status"]["complete_replayable"])
+            self.assertEqual(out_mf["audit_record"]["raw_archive_status_label"], "PARTIAL")
+            self.assertEqual(out_mf["audit_record"]["sample_replay_class"], "NON_REPLAYABLE")
             self.assertTrue(any(r.startswith("raw_archive_manifest_failed:") for r in out_mf["audit_record"]["failure_reasons"]))
 
     def test_p02_end_to_end_single_side_truncation_preserves_valid_side_policy(self) -> None:
@@ -469,6 +475,79 @@ class TestCollectorAndIsolation(unittest.TestCase):
             self.assertTrue(host_res["ok"])
             self.assertTrue(host_res["checks"]["python_version"]["ok"])
             self.assertTrue(host_res["checks"]["module_imports"]["ok"])
+
+    def test_section_a_b_end_to_end_index_fault_injection_and_archive_status(self) -> None:
+        from research.gfri_v11.history import ShadowLedger
+        from unittest.mock import patch
+
+        base_ts_ms = 1_795_020_000_000
+        inst_raw = _make_deribit_inst()
+
+        def make_fetcher(ts_ref: list[int]):
+            def _f(url: str) -> dict:
+                t = ts_ref[0]
+                if "gex-latest" in url:
+                    p = _make_raw_gex()
+                    p["data_timestamp"] = t - 2_000
+                    p["timestamp"] = t - 2_000
+                    p["computed_at"] = t - 1_000
+                elif "get_instrument" in url:
+                    p = inst_raw
+                else:
+                    p = _make_deribit_book(t, depth_total_usd=60_000_000.0)
+                raw = json.dumps(p).encode()
+                return {"status": 200, "received_at_ms": t, "raw_bytes": raw, "sha256": hashlib.sha256(raw).hexdigest(), "byte_len": len(raw), "payload": p}
+            return _f
+
+        cfg = replace(DEFAULT_CONFIG, confirm_interval_sec=0.0, max_source_age_ms=86_400_000)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            raw_dir = root / "raw"
+            ts_holder = [base_ts_ms]
+            fetcher = make_fetcher(ts_holder)
+
+            # Cycle 1: SAVED archive -> REPLAYABLE
+            out1 = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, raw_capture_dir=raw_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out1["audit_record"]["raw_archive_status_label"], "SAVED")
+            self.assertEqual(out1["audit_record"]["sample_replay_class"], "REPLAYABLE")
+
+            # Cycle 2: NOT_CONFIGURED (no raw_capture_dir) -> NON_REPLAYABLE
+            ts_holder[0] = base_ts_ms + 600_000
+            out2 = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, raw_capture_dir=None, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out2["audit_record"]["raw_archive_status_label"], "NOT_CONFIGURED")
+            self.assertEqual(out2["audit_record"]["sample_replay_class"], "NON_REPLAYABLE")
+
+            # Cycle 3: Inject index failure right after main ledger succeeds
+            ts_holder[0] = base_ts_ms + 1_200_000
+            orig_append = ShadowLedger._append_bytes
+
+            def _boom_on_index(target_path: Path, data: bytes) -> None:
+                if target_path.name == "gfri_history_index.jsonl":
+                    raise OSError("injected index failure")
+                orig_append(target_path, data)
+
+            with patch.object(ShadowLedger, "_append_bytes", side_effect=_boom_on_index):
+                with self.assertRaises(OSError):
+                    collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, raw_capture_dir=raw_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+
+            ledger = ShadowLedger(state_dir / "gfri_shadow_ledger.jsonl")
+            self.assertEqual(len(ledger.load_records()), 3)
+            self.assertFalse(ledger.verify_consistency()["consistent"])
+
+            # Cycle 4: Simulated restart & next cycle heals missed index row cleanly with zero duplicates
+            ts_holder[0] = base_ts_ms + 1_800_000
+            out4 = collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, raw_capture_dir=raw_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(out4["audit_record"]["sample_replay_class"], "REPLAYABLE")
+            consistency = ledger.verify_consistency()
+            self.assertTrue(consistency["consistent"])
+            self.assertEqual(consistency["ledger_count"], 4)
+            self.assertEqual(consistency["index_count"], 4)
+
+            window = ledger.load_history_window(reference_ms=base_ts_ms + 2_000_000, max_age_ms=86_400_000)
+            self.assertEqual([w["freeze_at_ms"] for w in window], [r["freeze_at_ms"] for r in ledger.load_records()])
+            self.assertEqual([w["raw_archive_status_label"] for w in window], ["SAVED", "NOT_CONFIGURED", "SAVED", "SAVED"])
+            self.assertEqual([w["sample_replay_class"] for w in window], ["REPLAYABLE", "NON_REPLAYABLE", "REPLAYABLE", "REPLAYABLE"])
 
 
 if __name__ == "__main__":

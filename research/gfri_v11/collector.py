@@ -428,6 +428,8 @@ def _write_cycle_manifest(archive_status: dict[str, Any], audit_record: dict[str
             audit_record["raw_archive_status"]["errors"] = list(archive_status["errors"])
             audit_record["raw_archive_status"]["status"] = archive_status["status"]
             audit_record["raw_archive_status"]["complete_replayable"] = False
+        audit_record["raw_archive_status_label"] = archive_status["status"]
+        audit_record["sample_replay_class"] = "NON_REPLAYABLE"
         if err not in audit_record["failure_reasons"]:
             audit_record["failure_reasons"].append(err)
 

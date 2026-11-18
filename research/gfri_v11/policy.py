@@ -609,6 +609,12 @@ def build_audit_record(
 
     freeze_at_ms = confirmed_cycle.get("freeze_at_ms")
 
+    archive_label = str(archive_status.get("status") or "UNKNOWN").upper()
+    is_replayable = (
+        archive_label == "SAVED" and archive_status.get("complete_replayable") is True
+    )
+    sample_replay_class = "REPLAYABLE" if is_replayable else "NON_REPLAYABLE"
+
     return {
         "schema": SCHEMA_AUDIT,
         "code_version": CODE_VERSION,
@@ -625,6 +631,8 @@ def build_audit_record(
         "comparability": confirmed_cycle.get("comparability"),
         "raw_input_hashes": raw_input_hashes,
         "raw_archive_status": archive_status,
+        "raw_archive_status_label": archive_label,
+        "sample_replay_class": sample_replay_class,
         "units": dict(UNITS_METADATA),
         "timestamps": confirmed_cycle.get("timestamps", {}),
         "hedge_flows": hedge_flows,

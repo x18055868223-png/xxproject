@@ -1,7 +1,7 @@
 {
   "schema": "gfri_audit_v11",
   "code_version": "1.1.0",
-  "git_commit": "20a2bbc7cdc3",
+  "git_commit": null,
   "decision_authority": "SHADOW_ONLY",
   "live_veto_enabled": false,
   "player_integration_enabled": false,
@@ -75,8 +75,8 @@
     },
     "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS"
   },
-  "freeze_at_ms": 1795021161079,
-  "cycle_asof_ms": 1795021161079,
+  "freeze_at_ms": 1795023363236,
+  "cycle_asof_ms": 1795023363236,
   "clock_role": "SHADOW_HIGH_FREQ_CYCLE",
   "primary_method": "HEDGE_FLOW_NATIVE",
   "comparability": {
@@ -87,53 +87,128 @@
     "code_version": "1.1.0"
   },
   "raw_input_hashes": {
-    "gex_sha256": "d88b65f075dc84ee6e902195ddb282db08d9ef1d2becad0e0066cd589c34008a",
-    "ob_sha256": "5cc779a8d39719e2d09be78228917dc320f44e73f4c5f633846abd1d9c0518ed",
-    "gex_snapshot_id": "gex:deribit:btc:5744d800bf600f31535ffccc",
-    "gex_universe_hash": "95de2acc3011e489cf06d29e5a3c643a422a4438b2a9f88f2c5cadfda341526f",
+    "gex_sha256": "afb1b837a60f977b3706bb4de6a695d7a572950c58c11cc1436f57de57c83fd5",
+    "ob_sha256": "100c0ac27902d217494dd1d2afbbe3e1d4492ce9964f253df6087ce6d2ac1995",
+    "gex_snapshot_id": "gex:deribit:btc:4a2f8154f736d952f55d3f22",
+    "gex_universe_hash": "dcfe3505891b20580064a323222d283ad1d5a10c8243209c95005282be8329d6",
     "sample_refs": [
       {
-        "ob_timestamp_ms": 1795021138972,
-        "ob_sha256": "c5f58134f841cf441ef2f8a022ca2dac5471e49cc53b07ef6153355a5fa5753c",
+        "ob_timestamp_ms": 1795023349817,
+        "ob_sha256": "1eb350b215ff6606d2d80fe8d432113579ef8ebf31fa9e6e998abc35b1284cf4",
         "data_quality": "DEGRADED",
-        "gfri_down_1pct": 5.546690284184934,
-        "gfri_up_1pct": 5.324354565586437,
+        "global_data_quality": "DEGRADED",
+        "gfri_down_1pct": 5.272463462286274,
+        "gfri_up_1pct": 5.179533806157979,
         "reasons": [
-          "secondary_venues_unavailable:bybit,okx,binance",
-          "price_basis_divergence_degraded"
+          "secondary_venues_unavailable:bybit,okx,binance"
         ]
       },
       {
-        "ob_timestamp_ms": 1795021147258,
-        "ob_sha256": "556fbc2204c8a23288e5543d8d4c07c70263c1585816921963f90d61e8cb846f",
+        "ob_timestamp_ms": 1795023356160,
+        "ob_sha256": "5afd003d4d0c942f364f71f116800d05ff03da18a9b3e914dbd8d67b91ba3013",
         "data_quality": "DEGRADED",
-        "gfri_down_1pct": 5.147290305557255,
-        "gfri_up_1pct": 5.337645414651487,
+        "global_data_quality": "DEGRADED",
+        "gfri_down_1pct": 5.3996889271701045,
+        "gfri_up_1pct": 5.11442003399951,
         "reasons": [
-          "secondary_venues_unavailable:bybit,okx,binance",
-          "price_basis_divergence_degraded"
+          "secondary_venues_unavailable:bybit,okx,binance"
         ]
       },
       {
-        "ob_timestamp_ms": 1795021156626,
-        "ob_sha256": "5cc779a8d39719e2d09be78228917dc320f44e73f4c5f633846abd1d9c0518ed",
+        "ob_timestamp_ms": 1795023361914,
+        "ob_sha256": "100c0ac27902d217494dd1d2afbbe3e1d4492ce9964f253df6087ce6d2ac1995",
         "data_quality": "DEGRADED",
-        "gfri_down_1pct": 5.328423608393869,
-        "gfri_up_1pct": 5.371208633610025,
+        "global_data_quality": "DEGRADED",
+        "gfri_down_1pct": 5.519536964955508,
+        "gfri_up_1pct": 5.072070510413146,
         "reasons": [
-          "secondary_venues_unavailable:bybit,okx,binance",
-          "price_basis_divergence_degraded"
+          "secondary_venues_unavailable:bybit,okx,binance"
         ]
       }
     ]
   },
   "raw_archive_status": {
-    "status": "NOT_CONFIGURED",
-    "complete_replayable": false,
+    "status": "SAVED",
+    "complete_replayable": true,
     "errors": [],
-    "files": {},
-    "cycle_dir": null
+    "files": {
+      "gex_latest": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/gex_latest.json",
+        "bytes": 136989,
+        "raw_http_sha256": "afb1b837a60f977b3706bb4de6a695d7a572950c58c11cc1436f57de57c83fd5",
+        "reserialized_json_sha256": "680706d23e9ffa12ff1f22ecd4bd89e1781e944d21647d519b0b107ceb1e6696",
+        "verified_disk_sha256": "afb1b837a60f977b3706bb4de6a695d7a572950c58c11cc1436f57de57c83fd5",
+        "bytes_origin": "raw_http_wire"
+      },
+      "deribit_instrument": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/deribit_instrument.json",
+        "bytes": 1011,
+        "raw_http_sha256": "d9430bdb1e7d1cf5b580fb7266cbac52a7da28444b4e715906ece24802daeec9",
+        "reserialized_json_sha256": "f5bdb21ccc01598ae045b9a1d919db7d84786d879edf5629335ae8b9ea610d8b",
+        "verified_disk_sha256": "d9430bdb1e7d1cf5b580fb7266cbac52a7da28444b4e715906ece24802daeec9",
+        "bytes_origin": "raw_http_wire"
+      },
+      "deribit_book_1": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/deribit_book_1.json",
+        "bytes": 25931,
+        "raw_http_sha256": "1eb350b215ff6606d2d80fe8d432113579ef8ebf31fa9e6e998abc35b1284cf4",
+        "reserialized_json_sha256": "7ef2a2fbfeabec2ac319526428a026df9bc350165b62449ef2b54237b3c4e2b5",
+        "verified_disk_sha256": "1eb350b215ff6606d2d80fe8d432113579ef8ebf31fa9e6e998abc35b1284cf4",
+        "bytes_origin": "raw_http_wire"
+      },
+      "deribit_book_2": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/deribit_book_2.json",
+        "bytes": 25955,
+        "raw_http_sha256": "5afd003d4d0c942f364f71f116800d05ff03da18a9b3e914dbd8d67b91ba3013",
+        "reserialized_json_sha256": "d3ce5ecfd81310aa091003d0d15bcfbe73df1f8dba4f7efeae5378a2a43d265c",
+        "verified_disk_sha256": "5afd003d4d0c942f364f71f116800d05ff03da18a9b3e914dbd8d67b91ba3013",
+        "bytes_origin": "raw_http_wire"
+      },
+      "deribit_book_3": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/deribit_book_3.json",
+        "bytes": 26022,
+        "raw_http_sha256": "100c0ac27902d217494dd1d2afbbe3e1d4492ce9964f253df6087ce6d2ac1995",
+        "reserialized_json_sha256": "942751801befd46e742f58a37794deb66ec0f372102ec015676b63d20cc204c2",
+        "verified_disk_sha256": "100c0ac27902d217494dd1d2afbbe3e1d4492ce9964f253df6087ce6d2ac1995",
+        "bytes_origin": "raw_http_wire"
+      },
+      "okx_instrument": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/okx_instrument.json",
+        "bytes": 1117,
+        "raw_http_sha256": "1a6eeb4c4cc625067010d0110718feaee4a6f03becc60f661b800acb4f5ac4e2",
+        "reserialized_json_sha256": "1a6eeb4c4cc625067010d0110718feaee4a6f03becc60f661b800acb4f5ac4e2",
+        "verified_disk_sha256": "1a6eeb4c4cc625067010d0110718feaee4a6f03becc60f661b800acb4f5ac4e2",
+        "bytes_origin": "raw_http_wire"
+      },
+      "okx_book_1": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/okx_book_1.json",
+        "bytes": 228673,
+        "raw_http_sha256": "b8d31f15374ccbb2833dd2b271521904eef97660f65d27413a10e21fa1fb8f46",
+        "reserialized_json_sha256": "b1bcba422557ce941b695890aa4a62f925ab371e8fc1a642b2696f0fcfa1dc64",
+        "verified_disk_sha256": "b8d31f15374ccbb2833dd2b271521904eef97660f65d27413a10e21fa1fb8f46",
+        "bytes_origin": "raw_http_wire"
+      },
+      "okx_book_2": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/okx_book_2.json",
+        "bytes": 228658,
+        "raw_http_sha256": "9743ff05d05f3c4b1c9f737670c76356333cb9194d27239cc619af2c978bc29f",
+        "reserialized_json_sha256": "2911bc675b599d2df28d33e6e1c4a7050befa7a143d7cf53a6735c93e11473d3",
+        "verified_disk_sha256": "9743ff05d05f3c4b1c9f737670c76356333cb9194d27239cc619af2c978bc29f",
+        "bytes_origin": "raw_http_wire"
+      },
+      "okx_book_3": {
+        "path": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236/okx_book_3.json",
+        "bytes": 228648,
+        "raw_http_sha256": "25370816d3c09eefabecd5eb375431f30f48e41d93c3a6fe52baadad274167a0",
+        "reserialized_json_sha256": "869d8c29cece15781db4263a04e8c5f71bdcf71b0c7f793181e6b05cdeaf82e6",
+        "verified_disk_sha256": "25370816d3c09eefabecd5eb375431f30f48e41d93c3a6fe52baadad274167a0",
+        "bytes_origin": "raw_http_wire"
+      }
+    },
+    "cycle_dir": "/srv/gfri_v11_accept/raw_captures/cycle_1795023363236"
   },
+  "raw_archive_status_label": "SAVED",
+  "sample_replay_class": "REPLAYABLE",
   "units": {
     "gfri": "ratio_x",
     "hedge_flow": "USD",
@@ -142,107 +217,105 @@
     "oi_lag": "hours"
   },
   "timestamps": {
-    "freeze_at_ms": 1795021161079,
-    "gex_data_ts_ms": 1795021084760,
-    "gex_computed_at_ms": 1795021132550,
-    "gex_received_at_ms": 1795021134912,
-    "gex_age_ms": 76319,
-    "ob_timestamp_ms": 1795021156626,
-    "ob_exchange_ts_ms": 1795021156626,
-    "ob_received_at_ms": 1795021157398,
-    "ob_age_ms": 4453,
-    "ob_received_age_ms": 3681,
-    "ob_exchange_to_recv_ms": 772,
-    "ob_skew_ms": 71866,
+    "freeze_at_ms": 1795023363236,
+    "gex_data_ts_ms": 1795023185427,
+    "gex_computed_at_ms": 1795023348568,
+    "gex_received_at_ms": 1795023349446,
+    "gex_age_ms": 177809,
+    "ob_timestamp_ms": 1795023361914,
+    "ob_exchange_ts_ms": 1795023361914,
+    "ob_received_at_ms": 1795023362262,
+    "ob_age_ms": 1322,
+    "ob_received_age_ms": 974,
+    "ob_exchange_to_recv_ms": 348,
+    "ob_skew_ms": 176487,
     "oi_source_lag_hours": 8,
     "oi_lag_note": "deribit_public_oi_reported_with_8h_delay_per_docs"
   },
   "hedge_flows": {
     "down_1pct": {
       "side": "PUT",
-      "raw_hedge_flow_usd": -127871456.47,
-      "signed_ratio": 5.328423608393869,
+      "raw_hedge_flow_usd": -128671887.29,
+      "signed_ratio": 5.3996889271701045,
       "is_amplifying": true
     },
     "up_1pct": {
       "side": "CALL",
-      "raw_hedge_flow_usd": 127933112.31,
-      "signed_ratio": 5.337645414651487,
+      "raw_hedge_flow_usd": 124522881.48,
+      "signed_ratio": 5.11442003399951,
       "is_amplifying": true
     }
   },
   "order_book": {
-    "put_liquidity_depth_usd": 23997990.0,
-    "call_liquidity_depth_usd": 23968080.0,
+    "put_liquidity_depth_usd": 23829500.0,
+    "call_liquidity_depth_usd": 24347410.0,
     "put_sample_depths_usd": [
-      23053650.0,
-      24842480.0,
-      23997990.0
+      24404510.0,
+      23829500.0,
+      23312080.0
     ],
     "call_sample_depths_usd": [
-      24027910.0,
-      23968080.0,
-      23818310.0
+      24041330.0,
+      24347410.0,
+      24550700.0
     ],
-    "gex_spot_usd": 62439.79,
-    "ob_ref_price_usd": 62622.75,
-    "total_open_interest": 394951.7,
+    "gex_spot_usd": 63410.26,
+    "ob_ref_price_usd": 63387.25,
+    "total_open_interest": 395032.0,
     "depth_coverage": {
-      "bid_levels": 592,
-      "ask_levels": 952,
+      "bid_levels": 609,
+      "ask_levels": 951,
       "deribit_depth_param": 1000,
-      "ob_bid_coverage_pct": 89.27067239940757,
-      "ob_ask_coverage_pct": 379.05912787285774
+      "ob_bid_coverage_pct": 89.40007651380995,
+      "ob_ask_coverage_pct": 373.2812986838836
     }
   },
   "ratios": {
     "put": {
-      "status": "DEGRADED",
-      "gfri_confirmed": 5.328423608393869,
-      "gfri_fast_max": 5.546690284184934,
-      "gfri_fast_min": 5.147290305557255,
-      "gfri_latest_raw": 5.328423608393869,
-      "spread_ratio": 1.0775942204379785,
+      "status": "VALID",
+      "gfri_confirmed": 5.3996889271701045,
+      "gfri_fast_max": 5.519536964955508,
+      "gfri_fast_min": 5.272463462286274,
+      "gfri_latest_raw": 5.519536964955508,
+      "spread_ratio": 1.046861112350335,
       "single_blip_detected": false,
       "valid_count": 3,
       "sample_count": 3
     },
     "call": {
-      "status": "DEGRADED",
-      "gfri_confirmed": 5.337645414651487,
-      "gfri_fast_max": 5.371208633610025,
-      "gfri_fast_min": 5.324354565586437,
-      "gfri_latest_raw": 5.371208633610025,
-      "spread_ratio": 1.0087999526414761,
+      "status": "VALID",
+      "gfri_confirmed": 5.11442003399951,
+      "gfri_fast_max": 5.179533806157979,
+      "gfri_fast_min": 5.072070510413146,
+      "gfri_latest_raw": 5.072070510413146,
+      "spread_ratio": 1.0211872637661892,
       "single_blip_detected": false,
       "valid_count": 3,
       "sample_count": 3
     }
   },
   "cross_venue_ref": {
-    "status": "DEGRADED",
-    "global_status": "DEGRADED",
-    "reason": "price_basis_divergence_degraded",
-    "reasons": [
-      "price_basis_divergence_degraded"
-    ],
-    "down_status": "DEGRADED",
-    "up_status": "DEGRADED",
-    "down_reason": "price_basis_divergence_degraded",
-    "up_reason": "price_basis_divergence_degraded",
-    "down_usd": 80530294.693,
-    "up_usd": 88709723.28184,
-    "ref_price": 62669.55,
-    "spread_pct": 1.5956712629977398e-06,
-    "price_divergence_pct": 0.0036797048804936726,
-    "down_bound_usd": 62042.8545,
-    "up_bound_usd": 63296.2455,
-    "min_bid_usd": 61849.3,
-    "max_ask_usd": 63533.7,
+    "status": "VALID",
+    "global_status": "VALID",
+    "reason": null,
+    "reasons": [],
+    "down_status": "VALID",
+    "up_status": "VALID",
+    "down_reason": null,
+    "up_reason": null,
+    "down_usd": 78165655.04745,
+    "up_usd": 86977704.72234,
+    "ref_price": 63423.55,
+    "spread_pct": 1.5767013987706459e-06,
+    "price_divergence_pct": 0.00020958753362626173,
+    "down_bound_usd": 62789.3145,
+    "up_bound_usd": 64057.7855,
+    "min_bid_usd": 62513.2,
+    "max_ask_usd": 64242.8,
     "bids_count": 5000,
     "asks_count": 5000,
     "depth_unit": "usd_okx_linear_ctval",
-    "ob_timestamp_ms": 1795021159002,
+    "ob_timestamp_ms": 1795023363003,
     "skew_ms": null,
     "ob_age_ms": null,
     "ob_received_age_ms": null,
@@ -253,61 +326,62 @@
     "ct_val": 0.01,
     "ct_val_ccy": "BTC",
     "ct_type": "linear",
-    "okx_sha256": "b2dfabd80f79e9984f3742f6da786034b8cc4a4eb7a777cf736c658041477ddf",
-    "ratio_okx_to_deribit_down": 3.3557099862530153,
-    "ratio_okx_to_deribit_up": 3.7244339872073207,
-    "gfri_down_1pct_okx": 1.5878677329752162,
-    "gfri_up_1pct_okx": 1.4421543386348217
+    "okx_sha256": "25370816d3c09eefabecd5eb375431f30f48e41d93c3a6fe52baadad274167a0",
+    "ratio_okx_to_deribit_down": 3.3530107586903446,
+    "ratio_okx_to_deribit_up": 3.542779013321005,
+    "gfri_down_1pct_okx": 1.646143529557713,
+    "gfri_up_1pct_okx": 1.431664377411613
   },
   "research_submetrics": {
     "zero_dte_share": {
-      "zero_dte_gex_usd": -7095208.8824655805,
-      "total_net_gex_usd": -128302945.93,
-      "share_signed": 0.05530043625293382,
-      "share_abs_pct": 5.5300436252933824
+      "zero_dte_gex_usd": -6129515.335998141,
+      "total_net_gex_usd": -127206253.4,
+      "share_signed": 0.04818564474754148,
+      "share_abs_pct": 4.818564474754148
     },
     "down_0p5pct": {
       "status": "DEGRADED",
-      "reason": "price_basis_divergence_degraded",
+      "reason": null,
       "sign_ds": -1,
       "method": "NET_GEX_LINEAR",
       "method_tier": "RESEARCH_LINEAR_0P5PCT",
       "curve_used": "total_net_gex_linear",
-      "raw_hedge_flow_usd": -64151472.965,
-      "signed_ratio": 3.3230410159517847,
-      "amplifying_pressure_usd": 64151472.965,
-      "liquidity_depth_usd": 19305050.0,
-      "gfri": 3.3230410159517847,
+      "raw_hedge_flow_usd": -63603126.7,
+      "signed_ratio": 3.3355128492217783,
+      "amplifying_pressure_usd": 63603126.7,
+      "liquidity_depth_usd": 19068470.0,
+      "gfri": 3.3355128492217783,
       "is_amplifying": true
     },
     "up_0p5pct": {
       "status": "DEGRADED",
-      "reason": "price_basis_divergence_degraded",
+      "reason": null,
       "sign_ds": 1,
       "method": "NET_GEX_LINEAR",
       "method_tier": "RESEARCH_LINEAR_0P5PCT",
       "curve_used": "total_net_gex_linear",
-      "raw_hedge_flow_usd": 64151472.965,
-      "signed_ratio": 2.8682996879594094,
-      "amplifying_pressure_usd": 64151472.965,
-      "liquidity_depth_usd": 22365680.0,
-      "gfri": 2.8682996879594094,
+      "raw_hedge_flow_usd": 63603126.7,
+      "signed_ratio": 3.1891369446360955,
+      "amplifying_pressure_usd": 63603126.7,
+      "liquidity_depth_usd": 19943680.0,
+      "gfri": 3.1891369446360955,
       "is_amplifying": true
     }
   },
   "near_ref": {
     "schema_version": "gfri_near_ref_v11",
     "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
-    "freeze_at_ms": 1795021161079,
+    "freeze_at_ms": 1795023363236,
     "window_ms": 14400000,
     "min_near_samples": 4,
+    "require_replayable_only": false,
     "put": {
       "side": "PUT",
       "state": "WARMING_UP",
       "insufficient_history": true,
       "sample_count": 0,
       "min_near_samples": 4,
-      "current_gfri": 5.328423608393869,
+      "current_gfri": 5.3996889271701045,
       "recent_median": null,
       "delta_abs": null,
       "delta_ratio": null,
@@ -318,7 +392,23 @@
       "driver": "STABLE",
       "coincided_with_liquidity_drop": false,
       "baseline_depth_usd": null,
-      "baseline_abs_flow_usd": null
+      "baseline_abs_flow_usd": null,
+      "require_replayable_only": false,
+      "replayable_sample_count": 0,
+      "non_replayable_sample_count": 0,
+      "contains_non_replayable_samples": false,
+      "sample_quality_breakdown": {
+        "replayable_count": 0,
+        "non_replayable_count": 0,
+        "non_replayable_excluded_count": 0,
+        "by_archive_status": {
+          "SAVED": 0,
+          "PARTIAL": 0,
+          "FAILED": 0,
+          "NOT_CONFIGURED": 0,
+          "UNKNOWN": 0
+        }
+      }
     },
     "call": {
       "side": "CALL",
@@ -326,7 +416,7 @@
       "insufficient_history": true,
       "sample_count": 0,
       "min_near_samples": 4,
-      "current_gfri": 5.337645414651487,
+      "current_gfri": 5.11442003399951,
       "recent_median": null,
       "delta_abs": null,
       "delta_ratio": null,
@@ -337,15 +427,32 @@
       "driver": "STABLE",
       "coincided_with_liquidity_drop": false,
       "baseline_depth_usd": null,
-      "baseline_abs_flow_usd": null
+      "baseline_abs_flow_usd": null,
+      "require_replayable_only": false,
+      "replayable_sample_count": 0,
+      "non_replayable_sample_count": 0,
+      "contains_non_replayable_samples": false,
+      "sample_quality_breakdown": {
+        "replayable_count": 0,
+        "non_replayable_count": 0,
+        "non_replayable_excluded_count": 0,
+        "by_archive_status": {
+          "SAVED": 0,
+          "PARTIAL": 0,
+          "FAILED": 0,
+          "NOT_CONFIGURED": 0,
+          "UNKNOWN": 0
+        }
+      }
     }
   },
   "long_ref": {
     "schema_version": "gfri_long_ref_v11",
     "param_calibration_status": "UNVALIDATED_CANDIDATE_PARAMS",
-    "freeze_at_ms": 1795021161079,
+    "freeze_at_ms": 1795023363236,
     "window_days": 60,
     "half_life_days": 14.0,
+    "require_replayable_only": false,
     "put": {
       "side": "PUT",
       "state": "ACCUMULATING",
@@ -357,7 +464,24 @@
       "weighted_median": null,
       "regime_drift_warning": false,
       "regime_drift_note": null,
-      "display_label": "积累中 (0/30天)"
+      "display_label": "积累中 (0/30天)",
+      "require_replayable_only": false,
+      "replayable_sample_count": 0,
+      "non_replayable_sample_count": 0,
+      "contains_non_replayable_samples": false,
+      "non_replayable_disclosure": null,
+      "sample_quality_breakdown": {
+        "replayable_count": 0,
+        "non_replayable_count": 0,
+        "non_replayable_excluded_count": 0,
+        "by_archive_status": {
+          "SAVED": 0,
+          "PARTIAL": 0,
+          "FAILED": 0,
+          "NOT_CONFIGURED": 0,
+          "UNKNOWN": 0
+        }
+      }
     },
     "call": {
       "side": "CALL",
@@ -370,7 +494,24 @@
       "weighted_median": null,
       "regime_drift_warning": false,
       "regime_drift_note": null,
-      "display_label": "积累中 (0/30天)"
+      "display_label": "积累中 (0/30天)",
+      "require_replayable_only": false,
+      "replayable_sample_count": 0,
+      "non_replayable_sample_count": 0,
+      "contains_non_replayable_samples": false,
+      "non_replayable_disclosure": null,
+      "sample_quality_breakdown": {
+        "replayable_count": 0,
+        "non_replayable_count": 0,
+        "non_replayable_excluded_count": 0,
+        "by_archive_status": {
+          "SAVED": 0,
+          "PARTIAL": 0,
+          "FAILED": 0,
+          "NOT_CONFIGURED": 0,
+          "UNKNOWN": 0
+        }
+      }
     }
   },
   "policy_version": "gfri_shadow_policy_v11_candidate_1",
@@ -444,7 +585,7 @@
       }
     },
     "next_policy_state": {
-      "last_freeze_at_ms": 1795021161079,
+      "last_freeze_at_ms": 1795023363236,
       "put": {
         "active_pause": false,
         "pause_consecutive": 0,
@@ -508,88 +649,82 @@
   "partial_valid_side": null,
   "confirmation_status": "CONFIRMED",
   "failure_reasons": [
-    "price_basis_divergence_degraded",
     "secondary_venues_unavailable:bybit,okx,binance"
   ],
   "reasons": [
-    "price_basis_divergence_degraded",
     "secondary_venues_unavailable:bybit,okx,binance"
   ],
   "put": {
     "side": "PUT",
     "shock": "down_1pct",
     "direction": "down_1pct",
-    "status": "DEGRADED",
+    "status": "VALID",
     "confirmation_status": "CONFIRMED",
     "valid_sample_count": 3,
     "valid_count": 3,
     "sample_count": 3,
-    "gfri_confirmed": 5.328423608393869,
-    "gfri_fast_max": 5.546690284184934,
-    "gfri_fast_min": 5.147290305557255,
-    "gfri_latest_raw": 5.328423608393869,
-    "raw_hedge_flow_usd": -127871456.47,
-    "liquidity_depth_usd": 23997990.0,
-    "signed_ratio": 5.328423608393869,
+    "gfri_confirmed": 5.3996889271701045,
+    "gfri_fast_max": 5.519536964955508,
+    "gfri_fast_min": 5.272463462286274,
+    "gfri_latest_raw": 5.519536964955508,
+    "raw_hedge_flow_usd": -128671887.29,
+    "liquidity_depth_usd": 23829500.0,
+    "signed_ratio": 5.3996889271701045,
     "is_amplifying": true,
-    "spread_ratio": 1.0775942204379785,
+    "spread_ratio": 1.046861112350335,
     "single_blip_detected": false,
     "samples_gfri": [
-      5.546690284184934,
-      5.147290305557255,
-      5.328423608393869
+      5.272463462286274,
+      5.3996889271701045,
+      5.519536964955508
     ],
     "sample_values": [
-      5.546690284184934,
-      5.147290305557255,
-      5.328423608393869
+      5.272463462286274,
+      5.3996889271701045,
+      5.519536964955508
     ],
     "sample_depths_usd": [
-      23053650.0,
-      24842480.0,
-      23997990.0
+      24404510.0,
+      23829500.0,
+      23312080.0
     ],
-    "reasons": [
-      "price_basis_divergence_degraded"
-    ]
+    "reasons": []
   },
   "call": {
     "side": "CALL",
     "shock": "up_1pct",
     "direction": "up_1pct",
-    "status": "DEGRADED",
+    "status": "VALID",
     "confirmation_status": "CONFIRMED",
     "valid_sample_count": 3,
     "valid_count": 3,
     "sample_count": 3,
-    "gfri_confirmed": 5.337645414651487,
-    "gfri_fast_max": 5.371208633610025,
-    "gfri_fast_min": 5.324354565586437,
-    "gfri_latest_raw": 5.371208633610025,
-    "raw_hedge_flow_usd": 127933112.31,
-    "liquidity_depth_usd": 23968080.0,
-    "signed_ratio": 5.337645414651487,
+    "gfri_confirmed": 5.11442003399951,
+    "gfri_fast_max": 5.179533806157979,
+    "gfri_fast_min": 5.072070510413146,
+    "gfri_latest_raw": 5.072070510413146,
+    "raw_hedge_flow_usd": 124522881.48,
+    "liquidity_depth_usd": 24347410.0,
+    "signed_ratio": 5.11442003399951,
     "is_amplifying": true,
-    "spread_ratio": 1.0087999526414761,
+    "spread_ratio": 1.0211872637661892,
     "single_blip_detected": false,
     "samples_gfri": [
-      5.324354565586437,
-      5.337645414651487,
-      5.371208633610025
+      5.179533806157979,
+      5.11442003399951,
+      5.072070510413146
     ],
     "sample_values": [
-      5.324354565586437,
-      5.337645414651487,
-      5.371208633610025
+      5.179533806157979,
+      5.11442003399951,
+      5.072070510413146
     ],
     "sample_depths_usd": [
-      24027910.0,
-      23968080.0,
-      23818310.0
+      24041330.0,
+      24347410.0,
+      24550700.0
     ],
-    "reasons": [
-      "price_basis_divergence_degraded"
-    ]
+    "reasons": []
   },
   "sanitized": true,
   "sanitization_note": "Derived purely from public market feeds and computed audit fields; no credentials or secrets."

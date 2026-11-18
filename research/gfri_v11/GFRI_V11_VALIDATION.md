@@ -1,12 +1,12 @@
 # GFRI v1.1 Validation & Experimental Evidence Report
 
-## 1. Automated Regression Suite Results (47 Tests Passing)
+## 1. Automated Regression Suite Results (51 Tests Passing)
 
 Executed in repository root against `.worktrees/gfri-v11`:
-- **Test Suite**: `C:\Users\Xu\AppData\Local\Programs\Python\Python312\python.exe -m pytest .worktrees/gfri-v11/research/gfri_v11/tests -v` -> **`48 passed`** (`0 failed`, `0 skipped`).
-- **Host & Lock Preflight**: `preflight_check.py --require-shadow-only --require-disabled --host-check --network-probe` -> **`HOST_PREFLIGHT_OK` / `PREFLIGHT_OK`**.
-- **Default-Off Scheduled Guard**: `python -m research.gfri_v11.collector --scheduled` -> exit `0` (`COLLECTOR_DISABLED (GFRI_COLLECTOR_ENABLED=0; SHADOW_ONLY)`).
-- **Bash Static Syntax**: `bash -n enable_collector.sh disable_collector.sh rollback_gfri_v11.sh` -> exit `0`.
+- **Test Suite**: `C:\Users\Xu\AppData\Local\Programs\Python\Python312\python.exe -m pytest research/gfri_v11/tests -v` -> **`51 passed`** (`0 failed`, `0 skipped`), including Section A ledger/index crash fault-injection and Section B 4-status (`SAVED`/`PARTIAL`/`FAILED`/`NOT_CONFIGURED`) replayability tests.
+- **Target Linux Host (`xx-eu` / `vmi3648530`) Preflight & Rollback**: `systemd-run --wait --pipe --collect -p User=bitnami -p Group=bitnami -p MemoryMax=128M -p ProtectSystem=strict -p PrivateTmp=true` -> Python `3.12.3`, `bitnami` (`uid=999`) RW verified, disk `56,070.1 MiB` free, Linux RAM `8,320.9 MiB` avail, NTP `SYNCED`, GEXMonitor/Deribit/OKX `200 OK`; `enable_collector.sh` simulated `systemctl enable` failure rolled back cleanly (`ROLLED_BACK_ON_ERROR`, `GFRI_COLLECTOR_ENABLED=0`, unit files removed).
+- **Default-Off Scheduled Guard**: `python3 -m research.gfri_v11.collector --scheduled` -> exit `0` (`COLLECTOR_DISABLED (GFRI_COLLECTOR_ENABLED=0; SHADOW_ONLY)`).
+- **Bash Static Syntax**: `bash -n deploy/gfri_v11/enable_collector.sh` -> exit `0`.
 
 ## 2. P0 & P1 Fix Closure Matrix
 
@@ -23,13 +23,15 @@ Executed in repository root against `.worktrees/gfri-v11`:
 | **P1-2 Freeze Clock Semantics** | `policy.py` (`cycle_asof_ms`, `clock_role="SHADOW_HIGH_FREQ_CYCLE"`), `history.py` (`select_snapshot_asof_episode`). | `test_p12_select_snapshot_asof_episode_excludes_future_and_honors_archive` |
 | **P1-3 Host Readiness Preflight** | `deploy/gfri_v11/preflight_check.py` (`run_host_checks`: Python, imports, perms, disk, RAM, NTP, live HTTP probe). | `test_p11_crash_recovery_and_p13_host_preflight` |
 
-## 3. Parity, Capacity (60d / 8,640 Cycles) & Fresh Live Verification
+## 3. Parity, Capacity (60d / 8,640 Cycles) & Target Linux Live Verification
 
 1. **Qualified Sample Parity Check**: Re-evaluating v1.0 `2026-11-18` Snap1 raw capture (`gex_latest_20261118.json` + `deribit_btc_perpetual_book_depth1000_20261118.json` + `deribit_btc_perpetual_instrument_20261118.json`) yielded **identical** qualified GFRI values: `gfri_down_1pct = 3.034746`, `gfri_up_1pct = 3.201071`, `data_quality = DEGRADED`, `deribit_spec_source = live_instrument`.
-2. **60-Day Capacity Benchmark (`tracemalloc`)**: Streaming `8,640` full `gfri_audit_v11` records (`115.71 MiB` JSONL file) through `ShadowLedger.load_history_window(reference_ms=now, max_age_ms=60d)` measured **`current = 8.32 MiB`, `peak = 8.44 MiB`** (< `7%` of `systemd MemoryMax=128M`) with bit-identical `compute_near_term_ref` and `compute_long_term_ref` outputs.
-3. **Fresh End-to-End Live Dry Run (`2026-11-18T16:59Z`)**:
-   - Output artifact: [`samples/gfri_v11_real_audit_sanitized.json`](samples/gfri_v11_real_audit_sanitized.json) (`cycle_asof_ms = 1795021161079`).
-   - **Live Basis Guard Triggered**: Rapid spot move (`gex_spot_usd = $62,439.79` vs `ob_ref_price_usd = $62,622.75`, `0.293%` > `0.20%`) accurately triggered `price_basis_divergence_degraded` alongside `secondary_venues_unavailable:bybit,okx,binance`.
-   - **Clocks & Telemetry**: `gex_age_ms = 76,319`, `ob_age_ms = 4,453`, `ob_received_age_ms = 3,681`, `ob_exchange_to_recv_ms = 772`, `ob_skew_ms = 71,866` — all well inside `60s` OB age / `30s` recv-lag gates.
-   - **Confirmed GFRI**: PUT `-$127.87M / $24.00M` (`592` bid levels) -> **`+5.33x`** (`fast_max 5.55x`); CALL `+$127.93M / $23.97M` (`952` ask levels) -> **`+5.34x`** (`fast_max 5.37x`); OKX ref `$80.53M / $88.71M` (`1.59x / 1.44x`); `shadow_decision = WARMING_UP`.
-   - **Isolation**: `.worktrees/player-dossier-v13` clean, zero Prompt A / dossier / player edits, zero scheduled timers active.
+2. **60-Day Capacity Benchmark (`tracemalloc` + Real Linux Process Peak RSS)**:
+   - Python `tracemalloc` (`8,640` full `gfri_audit_v11` records, `> 140 MB` JSONL): traced delta `< 32 MiB`.
+   - Real Linux `/usr/bin/python3` (`3.12.3`) inside `systemd-run -p MemoryMax=128M` (`8,640` ~17KB records rebuilt from ledger & streamed via `load_history_window`): **`peak_rss = 49,028 KiB` (`47.9 MiB`)**, zero index drift (`consistent = true`).
+3. **Target Linux Live Dry Run Under Strict Systemd Sandbox (`2026-11-18T17:36Z`, `xx-eu`)**:
+   - Output artifact: [`samples/gfri_v11_real_audit_sanitized.json`](samples/gfri_v11_real_audit_sanitized.json) (`cycle_asof_ms = 1795023363236`, live cycle Peak RSS **`37,692 KiB` (`36.8 MiB`)**).
+   - **Archive & Ledger Readback**: `9/9` raw HTTP files matched SHA-256 on disk (`raw_archive_status_label = SAVED`, `sample_replay_class = REPLAYABLE`, `complete_replayable = true`), `ShadowLedger.verify_consistency()` -> `consistent = true`, `meta_synced = true`.
+   - **Clocks & Telemetry**: `gex_age_ms = 177,809`, `ob_age_ms = 1,322`, `ob_received_age_ms = 974`, `ob_exchange_to_recv_ms = 348`, `ob_skew_ms = 176,487`.
+   - **Confirmed GFRI**: PUT `-$128.67M / $23.83M` -> **`+5.40x`** (`fast_max 5.52x`); CALL `+$124.52M / $24.35M` -> **`+5.11x`** (`fast_max 5.18x`); `shadow_decision = WARMING_UP`, `decision_authority = SHADOW_ONLY`.
+   - **Isolation**: `.worktrees/player-dossier-v13` untouched; `xx-eu` temp staging removed & `systemctl list-unit-files '*gfri*'` confirms **0 installed/active units**.

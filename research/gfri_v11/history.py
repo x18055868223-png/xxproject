@@ -1,11 +1,14 @@
-"""Historical shadow ledger, near-term reference, and long-term reference for GFRI v1.1.
+"""Historical shadow ledger, bounded crash-safe index, near-term & long-term references.
 
 All historical thresholds and cold-start windows are labeled UNVALIDATED_CANDIDATE_PARAMS.
+Maintains strict separation between REPLAYABLE research samples (archived raw HTTP captures
+verified on disk) and NON_REPLAYABLE monitoring-only samples.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -24,6 +27,7 @@ from research.gfri_v11.config import DEFAULT_CONFIG, GfriConfig
 
 MS_PER_DAY = 86_400_000
 INDEX_SCHEMA = "gfri_history_index_v11"
+INDEX_META_SCHEMA = "gfri_history_index_meta_v11"
 COMPARABILITY_KEYS = (
     "methodology_version",
     "universe_policy",
@@ -33,10 +37,36 @@ COMPARABILITY_KEYS = (
 )
 DRIVER_CHANGE_THRESHOLD = 0.10
 VALID_QUALITIES = ("VALID", "DEGRADED")
+KNOWN_ARCHIVE_LABELS = ("SAVED", "PARTIAL", "FAILED", "NOT_CONFIGURED", "UNKNOWN")
 
 
-def extract_index_entry(record: dict[str, Any]) -> dict[str, Any]:
-    """Project a full audit/eval record into the compact ~350B history index entry."""
+def _line_entry_id(raw_line_bytes: bytes) -> str:
+    """Compute stable 16-hex digest from stripped raw JSONL line bytes."""
+    return hashlib.sha256(raw_line_bytes.rstrip(b"\r\n")).hexdigest()[:16]
+
+
+def _resolve_replay_metadata(record: dict[str, Any]) -> tuple[str, bool, str]:
+    """Derive (raw_archive_status_label, complete_replayable, sample_replay_class)."""
+    raw_archive = record.get("raw_archive_status")
+    if isinstance(raw_archive, dict):
+        label_raw = str(raw_archive.get("status") or "UNKNOWN").upper()
+        complete = label_raw in ("SAVED", "COMPLETE") and raw_archive.get("complete_replayable") is True
+    elif "raw_archive_status_label" in record or "complete_replayable" in record:
+        label_raw = str(record.get("raw_archive_status_label") or "NOT_CONFIGURED").upper()
+        complete = label_raw in ("SAVED", "COMPLETE") and record.get("complete_replayable") is True
+    else:
+        label_raw = "NOT_CONFIGURED"
+        complete = False
+    replay_class = "REPLAYABLE" if complete else "NON_REPLAYABLE"
+    return sys.intern(label_raw), complete, sys.intern(replay_class)
+
+
+def extract_index_entry(
+    record: dict[str, Any],
+    *,
+    entry_id: str | None = None,
+) -> dict[str, Any]:
+    """Project a full audit/eval record into a compact ~400B history index entry."""
     comp_raw = record.get("comparability")
     if isinstance(comp_raw, dict) and comp_raw:
         comparability = {
@@ -89,15 +119,37 @@ def extract_index_entry(record: dict[str, Any]) -> dict[str, Any]:
     else:
         global_data_quality = str(gdq_raw)
 
-    return {
+    archive_label, complete_replayable, replay_class = _resolve_replay_metadata(record)
+    resolved_eid = entry_id if entry_id is not None else record.get("entry_id")
+
+    entry: dict[str, Any] = {
         "schema": INDEX_SCHEMA,
         "freeze_at_ms": freeze_at_ms,
         "data_quality": data_quality,
         "global_data_quality": global_data_quality,
+        "raw_archive_status_label": archive_label,
+        "complete_replayable": complete_replayable,
+        "sample_replay_class": replay_class,
         "comparability": comparability,
         "put": _compact_side("put"),
         "call": _compact_side("call"),
     }
+    if isinstance(resolved_eid, str) and resolved_eid:
+        entry["entry_id"] = resolved_eid
+    return entry
+
+
+def _encode_index_line(entry: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            entry,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -175,9 +227,16 @@ class _LoadHistoryWindowDescriptor:
             max_age_ms: int | None = None,
         ) -> list[dict[str, Any]]:
             if path_or_index is not None:
-                target: str | Path = path_or_index
-            elif instance.index_path.exists() and instance.index_path.stat().st_size > 0:
-                target = instance.index_path
+                return owner._load_history_window_from_path(
+                    path_or_index,
+                    reference_ms=reference_ms,
+                    max_age_ms=max_age_ms,
+                )
+            if instance.path.exists() and instance.path.stat().st_size > 0:
+                if instance._needs_reconcile_fast():
+                    instance.reconcile_index()
+            if instance.index_path.exists() and instance.index_path.stat().st_size > 0:
+                target: Path = instance.index_path
             else:
                 target = instance.path
             return owner._load_history_window_from_path(
@@ -190,7 +249,7 @@ class _LoadHistoryWindowDescriptor:
 
 
 class ShadowLedger:
-    """Pure append-only JSONL ledger reader/writer with companion index, flock/stale-lock & fsync."""
+    """Append-only JSONL ledger with self-healing companion index, flock/stale-lock & fsync."""
 
     load_records = _LoadRecordsDescriptor()
     load_history_window = _LoadHistoryWindowDescriptor()
@@ -209,6 +268,7 @@ class ShadowLedger:
             if index_path is not None
             else self.path.with_name("gfri_history_index.jsonl")
         )
+        self.index_meta_path = Path(f"{self.index_path}.meta.json")
         self.lock_path = Path(f"{self.path}.lock")
         self.lock_timeout_sec = lock_timeout_sec
         self.stale_lock_timeout_ms = int(stale_lock_timeout_ms)
@@ -222,25 +282,19 @@ class ShadowLedger:
             return False
 
         now_ms = int(time.time() * 1000)
-        mtime_age_ms = now_ms - int(stat.st_mtime * 1000)
-        if mtime_age_ms > self.stale_lock_timeout_ms:
+        if now_ms - int(stat.st_mtime * 1000) > self.stale_lock_timeout_ms:
             return True
 
         try:
             raw_text = self.lock_path.read_text(encoding="utf-8", errors="replace").strip()
-        except FileNotFoundError:
-            return False
         except OSError:
             return False
-
         if not raw_text:
             return False
-
         try:
             payload = json.loads(raw_text)
         except (json.JSONDecodeError, ValueError):
             return False
-
         if isinstance(payload, dict):
             created_at_ms = payload.get("created_at_ms")
             if _is_finite_number(created_at_ms) and (
@@ -339,45 +393,301 @@ class ShadowLedger:
         finally:
             os.close(fd)
 
-    def _backfill_index_if_needed(self) -> None:
-        if self.index_path.exists() or not self.path.exists() or self.path.stat().st_size == 0:
-            return
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
-        idx_fd = os.open(str(self.index_path), flags, 0o644)
+    @staticmethod
+    def _atomic_write_bytes(target: Path, payload: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(f"{target}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+        fd = os.open(str(tmp), flags, 0o644)
         try:
-            with self.path.open("r", encoding="utf-8", errors="replace") as fh:
+            written = 0
+            while written < len(payload):
+                written += os.write(fd, payload[written:])
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, target)
+
+    def _read_meta(self) -> dict[str, Any] | None:
+        if not self.index_meta_path.exists():
+            return None
+        try:
+            data = json.loads(self.index_meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(data, dict) or data.get("schema") != INDEX_META_SCHEMA:
+            return None
+        for key in ("ledger_offset", "index_offset", "entry_count"):
+            val = data.get(key)
+            if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                return None
+        return data
+
+    def _write_meta(
+        self,
+        *,
+        ledger_offset: int,
+        index_offset: int,
+        entry_count: int,
+        last_freeze_at_ms: int | None,
+        last_entry_id: str | None,
+    ) -> None:
+        meta = {
+            "schema": INDEX_META_SCHEMA,
+            "ledger_offset": int(ledger_offset),
+            "index_offset": int(index_offset),
+            "entry_count": int(entry_count),
+            "last_freeze_at_ms": last_freeze_at_ms,
+            "last_entry_id": last_entry_id,
+        }
+        raw = (
+            json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        self._atomic_write_bytes(self.index_meta_path, raw)
+
+    def _needs_reconcile_fast(self) -> bool:
+        if not self.path.exists():
+            return False
+        ledger_size = self.path.stat().st_size
+        if ledger_size == 0:
+            return False
+        if not self.index_path.exists():
+            return True
+        meta = self._read_meta()
+        if meta is None:
+            return True
+        index_size = self.index_path.stat().st_size
+        return ledger_size != meta["ledger_offset"] or index_size != meta["index_offset"]
+
+    def _rebuild_index_streaming_locked(self) -> dict[str, Any]:
+        """Rebuild companion index streaming from immutable main ledger without full RAM load."""
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = Path(f"{self.index_path}.rebuild.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+        count = 0
+        last_freeze_ms: int | None = None
+        last_eid: str | None = None
+        idx_fd = os.open(str(tmp_path), flags, 0o644)
+        try:
+            with self.path.open("rb") as fh:
                 for raw_line in fh:
-                    line = raw_line.strip()
-                    if not line:
+                    stripped = raw_line.strip()
+                    if not stripped:
                         continue
                     try:
-                        parsed = json.loads(line)
+                        parsed = json.loads(stripped.decode("utf-8", errors="replace"))
                     except (json.JSONDecodeError, ValueError):
                         continue
                     if not isinstance(parsed, dict):
                         continue
+                    eid = _line_entry_id(raw_line)
                     entry = (
-                        parsed
+                        dict(parsed, entry_id=eid)
                         if parsed.get("schema") == INDEX_SCHEMA
-                        else extract_index_entry(parsed)
+                        else extract_index_entry(parsed, entry_id=eid)
                     )
-                    line_bytes = (
-                        json.dumps(
-                            entry,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            allow_nan=False,
-                            separators=(",", ":"),
-                        )
-                        + "\n"
-                    ).encode("utf-8")
+                    line_bytes = _encode_index_line(entry)
                     written = 0
                     while written < len(line_bytes):
                         written += os.write(idx_fd, line_bytes[written:])
+                    count += 1
+                    last_freeze_ms = entry.get("freeze_at_ms")
+                    last_eid = eid
             os.fsync(idx_fd)
         finally:
             os.close(idx_fd)
+
+        os.replace(tmp_path, self.index_path)
+        ledger_size = self.path.stat().st_size if self.path.exists() else 0
+        index_size = self.index_path.stat().st_size if self.index_path.exists() else 0
+        self._write_meta(
+            ledger_offset=ledger_size,
+            index_offset=index_size,
+            entry_count=count,
+            last_freeze_at_ms=last_freeze_ms,
+            last_entry_id=last_eid,
+        )
+        return {"action": "REBUILT_FROM_LEDGER", "entry_count": count}
+
+    def _reconcile_index_locked(self) -> dict[str, Any]:
+        """Detect ledger/index drift and repair missing tail or corrupt index without duplication."""
+        if not self.path.exists():
+            return {"action": "NO_LEDGER", "entry_count": 0}
+        ledger_size = self.path.stat().st_size
+        if ledger_size == 0:
+            return {"action": "EMPTY_LEDGER", "entry_count": 0}
+
+        meta = self._read_meta()
+        index_exists = self.index_path.exists()
+        index_size = self.index_path.stat().st_size if index_exists else 0
+
+        if (
+            meta is not None
+            and index_exists
+            and ledger_size == meta["ledger_offset"]
+            and index_size == meta["index_offset"]
+        ):
+            return {"action": "IN_SYNC", "entry_count": meta["entry_count"]}
+
+        # Try O(tail) incremental heal when prefix offsets are intact
+        if (
+            meta is not None
+            and index_exists
+            and ledger_size >= meta["ledger_offset"]
+            and index_size >= meta["index_offset"]
+        ):
+            tail_ids: set[str] = set()
+            tail_corrupt = False
+            tail_count = 0
+            last_freeze_ms = meta.get("last_freeze_at_ms")
+            last_eid = meta.get("last_entry_id")
+
+            try:
+                with self.index_path.open("rb") as idx_fh:
+                    if meta["index_offset"] > 0:
+                        idx_fh.seek(meta["index_offset"] - 1)
+                        if idx_fh.read(1) != b"\n":
+                            tail_corrupt = True
+                    if not tail_corrupt and index_size > meta["index_offset"]:
+                        idx_tail_bytes = idx_fh.read()
+                        if not idx_tail_bytes.endswith(b"\n"):
+                            tail_corrupt = True
+                        else:
+                            for raw_line in idx_tail_bytes.splitlines():
+                                s = raw_line.strip()
+                                if not s:
+                                    continue
+                                parsed_idx = json.loads(s.decode("utf-8"))
+                                if not isinstance(parsed_idx, dict) or parsed_idx.get("schema") != INDEX_SCHEMA:
+                                    tail_corrupt = True
+                                    break
+                                eid_i = parsed_idx.get("entry_id")
+                                if not isinstance(eid_i, str) or not eid_i:
+                                    tail_corrupt = True
+                                    break
+                                tail_ids.add(eid_i)
+                                tail_count += 1
+                                last_freeze_ms = parsed_idx.get("freeze_at_ms")
+                                last_eid = eid_i
+            except Exception:
+                tail_corrupt = True
+
+            if not tail_corrupt:
+                appended = 0
+                to_append = bytearray()
+                with self.path.open("rb") as leg_fh:
+                    leg_fh.seek(meta["ledger_offset"])
+                    for raw_line in leg_fh:
+                        stripped = raw_line.strip()
+                        if not stripped:
+                            continue
+                        try:
+                            parsed = json.loads(stripped.decode("utf-8", errors="replace"))
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if not isinstance(parsed, dict):
+                            continue
+                        eid = _line_entry_id(raw_line)
+                        if eid in tail_ids:
+                            continue
+                        entry = extract_index_entry(parsed, entry_id=eid)
+                        to_append.extend(_encode_index_line(entry))
+                        tail_ids.add(eid)
+                        appended += 1
+                        last_freeze_ms = entry.get("freeze_at_ms")
+                        last_eid = eid
+
+                if to_append:
+                    self._append_bytes(self.index_path, bytes(to_append))
+                new_index_size = self.index_path.stat().st_size
+                total_count = int(meta["entry_count"]) + tail_count + appended
+                self._write_meta(
+                    ledger_offset=ledger_size,
+                    index_offset=new_index_size,
+                    entry_count=total_count,
+                    last_freeze_at_ms=last_freeze_ms,
+                    last_entry_id=last_eid,
+                )
+                return {
+                    "action": "TAIL_HEALED",
+                    "appended": appended,
+                    "entry_count": total_count,
+                }
+
+        return self._rebuild_index_streaming_locked()
+
+    def reconcile_index(self) -> dict[str, Any]:
+        """Public locked entry point to verify and repair companion index consistency."""
+        lock_fd = self._acquire_lock()
+        try:
+            return self._reconcile_index_locked()
+        finally:
+            self._release_lock(lock_fd)
+
+    def verify_consistency(self) -> dict[str, Any]:
+        """Audit full-ledger vs companion-index row count and tail alignment cleanly."""
+        ledger_count = 0
+        ledger_last_ts: int | None = None
+        if self.path.exists():
+            with self.path.open("rb") as fh:
+                for raw_line in fh:
+                    s = raw_line.strip()
+                    if not s:
+                        continue
+                    try:
+                        obj = json.loads(s.decode("utf-8", errors="replace"))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if isinstance(obj, dict):
+                        ledger_count += 1
+                        ts = obj.get("freeze_at_ms")
+                        if isinstance(ts, int) and not isinstance(ts, bool):
+                            ledger_last_ts = ts
+
+        index_count = 0
+        index_last_ts: int | None = None
+        index_malformed = 0
+        if self.index_path.exists():
+            with self.index_path.open("rb") as fh:
+                for raw_line in fh:
+                    s = raw_line.strip()
+                    if not s:
+                        continue
+                    try:
+                        obj = json.loads(s.decode("utf-8"))
+                    except (json.JSONDecodeError, ValueError):
+                        index_malformed += 1
+                        continue
+                    if isinstance(obj, dict):
+                        index_count += 1
+                        ts = obj.get("freeze_at_ms")
+                        if isinstance(ts, int) and not isinstance(ts, bool):
+                            index_last_ts = ts
+
+        meta = self._read_meta()
+        ledger_size = self.path.stat().st_size if self.path.exists() else 0
+        index_size = self.index_path.stat().st_size if self.index_path.exists() else 0
+        meta_synced = (
+            meta is not None
+            and meta["ledger_offset"] == ledger_size
+            and meta["index_offset"] == index_size
+            and meta["entry_count"] == index_count
+        )
+        consistent = (
+            index_malformed == 0
+            and ledger_count == index_count
+            and ledger_last_ts == index_last_ts
+            and (ledger_count == 0 or meta_synced)
+        )
+        return {
+            "consistent": consistent,
+            "ledger_count": ledger_count,
+            "index_count": index_count,
+            "index_malformed": index_malformed,
+            "ledger_last_freeze_at_ms": ledger_last_ts,
+            "index_last_freeze_at_ms": index_last_ts,
+            "meta_synced": meta_synced,
+        }
 
     def append_record(self, record: dict[str, Any]) -> None:
         """Strictly append a single JSONL record and its compact companion index entry."""
@@ -386,24 +696,25 @@ class ShadowLedger:
         payload = (
             json.dumps(record, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n"
         ).encode("utf-8")
-        index_entry = extract_index_entry(record)
-        index_payload = (
-            json.dumps(
-                index_entry,
-                ensure_ascii=False,
-                sort_keys=True,
-                allow_nan=False,
-                separators=(",", ":"),
-            )
-            + "\n"
-        ).encode("utf-8")
+        eid = _line_entry_id(payload)
+        index_entry = extract_index_entry(record, entry_id=eid)
+        index_payload = _encode_index_line(index_entry)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_fd = self._acquire_lock()
         try:
-            self._backfill_index_if_needed()
+            heal_info = self._reconcile_index_locked()
+            meta_before = self._read_meta()
+            base_count = int(meta_before["entry_count"]) if meta_before else int(heal_info.get("entry_count", 0))
             self._append_bytes(self.path, payload)
             self._append_bytes(self.index_path, index_payload)
+            self._write_meta(
+                ledger_offset=self.path.stat().st_size,
+                index_offset=self.index_path.stat().st_size,
+                entry_count=base_count + 1,
+                last_freeze_at_ms=index_entry.get("freeze_at_ms"),
+                last_entry_id=eid,
+            )
         finally:
             self._release_lock(lock_fd)
 
@@ -484,8 +795,8 @@ def select_snapshot_asof_episode(
         if not isinstance(ts, int) or isinstance(ts, bool) or ts > episode_freeze_ms:
             continue
         if require_replayable_archive:
-            archive = rec.get("raw_archive_status")
-            if not isinstance(archive, dict) or archive.get("complete_replayable") is not True:
+            _, is_replayable, _ = _resolve_replay_metadata(rec)
+            if not is_replayable:
                 continue
         if best_ts is None or ts >= best_ts:
             best = rec
@@ -533,12 +844,25 @@ def _collect_comparable_history(
     side: str,
     window_start_ms: int,
     current_ts_ms: int,
-) -> list[dict[str, Any]]:
+    *,
+    require_replayable_only: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     current_sig = _comparability_signature(current_cycle)
+    empty_stats: dict[str, Any] = {
+        "replayable_count": 0,
+        "non_replayable_count": 0,
+        "non_replayable_excluded_count": 0,
+        "by_archive_status": {lbl: 0 for lbl in KNOWN_ARCHIVE_LABELS},
+    }
     if current_sig is None:
-        return []
+        return [], empty_stats
 
     matched: list[dict[str, Any]] = []
+    by_status = {lbl: 0 for lbl in KNOWN_ARCHIVE_LABELS}
+    replayable_count = 0
+    non_replayable_count = 0
+    non_replayable_excluded = 0
+
     for rec in history_records:
         if not isinstance(rec, dict):
             continue
@@ -552,6 +876,17 @@ def _collect_comparable_history(
         usable, gfri_val = _is_usable_side_record(rec, side)
         if not usable or gfri_val is None:
             continue
+
+        archive_label, complete_replayable, replay_class = _resolve_replay_metadata(rec)
+        by_status[archive_label] = by_status.get(archive_label, 0) + 1
+        if complete_replayable:
+            replayable_count += 1
+        else:
+            non_replayable_count += 1
+            if require_replayable_only:
+                non_replayable_excluded += 1
+                continue
+
         side_block = _extract_side_block(rec, side) or {}
         depth = side_block.get("liquidity_depth_usd")
         flow = side_block.get("raw_hedge_flow_usd")
@@ -561,11 +896,20 @@ def _collect_comparable_history(
                 "gfri_confirmed": gfri_val,
                 "liquidity_depth_usd": float(depth) if _is_finite_number(depth) else None,
                 "raw_hedge_flow_usd": float(flow) if _is_finite_number(flow) else None,
+                "sample_replay_class": replay_class,
+                "raw_archive_status_label": archive_label,
+                "complete_replayable": complete_replayable,
             }
         )
 
     matched.sort(key=lambda item: item["freeze_at_ms"])
-    return matched
+    stats = {
+        "replayable_count": replayable_count,
+        "non_replayable_count": (0 if require_replayable_only else non_replayable_count),
+        "non_replayable_excluded_count": non_replayable_excluded,
+        "by_archive_status": by_status,
+    }
+    return matched, stats
 
 
 def _count_consecutive_from_end(values: list[float], threshold: float) -> int:
@@ -659,14 +1003,17 @@ def _compute_side_near_ref(
     side: str,
     current_ts_ms: int,
     cfg: GfriConfig,
+    *,
+    require_replayable_only: bool = False,
 ) -> dict[str, Any]:
     window_start_ms = current_ts_ms - cfg.near_window_ms
-    hist_samples = _collect_comparable_history(
+    hist_samples, quality_stats = _collect_comparable_history(
         history_records,
         current_cycle,
         side,
         window_start_ms,
         current_ts_ms,
+        require_replayable_only=require_replayable_only,
     )
     sample_count = len(hist_samples)
     current_usable, current_val = _is_usable_side_record(current_cycle, side)
@@ -684,6 +1031,14 @@ def _compute_side_near_ref(
     else:
         persistence_elevated = 0
         persistence_trigger = 0
+
+    quality_meta = {
+        "require_replayable_only": require_replayable_only,
+        "replayable_sample_count": quality_stats["replayable_count"],
+        "non_replayable_sample_count": quality_stats["non_replayable_count"],
+        "contains_non_replayable_samples": quality_stats["non_replayable_count"] > 0,
+        "sample_quality_breakdown": quality_stats,
+    }
 
     if sample_count < cfg.min_near_samples:
         return {
@@ -704,6 +1059,7 @@ def _compute_side_near_ref(
             "coincided_with_liquidity_drop": False,
             "baseline_depth_usd": None,
             "baseline_abs_flow_usd": None,
+            **quality_meta,
         }
 
     recent_median = float(statistics.median(hist_values))
@@ -736,6 +1092,7 @@ def _compute_side_near_ref(
         "persistence_count_elevated": persistence_elevated,
         "persistence_count_trigger": persistence_trigger,
         **driver_info,
+        **quality_meta,
     }
 
 
@@ -744,6 +1101,7 @@ def compute_near_term_ref(
     current_cycle: dict[str, Any],
     *,
     cfg: GfriConfig = DEFAULT_CONFIG,
+    require_replayable_only: bool = False,
 ) -> dict[str, Any]:
     """Compute per-side near-term (default 4h) reference and driver decomposition."""
     current_ts_ms = int(current_cycle["freeze_at_ms"])
@@ -753,8 +1111,23 @@ def compute_near_term_ref(
         "freeze_at_ms": current_ts_ms,
         "window_ms": cfg.near_window_ms,
         "min_near_samples": cfg.min_near_samples,
-        "put": _compute_side_near_ref(history_records, current_cycle, "put", current_ts_ms, cfg),
-        "call": _compute_side_near_ref(history_records, current_cycle, "call", current_ts_ms, cfg),
+        "require_replayable_only": require_replayable_only,
+        "put": _compute_side_near_ref(
+            history_records,
+            current_cycle,
+            "put",
+            current_ts_ms,
+            cfg,
+            require_replayable_only=require_replayable_only,
+        ),
+        "call": _compute_side_near_ref(
+            history_records,
+            current_cycle,
+            "call",
+            current_ts_ms,
+            cfg,
+            require_replayable_only=require_replayable_only,
+        ),
     }
 
 
@@ -807,14 +1180,17 @@ def _compute_side_long_ref(
     side: str,
     current_ts_ms: int,
     cfg: GfriConfig,
+    *,
+    require_replayable_only: bool = False,
 ) -> dict[str, Any]:
     window_start_ms = current_ts_ms - cfg.long_window_days * MS_PER_DAY
-    hist_samples = _collect_comparable_history(
+    hist_samples, quality_stats = _collect_comparable_history(
         history_records,
         current_cycle,
         side,
         window_start_ms,
         current_ts_ms,
+        require_replayable_only=require_replayable_only,
     )
     sample_count = len(hist_samples)
     current_usable, current_val = _is_usable_side_record(current_cycle, side)
@@ -860,6 +1236,20 @@ def _compute_side_long_ref(
         else None
     )
 
+    non_rep_note = (
+        "NON_REPLAYABLE_INCLUDED_MONITORING_ONLY"
+        if quality_stats["non_replayable_count"] > 0
+        else None
+    )
+    quality_meta = {
+        "require_replayable_only": require_replayable_only,
+        "replayable_sample_count": quality_stats["replayable_count"],
+        "non_replayable_sample_count": quality_stats["non_replayable_count"],
+        "contains_non_replayable_samples": quality_stats["non_replayable_count"] > 0,
+        "non_replayable_disclosure": non_rep_note,
+        "sample_quality_breakdown": quality_stats,
+    }
+
     if distinct_days < cfg.min_days_for_band:
         return {
             "side": side.upper(),
@@ -873,6 +1263,7 @@ def _compute_side_long_ref(
             "regime_drift_warning": regime_drift_warning,
             "regime_drift_note": regime_drift_note,
             "display_label": f"积累中 ({distinct_days}/{cfg.min_days_for_percentile}天)",
+            **quality_meta,
         }
 
     if (
@@ -892,6 +1283,7 @@ def _compute_side_long_ref(
             "regime_drift_warning": regime_drift_warning,
             "regime_drift_note": regime_drift_note,
             "display_label": f"粗粒度:{band_text} ({distinct_days}/{cfg.min_days_for_percentile}天)",
+            **quality_meta,
         }
 
     percentile = (
@@ -912,6 +1304,7 @@ def _compute_side_long_ref(
         "regime_drift_warning": regime_drift_warning,
         "regime_drift_note": regime_drift_note,
         "display_label": display_label,
+        **quality_meta,
     }
 
 
@@ -920,6 +1313,7 @@ def compute_long_term_ref(
     current_cycle: dict[str, Any],
     *,
     cfg: GfriConfig = DEFAULT_CONFIG,
+    require_replayable_only: bool = False,
 ) -> dict[str, Any]:
     """Compute per-side 60d exponentially decayed, intraday-normalized reference."""
     current_ts_ms = int(current_cycle["freeze_at_ms"])
@@ -929,6 +1323,21 @@ def compute_long_term_ref(
         "freeze_at_ms": current_ts_ms,
         "window_days": cfg.long_window_days,
         "half_life_days": cfg.long_half_life_days,
-        "put": _compute_side_long_ref(history_records, current_cycle, "put", current_ts_ms, cfg),
-        "call": _compute_side_long_ref(history_records, current_cycle, "call", current_ts_ms, cfg),
+        "require_replayable_only": require_replayable_only,
+        "put": _compute_side_long_ref(
+            history_records,
+            current_cycle,
+            "put",
+            current_ts_ms,
+            cfg,
+            require_replayable_only=require_replayable_only,
+        ),
+        "call": _compute_side_long_ref(
+            history_records,
+            current_cycle,
+            "call",
+            current_ts_ms,
+            cfg,
+            require_replayable_only=require_replayable_only,
+        ),
     }
