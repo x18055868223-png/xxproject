@@ -1,9 +1,9 @@
 # GFRI v1.1 Validation & Experimental Evidence Report
 
-## 1. Automated Regression Suite Results (51 Tests Passing)
+## 1. Automated Regression Suite Results (53 Tests Passing)
 
 Executed in repository root against `.worktrees/gfri-v11`:
-- **Test Suite**: `C:\Users\Xu\AppData\Local\Programs\Python\Python312\python.exe -m pytest research/gfri_v11/tests -v` -> **`51 passed`** (`0 failed`, `0 skipped`), including Section A ledger/index crash fault-injection and Section B 4-status (`SAVED`/`PARTIAL`/`FAILED`/`NOT_CONFIGURED`) replayability tests.
+- **Test Suite**: `C:\Users\Xu\AppData\Local\Programs\Python\Python312\python.exe -m pytest research/gfri_v11/tests -v` -> **`53 passed`** (`0 failed`, `0 skipped`), including Section A ledger/index crash fault-injection, Section B 4-status replayability, and post-launch 5A (`formal_calibration_eligible` / `assert_formal_research_ref_eligible`) + 5B (`LedgerCorruptionError` fail-closed partial-tail guard & streaming `quarantine_partial_tail`) tests.
 - **Target Linux Host (`xx-eu` / `vmi3648530`) Preflight & Rollback**: `systemd-run --wait --pipe --collect -p User=bitnami -p Group=bitnami -p MemoryMax=128M -p ProtectSystem=strict -p PrivateTmp=true` -> Python `3.12.3`, `bitnami` (`uid=999`) RW verified, disk `56,070.1 MiB` free, Linux RAM `8,320.9 MiB` avail, NTP `SYNCED`, GEXMonitor/Deribit/OKX `200 OK`; `enable_collector.sh` simulated `systemctl enable` failure rolled back cleanly (`ROLLED_BACK_ON_ERROR`, `GFRI_COLLECTOR_ENABLED=0`, unit files removed).
 - **Default-Off Scheduled Guard**: `python3 -m research.gfri_v11.collector --scheduled` -> exit `0` (`COLLECTOR_DISABLED (GFRI_COLLECTOR_ENABLED=0; SHADOW_ONLY)`).
 - **Bash Static Syntax**: `bash -n deploy/gfri_v11/enable_collector.sh` -> exit `0`.

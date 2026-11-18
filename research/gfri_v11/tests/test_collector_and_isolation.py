@@ -549,6 +549,27 @@ class TestCollectorAndIsolation(unittest.TestCase):
             self.assertEqual([w["raw_archive_status_label"] for w in window], ["SAVED", "NOT_CONFIGURED", "SAVED", "SAVED"])
             self.assertEqual([w["sample_replay_class"] for w in window], ["REPLAYABLE", "NON_REPLAYABLE", "REPLAYABLE", "REPLAYABLE"])
 
+            # 5A: verify audit record explicitly distinguishes monitoring vs formal replayable research track
+            self.assertEqual(out4["audit_record"]["long_ref"]["reference_scope"], "REALTIME_MONITORING_ONLY")
+            self.assertFalse(out4["audit_record"]["long_ref"]["formal_calibration_eligible"])
+            self.assertEqual(out4["audit_record"]["long_ref"]["put"]["sample_count"], 3)
+            formal_ref = out4["audit_record"]["formal_research_long_ref"]
+            self.assertEqual(formal_ref["reference_scope"], "FORMAL_REPLAYABLE_RESEARCH")
+            self.assertTrue(formal_ref["formal_calibration_eligible"])
+            self.assertEqual(formal_ref["put"]["sample_count"], 2)  # NOT_CONFIGURED cycle excluded
+
+            # 5B: partial ledger tail causes next cycle write to fail closed cleanly without concatenating
+            from research.gfri_v11.history import LedgerCorruptionError
+            ledger_path = state_dir / "gfri_shadow_ledger.jsonl"
+            with ledger_path.open("ab") as fh:
+                fh.write(b'{"schema":"partial_crash"')
+            damaged = ledger_path.read_bytes()
+            ts_holder[0] = base_ts_ms + 2_400_000
+            with self.assertRaises(LedgerCorruptionError):
+                collector.run_shadow_cycle(cfg=cfg, state_dir=state_dir, raw_capture_dir=raw_dir, append_ledger=True, include_okx=False, interval_sec=0.0, fetcher=fetcher, sleeper=lambda _: None)
+            self.assertEqual(ledger_path.read_bytes(), damaged)
+            self.assertTrue(list(state_dir.glob("gfri_shadow_ledger.jsonl.corrupt_evidence.*.json")))
+
 
 if __name__ == "__main__":
     unittest.main()

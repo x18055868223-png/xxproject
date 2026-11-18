@@ -554,8 +554,24 @@ def run_shadow_cycle(
             ledger_path,
         )
 
-    near_ref = compute_near_term_ref(history_records, confirmed, cfg=cfg)
-    long_ref = compute_long_term_ref(history_records, confirmed, cfg=cfg)
+    near_ref = compute_near_term_ref(
+        history_records,
+        confirmed,
+        cfg=cfg,
+        require_replayable_only=False,
+    )
+    long_ref = compute_long_term_ref(
+        history_records,
+        confirmed,
+        cfg=cfg,
+        require_replayable_only=False,
+    )
+    formal_research_long_ref = compute_long_term_ref(
+        history_records,
+        confirmed,
+        cfg=cfg,
+        require_replayable_only=True,
+    )
     policy_res = evaluate_shadow_policy(
         confirmed,
         near_ref,
@@ -572,6 +588,7 @@ def run_shadow_cycle(
         git_commit=(git_commit if git_commit is not None else resolve_git_commit()),
         cfg=cfg,
     )
+    audit_record["formal_research_long_ref"] = formal_research_long_ref
     _write_cycle_manifest(archive_status, audit_record)
     console_text = render_minimal_console(audit_record)
 

@@ -22,7 +22,10 @@ from research.gfri_v11.config import (
 from research.gfri_v11.history import (
     INDEX_SCHEMA,
     MS_PER_DAY,
+    LedgerCorruptionError,
     ShadowLedger,
+    assert_formal_research_ref_eligible,
+    compute_formal_research_refs,
     compute_long_term_ref,
     compute_near_term_ref,
     extract_index_entry,
@@ -1064,3 +1067,132 @@ def test_section_b_replayable_vs_non_replayable_samples(tmp_path: Path) -> None:
     assert near_mon["put"]["contains_non_replayable_samples"] is True
     assert near_res["put"]["sample_count"] == 1
     assert near_res["put"]["sample_quality_breakdown"]["non_replayable_excluded_count"] == 1
+
+
+def test_5a_formal_research_ref_isolation_and_guard() -> None:
+    now = BASE_TS_MS
+    curr = _make_cycle(now, put_gfri=2.0, call_gfri=0.5)
+    recs = [
+        {**_make_cycle(now - 2 * 3600_000, put_gfri=1.0, call_gfri=0.5), "raw_archive_status": {"status": "SAVED", "complete_replayable": True}},
+        {**_make_cycle(now - 3600_000, put_gfri=4.0, call_gfri=0.5), "raw_archive_status": {"status": "PARTIAL", "complete_replayable": False}},
+    ]
+
+    mon_long = compute_long_term_ref(recs, curr)
+    assert mon_long["require_replayable_only"] is False
+    assert mon_long["reference_scope"] == "REALTIME_MONITORING_ONLY"
+    assert mon_long["formal_calibration_eligible"] is False
+    with pytest.raises(ValueError, match="require_replayable_only=True"):
+        assert_formal_research_ref_eligible(mon_long)
+
+    formal_bundle = compute_formal_research_refs(recs, curr)
+    assert formal_bundle["reference_scope"] == "FORMAL_REPLAYABLE_RESEARCH"
+    assert formal_bundle["formal_calibration_eligible"] is True
+    assert formal_bundle["near_ref"]["formal_calibration_eligible"] is True
+    assert formal_bundle["long_ref"]["formal_calibration_eligible"] is True
+    assert formal_bundle["long_ref"]["put"]["sample_count"] == 1
+    assert formal_bundle["long_ref"]["put"]["contains_non_replayable_samples"] is False
+    assert_formal_research_ref_eligible(formal_bundle)
+    assert_formal_research_ref_eligible(formal_bundle["near_ref"])
+    assert_formal_research_ref_eligible(formal_bundle["long_ref"])
+
+    # Guard must reject non-replayable leakage even if top-level flags or count/scope are forged
+    forged_flag = {
+        **formal_bundle["long_ref"],
+        "put": {**formal_bundle["long_ref"]["put"], "contains_non_replayable_samples": True},
+    }
+    with pytest.raises(ValueError, match="non-replayable"):
+        assert_formal_research_ref_eligible(forged_flag)
+
+    forged_count = {
+        **formal_bundle["long_ref"],
+        "put": {**formal_bundle["long_ref"]["put"], "non_replayable_sample_count": 1},
+    }
+    with pytest.raises(ValueError, match="non-replayable"):
+        assert_formal_research_ref_eligible(forged_count)
+
+    forged_scope = {**formal_bundle["long_ref"], "reference_scope": "REALTIME_MONITORING_ONLY"}
+    with pytest.raises(ValueError, match="FORMAL_REPLAYABLE_RESEARCH"):
+        assert_formal_research_ref_eligible(forged_scope)
+
+
+def test_5b_main_ledger_partial_tail_fail_closed_and_quarantine(tmp_path: Path) -> None:
+    now = BASE_TS_MS
+    ledger_path = tmp_path / "gfri_shadow_ledger.jsonl"
+    ledger = ShadowLedger(ledger_path)
+
+    rec1 = {**_make_cycle(now - 1_200_000, put_gfri=1.1), "raw_archive_status": {"status": "SAVED", "complete_replayable": True}}
+    rec2 = {**_make_cycle(now - 600_000, put_gfri=1.2), "raw_archive_status": {"status": "SAVED", "complete_replayable": True}}
+    ledger.append_record(rec1)
+    ledger.append_record(rec2)
+
+    # Simulate interrupted write leaving partial unterminated JSONL tail
+    partial_fragment = b'{"schema":"gfri_audit_v11","freeze_at_ms":1760000'
+    with ledger_path.open("ab") as fh:
+        fh.write(partial_fragment)
+    damaged_bytes = ledger_path.read_bytes()
+
+    cons = ledger.verify_consistency()
+    assert cons["consistent"] is False
+    assert cons["ledger_partial_tail"] is True
+    assert cons["corrupt_tail_info"]["corrupt_tail_bytes_len"] == len(partial_fragment)
+
+    # Fail-closed on append_record & reconcile_index & load_history_window: never glue onto partial line
+    rec3 = {**_make_cycle(now, put_gfri=1.3), "raw_archive_status": {"status": "SAVED", "complete_replayable": True}}
+    with pytest.raises(LedgerCorruptionError) as exc_info:
+        ledger.append_record(rec3)
+    assert exc_info.value.evidence["corrupt_tail_bytes_len"] == len(partial_fragment)
+    assert ledger_path.read_bytes() == damaged_bytes  # Original preserved verbatim!
+
+    with pytest.raises(LedgerCorruptionError):
+        ledger.reconcile_index()
+    with pytest.raises(LedgerCorruptionError):
+        ledger.load_history_window(reference_ms=now, max_age_ms=MS_PER_DAY)
+
+    evidence_files = list(tmp_path.glob("gfri_shadow_ledger.jsonl.corrupt_evidence.*.json"))
+    assert len(evidence_files) >= 1
+    ev_data = json.loads(evidence_files[0].read_text(encoding="utf-8"))
+    assert ev_data["original_preserved"] is True
+    assert ev_data["corrupt_tail_bytes_len"] == len(partial_fragment)
+
+    # Explicit operator quarantine preserves original damaged file verbatim and restores safe appending
+    q_res = ledger.quarantine_partial_tail()
+    assert q_res["action"] == "QUARANTINED_AND_HEALED"
+    backup_path = Path(q_res["backup_path"])
+    assert backup_path.exists()
+    assert backup_path.read_bytes() == damaged_bytes
+
+    assert ledger.verify_consistency()["consistent"] is True
+    ledger.append_record(rec3)
+    assert [r["freeze_at_ms"] for r in ledger.load_records()] == [
+        rec1["freeze_at_ms"],
+        rec2["freeze_at_ms"],
+        rec3["freeze_at_ms"],
+    ]
+
+    # Edge case 1: partial tail > 64 KiB crossing multi-chunk backward scan
+    long_partial = b'{"schema":"gfri_audit_v11","pad":"' + (b"y" * 80_000)
+    with ledger_path.open("ab") as fh:
+        fh.write(long_partial)
+    cons_big = ledger.verify_consistency()
+    assert cons_big["consistent"] is False
+    assert cons_big["corrupt_tail_info"]["corrupt_tail_bytes_len"] == len(long_partial)
+    with pytest.raises(LedgerCorruptionError):
+        ledger.append_record(rec3)
+    q_big = ledger.quarantine_partial_tail()
+    assert q_big["corrupt_tail_bytes_len"] == len(long_partial)
+    assert ledger.verify_consistency()["consistent"] is True
+    assert len(ledger.load_records()) == 3
+
+    # Edge case 2: single-line unterminated ledger (clean_offset == 0) quarantines to empty cleanly
+    single_dir = tmp_path / "isolated_single"
+    single_dir.mkdir(parents=True, exist_ok=True)
+    single_bad_path = single_dir / "gfri_shadow_ledger.jsonl"
+    single_bad_path.write_bytes(b'{"truncated":true')
+    single_ledger = ShadowLedger(single_bad_path)
+    with pytest.raises(LedgerCorruptionError):
+        single_ledger.append_record(rec1)
+    q_zero = single_ledger.quarantine_partial_tail()
+    assert q_zero["clean_offset"] == 0
+    assert Path(q_zero["backup_path"]).read_bytes() == b'{"truncated":true'
+    assert single_bad_path.read_bytes() == b""
+    assert single_ledger.verify_consistency()["consistent"] is True

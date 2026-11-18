@@ -40,6 +40,14 @@ VALID_QUALITIES = ("VALID", "DEGRADED")
 KNOWN_ARCHIVE_LABELS = ("SAVED", "PARTIAL", "FAILED", "NOT_CONFIGURED", "UNKNOWN")
 
 
+class LedgerCorruptionError(RuntimeError):
+    """Raised fail-closed when the main JSONL ledger ends with a partial/unterminated line."""
+
+    def __init__(self, message: str, evidence: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.evidence: dict[str, Any] = dict(evidence or {})
+
+
 def _line_entry_id(raw_line_bytes: bytes) -> str:
     """Compute stable 16-hex digest from stripped raw JSONL line bytes."""
     return hashlib.sha256(raw_line_bytes.rstrip(b"\r\n")).hexdigest()[:16]
@@ -451,6 +459,10 @@ class ShadowLedger:
         ledger_size = self.path.stat().st_size
         if ledger_size == 0:
             return False
+        with self.path.open("rb") as fh:
+            fh.seek(ledger_size - 1)
+            if fh.read(1) != b"\n":
+                return True
         if not self.index_path.exists():
             return True
         meta = self._read_meta()
@@ -509,8 +521,173 @@ class ShadowLedger:
         )
         return {"action": "REBUILT_FROM_LEDGER", "entry_count": count}
 
+    def _inspect_ledger_tail(self) -> dict[str, Any]:
+        """Inspect trailing bytes of main ledger in O(tail_line_len) for partial-line corruption."""
+        if not self.path.exists():
+            return {"corrupt": False, "ledger_size": 0, "clean_offset": 0}
+        ledger_size = self.path.stat().st_size
+        if ledger_size == 0:
+            return {"corrupt": False, "ledger_size": 0, "clean_offset": 0}
+
+        with self.path.open("rb") as fh:
+            fh.seek(ledger_size - 1)
+            last_byte = fh.read(1)
+            if last_byte == b"\n":
+                return {"corrupt": False, "ledger_size": ledger_size, "clean_offset": ledger_size}
+
+            # Scan backwards to find the last newline boundary (O(tail) bounded read)
+            pos = ledger_size
+            chunk_size = 65_536
+            last_nl_end = 0
+            while pos > 0:
+                read_start = max(0, pos - chunk_size)
+                fh.seek(read_start)
+                buf = fh.read(pos - read_start)
+                idx = buf.rfind(b"\n")
+                if idx != -1:
+                    last_nl_end = read_start + idx + 1
+                    break
+                pos = read_start
+
+            fh.seek(last_nl_end)
+            tail_bytes = fh.read(ledger_size - last_nl_end)
+
+        tail_sha256 = hashlib.sha256(tail_bytes).hexdigest()
+        preview = tail_bytes[:256].decode("utf-8", errors="replace")
+        return {
+            "corrupt": True,
+            "reason": "partial_unterminated_trailing_line",
+            "ledger_path": str(self.path),
+            "ledger_size": ledger_size,
+            "clean_offset": last_nl_end,
+            "corrupt_tail_bytes_len": len(tail_bytes),
+            "corrupt_tail_sha256": tail_sha256,
+            "corrupt_tail_preview": preview,
+            "detected_at_ms": int(time.time() * 1000),
+        }
+
+    @staticmethod
+    def _stream_file_sha256(path: Path, *, chunk_size: int = 65_536) -> str:
+        """Compute file SHA-256 in constant O(chunk_size) RAM."""
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            while True:
+                buf = fh.read(chunk_size)
+                if not buf:
+                    break
+                h.update(buf)
+        return h.hexdigest()
+
+    @classmethod
+    def _stream_atomic_backup_and_verify(
+        cls,
+        src_path: Path,
+        dst_path: Path,
+        *,
+        chunk_size: int = 65_536,
+    ) -> str:
+        """Copy src_path atomically to dst_path in bounded chunks and verify SHA-256."""
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = Path(f"{dst_path}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+        src_hash = hashlib.sha256()
+        fd = os.open(str(tmp_path), flags, 0o644)
+        try:
+            with src_path.open("rb") as src_fh:
+                while True:
+                    buf = src_fh.read(chunk_size)
+                    if not buf:
+                        break
+                    src_hash.update(buf)
+                    written = 0
+                    while written < len(buf):
+                        written += os.write(fd, buf[written:])
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, dst_path)
+        expected_sha = src_hash.hexdigest()
+        if cls._stream_file_sha256(dst_path, chunk_size=chunk_size) != expected_sha:
+            raise LedgerCorruptionError("Corrupt ledger backup verification failed")
+        return expected_sha
+
+    def _record_corruption_evidence_locked(
+        self,
+        tail_info: dict[str, Any],
+        *,
+        precomputed_file_sha256: str | None = None,
+    ) -> Path:
+        """Persist immutable corruption evidence JSON next to the preserved damaged ledger."""
+        ts_ms = int(tail_info.get("detected_at_ms") or int(time.time() * 1000))
+        evidence_path = Path(f"{self.path}.corrupt_evidence.{ts_ms}.json")
+        # Avoid overwriting if called multiple times in same millisecond
+        suffix = 1
+        while evidence_path.exists():
+            evidence_path = Path(f"{self.path}.corrupt_evidence.{ts_ms}_{suffix}.json")
+            suffix += 1
+        orig_sha = (
+            precomputed_file_sha256
+            if precomputed_file_sha256 is not None
+            else (self._stream_file_sha256(self.path) if self.path.exists() else "")
+        )
+        evidence = {
+            **tail_info,
+            "evidence_path": str(evidence_path),
+            "original_preserved": True,
+            "original_file_sha256": orig_sha,
+        }
+        payload = (json.dumps(evidence, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        self._atomic_write_bytes(evidence_path, payload)
+        return evidence_path
+
+    def quarantine_partial_tail(self) -> dict[str, Any]:
+        """Safely archive damaged ledger verbatim, trim ONLY partial tail past last newline, and heal index."""
+        lock_fd = self._acquire_lock()
+        try:
+            tail_info = self._inspect_ledger_tail()
+            if not tail_info.get("corrupt"):
+                rec = self._reconcile_index_locked()
+                return {"action": "NO_PARTIAL_TAIL", "reconcile": rec}
+
+            ts_ms = int(tail_info["detected_at_ms"])
+            backup_path = Path(f"{self.path}.corrupt.{ts_ms}.orig")
+            suffix = 1
+            while backup_path.exists():
+                backup_path = Path(f"{self.path}.corrupt.{ts_ms}_{suffix}.orig")
+                suffix += 1
+            orig_sha = self._stream_atomic_backup_and_verify(self.path, backup_path)
+
+            evidence_path = self._record_corruption_evidence_locked(
+                {**tail_info, "quarantined_backup_path": str(backup_path)},
+                precomputed_file_sha256=orig_sha,
+            )
+            clean_offset = int(tail_info["clean_offset"])
+            with self.path.open("r+b") as fh:
+                fh.truncate(clean_offset)
+                fh.flush()
+                os.fsync(fh.fileno())
+            rec = self._reconcile_index_locked()
+            return {
+                "action": "QUARANTINED_AND_HEALED",
+                "backup_path": str(backup_path),
+                "evidence_path": str(evidence_path),
+                "clean_offset": clean_offset,
+                "corrupt_tail_bytes_len": tail_info["corrupt_tail_bytes_len"],
+                "reconcile": rec,
+            }
+        finally:
+            self._release_lock(lock_fd)
+
     def _reconcile_index_locked(self) -> dict[str, Any]:
         """Detect ledger/index drift and repair missing tail or corrupt index without duplication."""
+        tail_info = self._inspect_ledger_tail()
+        if tail_info.get("corrupt"):
+            ev_path = self._record_corruption_evidence_locked(tail_info)
+            ev = {**tail_info, "evidence_path": str(ev_path)}
+            raise LedgerCorruptionError(
+                f"Fail-closed: partial/unterminated trailing line in {self.path} at offset {tail_info['clean_offset']}",
+                ev,
+            )
         if not self.path.exists():
             return {"action": "NO_LEDGER", "entry_count": 0}
         ledger_size = self.path.stat().st_size
@@ -665,6 +842,8 @@ class ShadowLedger:
                             index_last_ts = ts
 
         meta = self._read_meta()
+        tail_info = self._inspect_ledger_tail()
+        ledger_partial_tail = bool(tail_info.get("corrupt"))
         ledger_size = self.path.stat().st_size if self.path.exists() else 0
         index_size = self.index_path.stat().st_size if self.index_path.exists() else 0
         meta_synced = (
@@ -674,13 +853,16 @@ class ShadowLedger:
             and meta["entry_count"] == index_count
         )
         consistent = (
-            index_malformed == 0
+            not ledger_partial_tail
+            and index_malformed == 0
             and ledger_count == index_count
             and ledger_last_ts == index_last_ts
             and (ledger_count == 0 or meta_synced)
         )
         return {
             "consistent": consistent,
+            "ledger_partial_tail": ledger_partial_tail,
+            "corrupt_tail_info": tail_info if ledger_partial_tail else None,
             "ledger_count": ledger_count,
             "index_count": index_count,
             "index_malformed": index_malformed,
@@ -1112,6 +1294,12 @@ def compute_near_term_ref(
         "window_ms": cfg.near_window_ms,
         "min_near_samples": cfg.min_near_samples,
         "require_replayable_only": require_replayable_only,
+        "reference_scope": (
+            "FORMAL_REPLAYABLE_RESEARCH"
+            if require_replayable_only
+            else "REALTIME_MONITORING_ONLY"
+        ),
+        "formal_calibration_eligible": bool(require_replayable_only),
         "put": _compute_side_near_ref(
             history_records,
             current_cycle,
@@ -1324,6 +1512,12 @@ def compute_long_term_ref(
         "window_days": cfg.long_window_days,
         "half_life_days": cfg.long_half_life_days,
         "require_replayable_only": require_replayable_only,
+        "reference_scope": (
+            "FORMAL_REPLAYABLE_RESEARCH"
+            if require_replayable_only
+            else "REALTIME_MONITORING_ONLY"
+        ),
+        "formal_calibration_eligible": bool(require_replayable_only),
         "put": _compute_side_long_ref(
             history_records,
             current_cycle,
@@ -1341,3 +1535,63 @@ def compute_long_term_ref(
             require_replayable_only=require_replayable_only,
         ),
     }
+
+
+def compute_formal_research_refs(
+    history_records: list[dict[str, Any]],
+    current_cycle: dict[str, Any],
+    *,
+    cfg: GfriConfig = DEFAULT_CONFIG,
+) -> dict[str, Any]:
+    """Compute strictly REPLAYABLE-only near and long historical references for calibration/validation."""
+    return {
+        "schema_version": "gfri_formal_research_refs_v11",
+        "reference_scope": "FORMAL_REPLAYABLE_RESEARCH",
+        "formal_calibration_eligible": True,
+        "near_ref": compute_near_term_ref(
+            history_records,
+            current_cycle,
+            cfg=cfg,
+            require_replayable_only=True,
+        ),
+        "long_ref": compute_long_term_ref(
+            history_records,
+            current_cycle,
+            cfg=cfg,
+            require_replayable_only=True,
+        ),
+    }
+
+
+def assert_formal_research_ref_eligible(ref: dict[str, Any]) -> None:
+    """Fail closed if a monitoring-only or non-replayable-polluted reference is passed to calibration."""
+    if not isinstance(ref, dict):
+        raise TypeError("Historical reference must be a dict")
+    if ref.get("schema_version") == "gfri_formal_research_refs_v11":
+        if (
+            ref.get("formal_calibration_eligible") is not True
+            or ref.get("reference_scope") != "FORMAL_REPLAYABLE_RESEARCH"
+        ):
+            raise ValueError("Formal research bundle missing valid scope or eligibility flag")
+        assert_formal_research_ref_eligible(ref.get("near_ref"))  # type: ignore[arg-type]
+        assert_formal_research_ref_eligible(ref.get("long_ref"))  # type: ignore[arg-type]
+        return
+
+    if (
+        ref.get("require_replayable_only") is not True
+        or ref.get("formal_calibration_eligible") is not True
+        or ref.get("reference_scope") != "FORMAL_REPLAYABLE_RESEARCH"
+    ):
+        raise ValueError(
+            "Formal research/calibration requires require_replayable_only=True, "
+            "formal_calibration_eligible=True, and reference_scope='FORMAL_REPLAYABLE_RESEARCH'"
+        )
+    for side in ("put", "call"):
+        sb = ref.get(side)
+        if isinstance(sb, dict):
+            if (
+                sb.get("require_replayable_only") is not True
+                or sb.get("contains_non_replayable_samples")
+                or int(sb.get("non_replayable_sample_count") or 0) > 0
+            ):
+                raise ValueError(f"Formal research reference contains non-replayable {side} samples")
