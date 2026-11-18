@@ -255,6 +255,11 @@ def request_proof(hand):
     proof = accepted(hand)
     request = load(hand / 'tracking' / 'request.json')
     proof['origin']['condition_sha256'] = dossier.sha(dossier.encode(condition_plan(proof, request['condition'])))
+    # v1.3 originally froze a two-minute handoff. Replay the recorded limit
+    # only when it exactly matches that policy; never extend an old request.
+    legacy_deadline = min(proof['deadline_ms'], proof['origin']['decided_at_ms'] + 120_000)
+    if request['deadline_ms'] == legacy_deadline:
+        proof['deadline_ms'] = legacy_deadline
     if (request['origin'] != proof['origin']
             or request['deadline_ms'] != proof['deadline_ms']
             or not proof['origin']['decision_recorded_at_ms'] <= request['requested_at_ms'] < proof['deadline_ms']):
@@ -484,6 +489,13 @@ def _link_blocked(root):
 def _link_with_fresh_quote(d, hand, service, plan=None):
     root = hand / 'tracking'
     pending = optional(root / 'request.json')
+    if not pending and plan and not (root / 'link.json').exists() and not _link_blocked(root):
+        try:
+            expired = d.clock() >= accepted(hand)['deadline_ms']
+        except Blocked:
+            expired = True
+        if expired:
+            return link(d, hand, service, plan)
     if pending and d.clock() >= pending['deadline_ms']:
         return link(d, hand, service, plan)
     if not (optional(root / 'link.json') or _link_blocked(root)):
@@ -523,6 +535,8 @@ def link(d, hand, service, plan=None):
                 return dict(state='NO_TRACKING_REQUEST', reason=exc.code)
             # Failure before any transport attempt remains visible in the dossier.
             with _short_writer(d):
+                if exc.code == 'shadow_handoff_expired' and not (root / 'final_block.json').exists():
+                    dossier.write(root / 'final_block.json', dossier.encode(dict(state='LOCK_BLOCKED', reason=exc.code, recorded_at_ms=d.clock())))
                 d.note(hand, 'LOCK_BLOCKED', exc.code)
             return dict(state='LOCK_BLOCKED', reason=exc.code)
         request = dict(state='SHADOW_LOCK_REQUESTED', accepted_at_ms=proof['origin']['decided_at_ms'],
@@ -1571,149 +1585,250 @@ def _remember_reply(folder, d, reply):
 
 def _record_initial_reply(d, hand, call, req, *, result=None, error=None):
     saved = optional(call / 'reply.json')
-    if result is None and saved is not None and error is None:
+    if result is None and saved is not None:
         try:
             result = review.parse_initial_reply(saved, dict(req))
+            error = None
         except (ValueError, KeyError, TypeError) as exc:
             error = exc
-    reply = saved or result or {}
+    reply = (saved if isinstance(saved, dict) else None) or result or {}
     payload = dict((result or {}).get('request_payload') or req)
     payload.update(requested_at_ms=req['requested_at_ms'], endpoint=reply.get('endpoint') or payload.get('endpoint'))
     is_timeout = isinstance(error, TimeoutError) or 'timed out' in str(error).lower() or isinstance(getattr(error, 'reason', None), TimeoutError)
     status = 'RECEIVED' if result is not None else 'PARSE_FAILED' if saved is not None else 'TIMEOUT' if is_timeout else 'REQUEST_FAILED'
+    http_error = getattr(error, 'code', None) or getattr(error, 'status_code', None)
+    delivery = ('RECEIVED' if saved is not None or result is not None else
+                'PROVIDER_REJECTED' if isinstance(http_error, int) and 400 <= http_error < 500 and http_error != 408
+                else 'DELIVERY_UNKNOWN')
     raw = (result or {}).get('raw_bytes')
-    detail = f'{type(error).__name__}: {str(error)[:180]}' if error else 'interrupted before response was archived' if result is None else None
+    detail = f'{type(error).__name__}: {str(error)[:180]}' if error else 'provider delivery unknown; no reply archived; automatic resend disabled' if result is None else None
     return _call_with_supported_kwargs(
         d.respond, hand, call.name, status, raw, (result or {}).get('annotation'),
         model=reply.get('model') or req['model'],
         configuration=dict(reasoning_effort=reply.get('reasoning_effort') or (req.get('parameters') or {}).get('reasoning_effort'),
-                           usage=reply.get('usage'), http_status=reply.get('http_status')),
+                           usage=reply.get('usage'), http_status=reply.get('http_status') or http_error, delivery_state=delivery),
         requested=req['requested_at_ms'], decided=reply.get('decided_at_ms') or d.clock(), channel='API_AUTO',
         error=detail, request_payload=review.sanitize_model_request(payload),
-        full_raw=saved['text'].encode('utf-8') if saved is not None else raw,
+        full_raw=(saved.get('text') or '').encode('utf-8') if isinstance(saved, dict) else raw,
         condition_plan=(result or {}).get('condition_plan'),
     )
 
 
 def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
-    cand_round = plan.get('candidate_round', 'r2')
-    with _short_writer(d):
-        hands = d.tick(plan, source_for=lambda expiry, slot: dossier.collect(
-            archive_root, expiry, slot, clock=d.clock, candidate_round=cand_round))
-    cfg = _llm_settings(llm_config)
     results = []
-    for hand in hands:
-        exp = load(hand / 'expected.json')
-        link_todo = None
-        llm_input = None
-        with _short_writer(d):
-            for request_file in sorted((hand / 'api_calls').glob('*/request.json')):
-                call = request_file.parent
-                if not (call / 'not_sent.json').is_file() and not (hand / 'responses' / call.name / 'attempt.json').is_file():
-                    _record_initial_reply(d, hand, call, load(request_file))
-            now = d.clock()
-            if (hand / 'decision.json').is_file():
-                decision = load(hand / 'decision.json')
-                action = decision['judgment']['action']
-                if action == 'Accept' and not (hand / 'tracking' / 'link.json').is_file() and not _link_blocked(hand / 'tracking'):
-                    req = optional(hand / 'tracking' / 'request.json')
-                    c_plan = (req.get('condition') if isinstance(req, dict) else None) or _recover_condition_plan(hand, decision)
-                    if c_plan:
-                        link_todo = c_plan
-                if link_todo is None:
-                    results.append(dict(hand_id=hand.name, status='ALREADY_DECIDED', decision=action, link=None))
-            elif not (hand / 'evidence' / 'input.md').is_file():
-                results.append(dict(hand_id=hand.name, status='NO_EVIDENCE'))
-            else:
-                meta = d.verify_evidence(hand)
-                deadline = dossier.Dossiers.reply_deadline(exp, meta)
-                existing_auto = sorted(
-                    (load(p) for p in (hand / 'responses').glob('*/attempt.json')
-                     if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
-                    key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
-                )
-                notes = [load(p) for p in (hand / 'issuance').glob('*.json')]
-                bjt_today = (now + 8 * 3_600_000) // dossier.DAY
-                if deadline is not None and now >= deadline:
-                    results.append(dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED'))
-                elif any(a.get('status') in {'VALID', 'RECEIVED'} for a in existing_auto) or len(existing_auto) >= 3:
-                    results.append(dict(hand_id=hand.name, status='AUTO_ATTEMPTED', last_status=existing_auto[-1].get('status')))
-                elif any(
-                    n.get('state') == 'DAILY_BUDGET_EXHAUSTED'
-                    and ((n.get('recorded_at_ms') or 0) + 8 * 3_600_000) // dossier.DAY == bjt_today
-                    for n in notes
-                ):
-                    results.append(dict(hand_id=hand.name, status='DAILY_BUDGET_EXHAUSTED'))
-                elif not cfg.get('api_key') and cfg.get('transport') is None:
-                    d.note(hand, 'LLM_NOT_CONFIGURED', 'missing_api_key')
-                    results.append(dict(hand_id=hand.name, status='LLM_NOT_CONFIGURED'))
+    now = d.clock()
+    for slot in reversed(dossier.schedule(plan, now)):
+        expiry = slot + plan['expiry_offset_ms']
+        hand = None
+        try:
+            # A closed historical slot cannot acquire a new position. A missing
+            # expected record still counts as a missed scheduled opportunity.
+            if expiry <= now:
+                expected = d.path(expiry) / 'hands' / dossier.identity('hand', 'Deribit', 'BTC', expiry, 'SCHEDULED', slot)
+                if (expected / 'expected.json').is_file():
+                    continue
+            with _short_writer(d):
+                hand, = d.tick(plan, slots=[slot])
+            if expiry <= now:
+                continue
+            if not (hand / 'evidence').exists() and d.clock() < slot + plan['deal_grace_ms']:
+                try:
+                    source = dossier.collect(archive_root, expiry, slot, clock=d.clock,
+                                             candidate_round=plan.get('candidate_round', 'r2'))
+                    with _short_writer(d):
+                        d.deal(hand, source)
+                except (OSError, LookupError, ValueError) as exc:
+                    with _short_writer(d):
+                        state = 'POLICY_BLOCKED' if isinstance(exc, dossier.player.HandNotDealt) else 'DATA_BLOCKED'
+                        d.note(hand, state, str(exc))
+            results.append(_deal_hand(d, hand, service, _llm_settings(llm_config)))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            results.append(_hand_error(d, hand, exc, slot))
+    return results
+
+
+def _hand_error(d, hand, exc, slot=None):
+    reason = getattr(exc, 'code', None) or type(exc).__name__
+    if hand is not None:
+        try:
+            with _short_writer(d):
+                d.note(hand, 'DEAL_BLOCKED', reason)
+        except (OSError, ValueError):
+            pass  # Preserve the failure in the scheduler journal if storage is unavailable.
+    return dict(hand_id=hand.name if hand else None, scheduled_at_ms=slot, status='DEAL_BLOCKED', reason=reason)
+
+
+def _safe_summary(d, expiry_ms):
+    try:
+        return d.summary(expiry_ms)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _deal_hand(d, hand, service, cfg, *, recover_only=False):
+    exp = load(hand / 'expected.json')
+    link_todo = None
+    llm_input = None
+    with _short_writer(d):
+        for request_file in sorted((hand / 'api_calls').glob('*/request.json')):
+            call = request_file.parent
+            if not (call / 'not_sent.json').is_file() and not (hand / 'responses' / call.name / 'attempt.json').is_file():
+                _record_initial_reply(d, hand, call, load(request_file))
+        if not (hand / 'decision.json').is_file():
+            d.select(hand)
+        now = d.clock()
+        if (hand / 'decision.json').is_file():
+            decision = load(hand / 'decision.json')
+            action = decision['judgment']['action']
+            if action == 'Accept' and now < exp['expiry_ms'] and not (hand / 'tracking' / 'link.json').is_file() and not _link_blocked(hand / 'tracking'):
+                req = optional(hand / 'tracking' / 'request.json')
+                c_plan = (req.get('condition') if isinstance(req, dict) else None) or _recover_condition_plan(hand, decision)
+                if c_plan:
+                    link_todo = c_plan
                 else:
-                    _, input_bytes, source = evidence(hand)
-                    contracts_pair = [contract_fields(dossier.player.bind(case, card, card['side']))
-                                      for case, card in zip(source['cases'], source['cards'])]
-                    llm_input = (meta, input_bytes, contracts_pair)
-        if link_todo is not None:
-            link_res = _link_with_fresh_quote(d, hand, service, link_todo)
-            results.append(dict(hand_id=hand.name, status='ALREADY_DECIDED', decision='Accept', link=link_res))
-            with _short_writer(d):
-                d.summary(exp['expiry_ms'])
-            continue
-        if llm_input is None:
-            with _short_writer(d):
-                d.summary(exp['expiry_ms'])
-            continue
-        meta, input_bytes, contracts_pair = llm_input
-        req_ms = d.clock()
-        attempt_id = dossier.identity('auto', req_ms, cfg['model'], len(existing_auto))
-        req_payload = review.build_initial_request_payload(
+                    d.note(hand, 'LOCK_BLOCKED', 'condition_plan_missing')
+            if link_todo is None:
+                result = dict(hand_id=hand.name, status='ALREADY_DECIDED', decision=action, link=None)
+        elif not (hand / 'evidence' / 'input.md').is_file():
+            result = dict(hand_id=hand.name, status='NO_EVIDENCE')
+        else:
+            meta = d.verify_evidence(hand)
+            deadline = dossier.Dossiers.reply_deadline(exp, meta)
+            existing_auto = sorted(
+                (load(p) for p in (hand / 'responses').glob('*/attempt.json')
+                 if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
+                key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
+            )
+            notes = [load(p) for p in (hand / 'issuance').glob('*.json')]
+            bjt_today = (now + 8 * 3_600_000) // dossier.DAY
+            if deadline is not None and now >= deadline:
+                result = dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED')
+            elif existing_auto:
+                result = dict(hand_id=hand.name, status='AUTO_ATTEMPTED', last_status=existing_auto[-1].get('status'))
+            elif any(
+                n.get('state') == 'DAILY_BUDGET_EXHAUSTED'
+                and ((n.get('recorded_at_ms') or 0) + 8 * 3_600_000) // dossier.DAY == bjt_today
+                for n in notes
+            ):
+                result = dict(hand_id=hand.name, status='DAILY_BUDGET_EXHAUSTED')
+            elif recover_only:
+                return dict(hand_id=hand.name, status='NOT_DISPATCHED')
+            elif not cfg.get('api_key') and cfg.get('transport') is None:
+                d.note(hand, 'LLM_NOT_CONFIGURED', 'missing_api_key')
+                result = dict(hand_id=hand.name, status='LLM_NOT_CONFIGURED')
+            else:
+                _, input_bytes, source = evidence(hand)
+                contracts_pair = [contract_fields(dossier.player.bind(case, card, card['side']))
+                                  for case, card in zip(source['cases'], source['cards'])]
+                llm_input = (meta, input_bytes, contracts_pair)
+    if link_todo is not None:
+        link_res = _link_with_fresh_quote(d, hand, service, link_todo)
+        result = dict(hand_id=hand.name, status='ALREADY_DECIDED', decision='Accept', link=link_res)
+        with _short_writer(d):
+            _safe_summary(d, exp['expiry_ms'])
+        return result
+    if llm_input is None:
+        with _short_writer(d):
+            _safe_summary(d, exp['expiry_ms'])
+        return result
+    meta, input_bytes, contracts_pair = llm_input
+    req_ms = d.clock()
+    if deadline is not None and req_ms >= deadline:
+        return dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED')
+    attempt_id = dossier.identity('auto', hand.name, req_ms, cfg['model'], len(existing_auto))
+    req_payload = review.build_initial_request_payload(
+        input_bytes.decode('utf-8'),
+        contract_pair=contracts_pair,
+        model=cfg['model'],
+        reasoning_effort=cfg.get('reasoning_effort'),
+        endpoint=review._normalize_endpoint(cfg.get('endpoint')),
+        packet_hash=meta['input_sha256'],
+        requested_at_ms=req_ms,
+        fidelity='EXACT',
+    )
+    call = hand / 'api_calls' / attempt_id
+    dossier.write(call / 'request.json', dossier.encode(review.sanitize_model_request(req_payload)))
+    dossier.write(call / 'dispatch.json', dossier.encode(dict(started_at_ms=d.clock(), timeout_s=cfg['timeout_s'])))
+    try:
+        ai_res = _call_with_supported_kwargs(
+            review.decide_initial_hand,
             input_bytes.decode('utf-8'),
             contract_pair=contracts_pair,
+            api_key=cfg['api_key'] or 'test-key',
             model=cfg['model'],
+            endpoint=cfg.get('endpoint'),
+            timeout_s=cfg.get('timeout_s', 300),
+            retries=0,  # An ambiguous POST must never be automatically replayed.
             reasoning_effort=cfg.get('reasoning_effort'),
-            endpoint=review._normalize_endpoint(cfg.get('endpoint')),
+            budget=cfg.get('budget'),
             packet_hash=meta['input_sha256'],
-            requested_at_ms=req_ms,
-            fidelity='EXACT',
+            transport=cfg.get('transport'),
+            on_response=lambda reply: _remember_reply(call, d, reply),
         )
-        call = hand / 'api_calls' / attempt_id
-        dossier.write(call / 'request.json', dossier.encode(review.sanitize_model_request(req_payload)))
-        try:
-            ai_res = _call_with_supported_kwargs(
-                review.decide_initial_hand,
-                input_bytes.decode('utf-8'),
-                contract_pair=contracts_pair,
-                api_key=cfg['api_key'] or 'test-key',
-                model=cfg['model'],
-                endpoint=cfg.get('endpoint'),
-                timeout_s=cfg.get('timeout_s', 300),
-                retries=cfg.get('retries'),
-                reasoning_effort=cfg.get('reasoning_effort'),
-                budget=cfg.get('budget'),
-                packet_hash=meta['input_sha256'],
-                transport=cfg.get('transport'),
-                on_response=lambda reply: _remember_reply(call, d, reply),
-            )
-        except signal_llm_review.DailyBudgetExceeded as exc:
-            with _short_writer(d):
-                dossier.write(call / 'not_sent.json', dossier.encode(dict(reason='DAILY_BUDGET_EXHAUSTED')))
-                d.note(hand, 'DAILY_BUDGET_EXHAUSTED', str(exc)[:180])
-            results.append(dict(hand_id=hand.name, status='DAILY_BUDGET_EXHAUSTED', error=str(exc)))
-        except Exception as exc:
-            with _short_writer(d):
-                att = _record_initial_reply(d, hand, call, req_payload, error=exc)
-            results.append(dict(hand_id=hand.name, status=att['status'], error=att.get('error')))
-        else:
-            with _short_writer(d):
-                att = _record_initial_reply(d, hand, call, req_payload, result=ai_res)
-                verdict = (att.get('judgment') or {}).get('action')
-            link_res = None
-            if att.get('status') == 'VALID' and verdict == 'Accept':
-                link_res = _link_with_fresh_quote(d, hand, service, ai_res.get('condition_plan'))
-            results.append(dict(hand_id=hand.name, status=att.get('status'), decision=verdict,
-                                error=att.get('error'), link=link_res))
+    except signal_llm_review.DailyBudgetExceeded as exc:
         with _short_writer(d):
-            d.summary(exp['expiry_ms'])
-    return results
+            dossier.write(call / 'not_sent.json', dossier.encode(dict(reason='DAILY_BUDGET_EXHAUSTED')))
+            d.note(hand, 'DAILY_BUDGET_EXHAUSTED', str(exc)[:180])
+        result = dict(hand_id=hand.name, status='DAILY_BUDGET_EXHAUSTED', error=str(exc))
+    except Exception as exc:
+        with _short_writer(d):
+            att = _record_initial_reply(d, hand, call, req_payload, error=exc)
+        result = dict(hand_id=hand.name, status=att['status'], error=att.get('error'))
+        if att['status'] == 'VALID':
+            result['decision'] = att['judgment']['action']
+            with _short_writer(d):
+                d.note(hand, 'POST_RESPONSE_ERROR', type(exc).__name__)
+            if result['decision'] == 'Accept':
+                result['link'] = _link_with_fresh_quote(d, hand, service, _recover_condition_plan(hand, load(hand / 'decision.json')))
+    else:
+        with _short_writer(d):
+            att = _record_initial_reply(d, hand, call, req_payload, result=ai_res)
+            verdict = (att.get('judgment') or {}).get('action')
+        link_res = None
+        if att.get('status') == 'VALID' and verdict == 'Accept':
+            link_res = _link_with_fresh_quote(d, hand, service, ai_res.get('condition_plan'))
+        result = dict(hand_id=hand.name, status=att.get('status'), decision=verdict,
+                            error=att.get('error'), link=link_res)
+    with _short_writer(d):
+        _safe_summary(d, exp['expiry_ms'])
+    return result
+
+
+def recover_initial(d, service):
+    """Sync may finish an existing hand after the last dispatch timer. Never call the model."""
+    out = []
+    with ExitStack() as lease:
+        try:
+            lease.enter_context(dossier.writer(d.root / '.auto-deal'))
+        except (BlockingIOError, PermissionError):
+            return out
+        cutoff = d.path(d.clock()).name
+        for folder in sorted((d.root / 'dossiers').glob('Deribit_BTC_*'), reverse=True):
+            if folder.name < cutoff and not any(
+                not (p.parent / 'not_sent.json').is_file()
+                for p in folder.glob('hands/*/api_calls/*/dispatch.json')
+            ):
+                continue  # Old sealed dossiers predate this recovery journal.
+            for hand in (folder / 'hands').glob('hand_*'):
+                try:
+                    exp = load(hand / 'expected.json')
+                    if exp['sample'] != 'SCHEDULED':
+                        continue
+                    if (hand / 'tracking/request.json').exists() or (hand / 'tracking/link.json').exists():
+                        continue  # sync-open already recovers native lock requests
+                    decision = optional(hand / 'decision.json')
+                    if decision and decision['judgment']['action'] != 'Accept':
+                        continue
+                    calls = [p.parent for p in (hand / 'api_calls').glob('*/request.json')]
+                    unfinished = any(not (c / 'not_sent.json').exists() and
+                                     not (hand / 'responses' / c.name / 'attempt.json').exists() for c in calls)
+                    saved_valid = any(load(p).get('status') == 'VALID' for p in dossier.attempts(hand))
+                    if unfinished or (saved_valid and not decision) or (decision and d.clock() < exp['expiry_ms']):
+                        if not _link_blocked(hand / 'tracking'):
+                            out.append(_deal_hand(d, hand, service, {}, recover_only=True))
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    out.append(_hand_error(d, hand, exc))
+    return out
 
 
 def _compact_triggers(triggers, keys=('category', 'code', 'summary_cn')):
@@ -2126,7 +2241,7 @@ def audit_record(hand, now, tracker_status, *, detail=False):
             terminal_meta, _ = terminal_trajectory(hand)
         except (OSError, ValueError, KeyError, TypeError):
             terminal_meta = None
-    lock_state = ('TRACKING' if tracker in tracker_status else 'ARCHIVED' if terminal_meta else 'TRACKER_UNAVAILABLE'
+    lock_state = ('TRACKING' if tracker in (tracker_status or {}) else 'ARCHIVED' if terminal_meta else 'TRACKER_UNAVAILABLE'
                   if tracker else 'LOCK_BLOCKED' if blocked or any(n['state'] == 'LOCK_BLOCKED' for n in notes)
                   else 'LINK_UNVERIFIED' if any(n['state'] == 'LINK_UNVERIFIED' for n in notes)
                   else req['state'] if req else None)
@@ -2136,9 +2251,52 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                   scheduled_at_ms=exp['scheduled_at_ms'], side=(decision or {}).get('judgment', {}).get('side'),
                   model=(decision or {}).get('model') or (attempts[-1].get('model') if attempts else None),
                   usage=initial_usage,
-                  tracker_episode_id=tracker if tracker in tracker_status else None,
-                  tracker_status=tracker_status.get(tracker),
+                  tracker_episode_id=tracker if tracker in (tracker_status or {}) else None,
+                  tracker_status=(tracker_status or {}).get(tracker),
                   tracking_state=lock_state)
+    # The request is published before HTTP. Its existence alone cannot prove delivery.
+    calls = [] if decision or attempts else [
+        p.parent for p in (hand / 'api_calls').glob('*/request.json')
+        if not (p.parent / 'not_sent.json').is_file()
+    ]
+    call = max(calls, key=lambda c: load(c / 'request.json')['requested_at_ms'], default=None)
+    sent = optional(call / 'request.json') if call else None
+    dispatch = optional(call / 'dispatch.json') if call else None
+    reply = optional(call / 'reply.json') if call and not attempts else None
+    last = attempts[-1] if attempts else {}
+    note = notes[-1] if notes else {}
+    updated = max((t for t in (exp.get('recorded_at_ms'), result['frozen_at_ms'],
+                    (sent or {}).get('requested_at_ms'), (reply or {}).get('decided_at_ms'),
+                    last.get('recorded_at_ms'), (decision or {}).get('recorded_at_ms'),
+                    (req or {}).get('requested_at_ms'), (receipt or {}).get('recorded_at_ms'),
+                    note.get('recorded_at_ms')) if isinstance(t, int)), default=None)
+    stage = lock_state or state
+    if receipt and tracker_status is None:
+        stage = 'ARCHIVED' if terminal_meta else 'LINK_CONFIRMED'
+    reason = (blocked or {}).get('reason') or last.get('error') or note.get('reason')
+    if not receipt and note.get('state') == 'DEAL_BLOCKED' and note.get('recorded_at_ms') == updated:
+        stage = 'DEAL_BLOCKED'
+    elif not decision and frozen and not attempts and (
+        state in {'AWAITING_RESPONSE', 'NO_RESPONSE'}
+        or (state == 'DAILY_BUDGET_EXHAUSTED' and deadline and now >= deadline)
+    ):
+        if reply:
+            stage = 'REPLY_SAVED'
+        elif not sent:
+            stage = 'DISPATCH_EXPIRED' if deadline and now >= deadline else 'AWAITING_DISPATCH'
+        elif (deadline and now >= deadline) or (dispatch and now >= dispatch['started_at_ms'] + dispatch['timeout_s'] * 1000):
+            stage = 'DELIVERY_UNKNOWN'
+        else:
+            stage = 'REQUEST_IN_PROGRESS' if dispatch else 'DELIVERY_UNKNOWN'
+    elif not decision and last.get('status') in {'TIMEOUT', 'REQUEST_FAILED'} and last.get('channel') == 'API_AUTO':
+        stage = (last.get('configuration') or {}).get('delivery_state') or 'DELIVERY_UNKNOWN'
+    elif not decision and last.get('status') == 'VALID':
+        stage = 'DECISION_PENDING'
+    elif decision and stage == 'Accept':
+        stage = 'HANDOFF_EXPIRED' if now >= min(deadline or exp['expiry_ms'], decision['decided_at_ms'] + HANDOFF_MS) else 'HANDOFF_PENDING'
+    result.update(stage=stage, last_update_ms=updated, reply_deadline_ms=deadline, stage_reason=reason)
+    if sent and not result['model']:
+        result['model'] = sent.get('model')
     if not detail:
         return result
     if frozen:
@@ -2206,6 +2364,28 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                 if extra in grade:
                     result['outcome'][extra] = grade[extra]
     return result
+
+
+def current_scheduled(root, now):
+    """Read the latest due formal hand without building the history or native tracker index."""
+    folders = sorted((Path(root) / 'dossiers').glob('Deribit_BTC_*'), reverse=True)
+    for folder in folders:
+        candidates = []
+        for path in (folder / 'hands').glob('hand_*/expected.json'):
+            try:
+                exp = load(path)
+                if (isinstance(exp, dict) and exp.get('sample') == 'SCHEDULED'
+                        and type(exp.get('scheduled_at_ms')) is int and exp['scheduled_at_ms'] <= now):
+                    candidates.append((exp['scheduled_at_ms'], path.parent.name, path.parent))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        for _, _, hand in candidates:
+            try:
+                return audit_record(hand, now, None)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+    return None
 
 
 def audit_index(root, now, active_ids):
@@ -2491,7 +2671,7 @@ def main():
             if args.command == 'auto-deal':
                 out = auto_deal(d, dossier.read(args.plan), args.archive, service)
             elif args.command == 'sync-open':
-                out = []
+                out = recover_initial(d, service)
                 for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
                     hand = request_file.parent.parent
                     if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
@@ -2535,6 +2715,12 @@ def main():
         print(dossier.encode(out).decode('utf-8'), end='')
     except (OSError, ValueError, KeyError) as exc:
         parser.exit(2, f'{getattr(exc, "code", type(exc).__name__)}\n')
+    if args.command == 'auto-deal' and any(row.get('status') in {
+        'DEAL_BLOCKED', 'NO_EVIDENCE', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED',
+        'TIMEOUT', 'REQUEST_FAILED', 'PARSE_FAILED', 'LATE', 'REPLY_WINDOW_CLOSED',
+    } or (row.get('status') == 'AUTO_ATTEMPTED' and row.get('last_status') != 'VALID')
+      or (row.get('link') or {}).get('state') in {'LOCK_BLOCKED', 'LINK_UNVERIFIED'} for row in out):
+        parser.exit(2)
     if isinstance(out, dict) and out.get('state') in {'LOCK_BLOCKED', 'LINK_UNVERIFIED', 'NO_TRACKING_REQUEST'}:
         parser.exit(2)
 

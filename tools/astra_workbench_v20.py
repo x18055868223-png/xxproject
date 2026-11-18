@@ -6614,7 +6614,8 @@ def make_handler(workbench: AstraWorkbench):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             heavy = (parsed.path.endswith("/evidence")
-                     or (player_tracking is not None and (parsed.path == player_tracking.AUDIT_PATH
+                     or (player_tracking is not None and parsed.path != player_tracking.AUDIT_PATH + "/current"
+                         and (parsed.path == player_tracking.AUDIT_PATH
                          or parsed.path.startswith(player_tracking.AUDIT_PATH + "/")))
                      or parsed.path.startswith(("/api/workbench/candidate-evidence/", "/api/workbench/wpem-proof/",
                                                 "/api/workbench/case-file/"))
@@ -6797,6 +6798,9 @@ def make_handler(workbench: AstraWorkbench):
                 self._json(404, {"code": "shadow_dossiers_disabled"})
                 return
             try:
+                if path == player_tracking.AUDIT_PATH + "/current":
+                    self._shadow_json({"hand": player_tracking.current_scheduled(root, workbench.clock_ms())})
+                    return
                 if path == player_tracking.AUDIT_PATH:
                     ids = {e["episode_id"]: e["status"] for e in workbench.locked_candidates.list() if not e.get("index_error")}
                     now = workbench.clock_ms()

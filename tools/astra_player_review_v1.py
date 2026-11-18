@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import inspect
 import json
 import math
 import re
@@ -185,12 +186,19 @@ def _budget_error_category(exc: Exception) -> str:
 
 
 def _invoke_transport(poster: Any, api_key: str, model: str, request_body: dict[str, Any], timeout_s: float, url: str) -> Any:
+    # Determine the legacy test transport signature before calling. A TypeError
+    # raised inside an already dispatched transport must not send a second POST.
+    args = (api_key, model, request_body, timeout_s)
     try:
-        return poster(api_key, model, request_body, timeout_s, endpoint=url)
-    except TypeError as exc:
-        if "unexpected keyword" not in str(exc):
-            raise
-        return poster(api_key, model, request_body, timeout_s)
+        signature = inspect.signature(poster)
+    except (TypeError, ValueError):
+        return poster(*args, endpoint=url)
+    try:
+        signature.bind(*args, endpoint=url)
+    except TypeError:
+        signature.bind(*args)
+        return poster(*args)
+    return poster(*args, endpoint=url)
 
 
 def call_chat_llm(
@@ -251,33 +259,39 @@ def call_chat_llm(
             ):
                 raise
         else:
-            if budget is not None:
-                if isinstance(response, Mapping):
-                    usage = signal_llm_review._response_usage(dict(response))
-                    budget.complete(res_id, "HTTP_OK", usage=usage)
-                else:
-                    budget.complete(res_id, "HTTP_ERROR", usage={})
             break
     if not isinstance(response, Mapping):
-        raise ValueError("LLM response must be a JSON object")
-    choices = response.get("choices")
-    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
-    finish_reason = choice.get("finish_reason")
-    message = choice.get("message") if isinstance(choice.get("message"), Mapping) else {}
-    raw_content = message.get("content")
-    if isinstance(raw_content, list):
-        text = "".join(
-            str(part.get("text") or "")
-            for part in raw_content
-            if isinstance(part, Mapping)
-        )
-    else:
-        text = str(raw_content or "")
-    http_status = response.get("_http_status") or response.get("http_status") or 200
-    if on_response is not None:
-        on_response(dict(text=text, usage=signal_llm_review._response_usage(dict(response)),
-                         model=str(response.get("model") or model), http_status=int(http_status),
-                         finish_reason=finish_reason, endpoint=url, reasoning_effort=reasoning_effort))
+        if budget is not None:
+            budget.complete(res_id, "HTTP_ERROR", usage={})
+        raise ValueError("LLM response is not a mapping")
+    usage: dict[str, Any] = {}
+    try:
+        choices = response.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], Mapping) else {}
+        finish_reason = choice.get("finish_reason")
+        message = choice.get("message") if isinstance(choice.get("message"), Mapping) else {}
+        raw_content = message.get("content")
+        if isinstance(raw_content, list):
+            text = "".join(
+                str(part.get("text") or "")
+                for part in raw_content
+                if isinstance(part, Mapping)
+            )
+        else:
+            text = str(raw_content or "")
+        raw_http_status = response.get("_http_status") or response.get("http_status") or 200
+        try:
+            http_status = int(raw_http_status) if not isinstance(raw_http_status, bool) else 200
+        except (TypeError, ValueError):
+            http_status = 200
+        usage = signal_llm_review._response_usage(dict(response))
+        if on_response is not None:
+            on_response(dict(text=text, usage=usage, model=str(response.get("model") or model),
+                             http_status=http_status, finish_reason=finish_reason,
+                             endpoint=url, reasoning_effort=reasoning_effort))
+    finally:
+        if budget is not None:
+            budget.complete(res_id, "HTTP_OK", usage=usage)
     if not isinstance(choices, list) or not choices:
         raise ValueError("LLM response missing choices")
     if not text.strip():
@@ -290,7 +304,7 @@ def call_chat_llm(
         "reasoning_content": str(reasoning_text) if reasoning_text else None,
         "usage": signal_llm_review._response_usage(dict(response)),
         "finish_reason": finish_reason,
-        "http_status": int(http_status),
+        "http_status": http_status,
         "model": str(response.get("model") or model),
         "reasoning_effort": reasoning_effort,
         "endpoint": url,

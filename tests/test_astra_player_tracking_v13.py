@@ -557,32 +557,13 @@ def test_auto_deal_budget_exhausted_timeout_attempts_and_audit_states(tmp_path, 
     assert aud['attempts'][0]['reasoning_effort'] == 'high'
     assert 'URLError' in aud['attempts'][0]['error']
 
-    # Attempt 2: TimeoutError -> TIMEOUT
+    # A transport timeout cannot tell whether the provider received the POST.
     clk.ms += 1_000
-    r2 = tracking.auto_deal(
-        d_run, plan(), tmp_path, lambda *_: {},
-        llm_config={'api_key': 'k', 'model': 'm-test', 'reasoning_effort': 'high', 'retries': 0, 'transport': timeout_transport},
-    )
-    assert r2[0]['status'] == 'TIMEOUT'
-    assert len(tracking.audit_record(hand, clk(), {}, detail=True)['attempts']) == 2
-
-    # Attempt 3 allowed (< 3), hits DailyBudgetExceeded -> notes DAILY_BUDGET_EXHAUSTED, skips attempt 4 immediately
-    clk.ms += 1_000
+    r2 = tracking.auto_deal(d_run, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'retries': 4, 'transport': timeout_transport})
+    assert r2[0]['status'] == 'AUTO_ATTEMPTED' and calls == [1]
+    assert len(tracking.audit_record(hand, clk(), {}, detail=True)['attempts']) == 1
     zero_budget = signal_llm_review.DailyHttpBudget(tmp_path / 'zero_budget.json', limit=0)
-    r3 = tracking.auto_deal(
-        d_run, plan(), tmp_path, lambda *_: {},
-        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'budget': zero_budget, 'transport': timeout_transport},
-    )
-    assert r3[0]['status'] == 'DAILY_BUDGET_EXHAUSTED'
-    assert calls[0] == 2  # budget checked before transport
-
-    clk.ms += 1_000
-    r4 = tracking.auto_deal(
-        d_run, plan(), tmp_path, lambda *_: {},
-        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'transport': timeout_transport},
-    )
-    assert r4[0]['status'] == 'DAILY_BUDGET_EXHAUSTED'
-    assert calls[0] == 2
 
     # Fresh hand with 0 attempts hitting DailyBudgetExceeded surfaces DAILY_BUDGET_EXHAUSTED on audit_record
     d_bud = dossier.Dossiers(tmp_path / 'budget_zero', clock=clk)
@@ -594,21 +575,9 @@ def test_auto_deal_budget_exhausted_timeout_attempts_and_audit_states(tmp_path, 
     bud_hand = next((tmp_path / 'budget_zero' / 'dossiers').glob('Deribit_BTC_*/hands/hand_*'))
     assert tracking.audit_record(bud_hand, clk(), {})['state'] == 'DAILY_BUDGET_EXHAUSTED'
 
-    # Hand with 3 failed attempts stops at AUTO_ATTEMPTED on 4th call
-    d_max = dossier.Dossiers(tmp_path / 'max_attempts', clock=clk)
-    for _ in range(3):
-        clk.ms += 1_000
-        tracking.auto_deal(
-            d_max, plan(), tmp_path, lambda *_: {},
-            llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'transport': timeout_transport},
-        )
-    before_calls = calls[0]
-    r_stop = tracking.auto_deal(
-        d_max, plan(), tmp_path, lambda *_: {},
-        llm_config={'api_key': 'k', 'model': 'm-test', 'retries': 0, 'transport': timeout_transport},
-    )
-    assert r_stop[0]['status'] == 'AUTO_ATTEMPTED' and r_stop[0]['last_status'] == 'TIMEOUT'
-    assert calls[0] == before_calls
+    again = tracking.auto_deal(d_bud, plan(), tmp_path, lambda *_: {},
+        llm_config={'api_key': 'k', 'transport': timeout_transport})
+    assert again[0]['status'] == 'DAILY_BUDGET_EXHAUSTED' and calls == [1]
 
 
 def test_shadow_quote_endpoint_lazy_entry_basis_and_ard_band_window(tmp_path, monkeypatch):

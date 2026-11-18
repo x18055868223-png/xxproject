@@ -416,9 +416,9 @@ class Dossiers:
             raise ValueError('frozen input or source hash mismatch')
         return meta
 
-    def tick(self, plan, source_for=None):
+    def tick(self, plan, source_for=None, *, slots=None):
         at, output = self.clock(), []
-        slots = schedule(plan, at)
+        slots = schedule(plan, at) if slots is None else slots
         write(self.root / 'plans' / (key(plan['plan_id']) + '.json'), encode(plan))
         for slot in slots:
             expiry = slot + plan['expiry_offset_ms']
@@ -795,8 +795,11 @@ class Dossiers:
                 meta = self.verify_evidence(hand)
                 deadline = self.reply_deadline(exp, meta)
                 unanswered = 'AWAITING_RESPONSE' if deadline is not None and self.clock() < deadline else 'NO_RESPONSE'
+            last_note = read(notes[-1])['state'] if notes else None
+            if last_note in {'DEAL_BLOCKED', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED'}:
+                unanswered = last_note
             state = (decision['judgment']['action'] if decision else read(replies[-1])['status'] if replies else
-                     unanswered if unanswered else read(notes[-1])['state'] if notes else 'EXPECTED')
+                     unanswered or last_note or 'EXPECTED')
             sample = exp['sample']
             counts.setdefault(sample, {})[state] = counts.setdefault(sample, {}).get(state, 0) + 1
             lines.append(f'- {sample} · {state} · [计划身份]({prefix}/expected.json)')
