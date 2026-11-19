@@ -275,6 +275,79 @@ def test_m01_discretionary_revoke_attribution_cases():
     assert r_trig["discretionary_revoke_attribution"] == "NOT_APPLICABLE"
 
 
+def test_m01_downstream_consumers_do_not_treat_unverified_revoke_as_exit():
+    unverified_ev = {
+        "kind": "AI_REVOKE",
+        "observed_at_ms": 1795000000000,
+        "recorded_at_ms": 1795000000000,
+        "body": {
+            "review_id": "rev_unverified",
+            "verdict": "REVOKE",
+            "protocol_status": "DISCRETIONARY_REVOKE_UNVERIFIED",
+            "shadow_action": "REVOKE_UNVERIFIED_ATTRIBUTION",
+            "discretionary_revoke_attribution": "UNVERIFIED",
+        },
+    }
+    verified_ev = {
+        "kind": "AI_REVOKE",
+        "observed_at_ms": 1795000000000,
+        "recorded_at_ms": 1795000000000,
+        "body": {
+            "review_id": "rev_verified",
+            "verdict": "REVOKE",
+            "protocol_status": "DISCRETIONARY_REVOKE",
+            "shadow_action": "REVOKE_DISCRETIONARY",
+            "discretionary_revoke_attribution": "VERIFIED",
+        },
+    }
+    legacy_ev = {
+        "kind": "AI_REVOKE",
+        "observed_at_ms": 1795000000000,
+        "recorded_at_ms": 1795000000000,
+        "body": {"review_id": "rev_legacy", "verdict": "REVOKE"},
+    }
+    assert tracking._is_verified_revoke(unverified_ev) is False
+    assert tracking._is_verified_revoke(verified_ev) is True
+    assert tracking._is_verified_revoke(legacy_ev) is True
+
+    frozen = {
+        "contract": {
+            "side": "call",
+            "short_instrument": "BTC-18NOV26-64000-C",
+            "long_instrument": "BTC-18NOV26-66000-C",
+            "short_strike_usd": 64000.0,
+            "long_strike_usd": 66000.0,
+            "quantity_btc": 1.0,
+        }
+    }
+    # Settlement cashflow consumer ignores unverified discretionary revoke
+    assert dossier._shadow_managed_cashflow(frozen, 63500.0, [unverified_ev], None) is None
+    # Verified & legacy AI_REVOKE events continue to be accounted for
+    assert dossier._shadow_managed_cashflow(frozen, 63500.0, [verified_ev], None)["mode"] == "UNPRICED_REVOKE"
+    assert dossier._shadow_managed_cashflow(frozen, 63500.0, [legacy_ev], None)["mode"] == "UNPRICED_REVOKE"
+
+
+def test_d02_11_18_hand_preserves_both_put_and_call_l2_observations():
+    candidates = [
+        Path(__file__).resolve().parents[2] / ".artifacts/player-runtime-repair/fixture/dossiers/Deribit_BTC_20261119T080000Z/hands/hand_af89529fa734fb9f4dba4a91/evidence",
+        Path(__file__).resolve().parents[3] / ".artifacts/player-runtime-repair/fixture/dossiers/Deribit_BTC_20261119T080000Z/hands/hand_af89529fa734fb9f4dba4a91/evidence",
+    ]
+    ev_dir = next((p for p in candidates if (p / "source.json").is_file()), None)
+    if ev_dir is None:
+        pytest.skip("local 2026-11-18 frozen hand artifact not present")
+    source = json.loads((ev_dir / "source.json").read_text(encoding="utf-8"))
+    rendered = player.build_input(
+        *source["cases"], *source["cards"],
+        index_path=source["index_path"],
+        ard_history=source["history"],
+        ard_band_snapshot=source.get("band_snapshot"),
+    )
+    assert "63,105.25 USD" in rendered  # Put L2 short-leg index preserved despite 0.6s long-leg delta
+    assert "63,093.70 USD" in rendered  # Call L2 short-leg index preserved
+    assert "合格图表末点63,152.5" in rendered
+    assert "在合格图表末点上方" in rendered
+
+
 # ---------------------------------------------------------------------------
 # V01: Research inquiry LLM callback default disabled unless explicitly gated
 # ---------------------------------------------------------------------------

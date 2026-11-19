@@ -202,11 +202,11 @@ def major_positions(case, card, contract):
     return levels_for(wall, None, None)
 
 
-def pin_relation(pin, index, contract):
+def pin_relation(pin, index, contract, *, ref_label='现价'):
     """One expiry Pin relative to this reading and its liability; never a vote."""
     short, long = contract['short_strike_usd'], contract['long_strike_usd']
     direction = -1 if contract['side'] == 'put' else 1
-    spot = '与现价同位' if pin == index else f'在现价{side_of(pin, index)}{fmt(abs(pin-index))} USD'
+    spot = f'与{ref_label}同位' if pin == index else f'在{ref_label}{side_of(pin, index)}{fmt(abs(pin-index))} USD'
     if pin == short:
         boundary = f'与短腿{fmt(short)}同位，不另算一站'
     elif pin == long:
@@ -222,23 +222,24 @@ def pin_relation(pin, index, contract):
     return spot + '，' + boundary
 
 
-def pin_context(cases, cards, contracts):
+def pin_context(cases, cards, contracts, *, ref_labels=None):
     # Read the actual expiry profile, never gamma_regime.pin_strike or the all-tenor magnet.
     rows = {s: entry(cases[s], 'L3.expiry_walls') for s in cases}
     pins = {s: number(((r.get('values') or {}).get('walls') or {}).get('pin')) for s,r in rows.items()}
     valid = {s: p for s,p in pins.items() if p is not None and p > 0}
     if not valid:
         return ''
+    labels = ref_labels or {}
     same = len(valid)==2 and len(set(valid.values()))==1
     if same:
         clocks = {rows[s].get('asof_ms') for s in valid}
         source = ('结构源' + stamp(next(iter(clocks))) if len(clocks)==1 else
                   '；'.join(s.title()+'结构源'+stamp(rows[s]['asof_ms']) for s in valid))
         text = f"**本期Pin** {fmt(next(iter(valid.values())))}（{source}）。"
-        return text + ' '.join(s.title()+'：'+pin_relation(p,cards[s]['index_usd'],contracts[s])+'。' for s,p in valid.items())
+        return text + ' '.join(s.title()+'：'+pin_relation(p,cards[s]['index_usd'],contracts[s],ref_label=labels.get(s,'现价'))+'。' for s,p in valid.items())
     # Serial readings can straddle a profile update: retain each source instead of choosing Put's Pin.
     return ' '.join(f"{s.title()}读取的**本期Pin** {fmt(p)}（结构源{stamp(rows[s]['asof_ms'])}）："
-                    + pin_relation(p,cards[s]['index_usd'],contracts[s])+'。' for s,p in valid.items())
+                    + pin_relation(p,cards[s]['index_usd'],contracts[s],ref_label=labels.get(s,'现价'))+'。' for s,p in valid.items())
 
 
 def stations(case, card, contract):
@@ -312,13 +313,12 @@ def chart_points_audit(index_path, expiry, cutoff):
 
 
 def extract_l2_index_observations(cases, cards):
-    """Extract independent, clock-verified Deribit L2 orderbook index observations per side."""
+    """Extract independent, clock-verified Deribit L2 short-leg orderbook index observations per side."""
     observations = {}
     for side, case in cases.items():
         card = cards[side]
         read_at = card.get('read_at_ms')
         short_vals = values(case, 'L2.book.short')
-        long_vals = values(case, 'L2.book.long')
         quote_vals = values(case, 'L2.quote')
         price = number(short_vals.get('index_price'))
         obs_ms = short_vals.get('timestamp')
@@ -326,12 +326,7 @@ def extract_l2_index_observations(cases, cards):
         if (price is None or price <= 0 or type(obs_ms) is not int or type(acq_ms) is not int
                 or type(read_at) is not int):
             continue
-        long_price = number(long_vals.get('index_price'))
-        long_ts = long_vals.get('timestamp')
-        if long_price is not None and abs(long_price - price) > 1e-6:
-            continue
-        latest_obs = max(obs_ms, long_ts) if type(long_ts) is int else obs_ms
-        if not (latest_obs <= acq_ms <= read_at):
+        if not (obs_ms <= acq_ms <= read_at):
             continue
         observations[side] = {
             'side': side,
@@ -862,7 +857,10 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
             else:
                 relation='在该侧入区前行走方向之外，不是必经位置'
             scale_text += f"对{s.title()}，轴{relation}。"
-    pin_text = pin_context(cases, cards, contracts)
+    pin_text = pin_context(
+        cases, cards, contracts,
+        ref_labels={s: ('合格图表末点' if s in boundary_replaced else '现价') for s in cases},
+    )
     ard_text = ''
     if include_ard:
         min_read = min(c['read_at_ms'] for c in cards.values())

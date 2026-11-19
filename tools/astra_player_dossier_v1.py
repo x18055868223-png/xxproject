@@ -881,9 +881,18 @@ def managed_cashflow(frozen, settlement, events, record):
                 managed_net_btc=managed, original_hold_net_btc=baseline, delta_btc=managed - baseline)
 
 
+def _is_verified_revoke_event(event):
+    if not isinstance(event, dict) or event.get('kind') != 'AI_REVOKE':
+        return False
+    body = event.get('body') if isinstance(event.get('body'), dict) else {}
+    return (body.get('protocol_status') != 'DISCRETIONARY_REVOKE_UNVERIFIED'
+            and body.get('shadow_action') != 'REVOKE_UNVERIFIED_ATTRIBUTION'
+            and body.get('discretionary_revoke_attribution') != 'UNVERIFIED')
+
+
 def _shadow_managed_cashflow(frozen, settlement, events, link_rec, *, t0_credit=None, hold_shadow_net=None):
-    """Non-fixture shadow accounting for AI_REVOKE: short buyback at ask (preserving long) or unpriced revoke."""
-    revokes = [e for e in events if e.get('kind') == 'AI_REVOKE']
+    """Non-fixture shadow accounting for verified AI_REVOKE: short buyback at ask (preserving long) or unpriced revoke."""
+    revokes = [e for e in events if _is_verified_revoke_event(e)]
     flow = [e for e in events if e.get('kind') == 'SIMULATED_ORDER' and (e.get('body') or {}).get('action') == 'BUY_BACK_SHORT']
     no_quotes = [e for e in events if e.get('kind') == 'SHADOW_ACTION' and (e.get('body') or {}).get('action') == 'REVOKE_RECORDED_NO_QUOTE']
     if not revokes and not flow and not no_quotes:

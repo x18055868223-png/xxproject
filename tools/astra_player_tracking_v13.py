@@ -852,6 +852,21 @@ def _record_revoke_shadow_action(d, episode, frozen, quote, at, *, review_id):
     return d.event(episode, ev_id, 'SHADOW_ACTION', body, observed=at, available=at)
 
 
+def _is_verified_revoke(record):
+    """Return True if a review decision or AI_REVOKE event represents a verified shadow revoke."""
+    if not isinstance(record, dict):
+        return False
+    body = record.get('body') if isinstance(record.get('body'), dict) else record
+    is_revoke = (record.get('kind') == 'AI_REVOKE') or (body.get('verdict') == 'REVOKE')
+    if not is_revoke:
+        return False
+    if (body.get('protocol_status') == 'DISCRETIONARY_REVOKE_UNVERIFIED'
+            or body.get('shadow_action') == 'REVOKE_UNVERIFIED_ATTRIBUTION'
+            or body.get('discretionary_revoke_attribution') == 'UNVERIFIED'):
+        return False
+    return True
+
+
 def _record_review_event(d, episode, decision):
     review_id = decision['review_id']
     event_id = dossier.identity('ai_rev', review_id)
@@ -863,6 +878,7 @@ def _record_review_event(d, episode, decision):
     body = {k: decision.get(k) for k in (
         'review_id', 'verdict', 'ai_management_verdict', 'mechanical_condition_state',
         'protocol_status', 'shadow_action', 'trigger_categories', 'affected_conditions',
+        'discretionary_mapped_condition_ids', 'discretionary_revoke_attribution',
         'condition_id_mapping_status', 'public_reply', 'model', 'reasoning_effort',
         'usage', 'input_sha256', 'raw_sha256')}
     body['triggers'] = _compact_triggers(decision.get('triggers'), keys=('category', 'code', 'summary_cn', 'observed_at_ms'))
@@ -1081,10 +1097,11 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         t0_metrics = {**t0_metrics, 'expected_move_usd': fallback_em}
 
     prior_reviews, last_review = _load_prior_reviews_and_context(episode)
-    if last_review and last_review.get('verdict') == 'REVOKE':
+    verified_prior_revoke = next((r for r in reversed(prior_reviews) if _is_verified_revoke(r)), None)
+    if verified_prior_revoke is not None:
         with _short_writer(d):
-            _resume_revoke_action(d, episode, frozen, prior_reviews[-1])
-        return dict(action='ALREADY_REVOKED', review_id=last_review['review_id'])
+            _resume_revoke_action(d, episode, frozen, verified_prior_revoke)
+        return dict(action='ALREADY_REVOKED', review_id=verified_prior_revoke['review_id'])
     ep_index = index_path or _merge_index_points(archive_root, frozen['contract']['expiry_ms'], at)
     cc = frozen['check_clock']
     cap = min(at, frozen['contract']['expiry_ms'] - 1)
@@ -1455,7 +1472,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                     observed=req_ms, available=fin_ms)
         return dict(triggers=triggers, action='FAILED', review_id=rev_id, error=str(exc))
 
-    if result_out['verdict'] == 'REVOKE':
+    if _is_verified_revoke(rev_decision):
         try:
             with _short_writer(d):
                 _resume_revoke_action(d, episode, frozen, rev_decision)
@@ -1471,10 +1488,11 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
     episode = hand.parent.parent / 'episodes' / link_record['origin']['dossier_episode_id']
-    prior_reviews, last_review = _load_prior_reviews_and_context(episode)
-    if last_review and last_review.get('verdict') == 'REVOKE':
+    prior_reviews, _last_review = _load_prior_reviews_and_context(episode)
+    verified_prior_revoke = next((r for r in reversed(prior_reviews) if _is_verified_revoke(r)), None)
+    if verified_prior_revoke is not None:
         with _short_writer(d):
-            _resume_revoke_action(d, episode, load(episode / 'condition.json'), prior_reviews[-1])
+            _resume_revoke_action(d, episode, load(episode / 'condition.json'), verified_prior_revoke)
     terminal = optional(root / 'terminal.json')
     if terminal is not None:
         meta, _ = terminal_trajectory(hand)
@@ -2057,8 +2075,9 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
         check_clock=(frozen or {}).get('check_clock'), expiry_ms=((frozen or {}).get('contract') or {}).get('expiry_ms'))
     mech_state = cond_summary['mechanical_condition_state']
     latest_rev = reviews[0] if reviews else {}
-    protocol_status = latest_rev.get('protocol_status') or ('DISCRETIONARY_REVOKE' if (not trig_events and rev_events) else 'ALIGNED')
-    shadow_action = latest_rev.get('shadow_action') or ('REVOKE_DISCRETIONARY' if (not trig_events and rev_events) else 'HOLD_SHADOW_CONTINUE' if latest_rev.get('verdict') == 'HOLD' else 'NONE')
+    verified_rev_events = [e for e in rev_events if _is_verified_revoke(e)]
+    protocol_status = latest_rev.get('protocol_status') or ('DISCRETIONARY_REVOKE' if (not trig_events and verified_rev_events) else 'ALIGNED')
+    shadow_action = latest_rev.get('shadow_action') or ('REVOKE_DISCRETIONARY' if (not trig_events and verified_rev_events) else 'HOLD_SHADOW_CONTINUE' if latest_rev.get('verdict') == 'HOLD' else 'NONE')
 
     valid_reviews = [r for r in reviews if r.get('status') == 'VALID']
     failed_reviews = [r for r in reviews if r.get('status') == 'FAILED']
@@ -2109,7 +2128,7 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             protocol_status=protocol_status,
             shadow_action=shadow_action,
             condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
-            ai_revoked_at_ms=(rev_events[-1].get('observed_at_ms') or rev_events[-1].get('recorded_at_ms')) if rev_events else None,
+            ai_revoked_at_ms=(verified_rev_events[-1].get('observed_at_ms') or verified_rev_events[-1].get('recorded_at_ms')) if verified_rev_events else None,
             exit_status=exit_status,
             buyback_cost_btc=fill.get('cost_btc'),
             buyback_fee_btc=fill.get('fee_btc'),
@@ -2117,7 +2136,7 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             retained_long_instrument=fill.get('long_instrument') or c.get('long_instrument'),
             long_retained=True,
         )
-    elif no_quotes or rev_events:
+    elif no_quotes or verified_rev_events:
         nq = (no_quotes[-1].get('body') or {}) if no_quotes else {}
         shadow_mgmt = dict(
             mechanical_condition_state=mech_state,
@@ -2125,7 +2144,7 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             protocol_status=protocol_status,
             shadow_action=shadow_action,
             condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
-            ai_revoked_at_ms=(rev_events[-1].get('observed_at_ms') or rev_events[-1].get('recorded_at_ms')) if rev_events else None,
+            ai_revoked_at_ms=(verified_rev_events[-1].get('observed_at_ms') or verified_rev_events[-1].get('recorded_at_ms')) if verified_rev_events else None,
             exit_status='REVOKE_NO_QUOTE',
             quote_gap_reasons=nq.get('quote_gap_reasons') or ['short_buyback_quote_unavailable'],
             retained_long_instrument=nq.get('long_instrument') or c.get('long_instrument'),
