@@ -2240,10 +2240,13 @@ def parse_hold_review_response(
         allowed_ids = {str(x).strip() for x in valid_condition_ids if str(x).strip()}
     mapped_ids = [cid for cid in cleaned_affected if cid in allowed_ids]
     unmapped_ids = [cid for cid in cleaned_affected if cid not in allowed_ids]
+    discretionary_allowed = {cid for cid in allowed_ids if cid[:1].upper() in {"C", "S", "R"}}
+    discretionary_mapped_ids = [cid for cid in mapped_ids if cid in discretionary_allowed]
     mapping_status = "UNMAPPED_CONDITION_ID" if unmapped_ids else "MAPPED"
 
     mech_state = mechanical_state or ("TRIGGERED" if program_triggered else "INTACT")
     notes: list[str] = []
+    discretionary_revoke_attribution = "NOT_APPLICABLE"
     if program_triggered:
         if payload.get("program_triggered") is False or _has_untriggered_claim(public_text, public_reply):
             raise ValueError("cannot_overturn_program_triggered")
@@ -2254,8 +2257,20 @@ def parse_hold_review_response(
         else:
             protocol_status = "ALIGNED"
     elif verdict == "REVOKE":
-        protocol_status = "DISCRETIONARY_REVOKE"
-        notes.append("模型依据新增反证主动建议影子撤销，程序没有确认机械触发（DISCRETIONARY_REVOKE）。")
+        if discretionary_mapped_ids:
+            protocol_status = "DISCRETIONARY_REVOKE"
+            discretionary_revoke_attribution = "VERIFIED"
+            notes.append("模型依据新增反证主动建议影子撤销，程序没有确认机械触发（DISCRETIONARY_REVOKE）。")
+        else:
+            protocol_status = "DISCRETIONARY_REVOKE_UNVERIFIED"
+            discretionary_revoke_attribution = "UNVERIFIED"
+            if not cleaned_affected:
+                mapping_status = "EMPTY_CONDITION_IDS"
+            elif unmapped_ids:
+                mapping_status = "UNMAPPED_CONDITION_ID"
+            else:
+                mapping_status = "NON_DISCRETIONARY_BASIS_ONLY"
+            notes.append("模型主动建议 REVOKE，但 affected_conditions 未映射到当时真实冻结的持续承保依据（C#/S#/R#）；保留原答，不计入已验证影子主动撤销归因（DISCRETIONARY_REVOKE_UNVERIFIED）。")
     else:
         protocol_status = "ALIGNED"
 
@@ -2267,6 +2282,8 @@ def parse_hold_review_response(
         "affected_conditions": cleaned_affected,
         "mapped_condition_ids": mapped_ids,
         "unmapped_condition_ids": unmapped_ids,
+        "discretionary_mapped_condition_ids": discretionary_mapped_ids,
+        "discretionary_revoke_attribution": discretionary_revoke_attribution,
         "condition_id_mapping_status": mapping_status,
         "public_reply": public_reply.strip(),
         "key_facts": deepcopy(payload["key_facts"]),

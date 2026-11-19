@@ -1324,10 +1324,12 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         shadow_action = (
             'FROZEN_RULE_TRIGGERED_CONFLICT' if parsed['protocol_status'] == 'CONFLICT_WITH_FROZEN_INVALIDATION'
             else 'REVOKE_DISCRETIONARY' if parsed['protocol_status'] == 'DISCRETIONARY_REVOKE'
+            else 'REVOKE_UNVERIFIED_ATTRIBUTION' if parsed['protocol_status'] == 'DISCRETIONARY_REVOKE_UNVERIFIED'
             else 'REVOKE_ALIGNED' if parsed['verdict'] == 'REVOKE'
             else 'HOLD_SHADOW_CONTINUE' if parsed['verdict'] == 'HOLD'
             else 'HOLD_UNKNOWN_OBSERVE'
         )
+        verified_shadow_revoke = shadow_action in {'REVOKE_ALIGNED', 'REVOKE_DISCRETIONARY'}
         rev_decision = dict(
             review_id=rev_id,
             status='VALID',
@@ -1342,6 +1344,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             affected_conditions=parsed['affected_conditions'],
             mapped_condition_ids=parsed['mapped_condition_ids'],
             unmapped_condition_ids=parsed['unmapped_condition_ids'],
+            discretionary_mapped_condition_ids=parsed.get('discretionary_mapped_condition_ids', []),
+            discretionary_revoke_attribution=parsed.get('discretionary_revoke_attribution', 'NOT_APPLICABLE'),
             condition_id_mapping_status=parsed['condition_id_mapping_status'],
             public_reply=parsed['public_reply'],
             key_facts=parsed['key_facts'],
@@ -1395,7 +1399,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             trigger_categories=cats,
         )
         revoke_quote = {}
-        if parsed['verdict'] == 'REVOKE':
+        if verified_shadow_revoke:
             quote_pt = latest_pt
             if service is not None and d.clock() < frozen['contract']['expiry_ms']:
                 try:
@@ -1420,7 +1424,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                 **revoke_quote,
             })
             _record_review_event(d, episode, rev_decision)
-            done_state = review.complete_review_action(fresh_state, now_ms=fin_ms, success=True, verdict=parsed['verdict'], cooldown_ms=cooldown_ms)
+            effective_verdict = parsed['verdict'] if verified_shadow_revoke or parsed['verdict'] != 'REVOKE' else None
+            done_state = review.complete_review_action(fresh_state, now_ms=fin_ms, success=True, verdict=effective_verdict, cooldown_ms=cooldown_ms)
             dossier.write(state_path, dossier.encode(done_state), replace=True)
         result_out = dict(
             triggers=triggers, action='REVIEWED', review_id=rev_id, verdict=parsed['verdict'],
@@ -2629,6 +2634,50 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
     return report
 
 
+_SYNC_OPEN_FAILED_STATES = {'LINK_UNVERIFIED', 'LOCK_BLOCKED', 'TRACKER_EXPORT_UNAVAILABLE'}
+_SYNC_OPEN_FAILED_STATUSES = {
+    'DEAL_BLOCKED', 'NO_EVIDENCE', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED',
+    'TIMEOUT', 'REQUEST_FAILED', 'PARSE_FAILED', 'LATE', 'REPLY_WINDOW_CLOSED', 'ERROR',
+}
+
+
+def classify_sync_open_batch(rows):
+    """Classify sync-open batch outcomes into ALL_OK / DEGRADED / FAILED without hiding per-hand errors."""
+    items = [r for r in (rows or []) if isinstance(r, dict)]
+    failed = []
+    for row in items:
+        is_fail = (
+            row.get('state') in _SYNC_OPEN_FAILED_STATES
+            or row.get('status') in _SYNC_OPEN_FAILED_STATUSES
+            or row.get('action') == 'RECOVERY_PENDING'
+            or bool(row.get('error'))
+        )
+        if is_fail:
+            failed.append(dict(
+                hand_id=row.get('hand_id'),
+                dossier_id=row.get('dossier_id'),
+                phase=row.get('phase'),
+                state=row.get('state') or row.get('status') or row.get('action'),
+                reason=row.get('reason') or row.get('error'),
+            ))
+    total = len(items)
+    failed_count = len(failed)
+    ok_count = total - failed_count
+    if failed_count == 0:
+        batch_status = 'ALL_OK'
+    elif ok_count > 0:
+        batch_status = 'DEGRADED'
+    else:
+        batch_status = 'FAILED'
+    return dict(
+        batch_status=batch_status,
+        total=total,
+        ok_count=ok_count,
+        failed_count=failed_count,
+        failed_hands=failed,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', default='http://127.0.0.1:8895', help='private loopback workbench listener')
@@ -2674,16 +2723,23 @@ def main():
                 out = recover_initial(d, service)
                 for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
                     hand = request_file.parent.parent
-                    if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
-                        continue
                     try:
+                        if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
+                            continue
                         expiry = load(hand / 'expected.json')['expiry_ms']
                         if d.clock() < expiry:
                             out.append(_link_with_fresh_quote(d, hand, service))
                             with _short_writer(d):
                                 d.summary(expiry)
                     except (OSError, ValueError, KeyError, TypeError) as exc:
-                        out.append(dict(state='LINK_UNVERIFIED', hand_id=hand.name, reason=getattr(exc, 'code', type(exc).__name__)))
+                        out.append(dict(
+                            state='LINK_UNVERIFIED',
+                            hand_id=hand.name,
+                            dossier_id=hand.parent.parent.name,
+                            phase='request',
+                            error=type(exc).__name__,
+                            reason=getattr(exc, 'code', type(exc).__name__),
+                        ))
                 for link_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/link.json')):
                     hand = link_file.parent.parent
                     try:
@@ -2703,7 +2759,14 @@ def main():
                                 d.summary(load(hand / 'expected.json')['expiry_ms'])
                         except Exception:
                             pass
-                        out.append(dict(state='TRACKER_EXPORT_UNAVAILABLE', hand_id=hand.name))
+                        out.append(dict(
+                            state='TRACKER_EXPORT_UNAVAILABLE',
+                            hand_id=hand.name,
+                            dossier_id=hand.parent.parent.name,
+                            phase='sync',
+                            error=type(exc).__name__,
+                            reason=getattr(exc, 'code', type(exc).__name__),
+                        ))
             else:
                 hand = hand_path(args.root, args.dossier, args.hand)
                 out = (_link_with_fresh_quote(d, hand, service, dossier.read(args.condition) if args.condition else None)
@@ -2715,6 +2778,12 @@ def main():
         print(dossier.encode(out).decode('utf-8'), end='')
     except (OSError, ValueError, KeyError) as exc:
         parser.exit(2, f'{getattr(exc, "code", type(exc).__name__)}\n')
+    if args.command == 'sync-open' and isinstance(out, list):
+        batch = classify_sync_open_batch(out)
+        if batch['batch_status'] != 'ALL_OK':
+            import sys
+            sys.stderr.write(json.dumps(batch, ensure_ascii=False) + '\n')
+            parser.exit(2)
     if args.command == 'auto-deal' and any(row.get('status') in {
         'DEAL_BLOCKED', 'NO_EVIDENCE', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED',
         'TIMEOUT', 'REQUEST_FAILED', 'PARSE_FAILED', 'LATE', 'REPLY_WINDOW_CLOSED',

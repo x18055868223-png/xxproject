@@ -387,12 +387,13 @@ def test_frozen_real_hand_time_identity_and_counterevidence_without_chosen_side(
     path['points'].append([max(c['read_at_ms'] for c in cards)+M,61300])
     body=player.build_input(*cases,*cards,index_path=path)
     put=section(body,'put');call=section(body,'call')
-    assert '2026-11-14 04:14:00 UTC' in put and '距短腿507.7 USD' in put and '扩大259.9 USD' in put
+    assert '2026-11-14 04:14:00 UTC' in put and '距短腿507.7 USD' in put and '扩大231.7 USD' in put
     assert '2026-11-14 09:03:00 UTC' in call and '2026-11-14 12:59:00 UTC' in call
     assert '深入责任398.9 USD' in call and '深入责任2,469.7' not in call
     assert '61,300' not in body and '**本期Pin** 67,000' in body
     assert '净主动卖390.7 BTC' in body and '净主动卖1,186.1 BTC' in body
-    assert '前8小时不重叠窗口' in body and '净主动卖795.4 BTC' in body and '延续净主动卖与下行' in body
+    assert '前8小时不重叠窗口' not in body and '未作12h减4h不重叠相减' in body
+    assert '双as-of核验' in body and '合格图表末点66,739.4' in body
     assert '须明确作为当前已成立的反证' in body and '尚不能确认压力缓和或增强' not in body
     assert '69,469.7，已越过保护腿，该段进入时刻未覆盖' in call and '读取时指数在责任区外' in call
     assert '须纳入该侧最强反证审查' in body and '旧越界不单独构成Reject' in body
@@ -421,8 +422,10 @@ def test_derive_non_overlapping_spot_windows_and_boundary(hand):
         'spot_price_change_pct_4h': 1.43,
         'spot_price_change_pct_12h': 0.31,
         'micro_flow': {
-            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 767.6, 'momentum_return_pct': 1.43, 'source': 'binance', 'symbol': 'BTCUSDT'},
-            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 396.4, 'momentum_return_pct': 0.31, 'source': 'binance', 'symbol': 'BTCUSDT'},
+            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 767.6, 'momentum_return_pct': 1.43,
+                        'source': 'binance', 'symbol': 'BTCUSDT', 'end_ts_ms': CUT},
+            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 396.4, 'momentum_return_pct': 0.31,
+                         'source': 'binance', 'symbol': 'BTCUSDT', 'end_ts_ms': CUT},
         },
     })
     derived = player.derive_non_overlapping_spot_windows(player.entry(case, 'L5.volume_price'), cutoff=CUT)
@@ -432,12 +435,23 @@ def test_derive_non_overlapping_spot_windows_and_boundary(hand):
     assert derived['previous_8h']['return_pct'] == pytest.approx(expected_ret, abs=1e-4)
     assert '由卖转买' in derived['direction_transition']['summary']
 
+    # Missing completion clocks on both windows must block previous_8h derivation (D01)
+    missing_clock = copy.deepcopy(hand[0])
+    add(missing_clock, 'L5.volume_price', {
+        'micro_flow': {
+            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 767.6, 'momentum_return_pct': 1.43, 'source': 'binance', 'symbol': 'BTCUSDT'},
+            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 396.4, 'momentum_return_pct': 0.31, 'source': 'binance', 'symbol': 'BTCUSDT'},
+        },
+    })
+    no_clk = player.derive_non_overlapping_spot_windows(player.entry(missing_clock, 'L5.volume_price'), cutoff=CUT)
+    assert no_clk['comparable'] is False and 'previous_8h' not in no_clk
+
     # Source mismatch blocks previous_8h derivation rather than guessing
     mismatch = copy.deepcopy(hand[0])
     add(mismatch, 'L5.volume_price', {
         'micro_flow': {
-            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 10.0, 'momentum_return_pct': 0.5, 'source': 'binance'},
-            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 20.0, 'momentum_return_pct': 1.0, 'source': 'okx'},
+            'fast_4h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 10.0, 'momentum_return_pct': 0.5, 'source': 'binance', 'end_ts_ms': CUT},
+            'slow_12h': {'data_ready': True, 'cvd_unit': 'BTC', 'cvd_sum': 20.0, 'momentum_return_pct': 1.0, 'source': 'okx', 'end_ts_ms': CUT},
         },
     })
     bad = player.derive_non_overlapping_spot_windows(player.entry(mismatch, 'L5.volume_price'), cutoff=CUT)

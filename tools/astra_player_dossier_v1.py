@@ -320,8 +320,10 @@ def collect(archive_root, expiry, slot, *, startup=False, clock=now_ms, band_sna
         gap = 'startup_card_from_native_case' if startup else 'scheduled_card_from_native_case'
         cards.append(levels.build_card(expiry_ms=expiry, rnd=candidate_round, side=c['side'], read_at_ms=tick,
                                      walls=player.values(case, 'L3.expiry_walls'), points=cut, case=case,
-                                     contract=c, snapshots=snaps, extra_gaps=[gap]))
+                                     contract=c, snapshots=snaps, extra_gaps=[gap],
+                                     timestamp_semantics='unverified_minute_label'))
     path = dict(schema='index_path@0.1', index_name='btc_usd', expiry_ms=expiry, fetched_at_ms=received,
+                timestamp_semantics='unverified_minute_label',
                 points=[p for p in points if p[0] <= max(reads)])
     resolved_band = _resolve_band_snapshot(archive_root, min(reads), band_snapshot=band_snapshot)
     return seal_source(candidates, cards, path, history, instrument_proof, received_at_ms=received,
@@ -757,7 +759,7 @@ class Dossiers:
             raise ValueError('official price unavailable, existing verified outcome retained')
         return self.save_outcome(self.settle(expiry, price, path, supersedes=supersedes, reason=reason), source, path)
 
-    def settle_due(self):
+    def settle_due(self, *, errors=None):
         for folder in sorted((self.root / 'dossiers').glob('Deribit_BTC_*')):
             try:
                 hands = [read(p) for p in (folder / 'hands').glob('*/expected.json')]
@@ -770,6 +772,8 @@ class Dossiers:
                     yield self.summary(expiry)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 import sys
+                if isinstance(errors, list):
+                    errors.append(dict(dossier_id=folder.name, error=type(exc).__name__, detail=str(exc)))
                 sys.stderr.write(f'settle_due skipped {folder.name}: {type(exc).__name__}: {exc}\n')
                 continue
 
@@ -1047,7 +1051,17 @@ def main():
             print(json.dumps([str(p) for p in [*(d.summary(read(h / 'expected.json')['expiry_ms']) for h in hands), *graded]], ensure_ascii=False))
             return
         if args.command == 'settle-due':
-            print(json.dumps([str(p) for p in d.settle_due()], ensure_ascii=False))
+            errors = []
+            settled = [str(p) for p in d.settle_due(errors=errors)]
+            print(json.dumps(settled, ensure_ascii=False))
+            if errors:
+                import sys
+                status = 'DEGRADED' if settled else 'FAILED'
+                sys.stderr.write(json.dumps(
+                    dict(batch_status=status, settled_count=len(settled), failed_count=len(errors), errors=errors),
+                    ensure_ascii=False,
+                ) + '\n')
+                parser.exit(2)
             return
         expiry, cmd = args.expiry_ms, args.command
         folder = d.path(expiry)

@@ -22,7 +22,11 @@ except ImportError:
     import astra_anchor_relative_v1 as ard
 
 HOUR = 3_600_000
+MINUTE = 60_000
 DAY = 24 * HOUR
+_CHART_DELAY_SEMANTICS = {'minute_open', 'unverified_minute_label'}
+_CHART_DIRECT_SEMANTICS = {'instant', 'minute_close'}
+_SPOT_END_CLOCK_KEYS = ('end_ts_ms', 'complete_ts_ms', 'window_end_ms', 'end_ms')
 ARD_READING = ('\n\nARD责任判读：责任边界→入区前路径→短腿穿越与回收→ARD→量价反证→两侧择优→条件冻结。'
                '读取可得的贴近、离返、迁移事实，结合Pin相对两侧短腿的位置、当前余量与剩余期限，'
                '分别说明它支持、削弱或限制哪项承担条件；若关系延续或破坏，哪侧责任更不利。'
@@ -260,11 +264,88 @@ def stations(case, card, contract):
     return roles, sorted(set(zones), reverse=contract["side"] == "put")
 
 
-def window_points(index_path, expiry, cutoff):
+def _chart_semantics(index_path):
+    if not isinstance(index_path, Mapping):
+        return 'minute_close'
+    sem = index_path.get('timestamp_semantics')
+    if sem is not None:
+        if sem not in _CHART_DELAY_SEMANTICS and sem not in _CHART_DIRECT_SEMANTICS:
+            raise ValueError(f'unsupported timestamp_semantics: {sem}')
+        return sem
+    if index_path.get('schema') == 'index_path@0.1' or index_path.get('fetched_at_ms') is not None:
+        return 'unverified_minute_label'
+    return 'minute_close'
+
+
+def chart_points_audit(index_path, expiry, cutoff):
+    """Separate eligible chart points from unverified boundary minute buckets at cutoff."""
     if not index_path or index_path.get('expiry_ms') != expiry or index_path.get('index_name') != 'btc_usd':
-        return []
-    return sorted((t, p) for t, p in index_path.get('points', [])
-                  if number(t) is not None and number(p) is not None and p > 0 and cutoff - DAY < t <= cutoff)
+        return {
+            'semantics': None,
+            'fetched_at_ms': None,
+            'eligible': [],
+            'excluded_boundary': [],
+            'latest_eligible': None,
+        }
+    semantics = _chart_semantics(index_path)
+    delay = MINUTE if semantics in _CHART_DELAY_SEMANTICS else 0
+    eligible = []
+    excluded_boundary = []
+    for t, p in index_path.get('points', []):
+        if number(t) is None or number(p) is None or p <= 0:
+            continue
+        if not (cutoff - DAY < t <= cutoff):
+            continue
+        if t + delay <= cutoff:
+            eligible.append((t, p))
+        else:
+            excluded_boundary.append((t, p))
+    eligible.sort(key=lambda x: x[0])
+    excluded_boundary.sort(key=lambda x: x[0])
+    return {
+        'semantics': semantics,
+        'fetched_at_ms': index_path.get('fetched_at_ms') if type(index_path.get('fetched_at_ms')) is int else None,
+        'eligible': eligible,
+        'excluded_boundary': excluded_boundary,
+        'latest_eligible': eligible[-1] if eligible else None,
+    }
+
+
+def extract_l2_index_observations(cases, cards):
+    """Extract independent, clock-verified Deribit L2 orderbook index observations per side."""
+    observations = {}
+    for side, case in cases.items():
+        card = cards[side]
+        read_at = card.get('read_at_ms')
+        short_vals = values(case, 'L2.book.short')
+        long_vals = values(case, 'L2.book.long')
+        quote_vals = values(case, 'L2.quote')
+        price = number(short_vals.get('index_price'))
+        obs_ms = short_vals.get('timestamp')
+        acq_ms = quote_vals.get('received_ts_ms')
+        if (price is None or price <= 0 or type(obs_ms) is not int or type(acq_ms) is not int
+                or type(read_at) is not int):
+            continue
+        long_price = number(long_vals.get('index_price'))
+        long_ts = long_vals.get('timestamp')
+        if long_price is not None and abs(long_price - price) > 1e-6:
+            continue
+        latest_obs = max(obs_ms, long_ts) if type(long_ts) is int else obs_ms
+        if not (latest_obs <= acq_ms <= read_at):
+            continue
+        observations[side] = {
+            'side': side,
+            'price_usd': price,
+            'observed_ms': obs_ms,
+            'acquired_ms': acq_ms,
+            'read_at_ms': read_at,
+            'source': 'Deribit L2.book.short.values.index_price',
+        }
+    return observations
+
+
+def window_points(index_path, expiry, cutoff):
+    return chart_points_audit(index_path, expiry, cutoff)['eligible']
 
 
 def continuous(points, start, end):
@@ -302,7 +383,7 @@ def responsibility_trace(points, side, short):
     return {'episodes':episodes,'touches':touches}
 
 
-def short_path_text(level, points, contract, index, cutoff, scale, *, report_protection=False):
+def short_path_text(level, points, contract, index, cutoff, scale, *, report_protection=False, chart_end_ms=None):
     """Responsibility-relative entry/recovery, or a timed closest approach."""
     k = contract['short_strike_usd']
     direction = -1 if contract['side'] == 'put' else 1
@@ -335,7 +416,8 @@ def short_path_text(level, points, contract, index, cutoff, scale, *, report_pro
         if crossings==0 and closest is not None:
             summary+=f'原生卡最接近距离{fmt(closest)} USD，时刻未提供，无法比较其后余量变化。'
         return summary+now+'未附指数序列，不补写最近进入/返回时刻或完整入区深度。'
-    complete = continuous(points, cutoff - DAY, cutoff)
+    end_ms = cutoff if chart_end_ms is None else chart_end_ms
+    complete = continuous(points, cutoff - DAY, end_ms)
     inside = [(t, p) for t, p in points if direction * (p - k) > 0]
     protection = contract['long_strike_usd']
     extreme = max(inside, key=lambda x: direction * x[1], default=None) if report_protection else None
@@ -391,18 +473,24 @@ def short_path_text(level, points, contract, index, cutoff, scale, *, report_pro
     return text+now
 
 
-def path_section(case, card, contract, scale, roles, zones, index_path, *, report_protection=False):
+def path_section(case, card, contract, scale, roles, zones, index_path, *, report_protection=False, boundary_replaced=None):
     index, cutoff, side = card["index_usd"], card["read_at_ms"], contract["side"]
     rows = {r["k"]: r for r in card.get("levels") or []}
     intro = "读取前24小时的已发生路径"
     if contract["expiry_ms"] - cutoff < DAY:
         intro += "，长于剩余寿命，不是交割前预测"
     lines = [intro + "。"]
-    points = window_points(index_path, contract['expiry_ms'], cutoff)
+    audit = chart_points_audit(index_path, contract['expiry_ms'], cutoff)
+    points = audit['eligible']
+    delay = MINUTE if audit['semantics'] in _CHART_DELAY_SEMANTICS else 0
+    chart_end_ms = cutoff - delay
     if not roles:
         outside = index > contract["short_strike_usd"] if side == "put" else index < contract["short_strike_usd"]
-        lines.append("入区前没有已列主要位置，直接审查短腿；不虚构缓冲，不自动Reject。" if outside
-                     else "现价已到达或进入短腿责任，不再将现价与短腿间的位置称为入区前缓冲。")
+        if boundary_replaced and outside:
+            lines.append("合格图表末点在短腿责任外，入区前没有已列主要位置，直接审查短腿；不虚构缓冲，不自动Reject。")
+        else:
+            lines.append("入区前没有已列主要位置，直接审查短腿；不虚构缓冲，不自动Reject。" if outside
+                         else "现价已到达或进入短腿责任，不再将现价与短腿间的位置称为入区前缓冲。")
     attached = set()
     for k in sorted(roles, reverse=side == "put"):
         level = rows.get(k, {})
@@ -412,7 +500,7 @@ def path_section(case, card, contract, scale, roles, zones, index_path, *, repor
             if z[0] <= k <= z[1]:
                 attrs += f"、成交接受区{fmt(z[0])}–{fmt(z[1])}（入区前部分）"
                 attached.add(z)
-        path = ("指数序列覆盖不足，仅限原生卡已记录片段；" if points and not continuous(points, cutoff-DAY, cutoff) else '')
+        path = ("指数序列覆盖不足，仅限原生卡已记录片段；" if points and not continuous(points, cutoff-DAY, chart_end_ms) else '')
         lines.append(f"- **{fmt(k)}**：{attrs}；Call/Put OI {fmt(oi.get('c'))}/{fmt(oi.get('p'))} BTC。"
                      + path + path_text(level.get("before_24h"), index, k, cutoff, scale) + flow_text(level))
     for z in zones:
@@ -426,7 +514,7 @@ def path_section(case, card, contract, scale, roles, zones, index_path, *, repor
     lines.append(f"- **短腿{fmt(short)}**" + (f"：与{attrs}同位，仅一处，不另算一站" if attrs else '：责任起点')
                  + f"；Call/Put OI {fmt(oi.get('c'))}/{fmt(oi.get('p'))} BTC。"
                  + short_path_text(level, points, contract, index, cutoff, scale,
-                                   report_protection=report_protection) + flow_text(level))
+                                   report_protection=report_protection, chart_end_ms=chart_end_ms) + flow_text(level))
     interior = [k for k in major if min(short, long) < k < max(short, long)]
     if interior:
         k = min(interior, key=lambda k: abs(k-short))
@@ -434,8 +522,8 @@ def path_section(case, card, contract, scale, roles, zones, index_path, *, repor
         lines.append(f"- **责任区内下一处{fmt(k)}**：{role_text(major[k])}；Call/Put OI {fmt(oi.get('c'))}/{fmt(oi.get('p'))} BTC。"
                      + '从短腿向保护腿方向最近的已列主要位置，不是入区前缓冲。')
     if len(points) >= 2:
-        first = next(((t, p) for t, p in reversed(points) if t <= cutoff - 5 * 60_000), None)
-        if first and cutoff-first[0] <= 10*60_000 and cutoff-points[-1][0] <= 60_000:
+        first = next(((t, p) for t, p in reversed(points) if t <= chart_end_ms - 5 * 60_000), None)
+        if first and chart_end_ms - first[0] <= 10 * 60_000 and chart_end_ms - points[-1][0] <= 60_000:
             lines.append(f"近5分钟指数从{fmt(first[1])}到{fmt(points[-1][1])} USD；仅辅助定位，不代替上述责任路径。")
     return "\n".join(lines)
 
@@ -448,8 +536,26 @@ def _spot_dir(value, pos_label, neg_label, flat_label='持平'):
     return flat_label
 
 
+def _extract_spot_end_clock(window):
+    """Return (end_ms, error_reason) for a spot window; missing or conflicting completion clock fails."""
+    found = {}
+    for key in _SPOT_END_CLOCK_KEYS:
+        if key not in window or window[key] is None:
+            continue
+        val = window[key]
+        if type(val) is not int or val <= 0:
+            return None, f'窗口完成时钟({key})无效'
+        found[key] = val
+    if not found:
+        return None, 'missing'
+    unique = set(found.values())
+    if len(unique) > 1:
+        return None, '单窗存在互相冲突的完成时钟'
+    return next(iter(unique)), None
+
+
 def derive_non_overlapping_spot_windows(row, *, cutoff=None):
-    """Verify same-source/same-cutoff/no-gap spot windows and derive the non-overlapping [-12h, -4h] slice."""
+    """Verify same-source/same-cutoff/completed/no-gap spot windows and derive the non-overlapping [-12h, -4h] slice."""
     if not isinstance(row, Mapping):
         return {'comparable': False, 'reason': '未提供现货量价数据'}
     if cutoff is not None and not usable(row, cutoff, HOUR):
@@ -470,9 +576,12 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
                 return {'comparable': False, 'reason': f'存在缺口/降级/回填标记({flag})，未作12h减4h相减'}
 
     parsed = {}
+    end_clocks = {}
     for name, w in (('fast_4h', fast), ('slow_12h', slow)):
         if w.get('data_ready') is not True or w.get('cvd_unit') != 'BTC':
             return {'comparable': False, 'reason': f'{name}未就绪或单位非BTC，未作12h减4h相减'}
+        if w.get('bar_complete') is False:
+            return {'comparable': False, 'reason': f'{name}存在未完成柱(bar_complete=false)，未作12h减4h相减'}
         cvd = number(w.get('cvd_sum'))
         ret = number(w.get('momentum_return_pct'))
         if ret is None:
@@ -480,11 +589,28 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
         if cvd is None or ret is None:
             return {'comparable': False, 'reason': f'{name}净主动量或涨跌幅缺失，未作12h减4h相减'}
         parsed[name] = (cvd, ret)
+        end_ms, err = _extract_spot_end_clock(w)
+        if err and err != 'missing':
+            return {'comparable': False, 'reason': f'{name}{err}，未作12h减4h相减'}
+        end_clocks[name] = end_ms
+        avail = w.get('available_at_ms')
+        if cutoff is not None and type(avail) is int and avail > cutoff:
+            return {'comparable': False, 'reason': f'{name}可得时钟晚于截止，未作12h减4h相减'}
 
-    for key in ('end_ts_ms', 'complete_ts_ms', 'window_end_ms', 'end_ms'):
+    fast_end, slow_end = end_clocks['fast_4h'], end_clocks['slow_12h']
+    if fast_end is None and slow_end is None:
+        return {'comparable': False, 'reason': '两窗均缺少完成时钟，无法证明同截止，未作12h减4h相减'}
+    if fast_end is None or slow_end is None:
+        return {'comparable': False, 'reason': '单侧窗口缺少完成时钟，无法证明同截止，未作12h减4h相减'}
+    if fast_end != slow_end:
+        return {'comparable': False, 'reason': '两窗完成时钟不一致，未作12h减4h相减'}
+    if cutoff is not None and fast_end > cutoff:
+        return {'comparable': False, 'reason': '窗口完成时钟晚于截止，未作12h减4h相减'}
+
+    for key in _SPOT_END_CLOCK_KEYS:
         fv, sv = fast.get(key), slow.get(key)
-        if (fv is not None) != (sv is not None) or (fv is not None and fv != sv):
-            return {'comparable': False, 'reason': f'两窗截止时间({key})不一致或单侧缺失，未作12h减4h相减'}
+        if fv is not None and sv is not None and fv != sv:
+            return {'comparable': False, 'reason': f'两窗截止时间({key})不一致，未作12h减4h相减'}
 
     for key in ('source', 'bar_source', 'symbol', 'price_source'):
         fv, sv = fast.get(key), slow.get(key)
@@ -497,11 +623,29 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
             if cf is None or cf < 0.85:
                 return {'comparable': False, 'reason': f'{name}覆盖率不足0.85，未作12h减4h相减'}
 
+    fast_start = fast.get('window_start_ms') if type(fast.get('window_start_ms')) is int else None
+    slow_start = slow.get('window_start_ms') if type(slow.get('window_start_ms')) is int else None
+    if fast.get('window_start_ms') is not None and fast_start is None:
+        return {'comparable': False, 'reason': 'fast_4h起始时钟无效，未作12h减4h相减'}
+    if slow.get('window_start_ms') is not None and slow_start is None:
+        return {'comparable': False, 'reason': 'slow_12h起始时钟无效，未作12h减4h相减'}
+    if fast_start is not None and fast_start >= fast_end:
+        return {'comparable': False, 'reason': 'fast_4h起止时钟非法，未作12h减4h相减'}
+    if slow_start is not None and slow_start >= slow_end:
+        return {'comparable': False, 'reason': 'slow_12h起止时钟非法，未作12h减4h相减'}
+    if fast_start is not None and slow_start is not None and not (slow_start < fast_start):
+        return {'comparable': False, 'reason': '两窗起始时钟不满足嵌套关系，未作12h减4h相减'}
+
     fast_hours = 4.0
     if 'coverage_hours' in fast and fast['coverage_hours'] is not None:
         fh = number(fast['coverage_hours'])
         if fh is None or not (3.0 <= fh <= 4.5):
             return {'comparable': False, 'reason': 'fast_4h覆盖时长超出[3.0, 4.5]h，未作12h减4h相减'}
+        fast_hours = fh
+    elif fast_start is not None:
+        fh = (fast_end - fast_start) / HOUR
+        if not (3.0 <= fh <= 4.5):
+            return {'comparable': False, 'reason': 'fast_4h起止时长超出[3.0, 4.5]h，未作12h减4h相减'}
         fast_hours = fh
 
     slow_hours = 12.0
@@ -509,6 +653,11 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
         sh = number(slow['coverage_hours'])
         if sh is None or not (10.0 <= sh <= 12.5):
             return {'comparable': False, 'reason': 'slow_12h覆盖时长超出[10.0, 12.5]h，未作12h减4h相减'}
+        slow_hours = sh
+    elif slow_start is not None:
+        sh = (slow_end - slow_start) / HOUR
+        if not (10.0 <= sh <= 12.5):
+            return {'comparable': False, 'reason': 'slow_12h起止时长超出[10.0, 12.5]h，未作12h减4h相减'}
         slow_hours = sh
 
     if slow_hours - fast_hours < 4.0:
@@ -562,6 +711,7 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
 
     return {
         'comparable': True,
+        'window_end_ms': fast_end,
         'fast': {
             'hours': fast_hours,
             'cvd_sum': fast_cvd,
@@ -593,17 +743,67 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
     }
 
 
+def _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts):
+    parts = []
+    if boundary_replaced:
+        fetched = next((a['fetched_at_ms'] for a in chart_audits.values() if a.get('fetched_at_ms') is not None), None)
+        fetched_txt = f"（图表取得时钟{stamp(fetched)}）" if fetched is not None else ''
+        labels = sorted({excl[0] for excl, _ in boundary_replaced.values()})
+        elig = sorted({latest[0] for _, latest in boundary_replaced.values()})
+        parts.append(
+            f"双as-of核验：Deribit btc_usd 图表分钟标签区间语义未证实，排除边界桶"
+            f"{'、'.join(stamp(t) for t in labels)}，图表路径仅截至合格分钟标签"
+            f"{'、'.join(stamp(t) for t in elig)}{fetched_txt}；不以未完结图表桶充当读取时当前指数或断言读取时区内外。"
+        )
+    if l2_obs and boundary_replaced:
+        obs_items = []
+        for s in ('put', 'call'):
+            obs = l2_obs.get(s)
+            if not obs:
+                continue
+            price = obs['price_usd']
+            rel_parts = []
+            for side_name, c in contracts.items():
+                zone = responsibility_zone(price, c)
+                dist = abs(price - c['short_strike_usd'])
+                rel_parts.append(f"{side_name.title()}短腿{fmt(c['short_strike_usd'])}{zone}（距{fmt(dist)} USD）")
+            obs_items.append(
+                f"{s.title()}原生盘口{stamp(obs['observed_ms'])}（取得{stamp(obs['acquired_ms'])}）"
+                f"见指数{price:,.2f} USD（{'；'.join(rel_parts)}）"
+            )
+        if obs_items:
+            parts.append(
+                "Deribit原生盘口独立观测：" + "；".join(obs_items)
+                + "。盘口观测与图表分钟标签分源记录、跨源先后不可证实，不拼成单一时间线。"
+            )
+    return " ".join(parts)
+
+
 def build_input(put_case, call_case, put_card, call_card, *, events=None, index_path=None,
                 ard_history=None, ard_band_snapshot=None, include_ard=True):
     """Return player-facing Markdown. Raises HandNotDealt before rendering on known events."""
-    cases, cards = {"put": put_case, "call": call_case}, {"put": put_card, "call": call_card}
-    contracts = {s: bind(cases[s], cards[s], s) for s in cases}
+    cases, raw_cards = {"put": put_case, "call": call_case}, {"put": put_card, "call": call_card}
+    contracts = {s: bind(cases[s], raw_cards[s], s) for s in cases}
     pc, cc = contracts["put"], contracts["call"]
-    if pc["expiry_ms"] != cc["expiry_ms"] or cards['put'].get('round') != cards['call'].get('round'):
+    if pc["expiry_ms"] != cc["expiry_ms"] or raw_cards['put'].get('round') != raw_cards['call'].get('round'):
         raise ValueError("pair must share expiry and reading round")
     # Native archive freezes the two candidates serially, normally seconds apart.
-    if abs(cards['put']['read_at_ms'] - cards['call']['read_at_ms']) > 60_000:
+    if abs(raw_cards['put']['read_at_ms'] - raw_cards['call']['read_at_ms']) > 60_000:
         raise ValueError("pair readings more than one minute apart")
+    chart_audits = {s: chart_points_audit(index_path, pc['expiry_ms'], raw_cards[s]['read_at_ms']) for s in cases}
+    cards = {}
+    boundary_replaced = {}
+    for s in cases:
+        raw_card = raw_cards[s]
+        audit = chart_audits[s]
+        excluded = audit['excluded_boundary']
+        latest = audit['latest_eligible']
+        if excluded and latest is not None and any(abs(p - raw_card['index_usd']) <= 1e-6 for _, p in excluded):
+            cards[s] = dict(raw_card, index_usd=latest[1])
+            boundary_replaced[s] = (excluded[-1], latest)
+        else:
+            cards[s] = raw_card
+    l2_obs = extract_l2_index_observations(cases, raw_cards)
     advisory_events = []
     for s in cases:
         for note in check_events(cases[s], cards[s]["read_at_ms"], contracts[s]["expiry_ms"], events):
@@ -616,9 +816,17 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         card, scale = cards[s], scales[s]
         route = " → ".join(fmt(k) for k in sorted(groups[s][0], reverse=s == "put")) or "无已列主要位置"
         lo, hi = sorted((c['short_strike_usd'], c['long_strike_usd']))
-        responsibility.append(f"{s.title()}：指数{fmt(card['index_usd'])}，{responsibility_zone(card['index_usd'], c)}；卖{fmt(c['short_strike_usd'])}、买{fmt(c['long_strike_usd'])}，"
+        if s in boundary_replaced:
+            _, latest = boundary_replaced[s]
+            idx_label = f"合格图表末点{fmt(card['index_usd'])}（标签{stamp(latest[0])}）"
+        else:
+            idx_label = f"指数{fmt(card['index_usd'])}"
+        responsibility.append(f"{s.title()}：{idx_label}，{responsibility_zone(card['index_usd'], c)}；卖{fmt(c['short_strike_usd'])}、买{fmt(c['long_strike_usd'])}，"
                               f"责任区{fmt(lo)}–{fmt(hi)} USD，数量{fmt(c['quantity_btc'])} BTC。"
                               f"入区前主结构由近到远：{route}。短腿距离{distance(abs(card['index_usd']-c['short_strike_usd']), scale)}。")
+    dual_asof_note = _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts)
+    if dual_asof_note:
+        responsibility.append(dual_asof_note)
     if scales['put'] == scales['call']:
         scale_text = f"本期到期隐含波动给出的剩余预期波动尺度：{fmt(scales['put'])}" + (" USD。" if scales['put'] else "。")
     else:
@@ -636,7 +844,8 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
     av = (anchor.get('values') or {}).get('anchor') or {}
     flip = number(av.get('effective_flip_point')) if usable(anchor, cutoff, HOUR) and av.get('freshness') == 'FRESH' else None
     if flip is not None:
-        scale_text += f"翻转参考{fmt(flip)}，现价在其{side_of(put_card['index_usd'],flip)}。"
+        put_ref_label = "合格图表末点" if 'put' in boundary_replaced else "现价"
+        scale_text += f"翻转参考{fmt(flip)}，{put_ref_label}在其{side_of(cards['put']['index_usd'],flip)}。"
         for s,c in contracts.items():
             idx, short, long = cards[s]['index_usd'], c['short_strike_usd'], c['long_strike_usd']
             outside = idx > short if s == 'put' else idx < short
@@ -656,13 +865,19 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
     pin_text = pin_context(cases, cards, contracts)
     ard_text = ''
     if include_ard:
-        ard_facts = ard.analyze(ard_history, index_path, expiry_ms=pc['expiry_ms'],
-                                cutoff_ms=min(c['read_at_ms'] for c in cards.values()),
+        min_read = min(c['read_at_ms'] for c in cards.values())
+        ard_index_path = index_path
+        if isinstance(index_path, Mapping) and _chart_semantics(index_path) in _CHART_DELAY_SEMANTICS:
+            ard_pts = chart_points_audit(index_path, pc['expiry_ms'], min_read)['eligible']
+            ard_index_path = dict(index_path, points=[[t, p] for t, p in ard_pts])
+        ard_facts = ard.analyze(ard_history, ard_index_path, expiry_ms=pc['expiry_ms'],
+                                cutoff_ms=min_read,
                                 band_snapshot=ard_band_snapshot)
         current_pin = (values(put_case,'L3.expiry_walls').get('walls') or {}).get('pin')
         ard_text = '\n\n'+ard.render(ard_facts,current_pin=current_pin)
     sections = [path_section(cases[s],cards[s],contracts[s],scales[s],*groups[s],index_path,
-                             report_protection=include_ard) for s in cases]
+                             report_protection=include_ard,
+                             boundary_replaced=boundary_replaced.get(s)) for s in cases]
     spot = []
     row = entry(put_case, 'L5.volume_price')
     micro = (row.get('values') or {}).get('micro_flow') or {}

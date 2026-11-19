@@ -1,0 +1,94 @@
+{
+  "schema": "astra_production_manifest@1",
+  "captured_at_utc": "2026-11-19T06:38:00Z",
+  "host": "xx-eu",
+  "policy": {
+    "forbid_full_git_tree_overwrite": true,
+    "research_inquiry_default_disabled": true,
+    "research_inquiry_gate_env": "ASTRA_RESEARCH_INQUIRY_ENABLED=1",
+    "note": "Deploy only explicitly listed runtime files; never overwrite /opt/signal-audit-tools with the full Git tree without verifying host-specific offline path adaptations and LLM inquiry gating."
+  },
+  "baseline_revisions": {
+    "deployed_integration_commit": "ba93eef27cc3f7044267ad78118aaf4c9c7c3a62",
+    "previous_production_commit": "f3911c06c7e5829e5101397d66814f996b541786",
+    "llm_retirement_gate_commit": "46c5ea6f",
+    "p0_research_replay_commit": "223958d3",
+    "p3_candidate_commit": "f619b225"
+  },
+  "runtime_schedule": {
+    "plan_file": "deploy/player_dossier/plan.daily_r16.v2.json",
+    "plan_id": "daily_r16@2",
+    "anchor_utc": "16:00",
+    "deal_timer_utc": ["16:02", "16:07", "16:12", "16:17"],
+    "reply_grace_ms": 1800000,
+    "historical_120s_note": "120s deadline applies only to legacy 2026-11-16 receipts; current plan uses 30m reply grace."
+  },
+  "deployed_core_files": {
+    "/opt/signal-audit-tools/astra_player_tracking_v13.py": {
+      "source_rel": "tools/astra_player_tracking_v13.py",
+      "deployed_sha256_prefix": "7013cf7c7572",
+      "status": "MANAGED_RUNTIME"
+    },
+    "/opt/signal-audit-tools/astra_player_review_v1.py": {
+      "source_rel": "tools/astra_player_review_v1.py",
+      "deployed_sha256_prefix": "cb29d9b25033",
+      "status": "MANAGED_RUNTIME"
+    },
+    "/opt/signal-audit-tools/astra_player_dossier_v1.py": {
+      "source_rel": "tools/astra_player_dossier_v1.py",
+      "deployed_sha256_prefix": "b0e473e95b95",
+      "status": "MANAGED_RUNTIME"
+    },
+    "/opt/signal-audit-tools/astra_player_input_v1.py": {
+      "source_rel": "tools/astra_player_input_v1.py",
+      "deployed_sha256_prefix": "f404867d35bf",
+      "status": "MANAGED_RUNTIME"
+    },
+    "/opt/signal-audit-tools/astra_player_condition_v1.py": {
+      "source_rel": "tools/astra_player_condition_v1.py",
+      "deployed_sha256_prefix": "1d177bea8a3c",
+      "status": "MANAGED_RUNTIME"
+    },
+    "/opt/signal-audit-tools/astra_workbench_v20.py": {
+      "source_rel": "tools/astra_workbench_v20.py",
+      "deployed_sha256_prefix": "b741ee3295c4",
+      "status": "MANAGED_RUNTIME"
+    },
+    "/opt/signal-audit-tools/astra_research_archive_v1.py": {
+      "source_rel": "tools/astra_research_archive_v1.py",
+      "deployed_sha256_prefix": "69ce59fa8693",
+      "status": "MANAGED_RUNTIME_WITH_INQUIRY_GATE",
+      "requirement": "Must retain ASTRA_RESEARCH_INQUIRY_ENABLED == '1' gate on run_inquiry."
+    }
+  },
+  "host_adapted_non_runtime_files": {
+    "/opt/signal-audit-tools/astra_joint_sources.py": {
+      "deployed_sha256_prefix": "0cd8de2d5637",
+      "diff_summary": "Host offline/ path adaptation replacing .artifacts/ references (non-production research helper)."
+    },
+    "/opt/signal-audit-tools/astra_joint_v11_data.py": {
+      "deployed_sha256_prefix": "32e1440eefa5",
+      "diff_summary": "Host env-backed offline/ default paths replacing local Windows .artifacts/ paths."
+    },
+    "/opt/signal-audit-tools/astra_observation_replay_v1.py": {
+      "deployed_sha256_prefix": "cd7f0e935ead",
+      "diff_summary": "Host offline/ path adaptation replacing .artifacts/ references (offline replay helper)."
+    },
+    "/opt/signal-audit-tools/astra_underwriting_real_replay_v20.py": {
+      "deployed_sha256_prefix": "56dad430e1ee",
+      "diff_summary": "Host offline/ path adaptation replacing .artifacts/ default snapshot path."
+    }
+  },
+  "tracked_non_blocking_items": {
+    "X01": {
+      "artifact": "demo/最新交付物/spm_manual_gate_execution_fmz.py",
+      "status": "SEPARATE_SAFETY_TICKET_BEFORE_NEXT_MANUAL_FMZ_USE",
+      "summary": "Global _num validation predicate at line 229 is shadowed by display formatter _num at line 2033; fix and test packaged artifact before next manual FMZ execution."
+    },
+    "T01": {
+      "artifact": "deploy/player_dossier/plan.daily_r16.v2.json",
+      "keys": ["debounce_ms", "cooldown_ms"],
+      "summary": "Snapshot documentation values only; sync-open systemd unit does not pass plan JSON and uses Python defaults in astra_player_review_v1.py."
+    }
+  }
+}

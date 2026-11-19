@@ -79,8 +79,10 @@ def test_data_failure_retry_keeps_same_hand_and_eligibility(tmp_path):
         *src['cases'], *src['cards'],
         index_path=src['index_path'], ard_history=src['history'], ard_band_snapshot=src.get('band_snapshot'),
     )
-    archived = (ROOT / 'player_ard_closeout/generated/ai_input.md').read_text(encoding='utf-8')
-    assert actual_input.split('## 本局牌面', 1)[1].split('5. **', 1)[0] == archived.split('## 本局牌面', 1)[1].split('5. **', 1)[0]
+    # D02: unverified boundary chart bucket (14:00:00 -> 66,767.6) is excluded in favor of eligible 13:59:00 -> 66,739.4
+    assert '合格图表末点66,739.4（标签2026-11-14 13:59:00 UTC）' in actual_input
+    assert '双as-of核验' in actual_input
+    assert '指数66,767.6' not in actual_input
     assert '5. **现货量价与主动流。**' in actual_input and '不能仅因“增强未确认”淡化既成反证' in actual_input
 
 

@@ -54,14 +54,16 @@ def _num(value: Any) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
-def at(points: Sequence[Sequence[float]], ms: int) -> float | None:
-    """Last index point at or before ms."""
-    if not points or points[0][0] > ms:
+def at(points: Sequence[Sequence[float]], ms: int, *, timestamp_semantics: str = "minute_close") -> float | None:
+    """Last eligible index point at or before ms (conservatively excludes unverified boundary minute)."""
+    delay = 60_000 if timestamp_semantics in ("minute_open", "unverified_minute_label") else 0
+    limit = ms - delay
+    if not points or points[0][0] > limit:
         return None
     lo, hi = 0, len(points) - 1
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if points[mid][0] <= ms:
+        if points[mid][0] <= limit:
             lo = mid
         else:
             hi = mid - 1
@@ -188,13 +190,14 @@ def build_card(*, expiry_ms: int, rnd: str, side: str, read_at_ms: int, walls: M
                points: Sequence[Sequence[float]], case: Mapping[str, Any] | None = None,
                contract: Mapping[str, Any] | None = None, strikes: Sequence[float] | None = None,
                snapshots: Sequence[Mapping[str, Any]] = (), flow_rows: Sequence[Mapping[str, Any]] = (),
-               backfilled: bool = False, extra_gaps: Sequence[str] = ()) -> dict[str, Any]:
+               backfilled: bool = False, extra_gaps: Sequence[str] = (),
+               timestamp_semantics: str = "minute_close") -> dict[str, Any]:
     """One level card. side is put / call for a round card, structure for a late look (no hand)."""
     if rnd not in ROUNDS:
         raise ValueError(rnd)
     _check_cut(read_at_ms, points, snapshots, flow_rows)
     gaps = list(extra_gaps)
-    index = at(points, read_at_ms)
+    index = at(points, read_at_ms, timestamp_semantics=timestamp_semantics)
     move = _num(walls.get("expected_move_usd"))
     if index is None:
         gaps.append("index_at_read")

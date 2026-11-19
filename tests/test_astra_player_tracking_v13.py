@@ -310,6 +310,7 @@ def test_prewarm_has_no_writes_and_disables_only_legacy_scheduler(tmp_path):
 def test_archive_experiment_keeps_inquiry_and_gates_legacy_player(tmp_path, monkeypatch):
     monkeypatch.setenv('LLM_API_KEY', 'fixture')
     monkeypatch.setenv('ASTRA_PLAYER_ENABLED', '1')
+    monkeypatch.setenv('ASTRA_RESEARCH_INQUIRY_ENABLED', '1')
     monkeypatch.setattr(archive, '_http_json', lambda *_: {})
     seen = []
     def tick(_archive, **callbacks):

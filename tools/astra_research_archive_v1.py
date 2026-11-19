@@ -1690,7 +1690,7 @@ def _tick_main(args: argparse.Namespace, archive: Archive) -> None:
                           args.workbench + "/api/workbench/case-file/" + urllib.parse.quote(sid, safe=""), token),
                       deribit=Deribit(),
                       run_inquiry=(lambda case: inquiry.run(case, api_key=key, model=model, timeout=INQUIRY_TIMEOUT_S))
-                      if key else None,
+                      if key and os.environ.get("ASTRA_RESEARCH_INQUIRY_ENABLED") == "1" else None,
                       inbox=(Path(args.inbox), Path(args.receipts)),
                       decision_source=lambda: _workbench_decisions(Path(args.workbench_dir)),
                       run_player=(lambda case, rnd, prev: player.run(case, rnd=rnd, previous=prev, api_key=key,
