@@ -1079,6 +1079,7 @@ def _resolve_reply_prompt_version(req_payload: Mapping[str, Any]) -> str:
     p0_profile = getattr(dossier.player, "INPUT_PROFILE_P0_STRICT", "p0_strict@1")
     req_profile = req_payload.get("input_profile")
 
+    resolved_pv: str | None = None
     if raw_prompt_ver is not None:
         if not isinstance(raw_prompt_ver, str) or raw_prompt_ver not in INITIAL_SYSTEM_PROMPTS:
             report = {
@@ -1116,28 +1117,49 @@ def _resolve_reply_prompt_version(req_payload: Mapping[str, Any]) -> str:
                 parsed_reply={"request_payload": dict(req_payload)},
                 contract_validation=report,
             )
-        return raw_prompt_ver
+        resolved_pv = raw_prompt_ver
+    elif sys_msg is not None and sys_msg.strip() == INITIAL_SYSTEM_PROMPT.strip() and req_profile != p0_profile:
+        # prompt_version is omitted: only legacy @1.0 exact system-message match (not under p0_strict@1) is allowed.
+        resolved_pv = INITIAL_SYSTEM_PROMPT_VERSION
+    else:
+        report = {
+            "status": "CONTRACT_FAILED",
+            "audit_scope": "PROMPT_VERSION_GATE",
+            "layer1_deterministic": {
+                "valid": False,
+                "blocking_errors": ["missing_prompt_version"],
+                "excerpt_checks": {},
+            },
+            "layer2_semantic_risk": {},
+            "c_audit": {},
+            "canonical_confirmation": None,
+        }
+        raise ContractValidationError(
+            "missing_prompt_version",
+            parsed_reply={"request_payload": dict(req_payload)},
+            contract_validation=report,
+        )
 
-    # prompt_version is omitted: only legacy @1.0 exact system-message match (not under p0_strict@1) is allowed.
-    if sys_msg is not None and sys_msg.strip() == INITIAL_SYSTEM_PROMPT.strip() and req_profile != p0_profile:
-        return INITIAL_SYSTEM_PROMPT_VERSION
-    report = {
-        "status": "CONTRACT_FAILED",
-        "audit_scope": "PROMPT_VERSION_GATE",
-        "layer1_deterministic": {
-            "valid": False,
-            "blocking_errors": ["missing_prompt_version"],
-            "excerpt_checks": {},
-        },
-        "layer2_semantic_risk": {},
-        "c_audit": {},
-        "canonical_confirmation": None,
-    }
-    raise ContractValidationError(
-        "missing_prompt_version",
-        parsed_reply={"request_payload": dict(req_payload)},
-        contract_validation=report,
-    )
+    exp_pv = req_payload.get("expected_prompt_version")
+    if exp_pv is not None and resolved_pv != exp_pv:
+        report = {
+            "status": "CONTRACT_FAILED",
+            "audit_scope": "PROMPT_VERSION_GATE",
+            "layer1_deterministic": {
+                "valid": False,
+                "blocking_errors": ["prompt_version_mismatch"],
+                "excerpt_checks": {},
+            },
+            "layer2_semantic_risk": {},
+            "c_audit": {},
+            "canonical_confirmation": None,
+        }
+        raise ContractValidationError(
+            f"prompt_version_mismatch: expected {exp_pv!r}, got {resolved_pv!r}",
+            parsed_reply={"request_payload": dict(req_payload)},
+            contract_validation=report,
+        )
+    return resolved_pv
 
 
 def parse_initial_reply(

@@ -539,6 +539,12 @@ def test_p2_five_price_states_and_non_5m_aligned_utc_clock(tmp_path):
     "采用 entry_not_returned 规则，仅触及短腿65,500不构成进入，也不构成返回；严格高于65,500（包括保护腿67,500及外侧）才构成进入，每5分钟（300000ms）固定检查一次。",
     # 5. Explaining geometric band with negation before unilateral threshold (in single sentence)
     "短腿65,500至67,500不是机械上限，严格高于65,500即计为进入（触及/越过保护腿67,500及外侧均计入）；每5分钟检查一次，采用 entry_not_returned。",
+    # 6. Finding #5: natural negation with 不把/切勿把 + explicit 1-minute index sampling vs 5-minute clock
+    "不把保护腿67,500当作破坏上限；采用 entry_not_returned，每5分钟检查，严格高于65,500即计为进入。",
+    "切勿把65,500至67,500解释为区间限制，每5分钟检查一次，严格高于65,500即进入，采用 entry_not_returned。",
+    "按每1分钟指数采样判定进入，但检查时钟固定为每5分钟（300000ms）一次；采用 entry_not_returned，严格高于65,500即计为进入。",
+    "每1分钟采样用于触发校验，每5分钟检查一次，采用 entry_not_returned，严格高于65,500即计为进入。",
+    "逐分钟采集指数样本，固定每5分钟检查，采用 entry_not_returned，严格高于65,500即计为进入。",
 ])
 def test_c1_natural_prose_anti_false_rejection(prose):
     res = condition.validate_confirmation_prose(
@@ -554,6 +560,7 @@ def test_c1_natural_prose_anti_false_rejection(prose):
     ("采用 entry_not_returned，每60分钟固定检查一次，严格高于65,500即进入。", "clock_interval_mismatch"),
     ("采用 entry_not_returned，逐分钟判定、不设额外检查时钟，严格高于65,500即进入。", "clock_interval_mismatch"),
     ("采用 entry_not_returned，按自然5分钟整点检查，严格高于65,500即进入。", "clock_interval_mismatch"),
+    ("采用 entry_not_returned，每5分钟检查，按每1分钟固定检查判定，严格高于65,500即进入。", "clock_interval_mismatch"),
     ("采用 new_entry 规则，每5分钟检查，严格高于65,500即进入。", "invalidation_rule_mismatch"),
 ])
 def test_c1_true_mechanical_violations_still_rejected(bad_prose, expected_v):
@@ -562,6 +569,15 @@ def test_c1_true_mechanical_violations_still_rejected(bad_prose, expected_v):
     )
     assert res["valid"] is False
     assert expected_v in res["violations"], res
+
+    res_new_entry_bypass = condition.validate_confirmation_prose(
+        "采用 new_entry，每5分钟检查，严格高于65,500即进入，直到检查点仍在责任区内才触发。",
+        CALL_CONTRACT,
+        expected_invalidation="new_entry",
+        expected_interval_ms=300_000,
+    )
+    assert res_new_entry_bypass["valid"] is False
+    assert "invalidation_rule_mismatch" in res_new_entry_bypass["violations"], res_new_entry_bypass
 
 
 def test_h1_j1_natural_prose_sections_and_c1_band_advisory_not_blocking():
@@ -618,6 +634,21 @@ def test_h1_j1_natural_prose_sections_and_c1_band_advisory_not_blocking():
     assert cv["status"] == "PASSED", cv
     # C mentioning 65,500-67,500 band must stay advisory only, NEVER blocking Accept!
     assert "c1_mechanical_advisory" in cv["layer2_semantic_risk"]
+
+    # Finding #5: numbered list items inside C and separate unlabeled USD/% paragraphs remain complete excerpts.
+    c_numbered = "1. 冻结余量约 1,200 USD（1.8%），当前远离 65,500 短腿。\n2. 若入场后 SPOT_FLOW_FLIP 转净买则独立触发重审。"
+    text_numbered = (
+        "## Accept / Call\n"
+        "承担条件：\n"
+        f"{c_numbered}\n\n"
+        "余量 1,200 USD（1.8%）尚未耗尽，未越过短腿且保留缓冲。\n\n"
+        "有效破坏标准：采用 entry_not_returned，每5分钟检查，严格高于65,500即计为进入。\n"
+    )
+    chk_num = dossier.inspect_excerpt_integrity(c_numbered, text_numbered, expected_section="accepted_conditions")
+    assert chk_num["complete"] is True, chk_num
+    unlabeled_usd = "余量 1,200 USD（1.8%）尚未耗尽，未越过短腿且保留缓冲。"
+    chk_unlab = dossier.inspect_excerpt_integrity(unlabeled_usd, text_numbered, expected_section="accepted_conditions")
+    assert chk_unlab["complete"] is True, chk_unlab
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +754,7 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
     assert att_unk["status"] == "PARSE_FAILED"
     assert "unknown_prompt_version" in att_unk["error"]
 
-    # Explicit @1.0 on p0_strict@1 hand (A+P0 shadow arm) succeeds without forcing candidate M/C prose rules!
+    # Finding #3: @1.0 (and @1.1-candidate when plan expects @1.2) downgrade on p0_strict@1 dossier MUST fail closed!
     att_ap0 = d.respond(
         hand, "manual-ap0", "RECEIVED", parsed_ok["raw_bytes"], parsed_ok["annotation"],
         model="m", requested=now[0] - 5, decided=now[0], channel="MANUAL_IMPORT",
@@ -731,37 +762,66 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
         system_sha256=hashlib.sha256(review.INITIAL_SYSTEM_PROMPT.encode()).hexdigest(),
         input_profile=player.INPUT_PROFILE_P0_STRICT,
     )
-    assert att_ap0["status"] == "VALID"
+    assert att_ap0["status"] == "PARSE_FAILED"
+    assert att_ap0["error_code"] == "CONTRACT_VALIDATION_FAILED"
+    assert att_ap0["error"] == "p0_strict_forbids_legacy_v10_prompt"
 
-    # 6. H3: tracking.link rejects bad candidate prose in condition_plan BEFORE calling service('lock') -> ZERO orphaned locks!
+    # Meanwhile, stateless dual-arm shadow comparison (@1.0 on p0_strict@1 User input) remains explicitly supported:
+    req_stateless_a = review.build_initial_request_payload(
+        (hand / "evidence" / "input.md").read_text(encoding="utf-8"),
+        contract_pair=cpair,
+        model="deepseek-v4-pro",
+        prompt_version=review.INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile=player.INPUT_PROFILE_P0_STRICT,
+        requested_at_ms=now[0] - 5,
+    )
+    parsed_stateless_a = review.parse_initial_reply({"text": _build_valid_p5_reply()}, req_stateless_a)
+    assert parsed_stateless_a["decision"]["action"] == "Accept"
+
+    # 6. H3: tracking.link rejects bad condition_plan & prompt_version mismatch BEFORE calling service('lock') -> ZERO orphaned locks!
     wb2, d2, hand2, src2, cpair2, req_d2, now2, exp_ms2 = _seed_locked_candidate_episode(tmp_path / "g2", SLOT)
     now2[0] += 10
-    bad_m_reply = _build_valid_p5_reply(custom_confirmation="破坏确认口径：每60分钟检查一次，触及短腿即进入。")
-    # Bypass parse check temporarily by simulating raw with old respond so condition_plan gate is tested independently
-    bad_ann_only = {k: LEGACY_EXCERPTS[k] for k in LEGACY_EXCERPTS}
-    raw_bad = ("## Accept / Call\n" + "\n".join(LEGACY_EXCERPTS.values()) + "\n"
-               + "\n".join([LEGACY_RULE["historical_facts"], LEGACY_RULE["accepted_conditions"],
-                            "破坏确认口径：每60分钟检查一次，回到65,500及以下返回。"])).encode("utf-8")
-    # Record using @1.0 attempt, then tamper request prompt_version to test accepted/condition_plan pre-lock defense
-    att2 = d2.respond(
-        hand2, "prelock-h3", "RECEIVED", raw_bad, {**bad_ann_only, "depends_on_ard": False},
+    p2_ok = review.parse_initial_reply({"text": _build_valid_p5_reply()}, copy.deepcopy(req_d2))
+    att2_v10_blocked = d2.respond(
+        hand2, "prelock-v10-blocked", "RECEIVED", p2_ok["raw_bytes"], p2_ok["annotation"],
         model="m", requested=now2[0] - 5, decided=now2[0], channel="API_AUTO",
         request_payload={**req_d2, "prompt_version": review.INITIAL_SYSTEM_PROMPT_VERSION},
         prompt_version=review.INITIAL_SYSTEM_PROMPT_VERSION,
+        condition_plan=p2_ok["condition_plan"],
+        input_profile=player.INPUT_PROFILE_P0_STRICT,
+    )
+    assert att2_v10_blocked["status"] == "PARSE_FAILED"
+    assert att2_v10_blocked["error_code"] == "CONTRACT_VALIDATION_FAILED"
+
+    att2 = d2.respond(
+        hand2, "prelock-h3", "RECEIVED", p2_ok["raw_bytes"], p2_ok["annotation"],
+        model="deepseek-v4-pro", requested=now2[0] - 5, decided=now2[0], channel="API_AUTO",
+        request_payload=req_d2, condition_plan=p2_ok["condition_plan"],
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        system_sha256=req_d2["system_sha256"], input_profile=player.INPUT_PROFILE_P0_STRICT,
+        contract_validation=p2_ok["contract_validation"],
     )
     assert att2["status"] == "VALID"
-    # Simulate mismatched attempt vs request prompt_version -> Blocked('prompt_version_mismatch')
-    req_json_path = hand2 / "responses" / dossier.key("prelock-h3") / "request.json"
-    req_json = json.loads(req_json_path.read_text(encoding="utf-8"))
-    req_json["prompt_version"] = review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION
-    req_json_path.write_text(json.dumps(req_json), encoding="utf-8")
     lock_calls = []
 
     def spy_service(action, payload):
         lock_calls.append((action, payload))
         return {"state": "SHADOW_LOCK_CREATED"}
 
-    res_mismatch = tracking.link(d2, hand2, spy_service, {**LEGACY_RULE, "confirmation_excerpt": "破坏确认口径：每60分钟检查一次，回到65,500及以下返回。"})
+    res_bad_cp = tracking.link(
+        d2, hand2, spy_service,
+        {**p2_ok["condition_plan"], "confirmation_excerpt": "破坏确认口径：每60分钟检查一次，回到65,500及以下返回。"},
+    )
+    assert res_bad_cp["state"] == "LOCK_BLOCKED"
+    assert lock_calls == []
+
+    # Simulate tampered request.json prompt_version vs attempt.json -> Blocked('prompt_version_mismatch')
+    req_json_path = hand2 / "responses" / dossier.key("prelock-h3") / "request.json"
+    req_json = json.loads(req_json_path.read_text(encoding="utf-8"))
+    req_json["prompt_version"] = review.INITIAL_SYSTEM_PROMPT_VERSION
+    req_json_path.write_text(json.dumps(req_json), encoding="utf-8")
+
+    res_mismatch = tracking.link(d2, hand2, spy_service, p2_ok["condition_plan"])
     assert res_mismatch["state"] == "LOCK_BLOCKED"
     assert res_mismatch["reason"] == "prompt_version_mismatch"
     assert lock_calls == []
@@ -821,6 +881,105 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
     parsed_leg = review.parse_initial_reply({"text": legacy_reply_raw}, req_leg)
     assert parsed_leg["decision"]["action"] == "Accept"
     assert parsed_leg["condition_plan"]["require_outside_at_t0"] is False
+
+
+def test_finding3_6_downgrade_spoof_blocking_and_cli_response_persistence(tmp_path):
+    # Finding #3: expected_prompt_version mismatch fails closed inside review._resolve_reply_prompt_version
+    wb, d, hand, src, cpair, req_d, now, exp_ms = _seed_locked_candidate_episode(tmp_path / "f36", SLOT)
+    now[0] += 10
+    bad_exp_req = copy.deepcopy(req_d)
+    bad_exp_req["expected_prompt_version"] = review.INITIAL_SYSTEM_PROMPT_VERSION
+    with pytest.raises(review.ContractValidationError, match="prompt_version_mismatch"):
+        review.parse_initial_reply({"text": _build_valid_p5_reply()}, bad_exp_req)
+
+    # Finding #3: tracking._is_candidate_proof rejects @1.0 on p0_strict@1 and plan_prompt_version mismatch
+    with pytest.raises(tracking.Blocked, match="prompt_version_mismatch"):
+        tracking._is_candidate_proof({
+            "prompt_version": review.INITIAL_SYSTEM_PROMPT_VERSION,
+            "input_profile": player.INPUT_PROFILE_P0_STRICT,
+        })
+    with pytest.raises(tracking.Blocked, match="prompt_version_mismatch"):
+        tracking._is_candidate_proof({
+            "prompt_version": review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            "input_profile": player.INPUT_PROFILE_P0_STRICT,
+            "plan_prompt_version": review.INITIAL_SYSTEM_PROMPT_VERSION,
+        })
+
+    # Finding #3: Dossiers.episode & tracking.accepted block if selected attempt or expected plan was tampered to @1.0
+    p_ok = review.parse_initial_reply({"text": _build_valid_p5_reply()}, copy.deepcopy(req_d))
+    d.respond(
+        hand, "cand-f3", "RECEIVED", p_ok["raw_bytes"], p_ok["annotation"],
+        model="deepseek-v4-pro", requested=now[0] - 5, decided=now[0], channel="API_AUTO",
+        request_payload=req_d, condition_plan=p_ok["condition_plan"],
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        system_sha256=req_d["system_sha256"], input_profile=player.INPUT_PROFILE_P0_STRICT,
+        contract_validation=p_ok["contract_validation"],
+    )
+    att_file = hand / "responses" / dossier.key("cand-f3") / "attempt.json"
+    req_file = hand / "responses" / dossier.key("cand-f3") / "request.json"
+    orig_att = dossier.read(att_file)
+    orig_req = dossier.read(req_file)
+    tampered_att = dict(orig_att, prompt_version=review.INITIAL_SYSTEM_PROMPT_VERSION)
+    dossier.write(att_file, dossier.encode(tampered_att), replace=True)
+    with pytest.raises(tracking.Blocked, match="prompt_version_mismatch"):
+        tracking.accepted(hand)
+    valid_t0_cond = dict(
+        contract={k: cpair["call"][k] for k in condition.CONTRACT_FIELDS},
+        entry_at_ms=now[0] + 1000,
+        entry_index_usd=cpair["call"]["short_strike_usd"] - 500.0,
+        historical_facts=p_ok["condition_plan"]["historical_facts"],
+        accepted_conditions=p_ok["condition_plan"]["accepted_conditions"],
+        confirmation_excerpt=p_ok["condition_plan"]["confirmation_excerpt"],
+        invalidation="entry_not_returned",
+        invalidation_meaning=condition.RULES["entry_not_returned"],
+        check_clock={"first_at_ms": ((now[0] + 1000) // M + 1) * M, "interval_ms": 300_000},
+        sampling=condition.SAMPLING,
+        require_outside_at_t0=True,
+        mechanical_contract_version="p2_strict@1",
+    )
+    entry_src = {"index_name": "btc_usd", "expiry_ms": exp_ms, "fetched_at_ms": now[0] + 2000,
+                 "points": [[now[0] + 1000, cpair["call"]["short_strike_usd"] - 500.0]]}
+    with pytest.raises(ValueError, match="selected attempt prompt_version differs from request.json"):
+        d.episode(hand, valid_t0_cond, entry_src)
+    dossier.write(att_file, dossier.encode(orig_att), replace=True)
+    dossier.write(req_file, dossier.encode(orig_req), replace=True)
+
+    # Finding #6: CLI `response` exits 2 AND persists failed PARSE_FAILED/CONTRACT_VALIDATION_FAILED attempt
+    # Use current wall clock so CLI `main()` evaluates within AD_HOC reply deadline.
+    cli_now = dossier.now_ms() - 5_000
+    cli_exp = cli_now + 2 * HOUR
+    cli_src = _shift_source_for_r16_slot(cli_exp, cli_now - 2_000)
+    cli_root = tmp_path / "cli_persist"
+    d_cli = dossier.Dossiers(cli_root, clock=lambda: cli_now)
+    h_cli = d_cli.expect(cli_exp, "AD_HOC", reference="P5-CLI-F6")
+    d_cli.deal(h_cli, cli_src, input_profile=player.INPUT_PROFILE_P0_STRICT)
+    raw_path = tmp_path / "cli_reply.raw"
+    raw_path.write_text(_build_valid_p5_reply(), encoding="utf-8")
+    tool_path = Path(__file__).resolve().parents[1] / "tools" / "astra_player_dossier_v1.py"
+    proc = subprocess.run(
+        [
+            sys.executable, str(tool_path),
+            "--root", str(cli_root),
+            "response",
+            "--expiry-ms", str(cli_exp),
+            "--hand", h_cli.name,
+            "--attempt", "cli-downgrade-1",
+            "--status", "RECEIVED",
+            "--raw", str(raw_path),
+            "--model", "deepseek-v4-pro",
+            "--prompt-version", review.INITIAL_SYSTEM_PROMPT_VERSION,
+            "--requested-ms", str(cli_now),
+            "--decided-ms", str(cli_now),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 2
+    saved_att_path = h_cli / "responses" / dossier.key("cli-downgrade-1") / "attempt.json"
+    assert saved_att_path.is_file(), f"CLI response failed to persist audit attempt: {proc.stderr}"
+    saved_att = dossier.read(saved_att_path)
+    assert saved_att["status"] == "PARSE_FAILED"
+    assert saved_att["error_code"] == "CONTRACT_VALIDATION_FAILED"
+    assert saved_att["prompt_version"] == review.INITIAL_SYSTEM_PROMPT_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -1006,3 +1165,631 @@ def test_hold_review_cm_separation_and_new_qualified_data_present(tmp_path):
     assert res_hold2["action"] == "REVIEWED"
     assert res_hold2["new_qualified_data_present"] is True
     assert "`new_qualified_data_present`）：`True`" in captured_inputs[-1]
+
+
+def test_hold_review_unverified_revoke_and_no_retry_on_120s_timeout(tmp_path):
+    # Finding #4: (a) retries=0 even when timeout_s=120 in both initial auto_deal & hold review;
+    # (b) DISCRETIONARY_REVOKE_UNVERIFIED never fires SIMULATED_ORDER / SHADOW_ACTION on initial review or sync recovery.
+    wb, d, hand, src, cpair, req_d, now, exp_ms = _seed_locked_candidate_episode(tmp_path / "f4", SLOT)
+    now[0] += 10
+
+    plan_cfg = {
+        **base_plan(),
+        "plan_id": "daily_r2@p5test",
+        "prompt_version": review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        "input_profile": player.INPUT_PROFILE_P0_STRICT,
+        "mechanical_contract_version": condition.MECHANICAL_CONTRACT_VERSION,
+        "effective_at_ms": SLOT,
+    }
+    auto_exp_ms = SLOT + plan_cfg["expiry_offset_ms"]
+    d_auto = dossier.Dossiers(tmp_path / "f4_auto", clock=lambda: SLOT + M)
+    h_auto = d_auto.expect(auto_exp_ms, "SCHEDULED", plan=plan_cfg, slot=SLOT)
+    d_auto.deal(h_auto, _shift_source_for_r16_slot(auto_exp_ms, SLOT + M), input_profile=player.INPUT_PROFILE_P0_STRICT)
+    init_calls = []
+
+    def spy_init_llm(messages, **kwargs):
+        init_calls.append(dict(kwargs))
+        return {"text": _build_valid_p5_reply(action_header="## Reject"), "model": "deepseek-v4-pro"}
+
+    with patch.object(tracking.review, "call_chat_llm", side_effect=spy_init_llm):
+        res_auto = tracking.auto_deal(
+            d_auto, plan_cfg, tmp_path / "arch_unused", lambda *_: {},
+            llm_config={"api_key": "k", "model": "deepseek-v4-pro", "timeout_s": 120},
+        )
+    assert len(res_auto) == 1
+    assert res_auto[0]["status"] == "VALID"
+    assert len(init_calls) == 1
+    assert init_calls[0]["retries"] == 0
+
+    p_ok = review.parse_initial_reply(
+        {"text": _build_valid_p5_reply(side="call", short_strike=98_000, long_strike=96_000, call_short_strike=102_000, call_long_strike=104_000)},
+        copy.deepcopy(req_d),
+    )
+    d.respond(
+        hand, "hold-f4", "RECEIVED", p_ok["raw_bytes"], p_ok["annotation"],
+        model="deepseek-v4-pro", requested=now[0] - 5, decided=now[0], channel="API_AUTO",
+        request_payload=req_d, condition_plan=p_ok["condition_plan"],
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        system_sha256=req_d["system_sha256"], input_profile=player.INPUT_PROFILE_P0_STRICT,
+        contract_validation=p_ok["contract_validation"],
+    )
+    with serving(wb) as base:
+        link_res = tracking.link(d, hand, wb_post(base, wb), p_ok["condition_plan"])
+        assert link_res["state"] == "SHADOW_LOCK_CREATED"
+        ep = next((hand.parent.parent / "episodes").glob("episode_*"))
+        frozen = json.loads((ep / "condition.json").read_text(encoding="utf-8"))
+        entry_at = frozen["entry_at_ms"]
+        now[0] = entry_at + M
+
+        t0_pt = _make_series_point(side="call", short_strike=103_000.0, long_strike=105_000.0, asof_ms=entry_at - 1_000, flow_asof_ms=entry_at - 5_000)
+        t0_row = locked_compare.point_metrics(t0_pt, t0_pt)
+        pt_post = _make_series_point(side="call", short_strike=103_000.0, long_strike=105_000.0, asof_ms=now[0] - 1_000, spot=100_400.0, flow_asof_ms=now[0] - 1_000)
+        m_post = locked_compare.point_metrics(pt_post, t0_pt)
+        exported_post = {"latest_point": pt_post, "points": [t0_row, m_post], "t0": {"metrics": dict(t0_row)}}
+        hold_calls = []
+
+        def spy_unverified_revoke_llm(messages, **kwargs):
+            hold_calls.append(dict(kwargs))
+            return {
+                "text": "REVOKE\n因未映射条件 C999 异常，建议撤销。\n<HOLD_REVIEW_JSON>"
+                        + json.dumps({
+                            "verdict": "REVOKE",
+                            "affected_conditions": ["C999_UNMAPPED"],
+                            "public_reply": "建议撤销但未映射到具体冻结条款。",
+                            "key_facts": ["未映射条目 C999"],
+                        }, ensure_ascii=False)
+                        + "</HOLD_REVIEW_JSON>",
+                "model": "deepseek-v4-pro",
+            }
+
+        def dynamic_idx(*_a, **_kw):
+            return {
+                "schema": "index_path@0.1", "index_name": "btc_usd", "expiry_ms": exp_ms,
+                "timestamp_semantics": "unverified_minute_label",
+                "points": [[now[0] - M, 100_100.0]],
+            }
+
+        d_eval = dossier.Dossiers(wb.config.shadow_dossier_root, clock=lambda: now[0])
+        with patch.object(review, "detect_hold_triggers", return_value=[{"category": "D", "code": "SPOT_FLOW_FLIP", "summary_cn": "D测试", "observed_at_ms": now[0]}]), \
+             patch.object(tracking, "_merge_index_points", side_effect=dynamic_idx), \
+             patch.object(tracking.review, "call_chat_llm", side_effect=spy_unverified_revoke_llm):
+            r_q = tracking.evaluate_hold_management(
+                d_eval, hand, exported_post, archive_root=tmp_path / "f4", index_path=None,
+                llm_config={"api_key": "k", "model": "deepseek-v4-pro", "timeout_s": 120},
+                debounce_ms=0, cooldown_ms=0,
+            )
+            assert r_q["action"] == "QUEUED"
+            now[0] += review.DEFAULT_DEBOUNCE_MS + 60_000
+            r_rev = tracking.evaluate_hold_management(
+                d_eval, hand, exported_post, archive_root=tmp_path / "f4", index_path=None,
+                llm_config={"api_key": "k", "model": "deepseek-v4-pro", "timeout_s": 120},
+                debounce_ms=0, cooldown_ms=0,
+            )
+
+        assert len(hold_calls) == 1
+        assert hold_calls[0]["retries"] == 0
+        assert r_rev["action"] == "REVIEWED"
+        assert r_rev["protocol_status"] == "DISCRETIONARY_REVOKE_UNVERIFIED"
+        assert r_rev["shadow_action"] == "REVOKE_UNVERIFIED_ATTRIBUTION"
+        events = [dossier.read(p) for p in (ep / "events").glob("*.json")]
+        assert not any(e["kind"] in {"SIMULATED_ORDER", "SHADOW_ACTION"} for e in events), events
+
+        # Recovery/sync path must likewise NEVER execute an unverified prior REVOKE decision.
+        tracking.sync(d_eval, hand, wb_post(base, wb), check_due=False, run_review=False)
+        events_after = [dossier.read(p) for p in (ep / "events").glob("*.json")]
+        assert not any(e["kind"] in {"SIMULATED_ORDER", "SHADOW_ACTION"} for e in events_after), events_after
+
+
+# ---------------------------------------------------------------------------
+# 6. Step 1 Source Readiness Gate, Prewarm & Promotion/Rollback Verification
+# ---------------------------------------------------------------------------
+
+def _make_ready_workbench_view(*, now_ms: int) -> dict:
+    def _item(side: str, snap_id: str) -> dict:
+        return {
+            "side": side,
+            "status": "snapshot",
+            "snapshot": {"snapshot_id": snap_id, "candidate_id": f"cand_{side}", "contract": {"side": side}},
+            "formal_evidence_eligible": True,
+            "live_lock_eligible": True,
+            "discovery_status": {
+                "capture_state": "COMPLETE",
+                "side_complete": True,
+                "upstream_code": None,
+                "delta_population": {"complete": True, "expected": 10, "observed": 10},
+            },
+        }
+
+    return {
+        "updated_at_ms": now_ms,
+        "discovery_status": {
+            "capture_state": "COMPLETE",
+            "upstream_code": None,
+            "observed_at_ms": now_ms,
+        },
+        "data_health": {
+            "products": {
+                "deribit.btc.discovery.current.v1": {
+                    "status": "OK",
+                    "capture_state": "COMPLETE",
+                }
+            }
+        },
+        "candidates": [_item("put", "snap_put_1"), _item("call", "snap_call_1")],
+    }
+
+
+def _make_ready_source(now_ms: int) -> dict:
+    src = copy.deepcopy(base_source(Clock(now_ms)))
+    for case, card in zip(src["cases"], src["cards"]):
+        read_at = card["read_at_ms"]
+        _set_case_layer(case, "L2.book.short", {"index_price": 100_000.0, "timestamp": read_at - 2_000}, asof_ms=read_at - 2_000)
+        _set_case_layer(case, "L2.book.long", {"index_price": 100_002.0, "timestamp": read_at - 1_000}, asof_ms=read_at - 1_000)
+        _set_case_layer(
+            case,
+            "L2.quote",
+            {
+                "kind": "sequential_leg_book_estimate",
+                "credit_btc": 0.0045,
+                "valuation_ts_ms": read_at - 500,
+                "received_ts_ms": read_at - 500,
+                "exchange_times_ms": {"short": read_at - 1_500, "long": read_at - 700},
+                "leg_received_ts_ms": {"short": read_at - 1_200, "long": read_at - 500},
+                "executable_or_filled": False,
+                "gap_reasons": [],
+            },
+            asof_ms=read_at - 500,
+        )
+    min_read = min(c["read_at_ms"] for c in src["cards"])
+    exp_ms = src["cards"][0]["expiry_ms"]
+    bs_at = min_read - 4 * HOUR - 5 * M
+    src["band_snapshot"] = {
+        "snapshot_exported_ms": bs_at,
+        "source_available_at_ms": bs_at,
+        "factor_snapshot": {
+            "anchor": {
+                "band_half": 1200.0,
+                "ready": True,
+                "band_clamped": False,
+                "freshness": "FRESH",
+                "gex_source_ts_ms": bs_at - M,
+            }
+        },
+    }
+    src["history"] = [
+        {
+            "schema": "structure_snapshot@0.1",
+            "at_ms": min_read - offset_m * M,
+            "available_at_ms": min_read - offset_m * M + 2_000,
+            "expiry_ms": exp_ms,
+            "compat_backfill_applied": False,
+            "pin_source": "deribit_public/get_book_summary_by_currency",
+            "profile": {"walls": {"pin": 66_000.0}},
+        }
+        for offset_m in (180, 150, 120, 90, 60, 30, 10)
+    ]
+    return src
+
+
+def test_evaluate_source_readiness_source_ready_and_upstream_blocked():
+    # 1. Missing or non-dict inputs -> UPSTREAM_BLOCKED(missing_input)
+    res_none = tracking.evaluate_source_readiness()
+    assert res_none["status"] == "UPSTREAM_BLOCKED"
+    assert res_none["reasons"] == ["missing_input"]
+    assert res_none["checks"]["accept_lock_ready"] is False
+
+    res_nondict = tracking.evaluate_source_readiness(source="bad", workbench_view=["bad"])
+    assert res_nondict["status"] == "UPSTREAM_BLOCKED"
+    assert res_nondict["reasons"] == ["missing_input"]
+
+    # 2. Healthy workbench_view -> SOURCE_READY & accept_lock_ready=True
+    now_ms = SLOT + 5 * M
+    wb_ok = _make_ready_workbench_view(now_ms=now_ms)
+    res_wb_ok = tracking.evaluate_source_readiness(workbench_view=wb_ok)
+    assert res_wb_ok["status"] == "SOURCE_READY"
+    assert res_wb_ok["reasons"] == []
+    assert res_wb_ok["checks"]["live_lock_eligible_by_side"] == {"put": True, "call": True}
+    assert res_wb_ok["checks"]["accept_lock_ready"] is True
+
+    # live_lock_eligible=False does NOT block initial SOURCE_READY, but accept_lock_ready becomes False
+    wb_no_lock = copy.deepcopy(wb_ok)
+    wb_no_lock["candidates"][1]["live_lock_eligible"] = False
+    res_wb_nolock = tracking.evaluate_source_readiness(workbench_view=wb_no_lock)
+    assert res_wb_nolock["status"] == "SOURCE_READY"
+    assert res_wb_nolock["checks"]["live_lock_eligible_by_side"] == {"put": True, "call": False}
+    assert res_wb_nolock["checks"]["accept_lock_ready"] is False
+
+    # 3. Workbench UPSTREAM_BLOCKED variants (PARTIAL / rate limit / held / historical / last_valid / delta incomplete)
+    wb_partial = copy.deepcopy(wb_ok)
+    wb_partial["discovery_status"]["capture_state"] = "PARTIAL"
+    r_part = tracking.evaluate_source_readiness(workbench_view=wb_partial)
+    assert r_part["status"] == "UPSTREAM_BLOCKED"
+    assert "discovery_capture_not_complete:PARTIAL" in r_part["reasons"]
+
+    wb_rate = copy.deepcopy(wb_ok)
+    wb_rate["discovery_status"]["upstream_code"] = "deribit_rate_limited"
+    r_rate = tracking.evaluate_source_readiness(workbench_view=wb_rate)
+    assert r_rate["status"] == "UPSTREAM_BLOCKED"
+    assert "upstream_code:deribit_rate_limited" in r_rate["reasons"]
+
+    wb_dh_bad = copy.deepcopy(wb_ok)
+    wb_dh_bad["data_health"]["products"]["deribit.btc.discovery.current.v1"]["capture_state"] = "PARTIAL"
+    assert tracking.evaluate_source_readiness(workbench_view=wb_dh_bad)["status"] == "UPSTREAM_BLOCKED"
+
+    wb_held = copy.deepcopy(wb_ok)
+    wb_held["candidates"][0]["held_capture"] = {"age_ms": 5000}
+    r_held = tracking.evaluate_source_readiness(workbench_view=wb_held)
+    assert r_held["status"] == "UPSTREAM_BLOCKED"
+    assert "candidate_put_held_capture" in r_held["reasons"]
+
+    wb_hist = copy.deepcopy(wb_ok)
+    wb_hist["candidates"][1]["is_historical_summary"] = True
+    assert tracking.evaluate_source_readiness(workbench_view=wb_hist)["status"] == "UPSTREAM_BLOCKED"
+
+    wb_lvc = copy.deepcopy(wb_ok)
+    wb_lvc["candidates"][0].update({
+        "status": "error",
+        "snapshot": None,
+        "formal_evidence_eligible": False,
+        "live_lock_eligible": False,
+        "last_valid_candidate": {
+            "side": "put",
+            "is_historical_summary": True,
+            "formal_evidence_eligible": False,
+        },
+    })
+    r_lvc = tracking.evaluate_source_readiness(workbench_view=wb_lvc)
+    assert r_lvc["status"] == "UPSTREAM_BLOCKED"
+    assert "candidate_put_last_valid_candidate_summary" in r_lvc["reasons"]
+
+    wb_delta_inc = copy.deepcopy(wb_ok)
+    wb_delta_inc["candidates"][1]["discovery_status"]["delta_population"]["complete"] = False
+    r_delta = tracking.evaluate_source_readiness(workbench_view=wb_delta_inc)
+    assert r_delta["status"] == "UPSTREAM_BLOCKED"
+    assert "candidate_call_delta_population_incomplete" in r_delta["reasons"]
+
+    wb_one_side = copy.deepcopy(wb_ok)
+    wb_one_side["candidates"] = [wb_one_side["candidates"][0]]
+    r_one = tracking.evaluate_source_readiness(workbench_view=wb_one_side)
+    assert r_one["status"] == "UPSTREAM_BLOCKED"
+    assert "candidate_missing:call" in r_one["reasons"]
+
+    # 4. Valid source bundle + combined view/source check -> SOURCE_READY
+    src_ok = _make_ready_source(now_ms)
+    src_ok_now = max(src_ok["received_at_ms"], src_ok["cards"][1]["read_at_ms"]) + 1_000
+    res_src_ok = tracking.evaluate_source_readiness(src_ok, now_ms=src_ok_now)
+    assert res_src_ok["status"] == "SOURCE_READY", res_src_ok
+    assert res_src_ok["reasons"] == []
+    assert res_src_ok["checks"]["source_instruments_proven"] == 4
+    assert res_src_ok["checks"]["source_has_band_snapshot"] is True
+    assert res_src_ok["checks"]["source_index_points_count"] > 0
+
+    wb_both = _make_ready_workbench_view(now_ms=src_ok_now)
+    res_both = tracking.evaluate_source_readiness(src_ok, workbench_view=wb_both, now_ms=src_ok_now)
+    assert res_both["status"] == "SOURCE_READY"
+    assert res_both["checks"]["accept_lock_ready"] is True
+
+    # 5. Source UPSTREAM_BLOCKED variants
+    src_missing_side = copy.deepcopy(src_ok)
+    src_missing_side["cards"] = [src_missing_side["cards"][0]]
+    assert tracking.evaluate_source_readiness(src_missing_side)["status"] == "UPSTREAM_BLOCKED"
+
+    src_backfilled = copy.deepcopy(src_ok)
+    src_backfilled["cards"][0]["backfilled"] = True
+    assert tracking.evaluate_source_readiness(src_backfilled)["status"] == "UPSTREAM_BLOCKED"
+
+    src_gaps = copy.deepcopy(src_ok)
+    src_gaps["cards"][1]["data_gaps"] = ["startup_card_from_native_case"]
+    assert tracking.evaluate_source_readiness(src_gaps)["status"] == "UPSTREAM_BLOCKED"
+
+    src_no_l2 = copy.deepcopy(src_ok)
+    _set_case_layer(src_no_l2["cases"][1], "L2.book.long", {}, asof_ms=src_no_l2["cards"][1]["read_at_ms"] - 1_000)
+    assert tracking.evaluate_source_readiness(src_no_l2)["status"] == "UPSTREAM_BLOCKED"
+
+    src_future_read = copy.deepcopy(src_ok)
+    res_fut = tracking.evaluate_source_readiness(src_future_read, now_ms=src_future_read["cards"][0]["read_at_ms"] - 1)
+    assert res_fut["status"] == "UPSTREAM_BLOCKED"
+
+    src_no_band = copy.deepcopy(src_ok)
+    src_no_band["band_snapshot"] = None
+    assert tracking.evaluate_source_readiness(src_no_band)["status"] == "UPSTREAM_BLOCKED"
+
+    src_inactive_inst = copy.deepcopy(src_ok)
+    src_inactive_inst["instruments"][0]["is_active"] = False
+    assert tracking.evaluate_source_readiness(src_inactive_inst)["status"] == "UPSTREAM_BLOCKED"
+
+    # Finding #2 tightened fail-closed gates:
+    # (a) Stale workbench_view & stale discovery observed_at_ms
+    wb_stale = _make_ready_workbench_view(now_ms=now_ms - 180_000)
+    r_stale = tracking.evaluate_source_readiness(workbench_view=wb_stale, now_ms=now_ms)
+    assert r_stale["status"] == "UPSTREAM_BLOCKED"
+    assert "workbench_view_stale" in r_stale["reasons"]
+    assert "discovery_observed_stale" in r_stale["reasons"]
+
+    # (b) Omitted per-side discovery_status
+    wb_no_side_disc = copy.deepcopy(wb_ok)
+    del wb_no_side_disc["candidates"][1]["discovery_status"]
+    r_no_side_disc = tracking.evaluate_source_readiness(workbench_view=wb_no_side_disc)
+    assert r_no_side_disc["status"] == "UPSTREAM_BLOCKED"
+    assert "candidate_call_discovery_status_missing" in r_no_side_disc["reasons"]
+
+    # (c) Toy / non-freezable band_snapshot
+    src_toy_band = copy.deepcopy(src_ok)
+    src_toy_band["band_snapshot"] = {"schema": "band_snapshot@0.1", "half_width_usd": 1200.0, "at_ms": src_ok["cards"][0]["read_at_ms"] - 60_000}
+    r_toy_band = tracking.evaluate_source_readiness(src_toy_band)
+    assert r_toy_band["status"] == "UPSTREAM_BLOCKED"
+    assert "source_band_snapshot_unfreezable" in r_toy_band["reasons"]
+
+    # (d) Missing / invalid-clock L2.quote
+    src_bad_quote = copy.deepcopy(src_ok)
+    _set_case_layer(src_bad_quote["cases"][0], "L2.quote", {"credit_btc": 0.0045}, asof_ms=src_bad_quote["cards"][0]["read_at_ms"] - 500)
+    r_bad_quote = tracking.evaluate_source_readiness(src_bad_quote)
+    assert r_bad_quote["status"] == "UPSTREAM_BLOCKED"
+    assert "source_case_put_invalid_l2_quote_clocks" in r_bad_quote["reasons"]
+
+    # (e) Backfilled-only history rows (no native clocked observations)
+    src_backfill_hist = copy.deepcopy(src_ok)
+    for hr in src_backfill_hist["history"]:
+        hr["compat_backfill_applied"] = True
+    r_bf_hist = tracking.evaluate_source_readiness(src_backfill_hist)
+    assert r_bf_hist["status"] == "UPSTREAM_BLOCKED"
+    assert "source_history_no_native_clocked_rows" in r_bf_hist["reasons"]
+
+    # (f) Cross-view source vs workbench_view contract expiry mismatch
+    wb_bad_exp = copy.deepcopy(wb_both)
+    wb_bad_exp["candidates"][0]["snapshot"]["contract"]["expiry_ms"] = src_ok["cards"][0]["expiry_ms"] + DAY
+    r_mismatch = tracking.evaluate_source_readiness(src_ok, workbench_view=wb_bad_exp, now_ms=src_ok["cards"][1]["read_at_ms"] + 1_000)
+    assert r_mismatch["status"] == "UPSTREAM_BLOCKED"
+    assert "source_workbench_expiry_mismatch" in r_mismatch["reasons"]
+
+
+def _shift_source_for_r16_slot(expiry_ms: int, read_ms: int) -> dict:
+    src = copy.deepcopy(base_source(Clock(read_ms)))
+    orig_call_read = max(c["read_at_ms"] for c in src["cards"])
+    dt = read_ms - orig_call_read
+
+    for case in src["cases"]:
+        case["build"]["built_at_ms"] += dt
+        for rows_list in (case.get("layers") or {}).values():
+            for row in rows_list:
+                if isinstance(row.get("asof_ms"), int):
+                    row["asof_ms"] += dt
+                vals = row.get("values") or {}
+                if "expiry_ms" in vals:
+                    vals["expiry_ms"] = expiry_ms
+                if isinstance(vals.get("from_ms"), int):
+                    vals["from_ms"] += dt
+                if isinstance(vals.get("received_ts_ms"), int):
+                    vals["received_ts_ms"] += dt
+                if isinstance(vals.get("valuation_ts_ms"), int):
+                    vals["valuation_ts_ms"] += dt
+                for key_map in ("exchange_times_ms", "leg_received_ts_ms"):
+                    if isinstance(vals.get(key_map), dict):
+                        for k, v in list(vals[key_map].items()):
+                            if isinstance(v, int):
+                                vals[key_map][k] = v + dt
+                for item in vals.get("reference_pool") or ():
+                    if isinstance(item, dict) and isinstance(item.get("observation_end_ms"), int):
+                        item["observation_end_ms"] += dt
+
+    exp_day = dossier.utc(expiry_ms).date().isoformat()
+    for card in src["cards"]:
+        card["expiry_ms"] = expiry_ms
+        card["expiry_day"] = exp_day
+        card["read_at_ms"] += dt
+        for lv in card.get("levels") or ():
+            for w in ("before_6h", "before_24h"):
+                seg = lv.get(w)
+                if isinstance(seg, dict) and isinstance(seg.get("first_cross_ms"), int):
+                    seg["first_cross_ms"] += dt
+
+    src["index_path"]["expiry_ms"] = expiry_ms
+    src["index_path"]["points"] = [[t + dt, p] for t, p in src["index_path"]["points"]]
+    for row in src["history"]:
+        row["expiry_ms"] = expiry_ms
+        if isinstance(row.get("at_ms"), int):
+            row["at_ms"] += dt
+        if isinstance(row.get("available_at_ms"), int):
+            row["available_at_ms"] += dt
+    for inst in src["instruments"]:
+        inst["expiration_timestamp"] = expiry_ms
+    src["received_at_ms"] = read_ms
+    return src
+
+
+def test_p5_plan_promotion_cutover_and_formal_a_rollback(tmp_path, monkeypatch):
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+    v2_plan = json.loads((deploy_dir / "plan.daily_r16.v2.json").read_text(encoding="utf-8"))
+    v3_plan = json.loads((deploy_dir / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"))
+    manifest = json.loads((deploy_dir / "production_manifest.json").read_text(encoding="utf-8"))
+
+    assert v2_plan["plan_id"] == "daily_r16@2"
+    assert v2_plan["research"] == dossier.RESEARCH
+    assert v3_plan["plan_id"] == "daily_r16@3"
+    assert v3_plan["supersedes"] == "daily_r16@2"
+    assert v3_plan["research"] == dossier.RESEARCH
+    assert v3_plan["prompt_version"] == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION
+    assert v3_plan["input_profile"] == player.INPUT_PROFILE_P0_STRICT
+    assert v3_plan["mechanical_contract_version"] == condition.MECHANICAL_CONTRACT_VERSION
+    assert v3_plan["execution_allowed"] is False
+
+    expected_p5_rel = {
+        "tools/astra_player_tracking_v13.py",
+        "tools/astra_player_review_v1.py",
+        "tools/astra_player_dossier_v1.py",
+        "tools/astra_player_input_v1.py",
+        "tools/astra_player_condition_v1.py",
+        "tools/astra_anchor_relative_v1.py",
+    }
+    assert set(manifest["p5_release_candidate"]["p5_owned_runtime_files"]) == expected_p5_rel
+    core_rels = {v["source_rel"] for v in manifest["deployed_core_files"].values()}
+    assert expected_p5_rel <= core_rels
+    assert manifest["deployed_core_files"]["/opt/signal-audit-tools/astra_anchor_relative_v1.py"]["deployed_sha256_prefix"] == "f4e7ffb137b2"
+
+    arch_dir = tmp_path / "archive"
+    for d_name in ("cases", "levels", "structure", "band_snapshots"):
+        (arch_dir / d_name).mkdir(parents=True, exist_ok=True)
+
+    slot_day1 = v3_plan["effective_at_ms"]  # 2026-11-23T16:00:00Z
+    slot_day0 = slot_day1 - DAY             # 2026-11-22T16:00:00Z
+    slot_day2 = slot_day1 + DAY             # 2026-11-24T16:00:00Z
+    exp_day0 = slot_day0 + v2_plan["expiry_offset_ms"]
+    exp_day1 = slot_day1 + v3_plan["expiry_offset_ms"]
+    exp_day2 = slot_day2 + v2_plan["expiry_offset_ms"]
+
+    warm_v3 = tracking.prewarm(
+        v3_plan, arch_dir, lambda *_: {"enabled": True},
+        clock=lambda: slot_day1 - 5 * M, public=lambda *a, **k: [],
+    )
+    assert warm_v3["state"] == "PREWARM"
+    assert warm_v3["prompt_version"] == "player_initial_system@1.2-p5-candidate"
+    assert warm_v3["input_profile"] == "p0_strict@1"
+    assert warm_v3["mechanical_contract_version"] == "p2_strict@1"
+
+    warm_v2 = tracking.prewarm(
+        v2_plan, arch_dir, lambda *_: {"enabled": True},
+        clock=lambda: slot_day2 - 5 * M, public=lambda *a, **k: [],
+    )
+    assert warm_v2["prompt_version"] == "player_initial_system@1.0"
+    assert warm_v2["input_profile"] == "legacy_v1"
+    assert warm_v2["mechanical_contract_version"] is None
+
+    with pytest.raises(ValueError, match="unsupported plan prompt_version"):
+        tracking.prewarm(dict(v3_plan, prompt_version="player_initial_system@9.9"), arch_dir, lambda *_: {}, dry_run=True)
+
+    clock = Clock(slot_day0 + 2 * M)
+    d = dossier.Dossiers(tmp_path / "dossiers", clock)
+    monkeypatch.setattr(
+        dossier,
+        "collect",
+        lambda _arch, expiry, slot, **_kw: _shift_source_for_r16_slot(expiry, clock()),
+    )
+
+    seen_prompts = []
+    legacy_reject_text = (
+        "Reject\n"
+        + "\n".join(LEGACY_EXCERPTS.values())
+        + "\n<ANNOTATION_JSON>"
+        + json.dumps({**LEGACY_EXCERPTS, "depends_on_ard": False}, ensure_ascii=False)
+        + "</ANNOTATION_JSON>"
+    )
+    p5_reject_text = _build_valid_p5_reply(action_header="## Reject")
+
+    def transport(api_key, model, body, timeout, endpoint=None):
+        sys_msg = body["messages"][0]["content"]
+        seen_prompts.append(sys_msg)
+        reply_txt = p5_reject_text if sys_msg == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT else legacy_reject_text
+        return {"choices": [{"message": {"content": reply_txt}, "finish_reason": "stop"}]}
+
+    llm_cfg = {"transport": transport, "model": "deepseek-v4-pro"}
+
+    # Day 0: run formal A (daily_r16@2) -> @1.0 + legacy_v1
+    res_day0 = tracking.auto_deal(d, v2_plan, arch_dir, lambda *_: {}, llm_config=llm_cfg)
+    assert len(res_day0) == 1
+    assert res_day0[0]["status"] == "VALID"
+    hand_day0 = d.path(exp_day0) / "hands" / res_day0[0]["hand_id"]
+    req_day0 = dossier.read(next((hand_day0 / "responses").glob("*/request.json")))
+    ident_day0 = dossier.read(hand_day0 / "evidence" / "identity.json")
+    assert req_day0["prompt_version"] == review.INITIAL_SYSTEM_PROMPT_VERSION
+    assert req_day0.get("input_profile") is None
+    assert req_day0.get("mechanical_contract_version") is None
+    assert "input_profile" not in ident_day0
+    assert "输入规范：p0_strict@1" not in (hand_day0 / "evidence" / "input.md").read_text(encoding="utf-8")
+
+    # Settle Day 0 before cutover
+    clock.ms = exp_day0 + 5 * M
+    out_day0 = d.settle(exp_day0, 66_500.0)
+    assert out_day0["classification"] == "OFFICIAL"
+    d.save_outcome(out_day0, {"delivery_price": 66_500.0})
+
+    # Day 1: cutover to daily_r16@3 -> @1.2-p5-candidate + p0_strict@1 + p2_strict@1
+    clock.ms = slot_day1 + 2 * M
+    res_day1 = tracking.auto_deal(d, v3_plan, arch_dir, lambda *_: {}, llm_config=llm_cfg)
+    assert len(res_day1) == 1
+    assert res_day1[0]["status"] == "VALID"
+    hand_day1 = d.path(exp_day1) / "hands" / res_day1[0]["hand_id"]
+    req_day1 = dossier.read(next((hand_day1 / "responses").glob("*/request.json")))
+    att_day1 = dossier.read(next((hand_day1 / "responses").glob("*/attempt.json")))
+    ident_day1 = dossier.read(hand_day1 / "evidence" / "identity.json")
+    assert req_day1["prompt_version"] == "player_initial_system@1.2-p5-candidate"
+    assert req_day1["input_profile"] == "p0_strict@1"
+    assert req_day1["mechanical_contract_version"] == "p2_strict@1"
+    assert att_day1["prompt_version"] == "player_initial_system@1.2-p5-candidate"
+    assert att_day1["input_profile"] == "p0_strict@1"
+    assert att_day1["contract_validation_status"] == "PASSED"
+    assert ident_day1["input_profile"] == "p0_strict@1"
+    assert "输入规范：p0_strict@1" in (hand_day1 / "evidence" / "input.md").read_text(encoding="utf-8")
+
+    # Settle Day 1 cleanly
+    clock.ms = exp_day1 + 5 * M
+    out_day1 = d.settle(exp_day1, 66_500.0)
+    assert out_day1["classification"] == "OFFICIAL"
+    d.save_outcome(out_day1, {"delivery_price": 66_500.0})
+
+    # Day 2: 1-step rollback to formal A (daily_r16@2) -> resumes @1.0 + legacy_v1 without overwriting Day 1
+    clock.ms = slot_day2 + 2 * M
+    res_day2 = tracking.auto_deal(d, v2_plan, arch_dir, lambda *_: {}, llm_config=llm_cfg)
+    assert len(res_day2) == 1
+    assert res_day2[0]["status"] == "VALID"
+    hand_day2 = d.path(exp_day2) / "hands" / res_day2[0]["hand_id"]
+    req_day2 = dossier.read(next((hand_day2 / "responses").glob("*/request.json")))
+    ident_day2 = dossier.read(hand_day2 / "evidence" / "identity.json")
+    assert req_day2["prompt_version"] == review.INITIAL_SYSTEM_PROMPT_VERSION
+    assert req_day2.get("input_profile") is None
+    assert req_day2.get("mechanical_contract_version") is None
+    assert "input_profile" not in ident_day2
+    assert dossier.read(hand_day1 / "expected.json")["plan"]["plan_id"] == "daily_r16@3"
+
+    # Settle Day 2 cleanly & verify audit_record reads all three hands (@1.0, @1.2-p5-candidate, @1.0)
+    clock.ms = exp_day2 + 5 * M
+    out_day2 = d.settle(exp_day2, 66_500.0)
+    assert out_day2["classification"] == "OFFICIAL"
+    d.save_outcome(out_day2, {"delivery_price": 66_500.0})
+
+    assert len(seen_prompts) == 3
+    assert seen_prompts[0] == review.INITIAL_SYSTEM_PROMPT
+    assert seen_prompts[1] == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT
+    assert seen_prompts[2] == review.INITIAL_SYSTEM_PROMPT
+
+    for hand_dir in (hand_day0, hand_day1, hand_day2):
+        rec = tracking.audit_record(hand_dir, clock(), None, detail=True)
+        assert rec["state"] == "Reject"
+        assert rec["outcome"]["classification"] == "OFFICIAL"
+
+
+def test_finding1_cross_plan_settled_tick_skip_and_v4_rollback_plan(tmp_path):
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+    v2_plan = json.loads((deploy_dir / "plan.daily_r16.v2.json").read_text(encoding="utf-8"))
+    v3_plan = json.loads((deploy_dir / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"))
+    v4_plan = json.loads((deploy_dir / "plan.daily_r16.v4_rollback_formal_a.json").read_text(encoding="utf-8"))
+
+    assert "08:05 UTC–15:50 UTC" in v3_plan["cutover_note"]
+    assert "NEVER during 16:18–08:00 UTC" in v3_plan["cutover_note"]
+    assert v4_plan["plan_id"] == "daily_r16@4"
+    assert v4_plan["supersedes"] == "daily_r16@3"
+    assert v4_plan["prompt_version"] == review.INITIAL_SYSTEM_PROMPT_VERSION
+    assert v4_plan["input_profile"] == player.INPUT_PROFILE_LEGACY
+    assert v4_plan["execution_allowed"] is False
+
+    slot0 = v2_plan["effective_at_ms"]
+    exp0 = slot0 + v2_plan["expiry_offset_ms"]
+    clk = Clock(slot0 + 2 * M)
+    d = dossier.Dossiers(tmp_path / "f1_tick", clk)
+    h0 = d.expect(exp0, "SCHEDULED", plan=v2_plan, slot=slot0)
+    d.deal(h0, _shift_source_for_r16_slot(exp0, clk()))
+
+    # Open (unexpired) slot with mismatched plan STILL raises ValueError during quiet cross-plan check.
+    v3_open = dict(v3_plan, effective_at_ms=slot0)
+    with pytest.raises(ValueError, match="different configuration"):
+        d.tick(v3_open)
+
+    # Once slot0 is settled (at >= exp0), quiet-window auto_walk skips the historical slot without raising.
+    clk.ms = exp0 + 10 * M
+    ticked = d.tick(v3_open)
+    assert ticked == [] or all(p != h0 for p in ticked)
+
+    # And rolling back cleanly using v4_plan on the next quiet slot initializes @1.0 + legacy_v1!
+    slot1 = v4_plan["effective_at_ms"]
+    clk.ms = slot1 + 2 * M
+    out_v4 = d.tick(v4_plan)
+    assert any((p / "expected.json").is_file() and dossier.read(p / "expected.json")["plan"]["plan_id"] == "daily_r16@4" for p in out_v4)

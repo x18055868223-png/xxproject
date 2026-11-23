@@ -1,0 +1,22 @@
+{
+  "plan_id": "daily_r16@3",
+  "version": "3.0.0",
+  "supersedes": "daily_r16@2",
+  "research": "AI Player v1 / ARD closeout 2026-11-15",
+  "release_track": "AI Player P5 release candidate (player_initial_system@1.2-p5-candidate + p0_strict@1 + p2_strict@1)",
+  "mode": "SHADOW_ONLY",
+  "candidate_round": "r16",
+  "prompt_version": "player_initial_system@1.2-p5-candidate",
+  "input_profile": "p0_strict@1",
+  "mechanical_contract_version": "p2_strict@1",
+  "effective_at_ms": 1795449600000,
+  "effective_at_utc": "2026-11-23T16:00:00Z",
+  "expiry_offset_ms": 57600000,
+  "deal_grace_ms": 1800000,
+  "reply_grace_ms": 1800000,
+  "prewarm_window_ms": 600000,
+  "debounce_ms": 720000,
+  "cooldown_ms": 1800000,
+  "execution_allowed": false,
+  "cutover_note": "Deploy / point /opt/signal-audit-tools/player-plan.json to this file ONLY during the 08:05 UTC–15:50 UTC quiet window (strictly after 08:00 UTC expiry and before 15:50 UTC prewarm when zero r16 slot is open; NEVER during 16:18–08:00 UTC). 1-step rollback in the same 08:05 UTC–15:50 UTC quiet window = switch player-plan.json -> plan.daily_r16.v4_rollback_formal_a.json (or restore plan.daily_r16.v2.json)."
+}

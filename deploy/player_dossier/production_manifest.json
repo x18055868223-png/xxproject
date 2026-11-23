@@ -1,6 +1,6 @@
 {
   "schema": "astra_production_manifest@1",
-  "captured_at_utc": "2026-11-19T06:38:00Z",
+  "captured_at_utc": "2026-11-23T13:25:00Z",
   "host": "xx-eu",
   "policy": {
     "forbid_full_git_tree_overwrite": true,
@@ -9,6 +9,8 @@
     "note": "Deploy only explicitly listed runtime files; never overwrite /opt/signal-audit-tools with the full Git tree without verifying host-specific offline path adaptations and LLM inquiry gating."
   },
   "baseline_revisions": {
+    "deployed_runtime_commit": "b3d79695f82e3a5f6392d0cbdba668d4406f4724",
+    "deployed_runtime_verified_at_utc": "2026-11-23T13:12:00Z",
     "deployed_integration_commit": "ba93eef27cc3f7044267ad78118aaf4c9c7c3a62",
     "previous_production_commit": "f3911c06c7e5829e5101397d66814f996b541786",
     "llm_retirement_gate_commit": "46c5ea6f",
@@ -26,22 +28,22 @@
   "deployed_core_files": {
     "/opt/signal-audit-tools/astra_player_tracking_v13.py": {
       "source_rel": "tools/astra_player_tracking_v13.py",
-      "deployed_sha256_prefix": "7013cf7c7572",
+      "deployed_sha256_prefix": "5aa70f53e7fe",
       "status": "MANAGED_RUNTIME"
     },
     "/opt/signal-audit-tools/astra_player_review_v1.py": {
       "source_rel": "tools/astra_player_review_v1.py",
-      "deployed_sha256_prefix": "cb29d9b25033",
+      "deployed_sha256_prefix": "90ec1049c0a9",
       "status": "MANAGED_RUNTIME"
     },
     "/opt/signal-audit-tools/astra_player_dossier_v1.py": {
       "source_rel": "tools/astra_player_dossier_v1.py",
-      "deployed_sha256_prefix": "b0e473e95b95",
+      "deployed_sha256_prefix": "278d410c035d",
       "status": "MANAGED_RUNTIME"
     },
     "/opt/signal-audit-tools/astra_player_input_v1.py": {
       "source_rel": "tools/astra_player_input_v1.py",
-      "deployed_sha256_prefix": "f404867d35bf",
+      "deployed_sha256_prefix": "f8b06225db3d",
       "status": "MANAGED_RUNTIME"
     },
     "/opt/signal-audit-tools/astra_player_condition_v1.py": {
@@ -49,17 +51,55 @@
       "deployed_sha256_prefix": "1d177bea8a3c",
       "status": "MANAGED_RUNTIME"
     },
+    "/opt/signal-audit-tools/astra_anchor_relative_v1.py": {
+      "source_rel": "tools/astra_anchor_relative_v1.py",
+      "deployed_sha256_prefix": "f4e7ffb137b2",
+      "status": "MANAGED_RUNTIME"
+    },
     "/opt/signal-audit-tools/astra_workbench_v20.py": {
       "source_rel": "tools/astra_workbench_v20.py",
       "deployed_sha256_prefix": "b741ee3295c4",
-      "status": "MANAGED_RUNTIME"
+      "status": "MANAGED_RUNTIME",
+      "host_note": "CRLF raw on host; upstream discovery/locking modules (astra_underwriting_discovery_v20.py, astra_workbench_v20.py, astra_research_archive_v1.py, astra_data_engine_v23.py, astra_workbench_reading_v1.py) are owned by the parallel upstream workstream."
     },
     "/opt/signal-audit-tools/astra_research_archive_v1.py": {
       "source_rel": "tools/astra_research_archive_v1.py",
       "deployed_sha256_prefix": "69ce59fa8693",
       "status": "MANAGED_RUNTIME_WITH_INQUIRY_GATE",
-      "requirement": "Must retain ASTRA_RESEARCH_INQUIRY_ENABLED == '1' gate on run_inquiry."
+      "requirement": "Must retain ASTRA_RESEARCH_INQUIRY_ENABLED == '1' gate on run_inquiry.",
+      "host_note": "Owned by the parallel upstream discovery/locking workstream."
     }
+  },
+  "p5_release_candidate": {
+    "prompt_version": "player_initial_system@1.2-p5-candidate",
+    "prompt_sha256": "b746c2d2f7f996d290992e01b11d9e4c4792a0e1afcacb900bbf0dfc678b6f34",
+    "input_profile": "p0_strict@1",
+    "mechanical_contract_version": "p2_strict@1",
+    "promotion_plan_file": "deploy/player_dossier/plan.daily_r16.v3_p5.json",
+    "promotion_plan_id": "daily_r16@3",
+    "quiet_cutover_window_utc": "08:05-15:50",
+    "rollback_plan_file": "deploy/player_dossier/plan.daily_r16.v2.json",
+    "rollback_plan_id": "daily_r16@2",
+    "rollback_forward_plan_file": "deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json",
+    "rollback_policy": "Formal A (1-step forward rollback via deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json daily_r16@4, or daily_r16@2) ONLY during 08:05-15:50 UTC quiet window (after 08:00 UTC expiry and before 15:50 UTC prewarm, never 16:18-08:00 UTC); never rollback to unverified Route D.",
+    "p5_owned_runtime_files": [
+      "tools/astra_player_tracking_v13.py",
+      "tools/astra_player_review_v1.py",
+      "tools/astra_player_dossier_v1.py",
+      "tools/astra_player_input_v1.py",
+      "tools/astra_player_condition_v1.py",
+      "tools/astra_anchor_relative_v1.py"
+    ],
+    "restart_required_services_on_deploy": ["astra-workbench-v20.service"],
+    "restart_reason": "astra-workbench-v20.service imports astra_player_tracking_v13 in-process.",
+    "upstream_workstream_files": [
+      "tools/astra_underwriting_discovery_v20.py",
+      "tools/astra_workbench_v20.py",
+      "tools/astra_research_archive_v1.py",
+      "tools/astra_data_engine_v23.py",
+      "tools/astra_workbench_reading_v1.py"
+    ],
+    "upstream_dependency": "Requires SOURCE_READY and resolution of Stage 1.5.7 Accept exact-contract locking in the parallel upstream workstream before Gate A/E promotion approval."
   },
   "host_adapted_non_runtime_files": {
     "/opt/signal-audit-tools/astra_joint_sources.py": {

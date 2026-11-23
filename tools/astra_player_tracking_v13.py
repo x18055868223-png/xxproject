@@ -185,10 +185,18 @@ def accepted(hand):
     if req_pv is not None and att_pv is not None and req_pv != att_pv:
         raise Blocked('prompt_version_mismatch')
     pv = req_pv or att_pv
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    plan_pv = (expected.get('plan') or {}).get('prompt_version')
+    if plan_pv is not None and pv != plan_pv:
+        raise Blocked('prompt_version_mismatch')
+    if meta.get('input_profile') == p0_profile and (not pv or pv == review.INITIAL_SYSTEM_PROMPT_VERSION):
+        raise Blocked('prompt_version_mismatch')
     out = dict(origin=origin, contract=contract, contracts=contracts_map, source=source, decision=decision,
                raw=raw.decode('utf-8'), deadline_ms=min(deadline, decided + HANDOFF_MS))
     if pv is not None:
         out['prompt_version'] = pv
+    if plan_pv is not None:
+        out['plan_prompt_version'] = plan_pv
     if meta.get('input_profile') is not None:
         out['input_profile'] = meta['input_profile']
     return out
@@ -225,10 +233,15 @@ def _is_candidate_proof(proof):
     p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
     pv = proof.get('prompt_version')
     ip = proof.get('input_profile')
+    plan_pv = proof.get('plan_prompt_version')
     if ip == p0_profile and not pv:
         raise Blocked('missing_prompt_version')
     if pv is not None and pv not in review.INITIAL_SYSTEM_PROMPTS:
         raise Blocked('unknown_prompt_version')
+    if plan_pv is not None and pv != plan_pv:
+        raise Blocked('prompt_version_mismatch')
+    if ip == p0_profile and pv == review.INITIAL_SYSTEM_PROMPT_VERSION:
+        raise Blocked('prompt_version_mismatch')
     return (pv in review.CANDIDATE_STRICT_PROMPT_VERSIONS) or (
         ip == p0_profile and pv != review.INITIAL_SYSTEM_PROMPT_VERSION
     )
@@ -1223,9 +1236,16 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             completed = prior_reviews[-1]
             if (completed.get('requested_at_ms') or 0) >= started and completed.get('decided_at_ms') is not None:
                 _record_review_event(d, episode, completed)
+                shadow_act = completed.get('shadow_action')
+                proto_st = completed.get('protocol_status')
+                rec_verified_revoke = (
+                    (shadow_act in {'REVOKE_ALIGNED', 'REVOKE_DISCRETIONARY'})
+                    or (shadow_act is None and proto_st != 'DISCRETIONARY_REVOKE_UNVERIFIED')
+                )
+                rec_verdict = completed['verdict'] if (rec_verified_revoke or completed['verdict'] != 'REVOKE') else None
                 prior_state = review.complete_review_action(
                     prior_state, now_ms=completed['decided_at_ms'], success=True,
-                    verdict=completed['verdict'], cooldown_ms=cooldown_ms)
+                    verdict=rec_verdict, cooldown_ms=cooldown_ms)
         next_state, action = _call_with_supported_kwargs(
             review.schedule_review_action,
             prior_state, triggers, now_ms=at, debounce_ms=debounce_ms,
@@ -1474,7 +1494,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             review.call_chat_llm,
             hold_req_payload['messages'], api_key=cfg['api_key'] or 'test-key', model=cfg['model'],
             endpoint=cfg.get('endpoint'), timeout_s=cfg.get('timeout_s', 300),
-            retries=cfg.get('retries'),
+            retries=0,  # Hold review must never replay an ambiguous POST.
             reasoning_effort=cfg.get('reasoning_effort'),
             budget=cfg.get('budget'),
             budget_role='astra_player_hold_review',
@@ -1794,12 +1814,21 @@ def _record_initial_reply(d, hand, call, req, *, result=None, error=None):
     contracts_pair = _hand_contracts_pair(hand, req)
     if result is None and saved is not None and not isinstance(error, review.ContractValidationError):
         try:
+            req_for_parse = dict(req)
+            had_exp_pv = 'expected_prompt_version' in req_for_parse
+            if not had_exp_pv:
+                exp_json = optional(hand / 'expected.json')
+                plan_pv = ((exp_json.get('plan') or {}).get('prompt_version')) if isinstance(exp_json, dict) else None
+                if plan_pv is not None:
+                    req_for_parse['expected_prompt_version'] = plan_pv
             result = _call_with_supported_kwargs(
                 review.parse_initial_reply,
                 saved,
-                dict(req),
+                req_for_parse,
                 contracts=contracts_pair,
             )
+            if not had_exp_pv and isinstance(result, dict) and isinstance(result.get('request_payload'), dict):
+                result['request_payload'].pop('expected_prompt_version', None)
             error = None
         except (review.ContractValidationError, ValueError, KeyError, TypeError) as exc:
             error = exc
@@ -2863,7 +2892,466 @@ def export_model_input(hand, *, review_id=None):
     }
 
 
+def _check_workbench_view_readiness(workbench_view, reasons, checks, *, now_ms=None, max_view_age_ms=120_000):
+    checks['workbench_view_checked'] = True
+    check_age = type(now_ms) is int and now_ms > 0 and type(max_view_age_ms) is int and max_view_age_ms > 0
+    updated_at_ms = workbench_view.get('updated_at_ms')
+    checks['workbench_view_updated_at_ms'] = updated_at_ms
+    if check_age:
+        if type(updated_at_ms) is not int or updated_at_ms <= 0:
+            reasons.append('workbench_view_updated_at_invalid')
+        elif updated_at_ms > now_ms:
+            reasons.append('workbench_view_in_future')
+        elif now_ms - updated_at_ms > max_view_age_ms:
+            reasons.append('workbench_view_stale')
+
+    discovery_status = workbench_view.get('discovery_status')
+    if not isinstance(discovery_status, dict):
+        reasons.append('discovery_status_missing')
+        checks['discovery_capture_state'] = None
+        checks['upstream_code'] = None
+        checks['discovery_observed_at_ms'] = None
+    else:
+        cap_state = discovery_status.get('capture_state')
+        up_code = discovery_status.get('upstream_code')
+        obs_ms = discovery_status.get('observed_at_ms')
+        checks['discovery_capture_state'] = cap_state
+        checks['upstream_code'] = up_code
+        checks['discovery_observed_at_ms'] = obs_ms
+        if cap_state != 'COMPLETE':
+            reasons.append(f"discovery_capture_not_complete:{cap_state if cap_state is not None else 'missing'}")
+        if up_code is not None:
+            reasons.append(f'upstream_code:{up_code}')
+        if check_age:
+            if type(obs_ms) is not int or obs_ms <= 0:
+                reasons.append('discovery_observed_at_invalid')
+            elif obs_ms > now_ms:
+                reasons.append('discovery_observed_in_future')
+            elif now_ms - obs_ms > max_view_age_ms:
+                reasons.append('discovery_observed_stale')
+
+    data_health = workbench_view.get('data_health')
+    if not isinstance(data_health, dict):
+        reasons.append('data_health_missing')
+        checks['data_health_discovery_capture_state'] = None
+        checks['data_health_discovery_status'] = None
+    else:
+        products = data_health.get('products')
+        disc_prod = products.get('deribit.btc.discovery.current.v1') if isinstance(products, dict) else None
+        if not isinstance(products, dict) or 'deribit.btc.discovery.current.v1' not in products or disc_prod is None:
+            reasons.append('data_health_discovery_missing')
+            checks['data_health_discovery_capture_state'] = None
+            checks['data_health_discovery_status'] = None
+        elif not isinstance(disc_prod, dict):
+            reasons.append('data_health_discovery_invalid')
+            checks['data_health_discovery_capture_state'] = None
+            checks['data_health_discovery_status'] = None
+        else:
+            dh_cap = disc_prod.get('capture_state')
+            dh_status = disc_prod.get('status')
+            checks['data_health_discovery_capture_state'] = dh_cap
+            checks['data_health_discovery_status'] = dh_status
+            if dh_cap != 'COMPLETE':
+                reasons.append(
+                    f"data_health_discovery_not_complete:{dh_cap if dh_cap is not None else 'missing'}"
+                )
+            if dh_status != 'OK':
+                reasons.append(
+                    f"data_health_discovery_status:{dh_status if dh_status is not None else 'missing'}"
+                )
+
+    candidates = workbench_view.get('candidates')
+    by_side_checks = {}
+    live_lock_by_side = {'put': False, 'call': False}
+    checks['candidates_by_side'] = by_side_checks
+    checks['live_lock_eligible_by_side'] = live_lock_by_side
+    if not isinstance(candidates, list):
+        reasons.append('candidates_missing_or_invalid')
+        return
+
+    if any(not isinstance(it, dict) for it in candidates):
+        reasons.append('candidate_item_invalid')
+
+    for side in ('put', 'call'):
+        matches = [it for it in candidates if isinstance(it, dict) and it.get('side') == side]
+        if not matches:
+            reasons.append(f'candidate_missing:{side}')
+            by_side_checks[side] = {'present': False}
+            continue
+        if len(matches) > 1:
+            reasons.append(f'candidate_duplicate:{side}')
+        item = matches[0]
+        st = item.get('status')
+        snap = item.get('snapshot')
+        formal_ok = item.get('formal_evidence_eligible') is True
+        live_ok = item.get('live_lock_eligible') is True
+        held = bool(item.get('held_capture'))
+        hist_summary = bool(item.get('is_historical_summary'))
+        lvc = item.get('last_valid_candidate')
+        item_disc = item.get('discovery_status')
+
+        live_lock_by_side[side] = live_ok
+        side_info = {
+            'present': True,
+            'status': st,
+            'has_snapshot': isinstance(snap, dict),
+            'formal_evidence_eligible': formal_ok,
+            'live_lock_eligible': live_ok,
+            'held_capture': held,
+            'is_historical_summary': hist_summary,
+            'has_last_valid_candidate': lvc is not None,
+        }
+        by_side_checks[side] = side_info
+
+        if st != 'snapshot':
+            reasons.append(f"candidate_{side}_not_snapshot:{st if st is not None else 'missing'}")
+        if not isinstance(snap, dict):
+            reasons.append(f'candidate_{side}_snapshot_missing')
+        if not formal_ok:
+            reasons.append(f'candidate_{side}_not_formal_evidence_eligible')
+        if held:
+            reasons.append(f'candidate_{side}_held_capture')
+        if hist_summary:
+            reasons.append(f'candidate_{side}_historical_summary')
+        if lvc is not None and (st != 'snapshot' or not formal_ok or not isinstance(snap, dict)):
+            reasons.append(f'candidate_{side}_last_valid_candidate_summary')
+
+        if item_disc is None:
+            reasons.append(f'candidate_{side}_discovery_status_missing')
+        elif not isinstance(item_disc, dict):
+            reasons.append(f'candidate_{side}_discovery_status_invalid')
+        else:
+            dp = item_disc.get('delta_population')
+            dp_complete = isinstance(dp, dict) and dp.get('complete') is True
+            side_info['side_complete'] = item_disc.get('side_complete') is True
+            side_info['capture_state'] = item_disc.get('capture_state')
+            side_info['upstream_code'] = item_disc.get('upstream_code')
+            side_info['delta_population_complete'] = dp_complete
+            if item_disc.get('side_complete') is not True:
+                reasons.append(f'candidate_{side}_not_complete')
+            if item_disc.get('capture_state') != 'COMPLETE':
+                c_st = item_disc.get('capture_state')
+                reasons.append(
+                    f"candidate_{side}_capture_not_complete:{c_st if c_st is not None else 'missing'}"
+                )
+            if item_disc.get('upstream_code') is not None:
+                reasons.append(f"candidate_{side}_upstream_code:{item_disc.get('upstream_code')}")
+            if not dp_complete:
+                reasons.append(f'candidate_{side}_delta_population_incomplete')
+
+
+def _check_source_bundle_readiness(source, now_ms, reasons, checks):
+    checks['source_checked'] = True
+    cards = source.get('cards')
+    card_expiries = set()
+    card_reads = {}
+    card_sides = []
+    if not isinstance(cards, list) or len(cards) != 2 or any(not isinstance(c, dict) for c in cards):
+        reasons.append('source_cards_invalid')
+    if isinstance(cards, list):
+        for idx, card in enumerate(cards):
+            if not isinstance(card, dict):
+                continue
+            side = card.get('side')
+            card_sides.append(side)
+            label = side if side in {'put', 'call'} else f'idx_{idx}'
+            exp = card.get('expiry_ms')
+            if type(exp) is not int or exp <= 0:
+                reasons.append(f'source_card_{label}_invalid_expiry_ms')
+            else:
+                card_expiries.add(exp)
+            read_at = card.get('read_at_ms')
+            if type(read_at) is not int or read_at <= 0:
+                reasons.append(f'source_card_{label}_invalid_read_at_ms')
+            else:
+                if side in {'put', 'call'} and side not in card_reads:
+                    card_reads[side] = read_at
+                if type(now_ms) is int and read_at > now_ms:
+                    reasons.append(f'source_card_{label}_read_at_in_future')
+            if card.get('backfilled'):
+                reasons.append(f'source_card_{label}_backfilled')
+            gaps = card.get('data_gaps')
+            if gaps is not None and not isinstance(gaps, list):
+                reasons.append(f'source_card_{label}_invalid_data_gaps')
+            elif gaps:
+                reasons.append(f'source_card_{label}_data_gaps')
+            ckey = card.get('contract_key')
+            if not isinstance(ckey, str) or not ckey.strip():
+                reasons.append(f'source_card_{label}_missing_contract_key')
+        if len(card_sides) != 2 or set(card_sides) != {'put', 'call'}:
+            reasons.append('source_cards_sides_mismatch')
+    if len(card_expiries) > 1:
+        reasons.append('source_cards_expiry_mismatch')
+    expiry_ms = next(iter(card_expiries)) if len(card_expiries) == 1 else None
+    checks['source_expiry_ms'] = expiry_ms
+    checks['source_card_sides'] = [s for s in card_sides if isinstance(s, str)]
+
+    received_at_ms = source.get('received_at_ms')
+    checks['source_received_at_ms'] = received_at_ms
+    if type(received_at_ms) is not int or received_at_ms <= 0:
+        reasons.append('source_received_at_invalid')
+    else:
+        if card_reads and max(card_reads.values()) > received_at_ms:
+            reasons.append('source_received_before_card_read')
+        if type(now_ms) is int and received_at_ms > now_ms:
+            reasons.append('source_received_at_in_future')
+
+    cases = source.get('cases')
+    case_sides = []
+    wanted_instruments = set()
+    if not isinstance(cases, list) or len(cases) != 2 or any(not isinstance(cs, dict) for cs in cases):
+        reasons.append('source_cases_invalid')
+    if isinstance(cases, list):
+        case_expiries = set()
+        for idx, case in enumerate(cases):
+            if not isinstance(case, dict):
+                continue
+            l1 = dossier.player.values(case, 'L1.contract')
+            c_side = l1.get('side')
+            case_sides.append(c_side)
+            c_label = c_side if c_side in {'put', 'call'} else f'idx_{idx}'
+            short_inst = l1.get('short_instrument')
+            long_inst = l1.get('long_instrument')
+            if (not isinstance(short_inst, str) or not short_inst.strip()
+                    or not isinstance(long_inst, str) or not long_inst.strip()):
+                reasons.append(f'source_case_{c_label}_missing_instruments')
+            else:
+                wanted_instruments.update((short_inst, long_inst))
+            c_exp = l1.get('expiry_ms')
+            if type(c_exp) is not int or c_exp <= 0:
+                reasons.append(f'source_case_{c_label}_invalid_expiry_ms')
+            else:
+                case_expiries.add(c_exp)
+                if expiry_ms is not None and c_exp != expiry_ms:
+                    reasons.append(f'source_case_{c_label}_expiry_mismatch')
+            read_at = card_reads.get(c_side)
+            for leg_key in ('short', 'long'):
+                book = dossier.player.values(case, f'L2.book.{leg_key}')
+                idx_p = dossier.player.number(book.get('index_price')) if isinstance(book, dict) else None
+                ts = book.get('timestamp') if isinstance(book, dict) else None
+                if (not isinstance(book, dict) or not book or idx_p is None or idx_p <= 0
+                        or type(ts) is not int or ts <= 0):
+                    reasons.append(f'source_case_{c_label}_missing_l2_book_{leg_key}')
+                elif type(read_at) is int and ts > read_at:
+                    reasons.append(f'source_case_{c_label}_l2_book_{leg_key}_after_read_at')
+            l2_quote = dossier.player.values(case, 'L2.quote')
+            if not isinstance(l2_quote, dict) or not l2_quote:
+                reasons.append(f'source_case_{c_label}_missing_l2_quote')
+            else:
+                if dossier.player.number(l2_quote.get('credit_btc')) is None:
+                    reasons.append(f'source_case_{c_label}_invalid_l2_quote_credit')
+                val_ts = l2_quote.get('valuation_ts_ms')
+                if type(val_ts) is not int or val_ts <= 0:
+                    reasons.append(f'source_case_{c_label}_invalid_l2_quote_valuation_ts')
+                elif type(read_at) is int and val_ts > read_at:
+                    reasons.append(f'source_case_{c_label}_l2_quote_valuation_after_read_at')
+                rec_ts = l2_quote.get('received_ts_ms')
+                if type(rec_ts) is not int or rec_ts <= 0:
+                    reasons.append(f'source_case_{c_label}_invalid_l2_quote_received_ts')
+                elif type(read_at) is int and rec_ts > read_at:
+                    reasons.append(f'source_case_{c_label}_l2_quote_received_after_read_at')
+                exch_times = l2_quote.get('exchange_times_ms')
+                leg_rec = l2_quote.get('leg_received_ts_ms')
+                if (not isinstance(exch_times, dict) or set(exch_times) != {'short', 'long'}
+                        or not isinstance(leg_rec, dict) or set(leg_rec) != {'short', 'long'}):
+                    reasons.append(f'source_case_{c_label}_invalid_l2_quote_clocks')
+                else:
+                    clocks_bad = False
+                    if type(val_ts) is int and val_ts > 0 and type(rec_ts) is int and rec_ts > 0 and rec_ts > val_ts:
+                        clocks_bad = True
+                    for leg_key in ('short', 'long'):
+                        et = exch_times.get(leg_key)
+                        lt = leg_rec.get(leg_key)
+                        if type(et) is not int or et <= 0 or type(lt) is not int or lt <= 0:
+                            clocks_bad = True
+                            break
+                        if type(read_at) is int and (et > read_at or lt > read_at):
+                            clocks_bad = True
+                            break
+                        if et > lt or (type(rec_ts) is int and rec_ts > 0 and lt > rec_ts):
+                            clocks_bad = True
+                            break
+                    if clocks_bad:
+                        reasons.append(f'source_case_{c_label}_invalid_l2_quote_clocks')
+                gap_r = l2_quote.get('gap_reasons')
+                q_gap_r = l2_quote.get('quote_gap_reasons')
+                if (gap_r is not None and not isinstance(gap_r, list)) or (q_gap_r is not None and not isinstance(q_gap_r, list)):
+                    reasons.append(f'source_case_{c_label}_l2_quote_gaps')
+                elif gap_r or q_gap_r:
+                    reasons.append(f'source_case_{c_label}_l2_quote_gaps')
+        if len(case_sides) != 2 or set(case_sides) != {'put', 'call'}:
+            reasons.append('source_cases_sides_mismatch')
+        if len(case_expiries) > 1:
+            reasons.append('source_cases_expiry_mismatch')
+    checks['source_case_sides'] = [s for s in case_sides if isinstance(s, str)]
+
+    instruments = source.get('instruments')
+    proven = set()
+    if not isinstance(instruments, list):
+        reasons.append('source_instruments_missing')
+    else:
+        proven = {
+            r.get('instrument_name')
+            for r in instruments
+            if isinstance(r, dict)
+            and expiry_ms is not None
+            and r.get('expiration_timestamp') == expiry_ms
+            and r.get('settlement_currency') == 'BTC'
+            and r.get('is_active') is True
+            and isinstance(r.get('instrument_name'), str)
+            and r.get('instrument_name')
+        }
+        if len(wanted_instruments) != 4 or not (wanted_instruments <= proven):
+            reasons.append('source_instruments_incomplete_or_inactive')
+    checks['source_instruments_proven'] = len(wanted_instruments & proven) if wanted_instruments else 0
+
+    band_snapshot = source.get('band_snapshot')
+    has_band = isinstance(band_snapshot, dict) and bool(band_snapshot)
+    checks['source_has_band_snapshot'] = has_band
+    if not has_band:
+        reasons.append('source_band_snapshot_missing')
+        checks['source_band_freezable'] = False
+    elif card_reads:
+        band_start = min(card_reads.values()) - 4 * dossier.player.ard.HOUR
+        band_ok = dossier.player.ard.frozen_band(band_snapshot, band_start) is not None
+        checks['source_band_freezable'] = band_ok
+        if not band_ok:
+            reasons.append('source_band_snapshot_unfreezable')
+    else:
+        checks['source_band_freezable'] = None
+
+    index_path = source.get('index_path')
+    points = index_path.get('points') if isinstance(index_path, dict) else None
+    valid_points_shape = isinstance(points, list) and all(
+        isinstance(pt, (list, tuple)) and len(pt) == 2 for pt in points
+    )
+    checks['source_index_points_count'] = len(points) if isinstance(points, list) else 0
+    if not valid_points_shape or not points:
+        reasons.append('source_index_path_points_missing')
+    if (isinstance(index_path, dict) and expiry_ms is not None
+            and index_path.get('expiry_ms') is not None and index_path.get('expiry_ms') != expiry_ms):
+        reasons.append('source_index_path_expiry_mismatch')
+
+    history = source.get('history')
+    checks['source_ard_strict_observations'] = None
+    checks['source_ard_strict_unclocked'] = None
+    if not isinstance(history, list) or any(not isinstance(r, dict) for r in history):
+        reasons.append('source_history_missing_or_invalid')
+    elif expiry_ms is not None and card_reads and valid_points_shape:
+        ard_strict = dossier.player.ard.analyze(
+            history,
+            index_path,
+            expiry_ms=expiry_ms,
+            cutoff_ms=min(card_reads.values()),
+            band_snapshot=band_snapshot if isinstance(band_snapshot, dict) else None,
+            strict_asof=True,
+        )
+        obs_rows = ard_strict.get('observations') or []
+        checks['source_ard_strict_observations'] = len(obs_rows)
+        checks['source_ard_strict_unclocked'] = ard_strict.get('unclocked_rows', 0)
+        expiry_rows = [r for r in history if r.get('expiry_ms') == expiry_ms]
+        if expiry_rows and len(obs_rows) == 0:
+            reasons.append('source_history_no_native_clocked_rows')
+
+
+def _check_source_workbench_consistency(source, workbench_view, reasons):
+    cases = source.get('cases')
+    candidates = workbench_view.get('candidates')
+    if not isinstance(cases, list) or not isinstance(candidates, list):
+        return
+    cases_by_side = {}
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        l1 = dossier.player.values(case, 'L1.contract')
+        c_side = l1.get('side') if isinstance(l1, dict) else None
+        if c_side in {'put', 'call'} and c_side not in cases_by_side:
+            cases_by_side[c_side] = l1
+    for side in ('put', 'call'):
+        src_l1 = cases_by_side.get(side)
+        cand = next((it for it in candidates if isinstance(it, dict) and it.get('side') == side), None)
+        if not isinstance(src_l1, dict) or not isinstance(cand, dict):
+            continue
+        snap = cand.get('snapshot')
+        if not isinstance(snap, dict):
+            continue
+        wb_contract = snap.get('contract')
+        if not isinstance(wb_contract, dict):
+            continue
+        wb_exp = wb_contract.get('expiry_ms')
+        src_exp = src_l1.get('expiry_ms')
+        if wb_exp is not None and src_exp is not None and wb_exp != src_exp:
+            reasons.append('source_workbench_expiry_mismatch')
+        wb_short = wb_contract.get('short_instrument')
+        wb_long = wb_contract.get('long_instrument')
+        wb_side = wb_contract.get('side')
+        if (
+            (wb_short is not None and wb_short != src_l1.get('short_instrument'))
+            or (wb_long is not None and wb_long != src_l1.get('long_instrument'))
+            or (wb_side is not None and wb_side != side)
+        ):
+            reasons.append(f'source_workbench_contract_mismatch:{side}')
+
+
+def evaluate_source_readiness(source=None, *, workbench_view=None, now_ms=None, max_view_age_ms=120_000):
+    """Pure read-only readiness gate verifying upstream discovery/source completeness without network or disk I/O."""
+    has_source = isinstance(source, dict)
+    has_view = isinstance(workbench_view, dict)
+    checks = {
+        'workbench_view_checked': False,
+        'source_checked': False,
+        'live_lock_eligible_by_side': {},
+        'accept_lock_ready': False,
+    }
+    if not has_source and not has_view:
+        return {'status': 'UPSTREAM_BLOCKED', 'reasons': ['missing_input'], 'checks': checks}
+
+    reasons = []
+    if source is not None and not has_source:
+        reasons.append('source_invalid_type')
+    if workbench_view is not None and not has_view:
+        reasons.append('workbench_view_invalid_type')
+    if now_ms is not None and (type(now_ms) is not int or now_ms <= 0):
+        reasons.append('invalid_now_ms')
+    if type(max_view_age_ms) is not int or max_view_age_ms <= 0:
+        reasons.append('invalid_max_view_age_ms')
+
+    if has_view:
+        _check_workbench_view_readiness(
+            workbench_view, reasons, checks, now_ms=now_ms, max_view_age_ms=max_view_age_ms
+        )
+    if has_source:
+        _check_source_bundle_readiness(source, now_ms, reasons, checks)
+    if has_source and has_view:
+        _check_source_workbench_consistency(source, workbench_view, reasons)
+
+    deduped = list(dict.fromkeys(reasons))
+    status = 'SOURCE_READY' if not deduped else 'UPSTREAM_BLOCKED'
+    checks['accept_lock_ready'] = bool(
+        status == 'SOURCE_READY'
+        and has_view
+        and all(checks['live_lock_eligible_by_side'].get(s) is True for s in ('put', 'call'))
+    )
+    return {'status': status, 'reasons': deduped, 'checks': checks}
+
+
 def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.public, dry_run=False):
+    prompt_version = plan.get('prompt_version') or review.INITIAL_SYSTEM_PROMPT_VERSION
+    if prompt_version not in review.INITIAL_SYSTEM_PROMPTS:
+        raise ValueError(f'unsupported plan prompt_version: {prompt_version!r}')
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    legacy_profile = getattr(dossier.player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
+    input_profile = plan.get('input_profile') or (
+        p0_profile if prompt_version == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION else legacy_profile
+    )
+    supported_profiles = getattr(dossier.player, 'SUPPORTED_INPUT_PROFILES', (legacy_profile, p0_profile))
+    if input_profile not in supported_profiles:
+        raise ValueError(f'unsupported plan input_profile: {input_profile!r}')
+    mechanical_contract_version = (
+        dossier.condition.MECHANICAL_CONTRACT_VERSION
+        if prompt_version in review.CANDIDATE_STRICT_PROMPT_VERSIONS
+        else None
+    )
     now = clock()
     slot_offset = plan['effective_at_ms'] % dossier.DAY
     slot = now - now % dossier.DAY + slot_offset
@@ -2880,6 +3368,9 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
     cfg = _llm_settings()
     report = dict(state='PREWARM_DRY_RUN' if dry_run else 'PREWARM', plan_id=plan['plan_id'],
                   candidate_round=plan.get('candidate_round', 'r2'),
+                  prompt_version=prompt_version,
+                  input_profile=input_profile,
+                  mechanical_contract_version=mechanical_contract_version,
                   checked_at_ms=now, scheduled_at_ms=slot,
                   target_expiry_ms=expiry,
                   response_channel='API_AUTO' if cfg.get('api_key') else 'MANUAL_IMPORT',

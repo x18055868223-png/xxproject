@@ -330,8 +330,8 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
     sep_re = r'\s*(?:至|到|[-–—～~])\s*'
     bracket_interval_re = rf'[\[\【]\s*(?:{long_re}\s*[,，]\s*{short_re}|{short_re}\s*[,，]\s*{long_re})\s*[\]\】]'
     interval_re = rf'(?:{long_re}{sep_re}{short_re}|{short_re}{sep_re}{long_re}|{bracket_interval_re})'
-    neg_prefix = r'(?:严禁|禁止|不得|不能|不可|不要|不该|不采用|不使用|不选择|不按|不适用|并非|不是|非|绝非|不应|错误地将)'
-    non_strict_neg = r'(?:严禁|禁止|不得|不能|不可|不要|不该|并非|不是|绝非|不应|不算|不计为?|不记为?|不视作?|不构成|不触发|未算|未计|未构成|既不算|也不算|均不算|都不算|既不构成|也不构成|均不构成|都不构成)'
+    neg_prefix = r'(?:严禁|禁止|不得|不能|不可|不要|不该|不把|不将|切勿|请勿|勿将|不采用|不使用|不选择|不按|不适用|并非|不是|非|绝非|不应|错误地将)'
+    non_strict_neg = r'(?:严禁|禁止|不得|不能|不可|不要|不该|不把|不将|切勿|请勿|勿将|并非|不是|绝非|不应|不算|不计为?|不记为?|不视作?|不构成|不触发|未算|未计|未构成|既不算|也不算|均不算|都不算|既不构成|也不构成|均不构成|都不构成)'
 
     violations = []
     clauses = [c.strip() for c in re.split(r'[。；;\n]+', text) if c.strip()]
@@ -495,6 +495,7 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
                 break
             if expected_invalidation == 'new_entry' and (
                 re.search(r'(?:且|并)?(?:至|截至)?(?:固定)?检查点(?:仍)?(?:未|没有)(?:后续)?(?:严格)?返回(?:责任外)?[^，。；\n]{0,6}(?:才|方|始)?(?:触发|破坏|计为触发|记为触发)', cl)
+                or re.search(r'(?:且|并)?(?:至|截至|直到)?(?:固定)?检查点(?:前)?(?:仍|依然)?(?:在责任区内|处于责任区内|未(?:严格)?返回(?:责任外)?)\s*(?:才|方|始)?(?:触发|破坏|计为触发|记为触发)', cl)
                 or re.search(r'(?:若|如果)[^，。；\n]{0,12}(?:检查点前?)?(?:已|已经)(?:严格)?返回(?:责任外)?[^，。；\n]{0,8}(?:则)?(?:不触发|不算触发|不计为触发|不构成破坏)', cl)
             ):
                 violations.append('invalidation_rule_mismatch')
@@ -532,7 +533,8 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
         if m_ms and any(int(val) != expected_interval_ms for val in m_ms):
             violations.append('clock_interval_mismatch')
         if 'clock_interval_mismatch' not in violations:
-            sampling_ctx_re = r'(?:采样|指数|btc_usd|K线|记录|数据|行情)'
+            sampling_ctx_re = r'(?:采样|采集|收盘|样本|指数|btc_usd|K线|记录|数据|行情)'
+            one_min_check_re = r'(?:每|按)?\s*1\s*分钟\s*(?:固定)?\s*(?:检查|复核|时钟|网格|步进)|(?:检查|复核)间隔\s*(?:为|:|：|=)?\s*1\s*分钟'
             for cl in clauses:
                 for m in re.finditer(r'(?:检查|步进|间隔|每\s*\d+\s*分钟)[^。；\n]{0,12}[（(]\s*(\d+)\s*ms\s*[)）]', cl, re.IGNORECASE):
                     prefix_ctx = cl[max(0, m.start() - 36):m.start()]
@@ -562,7 +564,7 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
                     for m in re.finditer(r'(?:每|按)\s*(\d+)\s*分钟', seg, re.IGNORECASE):
                         n_min = int(m.group(1))
                         near = seg[max(0, m.start() - 12):m.end() + 14]
-                        if n_min == 1 and re.search(sampling_ctx_re, near, re.IGNORECASE) and not re.search(r'(?:检查|判定|复核|时钟|触发)', near):
+                        if n_min == 1 and re.search(sampling_ctx_re, near, re.IGNORECASE) and not re.search(one_min_check_re, near):
                             continue
                         if n_min * MINUTE != expected_interval_ms:
                             violations.append('clock_interval_mismatch')
@@ -572,7 +574,7 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
                     for m in re.finditer(r'(?<!\d)(\d+)\s*分钟\s*(?:检查|复核|间隔|时钟|网格|一次|步进)', seg):
                         n_min = int(m.group(1))
                         near = seg[max(0, m.start() - 12):m.end() + 12]
-                        if n_min == 1 and re.search(sampling_ctx_re, near, re.IGNORECASE) and not re.search(r'(?:检查|判定|复核|时钟|触发)', near):
+                        if n_min == 1 and re.search(sampling_ctx_re, near, re.IGNORECASE) and not re.search(one_min_check_re, near):
                             continue
                         if n_min * MINUTE != expected_interval_ms:
                             violations.append('clock_interval_mismatch')

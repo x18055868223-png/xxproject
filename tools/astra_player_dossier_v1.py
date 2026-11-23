@@ -436,12 +436,22 @@ class Dossiers:
 
     def tick(self, plan, source_for=None, *, slots=None, input_profile=None):
         at, output = self.clock(), []
-        slots = schedule(plan, at) if slots is None else slots
+        auto_walk = slots is None
+        slots = schedule(plan, at) if auto_walk else slots
         legacy_profile = getattr(player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
         effective_profile = input_profile if input_profile is not None else (plan.get('input_profile') or legacy_profile)
         write(self.root / 'plans' / (key(plan['plan_id']) + '.json'), encode(plan))
         for slot in slots:
             expiry = slot + plan['expiry_offset_ms']
+            if auto_walk and at >= expiry:
+                hand_target = (
+                    self.path(expiry)
+                    / 'hands'
+                    / identity('hand', 'Deribit', 'BTC', expiry, 'SCHEDULED', slot)
+                    / 'expected.json'
+                )
+                if hand_target.is_file() and (read(hand_target).get('plan') or {}).get('plan_id') != plan['plan_id']:
+                    continue
             hand = self.expect(expiry, 'SCHEDULED', plan=plan, slot=slot)
             if (hand / 'evidence').exists():
                 meta = self.verify_evidence(hand)
@@ -509,9 +519,10 @@ class Dossiers:
         request_hash = sha(request_bytes) if request_bytes is not None else None
         legacy_profile = getattr(player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
         p0_profile = getattr(player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
-        eff_prompt_version = prompt_version if prompt_version is not None else (
-            request_payload.get('prompt_version') if isinstance(request_payload, dict) else None
-        )
+        plan_pv = (exp.get('plan') or {}).get('prompt_version')
+        req_pv = request_payload.get('prompt_version') if isinstance(request_payload, dict) else None
+        caller_req_pv_mismatch = prompt_version is not None and req_pv is not None and prompt_version != req_pv
+        eff_prompt_version = prompt_version if prompt_version is not None else req_pv
         eff_system_sha256 = system_sha256 if system_sha256 is not None else (
             request_payload.get('system_sha256') if isinstance(request_payload, dict) else None
         )
@@ -569,71 +580,84 @@ class Dossiers:
                     status, record_error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
             # Fail-closed candidate contract gate even on direct programmatic respond() calls.
             if status == 'VALID':
-                need_review_mod = (
-                    meta.get('input_profile') == p0_profile
-                    or eff_prompt_version is not None
-                    or eff_cv is not None
-                )
-                if need_review_mod:
-                    if __package__:
-                        from . import astra_player_review_v1 as review_mod
-                    else:
-                        import astra_player_review_v1 as review_mod
-                    if meta.get('input_profile') == p0_profile and not eff_prompt_version:
-                        status, record_error = 'PARSE_FAILED', 'missing_prompt_version'
-                        eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
-                        is_non_legacy = True
-                    elif eff_prompt_version is not None and eff_prompt_version not in review_mod.INITIAL_SYSTEM_PROMPTS:
-                        status, record_error = 'PARSE_FAILED', f'unknown_prompt_version:{eff_prompt_version}'
-                        eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
-                        is_non_legacy = True
-                    elif eff_prompt_version in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS:
-                        is_non_legacy = True
-                        if eff_cv is not None and eff_cv.get('status') != 'PASSED':
-                            errs = ', '.join(((eff_cv.get('layer1_deterministic') or {}).get('blocking_errors') or []))
-                            status = 'PARSE_FAILED'
-                            record_error = f"contract_validation_failed ({eff_cv.get('status')}): {errs}"[:240]
-                            eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
-                        elif judgment['action'] == 'Accept' and not isinstance(condition_plan, dict):
-                            status, record_error = 'PARSE_FAILED', 'candidate Accept requires condition_plan'
-                            eff_error_code = 'CONTRACT_VALIDATION_FAILED'
+                if caller_req_pv_mismatch:
+                    status, record_error = 'PARSE_FAILED', f'caller_req_pv_mismatch:{prompt_version}!={req_pv}'[:240]
+                    eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                    is_non_legacy = True
+                elif meta.get('input_profile') == p0_profile and not eff_prompt_version:
+                    status, record_error = 'PARSE_FAILED', 'missing_prompt_version'
+                    eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                    is_non_legacy = True
+                elif plan_pv is not None and eff_prompt_version != plan_pv:
+                    status, record_error = 'PARSE_FAILED', f'prompt_version_plan_mismatch:{eff_prompt_version}!={plan_pv}'[:240]
+                    eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                    is_non_legacy = True
+                elif meta.get('input_profile') == p0_profile and eff_prompt_version == 'player_initial_system@1.0':
+                    status, record_error = 'PARSE_FAILED', 'p0_strict_forbids_legacy_v10_prompt'
+                    eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                    is_non_legacy = True
+                else:
+                    need_review_mod = (
+                        meta.get('input_profile') == p0_profile
+                        or eff_prompt_version is not None
+                        or eff_cv is not None
+                    )
+                    if need_review_mod:
+                        if __package__:
+                            from . import astra_player_review_v1 as review_mod
                         else:
-                            src = read(hand / 'evidence' / 'source.json')
-                            contracts_pair = {
-                                c['side']: player.bind(cs, c, c['side'])
-                                for cs, c in zip(src['cases'], src['cards'])
-                                if c.get('side') in {'put', 'call'}
-                            }
-                            plan_to_check = condition_plan
-                            if (isinstance(condition_plan, dict)
-                                    and eff_prompt_version not in getattr(review_mod, 'P5_STRICT_PROMPT_VERSIONS', ())
-                                    and 'require_outside_at_t0' not in condition_plan):
-                                plan_to_check = dict(condition_plan, require_outside_at_t0=True)
-                            try:
-                                eff_cv = review_mod.validate_initial_reply_contract(
-                                    {'raw_text': raw.decode('utf-8'), 'decision': judgment, 'condition_plan': plan_to_check},
-                                    contracts_pair,
-                                    strict_clock_5m=True,
-                                    check_excerpt_completeness=True,
-                                    require_outside_at_t0=True,
-                                )
-                            except (ValueError, TypeError, KeyError) as exc:
-                                eff_cv = {
-                                    'status': 'CONTRACT_FAILED',
-                                    'layer1_deterministic': {'valid': False, 'blocking_errors': [str(exc)], 'excerpt_checks': {}},
-                                }
-                                status, record_error = 'PARSE_FAILED', f'contract_validation_failed: {exc}'[:240]
+                            import astra_player_review_v1 as review_mod
+                        if eff_prompt_version is not None and eff_prompt_version not in review_mod.INITIAL_SYSTEM_PROMPTS:
+                            status, record_error = 'PARSE_FAILED', f'unknown_prompt_version:{eff_prompt_version}'
+                            eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                            is_non_legacy = True
+                        elif eff_prompt_version in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS:
+                            is_non_legacy = True
+                            if eff_cv is not None and eff_cv.get('status') != 'PASSED':
+                                errs = ', '.join(((eff_cv.get('layer1_deterministic') or {}).get('blocking_errors') or []))
+                                status = 'PARSE_FAILED'
+                                record_error = f"contract_validation_failed ({eff_cv.get('status')}): {errs}"[:240]
+                                eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                            elif judgment['action'] == 'Accept' and not isinstance(condition_plan, dict):
+                                status, record_error = 'PARSE_FAILED', 'candidate Accept requires condition_plan'
                                 eff_error_code = 'CONTRACT_VALIDATION_FAILED'
                             else:
-                                declared['contract_validation_status'] = eff_cv.get('status')
-                                if eff_cv.get('status') != 'PASSED':
-                                    errs = ', '.join((eff_cv.get('layer1_deterministic') or {}).get('blocking_errors') or [])
-                                    status, record_error = 'PARSE_FAILED', f"contract_validation_failed ({eff_cv.get('status')}): {errs}"[:240]
+                                src = read(hand / 'evidence' / 'source.json')
+                                contracts_pair = {
+                                    c['side']: player.bind(cs, c, c['side'])
+                                    for cs, c in zip(src['cases'], src['cards'])
+                                    if c.get('side') in {'put', 'call'}
+                                }
+                                plan_to_check = condition_plan
+                                if (isinstance(condition_plan, dict)
+                                        and eff_prompt_version not in getattr(review_mod, 'P5_STRICT_PROMPT_VERSIONS', ())
+                                        and 'require_outside_at_t0' not in condition_plan):
+                                    plan_to_check = dict(condition_plan, require_outside_at_t0=True)
+                                try:
+                                    eff_cv = review_mod.validate_initial_reply_contract(
+                                        {'raw_text': raw.decode('utf-8'), 'decision': judgment, 'condition_plan': plan_to_check},
+                                        contracts_pair,
+                                        strict_clock_5m=True,
+                                        check_excerpt_completeness=True,
+                                        require_outside_at_t0=True,
+                                    )
+                                except (ValueError, TypeError, KeyError) as exc:
+                                    eff_cv = {
+                                        'status': 'CONTRACT_FAILED',
+                                        'layer1_deterministic': {'valid': False, 'blocking_errors': [str(exc)], 'excerpt_checks': {}},
+                                    }
+                                    status, record_error = 'PARSE_FAILED', f'contract_validation_failed: {exc}'[:240]
                                     eff_error_code = 'CONTRACT_VALIDATION_FAILED'
-                    elif eff_cv is not None and eff_cv.get('status') != 'PASSED':
-                        status, record_error = 'PARSE_FAILED', record_error or 'contract_validation_failed'
-                        eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
-                        is_non_legacy = True
+                                else:
+                                    declared['contract_validation_status'] = eff_cv.get('status')
+                                    if eff_cv.get('status') != 'PASSED':
+                                        errs = ', '.join((eff_cv.get('layer1_deterministic') or {}).get('blocking_errors') or [])
+                                        status, record_error = 'PARSE_FAILED', f"contract_validation_failed ({eff_cv.get('status')}): {errs}"[:240]
+                                        eff_error_code = 'CONTRACT_VALIDATION_FAILED'
+                        elif eff_cv is not None and eff_cv.get('status') != 'PASSED':
+                            status, record_error = 'PARSE_FAILED', record_error or 'contract_validation_failed'
+                            eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                            is_non_legacy = True
         elif status not in {'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED', 'PARSE_FAILED'} or raw is not None:
             raise ValueError('invalid response status or raw payload')
         elif isinstance(error, str) and error.strip():
@@ -651,6 +675,8 @@ class Dossiers:
                       recorded_at_ms=at, input_sha256=meta['input_sha256'], parser=PARSER,
                       configuration_id=config_id, judgment=judgment, error=record_error, hand_id=hand.name)
         if is_non_legacy:
+            if eff_prompt_version is not None and 'prompt_version' not in record:
+                record['prompt_version'] = eff_prompt_version
             if eff_error_code is not None:
                 record['error_code'] = eff_error_code
             if eff_cv is not None:
@@ -678,18 +704,23 @@ class Dossiers:
         contract = player.bind(case, card, side)
         if any(frozen['contract'].get(k) != contract.get(k) for k in condition.CONTRACT_FIELDS):
             raise ValueError('frozen legs differ from evidence')
+        exp = read(hand / 'expected.json')
+        plan_pv = (exp.get('plan') or {}).get('prompt_version')
         p0_profile = getattr(player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
         att_dir = hand / 'responses' / key(decision['attempt_id'])
         att_rec = read(att_dir / 'attempt.json') if (att_dir / 'attempt.json').is_file() else {}
-        att_pv = att_rec.get('prompt_version')
-        if not att_pv and (att_dir / 'request.json').is_file():
-            att_pv = read(att_dir / 'request.json').get('prompt_version')
+        req_pv = read(att_dir / 'request.json').get('prompt_version') if (att_dir / 'request.json').is_file() else None
+        att_pv = att_rec.get('prompt_version') or req_pv
         if __package__:
             from . import astra_player_review_v1 as review_mod
         else:
             import astra_player_review_v1 as review_mod
-        if meta.get('input_profile') == p0_profile and not att_pv:
-            raise ValueError('candidate p0_strict@1 hand requires explicit prompt_version before freeze')
+        if req_pv is not None and att_rec.get('prompt_version') is not None and req_pv != att_rec.get('prompt_version'):
+            raise ValueError('selected attempt prompt_version differs from request.json')
+        if meta.get('input_profile') == p0_profile and (not att_pv or att_pv == 'player_initial_system@1.0'):
+            raise ValueError('candidate p0_strict@1 hand requires non-legacy prompt_version before freeze')
+        if plan_pv is not None and att_pv != plan_pv:
+            raise ValueError(f'selected attempt prompt_version {att_pv!r} does not match plan prompt_version {plan_pv!r}')
         if att_pv is not None and att_pv not in review_mod.INITIAL_SYSTEM_PROMPTS:
             raise ValueError(f'unknown prompt_version on selected attempt: {att_pv!r}')
         is_candidate_prompt = att_pv in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS
@@ -747,7 +778,6 @@ class Dossiers:
                 if cv.get('status') != 'PASSED':
                     errs = ', '.join((cv.get('layer1_deterministic') or {}).get('blocking_errors') or [])
                     raise ValueError(f"candidate manual freeze contract validation failed: {errs}")
-        exp = read(hand / 'expected.json')
         if tracking is not None:
             if __package__:
                 from . import astra_player_tracking_v13 as tracking_core
@@ -1264,7 +1294,8 @@ def extract_labeled_sections(text):
             heading_pending = None
             current_lines = [stripped]
         elif current_key is not None:
-            if re.match(r'^#{1,4}\s+\S', stripped) or _SHORT_LABEL_PREFIX_RE.match(cleaned_line):
+            is_list_item = bool(re.match(r'^(?:[-*•]|\d+[.)、]|[（(][一二三四五六七八九十\d]+[）)])\s*', stripped))
+            if re.match(r'^#{1,4}\s+\S', stripped) or (not is_list_item and _SHORT_LABEL_PREFIX_RE.match(cleaned_line)):
                 _flush()
             else:
                 current_lines.append(stripped)
@@ -1315,6 +1346,46 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
             clean_after = (not after.strip()) or bool(re.match(r'^\s*\n', after))
             if clean_before and clean_after:
                 return {'status': 'COMPLETE_PARAGRAPH', 'complete': True, 'matched': True, 'section': matched_section, 'coverage_ratio': 1.0}
+        elif ends_terminal and ('\n' in ex_stripped):
+            raw_lines = raw_body.splitlines()
+            non_empty = [(idx, ln.strip()) for idx, ln in enumerate(raw_lines) if ln.strip()]
+            for pos_i, (line_idx, ln_text) in enumerate(non_empty):
+                cleaned_li = re.sub(r'^(?:[-*•]|\d+[.)、])\s*', '', ln_text).replace('**', '').replace('`', '').strip()
+                m_pref = _SHORT_LABEL_PREFIX_RE.match(cleaned_li)
+                candidates = [ln_text]
+                if m_pref and cleaned_li[m_pref.end():].strip():
+                    candidates.append(cleaned_li[m_pref.end():].strip())
+                prev_ln = raw_lines[line_idx - 1].strip() if line_idx > 0 else ''
+                clean_start = (
+                    line_idx == 0
+                    or not prev_ln
+                    or bool(_TERMINAL_END_RE.search(prev_ln))
+                    or bool(re.search(r'[：:]\s*$', prev_ln))
+                    or bool(re.match(r'^(?:#{1,4}\s+\S|\*\*[^*]+\*\*\s*$)', prev_ln))
+                    or bool(re.match(r'^(?:#{1,4}\s+|[-*•]\s*|\d+[.)、]\s*|[（(][一二三四五六七八九十\d]+[）)]\s*)', ln_text))
+                )
+                for start_idx_cand, start_part in enumerate(candidates):
+                    if not (clean_start or start_idx_cand == 1):
+                        continue
+                    norm_start = _norm_excerpt(start_part)
+                    if not norm_start or not norm_ex.startswith(norm_start):
+                        continue
+                    parts = [start_part]
+                    for pos_j in range(pos_i + 1, len(non_empty)):
+                        end_line_idx, next_ln = non_empty[pos_j]
+                        parts.append(next_ln)
+                        cand_norm = _norm_excerpt('\n'.join(parts))
+                        if cand_norm == norm_ex:
+                            clean_end = (
+                                end_line_idx == len(raw_lines) - 1
+                                or not raw_lines[end_line_idx + 1].strip()
+                                or bool(_TERMINAL_END_RE.search(next_ln))
+                            )
+                            if clean_end:
+                                return {'status': 'COMPLETE_PARAGRAPH', 'complete': True, 'matched': True, 'section': matched_section, 'coverage_ratio': 1.0}
+                            break
+                        if len(cand_norm) >= len(norm_ex) or not norm_ex.startswith(cand_norm):
+                            break
         for block in re.split(r'\n\s*\n', raw_body):
             b = block.strip()
             if not b or norm_ex not in _norm_excerpt(b):
@@ -1351,14 +1422,26 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
     norm_body = _norm_excerpt(owner['body'])
     if norm_ex in (norm_raw_full, norm_full, norm_body):
         if not ends_terminal and not from_labeled_section:
-            return {
-                'status': 'MID_SENTENCE_TRUNCATION',
-                'complete': False,
-                'matched': True,
-                'section': matched_section,
-                'coverage_ratio': 1.0,
-                'missing_trailing_chars': 0,
-            }
+            trailing_connector = bool(re.search(r'[,，、:：;；(\[（\-—–]$', ex_stripped))
+            open_paren_mismatch = (
+                ex_stripped.count('(') > ex_stripped.count(')')
+                or ex_stripped.count('（') > ex_stripped.count('）')
+                or ex_stripped.count('[') > ex_stripped.count(']')
+                or ex_stripped.count('【') > ex_stripped.count('】')
+                or ex_stripped.count('「') > ex_stripped.count('」')
+                or ex_stripped.count('“') > ex_stripped.count('”')
+                or ex_stripped.count('‘') > ex_stripped.count('’')
+                or ex_stripped.count('"') % 2 == 1
+            )
+            if len(norm_ex) < 16 or trailing_connector or open_paren_mismatch:
+                return {
+                    'status': 'MID_SENTENCE_TRUNCATION',
+                    'complete': False,
+                    'matched': True,
+                    'section': matched_section,
+                    'coverage_ratio': 1.0,
+                    'missing_trailing_chars': 0,
+                }
         return {'status': 'COMPLETE_PARAGRAPH', 'complete': True, 'matched': True, 'section': matched_section, 'coverage_ratio': 1.0}
 
     idx = norm_full.find(norm_ex)
@@ -1548,23 +1631,69 @@ def main():
                 parser.exit(2, f'{exc}\n')
         elif cmd == 'response':
             meta = d.verify_evidence(hand)
+            exp = read(hand / 'expected.json')
+            plan_pv = (exp.get('plan') or {}).get('prompt_version')
             p0_profile = getattr(player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
             hand_profile = meta.get('input_profile')
             pv = args.prompt_version
             raw_bytes = args.raw.read_bytes() if args.raw else None
             ann_obj = read(args.annotation) if args.annotation else None
             c_plan_obj = read(args.condition_plan) if args.condition_plan else None
+            cfg_obj = read(args.configuration) if args.configuration else None
             sys_sha = None
             cv_report = None
             full_raw_bytes = None
-            needs_prompt_gate = (hand_profile == p0_profile) or (pv is not None and pv != 'player_initial_system@1.0')
+            needs_prompt_gate = (
+                (hand_profile == p0_profile)
+                or (plan_pv is not None and plan_pv != 'player_initial_system@1.0')
+                or (pv is not None and pv != 'player_initial_system@1.0')
+            )
             if needs_prompt_gate:
                 if __package__:
                     from . import astra_player_review_v1 as review_mod
                 else:
                     import astra_player_review_v1 as review_mod
+                gate_err = None
                 if not pv or pv not in review_mod.INITIAL_SYSTEM_PROMPTS:
-                    parser.exit(2, f'candidate response requires a known --prompt-version (got {pv!r})\n')
+                    gate_err = f'candidate response requires a known --prompt-version (got {pv!r})'
+                elif hand_profile == p0_profile and pv == 'player_initial_system@1.0':
+                    gate_err = 'p0_strict@1 hand forbids legacy player_initial_system@1.0 --prompt-version'
+                elif plan_pv is not None and pv != plan_pv:
+                    gate_err = f'--prompt-version {pv!r} does not match plan prompt_version {plan_pv!r}'
+                if gate_err is not None:
+                    if args.status == 'RECEIVED' and raw_bytes is not None:
+                        fail_sys_sha = (
+                            sha(review_mod.INITIAL_SYSTEM_PROMPTS[pv].encode('utf-8'))
+                            if pv in review_mod.INITIAL_SYSTEM_PROMPTS else None
+                        )
+                        fail_raw, fail_ann = raw_bytes, ann_obj
+                        if fail_ann is None:
+                            m_tag = re.search(
+                                r'<ANNOTATION_JSON>\s*([\s\S]*?)\s*</ANNOTATION_JSON>',
+                                raw_bytes.decode('utf-8', errors='replace'),
+                            )
+                            if m_tag:
+                                try:
+                                    tag_obj = json.loads(m_tag.group(1))
+                                    if isinstance(tag_obj, dict):
+                                        fail_ann = tag_obj
+                                        fail_raw = (
+                                            raw_bytes.decode('utf-8', errors='replace')[:m_tag.start()].rstrip() + '\n'
+                                        ).encode('utf-8')
+                                except ValueError:
+                                    pass
+                        try:
+                            d.respond(
+                                hand, args.attempt, 'RECEIVED', fail_raw, fail_ann,
+                                model=args.model, configuration=cfg_obj,
+                                requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
+                                error=gate_err, full_raw=raw_bytes, condition_plan=c_plan_obj,
+                                prompt_version=pv, system_sha256=fail_sys_sha, input_profile=hand_profile,
+                                error_code='CONTRACT_VALIDATION_FAILED',
+                            )
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
+                    parser.exit(2, f'{gate_err}\n')
                 sys_sha = sha(review_mod.INITIAL_SYSTEM_PROMPTS[pv].encode('utf-8'))
                 if args.status == 'RECEIVED' and raw_bytes is not None and pv in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS:
                     src = read(hand / 'evidence' / 'source.json')
@@ -1597,7 +1726,25 @@ def main():
                             req_stub,
                             contracts=contracts_pair,
                         )
-                    except (review_mod.ContractValidationError, ValueError, KeyError, TypeError) as exc:
+                    except review_mod.ContractValidationError as exc:
+                        parsed_fail = exc.parsed_reply if isinstance(exc.parsed_reply, dict) else {}
+                        try:
+                            d.respond(
+                                hand, args.attempt, 'RECEIVED',
+                                parsed_fail.get('raw_bytes') if parsed_fail.get('raw_bytes') is not None else raw_bytes,
+                                parsed_fail.get('annotation') if parsed_fail.get('annotation') is not None else ann_obj,
+                                model=args.model, configuration=cfg_obj,
+                                requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
+                                error=str(exc), full_raw=raw_bytes,
+                                condition_plan=parsed_fail.get('condition_plan') if parsed_fail.get('condition_plan') is not None else c_plan_obj,
+                                prompt_version=pv, system_sha256=sys_sha, input_profile=hand_profile,
+                                contract_validation=exc.contract_validation,
+                                error_code='CONTRACT_VALIDATION_FAILED',
+                            )
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
+                        parser.exit(2, f'contract validation failed: {exc}\n')
+                    except (ValueError, KeyError, TypeError) as exc:
                         parser.exit(2, f'contract validation failed: {exc}\n')
                     full_raw_bytes = raw_bytes
                     raw_bytes = parsed_cli['raw_bytes']
@@ -1606,7 +1753,7 @@ def main():
                     cv_report = parsed_cli.get('contract_validation')
             result = d.respond(hand, args.attempt, args.status, raw_bytes,
                                ann_obj, model=args.model,
-                               configuration=read(args.configuration) if args.configuration else None,
+                               configuration=cfg_obj,
                                requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
                                error=args.error, full_raw=full_raw_bytes, condition_plan=c_plan_obj,
                                prompt_version=pv, system_sha256=sys_sha, input_profile=hand_profile,
