@@ -513,8 +513,21 @@ def path_stats(record: Mapping[str, Any], points: list[list[float]], delivery: f
 
 
 class Deribit:
-    def __init__(self, transport: Callable[[str, dict[str, Any]], Any] | None = None) -> None:
+    def __init__(
+        self,
+        transport: Callable[[str, dict[str, Any]], Any] | None = None,
+        *,
+        min_book_interval_s: float = 0.35,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._live_transport = transport is None
         self.transport = transport or self._get
+        self.min_book_interval_s = max(0.0, float(min_book_interval_s)) if self._live_transport else 0.0
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last_book_mono: float | None = None
+        self._rate_limited_until_mono: float = 0.0
 
     @staticmethod
     def _get(path: str, params: dict[str, Any]) -> Any:
@@ -523,14 +536,36 @@ class Deribit:
         url = PUBLIC + path + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         timeout = expiry_structure.REQUEST_TIMEOUT_S if path in COLLECT_PATHS else 15
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            body = json.load(response)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                body = json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                raise ValueError(f"DERIBIT_HTTP_429 on {path}") from exc
+            raise
+        if isinstance(body, dict) and isinstance(body.get("error"), Mapping):
+            err = body["error"]
+            if err.get("code") == 10028 or err.get("message") == "too_many_requests":
+                raise ValueError(f"DERIBIT_HTTP_429 on {path}")
         if not isinstance(body, dict) or body.get("error") or "result" not in body:
             raise ValueError("deribit public " + path + " invalid result")
         return body["result"]
 
     def book(self, name: str) -> dict[str, Any]:
-        book = self.transport("public/get_order_book", {"instrument_name": name, "depth": 1})
+        now_m = self._monotonic()
+        if self._rate_limited_until_mono > now_m:
+            raise ValueError("DERIBIT_HTTP_429 cooldown active")
+        if self.min_book_interval_s > 0 and self._last_book_mono is not None:
+            wait_s = self._last_book_mono + self.min_book_interval_s - now_m
+            if wait_s > 0:
+                self._sleep(wait_s)
+        self._last_book_mono = self._monotonic()
+        try:
+            book = self.transport("public/get_order_book", {"instrument_name": name, "depth": 1})
+        except Exception as exc:
+            if "DERIBIT_HTTP_429" in str(exc) or getattr(exc, "code", None) in {429, "DERIBIT_HTTP_429"}:
+                self._rate_limited_until_mono = self._monotonic() + 10.0
+            raise
         if not isinstance(book, dict) or book.get("instrument_name") != name:
             raise ValueError("book mismatch " + name)
         return book
@@ -1254,25 +1289,34 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
     day = hour[:10]
     new_cases: list[tuple[str, Mapping[str, Any]]] = []
-    for key, item in displayed.items():
-        side, snap = item.get("side"), item["snapshot"]
-        slot_key = f"{hour}|{side}"
-        if slot_key in state["cases"]:
-            continue
-        try:
-            case = fetch_case(snap["snapshot_id"])
-            data = gzip.compress(json.dumps(case, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
-            rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
-            archive.write_new(rel, data, at_ms=now_ms, kind="case")
-            credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
-            state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
-            state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
-                                                     "net_credit_after_fee_btc": credit, "path": rel})
-            new_cases.append((side, case))
-            report["cases"] += 1
-        except Exception as exc:
-            report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
-    archive.save_state(state)
+    # Defer early-hour case freeze when workbench capture is PARTIAL (<2 sides) inside
+    # the first 25m so a recovering partner later in the hour does not fail the 60s pair skew limit.
+    disc_state = str(((view or {}).get("discovery_status") or {}).get("capture_state") or "").upper()
+    defer_partial_single_side = (
+        disc_state == "PARTIAL"
+        and len({item.get("side") for item in displayed.values() if item.get("side") in {"put", "call"}}) < 2
+        and (now_ms % HOUR_MS) < 25 * 60_000
+    )
+    if not defer_partial_single_side:
+        for key, item in displayed.items():
+            side, snap = item.get("side"), item["snapshot"]
+            slot_key = f"{hour}|{side}"
+            if slot_key in state["cases"]:
+                continue
+            try:
+                case = fetch_case(snap["snapshot_id"])
+                data = gzip.compress(json.dumps(case, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
+                rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
+                archive.write_new(rel, data, at_ms=now_ms, kind="case")
+                credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
+                state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
+                state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
+                                                         "net_credit_after_fee_btc": credit, "path": rel})
+                new_cases.append((side, case))
+                report["cases"] += 1
+            except Exception as exc:
+                report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
+        archive.save_state(state)
 
     states = _program_states(view)
     index_points: list[list[float]] | None = None

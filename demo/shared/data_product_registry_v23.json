@@ -729,10 +729,20 @@
       },
       "request_policy": {
         "budget_per_minute": 12,
+        "incomplete_retry_ms": 15000,
         "retry_backoff_ms": [
           3000,
           10000,
           30000
+        ],
+        "rate_limit_backoff_ms": [
+          10000,
+          20000,
+          30000
+        ],
+        "maintenance_backoff_ms": [
+          30000,
+          60000
         ]
       },
       "maintenance_ref": "tools/astra_underwriting_discovery_v20.py"
@@ -869,6 +879,12 @@
             "OK"
           ]
         },
+        "discovery_delta": {
+          "ttl_ms": 120000,
+          "allowed_data_states": [
+            "OK"
+          ]
+        },
         "health": {
           "ttl_ms": 600000,
           "allowed_data_states": [
@@ -935,10 +951,15 @@
         }
       },
       "request_policy": {
-        "budget_per_minute": 64,
+        "budget_per_minute": 120,
         "retry_backoff_ms": [
           3000,
           10000,
+          30000
+        ],
+        "rate_limit_backoff_ms": [
+          10000,
+          20000,
           30000
         ]
       },
@@ -1699,7 +1720,7 @@
       "budget_per_minute": 2
     },
     "deribit": {
-      "budget_per_minute": 64
+      "budget_per_minute": 120
     }
   }
 }

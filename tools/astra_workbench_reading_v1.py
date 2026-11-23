@@ -98,6 +98,7 @@ _PAGE_CANDIDATE_KEYS = (
     "review_validity", "review_gate", "observation_review", "lock_availability", "current_usage",
     "remaining_to_expiry_ms", "review_display", "evidence_url", "space_gate", "decision_reduction", "market_marks", "upstream", "error_type", "spatial_position",
     "exogenous_events", "entry_warnings", "readings", "unsuitable",
+    "last_valid_candidate", "discovery_status", "formal_evidence_eligible", "live_lock_eligible",
 )
 _PAGE_SNAPSHOT_DROP = {"data_identity", "origins", "llm_review"}
 _PAGE_DISPLAY_DROP = {"observation_lineage"}
@@ -121,9 +122,22 @@ def workbench_page(reading):
     health = reading.get("data_health") or {}
     products = {}
     for product_id, product in (health.get("products") or {}).items():
-        first = (product.get("current") or [None])[0]
+        entries = list(product.get("current") or [])
+        first = None
+        if product_id == "deribit.btc.discovery.current.v1":
+            primary = [
+                e for e in entries
+                if isinstance(e, dict) and isinstance(e.get("scope"), dict)
+                and e["scope"].get("capture_contract") == "complete_delta_population@1"
+            ]
+            if primary:
+                primary.sort(key=lambda e: int(e.get("observation_end_ms") or 0), reverse=True)
+                first = primary[0]
+        if first is None and entries:
+            dict_entries = [e for e in entries if isinstance(e, dict)]
+            first = max(dict_entries, key=lambda e: int(e.get("observation_end_ms") or 0)) if dict_entries else None
         products[product_id] = {
-            **{key: product.get(key) for key in ("status", "collector_id", "affected_consumers", "usage_decision") if key in product},
+            **{key: product.get(key) for key in ("status", "collector_id", "affected_consumers", "usage_decision", "capture_state", "next_retry_at_ms", "last_error_code") if key in product},
             "current": [{key: first.get(key) for key in ("usage_decision", "observation_end_ms", "data_state")}] if isinstance(first, dict) else [],
         }
     page["data_health"] = {"generated_at_ms": health.get("generated_at_ms"), "products": products}
