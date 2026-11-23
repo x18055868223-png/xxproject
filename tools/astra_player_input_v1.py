@@ -27,6 +27,9 @@ DAY = 24 * HOUR
 _CHART_DELAY_SEMANTICS = {'minute_open', 'unverified_minute_label'}
 _CHART_DIRECT_SEMANTICS = {'instant', 'minute_close'}
 _SPOT_END_CLOCK_KEYS = ('end_ts_ms', 'complete_ts_ms', 'window_end_ms', 'end_ms')
+INPUT_PROFILE_LEGACY = 'legacy_v1'
+INPUT_PROFILE_P0_STRICT = 'p0_strict@1'
+SUPPORTED_INPUT_PROFILES = (INPUT_PROFILE_LEGACY, INPUT_PROFILE_P0_STRICT)
 ARD_READING = ('\n\nARD责任判读：责任边界→入区前路径→短腿穿越与回收→ARD→量价反证→两侧择优→条件冻结。'
                '读取可得的贴近、离返、迁移事实，结合Pin相对两侧短腿的位置、当前余量与剩余期限，'
                '分别说明它支持、削弱或限制哪项承担条件；若关系延续或破坏，哪侧责任更不利。'
@@ -313,29 +316,65 @@ def chart_points_audit(index_path, expiry, cutoff):
 
 
 def extract_l2_index_observations(cases, cards):
-    """Extract independent, clock-verified Deribit L2 short-leg orderbook index observations per side."""
+    """Extract independent, clock-verified Deribit L2 short/long orderbook index observations per side."""
     observations = {}
     for side, case in cases.items():
         card = cards[side]
         read_at = card.get('read_at_ms')
+        if type(read_at) is not int:
+            continue
         short_vals = values(case, 'L2.book.short')
         quote_vals = values(case, 'L2.quote')
+        leg_rec = quote_vals.get('leg_received_ts_ms') if isinstance(quote_vals.get('leg_received_ts_ms'), Mapping) else {}
+        acq_ms = quote_vals.get('received_ts_ms')
+
         price = number(short_vals.get('index_price'))
         obs_ms = short_vals.get('timestamp')
-        acq_ms = quote_vals.get('received_ts_ms')
-        if (price is None or price <= 0 or type(obs_ms) is not int or type(acq_ms) is not int
-                or type(read_at) is not int):
-            continue
-        if not (obs_ms <= acq_ms <= read_at):
-            continue
-        observations[side] = {
-            'side': side,
-            'price_usd': price,
-            'observed_ms': obs_ms,
-            'acquired_ms': acq_ms,
-            'read_at_ms': read_at,
-            'source': 'Deribit L2.book.short.values.index_price',
-        }
+        short_acq_ms = leg_rec.get('short') if leg_rec.get('short') is not None else acq_ms
+        short_ok = (
+            price is not None and price > 0
+            and type(obs_ms) is int and type(short_acq_ms) is int
+            and obs_ms <= short_acq_ms <= read_at
+        )
+
+        long_vals = values(case, 'L2.book.long')
+        long_price = number(long_vals.get('index_price'))
+        long_obs_ms = long_vals.get('timestamp')
+        long_acq_ms = leg_rec.get('long') if leg_rec.get('long') is not None else acq_ms
+        long_ok = (
+            long_price is not None and long_price > 0
+            and type(long_obs_ms) is int and type(long_acq_ms) is int
+            and long_obs_ms <= long_acq_ms <= read_at
+        )
+
+        if short_ok:
+            obs = {
+                'side': side,
+                'price_usd': price,
+                'observed_ms': obs_ms,
+                'acquired_ms': short_acq_ms,
+                'read_at_ms': read_at,
+                'source': 'Deribit L2.book.short.values.index_price',
+            }
+            if long_ok:
+                obs.update({
+                    'long_price_usd': long_price,
+                    'long_observed_ms': long_obs_ms,
+                    'long_acquired_ms': long_acq_ms,
+                    'leg_skew_ms': abs(long_obs_ms - obs_ms),
+                    'leg_price_delta_usd': long_price - price,
+                })
+            observations[side] = obs
+        elif long_ok:
+            observations[side] = {
+                'side': side,
+                'long_only': True,
+                'long_price_usd': long_price,
+                'long_observed_ms': long_obs_ms,
+                'long_acquired_ms': long_acq_ms,
+                'read_at_ms': read_at,
+                'source': 'Deribit L2.book.long.values.index_price',
+            }
     return observations
 
 
@@ -378,7 +417,7 @@ def responsibility_trace(points, side, short):
     return {'episodes':episodes,'touches':touches}
 
 
-def short_path_text(level, points, contract, index, cutoff, scale, *, report_protection=False, chart_end_ms=None):
+def short_path_text(level, points, contract, index, cutoff, scale, *, report_protection=False, chart_end_ms=None, disclose_full_extremum=False):
     """Responsibility-relative entry/recovery, or a timed closest approach."""
     k = contract['short_strike_usd']
     direction = -1 if contract['side'] == 'put' else 1
@@ -415,11 +454,13 @@ def short_path_text(level, points, contract, index, cutoff, scale, *, report_pro
     complete = continuous(points, cutoff - DAY, end_ms)
     inside = [(t, p) for t, p in points if direction * (p - k) > 0]
     protection = contract['long_strike_usd']
-    extreme = max(inside, key=lambda x: direction * x[1], default=None) if report_protection else None
+    extreme = max(inside, key=lambda x: direction * x[1], default=None) if (report_protection or disclose_full_extremum) else None
     if not complete:
         text=('已覆盖采样曾在责任内。' if inside else '已覆盖片段未见进入，不能据此认定全窗从未进入。')
         if extreme and direction * (extreme[1] - protection) >= 0:
             text += f'已覆盖采样{stamp(extreme[0])}指数{fmt(extreme[1])}，{responsibility_zone(extreme[1], contract)}。'
+        elif disclose_full_extremum:
+            text += f'覆盖不足，无法确认全窗是否曾触及保护腿{fmt(protection)}。'
         return (text+f'24小时覆盖不足：可见采样{stamp(points[0][0])}至{stamp(points[-1][0])}；'
                 +'无法可靠比较最近接近后的余量，或确认全窗最近进入/返回与完整入区过程。'+now)
     trace=responsibility_trace(points,contract['side'],k)
@@ -463,12 +504,17 @@ def short_path_text(level, points, contract, index, cutoff, scale, *, report_pro
         text+='该段有越过保护腿的采样。'
     elif extreme and extreme[1] == protection and points[0][1] != protection:
         text += f'窗口采样{stamp(extreme[0])}指数{fmt(protection)}，曾恰好触及保护腿。'
+    if disclose_full_extremum and extreme is not None:
+        if extreme[0] != last['peak_ms'] and abs(extreme[1] - last['peak_price']) > 1e-6:
+            text += f"全窗已覆盖采样最深于{stamp(extreme[0])}，指数{fmt(extreme[1])}（深入短腿{fmt(abs(extreme[1]-k))} USD）。"
+        if direction * (extreme[1] - protection) < 0:
+            text += f"全窗已覆盖分钟采样未触及保护腿{fmt(protection)}。"
     if index!=points[-1][1]:
         text+='路径末点与读取指数不同，上述时序仅截至'+stamp(points[-1][0])+'；末点至读取过程未覆盖。'
     return text+now
 
 
-def path_section(case, card, contract, scale, roles, zones, index_path, *, report_protection=False, boundary_replaced=None):
+def path_section(case, card, contract, scale, roles, zones, index_path, *, report_protection=False, boundary_replaced=None, disclose_full_extremum=False):
     index, cutoff, side = card["index_usd"], card["read_at_ms"], contract["side"]
     rows = {r["k"]: r for r in card.get("levels") or []}
     intro = "读取前24小时的已发生路径"
@@ -509,7 +555,8 @@ def path_section(case, card, contract, scale, roles, zones, index_path, *, repor
     lines.append(f"- **短腿{fmt(short)}**" + (f"：与{attrs}同位，仅一处，不另算一站" if attrs else '：责任起点')
                  + f"；Call/Put OI {fmt(oi.get('c'))}/{fmt(oi.get('p'))} BTC。"
                  + short_path_text(level, points, contract, index, cutoff, scale,
-                                   report_protection=report_protection, chart_end_ms=chart_end_ms) + flow_text(level))
+                                   report_protection=report_protection, chart_end_ms=chart_end_ms,
+                                   disclose_full_extremum=disclose_full_extremum) + flow_text(level))
     interior = [k for k in major if min(short, long) < k < max(short, long)]
     if interior:
         k = min(interior, key=lambda k: abs(k-short))
@@ -738,7 +785,121 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
     }
 
 
-def _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts):
+_SPOT_DEGRADED_FLAGS = ('gap', 'truncated', 'cvd_degraded', 'backfill_mixed', 'window_backfill')
+
+
+def inspect_spot_qualification(row, *, cutoff=None) -> dict:
+    """Classify L5.volume_price micro_flow windows into OBSERVED_ALIGNED / OBSERVED_UNALIGNED / UNKNOWN."""
+    derived = derive_non_overlapping_spot_windows(row, cutoff=cutoff)
+    if not isinstance(row, Mapping):
+        reason = '未提供现货量价数据'
+        empty = {'status': 'UNKNOWN', 'reason': reason}
+        return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+    if cutoff is not None:
+        if not usable(row, cutoff, HOUR):
+            reason = '量价行不在可用时钟或质量未就绪'
+            empty = {'status': 'UNKNOWN', 'reason': reason}
+            return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+        row_avail = row.get('available_at_ms')
+        if type(row_avail) is int and row_avail > cutoff:
+            reason = '量价行可得时钟晚于截止'
+            empty = {'status': 'UNKNOWN', 'reason': reason, 'future_excluded': True}
+            return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+    elif row.get('quality') is not None and row.get('quality') != 'ok':
+        reason = '量价行质量未就绪'
+        empty = {'status': 'UNKNOWN', 'reason': reason}
+        return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+
+    vals = row.get('values') if isinstance(row.get('values'), Mapping) else {}
+    micro = vals.get('micro_flow') if isinstance(vals.get('micro_flow'), Mapping) else {}
+
+    def classify_window(name):
+        w = micro.get(name)
+        if not isinstance(w, Mapping):
+            return {'status': 'UNKNOWN', 'reason': f'缺少{name}现货窗口'}
+        if w.get('data_ready') is not True or w.get('cvd_unit') != 'BTC':
+            return {'status': 'UNKNOWN', 'reason': f'{name}未就绪或单位非BTC'}
+        cvd = number(w.get('cvd_sum'))
+        ret = number(w.get('momentum_return_pct'))
+        if ret is None:
+            ret = number(w.get('price_return_pct'))
+        if cvd is None or ret is None:
+            return {'status': 'UNKNOWN', 'reason': f'{name}净主动量或涨跌幅缺失'}
+        end_ms, err = _extract_spot_end_clock(w)
+        avail = w.get('available_at_ms')
+        raw_future_end = cutoff is not None and any(
+            type(w.get(k)) is int and w[k] > cutoff for k in _SPOT_END_CLOCK_KEYS
+        )
+        future_end = cutoff is not None and end_ms is not None and end_ms > cutoff
+        future_avail = cutoff is not None and type(avail) is int and avail > cutoff
+        if future_end or raw_future_end or future_avail:
+            return {
+                'status': 'UNKNOWN',
+                'reason': f'{name}完成或可得时钟晚于截止（排除未来数据）',
+                'future_excluded': True,
+            }
+        align_reasons = []
+        if w.get('bar_complete') is False:
+            align_reasons.append(f'{name}存在未完成柱(bar_complete=false)')
+        for flag in _SPOT_DEGRADED_FLAGS:
+            for scope in (row, vals, micro, w):
+                if scope.get(flag) is True or (flag not in ('gap',) and scope.get(flag)):
+                    align_reasons.append(f'{name}存在质量降级标记({flag})')
+                    break
+        if err == 'missing' or end_ms is None:
+            align_reasons.append(f'{name}缺少窗口完成时钟')
+        elif err is not None:
+            align_reasons.append(f'{name}{err}')
+        if avail is not None and type(avail) is not int:
+            align_reasons.append(f'{name}可得时钟格式无效')
+        if align_reasons:
+            return {
+                'status': 'OBSERVED_UNALIGNED',
+                'cvd_sum': cvd,
+                'return_pct': ret,
+                'end_ms': end_ms,
+                'available_at_ms': avail if type(avail) is int else None,
+                'bar_complete': w.get('bar_complete'),
+                'reason': '；'.join(align_reasons),
+            }
+        return {
+            'status': 'OBSERVED_ALIGNED',
+            'cvd_sum': cvd,
+            'return_pct': ret,
+            'end_ms': end_ms,
+            'available_at_ms': avail,
+            'bar_complete': w.get('bar_complete'),
+            'reason': 'ok',
+        }
+
+    fast_info = classify_window('fast_4h')
+    slow_info = classify_window('slow_12h')
+    fast_st, slow_st = fast_info['status'], slow_info['status']
+    if fast_st == 'OBSERVED_ALIGNED':
+        overall = 'OBSERVED_ALIGNED'
+        reason = 'ok' if slow_st == 'OBSERVED_ALIGNED' else f"近12小时：{slow_info['reason']}"
+    elif fast_st == 'OBSERVED_UNALIGNED':
+        overall = 'OBSERVED_UNALIGNED'
+        reason = fast_info['reason']
+    elif fast_st == 'UNKNOWN' and slow_st == 'OBSERVED_ALIGNED':
+        overall = 'OBSERVED_ALIGNED_SLOW_ONLY'
+        reason = f"近4小时：{fast_info['reason']}"
+    elif slow_st == 'OBSERVED_UNALIGNED':
+        overall = 'OBSERVED_UNALIGNED'
+        reason = slow_info['reason']
+    else:
+        overall = 'UNKNOWN'
+        reason = fast_info['reason'] if fast_st == 'UNKNOWN' else slow_info['reason']
+    return {
+        'status': overall,
+        'fast_4h': fast_info,
+        'slow_12h': slow_info,
+        'derived': derived,
+        'reason': reason,
+    }
+
+
+def _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts, *, strict=False):
     parts = []
     if boundary_replaced:
         fetched = next((a['fetched_at_ms'] for a in chart_audits.values() if a.get('fetched_at_ms') is not None), None)
@@ -750,11 +911,24 @@ def _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts):
             f"{'、'.join(stamp(t) for t in labels)}，图表路径仅截至合格分钟标签"
             f"{'、'.join(stamp(t) for t in elig)}{fetched_txt}；不以未完结图表桶充当读取时当前指数或断言读取时区内外。"
         )
-    if l2_obs and boundary_replaced:
+    if l2_obs and (boundary_replaced or strict):
         obs_items = []
         for s in ('put', 'call'):
             obs = l2_obs.get(s)
             if not obs:
+                continue
+            if obs.get('long_only'):
+                if not strict:
+                    continue
+                lp = obs['long_price_usd']
+                rel_parts = [
+                    f"{sn.title()}短腿{fmt(c['short_strike_usd'])}{responsibility_zone(lp, c)}（距{fmt(abs(lp - c['short_strike_usd']))} USD）"
+                    for sn, c in contracts.items()
+                ]
+                obs_items.append(
+                    f"{s.title()}保护腿原生盘口{stamp(obs['long_observed_ms'])}（取得{stamp(obs['long_acquired_ms'])}）"
+                    f"见指数{lp:,.2f} USD（短腿盘口未就绪；{'；'.join(rel_parts)}）"
+                )
                 continue
             price = obs['price_usd']
             rel_parts = []
@@ -762,10 +936,16 @@ def _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts):
                 zone = responsibility_zone(price, c)
                 dist = abs(price - c['short_strike_usd'])
                 rel_parts.append(f"{side_name.title()}短腿{fmt(c['short_strike_usd'])}{zone}（距{fmt(dist)} USD）")
-            obs_items.append(
+            item = (
                 f"{s.title()}原生盘口{stamp(obs['observed_ms'])}（取得{stamp(obs['acquired_ms'])}）"
                 f"见指数{price:,.2f} USD（{'；'.join(rel_parts)}）"
             )
+            if strict and 'long_price_usd' in obs:
+                item += (
+                    f"，保护腿盘口{stamp(obs['long_observed_ms'])}见指数{obs['long_price_usd']:,.2f} USD"
+                    f"（串行两腿时差{obs['leg_skew_ms']}ms、价差{obs['leg_price_delta_usd']:+.2f} USD）"
+                )
+            obs_items.append(item)
         if obs_items:
             parts.append(
                 "Deribit原生盘口独立观测：" + "；".join(obs_items)
@@ -774,9 +954,31 @@ def _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts):
     return " ".join(parts)
 
 
+def ard_facts_for_evidence(ard_history, index_path, *, expiry_ms, cutoff_ms,
+                           band_snapshot=None, input_profile=INPUT_PROFILE_LEGACY):
+    """Compute canonical ARD facts consistent between build_input, condition_at_t0, and episode freeze."""
+    strict_profile = input_profile == INPUT_PROFILE_P0_STRICT
+    ard_index_path = index_path
+    if isinstance(index_path, Mapping) and _chart_semantics(index_path) in _CHART_DELAY_SEMANTICS:
+        ard_pts = chart_points_audit(index_path, expiry_ms, cutoff_ms)['eligible']
+        ard_index_path = dict(index_path, points=[[t, p] for t, p in ard_pts])
+    return ard.analyze(
+        ard_history,
+        ard_index_path,
+        expiry_ms=expiry_ms,
+        cutoff_ms=cutoff_ms,
+        band_snapshot=band_snapshot,
+        strict_asof=strict_profile,
+    )
+
+
 def build_input(put_case, call_case, put_card, call_card, *, events=None, index_path=None,
-                ard_history=None, ard_band_snapshot=None, include_ard=True):
+                ard_history=None, ard_band_snapshot=None, include_ard=True,
+                input_profile=INPUT_PROFILE_LEGACY):
     """Return player-facing Markdown. Raises HandNotDealt before rendering on known events."""
+    if input_profile not in SUPPORTED_INPUT_PROFILES:
+        raise ValueError(f'unsupported input_profile: {input_profile}')
+    strict_profile = input_profile == INPUT_PROFILE_P0_STRICT
     cases, raw_cards = {"put": put_case, "call": call_case}, {"put": put_card, "call": call_card}
     contracts = {s: bind(cases[s], raw_cards[s], s) for s in cases}
     pc, cc = contracts["put"], contracts["call"]
@@ -819,7 +1021,7 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         responsibility.append(f"{s.title()}：{idx_label}，{responsibility_zone(card['index_usd'], c)}；卖{fmt(c['short_strike_usd'])}、买{fmt(c['long_strike_usd'])}，"
                               f"责任区{fmt(lo)}–{fmt(hi)} USD，数量{fmt(c['quantity_btc'])} BTC。"
                               f"入区前主结构由近到远：{route}。短腿距离{distance(abs(card['index_usd']-c['short_strike_usd']), scale)}。")
-    dual_asof_note = _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts)
+    dual_asof_note = _format_dual_asof_notes(boundary_replaced, chart_audits, l2_obs, contracts, strict=strict_profile)
     if dual_asof_note:
         responsibility.append(dual_asof_note)
     if scales['put'] == scales['call']:
@@ -864,62 +1066,130 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
     ard_text = ''
     if include_ard:
         min_read = min(c['read_at_ms'] for c in cards.values())
-        ard_index_path = index_path
-        if isinstance(index_path, Mapping) and _chart_semantics(index_path) in _CHART_DELAY_SEMANTICS:
-            ard_pts = chart_points_audit(index_path, pc['expiry_ms'], min_read)['eligible']
-            ard_index_path = dict(index_path, points=[[t, p] for t, p in ard_pts])
-        ard_facts = ard.analyze(ard_history, ard_index_path, expiry_ms=pc['expiry_ms'],
-                                cutoff_ms=min_read,
-                                band_snapshot=ard_band_snapshot)
+        ard_facts = ard_facts_for_evidence(
+            ard_history,
+            index_path,
+            expiry_ms=pc['expiry_ms'],
+            cutoff_ms=min_read,
+            band_snapshot=ard_band_snapshot,
+            input_profile=input_profile,
+        )
         current_pin = (values(put_case,'L3.expiry_walls').get('walls') or {}).get('pin')
-        ard_text = '\n\n'+ard.render(ard_facts,current_pin=current_pin)
+        ard_text = '\n\n'+ard.render(ard_facts,current_pin=current_pin,disclose_backfill=strict_profile)
     sections = [path_section(cases[s],cards[s],contracts[s],scales[s],*groups[s],index_path,
                              report_protection=include_ard,
-                             boundary_replaced=boundary_replaced.get(s)) for s in cases]
-    spot = []
+                             boundary_replaced=boundary_replaced.get(s),
+                             disclose_full_extremum=strict_profile) for s in cases]
     row = entry(put_case, 'L5.volume_price')
-    micro = (row.get('values') or {}).get('micro_flow') or {}
-    derived = derive_non_overlapping_spot_windows(row, cutoff=cutoff)
-    if usable(row, cutoff, HOUR):
-        for key, label in [('fast_4h', '近4小时'), ('slow_12h', '近12小时')]:
-            f = micro.get(key) or {}
-            cvd = number(f.get('cvd_sum'))
-            ret = number(f.get('momentum_return_pct'))
-            if ret is None:
-                ret = number(f.get('price_return_pct'))
-            if f.get('data_ready') is True and f.get('cvd_unit') == 'BTC' and cvd is not None and ret is not None:
+    if strict_profile:
+        spot_qual = inspect_spot_qualification(row, cutoff=cutoff)
+        derived = spot_qual['derived']
+        fast_q, slow_q = spot_qual['fast_4h'], spot_qual['slow_12h']
+        spot_items = []
+        for key, label, q in (('fast_4h', '近4小时', fast_q), ('slow_12h', '近12小时', slow_q)):
+            if q['status'] in ('OBSERVED_ALIGNED', 'OBSERVED_UNALIGNED'):
+                cvd, ret = q['cvd_sum'], q['return_pct']
                 same = '同向' if cvd * ret > 0 else '不一致' if cvd * ret < 0 else '无明确同向'
                 flow = '净主动成交持平' if cvd == 0 else f"净主动{'买' if cvd > 0 else '卖'}{fmt(abs(cvd))} BTC"
                 rate_text = ''
                 if derived.get('comparable'):
                     rate_val = derived['fast' if key == 'fast_4h' else 'slow']['cvd_rate_btc_per_h']
                     rate_text = f"（{rate_val:+.1f} BTC/h）"
-                spot.append(f"{label}现货成交柱{flow}{rate_text}、价格变化{ret:+.2f}%，价流{same}")
-        if derived.get('comparable'):
-            prev = derived['previous_8h']
-            prev_cvd, prev_ret, prev_rate = prev['cvd_sum'], prev['return_pct'], prev['cvd_rate_btc_per_h']
-            prev_same = '同向' if prev_cvd * prev_ret > 0 else '不一致' if prev_cvd * prev_ret < 0 else '无明确同向'
-            prev_flow = '净主动成交持平' if prev_cvd == 0 else f"净主动{'买' if prev_cvd > 0 else '卖'}{fmt(abs(prev_cvd))} BTC"
-            ret_basis = '两端价差' if prev['return_method'] == 'endpoints' else '复合'
-            spot.append(
-                f"前8小时不重叠窗口（相对读牌[-12h, -4h]，约{prev['hours']:.1f}h，同源推导）"
-                f"{prev_flow}（{prev_rate:+.1f} BTC/h）、{ret_basis}价格变化{prev_ret:+.2f}%，价流{prev_same}；"
-                f"与近4小时对照：{derived['direction_transition']['summary']}"
+                unaligned_note = ''
+                if q['status'] == 'OBSERVED_UNALIGNED' and (fast_q['status'] == 'OBSERVED_ALIGNED' or slow_q['status'] == 'OBSERVED_ALIGNED'):
+                    unaligned_note = f"（未对齐观测：{q['reason']}，不作12h减4h相减）"
+                spot_items.append(f"{label}现货成交柱{flow}{rate_text}、价格变化{ret:+.2f}%，价流{same}{unaligned_note}")
+        if fast_q['status'] == 'OBSERVED_ALIGNED':
+            if derived.get('comparable'):
+                prev = derived['previous_8h']
+                prev_cvd, prev_ret, prev_rate = prev['cvd_sum'], prev['return_pct'], prev['cvd_rate_btc_per_h']
+                prev_same = '同向' if prev_cvd * prev_ret > 0 else '不一致' if prev_cvd * prev_ret < 0 else '无明确同向'
+                prev_flow = '净主动成交持平' if prev_cvd == 0 else f"净主动{'买' if prev_cvd > 0 else '卖'}{fmt(abs(prev_cvd))} BTC"
+                ret_basis = '两端价差' if prev['return_method'] == 'endpoints' else '复合'
+                spot_items.append(
+                    f"前8小时不重叠窗口（相对读牌[-12h, -4h]，约{prev['hours']:.1f}h，同源推导）"
+                    f"{prev_flow}（{prev_rate:+.1f} BTC/h）、{ret_basis}价格变化{prev_ret:+.2f}%，价流{prev_same}；"
+                    f"与近4小时对照：{derived['direction_transition']['summary']}"
+                )
+            else:
+                spot_items.append(f"未作12h减4h不重叠相减（{derived['reason']}）")
+            spot_text = (
+                '【OBSERVED_ALIGNED】'
+                + '；'.join(spot_items)
+                + '。区分三点：近4小时若存在可核验的不利价流同向压力，须明确作为当前已成立的反证（不因“增强未确认”或近5分钟小幅回落自动抵消）；'
+                + '可比不重叠前8h→近4h反映历史阶段切换或延续；最近更短窗口是否继续增强才需要更高频新窗确认。'
             )
-        elif spot:
-            spot.append(f"未作12h减4h不重叠相减（{derived['reason']}）")
-    if spot:
-        spot_text = (
-            '；'.join(spot)
-            + '。区分三点：近4小时若存在可核验的不利价流同向压力，须明确作为当前已成立的反证（不因“增强未确认”或近5分钟小幅回落自动抵消）；'
-            + '可比不重叠前8h→近4h反映历史阶段切换或延续；最近更短窗口是否继续增强才需要更高频新窗确认。'
-        )
-        if include_ard:
-            spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
-                          f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
-                          "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+            if include_ard and row.get('asof_ms') is not None:
+                spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
+                              f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
+                              "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+        elif fast_q['status'] == 'UNKNOWN' and slow_q['status'] == 'OBSERVED_ALIGNED':
+            spot_text = (
+                '【OBSERVED_ALIGNED（仅12h可用；近4h为UNKNOWN）】'
+                + '；'.join(spot_items)
+                + f"。近4小时现货窗口不可用或被时钟排除（{fast_q['reason']}），不得推定当前短窗反证，亦不将缺失当作无压力证明。"
+            )
+            if include_ard and row.get('asof_ms') is not None:
+                spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
+                              f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
+                              "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+        elif spot_qual['status'] == 'OBSERVED_UNALIGNED' or (spot_items and fast_q['status'] == 'OBSERVED_UNALIGNED'):
+            reason_str = fast_q['reason'] if fast_q['status'] == 'OBSERVED_UNALIGNED' else spot_qual['reason']
+            spot_text = (
+                '【OBSERVED_UNALIGNED】'
+                + '；'.join(spot_items)
+                + f"。因窗口完成时钟或对齐/质量未证实，仅作未对齐观测记录，不可升格为当前已成立反证；未作12h减4h不重叠相减（{reason_str}）。"
+            )
+            if include_ard and row.get('asof_ms') is not None:
+                spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
+                              f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
+                              "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+        else:
+            spot_text = '【UNKNOWN】现货成交限定不可用或缺失；不得将缺失当作无压力证明，继续依据位置与路径判断。'
     else:
-        spot_text = '现货成交限定未提供；继续依据位置与路径判断。'
+        spot = []
+        micro = (row.get('values') or {}).get('micro_flow') or {}
+        derived = derive_non_overlapping_spot_windows(row, cutoff=cutoff)
+        if usable(row, cutoff, HOUR):
+            for key, label in [('fast_4h', '近4小时'), ('slow_12h', '近12小时')]:
+                f = micro.get(key) or {}
+                cvd = number(f.get('cvd_sum'))
+                ret = number(f.get('momentum_return_pct'))
+                if ret is None:
+                    ret = number(f.get('price_return_pct'))
+                if f.get('data_ready') is True and f.get('cvd_unit') == 'BTC' and cvd is not None and ret is not None:
+                    same = '同向' if cvd * ret > 0 else '不一致' if cvd * ret < 0 else '无明确同向'
+                    flow = '净主动成交持平' if cvd == 0 else f"净主动{'买' if cvd > 0 else '卖'}{fmt(abs(cvd))} BTC"
+                    rate_text = ''
+                    if derived.get('comparable'):
+                        rate_val = derived['fast' if key == 'fast_4h' else 'slow']['cvd_rate_btc_per_h']
+                        rate_text = f"（{rate_val:+.1f} BTC/h）"
+                    spot.append(f"{label}现货成交柱{flow}{rate_text}、价格变化{ret:+.2f}%，价流{same}")
+            if derived.get('comparable'):
+                prev = derived['previous_8h']
+                prev_cvd, prev_ret, prev_rate = prev['cvd_sum'], prev['return_pct'], prev['cvd_rate_btc_per_h']
+                prev_same = '同向' if prev_cvd * prev_ret > 0 else '不一致' if prev_cvd * prev_ret < 0 else '无明确同向'
+                prev_flow = '净主动成交持平' if prev_cvd == 0 else f"净主动{'买' if prev_cvd > 0 else '卖'}{fmt(abs(prev_cvd))} BTC"
+                ret_basis = '两端价差' if prev['return_method'] == 'endpoints' else '复合'
+                spot.append(
+                    f"前8小时不重叠窗口（相对读牌[-12h, -4h]，约{prev['hours']:.1f}h，同源推导）"
+                    f"{prev_flow}（{prev_rate:+.1f} BTC/h）、{ret_basis}价格变化{prev_ret:+.2f}%，价流{prev_same}；"
+                    f"与近4小时对照：{derived['direction_transition']['summary']}"
+                )
+            elif spot:
+                spot.append(f"未作12h减4h不重叠相减（{derived['reason']}）")
+        if spot:
+            spot_text = (
+                '；'.join(spot)
+                + '。区分三点：近4小时若存在可核验的不利价流同向压力，须明确作为当前已成立的反证（不因“增强未确认”或近5分钟小幅回落自动抵消）；'
+                + '可比不重叠前8h→近4h反映历史阶段切换或延续；最近更短窗口是否继续增强才需要更高频新窗确认。'
+            )
+            if include_ard:
+                spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
+                              f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
+                              "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+        else:
+            spot_text = '现货成交限定未提供；继续依据位置与路径判断。'
     # The without-ARD mode is a replay of the frozen first-order baseline.
     decision_policy = (
         '至少一侧责任路径条件可接受时，必须Accept并选侧。只有Put和Call分别有足以排除其承担条件的具体不利事实，才Reject。'
@@ -932,6 +1202,10 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         if include_ard else ''
     )
     rejection_output = 'Reject分别写明两侧排除承担条件的具体依据' if include_ard else 'Reject分别写两侧反证'
+    profile_line = (
+        '输入规范：p0_strict@1（严格as-of；未对齐观测不升格为已成立反证；缺失不等于否定）。\n\n'
+        if strict_profile else ''
+    )
     hours=(pc['expiry_ms']-max(c['read_at_ms'] for c in cards.values()))/HOUR
     return f"""# AI牌手完整输入
 
@@ -952,7 +1226,7 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 ## 本局牌面
 
-1. **责任。** {' '.join(responsibility)} 已在责任内或行走方向之外的位置不作为入区前缓冲。
+{profile_line}1. **责任。** {' '.join(responsibility)} 已在责任内或行走方向之外的位置不作为入区前缓冲。
 
 2. **空间背景：尺度、体制、翻转轴、Pin。** {scale_text} {pin_text}{ard_text}
 
@@ -997,6 +1271,7 @@ def main():
     parser.add_argument('--ard-history',help='existing per-expiry structure JSONL; needs actual availability clocks')
     parser.add_argument('--ard-band-snapshot',help='optional native FMZ snapshot with explicit band_half known before ARD window')
     parser.add_argument('--without-ard',action='store_true',help='historical replay only: reproduce the unchanged first-order baseline (A)')
+    parser.add_argument('--input-profile',choices=list(SUPPORTED_INPUT_PROFILES),default=INPUT_PROFILE_LEGACY,help='input rendering profile (default: legacy_v1)')
     parser.add_argument('--out',required=True)
     args=parser.parse_args()
     if args.archive:
@@ -1038,7 +1313,8 @@ def main():
                          index_path=read_json(args.index_path) if args.index_path else None,
                          ard_history=[json.loads(line) for line in Path(args.ard_history).read_text(encoding='utf-8-sig').splitlines() if line.strip()] if args.ard_history else None,
                          ard_band_snapshot=read_json(args.ard_band_snapshot) if args.ard_band_snapshot else None,
-                         include_ard=not args.without_ard)
+                         include_ard=not args.without_ard,
+                         input_profile=args.input_profile)
     except HandNotDealt as exc:
         parser.exit(2,str(exc)+'\n')
     with Path(args.out).open('x',encoding='utf-8') as stream:

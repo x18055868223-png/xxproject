@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import inspect
 import json
 import math
@@ -39,6 +40,8 @@ HOLD_VERDICTS = ("HOLD", "REVOKE", "UNKNOWN")
 DEFAULT_CHAT_ENDPOINT = signal_llm_review.OPENAI_CHAT_COMPLETIONS_ENDPOINT
 MODEL_REQUEST_SCHEMA = "astra_player_model_request@1.0"
 INITIAL_SYSTEM_PROMPT_VERSION = "player_initial_system@1.0"
+CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION = "player_initial_system@1.1-candidate"
+P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION = "player_initial_system@1.2-p5-candidate"
 INITIAL_SYSTEM_PROMPT = (
     "你是承保影子牌手。请完整阅读冻结牌面并用中文作答。\n"
     "【核心术语公理】\n"
@@ -54,6 +57,65 @@ INITIAL_SYSTEM_PROMPT = (
     "5. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`（必须是合法 JSON 对象）。其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` 必须是**从上方中文正文原封不动逐字复制（verbatim substring）的非空连续片段**——不要删改、浓缩、跨段拼接或替换任何字词、数字、标点或符号；`depends_on_ard` 必须是显式布尔值。\n"
     "6. 若结论为 Accept，`<ANNOTATION_JSON>` 中必须包含 `condition_plan` 对象（不能是字符串），含：`invalidation`（仅限 `\"new_entry\"` 或 `\"entry_not_returned\"`）、`check_interval_ms`（默认 `300000`，整分钟毫秒）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须是**从上方中文正文原封不动逐字复制的连续片段**，任意改写或浓缩都会导致解析失败作废），以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，还须提供逐字复制自正文的 `ard_responsibility_meaning` 与 `ard_review_on`。"
 )
+CANDIDATE_INITIAL_SYSTEM_PROMPT = (
+    "你是承保影子牌手。请完整阅读冻结牌面并用中文作答。\n"
+    "【核心术语与程序边界公理】\n"
+    "- 价差内部区间与单侧机械入区：卖出短腿与保护腿之间仅描述价差内部亏损带（Put 为保护腿至短腿之间，Call 为短腿至保护腿之间）；"
+    "但程序机械判断（responsibility_trace / check_condition）以卖出短腿为单侧入区门槛——Put 分钟采样严格低于短腿、Call 分钟采样严格高于短腿即记为严格进入"
+    "（包括两腿之间、恰好触及保护腿边界以及已越过保护腿外侧），触及短腿边界本身既不算新进入也不算严格返回，只有严格回到短腿外侧才算返回。\n"
+    "- 本期尺度：指本期到期隐含波动给出的 `expected_move_usd` 预期波动尺度。\n"
+    "- Pin / 墙：仅作当前空间结构位置参照，不带方向性，不构成价格吸附保证。\n"
+    "- ARD：仅衡量过去 4 小时围绕同到期已知 Pin 的历史贴近、离返与迁移事实，不做未来方向预测。\n"
+    "【作答与规则锁定】\n"
+    "1. 在正文开头或明确独立标题行写出唯一结论：`## Accept / Put`、`## Accept / Call`、`## Reject` 或 `## Unknown`。\n"
+    "2. 正文按固定语义段各自先写一段连贯完整的中文整句段落（尽量不用分点或反引号）：`Put路径判断：`、`Call路径判断：`、`Put最强反证：`、`Call最强反证：`、`两侧对比择优：`，以及（若 Accept）`冻结历史事实：`、`承担条件：`、`破坏确认口径：`（与 `ARD判读：`）。\n"
+    "3. `承担条件`（C）必须独立于机械破坏（M），且同时写清四要素：（1）冻结时已正面承担的最强不利事实；（2）该不利事实尚未排除当前承担依据的理由；（3）尚未消除的关键来源、时钟或覆盖不确定性；（4）未来出现何种独立于机械越界、同口径可核验的新增事实将触发对原依据的实质重审。严禁写成“只要未确认入区/未触发 M 就继续承保”。\n"
+    "4. `破坏确认口径`（M）由程序按固定合约与规则校验：仅支持 `\"new_entry\"`（入场后出现严格越过短腿采样即触发，含保护腿边界与外侧）或 `\"entry_not_returned\"`（入场后严格越过短腿且至固定检查点仍未严格回到短腿外侧才触发），固定检查钟按 UTC 每 5 分钟网格（`check_interval_ms = 300000`）执行，不得自行改变单侧边界、保护腿含义、采样来源或检查时钟。\n"
+    "5. 在正文最后附带 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`（合法 JSON 对象）。其中 `put`、`call`、`comparison`、`put_counter`、`call_counter` 必须是**从上方对应中文段落完整逐字复制的全文片段**——禁止只摘前半段、漏掉结论句或在词语/句子中途截断；`depends_on_ard` 必须是显式布尔值。\n"
+    "6. 若结论为 Accept，`<ANNOTATION_JSON>` 须包含 `condition_plan` 对象，含 `invalidation`（`\"new_entry\"` 或 `\"entry_not_returned\"`）、`check_interval_ms`（固定 `300000`）、`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（三者均须完整逐字复制自对应段落全文），以及可选 `require_outside_at_t0`（布尔）；若 `depends_on_ard` 为 true，须同时逐字提供 `ard_responsibility_meaning` 与 `ard_review_on`。"
+)
+P5_CANDIDATE_INITIAL_SYSTEM_PROMPT = (
+    "你是承保影子牌手。请完整阅读冻结牌面并用中文作答。\n"
+    "【核心术语与机械公理】\n"
+    "- 单侧机械边界：短腿与保护腿之间仅描述价差几何亏损带，不构成机械上限。"
+    "Put 分钟采样严格低于短腿、Call 严格高于短腿即记为严格进入（含保护腿边界与外侧）；"
+    "触及短腿不算进入也不算返回，严格回到短腿外侧才算返回。\n"
+    "- 检查时钟：首次检查为入场后下一 UTC 整分钟，之后每 5 分钟（`check_interval_ms = 300000`）步进；"
+    "不要写成自然 `:00/:05` 整点网格或 60 分钟锚点。\n"
+    "- 本期尺度：到期隐含波动给出的 `expected_move_usd`；Pin/墙仅作空间参照不带方向性；"
+    "ARD 仅衡量过去 4 小时围绕同到期 Pin 的贴近、离返与迁移事实。\n"
+    "【作答与规则锁定】\n"
+    "1. 正文开头或独立标题行写出唯一结论：`## Accept / Put`、`## Accept / Call`、`## Reject` 或 `## Unknown`。\n"
+    "2. 正文以连贯完整的中文自然段分别写清 Put 路径判断、Call 路径判断、Put 最强反证、Call 最强反证与两侧对比择优；"
+    "若 Accept，另写清冻结历史事实、承担条件（C）、破坏确认口径（M）及（若依赖 ARD）ARD 责任相关性与复核变化；"
+    "每段请写完整句，摘录段尽量不用分点或反引号。\n"
+    "3. 机械破坏口径（M）仅支持 `\"new_entry\"`（入场后出现严格越过短腿采样即触发）或 "
+    "`\"entry_not_returned\"`（入场后严格越过短腿且至检查点仍未严格回到短腿外侧才触发），"
+    "按上述 5 分钟时钟执行且须锁定 `require_outside_at_t0 = true`。\n"
+    "4. 承担条件（C，对应 `accepted_conditions`）须独立于机械 M，简明写清四项："
+    "（1）冻结时正面承担的最强已知不利事实；（2）尚未排除承保依据的理由；"
+    "（3）关键来源、时钟或覆盖不确定性（标明 `OBSERVED_UNALIGNED` 或 `UNKNOWN`，严禁将资料缺失或未证实表述为“从未发生”）；"
+    "（4）独立于机械 M、可在越界前由系统盘中真实数据源复核的未来证伪事实（短腿外侧剩余余量与路径演变、时钟对齐后的同源 4h/12h 现货主动流、同口径本期 Pin/ARD 迁移）。"
+    "仅在机械越界后才成立的条件不算独立前置 C；不可观测项标 `UNKNOWN`；C 触发仅启动独立复核与留痕，不授权自动退出或交易。\n"
+    "5. 文末附 `<ANNOTATION_JSON>...</ANNOTATION_JSON>`（合法 JSON 对象）："
+    "`put`、`call`、`comparison`、`put_counter`、`call_counter` 须为上方正文逐字复制的完整连贯段落（禁止删改、浓缩或句中截断）；`depends_on_ard` 为显式布尔值。\n"
+    "6. 若 Accept，须含 `condition_plan` 对象：`invalidation`（`\"new_entry\"` 或 `\"entry_not_returned\"`）、"
+    "`check_interval_ms`（`300000`）、`require_outside_at_t0`（`true`）、"
+    "`historical_facts`、`accepted_conditions`、`confirmation_excerpt`（均完整逐字复制自正文）；"
+    "若 `depends_on_ard` 为 `true`，须在 `condition_plan` 内逐字提供 `ard_responsibility_meaning` 与 `ard_review_on`。"
+)
+INITIAL_SYSTEM_PROMPTS = {
+    INITIAL_SYSTEM_PROMPT_VERSION: INITIAL_SYSTEM_PROMPT,
+    CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION: CANDIDATE_INITIAL_SYSTEM_PROMPT,
+    P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION: P5_CANDIDATE_INITIAL_SYSTEM_PROMPT,
+}
+CANDIDATE_STRICT_PROMPT_VERSIONS = frozenset({
+    CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+    P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+})
+P5_STRICT_PROMPT_VERSIONS = frozenset({
+    P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+})
 HOLD_REVIEW_SYSTEM_PROMPT_VERSION = "player_hold_system@1.0"
 HOLD_REVIEW_SYSTEM_PROMPT = "你是中性回路影子持仓复核 AI。只可基于增量牌面输出 HOLD、REVOKE 或 UNKNOWN，严禁改选 Put/Call，严禁推翻已触发的 CONDITION_TRIGGERED。"
 _BANNED_REQUEST_KEYS = frozenset({
@@ -154,6 +216,30 @@ def _utc(ms: Any) -> str:
     if not isinstance(ms, int) or isinstance(ms, bool):
         return "未知时间"
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_canonical_json(obj: Any) -> str:
+    raw = json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+class ContractValidationError(ValueError):
+    """Raised when a parsed initial reply fails strict candidate contract checks while preserving parsed artifacts."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        parsed_reply: Mapping[str, Any] | None = None,
+        contract_validation: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.parsed_reply = dict(parsed_reply) if isinstance(parsed_reply, Mapping) else {}
+        self.contract_validation = dict(contract_validation) if isinstance(contract_validation, Mapping) else {}
 
 
 def _normalize_endpoint(endpoint: str | None) -> str:
@@ -446,8 +532,10 @@ def _build_model_request_payload(
 def build_initial_request_payload(
     input_md_text: str,
     *,
-    contract_pair: Any,
-    model: str | None,
+    contract_pair: Any = None,
+    model: str | None = None,
+    prompt_version: str = INITIAL_SYSTEM_PROMPT_VERSION,
+    input_profile: str | None = None,
     max_tokens: int = 24576,
     thinking: bool = True,
     reasoning_effort: str | None = None,
@@ -459,13 +547,36 @@ def build_initial_request_payload(
     fidelity_reason: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build canonical model request payload for an initial hand decision."""
+    """Build canonical model request payload for an initial hand decision with deterministic receipts."""
+    if prompt_version not in INITIAL_SYSTEM_PROMPTS:
+        raise ValueError(f"unsupported initial prompt_version: {prompt_version!r}")
+    p0_profile = getattr(dossier.player, "INPUT_PROFILE_P0_STRICT", "p0_strict@1")
+    legacy_profile = getattr(dossier.player, "INPUT_PROFILE_LEGACY", "legacy_v1")
+    supported_profiles = getattr(dossier.player, "SUPPORTED_INPUT_PROFILES", (legacy_profile, p0_profile))
+    if input_profile is not None:
+        if input_profile not in supported_profiles:
+            raise ValueError(f"unsupported input_profile: {input_profile!r}")
+        eff_input_profile: str | None = input_profile
+    elif prompt_version == P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION:
+        eff_input_profile = p0_profile
+    else:
+        eff_input_profile = None
+
     pair_summary = _format_contract_pair(contract_pair)
     user_content = f"候选合约对：\n{pair_summary}\n\n{input_md_text}" if pair_summary else input_md_text
-    return _build_model_request_payload(
+    meta_out = dict(metadata) if isinstance(metadata, Mapping) else {}
+    if (prompt_version in CANDIDATE_STRICT_PROMPT_VERSIONS or eff_input_profile == p0_profile) and contract_pair is not None:
+        pair_meta: dict[str, Any] = {}
+        for side_name in ("put", "call"):
+            resolved = _resolve_contract_from_pair(contract_pair, side_name)
+            if resolved is not None:
+                pair_meta[side_name] = resolved
+        if pair_meta:
+            meta_out.setdefault("contract_pair", pair_meta)
+    payload = _build_model_request_payload(
         stage="initial",
-        prompt_version=INITIAL_SYSTEM_PROMPT_VERSION,
-        system_prompt=INITIAL_SYSTEM_PROMPT,
+        prompt_version=prompt_version,
+        system_prompt=INITIAL_SYSTEM_PROMPTS[prompt_version],
         user_content=user_content,
         model=model,
         max_tokens=max_tokens,
@@ -477,8 +588,22 @@ def build_initial_request_payload(
         requested_at_ms=requested_at_ms,
         fidelity=fidelity,
         fidelity_reason=fidelity_reason,
-        metadata=metadata,
+        metadata=meta_out,
     )
+    payload["system_sha256"] = _sha256_text(payload["messages"][0]["content"])
+    payload["user_sha256"] = _sha256_text(payload["messages"][1]["content"])
+    payload["messages_sha256"] = _sha256_canonical_json(payload["messages"])
+    payload["body_sha256"] = _sha256_canonical_json({
+        "messages": payload["messages"],
+        "model": payload["model"],
+        "parameters": payload["parameters"],
+        "prompt_version": payload["prompt_version"],
+    })
+    if eff_input_profile is not None:
+        payload["input_profile"] = eff_input_profile
+    if prompt_version in CANDIDATE_STRICT_PROMPT_VERSIONS:
+        payload["mechanical_contract_version"] = getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1")
+    return payload
 
 
 def build_hold_review_request_payload(
@@ -622,6 +747,8 @@ def decide_initial_hand(
     contract_pair: Any,
     api_key: str,
     model: str,
+    prompt_version: str = INITIAL_SYSTEM_PROMPT_VERSION,
+    input_profile: str | None = None,
     endpoint: str | None = None,
     timeout_s: float = 180,
     retries: int | None = None,
@@ -632,12 +759,16 @@ def decide_initial_hand(
     budget_role: str = "astra_player_initial",
     packet_hash: str | None = None,
     on_response: Any = None,
+    strict_contract: bool | None = None,
+    strict_clock_5m: bool | None = None,
 ) -> dict[str, Any]:
     """Send frozen input.md to the LLM, parse public Chinese prose + verbatim annotation + condition_plan."""
     req_payload = build_initial_request_payload(
         input_md_text,
         contract_pair=contract_pair,
         model=model,
+        prompt_version=prompt_version,
+        input_profile=input_profile,
         max_tokens=max_tokens,
         reasoning_effort=reasoning_effort,
         endpoint=endpoint,
@@ -660,11 +791,377 @@ def decide_initial_hand(
         packet_hash=packet_hash,
         on_response=on_response,
     )
-    return parse_initial_reply(llm_result, req_payload)
+    return parse_initial_reply(
+        llm_result,
+        req_payload,
+        strict_contract=strict_contract,
+        contracts=contract_pair,
+        strict_clock_5m=strict_clock_5m,
+    )
 
 
-def parse_initial_reply(llm_result: Mapping[str, Any], req_payload: dict[str, Any]) -> dict[str, Any]:
+def _resolve_contract_from_pair(contract_pair: Any, side: str) -> dict[str, Any] | None:
+    side_norm = str(side or "").strip().lower()
+    if side_norm not in ("put", "call") or contract_pair is None:
+        return None
+    if isinstance(contract_pair, Mapping):
+        if side_norm in contract_pair and isinstance(contract_pair[side_norm], Mapping):
+            cand = dict(contract_pair[side_norm])
+        elif str(contract_pair.get("side") or "").strip().lower() == side_norm:
+            cand = dict(contract_pair)
+        else:
+            return None
+    elif isinstance(contract_pair, Sequence) and not isinstance(contract_pair, (str, bytes)):
+        cand = next(
+            (dict(item) for item in contract_pair if isinstance(item, Mapping) and str(item.get("side") or "").strip().lower() == side_norm),
+            None,
+        )
+        if cand is None:
+            return None
+    else:
+        return None
+    cand.setdefault("side", side_norm)
+    short_k = _num(cand.get("short_strike_usd"))
+    long_k = _num(cand.get("long_strike_usd"))
+    if short_k is None or long_k is None or short_k <= 0 or long_k <= 0:
+        return None
+    if (short_k <= long_k) if side_norm == "put" else (short_k >= long_k):
+        return None
+    return cand
+
+
+_C_DEGENERATE_RE = re.compile(
+    r"(?:只有|仅当|唯有)[^。；\n]*(?:严格(?:低于|高于|越过|进入)|new_entry|entry_not_returned)[^。；\n]*才(?:构成|算|视作)?(?:破坏|触发)"
+    r"|未严格进入则仍继续|不提前算入破坏"
+    r"|即触发\s*(?:new_entry|entry_not_returned)\s*破坏"
+    r"|只要求未确认进入(?:责任区|短腿)?"
+    r"|只要未(?:进入|触发)[^。；\n]*(?:就|即|均|便)(?:继续)?(?:承保|持有)"
+)
+
+
+def inspect_accepted_conditions_semantics(text: str) -> dict[str, Any]:
+    """Detect C1 degradation signals vs valid feed-grounded independent falsifiers (Layer-2 advisory only)."""
+    if not isinstance(text, str) or not text.strip():
+        return {
+            "empty": True,
+            "c_degenerates_to_m": True,
+            "has_borne_adverse": False,
+            "has_independent_falsifier": False,
+            "has_uncertainty_disclosure": False,
+            "has_grounded_hold_feed": False,
+            "has_post_m_only_trigger_risk": True,
+        }
+    clauses = [c.strip() for c in re.split(r"[。；;\n]+", text) if c.strip()]
+    has_borne_adverse = bool(re.search(
+        r"已承担|已承受|正面承担|最坏|不利事实|余量(?:仅|约)|无结构缓冲|无已列|零缓冲|反证|"
+        r"(?:4h|4小时|60m|240m)[^。；\n]*(?:下行|下跌|净卖|反证|负|-\d)",
+        text,
+    ))
+    has_independent_falsifier = bool(re.search(
+        r"事中事件门|独立复核|实质重审|独立于\s*(?:机械\s*)?M|独立证伪|同口径可核验|未来证伪|"
+        r"(?:若|如果|一旦|当)[^。；\n]*(?:余量(?:实质)?消耗|余量(?:继续)?收缩|同向现货净卖|同向现货净买|"
+        r"流向(?:恶化|转)|主动流(?:转|恶化|继续)|同向压力|复核依据|重新审查|Pin[^。；\n]*(?:迁移|移向)|ARD[^。；\n]*(?:迁移|穿越|离返))",
+        text,
+    ))
+    has_uncertainty_disclosure = bool(re.search(
+        r"不确定性|覆盖不足|未对齐|未证实|时钟(?:未|差|缺失|对齐)|口径(?:未|不|差)|来源(?:不|缺|未)|"
+        r"资料缺失|不可观测|尚难区分|未提供|OBSERVED_UNALIGNED|UNKNOWN",
+        text,
+    ))
+    has_grounded_hold_feed = bool(re.search(
+        r"短腿外侧|剩余余量|余量(?:收缩|消耗|缩至|演变)|路径演变|"
+        r"(?:4h|12h|4小时|12小时)[^。；\n]*(?:现货|主动流|CVD|动量)|现货主动流|CVD|"
+        r"(?:同口径)?(?:本期)?\s*Pin|ARD(?:迁移|邻域|离返)?",
+        text,
+    ))
+    explicit_degenerate = bool(
+        re.search(r"只要求未确认进入(?:责任区|短腿)?|只要未(?:进入|触发)[^。；\n]*(?:就|即|均)(?:继续)?(?:承保|持有)", text)
+        or (
+            re.search(r"直至机械破坏前不得出现[^。；\n]*(?:越过|进入)[^。；\n]*(?:分钟采样|触发)", text)
+            and not has_independent_falsifier
+        )
+    )
+    narrow_m_only = bool(
+        _C_DEGENERATE_RE.search(text)
+        and not has_independent_falsifier
+    )
+    pure_until_m = bool(
+        any(re.search(r"^(?:只要|只要求|直至|仅当).*(?:未|不).*(?:进入|触发)", cl) for cl in clauses)
+        and not has_independent_falsifier
+    )
+    c_degenerates = bool(explicit_degenerate or narrow_m_only or pure_until_m)
+    post_m_only_phrase = bool(re.search(
+        r"(?:越过短腿后|入区后|进入责任区后|触发\s*M\s*后|触及保护腿后|跌破保护腿|突破保护腿)[^。；\n]*(?:复核|重审|证伪|撤销|条件)",
+        text,
+    ))
+    has_post_m_only_trigger_risk = bool(c_degenerates or (post_m_only_phrase and not has_independent_falsifier))
+    return {
+        "empty": False,
+        "c_degenerates_to_m": c_degenerates,
+        "has_borne_adverse": has_borne_adverse,
+        "has_independent_falsifier": has_independent_falsifier,
+        "has_uncertainty_disclosure": has_uncertainty_disclosure,
+        "has_grounded_hold_feed": has_grounded_hold_feed,
+        "has_post_m_only_trigger_risk": has_post_m_only_trigger_risk,
+    }
+
+
+def validate_initial_reply_contract(
+    parsed_reply: Mapping[str, Any],
+    contracts: Any = None,
+    *,
+    strict_clock_5m: bool = False,
+    check_excerpt_completeness: bool = True,
+    require_outside_at_t0: bool = False,
+) -> dict[str, Any]:
+    """Validate J1 excerpt integrity, M1 mechanical compatibility, and Layer-2 non-blocking C audit."""
+    raw_text = str(parsed_reply.get("raw_text") or "")
+    decision = parsed_reply.get("decision") or {}
+    plan = parsed_reply.get("condition_plan")
+    action = str(decision.get("action") or "")
+    side = str(decision.get("side") or "").lower()
+    mech_ver = getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1")
+
+    excerpt_checks: dict[str, Any] = {}
+    blocking_errors: list[str] = []
+    if check_excerpt_completeness and raw_text:
+        for key in ("put", "call", "comparison", "put_counter", "call_counter"):
+            chk = dossier.inspect_excerpt_integrity(decision.get(key), raw_text, expected_section=key)
+            excerpt_checks[key] = chk
+            if not chk["complete"]:
+                blocking_errors.append(f"j1_excerpt_incomplete:{key}:{chk['status']}")
+
+    if action != "Accept":
+        return {
+            "status": "CONTRACT_FAILED" if blocking_errors else "PASSED",
+            "audit_scope": "NON_ACCEPT_J1_ONLY",
+            "mechanical_contract_version": mech_ver,
+            "layer1_deterministic": {
+                "valid": not blocking_errors,
+                "blocking_errors": blocking_errors,
+                "excerpt_checks": excerpt_checks,
+            },
+            "layer2_semantic_risk": {},
+            "c_audit": {},
+            "canonical_confirmation": None,
+        }
+
+    if not isinstance(plan, Mapping):
+        blocking_errors.append("missing_condition_plan")
+        return {
+            "status": "CONTRACT_FAILED",
+            "audit_scope": "ACCEPT_FULL_CONTRACT",
+            "mechanical_contract_version": mech_ver,
+            "layer1_deterministic": {
+                "valid": False,
+                "blocking_errors": blocking_errors,
+                "excerpt_checks": excerpt_checks,
+            },
+            "layer2_semantic_risk": {},
+            "c_audit": {},
+            "canonical_confirmation": None,
+        }
+
+    if check_excerpt_completeness and raw_text:
+        for key in ("historical_facts", "accepted_conditions", "confirmation_excerpt"):
+            chk = dossier.inspect_excerpt_integrity(plan.get(key), raw_text, expected_section=key)
+            excerpt_checks[f"condition_plan.{key}"] = chk
+            if not chk["complete"]:
+                blocking_errors.append(f"j1_excerpt_incomplete:condition_plan.{key}:{chk['status']}")
+        if decision.get("depends_on_ard") is True:
+            for key in ("ard_responsibility_meaning", "ard_review_on"):
+                val = plan.get(key)
+                if not isinstance(val, str) or not val.strip():
+                    blocking_errors.append(f"ard_condition_excerpt_missing:{key}")
+                else:
+                    chk = dossier.inspect_excerpt_integrity(val, raw_text, expected_section=key)
+                    excerpt_checks[f"condition_plan.{key}"] = chk
+                    if not chk["complete"]:
+                        blocking_errors.append(f"j1_excerpt_incomplete:condition_plan.{key}:{chk['status']}")
+
+    if strict_clock_5m and plan.get("check_interval_ms") != 300_000:
+        blocking_errors.append(f"clock_interval_not_5m:{plan.get('check_interval_ms')}")
+    if require_outside_at_t0:
+        if "require_outside_at_t0" not in plan or plan.get("require_outside_at_t0") is None:
+            blocking_errors.append("t0_outside_guard_required:omitted")
+        elif plan.get("require_outside_at_t0") is not True:
+            blocking_errors.append(f"t0_outside_guard_required:{plan.get('require_outside_at_t0')}")
+
+    if plan.get("invalidation") not in dossier.condition.RULES:
+        blocking_errors.append(f"unsupported_invalidation:{plan.get('invalidation')!r}")
+
+    contract = _resolve_contract_from_pair(contracts, side)
+    if contract is None:
+        return {
+            "status": "UNEVALUABLE_MISSING_CONTRACT",
+            "audit_scope": "ACCEPT_FULL_CONTRACT",
+            "mechanical_contract_version": mech_ver,
+            "layer1_deterministic": {
+                "valid": False,
+                "blocking_errors": [*blocking_errors, "missing_valid_contract"],
+                "excerpt_checks": excerpt_checks,
+            },
+            "layer2_semantic_risk": {},
+            "c_audit": {},
+            "canonical_confirmation": None,
+        }
+
+    m1_res = dossier.condition.validate_confirmation_prose(
+        plan.get("confirmation_excerpt"),
+        contract,
+        expected_invalidation=plan.get("invalidation"),
+        expected_interval_ms=(300_000 if strict_clock_5m else plan.get("check_interval_ms")),
+    )
+    if not m1_res["valid"]:
+        for v in m1_res["violations"]:
+            blocking_errors.append(f"m1_contract_violation:{v}")
+
+    # Spread geometric band mentions inside C (accepted_conditions) are advisory only; never Layer-1 blocking.
+    c_m_check = dossier.condition.validate_confirmation_prose(
+        plan.get("accepted_conditions"),
+        contract,
+        expected_invalidation=plan.get("invalidation"),
+        expected_interval_ms=None,
+    )
+    c1_mech_adv = [
+        v for v in c_m_check["violations"]
+        if v in ("excludes_protection_touch", "excludes_beyond_protection", "restricts_entry_to_finite_interval")
+    ]
+
+    c_audit = inspect_accepted_conditions_semantics(str(plan.get("accepted_conditions") or ""))
+    canonical_m = (
+        dossier.condition.canonical_confirmation_text(
+            contract,
+            plan["invalidation"],
+            plan.get("check_interval_ms") or 300_000,
+        )
+        if plan.get("invalidation") in dossier.condition.RULES
+        and isinstance(plan.get("check_interval_ms"), int)
+        and not isinstance(plan.get("check_interval_ms"), bool)
+        and plan["check_interval_ms"] >= dossier.MINUTE
+        and plan["check_interval_ms"] % dossier.MINUTE == 0
+        else None
+    )
+    return {
+        "status": "CONTRACT_FAILED" if blocking_errors else "PASSED",
+        "audit_scope": "ACCEPT_FULL_CONTRACT",
+        "mechanical_contract_version": mech_ver,
+        "layer1_deterministic": {
+            "valid": not blocking_errors,
+            "blocking_errors": blocking_errors,
+            "m1_prose_check": m1_res,
+            "excerpt_checks": excerpt_checks,
+        },
+        "layer2_semantic_risk": {
+            "c1_degenerates_to_m": c_audit["c_degenerates_to_m"],
+            "c1_has_borne_adverse": c_audit["has_borne_adverse"],
+            "c1_has_independent_falsifier": c_audit["has_independent_falsifier"],
+            "c1_has_uncertainty_disclosure": c_audit["has_uncertainty_disclosure"],
+            "c1_has_grounded_hold_feed": c_audit["has_grounded_hold_feed"],
+            "c1_has_post_m_only_trigger_risk": c_audit["has_post_m_only_trigger_risk"],
+            "c1_mechanical_advisory": c1_mech_adv,
+        },
+        "c_audit": c_audit,
+        "canonical_confirmation": canonical_m,
+    }
+
+
+def _resolve_reply_prompt_version(req_payload: Mapping[str, Any]) -> str:
+    raw_prompt_ver = req_payload.get("prompt_version")
+    sys_msg = None
+    messages = req_payload.get("messages")
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)) and messages:
+        first_msg = messages[0]
+        if isinstance(first_msg, Mapping) and first_msg.get("role") == "system":
+            content = first_msg.get("content")
+            if isinstance(content, str):
+                sys_msg = content
+    p0_profile = getattr(dossier.player, "INPUT_PROFILE_P0_STRICT", "p0_strict@1")
+    req_profile = req_payload.get("input_profile")
+
+    if raw_prompt_ver is not None:
+        if not isinstance(raw_prompt_ver, str) or raw_prompt_ver not in INITIAL_SYSTEM_PROMPTS:
+            report = {
+                "status": "CONTRACT_FAILED",
+                "audit_scope": "PROMPT_VERSION_GATE",
+                "layer1_deterministic": {
+                    "valid": False,
+                    "blocking_errors": [f"unknown_prompt_version:{raw_prompt_ver!r}"],
+                    "excerpt_checks": {},
+                },
+                "layer2_semantic_risk": {},
+                "c_audit": {},
+                "canonical_confirmation": None,
+            }
+            raise ContractValidationError(
+                f"unknown_prompt_version: {raw_prompt_ver!r}",
+                parsed_reply={"request_payload": dict(req_payload)},
+                contract_validation=report,
+            )
+        if sys_msg is not None and sys_msg.strip() != INITIAL_SYSTEM_PROMPTS[raw_prompt_ver].strip():
+            report = {
+                "status": "CONTRACT_FAILED",
+                "audit_scope": "PROMPT_VERSION_GATE",
+                "layer1_deterministic": {
+                    "valid": False,
+                    "blocking_errors": ["prompt_version_system_mismatch"],
+                    "excerpt_checks": {},
+                },
+                "layer2_semantic_risk": {},
+                "c_audit": {},
+                "canonical_confirmation": None,
+            }
+            raise ContractValidationError(
+                "prompt_version_system_mismatch",
+                parsed_reply={"request_payload": dict(req_payload)},
+                contract_validation=report,
+            )
+        return raw_prompt_ver
+
+    # prompt_version is omitted: only legacy @1.0 exact system-message match (not under p0_strict@1) is allowed.
+    if sys_msg is not None and sys_msg.strip() == INITIAL_SYSTEM_PROMPT.strip() and req_profile != p0_profile:
+        return INITIAL_SYSTEM_PROMPT_VERSION
+    report = {
+        "status": "CONTRACT_FAILED",
+        "audit_scope": "PROMPT_VERSION_GATE",
+        "layer1_deterministic": {
+            "valid": False,
+            "blocking_errors": ["missing_prompt_version"],
+            "excerpt_checks": {},
+        },
+        "layer2_semantic_risk": {},
+        "c_audit": {},
+        "canonical_confirmation": None,
+    }
+    raise ContractValidationError(
+        "missing_prompt_version",
+        parsed_reply={"request_payload": dict(req_payload)},
+        contract_validation=report,
+    )
+
+
+def parse_initial_reply(
+    llm_result: Mapping[str, Any],
+    req_payload: dict[str, Any],
+    *,
+    strict_contract: bool | None = None,
+    contracts: Any = None,
+    strict_clock_5m: bool | None = None,
+) -> dict[str, Any]:
     req_payload["endpoint"] = llm_result.get("endpoint") or req_payload.get("endpoint")
+    prompt_ver = _resolve_reply_prompt_version(req_payload)
+    is_candidate_prompt = prompt_ver in CANDIDATE_STRICT_PROMPT_VERSIONS
+    # Candidate strictness is UNCONDITIONAL: caller cannot bypass with strict_contract=False or strict_clock_5m=False.
+    if is_candidate_prompt:
+        effective_strict = True
+        effective_clock_5m = True
+        must_require_outside = True
+    else:
+        effective_strict = bool(strict_contract) if strict_contract is not None else False
+        effective_clock_5m = bool(strict_clock_5m) if strict_clock_5m is not None else False
+        must_require_outside = effective_strict
+    eff_contracts = contracts if contracts is not None else (req_payload.get("metadata") or {}).get("contract_pair")
+
     public_text, payload = _split_tagged_json(llm_result["text"], "ANNOTATION_JSON")
     if not public_text.strip():
         raise ValueError("empty public decision text")
@@ -688,24 +1185,61 @@ def parse_initial_reply(llm_result: Mapping[str, Any], req_payload: dict[str, An
         interval = raw_plan.get("check_interval_ms", 300_000)
         if isinstance(interval, bool) or not isinstance(interval, int) or not 0 < interval <= dossier.DAY or interval % dossier.MINUTE:
             raise ValueError("condition_plan.check_interval_ms must be positive minute-aligned int")
-        require_outside = raw_plan.get("require_outside_at_t0", False)
-        if not isinstance(require_outside, bool):
-            raise ValueError("condition_plan.require_outside_at_t0 must be boolean")
-        required_excerpts = ["historical_facts", "accepted_conditions", "confirmation_excerpt"]
-        if decision["depends_on_ard"]:
-            required_excerpts.extend(["ard_responsibility_meaning", "ard_review_on"])
         parsed_plan = {
             "invalidation": invalidation,
             "check_interval_ms": interval,
-            "require_outside_at_t0": require_outside,
         }
+        if "require_outside_at_t0" in raw_plan:
+            require_outside = raw_plan["require_outside_at_t0"]
+            if not isinstance(require_outside, bool):
+                raise ValueError("condition_plan.require_outside_at_t0 must be boolean")
+            parsed_plan["require_outside_at_t0"] = require_outside
+        elif prompt_ver in CANDIDATE_STRICT_PROMPT_VERSIONS and prompt_ver not in P5_STRICT_PROMPT_VERSIONS:
+            # @1.1-candidate prompt declares require_outside_at_t0 optional; fail-closed default to True.
+            parsed_plan["require_outside_at_t0"] = True
+        elif not must_require_outside:
+            parsed_plan["require_outside_at_t0"] = False
+        # When prompt_ver is in P5_STRICT_PROMPT_VERSIONS and require_outside_at_t0 was omitted,
+        # keep it omitted so validate_initial_reply_contract fails closed with t0_outside_guard_required:omitted.
+
+        required_excerpts = ["historical_facts", "accepted_conditions", "confirmation_excerpt"]
+        if decision["depends_on_ard"]:
+            required_excerpts.extend(["ard_responsibility_meaning", "ard_review_on"])
         for key in required_excerpts:
             val = raw_plan.get(key)
             if not dossier.excerpt_in_text(val, public_text):
+                if effective_strict:
+                    # Preserve full context and fail closed via ContractValidationError.
+                    err_code = f"ard_condition_excerpt_missing:{key}" if key.startswith("ard_") else f"condition_plan_excerpt_missing:{key}"
+                    report = {
+                        "status": "CONTRACT_FAILED",
+                        "audit_scope": "ACCEPT_FULL_CONTRACT",
+                        "mechanical_contract_version": getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1"),
+                        "layer1_deterministic": {
+                            "valid": False,
+                            "blocking_errors": [err_code],
+                            "excerpt_checks": {},
+                        },
+                        "layer2_semantic_risk": {},
+                        "c_audit": {},
+                        "canonical_confirmation": None,
+                    }
+                    raise ContractValidationError(
+                        f"condition_plan.{key} must be a verbatim excerpt from public text",
+                        parsed_reply={
+                            "raw_bytes": raw_bytes,
+                            "raw_text": public_text,
+                            "annotation": annotation,
+                            "condition_plan": parsed_plan,
+                            "decision": decision,
+                            "request_payload": req_payload,
+                        },
+                        contract_validation=report,
+                    )
                 raise ValueError(f"condition_plan.{key} must be a verbatim excerpt from public text")
             parsed_plan[key] = val.strip()
 
-    return {
+    parsed = {
         "raw_bytes": raw_bytes,
         "raw_text": public_text,
         "reasoning_content": llm_result.get("reasoning_content"),
@@ -719,6 +1253,24 @@ def parse_initial_reply(llm_result: Mapping[str, Any], req_payload: dict[str, An
         "finish_reason": llm_result.get("finish_reason"),
         "request_payload": req_payload,
     }
+
+    if effective_strict:
+        contract_report = validate_initial_reply_contract(
+            parsed,
+            eff_contracts,
+            strict_clock_5m=effective_clock_5m,
+            check_excerpt_completeness=True,
+            require_outside_at_t0=must_require_outside,
+        )
+        parsed["contract_validation"] = contract_report
+        if contract_report["status"] != "PASSED":
+            errs = ", ".join(contract_report["layer1_deterministic"]["blocking_errors"])
+            raise ContractValidationError(
+                f"contract_validation_failed ({contract_report['status']}): {errs}",
+                parsed_reply=parsed,
+                contract_validation=contract_report,
+            )
+    return parsed
 
 
 def _row_metrics(row: Mapping[str, Any] | None) -> Mapping[str, Any]:
@@ -2061,8 +2613,11 @@ def build_hold_review_input(
     prior_reviews: Sequence[Mapping[str, Any]] | None = None,
     entry_basis: Mapping[str, Any] | None = None,
     entry_pin_snapshot: Mapping[str, Any] | None = None,
+    authoritative_m: str | None = None,
+    review_channel: str | None = None,
+    new_qualified_data_present: bool | None = None,
 ) -> str:
-    """Render a pure-Chinese, decision-ready incremental hold-review card with the 5-section structure."""
+    """Render a pure-Chinese, decision-ready incremental hold-review card with C/M/UNKNOWN/OBSERVE separation."""
     side_norm = str(contract.get("side") or "").strip().lower()
     side_text = side_norm.upper()
     short_strike = _num(contract.get("short_strike_usd"))
@@ -2103,6 +2658,17 @@ def build_hold_review_input(
     else:
         pin_bg_line = f"- ARD 依赖状态：{'已依赖（R1）' if depends_on_ard else '入场未依赖 ARD（depends_on_ard=False），仅作结构背景参照'}。"
 
+    resolved_auth_m = authoritative_m
+    if resolved_auth_m is None and m1.get("invalidation") in dossier.condition.RULES and hasattr(dossier.condition, "canonical_confirmation_text"):
+        try:
+            resolved_auth_m = dossier.condition.canonical_confirmation_text(
+                dict(contract),
+                m1["invalidation"],
+                m1.get("check_interval_ms") or 300_000,
+            )
+        except ValueError:
+            resolved_auth_m = None
+
     lines = [
         "# 持仓增量复核牌面",
         "",
@@ -2122,6 +2688,7 @@ def build_hold_review_input(
         entry_flow_line,
         pin_bg_line,
         f"- 确认口径：{frozen_condition.get('confirmation_excerpt') or frozen_condition.get('sampling')}",
+        *([] if resolved_auth_m is None else [f"- 程序权威机械界定：{resolved_auth_m}"]),
         "",
         "## 2. 上次 AI 已评估什么",
     ])
@@ -2179,6 +2746,60 @@ def build_hold_review_input(
     ])
     if prog_trig:
         lines.append("- **【重要硬约束】程序已确认 `mechanical_condition_state = TRIGGERED`（[M1] 已被打破）：你若核验数据完整应输出 `REVOKE`，若关键数据阻塞缺损应输出 `UNKNOWN`；禁止输出声称原条件仍完整成立的正常 `HOLD`。**")
+
+    if prog_trig:
+        m_status_code = "CONDITION_TRIGGERED"
+    elif isinstance(condition_summary, Mapping) and condition_summary.get("mechanical_condition_state") == "INTACT":
+        m_status_code = "NOT_TRIGGERED"
+    else:
+        m_status_code = "UNKNOWN"
+
+    if new_qualified_data_present is not None:
+        eff_new_data = bool(new_qualified_data_present)
+    else:
+        latest_post_ts = (post_entry_summary.get("latest_ts_ms") or post_entry_summary.get("latest_at_ms")) if isinstance(post_entry_summary, Mapping) else None
+        flow_asof = flow_summary.get("flow_asof_ms") if isinstance(flow_summary, Mapping) else None
+        ard_new_obs = ard_summary.get("newly_available_anchor_observations") if isinstance(ard_summary, Mapping) else None
+        eff_new_data = bool(
+            (isinstance(latest_post_ts, int) and latest_post_ts > entry_at_ms)
+            or (isinstance(flow_summary, Mapping) and flow_summary.get("flow_ready") is True and isinstance(flow_asof, int) and flow_asof > entry_at_ms)
+            or (isinstance(ard_new_obs, Sequence) and not isinstance(ard_new_obs, (str, bytes)) and len(ard_new_obs) > 0)
+        )
+
+    if review_channel:
+        eff_channel = str(review_channel).strip().upper()
+    else:
+        has_m = prog_trig or any(isinstance(t, Mapping) and t.get("category") == "A" for t in (triggers or ()))
+        has_c = any(isinstance(t, Mapping) and t.get("category") in {"B", "C", "D"} for t in (triggers or ()))
+        eff_channel = "MIXED" if (has_m and has_c) else "MECHANICAL_M" if has_m else "C_REVIEW_ONLY" if has_c else "OBSERVE_ONLY"
+
+    unknown_items: list[str] = []
+    if m_status_code == "UNKNOWN":
+        unknown_items.append("机械检查结果处于 UNKNOWN（未到点或样本缺口）")
+    if isinstance(flow_summary, Mapping) and flow_summary.get("flow_ready") is False:
+        unknown_items.append("现货主动流未就绪（flow_ready=False）")
+    if isinstance(ard_summary, Mapping) and ard_summary.get("same_measure") is False:
+        unknown_items.append("ARD 口径不可比")
+    if isinstance(ard_summary, Mapping) and ard_summary.get("pin_status") not in (None, "ok"):
+        unknown_items.append(f"Pin 状态异常（{ard_summary.get('pin_status')}）")
+    if isinstance(post_entry_summary, Mapping) and (post_entry_summary.get("sample_count") or 0) == 0:
+        unknown_items.append("入场后分钟路径样本为空")
+
+    c_review_line = (
+        f"初始冻结 `[C1..]` 须结合入场后真实新增合格数据独立复核（`new_qualified_data_present=True`）。"
+        if eff_new_data
+        else "当前无入场后新增合格数据（`new_qualified_data_present=False`）；严禁声称 C 已被证实仍有效，须如实说明未获新证据验证或输出 `UNKNOWN`。"
+    )
+    lines.extend([
+        "",
+        "## 复核证据分层（M / C / UNKNOWN / 仅供观察）",
+        f"- 复核通道：`{eff_channel}`；入场后新增合格数据（`new_qualified_data_present`）：`{'True' if eff_new_data else 'False'}`。",
+        f"- 1. **机械 M**：`{m_status_code}`（`CONDITION_TRIGGERED` / `NOT_TRIGGERED` / `UNKNOWN`；程序机械裁决不可改写）。",
+        f"- 2. **独立 C 复核**：{c_review_line}",
+        f"- 3. **不可判定/未观测项（UNKNOWN）**：{'；'.join(unknown_items) if unknown_items else '当前无显式阻塞缺口；若存在口径冲突或未观测项须如实标 `UNKNOWN`。'}",
+        "- 4. **仅供观察项（OBSERVE_ONLY）**：影子盘口买回估算、锁定时信用基准及非依赖结构背景仅作观察参考，不单独替代 M/C 结论。",
+        "- **执行与留痕边界**：C 仅用于独立复核与留痕，不授权自动提前平仓、甩腿或交易。",
+    ])
 
     lines.extend([
         "",

@@ -50,7 +50,7 @@ def frozen_band(snapshot, start):
                 available_at_ms=available, source='factor_snapshot.anchor.band_half')
 
 
-def analyze(history, index_path, *, expiry_ms, cutoff_ms, band_snapshot=None, window_ms=4*HOUR):
+def analyze(history, index_path, *, expiry_ms, cutoff_ms, band_snapshot=None, window_ms=4*HOUR, strict_asof=False):
     """Internal factual result; the player consumes render(), not a new protocol."""
     start = cutoff_ms-window_ms
     band = frozen_band(band_snapshot, start)
@@ -63,7 +63,10 @@ def analyze(history, index_path, *, expiry_ms, cutoff_ms, band_snapshot=None, wi
         at, ready = r.get('at_ms'), r.get('available_at_ms')
         if not clock(at) or at > cutoff_ms:
             continue
-        if 'available_at_ms' not in r or ready is None:
+        if 'available_at_ms' not in r or ready is None or (strict_asof and r.get('compat_backfill_applied') is True):
+            if strict_asof:
+                unclocked += 1
+                continue
             ready = at
             legacy_backfill = True
         if not clock(ready) or ready < at:
@@ -176,7 +179,7 @@ def analyze(history, index_path, *, expiry_ms, cutoff_ms, band_snapshot=None, wi
                 **({'legacy_clock_backfill': True} if legacy_backfill else {}))
 
 
-def render(facts, *, current_pin=None):
+def render(facts, *, current_pin=None, disclose_backfill=False):
     def f(x): return f'{x:,.1f}'.removesuffix('.0')
     def when(t): return datetime.fromtimestamp(t/1000,timezone.utc).strftime('%m-%d %H:%M:%S UTC')
     head=f"**锚相对动态ARD（{when(facts['start_ms'])}—{when(facts['end_ms'])}）。** "
@@ -228,4 +231,6 @@ def render(facts, *, current_pin=None):
     text+=relations[facts['relation']]
     if current_pin is not None and obs[-1]['pin']!=current_pin:
         text+='历史末次Pin与正文当前Pin不同，不能合成同一当前关系。'
+    if disclose_backfill and facts.get('legacy_clock_backfill'):
+        text+='（含历史回填可用时钟，非原生可得收据）'
     return head+text

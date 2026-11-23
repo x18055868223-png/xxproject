@@ -174,8 +174,24 @@ def accepted(hand):
                   decided_at_ms=decided, decision_recorded_at_ms=recorded,
                   decision_asof_ms=card['read_at_ms'], decision_index_usd=card['index_usd'],
                   decision_quote=quote_reference(quote), request_key=request_key)
-    return dict(origin=origin, contract=contract, source=source, decision=decision,
-                raw=raw.decode('utf-8'), deadline_ms=min(deadline, decided + HANDOFF_MS))
+    contracts_map = {}
+    for c_case, c_card in zip(source['cases'], source['cards']):
+        c_side = c_card.get('side')
+        if c_side in {'put', 'call'}:
+            contracts_map[c_side] = dossier.player.bind(c_case, c_card, c_side)
+    req_saved = optional(hand / 'responses' / dossier.key(attempt['attempt_id']) / 'request.json')
+    req_pv = req_saved.get('prompt_version') if isinstance(req_saved, dict) else None
+    att_pv = attempt.get('prompt_version')
+    if req_pv is not None and att_pv is not None and req_pv != att_pv:
+        raise Blocked('prompt_version_mismatch')
+    pv = req_pv or att_pv
+    out = dict(origin=origin, contract=contract, contracts=contracts_map, source=source, decision=decision,
+               raw=raw.decode('utf-8'), deadline_ms=min(deadline, decided + HANDOFF_MS))
+    if pv is not None:
+        out['prompt_version'] = pv
+    if meta.get('input_profile') is not None:
+        out['input_profile'] = meta['input_profile']
+    return out
 
 
 def quote_reference(quote):
@@ -205,6 +221,19 @@ def confirm_quote(snapshot, now):
     return quote_reference(quote)
 
 
+def _is_candidate_proof(proof):
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    pv = proof.get('prompt_version')
+    ip = proof.get('input_profile')
+    if ip == p0_profile and not pv:
+        raise Blocked('missing_prompt_version')
+    if pv is not None and pv not in review.INITIAL_SYSTEM_PROMPTS:
+        raise Blocked('unknown_prompt_version')
+    return (pv in review.CANDIDATE_STRICT_PROMPT_VERSIONS) or (
+        ip == p0_profile and pv != review.INITIAL_SYSTEM_PROMPT_VERSION
+    )
+
+
 def condition_plan(proof, plan):
     required = ('historical_facts', 'accepted_conditions', 'confirmation_excerpt')
     if (not isinstance(plan, dict) or any(not dossier.excerpt_in_text(plan.get(k), proof['raw']) for k in required)
@@ -217,20 +246,51 @@ def condition_plan(proof, plan):
     keys = ('ard_responsibility_meaning', 'ard_review_on')
     if depends and any(not dossier.excerpt_in_text(plan.get(k), proof['raw']) for k in keys):
         raise Blocked('ard_condition_excerpt_missing')
-    outside = plan.get('require_outside_at_t0', False)
-    if not isinstance(outside, bool):
-        raise Blocked('condition_plan_missing_or_unverifiable')
-    return {**{k: plan[k] for k in (*required, 'check_interval_ms', 'invalidation', *(keys if depends else ()))},
-            'require_outside_at_t0': outside}
+    is_candidate = _is_candidate_proof(proof)
+    strict_mode = bool(is_candidate or proof.get('strict_contract'))
+    is_p5_strict = proof.get('prompt_version') in getattr(review, 'P5_STRICT_PROMPT_VERSIONS', ())
+    if strict_mode:
+        if 'require_outside_at_t0' in plan:
+            if plan.get('require_outside_at_t0') is not True:
+                raise Blocked('condition_contract_validation_failed')
+        elif is_p5_strict or proof.get('strict_contract'):
+            raise Blocked('condition_contract_validation_failed')
+        if plan['check_interval_ms'] != 300_000:
+            raise Blocked('condition_contract_validation_failed')
+        outside = True
+    else:
+        outside = plan.get('require_outside_at_t0', False)
+        if not isinstance(outside, bool):
+            raise Blocked('condition_plan_missing_or_unverifiable')
+    out_plan = {**{k: plan[k] for k in (*required, 'check_interval_ms', 'invalidation', *(keys if depends else ()))},
+                'require_outside_at_t0': outside}
+    if strict_mode:
+        decision_obj = dict((proof.get('decision') or {}).get('judgment') or {})
+        contract_arg = proof.get('contracts') or proof.get('contract')
+        check_res = review.validate_initial_reply_contract(
+            {'raw_text': proof['raw'], 'decision': decision_obj, 'condition_plan': out_plan},
+            contract_arg,
+            strict_clock_5m=True,
+            check_excerpt_completeness=True,
+            require_outside_at_t0=True,
+        )
+        if check_res.get('status') != 'PASSED':
+            raise Blocked('condition_contract_validation_failed')
+    return out_plan
 
 
 def condition_at_t0(proof, plan, snapshot, locked_at):
     plan = condition_plan(proof, plan)
+    is_candidate = _is_candidate_proof(proof)
+    strict_mode = bool(is_candidate or proof.get('strict_contract'))
     expiry = proof['contract']['expiry_ms']
     first = (locked_at // dossier.MINUTE + 1) * dossier.MINUTE
     invalidation = plan['invalidation']
     index = snapshot['market']['reference_price_usd']
-    if plan['require_outside_at_t0'] and dossier.player.responsibility_zone(index, proof['contract']) != '在责任区外':
+    if strict_mode:
+        if not dossier._is_strictly_outside(index, proof['contract']):
+            raise Blocked('t0_outside_condition_no_longer_holds')
+    elif plan['require_outside_at_t0'] and not dossier._is_strictly_outside(index, proof['contract']):
         raise Blocked('t0_outside_condition_no_longer_holds')
     frozen = dict(contract=contract_fields(proof['contract']), entry_at_ms=locked_at,
                   entry_index_usd=index,
@@ -238,10 +298,26 @@ def condition_at_t0(proof, plan, snapshot, locked_at):
                   invalidation=invalidation, invalidation_meaning=dossier.condition.RULES[invalidation],
                   check_clock=dict(first_at_ms=first, interval_ms=plan['check_interval_ms']),
                   sampling=dossier.condition.SAMPLING, confirmation_excerpt=plan['confirmation_excerpt'])
+    if strict_mode:
+        frozen['require_outside_at_t0'] = True
+        frozen['mechanical_contract_version'] = getattr(dossier.condition, 'MECHANICAL_CONTRACT_VERSION', 'p2_strict@1')
+        if proof.get('prompt_version'):
+            frozen['prompt_version'] = proof['prompt_version']
     if proof['decision']['judgment']['depends_on_ard']:
         s = proof['source']
-        facts = dossier.player.ard.analyze(s['history'], s['index_path'], expiry_ms=expiry,
-            cutoff_ms=min(c['read_at_ms'] for c in s['cards']), band_snapshot=s.get('band_snapshot'))
+        p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+        if proof.get('input_profile') == p0_profile:
+            facts = dossier.player.ard_facts_for_evidence(
+                s['history'],
+                s['index_path'],
+                expiry_ms=expiry,
+                cutoff_ms=min(c['read_at_ms'] for c in s['cards']),
+                band_snapshot=s.get('band_snapshot'),
+                input_profile=p0_profile,
+            )
+        else:
+            facts = dossier.player.ard.analyze(s['history'], s['index_path'], expiry_ms=expiry,
+                cutoff_ms=min(c['read_at_ms'] for c in s['cards']), band_snapshot=s.get('band_snapshot'))
         frozen['ard_basis'] = dict(facts=facts, responsibility_meaning=plan['ard_responsibility_meaning'],
                                    review_on=plan['ard_review_on'])
     try:
@@ -662,11 +738,17 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
         win_ms = max(4 * 3_600_000, tick - frozen['entry_at_ms'])
     else:
         win_ms = 4 * 3_600_000
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    hand_ident = optional(hand_dir / 'evidence' / 'identity.json') if hand_dir is not None else None
+    strict_ard_asof = bool(
+        (isinstance(hand_ident, dict) and hand_ident.get('input_profile') == p0_profile)
+        or frozen.get('mechanical_contract_version') == getattr(dossier.condition, 'MECHANICAL_CONTRACT_VERSION', 'p2_strict@1')
+    )
     history = [dossier._normalize_legacy_structure_row(r) for r in dossier.rows(struct_path)
                if r.get('expiry_ms') == expiry and isinstance(r.get('at_ms'), int) and r['at_ms'] <= tick]
     try:
         current = dossier.player.ard.analyze(history, index_path, expiry_ms=expiry, cutoff_ms=tick,
-                                            band_snapshot=band_snap, window_ms=win_ms)
+                                            band_snapshot=band_snap, window_ms=win_ms, strict_asof=strict_ard_asof)
         pin_status = next((r.get('pin_status') for r in reversed(history)
                            if r.get('available_at_ms') is not None and r['available_at_ms'] <= tick and r.get('pin_status')), None)
         if has_ard_basis:
@@ -881,6 +963,10 @@ def _record_review_event(d, episode, decision):
         'discretionary_mapped_condition_ids', 'discretionary_revoke_attribution',
         'condition_id_mapping_status', 'public_reply', 'model', 'reasoning_effort',
         'usage', 'input_sha256', 'raw_sha256')}
+    if decision.get('review_channel') is not None:
+        body['review_channel'] = decision['review_channel']
+    if decision.get('new_qualified_data_present') is not None:
+        body['new_qualified_data_present'] = decision['new_qualified_data_present']
     body['triggers'] = _compact_triggers(decision.get('triggers'), keys=('category', 'code', 'summary_cn', 'observed_at_ms'))
     decided = decision['decided_at_ms']
     return d.event(episode, event_id, kind, body, observed=decision['requested_at_ms'], available=decided, decided=decided)
@@ -1234,6 +1320,75 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                 if series_rows else {})
     latest_pt = exported.get('latest_point')
     quote_info = locked_compare.short_buyback_quote(latest_pt) if latest_pt else {'short_buyback_gaps': ['latest_point_unavailable']}
+
+    has_m_trigger = bool(prog_triggered or any(isinstance(t, dict) and t.get('category') == 'A' for t in batch))
+    has_c_trigger = bool(any(isinstance(t, dict) and t.get('category') in {'B', 'C', 'D'} for t in batch))
+    if has_m_trigger and has_c_trigger:
+        review_channel = 'MIXED'
+    elif has_m_trigger:
+        review_channel = 'MECHANICAL_M'
+    elif has_c_trigger:
+        review_channel = 'C_REVIEW_ONLY'
+    else:
+        review_channel = 'OBSERVE_ONLY'
+
+    entry_ms = frozen['entry_at_ms']
+    last_rev_ev_ms = (last_review or {}).get('evidence_asof_ms') or (last_review or {}).get('reviewed_at_ms')
+    data_floor = max(entry_ms, last_rev_ev_ms) if isinstance(last_rev_ev_ms, int) else entry_ms
+    has_new_tracker = any(
+        isinstance(ts := review._row_ts(row), int)
+        and data_floor < ts <= at
+        and (
+            dossier.player.number((row.get('metrics') if isinstance(row.get('metrics'), dict) else row).get('spot_usd')) is not None
+            or dossier.player.number((row.get('metrics') if isinstance(row.get('metrics'), dict) else row).get('short_distance_pct')) is not None
+        )
+        for row in series_rows
+    )
+    chart_delay = (
+        dossier.MINUTE
+        if isinstance(ep_index, dict) and dossier.player._chart_semantics(ep_index) in dossier.player._CHART_DELAY_SEMANTICS
+        else 0
+    )
+    has_new_index = any(
+        isinstance(pt, (list, tuple)) and len(pt) == 2
+        and isinstance(pt[0], int) and pt[0] > data_floor and pt[0] + chart_delay <= at
+        and dossier.player.number(pt[1]) is not None and pt[1] > 0
+        for pt in (ep_index.get('points') or () if isinstance(ep_index, dict) else ())
+    )
+    ard_new_obs = ard_comparison.get('newly_available_anchor_observations') if isinstance(ard_comparison, dict) else None
+    ard_anchor_ready = (ard_comparison.get('current_anchor') or {}).get('ready') if isinstance(ard_comparison, dict) else None
+    has_new_ard = bool(
+        isinstance(ard_comparison, dict)
+        and (
+            (isinstance(ard_new_obs, list) and any(isinstance(r, dict) and isinstance(r.get('ready'), int) and data_floor < r['ready'] <= at for r in ard_new_obs))
+            or (
+                ard_comparison.get('same_measure') is True
+                and ard_comparison.get('current_sample_available') is True
+                and isinstance(ard_anchor_ready, int)
+                and data_floor < ard_anchor_ready <= at
+            )
+        )
+    )
+    flow_floor_candidates = [t for t in (entry_ms, t0_metrics.get('flow_asof_ms'), (last_review or {}).get('flow_asof_ms')) if isinstance(t, int)]
+    flow_floor = max(flow_floor_candidates) if flow_floor_candidates else entry_ms
+    has_new_flow = bool(
+        latest_m.get('flow_ready') is True
+        and isinstance(latest_m.get('flow_asof_ms'), int)
+        and flow_floor < latest_m['flow_asof_ms'] <= at
+    )
+    new_qualified_data_present = bool(has_new_tracker or has_new_index or has_new_ard or has_new_flow)
+
+    authoritative_m = None
+    if frozen.get('invalidation') in dossier.condition.RULES and hasattr(dossier.condition, 'canonical_confirmation_text'):
+        try:
+            authoritative_m = dossier.condition.canonical_confirmation_text(
+                dict(frozen['contract']),
+                frozen['invalidation'],
+                (frozen.get('check_clock') or {}).get('interval_ms') or 300_000,
+            )
+        except ValueError:
+            authoritative_m = None
+
     input_md = _call_with_supported_kwargs(
         review.build_hold_review_input,
         contract=frozen['contract'],
@@ -1254,6 +1409,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         ),
         post_entry_summary=dict(
             sample_count=len(series_rows),
+            latest_ts_ms=review._row_ts(series_rows[-1]) if series_rows else None,
             latest_spot_usd=post_spots[-1] if post_spots else None,
             min_short_distance_pct=min(post_dists) if post_dists else None,
             latest_short_distance_pct=post_dists[-1] if post_dists else None,
@@ -1282,6 +1438,9 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         entry_basis=entry_basis,
         entry_pin_snapshot=entry_pin_snapshot,
         last_review_context=last_review,
+        authoritative_m=authoritative_m,
+        review_channel=review_channel,
+        new_qualified_data_present=new_qualified_data_present,
     )
     req_ms = d.clock()
     input_bytes = input_md.encode('utf-8')
@@ -1355,6 +1514,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             mechanical_condition_state=parsed['mechanical_condition_state'],
             protocol_status=parsed['protocol_status'],
             shadow_action=shadow_action,
+            review_channel=review_channel,
+            new_qualified_data_present=new_qualified_data_present,
             trigger_categories=cats,
             triggers=batch,
             reason=action['reason'],
@@ -1448,6 +1609,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             triggers=triggers, action='REVIEWED', review_id=rev_id, verdict=parsed['verdict'],
             mechanical_condition_state=parsed['mechanical_condition_state'],
             protocol_status=parsed['protocol_status'], shadow_action=shadow_action,
+            review_channel=review_channel,
+            new_qualified_data_present=new_qualified_data_present,
             usage=usage_dict,
         )
     except Exception as exc:
@@ -1606,40 +1769,101 @@ def _remember_reply(folder, d, reply):
     dossier.write(folder / 'reply.json', dossier.encode({**reply, 'decided_at_ms': d.clock()}))
 
 
+def _hand_contracts_pair(hand, req=None):
+    src = optional(hand / 'evidence' / 'source.json')
+    if isinstance(src, dict) and isinstance(src.get('cases'), list) and isinstance(src.get('cards'), list):
+        pair = {}
+        for case, card in zip(src['cases'], src['cards']):
+            side = card.get('side')
+            if side in {'put', 'call'}:
+                try:
+                    pair[side] = contract_fields(dossier.player.bind(case, card, side))
+                except (ValueError, KeyError, TypeError):
+                    pass
+        if pair:
+            return pair
+    if isinstance(req, dict):
+        meta_pair = (req.get('metadata') or {}).get('contract_pair')
+        if meta_pair:
+            return meta_pair
+    return None
+
+
 def _record_initial_reply(d, hand, call, req, *, result=None, error=None):
     saved = optional(call / 'reply.json')
-    if result is None and saved is not None:
+    contracts_pair = _hand_contracts_pair(hand, req)
+    if result is None and saved is not None and not isinstance(error, review.ContractValidationError):
         try:
-            result = review.parse_initial_reply(saved, dict(req))
+            result = _call_with_supported_kwargs(
+                review.parse_initial_reply,
+                saved,
+                dict(req),
+                contracts=contracts_pair,
+            )
             error = None
-        except (ValueError, KeyError, TypeError) as exc:
+        except (review.ContractValidationError, ValueError, KeyError, TypeError) as exc:
             error = exc
     reply = (saved if isinstance(saved, dict) else None) or result or {}
     payload = dict((result or {}).get('request_payload') or req)
     payload.update(requested_at_ms=req['requested_at_ms'], endpoint=reply.get('endpoint') or payload.get('endpoint'))
+    is_contract_err = isinstance(error, review.ContractValidationError)
     is_timeout = isinstance(error, TimeoutError) or 'timed out' in str(error).lower() or isinstance(getattr(error, 'reason', None), TimeoutError)
-    status = 'RECEIVED' if result is not None else 'PARSE_FAILED' if saved is not None else 'TIMEOUT' if is_timeout else 'REQUEST_FAILED'
+    status = (
+        'RECEIVED' if result is not None
+        else 'PARSE_FAILED' if (saved is not None or is_contract_err)
+        else 'TIMEOUT' if is_timeout
+        else 'REQUEST_FAILED'
+    )
     http_error = getattr(error, 'code', None) or getattr(error, 'status_code', None)
-    delivery = ('RECEIVED' if saved is not None or result is not None else
+    delivery = ('RECEIVED' if saved is not None or result is not None or is_contract_err else
                 'PROVIDER_REJECTED' if isinstance(http_error, int) and 400 <= http_error < 500 and http_error != 408
                 else 'DELIVERY_UNKNOWN')
     raw = (result or {}).get('raw_bytes')
     detail = f'{type(error).__name__}: {str(error)[:180]}' if error else 'provider delivery unknown; no reply archived; automatic resend disabled' if result is None else None
+    cv_report = (result or {}).get('contract_validation') or (error.contract_validation if is_contract_err else None)
+    err_code = 'CONTRACT_VALIDATION_FAILED' if is_contract_err else None
+    cfg_meta = dict(
+        reasoning_effort=reply.get('reasoning_effort') or (req.get('parameters') or {}).get('reasoning_effort'),
+        usage=reply.get('usage'),
+        http_status=reply.get('http_status') or http_error,
+        delivery_state=delivery,
+    )
+    if err_code is not None:
+        cfg_meta['error_code'] = err_code
+    full_raw_bytes = (
+        (saved.get('text') or '').encode('utf-8') if isinstance(saved, dict)
+        else (error.parsed_reply.get('raw_bytes') if is_contract_err and isinstance(error.parsed_reply, dict) else None) or raw
+    )
     return _call_with_supported_kwargs(
         d.respond, hand, call.name, status, raw, (result or {}).get('annotation'),
         model=reply.get('model') or req['model'],
-        configuration=dict(reasoning_effort=reply.get('reasoning_effort') or (req.get('parameters') or {}).get('reasoning_effort'),
-                           usage=reply.get('usage'), http_status=reply.get('http_status') or http_error, delivery_state=delivery),
+        configuration=cfg_meta,
         requested=req['requested_at_ms'], decided=reply.get('decided_at_ms') or d.clock(), channel='API_AUTO',
         error=detail, request_payload=review.sanitize_model_request(payload),
-        full_raw=(saved.get('text') or '').encode('utf-8') if isinstance(saved, dict) else raw,
+        full_raw=full_raw_bytes,
         condition_plan=(result or {}).get('condition_plan'),
+        prompt_version=payload.get('prompt_version'),
+        system_sha256=payload.get('system_sha256'),
+        input_profile=payload.get('input_profile'),
+        contract_validation=cv_report,
+        error_code=err_code,
     )
 
 
 def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
     results = []
     now = d.clock()
+    prompt_version = plan.get('prompt_version') or review.INITIAL_SYSTEM_PROMPT_VERSION
+    if prompt_version not in review.INITIAL_SYSTEM_PROMPTS:
+        raise ValueError(f'unsupported plan prompt_version: {prompt_version!r}')
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    legacy_profile = getattr(dossier.player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
+    input_profile = plan.get('input_profile') or (
+        p0_profile if prompt_version == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION else legacy_profile
+    )
+    supported_profiles = getattr(dossier.player, 'SUPPORTED_INPUT_PROFILES', (legacy_profile, p0_profile))
+    if input_profile not in supported_profiles:
+        raise ValueError(f'unsupported plan input_profile: {input_profile!r}')
     for slot in reversed(dossier.schedule(plan, now)):
         expiry = slot + plan['expiry_offset_ms']
         hand = None
@@ -1651,7 +1875,7 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                 if (expected / 'expected.json').is_file():
                     continue
             with _short_writer(d):
-                hand, = d.tick(plan, slots=[slot])
+                hand, = _call_with_supported_kwargs(d.tick, plan, slots=[slot], input_profile=input_profile)
             if expiry <= now:
                 continue
             if not (hand / 'evidence').exists() and d.clock() < slot + plan['deal_grace_ms']:
@@ -1659,12 +1883,15 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                     source = dossier.collect(archive_root, expiry, slot, clock=d.clock,
                                              candidate_round=plan.get('candidate_round', 'r2'))
                     with _short_writer(d):
-                        d.deal(hand, source)
+                        _call_with_supported_kwargs(d.deal, hand, source, input_profile=input_profile)
                 except (OSError, LookupError, ValueError) as exc:
                     with _short_writer(d):
                         state = 'POLICY_BLOCKED' if isinstance(exc, dossier.player.HandNotDealt) else 'DATA_BLOCKED'
                         d.note(hand, state, str(exc))
-            results.append(_deal_hand(d, hand, service, _llm_settings(llm_config)))
+            results.append(_deal_hand(
+                d, hand, service, _llm_settings(llm_config),
+                prompt_version=prompt_version, input_profile=input_profile,
+            ))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             results.append(_hand_error(d, hand, exc, slot))
     return results
@@ -1688,7 +1915,7 @@ def _safe_summary(d, expiry_ms):
         return None
 
 
-def _deal_hand(d, hand, service, cfg, *, recover_only=False):
+def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None, input_profile=None):
     exp = load(hand / 'expected.json')
     link_todo = None
     llm_input = None
@@ -1758,11 +1985,21 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False):
     req_ms = d.clock()
     if deadline is not None and req_ms >= deadline:
         return dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED')
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+    legacy_profile = getattr(dossier.player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
+    plan_cfg = exp.get('plan') if isinstance(exp.get('plan'), dict) else {}
+    eff_prompt_version = prompt_version or plan_cfg.get('prompt_version') or review.INITIAL_SYSTEM_PROMPT_VERSION
+    eff_input_profile = input_profile or meta.get('input_profile') or plan_cfg.get('input_profile') or (
+        p0_profile if eff_prompt_version == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION else legacy_profile
+    )
+    req_input_profile = eff_input_profile if eff_input_profile != legacy_profile else None
     attempt_id = dossier.identity('auto', hand.name, req_ms, cfg['model'], len(existing_auto))
     req_payload = review.build_initial_request_payload(
         input_bytes.decode('utf-8'),
         contract_pair=contracts_pair,
         model=cfg['model'],
+        prompt_version=eff_prompt_version,
+        input_profile=req_input_profile,
         reasoning_effort=cfg.get('reasoning_effort'),
         endpoint=review._normalize_endpoint(cfg.get('endpoint')),
         packet_hash=meta['input_sha256'],
@@ -1779,6 +2016,8 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False):
             contract_pair=contracts_pair,
             api_key=cfg['api_key'] or 'test-key',
             model=cfg['model'],
+            prompt_version=eff_prompt_version,
+            input_profile=req_input_profile,
             endpoint=cfg.get('endpoint'),
             timeout_s=cfg.get('timeout_s', 300),
             retries=0,  # An ambiguous POST must never be automatically replayed.
@@ -1970,6 +2209,10 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
                 'protocol_status', 'shadow_action', 'trigger_categories', 'affected_conditions',
                 'mapped_condition_ids', 'unmapped_condition_ids', 'condition_id_mapping_status',
                 'model', 'reasoning_effort', 'requested_at_ms', 'decided_at_ms', 'input_sha256', 'raw_sha256')}
+            if dec.get('review_channel') is not None:
+                rec['review_channel'] = dec['review_channel']
+            if dec.get('new_qualified_data_present') is not None:
+                rec['new_qualified_data_present'] = dec['new_qualified_data_present']
             att_dec = optional(folder / 'attempt.json')
             if rec.get('reasoning_effort') is None and isinstance(att_dec, dict) and att_dec.get('reasoning_effort') is not None:
                 rec['reasoning_effort'] = att_dec.get('reasoning_effort')
@@ -2511,10 +2754,19 @@ def export_model_input(hand, *, review_id=None):
                 if attempt_id else
                 '手牌尚未产生实发请求快照 request.json，按冻结证据 evidence/input.md、候选合约对与固定初始系统提示词重建'
             )
+            reconstructed_pv = (
+                (attempt.get('prompt_version') if isinstance(attempt, dict) else None)
+                or ((exp.get('plan') or {}).get('prompt_version') if isinstance(exp.get('plan'), dict) else None)
+                or review.INITIAL_SYSTEM_PROMPT_VERSION
+            )
+            if reconstructed_pv not in review.INITIAL_SYSTEM_PROMPTS:
+                reconstructed_pv = review.INITIAL_SYSTEM_PROMPT_VERSION
             req_payload = review.build_initial_request_payload(
                 input_bytes.decode('utf-8'),
                 contract_pair=contracts_pair,
                 model=precall_attempt.get('model'),
+                prompt_version=reconstructed_pv,
+                input_profile=meta.get('input_profile'),
                 reasoning_effort=precall_attempt.get('reasoning_effort'),
                 endpoint=None,
                 packet_hash=meta.get('input_sha256'),

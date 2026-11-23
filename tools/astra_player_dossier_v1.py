@@ -370,11 +370,16 @@ class Dossiers:
         if not out.exists():
             write(out, encode(dict(state=state, reason=reason, recorded_at_ms=self.clock())))
 
-    def deal(self, hand, source):
+    def deal(self, hand, source, *, input_profile=None):
         target = hand / 'evidence'
         if target.exists():
             self.verify_evidence(hand)
             return target / 'input.md'
+        legacy_profile = getattr(player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
+        supported_profiles = getattr(player, 'SUPPORTED_INPUT_PROFILES', (legacy_profile, 'p0_strict@1'))
+        effective_profile = legacy_profile if input_profile is None else input_profile
+        if effective_profile not in supported_profiles:
+            raise ValueError(f'unsupported input_profile: {effective_profile!r}')
         exp = read(hand / 'expected.json')
         at = self.clock()
         expiry = exp['expiry_ms']
@@ -397,16 +402,27 @@ class Dossiers:
                       for leg in ('short_instrument', 'long_instrument')}
             if not wanted <= proof:
                 raise ValueError('missing native leg/expiry proof')
-        text = player.build_input(*source['cases'], *source['cards'], index_path=source['index_path'],
-                                  ard_history=source['history'], ard_band_snapshot=source.get('band_snapshot'))
+        if effective_profile != legacy_profile:
+            text = player.build_input(*source['cases'], *source['cards'], index_path=source['index_path'],
+                                      ard_history=source['history'], ard_band_snapshot=source.get('band_snapshot'),
+                                      input_profile=effective_profile)
+        else:
+            text = player.build_input(*source['cases'], *source['cards'], index_path=source['index_path'],
+                                      ard_history=source['history'], ard_band_snapshot=source.get('band_snapshot'))
         raw, inputs = text.replace('\n', os.linesep).encode('utf-8'), encode(source)
         files = [Path(module.__file__) for module in (player, player.ard, condition, levels)]
         code = {p.name: sha(p.read_bytes()) for p in files}
-        rules = text.split('## 怎么读', 1)[1].split('## 本局牌面', 1)[0] + text.split('## 读完后另写', 1)[1]
+        if '## 怎么读' in text and '## 本局牌面' in text and '## 读完后另写' in text:
+            rules = text.split('## 怎么读', 1)[1].split('## 本局牌面', 1)[0] + text.split('## 读完后另写', 1)[1]
+        else:
+            rules = text.split('## 本局牌面', 1)[0]
         meta = dict(research=RESEARCH, source_sha256=sha(inputs), input_sha256=sha(raw),
                     rules_sha256=sha(rules.encode()), generator=code, generated_at_ms=at,
                     source_observed_at_ms=reads, source_bundle_available_at_ms=source['received_at_ms'],
                     hand_frozen_at_ms=self.clock())
+        if effective_profile != legacy_profile:
+            meta['input_profile'] = effective_profile
+            meta['candidate_mode'] = True
         publish(target, {'input.md': raw, 'source.json': inputs, 'identity.json': encode(meta)})
         return target / 'input.md'
 
@@ -418,9 +434,11 @@ class Dossiers:
             raise ValueError('frozen input or source hash mismatch')
         return meta
 
-    def tick(self, plan, source_for=None, *, slots=None):
+    def tick(self, plan, source_for=None, *, slots=None, input_profile=None):
         at, output = self.clock(), []
         slots = schedule(plan, at) if slots is None else slots
+        legacy_profile = getattr(player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
+        effective_profile = input_profile if input_profile is not None else (plan.get('input_profile') or legacy_profile)
         write(self.root / 'plans' / (key(plan['plan_id']) + '.json'), encode(plan))
         for slot in slots:
             expiry = slot + plan['expiry_offset_ms']
@@ -433,7 +451,7 @@ class Dossiers:
                 self.note(hand, 'MISSED', '计划发牌窗口已结束')
             elif source_for:
                 try:
-                    self.deal(hand, source_for(expiry, slot))
+                    self.deal(hand, source_for(expiry, slot), input_profile=effective_profile)
                 except (OSError, LookupError, ValueError, player.HandNotDealt, KeyError) as error:
                     self.note(hand, 'POLICY_BLOCKED' if isinstance(error, player.HandNotDealt) else 'DATA_BLOCKED', str(error))
             output.append(hand)
@@ -481,19 +499,52 @@ class Dossiers:
 
     def respond(self, hand, attempt, status, raw=None, annotation=None, *, model=None, configuration=None,
                 requested=None, decided=None, channel='MANUAL_IMPORT', error=None, request_payload=None,
-                full_raw=None, condition_plan=None):
+                full_raw=None, condition_plan=None, prompt_version=None, system_sha256=None,
+                input_profile=None, contract_validation=None, error_code=None):
         meta, at = self.verify_evidence(hand), self.clock()
         exp = read(hand / 'expected.json')
         folder = hand / 'responses' / key(attempt)
         payload_hash = sha(raw) if raw is not None else None
         request_bytes = encode(request_payload) if request_payload is not None else None
         request_hash = sha(request_bytes) if request_bytes is not None else None
+        legacy_profile = getattr(player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
+        p0_profile = getattr(player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+        eff_prompt_version = prompt_version if prompt_version is not None else (
+            request_payload.get('prompt_version') if isinstance(request_payload, dict) else None
+        )
+        eff_system_sha256 = system_sha256 if system_sha256 is not None else (
+            request_payload.get('system_sha256') if isinstance(request_payload, dict) else None
+        )
+        eff_input_profile = input_profile if input_profile is not None else (
+            (request_payload.get('input_profile') if isinstance(request_payload, dict) else None)
+            or meta.get('input_profile')
+        )
+        eff_cv = dict(contract_validation) if isinstance(contract_validation, dict) else None
+        eff_error_code = error_code
+        is_non_legacy = (
+            (eff_prompt_version is not None and eff_prompt_version != 'player_initial_system@1.0')
+            or (eff_input_profile is not None and eff_input_profile != legacy_profile)
+            or eff_cv is not None
+            or system_sha256 is not None
+            or eff_error_code is not None
+        )
         declared = dict(raw_sha256=payload_hash, annotation=annotation, input_status=status, model=model,
                         configuration=configuration, channel=channel, requested_at_ms=requested, decided_at_ms=decided)
         if request_hash is not None:
             declared['request_sha256'] = request_hash
         if full_raw is not None:
             declared['full_raw_sha256'] = sha(full_raw)
+        if is_non_legacy:
+            if eff_prompt_version is not None:
+                declared['prompt_version'] = eff_prompt_version
+            if eff_system_sha256 is not None:
+                declared['system_sha256'] = eff_system_sha256
+            if eff_input_profile is not None:
+                declared['input_profile'] = eff_input_profile
+            if eff_cv is not None:
+                declared['contract_validation_status'] = eff_cv.get('status')
+            if eff_error_code is not None:
+                declared['error_code'] = eff_error_code
         if folder.exists():
             old = read(folder / 'attempt.json')
             if any(old.get(k) != v for k, v in declared.items()):
@@ -516,17 +567,95 @@ class Dossiers:
                 if (status == 'VALID' and deadline is not None and self.require_reply_provenance
                         and not (requested is not None and decided is not None and model_identity(model))):
                     status, record_error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
+            # Fail-closed candidate contract gate even on direct programmatic respond() calls.
+            if status == 'VALID':
+                need_review_mod = (
+                    meta.get('input_profile') == p0_profile
+                    or eff_prompt_version is not None
+                    or eff_cv is not None
+                )
+                if need_review_mod:
+                    if __package__:
+                        from . import astra_player_review_v1 as review_mod
+                    else:
+                        import astra_player_review_v1 as review_mod
+                    if meta.get('input_profile') == p0_profile and not eff_prompt_version:
+                        status, record_error = 'PARSE_FAILED', 'missing_prompt_version'
+                        eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                        is_non_legacy = True
+                    elif eff_prompt_version is not None and eff_prompt_version not in review_mod.INITIAL_SYSTEM_PROMPTS:
+                        status, record_error = 'PARSE_FAILED', f'unknown_prompt_version:{eff_prompt_version}'
+                        eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                        is_non_legacy = True
+                    elif eff_prompt_version in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS:
+                        is_non_legacy = True
+                        if eff_cv is not None and eff_cv.get('status') != 'PASSED':
+                            errs = ', '.join(((eff_cv.get('layer1_deterministic') or {}).get('blocking_errors') or []))
+                            status = 'PARSE_FAILED'
+                            record_error = f"contract_validation_failed ({eff_cv.get('status')}): {errs}"[:240]
+                            eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                        elif judgment['action'] == 'Accept' and not isinstance(condition_plan, dict):
+                            status, record_error = 'PARSE_FAILED', 'candidate Accept requires condition_plan'
+                            eff_error_code = 'CONTRACT_VALIDATION_FAILED'
+                        else:
+                            src = read(hand / 'evidence' / 'source.json')
+                            contracts_pair = {
+                                c['side']: player.bind(cs, c, c['side'])
+                                for cs, c in zip(src['cases'], src['cards'])
+                                if c.get('side') in {'put', 'call'}
+                            }
+                            plan_to_check = condition_plan
+                            if (isinstance(condition_plan, dict)
+                                    and eff_prompt_version not in getattr(review_mod, 'P5_STRICT_PROMPT_VERSIONS', ())
+                                    and 'require_outside_at_t0' not in condition_plan):
+                                plan_to_check = dict(condition_plan, require_outside_at_t0=True)
+                            try:
+                                eff_cv = review_mod.validate_initial_reply_contract(
+                                    {'raw_text': raw.decode('utf-8'), 'decision': judgment, 'condition_plan': plan_to_check},
+                                    contracts_pair,
+                                    strict_clock_5m=True,
+                                    check_excerpt_completeness=True,
+                                    require_outside_at_t0=True,
+                                )
+                            except (ValueError, TypeError, KeyError) as exc:
+                                eff_cv = {
+                                    'status': 'CONTRACT_FAILED',
+                                    'layer1_deterministic': {'valid': False, 'blocking_errors': [str(exc)], 'excerpt_checks': {}},
+                                }
+                                status, record_error = 'PARSE_FAILED', f'contract_validation_failed: {exc}'[:240]
+                                eff_error_code = 'CONTRACT_VALIDATION_FAILED'
+                            else:
+                                declared['contract_validation_status'] = eff_cv.get('status')
+                                if eff_cv.get('status') != 'PASSED':
+                                    errs = ', '.join((eff_cv.get('layer1_deterministic') or {}).get('blocking_errors') or [])
+                                    status, record_error = 'PARSE_FAILED', f"contract_validation_failed ({eff_cv.get('status')}): {errs}"[:240]
+                                    eff_error_code = 'CONTRACT_VALIDATION_FAILED'
+                    elif eff_cv is not None and eff_cv.get('status') != 'PASSED':
+                        status, record_error = 'PARSE_FAILED', record_error or 'contract_validation_failed'
+                        eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
+                        is_non_legacy = True
         elif status not in {'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED', 'PARSE_FAILED'} or raw is not None:
             raise ValueError('invalid response status or raw payload')
         elif isinstance(error, str) and error.strip():
             record_error = str(error)[:240]
         if payload_hash is not None and any(r['status'] == 'VALID' and r['raw_sha256'] == payload_hash for r in siblings):
             status = 'DUPLICATE'
-        config_id = identity('config', RESEARCH, exp['plan'] and exp['plan']['plan_id'],
-                             meta['generator'], meta['rules_sha256'], model, configuration, channel)
+        if is_non_legacy:
+            config_id = identity('config', RESEARCH, exp['plan'] and exp['plan']['plan_id'],
+                                 meta['generator'], meta['rules_sha256'], model, configuration, channel,
+                                 eff_prompt_version, eff_system_sha256, eff_input_profile)
+        else:
+            config_id = identity('config', RESEARCH, exp['plan'] and exp['plan']['plan_id'],
+                                 meta['generator'], meta['rules_sha256'], model, configuration, channel)
         record = dict(declared, status=status, attempt_id=attempt, ordinal=len(siblings) + 1,
                       recorded_at_ms=at, input_sha256=meta['input_sha256'], parser=PARSER,
                       configuration_id=config_id, judgment=judgment, error=record_error, hand_id=hand.name)
+        if is_non_legacy:
+            if eff_error_code is not None:
+                record['error_code'] = eff_error_code
+            if eff_cv is not None:
+                record['contract_validation_status'] = eff_cv.get('status')
+                record['contract_validation'] = eff_cv
         publish(folder, {
             'attempt.json': encode(record),
             **({'response.raw': raw} if raw is not None else {}),
@@ -542,12 +671,82 @@ class Dossiers:
         if not decision or decision['judgment']['action'] != 'Accept':
             raise ValueError('only a selected valid Accept can freeze a shadow episode')
         condition.validate(frozen)
+        meta = self.verify_evidence(hand)
         source = read(hand / 'evidence' / 'source.json')
         side = decision['judgment']['side']
         case, card = next((x, c) for x, c in zip(source['cases'], source['cards']) if c['side'] == side)
         contract = player.bind(case, card, side)
         if any(frozen['contract'].get(k) != contract.get(k) for k in condition.CONTRACT_FIELDS):
             raise ValueError('frozen legs differ from evidence')
+        p0_profile = getattr(player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+        att_dir = hand / 'responses' / key(decision['attempt_id'])
+        att_rec = read(att_dir / 'attempt.json') if (att_dir / 'attempt.json').is_file() else {}
+        att_pv = att_rec.get('prompt_version')
+        if not att_pv and (att_dir / 'request.json').is_file():
+            att_pv = read(att_dir / 'request.json').get('prompt_version')
+        if __package__:
+            from . import astra_player_review_v1 as review_mod
+        else:
+            import astra_player_review_v1 as review_mod
+        if meta.get('input_profile') == p0_profile and not att_pv:
+            raise ValueError('candidate p0_strict@1 hand requires explicit prompt_version before freeze')
+        if att_pv is not None and att_pv not in review_mod.INITIAL_SYSTEM_PROMPTS:
+            raise ValueError(f'unknown prompt_version on selected attempt: {att_pv!r}')
+        is_candidate_prompt = att_pv in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS
+        is_p5_strict = att_pv in getattr(review_mod, 'P5_STRICT_PROMPT_VERSIONS', ())
+        require_candidate_gate = (
+            is_candidate_prompt
+            or frozen.get('require_outside_at_t0') is True
+            or bool(frozen.get('mechanical_contract_version'))
+        )
+        if require_candidate_gate:
+            if is_p5_strict and frozen.get('require_outside_at_t0') is not True:
+                raise ValueError('P5 candidate episode requires explicit require_outside_at_t0=True')
+            if is_candidate_prompt and frozen.get('require_outside_at_t0') is False:
+                raise ValueError('candidate episode cannot disable require_outside_at_t0')
+            if not _is_strictly_outside(frozen['entry_index_usd'], frozen['contract']):
+                raise ValueError('candidate episode requires entry_index_usd strictly OUTSIDE short strike at t0')
+            expected_first = (frozen['entry_at_ms'] // MINUTE + 1) * MINUTE
+            if frozen['check_clock']['first_at_ms'] != expected_first:
+                raise ValueError('candidate episode check_clock.first_at_ms must be next UTC full minute after entry_at_ms')
+            if frozen['check_clock']['interval_ms'] != 300_000:
+                raise ValueError('candidate episode check_clock.interval_ms must be 300000')
+            if tracking is None and is_candidate_prompt:
+                raw_path = att_dir / 'response.raw'
+                if not raw_path.is_file():
+                    raise ValueError('candidate manual freeze requires response.raw')
+                contracts_pair = {
+                    c['side']: player.bind(cs, c, c['side'])
+                    for cs, c in zip(source['cases'], source['cards'])
+                    if c.get('side') in {'put', 'call'}
+                }
+                manual_plan = {
+                    'invalidation': frozen['invalidation'],
+                    'check_interval_ms': frozen['check_clock']['interval_ms'],
+                    'historical_facts': frozen['historical_facts'],
+                    'accepted_conditions': frozen['accepted_conditions'],
+                    'confirmation_excerpt': frozen.get('confirmation_excerpt') or (
+                        read(att_dir / 'condition_plan.json').get('confirmation_excerpt')
+                        if (att_dir / 'condition_plan.json').is_file() else ''
+                    ),
+                }
+                if 'require_outside_at_t0' in frozen:
+                    manual_plan['require_outside_at_t0'] = frozen['require_outside_at_t0']
+                elif not is_p5_strict:
+                    manual_plan['require_outside_at_t0'] = True
+                if frozen.get('ard_basis') and isinstance(frozen['ard_basis'], dict):
+                    manual_plan['ard_responsibility_meaning'] = frozen['ard_basis'].get('responsibility_meaning', '')
+                    manual_plan['ard_review_on'] = frozen['ard_basis'].get('review_on', '')
+                cv = review_mod.validate_initial_reply_contract(
+                    {'raw_text': raw_path.read_text(encoding='utf-8'), 'decision': decision['judgment'], 'condition_plan': manual_plan},
+                    contracts_pair,
+                    strict_clock_5m=True,
+                    check_excerpt_completeness=True,
+                    require_outside_at_t0=True,
+                )
+                if cv.get('status') != 'PASSED':
+                    errs = ', '.join((cv.get('layer1_deterministic') or {}).get('blocking_errors') or [])
+                    raise ValueError(f"candidate manual freeze contract validation failed: {errs}")
         exp = read(hand / 'expected.json')
         if tracking is not None:
             if __package__:
@@ -573,10 +772,26 @@ class Dossiers:
         basis = frozen.get('ard_basis')
         if bool(basis) != decision['judgment'].get('depends_on_ard', False):
             raise ValueError('ARD attachment must reflect the actual selected answer')
-        if basis and encode(basis['facts']) != encode(player.ard.analyze(
-                source['history'], source['index_path'], expiry_ms=exp['expiry_ms'],
-                cutoff_ms=min(card['read_at_ms'] for card in source['cards']), band_snapshot=source.get('band_snapshot'))):
-            raise ValueError('ARD basis differs from frozen evidence')
+        if basis:
+            if meta.get('input_profile') == p0_profile:
+                expected_facts = player.ard_facts_for_evidence(
+                    source['history'],
+                    source['index_path'],
+                    expiry_ms=exp['expiry_ms'],
+                    cutoff_ms=min(card['read_at_ms'] for card in source['cards']),
+                    band_snapshot=source.get('band_snapshot'),
+                    input_profile=p0_profile,
+                )
+            else:
+                expected_facts = player.ard.analyze(
+                    source['history'],
+                    source['index_path'],
+                    expiry_ms=exp['expiry_ms'],
+                    cutoff_ms=min(card['read_at_ms'] for card in source['cards']),
+                    band_snapshot=source.get('band_snapshot'),
+                )
+            if encode(basis['facts']) != encode(expected_facts):
+                raise ValueError('ARD basis differs from frozen evidence')
         episode = identity('episode', hand.name, decision['attempt_id'], contract)
         target = hand.parent.parent / 'episodes' / episode
         if target.exists():
@@ -939,11 +1154,23 @@ def model_identity(model):
     return isinstance(model, str) and bool(model.strip()) and len(model) <= 120 and model.isprintable()
 
 
+def _is_strictly_outside(price, contract):
+    if hasattr(condition, 'classify_price_state'):
+        state = condition.classify_price_state(price, contract)
+        if isinstance(state, str):
+            return state == 'OUTSIDE'
+        if isinstance(state, dict):
+            return state.get('state') == 'OUTSIDE' and state.get('strictly_outside_short', True) is True
+    return player.responsibility_zone(price, contract) == '在责任区外'
+
+
 _PUNCT_TRANS = str.maketrans('，。：；（）【】“”‘’　', ',.:;()[]""\'\' ')
+_TERMINAL_END_RE = re.compile(r'[。！？.!?][”’"\'）)\]】」』]*$')
+_SHORT_LABEL_PREFIX_RE = re.compile(r'^(?!\d{1,2}:\d{2})(?:[^：:\n（(]{1,24}(?:[（(][^）)\n]{1,24}[）)])?)[：:]\s*')
 
 
 def _norm_excerpt(value):
-    cleaned = re.sub(r'(?m)^\s*(?:[-*•]|\d+[.)])\s+', '', value)
+    cleaned = re.sub(r'(?m)^\s*(?:[-*•]|\d+[.)、]|[一二三四五六七八九十]+[、.．])\s+', '', value)
     cleaned = cleaned.replace('**', '').replace('`', '')
     collapsed = re.sub(r'\s+', ' ', cleaned.translate(_PUNCT_TRANS)).strip()
     cjk_joined = re.sub(r'(?<=[^\x00-\x7f])\s+|\s+(?=[^\x00-\x7f])', '', collapsed)
@@ -957,6 +1184,234 @@ def excerpt_in_text(excerpt, text):
         return True
     norm_ex = _norm_excerpt(excerpt)
     return bool(norm_ex) and norm_ex in _norm_excerpt(text)
+
+
+_SECTION_TAG_OPT = r'(?:\s*[（(\[][^）)\]\n]{1,24}[\])）])?'
+_SECTION_LABELS = (
+    ('put', rf'(?:Put|PUT)\s*(?:侧)?(?:责任)?(?:路径)?(?:判断|分析|评估)?{_SECTION_TAG_OPT}'),
+    ('call', rf'(?:Call|CALL)\s*(?:侧)?(?:责任)?(?:路径)?(?:判断|分析|评估)?{_SECTION_TAG_OPT}'),
+    ('put_counter', rf'(?:Put|PUT)\s*(?:侧)?(?:最强)?反证{_SECTION_TAG_OPT}'),
+    ('call_counter', rf'(?:Call|CALL)\s*(?:侧)?(?:最强)?反证{_SECTION_TAG_OPT}'),
+    ('comparison', rf'(?:两侧|双侧)?(?:对比|比较)(?:与)?(?:择优|结论)?{_SECTION_TAG_OPT}'),
+    ('ard_responsibility_meaning', rf'ARD\s*责任(?:相关性|含义|意义){_SECTION_TAG_OPT}'),
+    ('ard_review_on', rf'ARD\s*(?:复核(?:变化|条件|触发)|触发复核){_SECTION_TAG_OPT}'),
+    ('ard', rf'ARD\s*(?:责任)?(?:判读|解读|说明){_SECTION_TAG_OPT}'),
+    ('historical_facts', rf'(?:冻结)?历史事实(?:冻结)?{_SECTION_TAG_OPT}'),
+    ('accepted_conditions', rf'(?:(?:持续)?承担条件|持续条件){_SECTION_TAG_OPT}'),
+    ('confirmation_excerpt', rf'(?:(?:机械)?(?:有效)?(?:破坏)?(?:确认)?(?:口径|标准)|破坏口径|有效破坏标准){_SECTION_TAG_OPT}'),
+)
+
+
+def extract_labeled_sections(text):
+    """Deterministically extract full paragraph text per stable Chinese S/C/M section label."""
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    sections = {}
+    current_key = None
+    current_pat = None
+    current_lines = []
+    heading_pending = None
+
+    def _flush():
+        nonlocal current_key, current_pat, current_lines
+        if current_key and current_lines and current_key not in sections:
+            raw_full = '\n'.join(current_lines).strip()
+            cleaned = re.sub(r'^[\s\-*•#>]+|\*\*', '', raw_full).strip()
+            cleaned = cleaned.replace('`', '')
+            if current_pat is not None:
+                m_pref = re.match(rf'^(?:{current_pat})\s*[：:]\s*', cleaned, re.IGNORECASE)
+                body = cleaned[m_pref.end():].strip() if m_pref else raw_full
+            else:
+                body = raw_full
+            sections[current_key] = {'raw_full': raw_full, 'full': raw_full, 'body': body}
+        current_key = None
+        current_pat = None
+        current_lines = []
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            if current_key is not None:
+                _flush()
+            continue
+        if '<ANNOTATION_JSON>' in stripped:
+            _flush()
+            break
+        cleaned_line = re.sub(r'^(?:[-*•]|\d+[.)、]|[一二三四五六七八九十]+[、.．]|#{1,4})\s*', '', stripped).replace('**', '').replace('`', '').strip()
+        matched_inline = None
+        matched_inline_pat = None
+        matched_heading = None
+        for key_name, pat in _SECTION_LABELS:
+            if re.match(rf'^(?:{pat})\s*[：:]\s*\S', cleaned_line, re.IGNORECASE):
+                matched_inline = key_name
+                matched_inline_pat = pat
+                break
+            if re.match(rf'^(?:{pat})\s*[：:]?\s*$', cleaned_line, re.IGNORECASE):
+                matched_heading = key_name
+                break
+        if matched_inline is not None:
+            _flush()
+            heading_pending = None
+            current_key = matched_inline
+            current_pat = matched_inline_pat
+            current_lines = [stripped]
+        elif matched_heading is not None:
+            _flush()
+            heading_pending = matched_heading
+        elif heading_pending is not None:
+            current_key = heading_pending
+            current_pat = None
+            heading_pending = None
+            current_lines = [stripped]
+        elif current_key is not None:
+            if re.match(r'^#{1,4}\s+\S', stripped) or _SHORT_LABEL_PREFIX_RE.match(cleaned_line):
+                _flush()
+            else:
+                current_lines.append(stripped)
+    _flush()
+    return sections
+
+
+def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
+    """Classify verbatim excerpt completeness: complete paragraph vs sentence truncation vs mid-word cut.
+
+    Covers full section if explicitly labeled, and supports natural prose paragraphs without requiring
+    rigid colon-prefixed headers.
+    """
+    if not isinstance(excerpt, str) or not excerpt.strip():
+        return {'status': 'EMPTY', 'complete': False, 'matched': False, 'section': expected_section}
+    if not excerpt_in_text(excerpt, text):
+        return {'status': 'NOT_IN_TEXT', 'complete': False, 'matched': False, 'section': expected_section}
+
+    ex_stripped = excerpt.strip()
+    ends_terminal = bool(_TERMINAL_END_RE.search(ex_stripped))
+    norm_ex = _norm_excerpt(ex_stripped)
+    sections = extract_labeled_sections(text)
+    owner = None
+    matched_section = expected_section
+    from_labeled_section = False
+
+    if expected_section and expected_section in sections:
+        sec = sections[expected_section]
+        if norm_ex in _norm_excerpt(sec['full']) or norm_ex in _norm_excerpt(sec['body']):
+            owner = sec
+            from_labeled_section = True
+    if owner is None:
+        for sec_key, sec in sections.items():
+            if norm_ex in _norm_excerpt(sec['full']) or norm_ex in _norm_excerpt(sec['body']):
+                owner = sec
+                matched_section = sec_key
+                from_labeled_section = True
+                break
+    if owner is None:
+        raw_body = text.split('<ANNOTATION_JSON>')[0]
+        # Support intentional multi-paragraph verbatim excerpts (e.g., 4-item C with blank lines inside)
+        # when bounded cleanly on both sides by paragraph/heading boundaries and ending with terminal punctuation.
+        exact_idx = raw_body.find(ex_stripped)
+        if exact_idx >= 0 and ends_terminal and ('\n' in ex_stripped):
+            before = raw_body[:exact_idx]
+            after = raw_body[exact_idx + len(ex_stripped):]
+            clean_before = (exact_idx == 0) or before.endswith('\n') or bool(re.search(r'[：:]\s*$', before))
+            clean_after = (not after.strip()) or bool(re.match(r'^\s*\n', after))
+            if clean_before and clean_after:
+                return {'status': 'COMPLETE_PARAGRAPH', 'complete': True, 'matched': True, 'section': matched_section, 'coverage_ratio': 1.0}
+        for block in re.split(r'\n\s*\n', raw_body):
+            b = block.strip()
+            if not b or norm_ex not in _norm_excerpt(b):
+                continue
+            lines = [ln.strip() for ln in b.splitlines() if ln.strip()]
+            # Support single-newline-separated natural prose paragraphs inside a block.
+            if len(lines) > 1:
+                # Strip a leading markdown heading line if present.
+                if re.match(r'^(?:#{1,4}\s+\S|\*\*[^*]+\*\*\s*$)', lines[0]):
+                    body_no_head = '\n'.join(lines[1:]).strip()
+                    if body_no_head and norm_ex == _norm_excerpt(body_no_head):
+                        owner = {'raw_full': b, 'full': body_no_head, 'body': body_no_head}
+                        break
+                matched_line = next(
+                    (ln for ln in lines if norm_ex in _norm_excerpt(ln)),
+                    None,
+                )
+                if matched_line is not None:
+                    cleaned_ln = re.sub(r'^(?:[-*•]|\d+[.)、])\s*', '', matched_line).replace('**', '').replace('`', '').strip()
+                    m_pref = _SHORT_LABEL_PREFIX_RE.match(cleaned_ln)
+                    body_only = cleaned_ln[m_pref.end():].strip() if m_pref else matched_line
+                    owner = {'raw_full': matched_line, 'full': matched_line, 'body': body_only}
+                    break
+            cleaned_b = re.sub(r'^(?:[-*•]|\d+[.)、])\s*', '', b).replace('**', '').replace('`', '').strip()
+            m_pref = _SHORT_LABEL_PREFIX_RE.match(cleaned_b)
+            body_only = cleaned_b[m_pref.end():].strip() if m_pref else b
+            owner = {'raw_full': b, 'full': b, 'body': body_only}
+            break
+        if owner is None:
+            owner = {'raw_full': raw_body.strip(), 'full': raw_body.strip(), 'body': raw_body.strip()}
+
+    norm_raw_full = _norm_excerpt(owner.get('raw_full', owner['full']))
+    norm_full = _norm_excerpt(owner['full'])
+    norm_body = _norm_excerpt(owner['body'])
+    if norm_ex in (norm_raw_full, norm_full, norm_body):
+        if not ends_terminal and not from_labeled_section:
+            return {
+                'status': 'MID_SENTENCE_TRUNCATION',
+                'complete': False,
+                'matched': True,
+                'section': matched_section,
+                'coverage_ratio': 1.0,
+                'missing_trailing_chars': 0,
+            }
+        return {'status': 'COMPLETE_PARAGRAPH', 'complete': True, 'matched': True, 'section': matched_section, 'coverage_ratio': 1.0}
+
+    idx = norm_full.find(norm_ex)
+    trailing = norm_full[idx + len(norm_ex):] if idx >= 0 else ''
+    leading = norm_full[:idx] if idx > 0 else ''
+    # ARD subfields (meaning + review_on) may be two complete sentences within one ARD paragraph.
+    if expected_section in {'ard_responsibility_meaning', 'ard_review_on'} and ends_terminal:
+        clean_start = (not leading) or leading.endswith((':', '：', '。', '！', '？', '.', '!', '?', ';', '；'))
+        if clean_start:
+            return {
+                'status': 'COMPLETE_SENTENCE',
+                'complete': True,
+                'matched': True,
+                'section': matched_section,
+                'coverage_ratio': round(len(norm_ex) / max(1, len(norm_full)), 4),
+            }
+    status = 'PARTIAL_SENTENCE_SUBSTRING' if (ends_terminal and not leading) else 'MID_SENTENCE_TRUNCATION'
+    if not ends_terminal and trailing:
+        status = 'MID_SENTENCE_TRUNCATION'
+    elif leading and not leading.endswith((':', '：')) and ':' not in leading:
+        status = 'MID_SENTENCE_TRUNCATION'
+    return {
+        'status': status,
+        'complete': False,
+        'matched': True,
+        'section': matched_section,
+        'coverage_ratio': round(len(norm_ex) / max(1, len(norm_full)), 4),
+        'missing_trailing_chars': len(trailing),
+    }
+
+
+def build_annotation_from_sections(text, *, action, depends_on_ard, invalidation=None,
+                                   check_interval_ms=300_000, require_outside_at_t0=False):
+    """Deterministically populate S/C/M excerpts directly from labeled prose sections (Option B helper)."""
+    sections = extract_labeled_sections(text)
+    required = ['put', 'call', 'comparison', 'put_counter', 'call_counter']
+    missing = [k for k in required if k not in sections]
+    if missing:
+        raise ValueError(f'missing labeled sections for deterministic extraction: {", ".join(missing)}')
+    out = {k: sections[k]['full'] for k in required}
+    out['depends_on_ard'] = bool(depends_on_ard)
+    if action == 'Accept':
+        plan_keys = ['historical_facts', 'accepted_conditions', 'confirmation_excerpt']
+        missing_plan = [k for k in plan_keys if k not in sections]
+        if missing_plan:
+            raise ValueError(f'missing labeled condition sections: {", ".join(missing_plan)}')
+        out['condition_plan'] = {
+            'invalidation': invalidation,
+            'check_interval_ms': check_interval_ms,
+            'require_outside_at_t0': bool(require_outside_at_t0),
+            **{k: sections[k]['full'] for k in plan_keys},
+        }
+    return out
 
 
 def parse(raw, annotation):
@@ -1013,8 +1468,10 @@ def main():
     response.add_argument('--status', choices=['RECEIVED', 'TIMEOUT', 'NO_RESPONSE', 'REQUEST_FAILED'], default='RECEIVED')
     response.add_argument('--raw', type=Path)
     response.add_argument('--annotation', type=Path)
+    response.add_argument('--condition-plan', type=Path)
     response.add_argument('--configuration', type=Path)
     response.add_argument('--model')
+    response.add_argument('--prompt-version')
     response.add_argument('--requested-ms', type=int)
     response.add_argument('--decided-ms', type=int)
     response.add_argument('--channel', default='MANUAL_IMPORT')
@@ -1090,16 +1547,78 @@ def main():
                 print(d.summary(expiry))
                 parser.exit(2, f'{exc}\n')
         elif cmd == 'response':
-            result = d.respond(hand, args.attempt, args.status, args.raw.read_bytes() if args.raw else None,
-                               read(args.annotation) if args.annotation else None, model=args.model,
+            meta = d.verify_evidence(hand)
+            p0_profile = getattr(player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
+            hand_profile = meta.get('input_profile')
+            pv = args.prompt_version
+            raw_bytes = args.raw.read_bytes() if args.raw else None
+            ann_obj = read(args.annotation) if args.annotation else None
+            c_plan_obj = read(args.condition_plan) if args.condition_plan else None
+            sys_sha = None
+            cv_report = None
+            full_raw_bytes = None
+            needs_prompt_gate = (hand_profile == p0_profile) or (pv is not None and pv != 'player_initial_system@1.0')
+            if needs_prompt_gate:
+                if __package__:
+                    from . import astra_player_review_v1 as review_mod
+                else:
+                    import astra_player_review_v1 as review_mod
+                if not pv or pv not in review_mod.INITIAL_SYSTEM_PROMPTS:
+                    parser.exit(2, f'candidate response requires a known --prompt-version (got {pv!r})\n')
+                sys_sha = sha(review_mod.INITIAL_SYSTEM_PROMPTS[pv].encode('utf-8'))
+                if args.status == 'RECEIVED' and raw_bytes is not None and pv in review_mod.CANDIDATE_STRICT_PROMPT_VERSIONS:
+                    src = read(hand / 'evidence' / 'source.json')
+                    contracts_pair = {
+                        c['side']: player.bind(cs, c, c['side'])
+                        for cs, c in zip(src['cases'], src['cards'])
+                        if c.get('side') in {'put', 'call'}
+                    }
+                    raw_text = raw_bytes.decode('utf-8')
+                    if '<ANNOTATION_JSON>' in raw_text or re.search(r'```json\s*[\s\S]*?```', raw_text, re.IGNORECASE):
+                        llm_text = raw_text
+                    elif isinstance(ann_obj, dict):
+                        merged_ann = dict(ann_obj)
+                        if c_plan_obj is not None and 'condition_plan' not in merged_ann:
+                            merged_ann['condition_plan'] = c_plan_obj
+                        llm_text = raw_text.rstrip() + '\n\n<ANNOTATION_JSON>\n' + json.dumps(merged_ann, ensure_ascii=False) + '\n</ANNOTATION_JSON>'
+                    else:
+                        parser.exit(2, 'candidate response requires <ANNOTATION_JSON> in --raw or --annotation JSON\n')
+                    req_stub = review_mod.build_initial_request_payload(
+                        (hand / 'evidence' / 'input.md').read_text(encoding='utf-8'),
+                        contract_pair=contracts_pair,
+                        model=args.model or 'manual',
+                        prompt_version=pv,
+                        input_profile=hand_profile,
+                        fidelity='RECONSTRUCTED',
+                    )
+                    try:
+                        parsed_cli = review_mod.parse_initial_reply(
+                            {'text': llm_text, 'model': args.model or 'manual'},
+                            req_stub,
+                            contracts=contracts_pair,
+                        )
+                    except (review_mod.ContractValidationError, ValueError, KeyError, TypeError) as exc:
+                        parser.exit(2, f'contract validation failed: {exc}\n')
+                    full_raw_bytes = raw_bytes
+                    raw_bytes = parsed_cli['raw_bytes']
+                    ann_obj = parsed_cli['annotation']
+                    c_plan_obj = parsed_cli['condition_plan']
+                    cv_report = parsed_cli.get('contract_validation')
+            result = d.respond(hand, args.attempt, args.status, raw_bytes,
+                               ann_obj, model=args.model,
                                configuration=read(args.configuration) if args.configuration else None,
                                requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
-                               error=args.error)
+                               error=args.error, full_raw=full_raw_bytes, condition_plan=c_plan_obj,
+                               prompt_version=pv, system_sha256=sys_sha, input_profile=hand_profile,
+                               contract_validation=cv_report)
             result = {k: result[k] for k in ('hand_id', 'attempt_id', 'status', 'error')}
         elif cmd == 'reparse':
             result = d.reparse(hand, args.attempt, read(args.annotation), args.reason)
         elif cmd == 'freeze':
-            result = d.episode(hand, read(args.condition), player.read_json(args.entry_path) if args.entry_path else None)
+            try:
+                result = d.episode(hand, read(args.condition), player.read_json(args.entry_path) if args.entry_path else None)
+            except ValueError as exc:
+                parser.exit(2, f'{exc}\n')
         elif cmd == 'event':
             result = d.event(episode, args.event_id, args.kind, read(args.body), observed=args.observed_ms,
                              available=args.available_ms, decided=args.decided_ms)['kind']
