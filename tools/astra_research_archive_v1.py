@@ -513,8 +513,26 @@ def path_stats(record: Mapping[str, Any], points: list[list[float]], delivery: f
 
 
 class Deribit:
-    def __init__(self, transport: Callable[[str, dict[str, Any]], Any] | None = None) -> None:
+    def __init__(
+        self,
+        transport: Callable[[str, dict[str, Any]], Any] | None = None,
+        *,
+        min_book_interval_s: float = 1.05,
+        max_rate_limit_waits: int = 1,
+        cooldown_default_s: float = 10.0,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._live_transport = transport is None
         self.transport = transport or self._get
+        self.min_book_interval_s = max(0.0, float(min_book_interval_s)) if self._live_transport else 0.0
+        self.max_rate_limit_waits = max(0, int(max_rate_limit_waits))
+        self.cooldown_default_s = max(1.0, float(cooldown_default_s))
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last_book_mono: float | None = None
+        self._rate_limited_until_mono: float = 0.0
+        self._rate_limit_waits_used: int = 0
 
     @staticmethod
     def _get(path: str, params: dict[str, Any]) -> Any:
@@ -523,14 +541,50 @@ class Deribit:
         url = PUBLIC + path + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         timeout = expiry_structure.REQUEST_TIMEOUT_S if path in COLLECT_PATHS else 15
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            body = json.load(response)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                body = json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                raise ValueError(f"DERIBIT_HTTP_429 on {path}") from exc
+            raise
+        if isinstance(body, dict) and isinstance(body.get("error"), Mapping):
+            err = body["error"]
+            if err.get("code") == 10028 or err.get("message") == "too_many_requests":
+                raise ValueError(f"DERIBIT_HTTP_429 on {path}")
         if not isinstance(body, dict) or body.get("error") or "result" not in body:
             raise ValueError("deribit public " + path + " invalid result")
         return body["result"]
 
     def book(self, name: str) -> dict[str, Any]:
-        book = self.transport("public/get_order_book", {"instrument_name": name, "depth": 1})
+        for attempt in range(2):
+            now_m = self._monotonic()
+            if self._rate_limited_until_mono > now_m:
+                if self.min_book_interval_s > 0 and self._rate_limit_waits_used < self.max_rate_limit_waits:
+                    wait_cd = self._rate_limited_until_mono - now_m
+                    self._rate_limit_waits_used += 1
+                    self._sleep(wait_cd)
+                    self._rate_limited_until_mono = 0.0
+                    now_m = self._monotonic()
+                else:
+                    raise ValueError("DERIBIT_HTTP_429 cooldown active")
+            if self.min_book_interval_s > 0 and self._last_book_mono is not None:
+                wait_s = self._last_book_mono + self.min_book_interval_s - now_m
+                if wait_s > 0:
+                    self._sleep(wait_s)
+            self._last_book_mono = self._monotonic()
+            try:
+                book = self.transport("public/get_order_book", {"instrument_name": name, "depth": 1})
+                break
+            except Exception as exc:
+                if "DERIBIT_HTTP_429" in str(exc) or getattr(exc, "code", None) in {429, "DERIBIT_HTTP_429"}:
+                    self._rate_limited_until_mono = self._monotonic() + self.cooldown_default_s
+                    if attempt == 0 and self.min_book_interval_s > 0 and self._rate_limit_waits_used < self.max_rate_limit_waits:
+                        self._rate_limit_waits_used += 1
+                        self._sleep(self.cooldown_default_s)
+                        self._rate_limited_until_mono = 0.0
+                        continue
+                raise
         if not isinstance(book, dict) or book.get("instrument_name") != name:
             raise ValueError("book mismatch " + name)
         return book
@@ -1254,25 +1308,34 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
     day = hour[:10]
     new_cases: list[tuple[str, Mapping[str, Any]]] = []
-    for key, item in displayed.items():
-        side, snap = item.get("side"), item["snapshot"]
-        slot_key = f"{hour}|{side}"
-        if slot_key in state["cases"]:
-            continue
-        try:
-            case = fetch_case(snap["snapshot_id"])
-            data = gzip.compress(json.dumps(case, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
-            rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
-            archive.write_new(rel, data, at_ms=now_ms, kind="case")
-            credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
-            state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
-            state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
-                                                     "net_credit_after_fee_btc": credit, "path": rel})
-            new_cases.append((side, case))
-            report["cases"] += 1
-        except Exception as exc:
-            report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
-    archive.save_state(state)
+    # Defer early-hour case freeze when workbench capture is PARTIAL (<2 sides) inside
+    # the first 25m so a recovering partner later in the hour does not fail the 60s pair skew limit.
+    disc_state = str(((view or {}).get("discovery_status") or {}).get("capture_state") or "").upper()
+    defer_partial_single_side = (
+        disc_state == "PARTIAL"
+        and len({item.get("side") for item in displayed.values() if item.get("side") in {"put", "call"}}) < 2
+        and (now_ms % HOUR_MS) < 25 * 60_000
+    )
+    if not defer_partial_single_side:
+        for key, item in displayed.items():
+            side, snap = item.get("side"), item["snapshot"]
+            slot_key = f"{hour}|{side}"
+            if slot_key in state["cases"]:
+                continue
+            try:
+                case = fetch_case(snap["snapshot_id"])
+                data = gzip.compress(json.dumps(case, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
+                rel = f"cases/{day}/{hour[11:]}_{side}_{case['case_id']}.json.gz"
+                archive.write_new(rel, data, at_ms=now_ms, kind="case")
+                credit = (case_entry(case, "L1.economics") or {}).get("net_credit_after_fee_btc")
+                state["cases"][slot_key] = {"case_id": case["case_id"], "path": rel, "contract_key": key}
+                state["contracts"][key]["cases"].append({"case_id": case["case_id"], "asof_ms": case.get("asof_ms"),
+                                                         "net_credit_after_fee_btc": credit, "path": rel})
+                new_cases.append((side, case))
+                report["cases"] += 1
+            except Exception as exc:
+                report["errors"].append({"step": "case", "side": side, "error": type(exc).__name__, "detail": str(exc)[:160]})
+        archive.save_state(state)
 
     states = _program_states(view)
     index_points: list[list[float]] | None = None
@@ -1286,11 +1349,25 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     except Exception as exc:
         report["errors"].append({"step": "ledger_context", "error": type(exc).__name__})
         ctx = market_context(None, None)
+    if deribit.min_book_interval_s > 0 and isinstance(view, Mapping):
+        next_retry = (view.get("discovery_status") or {}).get("next_retry_at_ms")
+        if isinstance(next_retry, int) and now_ms < next_retry <= now_ms + 12_000:
+            deribit._sleep(min(12.0, (next_retry - now_ms) / 1000.0 + 0.5))
+    tick_books: dict[str, dict[str, Any]] = {}
+
+    def _cached_book(name: str) -> dict[str, Any]:
+        cached = tick_books.get(name)
+        if cached is not None:
+            return cached
+        fresh = deribit.book(name)
+        tick_books[name] = fresh
+        return fresh
+
     for key, record in list(state["contracts"].items()):
         if int(record["expiry_ms"]) <= now_ms:
             continue
         try:
-            row = ledger_row(record, deribit.book(record["short_instrument"]), deribit.book(record["long_instrument"]),
+            row = ledger_row(record, _cached_book(record["short_instrument"]), _cached_book(record["long_instrument"]),
                              states, now_ms=now_ms, displayed=(key in displayed) if view is not None else None,
                              locked=(key in locked_keys) if locked_keys is not None else None)
         except Exception as exc:

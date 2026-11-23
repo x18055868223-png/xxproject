@@ -181,7 +181,7 @@ class UpstreamUnavailable(ValueError):
 
 
 def _upstream_code(exc: BaseException | None) -> str | None:
-    """deribit_maintenance / deribit_unavailable from an exception chain, else None."""
+    """deribit_maintenance / deribit_rate_limited / deribit_unavailable from an exception chain, else None."""
     texts, seen = [], set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -190,9 +190,74 @@ def _upstream_code(exc: BaseException | None) -> str | None:
     text = " ".join(texts)
     if "DERIBIT_MAINTENANCE" in text or "system_maintenance" in text:
         return "deribit_maintenance"
+    if "DERIBIT_HTTP_429" in text or "too_many_requests" in text or "10028" in text:
+        return "deribit_rate_limited"
     if any(k in text for k in ("DERIBIT_HTTP_5", "URLError", "timed out", "TimeoutError", "ConnectionError")):
         return "deribit_unavailable"
     return None
+
+
+DISCOVERY_CAPTURE_SCOPE = {
+    "asset": "BTC",
+    "target_hours": 24,
+    "width_usd": 2000,
+    "quantity_btc": 1,
+    "delta_target": 0.35,
+    "delta_max": 0.5,
+    "capture_contract": "complete_delta_population@1",
+}
+_REAL_DISCOVERY_PUBLIC_GET = discovery._public_get
+_REAL_QUOTE_PUBLIC_TRANSPORT = public_quote.public_transport
+_DELTA_CACHE_PRODUCT = "deribit.btc.option.greeks_oi.v1"
+_DELTA_CACHE_USAGE = "discovery_delta"
+_DELTA_CACHE_TTL_MS = 120_000
+
+
+def _build_last_valid_summary(item: Mapping[str, Any], *, discovered_at_ms: int | None) -> dict[str, Any] | None:
+    snap = item.get("snapshot")
+    if not isinstance(snap, Mapping):
+        return None
+    contract = snap.get("contract") or {}
+    market = snap.get("market") or {}
+    eco = snap.get("economics") or {}
+    disc = item.get("discovery") or {}
+    valid_at_ms = market.get("valuation_ts_ms")
+    if not isinstance(valid_at_ms, int):
+        return None
+    return {
+        "side": item.get("side") or contract.get("side"),
+        "candidate_id": snap.get("candidate_id"),
+        "snapshot_id": snap.get("snapshot_id"),
+        "short_instrument": contract.get("short_instrument"),
+        "long_instrument": contract.get("long_instrument"),
+        "short_strike_usd": contract.get("short_strike_usd"),
+        "long_strike_usd": contract.get("long_strike_usd"),
+        "expiry_ms": contract.get("expiry_ms"),
+        "width_usd": contract.get("width_usd"),
+        "quantity_btc": contract.get("quantity_btc"),
+        "short_delta": disc.get("short_delta"),
+        "short_delta_observed_at_ms": disc.get("short_delta_observed_at_ms"),
+        "valid_at_ms": valid_at_ms,
+        "discovered_at_ms": discovered_at_ms if isinstance(discovered_at_ms, int) else valid_at_ms,
+        "net_credit_after_fee_btc": eco.get("net_credit_after_fee_btc"),
+        "is_historical_summary": True,
+        "formal_evidence_eligible": False,
+        "live_lock_eligible": False,
+    }
+
+
+def _annotate_historical_summary(prior: Mapping[str, Any] | None, reasons: Sequence[str], now_ms: int) -> dict[str, Any] | None:
+    if not isinstance(prior, Mapping) or not isinstance(prior.get("valid_at_ms"), int):
+        return None
+    out = deepcopy(dict(prior))
+    expiry_ms = out.get("expiry_ms")
+    out["expired"] = bool(isinstance(expiry_ms, int) and now_ms >= expiry_ms)
+    out["age_ms"] = max(0, int(now_ms) - int(out["valid_at_ms"]))
+    out["current_failure_reasons"] = sorted({str(r) for r in (reasons or []) if r})
+    out["is_historical_summary"] = True
+    out["formal_evidence_eligible"] = False
+    out["live_lock_eligible"] = False
+    return out
 
 
 def _dp_with_narrative(session: Mapping[str, Any]) -> dict[str, Any]:
@@ -1882,6 +1947,13 @@ class AstraWorkbench:
         self._wpem_pinned: set[str] = set()
         self._sampler_marks: dict[str, int] = {}
         self._discovery_upstream: tuple[str, int] | None = None
+        self._deribit_pacer = discovery.DeribitPacer(
+            min_interval_s=1.05, priority_min_interval_s=0.08, max_per_second=2, burst_capacity=2.0
+        )
+        self._discovery_round_seq = 0
+        self._delta_mem_cache: dict[str, dict[str, Any]] = {}
+        self._shadow_quote_slots: dict[str, dict[str, Any]] = {}
+        self._pending_lock_guard = threading.Lock()
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
@@ -2005,57 +2077,289 @@ class AstraWorkbench:
         self._locked_state_update(update)
 
     def _default_discovery_capture(self, *, now_ms: int) -> Mapping[str, Any]:
+        scope = dict(DISCOVERY_CAPTURE_SCOPE)
+        cooldown = self.data_engine.provider_cooldown("deribit", now_ms=now_ms)
+        if cooldown is not None:
+            reason = str(cooldown.get("reason") or "")
+            if reason == "DERIBIT_MAINTENANCE":
+                raise self._discovery_unavailable(
+                    discovery.DeribitPublicError("DERIBIT_MAINTENANCE", "deribit maintenance cooldown active", status=503),
+                    None, now_ms, scope,
+                )
+            if reason == "DERIBIT_HTTP_429":
+                existing = self.data_engine.read(data_projection.DISCOVERY, now_ms=now_ms, usage="health", scope=scope)
+                kept = self._usable_partial_discovery(existing, now_ms, code="PROVIDER_COOLDOWN_ACTIVE",
+                                                      next_retry_at_ms=cooldown.get("until_ms"))
+                if kept is not None:
+                    return kept
+                raise self._discovery_unavailable(
+                    discovery.DeribitPublicError("DERIBIT_HTTP_429", "deribit rate limit cooldown active", status=429),
+                    existing, now_ms, scope,
+                )
+
+        last_transport_error: dict[str, Exception | None] = {"exc": None}
+
         def transport(base, path, params, timeout):
+            if path == "/public/get_order_book":
+                # Charge the wire request on order_book.v1 and avoid slow per-leg
+                # DataEngine JSON rewrites; _with_public_greeks handles pacing/retry.
+                self.data_engine.reserve_request("deribit.btc.option.order_book.v1", now_ms=self.clock_ms(), count=1)
+                try:
+                    body = discovery._public_get(base, path, params, timeout)
+                except discovery.DeribitPublicError as exc:
+                    if exc.is_maintenance:
+                        now_cd = self.clock_ms()
+                        self.data_engine.set_provider_cooldown(
+                            "deribit", until_ms=now_cd + 30_000, reason="DERIBIT_MAINTENANCE", now_ms=now_cd,
+                        )
+                    elif exc.is_rate_limit:
+                        now_cd = self.clock_ms()
+                        wait_ms = exc.retry_after_ms if isinstance(exc.retry_after_ms, int) and exc.retry_after_ms > 0 else 10_000
+                        self.data_engine.set_provider_cooldown(
+                            "deribit", until_ms=now_cd + wait_ms, reason="DERIBIT_HTTP_429", now_ms=now_cd,
+                        )
+                    raise
+                received = self.clock_ms()
+                result = body["result"]
+                observed = result.get("timestamp") if isinstance(result, Mapping) else received
+                return {
+                    "result": deepcopy(result),
+                    "data_engine_receipt": {"retrieved_at_ms": received, "observation_end_ms": observed},
+                }
+
             product = {"/public/get_index_price": "deribit.btc.index.v1",
-                       "/public/get_instruments": "deribit.btc.option.universe.v1",
-                       "/public/get_order_book": "deribit.btc.option.order_book.v1"}[path]
-            scope = {**params, "permission": "public_read_only"}
+                       "/public/get_instruments": "deribit.btc.option.universe.v1"}[path]
+            item_scope = {**params, "permission": "public_read_only"}
+            last_inner_exc: dict[str, Exception | None] = {"exc": None}
+
             def acquire():
                 try:
                     body = discovery._public_get(base, path, params, timeout)
-                except discovery.DeribitPublicError:
-                    raise   # the exchange's own answer (e.g. maintenance) is not retried
+                except discovery.DeribitPublicError as exc:
+                    last_inner_exc["exc"] = exc
+                    last_transport_error["exc"] = exc
+                    raise
                 except Exception:
-                    # One retry for a transient network error, inside the loader: once the
-                    # engine records the failure, its backoff refuses an immediate re-fetch.
-                    body = discovery._public_get(base, path, params, timeout)
+                    # One retry for a transient network error inside the loader.
+                    try:
+                        body = discovery._public_get(base, path, params, timeout)
+                    except Exception as exc2:
+                        last_inner_exc["exc"] = exc2
+                        last_transport_error["exc"] = exc2
+                        raise
                 received = self.clock_ms()
                 values = body["result"]
-                observed = values.get("timestamp") if path == "/public/get_order_book" else received
-                return {"values": {"result": values}, "observation_end_ms": observed,
+                return {"values": {"result": values}, "observation_end_ms": received,
                         "retrieved_at_ms": received, "ingested_at_ms": received}
-            record = self.data_engine.fetch(product, acquire, now_ms=self.clock_ms(), scope=scope)
-            qualified = self.data_engine.read(product, now_ms=self.clock_ms(), usage="fetch", scope=scope)
+
+            try:
+                record = self.data_engine.fetch(product, acquire, now_ms=self.clock_ms(), scope=item_scope)
+            except Exception as exc:
+                if last_inner_exc["exc"] is not None:
+                    raise last_inner_exc["exc"] from exc
+                raise
+            qualified = self.data_engine.read(product, now_ms=self.clock_ms(), usage="fetch", scope=item_scope)
             if not qualified.get("usage_decision", {}).get("can_use"):
+                if last_inner_exc["exc"] is not None:
+                    raise last_inner_exc["exc"]
                 code = (record.get("fetch_decision") or {}).get("error_code")
                 raise ValueError("discovery input unavailable for current use" + (f" ({code})" if code else ""))
             return {"result": deepcopy(record["content"]["values"]["result"]),
                     "data_engine_receipt": {"record_id": record["record_id"],
                                             "retrieved_at_ms": record["time"]["retrieved_at_ms"],
                                             "observation_end_ms": record["time"]["observation_end_ms"]}}
+
         failure: dict[str, Exception] = {}
 
+        def _delta_cache_get(name: str) -> Mapping[str, Any] | None:
+            now_chk = self.clock_ms()
+            mem = self._delta_mem_cache.get(name)
+            if isinstance(mem, Mapping):
+                obs = mem.get("delta_observed_at_ms")
+                rec = mem.get("delta_book_received_ms")
+                if isinstance(obs, int) and isinstance(rec, int) and 0 <= now_chk - obs <= _DELTA_CACHE_TTL_MS and 0 <= now_chk - rec <= _DELTA_CACHE_TTL_MS:
+                    return deepcopy(dict(mem))
+            rec_obj = self.data_engine.read(
+                _DELTA_CACHE_PRODUCT, now_ms=now_chk, usage=_DELTA_CACHE_USAGE,
+                scope={"instrument_name": name, "permission": "public_read_only"},
+            )
+            if (rec_obj.get("usage_decision") or {}).get("can_use"):
+                vals = (rec_obj.get("content") or {}).get("values") or {}
+                if isinstance(vals, Mapping):
+                    self._delta_mem_cache[name] = deepcopy(dict(vals))
+                    return deepcopy(dict(vals))
+            return None
+
+        def _choose_start_side() -> str:
+            prior = self.data_engine.read(data_projection.DISCOVERY, now_ms=now_ms, usage="health", scope=scope)
+            vals = ((prior.get("content") or {}).get("values") or {}) if isinstance(prior, Mapping) else {}
+            cands = vals.get("candidates") if isinstance(vals, Mapping) else {}
+            if isinstance(cands, Mapping):
+                p_cand = cands.get("put") or {}
+                c_cand = cands.get("call") or {}
+                p_ok = p_cand.get("status") == "candidate"
+                c_ok = c_cand.get("status") == "candidate"
+                if p_ok and not c_ok:
+                    surv_obs = p_cand.get("short_delta_observed_at_ms")
+                    if isinstance(surv_obs, int) and (now_ms - surv_obs) <= _DELTA_CACHE_TTL_MS:
+                        return "call"
+                if c_ok and not p_ok:
+                    surv_obs = c_cand.get("short_delta_observed_at_ms")
+                    if isinstance(surv_obs, int) and (now_ms - surv_obs) <= _DELTA_CACHE_TTL_MS:
+                        return "put"
+            seq = self._discovery_round_seq
+            self._discovery_round_seq += 1
+            return "put" if (seq % 2 == 0) else "call"
+
         def loader():
+            pending_deltas: dict[str, dict[str, Any]] = {}
+
+            def _delta_cache_put(name: str, entry: Mapping[str, Any]) -> None:
+                copy_entry = deepcopy(dict(entry))
+                pending_deltas[name] = copy_entry
+                self._delta_mem_cache[name] = copy_entry
+
+            live_http = (discovery._public_get is _REAL_DISCOVERY_PUBLIC_GET) or getattr(self, "_force_discovery_pacing", False)
+            active_pacer = (
+                self._deribit_pacer
+                if live_http
+                else discovery.DeribitPacer(min_interval_s=0.0, priority_min_interval_s=0.0,
+                                          max_per_second=100, sleep=lambda _: None)
+            )
+            start_side = _choose_start_side()
             try:
-                values = discovery.capture_public_deribit_discovery(captured_ts_ms=now_ms, transport=transport)
+                values = discovery.capture_public_deribit_discovery(
+                    captured_ts_ms=now_ms,
+                    transport=transport,
+                    pacer=active_pacer,
+                    retry_delay_s=0.25 if live_http else 0.0,
+                    delta_cache_get=_delta_cache_get,
+                    delta_cache_put=_delta_cache_put,
+                    start_side=start_side,
+                )
             except Exception as exc:
                 failure["error"] = exc
                 raise
+
+            if pending_deltas:
+                batch_items = []
+                for inst_name, entry in pending_deltas.items():
+                    obs_ms = entry.get("delta_observed_at_ms")
+                    rec_ms = entry.get("delta_book_received_ms")
+                    if not isinstance(obs_ms, int) or not isinstance(rec_ms, int):
+                        continue
+                    batch_items.append({
+                        "product_id": _DELTA_CACHE_PRODUCT,
+                        "values": entry,
+                        "observation_end_ms": obs_ms,
+                        "retrieved_at_ms": rec_ms,
+                        "ingested_at_ms": max(rec_ms, obs_ms),
+                        "scope": {"instrument_name": inst_name, "permission": "public_read_only"},
+                        "data_state": "OK",
+                    })
+                if batch_items:
+                    try:
+                        self.data_engine.ingest_batch(batch_items)
+                    except Exception:
+                        pass
+
+            capture_state = values.get("capture_state") or "COMPLETE"
+            upstream_status = values.get("upstream_status")
+            if capture_state == "MAINTENANCE" or upstream_status == "deribit_maintenance":
+                err = discovery.DeribitPublicError("DERIBIT_MAINTENANCE", "system_maintenance", status=503)
+                failure["error"] = err
+                raise err
+
             captured = values["captured_ts_ms"]
+            if capture_state == "INCOMPLETE" and upstream_status == "deribit_rate_limited":
+                retry_ms = (values.get("data_identity") or {}).get("retry_after_ms")
+                err = discovery.DeribitPublicError(
+                    "DERIBIT_HTTP_429", "too_many_requests (discovery incomplete)",
+                    status=429, retry_after_ms=retry_ms, error_code=10028,
+                )
+                failure["error"] = err
+                raise err
+
+            if capture_state == "COMPLETE":
+                return {"values": values, "observation_end_ms": captured,
+                        "retrieved_at_ms": captured, "ingested_at_ms": captured,
+                        "data_state": "OK", "reason_codes": []}
+
+            retry_ms = (values.get("data_identity") or {}).get("retry_after_ms") or (
+                10_000 if upstream_status == "deribit_rate_limited" else 15_000
+            )
             return {"values": values, "observation_end_ms": captured,
-                    "retrieved_at_ms": captured, "ingested_at_ms": captured}
-        scope = {"asset": "BTC", "target_hours": 24, "width_usd": 2000,
-                 "quantity_btc": 1, "delta_target": .35, "delta_max": .5,
-                 "capture_contract": "complete_delta_population@1"}
+                    "retrieved_at_ms": captured, "ingested_at_ms": captured,
+                    "data_state": "PARTIAL",
+                    "reason_codes": list(values.get("gap_reasons") or [str(capture_state).lower()]),
+                    "retry_after_ms": int(retry_ms)}
+
         try:
             record = self.data_engine.fetch(data_projection.DISCOVERY, loader, now_ms=now_ms, scope=scope)
         except Exception as exc:
-            # e.g. retry backoff after a failure: the last known upstream reason still applies
-            raise self._discovery_unavailable(exc, None, now_ms, scope) from exc
+            # Retry backoff after failure: keep valid PARTIAL side alive if still fresh within delta TTL,
+            # while reporting upstream reason when full discovery is unavailable.
+            code = getattr(exc, "code", None)
+            if code in {"FETCH_BACKOFF_ACTIVE", "FETCH_BUDGET_EXHAUSTED"}:
+                existing = self.data_engine.read(data_projection.DISCOVERY, now_ms=now_ms, usage="health", scope=scope)
+                kept = self._usable_partial_discovery(
+                    existing, now_ms, code=code,
+                    next_retry_at_ms=(exc.detail or {}).get("next_retry_at_ms") if isinstance(getattr(exc, "detail", None), Mapping) else None,
+                )
+                if kept is not None:
+                    return kept
+            raise self._discovery_unavailable(failure.get("error") or last_transport_error["exc"] or exc, None, now_ms, scope) from exc
+        vals = (record.get("content") or {}).get("values") or {}
+        if record.get("fetch_decision", {}).get("status") != "CACHE_HIT":
+            up = vals.get("upstream_status") if isinstance(vals, Mapping) else None
+            if up:
+                self._discovery_upstream = (up, now_ms)
+            elif (record.get("quality") or {}).get("data_state") == "OK":
+                self._discovery_upstream = None
+        if isinstance(vals, Mapping) and (record.get("quality") or {}).get("data_state") == "PARTIAL":
+            if (record.get("usage_decision") is None or (record.get("usage_decision") or {}).get("can_use")
+                    or (record.get("fetch_decision") or {}).get("status") == "FETCHED"):
+                return deepcopy(dict(vals))
         if not record.get("usage_decision", {"can_use": True}).get("can_use"):
-            raise self._discovery_unavailable(failure.get("error"), record, now_ms, scope)
+            raise self._discovery_unavailable(failure.get("error") or last_transport_error["exc"], record, now_ms, scope)
         self._discovery_upstream = None
-        return deepcopy(record["content"]["values"])
+        return deepcopy(dict(vals))
+
+    def _usable_partial_discovery(
+        self,
+        existing: Mapping[str, Any] | None,
+        now_ms: int,
+        *,
+        code: str,
+        next_retry_at_ms: Any = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(existing, Mapping):
+            return None
+        if (self._discovery_upstream or (None, 0))[0] == "deribit_maintenance":
+            return None
+        q_state = str((existing.get("quality") or {}).get("data_state") or "").upper()
+        if q_state != "PARTIAL":
+            return None
+        vals = (existing.get("content") or {}).get("values")
+        if not isinstance(vals, Mapping) or vals.get("capture_state") != "PARTIAL":
+            return None
+        obs_ms = (existing.get("time") or {}).get("observation_end_ms")
+        if not isinstance(obs_ms, int) or now_ms - obs_ms > discovery.DEFAULT_DELTA_MAX_AGE_MS:
+            return None
+        # Ensure at least one side has a candidate whose observed delta is still fresh at now_ms.
+        fresh_side = False
+        for c in (vals.get("candidates") or {}).values():
+            if isinstance(c, Mapping) and c.get("status") == "candidate":
+                d_obs = c.get("short_delta_observed_at_ms")
+                if isinstance(d_obs, int) and 0 <= now_ms - d_obs <= discovery.DEFAULT_DELTA_MAX_AGE_MS:
+                    fresh_side = True
+        if not fresh_side:
+            return None
+        out = deepcopy(dict(vals))
+        out["from_backoff_cache"] = True
+        out["backoff_reason"] = code
+        out["backoff_next_retry_at_ms"] = next_retry_at_ms
+        return out
 
     def _discovery_unavailable(self, exc: Exception | None, record: Mapping[str, Any] | None,
                                now_ms: int, scope: Mapping[str, Any]) -> "UpstreamUnavailable":
@@ -2071,6 +2375,12 @@ class AstraWorkbench:
             except Exception:
                 record = None
         last_ok = ((record or {}).get("time") or {}).get("observation_end_ms")
+        # Only report a full OK capture or fetch_status.last_success_at_ms as last full success
+        fetch_st = self.data_engine.fetch_status(data_projection.DISCOVERY, scope=scope) or {}
+        if isinstance(fetch_st.get("last_success_at_ms"), int):
+            last_ok = fetch_st["last_success_at_ms"]
+        elif isinstance(record, Mapping) and (record.get("quality") or {}).get("data_state") != "OK":
+            last_ok = None
         message = "discovery cache unavailable for current use"
         return UpstreamUnavailable(message + (f" ({upstream})" if upstream else ""),
                                    upstream=upstream, last_success_ms=last_ok if isinstance(last_ok, int) else None)
@@ -2087,6 +2397,11 @@ class AstraWorkbench:
         metadata_clocks = {}
         book_product = "deribit.btc.option.order_book.v1"
         book_requests = [0]
+        pair_credits = [0]
+        quote_pacing = (
+            public_quote.public_transport is _REAL_QUOTE_PUBLIC_TRANSPORT
+            or getattr(self, "_force_quote_pacing", False)
+        )
         # The two books are judged together (exchange clocks within 2 s, each within 5 s), so
         # they are read directly and back to back: no engine state load/save, cache hit or
         # lock wait runs between the legs (2026-10-28: ~39% of captures failed the skew check
@@ -2102,8 +2417,40 @@ class AstraWorkbench:
             if path == "public/get_order_book":
                 if budget_error is not None:
                     raise budget_error
+                if quote_pacing:
+                    mono_now = self._deribit_pacer._monotonic()
+                    if pair_credits[0] <= 0:
+                        ok, why = self._deribit_pacer.acquire(
+                            priority="quote", cost=2.0, deadline_mono=mono_now + 8.0,
+                        )
+                        if not ok:
+                            raise discovery.DeribitPublicError("DERIBIT_HTTP_429", f"quote paused ({why})", status=429)
+                        pair_credits[0] = 2
+                    else:
+                        ok, why = self._deribit_pacer.acquire(
+                            priority="quote", cost=0.0, deadline_mono=mono_now + 5.0,
+                        )
+                        if not ok:
+                            raise discovery.DeribitPublicError("DERIBIT_HTTP_429", f"quote paused ({why})", status=429)
+                    pair_credits[0] = max(0, pair_credits[0] - 1)
                 book_requests[0] += 1
-                return public_quote.public_transport(path, params)
+                try:
+                    return public_quote.public_transport(path, params)
+                except discovery.urllib.error.HTTPError as exc:
+                    if exc.code == 429:
+                        pair_credits[0] = 0
+                        self._deribit_pacer.record_rate_limit(discovery._parse_retry_after_ms(getattr(exc, "headers", None)))
+                        now_cd = self.clock_ms()
+                        self.data_engine.set_provider_cooldown("deribit", until_ms=now_cd + 10_000, reason="DERIBIT_HTTP_429", now_ms=now_cd)
+                    raise
+                except discovery.DeribitPublicError as exc:
+                    if exc.is_rate_limit:
+                        pair_credits[0] = 0
+                        self._deribit_pacer.record_rate_limit(exc.retry_after_ms)
+                        now_cd = self.clock_ms()
+                        wait_ms = exc.retry_after_ms if isinstance(exc.retry_after_ms, int) and exc.retry_after_ms > 0 else 10_000
+                        self.data_engine.set_provider_cooldown("deribit", until_ms=now_cd + wait_ms, reason="DERIBIT_HTTP_429", now_ms=now_cd)
+                    raise
             product = "deribit.btc.option.instrument.v1"
             scope = {"instrument_name": params["instrument_name"], "depth": params.get("depth"),
                      "permission": "public_read_only"}
@@ -2163,13 +2510,42 @@ class AstraWorkbench:
             received = receipts.get(leg)
             if not book or not isinstance(received, int) or not isinstance(book.get("timestamp"), int):
                 continue
+            inst_name = names.get(leg + "_instrument")
             try:
                 self.data_engine.ingest(product, book, observation_end_ms=book["timestamp"],
                                         retrieved_at_ms=received, ingested_at_ms=received,
-                                        scope={"instrument_name": names.get(leg + "_instrument"), "depth": 5,
+                                        scope={"instrument_name": inst_name, "depth": 5,
                                                "permission": "public_read_only"})
             except Exception:
                 pass
+            greeks = book.get("greeks") if isinstance(book.get("greeks"), Mapping) else None
+            if isinstance(inst_name, str) and greeks is not None:
+                parsed = discovery._named_expiry_ms(inst_name)
+                if parsed is not None:
+                    probe = {
+                        "instrument_name": inst_name,
+                        "option_type": parsed[2],
+                        "greeks": dict(greeks),
+                        "delta_observed_at_ms": book["timestamp"],
+                        "delta_source": "public/get_order_book.greeks.delta",
+                        "delta_book_received_ms": received,
+                    }
+                    check_ts = max(received, book["timestamp"])
+                    cat, _det, _rsn = discovery._classify_short_delta(
+                        probe,
+                        check_ts,
+                        max_age_ms=discovery.DEFAULT_DELTA_MAX_AGE_MS,
+                        max_abs=discovery.DEFAULT_SHORT_DELTA_MAX_ABS,
+                    )
+                    if cat in {"verified_eligible", "verified_above_max"}:
+                        self._delta_mem_cache[inst_name] = {
+                            "instrument_name": inst_name,
+                            "greeks": dict(greeks),
+                            "delta_observed_at_ms": book["timestamp"],
+                            "delta_source": "public/get_order_book.greeks.delta",
+                            "delta_book_received_ms": received,
+                            "response_hash": discovery._hash({"result": book}),
+                        }
 
     def _load_state(self) -> dict[str, Any]:
         state = _read_json(self.config.state_path, {"schema": STATE_SCHEMA})
@@ -2278,6 +2654,35 @@ class AstraWorkbench:
 
     def _data_health(self, now_ms: int, projection: Mapping[str, Any] | None = None) -> dict[str, Any]:
         health = self.data_engine.health(now_ms)
+        disc_health = (health.get("products") or {}).get(data_projection.DISCOVERY)
+        if isinstance(disc_health, Mapping):
+            entries = list(disc_health.get("current") or [])
+            primary = [
+                e for e in entries
+                if isinstance(e.get("scope"), Mapping)
+                and (e["scope"] or {}).get("capture_contract") == "complete_delta_population@1"
+            ]
+            if primary:
+                primary.sort(key=lambda e: int(e.get("observation_end_ms") or 0), reverse=True)
+                latest = primary[0]
+                fetch_st = self.data_engine.fetch_status(data_projection.DISCOVERY, scope=DISCOVERY_CAPTURE_SCOPE) or {}
+                p_rec = self.data_engine.read(
+                    data_projection.DISCOVERY, now_ms=now_ms, usage="health", scope=DISCOVERY_CAPTURE_SCOPE,
+                )
+                p_vals = ((p_rec.get("content") or {}).get("values") or {}) if isinstance(p_rec, Mapping) else {}
+                ud = latest.get("usage_decision") or {}
+                p_status = "OK" if ud.get("status") == "USABLE" else str(ud.get("status") or disc_health.get("status"))
+                if p_status == "OK":
+                    uds = latest.get("usage_decisions") or {}
+                    if any(name != "health" and not item.get("can_use") for name, item in uds.items()):
+                        p_status = "USAGE_LIMITED"
+                updated_disc = dict(disc_health)
+                updated_disc["current"] = [latest]
+                updated_disc["status"] = p_status
+                updated_disc["capture_state"] = p_vals.get("capture_state") if isinstance(p_vals, Mapping) else None
+                updated_disc["next_retry_at_ms"] = fetch_st.get("next_retry_at_ms")
+                updated_disc["last_error_code"] = fetch_st.get("last_error_code")
+                health["products"][data_projection.DISCOVERY] = updated_disc
         if self._wpem_archive is not None:
             # A full archive stops WPEM memory; surface it instead of failing silently.
             health["wpem_archive"] = {**self._wpem_archive.usage(),
@@ -2766,11 +3171,13 @@ class AstraWorkbench:
             )
             mark("fact_gate_map")
             discovered: Mapping[str, Any] | None = None
+            discovery_exc: Exception | None = None
             candidates: list[dict[str, Any]] = []
             try:
                 discovered = self.discovery_capture(now_ms=now)
                 mark("discovery")
             except Exception as exc:
+                discovery_exc = exc
                 gaps.append("discovery_refresh_error")
                 upstream = getattr(exc, "upstream", None) or _upstream_code(exc)
                 if upstream:
@@ -2798,7 +3205,24 @@ class AstraWorkbench:
                     ))
             mark("candidates")
             finished_at_ms = max(now, self.clock_ms())
-            email_state = self._load_state().get("email") or {}
+            state_snapshot = self._read_state_cached()
+            email_state = state_snapshot.get("email") or {}
+            prior_last_valid = dict(state_snapshot.get("last_valid_candidates") or {})
+            fetch_st = self.data_engine.fetch_status(data_projection.DISCOVERY, scope=DISCOVERY_CAPTURE_SCOPE) or {}
+            next_retry_ms = (
+                (discovered.get("backoff_next_retry_at_ms") if isinstance(discovered, Mapping) else None)
+                or fetch_st.get("next_retry_at_ms")
+            )
+            overall_capture_state = None
+            if isinstance(discovered, Mapping):
+                overall_capture_state = discovered.get("capture_state") or (
+                    "COMPLETE" if all((c or {}).get("status") == "candidate" for c in (discovered.get("candidates") or {}).values())
+                    else "PARTIAL" if any((c or {}).get("status") == "candidate" for c in (discovered.get("candidates") or {}).values())
+                    else "INCOMPLETE"
+                )
+            elif discovery_exc is not None:
+                up_code = getattr(discovery_exc, "upstream", None) or _upstream_code(discovery_exc)
+                overall_capture_state = "MAINTENANCE" if up_code == "deribit_maintenance" else "INCOMPLETE"
             last_attempt = email_state.get("last_attempt") or {}
             pending_transition = email_state.get("pending_transition") or {}
             view = {
@@ -2807,6 +3231,17 @@ class AstraWorkbench:
                 "market_context": deepcopy(dict(fmz_fact)),
                 "space_gate": gate,
                 "discovery": deepcopy(discovered),
+                "discovery_status": {
+                    "capture_state": overall_capture_state,
+                    "checked_at_ms": finished_at_ms,
+                    "observed_at_ms": (discovered.get("captured_ts_ms") if isinstance(discovered, Mapping)
+                                       else getattr(discovery_exc, "last_success_ms", None)),
+                    "upstream_code": (discovered.get("upstream_status") if isinstance(discovered, Mapping)
+                                      else (getattr(discovery_exc, "upstream", None) or _upstream_code(discovery_exc))),
+                    "next_retry_at_ms": next_retry_ms,
+                    "wire_requests_total": ((discovered.get("data_identity") or {}).get("wire_requests_total")
+                                            if isinstance(discovered, Mapping) else 0),
+                },
                 "candidates": candidates,
                 "btc_map": deepcopy(btc_projection.get("btc_map")),
                 "btc_map_projection": deepcopy(btc_projection),
@@ -2837,6 +3272,47 @@ class AstraWorkbench:
                 view["data_health"]["wpem_archive"] = {**self._wpem_archive.usage(),
                                                        "sampling": bool(self.config.wpem_history_replay)}
             self._remember_lockable(view, finished_at_ms)
+            updated_last_valid = dict(prior_last_valid)
+            new_valid_summaries: dict[str, dict[str, Any]] = {}
+            for item in view.get("candidates") or []:
+                side = item.get("side")
+                disc_side = ((discovered or {}).get("candidates") or {}).get(side) or {}
+                disc_pop = disc_side.get("delta_population") if isinstance(disc_side, Mapping) else None
+                item["discovery_status"] = {
+                    "capture_state": overall_capture_state,
+                    "checked_at_ms": finished_at_ms,
+                    "observed_at_ms": (discovered.get("captured_ts_ms") if isinstance(discovered, Mapping)
+                                       else getattr(discovery_exc, "last_success_ms", None)),
+                    "side_complete": bool((disc_pop or {}).get("complete")) if isinstance(disc_pop, Mapping) else (disc_side.get("status") == "candidate"),
+                    "delta_population": deepcopy(disc_pop) if isinstance(disc_pop, Mapping) else None,
+                    "failure_reason": ((item.get("review_gate") or {}).get("reasons") or [None])[0] if item.get("status") != "snapshot" else None,
+                    "upstream_code": view["discovery_status"]["upstream_code"],
+                    "next_retry_at_ms": next_retry_ms,
+                }
+                if item.get("status") == "snapshot" and isinstance(item.get("snapshot"), Mapping):
+                    item["formal_evidence_eligible"] = True
+                    item["live_lock_eligible"] = bool((item.get("lock_availability") or {}).get("enabled"))
+                    summary = _build_last_valid_summary(
+                        item,
+                        discovered_at_ms=discovered.get("captured_ts_ms") if isinstance(discovered, Mapping) else finished_at_ms,
+                    )
+                    if summary is not None and side in {"put", "call"}:
+                        updated_last_valid[side] = summary
+                        new_valid_summaries[side] = summary
+                else:
+                    item["formal_evidence_eligible"] = False
+                    item["live_lock_eligible"] = False
+                    hist = _annotate_historical_summary(
+                        prior_last_valid.get(side),
+                        (item.get("review_gate") or {}).get("reasons") or [],
+                        finished_at_ms,
+                    )
+                    if hist is not None:
+                        item["last_valid_candidate"] = hist
+            if new_valid_summaries and new_valid_summaries != {k: prior_last_valid.get(k) for k in new_valid_summaries}:
+                self._locked_state_update(
+                    lambda state: state.setdefault("last_valid_candidates", {}).update(new_valid_summaries)
+                )
             if not self._sampler_running:
                 self._refresh_locked_candidates(view, finished_at_ms)
             self._settle_expired_locks(finished_at_ms)
@@ -2854,6 +3330,13 @@ class AstraWorkbench:
             # The page may show the last good capture of the same contract while the newest one
             # is only out of step; everything above (locks, research, daily, audit) used the newest.
             shown, held_ids = self._hold_transient_quote_gaps(view.get("candidates") or [], finished_at_ms)
+            for item in shown:
+                if item.get("held_capture"):
+                    item["formal_evidence_eligible"] = False
+                    item["live_lock_eligible"] = False
+                elif item.get("status") != "snapshot" or not isinstance(item.get("snapshot"), Mapping):
+                    item["formal_evidence_eligible"] = False
+                    item["live_lock_eligible"] = False
             with self._view_lock:
                 # Daily raw snapshots remain on disk and in the explicit full
                 # endpoint; do not retain repeated MAP bodies in the read cache.
@@ -2869,7 +3352,103 @@ class AstraWorkbench:
             result["runtime"] = {"memory": dict(self._memory), "threads": threading.active_count()}
             if self.chain_audit is not None:
                 self.chain_audit.observe(result, finished_at_ms)
-            return result
+        try:
+            self.retry_pending_shadow_locks(finished_at_ms)
+        except Exception:
+            pass
+        return result
+
+    def retry_pending_shadow_locks(self, now_ms: int | None = None) -> list[dict[str, Any]]:
+        """Poll retryable ACCEPTED/PENDING_LOCK shadow hands inside their validity window."""
+        del now_ms
+        if player_tracking is None or not self.config.shadow_experiment or self.config.shadow_dossier_root is None:
+            return []
+        if not self._pending_lock_guard.acquire(blocking=False):
+            return []
+        try:
+            root = Path(self.config.shadow_dossier_root)
+            dossiers_root = root / "dossiers"
+            if not dossiers_root.is_dir():
+                return []
+            results: list[dict[str, Any]] = []
+
+            def direct_service(action: str, body: Mapping[str, Any]) -> dict[str, Any]:
+                try:
+                    return self.shadow_tracking(action, body)
+                except WorkbenchError as exc:
+                    raise player_tracking.Blocked(exc.code) from exc
+
+            d = player_tracking.dossier.Dossiers(root, clock=self.clock_ms)
+            for req_file in sorted(dossiers_root.glob("*/hands/hand_*/tracking/request.json")):
+                tr_dir = req_file.parent
+                hand = tr_dir.parent
+                if (tr_dir / "link.json").exists() or player_tracking._link_blocked(tr_dir):
+                    continue
+                try:
+                    req = player_tracking.load(req_file)
+                    exp = player_tracking.load(hand / "expected.json")
+                    proof = player_tracking.accepted(hand)
+                except (OSError, ValueError, KeyError, TypeError, player_tracking.Blocked):
+                    continue
+                now = d.clock()
+                target = player_tracking.contract_fields(proof["contract"])
+                failure_hint: str | None = None
+                use_fresh_quote = False
+                if now < int(req.get("deadline_ms") or 0):
+                    with self._view_lock:
+                        candidates = list((self._current_view or {}).get("candidates") or ())
+                        held = set(self._held_snapshot_ids)
+                        disc_status = dict((self._current_view or {}).get("discovery_status") or {})
+                    matching = next(
+                        (c for c in candidates if isinstance(c, Mapping) and isinstance(c.get("snapshot"), Mapping)
+                         and player_tracking.contract_fields(c["snapshot"]["contract"]) == target),
+                        None,
+                    )
+                    if matching is not None:
+                        snap = matching["snapshot"]
+                        if snap.get("snapshot_id") in held:
+                            failure_hint = "quote_held_not_current"
+                        else:
+                            try:
+                                player_tracking.confirm_quote(snap, now)
+                            except player_tracking.Blocked:
+                                use_fresh_quote = True
+                    else:
+                        same_side = next(
+                            (c for c in candidates if isinstance(c, Mapping) and c.get("side") == target["side"]),
+                            None,
+                        )
+                        side_snap = (same_side or {}).get("snapshot") if isinstance(same_side, Mapping) else None
+                        if isinstance(side_snap, Mapping):
+                            cur = player_tracking.contract_fields(side_snap["contract"])
+                            failure_hint = (
+                                f"current_contract_changed:{cur.get('short_instrument')}|{cur.get('long_instrument')}"
+                            )
+                        else:
+                            failure_hint = (
+                                str(disc_status.get("upstream_code") or "")
+                                or str((same_side or {}).get("error") or "")
+                                or "candidate_temporarily_unavailable"
+                            )
+                try:
+                    if use_fresh_quote:
+                        out = player_tracking._link_with_fresh_quote(d, hand, direct_service)
+                    else:
+                        out = player_tracking.link(d, hand, direct_service, _failure_hint=failure_hint)
+                    if out.get("state") in {"SHADOW_LOCK_CREATED", "ALREADY_LINKED", "LOCK_BLOCKED"}:
+                        with player_tracking._short_writer(d):
+                            d.summary(exp["expiry_ms"])
+                    results.append({"dossier_id": hand.parent.parent.name, "hand_id": hand.name, **out})
+                except (OSError, ValueError, KeyError, TypeError, player_tracking.Blocked) as exc:
+                    results.append({
+                        "dossier_id": hand.parent.parent.name,
+                        "hand_id": hand.name,
+                        "state": "LINK_UNVERIFIED",
+                        "reason": getattr(exc, "code", None) or type(exc).__name__,
+                    })
+            return results
+        finally:
+            self._pending_lock_guard.release()
 
     def _wpem_view_for_candidate(
         self,
@@ -4190,6 +4769,30 @@ class AstraWorkbench:
             self._ledger_state()
             with self._view_lock:
                 view = deepcopy(self._current_view or {})
+                held_ids = set(self._held_snapshot_ids)
+            view_cands = [c for c in (view.get("candidates") or []) if isinstance(c, Mapping)]
+            same_side = [c for c in view_cands if c.get("side") == contract["side"]]
+            side_snap = (same_side[0].get("snapshot") if same_side and isinstance(same_side[0].get("snapshot"), Mapping) else None)
+            if side_snap is not None:
+                if side_snap.get("snapshot_id") in held_ids:
+                    return {
+                        "state": "QUOTE_UNAVAILABLE",
+                        "error": "quote_held_not_current",
+                        "execution_allowed": False,
+                    }
+                if player_tracking.contract_fields(side_snap["contract"]) != contract:
+                    return {
+                        "state": "QUOTE_UNAVAILABLE",
+                        "error": "exact_current_contract_not_found",
+                        "detail": "current_contract_changed",
+                        "execution_allowed": False,
+                    }
+            else:
+                return {
+                    "state": "QUOTE_UNAVAILABLE",
+                    "error": "candidate_temporarily_unavailable",
+                    "execution_allowed": False,
+                }
             fact = self.latest_fact(now)
             gate = self.space_gate_view(fact, now)
             try:
@@ -4231,6 +4834,14 @@ class AstraWorkbench:
                 return {"state": "QUOTE_UNAVAILABLE", "error": exc.code, "execution_allowed": False}
             with self._view_lock:
                 self._held_snapshot_ids.discard(snap["snapshot_id"])
+                self._shadow_quote_slots[proof["origin"]["request_key"]] = {
+                    "snapshot": deepcopy(snap),
+                    "contract": dict(contract),
+                    "snapshot_id": snap["snapshot_id"],
+                    "recorded_at_ms": post_ready_at,
+                }
+                while len(self._shadow_quote_slots) > 16:
+                    self._shadow_quote_slots.pop(next(iter(self._shadow_quote_slots)))
                 current = self._current_view
                 if isinstance(current, dict):
                     updated_candidates = []
@@ -4265,16 +4876,34 @@ class AstraWorkbench:
                     raise player_tracking.Blocked("shadow_experiment_disabled")
                 if not request["requested_at_ms"] <= now < proof["deadline_ms"]:
                     raise player_tracking.Blocked("shadow_handoff_expired")
+                target_contract = player_tracking.contract_fields(proof["contract"])
                 with self._view_lock:
-                    candidates = (self._current_view or {}).get("candidates") or []
-                    choices = [c["snapshot"] for c in candidates if c.get("snapshot")
-                               and player_tracking.contract_fields(c["snapshot"]["contract"])
-                               == player_tracking.contract_fields(proof["contract"])]
+                    candidates = list((self._current_view or {}).get("candidates") or ())
+                    conflicting = any(
+                        isinstance(c, Mapping) and c.get("side") == target_contract["side"]
+                        and isinstance(c.get("snapshot"), Mapping)
+                        and player_tracking.contract_fields(c["snapshot"]["contract"]) != target_contract
+                        for c in candidates
+                    )
+                    if conflicting:
+                        self._shadow_quote_slots.pop(key, None)
+                        choices = []
+                    else:
+                        choices = [c["snapshot"] for c in candidates if c.get("snapshot")
+                                   and player_tracking.contract_fields(c["snapshot"]["contract"]) == target_contract]
+                        if not choices:
+                            slot = self._shadow_quote_slots.get(key)
+                            if (isinstance(slot, Mapping) and slot.get("contract") == target_contract
+                                    and slot.get("snapshot_id") in self._lockable_points
+                                    and slot.get("snapshot_id") not in self._held_snapshot_ids):
+                                choices = [slot["snapshot"]]
                 if len(choices) != 1:
                     raise player_tracking.Blocked("exact_current_contract_not_found")
                 snap = choices[0]
                 result = self.lock_candidate(snap["candidate_id"], snap["snapshot_id"], key,
                                              authorization=None, _shadow=(proof, request))
+                with self._view_lock:
+                    self._shadow_quote_slots.pop(key, None)
             if result is None:
                 return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
             episode = result["episode"]
@@ -4369,10 +4998,23 @@ class AstraWorkbench:
             if _shadow:
                 proof, request = _shadow
                 snapshot = point["candidate"]["snapshot"]
+                target_contract = player_tracking.contract_fields(proof["contract"])
                 with self._view_lock:
                     current = self._current_view or {}
-                    still_current = any((c.get("snapshot") or {}).get("snapshot_id") == snapshot_id
-                                        for c in current.get("candidates", ())) and snapshot_id not in self._held_snapshot_ids
+                    view_cands = [c for c in current.get("candidates", ()) if isinstance(c, Mapping)]
+                    conflicting = any(
+                        c.get("side") == target_contract["side"] and isinstance(c.get("snapshot"), Mapping)
+                        and player_tracking.contract_fields(c["snapshot"]["contract"]) != target_contract
+                        for c in view_cands
+                    )
+                    slot = self._shadow_quote_slots.get(request_key)
+                    slot_ok = bool(
+                        isinstance(slot, Mapping) and slot.get("snapshot_id") == snapshot_id and not conflicting
+                    )
+                    still_current = (
+                        any((c.get("snapshot") or {}).get("snapshot_id") == snapshot_id for c in view_cands)
+                        or slot_ok
+                    ) and snapshot_id not in self._held_snapshot_ids
                 if not still_current:
                     raise player_tracking.Blocked("tracking_snapshot_rotated")
                 if not request["requested_at_ms"] <= at < proof["deadline_ms"]:
@@ -5423,6 +6065,21 @@ class AstraWorkbench:
             if isinstance(held, Mapping) and isinstance(held.get("valuation_ts_ms"), int):
                 # the age of the shown reading at this read, not at the refresh that chose it
                 item["held_capture"] = {**held, "age_ms": max(0, now - held["valuation_ts_ms"])}
+                item["formal_evidence_eligible"] = False
+                item["live_lock_eligible"] = False
+            hist = item.get("last_valid_candidate")
+            if isinstance(hist, Mapping) and isinstance(hist.get("valid_at_ms"), int):
+                expiry_ms = hist.get("expiry_ms")
+                item["last_valid_candidate"] = {
+                    **hist,
+                    "age_ms": max(0, now - int(hist["valid_at_ms"])),
+                    "expired": bool(isinstance(expiry_ms, int) and now >= expiry_ms),
+                    "is_historical_summary": True,
+                    "formal_evidence_eligible": False,
+                    "live_lock_eligible": False,
+                }
+                item["formal_evidence_eligible"] = False
+                item["live_lock_eligible"] = False
         self._attach_exogenous_events(view, now)
         self._attach_session_layers(view, now)
         view["hold_reviews"] = self.hold_review_overview(view["locked_candidates"])

@@ -123,6 +123,7 @@ def _empty_state() -> dict[str, Any]:
         "health_events": [],
         "fetch_status": {},
         "fetch_budget": {},
+        "provider_cooldowns": {},
     }
 
 
@@ -140,6 +141,11 @@ def _working_copy(state: Mapping[str, Any]) -> dict[str, Any]:
         for key, value in budgets.items():
             if isinstance(value, dict):
                 budgets[key] = dict(value)
+    cooldowns = out.get("provider_cooldowns")
+    if isinstance(cooldowns, dict):
+        for key, value in cooldowns.items():
+            if isinstance(value, dict):
+                cooldowns[key] = dict(value)
     return out
 
 
@@ -269,7 +275,53 @@ class DataEngine:
         is_final: bool | None = None,
         historical_import: bool = False,
         ingested_at_ms: int | None = None,
-        _fetch_success: tuple[str, int] | None = None,
+        _fetch_success: tuple[Any, ...] | None = None,
+    ) -> dict[str, Any]:
+        prepared = self._prepare_ingest(
+            product_id, values, observation_end_ms=observation_end_ms,
+            retrieved_at_ms=retrieved_at_ms, scope=scope, source_revision=source_revision,
+            published_at_ms=published_at_ms, observation_start_ms=observation_start_ms,
+            data_state=data_state, reason_codes=reason_codes, parent_record_ids=parent_record_ids,
+            source_ref=source_ref, is_final=is_final, historical_import=historical_import,
+            ingested_at_ms=ingested_at_ms,
+        )
+        with self._state_guard():
+            state = self._load_state_unlocked()
+            out = self._apply_ingest_unlocked(state, prepared, _fetch_success=_fetch_success)
+            self._save_state_unlocked(state)
+            return out
+
+    def ingest_batch(self, items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Persist multiple validated data records in a single state-file transaction."""
+        if not items:
+            return []
+        prepared_items = [self._prepare_ingest(**dict(item)) for item in items]
+        out: list[dict[str, Any]] = []
+        with self._state_guard():
+            state = self._load_state_unlocked()
+            for prepared in prepared_items:
+                out.append(self._apply_ingest_unlocked(state, prepared))
+            self._save_state_unlocked(state)
+        return out
+
+    def _prepare_ingest(
+        self,
+        product_id: str,
+        values: Mapping[str, Any],
+        *,
+        observation_end_ms: int,
+        retrieved_at_ms: int | None,
+        scope: Any = None,
+        source_revision: str | None = None,
+        published_at_ms: int | None = None,
+        observation_start_ms: int | None = None,
+        data_state: str = "OK",
+        reason_codes: list[str] | None = None,
+        parent_record_ids: list[str] | None = None,
+        source_ref: str | None = None,
+        is_final: bool | None = None,
+        historical_import: bool = False,
+        ingested_at_ms: int | None = None,
     ) -> dict[str, Any]:
         product = self._product(product_id)
         if not isinstance(values, Mapping):
@@ -297,104 +349,134 @@ class DataEngine:
         for name, ts in (("observation_end_ms", observation_end_ms), ("published_at_ms", published_at_ms)):
             if ts is not None and first_seen_source_ms is not None and ts > first_seen_source_ms + CLOCK_SKEW_MS:
                 raise DataEngineError("SOURCE_TIME_IN_FUTURE", f"{name} is later than retrieval time")
-        with self._state_guard():
-            state = self._load_state_unlocked()
-            scope_key = _scope_key(scope)
-            state_key = _state_key(product_id, scope)
-            first_seen_at_ms = first_seen_source_ms if first_seen_source_ms is not None else observation_end_ms
-            source_ref = source_ref or product.get("source_ref")
-            payload_basis = self._payload_basis(
-                product,
-                values=dict(values),
-                scope=scope,
-                source_ref=source_ref,
-                observation_start_ms=observation_start_ms,
-                observation_end_ms=observation_end_ms,
-                published_at_ms=published_at_ms,
-                source_revision=source_revision,
-                is_final=is_final,
-                parent_record_ids=parent_record_ids,
-                data_state=data_state,
-                reason_codes=reason_codes,
-            )
-            payload_hash = _hash(payload_basis)
-            known = state.setdefault("known_records", {}).get(payload_hash)
-            if isinstance(known, Mapping):
-                first_seen_at_ms = int(known.get("first_seen_at_ms") or first_seen_at_ms)
-            record = self._build_record(
-                product,
-                values=dict(values),
-                scope=scope,
-                scope_key=scope_key,
-                source_ref=source_ref,
-                observation_start_ms=observation_start_ms,
-                observation_end_ms=observation_end_ms,
-                published_at_ms=published_at_ms,
-                first_seen_at_ms=first_seen_at_ms,
-                retrieved_at_ms=retrieved_at_ms,
-                ingested_at_ms=ingested_at_ms,
-                source_revision=source_revision,
-                is_final=is_final,
-                parent_record_ids=parent_record_ids,
-                payload_hash=payload_hash,
-                data_state=data_state,
-                reason_codes=reason_codes,
-                historical_import=historical_import,
-                accepted_as_current=True,
-            )
-            current = state.setdefault("current", {}).get(state_key)
-            accept = True
-            event_status = "CURRENT_ACCEPTED"
-            if isinstance(current, Mapping):
-                if current.get("version", {}).get("payload_hash") == payload_hash:
-                    merged = deepcopy(dict(current))
-                    merged.setdefault("collector", {})
-                    merged["collector"]["last_checked_at_ms"] = first_seen_source_ms
-                    if retrieved_at_ms is not None:
-                        merged["collector"]["last_transport_success_at_ms"] = retrieved_at_ms
-                    merged["collector"]["accepted_as_current"] = True
-                    merged["quality"]["checked_at_ms"] = first_seen_source_ms
-                    state["current"][state_key] = merged
-                    self._remember_record(state, payload_hash, merged)
-                    self._append_event(
-                        state,
-                        product_id,
-                        scope_key,
-                        "SAME_PAYLOAD_CHECKED",
-                        first_seen_source_ms,
-                        {"record_id": merged["record_id"], "payload_hash": payload_hash},
-                    )
-                    self._mark_fetch_success(state, merged, _fetch_success)
-                    self._save_state_unlocked(state)
-                    return deepcopy(merged)
-                current_obs = int(current.get("time", {}).get("observation_end_ms") or -1)
-                if observation_end_ms < current_obs:
-                    accept = False
-                    event_status = "OLDER_OBSERVATION_IGNORED"
-                    record["collector"]["accepted_as_current"] = False
-                    record["quality"]["reason_codes"] = sorted(set(record["quality"]["reason_codes"] + ["OLDER_THAN_CURRENT"]))
-                elif observation_end_ms == current_obs and not source_revision:
-                    accept = False
-                    event_status = "UNVERSIONED_REVISION_REJECTED"
-                    record["collector"]["accepted_as_current"] = False
-                    record["quality"]["data_state"] = "INVALID"
-                    record["quality"]["reason_codes"] = sorted(
-                        set(record["quality"]["reason_codes"] + ["UNVERSIONED_REVISION_REJECTED"])
-                    )
-            self._remember_record(state, payload_hash, record)
-            if accept:
-                state["current"][state_key] = record
-            self._append_event(
-                state,
-                product_id,
-                scope_key,
-                event_status,
-                first_seen_source_ms,
-                {"record_id": record["record_id"], "payload_hash": payload_hash},
-            )
-            self._mark_fetch_success(state, record, _fetch_success)
-            self._save_state_unlocked(state)
-            return deepcopy(record)
+        resolved_source_ref = source_ref or product.get("source_ref")
+        payload_basis = self._payload_basis(
+            product,
+            values=dict(values),
+            scope=scope,
+            source_ref=resolved_source_ref,
+            observation_start_ms=observation_start_ms,
+            observation_end_ms=observation_end_ms,
+            published_at_ms=published_at_ms,
+            source_revision=source_revision,
+            is_final=is_final,
+            parent_record_ids=parent_record_ids,
+            data_state=data_state,
+            reason_codes=reason_codes,
+        )
+        return {
+            "product_id": product_id,
+            "product": product,
+            "values": dict(values),
+            "scope": scope,
+            "scope_key": _scope_key(scope),
+            "state_key": _state_key(product_id, scope),
+            "source_ref": resolved_source_ref,
+            "observation_start_ms": observation_start_ms,
+            "observation_end_ms": observation_end_ms,
+            "published_at_ms": published_at_ms,
+            "source_revision": source_revision,
+            "is_final": is_final,
+            "parent_record_ids": parent_record_ids,
+            "data_state": data_state,
+            "reason_codes": reason_codes,
+            "historical_import": historical_import,
+            "retrieved_at_ms": retrieved_at_ms,
+            "ingested_at_ms": ingested_at_ms,
+            "first_seen_source_ms": first_seen_source_ms,
+            "payload_hash": _hash(payload_basis),
+        }
+
+    def _apply_ingest_unlocked(
+        self,
+        state: dict[str, Any],
+        p: Mapping[str, Any],
+        *,
+        _fetch_success: tuple[Any, ...] | None = None,
+    ) -> dict[str, Any]:
+        product_id = p["product_id"]
+        scope_key = p["scope_key"]
+        state_key = p["state_key"]
+        payload_hash = p["payload_hash"]
+        first_seen_source_ms = p["first_seen_source_ms"]
+        observation_end_ms = p["observation_end_ms"]
+        first_seen_at_ms = first_seen_source_ms if first_seen_source_ms is not None else observation_end_ms
+        known = state.setdefault("known_records", {}).get(payload_hash)
+        if isinstance(known, Mapping):
+            first_seen_at_ms = int(known.get("first_seen_at_ms") or first_seen_at_ms)
+        record = self._build_record(
+            p["product"],
+            values=p["values"],
+            scope=p["scope"],
+            scope_key=scope_key,
+            source_ref=p["source_ref"],
+            observation_start_ms=p["observation_start_ms"],
+            observation_end_ms=observation_end_ms,
+            published_at_ms=p["published_at_ms"],
+            first_seen_at_ms=first_seen_at_ms,
+            retrieved_at_ms=p["retrieved_at_ms"],
+            ingested_at_ms=p["ingested_at_ms"],
+            source_revision=p["source_revision"],
+            is_final=p["is_final"],
+            parent_record_ids=p["parent_record_ids"],
+            payload_hash=payload_hash,
+            data_state=p["data_state"],
+            reason_codes=p["reason_codes"],
+            historical_import=p["historical_import"],
+            accepted_as_current=True,
+        )
+        current = state.setdefault("current", {}).get(state_key)
+        accept = True
+        event_status = "CURRENT_ACCEPTED"
+        if isinstance(current, Mapping):
+            if current.get("version", {}).get("payload_hash") == payload_hash:
+                merged = deepcopy(dict(current))
+                merged.setdefault("collector", {})
+                merged["collector"]["last_checked_at_ms"] = first_seen_source_ms
+                if p["retrieved_at_ms"] is not None:
+                    merged["collector"]["last_transport_success_at_ms"] = p["retrieved_at_ms"]
+                merged["collector"]["accepted_as_current"] = True
+                merged["quality"]["checked_at_ms"] = first_seen_source_ms
+                state["current"][state_key] = merged
+                self._remember_record(state, payload_hash, merged)
+                self._append_event(
+                    state,
+                    product_id,
+                    scope_key,
+                    "SAME_PAYLOAD_CHECKED",
+                    first_seen_source_ms,
+                    {"record_id": merged["record_id"], "payload_hash": payload_hash},
+                )
+                self._mark_fetch_success(state, merged, _fetch_success)
+                return deepcopy(merged)
+            current_obs = int(current.get("time", {}).get("observation_end_ms") or -1)
+            current_state = str((current.get("quality") or {}).get("data_state") or "OK").upper()
+            if observation_end_ms < current_obs:
+                accept = False
+                event_status = "OLDER_OBSERVATION_IGNORED"
+                record["collector"]["accepted_as_current"] = False
+                record["quality"]["reason_codes"] = sorted(set(record["quality"]["reason_codes"] + ["OLDER_THAN_CURRENT"]))
+            elif observation_end_ms == current_obs and not p["source_revision"] and not (current_state != "OK" and p["data_state"] == "OK"):
+                accept = False
+                event_status = "UNVERSIONED_REVISION_REJECTED"
+                record["collector"]["accepted_as_current"] = False
+                record["quality"]["data_state"] = "INVALID"
+                record["quality"]["reason_codes"] = sorted(
+                    set(record["quality"]["reason_codes"] + ["UNVERSIONED_REVISION_REJECTED"])
+                )
+        self._remember_record(state, payload_hash, record)
+        if accept:
+            state["current"][state_key] = record
+        self._append_event(
+            state,
+            product_id,
+            scope_key,
+            event_status,
+            first_seen_source_ms,
+            {"record_id": record["record_id"], "payload_hash": payload_hash},
+        )
+        self._mark_fetch_success(state, record, _fetch_success)
+        return deepcopy(record)
 
     def read(self, product_id: str, *, now_ms: int, usage: str, scope: Any = None) -> dict[str, Any]:
         product = self._product(product_id)
@@ -602,8 +684,10 @@ class DataEngine:
                 if not isinstance(values, Mapping):
                     raise DataEngineError("LOADER_RESULT_INVALID", "loader result must include mapping values")
                 payload.pop("product_id", None)
-                # One save: the accepted record and the cleared fetch error land together.
-                record = self.ingest(product_id, values, scope=scope, _fetch_success=(lock_key, now_ms), **payload)
+                retry_after_ms = payload.pop("retry_after_ms", None)
+                # One save: the accepted record and the cleared (or partial-backoff) fetch status land together.
+                record = self.ingest(product_id, values, scope=scope,
+                                     _fetch_success=(lock_key, now_ms, retry_after_ms), **payload)
                 record["fetch_decision"] = {"status": "FETCHED", "loader_called": True}
                 return record
             except Exception as exc:
@@ -750,6 +834,26 @@ class DataEngine:
             drop.update(key for key, _record in rows[:-MAX_CURRENT_SCOPES_PER_PRODUCT])
         if drop:
             state["current"] = {key: value for key, value in current.items() if key not in drop}
+        fetch_status = state.get("fetch_status")
+        if isinstance(fetch_status, Mapping) and len(fetch_status) > MAX_KNOWN_RECORDS:
+            current_keys = set(state.get("current") or {})
+            scored: list[tuple[int, str]] = []
+            for key, value in fetch_status.items():
+                if not isinstance(value, Mapping):
+                    scored.append((0, key))
+                    continue
+                latest = max(
+                    int(value.get("last_success_at_ms") or 0),
+                    int(value.get("last_error_at_ms") or 0),
+                    int(value.get("last_partial_at_ms") or 0),
+                )
+                scored.append((latest, key))
+            keep_fs = set(current_keys)
+            for _ts, key in sorted(scored, reverse=True):
+                if len(keep_fs) >= MAX_KNOWN_RECORDS:
+                    break
+                keep_fs.add(key)
+            state["fetch_status"] = {key: val for key, val in fetch_status.items() if key in keep_fs}
 
     def _payload_basis(
         self,
@@ -990,7 +1094,16 @@ class DataEngine:
         current = []
         statuses = []
         limited = False
-        for record in entries:
+        ordered_entries = sorted(
+            entries,
+            key=lambda r: (
+                int((r.get("time") or {}).get("observation_end_ms") or 0),
+                int((r.get("time") or {}).get("first_seen_at_ms") or 0),
+                str(r.get("record_id") or ""),
+            ),
+            reverse=True,
+        )
+        for record in ordered_entries:
             decision = self._usage_decision(product, record, now_ms, "health")
             statuses.append(decision["status"])
             usage_decisions = self._usage_decisions_for_health(product, record, now_ms)
@@ -1141,6 +1254,44 @@ class DataEngine:
             if bucket_minute < minute - 10:
                 budgets.pop(key, None)
 
+    def set_provider_cooldown(
+        self,
+        provider_id: str,
+        *,
+        until_ms: int,
+        reason: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        now_ms = _require_int_ms("now_ms", now_ms) or 0
+        until_ms = _require_int_ms("until_ms", until_ms) or 0
+        entry = {"provider_id": str(provider_id), "until_ms": until_ms,
+                 "reason": str(reason), "recorded_at_ms": now_ms}
+        with self._state_guard():
+            state = self._load_state_unlocked()
+            cooldowns = state.setdefault("provider_cooldowns", {})
+            existing = cooldowns.get(str(provider_id))
+            if isinstance(existing, Mapping) and int(existing.get("until_ms") or 0) > until_ms:
+                return deepcopy(dict(existing))
+            cooldowns[str(provider_id)] = entry
+            self._save_state_unlocked(state)
+        return deepcopy(entry)
+
+    def provider_cooldown(self, provider_id: str, *, now_ms: int) -> dict[str, Any] | None:
+        now_ms = _require_int_ms("now_ms", now_ms) or 0
+        with self._state_guard():
+            state = self._load_state_unlocked(mutable=False)
+        entry = (state.get("provider_cooldowns") or {}).get(str(provider_id))
+        if isinstance(entry, Mapping) and int(entry.get("until_ms") or 0) > now_ms:
+            return deepcopy(dict(entry))
+        return None
+
+    def fetch_status(self, product_id: str, *, scope: Any = None) -> dict[str, Any] | None:
+        lock_key = _state_key(product_id, scope)
+        with self._state_guard():
+            state = self._load_state_unlocked(mutable=False)
+        entry = (state.get("fetch_status") or {}).get(lock_key)
+        return deepcopy(dict(entry)) if isinstance(entry, Mapping) else None
+
     def _record_fetch_error(
         self,
         product_id: str,
@@ -1153,14 +1304,27 @@ class DataEngine:
         with self._state_guard():
             state = self._load_state_unlocked()
             policy = self._fetch_policy(product)
-            backoff = policy.get("retry_backoff_ms") if isinstance(policy.get("retry_backoff_ms"), list) else [10_000, 30_000, 60_000]
+            code = getattr(exc, "code", None) or type(exc).__name__
+            is_maint = bool(getattr(exc, "is_maintenance", False)) or code == "DERIBIT_MAINTENANCE"
+            is_rl = bool(getattr(exc, "is_rate_limit", False)) or code == "DERIBIT_HTTP_429"
+            if is_maint and isinstance(policy.get("maintenance_backoff_ms"), list) and policy["maintenance_backoff_ms"]:
+                backoff = policy["maintenance_backoff_ms"]
+            elif is_rl and isinstance(policy.get("rate_limit_backoff_ms"), list) and policy["rate_limit_backoff_ms"]:
+                backoff = policy["rate_limit_backoff_ms"]
+            elif isinstance(policy.get("retry_backoff_ms"), list) and policy["retry_backoff_ms"]:
+                backoff = policy["retry_backoff_ms"]
+            else:
+                backoff = [10_000, 30_000, 60_000]
             status = dict(state.setdefault("fetch_status", {}).get(lock_key) or {})
             attempts = int(status.get("attempts") or 0) + 1
             delay = int(backoff[min(attempts - 1, len(backoff) - 1)])
+            exc_retry = getattr(exc, "retry_after_ms", None)
+            if isinstance(exc_retry, int) and exc_retry > 0:
+                delay = max(delay, exc_retry)
             status.update({
                 "attempts": attempts,
                 "last_error_at_ms": now_ms,
-                "last_error_code": getattr(exc, "code", type(exc).__name__),
+                "last_error_code": code,
                 "next_retry_at_ms": now_ms + delay,
             })
             state["fetch_status"][lock_key] = status
@@ -1175,14 +1339,35 @@ class DataEngine:
             self._save_state_unlocked(state)
 
     def _mark_fetch_success(
-        self, state: dict[str, Any], record: Mapping[str, Any], fetch_success: tuple[str, int] | None
+        self, state: dict[str, Any], record: Mapping[str, Any], fetch_success: tuple[Any, ...] | None
     ) -> None:
         if fetch_success is None:
             return
-        lock_key, now_ms = fetch_success
+        lock_key = fetch_success[0]
+        now_ms = int(fetch_success[1])
+        retry_after_ms = fetch_success[2] if len(fetch_success) > 2 else None
         now_ms = max(now_ms, int(record.get("time", {}).get("retrieved_at_ms") or now_ms))
+        data_state = str((record.get("quality") or {}).get("data_state") or "OK").upper()
         status = dict(state.setdefault("fetch_status", {}).get(lock_key) or {})
-        status.update({"attempts": 0, "next_retry_at_ms": None, "last_success_at_ms": now_ms})
+        if data_state == "OK":
+            status.update({
+                "attempts": 0,
+                "next_retry_at_ms": None,
+                "last_success_at_ms": now_ms,
+                "last_data_state": "OK",
+            })
+        else:
+            product_id = str((record.get("identity") or {}).get("product_id") or "")
+            product = self.products.get(product_id) or {}
+            policy = self._fetch_policy(product)
+            default_delay = int(policy.get("incomplete_retry_ms") or 15_000)
+            delay = int(retry_after_ms) if isinstance(retry_after_ms, int) and retry_after_ms > 0 else default_delay
+            status.update({
+                "attempts": int(status.get("attempts") or 0) + 1,
+                "last_partial_at_ms": now_ms,
+                "last_data_state": data_state,
+                "next_retry_at_ms": now_ms + delay,
+            })
         state["fetch_status"][lock_key] = status
 
 

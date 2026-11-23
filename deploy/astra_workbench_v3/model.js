@@ -14,6 +14,8 @@ const REASONS = {
   leg_book_time_skew: "两腿盘口读取时间相差过大",
   // Decision Path requests
   delta_population_capture_incomplete: "Delta 采集不完整，本轮没有选出候选",
+  delta_population_greeks_incomplete: "部分候选腿缺少有效 Delta，未做不完整选约",
+  upstream_deribit_rate_limited: "Deribit 公共接口限流（429），正在按退避自动恢复",
   verification_closed: "这条核验已结束",
   verification_not_found: "这条核验已清理（合约到期）",
   verification_concluding: "结论正在提交",
@@ -170,7 +172,17 @@ export function sideModel(view, candidate) {
   if (!candidate) return null;
   const snap = candidate.snapshot;
   const side = candidate.side;
-  const base = { side, name: side === "put" ? "Put" : "Call", status: candidate.status, candidate, error: candidate.error };
+  const base = {
+    side,
+    name: side === "put" ? "Put" : "Call",
+    status: candidate.status,
+    candidate,
+    error: candidate.error,
+    lastValid: candidate.last_valid_candidate || null,
+    discoveryStatus: candidate.discovery_status || null,
+    formalEligible: Boolean(candidate.formal_evidence_eligible),
+    liveLockEligible: Boolean(candidate.live_lock_eligible),
+  };
   if (!snap) return base;
   const c = snap.contract || {};
   const eco = snap.economics || {};

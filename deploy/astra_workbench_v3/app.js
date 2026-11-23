@@ -267,6 +267,10 @@ function candidateErrorBanner(errs) {
     return h("div", { class: "banner info" }, h("b", { text: "Deribit 交易所维护中。" }),
       ` 官方接口暂停服务，两侧候选暂不生成；接口恢复后自动继续。${since}锁定追踪在维护期间记为采样缺口。`);
   }
+  if (codes.length === 1 && codes[0] === "upstream_deribit_rate_limited") {
+    return h("div", { class: "banner" }, h("b", { text: "Deribit 公共接口限流（429）退避恢复中。" }),
+      ` 后台已停止连续试探，将按退避周期自动恢复（不依赖刷新网页）。${since}`);
+  }
   if (codes.length === 1 && codes[0] === "upstream_deribit_unavailable") {
     return h("div", { class: "banner" }, h("b", { text: "Deribit 接口暂时不可用。" }),
       ` 两侧候选暂不生成，后台会按退避间隔重试。${since}`);
@@ -416,8 +420,21 @@ function deck(m, side, blockers) {
     onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === card) { e.preventDefault(); select(side); } } });
   const name = side === "put" ? "Put 价差" : "Call 价差";
   if (!m || !m.snap) {
-    card.append(h("div", { class: "deck-head" }, h("h3", { text: name }), h("span", { class: "seal none", text: "无候选" })));
-    card.append(h("p", { class: "empty", text: blockers.length ? `本轮没有可展示的候选：${blockers.join("、")}。` : "本轮没有可展示的候选。" }));
+    card.append(h("div", { class: "deck-head" }, h("h3", { text: name }), h("span", { class: "seal none", text: "无实时候选" })));
+    card.append(h("p", { class: "empty", text: blockers.length ? `本轮没有合格实时候选：${blockers.join("、")}。` : "本轮没有合格实时候选。" }));
+    const hist = m?.lastValid;
+    if (hist) {
+      const token = String(hist.short_instrument || "").split("-")[1] || "";
+      const tagText = `仅历史摘要 · 非正式牌面 · 不可锁定${hist.expired ? " · 原合约已到期" : ""}`;
+      card.append(h("div", { class: "history-summary" },
+        h("div", { class: "history-head" },
+          h("span", { class: "chip warn", text: tagText }),
+          isNum(hist.valid_at_ms) ? h("span", { class: "muted small", text: `上次有效：${clock(hist.valid_at_ms)}` }) : null),
+        h("div", { class: "history-body" },
+          h("b", { text: `${token ? `${token} ` : ""}${side === "put" ? "Put" : "Call"} 卖 ${usd(hist.short_strike_usd)} / 买 ${usd(hist.long_strike_usd)}` }),
+          isNum(hist.short_delta) ? h("span", { class: "muted small", text: `（当时短腿 Δ ${hist.short_delta.toFixed(2)}）` }) : null),
+        h("p", { class: "muted small", text: `当前阻塞：${blockers.length ? blockers.join("、") : "等待后台恢复采集"}；后台恢复后自动刷新。` })));
+    }
     return card;
   }
   card.append(h("div", { class: "deck-head" },
