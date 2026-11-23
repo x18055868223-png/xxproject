@@ -1,0 +1,22 @@
+[Unit]
+Description=xxproject research archive tick (frozen cases, ledger, outcomes)
+After=network-online.target astra-workbench-v20.service
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=research
+UMask=0027
+WorkingDirectory=/opt/xxproject/current/tools
+EnvironmentFile=/etc/signal-audit/llm.env
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
+Environment=ASTRA_RESEARCH_ARCHIVE=/var/lib/xxproject/research_archive
+Environment=ASTRA_RESEARCH_INBOX=/var/lib/xxproject/research_inbox
+Environment=ASTRA_RESEARCH_RECEIPTS=/var/lib/xxproject/research_archive/receipts
+Environment=ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json
+Environment=ASTRA_AI_SHADOW_EXPERIMENT=1
+Environment=ASTRA_AI_SHADOW_DOSSIER_ROOT=/var/lib/xxproject/workbench/shadow_dossiers
+Environment=ASTRA_PLAYER_ENABLED=1
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_research_archive_v1.py tick
+TimeoutStartSec=2700
+Nice=10

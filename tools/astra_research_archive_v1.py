@@ -38,6 +38,7 @@ from typing import Any, Callable, Mapping
 
 if __package__:
     from . import astra_case_file_v1 as case_file_core
+    from . import astra_deribit_cooldown_v1 as deribit_cooldown
     from . import astra_commercial_math_v17 as commercial_math
     from . import astra_inquiry_v1 as inquiry
     from . import astra_market_baseline_v1 as market_baseline
@@ -52,6 +53,7 @@ if __package__:
     from . import astra_player_v1 as player
 else:
     import astra_case_file_v1 as case_file_core
+    import astra_deribit_cooldown_v1 as deribit_cooldown
     import astra_commercial_math_v17 as commercial_math
     import astra_inquiry_v1 as inquiry
     import astra_market_baseline_v1 as market_baseline
@@ -555,6 +557,8 @@ class Deribit:
         now_m = self._monotonic()
         if self._rate_limited_until_mono > now_m:
             raise ValueError("DERIBIT_HTTP_429 cooldown active")
+        if self._live_transport and deribit_cooldown.remaining_ms() > 0:
+            raise ValueError("DERIBIT_HTTP_429 cooldown active")
         if self.min_book_interval_s > 0 and self._last_book_mono is not None:
             wait_s = self._last_book_mono + self.min_book_interval_s - now_m
             if wait_s > 0:
@@ -565,6 +569,13 @@ class Deribit:
         except Exception as exc:
             if "DERIBIT_HTTP_429" in str(exc) or getattr(exc, "code", None) in {429, "DERIBIT_HTTP_429"}:
                 self._rate_limited_until_mono = self._monotonic() + 10.0
+                now_cd_ms = int(time.time() * 1000)
+                deribit_cooldown.record_cooldown(
+                    cooldown_until_ms=now_cd_ms + 10_000,
+                    source="astra_research_archive",
+                    reason="DERIBIT_HTTP_429",
+                    now_ms=now_cd_ms,
+                )
             raise
         if not isinstance(book, dict) or book.get("instrument_name") != name:
             raise ValueError("book mismatch " + name)

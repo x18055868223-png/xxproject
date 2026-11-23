@@ -45,13 +45,18 @@ def check(*, deliverable: Path = DELIVERABLE, manifest: Path = MANIFEST, view: d
         results.append({"check": name, "ok": bool(ok), "detail": detail})
 
     version = deliverable_version(deliverable)
-    digest = hashlib.sha256(deliverable.read_bytes()).hexdigest()
+    raw_bytes = deliverable.read_bytes()
+    digest = hashlib.sha256(raw_bytes).hexdigest()
+    lf_digest = hashlib.sha256(raw_bytes.replace(b"\r\n", b"\n")).hexdigest()
     add("deliverable_version", version is not None, f"demo_version={version}")
     producer = manifest_producer(manifest)
     add("manifest_version", producer.get("candidate_version") == version,
         f"manifest={producer.get('candidate_version')} deliverable={version}")
-    add("manifest_hash", producer.get("source_hash") == digest,
-        f"manifest={str(producer.get('source_hash'))[:12]} file={digest[:12]}")
+    expected_hash = producer.get("source_hash")
+    hash_ok = expected_hash in {digest, lf_digest}
+    matched_digest = digest if expected_hash == digest else lf_digest
+    add("manifest_hash", hash_ok,
+        f"manifest={str(expected_hash)[:12]} file={matched_digest[:12]}")
     if view is not None:
         observed = (view.get("market_context") or {}).get("strategy_version")
         add("server_observed_version", observed == version, f"server={observed} deliverable={version}")

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AI Player official settle-due retries after 08:00 UTC expiry
+
+[Timer]
+OnCalendar=*-*-* 08:06,16,31:00 UTC
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

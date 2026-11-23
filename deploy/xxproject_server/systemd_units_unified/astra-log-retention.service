@@ -1,0 +1,20 @@
+[Unit]
+Description=xxproject native signal log retention (freezes & prunes rotated gzip archives)
+After=astra-signal-producer.service
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=bitnami
+WorkingDirectory=/opt/xxproject/current/tools
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_data_retention_v23.py maintain --fmz-log-dir /var/lib/xxproject/signal_native/logs --retained-dir /var/lib/xxproject/signal_native/retained --apply
+MemoryHigh=128M
+MemoryMax=256M
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/xxproject/signal_native
+TimeoutStartSec=180

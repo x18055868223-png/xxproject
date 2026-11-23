@@ -35,6 +35,7 @@ from urllib.parse import unquote, urlparse, parse_qs
 
 if __package__:
     from . import astra_underwriting_discovery_v20 as discovery
+    from . import astra_deribit_cooldown_v1 as deribit_cooldown
     from . import astra_underwriting_fact_context_v20 as fact_context
     from . import astra_underwriting_guidance_v20 as guidance
     from . import astra_decision_reduction_v1 as decision_reduction
@@ -86,6 +87,7 @@ if __package__:
     from . import signal_llm_review
 else:  # direct CLI execution from tools/
     import astra_underwriting_discovery_v20 as discovery
+    import astra_deribit_cooldown_v1 as deribit_cooldown
     import astra_underwriting_fact_context_v20 as fact_context
     import astra_underwriting_guidance_v20 as guidance
     import astra_decision_reduction_v1 as decision_reduction
@@ -2075,6 +2077,13 @@ class AstraWorkbench:
     def _default_discovery_capture(self, *, now_ms: int) -> Mapping[str, Any]:
         scope = dict(DISCOVERY_CAPTURE_SCOPE)
         cooldown = self.data_engine.provider_cooldown("deribit", now_ms=now_ms)
+        if cooldown is None:
+            shared_cd = deribit_cooldown.read_cooldown(now_ms=now_ms)
+            if shared_cd is not None:
+                cooldown = {
+                    "until_ms": shared_cd["cooldown_until_ms"],
+                    "reason": shared_cd.get("reason") or "DERIBIT_HTTP_429",
+                }
         if cooldown is not None:
             reason = str(cooldown.get("reason") or "")
             if reason == "DERIBIT_MAINTENANCE":
@@ -2113,6 +2122,12 @@ class AstraWorkbench:
                         wait_ms = exc.retry_after_ms if isinstance(exc.retry_after_ms, int) and exc.retry_after_ms > 0 else 10_000
                         self.data_engine.set_provider_cooldown(
                             "deribit", until_ms=now_cd + wait_ms, reason="DERIBIT_HTTP_429", now_ms=now_cd,
+                        )
+                        deribit_cooldown.record_cooldown(
+                            cooldown_until_ms=now_cd + wait_ms,
+                            source="astra_workbench_discovery",
+                            reason="DERIBIT_HTTP_429",
+                            now_ms=now_cd,
                         )
                     raise
                 received = self.clock_ms()
@@ -2269,6 +2284,14 @@ class AstraWorkbench:
             captured = values["captured_ts_ms"]
             if capture_state == "INCOMPLETE" and upstream_status == "deribit_rate_limited":
                 retry_ms = (values.get("data_identity") or {}).get("retry_after_ms")
+                now_cd = self.clock_ms()
+                wait_ms = retry_ms if isinstance(retry_ms, int) and retry_ms > 0 else 10_000
+                deribit_cooldown.record_cooldown(
+                    cooldown_until_ms=now_cd + wait_ms,
+                    source="astra_workbench_discovery",
+                    reason="DERIBIT_HTTP_429",
+                    now_ms=now_cd,
+                )
                 err = discovery.DeribitPublicError(
                     "DERIBIT_HTTP_429", "too_many_requests (discovery incomplete)",
                     status=429, retry_after_ms=retry_ms, error_code=10028,
@@ -2420,6 +2443,25 @@ class AstraWorkbench:
                         self._deribit_pacer.record_rate_limit(discovery._parse_retry_after_ms(getattr(exc, "headers", None)))
                         now_cd = self.clock_ms()
                         self.data_engine.set_provider_cooldown("deribit", until_ms=now_cd + 10_000, reason="DERIBIT_HTTP_429", now_ms=now_cd)
+                        deribit_cooldown.record_cooldown(
+                            cooldown_until_ms=now_cd + 10_000,
+                            source="astra_workbench_quote",
+                            reason="DERIBIT_HTTP_429",
+                            now_ms=now_cd,
+                        )
+                    raise
+                except discovery.DeribitPublicError as exc:
+                    if exc.is_rate_limit:
+                        self._deribit_pacer.record_rate_limit(exc.retry_after_ms)
+                        now_cd = self.clock_ms()
+                        wait_ms = exc.retry_after_ms if isinstance(exc.retry_after_ms, int) and exc.retry_after_ms > 0 else 10_000
+                        self.data_engine.set_provider_cooldown("deribit", until_ms=now_cd + wait_ms, reason="DERIBIT_HTTP_429", now_ms=now_cd)
+                        deribit_cooldown.record_cooldown(
+                            cooldown_until_ms=now_cd + wait_ms,
+                            source="astra_workbench_quote",
+                            reason="DERIBIT_HTTP_429",
+                            now_ms=now_cd,
+                        )
                     raise
             product = "deribit.btc.option.instrument.v1"
             scope = {"instrument_name": params["instrument_name"], "depth": params.get("depth"),
@@ -5235,8 +5277,13 @@ class AstraWorkbench:
 
     def refresh_expiry_gamma(self, now_ms: int | None = None, *, force: bool = False) -> dict[str, Any] | None:
         now = self.clock_ms() if now_ms is None else now_ms
-        if not force and not expiry_gamma.due(self._expiry_gamma, now):
-            return self._expiry_gamma
+        if not force:
+            if not expiry_gamma.due(self._expiry_gamma, now):
+                return self._expiry_gamma
+            if (deribit_cooldown.remaining_ms(now_ms=now) > 0
+                    or self._deribit_pacer.stats().get("cooldown_remaining_s", 0.0) > 0.0
+                    or self.data_engine.provider_cooldown("deribit", now_ms=now) is not None):
+                return self._expiry_gamma
         result = expiry_gamma.collect(self.expiry_gamma_get_json, now)
         try:
             json.dumps(result, allow_nan=False)

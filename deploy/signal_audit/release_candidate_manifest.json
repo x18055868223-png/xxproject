@@ -32,7 +32,7 @@
       "component": "fmz_producer",
       "candidate_version": "2.0.6",
       "source_of_truth": "demo/最新交付物/neutral_regulation_demo_fmz.py",
-      "source_hash": "6a4ac7edba6278050d6cc9da4e7add645ce5723f073dd66d180ab6892fde5549",
+      "source_hash": "6d9a34e1d0cd4d11fa4d6c8f8edae9165d9190beb672fafc63e3dfd9c8072132",
       "schema_or_protocol": "2.0.6",
       "lifecycle": "canonical",
       "runtime_status": "USER_DEPLOYED_NATIVE_OBSERVED",

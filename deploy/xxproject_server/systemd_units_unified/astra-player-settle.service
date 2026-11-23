@@ -1,0 +1,17 @@
+[Unit]
+Description=xxproject AI Player 08:00 UTC official expiry settlement (SHADOW_ONLY)
+After=network-online.target astra-workbench-v20.service
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=research
+UMask=0027
+WorkingDirectory=/opt/xxproject/current/tools
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/signal-audit/llm.env
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_player_dossier_v1.py --root /var/lib/xxproject/workbench/shadow_dossiers settle-due
+TimeoutStartSec=300
+Nice=10
