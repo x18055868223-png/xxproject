@@ -512,19 +512,20 @@ def _delta_short_candidate_names(instruments: list[Any], selected_expiry: int | 
 
 
 class DeribitPacer:
-    """Process-local monotonic pacer respecting Deribit's 5 req/s (burst 25) order-book pool.
+    """Process-local monotonic pacer sharing a single token bucket for the order-book pool.
 
-    Sustained discovery pace defaults to 2.5 req/s (400 ms) so background discovery leaves
-    headroom for priority 2-leg quote pairs (80 ms spacing inside a 4 req/s sliding 1s cap)
-    and co-located cron consumers on the same egress IP.
+    Sustained pace defaults to ~0.95 req/s (1050 ms interval, burst 2.0, max 2 req/s) so cold
+    discovery sweeps stay under Deribit's strict unauthenticated EU edge ceiling and leave
+    clean pair-reserved headroom for priority 2-leg quote pairs (80 ms leg-to-leg spacing).
     """
 
     def __init__(
         self,
         *,
-        min_interval_s: float = 0.40,
+        min_interval_s: float = 1.05,
         priority_min_interval_s: float = 0.08,
-        max_per_second: int = 4,
+        max_per_second: int = 2,
+        burst_capacity: float = 2.0,
         cooldown_default_s: float = 10.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -532,6 +533,7 @@ class DeribitPacer:
         self.min_interval_s = max(0.0, float(min_interval_s))
         self.priority_min_interval_s = max(0.0, float(priority_min_interval_s))
         self.max_per_second = max(1, int(max_per_second))
+        self.burst_capacity = max(1.0, float(burst_capacity))
         self.cooldown_default_s = max(1.0, float(cooldown_default_s))
         self._monotonic = monotonic
         self._sleep = sleep
@@ -539,6 +541,8 @@ class DeribitPacer:
         self._last_grant_mono: float | None = None
         self._grants: list[float] = []
         self._cooldown_until_mono: float = 0.0
+        self._tokens: float = self.burst_capacity
+        self._tokens_updated_mono: float | None = None
         self._stats = {"total_acquired": 0, "discovery": 0, "quote": 0,
                        "rate_limit_events": 0, "maintenance_events": 0}
 
@@ -549,6 +553,8 @@ class DeribitPacer:
         with self._lock:
             now_m = self._monotonic()
             self._cooldown_until_mono = max(self._cooldown_until_mono, now_m + wait_s)
+            self._tokens = 0.0
+            self._tokens_updated_mono = now_m
             self._stats["rate_limit_events"] += 1
             return self._cooldown_until_mono - now_m
 
@@ -557,6 +563,8 @@ class DeribitPacer:
         with self._lock:
             now_m = self._monotonic()
             self._cooldown_until_mono = max(self._cooldown_until_mono, now_m + wait_s)
+            self._tokens = 0.0
+            self._tokens_updated_mono = now_m
             self._stats["maintenance_events"] += 1
             return self._cooldown_until_mono - now_m
 
@@ -566,9 +574,19 @@ class DeribitPacer:
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
-            return {**self._stats, "cooldown_remaining_s": round(max(0.0, self._cooldown_until_mono - self._monotonic()), 3)}
+            return {
+                **self._stats,
+                "tokens": round(self._tokens, 3),
+                "cooldown_remaining_s": round(max(0.0, self._cooldown_until_mono - self._monotonic()), 3),
+            }
 
-    def acquire(self, *, priority: str = "discovery", deadline_mono: float | None = None) -> tuple[bool, str | None]:
+    def acquire(
+        self,
+        *,
+        priority: str = "discovery",
+        cost: float = 1.0,
+        deadline_mono: float | None = None,
+    ) -> tuple[bool, str | None]:
         with self._lock:
             now_m = self._monotonic()
             if self._cooldown_until_mono > now_m:
@@ -578,6 +596,15 @@ class DeribitPacer:
                     return False, "rate_limit_cooldown"
             interval = self.priority_min_interval_s if priority in {"quote", "high"} else self.min_interval_s
             slot_m = now_m if self._last_grant_mono is None else max(now_m, self._last_grant_mono + interval)
+            if self._cooldown_until_mono > now_m:
+                slot_m = max(slot_m, self._cooldown_until_mono)
+            req_cost = min(max(0.0, float(cost)), self.burst_capacity)
+            ref_m = self._tokens_updated_mono if self._tokens_updated_mono is not None else now_m
+            if self.min_interval_s > 0.0 and req_cost > 0.0:
+                avail_at_slot = min(self.burst_capacity, self._tokens + max(0.0, slot_m - ref_m) / self.min_interval_s)
+                if avail_at_slot < req_cost:
+                    deficit = req_cost - avail_at_slot
+                    slot_m += deficit * self.min_interval_s
             cutoff = slot_m - 1.0
             self._grants = [t for t in self._grants if t > cutoff]
             if len(self._grants) >= self.max_per_second:
@@ -587,6 +614,10 @@ class DeribitPacer:
                 return False, "round_deadline_exceeded"
             wait_s = max(0.0, slot_m - now_m)
             self._last_grant_mono = slot_m
+            if self.min_interval_s > 0.0:
+                final_avail = min(self.burst_capacity, self._tokens + max(0.0, slot_m - ref_m) / self.min_interval_s)
+                self._tokens = max(0.0, final_avail - req_cost)
+                self._tokens_updated_mono = slot_m
             self._grants.append(slot_m)
             cutoff2 = slot_m - 1.0
             self._grants = [t for t in self._grants if t > cutoff2]
@@ -613,7 +644,7 @@ def _with_public_greeks(
     now: Callable[[], float],
     pacer: DeribitPacer | None = None,
     min_interval_s: float = 0.0,
-    max_round_s: float = 25.0,
+    max_round_s: float = 45.0,
     retry_delay_s: float = 0.25,
     delta_cache_get: Callable[[str], Mapping[str, Any] | None] | None = None,
     delta_cache_put: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -949,7 +980,7 @@ def capture_public_deribit_discovery(
     transport: Callable | None = None,
     pacer: DeribitPacer | None = None,
     min_interval_s: float | None = None,
-    max_round_s: float = 25.0,
+    max_round_s: float = 45.0,
     retry_delay_s: float = 0.25,
     delta_cache_get: Callable[[str], Mapping[str, Any] | None] | None = None,
     delta_cache_put: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -959,7 +990,7 @@ def capture_public_deribit_discovery(
     """One-shot public capture: metadata/index plus candidate-short book greeks."""
     timeout = _number("timeout_s", timeout_s, positive=True)
     get = transport or _public_get
-    effective_min_interval = (0.40 if (transport is None and pacer is None) else 0.0) if min_interval_s is None else float(min_interval_s)
+    effective_min_interval = (1.05 if (transport is None and pacer is None) else 0.0) if min_interval_s is None else float(min_interval_s)
     request_started_ms = (_integer("captured_ts_ms", captured_ts_ms)
                           if captured_ts_ms is not None else int(time.time() * 1000))
     index_response = get(base_url, "/public/get_index_price", {"index_name": "btc_usd"}, timeout)
