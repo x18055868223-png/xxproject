@@ -1947,7 +1947,9 @@ class AstraWorkbench:
         self._wpem_pinned: set[str] = set()
         self._sampler_marks: dict[str, int] = {}
         self._discovery_upstream: tuple[str, int] | None = None
-        self._deribit_pacer = discovery.DeribitPacer(min_interval_s=0.40, priority_min_interval_s=0.08, max_per_second=4)
+        self._deribit_pacer = discovery.DeribitPacer(
+            min_interval_s=1.05, priority_min_interval_s=0.08, max_per_second=2, burst_capacity=2.0
+        )
         self._discovery_round_seq = 0
         self._delta_mem_cache: dict[str, dict[str, Any]] = {}
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
@@ -2393,6 +2395,11 @@ class AstraWorkbench:
         metadata_clocks = {}
         book_product = "deribit.btc.option.order_book.v1"
         book_requests = [0]
+        pair_credits = [0]
+        quote_pacing = (
+            public_quote.public_transport is _REAL_QUOTE_PUBLIC_TRANSPORT
+            or getattr(self, "_force_quote_pacing", False)
+        )
         # The two books are judged together (exchange clocks within 2 s, each within 5 s), so
         # they are read directly and back to back: no engine state load/save, cache hit or
         # lock wait runs between the legs (2026-10-28: ~39% of captures failed the skew check
@@ -2408,18 +2415,39 @@ class AstraWorkbench:
             if path == "public/get_order_book":
                 if budget_error is not None:
                     raise budget_error
-                if public_quote.public_transport is _REAL_QUOTE_PUBLIC_TRANSPORT:
-                    ok, why = self._deribit_pacer.acquire(priority="quote", deadline_mono=time.monotonic() + 5.0)
-                    if not ok:
-                        raise discovery.DeribitPublicError("DERIBIT_HTTP_429", f"quote paused ({why})", status=429)
+                if quote_pacing:
+                    mono_now = self._deribit_pacer._monotonic()
+                    if pair_credits[0] <= 0:
+                        ok, why = self._deribit_pacer.acquire(
+                            priority="quote", cost=2.0, deadline_mono=mono_now + 8.0,
+                        )
+                        if not ok:
+                            raise discovery.DeribitPublicError("DERIBIT_HTTP_429", f"quote paused ({why})", status=429)
+                        pair_credits[0] = 2
+                    else:
+                        ok, why = self._deribit_pacer.acquire(
+                            priority="quote", cost=0.0, deadline_mono=mono_now + 5.0,
+                        )
+                        if not ok:
+                            raise discovery.DeribitPublicError("DERIBIT_HTTP_429", f"quote paused ({why})", status=429)
+                    pair_credits[0] = max(0, pair_credits[0] - 1)
                 book_requests[0] += 1
                 try:
                     return public_quote.public_transport(path, params)
                 except discovery.urllib.error.HTTPError as exc:
                     if exc.code == 429:
+                        pair_credits[0] = 0
                         self._deribit_pacer.record_rate_limit(discovery._parse_retry_after_ms(getattr(exc, "headers", None)))
                         now_cd = self.clock_ms()
                         self.data_engine.set_provider_cooldown("deribit", until_ms=now_cd + 10_000, reason="DERIBIT_HTTP_429", now_ms=now_cd)
+                    raise
+                except discovery.DeribitPublicError as exc:
+                    if exc.is_rate_limit:
+                        pair_credits[0] = 0
+                        self._deribit_pacer.record_rate_limit(exc.retry_after_ms)
+                        now_cd = self.clock_ms()
+                        wait_ms = exc.retry_after_ms if isinstance(exc.retry_after_ms, int) and exc.retry_after_ms > 0 else 10_000
+                        self.data_engine.set_provider_cooldown("deribit", until_ms=now_cd + wait_ms, reason="DERIBIT_HTTP_429", now_ms=now_cd)
                     raise
             product = "deribit.btc.option.instrument.v1"
             scope = {"instrument_name": params["instrument_name"], "depth": params.get("depth"),
@@ -2480,13 +2508,42 @@ class AstraWorkbench:
             received = receipts.get(leg)
             if not book or not isinstance(received, int) or not isinstance(book.get("timestamp"), int):
                 continue
+            inst_name = names.get(leg + "_instrument")
             try:
                 self.data_engine.ingest(product, book, observation_end_ms=book["timestamp"],
                                         retrieved_at_ms=received, ingested_at_ms=received,
-                                        scope={"instrument_name": names.get(leg + "_instrument"), "depth": 5,
+                                        scope={"instrument_name": inst_name, "depth": 5,
                                                "permission": "public_read_only"})
             except Exception:
                 pass
+            greeks = book.get("greeks") if isinstance(book.get("greeks"), Mapping) else None
+            if isinstance(inst_name, str) and greeks is not None:
+                parsed = discovery._named_expiry_ms(inst_name)
+                if parsed is not None:
+                    probe = {
+                        "instrument_name": inst_name,
+                        "option_type": parsed[2],
+                        "greeks": dict(greeks),
+                        "delta_observed_at_ms": book["timestamp"],
+                        "delta_source": "public/get_order_book.greeks.delta",
+                        "delta_book_received_ms": received,
+                    }
+                    check_ts = max(received, book["timestamp"])
+                    cat, _det, _rsn = discovery._classify_short_delta(
+                        probe,
+                        check_ts,
+                        max_age_ms=discovery.DEFAULT_DELTA_MAX_AGE_MS,
+                        max_abs=discovery.DEFAULT_SHORT_DELTA_MAX_ABS,
+                    )
+                    if cat in {"verified_eligible", "verified_above_max"}:
+                        self._delta_mem_cache[inst_name] = {
+                            "instrument_name": inst_name,
+                            "greeks": dict(greeks),
+                            "delta_observed_at_ms": book["timestamp"],
+                            "delta_source": "public/get_order_book.greeks.delta",
+                            "delta_book_received_ms": received,
+                            "response_hash": discovery._hash({"result": book}),
+                        }
 
     def _load_state(self) -> dict[str, Any]:
         state = _read_json(self.config.state_path, {"schema": STATE_SCHEMA})

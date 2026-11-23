@@ -848,3 +848,349 @@ def test_nov20_candidate_rotation_never_mislocks_new_contract_and_reproduces_sha
         masked = tracking._link_with_fresh_quote(d, hand, wrap_service, RULE)
         assert len(refresh_results) >= 1
         assert masked == {"state": "LINK_UNVERIFIED", "reason": "exact_current_contract_not_found"}
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: REST Pacing Tuning, Shared Token Bucket & Archive Dedup
+# ---------------------------------------------------------------------------
+
+def _21_leg_chain(expiry: int) -> list[dict]:
+    """Build 21 metadata-qualified short candidates (16 Put + 5 Call) + protection wings, matching live xx-eu."""
+    rows = []
+    # Put strikes: 82k..99k -> shorts 84k..99k (16 legs) all have -2k wings (82k..83k are protection)
+    for k in range(82_000, 100_000, 1_000):
+        rows.append(_opt(k, "put", expiry=expiry))
+    # Call strikes: 101k..107k -> shorts 101k..105k (5 legs) all have +2k wings
+    for k in range(101_000, 108_000, 1_000):
+        rows.append(_opt(k, "call", expiry=expiry))
+    return rows
+
+
+def test_pacer_and_archive_defaults_and_pair_token_bucket():
+    import inspect
+
+    p = discovery.DeribitPacer()
+    assert p.min_interval_s == 1.05
+    assert p.priority_min_interval_s == 0.08
+    assert p.max_per_second == 2
+    assert p.burst_capacity == 2.0
+
+    d = archive.Deribit()
+    assert d.min_book_interval_s == 1.05
+    assert d.max_rate_limit_waits == 1
+    assert d.cooldown_default_s == 10.0
+
+    assert inspect.signature(discovery._with_public_greeks).parameters["max_round_s"].default == 45.0
+    assert inspect.signature(discovery.capture_public_deribit_discovery).parameters["max_round_s"].default == 45.0
+
+    mono_now = [100.0]
+    grants: list[tuple[str, float]] = []
+
+    def sleep(dt: float) -> None:
+        mono_now[0] += dt
+
+    pacer = discovery.DeribitPacer(monotonic=lambda: mono_now[0], sleep=sleep)
+    for idx in range(5):
+        ok, why = pacer.acquire(priority="discovery", cost=1.0, deadline_mono=mono_now[0] + 10.0)
+        assert ok and why is None
+        grants.append((f"disc_{idx}", mono_now[0]))
+        mono_now[0] += 0.020  # 20ms EU RTT
+
+    # Immediately acquire Put pair (cost=2.0 on leg1, cost=0.0 on leg2) + Call pair right after discovery #5
+    for side in ("put", "call"):
+        ok1, why1 = pacer.acquire(priority="quote", cost=2.0, deadline_mono=mono_now[0] + 8.0)
+        assert ok1 and why1 is None
+        grants.append((f"{side}_short", mono_now[0]))
+        mono_now[0] += 0.020
+        ok2, why2 = pacer.acquire(priority="quote", cost=0.0, deadline_mono=mono_now[0] + 5.0)
+        assert ok2 and why2 is None
+        grants.append((f"{side}_long", mono_now[0]))
+        mono_now[0] += 0.020
+
+    ts = [t for _, t in grants]
+    # Discovery wait after leg 5 before Put short avoids colliding on call #6/#7
+    assert ts[5] - ts[4] >= 1.00 - 1e-6
+    # Put & Call 2-leg pairs stay tight internally (<= 150 ms) so skew << 2000 ms
+    assert 0.08 - 1e-6 <= ts[6] - ts[5] <= 0.15
+    assert 0.08 - 1e-6 <= ts[8] - ts[7] <= 0.15
+    # Call short waits ~2 tokens after Put short
+    assert ts[7] - ts[5] >= 2.00 - 1e-6
+    # No sliding 1s window ever has more than 2 grants
+    for i, t in enumerate(ts):
+        assert sum(1 for x in ts if t - 0.999 <= x <= t + 1e-9) <= 2, f"burst >2 around grant {i}"
+
+
+def test_21_leg_cold_sweep_plus_immediate_quotes_under_eu_burst_ceiling(tmp_path, monkeypatch):
+    expiry = SLOT_16 + 16 * HOUR
+    chain = _21_leg_chain(expiry)
+    meta_by_name = {r["instrument_name"]: dict(r) for r in chain}
+
+    def run_scenario(*, use_old_pacer: bool):
+        mono_now = [1000.0]
+        clock = [T]
+        book_wire_times: list[float] = []
+        rate_limit_errors: list[tuple[float, str]] = []
+        quote_depths: list[tuple[str, int]] = []
+
+        def advance(dt_s: float) -> None:
+            mono_now[0] += dt_s
+            clock[0] += int(round(dt_s * 1000))
+
+        wb, snaps = make_workbench(tmp_path / ("old" if use_old_pacer else "new"), clock=lambda: clock[0])
+        wb.discovery_capture = wb._default_discovery_capture
+        wb.quote_capture = wb._default_quote_capture
+        if use_old_pacer:
+            wb._deribit_pacer = discovery.DeribitPacer(
+                min_interval_s=0.40, priority_min_interval_s=0.08, max_per_second=4,
+                monotonic=lambda: mono_now[0], sleep=advance,
+            )
+        else:
+            wb._deribit_pacer._monotonic = lambda: mono_now[0]
+            wb._deribit_pacer._sleep = advance
+        wb._force_discovery_pacing = True
+        wb._force_quote_pacing = True
+
+        def check_eu_ceiling(name: str) -> None:
+            # Strict empirical EU IP ceiling: >= 8 calls inside 3.5 s triggers HTTP 429 (7 calls pass)
+            recent = [t for t in book_wire_times if mono_now[0] - t <= 3.5]
+            if len(recent) >= 7:
+                rate_limit_errors.append((mono_now[0], name))
+                raise discovery.DeribitPublicError.from_http(
+                    _http_error(429, b'{"error":{"code":10028,"message":"too_many_requests"}}', headers={"Retry-After": "10"}),
+                    "/public/get_order_book",
+                )
+            book_wire_times.append(mono_now[0])
+            advance(0.020)  # 20ms EU RTT
+
+        def fake_disc_get(base, path, params, timeout):
+            if path == "/public/get_index_price":
+                advance(0.020)
+                return {"result": {"index_price": 100_000.0}}
+            if path == "/public/get_instruments":
+                advance(0.020)
+                return {"result": [dict(r) for r in chain]}
+            if path == "/public/get_order_book":
+                name = params["instrument_name"]
+                check_eu_ceiling(name)
+                return {"result": _book_payload(name, clock[0], _default_delta(name))}
+            raise AssertionError(path)
+
+        def fake_quote_get(path, params):
+            name = params["instrument_name"]
+            if path == "public/get_instrument":
+                return dict(meta_by_name[name])
+            if path == "public/get_order_book":
+                quote_depths.append((name, int(params.get("depth") or 1)))
+                try:
+                    check_eu_ceiling(name)
+                except discovery.DeribitPublicError as exc:
+                    raise _http_error(429, b'{"error":{"code":10028,"message":"too_many_requests"}}', headers={"Retry-After": "10"}) from exc
+                return _book_payload(name, clock[0], _default_delta(name))
+            raise AssertionError(path)
+
+        monkeypatch.setattr(discovery, "_public_get", fake_disc_get)
+        monkeypatch.setattr(workbench.public_quote, "public_transport", fake_quote_get)
+        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+
+        t0 = mono_now[0]
+        view = wb.refresh(now_ms=clock[0], record_daily=False)
+        elapsed_s = mono_now[0] - t0
+        return view, elapsed_s, book_wire_times, rate_limit_errors, quote_depths
+
+    # Old 400ms pacing deterministically hits HTTP 429 on leg #8
+    old_view, _, old_wires, old_429s, _ = run_scenario(use_old_pacer=True)
+    assert len(old_429s) == 1
+    assert len(old_wires) == 7
+    assert old_view["discovery_status"]["capture_state"] in {"PARTIAL", "INCOMPLETE"}
+    assert old_view["discovery_status"]["upstream_code"] == "deribit_rate_limited"
+
+    # New 1.05s shared token-bucket + pair-reserved quote finishes all 21 legs + 4 depth=5 quotes with 0 HTTP 429
+    new_view, new_elapsed_s, new_wires, new_429s, new_q_depths = run_scenario(use_old_pacer=False)
+    assert new_429s == []
+    assert len(new_wires) == 25  # 21 discovery (depth=1) + 4 quote (depth=5)
+    assert new_elapsed_s < 30.0
+    assert new_view["discovery_status"]["capture_state"] == "COMPLETE"
+    assert len(new_q_depths) == 4 and all(depth == 5 for _, depth in new_q_depths)
+    for side in ("put", "call"):
+        cand = next(c for c in new_view["candidates"] if c["side"] == side)
+        assert cand["status"] == "snapshot"
+        assert cand["formal_evidence_eligible"] is True
+        snap = cand["snapshot"]
+        q = snap["market"]["quote"]
+        ex_ts = q["exchange_times_ms"]
+        assert q["gap_reasons"] == []
+        assert abs(ex_ts["short"] - ex_ts["long"]) <= 500
+        assert max(q["valuation_ts_ms"] - ex_ts["short"], q["valuation_ts_ms"] - ex_ts["long"]) <= 5_000
+
+
+def test_quote_delta_reuse_and_strict_freshness_invariants(tmp_path, monkeypatch):
+    expiry = SLOT_16 + 16 * HOUR
+    clock = [T]
+    d_root = tmp_path / "dossiers"
+    wb, snaps, _, wire_log = _wire_workbench_market(
+        tmp_path, monkeypatch, clock=clock, expiry=expiry, shadow_dossier_root=d_root,
+    )
+
+    v1 = wb.refresh(now_ms=clock[0], record_daily=False)
+    assert v1["discovery_status"]["capture_state"] == "COMPLETE"
+    assert v1["candidates"][0]["discovery"]["candidate"]["short_instrument"] == "BTC-23NOV26-97000-P"
+    assert v1["candidates"][1]["discovery"]["candidate"]["short_instrument"] == "BTC-23NOV26-103000-C"
+    # _record_quote_books populated _delta_mem_cache with verified depth=5 quote legs
+    for quoted_leg in ("BTC-23NOV26-97000-P", "BTC-23NOV26-95000-P", "BTC-23NOV26-103000-C", "BTC-23NOV26-105000-C"):
+        assert quoted_leg in wb._delta_mem_cache
+
+    # At T+270s, discovery is a 300s DataEngine cache hit while initial T=0 deltas (>120s) have expired;
+    # routine refresh captures fresh depth=5 live quotes and updates _delta_mem_cache for those 4 legs.
+    clock[0] += 270_000
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    v_mid = wb.refresh(now_ms=clock[0], record_daily=False)
+    assert v_mid["discovery_status"]["capture_state"] == "COMPLETE"
+
+    # At T+305s (>300s discovery TTL), next cold sweep runs: T=0 deltas are expired, T+270s quote deltas (35s old) hit!
+    clock[0] += 35_000
+    wire_log.clear()
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    v2 = wb.refresh(now_ms=clock[0], record_daily=False)
+    assert v2["discovery_status"]["capture_state"] == "COMPLETE"
+    disc_ob_legs = [p["instrument_name"] for _, path, p in wire_log if path == "/public/get_order_book" and p.get("depth") == 1]
+    quote_ob_legs = [p["instrument_name"] for _, path, p in wire_log if path == "/public/get_order_book" and p.get("depth") == 5]
+    # Quoted legs (40s old) were reused by discovery instead of re-fetched on the wire
+    for quoted_leg in ("BTC-23NOV26-97000-P", "BTC-23NOV26-95000-P", "BTC-23NOV26-103000-C", "BTC-23NOV26-105000-C"):
+        assert quoted_leg not in disc_ob_legs
+    assert len(disc_ob_legs) == 6  # 10 total short legs - 4 reused from live quote cache
+    # Live 2-leg quotes STILL fetched fresh depth=5 books on the wire and kept identical candidate ranking
+    assert quote_ob_legs == ["BTC-23NOV26-97000-P", "BTC-23NOV26-95000-P", "BTC-23NOV26-103000-C", "BTC-23NOV26-105000-C"]
+    assert v2["candidates"][0]["snapshot"]["candidate_id"] == v1["candidates"][0]["snapshot"]["candidate_id"]
+    assert v2["candidates"][1]["snapshot"]["candidate_id"] == v1["candidates"][1]["snapshot"]["candidate_id"]
+    assert v2["candidates"][0]["snapshot"]["contract"] == v1["candidates"][0]["snapshot"]["contract"]
+    assert v2["candidates"][1]["snapshot"]["contract"] == v1["candidates"][1]["snapshot"]["contract"]
+
+
+def test_concurrent_archive_and_workbench_ledger_complete_across_cycles_and_bounded_recovery(tmp_path, monkeypatch):
+    expiry = SLOT_16 + 16 * HOUR
+    arch_root = tmp_path / "archive"
+    arch = archive.Archive(arch_root)
+    mono_now = [500.0]
+    clock = [T + 10 * M]
+
+    def advance(dt_s: float) -> None:
+        mono_now[0] += dt_s
+        clock[0] += int(round(dt_s * 1000))
+
+    # 8 tracked contracts sharing overlapping strikes -> 16 leg slots -> only 10 unique option legs
+    overlapping = [
+        ("put", 97_000.0, 95_000.0),
+        ("put", 98_000.0, 96_000.0),
+        ("put", 99_000.0, 97_000.0),
+        ("put", 96_000.0, 94_000.0),
+        ("call", 103_000.0, 105_000.0),
+        ("call", 102_000.0, 104_000.0),
+        ("call", 101_000.0, 103_000.0),
+        ("call", 104_000.0, 106_000.0),
+    ]
+    st = arch.load_state()
+    for side, ks, kl in overlapping:
+        suf = "P" if side == "put" else "C"
+        sname, lname = f"BTC-23NOV26-{int(ks)}-{suf}", f"BTC-23NOV26-{int(kl)}-{suf}"
+        ckey = f"{sname}|{lname}"
+        st["contracts"][ckey] = {
+            "key": ckey, "side": side, "short_instrument": sname, "long_instrument": lname,
+            "short_strike_usd": ks, "long_strike_usd": kl, "expiry_ms": expiry,
+            "first_seen_ms": T, "cases": [], "last_row": None,
+        }
+    arch.save_state(st)
+
+    wb, _, _, _ = _wire_workbench_market(tmp_path / "wb", monkeypatch, clock=clock, expiry=expiry)
+    wb._deribit_pacer._monotonic = lambda: mono_now[0]
+    wb._deribit_pacer._sleep = advance
+    wb._force_discovery_pacing = True
+    wb._force_quote_pacing = True
+
+    shared_wire_times: list[float] = []
+    archive_book_calls: list[str] = []
+
+    def shared_rate_check() -> None:
+        recent = [t for t in shared_wire_times if mono_now[0] - t <= 3.5]
+        if len(recent) >= 7:
+            raise ValueError("DERIBIT_HTTP_429 on public/get_order_book")
+        shared_wire_times.append(mono_now[0])
+        advance(0.020)
+
+    def arch_transport(path, params):
+        if path == "public/get_index_chart_data":
+            return [[T - 3_600_000, 100_000.0], [clock[0], 100_000.0]]
+        if path == "public/get_book_summary_by_currency":
+            return []
+        if path == "public/get_last_trades_by_currency_and_time":
+            return {"trades": [], "has_more": False}
+        if path == "public/get_order_book":
+            shared_rate_check()
+            name = params["instrument_name"]
+            archive_book_calls.append(name)
+            return _book_payload(name, clock[0], _default_delta(name))
+        raise AssertionError(path)
+
+    # Run 3 consecutive archive ticks alongside live workbench refreshes (crossing near-expiry base triggers)
+    for cycle in range(3):
+        clock[0] = T + (cycle * 35 + 10) * M
+        mono_now[0] += 600.0
+        archive_book_calls.clear()
+        v = wb.refresh(now_ms=clock[0], record_daily=False)
+        advance(2.0)  # minor offset between workbench refresh and cron tick
+        d_client = archive.Deribit(monotonic=lambda: mono_now[0], sleep=advance)
+        d_client.min_book_interval_s = 1.05
+        d_client.transport = arch_transport
+        rep = archive.tick(arch, now_ms=clock[0], view=v, fetch_case=wb.case_file, deribit=d_client)
+        assert rep["errors"] == []
+        # 8 contracts use 16 leg slots -> 6 unique Put strikes + 6 unique Call strikes = 12 unique wire calls
+        assert len(archive_book_calls) == 12 and len(set(archive_book_calls)) == 12
+        assert rep["rows"] == 8
+
+    # Verify bounded single-stray-429 recovery (waits 10s once, recovers remaining contracts)
+    stray_calls = [0]
+    sleeps_rec: list[float] = []
+    d_stray = archive.Deribit(monotonic=lambda: mono_now[0], sleep=lambda s: (sleeps_rec.append(s), advance(s)))
+    d_stray.min_book_interval_s = 1.05
+    def stray_transport(path, params):
+        if path == "public/get_order_book":
+            stray_calls[0] += 1
+            if stray_calls[0] == 3:
+                raise ValueError("DERIBIT_HTTP_429 on public/get_order_book")
+            return _book_payload(params["instrument_name"], clock[0], _default_delta(params["instrument_name"]))
+        return arch_transport(path, params)
+    d_stray.transport = stray_transport
+    clock[0] += 35 * M
+    mono_now[0] += 600.0
+    rep_stray = archive.tick(arch, now_ms=clock[0], view=None, fetch_case=wb.case_file, deribit=d_stray)
+    assert rep_stray["errors"] == []
+    assert rep_stray["rows"] == 8
+    assert any(abs(s - 10.0) < 1e-6 for s in sleeps_rec)
+
+    # Verify persistent 429 fails fast after 1 bounded wait (never infinite retries)
+    sleeps_persist: list[float] = []
+    d_persist = archive.Deribit(monotonic=lambda: mono_now[0], sleep=lambda s: (sleeps_persist.append(s), advance(s)))
+    d_persist.min_book_interval_s = 1.05
+    def persist_transport(path, params):
+        if path == "public/get_order_book":
+            raise ValueError("DERIBIT_HTTP_429 on public/get_order_book")
+        return arch_transport(path, params)
+    d_persist.transport = persist_transport
+    clock[0] += 35 * M
+    mono_now[0] += 600.0
+    rep_persist = archive.tick(arch, now_ms=clock[0], view=None, fetch_case=wb.case_file, deribit=d_persist)
+    ledger_errs = [e for e in rep_persist["errors"] if e.get("step") == "ledger"]
+    assert len(ledger_errs) == 8
+    assert sum(1 for s in sleeps_persist if abs(s - 10.0) < 1e-6) == 1
+
+    # Verify archive yields at entry when workbench discovery_status reports active cooldown
+    sleeps_yield: list[float] = []
+    d_yield = archive.Deribit(monotonic=lambda: mono_now[0], sleep=lambda s: (sleeps_yield.append(s), advance(s)))
+    d_yield.min_book_interval_s = 1.05
+    d_yield.transport = arch_transport
+    clock[0] += 35 * M
+    mono_now[0] += 600.0
+    view_cooling = {"discovery_status": {"capture_state": "PARTIAL", "next_retry_at_ms": clock[0] + 4_000}, "candidates": []}
+    rep_yield = archive.tick(arch, now_ms=clock[0], view=view_cooling, fetch_case=wb.case_file, deribit=d_yield)
+    assert rep_yield["errors"] == []
+    assert sleeps_yield and abs(sleeps_yield[0] - 4.5) < 1e-6
+
