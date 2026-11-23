@@ -10,6 +10,8 @@ WatchdogSec=600
 User=bitnami
 Group=bitnami
 WorkingDirectory=/opt/xxproject/current/tools
+EnvironmentFile=-/etc/signal-audit/llm.env
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
 Environment=MALLOC_ARENA_MAX=2
@@ -21,8 +23,7 @@ Environment=ASTRA_RESEARCH_MAX_BYTES=2147483648
 Environment=ASTRA_RESEARCH_MAX_SAMPLES=20000
 Environment=ASTRA_WORKBENCH_MEMORY_SOFT_MB=3584
 Environment=ASTRA_WORKBENCH_MEMORY_HARD_MB=4608
-EnvironmentFile=/etc/signal-audit/workbench-v20.env
-ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_workbench_v20.py --host 127.0.0.1 --port 8895
+ExecStart=/usr/bin/env ASTRA_WORKBENCH_FRONTEND_DIR=/opt/xxproject/current/deploy/astra_workbench_v3 /usr/bin/python3 /opt/xxproject/current/tools/astra_workbench_v20.py --host 127.0.0.1 --port 8895
 Restart=on-failure
 RestartSec=5
 UMask=0027

@@ -318,6 +318,7 @@ def run_health_check(
     release_dir: Path | None,
     expected_core_version: str | None = "2.0.6",
     skip_network: bool = False,
+    require_workbench_auth: bool = False,
     require_release_manifest: bool = False,
     max_producer_age_ms: int = 300_000,
     max_snapshot_age_ms: int = 600_000,
@@ -344,9 +345,16 @@ def run_health_check(
     if not skip_network:
         checks["gexmonitorapi"] = _check_gex_api(gex_url, http_get=http_get)
         token = _read_workbench_token(workbench_env)
-        checks["workbench"] = _check_workbench(
-            workbench_url, token=token, expected_core_version=expected_core_version, http_get=http_get
-        )
+        if require_workbench_auth and not token:
+            checks["workbench"] = {
+                "ok": False,
+                "reason": "workbench_token_unreadable_or_missing",
+                "env_path": str(workbench_env) if workbench_env else None,
+            }
+        else:
+            checks["workbench"] = _check_workbench(
+                workbench_url, token=token, expected_core_version=expected_core_version, http_get=http_get
+            )
     if release_dir is not None and (require_release_manifest or (release_dir / "RELEASE_MANIFEST.json").exists()):
         checks["release_manifest"] = check_release_manifest(release_dir)
 
@@ -378,6 +386,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--release-dir", type=Path, default=Path("/opt/xxproject/current"))
     parser.add_argument("--expected-core-version", default="2.0.6")
     parser.add_argument("--skip-network", action="store_true")
+    parser.add_argument(
+        "--require-workbench-auth",
+        action="store_true",
+        help="Fail instead of falling back to session-only when ASTRA_WORKBENCH_TOKEN cannot be read",
+    )
     parser.add_argument("--require-release-manifest", action="store_true")
     parser.add_argument("--max-producer-age-ms", type=int, default=300_000)
     parser.add_argument("--max-snapshot-age-ms", type=int, default=600_000)
@@ -398,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         release_dir=args.release_dir,
         expected_core_version=args.expected_core_version,
         skip_network=args.skip_network,
+        require_workbench_auth=args.require_workbench_auth,
         require_release_manifest=args.require_release_manifest,
         max_producer_age_ms=args.max_producer_age_ms,
         max_snapshot_age_ms=args.max_snapshot_age_ms,

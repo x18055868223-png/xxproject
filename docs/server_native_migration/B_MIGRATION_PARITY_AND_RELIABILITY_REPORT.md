@@ -27,9 +27,10 @@
 
 | 测试批次 | 命令与范围 | 通过 / 失败 / 跳过 | 说明 |
 | :--- | :--- | :--- | :--- |
-| Batch 1 (3 新套 + 7 FMZ pytest) | `test_astra_signal_producer_v1`, `test_server_native_e2e_chain`, `test_xxproject_server_release`, `test_fmz_{205,206,23,204,20,cleanup_v244}`, `test_astra_release_check_v1` | **54 passed, 0 failed, 0 skipped** (26.63s) | 含修复 `astra_release_check_v1.py` CRLF/LF 与清单 hash 至 `2.0.6` |
+| Batch 1 (3 新套 + 7 FMZ pytest) | `test_astra_signal_producer_v1`, `test_server_native_e2e_chain`, `test_xxproject_server_release`, `test_fmz_{205,206,23,204,20,cleanup_v244}`, `test_astra_release_check_v1` | **55 passed, 0 failed, 0 skipped** (26.49s) | 含 `astra_release_check_v1.py` CRLF/LF、workbench unit 环境覆盖校验与全栈网络/鉴权健康检查测试 |
 | Batch 2 (4 独立 FMZ 契约脚本) | `test_fmz_157_{fixed_analysis_round,producer_contract}`, `test_fmz_161_near_term_context`, `test_fmz_162_gex_time_semantics` | **4/4 PASS** (exit 0) | 157/161/162 契约全绿 |
 | Batch 3 (16 下游核心组件套) | `deribit_discovery`, `data_{engine,server,retention,workbench}`, `map_data`, `kpf_light`, `server_data_package`, `workbench_v20`, `research_archive`, `player_{e2e,tracking,dossier,input}`, `anchor_relative`, `materializer_tail_window` | **269 passed, 1 failed, 1 skipped** (97.77s) | 唯一 skip：`test_astra_data_retention_v23.py:225`（Windows 无 symlink 权限）。唯一 fail：`test_astra_anchor_relative_v1.py:275`（基线 `607d66fe` 上先于本次迁移已存在的 `ai_input.md` 冻结文档文案漂移，本次未修改该链路源码）。 |
+| Linux 隔离安装/升级/回滚演练 | `xx-eu` `/tmp` 真机测试：`preflight -> install v1 -> verify -> seed 状态/密钥 -> upgrade v2 -> verify -> rollback -> status` | **EXIT 0 (`link_mode=symlink`, 19 units, `DRILL_CLEANUP_OK`)** | 真实 Linux POSIX `current`/`previous` 符号链接切换成功，`/var/lib/...` 与 `/etc/signal-audit/llm.env` 原样保留，3 条部署审计回执落盘 |
 
 ---
 

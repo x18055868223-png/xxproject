@@ -10,7 +10,7 @@
 | :--- | :--- | :--- |
 | Git 基线 | `607d66fe111fcae67f05a82cced9347e67058847`（含 Deribit REST 调频、负缓存与配对修复） | 本地 worktree 与生产 backup `/var/lib/xxproject/backups/p0_rest_20261123_607d66fe` 一致 |
 | 运行时工具 | `/opt/signal-audit-tools/` 下 **117/121** 文件与 `607d66fe` SHA-256 精确一致 | 其余 4 个离线脚本路径与 `deploy/player_dossier/production_manifest.json` 一致 |
-| GEX 接口 | `/opt/gexmonitorapi/current/src/gexmonitorapi/` 与 `05_GEX监控API_数据增强接口/src/gexmonitorapi/` 一致 | `127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.2.1"}` |
+| GEX 接口 | `/opt/gexmonitorapi/current/src/gexmonitorapi/` 与 `05_GEX监控API_数据增强接口/src/gexmonitorapi/` 一致 | `gexmonitorapi.service` 由宿主机 `/opt/xxproject-runtime/venv/bin/python` 托管；`127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.2.1"}` |
 | 现役 FMZ 信号 | `xxproject-fmz-node-69494805.service` -> `/var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/` | `neutral_regulation_demo_fmz.py` `2.0.6`，`read_only_demo=true` |
 | 未启用 FMZ 资产 | `spm_manual_gate_execution_fmz.py`、`xxproject-fmz-node-115167519`、`xxproject-fmz-bridge` | 服务未运行，`tools/` 与 `deploy/` 零消费者；保持静态归档边界 |
 

@@ -4,45 +4,49 @@
 
 ---
 
-## 1. 上线前置安全锁（硬门禁）
+## 1. 上线前置安全锁与宿主机前提
 
 1. **禁切时段：** 避开 **07:50–08:35 UTC**（每日 settle 窗口）与 **15:50–16:35 UTC**（每日 AI Player `daily_r16@2` 正式发牌锁定窗口）。确认 `systemctl is-active astra-player-deal.service` 返回 `inactive`。
-2. **只读与影子边界：** 切换后保持 `ASTRA_SIGNAL_READ_ONLY=1` 及 `/opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v2.json`（`mode="SHADOW_ONLY"`, `execution_allowed=false`）。
+2. **只读与影子边界：** `astra_signal_producer_v1.py` 代码内强制锁定 `read_only_demo=True`（不可通过环境变量开启实盘）；`/opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v2.json` 固定 `mode="SHADOW_ONLY"`, `execution_allowed=false`。
 3. **停 FMZ 再跑原生：** 正式接管时须**先停 `xxproject-fmz-node-69494805.service` 再启 `astra-signal-producer.service`**，避免双进程同 IP 竞争 Deribit `public/ticker` 配额触发 429。
+4. **GEX 运行时环境（宿主机前提）：** `gexmonitorapi.service` 使用宿主机虚拟环境 `/opt/xxproject-runtime/venv/bin/python`（已于 `xx-eu` 验证存在；若在新主机部署需提前建置，实机 `--apply-units` 安装会自动校验该文件存在）。
 
 ---
 
 ## 2. 目录规划与环境接驳（首次切换一次性准备）
 
-- **代码 root（只读切换）：** `/opt/xxproject/{releases/<id>,current,previous,deployments.jsonl}`
-- **数据/状态 root（持久不随回滚丢失）：** `/var/lib/xxproject/{signal_native/logs,signal_native/state,workbench,research_archive,research_inbox,llm}`（首次上线可按需保留 `/var/lib/astra-map-data/state`、`/var/lib/astra-kpf-light` 或迁移后做目录衔接）
+- **代码 root（只读符号链接切换）：** `/opt/xxproject/{releases/<id>,current,previous,deployments.jsonl}`
+- **数据/状态 root（持久不随回滚丢失）：** `/var/lib/xxproject/{signal_native/logs,signal_native/state,workbench,research_archive,research_inbox,llm}`；MAP 状态目录维持 `/opt/astra-map-data/state`；KPF 目录维持 `/var/lib/astra-kpf-light`。
 - **配置与密钥（不被发布包覆盖）：** `/etc/signal-audit/{signal-producer.env,workbench-v20.env,llm.env}`、`/etc/gexmonitorapi.env`、`/etc/astra-kpf-light.env`。
-  - **关键环境变量调整：**
-    1. 将 `/etc/signal-audit/workbench-v20.env` 中的 `ASTRA_WORKBENCH_SNAPSHOTS_JSONL` 指向 `/var/lib/xxproject/signal_native/logs/snapshots.jsonl`。
-    2. 将 `/opt/astra-map-data/config.json` 中 `snapshots_jsonl` 同指 `/var/lib/xxproject/signal_native/logs/snapshots.jsonl`。
-    3. 确保 `signal-producer.env` 设置 `ASTRA_SIGNAL_LOGS_DIR=/var/lib/xxproject/signal_native/logs`、`ASTRA_SIGNAL_STATE_DIR=/var/lib/xxproject/signal_native/state`、`ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json` 与 `ASTRA_SIGNAL_GEX_INFO_URL=http://127.0.0.1:8000`。
-    4. 确保目录属主为 `bitnami:bitnami`（或 `research_archive` 保持 `bitnami:research`）。
+  - **关键环境变量核查清单：**
+    1. **`/etc/signal-audit/workbench-v20.env`：** 将 `ASTRA_WORKBENCH_SNAPSHOTS_JSONL` 指向 `/var/lib/xxproject/signal_native/logs/snapshots.jsonl`；同步清理或更新 `ASTRA_WORKBENCH_FRONTEND_DIR` 指向 `/opt/xxproject/current/deploy/astra_workbench_v3`（且统一 unit `ExecStart` 已通过 `/usr/bin/env` 强制覆写以防旧值劫持）；确认 `ASTRA_WORKBENCH_STATE_DIR` 与 `ASTRA_WORKBENCH_USAGE_LEDGER` 均落在 `/var/lib/xxproject/workbench` 或 `/var/lib/xxproject/llm`（受 systemd `ReadWritePaths` 约束）。保留 `/etc/signal-audit/llm.env` 原地有效。
+    2. **`/opt/astra-map-data/config.json`：** 将 `snapshots_jsonl` 同指 `/var/lib/xxproject/signal_native/logs/snapshots.jsonl`。
+    3. **`/etc/signal-audit/signal-producer.env`：** 设置 `ASTRA_SIGNAL_LOGS_DIR=/var/lib/xxproject/signal_native/logs`、`ASTRA_SIGNAL_STATE_DIR=/var/lib/xxproject/signal_native/state`、`ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json` 与 `ASTRA_SIGNAL_GEX_INFO_URL=http://127.0.0.1:8000`。
 
 ---
 
 ## 3. 正式部署与切换步骤（预计 5–10 分钟）
 
 ```bash
-# 1) 上传并解包部署器到临时目录后执行 preflight
+# 1) 备份切换前宿主机 systemd unit 与 drop-in（用于 Scenario B 全量退回）
+sudo install -d -m 755 /var/lib/xxproject/backups/pre_cutover_units
+sudo cp -a /etc/systemd/system/{gexmonitorapi,astra-*,signal-audit-*,xxproject-*}.* /var/lib/xxproject/backups/pre_cutover_units/ || true
+
+# 2) 上传并解包部署器，执行 preflight（含 /opt/xxproject-runtime/venv 检查）
 PKG=/tmp/xxproject-server-<shortsha>.tar.gz
-mkdir -p /tmp/xx-deploy && tar -xzf "$PKG" -C /tmp/xx-deploy deploy/xxproject_server/deploy_release.py
+mkdir -p /tmp/xx-deploy && tar -xzf "$PKG" -C /tmp/xx-deploy deploy/xxproject_server
 python3 /tmp/xx-deploy/deploy/xxproject_server/deploy_release.py preflight --package "$PKG"
 
-# 2) 安装至 /opt/xxproject/releases/<id> 并安装 19 个统一 systemd unit（--no-systemd 先核验配置）
+# 3) 安装不可变发布树与 19 个统一 systemd unit，并验证
 sudo python3 /tmp/xx-deploy/deploy/xxproject_server/deploy_release.py install --package "$PKG" --apply-units --no-systemd
-sudo python3 /opt/xx-deploy/deploy/xxproject_server/deploy_release.py verify
+sudo python3 /tmp/xx-deploy/deploy/xxproject_server/deploy_release.py verify
 
-# 3) 首次历史连续性预载（从现役 bot 668422 只读拷贝历史 jsonl 到 native logs_dir，避免首日卡片/快照断档）
-sudo install -d -o bitnami -g bitnami /var/lib/xxproject/signal_native/logs /var/lib/xxproject/signal_native/state
-sudo cp -n /var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/{snapshots.jsonl,signal_review.jsonl} /var/lib/xxproject/signal_native/logs/
-sudo chown bitnami:bitnami /var/lib/xxproject/signal_native/logs/*.jsonl
+# 4) 初始化 native 目录（ReadWritePaths 要求）并从 bot 668422 只读拷贝历史连续性状态
+sudo install -d -o bitnami -g bitnami /var/lib/xxproject/signal_native/logs /var/lib/xxproject/signal_native/state /var/lib/xxproject/workbench
+sudo cp -n /var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/{snapshots.jsonl,signal_review.jsonl,space_gate_state.json,fixed_analysis_round_state.json} /var/lib/xxproject/signal_native/logs/ || true
+sudo chown -R bitnami:bitnami /var/lib/xxproject/signal_native
 
-# 4) 停 FMZ，停旧 data-engine-maintenance，重载并切换为 server-native 单元
+# 5) 停 FMZ 与冗余 data-engine-maintenance，切流启动 server-native 全栈
 sudo systemctl stop xxproject-fmz-node-69494805.service && sudo systemctl disable xxproject-fmz-node-69494805.service
 sudo systemctl stop astra-data-engine-maintenance.timer astra-data-engine-maintenance.service || true
 sudo systemctl disable astra-data-engine-maintenance.timer || true
@@ -64,12 +68,13 @@ sudo systemctl enable --now astra-map-data.timer astra-kpf-light.timer astra-res
 python3 /opt/xxproject/current/tools/astra_signal_producer_v1.py --state-dir /var/lib/xxproject/signal_native/state --health-check
 python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py verify
 
-# 2) 全栈只读健康检查（零 LLM / 零交易，退出码 0 即全绿）
-sudo -u bitnami python3 /opt/xxproject/current/tools/xxproject_server_health_v1.py \
+# 2) 全栈只读健康检查（须带 --require-workbench-auth 并用 sudo 读 0700 /etc/signal-audit，验证 strategy_version=2.0.6 与 execution_allowed=false）
+sudo python3 /opt/xxproject/current/tools/xxproject_server_health_v1.py \
   --signal-logs-dir /var/lib/xxproject/signal_native/logs \
   --signal-state-dir /var/lib/xxproject/signal_native/state \
   --workbench-env /etc/signal-audit/workbench-v20.env \
   --release-dir /opt/xxproject/current \
+  --require-workbench-auth \
   --require-release-manifest
 ```
 
@@ -83,8 +88,9 @@ sudo -u bitnami python3 /opt/xxproject/current/tools/xxproject_server_health_v1.
   sudo systemctl restart astra-signal-producer.service astra-workbench-v20.service
   python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py verify
   ```
-- **场景 B｜极端情况退回 FMZ Bot `668422`（需在观察过渡期保留 Node `69494805` 镜像但禁用自启）：**
-  1. 停止 `astra-signal-producer.service`。
-  2. 将 `/etc/signal-audit/workbench-v20.env` 与 `/opt/astra-map-data/config.json` 恢复指向 `/var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/snapshots.jsonl`。
-  3. 执行 `sudo systemctl restart astra-workbench-v20.service && sudo systemctl enable --now xxproject-fmz-node-69494805.service`。
-  4. 确认 `/opt/xxproject/releases/` 与 `/var/lib/xxproject/` 状态完好即可。
+- **场景 B｜极端情况退回 FMZ Bot `668422`：**
+  1. 停止并禁用 `astra-signal-producer.service`。
+  2. 如需完全退回切换前旧目录（`/opt/signal-audit-tools`, `/opt/gexmonitorapi` 等），将 `/var/lib/xxproject/backups/pre_cutover_units/` 下旧 unit 与 drop-in 恢复至 `/etc/systemd/system/` 并执行 `sudo systemctl daemon-reload`。
+  3. 若切换期间已有新增 `snapshots.jsonl`/`signal_review.jsonl` 行且需延续审计序列，按需将其追加/同步回 `/var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/` 并维持属主 `xxproject-fmz-worker:xxproject-fmz-worker`。
+  4. 将 `/etc/signal-audit/workbench-v20.env` 与 `/opt/astra-map-data/config.json` 恢复指向 `/var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/snapshots.jsonl`。
+  5. 执行 `sudo systemctl restart astra-workbench-v20.service gexmonitorapi.service && sudo systemctl enable --now xxproject-fmz-node-69494805.service`。

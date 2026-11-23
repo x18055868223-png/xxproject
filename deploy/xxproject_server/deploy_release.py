@@ -235,6 +235,7 @@ def cmd_preflight(pkg: Path, prefix: Path, *, min_free_bytes: int = 512 * 1024 *
                 with stream:
                     if _sha256(stream.read()) != meta.get("sha256"):
                         raise ValueError(f"TAR_SHA_MISMATCH: {rel}")
+    gex_venv_python = prefix / "opt" / "xxproject-runtime" / "venv" / "bin" / "python"
     return {
         "ok": True,
         "action": "preflight",
@@ -242,6 +243,7 @@ def cmd_preflight(pkg: Path, prefix: Path, *, min_free_bytes: int = 512 * 1024 *
         "source_commit": manifest.get("source_commit"),
         "file_count": manifest.get("file_count"),
         "free_bytes": free_bytes,
+        "gex_runtime_venv_present": gex_venv_python.is_file(),
     }
 
 
@@ -272,6 +274,9 @@ def _install_systemd_units(release_dir: Path, prefix: Path, *, apply_units: bool
             shutil.copy2(src, dst)
             installed.append(src.name)
     if not no_systemd and os.name != "nt":
+        gex_venv_python = prefix / "opt" / "xxproject-runtime" / "venv" / "bin" / "python"
+        if not gex_venv_python.is_file():
+            raise RuntimeError(f"MISSING_HOST_GEX_RUNTIME_VENV: {gex_venv_python}")
         subprocess.run(["systemctl", "daemon-reload"], check=True)
     return installed
 

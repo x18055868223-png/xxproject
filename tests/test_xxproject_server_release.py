@@ -309,3 +309,161 @@ def test_server_health_checker_green_and_failure_paths(tmp_path: Path):
     r_tamper = run_check()
     assert r_tamper["ok"] is False
     assert r_tamper["checks"]["release_manifest"]["reason"] == "release_integrity_failed"
+
+
+def test_workbench_unit_env_precedence_and_network_health_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    unit_text = (
+        ROOT / "deploy" / "xxproject_server" / "systemd_units_unified" / "astra-workbench-v20.service"
+    ).read_text(encoding="utf-8")
+    assert "EnvironmentFile=-/etc/signal-audit/llm.env" in unit_text
+    assert "EnvironmentFile=/etc/signal-audit/workbench-v20.env" in unit_text
+    assert unit_text.index("EnvironmentFile=-/etc/signal-audit/llm.env") < unit_text.index(
+        "EnvironmentFile=/etc/signal-audit/workbench-v20.env"
+    )
+    assert (
+        "ExecStart=/usr/bin/env ASTRA_WORKBENCH_FRONTEND_DIR=/opt/xxproject/current/deploy/astra_workbench_v3 "
+        "/usr/bin/python3 /opt/xxproject/current/tools/astra_workbench_v20.py"
+    ) in unit_text
+
+    # Seed offline health/data files and valid live_public_read_only snapshot
+    sig_logs = tmp_path / "logs"
+    sig_state = tmp_path / "state"
+    import datetime as dt
+    tick_ms = int(dt.datetime(2026, 10, 15, 15, 1, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    core = sp.load_signal_core(unique_module=True)[0]
+    core.now_ms = lambda: tick_ms
+    runner = sp.NativeSignalRuntime(
+        logs_dir=sig_logs,
+        state_dir=sig_state,
+        core_mod=core,
+        core_sha256="sha-test",
+        overrides={"live_fetch_enabled": False, "offline_fixture_enabled": True},
+    )
+    runner.tick(live_fetch=False)
+    # Rewrite snapshots.jsonl line as live_public_read_only for health check
+    snap_row = json.loads((sig_logs / "snapshots.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    snap_row["decision"]["runtime_facts"]["runtime_mode"] = "live_public_read_only"
+    (sig_logs / "snapshots.jsonl").write_text(json.dumps(snap_row) + "\n", encoding="utf-8")
+    now_ms = int(snap_row["decision"]["ts_ms"]) + 5_000
+
+    map_current = tmp_path / "current_map.json"
+    map_current.write_text(
+        json.dumps({"schema": "astra_map_data_server@2.4.2", "generated_at_ms": now_ms - 1000}),
+        encoding="utf-8",
+    )
+    kpf_current = tmp_path / "kpf_current.json"
+    kpf_current.write_text(json.dumps({"generated_at_ms": now_ms - 1000, "status": "READY"}), encoding="utf-8")
+    archive_root = tmp_path / "archive"
+    for sub in ("cases", "structure", "levels", "band_snapshots"):
+        (archive_root / sub).mkdir(parents=True)
+    plan_copy = tmp_path / "plan.json"
+    plan_copy.write_text(
+        (ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v2.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    wb_env = tmp_path / "workbench-v20.env"
+    wb_env.write_text("ASTRA_WORKBENCH_TOKEN=secret-tok-123\n", encoding="utf-8")
+    monkeypatch.delenv("ASTRA_WORKBENCH_TOKEN", raising=False)
+
+    gex_stale = [False]
+    wb_exec_allowed = [False]
+
+    def fake_http(url: str, *, headers=None, timeout_s=5.0):
+        del timeout_s
+        if url.endswith("/health"):
+            return 200, {"status": "ok", "version": "0.2.1"}
+        if url.endswith("/v1/info"):
+            return 200, {"availability": "ready", "stale": gex_stale[0], "data_age_ms": 1000}
+        if url.endswith("/api/workbench/session"):
+            return 200, {"ok": True}
+        if url.endswith("/api/workbench"):
+            assert (headers or {}).get("Authorization") == "Bearer secret-tok-123"
+            return 200, {
+                "market_context": {"status": "current", "strategy_version": "2.0.6"},
+                "discovery": {"candidates": {"c1": {"execution_allowed": wb_exec_allowed[0]}}},
+            }
+        raise AssertionError(f"unexpected URL: {url}")
+
+    # 1. Mocked network + auth green path
+    ok_res = health_check.run_health_check(
+        signal_logs_dir=sig_logs,
+        signal_state_dir=sig_state,
+        gex_url="http://127.0.0.1:8000",
+        workbench_url="http://127.0.0.1:8895",
+        workbench_env=wb_env,
+        map_current=map_current,
+        kpf_current=kpf_current,
+        archive_root=archive_root,
+        player_plan=plan_copy,
+        release_dir=None,
+        skip_network=False,
+        require_workbench_auth=True,
+        now_ms=now_ms,
+        http_get=fake_http,
+    )
+    assert ok_res["ok"] is True
+    assert ok_res["checks"]["workbench"]["authenticated_check"] is True
+    assert ok_res["checks"]["gexmonitorapi"]["ok"] is True
+
+    # 2. Fail closed when require_workbench_auth=True and env file missing/unreadable
+    no_auth = health_check.run_health_check(
+        signal_logs_dir=sig_logs,
+        signal_state_dir=sig_state,
+        gex_url="http://127.0.0.1:8000",
+        workbench_url="http://127.0.0.1:8895",
+        workbench_env=tmp_path / "missing.env",
+        map_current=map_current,
+        kpf_current=kpf_current,
+        archive_root=archive_root,
+        player_plan=plan_copy,
+        release_dir=None,
+        skip_network=False,
+        require_workbench_auth=True,
+        now_ms=now_ms,
+        http_get=fake_http,
+    )
+    assert no_auth["ok"] is False
+    assert no_auth["checks"]["workbench"]["reason"] == "workbench_token_unreadable_or_missing"
+
+    # 3. Fail on execution_allowed=True or stale GEX /v1/info
+    wb_exec_allowed[0] = True
+    bad_wb = health_check.run_health_check(
+        signal_logs_dir=sig_logs,
+        signal_state_dir=sig_state,
+        gex_url="http://127.0.0.1:8000",
+        workbench_url="http://127.0.0.1:8895",
+        workbench_env=wb_env,
+        map_current=map_current,
+        kpf_current=kpf_current,
+        archive_root=archive_root,
+        player_plan=plan_copy,
+        release_dir=None,
+        skip_network=False,
+        require_workbench_auth=True,
+        now_ms=now_ms,
+        http_get=fake_http,
+    )
+    assert bad_wb["ok"] is False
+    assert bad_wb["checks"]["workbench"]["reason"] == "workbench_execution_allowed_must_be_false"
+
+    wb_exec_allowed[0] = False
+    gex_stale[0] = True
+    bad_gex = health_check.run_health_check(
+        signal_logs_dir=sig_logs,
+        signal_state_dir=sig_state,
+        gex_url="http://127.0.0.1:8000",
+        workbench_url="http://127.0.0.1:8895",
+        workbench_env=wb_env,
+        map_current=map_current,
+        kpf_current=kpf_current,
+        archive_root=archive_root,
+        player_plan=plan_copy,
+        release_dir=None,
+        skip_network=False,
+        require_workbench_auth=True,
+        now_ms=now_ms,
+        http_get=fake_http,
+    )
+    assert bad_gex["ok"] is False
+    assert bad_gex["checks"]["gexmonitorapi"]["reason"] == "gexmonitorapi_not_ready_or_stale"
