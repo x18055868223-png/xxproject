@@ -1,48 +1,40 @@
-# P5 只读影子验证与回滚预案（P5_SHADOW_AND_ROLLBACK）
+# P5 有界影子验证与 Formal A 无损回滚预案（`P5_SHADOW_AND_ROLLBACK`）
 
-**门禁界线**：本方案用于从隔离状态 **`READY_FOR_SHADOW`** 走向未来评估 **`READY_FOR_PRODUCTION`**。在未经用户下一次明确批复前，**零付费调用、零推送、零部署、零触碰现网 `@1.0` 主调度与交易执行权限**。
-
----
-
-## 1. 两阶段影子验证选项（低风险渐进）
-
-### 选项 1｜零付费离线影子回放（推荐立即可批）
-- **范围**：只读拉取 `xx-eu` 上 **2026-11-20 至 2026-11-23 未见过的新自然牌 `evidence/source.json` 与生产 `@1.0` 原答**（严禁读取任何 `outcomes/` 事后盈亏或已到期轨迹胜负）。
-- **验证动作**：
-  1. 在本地 `.worktrees/player-p5-candidate` 运行 `build_input(..., input_profile='p0_strict@1')`，对比现网 `legacy_v1` 发现了多少以前未标明的 L2 长短腿偏移、现货 `OBSERVED_UNALIGNED` / `UNKNOWN`、以及回填 ARD；
-  2. 将线上已有 `@1.0` 历史原答交由 `@1.2-p5-candidate` 的 `validate_initial_reply_contract` 做只读干跑，定量审计现实生产回答中最常见触发的 M 正则与 J1 分界，提前验证零误拒边界。
-- **预算与影响**：**\$0 费用**、0 次 LLM 请求、0 服务器变更。
-
-### 选项 2｜有界限双臂旁路影子试点（需用户单批模型预算授权）
-- **样本与隔离**：选取 **5 至 10 张全新未见自然牌**（推荐优先回放 `2026-11-20..23` 新牌或在独立 `/var/lib/xxproject/workbench/shadow_p5_trial` 根目录旁路实跑），按**同证据双臂对照**：
-  - 对照臂：**`player_initial_system@1.0 + p0_strict@1`**
-  - 候选臂：**`player_initial_system@1.2-p5-candidate + p0_strict@1`**
-- **执行保护**：保持 `execution_allowed=false`、`retries=0`、单臂单手硬上限 1 次调用；绝不复用或修改生产 `/var/lib/xxproject/workbench/shadow_dossiers` 目录、`astra-player-deal.timer` 或 `workbench` 首屏状态。
-- **预算与耗时估测（按 `deepseek-v4-pro`, `reasoning_effort=high`, `max_tokens=24576`）**：
-  - 每张牌**仅初始请求输入**合计约 `8,200–8,600 tokens`（对照臂 ~4,050 + 候选臂 ~4,150；系统 Prompt 增幅仅 ~+61 tokens）。
-  - 模型可见思考 + 回复输出取决于 `high` 推理深度，参考 P4 可见长度估算单次回复约 `1,500–4,500 output/thinking tokens`（具体金额按账户实时模型费率计，且应为双臂设定单局硬预算帽，超出立即终止）。
+**当前状态**：**`READY_BUT_NOT_DEPLOYED`**（代码 RC `c39b3d27` 已冻结并通过 `59cca70d` 独立 Review；现网 `xx-eu` 保持 `6311071c` + Formal A `daily_r16@2` 未改，**未发起新增付费调用、未推送、未部署**）。
 
 ---
 
-## 2. 影子期核心观测与晋级 / 降级判定准则
+## 1. 累计影子预算、已归档样本与 `6311071c` 准入缺口
 
-**核心原则**：绝不以某一侧事后涨跌、模型“回复更长”或“格式工整”作为晋级依据！只看下列**过程判断与工程稳定性指标**：
-
-1. **首次合规与误拒审计**：候选臂 `CONTRACT_VALIDATION_FAILED` 率应 `< 5%`，且人工盲抽检查确认**无明显有效中文表达被正则误拒**。
-2. **决策结构偏移与模板化**：比较同证据下 `@1.0` vs `@1.2-p5-candidate` 的 `Accept/Reject/Unknown` 与 `Put/Call` 分歧局，人工盲审分歧是否基于真实 P0 反证（如现货未对齐/L2 距离），以及是否出现机械模板化或 Reject 过度保守偏移。
-3. **C 的独立可证伪增量（关键检验）**：当后续 Hold 复核触发时，统计：
-   - 冻结 `accepted_conditions` 中的第（4）条是否全由真实可观察源构成（无晚于 M 的触发、无不可补查的幻想指标）；
-   - 在 `CONDITION_TRIGGERED` **尚未发生** 的持仓期间，是否真实记录到基于 `new_qualified_data_present=True` 触发的独立 C 复核信号及合理分析；
-   - 是否遵守“无新合格数据时不得声称 C 已被证实仍有效”。
-4. **明确停止线与降级触发条件**：
-   - 若因 P2 正则或 J1 导致的合理文本误拒率 `> 5%`，或发生任何 `ContractValidationError` 诱导二次付费、状态串扰 → **立即停止**，切换或改造正则；
-   - 若影子测试证明 `@1.2-p5-candidate` 引起显著保守 Reject 漂移，或 C 在连续 5+ 局中普遍空洞、晚于 M 或零增量 → **立即放弃 `@1.2-p5-candidate` 中的 C 约束，无缝降级为方案 D（纯 `p0_strict@1` + `p2_strict@1` + 公理修正）**。
+- **累计活动上限（全轮共用，严格硬顶）**：最多 **`20` 次模型调用**、合计最多 **`¥20.0 RMB`**。
+- **已用 / 剩余真实账本**：
+  - 前次 P5 双臂试跑（`3` 张 `pre-6311071c` 牌 × `2` 臂，`deepseek-v4-pro`, `reasoning_effort=high`, `retries=0`, `execution_allowed=false`）消耗：**`6 / 20` 次调用**，峰值保守费用 **`¥3.62856`**（缓存计价 `¥3.588174`）；
+  - 本轮闭环加固额外付费调用：**`0` 次 / `¥0.00`**；
+  - 剩余可用影子额度：**`14 / 20` 次调用**、**`¥16.37144`**（最多再支持 `<= 7` 对双臂或 `<= 4` 对稳妥补验，任一上限先到即停，禁止从 Formal A 正式预算 `/var/lib/xxproject/llm/signal_llm_usage_ledger.json` 借额）。
+- **已保存 3 对按最新硬化解析器 `c39b3d27` 离线重评结论（零读取 `outcomes/`）**：
+  - `hand_8b126baf41e5883b410c1d06` (`H1_P4_unrun`)：Arm B `PASSED` (`Accept / put`, 4/4 C 非退化)；Arm A 在 P5 门禁下 `CONTRACT_FAILED` 且 `c_degenerates_to_m=True`（注意：仅作契约不合规记录，**不混同为 A 的方向判断错误**）。
+  - `hand_89df3d02846e56192937f6df` (`Nov19_natural`)：Arm B `PASSED` (`Accept / put`, 4/4 C 非退化)；Arm A 在 `@1.0` 旧契约下含有限区间/网格违规。
+  - `hand_d9598e9be936b9b777c5295f` (`Nov20_natural`)：经本轮跨节加固后，Arm B 由旧 `PASSED` 准确翻转为 **`CONTRACT_FAILED`**（`confirmation_excerpt` 拷贝了 `comparison`，触发 `WRONG_SECTION` + `j1_excerpt_duplicate_section` + `missing_m_mechanical_anchor`）。**即当前已保存双臂为 `2/3` 通过、`0` 误拒、`0` 假放行。**
+- **外部 soak 缺口（唯一阻断后续影子补验与发布的原因）**：
+  - 现网 `xx-eu` 上游 `6311071c` 于 `2026-11-23T16:49:44Z–16:49:57Z` 完成部署；
+  - 当日 `16:00Z` 自然牌 `hand_a050f60ea6bb7d73acf68a3f` 在 `16:02:13Z`（部署前）发出，因此**截至目前 `post-6311071c` 自然发牌周期为 `0 / 2`**；
+  - 依据 Gate A/C 门禁，严禁拿部署前历史牌凑数。须等 **`2026-11-24T16:00Z` 与 `2026-11-25T16:00Z`** 两个自然日发牌周期确认 `SOURCE_READY` 与正常发现/锁单链路后，方可用剩余额度对其中 `>= 2` 张合格新自然牌（总合格样本 `>= 5` 对）实施低预算双臂补验。
 
 ---
 
-## 3. 回滚与状态区分
+## 2. C 只读边界与降级停线标准
 
-- **一分钟无损回滚（当前与未来发布通用）**：
-  - 当前生产基线 `b3d79695` 位于独立目录 `/opt/signal-audit-tools` 且本地 `.worktrees/astra-audit-minimal-fix` 未动一字；
-  - 未来即便试运行切换了计划中的 `prompt_version` / `input_profile`，只需将 `player-plan.json` 中的 `prompt_version` 切回 `"player_initial_system@1.0"`（或还原 `b3d79695` 6 个 `.py` 文件），历史 `@1.0` 与候选卷宗因全部带有独立版本与 `input_profile` 标签互不干扰、互不覆写。
-- **`READY_FOR_SHADOW`（当前已达成）vs `READY_FOR_PRODUCTION`（未达成）**：只有完成上述选项 1 零付费回放 + 选项 2 有界双臂影子验收、人工盲审通过、并另外取得明确生产发布授权后，方有资格申请合并与生产部署。
+- **独立只读 C（`execution_allowed=false`）**：C 仅输出 4 要素持仓审查条件并在固定检查钟记录可验证的证伪线索，无自动交易、自动撤腿、提前止损或 Revoke 权；当前持仓期尚未观测到跨 M 前置证伪证实收益，保持 **`C_EARLY_WARNING_UNPROVEN`**。
+- **补充影子停线准则**：
+  1. 任意 `1` 例明确合理的中文正向表述遭到规则误拒 → 立即停下修规则，不得用小样本比例稀释；
+  2. 单手模型失败不自动补发（`retries=0`），遇 `401/403`、预算触顶或上游 `UPSTREAM_BLOCKED` 立即止步并记为样本不足；
+  3. 不得借对比 `@1.0` 契约不合规直接宣称 `@1.2` 具备长期市场胜率。
+
+---
+
+## 3. 正式回滚预案（唯一正式回退目标：Formal A，禁用 Route D）
+
+- **回滚目标**：现网已验证 **Formal A (`player_initial_system@1.0` + `legacy_v1`)**，绝不切换未验证的 Route D。
+- **两层无损回滚路径（全部仅可在 UTC `08:05–15:50` 安静窗执行，严禁 `16:18–08:00 UTC`）**：
+  1. **首选 1 步计划回滚**：切换 `/opt/signal-audit-tools/player-plan.json` 至 [`plan.daily_r16.v4_rollback_formal_a.json`](../../deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json)（`daily_r16@4`, `prompt_version='player_initial_system@1.0'`, `input_profile='legacy_v1'`, `execution_allowed=false`）。该路径保留统一版本身份与 `6311071c` 上游可靠性修复，`Dossiers.tick()` 自动跳过已结算 `daily_r16@3` 历史槽位，`MANUAL_IMPORT`、`accepted()` 与 `episode()` 本轮已通过端到端实测。
+  2. **兜底二进制/文件回滚**：如需将 6 个 P5 模块同步回切，还原发布前备份的 `6311071c` 同版 6 个 P5 `astra_player_*` / `astra_anchor_relative_v1.py` 文件（SHA 已归档于 `production_manifest.json`）并切回 `daily_r16@2` 计划；历史 P5 卷宗只读保留、互不覆写。
