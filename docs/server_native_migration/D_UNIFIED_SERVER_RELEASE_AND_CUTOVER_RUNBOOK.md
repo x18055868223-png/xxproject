@@ -22,7 +22,7 @@
   1. **`/etc/signal-audit/signal-producer.env`：** 设置 `ASTRA_SIGNAL_LOGS_DIR=/var/lib/xxproject/signal_native/logs`、`ASTRA_SIGNAL_STATE_DIR=/var/lib/xxproject/signal_native/state`、`ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json` 与 `ASTRA_SIGNAL_GEX_INFO_URL=http://127.0.0.1:8000`。
   2. **`/etc/signal-audit/workbench-v20.env`：** `ASTRA_WORKBENCH_SNAPSHOTS_JSONL=/var/lib/xxproject/signal_native/logs/snapshots.jsonl`；`ASTRA_WORKBENCH_FRONTEND_DIR=/opt/xxproject/current/deploy/astra_workbench_v3`；确保状态与账本落在 `/var/lib/xxproject/{workbench,llm}`；保留 `/etc/signal-audit/llm.env` 原地有效。
   3. **`/opt/astra-map-data/config.json`：** 将 `snapshots_jsonl` 改指 `/var/lib/xxproject/signal_native/logs/snapshots.jsonl`。
-  4. **`/etc/signal-audit/signal-audit-materialize.env`：** 设置 `SIGNAL_REVIEW_JSONL=/var/lib/xxproject/signal_native/logs/signal_review.jsonl`、`SIGNAL_CARDS_DIR=/var/lib/xxproject/signal_cards`、`SESSION_CONTEXT_REQUIRED=1`（参考 `deploy/signal_audit/signal-audit-materialize.env.example`）。
+  4. **`/etc/signal-audit/signal-audit-materialize.env`：** 设置 `JSONL_SOURCE=/var/lib/xxproject/signal_native/logs/signal_review.jsonl`、`OUTPUT_DIR=/opt/signal-audit`、`SESSION_CONTEXT_REQUIRED=1`（与 `systemd_units_unified/signal-audit-materialize.service` 及 `deploy/signal_audit/signal-audit-materialize.env.example` 对齐）。
 
 ---
 
@@ -44,9 +44,10 @@ sudo chmod -R a+rX /opt/xxproject
 sudo python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py verify
 
 # 4) 初始化目录并将 bot 668422 历史连续性日志只读迁入原生目录
-sudo install -d -o bitnami -g bitnami /var/lib/xxproject/signal_native/logs /var/lib/xxproject/signal_native/state /var/lib/xxproject/workbench /var/lib/xxproject/signal_cards
+sudo install -d -o bitnami -g bitnami /var/lib/xxproject/signal_native/logs /var/lib/xxproject/signal_native/state /var/lib/xxproject/workbench
+sudo install -d -m 755 /opt/signal-audit
 sudo cp -n /var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/{snapshots.jsonl,signal_review.jsonl,space_gate_state.json,fixed_analysis_round_state.json} /var/lib/xxproject/signal_native/logs/ || true
-sudo chown -R bitnami:bitnami /var/lib/xxproject/signal_native /var/lib/xxproject/signal_cards
+sudo chown -R bitnami:bitnami /var/lib/xxproject/signal_native
 
 # 5) 停 FMZ 与退役冗余 unit（data-engine-maintenance / observation-canary），切流启全栈
 sudo systemctl stop xxproject-fmz-node-69494805.service && sudo systemctl disable xxproject-fmz-node-69494805.service
