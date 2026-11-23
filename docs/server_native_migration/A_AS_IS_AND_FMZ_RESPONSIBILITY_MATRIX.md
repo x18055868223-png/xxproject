@@ -1,6 +1,6 @@
 # A｜现役架构基线与 FMZ 职责清单（As-Is Matrix）
 
-**裁决结论：** `xx-eu` 当前生产基线为 commit `607d66fe`（`codex/deribit-discovery-reliability`）。全系统仅有 1 个现役 FMZ 进程（`xxproject-fmz-node-69494805.service`，托管 bot `668422` 运行只读信号核心 `neutral_regulation_demo_fmz.py` v`2.0.6`）；仓库中的人工执行层（`spm_manual_gate_execution_fmz.py` v`3.0.0-manual-gate`）及相关 FMZ bridge/worker **未启用且零生产消费者**。
+**裁决结论：** `xx-eu` 当前生产基线为 commit `6311071c887433efb5a9b754290a1d8050caa0d8`（`codex/deribit-rest-pacing`，在 `607d66fe` 上叠加了 REST 调频、archive 去重、并发视图隔离与 `PENDING_LOCK`/`DELAYED_LOCK` 修复；已合流进本迁移分支）。全系统仅有 1 个现役 FMZ 进程（`xxproject-fmz-node-69494805.service`，托管 bot `668422` 运行只读信号核心 `neutral_regulation_demo_fmz.py` v`2.0.6`）；仓库中的人工执行层（`spm_manual_gate_execution_fmz.py` v`3.0.0-manual-gate`）及相关 FMZ bridge/worker **未启用且零生产消费者**。
 
 ---
 
@@ -8,8 +8,8 @@
 
 | 层级 | 生产实际（`xx-eu` `169.58.177.126`） | 验证结果 |
 | :--- | :--- | :--- |
-| Git 基线 | `607d66fe111fcae67f05a82cced9347e67058847`（含 Deribit REST 调频、负缓存与配对修复） | 本地 worktree 与生产 backup `/var/lib/xxproject/backups/p0_rest_20261123_607d66fe` 一致 |
-| 运行时工具 | `/opt/signal-audit-tools/` 下 **117/121** 文件与 `607d66fe` SHA-256 精确一致 | 其余 4 个离线脚本路径与 `deploy/player_dossier/production_manifest.json` 一致 |
+| Git 基线 | `6311071c887433efb5a9b754290a1d8050caa0d8`（`codex/deribit-rest-pacing`，含 `a55eded3` 与 `6311071c`） | 生产备份目录含 `p0_rest_20261123_607d66fe` 与今日增量 `p0_rest_pacing_pending_lock_20261123`；迁移分支已完成无损合流 (`6085ff94`) |
+| 运行时工具 | `/opt/signal-audit-tools/`：最新部署 4 个核心文件与 `6311071c` SHA-256 精确一致（`astra_workbench_v20.py` raw `779ee4d3...` / `astra_research_archive_v1.py` `c35f3413...` / `astra_player_tracking_v13.py` `0eeeedc1...` / `astra_underwriting_discovery_v20.py` `20464632...`），其余基线沿用 `607d66fe` | 本地发布树对 `astra_player_tracking_v13.py` 与 `astra_underwriting_discovery_v20.py` 0 改动；仅在 `workbench` 与 `research_archive` 上叠加共享 `astra_deribit_cooldown_v1` |
 | GEX 接口 | `/opt/gexmonitorapi/current/src/gexmonitorapi/` 与 `05_GEX监控API_数据增强接口/src/gexmonitorapi/` 一致 | `gexmonitorapi.service` 由宿主机 `/opt/xxproject-runtime/venv/bin/python` 托管；`127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.2.1"}` |
 | 现役 FMZ 信号 | `xxproject-fmz-node-69494805.service` -> `/var/lib/xxproject-fmz-node-69494805/logs/storage/668422/demo/logs/` | `neutral_regulation_demo_fmz.py` `2.0.6`，`read_only_demo=true` |
 | 未启用 FMZ 资产 | `spm_manual_gate_execution_fmz.py`、`xxproject-fmz-node-115167519`、`xxproject-fmz-bridge` | 服务未运行，`tools/` 与 `deploy/` 零消费者；保持静态归档边界 |
