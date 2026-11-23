@@ -9,6 +9,7 @@ hermetic offline and Linux ``/tmp`` rehearsal drills.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -37,9 +38,47 @@ ENV_TEMPLATES = {
     "deploy/signal_producer/signal-producer.env.example": "etc/signal-audit/signal-producer.env",
     "deploy/signal_audit/workbench-v20.env.example": "etc/signal-audit/workbench-v20.env",
     "deploy/signal_audit/signal-audit-llm.env.example": "etc/signal-audit/llm.env",
+    "deploy/signal_audit/signal-audit-materialize.env.example": "etc/signal-audit/signal-audit-materialize.env",
     "deploy/kpf_light/astra-kpf-light.env.example": "etc/astra-kpf-light.env",
     "deploy/gexmonitorapi/gexmonitorapi.env.example": "etc/gexmonitorapi.env",
 }
+
+
+def _is_system_root(prefix: Path) -> bool:
+    return os.name != "nt" and prefix.resolve() == Path("/")
+
+
+def _validate_deploy_window(
+    prefix: Path,
+    *,
+    allow_window_override: bool = False,
+    now_ms: int | None = None,
+) -> None:
+    """Refuse live root switches during 08:00 UTC settlement or 16:00 UTC deal windows unless overridden."""
+    if allow_window_override or not _is_system_root(prefix):
+        return
+    utc_now = (
+        dt.datetime.now(dt.timezone.utc)
+        if now_ms is None
+        else dt.datetime.fromtimestamp(now_ms / 1000.0, tz=dt.timezone.utc)
+    )
+    mins = utc_now.hour * 60 + utc_now.minute
+    in_settle = (7 * 60 + 50) <= mins < (8 * 60 + 35)
+    in_deal = (15 * 60 + 50) <= mins < (16 * 60 + 35)
+    if in_settle or in_deal:
+        window_name = "08:00 UTC settlement" if in_settle else "16:00 UTC auto-deal"
+        raise RuntimeError(
+            f"UNSAFE_DEPLOY_WINDOW_UTC: {utc_now.strftime('%H:%M UTC')} falls inside {window_name} protection window"
+        )
+
+
+def _validate_systemd_prereqs(prefix: Path, *, apply_units: bool, no_systemd: bool) -> None:
+    """Check host runtime prerequisites before mutating release symlinks or unit files."""
+    if not apply_units or no_systemd or os.name == "nt":
+        return
+    gex_venv_python = prefix / "opt" / "xxproject-runtime" / "venv" / "bin" / "python"
+    if not gex_venv_python.is_file():
+        raise RuntimeError(f"MISSING_HOST_GEX_RUNTIME_VENV: {gex_venv_python}")
 
 
 def _sha256(raw: bytes) -> str:
@@ -261,24 +300,40 @@ def _install_env_examples(release_dir: Path, prefix: Path) -> list[str]:
     return created
 
 
-def _install_systemd_units(release_dir: Path, prefix: Path, *, apply_units: bool, no_systemd: bool) -> list[str]:
+def _install_systemd_units(
+    release_dir: Path,
+    prefix: Path,
+    app_root: Path,
+    release_id: str,
+    *,
+    apply_units: bool,
+    no_systemd: bool,
+) -> tuple[list[str], list[str]]:
     if not apply_units:
-        return []
+        return [], []
+    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
     unit_src_dir = release_dir / "deploy" / "xxproject_server" / "systemd_units_unified"
     unit_dst_dir = prefix / "etc" / "systemd" / "system"
     unit_dst_dir.mkdir(parents=True, exist_ok=True)
     installed: list[str] = []
+    backed_up_dropins: list[str] = []
     for src in sorted(unit_src_dir.iterdir()):
         if src.is_file() and src.suffix in {".service", ".timer"}:
+            dropin_dir = unit_dst_dir / f"{src.name}.d"
+            if dropin_dir.is_dir():
+                for dropin_file in sorted(p for p in dropin_dir.iterdir() if p.is_file()):
+                    backup_dir = app_root / "unit_backups" / release_id / f"{src.name}.d"
+                    backup_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(dropin_file), str(backup_dir / dropin_file.name))
+                    backed_up_dropins.append(f"{src.name}.d/{dropin_file.name}")
+                if not any(dropin_dir.iterdir()):
+                    dropin_dir.rmdir()
             dst = unit_dst_dir / src.name
             shutil.copy2(src, dst)
             installed.append(src.name)
     if not no_systemd and os.name != "nt":
-        gex_venv_python = prefix / "opt" / "xxproject-runtime" / "venv" / "bin" / "python"
-        if not gex_venv_python.is_file():
-            raise RuntimeError(f"MISSING_HOST_GEX_RUNTIME_VENV: {gex_venv_python}")
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-    return installed
+    return installed, backed_up_dropins
 
 
 def _prune_old_releases(app_root: Path, *, keep_ids: set[str], keep_count: int) -> list[str]:
@@ -311,7 +366,11 @@ def cmd_install(
     no_systemd: bool = False,
     keep_releases: int = 3,
     min_free_bytes: int = 512 * 1024 * 1024,
+    allow_window_override: bool = False,
+    now_ms: int | None = None,
 ) -> dict[str, Any]:
+    _validate_deploy_window(prefix, allow_window_override=allow_window_override, now_ms=now_ms)
+    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
     cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
     app_root = _app_root(prefix)
     releases_dir = app_root / "releases"
@@ -350,7 +409,9 @@ def cmd_install(
     _write_json_atomic(_pointers_path(app_root), {"current": release_id, "previous": prev_id})
 
     created_envs = _install_env_examples(target_dir, prefix)
-    units = _install_systemd_units(target_dir, prefix, apply_units=apply_units, no_systemd=no_systemd)
+    units, backed_up_dropins = _install_systemd_units(
+        target_dir, prefix, app_root, release_id, apply_units=apply_units, no_systemd=no_systemd
+    )
     keep_set = {x for x in (release_id, prev_id) if x}
     pruned = _prune_old_releases(app_root, keep_ids=keep_set, keep_count=keep_releases)
 
@@ -363,6 +424,7 @@ def cmd_install(
         "link_mode": link_mode,
         "created_env_templates": created_envs,
         "installed_units": units,
+        "backed_up_dropins": backed_up_dropins,
         "pruned_releases": pruned,
         "ok": True,
     }
@@ -398,8 +460,12 @@ def cmd_rollback(
     to_release: str | None = None,
     apply_units: bool = False,
     no_systemd: bool = False,
+    allow_window_override: bool = False,
+    now_ms: int | None = None,
 ) -> dict[str, Any]:
     """Roll back to previous (or named) release without touching /var/lib or /etc."""
+    _validate_deploy_window(prefix, allow_window_override=allow_window_override, now_ms=now_ms)
+    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
     app_root = _app_root(prefix)
     pointers = _read_pointers(app_root)
     cur_id = pointers.get("current")
@@ -418,7 +484,9 @@ def cmd_rollback(
         _switch_link(app_root / "previous", app_root / "releases" / prev_after)
     link_mode = _switch_link(app_root / "current", target_dir)
     _write_json_atomic(_pointers_path(app_root), {"current": str(target_id), "previous": prev_after})
-    units = _install_systemd_units(target_dir, prefix, apply_units=apply_units, no_systemd=no_systemd)
+    units, backed_up_dropins = _install_systemd_units(
+        target_dir, prefix, app_root, str(target_id), apply_units=apply_units, no_systemd=no_systemd
+    )
 
     receipt = {
         "action": "rollback",
@@ -429,6 +497,7 @@ def cmd_rollback(
         "source_commit": manifest.get("source_commit"),
         "link_mode": link_mode,
         "installed_units": units,
+        "backed_up_dropins": backed_up_dropins,
         "runtime_state_preserved": True,
         "etc_configs_preserved": True,
         "ok": True,
@@ -470,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
     p_inst.add_argument("--no-systemd", action="store_true")
     p_inst.add_argument("--keep-releases", type=int, default=3)
     p_inst.add_argument("--min-free-bytes", type=int, default=512 * 1024 * 1024)
+    p_inst.add_argument("--allow-window-override", action="store_true")
 
     p_ver = sub.add_parser("verify")
     add_common(p_ver)
@@ -480,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     p_rb.add_argument("--to-release", default=None)
     p_rb.add_argument("--apply-units", action="store_true")
     p_rb.add_argument("--no-systemd", action="store_true")
+    p_rb.add_argument("--allow-window-override", action="store_true")
 
     p_st = sub.add_parser("status")
     add_common(p_st)
@@ -496,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
             no_systemd=args.no_systemd,
             keep_releases=args.keep_releases,
             min_free_bytes=args.min_free_bytes,
+            allow_window_override=args.allow_window_override,
         )
     elif args.command == "verify":
         out = cmd_verify(prefix, expected_core_version=args.expected_core_version)
@@ -505,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
             to_release=args.to_release,
             apply_units=args.apply_units,
             no_systemd=args.no_systemd,
+            allow_window_override=args.allow_window_override,
         )
     elif args.command == "status":
         out = cmd_status(prefix)

@@ -87,6 +87,7 @@ OFFLINE_PATH_SANITIZATIONS: dict[str, list[tuple[str, str]]] = {
 SIGNAL_AUDIT_WHITELIST = [
     "deploy/signal_audit/signal-audit-materialize.service",
     "deploy/signal_audit/signal-audit-materialize.timer",
+    "deploy/signal_audit/signal-audit-materialize.env.example",
     "deploy/signal_audit/workbench-v20.service",
     "deploy/signal_audit/workbench-v20.env.example",
     "deploy/signal_audit/release_candidate_manifest.json",

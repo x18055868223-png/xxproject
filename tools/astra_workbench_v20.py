@@ -2417,6 +2417,14 @@ class AstraWorkbench:
         now_ms: int,
         allow_partial: bool = False,
     ) -> Mapping[str, Any]:
+        shared_cd_ms = deribit_cooldown.remaining_ms(now_ms=now_ms)
+        if shared_cd_ms > 0:
+            raise discovery.DeribitPublicError(
+                "DERIBIT_HTTP_429",
+                f"deribit shared cooldown active ({shared_cd_ms}ms)",
+                status=429,
+                retry_after_ms=shared_cd_ms,
+            )
         metadata_clocks = {}
         book_product = "deribit.btc.option.order_book.v1"
         book_requests = [0]
@@ -4848,7 +4856,11 @@ class AstraWorkbench:
             except Exception as exc:
                 return {"state": "QUOTE_UNAVAILABLE", "error": type(exc).__name__, "execution_allowed": False}
             snap = item.get("snapshot")
-            if not isinstance(snap, Mapping) or player_tracking.contract_fields(snap["contract"]) != contract:
+            if not isinstance(snap, Mapping):
+                gaps = item.get("capture_gaps") or (item.get("discovery") or {}).get("gap_reasons") or []
+                err = str(item.get("error") or (gaps[0] if gaps else "") or "quote_capture_unavailable")
+                return {"state": "QUOTE_UNAVAILABLE", "error": err, "execution_allowed": False}
+            if player_tracking.contract_fields(snap["contract"]) != contract:
                 return {"state": "QUOTE_UNAVAILABLE", "error": "contract_mismatch", "execution_allowed": False}
             refreshed_at = max(capture_now, self.clock_ms())
             self._remember_lockable({"candidates": [item], "space_gate": gate, "market_context": fact},

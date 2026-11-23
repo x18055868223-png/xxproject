@@ -661,6 +661,8 @@ def test_full_server_native_downstream_chain_e2e(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should skip HTTP under cooldown")))
     with pytest.raises(workbench.UpstreamUnavailable, match="deribit_rate_limited"):
         wb._default_discovery_capture(now_ms=wall_now_ms)
+    with pytest.raises(discovery.DeribitPublicError, match="DERIBIT_HTTP_429"):
+        wb._default_quote_capture(short_inst, f"BTC-16OCT26-95000-P", 1.0, now_ms=wall_now_ms)
 
     # Research archive Deribit.book must skip network while cooldown is active
     live_arch_deribit = archive.Deribit(min_book_interval_s=0.0)

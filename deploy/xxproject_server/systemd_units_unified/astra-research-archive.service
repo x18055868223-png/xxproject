@@ -17,6 +17,6 @@ Environment=ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_coo
 Environment=ASTRA_AI_SHADOW_EXPERIMENT=1
 Environment=ASTRA_AI_SHADOW_DOSSIER_ROOT=/var/lib/xxproject/workbench/shadow_dossiers
 Environment=ASTRA_PLAYER_ENABLED=1
-ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_research_archive_v1.py tick
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_research_archive_v1.py tick --workbench http://127.0.0.1:8895
 TimeoutStartSec=2700
 Nice=10

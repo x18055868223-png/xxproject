@@ -1181,5 +1181,58 @@ def test_player_audit_current_preserves_403_and_401_status_codes(tmp_path):
         assert json.loads(err_401.value.read().decode('utf-8'))['code'] == 'unauthorized'
 
 
+def test_shadow_export_handles_large_payload_above_legacy_8mb_cap(tmp_path, monkeypatch):
+    wb, d, hand, _, _ = sample(tmp_path, 'Accept / Call')
+    assert tracking.MAX_BYTES >= 32_000_000
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d, hand, svc, RULE)
+        ep_id = receipt['t0']['tracker_episode_id']
+        ep = wb.locked_candidates.detail(ep_id)['episode']
+        t0_point = wb.locked_candidates.read_point(ep['t0_baseline_point_id'])
+        # Inflate exported point + series payload past the legacy 8_000_000 byte limit (~9.5 MB compact)
+        filler = 'x' * 5_000_000
+        large_point = {**t0_point, '_padding': filler}
+        real_read = wb.locked_candidates.read_point
+        monkeypatch.setattr(
+            wb.locked_candidates, 'read_point',
+            lambda pid: large_point if pid == ep['t0_baseline_point_id'] else real_read(pid),
+        )
+        big_points = [{'point_id': f'p{i}', 'pad': 'y' * 14_000} for i in range(250)]
+        real_series = wb.locked_candidate_series
+        monkeypatch.setattr(
+            wb, 'locked_candidate_series',
+            lambda eid, **_kw: {**real_series(eid), 'points': big_points},
+        )
+        exported = svc('export', {'dossier_id': hand.parent.parent.name, 'hand_id': hand.name})
+        compact_size = len(
+            (json.dumps(exported, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode('utf-8')
+        )
+        assert compact_size > 8_000_000
+        assert exported['point']['_padding'] == filler
+        assert len(exported['points']) == 250
+
+        # Still enforces MAX_BYTES cap with explicit 413 shadow_evidence_size_limit when exceeded
+        monkeypatch.setattr(tracking, 'MAX_BYTES', compact_size - 1)
+        with pytest.raises(tracking.Blocked, match='shadow_evidence_size_limit'):
+            svc('export', {'dossier_id': hand.parent.parent.name, 'hand_id': hand.name})
+
+
+def test_refresh_quote_preserves_capture_error_instead_of_contract_mismatch(tmp_path):
+    wb, d, hand, _, _ = sample(tmp_path, 'Accept / Call')
+    wb._capture_candidate = lambda *_a, **_kw: {
+        'side': 'call',
+        'status': 'error',
+        'snapshot': None,
+        'error': 'DERIBIT_HTTP_429: deribit shared cooldown active',
+    }
+    res = wb.shadow_tracking('refresh_quote', {'dossier_id': hand.parent.parent.name, 'hand_id': hand.name})
+    assert res['state'] == 'QUOTE_UNAVAILABLE'
+    assert 'DERIBIT_HTTP_429' in res['error']
+    assert res['error'] != 'contract_mismatch'
+
+
+
+
 
 

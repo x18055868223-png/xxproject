@@ -323,7 +323,7 @@ def run_health_check(
     max_producer_age_ms: int = 300_000,
     max_snapshot_age_ms: int = 600_000,
     max_map_age_ms: int = 1_800_000,
-    max_kpf_age_ms: int = 1_800_000,
+    max_kpf_age_ms: int = 172_800_000,
     now_ms: int | None = None,
     http_get: Callable[..., tuple[int, Any]] = _http_get_json,
 ) -> dict[str, Any]:
@@ -395,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-producer-age-ms", type=int, default=300_000)
     parser.add_argument("--max-snapshot-age-ms", type=int, default=600_000)
     parser.add_argument("--max-map-age-ms", type=int, default=1_800_000)
-    parser.add_argument("--max-kpf-age-ms", type=int, default=1_800_000)
+    parser.add_argument("--max-kpf-age-ms", type=int, default=172_800_000)
     args = parser.parse_args(argv)
 
     report = run_health_check(
