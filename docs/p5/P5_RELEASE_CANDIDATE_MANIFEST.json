@@ -1,0 +1,100 @@
+{
+  "schema": "astra_p5_release_candidate_manifest@1",
+  "captured_at_utc": "2026-11-23T08:55:00Z",
+  "status": "READY_FOR_SHADOW",
+  "production_ready": false,
+  "selected_architecture": "Refined Route B (A-Core + Surgical Mechanical Alignment + Minimal Feed-Grounded C @1.2-p5-candidate + p0_strict@1 + p2_strict@1; fallback = Route D zero-C)",
+  "git": {
+    "worktree": ".worktrees/player-p5-candidate",
+    "branch": "codex/player-p5-candidate",
+    "base_commit_sha": "b3d79695f82e3a5f6392d0cbdba668d4406f4724",
+    "live_xx_eu_verified_commit_sha": "b3d79695f82e3a5f6392d0cbdba668d4406f4724",
+    "live_xx_eu_verified_at_utc": "2026-11-23T08:08:46Z",
+    "code_commit_sha": "8cc65692fcc41d4439c257a2ede57b798858f3db",
+    "remote_pushed": false,
+    "merged_to_main_or_astra": false
+  },
+  "versions": {
+    "legacy_system_prompt": {
+      "version": "player_initial_system@1.0",
+      "bytes": 2831,
+      "chars": 1401,
+      "approx_tokens": 671,
+      "sha256": "653168703cd80d6ef6a0c0243d8a380bd2c2b8dbf8c76de45045124fb66a88e6"
+    },
+    "p3_candidate_prompt_compat": {
+      "version": "player_initial_system@1.1-candidate",
+      "bytes": 3306,
+      "chars": 1584,
+      "approx_tokens": 777,
+      "sha256": "98ae4aaae928f5d6dd9914aad2832df6642d0530d4ad0317231a987ea6c83137"
+    },
+    "p5_candidate_system_prompt": {
+      "version": "player_initial_system@1.2-p5-candidate",
+      "bytes": 3073,
+      "chars": 1551,
+      "approx_tokens": 732,
+      "sha256": "b746c2d2f7f996d290992e01b11d9e4c4792a0e1afcacb900bbf0dfc678b6f34"
+    },
+    "input_profiles": [
+      "legacy_v1",
+      "p0_strict@1"
+    ],
+    "mechanical_contract_version": "p2_strict@1"
+  },
+  "sample_request_receipts": {
+    "H1_hand_8b126baf41e5883b410c1d06": {
+      "legacy_v1_v10_user_bytes": 14664,
+      "legacy_v1_v10_body_sha256": "946f04058e6e7983dabd9d87d26813a5ba5e94a7fea22cbdb1b11d037a95fab5",
+      "p0_strict_v12_user_bytes": 14835,
+      "p0_strict_v12_user_sha256": "0bbf7c1fd49dfd03727e256b504524fdacb7758df5c4aad9bb0fa93eee338517",
+      "p0_strict_v12_messages_sha256": "bdab62a9b178bbcf838b4398ad4594dfa4943d996d4f53cbbdd593fe411be4b4",
+      "p0_strict_v12_body_sha256": "b93cf1924ac8ff25b1015194f22136c59fc8b9d27ecd7aad24a20a14d84499e5"
+    },
+    "H2_hand_af89529fa734fb9f4dba4a91": {
+      "legacy_v1_v10_user_bytes": 14977,
+      "legacy_v1_v10_body_sha256": "6dac68a56cb58d37b57002f38904168243429a763e0d18f9389ec8cad39f552e",
+      "p0_strict_v12_user_bytes": 15306,
+      "p0_strict_v12_user_sha256": "cf290b83477d24a4a2b91a950a8a11c37be31f79cec0a1fee4cacfe9ea399a6d",
+      "p0_strict_v12_messages_sha256": "6219cc4f49200fd83142760d15133f973572a8485cae09355bf79abe9e6eccac",
+      "p0_strict_v12_body_sha256": "277a2a50fd502b785550e217113265314efc27471634b94f1d4506b6fec4108e"
+    },
+    "H3_hand_471b8255463b975156c6cf29": {
+      "legacy_v1_v10_user_bytes": 14824,
+      "legacy_v1_v10_body_sha256": "36d3536356efbb012d4b87a02c8723a57766adf2bfe8aa78a8fce26f8cd41f0e",
+      "p0_strict_v12_user_bytes": 15250,
+      "p0_strict_v12_user_sha256": "ba8a8526457f50d615907368edf80ebd6200f2332418c9582a1ca850193ae74d",
+      "p0_strict_v12_messages_sha256": "2778c36203f3268876f853144e24757df690b44f1a7520af77168c8bf09d5de9",
+      "p0_strict_v12_body_sha256": "b6c3f9666172b6b65eae9785a001ba07064f1905d611df75e243ff14289e93bd"
+    },
+    "H4_hand_0cdc0af5db2cc321641fdb2a": {
+      "legacy_v1_v10_user_bytes": 14550,
+      "legacy_v1_v10_body_sha256": "7c7ebbb4f68d38e4eaa7408cc95812cb118bfb834dc645384e01edf3167ba0e7",
+      "p0_strict_v12_user_bytes": 14417,
+      "p0_strict_v12_user_sha256": "d3b6b6772458e4228727dd07610403b14cecd3907f655d21a93b33894c10f535",
+      "p0_strict_v12_messages_sha256": "e1341b7973f6f7fbf2b292ca076f6bb7d12f03cfc29063b00656663a49e42dbe",
+      "p0_strict_v12_body_sha256": "91b00ac3e280ee846cc321a94a45e9362396a4c18092c41360d3f15d49388e1a"
+    }
+  },
+  "validation": {
+    "pytest_command": "pytest tests/test_astra_p5_candidate.py tests/test_astra_player_condition_v1.py tests/test_astra_player_dossier_v1.py tests/test_astra_player_review_v1.py tests/test_astra_player_tracking_v13.py tests/test_player_initial_recovery.py tests/test_astra_audit_minimal_fixes.py tests/test_astra_workbench_v3_player_audit.py -q",
+    "passed": 142,
+    "failed": 0,
+    "p5_new_tests_passed": 22,
+    "p5_new_tests_failed": 0,
+    "llm_calls_made": 0,
+    "outcomes_files_read": 0,
+    "not_collected_due_to_missing_jsonschema": [
+      "tests/test_astra_player_input_v1.py",
+      "3 tests in tests/test_astra_anchor_relative_v1.py"
+    ],
+    "preexisting_baseline_mismatch_on_b3d79695": [
+      "tests/test_astra_anchor_relative_v1.py::test_real_ard_replays_identical_A_without_hindsight"
+    ]
+  },
+  "open_risks": [
+    "Real LLM adherence, J1/M1 compliance rate, Reject drift, output/thinking token cost, and whether C produces actionable Hold warnings earlier than M are UNTESTED until authorized shadow validation on unseen natural hands.",
+    "Remaining theoretical false-rejection tail risk under retries=0 if live LLM emits novel phrasing triggering Chinese M prose regexes (downgrade trigger to Route D defined in P5_SHADOW_AND_ROLLBACK.md).",
+    "Local Python312 lacked optional jsonschema package (verified legacy_v1 == b3d79695 directly via git show fixture instead)."
+  ]
+}
