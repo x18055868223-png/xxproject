@@ -817,17 +817,10 @@ def test_nov20_candidate_rotation_never_mislocks_new_contract_and_reproduces_sha
         assert res_without_refresh["reason"] == "exact_current_contract_not_found"
         assert len(wb.locked_candidates.list()) == 0
 
-        # 2. Deterministically reproduce Nov 20 shared-view race:
-        # refresh_quote captures 103000-C cleanly and puts it in _current_view, then background refresh()
-        # immediately rotates _current_view back to 104000-C BEFORE link() calls service("lock") ->
-        # lock STILL fails with exact_current_contract_not_found even though 103000-C quote was healthy!
-        ref_out = service("refresh_quote", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
-        assert ref_out["state"] == "QUOTE_REFRESHED"
-        clock[0] += 1_000
-        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
-        wb.refresh(now_ms=clock[0], record_daily=False)  # background refresh overwrites _current_view with 104k!
-        raced_link = tracking.link(d, hand, service, RULE)
-        assert raced_link == {"state": "LINK_UNVERIFIED", "reason": "exact_current_contract_not_found"}
+        # 2. Rotation STILL blocks refresh_quote and lock cleanly without ever mislocking 104000-C
+        ref_rot = service("refresh_quote", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
+        assert ref_rot["state"] == "QUOTE_UNAVAILABLE" and ref_rot["error"] == "exact_current_contract_not_found"
+        assert tracking.link(d, hand, service, RULE) == {"state": "LINK_UNVERIFIED", "reason": "exact_current_contract_not_found"}
         assert len(wb.locked_candidates.list()) == 0
 
         # 3. Direct lock_candidate with mismatched snapshot_id vs candidate_id rejects lock_candidate_mismatch
@@ -836,18 +829,35 @@ def test_nov20_candidate_rotation_never_mislocks_new_contract_and_reproduces_sha
                               "mismatch-key", authorization="Bearer secret")
         assert exc_info.value.code == "lock_candidate_mismatch"
 
-        # 4. Also reproduce _link_with_fresh_quote swallowing QUOTE_UNAVAILABLE from refresh_quote
-        # and masking it as exact_current_contract_not_found
+        # 4. Also verify _link_with_fresh_quote records QUOTE_UNAVAILABLE detail cleanly
         refresh_results = []
         def wrap_service(action, payload):
             if action == "refresh_quote":
                 refresh_results.append("QUOTE_UNAVAILABLE")
-                return {"state": "QUOTE_UNAVAILABLE", "reason": "public_quote_stale"}
+                return {"state": "QUOTE_UNAVAILABLE", "error": "public_quote_stale"}
             return service(action, payload)
         monkeypatch.setattr(tracking.time, "sleep", lambda _s: None)
         masked = tracking._link_with_fresh_quote(d, hand, wrap_service, RULE)
         assert len(refresh_results) >= 1
         assert masked == {"state": "LINK_UNVERIFIED", "reason": "exact_current_contract_not_found"}
+
+        # 5. Concurrent shared-view overwrite fix: once 103000-C is current again, refresh_quote succeeds
+        # and even if a concurrent background refresh transiently blanks _current_view (no conflicting rotation),
+        # the fresh slot lets exact 103000-C lock cleanly while still honoring <=5s confirm_quote & <=2s skew.
+        clock[0] += 305_000
+        spot_box["spot"] = 100_000.0
+        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+        v_back = wb.refresh(now_ms=clock[0], record_daily=False)
+        assert next(c for c in v_back["candidates"] if c["side"] == "call")["snapshot"]["contract"]["short_instrument"] == "BTC-23NOV26-103000-C"
+        ref_ok = service("refresh_quote", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
+        assert ref_ok["state"] == "QUOTE_REFRESHED"
+        with wb._view_lock:
+            wb._current_view["candidates"] = []  # simulate transient gap clearing _current_view before lock()
+        recovered_race = tracking.link(d, hand, service, RULE)
+        assert recovered_race["state"] == "SHADOW_LOCK_CREATED"
+        assert recovered_race["lock_mode"] == "DELAYED_LOCK" and recovered_race["delayed_lock"] is True
+        assert len(wb.locked_candidates.list()) == 1
+        assert wb.locked_candidates.detail(wb.locked_candidates.list()[0]["episode_id"])["episode"]["contract"]["short_instrument"] == "BTC-23NOV26-103000-C"
 
 
 # ---------------------------------------------------------------------------
@@ -1193,4 +1203,256 @@ def test_concurrent_archive_and_workbench_ledger_complete_across_cycles_and_boun
     rep_yield = archive.tick(arch, now_ms=clock[0], view=view_cooling, fetch_case=wb.case_file, deribit=d_yield)
     assert rep_yield["errors"] == []
     assert sleeps_yield and abs(sleeps_yield[0] - 4.5) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Pending Lock Auto-Retry Inside Decision Validity Window
+# ---------------------------------------------------------------------------
+
+def _build_frozen_accept_hand(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    expiry: int,
+    clock: list[int],
+    call_429: dict[str, bool],
+    spot_box: dict[str, float] | None = None,
+    plan_extra: dict | None = None,
+    quote_bid_103k: dict[str, float] | None = None,
+):
+    slot = expiry - 16 * HOUR
+    d_root = tmp_path / "dossiers"
+    spot = spot_box or {"spot": 100_000.0}
+
+    def on_ob(name, ts):
+        if call_429.get("on") and name.endswith("-C"):
+            raise discovery.DeribitPublicError.from_http(
+                _http_error(429, b'{"error":{"code":10028,"message":"too_many_requests"}}', headers={"Retry-After": "10"}),
+                "/public/get_order_book",
+            )
+        if spot["spot"] > 100_500.0 and name.endswith("-C"):
+            d_map = {102000: 0.55, 103000: 0.48, 104000: 0.35, 105000: 0.25, 106000: 0.16}
+            strike = int(name.split("-")[2])
+            return {"result": _book_payload(name, ts, d_map.get(strike, 0.15), spot["spot"])}
+        return None
+
+    wb, snaps, _, wire_log = _wire_workbench_market(
+        tmp_path / "wb", monkeypatch, clock=clock, expiry=expiry,
+        on_order_book=on_ob, index_price_fn=lambda: spot["spot"], shadow_dossier_root=d_root,
+    )
+    orig_quote_tr = workbench.public_quote.public_transport
+
+    def custom_quote_tr(path, params):
+        res = orig_quote_tr(path, params)
+        if path == "public/get_order_book" and quote_bid_103k and params["instrument_name"].endswith("-103000-C"):
+            res = dict(res)
+            res["bids"] = [[quote_bid_103k["bid"], 2.0]]
+            res["asks"] = [[round(quote_bid_103k["bid"] + 0.002, 6), 2.0]]
+        return res
+
+    monkeypatch.setattr(workbench.public_quote, "public_transport", custom_quote_tr)
+    v0 = wb.refresh(now_ms=clock[0], record_daily=False)
+    d = dossier.Dossiers(d_root, lambda: clock[0])
+    cases, cards, native = [], [], []
+    points = [[t, 100_000.0] for t in range(clock[0] - dossier.DAY, clock[0] + 1, M)]
+    for c in v0["candidates"]:
+        s = c["snapshot"]
+        case = wb.case_file(s["snapshot_id"])
+        read_ms = case["build"]["built_at_ms"]
+        walls = dict(expiry_ms=expiry, walls={"pin": 100_000.0},
+                     top={"oi_put": [{"strike": 97_000.0}], "oi_call": [{"strike": 103_000.0}]})
+        dossier.player.entry(case, "L3.expiry_walls").update(values=walls, asof_ms=read_ms, quality="ok")
+        contract = dossier.player.values(case, "L1.contract")
+        cards.append(dossier.levels.build_card(expiry_ms=expiry, rnd="r16", side=contract["side"],
+                     read_at_ms=read_ms, walls=walls, points=points, case=case, contract=contract, snapshots=[]))
+        cases.append(case)
+        native.extend(dict(instrument_name=contract[f"{leg}_instrument"], expiration_timestamp=expiry,
+                           settlement_currency="BTC", is_active=True) for leg in ("short", "long"))
+    path = dict(schema="index_path@0.1", index_name="btc_usd", expiry_ms=expiry, points=points, fetched_at_ms=clock[0])
+    plan = {
+        "plan_id": "daily_r16@2", "research": dossier.RESEARCH, "mode": "SHADOW_ONLY",
+        "candidate_round": "r16", "effective_at_ms": slot, "expiry_offset_ms": 16 * HOUR,
+        "deal_grace_ms": 30 * M, "reply_grace_ms": 30 * M, **(plan_extra or {}),
+    }
+    hand = d.expect(expiry, "SCHEDULED", plan=plan, slot=slot)
+    d.deal(hand, dossier.seal_source(cases, cards, path, [], native, received_at_ms=clock[0], source="TEST_FROZEN"))
+    requested_ms = clock[0]
+    clock[0] += 1_000
+    raw = ("**Accept / Call**\n" + "\n".join(EXCERPTS.values()) + "\n" +
+           "\n".join(RULE[k] for k in ("historical_facts", "accepted_conditions", "confirmation_excerpt"))).encode()
+    d.respond(hand, "auto_accept01", "RECEIVED", raw, EXCERPTS,
+              model="deepseek-v4-pro", requested=requested_ms, decided=clock[0],
+              configuration={"reasoning_effort": "high"})
+    return wb, snaps, d, hand, points, wire_log
+
+
+def test_pending_lock_429_recovery_delayed_lock_and_idempotent_polls(tmp_path, monkeypatch):
+    expiry = SLOT_16 + 16 * HOUR
+    slot = expiry - 16 * HOUR
+    clock = [slot + 2 * M]
+    mode = {"on": False}
+    q_bid = {"bid": 0.012}
+    wb, snaps, d, hand, _, _ = _build_frozen_accept_hand(
+        tmp_path, monkeypatch, expiry=expiry, clock=clock, call_429=mode, quote_bid_103k=q_bid,
+    )
+    decided_ms = dossier.read(hand / "decision.json")["decided_at_ms"]
+    frozen_input_bytes = (hand / "evidence" / "input.md").read_bytes()
+    frozen_decision_bytes = (hand / "decision.json").read_bytes()
+
+    # Now Deribit Call side hits 429; initial link fails and enters PENDING_LOCK with 60-minute deadline
+    clock[0] += 305_000
+    mode["on"] = True
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+
+    with serving(wb) as base:
+        svc = post(base, wb)
+        first = tracking._link_with_fresh_quote(d, hand, svc, RULE)
+        assert first["state"] == "LINK_UNVERIFIED"
+        assert len(wb.locked_candidates.list()) == 0
+
+    pending = tracking.load(hand / "tracking" / "pending_lock.json")
+    assert pending["state"] == "PENDING_LOCK"
+    assert pending["deadline_ms"] == min(expiry, decided_ms + 60 * M)
+    assert pending["decided_at_ms"] == decided_ms
+    assert pending["contract"]["short_instrument"] == "BTC-23NOV26-103000-C"
+    assert len(pending["attempts"]) >= 1 and all(
+        a["detail"] == "candidate_temporarily_unavailable" for a in pending["attempts"]
+    )
+    assert tracking.audit_record(hand, clock[0], {})["tracking_state"] == "PENDING_LOCK"
+
+    # Several natural refreshes while 429 persists: records retries, never locks wrong side or backfills
+    for step_m in (5, 10, 15):
+        clock[0] += step_m * M
+        write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+        wb.refresh(now_ms=clock[0], record_daily=False)
+        assert not (hand / "tracking" / "link.json").exists()
+        assert wb.locked_candidates.list() == []
+    pending_mid = tracking.load(hand / "tracking" / "pending_lock.json")
+    assert pending_mid["state"] == "PENDING_LOCK" and len(pending_mid["attempts"]) >= 4
+
+    # Provider recovers at ~decided+36m with updated live bid (0.018): natural wb.refresh() locks exact 103000-C!
+    clock[0] += 6 * M
+    mode["on"] = False
+    q_bid["bid"] = 0.018
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+
+    link_rec = tracking.load(hand / "tracking" / "link.json")
+    assert link_rec["state"] == "SHADOW_LOCK_CREATED"
+    assert link_rec["lock_mode"] == "DELAYED_LOCK" and link_rec["delayed_lock"] is True
+    assert len(link_rec["retry_history"]) >= 4
+    assert link_rec["origin"]["decided_at_ms"] == decided_ms
+    assert link_rec["t0"]["locked_at_ms"] == clock[0]
+    assert link_rec["t0"]["offset_from_decision_ms"] == clock[0] - decided_ms
+    # Uses genuine recovered live quote (0.018 - 0.005 = 0.013), never historical entry quote (0.012 - 0.005 = 0.007)
+    assert abs(link_rec["t0"]["quote"]["credit_btc"] - 0.013) < 1e-9
+    assert (hand / "evidence" / "input.md").read_bytes() == frozen_input_bytes
+    assert (hand / "decision.json").read_bytes() == frozen_decision_bytes
+    assert tracking.load(hand / "tracking" / "pending_lock.json")["state"] == "LOCKED"
+    assert len(wb.locked_candidates.list()) == 1
+
+    # Repeated polling / refresh / link calls after success remain 100% idempotent
+    clock[0] += M
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    with serving(wb) as base:
+        assert tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE) == link_rec
+    assert tracking.load(hand / "tracking" / "link.json") == link_rec
+    assert len(wb.locked_candidates.list()) == 1
+
+
+def test_pending_lock_restart_persistence_and_15m_legacy_compat(tmp_path, monkeypatch):
+    expiry = SLOT_16 + 16 * HOUR
+    slot = expiry - 16 * HOUR
+    clock = [slot + 2 * M]
+    mode = {"on": False}
+    wb, snaps, d, hand, _, _ = _build_frozen_accept_hand(
+        tmp_path, monkeypatch, expiry=expiry, clock=clock, call_429=mode,
+    )
+    clock[0] += 305_000
+    mode["on"] = True
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    with serving(wb) as base:
+        assert tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)["state"] == "LINK_UNVERIFIED"
+    del wb
+
+    # Simulated workbench service restart while PENDING_LOCK is on disk
+    clock[0] += 10 * M
+    mode["on"] = False
+    restarted, snaps2, _, _ = _wire_workbench_market(
+        tmp_path / "wb", monkeypatch, clock=clock, expiry=expiry, shadow_dossier_root=tmp_path / "dossiers",
+    )
+    write_fmz(snaps2, native_gate(ts=clock[0] - 1000), now=clock[0])
+    restarted.refresh(now_ms=clock[0], record_daily=False)
+    link_rec = tracking.load(hand / "tracking" / "link.json")
+    assert link_rec["lock_mode"] == "DELAYED_LOCK" and link_rec["delayed_lock"] is True
+    assert len(restarted.locked_candidates.list()) == 1
+
+    # Also prove pre-existing 15-minute legacy request.json files remain provable via request_proof()
+    req_path = hand / "tracking" / "request.json"
+    req_obj = tracking.load(req_path)
+    legacy_15m_req = {**req_obj, "deadline_ms": req_obj["accepted_at_ms"] + 15 * M}
+    dossier.write(req_path, dossier.encode(legacy_15m_req), replace=True)
+    proof_15m, _ = tracking.request_proof(hand)
+    assert proof_15m["deadline_ms"] == legacy_15m_req["deadline_ms"]
+
+
+def test_pending_lock_rotation_persistent_missing_timeout_and_declared_validity(tmp_path, monkeypatch):
+    # Case A: Contract changed + timeout at 60m -> never mislocks 104000-C, terminates cleanly
+    expiry = SLOT_16 + 16 * HOUR
+    slot = expiry - 16 * HOUR
+    clock = [slot + 2 * M]
+    mode = {"on": False}
+    spot = {"spot": 100_000.0}
+    wb, snaps, d, hand, _, _ = _build_frozen_accept_hand(
+        tmp_path / "case_a", monkeypatch, expiry=expiry, clock=clock, call_429=mode, spot_box=spot,
+    )
+    clock[0] += 305_000
+    spot["spot"] = 101_000.0  # discovery rotates Call to 104000-C while decision accepted 103000-C
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    with serving(wb) as base:
+        assert tracking._link_with_fresh_quote(d, hand, post(base, wb), RULE)["reason"] == "exact_current_contract_not_found"
+    assert len(wb.locked_candidates.list()) == 0
+
+    clock[0] += 61 * M  # cross 60-minute validity deadline
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    assert not (hand / "tracking" / "link.json").exists()
+    assert tracking.load(hand / "tracking" / "final_block.json")["reason"] == "shadow_handoff_expired"
+    term_pending = tracking.load(hand / "tracking" / "pending_lock.json")
+    assert term_pending["state"] == "TERMINATED" and term_pending["terminal_reason"] == "shadow_handoff_expired"
+    attempts_at_term = len(term_pending["attempts"])
+    # Further refreshes after termination do not retry or append attempts
+    clock[0] += 5 * M
+    write_fmz(snaps, native_gate(ts=clock[0] - 1000), now=clock[0])
+    wb.refresh(now_ms=clock[0], record_daily=False)
+    assert len(tracking.load(hand / "tracking" / "pending_lock.json")["attempts"]) == attempts_at_term
+    assert wb.locked_candidates.list() == []
+
+    # Case B: Declared shorter decision validity (20 minutes < 60 minutes) must strictly bind deadline_ms
+    clock_b = [slot + 2 * M]
+    mode_b = {"on": False}
+    wb_b, snaps_b, d_b, hand_b, _, _ = _build_frozen_accept_hand(
+        tmp_path / "case_b", monkeypatch, expiry=expiry, clock=clock_b, call_429=mode_b,
+        plan_extra={"decision_valid_ms": 20 * M},
+    )
+    decided_b = dossier.read(hand_b / "decision.json")["decided_at_ms"]
+    assert tracking.accepted(hand_b)["deadline_ms"] == decided_b + 20 * M
+    clock_b[0] += 305_000
+    mode_b["on"] = True
+    write_fmz(snaps_b, native_gate(ts=clock_b[0] - 1000), now=clock_b[0])
+    wb_b.refresh(now_ms=clock_b[0], record_daily=False)
+    with serving(wb_b) as base:
+        assert tracking._link_with_fresh_quote(d_b, hand_b, post(base, wb_b), RULE)["state"] == "LINK_UNVERIFIED"
+    # Even though < 60m elapsed (21m), 20m declared decision validity expired -> terminates cleanly
+    clock_b[0] = decided_b + 21 * M
+    mode_b["on"] = False
+    write_fmz(snaps_b, native_gate(ts=clock_b[0] - 1000), now=clock_b[0])
+    wb_b.refresh(now_ms=clock_b[0], record_daily=False)
+    assert tracking.load(hand_b / "tracking" / "final_block.json")["reason"] == "shadow_handoff_expired"
+    assert wb_b.locked_candidates.list() == []
+
 

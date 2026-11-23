@@ -1952,6 +1952,8 @@ class AstraWorkbench:
         )
         self._discovery_round_seq = 0
         self._delta_mem_cache: dict[str, dict[str, Any]] = {}
+        self._shadow_quote_slots: dict[str, dict[str, Any]] = {}
+        self._pending_lock_guard = threading.Lock()
         self._gate_since: tuple[str, int | None] | None = None  # (effective state, since ms)
         self._last_compaction: dict[str, Any] | None = None
         self._last_compaction_ms = 0
@@ -3350,7 +3352,103 @@ class AstraWorkbench:
             result["runtime"] = {"memory": dict(self._memory), "threads": threading.active_count()}
             if self.chain_audit is not None:
                 self.chain_audit.observe(result, finished_at_ms)
-            return result
+        try:
+            self.retry_pending_shadow_locks(finished_at_ms)
+        except Exception:
+            pass
+        return result
+
+    def retry_pending_shadow_locks(self, now_ms: int | None = None) -> list[dict[str, Any]]:
+        """Poll retryable ACCEPTED/PENDING_LOCK shadow hands inside their validity window."""
+        del now_ms
+        if player_tracking is None or not self.config.shadow_experiment or self.config.shadow_dossier_root is None:
+            return []
+        if not self._pending_lock_guard.acquire(blocking=False):
+            return []
+        try:
+            root = Path(self.config.shadow_dossier_root)
+            dossiers_root = root / "dossiers"
+            if not dossiers_root.is_dir():
+                return []
+            results: list[dict[str, Any]] = []
+
+            def direct_service(action: str, body: Mapping[str, Any]) -> dict[str, Any]:
+                try:
+                    return self.shadow_tracking(action, body)
+                except WorkbenchError as exc:
+                    raise player_tracking.Blocked(exc.code) from exc
+
+            d = player_tracking.dossier.Dossiers(root, clock=self.clock_ms)
+            for req_file in sorted(dossiers_root.glob("*/hands/hand_*/tracking/request.json")):
+                tr_dir = req_file.parent
+                hand = tr_dir.parent
+                if (tr_dir / "link.json").exists() or player_tracking._link_blocked(tr_dir):
+                    continue
+                try:
+                    req = player_tracking.load(req_file)
+                    exp = player_tracking.load(hand / "expected.json")
+                    proof = player_tracking.accepted(hand)
+                except (OSError, ValueError, KeyError, TypeError, player_tracking.Blocked):
+                    continue
+                now = d.clock()
+                target = player_tracking.contract_fields(proof["contract"])
+                failure_hint: str | None = None
+                use_fresh_quote = False
+                if now < int(req.get("deadline_ms") or 0):
+                    with self._view_lock:
+                        candidates = list((self._current_view or {}).get("candidates") or ())
+                        held = set(self._held_snapshot_ids)
+                        disc_status = dict((self._current_view or {}).get("discovery_status") or {})
+                    matching = next(
+                        (c for c in candidates if isinstance(c, Mapping) and isinstance(c.get("snapshot"), Mapping)
+                         and player_tracking.contract_fields(c["snapshot"]["contract"]) == target),
+                        None,
+                    )
+                    if matching is not None:
+                        snap = matching["snapshot"]
+                        if snap.get("snapshot_id") in held:
+                            failure_hint = "quote_held_not_current"
+                        else:
+                            try:
+                                player_tracking.confirm_quote(snap, now)
+                            except player_tracking.Blocked:
+                                use_fresh_quote = True
+                    else:
+                        same_side = next(
+                            (c for c in candidates if isinstance(c, Mapping) and c.get("side") == target["side"]),
+                            None,
+                        )
+                        side_snap = (same_side or {}).get("snapshot") if isinstance(same_side, Mapping) else None
+                        if isinstance(side_snap, Mapping):
+                            cur = player_tracking.contract_fields(side_snap["contract"])
+                            failure_hint = (
+                                f"current_contract_changed:{cur.get('short_instrument')}|{cur.get('long_instrument')}"
+                            )
+                        else:
+                            failure_hint = (
+                                str(disc_status.get("upstream_code") or "")
+                                or str((same_side or {}).get("error") or "")
+                                or "candidate_temporarily_unavailable"
+                            )
+                try:
+                    if use_fresh_quote:
+                        out = player_tracking._link_with_fresh_quote(d, hand, direct_service)
+                    else:
+                        out = player_tracking.link(d, hand, direct_service, _failure_hint=failure_hint)
+                    if out.get("state") in {"SHADOW_LOCK_CREATED", "ALREADY_LINKED", "LOCK_BLOCKED"}:
+                        with player_tracking._short_writer(d):
+                            d.summary(exp["expiry_ms"])
+                    results.append({"dossier_id": hand.parent.parent.name, "hand_id": hand.name, **out})
+                except (OSError, ValueError, KeyError, TypeError, player_tracking.Blocked) as exc:
+                    results.append({
+                        "dossier_id": hand.parent.parent.name,
+                        "hand_id": hand.name,
+                        "state": "LINK_UNVERIFIED",
+                        "reason": getattr(exc, "code", None) or type(exc).__name__,
+                    })
+            return results
+        finally:
+            self._pending_lock_guard.release()
 
     def _wpem_view_for_candidate(
         self,
@@ -4671,6 +4769,30 @@ class AstraWorkbench:
             self._ledger_state()
             with self._view_lock:
                 view = deepcopy(self._current_view or {})
+                held_ids = set(self._held_snapshot_ids)
+            view_cands = [c for c in (view.get("candidates") or []) if isinstance(c, Mapping)]
+            same_side = [c for c in view_cands if c.get("side") == contract["side"]]
+            side_snap = (same_side[0].get("snapshot") if same_side and isinstance(same_side[0].get("snapshot"), Mapping) else None)
+            if side_snap is not None:
+                if side_snap.get("snapshot_id") in held_ids:
+                    return {
+                        "state": "QUOTE_UNAVAILABLE",
+                        "error": "quote_held_not_current",
+                        "execution_allowed": False,
+                    }
+                if player_tracking.contract_fields(side_snap["contract"]) != contract:
+                    return {
+                        "state": "QUOTE_UNAVAILABLE",
+                        "error": "exact_current_contract_not_found",
+                        "detail": "current_contract_changed",
+                        "execution_allowed": False,
+                    }
+            else:
+                return {
+                    "state": "QUOTE_UNAVAILABLE",
+                    "error": "candidate_temporarily_unavailable",
+                    "execution_allowed": False,
+                }
             fact = self.latest_fact(now)
             gate = self.space_gate_view(fact, now)
             try:
@@ -4712,6 +4834,14 @@ class AstraWorkbench:
                 return {"state": "QUOTE_UNAVAILABLE", "error": exc.code, "execution_allowed": False}
             with self._view_lock:
                 self._held_snapshot_ids.discard(snap["snapshot_id"])
+                self._shadow_quote_slots[proof["origin"]["request_key"]] = {
+                    "snapshot": deepcopy(snap),
+                    "contract": dict(contract),
+                    "snapshot_id": snap["snapshot_id"],
+                    "recorded_at_ms": post_ready_at,
+                }
+                while len(self._shadow_quote_slots) > 16:
+                    self._shadow_quote_slots.pop(next(iter(self._shadow_quote_slots)))
                 current = self._current_view
                 if isinstance(current, dict):
                     updated_candidates = []
@@ -4746,16 +4876,34 @@ class AstraWorkbench:
                     raise player_tracking.Blocked("shadow_experiment_disabled")
                 if not request["requested_at_ms"] <= now < proof["deadline_ms"]:
                     raise player_tracking.Blocked("shadow_handoff_expired")
+                target_contract = player_tracking.contract_fields(proof["contract"])
                 with self._view_lock:
-                    candidates = (self._current_view or {}).get("candidates") or []
-                    choices = [c["snapshot"] for c in candidates if c.get("snapshot")
-                               and player_tracking.contract_fields(c["snapshot"]["contract"])
-                               == player_tracking.contract_fields(proof["contract"])]
+                    candidates = list((self._current_view or {}).get("candidates") or ())
+                    conflicting = any(
+                        isinstance(c, Mapping) and c.get("side") == target_contract["side"]
+                        and isinstance(c.get("snapshot"), Mapping)
+                        and player_tracking.contract_fields(c["snapshot"]["contract"]) != target_contract
+                        for c in candidates
+                    )
+                    if conflicting:
+                        self._shadow_quote_slots.pop(key, None)
+                        choices = []
+                    else:
+                        choices = [c["snapshot"] for c in candidates if c.get("snapshot")
+                                   and player_tracking.contract_fields(c["snapshot"]["contract"]) == target_contract]
+                        if not choices:
+                            slot = self._shadow_quote_slots.get(key)
+                            if (isinstance(slot, Mapping) and slot.get("contract") == target_contract
+                                    and slot.get("snapshot_id") in self._lockable_points
+                                    and slot.get("snapshot_id") not in self._held_snapshot_ids):
+                                choices = [slot["snapshot"]]
                 if len(choices) != 1:
                     raise player_tracking.Blocked("exact_current_contract_not_found")
                 snap = choices[0]
                 result = self.lock_candidate(snap["candidate_id"], snap["snapshot_id"], key,
                                              authorization=None, _shadow=(proof, request))
+                with self._view_lock:
+                    self._shadow_quote_slots.pop(key, None)
             if result is None:
                 return {"state": "LINK_UNVERIFIED", "execution_allowed": False}
             episode = result["episode"]
@@ -4850,10 +4998,23 @@ class AstraWorkbench:
             if _shadow:
                 proof, request = _shadow
                 snapshot = point["candidate"]["snapshot"]
+                target_contract = player_tracking.contract_fields(proof["contract"])
                 with self._view_lock:
                     current = self._current_view or {}
-                    still_current = any((c.get("snapshot") or {}).get("snapshot_id") == snapshot_id
-                                        for c in current.get("candidates", ())) and snapshot_id not in self._held_snapshot_ids
+                    view_cands = [c for c in current.get("candidates", ()) if isinstance(c, Mapping)]
+                    conflicting = any(
+                        c.get("side") == target_contract["side"] and isinstance(c.get("snapshot"), Mapping)
+                        and player_tracking.contract_fields(c["snapshot"]["contract"]) != target_contract
+                        for c in view_cands
+                    )
+                    slot = self._shadow_quote_slots.get(request_key)
+                    slot_ok = bool(
+                        isinstance(slot, Mapping) and slot.get("snapshot_id") == snapshot_id and not conflicting
+                    )
+                    still_current = (
+                        any((c.get("snapshot") or {}).get("snapshot_id") == snapshot_id for c in view_cands)
+                        or slot_ok
+                    ) and snapshot_id not in self._held_snapshot_ids
                 if not still_current:
                     raise player_tracking.Blocked("tracking_snapshot_rotated")
                 if not request["requested_at_ms"] <= at < proof["deadline_ms"]:

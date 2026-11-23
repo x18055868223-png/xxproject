@@ -31,9 +31,10 @@ except ImportError:
 
 AUDIT_PATH = '/api/workbench/player-audit'
 SERVICE_PATH = '/api/workbench/shadow-tracking'
-# The first request has a 15-minute handoff allowance, within the original hand
-# deadline. The quote itself must pass the collector's existing book-age limits.
-HANDOFF_MS = 15 * 60_000
+# Retry/handoff validity is anchored at AI decision time: at most 60 minutes, and never past
+# option expiry or an explicitly declared decision/plan validity limit.
+HANDOFF_MS = 60 * 60_000
+LEGACY_HANDOFF_MS = (120_000, 15 * 60_000)
 MAX_BYTES = 8_000_000
 CONTRACT_FIELDS = dossier.condition.CONTRACT_FIELDS
 DECISION_FIELDS = ('attempt_id', 'raw_sha256', 'parser', 'judgment', 'configuration_id',
@@ -133,6 +134,27 @@ def contract_fields(contract):
     return {key: contract.get(key) for key in CONTRACT_FIELDS}
 
 
+def _lock_deadline_ms(expected, decision, decided, expiry):
+    cap = min(expiry, decided + HANDOFF_MS)
+    judgment = decision.get('judgment') if isinstance(decision.get('judgment'), dict) else {}
+    for src, key in (
+        (decision, 'valid_until_ms'),
+        (decision, 'decision_valid_until_ms'),
+        (judgment, 'valid_until_ms'),
+        (expected, 'decision_valid_until_ms'),
+        (expected, 'lock_deadline_ms'),
+    ):
+        val = src.get(key) if isinstance(src, dict) else None
+        if type(val) is int and val > 0:
+            cap = min(cap, val)
+    plan = expected.get('plan') if isinstance(expected.get('plan'), dict) else {}
+    for key in ('decision_valid_ms', 'lock_valid_ms'):
+        val = plan.get(key)
+        if type(val) is int and val > 0:
+            cap = min(cap, decided + val)
+    return cap
+
+
 def accepted(hand):
     expected = load(hand / 'expected.json')
     decision, attempt, raw = selected(hand)
@@ -174,8 +196,9 @@ def accepted(hand):
                   decided_at_ms=decided, decision_recorded_at_ms=recorded,
                   decision_asof_ms=card['read_at_ms'], decision_index_usd=card['index_usd'],
                   decision_quote=quote_reference(quote), request_key=request_key)
+    lock_deadline = _lock_deadline_ms(expected, decision, decided, expiry)
     return dict(origin=origin, contract=contract, source=source, decision=decision,
-                raw=raw.decode('utf-8'), deadline_ms=min(deadline, decided + HANDOFF_MS))
+                raw=raw.decode('utf-8'), deadline_ms=lock_deadline, reply_deadline_ms=deadline)
 
 
 def quote_reference(quote):
@@ -255,11 +278,16 @@ def request_proof(hand):
     proof = accepted(hand)
     request = load(hand / 'tracking' / 'request.json')
     proof['origin']['condition_sha256'] = dossier.sha(dossier.encode(condition_plan(proof, request['condition'])))
-    # v1.3 originally froze a two-minute handoff. Replay the recorded limit
-    # only when it exactly matches that policy; never extend an old request.
-    legacy_deadline = min(proof['deadline_ms'], proof['origin']['decided_at_ms'] + 120_000)
-    if request['deadline_ms'] == legacy_deadline:
-        proof['deadline_ms'] = legacy_deadline
+    # Previously frozen hands used 2-minute or 15-minute (or reply_deadline-capped) handoffs.
+    # Replay the recorded limit only when it exactly matches a known prior policy; never extend an old request.
+    reply_deadline = proof.get('reply_deadline_ms') or proof['deadline_ms']
+    legacy_deadlines = {
+        min(cap, proof['origin']['decided_at_ms'] + span)
+        for span in LEGACY_HANDOFF_MS
+        for cap in (reply_deadline, proof['contract']['expiry_ms'], proof['deadline_ms'])
+    }
+    if request['deadline_ms'] in legacy_deadlines:
+        proof['deadline_ms'] = request['deadline_ms']
     if (request['origin'] != proof['origin']
             or request['deadline_ms'] != proof['deadline_ms']
             or not proof['origin']['decision_recorded_at_ms'] <= request['requested_at_ms'] < proof['deadline_ms']):
@@ -431,6 +459,45 @@ def _source_entry_context(hand, *, side=None, expiry_ms=None):
     return {'expected_move_usd': expected_move, 'entry_pin_snapshot': entry_pin}
 
 
+def _pending_lock_path(hand):
+    return hand / 'tracking' / 'pending_lock.json'
+
+
+def _record_pending_attempt(d, hand, proof, request, *, reason, detail=None, terminal=False):
+    root = hand / 'tracking'
+    path = _pending_lock_path(hand)
+    now = d.clock()
+    prior = optional(path)
+    attempts = list((prior or {}).get('attempts') or [])
+    entry = dict(at_ms=now, outcome=('TERMINATED' if terminal else 'RETRYABLE_FAILURE'), reason=reason)
+    if detail and detail != reason:
+        entry['detail'] = str(detail)[:200]
+    attempts.append(entry)
+    if len(attempts) > 240:
+        attempts = attempts[-240:]
+    record = dict(
+        schema='shadow_pending_lock@0.1',
+        state='TERMINATED' if terminal else 'PENDING_LOCK',
+        dossier_id=proof['origin']['dossier_id'],
+        hand_id=proof['origin']['hand_id'],
+        decision_id=proof['origin']['decision_id'],
+        decision_sha256=proof['origin']['decision_sha256'],
+        decided_at_ms=proof['origin']['decided_at_ms'],
+        side=proof['contract']['side'],
+        contract=contract_fields(proof['contract']),
+        deadline_ms=request['deadline_ms'],
+        created_at_ms=(prior or {}).get('created_at_ms') or now,
+        updated_at_ms=now,
+        last_failure_reason=reason,
+        terminal_reason=reason if terminal else None,
+        locked_at_ms=None,
+        delayed_lock=False,
+        attempts=attempts,
+    )
+    dossier.write(path, dossier.encode(record), replace=True)
+    return record
+
+
 def save_link(d, hand, proof, request, result):
     origin = proof['origin']
     if result.get('execution_allowed') is not False:
@@ -469,8 +536,26 @@ def save_link(d, hand, proof, request, result):
             changed = True
         if changed:
             dossier.write(ep_meta_path, dossier.encode(ep_meta), replace=True)
-    link = dict(state=result['state'], origin=origin, t0=t0, recorded_at_ms=d.clock(),
-                t0_sha256=dossier.sha(t0_files['point.json']), execution_allowed=False)
+    pending_path = _pending_lock_path(hand)
+    pending = optional(pending_path)
+    retry_history = list((pending or {}).get('attempts') or [])
+    is_delayed = bool(retry_history)
+    now_rec = d.clock()
+    if isinstance(pending, dict):
+        updated_pending = {
+            **pending,
+            'state': 'LOCKED',
+            'updated_at_ms': now_rec,
+            'terminal_reason': None,
+            'locked_at_ms': t0['locked_at_ms'],
+            'delayed_lock': is_delayed,
+            'lock_mode': 'DELAYED_LOCK' if is_delayed else 'IMMEDIATE_LOCK',
+        }
+        dossier.write(pending_path, dossier.encode(updated_pending), replace=True)
+    link = dict(state=result['state'], origin=origin, t0=t0, recorded_at_ms=now_rec,
+                t0_sha256=dossier.sha(t0_files['point.json']), execution_allowed=False,
+                lock_mode='DELAYED_LOCK' if is_delayed else 'IMMEDIATE_LOCK',
+                delayed_lock=is_delayed, retry_history=retry_history)
     dossier.write(root / 'link.json', dossier.encode(link))
     return link
 
@@ -478,6 +563,9 @@ def save_link(d, hand, proof, request, result):
 _RETRYABLE_LOCK_ERRORS = {
     'tracking_quote_stale_or_unsynced', 'tracking_snapshot_rotated',
     'exact_current_contract_not_found', 'quote_held_not_current', 'lock_snapshot_not_retained',
+    'DERIBIT_HTTP_429', 'deribit_rate_limited', 'candidate_temporarily_unavailable',
+    'quote_unavailable', 'public_quote_stale', 'TimeoutError', 'URLError',
+    'ConnectionError', 'OSError',
 }
 
 
@@ -498,23 +586,31 @@ def _link_with_fresh_quote(d, hand, service, plan=None):
             return link(d, hand, service, plan)
     if pending and d.clock() >= pending['deadline_ms']:
         return link(d, hand, service, plan)
+    ref_err = None
     if not (optional(root / 'link.json') or _link_blocked(root)):
         try:
-            service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
-        except (Blocked, OSError, ValueError, KeyError, TypeError):
-            pass
-    res = link(d, hand, service, plan)
-    if res.get('state') == 'LINK_UNVERIFIED' and not (optional(root / 'link.json') or _link_blocked(root)):
+            ref = service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+            if isinstance(ref, dict) and ref.get('state') == 'QUOTE_UNAVAILABLE':
+                ref_err = ref.get('detail') or ref.get('error') or 'quote_unavailable'
+        except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+            ref_err = getattr(exc, 'code', None) or type(exc).__name__
+    res = link(d, hand, service, plan, _failure_hint=ref_err)
+    if (res.get('state') == 'LINK_UNVERIFIED'
+            and ref_err != 'current_contract_changed'
+            and not (optional(root / 'link.json') or _link_blocked(root))):
         time.sleep(0.5)
+        ref_err2 = None
         try:
-            service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
-        except (Blocked, OSError, ValueError, KeyError, TypeError):
-            pass
-        res = link(d, hand, service, plan)
+            ref2 = service('refresh_quote', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+            if isinstance(ref2, dict) and ref2.get('state') == 'QUOTE_UNAVAILABLE':
+                ref_err2 = ref2.get('detail') or ref2.get('error') or 'quote_unavailable'
+        except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+            ref_err2 = getattr(exc, 'code', None) or type(exc).__name__
+        res = link(d, hand, service, plan, _failure_hint=ref_err2)
     return res
 
 
-def link(d, hand, service, plan=None):
+def link(d, hand, service, plan=None, *, _failure_hint=None):
     root = hand / 'tracking'
     saved = optional(root / 'link.json') or _link_blocked(root)
     if saved:
@@ -558,6 +654,7 @@ def link(d, hand, service, plan=None):
                 existing = optional(root / 'link.json') or _link_blocked(root)
                 if existing:
                     return existing
+                _record_pending_attempt(d, hand, proof, request, reason=exc.code, detail=_failure_hint, terminal=True)
                 receipt = 'final_block.json' if (root / 'blocked.json').exists() else 'blocked.json'
                 dossier.write(root / receipt, dossier.encode(blocked))
                 d.note(hand, 'LOCK_BLOCKED', exc.code)
@@ -572,7 +669,23 @@ def link(d, hand, service, plan=None):
                     return optional(root / 'link.json') or save_link(d, hand, proof, request, result)
             except (OSError, ValueError, KeyError, TypeError, store.LockedCandidateError) as exc:
                 reason = exc.code if isinstance(exc, Blocked) else type(exc).__name__
+    if action == 'recover' and d.clock() >= proof['deadline_ms']:
+        blocked = dict(state='LOCK_BLOCKED', reason='shadow_handoff_expired', recorded_at_ms=d.clock())
+        with _short_writer(d):
+            existing = optional(root / 'link.json') or _link_blocked(root)
+            if existing:
+                return existing
+            _record_pending_attempt(d, hand, proof, request, reason='shadow_handoff_expired',
+                                    detail=_failure_hint or reason, terminal=True)
+            if not (root / 'final_block.json').exists():
+                dossier.write(root / 'final_block.json', dossier.encode(blocked))
+            d.note(hand, 'LOCK_BLOCKED', 'shadow_handoff_expired')
+        return blocked
     with _short_writer(d):
+        existing = optional(root / 'link.json') or _link_blocked(root)
+        if existing:
+            return existing
+        _record_pending_attempt(d, hand, proof, request, reason=reason, detail=_failure_hint, terminal=False)
         d.note(hand, 'LINK_UNVERIFIED', reason)
     return dict(state='LINK_UNVERIFIED', reason=reason)
 
@@ -2247,6 +2360,7 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     frozen = optional(hand / 'evidence' / 'identity.json')
     req = optional(root / 'request.json')
     receipt = optional(root / 'link.json')
+    pending_lock = optional(root / 'pending_lock.json')
     blocked = _link_blocked(root)
     notes = sorted((load(p) for p in (hand / 'issuance').glob('*.json')), key=lambda p: p['recorded_at_ms'])
     deadline = dossier.Dossiers.reply_deadline(exp, frozen) if frozen else None
@@ -2265,8 +2379,19 @@ def audit_record(hand, now, tracker_status, *, detail=False):
             terminal_meta, _ = terminal_trajectory(hand)
         except (OSError, ValueError, KeyError, TypeError):
             terminal_meta = None
+    lock_deadline_ms = (
+        (pending_lock or {}).get('deadline_ms')
+        or (req or {}).get('deadline_ms')
+        or (_lock_deadline_ms(exp, decision, decision['decided_at_ms'], exp['expiry_ms']) if decision and isinstance(decision.get('decided_at_ms'), int) else None)
+    )
+    is_pending_active = bool(
+        not receipt and not blocked
+        and isinstance(pending_lock, dict) and pending_lock.get('state') == 'PENDING_LOCK'
+        and isinstance(lock_deadline_ms, int) and now < lock_deadline_ms
+    )
     lock_state = ('TRACKING' if tracker in (tracker_status or {}) else 'ARCHIVED' if terminal_meta else 'TRACKER_UNAVAILABLE'
                   if tracker else 'LOCK_BLOCKED' if blocked or any(n['state'] == 'LOCK_BLOCKED' for n in notes)
+                  else 'PENDING_LOCK' if is_pending_active
                   else 'LINK_UNVERIFIED' if any(n['state'] == 'LINK_UNVERIFIED' for n in notes)
                   else req['state'] if req else None)
     initial_usage = _normalize_usage(((attempt or {}).get('configuration') or {}).get('usage'))
@@ -2278,6 +2403,16 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                   tracker_episode_id=tracker if tracker in (tracker_status or {}) else None,
                   tracker_status=(tracker_status or {}).get(tracker),
                   tracking_state=lock_state)
+    if receipt:
+        result['lock_mode'] = receipt.get('lock_mode') or ('DELAYED_LOCK' if receipt.get('delayed_lock') else 'IMMEDIATE_LOCK')
+        result['delayed_lock'] = bool(receipt.get('delayed_lock'))
+    elif isinstance(pending_lock, dict):
+        result['pending_lock'] = dict(
+            state=pending_lock.get('state'),
+            deadline_ms=pending_lock.get('deadline_ms'),
+            attempts_count=len(pending_lock.get('attempts') or []),
+            last_failure_reason=pending_lock.get('last_failure_reason'),
+        )
     # The request is published before HTTP. Its existence alone cannot prove delivery.
     calls = [] if decision or attempts else [
         p.parent for p in (hand / 'api_calls').glob('*/request.json')
@@ -2317,7 +2452,8 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     elif not decision and last.get('status') == 'VALID':
         stage = 'DECISION_PENDING'
     elif decision and stage == 'Accept':
-        stage = 'HANDOFF_EXPIRED' if now >= min(deadline or exp['expiry_ms'], decision['decided_at_ms'] + HANDOFF_MS) else 'HANDOFF_PENDING'
+        handoff_cap = lock_deadline_ms if isinstance(lock_deadline_ms, int) else min(exp['expiry_ms'], decision['decided_at_ms'] + HANDOFF_MS)
+        stage = 'HANDOFF_EXPIRED' if now >= handoff_cap else 'HANDOFF_PENDING'
     result.update(stage=stage, last_update_ms=updated, reply_deadline_ms=deadline, stage_reason=reason)
     if sent and not result['model']:
         result['model'] = sent.get('model')
