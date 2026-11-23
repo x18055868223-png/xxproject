@@ -171,6 +171,20 @@ def _extract_source_contracts(src: dict) -> dict[str, dict]:
     }
 
 
+_SEED_STRIKES = {
+    "short_strike": 97_000,
+    "long_strike": 95_000,
+    "call_short_strike": 103_000,
+    "call_long_strike": 105_000,
+}
+_BASE_SRC_STRIKES = {
+    "short_strike": 66_000,
+    "long_strike": 64_000,
+    "call_short_strike": 67_000,
+    "call_long_strike": 69_000,
+}
+
+
 def _seed_locked_candidate_episode(tmp_path: Path, now_ms: int):
     wb, _, now, first = wb_setup(tmp_path / "tracker")
     wb.config.shadow_experiment = True
@@ -635,7 +649,8 @@ def test_h1_j1_natural_prose_sections_and_c1_band_advisory_not_blocking():
     # C mentioning 65,500-67,500 band must stay advisory only, NEVER blocking Accept!
     assert "c1_mechanical_advisory" in cv["layer2_semantic_risk"]
 
-    # Finding #5: numbered list items inside C and separate unlabeled USD/% paragraphs remain complete excerpts.
+    # Finding #5: numbered list items inside C remain complete, cross-section fallback from 承担条件： is blocked,
+    # and unlabeled USD/% natural paragraphs without a competing 承担条件： header remain complete.
     c_numbered = "1. 冻结余量约 1,200 USD（1.8%），当前远离 65,500 短腿。\n2. 若入场后 SPOT_FLOW_FLIP 转净买则独立触发重审。"
     text_numbered = (
         "## Accept / Call\n"
@@ -647,7 +662,10 @@ def test_h1_j1_natural_prose_sections_and_c1_band_advisory_not_blocking():
     chk_num = dossier.inspect_excerpt_integrity(c_numbered, text_numbered, expected_section="accepted_conditions")
     assert chk_num["complete"] is True, chk_num
     unlabeled_usd = "余量 1,200 USD（1.8%）尚未耗尽，未越过短腿且保留缓冲。"
-    chk_unlab = dossier.inspect_excerpt_integrity(unlabeled_usd, text_numbered, expected_section="accepted_conditions")
+    chk_cross_blocked = dossier.inspect_excerpt_integrity(unlabeled_usd, text_numbered, expected_section="accepted_conditions")
+    assert chk_cross_blocked["complete"] is False, chk_cross_blocked
+    unlabeled_doc = f"## Accept / Call\n\n{unlabeled_usd}\n\n其余背景说明。"
+    chk_unlab = dossier.inspect_excerpt_integrity(unlabeled_usd, unlabeled_doc, expected_section="accepted_conditions")
     assert chk_unlab["complete"] is True, chk_unlab
 
 
@@ -721,7 +739,7 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
     # 5. Dossiers.respond() closes spoofed contract_validation={'status':'PASSED'}, unknown version, and M3 malformed condition_plan without crashing
     wb, d, hand, src, cpair, req_d, now, exp_ms = _seed_locked_candidate_episode(tmp_path / "g1", SLOT)
     now[0] += 10
-    parsed_ok = review.parse_initial_reply({"text": _build_valid_p5_reply()}, copy.deepcopy(req_d))
+    parsed_ok = review.parse_initial_reply({"text": _build_valid_p5_reply(**_SEED_STRIKES)}, copy.deepcopy(req_d))
     bad_ann = dict(parsed_ok["annotation"], condition_plan=None)
     # Spoofed PASSED cannot bypass internal recomputation -> PARSE_FAILED
     att_spoof = d.respond(
@@ -775,13 +793,13 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
         input_profile=player.INPUT_PROFILE_P0_STRICT,
         requested_at_ms=now[0] - 5,
     )
-    parsed_stateless_a = review.parse_initial_reply({"text": _build_valid_p5_reply()}, req_stateless_a)
+    parsed_stateless_a = review.parse_initial_reply({"text": _build_valid_p5_reply(**_SEED_STRIKES)}, req_stateless_a)
     assert parsed_stateless_a["decision"]["action"] == "Accept"
 
     # 6. H3: tracking.link rejects bad condition_plan & prompt_version mismatch BEFORE calling service('lock') -> ZERO orphaned locks!
     wb2, d2, hand2, src2, cpair2, req_d2, now2, exp_ms2 = _seed_locked_candidate_episode(tmp_path / "g2", SLOT)
     now2[0] += 10
-    p2_ok = review.parse_initial_reply({"text": _build_valid_p5_reply()}, copy.deepcopy(req_d2))
+    p2_ok = review.parse_initial_reply({"text": _build_valid_p5_reply(**_SEED_STRIKES)}, copy.deepcopy(req_d2))
     att2_v10_blocked = d2.respond(
         hand2, "prelock-v10-blocked", "RECEIVED", p2_ok["raw_bytes"], p2_ok["annotation"],
         model="m", requested=now2[0] - 5, decided=now2[0], channel="API_AUTO",
@@ -829,7 +847,7 @@ def test_all_six_anti_bypass_gates_and_legacy_compat(tmp_path):
     # 7. Manual freeze / Dossiers.episode() fails closed on wrong t0 price, wrong first_at_ms, and non-matching response prose
     wb3, d3, hand3, src3, cpair3, req_d3, now3, exp_ms3 = _seed_locked_candidate_episode(tmp_path / "g3", SLOT)
     now3[0] += 10
-    p_valid = review.parse_initial_reply({"text": _build_valid_p5_reply()}, copy.deepcopy(req_d3))
+    p_valid = review.parse_initial_reply({"text": _build_valid_p5_reply(**_SEED_STRIKES)}, copy.deepcopy(req_d3))
     d3.respond(
         hand3, "cand-ok", "RECEIVED", p_valid["raw_bytes"], p_valid["annotation"],
         model="deepseek-v4-pro", requested=now3[0] - 5, decided=now3[0], channel="API_AUTO",
@@ -906,7 +924,7 @@ def test_finding3_6_downgrade_spoof_blocking_and_cli_response_persistence(tmp_pa
         })
 
     # Finding #3: Dossiers.episode & tracking.accepted block if selected attempt or expected plan was tampered to @1.0
-    p_ok = review.parse_initial_reply({"text": _build_valid_p5_reply()}, copy.deepcopy(req_d))
+    p_ok = review.parse_initial_reply({"text": _build_valid_p5_reply(**_SEED_STRIKES)}, copy.deepcopy(req_d))
     d.respond(
         hand, "cand-f3", "RECEIVED", p_ok["raw_bytes"], p_ok["annotation"],
         model="deepseek-v4-pro", requested=now[0] - 5, decided=now[0], channel="API_AUTO",
@@ -954,7 +972,7 @@ def test_finding3_6_downgrade_spoof_blocking_and_cli_response_persistence(tmp_pa
     h_cli = d_cli.expect(cli_exp, "AD_HOC", reference="P5-CLI-F6")
     d_cli.deal(h_cli, cli_src, input_profile=player.INPUT_PROFILE_P0_STRICT)
     raw_path = tmp_path / "cli_reply.raw"
-    raw_path.write_text(_build_valid_p5_reply(), encoding="utf-8")
+    raw_path.write_text(_build_valid_p5_reply(**_BASE_SRC_STRIKES), encoding="utf-8")
     tool_path = Path(__file__).resolve().parents[1] / "tools" / "astra_player_dossier_v1.py"
     proc = subprocess.run(
         [
@@ -1036,7 +1054,7 @@ def test_p5_contract_failure_1_attempt_cap_crash_recovery_and_isolation(tmp_path
     def transport_good(*a, **kw):
         calls2.append(1)
         return {"choices": [{"message": {
-            "content": _build_valid_p5_reply(side="call", short_strike=98_000, long_strike=96_000, call_short_strike=102_000, call_long_strike=104_000)
+            "content": _build_valid_p5_reply(side="call", **_BASE_SRC_STRIKES)
         }, "finish_reason": "stop"}]}
 
     with patch.object(review, "parse_initial_reply", side_effect=Boom):
@@ -1054,7 +1072,7 @@ def test_hold_review_cm_separation_and_new_qualified_data_present(tmp_path):
     wb, d, hand, src, cpair, req_d, now, exp_ms = _seed_locked_candidate_episode(tmp_path, SLOT)
     now[0] += 10
     p_ok = review.parse_initial_reply(
-        {"text": _build_valid_p5_reply(side="call", short_strike=98_000, long_strike=96_000, call_short_strike=102_000, call_long_strike=104_000)},
+        {"text": _build_valid_p5_reply(side="call", **_SEED_STRIKES)},
         copy.deepcopy(req_d),
     )
     d.respond(
@@ -1202,7 +1220,7 @@ def test_hold_review_unverified_revoke_and_no_retry_on_120s_timeout(tmp_path):
     assert init_calls[0]["retries"] == 0
 
     p_ok = review.parse_initial_reply(
-        {"text": _build_valid_p5_reply(side="call", short_strike=98_000, long_strike=96_000, call_short_strike=102_000, call_long_strike=104_000)},
+        {"text": _build_valid_p5_reply(side="call", **_SEED_STRIKES)},
         copy.deepcopy(req_d),
     )
     d.respond(
@@ -1500,7 +1518,7 @@ def test_evaluate_source_readiness_source_ready_and_upstream_blocked():
 
     # Finding #2 tightened fail-closed gates:
     # (a) Stale workbench_view & stale discovery observed_at_ms
-    wb_stale = _make_ready_workbench_view(now_ms=now_ms - 180_000)
+    wb_stale = _make_ready_workbench_view(now_ms=now_ms - 360_000)
     r_stale = tracking.evaluate_source_readiness(workbench_view=wb_stale, now_ms=now_ms)
     assert r_stale["status"] == "UPSTREAM_BLOCKED"
     assert "workbench_view_stale" in r_stale["reasons"]
@@ -1793,3 +1811,701 @@ def test_finding1_cross_plan_settled_tick_skip_and_v4_rollback_plan(tmp_path):
     clk.ms = slot1 + 2 * M
     out_v4 = d.tick(v4_plan)
     assert any((p / "expected.json").is_file() and dossier.read(p / "expected.json")["plan"]["plan_id"] == "daily_r16@4" for p in out_v4)
+
+
+# ---------------------------------------------------------------------------
+# Step 1 & Step 2 Hardening: Cross-Section Excerpt, Positive M, C->M,
+# CLI MANUAL_IMPORT/LATE, 6311071c Readiness/Pending-Lock Interop, Fault Injection
+# ---------------------------------------------------------------------------
+
+_D959_CONTRACTS = {
+    "put": {
+        "side": "put",
+        "short_strike_usd": 59_000.0,
+        "long_strike_usd": 57_000.0,
+        "expiry_ms": 1795248000000,
+        "quantity_btc": 1.0,
+        "venue": "Deribit",
+        "underlying": "BTC",
+        "settlement_currency": "BTC",
+        "short_instrument": "BTC-21NOV26-59000-P",
+        "long_instrument": "BTC-21NOV26-57000-P",
+    },
+    "call": {
+        "side": "call",
+        "short_strike_usd": 60_000.0,
+        "long_strike_usd": 62_000.0,
+        "expiry_ms": 1795248000000,
+        "quantity_btc": 1.0,
+        "venue": "Deribit",
+        "underlying": "BTC",
+        "settlement_currency": "BTC",
+        "short_instrument": "BTC-21NOV26-60000-C",
+        "long_instrument": "BTC-21NOV26-62000-C",
+    },
+}
+
+_D959_PUT = (
+    "Put路径判断：按严格as-of合格图表末点59,366.5 USD，Put短腿59,000 USD位于责任区外且入区前没有已列主要位置，只能直接审查短腿，不虚构缓冲。"
+    "该路径的有利事实是窗口采样未见进入责任区，原生盘口在2026-11-20 15:59:44 UTC给出59,395.38 USD，高于短腿59,000；不利事实是短腿距离只有约366.5 USD，"
+    "约0.17倍本期预期波动尺度，并且最后5分钟从59,530.4下降到59,366.5，正在向短腿方向收缩，4小时和12小时现货成交柱净主动卖与价格下行同向，"
+    "但这些现货流标为OBSERVED_UNALIGNED，不能升格为已成立反证。因此Put路径当前仍在责任外，但剩余余量很薄，尚不足以排除，却不是优先选择。"
+)
+_D959_CALL = (
+    "Call路径判断：按严格as-of合格图表末点59,366.5 USD，Call短腿60,000 USD位于责任区外且入区前没有已列主要位置；本期Pin位于60,000与短腿同位，不另算一站，直接审查短腿。"
+    "有利事实是当前严格低于短腿，原生盘口在2026-11-20 15:59:46 UTC给出59,385.63 USD，低于60,000，距离约633.5 USD，约0.30倍本期预期波动尺度；"
+    "近5分钟从59,530.4到59,366.5的下行对Call短腿是远离义务方向，且最近一次严格返回短腿外侧的采样确认时间为2026-11-20 15:43:00 UTC。"
+    "不利事实是窗口内曾记录到责任区内甚至越过保护腿的采样，最深为2026-11-19 17:35:00 UTC的63,288.5 USD，进入起点未被覆盖。因此Call路径存在历史反证，但当前已回到责任外且路径未向短腿压缩。"
+)
+_D959_PUT_CNT = (
+    "Put最强反证：最不利的是当前离短腿59,000只有约366.5 USD，约0.17倍尺度，近5分钟价格和同窗现货净主动卖均指向短腿方向；其中现货主动流为OBSERVED_UNALIGNED，"
+    "不能升格为已成立反证，但也未见同源可核验的缓和。窗口采样未见进入责任区不等于存在可靠缓冲，且当前没有中间结构可依赖。该反证不自动排除Put，但意味着Put的承担更需要尚未出现的稳定或反弹，安全余量条件较差。"
+)
+_D959_CALL_CNT = (
+    "Call最强反证：最不利的是窗口内曾出现深度进入责任区且越过保护腿的采样，首个已覆盖采样2026-11-19 16:01:00 UTC为63,054.6 USD，已高于保护腿；"
+    "已覆盖最深采样为2026-11-19 17:35:00 UTC为63,288.5 USD，超过短腿3,288.5 USD。该历史越界不能因当前回到责任外而抹去，但其最初进入起点未被本窗口覆盖，不能描述为完整连续留区；"
+    "最近一次返回责任外的采样确认时间为2026-11-20 15:43:00 UTC，当前仍严格低于60,000，且没有可核验的上行主动流确认同向增强。因此该反证须纳入承担条件，但不单独排除Call。"
+)
+_D959_COMP = (
+    "两侧对比择优：Put虽然没有责任区内历史，但距离短腿仅约366.5 USD、约为0.17倍尺度，近端价格和未对齐现货主动流同向提示压向短腿，剩余路径较薄；"
+    "Call虽有深度越界历史，但距离约633.5 USD、约为0.30倍尺度，当前严格低于短腿且近端5分钟下行路径是远离Call义务方向，未对齐同窗现货净卖仅作提示，"
+    "返回责任外的记录较近并且当前没有可核验的上行逼近。Call的相对优势在于当前剩余余量更大且路径并未压缩向短腿，而不是把历史未进入或OI数量当作可靠阻挡；"
+    "Call的最强反证是已发生的深度越界，但已由后续采样回到责任外。因此本次选择有条件接受Call侧，并保留后续严格越界的机械破坏确认。"
+)
+_D959_HIST = (
+    "冻结历史事实：本次冻结接受Call侧，严格as-of合格图表末点为2026-11-20 15:59:00 UTC的59,366.5 USD，原生盘口指数59,385.63 USD，均严格低于Call短腿60,000；"
+    "责任区60,000至62,000之间的下一处已列位置61,000不是入区前缓冲。窗口内责任历史为2026-11-19 16:01:00 UTC首个采样63,054.6 USD已越过保护腿，"
+    "已覆盖最深采样为2026-11-19 17:35:00 UTC的63,288.5 USD，最近一次严格返回短腿外侧的采样确认时间为2026-11-20 15:43:00 UTC，读取时仍严格低于60,000；其最初进入时刻未被本窗口覆盖，不作为完整连续留区起点。"
+)
+_D959_C = (
+    "承担条件（C）：其一，冻结时正面承担的最强已知不利事实是Call侧曾在窗口内深度进入责任区并越过保护腿，最深采样63,288.5 USD且进入起点未覆盖，说明该侧不是零历史风险。"
+    "其二，尚未排除承保依据的理由是合格图表末点59,366.5 USD与原生盘口指数59,385.63 USD均严格低于60,000，当前没有可核验的上行逼近Call短腿，现货主动流主要表现为净卖，作为未对齐提示不是与Call义务方向不利的同向组合。"
+    "其三，关键不确定性为4小时和12小时现货主动流是OBSERVED_UNALIGNED，图表分钟标签语义为UNKNOWN，历史进入起点未覆盖，ARD与现货量价分源不同口径。"
+    "其四，独立于机械M且可由系统盘中真实数据源复核的未来证伪事实包括短腿60,000下方剩余外侧余量与路径演变、时钟对齐后的同源4小时或12小时现货主动流转为上行净买、以及同口径本期Pin和ARD迁移显示价格重新贴近Call短腿。"
+    "上述复核触发仅启动独立复核与留痕，不授权自动退出或交易。"
+)
+_D959_M = (
+    "机械破坏确认口径（M）：采用entry_not_returned。首次检查为入场后下一UTC整分钟，之后每5分钟步进，间隔为check_interval_ms=300000，不用自然整点网格或60分钟锚点；"
+    "入场时要求指数采样严格低于60,000，即require_outside_at_t0=true。采用Deribit BTC/USD指数分钟采样，Call短腿的严格进入为分钟采样严格高于60,000，触及60,000不算进入也不算返回；"
+    "返回短腿外侧为分钟采样严格低于60,000。若在固定检查点可确认已出现严格高于60,000的采样，并且至该固定检查点仍未出现严格低于60,000的返回采样，才触发机械破坏；检查间或分钟内的连续状态不凭空补造。"
+)
+
+
+def _d959_reply_text(*, confirmation_excerpt: str) -> str:
+    prose = "\n\n".join([
+        "## Accept / Call",
+        _D959_PUT, _D959_CALL, _D959_PUT_CNT, _D959_CALL_CNT,
+        _D959_COMP, _D959_HIST, _D959_C, _D959_M,
+    ])
+    ann = {
+        "put": _D959_PUT,
+        "call": _D959_CALL,
+        "comparison": _D959_COMP,
+        "put_counter": _D959_PUT_CNT,
+        "call_counter": _D959_CALL_CNT,
+        "depends_on_ard": False,
+        "condition_plan": {
+            "invalidation": "entry_not_returned",
+            "check_interval_ms": 300_000,
+            "require_outside_at_t0": True,
+            "historical_facts": _D959_HIST,
+            "accepted_conditions": _D959_C,
+            "confirmation_excerpt": confirmation_excerpt,
+        },
+    }
+    return prose + "\n\n<ANNOTATION_JSON>\n" + json.dumps(ann, ensure_ascii=False) + "\n</ANNOTATION_JSON>"
+
+
+def test_step1_d959_cross_section_regression_and_positive_m_anchor(monkeypatch):
+    # 1. Exact real hand_d9598e9b Arm B defect: confirmation_excerpt copied `comparison`
+    bad_text = _d959_reply_text(confirmation_excerpt=_D959_COMP)
+    req_p5 = review.build_initial_request_payload(
+        "# mock user",
+        contract_pair=_D959_CONTRACTS,
+        model="deepseek-reasoner",
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile=player.INPUT_PROFILE_P0_STRICT,
+        fidelity="EXACT",
+    )
+    with pytest.raises(review.ContractValidationError) as exc_info:
+        review.parse_initial_reply({"text": bad_text, "model": "deepseek-reasoner"}, req_p5, contracts=_D959_CONTRACTS)
+    cv_fail = exc_info.value.contract_validation
+    assert cv_fail["status"] == "CONTRACT_FAILED"
+    errs = cv_fail["layer1_deterministic"]["blocking_errors"]
+    assert "j1_excerpt_incomplete:condition_plan.confirmation_excerpt:WRONG_SECTION" in errs
+    assert "j1_excerpt_duplicate_section:condition_plan.confirmation_excerpt" in errs
+    assert "m1_contract_violation:missing_m_mechanical_anchor" in errs
+
+    # 2. Swapping confirmation_excerpt to the true L17 M section passes deterministically
+    good_text = _d959_reply_text(confirmation_excerpt=_D959_M)
+    parsed_ok = review.parse_initial_reply({"text": good_text, "model": "deepseek-reasoner"}, req_p5, contracts=_D959_CONTRACTS)
+    assert parsed_ok["contract_validation"]["status"] == "PASSED"
+
+    # 3. Direct mock forcing inspect_excerpt_integrity(complete=True, section='comparison') triggers j1_excerpt_wrong_section
+    orig_inspect = dossier.inspect_excerpt_integrity
+
+    def fake_inspect(excerpt, text, *, expected_section=None):
+        if expected_section == "confirmation_excerpt":
+            return {
+                "status": "COMPLETE_PARAGRAPH",
+                "complete": True,
+                "matched": True,
+                "section": "comparison",
+                "expected_section": expected_section,
+                "coverage_ratio": 1.0,
+            }
+        return orig_inspect(excerpt, text, expected_section=expected_section)
+
+    monkeypatch.setattr(dossier, "inspect_excerpt_integrity", fake_inspect)
+    parsed_for_contract = {
+        "raw_text": good_text.split("<ANNOTATION_JSON>")[0],
+        "decision": {
+            **json.loads(good_text.split("<ANNOTATION_JSON>")[1].split("</ANNOTATION_JSON>")[0]),
+            "action": "Accept",
+            "side": "call",
+        },
+    }
+    parsed_for_contract["condition_plan"] = parsed_for_contract["decision"]["condition_plan"]
+    cv_mock = review.validate_initial_reply_contract(parsed_for_contract, contracts=_D959_CONTRACTS)
+    assert cv_mock["status"] == "CONTRACT_FAILED"
+    assert "j1_excerpt_wrong_section:condition_plan.confirmation_excerpt:comparison" in cv_mock["layer1_deterministic"]["blocking_errors"]
+
+    # 4. Positive M validation & invented UTC 5-minute grid vs negated valid prose
+    c_call = _D959_CONTRACTS["call"]
+    assert not condition.validate_confirmation_prose(
+        "采用 entry_not_returned，每5分钟核验一次。", c_call,
+        expected_invalidation="entry_not_returned", expected_interval_ms=300_000, require_positive_m=True,
+    )["valid"]
+    assert "missing_m_mechanical_anchor" in condition.validate_confirmation_prose(
+        "采用 entry_not_returned，每5分钟核验一次。", c_call,
+        expected_invalidation="entry_not_returned", expected_interval_ms=300_000, require_positive_m=True,
+    )["violations"]
+    for bad_grid in (
+        "按UTC 5分钟网格核验 Call 短腿60,000，采用 entry_not_returned 规则。",
+        "每5分钟UTC网格检查 Call 60,000，若 entry_not_returned 则破坏触发。",
+    ):
+        res_grid = condition.validate_confirmation_prose(
+            bad_grid, c_call, expected_invalidation="entry_not_returned", expected_interval_ms=300_000, require_positive_m=True
+        )
+        assert not res_grid["valid"] and "clock_interval_mismatch" in res_grid["violations"]
+    res_neg = condition.validate_confirmation_prose(
+        "采用entry_not_returned，入场后下一UTC整分钟首检、每5分钟步进，不用UTC五分钟网格，指数严格高于60,000且检查点未返回触发破坏。",
+        c_call, expected_invalidation="entry_not_returned", expected_interval_ms=300_000, require_positive_m=True,
+    )
+    assert res_neg["valid"]
+
+
+def test_step1_8b12_c_degeneration_and_advisory_boundary():
+    arm_a_c = (
+        "承担条件：入场时确认合格价格在Put责任区外，剩余交割前不接受指数越过63,000短腿严格进入61,000至63,000责任区；"
+        "若出现严格进入责任区即按破坏规则处理。"
+    )
+    sem_a = review.inspect_accepted_conditions_semantics(arm_a_c)
+    assert sem_a["c_degenerates_to_m"] is True
+
+    arm_b_c = (
+        "承担条件（C）：一，冻结时正面承担的最强已知不利事实是近6小时普通Put净主动卖9.9 BTC，且OBSERVED_UNALIGNED的4小时现货净主动卖56 BTC与价格变化-2.18%同向，短腿最近曾接近至373美元。"
+        "二，尚未排除承保依据的理由是严格图表路径仍以63,880.3美元处于63,000美元短腿上方责任外，距离约0.56倍预期波动，窗口内没有严格越过短腿的确认进入。"
+        "三，关键来源、时钟或覆盖不确定性为图表分钟标签区间语义未证实，现货主动流窗口完成时钟或对齐/质量未证实，记作OBSERVED_UNALIGNED；原生盘口与图表分钟分源且跨源先后不可证实；资料缺失或未证实不写成从未发生。"
+        "四，独立于机械M且可在越界前由盘中真实数据源复核的未来证伪事实是：短腿外侧剩余余量是否从当前880.3美元持续收窄并演变为反复贴近，同时源、同时钟的4小时/12小时现货主动流是否继续出现下行净卖和价格下移，"
+        "以及同口径本期Pin/ARD是否向63,000美元方向迁移。上述复核触发仅启动独立复核与留痕，不授权自动退出或交易。"
+    )
+    sem_b = review.inspect_accepted_conditions_semantics(arm_b_c)
+    assert sem_b["c_degenerates_to_m"] is False
+    assert sem_b["has_borne_adverse"] is True
+    assert sem_b["has_independent_falsifier"] is True
+    assert sem_b["has_uncertainty_disclosure"] is True
+    assert sem_b["has_grounded_hold_feed"] is True
+
+
+def test_step1_daily_r16_v4_manual_import_late_and_parse_failed_cli(tmp_path, monkeypatch):
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+    v2_plan = json.loads((deploy_dir / "plan.daily_r16.v2.json").read_text(encoding="utf-8"))
+    v3_plan = json.loads((deploy_dir / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"))
+    v4_plan = json.loads((deploy_dir / "plan.daily_r16.v4_rollback_formal_a.json").read_text(encoding="utf-8"))
+
+    legacy_accept_text = (
+        "**Accept / Call**\n"
+        + "\n".join(LEGACY_EXCERPTS.values())
+        + "\n"
+        + "\n".join(LEGACY_RULE[k] for k in ("historical_facts", "accepted_conditions", "confirmation_excerpt"))
+    )
+    legacy_raw_file = tmp_path / "legacy_reply.txt"
+    legacy_raw_file.write_text(legacy_accept_text, encoding="utf-8")
+    legacy_ann_file = tmp_path / "legacy_ann.json"
+    legacy_ann_file.write_text(json.dumps(LEGACY_EXCERPTS, ensure_ascii=False), encoding="utf-8")
+
+    orig_dossiers = dossier.Dossiers
+    cli_clock = Clock(v4_plan["effective_at_ms"] + 2 * M)
+
+    class _ClockedDossiers(orig_dossiers):
+        def __init__(self, root, clock=None, **kw):
+            super().__init__(root, cli_clock, **kw)
+
+    monkeypatch.setattr(dossier, "Dossiers", _ClockedDossiers)
+
+    # 1. daily_r16@4 MANUAL_IMPORT: omitting --prompt-version exits 2 AND persists PARSE_FAILED + error_code
+    root_v4 = tmp_path / "cli_v4"
+    slot_v4 = v4_plan["effective_at_ms"]
+    exp_v4 = slot_v4 + v4_plan["expiry_offset_ms"]
+    cli_clock.ms = slot_v4 + 2 * M
+    d4 = orig_dossiers(root_v4, cli_clock)
+    h4 = d4.expect(exp_v4, "SCHEDULED", plan=v4_plan, slot=slot_v4)
+    d4.deal(h4, _shift_source_for_r16_slot(exp_v4, cli_clock()), input_profile=player.INPUT_PROFILE_LEGACY)
+    cli_clock.ms = slot_v4 + 3 * M
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "astra_player_dossier_v1.py", "--root", str(root_v4), "response",
+            "--expiry-ms", str(exp_v4), "--hand", h4.name, "--attempt", "manual_no_pv",
+            "--status", "RECEIVED", "--raw", str(legacy_raw_file), "--annotation", str(legacy_ann_file),
+            "--model", "deepseek-v4-pro",
+            "--requested-ms", str(slot_v4 + 2 * M + 1_000), "--decided-ms", str(slot_v4 + 2 * M + 5_000),
+        ],
+    )
+    with pytest.raises(SystemExit) as sysexc:
+        dossier.main()
+    assert sysexc.value.code == 2
+    att_no_pv = dossier.read(h4 / "responses" / "manual_no_pv" / "attempt.json")
+    assert att_no_pv["status"] == "PARSE_FAILED"
+    assert att_no_pv["error_code"] == "CONTRACT_VALIDATION_FAILED"
+
+    # Passing explicit --prompt-version player_initial_system@1.0 succeeds and episode()/accepted() preserve @1.0
+    slot_v4_2 = slot_v4 + DAY
+    exp_v4_2 = slot_v4_2 + v4_plan["expiry_offset_ms"]
+    cli_clock.ms = slot_v4_2 + 2 * M
+    h4_ok = d4.expect(exp_v4_2, "SCHEDULED", plan=v4_plan, slot=slot_v4_2)
+    d4.deal(h4_ok, _shift_source_for_r16_slot(exp_v4_2, cli_clock()), input_profile=player.INPUT_PROFILE_LEGACY)
+    cli_clock.ms = slot_v4_2 + 3 * M
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "astra_player_dossier_v1.py", "--root", str(root_v4), "response",
+            "--expiry-ms", str(exp_v4_2), "--hand", h4_ok.name, "--attempt", "manual_with_pv",
+            "--status", "RECEIVED", "--raw", str(legacy_raw_file), "--annotation", str(legacy_ann_file),
+            "--model", "deepseek-v4-pro", "--prompt-version", review.INITIAL_SYSTEM_PROMPT_VERSION,
+            "--requested-ms", str(slot_v4_2 + 2 * M + 1_000), "--decided-ms", str(slot_v4_2 + 2 * M + 5_000),
+        ],
+    )
+    dossier.main()
+    att_ok = dossier.read(h4_ok / "responses" / "manual_with_pv" / "attempt.json")
+    assert att_ok["status"] == "VALID"
+    assert att_ok["prompt_version"] == "player_initial_system@1.0"
+    acc_v4 = tracking.accepted(h4_ok)
+    assert acc_v4["contract"]["side"] == "call"
+    t_entry = slot_v4_2 + 3 * M + 10_000
+    cli_clock.ms = t_entry + 1_000
+    frozen_cond = {
+        "contract": {k: acc_v4["contract"][k] for k in condition.CONTRACT_FIELDS if k in acc_v4["contract"]},
+        "entry_at_ms": t_entry,
+        "entry_index_usd": 66_200.0,
+        "historical_facts": LEGACY_RULE["historical_facts"],
+        "accepted_conditions": LEGACY_RULE["accepted_conditions"],
+        "invalidation": LEGACY_RULE["invalidation"],
+        "invalidation_meaning": condition.RULES[LEGACY_RULE["invalidation"]],
+        "check_clock": {"first_at_ms": (t_entry // M + 1) * M, "interval_ms": 5 * M},
+        "sampling": condition.SAMPLING,
+    }
+    ep_v4 = d4.episode(
+        h4_ok,
+        frozen_cond,
+        entry_path={
+            "expiry_ms": exp_v4_2,
+            "index_name": "btc_usd",
+            "fetched_at_ms": t_entry,
+            "points": [[t_entry, 66_200.0]],
+        },
+    )
+    assert (ep_v4 / "condition.json").is_file() or any(ep_v4.iterdir())
+
+    # 2. daily_r16@2 legacy CLI MANUAL_IMPORT without --prompt-version stays byte-compatible (omits prompt_version)
+    root_v2 = tmp_path / "cli_v2"
+    slot_v2 = v2_plan["effective_at_ms"]
+    exp_v2 = slot_v2 + v2_plan["expiry_offset_ms"]
+    cli_clock.ms = slot_v2 + 2 * M
+    d2 = orig_dossiers(root_v2, cli_clock)
+    h2 = d2.expect(exp_v2, "SCHEDULED", plan=v2_plan, slot=slot_v2)
+    d2.deal(h2, _shift_source_for_r16_slot(exp_v2, cli_clock()))
+    cli_clock.ms = slot_v2 + 3 * M
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "astra_player_dossier_v1.py", "--root", str(root_v2), "response",
+            "--expiry-ms", str(exp_v2), "--hand", h2.name, "--attempt", "legacy_cli_01",
+            "--status", "RECEIVED", "--raw", str(legacy_raw_file), "--annotation", str(legacy_ann_file),
+            "--model", "deepseek-v4-pro",
+            "--requested-ms", str(slot_v2 + 2 * M + 1_000), "--decided-ms", str(slot_v2 + 2 * M + 5_000),
+        ],
+    )
+    dossier.main()
+    att_v2 = dossier.read(h2 / "responses" / "legacy_cli_01" / "attempt.json")
+    assert att_v2["status"] == "VALID"
+    assert "prompt_version" not in att_v2
+
+    # 3. CLI LATE with ContractValidationError preserves LATE + error + error_code, and select() returns None;
+    #    missing <ANNOTATION_JSON> & pre-contract ValueError persist PARSE_FAILED (never VALID) + exit 2.
+    root_v3 = tmp_path / "cli_v3"
+    slot_v3 = v3_plan["effective_at_ms"]
+    exp_v3 = slot_v3 + v3_plan["expiry_offset_ms"]
+    cli_clock.ms = slot_v3 + 2 * M
+    d3 = orig_dossiers(root_v3, cli_clock)
+    h3 = d3.expect(exp_v3, "SCHEDULED", plan=v3_plan, slot=slot_v3)
+    d3.deal(h3, _shift_source_for_r16_slot(exp_v3, cli_clock()), input_profile=player.INPUT_PROFILE_P0_STRICT)
+
+    bad_cand_file = tmp_path / "bad_cand_d959_style.txt"
+    bad_cand_file.write_text(
+        _build_valid_p5_reply(
+            **_BASE_SRC_STRIKES,
+            custom_confirmation="两侧对比择优：Call 侧入区前距离与路径表现更稳健，因此优先选择 Call 侧承担。",
+        ),
+        encoding="utf-8",
+    )
+    no_ann_file = tmp_path / "no_ann.txt"
+    no_ann_file.write_text("## Reject\n无标注 JSON 的候选答复。\n", encoding="utf-8")
+    malformed_ann_file = tmp_path / "malformed_ann.txt"
+    malformed_ann_file.write_text(
+        "## Accept / Call\n正文。\n<ANNOTATION_JSON>\n{\"put\": \"缺右括号\n</ANNOTATION_JSON>",
+        encoding="utf-8",
+    )
+
+    # Pre-deadline missing <ANNOTATION_JSON> -> PARSE_FAILED + CONTRACT_VALIDATION_FAILED + exit 2
+    cli_clock.ms = slot_v3 + 3 * M
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "astra_player_dossier_v1.py", "--root", str(root_v3), "response",
+            "--expiry-ms", str(exp_v3), "--hand", h3.name, "--attempt", "cand_no_ann",
+            "--status", "RECEIVED", "--raw", str(no_ann_file),
+            "--model", "deepseek-reasoner", "--prompt-version", review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            "--requested-ms", str(slot_v3 + 2 * M + 1_000), "--decided-ms", str(slot_v3 + 2 * M + 5_000),
+        ],
+    )
+    with pytest.raises(SystemExit) as sysexc_noann:
+        dossier.main()
+    assert sysexc_noann.value.code == 2
+    att_noann = dossier.read(h3 / "responses" / "cand_no_ann" / "attempt.json")
+    assert att_noann["status"] == "PARSE_FAILED"
+    assert att_noann["error_code"] == "CONTRACT_VALIDATION_FAILED"
+
+    # Pre-deadline pre-contract ValueError (malformed annotation JSON) -> PARSE_FAILED + CONTRACT_VALIDATION_FAILED + exit 2
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "astra_player_dossier_v1.py", "--root", str(root_v3), "response",
+            "--expiry-ms", str(exp_v3), "--hand", h3.name, "--attempt", "cand_bad_json",
+            "--status", "RECEIVED", "--raw", str(malformed_ann_file),
+            "--model", "deepseek-reasoner", "--prompt-version", review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            "--requested-ms", str(slot_v3 + 2 * M + 1_000), "--decided-ms", str(slot_v3 + 2 * M + 5_000),
+        ],
+    )
+    with pytest.raises(SystemExit) as sysexc_badjson:
+        dossier.main()
+    assert sysexc_badjson.value.code == 2
+    att_badjson = dossier.read(h3 / "responses" / "cand_bad_json" / "attempt.json")
+    assert att_badjson["status"] == "PARSE_FAILED"
+    assert att_badjson["error_code"] == "CONTRACT_VALIDATION_FAILED"
+
+    # Past reply deadline -> ContractValidationError preserves LATE + error + error_code and select() returns None
+    slot_late = slot_v3 + DAY
+    exp_late = slot_late + v3_plan["expiry_offset_ms"]
+    cli_clock.ms = slot_late + 2 * M
+    h3_late = d3.expect(exp_late, "SCHEDULED", plan=v3_plan, slot=slot_late)
+    d3.deal(h3_late, _shift_source_for_r16_slot(exp_late, cli_clock()), input_profile=player.INPUT_PROFILE_P0_STRICT)
+    late_now = slot_late + v3_plan["deal_grace_ms"] + v3_plan["reply_grace_ms"] + 5 * M
+    cli_clock.ms = late_now
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "astra_player_dossier_v1.py", "--root", str(root_v3), "response",
+            "--expiry-ms", str(exp_late), "--hand", h3_late.name, "--attempt", "cand_late_cv",
+            "--status", "RECEIVED", "--raw", str(bad_cand_file),
+            "--model", "deepseek-reasoner", "--prompt-version", review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            "--requested-ms", str(slot_late + 2 * M + 1_000), "--decided-ms", str(late_now - 1_000),
+        ],
+    )
+    with pytest.raises(SystemExit) as sysexc_late:
+        dossier.main()
+    assert sysexc_late.value.code == 2
+    att_late = dossier.read(h3_late / "responses" / "cand_late_cv" / "attempt.json")
+    assert att_late["status"] == "LATE"
+    assert att_late["error"] and att_late["error_code"] == "CONTRACT_VALIDATION_FAILED"
+    assert att_late["contract_validation_status"] == "CONTRACT_FAILED"
+    assert d3.select(h3_late) is None
+
+
+def test_step2_6311071c_live_readiness_and_pending_lock_p5_interop(tmp_path, monkeypatch):
+    # 1. Live 6311071c workbench_view schema readiness checks (ttl_ms=300_000, usage_decisions.default.can_use)
+    now_ms = 1795453269673
+    wb_view = _make_ready_workbench_view(now_ms=now_ms - 18_000)
+    wb_view["discovery_status"]["observed_at_ms"] = now_ms - 184_000
+    wb_view["data_health"]["products"]["deribit.btc.discovery.current.v1"]["current"] = [
+        {
+            "data_state": "OK",
+            "usage_decisions": {
+                "default": {"age_ms": 183_919, "can_use": True, "reason_codes": [], "status": "USABLE", "ttl_ms": 300_000}
+            },
+        }
+    ]
+    res_ready = tracking.evaluate_source_readiness(workbench_view=wb_view, now_ms=now_ms)
+    assert res_ready["status"] == "SOURCE_READY"
+    assert res_ready["checks"]["accept_lock_ready"] is True
+    assert res_ready["checks"]["discovery_max_age_ms"] == 300_000
+
+    wb_stale_disc = copy.deepcopy(wb_view)
+    wb_stale_disc["discovery_status"]["observed_at_ms"] = now_ms - 301_000
+    res_stale = tracking.evaluate_source_readiness(workbench_view=wb_stale_disc, now_ms=now_ms)
+    assert res_stale["status"] == "UPSTREAM_BLOCKED"
+    assert "discovery_observed_stale" in res_stale["reasons"]
+
+    wb_unusable = copy.deepcopy(wb_view)
+    wb_unusable["data_health"]["products"]["deribit.btc.discovery.current.v1"]["current"][0]["usage_decisions"]["default"] = {
+        "can_use": False, "status": "EXPIRED", "ttl_ms": 300_000
+    }
+    res_unusable = tracking.evaluate_source_readiness(workbench_view=wb_unusable, now_ms=now_ms)
+    assert res_unusable["status"] == "UPSTREAM_BLOCKED"
+    assert "data_health_discovery_unusable:EXPIRED" in res_unusable["reasons"]
+
+    # 2. P5 candidate (daily_r16@3) Accept -> 429 PENDING_LOCK -> recovery DELAYED_LOCK interop
+    import io
+    import urllib.error
+    from test_deribit_discovery_reliability import _book_payload, _wire_workbench_market, SLOT_16, write_fmz, native_gate
+    from tools import astra_underwriting_discovery_v20 as discovery
+
+    expiry = SLOT_16 + 16 * HOUR
+    slot = expiry - 16 * HOUR
+    clk = [slot + 2 * M]
+    mode = {"on": False}
+    d_root = tmp_path / "p5_pending_dossiers"
+
+    def on_ob(name, ts):
+        if mode["on"] and name.endswith("-C"):
+            raise discovery.DeribitPublicError.from_http(
+                urllib.error.HTTPError(
+                    "https://www.deribit.com/api/v2/public/get_order_book",
+                    429, "Too Many Requests", {"Retry-After": "10"}, io.BytesIO(b'{"error":{"code":10028}}'),
+                ),
+                "/public/get_order_book",
+            )
+        return None
+
+    wb, snaps, _, _ = _wire_workbench_market(
+        tmp_path / "wb_interop", monkeypatch, clock=clk, expiry=expiry, on_order_book=on_ob, shadow_dossier_root=d_root
+    )
+    v0 = wb.refresh(now_ms=clk[0], record_daily=False)
+    d = dossier.Dossiers(d_root, lambda: clk[0])
+    cases, cards, native = [], [], []
+    points = [[t, 100_000.0] for t in range(clk[0] - DAY, clk[0] + 1, M)]
+    for c in v0["candidates"]:
+        s = c["snapshot"]
+        case = wb.case_file(s["snapshot_id"])
+        read_ms = case["build"]["built_at_ms"]
+        walls = dict(expiry_ms=expiry, walls={"pin": 100_000.0}, top={"oi_put": [{"strike": 97_000.0}], "oi_call": [{"strike": 103_000.0}]})
+        player.entry(case, "L3.expiry_walls").update(values=walls, asof_ms=read_ms, quality="ok")
+        contract = player.values(case, "L1.contract")
+        cards.append(dossier.levels.build_card(expiry_ms=expiry, rnd="r16", side=contract["side"],
+                     read_at_ms=read_ms, walls=walls, points=points, case=case, contract=contract, snapshots=[]))
+        cases.append(case)
+        native.extend(dict(instrument_name=contract[f"{leg}_instrument"], expiration_timestamp=expiry,
+                           settlement_currency="BTC", is_active=True) for leg in ("short", "long"))
+    path = dict(schema="index_path@0.1", index_name="btc_usd", expiry_ms=expiry, points=points, fetched_at_ms=clk[0],
+                timestamp_semantics="unverified_minute_label")
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+    v3_plan = json.loads((deploy_dir / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"))
+    plan_p5 = dict(v3_plan, effective_at_ms=slot)
+    hand = d.expect(expiry, "SCHEDULED", plan=plan_p5, slot=slot)
+    src = dossier.seal_source(cases, cards, path, [], native, received_at_ms=clk[0], source="TEST_FROZEN")
+    d.deal(hand, src, input_profile=player.INPUT_PROFILE_P0_STRICT)
+    c_pair = _extract_source_contracts(src)
+    p5_raw = _build_valid_p5_reply(
+        **_SEED_STRIKES, action_header="## Accept / Call", invalidation="entry_not_returned", side="call"
+    )
+    req_stub = review.build_initial_request_payload(
+        (hand / "evidence" / "input.md").read_text(encoding="utf-8"),
+        contract_pair=c_pair, model="deepseek-reasoner",
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile=player.INPUT_PROFILE_P0_STRICT, requested_at_ms=clk[0], fidelity="EXACT",
+    )
+    parsed = review.parse_initial_reply({"text": p5_raw, "model": "deepseek-reasoner"}, req_stub, contracts=c_pair)
+    req_ms = clk[0]
+    clk[0] += 2_000
+    d.respond(
+        hand, "auto_p5_pending", "RECEIVED", parsed["raw_bytes"], parsed["annotation"],
+        model="deepseek-reasoner", requested=req_ms, decided=clk[0], channel="API_AUTO",
+        request_payload=req_stub, condition_plan=parsed["condition_plan"],
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        system_sha256=req_stub["system_sha256"], input_profile=player.INPUT_PROFILE_P0_STRICT,
+        contract_validation=parsed["contract_validation"],
+    )
+    mode["on"] = True
+    clk[0] += 305_000
+    write_fmz(snaps, native_gate(ts=clk[0] - 1_000), now=clk[0])
+    wb.refresh(now_ms=clk[0], record_daily=False)
+    with serving(wb) as base_url:
+        res_pending = tracking._link_with_fresh_quote(d, hand, wb_post(base_url, wb), parsed["condition_plan"])
+        assert res_pending["state"] == "LINK_UNVERIFIED"
+    pending_obj = dossier.read(hand / "tracking" / "pending_lock.json")
+    assert pending_obj["state"] == "PENDING_LOCK"
+    assert pending_obj["deadline_ms"] == min(expiry, req_ms + 2_000 + 60 * M)
+
+    mode["on"] = False
+    clk[0] += 10 * M
+    write_fmz(snaps, native_gate(ts=clk[0] - 1_000), now=clk[0])
+    wb.refresh(now_ms=clk[0], record_daily=False)
+    link_rec = dossier.read(hand / "tracking" / "link.json")
+    assert link_rec["state"] == "SHADOW_LOCK_CREATED"
+    assert link_rec["lock_mode"] == "DELAYED_LOCK" and link_rec["delayed_lock"] is True
+    audit = tracking.audit_record(hand, clk[0], {link_rec["t0"]["tracker_episode_id"]: {"state": "TRACKING"}}, detail=True)
+    assert audit["tracking_state"] == "TRACKING"
+    assert audit["lock_mode"] == "DELAYED_LOCK"
+
+
+def test_step2_fault_injection_401_403_timeout_lost_receipt_budget_and_isolation(tmp_path, monkeypatch):
+    import io
+    import threading
+    import urllib.error
+    from tools import signal_llm_review
+
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+    v2_plan = json.loads((deploy_dir / "plan.daily_r16.v2.json").read_text(encoding="utf-8"))
+    v3_plan = json.loads((deploy_dir / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"))
+
+    # 1. Direct call_chat_llm with retries=3 still makes ONLY 1 attempt on HTTP 401 and HTTP 403
+    for code in (401, 403):
+        calls = [0]
+
+        def fail_http(api_key, model, body, timeout_s, endpoint=None, _code=code, _calls=calls):
+            _calls[0] += 1
+            raise urllib.error.HTTPError("https://api.example/v1/chat/completions", _code, "AuthError", {}, io.BytesIO(b"{}"))
+
+        with pytest.raises(urllib.error.HTTPError):
+            review.call_chat_llm([{"role": "user", "content": "hi"}], api_key="k", model="deepseek-reasoner", retries=3, transport=fail_http)
+        assert calls[0] == 1
+
+    # 2. auto_deal with HTTP 401 / 403 and TimeoutError: strictly 1 call, 0 retries, accurate status, 0 duplicate calls on recover_initial
+    monkeypatch.setattr(dossier, "collect", lambda _a, exp, sl, **_kw: _shift_source_for_r16_slot(exp, clk()))
+    arch_dir = tmp_path / "arch"
+    for dn in ("cases", "levels", "structure", "band_snapshots"):
+        (arch_dir / dn).mkdir(parents=True, exist_ok=True)
+
+    for idx, (err_factory, expected_status, expected_delivery) in enumerate((
+        (lambda: urllib.error.HTTPError("https://api.example/v1", 401, "Unauthorized", {}, io.BytesIO(b"")), "REQUEST_FAILED", "PROVIDER_REJECTED"),
+        (lambda: urllib.error.HTTPError("https://api.example/v1", 403, "Forbidden", {}, io.BytesIO(b"")), "REQUEST_FAILED", "PROVIDER_REJECTED"),
+        (lambda: TimeoutError("read timed out"), "TIMEOUT", "DELIVERY_UNKNOWN"),
+    )):
+        slot_i = v3_plan["effective_at_ms"] + idx * DAY
+        clk = Clock(slot_i + 2 * M)
+        d_i = dossier.Dossiers(tmp_path / f"fault_{idx}", clk)
+        plan_i = dict(v3_plan, effective_at_ms=slot_i)
+        call_n = [0]
+
+        def err_tr(api_key, model, body, timeout_s, endpoint=None, _ef=err_factory, _cn=call_n):
+            _cn[0] += 1
+            raise _ef()
+
+        tracking.auto_deal(d_i, plan_i, arch_dir, None, llm_config={"api_key": "k", "model": "deepseek-reasoner", "transport": err_tr, "retries": 0})
+        assert call_n[0] == 1
+        hand_i = next((d_i.path(slot_i + plan_i["expiry_offset_ms"]) / "hands").glob("hand_*"))
+        att_i = dossier.read(next((hand_i / "responses").glob("*/attempt.json")))
+        assert att_i["status"] == expected_status
+        assert att_i["configuration"]["delivery_state"] == expected_delivery
+        assert att_i["prompt_version"] == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION
+        # Second tick & recover_initial make 0 extra LLM calls
+        tracking.auto_deal(d_i, plan_i, arch_dir, None, llm_config={"api_key": "k", "model": "deepseek-reasoner", "transport": err_tr, "retries": 0})
+        tracking.recover_initial(d_i, None)
+        assert call_n[0] == 1
+
+    # 3. Lost receipt after provider returns response (on_response fails before dossier save) -> 1 budget reservation, 0 blind resend
+    b_path = tmp_path / "lost_budget.json"
+    budget_lost = signal_llm_review.DailyHttpBudget(b_path, limit=5)
+    lost_calls = [0]
+
+    def ok_then_drop(api_key, model, body, timeout_s, endpoint=None):
+        lost_calls[0] += 1
+        return {"choices": [{"message": {"content": _build_valid_p5_reply(action_header="## Reject")}, "finish_reason": "stop"}]}
+
+    def failing_on_response(_reply):
+        raise OSError("disk full before receipt save")
+
+    with pytest.raises(OSError, match="disk full"):
+        review.call_chat_llm(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            model="deepseek-reasoner",
+            retries=1,
+            budget=budget_lost,
+            on_response=failing_on_response,
+            transport=ok_then_drop,
+        )
+    assert lost_calls[0] == 1
+    assert budget_lost.snapshot()["http_calls_used"] == 1
+
+    # 4. Concurrent DailyHttpBudget contention never exceeds limit (limit=3 across 8 threads)
+    conc_budget = signal_llm_review.DailyHttpBudget(tmp_path / "conc_budget.json", limit=3)
+    results_lock = threading.Lock()
+    reserved_ids: list[str] = []
+    exceeded_count = [0]
+
+    def worker_reserve(tid: int):
+        try:
+            r = conc_budget.reserve(count=1, role=f"t{tid}", packet_hash=f"h{tid}", provider="deepseek", model="deepseek-reasoner")
+            with results_lock:
+                reserved_ids.append(r["reservation_id"])
+        except signal_llm_review.DailyBudgetExceeded:
+            with results_lock:
+                exceeded_count[0] += 1
+
+    threads = [threading.Thread(target=worker_reserve, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(reserved_ids) == 3
+    assert exceeded_count[0] == 5
+    assert conc_budget.snapshot()["http_calls_used"] == 3
+
+    # 5. Historical Formal A (@1.0) untouched + expired hand + Reject + Unknown states never trigger duplicate paid calls
+    d_mix = dossier.Dossiers(tmp_path / "mixed_states", lambda: mix_clk[0])
+    s0 = v3_plan["effective_at_ms"]
+    e0 = s0 + v2_plan["expiry_offset_ms"]
+    mix_clk = [s0 + 2 * M]
+    h_formal_a = d_mix.expect(e0, "SCHEDULED", plan=dict(v2_plan, effective_at_ms=s0), slot=s0)
+    d_mix.deal(h_formal_a, _shift_source_for_r16_slot(e0, mix_clk[0]))
+    req_a_ms = mix_clk[0]
+    mix_clk[0] += 2_000
+    d_mix.respond(
+        h_formal_a, "a_hist", "RECEIVED",
+        ("Reject\n" + "\n".join(LEGACY_EXCERPTS.values())).encode("utf-8"),
+        LEGACY_EXCERPTS, model="deepseek-v4-pro", requested=req_a_ms, decided=mix_clk[0],
+    )
+    snap_a_expected = (h_formal_a / "expected.json").read_bytes()
+    snap_a_decision = (h_formal_a / "decision.json").read_bytes()
+
+    # Advance past e0 + run P5 plan on s1 (expired unclaimed check on s_exp, Reject on s1)
+    s1 = s0 + DAY
+    plan_p5_s1 = dict(v3_plan, effective_at_ms=s1)
+    mix_clk[0] = s1 + 2 * M
+    monkeypatch.setattr(dossier, "collect", lambda _a, exp, sl, **_kw: _shift_source_for_r16_slot(exp, mix_clk[0]))
+    mix_calls = [0]
+
+    def p5_reject_tr(api_key, model, body, timeout_s, endpoint=None):
+        mix_calls[0] += 1
+        return {"choices": [{"message": {"content": _build_valid_p5_reply(action_header="## Reject")}, "finish_reason": "stop"}]}
+
+    res_mix = tracking.auto_deal(
+        d_mix, plan_p5_s1, arch_dir, None,
+        llm_config={"api_key": "k", "model": "deepseek-reasoner", "transport": p5_reject_tr, "retries": 0},
+    )
+    assert mix_calls[0] == 1
+    assert any(r.get("decision") == "Reject" or r.get("status") == "ALREADY_DECIDED" for r in res_mix)
+    assert tracking.recover_initial(d_mix, None) == []
+    assert mix_calls[0] == 1
+    assert (h_formal_a / "expected.json").read_bytes() == snap_a_expected
+    assert (h_formal_a / "decision.json").read_bytes() == snap_a_decision
+

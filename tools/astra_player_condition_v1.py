@@ -320,7 +320,14 @@ def canonical_confirmation_text(contract, invalidation, check_interval_ms=300_00
     )
 
 
-def validate_confirmation_prose(text, contract, *, expected_invalidation=None, expected_interval_ms=None):
+def validate_confirmation_prose(
+    text,
+    contract,
+    *,
+    expected_invalidation=None,
+    expected_interval_ms=None,
+    require_positive_m: bool = False,
+):
     """Deterministically detect contradictions between M confirmation prose and mechanical truth."""
     side, short, long = _contract_legs(contract)
     if not isinstance(text, str) or not text.strip():
@@ -507,11 +514,13 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
                 violations.append('invalidation_rule_mismatch')
                 break
 
-    clock_neg = r'(?:严禁|禁止|不得|不要|不写|不作|不按|不以|不采用|不使用|不可|避免|区别于|并非|不是|非|绝非|而非|而不是|勿)'
+    clock_neg = r'(?:严禁|禁止|不得|不要|不用|不写|不作|不按|不以|不采用|不使用|不可|避免|区别于|并非|不是|非|绝非|而非|而不是|勿)'
     invented_clock_re = re.compile(
         r'不设(?:额外)?检查时钟|无需(?:额外)?检查时钟|没有(?:固定)?检查时钟'
         r'|(?:[:：]00\s*[/、,，-]\s*[:：]05|00分\s*[/、,，-]\s*05分)'
         r'|自然\s*5\s*分钟整点|固定整\s*5\s*分钟(?:自然)?网格|整点\s*5\s*分钟网格'
+        r'|(?:按|以|每)?\s*(?:UTC\s*(?:5|五)\s*分钟网格|(?:5|五)\s*分钟\s*UTC\s*网格)',
+        re.IGNORECASE,
     )
     for cl in clauses:
         for seg in (s.strip() for s in sub_split_re.split(cl) if s.strip()):
@@ -583,5 +592,17 @@ def validate_confirmation_prose(text, contract, *, expected_invalidation=None, e
                         break
                 if 'clock_interval_mismatch' in violations:
                     break
+
+    if require_positive_m:
+        has_short_anchor = has_unilateral_short or (
+            bool(re.search(short_re, text))
+            and bool(re.search(rf'{cmp_short}|进入|突破|跌破|越过', text, re.IGNORECASE))
+        )
+        has_rule_anchor = bool(re.search(r'\b(?:new_entry|entry_not_returned)\b|触发|破坏|无效|返回', text))
+        has_cadence_anchor = (expected_interval_ms != 300_000) or bool(
+            re.search(r'(?<!\d)(?:5\s*分钟|300[,，_]?000|300\s*秒|300s(?![a-zA-Z])|5m(?![a-zA-Z]))|五分钟', text, re.IGNORECASE)
+        )
+        if not (has_short_anchor and has_rule_anchor and has_cadence_anchor):
+            violations.append('missing_m_mechanical_anchor')
 
     return {'valid': not violations, 'violations': list(dict.fromkeys(violations))}

@@ -881,15 +881,25 @@ def inspect_accepted_conditions_semantics(text: str) -> dict[str, Any]:
             and not has_independent_falsifier
         )
     )
-    narrow_m_only = bool(
+    unconditional_c_degenerate = bool(
         _C_DEGENERATE_RE.search(text)
-        and not has_independent_falsifier
+        or (
+            re.search(r"不接受[^。；\n]*(?:越过|进入)[^。；\n]*(?:短腿|责任区)", text)
+            and re.search(r"按(?:破坏|机械)?规则处理|触发破坏|机械破坏", text)
+        )
+        or (
+            not has_borne_adverse
+            and not has_independent_falsifier
+            and not has_uncertainty_disclosure
+            and not has_grounded_hold_feed
+            and re.search(r"短腿|责任区|破坏|new_entry|entry_not_returned", text)
+        )
     )
     pure_until_m = bool(
         any(re.search(r"^(?:只要|只要求|直至|仅当).*(?:未|不).*(?:进入|触发)", cl) for cl in clauses)
         and not has_independent_falsifier
     )
-    c_degenerates = bool(explicit_degenerate or narrow_m_only or pure_until_m)
+    c_degenerates = bool(explicit_degenerate or unconditional_c_degenerate or pure_until_m)
     post_m_only_phrase = bool(re.search(
         r"(?:越过短腿后|入区后|进入责任区后|触发\s*M\s*后|触及保护腿后|跌破保护腿|突破保护腿)[^。；\n]*(?:复核|重审|证伪|撤销|条件)",
         text,
@@ -904,6 +914,24 @@ def inspect_accepted_conditions_semantics(text: str) -> dict[str, Any]:
         "has_grounded_hold_feed": has_grounded_hold_feed,
         "has_post_m_only_trigger_risk": has_post_m_only_trigger_risk,
     }
+
+
+def _norm_review_excerpt(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    norm_fn = getattr(dossier, "_norm_excerpt", None)
+    if callable(norm_fn):
+        return str(norm_fn(value) or "")
+    return re.sub(r"[\s,.:;，。：；、()（）\[\]【】`*~\"'“”‘’]+", "", value).strip()
+
+
+def _strip_section_label_prefix(norm_text: str) -> str:
+    return re.sub(
+        r"^(?:Put|Call|两侧|双侧|对比|比较|历史事实|冻结历史事实|承担条件|持续条件|持续承担条件|破坏|机械|有效|ARD)[^:：]{0,20}[:：]",
+        "",
+        norm_text,
+        flags=re.IGNORECASE,
+    ).strip()
 
 
 def validate_initial_reply_contract(
@@ -930,6 +958,8 @@ def validate_initial_reply_contract(
             excerpt_checks[key] = chk
             if not chk["complete"]:
                 blocking_errors.append(f"j1_excerpt_incomplete:{key}:{chk['status']}")
+            elif chk.get("section") not in (None, key):
+                blocking_errors.append(f"j1_excerpt_wrong_section:{key}:{chk.get('section')}")
 
     if action != "Accept":
         return {
@@ -968,6 +998,8 @@ def validate_initial_reply_contract(
             excerpt_checks[f"condition_plan.{key}"] = chk
             if not chk["complete"]:
                 blocking_errors.append(f"j1_excerpt_incomplete:condition_plan.{key}:{chk['status']}")
+            elif chk.get("section") not in (None, key):
+                blocking_errors.append(f"j1_excerpt_wrong_section:condition_plan.{key}:{chk.get('section')}")
         if decision.get("depends_on_ard") is True:
             for key in ("ard_responsibility_meaning", "ard_review_on"):
                 val = plan.get(key)
@@ -978,6 +1010,37 @@ def validate_initial_reply_contract(
                     excerpt_checks[f"condition_plan.{key}"] = chk
                     if not chk["complete"]:
                         blocking_errors.append(f"j1_excerpt_incomplete:condition_plan.{key}:{chk['status']}")
+                    elif chk.get("section") not in (None, key, "ard", "ard_responsibility_meaning", "ard_review_on"):
+                        blocking_errors.append(f"j1_excerpt_wrong_section:condition_plan.{key}:{chk.get('section')}")
+
+    if check_excerpt_completeness:
+        conf_raw = plan.get("confirmation_excerpt")
+        norm_conf = _norm_review_excerpt(conf_raw)
+        if norm_conf:
+            conf_body = _strip_section_label_prefix(norm_conf)
+            non_m_candidates = [
+                *(decision.get(k) for k in ("put", "call", "comparison", "put_counter", "call_counter")),
+                *(plan.get(k) for k in ("historical_facts", "accepted_conditions")),
+            ]
+            is_dup = bool(
+                re.match(r"^(?:两侧|双侧)?(?:对比|比较)(?:与)?(?:择优|结论)\s*[：:]", str(conf_raw or "").strip())
+            )
+            if not is_dup:
+                for other_val in non_m_candidates:
+                    norm_other = _norm_review_excerpt(other_val)
+                    if not norm_other:
+                        continue
+                    other_body = _strip_section_label_prefix(norm_other)
+                    if (
+                        norm_conf == norm_other
+                        or (conf_body and other_body and conf_body == other_body)
+                        or (len(norm_other) >= 16 and norm_other in norm_conf)
+                        or (len(norm_conf) >= 16 and norm_conf in norm_other)
+                    ):
+                        is_dup = True
+                        break
+            if is_dup:
+                blocking_errors.append("j1_excerpt_duplicate_section:condition_plan.confirmation_excerpt")
 
     if strict_clock_5m and plan.get("check_interval_ms") != 300_000:
         blocking_errors.append(f"clock_interval_not_5m:{plan.get('check_interval_ms')}")
@@ -1006,11 +1069,20 @@ def validate_initial_reply_contract(
             "canonical_confirmation": None,
         }
 
-    m1_res = dossier.condition.validate_confirmation_prose(
+    val_conf_fn = dossier.condition.validate_confirmation_prose
+    m1_kwargs: dict[str, Any] = {
+        "expected_invalidation": plan.get("invalidation"),
+        "expected_interval_ms": (300_000 if strict_clock_5m else plan.get("check_interval_ms")),
+    }
+    try:
+        if "require_positive_m" in inspect.signature(val_conf_fn).parameters:
+            m1_kwargs["require_positive_m"] = True
+    except (ValueError, TypeError):
+        pass
+    m1_res = val_conf_fn(
         plan.get("confirmation_excerpt"),
         contract,
-        expected_invalidation=plan.get("invalidation"),
-        expected_interval_ms=(300_000 if strict_clock_5m else plan.get("check_interval_ms")),
+        **m1_kwargs,
     )
     if not m1_res["valid"]:
         for v in m1_res["violations"]:

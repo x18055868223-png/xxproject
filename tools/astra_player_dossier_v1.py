@@ -545,9 +545,9 @@ class Dossiers:
             declared['request_sha256'] = request_hash
         if full_raw is not None:
             declared['full_raw_sha256'] = sha(full_raw)
+        if eff_prompt_version is not None and (is_non_legacy or plan_pv is not None):
+            declared['prompt_version'] = eff_prompt_version
         if is_non_legacy:
-            if eff_prompt_version is not None:
-                declared['prompt_version'] = eff_prompt_version
             if eff_system_sha256 is not None:
                 declared['system_sha256'] = eff_system_sha256
             if eff_input_profile is not None:
@@ -580,7 +580,15 @@ class Dossiers:
                     status, record_error = 'PROVENANCE_MISSING', 'actual model, request and completion clocks required'
             # Fail-closed candidate contract gate even on direct programmatic respond() calls.
             if status == 'VALID':
-                if caller_req_pv_mismatch:
+                if eff_error_code == 'CONTRACT_VALIDATION_FAILED':
+                    status = 'PARSE_FAILED'
+                    record_error = (
+                        str(error)[:240]
+                        if isinstance(error, str) and error.strip()
+                        else 'contract_validation_failed'
+                    )
+                    is_non_legacy = True
+                elif caller_req_pv_mismatch:
                     status, record_error = 'PARSE_FAILED', f'caller_req_pv_mismatch:{prompt_version}!={req_pv}'[:240]
                     eff_error_code = eff_error_code or 'CONTRACT_VALIDATION_FAILED'
                     is_non_legacy = True
@@ -662,6 +670,8 @@ class Dossiers:
             raise ValueError('invalid response status or raw payload')
         elif isinstance(error, str) and error.strip():
             record_error = str(error)[:240]
+        if status == 'LATE' and record_error is None and isinstance(error, str) and error.strip():
+            record_error = str(error)[:240]
         if payload_hash is not None and any(r['status'] == 'VALID' and r['raw_sha256'] == payload_hash for r in siblings):
             status = 'DUPLICATE'
         if is_non_legacy:
@@ -674,9 +684,9 @@ class Dossiers:
         record = dict(declared, status=status, attempt_id=attempt, ordinal=len(siblings) + 1,
                       recorded_at_ms=at, input_sha256=meta['input_sha256'], parser=PARSER,
                       configuration_id=config_id, judgment=judgment, error=record_error, hand_id=hand.name)
+        if eff_prompt_version is not None and (is_non_legacy or plan_pv is not None) and 'prompt_version' not in record:
+            record['prompt_version'] = eff_prompt_version
         if is_non_legacy:
-            if eff_prompt_version is not None and 'prompt_version' not in record:
-                record['prompt_version'] = eff_prompt_version
             if eff_error_code is not None:
                 record['error_code'] = eff_error_code
             if eff_cv is not None:
@@ -1321,21 +1331,20 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
     owner = None
     matched_section = expected_section
     from_labeled_section = False
+    ard_subfields = {'ard_responsibility_meaning', 'ard_review_on'}
+    ard_allowed = {'ard', *ard_subfields}
 
-    if expected_section and expected_section in sections:
-        sec = sections[expected_section]
-        if norm_ex in _norm_excerpt(sec['full']) or norm_ex in _norm_excerpt(sec['body']):
-            owner = sec
-            from_labeled_section = True
-    if owner is None:
-        for sec_key, sec in sections.items():
-            if norm_ex in _norm_excerpt(sec['full']) or norm_ex in _norm_excerpt(sec['body']):
-                owner = sec
-                matched_section = sec_key
-                from_labeled_section = True
-                break
-    if owner is None:
-        raw_body = text.split('<ANNOTATION_JSON>')[0]
+    def _wrong_section(sec_key, *, matched=True):
+        return {
+            'status': 'WRONG_SECTION',
+            'complete': False,
+            'matched': matched,
+            'section': sec_key,
+            'expected_section': expected_section,
+            'coverage_ratio': 0.0,
+        }
+
+    def _check_multiline(raw_body):
         # Support intentional multi-paragraph verbatim excerpts (e.g., 4-item C with blank lines inside)
         # when bounded cleanly on both sides by paragraph/heading boundaries and ending with terminal punctuation.
         exact_idx = raw_body.find(ex_stripped)
@@ -1386,6 +1395,79 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
                             break
                         if len(cand_norm) >= len(norm_ex) or not norm_ex.startswith(cand_norm):
                             break
+        return None
+
+    def _match_in_section(sec):
+        return norm_ex in _norm_excerpt(sec['full']) or norm_ex in _norm_excerpt(sec['body'])
+
+    raw_body = text.split('<ANNOTATION_JSON>')[0]
+    if expected_section in ard_subfields:
+        allowed_keys = tuple(dict.fromkeys((expected_section, 'ard', 'ard_responsibility_meaning', 'ard_review_on')))
+        for sec_key in allowed_keys:
+            sec = sections.get(sec_key)
+            if sec is not None and _match_in_section(sec):
+                owner = sec
+                matched_section = sec_key
+                from_labeled_section = True
+                break
+        if owner is None:
+            for sec_key, sec in sections.items():
+                if sec_key not in ard_allowed and _match_in_section(sec):
+                    return _wrong_section(sec_key)
+            if expected_section in sections:
+                sec = sections[expected_section]
+                if ends_terminal and ('\n' in ex_stripped) and (
+                    norm_ex.startswith(_norm_excerpt(sec['full'])) or norm_ex.startswith(_norm_excerpt(sec['body']))
+                ):
+                    for sec_key, other_sec in sections.items():
+                        if sec_key not in ard_allowed:
+                            ob = _norm_excerpt(other_sec['body'])
+                            if ob and ob in norm_ex:
+                                return _wrong_section(sec_key)
+                    multi = _check_multiline(raw_body)
+                    if multi is not None:
+                        return multi
+                owner = sec
+                from_labeled_section = True
+    elif expected_section:
+        if expected_section in sections:
+            sec = sections[expected_section]
+            if _match_in_section(sec):
+                owner = sec
+                from_labeled_section = True
+            else:
+                for sec_key, other_sec in sections.items():
+                    if sec_key != expected_section and _match_in_section(other_sec):
+                        return _wrong_section(sec_key)
+                if ends_terminal and ('\n' in ex_stripped) and (
+                    norm_ex.startswith(_norm_excerpt(sec['full'])) or norm_ex.startswith(_norm_excerpt(sec['body']))
+                ):
+                    for sec_key, other_sec in sections.items():
+                        if sec_key != expected_section:
+                            ob = _norm_excerpt(other_sec['body'])
+                            if ob and ob in norm_ex:
+                                return _wrong_section(sec_key)
+                    multi = _check_multiline(raw_body)
+                    if multi is not None:
+                        return multi
+                owner = sec
+                from_labeled_section = True
+        else:
+            for sec_key, other_sec in sections.items():
+                if _match_in_section(other_sec):
+                    return _wrong_section(sec_key)
+    else:
+        for sec_key, sec in sections.items():
+            if _match_in_section(sec):
+                owner = sec
+                matched_section = sec_key
+                from_labeled_section = True
+                break
+
+    if owner is None:
+        multi = _check_multiline(raw_body)
+        if multi is not None:
+            return multi
         for block in re.split(r'\n\s*\n', raw_body):
             b = block.strip()
             if not b or norm_ex not in _norm_excerpt(b):
@@ -1445,8 +1527,17 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
         return {'status': 'COMPLETE_PARAGRAPH', 'complete': True, 'matched': True, 'section': matched_section, 'coverage_ratio': 1.0}
 
     idx = norm_full.find(norm_ex)
-    trailing = norm_full[idx + len(norm_ex):] if idx >= 0 else ''
-    leading = norm_full[:idx] if idx > 0 else ''
+    if idx < 0:
+        idx_body = norm_body.find(norm_ex)
+        if idx_body < 0:
+            return _wrong_section(None, matched=False)
+        trailing = norm_body[idx_body + len(norm_ex):]
+        leading = norm_body[:idx_body]
+        den = max(1, len(norm_body))
+    else:
+        trailing = norm_full[idx + len(norm_ex):]
+        leading = norm_full[:idx]
+        den = max(1, len(norm_full))
     # ARD subfields (meaning + review_on) may be two complete sentences within one ARD paragraph.
     if expected_section in {'ard_responsibility_meaning', 'ard_review_on'} and ends_terminal:
         clean_start = (not leading) or leading.endswith((':', '：', '。', '！', '？', '.', '!', '?', ';', '；'))
@@ -1456,7 +1547,7 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
                 'complete': True,
                 'matched': True,
                 'section': matched_section,
-                'coverage_ratio': round(len(norm_ex) / max(1, len(norm_full)), 4),
+                'coverage_ratio': round(len(norm_ex) / den, 4),
             }
     status = 'PARTIAL_SENTENCE_SUBSTRING' if (ends_terminal and not leading) else 'MID_SENTENCE_TRUNCATION'
     if not ends_terminal and trailing:
@@ -1468,7 +1559,7 @@ def inspect_excerpt_integrity(excerpt, text, *, expected_section=None):
         'complete': False,
         'matched': True,
         'section': matched_section,
-        'coverage_ratio': round(len(norm_ex) / max(1, len(norm_full)), 4),
+        'coverage_ratio': round(len(norm_ex) / den, 4),
         'missing_trailing_chars': len(trailing),
     }
 
@@ -1643,9 +1734,30 @@ def main():
             sys_sha = None
             cv_report = None
             full_raw_bytes = None
+            def _extract_cli_annotation_parts():
+                fail_raw, fail_ann, fail_cplan = raw_bytes, ann_obj, c_plan_obj
+                if fail_ann is None and raw_bytes is not None:
+                    m_tag = re.search(
+                        r'<ANNOTATION_JSON>\s*([\s\S]*?)\s*</ANNOTATION_JSON>',
+                        raw_bytes.decode('utf-8', errors='replace'),
+                    )
+                    if m_tag:
+                        try:
+                            tag_obj = json.loads(m_tag.group(1))
+                        except ValueError:
+                            tag_obj = None
+                        if isinstance(tag_obj, dict):
+                            fail_ann = tag_obj
+                            fail_raw = (
+                                raw_bytes.decode('utf-8', errors='replace')[:m_tag.start()].rstrip() + '\n'
+                            ).encode('utf-8')
+                            if fail_cplan is None and isinstance(tag_obj.get('condition_plan'), dict):
+                                fail_cplan = tag_obj['condition_plan']
+                return fail_raw, fail_ann, fail_cplan
+
             needs_prompt_gate = (
                 (hand_profile == p0_profile)
-                or (plan_pv is not None and plan_pv != 'player_initial_system@1.0')
+                or (plan_pv is not None)
                 or (pv is not None and pv != 'player_initial_system@1.0')
             )
             if needs_prompt_gate:
@@ -1666,28 +1778,13 @@ def main():
                             sha(review_mod.INITIAL_SYSTEM_PROMPTS[pv].encode('utf-8'))
                             if pv in review_mod.INITIAL_SYSTEM_PROMPTS else None
                         )
-                        fail_raw, fail_ann = raw_bytes, ann_obj
-                        if fail_ann is None:
-                            m_tag = re.search(
-                                r'<ANNOTATION_JSON>\s*([\s\S]*?)\s*</ANNOTATION_JSON>',
-                                raw_bytes.decode('utf-8', errors='replace'),
-                            )
-                            if m_tag:
-                                try:
-                                    tag_obj = json.loads(m_tag.group(1))
-                                    if isinstance(tag_obj, dict):
-                                        fail_ann = tag_obj
-                                        fail_raw = (
-                                            raw_bytes.decode('utf-8', errors='replace')[:m_tag.start()].rstrip() + '\n'
-                                        ).encode('utf-8')
-                                except ValueError:
-                                    pass
+                        fail_raw, fail_ann, fail_cplan = _extract_cli_annotation_parts()
                         try:
                             d.respond(
                                 hand, args.attempt, 'RECEIVED', fail_raw, fail_ann,
                                 model=args.model, configuration=cfg_obj,
                                 requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
-                                error=gate_err, full_raw=raw_bytes, condition_plan=c_plan_obj,
+                                error=gate_err, full_raw=raw_bytes, condition_plan=fail_cplan,
                                 prompt_version=pv, system_sha256=fail_sys_sha, input_profile=hand_profile,
                                 error_code='CONTRACT_VALIDATION_FAILED',
                             )
@@ -1711,7 +1808,19 @@ def main():
                             merged_ann['condition_plan'] = c_plan_obj
                         llm_text = raw_text.rstrip() + '\n\n<ANNOTATION_JSON>\n' + json.dumps(merged_ann, ensure_ascii=False) + '\n</ANNOTATION_JSON>'
                     else:
-                        parser.exit(2, 'candidate response requires <ANNOTATION_JSON> in --raw or --annotation JSON\n')
+                        msg = 'candidate response requires <ANNOTATION_JSON> in --raw or --annotation JSON'
+                        try:
+                            d.respond(
+                                hand, args.attempt, 'RECEIVED', raw_bytes, ann_obj,
+                                model=args.model, configuration=cfg_obj,
+                                requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
+                                error=msg, full_raw=raw_bytes, condition_plan=c_plan_obj,
+                                prompt_version=pv, system_sha256=sys_sha, input_profile=hand_profile,
+                                error_code='CONTRACT_VALIDATION_FAILED',
+                            )
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
+                        parser.exit(2, msg + '\n')
                     req_stub = review_mod.build_initial_request_payload(
                         (hand / 'evidence' / 'input.md').read_text(encoding='utf-8'),
                         contract_pair=contracts_pair,
@@ -1745,6 +1854,18 @@ def main():
                             pass
                         parser.exit(2, f'contract validation failed: {exc}\n')
                     except (ValueError, KeyError, TypeError) as exc:
+                        fail_raw, fail_ann, fail_cplan = _extract_cli_annotation_parts()
+                        try:
+                            d.respond(
+                                hand, args.attempt, 'RECEIVED', fail_raw, fail_ann,
+                                model=args.model, configuration=cfg_obj,
+                                requested=args.requested_ms, decided=args.decided_ms, channel=args.channel,
+                                error=str(exc), full_raw=raw_bytes, condition_plan=fail_cplan,
+                                prompt_version=pv, system_sha256=sys_sha, input_profile=hand_profile,
+                                error_code='CONTRACT_VALIDATION_FAILED',
+                            )
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
                         parser.exit(2, f'contract validation failed: {exc}\n')
                     full_raw_bytes = raw_bytes
                     raw_bytes = parsed_cli['raw_bytes']

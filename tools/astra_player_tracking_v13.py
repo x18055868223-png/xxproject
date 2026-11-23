@@ -3028,9 +3028,21 @@ def export_model_input(hand, *, review_id=None):
     }
 
 
-def _check_workbench_view_readiness(workbench_view, reasons, checks, *, now_ms=None, max_view_age_ms=120_000):
+def _check_workbench_view_readiness(
+    workbench_view,
+    reasons,
+    checks,
+    *,
+    now_ms=None,
+    max_view_age_ms=120_000,
+    max_discovery_age_ms=300_000,
+):
     checks['workbench_view_checked'] = True
     check_age = type(now_ms) is int and now_ms > 0 and type(max_view_age_ms) is int and max_view_age_ms > 0
+    disc_cap_valid = type(max_discovery_age_ms) is int and 0 < max_discovery_age_ms <= 600_000
+    check_disc_age = type(now_ms) is int and now_ms > 0 and disc_cap_valid
+    effective_disc_max_age = max_discovery_age_ms if disc_cap_valid else None
+
     updated_at_ms = workbench_view.get('updated_at_ms')
     checks['workbench_view_updated_at_ms'] = updated_at_ms
     if check_age:
@@ -3040,6 +3052,51 @@ def _check_workbench_view_readiness(workbench_view, reasons, checks, *, now_ms=N
             reasons.append('workbench_view_in_future')
         elif now_ms - updated_at_ms > max_view_age_ms:
             reasons.append('workbench_view_stale')
+
+    data_health = workbench_view.get('data_health')
+    dh_reasons = []
+    if not isinstance(data_health, dict):
+        dh_reasons.append('data_health_missing')
+        checks['data_health_discovery_capture_state'] = None
+        checks['data_health_discovery_status'] = None
+    else:
+        products = data_health.get('products')
+        disc_prod = products.get('deribit.btc.discovery.current.v1') if isinstance(products, dict) else None
+        if not isinstance(products, dict) or 'deribit.btc.discovery.current.v1' not in products or disc_prod is None:
+            dh_reasons.append('data_health_discovery_missing')
+            checks['data_health_discovery_capture_state'] = None
+            checks['data_health_discovery_status'] = None
+        elif not isinstance(disc_prod, dict):
+            dh_reasons.append('data_health_discovery_invalid')
+            checks['data_health_discovery_capture_state'] = None
+            checks['data_health_discovery_status'] = None
+        else:
+            dh_cap = disc_prod.get('capture_state')
+            dh_status = disc_prod.get('status')
+            checks['data_health_discovery_capture_state'] = dh_cap
+            checks['data_health_discovery_status'] = dh_status
+            if dh_cap != 'COMPLETE':
+                dh_reasons.append(
+                    f"data_health_discovery_not_complete:{dh_cap if dh_cap is not None else 'missing'}"
+                )
+            if dh_status != 'OK':
+                dh_reasons.append(
+                    f"data_health_discovery_status:{dh_status if dh_status is not None else 'missing'}"
+                )
+            current = disc_prod.get('current')
+            if isinstance(current, list) and current and isinstance(current[0], dict):
+                entry = current[0]
+                usage_decisions = entry.get('usage_decisions')
+                usage = (
+                    usage_decisions.get('default') if isinstance(usage_decisions, dict) else None
+                ) or entry.get('usage_decision')
+                if isinstance(usage, dict):
+                    if usage.get('can_use') is False:
+                        dh_reasons.append(f"data_health_discovery_unusable:{usage.get('status') or 'UNUSABLE'}")
+                    ttl_ms = usage.get('ttl_ms')
+                    if type(ttl_ms) is int and 0 < ttl_ms <= 600_000 and effective_disc_max_age is not None:
+                        effective_disc_max_age = min(effective_disc_max_age, int(ttl_ms))
+    checks['discovery_max_age_ms'] = effective_disc_max_age
 
     discovery_status = workbench_view.get('discovery_status')
     if not isinstance(discovery_status, dict):
@@ -3058,43 +3115,15 @@ def _check_workbench_view_readiness(workbench_view, reasons, checks, *, now_ms=N
             reasons.append(f"discovery_capture_not_complete:{cap_state if cap_state is not None else 'missing'}")
         if up_code is not None:
             reasons.append(f'upstream_code:{up_code}')
-        if check_age:
+        if check_disc_age and effective_disc_max_age is not None:
             if type(obs_ms) is not int or obs_ms <= 0:
                 reasons.append('discovery_observed_at_invalid')
             elif obs_ms > now_ms:
                 reasons.append('discovery_observed_in_future')
-            elif now_ms - obs_ms > max_view_age_ms:
+            elif now_ms - obs_ms > effective_disc_max_age:
                 reasons.append('discovery_observed_stale')
 
-    data_health = workbench_view.get('data_health')
-    if not isinstance(data_health, dict):
-        reasons.append('data_health_missing')
-        checks['data_health_discovery_capture_state'] = None
-        checks['data_health_discovery_status'] = None
-    else:
-        products = data_health.get('products')
-        disc_prod = products.get('deribit.btc.discovery.current.v1') if isinstance(products, dict) else None
-        if not isinstance(products, dict) or 'deribit.btc.discovery.current.v1' not in products or disc_prod is None:
-            reasons.append('data_health_discovery_missing')
-            checks['data_health_discovery_capture_state'] = None
-            checks['data_health_discovery_status'] = None
-        elif not isinstance(disc_prod, dict):
-            reasons.append('data_health_discovery_invalid')
-            checks['data_health_discovery_capture_state'] = None
-            checks['data_health_discovery_status'] = None
-        else:
-            dh_cap = disc_prod.get('capture_state')
-            dh_status = disc_prod.get('status')
-            checks['data_health_discovery_capture_state'] = dh_cap
-            checks['data_health_discovery_status'] = dh_status
-            if dh_cap != 'COMPLETE':
-                reasons.append(
-                    f"data_health_discovery_not_complete:{dh_cap if dh_cap is not None else 'missing'}"
-                )
-            if dh_status != 'OK':
-                reasons.append(
-                    f"data_health_discovery_status:{dh_status if dh_status is not None else 'missing'}"
-                )
+    reasons.extend(dh_reasons)
 
     candidates = workbench_view.get('candidates')
     by_side_checks = {}
@@ -3174,6 +3203,16 @@ def _check_workbench_view_readiness(workbench_view, reasons, checks, *, now_ms=N
                 reasons.append(f"candidate_{side}_upstream_code:{item_disc.get('upstream_code')}")
             if not dp_complete:
                 reasons.append(f'candidate_{side}_delta_population_incomplete')
+            if 'observed_at_ms' in item_disc and item_disc['observed_at_ms'] is not None:
+                side_obs = item_disc['observed_at_ms']
+                side_info['observed_at_ms'] = side_obs
+                if check_disc_age and effective_disc_max_age is not None:
+                    if type(side_obs) is not int or side_obs <= 0:
+                        reasons.append(f'candidate_{side}_discovery_observed_at_invalid')
+                    elif side_obs > now_ms:
+                        reasons.append(f'candidate_{side}_discovery_observed_in_future')
+                    elif now_ms - side_obs > effective_disc_max_age:
+                        reasons.append(f'candidate_{side}_discovery_observed_stale')
 
 
 def _check_source_bundle_readiness(source, now_ms, reasons, checks):
@@ -3429,7 +3468,14 @@ def _check_source_workbench_consistency(source, workbench_view, reasons):
             reasons.append(f'source_workbench_contract_mismatch:{side}')
 
 
-def evaluate_source_readiness(source=None, *, workbench_view=None, now_ms=None, max_view_age_ms=120_000):
+def evaluate_source_readiness(
+    source=None,
+    *,
+    workbench_view=None,
+    now_ms=None,
+    max_view_age_ms=120_000,
+    max_discovery_age_ms=300_000,
+):
     """Pure read-only readiness gate verifying upstream discovery/source completeness without network or disk I/O."""
     has_source = isinstance(source, dict)
     has_view = isinstance(workbench_view, dict)
@@ -3451,10 +3497,17 @@ def evaluate_source_readiness(source=None, *, workbench_view=None, now_ms=None, 
         reasons.append('invalid_now_ms')
     if type(max_view_age_ms) is not int or max_view_age_ms <= 0:
         reasons.append('invalid_max_view_age_ms')
+    if type(max_discovery_age_ms) is not int or not 0 < max_discovery_age_ms <= 600_000:
+        reasons.append('invalid_max_discovery_age_ms')
 
     if has_view:
         _check_workbench_view_readiness(
-            workbench_view, reasons, checks, now_ms=now_ms, max_view_age_ms=max_view_age_ms
+            workbench_view,
+            reasons,
+            checks,
+            now_ms=now_ms,
+            max_view_age_ms=max_view_age_ms,
+            max_discovery_age_ms=max_discovery_age_ms,
         )
     if has_source:
         _check_source_bundle_readiness(source, now_ms, reasons, checks)

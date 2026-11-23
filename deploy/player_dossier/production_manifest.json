@@ -1,6 +1,6 @@
 {
   "schema": "astra_production_manifest@1",
-  "captured_at_utc": "2026-11-23T13:25:00Z",
+  "captured_at_utc": "2026-11-23T17:01:08Z",
   "host": "xx-eu",
   "policy": {
     "forbid_full_git_tree_overwrite": true,
@@ -9,8 +9,9 @@
     "note": "Deploy only explicitly listed runtime files; never overwrite /opt/signal-audit-tools with the full Git tree without verifying host-specific offline path adaptations and LLM inquiry gating."
   },
   "baseline_revisions": {
-    "deployed_runtime_commit": "b3d79695f82e3a5f6392d0cbdba668d4406f4724",
-    "deployed_runtime_verified_at_utc": "2026-11-23T13:12:00Z",
+    "deployed_runtime_commit": "6311071c887433efb5a9b754290a1d8050caa0d8",
+    "previous_deployed_runtime_commit": "b3d79695f82e3a5f6392d0cbdba668d4406f4724",
+    "deployed_runtime_verified_at_utc": "2026-11-23T17:01:08Z",
     "deployed_integration_commit": "ba93eef27cc3f7044267ad78118aaf4c9c7c3a62",
     "previous_production_commit": "f3911c06c7e5829e5101397d66814f996b541786",
     "llm_retirement_gate_commit": "46c5ea6f",
@@ -28,7 +29,7 @@
   "deployed_core_files": {
     "/opt/signal-audit-tools/astra_player_tracking_v13.py": {
       "source_rel": "tools/astra_player_tracking_v13.py",
-      "deployed_sha256_prefix": "5aa70f53e7fe",
+      "deployed_sha256_prefix": "0eeeedc116f5",
       "status": "MANAGED_RUNTIME"
     },
     "/opt/signal-audit-tools/astra_player_review_v1.py": {
@@ -56,18 +57,43 @@
       "deployed_sha256_prefix": "f4e7ffb137b2",
       "status": "MANAGED_RUNTIME"
     },
+    "/opt/signal-audit-tools/astra_underwriting_discovery_v20.py": {
+      "source_rel": "tools/astra_underwriting_discovery_v20.py",
+      "deployed_sha256_prefix": "204646328c5f",
+      "status": "MANAGED_RUNTIME",
+      "host_note": "Owned by the parallel upstream discovery/locking workstream (live 6311071c)."
+    },
     "/opt/signal-audit-tools/astra_workbench_v20.py": {
       "source_rel": "tools/astra_workbench_v20.py",
-      "deployed_sha256_prefix": "b741ee3295c4",
+      "deployed_sha256_prefix": "b8fb1a43acc8",
+      "deployed_raw_sha256_prefix": "779ee4d370c0",
       "status": "MANAGED_RUNTIME",
-      "host_note": "CRLF raw on host; upstream discovery/locking modules (astra_underwriting_discovery_v20.py, astra_workbench_v20.py, astra_research_archive_v1.py, astra_data_engine_v23.py, astra_workbench_reading_v1.py) are owned by the parallel upstream workstream."
+      "host_note": "CRLF raw on host (raw 779ee4d370c0, LF b8fb1a43acc8); upstream discovery/locking modules (astra_underwriting_discovery_v20.py, astra_workbench_v20.py, astra_research_archive_v1.py, astra_data_engine_v23.py, astra_workbench_reading_v1.py, data_product_registry_v23.json) are owned by the parallel upstream workstream."
     },
     "/opt/signal-audit-tools/astra_research_archive_v1.py": {
       "source_rel": "tools/astra_research_archive_v1.py",
-      "deployed_sha256_prefix": "69ce59fa8693",
+      "deployed_sha256_prefix": "c35f34134b7b",
       "status": "MANAGED_RUNTIME_WITH_INQUIRY_GATE",
       "requirement": "Must retain ASTRA_RESEARCH_INQUIRY_ENABLED == '1' gate on run_inquiry.",
       "host_note": "Owned by the parallel upstream discovery/locking workstream."
+    },
+    "/opt/signal-audit-tools/astra_data_engine_v23.py": {
+      "source_rel": "tools/astra_data_engine_v23.py",
+      "deployed_sha256_prefix": "a91ff6e67975",
+      "status": "MANAGED_RUNTIME",
+      "host_note": "Owned by the parallel upstream discovery/locking workstream (live 6311071c)."
+    },
+    "/opt/signal-audit-tools/astra_workbench_reading_v1.py": {
+      "source_rel": "tools/astra_workbench_reading_v1.py",
+      "deployed_sha256_prefix": "c9a3c709def0",
+      "status": "MANAGED_RUNTIME",
+      "host_note": "Owned by the parallel upstream discovery/locking workstream (live 6311071c)."
+    },
+    "/opt/signal-audit-tools/data_product_registry_v23.json": {
+      "source_rel": "demo/shared/data_product_registry_v23.json",
+      "deployed_sha256_prefix": "bd99a3104d16",
+      "status": "MANAGED_RUNTIME",
+      "host_note": "Referenced at /opt/signal-audit-tools/data_product_registry_v23.json by data_health.registry_path; prefix matches 6311071c (live_files endpoint reports .py and player-plan.json)."
     }
   },
   "p5_release_candidate": {
@@ -97,9 +123,10 @@
       "tools/astra_workbench_v20.py",
       "tools/astra_research_archive_v1.py",
       "tools/astra_data_engine_v23.py",
-      "tools/astra_workbench_reading_v1.py"
+      "tools/astra_workbench_reading_v1.py",
+      "demo/shared/data_product_registry_v23.json"
     ],
-    "upstream_dependency": "Requires SOURCE_READY and resolution of Stage 1.5.7 Accept exact-contract locking in the parallel upstream workstream before Gate A/E promotion approval."
+    "upstream_dependency": "Upstream 6311071c deployed on xx-eu at 2026-11-23T16:49Z (verified live at 2026-11-23T17:01:08Z); pending >= 2 post-6311071c natural deal cycles (Nov 24-25 16:00Z) before Gate A/E promotion approval."
   },
   "host_adapted_non_runtime_files": {
     "/opt/signal-audit-tools/astra_joint_sources.py": {
