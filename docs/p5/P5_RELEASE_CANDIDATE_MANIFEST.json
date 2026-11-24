@@ -1,11 +1,17 @@
 {
   "schema": "astra_p5_release_candidate_manifest@1",
-  "captured_at_utc": "2026-11-24T08:52:00Z",
-  "status": "RELEASE_APPROVED_PENDING_UNIFIED_DEPLOY",
+  "captured_at_utc": "2026-11-24T09:27:00Z",
+  "status": "P5_PLUS_SHADOW_EXIT_DEPLOYED_PENDING_E2E",
+  "status_breakdown": {
+    "DEPLOYED": true,
+    "PROMOTED_PENDING_E2E": true,
+    "MAIN_PLAYER_E2E_CONFIRMED": false,
+    "SHADOW_EXIT_LIVE_VERIFIED": false
+  },
   "historical_statuses": [
     "958f0c58 / 6c945ca3: SHADOW_BLOCKED_OR_INCONCLUSIVE",
     "c39b3d27 / 2b7b42be: READY_BUT_NOT_DEPLOYED",
-    "52264db3: PRE_RELEASE_VERIFIED_PENDING_REVIEW_AND_QUIET_CUTOVER (superseded to merge server-native-release@2802262a + REVOKE SHADOW_EXITED closed-loop fix)"
+    "52264db3 -> 5869d902: MERGED_WITH_2802262a_INTO_a164dbdf"
   ],
   "production_ready_upon_quiet_window_deploy": true,
   "selected_architecture": "Refined Route B (A-Core + Surgical Mechanical Alignment + Minimal Feed-Grounded C @1.2-p5-candidate + p0_strict@1 + p2_strict@1) + REVOKE Terminal SHADOW_EXITED & 3-Tier Frozen Exit Valuation on Unified server-native-release; rollback = Formal A xxproject-server-2802262aa9c5-d7245ea39a9c / daily_r16@4 ONLY",
@@ -15,8 +21,10 @@
     "prior_p5_rc_commit_sha": "5869d902a523a511e473460af23470f303d28721",
     "live_server_native_baseline_sha": "2802262aa9c5cba6aca5f4d83f6934a1ebbb7f3e",
     "live_server_native_release_id": "xxproject-server-2802262aa9c5-d7245ea39a9c",
-    "remote_pushed": false,
-    "merged_to_astra": false
+    "deployed_code_commit_sha": "a164dbdf82a9ac8e94e3dbb59ddef603ea9778d7",
+    "remote_pushed": true,
+    "pushed_remote": "xxproject",
+    "merged_to_astra": true
   },
   "versions": {
     "legacy_system_prompt": {
@@ -60,19 +68,25 @@
     "deploy/xxproject_server/deploy_release.py": "335bb636d12034ab8e553171fa9c3601acc144a9c0f6aab18489025a48080e53"
   },
   "validation": {
-    "affected_31_file_suite_pre_cleanup": {
+    "post_merge_9_file_suite_a164dbdf": {
+      "passed": 131,
+      "failed": 0,
+      "duration_s": 237.92
+    },
+    "affected_31_file_suite_pre_merge": {
       "passed": 572,
       "failed": 0,
       "skipped": 1,
       "duration_s": 348.95,
       "log": "scratch/p5_closeout/pytest_p5_shadow_exit_full.log"
     },
-    "post_cleanup_targeted_suites": {
+    "post_cleanup_5869d902_targeted_suites": {
       "node_js_imports": "JS_OK",
       "shadow_exit_ui_tracking_suite": "62 passed in 176.64s",
-      "downstream_callers_and_release_suite": "99 passed in 80.21s"
+      "downstream_callers_and_release_suite": "99 passed in 80.21s",
+      "post_manifest_targeted_suite": "79 passed in 151.23s"
     },
-    "independent_reviewer_verdict": "RELEASE_APPROVED (ddaed22e, 0 CRITICAL / 0 HIGH / 0 MEDIUM / 1 LOW)",
+    "independent_reviewer_verdict": "RELEASE_APPROVED (ddaed22e on 5869d902 + delta RELEASE_APPROVED on a164dbdf: 0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW)",
     "shadow_run_historical_record": {
       "executed_pairs": 3,
       "first_attempt_arm_b_contract_compliant_pairs": 2,
@@ -94,10 +108,22 @@
     "target_host": "xx-eu",
     "safe_deploy_window_utc": "2026-11-24T08:35:00Z..15:50:00Z",
     "first_formal_deal_utc": "2026-11-24T16:00:00Z",
-    "actual_deployed_at_utc": null,
-    "actual_deployed_commit_sha": null,
-    "actual_release_id": null,
-    "historical_reconcile_event_id": null
+    "e2e_wakeup_utc": "2026-11-24T17:15:00Z",
+    "actual_deployed_at_utc": "2026-11-24T09:23:07Z",
+    "actual_health_verified_utc": "2026-11-24T09:23:59Z",
+    "actual_deployed_commit_sha": "a164dbdf82a9ac8e94e3dbb59ddef603ea9778d7",
+    "actual_release_id": "xxproject-server-a164dbdf82a9-c1d51b9ece69",
+    "package_sha256": "cdc526abd7e3f310ee578919b7a9d863a5a5273c142b0eafabc35a3e8984b5d1",
+    "previous_rollback_release_id": "xxproject-server-2802262aa9c5-d7245ea39a9c",
+    "deployed_host_adapted_sha256": {
+      "tools/astra_workbench_v20.py": "d24189ee9877f65c99c7a1eee0d96e760ca02469d7d6f85390afe562504b9a53"
+    },
+    "http_calls_used_after_deploy": 2,
+    "post_reconcile_check_count": 190,
+    "historical_hashes_unchanged": true,
+    "historical_reconcile_event_id": "shadow_exit_1e923027ba51b1acef76064a",
+    "historical_reconcile_snapshot_sha256": "0f2c03819c25527934f3076ea8d3fbab00bcaf57a6f013f543d779574e8f0e64",
+    "historical_reconcile_valuation_tier": "UNPRICED"
   },
   "rollback_command": "python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py rollback --apply-units (restores xxproject-server-2802262aa9c5-d7245ea39a9c Formal A)."
 }
