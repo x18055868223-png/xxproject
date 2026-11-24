@@ -42,19 +42,20 @@ def main(argv: list[str] | None = None) -> int:
     if not api_key:
         parser.error("LLM_API_KEY must be available in the environment")
     ledger = store.UnderwritingLedger(args.ledger)
-    state = ledger.state()
-    entry = state["snapshots"].get(args.snapshot_id)
-    if entry is None:
+    idx = ledger.index()
+    if args.snapshot_id not in idx["snapshots"]:
         parser.error("snapshot id does not exist in the selected underwriting ledger")
+    snapshot = ledger.get_snapshot(args.snapshot_id)
+    assert snapshot is not None
     budget = llm_core.DailyHttpBudget(args.usage_ledger, limit=args.daily_http_limit)
-    result = review.run_review(entry["snapshot"], ledger, args.state_dir,
+    result = review.run_review(snapshot, ledger, args.state_dir,
                                api_key=api_key, model=args.model, budget=budget,
                                endpoint=args.base_url)
-    annex = store.build_card_annex(ledger.state(), args.snapshot_id)
+    annex = ledger.card_annex(args.snapshot_id)
     annex["review_attempt"] = {
         "schema": "astra_underwriting_review_attempt_summary@2.0.0",
         "snapshot_id": args.snapshot_id,
-        "candidate_id": entry["snapshot"]["candidate_id"],
+        "candidate_id": snapshot["candidate_id"],
         "status": result.get("status"),
         "http_calls": result.get("http_calls", 0),
     }

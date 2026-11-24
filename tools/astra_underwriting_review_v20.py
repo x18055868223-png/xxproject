@@ -2766,7 +2766,7 @@ def run_review(snapshot: Mapping[str, Any], ledger: store.UnderwritingLedger,
             raise ValueError("historical replay is not a current candidate review")
         if (packet.get("risk") or {}).get("source_kind") == "synthetic_fixture":
             raise ValueError("synthetic risk fixtures are never sent to a live LLM")
-    if packet["snapshot_id"] not in ledger.state()["snapshots"]:
+    if packet["snapshot_id"] not in ledger.index()["snapshots"]:
         raise ValueError("snapshot must be frozen in the ledger before LLM review")
     candidate_id = packet["candidate_id"]
     state_path = _review_state_path(_review_state_root(state_dir, research_only), candidate_id, packet["snapshot_id"])

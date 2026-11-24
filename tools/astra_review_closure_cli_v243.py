@@ -225,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
             "finish_reasons": [choice.get("finish_reason") for choice in raw.get("choices", [])],
             "request_hash": attempt.get("request_hash"), "response_hash": attempt.get("response_hash"),
             "error_reason": attempt.get("error_reason")})
+    ledger_entry = ledger.index()["snapshots"][snapshot["snapshot_id"]]
+    review_attached = bool(ledger_entry.get("review_meta") or ledger_entry.get("review"))
     receipt = {"schema": RECEIPT_SCHEMA, "recorded_at": datetime.now(timezone.utc).isoformat(),
                "snapshot_id": snapshot["snapshot_id"], "packet_hash": core._hash(packet),
                "projection_hash": projection["projection_hash"], "research_only": True,
@@ -238,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                "attempt_state_path": str(state_path.relative_to(out)),
                "budget_before": before, "budget_after": after, "result": result,
                "full_packet_bytes": len(encoded(packet)), "review_input_bytes": len(encoded(projection)),
-               "ledger_review_attached": bool(ledger.state()["snapshots"][snapshot["snapshot_id"]].get("review"))}
+               "ledger_review_attached": review_attached}
     if receipt["ledger_review_attached"]:
         raise ValueError("research result unexpectedly attached to production review ledger")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")

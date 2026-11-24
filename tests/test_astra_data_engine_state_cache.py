@@ -124,24 +124,29 @@ def test_rejected_multi_reserve_does_not_leak_into_cached_state(tmp_path):
 
 def test_cache_miss_fetch_saves_twice_and_marks_success(tmp_path, monkeypatch):
     e = _engine(tmp_path)
-    writes = {"n": 0}
+    state_writes = {"n": 0}
+    control_writes = {"n": 0}
     real = de._write_json_atomic
 
-    def counting(*args, **kwargs):
-        writes["n"] += 1
-        return real(*args, **kwargs)
+    def counting(path, *args, **kwargs):
+        if path == e.control_path:
+            control_writes["n"] += 1
+        else:
+            state_writes["n"] += 1
+        return real(path, *args, **kwargs)
 
     monkeypatch.setattr(de, "_write_json_atomic", counting)
     rec = e.fetch(INDEX, lambda: {"values": {"index_price": 100_000.0}, "observation_end_ms": T,
                                   "retrieved_at_ms": T + 5}, now_ms=T, scope={"index": "btc_usd"})
     assert rec["fetch_decision"]["status"] == "FETCHED"
-    assert writes["n"] == 2  # budget reservation + record with cleared fetch error
-    status = json.loads(e.state_path.read_text(encoding="utf-8"))["fetch_status"]
+    assert state_writes["n"] == 1    # cache record persisted once
+    assert control_writes["n"] == 2  # budget reservation + cleared fetch error in control plane
+    status = json.loads(e.control_path.read_text(encoding="utf-8"))["fetch_status"]
     assert status[de._state_key(INDEX, {"index": "btc_usd"})] == {
-        "attempts": 0, "next_retry_at_ms": None, "last_success_at_ms": T + 5}
+        "attempts": 0, "next_retry_at_ms": None, "last_success_at_ms": T + 5, "last_data_state": "OK"}
     hit = e.fetch(INDEX, lambda: pytest.fail("loader called on hit"), now_ms=T + 1000, scope={"index": "btc_usd"})
     assert hit["fetch_decision"]["status"] == "CACHE_HIT"
-    assert writes["n"] == 2
+    assert state_writes["n"] == 1 and control_writes["n"] == 2
 
 
 def test_concurrent_threads_and_engines_lose_no_updates(tmp_path):

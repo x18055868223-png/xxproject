@@ -1917,6 +1917,7 @@ class AstraWorkbench:
                              "review_protocol": wpem_review.EVIDENCE_POINTS_RESPONSE_PROTOCOL})
             if config.chain_audit_enabled else None)
         self._ledger_cache: tuple[Any, dict[str, Any]] | None = None
+        self._ledger_index_cache: tuple[Any, dict[str, Any]] | None = None
         self._state_cache: tuple[Any, dict[str, Any]] | None = None
         self._state_cache_lock = threading.Lock()
         # Retained lock points are immutable, so their compact metrics are cached by point id.
@@ -2548,19 +2549,43 @@ class AstraWorkbench:
                 self.data_engine.reserve_request(product, now_ms=self.clock_ms(), count=extra_requests)
             except data_engine.DataEngineError:
                 pass  # already sent; the budget only shapes later reads
+        batch_items: list[dict[str, Any]] = []
         for leg in ("short", "long"):
             book = market.get(leg + "_book")
             received = receipts.get(leg)
             if not book or not isinstance(received, int) or not isinstance(book.get("timestamp"), int):
                 continue
             inst_name = names.get(leg + "_instrument")
+            batch_items.append({
+                "product_id": product,
+                "values": book,
+                "observation_end_ms": book["timestamp"],
+                "retrieved_at_ms": received,
+                "ingested_at_ms": received,
+                "scope": {"instrument_name": inst_name, "depth": 5, "permission": "public_read_only"},
+            })
+        if batch_items:
             try:
-                self.data_engine.ingest(product, book, observation_end_ms=book["timestamp"],
-                                        retrieved_at_ms=received, ingested_at_ms=received,
-                                        scope={"instrument_name": inst_name, "depth": 5,
-                                               "permission": "public_read_only"})
+                self.data_engine.ingest_batch(batch_items)
             except Exception:
-                pass
+                for item in batch_items:
+                    try:
+                        self.data_engine.ingest(
+                            item["product_id"],
+                            item["values"],
+                            observation_end_ms=item["observation_end_ms"],
+                            retrieved_at_ms=item["retrieved_at_ms"],
+                            ingested_at_ms=item["ingested_at_ms"],
+                            scope=item["scope"],
+                        )
+                    except Exception:
+                        pass
+        for leg in ("short", "long"):
+            book = market.get(leg + "_book")
+            received = receipts.get(leg)
+            if not book or not isinstance(received, int) or not isinstance(book.get("timestamp"), int):
+                continue
+            inst_name = names.get(leg + "_instrument")
             greeks = book.get("greeks") if isinstance(book.get("greeks"), Mapping) else None
             if isinstance(inst_name, str) and greeks is not None:
                 parsed = discovery._named_expiry_ms(inst_name)
@@ -3124,10 +3149,13 @@ class AstraWorkbench:
                     btc_map_projection,
                     snapshot,
                 )
-            ledger_state = self._ledger_state()
-            prior = ledger_state["snapshots"].get(snapshot["snapshot_id"])
-            annex = (store.build_card_annex(ledger_state, snapshot["snapshot_id"])
-                     if prior else {"review_annex": {"status": "not_attached"}})
+            ledger_index = self._ledger_index()
+            prior = ledger_index["snapshots"].get(snapshot["snapshot_id"])
+            review_annex = (
+                (self.ledger.get_review(snapshot["snapshot_id"]) or {"status": "not_attached"})
+                if prior and (prior.get("review_meta") or prior.get("review"))
+                else {"status": "not_attached"}
+            )
             review_gate = self._review_gate(snapshot, candidate_gate)
             if source_gaps:
                 review_gate["enabled"] = False
@@ -3164,7 +3192,7 @@ class AstraWorkbench:
                 "snapshot": snapshot,
                 "remaining_to_expiry_ms": max(0, int(snapshot["contract"]["expiry_ms"]) - quote_valuation_ms),
                 "space_gate": candidate_gate,
-                "review": _compact_review(annex.get("review_annex")),
+                "review": _compact_review(review_annex),
                 "review_gate": review_gate,
                 "reading_guidance": reading_guidance,
                 "risk_consumption_diagnosis": risk_diagnosis,
@@ -3203,50 +3231,51 @@ class AstraWorkbench:
             self._research_pending_payloads.clear()
             self._locked_payloads.clear()
             gaps: list[str] = []
-            fmz_fact = self.latest_fact(now)
-            gate = self.space_gate_view(fmz_fact, now)
-            self._record_space_gate_transition(gate, now)
-            btc_projection = self._build_btc_map_projection(
-                now,
-                fmz_fact,
-                collect_slow_sources=self.config.map_sources_enabled,
-                collect_local_artifacts=True,
-            )
-            mark("fact_gate_map")
             discovered: Mapping[str, Any] | None = None
             discovery_exc: Exception | None = None
             candidates: list[dict[str, Any]] = []
-            try:
-                discovered = self.discovery_capture(now_ms=now)
-                mark("discovery")
-            except Exception as exc:
-                discovery_exc = exc
-                gaps.append("discovery_refresh_error")
-                upstream = getattr(exc, "upstream", None) or _upstream_code(exc)
-                if upstream:
-                    gaps.append("upstream_" + upstream)
-                candidates = [
-                    {"side": side, "status": "error", "snapshot": None,
-                     "review": {"status": "not_attached"},
-                     # reasons are readable codes; the exception type is kept apart
-                     "review_gate": {"enabled": False, "reasons": ["discovery_refresh_error"]
-                                     + (["upstream_" + upstream] if upstream else [])},
-                     "reading_guidance": guidance.build_reading_guidance(None, fmz_fact),
-                     "error": str(exc)[:240], "error_type": type(exc).__name__,
-                     "upstream": {"code": upstream, "last_success_ms": getattr(exc, "last_success_ms", None)}}
-                    for side in ("put", "call")
-                ]
-            if discovered is not None:
-                for side in ("put", "call"):
-                    candidates.append(self._capture_candidate(
-                        side,
-                        discovered,
-                        fmz_fact,
-                        gate,
-                        now,
-                        btc_map_projection=btc_projection,
-                    ))
-            mark("candidates")
+            with self.data_engine.batch_cache_writes():
+                fmz_fact = self.latest_fact(now)
+                gate = self.space_gate_view(fmz_fact, now)
+                self._record_space_gate_transition(gate, now)
+                btc_projection = self._build_btc_map_projection(
+                    now,
+                    fmz_fact,
+                    collect_slow_sources=self.config.map_sources_enabled,
+                    collect_local_artifacts=True,
+                )
+                mark("fact_gate_map")
+                try:
+                    discovered = self.discovery_capture(now_ms=now)
+                    mark("discovery")
+                except Exception as exc:
+                    discovery_exc = exc
+                    gaps.append("discovery_refresh_error")
+                    upstream = getattr(exc, "upstream", None) or _upstream_code(exc)
+                    if upstream:
+                        gaps.append("upstream_" + upstream)
+                    candidates = [
+                        {"side": side, "status": "error", "snapshot": None,
+                         "review": {"status": "not_attached"},
+                         # reasons are readable codes; the exception type is kept apart
+                         "review_gate": {"enabled": False, "reasons": ["discovery_refresh_error"]
+                                         + (["upstream_" + upstream] if upstream else [])},
+                         "reading_guidance": guidance.build_reading_guidance(None, fmz_fact),
+                         "error": str(exc)[:240], "error_type": type(exc).__name__,
+                         "upstream": {"code": upstream, "last_success_ms": getattr(exc, "last_success_ms", None)}}
+                        for side in ("put", "call")
+                    ]
+                if discovered is not None:
+                    for side in ("put", "call"):
+                        candidates.append(self._capture_candidate(
+                            side,
+                            discovered,
+                            fmz_fact,
+                            gate,
+                            now,
+                            btc_map_projection=btc_projection,
+                        ))
+                mark("candidates")
             finished_at_ms = max(now, self.clock_ms())
             state_snapshot = self._read_state_cached()
             email_state = state_snapshot.get("email") or {}
@@ -3850,9 +3879,10 @@ class AstraWorkbench:
         except Exception:
             projection = view.get("btc_map_projection")
         sink: dict[str, Any] = {}
-        item = self._capture_candidate(
-            contract["side"], self._locked_binding(contract), fact, gate, now_ms,
-            btc_map_projection=projection, tracking=True, sink=sink)
+        with self.data_engine.batch_cache_writes():
+            item = self._capture_candidate(
+                contract["side"], self._locked_binding(contract), fact, gate, now_ms,
+                btc_map_projection=projection, tracking=True, sink=sink)
         if (item.get("snapshot") or {}).get("candidate_id") != episode["candidate_id"]:
             # When the capture itself failed, its error type rides on the exception (not in
             # the HTTP payload); the sampler appends it to the gap reason.
@@ -4877,8 +4907,8 @@ class AstraWorkbench:
             if now >= proof["deadline_ms"]:
                 raise player_tracking.Blocked("shadow_handoff_expired")
             contract = player_tracking.contract_fields(proof["contract"])
-            # Pre-warm heavy caches BEFORE grabbing the live orderbook so total book age stays << 5000ms.
-            self._ledger_state()
+            # Pre-warm lightweight ledger index BEFORE grabbing the live orderbook so total book age stays << 5000ms.
+            self._ledger_index()
             with self._view_lock:
                 view = deepcopy(self._current_view or {})
                 held_ids = set(self._held_snapshot_ids)
@@ -4919,9 +4949,10 @@ class AstraWorkbench:
             capture_now = self.clock_ms()
             sink: dict[str, Any] = {}
             try:
-                item = self._capture_candidate(
-                    contract["side"], self._locked_binding(contract), fact, gate, capture_now,
-                    btc_map_projection=projection, tracking=False, sink=sink)
+                with self.data_engine.batch_cache_writes():
+                    item = self._capture_candidate(
+                        contract["side"], self._locked_binding(contract), fact, gate, capture_now,
+                        btc_map_projection=projection, tracking=False, sink=sink)
             except Exception as exc:
                 return {"state": "QUOTE_UNAVAILABLE", "error": type(exc).__name__, "execution_allowed": False}
             snap = item.get("snapshot")
@@ -6135,6 +6166,7 @@ class AstraWorkbench:
                 # rebuilding it on every pass would only trade memory for a full replay each time.
                 with self._ledger_cache_lock:
                     self._ledger_cache = None
+                    self._ledger_index_cache = None
                 self.ledger.drop_cache()
             _release_memory()
             after = self.rss_bytes()
@@ -6319,6 +6351,22 @@ class AstraWorkbench:
                 "changed_sources": sorted(set(changed)), "unusable_sources": sorted(set(unusable)),
                 "note_cn": "当前缓存重新核对，仅提示来源变更或失效；不覆盖冻结账，也不自动补发评审。"}
 
+    def _ledger_index(self) -> dict[str, Any]:
+        """Replay lightweight ledger metadata once per file change without retaining snapshots."""
+        try:
+            st = Path(self.ledger.path).stat()
+            key: Any = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            key = None
+        with self._ledger_cache_lock:
+            if key is not None and self._ledger_index_cache is not None and self._ledger_index_cache[0] == key:
+                return self._ledger_index_cache[1]
+        index = self.ledger.index()
+        if key is not None:
+            with self._ledger_cache_lock:
+                self._ledger_index_cache = (key, index)
+        return index
+
     def _ledger_state(self) -> dict[str, Any]:
         """Replay the append-only ledger once per file change; callers only read it."""
         try:
@@ -6339,7 +6387,7 @@ class AstraWorkbench:
         receipt = review_state.get("last_result") or {}
         if receipt.get("candidate_id") != snapshot.get("candidate_id") or not receipt.get("snapshot_id"):
             return {}
-        reviewed = (self._ledger_state().get("snapshots", {}).get(receipt["snapshot_id"]) or {}).get("snapshot")
+        reviewed = self.ledger.get_snapshot(receipt["snapshot_id"])
         if not isinstance(reviewed, Mapping):
             return {"summary_cn": "最近回执的冻结资料未读回；不套用到当前保单。"}
         differences = []
@@ -7082,7 +7130,8 @@ class AstraWorkbench:
 
         def run() -> None:
             try:
-                self._ledger_state()
+                self._ledger_index()
+                _release_memory()
             except Exception:
                 pass
             while not self._background_stop.is_set():

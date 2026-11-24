@@ -27,12 +27,15 @@ REGISTRY_SCHEMA = "astra_data_product_registry@2.3.0"
 RULE_VERSION = "astra_data_engine_rules@2.3.0"
 NORMALIZER_VERSION = "astra_data_engine_normalizer@2.3.0"
 STATE_FILE = "data_engine_state_v23.json"
+CONTROL_FILE = "data_engine_control_v23.json"
+CONTROL_SCHEMA = "astra_data_engine_control@2.3.0"
 DEFAULT_HEALTH_EVENT_LIMIT = 80
 MAX_KNOWN_RECORDS = 512
 MAX_CURRENT_SCOPES_PER_PRODUCT = 128
 STATE_LOCK_TIMEOUT_S = 5.0
 STALE_LOCK_MS = 30_000
 DEFAULT_TTL_MS = 300_000
+MIN_SCOPE_RETENTION_MS = 3_600_000
 DEFAULT_FETCH_BUDGET_PER_MINUTE = 12
 CLOCK_SKEW_MS = 5_000
 
@@ -108,11 +111,25 @@ def _read_registry(path: Path) -> dict[str, Any]:
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any], *, sort_keys: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     text = _canonical(dict(value)) if sort_keys else json.dumps(
         dict(value), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     tmp.write_text(text + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        for attempt in range(6 if os.name == "nt" else 1):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if os.name != "nt" or attempt >= 5:
+                    raise
+                time.sleep(0.005 * (attempt + 1))
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def _empty_state() -> dict[str, Any]:
@@ -121,6 +138,15 @@ def _empty_state() -> dict[str, Any]:
         "current": {},
         "known_records": {},
         "health_events": [],
+        "fetch_status": {},
+        "fetch_budget": {},
+        "provider_cooldowns": {},
+    }
+
+
+def _empty_control() -> dict[str, Any]:
+    return {
+        "schema": CONTROL_SCHEMA,
         "fetch_status": {},
         "fetch_budget": {},
         "provider_cooldowns": {},
@@ -149,12 +175,33 @@ def _working_copy(state: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-# Parsed state per state file, keyed by the file's (inode, size, mtime_ns) and
+def _working_control_copy(control: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy mutable control-plane buckets so callers never alias cached control dicts."""
+    out = _empty_control()
+    if isinstance(control.get("fetch_status"), Mapping):
+        out["fetch_status"] = {str(k): (dict(v) if isinstance(v, Mapping) else v) for k, v in control["fetch_status"].items()}
+    budgets = control.get("fetch_budget")
+    if isinstance(budgets, Mapping):
+        copied_budgets: dict[str, Any] = {}
+        for level in ("provider", "product"):
+            bucket = budgets.get(level)
+            copied_budgets[level] = dict(bucket) if isinstance(bucket, Mapping) else {}
+        for k, v in budgets.items():
+            if k not in copied_budgets:
+                copied_budgets[k] = dict(v) if isinstance(v, Mapping) else v
+        out["fetch_budget"] = copied_budgets
+    cooldowns = control.get("provider_cooldowns")
+    if isinstance(cooldowns, Mapping):
+        out["provider_cooldowns"] = {str(k): (dict(v) if isinstance(v, Mapping) else v) for k, v in cooldowns.items()}
+    return out
+
+
+# Parsed state per state/control file, keyed by the file's (inode, size, mtime_ns) and
 # only consulted while the state file lock is held. Every writer replaces the
 # file atomically (a new inode), so a save by any other process changes the key.
 _STATE_CACHE: dict[str, tuple[tuple[int, int, int], dict[str, Any]]] = {}
 _STATE_CACHE_GUARD = threading.Lock()
-_STATE_CACHE_MAX = 8
+_STATE_CACHE_MAX = 16
 
 
 def _stat_key(st: os.stat_result) -> tuple[int, int, int]:
@@ -251,11 +298,85 @@ class DataEngine:
         self.state_dir = Path(state_dir)
         self.registry_path = Path(registry_path) if registry_path is not None else default_registry_path()
         self.state_path = self.state_dir / STATE_FILE
+        self.control_path = self.state_dir / CONTROL_FILE
         self.registry = _read_registry(self.registry_path)
         self.products = _registry_products(self.registry)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._state_lock = threading.RLock()
         self._cache_id = str(self.state_path.resolve())
+        self._control_cache_id = str(self.control_path.resolve())
+        self._batch_depth = 0
+        self._batch_dirty = False
+        self._batch_base_key: tuple[int, int, int] | None = None
+        self._batch_state: dict[str, Any] | None = None
+        self._batch_pending_ingests: list[dict[str, Any]] = []
+        self._batch_pending_events: list[tuple[str, str, str, int, dict[str, Any]]] = []
+        self._batch_pending_fetch_success: list[tuple[dict[str, Any], tuple[Any, ...]]] = []
+        self._batch_fetch_status: dict[str, dict[str, Any]] = {}
+
+    def _clear_batch_state_unlocked(self) -> None:
+        self._batch_dirty = False
+        self._batch_state = None
+        self._batch_base_key = None
+        self._batch_pending_ingests.clear()
+        self._batch_pending_events.clear()
+        self._batch_pending_fetch_success.clear()
+        self._batch_fetch_status.clear()
+
+    @contextmanager
+    def batch_cache_writes(self):
+        """Coalesce cache-plane rewrites while keeping control-plane writes immediate."""
+        with self._state_lock:
+            self._batch_depth += 1
+        exc_active = False
+        try:
+            yield
+        except BaseException:
+            exc_active = True
+            raise
+        finally:
+            should_flush = False
+            with self._state_lock:
+                self._batch_depth = max(0, self._batch_depth - 1)
+                if self._batch_depth == 0 and self._batch_dirty:
+                    should_flush = True
+            if should_flush:
+                if exc_active:
+                    try:
+                        self.flush_cache()
+                    except Exception:
+                        with self._state_lock:
+                            self._clear_batch_state_unlocked()
+                else:
+                    self.flush_cache()
+
+    def flush_cache(self) -> bool:
+        """Persist buffered cache mutations to disk, merging concurrent cache updates."""
+        with self._state_guard():
+            if not self._batch_dirty:
+                self._clear_batch_state_unlocked()
+                return False
+            try:
+                disk_key: tuple[int, int, int] | None = _stat_key(os.stat(self.state_path))
+            except OSError:
+                disk_key = None
+            if self._batch_state is not None and disk_key == self._batch_base_key:
+                target = self._batch_state
+            else:
+                target = self._load_state_unlocked(mutable=True)
+                for p in self._batch_pending_ingests:
+                    self._apply_ingest_unlocked(target, p)
+                for product_id, scope_key, status, ts_ms, detail in self._batch_pending_events:
+                    self._append_event(target, product_id, scope_key, status, ts_ms, detail)
+            self._save_state_unlocked(target)
+            pending_fs = list(self._batch_pending_fetch_success)
+            self._clear_batch_state_unlocked()
+            if pending_fs:
+                ctrl = self._load_control_unlocked(mutable=True)
+                for rec, fs in pending_fs:
+                    self._mark_fetch_success(ctrl, rec, fs)
+                self._save_control_unlocked(ctrl, current_keys=set(target.get("current") or ()))
+            return True
 
     def ingest(
         self,
@@ -285,10 +406,38 @@ class DataEngine:
             source_ref=source_ref, is_final=is_final, historical_import=historical_import,
             ingested_at_ms=ingested_at_ms,
         )
+        with self._state_lock:
+            if self._batch_depth > 0:
+                if self._batch_state is None:
+                    with self._state_guard():
+                        try:
+                            self._batch_base_key = _stat_key(os.stat(self.state_path))
+                        except OSError:
+                            self._batch_base_key = None
+                        self._batch_state = self._load_state_unlocked(mutable=True)
+                out = self._apply_ingest_unlocked(self._batch_state, prepared)
+                self._batch_pending_ingests.append(prepared)
+                self._batch_dirty = True
+                if _fetch_success is not None:
+                    data_state_ok = str((out.get("quality") or {}).get("data_state") or "OK").upper() == "OK"
+                    if data_state_ok:
+                        # Defer advancing last_success_at_ms until state_path actually receives the record.
+                        self._batch_pending_fetch_success.append((out, _fetch_success))
+                        self._mark_fetch_success({"fetch_status": self._batch_fetch_status}, out, _fetch_success)
+                    else:
+                        with self._state_guard():
+                            ctrl = self._load_control_unlocked(mutable=True)
+                            self._mark_fetch_success(ctrl, out, _fetch_success)
+                            self._save_control_unlocked(ctrl)
+                return out
         with self._state_guard():
             state = self._load_state_unlocked()
-            out = self._apply_ingest_unlocked(state, prepared, _fetch_success=_fetch_success)
+            out = self._apply_ingest_unlocked(state, prepared)
             self._save_state_unlocked(state)
+            if _fetch_success is not None:
+                ctrl = self._load_control_unlocked(mutable=True)
+                self._mark_fetch_success(ctrl, out, _fetch_success)
+                self._save_control_unlocked(ctrl, current_keys=set(state.get("current") or ()))
             return out
 
     def ingest_batch(self, items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -297,6 +446,20 @@ class DataEngine:
             return []
         prepared_items = [self._prepare_ingest(**dict(item)) for item in items]
         out: list[dict[str, Any]] = []
+        with self._state_lock:
+            if self._batch_depth > 0:
+                if self._batch_state is None:
+                    with self._state_guard():
+                        try:
+                            self._batch_base_key = _stat_key(os.stat(self.state_path))
+                        except OSError:
+                            self._batch_base_key = None
+                        self._batch_state = self._load_state_unlocked(mutable=True)
+                for prepared in prepared_items:
+                    out.append(self._apply_ingest_unlocked(self._batch_state, prepared))
+                    self._batch_pending_ingests.append(prepared)
+                self._batch_dirty = True
+                return out
         with self._state_guard():
             state = self._load_state_unlocked()
             for prepared in prepared_items:
@@ -481,28 +644,41 @@ class DataEngine:
     def read(self, product_id: str, *, now_ms: int, usage: str, scope: Any = None) -> dict[str, Any]:
         product = self._product(product_id)
         now_ms = _require_int_ms("now_ms", now_ms) or 0
-        with self._state_guard():
-            state = self._load_state_unlocked(mutable=False)
-            state_key = _state_key(product_id, scope)
-            record = state.get("current", {}).get(state_key)
-        if not isinstance(record, Mapping):
+        state_key = _state_key(product_id, scope)
+        with self._state_lock:
+            if self._batch_depth > 0 and self._batch_state is not None:
+                record = self._batch_state.get("current", {}).get(state_key)
+                copied = deepcopy(dict(record)) if isinstance(record, Mapping) else None
+            else:
+                with self._state_guard():
+                    state = self._load_state_unlocked(mutable=False)
+                    record = state.get("current", {}).get(state_key)
+                    copied = deepcopy(dict(record)) if isinstance(record, Mapping) else None
+        if copied is None:
             return {
                 "schema": RECORD_SCHEMA,
                 "identity": self._missing_identity(product, scope),
                 "usage_decision": self._missing_decision(product, now_ms, usage),
             }
-        out = deepcopy(dict(record))
-        out["usage_decision"] = self._usage_decision(product, out, now_ms, usage)
-        return out
+        copied["usage_decision"] = self._usage_decision(product, copied, now_ms, usage)
+        return copied
 
     def health(self, now_ms: int) -> dict[str, Any]:
         now_ms = _require_int_ms("now_ms", now_ms) or 0
-        with self._state_guard():
-            state = self._load_state_unlocked(mutable=False)
-            current = state.get("current", {}) if isinstance(state.get("current"), Mapping) else {}
+        with self._state_lock:
+            if self._batch_depth > 0 and self._batch_state is not None:
+                current = self._batch_state.get("current", {}) if isinstance(self._batch_state.get("current"), Mapping) else {}
+                current_copy = {k: dict(v) for k, v in current.items() if isinstance(v, Mapping)}
+                recent_events = deepcopy((self._batch_state.get("health_events") or [])[-DEFAULT_HEALTH_EVENT_LIMIT:])
+            else:
+                with self._state_guard():
+                    state = self._load_state_unlocked(mutable=False)
+                    current = state.get("current", {}) if isinstance(state.get("current"), Mapping) else {}
+                    current_copy = {k: dict(v) for k, v in current.items() if isinstance(v, Mapping)}
+                    recent_events = deepcopy((state.get("health_events") or [])[-DEFAULT_HEALTH_EVENT_LIMIT:])
         products: dict[str, Any] = {}
         for product_id, product in sorted(self.products.items()):
-            entries = [dict(v) for k, v in current.items() if k.startswith(product_id + "|") and isinstance(v, Mapping)]
+            entries = [v for k, v in current_copy.items() if k.startswith(product_id + "|")]
             products[product_id] = self._health_product(product, entries, now_ms)
         return {
             "schema": "astra_data_engine_health@2.3.0",
@@ -510,7 +686,7 @@ class DataEngine:
             "rule_version": RULE_VERSION,
             "registry_path": str(self.registry_path),
             "products": products,
-            "recent_events": deepcopy(state.get("health_events", [])[-DEFAULT_HEALTH_EVENT_LIMIT:]),
+            "recent_events": recent_events,
         }
 
     def freeze(
@@ -633,10 +809,10 @@ class DataEngine:
         if product.get("connection_status") == "PLANNED_NOT_CONNECTED":
             raise DataEngineError("PRODUCT_NOT_CONNECTED", "source is not connected")
         with self._state_guard():
-            state = self._load_state_unlocked()
+            ctrl = self._load_control_unlocked(mutable=True)
             for _ in range(max(1, int(count))):
-                self._consume_fetch_budget(state, product, now_ms)
-            self._save_state_unlocked(state)
+                self._consume_fetch_budget(ctrl, product, now_ms)
+            self._save_control_unlocked(ctrl)
 
     def fetch(
         self,
@@ -658,20 +834,23 @@ class DataEngine:
                 cached["fetch_decision"] = {"status": "CACHE_HIT", "loader_called": False}
                 return cached
             with self._state_guard():
-                state = self._load_state_unlocked(mutable=False)
+                ctrl = self._load_control_unlocked(mutable=False)
                 # Polling cadence and economic observation age are different.
                 # Reusing a daily record never refreshes its usage qualification.
                 interval = self._fetch_policy(product).get("min_fetch_interval_ms", 0)
-                last_success = (state.get("fetch_status", {}).get(lock_key) or {}).get("last_success_at_ms")
+                status_entry = (self._batch_fetch_status.get(lock_key) if self._batch_depth > 0 else None) or (
+                    ctrl.get("fetch_status", {}).get(lock_key) or {}
+                )
+                last_success = status_entry.get("last_success_at_ms")
                 if (isinstance(interval, int) and interval > 0 and isinstance(last_success, int)
                         and 0 <= now_ms - last_success < interval):
                     cached["fetch_decision"] = {"status": "AWAIT_SOURCE_CHECK", "loader_called": False,
                                                 "next_check_at_ms": last_success + interval}
                     return cached
-                self._check_fetch_backoff(state, product, lock_key, now_ms)
-                state = _working_copy(state)
-                self._consume_fetch_budget(state, product, now_ms)
-                self._save_state_unlocked(state)
+                self._check_fetch_backoff(ctrl, product, lock_key, now_ms)
+                ctrl = _working_control_copy(ctrl)
+                self._consume_fetch_budget(ctrl, product, now_ms)
+                self._save_control_unlocked(ctrl)
             try:
                 loaded = loader()
                 if not isinstance(loaded, Mapping):
@@ -685,7 +864,7 @@ class DataEngine:
                     raise DataEngineError("LOADER_RESULT_INVALID", "loader result must include mapping values")
                 payload.pop("product_id", None)
                 retry_after_ms = payload.pop("retry_after_ms", None)
-                # One save: the accepted record and the cleared (or partial-backoff) fetch status land together.
+                # Cache record and control-plane fetch_status land in their respective planes cleanly.
                 record = self.ingest(product_id, values, scope=scope,
                                      _fetch_success=(lock_key, now_ms, retry_after_ms), **payload)
                 record["fetch_decision"] = {"status": "FETCHED", "loader_called": True}
@@ -747,96 +926,104 @@ class DataEngine:
                     raise DataEngineError("STATE_LOCK_TIMEOUT", "timed out waiting for data engine state lock")
                 time.sleep(0.01)
 
-    def _load_state_unlocked(self, *, mutable: bool = True) -> dict[str, Any]:
-        """Return the state, reparsing the file only when it changed on disk.
-
-        mutable=False hands out the shared cached object, which callers must not
-        modify; mutable=True returns a working copy that is safe to modify and
-        save. Call only with the state file lock held.
-        """
+    def _load_cached_json_unlocked(self, path: Path, cache_id: str, empty_fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         try:
-            fh = open(self.state_path, "rb")
+            fh = open(path, "rb")
         except OSError:
-            return _empty_state()
+            return empty_fn()
         with fh:
             try:
                 key = _stat_key(os.fstat(fh.fileno()))
             except OSError:
                 key = None
             with _STATE_CACHE_GUARD:
-                cached = _STATE_CACHE.get(self._cache_id)
+                cached = _STATE_CACHE.get(cache_id)
             if key is not None and cached is not None and cached[0] == key:
-                state = cached[1]
-            else:
-                try:
-                    value = json.loads(fh.read().decode("utf-8-sig"))
-                except (OSError, json.JSONDecodeError):
-                    return _empty_state()
-                if not isinstance(value, Mapping):
-                    return _empty_state()
-                state = dict(value)
-                self._remember_state(key, state)
+                return cached[1]
+            try:
+                value = json.loads(fh.read().decode("utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                return empty_fn()
+            if not isinstance(value, Mapping):
+                return empty_fn()
+            loaded = dict(value)
+            self._remember_cached(cache_id, key, loaded)
+            return loaded
+
+    def _load_state_unlocked(self, *, mutable: bool = True) -> dict[str, Any]:
+        """Return the cache state, reparsing the file only when it changed on disk."""
+        state = self._load_cached_json_unlocked(self.state_path, self._cache_id, _empty_state)
         return _working_copy(state) if mutable else state
 
-    def _remember_state(self, key: tuple[int, int, int] | None, state: dict[str, Any]) -> None:
+    def _load_control_unlocked(self, *, mutable: bool = True) -> dict[str, Any]:
+        """Return the control plane, migrating once from legacy state_path if needed."""
+        if self.control_path.exists():
+            ctrl = self._load_cached_json_unlocked(self.control_path, self._control_cache_id, _empty_control)
+        else:
+            legacy = self._load_state_unlocked(mutable=False)
+            ctrl = _empty_control()
+            for key in ("fetch_status", "fetch_budget", "provider_cooldowns"):
+                if isinstance(legacy.get(key), Mapping):
+                    ctrl[key] = legacy[key]
+        return _working_control_copy(ctrl) if mutable else ctrl
+
+    def _remember_cached(self, cache_id: str, key: tuple[int, int, int] | None, value: dict[str, Any]) -> None:
         with _STATE_CACHE_GUARD:
-            _STATE_CACHE.pop(self._cache_id, None)
+            _STATE_CACHE.pop(cache_id, None)
             if key is None:
                 return
             while len(_STATE_CACHE) >= _STATE_CACHE_MAX:
                 _STATE_CACHE.pop(next(iter(_STATE_CACHE)))
-            _STATE_CACHE[self._cache_id] = (key, state)
+            _STATE_CACHE[cache_id] = (key, value)
+
+    def _remember_state(self, key: tuple[int, int, int] | None, state: dict[str, Any]) -> None:
+        self._remember_cached(self._cache_id, key, state)
 
     def _save_state_unlocked(self, state: Mapping[str, Any]) -> None:
         state = dict(state)
+        # Preserve legacy pre-split control fields on upgrade before clearing them from state_path.
+        if not self.control_path.exists():
+            legacy_src: Mapping[str, Any] = state
+            if not any(legacy_src.get(k) for k in ("fetch_status", "fetch_budget", "provider_cooldowns")) and self.state_path.exists():
+                legacy_src = self._load_cached_json_unlocked(self.state_path, self._cache_id, _empty_state)
+            if any(legacy_src.get(k) for k in ("fetch_status", "fetch_budget", "provider_cooldowns")):
+                self._save_control_unlocked(legacy_src, current_keys=set(state.get("current") or ()))
         self._prune_state(state)
+        # Keep schema keys present for clean rollback while storing live control state in control_path.
+        state["fetch_status"] = {}
+        state["fetch_budget"] = {}
+        state["provider_cooldowns"] = {}
         try:
             # Nothing hashes the state file bytes, so skip key sorting (loaded
             # dicts keep the file's order anyway).
             _write_json_atomic(self.state_path, state, sort_keys=False)
             key = _stat_key(os.stat(self.state_path))
         except BaseException:
-            self._remember_state(None, state)
+            self._remember_cached(self._cache_id, None, state)
             raise
-        self._remember_state(key, state)
+        self._remember_cached(self._cache_id, key, state)
 
-    def _prune_state(self, state: dict[str, Any]) -> None:
-        known = state.get("known_records")
-        if isinstance(known, Mapping) and len(known) > MAX_KNOWN_RECORDS:
-            ordered = sorted(
-                known.items(),
-                key=lambda item: (
-                    int(item[1].get("first_seen_at_ms") or 0) if isinstance(item[1], Mapping) else 0,
-                    str(item[0]),
-                ),
-            )
-            keep = {key for key, _value in ordered[-MAX_KNOWN_RECORDS:]}
-            state["known_records"] = {key: value for key, value in known.items() if key in keep}
-        current = state.get("current")
-        if not isinstance(current, Mapping):
-            return
-        grouped: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
-        for key, record in current.items():
-            product_id = str(key).split("|", 1)[0]
-            if isinstance(record, Mapping):
-                grouped.setdefault(product_id, []).append((key, record))
-        drop: set[str] = set()
-        for rows in grouped.values():
-            if len(rows) <= MAX_CURRENT_SCOPES_PER_PRODUCT:
-                continue
-            rows.sort(
-                key=lambda item: (
-                    int(item[1].get("time", {}).get("observation_end_ms") or 0),
-                    int(item[1].get("time", {}).get("first_seen_at_ms") or 0),
-                    item[0],
-                )
-            )
-            drop.update(key for key, _record in rows[:-MAX_CURRENT_SCOPES_PER_PRODUCT])
-        if drop:
-            state["current"] = {key: value for key, value in current.items() if key not in drop}
-        fetch_status = state.get("fetch_status")
+    def _save_control_unlocked(self, control: Mapping[str, Any], *, current_keys: set[str] | None = None) -> None:
+        ctrl = _working_control_copy(control)
+        self._prune_control(ctrl, current_keys=current_keys)
+        try:
+            _write_json_atomic(self.control_path, ctrl, sort_keys=False)
+            key = _stat_key(os.stat(self.control_path))
+        except BaseException:
+            self._remember_cached(self._control_cache_id, None, ctrl)
+            raise
+        self._remember_cached(self._control_cache_id, key, ctrl)
+
+    def _prune_control(self, ctrl: dict[str, Any], *, current_keys: set[str] | None = None) -> None:
+        fetch_status = ctrl.get("fetch_status")
         if isinstance(fetch_status, Mapping) and len(fetch_status) > MAX_KNOWN_RECORDS:
-            current_keys = set(state.get("current") or {})
+            if current_keys is None:
+                with self._state_lock:
+                    batch_cur = self._batch_state.get("current") if self._batch_state else None
+                if isinstance(batch_cur, Mapping):
+                    current_keys = set(batch_cur)
+                else:
+                    current_keys = set(self._load_state_unlocked(mutable=False).get("current") or ())
             scored: list[tuple[int, str]] = []
             for key, value in fetch_status.items():
                 if not isinstance(value, Mapping):
@@ -853,7 +1040,114 @@ class DataEngine:
                 if len(keep_fs) >= MAX_KNOWN_RECORDS:
                     break
                 keep_fs.add(key)
-            state["fetch_status"] = {key: val for key, val in fetch_status.items() if key in keep_fs}
+            ctrl["fetch_status"] = {key: val for key, val in fetch_status.items() if key in keep_fs}
+
+    @staticmethod
+    def _reference_now_ms(current: Mapping[str, Any]) -> int:
+        ref = 0
+        for record in current.values():
+            if not isinstance(record, Mapping):
+                continue
+            time_part = record.get("time")
+            if not isinstance(time_part, Mapping):
+                continue
+            for field in ("ingested_at_ms", "retrieved_at_ms", "first_seen_at_ms", "observation_end_ms"):
+                val = time_part.get(field)
+                if isinstance(val, int) and not isinstance(val, bool) and val > ref:
+                    ref = val
+        return ref
+
+    def _max_policy_ttl_ms(self, product: Mapping[str, Any]) -> int:
+        policies = product.get("usage_policies") if isinstance(product.get("usage_policies"), Mapping) else {}
+        ttls = [
+            int(policy["ttl_ms"])
+            for policy in policies.values()
+            if isinstance(policy, Mapping) and isinstance(policy.get("ttl_ms"), int) and policy["ttl_ms"] > 0
+        ]
+        return max(ttls) if ttls else DEFAULT_TTL_MS
+
+    @staticmethod
+    def _option_contract_expiry_ms(record: Mapping[str, Any]) -> int | None:
+        values = (record.get("content") or {}).get("values")
+        if not isinstance(values, Mapping):
+            return None
+        direct = values.get("expiration_timestamp")
+        if isinstance(direct, int) and not isinstance(direct, bool) and direct > 0:
+            return direct
+        expiries: list[int] = []
+        for leg_key in ("short", "long"):
+            leg = values.get(leg_key)
+            if isinstance(leg, Mapping):
+                exp = leg.get("expiration_timestamp")
+                if isinstance(exp, int) and not isinstance(exp, bool) and exp > 0:
+                    expiries.append(exp)
+        return min(expiries) if expiries else None
+
+    def _semantic_scope_expired(self, product: Mapping[str, Any], record: Mapping[str, Any], ref_now_ms: int) -> bool:
+        if ref_now_ms <= 0:
+            return False
+        scope_key = (record.get("identity") or {}).get("scope_key")
+        if scope_key == "__global__":
+            return False
+        contract_exp = self._option_contract_expiry_ms(record)
+        if contract_exp is not None and ref_now_ms > contract_exp + MIN_SCOPE_RETENTION_MS:
+            return True
+        time_part = record.get("time") or {}
+        rec_ts = max(
+            int(time_part.get("observation_end_ms") or 0),
+            int(time_part.get("retrieved_at_ms") or 0),
+            int(time_part.get("first_seen_at_ms") or 0),
+        )
+        retain_ms = max(self._max_policy_ttl_ms(product) * 2, MIN_SCOPE_RETENTION_MS)
+        return rec_ts > 0 and (ref_now_ms - rec_ts) > retain_ms
+
+    def _prune_state(self, state: dict[str, Any]) -> None:
+        known = state.get("known_records")
+        if isinstance(known, Mapping) and len(known) > MAX_KNOWN_RECORDS:
+            ordered = sorted(
+                known.items(),
+                key=lambda item: (
+                    int(item[1].get("first_seen_at_ms") or 0) if isinstance(item[1], Mapping) else 0,
+                    str(item[0]),
+                ),
+            )
+            keep = {key for key, _value in ordered[-MAX_KNOWN_RECORDS:]}
+            state["known_records"] = {key: value for key, value in known.items() if key in keep}
+        current = state.get("current")
+        if not isinstance(current, Mapping):
+            return
+        ref_now_ms = self._reference_now_ms(current)
+        grouped: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
+        for key, record in current.items():
+            product_id = str(key).split("|", 1)[0]
+            if isinstance(record, Mapping):
+                grouped.setdefault(product_id, []).append((key, record))
+        drop: set[str] = set()
+        for product_id, rows in grouped.items():
+            rows.sort(
+                key=lambda item: (
+                    int((item[1].get("time") or {}).get("observation_end_ms") or 0)
+                    if isinstance(item[1].get("time"), Mapping) else 0,
+                    int((item[1].get("time") or {}).get("first_seen_at_ms") or 0)
+                    if isinstance(item[1].get("time"), Mapping) else 0,
+                    item[0],
+                )
+            )
+            product = self.products.get(product_id) or {}
+            # Keep non-expired scopes, falling back to the single newest scope for health diagnostics.
+            survivors = [
+                (key, record)
+                for key, record in rows
+                if not self._semantic_scope_expired(product, record, ref_now_ms)
+            ]
+            if not survivors and rows:
+                survivors = [rows[-1]]
+            kept_keys = {key for key, _record in survivors[-MAX_CURRENT_SCOPES_PER_PRODUCT:]}
+            for key, _record in rows:
+                if key not in kept_keys:
+                    drop.add(key)
+        if drop:
+            state["current"] = {key: value for key, value in current.items() if key not in drop}
 
     def _payload_basis(
         self,
@@ -1267,20 +1561,20 @@ class DataEngine:
         entry = {"provider_id": str(provider_id), "until_ms": until_ms,
                  "reason": str(reason), "recorded_at_ms": now_ms}
         with self._state_guard():
-            state = self._load_state_unlocked()
-            cooldowns = state.setdefault("provider_cooldowns", {})
+            ctrl = self._load_control_unlocked(mutable=True)
+            cooldowns = ctrl.setdefault("provider_cooldowns", {})
             existing = cooldowns.get(str(provider_id))
             if isinstance(existing, Mapping) and int(existing.get("until_ms") or 0) > until_ms:
                 return deepcopy(dict(existing))
             cooldowns[str(provider_id)] = entry
-            self._save_state_unlocked(state)
+            self._save_control_unlocked(ctrl)
         return deepcopy(entry)
 
     def provider_cooldown(self, provider_id: str, *, now_ms: int) -> dict[str, Any] | None:
         now_ms = _require_int_ms("now_ms", now_ms) or 0
         with self._state_guard():
-            state = self._load_state_unlocked(mutable=False)
-        entry = (state.get("provider_cooldowns") or {}).get(str(provider_id))
+            ctrl = self._load_control_unlocked(mutable=False)
+        entry = (ctrl.get("provider_cooldowns") or {}).get(str(provider_id))
         if isinstance(entry, Mapping) and int(entry.get("until_ms") or 0) > now_ms:
             return deepcopy(dict(entry))
         return None
@@ -1288,8 +1582,10 @@ class DataEngine:
     def fetch_status(self, product_id: str, *, scope: Any = None) -> dict[str, Any] | None:
         lock_key = _state_key(product_id, scope)
         with self._state_guard():
-            state = self._load_state_unlocked(mutable=False)
-        entry = (state.get("fetch_status") or {}).get(lock_key)
+            if self._batch_depth > 0 and lock_key in self._batch_fetch_status:
+                return deepcopy(dict(self._batch_fetch_status[lock_key]))
+            ctrl = self._load_control_unlocked(mutable=False)
+        entry = (ctrl.get("fetch_status") or {}).get(lock_key)
         return deepcopy(dict(entry)) if isinstance(entry, Mapping) else None
 
     def _record_fetch_error(
@@ -1301,21 +1597,22 @@ class DataEngine:
         now_ms: int,
         exc: Exception,
     ) -> None:
+        policy = self._fetch_policy(product)
+        code = getattr(exc, "code", None) or type(exc).__name__
+        is_maint = bool(getattr(exc, "is_maintenance", False)) or code == "DERIBIT_MAINTENANCE"
+        is_rl = bool(getattr(exc, "is_rate_limit", False)) or code == "DERIBIT_HTTP_429"
+        if is_maint and isinstance(policy.get("maintenance_backoff_ms"), list) and policy["maintenance_backoff_ms"]:
+            backoff = policy["maintenance_backoff_ms"]
+        elif is_rl and isinstance(policy.get("rate_limit_backoff_ms"), list) and policy["rate_limit_backoff_ms"]:
+            backoff = policy["rate_limit_backoff_ms"]
+        elif isinstance(policy.get("retry_backoff_ms"), list) and policy["retry_backoff_ms"]:
+            backoff = policy["retry_backoff_ms"]
+        else:
+            backoff = [10_000, 30_000, 60_000]
+        scope_key = _scope_key(scope)
         with self._state_guard():
-            state = self._load_state_unlocked()
-            policy = self._fetch_policy(product)
-            code = getattr(exc, "code", None) or type(exc).__name__
-            is_maint = bool(getattr(exc, "is_maintenance", False)) or code == "DERIBIT_MAINTENANCE"
-            is_rl = bool(getattr(exc, "is_rate_limit", False)) or code == "DERIBIT_HTTP_429"
-            if is_maint and isinstance(policy.get("maintenance_backoff_ms"), list) and policy["maintenance_backoff_ms"]:
-                backoff = policy["maintenance_backoff_ms"]
-            elif is_rl and isinstance(policy.get("rate_limit_backoff_ms"), list) and policy["rate_limit_backoff_ms"]:
-                backoff = policy["rate_limit_backoff_ms"]
-            elif isinstance(policy.get("retry_backoff_ms"), list) and policy["retry_backoff_ms"]:
-                backoff = policy["retry_backoff_ms"]
-            else:
-                backoff = [10_000, 30_000, 60_000]
-            status = dict(state.setdefault("fetch_status", {}).get(lock_key) or {})
+            ctrl = self._load_control_unlocked(mutable=True)
+            status = dict(ctrl.setdefault("fetch_status", {}).get(lock_key) or {})
             attempts = int(status.get("attempts") or 0) + 1
             delay = int(backoff[min(attempts - 1, len(backoff) - 1)])
             exc_retry = getattr(exc, "retry_after_ms", None)
@@ -1327,16 +1624,23 @@ class DataEngine:
                 "last_error_code": code,
                 "next_retry_at_ms": now_ms + delay,
             })
-            state["fetch_status"][lock_key] = status
-            self._append_event(
-                state,
-                product_id,
-                _scope_key(scope),
-                "FETCH_ERROR",
-                now_ms,
-                {"error_code": status["last_error_code"], "next_retry_at_ms": status["next_retry_at_ms"]},
-            )
-            self._save_state_unlocked(state)
+            ctrl["fetch_status"][lock_key] = status
+            self._save_control_unlocked(ctrl)
+            detail = {"error_code": status["last_error_code"], "next_retry_at_ms": status["next_retry_at_ms"]}
+            if self._batch_depth > 0:
+                if self._batch_state is None:
+                    try:
+                        self._batch_base_key = _stat_key(os.stat(self.state_path))
+                    except OSError:
+                        self._batch_base_key = None
+                    self._batch_state = self._load_state_unlocked(mutable=True)
+                self._append_event(self._batch_state, product_id, scope_key, "FETCH_ERROR", now_ms, detail)
+                self._batch_pending_events.append((product_id, scope_key, "FETCH_ERROR", now_ms, detail))
+                self._batch_dirty = True
+            else:
+                state = self._load_state_unlocked(mutable=True)
+                self._append_event(state, product_id, scope_key, "FETCH_ERROR", now_ms, detail)
+                self._save_state_unlocked(state)
 
     def _mark_fetch_success(
         self, state: dict[str, Any], record: Mapping[str, Any], fetch_success: tuple[Any, ...] | None

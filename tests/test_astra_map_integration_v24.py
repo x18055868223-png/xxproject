@@ -30,15 +30,15 @@ def test_daily_check_cadence_never_renews_economic_clock(tmp_path):
         calls.append(1)
         return {"values": {"value": 42}, "observation_end_ms": fixtures.T, "retrieved_at_ms": fixtures.T}
     first = engine.fetch("daily.test", load, now_ms=fixtures.T)
-    budget = json.loads(engine.state_path.read_text(encoding="utf-8"))["fetch_budget"]
+    budget = json.loads(engine.control_path.read_text(encoding="utf-8"))["fetch_budget"]
     again = engine.fetch("daily.test", load, now_ms=fixtures.T + 2000)
     assert calls == [1]
     assert again["time"]["first_seen_at_ms"] == first["time"]["first_seen_at_ms"]
     assert again["time"]["observation_end_ms"] == fixtures.T
     assert not engine.read("daily.test", now_ms=fixtures.T + 2000, usage="background")["usage_decision"]["can_use"]
-    assert json.loads(engine.state_path.read_text(encoding="utf-8"))["fetch_budget"] == budget
+    assert json.loads(engine.control_path.read_text(encoding="utf-8"))["fetch_budget"] == budget
     engine.reserve_request("daily.test", now_ms=fixtures.T)
-    charged = json.loads(engine.state_path.read_text(encoding="utf-8"))["fetch_budget"]
+    charged = json.loads(engine.control_path.read_text(encoding="utf-8"))["fetch_budget"]
     assert sum(charged["product"].values()) == 2
     with pytest.raises(Exception, match="budget exhausted"):
         engine.reserve_request("daily.test", now_ms=fixtures.T)
