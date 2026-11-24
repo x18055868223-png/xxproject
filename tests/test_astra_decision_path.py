@@ -68,7 +68,9 @@ def test_collect_and_due_and_staleness():
     assert res["status"] == "ok" and "15OCT26" in res["expiries"]
     assert res["realized_vol"]["status"] == "fetch_failed"
     assert eg.collect(lambda u, p: (_ for _ in ()).throw(OSError()), NOW)["status"] == "fetch_failed"
-    assert not eg.due(res, NOW + 60_000) and eg.due(res, NOW + eg.REFRESH_MS)
+    assert eg.due(res, NOW + eg.RETRY_MS) and not eg.due(res, NOW + eg.RETRY_MS - 1)
+    assert eg.due({"status": "ok", "computed_at_ms": NOW, "realized_vol": {"status": "ok"}}, NOW + eg.REFRESH_MS)
+    assert not eg.due({"status": "ok", "computed_at_ms": NOW, "realized_vol": {"status": "ok"}}, NOW + 60_000)
     assert eg.due({"status": "fetch_failed", "computed_at_ms": NOW}, NOW + eg.RETRY_MS)
     assert eg.for_expiry(res, EXPIRY, now_ms=NOW + 60_000)["stale"] is False
     assert eg.for_expiry(res, EXPIRY, now_ms=NOW + eg.STALE_MS + 1)["stale"] is True

@@ -751,7 +751,7 @@ def cmd_install(
         return receipt
 
 
-def cmd_verify(prefix: Path, *, expected_core_version: str = "2.0.6") -> dict[str, Any]:
+def cmd_verify(prefix: Path, *, expected_core_version: str = "2.0.7") -> dict[str, Any]:
     app_root = _app_root(prefix)
     cur_dir = _resolve_active_release_dir(app_root, "current")
     if cur_dir is None:
@@ -882,7 +882,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_ver = sub.add_parser("verify")
     add_common(p_ver)
-    p_ver.add_argument("--expected-core-version", default="2.0.6")
+    p_ver.add_argument("--expected-core-version", default="2.0.7")
 
     p_rb = sub.add_parser("rollback")
     add_common(p_rb)

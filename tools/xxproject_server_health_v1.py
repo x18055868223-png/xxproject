@@ -18,8 +18,10 @@ import urllib.error
 import urllib.request
 
 if __package__:
+    from . import astra_evidence_qual_v1 as evidence_qual
     from . import astra_underwriting_fact_context_v20 as fact_context
 else:
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_underwriting_fact_context_v20 as fact_context
 
 SCHEMA = "xxproject_server_health@1.0.0"
@@ -177,12 +179,112 @@ def _check_gex_api(
     return {"ok": True, "availability": info.get("availability"), "data_age_ms": info.get("data_age_ms")}
 
 
+def _evaluate_workbench_evidence(view: Mapping[str, Any], *, now_ms: int | None = None) -> dict[str, Any]:
+    mc = view.get("market_context") if isinstance(view.get("market_context"), Mapping) else {}
+    facts = mc.get("market_facts") if isinstance(mc.get("market_facts"), Mapping) else {}
+    vp = facts.get("volume_price") if isinstance(facts.get("volume_price"), Mapping) else {}
+    flow = vp.get("micro_flow") if isinstance(vp.get("micro_flow"), Mapping) else {}
+    fast_4h = flow.get("fast_4h") if isinstance(flow.get("fast_4h"), Mapping) else None
+
+    cutoff_ms: int | None = None
+    for cand_clock in (view.get("served_at_ms"), now_ms, mc.get("snapshot_ts_ms")):
+        if evidence_qual.is_clock(cand_clock):
+            cutoff_ms = cand_clock
+            break
+
+    spot_qual = evidence_qual.qualify_spot_window(
+        fast_4h,
+        cutoff_ms=cutoff_ms,
+        extra_scopes=(vp, flow),
+        window_name="fast_4h",
+    )
+
+    eg = view.get("expiry_gamma") if isinstance(view.get("expiry_gamma"), Mapping) else {}
+    by_expiry = eg.get("by_expiry") if isinstance(eg.get("by_expiry"), Mapping) else {}
+    candidates = view.get("candidates") if isinstance(view.get("candidates"), list) else []
+    cand_expiry_ms: int | None = None
+    for item in candidates:
+        if not isinstance(item, Mapping):
+            continue
+        exp = ((item.get("snapshot") or {}).get("contract") or {}).get("expiry_ms")
+        if evidence_qual.is_clock(exp):
+            cand_expiry_ms = exp
+            break
+
+    pin_record: Mapping[str, Any] | None = None
+    if cand_expiry_ms is not None:
+        for row in by_expiry.values():
+            if isinstance(row, Mapping) and row.get("expiry_ms") == cand_expiry_ms:
+                pin_record = row
+                break
+    if pin_record is None and by_expiry:
+        for row in by_expiry.values():
+            if isinstance(row, Mapping):
+                pin_record = row
+                break
+    pin_expiry_ms = cand_expiry_ms
+    if pin_expiry_ms is None and isinstance(pin_record, Mapping) and evidence_qual.is_clock(pin_record.get("expiry_ms")):
+        pin_expiry_ms = pin_record.get("expiry_ms")
+
+    pin_qual = evidence_qual.qualify_live_pin(
+        pin_record,
+        expiry_ms=pin_expiry_ms,
+        cutoff_ms=cutoff_ms,
+    )
+    rv_raw = eg.get("realized_vol") if isinstance(eg.get("realized_vol"), Mapping) else None
+    rv_qual = evidence_qual.qualify_expiry_realized_vol(rv_raw, cutoff_ms=cutoff_ms)
+
+    spot_reasons = set(spot_qual.get("reason_codes") or ())
+    warmup_only_reasons = {
+        "degraded:window_backfill",
+        "degraded:backfill",
+        "degraded:has_backfill",
+        "degraded:backfill_mixed",
+        "not_ready",
+    }
+    spot_backfill_warming = bool(
+        isinstance(fast_4h, Mapping)
+        and spot_qual.get("status") == evidence_qual.QUAL_UNALIGNED
+        and spot_reasons
+        and spot_reasons.issubset(warmup_only_reasons)
+    )
+    spot_qual_for_health = (
+        {**spot_qual, "capability": evidence_qual.CAP_WARMING_UP}
+        if spot_backfill_warming
+        else spot_qual
+    )
+
+    cap_summary = evidence_qual.summarize_channel_capabilities(
+        spot_qual=spot_qual_for_health,
+        pin_qual=pin_qual,
+        rv_qual=rv_qual,
+    )
+    broken_spot = (
+        isinstance(fast_4h, Mapping)
+        and fast_4h.get("data_ready") is True
+        and spot_qual_for_health.get("capability") == evidence_qual.CAP_BLIND_UNALIGNED
+    )
+    broken_pin = isinstance(pin_record, Mapping) and pin_qual.get("capability") == evidence_qual.CAP_BLIND_UNALIGNED
+    broken_rv = (
+        isinstance(rv_raw, Mapping)
+        and rv_raw.get("status") == "ok"
+        and rv_qual.get("capability") == evidence_qual.CAP_BLIND_UNALIGNED
+    )
+    return {
+        "evidence_channels": cap_summary["channels"],
+        "blind_channels": cap_summary["blind_channels"],
+        "evidence_contract_ok": not (broken_spot or broken_pin or broken_rv),
+    }
+
+
 def _check_workbench(
     workbench_url: str,
     *,
     token: str,
     expected_core_version: str | None,
     http_get: Callable[..., tuple[int, Any]],
+    now_ms: int | None = None,
+    require_evidence_channels: bool = False,
 ) -> dict[str, Any]:
     base = workbench_url.rstrip("/")
     try:
@@ -224,12 +326,28 @@ def _check_workbench(
             "actual": mc.get("strategy_version"),
             "expected": expected_core_version,
         }
+    evidence = _evaluate_workbench_evidence(view, now_ms=now_ms)
+    if require_evidence_channels and (not evidence["evidence_contract_ok"] or evidence["blind_channels"]):
+        return {
+            "ok": False,
+            "reason": (
+                "workbench_evidence_contract_broken"
+                if not evidence["evidence_contract_ok"]
+                else "workbench_evidence_channels_blind"
+            ),
+            "authenticated_check": True,
+            "market_context_status": mc.get("status"),
+            "strategy_version": mc.get("strategy_version"),
+            "execution_allowed": False,
+            **evidence,
+        }
     return {
         "ok": True,
         "authenticated_check": True,
         "market_context_status": mc.get("status"),
         "strategy_version": mc.get("strategy_version"),
         "execution_allowed": False,
+        **evidence,
     }
 
 
@@ -434,12 +552,13 @@ def run_health_check(
     archive_root: Path,
     player_plan: Path,
     release_dir: Path | None,
-    expected_core_version: str | None = "2.0.6",
+    expected_core_version: str | None = "2.0.7",
     skip_network: bool = False,
     skip_systemd: bool = False,
     require_systemd: bool = False,
     require_workbench_auth: bool = False,
     require_release_manifest: bool = False,
+    require_evidence_channels: bool = False,
     gex_env: Path | None = None,
     max_producer_age_ms: int = 300_000,
     max_snapshot_age_ms: int = 600_000,
@@ -475,7 +594,12 @@ def run_health_check(
             }
         else:
             checks["workbench"] = _check_workbench(
-                workbench_url, token=token, expected_core_version=expected_core_version, http_get=http_get
+                workbench_url,
+                token=token,
+                expected_core_version=expected_core_version,
+                http_get=http_get,
+                now_ms=now,
+                require_evidence_channels=require_evidence_channels,
             )
     if release_dir is not None and (require_release_manifest or (release_dir / "RELEASE_MANIFEST.json").exists()):
         checks["release_manifest"] = check_release_manifest(release_dir)
@@ -509,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("/opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v3_p5.json"),
     )
     parser.add_argument("--release-dir", type=Path, default=Path("/opt/xxproject/current"))
-    parser.add_argument("--expected-core-version", default="2.0.6")
+    parser.add_argument("--expected-core-version", default="2.0.7")
     parser.add_argument("--skip-network", action="store_true")
     parser.add_argument("--skip-systemd", action="store_true")
     parser.add_argument("--require-systemd", action="store_true")
@@ -519,6 +643,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail instead of falling back to session-only when ASTRA_WORKBENCH_TOKEN cannot be read",
     )
     parser.add_argument("--require-release-manifest", action="store_true")
+    parser.add_argument(
+        "--require-evidence-channels",
+        action="store_true",
+        help="Fail when workbench evidence channels report blind channels or broken producer provenance",
+    )
     parser.add_argument("--max-producer-age-ms", type=int, default=300_000)
     parser.add_argument("--max-snapshot-age-ms", type=int, default=600_000)
     parser.add_argument("--max-map-age-ms", type=int, default=1_800_000)
@@ -550,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
         require_systemd=bool(args.require_systemd or auto_systemd),
         require_workbench_auth=args.require_workbench_auth,
         require_release_manifest=args.require_release_manifest,
+        require_evidence_channels=args.require_evidence_channels,
         max_producer_age_ms=args.max_producer_age_ms,
         max_snapshot_age_ms=args.max_snapshot_age_ms,
         max_map_age_ms=args.max_map_age_ms,

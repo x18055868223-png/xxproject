@@ -31,7 +31,7 @@ def assembler(mod):
 
 
 def test_version_is_206(mod):
-    assert mod.CONFIG["demo_version"] == "2.0.6"
+    assert mod.CONFIG["demo_version"] == "2.0.7"
     assert mod.CONFIG["volume_bar_backfill_enabled"] is True
 
 

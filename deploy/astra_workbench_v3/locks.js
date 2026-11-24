@@ -72,7 +72,7 @@ export const gapCn = (code) => {
   return GAP_CN[base] || (base ? "其他采样问题" : "原因未记录");
 };
 const ROW_STATUS_CN = {
-  changed: "有变化", unchanged: "未变", same_clock: "来源未更新", not_precise: "口径不同，只并列",
+  changed: "有变化", unchanged: "未变", same_clock: "来源未更新", stale: "数据偏旧·未确认", not_precise: "口径不同，只并列",
   missing: "两端缺失", new_fact: "锁定后才出现", latest_missing: "最新缺失", reference_only: "参考估算", unknown: "无法估算",
   not_recorded_at_lock: "锁定时未生成",
 };
@@ -808,19 +808,32 @@ export function levelsView(rows) {
     const a = get(r, "t0.value"), b = get(r, "t1.value");
     const notAtLock = r.status === "not_recorded_at_lock";
     const why = LEVEL_MISSING_CN[r.t0_missing_reason];
+    const t1Stale = r.status === "stale" || Boolean(r.stale && r.stale.t1) || Boolean(get(r, "t1.stale"));
+    const blockedStatus = r.status === "same_clock" || r.status === "stale" || r.status === "missing" || r.status === "latest_missing";
     const change = notAtLock ? (why ? why[1] : "锁定时未记录")
+      : t1Stale ? ROW_STATUS_CN.stale
+      : blockedStatus ? (ROW_STATUS_CN[r.status] || "—")
       : isNum(a) && isNum(b) ? (Math.round(b) === Math.round(a) ? "未变" : `${b > a ? "+" : "−"}${usd(Math.abs(b - a))}`)
       : ROW_STATUS_CN[r.status] || "—";
     const dt = get(r, "to_short_pct.t1"), d0 = get(r, "to_short_pct.t0");
-    if (get(r, "stale.t1") || get(r, "stale.t0")) stale = true;
+    if (t1Stale || get(r, "stale.t0")) stale = true;
     const bf = !notAtLock && get(r, "t0.compat_backfill_applied") && isNum(a);
     if (bf) backfilled = true;
+    const t1Clock = get(r, "t1.asof_ms");
+    const t1Age = get(r, "raw.t1.age_ms");
+    const t1MetaParts = [isNum(t1Clock) ? clock(t1Clock) : null, isNum(t1Age) ? `龄 ${dur(t1Age)}` : null].filter(Boolean);
+    const t1Meta = t1MetaParts.length ? `（${t1MetaParts.join(" · ")}）` : "";
+    const latestCell = !r.t1 ? h("td", { class: "n", text: "未记录" })
+      : !isNum(b) ? h("td", { class: "n", text: "缺失" })
+      : h("td", { class: "n", title: t1MetaParts.join(" · ") || null },
+          usd(b),
+          t1Meta ? h("span", { class: "muted small", text: ` ${t1Meta}` }) : null);
     tb.append(h("tr", { title: r.change_cn || "" },
       h("td", { text: r.label_cn || "其他价位" }),
       bf ? h("td", { class: "n", title: "由锁定时同源快照或本局冻结案卷按同一方法回填重算" }, usd(a), h("span", { class: "bf-hint", text: "（重算）" }))
         : h("td", { class: "n", text: notAtLock ? (why ? why[0] : "未记录") : isNum(a) ? usd(a) : "缺失" }),
-      h("td", { class: "n", text: r.t1 ? (isNum(b) ? usd(b) : "缺失") : "未记录" }),
-      h("td", { class: `n${notAtLock ? " muted" : ""}`, text: change }),
+      latestCell,
+      h("td", { class: `n${notAtLock || t1Stale || r.status === "same_clock" ? " muted" : ""}`, text: change }),
       h("td", { class: "n", text: isNum(dt) ? `${signedPct(dt)}${isNum(d0) && d0 !== dt ? `（锁定时 ${signedPct(d0)}）` : ""}` : "—" })));
   }
   t.append(tb);
@@ -903,19 +916,28 @@ function cell(point, unit) {
   return unit === "pct" ? signedPct(v) : unit === "BTC" ? btcText(v) : unit === "USD" ? usd(v) : String(v);
 }
 
-function changeRow(r) {
+export function changeRow(r) {
   const unit = get(r, "t1.unit") || get(r, "t0.unit");
   const a = get(r, "t0.value"), b = get(r, "t1.value");
-  let text = ROW_STATUS_CN[r.status] || "—", tone = "";
-  if (isNum(a) && isNum(b)) {
+  const t1Stale = r.status === "stale" || Boolean(r.stale && r.stale.t1) || Boolean(get(r, "t1.stale"));
+  const blockedStatus = r.status === "same_clock" || r.status === "stale" || r.status === "missing" || r.status === "latest_missing";
+  let text = t1Stale ? ROW_STATUS_CN.stale : (ROW_STATUS_CN[r.status] || "—"), tone = "";
+  if (!t1Stale && !blockedStatus && isNum(a) && isNum(b)) {
     const dlt = b - a;
     text = dlt === 0 ? "未变" : unit === "pct" ? `${dlt > 0 ? "+" : "−"}${Math.abs(dlt).toFixed(2)} 个百分点` : `${dlt > 0 ? "+" : "−"}${btcText(Math.abs(dlt))}`;
     const worse = WORSE[r.key];
     if (worse && dlt !== 0) tone = Math.sign(dlt) === worse ? "bad" : "ok";
   }
+  const t1Clock = get(r, "t1.asof_ms");
+  const t1Age = get(r, "raw.t1.age_ms");
+  const t1MetaParts = [isNum(t1Clock) ? clock(t1Clock) : null, isNum(t1Age) ? `龄 ${dur(t1Age)}` : null].filter(Boolean);
+  const t1Meta = t1MetaParts.length ? `（${t1MetaParts.join(" · ")}）` : "";
   return h("tr", { title: r.meaning_cn || "" },
     h("td", { text: LABEL[r.key] || r.label_cn || "其他项目" }),
-    h("td", { class: "n", text: cell(r.t0, unit) }), h("td", { class: "n", text: cell(r.t1, unit) }),
+    h("td", { class: "n", text: cell(r.t0, unit) }),
+    h("td", { class: "n", title: t1MetaParts.join(" · ") || null },
+      cell(r.t1, unit),
+      r.t1 && t1Meta ? h("span", { class: "muted small", text: ` ${t1Meta}` }) : null),
     h("td", { class: `n ${tone}`, text }));
 }
 

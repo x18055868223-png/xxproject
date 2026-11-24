@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 try:
+    from . import astra_evidence_qual_v1 as evidence_qual
     from . import astra_locked_candidate_compare_v1 as locked_compare
     from . import astra_locked_candidate_store_v1 as store
     from . import astra_player_dossier_v1 as dossier
@@ -21,6 +22,7 @@ try:
     from . import astra_underwriting_v20 as underwriting
     from . import signal_llm_review
 except ImportError:
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_locked_candidate_compare_v1 as locked_compare
     import astra_locked_candidate_store_v1 as store
     import astra_player_dossier_v1 as dossier
@@ -542,6 +544,16 @@ def _source_entry_context(hand, *, side=None, expiry_ms=None):
                 )
                 pin_method = ew.get('pin_method') or (hist_match or {}).get('pin_method') or default_method
                 pin_source = ew.get('pin_source') or (hist_match or {}).get('pin_source') or default_source
+                band_half = None
+                band_snap = src.get('band_snapshot') if isinstance(src.get('band_snapshot'), dict) else None
+                if band_snap is not None:
+                    read_cutoff = (case.get('build') or {}).get('built_at_ms') or at_ms
+                    if isinstance(read_cutoff, int) and not isinstance(read_cutoff, bool):
+                        fb = dossier.player.ard.frozen_band(band_snap, read_cutoff - 4 * 3_600_000)
+                        if fb is None:
+                            fb = dossier.player.ard.frozen_band(band_snap, read_cutoff)
+                        if fb is not None:
+                            band_half = fb.get('half_width_usd')
                 entry_pin = {
                     'expiry_ms': expiry_ms if expiry_ms is not None else ew_exp,
                     'pin': float(pin_val),
@@ -551,6 +563,7 @@ def _source_entry_context(hand, *, side=None, expiry_ms=None):
                     'pin_source': pin_source,
                     'pin_status': pin_status or 'ok',
                     'source': 'shadow_dossier.evidence.source.L3.expiry_walls',
+                    **({'band_half': float(band_half)} if dossier.player.number(band_half) is not None else {}),
                 }
         if expected_move is not None and entry_pin is not None:
             break
@@ -821,14 +834,107 @@ def _merge_index_points(archive_root, expiry_ms, at, *, public_fn=None):
                 points=[[t, by_ts[t]] for t in sorted(by_ts)])
 
 
-def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry_pin_snapshot=None):
-    """Build current ARD facts + strict same-measure comparison at a check_clock tick.
+def _collect_live_pin_rows(series_rows, latest_point, *, expiry, tick, win_ms):
+    """Extract and qualify live 5m Pin snapshots from series_rows and latest_point."""
+    candidates = []
+    for row in series_rows or ():
+        if not isinstance(row, dict):
+            continue
+        metrics = row.get('metrics') if isinstance(row.get('metrics'), dict) else row
+        if isinstance(metrics.get('levels'), dict):
+            candidates.append(metrics['levels'])
+        cand = row.get('candidate') if isinstance(row.get('candidate'), dict) else {}
+        if isinstance(cand.get('expiry_levels'), dict):
+            candidates.append(cand['expiry_levels'])
+    if isinstance(latest_point, dict):
+        cand = latest_point.get('candidate') if isinstance(latest_point.get('candidate'), dict) else {}
+        if isinstance(cand.get('expiry_levels'), dict):
+            candidates.append(cand['expiry_levels'])
+        metrics = latest_point.get('metrics') if isinstance(latest_point.get('metrics'), dict) else {}
+        if isinstance(metrics.get('levels'), dict):
+            candidates.append(metrics['levels'])
 
-    Supports both `depends_on_ard=True` (`frozen['ard_basis']`) and read-only
-    same-measure Pin comparison via `entry_pin_snapshot` when `depends_on_ard=False`.
+    live_rows = []
+    attempts = []
+    hist_max_age = max(win_ms, 4 * 3_600_000) + dossier.archive.expiry_structure.GAP_MS
+    pin_keys = {'pin', 'pin_status', 'pin_method', 'pin_source', 'expiry_ms', 'computed_at_ms'}
+    for lev in candidates:
+        if not any(k in lev and lev[k] is not None for k in pin_keys):
+            continue
+        q_live = evidence_qual.qualify_live_pin(lev, expiry_ms=expiry, cutoff_ms=tick)
+        attempts.append(q_live)
+        q_use = None
+        if q_live['status'] == evidence_qual.QUAL_ALIGNED:
+            q_use = q_live
+        elif q_live['status'] == evidence_qual.QUAL_STALE and lev.get('stale') is not True:
+            q_hist = evidence_qual.qualify_live_pin(
+                lev, expiry_ms=expiry, cutoff_ms=tick, max_age_ms=hist_max_age,
+            )
+            if q_hist['status'] == evidence_qual.QUAL_ALIGNED:
+                q_use = q_hist
+        if q_use is not None:
+            live_rows.append({
+                'schema': dossier.archive.expiry_structure.SNAPSHOT_SCHEMA,
+                'expiry_ms': expiry,
+                'at_ms': q_use['computed_at_ms'],
+                'available_at_ms': q_use['available_at_ms'],
+                'pin_source': q_use['pin_source'],
+                'pin_method': q_use['pin_method'],
+                'pin_status': q_use['pin_status'],
+                'pin_lineage': 'live_5m',
+                'profile': {'walls': {'pin': q_use['pin']}},
+            })
+    return live_rows, attempts
+
+
+def _merge_pin_history(live_rows, archive_rows, *, tick, strict_ard_asof):
+    """Merge live 5m and archive 30m snapshots, preferring live_5m and forbidding rollback."""
+    by_at = {}
+    for r in archive_rows:
+        r_at = r.get('at_ms')
+        if not isinstance(r_at, int) or r_at > tick:
+            continue
+        r_avail = r.get('available_at_ms')
+        if strict_ard_asof and (not isinstance(r_avail, int) or r.get('compat_backfill_applied') is True):
+            continue
+        if isinstance(r_avail, int) and r_avail > tick:
+            continue
+        prev = by_at.get(r_at)
+        if prev is None or (prev.get('compat_backfill_applied') is True and r.get('compat_backfill_applied') is not True):
+            by_at[r_at] = r
+    for r in live_rows:
+        r_at = r.get('at_ms')
+        if not isinstance(r_at, int) or r_at > tick:
+            continue
+        r_avail = r.get('available_at_ms')
+        if isinstance(r_avail, int) and r_avail > tick:
+            continue
+        prev = by_at.get(r_at)
+        if prev is None or prev.get('pin_lineage') != 'live_5m':
+            by_at[r_at] = r
+    candidates = sorted(
+        by_at.values(),
+        key=lambda r: (
+            r['available_at_ms'] if isinstance(r.get('available_at_ms'), int) else (r.get('at_ms') or 0),
+            r.get('at_ms') or 0,
+        ),
+    )
+    ordered = []
+    for r in candidates:
+        if ordered and r['at_ms'] < ordered[-1]['at_ms']:
+            continue
+        ordered.append(r)
+    return ordered
+
+
+def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry_pin_snapshot=None,
+                       series_rows=None, latest_point=None):
+    """Build current ARD facts + strict 20m Pin SLA comparison at a check_clock tick.
+
+    Merges live 5m `expiry_levels` (`pin_lineage='live_5m'`) with `structure/*.jsonl`
+    (`pin_lineage='archive_30m'`), forbids rollback by late older archive rows, and
+    classifies into `'same_measure_ard'`, `'position_only'`, or `'STALE'|'UNALIGNED'|'UNKNOWN'`.
     """
-    if archive_root is None:
-        return None
     expiry = frozen['contract']['expiry_ms']
     has_ard_basis = bool(frozen.get('ard_basis'))
     ep_meta = optional(episode / 'episode.json') if episode is not None else None
@@ -856,13 +962,16 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
         if (snap_pin is None or snap_pin <= 0 or not snap_method or not snap_source
                 or (snap_exp is not None and snap_exp != expiry)):
             return None
+    else:
+        old_obs = ((frozen['ard_basis'].get('facts') or {}).get('observations') or [])
+        orig_anchor = old_obs[-1] if old_obs else {}
+        snap_pin = dossier.player.number(orig_anchor.get('pin'))
+        snap_method = orig_anchor.get('method')
+        snap_source = orig_anchor.get('source')
 
-    struct_path = Path(archive_root) / 'structure' / f'{dossier.utc(expiry).date().isoformat()}.jsonl'
-    if not struct_path.is_file():
-        return None
     old_start = (frozen['ard_basis'].get('facts') or {}).get('start_ms') if has_ard_basis else None
     band_snap = ev_src.get('band_snapshot') if isinstance(ev_src, dict) else None
-    if band_snap is None:
+    if band_snap is None and archive_root is not None:
         if isinstance(old_start, int):
             band_cutoff = old_start + 4 * 3_600_000
         elif isinstance(frozen.get('entry_at_ms'), int):
@@ -882,16 +991,55 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
         (isinstance(hand_ident, dict) and hand_ident.get('input_profile') == p0_profile)
         or frozen.get('mechanical_contract_version') == getattr(dossier.condition, 'MECHANICAL_CONTRACT_VERSION', 'p2_strict@1')
     )
-    history = [dossier._normalize_legacy_structure_row(r) for r in dossier.rows(struct_path)
-               if r.get('expiry_ms') == expiry and isinstance(r.get('at_ms'), int) and r['at_ms'] <= tick]
+
+    struct_path = (
+        Path(archive_root) / 'structure' / f'{dossier.utc(expiry).date().isoformat()}.jsonl'
+        if archive_root is not None else None
+    )
+    archive_rows = []
+    if struct_path is not None and struct_path.is_file():
+        for r in dossier.rows(struct_path):
+            if r.get('expiry_ms') == expiry and isinstance(r.get('at_ms'), int) and r['at_ms'] <= tick:
+                norm = dossier._normalize_legacy_structure_row(r)
+                norm['pin_lineage'] = 'archive_30m'
+                archive_rows.append(norm)
+    live_rows, live_attempts = _collect_live_pin_rows(
+        series_rows, latest_point, expiry=expiry, tick=tick, win_ms=win_ms,
+    )
+    if not archive_rows and not live_rows and not live_attempts and archive_root is not None and not (struct_path and struct_path.is_file()) and series_rows is None and latest_point is None:
+        return None
+
+    history = _merge_pin_history(live_rows, archive_rows, tick=tick, strict_ard_asof=strict_ard_asof)
+    row_by_key = {
+        (r['at_ms'], r.get('available_at_ms') if isinstance(r.get('available_at_ms'), int) else r['at_ms']): r
+        for r in history
+    }
     try:
         current = dossier.player.ard.analyze(history, index_path, expiry_ms=expiry, cutoff_ms=tick,
                                             band_snapshot=band_snap, window_ms=win_ms, strict_asof=strict_ard_asof)
-        pin_status = next((r.get('pin_status') for r in reversed(history)
-                           if r.get('available_at_ms') is not None and r['available_at_ms'] <= tick and r.get('pin_status')), None)
+        latest = current['observations'][-1] if current.get('observations') else None
+        latest_row = row_by_key.get((latest['at'], latest['ready'])) if latest else None
+        pin_lineage = latest_row.get('pin_lineage') if latest_row else ('live_5m' if live_attempts else ('archive_30m' if archive_rows else None))
+        pin_status = (latest_row.get('pin_status') if latest_row else None) or next(
+            (r.get('pin_status') for r in reversed(history)
+             if r.get('available_at_ms') is not None and r['available_at_ms'] <= tick and r.get('pin_status')),
+            None,
+        )
+        pin_computed_at_ms = latest.get('at') if latest else None
+        pin_age_ms = (tick - pin_computed_at_ms) if (isinstance(pin_computed_at_ms, int) and not isinstance(pin_computed_at_ms, bool)) else None
+        within_20m = isinstance(pin_age_ms, int) and 0 <= pin_age_ms <= 20 * dossier.MINUTE
+
+        latest_att = live_attempts[-1] if live_attempts else None
+        qual_reasons = []
+        if latest_att is not None and latest_att.get('status') != evidence_qual.QUAL_ALIGNED:
+            for rc in latest_att.get('reason_codes') or ():
+                if rc not in qual_reasons:
+                    qual_reasons.append(rc)
+
         if has_ard_basis:
             comparison = dossier.condition.compare_ard_basis(episode / 'condition.json', current, tick)
-            comparison['same_measure'] = comparison.get('new_neighborhood_events') is not None
+            if 'frozen_anchor' not in comparison and snap_pin is not None:
+                comparison['frozen_anchor'] = dict(pin=float(snap_pin), method=snap_method, source=snap_source)
             if comparison.get('old_pin') is None and isinstance(comparison.get('frozen_anchor'), dict):
                 comparison['old_pin'] = comparison['frozen_anchor'].get('pin')
             if comparison.get('new_pin') is None and isinstance(comparison.get('current_anchor'), dict):
@@ -900,29 +1048,118 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
                 comparison['check_at_ms'] = tick
             if pin_status:
                 comparison['pin_status'] = pin_status
+
+            old_pin_val = dossier.player.number(comparison.get('old_pin'))
+            new_pin_val = dossier.player.number(latest.get('pin')) if (latest and latest.get('pin') is not None and pin_status in (None, 'ok')) else None
+            comparable = bool(snap_method and snap_source and latest and (snap_method, snap_source) == (latest.get('method'), latest.get('source')))
+            if latest and new_pin_val is not None and within_20m and comparable:
+                if comparison.get('pin_eval_mode') == 'same_measure_ard':
+                    mode = 'same_measure_ard'
+                    comparison['same_measure'] = True
+                else:
+                    mode = 'position_only'
+                    comparison['same_measure'] = False
+                    comparison['new_neighborhood_events'] = None
+                if pin_lineage == 'live_5m':
+                    qual_reasons = []
+                comparison['pin_eval_mode'] = mode
+                comparison['current_sample_available'] = True
+                comparison['pin_price_changed'] = (new_pin_val != old_pin_val) if old_pin_val is not None else None
+                comparison['new_pin'] = float(new_pin_val)
+                comparison['source_method_comparable'] = True
+            else:
+                if latest and new_pin_val is not None and not within_20m:
+                    mode = 'STALE'
+                    if f'pin_age_exceeds_20m:{pin_age_ms}' not in qual_reasons:
+                        qual_reasons.append(f'pin_age_exceeds_20m:{pin_age_ms}')
+                elif latest and not comparable:
+                    mode = 'UNALIGNED'
+                    if 'pin_source_or_method_mismatch' not in qual_reasons:
+                        qual_reasons.append('pin_source_or_method_mismatch')
+                elif (
+                    (latest_att is not None and latest_att.get('status') == evidence_qual.QUAL_UNALIGNED)
+                    or (latest_att is None and any(a.get('status') == evidence_qual.QUAL_UNALIGNED for a in live_attempts))
+                    or (current.get('unclocked_rows') or 0) > 0
+                ):
+                    mode = 'UNALIGNED'
+                elif (
+                    (latest_att is not None and latest_att.get('status') == evidence_qual.QUAL_STALE)
+                    or (latest_att is None and any(a.get('status') == evidence_qual.QUAL_STALE for a in live_attempts))
+                ):
+                    mode = 'STALE'
+                    last_stale = latest_att if (latest_att and latest_att.get('status') == evidence_qual.QUAL_STALE) else next((a for a in reversed(live_attempts) if a.get('status') == evidence_qual.QUAL_STALE), {})
+                    if pin_computed_at_ms is None:
+                        pin_computed_at_ms = last_stale.get('computed_at_ms')
+                    if pin_age_ms is None:
+                        pin_age_ms = last_stale.get('age_ms')
+                else:
+                    mode = 'UNKNOWN'
+                comparison['pin_eval_mode'] = mode
+                comparison['same_measure'] = False
+                comparison['current_sample_available'] = False
+                comparison['pin_price_changed'] = None
+                comparison['new_neighborhood_events'] = None
+                if mode in ('UNALIGNED', 'UNKNOWN'):
+                    comparison['new_pin'] = None
+                if not pin_status:
+                    comparison['pin_status'] = 'stale' if mode == 'STALE' else 'unavailable'
+            comparison['pin_lineage'] = pin_lineage
+            comparison['pin_age_ms'] = pin_age_ms
+            comparison['pin_computed_at_ms'] = pin_computed_at_ms
+            comparison['pin_qualification_reasons'] = qual_reasons
             return dict(facts=current, comparison=comparison)
 
-        latest = current['observations'][-1] if current.get('observations') else None
-        price = current.get('last')
         old_pin = float(snap_pin)
         new_pin = float(latest['pin']) if (latest and latest.get('pin') is not None and pin_status in (None, 'ok')) else None
         comparable = bool(
             snap_method and snap_source and latest
             and (snap_method, snap_source) == (latest.get('method'), latest.get('source'))
         )
-        same_measure = bool(
-            comparable
-            and current.get('method_comparable')
-            and new_pin is not None
-            and pin_status in (None, 'ok')
-        )
-        fresh = bool(price and price.get('t') == tick and latest and price.get('pin') == latest.get('pin'))
-        pin_recent = bool(latest and latest.get('pin') is not None and isinstance(latest.get('at'), int)
-                          and tick - latest['at'] <= dossier.archive.expiry_structure.GAP_MS)
-        sample_avail = bool(fresh or (new_pin is not None and pin_recent and not price))
-        pin_changed = (new_pin != old_pin) if (sample_avail and same_measure and new_pin is not None) else None
+        if latest and new_pin is not None and within_20m and comparable:
+            pin_eval_mode = 'position_only'
+            sample_avail = True
+            pin_changed = (new_pin != old_pin)
+            effective_pin_status = pin_status or 'ok'
+            if pin_lineage == 'live_5m':
+                qual_reasons = []
+        else:
+            if latest and new_pin is not None and not within_20m:
+                pin_eval_mode = 'STALE'
+                if f'pin_age_exceeds_20m:{pin_age_ms}' not in qual_reasons:
+                    qual_reasons.append(f'pin_age_exceeds_20m:{pin_age_ms}')
+            elif latest and not comparable:
+                pin_eval_mode = 'UNALIGNED'
+                new_pin = None
+                if 'pin_source_or_method_mismatch' not in qual_reasons:
+                    qual_reasons.append('pin_source_or_method_mismatch')
+            elif (
+                (latest_att is not None and latest_att.get('status') == evidence_qual.QUAL_UNALIGNED)
+                or (latest_att is None and any(a.get('status') == evidence_qual.QUAL_UNALIGNED for a in live_attempts))
+                or (current.get('unclocked_rows') or 0) > 0
+            ):
+                pin_eval_mode = 'UNALIGNED'
+                new_pin = None
+            elif (
+                (latest_att is not None and latest_att.get('status') == evidence_qual.QUAL_STALE)
+                or (latest_att is None and any(a.get('status') == evidence_qual.QUAL_STALE for a in live_attempts))
+            ):
+                pin_eval_mode = 'STALE'
+                last_stale = latest_att if (latest_att and latest_att.get('status') == evidence_qual.QUAL_STALE) else next((a for a in reversed(live_attempts) if a.get('status') == evidence_qual.QUAL_STALE), {})
+                if pin_computed_at_ms is None:
+                    pin_computed_at_ms = last_stale.get('computed_at_ms')
+                if pin_age_ms is None:
+                    pin_age_ms = last_stale.get('age_ms')
+            else:
+                pin_eval_mode = 'UNKNOWN'
+                new_pin = None
+            sample_avail = False
+            pin_changed = None
+            effective_pin_status = pin_status or ('stale' if pin_eval_mode == 'STALE' else 'unavailable')
+
         band_half = ((current.get('band') or {}).get('half_width_usd')
                      if isinstance(current.get('band'), dict) else None)
+        if band_half is None and isinstance(pin_snap, dict):
+            band_half = dossier.player.number(pin_snap.get('band_half'))
         comparison = dict(
             mode='READ_ONLY_ENTRY_PIN',
             frozen_anchor=dict(
@@ -939,8 +1176,13 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
             check_at_ms=tick,
             current_sample_available=sample_avail,
             pin_price_changed=pin_changed,
-            same_measure=same_measure,
-            pin_status=pin_status or ('ok' if new_pin is not None else 'unavailable'),
+            same_measure=False,
+            pin_eval_mode=pin_eval_mode,
+            pin_lineage=pin_lineage,
+            pin_age_ms=pin_age_ms,
+            pin_computed_at_ms=pin_computed_at_ms,
+            pin_qualification_reasons=qual_reasons,
+            pin_status=effective_pin_status,
             source_method_comparable=comparable,
             new_neighborhood_events=None,
             note='入场未依赖ARD；以入场L3有效Pin作同口径只读对比，不事后新增ARD承担条件或改写原冻结规则。',
@@ -950,7 +1192,8 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
         return None
 
 
-def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive_root=None):
+def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive_root=None,
+                    series_rows=None, latest_point=None):
     """Run due grid condition checks idempotently without duplicating existing ticks."""
     if _episode_has_shadow_exit(episode):
         return [], None
@@ -979,7 +1222,10 @@ def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive
     for tick in range(clock_cfg['first_at_ms'], limit + 1, clock_cfg['interval_ms']):
         if tick in done_ticks:
             continue
-        ard_state = _episode_ard_state(frozen, episode, archive_root, index_path, tick)
+        ard_state = _episode_ard_state(
+            frozen, episode, archive_root, index_path, tick,
+            series_rows=series_rows, latest_point=latest_point,
+        )
         ev = d.check(episode, index_path, tick, available=at,
                      ard=(ard_state['facts'] if frozen.get('ard_basis') and ard_state and ard_state['comparison'].get('same_measure') else None))
         checked_events.append(dict(event_id=ev['event_id'], kind=ev['kind'], observed_at_ms=ev['observed_at_ms']))
@@ -1680,15 +1926,29 @@ def _load_prior_reviews_and_context(episode):
             if not isinstance(dec, dict) or dec.get('status') not in (None, 'VALID'):
                 continue
             snap = optional(folder / 'review_snapshot.json')
-            snap_dict = snap if isinstance(snap, dict) else {}
+            snap_dict = dict(snap) if isinstance(snap, dict) else {}
+            snap_flow_ok = bool(
+                isinstance(snap_dict.get('flow_window_basis'), dict)
+                and isinstance(snap_dict.get('flow_asof_ms'), int)
+                and snap_dict.get('flow_qualification_status') not in ('OBSERVED_UNALIGNED', 'STALE', 'UNKNOWN')
+                and snap_dict.get('flow_fast_4h_ready') is not False
+            )
+            if snap_dict and not snap_flow_ok:
+                for fkey in ('flow_asof_ms', 'flow_window_basis', 'flow_direction',
+                             'flow_cvd_4h', 'flow_cvd_12h', 'flow_momentum_4h_pct', 'flow_momentum_12h_pct'):
+                    snap_dict[fkey] = None
             merged = dict(snap_dict)
             merged.update(dec)
             for key in ('spot_usd', 'short_distance_pct', 'expected_move_usd', 'expected_move_ratio',
-                        'flow_asof_ms', 'flow_direction', 'flow_cvd_4h', 'flow_cvd_12h',
+                        'flow_asof_ms', 'flow_window_basis', 'flow_direction', 'flow_cvd_4h', 'flow_cvd_12h',
                         'flow_momentum_4h_pct', 'flow_momentum_12h_pct', 'pin',
                         'evidence_asof_ms', 'cutoff_at_ms'):
                 if merged.get(key) is None and snap_dict.get(key) is not None:
                     merged[key] = snap_dict[key]
+            if not snap_flow_ok:
+                for fkey in ('flow_asof_ms', 'flow_window_basis', 'flow_direction',
+                             'flow_cvd_4h', 'flow_cvd_12h', 'flow_momentum_4h_pct', 'flow_momentum_12h_pct'):
+                    merged[fkey] = None
             sort_ts = dec.get('decided_at_ms') or dec.get('requested_at_ms') or 0
             items.append((sort_ts, str(dec.get('review_id') or folder.name), merged, snap_dict))
     items.sort(key=lambda row: (row[0], row[1]))
@@ -1696,6 +1956,12 @@ def _load_prior_reviews_and_context(episode):
     if not items:
         return prior_reviews, None
     _, _, latest_dec, latest_snap = items[-1]
+    latest_flow_ok = bool(
+        isinstance(latest_snap.get('flow_window_basis'), dict)
+        and isinstance(latest_snap.get('flow_asof_ms'), int)
+        and latest_snap.get('flow_qualification_status') not in ('OBSERVED_UNALIGNED', 'STALE', 'UNKNOWN')
+        and latest_snap.get('flow_fast_4h_ready') is not False
+    )
     last_review = dict(
         review_id=latest_dec.get('review_id'),
         reviewed_at_ms=latest_dec.get('decided_at_ms') or latest_dec.get('requested_at_ms'),
@@ -1708,13 +1974,15 @@ def _load_prior_reviews_and_context(episode):
         short_distance_pct=latest_snap.get('short_distance_pct'),
         expected_move_usd=latest_snap.get('expected_move_usd'),
         expected_move_ratio=latest_snap.get('expected_move_ratio'),
-        flow_asof_ms=latest_snap.get('flow_asof_ms') if 'flow_window_basis' in latest_snap else None,
-        flow_window_basis=latest_snap.get('flow_window_basis'),
-        flow_direction=latest_snap.get('flow_direction'),
-        flow_cvd_4h=latest_snap.get('flow_cvd_4h'),
-        flow_cvd_12h=latest_snap.get('flow_cvd_12h'),
-        flow_momentum_4h_pct=latest_snap.get('flow_momentum_4h_pct'),
-        flow_momentum_12h_pct=latest_snap.get('flow_momentum_12h_pct'),
+        flow_asof_ms=latest_snap.get('flow_asof_ms') if latest_flow_ok else None,
+        flow_window_basis=latest_snap.get('flow_window_basis') if latest_flow_ok else None,
+        flow_qualification_status=latest_snap.get('flow_qualification_status'),
+        flow_fast_4h_ready=latest_snap.get('flow_fast_4h_ready'),
+        flow_direction=latest_snap.get('flow_direction') if latest_flow_ok else None,
+        flow_cvd_4h=latest_snap.get('flow_cvd_4h') if latest_flow_ok else None,
+        flow_cvd_12h=latest_snap.get('flow_cvd_12h') if latest_flow_ok else None,
+        flow_momentum_4h_pct=latest_snap.get('flow_momentum_4h_pct') if latest_flow_ok else None,
+        flow_momentum_12h_pct=latest_snap.get('flow_momentum_12h_pct') if latest_flow_ok else None,
         pin=latest_snap.get('pin'),
         mechanical_condition_state=latest_snap.get('mechanical_condition_state') or latest_dec.get('mechanical_condition_state'),
     )
@@ -1746,6 +2014,138 @@ _MEANINGFUL_SKIP_CODES = frozenset({
     'COOLDOWN', 'BELOW_MATERIALITY', 'DUPLICATE_EVENT', 'BUDGET_DEFERRED',
     'DATA_UNVERIFIED', 'NO_NEW_EVIDENCE', 'BACKOFF',
 })
+
+
+def _resolve_hold_flow_qualification(latest_m, latest_pt, at):
+    """Resolve current spot flow qualification and readiness strictly as-of `at`."""
+    basis = latest_m.get('flow_window_basis')
+    flow_asof = latest_m.get('flow_asof_ms')
+    flow_ready = latest_m.get('flow_ready')
+    fast_ready = latest_m.get('flow_fast_4h_ready')
+    basis_ok = (
+        isinstance(basis, dict)
+        and evidence_qual.is_valid_provenance_token(basis.get('source'))
+        and evidence_qual.is_valid_provenance_token(basis.get('symbol'))
+        and isinstance(basis.get('start_ms'), int)
+        and not isinstance(basis.get('start_ms'), bool)
+        and isinstance(flow_asof, int)
+        and not isinstance(flow_asof, bool)
+        and 0 < basis['start_ms'] <= flow_asof
+    )
+    raw_q = None
+    if isinstance(latest_pt, dict):
+        snap = (
+            (latest_pt.get('candidate') or {}).get('snapshot')
+            or (latest_pt.get('packet') or {}).get('snapshot')
+            or {}
+        )
+        vp = ((snap.get('fact_context') or {}).get('market_facts') or {}).get('volume_price') if isinstance(snap, dict) else None
+        if isinstance(vp, dict) and isinstance(vp.get('micro_flow'), dict):
+            fast_raw = vp['micro_flow'].get('fast_4h')
+            if fast_ready is None and isinstance(fast_raw, dict) and 'data_ready' in fast_raw:
+                fast_ready = fast_raw.get('data_ready')
+            if latest_m.get('flow_qualification_status') is None:
+                raw_q = evidence_qual.qualify_spot_window(
+                    fast_raw,
+                    cutoff_ms=at,
+                    max_age_ms=60 * 60_000,
+                    extra_scopes=(vp, vp['micro_flow']),
+                    window_name='fast_4h',
+                )
+
+    reasons = list(latest_m.get('flow_qualification_reasons') or [])
+    status = latest_m.get('flow_qualification_status')
+    if status is None and raw_q is not None and (not basis_ok or raw_q.get('status') != evidence_qual.QUAL_ALIGNED):
+        status = raw_q.get('status')
+        if not reasons:
+            reasons = list(raw_q.get('reason_codes') or [])
+    if status is None:
+        if flow_ready is False or fast_ready is False:
+            status = evidence_qual.QUAL_UNKNOWN
+            if not reasons:
+                reasons = ['fast_4h_not_ready' if fast_ready is False else 'flow_not_ready']
+        elif isinstance(flow_asof, int) and not isinstance(flow_asof, bool) and flow_asof > at:
+            status = evidence_qual.QUAL_UNKNOWN
+            if not reasons:
+                reasons = ['future_clock_excluded']
+        elif not basis_ok:
+            status = (
+                evidence_qual.QUAL_UNALIGNED
+                if (flow_ready is True or latest_m.get('flow_cvd_4h') is not None)
+                else evidence_qual.QUAL_UNKNOWN
+            )
+            if not reasons:
+                reasons = ['missing_or_unaligned_flow_window_basis']
+        elif at - flow_asof > 60 * 60_000:
+            status = evidence_qual.QUAL_STALE
+            if not reasons:
+                reasons = ['flow_stale']
+        else:
+            status = evidence_qual.QUAL_ALIGNED
+    elif status == evidence_qual.QUAL_ALIGNED:
+        if flow_ready is False or fast_ready is False:
+            status = evidence_qual.QUAL_UNKNOWN
+            reasons = list(dict.fromkeys([*reasons, 'fast_4h_not_ready']))
+        elif isinstance(flow_asof, int) and not isinstance(flow_asof, bool) and flow_asof > at:
+            status = evidence_qual.QUAL_UNKNOWN
+            reasons = list(dict.fromkeys([*reasons, 'future_clock_excluded']))
+        elif not basis_ok:
+            status = evidence_qual.QUAL_UNALIGNED
+            reasons = list(dict.fromkeys([*reasons, 'missing_or_unaligned_flow_window_basis']))
+        elif at - flow_asof > 60 * 60_000:
+            status = evidence_qual.QUAL_STALE
+            reasons = list(dict.fromkeys([*reasons, 'flow_stale']))
+
+    cap_map = {
+        evidence_qual.QUAL_ALIGNED: evidence_qual.CAP_ACTIVE,
+        evidence_qual.QUAL_UNALIGNED: evidence_qual.CAP_BLIND_UNALIGNED,
+        evidence_qual.QUAL_STALE: evidence_qual.CAP_BLIND_STALE,
+    }
+    cap = cap_map.get(status)
+    if cap is None:
+        cap = evidence_qual.CAP_WARMING_UP if (fast_ready is False or flow_ready is False) else evidence_qual.CAP_BLIND_MISSING
+    spot_qual = {
+        'schema': evidence_qual.SCHEMA,
+        'channel': 'spot_flow',
+        'status': status,
+        'capability': cap,
+        'reason_codes': reasons,
+        'reason': '；'.join(reasons) if reasons else ('ok' if status == evidence_qual.QUAL_ALIGNED else status),
+    }
+    return basis_ok, fast_ready, status, reasons, spot_qual
+
+
+def _pin_qual_from_comparison(ard_comparison):
+    if not isinstance(ard_comparison, dict):
+        return None, None
+    mode = ard_comparison.get('pin_eval_mode')
+    reasons = list(ard_comparison.get('pin_qualification_reasons') or ())
+    if mode in ('same_measure_ard', 'position_only'):
+        status = evidence_qual.QUAL_ALIGNED
+        cap = evidence_qual.CAP_POSITION_ONLY if mode == 'position_only' else evidence_qual.CAP_ACTIVE
+    elif mode == 'STALE':
+        status = evidence_qual.QUAL_STALE
+        cap = evidence_qual.CAP_BLIND_STALE
+    elif mode == 'UNALIGNED':
+        status = evidence_qual.QUAL_UNALIGNED
+        cap = evidence_qual.CAP_BLIND_UNALIGNED
+    elif mode == 'UNKNOWN':
+        status = evidence_qual.QUAL_UNKNOWN
+        cap = evidence_qual.CAP_BLIND_MISSING
+    elif ard_comparison.get('same_measure') is True and ard_comparison.get('current_sample_available') is not False:
+        status = evidence_qual.QUAL_ALIGNED
+        cap = evidence_qual.CAP_ACTIVE
+    else:
+        status = evidence_qual.QUAL_UNKNOWN
+        cap = evidence_qual.CAP_BLIND_MISSING
+    return {
+        'schema': evidence_qual.SCHEMA,
+        'channel': 'pin_structure',
+        'status': status,
+        'capability': cap,
+        'reason_codes': reasons,
+        'reason': ard_comparison.get('note'),
+    }, mode
 
 
 def _update_skip_and_telemetry(prior_state, next_state, triggers, action, at):
@@ -1845,6 +2245,10 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     entry_pin_snapshot = ep_meta.get('entry_pin_snapshot') if isinstance(ep_meta, dict) else None
     if not isinstance(entry_pin_snapshot, dict):
         entry_pin_snapshot = source_ctx.get('entry_pin_snapshot')
+    elif entry_pin_snapshot.get('band_half') is None:
+        src_eps = source_ctx.get('entry_pin_snapshot')
+        if isinstance(src_eps, dict) and src_eps.get('band_half') is not None:
+            entry_pin_snapshot = {**entry_pin_snapshot, 'band_half': src_eps['band_half']}
     fallback_em = (
         ep_meta.get('entry_expected_move_usd')
         if isinstance(ep_meta, dict) and dossier.player.number(ep_meta.get('entry_expected_move_usd')) is not None
@@ -1892,6 +2296,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             review_id=verified_prior_revoke['review_id'],
             exit_intent_only=bool(isinstance(link_record, dict) and link_record.get('execution_allowed') is True),
         )
+    latest_pt = exported.get('latest_point')
     ep_index = index_path or _merge_index_points(archive_root, frozen['contract']['expiry_ms'], at)
     cc = frozen['check_clock']
     cap = min(at, frozen['contract']['expiry_ms'] - 1)
@@ -1899,7 +2304,10 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     if cap >= cc['first_at_ms']:
         ard_tick = cc['first_at_ms'] + ((cap - cc['first_at_ms']) // cc['interval_ms']) * cc['interval_ms']
         ard_state = _episode_ard_state(
-            frozen, episode, archive_root, ep_index, ard_tick, entry_pin_snapshot=entry_pin_snapshot
+            frozen, episode, archive_root, ep_index, ard_tick,
+            entry_pin_snapshot=entry_pin_snapshot,
+            series_rows=series_rows,
+            latest_point=latest_pt,
         )
     ard_comparison = ard_state['comparison'] if ard_state else None
     triggers = _call_with_supported_kwargs(
@@ -2029,7 +2437,6 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     post_dists = [x for x in post_dists if dossier.player.number(x)]
     latest_m = ((series_rows[-1].get('metrics') if isinstance(series_rows[-1].get('metrics'), dict) else series_rows[-1])
                 if series_rows else {})
-    latest_pt = exported.get('latest_point')
     quote_info = locked_compare.short_buyback_quote(latest_pt) if latest_pt else {'short_buyback_gaps': ['latest_point_unavailable']}
 
     has_m_trigger = bool(prog_triggered or any(isinstance(t, dict) and t.get('category') == 'A' for t in batch))
@@ -2068,12 +2475,16 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     )
     ard_new_obs = ard_comparison.get('newly_available_anchor_observations') if isinstance(ard_comparison, dict) else None
     ard_anchor_ready = (ard_comparison.get('current_anchor') or {}).get('ready') if isinstance(ard_comparison, dict) else None
+    ard_mode_ok = isinstance(ard_comparison, dict) and (
+        ard_comparison.get('same_measure') is True
+        or ard_comparison.get('pin_eval_mode') in ('same_measure_ard', 'position_only')
+    )
     has_new_ard = bool(
         isinstance(ard_comparison, dict)
         and (
             (isinstance(ard_new_obs, list) and any(isinstance(r, dict) and isinstance(r.get('ready'), int) and data_floor < r['ready'] <= at for r in ard_new_obs))
             or (
-                ard_comparison.get('same_measure') is True
+                ard_mode_ok
                 and ard_comparison.get('current_sample_available') is True
                 and isinstance(ard_anchor_ready, int)
                 and data_floor < ard_anchor_ready <= at
@@ -2082,12 +2493,29 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     )
     flow_floor_candidates = [t for t in (entry_ms, t0_metrics.get('flow_asof_ms'), (last_review or {}).get('flow_asof_ms')) if isinstance(t, int)]
     flow_floor = max(flow_floor_candidates) if flow_floor_candidates else entry_ms
+    flow_basis_ok, flow_fast_4h_ready, flow_qual_status, flow_qual_reasons, spot_qual = _resolve_hold_flow_qualification(
+        latest_m, latest_pt, at,
+    )
+    flow_asof_val = latest_m.get('flow_asof_ms')
     has_new_flow = bool(
         latest_m.get('flow_ready') is True
-        and isinstance(latest_m.get('flow_asof_ms'), int)
-        and flow_floor < latest_m['flow_asof_ms'] <= at
+        and flow_fast_4h_ready is not False
+        and flow_basis_ok
+        and flow_qual_status == evidence_qual.QUAL_ALIGNED
+        and 0 <= at - flow_asof_val <= 60 * 60_000
+        and flow_floor < flow_asof_val
     )
     new_qualified_data_present = bool(has_new_tracker or has_new_index or has_new_ard or has_new_flow)
+
+    pin_qual, pin_mode_for_cap = _pin_qual_from_comparison(ard_comparison)
+    channel_readiness = evidence_qual.summarize_channel_capabilities(
+        spot_qual=spot_qual,
+        pin_qual=pin_qual,
+        pin_eval_mode=pin_mode_for_cap,
+        spot_event_fired=any(isinstance(t, dict) and t.get('category') == 'D' for t in (batch or ())),
+        pin_event_fired=any(isinstance(t, dict) and t.get('category') == 'C' for t in (batch or ())),
+        include_rv24=False,
+    )
 
     authoritative_m = None
     if frozen.get('invalidation') in dossier.condition.RULES and hasattr(dossier.condition, 'canonical_confirmation_text'):
@@ -2099,6 +2527,21 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             )
         except ValueError:
             authoritative_m = None
+
+    cur_flow_qualified = bool(
+        flow_qual_status == evidence_qual.QUAL_ALIGNED
+        and flow_basis_ok
+        and flow_fast_4h_ready is not False
+        and latest_m.get('flow_ready') is not False
+    )
+    t0_flow_qualified = bool(
+        str(t0_metrics.get('flow_qualification_status') or '').strip().upper()
+        not in ('OBSERVED_UNALIGNED', 'STALE', 'UNKNOWN')
+        and t0_metrics.get('flow_fast_4h_ready') is not False
+        and t0_metrics.get('flow_ready') is not False
+        and isinstance(t0_metrics.get('flow_window_basis'), dict)
+        and isinstance(t0_metrics.get('flow_asof_ms'), int)
+    )
 
     input_md = _call_with_supported_kwargs(
         review.build_hold_review_input,
@@ -2112,10 +2555,13 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             entry_index_usd=frozen.get('entry_index_usd'),
             short_distance_pct=t0_metrics.get('short_distance_pct'),
             expected_move_usd=t0_metrics.get('expected_move_usd'),
-            flow_direction=t0_metrics.get('flow_direction'),
-            flow_asof_ms=t0_metrics.get('flow_asof_ms'),
-            flow_cvd_4h=t0_metrics.get('flow_cvd_4h'),
-            flow_cvd_12h=t0_metrics.get('flow_cvd_12h'),
+            flow_direction=t0_metrics.get('flow_direction') if t0_flow_qualified else None,
+            flow_asof_ms=t0_metrics.get('flow_asof_ms') if t0_flow_qualified else None,
+            flow_window_basis=t0_metrics.get('flow_window_basis') if t0_flow_qualified else None,
+            flow_qualification_status=t0_metrics.get('flow_qualification_status'),
+            flow_fast_4h_ready=t0_metrics.get('flow_fast_4h_ready'),
+            flow_cvd_4h=t0_metrics.get('flow_cvd_4h') if t0_flow_qualified else None,
+            flow_cvd_12h=t0_metrics.get('flow_cvd_12h') if t0_flow_qualified else None,
             net_credit_after_fee_btc=((link_record.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc'),
         ),
         post_entry_summary=dict(
@@ -2135,14 +2581,22 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         ard_summary=ard_comparison or '未开启或无可比同口径 ARD 数据',
         flow_summary=dict(
             flow_ready=latest_m.get('flow_ready'),
-            flow_asof_ms=latest_m.get('flow_asof_ms'),
-            flow_direction=latest_m.get('flow_direction'),
-            flow_fast_4h=latest_m.get('flow_fast_4h'),
-            flow_slow_12h=latest_m.get('flow_slow_12h'),
-            flow_cvd_4h=latest_m.get('flow_cvd_4h'),
-            flow_cvd_12h=latest_m.get('flow_cvd_12h'),
-            flow_momentum_4h_pct=latest_m.get('flow_momentum_4h_pct'),
-            flow_momentum_12h_pct=latest_m.get('flow_momentum_12h_pct'),
+            flow_fast_4h_ready=flow_fast_4h_ready,
+            flow_asof_ms=(
+                latest_m.get('flow_asof_ms')
+                if (cur_flow_qualified or flow_qual_status == evidence_qual.QUAL_STALE)
+                else None
+            ),
+            flow_window_basis=latest_m.get('flow_window_basis') if cur_flow_qualified else None,
+            flow_qualification_status=flow_qual_status,
+            flow_qualification_reasons=flow_qual_reasons,
+            flow_direction=latest_m.get('flow_direction') if cur_flow_qualified else None,
+            flow_fast_4h=latest_m.get('flow_fast_4h') if cur_flow_qualified else None,
+            flow_slow_12h=latest_m.get('flow_slow_12h') if cur_flow_qualified else None,
+            flow_cvd_4h=latest_m.get('flow_cvd_4h') if cur_flow_qualified else None,
+            flow_cvd_12h=latest_m.get('flow_cvd_12h') if cur_flow_qualified else None,
+            flow_momentum_4h_pct=latest_m.get('flow_momentum_4h_pct') if cur_flow_qualified else None,
+            flow_momentum_12h_pct=latest_m.get('flow_momentum_12h_pct') if cur_flow_qualified else None,
         ),
         quote_summary=quote_info,
         prior_reviews=prior_reviews,
@@ -2152,6 +2606,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         authoritative_m=authoritative_m,
         review_channel=review_channel,
         new_qualified_data_present=new_qualified_data_present,
+        channel_readiness=channel_readiness,
     )
     req_ms = d.clock()
     input_bytes = input_md.encode('utf-8')
@@ -2227,6 +2682,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             shadow_action=shadow_action,
             review_channel=review_channel,
             new_qualified_data_present=new_qualified_data_present,
+            pin_eval_mode=(ard_comparison or {}).get('pin_eval_mode') if isinstance(ard_comparison, dict) else None,
+            channel_readiness=channel_readiness,
             trigger_categories=cats,
             triggers=batch,
             reason=action['reason'],
@@ -2263,9 +2720,11 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                 and dossier.player.number(snap_em) is not None and float(snap_em) > 0)
             else None
         )
-        snap_pin = (ard_comparison or {}).get('new_pin')
-        if snap_pin is None:
-            snap_pin = (ard_comparison or {}).get('old_pin')
+        snap_pin = None
+        if isinstance(ard_comparison, dict) and ard_comparison.get('pin_eval_mode') in ('same_measure_ard', 'position_only'):
+            cand_pin = dossier.player.number(ard_comparison.get('new_pin'))
+            if cand_pin is not None and cand_pin > 0:
+                snap_pin = float(cand_pin)
         review_snapshot = dict(
             review_id=rev_id,
             reviewed_at_ms=fin_ms,
@@ -2276,14 +2735,19 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             short_distance_pct=snap_dist,
             expected_move_usd=snap_em,
             expected_move_ratio=snap_em_ratio,
-            flow_asof_ms=latest_m.get('flow_asof_ms'),
-            flow_window_basis=latest_m.get('flow_window_basis'),
-            flow_direction=latest_m.get('flow_direction'),
-            flow_cvd_4h=latest_m.get('flow_cvd_4h'),
-            flow_cvd_12h=latest_m.get('flow_cvd_12h'),
-            flow_momentum_4h_pct=latest_m.get('flow_momentum_4h_pct'),
-            flow_momentum_12h_pct=latest_m.get('flow_momentum_12h_pct'),
+            flow_asof_ms=latest_m.get('flow_asof_ms') if cur_flow_qualified else None,
+            flow_window_basis=latest_m.get('flow_window_basis') if cur_flow_qualified else None,
+            flow_fast_4h_ready=flow_fast_4h_ready,
+            flow_qualification_status=flow_qual_status,
+            flow_qualification_reasons=flow_qual_reasons,
+            flow_direction=latest_m.get('flow_direction') if cur_flow_qualified else None,
+            flow_cvd_4h=latest_m.get('flow_cvd_4h') if cur_flow_qualified else None,
+            flow_cvd_12h=latest_m.get('flow_cvd_12h') if cur_flow_qualified else None,
+            flow_momentum_4h_pct=latest_m.get('flow_momentum_4h_pct') if cur_flow_qualified else None,
+            flow_momentum_12h_pct=latest_m.get('flow_momentum_12h_pct') if cur_flow_qualified else None,
             pin=snap_pin,
+            pin_eval_mode=(ard_comparison or {}).get('pin_eval_mode') if isinstance(ard_comparison, dict) else None,
+            channel_readiness=channel_readiness,
             mechanical_condition_state=mech_state,
             trigger_categories=cats,
         )
@@ -2565,7 +3029,8 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
                                       (settlement or {}).get('settled_at_ms')) if t is not None), default=None),
             available=at)
         checks, check_error = (None, None) if terminal else _run_due_checks(
-            d, episode, at, index_path=ep_index, check_due=check_due, archive_root=archive_root)
+            d, episode, at, index_path=ep_index, check_due=check_due, archive_root=archive_root,
+            series_rows=exported.get('points'), latest_point=exported.get('latest_point'))
     review_result = None
     if run_review and not archived:
         review_result = evaluate_hold_management(
@@ -3092,6 +3557,21 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
                 rec['review_channel'] = dec['review_channel']
             if dec.get('new_qualified_data_present') is not None:
                 rec['new_qualified_data_present'] = dec['new_qualified_data_present']
+            rev_snap = optional(folder / 'review_snapshot.json')
+            snap_dict = rev_snap if isinstance(rev_snap, dict) else {}
+            pin_mode = dec.get('pin_eval_mode') if dec.get('pin_eval_mode') is not None else snap_dict.get('pin_eval_mode')
+            ch_ready = dec.get('channel_readiness') if isinstance(dec.get('channel_readiness'), dict) else snap_dict.get('channel_readiness')
+            if pin_mode is not None:
+                rec['pin_eval_mode'] = pin_mode
+            if isinstance(ch_ready, dict):
+                rec['channel_readiness'] = ch_ready
+            if snap_dict:
+                rec['evidence_snapshot'] = {
+                    k: snap_dict[k]
+                    for k in ('reviewed_at_ms', 'evidence_asof_ms', 'pin', 'pin_eval_mode',
+                              'channel_readiness', 'flow_qualification_status', 'flow_asof_ms')
+                    if k in snap_dict and snap_dict[k] is not None
+                }
             att_dec = optional(folder / 'attempt.json')
             if rec.get('reasoning_effort') is None and isinstance(att_dec, dict) and att_dec.get('reasoning_effort') is not None:
                 rec['reasoning_effort'] = att_dec.get('reasoning_effort')

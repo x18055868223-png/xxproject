@@ -13,9 +13,11 @@ from typing import Any, Mapping, Sequence
 import urllib.error
 
 try:
+    from . import astra_evidence_qual_v1 as evidence_qual
     from . import astra_player_dossier_v1 as dossier
     from . import signal_llm_review
 except ImportError:
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_player_dossier_v1 as dossier
     import signal_llm_review
 
@@ -295,7 +297,7 @@ def call_chat_llm(
     endpoint: str | None = None,
     timeout_s: float = 180,
     retries: int = 1,
-    max_tokens: int = 24576,
+    max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
     transport: Any = None,
@@ -487,7 +489,7 @@ def _build_model_request_payload(
     system_prompt: str,
     user_content: str,
     model: str | None,
-    max_tokens: int = 24576,
+    max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
     stream: bool = False,
@@ -536,7 +538,7 @@ def build_initial_request_payload(
     model: str | None = None,
     prompt_version: str = INITIAL_SYSTEM_PROMPT_VERSION,
     input_profile: str | None = None,
-    max_tokens: int = 24576,
+    max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
     stream: bool = False,
@@ -610,7 +612,7 @@ def build_hold_review_request_payload(
     input_md_text: str,
     *,
     model: str | None,
-    max_tokens: int = 24576,
+    max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
     stream: bool = False,
@@ -752,7 +754,7 @@ def decide_initial_hand(
     endpoint: str | None = None,
     timeout_s: float = 180,
     retries: int | None = None,
-    max_tokens: int = 24576,
+    max_tokens: int = 32768,
     reasoning_effort: str | None = None,
     transport: Any = None,
     budget: Any = None,
@@ -1496,6 +1498,8 @@ def _extract_last_review_metrics(last_review: Mapping[str, Any] | None) -> dict[
         "flow_asof_ms": flow_asof_ms,
         "flow_window_basis": next((src['flow_window_basis'] for src in sources
                                    if isinstance(src.get('flow_window_basis'), Mapping)), None),
+        "flow_qualification_status": pick_str("flow_qualification_status").upper() or None,
+        "flow_fast_4h_ready": next((src["flow_fast_4h_ready"] for src in sources if isinstance(src.get("flow_fast_4h_ready"), bool)), None),
         "flow_direction": flow_direction,
         "flow_fast_4h": flow_fast_4h,
         "flow_slow_12h": flow_slow_12h,
@@ -1709,6 +1713,9 @@ def _detect_category_c(
 ) -> dict[str, Any] | None:
     if not isinstance(ard_comparison, Mapping):
         return None
+    pin_eval_mode = ard_comparison.get("pin_eval_mode")
+    if pin_eval_mode in ("STALE", "UNALIGNED", "UNKNOWN"):
+        return None
     if "pin_status" in ard_comparison and ard_comparison.get("pin_status") is not None:
         if ard_comparison.get("pin_status") != "ok":
             return None
@@ -1737,16 +1744,22 @@ def _detect_category_c(
         new_pin = _num((ard_comparison.get("current_anchor") or {}).get("pin")) if isinstance(ard_comparison.get("current_anchor"), Mapping) else None
 
     same_measure = ard_comparison.get("same_measure")
+    position_only_ok = (
+        pin_eval_mode == "position_only"
+        and ard_comparison.get("source_method_comparable") is True
+        and ard_comparison.get("pin_status") == "ok"
+        and ard_comparison.get("current_sample_available") is True
+    )
     if depends_on_ard:
-        if same_measure is not True:
+        if not (same_measure is True or pin_eval_mode == "same_measure_ard" or position_only_ok):
             return None
     else:
-        if same_measure is False:
+        if same_measure is False and not position_only_ok:
             return None
-        if same_measure is not True:
+        if same_measure is not True and not position_only_ok:
             if ard_comparison.get("pin_status") != "ok" or old_pin is None or new_pin is None:
                 return None
-            if ard_comparison.get("method_comparable") is False:
+            if ard_comparison.get("method_comparable") is False or ard_comparison.get("source_method_comparable") is False:
                 return None
             old_src = ard_comparison.get("old_pin_source") or entry_snap.get("pin_source")
             new_src = ard_comparison.get("new_pin_source") or ard_comparison.get("pin_source")
@@ -1770,7 +1783,11 @@ def _detect_category_c(
 
     pin_changed_flag = ard_comparison.get("pin_price_changed")
     pin_changed = (pin_changed_flag is True) or (
-        not depends_on_ard and pin_changed_flag is not False and old_pin is not None and new_pin is not None and new_pin != old_pin
+        (not depends_on_ard or position_only_ok)
+        and pin_changed_flag is not False
+        and old_pin is not None
+        and new_pin is not None
+        and new_pin != old_pin
     )
 
     pin_triggered = False
@@ -1780,7 +1797,7 @@ def _detect_category_c(
         material_shift = abs(new_pin - old_pin) >= threshold
         old_margin = (old_pin - short_strike_usd) if side == "put" else (short_strike_usd - old_pin)
         new_margin = (new_pin - short_strike_usd) if side == "put" else (short_strike_usd - new_pin)
-        if depends_on_ard:
+        if depends_on_ard and not position_only_ok:
             closer_or_beyond = (new_margin < old_margin) and (new_margin <= 0 or old_margin > 0)
             pin_triggered = (material_shift or closer_or_beyond) and (last_rev_pin is None or new_pin != last_rev_pin)
         else:
@@ -1792,12 +1809,19 @@ def _detect_category_c(
                 pin_against_last = abs(new_pin - last_rev_pin) >= threshold and (
                     new_margin < last_rev_margin or near_or_beyond
                 )
-            pin_triggered = material_shift and (moved_toward_short or near_or_beyond) and pin_against_last
+            if depends_on_ard and position_only_ok:
+                pin_triggered = material_shift and moved_toward_short and pin_against_last
+            else:
+                pin_triggered = material_shift and (moved_toward_short or near_or_beyond) and pin_against_last
 
-    genuine_events = [
-        dict(e) for e in (ard_comparison.get("new_neighborhood_events") or ())
-        if _is_genuine_ard_event(e, entry_at_ms=entry_at_ms, after_ms=last_rev_at)
-    ]
+    genuine_events = (
+        []
+        if position_only_ok
+        else [
+            dict(e) for e in (ard_comparison.get("new_neighborhood_events") or ())
+            if _is_genuine_ard_event(e, entry_at_ms=entry_at_ms, after_ms=last_rev_at)
+        ]
+    )
     if not (pin_triggered or genuine_events):
         return None
 
@@ -1809,7 +1833,10 @@ def _detect_category_c(
     )
     if pin_triggered:
         sig = "ARD_STRUCTURE_SHIFT:PIN"
-        summary = f"同口径 ARD Pin 发生实质变化（{old_pin:,.0f} -> {new_pin:,.0f} USD）。"
+        if position_only_ok:
+            summary = f"仅位置迁移口径（{ard_comparison.get('pin_lineage') or 'live_5m'}）Pin 发生向短腿实质迁移（{old_pin:,.0f} -> {new_pin:,.0f} USD）。"
+        else:
+            summary = f"同口径 ARD Pin 发生实质变化（{old_pin:,.0f} -> {new_pin:,.0f} USD）。"
     else:
         last_ev = genuine_events[-1]
         kind = str(last_ev.get("kind") or last_ev.get("type") or last_ev.get("event") or "EVENT").strip()
@@ -1827,6 +1854,8 @@ def _detect_category_c(
             "last_reviewed_pin": last_rev_pin,
             "band_half": band_half,
             "depends_on_ard": depends_on_ard,
+            "pin_eval_mode": pin_eval_mode or ("same_measure_ard" if same_measure is True else None),
+            "pin_lineage": ard_comparison.get("pin_lineage"),
             "old_short_margin_usd": old_margin,
             "new_short_margin_usd": new_margin,
             "genuine_events": genuine_events,
@@ -1863,6 +1892,10 @@ def _detect_category_d(
         return None
     if latest_m.get("flow_ready") is not True:
         return None
+    if latest_m.get("flow_fast_4h_ready") is False:
+        return None
+    if latest_m.get("flow_qualification_status") in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN"):
+        return None
 
     adverse_dirs = {"bearish", "neutral_to_bearish"} if side == "put" else {"bullish", "neutral_to_bullish"}
     latest_dir = str(latest_m.get("flow_direction") or "").strip().lower()
@@ -1880,6 +1913,32 @@ def _detect_category_d(
 
     if (flow_asof is None or flow_asof > latest_ts or flow_asof <= max(entry_at_ms, last_rev_flow_asof or 0, t0_flow_asof or 0)
             or not 0 <= now_ms - flow_asof <= 60 * 60_000):
+        return None
+
+    basis = latest_m.get("flow_window_basis")
+    if not isinstance(basis, Mapping):
+        return None
+    basis_source = evidence_qual.clean_text(basis.get("source"))
+    basis_symbol = evidence_qual.clean_text(basis.get("symbol"))
+    basis_start = _int(basis.get("start_ms"))
+    if (not evidence_qual.is_valid_provenance_token(basis_source)
+            or not evidence_qual.is_valid_provenance_token(basis_symbol)
+            or basis_start is None or basis_start <= 0 or basis_start > flow_asof):
+        return None
+
+    ref_obj = rev if last_rev_flow_asof else t0
+    ref_flow_asof = _int(ref_obj.get("flow_asof_ms"))
+    ref_qual = str(ref_obj.get("flow_qualification_status") or "").strip().upper()
+    ref_basis = ref_obj.get("flow_window_basis") if isinstance(ref_obj.get("flow_window_basis"), Mapping) else None
+    if (
+        ref_basis is None
+        or ref_flow_asof is None
+        or ref_qual in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN")
+        or ref_obj.get("flow_fast_4h_ready") is False
+    ):
+        return None
+    if (evidence_qual.clean_text(ref_basis.get("source")) != basis_source
+            or evidence_qual.clean_text(ref_basis.get("symbol")) != basis_symbol):
         return None
 
     t0_dir = str(t0.get("flow_direction") or "").strip().lower()
@@ -1902,26 +1961,38 @@ def _detect_category_d(
         )
 
     is_reversal = (bool(prior_dir) and prior_dir not in adverse_dirs) or (not prior_dir and mom_shift)
+    incremental_basis = None
+    incremental_cvd = None
     if is_reversal:
         code = "FLOW_REVERSAL"
         mode = "reversal"
         min_shrink = 0.20
     else:
         # Prior state (t0 or last_review) was already in adverse_dirs -> check genuine continuation
-        if prior_dir not in adverse_dirs:
+        if prior_dir not in adverse_dirs or ref_basis is None:
             return None
         clock_floor = last_rev_flow_asof or t0_flow_asof or entry_at_ms
-        basis = latest_m.get("flow_window_basis") or {}
-        ref_basis = (rev.get("flow_window_basis") if last_rev_flow_asof else t0.get("flow_window_basis")) or {}
-        if not all(basis.get(key) and basis[key] == ref_basis.get(key) for key in ("source", "symbol")):
-            return None
-        start, ref_start = _int(basis.get("start_ms")), _int(ref_basis.get("start_ms"))
-        if start is None or not start <= flow_asof or latest_cvd4 is None:
-            return None
-        if start > clock_floor:
+        ref_start = _int(ref_basis.get("start_ms"))
+        if basis_start > clock_floor and latest_cvd4 is not None:
             incremental_cvd = latest_cvd4
-        elif start == ref_start and ref_cvd4 is not None and (last_rev_flow_asof or t0_flow_asof) is not None:
+            incremental_basis = "disjoint_4h"
+        elif ref_start is not None and basis_start == ref_start and ref_cvd4 is not None and (last_rev_flow_asof or t0_flow_asof) is not None and latest_cvd4 is not None:
             incremental_cvd = latest_cvd4 - ref_cvd4
+            incremental_basis = "same_start"
+        elif (
+            evidence_qual.is_valid_provenance_token(basis.get("cum_session_id"))
+            and basis.get("cum_session_id") == ref_basis.get("cum_session_id")
+            and _int(basis.get("cum_gap_count")) is not None
+            and _int(basis.get("cum_gap_count")) == _int(ref_basis.get("cum_gap_count"))
+            and _num(basis.get("cum_cvd_btc")) is not None
+            and _num(ref_basis.get("cum_cvd_btc")) is not None
+            and _int(basis.get("last_bar_index")) is not None
+            and _int(ref_basis.get("last_bar_index")) is not None
+            and _int(basis.get("last_bar_index")) > _int(ref_basis.get("last_bar_index"))
+            and flow_asof > clock_floor
+        ):
+            incremental_cvd = _num(basis.get("cum_cvd_btc")) - _num(ref_basis.get("cum_cvd_btc"))
+            incremental_basis = "exact_closed_bars_post_ref"
         else:
             return None
         if not (incremental_cvd < 0 if side == "put" else incremental_cvd > 0):
@@ -1955,9 +2026,11 @@ def _detect_category_d(
 
     non_overlapping_confirmed = (
         is_reversal
-        and _comparable_disjoint_flow(latest_m, rev if last_rev_flow_asof else t0)
+        and _comparable_disjoint_flow(latest_m, ref_obj)
         and mom_shift
     )
+    if is_reversal:
+        incremental_basis = "disjoint_4h" if non_overlapping_confirmed else "rolling_4h"
     if code == "FLOW_REVERSAL":
         summary_text = (
             f"相邻不重叠窗口确认主动流由{prior_dir or '非不利'}反转为{latest_dir}，现价相对锚点向短腿收缩 {coincident_shrink:.2f} 个百分点。"
@@ -1966,7 +2039,7 @@ def _detect_category_d(
         )
     else:
         summary_text = (
-            f"已知不利主动流继续同向兑现（{latest_dir}，新流向时钟 {_utc(flow_asof)}），伴随现价相对锚点继续向短腿实质收缩 {coincident_shrink:.2f} 个百分点。"
+            f"已知不利主动流继续同向兑现（{latest_dir}，增量 {incremental_cvd:+.2f} BTC [{incremental_basis}]，新流向时钟 {_utc(flow_asof)}），伴随现价相对锚点继续向短腿实质收缩 {coincident_shrink:.2f} 个百分点。"
         )
 
     return {
@@ -1982,6 +2055,8 @@ def _detect_category_d(
             "t0_flow_direction": t0_dir or None,
             "last_reviewed_flow_direction": last_rev_dir or None,
             "flow_asof_ms": flow_asof,
+            "flow_window_basis": dict(basis),
+            "incremental_basis": incremental_basis,
             "incremental_flow_cvd_btc": incremental_cvd if mode == "continuation" else None,
             "t0_flow_asof_ms": t0_flow_asof,
             "last_reviewed_flow_asof_ms": last_rev_flow_asof,
@@ -2553,15 +2628,51 @@ def _format_ard_lines(data: Any) -> list[str]:
     same = data.get("same_measure")
     if same is None:
         same = data.get("new_neighborhood_events") is not None
+    pin_eval_mode = data.get("pin_eval_mode")
     pin_changed = data.get("pin_price_changed")
     frozen_pin = (data.get("frozen_anchor") or {}).get("pin") if isinstance(data.get("frozen_anchor"), Mapping) else data.get("old_pin")
     cur_pin = (data.get("current_anchor") or {}).get("pin") if isinstance(data.get("current_anchor"), Mapping) else data.get("new_pin")
     events = data.get("new_neighborhood_events")
-    ev_count = len(events) if isinstance(events, list) else 0
+    lineage = data.get("pin_lineage") or "未标注"
+    comp_ms = data.get("pin_computed_at_ms") or ((data.get("current_anchor") or {}).get("at") if isinstance(data.get("current_anchor"), Mapping) else None)
+    age_ms = data.get("pin_age_ms")
+    age_txt = f"{age_ms // 60_000}分钟" if isinstance(age_ms, int) and not isinstance(age_ms, bool) else "未知"
+    clk_txt = _utc(comp_ms) if isinstance(comp_ms, int) and not isinstance(comp_ms, bool) else "未知时钟"
+    reasons = [str(r) for r in (data.get("pin_qualification_reasons") or ()) if r]
+    reason_suffix = f"；原因：{'、'.join(reasons)}" if reasons else ""
+
+    degraded = pin_eval_mode in ("STALE", "UNALIGNED", "UNKNOWN") or pin_changed is None
+    if pin_eval_mode == "position_only" and not degraded:
+        comp_txt = "仅位置迁移口径可比（position_only；不测邻域停留/离返）"
+    elif not degraded and (pin_eval_mode == "same_measure_ard" or same is True):
+        comp_txt = "同口径可比"
+    else:
+        status_tag = pin_eval_mode or ("UNALIGNED" if same is False else "UNKNOWN")
+        comp_txt = f"{status_tag}（不可比或已降级；严禁作未迁移或结构完整依据{reason_suffix}）"
+
+    if degraded:
+        status_tag = pin_eval_mode or ("UNALIGNED" if same is False else "UNKNOWN")
+        pin_mig_line = (
+            f"- Pin 迁移对照：入场参考 Pin {_fmt_num(frozen_pin, 1, ' USD')} -> 当前观测状态【{status_tag}】"
+            f"（来源：{lineage}，计算时钟：{clk_txt}，延迟：{age_txt}{reason_suffix}；未获有效同口径迁移判定）"
+        )
+    else:
+        pin_mig_line = (
+            f"- Pin 迁移对照：入场参考 Pin {_fmt_num(frozen_pin, 1, ' USD')} -> 最新 Pin {_fmt_num(cur_pin, 1, ' USD')}"
+            f"（是否迁移：{_fmt_bool_cn(pin_changed)}；来源：{lineage}，计算时钟：{clk_txt}，延迟：{age_txt}）"
+        )
+
+    if isinstance(events, list) and not degraded and pin_eval_mode != "position_only":
+        ev_txt = f"{len(events)} 次"
+    elif pin_eval_mode in ("STALE", "UNALIGNED", "UNKNOWN"):
+        ev_txt = f"不适用/未测量（当前状态：{pin_eval_mode}）"
+    else:
+        ev_txt = "不适用/未测量（仅位置迁移口径）"
+
     return [
-        f"- 同口径可比性：{_fmt_bool_cn(same, '同口径可比', '口径/窗口不可比（不作为结构变化触发依据）')}",
-        f"- Pin 迁移对照：入场参考 Pin {_fmt_num(frozen_pin, 1, ' USD')} -> 最新 Pin {_fmt_num(cur_pin, 1, ' USD')}（是否迁移：{_fmt_bool_cn(pin_changed)}）",
-        f"- 现价距入场 Pin 距离：{_fmt_num(data.get('current_distance_to_frozen_pin_usd'), 1, ' USD')}；位于入场邻域内：{_fmt_bool_cn(data.get('current_inside_frozen_neighborhood'))}；入场后新增同口径邻域事件：{ev_count} 次",
+        f"- 同口径可比性：{comp_txt}",
+        pin_mig_line,
+        f"- 现价距入场 Pin 距离：{_fmt_num(data.get('current_distance_to_frozen_pin_usd'), 1, ' USD')}；位于入场邻域内：{_fmt_bool_cn(data.get('current_inside_frozen_neighborhood'))}；入场后新增同口径邻域事件：{ev_txt}",
     ]
 
 
@@ -2571,24 +2682,65 @@ def _format_flow_lines(data: Any, *, triggers: Sequence[Mapping[str, Any]] = ())
     cur_dir = _flow_dir_label(data.get("flow_direction"))
     fast4 = _flow_dir_label(data.get("flow_fast_4h"))
     slow12 = _flow_dir_label(data.get("flow_slow_12h"))
+    basis = data.get("flow_window_basis") if isinstance(data.get("flow_window_basis"), Mapping) else None
+    flow_qual = data.get("flow_qualification_status")
+    fast_ready = data.get("flow_fast_4h_ready")
+    flow_reasons = [str(r) for r in (data.get("flow_qualification_reasons") or ()) if r]
+    if basis:
+        src = basis.get("source") or "未提供"
+        sym = basis.get("symbol") or "未提供"
+        start_txt = _utc(basis.get("start_ms")) if _int(basis.get("start_ms")) else "未提供"
+        end_txt = _utc(data.get("flow_asof_ms")) if _int(data.get("flow_asof_ms")) else "未核实"
+        cum_info = ""
+        if basis.get("cum_session_id") or basis.get("last_bar_index") is not None:
+            cum_info = f"；累计会话 {basis.get('cum_session_id') or '?'} 末柱 #{basis.get('last_bar_index')}"
+        basis_line = f"- 现货流向窗口凭据（flow_window_basis）：来源 {src} / 标的 {sym}；4h 窗口 {start_txt} 至 {end_txt}{cum_info}"
+    else:
+        basis_line = "- 现货流向窗口凭据（flow_window_basis）：缺失（未证实同源完成窗口，禁止用于触发延续判定）"
+
     d_trigs = [t for t in triggers if isinstance(t, Mapping) and t.get("category") == "D"]
     if d_trigs:
-        d_code = str(d_trigs[-1].get("code") or "")
+        d_last = d_trigs[-1]
+        d_code = str(d_last.get("code") or "")
+        d_facts = d_last.get("facts") if isinstance(d_last.get("facts"), Mapping) else {}
         if d_code == "FLOW_ADVERSE_CONTINUATION":
-            mode_note = "本次属【已知不利流继续兑现（FLOW_ADVERSE_CONTINUATION）】，非全新反转，需评估不利动量与价格同步收缩是否已超出原承担范围。"
+            inc_cvd = _num(d_facts.get("incremental_flow_cvd_btc"))
+            inc_basis = d_facts.get("incremental_basis") or "未标明"
+            inc_txt = f"；post-ref 增量净流 incremental_flow_cvd_btc={inc_cvd:+.2f} BTC（口径：{inc_basis}）" if inc_cvd is not None else ""
+            mode_note = f"本次属【已知不利流继续兑现（FLOW_ADVERSE_CONTINUATION）{inc_txt}】，非全新反转，需评估不利动量与价格同步收缩是否已超出原承担范围。"
         else:
-            mode_note = "本次属【主动流结构反转（FLOW_REVERSAL）】，需正面评估反转是否伴随向短腿的实质推进。"
+            rev_conf = bool(d_facts.get("reversal_confirmed"))
+            mode_note = f"本次属【主动流结构反转（FLOW_REVERSAL；reversal_confirmed={rev_conf}）】，需正面评估反转是否伴随向短腿的实质推进。"
     else:
         mode_note = "未触发 D 类新流向事件；4h/12h 为滚动窗，旧柱滑出不直接等同相邻不重叠窗口真实反转。"
+
+    qual_tag = ""
+    if flow_qual in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN") or fast_ready is False:
+        tag = flow_qual or "FAST_4H_NOT_READY"
+        rs = f"（{'、'.join(flow_reasons)}）" if flow_reasons else ""
+        qual_tag = f"；资格状态：【{tag}】{rs}"
+    elif flow_qual:
+        qual_tag = f"；资格状态：{flow_qual}"
+
+    qual_failed = flow_qual in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN") or fast_ready is False
     lines = [
-        f"- 现货主动流就绪：{_fmt_bool_cn(data.get('flow_ready'))}（流向源时钟：{_utc(data.get('flow_asof_ms')) if data.get('flow_asof_ms') else '未核实'}）",
-        f"- 综合方向：{cur_dir}（近 4h：{fast4} / 近 12h：{slow12}）；定性：{mode_note}",
-        f"- 近 4h CVD 净额：{_fmt_num(data.get('flow_cvd_4h'), 2)}；近 4h 动量变化：{_fmt_num(data.get('flow_momentum_4h_pct'), 2, '%')}",
+        f"- 现货主动流就绪：{_fmt_bool_cn(data.get('flow_ready'))}（近 4h 就绪：{_fmt_bool_cn(fast_ready) if fast_ready is not None else '未单独标注'}；流向源时钟：{_utc(data.get('flow_asof_ms')) if data.get('flow_asof_ms') else '未核实'}{qual_tag}）",
+        basis_line,
     ]
-    if _num(data.get("flow_cvd_12h")) is not None or _num(data.get("flow_momentum_12h_pct")) is not None:
+    if qual_failed:
+        fail_tag = flow_qual or "FAST_4H_NOT_READY"
         lines.append(
-            f"- 近 12h CVD 净额：{_fmt_num(data.get('flow_cvd_12h'), 2)}；近 12h 动量变化：{_fmt_num(data.get('flow_momentum_12h_pct'), 2, '%')}"
+            f"- 流向读数处理：当前现货主动流资格为【{fail_tag}】（未通过时钟/来源/窗口完整校验），原始方向与 CVD 数值已降级隐藏，不参与本轮反转或延续判断。"
         )
+    else:
+        lines.extend([
+            f"- 综合方向：{cur_dir}（近 4h：{fast4} / 近 12h：{slow12}）；定性：{mode_note}",
+            f"- 近 4h CVD 净额：{_fmt_num(data.get('flow_cvd_4h'), 2)}；近 4h 动量变化：{_fmt_num(data.get('flow_momentum_4h_pct'), 2, '%')}",
+        ])
+        if _num(data.get("flow_cvd_12h")) is not None or _num(data.get("flow_momentum_12h_pct")) is not None:
+            lines.append(
+                f"- 近 12h CVD 净额：{_fmt_num(data.get('flow_cvd_12h'), 2)}；近 12h 动量变化：{_fmt_num(data.get('flow_momentum_12h_pct'), 2, '%')}"
+            )
     return lines
 
 
@@ -2609,6 +2761,22 @@ def _format_economics_lines(t0_summary: Any, quote_summary: Any) -> list[str]:
     elif quote_summary is not None:
         lines.extend(_kv_lines(quote_summary))
     return lines or ["- 暂无新增经济与盘口估值"]
+
+
+def _hold_flow_delta_allowed(flow_obj: Any, *, require_basis: bool = False) -> bool:
+    """Return True iff flow snapshot is aligned and cleared for Hold Section 2/3 comparison."""
+    if not isinstance(flow_obj, Mapping):
+        return False
+    fq = str(flow_obj.get("flow_qualification_status") or "").strip().upper()
+    if fq in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN"):
+        return False
+    if flow_obj.get("flow_fast_4h_ready") is False or flow_obj.get("flow_ready") is False:
+        return False
+    if _int(flow_obj.get("flow_asof_ms")) is None:
+        return False
+    if require_basis and not isinstance(flow_obj.get("flow_window_basis"), Mapping):
+        return False
+    return True
 
 
 def _format_dual_delta_lines(
@@ -2658,13 +2826,15 @@ def _format_dual_delta_lines(
             parts.append(f"现价 {cur_spot - rev_spot:+,.2f} USD（{rev_spot:,.2f} -> {cur_spot:,.2f}）")
         if cur_dist is not None and rev_dist is not None:
             parts.append(f"短腿余量 {cur_dist - rev_dist:+.2f} 个百分点（{rev_dist:.2f}% -> {cur_dist:.2f}%）")
-        cur_flow_ts = _int(flow_m.get("flow_asof_ms"))
-        rev_flow_ts = _int(last_rev.get("flow_asof_ms"))
+        cur_flow_ok = _hold_flow_delta_allowed(flow_m, require_basis=True)
+        prev_flow_ok = _hold_flow_delta_allowed(last_rev, require_basis=False)
+        cur_flow_ts = _int(flow_m.get("flow_asof_ms")) if cur_flow_ok else None
+        rev_flow_ts = _int(last_rev.get("flow_asof_ms")) if prev_flow_ok else None
         if cur_flow_ts is not None and rev_flow_ts is not None:
             dt_min = (cur_flow_ts - rev_flow_ts) // 60_000
             parts.append(f"流向时钟推进 {dt_min:+d} 分钟（{_flow_dir_label(last_rev.get('flow_direction'))} -> {_flow_dir_label(flow_m.get('flow_direction'))}）")
-        cur_cvd4 = _num(flow_m.get("flow_cvd_4h"))
-        rev_cvd4 = _num(last_rev.get("flow_cvd_4h"))
+        cur_cvd4 = _num(flow_m.get("flow_cvd_4h")) if cur_flow_ok else None
+        rev_cvd4 = _num(last_rev.get("flow_cvd_4h")) if prev_flow_ok else None
         if cur_cvd4 is not None and rev_cvd4 is not None:
             parts.append(f"4h CVD {rev_cvd4:+.2f} -> {cur_cvd4:+.2f}")
         cur_pin = _num((ard_m.get("current_anchor") or {}).get("pin")) if isinstance(ard_m.get("current_anchor"), Mapping) else _num(ard_m.get("new_pin"))
@@ -2678,17 +2848,96 @@ def _format_dual_delta_lines(
 
     # Explicit data gaps summary (high-signal only)
     gaps: list[str] = []
-    if isinstance(flow_summary, Mapping) and flow_summary.get("flow_ready") is False:
-        gaps.append("主动流尚未就绪（flow_ready=False）")
-    if isinstance(ard_summary, Mapping) and ard_summary.get("same_measure") is False:
-        gaps.append("ARD 口径不可比")
-    if isinstance(ard_summary, Mapping) and ard_summary.get("pin_status") not in (None, "ok"):
-        gaps.append(f"Pin 状态异常（{ard_summary.get('pin_status')}）")
+    if isinstance(flow_summary, Mapping):
+        if flow_summary.get("flow_ready") is False or flow_summary.get("flow_fast_4h_ready") is False:
+            gaps.append("现货主动流未就绪（flow_ready/fast_4h_ready=False）")
+        fq_st = flow_summary.get("flow_qualification_status")
+        if fq_st in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN"):
+            gaps.append(f"现货主动流资格异常（{fq_st}）")
+        elif not isinstance(flow_summary.get("flow_window_basis"), Mapping):
+            gaps.append("现货主动流缺少 flow_window_basis 窗口凭据")
+    if isinstance(ard_summary, Mapping):
+        pm = ard_summary.get("pin_eval_mode")
+        if pm in ("STALE", "UNALIGNED", "UNKNOWN"):
+            gaps.append(f"Pin/ARD 状态异常（{pm}）")
+        elif pm != "position_only" and ard_summary.get("same_measure") is False:
+            gaps.append("ARD 口径不可比")
+        if ard_summary.get("pin_status") not in (None, "ok"):
+            gaps.append(f"Pin 状态异常（{ard_summary.get('pin_status')}）")
     if isinstance(post_entry_summary, Mapping) and (post_entry_summary.get("sample_count") or 0) == 0:
         gaps.append("入场后分钟路径样本为空")
     if gaps:
         lines.append(f"- 明确数据缺口：{'；'.join(gaps)}。")
     return lines
+
+
+def _derive_hold_channel_readiness(
+    *,
+    flow_summary: Any,
+    ard_summary: Any,
+    triggers: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    trig_list = [t for t in (triggers or ()) if isinstance(t, Mapping)]
+    spot_fired = any(t.get("category") == "D" for t in trig_list)
+    pin_fired = any(t.get("category") == "C" for t in trig_list)
+
+    spot_qual: dict[str, Any] | None = None
+    if isinstance(flow_summary, Mapping):
+        fq = flow_summary.get("flow_qualification_status")
+        f_ready = flow_summary.get("flow_ready")
+        fast_ready = flow_summary.get("flow_fast_4h_ready")
+        basis = flow_summary.get("flow_window_basis")
+        reasons = list(flow_summary.get("flow_qualification_reasons") or ())
+        if fq in (evidence_qual.QUAL_ALIGNED, evidence_qual.QUAL_UNALIGNED, evidence_qual.QUAL_STALE, evidence_qual.QUAL_UNKNOWN):
+            st = fq
+        elif f_ready is False or fast_ready is False:
+            st = evidence_qual.QUAL_UNKNOWN
+        elif isinstance(basis, Mapping) and _int(flow_summary.get("flow_asof_ms")) is not None:
+            st = evidence_qual.QUAL_ALIGNED
+        elif f_ready is True:
+            st = evidence_qual.QUAL_UNALIGNED
+            if not reasons:
+                reasons = ["missing_flow_window_basis"]
+        else:
+            st = evidence_qual.QUAL_UNKNOWN
+        cap_map = {
+            evidence_qual.QUAL_ALIGNED: evidence_qual.CAP_ACTIVE,
+            evidence_qual.QUAL_UNALIGNED: evidence_qual.CAP_BLIND_UNALIGNED,
+            evidence_qual.QUAL_STALE: evidence_qual.CAP_BLIND_STALE,
+        }
+        cap = cap_map.get(st) or (evidence_qual.CAP_WARMING_UP if (f_ready is False or fast_ready is False) else evidence_qual.CAP_BLIND_MISSING)
+        spot_qual = {"status": st, "capability": cap, "reason_codes": reasons}
+
+    pin_qual: dict[str, Any] | None = None
+    pin_mode: str | None = None
+    if isinstance(ard_summary, Mapping):
+        pin_mode = ard_summary.get("pin_eval_mode")
+        p_reasons = list(ard_summary.get("pin_qualification_reasons") or ())
+        if pin_mode in ("same_measure_ard", "position_only"):
+            p_st = evidence_qual.QUAL_ALIGNED
+            p_cap = evidence_qual.CAP_POSITION_ONLY if pin_mode == "position_only" else evidence_qual.CAP_ACTIVE
+        elif pin_mode == "STALE":
+            p_st, p_cap = evidence_qual.QUAL_STALE, evidence_qual.CAP_BLIND_STALE
+        elif pin_mode == "UNALIGNED":
+            p_st, p_cap = evidence_qual.QUAL_UNALIGNED, evidence_qual.CAP_BLIND_UNALIGNED
+        elif pin_mode == "UNKNOWN":
+            p_st, p_cap = evidence_qual.QUAL_UNKNOWN, evidence_qual.CAP_BLIND_MISSING
+        elif ard_summary.get("same_measure") is True and ard_summary.get("pin_status") in (None, "ok") and ard_summary.get("current_sample_available") is not False:
+            p_st, p_cap, pin_mode = evidence_qual.QUAL_ALIGNED, evidence_qual.CAP_ACTIVE, "same_measure_ard"
+        elif ard_summary.get("same_measure") is False:
+            p_st, p_cap, pin_mode = evidence_qual.QUAL_UNALIGNED, evidence_qual.CAP_BLIND_UNALIGNED, "UNALIGNED"
+        else:
+            p_st, p_cap = evidence_qual.QUAL_UNKNOWN, evidence_qual.CAP_BLIND_MISSING
+        pin_qual = {"status": p_st, "capability": p_cap, "reason_codes": p_reasons}
+
+    return evidence_qual.summarize_channel_capabilities(
+        spot_qual=spot_qual,
+        pin_qual=pin_qual,
+        pin_eval_mode=pin_mode,
+        spot_event_fired=spot_fired,
+        pin_event_fired=pin_fired,
+        include_rv24=False,
+    )
 
 
 def build_hold_review_input(
@@ -2710,6 +2959,7 @@ def build_hold_review_input(
     authoritative_m: str | None = None,
     review_channel: str | None = None,
     new_qualified_data_present: bool | None = None,
+    channel_readiness: Mapping[str, Any] | None = None,
 ) -> str:
     """Render a pure-Chinese, decision-ready incremental hold-review card with C/M/UNKNOWN/OBSERVE separation."""
     side_norm = str(contract.get("side") or "").strip().lower()
@@ -2730,12 +2980,30 @@ def build_hold_review_input(
     t0_m = t0_summary if isinstance(t0_summary, Mapping) else {}
     t0_flow_dir = t0_m.get("flow_direction") or (frozen_condition.get("t0_flow_direction") if isinstance(frozen_condition, Mapping) else None)
     t0_flow_asof = t0_m.get("flow_asof_ms") or (frozen_condition.get("t0_flow_asof_ms") if isinstance(frozen_condition, Mapping) else None)
-    if t0_flow_dir:
+    t0_qual = str(t0_m.get("flow_qualification_status") or "").strip().upper()
+    t0_has_basis = (
+        isinstance(t0_m.get("flow_window_basis"), Mapping)
+        if ("flow_window_basis" in t0_m or "flow_qualification_status" in t0_m)
+        else bool(_int(t0_flow_asof) is not None)
+    )
+    t0_flow_aligned = bool(
+        t0_flow_dir
+        and _int(t0_flow_asof) is not None
+        and t0_qual not in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN")
+        and t0_m.get("flow_fast_4h_ready") is not False
+        and t0_has_basis
+    )
+    if t0_flow_aligned:
         adverse_at_entry = _is_adverse_flow_dir(side_norm, t0_flow_dir)
         entry_flow_line = (
-            f"- 入场时主动流基线：{_flow_dir_label(t0_flow_dir)}（时钟 {_utc(t0_flow_asof) if t0_flow_asof else '随入场同步'}；"
+            f"- 入场时主动流基线：{_flow_dir_label(t0_flow_dir)}（时钟 {_utc(t0_flow_asof)}；"
             + ("**入场时即属已知不利流，已纳入原承保判断，不可将旧不利状态冒充新反转**" if adverse_at_entry else "入场时非不利方向")
             + "）。"
+        )
+    elif t0_flow_dir:
+        tag = t0_qual or "OBSERVED_UNALIGNED"
+        entry_flow_line = (
+            f"- 入场时主动流基线：资格未通过（{tag}；无有效同源时钟，不得作已知反向支持或可比反转基线），以 [S1] 与 [H1] 冻结原文为准。"
         )
     else:
         entry_flow_line = "- 入场时主动流基线：以 [S1] 与 [H1] 冻结原文为准。"
@@ -2798,9 +3066,14 @@ def build_hold_review_input(
         ev_cutoff = _utc(last_rev_extracted.get("evidence_asof_ms") or last_rev_extracted.get("reviewed_at_ms"))
         kf = last_rev_extracted.get("key_facts")
         kf_text = "；".join(str(x) for x in kf) if isinstance(kf, Sequence) and not isinstance(kf, (str, bytes)) else (str(kf) if kf else "未单列")
+        last_rev_flow_ok = bool(
+            last_rev_extracted.get("flow_direction")
+            and _hold_flow_delta_allowed(last_rev_extracted, require_basis=False)
+        )
+        last_rev_flow_txt = _flow_dir_label(last_rev_extracted.get("flow_direction")) if last_rev_flow_ok else "未对齐/未核实（不参与对比）"
         lines.extend([
             f"- 最近一次复核（共 {len(prior_list)} 次）：结论 **{last_rev_extracted.get('verdict') or '未知'}**（{last_rev_extracted.get('protocol_status') or 'RECORDED'}），复核时间 {rev_time}，证据截止 {ev_cutoff}。",
-            f"- 上次复核时状态：指数 {_fmt_num(last_rev_extracted.get('spot_usd'), 2, ' USD')}；短腿余量 {_fmt_num(last_rev_extracted.get('short_distance_pct'), 2, '%')}；主动流 {_flow_dir_label(last_rev_extracted.get('flow_direction'))}。",
+            f"- 上次复核时状态：指数 {_fmt_num(last_rev_extracted.get('spot_usd'), 2, ' USD')}；短腿余量 {_fmt_num(last_rev_extracted.get('short_distance_pct'), 2, '%')}；主动流 {last_rev_flow_txt}。",
             f"- 上次复核核心事实：{kf_text}",
             f"- 上次复核回复：{last_rev_extracted.get('public_reply') or '无'}",
             "- **严禁重复计费**：上述上次复核已评估并承接的旧风险，不得冒充本次新暴雷。",
@@ -2853,10 +3126,18 @@ def build_hold_review_input(
     else:
         latest_post_ts = (post_entry_summary.get("latest_ts_ms") or post_entry_summary.get("latest_at_ms")) if isinstance(post_entry_summary, Mapping) else None
         flow_asof = flow_summary.get("flow_asof_ms") if isinstance(flow_summary, Mapping) else None
+        flow_basis_ok = (
+            isinstance(flow_summary.get("flow_window_basis"), Mapping)
+            and evidence_qual.is_valid_provenance_token(flow_summary["flow_window_basis"].get("source"))
+            and evidence_qual.is_valid_provenance_token(flow_summary["flow_window_basis"].get("symbol"))
+            and isinstance(_int(flow_summary["flow_window_basis"].get("start_ms")), int)
+            and flow_summary.get("flow_fast_4h_ready") is not False
+            and flow_summary.get("flow_qualification_status") not in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN")
+        ) if isinstance(flow_summary, Mapping) else False
         ard_new_obs = ard_summary.get("newly_available_anchor_observations") if isinstance(ard_summary, Mapping) else None
         eff_new_data = bool(
             (isinstance(latest_post_ts, int) and latest_post_ts > entry_at_ms)
-            or (isinstance(flow_summary, Mapping) and flow_summary.get("flow_ready") is True and isinstance(flow_asof, int) and flow_asof > entry_at_ms)
+            or (isinstance(flow_summary, Mapping) and flow_summary.get("flow_ready") is True and flow_basis_ok and isinstance(flow_asof, int) and flow_asof > entry_at_ms)
             or (isinstance(ard_new_obs, Sequence) and not isinstance(ard_new_obs, (str, bytes)) and len(ard_new_obs) > 0)
         )
 
@@ -2870,14 +3151,54 @@ def build_hold_review_input(
     unknown_items: list[str] = []
     if m_status_code == "UNKNOWN":
         unknown_items.append("机械检查结果处于 UNKNOWN（未到点或样本缺口）")
-    if isinstance(flow_summary, Mapping) and flow_summary.get("flow_ready") is False:
-        unknown_items.append("现货主动流未就绪（flow_ready=False）")
-    if isinstance(ard_summary, Mapping) and ard_summary.get("same_measure") is False:
-        unknown_items.append("ARD 口径不可比")
-    if isinstance(ard_summary, Mapping) and ard_summary.get("pin_status") not in (None, "ok"):
-        unknown_items.append(f"Pin 状态异常（{ard_summary.get('pin_status')}）")
+    if isinstance(flow_summary, Mapping):
+        if flow_summary.get("flow_ready") is False or flow_summary.get("flow_fast_4h_ready") is False:
+            unknown_items.append("现货主动流未就绪（flow_ready/fast_4h_ready=False）")
+        fq_st = flow_summary.get("flow_qualification_status")
+        if fq_st in ("OBSERVED_UNALIGNED", "STALE", "UNKNOWN"):
+            unknown_items.append(f"现货主动流资格异常（{fq_st}）")
+        elif not isinstance(flow_summary.get("flow_window_basis"), Mapping):
+            unknown_items.append("现货主动流缺少 flow_window_basis 窗口凭据")
+    if isinstance(ard_summary, Mapping):
+        pm = ard_summary.get("pin_eval_mode")
+        if pm in ("STALE", "UNALIGNED", "UNKNOWN"):
+            unknown_items.append(f"Pin/ARD 状态异常（{pm}）")
+        elif pm != "position_only" and ard_summary.get("same_measure") is False:
+            unknown_items.append("ARD 口径不可比")
+        if ard_summary.get("pin_status") not in (None, "ok"):
+            unknown_items.append(f"Pin 状态异常（{ard_summary.get('pin_status')}）")
+    elif depends_on_ard:
+        unknown_items.append("依赖 ARD 但当前无可比同口径 ARD 数据")
     if isinstance(post_entry_summary, Mapping) and (post_entry_summary.get("sample_count") or 0) == 0:
         unknown_items.append("入场后分钟路径样本为空")
+
+    readiness = (
+        dict(channel_readiness)
+        if isinstance(channel_readiness, Mapping)
+        else _derive_hold_channel_readiness(flow_summary=flow_summary, ard_summary=ard_summary, triggers=triggers)
+    )
+    ch_map = readiness.get("channels") if isinstance(readiness.get("channels"), Mapping) else {}
+    if not ch_map and isinstance(channel_readiness, Mapping):
+        # Accept shorthand flat capability mappings when callers pass direct channel->capability pairs.
+        spot_cap = readiness.get("spot_flow") if isinstance(readiness.get("spot_flow"), str) else "BLIND_MISSING"
+        pin_cap = (
+            readiness.get("pin_structure")
+            if isinstance(readiness.get("pin_structure"), str)
+            else (readiness.get("pin") if isinstance(readiness.get("pin"), str) else "BLIND_MISSING")
+        )
+        spot_ch = {"capability": spot_cap, "status": spot_cap}
+        pin_ch = {"capability": pin_cap, "status": pin_cap}
+        blind_list = [k for k, v in (("spot_flow", spot_cap), ("pin_structure", pin_cap)) if str(v).startswith("BLIND_")]
+    else:
+        spot_ch = ch_map.get("spot_flow") if isinstance(ch_map.get("spot_flow"), Mapping) else {}
+        pin_ch = ch_map.get("pin_structure") if isinstance(ch_map.get("pin_structure"), Mapping) else {}
+        blind_list = [str(x) for x in (readiness.get("blind_channels") or ()) if x and x != "rv24_background"]
+    readiness_line = (
+        f"- 通道观测能力（`channel_readiness`）："
+        f"现货流 `{spot_ch.get('capability', 'BLIND_MISSING')}`（{spot_ch.get('status', 'UNKNOWN')}） / "
+        f"Pin结构 `{pin_ch.get('capability', 'BLIND_MISSING')}`（{pin_ch.get('status', 'UNKNOWN')}）；"
+        f"关键盲区：{', '.join(blind_list) if blind_list else '无'}。"
+    )
 
     c_review_line = (
         f"初始冻结 `[C1..]` 须结合入场后真实新增合格数据独立复核（`new_qualified_data_present=True`）。"
@@ -2888,6 +3209,7 @@ def build_hold_review_input(
         "",
         "## 复核证据分层（M / C / UNKNOWN / 仅供观察）",
         f"- 复核通道：`{eff_channel}`；入场后新增合格数据（`new_qualified_data_present`）：`{'True' if eff_new_data else 'False'}`。",
+        readiness_line,
         f"- 1. **机械 M**：`{m_status_code}`（`CONDITION_TRIGGERED` / `NOT_TRIGGERED` / `UNKNOWN`；程序机械裁决不可改写）。",
         f"- 2. **独立 C 复核**：{c_review_line}",
         f"- 3. **不可判定/未观测项（UNKNOWN）**：{'；'.join(unknown_items) if unknown_items else '当前无显式阻塞缺口；若存在口径冲突或未观测项须如实标 `UNKNOWN`。'}",

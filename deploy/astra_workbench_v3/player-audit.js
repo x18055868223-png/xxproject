@@ -282,6 +282,56 @@ function protocolStatusChip(status) {
   return status ? h("span", { class: "chip warn", text: status }) : null;
 }
 
+const PIN_EVAL_MODE_CN = {
+  same_measure_ard: { text: "Pin 口径：同口径 ARD", tone: "ok" },
+  position_only: { text: "Pin 口径：仅持仓参考", tone: "warn" },
+  STALE: { text: "Pin 口径：过期(STALE)", tone: "bad" },
+  UNALIGNED: { text: "Pin 口径：未对齐", tone: "bad" },
+  UNKNOWN: { text: "Pin 口径：未知", tone: "muted-chip" },
+  full: { text: "Pin 口径：完整结构", tone: "ok" },
+  blind: { text: "Pin 口径：盲区", tone: "bad" },
+};
+
+function pinEvalModeChip(mode) {
+  if (!mode) return null;
+  const meta = PIN_EVAL_MODE_CN[mode] || { text: `Pin 模式：${mode}`, tone: "muted-chip" };
+  return h("span", { class: `chip ${meta.tone}`, text: meta.text });
+}
+
+function channelReadinessChip(readiness) {
+  if (!readiness) return null;
+  if (typeof readiness === "string") {
+    const upper = readiness.toUpperCase();
+    const tone = /BLIND|UNALIGNED|MISSING|FAIL/.test(upper) ? "bad"
+      : /DEGRADED|POSITION_ONLY|WARN|STALE/.test(upper) ? "warn"
+      : /QUALIFIED|OK|READY|OPERATIONAL/.test(upper) ? "ok" : "muted-chip";
+    return h("span", { class: `chip ${tone}`, text: `通道：${readiness}` });
+  }
+  if (typeof readiness === "object") {
+    const chMap = (readiness.channels && typeof readiness.channels === "object") ? readiness.channels : readiness;
+    const entries = Object.entries(chMap).filter(([, v]) => v && (typeof v === "string" || typeof v === "object"));
+    const blind = Array.isArray(readiness.blind_channels) ? readiness.blind_channels
+      : entries.filter(([, v]) => String(v.capability ?? v.status ?? v).startsWith("BLIND")).map(([k]) => k);
+    const degraded = Array.isArray(readiness.degraded_channels) ? readiness.degraded_channels
+      : entries.filter(([, v]) => String(v.capability ?? v).includes("POSITION_ONLY") || String(v.capability ?? v).startsWith("DEGRADED")).map(([k]) => k);
+    const warming = entries.filter(([, v]) => String(v.capability ?? v) === "WARMING_UP").map(([k]) => k);
+    const title = entries.map(([k, v]) => `${k}: ${typeof v === "object" ? (v.capability || v.status || "—") : v}`).join(" | ");
+    if (blind.length) {
+      return h("span", { class: "chip bad", text: `通道盲区：${blind.join("、")}`, title: title || null });
+    }
+    if (degraded.length) {
+      return h("span", { class: "chip warn", text: `通道降级：${degraded.join("、")}`, title: title || null });
+    }
+    if (warming.length) {
+      return h("span", { class: "chip warn", text: `通道预热：${warming.join("、")}`, title: title || null });
+    }
+    if (readiness.all_critical_operational === true || entries.length) {
+      return h("span", { class: "chip ok", text: "通道就绪", title: title || null });
+    }
+  }
+  return null;
+}
+
 function triggerListView(triggers) {
   const rows = Array.isArray(triggers)
     ? triggers.filter((t) => t && (typeof t === "string" || t.code || t.summary_cn || t.summary))
@@ -860,6 +910,8 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
                 ? `未映射 ID：${r.unmapped_condition_ids.join("、")}` : null,
             })
           : null;
+        const pinModeChip = pinEvalModeChip(r.pin_eval_mode ?? r.evidence_snapshot?.pin_eval_mode);
+        const readinessChip = channelReadinessChip(r.channel_readiness ?? r.evidence_snapshot?.channel_readiness);
         const mTag = modelTag(r.model, r.reasoning_effort ?? r.configuration?.reasoning_effort);
         const revTokens = usageTotalTokens(r.usage);
         const ts = r.reviewed_at_ms ?? r.decided_at_ms ?? r.recorded_at_ms ?? r.observed_at_ms;
@@ -873,6 +925,8 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
             h("span", { class: `chip ${vm.tone}`, text: vm.text }),
             revProtoChip,
             unmappedChip,
+            pinModeChip,
+            readinessChip,
             mTag ? h("span", { class: "chip muted-chip", text: mTag }) : null,
             revTokens !== null ? h("span", { class: "chip muted-chip num", text: `${revTokens.toLocaleString("en-US")} tok` }) : null,
             h("span", { class: "muted small num pa-hold-ts", text: utc(ts) })),

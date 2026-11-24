@@ -428,11 +428,41 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
              quality_reason=gex_enrich_reason or ("iv_not_contract_expiry" if not _empty(_pick(gex, GEX_VOL_KEYS)) and False in (
                  iv_align["term_front_is_contract_expiry"], iv_align["rr_1d_is_contract_expiry"]) else None))
     eg = view.get("expiry_gamma") or {}
+    rv = eg.get("realized_vol") if isinstance(eg.get("realized_vol"), Mapping) else None
+    iv_asof_ms = _int((expiry_row or {}).get("computed_at_ms"))
+    iv_available_at_ms = _int((expiry_row or {}).get("available_at_ms"))
+    if iv_available_at_ms is None and iv_asof_ms is not None and expiry_row is not None:
+        iv_available_at_ms = iv_asof_ms
+    iv_stale = expiry_row.get("stale") if isinstance(expiry_row, Mapping) and isinstance(expiry_row.get("stale"), bool) else None
+    rv_computed_at_ms = _int(rv.get("rv_computed_at_ms")) if isinstance(rv, Mapping) else None
+    vol_clocks = [t for t in (iv_asof_ms, rv_computed_at_ms) if isinstance(t, int) and t > 0]
+    vol_asof_ms = max(vol_clocks) if vol_clocks else None
+    vol_reasons: list[str] = []
+    if iv_stale is True:
+        vol_reasons.append("expiry_iv_stale")
+    rv_status = rv.get("status") if isinstance(rv, Mapping) else None
+    rv_cached = isinstance(rv, Mapping) and rv.get("cached_fallback") is True
+    if rv_cached:
+        vol_reasons.append("rv_cached_fallback")
+    elif rv_status in {"fetch_failed", "duplicate_conflict", "insufficient_bars"}:
+        vol_reasons.append(f"rv_{rv_status}")
+    vol_quality = (
+        "unknown"
+        if (rv_status in {"fetch_failed", "duplicate_conflict", "insufficient_bars"} and not rv_cached)
+        else "stale"
+    ) if vol_reasons else None
+    vol_reason = ",".join(vol_reasons) if vol_reasons else None
     case.add("L4.expiry_vol", "本期 ATM IV、预期波动与已实现波动",
-             {"atm_iv_pct": (expiry_row or {}).get("atm_iv_pct"),
+             {"expiry_ms": (expiry_row or {}).get("expiry_ms"),
+              "atm_iv_pct": (expiry_row or {}).get("atm_iv_pct"),
               "expected_move_usd": (expiry_row or {}).get("expected_move_usd"),
-              "forward_usd": (expiry_row or {}).get("forward_usd"), "realized_vol": eg.get("realized_vol")},
-             lineage=["deribit.book_summary", "deribit.index"], source="view.expiry_gamma")
+              "forward_usd": (expiry_row or {}).get("forward_usd"),
+              "iv_asof_ms": iv_asof_ms,
+              "iv_available_at_ms": iv_available_at_ms,
+              "iv_stale": iv_stale,
+              "realized_vol": rv},
+             lineage=["deribit.book_summary", "deribit.perpetual_chart"], source="view.expiry_gamma",
+             asof_ms=vol_asof_ms, quality=vol_quality, quality_reason=vol_reason)
     case.add("L4.skew", "信号层 skew 读数", facts.get("skew"), lineage=["fmz.snapshot"],
              source="market_facts.skew", asof_ms=fmz_asof)
 

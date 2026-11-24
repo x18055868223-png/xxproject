@@ -511,7 +511,7 @@ def test_deterministic_parity_backfill_spacegate_nr_and_fixed_round(tmp_path: Pa
     dc, nc = demo_cards[0], native_cards[0]
     assert nc["analysis_round"]["round_type"] == "US_FIXED_ANALYSIS_ROUND"
     assert "FIXED_ANALYSIS_ROUND" in nc["decision_matrix"]["reason_codes"]
-    assert nc["identity"]["strategy_version"] == "2.0.6"
+    assert nc["identity"]["strategy_version"] == "2.0.7"
     sess_ctx = nc["signal_window"]["session_context"]
     assert sess_ctx["schema_name"] == "SignalSessionPremiseDurabilityContext"
     assert sess_ctx["schema"] == "SignalSessionPremiseDurabilityContext@1.0.0"

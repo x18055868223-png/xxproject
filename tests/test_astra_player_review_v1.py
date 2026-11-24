@@ -37,6 +37,13 @@ def _make_series_point(
     flow_mom_4h=0.10,
     flow_mom_12h=0.25,
     flow_asof_ms=None,
+    expiry_ms=None,
+    pin=100_000.0,
+    pin_status="ok",
+    pin_method="astra_expiry_gamma_v1@1.0.0:profile.expected_move_max_unsigned_gamma",
+    pin_source="deribit_public/get_book_summary_by_currency",
+    computed_at_ms=None,
+    available_at_ms=None,
 ):
     payload = payload_with_components(side=side)
     payload["metadata"]["short"]["strike"] = short_strike
@@ -64,19 +71,50 @@ def _make_series_point(
     payload["risk"]["horizon_hours"] = (payload["metadata"]["short"]["expiration_timestamp"] - asof_ms) / 3_600_000
 
     point = point_from_payload(payload, point_id=f"p_{asof_ms}", recorded_at_ms=asof_ms + 50)
-    point["candidate"]["expiry_levels"] = {"schema": "lock_levels@0.1", "expected_move_usd": expected_move_usd}
+    exp_ms = payload["metadata"]["short"]["expiration_timestamp"] if expiry_ms is None else expiry_ms
+    comp_ms = asof_ms if computed_at_ms is None else computed_at_ms
+    avail_ms = (asof_ms + 50) if available_at_ms is None else available_at_ms
+    point["candidate"]["expiry_levels"] = {
+        "schema": "lock_levels@0.1",
+        "expected_move_usd": expected_move_usd,
+        "expiry_ms": exp_ms,
+        "pin": pin,
+        "pin_status": pin_status,
+        "pin_method": pin_method,
+        "pin_source": pin_source,
+        "computed_at_ms": comp_ms,
+        "available_at_ms": avail_ms,
+    }
+    flow_end = flow_asof_ms if flow_asof_ms is not None else asof_ms - 10_000
     vp = {
         "tmv_state": "SUPPORTED",
-        "asof_ms": flow_asof_ms if flow_asof_ms is not None else asof_ms - 10_000,
+        "asof_ms": flow_end,
         "micro_flow": {
             "fast_4h": {
-                "end_ts_ms": flow_asof_ms if flow_asof_ms is not None else asof_ms - 10_000,
+                "source": "binance",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 4 * 3_600_000,
+                "first_ts_ms": flow_end - 4 * 3_600_000,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
                 "direction": flow_direction,
                 "cvd_sum": flow_cvd_4h,
                 "momentum_return_pct": flow_mom_4h,
                 "data_ready": flow_ready,
             },
             "slow_12h": {
+                "source": "binance",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 12 * 3_600_000,
+                "first_ts_ms": flow_end - 12 * 3_600_000,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
                 "direction": flow_direction,
                 "cvd_sum": flow_cvd_12h,
                 "momentum_return_pct": flow_mom_12h,
@@ -111,7 +149,7 @@ def test_short_buyback_quote_works_with_empty_long_book_and_handles_gaps():
     assert quote["short_quote_asof_ms"] == T + M
 
     metrics = compare.point_metrics(empty_long, base)
-    assert metrics["metrics_version"] == compare.SERIES_METRICS_VERSION == 4
+    assert metrics["metrics_version"] == compare.SERIES_METRICS_VERSION == 5
     assert metrics["close_debit_btc"] is None  # two-leg close still requires long_book
     assert metrics["short_buyback_ask_btc"] == pytest.approx(0.0011)
     assert metrics["short_buyback_fee_btc"] == pytest.approx(0.00003)
@@ -310,6 +348,7 @@ def test_detect_hold_triggers_all_four_categories_positive_and_anti_noise():
         "flow_direction": "neutral",
         "flow_momentum_4h_pct": 0.15,
         "flow_asof_ms": T,
+        "flow_window_basis": {"source": "binance", "symbol": "BTCUSDT", "start_ms": T - 4 * 3_600_000},
     }
 
     # --- Category A: CONDITION_TRIGGERED event fires even when latest price bounced outside ---
@@ -434,14 +473,21 @@ def test_detect_hold_triggers_all_four_categories_positive_and_anti_noise():
     ) == []
 
     flow_reversal_coincident = [
-        {"asof_ms": T + M, "spot_usd": 99_900.0, "short_distance_pct": 2.98, "flow_ready": True, "flow_direction": "neutral", "flow_cvd_4h": -10.0, "flow_momentum_4h_pct": -0.05, "flow_asof_ms": T + M},
-        {"asof_ms": T + 2 * M, "spot_usd": 99_600.0, "short_distance_pct": 2.68, "flow_ready": True, "flow_direction": "bearish", "flow_cvd_4h": -120.0, "flow_momentum_4h_pct": -0.45, "flow_asof_ms": T + 2 * M},
+        {"asof_ms": T + M, "spot_usd": 99_900.0, "short_distance_pct": 2.98, "flow_ready": True, "flow_direction": "neutral", "flow_cvd_4h": -10.0, "flow_momentum_4h_pct": -0.05, "flow_asof_ms": T + M, "flow_window_basis": {"source": "binance", "symbol": "BTCUSDT", "start_ms": T + M - 4 * 3_600_000}},
+        {"asof_ms": T + 2 * M, "spot_usd": 99_600.0, "short_distance_pct": 2.68, "flow_ready": True, "flow_direction": "bearish", "flow_cvd_4h": -120.0, "flow_momentum_4h_pct": -0.45, "flow_asof_ms": T + 2 * M, "flow_window_basis": {"source": "binance", "symbol": "BTCUSDT", "start_ms": T + 2 * M - 4 * 3_600_000}},
     ]
     trig_d = review.detect_hold_triggers(
         frozen_condition=frozen, side="put", short_strike_usd=97_000.0, entry_at_ms=T,
         t0_metrics=t0, series_rows=flow_reversal_coincident, now_ms=T + 3 * M,
     )
     assert [t["category"] for t in trig_d] == ["D"]
+
+    # Missing flow_window_basis blocks D cleanly
+    flow_no_basis = [{k: v for k, v in r.items() if k != "flow_window_basis"} for r in flow_reversal_coincident]
+    assert review.detect_hold_triggers(
+        frozen_condition=frozen, side="put", short_strike_usd=97_000.0, entry_at_ms=T,
+        t0_metrics=t0, series_rows=flow_no_basis, now_ms=T + 3 * M,
+    ) == []
 
     # flow_ready=False blocks D
     flow_unready = deepcopy(flow_reversal_coincident)
@@ -454,8 +500,8 @@ def test_detect_hold_triggers_all_four_categories_positive_and_anti_noise():
     # Call side mirror: bullish flow + upward price toward 103,000 triggers D; bearish flow does not
     call_t0 = {**t0, "short_distance_pct": 2.91, "flow_direction": "neutral", "flow_momentum_4h_pct": -0.10}
     call_bull_rows = [
-        {"asof_ms": T + M, "spot_usd": 100_100.0, "short_distance_pct": 2.81, "flow_ready": True, "flow_direction": "neutral", "flow_momentum_4h_pct": 0.05, "flow_asof_ms": T + M},
-        {"asof_ms": T + 2 * M, "spot_usd": 100_500.0, "short_distance_pct": 2.43, "flow_ready": True, "flow_direction": "bullish", "flow_momentum_4h_pct": 0.40, "flow_asof_ms": T + 2 * M},
+        {"asof_ms": T + M, "spot_usd": 100_100.0, "short_distance_pct": 2.81, "flow_ready": True, "flow_direction": "neutral", "flow_momentum_4h_pct": 0.05, "flow_asof_ms": T + M, "flow_window_basis": {"source": "binance", "symbol": "BTCUSDT", "start_ms": T + M - 4 * 3_600_000}},
+        {"asof_ms": T + 2 * M, "spot_usd": 100_500.0, "short_distance_pct": 2.43, "flow_ready": True, "flow_direction": "bullish", "flow_momentum_4h_pct": 0.40, "flow_asof_ms": T + 2 * M, "flow_window_basis": {"source": "binance", "symbol": "BTCUSDT", "start_ms": T + 2 * M - 4 * 3_600_000}},
     ]
     call_trig = review.detect_hold_triggers(
         frozen_condition=frozen, side="call", short_strike_usd=103_000.0, entry_at_ms=T,
@@ -1253,7 +1299,7 @@ def test_decide_initial_hand_returns_leakage_free_exact_request_payload():
     assert "# Frozen Hand\nBody text" in req["messages"][1]["content"]
     assert req["parameters"] == {
         "stream": False,
-        "max_tokens": 24576,
+        "max_tokens": 32768,
         "thinking": {"type": "enabled"},
         "reasoning_effort": "high",
     }

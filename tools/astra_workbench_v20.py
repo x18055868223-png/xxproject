@@ -17,6 +17,7 @@ import gc
 import gzip
 import hashlib
 import hmac
+import inspect
 import json
 import mimetypes
 import math
@@ -3935,14 +3936,14 @@ class AstraWorkbench:
             at = int(point.get("recorded_at_ms") or snapshot["market"]["valuation_ts_ms"])
             expiry = (snapshot.get("contract") or {}).get("expiry_ms")
             profile = expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=at)
-            # a profile computed well after this point is not what the market showed then
-            if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at + lock_levels.STALE_MS:
+            # a profile computed after this point is not what the market showed then
+            if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at:
                 profile = None
             if (profile is None or profile.get("stale")) and self.config.expiry_gamma_enabled and expiry is not None:
                 try:
                     self.refresh_expiry_gamma(now_ms=at, force=True)
                     profile = expiry_gamma.for_expiry(self._expiry_gamma, expiry, now_ms=at)
-                    if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at + lock_levels.STALE_MS:
+                    if profile and isinstance(profile.get("computed_at_ms"), int) and profile["computed_at_ms"] > at:
                         profile = None
                 except Exception:
                     pass
@@ -5594,7 +5595,11 @@ class AstraWorkbench:
                 or self._deribit_pacer.stats().get("cooldown_remaining_s", 0.0) > 0.0
                 or self.data_engine.provider_cooldown("deribit", now_ms=now) is not None):
             return self._expiry_gamma
-        result = expiry_gamma.collect(self.expiry_gamma_get_json, now)
+        sig = inspect.signature(expiry_gamma.collect)
+        if "clock_ms" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            result = expiry_gamma.collect(self.expiry_gamma_get_json, now, clock_ms=self.clock_ms)
+        else:
+            result = expiry_gamma.collect(self.expiry_gamma_get_json, now)
         try:
             json.dumps(result, allow_nan=False)
         except (TypeError, ValueError):
@@ -5605,7 +5610,19 @@ class AstraWorkbench:
         if (result.get("status") == "ok" and rv.get("rv_24h_pct") is None and rv.get("rv_7d_pct") is None
                 and isinstance(old_rv, Mapping) and old_rv.get("last_bar_end_ms")):
             # a failed chart request keeps the last good RV; its bar end time says how old it is
-            result = {**result, "realized_vol": {**old_rv, "last_attempt": rv.get("status") or "no_value"}}
+            result = {
+                **result,
+                "realized_vol": {
+                    **old_rv,
+                    "rv_computed_at_ms": old_rv.get("rv_computed_at_ms"),
+                    "rv_available_at_ms": old_rv.get("rv_available_at_ms"),
+                    "last_bar_end_ms": old_rv.get("last_bar_end_ms"),
+                    "cached_fallback": True,
+                    "last_attempt": rv.get("status") or "no_value",
+                    "last_attempt_at_ms": now,
+                    "last_attempt_error_type": rv.get("error_type"),
+                },
+            }
         if result.get("status") != "ok" and isinstance(previous, dict) and previous.get("status") == "ok":
             # keep the last good walls with their own clock; the page marks them stale by age
             result = {**previous, "last_attempt": {"computed_at_ms": now, "status": result.get("status"),

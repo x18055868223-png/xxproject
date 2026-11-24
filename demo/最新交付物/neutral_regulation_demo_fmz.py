@@ -172,6 +172,8 @@ CONFIG = {
     # underwriting facts. Audit-only; no direction/weight/permission changes.
     # v2.0.1 (2026-09-26): bounded native workbench snapshot export for
     # continuous current facts. No direction/weight/LLM/permission changes.
+    # v2.0.7 (2026-11-24): spot active micro-flow clock/provenance/bar-integrity
+    # hardening across BarAssembler, micro_flow_for_horizon, and cross-section.
     # v2.0.6 (2026-10-12): after a restart, backfill volume bars from Binance spot
     # 1m klines (taker buy/sell) so CVD windows and the anchor score are not empty for hours.
     # v2.0.5 (2026-10-11): clean exit on FMZ stop (no exit-code-1 error),
@@ -184,7 +186,7 @@ CONFIG = {
     # a token (gexmonitorapi PUBLIC_READ); removed dead config keys.
     # v2.0.2 (2026-10-05): producer-local snapshot handoff/export clocks
     # and same-snapshot session context. No financial/permission changes.
-    "demo_version": "2.0.6",
+    "demo_version": "2.0.7",
     "schema_version": "nrd.schema.v1.0.0",
     # ============================================================
     # 用户配置区: FMZ 实盘/模拟部署时优先只改这里和 USER_CONFIG_DOC_CN。
@@ -336,7 +338,7 @@ CONFIG = {
     "volume_bar_n": 10.0,
     "volume_bar_backfill_enabled": True,
     "volume_bar_backfill_hours": 12,
-    "bar_history_size": 2500,
+    "bar_history_size": 10000,
     "slow_std_window": 60,
     "drain_enabled": True,
     "max_drain_rounds": 5,
@@ -7954,8 +7956,6 @@ def _build_cross_section(fs, runtime_facts=None):
     runtime_facts = runtime_facts or {}
     tmvf_age_ms = runtime_facts.get("tmvf_data_age_ms")
     option_greeks_age_ms = runtime_facts.get("option_greeks_age_ms")
-    current_trade_poll = runtime_facts.get("last_cycle_trade_count")
-    micro_age_ms = 0 if current_trade_poll is not None else None
     gex_age_ms = runtime_facts.get("gex_fetch_age_ms")
     tmvf = {
         "direction": flow.get("direction"),
@@ -7967,6 +7967,15 @@ def _build_cross_section(fs, runtime_facts=None):
     if tmvf_age_ms is not None:
         tmvf["age_ms"] = tmvf_age_ms
     micro_flow = dict(flow.get("micro_flow") or {})
+    fast_4h = (micro_flow.get("fast_4h")
+               if isinstance(micro_flow.get("fast_4h"), dict) else {})
+    fast_end_ts_ms = fast_4h.get("end_ts_ms")
+    if (isinstance(fast_end_ts_ms, int)
+            and not isinstance(fast_end_ts_ms, bool)
+            and fast_end_ts_ms > 0):
+        micro_age_ms = now_ms() - fast_end_ts_ms
+    else:
+        micro_age_ms = None
     if micro_flow and micro_age_ms is not None and "age_ms" not in micro_flow:
         micro_flow["age_ms"] = micro_age_ms
     funding = {
@@ -10510,10 +10519,28 @@ class BarAssembler:
         self.current_volume = 0.0
         self.current_cvd = 0.0
         self.current_last_trade_ts_ms = None
+        self.current_first_trade_ts_ms = None
+        self.current_bar_gap = False
+        self.current_bar_cvd_degraded = False
+        self.current_out_of_order = False
         self.last_trade_price = None
         self.last_trade_ts_ms = None
+        self._max_trade_ts_ms = None
         self.cvd_degraded = False
+        self.history_evicted_before_ms = None
+        self.cum_session_id = "sess_{}".format(now_ms())
+        self.cum_cvd_btc = 0.0
+        self.cum_gap_count = 0
         self.last_cycle_metrics = {}
+
+    def _append_completed_bar(self, bar):
+        if (self.completed_bars.maxlen
+                and len(self.completed_bars) == self.completed_bars.maxlen):
+            ev_ts = self.completed_bars[0].get("complete_ts_ms")
+            if isinstance(ev_ts, int) and not isinstance(ev_ts, bool):
+                self.history_evicted_before_ms = max(
+                    self.history_evicted_before_ms or 0, ev_ts)
+        self.completed_bars.append(bar)
 
     def poll(self):
         from_id = None if self.last_trade_id is None else self.last_trade_id + 1
@@ -10538,14 +10565,31 @@ class BarAssembler:
             trade = self.normalize_trade(item) if self.normalize_trade else item
             if not trade:
                 continue
+            trade_ts = trade.get("ts_ms")
+            if (self.last_trade_id is not None
+                    and trade.get("id") is not None
+                    and trade["id"] > self.last_trade_id + 1):
+                had_gap = True
+                self.current_bar_gap = True
+                self.current_bar_cvd_degraded = True
+                self.cum_gap_count += 1
+            prev_ts = (self._max_trade_ts_ms
+                       if getattr(self, "_max_trade_ts_ms", None) is not None
+                       else self.last_trade_ts_ms)
+            if (prev_ts is not None and trade_ts is not None
+                    and not isinstance(prev_ts, bool)
+                    and not isinstance(trade_ts, bool)
+                    and trade_ts < prev_ts):
+                self.current_out_of_order = True
             self.last_trade_price = trade.get("price")
-            self.last_trade_ts_ms = trade.get("ts_ms")
+            self.last_trade_ts_ms = trade_ts
+            if (isinstance(trade_ts, (int, float))
+                    and not isinstance(trade_ts, bool)):
+                self._max_trade_ts_ms = (
+                    trade_ts if prev_ts is None or isinstance(prev_ts, bool)
+                    else max(prev_ts, trade_ts))
             cycle_last_trade_price = self.last_trade_price
             cycle_last_trade_ts_ms = self.last_trade_ts_ms
-            if (self.last_trade_id is not None
-                    and trade["id"] > self.last_trade_id + 1
-                    and not new_bars):
-                had_gap = True
             new_bars.extend(self._ingest_trade(trade))
 
         if had_gap and self.config.get("cvd_gap_degrade_enabled", True):
@@ -10628,11 +10672,13 @@ class BarAssembler:
         remaining = trade["qty"]
         threshold = float(self.config["volume_bar_n"])
         completed = []
+        trade_ts = trade.get("ts_ms")
         while remaining > 0:
             if self.current_open is None:
                 self.current_open = trade["price"]
                 self.current_high = trade["price"]
                 self.current_low = trade["price"]
+                self.current_first_trade_ts_ms = trade_ts
             space = threshold - self.current_volume
             if space <= 0:
                 completed.extend(self._complete_current_bar())
@@ -10644,7 +10690,7 @@ class BarAssembler:
             self.current_close = trade["price"]
             self.current_volume += take_qty
             self.current_cvd += trade["signed_qty"] * fill_ratio
-            self.current_last_trade_ts_ms = trade.get("ts_ms")
+            self.current_last_trade_ts_ms = trade_ts
             self.last_trade_id = trade["id"]
             remaining -= take_qty
             if self.current_volume >= threshold:
@@ -10655,6 +10701,26 @@ class BarAssembler:
         if self.current_open is None:
             return []
         self.bar_index += 1
+        last_ts = self.current_last_trade_ts_ms
+        valid_last_ts = (isinstance(last_ts, int)
+                         and not isinstance(last_ts, bool)
+                         and last_ts > 0)
+        first_ts = self.current_first_trade_ts_ms
+        valid_first_ts = (isinstance(first_ts, int)
+                          and not isinstance(first_ts, bool)
+                          and first_ts > 0)
+        if valid_last_ts:
+            complete_ts_ms = int(last_ts)
+            first_trade_ts_ms = (
+                int(first_ts) if valid_first_ts else complete_ts_ms)
+            bar_complete = True
+            complete_ts_synthetic = False
+        else:
+            complete_ts_ms = None
+            first_trade_ts_ms = int(first_ts) if valid_first_ts else None
+            bar_complete = False
+            complete_ts_synthetic = True
+        self.cum_cvd_btc += self.current_cvd
         bar = add_schema({
             "bar_index": self.bar_index,
             "open": self.current_open,
@@ -10663,9 +10729,20 @@ class BarAssembler:
             "close": self.current_close,
             "total_volume": self.current_volume,
             "cvd_delta": self.current_cvd,
-            "complete_ts_ms": self.current_last_trade_ts_ms or now_ms(),
+            "first_trade_ts_ms": first_trade_ts_ms,
+            "complete_ts_ms": complete_ts_ms,
+            "bar_complete": bar_complete,
+            "complete_ts_synthetic": complete_ts_synthetic,
+            "source": "binance_spot_agg_trades",
+            "symbol": str(self.config.get("spot_symbol") or "BTCUSDT"),
+            "gap": bool(self.current_bar_gap),
+            "cvd_degraded": bool(self.current_bar_cvd_degraded),
+            "out_of_order": bool(self.current_out_of_order),
+            "cum_cvd_btc": self.cum_cvd_btc,
+            "cum_session_id": self.cum_session_id,
+            "cum_gap_count": self.cum_gap_count,
         }, SCHEMA_VOLUME_BAR, self.config)
-        self.completed_bars.append(bar)
+        self._append_completed_bar(bar)
         self.current_open = None
         self.current_high = None
         self.current_low = None
@@ -10673,6 +10750,10 @@ class BarAssembler:
         self.current_volume = 0.0
         self.current_cvd = 0.0
         self.current_last_trade_ts_ms = None
+        self.current_first_trade_ts_ms = None
+        self.current_bar_gap = False
+        self.current_bar_cvd_degraded = False
+        self.current_out_of_order = False
         return [bar]
 
     def backfill_from_klines(self, klines, cutoff_ms):
@@ -10686,25 +10767,50 @@ class BarAssembler:
         if self.completed_bars or self.current_open is not None:
             return {"applied": False, "reason": "history_not_empty"}
         threshold = float(self.config["volume_bar_n"])
-        rows = []
+        symbol = str(self.config.get("spot_symbol") or "BTCUSDT")
+        rows_by_open = {}
+        duplicate_klines = 0
         for raw in klines or []:
             try:
+                open_ts = int(raw[0])
                 close_ts = int(raw[6])
-                row = (int(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]),
+                row = (open_ts, float(raw[1]), float(raw[2]), float(raw[3]),
                        float(raw[4]), float(raw[5]), close_ts, float(raw[9]))
             except (TypeError, ValueError, IndexError):
                 continue
             if close_ts < cutoff_ms and row[5] > 0 and 0 <= row[7] <= row[5] + 1e-9:
-                rows.append(row)
-        rows.sort(key=lambda item: item[0])
+                if open_ts in rows_by_open:
+                    duplicate_klines += 1
+                else:
+                    rows_by_open[open_ts] = row
+        rows = [rows_by_open[key] for key in sorted(rows_by_open)]
         bar = None
         made = 0
-        for _open_ts, k_open, k_high, k_low, k_close, volume, close_ts, taker_buy in rows:
+        prev_open_ts = None
+        any_kline_gap = False
+        pending_gap = False
+        for open_ts, k_open, k_high, k_low, k_close, volume, close_ts, taker_buy in rows:
+            if prev_open_ts is not None and open_ts - prev_open_ts > 60_000:
+                any_kline_gap = True
+                if bar is not None:
+                    bar["gap"] = True
+                else:
+                    pending_gap = True
+            prev_open_ts = open_ts
             signed_per_unit = (2.0 * taker_buy - volume) / volume
             remaining = volume
             while remaining > 1e-12:
                 if bar is None:
-                    bar = {"open": k_open, "high": k_high, "low": k_low, "volume": 0.0, "cvd": 0.0}
+                    bar = {
+                        "open": k_open,
+                        "high": k_high,
+                        "low": k_low,
+                        "volume": 0.0,
+                        "cvd": 0.0,
+                        "first_ts": open_ts,
+                        "gap": pending_gap,
+                    }
+                    pending_gap = False
                 take = min(remaining, threshold - bar["volume"])
                 bar["high"] = max(bar["high"], k_high)
                 bar["low"] = min(bar["low"], k_low)
@@ -10713,7 +10819,8 @@ class BarAssembler:
                 remaining -= take
                 if bar["volume"] >= threshold - 1e-9:
                     self.bar_index += 1
-                    self.completed_bars.append(add_schema({
+                    self.cum_cvd_btc += bar["cvd"]
+                    self._append_completed_bar(add_schema({
                         "bar_index": self.bar_index,
                         "open": bar["open"],
                         "high": bar["high"],
@@ -10721,8 +10828,18 @@ class BarAssembler:
                         "close": k_close,
                         "total_volume": bar["volume"],
                         "cvd_delta": bar["cvd"],
+                        "first_trade_ts_ms": bar["first_ts"],
                         "complete_ts_ms": close_ts,
+                        "bar_complete": True,
+                        "complete_ts_synthetic": False,
                         "source": "kline_backfill_1m",
+                        "symbol": symbol,
+                        "gap": bool(bar["gap"]),
+                        "cvd_degraded": False,
+                        "out_of_order": False,
+                        "cum_cvd_btc": self.cum_cvd_btc,
+                        "cum_session_id": self.cum_session_id,
+                        "cum_gap_count": self.cum_gap_count,
                     }, SCHEMA_VOLUME_BAR, self.config))
                     made += 1
                     bar = None
@@ -10730,6 +10847,8 @@ class BarAssembler:
             "applied": made > 0,
             "bar_count": made,
             "kline_count": len(rows),
+            "duplicate_kline_count": duplicate_klines,
+            "kline_gap": any_kline_gap,
             "from_ms": rows[0][0] if rows else None,
             "to_ms": rows[-1][6] if rows else None,
             "source": "binance_spot_klines_1m_taker_buy",
@@ -11311,14 +11430,69 @@ def combine_tmvf_horizons(results, config=None):
     }
 
 
-def compute_micro_flow_context(bars, config=None):
+_MICRO_FLOW_BACKFILL_SOURCES = frozenset({
+    "kline_backfill_1m",
+    "binance_spot_kline_1m_backfill",
+})
+_MICRO_FLOW_INVALID_TOKENS = frozenset({
+    "unknown", "none", "null", "n/a", "na", "unset",
+})
+_MICRO_FLOW_INTEGRITY_FLAGS = (
+    "gap",
+    "truncated",
+    "cvd_degraded",
+    "backfill_mixed",
+    "window_backfill",
+    "out_of_order",
+    "source_conflict",
+    "complete_ts_synthetic",
+)
+_BAR_CONFLICT_FIELDS = (
+    "complete_ts_ms",
+    "open",
+    "high",
+    "low",
+    "close",
+    "total_volume",
+    "cvd_delta",
+    "source",
+    "symbol",
+    "bar_complete",
+    "complete_ts_synthetic",
+    "gap",
+    "cvd_degraded",
+    "out_of_order",
+)
+
+
+def _clean_provenance_token(value):
+    if not isinstance(value, str):
+        return None
+    txt = value.strip()
+    if not txt or txt.lower() in _MICRO_FLOW_INVALID_TOKENS:
+        return None
+    return txt
+
+
+def _bar_conflict_signature(bar):
+    return tuple(bar.get(field) for field in _BAR_CONFLICT_FIELDS)
+
+
+def compute_micro_flow_context(
+        bars, config=None, *, as_of_ms=None, history_evicted_before_ms=None):
     config = config or CONFIG
     horizons = _config_number_list(config.get(
         "tmvf_micro_horizons_hours", [4, 8, 12]))
     results = {}
     for horizon in horizons:
         label = str(int(horizon)) + "h"
-        results[label] = micro_flow_for_horizon(bars, horizon, config)
+        results[label] = micro_flow_for_horizon(
+            bars,
+            horizon,
+            config,
+            as_of_ms=as_of_ms,
+            history_evicted_before_ms=history_evicted_before_ms,
+        )
         if label == "4h":
             results[label]["window_role"] = "fast"
         elif label == "12h":
@@ -11331,34 +11505,121 @@ def compute_micro_flow_context(bars, config=None):
         "horizons": results,
         "fast_4h": fast,
         "slow_12h": slow,
-        "combined": combine_micro_flow_horizons(results, config),
+        "combined": combine_micro_flow_horizons(
+            results, config, as_of_ms=as_of_ms),
     }
 
 
-def micro_flow_for_horizon(bars, horizon_hours, config=None):
+def micro_flow_for_horizon(
+        bars, horizon_hours, config=None, *,
+        as_of_ms=None, history_evicted_before_ms=None):
     config = config or CONFIG
-    bars = list(bars or [])
-    if not bars:
+    raw_bars = [bar for bar in (bars or []) if isinstance(bar, dict)]
+    if not raw_bars:
         return {
             "horizon_hours": horizon_hours,
             "data_ready": False,
             "bar_count": 0,
             "state": "unavailable",
         }
-    end_ts = bars[-1].get("complete_ts_ms")
-    if end_ts is None:
-        return {
+
+    in_cutoff_bars = []
+    for bar in raw_bars:
+        ts = bar.get("complete_ts_ms")
+        if (as_of_ms is not None
+                and isinstance(ts, int)
+                and not isinstance(ts, bool)
+                and ts > as_of_ms):
+            continue
+        in_cutoff_bars.append(bar)
+
+    deduped = []
+    seen_by_index = {}
+    conflicting_indices = set()
+    conflicting_ts_list = []
+    duplicate_bars = 0
+    for bar in in_cutoff_bars:
+        b_idx = bar.get("bar_index")
+        if b_idx is not None:
+            if b_idx in seen_by_index:
+                duplicate_bars += 1
+                if (_bar_conflict_signature(seen_by_index[b_idx])
+                        != _bar_conflict_signature(bar)):
+                    conflicting_indices.add(b_idx)
+                    ts_dup = bar.get("complete_ts_ms")
+                    if (isinstance(ts_dup, int)
+                            and not isinstance(ts_dup, bool)):
+                        conflicting_ts_list.append(ts_dup)
+                continue
+            seen_by_index[b_idx] = bar
+        deduped.append(bar)
+
+    eligible = []
+    for bar in deduped:
+        ts = bar.get("complete_ts_ms")
+        if not isinstance(ts, int) or isinstance(ts, bool) or ts <= 0:
+            continue
+        if bar.get("complete_ts_synthetic") is True:
+            continue
+        if bar.get("bar_complete") is False:
+            continue
+        eligible.append(bar)
+
+    if not eligible:
+        has_missing_or_synth = any(
+            bar.get("complete_ts_ms") is None
+            or not isinstance(bar.get("complete_ts_ms"), int)
+            or isinstance(bar.get("complete_ts_ms"), bool)
+            or bar.get("complete_ts_ms") <= 0
+            or bar.get("complete_ts_synthetic") is True
+            for bar in in_cutoff_bars
+        )
+        out = {
             "horizon_hours": horizon_hours,
             "data_ready": False,
-            "bar_count": len(bars),
-            "reason": "MISSING_BAR_TIMESTAMPS",
+            "bar_count": 0,
             "state": "unavailable",
         }
+        if has_missing_or_synth or not in_cutoff_bars:
+            out["reason"] = ("MISSING_BAR_TIMESTAMPS"
+                             if has_missing_or_synth else "NO_ELIGIBLE_BARS")
+        if any(bar.get("bar_complete") is False for bar in in_cutoff_bars):
+            out["bar_complete"] = False
+        if any(bar.get("complete_ts_synthetic") is True
+               for bar in in_cutoff_bars):
+            out["complete_ts_synthetic"] = True
+        if conflicting_indices:
+            out["source_conflict"] = True
+        if duplicate_bars:
+            out["duplicate_bars"] = duplicate_bars
+        return out
+
+    end_ts = max(bar["complete_ts_ms"] for bar in eligible)
     lower = end_ts - horizon_hours * 60 * 60 * 1000
+
+    raw_out_of_order = False
+    max_raw_ts = None
+    for bar in eligible:
+        ts = bar["complete_ts_ms"]
+        if max_raw_ts is not None and ts < max_raw_ts:
+            if ts > lower or max_raw_ts > lower:
+                raw_out_of_order = True
+        if max_raw_ts is None or ts > max_raw_ts:
+            max_raw_ts = ts
+
+    eligible_sorted = sorted(
+        eligible,
+        key=lambda bar: (
+            bar["complete_ts_ms"],
+            bar["bar_index"]
+            if (isinstance(bar.get("bar_index"), int)
+                and not isinstance(bar.get("bar_index"), bool))
+            else 0,
+        ),
+    )
     selected = [
-        bar for bar in bars
-        if bar.get("complete_ts_ms") is not None
-        and bar.get("complete_ts_ms") > lower
+        bar for bar in eligible_sorted
+        if lower < bar["complete_ts_ms"] <= end_ts
     ]
     if not selected:
         return {
@@ -11367,7 +11628,8 @@ def micro_flow_for_horizon(bars, horizon_hours, config=None):
             "bar_count": 0,
             "state": "unavailable",
         }
-    first_ts = selected[0].get("complete_ts_ms")
+
+    first_ts = selected[0]["complete_ts_ms"]
     coverage_hours = (end_ts - first_ts) / float(60 * 60 * 1000)
     coverage = coverage_hours / max(float(horizon_hours), 1e-9)
     momentum = recent_momentum(selected)
@@ -11401,15 +11663,114 @@ def micro_flow_for_horizon(bars, horizon_hours, config=None):
     state = micro_flow_state(score, config)
     confidence = min(1.0, coverage) * min(
         1.0, len(selected) / max(float(config["tmvf_micro_min_bars"]), 1.0))
-    return {
+
+    norm_sources = set()
+    has_backfill = False
+    has_missing_source = False
+    valid_symbols = []
+    has_missing_symbol = False
+    for bar in selected:
+        src_tok = _clean_provenance_token(bar.get("source"))
+        if src_tok is None:
+            has_missing_source = True
+        elif src_tok in _MICRO_FLOW_BACKFILL_SOURCES:
+            has_backfill = True
+            norm_sources.add("binance_spot_kline_1m_backfill")
+        else:
+            norm_sources.add(src_tok)
+
+        sym_tok = _clean_provenance_token(bar.get("symbol"))
+        if sym_tok is None:
+            has_missing_symbol = True
+        else:
+            valid_symbols.append(sym_tok)
+
+    non_backfill_sources = norm_sources - {"binance_spot_kline_1m_backfill"}
+    if not norm_sources:
+        window_backfill = False
+        backfill_mixed = False
+        window_source = None
+        multi_source_conflict = False
+    elif (norm_sources == {"binance_spot_kline_1m_backfill"}
+          and not has_missing_source):
+        window_backfill = True
+        backfill_mixed = False
+        window_source = "binance_spot_kline_1m_backfill"
+        multi_source_conflict = False
+    elif (len(norm_sources) == 1
+          and not has_backfill
+          and not has_missing_source):
+        window_backfill = False
+        backfill_mixed = False
+        window_source = next(iter(norm_sources))
+        multi_source_conflict = False
+    elif (has_backfill
+          and len(non_backfill_sources) == 1
+          and not has_missing_source):
+        window_backfill = True
+        backfill_mixed = True
+        window_source = (next(iter(non_backfill_sources))
+                         + "+binance_spot_kline_1m_backfill")
+        multi_source_conflict = False
+    else:
+        window_backfill = bool(has_backfill)
+        backfill_mixed = bool(
+            has_backfill and (len(norm_sources) > 1 or has_missing_source))
+        window_source = None
+        multi_source_conflict = True
+
+    upper_symbols = {s.upper() for s in valid_symbols}
+    if len(upper_symbols) == 1 and not has_missing_symbol:
+        window_symbol = (valid_symbols[0]
+                         if len(set(valid_symbols)) == 1
+                         else valid_symbols[0].upper())
+        symbol_conflict = False
+    elif not upper_symbols:
+        window_symbol = None
+        symbol_conflict = False
+    else:
+        window_symbol = None
+        symbol_conflict = True
+
+    dup_conflict = (
+        any(bar.get("bar_index") in conflicting_indices
+            for bar in selected if bar.get("bar_index") is not None)
+        or any(lower < ts_dup <= end_ts for ts_dup in conflicting_ts_list)
+    )
+    source_conflict = bool(
+        dup_conflict or multi_source_conflict or symbol_conflict)
+    bar_complete = all(
+        bar.get("bar_complete") is not False
+        and bar.get("complete_ts_synthetic") is not True
+        for bar in selected
+    )
+    complete_ts_synthetic = any(
+        bar.get("complete_ts_synthetic") is True for bar in selected
+    )
+    gap_flag = any(bar.get("gap") is True for bar in selected)
+    cvd_degraded_flag = any(bar.get("cvd_degraded") is True for bar in selected)
+    out_of_order_flag = bool(
+        raw_out_of_order
+        or any(bar.get("out_of_order") is True for bar in selected)
+    )
+    truncated_flag = bool(
+        isinstance(history_evicted_before_ms, int)
+        and not isinstance(history_evicted_before_ms, bool)
+        and history_evicted_before_ms >= lower
+    )
+    available_at_ms = (
+        max(end_ts, int(as_of_ms)) if as_of_ms is not None else end_ts
+    )
+    price_return_pct = momentum * 100.0 if momentum is not None else None
+
+    out = {
         "horizon_hours": horizon_hours,
         "data_ready": data_ready,
         "bar_count": len(selected),
         "coverage_hours": coverage_hours,
         "coverage_frac": coverage,
         "momentum": momentum,
-        "momentum_return_pct": (
-            momentum * 100.0 if momentum is not None else None),
+        "momentum_return_pct": price_return_pct,
         "momentum_norm": momentum_norm,
         "cvd_sum": cvd,
         "cvd_unit": "BTC",
@@ -11419,13 +11780,58 @@ def micro_flow_for_horizon(bars, horizon_hours, config=None):
         "state": state,
         "confidence": confidence,
         "direction": direction,
+        "first_ts_ms": first_ts,
+        "window_start_ms": first_ts,
+        "end_ts_ms": end_ts,
+        "complete_ts_ms": end_ts,
+        "window_end_ms": end_ts,
+        "available_at_ms": available_at_ms,
+        "bar_complete": bar_complete,
+        "price_open": selected[0].get("close"),
+        "price_close": selected[-1].get("close"),
+        "price_return_pct": price_return_pct,
+        "source": window_source,
+        "bar_source": window_source,
+        "price_source": window_source,
+        "symbol": window_symbol,
+        "window_backfill": window_backfill,
+        "backfill_mixed": backfill_mixed,
+        "source_conflict": source_conflict,
+        "gap": gap_flag,
+        "cvd_degraded": cvd_degraded_flag,
+        "truncated": truncated_flag,
+        "out_of_order": out_of_order_flag,
+        "complete_ts_synthetic": complete_ts_synthetic,
+        "duplicate_bars": duplicate_bars,
     }
+    last_bar = selected[-1]
+    if last_bar.get("bar_index") is not None:
+        out["last_bar_index"] = last_bar.get("bar_index")
+    if last_bar.get("cum_cvd_btc") is not None:
+        out["cum_cvd_btc"] = last_bar.get("cum_cvd_btc")
+    if last_bar.get("cum_session_id") is not None:
+        out["cum_session_id"] = last_bar.get("cum_session_id")
+    if last_bar.get("cum_gap_count") is not None:
+        out["cum_gap_count"] = last_bar.get("cum_gap_count")
+    return out
 
 
-def combine_micro_flow_horizons(results, config=None):
+def combine_micro_flow_horizons(results, config=None, *, as_of_ms=None):
     config = config or CONFIG
+    results = results or {}
+    fast_4h = results.get("4h") if isinstance(results.get("4h"), dict) else {}
+    slow_12h = results.get("12h") if isinstance(results.get("12h"), dict) else {}
+    fast_4h_ready = bool(fast_4h.get("data_ready"))
+    slow_12h_ready = bool(slow_12h.get("data_ready"))
+    fast_integrity_ok = (
+        fast_4h_ready
+        and fast_4h.get("bar_complete") is True
+        and not any(bool(fast_4h.get(flag))
+                    for flag in _MICRO_FLOW_INTEGRITY_FLAGS)
+    )
+
     items = []
-    for item in (results or {}).values():
+    for item in results.values():
         if not isinstance(item, dict):
             continue
         score = safe_float(item.get("score"))
@@ -11437,14 +11843,19 @@ def combine_micro_flow_horizons(results, config=None):
         weight = max(horizon, 1.0) * confidence * ready_boost
         items.append((score, weight, item))
     if not items:
-        return {
+        out = {
             "data_ready": False,
             "score": None,
             "state": "unavailable",
             "direction": "neutral",
             "ready_horizons": [],
             "max_coverage_hours": 0.0,
+            "fast_4h_ready": fast_4h_ready,
+            "slow_12h_ready": slow_12h_ready,
         }
+        if as_of_ms is not None:
+            out["asof_ms"] = int(as_of_ms)
+        return out
     total_weight = sum(weight for _score, weight, _item in items)
     score = sum(score * weight for score, weight, _item in items) / max(
         total_weight, 1e-9)
@@ -11457,14 +11868,24 @@ def combine_micro_flow_horizons(results, config=None):
         safe_float(item.get("coverage_hours")) or 0.0
         for _score, _weight, item in items)
     data_ready = bool(ready_horizons)
-    return {
+    out = {
         "data_ready": data_ready,
         "score": score,
         "state": micro_flow_state(score, config),
         "direction": micro_flow_direction(score, config),
         "ready_horizons": ready_horizons,
         "max_coverage_hours": max_coverage,
+        "fast_4h_ready": fast_4h_ready,
+        "slow_12h_ready": slow_12h_ready,
     }
+    if as_of_ms is not None:
+        out["asof_ms"] = int(as_of_ms)
+    if fast_integrity_ok:
+        for key in ("end_ts_ms", "complete_ts_ms",
+                    "window_end_ms", "available_at_ms"):
+            if fast_4h.get(key) is not None:
+                out[key] = fast_4h.get(key)
+    return out
 
 
 def micro_flow_direction(score, config=None):
@@ -12026,6 +12447,8 @@ def build_factor_snapshot(module_results, strategy_recommendation=None,
             "tmvf_funding_semantics",
             "micro_flow_effect",
             "micro_flow",
+            "asof_ms",
+            "end_ts_ms",
             "kline_count",
             "funding_count",
             "last_funding_rate",
@@ -12221,14 +12644,20 @@ def evaluate_anchor(gex_snapshot, current_price, std_usd, config=None,
 
 
 def evaluate_tmvf(bars, anchor_result, futures_facts=None, config=None,
-                  kline_bars=None, funding_points=None):
+                  kline_bars=None, funding_points=None,
+                  as_of_ms=None, history_evicted_before_ms=None):
     config = config or CONFIG
     facts = dict(futures_facts or {})
     if facts.get("last_funding_rate") is None:
         facts["last_funding_rate"] = _latest_funding_rate(funding_points)
     profile = compute_tmvf_profile(kline_bars or [], funding_points or [],
                                    config)
-    micro_flow = compute_micro_flow_context(bars or [], config)
+    micro_flow = compute_micro_flow_context(
+        bars or [],
+        config,
+        as_of_ms=as_of_ms,
+        history_evicted_before_ms=history_evicted_before_ms,
+    )
     combined = profile.get("combined", {})
     results = profile.get("results", {})
     nd = anchor_result.get("facts", {}).get("normalized_deviation")
@@ -12242,6 +12671,8 @@ def evaluate_tmvf(bars, anchor_result, futures_facts=None, config=None,
         "tmv_state": combined.get("state"),
         "window_conflict": combined.get("window_conflict"),
         "micro_flow": micro_flow,
+        "asof_ms": as_of_ms,
+        "end_ts_ms": (micro_flow.get("combined") or {}).get("end_ts_ms"),
         "normalized_deviation": nd,
         "kline_count": profile.get("kline_count"),
         "funding_count": profile.get("funding_count"),
@@ -14315,7 +14746,9 @@ class DemoRuntime:
             list(self.bars.completed_bars), anchor, self.futures_facts,
             self.config,
             kline_bars=self.tmvf_klines,
-            funding_points=self.tmvf_funding_points)
+            funding_points=self.tmvf_funding_points,
+            as_of_ms=now_ms(),
+            history_evicted_before_ms=self.bars.history_evicted_before_ms)
         module_results = [
             external, anchor, tmvf,
         ]

@@ -16,10 +16,12 @@ try:
     from .astra_structural_board_v1 import entry, number, usable
     from .astra_level_behaviour_v1 import levels_for
     from . import astra_anchor_relative_v1 as ard
+    from . import astra_evidence_qual_v1 as evidence_qual
 except ImportError:
     from astra_structural_board_v1 import entry, number, usable
     from astra_level_behaviour_v1 import levels_for
     import astra_anchor_relative_v1 as ard
+    import astra_evidence_qual_v1 as evidence_qual
 
 HOUR = 3_600_000
 MINUTE = 60_000
@@ -580,20 +582,7 @@ def _spot_dir(value, pos_label, neg_label, flat_label='持平'):
 
 def _extract_spot_end_clock(window):
     """Return (end_ms, error_reason) for a spot window; missing or conflicting completion clock fails."""
-    found = {}
-    for key in _SPOT_END_CLOCK_KEYS:
-        if key not in window or window[key] is None:
-            continue
-        val = window[key]
-        if type(val) is not int or val <= 0:
-            return None, f'窗口完成时钟({key})无效'
-        found[key] = val
-    if not found:
-        return None, 'missing'
-    unique = set(found.values())
-    if len(unique) > 1:
-        return None, '单窗存在互相冲突的完成时钟'
-    return next(iter(unique)), None
+    return evidence_qual.extract_spot_end_clock(window)
 
 
 def derive_non_overlapping_spot_windows(row, *, cutoff=None):
@@ -611,10 +600,9 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
     if not isinstance(fast, Mapping) or not isinstance(slow, Mapping):
         return {'comparable': False, 'reason': '缺少4h或12h现货窗口，未作12h减4h相减'}
 
-    bad_flags = ('gap', 'truncated', 'cvd_degraded', 'backfill_mixed', 'window_backfill')
     for scope in (row, vals, micro, fast, slow):
-        for flag in bad_flags:
-            if scope.get(flag) is True:
+        for flag in evidence_qual.SPOT_DEGRADED_FLAGS:
+            if evidence_qual._flag_triggered(scope, flag):
                 return {'comparable': False, 'reason': f'存在缺口/降级/回填标记({flag})，未作12h减4h相减'}
 
     parsed = {}
@@ -636,8 +624,12 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
             return {'comparable': False, 'reason': f'{name}{err}，未作12h减4h相减'}
         end_clocks[name] = end_ms
         avail = w.get('available_at_ms')
+        if avail is not None and not evidence_qual.is_clock(avail):
+            return {'comparable': False, 'reason': f'{name}可得时钟格式无效，未作12h减4h相减'}
         if cutoff is not None and type(avail) is int and avail > cutoff:
             return {'comparable': False, 'reason': f'{name}可得时钟晚于截止，未作12h减4h相减'}
+        if end_ms is not None and type(avail) is int and avail < end_ms:
+            return {'comparable': False, 'reason': f'{name}可得时钟早于完成时钟，未作12h减4h相减'}
 
     fast_end, slow_end = end_clocks['fast_4h'], end_clocks['slow_12h']
     if fast_end is None and slow_end is None:
@@ -649,12 +641,20 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
     if cutoff is not None and fast_end > cutoff:
         return {'comparable': False, 'reason': '窗口完成时钟晚于截止，未作12h减4h相减'}
 
-    for key in _SPOT_END_CLOCK_KEYS:
+    for key in evidence_qual.SPOT_END_CLOCK_KEYS:
         fv, sv = fast.get(key), slow.get(key)
         if fv is not None and sv is not None and fv != sv:
             return {'comparable': False, 'reason': f'两窗截止时间({key})不一致，未作12h减4h相减'}
 
-    for key in ('source', 'bar_source', 'symbol', 'price_source'):
+    for req_key in ('source', 'symbol'):
+        fv = evidence_qual.clean_text(fast.get(req_key))
+        sv = evidence_qual.clean_text(slow.get(req_key))
+        if (not evidence_qual.is_valid_provenance_token(fv)
+                or not evidence_qual.is_valid_provenance_token(sv)
+                or fv != sv):
+            return {'comparable': False, 'reason': f'两窗缺少或不一致的来源口径({req_key})，未作12h减4h相减'}
+
+    for key in ('bar_source', 'price_source'):
         fv, sv = fast.get(key), slow.get(key)
         if (fv is not None) != (sv is not None) or (fv is not None and fv != sv):
             return {'comparable': False, 'reason': f'两窗来源口径({key})不一致，未作12h减4h相减'}
@@ -665,12 +665,12 @@ def derive_non_overlapping_spot_windows(row, *, cutoff=None):
             if cf is None or cf < 0.85:
                 return {'comparable': False, 'reason': f'{name}覆盖率不足0.85，未作12h减4h相减'}
 
-    fast_start = fast.get('window_start_ms') if type(fast.get('window_start_ms')) is int else None
-    slow_start = slow.get('window_start_ms') if type(slow.get('window_start_ms')) is int else None
-    if fast.get('window_start_ms') is not None and fast_start is None:
-        return {'comparable': False, 'reason': 'fast_4h起始时钟无效，未作12h减4h相减'}
-    if slow.get('window_start_ms') is not None and slow_start is None:
-        return {'comparable': False, 'reason': 'slow_12h起始时钟无效，未作12h减4h相减'}
+    fast_start, fast_start_err = evidence_qual.extract_spot_start_clock(fast)
+    slow_start, slow_start_err = evidence_qual.extract_spot_start_clock(slow)
+    if fast_start_err and fast_start_err != 'missing':
+        return {'comparable': False, 'reason': f'fast_4h{fast_start_err}，未作12h减4h相减'}
+    if slow_start_err and slow_start_err != 'missing':
+        return {'comparable': False, 'reason': f'slow_12h{slow_start_err}，未作12h减4h相减'}
     if fast_start is not None and fast_start >= fast_end:
         return {'comparable': False, 'reason': 'fast_4h起止时钟非法，未作12h减4h相减'}
     if slow_start is not None and slow_start >= slow_end:
@@ -789,22 +789,28 @@ _SPOT_DEGRADED_FLAGS = ('gap', 'truncated', 'cvd_degraded', 'backfill_mixed', 'w
 
 
 def inspect_spot_qualification(row, *, cutoff=None) -> dict:
-    """Classify L5.volume_price micro_flow windows into OBSERVED_ALIGNED / OBSERVED_UNALIGNED / UNKNOWN."""
+    """Classify L5.volume_price micro_flow windows into OBSERVED_ALIGNED / OBSERVED_ALIGNED_SLOW_ONLY / OBSERVED_UNALIGNED / STALE / UNKNOWN."""
     derived = derive_non_overlapping_spot_windows(row, cutoff=cutoff)
     if not isinstance(row, Mapping):
         reason = '未提供现货量价数据'
         empty = {'status': 'UNKNOWN', 'reason': reason}
         return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+    row_stale_reason = None
     if cutoff is not None:
-        if not usable(row, cutoff, HOUR):
+        row_avail = row.get('available_at_ms')
+        row_asof = row.get('asof_ms')
+        if (type(row_avail) is int and row_avail > cutoff) or (type(row_asof) is int and row_asof > cutoff):
+            reason = '量价行时钟晚于截止（排除未来数据）'
+            empty = {'status': 'UNKNOWN', 'reason': reason, 'future_excluded': True}
+            return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+        if row.get('quality') == 'stale' or (row.get('quality') == 'ok' and type(row_asof) is int and cutoff - row_asof > HOUR):
+            row_stale_reason = '量价行已过期(STALE)'
+        elif not usable(row, cutoff, HOUR):
             reason = '量价行不在可用时钟或质量未就绪'
             empty = {'status': 'UNKNOWN', 'reason': reason}
             return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
-        row_avail = row.get('available_at_ms')
-        if type(row_avail) is int and row_avail > cutoff:
-            reason = '量价行可得时钟晚于截止'
-            empty = {'status': 'UNKNOWN', 'reason': reason, 'future_excluded': True}
-            return {'status': 'UNKNOWN', 'fast_4h': dict(empty), 'slow_12h': dict(empty), 'derived': derived, 'reason': reason}
+    elif row.get('quality') == 'stale':
+        row_stale_reason = '量价行质量标记为stale'
     elif row.get('quality') is not None and row.get('quality') != 'ok':
         reason = '量价行质量未就绪'
         empty = {'status': 'UNKNOWN', 'reason': reason}
@@ -813,71 +819,42 @@ def inspect_spot_qualification(row, *, cutoff=None) -> dict:
     vals = row.get('values') if isinstance(row.get('values'), Mapping) else {}
     micro = vals.get('micro_flow') if isinstance(vals.get('micro_flow'), Mapping) else {}
 
-    def classify_window(name):
-        w = micro.get(name)
-        if not isinstance(w, Mapping):
-            return {'status': 'UNKNOWN', 'reason': f'缺少{name}现货窗口'}
-        if w.get('data_ready') is not True or w.get('cvd_unit') != 'BTC':
-            return {'status': 'UNKNOWN', 'reason': f'{name}未就绪或单位非BTC'}
-        cvd = number(w.get('cvd_sum'))
-        ret = number(w.get('momentum_return_pct'))
-        if ret is None:
-            ret = number(w.get('price_return_pct'))
-        if cvd is None or ret is None:
-            return {'status': 'UNKNOWN', 'reason': f'{name}净主动量或涨跌幅缺失'}
-        end_ms, err = _extract_spot_end_clock(w)
-        avail = w.get('available_at_ms')
-        raw_future_end = cutoff is not None and any(
-            type(w.get(k)) is int and w[k] > cutoff for k in _SPOT_END_CLOCK_KEYS
-        )
-        future_end = cutoff is not None and end_ms is not None and end_ms > cutoff
-        future_avail = cutoff is not None and type(avail) is int and avail > cutoff
-        if future_end or raw_future_end or future_avail:
-            return {
-                'status': 'UNKNOWN',
-                'reason': f'{name}完成或可得时钟晚于截止（排除未来数据）',
-                'future_excluded': True,
-            }
-        align_reasons = []
-        if w.get('bar_complete') is False:
-            align_reasons.append(f'{name}存在未完成柱(bar_complete=false)')
-        for flag in _SPOT_DEGRADED_FLAGS:
-            for scope in (row, vals, micro, w):
-                if scope.get(flag) is True or (flag not in ('gap',) and scope.get(flag)):
-                    align_reasons.append(f'{name}存在质量降级标记({flag})')
-                    break
-        if err == 'missing' or end_ms is None:
-            align_reasons.append(f'{name}缺少窗口完成时钟')
-        elif err is not None:
-            align_reasons.append(f'{name}{err}')
-        if avail is not None and type(avail) is not int:
-            align_reasons.append(f'{name}可得时钟格式无效')
-        if align_reasons:
-            return {
-                'status': 'OBSERVED_UNALIGNED',
-                'cvd_sum': cvd,
-                'return_pct': ret,
-                'end_ms': end_ms,
-                'available_at_ms': avail if type(avail) is int else None,
-                'bar_complete': w.get('bar_complete'),
-                'reason': '；'.join(align_reasons),
-            }
+    fast_info = evidence_qual.qualify_spot_window(
+        micro.get('fast_4h'),
+        cutoff_ms=cutoff,
+        max_age_ms=HOUR,
+        require_provenance=True,
+        extra_scopes=(row, vals, micro),
+        window_name='fast_4h',
+    )
+    slow_info = evidence_qual.qualify_spot_window(
+        micro.get('slow_12h'),
+        cutoff_ms=cutoff,
+        max_age_ms=HOUR,
+        require_provenance=True,
+        extra_scopes=(row, vals, micro),
+        window_name='slow_12h',
+    )
+    if row_stale_reason is not None:
+        for info in (fast_info, slow_info):
+            if info['status'] != 'UNKNOWN' and info['status'] != 'STALE':
+                info['status'] = 'STALE'
+                info['capability'] = evidence_qual.CAP_BLIND_STALE
+                info['reason'] = row_stale_reason
         return {
-            'status': 'OBSERVED_ALIGNED',
-            'cvd_sum': cvd,
-            'return_pct': ret,
-            'end_ms': end_ms,
-            'available_at_ms': avail,
-            'bar_complete': w.get('bar_complete'),
-            'reason': 'ok',
+            'status': 'STALE',
+            'fast_4h': fast_info,
+            'slow_12h': slow_info,
+            'derived': derived,
+            'reason': row_stale_reason,
         }
-
-    fast_info = classify_window('fast_4h')
-    slow_info = classify_window('slow_12h')
     fast_st, slow_st = fast_info['status'], slow_info['status']
     if fast_st == 'OBSERVED_ALIGNED':
         overall = 'OBSERVED_ALIGNED'
         reason = 'ok' if slow_st == 'OBSERVED_ALIGNED' else f"近12小时：{slow_info['reason']}"
+    elif fast_st == 'STALE':
+        overall = 'STALE'
+        reason = fast_info['reason']
     elif fast_st == 'OBSERVED_UNALIGNED':
         overall = 'OBSERVED_UNALIGNED'
         reason = fast_info['reason']
@@ -886,6 +863,9 @@ def inspect_spot_qualification(row, *, cutoff=None) -> dict:
         reason = f"近4小时：{fast_info['reason']}"
     elif slow_st == 'OBSERVED_UNALIGNED':
         overall = 'OBSERVED_UNALIGNED'
+        reason = slow_info['reason']
+    elif slow_st == 'STALE':
+        overall = 'STALE'
         reason = slow_info['reason']
     else:
         overall = 'UNKNOWN'
@@ -972,9 +952,105 @@ def ard_facts_for_evidence(ard_history, index_path, *, expiry_ms, cutoff_ms,
     )
 
 
+def _format_vol_background_p0(
+    cases,
+    cards,
+    contracts,
+    cutoff,
+    *,
+    offline_reconstructed_rv_clock_ms=None,
+):
+    """Render concise neutral IV/RV24 background for p0_strict@1 without touching legacy_v1 or distance scale."""
+    atm_ivs = {}
+    short_mark_ivs = {}
+    for s in ('put', 'call'):
+        read_at = cards[s]['read_at_ms']
+        expiry = contracts[s]['expiry_ms']
+        w_row = entry(cases[s], 'L3.expiry_walls')
+        wall = w_row.get('values') if isinstance(w_row.get('values'), Mapping) else {}
+        atm_iv = number(wall.get('atm_iv_pct'))
+        if (usable(w_row, read_at, 5 * MINUTE)
+                and wall.get('expiry_ms') == expiry
+                and not wall.get('stale')
+                and atm_iv is not None and atm_iv > 0):
+            atm_ivs[s] = atm_iv
+
+        book_row = entry(cases[s], 'L2.book.short')
+        book_vals = book_row.get('values') if isinstance(book_row.get('values'), Mapping) else {}
+        book_asof = book_row.get('asof_ms')
+        book_ts = book_vals.get('timestamp')
+        mark_iv = number(book_vals.get('mark_iv'))
+        short_inst = contracts[s].get('short_instrument')
+        if (book_row.get('quality') in (None, 'ok')
+                and type(book_asof) is int and book_asof <= read_at
+                and (book_ts is None or (type(book_ts) is int and book_ts <= read_at))
+                and short_inst and book_vals.get('instrument_name') == short_inst
+                and mark_iv is not None and mark_iv > 0):
+            short_mark_ivs[s] = mark_iv
+
+    iv_parts = []
+    if len(atm_ivs) == 2 and abs(atm_ivs['put'] - atm_ivs['call']) < 1e-9:
+        iv_parts.append(f"交易所本期ATM IV {atm_ivs['put']:.2f}%")
+    elif atm_ivs:
+        atm_txt = '/'.join(f"{s.title()} {atm_ivs[s]:.2f}%" for s in ('put', 'call') if s in atm_ivs)
+        iv_parts.append(f"交易所本期ATM IV {atm_txt}")
+    if short_mark_ivs:
+        mk_txt = '/'.join(f"{s.title()} {short_mark_ivs[s]:.2f}%" for s in ('put', 'call') if s in short_mark_ivs)
+        iv_parts.append(f"短腿盘口mark_iv {mk_txt}")
+    iv_summary = '，'.join(iv_parts)
+
+    l4_row = entry(cases['put'], 'L4.expiry_vol')
+    l4_vals = l4_row.get('values') if isinstance(l4_row, Mapping) and isinstance(l4_row.get('values'), Mapping) else {}
+    if not l4_vals.get('realized_vol'):
+        l4_call = entry(cases['call'], 'L4.expiry_vol')
+        l4_call_vals = l4_call.get('values') if isinstance(l4_call, Mapping) and isinstance(l4_call.get('values'), Mapping) else {}
+        if l4_call_vals.get('realized_vol'):
+            l4_row, l4_vals = l4_call, l4_call_vals
+
+    l4_asof = l4_row.get('asof_ms') if isinstance(l4_row, Mapping) else None
+    if type(l4_asof) is int and l4_asof > cutoff:
+        rv_q = {
+            'status': evidence_qual.QUAL_UNKNOWN,
+            'future_excluded': True,
+            'reconstructed_offline': False,
+            'reason': 'L4.expiry_vol时钟晚于读取截止（排除未来数据）',
+        }
+    else:
+        rv_q = evidence_qual.qualify_expiry_realized_vol(
+            l4_vals.get('realized_vol') if isinstance(l4_vals, Mapping) else None,
+            cutoff_ms=cutoff,
+            offline_reconstructed_clock_ms=offline_reconstructed_rv_clock_ms,
+        )
+        l4_q = l4_row.get('quality') if isinstance(l4_row, Mapping) else None
+        l4_qr = str(l4_row.get('quality_reason') or '') if isinstance(l4_row, Mapping) else ''
+        l4_reasons = {p.strip() for p in l4_qr.split(',') if p.strip()}
+        if l4_q == 'stale' and rv_q.get('status') == evidence_qual.QUAL_ALIGNED and l4_reasons != {'expiry_iv_stale'}:
+            rv_q = {
+                'status': evidence_qual.QUAL_STALE,
+                'future_excluded': False,
+                'reconstructed_offline': False,
+                'reason': f"L4.expiry_vol质量标记为stale（{l4_qr or 'unspecified'}）",
+            }
+
+    prefix = f"{iv_summary}；" if iv_summary else ''
+    if rv_q.get('status') == evidence_qual.QUAL_ALIGNED:
+        recons = '，RECONSTRUCTED_OFFLINE' if rv_q.get('reconstructed_offline') else ''
+        return (
+            f"波动率背景参考（仅作历史年化压力背景对照，不替代上述expected_move_usd距离尺度）："
+            f"{prefix}BTC-PERPETUAL 1h闭合柱RV24 {rv_q['rv_24h_pct']:.2f}%"
+            f"（末柱截至{stamp(rv_q['last_bar_end_ms'])}{recons}）。"
+            f"RV24与期权ATM IV/短腿mark_iv来源和窗口不同，非概率亦不单独否决，且严禁将不可核验RV规则写入持仓条件[C]。"
+        )
+    return (
+        f"波动率背景参考（不替代上述expected_move_usd距离尺度）："
+        f"{prefix}历史实现波动率RV24为{rv_q['status']}（{rv_q['reason']}）；仅保留有效隐含波动与短腿盘口参考。"
+    )
+
+
 def build_input(put_case, call_case, put_card, call_card, *, events=None, index_path=None,
                 ard_history=None, ard_band_snapshot=None, include_ard=True,
-                input_profile=INPUT_PROFILE_LEGACY):
+                input_profile=INPUT_PROFILE_LEGACY,
+                offline_reconstructed_rv_clock_ms=None):
     """Return player-facing Markdown. Raises HandNotDealt before rendering on known events."""
     if input_profile not in SUPPORTED_INPUT_PROFILES:
         raise ValueError(f'unsupported input_profile: {input_profile}')
@@ -1059,6 +1135,16 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
             else:
                 relation='在该侧入区前行走方向之外，不是必经位置'
             scale_text += f"对{s.title()}，轴{relation}。"
+    vol_bg_text = (
+        _format_vol_background_p0(
+            cases,
+            cards,
+            contracts,
+            cutoff,
+            offline_reconstructed_rv_clock_ms=offline_reconstructed_rv_clock_ms,
+        )
+        if strict_profile else ''
+    )
     pin_text = pin_context(
         cases, cards, contracts,
         ref_labels={s: ('合格图表末点' if s in boundary_replaced else '现价') for s in cases},
@@ -1087,18 +1173,27 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
         fast_q, slow_q = spot_qual['fast_4h'], spot_qual['slow_12h']
         spot_items = []
         for key, label, q in (('fast_4h', '近4小时', fast_q), ('slow_12h', '近12小时', slow_q)):
-            if q['status'] in ('OBSERVED_ALIGNED', 'OBSERVED_UNALIGNED'):
-                cvd, ret = q['cvd_sum'], q['return_pct']
+            if q['status'] in ('OBSERVED_ALIGNED', 'OBSERVED_UNALIGNED', 'STALE'):
+                cvd, ret = q.get('cvd_sum'), q.get('return_pct')
+                if cvd is None or ret is None:
+                    spot_items.append(f"{label}现货成交柱状态{q['status']}（{q['reason']}，严禁作当前反证且不作12h减4h相减）")
+                    continue
                 same = '同向' if cvd * ret > 0 else '不一致' if cvd * ret < 0 else '无明确同向'
                 flow = '净主动成交持平' if cvd == 0 else f"净主动{'买' if cvd > 0 else '卖'}{fmt(abs(cvd))} BTC"
-                rate_text = ''
+                meta_parts = []
                 if derived.get('comparable'):
                     rate_val = derived['fast' if key == 'fast_4h' else 'slow']['cvd_rate_btc_per_h']
-                    rate_text = f"（{rate_val:+.1f} BTC/h）"
-                unaligned_note = ''
-                if q['status'] == 'OBSERVED_UNALIGNED' and (fast_q['status'] == 'OBSERVED_ALIGNED' or slow_q['status'] == 'OBSERVED_ALIGNED'):
-                    unaligned_note = f"（未对齐观测：{q['reason']}，不作12h减4h相减）"
-                spot_items.append(f"{label}现货成交柱{flow}{rate_text}、价格变化{ret:+.2f}%，价流{same}{unaligned_note}")
+                    meta_parts.append(f"{rate_val:+.1f} BTC/h")
+                if q['status'] == 'OBSERVED_ALIGNED' and q.get('end_ms') is not None:
+                    meta_parts.append(f"完成柱截止{stamp(q['end_ms'])}")
+                meta_text = f"（{'，'.join(meta_parts)}）" if meta_parts else ''
+                extra_note = ''
+                if q['status'] == 'STALE':
+                    end_s = stamp(q['end_ms']) if q.get('end_ms') is not None else '未知'
+                    extra_note = f"（已过期STALE：末柱完成{end_s}，{q['reason']}，严禁作当前反证且不作12h减4h相减）"
+                elif q['status'] == 'OBSERVED_UNALIGNED' and (fast_q['status'] == 'OBSERVED_ALIGNED' or slow_q['status'] == 'OBSERVED_ALIGNED'):
+                    extra_note = f"（未对齐观测：{q['reason']}，不作12h减4h相减）"
+                spot_items.append(f"{label}现货成交柱{flow}{meta_text}、价格变化{ret:+.2f}%，价流{same}{extra_note}")
         if fast_q['status'] == 'OBSERVED_ALIGNED':
             if derived.get('comparable'):
                 prev = derived['previous_8h']
@@ -1128,6 +1223,17 @@ def build_input(put_case, call_case, put_card, call_card, *, events=None, index_
                 '【OBSERVED_ALIGNED（仅12h可用；近4h为UNKNOWN）】'
                 + '；'.join(spot_items)
                 + f"。近4小时现货窗口不可用或被时钟排除（{fast_q['reason']}），不得推定当前短窗反证，亦不将缺失当作无压力证明。"
+            )
+            if include_ard and row.get('asof_ms') is not None:
+                spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
+                              f"案卷量价事实时钟为{stamp(row['asof_ms'])}，该时钟不等于首末柱时间。"
+                              "ARD 另用 Deribit BTC/USD 指数分钟价，两者的价格来源和窗口口径不同。")
+        elif spot_qual['status'] == 'STALE':
+            reason_str = fast_q['reason'] if fast_q['status'] == 'STALE' else spot_qual['reason']
+            detail = ('；'.join(spot_items) + '。') if spot_items else ''
+            spot_text = (
+                f"【STALE】{detail}现货主动流已过期（{reason_str}），"
+                '严禁升格为当前已成立反证，亦不作12h减4h相减；继续依据位置与路径判断。'
             )
             if include_ard and row.get('asof_ms') is not None:
                 spot_text += (f"现货涨跌取 FMZ 的 Binance 现货量柱首末收盘价，窗口止于末根完成柱。"
@@ -1228,7 +1334,7 @@ Put读取于{stamp(put_card['read_at_ms'])}，Call读取于{stamp(call_card['rea
 
 {profile_line}1. **责任。** {' '.join(responsibility)} 已在责任内或行走方向之外的位置不作为入区前缓冲。
 
-2. **空间背景：尺度、体制、翻转轴、Pin。** {scale_text} {pin_text}{ard_text}
+2. **空间背景：尺度、体制、翻转轴、Pin。** {scale_text} {vol_bg_text + ' ' if vol_bg_text else ''}{pin_text}{ard_text}
 
 3. **Put责任路径，入区前由近到远。** {sections[0]}
 

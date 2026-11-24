@@ -282,7 +282,7 @@ def test_server_health_checker_green_and_failure_paths(tmp_path: Path):
             archive_root=archive_root,
             player_plan=plan_copy,
             release_dir=release_dir,
-            expected_core_version="2.0.6",
+            expected_core_version="2.0.7",
             skip_network=True,
             require_release_manifest=True,
             now_ms=now_ms if now_override is None else now_override,
@@ -420,7 +420,7 @@ def test_workbench_unit_env_precedence_and_network_health_checks(tmp_path: Path,
         if url.endswith("/api/workbench"):
             assert (headers or {}).get("Authorization") == "Bearer secret-tok-123"
             return 200, {
-                "market_context": {"status": "current", "strategy_version": "2.0.6"},
+                "market_context": {"status": "current", "strategy_version": "2.0.7"},
                 "discovery": {"candidates": {"c1": {"execution_allowed": wb_exec_allowed[0]}}},
             }
         raise AssertionError(f"unexpected URL: {url}")

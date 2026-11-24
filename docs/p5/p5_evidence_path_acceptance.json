@@ -1,0 +1,243 @@
+{
+  "schema": "p5_evidence_path_acceptance@1.0",
+  "generated_at_utc": "2026-11-24T18:46:00Z",
+  "base_commit_sha": "3a3f850e86423ce604ca25ee62e3ad9221fcef97",
+  "branch": "codex/p5-evidence-pipeline-fix",
+  "overall_status": "FIX_READY_NOT_DEPLOYED",
+  "live_natural_confirmation_status": "PENDING_NATURAL_CONFIRMATION",
+  "verification_summary": {
+    "targeted_p5_e2e_3_files": "28 passed in 10.03s (test_p5_flow_e2e_chain.py + test_p5_pin_rv_chain.py + test_p5_evidence_consumers.py, incl. real FMZ backfill_mixed warmup + multi-round Hold Section 3 anti-leak)",
+    "e2e_v13_file": "5 passed in 26.84s (tests/test_astra_player_e2e_v13.py after aligning write_fmz_with_flow mock provenance)",
+    "pytest_35_files": "643 passed, 1 skipped, 1 pre-existing base@3a3f850e failure in 304.12s (skipped=test_real_initial_public_view_context_refs_keep_missing_source_clock_none due to absent local .artifacts dir; pre-existing base@3a3f850e failure=tests/test_player_initial_recovery.py::test_formal_timer_to_native_tracking_and_fixed_check from commit 795048bd adding at-dossier.MINUTE closed-bar limit while test kept now[0]=tick; 0 failures across the other 34 files)",
+    "standalone_fmz_scripts": [
+      "test_fmz_157_fixed_analysis_round.py: PASS",
+      "test_fmz_157_producer_contract.py: PASS",
+      "test_fmz_161_near_term_context.py: PASS",
+      "test_fmz_162_gex_time_semantics.py: PASS"
+    ],
+    "release_check": "ok=true, demo_version=2.0.7, manifest_lf_sha256=1c5dc75fd9d312acac706869d503bf0102f5bf9a5996c767d4d385872096ab9c",
+    "js_syntax_and_real_audit_e2e": "node --check PASS (locks.js, player-audit.js) + tracking.evaluate_hold_management -> audit_record() -> renderPlayerAudit E2E PASS"
+  },
+  "live_3a3f850e_1600z_e2e_audit": {
+    "hand_id": "hand_d62e9c3f7ee24f5b80c0efee",
+    "scheduled_utc": "2026-11-24T16:00:00Z",
+    "verdict": "MAIN_PLAYER_E2E_NOT_CONFIRMED",
+    "reason": "TRUNCATED_AT_MAX_TOKENS_24576 (finish_reason=length, completion_tokens=24576, missing ANNOTATION_JSON; fail-closed PARSE_FAILED with 0 phantom trade)",
+    "live_channel_coverage_observed": {
+      "fmz_snapshots_aligned_flow": "0/12",
+      "expiry_gamma_rv_has_computed_at": false,
+      "expiry_gamma_expiries_with_pin_meta": "0/4",
+      "recent_locked_series_aligned_flow_and_pin": "0/5",
+      "today_1600z_l4_asof_ms": null
+    }
+  },
+  "artifacts_sha256_lf": {
+    "tools/astra_evidence_qual_v1.py": "efdcdd2c93ba35fd26fec2baf0e5da47ea2922ea7d4235f5366e33c00029fb34",
+    "demo/最新交付物/neutral_regulation_demo_fmz.py": "1c5dc75fd9d312acac706869d503bf0102f5bf9a5996c767d4d385872096ab9c",
+    "tools/astra_underwriting_fact_context_v20.py": "0cebf31b217e35899fa3ab153a153de5a948c3e374531c8dd6b18f85abd036c5",
+    "tools/astra_expiry_gamma_v1.py": "f2845357b854a584e8bbc49f3b04a72de60f377fa66d165c528da7c7854250ad",
+    "tools/astra_lock_levels_v1.py": "cce17a98422a2afa5146b34d1fc0b7ff5c5e63075ffee8578eeffe3e929ca26c",
+    "tools/astra_case_file_v1.py": "229d595008e7d9a503aea44461b82536e01791c894ab3f635171281cef3ad5b9",
+    "tools/astra_workbench_v20.py": "7da621958d638d117ae5b5939bb3b2c9415816298640f6af583ee3a1cba57c24",
+    "tools/astra_locked_candidate_compare_v1.py": "744efa8554ed874dc841261c8cac86ffd911f1ac08d0f8c41ce5efd2f6c320fb",
+    "tools/astra_player_input_v1.py": "f1935359c5cf058c323071fccd62731e8b6d2c40f0abbbda05a64fa6df64e345",
+    "tools/astra_player_condition_v1.py": "fe9a6bbf81463f7a66ab36f7bbb79a24d9244e2b3b1fcaab02845701bcd67b58",
+    "tools/astra_player_tracking_v13.py": "4865f83eab8d8b647f9f14dc03f1bd5de29a20dd1a1570395f766efbd99b1013",
+    "tools/astra_player_review_v1.py": "3bf83eac226cb57d4ee8315bd5fa1b4d075cd90a5a501186753836d1ecdc5b09",
+    "tools/xxproject_server_health_v1.py": "6759be2e173d14013eb5d6b855b9daacc7a309f27c68c7415eeaafa2dd6c143a"
+  },
+  "paths": [
+    {
+      "path_id": "A1_SPOT_FLOW_T0",
+      "stage": "initial_t0",
+      "channel": "spot_flow",
+      "chain": [
+        "demo/最新交付物/neutral_regulation_demo_fmz.py::BarAssembler & micro_flow_for_horizon (2.0.7)",
+        "tools/astra_underwriting_fact_context_v20.py::_micro_window_context/_volume_price_context",
+        "tools/astra_case_file_v1.py (L5.volume_price)",
+        "tools/astra_player_input_v1.py::inspect_spot_qualification & derive_non_overlapping_spot_windows"
+      ],
+      "qualification_contract": "evidence_qual@1::qualify_spot_window",
+      "positive_e2e_proof": "tests/test_p5_flow_e2e_chain.py::test_e2e_positive_live_agg_trades_observed_aligned_and_derived_windows (live aggTrade -> 4h/12h aligned, start/end_ts_ms, cum_cvd_btc, source=binance_spot_aggtrades, symbol=BTCUSDT -> p0_strict@1 aligned non-overlapping 4h/8h/12h windows)",
+      "adversarial_negative_proofs": [
+        "test_adversarial_missing_trade_timestamp_never_uses_now_ms (FAIL-CLOSED UNKNOWN/UNALIGNED, never now_ms)",
+        "test_adversarial_mid_batch_trade_id_gap_sets_bar_gap_and_downgrades_e2e",
+        "test_adversarial_kline_backfill_and_mixed_backfill_e2e",
+        "test_adversarial_deque_eviction_sets_truncated_e2e",
+        "test_adversarial_out_of_order_bars_and_trades_e2e",
+        "test_adversarial_duplicate_klines_and_bar_index_conflicts",
+        "test_adversarial_wrong_symbol_and_source_conflict_e2e",
+        "test_adversarial_4h_valid_while_12h_invalid_and_anti_lookahead_e2e",
+        "test_p0_spot_stale_unaligned_aligned_future_and_windows"
+      ],
+      "historical_replay_1123": {
+        "source_sha256": "d2a700ca1a8fcbc101dca0bebce60fa121412bd4b29b72b5b403f649babef125",
+        "legacy_v1_sha256": "58253266e679a21c5dead084de93c33c51c49ede5a974caf26f380e00d0b0f10",
+        "legacy_byte_identical": true,
+        "p0_strict_sha256": "b44d054a041b2b57f408113ca3b521978014a48d10478137edaa03b6568624e1",
+        "qualification": "OBSERVED_UNALIGNED",
+        "llm_consumption_verified": "call1 & call2 surface OBSERVED_UNALIGNED without upgrading to aligned counter-evidence"
+      },
+      "historical_replay_1120": {
+        "source_sha256": "cc64fd87944282da552a70465070afe5b3df3a3c6aa0d2997995852e4425f143",
+        "legacy_v1_sha256": "25aa2753f610d39c60f91a0678beafa3889fde017859d0917c26fbdac796b77d",
+        "legacy_byte_identical": true,
+        "p0_strict_sha256": "6d7b2b52f2ba809a1ac4af980c01dae0da82a96a17114dda1c71dc056990a951",
+        "qualification": "OBSERVED_UNALIGNED"
+      },
+      "acceptance_status": "PASS_OFFLINE_AND_UNIT_E2E_PENDING_LIVE_2_0_7_NATURAL"
+    },
+    {
+      "path_id": "A2_SPOT_FLOW_HOLD_CAT_D",
+      "stage": "hold",
+      "channel": "spot_flow",
+      "chain": [
+        "FMZ 2.0.7 cum_session_id/cum_cvd_btc/cum_gap_count/end_ts_ms/source/symbol",
+        "tools/astra_locked_candidate_compare_v1.py::_producer_facts (METRICS_VERSION=5)",
+        "tools/astra_player_tracking_v13.py::_resolve_hold_flow_qualification",
+        "tools/astra_player_review_v1.py::_detect_category_d & _format_flow_lines & build_hold_review_input"
+      ],
+      "qualification_contract": "evidence_qual@1::qualify_spot_window",
+      "positive_e2e_proof": "tests/test_p5_evidence_consumers.py::test_hold_cat_d_basis_exact_closed_bars_and_fail_closed (FLOW_ADVERSE_CONTINUATION incremental_flow_cvd_btc=-110.0 BTC exact_closed_bars_post_ref + FLOW_REVERSAL + capability=QUALIFIED_ACTIVE/QUALIFIED_NO_EVENT)",
+      "adversarial_negative_proofs": [
+        "test_hold_cat_d_basis_exact_closed_bars_and_fail_closed (null flow_asof_ms / unaligned flow_window_basis / missing provenance / cum_gap_count delta / cum_session_id switch -> fail-closed)",
+        "test_hold_pin_latest_reason_not_tainted_and_unaligned_flow_hidden (OBSERVED_UNALIGNED/STALE/UNKNOWN hides raw CVD/direction in Hold card)",
+        "test_locked_compare_flow_qualification_and_stale_levels",
+        "test_unaligned_t0_and_last_review_flow_blocked_from_cat_d_and_prompts (blocks FLOW_REVERSAL when ref_basis is None/unaligned & hides unaligned flow_direction in Hold Sections 1 & 2)",
+        "test_multi_round_hold_degraded_or_stale_flow_not_leaked_in_section3_delta (aligned prior review followed by OBSERVED_UNALIGNED/STALE suppresses Section 3 4h CVD & clock delta)"
+      ],
+      "historical_replay_1123_hold_1645z": {
+        "tick_ms": 1795452320867,
+        "hold_armA_sha256": "71f71882c3bbee36ad5143f0bbdbd351936e3cd87ace12a0c010b2f8cc6a1523",
+        "spot_flow_qualification": "OBSERVED_UNALIGNED",
+        "capability": "BLIND_UNALIGNED",
+        "cat_d_fired": false,
+        "raw_unaligned_cvd_hidden": true,
+        "llm_call5_call6_verified": "Neither call5 nor call6 leaked raw CVD 232.01; both surfaced spot_flow OBSERVED_UNALIGNED blind spot",
+        "hold_armA_sha256_post_fix": "6344ba766a5929b3bdc781df1f754e64466f71fe1424858633ad37b54370a335"
+      },
+      "acceptance_status": "PASS_OFFLINE_AND_UNIT_E2E_PENDING_LIVE_2_0_7_NATURAL"
+    },
+    {
+      "path_id": "B_LIVE_5M_PIN_HOLD_CAT_C_AND_UI",
+      "stage": "hold",
+      "channel": "pin_structure",
+      "chain": [
+        "tools/astra_expiry_gamma_v1.py::profile & collect & for_expiry (PIN_SOURCE, PIN_METHOD, pin_status)",
+        "tools/astra_workbench_v20.py::_with_expiry_levels",
+        "tools/astra_lock_levels_v1.py::compact & SERIES_KEYS (<950B)",
+        "tools/astra_locked_candidate_compare_v1.py::_level_fact",
+        "tools/astra_player_condition_v1.py::compare_ard_basis (20m SLA, pin_eval_mode)",
+        "tools/astra_player_tracking_v13.py::_collect_live_pin_rows & _merge_pin_history & _episode_ard_state",
+        "tools/astra_player_review_v1.py::_detect_category_c & _format_ard_lines",
+        "deploy/astra_workbench_v3/{locks.js,player-audit.js}"
+      ],
+      "qualification_contract": "evidence_qual@1::qualify_live_pin",
+      "positive_e2e_proof": "test_hold_5m_live_pin_20m_sla_no_rollback_and_band_half & test_hold_tracking_snapshot_readiness_no_old_pin_backfill_and_idempotency & test_category_c_position_only_and_degraded_guards & test_js_syntax_and_ui_rendering_with_node & audit_record()->renderPlayerAudit live JSON E2E",
+      "adversarial_negative_proofs": [
+        "test_hold_5m_live_pin_20m_sla_no_rollback_and_band_half (no rollback by late archive row, wrong expiry rejected, 20m SLA STALE rejects 20-40m archive, future computed_at_ms rejected)",
+        "test_category_c_position_only_and_degraded_guards (rejects STALE/UNALIGNED/UNKNOWN & legacy same_measure=False without position_only)",
+        "test_hold_rendering_unknowns_channel_readiness_and_prompt_preserved (no false 是否迁移：否 on STALE; no 0 次 on position_only)",
+        "test_hold_pin_latest_reason_not_tainted_and_unaligned_flow_hidden (historical stale rows never taint 0ms-fresh live_5m)"
+      ],
+      "historical_replay_1123_hold_1645z": {
+        "arm_a_raw_archive30m": {
+          "pin_eval_mode": "position_only",
+          "pin_lineage": "archive_30m",
+          "pin_age_ms": 895675,
+          "pin_usd": 64000.0,
+          "cat_c_fired": false,
+          "input_sha256": "71f71882c3bbee36ad5143f0bbdbd351936e3cd87ace12a0c010b2f8cc6a1523",
+          "llm_call5_verdict": "REVOKE",
+          "input_sha256_post_fix": "6344ba766a5929b3bdc781df1f754e64466f71fe1424858633ad37b54370a335"
+        },
+        "arm_b_reconstructed_live5m": {
+          "pin_eval_mode": "position_only",
+          "pin_lineage": "live_5m",
+          "pin_age_ms": 0,
+          "pin_usd": 60500.0,
+          "pin_qualification_reasons": [],
+          "cat_c_fired": true,
+          "input_sha256": "c795efc300cf55adde1b98b79d39fcdc2607ce8f1e918516e8e06699b9e4d52a",
+          "llm_call6_verdict": "REVOKE",
+          "llm_call6_consumed_60500_live_5m": true,
+          "input_sha256_post_fix": "1022132454fd3fadb80eb6a8a65cac34e2f63c4267df8330104e63682dd8e695"
+        },
+        "stale_archive_1651z_negative": {
+          "tick_ms": 1795452660000,
+          "pin_eval_mode": "STALE",
+          "pin_age_ms": 1234808,
+          "hides_false_migration_no": true
+        },
+        "sweep_38_rows_summary": {
+          "raw_cat_b_rows": 11,
+          "raw_cat_c_rows": 0,
+          "raw_cat_d_rows": 0,
+          "live_5m_pin_cat_b_rows": 11,
+          "live_5m_pin_cat_c_rows": 11,
+          "live_5m_pin_cat_c_first_idx": 27,
+          "live_5m_pin_first_cat_c_pin": 62000.0
+        }
+      },
+      "acceptance_status": "PASS_OFFLINE_AND_UNIT_E2E_PENDING_LIVE_DEPLOY"
+    },
+    {
+      "path_id": "C_L4_RV24_BACKGROUND_T0",
+      "stage": "initial_t0",
+      "channel": "rv24_background",
+      "chain": [
+        "tools/astra_expiry_gamma_v1.py::realized_vol (dedup, duplicate_conflict, rv_computed_at_ms, source, status)",
+        "tools/astra_workbench_v20.py::refresh_expiry_gamma (fallback preserves old clocks + cached_fallback)",
+        "tools/astra_case_file_v1.py::build (L4.expiry_vol lineage=deribit.perpetual_chart + clocks + quality)",
+        "tools/astra_player_input_v1.py::_format_vol_background_p0 (p0_strict@1 neutral IV + RV24; legacy_v1 parity preserved)"
+      ],
+      "qualification_contract": "evidence_qual@1::qualify_expiry_realized_vol",
+      "positive_e2e_proof": "test_expiry_gamma_pin_provenance_and_realized_vol_dedup_and_conflict & test_workbench_refresh_expiry_gamma_fallback_and_strict_lookahead & test_case_file_l4_expiry_vol_lineage_clocks_quality_and_legacy_annotate & test_p0_vol_background_rv24_qualification_scale_and_legacy_parity & case_file->build_card->player_input.build_input seam proof",
+      "adversarial_negative_proofs": [
+        "Duplicate conflicting closes -> rv_status=duplicate_conflict -> UNKNOWN",
+        "Stale >90m bar or >20m compute -> STALE",
+        "Future rv_computed_at_ms / future L4.asof_ms -> UNKNOWN (anti-lookahead)",
+        "Wrong instrument -> OBSERVED_UNALIGNED",
+        "RV4h & p_touch_short strictly excluded from p0_strict@1 input; zero mechanical vetoes added"
+      ],
+      "historical_replay_1123_and_1120": {
+        "1123_raw_p0_strict": {
+          "rv24_status": "UNKNOWN",
+          "sha256": "b44d054a041b2b57f408113ca3b521978014a48d10478137edaa03b6568624e1",
+          "llm_call1": "HONEST_UNKNOWN_SURFACE"
+        },
+        "1123_reconstructed_offline": {
+          "rv24_status": "OBSERVED_ALIGNED",
+          "clock_ms": 1795449603698,
+          "sha256": "5c7cf8e63c853a3614b37732691697c91b622301bb5178755c0d84844026f275",
+          "llm_call2": "DELIVERED_NON_DISTORTING_NO_VERBATIM_CITATION"
+        },
+        "1120_raw_p0_strict": {
+          "rv24_status": "UNKNOWN",
+          "sha256": "6d7b2b52f2ba809a1ac4af980c01dae0da82a96a17114dda1c71dc056990a951",
+          "llm_call3": "HONEST_UNKNOWN_SURFACE"
+        },
+        "1120_reconstructed_offline": {
+          "rv24_status": "OBSERVED_ALIGNED",
+          "clock_ms": 1795190409809,
+          "sha256": "dcff3abb77bac86435e04f9d879e6b116dfc39b75c7410729ee6527364f8237e",
+          "llm_call4": "DELIVERED_NON_DISTORTING_NO_VERBATIM_CITATION"
+        }
+      },
+      "acceptance_status": "PASS_OFFLINE_AND_UNIT_E2E_PENDING_LIVE_DEPLOY"
+    },
+    {
+      "path_id": "D_OPERATIONAL_COVERAGE_DIAGNOSTICS",
+      "stage": "ops_health_and_tracking",
+      "channel": "all_channels_readiness",
+      "chain": [
+        "tools/astra_evidence_qual_v1.py::summarize_channel_capabilities",
+        "tools/xxproject_server_health_v1.py (--require-evidence-channels, warming_up vs BLIND_* vs QUALIFIED_*)",
+        "tools/astra_player_tracking_v13.py::audit_record & review_snapshot.json",
+        "tools/astra_player_review_v1.py::build_hold_review_input (channel_readiness)"
+      ],
+      "positive_e2e_proof": "test_server_health_evidence_channels_and_warming_vs_broken (incl. real FMZ BarAssembler.backfill_from_klines + live trade backfill_mixed -> CAP_WARMING_UP, while truncated/gap/source_conflict fail) & test_hold_rendering_unknowns_channel_readiness_and_prompt_preserved & test_hold_tracking_snapshot_readiness_no_old_pin_backfill_and_idempotency",
+      "acceptance_status": "PASS_UNIT_E2E_PENDING_LIVE_DEPLOY"
+    }
+  ]
+}

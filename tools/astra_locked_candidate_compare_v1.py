@@ -13,6 +13,7 @@ from typing import Any, Mapping, Sequence
 
 if __package__:
     from .astra_workbench_reading_v1 import reading_value
+    from . import astra_evidence_qual_v1 as evidence_qual
     from . import astra_lock_levels_v1 as lock_levels
     from . import astra_observation_replay_v1 as public_replay
     from . import astra_underwriting_real_replay_v20 as real_replay
@@ -20,6 +21,7 @@ if __package__:
     from . import astra_wpem_product_review_v1 as wpem_review
 else:
     from astra_workbench_reading_v1 import reading_value
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_lock_levels_v1 as lock_levels
     import astra_observation_replay_v1 as public_replay
     import astra_underwriting_real_replay_v20 as real_replay
@@ -215,6 +217,8 @@ def _wire_fact(item: dict[str, Any] | None) -> dict[str, Any] | None:
     if item is None:
         return None
     out = {key: deepcopy(item.get(key)) for key in ("text_cn", "value", "unit", "asof_ms")}
+    if item.get("stale") is True:
+        out["stale"] = True
     if item.get("compat_backfill_applied"):
         out["compat_backfill_applied"] = True
         out["backfill_source"] = item.get("backfill_source")
@@ -249,6 +253,8 @@ def _change_cn(t0: dict[str, Any] | None, t1: dict[str, Any] | None) -> tuple[st
         return "基线该值缺失，最近首次可读；不按 0 计算。", "new_fact"
     if t1.get("value") is None:
         return "最近该值缺失，不能判断原值是否保持。", "latest_missing"
+    if t1.get("stale") is True:
+        return "最近读数偏旧，不判未变。", "stale"
     if t0.get("compat_backfill_applied") or t1.get("compat_backfill_applied"):
         # Same reader on the same frozen market facts; the recomputed end has no retained
         # source clock and no routing qualification, so only the content is compared.
@@ -965,6 +971,8 @@ def _level_fact(levels: Mapping[str, Any] | None, key: str, field: str, product:
               "window": levels.get("expiry") or "expiry_unknown", "unit": "USD"},
         raw={"field": field, "value": value, "stale": levels.get("stale"), "age_ms": levels.get("age_ms")},
     )
+    if product == "expiry_profile" and levels.get("stale") is True:
+        fact["stale"] = True
     fact["to_short_pct"] = ((value - short_strike) / short_strike * 100
                             if value is not None and short_strike else None)
     return fact
@@ -1204,7 +1212,8 @@ SERIES_SCHEMA = "locked_candidate_series@1.0.0"
 # sign, 4h/12h flow, M-DIE, time left); flow/TMV/gamma/macro no longer depend on WPEM's
 # research context (which also matched context.active_flow_unqualified by prefix).
 # 4: adds decoupled short_buyback_quote, expected_move_usd, and 4h/12h flow CVD/momentum/asof.
-SERIES_METRICS_VERSION = 4
+# 5: enforces evidence_qual@1 spot flow qualification (no null flow_window_basis) and expanded pin series keys.
+SERIES_METRICS_VERSION = 5
 
 
 def _leg_marks(point: Mapping[str, Any]) -> dict[str, float | None]:
@@ -1260,10 +1269,10 @@ def _reading(candidate: Mapping[str, Any], prefix: str, path: Sequence[str]) -> 
 
 def _flow_asof_ms(fast: Mapping[str, Any]) -> int | None:
     """Resolve the closing clock of the same fast window that provided CVD."""
-    for key in ("end_ts_ms", "complete_ts_ms", "window_end_ms", "window_end_time", "last_closed_bar_time"):
-        if (ts := _int(fast.get(key))) is not None:
-            return ts
-    return None
+    if not isinstance(fast, Mapping):
+        return None
+    ts, _ = evidence_qual.extract_spot_end_clock(fast)
+    return ts
 
 
 def short_buyback_quote(point: Mapping[str, Any]) -> dict[str, Any]:
@@ -1344,12 +1353,48 @@ def short_buyback_quote(point: Mapping[str, Any]) -> dict[str, Any]:
 
 def _producer_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """Ledger inputs from S.fact_context.market_facts; None where the producer gave nothing."""
-    facts = _mapping(_dig(snapshot, ("fact_context", "market_facts")))
+    fact_ctx = _mapping(snapshot.get("fact_context"))
+    facts = _mapping(fact_ctx.get("market_facts"))
     vp = _mapping(facts.get("volume_price"))
     flow = _mapping(vp.get("micro_flow"))
 
     def leg(name: str, key: str) -> Any:
         return _mapping(flow.get(name)).get(key)
+
+    snapshot_asof = (
+        _int(_dig(snapshot, ("market", "valuation_ts_ms")))
+        or _int(fact_ctx.get("snapshot_ts_ms"))
+        or _int(facts.get("asof_ms"))
+        or _int(vp.get("asof_ms"))
+    )
+    fast_win = _mapping(flow.get("fast_4h"))
+    q_fast = evidence_qual.qualify_spot_window(
+        flow.get("fast_4h"),
+        cutoff_ms=snapshot_asof,
+        extra_scopes=(vp, flow),
+        window_name="fast_4h",
+    )
+    q_slow = evidence_qual.qualify_spot_window(
+        flow.get("slow_12h"),
+        cutoff_ms=snapshot_asof,
+        extra_scopes=(vp, flow),
+        window_name="slow_12h",
+    )
+    fast_aligned = q_fast["status"] == evidence_qual.QUAL_ALIGNED
+    slow_aligned = q_slow["status"] == evidence_qual.QUAL_ALIGNED
+    flow_basis = None
+    if fast_aligned:
+        flow_basis = {
+            "source": q_fast["source"],
+            "symbol": q_fast["symbol"],
+            "start_ms": q_fast["start_ms"],
+            "end_ms": q_fast["end_ms"],
+            "available_at_ms": q_fast["available_at_ms"],
+            "bar_complete": q_fast["bar_complete"],
+        }
+        for extra_key in ("last_bar_index", "cum_cvd_btc", "cum_session_id", "cum_gap_count"):
+            if extra_key in fast_win and fast_win.get(extra_key) is not None:
+                flow_basis[extra_key] = fast_win.get(extra_key)
 
     score = _number(_dig(facts, ("space_gate", "anchor", "score")))
     if score is None:
@@ -1363,16 +1408,16 @@ def _producer_facts(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "flow_ready": leg("combined", "data_ready"),
         "flow_fast_4h": leg("fast_4h", "direction"),
         "flow_slow_12h": leg("slow_12h", "direction"),
+        "flow_fast_4h_ready": fast_aligned,
+        "flow_slow_12h_ready": slow_aligned,
+        "flow_qualification_status": q_fast["status"],
+        "flow_qualification_reasons": list(q_fast.get("reason_codes") or []),
         "flow_cvd_4h": _number(leg("fast_4h", "cvd_sum")),
         "flow_cvd_12h": _number(leg("slow_12h", "cvd_sum")),
         "flow_momentum_4h_pct": _number(leg("fast_4h", "momentum_return_pct")),
         "flow_momentum_12h_pct": _number(leg("slow_12h", "momentum_return_pct")),
-        "flow_asof_ms": _flow_asof_ms(_mapping(flow.get("fast_4h"))),
-        "flow_window_basis": ({
-            "source": leg("fast_4h", "source"), "symbol": leg("fast_4h", "symbol"),
-            "start_ms": _int(leg("fast_4h", "first_ts_ms")),
-        } if (leg("fast_4h", "data_ready") is True and leg("fast_4h", "cvd_unit") == "BTC"
-              and not any(leg("fast_4h", flag) for flag in ("gap", "truncated", "cvd_degraded"))) else None),
+        "flow_asof_ms": q_fast["end_ms"] if fast_aligned else None,
+        "flow_window_basis": flow_basis,
         "tmv_state": vp.get("tmv_state"),
         "macro_regime": _dig(facts, ("macro_pressure", "macro_regime")),
         "mdie_direction": _dig(facts, ("m_die", "direction")),

@@ -119,15 +119,33 @@ def compare_ard_basis(frozen_path, current_facts, check_at_ms):
                     and old['band'] is not None and current_facts['band'] == old['band'])
     fresh = bool(price and price['t'] == check_at_ms and latest
                  and price['pin'] == latest['pin'])
+    pin_fresh_live = bool(
+        fresh and latest
+        and isinstance(latest.get('at'), int) and not isinstance(latest.get('at'), bool)
+        and latest.get('pin') is not None
+        and 0 <= check_at_ms - latest['at'] <= 20 * MINUTE
+    )
+    if same_measure and pin_fresh_live:
+        pin_eval_mode = 'same_measure_ard'
+    elif comparable and pin_fresh_live:
+        pin_eval_mode = 'position_only'
+    elif fresh and latest and isinstance(latest.get('at'), int) and check_at_ms - latest['at'] > 20 * MINUTE:
+        pin_eval_mode = 'STALE'
+    elif latest and not comparable:
+        pin_eval_mode = 'UNALIGNED'
+    else:
+        pin_eval_mode = 'UNKNOWN'
     sign = 1 if c['side'] == 'put' else -1
     return dict(
         frozen_anchor=deepcopy(original), current_anchor=deepcopy(latest),
-        current_sample_available=fresh,
-        pin_price_changed=(latest['pin'] != original['pin']) if fresh else None,
+        current_sample_available=bool(comparable and pin_fresh_live),
+        pin_price_changed=(latest['pin'] != original['pin']) if (comparable and pin_fresh_live) else None,
+        pin_eval_mode=pin_eval_mode,
         source_method_comparable=comparable,
         newly_available_anchor_observations=[deepcopy(r) for r in current_facts['observations'] if r['ready'] > entry],
         new_neighborhood_events=[deepcopy(e) for e in current_facts['events']
-                                 if entry < e['at_ms'] <= check_at_ms and e['pin'] == original['pin']] if same_measure else None,
+                                 if entry < e['at_ms'] <= check_at_ms and e['pin'] == original['pin']]
+                                if (same_measure and pin_fresh_live) else None,
         entry_distance_to_frozen_pin_usd=abs(record['entry_index_usd']-original['pin']),
         current_distance_to_frozen_pin_usd=abs(price['price']-original['pin']) if fresh else None,
         current_inside_frozen_neighborhood=(abs(price['price']-original['pin']) <= old['band']['half_width_usd'])

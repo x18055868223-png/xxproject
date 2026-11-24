@@ -109,11 +109,16 @@ def compact(profile: Mapping[str, Any] | None, gex_info: Mapping[str, Any] | Non
             kpf_end = max(end, kpf_end or end)
 
     computed = _clock(prof.get("computed_at_ms"))
+    available = _clock(prof.get("available_at_ms")) or computed
     age = now_ms - computed if computed is not None else None
     return {
         "schema": SCHEMA,
         "expiry": token,
+        "expiry_ms": _clock(prof.get("expiry_ms")) or _clock(expiry_ms),
         "profile_present": bool(prof),
+        "pin_status": prof.get("pin_status") if isinstance(prof.get("pin_status"), str) else None,
+        "pin_method": prof.get("pin_method") if isinstance(prof.get("pin_method"), str) else None,
+        "pin_source": prof.get("pin_source") if isinstance(prof.get("pin_source"), str) else None,
         "pin": _num(walls.get("pin")),
         "gamma_put": _num(walls.get("gamma_put")),
         "gamma_call": _num(walls.get("gamma_call")),
@@ -135,12 +140,30 @@ def compact(profile: Mapping[str, Any] | None, gex_info: Mapping[str, Any] | Non
         "gex_asof_ms": _clock(gex.get("fetched_at_ms")),
         "map_asof_ms": _clock(_map(btc_map).get("cutoff_at_ms")),
         "computed_at_ms": computed,
+        "available_at_ms": available,
         "age_ms": age,
         "stale": bool(prof) and (age is None or age > STALE_MS),
     }
 
 
-SERIES_KEYS = ("pin", "gamma_put", "gamma_call", "oi_put", "oi_call", "max_pain_this", "flip")
+SERIES_KEYS = (
+    "pin",
+    "gamma_put",
+    "gamma_call",
+    "oi_put",
+    "oi_call",
+    "max_pain_this",
+    "flip",
+    "expiry",
+    "expiry_ms",
+    "pin_status",
+    "pin_method",
+    "pin_source",
+    "computed_at_ms",
+    "available_at_ms",
+    "age_ms",
+    "stale",
+)
 
 
 def series_subset(levels: Any) -> dict[str, Any] | None:

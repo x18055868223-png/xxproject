@@ -618,8 +618,12 @@ def test_series_metrics_carry_the_compact_levels_only_when_present():
     assert "levels" not in followup.point_metrics(latest, baseline)
     latest["candidate"]["expiry_levels"] = _levels(pin=99000.0, gamma_put=97000.0)
     levels = followup.point_metrics(latest, baseline)["levels"]
-    assert levels == {"pin": 99000.0, "gamma_put": 97000.0, "gamma_call": None, "oi_put": None, "oi_call": None,
-                      "max_pain_this": 96000.0, "flip": 97500.0}
+    assert levels == {
+        "pin": 99000.0, "gamma_put": 97000.0, "gamma_call": None, "oi_put": None, "oi_call": None,
+        "max_pain_this": 96000.0, "flip": 97500.0,
+        "expiry": "30OCT26", "expiry_ms": None, "pin_status": None, "pin_method": None, "pin_source": None,
+        "computed_at_ms": T, "available_at_ms": T, "age_ms": 0, "stale": False,
+    }
 
 
 def _old_lock_with_sources(point, *, this_pain=False):

@@ -256,8 +256,14 @@ def _micro_window_context(value: Any) -> dict[str, Any]:
         "cvd_sum", "cvd_unit", "cvd_per_bar", "cvd_norm", "score", "state",
         "confidence", "direction", "window_role", "reason",
         "price_open", "price_close", "price_return_pct",
-        "first_ts_ms", "end_ts_ms", "complete_ts_ms", "window_end_ms",
-        "source", "symbol", "cvd_degraded", "gap", "truncated"))
+        "first_ts_ms", "window_start_ms", "end_ts_ms", "complete_ts_ms",
+        "window_end_ms", "available_at_ms", "bar_complete",
+        "source", "bar_source", "price_source", "symbol",
+        "cvd_degraded", "gap", "truncated",
+        "backfill_mixed", "window_backfill", "out_of_order",
+        "source_conflict", "complete_ts_synthetic", "stale",
+        "end_ms", "window_end_time", "last_closed_bar_time",
+        "last_bar_index", "cum_cvd_btc", "cum_session_id", "cum_gap_count"))
 
 
 def _volume_price_context(flow: Any) -> dict[str, Any]:
@@ -292,7 +298,9 @@ def _volume_price_context(flow: Any) -> dict[str, Any]:
             "combined": _fields(micro.get("combined"), (
                 "score", "state", "direction", "ready_horizons",
                 "max_coverage_hours", "data_ready",
-                "asof_ms", "end_ts_ms", "complete_ts_ms", "window_end_ms")),
+                "fast_4h_ready", "slow_12h_ready",
+                "asof_ms", "end_ts_ms", "complete_ts_ms", "window_end_ms",
+                "available_at_ms")),
         }),
         "funding": _clean({
             "last_rate": _first_non_none(

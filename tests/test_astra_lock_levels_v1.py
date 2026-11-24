@@ -8,7 +8,10 @@ T = 1_793_070_000_000
 EXPIRY = 1_793_174_400_000          # 28OCT26 08:00 UTC
 
 PROFILE = {
-    "expiry": "28OCT26", "computed_at_ms": T - 120_000,
+    "expiry": "28OCT26", "expiry_ms": EXPIRY,
+    "computed_at_ms": T - 120_000, "available_at_ms": T - 119_500,
+    "pin_status": "ok", "pin_method": expiry_gamma.PIN_METHOD, "pin_source": expiry_gamma.PIN_SOURCE,
+    "expected_move_usd": 1850.0,
     "walls": {"pin": 80000.0, "gamma_put": 77000.0, "gamma_call": 80000.0, "oi_put": 77000.0, "oi_call": 84000.0},
     "top": {"gamma_put": [{"strike": 77000.0, "value": 3085440.2}, {"strike": 79000.0, "value": 2469677.2},
                           {"strike": 80500.0, "value": 1264036.1}, {"strike": 76000.0, "value": 1.0}],
@@ -40,7 +43,12 @@ def test_compact_reads_profile_gexmonitor_and_map_with_the_page_semantics():
     # the background's cost basis first, the display pool fills what it lacks
     assert (out["cost_sth"], out["cost_lth"], out["cost_all"]) == (76709.52, 84345.9, 82378.1)
     assert out["kpf"] == [[62700.0, 63200.0], [83250.0, 83600.0]] and out["kpf_asof_ms"] == T - 86_400_000
-    assert (out["computed_at_ms"], out["age_ms"], out["stale"]) == (T - 120_000, 120_000, False)
+    assert (out["computed_at_ms"], out["available_at_ms"], out["age_ms"], out["stale"]) == (
+        T - 120_000, T - 119_500, 120_000, False)
+    assert out["expiry_ms"] == EXPIRY
+    assert (out["pin_status"], out["pin_method"], out["pin_source"]) == (
+        "ok", expiry_gamma.PIN_METHOD, expiry_gamma.PIN_SOURCE)
+    assert "expected_move_usd" not in out
     assert (out["gex_asof_ms"], out["map_asof_ms"]) == (T - 600_000, T - 30_000)
     assert len(json.dumps(out, separators=(",", ":"))) < 1024
 
@@ -58,13 +66,29 @@ def test_missing_sources_stay_none_and_an_old_profile_is_stale():
     assert empty["profile_present"] is False and empty["stale"] is False
     assert all(empty[k] is None for k in ("pin", "gamma_put", "max_pain_this", "flip", "cost_sth", "age_ms"))
     assert empty["kpf"] == [] and empty["top_gamma_put"] == []
-    old = levels.compact({**PROFILE, "computed_at_ms": T - levels.STALE_MS - 1}, GEX, MAP, now_ms=T)
+    old = levels.compact({**PROFILE, "computed_at_ms": T - levels.STALE_MS - 1, "available_at_ms": None}, GEX, MAP, now_ms=T)
     assert old["stale"] is True
+    assert old["available_at_ms"] == T - levels.STALE_MS - 1
 
 
 def test_series_subset_is_the_few_levels_of_the_process_series():
     out = levels.compact(PROFILE, GEX, MAP, now_ms=T)
-    assert levels.series_subset(out) == {"pin": 80000.0, "gamma_put": 77000.0, "gamma_call": 80000.0,
-                                         "oi_put": 77000.0, "oi_call": 84000.0, "max_pain_this": None,
-                                         "flip": 79819.26}
+    assert levels.series_subset(out) == {
+        "pin": 80000.0,
+        "gamma_put": 77000.0,
+        "gamma_call": 80000.0,
+        "oi_put": 77000.0,
+        "oi_call": 84000.0,
+        "max_pain_this": None,
+        "flip": 79819.26,
+        "expiry": "28OCT26",
+        "expiry_ms": EXPIRY,
+        "pin_status": "ok",
+        "pin_method": expiry_gamma.PIN_METHOD,
+        "pin_source": expiry_gamma.PIN_SOURCE,
+        "computed_at_ms": T - 120_000,
+        "available_at_ms": T - 119_500,
+        "age_ms": 120_000,
+        "stale": False,
+    }
     assert levels.series_subset(None) is None and levels.series_subset({"schema": "other"}) is None

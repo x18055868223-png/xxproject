@@ -325,7 +325,7 @@ def test_full_server_native_downstream_chain_e2e(tmp_path: Path, monkeypatch: py
     # 1. fact_context + astra_wpem_native_v1 qualification
     fact_res = facts.latest_from_jsonl(snapshots_jsonl, slot_r16 + 2_000)
     assert fact_res["status"] == "current"
-    assert fact_res["strategy_version"] == "2.0.6"
+    assert fact_res["strategy_version"] == "2.0.7"
     assert fact_res["runtime_mode"] == "live_public_read_only"
     assert fact_res["underlying"] == "BTC"
     assert fact_res["current_price_usd"] > 0
@@ -390,7 +390,7 @@ def test_full_server_native_downstream_chain_e2e(tmp_path: Path, monkeypatch: py
         "NATIVE_FACT_CONTENT_MISMATCH",
     ):
         assert forbidden_gap not in wpem_rep["gaps"]
-    assert wpem_rep["producer_version"] == "2.0.6"
+    assert wpem_rep["producer_version"] == "2.0.7"
 
     # 2 & 3. DataEngine + astra_data_projection_v23 + astra_map_data_server_v24
     def fake_bg_sources(engine: data_engine.DataEngine, now_ms: int, *, transport=None, config=None):
@@ -482,7 +482,7 @@ def test_full_server_native_downstream_chain_e2e(tmp_path: Path, monkeypatch: py
     }
     view = wb.refresh(now_ms=slot_r16, record_daily=False)
     assert view["market_context"]["status"] == "current"
-    assert view["market_context"]["strategy_version"] == "2.0.6"
+    assert view["market_context"]["strategy_version"] == "2.0.7"
     assert view["llm_call_count"] == 0
     assert len(view["candidates"]) == 2
 
@@ -628,7 +628,7 @@ def test_full_server_native_downstream_chain_e2e(tmp_path: Path, monkeypatch: py
     card_files = [p for p in (mat_out / "signal_cards").glob("*.json") if p.name != "index.json"]
     assert len(card_files) == 1
     card_data = json.loads(card_files[0].read_text(encoding="utf-8"))
-    assert card_data["identity"]["strategy_version"] == "2.0.6"
+    assert card_data["identity"]["strategy_version"] == "2.0.7"
     sess_ctx = card_data["signal_window"]["session_context"]
     assert sess_ctx["schema_name"] == "SignalSessionPremiseDurabilityContext"
     assert "clock_window" in sess_ctx

@@ -2,10 +2,10 @@
   "schema": "release_candidate_manifest@1.0.0",
   "release_id": "OBSERVATION-2.6.3-22c18ce92bee",
   "status": "CANONICAL_SOURCE_VERSION_GRAPH",
-  "generated_at_utc": "2026-10-08T14:57:11.274000+00:00",
+  "generated_at_utc": "2026-11-24T18:30:00+00:00",
   "authority": "xxproject",
-  "git_branch": "codex/astra-signal-rating-v1",
-  "git_head": "950631e0aff8f27179b3b2601776b823a793eaa4",
+  "git_branch": "codex/p5-evidence-pipeline-fix",
+  "git_head": "3a3f850e86423ce604ca25ee62e3ad9221fcef97",
   "local_uncommitted_candidate": true,
   "runtime_status": "LOCAL_CANDIDATE",
   "loaded_source_hash_status": "NOT_VERIFIED_NONBLOCKING_VERSION_CHECK_ONLY",
@@ -30,23 +30,23 @@
   "components": [
     {
       "component": "fmz_producer",
-      "candidate_version": "2.0.6",
+      "candidate_version": "2.0.7",
       "source_of_truth": "demo/最新交付物/neutral_regulation_demo_fmz.py",
-      "source_hash": "6d9a34e1d0cd4d11fa4d6c8f8edae9165d9190beb672fafc63e3dfd9c8072132",
-      "schema_or_protocol": "2.0.6",
+      "source_hash": "1c5dc75fd9d312acac706869d503bf0102f5bf9a5996c767d4d385872096ab9c",
+      "schema_or_protocol": "2.0.7",
       "lifecycle": "canonical",
-      "runtime_status": "USER_DEPLOYED_NATIVE_OBSERVED",
-      "production_status": "USER_DEPLOYED_NATIVE_OBSERVED"
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
     },
     {
       "component": "fmz_native_schema",
       "candidate_version": "nrd.schema.v1.0.0",
       "source_of_truth": "demo/最新交付物/neutral_regulation_demo_fmz.py",
-      "source_hash": "87632e850d4bf8ccd75bab61bec92d54c0ab5e6c20751e36c4f73d4ebd2c7ab9",
+      "source_hash": "1c5dc75fd9d312acac706869d503bf0102f5bf9a5996c767d4d385872096ab9c",
       "schema_or_protocol": "nrd.schema.v1.0.0",
       "lifecycle": "canonical",
-      "runtime_status": "NATIVE_OBSERVED",
-      "production_status": "NATIVE_OBSERVED"
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
     },
     {
       "component": "data_engine",
@@ -192,7 +192,7 @@
       "component": "workbench_api",
       "candidate_version": "astra_workbench@2.0.0",
       "source_of_truth": "tools/astra_workbench_v20.py",
-      "source_hash": "96997a6fdd961b1a092e1526bb3327fdbb8a68fcfc0e7a7dcf7d4a7fd1906a52",
+      "source_hash": "7da621958d638d117ae5b5939bb3b2c9415816298640f6af583ee3a1cba57c24",
       "schema_or_protocol": "astra_workbench@2.0.0",
       "lifecycle": "canonical_candidate",
       "runtime_status": "LOCAL_WPEM_PROFILE_NOT_DEPLOYED",
@@ -230,13 +230,13 @@
     },
     {
       "component": "native_receiver",
-      "candidate_version": "accepts_FMZ_2.0.2",
+      "candidate_version": "accepts_FMZ_2.0.7",
       "source_of_truth": "tools/astra_underwriting_fact_context_v20.py",
-      "source_hash": "79a5f9442697de7126f9b13a4e02fa5efa7c73d98f7280ffaaa24e97bd0debf7",
-      "schema_or_protocol": "accepts_FMZ_2.0.2",
+      "source_hash": "0cebf31b217e35899fa3ab153a153de5a948c3e374531c8dd6b18f85abd036c5",
+      "schema_or_protocol": "accepts_FMZ_2.0.7",
       "lifecycle": "canonical",
-      "runtime_status": "REMOTE_TWO_READERS_COMPAT_PATCH_APPLIED",
-      "production_status": "REMOTE_TWO_READERS_COMPAT_PATCH_APPLIED"
+      "runtime_status": "LOCAL_CANDIDATE",
+      "production_status": "NOT_NEWLY_DEPLOYED"
     },
     {
       "component": "result_attachment",
@@ -316,7 +316,7 @@
       "lifecycle": "canonical_candidate",
       "runtime_status": "LOCAL_NOT_DEPLOYED",
       "production_status": "NOT_NEWLY_DEPLOYED",
-      "source_hash": "023f6cbe7c12495f9bd084931a822d974946114c3bfb863f084adb8edb95e6e7"
+      "source_hash": "744efa8554ed874dc841261c8cac86ffd911f1ac08d0f8c41ce5efd2f6c320fb"
     },
     {
       "component": "public_observation_scrub",

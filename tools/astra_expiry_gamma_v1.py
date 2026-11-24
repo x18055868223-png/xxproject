@@ -32,7 +32,10 @@ from typing import Any, Callable, Mapping, Sequence
 SCHEMA = "astra_expiry_gamma_v1@1.0.0"
 BOOK_SUMMARY_URL = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency"
 CHART_URL = "https://www.deribit.com/api/v2/public/get_tradingview_chart_data"
+PIN_SOURCE = "deribit_public/get_book_summary_by_currency"
+PIN_METHOD = "astra_expiry_gamma_v1@1.0.0:profile.expected_move_max_unsigned_gamma"
 RV_INSTRUMENT = "BTC-PERPETUAL"
+RV_SOURCE = "deribit_public/get_tradingview_chart_data"
 REFRESH_MS = 5 * 60_000
 RETRY_MS = 60_000
 HORIZON_MS = 8 * 86_400_000      # expiries kept: the next eight days
@@ -125,6 +128,9 @@ def profile(rows: Sequence[Mapping[str, Any]], *, expiry_ms: int, now_ms: int) -
         "expiry": expiry_code(expiry_ms), "expiry_ms": expiry_ms, "hours_to_expiry": round(years * YEAR_HOURS, 2),
         "forward_usd": round(forward, 2), "atm_strike": atm, "atm_iv_pct": round(atm_iv, 2) if atm_iv else None,
         "expected_move_usd": round(move, 1) if move else None,
+        "pin_status": "ok" if pin is not None else "unavailable",
+        "pin_method": PIN_METHOD,
+        "pin_source": PIN_SOURCE,
         "walls": {"gamma_call": first(gamma_call), "gamma_put": first(gamma_put),
                   "oi_call": first(oi_call), "oi_put": first(oi_put), "pin": pin},
         "top": {"gamma_call": gamma_call, "gamma_put": gamma_put, "oi_call": oi_call, "oi_put": oi_put},
@@ -142,23 +148,59 @@ def realized_vol(chart: Mapping[str, Any], *, now_ms: int) -> dict[str, Any] | N
     ticks, closes = chart.get("ticks"), chart.get("close")
     if not isinstance(ticks, list) or not isinstance(closes, list):
         return None
-    bars = sorted((int(t), float(c)) for t, c in zip(ticks, closes)
-                  if _num(t) is not None and _num(c) is not None and c > 0 and int(t) + HOUR_MS <= now_ms)
-    out: dict[str, Any] = {"instrument": RV_INSTRUMENT, "bar": "1h close-to-close",
-                           "last_bar_end_ms": bars[-1][0] + HOUR_MS if bars else None}
-    for label, n in (("rv_24h_pct", 24), ("rv_7d_pct", 168)):
+    by_tick: dict[int, float] = {}
+    for t, c in zip(ticks, closes):
+        if _num(t) is None or _num(c) is None or c <= 0 or int(t) + HOUR_MS > now_ms:
+            continue
+        ti, cf = int(t), float(c)
+        if ti in by_tick:
+            if abs(by_tick[ti] - cf) > 1e-9:
+                return {
+                    "instrument": RV_INSTRUMENT,
+                    "symbol": RV_INSTRUMENT,
+                    "bar": "1h close-to-close",
+                    "source": RV_SOURCE,
+                    "status": "duplicate_conflict",
+                    "last_bar_end_ms": None,
+                    "rv_24h_pct": None,
+                    "rv_7d_pct": None,
+                    "rv_computed_at_ms": now_ms,
+                    "cached_fallback": False,
+                }
+            continue
+        by_tick[ti] = cf
+    bars = sorted(by_tick.items())
+    out: dict[str, Any] = {
+        "instrument": RV_INSTRUMENT,
+        "symbol": RV_INSTRUMENT,
+        "bar": "1h close-to-close",
+        "source": RV_SOURCE,
+        "last_bar_end_ms": bars[-1][0] + HOUR_MS if bars else None,
+        "bar_count_closed": len(bars),
+        "rv_computed_at_ms": now_ms,
+        "cached_fallback": False,
+    }
+    for label, win_key, n in (("rv_24h_pct", "rv_24h_window", 24), ("rv_7d_pct", "rv_7d_window", 168)):
         window = bars[-(n + 1):]
         if len(window) < n + 1 or window[-1][0] - window[0][0] != n * HOUR_MS:
             out[label] = None  # a missing bar would silently stretch the window
+            out[win_key] = None
             continue
         rets = [math.log(b[1] / a[1]) for a, b in zip(window, window[1:])]
         mean = sum(rets) / len(rets)
         var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
         out[label] = round(math.sqrt(var * YEAR_HOURS) * 100, 2)
+        out[win_key] = {"start_ms": window[0][0], "end_ms": window[-1][0] + HOUR_MS, "bar_count": n}
+    out["status"] = "ok" if (out.get("rv_24h_pct") is not None or out.get("rv_7d_pct") is not None) else "insufficient_bars"
     return out
 
 
-def collect(get_json: Callable[[str, Mapping[str, Any]], Any], now_ms: int) -> dict[str, Any]:
+def collect(
+    get_json: Callable[[str, Mapping[str, Any]], Any],
+    now_ms: int,
+    *,
+    clock_ms: Callable[[], int] | None = None,
+) -> dict[str, Any]:
     """Two public requests; errors become a status, never raise."""
     result: dict[str, Any] = {"schema": SCHEMA, "computed_at_ms": now_ms, "source": "deribit_public"}
     try:
@@ -179,9 +221,24 @@ def collect(get_json: Callable[[str, Mapping[str, Any]], Any], now_ms: int) -> d
     try:
         chart = get_json(CHART_URL, {"instrument_name": RV_INSTRUMENT, "resolution": "60",
                                      "start_timestamp": now_ms - 8 * 86_400_000, "end_timestamp": now_ms})["result"]
-        result["realized_vol"] = realized_vol(chart, now_ms=now_ms)
+        rv = realized_vol(chart, now_ms=now_ms)
     except Exception as exc:
-        result["realized_vol"] = {"status": "fetch_failed", "error_type": type(exc).__name__}
+        rv = {
+            "status": "fetch_failed",
+            "error_type": type(exc).__name__,
+            "instrument": RV_INSTRUMENT,
+            "symbol": RV_INSTRUMENT,
+            "bar": "1h close-to-close",
+            "source": RV_SOURCE,
+            "rv_computed_at_ms": None,
+            "rv_available_at_ms": None,
+            "cached_fallback": False,
+        }
+    avail = max(int(now_ms), int(clock_ms())) if clock_ms else now_ms
+    result["available_at_ms"] = avail
+    if isinstance(rv, dict) and rv.get("status") != "fetch_failed":
+        rv["rv_available_at_ms"] = avail
+    result["realized_vol"] = rv
     return result
 
 
@@ -189,11 +246,15 @@ def due(previous: Mapping[str, Any] | None, now_ms: int) -> bool:
     if not isinstance(previous, Mapping):
         return True
     attempt = previous.get("last_attempt") if isinstance(previous.get("last_attempt"), Mapping) else {}
-    times = [t for t in (previous.get("computed_at_ms"), attempt.get("computed_at_ms"))
-             if isinstance(t, int) and not isinstance(t, bool) and t <= now_ms]
+    rv = previous.get("realized_vol") if isinstance(previous.get("realized_vol"), Mapping) else {}
+    times = [
+        t for t in (previous.get("computed_at_ms"), attempt.get("computed_at_ms"), rv.get("last_attempt_at_ms"))
+        if isinstance(t, int) and not isinstance(t, bool) and t <= now_ms
+    ]
     if not times:
         return True
-    wait = REFRESH_MS if previous.get("status") == "ok" and not attempt else RETRY_MS
+    rv_degraded = rv.get("status") == "fetch_failed" or rv.get("cached_fallback") is True
+    wait = REFRESH_MS if previous.get("status") == "ok" and not attempt and not rv_degraded else RETRY_MS
     return now_ms - max(times) >= wait
 
 
@@ -206,6 +267,24 @@ def for_expiry(result: Mapping[str, Any] | None, expiry_ms: Any, *, now_ms: int)
     if not isinstance(item, Mapping):
         return None
     computed = result.get("computed_at_ms")
-    age = now_ms - computed if isinstance(computed, int) else None
-    return {**item, "computed_at_ms": computed, "age_ms": age,
-            "stale": age is None or age > STALE_MS}
+    avail = result.get("available_at_ms")
+    if not isinstance(avail, int) or isinstance(avail, bool):
+        avail = computed
+    age = now_ms - computed if isinstance(computed, int) and not isinstance(computed, bool) else None
+    walls = item.get("walls") if isinstance(item.get("walls"), Mapping) else {}
+    pin_status = item.get("pin_status") if "pin_status" in item else ("ok" if _num(walls.get("pin")) is not None else "unavailable")
+    out = {
+        **item,
+        "computed_at_ms": computed,
+        "available_at_ms": avail,
+        "age_ms": age,
+        "stale": age is None or age > STALE_MS,
+        "pin_status": pin_status,
+        "pin_method": item.get("pin_method"),
+        "pin_source": item.get("pin_source"),
+    }
+    if "last_attempt" in result:
+        out["last_attempt"] = result.get("last_attempt")
+    else:
+        out.setdefault("last_attempt", None)
+    return out

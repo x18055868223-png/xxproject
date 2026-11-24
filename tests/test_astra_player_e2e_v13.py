@@ -244,10 +244,55 @@ def test_full_closed_loop_r16_deal_grid_debounce_revoke_and_settlement(tmp_path,
 
     def write_fmz_with_flow(ts_ms: int):
         row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        flow_end = ts_ms - 10_000
         row["factor_snapshot"]["flow"]["micro_flow"] = {
-            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
-            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
-            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+            "fast_4h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 15.0,
+                "momentum_return_pct": 0.05,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 4 * HOUR,
+                "first_ts_ms": flow_end - 4 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 15.0,
+            },
+            "slow_12h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 18.0,
+                "momentum_return_pct": 0.10,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 12 * HOUR,
+                "first_ts_ms": flow_end - 12 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 18.0,
+            },
+            "combined": {
+                "data_ready": True,
+                "direction": "neutral",
+                "ready_horizons": ["4h", "12h"],
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+            },
         }
         snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -479,10 +524,55 @@ def test_unpriced_revoke_and_llm_failure_backoff_keeps_grid_monitoring_alive(tmp
 
     def write_fmz_with_flow(ts_ms: int):
         row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        flow_end = ts_ms - 10_000
         row["factor_snapshot"]["flow"]["micro_flow"] = {
-            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
-            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
-            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+            "fast_4h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 15.0,
+                "momentum_return_pct": 0.05,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 4 * HOUR,
+                "first_ts_ms": flow_end - 4 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 15.0,
+            },
+            "slow_12h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 18.0,
+                "momentum_return_pct": 0.10,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 12 * HOUR,
+                "first_ts_ms": flow_end - 12 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 18.0,
+            },
+            "combined": {
+                "data_ready": True,
+                "direction": "neutral",
+                "ready_horizons": ["4h", "12h"],
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+            },
         }
         snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -625,10 +715,55 @@ def test_ard_depends_category_c_and_priority_a_backfill_safety(tmp_path, monkeyp
 
     def write_fmz_with_flow(ts_ms: int):
         row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        flow_end = ts_ms - 10_000
         row["factor_snapshot"]["flow"]["micro_flow"] = {
-            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
-            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
-            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+            "fast_4h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 15.0,
+                "momentum_return_pct": 0.05,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 4 * HOUR,
+                "first_ts_ms": flow_end - 4 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 15.0,
+            },
+            "slow_12h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 18.0,
+                "momentum_return_pct": 0.10,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 12 * HOUR,
+                "first_ts_ms": flow_end - 12 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 18.0,
+            },
+            "combined": {
+                "data_ready": True,
+                "direction": "neutral",
+                "ready_horizons": ["4h", "12h"],
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+            },
         }
         snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -806,10 +941,55 @@ def test_slow_llm_revoke_captures_live_quote_flow_12h_and_stale_recovery(tmp_pat
 
     def write_fmz_with_flow(ts_ms: int):
         row = write_fmz(snapshots, native_gate(ts=ts_ms - 1000), now=ts_ms)
+        flow_end = ts_ms - 10_000
         row["factor_snapshot"]["flow"]["micro_flow"] = {
-            "fast_4h": {"data_ready": True, "direction": "neutral", "cvd_sum": 15.0, "momentum_return_pct": 0.05},
-            "slow_12h": {"data_ready": True, "direction": "neutral", "cvd_sum": 18.0, "momentum_return_pct": 0.10},
-            "combined": {"data_ready": True, "direction": "neutral", "ready_horizons": ["4h", "12h"]},
+            "fast_4h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 15.0,
+                "momentum_return_pct": 0.05,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 4 * HOUR,
+                "first_ts_ms": flow_end - 4 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 15.0,
+            },
+            "slow_12h": {
+                "data_ready": True,
+                "direction": "neutral",
+                "cvd_sum": 18.0,
+                "momentum_return_pct": 0.10,
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "bar_complete": True,
+                "coverage_frac": 1.0,
+                "window_start_ms": flow_end - 12 * HOUR,
+                "first_ts_ms": flow_end - 12 * HOUR,
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+                "last_bar_index": 10,
+                "cum_session_id": "s1",
+                "cum_gap_count": 0,
+                "cum_cvd_btc": 18.0,
+            },
+            "combined": {
+                "data_ready": True,
+                "direction": "neutral",
+                "ready_horizons": ["4h", "12h"],
+                "source": "binance_spot_aggtrades",
+                "symbol": "BTCUSDT",
+                "end_ts_ms": flow_end,
+                "available_at_ms": flow_end + 100,
+            },
         }
         snapshots.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
 

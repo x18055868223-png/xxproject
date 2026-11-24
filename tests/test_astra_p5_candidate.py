@@ -381,7 +381,20 @@ def test_p0_strict_l2_and_mixed_spot_and_extremum_rendering():
     _set_case_layer(put_case, "L5.volume_price", {
         "micro_flow": {
             "fast_4h": {"data_ready": True, "cvd_unit": "BTC", "cvd_sum": -25.0, "momentum_return_pct": -1.2},
-            "slow_12h": {"data_ready": True, "cvd_unit": "BTC", "cvd_sum": -10.0, "momentum_return_pct": -0.4, "end_ts_ms": read_at - 60_000},
+            "slow_12h": {
+                "data_ready": True,
+                "source": "binance",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "cvd_sum": -10.0,
+                "momentum_return_pct": -0.4,
+                "bar_complete": True,
+                "coverage_hours": 12.0,
+                "coverage_frac": 1.0,
+                "window_start_ms": read_at - 60_000 - 12 * 3_600_000,
+                "end_ts_ms": read_at - 60_000,
+                "available_at_ms": read_at - 59_000,
+            },
         }
     }, asof_ms=read_at - 1_000)
 
@@ -398,7 +411,20 @@ def test_p0_strict_l2_and_mixed_spot_and_extremum_rendering():
     _set_case_layer(put_case, "L5.volume_price", {
         "micro_flow": {
             "fast_4h": {"data_ready": True, "cvd_unit": "BTC", "cvd_sum": -999.9, "momentum_return_pct": -9.9, "end_ts_ms": read_at + 120_000},
-            "slow_12h": {"data_ready": True, "cvd_unit": "BTC", "cvd_sum": -10.0, "momentum_return_pct": -0.4, "end_ts_ms": read_at - 60_000},
+            "slow_12h": {
+                "data_ready": True,
+                "source": "binance",
+                "symbol": "BTCUSDT",
+                "cvd_unit": "BTC",
+                "cvd_sum": -10.0,
+                "momentum_return_pct": -0.4,
+                "bar_complete": True,
+                "coverage_hours": 12.0,
+                "coverage_frac": 1.0,
+                "window_start_ms": read_at - 60_000 - 12 * 3_600_000,
+                "end_ts_ms": read_at - 60_000,
+                "available_at_ms": read_at - 59_000,
+            },
         }
     }, asof_ms=read_at - 1_000)
     md_slow_only = player.build_input(put_case, call_case, put_card, call_card, index_path=src["index_path"], input_profile=player.INPUT_PROFILE_P0_STRICT)
