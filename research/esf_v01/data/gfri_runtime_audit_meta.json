@@ -1,0 +1,546 @@
+{
+  "snapshot_captured_utc": "2026-11-24T07:52:00Z",
+  "systemd_timer": {
+    "unit": "gfri-shadow-collector.timer",
+    "active_state": "active (waiting)",
+    "on_boot_sec": 180,
+    "on_unit_inactive_sec": 600,
+    "accuracy_sec": 5,
+    "persistent": false,
+    "service_user": "bitnami",
+    "memory_max": "128M",
+    "cpu_quota": "25%"
+  },
+  "deployed_release": {
+    "initial_commit_cycles_1_to_3": "f3e565e48d59e786ca8e8b100d4ad05c20c4e74e",
+    "upgraded_commit_from_cycle_4": "855ff4ba593f6718d1190436fa2e4279a19d7a4d",
+    "upgrade_timestamp_utc": "2026-11-18T18:34:07Z",
+    "working_tree_clean": true,
+    "env_flags": {
+      "GFRI_COLLECTOR_ENABLED": 1,
+      "GFRI_DECISION_AUTHORITY": "SHADOW_ONLY",
+      "GFRI_PLAYER_INTEGRATION_ENABLED": 0,
+      "GFRI_LIVE_VETO_ENABLED": 0,
+      "GFRI_INCLUDE_OKX_REF": 1,
+      "GFRI_CONFIRM_SAMPLES": 3,
+      "GFRI_CONFIRM_INTERVAL_SEC": 15,
+      "GFRI_OB_SKEW_MAX_MS": 900000,
+      "GFRI_OB_AGE_MAX_MS": 60000,
+      "GFRI_OB_RECV_LAG_MAX_MS": 30000,
+      "GFRI_SOURCE_AGE_MAX_MS": 3600000
+    }
+  },
+  "ledger_consistency": {
+    "consistent": true,
+    "ledger_partial_tail": false,
+    "corrupt_tail_info": null,
+    "ledger_count": 755,
+    "index_count": 755,
+    "index_malformed": 0,
+    "ledger_last_freeze_at_ms": 1795506463235,
+    "index_last_freeze_at_ms": 1795506463235,
+    "meta_synced": true
+  },
+  "raw_captures_hash_audit": {
+    "capture_dir_count_at_hash_scan": 754,
+    "capture_dir_count_at_bundle_pull": 755,
+    "total_raw_files_hashed": 6730,
+    "total_raw_bytes_hashed": 679243431,
+    "sha256_mismatch_count": 0,
+    "missing_file_count": 0,
+    "saved_replayable_count": 732,
+    "partial_non_replayable_count": 23,
+    "failed_count": 0
+  },
+  "systemd_execution_stats": {
+    "finished_success_runs": 755,
+    "failed_service_runs": 0,
+    "journal_err_entries": 0,
+    "duration_sec_min": 34.687,
+    "duration_sec_p50": 36.07,
+    "duration_sec_p95": 38.34,
+    "duration_sec_max": 84.253,
+    "cpu_time_sec_samples": [
+      1.119,
+      1.166,
+      1.31,
+      1.17,
+      1.213
+    ]
+  },
+  "partial_manifests": [
+    {
+      "cycle_dir": "cycle_1795203067236",
+      "freeze_at_ms": 1795203067236,
+      "freeze_iso": "2026-11-20T19:31:07Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795203705224",
+      "freeze_at_ms": 1795203705224,
+      "freeze_iso": "2026-11-20T19:41:45Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795204341213",
+      "freeze_at_ms": 1795204341213,
+      "freeze_iso": "2026-11-20T19:52:21Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795204980214",
+      "freeze_at_ms": 1795204980214,
+      "freeze_iso": "2026-11-20T20:03:00Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795205619215",
+      "freeze_at_ms": 1795205619215,
+      "freeze_iso": "2026-11-20T20:13:39Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795206254212",
+      "freeze_at_ms": 1795206254212,
+      "freeze_iso": "2026-11-20T20:24:14Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795206889192",
+      "freeze_at_ms": 1795206889192,
+      "freeze_iso": "2026-11-20T20:34:49Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795207525204",
+      "freeze_at_ms": 1795207525204,
+      "freeze_iso": "2026-11-20T20:45:25Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795208160396",
+      "freeze_at_ms": 1795208160396,
+      "freeze_iso": "2026-11-20T20:56:00Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795208797210",
+      "freeze_at_ms": 1795208797210,
+      "freeze_iso": "2026-11-20T21:06:37Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 5,
+      "present_files": [
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795209434197",
+      "freeze_at_ms": 1795209434197,
+      "freeze_iso": "2026-11-20T21:17:14Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 6,
+      "present_files": [
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1",
+        "raw_archive_missing_capture:deribit_book_2",
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795262423243",
+      "freeze_at_ms": 1795262423243,
+      "freeze_iso": "2026-11-21T12:00:23Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_2"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795275847235",
+      "freeze_at_ms": 1795275847235,
+      "freeze_iso": "2026-11-21T15:44:07Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_2",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795290550200",
+      "freeze_at_ms": 1795290550200,
+      "freeze_iso": "2026-11-21T19:49:10Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_2"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795291185198",
+      "freeze_at_ms": 1795291185198,
+      "freeze_iso": "2026-11-21T19:59:45Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_2",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795306486228",
+      "freeze_at_ms": 1795306486228,
+      "freeze_iso": "2026-11-22T00:14:46Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_2",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795307122220",
+      "freeze_at_ms": 1795307122220,
+      "freeze_iso": "2026-11-22T00:25:22Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_2",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_1"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795333284197",
+      "freeze_at_ms": 1795333284197,
+      "freeze_iso": "2026-11-22T07:41:24Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_2"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795371576200",
+      "freeze_at_ms": 1795371576200,
+      "freeze_iso": "2026-11-22T18:19:36Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_2",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795388192212",
+      "freeze_at_ms": 1795388192212,
+      "freeze_iso": "2026-11-22T22:56:32Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_2",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795412486204",
+      "freeze_at_ms": 1795412486204,
+      "freeze_iso": "2026-11-23T05:41:26Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_2",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795470647222",
+      "freeze_at_ms": 1795470647222,
+      "freeze_iso": "2026-11-23T21:50:47Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_2",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_3"
+      ]
+    },
+    {
+      "cycle_dir": "cycle_1795490463252",
+      "freeze_at_ms": 1795490463252,
+      "freeze_iso": "2026-11-24T03:21:03Z",
+      "status": "PARTIAL",
+      "complete_replayable": false,
+      "file_count": 8,
+      "present_files": [
+        "deribit_book_1",
+        "deribit_book_3",
+        "deribit_instrument",
+        "gex_latest",
+        "okx_book_1",
+        "okx_book_2",
+        "okx_book_3",
+        "okx_instrument"
+      ],
+      "errors": [
+        "raw_archive_missing_capture:deribit_book_2"
+      ]
+    }
+  ]
+}
