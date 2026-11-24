@@ -492,6 +492,12 @@ async def test_removed_fields_never_survive_old_cache_restore(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_rank_only_compares_samples_with_same_source(monkeypatch, tmp_path) -> None:
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 11, 9, tzinfo=tz or UTC)
+
+    monkeypatch.setattr("gexmonitorapi.json_source.datetime", _FixedDateTime)
     history_file = tmp_path / "metrics_history.jsonl"
     old_lines = [
         # Pre-redesign sample: no metric_sources recorded.
