@@ -3832,7 +3832,14 @@ class AstraWorkbench:
             contract["side"]: {"status": "candidate", "selection_origin": "locked_contract",
                                "candidate": deepcopy(dict(contract))}}}
 
-    def _capture_locked_point(self, episode: Mapping[str, Any], view: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
+    def _capture_locked_point(
+        self,
+        episode: Mapping[str, Any],
+        view: Mapping[str, Any],
+        now_ms: int,
+        *,
+        fast_quote: bool = False,
+    ) -> dict[str, Any]:
         contract = episode["contract"]
         fact = self.latest_fact(now_ms)
         gate = self.space_gate_view(fact, now_ms)
@@ -3856,6 +3863,30 @@ class AstraWorkbench:
                 error.cause = why[0] if why else None
             raise error
         snapshot_id = item["snapshot"]["snapshot_id"]
+        if fast_quote:
+            displayed = self._apply_current_review_availability(
+                {**view, "space_gate": view.get("space_gate") or gate, "candidates": [dict(item)]},
+                now_ms,
+            )["candidates"][0]
+            snapshot = displayed["snapshot"]
+            try:
+                packet = candidate_asof.build_packet(
+                    snapshot,
+                    raw_payload=sink.get(snapshot_id),
+                    source_receipts=candidate_asof.collect_source_receipts(snapshot, self.data_engine),
+                    interval_ms=max(1, self.config.locked_sample_interval_ms),
+                )
+            except Exception as exc:
+                raise WorkbenchError(
+                    409,
+                    "locked_packet_unavailable:" + type(exc).__name__,
+                    "original contract packet did not validate",
+                ) from exc
+            return {
+                "candidate": deepcopy(displayed),
+                "packet": packet,
+                "recorded_at_ms": max(now_ms, int(snapshot["market"]["valuation_ts_ms"])),
+            }
         local_view = self._wpem_view_for_candidate(view, item)
         local_view["space_gate"] = gate
         with self._view_lock:
@@ -4198,6 +4229,44 @@ class AstraWorkbench:
         episode_id = str(episode.get("episode_id") or "")
         settled = settlements.get(episode.get("episode_id")) or {}
         out: dict[str, Any] = {"verdict": None, "basis": None, "flat_band_usd": self.LOCK_FLAT_USD}
+        mgmt = episode.get("ai_dossier_management") if isinstance(episode.get("ai_dossier_management"), Mapping) else None
+        if mgmt is None and episode.get("ai_shadow"):
+            mgmt = self._ai_dossier_management(episode, detail=False) or {}
+        mgmt = mgmt if isinstance(mgmt, Mapping) else {}
+        sm = mgmt.get("shadow_management") if isinstance(mgmt.get("shadow_management"), Mapping) else {}
+        if episode.get("ai_shadow") and sm.get("exit_terminal") is True:
+            sx = (
+                sm.get("shadow_exit") if isinstance(sm.get("shadow_exit"), Mapping)
+                else (mgmt.get("shadow_exit") if isinstance(mgmt.get("shadow_exit"), Mapping) else {})
+            )
+            tier = sx.get("valuation_tier") or sm.get("valuation_tier") or "UNPRICED"
+            if (tier == "EXECUTABLE_TWO_LEG_QUOTE"
+                    and isinstance(sx.get("exit_pnl_btc"), (int, float))
+                    and not isinstance(sx.get("exit_pnl_btc"), bool)):
+                exit_btc = float(sx["exit_pnl_btc"])
+                spot = sx.get("spot_usd")
+                if isinstance(spot, (int, float)) and not isinstance(spot, bool):
+                    usd_value = exit_btc * float(spot)
+                    out["verdict"] = (
+                        "flat" if abs(usd_value) <= self.LOCK_FLAT_USD
+                        else ("profit" if usd_value > 0 else "loss")
+                    )
+                else:
+                    out["verdict"] = "flat" if exit_btc == 0 else ("profit" if exit_btc > 0 else "loss")
+                out["basis"] = "shadow_exit_frozen"
+                out["valuation_tier"] = tier
+                out["frozen_exit_pnl_btc"] = exit_btc
+                out["measured_from"] = "shadow_exit_two_leg_quote"
+            elif tier == "INDICATIVE_MARK_ONLY":
+                out["basis"] = "shadow_exit_indicative_only"
+                out["verdict"] = None
+                out["valuation_tier"] = tier
+                out["indicative_exit_pnl_btc"] = sx.get("indicative_exit_pnl_btc")
+            else:
+                out["basis"] = "shadow_exit_unpriced"
+                out["verdict"] = None
+                out["valuation_tier"] = "UNPRICED"
+            return out
         usd_value = None
         if (episode.get("status") == "expired" and settled.get("status") == "settled"
                 and isinstance(settled.get("settlement_result_usd"), (int, float))):
@@ -4958,7 +5027,7 @@ class AstraWorkbench:
                 with self._view_lock:
                     view = self._current_view or {}
                 try:
-                    point = self._capture_locked_point(episode, view, self.clock_ms())
+                    point = self._capture_locked_point(episode, view, self.clock_ms(), fast_quote=True)
                     return {
                         "state": "QUOTE_CAPTURED",
                         "episode": episode,
@@ -4973,6 +5042,25 @@ class AstraWorkbench:
                         "error": type(exc).__name__,
                         "execution_allowed": False,
                     }
+            if action == "stop":
+                ai_shadow = episode.get("ai_shadow")
+                if (not isinstance(ai_shadow, Mapping)
+                        or ai_shadow.get("request_key") != key
+                        or ai_shadow.get("hand_id") != origin["hand_id"]
+                        or ai_shadow.get("dossier_id") != origin["dossier_id"]):
+                    raise player_tracking.Blocked("shadow_stop_identity_mismatch")
+                link_rec = player_tracking.optional(hand / "tracking" / "link.json")
+                if not (isinstance(link_rec, dict) and link_rec.get("execution_allowed") is False):
+                    raise player_tracking.Blocked("shadow_stop_authority_mismatch")
+                if not player_tracking.has_verified_shadow_revoke(hand):
+                    raise player_tracking.Blocked("shadow_stop_unverified")
+                stopped = self.locked_candidates.stop(
+                    episode["episode_id"],
+                    now_ms=self.clock_ms(),
+                    stop_reason="shadow_revoked_terminal",
+                )
+                self.invalidate_view_body()
+                return {"state": "SHADOW_STOPPED", "episode": stopped, "execution_allowed": False}
             try:
                 point = self.locked_candidates.read_point(episode["t0_baseline_point_id"])
                 t0 = player_tracking.tracker_t0(origin, episode, point)
@@ -7593,6 +7681,22 @@ def make_handler(workbench: AstraWorkbench):
                     }
                 if "hold_reviews" in redacted:
                     redacted["hold_reviews"] = []
+                strip_sx = {"source_decision_raw_sha256", "source_input_sha256"}
+                if isinstance(redacted.get("shadow_exit"), Mapping):
+                    redacted["shadow_exit"] = {
+                        key: value for key, value in redacted["shadow_exit"].items()
+                        if key not in strip_sx
+                    }
+                if isinstance(redacted.get("shadow_management"), Mapping):
+                    sm_copy = dict(redacted["shadow_management"])
+                    if isinstance(sm_copy.get("shadow_exit"), Mapping):
+                        sm_copy["shadow_exit"] = {
+                            key: value for key, value in sm_copy["shadow_exit"].items()
+                            if key not in strip_sx
+                        }
+                    for key in strip_sx:
+                        sm_copy.pop(key, None)
+                    redacted["shadow_management"] = sm_copy
                 out["ai_dossier_management"] = redacted
             return out
 
@@ -7612,7 +7716,7 @@ def make_handler(workbench: AstraWorkbench):
                     or not hmac.compare_digest(auth.encode(), ("Bearer " + token).encode())):
                 self._json(401, {"code": "shadow_service_credential_required"})
                 return
-            if action not in {"lock", "recover", "export", "readiness", "quote", "refresh_quote"}:
+            if action not in {"lock", "recover", "export", "readiness", "quote", "refresh_quote", "stop"}:
                 self._json(404, {"code": "not_found"})
                 return
             try:

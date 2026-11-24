@@ -612,11 +612,20 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   left.append(trackCard);
 
   if (condition) {
+    const isShadowExited = Boolean(
+      d.shadow_management?.exit_terminal
+      || d.shadow_management?.exit_state === "SHADOW_EXITED"
+    );
     const ruleType = condition.invalidation_rule?.type ?? condition.invalidation;
+    const postRevCount = isNum(d.post_revoke_grid_check_count) ? d.post_revoke_grid_check_count : 0;
     const condCard = h("div", { class: "ev pa-cond-card" },
       h("header", {},
         h("b", { text: "冻结承担条件与事中检查" }),
         ruleType ? h("span", { class: "chip", text: ruleTypes[ruleType] || ruleType }) : null),
+      isShadowExited ? para(
+        `AI 撤销 → 影子已退出 → 已停止主动追踪${postRevCount > 0 ? ` · 含修复前遗留撤销后检查 ${postRevCount} 次，已默认折叠` : ""}`,
+        "banner warn small pa-shadow-exit-banner",
+      ) : null,
       h("dl", { class: "kv pa-cond-kv" },
         h("dt", { text: "入场前历史事实" }), h("dd", { text: condition.historical_facts || "—" }),
         h("dt", { text: "持续承担条件" }), h("dd", { text: condition.accepted_conditions || "—" }),
@@ -653,16 +662,28 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       }
     }
     if (d.events?.length) {
+      const firstTrigIdx = d.events.findIndex((ev) => ev.kind === "CONDITION_TRIGGERED");
+      const lastTrigIdx = d.events.findLastIndex((ev) => ev.kind === "CONDITION_TRIGGERED");
+      const trigEventsCount = d.events.filter((ev) => ev.kind === "CONDITION_TRIGGERED").length;
+      const collapsedTrigCount = trigEventsCount > 2 ? trigEventsCount - 2 : 0;
       const lastNotTrigIdx = d.events.findLastIndex((ev) => ev.kind === "CONDITION_NOT_TRIGGERED");
       const lastObsIdx = d.events.findLastIndex((ev) => ev.kind === "OBSERVATION");
-      const shownEvents = d.events.filter((ev, idx) =>
-        (ev.kind !== "CONDITION_NOT_TRIGGERED" && ev.kind !== "OBSERVATION") || idx === lastNotTrigIdx || idx === lastObsIdx);
+      const shownEvents = d.events.filter((ev, idx) => {
+        if (ev.kind === "CONDITION_NOT_TRIGGERED") return idx === lastNotTrigIdx;
+        if (ev.kind === "OBSERVATION") return idx === lastObsIdx;
+        if (ev.kind === "CONDITION_TRIGGERED" && collapsedTrigCount > 0) {
+          return idx === firstTrigIdx || idx === lastTrigIdx;
+        }
+        return true;
+      });
       const tbl = h("table", { class: "t compact pa-events-table" },
         h("thead", {}, h("tr", {}, h("th", { text: "事件 / 网格检查结果" }), h("th", { class: "n", text: "观测 / 记录时刻" }))),
         h("tbody", {}, ...shownEvents.map((ev) => {
           const note = ev.kind === "HOLD_REVIEW_SKIPPED"
             ? (ev.summary && ev.summary !== ev.reason ? `${skipReasonLabel(ev.reason)}：${ev.summary}` : skipReasonLabel(ev.reason))
-            : (ev.summary || ev.verdict);
+            : ev.kind === "SHADOW_EXITED"
+              ? (ev.summary || ev.valuation_tier || ev.body?.valuation_tier || "")
+              : (ev.summary || ev.verdict);
           const shortNote = note ? String(note).trim().slice(0, 72) : "";
           return h("tr", {},
             h("td", {},
@@ -671,11 +692,32 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
             h("td", { class: "n num", text: utc(ev.observed_at_ms ?? ev.recorded_at_ms ?? ev.created_at_ms) }));
         })));
       condCard.append(tbl);
+      if (collapsedTrigCount > 0) {
+        condCard.append(para(`(已折叠 ${collapsedTrigCount} 条重复触发检查)`, "muted small num pa-trig-collapsed"));
+      }
+    }
+    const isGridKind = (kind) => kind === "CONDITION_TRIGGERED" || kind === "CONDITION_NOT_TRIGGERED" || kind === "CONDITION_UNKNOWN";
+    const rawGridChecks = Array.isArray(d.grid_check_history) && d.grid_check_history.length
+      ? d.grid_check_history
+      : (d.events || []).filter((ev) => isGridKind(ev.kind));
+    if (rawGridChecks.length) {
+      const checkTs = (chk) => chk.tick_ms ?? chk.observed_at_ms ?? chk.recorded_at_ms ?? chk.created_at_ms;
+      const sortedGridChecks = rawGridChecks.slice().sort((a, b) => (checkTs(a) ?? 0) - (checkTs(b) ?? 0));
+      const auditTbl = h("table", { class: "t compact pa-grid-audit-table" },
+        h("thead", {}, h("tr", {}, h("th", { text: "网格检查结果" }), h("th", { class: "n", text: "观测 / 记录时刻" }))),
+        h("tbody", {}, ...sortedGridChecks.map((chk) => h("tr", {},
+          h("td", {},
+            h("span", { text: label(chk.kind) }),
+            chk.post_revoke === true ? h("span", { class: "chip warn", text: "撤销后历史遗留" }) : null),
+          h("td", { class: "n num", text: utc(checkTs(chk)) })))));
+      condCard.append(h("details", { class: "pa-grid-audit" },
+        h("summary", { text: `展开完整网格检查审计轨迹（共 ${sortedGridChecks.length} 次）` }),
+        auditTbl));
     }
     left.append(condCard);
   }
 
-  if (d.hold_reviews?.length || d.shadow_management || d.management_telemetry || d.hold_skip_summary?.total_skips) {
+  if (d.hold_reviews?.length || d.shadow_management || d.management_telemetry || d.hold_skip_summary?.total_skips || d.shadow_exit) {
     const holdCard = h("div", { class: "ev pa-hold-card" },
       h("header", {}, h("b", { text: "持仓复核与影子管理轨迹" })));
     const tel = d.management_telemetry || {};
@@ -717,28 +759,70 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       }
     }
     const sm = d.shadow_management;
-    if (sm) {
-      const trigChip = sm.mechanical_condition_state === "TRIGGERED" || isNum(sm.condition_triggered_at_ms)
-        ? h("span", {
-            class: "chip bad",
-            text: isNum(sm.condition_triggered_at_ms) ? `原规则已触发 · ${utc(sm.condition_triggered_at_ms)}` : "原规则已触发",
-          })
-        : sm.mechanical_condition_state === "DATA_GAP"
-          ? h("span", { class: "chip warn", text: "网格检查存在数据缺口" })
-          : h("span", { class: "chip ok", text: "原冻结规则未触发" });
-      const revChip = isNum(sm.ai_revoked_at_ms)
-        ? h("span", { class: "chip bad", text: `AI 建议撤销 · ${utc(sm.ai_revoked_at_ms)}` })
-        : h("span", { class: "chip muted-chip", text: "AI 未建议撤销" });
-      const protoChip = protocolStatusChip(sm.protocol_status);
-      const actionChip = sm.shadow_action && sm.shadow_action !== "NONE"
+    const sxHold = sm?.shadow_exit || d.shadow_exit || null;
+    if (sm || sxHold) {
+      const trigChip = sm
+        ? (sm.mechanical_condition_state === "TRIGGERED" || isNum(sm.condition_triggered_at_ms)
+          ? h("span", {
+              class: "chip bad",
+              text: isNum(sm.condition_triggered_at_ms) ? `原规则已触发 · ${utc(sm.condition_triggered_at_ms)}` : "原规则已触发",
+            })
+          : sm.mechanical_condition_state === "DATA_GAP"
+            ? h("span", { class: "chip warn", text: "网格检查存在数据缺口" })
+            : h("span", { class: "chip ok", text: "原冻结规则未触发" }))
+        : null;
+      const revChip = sm
+        ? (isNum(sm.ai_revoked_at_ms)
+          ? h("span", { class: "chip bad", text: `AI 建议撤销 · ${utc(sm.ai_revoked_at_ms)}` })
+          : h("span", { class: "chip muted-chip", text: "AI 未建议撤销" }))
+        : null;
+      const protoChip = sm ? protocolStatusChip(sm.protocol_status) : null;
+      const actionChip = sm?.shadow_action && sm.shadow_action !== "NONE"
         ? h("span", {
             class: `chip ${sm.shadow_action === "FROZEN_RULE_TRIGGERED_CONFLICT" ? "bad" : sm.shadow_action.startsWith("REVOKE") ? "warn" : "muted-chip"}`,
             text: SHADOW_ACTION_CN[sm.shadow_action] || sm.shadow_action,
           })
         : null;
+      const isShadowExited = Boolean(sm?.exit_terminal || sm?.exit_state === "SHADOW_EXITED");
       let exitChip;
+      let tierChip = null;
       let exitNote = null;
-      if (sm.exit_status === "SIMULATED_BUY_BACK_SHORT") {
+      let refNote = null;
+      if (isShadowExited) {
+        exitChip = h("span", { class: "chip bad", text: "影子已退出 · 已停止主动追踪" });
+        const tier = sxHold?.valuation_tier || sm?.valuation_tier
+          || (isNum(sxHold?.exit_pnl_btc) ? "EXECUTABLE_TWO_LEG_QUOTE"
+            : isNum(sxHold?.indicative_exit_pnl_btc) ? "INDICATIVE_MARK_ONLY" : "UNPRICED");
+        if (tier === "EXECUTABLE_TWO_LEG_QUOTE") {
+          tierChip = h("span", { class: "chip ok", text: "双腿报价估值" });
+          const q = sxHold?.exit_quote || {};
+          const pnl = sxHold?.exit_pnl_btc;
+          const pnlUsd = isNum(sxHold?.exit_pnl_usd) ? sxHold.exit_pnl_usd
+            : (isNum(pnl) && isNum(sxHold?.spot_usd) ? pnl * sxHold.spot_usd : null);
+          const usdTxt = isNum(pnlUsd) ? `（约 ${pnlUsd > 0 ? "+" : pnlUsd < 0 ? "−" : ""}${usd(Math.abs(pnlUsd), 0)} USD）` : "";
+          const shortBuy = q.short_buy_btc ?? q.short_buyback_ask_btc;
+          const longSale = q.long_sale_btc ?? q.long_sale_bid_btc;
+          const closeDebit = q.close_debit_btc ?? q.debit_btc;
+          exitNote = `冻结退出净盈亏 ${signedBtc(pnl, 6)}${usdTxt} · 买回短腿 ${isNum(shortBuy) ? `${btc(shortBuy, 6)} BTC` : "—"} · 卖出保护腿 ${isNum(longSale) ? `${btc(longSale, 6)} BTC` : "—"} · 平仓借记 ${isNum(closeDebit) ? `${btc(closeDebit, 6)} BTC` : "—"} · 手续费 ${isNum(q.close_fee_btc) ? `${btc(q.close_fee_btc, 6)} BTC` : "—"} · 退出时刻 ${utc(sxHold?.shadow_exit_at_ms)}（影子模拟双腿退出估值，非实盘成交）`;
+        } else if (tier === "INDICATIVE_MARK_ONLY") {
+          tierChip = h("span", { class: "chip warn", text: "仅指示性估值" });
+          const ind = sxHold?.indicative_exit_pnl_btc;
+          const gaps = (sxHold?.quote_gap_reasons || sm?.quote_gap_reasons || []).join("、");
+          const im = sxHold?.indicative_marks || sxHold?.exit_quote || {};
+          const marksTxt = (isNum(im.short_mark_btc) || isNum(im.long_mark_btc))
+            ? ` · 短腿标记 ${isNum(im.short_mark_btc) ? `${btc(im.short_mark_btc, 6)} BTC` : "—"} / 保护腿标记 ${isNum(im.long_mark_btc) ? `${btc(im.long_mark_btc, 6)} BTC` : "—"}`
+            : "";
+          exitNote = `影子退出（指示性标记估值 · 非可执行报价）：指示性净盈亏 ${signedBtc(ind, 6)}${marksTxt} · 退出时刻 ${utc(sxHold?.shadow_exit_at_ms)}${gaps ? ` · 报价缺口 ${gaps}` : ""}（非实盘成交，无可执行退出价）`;
+        } else {
+          tierChip = h("span", { class: "chip warn", text: "缺价不可核实 UNPRICED" });
+          const gaps = (sxHold?.quote_gap_reasons || sm?.quote_gap_reasons || []).join("、");
+          exitNote = `影子退出，退出价/收益暂不可核实（UNPRICED） · 退出时刻 ${utc(sxHold?.shadow_exit_at_ms ?? sm?.ai_revoked_at_ms)}${gaps ? ` · 缺口 ${gaps}` : ""} · 保留保护腿，未虚构止损盈亏`;
+          const ref = sxHold?.last_indicative_reference;
+          if (ref && typeof ref === "object") {
+            refNote = `撤销前最后有效指示值（非退出成交价）：${utc(ref.asof_ms)} · 现货 ${isNum(ref.spot_usd) ? usd(ref.spot_usd, 1) : "—"} USD · 标记浮盈亏 ${isNum(ref.float_pnl_btc) ? signedBtc(ref.float_pnl_btc, 6) : "—"}`;
+          }
+        }
+      } else if (sm.exit_status === "SIMULATED_BUY_BACK_SHORT") {
         exitChip = h("span", { class: "chip warn", text: "影子退出：模拟买回短腿" });
         const cost = sm.buyback_cost_btc ?? sm.short_buyback_cost_btc ?? sm.simulated_order?.cost_btc;
         const fee = sm.buyback_fee_btc ?? sm.simulated_order?.fee_btc ?? sm.fees_btc?.buyback;
@@ -750,8 +834,9 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
       } else {
         exitChip = h("span", { class: "chip muted-chip", text: "影子退出：无（继续观察）" });
       }
-      holdCard.append(h("div", { class: "pa-trigger-row pa-shadow-state" }, trigChip, revChip, exitChip, protoChip, actionChip));
+      holdCard.append(h("div", { class: "pa-trigger-row pa-shadow-state" }, trigChip, revChip, exitChip, tierChip, protoChip, actionChip));
       if (exitNote) holdCard.append(para(exitNote, "small muted num pa-shadow-note"));
+      if (refNote) holdCard.append(para(refNote, "small muted num pa-shadow-ref"));
     }
     if (d.hold_reviews?.length) {
       const reviews = d.hold_reviews.slice().sort((a, b) => {
@@ -820,6 +905,29 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
   }
 
   const outCard = h("div", { class: "ev pa-outcome-card" });
+  const isShadowExitedOut = Boolean(
+    d.shadow_management?.exit_terminal
+    || d.shadow_management?.exit_state === "SHADOW_EXITED"
+  );
+  const sxOut = d.shadow_exit || d.shadow_management?.shadow_exit || null;
+  const shadowExitTier = sxOut?.valuation_tier || d.shadow_management?.valuation_tier
+    || (isNum(sxOut?.exit_pnl_btc) ? "EXECUTABLE_TWO_LEG_QUOTE"
+      : isNum(sxOut?.indicative_exit_pnl_btc) ? "INDICATIVE_MARK_ONLY" : "UNPRICED");
+  const shadowExitTierTag = shadowExitTier === "EXECUTABLE_TWO_LEG_QUOTE"
+    ? "EXECUTABLE"
+    : shadowExitTier === "INDICATIVE_MARK_ONLY"
+      ? "INDICATIVE"
+      : "UNPRICED";
+  const shadowExitResultText = () => {
+    if (shadowExitTier === "EXECUTABLE_TWO_LEG_QUOTE" && isNum(sxOut?.exit_pnl_btc)) {
+      return `${signedBtc(sxOut.exit_pnl_btc, 6)}（影子模拟双腿退出估值，非实盘成交）`;
+    }
+    if (shadowExitTier === "INDICATIVE_MARK_ONLY") {
+      return `非可执行报价；指示性净盈亏 ${signedBtc(sxOut?.indicative_exit_pnl_btc, 6)}（非实盘）`;
+    }
+    return "退出价/收益暂不可核实（未虚构平仓盈亏）";
+  };
+
   if (d.outcome) {
     const o = d.outcome;
     outCard.append(h("header", {},
@@ -833,8 +941,14 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     if (isNum(o.t0_net_credit_after_entry_fee_btc)) {
       outRows.push(["锁定时费后净信用", `${btc(o.t0_net_credit_after_entry_fee_btc, 6)} BTC`]);
     }
+    if (isShadowExitedOut) {
+      outRows.push([`冻结影子退出净结果（${shadowExitTierTag}）`, shadowExitResultText()]);
+    }
     if (isNum(o.hold_to_expiry_shadow_net_btc)) {
-      outRows.push(["持有到期影子净结果", `${o.hold_to_expiry_shadow_net_btc > 0 ? "+" : ""}${btc(o.hold_to_expiry_shadow_net_btc, 6)} BTC`]);
+      outRows.push([
+        isShadowExitedOut ? "反事实对照：若持有至到期影子净结果" : "持有到期影子净结果",
+        `${o.hold_to_expiry_shadow_net_btc > 0 ? "+" : ""}${btc(o.hold_to_expiry_shadow_net_btc, 6)} BTC`,
+      ]);
     }
     if (o.managed_cashflow) {
       const mc = o.managed_cashflow;
@@ -855,8 +969,16 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
     outCard.append(h("dl", { class: "kv pa-meta" },
       ...outRows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v })])));
   } else {
-    outCard.append(h("header", {}, h("b", { text: "到期机械判卷" }), h("span", { class: "chip muted-chip", text: "待交割" })),
-      para(`本局将于 ${utc(d.expiry_ms)} 到期；交割后读取 Deribit 官方交割价自动并列两侧到期赔付及持有到期影子净结果。`, "muted small"));
+    outCard.append(h("header", {}, h("b", { text: "到期机械判卷" }), h("span", { class: "chip muted-chip", text: "待交割" })));
+    if (isShadowExitedOut) {
+      outCard.append(h("dl", { class: "kv pa-meta" },
+        h("dt", { text: `冻结影子退出净结果（${shadowExitTierTag}）` }),
+        h("dd", { text: shadowExitResultText() }),
+        h("dt", { text: "反事实对照：若持有至到期影子净结果" }),
+        h("dd", { text: `将于 ${utc(d.expiry_ms)} 到期交割后计算，仅作反事实研究对照，不改写已冻结影子退出净结果` })));
+    } else {
+      outCard.append(para(`本局将于 ${utc(d.expiry_ms)} 到期；交割后读取 Deribit 官方交割价自动并列两侧到期赔付及持有到期影子净结果。`, "muted small"));
+    }
   }
   left.append(outCard);
 
@@ -904,6 +1026,7 @@ export function renderPlayerAudit(box, player, { available = true, onSelect, onT
             requested_at_ms: d.requested_at_ms, lock_requested_at_ms: d.lock_requested_at_ms,
             contracts: d.contracts, source: d.source, input: d.identity, decision: d.decision,
             entry_basis: d.entry_basis, shadow_management: d.shadow_management,
+            shadow_exit: d.shadow_exit, grid_check_history: d.grid_check_history,
             attempts: d.attempts, receipt, archive: d.archive,
           }, null, 2))),
       ], null, "pa-provenance"));

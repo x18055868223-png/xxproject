@@ -33,7 +33,7 @@ PARSER = 'public-excerpts@1'
 EVENTS = {'OBSERVATION', 'REVIEW_REQUIRED', 'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED',
           'CONDITION_UNKNOWN', 'AI_HOLD', 'AI_REVOKE', 'AI_HOLD_UNKNOWN',
           'HOLD_REVIEW_FAILED', 'HOLD_REVIEW_QUEUED', 'HOLD_REVIEW_SKIPPED',
-          'SHADOW_ACTION', 'SIMULATED_ORDER', 'CORRECTION'}
+          'SHADOW_ACTION', 'SHADOW_EXITED', 'SIMULATED_ORDER', 'CORRECTION'}
 MANUAL_EVENTS = {kind for kind in EVENTS if not kind.startswith('CONDITION_')}
 KINDS = {'SCHEDULED', 'STARTUP_AD_HOC', 'AD_HOC', 'HISTORICAL_REPLAY', 'FIXTURE'}
 
@@ -1150,44 +1150,81 @@ def _shadow_managed_cashflow(frozen, settlement, events, link_rec, *, t0_credit=
     revokes = [e for e in events if _is_verified_revoke_event(e)]
     flow = [e for e in events if e.get('kind') == 'SIMULATED_ORDER' and (e.get('body') or {}).get('action') == 'BUY_BACK_SHORT']
     no_quotes = [e for e in events if e.get('kind') == 'SHADOW_ACTION' and (e.get('body') or {}).get('action') == 'REVOKE_RECORDED_NO_QUOTE']
-    if not revokes and not flow and not no_quotes:
+    exit_events = [e for e in events if e.get('kind') == 'SHADOW_EXITED']
+    if not revokes and not flow and not no_quotes and not exit_events:
         return None
     c = frozen['contract']
     q = c['quantity_btc']
+
+    def _with_shadow_exit(result):
+        if not exit_events:
+            return result
+        sx_ev = exit_events[-1]
+        sx = sx_ev.get('body') or {}
+        result.update(
+            shadow_exit_event_id=sx_ev.get('event_id'),
+            shadow_exit_at_ms=sx.get('shadow_exit_at_ms'),
+            valuation_tier=sx.get('valuation_tier'),
+            frozen_exit_pnl_btc=sx.get('exit_pnl_btc'),
+            indicative_exit_pnl_btc=sx.get('indicative_exit_pnl_btc'),
+            shadow_exit_snapshot_sha256=sx.get('snapshot_sha256'),
+            counterfactual_hold_to_expiry_net_btc=hold_shadow_net,
+        )
+        return result
+
     if flow and settlement is not None and player.number(t0_credit) is not None:
         fill = flow[-1]['body']
         if fill.get('instrument') != c['short_instrument'] or fill.get('quantity_btc') != q:
-            return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
-                        long_instrument=c['long_instrument'], unpriced_reason='short_fill_contract_mismatch')
+            return _with_shadow_exit(dict(
+                mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+                long_instrument=c['long_instrument'], unpriced_reason='short_fill_contract_mismatch',
+            ))
         buyback = fill.get('cost_btc')
         buyback_fee = fill.get('fee_btc', 0.0)
         if any(type(x) not in (int, float) or not 0 <= x < float('inf') for x in (buyback, buyback_fee)):
-            return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
-                        long_instrument=c['long_instrument'], unpriced_reason='invalid_buyback_quote')
+            return _with_shadow_exit(dict(
+                mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+                long_instrument=c['long_instrument'], unpriced_reason='invalid_buyback_quote',
+            ))
         long_payout = cash.inverse_leg_payout(c['side'], c['long_strike_usd'], settlement, q)
         long_fee = fill.get('long_delivery_fee_btc', 0.0)
         managed = round(t0_credit - buyback - buyback_fee + long_payout - long_fee, 8)
         economy = ((link_rec or {}).get('t0') or {}).get('economy') or {}
-        return dict(mode='SHADOW_MANAGED', simulated_short_fill_event=flow[-1]['event_id'],
-                    short_remaining=0, long_instrument=c['long_instrument'],
-                    long_remaining_before_expiry_btc=q, long_settlement_credit_btc=long_payout,
-                    long_remaining_after_expiry=0,
-                    entry_credit_btc=economy.get('visible_credit_btc'),
-                    t0_net_credit_after_entry_fee_btc=t0_credit,
-                    fees_btc=dict(entry=economy.get('theoretical_two_leg_fee_btc'), buyback=buyback_fee, delivery=long_fee),
-                    short_buyback_cost_btc=buyback, quoted_at_ms=fill.get('quoted_at_ms'),
-                    managed_net_btc=managed, original_hold_net_btc=hold_shadow_net,
-                    delta_btc=round(managed - hold_shadow_net, 8) if hold_shadow_net is not None else None)
+        return _with_shadow_exit(dict(
+            mode='SHADOW_MANAGED', simulated_short_fill_event=flow[-1]['event_id'],
+            short_remaining=0, long_instrument=c['long_instrument'],
+            long_remaining_before_expiry_btc=q, long_settlement_credit_btc=long_payout,
+            long_remaining_after_expiry=0,
+            entry_credit_btc=economy.get('visible_credit_btc'),
+            t0_net_credit_after_entry_fee_btc=t0_credit,
+            fees_btc=dict(entry=economy.get('theoretical_two_leg_fee_btc'), buyback=buyback_fee, delivery=long_fee),
+            short_buyback_cost_btc=buyback, quoted_at_ms=fill.get('quoted_at_ms'),
+            managed_net_btc=managed, original_hold_net_btc=hold_shadow_net,
+            delta_btc=round(managed - hold_shadow_net, 8) if hold_shadow_net is not None else None,
+        ))
     if flow and settlement is None:
-        return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
-                    long_instrument=c['long_instrument'], long_remaining_before_expiry_btc=q,
-                    revoked_at_ms=revokes[-1].get('observed_at_ms') or revokes[-1].get('recorded_at_ms') if revokes else None,
-                    unpriced_reason='settlement_price_missing')
-    reason = ((no_quotes[-1].get('body') or {}).get('quote_gap_reasons') if no_quotes else None) or ['no_reliable_short_buyback_quote']
-    return dict(mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
-                long_instrument=c['long_instrument'], long_remaining_before_expiry_btc=q,
-                revoked_at_ms=revokes[-1].get('observed_at_ms') or revokes[-1].get('recorded_at_ms') if revokes else None,
-                unpriced_reason=reason[0] if isinstance(reason, list) and reason else reason)
+        return _with_shadow_exit(dict(
+            mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+            long_instrument=c['long_instrument'], long_remaining_before_expiry_btc=q,
+            revoked_at_ms=revokes[-1].get('observed_at_ms') or revokes[-1].get('recorded_at_ms') if revokes else None,
+            unpriced_reason='settlement_price_missing',
+        ))
+    sx_body = (exit_events[-1].get('body') or {}) if exit_events else {}
+    reason = (
+        ((no_quotes[-1].get('body') or {}).get('quote_gap_reasons') if no_quotes else None)
+        or sx_body.get('quote_gap_reasons')
+        or ['no_reliable_short_buyback_quote']
+    )
+    revoked_at = (
+        (revokes[-1].get('observed_at_ms') or revokes[-1].get('recorded_at_ms'))
+        if revokes else sx_body.get('shadow_exit_at_ms')
+    )
+    return _with_shadow_exit(dict(
+        mode='UNPRICED_REVOKE', short_buyback_cost_btc=None, managed_net_btc=None,
+        long_instrument=c['long_instrument'], long_remaining_before_expiry_btc=q,
+        revoked_at_ms=revoked_at,
+        unpriced_reason=reason[0] if isinstance(reason, list) and reason else reason,
+    ))
 
 
 def model_identity(model):

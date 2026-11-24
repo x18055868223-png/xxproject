@@ -582,19 +582,26 @@ class LockedCandidateStore:
                 self._save_state_with_budget_unlocked(prior_state, extra_point_bytes=0)
             return self._summary(episode)
 
-    def stop(self, episode_id: str, *, now_ms: int) -> dict[str, Any]:
+    def stop(
+        self,
+        episode_id: str,
+        *,
+        now_ms: int,
+        stop_reason: str = "observation_stopped_not_position_close",
+    ) -> dict[str, Any]:
         episode_id = _text(episode_id, "invalid_episode_id")
         now_ms = _clock(now_ms, "invalid_now_ms")
+        stop_reason = _text(stop_reason, "invalid_stop_reason")
         with store._APPEND_LOCK, store._exclusive_file_lock(self.index_path):
             state = self._read_state_unlocked()
             episode = self._episode(state, episode_id)
-            if episode["status"] != EXPIRED:
+            if episode["status"] not in {STOPPED, EXPIRED}:
                 episode["status"] = STOPPED
-                episode["stop_reason"] = "observation_stopped_not_position_close"
-            episode["stopped_at_ms"] = episode["stopped_at_ms"] or now_ms
-            episode["updated_at_ms"] = now_ms
-            episode["last_attempt_at_ms"] = now_ms
-            self._save_state_with_budget_unlocked(state, extra_point_bytes=0)
+                episode["stop_reason"] = stop_reason
+                episode["stopped_at_ms"] = episode["stopped_at_ms"] or now_ms
+                episode["updated_at_ms"] = now_ms
+                episode["last_attempt_at_ms"] = now_ms
+                self._save_state_with_budget_unlocked(state, extra_point_bytes=0)
             return self._summary(episode)
 
     def list(self) -> list[dict[str, Any]]:

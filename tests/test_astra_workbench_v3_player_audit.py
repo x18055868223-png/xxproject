@@ -265,3 +265,263 @@ def test_current_hand_banner_labels_and_error_handling():
     assert out["disabledHidden"] is True and out["disabledText"] == ""
     assert out["badJsonHidden"] is False and "响应格式异常" in out["badJsonText"] and out["badJsonState"] == "error"
     assert "HTTP 403" in out["err403Text"]
+
+
+def test_current_hand_shadow_exited_label():
+    current_hand_js = (ROOT / "deploy" / "astra_workbench_v3" / "current-hand.js").as_uri()
+    out = _run_node(
+        f"""
+        const mod = await import("{current_hand_js}");
+        return {{
+          label: mod.LABELS.SHADOW_EXITED,
+          stage: mod.stageText({{ stage: "SHADOW_EXITED" }}),
+        }};
+        """,
+        {},
+    )
+    assert out["label"] == "影子已退出（终态 · 已停止主动追踪）"
+    assert out["stage"] == "影子已退出（终态 · 已停止主动追踪）"
+
+
+def _base_audit_detail(*, valuation_tier="UNPRICED", exit_terminal=True):
+    t0 = 1_795_400_000_000
+    events = [
+        {"event_id": "ev_not_1", "kind": "CONDITION_NOT_TRIGGERED", "observed_at_ms": t0 + 60_000},
+        {"event_id": "ev_obs_1", "kind": "OBSERVATION", "observed_at_ms": t0 + 120_000},
+    ]
+    grid_history = [
+        {"event_id": "ev_not_1", "kind": "CONDITION_NOT_TRIGGERED", "observed_at_ms": t0 + 60_000, "recorded_at_ms": t0 + 60_010, "post_revoke": False},
+    ]
+    for i in range(177):
+        ts = t0 + (i + 2) * 300_000
+        post_rev = i >= 172
+        ev = {
+            "event_id": f"ev_trig_{i}",
+            "kind": "CONDITION_TRIGGERED",
+            "observed_at_ms": ts,
+            "recorded_at_ms": ts + 100,
+            "summary": "entry_not_returned",
+            "post_revoke": post_rev,
+        }
+        events.append(ev)
+        grid_history.append({
+            "event_id": ev["event_id"],
+            "kind": "CONDITION_TRIGGERED",
+            "observed_at_ms": ts,
+            "recorded_at_ms": ts + 100,
+            "post_revoke": post_rev,
+        })
+    revoke_ts = t0 + 174 * 300_000
+    events.extend([
+        {"event_id": "ev_hold", "kind": "AI_HOLD", "observed_at_ms": t0 + 300_000, "verdict": "HOLD", "summary": "继续持有"},
+        {"event_id": "ev_fail", "kind": "HOLD_REVIEW_FAILED", "observed_at_ms": t0 + 600_000, "verdict": "FAILED", "summary": "TIMEOUT"},
+        {"event_id": "ev_rev", "kind": "AI_REVOKE", "observed_at_ms": revoke_ts, "verdict": "REVOKE", "summary": "建议撤销"},
+        {"event_id": "ev_sx", "kind": "SHADOW_EXITED", "observed_at_ms": revoke_ts + 500, "summary": valuation_tier},
+    ])
+    sx = {
+        "schema": "shadow_exit_snapshot@1",
+        "exit_state": "SHADOW_EXITED",
+        "terminal": True,
+        "active_monitoring_stopped": True,
+        "exit_reason": "AI_REVOKE",
+        "review_id": "rev_111111111111111111111111",
+        "shadow_exit_at_ms": revoke_ts + 500,
+        "valuation_tier": valuation_tier,
+        "exit_pnl_btc": -0.0021 if valuation_tier == "EXECUTABLE_TWO_LEG_QUOTE" else None,
+        "exit_pnl_usd": -210.0 if valuation_tier == "EXECUTABLE_TWO_LEG_QUOTE" else None,
+        "indicative_exit_pnl_btc": -0.0019 if valuation_tier == "INDICATIVE_MARK_ONLY" else None,
+        "spot_usd": 100_000.0,
+        "exit_quote": {
+            "short_buyback_ask_btc": 0.0080,
+            "long_sale_bid_btc": 0.0015,
+            "short_buy_btc": 0.0080,
+            "long_sale_btc": 0.0015,
+            "close_debit_btc": 0.0065,
+            "close_fee_btc": 0.0002,
+        },
+        "quote_gap_reasons": [] if valuation_tier == "EXECUTABLE_TWO_LEG_QUOTE" else ["short_quote_stale_at_revoke"],
+        "last_indicative_reference": (
+            {
+                "point_id": "p_pre",
+                "asof_ms": revoke_ts - 60_000,
+                "age_at_revoke_ms": 60_000,
+                "spot_usd": 101_200.0,
+                "float_pnl_btc": -0.0014,
+                "basis": "pre_revoke_asof_series_reference_not_exit_fill",
+            }
+            if valuation_tier == "UNPRICED" else None
+        ),
+    }
+    return {
+        "dossier_id": "Deribit_BTC_20261124T080000Z",
+        "hand_id": "hand_222222222222222222222222",
+        "sample": "SCHEDULED",
+        "state": "Accept",
+        "side": "call",
+        "expiry_ms": t0 + 16 * 3_600_000,
+        "frozen_at_ms": t0,
+        "model": "deepseek-v4-pro",
+        "board": "1. **责任。** 示例",
+        "decision": {"decided_at_ms": t0 + 10_000, "judgment": {
+            "action": "Accept", "side": "call", "depends_on_ard": False,
+            "comparison": "c", "put": "p", "put_counter": "pc", "call": "cc", "call_counter": "ccnt",
+        }},
+        "condition": {
+            "historical_facts": "hist",
+            "accepted_conditions": "acc",
+            "invalidation": "entry_not_returned",
+            "invalidation_meaning": "meaning",
+            "check_clock": {"first_at_ms": t0 + 60_000, "interval_ms": 300_000},
+        },
+        "events": events,
+        "grid_check_history": grid_history,
+        "post_revoke_grid_check_count": 5,
+        "grid_check_summary": {"total": 178, "not_triggered": 1, "triggered": 177, "unknown": 0, "latest_at_ms": t0 + 178 * 300_000},
+        "hold_reviews": [
+            {"review_id": "rev_111111111111111111111111", "status": "VALID", "verdict": "REVOKE", "decided_at_ms": revoke_ts, "public_reply": "建议撤销"},
+        ],
+        "shadow_management": {
+            "mechanical_condition_state": "TRIGGERED",
+            "condition_triggered_at_ms": t0 + 2 * 300_000,
+            "ai_revoked_at_ms": revoke_ts,
+            "protocol_status": "ALIGNED",
+            "shadow_action": "REVOKE_ALIGNED",
+            "exit_terminal": exit_terminal,
+            "exit_state": "SHADOW_EXITED" if exit_terminal else "ACTIVE",
+            "active_monitoring_stopped": exit_terminal,
+            "valuation_tier": valuation_tier if exit_terminal else None,
+            "shadow_exit": sx if exit_terminal else None,
+            "exit_status": "REVOKE_NO_QUOTE",
+        },
+        "shadow_exit": sx if exit_terminal else None,
+        "outcome": {
+            "classification": "OFFICIAL",
+            "delivery": 105_000.0,
+            "liability_btc": {"put": 0.0, "call": 0.019048},
+            "t0_net_credit_after_entry_fee_btc": 0.0046,
+            "hold_to_expiry_shadow_net_btc": -0.0222,
+        },
+    }
+
+
+def _render_audit_payload(detail):
+    return _run_node(
+        """
+        const box = document.createElement("div");
+        const walk = (n, out = []) => {
+          if (n && n.attrs) {
+            out.push(n);
+            for (const c of n.childNodes) walk(c, out);
+          }
+          return out;
+        };
+        renderPlayerAudit(box, {
+          cards: [p.detail],
+          ref: `${p.detail.dossier_id}/${p.detail.hand_id}`,
+          detail: p.detail,
+          expanded: new Set(),
+        }, {
+          authenticated: true,
+          available: true,
+          onSelect: () => {},
+          onTracker: () => {},
+          onOriginals: () => {},
+          onLogin: () => {},
+          onRefresh: () => {},
+          modelInputUrl: api.playerModelInputUrl,
+        });
+        const nodes = walk(box);
+        const byClass = (cls) => nodes.find((n) => (n.className || "").split(/\\s+/).includes(cls));
+        const condCard = byClass("pa-cond-card");
+        const evTbl = byClass("pa-events-table");
+        const evRows = evTbl ? walk(evTbl).filter((n) => n.tagName === "tr").slice(1).map((r) => r.textContent) : [];
+        const auditDet = byClass("pa-grid-audit");
+        const auditRows = auditDet ? walk(auditDet).filter((n) => n.tagName === "tr").slice(1).map((r) => r.textContent) : [];
+        const holdCard = byClass("pa-hold-card");
+        const holdChips = holdCard ? walk(holdCard).filter((n) => (n.className || "").includes("chip")).map((n) => n.textContent) : [];
+        const outCard = byClass("pa-outcome-card");
+        const outPairs = outCard
+          ? walk(outCard).filter((n) => n.tagName === "dt" || n.tagName === "dd").map((n) => n.textContent)
+          : [];
+        return {
+          condText: condCard ? condCard.textContent : "",
+          evRows,
+          auditSummary: auditDet ? auditDet.childNodes[0].textContent : null,
+          auditCount: auditRows.length,
+          auditLegacyRows: auditRows.filter((t) => t.includes("撤销后历史遗留")).length,
+          holdText: holdCard ? holdCard.textContent : "",
+          holdChips,
+          outText: outCard ? outCard.textContent : "",
+          outPairs,
+        };
+        """,
+        {"detail": detail},
+    )
+
+
+def test_player_audit_shadow_exit_collapsed_grid_and_counterfactual_separation():
+    out = _render_audit_payload(_base_audit_detail(valuation_tier="UNPRICED"))
+    assert "AI 撤销 → 影子已退出 → 已停止主动追踪" in out["condText"]
+    assert "含修复前遗留撤销后检查 5 次，已默认折叠" in out["condText"]
+    assert "(已折叠 175 条重复触发检查)" in out["condText"]
+
+    trig_rows = [r for r in out["evRows"] if "网格检查：已触发破坏条件" in r]
+    assert len(trig_rows) == 2
+    assert any("AI 建议撤销 · REVOKE" in r for r in out["evRows"])
+    assert any("影子已退出（终态 · 已停止主动追踪）" in r for r in out["evRows"])
+    assert any("AI 续持 · HOLD" in r for r in out["evRows"])
+    assert any("持仓复核调用失败" in r for r in out["evRows"])
+
+    assert out["auditSummary"] == "展开完整网格检查审计轨迹（共 178 次）"
+    assert out["auditCount"] == 178
+    assert out["auditLegacyRows"] == 5
+
+    assert "影子已退出 · 已停止主动追踪" in out["holdChips"]
+    assert "缺价不可核实 UNPRICED" in out["holdChips"]
+    assert "影子退出，退出价/收益暂不可核实（UNPRICED）" in out["holdText"]
+    assert "撤销前最后有效指示值（非退出成交价）：" in out["holdText"]
+    assert "101,200.0 USD" in out["holdText"] and "−0.001400 BTC" in out["holdText"]
+
+    assert "冻结影子退出净结果（UNPRICED）" in out["outPairs"]
+    assert "反事实对照：若持有至到期影子净结果" in out["outPairs"]
+    assert "持有到期影子净结果" not in out["outPairs"]  # must use counterfactual label instead
+
+
+def test_player_audit_shadow_exit_executable_indicative_and_legacy_fallback():
+    exec_out = _render_audit_payload(_base_audit_detail(valuation_tier="EXECUTABLE_TWO_LEG_QUOTE"))
+    assert "双腿报价估值" in exec_out["holdChips"]
+    assert "影子模拟双腿退出估值，非实盘成交" in exec_out["holdText"]
+    assert "冻结影子退出净结果（EXECUTABLE）" in exec_out["outPairs"]
+    assert "反事实对照：若持有至到期影子净结果" in exec_out["outPairs"]
+
+    ind_out = _render_audit_payload(_base_audit_detail(valuation_tier="INDICATIVE_MARK_ONLY"))
+    assert "仅指示性估值" in ind_out["holdChips"]
+    assert "影子退出（指示性标记估值 · 非可执行报价）" in ind_out["holdText"]
+    assert "冻结影子退出净结果（INDICATIVE）" in ind_out["outPairs"]
+
+    legacy = _base_audit_detail(valuation_tier="UNPRICED", exit_terminal=False)
+    legacy["shadow_management"]["exit_status"] = "SIMULATED_BUY_BACK_SHORT"
+    legacy["shadow_management"]["buyback_cost_btc"] = 0.008
+    legacy["shadow_management"]["buyback_fee_btc"] = 0.0002
+    legacy_out = _render_audit_payload(legacy)
+    assert "影子退出：模拟买回短腿" in legacy_out["holdChips"]
+    assert "影子已退出 · 已停止主动追踪" not in legacy_out["holdChips"]
+    assert "持有到期影子净结果" in legacy_out["outPairs"]
+    assert "反事实对照：若持有至到期影子净结果" not in legacy_out["outPairs"]
+
+    # Backend tick_ms grid_check_history + indicative_marks + debit_btc compatibility
+    tick_detail = _base_audit_detail(valuation_tier="INDICATIVE_MARK_ONLY")
+    t0 = tick_detail["frozen_at_ms"]
+    tick_detail["grid_check_history"] = [
+        {"kind": "CONDITION_TRIGGERED", "tick_ms": t0 + 300_000, "post_revoke": False},
+        {"kind": "CONDITION_TRIGGERED", "tick_ms": t0 + 900_000, "post_revoke": True},
+    ]
+    tick_detail["shadow_management"]["shadow_exit"]["indicative_marks"] = {
+        "short_mark_btc": 0.0081, "long_mark_btc": 0.0019, "asof_ms": t0 + 840_000,
+    }
+    tick_detail["shadow_exit"] = tick_detail["shadow_management"]["shadow_exit"]
+    tick_out = _render_audit_payload(tick_detail)
+    assert tick_out["auditSummary"] == "展开完整网格检查审计轨迹（共 2 次）"
+    assert tick_out["auditLegacyRows"] == 1
+    assert "短腿标记 0.008100 BTC / 保护腿标记 0.001900 BTC" in tick_out["holdText"]
+    assert "UTC" in tick_out["condText"]

@@ -381,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--player-plan",
         type=Path,
-        default=Path("/opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v2.json"),
+        default=Path("/opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v3_p5.json"),
     )
     parser.add_argument("--release-dir", type=Path, default=Path("/opt/xxproject/current"))
     parser.add_argument("--expected-core-version", default="2.0.6")

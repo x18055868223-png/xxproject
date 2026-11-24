@@ -9,6 +9,7 @@ const STATUS_CN = { active: "追踪中", expired: "已到期", stopped: "已停�
 const STOP_CN = {
   expired: "合约到期",
   observation_stopped_not_position_close: "手动停止观察（不是平仓）",
+  shadow_revoked_terminal: "AI 撤销 · 影子已退出（已停止主动追踪）",
 };
 const GAP_CN = {
   locked_packet_unavailable: "该时刻没有可用的冻结快照",
@@ -33,6 +34,38 @@ const GAP_CN = {
   baseline_entry_fee_missing: "锁定时入场费缺失",
   quote_clock_missing: "报价时钟缺失",
   risk_identity_missing: "风险参考身份缺失",
+  short_book_missing: "短腿盘口缺失",
+  long_book_missing: "保护腿盘口缺失",
+  short_book_stale: "短腿盘口已过期",
+  long_book_stale: "保护腿盘口已过期",
+  short_book_stale_or_future: "短腿盘口过期或时间异常",
+  long_book_stale_or_future: "保护腿盘口过期或时间异常",
+  short_quote_stale_at_revoke: "撤销时短腿报价已过期",
+  long_quote_stale_at_revoke: "撤销时保护腿报价已过期",
+  short_buyback_quote_unavailable: "撤销时无可用短腿买回报价",
+  two_leg_quote_unavailable: "撤销时双腿可成交报价不可用",
+  revoke_quote_missing: "撤销时报价快照缺失",
+  latest_point_unavailable: "最新采样点不可用",
+  missing_taker_commission: "缺少吃单费率",
+  short_ask_missing: "短腿买回卖一价缺失",
+  long_bid_missing: "保护腿卖出买一价缺失",
+  short_book_timestamp_missing: "短腿盘口时钟缺失",
+  long_book_timestamp_missing: "保护腿盘口时钟缺失",
+  short_crossed_book: "短腿盘口买卖倒挂",
+  long_crossed_book: "保护腿盘口买卖倒挂",
+  short_book_not_open: "短腿合约未处于可交易状态",
+  long_book_not_open: "保护腿合约未处于可交易状态",
+  short_book_instrument_mismatch: "短腿盘口合约标识不匹配",
+  long_book_instrument_mismatch: "保护腿盘口合约标识不匹配",
+  leg_book_time_skew: "两腿报价时间差超限",
+  leg_skew_exceeded: "两腿报价时间差超限",
+  local_receipt_missing: "本地接收时钟缺失",
+  local_receipt_outside_freshness: "本地接收时钟超新鲜度窗口",
+  short_receipt_missing: "短腿接收时钟缺失",
+  long_receipt_missing: "保护腿接收时钟缺失",
+  leg_index_mismatch: "两腿指数参考价不一致",
+  leg_index_missing: "指数参考价缺失",
+  mark_stale: "标记价已过期",
 };
 export const gapCn = (code) => {
   const base = String(code || "").split(":")[0];
@@ -117,6 +150,9 @@ function aiMgmtChips(mgmt) {
   const protoStatus = mgmt.protocol_status ?? sm.protocol_status ?? mgmt.latest_review?.protocol_status;
   const pChip = protocolChip(protoStatus, "ld-mgmt-chip");
   if (pChip) chips.push(pChip);
+  if (mgmt.exit_terminal || sm.exit_terminal || mgmt.exit_state === "SHADOW_EXITED" || sm.exit_state === "SHADOW_EXITED") {
+    chips.push(h("span", { class: "chip warn ld-mgmt-chip", text: "影子已退出" }));
+  }
   return chips;
 }
 
@@ -174,15 +210,36 @@ export function lockList(episodes, { selected, onOpen, renderDetail, showAll = f
  * floating PnL (at stop, or now while tracking). Within ±10 USD counts as flat. */
 const OUTCOME_CN = { profit: "盈利", loss: "亏损", flat: "持平" };
 const OUTCOME_TONE = { profit: "ok", loss: "bad", flat: "" };
-const OUTCOME_BASIS = { settlement: "按到期结算", floating_at_stop: "按停止时浮动盈亏相对锁定时的变化",
-  floating_now: "按当前浮动盈亏相对锁定时的变化（未到期）", floating_at_expiry: "按到期前最后浮动盈亏相对锁定时的变化" };
+const OUTCOME_BASIS = {
+  settlement: "按到期结算",
+  floating_at_stop: "按停止时浮动盈亏相对锁定时的变化",
+  floating_now: "按当前浮动盈亏相对锁定时的变化（未到期）",
+  floating_at_expiry: "按到期前最后浮动盈亏相对锁定时的变化",
+  shadow_exit_frozen: "按撤销时冻结双腿影子报价",
+  shadow_exit_indicative_only: "指示估值 · 非实盘",
+  shadow_exit_unpriced: "退出价不可核实",
+};
 const FALLBACK_CN = { credit_missing: "到期结算无法计算（锁定时信用缺失）", delivery_unavailable: "交割价未取得",
   settlement_pending: "到期结算尚未完成" };
 function outcomeChip(o) {
-  if (!o || !o.verdict) return h("span", { class: "muted small", text: "—", title: o?.basis === "settlement" ? "到期结算结果不可用" : "盈亏不可用" });
-  return h("span", {}, h("span", { class: `chip ${OUTCOME_TONE[o.verdict]}`, text: OUTCOME_CN[o.verdict],
-    title: `${o.fallback_reason ? `${FALLBACK_CN[o.fallback_reason] || ""}，` : ""}${OUTCOME_BASIS[o.basis] || ""}；±${o.flat_band_usd ?? 10} 美元以内算持平` }),
-    o.basis === "floating_now" ? h("span", { class: "muted small", text: " 浮动" }) : null);
+  if (!o || !o.verdict) {
+    if (o?.basis === "shadow_exit_indicative_only") {
+      return h("span", { class: "muted small", text: "指示估值", title: OUTCOME_BASIS.shadow_exit_indicative_only });
+    }
+    if (o?.basis?.startsWith("shadow_exit_")) {
+      return h("span", { class: "muted small", text: "价不可核实", title: OUTCOME_BASIS[o.basis] || "退出价不可核实" });
+    }
+    return h("span", { class: "muted small", text: "—", title: o?.basis === "settlement" ? "到期结算结果不可用" : "盈亏不可用" });
+  }
+  return h("span", {},
+    h("span", {
+      class: `chip ${OUTCOME_TONE[o.verdict]}`,
+      text: OUTCOME_CN[o.verdict],
+      title: `${o.fallback_reason ? `${FALLBACK_CN[o.fallback_reason] || ""}，` : ""}${OUTCOME_BASIS[o.basis] || ""}；±${o.flat_band_usd ?? 10} 美元以内算持平`,
+    }),
+    o.basis === "floating_now" ? h("span", { class: "muted small", text: " 浮动" })
+      : o.basis === "shadow_exit_frozen" ? h("span", { class: "muted small", text: " 影子退出" })
+      : null);
 }
 
 // ── detail ───────────────────────────────────────
@@ -234,9 +291,17 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
       h("a", { href: hand, class: "dp-jump", onclick: onPlayerAudit ? (ev) => { ev.preventDefault(); onPlayerAudit(a); } : null }, "本局推理审计与卷宗")));
   }
   const mgmtDetail = d.ai_dossier_management;
+  const smDetail = mgmtDetail?.shadow_management || mgmtDetail || {};
+  const sx = smDetail.shadow_exit || mgmtDetail?.shadow_exit || null;
+  const isShadowExited = Boolean(
+    mgmtDetail?.exit_terminal
+    || smDetail.exit_terminal
+    || mgmtDetail?.exit_state === "SHADOW_EXITED"
+    || smDetail.exit_state === "SHADOW_EXITED"
+  );
   if (mgmtDetail) {
     const checkCount = mgmtDetail.frozen_check_count ?? mgmtDetail.grid_check_count ?? mgmtDetail.check_count ?? 0;
-    const sm = mgmtDetail.shadow_management || mgmtDetail;
+    const sm = smDetail;
     const mechState = mgmtDetail.mechanical_condition_state ?? sm.mechanical_condition_state;
     const trigAt = mgmtDetail.condition_triggered_at_ms ?? sm.condition_triggered_at_ms;
     const trigFlag = mechState === "TRIGGERED" || mgmtDetail.condition_triggered || isNum(trigAt);
@@ -263,6 +328,7 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
           : " · 未触发";
     const mgmtBox = h("div", { class: "ld-sec small ld-ai-mgmt" },
       h("h5", { text: "AI 持仓复核与影子管理摘要" }),
+      isShadowExited ? h("p", { class: "banner warn", text: "AI 撤销 → 影子已退出（终态）→ 已停止主动追踪" }) : null,
       h("p", { class: "muted num",
         text: `冻结规则固定检查：${checkCount} 次${checkStateText}` }));
     const vChip = aiVerdictChip(verdict);
@@ -302,27 +368,39 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
         })) : null,
         reply ? h("p", { class: "ld-ai-reply", text: reply }) : (revErr ? h("p", { class: "ld-ai-reply muted", text: `复核失败：${revErr}` }) : null)));
     }
-    if (exitStatus === "SIMULATED_BUY_BACK_SHORT") {
-      const cost = sm.buyback_cost_btc ?? sm.short_buyback_cost_btc ?? sm.simulated_order?.cost_btc;
-      const fee = sm.buyback_fee_btc ?? sm.simulated_order?.fee_btc ?? sm.fees_btc?.buyback;
-      const qAt = sm.buyback_quote_at_ms ?? sm.quote_at_ms ?? sm.quoted_at_ms ?? sm.simulated_order?.quoted_at_ms;
-      const longInst = sm.retained_long_instrument ?? sm.long_instrument ?? c.long_instrument;
-      mgmtBox.append(h("p", { class: "muted num",
-        text: `影子模拟买回短腿（非实盘成交）：买回成本 ${isNum(cost) ? btcText(cost, 6) : "—"}${isNum(fee) ? `，手续费 ${btcText(fee, 6)}` : ""}${isNum(qAt) ? `，报价 ${clock(qAt)}` : ""}；保留保护腿${longInst ? `（${longInst}）` : ""}至到期。` }));
-    } else if (exitStatus === "REVOKE_NO_QUOTE") {
-      const longInst = sm.retained_long_instrument ?? sm.long_instrument ?? c.long_instrument;
-      mgmtBox.append(h("p", { class: "muted",
-        text: `REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益；保留保护腿${longInst ? `（${longInst}）` : ""}至到期。` }));
+    if (!isShadowExited) {
+      if (exitStatus === "SIMULATED_BUY_BACK_SHORT") {
+        const cost = sm.buyback_cost_btc ?? sm.short_buyback_cost_btc ?? sm.simulated_order?.cost_btc;
+        const fee = sm.buyback_fee_btc ?? sm.simulated_order?.fee_btc ?? sm.fees_btc?.buyback;
+        const qAt = sm.buyback_quote_at_ms ?? sm.quote_at_ms ?? sm.quoted_at_ms ?? sm.simulated_order?.quoted_at_ms;
+        const longInst = sm.retained_long_instrument ?? sm.long_instrument ?? c.long_instrument;
+        mgmtBox.append(h("p", { class: "muted num",
+          text: `影子模拟买回短腿（非实盘成交）：买回成本 ${isNum(cost) ? btcText(cost, 6) : "—"}${isNum(fee) ? `，手续费 ${btcText(fee, 6)}` : ""}${isNum(qAt) ? `，报价 ${clock(qAt)}` : ""}；保留保护腿${longInst ? `（${longInst}）` : ""}至到期。` }));
+      } else if (exitStatus === "REVOKE_NO_QUOTE") {
+        const longInst = sm.retained_long_instrument ?? sm.long_instrument ?? c.long_instrument;
+        mgmtBox.append(h("p", { class: "muted",
+          text: `REVOKE 时无可靠卖腿报价，仅记录撤销事实，未虚构止损收益；保留保护腿${longInst ? `（${longInst}）` : ""}至到期。` }));
+      }
     }
     box.append(mgmtBox);
   }
 
-  // 0. settlement at expiry, from the exchange delivery price
   const settlement = d.settlement;
-  if (settlement) box.append(settlementView(settlement, c));
+  if (isShadowExited) {
+    box.append(section("影子退出（终态）", shadowExitView(sx, c)));
+    box.append(h("details", { class: "ld-more ld-counterfactual" },
+      h("summary", { text: "反事实对照：若未撤销持有至到期（仅供研究，不计入本局影子退出盈亏）" }),
+      h("p", { class: "muted small", text: "以下为撤销后假设继续持有至到期的行情与结算对照，不影响上述已冻结的影子退出状态或盈亏。" }),
+      settlement ? settlementView(settlement, c) : null,
+      floatView(series, seriesError),
+      pathNowView(ov.path_now)));
+  } else {
+    // 0. settlement at expiry, from the exchange delivery price
+    if (settlement) box.append(settlementView(settlement, c));
 
-  // Now first: floating P&L, share of max profit and time left; the lock-time row follows.
-  box.append(section("现在", floatView(series, seriesError), pathNowView(ov.path_now)));
+    // Now first: floating P&L, share of max profit and time left; the lock-time row follows.
+    box.append(section("现在", floatView(series, seriesError), pathNowView(ov.path_now)));
+  }
 
   // The lock-time reasons, re-decided by fixed rules at every sample, and the hold review.
   if (series?.thesis_ledger) box.append(section(e.ai_shadow ? "工作台对照 · 仅作参考" : "锁定时的依据，现在怎样",
@@ -436,7 +514,7 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
         h("button", { class: "btn", type: "button", onclick: onStop }, "确认停止"),
         h("button", { class: "btn secondary", type: "button", onclick: onCancel }, "取消"));
       else acts.append(h("button", { class: "btn secondary", type: "button", onclick: onAskStop }, "停止追踪"));
-    } else if (e.status === "stopped" && e.stop_reason !== "expired" && isNum(c.expiry_ms) && c.expiry_ms > Date.now() && e.latest_snapshot_id) {
+    } else if (e.status === "stopped" && e.stop_reason !== "expired" && e.stop_reason !== "shadow_revoked_terminal" && !isShadowExited && isNum(c.expiry_ms) && c.expiry_ms > Date.now() && e.latest_snapshot_id) {
       if (confirm === "relock") acts.append(h("span", { class: "confirm", text: `以最近一点（${clock(e.latest_decision_asof_ms)}）为新的锁定时，开始一条新追踪。` }),
         h("button", { class: "btn", type: "button", onclick: onRelock }, "确认重新追踪"),
         h("button", { class: "btn secondary", type: "button", onclick: onCancel }, "取消"));
@@ -445,6 +523,107 @@ export function lockDetail(d, { loading, error, session, confirm, onStop, onAskS
   } else if (e.status === "active") acts.append(h("span", { class: "why", text: "登录后可停止追踪" }));
   if (acts.childNodes.length) box.append(acts);
   return box;
+}
+
+function shadowGapText(code) {
+  const base = String(code || "").split(":")[0];
+  return GAP_CN[base] || (base ? `${gapCn(code)}（${base}）` : "原因未记录");
+}
+
+export function shadowExitView(sx, c) {
+  if (!sx || typeof sx !== "object") {
+    return h("div", { class: "ld-result" },
+      h("b", { text: "影子已退出（终态 · 已停止主动追踪）" }),
+      h("span", { class: "muted small", text: "暂无冻结退出估值明细。" }));
+  }
+  const tier = sx.valuation_tier
+    || (isNum(sx.exit_pnl_btc) ? "EXECUTABLE_TWO_LEG_QUOTE"
+      : isNum(sx.indicative_exit_pnl_btc) ? "INDICATIVE_MARK_ONLY" : "UNPRICED");
+  const q = sx.exit_quote || {};
+  const entry = sx.entry || {};
+  const contract = sx.contract || c || {};
+  const gaps = Array.isArray(sx.quote_gap_reasons) ? sx.quote_gap_reasons.filter(Boolean) : [];
+  const gapsText = gaps.length ? [...new Set(gaps.map(shadowGapText))].join("、") : "";
+  const exitAt = sx.shadow_exit_at_ms;
+  const spotUsd = sx.spot_usd;
+
+  if (tier === "EXECUTABLE_TWO_LEG_QUOTE") {
+    const pnl = sx.exit_pnl_btc;
+    const pnlUsd = isNum(sx.exit_pnl_usd) ? sx.exit_pnl_usd : (isNum(pnl) && isNum(spotUsd) ? pnl * spotUsd : null);
+    const usdPart = isNum(pnlUsd)
+      ? `（约 ${pnlUsd > 0 ? "+" : pnlUsd < 0 ? "−" : ""}${usd(Math.abs(pnlUsd))} 美元${isNum(spotUsd) ? `，冻结现货 ${usd(spotUsd)} USD` : ""}）`
+      : (isNum(spotUsd) ? `（冻结现货 ${usd(spotUsd)} USD）` : "");
+    const shortBuy = q.short_buy_btc ?? q.short_buyback_ask_btc;
+    const longSale = q.long_sale_btc ?? q.long_sale_bid_btc;
+    const closeDebit = q.close_debit_btc ?? q.debit_btc;
+    const entryAfterFee = entry.entry_after_fee_btc ?? entry.net_credit_after_entry_fee_btc;
+    const shortTs = q.short_ts_ms ?? q.exchange_times_ms?.short;
+    const longTs = q.long_ts_ms ?? q.exchange_times_ms?.long;
+    const legSkew = isNum(q.leg_skew_ms) ? q.leg_skew_ms
+      : (isNum(shortTs) && isNum(longTs) ? Math.abs(shortTs - longTs) : null);
+    const quoteTs = q.valuation_ts_ms
+      ?? (isNum(shortTs) && isNum(longTs) ? Math.max(shortTs, longTs) : (shortTs ?? longTs));
+    const ageAtRevoke = isNum(q.age_at_revoke_ms) ? q.age_at_revoke_ms
+      : (isNum(exitAt) && isNum(quoteTs) ? Math.max(0, exitAt - quoteTs) : null);
+    const detailParts = [
+      `买回短腿（Ask） ${btcText(shortBuy, 6)}`,
+      `卖出保护腿（Bid） ${btcText(longSale, 6)}`,
+      `双腿平仓借记 ${btcText(closeDebit, 6)}`,
+      `平仓费 ${btcText(q.close_fee_btc, 6)}`,
+      isNum(entryAfterFee) ? `入场扣费后信用 ${btcText(entryAfterFee, 6)}` : null,
+      isNum(legSkew) ? `两腿时差 ${legSkew} ms` : null,
+      `报价时钟 ${clock(quoteTs)} vs 撤销时钟 ${clock(exitAt)}`,
+      isNum(ageAtRevoke) ? `报价距撤销 ${Math.round(ageAtRevoke / 1000)} 秒` : null,
+      (sx.historical_compat_closure || sx.historical_compat) ? "历史兼容收敛补建终态" : null,
+    ].filter(Boolean).join("；");
+    return h("div", { class: `ld-result${isNum(pnl) ? (pnl >= 0 ? " ok" : " bad") : ""}` },
+      h("b", { text: "影子模拟双腿退出估值（非实盘成交）" }),
+      h("span", { class: "num", text: `${signedBtc(pnl, 6)}${usdPart}` }),
+      h("span", { class: "ld-cap", text: `退出时刻 ${clock(exitAt)} · 已冻结终态` }),
+      h("small", { text: detailParts }));
+  }
+
+  if (tier === "INDICATIVE_MARK_ONLY") {
+    const ind = sx.indicative_exit_pnl_btc;
+    const indUsd = isNum(sx.indicative_exit_pnl_usd) ? sx.indicative_exit_pnl_usd
+      : (isNum(ind) && isNum(spotUsd) ? ind * spotUsd : null);
+    const usdPart = isNum(indUsd)
+      ? `（约 ${indUsd > 0 ? "+" : indUsd < 0 ? "−" : ""}${usd(Math.abs(indUsd))} 美元${isNum(spotUsd) ? `，现货 ${usd(spotUsd)} USD` : ""}）`
+      : "";
+    const shortMark = q.short_mark_btc ?? sx.indicative_marks?.short_mark_btc;
+    const longMark = q.long_mark_btc ?? sx.indicative_marks?.long_mark_btc;
+    const markAsof = q.mark_asof_ms ?? sx.indicative_marks?.asof_ms ?? q.valuation_ts_ms;
+    const detailParts = [
+      isNum(shortMark) || isNum(longMark)
+        ? `短腿标记价 ${btcText(shortMark, 6)}，保护腿标记价 ${btcText(longMark, 6)}${isNum(markAsof) ? `（标记时钟 ${clock(markAsof)}）` : ""}`
+        : null,
+      `双腿可执行报价缺口：${gapsText || "缺少完整双腿可成交盘口"}`,
+      "仅作指示性标记参考，不构成可执行退出成交或实盘盈亏。",
+    ].filter(Boolean).join("；");
+    return h("div", { class: "ld-result" },
+      h("b", { text: "影子退出（指示性标记估值 · 非可执行报价）" }),
+      h("span", { class: "num", text: `指示性净盈亏（非成交）：${signedBtc(ind, 6)}${usdPart}` }),
+      h("span", { class: "ld-cap", text: `退出时刻 ${clock(exitAt)} · 无可执行退出盈亏` }),
+      h("small", { text: detailParts }));
+  }
+
+  const ref = sx.last_indicative_reference;
+  const wrap = h("div", { class: "ld-shadow-exit-wrap" },
+    h("div", { class: "ld-result" },
+      h("b", { text: "影子退出，退出价/收益暂不可核实（UNPRICED）" }),
+      h("span", { class: "ld-cap", text: `退出时刻 ${clock(exitAt)} · 退出净盈亏：不可核实` }),
+      h("small", { text: [
+        `缺口原因：${gapsText || "撤销时无可用双腿报价"}`,
+        `保留保护腿${contract.long_instrument ? `（${contract.long_instrument}）` : ""}，未虚构平仓成交盈亏`,
+        (sx.historical_compat_closure || sx.historical_compat) ? "历史兼容收敛补建终态" : null,
+      ].filter(Boolean).join("；") })));
+  if (ref && typeof ref === "object") {
+    wrap.append(h("p", {
+      class: "muted small num",
+      text: `撤销前最后有效指示值（非退出成交价）：${clock(ref.asof_ms)} · 现货 ${isNum(ref.spot_usd) ? usd(ref.spot_usd) : "—"} USD · 标记浮盈亏 ${isNum(ref.float_pnl_btc) ? signedBtc(ref.float_pnl_btc, 6) : "—"}`,
+    }));
+  }
+  return wrap;
 }
 
 function settlementView(st, c) {

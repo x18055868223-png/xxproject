@@ -259,9 +259,26 @@ def _collect_entries(root: Path) -> tuple[dict[str, bytes], list[dict[str, str]]
     if '"read_only_demo": True' not in core_text:
         raise ValueError("SIGNAL_CORE_READ_ONLY_VIOLATED")
 
-    plan = json.loads(content["deploy/player_dossier/plan.daily_r16.v2.json"].decode("utf-8-sig"))
-    if plan.get("mode") != "SHADOW_ONLY" or plan.get("execution_allowed") is not False:
-        raise ValueError("PLAYER_PLAN_SHADOW_ONLY_VIOLATED")
+    plan_paths = sorted(
+        name for name in content
+        if name.startswith("deploy/player_dossier/plan.daily_r16.") and name.endswith(".json")
+    )
+    if not plan_paths:
+        raise ValueError("PLAYER_PLAN_MISSING")
+    plans_by_name: dict[str, dict[str, Any]] = {}
+    for rel_plan in plan_paths:
+        p_obj = json.loads(content[rel_plan].decode("utf-8-sig"))
+        if p_obj.get("mode") != "SHADOW_ONLY" or p_obj.get("execution_allowed") is not False:
+            raise ValueError(f"PLAYER_PLAN_SHADOW_ONLY_VIOLATED: {rel_plan}")
+        plans_by_name[rel_plan] = p_obj
+    active_plan_rel = (
+        "deploy/player_dossier/plan.daily_r16.v3_p5.json"
+        if "deploy/player_dossier/plan.daily_r16.v3_p5.json" in plans_by_name
+        else "deploy/player_dossier/plan.daily_r16.v2.json"
+    )
+    if active_plan_rel not in plans_by_name:
+        raise ValueError(f"PLAYER_PLAN_MISSING: {active_plan_rel}")
+    plan = plans_by_name[active_plan_rel]
 
     for name in content:
         lower = name.lower()

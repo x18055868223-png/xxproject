@@ -58,6 +58,8 @@ def test_reproducible_release_build_and_security_hygiene(tmp_path: Path):
         assert "signal_core/neutral_regulation_demo_fmz.py" in names
         assert "tools/astra_signal_producer_v1.py" in names
         assert "tools/xxproject_server_health_v1.py" in names
+        assert "deploy/player_dossier/plan.daily_r16.v3_p5.json" in names
+        assert "deploy/player_dossier/plan.daily_r16.v2.json" in names
         for name in names:
             lower = name.lower()
             assert not lower.endswith(".env"), f"forbidden .env in tarball: {name}"
@@ -68,6 +70,7 @@ def test_reproducible_release_build_and_security_hygiene(tmp_path: Path):
             assert "fmz-password" not in lower
 
         manifest = json.loads(tf.extractfile("RELEASE_MANIFEST.json").read().decode("utf-8"))
+        assert manifest["module_versions"]["player_plan"] == "daily_r16@3"
         inv = manifest["security_invariants"]
         assert inv["fmz_robot_bundled"] is False
         assert inv["fmz_execution_bundled"] is False
@@ -259,7 +262,8 @@ def test_server_health_checker_green_and_failure_paths(tmp_path: Path):
         (archive_root / sub).mkdir(parents=True)
 
     plan_copy = tmp_path / "plan.json"
-    plan_copy.write_text((ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v2.json").read_text(encoding="utf-8"), encoding="utf-8")
+    plan_copy.write_text((ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"), encoding="utf-8")
+    assert health_check._check_player_plan(ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v2.json")["ok"] is True
 
     def run_check(*, now_override: int | None = None):
         return health_check.run_health_check(
@@ -322,7 +326,7 @@ def test_server_health_checker_green_and_failure_paths(tmp_path: Path):
     assert r_plan["checks"]["player_plan"]["reason"] == "player_plan_safety_boundary_violated"
 
     # Restore valid plan & check Failure 4: release manifest tampering
-    plan_copy.write_text((ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v2.json").read_text(encoding="utf-8"), encoding="utf-8")
+    plan_copy.write_text((ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"), encoding="utf-8")
     (release_dir / "tools" / "astra_signal_producer_v1.py").write_text("# tampered\n", encoding="utf-8")
     r_tamper = run_check()
     assert r_tamper["ok"] is False
@@ -342,6 +346,14 @@ def test_workbench_unit_env_precedence_and_network_health_checks(tmp_path: Path,
         "ExecStart=/usr/bin/env ASTRA_WORKBENCH_FRONTEND_DIR=/opt/xxproject/current/deploy/astra_workbench_v3 "
         "/usr/bin/python3 /opt/xxproject/current/tools/astra_workbench_v20.py"
     ) in unit_text
+    prewarm_text = (
+        ROOT / "deploy" / "xxproject_server" / "systemd_units_unified" / "astra-player-prewarm.service"
+    ).read_text(encoding="utf-8")
+    deal_text = (
+        ROOT / "deploy" / "xxproject_server" / "systemd_units_unified" / "astra-player-deal.service"
+    ).read_text(encoding="utf-8")
+    assert "plan.daily_r16.v3_p5.json" in prewarm_text
+    assert "plan.daily_r16.v3_p5.json" in deal_text
 
     # Seed offline health/data files and valid live_public_read_only snapshot
     sig_logs = tmp_path / "logs"

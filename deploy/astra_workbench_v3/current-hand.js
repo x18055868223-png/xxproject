@@ -32,6 +32,7 @@ export const LABELS = {
   HOLD_REVIEW_SKIPPED: "持仓复核已跳过",
   SIMULATED_ORDER: "影子模拟买回短腿",
   SHADOW_ACTION: "影子撤销记录",
+  SHADOW_EXITED: "影子已退出（终态 · 已停止主动追踪）",
   active: "观察中", stopped: "已停止观察", expired: "已到期", error: "追踪异常", paused: "追踪暂停",
 };
 export function stageText(hand) {

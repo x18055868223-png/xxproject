@@ -184,9 +184,22 @@ def _verify_release_dir(release_dir: Path) -> dict[str, Any]:
         if actual != meta.get("sha256"):
             raise ValueError(f"RELEASE_FILE_SHA_MISMATCH: {rel}")
 
-    plan = json.loads((release_dir / "deploy/player_dossier/plan.daily_r16.v2.json").read_text(encoding="utf-8-sig"))
-    if plan.get("mode") != "SHADOW_ONLY" or plan.get("execution_allowed") is not False:
-        raise ValueError("PLAYER_PLAN_SHADOW_ONLY_FAILED")
+    dossier_dir = release_dir / "deploy" / "player_dossier"
+    plan_files = sorted(dossier_dir.glob("plan.daily_r16.*.json"))
+    if not plan_files:
+        raise ValueError("PLAYER_PLAN_MISSING")
+    plans_by_name: dict[str, dict[str, Any]] = {}
+    for pf in plan_files:
+        p_obj = json.loads(pf.read_text(encoding="utf-8-sig"))
+        if p_obj.get("mode") != "SHADOW_ONLY" or p_obj.get("execution_allowed") is not False:
+            raise ValueError(f"PLAYER_PLAN_SHADOW_ONLY_FAILED: {pf.name}")
+        plans_by_name[pf.name] = p_obj
+    active_plan_name = (
+        "plan.daily_r16.v3_p5.json" if "plan.daily_r16.v3_p5.json" in plans_by_name
+        else "plan.daily_r16.v2.json"
+    )
+    if active_plan_name not in plans_by_name:
+        raise ValueError(f"PLAYER_PLAN_MISSING: {active_plan_name}")
     core_text = (release_dir / "signal_core/neutral_regulation_demo_fmz.py").read_text(encoding="utf-8")
     if '"read_only_demo": True' not in core_text:
         raise ValueError("SIGNAL_CORE_READ_ONLY_FAILED")

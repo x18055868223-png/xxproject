@@ -13,6 +13,6 @@ Environment=PYTHONUNBUFFERED=1
 Environment=ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json
 EnvironmentFile=/etc/signal-audit/llm.env
 EnvironmentFile=/etc/signal-audit/workbench-v20.env
-ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_player_tracking_v13.py --url http://127.0.0.1:8895 auto-deal --root /var/lib/xxproject/workbench/shadow_dossiers --plan /opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v2.json --archive /var/lib/xxproject/research_archive
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_player_tracking_v13.py --url http://127.0.0.1:8895 auto-deal --root /var/lib/xxproject/workbench/shadow_dossiers --plan /opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v3_p5.json --archive /var/lib/xxproject/research_archive
 TimeoutStartSec=900
 Nice=10

@@ -262,3 +262,289 @@ def test_levels_view_words_why_a_lock_time_level_is_absent_and_marks_recomputed_
     assert out["rows"][1][:4] == ["本期最大痛点", "未覆盖", "80,000", "当时数据源未覆盖本到期日"]
     assert out["rows"][2] == ["Gamma 翻转位", "79,819（重算）", "79,783", "−36", "+0.99%（锁定时 +1.04%）"]
     assert "标“重算”的锁定时读数" in out["text"]
+
+
+# ── P5 shadow exit terminal view, valuation tiers, counterfactual isolation ──
+def test_shadow_exit_list_stop_reason_chips_and_outcome_tiers():
+    episodes = [
+        {
+            "episode_id": "lce_active",
+            "status": "active",
+            "created_at_ms": T0 + 10_000,
+            "contract": {"side": "put", "short_strike_usd": 95000, "long_strike_usd": 93000, "expiry_ms": T0 + 86_400_000},
+            "ai_shadow": {"model": "deepseek-v4-pro"},
+            "ai_dossier_management": {"latest_verdict": "HOLD"},
+            "outcome": {"verdict": "profit", "basis": "floating_now", "flat_band_usd": 10},
+        },
+        {
+            "episode_id": "lce_exec",
+            "status": "stopped",
+            "stop_reason": "shadow_revoked_terminal",
+            "created_at_ms": T0 + 9_000,
+            "contract": {"side": "call", "short_strike_usd": 102000, "long_strike_usd": 104000, "expiry_ms": T0 + 86_400_000},
+            "ai_shadow": {"model": "deepseek-v4-pro"},
+            "ai_dossier_management": {
+                "latest_verdict": "REVOKE",
+                "exit_terminal": True,
+                "exit_state": "SHADOW_EXITED",
+                "shadow_management": {"exit_terminal": True, "exit_state": "SHADOW_EXITED"},
+            },
+            "outcome": {"verdict": "loss", "basis": "shadow_exit_frozen", "frozen_exit_pnl_btc": -0.0021, "flat_band_usd": 10},
+        },
+        {
+            "episode_id": "lce_ind",
+            "status": "stopped",
+            "stop_reason": "shadow_revoked_terminal",
+            "created_at_ms": T0 + 8_000,
+            "contract": {"side": "call", "short_strike_usd": 102000, "long_strike_usd": 104000, "expiry_ms": T0 + 86_400_000},
+            "ai_shadow": {"model": "deepseek-v4-pro"},
+            "ai_dossier_management": {"latest_verdict": "REVOKE", "exit_terminal": True, "exit_state": "SHADOW_EXITED"},
+            "outcome": {"verdict": None, "basis": "shadow_exit_indicative_only", "flat_band_usd": 10},
+        },
+        {
+            "episode_id": "lce_unp",
+            "status": "stopped",
+            "stop_reason": "shadow_revoked_terminal",
+            "created_at_ms": T0 + 7_000,
+            "contract": {"side": "put", "short_strike_usd": 95000, "long_strike_usd": 93000, "expiry_ms": T0 + 86_400_000},
+            "ai_shadow": {"model": "deepseek-v4-pro"},
+            "ai_dossier_management": {"latest_verdict": "REVOKE", "exit_terminal": True, "exit_state": "SHADOW_EXITED"},
+            "outcome": {"verdict": None, "basis": "shadow_exit_unpriced", "flat_band_usd": 10},
+        },
+    ]
+    out = run(
+        """
+        const tbl = L.lockList(p.episodes, { selected: null, onOpen: () => {}, renderDetail: () => document.createElement('div') });
+        const rows = walk(tbl).filter((x) => x.tagName === 'tr' && (x.className || '').includes('lock-row'));
+        return rows.map((r) => {
+          const tds = r.childNodes;
+          const chips = walk(tds[2]).filter((x) => (x.className || '').includes('chip')).map((x) => x.textContent);
+          const outcomeSpan = walk(tds[3]).find((x) => x.attrs && x.attrs.title);
+          return {
+            id: r.attrs.id,
+            statusText: tds[2].textContent,
+            chips,
+            outcomeText: tds[3].textContent,
+            outcomeTitle: outcomeSpan ? outcomeSpan.attrs.title : null,
+          };
+        });
+        """,
+        {"episodes": episodes},
+    )
+    by_id = {r["id"]: r for r in out}
+    assert "追踪中" in by_id["lock-lce_active"]["statusText"] and "影子已退出" not in by_id["lock-lce_active"]["chips"]
+    assert by_id["lock-lce_active"]["outcomeText"] == "盈利 浮动"
+
+    exec_row = by_id["lock-lce_exec"]
+    assert "AI 撤销 · 影子已退出（已停止主动追踪）" in exec_row["statusText"]
+    assert "AI · REVOKE" in exec_row["chips"] and "影子已退出" in exec_row["chips"]
+    assert exec_row["outcomeText"] == "亏损 影子退出"
+    assert "按撤销时冻结双腿影子报价" in exec_row["outcomeTitle"]
+
+    ind_row = by_id["lock-lce_ind"]
+    assert ind_row["outcomeText"] == "指示估值"
+    assert "指示估值 · 非实盘" in ind_row["outcomeTitle"]
+
+    unp_row = by_id["lock-lce_unp"]
+    assert unp_row["outcomeText"] == "价不可核实"
+    assert "退出价不可核实" in unp_row["outcomeTitle"]
+
+
+def test_shadow_exit_lock_detail_three_tiers_counterfactual_and_no_relock():
+    future_expiry = 4_000_000_000_000
+    base_detail = {
+        "episode": {
+            "episode_id": "lce_sx1",
+            "status": "stopped",
+            "stop_reason": "shadow_revoked_terminal",
+            "created_at_ms": T0,
+            "latest_snapshot_id": "snap_latest",
+            "latest_decision_asof_ms": T0 + 120_000,
+            "ai_shadow": {"dossier_id": "Deribit_BTC_20261124T080000Z", "hand_id": "hand_aaaaaaaaaaaaaaaaaaaaaaaa", "model": "deepseek-v4-pro"},
+        },
+        "fixed_contract": {
+            "side": "call",
+            "short_strike_usd": 102000,
+            "long_strike_usd": 104000,
+            "width_usd": 2000,
+            "quantity_btc": 1,
+            "expiry_ms": future_expiry,
+            "long_instrument": "BTC-24NOV26-104000-C",
+        },
+        "baseline": {"asof_ms": T0},
+        "latest": {"asof_ms": T0 + 600_000},
+        "overview": {
+            "remaining_to_expiry_ms": 3_600_000,
+            "reference_result": {"entry_credit_btc": 0.005, "entry_fee_btc": 0.0004, "entry_after_fee_btc": 0.0046},
+            "path_now": {"applicable": True, "touched": True, "touch_cn": "已触及短腿"},
+        },
+        "settlement": {
+            "status": "settled",
+            "delivery": {"delivery_price_usd": 105000, "date": "2026-11-24"},
+            "payout_btc": 0.019048,
+            "entry_after_fee_btc": 0.0046,
+            "settlement_result_btc": -0.014448,
+            "settlement_result_usd": -1517.0,
+        },
+        "rows": [],
+        "process": {},
+    }
+    series = {
+        "points": [{"asof_ms": T0 + 600_000, "spot_usd": 105000, "float_pnl_btc": -0.0222, "max_profit_btc": 0.005, "remaining_credit_btc": 0.0272}]
+    }
+
+    def render_tier(sx, extra_episode=None, extra_mgmt=None):
+        detail = json.loads(json.dumps(base_detail))
+        if extra_episode:
+            detail["episode"].update(extra_episode)
+        detail["ai_dossier_management"] = {
+            "frozen_check_count": 5,
+            "condition_triggered": True,
+            "condition_triggered_at_ms": T0 + 300_000,
+            "latest_verdict": "REVOKE",
+            "exit_terminal": True,
+            "exit_state": "SHADOW_EXITED",
+            "shadow_management": {
+                "exit_terminal": True,
+                "exit_state": "SHADOW_EXITED",
+                "active_monitoring_stopped": True,
+                "valuation_tier": sx["valuation_tier"],
+                "shadow_exit": sx,
+                **(extra_mgmt or {}),
+            },
+        }
+        return run(
+            """
+            const v = L.lockDetail(p.d, { session: true, series: p.series, onRelock: () => {} });
+            const n = walk(v);
+            const cf = n.find((x) => x.tagName === 'details' && (x.className || '').includes('ld-counterfactual'));
+            const btns = n.filter((x) => x.tagName === 'button').map((x) => x.textContent);
+            const results = n.filter((x) => (x.className || '').includes('ld-result')).map((x) => x.textContent);
+            return { secs: sections(v), text: v.textContent, cfSummary: cf ? cf.childNodes[0].textContent : null, cfText: cf ? cf.textContent : null, btns, results };
+            """,
+            {"d": detail, "series": series},
+        )
+
+    sx_exec = {
+        "valuation_tier": "EXECUTABLE_TWO_LEG_QUOTE",
+        "shadow_exit_at_ms": T0 + 350_000,
+        "exit_pnl_btc": -0.0018,
+        "exit_pnl_usd": -184.5,
+        "spot_usd": 102500.0,
+        "entry": {"entry_after_fee_btc": 0.0046},
+        "exit_quote": {
+            "short_buyback_ask_btc": 0.0082,
+            "long_sale_bid_btc": 0.0022,
+            "short_buy_btc": 0.0082,
+            "long_sale_btc": 0.0022,
+            "close_debit_btc": 0.0060,
+            "close_fee_btc": 0.0004,
+            "leg_skew_ms": 420,
+            "valuation_ts_ms": T0 + 349_000,
+            "age_at_revoke_ms": 1000,
+        },
+        "quote_gap_reasons": [],
+    }
+    out_exec = render_tier(sx_exec)
+    assert out_exec["secs"][:2] == ["AI 持仓复核与影子管理摘要", "影子退出（终态）"]
+    assert "现在" not in out_exec["secs"]
+    assert "AI 撤销 → 影子已退出（终态）→ 已停止主动追踪" in out_exec["text"]
+    assert "影子模拟双腿退出估值（非实盘成交）" in out_exec["results"][0]
+    assert "−0.0018 BTC" in out_exec["results"][0]
+    assert "185 美元" in out_exec["results"][0]
+    assert "两腿时差 420 ms" in out_exec["results"][0]
+    assert "0.006 BTC" in out_exec["results"][0] and "0.0004 BTC" in out_exec["results"][0]
+    assert out_exec["cfSummary"] == "反事实对照：若未撤销持有至到期（仅供研究，不计入本局影子退出盈亏）"
+    assert "以下为撤销后假设继续持有至到期的行情与结算对照，不影响上述已冻结的影子退出状态或盈亏。" in out_exec["cfText"]
+    assert "到期结算" in out_exec["cfText"] and "锁定以来浮动盈亏" in out_exec["cfText"]
+    assert "以最近一点重新追踪" not in out_exec["btns"]
+
+    sx_ind = {
+        "valuation_tier": "INDICATIVE_MARK_ONLY",
+        "shadow_exit_at_ms": T0 + 350_000,
+        "exit_pnl_btc": None,
+        "indicative_exit_pnl_btc": -0.00195,
+        "indicative_exit_pnl_usd": -200.0,
+        "spot_usd": 102500.0,
+        "exit_quote": {"short_mark_btc": 0.0081, "long_mark_btc": 0.0019, "mark_asof_ms": T0 + 349_000},
+        "quote_gap_reasons": ["long_depth_insufficient"],
+    }
+    out_ind = render_tier(sx_ind)
+    assert "影子退出（指示性标记估值 · 非可执行报价）" in out_ind["results"][0]
+    assert "−0.00195 BTC" in out_ind["results"][0]
+    assert "保护腿盘口深度不足" in out_ind["results"][0]
+    assert "影子模拟双腿退出估值（非实盘成交）" not in out_ind["results"][0]
+
+    sx_unp_with_ref = {
+        "valuation_tier": "UNPRICED",
+        "shadow_exit_at_ms": T0 + 350_000,
+        "exit_pnl_btc": None,
+        "indicative_exit_pnl_btc": None,
+        "quote_gap_reasons": ["short_quote_stale_at_revoke", "long_book_missing"],
+        "last_indicative_reference": {
+            "asof_ms": T0 + 240_000,
+            "spot_usd": 102100.0,
+            "float_pnl_btc": -0.0012,
+            "basis": "pre_revoke_asof_series_reference_not_exit_fill",
+        },
+    }
+    out_unp = render_tier(sx_unp_with_ref)
+    assert "影子退出，退出价/收益暂不可核实（UNPRICED）" in out_unp["results"][0]
+    assert "撤销时短腿报价已过期" in out_unp["results"][0]
+    assert "BTC-24NOV26-104000-C" in out_unp["results"][0]
+    assert "撤销前最后有效指示值（非退出成交价）：" in out_unp["text"]
+    assert "102,100 USD" in out_unp["text"] and "−0.0012 BTC" in out_unp["text"]
+
+    sx_unp_no_ref = {**sx_unp_with_ref, "last_indicative_reference": None}
+    out_unp_noref = render_tier(sx_unp_no_ref)
+    assert "撤销前最后有效指示值（非退出成交价）：" not in out_unp_noref["text"]
+
+    # Manual non-revoked stopped episode still keeps relock button and top-level "现在" section
+    manual_stopped = {
+        **base_detail,
+        "episode": {"episode_id": "lce_manual", "status": "stopped", "stop_reason": "observation_stopped_not_position_close",
+                    "created_at_ms": T0, "latest_snapshot_id": "snap_latest", "latest_decision_asof_ms": T0 + 120_000},
+    }
+    out_manual = run(
+        """
+        const v = L.lockDetail(p.d, { session: true, series: p.series, onRelock: () => {} });
+        return { secs: sections(v), btns: walk(v).filter((x) => x.tagName === 'button').map((x) => x.textContent) };
+        """,
+        {"d": manual_stopped, "series": series},
+    )
+    assert "现在" in out_manual["secs"] and "影子退出（终态）" not in out_manual["secs"]
+    assert "以最近一点重新追踪" in out_manual["btns"]
+
+    # Backend canonical schema fields: net_credit_after_entry_fee_btc, exchange_times_ms, debit_btc, indicative_marks
+    sx_worker_exec = {
+        "valuation_tier": "EXECUTABLE_TWO_LEG_QUOTE",
+        "shadow_exit_at_ms": T0 + 350_000,
+        "exit_pnl_btc": -0.0018,
+        "spot_usd": 102500.0,
+        "entry": {"net_credit_after_entry_fee_btc": 0.0046},
+        "exit_quote": {
+            "short_buy_btc": 0.0082,
+            "long_sale_btc": 0.0022,
+            "debit_btc": 0.0060,
+            "close_fee_btc": 0.0004,
+            "exchange_times_ms": {"short": T0 + 348_200, "long": T0 + 348_750},
+            "valuation_ts_ms": T0 + 348_750,
+        },
+        "historical_compat": True,
+    }
+    out_w_exec = render_tier(sx_worker_exec)
+    assert "入场扣费后信用 0.0046 BTC" in out_w_exec["results"][0]
+    assert "两腿时差 550 ms" in out_w_exec["results"][0]
+    assert "双腿平仓借记 0.006 BTC" in out_w_exec["results"][0]
+    assert "历史兼容收敛补建终态" in out_w_exec["results"][0]
+
+    sx_worker_ind = {
+        "valuation_tier": "INDICATIVE_MARK_ONLY",
+        "shadow_exit_at_ms": T0 + 350_000,
+        "indicative_exit_pnl_btc": -0.00195,
+        "spot_usd": 102500.0,
+        "indicative_marks": {"short_mark_btc": 0.0081, "long_mark_btc": 0.0019, "asof_ms": T0 + 349_000},
+        "quote_gap_reasons": ["long_depth_insufficient"],
+    }
+    out_w_ind = render_tier(sx_worker_ind)
+    assert "短腿标记价 0.0081 BTC，保护腿标记价 0.0019 BTC" in out_w_ind["results"][0]

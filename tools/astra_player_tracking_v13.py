@@ -43,6 +43,10 @@ DOSSIER_ID = r'Deribit_BTC_\d{8}T\d{6}Z'
 HAND_ID = r'hand_[0-9a-f]{24}'
 TRACKER_ID = r'lce_[0-9a-f]{24}'
 REVIEW_ID = r'rev_[0-9a-f]{24}'
+SHADOW_EXIT_SCHEMA = 'shadow_exit_snapshot@1'
+VALUATION_TIERS = ('EXECUTABLE_TWO_LEG_QUOTE', 'INDICATIVE_MARK_ONLY', 'UNPRICED')
+INDICATIVE_MARK_MAX_AGE_MS = 30_000
+PRE_REVOKE_REF_MAX_AGE_MS = 10 * 60_000
 
 
 class Blocked(ValueError):
@@ -940,6 +944,8 @@ def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry
 
 def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive_root=None):
     """Run due grid condition checks idempotently without duplicating existing ticks."""
+    if _episode_has_shadow_exit(episode):
+        return [], None
     if index_path is None and not check_due:
         return None, None
     frozen = optional(episode / 'condition.json')
@@ -1073,6 +1079,550 @@ def _is_verified_revoke(record):
             or body.get('discretionary_revoke_attribution') == 'UNVERIFIED'):
         return False
     return True
+
+
+def _can_auto_shadow_exit(link_record, episode_meta, decision):
+    """Strictly allow automatic SHADOW_EXITED transition only for verified shadow revokes."""
+    if not _is_verified_revoke(decision):
+        return False
+    body = decision.get('body') if isinstance(decision.get('body'), dict) else decision
+    if decision.get('status') not in (None, 'VALID') or body.get('status') not in (None, 'VALID'):
+        return False
+    if not (isinstance(link_record, dict) and link_record.get('execution_allowed') is False):
+        return False
+    if not (isinstance(episode_meta, dict)
+            and episode_meta.get('mode') == 'SHADOW_DECISION'
+            and episode_meta.get('actual_execution') is None):
+        return False
+    return True
+
+
+def has_verified_shadow_revoke(hand):
+    """Return True iff the shadow hand has a verified AI REVOKE within strict shadow boundaries."""
+    link_record = optional(hand / 'tracking' / 'link.json')
+    if not isinstance(link_record, dict):
+        return False
+    ep_id = (link_record.get('origin') or {}).get('dossier_episode_id')
+    if not ep_id:
+        return False
+    ep_dir = hand.parent.parent / 'episodes' / dossier.key(ep_id)
+    if not ep_dir.is_dir():
+        return False
+    episode_meta = optional(ep_dir / 'episode.json')
+    prior_reviews, _ = _load_prior_reviews_and_context(ep_dir)
+    for rev in reversed(prior_reviews):
+        if _can_auto_shadow_exit(link_record, episode_meta, rev):
+            return True
+    if (ep_dir / 'events').is_dir():
+        ev_items = []
+        for p in (ep_dir / 'events').glob('ai_rev_*.json'):
+            ev = optional(p)
+            if isinstance(ev, dict):
+                ev_items.append(ev)
+        ev_items.sort(key=lambda e: (e.get('recorded_at_ms') or 0, str(e.get('event_id') or '')), reverse=True)
+        for ev in ev_items:
+            if _can_auto_shadow_exit(link_record, episode_meta, ev):
+                return True
+    return False
+
+
+def _episode_has_shadow_exit(episode, link_record=None):
+    """Return True if the episode has SHADOW_EXITED or an active verified shadow revoke."""
+    if episode is None or not episode.is_dir():
+        return False
+    events_dir = episode / 'events'
+    if events_dir.is_dir():
+        for p in events_dir.glob('*.json'):
+            ev = optional(p)
+            if isinstance(ev, dict) and ev.get('kind') == 'SHADOW_EXITED':
+                return True
+    ep_meta = optional(episode / 'episode.json')
+    if not isinstance(ep_meta, dict):
+        return False
+    if link_record is None and ep_meta.get('hand_id'):
+        try:
+            hand_link = episode.parent.parent / 'hands' / dossier.key(ep_meta['hand_id']) / 'tracking' / 'link.json'
+            link_record = optional(hand_link)
+        except ValueError:
+            link_record = None
+    if not (ep_meta.get('mode') == 'SHADOW_DECISION'
+            and ep_meta.get('actual_execution') is None
+            and isinstance(link_record, dict)
+            and link_record.get('execution_allowed') is False):
+        return False
+    if events_dir.is_dir():
+        for p in events_dir.glob('*.json'):
+            ev = optional(p)
+            if isinstance(ev, dict) and ev.get('kind') == 'AI_REVOKE' and _is_verified_revoke(ev):
+                return True
+    reviews_dir = episode / 'reviews'
+    if reviews_dir.is_dir():
+        for p in reviews_dir.glob('rev_*/decision.json'):
+            dec = optional(p)
+            if isinstance(dec, dict) and dec.get('status') in (None, 'VALID') and _is_verified_revoke(dec):
+                return True
+    return False
+
+
+def _compact_close_quote_dict(close_q):
+    if not isinstance(close_q, dict):
+        return None
+    out = {
+        'kind': close_q.get('kind'),
+        'side': close_q.get('side'),
+        'short_buy_btc': close_q.get('short_buy_btc'),
+        'long_sale_btc': close_q.get('long_sale_btc'),
+        'debit_btc': close_q.get('debit_btc'),
+        'close_debit_btc': close_q.get('debit_btc'),
+        'close_fee_btc': close_q.get('close_fee_btc'),
+        'close_fee_basis': close_q.get('close_fee_basis'),
+        'net_debit_after_close_fee_btc': close_q.get('net_debit_after_close_fee_btc'),
+        'available_depth_btc': close_q.get('available_depth_btc'),
+        'exchange_times_ms': close_q.get('exchange_times_ms'),
+        'valuation_ts_ms': close_q.get('valuation_ts_ms'),
+        'gap_reasons': list(close_q.get('gap_reasons') or []),
+    }
+    if isinstance(close_q.get('upper_bound'), dict):
+        out['upper_bound'] = close_q['upper_bound']
+    return out
+
+
+def build_shadow_exit_snapshot(
+    frozen,
+    link_record,
+    decision,
+    *,
+    revoke_at_ms,
+    quote_pt=None,
+    t0_point=None,
+    series_rows=None,
+    saved_revoke_quote=None,
+    review_snapshot=None,
+    historical_compat=False,
+):
+    """Freeze an immutable 3-tier shadow exit snapshot at revoke_at_ms without post-revoke hindsight."""
+    contract_src = dict((frozen or {}).get('contract') or {})
+    contract = {
+        k: contract_src.get(k)
+        for k in (*CONTRACT_FIELDS, 'short_strike_usd', 'long_strike_usd', 'width_usd')
+        if k in contract_src
+    }
+    contract['contract_multiplier'] = 1.0
+    expiry_ms = contract.get('expiry_ms')
+    quantity = locked_compare._number(contract.get('quantity_btc'))
+    revoke_ts = int(revoke_at_ms)
+
+    t0 = (link_record or {}).get('t0') or {}
+    economy = t0.get('economy') or {}
+    t0_snap = locked_compare._point_snapshot(t0_point) if isinstance(t0_point, dict) else {}
+    t0_econ = t0_snap.get('economics') or {}
+    t0_quote = (t0_snap.get('market') or {}).get('quote') or {}
+
+    entry_visible_credit_btc = locked_compare._number(economy.get('visible_credit_btc'))
+    if entry_visible_credit_btc is None:
+        entry_visible_credit_btc = (
+            locked_compare._number(t0_econ.get('visible_credit_btc'))
+            or locked_compare._number(t0_quote.get('credit_btc'))
+        )
+    entry_fee_btc = locked_compare._number(economy.get('theoretical_two_leg_fee_btc'))
+    if entry_fee_btc is None:
+        entry_fee_btc = locked_compare._number(t0_econ.get('theoretical_two_leg_fee_btc'))
+    entry_after_fee_btc = locked_compare._number(economy.get('net_credit_after_entry_fee_btc'))
+    if entry_after_fee_btc is None:
+        entry_after_fee_btc = locked_compare._number(t0_econ.get('net_credit_after_entry_fee_btc'))
+        if entry_after_fee_btc is None and entry_visible_credit_btc is not None and entry_fee_btc is not None:
+            entry_after_fee_btc = entry_visible_credit_btc - entry_fee_btc
+    entry_short_btc = locked_compare._number(economy.get('short_premium_btc'))
+    if entry_short_btc is None:
+        entry_short_btc = (
+            locked_compare._number(t0_econ.get('short_premium_btc'))
+            or locked_compare._number(t0_quote.get('short_sale_btc'))
+        )
+    entry_long_btc = locked_compare._number(economy.get('long_premium_btc'))
+    if entry_long_btc is None:
+        entry_long_btc = (
+            locked_compare._number(t0_econ.get('long_premium_btc'))
+            or locked_compare._number(t0_quote.get('long_purchase_btc'))
+        )
+    entry_spot_usd = (
+        locked_compare._number(economy.get('valuation_spot_usd'))
+        or locked_compare._number(t0.get('index_usd'))
+        or locked_compare._number(t0_econ.get('valuation_spot_usd'))
+        or locked_compare._number((t0_snap.get('market') or {}).get('reference_price_usd'))
+    )
+
+    quote_snap = locked_compare._point_snapshot(quote_pt) if isinstance(quote_pt, dict) else {}
+    rev_spot = locked_compare._number((review_snapshot or {}).get('spot_usd'))
+    exit_spot_usd = (locked_compare._spot(quote_snap) if quote_snap else None) or rev_spot
+
+    close_q = None
+    marks = {'short': None, 'long': None}
+    mark_asof_ms = None
+    gap_reasons = []
+    valuation_tier = 'UNPRICED'
+    exit_pnl_btc = None
+    exit_pnl_usd = None
+    indicative_exit_pnl_btc = None
+    indicative_exit_pnl_usd = None
+
+    before_expiry = (expiry_ms is None) or (revoke_ts < int(expiry_ms))
+    if not before_expiry:
+        gap_reasons.append('revoked_at_or_after_expiry')
+    if quantity is None or quantity <= 0:
+        gap_reasons.append('quantity_invalid_or_missing')
+
+    if isinstance(quote_pt, dict) and before_expiry and quantity is not None and quantity > 0:
+        close_q = locked_compare._close_quote(quote_pt)
+        raw_market = (((quote_pt.get('packet') or {}).get('raw_payload') or {}).get('market') or {})
+        short_book = raw_market.get('short_book') if isinstance(raw_market.get('short_book'), dict) else {}
+        long_book = raw_market.get('long_book') if isinstance(raw_market.get('long_book'), dict) else {}
+        short_ts = locked_compare._int(short_book.get('timestamp'))
+        if short_ts is None:
+            short_ts = locked_compare._int((close_q.get('exchange_times_ms') or {}).get('short'))
+        long_ts = locked_compare._int(long_book.get('timestamp'))
+        if long_ts is None:
+            long_ts = locked_compare._int((close_q.get('exchange_times_ms') or {}).get('long'))
+
+        short_fresh = short_ts is not None and 0 <= revoke_ts - short_ts <= underwriting.MAX_BOOK_AGE_MS
+        long_fresh = long_ts is not None and 0 <= revoke_ts - long_ts <= underwriting.MAX_BOOK_AGE_MS
+        skew_ok = (short_ts is not None and long_ts is not None
+                   and abs(short_ts - long_ts) <= underwriting.MAX_BOOK_SKEW_MS)
+
+        debit_btc = locked_compare._number(close_q.get('debit_btc'))
+        close_fee_btc = locked_compare._number(close_q.get('close_fee_btc'))
+
+        if (not close_q.get('gap_reasons')
+                and debit_btc is not None
+                and close_fee_btc is not None
+                and short_fresh
+                and long_fresh
+                and skew_ok
+                and entry_after_fee_btc is not None):
+            valuation_tier = 'EXECUTABLE_TWO_LEG_QUOTE'
+            exit_pnl_btc = round(entry_after_fee_btc - debit_btc - close_fee_btc, 8)
+            if exit_spot_usd is not None:
+                exit_pnl_usd = round(exit_pnl_btc * exit_spot_usd, 2)
+        else:
+            gap_reasons.extend(list(close_q.get('gap_reasons') or []))
+            if not long_book:
+                gap_reasons.append('long_leg_quote_missing_at_revoke')
+            if not short_fresh:
+                gap_reasons.append('short_quote_stale_at_revoke')
+            if not long_fresh:
+                gap_reasons.append('long_quote_stale_at_revoke')
+            if short_ts is not None and long_ts is not None and not skew_ok:
+                gap_reasons.append('leg_book_time_skew')
+            if entry_after_fee_btc is None:
+                gap_reasons.append('entry_after_fee_missing')
+
+            marks = locked_compare._leg_marks(quote_pt)
+            mark_asof_ms = locked_compare._point_asof(quote_pt, quote_snap) or locked_compare._point_recorded(quote_pt)
+            mark_fresh = mark_asof_ms is not None and 0 <= revoke_ts - mark_asof_ms <= INDICATIVE_MARK_MAX_AGE_MS
+            if marks['short'] is not None and marks['long'] is not None and mark_fresh:
+                ind_val = None
+                if isinstance(t0_point, dict):
+                    flt = locked_compare.floating_pnl(quote_pt, t0_point)
+                    ind_val = locked_compare._number(flt.get('float_pnl_btc'))
+                if ind_val is None and entry_short_btc is not None and entry_long_btc is not None:
+                    ind_val = (entry_short_btc - entry_long_btc) - (marks['short'] - marks['long']) * quantity
+                if ind_val is None and entry_visible_credit_btc is not None:
+                    ind_val = entry_visible_credit_btc - (marks['short'] - marks['long']) * quantity
+                if ind_val is not None:
+                    valuation_tier = 'INDICATIVE_MARK_ONLY'
+                    indicative_exit_pnl_btc = round(float(ind_val), 8)
+                    if exit_spot_usd is not None:
+                        indicative_exit_pnl_usd = round(indicative_exit_pnl_btc * exit_spot_usd, 2)
+                else:
+                    gap_reasons.append('entry_credit_missing_for_mark')
+            else:
+                if marks['short'] is None or marks['long'] is None:
+                    gap_reasons.append('leg_mark_missing')
+                else:
+                    gap_reasons.append('indicative_mark_stale_at_revoke')
+    else:
+        if quote_pt is None:
+            gap_reasons.append('quote_point_missing_at_revoke')
+        saved_gaps = ((saved_revoke_quote or {}).get('quote') or {}).get('short_buyback_gaps')
+        if isinstance(saved_gaps, list):
+            gap_reasons.extend(str(g) for g in saved_gaps if g)
+        if historical_compat and quote_pt is None and (saved_revoke_quote or {}).get('quote'):
+            gap_reasons.append('long_leg_quote_missing_at_revoke')
+
+    # Strictly as-of pre-revoke series lookup (never include any row with row_asof > revoke_ts)
+    last_indicative_reference = None
+    best_asof = None
+    best_metrics = None
+    for row in series_rows or ():
+        if not isinstance(row, dict):
+            continue
+        m = row.get('metrics') if isinstance(row.get('metrics'), dict) else row
+        row_asof = (
+            locked_compare._int(m.get('asof_ms'))
+            or locked_compare._int(row.get('asof_ms'))
+            or locked_compare._int(row.get('recorded_at_ms'))
+        )
+        if row_asof is None or not (0 <= revoke_ts - row_asof <= PRE_REVOKE_REF_MAX_AGE_MS):
+            continue
+        has_float = locked_compare._number(m.get('float_pnl_btc')) is not None
+        has_marks = (locked_compare._number(m.get('short_mark_btc')) is not None
+                     and locked_compare._number(m.get('long_mark_btc')) is not None)
+        if not (has_float or has_marks):
+            continue
+        if best_asof is None or row_asof >= best_asof:
+            best_asof = row_asof
+            best_metrics = m
+    if best_asof is not None and best_metrics is not None:
+        last_indicative_reference = dict(
+            asof_ms=best_asof,
+            age_ms=revoke_ts - best_asof,
+            float_pnl_btc=locked_compare._number(best_metrics.get('float_pnl_btc')),
+            short_mark_btc=locked_compare._number(best_metrics.get('short_mark_btc')),
+            long_mark_btc=locked_compare._number(best_metrics.get('long_mark_btc')),
+            spot_usd=locked_compare._number(best_metrics.get('spot_usd')),
+            basis='pre_revoke_asof_series_reference_not_exit_fill',
+        )
+
+    short_buyback_ref = (saved_revoke_quote or {}).get('quote')
+    if short_buyback_ref is None and isinstance(quote_pt, dict):
+        short_buyback_ref = locked_compare.short_buyback_quote(quote_pt)
+
+    dec_body = decision.get('body') if isinstance(decision, dict) and isinstance(decision.get('body'), dict) else (decision or {})
+    compact_cq = _compact_close_quote_dict(close_q)
+    core = dict(
+        schema=SHADOW_EXIT_SCHEMA,
+        exit_state='SHADOW_EXITED',
+        terminal=True,
+        exit_terminal=True,
+        active_monitoring_stopped=True,
+        exit_reason='AI_REVOKE',
+        simulated=True,
+        execution_allowed=False,
+        actual_execution=None,
+        actual_trade_pnl_recorded=False,
+        historical_compat=bool(historical_compat),
+        historical_compat_closure=bool(historical_compat),
+        review_id=dec_body.get('review_id'),
+        shadow_exit_at_ms=revoke_ts,
+        valuation_tier=valuation_tier,
+        contract=contract,
+        spot_usd=exit_spot_usd,
+        entry=dict(
+            visible_credit_btc=entry_visible_credit_btc,
+            entry_fee_btc=entry_fee_btc,
+            net_credit_after_entry_fee_btc=entry_after_fee_btc,
+            short_premium_btc=entry_short_btc,
+            long_premium_btc=entry_long_btc,
+            spot_usd=entry_spot_usd,
+        ),
+        close_quote=compact_cq,
+        exit_quote=compact_cq,
+        short_buyback_quote=short_buyback_ref,
+        exit_pnl_btc=exit_pnl_btc,
+        exit_pnl_usd=exit_pnl_usd,
+        indicative_exit_pnl_btc=indicative_exit_pnl_btc,
+        indicative_exit_pnl_usd=indicative_exit_pnl_usd,
+        indicative_marks=(
+            dict(short_mark_btc=marks['short'], long_mark_btc=marks['long'], asof_ms=mark_asof_ms)
+            if (marks['short'] is not None and marks['long'] is not None)
+            else None
+        ),
+        quote_gap_reasons=[] if valuation_tier == 'EXECUTABLE_TWO_LEG_QUOTE' else sorted(set(gap_reasons)),
+        last_indicative_reference=last_indicative_reference,
+        source_decision_review_id=dec_body.get('review_id'),
+        source_decision_protocol_status=dec_body.get('protocol_status'),
+        source_decision_shadow_action=dec_body.get('shadow_action'),
+        source_decision_raw_sha256=dec_body.get('raw_sha256'),
+        source_input_sha256=dec_body.get('input_sha256'),
+    )
+    core['snapshot_sha256'] = dossier.sha(dossier.encode(core))
+    return core
+
+
+def _ensure_shadow_exit_terminal(
+    d,
+    hand,
+    episode,
+    frozen,
+    link_record,
+    decision,
+    *,
+    service=None,
+    series_rows=None,
+    review_snapshot=None,
+    historical_compat=False,
+):
+    """Idempotently emit immutable SHADOW_EXITED event + tracking/shadow_exit.json and stop native tracker."""
+    episode_meta = optional(episode / 'episode.json')
+    if not _can_auto_shadow_exit(link_record, episode_meta, decision):
+        return None
+    review_id = dossier.key(decision['review_id'])
+    sx_ev_id = dossier.identity('shadow_exit', review_id)
+    ev_path = episode / 'events' / f'{sx_ev_id}.json'
+    tracking_sx_path = hand / 'tracking' / 'shadow_exit.json'
+    with _short_writer(d):
+        existing_ev = optional(ev_path)
+        existing_tracking_sx = optional(tracking_sx_path)
+        if isinstance(existing_ev, dict) and isinstance(existing_ev.get('body'), dict):
+            snapshot = existing_ev['body']
+        else:
+            saved = optional(episode / 'reviews' / review_id / 'revoke_quote.json') or {}
+            saved_snap = saved.get('shadow_exit_snapshot')
+            if (isinstance(saved_snap, dict)
+                    and saved_snap.get('review_id') == review_id
+                    and saved_snap.get('snapshot_sha256')):
+                snapshot = saved_snap
+            else:
+                revoke_at_ms = (
+                    saved.get('captured_at_ms')
+                    or decision.get('decided_at_ms')
+                    or decision.get('recorded_at_ms')
+                    or d.clock()
+                )
+                t0_point = optional(hand / 'tracking' / 't0' / 'point.json')
+                rev_snap = review_snapshot or optional(episode / 'reviews' / review_id / 'review_snapshot.json')
+                snapshot = build_shadow_exit_snapshot(
+                    frozen,
+                    link_record,
+                    decision,
+                    revoke_at_ms=revoke_at_ms,
+                    quote_pt=None,
+                    t0_point=t0_point,
+                    series_rows=series_rows,
+                    saved_revoke_quote=saved,
+                    review_snapshot=rev_snap,
+                    historical_compat=historical_compat,
+                )
+            obs_at = int(snapshot['shadow_exit_at_ms'])
+            avail_at = max(obs_at, d.clock())
+            d.event(
+                episode,
+                sx_ev_id,
+                'SHADOW_EXITED',
+                snapshot,
+                observed=obs_at,
+                available=avail_at,
+            )
+        if isinstance(existing_tracking_sx, dict) and isinstance(existing_tracking_sx.get('snapshot'), dict):
+            tracking_rec = dict(existing_tracking_sx)
+        else:
+            tracking_rec = dict(
+                schema='shadow_exit_tracking@1',
+                exit_state='SHADOW_EXITED',
+                exit_terminal=True,
+                execution_allowed=False,
+                dossier_id=hand.parent.parent.name,
+                hand_id=hand.name,
+                dossier_episode_id=episode.name,
+                tracker_episode_id=((link_record.get('t0') or {}).get('tracker_episode_id')),
+                review_id=review_id,
+                event_id=sx_ev_id,
+                valuation_tier=snapshot.get('valuation_tier'),
+                shadow_exit_at_ms=snapshot.get('shadow_exit_at_ms'),
+                snapshot_sha256=snapshot.get('snapshot_sha256'),
+                tracker_stopped=False,
+                tracker_stopped_at_ms=None,
+                snapshot=snapshot,
+            )
+            dossier.write(tracking_sx_path, dossier.encode(tracking_rec), replace=False)
+
+    if service is not None and not tracking_rec.get('tracker_stopped'):
+        try:
+            stop_res = service('stop', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        except Exception:
+            stop_res = None
+        if isinstance(stop_res, dict) and (
+            stop_res.get('state') == 'SHADOW_STOPPED'
+            or ((stop_res.get('episode') or {}).get('status') in {'stopped', 'expired'})
+        ):
+            with _short_writer(d):
+                cur_rec = optional(tracking_sx_path)
+                base_rec = dict(cur_rec) if isinstance(cur_rec, dict) else dict(tracking_rec)
+                if not base_rec.get('tracker_stopped'):
+                    base_rec['tracker_stopped'] = True
+                    base_rec['tracker_stopped_at_ms'] = d.clock()
+                    dossier.write(tracking_sx_path, dossier.encode(base_rec), replace=True)
+                tracking_rec = base_rec
+    return tracking_rec
+
+
+def reconcile_historical_shadow_exit(d, hand, *, service=None, series_rows=None):
+    """Idempotently seal SHADOW_EXITED & tracking/shadow_exit.json for historical verified revokes."""
+    root = hand / 'tracking'
+    link_record = optional(root / 'link.json')
+    if not isinstance(link_record, dict):
+        raise Blocked('tracking_link_missing')
+    ep_id = (link_record.get('origin') or {}).get('dossier_episode_id')
+    if not ep_id:
+        raise Blocked('dossier_episode_identity_mismatch')
+    episode = hand.parent.parent / 'episodes' / dossier.key(ep_id)
+    episode_meta = optional(episode / 'episode.json')
+    frozen = load(episode / 'condition.json')
+    prior_reviews, _ = _load_prior_reviews_and_context(episode)
+    verified_revoke = next((r for r in reversed(prior_reviews) if _is_verified_revoke(r)), None)
+    if verified_revoke is None and (episode / 'events').is_dir():
+        rev_evs = []
+        for p in (episode / 'events').glob('ai_rev_*.json'):
+            ev = optional(p)
+            if isinstance(ev, dict) and _is_verified_revoke(ev):
+                rev_evs.append(ev)
+        rev_evs.sort(key=lambda e: (e.get('recorded_at_ms') or 0, str(e.get('event_id') or '')))
+        if rev_evs:
+            ev = rev_evs[-1]
+            b = ev.get('body') or {}
+            verified_revoke = dict(
+                b,
+                status='VALID',
+                verdict='REVOKE',
+                requested_at_ms=ev.get('observed_at_ms'),
+                decided_at_ms=ev.get('decided_at_ms') or ev.get('available_at_ms') or ev.get('recorded_at_ms'),
+                recorded_at_ms=ev.get('recorded_at_ms'),
+            )
+    if verified_revoke is None or not _can_auto_shadow_exit(link_record, episode_meta, verified_revoke):
+        return dict(
+            state='NO_VERIFIED_SHADOW_REVOKE',
+            dossier_id=hand.parent.parent.name,
+            hand_id=hand.name,
+            reconciled=False,
+        )
+    if series_rows is None:
+        terminal = optional(root / 'terminal.json')
+        if isinstance(terminal, dict) and terminal.get('export_id'):
+            traj = optional(root / 'exports' / dossier.key(terminal['export_id']) / 'trajectory.json')
+            if isinstance(traj, dict) and isinstance(traj.get('points'), list):
+                series_rows = traj['points']
+        if series_rows is None and service is not None:
+            try:
+                exported = service('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+                if isinstance(exported, dict) and isinstance(exported.get('points'), list):
+                    series_rows = exported['points']
+            except Exception:
+                pass
+    with _short_writer(d):
+        _resume_revoke_action(d, episode, frozen, verified_revoke)
+    sx_rec = _ensure_shadow_exit_terminal(
+        d,
+        hand,
+        episode,
+        frozen,
+        link_record,
+        verified_revoke,
+        service=service,
+        series_rows=series_rows,
+        historical_compat=True,
+    )
+    snap = (sx_rec or {}).get('snapshot') or {}
+    return dict(
+        state='SHADOW_EXITED',
+        dossier_id=hand.parent.parent.name,
+        hand_id=hand.name,
+        dossier_episode_id=episode.name,
+        review_id=verified_revoke.get('review_id'),
+        valuation_tier=snap.get('valuation_tier'),
+        tracker_stopped=bool((sx_rec or {}).get('tracker_stopped')),
+        snapshot_sha256=(sx_rec or {}).get('snapshot_sha256'),
+        historical_compat=bool(snap.get('historical_compat')),
+        reconciled=True,
+    )
 
 
 def _record_review_event(d, episode, decision):
@@ -1311,9 +1861,29 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     prior_reviews, last_review = _load_prior_reviews_and_context(episode)
     verified_prior_revoke = next((r for r in reversed(prior_reviews) if _is_verified_revoke(r)), None)
     if verified_prior_revoke is not None:
-        with _short_writer(d):
-            _resume_revoke_action(d, episode, frozen, verified_prior_revoke)
-        return dict(action='ALREADY_REVOKED', review_id=verified_prior_revoke['review_id'])
+        if _can_auto_shadow_exit(link_record, ep_meta, verified_prior_revoke):
+            with _short_writer(d):
+                _resume_revoke_action(d, episode, frozen, verified_prior_revoke)
+            _ensure_shadow_exit_terminal(
+                d,
+                hand,
+                episode,
+                frozen,
+                link_record,
+                verified_prior_revoke,
+                service=service,
+                series_rows=series_rows,
+            )
+            return dict(
+                action='ALREADY_REVOKED',
+                review_id=verified_prior_revoke['review_id'],
+                shadow_exited=True,
+            )
+        return dict(
+            action='ALREADY_REVOKED',
+            review_id=verified_prior_revoke['review_id'],
+            exit_intent_only=bool(isinstance(link_record, dict) and link_record.get('execution_allowed') is True),
+        )
     ep_index = index_path or _merge_index_points(archive_root, frozen['contract']['expiry_ms'], at)
     cc = frozen['check_clock']
     cap = min(at, frozen['contract']['expiry_ms'] - 1)
@@ -1722,7 +2292,20 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             revoke_at = d.clock()
             quote = (locked_compare.short_buyback_quote(quote_pt)
                      if quote_pt and revoke_at < frozen['contract']['expiry_ms'] else None)
-            revoke_quote['revoke_quote.json'] = dossier.encode(dict(captured_at_ms=revoke_at, quote=quote))
+            sx_payload = dict(captured_at_ms=revoke_at, quote=quote)
+            if _can_auto_shadow_exit(link_record, ep_meta, rev_decision):
+                sx_payload['shadow_exit_snapshot'] = build_shadow_exit_snapshot(
+                    frozen,
+                    link_record,
+                    rev_decision,
+                    revoke_at_ms=revoke_at,
+                    quote_pt=quote_pt,
+                    t0_point=t0_point,
+                    series_rows=series_rows,
+                    saved_revoke_quote=sx_payload,
+                    review_snapshot=review_snapshot,
+                )
+            revoke_quote['revoke_quote.json'] = dossier.encode(sx_payload)
         with _short_writer(d):
             fresh_state = optional(state_path) or next_state
             dossier.publish(episode / 'reviews' / rev_id, {
@@ -1768,12 +2351,31 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                     observed=req_ms, available=fin_ms)
         return dict(triggers=triggers, action='FAILED', review_id=rev_id, error=str(exc))
 
-    if _is_verified_revoke(rev_decision):
+    if verified_shadow_revoke and _can_auto_shadow_exit(link_record, ep_meta, rev_decision):
         try:
             with _short_writer(d):
                 _resume_revoke_action(d, episode, frozen, rev_decision)
+            sx_rec = _ensure_shadow_exit_terminal(
+                d,
+                hand,
+                episode,
+                frozen,
+                link_record,
+                rev_decision,
+                service=service,
+                series_rows=series_rows,
+                review_snapshot=review_snapshot,
+            )
+            result_out['shadow_exit'] = sx_rec
+            result_out['active_monitoring_stopped'] = True
         except Exception as exc:
             result_out['shadow_action_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
+    else:
+        result_out['exit_intent_only'] = bool(
+            parsed.get('verdict') == 'REVOKE'
+            and isinstance(link_record, dict)
+            and link_record.get('execution_allowed') is True
+        )
     return result_out
 
 
@@ -1784,11 +2386,119 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
     episode = hand.parent.parent / 'episodes' / link_record['origin']['dossier_episode_id']
+    episode_meta = optional(episode / 'episode.json')
+    frozen = load(episode / 'condition.json')
     prior_reviews, _last_review = _load_prior_reviews_and_context(episode)
     verified_prior_revoke = next((r for r in reversed(prior_reviews) if _is_verified_revoke(r)), None)
-    if verified_prior_revoke is not None:
+    if verified_prior_revoke is not None and isinstance(link_record, dict) and link_record.get('execution_allowed') is False:
         with _short_writer(d):
-            _resume_revoke_action(d, episode, load(episode / 'condition.json'), verified_prior_revoke)
+            _resume_revoke_action(d, episode, frozen, verified_prior_revoke)
+    if verified_prior_revoke is not None and _can_auto_shadow_exit(link_record, episode_meta, verified_prior_revoke):
+        sx_rec = _ensure_shadow_exit_terminal(
+            d,
+            hand,
+            episode,
+            frozen,
+            link_record,
+            verified_prior_revoke,
+            service=service,
+        )
+        expiry_ms = frozen['contract']['expiry_ms']
+        if d.clock() < expiry_ms + 2 * dossier.MINUTE:
+            out = dict(
+                state='SHADOW_EXITED',
+                active_monitoring_stopped=True,
+                tracker_stopped=bool((sx_rec or {}).get('tracker_stopped')),
+                valuation_tier=((sx_rec or {}).get('snapshot') or sx_rec or {}).get('valuation_tier'),
+                settlement='pending',
+            )
+            if check_due or index_path is not None:
+                out['checks'] = []
+            if run_review:
+                out['hold_review'] = dict(
+                    action='ALREADY_REVOKED',
+                    review_id=verified_prior_revoke['review_id'],
+                    shadow_exited=True,
+                )
+            return out
+        terminal = optional(root / 'terminal.json')
+        if terminal is not None:
+            meta, _ = terminal_trajectory(hand)
+            if meta['settlement_state'] == 'settled':
+                return terminal
+            retry = optional(root / 'settlement_retry.json') or {}
+            if d.clock() < retry.get('next_at_ms', 0):
+                return terminal
+            with _short_writer(d):
+                dossier.write(root / 'settlement_retry.json', dossier.encode(dict(next_at_ms=d.clock() + 10 * 60_000)), replace=True)
+        exported = service('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        ep, point = exported['episode'], exported['point']
+        if tracker_t0(link_record['origin'], ep, point) != link_record['t0'] or exported['t0'] != link_record['t0']:
+            raise Blocked('tracking_export_identity_mismatch')
+        point_bytes = dossier.encode(point)
+        if dossier.sha(point_bytes) != link_record['t0_sha256'] or point_bytes != bounded(root / 't0' / 'point.json'):
+            raise Blocked('t0_hash_mismatch')
+        settlement = exported.get('settlement')
+        completed = (not exported['thinned'] and not exported['unreadable_points']
+                     and len(exported['points']) == ep['point_count'])
+        settlement_state = (settlement or {}).get('status', 'pending')
+        body = dict(
+            episode=ep,
+            points=exported['points'],
+            gaps=exported['gaps'],
+            thinned=exported['thinned'],
+            unreadable_points=exported['unreadable_points'],
+            valuation_basis='MARK_TO_MARKET_REFERENCE',
+            terminal_valuation=settlement,
+            terminal_basis='SHADOW_EXITED_WITH_COUNTERFACTUAL_SETTLEMENT' if settlement_state == 'settled' else None,
+            actual_execution=None,
+        )
+        archive_id = dossier.identity('track', body)
+        at = d.clock()
+        archived = ep['status'] in {'stopped', 'expired'}
+        with _short_writer(d):
+            if archived and (terminal is None or settlement_state == 'settled'):
+                data = dossier.encode(body)
+                seal = dict(
+                    export_id=archive_id,
+                    tracker_episode_id=ep['episode_id'],
+                    t0_point_id=ep['t0_baseline_point_id'],
+                    t0_sha256=link_record['t0_sha256'],
+                    last_point_id=ep['latest_point_id'],
+                    trajectory_sha256=dossier.sha(data),
+                    status=ep['status'],
+                    stopped_at_ms=ep['stopped_at_ms'],
+                    recorded_at_ms=at,
+                    complete_native_series=completed,
+                    settlement_state=settlement_state,
+                    shadow_exited=True,
+                    terminal_basis=body['terminal_basis'],
+                )
+                folder = root / 'exports' / archive_id
+                if not folder.exists():
+                    dossier.publish(folder, {'manifest.json': dossier.encode(seal), 'trajectory.json': data})
+        if archived and (settlement_state == 'settled' or (terminal is None and settlement_state == 'delivery_price_unavailable')):
+            with _short_writer(d):
+                current = optional(root / 'terminal.json')
+                if current is None or (settlement_state == 'settled' and terminal_trajectory(hand)[0]['settlement_state'] != 'settled'):
+                    dossier.write(root / 'terminal.json', dossier.encode(dict(export_id=archive_id, full_series=completed)), replace=current is not None)
+        out = dict(
+            state='SHADOW_EXITED',
+            active_monitoring_stopped=True,
+            tracker_stopped=bool((sx_rec or {}).get('tracker_stopped')) or (ep['status'] in {'stopped', 'expired'}),
+            valuation_tier=((sx_rec or {}).get('snapshot') or sx_rec or {}).get('valuation_tier'),
+            full_series=completed,
+            settlement=settlement_state,
+        )
+        if check_due or index_path is not None:
+            out['checks'] = []
+        if run_review:
+            out['hold_review'] = dict(
+                action='ALREADY_REVOKED',
+                review_id=verified_prior_revoke['review_id'],
+                shadow_exited=True,
+            )
+        return out
     terminal = optional(root / 'terminal.json')
     if terminal is not None:
         meta, _ = terminal_trajectory(hand)
@@ -2322,6 +3032,24 @@ def _event_projection(ev):
         item.update(summary=f"买回 {body.get('instrument')} · 成本 {body.get('cost_btc')} BTC")
     elif kind == 'SHADOW_ACTION':
         item.update(summary=f"{body.get('action')} · {', '.join(body.get('quote_gap_reasons') or [])}")
+    elif kind == 'SHADOW_EXITED':
+        tier = body.get('valuation_tier')
+        pnl = body.get('exit_pnl_btc')
+        ind = body.get('indicative_exit_pnl_btc')
+        summary = f"影子终局退出 · {tier or 'UNPRICED'}"
+        if pnl is not None:
+            summary += f" · 退出盈亏 {pnl} BTC"
+        elif ind is not None:
+            summary += f" · 指示性浮动 {ind} BTC"
+        item.update(
+            review_id=body.get('review_id'),
+            valuation_tier=tier,
+            exit_pnl_btc=pnl,
+            indicative_exit_pnl_btc=ind,
+            shadow_exit_at_ms=body.get('shadow_exit_at_ms'),
+            snapshot_sha256=body.get('snapshot_sha256'),
+            summary=summary,
+        )
     elif kind == 'CONDITION_TRIGGERED':
         res = body.get('result') if isinstance(body.get('result'), dict) else {}
         item.update(summary=res.get('rule') or '原冻结条件已触发')
@@ -2332,6 +3060,7 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
     check_events = [e for e in sorted_events if str(e.get('kind', '')).startswith('CONDITION_')]
     trig_events = [e for e in sorted_events if e.get('kind') == 'CONDITION_TRIGGERED']
     rev_events = [e for e in sorted_events if e.get('kind') == 'AI_REVOKE']
+    sx_events = [e for e in sorted_events if e.get('kind') == 'SHADOW_EXITED']
     buybacks = [e for e in sorted_events if e.get('kind') == 'SIMULATED_ORDER'
                 and (e.get('body') or {}).get('action') == 'BUY_BACK_SHORT']
     no_quotes = [e for e in sorted_events if e.get('kind') == 'SHADOW_ACTION'
@@ -2504,6 +3233,69 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
     )
 
     c = (frozen or {}).get('contract') or contract or {}
+    ep_meta = optional(ep / 'episode.json') if ep is not None else None
+    hand_dir = None
+    if ep is not None and isinstance(ep_meta, dict) and ep_meta.get('hand_id'):
+        try:
+            hand_dir = ep.parent.parent / 'hands' / dossier.key(ep_meta['hand_id'])
+        except ValueError:
+            hand_dir = None
+    link_rec_ro = optional(hand_dir / 'tracking' / 'link.json') if hand_dir is not None else None
+    sx_snapshot = None
+    exit_terminal = False
+    exit_state = 'ACTIVE'
+    active_monitoring_stopped = False
+    if sx_events:
+        sx_body = sx_events[-1].get('body')
+        if isinstance(sx_body, dict):
+            sx_snapshot = dict(sx_body)
+            exit_terminal = True
+            exit_state = 'SHADOW_EXITED'
+            active_monitoring_stopped = True
+    elif (ep is not None
+          and isinstance(ep_meta, dict)
+          and ep_meta.get('mode') == 'SHADOW_DECISION'
+          and ep_meta.get('actual_execution') is None
+          and isinstance(link_rec_ro, dict)
+          and link_rec_ro.get('execution_allowed') is False
+          and (verified_rev_events or any(_is_verified_revoke(r) and r.get('status') in (None, 'VALID') for r in reviews))):
+        valid_rev_src = verified_rev_events[-1] if verified_rev_events else next(
+            r for r in reviews if _is_verified_revoke(r) and r.get('status') in (None, 'VALID')
+        )
+        rev_body = valid_rev_src.get('body') if isinstance(valid_rev_src.get('body'), dict) else valid_rev_src
+        rev_id_fb = rev_body.get('review_id')
+        saved_rq = optional(ep / 'reviews' / dossier.key(rev_id_fb) / 'revoke_quote.json') if rev_id_fb else None
+        if isinstance((saved_rq or {}).get('shadow_exit_snapshot'), dict):
+            sx_snapshot = dict(saved_rq['shadow_exit_snapshot'])
+        else:
+            rev_snap = optional(ep / 'reviews' / dossier.key(rev_id_fb) / 'review_snapshot.json') if rev_id_fb else None
+            rev_dec = optional(ep / 'reviews' / dossier.key(rev_id_fb) / 'decision.json') if rev_id_fb else None
+            dec_fb = rev_dec if isinstance(rev_dec, dict) else dict(rev_body)
+            revoke_at_fb = (
+                (saved_rq or {}).get('captured_at_ms')
+                or dec_fb.get('decided_at_ms')
+                or valid_rev_src.get('decided_at_ms')
+                or valid_rev_src.get('available_at_ms')
+                or valid_rev_src.get('recorded_at_ms')
+                or (frozen or {}).get('entry_at_ms')
+                or 0
+            )
+            t0_pt_ro = optional(hand_dir / 'tracking' / 't0' / 'point.json') if hand_dir is not None else None
+            sx_snapshot = build_shadow_exit_snapshot(
+                frozen or {'contract': c},
+                link_rec_ro or {},
+                dec_fb,
+                revoke_at_ms=revoke_at_fb,
+                quote_pt=None,
+                t0_point=t0_pt_ro,
+                series_rows=None,
+                saved_revoke_quote=saved_rq,
+                review_snapshot=rev_snap,
+                historical_compat=True,
+            )
+
+    valuation_tier = sx_snapshot.get('valuation_tier') if isinstance(sx_snapshot, dict) else None
+
     if buybacks:
         fill = buybacks[-1].get('body') or {}
         exit_status = 'SIMULATED_BUY_BACK_SHORT'
@@ -2535,6 +3327,19 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             retained_long_instrument=nq.get('long_instrument') or c.get('long_instrument'),
             long_retained=True,
         )
+    elif sx_events:
+        shadow_mgmt = dict(
+            mechanical_condition_state=mech_state,
+            ai_management_verdict=latest_rev.get('verdict') or 'REVOKE',
+            protocol_status=protocol_status,
+            shadow_action=shadow_action,
+            condition_triggered_at_ms=(trig_events[0].get('observed_at_ms') or trig_events[0].get('recorded_at_ms')) if trig_events else None,
+            ai_revoked_at_ms=(sx_snapshot or {}).get('shadow_exit_at_ms'),
+            exit_status='SHADOW_EXITED',
+            quote_gap_reasons=(sx_snapshot or {}).get('quote_gap_reasons'),
+            retained_long_instrument=c.get('long_instrument'),
+            long_retained=True,
+        )
     else:
         shadow_mgmt = dict(
             mechanical_condition_state=mech_state,
@@ -2547,6 +3352,13 @@ def _episode_management_data(ep, frozen, sorted_events, *, contract=None, includ
             retained_long_instrument=c.get('long_instrument'),
             long_retained=True,
         )
+    shadow_mgmt.update(
+        exit_terminal=exit_terminal,
+        exit_state=exit_state,
+        active_monitoring_stopped=active_monitoring_stopped,
+        valuation_tier=valuation_tier,
+        shadow_exit=sx_snapshot,
+    )
     return dict(
         hold_reviews=reviews,
         shadow_management=shadow_mgmt,
@@ -2574,16 +3386,29 @@ def episode_management_summary(root, dossier_id, hand_id, dossier_episode_id=Non
                            key=lambda e: (e['recorded_at_ms'], e['event_id']))
     mgmt = _episode_management_data(ep, frozen, sorted_events, include_reply=include_reply)
     latest = mgmt['hold_reviews'][0] if mgmt['hold_reviews'] else None
+    sm = mgmt['shadow_management']
+    sx_summary = sm.get('shadow_exit')
+    if isinstance(sx_summary, dict) and not include_reply:
+        sx_summary = {
+            k: v for k, v in sx_summary.items()
+            if k not in {'source_decision_raw_sha256', 'source_input_sha256'}
+        }
+        sm = {**sm, 'shadow_exit': sx_summary}
     out = dict(
         frozen_check_count=mgmt['check_count'],
-        mechanical_condition_state=mgmt['shadow_management']['mechanical_condition_state'],
-        protocol_status=mgmt['shadow_management']['protocol_status'],
-        shadow_action=mgmt['shadow_management']['shadow_action'],
-        condition_triggered=mgmt['shadow_management']['condition_triggered_at_ms'] is not None,
-        condition_triggered_at_ms=mgmt['shadow_management']['condition_triggered_at_ms'],
-        ai_revoked_at_ms=mgmt['shadow_management']['ai_revoked_at_ms'],
-        exit_status=mgmt['shadow_management']['exit_status'],
-        shadow_management=mgmt['shadow_management'],
+        mechanical_condition_state=sm['mechanical_condition_state'],
+        protocol_status=sm['protocol_status'],
+        shadow_action=sm['shadow_action'],
+        condition_triggered=sm['condition_triggered_at_ms'] is not None,
+        condition_triggered_at_ms=sm['condition_triggered_at_ms'],
+        ai_revoked_at_ms=sm['ai_revoked_at_ms'],
+        exit_status=sm['exit_status'],
+        exit_terminal=sm.get('exit_terminal', False),
+        exit_state=sm.get('exit_state', 'ACTIVE'),
+        active_monitoring_stopped=sm.get('active_monitoring_stopped', False),
+        valuation_tier=sm.get('valuation_tier'),
+        shadow_exit=sx_summary,
+        shadow_management=sm,
         review_count=len(mgmt['hold_reviews']),
         hold_skip_summary=mgmt.get('hold_skip_summary'),
         management_telemetry=mgmt.get('management_telemetry'),
@@ -2752,9 +3577,54 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                    if load(p).get('hand_id') == hand.name), None)
     sorted_events = sorted((load(p) for p in (ep / 'events').glob('*.json')),
                            key=lambda e: (e['recorded_at_ms'], e['event_id'])) if ep else []
-    recent = sorted_events[-64:]
+    _grid_obs_kinds = {'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED', 'CONDITION_UNKNOWN', 'OBSERVATION'}
+    lifecycle_events = [e for e in sorted_events if e.get('kind') not in _grid_obs_kinds]
+    trig_evs = [e for e in sorted_events if e.get('kind') == 'CONDITION_TRIGGERED']
+    not_trig_evs = [e for e in sorted_events if e.get('kind') == 'CONDITION_NOT_TRIGGERED']
+    unk_evs = [e for e in sorted_events if e.get('kind') == 'CONDITION_UNKNOWN']
+    obs_evs = [e for e in sorted_events if e.get('kind') == 'OBSERVATION']
+    recent_map = {}
+    for ev_item in [
+        *lifecycle_events,
+        *(trig_evs[:1] + trig_evs[-1:] if trig_evs else []),
+        *(not_trig_evs[-1:] if not_trig_evs else []),
+        *(unk_evs[-1:] if unk_evs else []),
+        *(obs_evs[-1:] if obs_evs else []),
+    ]:
+        recent_map[ev_item['event_id']] = ev_item
+    recent = sorted(recent_map.values(), key=lambda e: (e['recorded_at_ms'], e['event_id']))
     frozen_cond = optional(ep / 'condition.json') if ep else None
     mgmt = _episode_management_data(ep, frozen_cond, sorted_events, include_reply=True) if ep else None
+    revoke_cutoff_ms = None
+    if mgmt is not None:
+        sm_info = mgmt.get('shadow_management') or {}
+        sx_info = sm_info.get('shadow_exit') if isinstance(sm_info.get('shadow_exit'), dict) else {}
+        revoke_cutoff_ms = sx_info.get('shadow_exit_at_ms')
+        if revoke_cutoff_ms is None:
+            revoke_cutoff_ms = sm_info.get('ai_revoked_at_ms')
+        if revoke_cutoff_ms is None:
+            for r in mgmt.get('hold_reviews') or ():
+                if _is_verified_revoke(r) and r.get('status') in (None, 'VALID'):
+                    revoke_cutoff_ms = r.get('decided_at_ms') or r.get('requested_at_ms')
+                    break
+    ticks_by_ms = {}
+    for ev in sorted_events:
+        if ev.get('kind') not in {'CONDITION_TRIGGERED', 'CONDITION_NOT_TRIGGERED', 'CONDITION_UNKNOWN'}:
+            continue
+        tick_ms = ev.get('observed_at_ms') if isinstance(ev.get('observed_at_ms'), int) else ev.get('recorded_at_ms')
+        if not isinstance(tick_ms, int):
+            continue
+        res = (ev.get('body') or {}).get('result') if isinstance(ev.get('body'), dict) else {}
+        ticks_by_ms[tick_ms] = dict(
+            tick_ms=tick_ms,
+            event_id=ev.get('event_id'),
+            kind=ev.get('kind'),
+            status=(res or {}).get('status'),
+            rule=(res or {}).get('rule'),
+            post_revoke=bool(isinstance(revoke_cutoff_ms, int) and tick_ms > revoke_cutoff_ms),
+        )
+    grid_check_history = [ticks_by_ms[t] for t in sorted(ticks_by_ms)]
+    post_revoke_grid_check_count = sum(1 for row in grid_check_history if row['post_revoke'])
     entry_basis = optional(ep / 'entry_basis.json') if ep else None
     if entry_basis is None and decision and frozen_cond:
         entry_basis = review.build_entry_decision_basis(
@@ -2777,10 +3647,13 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                   condition=frozen_cond, entry_basis=entry_basis,
                   events=[_event_projection(e) for e in recent], archive=terminal_meta,
                   attempts=[_attempt_projection(a) for a in attempts[-8:]],
-                  notes=notes[-8:], lock_reason=(blocked or {}).get('reason') or note_lock_reason)
+                  notes=notes[-8:], lock_reason=(blocked or {}).get('reason') or note_lock_reason,
+                  grid_check_history=grid_check_history,
+                  post_revoke_grid_check_count=post_revoke_grid_check_count)
     if mgmt is not None:
         result['hold_reviews'] = mgmt['hold_reviews']
         result['shadow_management'] = mgmt['shadow_management']
+        result['shadow_exit'] = (mgmt['shadow_management'] or {}).get('shadow_exit')
         result['grid_check_summary'] = mgmt.get('grid_check_summary')
         result['hold_skip_summary'] = mgmt.get('hold_skip_summary')
         result['management_telemetry'] = mgmt.get('management_telemetry')
@@ -3657,6 +4530,11 @@ def main():
     follow.add_argument('--check-due', action='store_true')
     follow.add_argument('--review', action='store_true')
     follow.add_argument('--archive', type=Path)
+    rec_sx = sub.add_parser('reconcile-shadow-exit')
+    rec_sx.add_argument('--root', type=Path, required=True)
+    rec_sx.add_argument('--dossier', required=True)
+    rec_sx.add_argument('--hand', required=True)
+    rec_sx.add_argument('--series-jsonl', type=Path)
     args = parser.parse_args()
     try:
         try:
@@ -3670,6 +4548,12 @@ def main():
             d = dossier.Dossiers(args.root)
             if args.command == 'auto-deal':
                 out = auto_deal(d, dossier.read(args.plan), args.archive, service)
+            elif args.command == 'reconcile-shadow-exit':
+                hand = hand_path(args.root, args.dossier, args.hand)
+                s_rows = dossier.rows(args.series_jsonl) if args.series_jsonl is not None else None
+                out = reconcile_historical_shadow_exit(d, hand, service=service, series_rows=s_rows)
+                with _short_writer(d):
+                    d.summary(load(hand / 'expected.json')['expiry_ms'])
             elif args.command == 'sync-open':
                 out = recover_initial(d, service)
                 for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
@@ -3699,6 +4583,12 @@ def main():
                             meta = load(link_file.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
                             if meta.get('settlement_state') == 'settled':
                                 continue
+                        sx = optional(link_file.parent / 'shadow_exit.json')
+                        if (isinstance(sx, dict)
+                                and (sx.get('exit_state') == 'SHADOW_EXITED' or sx.get('state') == 'SHADOW_EXITED')
+                                and sx.get('tracker_stopped') is True
+                                and d.clock() < load(hand / 'expected.json')['expiry_ms'] + 2 * dossier.MINUTE):
+                            continue
                         out.append(sync(d, hand, service, check_due=args.check_due,
                                         archive_root=args.archive, run_review=args.review))
                         with _short_writer(d):

@@ -1,20 +1,22 @@
 {
   "schema": "astra_p5_release_candidate_manifest@1",
-  "captured_at_utc": "2026-11-24T03:38:00Z",
-  "status": "PRE_RELEASE_VERIFIED_PENDING_REVIEW_AND_QUIET_CUTOVER",
+  "captured_at_utc": "2026-11-24T08:52:00Z",
+  "status": "RELEASE_APPROVED_PENDING_UNIFIED_DEPLOY",
   "historical_statuses": [
     "958f0c58 / 6c945ca3: SHADOW_BLOCKED_OR_INCONCLUSIVE",
-    "c39b3d27 / 2b7b42be: READY_BUT_NOT_DEPLOYED"
+    "c39b3d27 / 2b7b42be: READY_BUT_NOT_DEPLOYED",
+    "52264db3: PRE_RELEASE_VERIFIED_PENDING_REVIEW_AND_QUIET_CUTOVER (superseded before cutover to merge server-native-release@c49fed0d + REVOKE SHADOW_EXITED closed-loop fix)"
   ],
-  "production_ready_upon_reviewer_approval_and_quiet_window": true,
-  "selected_architecture": "Refined Route B (A-Core + Surgical Mechanical Alignment + Minimal Feed-Grounded C @1.2-p5-candidate + p0_strict@1 + p2_strict@1; rollback = Formal A daily_r16@4 / daily_r16@2 ONLY, never Route D)",
+  "production_ready_upon_quiet_window_deploy": true,
+  "selected_architecture": "Refined Route B (A-Core + Surgical Mechanical Alignment + Minimal Feed-Grounded C @1.2-p5-candidate + p0_strict@1 + p2_strict@1) + REVOKE Terminal SHADOW_EXITED & 3-Tier Frozen Exit Valuation on Unified server-native-release; rollback = Formal A xxproject-server-c49fed0dc24a-bf7788fcff5e / daily_r16@4 ONLY",
   "git": {
     "worktree": ".worktrees/player-p5-candidate",
     "branch": "codex/player-p5-candidate",
-    "upstream_baseline_commit_sha": "6311071c887433efb5a9b754290a1d8050caa0d8",
-    "prior_rc_commit_sha": "c39b3d278585b94fbdccd9cc320befe4b47871ad",
+    "prior_p5_rc_commit_sha": "52264db3cbdf6339bc1245fab8a9fdbd6e730bd7",
+    "live_server_native_baseline_sha": "c49fed0dc24a84c46044fa232f361f888854599e",
+    "live_server_native_release_id": "xxproject-server-c49fed0dc24a-bf7788fcff5e",
     "remote_pushed": false,
-    "merged_to_main_or_astra": false
+    "merged_to_astra": false
   },
   "versions": {
     "legacy_system_prompt": {
@@ -38,37 +40,39 @@
   "rc_artifact_sha256_lf": {
     "tools/astra_anchor_relative_v1.py": "e4a4c2a5e01c6540eabe0f08809113daf18e1b4c93909dc4300729b38a3870be",
     "tools/astra_player_condition_v1.py": "ad51e910f0665f3454ed1f6ff8c0fb7817de29c9e604786d7bacbcafeb582743",
-    "tools/astra_player_dossier_v1.py": "9dce71a2fb624f3e6c17fbdd06e0bb8b22748822b95f44e6f05540dc9989872f",
+    "tools/astra_player_dossier_v1.py": "a45af9d09096649de3a772996e488ecb25e6bf3cb3c3d6e2892ea777df022e6d",
     "tools/astra_player_input_v1.py": "082572f2445be8cf2e09e1554e46fb8c8cb245a782a5ef2a9af68a7d94100d42",
     "tools/astra_player_review_v1.py": "b48a2785aae41565e3018b45fa2e4f72f388f5fc77da6780c23aa6524ad0c959",
-    "tools/astra_player_tracking_v13.py": "7073c1280634e7264d0f12d560fe0fca632551fdda8852864c373da68c313e97",
+    "tools/astra_player_tracking_v13.py": "76e8b828ed5b773f1a6e77cff5f572c4bdfc70cf67c4997f2b7b4adcae845135",
+    "tools/astra_locked_candidate_store_v1.py": "e07decb5077c527262f875d549b47c339a5040c6db14d2cd12619df67f3d481d",
+    "tools/astra_workbench_v20.py": "11ae2317cddfff93c6f9ae2105a598fc867637e0196538e77a747febafad5980",
+    "tools/xxproject_server_health_v1.py": "ceceee06afafed581bba5002ecbafd7902ffae309f84476cf5e2ad3456df35fe",
+    "deploy/astra_workbench_v3/current-hand.js": "65e748ff01739a80ec180a9f6af51a7bae6b7fd526a50010fc38d15e48d86f0b",
+    "deploy/astra_workbench_v3/locks.js": "da9a1e21c916dbf8aa3bccdb69b82b6a33a844728936229cbe1d3c9cc7a9e5e5",
+    "deploy/astra_workbench_v3/player-audit.js": "0d70d09a47628c59df935385f27bd598fc316c92a48aadcbd624d824d51fdf33",
+    "deploy/player_dossier/plan.daily_r16.v2.json": "33dd99ad54a67c3fc7d558eadf96df232f8a4eaf1a2ae26898046143cdae3577",
     "deploy/player_dossier/plan.daily_r16.v3_p5.json": "7aebdfe5de1c169c2821bf02ebedbd038dbce1c47b9788b9998e1a98a64b6dca",
     "deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json": "84501140acf6a0b577fdf532f556165ef400aae99d959319720d69d7416890e0",
-    "deploy/player_dossier/production_manifest.json": "4922bea9a88ce4ebbc67f8cb37c9f42fbbfc481ddfc3616ff41ffe61c729ec8d"
+    "deploy/player_dossier/production_manifest.json": "285a14d58bc29508e737fa325e75aea73a5220088ce2380ac8f56d77cfa3e8de",
+    "deploy/xxproject_server/systemd_units_unified/astra-player-prewarm.service": "fa66b20364995bfe296c3746cc72c62fd194db7f676509ac34b66fa8dccadc52",
+    "deploy/xxproject_server/systemd_units_unified/astra-player-deal.service": "45c004e700318b767093f5bad4b02321e1f5a527c86947beefa2b05e3a166a24",
+    "deploy/xxproject_server/build_release.py": "6e686b6773500bd2c8e3b710d71c820167df3c770f4ef27706cca8eeaaa4429a",
+    "deploy/xxproject_server/deploy_release.py": "bb1ce52960f0d162d4e3a14360672f904a0d152c5a522d1c1e8c95bd810c4fc8"
   },
   "validation": {
-    "p5_candidate_tests": {
-      "command": "pytest tests/test_astra_p5_candidate.py -q",
-      "passed": 39,
+    "affected_31_file_suite_pre_cleanup": {
+      "passed": 572,
       "failed": 0,
-      "skipped": 0
-    },
-    "affected_24_file_suite": {
-      "collected": 514,
-      "passed": 511,
-      "failed": 2,
       "skipped": 1,
-      "errors": 0,
-      "duration_s": 195.7,
-      "jsonschema_version": "4.26.0",
-      "preexisting_6311071c_d02_failures_reproduced": [
-        "tests/test_astra_anchor_relative_v1.py::test_real_ard_replays_identical_A_without_hindsight",
-        "tests/test_astra_ard_condition_v1.py::test_real_hand_and_synthetic_continuation_stay_separate_and_reproducible"
-      ],
-      "skipped_tests": [
-        "tests/test_astra_locked_candidate_compare_v1.py::test_real_initial_public_view_context_refs_keep_missing_source_clock_none"
-      ]
+      "duration_s": 348.95,
+      "log": "scratch/p5_closeout/pytest_p5_shadow_exit_full.log"
     },
+    "post_cleanup_targeted_suites": {
+      "node_js_imports": "JS_OK",
+      "shadow_exit_ui_tracking_suite": "62 passed in 176.64s",
+      "downstream_callers_and_release_suite": "99 passed in 80.21s"
+    },
+    "independent_reviewer_verdict": "RELEASE_APPROVED (ddaed22e, 0 CRITICAL / 0 HIGH / 0 MEDIUM / 1 LOW)",
     "shadow_run_historical_record": {
       "executed_pairs": 3,
       "first_attempt_arm_b_contract_compliant_pairs": 2,
@@ -88,11 +92,12 @@
   ],
   "live_deployment": {
     "target_host": "xx-eu",
-    "scheduled_quiet_cutover_utc": "2026-11-24T08:15:00Z",
+    "safe_deploy_window_utc": "2026-11-24T08:35:00Z..15:50:00Z",
     "first_formal_deal_utc": "2026-11-24T16:00:00Z",
-    "backup_path": null,
     "actual_deployed_at_utc": null,
-    "actual_deployed_commit_sha": null
+    "actual_deployed_commit_sha": null,
+    "actual_release_id": null,
+    "historical_reconcile_event_id": null
   },
-  "rollback_command": "During 08:05-15:50 UTC quiet window switch /opt/signal-audit-tools/player-plan.json to plan.daily_r16.v4_rollback_formal_a.json (or restore /var/backups/xxproject/pre_p5_<UTC_TS>/*) and restart astra-workbench-v20.service."
+  "rollback_command": "python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py rollback --apply-units (restores xxproject-server-c49fed0dc24a-bf7788fcff5e Formal A)."
 }
