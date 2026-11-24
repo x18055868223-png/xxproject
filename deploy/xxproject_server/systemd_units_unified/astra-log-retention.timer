@@ -3,7 +3,7 @@ Description=Run xxproject native signal log retention every hour
 
 [Timer]
 OnBootSec=300
-OnUnitActiveSec=3600
+OnUnitInactiveSec=3600
 AccuracySec=60
 Persistent=false
 Unit=astra-log-retention.service

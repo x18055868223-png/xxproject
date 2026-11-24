@@ -365,9 +365,12 @@ class LockedCandidateStore:
                         can_coexist = (
                             shadow_origin.get("plan_id") is not None
                             and all(
-                                isinstance(ep.get("ai_shadow"), Mapping)
-                                and ep["ai_shadow"].get("plan_id") is None
-                                and ep["ai_shadow"].get("hand_id") != shadow_origin.get("hand_id")
+                                ep.get("ai_shadow") is None
+                                or (
+                                    isinstance(ep.get("ai_shadow"), Mapping)
+                                    and ep["ai_shadow"].get("plan_id") is None
+                                    and ep["ai_shadow"].get("hand_id") != shadow_origin.get("hand_id")
+                                )
                                 for ep in active_same
                             )
                         )
@@ -375,17 +378,22 @@ class LockedCandidateStore:
                             raise LockedCandidateError("active_tracking_exists",
                                                        "existing tracker cannot acquire a new AI identity or t0")
                     else:
-                        state["request_keys"][request_key] = {
-                            "operation": "lock",
-                            "contract_key": checked["contract_key"],
-                            "episode_id": existing["episode_id"],
-                            "point_id": checked["point_id"],
-                            "candidate_id": checked["candidate_id"],
-                            "snapshot_id": checked["snapshot_id"],
-                            "new_reference": False,
-                        }
-                        self._save_state_with_budget_unlocked(state, extra_point_bytes=self._control_reserve_bytes)
-                        return {"created": False, "episode": self._summary(existing)}
+                        existing_human = next(
+                            (ep for ep in active_same if ep.get("ai_shadow") is None),
+                            None,
+                        )
+                        if existing_human is not None:
+                            state["request_keys"][request_key] = {
+                                "operation": "lock",
+                                "contract_key": checked["contract_key"],
+                                "episode_id": existing_human["episode_id"],
+                                "point_id": checked["point_id"],
+                                "candidate_id": checked["candidate_id"],
+                                "snapshot_id": checked["snapshot_id"],
+                                "new_reference": False,
+                            }
+                            self._save_state_with_budget_unlocked(state, extra_point_bytes=self._control_reserve_bytes)
+                            return {"created": False, "episode": self._summary(existing_human)}
 
             if len(state["episodes"]) >= self.max_episodes:
                 raise LockedCandidateError("episode_budget_exhausted", "locked candidate episode budget exhausted")

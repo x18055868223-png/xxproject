@@ -31,7 +31,7 @@
 
 ## 3. Formal A 一键回滚通道与可执行性校验（禁用 Route D）
 
-- **唯一正式回滚目标**：现网已验证 `xxproject-server-c49fed0dc24a-bf7788fcff5e`（Formal A `daily_r16@2 + @1.0 + legacy_v1`），严禁切换至未验证的 Route D。
+- **唯一正式回滚目标**：现网已验证 `xxproject-server-2802262aa9c5-d7245ea39a9c`（`2802262aa9c5`，含 Formal A `daily_r16@2 + @1.0 + legacy_v1` 与 Pre-Trade P1/P2 修复；先前 `c49fed0d` 保留于历史包），严禁切换至未验证的 Route D。
 - **两层无损回滚路径（严格避开 `07:50–08:35 UTC` 结算窗与 `15:50–16:35 UTC` 发牌窗，即在 `08:35–15:50 UTC` 安全窗口执行；紧急故障时按授权传 `--allow-window-override`）**：
-  1. **原子包级一键回滚**：在 `xx-eu` 执行 `python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py rollback --apply-units`，直接把 `/opt/xxproject/current` 切回 `/opt/xxproject/releases/xxproject-server-c49fed0dc24a-bf7788fcff5e` 并重装载统一 systemd 单元（不触碰 `/var/lib/xxproject/` 与 `/etc/signal-audit/`，已通过本地升级-校验-回滚全链路预演）；再执行 `xxproject_server_health_v1.py` 核验恢复。
+  1. **原子包级一键回滚**：在 `xx-eu` 执行 `python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py rollback --apply-units`，直接把 `/opt/xxproject/current` 切回 `/opt/xxproject/releases/xxproject-server-2802262aa9c5-d7245ea39a9c` 并重装载统一 systemd 单元（不触碰 `/var/lib/xxproject/` 与 `/etc/signal-audit/`，已通过本地升级-校验-回滚全链路预演）；再执行 `xxproject_server_health_v1.py` 核验恢复。
   2. **1 步前向计划回滚**：如只需保留代码而退回 `@1.0` 提示词策略，使用 `deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json`（`daily_r16@4`）。回滚后已存在的 `SHADOW_EXITED` 终态与 `stopped` 追踪记录保持静止，不被误重新激活。

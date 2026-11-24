@@ -595,8 +595,8 @@ def test_checkpoint_restore_windows_and_no_duplicate_fixed_round(tmp_path: Path)
     assert len(_read_jsonl(logs_dir / "signal_review.jsonl")) == 1
     orig_gex_ingest_ms = r1.runtime.gex_state.last_raw_ingest_ms
 
-    # Case 1: Short restart (2m later, <= 10m) -> restores bars_tail, histories, NR, GEX + no duplicate fixed round
-    scenario["clock_ms"] = fixed_ts + 120_000
+    # Case 1: Short restart (60s later, <= 90s) -> restores bars_tail, histories, NR, GEX + no duplicate fixed round
+    scenario["clock_ms"] = fixed_ts + 60_000
     core2 = _load_isolated_core("ckpt2")
     core2.now_ms = lambda: int(scenario["clock_ms"])
     r2 = sp.NativeSignalRuntime(logs_dir=logs_dir, state_dir=state_dir, core_mod=core2, core_sha256="sha1")
@@ -710,7 +710,7 @@ def test_upstream_outage_resilience_and_deribit_429_shared_cooldown(tmp_path: Pa
 
     calls: list[str] = []
 
-    def _flaky_http(url: str, params=None, headers=None, timeout_sec=None):
+    def _flaky_http(url: str, params=None, headers=None, timeout_sec=None, **_kwargs: Any):
         calls.append(url)
         if "public/ticker" in url:
             return {

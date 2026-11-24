@@ -35,6 +35,7 @@ import datetime as dt
 import gzip
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -350,15 +351,60 @@ def _secondary(scored: Sequence[Mapping[str, Any]], field: str) -> dict[str, Any
             "halves_same_sign": halves_same_sign(values)}
 
 
-def human_locks(root: Path, outcomes_by_key: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Each lock_created decision, scored against the latest frozen case of its contract at most 65
-    minutes before the lock. The outcome lists every frozen case of a contract with its quote time
-    (asof), so the window is on asof, not on the freeze instant the rounds use: either way the price
-    is from before the lock. A record that cannot be read is listed as unreadable."""
+def _discover_ai_shadow_episode_ids(
+    root: Path,
+    *,
+    workbench_dir: str | Path | None = None,
+) -> set[str]:
+    """Read-only lookup of ai_shadow episode_ids so historical chained lock rows stay isolated from human_locks."""
+    candidates: list[Path] = []
+    if workbench_dir is not None:
+        candidates.append(Path(workbench_dir))
+    env_wb = (os.environ.get("ASTRA_WORKBENCH_STATE_DIR") or "").strip()
+    if env_wb:
+        candidates.append(Path(env_wb))
+    candidates.append(root.parent / "workbench")
+    shadow_ids: set[str] = set()
+    for base in candidates:
+        idx = base / "locked_candidates" / "index.json"
+        if not idx.is_file():
+            continue
+        try:
+            payload = json.loads(idx.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        episodes = payload.get("episodes") if isinstance(payload, Mapping) else None
+        rows = episodes.values() if isinstance(episodes, Mapping) else (episodes if isinstance(episodes, list) else ())
+        for ep in rows:
+            if isinstance(ep, Mapping) and ep.get("episode_id") and isinstance(ep.get("ai_shadow"), Mapping) and ep.get("ai_shadow"):
+                shadow_ids.add(str(ep["episode_id"]))
+        break
+    return shadow_ids
+
+
+def human_locks(
+    root: Path,
+    outcomes_by_key: Mapping[str, Mapping[str, Any]],
+    *,
+    workbench_dir: str | Path | None = None,
+    ai_shadow_episode_ids: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Each human lock_created decision, scored against the latest frozen case of its contract at most 65
+    minutes before the lock. AI shadow locks (including historical chained rows before actor='ai_shadow'
+    was recorded) are excluded without mutating immutable decisions/chain logs."""
+    shadow_ids = (
+        {str(x) for x in ai_shadow_episode_ids if x}
+        if ai_shadow_episode_ids is not None
+        else _discover_ai_shadow_episode_ids(root, workbench_dir=workbench_dir)
+    )
     items = []
     for path in sorted((root / "decisions").glob("*.jsonl")):
         for d in _lines(path):
             if d.get("source") != "lock" or d.get("event") != "lock_created" or d.get("actor", "human") != "human":
+                continue
+            ref_id = str(d.get("ref_id") or "")
+            detail = d.get("detail") if isinstance(d.get("detail"), Mapping) else {}
+            if ref_id in shadow_ids or detail.get("plan_id") or detail.get("hand_id") or detail.get("dossier_id"):
                 continue
             at, key = d.get("at_ms"), d.get("contract_key")
             item: dict[str, Any] = {"ref_id": d.get("ref_id"), "at_ms": at, "contract_key": key, "side": d.get("side"),

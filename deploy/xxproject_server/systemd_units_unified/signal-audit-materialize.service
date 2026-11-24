@@ -4,6 +4,8 @@ After=astra-signal-producer.service
 
 [Service]
 Type=oneshot
+User=bitnami
+Group=bitnami
 WorkingDirectory=/opt/xxproject/current/tools
 Environment=JSONL_SOURCE=/var/lib/xxproject/signal_native/logs/signal_review.jsonl
 Environment=LLM_REVIEWS_SOURCE=/var/lib/xxproject/signal_audit/signal_llm_reviews.jsonl
@@ -15,6 +17,10 @@ Environment=MAX_CARDS=15
 Environment=SESSION_CONTEXT_REQUIRED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=-/etc/signal-audit/signal-audit-materialize.env
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/signal-audit /var/lib/xxproject/signal_audit
 MemoryHigh=384M
 MemoryMax=512M
 CPUQuota=50%

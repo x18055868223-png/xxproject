@@ -138,10 +138,11 @@ async def test_public_snapshot_failure_keeps_legacy_fetch_age_behavior() -> None
 
     assert payload["stale"] is True
     assert payload["availability"] == "partial"
-    assert payload["fetched_at"] == "2026-06-03T09:30:00+00:00"
+    assert payload["fetched_at"] == "2026-06-03T09:00:00+00:00"
+    assert payload["latest_attempt_at"] == "2026-06-03T09:30:00+00:00"
     assert payload["data_age_ms"] is not None
     assert payload["gex_board"]["total_net_gex"] == -67000000.0
-    assert payload["sections"]["gex_board"]["fetched_at"] == "2026-06-03T09:30:00+00:00"
+    assert payload["sections"]["gex_board"]["fetched_at"] == "2026-06-03T09:00:00+00:00"
     assert payload["sections"]["gex_board"]["latest_attempt_at"] == "2026-06-03T09:30:00+00:00"
     assert payload["sections"]["gex_board"]["content_hash"] == "hash-good"
     assert payload["sections"]["gex_board"]["last_error"] == "blocked"
@@ -491,6 +492,12 @@ async def test_removed_fields_never_survive_old_cache_restore(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_rank_only_compares_samples_with_same_source(monkeypatch, tmp_path) -> None:
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 11, 9, tzinfo=tz or UTC)
+
+    monkeypatch.setattr("gexmonitorapi.json_source.datetime", _FixedDateTime)
     history_file = tmp_path / "metrics_history.jsonl"
     old_lines = [
         # Pre-redesign sample: no metric_sources recorded.

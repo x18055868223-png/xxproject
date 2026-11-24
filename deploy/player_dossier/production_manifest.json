@@ -107,7 +107,7 @@
     "rollback_plan_file": "deploy/player_dossier/plan.daily_r16.v2.json",
     "rollback_plan_id": "daily_r16@2",
     "rollback_forward_plan_file": "deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json",
-    "rollback_policy": "Formal A (deploy_release.py rollback to xxproject-server-c49fed0dc24a-bf7788fcff5e or 1-step forward plan daily_r16@4) ONLY during 08:35-15:50 UTC quiet window (never 07:50-08:35 UTC settle or 15:50-16:35 UTC deal windows); never rollback to unverified Route D.",
+    "rollback_policy": "Formal A (deploy_release.py rollback to xxproject-server-2802262aa9c5-d7245ea39a9c or 1-step forward plan daily_r16@4) ONLY during 08:35-15:50 UTC quiet window (never 07:50-08:35 UTC settle or 15:50-16:35 UTC deal windows); never rollback to unverified Route D.",
     "p5_owned_runtime_files": [
       "tools/astra_player_tracking_v13.py",
       "tools/astra_player_review_v1.py",
@@ -117,25 +117,25 @@
       "tools/astra_anchor_relative_v1.py"
     ],
     "server_native_release": {
-      "live_baseline_commit": "c49fed0dc24a84c46044fa232f361f888854599e",
-      "live_baseline_release_id": "xxproject-server-c49fed0dc24a-bf7788fcff5e",
+      "live_baseline_commit": "2802262aa9c5cba6aca5f4d83f6934a1ebbb7f3e",
+      "live_baseline_release_id": "xxproject-server-2802262aa9c5-d7245ea39a9c",
       "build_script": "deploy/xxproject_server/build_release.py",
       "deploy_script": "deploy/xxproject_server/deploy_release.py",
       "health_script": "tools/xxproject_server_health_v1.py",
       "shadow_exit_closure": true,
       "modified_release_files_lf_sha256": {
-        "tools/astra_player_dossier_v1.py": "a45af9d09096649de3a772996e488ecb25e6bf3cb3c3d6e2892ea777df022e6d",
-        "tools/astra_player_tracking_v13.py": "76e8b828ed5b773f1a6e77cff5f572c4bdfc70cf67c4997f2b7b4adcae845135",
-        "tools/astra_locked_candidate_store_v1.py": "e07decb5077c527262f875d549b47c339a5040c6db14d2cd12619df67f3d481d",
-        "tools/astra_workbench_v20.py": "11ae2317cddfff93c6f9ae2105a598fc867637e0196538e77a747febafad5980",
-        "tools/xxproject_server_health_v1.py": "ceceee06afafed581bba5002ecbafd7902ffae309f84476cf5e2ad3456df35fe",
+        "tools/astra_player_dossier_v1.py": "8f99cfaa2740520ec8ed0a1a20d1726cb4aa4aaf9f8a693cd903fce25acd0e13",
+        "tools/astra_player_tracking_v13.py": "5c7645a5c47aea5058efbe28ae9a7338a451d203d7b808952332eb9297bb450f",
+        "tools/astra_locked_candidate_store_v1.py": "869ddc2de49ab66e20772ada13c4dff7ce26ea900ceb7a58822bfeb5a393cb7f",
+        "tools/astra_workbench_v20.py": "d733a1700498a4564c08d2249c85a5a56974ffafe34a203741bb82a92f3d8026",
+        "tools/xxproject_server_health_v1.py": "00f7deb01ece00e015e45870cd9009ae79cd00ab718556e89012c5ed2d858548",
         "deploy/astra_workbench_v3/current-hand.js": "65e748ff01739a80ec180a9f6af51a7bae6b7fd526a50010fc38d15e48d86f0b",
         "deploy/astra_workbench_v3/locks.js": "da9a1e21c916dbf8aa3bccdb69b82b6a33a844728936229cbe1d3c9cc7a9e5e5",
         "deploy/astra_workbench_v3/player-audit.js": "0d70d09a47628c59df935385f27bd598fc316c92a48aadcbd624d824d51fdf33",
         "deploy/xxproject_server/systemd_units_unified/astra-player-prewarm.service": "fa66b20364995bfe296c3746cc72c62fd194db7f676509ac34b66fa8dccadc52",
         "deploy/xxproject_server/systemd_units_unified/astra-player-deal.service": "45c004e700318b767093f5bad4b02321e1f5a527c86947beefa2b05e3a166a24",
         "deploy/xxproject_server/build_release.py": "6e686b6773500bd2c8e3b710d71c820167df3c770f4ef27706cca8eeaaa4429a",
-        "deploy/xxproject_server/deploy_release.py": "bb1ce52960f0d162d4e3a14360672f904a0d152c5a522d1c1e8c95bd810c4fc8"
+        "deploy/xxproject_server/deploy_release.py": "335bb636d12034ab8e553171fa9c3601acc144a9c0f6aab18489025a48080e53"
       }
     },
     "restart_required_services_on_deploy": ["astra-workbench-v20.service"],
@@ -148,7 +148,7 @@
       "tools/astra_workbench_reading_v1.py",
       "demo/shared/data_product_registry_v23.json"
     ],
-    "upstream_dependency": "Upstream 6311071c merged with unified server-native release c49fed0dc24a (verified live on xx-eu before cutover); user-authorized expedited release waives the 2-cycle soak and 5-7 shadow pair pre-deploy gates and bundles the REVOKE terminal SHADOW_EXITED & frozen valuation fix.",
+    "upstream_dependency": "Upstream 6311071c merged with unified server-native release 2802262aa9c5 (c49fed0dc24a + Pre-Trade P1/P2 fixes verified live on xx-eu before cutover); user-authorized expedited release waives the 2-cycle soak and 5-7 shadow pair pre-deploy gates and bundles the REVOKE terminal SHADOW_EXITED & frozen valuation fix.",
     "shadow_evidence_size_cap_bytes": 32000000
   },
   "host_adapted_non_runtime_files": {

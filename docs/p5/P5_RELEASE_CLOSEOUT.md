@@ -1,7 +1,7 @@
 # P5 + Shadow Exit Release Closeout Report (`P5_RELEASE_CLOSEOUT`)
 
 **Pre-Cutover Status:** `RELEASE_APPROVED_PENDING_UNIFIED_DEPLOY` *(all 572 pre-cleanup + 62/99 post-cleanup tests pass; independent Reviewer `ddaed22e` signed `RELEASE_APPROVED` with `0 CRITICAL / 0 HIGH / 0 MEDIUM`; `Deribit_BTC_20261124T080000Z` settled cleanly at `08:06:11 UTC`; currently inside safe deploy window `08:35–15:50 UTC`)*  
-**Historical Trail Preserved:** Prior `958f0c58` (`6c945ca3`) retained honestly as `SHADOW_BLOCKED_OR_INCONCLUSIVE`; `2b7b42be` retained as `READY_BUT_NOT_DEPLOYED`; `52264db3` promoted and merged with live `xx-eu` `server-native-release@c49fed0d` plus the urgent closed-loop `REVOKE -> SHADOW_EXITED` & frozen valuation fix. Two forward-sample gates (`>= 2` natural cycles and `5–7` shadow pairs) remain explicitly documented exemptions.
+**Historical Trail Preserved:** Prior `958f0c58` (`6c945ca3`) retained honestly as `SHADOW_BLOCKED_OR_INCONCLUSIVE`; `2b7b42be` retained as `READY_BUT_NOT_DEPLOYED`; `52264db3` promoted and merged with live `xx-eu` `server-native-release@2802262a` (superseding `c49fed0d` with Pre-Trade P1/P2 fixes) plus the urgent closed-loop `REVOKE -> SHADOW_EXITED` & frozen valuation fix. Two forward-sample gates (`>= 2` natural cycles and `5–7` shadow pairs) remain explicitly documented exemptions.
 
 ---
 
@@ -9,9 +9,9 @@
 
 | Layer | Pre-Cutover Live Baseline (`xx-eu`) | Unified Release Candidate (`codex/player-p5-candidate`) |
 | :--- | :--- | :--- |
-| **Git Commit SHA** | `c49fed0dc24a84c46044fa232f361f888854599e` (`server-native-release`, on `6311071c`) | *(set in post-commit / post-deploy update)* |
-| **Release Package ID** | `xxproject-server-c49fed0dc24a-bf7788fcff5e` | *(set on clean commit build & deploy)* |
-| **Active Plan** | `daily_r16@2` (`plan.daily_r16.v2.json`, LF `33dd99ad54a6...`) | `daily_r16@3` (`plan.daily_r16.v3_p5.json`, `effective_at_ms=1795536000000`, `2026-11-24T16:00:00Z`, LF `7aebdfe5de1c...`)<br>Rollback target: `xxproject-server-c49fed0dc24a-bf7788fcff5e` / `daily_r16@4` (`plan.daily_r16.v4_rollback_formal_a.json`) |
+| **Git Commit SHA** | `2802262aa9c5cba6aca5f4d83f6934a1ebbb7f3e` (`server-native-release`, on `6311071c` + Pre-Trade P1/P2) | *(set in post-commit / post-deploy update)* |
+| **Release Package ID** | `xxproject-server-2802262aa9c5-d7245ea39a9c` | *(set on clean commit build & deploy)* |
+| **Active Plan** | `daily_r16@2` (`plan.daily_r16.v2.json`, LF `33dd99ad54a6...`) | `daily_r16@3` (`plan.daily_r16.v3_p5.json`, `effective_at_ms=1795536000000`, `2026-11-24T16:00:00Z`, LF `7aebdfe5de1c...`)<br>Rollback target: `xxproject-server-2802262aa9c5-d7245ea39a9c` / `daily_r16@4` (`plan.daily_r16.v4_rollback_formal_a.json`) |
 | **System Prompt** | `player_initial_system@1.0` (`2,831 B`, `653168703cd8...`) | `player_initial_system@1.2-p5-candidate` (`3,073 B`, `b746c2d2f7f996d290992e01b11d9e4c4792a0e1afcacb900bbf0dfc678b6f34`) |
 | **Input / Contract / Auth** | `legacy_v1` / legacy rules / `execution_allowed=false` | `p0_strict@1` / `p2_strict@1` / `execution_allowed=false` (Hold C strictly read-only; no real trading/closing) |
 
@@ -23,21 +23,21 @@
   - `tools/astra_player_review_v1.py`: `b48a2785aae41565e3018b45fa2e4f72f388f5fc77da6780c23aa6524ad0c959`
   - `deploy/player_dossier/plan.daily_r16.v2.json`: `33dd99ad54a67c3fc7d558eadf96df232f8a4eaf1a2ae26898046143cdae3577`
 - **Modified Runtime / UI / Unified Server Release Assets:**
-  - `tools/astra_player_dossier_v1.py`: `a45af9d09096649de3a772996e488ecb25e6bf3cb3c3d6e2892ea777df022e6d`
-  - `tools/astra_player_tracking_v13.py`: `76e8b828ed5b773f1a6e77cff5f572c4bdfc70cf67c4997f2b7b4adcae845135`
-  - `tools/astra_locked_candidate_store_v1.py`: `e07decb5077c527262f875d549b47c339a5040c6db14d2cd12619df67f3d481d`
-  - `tools/astra_workbench_v20.py`: `11ae2317cddfff93c6f9ae2105a598fc867637e0196538e77a747febafad5980`
-  - `tools/xxproject_server_health_v1.py`: `ceceee06afafed581bba5002ecbafd7902ffae309f84476cf5e2ad3456df35fe`
+  - `tools/astra_player_dossier_v1.py`: `8f99cfaa2740520ec8ed0a1a20d1726cb4aa4aaf9f8a693cd903fce25acd0e13`
+  - `tools/astra_player_tracking_v13.py`: `5c7645a5c47aea5058efbe28ae9a7338a451d203d7b808952332eb9297bb450f`
+  - `tools/astra_locked_candidate_store_v1.py`: `869ddc2de49ab66e20772ada13c4dff7ce26ea900ceb7a58822bfeb5a393cb7f`
+  - `tools/astra_workbench_v20.py`: `d733a1700498a4564c08d2249c85a5a56974ffafe34a203741bb82a92f3d8026`
+  - `tools/xxproject_server_health_v1.py`: `00f7deb01ece00e015e45870cd9009ae79cd00ab718556e89012c5ed2d858548`
   - `deploy/astra_workbench_v3/current-hand.js`: `65e748ff01739a80ec180a9f6af51a7bae6b7fd526a50010fc38d15e48d86f0b`
   - `deploy/astra_workbench_v3/locks.js`: `da9a1e21c916dbf8aa3bccdb69b82b6a33a844728936229cbe1d3c9cc7a9e5e5`
   - `deploy/astra_workbench_v3/player-audit.js`: `0d70d09a47628c59df935385f27bd598fc316c92a48aadcbd624d824d51fdf33`
   - `deploy/player_dossier/plan.daily_r16.v3_p5.json`: `7aebdfe5de1c169c2821bf02ebedbd038dbce1c47b9788b9998e1a98a64b6dca`
   - `deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json`: `84501140acf6a0b577fdf532f556165ef400aae99d959319720d69d7416890e0`
-  - `deploy/player_dossier/production_manifest.json`: `285a14d58bc29508e737fa325e75aea73a5220088ce2380ac8f56d77cfa3e8de`
+  - `deploy/player_dossier/production_manifest.json`: `7e81ac286ece3ef0c60ffc0a1043a9a7672ced763cc76ec95de5bb3c3decf895`
   - `deploy/xxproject_server/systemd_units_unified/astra-player-prewarm.service`: `fa66b20364995bfe296c3746cc72c62fd194db7f676509ac34b66fa8dccadc52`
   - `deploy/xxproject_server/systemd_units_unified/astra-player-deal.service`: `45c004e700318b767093f5bad4b02321e1f5a527c86947beefa2b05e3a166a24`
   - `deploy/xxproject_server/build_release.py`: `6e686b6773500bd2c8e3b710d71c820167df3c770f4ef27706cca8eeaaa4429a`
-  - `deploy/xxproject_server/deploy_release.py`: `bb1ce52960f0d162d4e3a14360672f904a0d152c5a522d1c1e8c95bd810c4fc8`
+  - `deploy/xxproject_server/deploy_release.py`: `335bb636d12034ab8e553171fa9c3601acc144a9c0f6aab18489025a48080e53`
 
 ---
 

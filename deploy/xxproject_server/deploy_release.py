@@ -41,7 +41,47 @@ ENV_TEMPLATES = {
     "deploy/signal_audit/signal-audit-materialize.env.example": "etc/signal-audit/signal-audit-materialize.env",
     "deploy/kpf_light/astra-kpf-light.env.example": "etc/astra-kpf-light.env",
     "deploy/gexmonitorapi/gexmonitorapi.env.example": "etc/gexmonitorapi.env",
+    "deploy/astra_map_data/config.example.json": "opt/astra-map-data/config.json",
 }
+
+MANAGED_DAEMON_SERVICES = (
+    "gexmonitorapi.service",
+    "astra-signal-producer.service",
+    "astra-workbench-v20.service",
+)
+
+MANAGED_TIMERS = (
+    "astra-kpf-light.timer",
+    "astra-log-retention.timer",
+    "astra-map-data.timer",
+    "astra-player-deal.timer",
+    "astra-player-prewarm.timer",
+    "astra-player-settle.timer",
+    "astra-player-sync.timer",
+    "astra-research-archive.timer",
+    "signal-audit-materialize.timer",
+)
+
+WINDOW_GUARD_UNITS = (
+    "astra-player-deal.service",
+    "astra-player-settle.service",
+)
+
+
+def _chmod_posix(path: Path, mode: int) -> None:
+    if os.name != "nt":
+        os.chmod(path, mode)
+
+
+def _chmod_release_tree(release_dir: Path) -> None:
+    if os.name == "nt":
+        return
+    for cur_root, dirnames, filenames in os.walk(release_dir):
+        _chmod_posix(Path(cur_root), 0o755)
+        for d in dirnames:
+            _chmod_posix(Path(cur_root) / d, 0o755)
+        for f in filenames:
+            _chmod_posix(Path(cur_root) / f, 0o755 if f.endswith(".sh") else 0o644)
 
 
 def _is_system_root(prefix: Path) -> bool:
@@ -53,8 +93,9 @@ def _validate_deploy_window(
     *,
     allow_window_override: bool = False,
     now_ms: int | None = None,
+    no_systemd: bool = False,
 ) -> None:
-    """Refuse live root switches during 08:00 UTC settlement or 16:00 UTC deal windows unless overridden."""
+    """Refuse live root switches during 08:00 UTC settlement, 16:00 UTC deal, or active deal/settle units."""
     if allow_window_override or not _is_system_root(prefix):
         return
     utc_now = (
@@ -70,6 +111,11 @@ def _validate_deploy_window(
         raise RuntimeError(
             f"UNSAFE_DEPLOY_WINDOW_UTC: {utc_now.strftime('%H:%M UTC')} falls inside {window_name} protection window"
         )
+    if os.name != "nt" and not no_systemd and Path("/run/systemd/system").is_dir():
+        for unit in WINDOW_GUARD_UNITS:
+            res = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False)
+            if res.stdout.strip() in {"active", "activating"}:
+                raise RuntimeError(f"UNSAFE_ACTIVE_WINDOW_UNIT: {unit} ({res.stdout.strip()})")
 
 
 def _validate_systemd_prereqs(prefix: Path, *, apply_units: bool, no_systemd: bool) -> None:
@@ -112,22 +158,26 @@ def _read_pointers(app_root: Path) -> dict[str, Any]:
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(path.parent, 0o755)
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
     data = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     with tmp.open("w", encoding="utf-8") as handle:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
+    _chmod_posix(tmp, 0o644)
     os.replace(tmp, path)
 
 
 def _append_receipt(app_root: Path, receipt: dict[str, Any]) -> None:
     ledger = app_root / "deployments.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(ledger.parent, 0o755)
     with ledger.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(receipt, ensure_ascii=False, sort_keys=True) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+    _chmod_posix(ledger, 0o644)
 
 
 def _safe_extract_tar(pkg_path: Path, stage_dir: Path) -> dict[str, Any]:
@@ -306,11 +356,165 @@ def _install_env_examples(release_dir: Path, prefix: Path) -> list[str]:
         dst = prefix / dst_rel
         if src.is_file() and not dst.exists():
             dst.parent.mkdir(parents=True, exist_ok=True)
+            _chmod_posix(dst.parent, 0o755)
             shutil.copy2(src, dst)
             if os.name != "nt":
-                os.chmod(dst, 0o600 if "llm" in dst.name or "workbench" in dst.name else 0o640)
+                if dst.name.endswith(".json"):
+                    mode = 0o644
+                elif "llm" in dst.name or "workbench" in dst.name:
+                    mode = 0o600
+                else:
+                    mode = 0o640
+                os.chmod(dst, mode)
             created.append(dst_rel)
     return created
+
+
+def _sync_workbench_frontend_link(prefix: Path, app_root: Path) -> dict[str, Any]:
+    """Point /opt/signal-audit/workbench-v3 at current/deploy/astra_workbench_v3 for Nginx static serving."""
+    frontend_target = app_root / "current" / "deploy" / "astra_workbench_v3"
+    if not (frontend_target / "index.html").is_file():
+        return {"synced": False, "reason": "frontend_index_missing"}
+    audit_dir = prefix / "opt" / "signal-audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(audit_dir.parent, 0o755)
+    _chmod_posix(audit_dir, 0o755)
+    link_path = audit_dir / "workbench-v3"
+    backup_path = None
+    if link_path.exists() and not link_path.is_symlink():
+        backup = link_path.with_name(f"workbench-v3.pre-release-backup-{int(time.time())}")
+        shutil.move(str(link_path), str(backup))
+        backup_path = str(backup)
+    link_mode = _switch_link(link_path, frontend_target)
+    if not (link_path / "index.html").is_file():
+        raise RuntimeError(f"WORKBENCH_FRONTEND_LINK_BROKEN: {link_path}")
+    return {
+        "synced": True,
+        "link_mode": link_mode,
+        "path": str(link_path),
+        "target": str(frontend_target),
+        "backup": backup_path,
+    }
+
+
+def _ensure_materialize_bitnami_writable(prefix: Path) -> None:
+    if os.name == "nt" or not _is_system_root(prefix):
+        return
+    try:
+        import pwd
+
+        pwd.getpwnam("bitnami")
+    except Exception:
+        return
+    for rel in (
+        "opt/signal-audit",
+        "opt/signal-audit/signal_cards",
+        "var/lib/xxproject/signal_audit",
+        "opt/astra-map-data",
+        "opt/astra-map-data/state",
+    ):
+        d = prefix / rel
+        d.mkdir(parents=True, exist_ok=True)
+        _chmod_posix(d, 0o755)
+        try:
+            shutil.chown(d, "bitnami", "bitnami")
+        except OSError:
+            pass
+    for rel in (
+        "var/lib/xxproject/signal_native",
+        "var/lib/xxproject/signal_native/logs",
+        "var/lib/xxproject/signal_native/state",
+        "var/lib/xxproject/signal_native/retained",
+        "var/lib/xxproject/workbench",
+        "var/lib/xxproject/llm",
+        "var/lib/xxproject/gexmonitorapi",
+        "var/lib/xxproject/research_archive",
+        "var/lib/astra-kpf-light",
+    ):
+        d = prefix / rel
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            _chmod_posix(d, 0o755)
+            try:
+                shutil.chown(d, "bitnami", "bitnami")
+            except OSError:
+                pass
+
+
+def _active_release_ids_in_use(app_root: Path, prefix: Path) -> set[str]:
+    in_use: set[str] = set()
+    if os.name == "nt" or not _is_system_root(prefix) or not Path("/run/systemd/system").is_dir():
+        return in_use
+    releases_root = (app_root / "releases").resolve()
+    for unit in MANAGED_DAEMON_SERVICES:
+        show = subprocess.run(
+            ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        raw_pid = show.stdout.strip()
+        if not raw_pid.isdigit() or int(raw_pid) <= 0:
+            continue
+        cwd_link = Path(f"/proc/{int(raw_pid)}/cwd")
+        try:
+            resolved = cwd_link.resolve(strict=True)
+            rel = resolved.relative_to(releases_root)
+            if rel.parts:
+                in_use.add(rel.parts[0])
+        except (OSError, ValueError):
+            continue
+    return in_use
+
+
+def _restart_managed_daemons(app_root: Path, release_id: str) -> tuple[list[str], dict[str, int]]:
+    expected_release = (app_root / "releases" / release_id).resolve()
+    restarted: list[str] = []
+    verified_pids: dict[str, int] = {}
+    for unit in MANAGED_DAEMON_SERVICES:
+        subprocess.run(["systemctl", "enable", unit], check=True)
+        subprocess.run(["systemctl", "restart", unit], check=True)
+        st = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False)
+        if st.stdout.strip() != "active":
+            raise RuntimeError(f"SERVICE_NOT_ACTIVE_AFTER_RESTART: {unit} ({st.stdout.strip()})")
+        show = subprocess.run(
+            ["systemctl", "show", unit, "-p", "MainPID", "--value"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        raw_pid = show.stdout.strip()
+        if not raw_pid.isdigit() or int(raw_pid) <= 0:
+            raise RuntimeError(f"SERVICE_MAINPID_MISSING: {unit} ({raw_pid!r})")
+        pid = int(raw_pid)
+        proc_cwd = Path(f"/proc/{pid}/cwd").resolve(strict=True)
+        if proc_cwd != expected_release and expected_release not in proc_cwd.parents:
+            raise RuntimeError(f"SERVICE_CWD_MISMATCH: {unit} pid={pid} cwd={proc_cwd} expected={expected_release}")
+        restarted.append(unit)
+        verified_pids[unit] = pid
+    return restarted, verified_pids
+
+
+def _sync_managed_timers(installed_units: list[str], release_dir: Path) -> list[str]:
+    synced: list[str] = []
+    units_dir = release_dir / "deploy" / "xxproject_server" / "systemd_units_unified"
+    for timer in sorted(u for u in installed_units if u.endswith(".timer")):
+        subprocess.run(["systemctl", "enable", timer], check=True)
+        cur = subprocess.run(["systemctl", "is-active", timer], capture_output=True, text=True, check=False)
+        active_state = cur.stdout.strip()
+        unit_file = units_dir / timer
+        is_monotonic = unit_file.is_file() and ("OnUnitInactiveSec=" in unit_file.read_text(encoding="utf-8"))
+        if active_state != "active":
+            subprocess.run(["systemctl", "start", timer], check=True)
+        elif is_monotonic:
+            # Re-arm OnBootSec/OnUnitInactiveSec without spuriously re-triggering active OnCalendar deal/settle timers.
+            subprocess.run(["systemctl", "restart", timer], check=True)
+        post = subprocess.run(["systemctl", "is-active", timer], capture_output=True, text=True, check=False)
+        post_state = post.stdout.strip()
+        if post_state != "active":
+            raise RuntimeError(f"TIMER_NOT_ACTIVE_AFTER_SYNC: {timer} ({post_state})")
+        synced.append(timer)
+    return synced
 
 
 def _install_systemd_units(
@@ -377,25 +581,33 @@ def cmd_install(
     *,
     apply_units: bool = False,
     no_systemd: bool = False,
+    restart_services: bool = True,
     keep_releases: int = 3,
     min_free_bytes: int = 512 * 1024 * 1024,
     allow_window_override: bool = False,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    _validate_deploy_window(prefix, allow_window_override=allow_window_override, now_ms=now_ms)
+    _validate_deploy_window(
+        prefix, allow_window_override=allow_window_override, now_ms=now_ms, no_systemd=no_systemd
+    )
     _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
     cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
     app_root = _app_root(prefix)
     releases_dir = app_root / "releases"
     releases_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(app_root.parent, 0o755)
+    _chmod_posix(app_root, 0o755)
+    _chmod_posix(releases_dir, 0o755)
 
     stage_dir = releases_dir / f".staging-{os.getpid()}-{time.time_ns()}"
     stage_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(stage_dir, 0o755)
     try:
         if pkg.is_dir():
             shutil.copytree(pkg, stage_dir, dirs_exist_ok=True)
         else:
             _safe_extract_tar(pkg, stage_dir)
+        _chmod_release_tree(stage_dir)
         manifest = _verify_release_dir(stage_dir)
         _run_import_smoke(stage_dir)
         release_id = str(manifest["release_id"])
@@ -404,6 +616,7 @@ def cmd_install(
             shutil.rmtree(stage_dir)
         else:
             os.replace(stage_dir, target_dir)
+        _chmod_posix(target_dir, 0o755)
     except Exception:
         if stage_dir.exists():
             shutil.rmtree(stage_dir, ignore_errors=True)
@@ -420,12 +633,21 @@ def cmd_install(
 
     link_mode = _switch_link(app_root / "current", target_dir)
     _write_json_atomic(_pointers_path(app_root), {"current": release_id, "previous": prev_id})
+    frontend_link = _sync_workbench_frontend_link(prefix, app_root)
 
     created_envs = _install_env_examples(target_dir, prefix)
     units, backed_up_dropins = _install_systemd_units(
         target_dir, prefix, app_root, release_id, apply_units=apply_units, no_systemd=no_systemd
     )
-    keep_set = {x for x in (release_id, prev_id) if x}
+    if apply_units and not no_systemd:
+        _ensure_materialize_bitnami_writable(prefix)
+    restarted_services: list[str] = []
+    verified_service_pids: dict[str, int] = {}
+    synced_timers: list[str] = []
+    if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
+        restarted_services, verified_service_pids = _restart_managed_daemons(app_root, release_id)
+        synced_timers = _sync_managed_timers(units, target_dir)
+    keep_set = {x for x in (release_id, prev_id) if x} | _active_release_ids_in_use(app_root, prefix)
     pruned = _prune_old_releases(app_root, keep_ids=keep_set, keep_count=keep_releases)
 
     receipt = {
@@ -435,9 +657,13 @@ def cmd_install(
         "previous_release_id": prev_id,
         "source_commit": manifest.get("source_commit"),
         "link_mode": link_mode,
+        "frontend_link": frontend_link,
         "created_env_templates": created_envs,
         "installed_units": units,
         "backed_up_dropins": backed_up_dropins,
+        "restarted_services": restarted_services,
+        "verified_service_pids": verified_service_pids,
+        "synced_timers": synced_timers,
         "pruned_releases": pruned,
         "ok": True,
     }
@@ -473,11 +699,14 @@ def cmd_rollback(
     to_release: str | None = None,
     apply_units: bool = False,
     no_systemd: bool = False,
+    restart_services: bool = True,
     allow_window_override: bool = False,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
     """Roll back to previous (or named) release without touching /var/lib or /etc."""
-    _validate_deploy_window(prefix, allow_window_override=allow_window_override, now_ms=now_ms)
+    _validate_deploy_window(
+        prefix, allow_window_override=allow_window_override, now_ms=now_ms, no_systemd=no_systemd
+    )
     _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
     app_root = _app_root(prefix)
     pointers = _read_pointers(app_root)
@@ -489,6 +718,7 @@ def cmd_rollback(
     if not target_dir.is_dir():
         raise RuntimeError(f"ROLLBACK_TARGET_MISSING: {target_dir}")
 
+    _chmod_release_tree(target_dir)
     manifest = _verify_release_dir(target_dir)
     _run_import_smoke(target_dir)
 
@@ -497,9 +727,18 @@ def cmd_rollback(
         _switch_link(app_root / "previous", app_root / "releases" / prev_after)
     link_mode = _switch_link(app_root / "current", target_dir)
     _write_json_atomic(_pointers_path(app_root), {"current": str(target_id), "previous": prev_after})
+    frontend_link = _sync_workbench_frontend_link(prefix, app_root)
     units, backed_up_dropins = _install_systemd_units(
         target_dir, prefix, app_root, str(target_id), apply_units=apply_units, no_systemd=no_systemd
     )
+    if apply_units and not no_systemd:
+        _ensure_materialize_bitnami_writable(prefix)
+    restarted_services: list[str] = []
+    verified_service_pids: dict[str, int] = {}
+    synced_timers: list[str] = []
+    if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
+        restarted_services, verified_service_pids = _restart_managed_daemons(app_root, str(target_id))
+        synced_timers = _sync_managed_timers(units, target_dir)
 
     receipt = {
         "action": "rollback",
@@ -509,8 +748,12 @@ def cmd_rollback(
         "previous_release_id": prev_after,
         "source_commit": manifest.get("source_commit"),
         "link_mode": link_mode,
+        "frontend_link": frontend_link,
         "installed_units": units,
         "backed_up_dropins": backed_up_dropins,
+        "restarted_services": restarted_services,
+        "verified_service_pids": verified_service_pids,
+        "synced_timers": synced_timers,
         "runtime_state_preserved": True,
         "etc_configs_preserved": True,
         "ok": True,
@@ -550,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
     p_inst.add_argument("--package", type=Path, required=True)
     p_inst.add_argument("--apply-units", action="store_true")
     p_inst.add_argument("--no-systemd", action="store_true")
+    p_inst.add_argument("--no-restart", action="store_true")
     p_inst.add_argument("--keep-releases", type=int, default=3)
     p_inst.add_argument("--min-free-bytes", type=int, default=512 * 1024 * 1024)
     p_inst.add_argument("--allow-window-override", action="store_true")
@@ -563,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
     p_rb.add_argument("--to-release", default=None)
     p_rb.add_argument("--apply-units", action="store_true")
     p_rb.add_argument("--no-systemd", action="store_true")
+    p_rb.add_argument("--no-restart", action="store_true")
     p_rb.add_argument("--allow-window-override", action="store_true")
 
     p_st = sub.add_parser("status")
@@ -578,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             prefix,
             apply_units=args.apply_units,
             no_systemd=args.no_systemd,
+            restart_services=not args.no_restart,
             keep_releases=args.keep_releases,
             min_free_bytes=args.min_free_bytes,
             allow_window_override=args.allow_window_override,
@@ -590,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
             to_release=args.to_release,
             apply_units=args.apply_units,
             no_systemd=args.no_systemd,
+            restart_services=not args.no_restart,
             allow_window_override=args.allow_window_override,
         )
     elif args.command == "status":

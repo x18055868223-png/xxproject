@@ -260,6 +260,11 @@ def test_server_health_checker_green_and_failure_paths(tmp_path: Path):
     archive_root = tmp_path / "archive"
     for sub in ("cases", "structure", "levels", "band_snapshots"):
         (archive_root / sub).mkdir(parents=True)
+    (archive_root / "_state").mkdir(parents=True)
+    (archive_root / "_state" / "state.json").write_text(
+        json.dumps({"last_tick_ms": now_ms - 5_000, "last_tick_summary": {"at_ms": now_ms - 5_000, "errors_count": 0}}),
+        encoding="utf-8",
+    )
 
     plan_copy = tmp_path / "plan.json"
     plan_copy.write_text((ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"), encoding="utf-8")
@@ -378,7 +383,7 @@ def test_workbench_unit_env_precedence_and_network_health_checks(tmp_path: Path,
 
     map_current = tmp_path / "current_map.json"
     map_current.write_text(
-        json.dumps({"schema": "astra_map_data_server@2.4.2", "generated_at_ms": now_ms - 1000}),
+        json.dumps({"schema": "astra_map_data_server@2.4.2", "generated_at_ms": now_ms - 1000, "fmz": {"status": "current"}}),
         encoding="utf-8",
     )
     kpf_current = tmp_path / "kpf_current.json"
@@ -386,6 +391,11 @@ def test_workbench_unit_env_precedence_and_network_health_checks(tmp_path: Path,
     archive_root = tmp_path / "archive"
     for sub in ("cases", "structure", "levels", "band_snapshots"):
         (archive_root / sub).mkdir(parents=True)
+    (archive_root / "_state").mkdir(parents=True, exist_ok=True)
+    (archive_root / "_state" / "state.json").write_text(
+        json.dumps({"last_tick_ms": now_ms - 1000, "last_tick_summary": {"at_ms": now_ms - 1000, "errors_count": 0}}),
+        encoding="utf-8",
+    )
     plan_copy = tmp_path / "plan.json"
     plan_copy.write_text(
         (ROOT / "deploy" / "player_dossier" / "plan.daily_r16.v2.json").read_text(encoding="utf-8"),

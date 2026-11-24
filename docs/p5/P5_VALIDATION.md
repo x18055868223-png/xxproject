@@ -1,6 +1,6 @@
 # P5 候选验收与闭环修复验证报告（`P5_VALIDATION`）
 
-**基于基线**：P5 冻结 RC `52264db3cbdf6339bc1245fab8a9fdbd6e730bd7` 合并现网 `xx-eu` 上游 `server-native-release`（`c49fed0dc24a84c46044fa232f361f888854599e`）  
+**基于基线**：P5 冻结 RC `5869d902`（自 `52264db3` 经 `c49fed0d` 演进）合并现网 `xx-eu` 最新上游 `server-native-release`（`2802262aa9c5cba6aca5f4d83f6934a1ebbb7f3e` / `xxproject-server-2802262aa9c5-d7245ea39a9c`）  
 **当前验证结论**：全部不可豁免安全、契约、AI `REVOKE -> SHADOW_EXITED` 终态退出、三档冻结估值、Workbench v3 展示及统一部署/回滚门禁均已通过（独立 Reviewer `ddaed22e` 签署 **`RELEASE_APPROVED`**，`0 CRITICAL / 0 HIGH / 0 MEDIUM`），待在 `08:35–15:50 UTC` 安全窗口原子切换上线。
 
 ---

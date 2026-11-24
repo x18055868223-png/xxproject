@@ -8,6 +8,7 @@ import re
 import shutil
 import sys
 import time
+import urllib.error
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ DEFAULT_MIN_FREE_BYTES = 6 * 1024**3
 DEFAULT_STORAGE_BUDGET_BYTES = 5 * 1024**3
 DEFAULT_MAX_ZONES = 128
 DEFAULT_QUOTE_MAX_AGE_MS = 300_000
+REMOTE_404_BACKOFF_MS = 1_800_000
 DEFAULT_UM_DAILY_BASE = "https://data.binance.vision/data/futures/um/daily/aggTrades"
 DEFAULT_USDM_QUOTE_URL = "https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT"
 SOURCE_CACHE_FILE_RE = re.compile(r"^BTCUSDT-aggTrades-(\d{4}-\d{2}-\d{2})\.zip(?:\.CHECKSUM|\.source\.json)?$")
@@ -719,6 +721,59 @@ def download_one_day(
     return inspect_sources(data_root, [day])[0]
 
 
+def remote_backoff_path(data_root: Path) -> Path:
+    return data_root / "remote_missing_backoff.json"
+
+
+def active_remote_404_backoff(data_root: Path, day: date, current_ms: int) -> int | None:
+    path = remote_backoff_path(data_root)
+    if not path.is_file():
+        return None
+    try:
+        payload = read_json(path)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("day") != day.isoformat():
+        return None
+    retry_at = payload.get("next_retry_at_ms")
+    if isinstance(retry_at, int) and not isinstance(retry_at, bool) and current_ms < retry_at:
+        return retry_at
+    return None
+
+
+def record_remote_404_backoff(data_root: Path, day: date, current_ms: int, backoff_ms: int) -> int:
+    next_retry = current_ms + max(60_000, int(backoff_ms))
+    write_json_atomic(
+        remote_backoff_path(data_root),
+        {
+            "schema": "astra_kpf_remote_missing_backoff@1",
+            "day": day.isoformat(),
+            "recorded_at_ms": current_ms,
+            "next_retry_at_ms": next_retry,
+            "reason": "HTTP_404",
+        },
+    )
+    return next_retry
+
+
+def ready_manifest_for_day(output_root: Path, day: date) -> dict[str, Any] | None:
+    current = output_root / "current.json"
+    if not current.is_file():
+        return None
+    try:
+        manifest = read_json(current)
+    except Exception:
+        return None
+    if manifest.get("status") != "READY" or not verified_manifest_artifacts(output_root, manifest):
+        return None
+    snapshot = manifest_snapshot(output_root, manifest)
+    if not snapshot or snapshot.get("status") != "READY":
+        return None
+    if ((snapshot.get("clock") or {}).get("latest_closed_day")) != day.isoformat():
+        return None
+    return manifest
+
+
 def maybe_download_one_missing_day(
     data_root: Path,
     days: list[date],
@@ -727,18 +782,50 @@ def maybe_download_one_missing_day(
     *,
     min_free_bytes: int,
     storage_budget_bytes: int,
+    as_of_ms: int | None = None,
+    remote_missing_backoff_ms: int = REMOTE_404_BACKOFF_MS,
 ) -> SourceDay | None:
     if not allow_download:
         return None
-    for item in inspect_sources(data_root, days):
-        if not item.verified and item.error == "missing_source_zip":
-            return download_one_day(
-                data_root,
-                item.day,
-                timeout_seconds=timeout_seconds,
-                min_free_bytes=min_free_bytes,
-                storage_budget_bytes=storage_budget_bytes,
-            )
+    current_ms = now_ms() if as_of_ms is None else int(as_of_ms)
+    for day in days:
+        zip_path = source_zip_path(data_root, day)
+        checksum_path = checksum_path_for(zip_path)
+        if not zip_path.exists():
+            retry_at = active_remote_404_backoff(data_root, day, current_ms)
+            if retry_at is not None:
+                return SourceDay(
+                    day=day,
+                    zip_path=zip_path,
+                    checksum_path=checksum_path,
+                    verified=False,
+                    sha256=None,
+                    bytes=0,
+                    source_acquired_at_ms=None,
+                    error="remote_404_backoff",
+                )
+            try:
+                return download_one_day(
+                    data_root,
+                    day,
+                    timeout_seconds=timeout_seconds,
+                    min_free_bytes=min_free_bytes,
+                    storage_budget_bytes=storage_budget_bytes,
+                )
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    record_remote_404_backoff(data_root, day, current_ms, remote_missing_backoff_ms)
+                    return SourceDay(
+                        day=day,
+                        zip_path=zip_path,
+                        checksum_path=checksum_path,
+                        verified=False,
+                        sha256=None,
+                        bytes=0,
+                        source_acquired_at_ms=None,
+                        error="remote_day_not_published_yet",
+                    )
+                raise
     return None
 
 
@@ -1593,6 +1680,7 @@ def run_oneshot(
     min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
     storage_budget_bytes: int = DEFAULT_STORAGE_BUDGET_BYTES,
     max_zones: int = DEFAULT_MAX_ZONES,
+    remote_missing_backoff_ms: int = REMOTE_404_BACKOFF_MS,
 ) -> dict[str, Any]:
     as_of_ms = as_of_ms or now_ms()
     data_root = data_root.resolve()
@@ -1617,15 +1705,33 @@ def run_oneshot(
                 "reason": "same_latest_closed_day_ready_bundle",
                 "current_manifest_path": str(output_root / "current.json"),
             }
+        dl_res: SourceDay | None = None
         if capacity["ok"]:
-            maybe_download_one_missing_day(
+            dl_res = maybe_download_one_missing_day(
                 data_root,
                 days,
                 allow_download=allow_download,
                 timeout_seconds=int(config.download.get("timeout_seconds", 45)),
                 min_free_bytes=min_free_bytes,
                 storage_budget_bytes=storage_budget_bytes,
+                as_of_ms=as_of_ms,
+                remote_missing_backoff_ms=remote_missing_backoff_ms,
             )
+        if (
+            dl_res is not None
+            and dl_res.day == end_day
+            and dl_res.error in {"remote_day_not_published_yet", "remote_404_backoff"}
+            and all(source_zip_path(data_root, d).exists() for d in days[:-1])
+            and ready_manifest_for_day(output_root, end_day - timedelta(days=1)) is not None
+        ):
+            return {
+                "ok": True,
+                "unchanged": True,
+                "reason": "remote_day_not_published_yet",
+                "missing_day": end_day.isoformat(),
+                "next_retry_at_ms": active_remote_404_backoff(data_root, end_day, as_of_ms),
+                "current_manifest_path": str(output_root / "current.json"),
+            }
         statuses = inspect_sources(data_root, days)
         window_complete = all(item.verified for item in statuses)
         quote = None

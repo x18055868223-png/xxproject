@@ -365,14 +365,23 @@ def test_scheduled_shadow_coexists_with_adhoc_but_respects_manual_and_duplicate_
                                       now_ms=now[0], shadow_origin=dup_sched_origin)
         assert dup_exc.value.code == 'active_tracking_exists'
 
-        # Manual active lock on the Put contract still blocks even a formal SCHEDULED hand.
+        # Manual active lock on the Put contract coexists with a formal SCHEDULED hand without blocking it,
+        # while a second SCHEDULED hand on Put is still blocked and ad-hoc remains blocked by manual.
         put_ep = next(ep for ep in wb.locked_candidates.list() if ep['lock_actor'] == 'USER')
         put_point = wb.locked_candidates.read_point(put_ep['t0_baseline_point_id'])
         put_sched_origin = dict(base_origin, plan_id='daily-deribit-btc-r2@1', hand_id='hand_put_sched_01',
                                 dossier_episode_id='episode_put_sched_01', request_key='shadow_' + 'c' * 24)
+        put_sched_res = wb.locked_candidates.lock(put_point, request_key=put_sched_origin['request_key'],
+                                                  now_ms=now[0], shadow_origin=put_sched_origin)
+        assert put_sched_res['created'] is True
+        assert put_sched_res['episode']['episode_id'] != put_ep['episode_id']
+        assert put_sched_res['episode']['lock_actor'] == 'AI_SHADOW'
+
+        dup_put_sched = dict(base_origin, plan_id='OTHER-PLAN', hand_id='hand_put_sched_02',
+                             dossier_episode_id='episode_put_sched_02', request_key='shadow_' + 'd' * 24)
         with pytest.raises(tracking.store.LockedCandidateError) as manual_exc:
-            wb.locked_candidates.lock(put_point, request_key=put_sched_origin['request_key'],
-                                      now_ms=now[0], shadow_origin=put_sched_origin)
+            wb.locked_candidates.lock(put_point, request_key=dup_put_sched['request_key'],
+                                      now_ms=now[0], shadow_origin=dup_put_sched)
         assert manual_exc.value.code == 'active_tracking_exists'
 
 

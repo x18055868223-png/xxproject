@@ -813,21 +813,26 @@ class Dossiers:
         if bool(basis) != decision['judgment'].get('depends_on_ard', False):
             raise ValueError('ARD attachment must reflect the actual selected answer')
         if basis:
+            cutoff_ms = min(card['read_at_ms'] for card in source['cards'])
             if meta.get('input_profile') == p0_profile:
                 expected_facts = player.ard_facts_for_evidence(
                     source['history'],
                     source['index_path'],
                     expiry_ms=exp['expiry_ms'],
-                    cutoff_ms=min(card['read_at_ms'] for card in source['cards']),
+                    cutoff_ms=cutoff_ms,
                     band_snapshot=source.get('band_snapshot'),
                     input_profile=p0_profile,
                 )
             else:
+                ard_index_path = source['index_path']
+                if isinstance(ard_index_path, dict) and player._chart_semantics(ard_index_path) in player._CHART_DELAY_SEMANTICS:
+                    ard_pts = player.chart_points_audit(ard_index_path, exp['expiry_ms'], cutoff_ms)['eligible']
+                    ard_index_path = dict(ard_index_path, points=[[t, p] for t, p in ard_pts])
                 expected_facts = player.ard.analyze(
                     source['history'],
-                    source['index_path'],
+                    ard_index_path,
                     expiry_ms=exp['expiry_ms'],
-                    cutoff_ms=min(card['read_at_ms'] for card in source['cards']),
+                    cutoff_ms=cutoff_ms,
                     band_snapshot=source.get('band_snapshot'),
                 )
             if encode(basis['facts']) != encode(expected_facts):
@@ -935,10 +940,33 @@ class Dossiers:
             put, call = (pair[x]['delivery_payout_btc'] for x in ('put', 'call'))
             better = None if put is None else ('tie' if put == call else 'put' if put < call else 'call')
             chosen = decision['judgment']['side'] if decision else None
+            decided_at_ms = decision.get('recorded_at_ms') if isinstance(decision, dict) else None
             t0_credit, shadow_net, managed_shadow = None, None, None
-            link_path = hand / 'tracking' / 'link.json'
-            if chosen and link_path.is_file():
+            tracking_dir = hand / 'tracking'
+            link_path = tracking_dir / 'link.json'
+            final_block = read(tracking_dir / 'final_block.json') if (tracking_dir / 'final_block.json').is_file() else None
+            blocked_rec = read(tracking_dir / 'blocked.json') if (tracking_dir / 'blocked.json').is_file() else None
+            pending_rec = read(tracking_dir / 'pending_lock.json') if (tracking_dir / 'pending_lock.json').is_file() else None
+            lock_mode = None
+            delayed_lock = False
+            lock_reason = None
+            locked_at_ms = None
+            offset_from_decision_ms = None
+            if chosen is None:
+                lock_status = 'NOT_APPLICABLE'
+                management_status = 'NOT_APPLICABLE'
+            elif link_path.is_file():
                 link_rec = read(link_path)
+                locked_at_ms = (link_rec.get('t0') or {}).get('locked_at_ms')
+                if isinstance(locked_at_ms, int) and isinstance(decided_at_ms, int):
+                    offset_from_decision_ms = locked_at_ms - decided_at_ms
+                lock_mode = link_rec.get('lock_mode') or (
+                    'DELAYED_LOCK' if (link_rec.get('delayed_lock') or link_rec.get('retry_history')) else 'IMMEDIATE_LOCK'
+                )
+                delayed_lock = bool(lock_mode == 'DELAYED_LOCK' or link_rec.get('delayed_lock'))
+                lock_status = 'DELAYED_LOCK' if delayed_lock else 'IMMEDIATE_LOCK'
+                if pending_rec:
+                    lock_reason = pending_rec.get('last_failure_reason') or pending_rec.get('last_reason')
                 raw_credit = ((link_rec.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc')
                 if player.number(raw_credit) is not None:
                     t0_credit = raw_credit
@@ -954,10 +982,24 @@ class Dossiers:
                         t0_credit=t0_credit, hold_shadow_net=shadow_net)
                     if managed_shadow is not None:
                         episodes.append(dict(episode_id=ep_id, hand_id=hand.name, **managed_shadow))
+                management_status = managed_shadow['mode'] if managed_shadow is not None else 'HOLD_TO_EXPIRY'
+            else:
+                pending_reason = (pending_rec or {}).get('last_failure_reason') or (pending_rec or {}).get('last_reason')
+                terminal_block = final_block or blocked_rec
+                if terminal_block is not None:
+                    lock_status = 'LOCK_BLOCKED'
+                    lock_reason = terminal_block.get('reason') or pending_reason
+                else:
+                    lock_status = 'UNLINKED'
+                    lock_reason = pending_reason
+                management_status = 'NOT_APPLICABLE'
             hand_row = dict(hand_id=hand.name, sample=exp['sample'], decision=decision and decision['judgment']['action'],
                             chosen_side=chosen, sides=pair, lower_payout_side=better,
                             t0_net_credit_after_entry_fee_btc=t0_credit,
-                            hold_to_expiry_shadow_net_btc=shadow_net)
+                            hold_to_expiry_shadow_net_btc=shadow_net,
+                            lock_status=lock_status, lock_mode=lock_mode, delayed_lock=delayed_lock,
+                            lock_reason=lock_reason, decided_at_ms=decided_at_ms, locked_at_ms=locked_at_ms,
+                            offset_from_decision_ms=offset_from_decision_ms, management_status=management_status)
             if managed_shadow is not None:
                 hand_row['managed_cashflow'] = managed_shadow
             hands.append(hand_row)
@@ -1042,7 +1084,7 @@ class Dossiers:
         status = ('OPEN' if self.clock() < expiry else 'SETTLEMENT_PENDING' if not latest else
                   'CLOSED' if latest['classification'] in {'OFFICIAL', 'FIXTURE'} else 'UNVERIFIED')
         front = [f'# {folder.name}', '', f'到期 {utc(expiry).isoformat()} · {status}', '']
-        lines, counts = [], {}
+        lines, counts, lock_counts = [], {}, {}
         for hand in hands:
             exp = read(hand / 'expected.json')
             decision = self.select(hand)
@@ -1071,6 +1113,16 @@ class Dossiers:
                 lines[-1] += f" · [正式判断]({prefix}/decision.json) · [原始回复]({prefix}/{decision['response']})"
             tracking = hand / 'tracking'
             link = read(tracking / 'link.json') if (tracking / 'link.json').is_file() else None
+            if decision and decision['judgment']['action'] == 'Accept':
+                if link:
+                    lkey = 'DELAYED_LOCK' if (link.get('delayed_lock') or link.get('lock_mode') == 'DELAYED_LOCK') else 'IMMEDIATE_LOCK'
+                elif (tracking / 'final_block.json').is_file() or (tracking / 'blocked.json').is_file():
+                    lkey = 'LOCK_BLOCKED'
+                elif (tracking / 'pending_lock.json').is_file():
+                    lkey = 'PENDING_LOCK'
+                else:
+                    lkey = 'UNLINKED'
+                lock_counts[lkey] = lock_counts.get(lkey, 0) + 1
             if link:
                 lines[-1] += f" · [AI 推理审计](/#player-hand/{folder.name}/{hand.name})"
                 terminal = tracking / 'terminal.json'
@@ -1083,6 +1135,10 @@ class Dossiers:
                 lines[-1] += f" · [锁定回执]({prefix}/tracking/link.json)"
             if (tracking / 'request.json').is_file():
                 lines.append(f"  - [影子锁定申请]({prefix}/tracking/request.json)")
+            if (tracking / 'pending_lock.json').is_file():
+                lines.append(f"  - [延迟锁定试锁状态]({prefix}/tracking/pending_lock.json)")
+            if (tracking / 'final_block.json').is_file():
+                lines.append(f"  - [锁定终局终止回执]({prefix}/tracking/final_block.json)")
             if (tracking / 'blocked.json').is_file():
                 lines.append(f"  - [锁定阻塞回执]({prefix}/tracking/blocked.json)")
             for item in replies + notes:
@@ -1105,7 +1161,8 @@ class Dossiers:
         for review in sorted((folder / 'reviews').glob('*.json')):
             front.append(f'- [事后复盘]({review.relative_to(folder).as_posix()})')
         write(folder / 'summary.md', ('\n'.join(front) + '\n').encode(), replace=True)
-        write(folder / 'manifest.json', encode(dict(dossier_id=folder.name, expiry_ms=expiry, status=status, counts=counts)), replace=True)
+        write(folder / 'manifest.json', encode(dict(dossier_id=folder.name, expiry_ms=expiry, status=status,
+                                                    counts=counts, lock_counts=lock_counts)), replace=True)
         return folder / 'summary.md'
 
 

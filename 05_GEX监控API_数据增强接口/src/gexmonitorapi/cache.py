@@ -154,7 +154,7 @@ class MetricsCache:
                     "missing_fields": self._sections[target]["missing_fields"] if preserve_cached else missing,
                     "field_status": self._sections[target]["field_status"] if preserve_cached else statuses,
                     "gex_time_semantics": self._sections[target]["gex_time_semantics"] if preserve_cached else time_semantics,
-                    "fetched_at": state.get("fetched_at") or fetched_at,
+                    "fetched_at": self._sections[target].get("fetched_at") if preserve_cached else (state.get("fetched_at") or fetched_at),
                     "latest_attempt_at": state.get("latest_attempt_at") or latest_attempt_at,
                     "last_success_at": self._sections[target].get("last_success_at") if preserve_cached else (state.get("last_success_at") or fetched_at),
                     "source_url": state.get("source_url") or self._source_url(target),
