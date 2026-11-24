@@ -1,0 +1,20 @@
+[Unit]
+Description=GEX Monitor API (loopback only)
+After=network-online.target
+
+[Service]
+User=bitnami
+Group=bitnami
+WorkingDirectory=/opt/xxproject/current/05_GEX监控API_数据增强接口
+EnvironmentFile=/etc/gexmonitorapi.env
+Environment=PYTHONPATH=/opt/xxproject/current/05_GEX监控API_数据增强接口/src
+ExecStart=/opt/xxproject-runtime/venv/bin/python -m uvicorn gexmonitorapi.app:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+MemoryHigh=450M
+MemoryMax=600M
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

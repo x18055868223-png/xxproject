@@ -1,6 +1,7 @@
 """ARD facts: causal anchor/price alignment, frozen width, gaps and no voting."""
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -272,11 +273,32 @@ def test_real_ard_replays_identical_A_without_hindsight(tmp_path):
     assert r['band'] is None and r['occupancy_pct'] is None and not r['method_comparable']
     first_order=module.player.build_input(*cases,*cards,index_path=path,include_ard=False)
     orig_first=(module.HERE.parent/'player_first_order_guard/ai_input.md').read_text(encoding='utf-8')
-    assert first_order.split('## 本局牌面',1)[1].split('5. **',1)[0]==orig_first.split('## 本局牌面',1)[1].split('5. **',1)[0]
+    # Reconcile pre-5a43b21d (163ff9b3) historical frozen wording with 5a43b21d/6311071c dual-as-of chart-endpoint baseline.
+    reconciled_orig=(
+        orig_first.split('## 本局牌面',1)[1].split('5. **',1)[0]
+        .replace('指数66,767.6，','合格图表末点66,739.4（标签2026-11-14 13:59:00 UTC），')
+        .replace('短腿距离767.6 USD（约0.61倍尺度）。','短腿距离739.4 USD（约0.58倍尺度）。')
+        .replace(
+            '短腿距离232.4 USD（约0.18倍尺度）。 已在责任内',
+            '短腿距离260.6 USD（约0.21倍尺度）。 双as-of核验：Deribit btc_usd 图表分钟标签区间语义未证实，'
+            '排除边界桶2026-11-14 14:00:00 UTC，图表路径仅截至合格分钟标签2026-11-14 13:59:00 UTC；'
+            '不以未完结图表桶充当读取时当前指数或断言读取时区内外。 已在责任内',
+        )
+        .replace('翻转参考69,482.9，现价在其下方','翻转参考69,482.9，合格图表末点在其下方')
+        .replace('在现价上方232.4 USD','在合格图表末点上方260.6 USD')
+        .replace('\n入区前没有已列主要位置，直接审查短腿','\n合格图表末点在短腿责任外，入区前没有已列主要位置，直接审查短腿')
+        .replace('至读取距离767.6 USD，较该采样扩大259.9 USD','至读取距离739.4 USD，较该采样扩大231.7 USD')
+        .replace('近5分钟指数从66,759到66,767.6 USD','近5分钟指数从66,730.4到66,739.4 USD')
+    )
+    first_order_board=first_order.split('## 本局牌面',1)[1].split('5. **',1)[0]
+    assert first_order_board==reconciled_orig
     body=module.player.build_input(*cases,*cards,index_path=path,ard_history=history)
+    body_board=body.split('## 本局牌面',1)[1].split('5. **',1)[0]
+    assert re.sub(r'\n\n\*\*锚相对动态ARD（.*?(?=\n\n3\. \*\*)','',body_board,count=1,flags=re.S)==first_order_board
     (tmp_path/'ai_input.md').write_text(body,encoding='utf-8')
     assert '61,300' not in body
     assert 'Pin输出位置由68,000变为67,000' in body
     assert '不能确认是同口径结构迁移' in body
-    assert '有效240/240个分钟样本' in body and '覆盖数不是独立结构更新次数' in body
+    # Dual-as-of chart_points_audit excludes the unverified 14:00:00 UTC boundary minute -> 239/240 qualified minutes
+    assert '有效239/240个分钟样本' in body and '覆盖数不是独立结构更新次数' in body
     assert '窗初已知Pin 68,000固定参照' in body

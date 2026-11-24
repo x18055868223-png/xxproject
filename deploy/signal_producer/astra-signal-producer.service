@@ -1,0 +1,31 @@
+[Unit]
+Description=xxproject Server-Native Signal Producer (Read-Only, Zero FMZ)
+Wants=network-online.target gexmonitorapi.service
+After=network-online.target gexmonitorapi.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=300
+User=bitnami
+Group=bitnami
+WorkingDirectory=/opt/xxproject/current
+EnvironmentFile=/etc/signal-audit/signal-producer.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_signal_producer_v1.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryHigh=256M
+MemoryMax=512M
+CPUQuota=50%
+ReadWritePaths=/var/lib/xxproject/signal_native /var/lib/xxproject/workbench
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=xxproject AI Player 15:50 UTC prewarm readiness check (SHADOW_ONLY)
+After=network-online.target astra-workbench-v20.service astra-research-archive.service
+
+[Service]
+Type=oneshot
+User=bitnami
+Group=research
+UMask=0027
+WorkingDirectory=/opt/xxproject/current/tools
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json
+EnvironmentFile=/etc/signal-audit/llm.env
+EnvironmentFile=/etc/signal-audit/workbench-v20.env
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_player_tracking_v13.py --url http://127.0.0.1:8895 prewarm --plan /opt/xxproject/current/deploy/player_dossier/plan.daily_r16.v2.json --archive /var/lib/xxproject/research_archive
+TimeoutStartSec=120
+Nice=10

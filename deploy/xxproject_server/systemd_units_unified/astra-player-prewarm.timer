@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AI Player prewarm at 15:52 UTC daily
+
+[Timer]
+OnCalendar=*-*-* 15:52:00 UTC
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

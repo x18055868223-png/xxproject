@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AI Player 5-minute fixed-grid condition checks & event-triggered reviews
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
