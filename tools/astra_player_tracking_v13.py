@@ -35,7 +35,7 @@ SERVICE_PATH = '/api/workbench/shadow-tracking'
 # option expiry or an explicitly declared decision/plan validity limit.
 HANDOFF_MS = 60 * 60_000
 LEGACY_HANDOFF_MS = (120_000, 15 * 60_000)
-MAX_BYTES = 8_000_000
+MAX_BYTES = 32_000_000
 CONTRACT_FIELDS = dossier.condition.CONTRACT_FIELDS
 DECISION_FIELDS = ('attempt_id', 'raw_sha256', 'parser', 'judgment', 'configuration_id',
                    'decided_at_ms', 'recorded_at_ms', 'channel', 'model')

@@ -126,7 +126,8 @@
       "tools/astra_workbench_reading_v1.py",
       "demo/shared/data_product_registry_v23.json"
     ],
-    "upstream_dependency": "Upstream 6311071c deployed on xx-eu at 2026-11-23T16:49Z (verified live at 2026-11-23T17:01:08Z); pending >= 2 post-6311071c natural deal cycles (Nov 24-25 16:00Z) before Gate A/E promotion approval."
+    "upstream_dependency": "Upstream 6311071c deployed on xx-eu at 2026-11-23T16:49Z (verified live at 2026-11-24T03:24Z); user-authorized expedited release waives the 2-cycle soak and 5-7 shadow pair pre-deploy gates in favor of post-promotion live E2E monitoring.",
+    "shadow_evidence_size_cap_bytes": 32000000
   },
   "host_adapted_non_runtime_files": {
     "/opt/signal-audit-tools/astra_joint_sources.py": {

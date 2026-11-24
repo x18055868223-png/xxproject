@@ -2509,3 +2509,82 @@ def test_step2_fault_injection_401_403_timeout_lost_receipt_budget_and_isolation
     assert (h_formal_a / "expected.json").read_bytes() == snap_a_expected
     assert (h_formal_a / "decision.json").read_bytes() == snap_a_decision
 
+
+def test_expedited_shadow_export_32mb_cap_and_cutover_schedule_zero_missed(tmp_path, monkeypatch):
+    from test_astra_player_tracking_v13 import sample as tracking_sample
+
+    # 1. Verify 32 MB shadow export cap eliminates live >8 MB blocker while still enforcing MAX_BYTES fail-closed
+    assert tracking.MAX_BYTES == 32_000_000
+    wb, d_trk, hand, _, _ = tracking_sample(tmp_path / "trk_32mb", "Accept / Call")
+    with serving(wb) as base_url:
+        svc = wb_post(base_url, wb)
+        receipt = tracking.link(d_trk, hand, svc, LEGACY_RULE)
+        ep_id = receipt["t0"]["tracker_episode_id"]
+        ep = wb.locked_candidates.detail(ep_id)["episode"]
+        t0_point = wb.locked_candidates.read_point(ep["t0_baseline_point_id"])
+        filler = "x" * 5_000_000
+        large_point = {**t0_point, "_padding": filler}
+        real_read = wb.locked_candidates.read_point
+        monkeypatch.setattr(
+            wb.locked_candidates,
+            "read_point",
+            lambda pid: large_point if pid == ep["t0_baseline_point_id"] else real_read(pid),
+        )
+        big_points = [{"point_id": f"p{i}", "pad": "y" * 14_000} for i in range(250)]
+        real_series = wb.locked_candidate_series
+        monkeypatch.setattr(
+            wb,
+            "locked_candidate_series",
+            lambda eid, **_kw: {**real_series(eid), "points": big_points},
+        )
+        exported = svc("export", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
+        compact_size = len(
+            (json.dumps(exported, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        )
+        assert compact_size > 8_000_000
+        assert exported["point"]["_padding"] == filler
+        assert len(exported["points"]) == 250
+
+        monkeypatch.setattr(tracking, "MAX_BYTES", compact_size - 1)
+        with pytest.raises(tracking.Blocked, match="shadow_evidence_size_limit"):
+            svc("export", {"dossier_id": hand.parent.parent.name, "hand_id": hand.name})
+
+    # 2. Verify live cutover timestamps create ZERO MISSED/backfill during quiet window (2026-11-24T08:15Z)
+    deploy_dir = Path(__file__).resolve().parents[1] / "deploy" / "player_dossier"
+    v2_plan = json.loads((deploy_dir / "plan.daily_r16.v2.json").read_text(encoding="utf-8"))
+    v3_plan = json.loads((deploy_dir / "plan.daily_r16.v3_p5.json").read_text(encoding="utf-8"))
+    v4_plan = json.loads((deploy_dir / "plan.daily_r16.v4_rollback_formal_a.json").read_text(encoding="utf-8"))
+
+    assert v3_plan["effective_at_ms"] == 1795536000000
+    assert v3_plan["effective_at_utc"] == "2026-11-24T16:00:00Z"
+    assert v4_plan["effective_at_ms"] == 1795622400000
+    assert v4_plan["effective_at_utc"] == "2026-11-25T16:00:00Z"
+
+    quiet_cutover_ms = v3_plan["effective_at_ms"] - 7 * HOUR - 45 * M  # 2026-11-24T08:15:00Z
+    slot_v2_prev = v3_plan["effective_at_ms"] - DAY                     # 2026-11-23T16:00:00Z
+    exp_v2_prev = slot_v2_prev + v2_plan["expiry_offset_ms"]
+
+    assert list(dossier.schedule(v3_plan, quiet_cutover_ms)) == []
+    assert list(dossier.schedule(v3_plan, v3_plan["effective_at_ms"] + 2 * M)) == [v3_plan["effective_at_ms"]]
+    assert list(dossier.schedule(v4_plan, v4_plan["effective_at_ms"] + 2 * M)) == [v4_plan["effective_at_ms"]]
+
+    # Settled v2 hand + quiet cutover into v3 creates 0 MISSED and keeps v2 expected.json byte-identical
+    clk = Clock(slot_v2_prev + 2 * M)
+    d_cut = dossier.Dossiers(tmp_path / "quiet_cutover", clk)
+    h_prev = d_cut.expect(exp_v2_prev, "SCHEDULED", plan=v2_plan, slot=slot_v2_prev)
+    d_cut.deal(h_prev, _shift_source_for_r16_slot(exp_v2_prev, clk()))
+    prev_exp_bytes = (h_prev / "expected.json").read_bytes()
+
+    clk.ms = quiet_cutover_ms
+    assert d_cut.tick(v3_plan) == []
+    assert (h_prev / "expected.json").read_bytes() == prev_exp_bytes
+
+    # Rollback schedule after v3 slot settles transitions cleanly to daily_r16@4 (@1.0 + legacy_v1)
+    clk.ms = v4_plan["effective_at_ms"] + 2 * M
+    out_rb = d_cut.tick(v4_plan)
+    assert any(
+        (p / "expected.json").is_file() and dossier.read(p / "expected.json")["plan"]["plan_id"] == "daily_r16@4"
+        for p in out_rb
+    )
+
+

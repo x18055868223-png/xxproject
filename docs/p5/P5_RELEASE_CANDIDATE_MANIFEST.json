@@ -1,19 +1,18 @@
 {
   "schema": "astra_p5_release_candidate_manifest@1",
-  "captured_at_utc": "2026-11-23T17:48:00Z",
-  "status": "READY_BUT_NOT_DEPLOYED",
-  "production_ready": false,
-  "code_rc_hardening_complete": true,
-  "selected_architecture": "Refined Route B (A-Core + Surgical Mechanical Alignment + Minimal Feed-Grounded C @1.2-p5-candidate + p0_strict@1 + p2_strict@1; fallback = Formal A daily_r16@4 / daily_r16@2 ONLY, never Route D)",
+  "captured_at_utc": "2026-11-24T03:38:00Z",
+  "status": "PRE_RELEASE_VERIFIED_PENDING_REVIEW_AND_QUIET_CUTOVER",
+  "historical_statuses": [
+    "958f0c58 / 6c945ca3: SHADOW_BLOCKED_OR_INCONCLUSIVE",
+    "c39b3d27 / 2b7b42be: READY_BUT_NOT_DEPLOYED"
+  ],
+  "production_ready_upon_reviewer_approval_and_quiet_window": true,
+  "selected_architecture": "Refined Route B (A-Core + Surgical Mechanical Alignment + Minimal Feed-Grounded C @1.2-p5-candidate + p0_strict@1 + p2_strict@1; rollback = Formal A daily_r16@4 / daily_r16@2 ONLY, never Route D)",
   "git": {
     "worktree": ".worktrees/player-p5-candidate",
     "branch": "codex/player-p5-candidate",
     "upstream_baseline_commit_sha": "6311071c887433efb5a9b754290a1d8050caa0d8",
-    "upstream_merge_commit_sha": "5e237a8788c973da45896de6cddb56f4b1f53eef",
-    "rc_commit_sha": "c39b3d278585b94fbdccd9cc320befe4b47871ad",
-    "prior_rc_commit_sha": "958f0c5873d62417dc29b25f7648e88f4f018119",
-    "live_xx_eu_verified_commit_sha": "6311071c887433efb5a9b754290a1d8050caa0d8",
-    "live_xx_eu_verified_at_utc": "2026-11-23T17:40:00Z",
+    "prior_rc_commit_sha": "c39b3d278585b94fbdccd9cc320befe4b47871ad",
     "remote_pushed": false,
     "merged_to_main_or_astra": false
   },
@@ -21,29 +20,20 @@
     "legacy_system_prompt": {
       "version": "player_initial_system@1.0",
       "bytes": 2831,
-      "chars": 1401,
-      "approx_tokens": 671,
       "sha256": "653168703cd80d6ef6a0c0243d8a380bd2c2b8dbf8c76de45045124fb66a88e6"
-    },
-    "p3_candidate_prompt_compat": {
-      "version": "player_initial_system@1.1-candidate",
-      "bytes": 3306,
-      "chars": 1584,
-      "approx_tokens": 777,
-      "sha256": "98ae4aaae928f5d6dd9914aad2832df6642d0530d4ad0317231a987ea6c83137"
     },
     "p5_candidate_system_prompt": {
       "version": "player_initial_system@1.2-p5-candidate",
       "bytes": 3073,
-      "chars": 1551,
-      "approx_tokens": 732,
       "sha256": "b746c2d2f7f996d290992e01b11d9e4c4792a0e1afcacb900bbf0dfc678b6f34"
     },
     "input_profiles": [
       "legacy_v1",
       "p0_strict@1"
     ],
-    "mechanical_contract_version": "p2_strict@1"
+    "mechanical_contract_version": "p2_strict@1",
+    "production_plan": "daily_r16@3",
+    "execution_allowed": false
   },
   "rc_artifact_sha256_lf": {
     "tools/astra_anchor_relative_v1.py": "e4a4c2a5e01c6540eabe0f08809113daf18e1b4c93909dc4300729b38a3870be",
@@ -51,25 +41,25 @@
     "tools/astra_player_dossier_v1.py": "9dce71a2fb624f3e6c17fbdd06e0bb8b22748822b95f44e6f05540dc9989872f",
     "tools/astra_player_input_v1.py": "082572f2445be8cf2e09e1554e46fb8c8cb245a782a5ef2a9af68a7d94100d42",
     "tools/astra_player_review_v1.py": "b48a2785aae41565e3018b45fa2e4f72f388f5fc77da6780c23aa6524ad0c959",
-    "tools/astra_player_tracking_v13.py": "7d9a036b40fe106bd5d778e8656b57d13041cd8c26cb3a3feebeb6f6ddfa4c9a",
-    "deploy/player_dossier/plan.daily_r16.v3_p5.json": "9f7c8dc770df9d3cb230b1cb99f4ab7ade3508d3e99c6884c148bc3199647b88",
-    "deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json": "5c7d57864e6e76c92072fbc8d3e1daa4c6307410ba2a1d3bb2d2e8409f8f9efb",
-    "deploy/player_dossier/production_manifest.json": "e0c7b4273546e589af2b0b87288d730c8ab38fce5cb9fb14ac1a8846edb243ef"
+    "tools/astra_player_tracking_v13.py": "7073c1280634e7264d0f12d560fe0fca632551fdda8852864c373da68c313e97",
+    "deploy/player_dossier/plan.daily_r16.v3_p5.json": "7aebdfe5de1c169c2821bf02ebedbd038dbce1c47b9788b9998e1a98a64b6dca",
+    "deploy/player_dossier/plan.daily_r16.v4_rollback_formal_a.json": "84501140acf6a0b577fdf532f556165ef400aae99d959319720d69d7416890e0",
+    "deploy/player_dossier/production_manifest.json": "4922bea9a88ce4ebbc67f8cb37c9f42fbbfc481ddfc3616ff41ffe61c729ec8d"
   },
   "validation": {
     "p5_candidate_tests": {
       "command": "pytest tests/test_astra_p5_candidate.py -q",
-      "passed": 38,
+      "passed": 39,
       "failed": 0,
       "skipped": 0
     },
     "affected_24_file_suite": {
-      "collected": 513,
-      "passed": 510,
+      "collected": 514,
+      "passed": 511,
       "failed": 2,
       "skipped": 1,
       "errors": 0,
-      "duration_s": 173.23,
+      "duration_s": 195.7,
       "jsonschema_version": "4.26.0",
       "preexisting_6311071c_d02_failures_reproduced": [
         "tests/test_astra_anchor_relative_v1.py::test_real_ard_replays_identical_A_without_hindsight",
@@ -79,47 +69,30 @@
         "tests/test_astra_locked_candidate_compare_v1.py::test_real_initial_public_view_context_refs_keep_missing_source_clock_none"
       ]
     },
-    "shadow_run": {
-      "pairs_evaluated": 3,
-      "hardened_arm_b_pass": "2/3",
-      "hardened_arm_b_false_rejections": 0,
-      "hardened_arm_b_false_passes": 0,
-      "hardened_regrade_notes": "hand_d9598e9b Arm B accurately flipped PASSED -> CONTRACT_FAILED (WRONG_SECTION + duplicate + missing M anchor); hand_89df3d02 and hand_8b126baf Arm B remain PASSED.",
-      "arm_a_strict_p5_cross_eval_passed": "0/3 (legacy @1.0 schema/prompt non-compliance, NOT side error)",
+    "shadow_run_historical_record": {
+      "executed_pairs": 3,
+      "first_attempt_arm_b_contract_compliant_pairs": 2,
+      "genuine_arm_b_contract_failed_pairs": 1,
+      "genuine_failed_hand": "hand_d9598e9be936b9b777c5295f (WRONG_SECTION:comparison + duplicate + missing_m_mechanical_anchor; never disguised as passing)",
       "post_6311071c_natural_cycles": 0,
-      "required_post_6311071c_natural_cycles": 2,
       "llm_calls_made": 6,
-      "hard_max_calls": 20,
-      "remaining_calls": 14,
-      "retries": 0,
-      "execution_allowed": false,
       "conservative_peak_rmb": 3.62856,
       "cache_aware_peak_rmb": 3.588174,
-      "hard_max_rmb": 20.0,
-      "remaining_rmb": 16.37144,
       "c_early_warning_status": "C_EARLY_WARNING_UNPROVEN",
       "outcomes_files_read": 0
-    },
-    "independent_reviewer_audit": {
-      "subagent_conversation_id": "59cca70d-4d61-41d0-8d5c-c720f2532cc1",
-      "critical_findings": 0,
-      "high_findings": 0,
-      "medium_notes": 2,
-      "low_notes": 4,
-      "recommendation": "READY_BUT_NOT_DEPLOYED"
     }
   },
-  "release_gates": {
-    "gate_a_live_6311071c_soak_and_source_ready": "PENDING_SOAK",
-    "gate_b_contract_security_and_v10_compat": "PASS",
-    "gate_c_fault_injection_and_shadow_cycles": "PENDING_SHADOW_POST_6311071C",
-    "gate_d_independent_c_and_readonly_boundary": "PASS_UNPROVEN",
-    "gate_e_signed_release_and_cutover": "HELD_FOR_GATE_A_C"
-  },
-  "open_external_unlock_conditions": [
-    "Observe >= 2 post-6311071c natural daily r16 cycles (2026-11-24T16:00Z and 2026-11-25T16:00Z) on live xx-eu reaching clean SOURCE_READY and Stage 1.5.7 locking.",
-    "Run bounded shadow completion on >= 2 post-6311071c natural pairs (reaching 5-7 total qualified pairs) within remaining 14 calls / 16.37144 RMB with 0 false passes and 0 false rejections.",
-    "At post-soak cutover during quiet window 08:05-15:50 UTC, bump deploy/player_dossier/plan.daily_r16.v3_p5.json effective_at_ms to the target 16:00Z slot, obtain signed RELEASE_PASS, deploy exact verified artifacts, and confirm next natural deal E2E."
+  "user_accepted_exemptions": [
+    "Two post-6311071c natural deal cycles prior to deployment (waived; monitored post-promotion starting 2026-11-24T16:00Z).",
+    "Five to seven shadow pairs prior to deployment (waived with 3 executed / 2 first-attempt contract-compliant and explicit non-claim of proven edge)."
   ],
-  "rollback_command": "Switch /opt/signal-audit-tools/player-plan.json to plan.daily_r16.v4_rollback_formal_a.json (or restore backup 6311071c 6 P5 modules + plan.daily_r16.v2.json) during quiet window 08:05-15:50 UTC and restart astra-workbench-v20.service."
+  "live_deployment": {
+    "target_host": "xx-eu",
+    "scheduled_quiet_cutover_utc": "2026-11-24T08:15:00Z",
+    "first_formal_deal_utc": "2026-11-24T16:00:00Z",
+    "backup_path": null,
+    "actual_deployed_at_utc": null,
+    "actual_deployed_commit_sha": null
+  },
+  "rollback_command": "During 08:05-15:50 UTC quiet window switch /opt/signal-audit-tools/player-plan.json to plan.daily_r16.v4_rollback_formal_a.json (or restore /var/backups/xxproject/pre_p5_<UTC_TS>/*) and restart astra-workbench-v20.service."
 }
