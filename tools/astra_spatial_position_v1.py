@@ -104,7 +104,12 @@ def assess(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     if flip is None:
         flip = _num(gex_info.get("flip_point"))
     freshness = anchor.get("gex_freshness") or anchor.get("freshness")
-    fresh = freshness == "FRESH" and gex_info.get("stale") is not True
+    fresh = (
+        freshness == "FRESH"
+        and gex_info.get("stale") is not True
+        and str(gex_info.get("data_state") or "").lower() != "lkgv_cache"
+        and str(gex_info.get("quality") or "").upper() != "STALE"
+    )
     events: list[dict[str, Any]] = []
     for wall in _walls(gex_info):
         if in_corridor(wall["price"]):

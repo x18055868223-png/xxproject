@@ -521,6 +521,7 @@ class Deribit:
         *,
         min_book_interval_s: float = 1.05,
         max_rate_limit_waits: int = 1,
+        max_cooldown_wait_s: float = 15.0,
         cooldown_default_s: float = 10.0,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -529,6 +530,7 @@ class Deribit:
         self.transport = transport or self._get
         self.min_book_interval_s = max(0.0, float(min_book_interval_s)) if self._live_transport else 0.0
         self.max_rate_limit_waits = max(0, int(max_rate_limit_waits))
+        self.max_cooldown_wait_s = max(0.0, float(max_cooldown_wait_s))
         self.cooldown_default_s = max(1.0, float(cooldown_default_s))
         self._monotonic = monotonic
         self._sleep = sleep
@@ -559,8 +561,15 @@ class Deribit:
         return body["result"]
 
     def book(self, name: str) -> dict[str, Any]:
-        if self._live_transport and deribit_cooldown.remaining_ms() > 0:
-            raise ValueError("DERIBIT_HTTP_429 cooldown active")
+        if self._live_transport:
+            rem_ms = deribit_cooldown.remaining_ms()
+            if rem_ms > 0:
+                max_wait_ms = int(self.max_cooldown_wait_s * 1000)
+                if self.min_book_interval_s > 0 and max_wait_ms > 0 and rem_ms <= max_wait_ms:
+                    self._sleep((rem_ms / 1000.0) + 0.25)
+                    rem_ms = deribit_cooldown.remaining_ms()
+                if rem_ms > 0:
+                    raise ValueError("DERIBIT_HTTP_429 cooldown active")
         for attempt in range(2):
             now_m = self._monotonic()
             if self._rate_limited_until_mono > now_m:
@@ -628,9 +637,7 @@ def instrument_key(contract: Mapping[str, Any]) -> str | None:
 
 
 def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """User-side decision events from the workbench: lock created / stopped, Decision Path rows.
-    All are the human's (decision_event@0.2): a lock is scored at its own instant, not as a round,
-    so round, case and action stay empty."""
+    """Decision events from workbench: locks (human or ai_shadow) and Decision Path rows."""
     events: list[dict[str, Any]] = []
     human = {"actor": "human", "round": None, "case_id": None, "action": None}
     for ep in locked_episodes:
@@ -638,15 +645,34 @@ def collect_decisions(locked_episodes: list[Mapping[str, Any]], dp_records: list
         key = instrument_key(contract)
         if not key or not ep.get("episode_id"):
             continue
-        base = {**human, "source": "lock", "contract_key": key, "side": contract.get("side"),
+        shadow = ep.get("ai_shadow")
+        is_shadow = isinstance(shadow, Mapping) and bool(shadow)
+        actor_meta = {
+            "actor": "ai_shadow" if is_shadow else "human",
+            "round": None,
+            "case_id": None,
+            "action": None,
+        }
+        shadow_detail = (
+            {
+                k: shadow.get(k)
+                for k in ("plan_id", "hand_id", "dossier_id", "decision_id", "lock_mode")
+                if shadow.get(k) is not None
+            }
+            if is_shadow
+            else {}
+        )
+        base = {**actor_meta, "source": "lock", "contract_key": key, "side": contract.get("side"),
                 "expiry_ms": contract.get("expiry_ms"), "ref_id": ep["episode_id"]}
         if isinstance(ep.get("created_at_ms"), int):
             events.append({**base, "event": "lock_created", "at_ms": ep["created_at_ms"],
                            "detail": {"candidate_id": ep.get("candidate_id"),
-                                      "source_episode_id": ep.get("source_episode_id")}})
+                                      "source_episode_id": ep.get("source_episode_id"),
+                                      **shadow_detail}})
         if ep.get("status") != "active" and isinstance(ep.get("stopped_at_ms"), int):
             events.append({**base, "event": "lock_stopped", "at_ms": ep["stopped_at_ms"],
-                           "detail": {"status": ep.get("status"), "stop_reason": ep.get("stop_reason")}})
+                           "detail": {"status": ep.get("status"), "stop_reason": ep.get("stop_reason"),
+                                      **shadow_detail}})
     for row in dp_records:
         contract = row.get("contract") or {}
         key = instrument_key(contract)
@@ -1566,6 +1592,13 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     state["closed_recent"] = {k: v for k, v in state["closed_recent"].items()
                               if now_ms - int(v["expiry_ms"]) <= INDEX_KEEP_CLOSED_MS}
     state["last_tick_ms"] = now_ms
+    state["last_tick_summary"] = {
+        "at_ms": now_ms,
+        "rows": int(report.get("rows", 0)),
+        "outcomes": int(report.get("outcomes", 0)),
+        "errors_count": len(report.get("errors") or []),
+        "error_steps": [str(e.get("step")) for e in (report.get("errors") or [])[:10] if isinstance(e, Mapping)],
+    }
     archive.save_state(state)
     try:
         write_index(archive, state, now_ms=now_ms)

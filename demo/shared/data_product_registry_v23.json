@@ -1603,11 +1603,11 @@
       ],
       "usage_policies": {
         "background": {
-          "ttl_ms": 604800000,
+          "ttl_ms": 172800000,
           "allowed_data_states": ["OK"]
         },
         "default": {
-          "ttl_ms": 604800000,
+          "ttl_ms": 172800000,
           "allowed_data_states": [
             "OK"
           ]

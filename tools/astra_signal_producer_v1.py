@@ -38,7 +38,7 @@ DEFAULT_DERIBIT_TICKER_INTERVAL_MS = 200
 DEFAULT_DERIBIT_429_COOLDOWN_SEC = 60
 DEFAULT_DERIBIT_WALL_TIME_MS = 25_000
 DEFAULT_CHECKPOINT_MAX_AGE_MS = 86_400_000  # 24h
-DEFAULT_BARS_RESTORE_MAX_AGE_MS = 600_000   # 10m
+DEFAULT_BARS_RESTORE_MAX_AGE_MS = 90_000    # 90s: fast restarts keep partial bar, longer gaps rebuild via 1m backfill
 
 
 def _repo_or_release_root() -> Path:
@@ -363,6 +363,7 @@ class NativeSignalRuntime:
         self.last_snapshot_exported_ms: int | None = None
         self.checkpoint_saved_ms: int | None = None
         self.checkpoint_restored: dict[str, Any] = {"restored": False}
+        self._pending_bars_restore_catchup_check: bool = False
 
         self._install_runtime_hooks()
         self.checkpoint_restored = self.restore_checkpoint()
@@ -434,6 +435,84 @@ class NativeSignalRuntime:
         rt.gex_info._write_cache = _gex_write_cache_atomic
         rt.macro_factor._write_cache = _macro_write_cache_atomic
         rt.macro_factor._write_previous_snapshot = _macro_write_prev_atomic
+
+        # 1b. Preserve honest LKGV staleness & enrichment staleness on gex_info snapshots
+        orig_gex_cached_or_missing = rt.gex_info._cached_or_missing
+        orig_gex_fetch_snapshot = rt.gex_info._fetch_snapshot
+
+        def _mark_gex_snapshot_flags(snap: Any, enrichment_meta: Mapping[str, Any] | None = None) -> Any:
+            if not isinstance(snap, dict):
+                return snap
+            out = dict(snap)
+            quality = str(out.get("quality") or "").upper()
+            data_state = str(out.get("data_state") or "").lower()
+            if data_state == "lkgv_cache" or quality == "STALE":
+                out["stale"] = True
+            if enrichment_meta:
+                out["enrichment_stale"] = bool(enrichment_meta.get("enrichment_stale", False))
+                if enrichment_meta.get("enrichment_availability") is not None:
+                    out["enrichment_availability"] = enrichment_meta.get("enrichment_availability")
+            return out
+
+        def _native_gex_cached_or_missing(reasons: Any, error: Any = None) -> Any:
+            return _mark_gex_snapshot_flags(orig_gex_cached_or_missing(reasons, error=error))
+
+        def _native_gex_fetch_snapshot() -> Any:
+            meta: dict[str, Any] = {}
+            cur_http_get_json = rt.gex_info.http.get_json
+
+            def _capturing_gex_get_json(*args: Any, **kwargs: Any) -> Any:
+                res = cur_http_get_json(*args, **kwargs)
+                if isinstance(res, Mapping) and res.get("quality") == core.QUALITY_OK:
+                    data = res.get("data")
+                    if isinstance(data, Mapping):
+                        if "enrichment_stale" in data:
+                            meta["enrichment_stale"] = bool(data.get("enrichment_stale"))
+                        if data.get("enrichment_availability") is not None:
+                            meta["enrichment_availability"] = data.get("enrichment_availability")
+                return res
+
+            rt.gex_info.http.get_json = _capturing_gex_get_json
+            try:
+                snap = orig_gex_fetch_snapshot()
+            finally:
+                rt.gex_info.http.get_json = cur_http_get_json
+            if isinstance(snap, dict) and str(snap.get("quality") or "").upper() == "OK" and meta:
+                updated = _mark_gex_snapshot_flags(snap, meta)
+                rt.gex_info._write_cache(updated)
+                return updated
+            return _mark_gex_snapshot_flags(snap)
+
+        rt.gex_info._cached_or_missing = _native_gex_cached_or_missing
+        rt.gex_info._fetch_snapshot = _native_gex_fetch_snapshot
+
+        # 1c. Post-restore catchup guard: fall back to 1m kline backfill if restored bars stay backlogged
+        orig_poll_with_drain = rt.bars.poll_with_drain
+
+        def _native_poll_with_drain() -> list[Any]:
+            bars = orig_poll_with_drain()
+            if self._pending_bars_restore_catchup_check:
+                self._pending_bars_restore_catchup_check = False
+                if (rt.bars.last_cycle_metrics or {}).get("backlogged"):
+                    rt.bars.completed_bars.clear()
+                    rt.bars.last_trade_id = None
+                    rt.bars.bar_index = 0
+                    rt.bars.current_open = None
+                    rt.bars.current_high = None
+                    rt.bars.current_low = None
+                    rt.bars.current_close = None
+                    rt.bars.current_volume = 0.0
+                    rt.bars.current_cvd = 0.0
+                    rt.bars.current_last_trade_ts_ms = None
+                    rt.bars.cvd_degraded = False
+                    rt.last_anchor_bar_index = None
+                    rt.last_edb_cvd_bar_index = None
+                    rt.anchor_nd_window.clear()
+                    rt.bar_backfill = rt._backfill_volume_bars()
+                    bars = orig_poll_with_drain()
+            return bars
+
+        rt.bars.poll_with_drain = _native_poll_with_drain
 
         # 2. Enrich EvaluationSnapshot with truthful server-native identity
         orig_maybe_write = rt.snapshot_exporter.maybe_write
@@ -525,23 +604,36 @@ class NativeSignalRuntime:
                     core.SCHEMA_HTTP_RESULT,
                     self.config,
                 )
-            is_live_http = (rt.http.get_json is self._orig_http_get_json) or self._force_deribit_pacing
-            if method == "public/ticker" and is_live_http and self._deribit_ticker_interval_ms > 0:
-                if self._last_ticker_mono is not None:
-                    elapsed_ms = (time.monotonic() - self._last_ticker_mono) * 1000.0
-                    wait_ms = self._deribit_ticker_interval_ms - elapsed_ms
-                    if wait_ms > 0:
-                        self._sleep_interruptible(wait_ms)
-                        if self.stop_event.is_set():
-                            return core.add_schema(
-                                {"quality": core.QUALITY_ERROR, "data": None, "error": "shutdown_requested"},
-                                core.SCHEMA_HTTP_RESULT,
-                                self.config,
-                            )
-                self._last_ticker_mono = time.monotonic()
+            current_get_json = rt.http.get_json
+            orig_func = getattr(self._orig_http_get_json, "__func__", None)
+            cur_func = getattr(current_get_json, "__func__", None)
+            cur_self = getattr(current_get_json, "__self__", None)
+            is_unpatched_http = (
+                current_get_json == self._orig_http_get_json
+                or (orig_func is not None and cur_func is orig_func and cur_self is rt.http)
+            )
+            is_live_http = is_unpatched_http or self._force_deribit_pacing
+            method_norm = str(method or "").lstrip("/")
+            if method_norm.startswith("public/"):
+                effective_retries = 0
+                if is_live_http and self._deribit_ticker_interval_ms > 0:
+                    if self._last_ticker_mono is not None:
+                        elapsed_ms = (time.monotonic() - self._last_ticker_mono) * 1000.0
+                        wait_ms = self._deribit_ticker_interval_ms - elapsed_ms
+                        if wait_ms > 0:
+                            self._sleep_interruptible(wait_ms)
+                            if self.stop_event.is_set():
+                                return core.add_schema(
+                                    {"quality": core.QUALITY_ERROR, "data": None, "error": "shutdown_requested"},
+                                    core.SCHEMA_HTTP_RESULT,
+                                    self.config,
+                                )
+                    self._last_ticker_mono = time.monotonic()
+            else:
+                effective_retries = retries
 
             try:
-                result = orig_deribit_public_get(method, params=params, timeout_sec=timeout_sec, retries=retries)
+                result = orig_deribit_public_get(method, params=params, timeout_sec=timeout_sec, retries=effective_retries)
             except Exception as exc:
                 msg = str(exc).lower()
                 if any(tok in msg for tok in ("429", "too_many_requests", "too many requests", "10028")):
@@ -609,6 +701,13 @@ class NativeSignalRuntime:
                 "completed_bars": deepcopy(list(rt.bars.completed_bars)),
                 "last_trade_id": rt.bars.last_trade_id,
                 "bar_index": rt.bars.bar_index,
+                "current_open": rt.bars.current_open,
+                "current_high": rt.bars.current_high,
+                "current_low": rt.bars.current_low,
+                "current_close": rt.bars.current_close,
+                "current_volume": rt.bars.current_volume,
+                "current_cvd": rt.bars.current_cvd,
+                "current_last_trade_ts_ms": rt.bars.current_last_trade_ts_ms,
                 "last_trade_price": rt.bars.last_trade_price,
                 "last_trade_ts_ms": rt.bars.last_trade_ts_ms,
                 "cvd_degraded": rt.bars.cvd_degraded,
@@ -715,13 +814,21 @@ class NativeSignalRuntime:
         bars_tail = data.get("bars_tail")
         if age_ms <= bars_max_age_ms and isinstance(bars_tail, Mapping):
             completed = bars_tail.get("completed_bars")
-            if isinstance(completed, list) and completed:
+            has_partial = bars_tail.get("current_open") is not None
+            if isinstance(completed, list) and (completed or has_partial):
                 rt.bars.completed_bars = deque(
                     (dict(b) for b in completed if isinstance(b, Mapping)),
                     maxlen=rt.bars.completed_bars.maxlen,
                 )
                 rt.bars.last_trade_id = bars_tail.get("last_trade_id")
                 rt.bars.bar_index = int(bars_tail.get("bar_index") or len(rt.bars.completed_bars))
+                rt.bars.current_open = bars_tail.get("current_open")
+                rt.bars.current_high = bars_tail.get("current_high")
+                rt.bars.current_low = bars_tail.get("current_low")
+                rt.bars.current_close = bars_tail.get("current_close")
+                rt.bars.current_volume = float(bars_tail.get("current_volume") or 0.0)
+                rt.bars.current_cvd = float(bars_tail.get("current_cvd") or 0.0)
+                rt.bars.current_last_trade_ts_ms = bars_tail.get("current_last_trade_ts_ms")
                 rt.bars.last_trade_price = bars_tail.get("last_trade_price")
                 rt.bars.last_trade_ts_ms = bars_tail.get("last_trade_ts_ms")
                 rt.bars.cvd_degraded = bool(bars_tail.get("cvd_degraded", False))
@@ -734,6 +841,7 @@ class NativeSignalRuntime:
                 rt.last_anchor_bar_index = bars_tail.get("last_anchor_bar_index")
                 rt.last_edb_cvd_bar_index = bars_tail.get("last_edb_cvd_bar_index")
                 bars_restored = True
+                self._pending_bars_restore_catchup_check = True
 
         return {
             "restored": True,

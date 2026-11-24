@@ -56,7 +56,8 @@ GEX_FLOW_KEYS = ("pcr", "pcr_oi", "put_oi", "call_oi", "put_volume", "call_volum
 GEX_STRUCTURE_KEYS = ("flip_point", "total_net_gex", "support_walls", "resistance_walls", "near_term_walls",
                       "max_pain_price", "max_pain_target_expiry", "magnet_price", "market_state", "p1", "p2", "n1",
                       "n2", "next_expiry", "spot_price")
-GEX_META_KEYS = ("age_ms", "fetched_at_ms", "data_state", "quality", "stale", "availability")
+GEX_META_KEYS = ("age_ms", "fetched_at_ms", "data_state", "quality", "stale", "availability",
+                 "enrichment_stale", "enrichment_availability")
 
 
 def clean(value: Any) -> Any:
@@ -136,10 +137,24 @@ def _stale_quality(meta: Mapping[str, Any] | None) -> tuple[str | None, str | No
     meta = meta or {}
     if meta.get("stale") is True:
         return "stale", "source_marked_stale"
-    state = str(meta.get("data_state") or meta.get("quality") or "").lower()
-    if state in {"stale", "degraded"}:
-        return "stale", "source_" + state
+    data_state = str(meta.get("data_state") or "").lower()
+    if data_state in {"lkgv_cache", "stale", "degraded"}:
+        return "stale", "source_" + data_state
+    quality = str(meta.get("quality") or "").lower()
+    if quality in {"stale", "degraded"}:
+        return "stale", "source_" + quality
     return None, None
+
+
+def _gex_enrichment_quality(gex: Mapping[str, Any], base_quality: str | None,
+                            base_reason: str | None) -> tuple[str | None, str | None]:
+    if base_quality == "stale":
+        return base_quality, base_reason
+    if gex.get("enrichment_stale") is True:
+        return "stale", "gex_enrichment_stale"
+    if str(gex.get("enrichment_availability") or "").lower() == "missing":
+        return "stale", "gex_enrichment_missing"
+    return base_quality, base_reason
 
 
 MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
@@ -243,6 +258,7 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
     space = facts.get("space_context") or {}
     gex = space.get("gex_info") or {}
     gex_quality, gex_reason = _stale_quality(gex)
+    gex_enrich_quality, gex_enrich_reason = _gex_enrichment_quality(gex, gex_quality, gex_reason)
     gex_asof = gex.get("fetched_at_ms")
     fmz_asof = fact.get("snapshot_ts_ms")
     market = snapshot.get("market") or {}
@@ -408,8 +424,8 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
     iv_align = iv_alignment(contract, gex)
     case.add("L4.iv", "隐含波动（市场口径）：ATM IV、DVOL、IV 分位、期限结构、RR skew", _pick(gex, GEX_VOL_KEYS),
              relations={**_pick(gex, GEX_META_KEYS), "expiry_alignment": iv_align}, lineage=["gexmonitor.gex_info"],
-             source="market_facts.space_context.gex_info", asof_ms=gex_asof, quality=gex_quality,
-             quality_reason=gex_reason or ("iv_not_contract_expiry" if not _empty(_pick(gex, GEX_VOL_KEYS)) and False in (
+             source="market_facts.space_context.gex_info", asof_ms=gex_asof, quality=gex_enrich_quality,
+             quality_reason=gex_enrich_reason or ("iv_not_contract_expiry" if not _empty(_pick(gex, GEX_VOL_KEYS)) and False in (
                  iv_align["term_front_is_contract_expiry"], iv_align["rr_1d_is_contract_expiry"]) else None))
     eg = view.get("expiry_gamma") or {}
     case.add("L4.expiry_vol", "本期 ATM IV、预期波动与已实现波动",
@@ -432,7 +448,7 @@ def build(*, snapshot: Mapping[str, Any], raw_market: Mapping[str, Any], asof_ms
     case.add("L5.options_flow", "期权流：PCR、OI、成交量、大单、对冲流", _pick(gex, GEX_FLOW_KEYS),
              relations=_pick(gex, GEX_META_KEYS), lineage=["gexmonitor.gex_info"],
              source="market_facts.space_context.gex_info", asof_ms=gex_asof,
-             quality=gex_quality, quality_reason=gex_reason)
+             quality=gex_enrich_quality, quality_reason=gex_enrich_reason)
 
     # L6 time evolution
     days = [d for d in (view.get("daily_snapshots") or []) if isinstance(d, Mapping)][-DAILY_DAYS:]

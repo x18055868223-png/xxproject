@@ -5500,13 +5500,12 @@ class AstraWorkbench:
 
     def refresh_expiry_gamma(self, now_ms: int | None = None, *, force: bool = False) -> dict[str, Any] | None:
         now = self.clock_ms() if now_ms is None else now_ms
-        if not force:
-            if not expiry_gamma.due(self._expiry_gamma, now):
-                return self._expiry_gamma
-            if (deribit_cooldown.remaining_ms(now_ms=now) > 0
-                    or self._deribit_pacer.stats().get("cooldown_remaining_s", 0.0) > 0.0
-                    or self.data_engine.provider_cooldown("deribit", now_ms=now) is not None):
-                return self._expiry_gamma
+        if not force and not expiry_gamma.due(self._expiry_gamma, now):
+            return self._expiry_gamma
+        if (deribit_cooldown.remaining_ms(now_ms=now) > 0
+                or self._deribit_pacer.stats().get("cooldown_remaining_s", 0.0) > 0.0
+                or self.data_engine.provider_cooldown("deribit", now_ms=now) is not None):
+            return self._expiry_gamma
         result = expiry_gamma.collect(self.expiry_gamma_get_json, now)
         try:
             json.dumps(result, allow_nan=False)

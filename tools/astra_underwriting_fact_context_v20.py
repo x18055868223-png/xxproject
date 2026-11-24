@@ -339,6 +339,21 @@ def _space_context(factors: Mapping[str, Any], space_gate: dict[str, Any] | None
     anchor = factors.get("anchor") if isinstance(factors.get("anchor"), Mapping) else {}
     gamma = factors.get("gamma_regime") if isinstance(factors.get("gamma_regime"), Mapping) else {}
     gex_info = factors.get("gex_info") if isinstance(factors.get("gex_info"), Mapping) else {}
+    gex_info_fields = _fields(gex_info, (
+        "asset", "quality", "data_state", "availability", "stale",
+        "enrichment_stale", "enrichment_availability",
+        "market_state", "total_net_gex", "fetched_at_ms", "age_ms",
+        "spot_price", "flip_point", "magnet_price", "n1", "n2",
+        "p1", "p2", "support_walls", "resistance_walls",
+        # gexmonitor dashboard-bundle enrichment (FMZ >= 2.0.4)
+        "volatility_trigger", "near_term_walls", "hedging_flows",
+        "max_pain_price", "max_pain_target_expiry", "next_expiry",
+        "dvol", "atm_iv", "iv_percentile", "term_structure", "rr_skew",
+        "pcr", "pcr_oi", "call_volume", "put_volume", "call_oi", "put_oi",
+        "whale_1h", "whale_24h"))
+    if (str(gex_info_fields.get("quality") or "").upper() == "STALE"
+            or str(gex_info_fields.get("data_state") or "").lower() == "lkgv_cache"):
+        gex_info_fields["stale"] = True
     gamma_context = _fields(gamma, (
         "regime", "regime_strength", "flip_point", "asset_price",
         "distance_to_flip_pct", "net_gex_sign", "net_gamma_notional",
@@ -355,17 +370,7 @@ def _space_context(factors: Mapping[str, Any], space_gate: dict[str, Any] | None
             "anchor_gravity_ref_score", "anchor_gravity_ref_label",
             "anchor_gravity_warming", "anchor_gravity_window_count")),
         "gamma_regime": gamma_context,
-        "gex_info": _fields(gex_info, (
-            "asset", "quality", "data_state", "availability", "stale",
-            "market_state", "total_net_gex", "fetched_at_ms", "age_ms",
-            "spot_price", "flip_point", "magnet_price", "n1", "n2",
-            "p1", "p2", "support_walls", "resistance_walls",
-            # gexmonitor dashboard-bundle enrichment (FMZ >= 2.0.4)
-            "volatility_trigger", "near_term_walls", "hedging_flows",
-            "max_pain_price", "max_pain_target_expiry", "next_expiry",
-            "dvol", "atm_iv", "iv_percentile", "term_structure", "rr_skew",
-            "pcr", "pcr_oi", "call_volume", "put_volume", "call_oi", "put_oi",
-            "whale_1h", "whale_24h")),
+        "gex_info": gex_info_fields,
         "space_gate_state": space_gate.get("state") if space_gate else None,
         "space_gate_reasons": (space_gate or {}).get("reason_codes") or (
             [gate_gap] if gate_gap else []),

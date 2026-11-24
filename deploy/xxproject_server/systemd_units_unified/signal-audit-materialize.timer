@@ -3,7 +3,7 @@ Description=Refresh signal audit static cards from server-native signal_review.j
 
 [Timer]
 OnBootSec=30
-OnUnitActiveSec=120
+OnUnitInactiveSec=120
 Unit=signal-audit-materialize.service
 
 [Install]

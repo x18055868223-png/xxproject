@@ -263,8 +263,13 @@ def condition_at_t0(proof, plan, snapshot, locked_at):
                   sampling=dossier.condition.SAMPLING, confirmation_excerpt=plan['confirmation_excerpt'])
     if proof['decision']['judgment']['depends_on_ard']:
         s = proof['source']
-        facts = dossier.player.ard.analyze(s['history'], s['index_path'], expiry_ms=expiry,
-            cutoff_ms=min(c['read_at_ms'] for c in s['cards']), band_snapshot=s.get('band_snapshot'))
+        cutoff_ms = min(c['read_at_ms'] for c in s['cards'])
+        ard_index_path = s['index_path']
+        if isinstance(ard_index_path, dict) and dossier.player._chart_semantics(ard_index_path) in dossier.player._CHART_DELAY_SEMANTICS:
+            ard_pts = dossier.player.chart_points_audit(ard_index_path, expiry, cutoff_ms)['eligible']
+            ard_index_path = dict(ard_index_path, points=[[t, p] for t, p in ard_pts])
+        facts = dossier.player.ard.analyze(s['history'], ard_index_path, expiry_ms=expiry,
+            cutoff_ms=cutoff_ms, band_snapshot=s.get('band_snapshot'))
         frozen['ard_basis'] = dict(facts=facts, responsibility_meaning=plan['ard_responsibility_meaning'],
                                    review_on=plan['ard_review_on'])
     try:
@@ -692,6 +697,7 @@ def link(d, hand, service, plan=None, *, _failure_hint=None):
 
 def _merge_index_points(archive_root, expiry_ms, at, *, public_fn=None):
     by_ts = {}
+    closed_limit = min(at - dossier.MINUTE, expiry_ms)
     if archive_root is not None:
         root = Path(archive_root)
         for day_ms in (expiry_ms - dossier.DAY, expiry_ms):
@@ -704,7 +710,7 @@ def _merge_index_points(archive_root, expiry_ms, at, *, public_fn=None):
                             or data.get('expiry_ms') != day_ms):
                         continue
                     for t, v in data.get('points') or ():
-                        if isinstance(t, int) and t <= min(at, expiry_ms) and dossier.player.number(v) and v > 0:
+                        if isinstance(t, int) and t <= closed_limit and dossier.player.number(v) and v > 0:
                             by_ts[t] = float(v)
                 except Exception:
                     pass
@@ -713,11 +719,13 @@ def _merge_index_points(archive_root, expiry_ms, at, *, public_fn=None):
         for item in points or ():
             if isinstance(item, (list, tuple)) and len(item) == 2:
                 t, v = item
-                if isinstance(t, int) and t <= min(at, expiry_ms) and dossier.player.number(v) and v > 0:
+                if isinstance(t, int) and t <= closed_limit and dossier.player.number(v) and v > 0:
                     by_ts[t] = float(v)
     except Exception:
         pass
-    return dict(index_name='btc_usd', expiry_ms=expiry_ms, points=[[t, by_ts[t]] for t in sorted(by_ts)])
+    return dict(index_name='btc_usd', expiry_ms=expiry_ms,
+                timestamp_semantics='unverified_minute_label',
+                points=[[t, by_ts[t]] for t in sorted(by_ts)])
 
 
 def _episode_ard_state(frozen, episode, archive_root, index_path, tick, *, entry_pin_snapshot=None):
@@ -859,7 +867,7 @@ def _run_due_checks(d, episode, at, *, index_path=None, check_due=False, archive
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return [], type(exc).__name__
     clock_cfg = frozen['check_clock']
-    limit = min(at, frozen['contract']['expiry_ms'] - 1)
+    limit = min(at - dossier.MINUTE, frozen['contract']['expiry_ms'] - 1)
     done_ticks = {
         ev.get('observed_at_ms')
         for p in (episode / 'events').glob('check_*.json')
