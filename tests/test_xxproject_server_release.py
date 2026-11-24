@@ -561,3 +561,43 @@ def test_deploy_release_fail_before_mutate_dropin_backup_and_window_guard(
         deployer.cmd_rollback(prefix, to_release=r1["release_id"], apply_units=False, no_systemd=True, now_ms=deal_ms)
     deployer._validate_deploy_window(prefix, allow_window_override=False, now_ms=safe_ms)
     deployer._validate_deploy_window(prefix, allow_window_override=True, now_ms=deal_ms)
+
+
+def test_deploy_release_mutual_exclusion_lock_blocks_concurrent_install_and_rollback(tmp_path: Path):
+    builder = _load_script("xxproject_build_release_lock", BUILD_SCRIPT)
+    deployer = _load_script("xxproject_deploy_release_lock", DEPLOY_SCRIPT)
+
+    pkg_v1 = tmp_path / "pkg_v1.tar.gz"
+    pkg_v2 = tmp_path / "pkg_v2.tar.gz"
+    r1 = builder.build_release(
+        ROOT, pkg_v1, source_commit="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", release_tag="v1", allow_dirty=True
+    )
+    r2 = builder.build_release(
+        ROOT, pkg_v2, source_commit="ffffffffffffffffffffffffffffffffffffffff", release_tag="v2", allow_dirty=True
+    )
+
+    prefix = tmp_path / "host"
+    inst1 = deployer.cmd_install(pkg_v1, prefix, apply_units=False, no_systemd=True)
+    app_root = prefix / "opt" / "xxproject"
+    expected_lock = app_root / deployer.DEPLOY_LOCK_FILENAME
+    assert inst1["deploy_lock"] == str(expected_lock)
+    assert expected_lock.is_file()
+
+    with deployer._deploy_lock(app_root, action="install"):
+        with pytest.raises(RuntimeError, match="DEPLOY_LOCK_HELD"):
+            deployer.cmd_install(pkg_v2, prefix, apply_units=False, no_systemd=True)
+        with pytest.raises(RuntimeError, match="DEPLOY_LOCK_HELD"):
+            deployer.cmd_rollback(prefix, to_release=r1["release_id"], apply_units=False, no_systemd=True)
+
+    status_mid = deployer.cmd_status(prefix)
+    assert status_mid["current"] == r1["release_id"]
+    assert r2["release_id"] not in status_mid["available_releases"]
+
+    inst2 = deployer.cmd_install(pkg_v2, prefix, apply_units=False, no_systemd=True)
+    assert inst2["deploy_lock"] == str(expected_lock)
+    assert deployer.cmd_status(prefix)["current"] == r2["release_id"]
+
+    rb = deployer.cmd_rollback(prefix, apply_units=False, no_systemd=True)
+    assert rb["deploy_lock"] == str(expected_lock)
+    assert rb["release_id"] == r1["release_id"]
+    assert deployer.cmd_status(prefix)["current"] == r1["release_id"]

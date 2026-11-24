@@ -7,19 +7,20 @@
 
 ## 1. 上线前置安全锁与宿主机前提
 
-1. **禁切交易与结算窗：** 避开 **07:50–08:35 UTC**（官方到期 settle）与 **15:50–16:35 UTC**（每日 AI Player `daily_r16@2` 发牌与锁定窗）；`deploy_release.py` 已内置 UTC 窗保护拒绝实机热切（仅紧急回滚可显式 `--allow-window-override`）。确认 `systemctl is-active astra-player-deal.service` 返回 `inactive`。
-2. **只读与影子边界：** `astra_signal_producer_v1.py` 强制锁定 `read_only_demo=True`；`deploy/player_dossier/plan.daily_r16.v2.json` 锁定 `mode="SHADOW_ONLY"`, `execution_allowed=false`。
+1. **禁切交易与结算窗：** 避开 **07:50–08:35 UTC**（官方到期 settle）与 **15:50–16:35 UTC**（每日 AI Player 发牌与锁定窗）；`deploy_release.py` 已内置 UTC 窗保护拒绝实机热切（仅紧急回滚可显式 `--allow-window-override`）。确认 `systemctl is-active astra-player-deal.service` 返回 `inactive`。
+2. **只读与影子边界：** `astra_signal_producer_v1.py` 强制锁定 `read_only_demo=True`；现役 `deploy/player_dossier/plan.daily_r16.v3_p5.json`（`daily_r16@3`，P5 影子闭环）及回退 `plan.daily_r16.v2.json` 均锁定 `mode="SHADOW_ONLY"`, `execution_allowed=false`。
 3. **先停 FMZ 再启原生：** 正式接管须先停 `xxproject-fmz-node-69494805.service` 再启 `astra-signal-producer.service`，避免双进程同 IP 竞争 Deribit `public/ticker` 配额触发 429。
 4. **宿主前置（GEX Python 环境）：** `gexmonitorapi.service` 依赖 `/opt/xxproject-runtime/venv/bin/python`；`deploy_release.py install --apply-units` 会在修改 symlink/unit 前自动预检该文件。
+5. **唯一发布入口与部署互斥锁：** 一切生产 `install` 与 `rollback` 必须通过统一入口 `deploy/xxproject_server/install_release.sh`（底层 `deploy_release.py`）执行，严禁多个 Agent 并发修改生产版本或直接手工热替换 `/opt/xxproject`；`deploy_release.py` 在 `/opt/xxproject/.deploy.lock` 持有非阻塞独占锁（并发调用立即以 `DEPLOY_LOCK_HELD` 快速失败）。
 
 ---
 
 ## 2. 目录规划与环境接驳（首次切换准备）
 
-- **不可变代码 root：** `/opt/xxproject/{releases/<id>,current,previous,unit_backups,deployments.jsonl}`（`chmod -R a+rX /opt/xxproject`，供 `bitnami`/`research` 服务只读执行）。
+- **不可变代码 root：** `/opt/xxproject/{releases/<id>,current,previous,unit_backups,deployments.jsonl,.deploy.lock}`（`chmod -R a+rX /opt/xxproject`，供 `bitnami`/`research` 服务只读执行）。
 - **持久化运行状态：** `/var/lib/xxproject/{signal_native/logs,signal_native/state,workbench,research_archive,research_inbox,llm}`；MAP 保持 `/opt/astra-map-data/state`；KPF 保持 `/var/lib/astra-kpf-light`。
 - **宿主机配置与密钥（不被发布包或回滚覆盖）：**
-  1. **`/etc/signal-audit/signal-producer.env`：** 设置 `ASTRA_SIGNAL_LOGS_DIR=/var/lib/xxproject/signal_native/logs`、`ASTRA_SIGNAL_STATE_DIR=/var/lib/xxproject/signal_native/state`、`ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json` 与 `ASTRA_SIGNAL_GEX_INFO_URL=http://127.0.0.1:8000`。
+  1. **`/etc/signal-audit/signal-producer.env`：** 设置 `ASTRA_SIGNAL_LOGS_DIR=/var/lib/xxproject/signal_native/logs`、`ASTRA_SIGNAL_STATE_DIR=/var/lib/xxproject/signal_native/state`、`ASTRA_DERIBIT_COOLDOWN_FILE=/var/lib/xxproject/workbench/deribit_cooldown.json`、`ASTRA_SIGNAL_GEX_INFO_URL=http://127.0.0.1:8000`，以及线上实测收敛参数 `ASTRA_SIGNAL_DERIBIT_TICKER_INTERVAL_MS=1200`、`ASTRA_SIGNAL_DERIBIT_WALL_TIME_MS=48000`、`ASTRA_SIGNAL_BARS_RESTORE_MAX_AGE_MS=90000`。
   2. **`/etc/signal-audit/workbench-v20.env`：** `ASTRA_WORKBENCH_SNAPSHOTS_JSONL=/var/lib/xxproject/signal_native/logs/snapshots.jsonl`；`ASTRA_WORKBENCH_FRONTEND_DIR=/opt/xxproject/current/deploy/astra_workbench_v3`；确保状态与账本落在 `/var/lib/xxproject/{workbench,llm}`；保留 `/etc/signal-audit/llm.env` 原地有效。
   3. **`/opt/astra-map-data/config.json`：** 将 `snapshots_jsonl` 改指 `/var/lib/xxproject/signal_native/logs/snapshots.jsonl`。
   4. **`/etc/signal-audit/signal-audit-materialize.env`：** 设置 `JSONL_SOURCE=/var/lib/xxproject/signal_native/logs/signal_review.jsonl`、`OUTPUT_DIR=/opt/signal-audit`、`SESSION_CONTEXT_REQUIRED=1`（与 `systemd_units_unified/signal-audit-materialize.service` 及 `deploy/signal_audit/signal-audit-materialize.env.example` 对齐）。

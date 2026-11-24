@@ -20,6 +20,7 @@ python3 deploy/xxproject_server/deploy_release.py rollback --apply-units
 ```
 
 ## Layout & Safety Boundaries
+- Single-deployer & concurrency mutex: all production `install` and `rollback` operations must run through `deploy/xxproject_server/install_release.sh` (or `deploy_release.py`), which acquires an exclusive non-blocking host lock at `/opt/xxproject/.deploy.lock` and fails fast with `DEPLOY_LOCK_HELD` to block concurrent multi-agent or parallel deployments.
 - Code releases live in `/opt/xxproject/releases/<release_id>/`, selected atomically via `/opt/xxproject/current` and `/opt/xxproject/previous` (with legacy `.service.d/*.conf` drop-ins backed up under `/opt/xxproject/unit_backups/`).
 - Live root switches refuse edits inside `07:50–08:35 UTC` (settlement) and `15:50–16:35 UTC` (auto-deal) unless explicitly overridden with `--allow-window-override`.
 - Runtime state (`/var/lib/xxproject/`, `/var/lib/astra-kpf-light/`, `/opt/astra-map-data/state/`) and host configs/secrets (`/etc/signal-audit/`, `/etc/gexmonitorapi.env`, `/etc/astra-kpf-light.env`) are NEVER bundled and NEVER overwritten by install or rollback.

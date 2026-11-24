@@ -518,7 +518,13 @@ def test_p1_5_release_symlink_prune_guard_and_templates(tmp_path: Path, monkeypa
         assert "/home/ubuntu" not in text, f"legacy ubuntu path in {path}"
         assert "/opt/astra-map-data/kpf/current.json" not in text
 
-    assert "ASTRA_SIGNAL_BARS_RESTORE_MAX_AGE_MS=90000" in (ROOT / "deploy" / "signal_producer" / "signal-producer.env.example").read_text(encoding="utf-8")
+    assert sp.DEFAULT_DERIBIT_TICKER_INTERVAL_MS == 1200
+    assert sp.DEFAULT_DERIBIT_WALL_TIME_MS == 48_000
+    assert sp.DEFAULT_BARS_RESTORE_MAX_AGE_MS == 90_000
+    sp_env = (ROOT / "deploy" / "signal_producer" / "signal-producer.env.example").read_text(encoding="utf-8")
+    assert "ASTRA_SIGNAL_DERIBIT_TICKER_INTERVAL_MS=1200" in sp_env
+    assert "ASTRA_SIGNAL_DERIBIT_WALL_TIME_MS=48000" in sp_env
+    assert "ASTRA_SIGNAL_BARS_RESTORE_MAX_AGE_MS=90000" in sp_env
     install_sh = (ROOT / "deploy" / "xxproject_server" / "install_release.sh").read_text(encoding="utf-8")
     assert "umask 022" in install_sh and "--apply-units" in install_sh
 

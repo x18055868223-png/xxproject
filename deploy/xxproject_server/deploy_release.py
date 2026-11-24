@@ -9,6 +9,8 @@ hermetic offline and Linux ``/tmp`` rehearsal drills.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 import datetime as dt
 import hashlib
 import json
@@ -21,7 +23,18 @@ import tarfile
 import time
 from typing import Any
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
+
 RELEASE_SCHEMA = "xxproject_server_release@1.0.0"
+DEPLOY_LOCK_FILENAME = ".deploy.lock"
 
 CORE_IMPORT_MODULES = [
     "astra_signal_producer_v1",
@@ -133,6 +146,71 @@ def _sha256(raw: bytes) -> str:
 
 def _app_root(prefix: Path) -> Path:
     return prefix / "opt" / "xxproject"
+
+
+def _read_lock_holder(lock_path: Path) -> str:
+    try:
+        text = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "active deploy in progress"
+    return text or "active deploy in progress"
+
+
+@contextmanager
+def _deploy_lock(app_root: Path, *, action: str) -> Iterator[Path]:
+    """Acquire a non-blocking exclusive host lock serializing installs and rollbacks."""
+    app_root.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(app_root.parent, 0o755)
+    _chmod_posix(app_root, 0o755)
+    lock_path = app_root / DEPLOY_LOCK_FILENAME
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(str(lock_path), flags, 0o644)
+    _chmod_posix(lock_path, 0o644)
+    locked = False
+    try:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except OSError as exc:
+                raise RuntimeError(f"DEPLOY_LOCK_HELD: {lock_path} ({_read_lock_holder(lock_path)})") from exc
+        elif msvcrt is not None:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                locked = True
+            except OSError as exc:
+                raise RuntimeError(f"DEPLOY_LOCK_HELD: {lock_path} ({_read_lock_holder(lock_path)})") from exc
+        payload = (
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "action": action,
+                    "started_at_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "app_root": str(app_root),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, payload)
+        os.ftruncate(fd, len(payload))
+        os.fsync(fd)
+        yield lock_path
+    finally:
+        try:
+            if locked:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(fd)
 
 
 def _pointers_path(app_root: Path) -> Path:
@@ -591,84 +669,86 @@ def cmd_install(
         prefix, allow_window_override=allow_window_override, now_ms=now_ms, no_systemd=no_systemd
     )
     _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
-    cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
     app_root = _app_root(prefix)
-    releases_dir = app_root / "releases"
-    releases_dir.mkdir(parents=True, exist_ok=True)
-    _chmod_posix(app_root.parent, 0o755)
-    _chmod_posix(app_root, 0o755)
-    _chmod_posix(releases_dir, 0o755)
+    with _deploy_lock(app_root, action="install") as lock_path:
+        cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
+        releases_dir = app_root / "releases"
+        releases_dir.mkdir(parents=True, exist_ok=True)
+        _chmod_posix(app_root.parent, 0o755)
+        _chmod_posix(app_root, 0o755)
+        _chmod_posix(releases_dir, 0o755)
 
-    stage_dir = releases_dir / f".staging-{os.getpid()}-{time.time_ns()}"
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    _chmod_posix(stage_dir, 0o755)
-    try:
-        if pkg.is_dir():
-            shutil.copytree(pkg, stage_dir, dirs_exist_ok=True)
-        else:
-            _safe_extract_tar(pkg, stage_dir)
-        _chmod_release_tree(stage_dir)
-        manifest = _verify_release_dir(stage_dir)
-        _run_import_smoke(stage_dir)
-        release_id = str(manifest["release_id"])
-        target_dir = releases_dir / release_id
-        if target_dir.exists():
-            shutil.rmtree(stage_dir)
-        else:
-            os.replace(stage_dir, target_dir)
-        _chmod_posix(target_dir, 0o755)
-    except Exception:
-        if stage_dir.exists():
-            shutil.rmtree(stage_dir, ignore_errors=True)
-        raise
+        stage_dir = releases_dir / f".staging-{os.getpid()}-{time.time_ns()}"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        _chmod_posix(stage_dir, 0o755)
+        try:
+            if pkg.is_dir():
+                shutil.copytree(pkg, stage_dir, dirs_exist_ok=True)
+            else:
+                _safe_extract_tar(pkg, stage_dir)
+            _chmod_release_tree(stage_dir)
+            manifest = _verify_release_dir(stage_dir)
+            _run_import_smoke(stage_dir)
+            release_id = str(manifest["release_id"])
+            target_dir = releases_dir / release_id
+            if target_dir.exists():
+                shutil.rmtree(stage_dir)
+            else:
+                os.replace(stage_dir, target_dir)
+            _chmod_posix(target_dir, 0o755)
+        except Exception:
+            if stage_dir.exists():
+                shutil.rmtree(stage_dir, ignore_errors=True)
+            raise
 
-    pointers = _read_pointers(app_root)
-    old_current_id = pointers.get("current")
-    prev_id = pointers.get("previous")
-    if isinstance(old_current_id, str) and old_current_id and old_current_id != release_id:
-        old_dir = releases_dir / old_current_id
-        if old_dir.is_dir():
-            _switch_link(app_root / "previous", old_dir)
-            prev_id = old_current_id
+        pointers = _read_pointers(app_root)
+        old_current_id = pointers.get("current")
+        prev_id = pointers.get("previous")
+        if isinstance(old_current_id, str) and old_current_id and old_current_id != release_id:
+            old_dir = releases_dir / old_current_id
+            if old_dir.is_dir():
+                _switch_link(app_root / "previous", old_dir)
+                prev_id = old_current_id
 
-    link_mode = _switch_link(app_root / "current", target_dir)
-    _write_json_atomic(_pointers_path(app_root), {"current": release_id, "previous": prev_id})
-    frontend_link = _sync_workbench_frontend_link(prefix, app_root)
+        link_mode = _switch_link(app_root / "current", target_dir)
+        _write_json_atomic(_pointers_path(app_root), {"current": release_id, "previous": prev_id})
+        frontend_link = _sync_workbench_frontend_link(prefix, app_root)
 
-    created_envs = _install_env_examples(target_dir, prefix)
-    units, backed_up_dropins = _install_systemd_units(
-        target_dir, prefix, app_root, release_id, apply_units=apply_units, no_systemd=no_systemd
-    )
-    if apply_units and not no_systemd:
-        _ensure_materialize_bitnami_writable(prefix)
-    restarted_services: list[str] = []
-    verified_service_pids: dict[str, int] = {}
-    synced_timers: list[str] = []
-    if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
-        restarted_services, verified_service_pids = _restart_managed_daemons(app_root, release_id)
-        synced_timers = _sync_managed_timers(units, target_dir)
-    keep_set = {x for x in (release_id, prev_id) if x} | _active_release_ids_in_use(app_root, prefix)
-    pruned = _prune_old_releases(app_root, keep_ids=keep_set, keep_count=keep_releases)
+        created_envs = _install_env_examples(target_dir, prefix)
+        units, backed_up_dropins = _install_systemd_units(
+            target_dir, prefix, app_root, release_id, apply_units=apply_units, no_systemd=no_systemd
+        )
+        if apply_units and not no_systemd:
+            _ensure_materialize_bitnami_writable(prefix)
+        restarted_services: list[str] = []
+        verified_service_pids: dict[str, int] = {}
+        synced_timers: list[str] = []
+        if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
+            restarted_services, verified_service_pids = _restart_managed_daemons(app_root, release_id)
+            synced_timers = _sync_managed_timers(units, target_dir)
+        keep_set = {x for x in (release_id, prev_id) if x} | _active_release_ids_in_use(app_root, prefix)
+        pruned = _prune_old_releases(app_root, keep_ids=keep_set, keep_count=keep_releases)
 
-    receipt = {
-        "action": "install",
-        "at_ms": int(time.time() * 1000),
-        "release_id": release_id,
-        "previous_release_id": prev_id,
-        "source_commit": manifest.get("source_commit"),
-        "link_mode": link_mode,
-        "frontend_link": frontend_link,
-        "created_env_templates": created_envs,
-        "installed_units": units,
-        "backed_up_dropins": backed_up_dropins,
-        "restarted_services": restarted_services,
-        "verified_service_pids": verified_service_pids,
-        "synced_timers": synced_timers,
-        "pruned_releases": pruned,
-        "ok": True,
-    }
-    _append_receipt(app_root, receipt)
-    return receipt
+        receipt = {
+            "action": "install",
+            "at_ms": int(time.time() * 1000),
+            "deploy_lock": str(lock_path),
+            "release_id": release_id,
+            "previous_release_id": prev_id,
+            "source_commit": manifest.get("source_commit"),
+            "link_mode": link_mode,
+            "frontend_link": frontend_link,
+            "created_env_templates": created_envs,
+            "installed_units": units,
+            "backed_up_dropins": backed_up_dropins,
+            "restarted_services": restarted_services,
+            "verified_service_pids": verified_service_pids,
+            "synced_timers": synced_timers,
+            "pruned_releases": pruned,
+            "ok": True,
+        }
+        _append_receipt(app_root, receipt)
+        return receipt
 
 
 def cmd_verify(prefix: Path, *, expected_core_version: str = "2.0.6") -> dict[str, Any]:
@@ -709,57 +789,59 @@ def cmd_rollback(
     )
     _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
     app_root = _app_root(prefix)
-    pointers = _read_pointers(app_root)
-    cur_id = pointers.get("current")
-    target_id = to_release or pointers.get("previous")
-    if not target_id:
-        raise RuntimeError("NO_ROLLBACK_TARGET")
-    target_dir = app_root / "releases" / str(target_id)
-    if not target_dir.is_dir():
-        raise RuntimeError(f"ROLLBACK_TARGET_MISSING: {target_dir}")
+    with _deploy_lock(app_root, action="rollback") as lock_path:
+        pointers = _read_pointers(app_root)
+        cur_id = pointers.get("current")
+        target_id = to_release or pointers.get("previous")
+        if not target_id:
+            raise RuntimeError("NO_ROLLBACK_TARGET")
+        target_dir = app_root / "releases" / str(target_id)
+        if not target_dir.is_dir():
+            raise RuntimeError(f"ROLLBACK_TARGET_MISSING: {target_dir}")
 
-    _chmod_release_tree(target_dir)
-    manifest = _verify_release_dir(target_dir)
-    _run_import_smoke(target_dir)
+        _chmod_release_tree(target_dir)
+        manifest = _verify_release_dir(target_dir)
+        _run_import_smoke(target_dir)
 
-    prev_after = cur_id if (cur_id and cur_id != target_id and (app_root / "releases" / cur_id).is_dir()) else None
-    if prev_after:
-        _switch_link(app_root / "previous", app_root / "releases" / prev_after)
-    link_mode = _switch_link(app_root / "current", target_dir)
-    _write_json_atomic(_pointers_path(app_root), {"current": str(target_id), "previous": prev_after})
-    frontend_link = _sync_workbench_frontend_link(prefix, app_root)
-    units, backed_up_dropins = _install_systemd_units(
-        target_dir, prefix, app_root, str(target_id), apply_units=apply_units, no_systemd=no_systemd
-    )
-    if apply_units and not no_systemd:
-        _ensure_materialize_bitnami_writable(prefix)
-    restarted_services: list[str] = []
-    verified_service_pids: dict[str, int] = {}
-    synced_timers: list[str] = []
-    if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
-        restarted_services, verified_service_pids = _restart_managed_daemons(app_root, str(target_id))
-        synced_timers = _sync_managed_timers(units, target_dir)
+        prev_after = cur_id if (cur_id and cur_id != target_id and (app_root / "releases" / cur_id).is_dir()) else None
+        if prev_after:
+            _switch_link(app_root / "previous", app_root / "releases" / prev_after)
+        link_mode = _switch_link(app_root / "current", target_dir)
+        _write_json_atomic(_pointers_path(app_root), {"current": str(target_id), "previous": prev_after})
+        frontend_link = _sync_workbench_frontend_link(prefix, app_root)
+        units, backed_up_dropins = _install_systemd_units(
+            target_dir, prefix, app_root, str(target_id), apply_units=apply_units, no_systemd=no_systemd
+        )
+        if apply_units and not no_systemd:
+            _ensure_materialize_bitnami_writable(prefix)
+        restarted_services: list[str] = []
+        verified_service_pids: dict[str, int] = {}
+        synced_timers: list[str] = []
+        if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
+            restarted_services, verified_service_pids = _restart_managed_daemons(app_root, str(target_id))
+            synced_timers = _sync_managed_timers(units, target_dir)
 
-    receipt = {
-        "action": "rollback",
-        "at_ms": int(time.time() * 1000),
-        "rolled_back_from": cur_id,
-        "release_id": str(target_id),
-        "previous_release_id": prev_after,
-        "source_commit": manifest.get("source_commit"),
-        "link_mode": link_mode,
-        "frontend_link": frontend_link,
-        "installed_units": units,
-        "backed_up_dropins": backed_up_dropins,
-        "restarted_services": restarted_services,
-        "verified_service_pids": verified_service_pids,
-        "synced_timers": synced_timers,
-        "runtime_state_preserved": True,
-        "etc_configs_preserved": True,
-        "ok": True,
-    }
-    _append_receipt(app_root, receipt)
-    return receipt
+        receipt = {
+            "action": "rollback",
+            "at_ms": int(time.time() * 1000),
+            "deploy_lock": str(lock_path),
+            "rolled_back_from": cur_id,
+            "release_id": str(target_id),
+            "previous_release_id": prev_after,
+            "source_commit": manifest.get("source_commit"),
+            "link_mode": link_mode,
+            "frontend_link": frontend_link,
+            "installed_units": units,
+            "backed_up_dropins": backed_up_dropins,
+            "restarted_services": restarted_services,
+            "verified_service_pids": verified_service_pids,
+            "synced_timers": synced_timers,
+            "runtime_state_preserved": True,
+            "etc_configs_preserved": True,
+            "ok": True,
+        }
+        _append_receipt(app_root, receipt)
+        return receipt
 
 
 def cmd_status(prefix: Path) -> dict[str, Any]:

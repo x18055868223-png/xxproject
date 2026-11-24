@@ -34,9 +34,9 @@ IDENTITY_SCHEMA = "xxproject_signal_producer_identity@1.0.0"
 CHECKPOINT_SCHEMA = "astra_signal_runtime_checkpoint@1.0.0"
 HEALTH_SCHEMA = "astra_signal_producer_health@1.0.0"
 
-DEFAULT_DERIBIT_TICKER_INTERVAL_MS = 200
+DEFAULT_DERIBIT_TICKER_INTERVAL_MS = 1200
 DEFAULT_DERIBIT_429_COOLDOWN_SEC = 60
-DEFAULT_DERIBIT_WALL_TIME_MS = 25_000
+DEFAULT_DERIBIT_WALL_TIME_MS = 48_000
 DEFAULT_CHECKPOINT_MAX_AGE_MS = 86_400_000  # 24h
 DEFAULT_BARS_RESTORE_MAX_AGE_MS = 90_000    # 90s: fast restarts keep partial bar, longer gaps rebuild via 1m backfill
 
