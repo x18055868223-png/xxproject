@@ -712,7 +712,7 @@ class Dossiers:
                 delayed_lock = bool(lock_mode == 'DELAYED_LOCK' or link_rec.get('delayed_lock'))
                 lock_status = 'DELAYED_LOCK' if delayed_lock else 'IMMEDIATE_LOCK'
                 if pending_rec:
-                    lock_reason = pending_rec.get('last_reason')
+                    lock_reason = pending_rec.get('last_failure_reason') or pending_rec.get('last_reason')
                 raw_credit = ((link_rec.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc')
                 if player.number(raw_credit) is not None:
                     t0_credit = raw_credit
@@ -730,13 +730,14 @@ class Dossiers:
                         episodes.append(dict(episode_id=ep_id, hand_id=hand.name, **managed_shadow))
                 management_status = managed_shadow['mode'] if managed_shadow is not None else 'HOLD_TO_EXPIRY'
             else:
+                pending_reason = (pending_rec or {}).get('last_failure_reason') or (pending_rec or {}).get('last_reason')
                 terminal_block = final_block or blocked_rec
                 if terminal_block is not None:
                     lock_status = 'LOCK_BLOCKED'
-                    lock_reason = terminal_block.get('reason') or (pending_rec or {}).get('last_reason')
+                    lock_reason = terminal_block.get('reason') or pending_reason
                 else:
                     lock_status = 'UNLINKED'
-                    lock_reason = (pending_rec or {}).get('last_reason')
+                    lock_reason = pending_reason
                 management_status = 'NOT_APPLICABLE'
             hand_row = dict(hand_id=hand.name, sample=exp['sample'], decision=decision and decision['judgment']['action'],
                             chosen_side=chosen, sides=pair, lower_payout_side=better,

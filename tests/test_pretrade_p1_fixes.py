@@ -219,21 +219,28 @@ def test_p1_2_dossier_settle_explicit_lock_and_management_modes(tmp_path: Path):
     d.respond(hand_blocked, "reply-blk", "RECEIVED", raw_bytes, EXCERPTS, model="fixture-model-1.3", requested=now[0], decided=now[0])
     blk_dir = hand_blocked / "tracking"
     blk_dir.mkdir(parents=True, exist_ok=True)
-    dossier.write(blk_dir / "pending_lock.json", dossier.encode({"state": "LOCK_BLOCKED", "last_reason": "quote_unavailable"}))
+    dossier.write(blk_dir / "pending_lock.json", dossier.encode({"state": "LOCK_BLOCKED", "last_failure_reason": "quote_unavailable"}))
     dossier.write(blk_dir / "final_block.json", dossier.encode({"state": "LOCK_BLOCKED", "reason": "shadow_handoff_expired", "recorded_at_ms": now[0] + 60_000}))
+
+    hand_unlinked = d.expect(expiry, "STARTUP_AD_HOC", reference="unlinked-pending")
+    d.deal(hand_unlinked, source_rec)
+    d.respond(hand_unlinked, "reply-unlinked", "RECEIVED", raw_bytes, EXCERPTS, model="fixture-model-1.3", requested=now[0], decided=now[0])
+    unlinked_dir = hand_unlinked / "tracking"
+    unlinked_dir.mkdir(parents=True, exist_ok=True)
+    dossier.write(unlinked_dir / "pending_lock.json", dossier.encode({"state": "PENDING_LOCK", "last_failure_reason": "quote_unavailable"}))
 
     with serving(wb) as base:
         service = post(base, wb)
         pending_dir = hand_ok / "tracking"
         pending_dir.mkdir(parents=True, exist_ok=True)
-        dossier.write(pending_dir / "pending_lock.json", dossier.encode({"state": "PENDING_LOCK", "attempts": [{"reason": "tracking_quote_stale_or_unsynced"}], "last_reason": "tracking_quote_stale_or_unsynced"}))
+        dossier.write(pending_dir / "pending_lock.json", dossier.encode({"state": "PENDING_LOCK", "attempts": [{"reason": "tracking_quote_stale_or_unsynced"}], "last_failure_reason": "tracking_quote_stale_or_unsynced"}))
         rec = tracking.link(d, hand_ok, service, RULE)
         assert rec["lock_mode"] == "DELAYED_LOCK"
 
     now[0] = expiry + dossier.MINUTE
     d.summary(expiry)
     manifest = dossier.read(d.path(expiry) / "manifest.json")
-    assert manifest["lock_counts"] == {"DELAYED_LOCK": 1, "LOCK_BLOCKED": 1}
+    assert manifest["lock_counts"] == {"DELAYED_LOCK": 1, "LOCK_BLOCKED": 1, "PENDING_LOCK": 1}
 
     pts = [[m, 95_000.0] for m in range(now[0] - 20 * 60_000, expiry + 1, dossier.MINUTE)]
     out_dir = d.official(expiry, {"index_name": "btc_usd", "expiry_ms": expiry, "points": pts})
@@ -241,6 +248,7 @@ def test_p1_2_dossier_settle_explicit_lock_and_management_modes(tmp_path: Path):
     by_hand = {row["hand_id"]: row for row in outcome["hands"]}
     assert by_hand[hand_ok.name]["lock_status"] == "DELAYED_LOCK"
     assert by_hand[hand_ok.name]["delayed_lock"] is True
+    assert by_hand[hand_ok.name]["lock_reason"] == "tracking_quote_stale_or_unsynced"
     assert by_hand[hand_ok.name]["management_status"] == "HOLD_TO_EXPIRY"
     assert by_hand[hand_ok.name]["t0_net_credit_after_entry_fee_btc"] is not None
 
@@ -249,6 +257,12 @@ def test_p1_2_dossier_settle_explicit_lock_and_management_modes(tmp_path: Path):
     assert by_hand[hand_blocked.name]["management_status"] == "NOT_APPLICABLE"
     assert by_hand[hand_blocked.name]["t0_net_credit_after_entry_fee_btc"] is None
     assert by_hand[hand_blocked.name]["hold_to_expiry_shadow_net_btc"] is None
+
+    assert by_hand[hand_unlinked.name]["lock_status"] == "UNLINKED"
+    assert by_hand[hand_unlinked.name]["lock_reason"] == "quote_unavailable"
+    assert by_hand[hand_unlinked.name]["management_status"] == "NOT_APPLICABLE"
+    assert by_hand[hand_unlinked.name]["t0_net_credit_after_entry_fee_btc"] is None
+    assert by_hand[hand_unlinked.name]["hold_to_expiry_shadow_net_btc"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -346,43 +360,37 @@ def test_p1_4_checkpoint_partial_bar_and_backlog_kline_fallback(tmp_path: Path):
     assert r2.runtime.bars.current_cvd == pytest.approx(-1.75)
     assert r2.runtime.bars.current_open == pytest.approx(90_100.0)
 
-    # First tick after restore: if drain stays backlogged, hook clears bars and rebuilds via 1m backfill
-    backfill_called = [0]
-    poll_calls = [0]
-
-    def fake_backfill() -> dict[str, Any]:
-        backfill_called[0] += 1
-        r2.runtime.bars.bar_index = 1
-        r2.runtime.bars.completed_bars.append({"bar_index": 1, "close": 90_200.0, "total_volume": 10.0, "cvd_delta": 2.0, "complete_ts_ms": now_box[0] - 60_000})
-        return {"applied": True, "bar_count": 1}
-
-    def fake_poll_only() -> list[Any]:
-        poll_calls[0] += 1
-        if poll_calls[0] == 1:
-            r2.runtime.bars.last_cycle_metrics = {"quality": "OK", "backlogged": True}
-            return []
-        r2.runtime.bars.last_cycle_metrics = {"quality": "OK", "backlogged": False}
-        return [{"bar_index": 2}]
-
-    # Rewire inner drain target for unit verification by wrapping inner closure cleanly
-    r2.runtime._backfill_volume_bars = fake_backfill
-    r2._pending_bars_restore_catchup_check = True
-    # Temporarily test fallback branch via fresh runtime wrapping orig_poll_with_drain
-    r2.runtime.bars.poll = fake_poll_only
-    # Simulate orig_poll_with_drain returning backlogged on 1st call and caught_up on 2nd
-    orig_inner_calls = [0]
-
-    def sim_fetch_agg_trades(from_id=None):
-        orig_inner_calls[0] += 1
-        if orig_inner_calls[0] == 1:
-            # hit max_rounds (5 rounds of limit=1000) when from_id is set after restart
-            return {"quality": "OK", "data": [{"id": i, "a": i, "p": "90000", "q": "0.001", "T": now_box[0] - 500, "m": False} for i in range(1000)]}
-        return {"quality": "OK", "data": [{"id": 9999, "a": 9999, "p": "90200", "q": "0.01", "T": now_box[0] - 100, "m": False}]}
-
+    # First tick after restore: if drain stays backlogged, hook clears bars and rebuilds via real _backfill_volume_bars + BarAssembler.backfill_from_klines
     core_fb = sp.load_signal_core(unique_module=True)[0]
     core_fb.now_ms = lambda: now_box[0]
     r_fb = sp.NativeSignalRuntime(logs_dir=logs_dir, state_dir=state_dir, core_mod=core_fb, core_sha256="sha1")
-    r_fb.runtime._backfill_volume_bars = lambda: (backfill_called.__setitem__(0, backfill_called[0] + 1) or {"applied": True, "bar_count": 1})
+    assert r_fb.checkpoint_restored["bars_restored"] is True
+    bar_threshold = float(r_fb.runtime.bars.config["volume_bar_n"])
+    kline_rows = [
+        [
+            now_box[0] - 180_000,
+            "90000", "90100", "89950", "90050",
+            f"{bar_threshold * 0.6:.6f}",
+            now_box[0] - 120_001,
+            "0", 10,
+            f"{bar_threshold * 0.4:.6f}",
+            "0", "0",
+        ],
+        [
+            now_box[0] - 120_000,
+            "90050", "90150", "90020", "90120",
+            f"{bar_threshold * 0.6:.6f}",
+            now_box[0] - 60_001,
+            "0", 10,
+            f"{bar_threshold * 0.3:.6f}",
+            "0", "0",
+        ],
+    ]
+    r_fb.runtime.http.get_json = lambda url, *_a, **_kw: (
+        {"quality": core_fb.QUALITY_OK, "data": kline_rows, "error": None}
+        if "/api/v3/klines" in str(url)
+        else {"quality": core_fb.QUALITY_ERROR, "data": None, "error": f"unexpected:{url}"}
+    )
     r_fb.runtime.bars.config["agg_trades_limit"] = 5
     r_fb.runtime.bars.config["max_drain_rounds"] = 2
     round_no = [0]
@@ -395,7 +403,9 @@ def test_p1_4_checkpoint_partial_bar_and_backlog_kline_fallback(tmp_path: Path):
 
     r_fb.runtime.bars.fetch_agg_trades = fake_agg_trades
     r_fb.runtime.bars.poll_with_drain()
-    assert backfill_called[0] >= 1
+    assert r_fb.runtime.bar_backfill["applied"] is True
+    assert len(r_fb.runtime.bars.completed_bars) >= 1
+    assert r_fb.runtime.bars.completed_bars[0]["source"] == "kline_backfill_1m"
     assert r_fb.runtime.bars.last_cycle_metrics["backlogged"] is False
     assert r_fb.runtime.bars.last_trade_id == 9001
 
@@ -511,6 +521,87 @@ def test_p1_5_release_symlink_prune_guard_and_templates(tmp_path: Path, monkeypa
     assert "ASTRA_SIGNAL_BARS_RESTORE_MAX_AGE_MS=90000" in (ROOT / "deploy" / "signal_producer" / "signal-producer.env.example").read_text(encoding="utf-8")
     install_sh = (ROOT / "deploy" / "xxproject_server" / "install_release.sh").read_text(encoding="utf-8")
     assert "umask 022" in install_sh and "--apply-units" in install_sh
+
+    # Cross-file MAP / ledger / systemd ReadWritePaths / timer inventory consistency
+    from pathlib import PurePosixPath
+
+    units_dir = ROOT / "deploy" / "xxproject_server" / "systemd_units_unified"
+    map_cfg = json.loads((ROOT / "deploy" / "astra_map_data" / "config.example.json").read_text(encoding="utf-8"))
+    map_svc_rw = [
+        PurePosixPath(p)
+        for line in (units_dir / "astra-map-data.service").read_text(encoding="utf-8").splitlines()
+        if line.startswith("ReadWritePaths=")
+        for p in line.split("=", 1)[1].split()
+    ]
+    map_state_dir = PurePosixPath(map_cfg["state_dir"])
+    assert any(map_state_dir == rw or rw in map_state_dir.parents for rw in map_svc_rw)
+    wb_env_kv = dict(
+        line.split("=", 1)
+        for line in (ROOT / "deploy" / "signal_audit" / "workbench-v20.env.example").read_text(encoding="utf-8").splitlines()
+        if "=" in line and not line.lstrip().startswith("#")
+    )
+    expected_map_current = f"{map_cfg['state_dir'].rstrip('/')}/current_map.json"
+    assert wb_env_kv["ASTRA_MAP_PRODUCER_CURRENT_PATH"] == expected_map_current
+    captured_defaults: dict[str, Any] = {}
+    with monkeypatch.context() as mc:
+        mc.setattr(health_check, "run_health_check", lambda **kw: captured_defaults.update(kw) or {"ok": True})
+        assert health_check.main(["--skip-network", "--skip-systemd"]) == 0
+    assert captured_defaults["map_current"].as_posix() == expected_map_current
+
+    wb_svc_rw = [
+        PurePosixPath(p)
+        for line in (units_dir / "astra-workbench-v20.service").read_text(encoding="utf-8").splitlines()
+        if line.startswith("ReadWritePaths=")
+        for p in line.split("=", 1)[1].split()
+    ]
+    ledger_parent = PurePosixPath(wb_env_kv["ASTRA_WORKBENCH_USAGE_LEDGER"]).parent
+    assert any(ledger_parent == rw or rw in ledger_parent.parents for rw in wb_svc_rw)
+    assert set(deployer.MANAGED_TIMERS) == set(health_check.MANAGED_TIMERS) == {p.name for p in units_dir.glob("*.timer")}
+
+    # Unit-test deployer._sync_managed_timers for inactive start, OnUnitInactiveSec restart, OnCalendar skip, and failure raise
+    timer_cmds: list[list[str]] = []
+    started_timers: set[str] = set()
+
+    def fake_timer_sub(cmd: list[str], **_kw: Any):
+        timer_cmds.append(list(cmd))
+
+        class _R:
+            stdout = ""
+
+        res = _R()
+        if cmd[:2] == ["systemctl", "start"]:
+            started_timers.add(cmd[2])
+        elif cmd[:2] == ["systemctl", "is-active"]:
+            t = cmd[2]
+            if t == "astra-log-retention.timer":
+                res.stdout = "active\n" if t in started_timers else "inactive\n"
+            else:
+                res.stdout = "active\n"
+        return res
+
+    with monkeypatch.context() as mc:
+        mc.setattr(deployer.subprocess, "run", fake_timer_sub)
+        synced = deployer._sync_managed_timers(
+            ["astra-signal-producer.service", "astra-log-retention.timer", "astra-kpf-light.timer", "astra-player-deal.timer"],
+            ROOT,
+        )
+    assert synced == ["astra-kpf-light.timer", "astra-log-retention.timer", "astra-player-deal.timer"]
+    assert ["systemctl", "enable", "astra-log-retention.timer"] in timer_cmds
+    assert ["systemctl", "start", "astra-log-retention.timer"] in timer_cmds
+    assert ["systemctl", "restart", "astra-log-retention.timer"] not in timer_cmds
+    assert ["systemctl", "restart", "astra-kpf-light.timer"] in timer_cmds
+    assert ["systemctl", "enable", "astra-player-deal.timer"] in timer_cmds
+    assert ["systemctl", "start", "astra-player-deal.timer"] not in timer_cmds
+    assert ["systemctl", "restart", "astra-player-deal.timer"] not in timer_cmds
+
+    with monkeypatch.context() as mc:
+        mc.setattr(
+            deployer.subprocess,
+            "run",
+            lambda _cmd, **_kw: type("_R", (), {"stdout": "inactive\n"})(),
+        )
+        with pytest.raises(RuntimeError, match="TIMER_NOT_ACTIVE_AFTER_SYNC"):
+            deployer._sync_managed_timers(["astra-log-retention.timer"], ROOT)
 
     # Test frontend symlink creation & pre-existing directory backup on install
     pkg = tmp_path / "pkg.tar.gz"
@@ -673,3 +764,34 @@ def test_p1_6_health_gates_kpf_404_backoff_and_systemd_timers(tmp_path: Path, mo
     assert "User=bitnami" in mat_svc and "Group=bitnami" in mat_svc
     assert "ProtectSystem=strict" in mat_svc
     assert "ReadWritePaths=/opt/signal-audit /var/lib/xxproject/signal_audit" in mat_svc
+
+    # 7. _read_gex_token + _check_gex_api Bearer auth vs placeholder token skip
+    gex_headers_seen: list[Any] = []
+
+    def fake_gex_http(url: str, *, headers: Any = None, timeout_s: float = 5.0):
+        del timeout_s
+        if url.endswith("/health"):
+            return 200, {"status": "ok"}
+        gex_headers_seen.append(headers)
+        return 200, {"availability": "ready", "stale": False, "data_age_ms": 100}
+
+    real_gex_env = tmp_path / "gex_real.env"
+    real_gex_env.write_text("PUBLIC_READ=false\nAPI_TOKEN=real-secret\n", encoding="utf-8")
+    placeholder_gex_env = tmp_path / "gex_placeholder.env"
+    placeholder_gex_env.write_text("PUBLIC_READ=false\nAPI_TOKEN=REPLACE_WITH_A_STRONG_RANDOM_TOKEN\n", encoding="utf-8")
+
+    gex_ok = health_check._check_gex_api(
+        "http://127.0.0.1:8000",
+        token=health_check._read_gex_token(real_gex_env),
+        http_get=fake_gex_http,
+    )
+    assert gex_ok["ok"] is True
+    assert gex_headers_seen[0] == {"Authorization": "Bearer real-secret"}
+
+    gex_placeholder = health_check._check_gex_api(
+        "http://127.0.0.1:8000",
+        token=health_check._read_gex_token(placeholder_gex_env),
+        http_get=fake_gex_http,
+    )
+    assert gex_placeholder["ok"] is True
+    assert gex_headers_seen[1] is None

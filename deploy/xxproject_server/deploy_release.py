@@ -50,6 +50,18 @@ MANAGED_DAEMON_SERVICES = (
     "astra-workbench-v20.service",
 )
 
+MANAGED_TIMERS = (
+    "astra-kpf-light.timer",
+    "astra-log-retention.timer",
+    "astra-map-data.timer",
+    "astra-player-deal.timer",
+    "astra-player-prewarm.timer",
+    "astra-player-settle.timer",
+    "astra-player-sync.timer",
+    "astra-research-archive.timer",
+    "signal-audit-materialize.timer",
+)
+
 WINDOW_GUARD_UNITS = (
     "astra-player-deal.service",
     "astra-player-settle.service",
@@ -381,7 +393,13 @@ def _ensure_materialize_bitnami_writable(prefix: Path) -> None:
         pwd.getpwnam("bitnami")
     except Exception:
         return
-    for rel in ("opt/signal-audit", "opt/signal-audit/signal_cards", "var/lib/xxproject/signal_audit"):
+    for rel in (
+        "opt/signal-audit",
+        "opt/signal-audit/signal_cards",
+        "var/lib/xxproject/signal_audit",
+        "opt/astra-map-data",
+        "opt/astra-map-data/state",
+    ):
         d = prefix / rel
         d.mkdir(parents=True, exist_ok=True)
         _chmod_posix(d, 0o755)
@@ -389,6 +407,25 @@ def _ensure_materialize_bitnami_writable(prefix: Path) -> None:
             shutil.chown(d, "bitnami", "bitnami")
         except OSError:
             pass
+    for rel in (
+        "var/lib/xxproject/signal_native",
+        "var/lib/xxproject/signal_native/logs",
+        "var/lib/xxproject/signal_native/state",
+        "var/lib/xxproject/signal_native/retained",
+        "var/lib/xxproject/workbench",
+        "var/lib/xxproject/llm",
+        "var/lib/xxproject/gexmonitorapi",
+        "var/lib/xxproject/research_archive",
+        "var/lib/astra-kpf-light",
+    ):
+        d = prefix / rel
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            _chmod_posix(d, 0o755)
+            try:
+                shutil.chown(d, "bitnami", "bitnami")
+            except OSError:
+                pass
 
 
 def _active_release_ids_in_use(app_root: Path, prefix: Path) -> set[str]:
@@ -422,6 +459,7 @@ def _restart_managed_daemons(app_root: Path, release_id: str) -> tuple[list[str]
     restarted: list[str] = []
     verified_pids: dict[str, int] = {}
     for unit in MANAGED_DAEMON_SERVICES:
+        subprocess.run(["systemctl", "enable", unit], check=True)
         subprocess.run(["systemctl", "restart", unit], check=True)
         st = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False)
         if st.stdout.strip() != "active":
@@ -442,6 +480,28 @@ def _restart_managed_daemons(app_root: Path, release_id: str) -> tuple[list[str]
         restarted.append(unit)
         verified_pids[unit] = pid
     return restarted, verified_pids
+
+
+def _sync_managed_timers(installed_units: list[str], release_dir: Path) -> list[str]:
+    synced: list[str] = []
+    units_dir = release_dir / "deploy" / "xxproject_server" / "systemd_units_unified"
+    for timer in sorted(u for u in installed_units if u.endswith(".timer")):
+        subprocess.run(["systemctl", "enable", timer], check=True)
+        cur = subprocess.run(["systemctl", "is-active", timer], capture_output=True, text=True, check=False)
+        active_state = cur.stdout.strip()
+        unit_file = units_dir / timer
+        is_monotonic = unit_file.is_file() and ("OnUnitInactiveSec=" in unit_file.read_text(encoding="utf-8"))
+        if active_state != "active":
+            subprocess.run(["systemctl", "start", timer], check=True)
+        elif is_monotonic:
+            # Re-arm OnBootSec/OnUnitInactiveSec without spuriously re-triggering active OnCalendar deal/settle timers.
+            subprocess.run(["systemctl", "restart", timer], check=True)
+        post = subprocess.run(["systemctl", "is-active", timer], capture_output=True, text=True, check=False)
+        post_state = post.stdout.strip()
+        if post_state != "active":
+            raise RuntimeError(f"TIMER_NOT_ACTIVE_AFTER_SYNC: {timer} ({post_state})")
+        synced.append(timer)
+    return synced
 
 
 def _install_systemd_units(
@@ -570,8 +630,10 @@ def cmd_install(
         _ensure_materialize_bitnami_writable(prefix)
     restarted_services: list[str] = []
     verified_service_pids: dict[str, int] = {}
+    synced_timers: list[str] = []
     if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
         restarted_services, verified_service_pids = _restart_managed_daemons(app_root, release_id)
+        synced_timers = _sync_managed_timers(units, target_dir)
     keep_set = {x for x in (release_id, prev_id) if x} | _active_release_ids_in_use(app_root, prefix)
     pruned = _prune_old_releases(app_root, keep_ids=keep_set, keep_count=keep_releases)
 
@@ -588,6 +650,7 @@ def cmd_install(
         "backed_up_dropins": backed_up_dropins,
         "restarted_services": restarted_services,
         "verified_service_pids": verified_service_pids,
+        "synced_timers": synced_timers,
         "pruned_releases": pruned,
         "ok": True,
     }
@@ -659,8 +722,10 @@ def cmd_rollback(
         _ensure_materialize_bitnami_writable(prefix)
     restarted_services: list[str] = []
     verified_service_pids: dict[str, int] = {}
+    synced_timers: list[str] = []
     if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
         restarted_services, verified_service_pids = _restart_managed_daemons(app_root, str(target_id))
+        synced_timers = _sync_managed_timers(units, target_dir)
 
     receipt = {
         "action": "rollback",
@@ -675,6 +740,7 @@ def cmd_rollback(
         "backed_up_dropins": backed_up_dropins,
         "restarted_services": restarted_services,
         "verified_service_pids": verified_service_pids,
+        "synced_timers": synced_timers,
         "runtime_state_preserved": True,
         "etc_configs_preserved": True,
         "ok": True,

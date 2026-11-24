@@ -35,19 +35,29 @@ def _http_get_json(url: str, *, headers: Mapping[str, str] | None = None, timeou
         return int(status), json.loads(resp.read().decode("utf-8"))
 
 
-def _read_workbench_token(env_path: Path | None) -> str:
-    direct = (os.environ.get("ASTRA_WORKBENCH_TOKEN") or "").strip()
-    if direct:
-        return direct
+def _read_env_key(env_path: Path | None, key: str) -> str:
     if env_path and env_path.is_file():
         try:
+            prefix = f"{key}="
             for line in env_path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
-                if line.startswith("ASTRA_WORKBENCH_TOKEN="):
+                if line.startswith(prefix):
                     return line.split("=", 1)[1].strip()
         except OSError:
             pass
     return ""
+
+
+def _read_workbench_token(env_path: Path | None) -> str:
+    direct = (os.environ.get("ASTRA_WORKBENCH_TOKEN") or "").strip()
+    return direct or _read_env_key(env_path, "ASTRA_WORKBENCH_TOKEN")
+
+
+def _read_gex_token(env_path: Path | None) -> str:
+    val = _read_env_key(env_path, "API_TOKEN")
+    if not val or val.startswith("REPLACE_WITH_"):
+        return ""
+    return val
 
 
 def _read_json_file(path: Path) -> tuple[dict[str, Any] | None, str | None]:
@@ -141,12 +151,16 @@ def _check_signal_producer(
 
 
 def _check_gex_api(
-    gex_url: str, *, http_get: Callable[..., tuple[int, Any]]
+    gex_url: str, *, token: str = "", http_get: Callable[..., tuple[int, Any]]
 ) -> dict[str, Any]:
     base = gex_url.rstrip("/")
+    info_headers = {"Authorization": f"Bearer {token}"} if token else None
     try:
         st_h, health = http_get(f"{base}/health", timeout_s=5.0)
-        st_i, info = http_get(f"{base}/v1/info", timeout_s=8.0)
+        if info_headers:
+            st_i, info = http_get(f"{base}/v1/info", headers=info_headers, timeout_s=8.0)
+        else:
+            st_i, info = http_get(f"{base}/v1/info", timeout_s=8.0)
     except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
         return {"ok": False, "reason": f"gexmonitorapi_unreachable:{type(exc).__name__}"}
     if st_h != 200 or not isinstance(health, dict) or health.get("status") != "ok":
@@ -304,10 +318,12 @@ MANAGED_DAEMON_SERVICES = (
 MANAGED_TIMERS = (
     "astra-research-archive.timer",
     "astra-player-sync.timer",
+    "astra-player-prewarm.timer",
     "astra-player-deal.timer",
     "astra-player-settle.timer",
     "astra-map-data.timer",
     "astra-kpf-light.timer",
+    "astra-log-retention.timer",
     "signal-audit-materialize.timer",
 )
 
@@ -424,6 +440,7 @@ def run_health_check(
     require_systemd: bool = False,
     require_workbench_auth: bool = False,
     require_release_manifest: bool = False,
+    gex_env: Path | None = None,
     max_producer_age_ms: int = 300_000,
     max_snapshot_age_ms: int = 600_000,
     max_map_age_ms: int = 1_800_000,
@@ -448,7 +465,7 @@ def run_health_check(
         "player_plan": _check_player_plan(player_plan),
     }
     if not skip_network:
-        checks["gexmonitorapi"] = _check_gex_api(gex_url, http_get=http_get)
+        checks["gexmonitorapi"] = _check_gex_api(gex_url, token=_read_gex_token(gex_env), http_get=http_get)
         token = _read_workbench_token(workbench_env)
         if require_workbench_auth and not token:
             checks["workbench"] = {
@@ -480,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--signal-logs-dir", type=Path, default=Path("/var/lib/xxproject/signal_native/logs"))
     parser.add_argument("--signal-state-dir", type=Path, default=Path("/var/lib/xxproject/signal_native/state"))
     parser.add_argument("--gex-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--gex-env", type=Path, default=Path("/etc/gexmonitorapi.env"))
     parser.add_argument("--workbench-url", default="http://127.0.0.1:8895")
     parser.add_argument("--workbench-env", type=Path, default=Path("/etc/signal-audit/workbench-v20.env"))
     parser.add_argument("--map-current", type=Path, default=Path("/opt/astra-map-data/state/current_map.json"))
@@ -518,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
         signal_logs_dir=args.signal_logs_dir,
         signal_state_dir=args.signal_state_dir,
         gex_url=args.gex_url,
+        gex_env=args.gex_env,
         workbench_url=args.workbench_url,
         workbench_env=args.workbench_env,
         map_current=args.map_current,
