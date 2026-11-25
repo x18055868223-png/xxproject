@@ -737,3 +737,257 @@ def test_upstream_outage_resilience_and_deribit_429_shared_cooldown(tmp_path: Pa
     res2 = runner.runtime.deribit.public_get("public/ticker", {"instrument_name": "BTC-16OCT26-90000-P"})
     assert res2["error"] == "deribit_429_cooldown_active"
     assert len(calls) == prev_calls  # short-circuited without hitting HTTP
+
+
+def test_checkpoint_restore_skips_v206_bars_tail_and_triggers_v207_backfill_without_source_conflict(tmp_path: Path):
+    from tools import astra_underwriting_fact_context_v20 as fact_context
+    from tools import xxproject_server_health_v1 as health_check
+
+    t0 = int(dt.datetime(2026, 11, 25, 8, 36, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    scenario: dict[str, Any] = {
+        "clock_ms": t0,
+        "price": 59_200.0,
+        "flip_point": 59_000.0,
+        "spring": 200.0,
+        "total_net_gex": 120_000_000.0,
+        "gex_market_state": "positive_gamma",
+        "spot_kline_vol": 14.0,
+        "spot_kline_buy_vol": 9.0,
+        "fut_kline_vol": 20.0,
+        "fut_kline_buy_vol": 13.0,
+        "spot_trade_base_id": 50_000,
+        "fut_trade_base_id": 60_000,
+        "spot_trade_qty": 1.2,
+        "fut_trade_qty": 1.5,
+        "spot_buyer_is_maker": False,
+        "fut_buyer_is_maker": False,
+    }
+    logs_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    logs_dir.mkdir(parents=True)
+
+    # Realistic 2.0.6 runtime_checkpoint.json (short restart age = 1s <= 90s):
+    # contains mixed legacy backfill bars (no symbol) + live bars (no source/symbol) and no cum_* fields.
+    v206_ckpt = {
+        "schema": sp.CHECKPOINT_SCHEMA,
+        "saved_at_ms": t0 - 1_000,
+        "core_version": "2.0.6",
+        "core_source_sha256": "6d9a34e1d0cd4d11fa4d6c8f8edae9165d9190beb672fafc63e3dfd9c8072132",
+        "rr_hist": [0.015, -0.025],
+        "last_edb_rr_success_ms": t0 - 60_000,
+        "cvd_hist": {"4h": [12.5, 14.0], "12h": [25.0]},
+        "neutral_repair_context": {"event_start_ms": t0 - 120_000, "state": "OBSERVING"},
+        "gex_state": {
+            "effective": {
+                "flip_point": 59_000.0,
+                "spring": 200.0,
+                "spot": 59_200.0,
+                "total_net_gex": 120_000_000.0,
+                "timestamp": t0 - 30_000,
+                "source_ts_ms": t0 - 30_000,
+            },
+            "raw": None,
+            "pending": None,
+            "last_acceptance_event": "initial",
+            "last_effective_accept_ms": t0 - 30_000,
+            "last_raw_ingest_ms": t0 - 30_000,
+            "prev_band_half": 1500.0,
+        },
+        "signal_events": {
+            "seen_episode_ids": ["ep_keep_1"],
+            "seen_fixed_round_slots": ["2026-11-24T15:00Z"],
+            "events": [],
+        },
+        "pending_signal_reviews": [
+            {"card": {"card_id": "pending_keep_1"}, "json_written": True, "push_done": True},
+        ],
+        "bars_tail": {
+            "completed_bars": [
+                {
+                    "bar_index": 506,
+                    "open": 59_100.0,
+                    "high": 59_150.0,
+                    "low": 59_080.0,
+                    "close": 59_120.0,
+                    "total_volume": 10.0,
+                    "cvd_delta": 2.0,
+                    "complete_ts_ms": t0 - 3600_000,
+                    "source": "kline_backfill_1m",
+                    "schema_name": "VolumeBar",
+                    "schema_version": "nrd.schema.v1.0.0",
+                },
+                {
+                    "bar_index": 3007,
+                    "open": 59_180.0,
+                    "high": 59_240.0,
+                    "low": 59_170.0,
+                    "close": 59_220.0,
+                    "total_volume": 10.0,
+                    "cvd_delta": 3.5,
+                    "complete_ts_ms": t0 - 5_000,
+                    "schema_name": "VolumeBar",
+                    "schema_version": "nrd.schema.v1.0.0",
+                },
+            ],
+            "last_trade_id": 49_999,
+            "bar_index": 3007,
+            "current_open": 59_220.0,
+            "current_high": 59_225.0,
+            "current_low": 59_215.0,
+            "current_close": 59_220.0,
+            "current_volume": 4.0,
+            "current_cvd": 1.2,
+            "current_last_trade_ts_ms": t0 - 2_000,
+            "last_trade_price": 59_220.0,
+            "last_trade_ts_ms": t0 - 2_000,
+            "cvd_degraded": False,
+            "anchor_nd_window": [0.1, 0.2],
+            "last_anchor_bar_index": 3007,
+            "last_edb_cvd_bar_index": 3007,
+        },
+    }
+    (state_dir / "runtime_checkpoint.json").write_text(json.dumps(v206_ckpt), encoding="utf-8")
+
+    core = _load_isolated_core("v206_to_v207_ckpt")
+    core.now_ms = lambda: int(scenario["clock_ms"])
+    runner = sp.NativeSignalRuntime(logs_dir=logs_dir, state_dir=state_dir, core_mod=core, core_sha256="sha207")
+
+    assert runner.checkpoint_restored["restored"] is True
+    assert runner.checkpoint_restored["bars_restored"] is False
+    assert runner.checkpoint_restored["bars_skip_reason"] == "bars_schema_incompatible"
+    assert len(runner.runtime.bars.completed_bars) == 0
+    assert runner.runtime.bars.current_open is None
+    assert "ep_keep_1" in runner.runtime.signal_events.seen_episode_ids
+    assert "2026-11-24T15:00Z" in runner.runtime.signal_events.seen_fixed_round_slots
+    assert runner.runtime.pending_signal_reviews == [
+        {"card": {"card_id": "pending_keep_1"}, "json_written": True, "push_done": True},
+    ]
+    assert list(runner.runtime.rr_hist)[-2:] == [0.015, -0.025]
+    assert list(runner.runtime.cvd_hist["4h"]) == [12.5, 14.0]
+    assert runner.runtime.neutral_repair_tracker.context["state"] == "OBSERVING"
+    assert runner.runtime.gex_state.last_raw_ingest_ms == t0 - 30_000
+
+    runner.runtime.http.get_json = _MockTransport(core, scenario).get_json
+    snap_dec, _ = runner.tick(live_fetch=True)
+    assert runner.runtime.bar_backfill is not None and runner.runtime.bar_backfill["applied"] is True
+    fast_4h = snap_dec["factor_snapshot"]["flow"]["micro_flow"]["fast_4h"]
+    assert fast_4h["source_conflict"] is False
+    assert fast_4h["symbol"] == "BTCUSDT"
+    assert fast_4h["window_backfill"] is True
+
+    # Project latest snapshot -> _evaluate_workbench_evidence and verify WARMING_UP (NOT BLIND_UNALIGNED)
+    ctx = fact_context.latest_from_jsonl(logs_dir / "snapshots.jsonl", scenario["clock_ms"] + 1_000)
+    assert ctx["status"] == "current"
+    proj_4h = ctx["market_facts"]["volume_price"]["micro_flow"]["fast_4h"]
+    assert proj_4h["source_conflict"] is False
+    assert proj_4h["symbol"] == "BTCUSDT"
+    view = {
+        "served_at_ms": scenario["clock_ms"] + 1_000,
+        "market_context": ctx,
+        "expiry_gamma": {},
+        "candidates": [],
+    }
+    ev = health_check._evaluate_workbench_evidence(view, now_ms=scenario["clock_ms"] + 1_000)
+    assert ev["evidence_contract_ok"] is True
+    assert ev["evidence_channels"]["spot_flow"]["capability"] == "WARMING_UP"
+
+
+def test_checkpoint_restore_preserves_v207_bar_assembler_state_and_backlog_reset(tmp_path: Path):
+    t0 = int(dt.datetime(2026, 11, 25, 10, 0, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    scenario: dict[str, Any] = {
+        "clock_ms": t0,
+        "price": 60_000.0,
+        "flip_point": 59_800.0,
+        "spring": 200.0,
+        "total_net_gex": 120_000_000.0,
+        "gex_market_state": "positive_gamma",
+        "spot_kline_vol": 14.0,
+        "spot_kline_buy_vol": 9.0,
+        "fut_kline_vol": 20.0,
+        "fut_kline_buy_vol": 13.0,
+        "spot_trade_base_id": 70_000,
+        "fut_trade_base_id": 80_000,
+        "spot_trade_qty": 1.2,
+        "fut_trade_qty": 1.5,
+        "spot_buyer_is_maker": False,
+        "fut_buyer_is_maker": False,
+    }
+    logs_dir = tmp_path / "logs"
+    state_dir = tmp_path / "state"
+
+    core1 = _load_isolated_core("v207_roundtrip_1")
+    core1.now_ms = lambda: int(scenario["clock_ms"])
+    r1 = sp.NativeSignalRuntime(logs_dir=logs_dir, state_dir=state_dir, core_mod=core1, core_sha256="sha207")
+    r1.runtime.http.get_json = _MockTransport(core1, scenario).get_json
+    r1.tick(live_fetch=True)
+
+    # Set explicit non-default state across all 9 v2.0.7 BarAssembler attributes
+    r1.runtime.bars.current_open = 60_010.0
+    r1.runtime.bars.current_high = 60_020.0
+    r1.runtime.bars.current_low = 60_005.0
+    r1.runtime.bars.current_close = 60_015.0
+    r1.runtime.bars.current_volume = 3.2
+    r1.runtime.bars.current_cvd = -0.8
+    r1.runtime.bars.current_first_trade_ts_ms = t0 - 15_000
+    r1.runtime.bars.current_last_trade_ts_ms = t0 - 2_000
+    r1.runtime.bars.current_bar_gap = True
+    r1.runtime.bars.current_bar_cvd_degraded = True
+    r1.runtime.bars.current_out_of_order = True
+    r1.runtime.bars._max_trade_ts_ms = t0 - 1_500
+    r1.runtime.bars.history_evicted_before_ms = t0 - 40_000_000
+    r1.runtime.bars.cum_session_id = "sess_custom_207"
+    r1.runtime.bars.cum_cvd_btc = 123.45
+    r1.runtime.bars.cum_gap_count = 7
+    r1.save_checkpoint(now_ms=t0)
+
+    # Short restart (10s <= 90s): all 9 v2.0.7 attrs must round-trip cleanly
+    scenario["clock_ms"] = t0 + 10_000
+    core2 = _load_isolated_core("v207_roundtrip_2")
+    core2.now_ms = lambda: int(scenario["clock_ms"])
+    r2 = sp.NativeSignalRuntime(logs_dir=logs_dir, state_dir=state_dir, core_mod=core2, core_sha256="sha207")
+    assert r2.checkpoint_restored["restored"] is True
+    assert r2.checkpoint_restored["bars_restored"] is True
+    assert "bars_skip_reason" not in r2.checkpoint_restored
+    assert r2.runtime.bars.current_first_trade_ts_ms == t0 - 15_000
+    assert r2.runtime.bars.current_bar_gap is True
+    assert r2.runtime.bars.current_bar_cvd_degraded is True
+    assert r2.runtime.bars.current_out_of_order is True
+    assert r2.runtime.bars._max_trade_ts_ms == t0 - 1_500
+    assert r2.runtime.bars.history_evicted_before_ms == t0 - 40_000_000
+    assert r2.runtime.bars.cum_session_id == "sess_custom_207"
+    assert r2.runtime.bars.cum_cvd_btc == pytest.approx(123.45)
+    assert r2.runtime.bars.cum_gap_count == 7
+
+    # Trigger backlog fallback inside _native_poll_with_drain -> must reset all 9 attrs + last_trade_* cleanly
+    transport = _MockTransport(core2, scenario)
+    poll_calls = {"n": 0}
+    r2.runtime.config["max_drain_rounds"] = 1
+    r2.runtime.config["agg_trades_limit"] = 16
+    r2.runtime.http.get_json = lambda url, params=None, **kw: (
+        transport._ok(_make_agg_trades(70_100, scenario["clock_ms"] - 1_000, 16, price=60_000.0, qty=0.1, buyer_is_maker=False))
+        if ("/api/v3/aggTrades" in url and poll_calls.__setitem__("n", poll_calls["n"] + 1) is None and poll_calls["n"] == 1)
+        else (
+            transport._ok(_make_agg_trades(70_116, scenario["clock_ms"] - 500, 2, price=60_000.0, qty=0.1, buyer_is_maker=False))
+            if "/api/v3/aggTrades" in url
+            else transport.get_json(url, params=params, **kw)
+        )
+    )
+
+    bars_out = r2.runtime.bars.poll_with_drain()
+    assert poll_calls["n"] == 2
+    assert r2.runtime.bar_backfill is not None and r2.runtime.bar_backfill["applied"] is True
+    assert r2.runtime.bars.cum_session_id == f"sess_{scenario['clock_ms']}"
+    assert r2.runtime.bars.cum_gap_count == 0
+    assert r2.runtime.bars.history_evicted_before_ms is None
+    assert r2.runtime.bars.current_bar_gap is False
+    assert r2.runtime.bars.current_bar_cvd_degraded is False
+    assert r2.runtime.bars.current_out_of_order is False
+    # _make_agg_trades(..., ts_ms=clock_ms - 500, count=2) sets last trade T = clock_ms - 1_000
+    assert r2.runtime.bars._max_trade_ts_ms == scenario["clock_ms"] - 1_000
+    assert r2.runtime.bars.current_first_trade_ts_ms != t0 - 15_000
+    # cum_cvd_btc should equal the fresh backfill sum, NOT inherited 123.45
+    assert len(r2.runtime.bars.completed_bars) > 0
+    expected_backfill_cvd = sum(float(b["cvd_delta"]) for b in r2.runtime.bars.completed_bars)
+    assert r2.runtime.bars.cum_cvd_btc == pytest.approx(expected_backfill_cvd)
+    assert isinstance(bars_out, list)

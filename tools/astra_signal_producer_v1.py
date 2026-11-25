@@ -13,6 +13,7 @@ from copy import deepcopy
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -39,6 +40,45 @@ DEFAULT_DERIBIT_429_COOLDOWN_SEC = 60
 DEFAULT_DERIBIT_WALL_TIME_MS = 48_000
 DEFAULT_CHECKPOINT_MAX_AGE_MS = 86_400_000  # 24h
 DEFAULT_BARS_RESTORE_MAX_AGE_MS = 90_000    # 90s: fast restarts keep partial bar, longer gaps rebuild via 1m backfill
+
+_V207_REQUIRED_BAR_KEYS = (
+    "first_trade_ts_ms",
+    "complete_ts_ms",
+    "bar_complete",
+    "complete_ts_synthetic",
+    "source",
+    "symbol",
+    "gap",
+    "cvd_degraded",
+    "out_of_order",
+    "cum_cvd_btc",
+    "cum_session_id",
+    "cum_gap_count",
+)
+
+
+def _is_v207_bars_tail_compatible(bars_tail: Mapping[str, Any], completed: list[Any]) -> bool:
+    """Return True only if checkpoint bars_tail carries valid 2.0.7 BarAssembler schema and provenance."""
+    sess_id = bars_tail.get("cum_session_id")
+    if not isinstance(sess_id, str) or not sess_id.strip():
+        return False
+    cum_cvd = bars_tail.get("cum_cvd_btc")
+    if isinstance(cum_cvd, bool) or not isinstance(cum_cvd, (int, float)) or not math.isfinite(float(cum_cvd)):
+        return False
+    cum_gap = bars_tail.get("cum_gap_count")
+    if isinstance(cum_gap, bool) or not isinstance(cum_gap, int) or cum_gap < 0:
+        return False
+    for bar in completed:
+        if not isinstance(bar, Mapping):
+            return False
+        for req_key in _V207_REQUIRED_BAR_KEYS:
+            if req_key not in bar:
+                return False
+        src = bar.get("source")
+        sym = bar.get("symbol")
+        if not isinstance(src, str) or not src.strip() or not isinstance(sym, str) or not sym.strip():
+            return False
+    return True
 
 
 def _repo_or_release_root() -> Path:
@@ -505,6 +545,18 @@ class NativeSignalRuntime:
                     rt.bars.current_cvd = 0.0
                     rt.bars.current_last_trade_ts_ms = None
                     rt.bars.cvd_degraded = False
+                    rt.bars.last_trade_price = None
+                    rt.bars.last_trade_ts_ms = None
+                    if hasattr(rt.bars, "cum_session_id"):
+                        rt.bars.current_first_trade_ts_ms = None
+                        rt.bars.current_bar_gap = False
+                        rt.bars.current_bar_cvd_degraded = False
+                        rt.bars.current_out_of_order = False
+                        rt.bars._max_trade_ts_ms = None
+                        rt.bars.history_evicted_before_ms = None
+                        rt.bars.cum_session_id = f"sess_{self._now_ms()}"
+                        rt.bars.cum_cvd_btc = 0.0
+                        rt.bars.cum_gap_count = 0
                     rt.last_anchor_bar_index = None
                     rt.last_edb_cvd_bar_index = None
                     rt.anchor_nd_window.clear()
@@ -711,6 +763,15 @@ class NativeSignalRuntime:
                 "last_trade_price": rt.bars.last_trade_price,
                 "last_trade_ts_ms": rt.bars.last_trade_ts_ms,
                 "cvd_degraded": rt.bars.cvd_degraded,
+                "current_first_trade_ts_ms": getattr(rt.bars, "current_first_trade_ts_ms", None),
+                "current_bar_gap": bool(getattr(rt.bars, "current_bar_gap", False)),
+                "current_bar_cvd_degraded": bool(getattr(rt.bars, "current_bar_cvd_degraded", False)),
+                "current_out_of_order": bool(getattr(rt.bars, "current_out_of_order", False)),
+                "max_trade_ts_ms": getattr(rt.bars, "_max_trade_ts_ms", None),
+                "history_evicted_before_ms": getattr(rt.bars, "history_evicted_before_ms", None),
+                "cum_session_id": getattr(rt.bars, "cum_session_id", None),
+                "cum_cvd_btc": float(getattr(rt.bars, "cum_cvd_btc", 0.0) or 0.0),
+                "cum_gap_count": int(getattr(rt.bars, "cum_gap_count", 0) or 0),
                 "anchor_nd_window": list(rt.anchor_nd_window),
                 "last_anchor_bar_index": rt.last_anchor_bar_index,
                 "last_edb_cvd_bar_index": rt.last_edb_cvd_bar_index,
@@ -809,41 +870,55 @@ class NativeSignalRuntime:
             ):
                 rt.gex_state.prev_band_half = float(gex_saved["prev_band_half"])
 
-        # Restore volume bars ONLY across short restarts; longer outages fall back to 1m kline backfill
+        # Restore volume bars ONLY across short restarts; longer outages or incompatible schemas fall back to 1m kline backfill
         bars_restored = False
+        bars_skip_reason: str | None = None
         bars_tail = data.get("bars_tail")
         if age_ms <= bars_max_age_ms and isinstance(bars_tail, Mapping):
             completed = bars_tail.get("completed_bars")
             has_partial = bars_tail.get("current_open") is not None
             if isinstance(completed, list) and (completed or has_partial):
-                rt.bars.completed_bars = deque(
-                    (dict(b) for b in completed if isinstance(b, Mapping)),
-                    maxlen=rt.bars.completed_bars.maxlen,
-                )
-                rt.bars.last_trade_id = bars_tail.get("last_trade_id")
-                rt.bars.bar_index = int(bars_tail.get("bar_index") or len(rt.bars.completed_bars))
-                rt.bars.current_open = bars_tail.get("current_open")
-                rt.bars.current_high = bars_tail.get("current_high")
-                rt.bars.current_low = bars_tail.get("current_low")
-                rt.bars.current_close = bars_tail.get("current_close")
-                rt.bars.current_volume = float(bars_tail.get("current_volume") or 0.0)
-                rt.bars.current_cvd = float(bars_tail.get("current_cvd") or 0.0)
-                rt.bars.current_last_trade_ts_ms = bars_tail.get("current_last_trade_ts_ms")
-                rt.bars.last_trade_price = bars_tail.get("last_trade_price")
-                rt.bars.last_trade_ts_ms = bars_tail.get("last_trade_ts_ms")
-                rt.bars.cvd_degraded = bool(bars_tail.get("cvd_degraded", False))
-                nd_vals = bars_tail.get("anchor_nd_window")
-                if isinstance(nd_vals, list):
-                    rt.anchor_nd_window = deque(
-                        (float(x) for x in nd_vals if isinstance(x, (int, float)) and not isinstance(x, bool)),
-                        maxlen=rt.anchor_nd_window.maxlen,
+                if hasattr(rt.bars, "cum_session_id") and not _is_v207_bars_tail_compatible(bars_tail, completed):
+                    bars_skip_reason = "bars_schema_incompatible"
+                else:
+                    rt.bars.completed_bars = deque(
+                        (dict(b) for b in completed if isinstance(b, Mapping)),
+                        maxlen=rt.bars.completed_bars.maxlen,
                     )
-                rt.last_anchor_bar_index = bars_tail.get("last_anchor_bar_index")
-                rt.last_edb_cvd_bar_index = bars_tail.get("last_edb_cvd_bar_index")
-                bars_restored = True
-                self._pending_bars_restore_catchup_check = True
+                    rt.bars.last_trade_id = bars_tail.get("last_trade_id")
+                    rt.bars.bar_index = int(bars_tail.get("bar_index") or len(rt.bars.completed_bars))
+                    rt.bars.current_open = bars_tail.get("current_open")
+                    rt.bars.current_high = bars_tail.get("current_high")
+                    rt.bars.current_low = bars_tail.get("current_low")
+                    rt.bars.current_close = bars_tail.get("current_close")
+                    rt.bars.current_volume = float(bars_tail.get("current_volume") or 0.0)
+                    rt.bars.current_cvd = float(bars_tail.get("current_cvd") or 0.0)
+                    rt.bars.current_last_trade_ts_ms = bars_tail.get("current_last_trade_ts_ms")
+                    rt.bars.last_trade_price = bars_tail.get("last_trade_price")
+                    rt.bars.last_trade_ts_ms = bars_tail.get("last_trade_ts_ms")
+                    rt.bars.cvd_degraded = bool(bars_tail.get("cvd_degraded", False))
+                    if hasattr(rt.bars, "cum_session_id"):
+                        rt.bars.current_first_trade_ts_ms = bars_tail.get("current_first_trade_ts_ms")
+                        rt.bars.current_bar_gap = bool(bars_tail.get("current_bar_gap", False))
+                        rt.bars.current_bar_cvd_degraded = bool(bars_tail.get("current_bar_cvd_degraded", False))
+                        rt.bars.current_out_of_order = bool(bars_tail.get("current_out_of_order", False))
+                        rt.bars._max_trade_ts_ms = bars_tail.get("max_trade_ts_ms")
+                        rt.bars.history_evicted_before_ms = bars_tail.get("history_evicted_before_ms")
+                        rt.bars.cum_session_id = str(bars_tail["cum_session_id"])
+                        rt.bars.cum_cvd_btc = float(bars_tail["cum_cvd_btc"])
+                        rt.bars.cum_gap_count = int(bars_tail["cum_gap_count"])
+                    nd_vals = bars_tail.get("anchor_nd_window")
+                    if isinstance(nd_vals, list):
+                        rt.anchor_nd_window = deque(
+                            (float(x) for x in nd_vals if isinstance(x, (int, float)) and not isinstance(x, bool)),
+                            maxlen=rt.anchor_nd_window.maxlen,
+                        )
+                    rt.last_anchor_bar_index = bars_tail.get("last_anchor_bar_index")
+                    rt.last_edb_cvd_bar_index = bars_tail.get("last_edb_cvd_bar_index")
+                    bars_restored = True
+                    self._pending_bars_restore_catchup_check = True
 
-        return {
+        out = {
             "restored": True,
             "age_ms": age_ms,
             "bars_restored": bars_restored,
@@ -852,6 +927,9 @@ class NativeSignalRuntime:
             "nr_context_restored": rt.neutral_repair_tracker.context is not None,
             "gex_effective_restored": rt.gex_state.effective is not None,
         }
+        if bars_skip_reason is not None:
+            out["bars_skip_reason"] = bars_skip_reason
+        return out
 
     def write_health(self, *, state: str, decision_snapshot: Mapping[str, Any] | None = None) -> Path:
         """Persist current runtime health atomically."""
