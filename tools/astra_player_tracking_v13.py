@@ -1325,12 +1325,50 @@ def _llm_settings(llm_config=None):
                 or signal_llm_review.DEFAULT_DAILY_HTTP_LIMIT
             )
             budget = signal_llm_review.DailyHttpBudget(ledger_path, limit=daily_limit)
+    if 'fallback_enabled' in cfg and cfg['fallback_enabled'] is not None:
+        fallback_enabled = bool(cfg['fallback_enabled'])
+    else:
+        fb_env = _env_str('ASTRA_PLAYER_FALLBACK_ENABLED')
+        fallback_enabled = bool(fb_env and fb_env.lower() in {'1', 'true', 'yes', 'on'})
+    raw_fb_model = cfg.get('fallback_model') or _env_str('ASTRA_PLAYER_FALLBACK_MODEL')
+    fallback_model = str(raw_fb_model).strip() if isinstance(raw_fb_model, str) and raw_fb_model.strip() else None
+    fallback_endpoint = cfg.get('fallback_endpoint') or _env_str('ASTRA_PLAYER_FALLBACK_ENDPOINT') or endpoint
+    fallback_api_key = cfg.get('fallback_api_key') or _env_str('ASTRA_PLAYER_FALLBACK_API_KEY') or api_key
+    fallback_effort = cfg.get('fallback_reasoning_effort') or _env_str('ASTRA_PLAYER_FALLBACK_REASONING_EFFORT') or effort
+    raw_fb_timeout = (
+        cfg.get('fallback_timeout_s')
+        if cfg.get('fallback_timeout_s') is not None
+        else _env_str('ASTRA_PLAYER_FALLBACK_TIMEOUT_SEC')
+    )
+    fallback_timeout_explicit = raw_fb_timeout is not None
+    if raw_fb_timeout is not None:
+        fallback_timeout_s = float(raw_fb_timeout)
+    elif cfg_timeout is not None:
+        fallback_timeout_s = float(cfg_timeout)
+    else:
+        fb_heavy = bool(fallback_model and ('pro' in fallback_model.lower() or 'reasoner' in fallback_model.lower()))
+        fallback_timeout_s = 600.0 if fb_heavy else 300.0
+    raw_sb = (
+        cfg.get('service_budget_s')
+        if cfg.get('service_budget_s') is not None
+        else _env_str('ASTRA_PLAYER_SERVICE_BUDGET_SEC')
+    )
+    service_budget_s = float(raw_sb) if raw_sb is not None else 810.0
     out = dict(
         api_key=api_key, model=model, endpoint=endpoint, timeout_s=timeout_s,
         initial_timeout_s=initial_timeout_s, hold_timeout_s=hold_timeout_s,
         timeout_explicit=bool(timeout_explicit),
         reasoning_effort=effort, retries=retries, budget=budget, transport=cfg.get('transport'),
+        fallback_enabled=fallback_enabled, fallback_model=fallback_model,
+        fallback_endpoint=fallback_endpoint, fallback_api_key=fallback_api_key,
+        fallback_reasoning_effort=fallback_effort, fallback_timeout_s=fallback_timeout_s,
+        fallback_timeout_explicit=fallback_timeout_explicit,
+        service_budget_s=service_budget_s,
     )
+    if cfg.get('fallback_transport') is not None:
+        out['fallback_transport'] = cfg['fallback_transport']
+    if cfg.get('service_deadline_mono') is not None:
+        out['service_deadline_mono'] = float(cfg['service_deadline_mono'])
     if 'stream' in cfg and cfg['stream'] is not None:
         out['stream'] = bool(cfg['stream'])
     if isinstance(cfg.get('max_initial_attempts'), int) and cfg['max_initial_attempts'] >= 1:
@@ -3460,9 +3498,20 @@ def _extract_partial_meta(partial):
     if p_text is None:
         p_text = partial.get('content')
     p_reasoning = partial.get('reasoning_content')
+    if p_text is None or p_reasoning is None:
+        choices = partial.get('choices')
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            msg = choices[0].get('message')
+            if isinstance(msg, dict):
+                if p_text is None:
+                    p_text = msg.get('content')
+                if p_reasoning is None:
+                    p_reasoning = msg.get('reasoning_content')
     text_bytes = len(str(p_text or '').encode('utf-8'))
     reasoning_bytes = len(str(p_reasoning or '').encode('utf-8'))
     p_bytes = partial.get('partial_bytes')
+    if not isinstance(p_bytes, int) or isinstance(p_bytes, bool):
+        p_bytes = partial.get('bytes_received')
     if not isinstance(p_bytes, int) or isinstance(p_bytes, bool):
         p_bytes = partial.get('bytes')
     if not isinstance(p_bytes, int) or isinstance(p_bytes, bool):
@@ -3549,10 +3598,20 @@ def _record_initial_reply(d, hand, call, req, *, result=None, error=None):
         else 'TIMEOUT' if is_timeout
         else 'REQUEST_FAILED'
     )
-    http_error = getattr(error, 'code', None) or getattr(error, 'status_code', None)
-    delivery = ('RECEIVED' if saved is not None or result is not None or is_contract_err else
-                'PROVIDER_REJECTED' if isinstance(http_error, int) and 400 <= http_error < 500 and http_error != 408
-                else 'DELIVERY_UNKNOWN')
+    partial_meta = _extract_partial_meta(partial) if (result is None and saved is None and isinstance(partial, dict)) else {}
+    has_partial = bool(partial is not None or partial_meta.get('partial_bytes', 0) > 0)
+    raw_http = getattr(error, 'code', None) or getattr(error, 'status_code', None)
+    http_error = raw_http if isinstance(raw_http, int) and not isinstance(raw_http, bool) else None
+    if saved is not None or result is not None or is_contract_err:
+        delivery = 'RECEIVED'
+    elif has_partial or is_timeout:
+        delivery = 'DELIVERY_UNKNOWN'
+    elif http_error is not None and 400 <= http_error < 500 and http_error != 408:
+        delivery = 'PROVIDER_REJECTED'
+    elif http_error in {503, 529}:
+        delivery = 'PROVIDER_UNAVAILABLE'
+    else:
+        delivery = 'DELIVERY_UNKNOWN'
     raw = (result or {}).get('raw_bytes')
     detail = f'{type(error).__name__}: {str(error)[:180]}' if error else 'provider delivery unknown; no reply archived; automatic resend disabled' if result is None else None
     cv_report = (result or {}).get('contract_validation') or (error.contract_validation if is_contract_err else None)
@@ -3563,12 +3622,31 @@ def _record_initial_reply(d, hand, call, req, *, result=None, error=None):
         http_status=reply.get('http_status') or http_error,
         delivery_state=delivery,
     )
-    partial_meta = _extract_partial_meta(partial) if (result is None and saved is None and isinstance(partial, dict)) else {}
+    import math
+    raw_ra = getattr(error, 'retry_after', None)
+    if raw_ra is None and hasattr(error, 'headers') and getattr(error, 'headers', None) is not None:
+        try:
+            hdr_ra = error.headers.get('Retry-After')
+            raw_ra = float(hdr_ra) if hdr_ra is not None else None
+        except (ValueError, TypeError, AttributeError):
+            raw_ra = None
+    if isinstance(raw_ra, (int, float)) and not isinstance(raw_ra, bool) and math.isfinite(float(raw_ra)) and float(raw_ra) >= 0:
+        cfg_meta['retry_after_s'] = float(raw_ra)
     for pkey in ('partial_bytes', 'partial_chunks', 'partial_usage'):
         if pkey in partial_meta:
             cfg_meta[pkey] = partial_meta[pkey]
     if err_code is not None:
         cfg_meta['error_code'] = err_code
+    fb_ctx = req.get('fallback_context') if isinstance(req, dict) and isinstance(req.get('fallback_context'), dict) else None
+    if fb_ctx is None and isinstance(req, dict) and isinstance(req.get('metadata'), dict):
+        meta_fb = req['metadata'].get('fallback_context')
+        if isinstance(meta_fb, dict):
+            fb_ctx = meta_fb
+    if fb_ctx is not None:
+        payload['fallback_context'] = dict(fb_ctx)
+        for fb_key in ('is_fallback', 'fallback_from_model', 'fallback_from_attempt_id', 'fallback_reason'):
+            if fb_key in fb_ctx and fb_ctx[fb_key] is not None:
+                cfg_meta[fb_key] = fb_ctx[fb_key]
     full_raw_bytes = (
         (saved.get('text') or '').encode('utf-8') if isinstance(saved, dict)
         else (error.parsed_reply.get('raw_bytes') if is_contract_err and isinstance(error.parsed_reply, dict) else None) or raw
@@ -3603,33 +3681,134 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
     supported_profiles = getattr(dossier.player, 'SUPPORTED_INPUT_PROFILES', (legacy_profile, p0_profile))
     if input_profile not in supported_profiles:
         raise ValueError(f'unsupported plan input_profile: {input_profile!r}')
+    eff_cfg = _llm_settings(llm_config)
+    cfg_service_budget_s = float(eff_cfg.get('service_budget_s') or 810.0)
+    service_deadline_mono = (
+        float(eff_cfg['service_deadline_mono'])
+        if eff_cfg.get('service_deadline_mono') is not None
+        else time.monotonic() + cfg_service_budget_s
+    )
+    cand_round = plan.get('candidate_round', 'r2')
     for slot in reversed(dossier.schedule(plan, now)):
         expiry = slot + plan['expiry_offset_ms']
         hand = None
         try:
             # A closed historical slot cannot acquire a new position. A missing
-            # expected record still counts as a missed scheduled opportunity.
+            # expected record or unsealed closed issuance still seals MISSED once.
             if expiry <= now:
                 expected = d.path(expiry) / 'hands' / dossier.identity('hand', 'Deribit', 'BTC', expiry, 'SCHEDULED', slot)
                 if (expected / 'expected.json').is_file():
-                    continue
+                    if (expected / 'evidence').exists():
+                        continue
+                    old_exp = optional(expected / 'expected.json') or {}
+                    if (old_exp.get('plan') or {}).get('plan_id') != plan.get('plan_id'):
+                        continue
+                    issuance_notes = [optional(p) or {} for p in (expected / 'issuance').glob('*.json')]
+                    has_closed_marker = any(
+                        n.get('state') == 'MISSED' or n.get('window_closed_at_ms') is not None
+                        for n in issuance_notes if isinstance(n, dict)
+                    )
+                    if has_closed_marker:
+                        continue
             with _short_writer(d):
                 hand, = _call_with_supported_kwargs(d.tick, plan, slots=[slot], input_profile=input_profile)
             if expiry <= now:
                 continue
             if not (hand / 'evidence').exists() and d.clock() < slot + plan['deal_grace_ms']:
+                prep_diag = None
+                backfill_attempted = False
+                backfill_persisted = None
                 try:
-                    source = dossier.collect(archive_root, expiry, slot, clock=d.clock,
-                                             candidate_round=plan.get('candidate_round', 'r2'))
+                    try:
+                        source = dossier.collect(archive_root, expiry, slot, clock=d.clock,
+                                                 candidate_round=cand_round)
+                    except LookupError as collect_exc:
+                        dealt_cases = None
+                        rem_budget_s = service_deadline_mono - time.monotonic()
+                        if service is not None and rem_budget_s >= 60.0:
+                            backfill_attempted = True
+                            try:
+                                prep_diag = service('prepare_deal', {
+                                    'target_expiry_ms': expiry,
+                                    'slot_ms': slot,
+                                    'candidate_round': cand_round,
+                                    'allow_refresh': True,
+                                    'input_profile': input_profile,
+                                })
+                            except (Blocked, OSError, ValueError, KeyError, TypeError) as prep_exc:
+                                prep_diag = {
+                                    'readiness_status': 'PREPARE_DEAL_ERROR',
+                                    'blockers': [getattr(prep_exc, 'code', None) or str(prep_exc)],
+                                }
+                            if (
+                                isinstance(prep_diag, dict)
+                                and prep_diag.get('ready_for_deal') is True
+                                and prep_diag.get('readiness_status') == 'SOURCE_READY'
+                                and isinstance(prep_diag.get('cases'), dict)
+                                and isinstance(prep_diag['cases'].get('put'), dict)
+                                and isinstance(prep_diag['cases'].get('call'), dict)
+                            ):
+                                dealt_cases = prep_diag['cases']
+                                backfill_fn = getattr(dossier.archive, 'backfill_slot_cases', None)
+                                if callable(backfill_fn):
+                                    try:
+                                        bf_res = _call_with_supported_kwargs(
+                                            backfill_fn,
+                                            archive_root,
+                                            dealt_cases,
+                                            slot_ms=slot,
+                                            target_expiry_ms=expiry,
+                                            now_ms=d.clock(),
+                                        )
+                                        if isinstance(bf_res, dict):
+                                            if isinstance(bf_res.get('cases'), (dict, list)):
+                                                dealt_cases = bf_res['cases']
+                                            backfill_persisted = {k: v for k, v in bf_res.items() if k != 'cases'}
+                                        else:
+                                            backfill_persisted = (
+                                                bf_res if isinstance(bf_res, (bool, list, str, int)) else True
+                                            )
+                                    except (ValueError, KeyError, TypeError) as bf_val_exc:
+                                        dealt_cases = None
+                                        backfill_persisted = {
+                                            'persisted': False,
+                                            'validation_failed': True,
+                                            'error': str(bf_val_exc),
+                                        }
+                                        collect_exc = LookupError(f'补建原生案卷校验失败: {bf_val_exc}')
+                                    except OSError as bf_os_exc:
+                                        backfill_persisted = {'persisted': False, 'error': str(bf_os_exc)}
+                        if dealt_cases is None:
+                            raise collect_exc
+                        source = _call_with_supported_kwargs(
+                            dossier.collect,
+                            archive_root,
+                            expiry,
+                            slot,
+                            clock=d.clock,
+                            candidate_round=cand_round,
+                            fallback_cases=dealt_cases,
+                            provenance_override='targeted workbench verified native case + Deribit public read',
+                        )
                     with _short_writer(d):
                         _call_with_supported_kwargs(d.deal, hand, source, input_profile=input_profile)
                 except (OSError, LookupError, ValueError) as exc:
+                    p_dict = prep_diag if isinstance(prep_diag, dict) else {}
+                    diag = {
+                        'readiness_status': p_dict.get('readiness_status'),
+                        'blockers': list(p_dict.get('blockers') or []),
+                        'sides': p_dict.get('sides') if isinstance(p_dict.get('sides'), dict) else {},
+                        'cooldown_remaining_ms': p_dict.get('deribit_cooldown_remaining_ms'),
+                        'backfill_attempted': bool(backfill_attempted),
+                        'backfill_persisted': backfill_persisted,
+                    }
                     with _short_writer(d):
                         state = 'POLICY_BLOCKED' if isinstance(exc, dossier.player.HandNotDealt) else 'DATA_BLOCKED'
-                        d.note(hand, state, str(exc))
+                        _call_with_supported_kwargs(d.note, hand, state, str(exc), diagnostics=diag)
             results.append(_deal_hand(
-                d, hand, service, _llm_settings(llm_config),
+                d, hand, service, eff_cfg,
                 prompt_version=prompt_version, input_profile=input_profile,
+                service_deadline_mono=service_deadline_mono,
             ))
         except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
             results.append(_hand_error(d, hand, exc, slot))
@@ -3654,10 +3833,69 @@ def _safe_summary(d, expiry_ms):
         return None
 
 
-def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None, input_profile=None):
+def _standby_model_target(cfg):
+    if not isinstance(cfg, dict) or not cfg.get('fallback_enabled'):
+        return None
+    fb_model = cfg.get('fallback_model')
+    if not isinstance(fb_model, str) or not fb_model.strip() or not dossier.model_identity(fb_model):
+        return None
+    fb_model = fb_model.strip()
+    prim_model = str(cfg.get('model') or '').strip()
+    prim_ep = review._normalize_endpoint(cfg.get('endpoint'))
+    fb_raw_ep = cfg.get('fallback_endpoint') if cfg.get('fallback_endpoint') is not None else cfg.get('endpoint')
+    fb_ep = review._normalize_endpoint(fb_raw_ep)
+    if (fb_model, fb_ep) == (prim_model, prim_ep):
+        return None
+    fb_key = cfg.get('fallback_api_key') or cfg.get('api_key')
+    fb_transport = cfg.get('fallback_transport') or cfg.get('transport')
+    if not fb_key and fb_transport is None:
+        return None
+    fb_effort = cfg.get('fallback_reasoning_effort') if cfg.get('fallback_reasoning_effort') is not None else cfg.get('reasoning_effort')
+    fb_timeout = float(cfg.get('fallback_timeout_s') or cfg.get('initial_timeout_s') or cfg.get('timeout_s', 300))
+    fb_heavy = ('pro' in fb_model.lower() or 'reasoner' in fb_model.lower())
+    if not cfg.get('fallback_timeout_explicit') and not cfg.get('timeout_explicit') and fb_heavy:
+        fb_timeout = max(fb_timeout, 600.0)
+    return dict(
+        model=fb_model,
+        endpoint=fb_raw_ep,
+        normalized_endpoint=fb_ep,
+        api_key=fb_key,
+        reasoning_effort=fb_effort,
+        timeout_s=fb_timeout,
+        transport=fb_transport,
+    )
+
+
+def _deal_hand(
+    d,
+    hand,
+    service,
+    cfg,
+    *,
+    recover_only=False,
+    prompt_version=None,
+    input_profile=None,
+    service_deadline_mono=None,
+    _inline_failover_used=False,
+):
+    eff_service_deadline = (
+        service_deadline_mono
+        if service_deadline_mono is not None
+        else (
+            float(cfg['service_deadline_mono'])
+            if isinstance(cfg, dict) and cfg.get('service_deadline_mono') is not None
+            else (
+                time.monotonic() + float(cfg['service_budget_s'])
+                if isinstance(cfg, dict) and cfg.get('service_budget_s') is not None
+                else None
+            )
+        )
+    )
     exp = load(hand / 'expected.json')
     link_todo = None
     llm_input = None
+    retry_parse_failed = False
+    retry_provider_overload = False
     with _short_writer(d):
         for request_file in sorted((hand / 'api_calls').glob('*/request.json')):
             call = request_file.parent
@@ -3680,7 +3918,29 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None
             if link_todo is None:
                 result = dict(hand_id=hand.name, status='ALREADY_DECIDED', decision=action, link=blocked_link)
         elif not (hand / 'evidence' / 'input.md').is_file():
-            result = dict(hand_id=hand.name, status='NO_EVIDENCE')
+            issuance_notes = sorted(
+                (load(p) for p in (hand / 'issuance').glob('*.json')),
+                key=lambda n: (int(n.get('recorded_at_ms') or 0), str(n.get('state') or '')),
+            )
+            if issuance_notes:
+                last_note = issuance_notes[-1]
+                plan_cfg_n = exp.get('plan') if isinstance(exp.get('plan'), dict) else None
+                sched_ms = exp.get('scheduled_at_ms')
+                grace_ms = plan_cfg_n.get('deal_grace_ms') if isinstance(plan_cfg_n, dict) else None
+                win_closed = bool(
+                    last_note.get('window_closed_at_ms')
+                    or (type(sched_ms) is int and type(grace_ms) is int and now >= sched_ms + grace_ms)
+                )
+                result = dict(
+                    hand_id=hand.name,
+                    status='NO_EVIDENCE',
+                    block_state=last_note.get('state'),
+                    reason=last_note.get('reason'),
+                    attempts=last_note.get('attempt_count', 1),
+                    window_closed=win_closed,
+                )
+            else:
+                result = dict(hand_id=hand.name, status='NO_EVIDENCE')
         else:
             meta = d.verify_evidence(hand)
             deadline = dossier.Dossiers.reply_deadline(exp, meta)
@@ -3699,32 +3959,65 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None
             if isinstance(cfg.get('max_initial_attempts'), int) and cfg['max_initial_attempts'] >= 1:
                 max_initial_attempts = cfg['max_initial_attempts']
             last_auto = existing_auto[-1] if existing_auto else None
-            retry_parse_failed = bool(
+            last_cfg = (last_auto.get('configuration') if isinstance(last_auto, dict) and isinstance(last_auto.get('configuration'), dict) else {})
+            has_partial = (
+                ('partial_bytes' in last_cfg and last_cfg.get('partial_bytes') is not None)
+                or bool(
+                    isinstance(last_auto, dict)
+                    and last_auto.get('attempt_id')
+                    and (hand / 'api_calls' / dossier.key(last_auto['attempt_id']) / 'partial_reply.json').is_file()
+                )
+            )
+            window_has_45s = (deadline is None or (deadline - now) >= 45_000)
+            retry_precond = bool(
                 not recover_only
                 and last_auto is not None
                 and len(existing_auto) < max_initial_attempts
-                and last_auto.get('status') == 'PARSE_FAILED'
-                and (last_auto.get('configuration') or {}).get('delivery_state') == 'RECEIVED'
-                and last_auto.get('error_code') != 'CONTRACT_VALIDATION_FAILED'
-                and (last_auto.get('configuration') or {}).get('error_code') != 'CONTRACT_VALIDATION_FAILED'
-                and (deadline is None or (deadline - now) >= 30_000)
+                and window_has_45s
             )
+            retry_parse_failed = bool(
+                retry_precond
+                and last_auto.get('status') == 'PARSE_FAILED'
+                and last_cfg.get('delivery_state') == 'RECEIVED'
+                and last_auto.get('error_code') != 'CONTRACT_VALIDATION_FAILED'
+                and last_cfg.get('error_code') != 'CONTRACT_VALIDATION_FAILED'
+                and last_auto.get('contract_validation_status') != 'CONTRACT_FAILED'
+            )
+            raw_ra = last_cfg.get('retry_after_s')
+            ra_ms = int(float(raw_ra) * 1000) if isinstance(raw_ra, (int, float)) and not isinstance(raw_ra, bool) and raw_ra > 0 else 0
+            last_rec_ms = int((last_auto or {}).get('recorded_at_ms') or (last_auto or {}).get('decided_at_ms') or 0)
+            retry_provider_overload = bool(
+                retry_precond
+                and last_auto.get('status') == 'REQUEST_FAILED'
+                and last_cfg.get('http_status') in {429, 503, 529}
+                and not isinstance(last_cfg.get('http_status'), bool)
+                and last_cfg.get('delivery_state') in {'PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE'}
+                and not has_partial
+                and now >= last_rec_ms + ra_ms
+            )
+            can_retry_initial = retry_parse_failed or retry_provider_overload
             budget_exhausted_today = any(
                 n.get('state') == 'DAILY_BUDGET_EXHAUSTED'
                 and ((n.get('recorded_at_ms') or 0) + 8 * 3_600_000) // dossier.DAY == bjt_today
                 for n in notes
             )
+            rem_service_s = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
             if deadline is not None and now >= deadline:
                 result = dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED')
-            elif existing_auto and not retry_parse_failed:
+            elif existing_auto and not can_retry_initial:
                 result = dict(hand_id=hand.name, status='AUTO_ATTEMPTED', last_status=existing_auto[-1].get('status'))
             elif budget_exhausted_today:
                 result = dict(hand_id=hand.name, status='DAILY_BUDGET_EXHAUSTED')
             elif recover_only:
                 return dict(hand_id=hand.name, status='NOT_DISPATCHED')
+            elif not window_has_45s:
+                result = dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED')
             elif not cfg.get('api_key') and cfg.get('transport') is None:
                 d.note(hand, 'LLM_NOT_CONFIGURED', 'missing_api_key')
                 result = dict(hand_id=hand.name, status='LLM_NOT_CONFIGURED')
+            elif rem_service_s is not None and rem_service_s < 45.0:
+                d.note(hand, 'SERVICE_BUDGET_DEFERRED', f'remaining_service_s={rem_service_s:.1f}')
+                result = dict(hand_id=hand.name, status='SERVICE_BUDGET_DEFERRED')
             else:
                 _, input_bytes, source = evidence(hand)
                 contracts_pair = [contract_fields(dossier.player.bind(case, card, card['side']))
@@ -3742,8 +4035,18 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None
         return result
     meta, input_bytes, contracts_pair = llm_input
     req_ms = d.clock()
-    if deadline is not None and req_ms >= deadline:
-        return dict(hand_id=hand.name, status='REPLY_WINDOW_CLOSED')
+    if deadline is not None and (deadline - req_ms) < 45_000:
+        return dict(
+            hand_id=hand.name,
+            status='AUTO_ATTEMPTED' if existing_auto else 'REPLY_WINDOW_CLOSED',
+            **({'last_status': existing_auto[-1].get('status')} if existing_auto else {}),
+        )
+    rem_service_s = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
+    if rem_service_s is not None and rem_service_s < 45.0:
+        with _short_writer(d):
+            d.note(hand, 'SERVICE_BUDGET_DEFERRED', f'remaining_service_s={rem_service_s:.1f}')
+            _safe_summary(d, exp['expiry_ms'])
+        return dict(hand_id=hand.name, status='SERVICE_BUDGET_DEFERRED')
     p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
     legacy_profile = getattr(dossier.player, 'INPUT_PROFILE_LEGACY', 'legacy_v1')
     plan_cfg = exp.get('plan') if isinstance(exp.get('plan'), dict) else {}
@@ -3752,47 +4055,83 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None
         p0_profile if eff_prompt_version == review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION else legacy_profile
     )
     req_input_profile = eff_input_profile if eff_input_profile != legacy_profile else None
-    call_timeout_s = float(cfg.get('initial_timeout_s') or cfg.get('timeout_s', 300))
-    is_heavy_model = ('pro' in str(cfg.get('model') or '').lower() or 'reasoner' in str(cfg.get('model') or '').lower())
-    if not cfg.get('timeout_explicit') and is_heavy_model:
-        call_timeout_s = max(call_timeout_s, 600.0)
+    fb_target = _standby_model_target(cfg)
+    already_used_fallback = any((a.get('configuration') or {}).get('is_fallback') is True for a in existing_auto)
+    use_fallback = bool(
+        (retry_parse_failed or retry_provider_overload)
+        and fb_target is not None
+        and not already_used_fallback
+    )
+    if use_fallback:
+        active_model = fb_target['model']
+        active_endpoint = fb_target['endpoint']
+        active_key = fb_target['api_key']
+        active_effort = fb_target['reasoning_effort']
+        active_transport = fb_target['transport']
+        call_timeout_s = float(fb_target['timeout_s'])
+        budget_role = 'astra_player_initial_fallback'
+        fallback_context = {
+            'is_fallback': True,
+            'fallback_from_model': (last_auto or {}).get('model') or cfg.get('model'),
+            'fallback_from_attempt_id': (last_auto or {}).get('attempt_id'),
+            'fallback_reason': f"HTTP_{last_cfg.get('http_status')}" if retry_provider_overload else 'PARSE_FAILED',
+        }
+    else:
+        active_model = cfg['model']
+        active_endpoint = cfg.get('endpoint')
+        active_key = cfg.get('api_key')
+        active_effort = cfg.get('reasoning_effort')
+        active_transport = cfg.get('transport')
+        call_timeout_s = float(cfg.get('initial_timeout_s') or cfg.get('timeout_s', 300))
+        is_heavy_model = ('pro' in str(active_model or '').lower() or 'reasoner' in str(active_model or '').lower())
+        if not cfg.get('timeout_explicit') and is_heavy_model:
+            call_timeout_s = max(call_timeout_s, 600.0)
+        budget_role = 'astra_player_initial'
+        fallback_context = None
+    call_timeout_s = min(call_timeout_s, 720.0)
+    if rem_service_s is not None:
+        call_timeout_s = min(call_timeout_s, rem_service_s - 20.0)
     if deadline is not None:
-        call_timeout_s = min(call_timeout_s, 720.0, max(30.0, (deadline - req_ms) / 1000.0 - 15.0))
+        call_timeout_s = min(call_timeout_s, (deadline - req_ms) / 1000.0 - 15.0)
     eff_stream = _stream_enabled(cfg)
-    attempt_id = dossier.identity('auto', hand.name, req_ms, cfg['model'], len(existing_auto))
+    attempt_id = dossier.identity('auto', hand.name, req_ms, active_model, len(existing_auto))
     req_payload = review.build_initial_request_payload(
         input_bytes.decode('utf-8'),
         contract_pair=contracts_pair,
-        model=cfg['model'],
+        model=active_model,
         prompt_version=eff_prompt_version,
         input_profile=req_input_profile,
-        reasoning_effort=cfg.get('reasoning_effort'),
+        reasoning_effort=active_effort,
         stream=eff_stream,
-        endpoint=review._normalize_endpoint(cfg.get('endpoint')),
+        endpoint=review._normalize_endpoint(active_endpoint),
         packet_hash=meta['input_sha256'],
         requested_at_ms=req_ms,
         fidelity='EXACT',
     )
+    if fallback_context is not None:
+        req_payload['fallback_context'] = dict(fallback_context)
     call = hand / 'api_calls' / attempt_id
     dossier.write(call / 'request.json', dossier.encode(review.sanitize_model_request(req_payload)))
     dossier.write(call / 'dispatch.json', dossier.encode(dict(started_at_ms=d.clock(), timeout_s=call_timeout_s)))
+    attempt_start_mono = time.monotonic()
     try:
         ai_res = _call_with_supported_kwargs(
             review.decide_initial_hand,
             input_bytes.decode('utf-8'),
             contract_pair=contracts_pair,
-            api_key=cfg['api_key'] or 'test-key',
-            model=cfg['model'],
+            api_key=active_key or 'test-key',
+            model=active_model,
             prompt_version=eff_prompt_version,
             input_profile=req_input_profile,
-            endpoint=cfg.get('endpoint'),
+            endpoint=active_endpoint,
             timeout_s=call_timeout_s,
             retries=0,  # An ambiguous POST must never be automatically replayed.
-            reasoning_effort=cfg.get('reasoning_effort'),
+            reasoning_effort=active_effort,
             stream=eff_stream,
             budget=cfg.get('budget'),
+            budget_role=budget_role,
             packet_hash=meta['input_sha256'],
-            transport=cfg.get('transport'),
+            transport=active_transport,
             on_partial=lambda partial: _remember_partial(call, d, partial),
             on_response=lambda reply: _remember_reply(call, d, reply),
         )
@@ -3802,6 +4141,7 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None
             d.note(hand, 'DAILY_BUDGET_EXHAUSTED', str(exc)[:180])
         result = dict(hand_id=hand.name, status='DAILY_BUDGET_EXHAUSTED', error=str(exc))
     except Exception as exc:
+        elapsed_s = time.monotonic() - attempt_start_mono
         with _short_writer(d):
             att = _record_initial_reply(d, hand, call, req_payload, error=exc)
         result = dict(hand_id=hand.name, status=att['status'], error=att.get('error'))
@@ -3816,6 +4156,40 @@ def _deal_hand(d, hand, service, cfg, *, recover_only=False, prompt_version=None
                 else:
                     with _short_writer(d):
                         result['link'] = _seal_terminal_block(d, hand, 'condition_plan_missing', terminal=True)
+        elif (
+            not _inline_failover_used
+            and len(existing_auto) == 0
+            and max_initial_attempts >= 2
+            and fb_target is not None
+            and elapsed_s < 30.0
+        ):
+            att_cfg = att.get('configuration') if isinstance(att.get('configuration'), dict) else {}
+            att_ra = att_cfg.get('retry_after_s')
+            ra_val = float(att_ra) if isinstance(att_ra, (int, float)) and not isinstance(att_ra, bool) else 0.0
+            fb_room_s = min(float(fb_target['timeout_s']), 720.0) + 30.0
+            rem_svc_after = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
+            now_after = d.clock()
+            if (
+                att.get('status') == 'REQUEST_FAILED'
+                and att_cfg.get('http_status') in {429, 503, 529}
+                and not isinstance(att_cfg.get('http_status'), bool)
+                and att_cfg.get('delivery_state') in {'PROVIDER_REJECTED', 'PROVIDER_UNAVAILABLE'}
+                and 'partial_bytes' not in att_cfg
+                and ra_val <= 5.0
+                and (rem_svc_after is None or rem_svc_after >= fb_room_s)
+                and (deadline is None or (deadline - now_after) >= int(fb_room_s * 1000))
+            ):
+                if 0 < ra_val <= 5.0 and fb_target['transport'] is None:
+                    time.sleep(ra_val)
+                if d.clock() >= int(att.get('recorded_at_ms') or 0) + int(ra_val * 1000):
+                    return _deal_hand(
+                        d, hand, service, cfg,
+                        recover_only=False,
+                        prompt_version=prompt_version,
+                        input_profile=input_profile,
+                        service_deadline_mono=eff_service_deadline,
+                        _inline_failover_used=True,
+                    )
     else:
         with _short_writer(d):
             att = _record_initial_reply(d, hand, call, req_payload, result=ai_res)
@@ -4386,7 +4760,11 @@ def _attempt_projection(attempt_rec):
         'recorded_at_ms': attempt_rec.get('recorded_at_ms'),
         'error': err,
     }
-    for pkey in ('partial_bytes', 'partial_chunks', 'partial_usage'):
+    for pkey in (
+        'partial_bytes', 'partial_chunks', 'partial_usage',
+        'http_status', 'delivery_state', 'retry_after_s',
+        'is_fallback', 'fallback_from_model', 'fallback_from_attempt_id', 'fallback_reason',
+    ):
         if pkey in cfg and cfg[pkey] is not None:
             proj[pkey] = cfg[pkey]
     return proj
@@ -4411,7 +4789,7 @@ def audit_record(hand, now, tracker_status, *, detail=False):
                       key=lambda p: p['ordinal'])
     state = (decision['judgment']['action'] if decision else attempts[-1]['status'] if attempts else
              notes[-1]['state'] if notes and notes[-1].get('state') in {
-                 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED', 'POLICY_BLOCKED'} else
+                 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED', 'POLICY_BLOCKED', 'SERVICE_BUDGET_DEFERRED'} else
              'AWAITING_RESPONSE' if frozen and deadline is not None and now < deadline else 'NO_RESPONSE' if frozen
              else notes[-1]['state'] if notes else 'EXPECTED')
     tracker = receipt['t0']['tracker_episode_id'] if receipt else None
@@ -4500,6 +4878,12 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     result.update(stage=stage, last_update_ms=updated, reply_deadline_ms=deadline, stage_reason=reason)
     if sent and not result['model']:
         result['model'] = sent.get('model')
+    fb_src_cfg = ((attempt or (attempts[-1] if attempts else None) or {}).get('configuration') or {})
+    if fb_src_cfg.get('is_fallback') is True:
+        result['is_fallback'] = True
+        for fb_k in ('fallback_from_model', 'fallback_from_attempt_id', 'fallback_reason'):
+            if fb_src_cfg.get(fb_k) is not None:
+                result[fb_k] = fb_src_cfg[fb_k]
     if not detail:
         return result
     if frozen:
@@ -4658,21 +5042,111 @@ def audit_index(root, now, active_ids, *, limit=200):
     return {'hands': cards[:cap]}
 
 
+def _sanitize_partial_response(partial):
+    if not isinstance(partial, dict):
+        return None
+    content = partial.get('text')
+    if content is None:
+        content = partial.get('content')
+    if content is None and isinstance(partial.get('choices'), list) and partial['choices']:
+        ch0 = partial['choices'][0]
+        if isinstance(ch0, dict):
+            msg = ch0.get('message') or ch0.get('delta')
+            if isinstance(msg, dict) and msg.get('content') is not None:
+                content = msg.get('content')
+    meta = _extract_partial_meta(partial)
+    chunk_count = partial.get('chunk_count')
+    if not isinstance(chunk_count, int) or isinstance(chunk_count, bool):
+        chunk_count = meta.get('partial_chunks')
+    bytes_received = partial.get('bytes_received')
+    if not isinstance(bytes_received, int) or isinstance(bytes_received, bool):
+        bytes_received = meta.get('partial_bytes')
+    raw_http = partial.get('http_status') or partial.get('_http_status')
+    http_st = raw_http if isinstance(raw_http, int) and not isinstance(raw_http, bool) else None
+    return {
+        'content': str(content) if content is not None else '',
+        'chunk_count': chunk_count,
+        'bytes_received': bytes_received,
+        'usage': meta.get('partial_usage') or _normalize_usage(partial.get('usage')),
+        'http_status': http_st,
+        'model': str(partial['model']) if partial.get('model') else None,
+    }
+
+
 def audit_originals(hand):
-    _, input_bytes, _ = evidence(hand)
+    hand = Path(hand)
+    exp = load(hand / 'expected.json')
+    if exp['hand_id'] != hand.name or exp['dossier_id'] != hand.parent.parent.name:
+        raise Blocked('invalid_hand_identity')
+    if (hand / 'evidence' / 'identity.json').is_file():
+        _, input_bytes, _ = evidence(hand)
+        input_text = input_bytes.decode('utf-8')
+        evidence_available = True
+    else:
+        input_text = None
+        evidence_available = False
     decision, attempt, response = selected(hand)
+    candidates = [load(p) for p in (hand / 'responses').glob('*/attempt.json') if not p.parent.name.startswith('.')]
     if attempt is None:
-        candidates = [load(p) for p in (hand / 'responses').glob('*/attempt.json') if not p.parent.name.startswith('.')]
-        attempt = max((a for a in candidates if a.get('raw_sha256') or a.get('full_raw_sha256')),
-                      key=lambda a: a['ordinal'], default=None)
+        attempt = max(
+            (a for a in candidates if a.get('raw_sha256') or a.get('full_raw_sha256')),
+            key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
+            default=None,
+        )
         if attempt is not None:
             failed_raw = attempt.get('full_raw_sha256') is not None
             filename = 'response.full.raw' if failed_raw else 'response.raw'
             response = bounded(hand / 'responses' / dossier.key(attempt['attempt_id']) / filename)
             if dossier.sha(response) != attempt.get('full_raw_sha256' if failed_raw else 'raw_sha256'):
                 raise Blocked('reply_identity_mismatch')
-    return dict(input=input_bytes.decode('utf-8'), response=response.decode('utf-8') if response is not None else None,
-                selected=decision is not None, response_status=(attempt or {}).get('status'))
+        elif candidates:
+            attempt = max(
+                candidates,
+                key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
+                default=None,
+            )
+    sanitized_partial = None
+    if response is None:
+        raw_partial = None
+        if isinstance(attempt, dict) and attempt.get('attempt_id'):
+            raw_partial = optional(hand / 'api_calls' / dossier.key(attempt['attempt_id']) / 'partial_reply.json')
+        if raw_partial is None:
+            partial_files = [
+                p for p in (hand / 'api_calls').glob('*/partial_reply.json')
+                if not (p.parent / 'not_sent.json').is_file()
+            ]
+            if partial_files:
+                latest_pf = max(
+                    partial_files,
+                    key=lambda p: (int((optional(p) or {}).get('updated_at_ms') or 0), p.parent.name),
+                )
+                raw_partial = optional(latest_pf)
+        sanitized_partial = _sanitize_partial_response(raw_partial)
+    out = dict(
+        input=input_text,
+        evidence_available=evidence_available,
+        response=response.decode('utf-8') if response is not None else None,
+        selected=decision is not None,
+        response_status=(attempt or {}).get('status'),
+    )
+    if not evidence_available:
+        notes = sorted(
+            (load(p) for p in (hand / 'issuance').glob('*.json')),
+            key=lambda n: (int(n.get('recorded_at_ms') or 0), str(n.get('state') or '')),
+        )
+        out['issuance_notes'] = [
+            {
+                'state': n.get('state'),
+                'reason': n.get('reason'),
+                'recorded_at_ms': n.get('recorded_at_ms'),
+                **({'attempt_count': n['attempt_count']} if 'attempt_count' in n else {}),
+                **({'window_closed_at_ms': n['window_closed_at_ms']} if 'window_closed_at_ms' in n else {}),
+            }
+            for n in notes[-8:]
+        ]
+    if sanitized_partial is not None:
+        out['partial_response'] = sanitized_partial
+    return out
 
 
 def export_model_input(hand, *, review_id=None):
@@ -4683,6 +5157,8 @@ def export_model_input(hand, *, review_id=None):
         raise Blocked('invalid_hand_identity')
 
     if review_id is None:
+        if not (hand / 'evidence' / 'identity.json').is_file():
+            raise Blocked('evidence_not_dealt')
         meta, input_bytes, source = evidence(hand)
         _, selected_attempt, _ = selected(hand)
         attempt = selected_attempt
@@ -4856,12 +5332,18 @@ def _check_workbench_view_readiness(
     now_ms=None,
     max_view_age_ms=120_000,
     max_discovery_age_ms=300_000,
+    target_expiry_ms=None,
+    slot_ms=None,
+    input_profile=None,
 ):
+    del slot_ms
     checks['workbench_view_checked'] = True
     check_age = type(now_ms) is int and now_ms > 0 and type(max_view_age_ms) is int and max_view_age_ms > 0
     disc_cap_valid = type(max_discovery_age_ms) is int and 0 < max_discovery_age_ms <= 600_000
     check_disc_age = type(now_ms) is int and now_ms > 0 and disc_cap_valid
     effective_disc_max_age = max_discovery_age_ms if disc_cap_valid else None
+    check_target_exp = type(target_expiry_ms) is int and target_expiry_ms > 0
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
 
     updated_at_ms = workbench_view.get('updated_at_ms')
     checks['workbench_view_updated_at_ms'] = updated_at_ms
@@ -4957,6 +5439,7 @@ def _check_workbench_view_readiness(
     if any(not isinstance(it, dict) for it in candidates):
         reasons.append('candidate_item_invalid')
 
+    side_timestamps = {}
     for side in ('put', 'call'):
         matches = [it for it in candidates if isinstance(it, dict) and it.get('side') == side]
         if not matches:
@@ -4975,6 +5458,25 @@ def _check_workbench_view_readiness(
         lvc = item.get('last_valid_candidate')
         item_disc = item.get('discovery_status')
 
+        cand_contract = snap.get('contract') if isinstance(snap, dict) and isinstance(snap.get('contract'), dict) else {}
+        cand_exp = cand_contract.get('expiry_ms')
+        if cand_exp is None and isinstance(item.get('discovery'), dict):
+            cand_exp = item['discovery'].get('expiry_ms')
+        cand_ts = None
+        if isinstance(snap, dict):
+            snap_mkt = snap.get('market') if isinstance(snap.get('market'), dict) else {}
+            for ts_cand in (
+                snap_mkt.get('valuation_ts_ms'),
+                snap.get('valuation_ts_ms'),
+                snap.get('captured_ts_ms'),
+                snap.get('built_at_ms'),
+            ):
+                if type(ts_cand) is int and ts_cand > 0:
+                    cand_ts = ts_cand
+                    break
+        if cand_ts is not None:
+            side_timestamps[side] = cand_ts
+
         live_lock_by_side[side] = live_ok
         side_info = {
             'present': True,
@@ -4986,6 +5488,10 @@ def _check_workbench_view_readiness(
             'is_historical_summary': hist_summary,
             'has_last_valid_candidate': lvc is not None,
         }
+        if cand_exp is not None:
+            side_info['expiry_ms'] = cand_exp
+        if cand_ts is not None:
+            side_info['valuation_ts_ms'] = cand_ts
         by_side_checks[side] = side_info
 
         if st != 'snapshot':
@@ -5001,6 +5507,7 @@ def _check_workbench_view_readiness(
         if lvc is not None and (st != 'snapshot' or not formal_ok or not isinstance(snap, dict)):
             reasons.append(f'candidate_{side}_last_valid_candidate_summary')
 
+        no_eligible_strike = False
         if item_disc is None:
             reasons.append(f'candidate_{side}_discovery_status_missing')
         elif not isinstance(item_disc, dict):
@@ -5008,10 +5515,17 @@ def _check_workbench_view_readiness(
         else:
             dp = item_disc.get('delta_population')
             dp_complete = isinstance(dp, dict) and dp.get('complete') is True
+            ve = dp.get('verified_eligible') if isinstance(dp, dict) else None
             side_info['side_complete'] = item_disc.get('side_complete') is True
             side_info['capture_state'] = item_disc.get('capture_state')
             side_info['upstream_code'] = item_disc.get('upstream_code')
             side_info['delta_population_complete'] = dp_complete
+            if type(ve) is int:
+                side_info['verified_eligible'] = ve
+            no_eligible_strike = bool(dp_complete and type(ve) is int and ve == 0 and st != 'error')
+            side_info['market_no_eligible_strike'] = no_eligible_strike
+            if no_eligible_strike:
+                reasons.append(f'candidate_{side}_no_verified_eligible_strike')
             if item_disc.get('side_complete') is not True:
                 reasons.append(f'candidate_{side}_not_complete')
             if item_disc.get('capture_state') != 'COMPLETE':
@@ -5034,9 +5548,70 @@ def _check_workbench_view_readiness(
                     elif now_ms - side_obs > effective_disc_max_age:
                         reasons.append(f'candidate_{side}_discovery_observed_stale')
 
+        if check_target_exp:
+            if cand_exp is not None and cand_exp != target_expiry_ms:
+                reasons.append(f'candidate_{side}_expiry_mismatch:{cand_exp}')
+            elif cand_exp is None and not no_eligible_strike:
+                reasons.append(f'candidate_{side}_expiry_mismatch:missing')
 
-def _check_source_bundle_readiness(source, now_ms, reasons, checks):
+    if 'put' in side_timestamps and 'call' in side_timestamps:
+        skew_ms = abs(side_timestamps['put'] - side_timestamps['call'])
+        checks['pair_skew_ms'] = skew_ms
+        if skew_ms > 60_000:
+            reasons.append('PAIR_SKEW_EXCEEDED')
+
+    if input_profile == p0_profile and 'expiry_gamma' in workbench_view:
+        eg = workbench_view.get('expiry_gamma')
+        if not isinstance(eg, dict) or eg.get('status') != 'ok':
+            reasons.append(f"expiry_gamma_not_ok:{eg.get('status') if isinstance(eg, dict) else 'invalid'}")
+        else:
+            by_exp = eg.get('by_expiry') if isinstance(eg.get('by_expiry'), dict) else eg.get('expiries')
+            if isinstance(by_exp, dict):
+                prof_rows = [r for r in by_exp.values() if isinstance(r, dict)]
+                matched_prof = (
+                    next((r for r in prof_rows if r.get('expiry_ms') == target_expiry_ms), None)
+                    if check_target_exp
+                    else (prof_rows[0] if prof_rows else None)
+                )
+                if matched_prof is None and (check_target_exp or not prof_rows):
+                    reasons.append('expiry_gamma_walls_missing_for_target_expiry')
+                elif matched_prof is not None:
+                    prof_comp = matched_prof.get('computed_at_ms')
+                    if prof_comp is None:
+                        prof_comp = eg.get('computed_at_ms')
+                    if matched_prof.get('stale') is True or (
+                        type(prof_comp) is int and type(now_ms) is int and (now_ms - prof_comp) > 5 * 60_000
+                    ):
+                        reasons.append('expiry_gamma_walls_stale')
+                    walls = matched_prof.get('walls')
+                    if not isinstance(walls, dict) or dossier.player.number(walls.get('pin')) is None:
+                        reasons.append('expiry_gamma_walls_invalid')
+            elif check_target_exp:
+                reasons.append('expiry_gamma_walls_missing_for_target_expiry')
+            rv_obj = eg.get('realized_vol')
+            rv_24h = dossier.player.number(rv_obj.get('rv_24h_pct')) if isinstance(rv_obj, dict) else None
+            checks['expiry_gamma_rv_24h_pct'] = rv_24h
+            if rv_24h is None or rv_24h <= 0:
+                reasons.append('expiry_gamma_rv_24h_missing')
+            elif isinstance(rv_obj, dict) and (
+                rv_obj.get('cached_fallback') is True
+                or rv_obj.get('status') in {'fetch_failed', 'duplicate_conflict', 'insufficient_bars'}
+            ):
+                reasons.append('expiry_gamma_rv_24h_stale')
+
+
+def _check_source_bundle_readiness(
+    source,
+    now_ms,
+    reasons,
+    checks,
+    *,
+    target_expiry_ms=None,
+    slot_ms=None,
+    input_profile=None,
+):
     checks['source_checked'] = True
+    p0_profile = getattr(dossier.player, 'INPUT_PROFILE_P0_STRICT', 'p0_strict@1')
     cards = source.get('cards')
     card_expiries = set()
     card_reads = {}
@@ -5080,6 +5655,15 @@ def _check_source_bundle_readiness(source, now_ms, reasons, checks):
     expiry_ms = next(iter(card_expiries)) if len(card_expiries) == 1 else None
     checks['source_expiry_ms'] = expiry_ms
     checks['source_card_sides'] = [s for s in card_sides if isinstance(s, str)]
+    if type(target_expiry_ms) is int and target_expiry_ms > 0 and expiry_ms is not None and expiry_ms != target_expiry_ms:
+        reasons.append('source_target_expiry_mismatch')
+    if 'put' in card_reads and 'call' in card_reads:
+        src_skew = abs(card_reads['put'] - card_reads['call'])
+        checks['source_pair_skew_ms'] = src_skew
+        if src_skew > 60_000:
+            reasons.append('PAIR_SKEW_EXCEEDED')
+    if type(slot_ms) is int and slot_ms > 0 and card_reads and min(card_reads.values()) < slot_ms:
+        reasons.append('source_card_read_before_slot')
 
     received_at_ms = source.get('received_at_ms')
     checks['source_received_at_ms'] = received_at_ms
@@ -5094,6 +5678,7 @@ def _check_source_bundle_readiness(source, now_ms, reasons, checks):
     cases = source.get('cases')
     case_sides = []
     wanted_instruments = set()
+    has_valid_rv24 = False
     if not isinstance(cases, list) or len(cases) != 2 or any(not isinstance(cs, dict) for cs in cases):
         reasons.append('source_cases_invalid')
     if isinstance(cases, list):
@@ -5174,6 +5759,25 @@ def _check_source_bundle_readiness(source, now_ms, reasons, checks):
                     reasons.append(f'source_case_{c_label}_l2_quote_gaps')
                 elif gap_r or q_gap_r:
                     reasons.append(f'source_case_{c_label}_l2_quote_gaps')
+            if input_profile == p0_profile:
+                l3_walls = dossier.player.values(case, 'L3.expiry_walls')
+                expected_exp = target_expiry_ms if (type(target_expiry_ms) is int and target_expiry_ms > 0) else expiry_ms
+                walls_map = l3_walls.get('walls') if isinstance(l3_walls, dict) else None
+                if (
+                    not isinstance(l3_walls, dict)
+                    or l3_walls.get('stale') is True
+                    or (expected_exp is not None and l3_walls.get('expiry_ms') != expected_exp)
+                    or not isinstance(walls_map, dict)
+                    or dossier.player.number(walls_map.get('pin')) is None
+                ):
+                    reasons.append(f'source_case_{c_label}_invalid_l3_expiry_walls')
+                l4_vol = dossier.player.values(case, 'L4.expiry_vol')
+                rv_map = l4_vol.get('realized_vol') if isinstance(l4_vol, dict) else None
+                rv_24h = dossier.player.number(rv_map.get('rv_24h_pct')) if isinstance(rv_map, dict) else None
+                if rv_24h is not None and rv_24h > 0:
+                    has_valid_rv24 = True
+        if input_profile == p0_profile and not has_valid_rv24:
+            reasons.append('source_l4_rv_24h_missing')
         if len(case_sides) != 2 or set(case_sides) != {'put', 'call'}:
             reasons.append('source_cases_sides_mismatch')
         if len(case_expiries) > 1:
@@ -5295,6 +5899,9 @@ def evaluate_source_readiness(
     now_ms=None,
     max_view_age_ms=120_000,
     max_discovery_age_ms=300_000,
+    target_expiry_ms=None,
+    slot_ms=None,
+    input_profile=None,
 ):
     """Pure read-only readiness gate verifying upstream discovery/source completeness without network or disk I/O."""
     has_source = isinstance(source, dict)
@@ -5305,6 +5912,12 @@ def evaluate_source_readiness(
         'live_lock_eligible_by_side': {},
         'accept_lock_ready': False,
     }
+    if target_expiry_ms is not None:
+        checks['target_expiry_ms'] = target_expiry_ms
+    if slot_ms is not None:
+        checks['slot_ms'] = slot_ms
+    if input_profile is not None:
+        checks['input_profile'] = input_profile
     if not has_source and not has_view:
         return {'status': 'UPSTREAM_BLOCKED', 'reasons': ['missing_input'], 'checks': checks}
 
@@ -5319,6 +5932,13 @@ def evaluate_source_readiness(
         reasons.append('invalid_max_view_age_ms')
     if type(max_discovery_age_ms) is not int or not 0 < max_discovery_age_ms <= 600_000:
         reasons.append('invalid_max_discovery_age_ms')
+    if target_expiry_ms is not None and (type(target_expiry_ms) is not int or target_expiry_ms <= 0):
+        reasons.append('invalid_target_expiry_ms')
+    if slot_ms is not None and (type(slot_ms) is not int or slot_ms <= 0):
+        reasons.append('invalid_slot_ms')
+    supported_profiles = getattr(dossier.player, 'SUPPORTED_INPUT_PROFILES', ('legacy_v1', 'p0_strict@1'))
+    if input_profile is not None and input_profile not in supported_profiles:
+        reasons.append('invalid_input_profile')
 
     if has_view:
         _check_workbench_view_readiness(
@@ -5328,20 +5948,60 @@ def evaluate_source_readiness(
             now_ms=now_ms,
             max_view_age_ms=max_view_age_ms,
             max_discovery_age_ms=max_discovery_age_ms,
+            target_expiry_ms=target_expiry_ms,
+            slot_ms=slot_ms,
+            input_profile=input_profile,
         )
     if has_source:
-        _check_source_bundle_readiness(source, now_ms, reasons, checks)
+        _check_source_bundle_readiness(
+            source,
+            now_ms,
+            reasons,
+            checks,
+            target_expiry_ms=target_expiry_ms,
+            slot_ms=slot_ms,
+            input_profile=input_profile,
+        )
     if has_source and has_view:
         _check_source_workbench_consistency(source, workbench_view, reasons)
 
     deduped = list(dict.fromkeys(reasons))
-    status = 'SOURCE_READY' if not deduped else 'UPSTREAM_BLOCKED'
+    if not deduped:
+        status = 'SOURCE_READY'
+    else:
+        by_side = checks.get('candidates_by_side') if isinstance(checks.get('candidates_by_side'), dict) else {}
+        empty_sides = [
+            s for s in ('put', 'call')
+            if isinstance(by_side.get(s), dict) and by_side[s].get('market_no_eligible_strike') is True
+        ]
+        allowed_empty_reasons = set()
+        for s in empty_sides:
+            st_lbl = by_side[s].get('status')
+            allowed_empty_reasons.update({
+                f"candidate_{s}_not_snapshot:{st_lbl if st_lbl is not None else 'missing'}",
+                f'candidate_{s}_snapshot_missing',
+                f'candidate_{s}_not_formal_evidence_eligible',
+                f'candidate_{s}_last_valid_candidate_summary',
+                f'candidate_{s}_no_verified_eligible_strike',
+            })
+        if has_view and empty_sides and all(r in allowed_empty_reasons for r in deduped):
+            status = 'MARKET_SINGLE_SIDE_ONLY'
+        else:
+            status = 'UPSTREAM_BLOCKED'
     checks['accept_lock_ready'] = bool(
         status == 'SOURCE_READY'
         and has_view
         and all(checks['live_lock_eligible_by_side'].get(s) is True for s in ('put', 'call'))
     )
     return {'status': status, 'reasons': deduped, 'checks': checks}
+
+
+def _archive_hour_case_counts(archive_root, hour_ms):
+    case_dir = Path(archive_root) / 'cases' / dossier.utc(hour_ms).date().isoformat()
+    hh = f'{dossier.utc(hour_ms):%H}'
+    if not case_dir.is_dir():
+        return {'put': 0, 'call': 0}
+    return {s: len(list(case_dir.glob(f'{hh}_{s}_*.json.gz'))) for s in ('put', 'call')}
 
 
 def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.public, dry_run=False):
@@ -5374,9 +6034,11 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
             slot = plan['effective_at_ms']
         dossier.schedule(plan, slot)
     expiry = slot + plan['expiry_offset_ms']
+    cand_round = plan.get('candidate_round', 'r2')
     cfg = _llm_settings()
+    archive = Path(archive)
     report = dict(state='PREWARM_DRY_RUN' if dry_run else 'PREWARM', plan_id=plan['plan_id'],
-                  candidate_round=plan.get('candidate_round', 'r2'),
+                  candidate_round=cand_round,
                   prompt_version=prompt_version,
                   input_profile=input_profile,
                   mechanical_contract_version=mechanical_contract_version,
@@ -5398,10 +6060,144 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
             and i.get('settlement_currency') == 'BTC' and i.get('is_active') for i in instruments)
     except (OSError, ValueError, KeyError, TypeError):
         report['native_expiry_present'] = None
-    try:
-        report['tracking'] = service('readiness', {})
-    except (OSError, ValueError, KeyError, TypeError):
+
+    prep = None
+    if service is None:
         report['tracking'] = {'state': 'UNAVAILABLE'}
+    else:
+        try:
+            raw_prep = service('prepare_deal', {
+                'target_expiry_ms': expiry,
+                'slot_ms': slot,
+                'candidate_round': cand_round,
+                'allow_refresh': not dry_run,
+                'input_profile': input_profile,
+            })
+            if isinstance(raw_prep, dict) and ('ready_for_deal' in raw_prep or 'readiness_status' in raw_prep):
+                prep = raw_prep
+                if isinstance(raw_prep.get('tracking'), dict):
+                    report['tracking'] = raw_prep['tracking']
+                else:
+                    try:
+                        report['tracking'] = service('readiness', {})
+                    except (Blocked, OSError, ValueError, KeyError, TypeError):
+                        report['tracking'] = {k: v for k, v in raw_prep.items() if k != 'cases'}
+            elif isinstance(raw_prep, dict):
+                report['tracking'] = raw_prep
+            else:
+                report['tracking'] = service('readiness', {})
+        except (Blocked, OSError, ValueError, KeyError, TypeError):
+            try:
+                report['tracking'] = service('readiness', {})
+            except (Blocked, OSError, ValueError, KeyError, TypeError):
+                report['tracking'] = {'state': 'UNAVAILABLE'}
+
+    hour_ms = 60 * dossier.MINUTE
+    cur_hour_ms = now - (now % hour_ms)
+    prev_hour_ms = cur_hour_ms - hour_ms
+    archive_cases = {
+        'slot_hour': _archive_hour_case_counts(archive, slot),
+        'current_hour': _archive_hour_case_counts(archive, cur_hour_ms),
+        'previous_hour': _archive_hour_case_counts(archive, prev_hour_ms),
+    }
+
+    blockers = []
+    if not report['archive_readable']:
+        blockers.append('archive_unreadable')
+    if not report['structure_readable']:
+        blockers.append('structure_unreadable')
+    if not report['band_snapshots_readable']:
+        blockers.append('band_snapshots_unreadable')
+    native_ok = report.get('native_expiry_present') is True
+    if report.get('native_expiry_present') is False:
+        blockers.append('native_expiry_missing')
+    elif report.get('native_expiry_present') is None:
+        blockers.append('native_expiry_unverified')
+    llm_ok = bool(report.get('llm_configured'))
+    if not llm_ok:
+        blockers.append('llm_not_configured')
+
+    if isinstance(prep, dict):
+        prep_ready = bool(prep.get('ready_for_deal'))
+        prep_status = prep.get('readiness_status') or ('SOURCE_READY' if prep_ready else 'UPSTREAM_BLOCKED')
+        for b in (prep.get('blockers') or []):
+            if b and str(b) not in blockers:
+                blockers.append(str(b))
+        if not prep_ready and not (prep.get('blockers')):
+            blockers.append(f'workbench_not_ready:{prep_status}')
+        sides_info = prep.get('sides') if isinstance(prep.get('sides'), dict) else {}
+        refresh_triggered = bool(prep.get('refresh_triggered'))
+        cooldown_ms = int(prep.get('deribit_cooldown_remaining_ms') or 0)
+    else:
+        trk = report.get('tracking')
+        if not isinstance(trk, dict) or trk.get('state') == 'UNAVAILABLE':
+            prep_ready = False
+            prep_status = 'WORKBENCH_UNAVAILABLE'
+            blockers.append('workbench_service_unavailable')
+        elif trk.get('enabled') is False:
+            prep_ready = False
+            prep_status = 'TRACKING_DISABLED'
+            blockers.append('tracking_disabled')
+        else:
+            has_recent_pair = any(
+                row.get('put', 0) >= 1 and row.get('call', 0) >= 1
+                for row in archive_cases.values()
+            )
+            if has_recent_pair:
+                prep_ready = True
+                prep_status = 'ARCHIVE_PAIR_PRESENT'
+            else:
+                prep_ready = False
+                prep_status = 'PREPARE_DEAL_UNAVAILABLE'
+                blockers.append('recent_archive_cases_missing')
+        sides_info = {}
+        refresh_triggered = False
+        cooldown_ms = 0
+
+    ready_for_deal = bool(
+        native_ok
+        and llm_ok
+        and report['archive_readable']
+        and report['structure_readable']
+        and report['band_snapshots_readable']
+        and prep_ready
+        and not blockers
+    )
+    if ready_for_deal:
+        br_status = 'READY_FOR_DEAL'
+    elif not native_ok or not llm_ok:
+        br_status = 'CRITICAL_CONFIG_MISSING'
+    elif not prep_ready:
+        br_status = prep_status
+    else:
+        br_status = 'PREWARM_BLOCKED'
+    alert_level = 'NONE' if ready_for_deal else ('CRITICAL' if (not native_ok or not llm_ok) else 'WARN')
+    report['business_readiness'] = dict(
+        ready_for_deal=ready_for_deal,
+        status=br_status,
+        blockers=blockers,
+        alert_level=alert_level,
+        target_expiry_ms=expiry,
+        scheduled_at_ms=slot,
+        sides=sides_info,
+        refresh_triggered=refresh_triggered,
+        deribit_cooldown_remaining_ms=cooldown_ms,
+        archive_cases=archive_cases,
+    )
+    if not dry_run and not ready_for_deal:
+        import sys
+        alert_line = dict(
+            event='PREWARM_NOT_READY',
+            plan_id=plan['plan_id'],
+            checked_at_ms=now,
+            scheduled_at_ms=slot,
+            target_expiry_ms=expiry,
+            alert_level=alert_level,
+            status=br_status,
+            blockers=blockers,
+            refresh_triggered=refresh_triggered,
+        )
+        sys.stderr.write('PREWARM_ALERT ' + json.dumps(alert_line, ensure_ascii=False, sort_keys=True) + '\n')
     return report
 
 

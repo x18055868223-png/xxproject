@@ -58,6 +58,7 @@ if __package__:
     from . import astra_map_v24 as map_core
     from . import astra_map_projection_v24 as map_projection
     from . import astra_risk_qualification_v244 as risk_qualification
+    from . import astra_evidence_qual_v1 as evidence_qual
     from . import astra_candidate_asof_v1 as candidate_asof
     from . import astra_wpem_workbench_v1 as wpem_workbench
     from . import astra_thesis_ledger_v1 as thesis_ledger
@@ -110,6 +111,7 @@ else:  # direct CLI execution from tools/
     import astra_map_v24 as map_core
     import astra_map_projection_v24 as map_projection
     import astra_risk_qualification_v244 as risk_qualification
+    import astra_evidence_qual_v1 as evidence_qual
     import astra_candidate_asof_v1 as candidate_asof
     import astra_wpem_workbench_v1 as wpem_workbench
     import astra_thesis_ledger_v1 as thesis_ledger
@@ -4848,27 +4850,501 @@ class AstraWorkbench:
             raise WorkbenchError(409, "evidence_not_retained", "this exact displayed input is no longer retained")
         return locked_compare._public_point(point)
 
+    def _deribit_cooldown_remaining_ms(self, now_ms: int) -> int:
+        prov_cd = self.data_engine.provider_cooldown("deribit", now_ms=now_ms)
+        prov_ms = (
+            max(0, int(prov_cd["until_ms"]) - now_ms)
+            if isinstance(prov_cd, Mapping) and isinstance(prov_cd.get("until_ms"), int)
+            else 0
+        )
+        pacer_ms = int(round(max(0.0, float(self._deribit_pacer.stats().get("cooldown_remaining_s") or 0.0)) * 1000))
+        return max(int(deribit_cooldown.remaining_ms(now_ms=now_ms)), pacer_ms, prov_ms)
+
+    def _prepare_shadow_deal(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        allowed_keys = {"target_expiry_ms", "slot_ms", "candidate_round", "allow_refresh", "input_profile"}
+        if not isinstance(body, Mapping) or not (set(body) <= allowed_keys):
+            raise WorkbenchError(400, "invalid_shadow_request", "unexpected prepare_deal fields")
+        target_expiry_ms = body.get("target_expiry_ms")
+        if target_expiry_ms is not None and (type(target_expiry_ms) is not int or target_expiry_ms <= 0):
+            raise WorkbenchError(400, "invalid_shadow_request", "target_expiry_ms must be a positive integer")
+        slot_ms = body.get("slot_ms")
+        if slot_ms is not None and (type(slot_ms) is not int or slot_ms <= 0):
+            raise WorkbenchError(400, "invalid_shadow_request", "slot_ms must be a positive integer")
+        candidate_round = body.get("candidate_round")
+        if candidate_round is not None and not isinstance(candidate_round, str):
+            raise WorkbenchError(400, "invalid_shadow_request", "candidate_round must be a string")
+        raw_profile = body.get("input_profile")
+        if raw_profile is not None and not isinstance(raw_profile, str):
+            raise WorkbenchError(400, "invalid_shadow_request", "input_profile must be a string")
+        effective_profile = raw_profile or "p0_strict@1"
+        allow_refresh = bool(body.get("allow_refresh"))
+        capture_err_codes = {
+            "delta_population_capture_incomplete",
+            "delta_population_greeks_incomplete",
+            "discovery_refresh_error",
+        }
+
+        def _evaluate(now: int) -> dict[str, Any]:
+            with self._view_lock:
+                view = deepcopy(self._current_view or {})
+            eg_raw = deepcopy(self._expiry_gamma)
+            cooldown_ms = self._deribit_cooldown_remaining_ms(now)
+            disc_status = view.get("discovery_status") if isinstance(view.get("discovery_status"), Mapping) else {}
+            disc_obj = view.get("discovery") if isinstance(view.get("discovery"), Mapping) else {}
+            capture_state = disc_status.get("capture_state") or disc_obj.get("capture_state")
+            selected_expiry_ms = disc_obj.get("selected_expiry_ms")
+            effective_expiry_ms = (
+                target_expiry_ms if isinstance(target_expiry_ms, int)
+                else (selected_expiry_ms if isinstance(selected_expiry_ms, int) else None)
+            )
+            sides: dict[str, dict[str, Any]] = {}
+            market_absent_by_side: dict[str, bool] = {}
+            cand_list = [c for c in (view.get("candidates") or []) if isinstance(c, Mapping)]
+            disc_cands = disc_obj.get("candidates") if isinstance(disc_obj.get("candidates"), Mapping) else {}
+            for side in ("put", "call"):
+                item = next((c for c in cand_list if c.get("side") == side), None)
+                disc_side = disc_cands.get(side) if isinstance(disc_cands.get(side), Mapping) else None
+                snap = item.get("snapshot") if isinstance(item, Mapping) and isinstance(item.get("snapshot"), Mapping) else None
+                contract = snap.get("contract") if isinstance(snap, Mapping) and isinstance(snap.get("contract"), Mapping) else {}
+                market = snap.get("market") if isinstance(snap, Mapping) and isinstance(snap.get("market"), Mapping) else {}
+                quote = market.get("quote") if isinstance(market.get("quote"), Mapping) else {}
+                side_exp = (
+                    contract.get("expiry_ms") if isinstance(contract.get("expiry_ms"), int)
+                    else (disc_side.get("expiry_ms") if isinstance(disc_side, Mapping) and isinstance(disc_side.get("expiry_ms"), int) else None)
+                )
+                if effective_expiry_ms is None and isinstance(side_exp, int):
+                    effective_expiry_ms = side_exp
+                expiry_matches = bool(effective_expiry_ms is not None and side_exp == effective_expiry_ms)
+                quote_credit = quote.get("credit_btc")
+                quote_has_credit = bool(
+                    isinstance(quote_credit, (int, float))
+                    and not isinstance(quote_credit, bool)
+                    and math.isfinite(float(quote_credit))
+                    and float(quote_credit) > 0
+                )
+                quote_gaps = (
+                    list(quote.get("gap_reasons") or [])
+                    + list(quote.get("quote_gap_reasons") or [])
+                    + list((item.get("capture_gaps") if isinstance(item, Mapping) else None) or [])
+                )
+                formal_ok = bool(
+                    isinstance(item, Mapping)
+                    and item.get("formal_evidence_eligible") is True
+                    and item.get("live_lock_eligible") is True
+                    and snap is not None
+                    and not item.get("held_capture")
+                    and quote_has_credit
+                    and not quote_gaps
+                )
+                val_ts = (
+                    market.get("valuation_ts_ms") if isinstance(market.get("valuation_ts_ms"), int)
+                    else (quote.get("valuation_ts_ms") if isinstance(quote.get("valuation_ts_ms"), int) else None)
+                )
+                slot_window_ok = (
+                    (val_ts is not None and val_ts >= slot_ms)
+                    if (isinstance(slot_ms, int) and now >= slot_ms)
+                    else (val_ts is not None)
+                )
+                item_disc_st = (
+                    item.get("discovery_status")
+                    if isinstance(item, Mapping) and isinstance(item.get("discovery_status"), Mapping)
+                    else {}
+                )
+                d_pop = (
+                    item_disc_st.get("delta_population")
+                    if isinstance(item_disc_st.get("delta_population"), Mapping)
+                    else (disc_side.get("delta_population") if isinstance(disc_side, Mapping) and isinstance(disc_side.get("delta_population"), Mapping) else None)
+                )
+                raw_gaps = (
+                    list((disc_side.get("gap_reasons") if isinstance(disc_side, Mapping) else None) or [])
+                    + list((item.get("capture_gaps") if isinstance(item, Mapping) else None) or [])
+                    + list(((item.get("review_gate") or {}).get("reasons") if isinstance(item, Mapping) else None) or [])
+                )
+                gap_reasons = list(dict.fromkeys(str(r) for r in raw_gaps if r))
+                item_status = item.get("status") if isinstance(item, Mapping) else "missing"
+                disc_side_status = disc_side.get("status") if isinstance(disc_side, Mapping) else None
+                has_capture_err = any(
+                    r in capture_err_codes or r.startswith("upstream_") for r in gap_reasons
+                )
+                pop_complete_zero = (
+                    isinstance(d_pop, Mapping)
+                    and d_pop.get("complete") is True
+                    and int(d_pop.get("verified_eligible") or 0) == 0
+                )
+                structural_no_spread = (
+                    isinstance(d_pop, Mapping)
+                    and int(d_pop.get("total_qualified") or 0) == 0
+                    and not d_pop.get("unacquired")
+                    and not d_pop.get("delta_missing_or_invalid")
+                    and disc_status.get("upstream_code") is None
+                    and disc_side_status == "gap"
+                )
+                market_absent_by_side[side] = (
+                    (not formal_ok)
+                    and (not has_capture_err)
+                    and (
+                        pop_complete_zero
+                        or structural_no_spread
+                        or (capture_state == "COMPLETE" and disc_side_status != "candidate" and item_status == "gap")
+                    )
+                )
+                sides[side] = {
+                    "status": item_status,
+                    "snapshot_id": snap.get("snapshot_id") if isinstance(snap, Mapping) and isinstance(snap.get("snapshot_id"), str) else None,
+                    "expiry_ms": side_exp,
+                    "expiry_matches": expiry_matches,
+                    "formal_evidence_eligible": formal_ok,
+                    "live_lock_eligible": bool(isinstance(item, Mapping) and item.get("live_lock_eligible") is True),
+                    "valuation_ts_ms": val_ts,
+                    "slot_window_ok": bool(slot_window_ok),
+                    "gap_reasons": gap_reasons,
+                    "delta_population": deepcopy(dict(d_pop)) if isinstance(d_pop, Mapping) else None,
+                }
+
+            put_ts = sides["put"]["valuation_ts_ms"]
+            call_ts = sides["call"]["valuation_ts_ms"]
+            pair_skew_ms = abs(put_ts - call_ts) if (isinstance(put_ts, int) and isinstance(call_ts, int)) else None
+            pair_skew_ok = pair_skew_ms is not None and pair_skew_ms <= 60_000
+
+            walls_profile = (
+                expiry_gamma.for_expiry(eg_raw, effective_expiry_ms, now_ms=now)
+                if isinstance(effective_expiry_ms, int)
+                else None
+            )
+            walls_dict = (walls_profile or {}).get("walls") if isinstance(walls_profile, Mapping) else {}
+            pin_val = walls_dict.get("pin") if isinstance(walls_dict, Mapping) else None
+            l3_computed = (walls_profile or {}).get("computed_at_ms") if isinstance(walls_profile, Mapping) else None
+            l3_age_ok = bool(
+                isinstance(l3_computed, int)
+                and not isinstance(l3_computed, bool)
+                and 0 <= (now - l3_computed) <= 270_000
+            )
+            exp_move_val = (walls_profile or {}).get("expected_move_usd") if isinstance(walls_profile, Mapping) else None
+            atm_iv_val = (walls_profile or {}).get("atm_iv_pct") if isinstance(walls_profile, Mapping) else None
+            l3_walls_ok = bool(
+                isinstance(walls_profile, Mapping)
+                and not walls_profile.get("stale")
+                and l3_age_ok
+                and isinstance(pin_val, (int, float))
+                and not isinstance(pin_val, bool)
+                and math.isfinite(float(pin_val))
+                and pin_val > 0
+                and isinstance(exp_move_val, (int, float))
+                and not isinstance(exp_move_val, bool)
+                and math.isfinite(float(exp_move_val))
+                and exp_move_val > 0
+                and isinstance(atm_iv_val, (int, float))
+                and not isinstance(atm_iv_val, bool)
+                and math.isfinite(float(atm_iv_val))
+                and atm_iv_val > 0
+            )
+            rv_obj = (eg_raw or {}).get("realized_vol") if isinstance(eg_raw, Mapping) else None
+            rv_24h = rv_obj.get("rv_24h_pct") if isinstance(rv_obj, Mapping) else None
+            rv_qual = evidence_qual.qualify_expiry_realized_vol(rv_obj, cutoff_ms=now)
+            l4_rv_ok = bool(rv_qual.get("status") == evidence_qual.QUAL_ALIGNED)
+            m_ctx = view.get("market_context") if isinstance(view.get("market_context"), Mapping) else {}
+            m_facts = m_ctx.get("market_facts") if isinstance(m_ctx.get("market_facts"), Mapping) else {}
+            vp = m_facts.get("volume_price") if isinstance(m_facts.get("volume_price"), Mapping) else {}
+            micro_flow = (
+                vp.get("micro_flow")
+                if isinstance(vp.get("micro_flow"), Mapping)
+                else (m_facts.get("micro_flow") if isinstance(m_facts.get("micro_flow"), Mapping) else None)
+            )
+            l5_micro_flow_present = bool(isinstance(micro_flow, Mapping) and micro_flow)
+
+            reasons: list[str] = []
+            view_updated_ms = view.get("updated_at_ms") if isinstance(view.get("updated_at_ms"), int) else None
+            both_eligible = sides["put"]["formal_evidence_eligible"] and sides["call"]["formal_evidence_eligible"]
+            any_expiry_mismatch = False
+            if isinstance(target_expiry_ms, int):
+                if isinstance(selected_expiry_ms, int) and selected_expiry_ms != target_expiry_ms:
+                    any_expiry_mismatch = True
+                    reasons.append("selected_expiry_mismatch")
+                for s in ("put", "call"):
+                    s_exp = sides[s]["expiry_ms"]
+                    if isinstance(s_exp, int) and s_exp != target_expiry_ms:
+                        any_expiry_mismatch = True
+                        reasons.append(f"{s}_expiry_mismatch")
+            non_eligible_sides = [s for s in ("put", "call") if not sides[s]["formal_evidence_eligible"]]
+            all_missing_market_absent = bool(non_eligible_sides) and all(
+                market_absent_by_side[s] for s in non_eligible_sides
+            )
+            quote_hold_ms = int(getattr(unsuitable, "QUOTE_HOLD_MS", 180_000))
+            view_stale = isinstance(view_updated_ms, int) and (now - view_updated_ms) > quote_hold_ms
+            view_pre_slot = isinstance(slot_ms, int) and now >= slot_ms and (
+                view_updated_ms is None or view_updated_ms < slot_ms
+            )
+            quote_stale = any(
+                isinstance(sides[s]["valuation_ts_ms"], int)
+                and (now - int(sides[s]["valuation_ts_ms"])) > quote_hold_ms
+                for s in ("put", "call")
+            )
+            both_slot_ok = sides["put"]["slot_window_ok"] and sides["call"]["slot_window_ok"]
+            required_l3_l4_ok = (l3_walls_ok and l4_rv_ok) if effective_profile == "p0_strict@1" else l3_walls_ok
+
+            if not view or not view.get("candidates"):
+                if cooldown_ms > 0:
+                    readiness_status = "DERIBIT_429_COOLDOWN"
+                    reasons.append("deribit_cooldown_active")
+                else:
+                    readiness_status = "DISCOVERY_INCOMPLETE"
+                    reasons.append("workbench_view_empty")
+            elif any_expiry_mismatch:
+                readiness_status = "EXPIRY_MISMATCH"
+            elif all_missing_market_absent and not view_stale and not view_pre_slot:
+                readiness_status = "MARKET_SINGLE_SIDE_ONLY"
+                for s in non_eligible_sides:
+                    reasons.append(f"{s}_market_candidate_absent")
+            elif not both_eligible and cooldown_ms > 0:
+                readiness_status = "DERIBIT_429_COOLDOWN"
+                reasons.append("deribit_cooldown_active")
+            elif not both_eligible and view_pre_slot and all_missing_market_absent:
+                readiness_status = "STALE_OR_PRE_SLOT_VIEW"
+                reasons.append("pre_slot_view")
+            elif not both_eligible or capture_state in {"PARTIAL", "INCOMPLETE", "MAINTENANCE"}:
+                readiness_status = "DISCOVERY_INCOMPLETE"
+                for s in non_eligible_sides:
+                    reasons.append(f"{s}_not_eligible")
+                if capture_state in {"PARTIAL", "INCOMPLETE", "MAINTENANCE"}:
+                    reasons.append(f"capture_state_{str(capture_state).lower()}")
+            elif not (sides["put"]["expiry_matches"] and sides["call"]["expiry_matches"]):
+                readiness_status = "EXPIRY_MISMATCH"
+                reasons.append("candidate_expiry_mismatch")
+            elif not both_slot_ok or not pair_skew_ok or view_stale or quote_stale:
+                readiness_status = "STALE_OR_PRE_SLOT_VIEW"
+                if not both_slot_ok:
+                    reasons.append("valuation_before_slot")
+                if not pair_skew_ok:
+                    reasons.append("pair_skew_exceeded")
+                if view_stale or quote_stale:
+                    reasons.append("view_or_quote_stale")
+            elif not required_l3_l4_ok:
+                readiness_status = "L3_OR_L4_INCOMPLETE"
+                if not l3_walls_ok:
+                    reasons.append("l3_expiry_walls_missing_or_stale")
+                if effective_profile == "p0_strict@1" and not l4_rv_ok:
+                    reasons.append("l4_rv_24h_missing")
+            else:
+                readiness_status = "SOURCE_READY"
+
+            return {
+                "readiness_status": readiness_status,
+                "checked_at_ms": now,
+                "view_updated_at_ms": view_updated_ms,
+                "effective_expiry_ms": effective_expiry_ms,
+                "selected_expiry_ms": selected_expiry_ms,
+                "discovery_capture_state": capture_state,
+                "deribit_cooldown_remaining_ms": cooldown_ms,
+                "pair_skew_ms": pair_skew_ms,
+                "pair_skew_ok": pair_skew_ok,
+                "sides": sides,
+                "channels": {
+                    "l3_expiry_gamma": {
+                        "ok": l3_walls_ok,
+                        "pin": pin_val,
+                        "stale": bool(not l3_age_ok or (walls_profile or {}).get("stale")) if isinstance(walls_profile, Mapping) else True,
+                    },
+                    "l4_realized_vol": {"ok": l4_rv_ok, "rv_24h_pct": rv_24h, "qual_status": rv_qual.get("status")},
+                    "l5_micro_flow": {"present": l5_micro_flow_present},
+                },
+                "reasons": list(dict.fromkeys(reasons)),
+            }
+
+        state = _evaluate(self.clock_ms())
+        refreshed = False
+        refresh_debounced = False
+        if (
+            allow_refresh
+            and state["readiness_status"] not in {"SOURCE_READY", "MARKET_SINGLE_SIDE_ONLY"}
+            and state["deribit_cooldown_remaining_ms"] == 0
+        ):
+            now_ref = self.clock_ms()
+            last_ref = int(getattr(self, "_last_prepare_deal_refresh_ms", 0) or 0)
+            if last_ref <= 0 or (now_ref - last_ref) >= 20_000:
+                self._last_prepare_deal_refresh_ms = now_ref
+                if self.config.expiry_gamma_enabled:
+                    force_eg = bool(
+                        not state["channels"]["l3_expiry_gamma"]["ok"]
+                        or (effective_profile == "p0_strict@1" and not state["channels"]["l4_realized_vol"]["ok"])
+                    )
+                    try:
+                        self.refresh_expiry_gamma(now_ms=self.clock_ms(), force=force_eg)
+                    except Exception:
+                        pass
+                self.refresh(now_ms=self.clock_ms(), record_daily=False)
+                refreshed = True
+                state = _evaluate(self.clock_ms())
+            else:
+                refresh_debounced = True
+
+        now_final = self.clock_ms()
+        quote_hold_final = int(getattr(unsuitable, "QUOTE_HOLD_MS", 180_000))
+        cases_out: dict[str, Any] | None = None
+        put_side = state["sides"]["put"]
+        call_side = state["sides"]["call"]
+        put_sid = put_side.get("snapshot_id")
+        call_sid = call_side.get("snapshot_id")
+        exp_match = (
+            put_side["expiry_matches"]
+            and call_side["expiry_matches"]
+            and (target_expiry_ms is None or (put_side["expiry_ms"] == target_expiry_ms and call_side["expiry_ms"] == target_expiry_ms))
+        )
+
+        def _built_case_deal_ready(c_obj: Mapping[str, Any], b_ms: int) -> bool:
+            asof = c_obj.get("asof_ms")
+            if not isinstance(asof, int) or isinstance(asof, bool) or not (0 <= b_ms - asof <= quote_hold_final):
+                return False
+            if (now_final - asof) > quote_hold_final:
+                return False
+            if isinstance(slot_ms, int) and now_final >= slot_ms and asof < slot_ms:
+                return False
+            q_ref = (c_obj.get("refs") or {}).get("L2.quote")
+            q_entry = c_obj["layers"][q_ref["layer"]][q_ref["index"]] if isinstance(q_ref, Mapping) else {}
+            q_val = q_entry.get("values") if isinstance(q_entry, Mapping) else {}
+            if not isinstance(q_val, Mapping):
+                return False
+            q_c = q_val.get("credit_btc")
+            if not isinstance(q_c, (int, float)) or isinstance(q_c, bool) or not math.isfinite(float(q_c)) or float(q_c) <= 0:
+                return False
+            if (q_val.get("gap_reasons") or []) or (q_val.get("quote_gap_reasons") or []):
+                return False
+            l3_ref = (c_obj.get("refs") or {}).get("L3.expiry_walls")
+            l3_entry = c_obj["layers"][l3_ref["layer"]][l3_ref["index"]] if isinstance(l3_ref, Mapping) else {}
+            l3_asof = l3_entry.get("asof_ms") if isinstance(l3_entry, Mapping) else None
+            l3_val = l3_entry.get("values") if isinstance(l3_entry, Mapping) else None
+            l3_pin = (l3_val.get("walls") or {}).get("pin") if isinstance(l3_val, Mapping) and isinstance(l3_val.get("walls"), Mapping) else None
+            if (
+                not isinstance(l3_entry, Mapping)
+                or l3_entry.get("quality") in {"missing", "unknown", "stale"}
+                or not isinstance(l3_asof, int)
+                or isinstance(l3_asof, bool)
+                or not (0 <= (b_ms - l3_asof) <= 5 * 60_000)
+                or not isinstance(l3_val, Mapping)
+                or l3_val.get("stale") is True
+                or not isinstance(l3_pin, (int, float))
+                or isinstance(l3_pin, bool)
+                or l3_pin <= 0
+            ):
+                return False
+            if effective_profile == "p0_strict@1":
+                l4_ref = (c_obj.get("refs") or {}).get("L4.expiry_vol")
+                l4_entry = c_obj["layers"][l4_ref["layer"]][l4_ref["index"]] if isinstance(l4_ref, Mapping) else {}
+                l4_val = l4_entry.get("values") if isinstance(l4_entry, Mapping) else {}
+                rv_sub = l4_val.get("realized_vol") if isinstance(l4_val, Mapping) else None
+                if evidence_qual.qualify_expiry_realized_vol(rv_sub, cutoff_ms=b_ms).get("status") != evidence_qual.QUAL_ALIGNED:
+                    return False
+            return True
+
+        if (
+            state["readiness_status"] == "SOURCE_READY"
+            and put_side["formal_evidence_eligible"]
+            and call_side["formal_evidence_eligible"]
+            and exp_match
+            and isinstance(put_sid, str)
+            and isinstance(call_sid, str)
+        ):
+            try:
+                put_case = self.case_file(put_sid)
+                call_case = self.case_file(call_sid)
+                put_built = (put_case.get("build") or {}).get("built_at_ms")
+                call_built = (call_case.get("build") or {}).get("built_at_ms")
+                put_asof = put_case.get("asof_ms")
+                call_asof = call_case.get("asof_ms")
+                built_ok = (
+                    isinstance(put_built, int)
+                    and isinstance(call_built, int)
+                    and abs(put_built - call_built) <= 60_000
+                    and isinstance(put_asof, int)
+                    and isinstance(call_asof, int)
+                    and abs(put_asof - call_asof) <= 60_000
+                    and (
+                        not (isinstance(slot_ms, int) and now_final >= slot_ms)
+                        or (put_built >= slot_ms and call_built >= slot_ms)
+                    )
+                    and _built_case_deal_ready(put_case, put_built)
+                    and _built_case_deal_ready(call_case, call_built)
+                )
+                if built_ok:
+                    cases_out = {"put": put_case, "call": call_case}
+                else:
+                    state["readiness_status"] = "L3_OR_L4_INCOMPLETE"
+                    state["reasons"] = list(dict.fromkeys([*state["reasons"], "built_case_qualification_failed"]))
+            except WorkbenchError:
+                cases_out = None
+                state["readiness_status"] = "DISCOVERY_INCOMPLETE"
+                state["reasons"] = list(dict.fromkeys([*state["reasons"], "case_file_build_failed"]))
+
+        out: dict[str, Any] = {
+            "enabled": self.config.shadow_experiment,
+            "ready_for_deal": state["readiness_status"] == "SOURCE_READY" and cases_out is not None,
+            "readiness_status": state["readiness_status"],
+            "checked_at_ms": state["checked_at_ms"],
+            "view_updated_at_ms": state["view_updated_at_ms"],
+            "target_expiry_ms": state["effective_expiry_ms"],
+            "selected_expiry_ms": state["selected_expiry_ms"],
+            "slot_ms": slot_ms,
+            "candidate_round": candidate_round,
+            "input_profile": effective_profile,
+            "discovery_capture_state": state["discovery_capture_state"],
+            "deribit_cooldown_remaining_ms": state["deribit_cooldown_remaining_ms"],
+            "pair_skew_ms": state["pair_skew_ms"],
+            "pair_skew_ok": state["pair_skew_ok"],
+            "sides": state["sides"],
+            "channels": state["channels"],
+            "reasons": state["reasons"],
+            "blockers": list(state["reasons"]),
+            "refreshed": refreshed,
+            "refresh_triggered": refreshed,
+            "refresh_debounced": refresh_debounced,
+            "execution_allowed": False,
+        }
+        if cases_out is not None:
+            out["cases"] = cases_out
+        return out
+
     def shadow_tracking(self, action: str, body: Mapping[str, Any]) -> dict[str, Any]:
         root = self.config.shadow_dossier_root
         if root is None:
             raise WorkbenchError(404, "shadow_dossiers_disabled", "shadow dossier storage is not configured")
         if action == "readiness":
+            now = self.clock_ms()
             episodes = self.locked_candidates.list()
             with self._view_lock:
-                candidates = list((self._current_view or {}).get("candidates") or [])
+                view = deepcopy(self._current_view or {})
+            candidates = list(view.get("candidates") or [])
             ready = []
+            candidate_sides: dict[str, dict[str, Any]] = {}
             for row in candidates:
-                snapshot = row.get("snapshot")
+                if isinstance(row, Mapping) and row.get("side") in {"put", "call"}:
+                    snap_c = (row.get("snapshot") or {}).get("contract") if isinstance(row.get("snapshot"), Mapping) else {}
+                    candidate_sides[row["side"]] = {
+                        "status": row.get("status"),
+                        "expiry_ms": (snap_c or {}).get("expiry_ms") or (row.get("discovery") or {}).get("expiry_ms"),
+                        "formal_evidence_eligible": bool(row.get("formal_evidence_eligible")),
+                        "live_lock_eligible": bool(row.get("live_lock_eligible")),
+                    }
+                snapshot = row.get("snapshot") if isinstance(row, Mapping) else None
                 if snapshot:
                     try:
-                        player_tracking.confirm_quote(snapshot, self.clock_ms())
+                        player_tracking.confirm_quote(snapshot, now)
                     except player_tracking.Blocked:
                         continue
                     ready.append(player_tracking.contract_fields(snapshot["contract"]))
-            return {"enabled": self.config.shadow_experiment, "synced_contracts": ready,
-                    "active": sum(e.get("status") == locked_store.ACTIVE for e in episodes),
-                    "episodes": len(episodes), "max_active": self.config.locked_max_active,
-                    "max_episodes": self.config.locked_max_episodes, "execution_allowed": False}
+            return {
+                "enabled": self.config.shadow_experiment,
+                "synced_contracts": ready,
+                "active": sum(e.get("status") == locked_store.ACTIVE for e in episodes),
+                "episodes": len(episodes),
+                "max_active": self.config.locked_max_active,
+                "max_episodes": self.config.locked_max_episodes,
+                "view_updated_at_ms": view.get("updated_at_ms") if isinstance(view.get("updated_at_ms"), int) else None,
+                "discovery_capture_state": (view.get("discovery_status") or {}).get("capture_state") if isinstance(view.get("discovery_status"), Mapping) else None,
+                "deribit_cooldown_remaining_ms": self._deribit_cooldown_remaining_ms(now),
+                "candidate_sides": candidate_sides,
+                "execution_allowed": False,
+            }
+        if action == "prepare_deal":
+            return self._prepare_shadow_deal(body)
         hand = player_tracking.hand_path(root, body.get("dossier_id"), body.get("hand_id"))
         if action == "refresh_quote":
             if not self.config.shadow_experiment:
@@ -7732,7 +8208,7 @@ def make_handler(workbench: AstraWorkbench):
                     or not hmac.compare_digest(auth.encode(), ("Bearer " + token).encode())):
                 self._json(401, {"code": "shadow_service_credential_required"})
                 return
-            if action not in {"lock", "recover", "export", "readiness", "quote", "refresh_quote", "stop"}:
+            if action not in {"lock", "recover", "export", "readiness", "prepare_deal", "quote", "refresh_quote", "stop"}:
                 self._json(404, {"code": "not_found"})
                 return
             try:
@@ -7740,7 +8216,11 @@ def make_handler(workbench: AstraWorkbench):
                 if not 0 < length <= 4096:
                     raise WorkbenchError(413, "request_size_invalid", "shadow service request too large")
                 body = json.loads(self.rfile.read(length))
-                if not isinstance(body, dict) or (set(body) != (set() if action == "readiness" else {"dossier_id", "hand_id"})):
+                if not isinstance(body, dict) or (
+                    (set(body) != set()) if action == "readiness"
+                    else not (set(body) <= {"target_expiry_ms", "slot_ms", "candidate_round", "allow_refresh", "input_profile"}) if action == "prepare_deal"
+                    else (set(body) != {"dossier_id", "hand_id"})
+                ):
                     raise WorkbenchError(400, "invalid_shadow_request", "send only dossier_id and hand_id")
                 result = workbench.shadow_tracking(action, body)
                 if action in {"lock", "recover"} and result.get("episode"):
