@@ -2034,6 +2034,23 @@ def test_m1_tp_cancel_unknown_retry_both_itm_grace_and_admin_unknown_cli(tmp_pat
     )
     assert any(a.action_type == contracts.ActionType.CANCEL_BY_LABEL and a.target_cmd_id == "cmd_tp_1" for a in res_tp.actions)
 
+    # 1b. Post-expiry incomplete/error facts (positions_complete=False, api_error!=None) MUST NOT clear liability or inventory!
+    err_facts_exp = contracts.ExchangeFacts(
+        asof_ms=exp_ms + 5_000, server_time_ms=exp_ms + 5_000, spot_usd=D("62785"),
+        equity_btc=D("1"), available_funds_btc=D("1"), initial_margin_btc=ZERO, maintenance_margin_btc=ZERO,
+        positions=(), open_orders=(), open_orders_complete=False, history_complete=False,
+        recent_orders_by_label={}, recent_trades=(), tx_logs=(), tx_logs_complete=False,
+        short_book=None, long_book=None, short_spec=spec, long_spec=facts_tp.long_spec,
+        subaccount_id="sub-tn-1", api_error="10028", positions_complete=False,
+    )
+    res_err_exp = policy.evaluate_step(
+        ep, contracts.CapitalAuthorization(entry_armed=True, budget_cap_btc=D("0.2"), max_qty_btc=D("0.1"), auth_epoch=1),
+        (), ev_tp, err_facts_exp, exp_ms + 5_000, contracts.ExecConfig(initial_qty_btc=D("0.1"), max_entry_slice_btc=D("0.1")),
+    )
+    assert res_err_exp.episode_patch.short_liability_cleared is False
+    assert res_err_exp.episode_patch.inventory_cleared is False
+    assert res_err_exp.episode_patch.phase == contracts.LifecyclePhase.TP_MANAGED
+
     # 2. Both-ITM zero-net-future expiry waits 30s grace then settles with diff_btc == 0
     s_rows = [
         {"id": 9001, "type": "assignment", "instrument_name": ep.short_instrument, "amount": "0.1", "timestamp_ms": exp_ms + 100},

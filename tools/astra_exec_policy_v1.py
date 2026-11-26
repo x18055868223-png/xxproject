@@ -1527,7 +1527,10 @@ def evaluate_step(
 
     # 7. Independent Milestones & 6 Lifecycle Phases (Spec 2.1)
     short_liability_cleared = (
-        short_qty == ZERO
+        facts.api_error is None
+        and facts.positions_complete
+        and facts.open_orders_complete
+        and short_qty == ZERO
         and not es_trades_lagging
         and not close_trades_lagging
         and not short_pos_lagging
