@@ -277,3 +277,96 @@ def test_empty_index_path_is_retried_not_written(tmp_path):
     _tick(archive, NOW, _view(), FakeDeribit())
     assert _tick(archive, EXPIRY + 15 * 60_000, None, FakeDeribit(delivery=82000.0, path=[]))["outcomes"] == 0
     assert not list(tmp_path.glob("paths/*")) and archive.load_state()["contracts"]
+
+
+def _player_eligible_case(cid, side, built, expiry):
+    entries = [
+        ("L1", "L1.contract", {"side": side, "short_instrument": f"BTC-20OCT26-81500-{side[0].upper()}",
+                               "long_instrument": f"BTC-20OCT26-79500-{side[0].upper()}",
+                               "expiry_ms": expiry, "quantity_btc": 1.0}),
+        ("L2", "L2.quote", {"short_bid": 0.0061, "long_ask": 0.0028}),
+        ("L3", "L3.expiry_walls", {"pin": 80500.0}),
+        ("L6", "L6.session_clock", {"remaining_variance_share": 0.62}),
+    ]
+    layers, refs = {}, {}
+    for layer, ref, values in entries:
+        layers.setdefault(layer, []).append({"ref": ref, "label_cn": ref, "values": values})
+        refs[ref] = {"layer": layer, "index": len(layers[layer]) - 1}
+    return {
+        "case_id": cid, "asof_ms": built - 10_000, "build": {"built_at_ms": built},
+        "layers": layers, "refs": refs,
+        "selection": {"schema": "selection@0.1", "path_version": "dp-test", "eligible": True, "vetoes": [],
+                      "round": {"current": 2}},
+    }
+
+
+def _freeze_player_case(root, state, case, hour_key, side):
+    rel = f"cases/{hour_key[:10]}/{hour_key[11:]}_{side}_{case['case_id']}.json.gz"
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_bytes(gzip.compress(json.dumps(case).encode("utf-8")))
+    state.setdefault("cases", {})[f"{hour_key}|{side}"] = {"case_id": case["case_id"], "path": rel}
+
+
+def test_run_players_stale_running_ttl_and_corrupt_gz_isolation(tmp_path):
+    M = 60_000
+    archive = ar.Archive(tmp_path)
+    state = archive.load_state()
+    hour_key = ar._utc(NOW).strftime("%Y-%m-%dT%H")
+    # Corrupt put case alongside valid call case
+    corrupt_rel = f"cases/{hour_key[:10]}/{hour_key[11:]}_put_corrupt.json.gz"
+    (tmp_path / corrupt_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / corrupt_rel).write_bytes(b"not-a-valid-gzip-archive")
+    state.setdefault("cases", {})[f"{hour_key}|put"] = {"case_id": "cf_bad", "path": corrupt_rel}
+    _freeze_player_case(tmp_path, state, _player_eligible_case("cf_call_ok", "call", NOW + 10_000, EXPIRY), hour_key, "call")
+
+    # Seed active running marker (within TTL) -> blocked; then advance past STALE_PLAYER_RUNNING_MS -> recovered
+    state["player"] = {f"{hour_key}|call": {"status": "running", "started_at_ms": NOW}}
+    seen = []
+
+    def ok_player(case, rnd, prev):
+        seen.append((case["case_id"], rnd, prev))
+        return {"status": "OK", "decision": {"action": "reject", "reject_reason": "pricing"},
+                "rulebook": "rb", "prompt_version": "pv", "requested_model": "m"}
+
+    report = {"errors": []}
+    assert ar.run_players(archive, state, now_ms=NOW + 10 * M, run_player=ok_player, report=report) == 0
+    assert seen == []
+    assert state["player"][f"{hour_key}|put"] == "corrupt_case"
+    assert any(e["step"] == "player_case_read" for e in report["errors"])
+
+    assert ar.run_players(archive, state, now_ms=NOW + 31 * M, run_player=ok_player, report=report) == 1
+    assert seen == [("cf_call_ok", "r2", None)]
+    assert state["player"][f"{hour_key}|call"] == "OK"
+
+    # Legacy string "running" falls back to state["last_tick_ms"]
+    state["player"][f"{hour_key}|call"] = "running"
+    state["last_tick_ms"] = NOW + 20 * M
+    assert ar.run_players(archive, state, now_ms=NOW + 32 * M, run_player=ok_player, report=report) == 0
+    state["last_tick_ms"] = NOW
+    assert ar.run_players(archive, state, now_ms=NOW + 33 * M, run_player=ok_player, report=report) == 0
+    # Existing decision row with matching case_id is adopted without re-calling run_player!
+    assert len(seen) == 1 and state["player"][f"{hour_key}|call"] == "OK"
+
+    # Legacy string "running" WITHOUT prior decision row recovers and executes run_player after TTL
+    arch2 = ar.Archive(tmp_path / "legacy_stale")
+    st2 = arch2.load_state()
+    _freeze_player_case(tmp_path / "legacy_stale", st2, _player_eligible_case("cf_leg", "put", NOW + 10_000, EXPIRY), hour_key, "put")
+    st2["player"] = {f"{hour_key}|put": "running"}
+    st2["last_tick_ms"] = NOW
+    leg_seen = []
+    assert ar.run_players(arch2, st2, now_ms=NOW + 31 * M, run_player=lambda c, r, p: leg_seen.append(c["case_id"]) or {
+        "status": "OK", "decision": {"action": "reject", "reject_reason": "pricing"},
+        "rulebook": "rb", "prompt_version": "pv", "requested_model": "m",
+    }, report={"errors": []}) == 1
+    assert leg_seen == ["cf_leg"] and st2["player"][f"{hour_key}|put"] == "OK"
+
+
+def test_tick_prunes_player_state_to_1500_sorted_keys(tmp_path):
+    archive = ar.Archive(tmp_path)
+    state = archive.load_state()
+    state["player"] = {f"2026-01-{i // 24 + 1:02d}T{i % 24:02d}|put": "OK" for i in range(1600)}
+    archive.save_state(state)
+    _tick(archive, NOW, None, FakeDeribit())
+    pruned = archive.load_state()["player"]
+    assert len(pruned) == 1500
+    assert min(pruned) > "2026-01-01T00|put"

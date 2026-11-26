@@ -1241,7 +1241,359 @@ def test_refresh_quote_preserves_capture_error_instead_of_contract_mismatch(tmp_
     assert res['error'] != 'contract_mismatch'
 
 
+def test_llm_timeout_precedence_initial_vs_hold_and_dynamic_deadline_cap(tmp_path, monkeypatch):
+    for key in ('ASTRA_PLAYER_TIMEOUT_SEC', 'ASTRA_PLAYER_HOLD_TIMEOUT_SEC', 'LLM_TIMEOUT_SEC'):
+        monkeypatch.delenv(key, raising=False)
+
+    assert tracking._llm_settings({'model': 'deepseek-reasoner'})['initial_timeout_s'] == 600.0
+    assert tracking._llm_settings({'model': 'deepseek-chat'})['initial_timeout_s'] == 300.0
+
+    monkeypatch.setenv('LLM_TIMEOUT_SEC', '360')
+    s_generic = tracking._llm_settings({'model': 'deepseek-reasoner'})
+    assert s_generic['timeout_s'] == 360.0
+    assert s_generic['timeout_explicit'] is False
+    assert s_generic['initial_timeout_s'] == 600.0
+    assert s_generic['hold_timeout_s'] == 360.0
+
+    monkeypatch.setenv('ASTRA_PLAYER_TIMEOUT_SEC', '520')
+    s_player = tracking._llm_settings({'model': 'deepseek-reasoner'})
+    assert s_player['timeout_s'] == 520.0
+    assert s_player['timeout_explicit'] is True
+    assert s_player['initial_timeout_s'] == 520.0
+    assert s_player['hold_timeout_s'] == 360.0  # hold bounded <= 360 unless explicit/hold env
+
+    monkeypatch.setenv('ASTRA_PLAYER_HOLD_TIMEOUT_SEC', '410')
+    assert tracking._llm_settings({'model': 'deepseek-reasoner'})['hold_timeout_s'] == 410.0
+
+    # Dynamic reply_deadline cap in _deal_hand (with 15s headroom and 30s floor)
+    clk = Clock(SLOT + M)
+    d = dossier.Dossiers(tmp_path, clock=clk)
+    monkeypatch.setattr(dossier, 'collect', lambda *_a, **_kw: fixture_source(clk))
+    p = plan()
+    p['reply_grace_ms'] = 120_000  # 120s window
+    hand, = d.tick(p, slots=[SLOT])
+    d.deal(hand, fixture_source(clk))
+    clk.ms += 20_000  # 100s left -> capped to 85.0s
+    seen_timeout = []
+
+    def cap_transport(api_key, model, body, timeout_s, endpoint=None):
+        del api_key, model, body, endpoint
+        seen_timeout.append(timeout_s)
+        return {'choices': [{'finish_reason': 'stop', 'message': {
+            'content': '## Reject\n\nPut：风险高。\nCall：风险高。\n对比：不承接。\nPut反证：近。\nCall反证：近。\n<ANNOTATION_JSON>{"put":"Put：风险高。","call":"Call：风险高。","comparison":"对比：不承接。","put_counter":"Put反证：近。","call_counter":"Call反证：近。","depends_on_ard":false}</ANNOTATION_JSON>'
+        }}]}
+
+    res = tracking._deal_hand(d, hand, None, tracking._llm_settings({'model': 'deepseek-reasoner', 'transport': cap_transport}))
+    assert res['status'] == 'VALID'
+    assert seen_timeout == [85.0]
 
 
+def test_hold_orphan_reply_recovery_before_stale_inflight_and_cas_protection(tmp_path):
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    with serving(wb) as base:
+        svc = post(base, wb)
+        receipt = tracking.link(d, hand, svc, RULE)
+        ep_dir = hand.parent.parent / 'episodes' / receipt['origin']['dossier_episode_id']
+        now[0] += 5 * M
+        exported = svc('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        exported['points'] = [
+            {'metrics': {'asof_ms': now[0] - 2 * M, 'spot_usd': 102_000.0, 'short_distance_pct': 0.98, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now[0] - M, 'spot_usd': 103_200.0, 'short_distance_pct': -0.19, 'flow_ready': False}},
+        ]
+        d.event(ep_dir, dossier.identity('chk', now[0] - M), 'CONDITION_TRIGGERED',
+                dict(result={'rule': 'entry_not_returned'}), observed=now[0] - M, available=now[0])
 
+        # 1) Orphaned review_calls/*/reply.json recovered BEFORE stale_inflight re-dispatch
+        started_ms = now[0] - 30 * M
+        rev_id = 'rev_' + '11223344' * 3
+        batch = [{'category': 'A', 'code': 'CONDITION_TRIGGERED', 'signature': 'CONDITION_TRIGGERED',
+                  'severity': 3, 'observed_at_ms': now[0] - M, 'summary_cn': 'triggered'}]
+        dossier.write(ep_dir / 'trigger_state.json', dossier.encode({
+            'revoked': False, 'inflight': True, 'inflight_started_at_ms': started_ms,
+            'inflight_batch': batch, 'pending': [], 'dispatched_signatures': {},
+        }), replace=True)
+        call_dir = ep_dir / 'review_calls' / rev_id
+        hold_req = review.build_hold_review_request_payload(
+            'orphan input', model='m-orphan', requested_at_ms=started_ms + 5,
+        )
+        dossier.publish(call_dir, {
+            'input.md': b'orphan input',
+            'request.json': dossier.encode(hold_req),
+            'reply.json': dossier.encode({
+                'text': '## HOLD\n\n继续持有。\n<HOLD_REVIEW_JSON>{"verdict":"HOLD","affected_conditions":[],"public_reply":"继续观察","key_facts":["k"]}</HOLD_REVIEW_JSON>',
+                'model': 'm-orphan',
+                'usage': {'total_tokens': 42},
+                'decided_at_ms': started_ms + 2_000,
+            }),
+        })
+        res_rec = tracking.evaluate_hold_management(
+            d, hand, exported,
+            llm_config={'api_key': 'k', 'model': 'm-orphan',
+                        'transport': lambda *a, **k: pytest.fail('orphan reply should prevent duplicate LLM call')},
+        )
+        assert res_rec.get('recovered_review_id') == rev_id
+        assert (ep_dir / 'reviews' / rev_id / 'decision.json').is_file()
+        assert dossier.read(ep_dir / 'trigger_state.json')['inflight'] is False
+        assert not any(
+            (dossier.read(p).get('body') or {}).get('error') == 'inflight_stale_recovered'
+            for p in (ep_dir / 'events').glob('*.json')
+        )
+
+        # 2) RECOVERY_PENDING cleanup when decision.json already published with decided_at_ms >= started
+        rev_id2 = 'rev_' + '55667788' * 3
+        started2 = now[0]
+        dossier.publish(ep_dir / 'reviews' / rev_id2, {
+            'input.md': b'rp',
+            'request.json': dossier.encode({'stage': 'hold_review', 'messages': []}),
+            'response.raw': b'ok',
+            'attempt.json': dossier.encode({'review_id': rev_id2, 'status': 'VALID'}),
+            'decision.json': dossier.encode({
+                'review_id': rev_id2, 'status': 'VALID', 'verdict': 'HOLD',
+                'requested_at_ms': started2 + 5, 'decided_at_ms': started2 + 500,
+                'public_reply': 'ok', 'trigger_categories': ['A'], 'triggers': batch,
+            }),
+            'review_snapshot.json': dossier.encode({'review_id': rev_id2, 'verdict': 'HOLD'}),
+        })
+        dossier.write(ep_dir / 'trigger_state.json', dossier.encode({
+            'revoked': False, 'inflight': True, 'inflight_started_at_ms': started2,
+            'inflight_batch': batch, 'pending': [],
+            'dispatched_signatures': {'A:CONDITION_TRIGGERED': {'severity': 3, 'at_ms': started2}},
+            'cooldown_until_ms': now[0] + 600_000,
+        }), replace=True)
+        now[0] += M
+        tracking.evaluate_hold_management(
+            d, hand, exported,
+            llm_config={'api_key': 'k', 'transport': lambda *a, **k: pytest.fail('RECOVERY_PENDING must not recall')},
+        )
+        assert dossier.read(ep_dir / 'trigger_state.json')['inflight'] is False
+
+        # 3) CAS ownership: stale worker finishing late must NOT overwrite newer inflight trigger_state.json
+        dossier.write(ep_dir / 'trigger_state.json', dossier.encode({
+            'revoked': False, 'inflight': False, 'pending': [], 'dispatched_signatures': {},
+        }), replace=True)
+        now[0] += 35 * M
+        exported['points'].append({'metrics': {'asof_ms': now[0] - M, 'spot_usd': 103_400.0, 'short_distance_pct': -0.39, 'flow_ready': False}})
+        d.event(ep_dir, dossier.identity('chk', now[0] - M), 'CONDITION_TRIGGERED',
+                dict(result={'rule': 'entry_not_returned'}), observed=now[0] - M, available=now[0])
+        newer_started = now[0] + 5_000
+
+        def hijacked_transport(*_a, **_k):
+            cur = dossier.read(ep_dir / 'trigger_state.json')
+            dossier.write(ep_dir / 'trigger_state.json', dossier.encode({
+                **cur, 'inflight': True, 'inflight_started_at_ms': newer_started,
+            }), replace=True)
+            raise TimeoutError('stale worker timed out after takeover')
+
+        res_cas = tracking.evaluate_hold_management(
+            d, hand, exported,
+            llm_config={'api_key': 'k', 'model': 'm', 'transport': hijacked_transport},
+        )
+        assert res_cas['action'] == 'FAILED'
+        final_st = dossier.read(ep_dir / 'trigger_state.json')
+        assert final_st['inflight'] is True
+        assert final_st['inflight_started_at_ms'] == newer_started
+
+        # 4) CAS ownership when stale worker SUCCEEDS late after takeover -> publishes review but preserves newer inflight
+        dossier.write(ep_dir / 'trigger_state.json', dossier.encode({
+            'revoked': False, 'inflight': False, 'pending': [], 'dispatched_signatures': {},
+        }), replace=True)
+        now[0] += 35 * M
+        exported['points'].append({'metrics': {'asof_ms': now[0] - M, 'spot_usd': 103_450.0, 'short_distance_pct': -0.44, 'flow_ready': False}})
+        d.event(ep_dir, dossier.identity('chk', now[0] - M), 'CONDITION_TRIGGERED',
+                dict(result={'rule': 'entry_not_returned'}), observed=now[0] - M, available=now[0])
+        takeover_started = now[0] + 9_000
+
+        def hijacked_success_transport(*_a, **_k):
+            cur = dossier.read(ep_dir / 'trigger_state.json')
+            dossier.write(ep_dir / 'trigger_state.json', dossier.encode({
+                **cur, 'inflight': True, 'inflight_started_at_ms': takeover_started,
+            }), replace=True)
+            return {'choices': [{'finish_reason': 'stop', 'message': {
+                'content': '## HOLD\n\n继续观察。\n<HOLD_REVIEW_JSON>{"verdict":"HOLD","affected_conditions":[],"public_reply":"继续观察","key_facts":["k"]}</HOLD_REVIEW_JSON>'
+            }}]}
+
+        res_cas_ok = tracking.evaluate_hold_management(
+            d, hand, exported,
+            llm_config={'api_key': 'k', 'model': 'm', 'transport': hijacked_success_transport},
+        )
+        assert res_cas_ok['action'] == 'REVIEWED'
+        assert dossier.read(ep_dir / 'trigger_state.json')['inflight_started_at_ms'] == takeover_started
+        now[0] += M
+        res_cas_next = tracking.evaluate_hold_management(
+            d, hand, exported,
+            llm_config={'api_key': 'k', 'model': 'm', 'transport': lambda *a, **k: pytest.fail('takeover inflight must stay active')},
+        )
+        assert res_cas_next['action'] == 'NO_TRIGGER'
+        assert dossier.read(ep_dir / 'trigger_state.json')['inflight'] is True
+        assert dossier.read(ep_dir / 'trigger_state.json')['inflight_started_at_ms'] == takeover_started
+
+        # 5) Malformed orphaned reply.json marks PARSE_FAILED and suppresses stale_inflight re-dispatch
+        wb2, d2, hand2, now2, _ = sample(tmp_path / 'mal_orphan', 'Accept / Call')
+        with serving(wb2) as base2:
+            svc2 = post(base2, wb2)
+            rec2 = tracking.link(d2, hand2, svc2, RULE)
+            ep2 = hand2.parent.parent / 'episodes' / rec2['origin']['dossier_episode_id']
+            now2[0] += 5 * M
+            exp2 = svc2('export', dict(dossier_id=hand2.parent.parent.name, hand_id=hand2.name))
+            exp2['points'] = [
+                {'metrics': {'asof_ms': now2[0] - 2 * M, 'spot_usd': 101_000.0, 'short_distance_pct': 0.98, 'flow_ready': False}},
+                {'metrics': {'asof_ms': now2[0] - M, 'spot_usd': 101_400.0, 'short_distance_pct': 0.58, 'flow_ready': False}},
+            ]
+            mal_rev_id = 'rev_' + '99aabbcc' * 3
+            mal_started = now2[0]
+            now2[0] = mal_started + 30 * M
+            b_batch = [{'category': 'B', 'code': 'BUFFER_EROSION', 'signature': 'BUFFER_EROSION',
+                        'severity': 1, 'observed_at_ms': mal_started - M, 'summary_cn': 'erosion'}]
+            dossier.write(ep2 / 'trigger_state.json', dossier.encode({
+                'revoked': False, 'inflight': True, 'inflight_started_at_ms': mal_started,
+                'inflight_batch': b_batch, 'pending': [], 'dispatched_signatures': {},
+            }), replace=True)
+            mal_call_dir = ep2 / 'review_calls' / mal_rev_id
+            dossier.publish(mal_call_dir, {
+                'input.md': b'orphan malformed input',
+                'request.json': dossier.encode(review.build_hold_review_request_payload(
+                    'orphan malformed input', model='m-orphan', requested_at_ms=mal_started + 5,
+                )),
+                'reply.json': dossier.encode({
+                    'text': 'truncated without tag',
+                    'model': 'm-orphan',
+                    'decided_at_ms': mal_started + 1_000,
+                }),
+            })
+            res_mal = tracking.evaluate_hold_management(
+                d2, hand2, exp2,
+                llm_config={'api_key': 'k', 'model': 'm-orphan',
+                            'transport': lambda *a, **k: pytest.fail('malformed orphan must enter backoff without immediate re-call')},
+            )
+            assert res_mal['action'] == 'QUEUED'
+            assert (mal_call_dir / 'parse_failed.json').is_file()
+            mal_st = dossier.read(ep2 / 'trigger_state.json')
+            assert mal_st['inflight'] is False and mal_st['backoff_until_ms'] is not None
+            assert any(
+                (dossier.read(p).get('body') or {}).get('status') == 'PARSE_FAILED'
+                for p in (ep2 / 'events').glob('*.json')
+            )
+            assert not any(
+                (dossier.read(p).get('body') or {}).get('error') == 'inflight_stale_recovered'
+                for p in (ep2 / 'events').glob('*.json')
+            )
+
+
+def test_pre_request_existing_episode_and_sync_open_request_isolation(tmp_path, monkeypatch):
+    wb, d, hand, now, _ = sample(tmp_path, 'Accept / Call')
+    proof = tracking.accepted(hand)
+    ep_dir = hand.parent.parent / 'episodes' / proof['origin']['dossier_episode_id']
+    ep_dir.mkdir(parents=True, exist_ok=True)
+    res_block = tracking.link(d, hand, lambda *a, **k: pytest.fail('must not call service'), RULE)
+    assert res_block == {'state': 'LOCK_BLOCKED', 'reason': 'existing_unlinked_dossier_episode'}
+    assert dossier.read(hand / 'tracking' / 'blocked.json')['reason'] == 'existing_unlinked_dossier_episode'
+    assert dossier.read(hand / 'tracking' / 'blocked.json')['terminal'] is True
+    assert tracking._link_blocked(hand / 'tracking')['reason'] == 'existing_unlinked_dossier_episode'
+
+
+def test_audit_index_returns_more_than_40_hands(tmp_path):
+    clk = Clock(SLOT + 45 * dossier.DAY + M)
+    d = dossier.Dossiers(tmp_path, clock=clk)
+    p = plan()
+    for i in range(45):
+        slot_i = SLOT + i * dossier.DAY
+        d.expect(slot_i + p['expiry_offset_ms'], 'SCHEDULED', plan=p, slot=slot_i)
+    idx = tracking.audit_index(tmp_path, clk(), {})
+    assert len(idx['hands']) == 45
+
+
+def test_hold_orphan_ignores_superseded_dispatch_and_recovers_non_auto_revoke(tmp_path):
+    # 1. Stale superseded orphan (requested_at_ms=T1 < T2) arriving late (decided_at_ms>=T2) must NOT clear T2 inflight
+    wb, d, hand, now, _ = sample(tmp_path / 'stale_orphan', 'Accept / Call')
+    with serving(wb) as base:
+        svc = post(base, wb)
+        rec = tracking.link(d, hand, svc, RULE)
+        ep = hand.parent.parent / 'episodes' / rec['origin']['dossier_episode_id']
+        now[0] += 5 * M
+        exported = svc('export', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
+        exported['points'] = [
+            {'metrics': {'asof_ms': now[0] - 2 * M, 'spot_usd': 100_100.0, 'short_distance_pct': 2.8, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now[0] - M, 'spot_usd': 100_200.0, 'short_distance_pct': 2.7, 'flow_ready': False}},
+        ]
+        t1 = now[0]
+        t2 = t1 + 10 * M
+        now[0] = t2 + M  # within stale_inflight_ms of t2
+        stale_rev_id = 'rev_' + '11aa22bb' * 3
+        dossier.publish(ep / 'review_calls' / stale_rev_id, {
+            'input.md': b'stale input',
+            'request.json': dossier.encode(review.build_hold_review_request_payload(
+                'stale input', model='m-stale', requested_at_ms=t1,
+            )),
+            'reply.json': dossier.encode({
+                'text': '## HOLD\n\n继续持有。\n<HOLD_REVIEW_JSON>{"verdict":"HOLD","affected_conditions":[],"public_reply":"ok","key_facts":["k"]}</HOLD_REVIEW_JSON>',
+                'model': 'm-stale',
+                'decided_at_ms': t2 + 1_000,
+            }),
+        })
+        dossier.write(ep / 'trigger_state.json', dossier.encode({
+            'revoked': False,
+            'inflight': True,
+            'inflight_started_at_ms': t2,
+            'inflight_batch': [],
+            'pending': [],
+            'dispatched_signatures': {},
+        }), replace=True)
+        res_keep = tracking.evaluate_hold_management(
+            d, hand, exported,
+            llm_config={'api_key': 'k', 'model': 'm-stale', 'transport': lambda *a, **k: pytest.fail('must remain coalesced')},
+        )
+        assert res_keep['action'] == 'NO_TRIGGER'
+        assert not (ep / 'reviews' / stale_rev_id).exists()
+        assert dossier.read(ep / 'trigger_state.json')['inflight'] is True
+        assert dossier.read(ep / 'trigger_state.json')['inflight_started_at_ms'] == t2
+
+    # 2. Orphan verified REVOKE when _can_auto_shadow_exit=False (execution_allowed=True) returns ALREADY_REVOKED
+    wb2, d2, hand2, now2, _ = sample(tmp_path / 'exec_orphan', 'Accept / Call')
+    with serving(wb2) as base2:
+        svc2 = post(base2, wb2)
+        rec2 = tracking.link(d2, hand2, svc2, RULE)
+        link_path2 = hand2 / 'tracking' / 'link.json'
+        dossier.write(link_path2, dossier.encode({**rec2, 'execution_allowed': True}), replace=True)
+        ep2 = hand2.parent.parent / 'episodes' / rec2['origin']['dossier_episode_id']
+        now2[0] += 5 * M
+        exported2 = svc2('export', dict(dossier_id=hand2.parent.parent.name, hand_id=hand2.name))
+        exported2['points'] = [
+            {'metrics': {'asof_ms': now2[0] - 2 * M, 'spot_usd': 103_200.0, 'short_distance_pct': -0.19, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now2[0] - M, 'spot_usd': 103_400.0, 'short_distance_pct': -0.39, 'flow_ready': False}},
+        ]
+        d2.event(ep2, dossier.identity('chk', now2[0] - M), 'CONDITION_TRIGGERED',
+                 dict(result={'rule': 'entry_not_returned'}), observed=now2[0] - M, available=now2[0])
+        started_ex = now2[0]
+        now2[0] = started_ex + 30 * M
+        ex_rev_id = 'rev_' + '33cc44dd' * 3
+        dossier.write(ep2 / 'trigger_state.json', dossier.encode({
+            'revoked': False,
+            'inflight': True,
+            'inflight_started_at_ms': started_ex,
+            'inflight_batch': [{'category': 'A', 'code': 'CONDITION_TRIGGERED', 'signature': f'CONDITION_TRIGGERED:{started_ex - M}', 'severity': 3, 'observed_at_ms': started_ex - M}],
+            'pending': [],
+            'dispatched_signatures': {},
+        }), replace=True)
+        dossier.publish(ep2 / 'review_calls' / ex_rev_id, {
+            'input.md': b'revoke input',
+            'request.json': dossier.encode(review.build_hold_review_request_payload(
+                'revoke input', model='m-exec', requested_at_ms=started_ex + 5,
+            )),
+            'reply.json': dossier.encode({
+                'text': '## REVOKE\n\n边界已触发，撤销。\n<HOLD_REVIEW_JSON>{"verdict":"REVOKE","program_triggered":true,"affected_conditions":["M1"],"public_reply":"撤销","key_facts":["trigger"]}</HOLD_REVIEW_JSON>',
+                'model': 'm-exec',
+                'decided_at_ms': started_ex + 1_000,
+            }),
+        })
+        res_ex = tracking.evaluate_hold_management(
+            d2, hand2, exported2,
+            llm_config={'api_key': 'k', 'model': 'm-exec', 'transport': lambda *a, **k: pytest.fail('orphan REVOKE must recover cleanly')},
+        )
+        assert res_ex == {
+            'action': 'ALREADY_REVOKED',
+            'recovered': True,
+            'review_id': ex_rev_id,
+            'exit_intent_only': True,
+        }
+        assert not (hand2 / 'tracking' / 'shadow_exit.json').exists()
 

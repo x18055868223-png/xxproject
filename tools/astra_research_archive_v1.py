@@ -31,6 +31,7 @@ import math
 import os
 import time
 import urllib.parse
+import zlib
 from contextlib import contextmanager
 import urllib.request
 from pathlib import Path
@@ -93,6 +94,7 @@ INQUIRY_HOURS_UTC = (2, 14)
 INQUIRY_WINDOW_MS = 45 * 60_000
 INQUIRY_TIMEOUT_S = 240
 PLAYER_TIMEOUT_S = 300
+STALE_PLAYER_RUNNING_MS = 1800_000
 NEW_CONTRACT_INQUIRY_MS = 2 * HOUR_MS   # a contract with no questions yet gets them in its first hours
 NEW_CONTRACT_INQUIRY_DAILY_MAX = 8       # unscheduled runs per UTC day, both sides together
 OUTCOME_DELAY_MS = 10 * 60_000
@@ -903,6 +905,28 @@ def _player_row(decisions_dir: Path, expiry_ms: int, side: str, rnd: str) -> dic
     return found
 
 
+def _player_slot_blocked(done: Mapping[str, Any], state: Mapping[str, Any], slot_key: str, now_ms: int) -> bool:
+    """Return True if slot is finished or has an active non-stale 'running' marker."""
+    if slot_key not in done:
+        return False
+    entry = done.get(slot_key)
+    if entry == "running":
+        started_at = state.get("last_tick_ms")
+        return (
+            isinstance(started_at, int)
+            and not isinstance(started_at, bool)
+            and 0 <= now_ms - started_at < STALE_PLAYER_RUNNING_MS
+        )
+    if isinstance(entry, Mapping) and entry.get("status") == "running":
+        started_at = entry.get("started_at_ms")
+        return (
+            isinstance(started_at, int)
+            and not isinstance(started_at, bool)
+            and 0 <= now_ms - started_at < STALE_PLAYER_RUNNING_MS
+        )
+    return True
+
+
 def run_players(archive: "Archive", state: dict[str, Any], *, now_ms: int,
                 run_player: Callable[[Mapping[str, Any], str, Mapping[str, Any] | None], Mapping[str, Any] | None],
                 report: dict[str, Any]) -> int:
@@ -910,18 +934,35 @@ def run_players(archive: "Archive", state: dict[str, Any], *, now_ms: int,
     let through (selection.eligible), at round 1 (02:00 UTC, about 30 h left) or round 2 (14:00 UTC,
     about 18 h left); one call per case, marked running before the call; in round 2 not after a
     round-1 accept of the same expiry and side. Each decision is one decision_event@0.2 row,
-    actor player, source shadow. A slot left over by a slow tick is taken by the next tick inside
-    the 45-minute window."""
+    actor player, source shadow. A slot left over by a slow tick or stale running marker is taken
+    by the next tick inside the 45-minute window."""
     if not (_utc(now_ms).hour in INQUIRY_HOURS_UTC and now_ms % HOUR_MS < INQUIRY_WINDOW_MS):
         return 0
     done = state.setdefault("player", {})
     hour = _utc(now_ms).strftime("%Y-%m-%dT%H")
     written = 0
     for slot_key, info in sorted(state.get("cases", {}).items()):
-        if not slot_key.startswith(hour + "|") or slot_key in done:
+        if not slot_key.startswith(hour + "|") or _player_slot_blocked(done, state, slot_key, now_ms):
             continue
         side = slot_key.split("|")[1]
-        case = json.loads(gzip.decompress((archive.root / info["path"]).read_bytes()))
+        rel_path = info.get("path") if isinstance(info, Mapping) else None
+        try:
+            if not isinstance(rel_path, str) or not rel_path:
+                raise ValueError("missing case path")
+            case = json.loads(gzip.decompress((archive.root / rel_path).read_bytes()))
+            if not isinstance(case, Mapping):
+                raise ValueError("case payload is not an object")
+        except (OSError, EOFError, zlib.error, ValueError, TypeError, UnicodeError) as exc:
+            report.setdefault("errors", []).append({
+                "step": "player_case_read",
+                "slot_key": slot_key,
+                "path": rel_path,
+                "error": type(exc).__name__,
+                "detail": str(exc)[:160],
+            })
+            done[slot_key] = "corrupt_case"
+            archive.save_state(state)
+            continue
         sel = case.get("selection") if isinstance(case.get("selection"), Mapping) else {}
         contract = case_entry(case, "L1.contract") or {}
         expiry, built = contract.get("expiry_ms"), (case.get("build") or {}).get("built_at_ms")
@@ -942,6 +983,12 @@ def run_players(archive: "Archive", state: dict[str, Any], *, now_ms: int,
         if not isinstance(asof, int) or built - asof > research_scorecards.selection.QUOTE_STALE_MS:
             done[slot_key] = "stale_quote"
             continue
+        if slot_key in done:
+            existing_row = _player_row(archive.root / "decisions", expiry, side, rnd)
+            if existing_row is not None and existing_row.get("case_id") == case.get("case_id"):
+                done[slot_key] = ((existing_row.get("detail") or {}).get("status") or "OK")
+                archive.save_state(state)
+                continue
         previous = None
         if rnd == "r2":
             first = _player_row(archive.root / "decisions", expiry, side, "r1")
@@ -951,7 +998,7 @@ def run_players(archive: "Archive", state: dict[str, Any], *, now_ms: int,
                 if first.get("action") == "accept":
                     done[slot_key] = "accepted_in_round_1"
                     continue
-        done[slot_key] = "running"
+        done[slot_key] = {"status": "running", "started_at_ms": now_ms}
         archive.save_state(state)
         try:
             result = run_player(case, rnd, previous)
@@ -991,7 +1038,12 @@ def player_canary(root: Path, *, limit: int, run_player: Callable[[Mapping[str, 
     (their round is read from the hours left; their 本轮 block has no pass cost), alternating sides."""
     eligible: list[tuple[int, Path, str, str]] = []
     for path in sorted((root / "cases").glob("*/*.json.gz"), reverse=True):
-        case = json.loads(gzip.decompress(path.read_bytes()))
+        try:
+            case = json.loads(gzip.decompress(path.read_bytes()))
+            if not isinstance(case, Mapping):
+                continue
+        except (OSError, EOFError, zlib.error, ValueError, TypeError, UnicodeError):
+            continue
         if ((case.get("selection") or {}).get("eligible")) is not True:
             continue
         expiry = (case_entry(case, "L1.contract") or {}).get("expiry_ms")
@@ -1589,6 +1641,8 @@ def tick(archive: Archive, *, now_ms: int, view: Mapping[str, Any] | None,
     # trimmed set would rewrite the oldest ones forever (decisions are few: tens a month)
     for name in ("cases", "inquiry"):   # slot keys sort by hour; keep the recent ones
         state[name] = dict(sorted(state[name].items())[-500:])
+    if isinstance(state.get("player"), Mapping):
+        state["player"] = dict(sorted(state["player"].items())[-1500:])
     state["closed_recent"] = {k: v for k, v in state["closed_recent"].items()
                               if now_ms - int(v["expiry_ms"]) <= INDEX_KEEP_CLOSED_MS}
     state["last_tick_ms"] = now_ms

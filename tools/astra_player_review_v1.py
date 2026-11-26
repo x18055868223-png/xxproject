@@ -7,9 +7,10 @@ import hashlib
 import inspect
 import json
 import math
+import os
 import re
 import socket
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 import urllib.error
 
 try:
@@ -289,6 +290,15 @@ def _invoke_transport(poster: Any, api_key: str, model: str, request_body: dict[
     return poster(*args, endpoint=url)
 
 
+def _resolve_stream_flag(stream: bool | None = None, *, transport: Any = None) -> bool:
+    if stream is not None:
+        return bool(stream)
+    if transport is not None:
+        return False
+    raw = str(os.environ.get("ASTRA_PLAYER_STREAM", "1")).strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def call_chat_llm(
     messages: Sequence[Mapping[str, Any]],
     *,
@@ -300,6 +310,8 @@ def call_chat_llm(
     max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
+    stream: bool | None = None,
+    on_partial: Callable[[dict[str, Any]], None] | None = None,
     transport: Any = None,
     budget: Any = None,
     budget_role: str = "astra_player",
@@ -310,16 +322,24 @@ def call_chat_llm(
     if not api_key and transport is None:
         raise RuntimeError("LLM_API_KEY is required")
     url = _normalize_endpoint(endpoint)
+    eff_stream = _resolve_stream_flag(stream, transport=transport)
     request_body: dict[str, Any] = {
         "model": model,
         "messages": [dict(m) for m in messages],
-        "stream": False,
+        "stream": eff_stream,
         "max_tokens": int(max_tokens),
         "thinking": {"type": "enabled" if thinking else "disabled"},
     }
     if reasoning_effort and str(reasoning_effort).strip():
         request_body["reasoning_effort"] = str(reasoning_effort).strip()
     poster = transport or signal_llm_review._post_chat_completion
+    wire_request_body = dict(request_body)
+    if (
+        on_partial is not None
+        and eff_stream
+        and (transport is None or transport is signal_llm_review._post_chat_completion)
+    ):
+        wire_request_body["_local_on_partial"] = on_partial
     total_attempts = 1 + max(0, int(retries))
     response: Any = None
     attempts_used = 0
@@ -336,10 +356,28 @@ def call_chat_llm(
             )
             res_id = res.get("reservation_id") if isinstance(res, Mapping) else None
         try:
-            response = _invoke_transport(poster, api_key, model, request_body, timeout_s, url)
+            response = _invoke_transport(poster, api_key, model, wire_request_body, timeout_s, url)
         except Exception as exc:
+            partial_resp = getattr(exc, "partial_response", None)
+            if partial_resp is None and getattr(exc, "__cause__", None) is not None:
+                partial_resp = getattr(exc.__cause__, "partial_response", None)
+                if partial_resp is not None:
+                    try:
+                        setattr(exc, "partial_response", partial_resp)
+                    except Exception:
+                        pass
+            if callable(on_partial) and isinstance(partial_resp, Mapping):
+                try:
+                    on_partial(dict(partial_resp))
+                except Exception:
+                    pass
+            partial_usage = (
+                signal_llm_review._response_usage(dict(partial_resp))
+                if isinstance(partial_resp, Mapping)
+                else {}
+            )
             if budget is not None and not isinstance(exc, signal_llm_review.DailyBudgetExceeded):
-                budget.complete(res_id, _budget_error_category(exc), usage={})
+                budget.complete(res_id, _budget_error_category(exc), usage=partial_usage)
             if (
                 isinstance(exc, signal_llm_review.DailyBudgetExceeded)
                 or attempt + 1 >= total_attempts
@@ -373,19 +411,24 @@ def call_chat_llm(
         except (TypeError, ValueError):
             http_status = 200
         usage = signal_llm_review._response_usage(dict(response))
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("LLM response missing choices")
+        response_record = dict(
+            text=text, usage=usage, model=str(response.get("model") or model),
+            http_status=http_status, finish_reason=finish_reason,
+            endpoint=url, reasoning_effort=reasoning_effort,
+        )
+        if not text.strip():
+            if finish_reason == "length":
+                if on_response is not None:
+                    on_response(response_record)
+                raise ValueError("LLM response content is empty (finish_reason=length)")
+            raise ValueError("LLM response content is empty")
         if on_response is not None:
-            on_response(dict(text=text, usage=usage, model=str(response.get("model") or model),
-                             http_status=http_status, finish_reason=finish_reason,
-                             endpoint=url, reasoning_effort=reasoning_effort))
+            on_response(response_record)
     finally:
         if budget is not None:
             budget.complete(res_id, "HTTP_OK", usage=usage)
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("LLM response missing choices")
-    if not text.strip():
-        if finish_reason == "length":
-            raise ValueError("LLM response content is empty (finish_reason=length)")
-        raise ValueError("LLM response content is empty")
     reasoning_text = message.get("reasoning_content")
     return {
         "text": text.strip(),
@@ -452,7 +495,7 @@ def _strip_banned_keys(value: Any) -> Any:
         return {
             k: _strip_banned_keys(v)
             for k, v in value.items()
-            if str(k) not in _BANNED_REQUEST_KEYS
+            if str(k) not in _BANNED_REQUEST_KEYS and not str(k).startswith("_local_")
         }
     if isinstance(value, (list, tuple)):
         return [_strip_banned_keys(item) for item in value]
@@ -541,7 +584,7 @@ def build_initial_request_payload(
     max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
-    stream: bool = False,
+    stream: bool | None = None,
     endpoint: str | None = None,
     packet_hash: str | None = None,
     requested_at_ms: int | None = None,
@@ -584,7 +627,7 @@ def build_initial_request_payload(
         max_tokens=max_tokens,
         thinking=thinking,
         reasoning_effort=reasoning_effort,
-        stream=stream,
+        stream=_resolve_stream_flag(stream),
         endpoint=endpoint,
         packet_hash=packet_hash,
         requested_at_ms=requested_at_ms,
@@ -615,7 +658,7 @@ def build_hold_review_request_payload(
     max_tokens: int = 32768,
     thinking: bool = True,
     reasoning_effort: str | None = None,
-    stream: bool = False,
+    stream: bool | None = None,
     endpoint: str | None = None,
     packet_hash: str | None = None,
     requested_at_ms: int | None = None,
@@ -633,7 +676,7 @@ def build_hold_review_request_payload(
         max_tokens=max_tokens,
         thinking=thinking,
         reasoning_effort=reasoning_effort,
-        stream=stream,
+        stream=_resolve_stream_flag(stream),
         endpoint=endpoint,
         packet_hash=packet_hash,
         requested_at_ms=requested_at_ms,
@@ -756,6 +799,8 @@ def decide_initial_hand(
     retries: int | None = None,
     max_tokens: int = 32768,
     reasoning_effort: str | None = None,
+    stream: bool | None = None,
+    on_partial: Callable[[dict[str, Any]], None] | None = None,
     transport: Any = None,
     budget: Any = None,
     budget_role: str = "astra_player_initial",
@@ -765,6 +810,7 @@ def decide_initial_hand(
     strict_clock_5m: bool | None = None,
 ) -> dict[str, Any]:
     """Send frozen input.md to the LLM, parse public Chinese prose + verbatim annotation + condition_plan."""
+    eff_stream = _resolve_stream_flag(stream, transport=transport)
     req_payload = build_initial_request_payload(
         input_md_text,
         contract_pair=contract_pair,
@@ -773,6 +819,7 @@ def decide_initial_hand(
         input_profile=input_profile,
         max_tokens=max_tokens,
         reasoning_effort=reasoning_effort,
+        stream=eff_stream,
         endpoint=endpoint,
         packet_hash=packet_hash,
         fidelity="EXACT",
@@ -787,6 +834,8 @@ def decide_initial_hand(
         retries=effective_retries,
         max_tokens=max_tokens,
         reasoning_effort=reasoning_effort,
+        stream=eff_stream,
+        on_partial=on_partial,
         transport=transport,
         budget=budget,
         budget_role=budget_role,
@@ -1848,6 +1897,7 @@ def _detect_category_c(
         "signature": sig,
         "severity": 2,
         "observed_at_ms": obs_ms,
+        "evidence_at_ms": obs_ms,
         "facts": {
             "old_pin": old_pin,
             "new_pin": new_pin,
@@ -2220,14 +2270,24 @@ def evaluate_review_gate(
         return deny("COALESCED", "已有在途复核请求，新事件已并入待合并队列。")
     if not pending:
         return deny(empty_skip_code, empty_skip_reason)
-    backoff_until = _int(state.get("backoff_until_ms"))
-    if backoff_until is not None and now_ms < backoff_until:
-        return deny("COOLDOWN", "处于失败重试退避窗口内，暂缓调度。")
 
     priority_a_triggers = [t for t in pending if _is_priority_a_trigger(t)]
-    cond_triggers = [t for t in priority_a_triggers if t.get("code") == "CONDITION_TRIGGERED"]
     is_priority_a = bool(priority_a_triggers)
-    priority_a_bypass = bool(cond_triggers)
+    priority_a_bypass = is_priority_a
+
+    backoff_until = _int(state.get("backoff_until_ms"))
+    backoff_reason = state.get("backoff_reason")
+    circuit_open = bool(state.get("circuit_open"))
+    if not force:
+        if circuit_open and (backoff_until is None or now_ms < backoff_until):
+            return deny("COOLDOWN", "连续失败已触发熔断冷却窗口，暂缓调度。", is_priority_a=is_priority_a)
+        if backoff_until is not None and now_ms < backoff_until:
+            if not (
+                is_priority_a
+                and backoff_reason != "DAILY_BUDGET_EXHAUSTED"
+                and not circuit_open
+            ):
+                return deny("COOLDOWN", "处于失败重试退避窗口内，暂缓调度。", is_priority_a=is_priority_a)
 
     if not data_verified and not is_priority_a and not force:
         return deny("DATA_UNVERIFIED", "关键事实数据未核验，暂缓自动调用模型。", is_priority_a=is_priority_a)
@@ -2298,6 +2358,10 @@ def schedule_review_action(
         "last_trigger_ms": _int(raw.get("last_trigger_ms")),
         "cooldown_until_ms": _int(raw.get("cooldown_until_ms")),
         "backoff_until_ms": _int(raw.get("backoff_until_ms")),
+        "backoff_reason": raw.get("backoff_reason"),
+        "consecutive_failures": int(raw.get("consecutive_failures") or 0),
+        "last_failure_kind": raw.get("last_failure_kind"),
+        "circuit_open": bool(raw.get("circuit_open", False)),
         "last_review_at_ms": _int(raw.get("last_review_at_ms")),
         "dispatched_signatures": deepcopy(dict(raw.get("dispatched_signatures") or {})),
         "ordinary_review_count": int(raw.get("ordinary_review_count") or 0),
@@ -2432,9 +2496,17 @@ def complete_review_action(
     verdict: str | None = None,
     cooldown_ms: int = DEFAULT_COOLDOWN_MS,
     retry_backoff_ms: int = RETRY_BACKOFF_MS,
+    expected_inflight_started_at_ms: int | None = None,
+    failure_kind: str | None = None,
+    max_consecutive_failures: int = 3,
 ) -> dict[str, Any]:
     """Record completion or failure of an inflight review call on scheduler state."""
     state = deepcopy(dict(scheduler_state))
+    if expected_inflight_started_at_ms is not None:
+        cur_started = _int(state.get("inflight_started_at_ms"))
+        expected_started = _int(expected_inflight_started_at_ms)
+        if not state.get("inflight") or cur_started is None or expected_started is None or cur_started != expected_started:
+            return state
     batch = [deepcopy(dict(t)) for t in (state.pop("inflight_batch", None) or []) if isinstance(t, Mapping)]
     state["inflight"] = False
     state["inflight_started_at_ms"] = None
@@ -2442,6 +2514,10 @@ def complete_review_action(
         state["last_review_at_ms"] = now_ms
         state["cooldown_until_ms"] = now_ms + int(cooldown_ms)
         state["backoff_until_ms"] = None
+        state["backoff_reason"] = None
+        state["consecutive_failures"] = 0
+        state["last_failure_kind"] = None
+        state["circuit_open"] = False
         if not any(_is_priority_a_trigger(t) for t in batch):
             state["ordinary_review_count"] = int(state.get("ordinary_review_count") or 0) + 1
         if str(verdict or "").strip().upper() == "REVOKE":
@@ -2458,7 +2534,25 @@ def complete_review_action(
                 seen_pending.add(sig_key)
         if pending and state.get("pending_since_ms") is None:
             state["pending_since_ms"] = max(0, now_ms - MAX_DEBOUNCE_MS)
-        state["backoff_until_ms"] = now_ms + int(retry_backoff_ms)
+        consecutive = int(state.get("consecutive_failures") or 0) + 1
+        state["consecutive_failures"] = consecutive
+        state["last_failure_kind"] = failure_kind
+        threshold = max(1, int(max_consecutive_failures))
+        base_backoff_ms = max(0, int(retry_backoff_ms))
+        if failure_kind == "DAILY_BUDGET_EXHAUSTED":
+            state["backoff_reason"] = "DAILY_BUDGET_EXHAUSTED"
+            state["circuit_open"] = bool(state.get("circuit_open", False))
+            backoff_ms = base_backoff_ms
+        elif consecutive >= threshold:
+            state["circuit_open"] = True
+            state["backoff_reason"] = "CIRCUIT_OPEN"
+            exp = min(6, consecutive - threshold + 1)
+            backoff_ms = min(6 * 3_600_000, base_backoff_ms * (2 ** exp))
+        else:
+            state["circuit_open"] = False
+            state["backoff_reason"] = str(failure_kind) if failure_kind else "TRANSIENT_ERROR"
+            backoff_ms = base_backoff_ms
+        state["backoff_until_ms"] = now_ms + backoff_ms
     return state
 
 

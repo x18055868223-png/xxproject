@@ -2,7 +2,7 @@
 Description=Run AI Player daily formal deal with bounded retries inside 16:00-16:30 UTC window
 
 [Timer]
-OnCalendar=*-*-* 16:02,07,12,17:00 UTC
+OnCalendar=*-*-* 16:02,07,12,17,22,27:00 UTC
 AccuracySec=15s
 Persistent=true
 

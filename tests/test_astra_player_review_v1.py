@@ -1,7 +1,12 @@
 """Tests for Track 2: short buyback quote, flow/EM metrics, 4-category triggers, debounce scheduler, and hold review AI protocol."""
+from contextlib import contextmanager
 from copy import deepcopy
 import datetime as dt
+import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import threading
+import time
 import urllib.error
 
 import pytest
@@ -1468,6 +1473,634 @@ def test_dossier_respond_atomically_persists_request_json_and_preserves_compat(t
         )
 
 
+@contextmanager
+def _sse_test_server(handler_fn):
+    captured = []
+    stop_event = threading.Event()
 
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format, *args):
+            del format, args
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            raw_body = self.rfile.read(length) if length > 0 else b""
+            captured.append({
+                "path": self.path,
+                "headers": {k.lower(): v for k, v in self.headers.items()},
+                "body": json.loads(raw_body.decode("utf-8")) if raw_body else None,
+            })
+            try:
+                handler_fn(self, stop_event)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", captured, stop_event
+    finally:
+        stop_event.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+
+
+def _send_chunk(handler, data: bytes):
+    handler.wfile.write(f"{len(data):x}\r\n".encode("ascii") + data + b"\r\n")
+    handler.wfile.flush()
+
+
+def test_post_chat_completion_sse_streaming_and_json_fallback():
+    # 1. Chunked SSE with split multi-byte UTF-8 Chinese, keepalive, reasoning_content, usage, [DONE],
+    #    and a noisy on_partial callback that raises without breaking the stream.
+    chinese_text = "评估完成：保持继续持有。"
+    chinese_bytes = chinese_text.encode("utf-8")
+    # Split right inside a 3-byte UTF-8 Chinese character across two separate SSE lines/chunks
+    chunk_a = b'data: ' + json.dumps({
+        "id": "chatcmpl-sse-1",
+        "model": "deepseek-v4-pro",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "先核对余量。"}, "finish_reason": None}],
+    }, ensure_ascii=False).encode("utf-8") + b"\n\n"
+    full_c_line = b'data: ' + json.dumps({
+        "id": "chatcmpl-sse-1",
+        "model": "deepseek-v4-pro",
+        "choices": [{"index": 0, "delta": {"content": chinese_text}, "finish_reason": None}],
+    }, ensure_ascii=False).encode("utf-8") + b"\n\n"
+    split_pos = full_c_line.index(chinese_bytes[:3]) + 1  # cuts mid UTF-8 sequence!
+
+    def sse_ok_handler(handler, _stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        _send_chunk(handler, chunk_a)
+        _send_chunk(handler, b": keepalive\n\n")
+        _send_chunk(handler, full_c_line[:split_pos])
+        _send_chunk(handler, full_c_line[split_pos:])
+        _send_chunk(handler, (
+            b'data: {"id":"chatcmpl-sse-1","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+            b'"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28}}\n\n'
+            b'data: [DONE]\n\n'
+        ))
+        handler.wfile.write(b"0\r\n\r\n")
+        handler.wfile.flush()
+
+    partials = []
+
+    def noisy_on_partial(snap):
+        partials.append(deepcopy(snap))
+        if len(partials) == 1:
+            raise RuntimeError("callback error should not kill stream")
+
+    with _sse_test_server(sse_ok_handler) as (base_url, captured, _):
+        resp = signal_llm_review._post_chat_completion(
+            "secret-k",
+            "deepseek-v4-pro",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "_local_on_partial": noisy_on_partial,
+                "_local_stream_idle_s": 2.0,
+            },
+            timeout=5.0,
+            endpoint=base_url,
+        )
+    assert len(captured) == 1
+    assert captured[0]["headers"]["accept"] == "text/event-stream"
+    assert "_local_on_partial" not in captured[0]["body"]
+    assert "_local_stream_idle_s" not in captured[0]["body"]
+    assert resp["http_status"] == 200
+    assert resp["id"] == "chatcmpl-sse-1"
+    assert resp["model"] == "deepseek-v4-pro"
+    assert resp["choices"][0]["finish_reason"] == "stop"
+    assert resp["choices"][0]["message"]["role"] == "assistant"
+    assert resp["choices"][0]["message"]["content"] == chinese_text
+    assert resp["choices"][0]["message"]["reasoning_content"] == "先核对余量。"
+    assert resp["usage"] == {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+    assert resp["chunk_count"] == 3
+    assert resp["bytes_received"] > 0
+    assert len(partials) >= 2
+    assert partials[-1]["choices"][0]["message"]["content"] == chinese_text
+
+    # 2. application/json fallback despite stream=True + stream=False behavior preserved
+    def json_handler(handler, _stop):
+        payload = json.dumps({
+            "id": "chatcmpl-json-1",
+            "model": "deepseek-chat",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "json fallback"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        }).encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+        handler.wfile.flush()
+
+    with _sse_test_server(json_handler) as (base_url, captured, _):
+        resp_fb = signal_llm_review._post_chat_completion(
+            "secret-k", "deepseek-chat", {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            timeout=5.0, endpoint=base_url,
+        )
+        resp_non = signal_llm_review._post_chat_completion(
+            "secret-k", "deepseek-chat", {"messages": [{"role": "user", "content": "hi"}], "stream": False},
+            timeout=5.0, endpoint=base_url,
+        )
+    assert resp_fb["choices"][0]["message"]["content"] == "json fallback"
+    assert resp_non["choices"][0]["message"]["content"] == "json fallback"
+    assert captured[0]["headers"]["accept"] == "text/event-stream"
+    assert "accept" not in captured[1]["headers"] or captured[1]["headers"]["accept"] != "text/event-stream"
+
+
+def test_deepseek_v4_pro_nov24_25_sse_idle_wallclock_truncation_and_partial_capture():
+    # Pattern A: Idle stall timeout after partial reasoning + content tokens arrives
+    def idle_stall_handler(handler, stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        _send_chunk(handler, (
+            b'data: {"id":"cmpl-stall","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"reasoning..."},"finish_reason":null}]}\n\n'
+            b'data: {"id":"cmpl-stall","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{"content":"## Accept / Call\\npartial"}, "finish_reason":null}]}\n\n'
+        ))
+        stop.wait(timeout=3.0)
+
+    stall_partials = []
+    with _sse_test_server(idle_stall_handler) as (base_url, _, _):
+        with pytest.raises(TimeoutError, match="idle") as excinfo:
+            signal_llm_review._post_chat_completion(
+                "k",
+                "deepseek-v4-pro",
+                {
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "_local_stream_idle_s": 0.15,
+                    "_local_on_partial": stall_partials.append,
+                },
+                timeout=3.0,
+                endpoint=base_url,
+            )
+    partial = getattr(excinfo.value, "partial_response", None)
+    assert isinstance(partial, dict)
+    assert partial["http_status"] == 200
+    assert partial["choices"][0]["message"]["reasoning_content"] == "reasoning..."
+    assert partial["choices"][0]["message"]["content"] == "## Accept / Call\npartial"
+    assert partial["chunk_count"] == 2 and partial["bytes_received"] > 0
+    assert stall_partials and stall_partials[-1]["choices"][0]["message"]["content"] == "## Accept / Call\npartial"
+
+    # Pattern B: Keepalive SSE comments reset idle timeout, yet hard wall-clock deadline is still enforced
+    def keepalive_forever_handler(handler, stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        while not stop.is_set():
+            _send_chunk(handler, b": keepalive\n\n")
+            time.sleep(0.05)
+
+    keepalive_partials = []
+    with _sse_test_server(keepalive_forever_handler) as (base_url, _, _):
+        with pytest.raises(TimeoutError, match="wall-clock deadline") as excinfo_wall:
+            signal_llm_review._post_chat_completion(
+                "k",
+                "deepseek-v4-pro",
+                {
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "_local_stream_idle_s": 0.16,
+                    "_local_on_partial": keepalive_partials.append,
+                },
+                timeout=0.35,
+                endpoint=base_url,
+            )
+    wall_partial = getattr(excinfo_wall.value, "partial_response", None)
+    assert isinstance(wall_partial, dict) and wall_partial["http_status"] == 200
+    assert wall_partial["bytes_received"] > 0
+    assert keepalive_partials
+
+    # Pattern C: Abrupt mid-chunk drop (IncompleteRead) and truncated malformed JSON frame both preserve partial_response
+    def abrupt_drop_handler(handler, _stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        _send_chunk(handler, (
+            b'data: {"id":"cmpl-drop","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{"reasoning_content":"partial thinking"},"finish_reason":null}]}\n\n'
+        ))
+        # Write declared chunk header of 100 bytes then close early without finishing -> IncompleteRead
+        handler.wfile.write(b"64\r\ndata: {\"partial\":")
+        handler.wfile.flush()
+        handler.close_connection = True
+
+    drop_partials = []
+    with _sse_test_server(abrupt_drop_handler) as (base_url, _, _):
+        with pytest.raises((http.client.HTTPException, ConnectionResetError, OSError)) as excinfo_drop:
+            signal_llm_review._post_chat_completion(
+                "k",
+                "deepseek-v4-pro",
+                {
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "_local_on_partial": drop_partials.append,
+                },
+                timeout=3.0,
+                endpoint=base_url,
+            )
+    drop_partial = getattr(excinfo_drop.value, "partial_response", None)
+    assert isinstance(drop_partial, dict)
+    assert drop_partial["http_status"] == 200
+    assert drop_partial["choices"][0]["message"]["reasoning_content"] == "partial thinking"
+    assert drop_partials
+
+    def truncated_json_handler(handler, _stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        _send_chunk(handler, (
+            b'data: {"id":"cmpl-trunc","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{"reasoning_content":"step 1"},"finish_reason":null}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"cut_off\n\n'
+        ))
+        handler.wfile.write(b"0\r\n\r\n")
+        handler.wfile.flush()
+
+    with _sse_test_server(truncated_json_handler) as (base_url, _, _):
+        with pytest.raises(json.JSONDecodeError) as excinfo_json:
+            signal_llm_review._post_chat_completion(
+                "k",
+                "deepseek-v4-pro",
+                {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+                timeout=3.0,
+                endpoint=base_url,
+            )
+    json_partial = getattr(excinfo_json.value, "partial_response", None)
+    assert isinstance(json_partial, dict)
+    assert json_partial["choices"][0]["message"]["reasoning_content"] == "step 1"
+
+    # Pattern D: Reasoning budget exhaustion (finish_reason=length, content="") through call_chat_llm SSE
+    def length_empty_handler(handler, _stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        _send_chunk(handler, (
+            b'data: {"id":"cmpl-len","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{"reasoning_content":"long reasoning..."},"finish_reason":"length"}],'
+            b'"usage":{"prompt_tokens":100,"completion_tokens":32768,"total_tokens":32868}}\n\n'
+            b'data: [DONE]\n\n'
+        ))
+        handler.wfile.write(b"0\r\n\r\n")
+        handler.wfile.flush()
+
+    captured_partials = []
+    captured_responses = []
+    with _sse_test_server(length_empty_handler) as (base_url, _, _):
+        with pytest.raises(ValueError, match="finish_reason=length"):
+            review.call_chat_llm(
+                [{"role": "user", "content": "hi"}],
+                api_key="k",
+                model="deepseek-v4-pro",
+                endpoint=base_url,
+                retries=0,
+                stream=True,
+                on_partial=captured_partials.append,
+                on_response=captured_responses.append,
+            )
+    assert captured_partials and captured_partials[-1]["choices"][0]["message"]["reasoning_content"] == "long reasoning..."
+    assert captured_responses and captured_responses[0]["finish_reason"] == "length"
+
+    # Pattern E: Clean-EOF chunked SSE close without [DONE] and finish_reason=None must fail incomplete, never invoke on_response
+    def clean_eof_no_done_handler(handler, _stop):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.end_headers()
+        _send_chunk(handler, (
+            b'data: {"id":"cmpl-eof","model":"deepseek-v4-pro",'
+            b'"choices":[{"index":0,"delta":{"reasoning_content":"think","content":"## Accept / Call\\n</ANNOTATION_JSON>"},"finish_reason":null}]}\n\n'
+        ))
+        handler.wfile.write(b"0\r\n\r\n")
+        handler.wfile.flush()
+
+    eof_partials = []
+    eof_responses = []
+    with _sse_test_server(clean_eof_no_done_handler) as (base_url, _, _):
+        with pytest.raises(http.client.IncompleteRead) as excinfo_eof:
+            review.call_chat_llm(
+                [{"role": "user", "content": "hi"}],
+                api_key="k",
+                model="deepseek-v4-pro",
+                endpoint=base_url,
+                retries=0,
+                stream=True,
+                on_partial=eof_partials.append,
+                on_response=eof_responses.append,
+            )
+    assert eof_responses == []
+    assert eof_partials and getattr(excinfo_eof.value, "partial_response", None) is not None
+    assert excinfo_eof.value.partial_response["choices"][0]["message"]["content"] == "## Accept / Call\n</ANNOTATION_JSON>"
+
+    # Non-stream / mock response with empty choices or empty non-length content never invokes on_response
+    bad_responses = []
+    for bad_payload in (
+        {"choices": [], "usage": {}},
+        {"choices": [{"finish_reason": "stop", "message": {"content": "   "}}], "usage": {}},
+    ):
+        with pytest.raises(ValueError):
+            review.call_chat_llm(
+                [{"role": "user", "content": "ping"}],
+                api_key="k",
+                model="deepseek-chat",
+                transport=lambda *_a, p=bad_payload, **_k: p,
+                on_response=bad_responses.append,
+            )
+    assert bad_responses == []
+
+
+def test_call_chat_llm_and_decide_initial_hand_stream_toggle_and_partial_passthrough(monkeypatch, tmp_path):
+    # 1. Backward compat: transport != None and stream=None keeps stream=False
+    seen_bodies = []
+
+    def mock_transport(api_key, model, body, timeout, endpoint=None):
+        del api_key, model, timeout, endpoint
+        seen_bodies.append(deepcopy(body))
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}], "usage": {}}
+
+    res_mock = review.call_chat_llm(
+        [{"role": "user", "content": "ping"}], api_key="k", model="deepseek-chat", transport=mock_transport,
+    )
+    assert seen_bodies[0]["stream"] is False
+    assert res_mock["request_body"]["stream"] is False
+
+    # 2. transport=None and stream=None resolves from ASTRA_PLAYER_STREAM (default True; "0"/"false"/"no" -> False)
+    monkeypatch.delenv("ASTRA_PLAYER_STREAM", raising=False)
+    post_bodies = []
+
+    def fake_post(api_key, model, body, timeout, endpoint=None):
+        del api_key, model, timeout, endpoint
+        post_bodies.append(dict(body))
+        cb = body.get("_local_on_partial")
+        if callable(cb):
+            cb({"http_status": 200, "choices": [{"index": 0, "finish_reason": None, "message": {"content": "partial"}}]})
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "done"}}], "usage": {"total_tokens": 9}}
+
+    monkeypatch.setattr(signal_llm_review, "_post_chat_completion", fake_post)
+    got_partials = []
+    res_default = review.call_chat_llm(
+        [{"role": "user", "content": "ping"}], api_key="k", model="deepseek-v4-pro", on_partial=got_partials.append,
+    )
+    assert post_bodies[0]["stream"] is True
+    assert callable(post_bodies[0].get("_local_on_partial"))
+    assert "_local_on_partial" not in res_default["request_body"]
+    assert res_default["request_body"]["stream"] is True
+    assert got_partials and got_partials[0]["choices"][0]["message"]["content"] == "partial"
+
+    for off_val in ("0", "false", "no"):
+        monkeypatch.setenv("ASTRA_PLAYER_STREAM", off_val)
+        p_init = review.build_initial_request_payload("# u", model="m")
+        p_hold = review.build_hold_review_request_payload("# h", model="m")
+        assert p_init["parameters"]["stream"] is False
+        assert p_hold["parameters"]["stream"] is False
+        res_off = review.call_chat_llm([{"role": "user", "content": "ping"}], api_key="k", model="m")
+        assert res_off["request_body"]["stream"] is False
+
+    monkeypatch.delenv("ASTRA_PLAYER_STREAM", raising=False)
+    assert review.build_initial_request_payload("# u", model="m")["parameters"]["stream"] is True
+    assert review.build_hold_review_request_payload("# h", model="m")["parameters"]["stream"] is True
+
+    # Sanitization strips any _local_* keys
+    san = review.sanitize_model_request({"messages": [{"role": "user", "content": "x"}], "_local_on_partial": lambda x: x})
+    assert "_local_on_partial" not in san
+
+    # 3. Exception with .partial_response invokes on_partial, preserves .partial_response, and records partial usage
+    budget = signal_llm_review.DailyHttpBudget(tmp_path / "partial_budget.json", limit=5)
+
+    def failing_partial_transport(*_a, **_kw):
+        err = TimeoutError("stream interrupted")
+        err.partial_response = {
+            "http_status": 200,
+            "choices": [{"index": 0, "finish_reason": None, "message": {"content": "partial text"}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+        }
+        raise err
+
+    err_partials = []
+    with pytest.raises(TimeoutError) as excinfo:
+        review.call_chat_llm(
+            [{"role": "user", "content": "ping"}],
+            api_key="k",
+            model="deepseek-v4-pro",
+            retries=0,
+            stream=True,
+            on_partial=err_partials.append,
+            transport=failing_partial_transport,
+            budget=budget,
+        )
+    assert getattr(excinfo.value, "partial_response", {}).get("http_status") == 200
+    assert len(err_partials) == 1
+    assert budget.snapshot()["events"][-1]["usage"] == {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16}
+
+    # 4. decide_initial_hand propagates stream/on_partial and keeps stream=False when transport is mocked
+    reject_reply = (
+        "## Reject\n\n"
+        "Put路径：安全。\nCall路径：较近。\n对比结论：均观望。\nPut反证：存在回踩。\nCall反证：上方承压。\n"
+        "<ANNOTATION_JSON>"
+        + json.dumps({
+            "put": "Put路径：安全。",
+            "call": "Call路径：较近。",
+            "comparison": "对比结论：均观望。",
+            "put_counter": "Put反证：存在回踩。",
+            "call_counter": "Call反证：上方承压。",
+            "depends_on_ard": False,
+        }, ensure_ascii=False)
+        + "</ANNOTATION_JSON>"
+    )
+    dec_bodies = []
+    res_dec = review.decide_initial_hand(
+        "# input",
+        contract_pair={},
+        api_key="k",
+        model="deepseek-v4-pro",
+        transport=lambda _k, _m, body, _t, **_kw: (
+            dec_bodies.append(deepcopy(body)),
+            {"choices": [{"finish_reason": "stop", "message": {"content": reject_reply}}], "usage": {}},
+        )[-1],
+    )
+    assert dec_bodies[0]["stream"] is False
+    assert res_dec["request_payload"]["parameters"]["stream"] is False
+
+
+def test_category_c_pin_shift_evidence_at_ms_allows_subsequent_shift_review():
+    frozen = {
+        "contract": {"side": "call", "short_strike_usd": 65_500.0, "long_strike_usd": 67_500.0, "expiry_ms": T + 16 * 3_600_000},
+        "invalidation": "new_entry",
+        "invalidation_meaning": "严格入区即破坏",
+        "accepted_conditions": ["保持 65,500 下方"],
+        "entry_index_usd": 64_908.38,
+    }
+    trigs1 = review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics={"asof_ms": T, "spot_usd": 64_908.38, "short_distance_pct": 0.90},
+        series_rows=[{"asof_ms": T + M, "spot_usd": 64_950.0, "short_distance_pct": 0.84}],
+        ard_comparison={
+            "old_pin": 64_000.0, "new_pin": 66_000.0, "pin_price_changed": True,
+            "same_measure": True, "pin_status": "ok", "band_half": 400.0, "check_at_ms": T + M,
+        },
+        entry_pin_snapshot={"pin": 64_000.0, "pin_source": "deribit", "pin_method": "gex", "pin_status": "ok"},
+        now_ms=T + M,
+    )
+    assert len(trigs1) == 1
+    assert trigs1[0]["signature"] == "ARD_STRUCTURE_SHIFT:PIN"
+    assert trigs1[0]["evidence_at_ms"] == T + M
+
+    st, _ = review.schedule_review_action({}, trigs1, now_ms=T + M)
+    st, act1 = review.schedule_review_action(st, [], now_ms=T + 13 * M)
+    assert act1 is not None and act1["should_call"] is True
+    st = review.complete_review_action(st, now_ms=T + 14 * M, success=True, verdict="HOLD")
+
+    # Same observation timestamp is deduplicated
+    st_dup, act_dup = review.schedule_review_action(st, trigs1, now_ms=T + 45 * M)
+    assert act_dup is None and st_dup["last_skip"]["code"] == "DUPLICATE_EVENT"
+
+    # Subsequent Pin shift at a newer check_at_ms escalates and schedules a fresh review
+    trigs2 = review.detect_hold_triggers(
+        frozen_condition=frozen, side="call", short_strike_usd=65_500.0, entry_at_ms=T,
+        t0_metrics={"asof_ms": T, "spot_usd": 64_908.38, "short_distance_pct": 0.90},
+        series_rows=[{"asof_ms": T + 45 * M, "spot_usd": 65_100.0, "short_distance_pct": 0.61}],
+        ard_comparison={
+            "old_pin": 64_000.0, "new_pin": 65_500.0, "pin_price_changed": True,
+            "same_measure": True, "pin_status": "ok", "band_half": 400.0, "check_at_ms": T + 45 * M,
+        },
+        last_review={"pin": 66_000.0, "reviewed_at_ms": T + 14 * M},
+        entry_pin_snapshot={"pin": 64_000.0, "pin_source": "deribit", "pin_method": "gex", "pin_status": "ok"},
+        now_ms=T + 45 * M,
+    )
+    assert len(trigs2) == 1
+    assert trigs2[0]["signature"] == "ARD_STRUCTURE_SHIFT:PIN"
+    assert trigs2[0]["evidence_at_ms"] == T + 45 * M
+
+    st2, _ = review.schedule_review_action(st, trigs2, now_ms=T + 45 * M)
+    assert len(st2["pending"]) == 1
+    st2, act2 = review.schedule_review_action(st2, [], now_ms=T + 57 * M)
+    assert act2 is not None and act2["should_call"] is True
+
+
+def test_hold_review_priority_a_boundary_breach_backoff_circuit_breaker_and_cas():
+    trig_b = {"category": "B", "code": "MARGIN_DETERIORATION", "signature": "MARGIN_DETERIORATION:step_5", "depth_step": 5, "severity": 2, "observed_at_ms": T}
+    trig_breach = {"category": "A", "code": "BOUNDARY_BREACH", "signature": "BOUNDARY_BREACH", "severity": 3, "observed_at_ms": T + M}
+    trig_cond = {"category": "A", "code": "CONDITION_TRIGGERED", "signature": f"CONDITION_TRIGGERED:{T + 2 * M}", "severity": 3, "observed_at_ms": T + 2 * M}
+
+    # 1. BOUNDARY_BREACH bypasses cooldown & debounce identically to CONDITION_TRIGGERED
+    st_cd = {"cooldown_until_ms": T + 30 * M, "pending": [], "dispatched_signatures": {}}
+    st_bb, act_bb = review.schedule_review_action(st_cd, [trig_breach], now_ms=T + M)
+    assert act_bb is not None and act_bb["should_call"] is True and act_bb["is_priority_a"] is True
+    assert act_bb["reason"] == "condition_triggered_priority_a"
+
+    # 2. Routine transient failure backoff blocks ordinary triggers, does NOT block Priority A (BOUNDARY_BREACH / CONDITION_TRIGGERED)
+    st_t1 = review.complete_review_action(st_bb, now_ms=T + 2 * M, success=False, failure_kind="TRANSIENT_ERROR")
+    assert st_t1["consecutive_failures"] == 1
+    assert st_t1["backoff_reason"] == "TRANSIENT_ERROR"
+    assert st_t1["circuit_open"] is False
+    st_ord_blk, act_ord_blk = review.schedule_review_action(
+        {**st_t1, "pending": [trig_b], "pending_since_ms": T - 15 * M}, [], now_ms=T + 3 * M,
+    )
+    assert act_ord_blk is None and st_ord_blk["last_skip"]["code"] == "COOLDOWN"
+
+    st_pa_go, act_pa_go = review.schedule_review_action(st_t1, [trig_cond], now_ms=T + 3 * M)
+    assert act_pa_go is not None and act_pa_go["should_call"] is True
+
+    # 3. DAILY_BUDGET_EXHAUSTED backoff DOES block Priority A until expired or force=True
+    st_budget = review.complete_review_action(
+        st_pa_go, now_ms=T + 4 * M, success=False, failure_kind="DAILY_BUDGET_EXHAUSTED", retry_backoff_ms=30 * M,
+    )
+    assert st_budget["backoff_reason"] == "DAILY_BUDGET_EXHAUSTED"
+    st_b_blk, act_b_blk = review.schedule_review_action(st_budget, [trig_breach], now_ms=T + 10 * M)
+    assert act_b_blk is None and st_b_blk["last_skip"]["code"] == "COOLDOWN"
+    _, act_b_force = review.schedule_review_action(st_budget, [trig_breach], now_ms=T + 10 * M, force=True)
+    assert act_b_force is not None and act_b_force["should_call"] is True
+
+    # 4. Consecutive failure circuit breaker + capped exponential backoff + recovery reset
+    s = {"pending": [trig_b], "pending_since_ms": T}
+    s, a1 = review.schedule_review_action(s, [], now_ms=T + 12 * M)
+    assert a1 is not None
+    s = review.complete_review_action(s, now_ms=T + 13 * M, success=False, failure_kind="PARSE_FAILED", retry_backoff_ms=5 * M)
+    assert s["consecutive_failures"] == 1 and s["circuit_open"] is False
+    assert s["backoff_until_ms"] == T + 18 * M
+
+    s, a2 = review.schedule_review_action(s, [], now_ms=T + 18 * M)
+    assert a2 is not None
+    s = review.complete_review_action(s, now_ms=T + 19 * M, success=False, failure_kind="PARSE_FAILED", retry_backoff_ms=5 * M)
+    assert s["consecutive_failures"] == 2 and s["circuit_open"] is False
+    assert s["backoff_until_ms"] == T + 24 * M
+
+    s, a3 = review.schedule_review_action(s, [], now_ms=T + 24 * M)
+    assert a3 is not None
+    s = review.complete_review_action(s, now_ms=T + 25 * M, success=False, failure_kind="PARSE_FAILED", retry_backoff_ms=5 * M)
+    assert s["consecutive_failures"] == 3
+    assert s["last_failure_kind"] == "PARSE_FAILED"
+    assert s["circuit_open"] is True
+    assert s["backoff_reason"] == "CIRCUIT_OPEN"
+    assert s["backoff_until_ms"] == T + 25 * M + 10 * M  # 5m * 2**1 = 10m
+
+    # While circuit_open is within backoff window, even Priority A is blocked unless force=True
+    s_cb_blk, act_cb_blk = review.schedule_review_action(s, [trig_cond], now_ms=T + 30 * M)
+    assert act_cb_blk is None and s_cb_blk["last_skip"]["code"] == "COOLDOWN"
+
+    # Once backoff window elapses, half-open probe is allowed; another failure doubles backoff; success resets circuit
+    s_probe, act_probe = review.schedule_review_action(s, [], now_ms=T + 35 * M)
+    assert act_probe is not None and act_probe["should_call"] is True
+
+    # CAS ownership guard ignores stale completion with mismatched expected_inflight_started_at_ms
+    s_stale_ignored = review.complete_review_action(
+        s_probe,
+        now_ms=T + 36 * M,
+        success=False,
+        expected_inflight_started_at_ms=T + 12 * M,  # stale! current is T + 35 * M
+        failure_kind="TIMEOUT",
+    )
+    assert s_stale_ignored == s_probe
+    assert s_stale_ignored["inflight"] is True and s_stale_ignored["consecutive_failures"] == 3
+
+    # Matching CAS completes failure -> consecutive_failures=4, backoff=5m * 2**2 = 20m
+    s_fail4 = review.complete_review_action(
+        s_probe,
+        now_ms=T + 36 * M,
+        success=False,
+        expected_inflight_started_at_ms=T + 35 * M,
+        failure_kind="PARSE_FAILED",
+        retry_backoff_ms=5 * M,
+    )
+    assert s_fail4["consecutive_failures"] == 4 and s_fail4["circuit_open"] is True
+    assert s_fail4["backoff_until_ms"] == T + 36 * M + 20 * M
+
+    # force=True bypasses circuit_open, and success=True resets all failure/circuit fields
+    s_forced, act_forced = review.schedule_review_action(s_fail4, [], now_ms=T + 40 * M, force=True)
+    assert act_forced is not None and act_forced["should_call"] is True
+    s_reset = review.complete_review_action(
+        s_forced,
+        now_ms=T + 41 * M,
+        success=True,
+        verdict="HOLD",
+        expected_inflight_started_at_ms=T + 40 * M,
+    )
+    assert s_reset["inflight"] is False
+    assert s_reset["consecutive_failures"] == 0
+    assert s_reset["last_failure_kind"] is None
+    assert s_reset["backoff_reason"] is None
+    assert s_reset["backoff_until_ms"] is None
+    assert s_reset["circuit_open"] is False
+
+    # CAS on non-inflight state is a safe no-op
+    assert review.complete_review_action(s_reset, now_ms=T + 42 * M, success=False, expected_inflight_started_at_ms=T + 40 * M) == s_reset
 
 

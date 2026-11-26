@@ -11,6 +11,7 @@ import concurrent.futures
 from contextlib import contextmanager
 import datetime as _dt
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -2878,26 +2879,68 @@ def _invoke_call_llm(call_fn, api_key, model, request_body, timeout,
         return call_fn(api_key, model, request_body, timeout)
 
 
+def _resolve_stream_idle_timeout(raw_idle_s, total_timeout):
+    if raw_idle_s is not None:
+        return max(0.001, float(raw_idle_s))
+    env_raw = (os.environ.get("ASTRA_LLM_STREAM_IDLE_SEC") or "").strip()
+    if env_raw:
+        try:
+            env_val = float(env_raw)
+            if env_val > 0:
+                return max(0.001, env_val)
+        except (TypeError, ValueError):
+            pass
+    return max(0.001, min(120.0, float(total_timeout)))
+
+
 def _post_chat_completion(api_key, model, request_body, timeout, endpoint=None):
     base = (endpoint or OPENAI_CHAT_COMPLETIONS_ENDPOINT).rstrip("/")
     url = base if base.endswith("/chat/completions") else base + "/chat/completions"
-    body_payload = _strip_local_request_fields(request_body)
+    raw_request = dict(request_body or {})
+    on_partial = raw_request.get("_local_on_partial")
+    raw_stream_idle_s = raw_request.get("_local_stream_idle_s")
+    body_payload = _strip_local_request_fields(raw_request)
     body_payload["model"] = model
+    is_stream = bool(body_payload.get("stream"))
     body = json.dumps(body_payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + api_key,
+    }
+    if is_stream:
+        headers["Accept"] = "text/event-stream"
     request = urllib.request.Request(
         url,
         data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + api_key,
-        },
+        headers=headers,
         method="POST",
     )
     deadline = time.monotonic() + float(timeout)
+    idle_s = _resolve_stream_idle_timeout(raw_stream_idle_s, timeout) if is_stream else None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw_body = _read_response_body_with_deadline(response, deadline)
-            return json.loads(raw_body.decode("utf-8"))
+            if not is_stream:
+                raw_body = _read_response_body_with_deadline(response, deadline)
+                return json.loads(raw_body.decode("utf-8"))
+            resp_headers = getattr(response, "headers", None)
+            content_type = ""
+            if resp_headers is not None and callable(getattr(resp_headers, "get", None)):
+                content_type = str(
+                    resp_headers.get("Content-Type")
+                    or resp_headers.get("content-type")
+                    or ""
+                ).lower()
+            if "application/json" in content_type and "text/event-stream" not in content_type:
+                raw_body = _read_response_body_with_deadline(response, deadline)
+                return json.loads(raw_body.decode("utf-8"))
+            return _read_sse_chat_completion(
+                response,
+                model=model,
+                deadline=deadline,
+                total_timeout=float(timeout),
+                idle_s=idle_s,
+                on_partial=on_partial,
+            )
     except urllib.error.HTTPError as exc:
         detail = _read_response_body_with_deadline(
             exc, deadline, allow_plain_read=False).decode(
@@ -2910,6 +2953,254 @@ def _post_chat_completion(api_key, model, request_body, timeout, endpoint=None):
         except (TypeError, ValueError):
             error.retry_after = None
         raise error from exc
+
+
+def _read_sse_chat_completion(
+    response,
+    *,
+    model,
+    deadline,
+    total_timeout,
+    idle_s,
+    on_partial=None,
+):
+    raw_status = getattr(response, "status", None)
+    try:
+        http_status = (
+            int(raw_status)
+            if raw_status is not None and not isinstance(raw_status, bool)
+            else 200
+        )
+    except (TypeError, ValueError):
+        http_status = 200
+
+    response_id = None
+    response_model = None
+    finish_reason = None
+    role = "assistant"
+    usage = {}
+    content_parts = []
+    reasoning_parts = []
+    chunk_count = 0
+    bytes_received = 0
+    last_emit_at = 0.0
+    last_emit_chunk = 0
+
+    def _snapshot():
+        return {
+            "id": response_id,
+            "model": response_model or model,
+            "http_status": http_status,
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": finish_reason,
+                    "message": {
+                        "role": role,
+                        "content": "".join(content_parts),
+                        "reasoning_content": (
+                            "".join(reasoning_parts) if reasoning_parts else None
+                        ),
+                    },
+                }
+            ],
+            "usage": dict(usage) if isinstance(usage, dict) else {},
+            "chunk_count": chunk_count,
+            "bytes_received": bytes_received,
+        }
+
+    def _emit_partial(force=False):
+        nonlocal last_emit_at, last_emit_chunk
+        if not callable(on_partial):
+            return
+        now_m = time.monotonic()
+        if (
+            not force
+            and last_emit_chunk > 0
+            and (chunk_count - last_emit_chunk) < 8
+            and (now_m - last_emit_at) < 0.5
+        ):
+            return
+        last_emit_at = now_m
+        last_emit_chunk = chunk_count
+        try:
+            on_partial(_snapshot())
+        except Exception:
+            pass
+
+    def _process_sse_line(raw_line_bytes):
+        nonlocal response_id, response_model, finish_reason, role, usage, chunk_count
+        line = raw_line_bytes.rstrip(b"\r\n").decode("utf-8", errors="replace")
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            return False
+        payload_text = line[5:].strip()
+        if not payload_text:
+            return False
+        if payload_text == "[DONE]":
+            return True
+        obj = json.loads(payload_text)
+        if not isinstance(obj, dict):
+            return False
+        err_obj = obj.get("error")
+        if isinstance(err_obj, dict) or (err_obj and not obj.get("choices")):
+            err_code = 502
+            if isinstance(err_obj, dict):
+                raw_code = err_obj.get("status_code") or err_obj.get("code")
+                if (
+                    isinstance(raw_code, int)
+                    and not isinstance(raw_code, bool)
+                    and 400 <= raw_code < 600
+                ):
+                    err_code = raw_code
+                detail = str(
+                    err_obj.get("message")
+                    or json.dumps(err_obj, ensure_ascii=False)
+                )
+            else:
+                detail = str(err_obj)
+            raise LlmApiError(err_code, detail)
+
+        chunk_count += 1
+        if obj.get("id"):
+            response_id = str(obj["id"])
+        if obj.get("model"):
+            response_model = str(obj["model"])
+        if isinstance(obj.get("usage"), dict) and obj["usage"]:
+            usage = dict(obj["usage"])
+
+        had_delta = False
+        choices = obj.get("choices")
+        if isinstance(choices, list) and choices:
+            choice0 = choices[0] if isinstance(choices[0], dict) else {}
+            if choice0.get("finish_reason") is not None:
+                finish_reason = choice0.get("finish_reason")
+            delta = choice0.get("delta")
+            if not isinstance(delta, dict):
+                msg_alt = choice0.get("message")
+                delta = msg_alt if isinstance(msg_alt, dict) else {}
+            if delta.get("role"):
+                role = str(delta["role"])
+            d_content = delta.get("content")
+            if isinstance(d_content, str) and d_content != "":
+                content_parts.append(d_content)
+                had_delta = True
+            elif isinstance(d_content, list):
+                part_txt = "".join(
+                    str(part.get("text") or "")
+                    for part in d_content
+                    if isinstance(part, dict)
+                )
+                if part_txt:
+                    content_parts.append(part_txt)
+                    had_delta = True
+            d_reason = delta.get("reasoning_content")
+            if d_reason is None and "reasoning_content" not in delta:
+                d_reason = delta.get("reasoning")
+            if isinstance(d_reason, str) and d_reason != "":
+                reasoning_parts.append(d_reason)
+                had_delta = True
+
+        if had_delta or finish_reason is not None or usage:
+            _emit_partial(force=False)
+        return False
+
+    def _classify_timeout(remaining_wall):
+        remaining_after = float(deadline) - time.monotonic()
+        if remaining_after <= 0 or remaining_wall <= idle_s:
+            return TimeoutError(
+                f"LLM stream wall-clock deadline exceeded ({total_timeout:.1f}s)"
+            )
+        return TimeoutError(
+            f"LLM stream idle stall timeout exceeded ({idle_s:.1f}s)"
+        )
+
+    read1_fn = getattr(response, "read1", None)
+    readline_fn = getattr(response, "readline", None)
+    buf = bytearray()
+    saw_done = False
+    try:
+        if callable(read1_fn):
+            while not saw_done:
+                remaining_wall = float(deadline) - time.monotonic()
+                if remaining_wall <= 0:
+                    raise TimeoutError(
+                        f"LLM stream wall-clock deadline exceeded ({total_timeout:.1f}s)"
+                    )
+                wait_s = min(remaining_wall, idle_s)
+                _set_response_socket_timeout(response, wait_s)
+                try:
+                    chunk = read1_fn(65536)
+                except (TimeoutError, socket.timeout) as exc:
+                    raise _classify_timeout(remaining_wall) from exc
+                if not chunk:
+                    break
+                bytes_received += len(chunk)
+                buf.extend(chunk)
+                while True:
+                    nl_idx = buf.find(b"\n")
+                    if nl_idx < 0:
+                        break
+                    line_bytes = bytes(buf[: nl_idx + 1])
+                    del buf[: nl_idx + 1]
+                    if _process_sse_line(line_bytes):
+                        saw_done = True
+                        break
+            if not saw_done and buf:
+                saw_done = _process_sse_line(bytes(buf))
+                buf.clear()
+        elif callable(readline_fn):
+            while not saw_done:
+                remaining_wall = float(deadline) - time.monotonic()
+                if remaining_wall <= 0:
+                    raise TimeoutError(
+                        f"LLM stream wall-clock deadline exceeded ({total_timeout:.1f}s)"
+                    )
+                wait_s = min(remaining_wall, idle_s)
+                _set_response_socket_timeout(response, wait_s)
+                try:
+                    line_bytes = readline_fn()
+                except (TimeoutError, socket.timeout) as exc:
+                    raise _classify_timeout(remaining_wall) from exc
+                if not line_bytes:
+                    break
+                bytes_received += len(line_bytes)
+                if _process_sse_line(line_bytes):
+                    saw_done = True
+                    break
+        else:
+            raw_all = response.read()
+            if raw_all:
+                bytes_received += len(raw_all)
+                for line_bytes in raw_all.splitlines(keepends=True):
+                    if _process_sse_line(line_bytes):
+                        saw_done = True
+                        break
+        if not saw_done and finish_reason is None:
+            raise http.client.IncompleteRead(
+                "".join(content_parts).encode("utf-8")
+            )
+    except (
+        TimeoutError,
+        socket.timeout,
+        ConnectionResetError,
+        OSError,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        http.client.HTTPException,
+        LlmApiError,
+    ) as exc:
+        if bytes_received > 0 or chunk_count > 0 or content_parts or reasoning_parts:
+            partial = _snapshot()
+            try:
+                setattr(exc, "partial_response", partial)
+            except Exception:
+                pass
+            _emit_partial(force=True)
+        raise
+
+    if bytes_received > 0 or chunk_count > 0:
+        _emit_partial(force=True)
+    return _snapshot()
 
 
 def _read_response_body_with_deadline(response, deadline, allow_plain_read=True):
