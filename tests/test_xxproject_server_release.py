@@ -601,3 +601,123 @@ def test_deploy_release_mutual_exclusion_lock_blocks_concurrent_install_and_roll
     assert rb["deploy_lock"] == str(expected_lock)
     assert rb["release_id"] == r1["release_id"]
     assert deployer.cmd_status(prefix)["current"] == r1["release_id"]
+
+
+def test_execution_health_checks_and_rollback_unit_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # 1. _check_execution_status validates facts_asof_ms, v1.2.0 critical alerts, cleared 10009, and expected_mode
+    st_path = tmp_path / "public_status.json"
+    now_ms = 1_795_450_500_000
+    base_status = {
+        "schema": "astra_execution_status@1.0.0",
+        "generated_at_ms": now_ms - 5_000,
+        "facts_asof_ms": now_ms - 5_000,
+        "stale": False,
+        "mode": "SHADOW_ONLY",
+        "cockpit_mode": "READ_ONLY",
+        "writes_enabled": False,
+        "health": "HEALTHY",
+        "manual_takeover_required": False,
+        "active_episode": {
+            "episode_id": "ep_h1",
+            "cashflow_settled": False,
+            "alerts": ["RX_MARGIN_OR_CASH_EXHAUSTED_SPREAD_HEDGED_MANUAL_DECISION"],
+            "revoke": {"cash_wall_10009": False},
+        },
+    }
+    st_path.write_text(json.dumps(base_status), encoding="utf-8")
+    ok_cleared = health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)
+    assert ok_cleared["ok"] is True
+
+    # Stale facts_asof_ms triggers execution_facts_stale
+    stale_facts = {**base_status, "facts_asof_ms": now_ms - 60_000}
+    st_path.write_text(json.dumps(stale_facts), encoding="utf-8")
+    bad_facts = health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000, max_facts_age_ms=45_000)
+    assert bad_facts["ok"] is False and bad_facts["reason"] == "execution_facts_stale"
+
+    # v1.2.0 critical alert prefix fails closed
+    bad_alert = {
+        **base_status,
+        "active_episode": {**base_status["active_episode"], "alerts": ["ORDER_TRADES_EXCEED_ORDER_FILLED:cmd1"]},
+    }
+    st_path.write_text(json.dumps(bad_alert), encoding="utf-8")
+    res_alert = health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)
+    assert res_alert["ok"] is False and "ORDER_TRADES_EXCEED_ORDER_FILLED" in res_alert["reason"]
+
+    # --expected-exec-mode TESTNET allows TESTNET
+    tn_ok_payload = {**base_status, "mode": "TESTNET", "writes_enabled": True, "active_episode": None}
+    st_path.write_text(json.dumps(tn_ok_payload), encoding="utf-8")
+    res_tn = health_check._check_execution_status(
+        st_path, now_ms=now_ms, max_age_ms=120_000, require_shadow_only=False, expected_mode="TESTNET"
+    )
+    assert res_tn["ok"] is True and res_tn["mode"] == "TESTNET"
+
+    # 2. Rolling back to a release without with_execution stops/cleans up astra-execution-coordinator.service & 60-exec-control.conf
+    builder = _load_script("xxproject_build_rb_exec", BUILD_SCRIPT)
+    deployer = _load_script("xxproject_deploy_rb_exec", DEPLOY_SCRIPT)
+    pkg1 = tmp_path / "pkg_pre.tar.gz"
+    pkg2 = tmp_path / "pkg_exec.tar.gz"
+    r1 = builder.build_release(ROOT, pkg1, source_commit="1111111111111111111111111111111111111111", release_tag="pre", allow_dirty=True)
+    builder.build_release(ROOT, pkg2, source_commit="2222222222222222222222222222222222222222", release_tag="exec", allow_dirty=True)
+    prefix = tmp_path / "host_rb"
+    monkeypatch.setattr(deployer, "_validate_execution_os_isolation", lambda _p: None)
+    monkeypatch.setattr(deployer, "_migrate_exec_shared_permissions", lambda _p: None)
+    import shutil
+    deployer.cmd_install(pkg1, prefix, apply_units=True, no_systemd=True, with_execution=False)
+    r1_dir = prefix / "opt" / "xxproject" / "releases" / r1["release_id"]
+    pre_exec_units_dir = r1_dir / "deploy" / "xxproject_server" / "systemd_units_execution"
+    if pre_exec_units_dir.exists():
+        shutil.rmtree(pre_exec_units_dir)
+    mf_path = r1_dir / "RELEASE_MANIFEST.json"
+    mf_data = json.loads(mf_path.read_text(encoding="utf-8"))
+    mf_data["files"] = {
+        k: v for k, v in mf_data["files"].items()
+        if not k.startswith("deploy/xxproject_server/systemd_units_execution/")
+    }
+    mf_path.write_text(json.dumps(mf_data, indent=2, sort_keys=True), encoding="utf-8")
+    deployer.cmd_install(pkg2, prefix, apply_units=True, no_systemd=True, with_execution=True)
+    exec_unit = prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service"
+    exec_dropin = prefix / "etc" / "systemd" / "system" / "astra-workbench-v20.service.d" / "60-exec-control.conf"
+    assert exec_unit.is_file() and exec_dropin.is_file()
+
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    tok_file = tmp_path / "ctrl_tok.txt"
+    tok_file.write_text("ctrl_rb_secret", encoding="utf-8")
+
+    class _IdleCtrlHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a: Any) -> None:
+            return
+
+        def do_GET(self) -> None:
+            assert self.headers.get("Authorization") == "Bearer ctrl_rb_secret"
+            body = json.dumps({
+                "ok": True,
+                "safe_for_deploy": True,
+                "open_positions_count": 0,
+                "open_orders_count": 0,
+                "active_or_unknown_commands_count": 0,
+                "active_unsettled_episode": False,
+                "status": {"writes_enabled": False, "active_episode": None},
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), _IdleCtrlHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        deployer.cmd_rollback(
+            prefix,
+            to_release=r1["release_id"],
+            apply_units=True,
+            no_systemd=True,
+            exec_control_url=f"http://127.0.0.1:{srv.server_port}",
+            exec_control_token_file=tok_file,
+        )
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert not exec_unit.exists() and not exec_dropin.exists()

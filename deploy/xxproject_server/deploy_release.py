@@ -13,15 +13,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import time
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 try:
     import fcntl
@@ -43,6 +47,7 @@ CORE_IMPORT_MODULES = [
     "astra_kpf_light_v1",
     "astra_research_archive_v1",
     "astra_player_tracking_v13",
+    "astra_execution_coordinator_v1",
     "materialize_signal_cards",
     "xxproject_server_health_v1",
 ]
@@ -131,13 +136,86 @@ def _validate_deploy_window(
                 raise RuntimeError(f"UNSAFE_ACTIVE_WINDOW_UNIT: {unit} ({res.stdout.strip()})")
 
 
-def _validate_systemd_prereqs(prefix: Path, *, apply_units: bool, no_systemd: bool) -> None:
+def _read_workbench_env_token(prefix: Path) -> str:
+    env_path = prefix / "etc" / "signal-audit" / "workbench-v20.env"
+    if not env_path.is_file():
+        return ""
+    try:
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("ASTRA_WORKBENCH_TOKEN="):
+                val = stripped.split("=", 1)[1].strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+                    val = val[1:-1]
+                return val
+    except OSError:
+        return ""
+    return ""
+
+
+def _validate_execution_os_isolation(prefix: Path) -> None:
+    """Enforce mandatory OS UID/group and token separation before activating execution units on POSIX."""
+    import grp
+    import pwd
+
+    ctrl_tok_file = prefix / "etc" / "signal-audit" / "exec-control.token"
+    if not ctrl_tok_file.is_file():
+        raise RuntimeError(f"MISSING_HOST_EXEC_CONTROL_TOKEN: {ctrl_tok_file}")
+    ctrl_tok = ctrl_tok_file.read_text(encoding="utf-8").strip()
+    if not ctrl_tok:
+        raise RuntimeError("EMPTY_EXEC_ISOLATION_TOKEN")
+    wb_tok = _read_workbench_env_token(prefix)
+    if wb_tok and wb_tok == ctrl_tok:
+        raise RuntimeError("UNISOLATED_EXEC_TOKENS_REJECTED")
+    legacy_op_file = prefix / "etc" / "signal-audit" / "exec-operator.token"
+    if legacy_op_file.is_file():
+        op_tok = legacy_op_file.read_text(encoding="utf-8").strip()
+        if op_tok and (op_tok == ctrl_tok or (wb_tok and op_tok == wb_tok)):
+            raise RuntimeError("UNISOLATED_EXEC_TOKENS_REJECTED")
+
+    try:
+        exec_pw = pwd.getpwnam("astra-exec")
+    except KeyError as exc:
+        raise RuntimeError("MISSING_HOST_EXEC_USER: astra-exec") from exc
+    try:
+        wb_pw = pwd.getpwnam("astra-workbench")
+    except KeyError as exc:
+        raise RuntimeError("MISSING_HOST_WORKBENCH_USER: astra-workbench") from exc
+    try:
+        bitnami_pw = pwd.getpwnam("bitnami")
+        if wb_pw.pw_uid == bitnami_pw.pw_uid or exec_pw.pw_uid == bitnami_pw.pw_uid:
+            raise RuntimeError("UNISOLATED_WORKBENCH_UID_EQUALS_BITNAMI")
+        try:
+            exec_grp = grp.getgrnam("astra-exec")
+            if (
+                bitnami_pw.pw_gid == exec_grp.gr_gid
+                or wb_pw.pw_gid == exec_grp.gr_gid
+                or "bitnami" in (exec_grp.gr_mem or ())
+                or "astra-workbench" in (exec_grp.gr_mem or ())
+            ):
+                raise RuntimeError("UNSAFE_GROUP_MEMBERSHIP_IN_ASTRA_EXEC")
+        except KeyError:
+            pass
+    except KeyError:
+        pass
+
+
+def _validate_systemd_prereqs(
+    prefix: Path,
+    *,
+    apply_units: bool,
+    no_systemd: bool,
+    with_execution: bool = False,
+) -> None:
     """Check host runtime prerequisites before mutating release symlinks or unit files."""
     if not apply_units or no_systemd or os.name == "nt":
         return
     gex_venv_python = prefix / "opt" / "xxproject-runtime" / "venv" / "bin" / "python"
     if not gex_venv_python.is_file():
         raise RuntimeError(f"MISSING_HOST_GEX_RUNTIME_VENV: {gex_venv_python}")
+    exec_active = bool(with_execution or (prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service").exists())
+    if exec_active:
+        _validate_execution_os_isolation(prefix)
 
 
 def _sha256(raw: bytes) -> str:
@@ -298,6 +376,8 @@ def _verify_release_dir(release_dir: Path) -> dict[str, Any]:
         or inv.get("signal_core_read_only_demo") is not True
         or inv.get("ai_player_mode") != "SHADOW_ONLY"
         or inv.get("ai_player_execution_allowed") is not False
+        or inv.get("execution_default_mode", "SHADOW_ONLY") != "SHADOW_ONLY"
+        or inv.get("execution_live_writes_enabled", False) is not False
     ):
         raise ValueError("SECURITY_INVARIANTS_FAILED")
 
@@ -475,48 +555,139 @@ def _sync_workbench_frontend_link(prefix: Path, app_root: Path) -> dict[str, Any
     }
 
 
-def _ensure_materialize_bitnami_writable(prefix: Path) -> None:
-    if os.name == "nt" or not _is_system_root(prefix):
+def _chown_safe(path: Path, *, user: str | None = None, group: str | None = None) -> None:
+    kwargs: dict[str, str] = {}
+    if user is not None:
+        kwargs["user"] = user
+    if group is not None:
+        kwargs["group"] = group
+    if not kwargs:
         return
     try:
-        import pwd
+        shutil.chown(path, **kwargs)
+    except (OSError, LookupError):
+        pass
 
-        pwd.getpwnam("bitnami")
-    except Exception:
+
+def _add_mode_bits(path: Path, extra_bits: int) -> None:
+    try:
+        cur = path.stat().st_mode & 0o7777
+    except OSError:
         return
-    for rel in (
-        "opt/signal-audit",
-        "opt/signal-audit/signal_cards",
-        "var/lib/xxproject/signal_audit",
-        "opt/astra-map-data",
-        "opt/astra-map-data/state",
-    ):
-        d = prefix / rel
-        d.mkdir(parents=True, exist_ok=True)
-        _chmod_posix(d, 0o755)
-        try:
-            shutil.chown(d, "bitnami", "bitnami")
-        except OSError:
-            pass
-    for rel in (
-        "var/lib/xxproject/signal_native",
-        "var/lib/xxproject/signal_native/logs",
-        "var/lib/xxproject/signal_native/state",
-        "var/lib/xxproject/signal_native/retained",
-        "var/lib/xxproject/workbench",
-        "var/lib/xxproject/llm",
-        "var/lib/xxproject/gexmonitorapi",
-        "var/lib/xxproject/research_archive",
-        "var/lib/astra-kpf-light",
-    ):
-        d = prefix / rel
-        if not d.exists():
+    _chmod_posix(path, cur | extra_bits)
+
+
+def _walk_tree_no_symlinks(root: Path, *, on_dir: Any, on_file: Any) -> None:
+    if root.is_symlink():
+        return
+    if root.is_dir():
+        on_dir(root)
+        for cur_root, dirnames, filenames in os.walk(root, followlinks=False):
+            cur_p = Path(cur_root)
+            dirnames[:] = [d for d in dirnames if not (cur_p / d).is_symlink()]
+            for d in dirnames:
+                on_dir(cur_p / d)
+            for f in filenames:
+                fp = cur_p / f
+                if not fp.is_symlink():
+                    on_file(fp)
+    elif root.is_file():
+        on_file(root)
+
+
+def _migrate_exec_shared_permissions(prefix: Path) -> None:
+    """Migrate existing /var/lib/xxproject/{workbench,llm} ownership/permissions for astra-workbench."""
+    research_grp = "bitnami"
+    try:
+        import grp
+
+        grp.getgrnam("research")
+        research_grp = "research"
+    except Exception:
+        pass
+
+    llm_dir = prefix / "var" / "lib" / "xxproject" / "llm"
+    if llm_dir.is_dir():
+        _walk_tree_no_symlinks(
+            llm_dir,
+            on_dir=lambda d: (_chown_safe(d, group=research_grp), _chmod_posix(d, 0o2770)),
+            on_file=lambda f: (_chown_safe(f, group=research_grp), _chmod_posix(f, 0o660)),
+        )
+        _chown_safe(llm_dir, user="bitnami", group=research_grp)
+
+    wb_dir = prefix / "var" / "lib" / "xxproject" / "workbench"
+    if wb_dir.is_dir():
+        _chown_safe(wb_dir, user="bitnami", group=research_grp)
+        _chmod_posix(wb_dir, 0o2775)
+        for child in sorted(wb_dir.iterdir()):
+            if child.is_symlink():
+                continue
+            name = child.name
+            if name == "sessions.json":
+                _chown_safe(child, user="astra-workbench", group="astra-workbench")
+                _chmod_posix(child, 0o600)
+            elif name == "deribit_cooldown.json":
+                _chown_safe(child, group=research_grp)
+                _chmod_posix(child, 0o664)
+            elif name == "shadow_dossiers" or name.startswith(("snapshots.jsonl", "decisions.jsonl", "signal_review.jsonl")):
+                _walk_tree_no_symlinks(
+                    child,
+                    on_dir=lambda d: (_chown_safe(d, group=research_grp), _add_mode_bits(d, 0o050)),
+                    on_file=lambda f: (_chown_safe(f, group=research_grp), _add_mode_bits(f, 0o040)),
+                )
+            else:
+                _walk_tree_no_symlinks(
+                    child,
+                    on_dir=lambda d: (_chown_safe(d, user="astra-workbench", group=research_grp), _chmod_posix(d, 0o2750)),
+                    on_file=lambda f: (_chown_safe(f, user="astra-workbench", group=research_grp), _chmod_posix(f, 0o640)),
+                )
+
+
+def _ensure_materialize_bitnami_writable(prefix: Path, *, with_execution: bool = False) -> None:
+    if os.name == "nt" or not _is_system_root(prefix):
+        return
+    import pwd
+
+    try:
+        pwd.getpwnam("bitnami")
+        has_bitnami = True
+    except Exception:
+        has_bitnami = False
+    exec_active = bool(with_execution or (prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service").exists())
+    if has_bitnami:
+        for rel in (
+            "opt/signal-audit",
+            "opt/signal-audit/signal_cards",
+            "var/lib/xxproject/signal_audit",
+            "opt/astra-map-data",
+            "opt/astra-map-data/state",
+        ):
+            d = prefix / rel
             d.mkdir(parents=True, exist_ok=True)
             _chmod_posix(d, 0o755)
-            try:
-                shutil.chown(d, "bitnami", "bitnami")
-            except OSError:
-                pass
+            _chown_safe(d, user="bitnami", group="bitnami")
+        for rel in (
+            "var/lib/xxproject/signal_native",
+            "var/lib/xxproject/signal_native/logs",
+            "var/lib/xxproject/signal_native/state",
+            "var/lib/xxproject/signal_native/retained",
+            "var/lib/xxproject/workbench",
+            "var/lib/xxproject/llm",
+            "var/lib/xxproject/gexmonitorapi",
+            "var/lib/xxproject/research_archive",
+            "var/lib/astra-kpf-light",
+        ):
+            d = prefix / rel
+            if not d.exists():
+                d.mkdir(parents=True, exist_ok=True)
+                _chmod_posix(d, 0o755)
+                _chown_safe(d, user="bitnami", group="bitnami")
+    if exec_active:
+        _migrate_exec_shared_permissions(prefix)
+    exec_dir = prefix / "var" / "lib" / "xxproject" / "execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_posix(exec_dir, 0o755)
+    _chown_safe(exec_dir, user="astra-exec", group="astra-exec")
 
 
 def _active_release_ids_in_use(app_root: Path, prefix: Path) -> set[str]:
@@ -524,7 +695,7 @@ def _active_release_ids_in_use(app_root: Path, prefix: Path) -> set[str]:
     if os.name == "nt" or not _is_system_root(prefix) or not Path("/run/systemd/system").is_dir():
         return in_use
     releases_root = (app_root / "releases").resolve()
-    for unit in MANAGED_DAEMON_SERVICES:
+    for unit in (*MANAGED_DAEMON_SERVICES, "astra-execution-coordinator.service"):
         show = subprocess.run(
             ["systemctl", "show", unit, "-p", "MainPID", "--value"],
             capture_output=True,
@@ -545,11 +716,26 @@ def _active_release_ids_in_use(app_root: Path, prefix: Path) -> set[str]:
     return in_use
 
 
-def _restart_managed_daemons(app_root: Path, release_id: str) -> tuple[list[str], dict[str, int]]:
+def _restart_managed_daemons(
+    app_root: Path,
+    release_id: str,
+    *,
+    prefix: Path | None = None,
+    with_execution: bool = False,
+) -> tuple[list[str], dict[str, int]]:
     expected_release = (app_root / "releases" / release_id).resolve()
+    root_prefix = Path("/") if prefix is None else prefix
+    units_to_restart = list(MANAGED_DAEMON_SERVICES)
+    has_exec_in_release = (
+        expected_release / "deploy" / "xxproject_server" / "systemd_units_execution" / "astra-execution-coordinator.service"
+    ).is_file()
+    if has_exec_in_release and (
+        with_execution or (root_prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service").exists()
+    ):
+        units_to_restart.append("astra-execution-coordinator.service")
     restarted: list[str] = []
     verified_pids: dict[str, int] = {}
-    for unit in MANAGED_DAEMON_SERVICES:
+    for unit in units_to_restart:
         subprocess.run(["systemctl", "enable", unit], check=True)
         subprocess.run(["systemctl", "restart", unit], check=True)
         st = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False)
@@ -603,13 +789,15 @@ def _install_systemd_units(
     *,
     apply_units: bool,
     no_systemd: bool,
+    with_execution: bool = False,
 ) -> tuple[list[str], list[str]]:
     if not apply_units:
         return [], []
-    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
+    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd, with_execution=with_execution)
     unit_src_dir = release_dir / "deploy" / "xxproject_server" / "systemd_units_unified"
     unit_dst_dir = prefix / "etc" / "systemd" / "system"
     unit_dst_dir.mkdir(parents=True, exist_ok=True)
+    exec_active = bool(with_execution or (unit_dst_dir / "astra-execution-coordinator.service").exists())
     installed: list[str] = []
     backed_up_dropins: list[str] = []
     for src in sorted(unit_src_dir.iterdir()):
@@ -617,6 +805,8 @@ def _install_systemd_units(
             dropin_dir = unit_dst_dir / f"{src.name}.d"
             if dropin_dir.is_dir():
                 for dropin_file in sorted(p for p in dropin_dir.iterdir() if p.is_file()):
+                    if exec_active and src.name == "astra-workbench-v20.service" and dropin_file.name == "60-exec-control.conf":
+                        continue
                     backup_dir = app_root / "unit_backups" / release_id / f"{src.name}.d"
                     backup_dir.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(dropin_file), str(backup_dir / dropin_file.name))
@@ -626,6 +816,39 @@ def _install_systemd_units(
             dst = unit_dst_dir / src.name
             shutil.copy2(src, dst)
             installed.append(src.name)
+    exec_src_dir = release_dir / "deploy" / "xxproject_server" / "systemd_units_execution"
+    coord_unit_src = exec_src_dir / "astra-execution-coordinator.service"
+    wb_dropin_dst = unit_dst_dir / "astra-workbench-v20.service.d" / "60-exec-control.conf"
+    if exec_active and coord_unit_src.is_file():
+        shutil.copy2(coord_unit_src, unit_dst_dir / "astra-execution-coordinator.service")
+        installed.append("astra-execution-coordinator.service")
+        wb_dropin_src = exec_src_dir / "60-exec-control.conf"
+        if wb_dropin_src.is_file():
+            wb_dropin_dir = unit_dst_dir / "astra-workbench-v20.service.d"
+            wb_dropin_dir.mkdir(parents=True, exist_ok=True)
+            _chmod_posix(wb_dropin_dir, 0o755)
+            shutil.copy2(wb_dropin_src, wb_dropin_dir / "60-exec-control.conf")
+        exec_env_src = exec_src_dir / "exec-coordinator.env.example"
+        exec_env_dst = prefix / "etc" / "signal-audit" / "exec-coordinator.env"
+        if exec_env_src.is_file() and not exec_env_dst.exists():
+            exec_env_dst.parent.mkdir(parents=True, exist_ok=True)
+            _chmod_posix(exec_env_dst.parent, 0o755)
+            shutil.copy2(exec_env_src, exec_env_dst)
+            _chmod_posix(exec_env_dst, 0o600)
+    elif exec_active and not with_execution and not coord_unit_src.is_file():
+        # Rolling back to a pre-execution release: cleanly deactivate and remove orphaned execution unit & drop-in.
+        if not no_systemd and os.name != "nt" and _is_system_root(prefix):
+            subprocess.run(["systemctl", "stop", "astra-execution-coordinator.service"], check=False)
+            subprocess.run(["systemctl", "disable", "astra-execution-coordinator.service"], check=False)
+        coord_dst = unit_dst_dir / "astra-execution-coordinator.service"
+        if coord_dst.exists():
+            coord_dst.unlink()
+            backed_up_dropins.append("removed:astra-execution-coordinator.service")
+        if wb_dropin_dst.exists():
+            wb_dropin_dst.unlink()
+            backed_up_dropins.append("removed:astra-workbench-v20.service.d/60-exec-control.conf")
+            if wb_dropin_dst.parent.is_dir() and not any(wb_dropin_dst.parent.iterdir()):
+                wb_dropin_dst.parent.rmdir()
     if not no_systemd and os.name != "nt":
         subprocess.run(["systemctl", "daemon-reload"], check=True)
     return installed, backed_up_dropins
@@ -653,6 +876,113 @@ def _prune_old_releases(app_root: Path, *, keep_ids: set[str], keep_count: int) 
     return removed
 
 
+class _UnixControlHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, sock_path: str, timeout: float = 5.0) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self._sock_path = sock_path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self._sock_path)
+        self.sock = sock
+
+
+def _load_exec_control_token(prefix: Path, token_file: Path | None = None) -> str:
+    candidates: list[Path] = []
+    if token_file is not None:
+        candidates.append(token_file)
+    cred_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if cred_dir:
+        candidates.append(Path(cred_dir) / "exec_control_token")
+    env_file = os.environ.get("ASTRA_EXEC_CONTROL_TOKEN_FILE")
+    if env_file:
+        candidates.append(Path(env_file))
+    candidates.append(prefix / "etc/signal-audit/exec-control.token")
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                val = cand.read_text(encoding="utf-8").strip()
+                if val:
+                    return val
+        except OSError:
+            continue
+    return ""
+
+
+def _http_get_control_json(url: str, *, token: str, timeout_s: float = 5.0) -> tuple[int, Any]:
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+    if url.startswith("unix://"):
+        sock_part = url[len("unix://"):]
+        if ":" in sock_part and not (len(sock_part) >= 2 and sock_part[1] == ":" and sock_part.endswith(".sock")):
+            sock_path, req_path = sock_part.split(":", 1)
+        else:
+            sock_path, req_path = sock_part, "/health-fresh"
+        if not req_path.startswith("/"):
+            req_path = "/" + req_path
+        conn = _UnixControlHTTPConnection(sock_path, timeout=timeout_s)
+        try:
+            conn.request("GET", req_path, headers=headers)
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8")
+            return int(resp.status), json.loads(raw)
+        finally:
+            conn.close()
+    target = url.rstrip("/")
+    if not target.endswith("/health-fresh"):
+        target = f"{target}/health-fresh"
+    req = Request(target, headers=headers, method="GET")
+    try:
+        with urlopen(req, timeout=timeout_s) as resp:
+            return int(getattr(resp, "status", 200)), json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            return int(exc.code), json.loads(body)
+        except json.JSONDecodeError:
+            return int(exc.code), {"ok": False, "error": body}
+
+
+def _check_execution_deploy_safety(
+    prefix: Path,
+    *,
+    exec_control_url: str | None = None,
+    exec_control_token_file: Path | None = None,
+    no_systemd: bool = False,
+) -> dict[str, Any] | None:
+    """Fail-closed pre-deploy / pre-rollback safety check against live execution coordinator /health-fresh."""
+    sock = Path("/run/astra-exec/control.sock") if _is_system_root(prefix) else (prefix / "run" / "astra-exec" / "control.sock")
+    has_footprint = bool(
+        sock.exists()
+        or (prefix / "var" / "lib" / "xxproject" / "execution" / "exec_store.sqlite").exists()
+        or (prefix / "var" / "lib" / "xxproject" / "execution" / "public_status.json").exists()
+        or (prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service").exists()
+    )
+    url = exec_control_url or os.environ.get("ASTRA_EXEC_CONTROL_URL")
+    if not url and not no_systemd and sock.exists():
+        url = f"unix://{sock}"
+    if not url:
+        if has_footprint:
+            raise RuntimeError("UNSAFE_EXECUTION_STATE: execution_coordinator_unreachable_with_active_execution_footprint")
+        return None
+    token = _load_exec_control_token(prefix, exec_control_token_file)
+    try:
+        status, data = _http_get_control_json(url, token=token)
+    except Exception as exc:
+        raise RuntimeError(f"UNSAFE_EXECUTION_STATE: health_fresh_unreachable:{exc}") from exc
+    if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+        raise RuntimeError(f"UNSAFE_EXECUTION_STATE: health_fresh_failed status={status} payload={data}")
+    if (
+        data.get("safe_for_deploy") is not True
+        or int(data.get("open_positions_count") or 0) > 0
+        or int(data.get("open_orders_count") or 0) > 0
+        or int(data.get("active_or_unknown_commands_count") or 0) > 0
+        or bool(data.get("active_unsettled_episode"))
+    ):
+        raise RuntimeError(f"UNSAFE_EXECUTION_STATE: active_live_exposure_or_commands payload={data}")
+    return data
+
+
 def cmd_install(
     pkg: Path,
     prefix: Path,
@@ -660,17 +990,26 @@ def cmd_install(
     apply_units: bool = False,
     no_systemd: bool = False,
     restart_services: bool = True,
+    with_execution: bool = False,
     keep_releases: int = 3,
     min_free_bytes: int = 512 * 1024 * 1024,
     allow_window_override: bool = False,
     now_ms: int | None = None,
+    exec_control_url: str | None = None,
+    exec_control_token_file: Path | None = None,
 ) -> dict[str, Any]:
     _validate_deploy_window(
         prefix, allow_window_override=allow_window_override, now_ms=now_ms, no_systemd=no_systemd
     )
-    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
+    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd, with_execution=with_execution)
     app_root = _app_root(prefix)
     with _deploy_lock(app_root, action="install") as lock_path:
+        _check_execution_deploy_safety(
+            prefix,
+            exec_control_url=exec_control_url,
+            exec_control_token_file=exec_control_token_file,
+            no_systemd=no_systemd,
+        )
         cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
         releases_dir = app_root / "releases"
         releases_dir.mkdir(parents=True, exist_ok=True)
@@ -716,15 +1055,23 @@ def cmd_install(
 
         created_envs = _install_env_examples(target_dir, prefix)
         units, backed_up_dropins = _install_systemd_units(
-            target_dir, prefix, app_root, release_id, apply_units=apply_units, no_systemd=no_systemd
+            target_dir,
+            prefix,
+            app_root,
+            release_id,
+            apply_units=apply_units,
+            no_systemd=no_systemd,
+            with_execution=with_execution,
         )
         if apply_units and not no_systemd:
-            _ensure_materialize_bitnami_writable(prefix)
+            _ensure_materialize_bitnami_writable(prefix, with_execution=with_execution)
         restarted_services: list[str] = []
         verified_service_pids: dict[str, int] = {}
         synced_timers: list[str] = []
         if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
-            restarted_services, verified_service_pids = _restart_managed_daemons(app_root, release_id)
+            restarted_services, verified_service_pids = _restart_managed_daemons(
+                app_root, release_id, prefix=prefix, with_execution=with_execution
+            )
             synced_timers = _sync_managed_timers(units, target_dir)
         keep_set = {x for x in (release_id, prev_id) if x} | _active_release_ids_in_use(app_root, prefix)
         pruned = _prune_old_releases(app_root, keep_ids=keep_set, keep_count=keep_releases)
@@ -780,16 +1127,25 @@ def cmd_rollback(
     apply_units: bool = False,
     no_systemd: bool = False,
     restart_services: bool = True,
+    with_execution: bool = False,
     allow_window_override: bool = False,
     now_ms: int | None = None,
+    exec_control_url: str | None = None,
+    exec_control_token_file: Path | None = None,
 ) -> dict[str, Any]:
     """Roll back to previous (or named) release without touching /var/lib or /etc."""
     _validate_deploy_window(
         prefix, allow_window_override=allow_window_override, now_ms=now_ms, no_systemd=no_systemd
     )
-    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd)
+    _validate_systemd_prereqs(prefix, apply_units=apply_units, no_systemd=no_systemd, with_execution=with_execution)
     app_root = _app_root(prefix)
     with _deploy_lock(app_root, action="rollback") as lock_path:
+        _check_execution_deploy_safety(
+            prefix,
+            exec_control_url=exec_control_url,
+            exec_control_token_file=exec_control_token_file,
+            no_systemd=no_systemd,
+        )
         pointers = _read_pointers(app_root)
         cur_id = pointers.get("current")
         target_id = to_release or pointers.get("previous")
@@ -810,15 +1166,23 @@ def cmd_rollback(
         _write_json_atomic(_pointers_path(app_root), {"current": str(target_id), "previous": prev_after})
         frontend_link = _sync_workbench_frontend_link(prefix, app_root)
         units, backed_up_dropins = _install_systemd_units(
-            target_dir, prefix, app_root, str(target_id), apply_units=apply_units, no_systemd=no_systemd
+            target_dir,
+            prefix,
+            app_root,
+            str(target_id),
+            apply_units=apply_units,
+            no_systemd=no_systemd,
+            with_execution=with_execution,
         )
         if apply_units and not no_systemd:
-            _ensure_materialize_bitnami_writable(prefix)
+            _ensure_materialize_bitnami_writable(prefix, with_execution=with_execution)
         restarted_services: list[str] = []
         verified_service_pids: dict[str, int] = {}
         synced_timers: list[str] = []
         if apply_units and restart_services and not no_systemd and _is_system_root(prefix):
-            restarted_services, verified_service_pids = _restart_managed_daemons(app_root, str(target_id))
+            restarted_services, verified_service_pids = _restart_managed_daemons(
+                app_root, str(target_id), prefix=prefix, with_execution=with_execution
+            )
             synced_timers = _sync_managed_timers(units, target_dir)
 
         receipt = {
@@ -876,9 +1240,12 @@ def main(argv: list[str] | None = None) -> int:
     p_inst.add_argument("--apply-units", action="store_true")
     p_inst.add_argument("--no-systemd", action="store_true")
     p_inst.add_argument("--no-restart", action="store_true")
+    p_inst.add_argument("--with-execution", action="store_true")
     p_inst.add_argument("--keep-releases", type=int, default=3)
     p_inst.add_argument("--min-free-bytes", type=int, default=512 * 1024 * 1024)
     p_inst.add_argument("--allow-window-override", action="store_true")
+    p_inst.add_argument("--exec-control-url", default=None)
+    p_inst.add_argument("--exec-control-token-file", type=Path, default=None)
 
     p_ver = sub.add_parser("verify")
     add_common(p_ver)
@@ -890,7 +1257,10 @@ def main(argv: list[str] | None = None) -> int:
     p_rb.add_argument("--apply-units", action="store_true")
     p_rb.add_argument("--no-systemd", action="store_true")
     p_rb.add_argument("--no-restart", action="store_true")
+    p_rb.add_argument("--with-execution", action="store_true")
     p_rb.add_argument("--allow-window-override", action="store_true")
+    p_rb.add_argument("--exec-control-url", default=None)
+    p_rb.add_argument("--exec-control-token-file", type=Path, default=None)
 
     p_st = sub.add_parser("status")
     add_common(p_st)
@@ -906,9 +1276,12 @@ def main(argv: list[str] | None = None) -> int:
             apply_units=args.apply_units,
             no_systemd=args.no_systemd,
             restart_services=not args.no_restart,
+            with_execution=args.with_execution,
             keep_releases=args.keep_releases,
             min_free_bytes=args.min_free_bytes,
             allow_window_override=args.allow_window_override,
+            exec_control_url=args.exec_control_url,
+            exec_control_token_file=args.exec_control_token_file,
         )
     elif args.command == "verify":
         out = cmd_verify(prefix, expected_core_version=args.expected_core_version)
@@ -919,7 +1292,10 @@ def main(argv: list[str] | None = None) -> int:
             apply_units=args.apply_units,
             no_systemd=args.no_systemd,
             restart_services=not args.no_restart,
+            with_execution=args.with_execution,
             allow_window_override=args.allow_window_override,
+            exec_control_url=args.exec_control_url,
+            exec_control_token_file=args.exec_control_token_file,
         )
     elif args.command == "status":
         out = cmd_status(prefix)

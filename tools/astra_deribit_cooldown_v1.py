@@ -106,6 +106,11 @@ def record_cooldown(
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
+        if os.name != "nt":
+            try:
+                os.chmod(tmp_path, 0o664)
+            except OSError:
+                pass
         os.replace(tmp_path, target)
     except OSError:
         if tmp_path is not None:

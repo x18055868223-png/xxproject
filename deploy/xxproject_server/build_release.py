@@ -29,6 +29,8 @@ ENTRYPOINT_ROOTS = [
     "astra_research_archive_v1",
     "astra_player_tracking_v13",
     "astra_player_dossier_v1",
+    "astra_execution_coordinator_v1",
+    "astra_exec_testnet_verify_v1",
     "materialize_signal_cards",
     "signal_llm_review",
     "signal_llm_review_entry",
@@ -292,6 +294,23 @@ def _collect_entries(root: Path) -> tuple[dict[str, bytes], list[dict[str, str]]
         ):
             raise ValueError(f"FORBIDDEN_PACKAGED_ARTIFACT: {name}")
 
+    exec_unit_rel = "deploy/xxproject_server/systemd_units_execution/astra-execution-coordinator.service"
+    exec_dropin_rel = "deploy/xxproject_server/systemd_units_execution/60-exec-control.conf"
+    if exec_unit_rel not in content or exec_dropin_rel not in content:
+        raise ValueError(f"EXECUTION_SYSTEMD_ASSETS_MISSING: {exec_unit_rel}")
+    exec_unit_txt = content[exec_unit_rel].decode("utf-8")
+    if "--mode SHADOW_ONLY" not in exec_unit_txt or "UMask=0077" not in exec_unit_txt or "SupplementaryGroups=research" not in exec_unit_txt:
+        raise ValueError(f"EXECUTION_UNIT_ISOLATION_VIOLATED: {exec_unit_rel}")
+    exec_dropin_txt = content[exec_dropin_rel].decode("utf-8")
+    if (
+        "User=astra-workbench" not in exec_dropin_txt
+        or "ReadOnlyPaths=/var/lib/xxproject/execution" not in exec_dropin_txt
+        or "LoadCredential=exec_control_token" in exec_dropin_txt
+        or "LoadCredential=exec_operator_token" in exec_dropin_txt
+        or "ASTRA_EXEC_CONTROL_SOCKET" in exec_dropin_txt
+    ):
+        raise ValueError(f"EXECUTION_DROPIN_ISOLATION_VIOLATED: {exec_dropin_rel}")
+
     versions = {
         "signal_core": core_version,
         "signal_core_lf_sha256": _sha256(content["signal_core/neutral_regulation_demo_fmz.py"]),
@@ -299,6 +318,9 @@ def _collect_entries(root: Path) -> tuple[dict[str, bytes], list[dict[str, str]]
         "workbench": _extract_version(content["tools/astra_workbench_v20.py"].decode("utf-8"), r'^SCHEMA\s*=\s*"([^"]+)"'),
         "map_data_server": _extract_version(content["tools/astra_map_data_server_v24.py"].decode("utf-8"), r'^SCHEMA\s*=\s*"([^"]+)"'),
         "player_plan": plan.get("plan_id"),
+        "execution_coordinator": _extract_version(
+            content["tools/astra_execution_coordinator_v1.py"].decode("utf-8"), r'^SCHEMA\s*=\s*"([^"]+)"'
+        ),
         "health_check": _extract_version(content["tools/xxproject_server_health_v1.py"].decode("utf-8"), r'^SCHEMA\s*=\s*"([^"]+)"'),
     }
     return content, transformations, versions
@@ -334,6 +356,8 @@ def build_release(
             "signal_core_read_only_demo": True,
             "ai_player_mode": "SHADOW_ONLY",
             "ai_player_execution_allowed": False,
+            "execution_default_mode": "SHADOW_ONLY",
+            "execution_live_writes_enabled": False,
             "secrets_or_runtime_data_bundled": False,
         },
         "packaging_transformations": transformations,

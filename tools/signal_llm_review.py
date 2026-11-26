@@ -2631,6 +2631,13 @@ def _exclusive_file_lock(target_path):
     lock_path = Path(str(target_path) + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
+        if os.name != "nt":
+            try:
+                cur_mode = os.fstat(handle.fileno()).st_mode & 0o777
+                if (cur_mode & 0o060) != 0o060:
+                    os.fchmod(handle.fileno(), cur_mode | 0o060)
+            except OSError:
+                pass
         handle.seek(0, os.SEEK_END)
         if handle.tell() == 0:
             handle.write(b"0")
@@ -2698,7 +2705,7 @@ class DailyHttpBudget:
                     "usage": {},
                 })
                 state["events"] = events[-self.limit:]
-                _write_json_atomic(self.state_path, state)
+                _write_json_atomic(self.state_path, state, mode=0o660)
                 result = dict(state)
                 result["reservation_id"] = reservation_id
                 return result
@@ -2714,7 +2721,7 @@ class DailyHttpBudget:
                         event["status_category"] = str(status_category)[:80]
                         event["usage"] = dict(usage or {})
                         break
-                _write_json_atomic(self.state_path, state)
+                _write_json_atomic(self.state_path, state, mode=0o660)
                 return dict(state)
 
     def snapshot(self):
@@ -8115,7 +8122,7 @@ def _append_jsonl(path, payload):
                 os.fsync(handle.fileno())
 
 
-def _write_json_atomic(path, payload):
+def _write_json_atomic(path, payload, *, mode=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
@@ -8130,6 +8137,8 @@ def _write_json_atomic(path, payload):
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        if mode is not None and os.name != "nt":
+            os.chmod(temp_name, mode)
         os.replace(temp_name, path)
     except Exception:
         try:

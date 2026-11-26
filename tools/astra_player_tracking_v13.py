@@ -1770,6 +1770,7 @@ def _ensure_shadow_exit_terminal(
     series_rows=None,
     review_snapshot=None,
     historical_compat=False,
+    live_execution_active=False,
 ):
     """Idempotently emit immutable SHADOW_EXITED event + tracking/shadow_exit.json and stop native tracker."""
     episode_meta = optional(episode / 'episode.json')
@@ -1845,7 +1846,7 @@ def _ensure_shadow_exit_terminal(
             )
             dossier.write(tracking_sx_path, dossier.encode(tracking_rec), replace=False)
 
-    if service is not None and not tracking_rec.get('tracker_stopped'):
+    if service is not None and not tracking_rec.get('tracker_stopped') and not live_execution_active:
         try:
             stop_res = service('stop', dict(dossier_id=hand.parent.parent.name, hand_id=hand.name))
         except Exception:
@@ -2575,7 +2576,7 @@ def _build_revoke_quote_files(*, frozen, link_record, ep_meta, rev_decision, rev
 
 def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path=None, service=None, llm_config=None,
                            debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS,
-                           soft_budget=2):
+                           soft_budget=2, real_execution_context=None, live_budget_path=None):
     """Detect A/B/C/D triggers, debounce/coalesce calls, run incremental HOLD/REVOKE/UNKNOWN review & shadow exit."""
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
@@ -2633,11 +2634,13 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                 verified_prior_revoke,
                 service=service,
                 series_rows=series_rows,
+                live_execution_active=bool(real_execution_context),
             )
             return dict(
                 action='ALREADY_REVOKED',
                 review_id=verified_prior_revoke['review_id'],
                 shadow_exited=True,
+                live_execution_active=bool(real_execution_context),
             )
         return dict(
             action='ALREADY_REVOKED',
@@ -2674,6 +2677,20 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         expected_move_usd=t0_metrics.get('expected_move_usd'),
     )
     cfg = _llm_settings(llm_config)
+    live_ctx = real_execution_context if isinstance(real_execution_context, dict) else (
+        dict(real_execution_context) if real_execution_context is not None else None
+    )
+    if live_ctx is not None:
+        # R-06: isolate live hold-review quota ledger completely from shared shadow DailyHttpBudget.
+        live_path = live_budget_path or os.environ.get('ASTRA_PLAYER_LIVE_USAGE_LEDGER')
+        if not live_path and cfg.get('budget') is not None and getattr(cfg['budget'], 'state_path', None):
+            sp_orig = Path(cfg['budget'].state_path)
+            live_path = str(sp_orig.with_name(f'live_{sp_orig.name}'))
+        if not live_path:
+            live_path = str(d.root / 'live_hold_review_usage.json')
+        live_limit = int(os.environ.get('ASTRA_PLAYER_LIVE_DAILY_HTTP_LIMIT') or 60)
+        cfg['budget'] = signal_llm_review.DailyHttpBudget(live_path, limit=live_limit)
+    budget_role = 'astra_player_live_hold_review' if live_ctx is not None else 'astra_player_hold_review'
     hold_timeout_s = float(cfg.get('hold_timeout_s') or min(float(cfg.get('timeout_s', 300)), 360.0))
     hold_stream = _stream_enabled(cfg)
     stale_inflight_ms = max(8 * dossier.MINUTE, int(hold_timeout_s * 1000) + 60_000)
@@ -2929,12 +2946,14 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             _ensure_shadow_exit_terminal(
                 d, hand, episode, frozen, link_record, o_rev_dec,
                 service=service, series_rows=series_rows, review_snapshot=o_rev_snap,
+                live_execution_active=bool(real_execution_context),
             )
             return dict(
                 action='ALREADY_REVOKED',
                 recovered=True,
                 review_id=o_rev_dec['review_id'],
                 shadow_exited=True,
+                live_execution_active=bool(real_execution_context),
             )
         return dict(
             action='ALREADY_REVOKED',
@@ -2963,6 +2982,32 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     flow_qual_reasons = ctx['flow_qual_reasons']
     t0_flow_qualified = ctx['t0_flow_qualified']
 
+    real_t0_summary = dict(
+        locked_at=frozen['entry_at_ms'],
+        entry_index_usd=frozen.get('entry_index_usd'),
+        short_distance_pct=t0_metrics.get('short_distance_pct'),
+        expected_move_usd=t0_metrics.get('expected_move_usd'),
+        flow_direction=t0_metrics.get('flow_direction') if t0_flow_qualified else None,
+        flow_asof_ms=t0_metrics.get('flow_asof_ms') if t0_flow_qualified else None,
+        flow_window_basis=t0_metrics.get('flow_window_basis') if t0_flow_qualified else None,
+        flow_qualification_status=t0_metrics.get('flow_qualification_status'),
+        flow_fast_4h_ready=t0_metrics.get('flow_fast_4h_ready'),
+        flow_cvd_4h=t0_metrics.get('flow_cvd_4h') if t0_flow_qualified else None,
+        flow_cvd_12h=t0_metrics.get('flow_cvd_12h') if t0_flow_qualified else None,
+        net_credit_after_fee_btc=((link_record.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc'),
+    )
+    if live_ctx is not None:
+        if live_ctx.get('actual_entry_at_ms') is not None:
+            real_t0_summary['actual_entry_at_ms'] = live_ctx['actual_entry_at_ms']
+        if live_ctx.get('actual_spot_usd') is not None:
+            real_t0_summary['entry_index_usd'] = live_ctx['actual_spot_usd']
+            real_t0_summary['actual_spot_usd'] = live_ctx['actual_spot_usd']
+        if live_ctx.get('actual_qty_btc') is not None:
+            real_t0_summary['actual_qty_btc'] = live_ctx['actual_qty_btc']
+        if live_ctx.get('actual_net_credit_per_btc') is not None:
+            real_t0_summary['net_credit_after_fee_btc'] = live_ctx['actual_net_credit_per_btc']
+            real_t0_summary['actual_net_credit_per_btc'] = live_ctx['actual_net_credit_per_btc']
+
     input_md = _call_with_supported_kwargs(
         review.build_hold_review_input,
         contract=frozen['contract'],
@@ -2970,20 +3015,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         initial_decision=decision,
         frozen_condition=frozen,
         triggers=batch,
-        t0_summary=dict(
-            locked_at=frozen['entry_at_ms'],
-            entry_index_usd=frozen.get('entry_index_usd'),
-            short_distance_pct=t0_metrics.get('short_distance_pct'),
-            expected_move_usd=t0_metrics.get('expected_move_usd'),
-            flow_direction=t0_metrics.get('flow_direction') if t0_flow_qualified else None,
-            flow_asof_ms=t0_metrics.get('flow_asof_ms') if t0_flow_qualified else None,
-            flow_window_basis=t0_metrics.get('flow_window_basis') if t0_flow_qualified else None,
-            flow_qualification_status=t0_metrics.get('flow_qualification_status'),
-            flow_fast_4h_ready=t0_metrics.get('flow_fast_4h_ready'),
-            flow_cvd_4h=t0_metrics.get('flow_cvd_4h') if t0_flow_qualified else None,
-            flow_cvd_12h=t0_metrics.get('flow_cvd_12h') if t0_flow_qualified else None,
-            net_credit_after_fee_btc=((link_record.get('t0') or {}).get('economy') or {}).get('net_credit_after_entry_fee_btc'),
-        ),
+        t0_summary=real_t0_summary,
         post_entry_summary=dict(
             sample_count=len(series_rows),
             latest_ts_ms=review._row_ts(series_rows[-1]) if series_rows else None,
@@ -3065,7 +3097,7 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             reasoning_effort=cfg.get('reasoning_effort'),
             stream=hold_stream,
             budget=cfg.get('budget'),
-            budget_role='astra_player_hold_review',
+            budget_role=budget_role,
             packet_hash=packet_hash,
             transport=cfg.get('transport'),
             on_partial=lambda partial: _remember_partial(call, d, partial),
@@ -3196,9 +3228,11 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
                 service=service,
                 series_rows=series_rows,
                 review_snapshot=review_snapshot,
+                live_execution_active=bool(real_execution_context),
             )
             result_out['shadow_exit'] = sx_rec
             result_out['active_monitoring_stopped'] = True
+            result_out['live_execution_active'] = bool(real_execution_context)
         except Exception as exc:
             result_out['shadow_action_error'] = f'{type(exc).__name__}: {str(exc)[:180]}'
     else:
@@ -3210,9 +3244,63 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     return result_out
 
 
+def _resolve_live_execution_context_for_hand(exec_status_path, hand_name):
+    """Read coordinator public_status.json (read-only) and return normalized real_execution_context if hand is active."""
+    cand_path = exec_status_path or os.environ.get('ASTRA_EXEC_STATUS_PATH')
+    if not cand_path:
+        default_p = Path('/var/lib/xxproject/execution/public_status.json')
+        cand_path = default_p if default_p.is_file() else None
+    if not cand_path:
+        return None
+    p = Path(cand_path)
+    if not p.is_file():
+        return None
+    try:
+        payload = json.loads(p.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    active = payload.get('active_episode')
+    if not isinstance(active, dict):
+        return None
+    if str(active.get('hand_id') or '') != str(hand_name) or bool(active.get('cashflow_settled')):
+        return None
+    try:
+        matched_qty = float(active.get('matched_qty_btc') or 0.0)
+        short_pos = abs(float(active.get('short_pos_btc') or 0.0))
+        prot_pos = abs(float(active.get('prot_pos_btc') or 0.0))
+    except (ValueError, TypeError):
+        return None
+    if matched_qty <= 0.0 and short_pos <= 0.0 and prot_pos <= 0.0 and active.get('phase') not in {
+        'ENTRY', 'TP_MANAGED', 'EXIT_LATCHED', 'SHORT_LIABILITY_CLEARED', 'INVENTORY_CLEARED'
+    }:
+        return None
+    ctx = {'live_episode_id': str(active.get('episode_id') or hand_name)}
+    entry_ms = active.get('entry_started_at_ms') or active.get('created_at_ms')
+    if entry_ms is not None:
+        ctx['actual_entry_at_ms'] = int(entry_ms)
+    if active.get('entry_spot_usd') is not None:
+        try:
+            spot_v = float(active['entry_spot_usd'])
+            if spot_v > 0:
+                ctx['actual_spot_usd'] = spot_v
+        except (ValueError, TypeError):
+            pass
+    qty_eff = matched_qty if matched_qty > 0.0 else short_pos
+    if qty_eff > 0.0:
+        ctx['actual_qty_btc'] = qty_eff
+    if matched_qty > 0.0 and active.get('matched_net_credit_btc') is not None:
+        try:
+            ctx['actual_net_credit_per_btc'] = float(active['matched_net_credit_btc']) / matched_qty
+        except (ValueError, TypeError, ZeroDivisionError):
+            pass
+    return ctx
+
+
 def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=None,
          run_review=False, llm_config=None, debounce_ms=review.DEFAULT_DEBOUNCE_MS, cooldown_ms=review.DEFAULT_COOLDOWN_MS,
-         soft_budget=2):
+         soft_budget=2, real_execution_context=None, live_budget_path=None):
     """Copy the native tracker evidence; optionally run due fixed-clock checks and event-triggered hold reviews."""
     root = hand / 'tracking'
     link_record = load(root / 'link.json')
@@ -3233,6 +3321,7 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
             link_record,
             verified_prior_revoke,
             service=service,
+            live_execution_active=bool(real_execution_context),
         )
         expiry_ms = frozen['contract']['expiry_ms']
         if d.clock() < expiry_ms + 2 * dossier.MINUTE:
@@ -3395,7 +3484,8 @@ def sync(d, hand, service, *, index_path=None, check_due=False, archive_root=Non
         review_result = evaluate_hold_management(
             d, hand, exported, archive_root=archive_root, index_path=ep_index,
             service=service, llm_config=llm_config, debounce_ms=debounce_ms, cooldown_ms=cooldown_ms,
-            soft_budget=soft_budget)
+            soft_budget=soft_budget, real_execution_context=real_execution_context,
+            live_budget_path=live_budget_path)
     if archived and (settlement_state == 'settled' or (terminal is None and settlement_state == 'delivery_price_unavailable')):
         with _short_writer(d):
             current = optional(root / 'terminal.json')
@@ -3899,11 +3989,12 @@ def _condition_check_summary(check_events, *, asof_ms=None, check_clock=None, ex
     latest = ordered[-1] if ordered else None
     first_at = (check_clock or {}).get('first_at_ms')
     interval = (check_clock or {}).get('interval_ms')
-    not_due = not latest and isinstance(asof_ms, int) and isinstance(first_at, int) and asof_ms < first_at
+    closed_asof_ms = (asof_ms - dossier.MINUTE) if isinstance(asof_ms, int) else None
+    not_due = not latest and isinstance(closed_asof_ms, int) and isinstance(first_at, int) and closed_asof_ms < first_at
     latest_at_ms = ((latest.get('observed_at_ms') or latest.get('recorded_at_ms')) if latest else None)
     due = None
-    if isinstance(asof_ms, int) and isinstance(first_at, int) and isinstance(interval, int) and interval > 0:
-        limit = min(asof_ms, expiry_ms - 1) if isinstance(expiry_ms, int) else asof_ms
+    if isinstance(closed_asof_ms, int) and isinstance(first_at, int) and isinstance(interval, int) and interval > 0:
+        limit = min(closed_asof_ms, expiry_ms - 1) if isinstance(expiry_ms, int) else closed_asof_ms
         if limit >= first_at:
             due = first_at + (limit - first_at) // interval * interval
     mech_state = ('TRIGGERED' if triggered
@@ -5457,7 +5548,7 @@ def classify_sync_open_batch(rows):
     )
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url', default='http://127.0.0.1:8895', help='private loopback workbench listener')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -5480,17 +5571,21 @@ def main():
             command.add_argument('--check-due', action='store_true')
             command.add_argument('--review', action='store_true')
             command.add_argument('--archive', type=Path)
+            command.add_argument('--exec-status-path', type=Path, default=None)
+            command.add_argument('--live-budget-path', type=Path, default=None)
     follow = sub.add_parser('sync-open')
     follow.add_argument('--root', type=Path, required=True)
     follow.add_argument('--check-due', action='store_true')
     follow.add_argument('--review', action='store_true')
     follow.add_argument('--archive', type=Path)
+    follow.add_argument('--exec-status-path', type=Path, default=None)
+    follow.add_argument('--live-budget-path', type=Path, default=None)
     rec_sx = sub.add_parser('reconcile-shadow-exit')
     rec_sx.add_argument('--root', type=Path, required=True)
     rec_sx.add_argument('--dossier', required=True)
     rec_sx.add_argument('--hand', required=True)
     rec_sx.add_argument('--series-jsonl', type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         try:
             service = local_service(args.url, os.environ.get('ASTRA_AI_SHADOW_LOCK_TOKEN'))
@@ -5542,14 +5637,18 @@ def main():
                             meta = load(link_file.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
                             if meta.get('settlement_state') == 'settled':
                                 continue
+                        live_ctx = _resolve_live_execution_context_for_hand(args.exec_status_path, hand.name)
                         sx = optional(link_file.parent / 'shadow_exit.json')
-                        if (isinstance(sx, dict)
+                        if (live_ctx is None
+                                and isinstance(sx, dict)
                                 and (sx.get('exit_state') == 'SHADOW_EXITED' or sx.get('state') == 'SHADOW_EXITED')
                                 and sx.get('tracker_stopped') is True
                                 and d.clock() < load(hand / 'expected.json')['expiry_ms'] + 2 * dossier.MINUTE):
                             continue
                         out.append(sync(d, hand, service, check_due=args.check_due,
-                                        archive_root=args.archive, run_review=args.review))
+                                        archive_root=args.archive, run_review=args.review,
+                                        real_execution_context=live_ctx,
+                                        live_budget_path=args.live_budget_path))
                         with _short_writer(d):
                             d.summary(load(hand / 'expected.json')['expiry_ms'])
                     except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
@@ -5572,7 +5671,10 @@ def main():
                 out = (_link_with_fresh_quote(d, hand, service, dossier.read(args.condition) if args.condition else None)
                        if args.command == 'link'
                        else sync(d, hand, service, check_due=args.check_due,
-                                 archive_root=args.archive, run_review=args.review))
+                                 archive_root=args.archive, run_review=args.review,
+                                 real_execution_context=_resolve_live_execution_context_for_hand(
+                                     args.exec_status_path, hand.name),
+                                 live_budget_path=args.live_budget_path))
                 with _short_writer(d):
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
         print(dossier.encode(out).decode('utf-8'), end='')

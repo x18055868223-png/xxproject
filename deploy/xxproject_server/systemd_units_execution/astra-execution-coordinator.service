@@ -1,0 +1,37 @@
+[Unit]
+Description=xxproject Single-Writer Execution Coordinator (Default SHADOW_ONLY)
+After=network-online.target astra-signal-producer.service astra-workbench-v20.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=astra-exec
+Group=astra-exec
+SupplementaryGroups=research
+WorkingDirectory=/opt/xxproject/current/tools
+Environment=ASTRA_EXEC_ENV_TAG=tn
+EnvironmentFile=-/etc/signal-audit/exec-coordinator.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=astra-exec
+RuntimeDirectoryMode=0750
+LoadCredential=exec_control_token:/etc/signal-audit/exec-control.token
+ExecStart=/usr/bin/python3 /opt/xxproject/current/tools/astra_execution_coordinator_v1.py --mode SHADOW_ONLY --env-tag ${ASTRA_EXEC_ENV_TAG} --db /var/lib/xxproject/execution/exec_store.sqlite --status-path /var/lib/xxproject/execution/public_status.json --dossier-root /var/lib/xxproject/workbench/shadow_dossiers --control-socket /run/astra-exec/control.sock
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xxproject/execution
+ReadOnlyPaths=/var/lib/xxproject/workbench/shadow_dossiers
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryHigh=256M
+MemoryMax=512M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

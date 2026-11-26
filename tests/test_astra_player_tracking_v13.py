@@ -665,8 +665,11 @@ def test_reviewer_guards_unauth_redaction_deduped_checks_and_revoke_isolation(tm
     assert summary['latest_at_ms'] == SLOT + 10 * M
     clock = {'first_at_ms': SLOT + 5 * M, 'interval_ms': 5 * M}
     assert tracking._condition_check_summary([], asof_ms=SLOT, check_clock=clock)['mechanical_condition_state'] == 'NOT_DUE'
-    assert tracking._condition_check_summary([], asof_ms=SLOT + 5 * M, check_clock=clock)['mechanical_condition_state'] == 'DATA_GAP'
-    assert tracking._condition_check_summary(checks, asof_ms=SLOT + 15 * M, check_clock=clock)['mechanical_condition_state'] == 'DATA_GAP'
+    assert tracking._condition_check_summary([], asof_ms=SLOT + 5 * M, check_clock=clock)['mechanical_condition_state'] == 'NOT_DUE'
+    assert tracking._condition_check_summary([], asof_ms=SLOT + 5 * M + 2_000, check_clock=clock)['mechanical_condition_state'] == 'NOT_DUE'
+    assert tracking._condition_check_summary([], asof_ms=SLOT + 6 * M, check_clock=clock)['mechanical_condition_state'] == 'DATA_GAP'
+    assert tracking._condition_check_summary(checks, asof_ms=SLOT + 15 * M, check_clock=clock)['mechanical_condition_state'] == 'INTACT'
+    assert tracking._condition_check_summary(checks, asof_ms=SLOT + 16 * M, check_clock=clock)['mechanical_condition_state'] == 'DATA_GAP'
 
     # 2) Unauthenticated locked-candidates detail redacts private AI public_reply & hold_reviews
     wb, d, hand, now, _ = sample(tmp_path)
@@ -1596,4 +1599,63 @@ def test_hold_orphan_ignores_superseded_dispatch_and_recovers_non_auto_revoke(tm
             'exit_intent_only': True,
         }
         assert not (hand2 / 'tracking' / 'shadow_exit.json').exists()
+
+    # 3. Orphan verified REVOKE when real_execution_context is active preserves live_execution_active=True and does NOT stop native tracker
+    wb3, d3, hand3, now3, _ = sample(tmp_path / 'live_orphan', 'Accept / Call')
+    stop_calls: list[dict] = []
+    with serving(wb3) as base3:
+        svc3 = post(base3, wb3)
+        rec3 = tracking.link(d3, hand3, svc3, RULE)
+        ep3 = hand3.parent.parent / 'episodes' / rec3['origin']['dossier_episode_id']
+        now3[0] += 5 * M
+        exported3 = svc3('export', dict(dossier_id=hand3.parent.parent.name, hand_id=hand3.name))
+        exported3['points'] = [
+            {'metrics': {'asof_ms': now3[0] - 2 * M, 'spot_usd': 103_200.0, 'short_distance_pct': -0.19, 'flow_ready': False}},
+            {'metrics': {'asof_ms': now3[0] - M, 'spot_usd': 103_400.0, 'short_distance_pct': -0.39, 'flow_ready': False}},
+        ]
+        d3.event(ep3, dossier.identity('chk', now3[0] - M), 'CONDITION_TRIGGERED',
+                 dict(result={'rule': 'entry_not_returned'}), observed=now3[0] - M, available=now3[0])
+        started_lv = now3[0]
+        now3[0] = started_lv + 30 * M
+        lv_rev_id = 'rev_' + '55ee66ff' * 3
+        dossier.write(ep3 / 'trigger_state.json', dossier.encode({
+            'revoked': False,
+            'inflight': True,
+            'inflight_started_at_ms': started_lv,
+            'inflight_batch': [{'category': 'A', 'code': 'CONDITION_TRIGGERED', 'signature': f'CONDITION_TRIGGERED:{started_lv - M}', 'severity': 3, 'observed_at_ms': started_lv - M}],
+            'pending': [],
+            'dispatched_signatures': {},
+        }), replace=True)
+        dossier.publish(ep3 / 'review_calls' / lv_rev_id, {
+            'input.md': b'revoke input',
+            'request.json': dossier.encode(review.build_hold_review_request_payload(
+                'revoke input', model='m-live', requested_at_ms=started_lv + 5,
+            )),
+            'reply.json': dossier.encode({
+                'text': '## REVOKE\n\n触发实盘撤退。\n<HOLD_REVIEW_JSON>{"verdict":"REVOKE","program_triggered":true,"affected_conditions":["M1"],"public_reply":"撤销","key_facts":["trigger"]}</HOLD_REVIEW_JSON>',
+                'model': 'm-live',
+                'decided_at_ms': started_lv + 1_000,
+            }),
+        })
+
+        def _spy_svc(action: str, body: dict) -> dict:
+            if action == 'stop':
+                stop_calls.append(body)
+            return svc3(action, body)
+
+        res_lv = tracking.evaluate_hold_management(
+            d3, hand3, exported3, service=_spy_svc,
+            llm_config={'api_key': 'k', 'model': 'm-live', 'transport': lambda *a, **k: pytest.fail('orphan REVOKE must recover cleanly')},
+            real_execution_context={'mode': 'TESTNET', 'hand_id': hand3.name, 'episode_id': 'ep_live_1'},
+        )
+        assert res_lv == {
+            'action': 'ALREADY_REVOKED',
+            'recovered': True,
+            'review_id': lv_rev_id,
+            'shadow_exited': True,
+            'live_execution_active': True,
+        }
+        assert stop_calls == []
+        sx_lv = dossier.read(hand3 / 'tracking' / 'shadow_exit.json')
+        assert sx_lv['tracker_stopped'] is False
 

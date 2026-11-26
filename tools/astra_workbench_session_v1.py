@@ -145,6 +145,8 @@ class WorkbenchSessions:
         max_sessions: int = 32,
         now_ms: Callable[[], int] | None = None,
         store_path: Path | str | None = None,
+        cookie_name: str = COOKIE_NAME,
+        cookie_path: str = COOKIE_PATH,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds_must_be_positive")
@@ -161,6 +163,8 @@ class WorkbenchSessions:
         self.ttl_seconds = int(ttl_seconds)
         self.max_sessions = int(max_sessions)
         self.now_ms = now_ms or _now_ms
+        self.cookie_name = str(cookie_name or COOKIE_NAME)
+        self.cookie_path = str(cookie_path or COOKIE_PATH)
         self._hash_key = secrets.token_bytes(32)
         self._sessions: dict[str, _SessionRecord] = {}
         self._lock = threading.RLock()
@@ -177,8 +181,9 @@ class WorkbenchSessions:
         peer_host: str | None,
         *,
         request_scheme: str | None = None,
+        allow_bearer: bool = True,
     ) -> dict[str, object]:
-        result = self.authorize("GET", headers, peer_host, request_scheme=request_scheme)
+        result = self.authorize("GET", headers, peer_host, request_scheme=request_scheme, allow_bearer=allow_bearer)
         return {
             "schema": SCHEMA,
             "authenticated": result.ok,
@@ -289,6 +294,7 @@ class WorkbenchSessions:
         authorization: str | None = None,
         *,
         request_scheme: str | None = None,
+        allow_bearer: bool = True,
     ) -> AuthResult:
         method_upper = method.upper()
         transport_reason = self._transport_reason(headers, peer_host, request_scheme=request_scheme)
@@ -296,7 +302,9 @@ class WorkbenchSessions:
             return AuthResult(False, 403, transport_reason)
 
         explicit_authorization = authorization or _header(headers, "Authorization")
-        if not explicit_authorization and not self._cookie_token(headers):
+        if explicit_authorization and not allow_bearer:
+            return AuthResult(False, 403, "bearer_not_allowed")
+        if (not explicit_authorization or not allow_bearer) and not self._cookie_token(headers):
             return AuthResult(False, 401, "unauthorized")
         if method_upper in UNSAFE_METHODS:
             origin_reason = self._origin_reason(headers, require_cookie_context=not bool(explicit_authorization))
@@ -418,7 +426,7 @@ class WorkbenchSessions:
             cookie.load(raw)
         except Exception:
             return None
-        morsel = cookie.get(COOKIE_NAME)
+        morsel = cookie.get(self.cookie_name)
         return morsel.value if morsel is not None else None
 
     def _session_record(self, token: str | None) -> _SessionRecord | None:
@@ -504,9 +512,9 @@ class WorkbenchSessions:
     ) -> str:
         max_age = max(0, math.ceil((expires_at_ms - self.now_ms()) / 1000))
         parts = [
-            f"{COOKIE_NAME}={token}",
+            f"{self.cookie_name}={token}",
             f"Max-Age={max_age}",
-            f"Path={COOKIE_PATH}",
+            f"Path={self.cookie_path}",
             "HttpOnly",
             "SameSite=Strict",
         ]
@@ -521,9 +529,9 @@ class WorkbenchSessions:
         request_scheme: str | None,
     ) -> str:
         parts = [
-            f"{COOKIE_NAME}=",
+            f"{self.cookie_name}=",
             "Max-Age=0",
-            f"Path={COOKIE_PATH}",
+            f"Path={self.cookie_path}",
             "HttpOnly",
             "SameSite=Strict",
         ]

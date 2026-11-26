@@ -1765,6 +1765,8 @@ class WorkbenchConfig:
     # only cached page bodies and refuse heavy reads with 503 until back under soft.
     memory_soft_mb: int = 1536
     memory_hard_mb: int = 2560
+    exec_status_path: Path | None = None
+    exec_stale_after_ms: int = 15_000
 
     @property
     def state_path(self) -> Path:
@@ -7182,6 +7184,127 @@ class AstraWorkbench:
                 thread.join(timeout=5)
         self._sampler_running = bool(self._sampler_thread and self._sampler_thread.is_alive())
 
+    def _default_capital_policy_view(self) -> dict[str, Any]:
+        return {
+            "entry_armed": False,
+            "entry_paused": True,
+            "auth_epoch": 0,
+            "budget_cap_btc": "0",
+            "effective_budget_btc": "0",
+            "pnl_settled_btc": "0",
+            "grant_baseline_pnl_btc": "0",
+            "max_qty_btc": "0.1",
+            "max_active_episodes": 1,
+            "min_net_credit_per_btc": "0.0008",
+            "max_zero_rec_ep_unit_btc": "0.0060",
+            "updated_at_ms": 0,
+            "last_reject_reason": None,
+        }
+
+    def execution_live_status(self) -> dict[str, Any]:
+        """Read coordinator atomic public_status.json (read-only cockpit) and enforce server-side staleness."""
+        now_ms = int(self.clock_ms())
+        status_path = self.config.exec_status_path
+        if status_path is None:
+            return {
+                "schema": "astra_exec_status@1.0.0",
+                "contract_version": "live-exec-behavior@1.2.0",
+                "cockpit_mode": "READ_ONLY",
+                "mode": "SHADOW_ONLY",
+                "writes_enabled": False,
+                "writes_disabled_reason": None,
+                "manual_takeover_required": False,
+                "lifecycle_view": "IDLE",
+                "generated_at_ms": now_ms,
+                "facts_asof_ms": None,
+                "stale_after_ms": self.config.exec_stale_after_ms,
+                "stale": False,
+                "status_age_ms": 0,
+                "facts_age_ms": None,
+                "health": "SHADOW_IDLE",
+                "venue_connected": False,
+                "last_error": None,
+                "subaccount_id": "",
+                "capital_policy": self._default_capital_policy_view(),
+                "account": None,
+                "active_episode": None,
+                "history_episodes": [],
+            }
+        if not status_path.is_file():
+            return {
+                "schema": "astra_exec_status@1.0.0",
+                "contract_version": "live-exec-behavior@1.2.0",
+                "cockpit_mode": "READ_ONLY",
+                "mode": "SHADOW_ONLY",
+                "writes_enabled": False,
+                "writes_disabled_reason": None,
+                "manual_takeover_required": False,
+                "lifecycle_view": "IDLE",
+                "generated_at_ms": now_ms,
+                "facts_asof_ms": None,
+                "stale_after_ms": self.config.exec_stale_after_ms,
+                "stale": True,
+                "status_age_ms": None,
+                "facts_age_ms": None,
+                "health": "DISCONNECTED",
+                "venue_connected": False,
+                "last_error": "coordinator_status_missing",
+                "subaccount_id": "",
+                "capital_policy": self._default_capital_policy_view(),
+                "account": None,
+                "active_episode": None,
+                "history_episodes": [],
+            }
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("status_not_dict")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {
+                "schema": "astra_exec_status@1.0.0",
+                "contract_version": "live-exec-behavior@1.2.0",
+                "cockpit_mode": "READ_ONLY",
+                "mode": "SHADOW_ONLY",
+                "writes_enabled": False,
+                "writes_disabled_reason": None,
+                "manual_takeover_required": False,
+                "lifecycle_view": "IDLE",
+                "generated_at_ms": now_ms,
+                "facts_asof_ms": None,
+                "stale_after_ms": self.config.exec_stale_after_ms,
+                "stale": True,
+                "status_age_ms": None,
+                "facts_age_ms": None,
+                "health": "DISCONNECTED",
+                "venue_connected": False,
+                "last_error": f"status_unreadable:{type(exc).__name__}",
+                "subaccount_id": "",
+                "capital_policy": self._default_capital_policy_view(),
+                "account": None,
+                "active_episode": None,
+                "history_episodes": [],
+            }
+        gen_ms = data.get("generated_at_ms")
+        facts_ms = data.get("facts_asof_ms")
+        stale_limit = int(data.get("stale_after_ms") or self.config.exec_stale_after_ms)
+        status_age = max(0, now_ms - int(gen_ms)) if isinstance(gen_ms, int) else None
+        facts_age = max(0, now_ms - int(facts_ms)) if isinstance(facts_ms, int) else None
+        is_stale = bool(
+            status_age is None
+            or status_age > stale_limit
+            or (data.get("active_episode") is not None and (facts_age is None or facts_age > stale_limit))
+        )
+        out = dict(data)
+        out.pop("pending_approval_candidates", None)
+        out.setdefault("cockpit_mode", "READ_ONLY")
+        out.setdefault("lifecycle_view", (out.get("active_episode") or {}).get("phase") or "IDLE")
+        out["status_age_ms"] = status_age
+        out["facts_age_ms"] = facts_age
+        out["stale"] = is_stale
+        if is_stale and out.get("health") in {"OK", "SHADOW_IDLE", None}:
+            out["health"] = "STALE"
+        return out
+
 
 def _process_rss_bytes() -> int | None:
     """Resident set size of this process (Linux /proc); None elsewhere."""
@@ -7453,6 +7576,12 @@ def make_handler(workbench: AstraWorkbench):
             if player_tracking is not None and (parsed.path == player_tracking.AUDIT_PATH
                     or parsed.path.startswith(player_tracking.AUDIT_PATH + "/")):
                 self._player_audit(parsed.path, query)
+                return
+            if parsed.path == "/api/workbench/execution/live":
+                if workbench.config.server_token and not sessions.authorize("GET", self.headers, self.client_address[0]).ok:
+                    self._json(401, {"schema": SCHEMA, "code": "unauthorized"})
+                    return
+                self._json(200, workbench.execution_live_status())
                 return
             if parsed.path == "/api/workbench/session/check":
                 # For the public proxy's auth_request: 204 with a live session, 401 otherwise; never a body.
@@ -7760,6 +7889,11 @@ def make_handler(workbench: AstraWorkbench):
             if player_tracking is not None and parsed.path.startswith(player_tracking.SERVICE_PATH + "/"):
                 self._shadow_service(parsed.path[len(player_tracking.SERVICE_PATH) + 1:])
                 return
+            if parsed.path == "/api/workbench/execution" or parsed.path.startswith("/api/workbench/execution/"):
+                self._json(403, {"schema": SCHEMA, "status": "ERROR",
+                                 "code": "execution_control_disabled_readonly_cockpit",
+                                 "message": "工作台已收束为纯只读驾驶舱，不开放前端交易控制写入"})
+                return
             if parsed.path == "/api/workbench/session":
                 result = sessions.login("POST", self.headers, self.client_address[0])
                 self._json(result.status_code, result.body, headers=result.headers)
@@ -7956,6 +8090,8 @@ def config_from_env() -> WorkbenchConfig:
         expiry_gamma_enabled=os.environ.get("ASTRA_EXPIRY_GAMMA_ENABLED", "1") == "1",
         memory_soft_mb=int(os.environ.get("ASTRA_WORKBENCH_MEMORY_SOFT_MB") or "1536"),
         memory_hard_mb=int(os.environ.get("ASTRA_WORKBENCH_MEMORY_HARD_MB") or "2560"),
+        exec_status_path=(Path(os.environ["ASTRA_EXEC_STATUS_PATH"]) if os.environ.get("ASTRA_EXEC_STATUS_PATH") else None),
+        exec_stale_after_ms=int(os.environ.get("ASTRA_EXEC_STALE_AFTER_MS") or "15000"),
         map_sources_enabled=os.environ.get("ASTRA_MAP_SOURCES_ENABLED") == "1",
         map_source_mode=os.environ.get("ASTRA_MAP_SOURCE_MODE") or map_projection.SOURCE_MODE_COLLECTOR,
         map_producer_current_path=Path(producer_path) if producer_path else None,

@@ -285,6 +285,7 @@ def _check_workbench(
     http_get: Callable[..., tuple[int, Any]],
     now_ms: int | None = None,
     require_evidence_channels: bool = False,
+    check_execution_live: bool = False,
 ) -> dict[str, Any]:
     base = workbench_url.rstrip("/")
     try:
@@ -341,12 +342,31 @@ def _check_workbench(
             "execution_allowed": False,
             **evidence,
         }
+    exec_live_cockpit_mode: str | None = None
+    if check_execution_live:
+        try:
+            st_ex, ex_payload = http_get(
+                f"{base}/api/workbench/execution/live",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout_s=5.0,
+            )
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+            return {"ok": False, "reason": f"workbench_execution_live_failed:{type(exc).__name__}"}
+        if st_ex != 200 or not isinstance(ex_payload, dict) or ex_payload.get("cockpit_mode") != "READ_ONLY":
+            return {
+                "ok": False,
+                "reason": "workbench_execution_live_contract_invalid",
+                "status": st_ex,
+                "cockpit_mode": ex_payload.get("cockpit_mode") if isinstance(ex_payload, dict) else None,
+            }
+        exec_live_cockpit_mode = str(ex_payload.get("cockpit_mode"))
     return {
         "ok": True,
         "authenticated_check": True,
         "market_context_status": mc.get("status"),
         "strategy_version": mc.get("strategy_version"),
         "execution_allowed": False,
+        **({"execution_cockpit_mode": exec_live_cockpit_mode} if exec_live_cockpit_mode is not None else {}),
         **evidence,
     }
 
@@ -446,14 +466,18 @@ MANAGED_TIMERS = (
 )
 
 
-def _check_systemd_units(release_dir: Path | None) -> dict[str, Any]:
+def _check_systemd_units(release_dir: Path | None, *, include_execution: bool = False) -> dict[str, Any]:
     if os.name == "nt":
         return {"ok": True, "skipped": "windows"}
     expected_release = release_dir.resolve() if release_dir and release_dir.exists() else None
     daemons: dict[str, Any] = {}
     timers: dict[str, str] = {}
     failures: list[str] = []
-    for unit in MANAGED_DAEMON_SERVICES:
+    daemon_list = list(MANAGED_DAEMON_SERVICES)
+    if include_execution or Path("/etc/systemd/system/astra-execution-coordinator.service").exists():
+        if "astra-execution-coordinator.service" not in daemon_list:
+            daemon_list.append("astra-execution-coordinator.service")
+    for unit in daemon_list:
         res = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False)
         status = res.stdout.strip() or "unknown"
         pid_out = subprocess.run(
@@ -540,6 +564,113 @@ def check_release_manifest(release_root: Path) -> dict[str, Any]:
     }
 
 
+EXEC_CRITICAL_ALERTS = frozenset({
+    "NAKED_SHORT_BREACH",
+    "EXTERNAL_UNATTRIBUTED_POSITION",
+    "UNEXPECTED_LONG_IN_SHORT_LEG",
+    "UNEXPECTED_SHORT_IN_LONG_LEG",
+    "HOLD_REVIEW_LLM_UNAVAILABLE",
+    "WRITES_DISABLED_OPEN_ORDERS_OR_RISK_MANUAL_TAKEOVER",
+})
+EXEC_CRITICAL_PREFIXES = (
+    "UNKNOWN_UNVERIFIABLE_PAST_HOT_CACHE:",
+    "ORDER_RECONCILE_CONFLICT_",
+    "ORDER_TRADES_EXCEED_ORDER_FILLED:",
+)
+DEFAULT_EXEC_STATUS_PATH = Path("/var/lib/xxproject/execution/public_status.json")
+
+
+def _check_execution_status(
+    status_path: Path,
+    *,
+    now_ms: int,
+    max_age_ms: int,
+    max_facts_age_ms: int = 45_000,
+    require_shadow_only: bool = True,
+    expected_mode: str | None = None,
+) -> dict[str, Any]:
+    if not status_path.is_file():
+        return {"ok": False, "reason": "execution_status_missing", "path": str(status_path)}
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "reason": f"execution_status_unreadable:{exc}", "path": str(status_path)}
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "execution_status_invalid_json", "path": str(status_path)}
+    gen_ms = payload.get("generated_at_ms")
+    if isinstance(gen_ms, bool) or not isinstance(gen_ms, (int, float)):
+        return {"ok": False, "reason": "execution_status_missing_timestamp", "path": str(status_path)}
+    age_ms = now_ms - int(gen_ms)
+    if age_ms > max_age_ms:
+        return {"ok": False, "reason": "execution_status_stale", "age_ms": age_ms, "max_age_ms": max_age_ms}
+    if payload.get("stale") is True:
+        return {"ok": False, "reason": "execution_status_marked_stale", "age_ms": age_ms}
+
+    active = payload.get("active_episode") if isinstance(payload.get("active_episode"), Mapping) else None
+    facts_age_ms: int | None = None
+    if active is not None and not bool(active.get("cashflow_settled")):
+        facts_asof_ms = payload.get("facts_asof_ms")
+        if isinstance(facts_asof_ms, bool) or not isinstance(facts_asof_ms, (int, float)):
+            return {"ok": False, "reason": "execution_facts_timestamp_missing", "path": str(status_path)}
+        facts_age_ms = now_ms - int(facts_asof_ms)
+        if facts_age_ms > max_facts_age_ms:
+            return {
+                "ok": False,
+                "reason": "execution_facts_stale",
+                "facts_age_ms": facts_age_ms,
+                "max_facts_age_ms": max_facts_age_ms,
+            }
+
+    health = str(payload.get("health") or "")
+    if health in {"DEGRADED", "STALE", "NAKED_SHORT_BREACH", "DISCONNECTED", "WRITE_DISABLED", "HALTED"}:
+        return {"ok": False, "reason": f"execution_unhealthy:{health}", "health": health}
+
+    ep_alerts = [str(a) for a in ((active or {}).get("alerts") or ())]
+    for raw_alert in ep_alerts:
+        if raw_alert in EXEC_CRITICAL_ALERTS or any(raw_alert.startswith(px) for px in EXEC_CRITICAL_PREFIXES):
+            return {"ok": False, "reason": f"execution_critical_alert:{raw_alert}", "health": health}
+    if (
+        "RX_MARGIN_OR_CASH_EXHAUSTED_SPREAD_HEDGED_MANUAL_DECISION" in ep_alerts
+        and ((active or {}).get("revoke") or {}).get("cash_wall_10009") is not False
+    ):
+        return {
+            "ok": False,
+            "reason": "execution_critical_alert:RX_MARGIN_OR_CASH_EXHAUSTED_SPREAD_HEDGED_MANUAL_DECISION",
+            "health": health,
+        }
+
+    if payload.get("manual_takeover_required") is True:
+        return {"ok": False, "reason": "execution_manual_takeover_required", "health": health}
+
+    mode = str(payload.get("mode") or "")
+    writes_enabled = bool(payload.get("writes_enabled"))
+    want_mode = expected_mode or ("SHADOW_ONLY" if require_shadow_only else None)
+    if require_shadow_only and want_mode == "SHADOW_ONLY" and (mode != "SHADOW_ONLY" or writes_enabled):
+        return {
+            "ok": False,
+            "reason": "execution_shadow_only_violated",
+            "mode": mode,
+            "writes_enabled": writes_enabled,
+        }
+    if want_mode is not None and mode != want_mode:
+        return {
+            "ok": False,
+            "reason": "execution_mode_mismatch",
+            "mode": mode,
+            "expected_mode": want_mode,
+        }
+    return {
+        "ok": True,
+        "mode": mode,
+        "cockpit_mode": payload.get("cockpit_mode"),
+        "writes_enabled": writes_enabled,
+        "health": health,
+        "age_ms": age_ms,
+        "facts_age_ms": facts_age_ms,
+        "path": str(status_path),
+    }
+
+
 def run_health_check(
     *,
     signal_logs_dir: Path,
@@ -560,6 +691,12 @@ def run_health_check(
     require_release_manifest: bool = False,
     require_evidence_channels: bool = False,
     gex_env: Path | None = None,
+    exec_status_path: Path | None = None,
+    require_execution: bool = False,
+    max_exec_status_age_ms: int = 120_000,
+    max_exec_facts_age_ms: int = 45_000,
+    require_exec_shadow_only: bool = True,
+    expected_exec_mode: str | None = None,
     max_producer_age_ms: int = 300_000,
     max_snapshot_age_ms: int = 600_000,
     max_map_age_ms: int = 1_800_000,
@@ -583,6 +720,19 @@ def run_health_check(
         "research_archive": _check_archive(archive_root, now_ms=now, max_age_ms=max_archive_age_ms),
         "player_plan": _check_player_plan(player_plan),
     }
+    exec_path_eff = exec_status_path
+    if exec_path_eff is None and (require_execution or DEFAULT_EXEC_STATUS_PATH.is_file()):
+        exec_path_eff = DEFAULT_EXEC_STATUS_PATH
+    if exec_path_eff is not None:
+        eff_shadow_only = require_exec_shadow_only and (expected_exec_mode in (None, "SHADOW_ONLY"))
+        checks["execution"] = _check_execution_status(
+            exec_path_eff,
+            now_ms=now,
+            max_age_ms=max_exec_status_age_ms,
+            max_facts_age_ms=max_exec_facts_age_ms,
+            require_shadow_only=eff_shadow_only,
+            expected_mode=expected_exec_mode,
+        )
     if not skip_network:
         checks["gexmonitorapi"] = _check_gex_api(gex_url, token=_read_gex_token(gex_env), http_get=http_get)
         token = _read_workbench_token(workbench_env)
@@ -600,11 +750,12 @@ def run_health_check(
                 http_get=http_get,
                 now_ms=now,
                 require_evidence_channels=require_evidence_channels,
+                check_execution_live=bool(exec_path_eff is not None and token),
             )
     if release_dir is not None and (require_release_manifest or (release_dir / "RELEASE_MANIFEST.json").exists()):
         checks["release_manifest"] = check_release_manifest(release_dir)
     if require_systemd and not skip_systemd:
-        checks["systemd_units"] = _check_systemd_units(release_dir)
+        checks["systemd_units"] = _check_systemd_units(release_dir, include_execution=bool(exec_path_eff is not None))
 
     ok = all(item.get("ok") is True for item in checks.values())
     return {
@@ -648,6 +799,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Fail when workbench evidence channels report blind channels or broken producer provenance",
     )
+    parser.add_argument("--exec-status-path", type=Path, default=None)
+    parser.add_argument("--require-execution", action="store_true")
+    parser.add_argument("--expected-exec-mode", choices=("SHADOW_ONLY", "DRY_RUN", "TESTNET"), default="SHADOW_ONLY")
+    parser.add_argument("--max-exec-status-age-ms", type=int, default=120_000)
+    parser.add_argument("--max-exec-facts-age-ms", type=int, default=45_000)
     parser.add_argument("--max-producer-age-ms", type=int, default=300_000)
     parser.add_argument("--max-snapshot-age-ms", type=int, default=600_000)
     parser.add_argument("--max-map-age-ms", type=int, default=1_800_000)
@@ -680,6 +836,12 @@ def main(argv: list[str] | None = None) -> int:
         require_workbench_auth=args.require_workbench_auth,
         require_release_manifest=args.require_release_manifest,
         require_evidence_channels=args.require_evidence_channels,
+        exec_status_path=args.exec_status_path,
+        require_execution=args.require_execution,
+        max_exec_status_age_ms=args.max_exec_status_age_ms,
+        max_exec_facts_age_ms=args.max_exec_facts_age_ms,
+        require_exec_shadow_only=(args.expected_exec_mode == "SHADOW_ONLY"),
+        expected_exec_mode=args.expected_exec_mode,
         max_producer_age_ms=args.max_producer_age_ms,
         max_snapshot_age_ms=args.max_snapshot_age_ms,
         max_map_age_ms=args.max_map_age_ms,
