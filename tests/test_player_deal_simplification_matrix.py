@@ -1092,3 +1092,821 @@ def test_empirical_citation_and_format_flaws_vs_substantive_bad_reply_and_real_r
     )
     put_case_f2 = next(c for c in collected_f2["cases"] if dossier.player.values(c, "L1.contract")["side"] == "put")
     assert dossier.player.values(put_case_f2, "L4.expiry_vol")["realized_vol"]["rv_24h_pct"] is not None
+
+
+# ---------------------------------------------------------------------------
+# (h) Pre-Seal CLI Scheduler Entrypoints: Pre-Dispatch Exit, Unknown Receipt,
+#     Persisted Receipt, Expired Never Dispatches, & Same-Hand Outcomes
+# ---------------------------------------------------------------------------
+
+def _run_tracking_cli(monkeypatch, capsys, *, argv: list[str], clock_box: list[int]):
+    import sys
+
+    orig_dossiers = dossier.Dossiers
+    orig_prewarm = tracking.prewarm
+
+    class PatchedDossiers(orig_dossiers):
+        def __init__(self, root, clock=None, **kw):
+            super().__init__(root, clock=(clock or (lambda: clock_box[0])), **kw)
+
+    def patched_prewarm(plan_doc, arch_path, svc, **kw):
+        kw_no_clk = {k: v for k, v in kw.items() if k not in {"clock", "public"}}
+        return orig_prewarm(plan_doc, arch_path, svc, clock=lambda: clock_box[0], public=dossier.public, **kw_no_clk)
+
+    capsys.readouterr()
+    exit_code = 0
+    with monkeypatch.context() as mp:
+        mp.setattr(sys, "argv", ["astra_player_tracking_v13.py", *argv])
+        mp.setattr(dossier, "Dossiers", PatchedDossiers)
+        mp.setattr(tracking, "prewarm", patched_prewarm)
+        try:
+            tracking.main()
+        except SystemExit as exc:
+            exit_code = int(exc.code) if isinstance(exc.code, int) else 2
+    captured = capsys.readouterr()
+    parsed_out = json.loads(captured.out) if captured.out.strip().startswith(("{", "[")) else captured.out
+    return exit_code, parsed_out, captured.err
+
+
+def _run_dossier_cli(monkeypatch, capsys, *, argv: list[str], clock_box: list[int]):
+    import sys
+
+    orig_dossiers = dossier.Dossiers
+
+    class PatchedDossiers(orig_dossiers):
+        def __init__(self, root, clock=None, **kw):
+            super().__init__(root, clock=(clock or (lambda: clock_box[0])), **kw)
+
+    capsys.readouterr()
+    exit_code = 0
+    with monkeypatch.context() as mp:
+        mp.setattr(sys, "argv", ["astra_player_dossier_v1.py", *argv])
+        mp.setattr(dossier, "Dossiers", PatchedDossiers)
+        try:
+            dossier.main()
+        except SystemExit as exc:
+            exit_code = int(exc.code) if isinstance(exc.code, int) else 2
+    captured = capsys.readouterr()
+    parsed_out = json.loads(captured.out) if captured.out.strip().startswith(("{", "[")) else captured.out
+    return exit_code, parsed_out, captured.err
+
+
+def test_cli_scheduler_fault_injection_spine_and_same_hand_contrasts(tmp_path, monkeypatch, capsys):
+    slot_0 = int(datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    accept_put = _strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000, require_outside_at_t0=True)
+    unknown_watch = _strict_p5_reply_text("## Unknown")
+
+    # 1) Frozen at 16:27Z -> exits BEFORE first dispatch (0 api_calls, 0 SERVICE_BUDGET_DEFERRED notes) -> misses 16:32Z ->
+    #    wakes ONLY via scheduled `sync-open --check-due --review` CLI at 16:35, 16:40, 16:45, 16:50, 16:55Z ->
+    #    dispatches EXACTLY ONCE inside original reply_deadline, locks once, settles via `settle-due` CLI!
+    clk_1 = [slot_0 - 8 * M]  # 15:52:00Z
+    wb_1, arch_1, dos_1, plan_1, slot_ms, exp_ms, _, sync_1 = _setup_nov26_workbench_and_archive(
+        tmp_path / "cli_freeze_crash", monkeypatch, clock=clk_1,
+    )
+    plan_path_1 = tmp_path / "cli_freeze_crash" / "plan.json"
+    dossier.write(plan_path_1, dossier.encode(plan_1), replace=True)
+
+    with serving(wb_1) as wb_url_1, _sse_mock_server(
+        lambda _idx, _body: {"status": 200, "reasoning": "补发推理...", "text": accept_put, "finish_reason": "stop"}
+    ) as (llm_ep_1, llm_calls_1):
+        monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_1.config.shadow_service_token)
+        monkeypatch.setenv("ASTRA_AI_SHADOW_EXPERIMENT", "1")
+        monkeypatch.setenv("LLM_API_KEY", "k-cli-1")
+        monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+        monkeypatch.setenv("LLM_BASE_URL", llm_ep_1)
+
+        # 15:52Z CLI prewarm
+        rc_pw, out_pw, err_pw = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_1, "prewarm", "--plan", str(plan_path_1), "--archive", str(arch_1)],
+            clock_box=clk_1,
+        )
+        assert rc_pw == 0 and err_pw == ""
+        assert out_pw["business_readiness"]["ready_for_deal"] is True
+
+        # 16:27Z CLI auto-deal crashes right after `Dossiers.deal` freezes `evidence/` (before `_deal_hand`!)
+        clk_1[0] = slot_ms + 27 * M
+        sync_1()
+        wb_1.refresh(now_ms=clk_1[0], record_daily=False)
+        crash_armed = {"on": True}
+        orig_deal_hand = tracking._deal_hand
+
+        def exit_before_dispatch(*a, **kw):
+            if crash_armed["on"]:
+                crash_armed["on"] = False
+                raise SystemExit(137)  # SIGKILL / OOM / host restart before first dispatch
+            return orig_deal_hand(*a, **kw)
+
+        with monkeypatch.context() as mp_kill:
+            mp_kill.setattr(tracking, "_deal_hand", exit_before_dispatch)
+            rc_kill, _, _ = _run_tracking_cli(
+                mp_kill,
+                capsys,
+                argv=["--url", wb_url_1, "auto-deal", "--root", str(dos_1), "--plan", str(plan_path_1), "--archive", str(arch_1)],
+                clock_box=clk_1,
+            )
+        assert rc_kill == 137
+        hand_1 = dos_1 / "dossiers" / f"Deribit_BTC_{dossier.utc(exp_ms):%Y%m%dT%H%M%SZ}" / "hands" / EXPECTED_HAND_ID
+        assert (hand_1 / "evidence" / "identity.json").is_file()
+        assert not (hand_1 / "api_calls").exists()
+        assert not list((hand_1 / "issuance").glob("*.json"))  # ZERO SERVICE_BUDGET_DEFERRED note!
+        assert len(llm_calls_1) == 0
+
+        # Miss 16:32Z completely; wake via normal 5m `sync-open --check-due --review` CLI at 16:35, 40, 45, 50, 55Z
+        for minute_offset in (35, 40, 45, 50, 55):
+            clk_1[0] = slot_ms + minute_offset * M
+            sync_1()
+            wb_1.refresh(now_ms=clk_1[0], record_daily=False)
+            rc_so, out_so, err_so = _run_tracking_cli(
+                monkeypatch,
+                capsys,
+                argv=["--url", wb_url_1, "sync-open", "--root", str(dos_1), "--archive", str(arch_1), "--check-due", "--review"],
+                clock_box=clk_1,
+            )
+            assert rc_so == 0, f"minute={minute_offset} err={err_so} out={out_so}"
+            if minute_offset == 35:
+                assert any(
+                    r.get("hand_id") == EXPECTED_HAND_ID
+                    and r.get("status") == "VALID"
+                    and r.get("decision") == "Accept"
+                    and (r.get("link") or {}).get("state") == "SHADOW_LOCK_CREATED"
+                    for r in out_so
+                )
+            assert len(llm_calls_1) == 1  # Dispatched ONCE at :35; :40/:45/:50/:55 do NOT re-dispatch!
+
+        assert len(list((hand_1.parent.parent / "episodes").glob("episode_*"))) == 1
+
+        # Post-expiry `settle-due` CLI settles once and stays idempotent
+        clk_1[0] = exp_ms + 5 * M
+        rc_set1, out_set1, _ = _run_dossier_cli(
+            monkeypatch, capsys, argv=["--root", str(dos_1), "settle-due"], clock_box=clk_1,
+        )
+        assert rc_set1 == 0 and len(out_set1) == 1
+        rc_set2, out_set2, _ = _run_dossier_cli(
+            monkeypatch, capsys, argv=["--root", str(dos_1), "settle-due"], clock_box=clk_1,
+        )
+        assert rc_set2 == 0 and out_set2 == []
+
+    # 2) Dispatch credential exists (`dispatch.json` WITHOUT `request.json`, and `dispatch.json` + `request.json` + `partial_reply.json`)
+    #    with unknown receipt (`reply.json` absent) -> ZERO resend across `auto-deal` and `sync-open --check-due --review` CLI!
+    for sub_name, include_req, include_partial in (
+        ("orphan_dispatch_only", False, False),
+        ("dispatch_plus_partial", True, True),
+    ):
+        clk_2 = [slot_0 + 27 * M]
+        wb_2, arch_2, dos_2, plan_2, _, exp_2, _, sync_2 = _setup_nov26_workbench_and_archive(
+            tmp_path / f"cli_unk_{sub_name}", monkeypatch, clock=clk_2,
+        )
+        plan_path_2 = tmp_path / f"cli_unk_{sub_name}" / "plan.json"
+        dossier.write(plan_path_2, dossier.encode(plan_2), replace=True)
+        wb_2.refresh(now_ms=clk_2[0], record_daily=False)
+        prep_2 = wb_2.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_2, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_2 = dossier.collect(
+            arch_2, exp_2, slot_0, clock=lambda: clk_2[0], candidate_round="r16",
+            fallback_cases=prep_2["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        d_2 = dossier.Dossiers(dos_2, clock=lambda: clk_2[0], require_reply_provenance=True)
+        h_2, = d_2.tick(plan_2, slots=[slot_0], input_profile="p0_strict@1")
+        d_2.deal(h_2, src_2, input_profile="p0_strict@1")
+        att_id_2 = dossier.identity("auto", h_2.name, clk_2[0], "deepseek-v4-pro", 0)
+        call_dir_2 = h_2 / "api_calls" / att_id_2
+        files_2 = {
+            "dispatch.json": dossier.encode({
+                "started_at_ms": clk_2[0],
+                "requested_at_ms": clk_2[0],
+                "model": "deepseek-v4-pro",
+                "timeout_s": 600.0,
+            }),
+        }
+        if include_req:
+            meta_2 = d_2.verify_evidence(h_2)
+            req_2 = review.build_initial_request_payload(
+                (h_2 / "evidence" / "input.md").read_text(encoding="utf-8"),
+                model="deepseek-v4-pro",
+                prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+                input_profile="p0_strict@1",
+                packet_hash=meta_2["input_sha256"],
+                requested_at_ms=clk_2[0],
+                fidelity="EXACT",
+            )
+            files_2["request.json"] = dossier.encode(review.sanitize_model_request(req_2))
+        if include_partial:
+            files_2["partial_reply.json"] = dossier.encode({"text": "## Accept / Put\n半截断流", "partial": True, "updated_at_ms": clk_2[0] + 1_000})
+        dossier.publish(call_dir_2, files_2)
+
+        # Before reconciliation, `audit_record` already sees the dispatch credential (never `AWAITING_DISPATCH`)
+        aud_pre_2 = tracking.audit_record(h_2, clk_2[0] + 5_000, {})
+        assert aud_pre_2["stage"] == "REQUEST_IN_PROGRESS"
+
+        with serving(wb_2) as wb_url_2, _sse_mock_server(
+            lambda *_a: pytest.fail(f"unknown receipt ({sub_name}) must NEVER resend LLM request")
+        ) as (llm_ep_2, llm_calls_2):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_2.config.shadow_service_token)
+            monkeypatch.setenv("LLM_API_KEY", "k-cli-2")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", llm_ep_2)
+
+            # Reconciles to DELIVERY_UNKNOWN on 16:35Z & 16:40Z `sync-open --check-due --review` CLI with ZERO HTTP calls
+            for m_off in (35, 40):
+                clk_2[0] = slot_0 + m_off * M
+                sync_2()
+                rc_u, out_u, _ = _run_tracking_cli(
+                    monkeypatch,
+                    capsys,
+                    argv=["--url", wb_url_2, "sync-open", "--root", str(dos_2), "--archive", str(arch_2), "--check-due", "--review"],
+                    clock_box=clk_2,
+                )
+                if m_off == 35:
+                    assert rc_u == 2  # first reconciliation surfaces REQUEST_FAILED/DELIVERY_UNKNOWN explicitly
+                else:
+                    assert rc_u == 0 and out_u == []
+            assert len(llm_calls_2) == 0
+            att_saved_2 = dossier.read(dossier.attempts(h_2)[0])
+            assert att_saved_2["configuration"]["delivery_state"] == "DELIVERY_UNKNOWN"
+
+    # 3) Persisted valid receipt (`reply.json` on disk without `attempt.json`/`decision.json`/`link.json`) ->
+    #    `sync-open --check-due --review` CLI recovers verdict + SHADOW_LOCK_CREATED + runs due grid check in ONE tick with ZERO resend!
+    clk_3 = [slot_0 + 27 * M]
+    wb_3, arch_3, dos_3, plan_3, _, exp_3, _, sync_3 = _setup_nov26_workbench_and_archive(
+        tmp_path / "cli_persisted_receipt", monkeypatch, clock=clk_3,
+    )
+    wb_3.refresh(now_ms=clk_3[0], record_daily=False)
+    prep_3 = wb_3.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_3, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    src_3 = dossier.collect(
+        arch_3, exp_3, slot_0, clock=lambda: clk_3[0], candidate_round="r16",
+        fallback_cases=prep_3["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+    d_3 = dossier.Dossiers(dos_3, clock=lambda: clk_3[0], require_reply_provenance=True)
+    h_3, = d_3.tick(plan_3, slots=[slot_0], input_profile="p0_strict@1")
+    d_3.deal(h_3, src_3, input_profile="p0_strict@1")
+    meta_3 = d_3.verify_evidence(h_3)
+    att_id_3 = dossier.identity("auto", h_3.name, clk_3[0], "deepseek-v4-pro", 0)
+    req_3 = review.build_initial_request_payload(
+        (h_3 / "evidence" / "input.md").read_text(encoding="utf-8"),
+        model="deepseek-v4-pro",
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile="p0_strict@1",
+        packet_hash=meta_3["input_sha256"],
+        requested_at_ms=clk_3[0],
+        fidelity="EXACT",
+    )
+    dossier.publish(h_3 / "api_calls" / att_id_3, {
+        "request.json": dossier.encode(review.sanitize_model_request(req_3)),
+        "dispatch.json": dossier.encode({"started_at_ms": clk_3[0], "requested_at_ms": clk_3[0], "model": "deepseek-v4-pro", "timeout_s": 600.0}),
+        "reply.json": dossier.encode({"text": accept_put, "model": "deepseek-v4-pro", "http_status": 200, "decided_at_ms": clk_3[0] + 15_000}),
+    })
+    assert tracking.audit_record(h_3, clk_3[0] + 20_000, {})["stage"] == "REPLY_SAVED"
+
+    with serving(wb_3) as wb_url_3, _sse_mock_server(
+        lambda *_a: pytest.fail("persisted valid receipt must NEVER resend LLM request")
+    ) as (llm_ep_3, llm_calls_3):
+        monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_3.config.shadow_service_token)
+        monkeypatch.setenv("LLM_API_KEY", "k-cli-3")
+        monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+        monkeypatch.setenv("LLM_BASE_URL", llm_ep_3)
+
+        clk_3[0] = slot_0 + 35 * M  # 16:35Z
+        sync_3()
+        wb_3.refresh(now_ms=clk_3[0], record_daily=False)
+        rc_3, out_3, err_3 = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_3, "sync-open", "--root", str(dos_3), "--archive", str(arch_3), "--check-due", "--review"],
+            clock_box=clk_3,
+        )
+        assert rc_3 == 0 and err_3 == ""
+        assert len(llm_calls_3) == 0
+        # Phase 1 promoted persisted reply to SHADOW_LOCK_CREATED AND Phase 3 already synced active episode in same tick!
+        assert any((r.get("link") or {}).get("state") == "SHADOW_LOCK_CREATED" for r in out_3)
+        assert any(r.get("state") == "active" for r in out_3)
+        assert len(list((h_3.parent.parent / "episodes").glob("episode_*"))) == 1
+
+    # 3b) Unrecorded truncated `reply.json` on disk -> Phase 1 reconciles `PARSE_FAILED`, Phase 3 syncs open hands,
+    #     Phase 4 retries ONCE to `VALID + SHADOW_LOCK_CREATED` and supersedes the intermediate Phase 1 row (`rc == 0`, `ALL_OK`)!
+    clk_3b = [slot_0 + 27 * M]
+    wb_3b, arch_3b, dos_3b, plan_3b, _, exp_3b, _, sync_3b = _setup_nov26_workbench_and_archive(
+        tmp_path / "cli_persisted_trunc_retry", monkeypatch, clock=clk_3b,
+    )
+    wb_3b.refresh(now_ms=clk_3b[0], record_daily=False)
+    prep_3b = wb_3b.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_3b, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    src_3b = dossier.collect(
+        arch_3b, exp_3b, slot_0, clock=lambda: clk_3b[0], candidate_round="r16",
+        fallback_cases=prep_3b["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+    d_3b = dossier.Dossiers(dos_3b, clock=lambda: clk_3b[0], require_reply_provenance=True)
+    h_3b, = d_3b.tick(plan_3b, slots=[slot_0], input_profile="p0_strict@1")
+    d_3b.deal(h_3b, src_3b, input_profile="p0_strict@1")
+    meta_3b = d_3b.verify_evidence(h_3b)
+    att_id_3b = dossier.identity("auto", h_3b.name, clk_3b[0], "deepseek-v4-pro", 0)
+    req_3b = review.build_initial_request_payload(
+        (h_3b / "evidence" / "input.md").read_text(encoding="utf-8"),
+        model="deepseek-v4-pro",
+        prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+        input_profile="p0_strict@1",
+        packet_hash=meta_3b["input_sha256"],
+        requested_at_ms=clk_3b[0],
+        fidelity="EXACT",
+    )
+    dossier.publish(h_3b / "api_calls" / att_id_3b, {
+        "request.json": dossier.encode(review.sanitize_model_request(req_3b)),
+        "dispatch.json": dossier.encode({"started_at_ms": clk_3b[0], "requested_at_ms": clk_3b[0], "model": "deepseek-v4-pro", "timeout_s": 600.0}),
+        "reply.json": dossier.encode({
+            "text": "## Accept / Put\n流式输出因length截断未完成JSON",
+            "finish_reason": "length",
+            "model": "deepseek-v4-pro",
+            "http_status": 200,
+            "decided_at_ms": clk_3b[0] + 10_000,
+        }),
+    })
+    with serving(wb_3b) as wb_url_3b, _sse_mock_server(
+        lambda _i, _b: {"status": 200, "text": accept_put, "finish_reason": "stop"}
+    ) as (llm_ep_3b, llm_calls_3b):
+        monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_3b.config.shadow_service_token)
+        monkeypatch.setenv("LLM_API_KEY", "k-cli-3b")
+        monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+        monkeypatch.setenv("LLM_BASE_URL", llm_ep_3b)
+        clk_3b[0] = slot_0 + 35 * M
+        sync_3b()
+        wb_3b.refresh(now_ms=clk_3b[0], record_daily=False)
+        rc_3b, out_3b, err_3b = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_3b, "sync-open", "--root", str(dos_3b), "--archive", str(arch_3b), "--check-due", "--review"],
+            clock_box=clk_3b,
+        )
+        assert rc_3b == 0 and err_3b == ""
+        assert len(llm_calls_3b) == 1
+        hand_3b_rows = [r for r in out_3b if isinstance(r, dict) and r.get("hand_id") == EXPECTED_HAND_ID]
+        assert len(hand_3b_rows) == 1 and hand_3b_rows[0]["status"] == "VALID"
+        assert hand_3b_rows[0]["link"]["state"] == "SHADOW_LOCK_CREATED"
+
+    # 4) Expired (`now >= reply_deadline` AND `< 45s` remaining) -> NEVER dispatches, seals `REPLY_WINDOW_CLOSED`, and cleans post-deadline `SERVICE_BUDGET_DEFERRED` state!
+    clk_4 = [slot_0 + 2 * M]  # frozen at 16:02Z -> reply_deadline = 16:32:00Z
+    wb_4, arch_4, dos_4, plan_4, _, exp_4, _, sync_4 = _setup_nov26_workbench_and_archive(
+        tmp_path / "cli_expired", monkeypatch, clock=clk_4,
+    )
+    wb_4.refresh(now_ms=clk_4[0], record_daily=False)
+    prep_4 = wb_4.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_4, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    src_4 = dossier.collect(
+        arch_4, exp_4, slot_0, clock=lambda: clk_4[0], candidate_round="r16",
+        fallback_cases=prep_4["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+    d_4 = dossier.Dossiers(dos_4, clock=lambda: clk_4[0], require_reply_provenance=True)
+    h_4, = d_4.tick(plan_4, slots=[slot_0], input_profile="p0_strict@1")
+    d_4.deal(h_4, src_4, input_profile="p0_strict@1")
+    d_4.note(h_4, "SERVICE_BUDGET_DEFERRED", "remaining_service_s=20.0")
+    assert tracking.audit_record(h_4, clk_4[0] + 1_000, {})["state"] == "SERVICE_BUDGET_DEFERRED"
+
+    with serving(wb_4) as wb_url_4, _sse_mock_server(
+        lambda *_a: pytest.fail("expired hand must NEVER dispatch")
+    ) as (llm_ep_4, llm_calls_4):
+        monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_4.config.shadow_service_token)
+        monkeypatch.setenv("LLM_API_KEY", "k-cli-4")
+        monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+        monkeypatch.setenv("LLM_BASE_URL", llm_ep_4)
+
+        for m_off in (35, 40):
+            clk_4[0] = slot_0 + m_off * M  # >= 16:32Z reply_deadline!
+            sync_4()
+            rc_4, out_4, _ = _run_tracking_cli(
+                monkeypatch,
+                capsys,
+                argv=["--url", wb_url_4, "sync-open", "--root", str(dos_4), "--archive", str(arch_4), "--check-due", "--review"],
+                clock_box=clk_4,
+            )
+            assert rc_4 == 0 and out_4 == []
+        assert len(llm_calls_4) == 0
+        aud_4 = tracking.audit_record(h_4, clk_4[0], {})
+        assert aud_4["state"] == "NO_RESPONSE" and aud_4["stage"] == "DISPATCH_EXPIRED"
+        notes_4 = [dossier.read(p) for p in (h_4 / "issuance").glob("*.json")]
+        assert sum(1 for n in notes_4 if n["state"] == "REPLY_WINDOW_CLOSED") == 1
+
+    # Also verify `< 45s` remaining (`16:56:20Z` vs `16:57:00Z` deadline) never dispatches
+    clk_4b = [slot_0 + 27 * M]
+    wb_4b, arch_4b, dos_4b, plan_4b, _, exp_4b, _, sync_4b = _setup_nov26_workbench_and_archive(
+        tmp_path / "cli_under_45s", monkeypatch, clock=clk_4b,
+    )
+    wb_4b.refresh(now_ms=clk_4b[0], record_daily=False)
+    prep_4b = wb_4b.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_4b, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    src_4b = dossier.collect(
+        arch_4b, exp_4b, slot_0, clock=lambda: clk_4b[0], candidate_round="r16",
+        fallback_cases=prep_4b["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+    d_4b = dossier.Dossiers(dos_4b, clock=lambda: clk_4b[0], require_reply_provenance=True)
+    h_4b, = d_4b.tick(plan_4b, slots=[slot_0], input_profile="p0_strict@1")
+    d_4b.deal(h_4b, src_4b, input_profile="p0_strict@1")
+    with serving(wb_4b) as wb_url_4b, _sse_mock_server(
+        lambda *_a: pytest.fail("<45s remaining must NEVER dispatch")
+    ) as (llm_ep_4b, llm_calls_4b):
+        monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_4b.config.shadow_service_token)
+        monkeypatch.setenv("LLM_API_KEY", "k-cli-4b")
+        monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+        monkeypatch.setenv("LLM_BASE_URL", llm_ep_4b)
+        clk_4b[0] = slot_0 + 56 * M + 20_000  # 16:56:20Z -> 40s (< 45s) before 16:57:00Z
+        sync_4b()
+        rc_4b, out_4b, _ = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_4b, "sync-open", "--root", str(dos_4b), "--archive", str(arch_4b), "--check-due", "--review"],
+            clock_box=clk_4b,
+        )
+        assert rc_4b == 0 and out_4b == [] and len(llm_calls_4b) == 0
+
+    # 5) Same-hand (`hand_66a598b4790172fa3fd56276`) contrast: Upstream single-side unavailability at :02 (`DATA_BLOCKED`, 0 LLM calls)
+    #    -> recovers at :07 -> normal `Unknown` (`观望`) decision -> no shadow lock -> clean settlement!
+    clk_5 = [slot_0 + 2 * M]
+    wb_5, arch_5, dos_5, plan_5, _, exp_5, _, sync_5 = _setup_nov26_workbench_and_archive(
+        tmp_path / "cli_unknown_and_partial_upstream", monkeypatch, clock=clk_5,
+    )
+    plan_path_5 = tmp_path / "cli_unknown_and_partial_upstream" / "plan.json"
+    dossier.write(plan_path_5, dossier.encode(plan_5), replace=True)
+    orig_prep_5 = wb_5._prepare_shadow_deal
+    block_put_once = {"on": True}
+
+    def partial_upstream_prepare(body):
+        if block_put_once["on"]:
+            return {
+                "ready_for_deal": False,
+                "readiness_status": "DERIBIT_429_COOLDOWN",
+                "blockers": ["put_book_429_incomplete"],
+                "sides": {"put": {"ok": False, "reason": "http_429"}, "call": {"ok": True}},
+                "deribit_cooldown_remaining_ms": 12_000,
+            }
+        return orig_prep_5(body)
+
+    monkeypatch.setattr(wb_5, "_prepare_shadow_deal", partial_upstream_prepare)
+    with serving(wb_5) as wb_url_5, _sse_mock_server(
+        lambda _i, _b: {"status": 200, "text": unknown_watch, "finish_reason": "stop"}
+    ) as (llm_ep_5, llm_calls_5):
+        monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb_5.config.shadow_service_token)
+        monkeypatch.setenv("LLM_API_KEY", "k-cli-5")
+        monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+        monkeypatch.setenv("LLM_BASE_URL", llm_ep_5)
+
+        # :02 -> upstream Put unavailable -> exits 2 with DATA_BLOCKED and 0 LLM calls
+        rc_5a, out_5a, _ = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_5, "auto-deal", "--root", str(dos_5), "--plan", str(plan_path_5), "--archive", str(arch_5)],
+            clock_box=clk_5,
+        )
+        assert rc_5a == 2
+        assert out_5a[0]["hand_id"] == EXPECTED_HAND_ID and out_5a[0]["status"] == "NO_EVIDENCE"
+        assert out_5a[0]["block_state"] == "DATA_BLOCKED"
+        assert len(llm_calls_5) == 0
+
+        # :07 -> upstream recovers -> freezes & decides `Unknown` (`观望`) -> no lock -> idempotent at :12 -> settles cleanly!
+        block_put_once["on"] = False
+        clk_5[0] = slot_0 + 7 * M
+        sync_5()
+        wb_5.refresh(now_ms=clk_5[0], record_daily=False)
+        rc_5b, out_5b, _ = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_5, "auto-deal", "--root", str(dos_5), "--plan", str(plan_path_5), "--archive", str(arch_5)],
+            clock_box=clk_5,
+        )
+        assert rc_5b == 0
+        assert out_5b[0] == {"hand_id": EXPECTED_HAND_ID, "status": "VALID", "decision": "Unknown", "error": None, "link": None}
+        assert len(llm_calls_5) == 1
+        h_5 = dos_5 / "dossiers" / f"Deribit_BTC_{dossier.utc(exp_5):%Y%m%dT%H%M%SZ}" / "hands" / EXPECTED_HAND_ID
+        assert not (h_5 / "tracking" / "link.json").exists()
+
+        clk_5[0] = slot_0 + 12 * M
+        rc_5c, out_5c, _ = _run_tracking_cli(
+            monkeypatch,
+            capsys,
+            argv=["--url", wb_url_5, "auto-deal", "--root", str(dos_5), "--plan", str(plan_path_5), "--archive", str(arch_5)],
+            clock_box=clk_5,
+        )
+        assert rc_5c == 0 and out_5c[0]["status"] == "ALREADY_DECIDED" and out_5c[0]["decision"] == "Unknown"
+        assert len(llm_calls_5) == 1
+
+        clk_5[0] = exp_5 + 5 * M
+        rc_5s, out_5s, _ = _run_dossier_cli(
+            monkeypatch, capsys, argv=["--root", str(dos_5), "settle-due"], clock_box=clk_5,
+        )
+        assert rc_5s == 0 and len(out_5s) == 1
+        aud_5 = tracking.audit_record(h_5, clk_5[0], {})
+        assert aud_5["state"] == "Unknown" and aud_5["stage"] == "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# (i) Contention Reproduction & Isolation: Slow New-Hand LLM Request NEVER
+#     Blocks Urgent Hold Reviews (`HOLD` / `REVOKE` -> `SHADOW_EXITED`) of Open Hands
+# ---------------------------------------------------------------------------
+
+def test_new_hand_slow_request_never_blocks_existing_open_hand_hold_reviews(tmp_path, monkeypatch, capsys):
+    import threading
+
+    slot_0 = int(datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    accept_put = _strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000, require_outside_at_t0=True)
+    hold_reply = (
+        '## HOLD\n\n缓冲仍在可承受范围，维持观察。\n'
+        '<HOLD_REVIEW_JSON>{"verdict":"HOLD","affected_conditions":[],"public_reply":"维持观察","key_facts":["余量尚存"]}</HOLD_REVIEW_JSON>'
+    )
+    revoke_reply = (
+        '## REVOKE\n\n卖出短腿60,000已被跌破且确认触发M1，立即撤销。\n'
+        '<HOLD_REVIEW_JSON>{"verdict":"REVOKE","affected_conditions":["M1"],"public_reply":"确认触发M1撤销","key_facts":["跌破60000"]}</HOLD_REVIEW_JSON>'
+    )
+
+    clk = [slot_0 + 2 * M]
+    wb, arch_root, dos_root, plan_r16, slot_ms, exp_ms, _, sync_aux = _setup_nov26_workbench_and_archive(
+        tmp_path / "priority_isolation", monkeypatch, clock=clk,
+    )
+    plan_path = tmp_path / "priority_isolation" / "plan.json"
+    dossier.write(plan_path, dossier.encode(plan_r16), replace=True)
+    wb.refresh(now_ms=clk[0], record_daily=False)
+    prep = wb.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_ms, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    base_src = dossier.collect(
+        arch_root, exp_ms, slot_ms, clock=lambda: clk[0], candidate_round="r16",
+        fallback_cases=prep["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+
+    # Create an already-open locked shadow hand `h_open` (`AD_HOC` on same dossier) at 16:02Z
+    d = dossier.Dossiers(dos_root, clock=lambda: clk[0], require_reply_provenance=True)
+    h_open = d.expect(exp_ms, "AD_HOC", reference="existing-open-position")
+    d.deal(h_open, base_src, input_profile="p0_strict@1")
+
+    with serving(wb) as wb_url:
+        svc = post(wb_url, wb)
+        cfg_open_init = tracking._llm_settings({
+            "api_key": "k-iso",
+            "model": "deepseek-v4-pro",
+            "transport": lambda *_a, **_kw: {"choices": [{"finish_reason": "stop", "message": {"content": accept_put}}]},
+        })
+        res_open_init = tracking._deal_hand(
+            d, h_open, svc, cfg_open_init,
+            prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION, input_profile="p0_strict@1",
+        )
+        assert res_open_init["link"]["state"] == "SHADOW_LOCK_CREATED"
+        open_ep_id = res_open_init["link"]["origin"]["dossier_episode_id"]
+        open_ep_dir = h_open.parent.parent / "episodes" / open_ep_id
+
+        # Step 1: Verify `HOLD` review on `h_open` at 16:15Z before testing contention
+        clk[0] = slot_ms + 15 * M
+        sync_aux()
+        wb.refresh(now_ms=clk[0], record_daily=False)
+        d.event(
+            open_ep_dir,
+            dossier.identity("chk_hold", clk[0] - M),
+            "CONDITION_TRIGGERED",
+            {"result": {"status": "triggered", "rule": "entry_not_returned"}},
+            observed=clk[0] - M,
+            available=clk[0],
+        )
+        with _sse_mock_server(
+            lambda _i, _b: {"status": 200, "text": hold_reply, "finish_reason": "stop"}
+        ) as (ep_hold, calls_hold):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb.config.shadow_service_token)
+            monkeypatch.setenv("LLM_API_KEY", "k-iso")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", ep_hold)
+            # Verify `<45s` service-budget guard in `evaluate_hold_management` defers cleanly (`inflight=False`, `pending` preserved) before live HOLD call!
+            exported_15 = svc("export", {"dossier_id": h_open.parent.parent.name, "hand_id": h_open.name})
+            def_res = tracking.evaluate_hold_management(
+                d,
+                h_open,
+                exported_15,
+                archive_root=arch_root,
+                service=svc,
+                llm_config={
+                    "api_key": "k-iso",
+                    "model": "deepseek-v4-pro",
+                    "service_deadline_mono": tracking.time.monotonic() + 20.0,  # < 45s -> defer without setting inflight!
+                },
+            )
+            assert def_res["action"] == "QUEUED" and def_res.get("deferred_reason") == "service_budget_deferred"
+            assert dossier.read(open_ep_dir / "trigger_state.json")["inflight"] is False
+            assert len(calls_hold) == 0
+
+            rc_h, out_h, err_h = _run_tracking_cli(
+                monkeypatch,
+                capsys,
+                argv=["--url", wb_url, "sync-open", "--root", str(dos_root), "--archive", str(arch_root), "--check-due", "--review"],
+                clock_box=clk,
+            )
+            assert rc_h == 0 and len(calls_hold) == 1, f"rc={rc_h} calls={len(calls_hold)} err={err_h!r} out={out_h!r}"
+            assert any((r.get("hold_review") or {}).get("verdict") == "HOLD" for r in out_h)
+            assert not (h_open / "tracking" / "shadow_exit.json").exists()
+
+        # Step 2 (Mode A — Same `16:40Z` `sync-open --check-due --review` CLI batch):
+        #   - `h_new` (`hand_66a598b4790172fa3fd56276`) froze at `16:27Z`, missed `:32`, and has a SLOW 540s LLM call;
+        #   - `h_open` has a fresh `CONDITION_TRIGGERED` breach at `16:39Z` requiring urgent `REVOKE` -> `SHADOW_EXITED`!
+        #   Verify `h_open` `hold_review` runs FIRST (at t=+0s, NOT behind `h_new`'s slow 540s initial call!), exits `SHADOW_EXITED`,
+        #   and `h_new` then executes cleanly after `h_open`!
+        clk[0] = slot_ms + 27 * M
+        sync_aux()
+        wb.refresh(now_ms=clk[0], record_daily=False)
+        prep_27 = wb.shadow_tracking(
+            "prepare_deal",
+            {"target_expiry_ms": exp_ms, "slot_ms": slot_ms, "allow_refresh": False, "input_profile": "p0_strict@1"},
+        )
+        src_27 = dossier.collect(
+            arch_root, exp_ms, slot_ms, clock=lambda: clk[0], candidate_round="r16",
+            fallback_cases=prep_27["cases"],
+            provenance_override="targeted workbench verified native case + Deribit public read",
+            input_profile="p0_strict@1",
+        )
+        h_new, = d.tick(plan_r16, slots=[slot_ms], input_profile="p0_strict@1")
+        assert h_new.name == EXPECTED_HAND_ID
+        d.deal(h_new, src_27, input_profile="p0_strict@1")
+
+        # Advance to 16:40Z (> 15m cooldown since 16:15Z HOLD) and record new severe M1 trigger on `h_open`
+        clk[0] = slot_ms + 40 * M
+        sync_aux()
+        wb.refresh(now_ms=clk[0], record_daily=False)
+        d.event(
+            open_ep_dir,
+            dossier.identity("chk_rev", clk[0] - M),
+            "CONDITION_TRIGGERED",
+            {"result": {"status": "triggered", "rule": "entry_not_returned", "breach_usd": 58_900.0}},
+            observed=clk[0] - M,
+            available=clk[0],
+        )
+        # Clear dispatched signature so fresh M1 breach triggers urgent review at 16:40Z
+        st_open = dossier.read(open_ep_dir / "trigger_state.json")
+        st_open["dispatched_signatures"] = {}
+        st_open["cooldown_until_ms"] = None
+        dossier.write(open_ep_dir / "trigger_state.json", dossier.encode(st_open), replace=True)
+
+        call_order: list[tuple[str, int]] = []
+
+        def priority_sse_script(_idx: int, body: dict) -> dict:
+            sys_prompt = str(((body.get("messages") or [{}])[0]).get("content") or "")
+            is_hold_call = ("HOLD_REVIEW_JSON" in sys_prompt) or ("持仓" in sys_prompt and "ANNOTATION_JSON" not in sys_prompt)
+            if is_hold_call:
+                call_order.append(("open_hand_hold_review", clk[0]))
+                return {"status": 200, "text": revoke_reply, "finish_reason": "stop"}
+            # Slow 420s new-hand initial reasoning! If this had run first, `open_hand_hold_review` would be delayed to 16:47Z!
+            call_order.append(("new_hand_initial_deal_start", clk[0]))
+            clk[0] = slot_ms + 47 * M
+            sync_aux()
+            wb.refresh(now_ms=clk[0], record_daily=False)
+            return {"status": 200, "text": accept_put, "finish_reason": "stop"}
+
+        with _sse_mock_server(priority_sse_script) as (ep_prio, _calls_prio):
+            monkeypatch.setenv("ASTRA_AI_SHADOW_LOCK_TOKEN", wb.config.shadow_service_token)
+            monkeypatch.setenv("LLM_API_KEY", "k-iso")
+            monkeypatch.setenv("LLM_MODEL", "deepseek-v4-pro")
+            monkeypatch.setenv("LLM_BASE_URL", ep_prio)
+
+            rc_prio, out_prio, err_prio = _run_tracking_cli(
+                monkeypatch,
+                capsys,
+                argv=["--url", wb_url, "sync-open", "--root", str(dos_root), "--archive", str(arch_root), "--check-due", "--review"],
+                clock_box=clk,
+            )
+            assert rc_prio == 0, f"err={err_prio} out={out_prio}"
+
+        assert call_order == [
+            ("open_hand_hold_review", slot_ms + 40 * M),
+            ("new_hand_initial_deal_start", slot_ms + 40 * M),
+        ]
+        sx_open = dossier.read(h_open / "tracking" / "shadow_exit.json")
+        assert sx_open["exit_state"] == "SHADOW_EXITED" and sx_open["tracker_stopped"] is True
+        assert (h_new / "tracking" / "link.json").is_file()
+
+    # Step 3 (Mode B — Concurrent `16:05Z` `auto_deal` blocked inside a slow `h_new` LLM request WHILE `sync_open` runs on `h_open`):
+    clk_b = [slot_0 + 2 * M]
+    wb_b, arch_b, dos_b, plan_b, _, exp_b, _, sync_b = _setup_nov26_workbench_and_archive(
+        tmp_path / "concurrent_isolation", monkeypatch, clock=clk_b,
+    )
+    wb_b.refresh(now_ms=clk_b[0], record_daily=False)
+    prep_b = wb_b.shadow_tracking(
+        "prepare_deal",
+        {"target_expiry_ms": exp_b, "slot_ms": slot_0, "allow_refresh": False, "input_profile": "p0_strict@1"},
+    )
+    src_b = dossier.collect(
+        arch_b, exp_b, slot_0, clock=lambda: clk_b[0], candidate_round="r16",
+        fallback_cases=prep_b["cases"],
+        provenance_override="targeted workbench verified native case + Deribit public read",
+        input_profile="p0_strict@1",
+    )
+    d_b = dossier.Dossiers(dos_b, clock=lambda: clk_b[0], require_reply_provenance=True)
+    h_open_b = d_b.expect(exp_b, "AD_HOC", reference="concurrent-open-hand")
+    d_b.deal(h_open_b, src_b, input_profile="p0_strict@1")
+
+    deal_entered_llm = threading.Event()
+    allow_deal_finish = threading.Event()
+    events_timeline: list[str] = []
+
+    with serving(wb_b) as wb_url_b:
+        svc_b = post(wb_url_b, wb_b)
+        res_ob = tracking._deal_hand(
+            d_b,
+            h_open_b,
+            svc_b,
+            tracking._llm_settings({
+                "api_key": "k-conc",
+                "model": "deepseek-v4-pro",
+                "transport": lambda *_a, **_kw: {"choices": [{"finish_reason": "stop", "message": {"content": accept_put}}]},
+            }),
+            prompt_version=review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+            input_profile="p0_strict@1",
+        )
+        ep_open_b = h_open_b.parent.parent / "episodes" / res_ob["link"]["origin"]["dossier_episode_id"]
+
+        clk_b[0] = slot_0 + 5 * M
+        sync_b()
+        wb_b.refresh(now_ms=clk_b[0], record_daily=False)
+        d_b.event(
+            ep_open_b,
+            dossier.identity("chk_conc", clk_b[0] - M),
+            "CONDITION_TRIGGERED",
+            {"result": {"status": "triggered", "rule": "entry_not_returned"}},
+            observed=clk_b[0] - M,
+            available=clk_b[0],
+        )
+
+        def slow_blocking_deal_transport(*_a, **_kw):
+            events_timeline.append("new_deal_llm_started")
+            deal_entered_llm.set()
+            assert allow_deal_finish.wait(timeout=10.0), "timed out waiting for concurrent sync_open"
+            events_timeline.append("new_deal_llm_finished")
+            return {"choices": [{"finish_reason": "stop", "message": {"content": accept_put}}]}
+
+        deal_out_holder: list = []
+
+        def run_auto_deal_thread():
+            d_thread = dossier.Dossiers(dos_b, clock=lambda: clk_b[0], require_reply_provenance=True)
+            deal_out_holder.extend(
+                tracking.auto_deal(
+                    d_thread,
+                    plan_b,
+                    arch_b,
+                    svc_b,
+                    llm_config={
+                        "api_key": "k-conc",
+                        "model": "deepseek-v4-pro",
+                        "transport": slow_blocking_deal_transport,
+                        "prompt_version": review.P5_CANDIDATE_INITIAL_SYSTEM_PROMPT_VERSION,
+                        "input_profile": "p0_strict@1",
+                    },
+                )
+            )
+
+        t_deal = threading.Thread(target=run_auto_deal_thread, daemon=True)
+        t_deal.start()
+        assert deal_entered_llm.wait(timeout=10.0)
+
+        # While `auto_deal` is blocked mid-HTTP on `h_new`, `sync_open` completes `h_open_b`'s `REVOKE` -> `SHADOW_EXITED`!
+        sync_rows_b = tracking.sync_open(
+            d_b,
+            svc_b,
+            check_due=True,
+            archive_root=arch_b,
+            run_review=True,
+            llm_config={
+                "api_key": "k-conc",
+                "model": "deepseek-v4-pro",
+                "transport": lambda *_a, **_kw: (
+                    events_timeline.append("open_hold_revoke_completed")
+                    or {"choices": [{"finish_reason": "stop", "message": {"content": revoke_reply}}]}
+                ),
+            },
+        )
+        assert any((r.get("hold_review") or {}).get("verdict") == "REVOKE" for r in sync_rows_b)
+        assert (h_open_b / "tracking" / "shadow_exit.json").is_file()
+        allow_deal_finish.set()
+        t_deal.join(timeout=10.0)
+
+        assert events_timeline == [
+            "new_deal_llm_started",
+            "open_hold_revoke_completed",
+            "new_deal_llm_finished",
+        ]
+        assert deal_out_holder[0]["hand_id"] == EXPECTED_HAND_ID
+        assert deal_out_holder[0]["link"]["state"] == "SHADOW_LOCK_CREATED"
+

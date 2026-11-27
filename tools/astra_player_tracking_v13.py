@@ -1381,11 +1381,27 @@ def _llm_settings(llm_config=None):
         out['fallback_transport'] = cfg['fallback_transport']
     if cfg.get('service_deadline_mono') is not None:
         out['service_deadline_mono'] = float(cfg['service_deadline_mono'])
+    elif _ACTIVE_SERVICE_DEADLINE_MONO is not None:
+        out['service_deadline_mono'] = float(_ACTIVE_SERVICE_DEADLINE_MONO)
     if 'stream' in cfg and cfg['stream'] is not None:
         out['stream'] = bool(cfg['stream'])
     if isinstance(cfg.get('max_initial_attempts'), int) and cfg['max_initial_attempts'] >= 1:
         out['max_initial_attempts'] = cfg['max_initial_attempts']
     return out
+
+
+_ACTIVE_SERVICE_DEADLINE_MONO = None
+
+
+@contextmanager
+def _scoped_service_deadline(deadline_mono):
+    global _ACTIVE_SERVICE_DEADLINE_MONO
+    prev = _ACTIVE_SERVICE_DEADLINE_MONO
+    _ACTIVE_SERVICE_DEADLINE_MONO = deadline_mono
+    try:
+        yield
+    finally:
+        _ACTIVE_SERVICE_DEADLINE_MONO = prev
 
 
 def _record_revoke_shadow_action(d, episode, frozen, quote, at, *, review_id):
@@ -2727,6 +2743,11 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
     hold_timeout_s = float(cfg.get('hold_timeout_s') or min(float(cfg.get('timeout_s', 300)), 360.0))
     hold_stream = _stream_enabled(cfg)
     stale_inflight_ms = max(8 * dossier.MINUTE, int(hold_timeout_s * 1000) + 60_000)
+    eff_service_deadline = (
+        float(cfg['service_deadline_mono'])
+        if isinstance(cfg, dict) and cfg.get('service_deadline_mono') is not None
+        else None
+    )
     check_ev_list = [e for e in ep_events if str(e.get('kind', '')).startswith('CONDITION_')]
     cond_summary = _condition_check_summary(check_ev_list, asof_ms=at, check_clock=frozen['check_clock'],
                                             expiry_ms=frozen['contract']['expiry_ms'])
@@ -2896,6 +2917,38 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             cooldown_ms=cooldown_ms, stale_inflight_ms=stale_inflight_ms,
             max_ordinary_reviews=soft_budget,
         )
+        rem_hold_svc_s = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
+        deferred_hold_budget = False
+        if (
+            action
+            and action.get('should_call')
+            and (cfg.get('api_key') or cfg.get('transport') is not None)
+            and rem_hold_svc_s is not None
+            and rem_hold_svc_s < 45.0
+        ):
+            deferred_batch = [dict(t) for t in (action.get('triggers') or []) if isinstance(t, dict)]
+            next_state = dict(next_state)
+            recovered_pending_since = (
+                next_state.get('pending_since_ms')
+                if next_state.get('stale_inflight_recovered_at_ms') == at
+                else None
+            )
+            next_state.pop('inflight_batch', None)
+            next_state['inflight'] = False
+            next_state['inflight_started_at_ms'] = None
+            disp_clean = dict(next_state.get('dispatched_signatures') or {})
+            for d_item in deferred_batch:
+                if d_item.get('category') and d_item.get('signature'):
+                    disp_clean.pop(f"{d_item.get('category')}:{d_item.get('signature')}", None)
+            next_state['dispatched_signatures'] = disp_clean
+            next_state['pending'] = deferred_batch
+            next_state['pending_since_ms'] = (
+                recovered_pending_since
+                if isinstance(recovered_pending_since, int)
+                else (prior_state.get('pending_since_ms') or at)
+            )
+            action = None
+            deferred_hold_budget = True
         new_skip = _update_skip_and_telemetry(prior_state, next_state, triggers, action, at)
         dossier.write(state_path, dossier.encode(next_state), replace=True)
         dispatch_started_ms = next_state.get('inflight_started_at_ms')
@@ -2944,6 +2997,8 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
             else:
                 out_idle = dict(triggers=triggers, action='QUEUED' if next_state.get('pending') else 'NO_TRIGGER',
                                 pending=len(next_state.get('pending') or []))
+                if deferred_hold_budget:
+                    out_idle['deferred_reason'] = 'service_budget_deferred'
                 if new_skip is not None:
                     out_idle['skip'] = new_skip
                 if recovered_orphan_id is not None:
@@ -3092,25 +3147,19 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         requested_at_ms=req_ms,
         fidelity='EXACT',
     )
+    eff_hold_timeout_s = hold_timeout_s
+    if eff_service_deadline is not None:
+        eff_hold_timeout_s = min(eff_hold_timeout_s, max(1.0, (eff_service_deadline - time.monotonic()) - 20.0))
     call = episode / 'review_calls' / rev_id
     dossier.publish(call, {'input.md': input_bytes,
-                           'request.json': dossier.encode(review.sanitize_model_request(hold_req_payload))})
-    if 'AI_REVIEW_REQUESTED' in getattr(dossier, 'EVENTS', set()):
-        with _short_writer(d):
-            req_ev_id = dossier.identity('ai_req', rev_id)
-            if not (episode / 'events' / f'{dossier.key(req_ev_id)}.json').exists():
-                d.event(
-                    episode, req_ev_id, 'AI_REVIEW_REQUESTED',
-                    dict(review_id=rev_id, trigger_categories=cats, triggers=batch_triggers,
-                         model=cfg['model'], reasoning_effort=cfg.get('reasoning_effort'),
-                         input_sha256=packet_hash),
-                    observed=req_ms, available=req_ms,
-                )
+                           'request.json': dossier.encode(review.sanitize_model_request(hold_req_payload)),
+                           'dispatch.json': dossier.encode(dict(started_at_ms=d.clock(), requested_at_ms=req_ms,
+                                                                model=cfg['model'], timeout_s=eff_hold_timeout_s))})
     try:
         llm_res = _call_with_supported_kwargs(
             review.call_chat_llm,
             hold_req_payload['messages'], api_key=cfg['api_key'] or 'test-key', model=cfg['model'],
-            endpoint=cfg.get('endpoint'), timeout_s=hold_timeout_s,
+            endpoint=cfg.get('endpoint'), timeout_s=eff_hold_timeout_s,
             retries=0,  # Hold review must never replay an ambiguous POST.
             reasoning_effort=cfg.get('reasoning_effort'),
             stream=hold_stream,
@@ -3187,6 +3236,11 @@ def evaluate_hold_management(d, hand, exported, *, archive_root=None, index_path
         fin_ms = d.clock()
         backoff_ms = 30 * 60_000 if isinstance(exc, signal_llm_review.DailyBudgetExceeded) else review.RETRY_BACKOFF_MS
         with _short_writer(d):
+            if isinstance(exc, signal_llm_review.DailyBudgetExceeded):
+                try:
+                    dossier.write(call / 'not_sent.json', dossier.encode(dict(reason='DAILY_BUDGET_EXHAUSTED')))
+                except (OSError, ValueError):
+                    pass
             saved = optional(call / 'reply.json')
             err_partial = getattr(exc, 'partial_response', None)
             if not isinstance(err_partial, dict):
@@ -3564,6 +3618,94 @@ def _hand_contracts_pair(hand, req=None):
     return None
 
 
+def _sent_api_calls(hand):
+    api_dir = hand / 'api_calls'
+    if not api_dir.is_dir():
+        return []
+    calls = []
+    for call in sorted(api_dir.iterdir(), key=lambda p: p.name):
+        if not call.is_dir() or call.name.startswith('.'):
+            continue
+        if (call / 'not_sent.json').is_file():
+            continue
+        if (call / 'request.json').is_file() or (call / 'dispatch.json').is_file():
+            calls.append(call)
+    return calls
+
+
+def _synthesized_call_request(d, hand, call):
+    req_doc = optional(call / 'request.json')
+    if isinstance(req_doc, dict) and isinstance(req_doc.get('requested_at_ms'), int) and req_doc.get('model'):
+        return req_doc
+    disp = optional(call / 'dispatch.json') or {}
+    meta = optional(hand / 'evidence' / 'identity.json') or {}
+    exp = optional(hand / 'expected.json') or {}
+    plan_cfg = exp.get('plan') if isinstance(exp.get('plan'), dict) else {}
+    frozen_at = meta.get('hand_frozen_at_ms')
+    started_at = disp.get('started_at_ms')
+    now = d.clock()
+    req_ts = (
+        started_at
+        if isinstance(started_at, int)
+        else (
+            req_doc.get('requested_at_ms')
+            if isinstance(req_doc, dict) and isinstance(req_doc.get('requested_at_ms'), int)
+            else None
+        )
+        or (disp.get('requested_at_ms') if isinstance(disp.get('requested_at_ms'), int) else None)
+        or (frozen_at if isinstance(frozen_at, int) else now)
+    )
+    if isinstance(frozen_at, int) and req_ts < frozen_at:
+        req_ts = frozen_at
+    if req_ts > now:
+        req_ts = now
+    base = dict(req_doc) if isinstance(req_doc, dict) else {}
+    base.setdefault('model', disp.get('model') or 'unrecorded_dispatch_model')
+    base['requested_at_ms'] = req_ts
+    if plan_cfg.get('prompt_version') and not base.get('prompt_version'):
+        base['prompt_version'] = plan_cfg['prompt_version']
+    eff_prof = meta.get('input_profile') or plan_cfg.get('input_profile')
+    if eff_prof and not base.get('input_profile'):
+        base['input_profile'] = eff_prof
+    if meta.get('input_sha256') and not base.get('packet_hash'):
+        base['packet_hash'] = meta['input_sha256']
+    return base
+
+
+def _reconcile_unfinished_initial_calls(d, hand):
+    reconciled = []
+    for call in _sent_api_calls(hand):
+        if not (hand / 'responses' / call.name / 'attempt.json').is_file():
+            reconciled.append(_record_initial_reply(d, hand, call, _synthesized_call_request(d, hand, call)))
+    return reconciled
+
+
+def _auto_attempts(hand):
+    resp_dir = hand / 'responses'
+    if not resp_dir.is_dir():
+        return []
+    rows = []
+    for p in resp_dir.glob('*/attempt.json'):
+        if p.parent.name.startswith('.'):
+            continue
+        att = load(p)
+        if att.get('channel') == 'API_AUTO':
+            rows.append(att)
+    rows.sort(key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)))
+    return rows
+
+
+def _max_initial_attempts(cfg=None):
+    raw_max = _env_str('ASTRA_PLAYER_INITIAL_MAX_ATTEMPTS')
+    try:
+        max_att = max(1, int(raw_max)) if raw_max else 2
+    except ValueError:
+        max_att = 2
+    if isinstance(cfg, dict) and isinstance(cfg.get('max_initial_attempts'), int) and cfg['max_initial_attempts'] >= 1:
+        max_att = cfg['max_initial_attempts']
+    return max_att
+
+
 def _record_initial_reply(d, hand, call, req, *, result=None, error=None):
     saved = optional(call / 'reply.json')
     partial = None
@@ -3889,18 +4031,8 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                 meta_post = d.verify_evidence(hand)
                 exp_post = load(hand / 'expected.json')
                 deadline_post = dossier.Dossiers.reply_deadline(exp_post, meta_post)
-                existing_post = sorted(
-                    (load(p) for p in (hand / 'responses').glob('*/attempt.json')
-                     if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
-                    key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
-                )
-                raw_max_att = _env_str('ASTRA_PLAYER_INITIAL_MAX_ATTEMPTS')
-                try:
-                    max_att_post = max(1, int(raw_max_att)) if raw_max_att else 2
-                except ValueError:
-                    max_att_post = 2
-                if isinstance(eff_cfg.get('max_initial_attempts'), int) and eff_cfg['max_initial_attempts'] >= 1:
-                    max_att_post = eff_cfg['max_initial_attempts']
+                existing_post = _auto_attempts(hand)
+                max_att_post = _max_initial_attempts(eff_cfg)
                 now_post = d.clock()
                 r_post = _initial_retry_decision(
                     hand,
@@ -3913,17 +4045,10 @@ def _auto_deal(d, plan, archive_root, service, *, llm_config=None):
                 )
                 rem_svc_post = service_deadline_mono - time.monotonic()
                 rem_reply_s = ((deadline_post - now_post) / 1000.0) if deadline_post is not None else 600.0
-                fb_post = _standby_model_target(eff_cfg)
-                used_fb_post = any((a.get('configuration') or {}).get('is_fallback') is True for a in existing_post)
-                next_uses_fb = bool(
-                    fb_post is not None
-                    and not used_fb_post
-                    and not r_post.get('retry_citation_contract')
-                )
-                next_model_post = fb_post['model'] if next_uses_fb else eff_cfg.get('model')
-                next_heavy_post = (
-                    ('pro' in str(next_model_post or '').lower() or 'reasoner' in str(next_model_post or '').lower())
-                    and not eff_cfg.get('timeout_explicit')
+                next_heavy_post = _next_initial_is_heavy(
+                    eff_cfg,
+                    existing_post,
+                    retry_citation_contract=bool(r_post.get('retry_citation_contract')),
                 )
                 min_inline_svc_s = (
                     min(320.0, max(90.0, rem_reply_s + 5.0))
@@ -4093,6 +4218,54 @@ def _initial_retry_decision(
     )
 
 
+def _next_initial_is_heavy(cfg, existing_auto, *, retry_citation_contract=False):
+    if not isinstance(cfg, dict):
+        return False
+    fb_target = _standby_model_target(cfg)
+    used_fb = any((a.get('configuration') or {}).get('is_fallback') is True for a in (existing_auto or ()))
+    uses_fb = bool(existing_auto and fb_target is not None and not used_fb and not retry_citation_contract)
+    next_model = fb_target['model'] if uses_fb else cfg.get('model')
+    timeout_explicit = bool(cfg.get('fallback_timeout_explicit') if uses_fb else cfg.get('timeout_explicit'))
+    return bool(
+        ('pro' in str(next_model or '').lower() or 'reasoner' in str(next_model or '').lower())
+        and not timeout_explicit
+    )
+
+
+def _initial_dispatch_eligibility(
+    hand,
+    existing_auto,
+    *,
+    now_ms,
+    deadline_ms,
+    max_attempts,
+    recover_only=False,
+    ignore_retry_after=False,
+):
+    r_dec = _initial_retry_decision(
+        hand,
+        existing_auto,
+        now_ms=now_ms,
+        deadline_ms=deadline_ms,
+        max_attempts=max_attempts,
+        recover_only=recover_only,
+        ignore_retry_after=ignore_retry_after,
+    )
+    has_sent_call = bool(_sent_api_calls(hand))
+    can_first_dispatch = bool(
+        not recover_only
+        and not existing_auto
+        and not has_sent_call
+        and r_dec['window_has_45s']
+    )
+    return {
+        **r_dec,
+        'has_sent_call': has_sent_call,
+        'can_first_dispatch': can_first_dispatch,
+        'can_dispatch': bool(can_first_dispatch or r_dec['can_retry']),
+    }
+
+
 def _deal_hand(
     d,
     hand,
@@ -4125,10 +4298,7 @@ def _deal_hand(
     retry_citation_contract = False
     retry_provider_overload = False
     with _short_writer(d):
-        for request_file in sorted((hand / 'api_calls').glob('*/request.json')):
-            call = request_file.parent
-            if not (call / 'not_sent.json').is_file() and not (hand / 'responses' / call.name / 'attempt.json').is_file():
-                _record_initial_reply(d, hand, call, load(request_file))
+        _reconcile_unfinished_initial_calls(d, hand)
         if not (hand / 'decision.json').is_file():
             d.select(hand)
         now = d.clock()
@@ -4172,23 +4342,13 @@ def _deal_hand(
         else:
             meta = d.verify_evidence(hand)
             deadline = dossier.Dossiers.reply_deadline(exp, meta)
-            existing_auto = sorted(
-                (load(p) for p in (hand / 'responses').glob('*/attempt.json')
-                 if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
-                key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
-            )
+            existing_auto = _auto_attempts(hand)
             notes = [load(p) for p in (hand / 'issuance').glob('*.json')]
             bjt_today = (now + 8 * 3_600_000) // dossier.DAY
-            raw_max_attempts = _env_str('ASTRA_PLAYER_INITIAL_MAX_ATTEMPTS')
-            try:
-                max_initial_attempts = max(1, int(raw_max_attempts)) if raw_max_attempts else 2
-            except ValueError:
-                max_initial_attempts = 2
-            if isinstance(cfg.get('max_initial_attempts'), int) and cfg['max_initial_attempts'] >= 1:
-                max_initial_attempts = cfg['max_initial_attempts']
+            max_initial_attempts = _max_initial_attempts(cfg)
             last_auto = existing_auto[-1] if existing_auto else None
             last_cfg = (last_auto.get('configuration') if isinstance(last_auto, dict) and isinstance(last_auto.get('configuration'), dict) else {})
-            r_dec = _initial_retry_decision(
+            elig = _initial_dispatch_eligibility(
                 hand,
                 existing_auto,
                 now_ms=now,
@@ -4196,11 +4356,11 @@ def _deal_hand(
                 max_attempts=max_initial_attempts,
                 recover_only=recover_only,
             )
-            retry_parse_failed = r_dec['retry_parse_failed']
-            retry_citation_contract = bool(r_dec.get('retry_citation_contract'))
-            retry_provider_overload = r_dec['retry_provider_overload']
-            can_retry_initial = r_dec['can_retry']
-            window_has_45s = r_dec['window_has_45s']
+            retry_parse_failed = elig['retry_parse_failed']
+            retry_citation_contract = bool(elig.get('retry_citation_contract'))
+            retry_provider_overload = elig['retry_provider_overload']
+            can_retry_initial = elig['can_retry']
+            window_has_45s = elig['window_has_45s']
             budget_exhausted_today = any(
                 n.get('state') == 'DAILY_BUDGET_EXHAUSTED'
                 and ((n.get('recorded_at_ms') or 0) + 8 * 3_600_000) // dossier.DAY == bjt_today
@@ -4317,8 +4477,15 @@ def _deal_hand(
     if fallback_context is not None:
         req_payload['fallback_context'] = dict(fallback_context)
     call = hand / 'api_calls' / attempt_id
-    dossier.write(call / 'request.json', dossier.encode(review.sanitize_model_request(req_payload)))
-    dossier.write(call / 'dispatch.json', dossier.encode(dict(started_at_ms=d.clock(), timeout_s=call_timeout_s)))
+    dossier.publish(call, {
+        'request.json': dossier.encode(review.sanitize_model_request(req_payload)),
+        'dispatch.json': dossier.encode(dict(
+            started_at_ms=d.clock(),
+            requested_at_ms=req_ms,
+            model=active_model,
+            timeout_s=call_timeout_s,
+        )),
+    })
     attempt_start_mono = time.monotonic()
     try:
         ai_res = _call_with_supported_kwargs(
@@ -4418,20 +4585,20 @@ def _deal_hand(
     return result
 
 
-def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=False):
+def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=False, service_deadline_mono=None):
     """Finish an existing frozen hand after the dispatch window.
 
     Default `allow_post_window_retry=False` is receipt-only and never calls the model.
     When `allow_post_window_retry=True` (used by `sync-open --review` after the last
-    scheduled deal timer tick), a frozen hand still inside `reply_deadline` may run its
-    single remaining budget-bounded retry or deferred first dispatch under `.auto-deal` lock.
+    scheduled deal timer tick), any frozen scheduled hand still inside `reply_deadline`
+    with zero sent calls or a bounded retryable attempt runs under `.auto-deal` lock.
     """
     out = []
     eff_cfg = _llm_settings(llm_config) if allow_post_window_retry else {}
-    service_deadline_mono = None
-    if allow_post_window_retry:
+    eff_service_deadline = service_deadline_mono
+    if allow_post_window_retry and eff_service_deadline is None:
         cfg_service_budget_s = float(eff_cfg.get('service_budget_s') or 810.0)
-        service_deadline_mono = (
+        eff_service_deadline = (
             float(eff_cfg['service_deadline_mono'])
             if eff_cfg.get('service_deadline_mono') is not None
             else time.monotonic() + cfg_service_budget_s
@@ -4445,10 +4612,11 @@ def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=Fals
         for folder in sorted((d.root / 'dossiers').glob('Deribit_BTC_*'), reverse=True):
             if folder.name < cutoff and not any(
                 not (p.parent / 'not_sent.json').is_file()
-                for p in folder.glob('hands/*/api_calls/*/dispatch.json')
+                for p in (*folder.glob('hands/*/api_calls/*/dispatch.json'),
+                          *folder.glob('hands/*/api_calls/*/request.json'))
             ):
                 continue  # Old sealed dossiers predate this recovery journal.
-            for hand in (folder / 'hands').glob('hand_*'):
+            for hand in sorted((folder / 'hands').glob('hand_*'), key=lambda p: p.name):
                 try:
                     exp = load(hand / 'expected.json')
                     if exp['sample'] != 'SCHEDULED':
@@ -4458,9 +4626,8 @@ def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=Fals
                     decision = optional(hand / 'decision.json')
                     if decision and decision['judgment']['action'] != 'Accept':
                         continue
-                    calls = [p.parent for p in (hand / 'api_calls').glob('*/request.json')]
-                    unfinished = any(not (c / 'not_sent.json').exists() and
-                                     not (hand / 'responses' / c.name / 'attempt.json').exists() for c in calls)
+                    calls = _sent_api_calls(hand)
+                    unfinished = any(not (hand / 'responses' / c.name / 'attempt.json').is_file() for c in calls)
                     saved_valid = any(load(p).get('status') == 'VALID' for p in dossier.attempts(hand))
                     now = d.clock()
                     if unfinished or (saved_valid and not decision) or (decision and now < exp['expiry_ms']):
@@ -4488,20 +4655,16 @@ def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=Fals
                         meta = d.verify_evidence(hand)
                         deadline = dossier.Dossiers.reply_deadline(exp, meta)
                         if deadline is not None and (deadline - now) < 45_000:
+                            if now >= deadline:
+                                with _short_writer(d):
+                                    notes_exp = [load(p) for p in (hand / 'issuance').glob('*.json')]
+                                    if not any(n.get('state') == 'REPLY_WINDOW_CLOSED' for n in notes_exp):
+                                        d.note(hand, 'REPLY_WINDOW_CLOSED', '截止前没有有效回复，保留所有尝试')
+                                        _safe_summary(d, exp['expiry_ms'])
                             continue
-                        existing_auto = sorted(
-                            (load(p) for p in (hand / 'responses').glob('*/attempt.json')
-                             if not p.parent.name.startswith('.') and load(p).get('channel') == 'API_AUTO'),
-                            key=lambda a: (int(a.get('ordinal') or 0), int(a.get('recorded_at_ms') or 0)),
-                        )
-                        raw_max_att = _env_str('ASTRA_PLAYER_INITIAL_MAX_ATTEMPTS')
-                        try:
-                            max_att = max(1, int(raw_max_att)) if raw_max_att else 2
-                        except ValueError:
-                            max_att = 2
-                        if isinstance(eff_cfg.get('max_initial_attempts'), int) and eff_cfg['max_initial_attempts'] >= 1:
-                            max_att = eff_cfg['max_initial_attempts']
-                        r_dec = _initial_retry_decision(
+                        existing_auto = _auto_attempts(hand)
+                        max_att = _max_initial_attempts(eff_cfg)
+                        elig = _initial_dispatch_eligibility(
                             hand,
                             existing_auto,
                             now_ms=now,
@@ -4509,12 +4672,28 @@ def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=Fals
                             max_attempts=max_att,
                             recover_only=False,
                         )
-                        notes = [load(p) for p in (hand / 'issuance').glob('*.json')]
-                        deferred_first = (
-                            not existing_auto
-                            and any(n.get('state') == 'SERVICE_BUDGET_DEFERRED' for n in notes)
-                        )
-                        if r_dec['can_retry'] or deferred_first:
+                        if elig['can_dispatch']:
+                            rem_svc = (eff_service_deadline - time.monotonic()) if eff_service_deadline is not None else None
+                            next_heavy = _next_initial_is_heavy(
+                                eff_cfg,
+                                existing_auto,
+                                retry_citation_contract=bool(elig.get('retry_citation_contract')),
+                            )
+                            min_post_svc_s = (
+                                320.0
+                                if next_heavy and (deadline is None or (deadline - now) >= 420_000)
+                                else 45.0
+                            )
+                            if rem_svc is not None and rem_svc < min_post_svc_s:
+                                with _short_writer(d):
+                                    d.note(
+                                        hand,
+                                        'SERVICE_BUDGET_DEFERRED',
+                                        f'post_window_sync_deferred:rem_service_s={rem_svc:.1f}',
+                                    )
+                                    _safe_summary(d, exp['expiry_ms'])
+                                out.append(dict(hand_id=hand.name, status='SERVICE_BUDGET_DEFERRED'))
+                                continue
                             out.append(_deal_hand(
                                 d,
                                 hand,
@@ -4523,7 +4702,7 @@ def recover_initial(d, service, *, llm_config=None, allow_post_window_retry=Fals
                                 recover_only=False,
                                 prompt_version=plan_cfg.get('prompt_version'),
                                 input_profile=plan_cfg.get('input_profile'),
-                                service_deadline_mono=service_deadline_mono,
+                                service_deadline_mono=eff_service_deadline,
                             ))
                 except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
                     out.append(_hand_error(d, hand, exc))
@@ -4590,13 +4769,6 @@ def _event_projection(ev):
                     protocol_status=body.get('protocol_status'),
                     shadow_action=body.get('shadow_action'),
                     summary=body.get('public_reply'))
-    elif kind == 'AI_REVIEW_REQUESTED':
-        item.update(review_id=body.get('review_id'),
-                    trigger_categories=body.get('trigger_categories'),
-                    triggers=_compact_triggers(body.get('triggers')),
-                    model=body.get('model'),
-                    reasoning_effort=body.get('reasoning_effort'),
-                    summary='已发起 AI 持仓复核')
     elif kind == 'HOLD_REVIEW_FAILED':
         item.update(review_id=body.get('review_id'), verdict='FAILED',
                     trigger_categories=body.get('trigger_categories'),
@@ -5071,12 +5243,24 @@ def audit_record(hand, now, tracker_status, *, detail=False):
     deadline = dossier.Dossiers.reply_deadline(exp, frozen) if frozen else None
     attempts = sorted((load(p) for p in (hand / 'responses').glob('*/attempt.json') if not p.parent.name.startswith('.')),
                       key=lambda p: p['ordinal'])
-    state = (decision['judgment']['action'] if decision else attempts[-1]['status'] if attempts else
-             notes[-1]['state'] if notes and notes[-1].get('state') in {
-                 'DEAL_BLOCKED', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED',
-                 'POLICY_BLOCKED', 'SERVICE_BUDGET_DEFERRED'} else
-             'AWAITING_RESPONSE' if frozen and deadline is not None and now < deadline else 'NO_RESPONSE' if frozen
-             else notes[-1]['state'] if notes else 'EXPECTED')
+    last_note_state = notes[-1].get('state') if notes else None
+    pre_deadline_window = (deadline is None or now < deadline)
+    state = (
+        decision['judgment']['action']
+        if decision
+        else attempts[-1]['status']
+        if attempts
+        else last_note_state
+        if last_note_state in {'DEAL_BLOCKED', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED', 'POLICY_BLOCKED'}
+        or (last_note_state == 'SERVICE_BUDGET_DEFERRED' and pre_deadline_window)
+        else 'AWAITING_RESPONSE'
+        if frozen and deadline is not None and now < deadline
+        else 'NO_RESPONSE'
+        if frozen
+        else last_note_state
+        if last_note_state
+        else 'EXPECTED'
+    )
     tracker = receipt['t0']['tracker_episode_id'] if receipt else None
     terminal = optional(root / 'terminal.json') if receipt else None
     terminal_meta = optional(root / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json') if terminal else None
@@ -5120,13 +5304,23 @@ def audit_record(hand, now, tracker_status, *, detail=False):
             last_failure_reason=pending_lock.get('last_failure_reason'),
         )
     # The request is published before HTTP. Its existence alone cannot prove delivery.
-    calls = [] if decision or attempts else [
-        p.parent for p in (hand / 'api_calls').glob('*/request.json')
-        if not (p.parent / 'not_sent.json').is_file()
-    ]
-    call = max(calls, key=lambda c: load(c / 'request.json')['requested_at_ms'], default=None)
-    sent = optional(call / 'request.json') if call else None
+    calls = [] if decision or attempts else _sent_api_calls(hand)
+
+    def _call_sort_ts(c_dir):
+        r_doc = optional(c_dir / 'request.json') or {}
+        d_doc = optional(c_dir / 'dispatch.json') or {}
+        return int(r_doc.get('requested_at_ms') or d_doc.get('requested_at_ms') or d_doc.get('started_at_ms') or 0)
+
+    call = max(calls, key=_call_sort_ts, default=None)
     dispatch = optional(call / 'dispatch.json') if call else None
+    sent = (optional(call / 'request.json') or (
+        dict(
+            requested_at_ms=dispatch.get('requested_at_ms') or dispatch.get('started_at_ms'),
+            model=dispatch.get('model'),
+        )
+        if isinstance(dispatch, dict)
+        else None
+    )) if call else None
     reply = optional(call / 'reply.json') if call and not attempts else None
     last = attempts[-1] if attempts else {}
     note = notes[-1] if notes else {}
@@ -5143,7 +5337,7 @@ def audit_record(hand, now, tracker_status, *, detail=False):
         stage = 'DEAL_BLOCKED'
     elif not decision and frozen and not attempts and (
         state in {'AWAITING_RESPONSE', 'NO_RESPONSE'}
-        or (state == 'DAILY_BUDGET_EXHAUSTED' and deadline and now >= deadline)
+        or (state in {'DAILY_BUDGET_EXHAUSTED', 'LLM_NOT_CONFIGURED'} and deadline and now >= deadline)
     ):
         if reply:
             stage = 'REPLY_SAVED'
@@ -6520,6 +6714,148 @@ def prewarm(plan, archive, service, *, clock=dossier.now_ms, public=dossier.publ
     return report
 
 
+def _open_hand_sync_priority_key(link_file):
+    hand = link_file.parent.parent
+    exp = optional(hand / 'expected.json') or {}
+    expiry_ms = int(exp.get('expiry_ms') or 0)
+    link_rec = optional(link_file) or {}
+    ep_id = (link_rec.get('origin') or {}).get('dossier_episode_id')
+    has_urgent_trigger = False
+    if ep_id:
+        ep_dir = hand.parent.parent / 'episodes' / dossier.key(ep_id)
+        t_state = optional(ep_dir / 'trigger_state.json') or {}
+        if t_state.get('pending') or t_state.get('inflight'):
+            has_urgent_trigger = True
+        elif (ep_dir / 'events').is_dir():
+            for ev_p in (ep_dir / 'events').glob('*.json'):
+                ev_doc = optional(ev_p)
+                if isinstance(ev_doc, dict) and ev_doc.get('kind') == 'CONDITION_TRIGGERED':
+                    has_urgent_trigger = True
+                    break
+    return (0 if has_urgent_trigger else 1, expiry_ms, str(link_file))
+
+
+def _prioritized_open_link_files(d):
+    active_links = []
+    for cand_link in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/link.json')):
+        cand_hand = cand_link.parent.parent
+        try:
+            terminal = optional(cand_link.parent / 'terminal.json')
+            if terminal:
+                meta = load(cand_link.parent / 'exports' / dossier.key(terminal['export_id']) / 'manifest.json')
+                if meta.get('settlement_state') == 'settled':
+                    continue
+            sx = optional(cand_link.parent / 'shadow_exit.json')
+            if (isinstance(sx, dict)
+                    and (sx.get('exit_state') == 'SHADOW_EXITED' or sx.get('state') == 'SHADOW_EXITED')
+                    and sx.get('tracker_stopped') is True
+                    and d.clock() < load(cand_hand / 'expected.json')['expiry_ms'] + 2 * dossier.MINUTE):
+                continue
+        except (Blocked, OSError, ValueError, KeyError, TypeError):
+            pass
+        active_links.append(cand_link)
+    active_links.sort(key=_open_hand_sync_priority_key)
+    return active_links
+
+
+def _merge_sync_open_phases(d, service, phase1_rows, mid_rows, *, run_review=False, llm_config=None, service_deadline_mono=None):
+    post_rows = []
+    if run_review:
+        post_rows = recover_initial(
+            d,
+            service,
+            llm_config=llm_config,
+            allow_post_window_retry=True,
+            service_deadline_mono=service_deadline_mono,
+        )
+    superseded_hands = {r.get('hand_id') for r in post_rows if isinstance(r, dict) and r.get('hand_id')}
+    kept_phase1 = [
+        r for r in phase1_rows
+        if not (isinstance(r, dict) and r.get('hand_id') in superseded_hands)
+    ]
+    return [*kept_phase1, *mid_rows, *post_rows]
+
+
+def sync_open(d, service, *, check_due=False, archive_root=None, run_review=False, llm_config=None):
+    """Reconcile receipts/locks, prioritize active open-hand checks & hold reviews, then run post-window initial recovery."""
+    eff_cfg = _llm_settings(llm_config) if run_review else None
+    service_deadline_mono = None
+    if run_review and isinstance(eff_cfg, dict):
+        cfg_service_budget_s = float(eff_cfg.get('service_budget_s') or 810.0)
+        service_deadline_mono = (
+            float(eff_cfg['service_deadline_mono'])
+            if eff_cfg.get('service_deadline_mono') is not None
+            else time.monotonic() + cfg_service_budget_s
+        )
+        eff_cfg = {**eff_cfg, 'service_deadline_mono': service_deadline_mono}
+
+    with _scoped_service_deadline(service_deadline_mono):
+        phase1_rows = recover_initial(d, service, allow_post_window_retry=False)
+        out = []
+        for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
+            hand = request_file.parent.parent
+            try:
+                if (request_file.parent / 'link.json').exists() or _link_blocked(request_file.parent):
+                    continue
+                expiry = load(hand / 'expected.json')['expiry_ms']
+                if d.clock() < expiry:
+                    link_res = _link_with_fresh_quote(d, hand, service)
+                    if isinstance(link_res, dict) and 'hand_id' not in link_res:
+                        link_res = {**link_res, 'hand_id': hand.name,
+                                    'dossier_id': hand.parent.parent.name, 'phase': 'request'}
+                    out.append(link_res)
+                    with _short_writer(d):
+                        d.summary(expiry)
+            except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+                out.append(dict(
+                    state='LINK_UNVERIFIED',
+                    hand_id=hand.name,
+                    dossier_id=hand.parent.parent.name,
+                    phase='request',
+                    error=type(exc).__name__,
+                    reason=getattr(exc, 'code', type(exc).__name__),
+                ))
+        for link_file in _prioritized_open_link_files(d):
+            hand = link_file.parent.parent
+            try:
+                sync_row = sync(
+                    d,
+                    hand,
+                    service,
+                    check_due=check_due,
+                    archive_root=archive_root,
+                    run_review=run_review,
+                    llm_config=eff_cfg,
+                )
+                out.append(sync_row)
+                with _short_writer(d):
+                    d.summary(load(hand / 'expected.json')['expiry_ms'])
+            except (Blocked, OSError, ValueError, KeyError, TypeError) as exc:
+                try:
+                    with _short_writer(d):
+                        d.note(hand, 'TRACKER_EXPORT_UNAVAILABLE', getattr(exc, 'code', type(exc).__name__))
+                        d.summary(load(hand / 'expected.json')['expiry_ms'])
+                except Exception:
+                    pass
+                out.append(dict(
+                    state='TRACKER_EXPORT_UNAVAILABLE',
+                    hand_id=hand.name,
+                    dossier_id=hand.parent.parent.name,
+                    phase='sync',
+                    error=type(exc).__name__,
+                    reason=getattr(exc, 'code', type(exc).__name__),
+                ))
+        return _merge_sync_open_phases(
+            d,
+            service,
+            phase1_rows,
+            out,
+            run_review=run_review,
+            llm_config=eff_cfg,
+            service_deadline_mono=service_deadline_mono,
+        )
+
+
 _SYNC_OPEN_FAILED_STATES = {'LINK_UNVERIFIED', 'LOCK_BLOCKED', 'TRACKER_EXPORT_UNAVAILABLE'}
 _SYNC_OPEN_FAILED_STATUSES = {
     'DEAL_BLOCKED', 'NO_EVIDENCE', 'LLM_NOT_CONFIGURED', 'DAILY_BUDGET_EXHAUSTED',
@@ -6537,6 +6873,7 @@ def classify_sync_open_batch(rows):
         is_fail = (
             row.get('state') in _SYNC_OPEN_FAILED_STATES
             or row.get('status') in _SYNC_OPEN_FAILED_STATUSES
+            or (row.get('status') == 'AUTO_ATTEMPTED' and row.get('last_status') != 'VALID')
             or link_state in _SYNC_OPEN_FAILED_STATES
             or row.get('action') == 'RECOVERY_PENDING'
             or bool(row.get('error'))
@@ -6549,6 +6886,7 @@ def classify_sync_open_batch(rows):
                 state=(
                     row.get('state')
                     or (link_state if link_state in _SYNC_OPEN_FAILED_STATES else None)
+                    or (row.get('last_status') if row.get('status') == 'AUTO_ATTEMPTED' and row.get('last_status') != 'VALID' else None)
                     or row.get('status')
                     or row.get('action')
                 ),
@@ -6625,7 +6963,21 @@ def main():
                 with _short_writer(d):
                     d.summary(load(hand / 'expected.json')['expiry_ms'])
             elif args.command == 'sync-open':
-                out = recover_initial(d, service, allow_post_window_retry=bool(args.review))
+                global _ACTIVE_SERVICE_DEADLINE_MONO
+                _prev_sync_dl = _ACTIVE_SERVICE_DEADLINE_MONO
+                _cli_sync_dl = None
+                _cli_eff_cfg = None
+                if args.review:
+                    _cli_eff_cfg = _llm_settings()
+                    _cli_sync_dl = (
+                        float(_cli_eff_cfg['service_deadline_mono'])
+                        if _cli_eff_cfg.get('service_deadline_mono') is not None
+                        else time.monotonic() + float(_cli_eff_cfg.get('service_budget_s') or 810.0)
+                    )
+                    _cli_eff_cfg = {**_cli_eff_cfg, 'service_deadline_mono': _cli_sync_dl}
+                    _ACTIVE_SERVICE_DEADLINE_MONO = _cli_sync_dl
+                phase1_rows = recover_initial(d, service, allow_post_window_retry=False)
+                out = []
                 for request_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/request.json')):
                     hand = request_file.parent.parent
                     try:
@@ -6649,7 +7001,7 @@ def main():
                             error=type(exc).__name__,
                             reason=getattr(exc, 'code', type(exc).__name__),
                         ))
-                for link_file in sorted((d.root / 'dossiers').glob('*/hands/hand_*/tracking/link.json')):
+                for link_file in _prioritized_open_link_files(d):
                     hand = link_file.parent.parent
                     try:
                         terminal = optional(link_file.parent / 'terminal.json')
@@ -6682,6 +7034,18 @@ def main():
                             error=type(exc).__name__,
                             reason=getattr(exc, 'code', type(exc).__name__),
                         ))
+                try:
+                    out = _merge_sync_open_phases(
+                        d,
+                        service,
+                        phase1_rows,
+                        out,
+                        run_review=bool(args.review),
+                        llm_config=_cli_eff_cfg,
+                        service_deadline_mono=_cli_sync_dl,
+                    )
+                finally:
+                    _ACTIVE_SERVICE_DEADLINE_MONO = _prev_sync_dl
             else:
                 hand = hand_path(args.root, args.dossier, args.hand)
                 out = (_link_with_fresh_quote(d, hand, service, dossier.read(args.condition) if args.condition else None)
