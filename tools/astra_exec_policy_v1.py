@@ -37,6 +37,7 @@ if __package__:
         compute_margin_and_cash_requirements,
         compute_tp_plan,
         conservative_split_buy_outlay_btc,
+        facts_clock_skew_ms,
         matches_episode_future,
         option_trade_fee_btc,
         quant_qty,
@@ -77,6 +78,7 @@ else:
         compute_margin_and_cash_requirements,
         compute_tp_plan,
         conservative_split_buy_outlay_btc,
+        facts_clock_skew_ms,
         matches_episode_future,
         option_trade_fee_btc,
         quant_qty,
@@ -874,11 +876,11 @@ def evaluate_step(
     if stage2_fut_pos != ZERO:
         alerts.append("STAGE2_DELIVERY_FUTURE_PENDING")
 
-    naked_breach = prot_pos < short_qty
+    naked_breach = facts.api_error is None and facts.positions_complete and (prot_pos < short_qty)
     if naked_breach:
         alerts.append("NAKED_SHORT_BREACH")
 
-    clock_skew_high = abs(facts.server_time_ms - now_ms) > config.max_clock_skew_ms
+    clock_skew_high = facts_clock_skew_ms(facts, now_ms) > config.max_clock_skew_ms
     if clock_skew_high:
         alerts.append("CLOCK_SKEW_HIGH")
     venue_now_ms = facts.server_time_ms if facts.server_time_ms > 0 else now_ms
@@ -1036,7 +1038,13 @@ def evaluate_step(
     tp_substate = episode.tp_substate
     estimated_abort_loss_at_ep = episode.estimated_abort_loss_at_ep_btc
 
-    if not entry_closed and not entry_cmds_open_or_unknown and not entry_sync_lagging:
+    if (
+        not entry_closed
+        and facts.api_error is None
+        and not entry_cmds_open_or_unknown
+        and not entry_sync_lagging
+        and (es_filled == ZERO or exit_latched or short_spec is not None)
+    ):
         close_reason: str | None = None
         if es_filled >= target_qty:
             close_reason = "FULL_TARGET_FILLED"
@@ -1092,6 +1100,18 @@ def evaluate_step(
         alerts.append("RX_MARGIN_OR_CASH_EXHAUSTED_SPREAD_HEDGED_MANUAL_DECISION")
 
     rx_quote_samples = episode.rx_quote_samples
+
+    # Shared milestone predicate (Spec 2.1): reused by Branch 3 (LX) and Section 7
+    short_liability_cleared = (
+        facts.api_error is None
+        and facts.positions_complete
+        and facts.open_orders_complete
+        and short_qty == ZERO
+        and not es_trades_lagging
+        and not close_trades_lagging
+        and not short_pos_lagging
+        and not any(c.purpose in {"ES", "TP", "RX"} and c.is_open_or_unknown for c in eff_cmds)
+    )
 
     # 6. Action Selection
     actions: list[PolicyAction] = []
@@ -1297,10 +1317,6 @@ def evaluate_step(
                             )
 
         # Branch 3: Unified Protection Residual Disposal (Spec 1.2.4 & 3.2: floor_px >= 0.0002, DTE > 15s)
-        short_cleared_now = (
-            short_qty == ZERO
-            and not any(c.purpose in {"ES", "TP", "RX"} and c.is_open_or_unknown for c in eff_cmds)
-        )
         can_consider_lx = (
             long_spec is not None
             and (entry_closed or exit_latched)
@@ -1308,12 +1324,14 @@ def evaluate_step(
             and not ep_trades_lagging
             and not es_trades_lagging
             and not close_trades_lagging
+            and not short_pos_lagging
             and not lx_trades_lagging
+            and (not exit_latched or short_liability_cleared)
+            and (short_qty > ZERO or short_liability_cleared)
             and not has_unknown_ep
             and not any(c.is_open_or_unknown for c in ep_cmds)
             and not has_unknown_lx
             and not any(c.is_open_or_unknown for c in lx_cmds)
-            and (not exit_latched or short_cleared_now)
             and venue_now_ms < (episode.expiry_ms - config.lx_submit_cutoff_ms)
         )
         if can_consider_lx and long_spec is not None:
@@ -1525,17 +1543,7 @@ def evaluate_step(
                             else:
                                 notes.append("EP_WAIT_PRICE_WITHIN_CAP")
 
-    # 7. Independent Milestones & 6 Lifecycle Phases (Spec 2.1)
-    short_liability_cleared = (
-        facts.api_error is None
-        and facts.positions_complete
-        and facts.open_orders_complete
-        and short_qty == ZERO
-        and not es_trades_lagging
-        and not close_trades_lagging
-        and not short_pos_lagging
-        and not any(c.purpose in {"ES", "TP", "RX"} and c.is_open_or_unknown for c in eff_cmds)
-    )
+    # 7. Independent Milestones & 6 Lifecycle Phases (Spec 2.1; short_liability_cleared shared above)
     inventory_cleared = (
         short_liability_cleared
         and prot_pos == ZERO

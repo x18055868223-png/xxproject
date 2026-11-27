@@ -1,5 +1,8 @@
 # xxproject Live Execution Contract (LIVE-P0 Converged v2.1)
 
+> [!WARNING]
+> **SUPERSEDED / HISTORICAL BASELINE（Pre-v1.2.0 历史合同）**：本文件记录 `LIVE-P0 v2.1` 早期设计（含已删除的 `approvals` 逐局审批、`AWAITING_APPROVAL`、`OperatorApproval` / `confirm_code`、`max_exit_pay_btc`、`EXIT_CAP_EXCEEDED` 以及已推翻的 Workbench `LoadCredential=exec_control_token` / 控制面直连方案）。**当前权威行为规范为 `live-exec-behavior@1.2.0`（持续资本授权 + 纯只读 Workbench v3 + 三用户物理隔离，Workbench 以 `User=astra-workbench` 零令牌仅读 `public_status.json`，绝无控制套接字权限）；Linux/Testnet 运维请以 [PRELIVE_VERIFICATION_RUNBOOK.md](PRELIVE_VERIFICATION_RUNBOOK.md) 与当前源码为准。**
+
 - **Scope**: 0–1DTE Deribit BTC inverse credit vertical spreads (`BUY` protection -> confirm available coverage -> `SELL` short). Single dedicated subaccount, `MAX_EPISODES = 1` active/unsettled episode.
 - **Authority Baseline**: `pre-trade-baseline-20261124-3a3f850e` (`3a3f850e86423ce604ca25ee62e3ad9221fcef97`).
 - **Pre-Live Constraint**: Stages P0–P3 operate strictly in `SHADOW_ONLY` / `DRY_RUN` / isolated `TESTNET`. Live trading credentials, mainnet writes, and P4 capital authorization are excluded from this contract's authorization scope.

@@ -280,6 +280,9 @@ def _serialize_capital_auth(auth: CapitalAuthorization) -> str:
     return json.dumps(dataclass_to_jsonable(auth), sort_keys=True, ensure_ascii=False)
 
 
+_UNSET = object()
+
+
 class ExecutionStore:
     """Single-writer SQLite WAL store with 4 core tables, capital auth audit chain, and rebuildable ledger."""
 
@@ -1142,7 +1145,7 @@ class ExecutionStore:
         now_ms: int,
         venue_order_id: str | None = None,
         filled_amount: Decimal | None = None,
-        last_error: str | None = None,
+        last_error: Any = _UNSET,
         cancel_requested_at_ms: int | None = None,
     ) -> None:
         self._begin_write()
@@ -1156,6 +1159,7 @@ class ExecutionStore:
                 else row["filled_amount"]
             )
             new_oid = venue_order_id if venue_order_id is not None else row["venue_order_id"]
+            new_last_err = row["last_error"] if last_error is _UNSET else last_error
             new_cancel_req = (
                 cancel_requested_at_ms if cancel_requested_at_ms is not None else row["cancel_requested_at_ms"]
             )
@@ -1165,10 +1169,10 @@ class ExecutionStore:
                 SET status=?, venue_order_id=?, filled_amount=?, last_error=?, updated_at_ms=?, cancel_requested_at_ms=?
                 WHERE cmd_id=?
                 """,
-                (status.value, new_oid, new_filled, last_error, int(now_ms), new_cancel_req, cmd_id),
+                (status.value, new_oid, new_filled, new_last_err, int(now_ms), new_cancel_req, cmd_id),
             )
-            if row["purpose"] == "RX" and status == CommandStatus.REJECTED and last_error and (
-                "10009" in last_error or "not_enough_funds" in last_error.lower()
+            if row["purpose"] == "RX" and status == CommandStatus.REJECTED and isinstance(new_last_err, str) and (
+                "10009" in new_last_err or "not_enough_funds" in new_last_err.lower()
             ):
                 self.conn.execute(
                     "UPDATE episodes SET rx_cash_wall_10009 = 1, updated_at_ms = ? WHERE episode_id = ?",
@@ -1271,9 +1275,13 @@ class ExecutionStore:
         foreign_uids, foreign_oids = self.get_foreign_attribution_ids(episode.episode_id)
         inserted = 0
         accepted_qty = ZERO
+        seen_tids: set[str] = set()
         self._begin_write()
         try:
             for tr in trades:
+                if tr.trade_id in seen_tids:
+                    continue
+                seen_tids.add(tr.trade_id)
                 accepted, _purpose = classify_trade_attribution(
                     tr,
                     episode=episode,
@@ -1460,7 +1468,7 @@ class ExecutionStore:
                 user_trades[tid] = raw
             elif ev["event_type"] == "TX_LOG":
                 tx_all.append(raw)
-                if raw.get("type") == "trade" and raw.get("trade_id"):
+                if str(raw.get("type") or "").lower() == "trade" and raw.get("trade_id"):
                     tx_trade_by_tid[str(raw["trade_id"])] = raw
 
         def _purpose_for_trade(tr: dict[str, Any], tx: dict[str, Any] | None) -> str:

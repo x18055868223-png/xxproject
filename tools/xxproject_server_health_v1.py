@@ -560,6 +560,7 @@ def check_release_manifest(release_root: Path) -> dict[str, Any]:
         "ok": True,
         "release_id": data.get("release_id"),
         "source_commit": data.get("source_commit"),
+        "worktree_state": data.get("worktree_state"),
         "file_count": len(files),
     }
 
@@ -601,6 +602,8 @@ def _check_execution_status(
     if isinstance(gen_ms, bool) or not isinstance(gen_ms, (int, float)):
         return {"ok": False, "reason": "execution_status_missing_timestamp", "path": str(status_path)}
     age_ms = now_ms - int(gen_ms)
+    if age_ms < -5_000:
+        return {"ok": False, "reason": "execution_status_clock_future", "age_ms": age_ms}
     if age_ms > max_age_ms:
         return {"ok": False, "reason": "execution_status_stale", "age_ms": age_ms, "max_age_ms": max_age_ms}
     if payload.get("stale") is True:
@@ -624,6 +627,8 @@ def _check_execution_status(
     health = str(payload.get("health") or "")
     if health in {"DEGRADED", "STALE", "NAKED_SHORT_BREACH", "DISCONNECTED", "WRITE_DISABLED", "HALTED"}:
         return {"ok": False, "reason": f"execution_unhealthy:{health}", "health": health}
+    if health not in {"OK", "SHADOW_IDLE", "HEALTHY"}:
+        return {"ok": False, "reason": f"execution_health_unrecognized:{health or 'empty'}", "health": health}
 
     ep_alerts = [str(a) for a in ((active or {}).get("alerts") or ())]
     for raw_alert in ep_alerts:

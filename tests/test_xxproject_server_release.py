@@ -721,3 +721,139 @@ def test_execution_health_checks_and_rollback_unit_cleanup(tmp_path: Path, monke
         srv.shutdown()
         srv.server_close()
     assert not exec_unit.exists() and not exec_dropin.exists()
+
+
+def test_closure_ops_b4_preexec_rollback_rel_w5_and_health_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    builder = _load_script("xxproject_build_b4", BUILD_SCRIPT)
+    deployer = _load_script("xxproject_deploy_b4", DEPLOY_SCRIPT)
+
+    # 1. build_release forbids deploy/astra_workbench_v3/fixtures/
+    assert (
+        deployer._sha256(b"x")
+        and any("deploy/astra_workbench_v3/fixtures/" in line for line in BUILD_SCRIPT.read_text(encoding="utf-8").splitlines())
+    )
+
+    pkg_pre = tmp_path / "pkg_pre.tar.gz"
+    pkg_exec = tmp_path / "pkg_exec.tar.gz"
+    r1 = builder.build_release(ROOT, pkg_pre, source_commit="1111111111111111111111111111111111111111", release_tag="pre", allow_dirty=True)
+    builder.build_release(ROOT, pkg_exec, source_commit="2222222222222222222222222222222222222222", release_tag="exec", allow_dirty=True)
+
+    # 2. REL-W5: strict_clean rejects dirty builds unless allow_dirty_release=True; worktree_state propagates
+    prefix = tmp_path / "host_b4"
+    monkeypatch.setattr(deployer, "_validate_execution_os_isolation", lambda _p: None)
+    monkeypatch.setattr(deployer, "_migrate_exec_shared_permissions", lambda _p: None)
+    with pytest.raises(RuntimeError, match="DIRTY_RELEASE_PACKAGE_REJECTED"):
+        deployer.cmd_install(pkg_pre, prefix, apply_units=False, no_systemd=True, strict_clean=True)
+
+    inst1 = deployer.cmd_install(pkg_pre, prefix, apply_units=True, no_systemd=True, with_execution=False, strict_clean=True, allow_dirty_release=True)
+    assert inst1["worktree_state"] == "dirty"
+    assert deployer.cmd_verify(prefix)["worktree_state"] == "dirty"
+
+    # Strip BOTH systemd_units_execution AND astra_execution_coordinator_v1.py from r1 to simulate a true pre-exec P5 release (53f1db86/87e9cab8)
+    import shutil
+    r1_dir = prefix / "opt" / "xxproject" / "releases" / r1["release_id"]
+    shutil.rmtree(r1_dir / "deploy" / "xxproject_server" / "systemd_units_execution")
+    coord_py = r1_dir / "tools" / "astra_execution_coordinator_v1.py"
+    if coord_py.exists():
+        coord_py.unlink()
+    mf_path = r1_dir / "RELEASE_MANIFEST.json"
+    mf_data = json.loads(mf_path.read_text(encoding="utf-8"))
+    mf_data["files"] = {
+        k: v for k, v in mf_data["files"].items()
+        if not k.startswith("deploy/xxproject_server/systemd_units_execution/")
+        and k != "tools/astra_execution_coordinator_v1.py"
+    }
+    mf_path.write_text(json.dumps(mf_data, indent=2, sort_keys=True), encoding="utf-8")
+
+    # Install execution release + create workbench sessions.json + llm usage.json + stale public_status.json + settled exec_store.sqlite
+    import sys
+    sys.path.insert(0, str(ROOT / "tools"))
+    import astra_exec_store_v1 as exec_store_mod
+
+    deployer.cmd_install(pkg_exec, prefix, apply_units=True, no_systemd=True, with_execution=True)
+    wb_dir = prefix / "var" / "lib" / "xxproject" / "workbench"
+    wb_dir.mkdir(parents=True, exist_ok=True)
+    (wb_dir / "sessions.json").write_text("{}", encoding="utf-8")
+    llm_dir = prefix / "var" / "lib" / "xxproject" / "llm"
+    llm_dir.mkdir(parents=True, exist_ok=True)
+    (llm_dir / "usage.json").write_text("{}", encoding="utf-8")
+    exec_dir = prefix / "var" / "lib" / "xxproject" / "execution"
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    (exec_dir / "public_status.json").write_text('{"mode":"SHADOW_ONLY"}', encoding="utf-8")
+    st_settled = exec_store_mod.ExecutionStore(exec_dir / "exec_store.sqlite")
+    st_settled.close()
+
+    restored_calls: list[Path] = []
+    orig_restore = deployer._restore_pre_execution_workbench_permissions
+    def _spy_restore(p: Path) -> list[str]:
+        restored_calls.append(p)
+        return orig_restore(p)
+    monkeypatch.setattr(deployer, "_restore_pre_execution_workbench_permissions", _spy_restore)
+
+    # Notice _check_execution_deploy_safety fails closed without live /health-fresh when execution footprint exists; verify CLI rollback works end-to-end!
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    tok_file = tmp_path / "b4_ctrl_tok.txt"
+    tok_file.write_text("b4_ctrl_secret", encoding="utf-8")
+
+    class _B4IdleCtrlHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a: Any) -> None:
+            return
+
+        def do_GET(self) -> None:
+            assert self.headers.get("Authorization") == "Bearer b4_ctrl_secret"
+            body = json.dumps({
+                "ok": True,
+                "safe_for_deploy": True,
+                "open_positions_count": 0,
+                "open_orders_count": 0,
+                "active_or_unknown_commands_count": 0,
+                "active_unsettled_episode": False,
+                "status": {"writes_enabled": False, "active_episode": None},
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv_b4 = HTTPServer(("127.0.0.1", 0), _B4IdleCtrlHandler)
+    threading.Thread(target=srv_b4.serve_forever, daemon=True).start()
+    try:
+        rc_rb = deployer.main([
+            "rollback",
+            "--root-prefix", str(prefix),
+            "--to-release", r1["release_id"],
+            "--apply-units",
+            "--no-systemd",
+            "--exec-control-url", f"http://127.0.0.1:{srv_b4.server_port}",
+            "--exec-control-token-file", str(tok_file),
+        ])
+    finally:
+        srv_b4.shutdown()
+        srv_b4.server_close()
+    assert rc_rb == 0
+    assert restored_calls == [prefix]
+    assert not (exec_dir / "public_status.json").exists()
+    assert any(p.name.startswith("public_status.pre_rollback.") for p in exec_dir.iterdir())
+    assert (exec_dir / "exec_store.sqlite").is_file()
+
+    # Subsequent CLI install after clean cross-boundary rollback (only settled exec_store.sqlite retained, coordinator stopped) MUST succeed!
+    rc_reinst = deployer.main([
+        "install",
+        "--root-prefix", str(prefix),
+        "--package", str(pkg_exec),
+        "--apply-units",
+        "--no-systemd",
+        "--with-execution",
+    ])
+    assert rc_reinst == 0
+
+    # 3. Info-2 & Info-3: _check_execution_status rejects future clocks and empty/unrecognized health
+    st_path = tmp_path / "hc_st.json"
+    now_ms = 1_795_450_500_000
+    st_path.write_text(json.dumps({"generated_at_ms": now_ms + 10_000, "mode": "SHADOW_ONLY", "writes_enabled": False, "health": "SHADOW_IDLE"}), encoding="utf-8")
+    assert health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)["reason"] == "execution_status_clock_future"
+    st_path.write_text(json.dumps({"generated_at_ms": now_ms, "mode": "SHADOW_ONLY", "writes_enabled": False, "health": ""}), encoding="utf-8")
+    assert health_check._check_execution_status(st_path, now_ms=now_ms, max_age_ms=120_000)["reason"].startswith("execution_health_unrecognized")

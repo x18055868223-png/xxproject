@@ -22,6 +22,7 @@ id -u astra-exec >/dev/null 2>&1 || fail "missing user astra-exec"
 id -u astra-workbench >/dev/null 2>&1 || fail "missing user astra-workbench"
 [[ "$(id -u bitnami)" != "$(id -u astra-workbench)" ]] || fail "bitnami UID equals astra-workbench UID"
 [[ "$(id -u bitnami)" != "$(id -u astra-exec)" ]] || fail "bitnami UID equals astra-exec UID"
+[[ "$(id -u astra-workbench)" != "$(id -u astra-exec)" ]] || fail "astra-workbench UID equals astra-exec UID"
 if id -nG bitnami | tr ' ' '\n' | grep -qx 'astra-exec'; then
   fail "bitnami must NOT belong to group astra-exec"
 fi

@@ -1206,3 +1206,157 @@ def test_mandatory_multi_fault_combined_trajectory(tmp_path: Path):
     finally:
         st2.close()
         st1.conn.close()
+
+
+def test_closure_policy_completeness_guards_and_mixed_expiry_settlement(tmp_path: Path):
+    # 1. K-W1: incomplete facts / transient missing short_spec must NEVER trigger false NAKED_SHORT_BREACH or freeze tp_cap_init=0
+    venue, ep, _, cfg = _setup_put_spread(target_qty=D("0.1"), max_entry_slice=D("0.1"), budget_cap_btc=D("0.10"))
+    st = store.ExecutionStore(tmp_path / "kw1.sqlite3")
+    try:
+        auth = st.set_capital_policy(entry_armed=True, budget_cap_btc=D("0.10"), max_qty_btc=D("0.1"), now_ms=ep.created_at_ms)
+        st.create_episode(ep)
+        _step_once(st, venue, ep.episode_id, cfg, recurse_entry=False)  # EP filled 0.1
+        venue.advance_time(10)
+        _refresh_books(venue, ep)
+        _step_once(st, venue, ep.episode_id, cfg, recurse_entry=False)  # ES filled 0.1 (entry still open on partial poll)
+
+        ep_cur = st.get_episode(ep.episode_id)
+        cmds_cur = st.get_commands(ep.episode_id)
+        evs_cur = st.get_venue_events(ep.episode_id)
+        facts_ok = _adapt_facts(venue.build_facts(ep.short_instrument, ep.long_instrument))
+
+        # Incomplete positions_complete=False with missing long position MUST NOT trigger NAKED_SHORT_BREACH
+        facts_incomplete = contracts.ExchangeFacts(
+            **{
+                **facts_ok.__dict__,
+                "positions": tuple(p for p in facts_ok.positions if p.instrument_name == ep.short_instrument),
+                "positions_complete": False,
+            }
+        )
+        res_inc = policy.evaluate_step(ep_cur, auth, cmds_cur, evs_cur, facts_incomplete, venue.server_time_ms, cfg)
+        assert res_inc.episode_patch.exit_latched is False
+        assert "NAKED_SHORT_BREACH" not in res_inc.alerts
+
+        # Transient short_spec=None on non-exited filled ES MUST NOT freeze entry_closed with tp_cap_init=0
+        facts_no_spec = contracts.ExchangeFacts(**{**facts_ok.__dict__, "short_spec": None})
+        res_nospec = policy.evaluate_step(ep_cur, auth, cmds_cur, evs_cur, facts_no_spec, venue.server_time_ms, cfg)
+        assert res_nospec.episode_patch.entry_closed is False
+
+        # Transient api_error with stale clock on empty episode MUST NOT close zero-fill prematurely
+        ep_empty = contracts.EpisodeState(
+            **{
+                **ep.__dict__,
+                "episode_id": "ep_err_empty",
+                "hand_id": "h_err_empty",
+                "contract_hash": "ch_err_empty",
+            }
+        )
+        facts_err = contracts.ExchangeFacts(
+            **{**facts_ok.__dict__, "api_error": "10028", "server_time_ms": facts_ok.asof_ms - 5_000}
+        )
+        res_err = policy.evaluate_step(ep_empty, auth, (), (), facts_err, facts_ok.asof_ms, cfg)
+        assert res_err.episode_patch.entry_closed is False
+
+        # Incomplete positions_complete=False during exit_latched when short_qty == 0 blocks LX and keeps short_liability_cleared=False
+        ep_exit = contracts.EpisodeState(
+            **{
+                **ep_cur.__dict__,
+                "episode_id": "ep_exit_inc",
+                "hand_id": "h_exit_inc",
+                "contract_hash": "ch_exit_inc",
+                "entry_closed": True,
+                "exit_latched": True,
+                "exit_latch_reason": "AI_REVOKE",
+                "matched_qty_btc": ZERO,
+            }
+        )
+        facts_exit_inc = contracts.ExchangeFacts(
+            **{
+                **facts_ok.__dict__,
+                "positions": (contracts.ExchangePosition(instrument_name=ep.long_instrument, kind="option", size=D("0.1")),),
+                "positions_complete": False,
+            }
+        )
+        res_ex_inc = policy.evaluate_step(ep_exit, auth, (), (), facts_exit_inc, venue.server_time_ms, cfg)
+        assert res_ex_inc.episode_patch.short_liability_cleared is False
+        assert not [a for a in res_ex_inc.actions if a.purpose == "LX"]
+    finally:
+        st.close()
+
+    # 2. K-W5: Mixed settlement format (OTM stage-1 expiry + ITM direct option delivery) settles cleanly
+    exp_ms = 1_795_507_200_000
+    s1 = [{"id": 1, "type": "expiry", "instrument_name": ep.long_instrument, "amount": "0", "timestamp_ms": exp_ms + 50}]
+    s2 = [{"id": 2, "type": "delivery", "instrument_name": ep.short_instrument, "amount": "0.1", "timestamp_ms": exp_ms + 60}]
+    has_itm, all_legs, complete = contracts.compute_episode_expiry_settlement(
+        short_instrument=ep.short_instrument,
+        long_instrument=ep.long_instrument,
+        es_qty=D("0.1"),
+        close_short_qty=ZERO,
+        ep_qty=D("0.1"),
+        lx_qty=ZERO,
+        stage1_rows=s1,
+        stage2_rows=s2,
+        positions=(),
+        expiry_ms=exp_ms,
+        server_time_ms=exp_ms + 100,
+    )
+    assert has_itm is False and all_legs is True and complete is True
+
+    # 3. K-W7 & Info-4: update_command_state preserves last_error when omitted; ingest_order_trades dedupes batch trade_ids
+    st_store = store.ExecutionStore(tmp_path / "store_kw7.sqlite3")
+    try:
+        st_store.create_episode(ep)
+        cmd_u = contracts.ExecCommand(
+            cmd_id=f"{ep.episode_id}:cmd_0001_EP",
+            episode_id=ep.episode_id,
+            purpose="EP",
+            label="ax1:tn:kw7:EP:0001",
+            instrument_name=ep.long_instrument,
+            direction="buy",
+            amount=D("0.1"),
+            limit_price=D("0.0012"),
+            time_in_force="IOC",
+            reduce_only=False,
+            post_only=False,
+            reject_post_only=False,
+            valid_until_ms=ep.expiry_ms,
+            created_at_ms=ep.created_at_ms,
+            status=contracts.CommandStatus.SUBMIT_UNKNOWN,
+            updated_at_ms=ep.created_at_ms,
+        )
+        st_store.create_command_intent(cmd_u, now_ms=ep.created_at_ms)
+        st_store.update_command_state(
+            cmd_u.cmd_id,
+            status=contracts.CommandStatus.SUBMIT_UNKNOWN,
+            last_error="t5_injected_post_submit_ack_timeout",
+            now_ms=ep.created_at_ms + 10,
+        )
+        st_store.update_command_state(
+            cmd_u.cmd_id,
+            status=contracts.CommandStatus.FILLED,
+            venue_order_id="oid_kw7",
+            filled_amount=D("0.1"),
+            now_ms=ep.created_at_ms + 20,
+        )
+        cmds_loaded = st_store.get_commands(ep.episode_id)
+        assert cmds_loaded[0].last_error == "t5_injected_post_submit_ack_timeout"
+
+        dup_trade = contracts.VenueTrade(
+            trade_id="dup_tid_1",
+            order_id="oid_kw7",
+            label=cmd_u.label,
+            instrument_name=ep.long_instrument,
+            direction="buy",
+            amount=D("0.1"),
+            price=D("0.0012"),
+            fee=D("0.000015"),
+            fee_currency="BTC",
+            timestamp_ms=ep.created_at_ms + 15,
+            liquidity="T",
+        )
+        ins_n, acc_qty = st_store.ingest_order_trades(
+            ep, [dup_trade, dup_trade], subaccount_id=ep.subaccount_id, now_ms=ep.created_at_ms + 15
+        )
+        assert ins_n == 1 and acc_qty == D("0.1")
+    finally:
+        st_store.close()

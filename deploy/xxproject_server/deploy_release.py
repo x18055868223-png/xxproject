@@ -47,10 +47,10 @@ CORE_IMPORT_MODULES = [
     "astra_kpf_light_v1",
     "astra_research_archive_v1",
     "astra_player_tracking_v13",
-    "astra_execution_coordinator_v1",
     "materialize_signal_cards",
     "xxproject_server_health_v1",
 ]
+OPTIONAL_EXEC_IMPORT_MODULES = ("astra_execution_coordinator_v1",)
 
 ENV_TEMPLATES = {
     "deploy/signal_producer/signal-producer.env.example": "etc/signal-audit/signal-producer.env",
@@ -183,6 +183,8 @@ def _validate_execution_os_isolation(prefix: Path) -> None:
         raise RuntimeError("MISSING_HOST_WORKBENCH_USER: astra-workbench") from exc
     try:
         bitnami_pw = pwd.getpwnam("bitnami")
+        if wb_pw.pw_uid == exec_pw.pw_uid:
+            raise RuntimeError("UNISOLATED_WORKBENCH_UID_EQUALS_EXEC")
         if wb_pw.pw_uid == bitnami_pw.pw_uid or exec_pw.pw_uid == bitnami_pw.pw_uid:
             raise RuntimeError("UNISOLATED_WORKBENCH_UID_EQUALS_BITNAMI")
         try:
@@ -416,7 +418,10 @@ def _verify_release_dir(release_dir: Path) -> dict[str, Any]:
 
 def _run_import_smoke(release_dir: Path) -> None:
     tools_dir = release_dir / "tools"
-    script = "; ".join(f"import {mod}" for mod in CORE_IMPORT_MODULES)
+    modules = list(CORE_IMPORT_MODULES) + [
+        mod for mod in OPTIONAL_EXEC_IMPORT_MODULES if (tools_dir / f"{mod}.py").is_file()
+    ]
+    script = "; ".join(f"import {mod}" for mod in modules)
     proc = subprocess.run(
         [sys.executable, "-c", script],
         cwd=str(tools_dir),
@@ -501,6 +506,7 @@ def cmd_preflight(pkg: Path, prefix: Path, *, min_free_bytes: int = 512 * 1024 *
         "action": "preflight",
         "release_id": manifest.get("release_id"),
         "source_commit": manifest.get("source_commit"),
+        "worktree_state": manifest.get("worktree_state"),
         "file_count": manifest.get("file_count"),
         "free_bytes": free_bytes,
         "gex_runtime_venv_present": gex_venv_python.is_file(),
@@ -641,6 +647,48 @@ def _migrate_exec_shared_permissions(prefix: Path) -> None:
                     on_dir=lambda d: (_chown_safe(d, user="astra-workbench", group=research_grp), _chmod_posix(d, 0o2750)),
                     on_file=lambda f: (_chown_safe(f, user="astra-workbench", group=research_grp), _chmod_posix(f, 0o640)),
                 )
+
+
+def _restore_pre_execution_workbench_permissions(prefix: Path) -> list[str]:
+    """Restore bitnami ownership on /var/lib/xxproject/workbench & archive public_status.json when rolling back across --with-execution."""
+    changes: list[str] = []
+    wb_dir = prefix / "var" / "lib" / "xxproject" / "workbench"
+    if wb_dir.is_dir():
+        _chown_safe(wb_dir, user="bitnami", group="bitnami")
+        _chmod_posix(wb_dir, 0o755)
+        changes.append("restored:var/lib/xxproject/workbench")
+        for child in sorted(wb_dir.iterdir()):
+            if child.is_symlink():
+                continue
+            name = child.name
+            if name == "sessions.json":
+                _chown_safe(child, user="bitnami", group="bitnami")
+                _chmod_posix(child, 0o600)
+                changes.append("restored:var/lib/xxproject/workbench/sessions.json")
+            elif name == "deribit_cooldown.json":
+                _chown_safe(child, user="bitnami", group="bitnami")
+                _chmod_posix(child, 0o644)
+                changes.append("restored:var/lib/xxproject/workbench/deribit_cooldown.json")
+            else:
+                _walk_tree_no_symlinks(
+                    child,
+                    on_dir=lambda d: (_chown_safe(d, user="bitnami", group="bitnami"), _chmod_posix(d, 0o755)),
+                    on_file=lambda f: (_chown_safe(f, user="bitnami", group="bitnami"), _chmod_posix(f, 0o644)),
+                )
+    llm_dir = prefix / "var" / "lib" / "xxproject" / "llm"
+    if llm_dir.is_dir():
+        _walk_tree_no_symlinks(
+            llm_dir,
+            on_dir=lambda d: (_chown_safe(d, user="bitnami", group="bitnami"), _chmod_posix(d, 0o755)),
+            on_file=lambda f: (_chown_safe(f, user="bitnami", group="bitnami"), _chmod_posix(f, 0o644)),
+        )
+        changes.append("restored:var/lib/xxproject/llm")
+    pub_status = prefix / "var" / "lib" / "xxproject" / "execution" / "public_status.json"
+    if pub_status.is_file() and not pub_status.is_symlink():
+        archived = pub_status.with_name(f"public_status.pre_rollback.{int(time.time())}.json")
+        pub_status.replace(archived)
+        changes.append(f"archived:{archived.name}")
+    return changes
 
 
 def _ensure_materialize_bitnami_writable(prefix: Path, *, with_execution: bool = False) -> None:
@@ -849,6 +897,7 @@ def _install_systemd_units(
             backed_up_dropins.append("removed:astra-workbench-v20.service.d/60-exec-control.conf")
             if wb_dropin_dst.parent.is_dir() and not any(wb_dropin_dst.parent.iterdir()):
                 wb_dropin_dst.parent.rmdir()
+        backed_up_dropins.extend(_restore_pre_execution_workbench_permissions(prefix))
     if not no_systemd and os.name != "nt":
         subprocess.run(["systemctl", "daemon-reload"], check=True)
     return installed, backed_up_dropins
@@ -943,6 +992,28 @@ def _http_get_control_json(url: str, *, token: str, timeout_s: float = 5.0) -> t
             return int(exc.code), {"ok": False, "error": body}
 
 
+def _is_clean_settled_post_rollback_store(db_path: Path) -> bool:
+    """True only when a retained post-rollback SQLite DB proves 0 unsettled episodes and 0 open/unknown commands."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=2.0)
+    except Exception:
+        return False
+    try:
+        unsettled = int(conn.execute("SELECT COUNT(*) FROM episodes WHERE cashflow_settled=0").fetchone()[0])
+        open_cmd = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM commands WHERE status IN ('PREPARED_UNKNOWN','SUBMIT_UNKNOWN','OPEN','CANCEL_UNKNOWN')"
+            ).fetchone()[0]
+        )
+        return unsettled == 0 and open_cmd == 0
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 def _check_execution_deploy_safety(
     prefix: Path,
     *,
@@ -952,17 +1023,19 @@ def _check_execution_deploy_safety(
 ) -> dict[str, Any] | None:
     """Fail-closed pre-deploy / pre-rollback safety check against live execution coordinator /health-fresh."""
     sock = Path("/run/astra-exec/control.sock") if _is_system_root(prefix) else (prefix / "run" / "astra-exec" / "control.sock")
-    has_footprint = bool(
-        sock.exists()
-        or (prefix / "var" / "lib" / "xxproject" / "execution" / "exec_store.sqlite").exists()
-        or (prefix / "var" / "lib" / "xxproject" / "execution" / "public_status.json").exists()
-        or (prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service").exists()
-    )
+    db_path = prefix / "var" / "lib" / "xxproject" / "execution" / "exec_store.sqlite"
+    pub_status_path = prefix / "var" / "lib" / "xxproject" / "execution" / "public_status.json"
+    exec_unit_path = prefix / "etc" / "systemd" / "system" / "astra-execution-coordinator.service"
+    has_live_footprint = bool(sock.exists() or pub_status_path.exists() or exec_unit_path.exists())
+    has_footprint = has_live_footprint or db_path.exists()
     url = exec_control_url or os.environ.get("ASTRA_EXEC_CONTROL_URL")
     if not url and not no_systemd and sock.exists():
         url = f"unix://{sock}"
     if not url:
         if has_footprint:
+            # Post-rollback retained exec_store.sqlite with no coordinator unit/socket/public_status is safe ONLY if DB proves completely settled.
+            if (not has_live_footprint) and db_path.is_file() and _is_clean_settled_post_rollback_store(db_path):
+                return {"ok": True, "safe_for_deploy": True, "post_rollback_settled_db": True}
             raise RuntimeError("UNSAFE_EXECUTION_STATE: execution_coordinator_unreachable_with_active_execution_footprint")
         return None
     token = _load_exec_control_token(prefix, exec_control_token_file)
@@ -983,6 +1056,20 @@ def _check_execution_deploy_safety(
     return data
 
 
+def _validate_clean_release_manifest(
+    manifest: dict[str, Any],
+    *,
+    prefix: Path,
+    allow_dirty_release: bool = False,
+    strict_clean: bool | None = None,
+) -> None:
+    enforce = _is_system_root(prefix) if strict_clean is None else bool(strict_clean)
+    if enforce and not allow_dirty_release and manifest.get("worktree_state") != "clean":
+        raise RuntimeError(
+            f"DIRTY_RELEASE_PACKAGE_REJECTED: worktree_state={manifest.get('worktree_state')!r} (rebuild from clean commit or pass --allow-dirty-release)"
+        )
+
+
 def cmd_install(
     pkg: Path,
     prefix: Path,
@@ -994,6 +1081,8 @@ def cmd_install(
     keep_releases: int = 3,
     min_free_bytes: int = 512 * 1024 * 1024,
     allow_window_override: bool = False,
+    allow_dirty_release: bool = False,
+    strict_clean: bool | None = None,
     now_ms: int | None = None,
     exec_control_url: str | None = None,
     exec_control_token_file: Path | None = None,
@@ -1010,7 +1099,10 @@ def cmd_install(
             exec_control_token_file=exec_control_token_file,
             no_systemd=no_systemd,
         )
-        cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
+        preflight = cmd_preflight(pkg, prefix, min_free_bytes=min_free_bytes)
+        _validate_clean_release_manifest(
+            preflight, prefix=prefix, allow_dirty_release=allow_dirty_release, strict_clean=strict_clean
+        )
         releases_dir = app_root / "releases"
         releases_dir.mkdir(parents=True, exist_ok=True)
         _chmod_posix(app_root.parent, 0o755)
@@ -1083,6 +1175,7 @@ def cmd_install(
             "release_id": release_id,
             "previous_release_id": prev_id,
             "source_commit": manifest.get("source_commit"),
+            "worktree_state": manifest.get("worktree_state"),
             "link_mode": link_mode,
             "frontend_link": frontend_link,
             "created_env_templates": created_envs,
@@ -1113,6 +1206,7 @@ def cmd_verify(prefix: Path, *, expected_core_version: str = "2.0.7") -> dict[st
         "action": "verify",
         "release_id": manifest.get("release_id"),
         "source_commit": manifest.get("source_commit"),
+        "worktree_state": manifest.get("worktree_state"),
         "core_version": actual_core,
         "file_count": manifest.get("file_count"),
         "fmz_robot_bundled": False,
@@ -1193,6 +1287,7 @@ def cmd_rollback(
             "release_id": str(target_id),
             "previous_release_id": prev_after,
             "source_commit": manifest.get("source_commit"),
+            "worktree_state": manifest.get("worktree_state"),
             "link_mode": link_mode,
             "frontend_link": frontend_link,
             "installed_units": units,
@@ -1244,6 +1339,7 @@ def main(argv: list[str] | None = None) -> int:
     p_inst.add_argument("--keep-releases", type=int, default=3)
     p_inst.add_argument("--min-free-bytes", type=int, default=512 * 1024 * 1024)
     p_inst.add_argument("--allow-window-override", action="store_true")
+    p_inst.add_argument("--allow-dirty-release", action="store_true")
     p_inst.add_argument("--exec-control-url", default=None)
     p_inst.add_argument("--exec-control-token-file", type=Path, default=None)
 
@@ -1280,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
             keep_releases=args.keep_releases,
             min_free_bytes=args.min_free_bytes,
             allow_window_override=args.allow_window_override,
+            allow_dirty_release=args.allow_dirty_release,
             exec_control_url=args.exec_control_url,
             exec_control_token_file=args.exec_control_token_file,
         )

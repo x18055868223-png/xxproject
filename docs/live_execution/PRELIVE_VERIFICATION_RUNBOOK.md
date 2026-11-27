@@ -33,14 +33,18 @@ sudo sysctl -w kernel.yama.ptrace_scope=1
 ## 2. 发布包构建、隔离部署与 Linux 反向安全验收
 
 ```bash
-# 构建单一不可变发布包（建议在隔离发布树 / CI 执行）
+# 构建单一不可变发布包（默认拒绝脏工作树，必须干净提交后再打正式包）
 python3 deploy/xxproject_server/build_release.py --output /tmp/xxproject_release.tar.gz
 
-# 应用 21 基线 + 执行隔离单元（默认 SHADOW_ONLY；未满足三令牌与独立 UID 前 deploy_release 直接 fail-closed）
+# 应用 21 基线 + 执行隔离单元（默认 SHADOW_ONLY；未满足双令牌与三独立 UID 前 deploy_release 直接 fail-closed）
 sudo python3 deploy/xxproject_server/deploy_release.py install \
   --package /tmp/xxproject_release.tar.gz \
   --apply-units \
   --with-execution
+
+# 若启用 --with-execution 后需回退至无执行层的 P5 基线，必须用新版 deploy_release.py 执行回滚（禁止使用旧版脚本）：
+# 会校验 /health-fresh safe_for_deploy=true、卸载执行单元与 60-exec-control.conf、恢复 workbench 属主为 bitnami 并归档旧 public_status.json
+sudo python3 /opt/xxproject/current/deploy/xxproject_server/deploy_release.py rollback --apply-units
 
 # 验证 8 项 OS / Confused-Deputy / 跨 UID 共享读写 / P5 只读可见性隔离门禁
 sudo bash /opt/xxproject/current/deploy/xxproject_server/systemd_units_execution/linux_security_verify.sh

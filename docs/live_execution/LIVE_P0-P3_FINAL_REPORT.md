@@ -1,5 +1,8 @@
 # xxproject｜LIVE-P0 → LIVE-P3 实盘前准备最终交付报告
 
+> [!WARNING]
+> **SUPERSEDED / HISTORICAL SNAPSHOT（Pre-v1.2.0 历史存档）**：本文件记录的是早先 `live-exec-p1-p3@2cbbb3f2` / `core_version=2.0.6` 阶段的阶段性快照，**已被 `live-exec-behavior@1.2.0` 与现行代码完全取代**。其中关于 `User=bitnami` + `SupplementaryGroups=astra-exec`、Workbench 持有 `LoadCredential`、控制面 UID 白名单包含 `bitnami`/`astra-workbench`、`approvals` 逐局审批以及 `deploy/astra_workbench_v3/fixtures/exec_states.json` 的描述均已废止且与现行隔离门禁直接冲突（现行代码禁止 `bitnami`/`astra-workbench` 加入 `astra-exec` 组或接触控制凭据）。**实机部署、运维和验收请一律以 [PRELIVE_VERIFICATION_RUNBOOK.md](PRELIVE_VERIFICATION_RUNBOOK.md)、[60-exec-control.conf](../../deploy/xxproject_server/systemd_units_execution/60-exec-control.conf) 与当前代码为准。**
+
 - **终态裁决**：**`PRELIVE_BLOCKED`**（代码与离线/仿真/安全/发布门禁全部就绪并获独立审查 `PASS`，**禁止进入 P4 真实交易**）
 - **权威基线**：`pre-trade-baseline-20261124-3a3f850e`（[server-native-release](file:///c:/Users/Xu/Documents/中性回路整合工程/.worktrees/server-native-release) 保持 `3a3f850e86423ce604ca25ee62e3ad9221fcef97` 干净未动）
 - **本地代码冻结提交**：`codex/live-exec-p1-p3` 代码基线 `2cbbb3f299c020186d26e376a4fbf21a31b728b0`（`24 files changed, +12484 / -66`；未 `git push`，未修改 `xx-eu` 生产环境）

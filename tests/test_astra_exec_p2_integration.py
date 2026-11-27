@@ -2193,3 +2193,257 @@ def test_m4_simulated_t3_t4_single_both_itm_t5_and_negative_no_false_pass(tmp_pa
         step_hook=lambda _s, _c, _i: v_neg.advance_time(5_000),
     )
     assert rc_neg != 0 and res_neg["status"] != "PASSED"
+
+
+def test_closure_k_b1_daemon_poll_concurrent_control_and_http_400(tmp_path: Path):
+    import urllib.request
+
+    venue = _setup_venue()
+    st, _adp, coord, dos_root = _new_coord(tmp_path / "kb1", venue, budget_cap_btc="0.20", max_qty_btc="0.1")
+    _build_p5_dossier(dos_root, decided_at_ms=venue.server_time_ms - 5_000)
+    srv, _ = coord_mod.start_control_server(coord, expected_token="kb1_tok", port=0)
+    ctrl_url = f"http://127.0.0.1:{srv.server_port}"
+
+    loop_errors: list[str] = []
+    stop_flag = threading.Event()
+
+    def _poll_worker() -> None:
+        while not stop_flag.is_set():
+            try:
+                if coord.should_poll_now():
+                    coord.run_tick()
+            except Exception as exc:
+                loop_errors.append(repr(exc))
+            time.sleep(0.002)
+
+    t_bg = threading.Thread(target=_poll_worker, daemon=True)
+    t_bg.start()
+    try:
+        # Malformed Content-Length must return HTTP 400 JSON rather than unhandled traceback (Info 1)
+        req_bad = urllib.request.Request(
+            f"{ctrl_url}/exit-all",
+            data=b"{}",
+            headers={"Authorization": "Bearer kb1_tok", "Content-Length": "abc"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_http:
+            urllib.request.urlopen(req_bad, timeout=5.0)
+        assert exc_http.value.code == 400
+        assert json.loads(exc_http.value.read().decode("utf-8"))["code"].startswith("invalid_request:")
+
+        ctrl_errors: list[tuple[str, int, Any]] = []
+        for idx in range(15):
+            code, body = _raw_http(
+                ctrl_url,
+                "/capital-policy",
+                method="POST",
+                payload={"entry_armed": True, "budget_cap_btc": "0.15", "max_qty_btc": "0.1", "operator": f"op_{idx}"},
+                headers={"Authorization": "Bearer kb1_tok"},
+            )
+            if code != 200 or not body.get("ok"):
+                ctrl_errors.append(("cp", code, body))
+
+        code_ex, body_ex = _raw_http(
+            ctrl_url, "/exit-all", method="POST", payload={"operator": "ops_ex"}, headers={"Authorization": "Bearer kb1_tok"}
+        )
+        if code_ex != 200 or not body_ex.get("ok"):
+            ctrl_errors.append(("exit_all", code_ex, body_ex))
+
+        code_dw, body_dw = _raw_http(
+            ctrl_url, "/disable-writes", method="POST", payload={"reason": "kb1_lock"}, headers={"Authorization": "Bearer kb1_tok"}
+        )
+        if code_dw != 200 or not body_dw.get("ok"):
+            ctrl_errors.append(("disable_writes", code_dw, body_dw))
+
+        assert not loop_errors, f"background daemon loop failed: {loop_errors}"
+        assert not ctrl_errors, f"concurrent control HTTP failed: {ctrl_errors}"
+        assert st.writes_disabled()[0] is True
+    finally:
+        stop_flag.set()
+        t_bg.join(timeout=3.0)
+        srv.shutdown()
+        srv.server_close()
+        st.close()
+
+
+def test_closure_k_b2_slow_probe_and_admit_no_false_clock_skew(tmp_path: Path):
+    # 1. Slow cold-start DeribitRestAdapter.fetch_facts (>2.1s between get_time and private calls) with 0ms true skew
+    t_start = int(time.time() * 1000)
+
+    def _slow_fetch_http(method: str, params: dict[str, Any], *, private: bool = False) -> dict[str, Any]:
+        if method == "public/get_time":
+            return int(time.time() * 1000)
+        if method == "private/get_account_summary":
+            time.sleep(0.35)
+            return {"id": 1001, "username": "sub-tn-1", "type": "subaccount", "equity": 1.0, "available_funds": 1.0, "initial_margin": 0.0, "maintenance_margin": 0.0, "balance": 1.0, "index_price": 62785.0}
+        if method in {"private/get_positions", "private/get_open_orders_by_currency"}:
+            time.sleep(0.35)
+            return []
+        if method in {"private/get_user_trades_by_currency_and_time", "private/get_user_trades_by_instrument"}:
+            return {"trades": [], "has_more": False}
+        if method == "public/get_instrument":
+            inst = str(params["instrument_name"])
+            return {
+                "instrument_name": inst, "kind": "option", "settlement_period": "day",
+                "strike": 62000.0 if "62000" in inst else 60000.0, "option_type": "put",
+                "expiration_timestamp": t_start + 10_800_000, "tick_size": 0.0001,
+                "tick_size_steps": [], "min_trade_amount": 0.1,
+            }
+        if method == "public/get_order_book":
+            time.sleep(0.6)  # Push total fetch_facts > 2.2s while books stay fresh at end
+            inst = str(params["instrument_name"])
+            return {
+                "instrument_name": inst, "timestamp": int(time.time() * 1000), "index_price": 62785.0,
+                "best_bid_price": 0.0044 if "62000" in inst else 0.0011, "best_bid_amount": 5.0,
+                "best_ask_price": 0.0046 if "62000" in inst else 0.0013, "best_ask_amount": 5.0,
+                "mark_price": 0.0045 if "62000" in inst else 0.0012, "min_price": 0.0001, "max_price": 0.05,
+                "bids": [[0.0044, 5.0]], "asks": [[0.0046, 5.0]],
+            }
+        return {"ok": True}
+
+    adp_slow = coord_mod.DeribitRestAdapter(
+        mode="TESTNET", base_url="https://test.deribit.com", client_id="cid", client_secret="csec",
+        subaccount_id="sub-tn-1", http_fn=lambda m, p, **kw: _slow_fetch_http(m, p, private=bool(kw.get("private"))),
+    )
+    facts_slow = adp_slow.fetch_facts("BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", need_tx_logs=False)
+    assert contracts.facts_clock_skew_ms(facts_slow, int(time.time() * 1000)) < 1_000
+    assert abs(facts_slow.server_time_ms - facts_slow.asof_ms) < 500
+
+    # 2. Slow 2.5s order_probe during SUBMIT_UNKNOWN recovery MUST NOT trigger CLOCK_SKEW_HIGH / RUNTIME_ANOMALY_HALT
+    venue = _setup_venue()
+    st, _base_adp, coord, dos_root = _new_coord(tmp_path / "kb2_probe", venue, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        ep = contracts.EpisodeState(
+            episode_id="ep_kb2", hand_id="h_kb2", p5_episode_id="p5_kb2", dossier_id="d_kb2",
+            env="tn", subaccount_id="sub-tn-1", side="put",
+            short_instrument="BTC-25NOV26-62000-P", long_instrument="BTC-25NOV26-60000-P",
+            short_strike_usd=D("62000"), long_strike_usd=D("60000"),
+            expiry_ms=venue.server_time_ms + 10_800_000, contract_hash="ch_kb2",
+            phase=contracts.LifecyclePhase.ENTRY, created_at_ms=venue.server_time_ms - 1_000,
+            target_qty_btc=D("0.1"), matched_qty_btc=ZERO, auth_epoch=1,
+        )
+        st.create_episode(ep)
+        cmd_ep = contracts.ExecCommand(
+            cmd_id="ep_kb2:cmd_0001_EP", episode_id="ep_kb2", purpose="EP",
+            label="ax1:tn:kb2:EP:0001", instrument_name=ep.long_instrument, direction="buy",
+            amount=D("0.1"), limit_price=D("0.0013"), time_in_force="IOC",
+            reduce_only=False, post_only=False, reject_post_only=False,
+            valid_until_ms=venue.server_time_ms - 3_000, created_at_ms=venue.server_time_ms - 8_000,
+            status=contracts.CommandStatus.SUBMIT_UNKNOWN, updated_at_ms=venue.server_time_ms - 8_000,
+        )
+        st.create_command_intent(cmd_ep, now_ms=venue.server_time_ms - 8_000)
+
+        facts_ok = coord.adapter.fetch_facts(ep.short_instrument, ep.long_instrument)
+        facts_probed = contracts.ExchangeFacts(
+            **{
+                **facts_ok.__dict__,
+                "order_probes": {
+                    cmd_ep.cmd_id: contracts.OrderReconcileProbe(
+                        cmd_id=cmd_ep.cmd_id,
+                        order_state_status="NOT_QUERIED",
+                        label_query_status="EMPTY_CONFIRMED",
+                        inst_history_recent_complete=True,
+                        inst_history_archive_complete=True,
+                        matched_orders=(),
+                    )
+                },
+            }
+        )
+        # Simulate 2.5s wall time passing between initial fetch (asof_ms == server_time_ms) and evaluate_step(now_ms)
+        now_post_probe = facts_probed.asof_ms + 2_500
+        res_probe = policy.evaluate_step(
+            ep, st.get_capital_auth(), st.get_commands("ep_kb2"), (), facts_probed, now_post_probe, coord.config
+        )
+        assert "CLOCK_SKEW_HIGH" not in res_probe.alerts
+        assert res_probe.episode_patch.entry_halted is False
+
+        # Genuine 5s exchange clock skew STILL triggers CLOCK_SKEW_HIGH
+        facts_bad_skew = contracts.ExchangeFacts(**{**facts_probed.__dict__, "server_time_ms": facts_probed.asof_ms + 5_000})
+        res_skew = policy.evaluate_step(
+            ep, st.get_capital_auth(), st.get_commands("ep_kb2"), (), facts_bad_skew, now_post_probe, coord.config
+        )
+        assert "CLOCK_SKEW_HIGH" in res_skew.alerts and res_skew.episode_patch.entry_halt_reason == "RUNTIME_ANOMALY_HALT"
+    finally:
+        st.close()
+
+
+def test_closure_warnings_and_ops_b5_idle_stale_boundary(tmp_path: Path):
+    # 1. OPS-B5: IDLE recommends 30s poll -> stale_after_ms=45s (25s fresh, 50s stale); active uses 15s (20s stale)
+    venue = _setup_venue()
+    st, adp, coord, dos_root = _new_coord(tmp_path / "b5", venue, budget_cap_btc="0.20", max_qty_btc="0.1")
+    st_path = tmp_path / "b5_public_status.json"
+    coord.status_path = st_path
+    try:
+        st.set_capital_policy(entry_armed=False, budget_cap_btc=D("0"), max_qty_btc=D("0.1"), now_ms=venue.server_time_ms)
+        idle_payload = coord.run_tick(now_ms=venue.server_time_ms)
+        assert idle_payload["telemetry"]["recommended_poll_ms"] == 30_000
+        assert idle_payload["stale_after_ms"] == 45_000
+
+        clock_box = [venue.server_time_ms + 25_000]
+        wb_dir = tmp_path / "wb_b5"
+        wb_dir.mkdir(parents=True, exist_ok=True)
+        snap = tmp_path / "snap.jsonl"
+        snap.write_text("", encoding="utf-8")
+        wb = wb_mod.AstraWorkbench(
+            wb_mod.WorkbenchConfig(snapshots_jsonl=snap, state_dir=wb_dir, exec_status_path=st_path, exec_stale_after_ms=15_000),
+            clock_ms=lambda: clock_box[0],
+        )
+        v_25s = wb.execution_live_status()
+        assert v_25s["stale"] is False and v_25s["health"] in {"OK", "SHADOW_IDLE"}
+        clock_box[0] = venue.server_time_ms + 50_000
+        v_50s = wb.execution_live_status()
+        assert v_50s["stale"] is True and v_50s["health"] == "STALE"
+
+        # 2. K-W3: startup_init(initial_entry_armed=True) does NOT override persisted disarm when auth_epoch > 0 (unless reset_grant_baseline)
+        st.set_capital_policy(entry_armed=True, budget_cap_btc=D("0.1"), max_qty_btc=D("0.1"), now_ms=venue.server_time_ms)
+        st.set_capital_policy(entry_armed=False, budget_cap_btc=D("0.1"), max_qty_btc=D("0.1"), now_ms=venue.server_time_ms + 10)
+        coord.startup_init(initial_entry_armed=True, now_ms=venue.server_time_ms + 20)
+        assert st.get_capital_auth().entry_armed is False
+        coord.startup_init(initial_entry_armed=True, reset_grant_baseline=True, now_ms=venue.server_time_ms + 30)
+        assert st.get_capital_auth().entry_armed is True
+
+        # 3. K-W2: concurrent disarm during _try_admit_p5_candidate does NOT create ghost episode or consume hand_id
+        _build_p5_dossier(dos_root, hand_id="hand_kw2", ep_id="ep_kw2", decided_at_ms=venue.server_time_ms)
+        orig_fetch = adp.fetch_facts
+
+        def _disarm_mid_fetch(*a: Any, **kw: Any) -> contracts.ExchangeFacts:
+            coord._pending_disarm_entry += 1
+            return orig_fetch(*a, **kw)
+
+        adp.fetch_facts = _disarm_mid_fetch  # type: ignore[method-assign]
+        c_map, _ = coord._scan_dossiers()
+        ep_race, _ = coord._try_admit_p5_candidate(c_map, venue.server_time_ms + 100)
+        coord._pending_disarm_entry -= 1
+        adp.fetch_facts = orig_fetch  # type: ignore[method-assign]
+        assert ep_race is None and st.has_consumed_hand("hand_kw2") is False
+
+        # 4. K-W6 (Prior Warning 2): terminal TP sets active_limit_price_btc=None; K-W4: HTTP 408 submit -> SUBMIT_UNKNOWN
+        st_ep = _drive(coord, venue, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=50)
+        assert st_ep["stale_after_ms"] == 15_000
+        assert st_ep["active_episode"]["tp"]["active_limit_price_btc"] is not None
+        ep_id_active = st_ep["active_episode"]["episode_id"]
+        tp_cmd = next(c for c in st.get_commands(ep_id_active) if c.purpose == "TP")
+        st.update_command_state(tp_cmd.cmd_id, status=contracts.CommandStatus.CANCELLED, now_ms=venue.server_time_ms)
+        ep_obj = st.get_episode(ep_id_active)
+        assert ep_obj is not None
+        emitted = coord._emit_status(ep_obj, adp.fetch_facts(ep_obj.short_instrument, ep_obj.long_instrument), {}, {}, writes_off=False, writes_off_reason=None, now_ms=venue.server_time_ms)
+        assert emitted["active_episode"]["tp"]["active_limit_price_btc"] is None
+        assert emitted["active_episode"]["tp"]["order_status"] == "CANCELLED"
+
+        # K-W4: HTTP 408 on write raises network_unknown, placing order in SUBMIT_UNKNOWN instead of REJECTED
+        def _http_408(**_kw: Any) -> Any:
+            raise coord_mod.VenueTransportError("network_unknown", "http_408:Request Timeout")
+
+        orig_submit = adp.submit_order
+        adp.submit_order = _http_408  # type: ignore[method-assign]
+        coord._execute_actions(
+            ep_id_active,
+            (contracts.PolicyAction(action_type=contracts.ActionType.SUBMIT, purpose="RX", instrument_name=ep_obj.short_instrument, direction="buy", amount=D("0.1"), limit_price=D("0.01"), time_in_force="IOC", reduce_only=True, post_only=False, reject_post_only=False, reason="test_408"),),
+            adp.fetch_facts(ep_obj.short_instrument, ep_obj.long_instrument),
+            venue.server_time_ms,
+        )
+        adp.submit_order = orig_submit  # type: ignore[method-assign]
+        rx_cmds = [c for c in st.get_commands(ep_id_active) if c.purpose == "RX"]
+        assert rx_cmds[-1].status == contracts.CommandStatus.SUBMIT_UNKNOWN
+    finally:
+        st.close()

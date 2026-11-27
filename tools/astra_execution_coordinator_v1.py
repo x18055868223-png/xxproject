@@ -52,6 +52,7 @@ if __package__:
         conservative_split_buy_outlay_btc,
         dataclass_to_jsonable,
         dec_str,
+        facts_clock_skew_ms,
         make_order_label,
         matches_episode_future,
         opt_dec,
@@ -90,6 +91,7 @@ else:
         conservative_split_buy_outlay_btc,
         dataclass_to_jsonable,
         dec_str,
+        facts_clock_skew_ms,
         make_order_label,
         matches_episode_future,
         opt_dec,
@@ -479,7 +481,7 @@ class DeribitRestAdapter:
                 retry_ms = _parse_retry_after_ms(resp.getheader("Retry-After"))
                 if resp.status == 429:
                     raise VenueTransportError(429, f"http_429:{body_txt[:240]}", retry_after_ms=retry_ms)
-                if resp.status >= 500 and is_write:
+                if is_write and (resp.status >= 500 or resp.status == 408):
                     raise VenueTransportError("network_unknown", f"http_{resp.status}:{body_txt[:240]}")
                 try:
                     err_obj = (json.loads(body_txt).get("error") or {})
@@ -660,8 +662,19 @@ class DeribitRestAdapter:
         need_tx_logs: bool = True,
         episode_start_ms: int | None = None,
     ) -> ExchangeFacts:
+        server_sample_t0 = int(time.time() * 1000)
         server_ms = self.get_server_time_ms()
-        asof_ms = int(time.time() * 1000)
+        server_sample_t1 = int(time.time() * 1000)
+        server_sample_mid_ms = (server_sample_t0 + server_sample_t1) // 2
+
+        def _co_sampled_times() -> tuple[int, int]:
+            now_asof = int(time.time() * 1000)
+            eff_srv = (
+                (now_asof + self._server_offset_ms)
+                if self._has_server_offset
+                else (server_ms + max(0, now_asof - server_sample_mid_ms))
+            )
+            return now_asof, eff_srv
 
         short_spec = self._get_instrument_spec(short_instrument) if short_instrument else None
         long_spec = self._get_instrument_spec(long_instrument) if long_instrument else None
@@ -696,10 +709,11 @@ class DeribitRestAdapter:
 
         if not self.client_id or not self.client_secret:
             _fetch_books()
+            asof_now, srv_now = _co_sampled_times()
             unauth_err = None if self.mode == "SHADOW_ONLY" else "credentials_missing"
             return ExchangeFacts(
-                asof_ms=int(time.time() * 1000),
-                server_time_ms=server_ms,
+                asof_ms=asof_now,
+                server_time_ms=srv_now,
                 spot_usd=spot_usd,
                 equity_btc=ZERO,
                 available_funds_btc=ZERO,
@@ -729,9 +743,10 @@ class DeribitRestAdapter:
 
         sub_norm = str(self.subaccount_id or "").strip()
         if self.mode != "SHADOW_ONLY" and (not sub_norm or sub_norm == "0"):
+            asof_now, srv_now = _co_sampled_times()
             return ExchangeFacts(
-                asof_ms=int(time.time() * 1000),
-                server_time_ms=server_ms,
+                asof_ms=asof_now,
+                server_time_ms=srv_now,
                 spot_usd=spot_usd,
                 equity_btc=ZERO,
                 available_funds_btc=ZERO,
@@ -769,9 +784,10 @@ class DeribitRestAdapter:
         acct_type = str(acct.get("type") or "").strip().lower()
         acct_id_str = str(acct.get("id") or "").strip()
         if self.mode != "SHADOW_ONLY" and (acct_type == "main" or acct_id_str == "0"):
+            asof_now, srv_now = _co_sampled_times()
             return ExchangeFacts(
-                asof_ms=int(time.time() * 1000),
-                server_time_ms=server_ms,
+                asof_ms=asof_now,
+                server_time_ms=srv_now,
                 spot_usd=spot_usd,
                 equity_btc=ZERO,
                 available_funds_btc=ZERO,
@@ -802,9 +818,10 @@ class DeribitRestAdapter:
         if self.subaccount_id:
             acct_ids = {str(acct.get("id") or ""), str(acct.get("username") or "")}
             if str(self.subaccount_id) not in acct_ids:
+                asof_now, srv_now = _co_sampled_times()
                 return ExchangeFacts(
-                    asof_ms=int(time.time() * 1000),
-                    server_time_ms=server_ms,
+                    asof_ms=asof_now,
+                    server_time_ms=srv_now,
                     spot_usd=spot_usd,
                     equity_btc=ZERO,
                     available_funds_btc=ZERO,
@@ -937,10 +954,10 @@ class DeribitRestAdapter:
                 tx_complete = False
 
         _fetch_books()
-        asof_done = int(time.time() * 1000)
+        asof_done, srv_done = _co_sampled_times()
         return ExchangeFacts(
             asof_ms=asof_done,
-            server_time_ms=self.estimated_server_time_ms() if self._has_server_offset else server_ms,
+            server_time_ms=srv_done,
             spot_usd=spot_usd,
             equity_btc=D(acct.get("equity") or 0),
             available_funds_btc=D(acct.get("available_funds") or 0),
@@ -1335,6 +1352,14 @@ class ExecutionCoordinator:
             t_now = int(now_ms if now_ms is not None else time.time() * 1000)
             cur_auth = self.store.get_capital_auth()
             want_armed = cur_auth.entry_armed if initial_entry_armed is None else bool(initial_entry_armed)
+            # K-W3: never silently override a persisted operator disarm / EXIT_ALL on restart unless reset_grant_baseline=True.
+            if (
+                initial_entry_armed is True
+                and cur_auth.auth_epoch > 0
+                and not cur_auth.entry_armed
+                and not reset_grant_baseline
+            ):
+                want_armed = False
             want_cap = cur_auth.budget_cap_btc if initial_budget_cap_btc is None else initial_budget_cap_btc
             want_qty = cur_auth.max_qty_btc if initial_max_qty_btc is None else initial_max_qty_btc
             if (
@@ -1725,7 +1750,7 @@ class ExecutionCoordinator:
                             cmd.cmd_id, status=CommandStatus.SUBMIT_UNKNOWN, last_error=str(exc), now_ms=now_ms
                         )
                     elif (
-                        exc.code in {"network_unknown", "network_error", "timeout", "submit_ack"}
+                        exc.code in {"network_unknown", "network_error", "timeout", "submit_ack", "408", "10040", "13028", "-32603"}
                         or exc.code.startswith("network")
                     ):
                         self.store.update_command_state(
@@ -1848,7 +1873,7 @@ class ExecutionCoordinator:
             if (p5c.expiry_ms - facts.server_time_ms) < self.config.min_entry_dte_ms:
                 self._last_reject_reason = "DTE_BELOW_30M"
                 continue
-            if abs(facts.server_time_ms - t_now) > self.config.max_clock_skew_ms:
+            if facts_clock_skew_ms(facts, t_now) > self.config.max_clock_skew_ms:
                 self._last_reject_reason = "CLOCK_SKEW_HIGH"
                 return None, facts
             if any(p.size != ZERO for p in facts.positions):
@@ -1942,6 +1967,13 @@ class ExecutionCoordinator:
                 link_recorded_at_ms=p5c.link_recorded_at_ms,
                 c_decision_ref_btc=p5c.c_decision_ref_btc,
             )
+            if (
+                not self.writes_permitted_by_mode()
+                or self._pending_disarm_entry > 0
+                or self._pending_exit_all > 0
+                or (not from_control and (self._pending_control_ops > 0 or self._control_interrupt.is_set()))
+            ):
+                return None, facts
             self.store.create_episode(ep)
             self._last_reject_reason = None
             return ep, facts
@@ -2023,6 +2055,8 @@ class ExecutionCoordinator:
                     allow_account_only=True,
                     use_cache=False,
                 )
+                if not synthetic_clock:
+                    t_now = int(time.time() * 1000)
                 self._last_venue_poll_ms = t_now
                 self._last_tick_duration_ms = int((time.monotonic() - tick_start_mono) * 1000)
                 return self._emit_status(
@@ -2203,24 +2237,31 @@ class ExecutionCoordinator:
         writes_off_reason: str | None,
         now_ms: int,
     ) -> dict[str, Any]:
-        stale_after = self.config.status_warn_age_ms
         facts_asof = facts.asof_ms if facts else 0
         facts_age = max(0, now_ms - facts_asof) if facts_asof > 0 else None
-        venue_ok = (
-            facts is not None
-            and facts.api_error is None
-            and (facts_age is None or facts_age <= self.config.status_stale_age_ms)
-        )
 
         auth, pnl_settled, b_eff = self.store.get_effective_budget_state()
         writes_en = self.writes_permitted_by_mode()
 
         active_block = None
         manual_takeover = False
-        cmds_for_poll: list[ExecCommand] = []
-        if ep is not None and not ep.cashflow_settled:
-            cmds = self.store.get_commands(ep.episode_id)
-            cmds_for_poll = cmds
+        active_ep = ep if (ep is not None and not ep.cashflow_settled) else None
+        cmds_for_poll: list[ExecCommand] = self.store.get_commands(active_ep.episode_id) if active_ep is not None else []
+        rec_poll_ms = self.recommended_poll_ms(active_ep, cmds_for_poll)
+        # OPS-B5: align advertised staleness bound with active cadence (15s active vs 45s at 30s idle cadence).
+        stale_after = (
+            self.config.status_warn_age_ms
+            if active_ep is not None
+            else max(self.config.status_warn_age_ms, rec_poll_ms + self.config.status_warn_age_ms)
+        )
+        venue_ok = (
+            facts is not None
+            and facts.api_error is None
+            and (facts_age is None or facts_age <= max(self.config.status_stale_age_ms, stale_after))
+        )
+
+        if active_ep is not None:
+            cmds = cmds_for_poll
             all_cmds_json = [
                 {
                     "cmd_id": c.cmd_id,
@@ -2258,6 +2299,7 @@ class ExecutionCoordinator:
             res_short = max(ZERO, -short_pos) + pending_es
 
             tp_cmd = next((c for c in reversed(cmds) if c.purpose == "TP"), None)
+            active_tp = tp_cmd if (tp_cmd and tp_cmd.is_open_or_unknown) else None
             lx_cmd = next((c for c in reversed(cmds) if c.purpose == "LX"), None)
             shadow_sx = (aux_map.get(ep.hand_id) or {}).get("shadow_exit_snapshot")
             ledger = self.store.rebuild_episode_ledger(ep.episode_id, facts=facts, shadow_counterfactual=shadow_sx)
@@ -2331,8 +2373,8 @@ class ExecutionCoordinator:
                     "spent_btc": dec_str(tp_spent),
                     "cap_init_btc": dec_str(ep.tp_cap_init_btc),
                     "target_capture_ratio": dec_str(ep.tp_target_capture_ratio),
-                    "active_limit_price_btc": dec_str(tp_cmd.limit_price) if tp_cmd else None,
-                    "active_remaining_btc": dec_str(tp_cmd.reserved_remaining) if tp_cmd else "0",
+                    "active_limit_price_btc": dec_str(active_tp.limit_price) if active_tp else None,
+                    "active_remaining_btc": dec_str(active_tp.reserved_remaining) if active_tp else "0",
                     "order_status": tp_cmd.status.value if tp_cmd else None,
                 },
                 "revoke": {
@@ -2478,9 +2520,7 @@ class ExecutionCoordinator:
                 "last_reject_reason": self._last_reject_reason,
             },
             "telemetry": {
-                "recommended_poll_ms": self.recommended_poll_ms(
-                    ep if (ep and not ep.cashflow_settled) else None, cmds_for_poll
-                ),
+                "recommended_poll_ms": rec_poll_ms,
                 "last_tick_duration_ms": self._last_tick_duration_ms,
                 "last_rpc_rtt_ms": rpc_rtt,
             },
@@ -2604,7 +2644,7 @@ class ExecutionCoordinator:
                     )
                 )
                 if want_armed_raw:
-                    if not self.writes_permitted_by_mode():
+                    if not self.writes_permitted_by_mode() or self._pending_exit_all > 0 or self._pending_disarm_entry > 0:
                         disabled, reason = self.store.writes_disabled()
                         raise ValueError(f"writes_not_permitted:mode={self.mode}:disabled={disabled}:{reason or ''}")
                     if new_cap <= ZERO:
@@ -2632,6 +2672,9 @@ class ExecutionCoordinator:
                         raise ValueError(
                             f"subaccount_funds_below_budget_cap:avail={dec_str(facts.available_funds_btc)}:bal={dec_str(bal)}<{dec_str(new_cap)}"
                         )
+                    if not self.writes_permitted_by_mode() or self._pending_exit_all > 0 or self._pending_disarm_entry > 0:
+                        disabled, reason = self.store.writes_disabled()
+                        raise ValueError(f"writes_not_permitted:mode={self.mode}:disabled={disabled}:{reason or ''}")
 
                 updated_auth = self.store.set_capital_policy(
                     entry_armed=want_armed_raw,
@@ -2646,34 +2689,12 @@ class ExecutionCoordinator:
                     self._leave_control_op(disarm_entry=disarm)
                     left = True
                 self._wake_event.set()
-                tick_error: str | None = None
-                if run_tick_after:
-                    try:
-                        status = self._run_tick_locked(now_ms=now_ms, from_control=True)
-                    except Exception as exc:
-                        tick_error = str(exc)
-                        self._last_error = f"capital_policy_post_tick:{exc}"
-                        writes_off, writes_off_reason = self.store.writes_disabled()
-                        status = self._emit_status(
-                            self.store.get_active_episode() or self.store.get_latest_episode(),
-                            self._last_facts,
-                            self._cached_contracts,
-                            self._cached_aux,
-                            writes_off=writes_off,
-                            writes_off_reason=writes_off_reason,
-                            now_ms=int(now_ms if now_ms is not None else time.time() * 1000),
-                        )
-                else:
-                    writes_off, writes_off_reason = self.store.writes_disabled()
-                    status = self._emit_status(
-                        self.store.get_active_episode() or self.store.get_latest_episode(),
-                        self._last_facts,
-                        self._cached_contracts,
-                        self._cached_aux,
-                        writes_off=writes_off,
-                        writes_off_reason=writes_off_reason,
-                        now_ms=t_now,
-                    )
+                status, tick_error = self._finish_control_tick_locked(
+                    op_label="capital_policy_post_tick",
+                    now_ms=now_ms,
+                    fallback_now_ms=t_now,
+                    run_tick_after=run_tick_after,
+                )
                 res = {
                     "ok": True,
                     "action": "SET_CAPITAL_POLICY",
@@ -2688,6 +2709,34 @@ class ExecutionCoordinator:
         finally:
             if not left:
                 self._leave_control_op(disarm_entry=disarm)
+
+    def _finish_control_tick_locked(
+        self,
+        *,
+        op_label: str,
+        now_ms: int | None,
+        fallback_now_ms: int,
+        run_tick_after: bool = True,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Run immediate follow-up tick after control latch, falling back cleanly to atomic status emit."""
+        tick_error: str | None = None
+        if run_tick_after:
+            try:
+                return self._run_tick_locked(now_ms=now_ms, from_control=True), None
+            except Exception as exc:
+                tick_error = str(exc)
+                self._last_error = f"{op_label}:{exc}"
+        writes_off, writes_off_reason = self.store.writes_disabled()
+        status = self._emit_status(
+            self.store.get_active_episode() or self.store.get_latest_episode(),
+            self._last_facts,
+            self._cached_contracts,
+            self._cached_aux,
+            writes_off=writes_off,
+            writes_off_reason=writes_off_reason,
+            now_ms=int(now_ms if now_ms is not None else (time.time() * 1000 if run_tick_after else fallback_now_ms)),
+        )
+        return status, tick_error
 
     def handle_exit_all(
         self,
@@ -2706,22 +2755,9 @@ class ExecutionCoordinator:
                 self._leave_control_op(exit_all=True)
                 left = True
                 self._wake_event.set()
-                tick_error: str | None = None
-                try:
-                    status = self._run_tick_locked(now_ms=now_ms, from_control=True)
-                except Exception as exc:
-                    tick_error = str(exc)
-                    self._last_error = f"exit_all_post_tick:{exc}"
-                    writes_off, writes_off_reason = self.store.writes_disabled()
-                    status = self._emit_status(
-                        self.store.get_active_episode() or self.store.get_latest_episode(),
-                        self._last_facts,
-                        self._cached_contracts,
-                        self._cached_aux,
-                        writes_off=writes_off,
-                        writes_off_reason=writes_off_reason,
-                        now_ms=int(now_ms if now_ms is not None else time.time() * 1000),
-                    )
+                status, tick_error = self._finish_control_tick_locked(
+                    op_label="exit_all_post_tick", now_ms=now_ms, fallback_now_ms=t_now
+                )
                 res = {
                     "ok": True,
                     "action": "EXIT_ALL",
@@ -2752,22 +2788,9 @@ class ExecutionCoordinator:
                 self._leave_control_op()
                 left = True
                 self._wake_event.set()
-                tick_error: str | None = None
-                try:
-                    status = self._run_tick_locked(now_ms=now_ms, from_control=True)
-                except Exception as exc:
-                    tick_error = str(exc)
-                    self._last_error = f"disable_writes_post_tick:{exc}"
-                    writes_off, writes_off_reason = self.store.writes_disabled()
-                    status = self._emit_status(
-                        self.store.get_active_episode() or self.store.get_latest_episode(),
-                        self._last_facts,
-                        self._cached_contracts,
-                        self._cached_aux,
-                        writes_off=writes_off,
-                        writes_off_reason=writes_off_reason,
-                        now_ms=int(now_ms if now_ms is not None else time.time() * 1000),
-                    )
+                status, tick_error = self._finish_control_tick_locked(
+                    op_label="disable_writes_post_tick", now_ms=now_ms, fallback_now_ms=t_now
+                )
                 active = status.get("active_episode") or {}
                 open_cnt = len(active.get("open_or_unknown_commands") or [])
                 res = {
@@ -2822,6 +2845,26 @@ class ExecutionCoordinator:
             ):
                 return True
         return False
+
+    def should_poll_now(self, *, now_ms: int | None = None) -> bool:
+        """Thread-safe daemon poll check holding _lock around shared SQLite connection and dossier cache."""
+        with self._lock:
+            t_now = int(now_ms if now_ms is not None else time.time() * 1000)
+            active = self.store.get_active_episode()
+            cmds = self.store.get_commands(active.episode_id) if active else []
+            poll_ms = self.recommended_poll_ms(active, cmds)
+            should_poll = (t_now - self._last_venue_poll_ms) >= poll_ms or self._wake_event.is_set()
+            if not should_poll:
+                c_map, _ = self._scan_dossiers()
+                if self.has_fast_poll_trigger(active, c_map, t_now):
+                    should_poll = True
+            if should_poll:
+                self._wake_event.clear()
+            return should_poll
+
+    def record_daemon_loop_error(self, exc: Exception) -> None:
+        with self._lock:
+            self._last_error = f"daemon_loop:{type(exc).__name__}:{exc}"
 
 
 def load_control_token(*, token_file: Path | None = None) -> str | None:
@@ -2890,15 +2933,19 @@ def _build_control_handler(
             if not ok:
                 self._send(st, {"ok": False, "code": reason})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
-            if length < 0 or length > 32_768:
-                self._send(413, {"ok": False, "code": "body_too_large"})
-                return
-            raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
             try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length < 0 or length > 32_768:
+                    self._send(413, {"ok": False, "code": "body_too_large"})
+                    return
+                raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
                 body = json.loads(raw or "{}")
                 if not isinstance(body, dict):
                     raise ValueError("body_must_be_object")
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                self._send(400, {"ok": False, "code": f"invalid_request:{exc}"})
+                return
+            try:
                 path = self.path.split("?", 1)[0]
                 if path == "/capital-policy":
                     self._send(200, coordinator.handle_capital_policy(body))
@@ -3082,18 +3129,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             # Target 0.5s local watcher cadence + adaptive 1s / 5s / 30s venue polling (Spec 5.2)
             while True:
-                now_ms = int(time.time() * 1000)
-                active = store.get_active_episode()
-                cmds = store.get_commands(active.episode_id) if active else []
-                poll_ms = coord.recommended_poll_ms(active, cmds)
-                should_poll = (now_ms - coord._last_venue_poll_ms) >= poll_ms or coord._wake_event.is_set()
-                if not should_poll:
-                    c_map, _ = coord._scan_dossiers()
-                    if coord.has_fast_poll_trigger(active, c_map, now_ms):
-                        should_poll = True
-                if should_poll:
-                    coord._wake_event.clear()
-                    coord.run_tick()
+                try:
+                    if coord.should_poll_now():
+                        coord.run_tick()
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    coord.record_daemon_loop_error(exc)
                 coord._wake_event.wait(timeout=0.5)
         finally:
             srv.shutdown()

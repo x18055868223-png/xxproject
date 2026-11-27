@@ -858,6 +858,14 @@ class ExchangeFacts:
             object.__setattr__(self, "margin_model", "PM" if self.portfolio_margining_enabled else "SM")
 
 
+def facts_clock_skew_ms(facts: ExchangeFacts, fallback_now_ms: int) -> int:
+    """Measure exchange vs host skew using co-sampled facts.asof_ms so multi-RPC probe latency never mimics clock skew."""
+    if facts.server_time_ms <= 0:
+        return 0
+    ref_ms = facts.asof_ms if facts.asof_ms > 0 else fallback_now_ms
+    return abs(facts.server_time_ms - ref_ms)
+
+
 @dataclass(frozen=True)
 class P5DecisionContract:
     dossier_id: str
@@ -1327,7 +1335,9 @@ def compute_episode_expiry_settlement(
     if rem_long > ZERO:
         required_legs.add(long_instrument)
     stage1_seen = {str(r.get("instrument_name") or "") for r in stage1_rows}
-    all_legs_present = bool(stage1_rows) and (not required_legs or required_legs.issubset(stage1_seen))
+    stage2_seen = {str(r.get("instrument_name") or "") for r in stage2_rows}
+    covered_legs = stage1_seen | (stage2_seen & required_legs)
+    all_legs_present = bool(covered_legs) and (not required_legs or required_legs.issubset(covered_legs))
     itm_stage1 = [r for r in stage1_rows if str(r.get("type") or "").lower() in {"exercise", "assignment"}]
     has_itm = len(itm_stage1) > 0
     assignment_qty = sum(

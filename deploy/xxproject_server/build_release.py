@@ -291,6 +291,7 @@ def _collect_entries(root: Path) -> tuple[dict[str, bytes], list[dict[str, str]]
             or ".artifacts" in lower
             or "spm_manual_gate_execution" in lower
             or "fmz-password" in lower
+            or "deploy/astra_workbench_v3/fixtures/" in lower
         ):
             raise ValueError(f"FORBIDDEN_PACKAGED_ARTIFACT: {name}")
 
