@@ -735,8 +735,17 @@ def test_closure_ops_b4_preexec_rollback_rel_w5_and_health_bounds(tmp_path: Path
 
     pkg_pre = tmp_path / "pkg_pre.tar.gz"
     pkg_exec = tmp_path / "pkg_exec.tar.gz"
-    r1 = builder.build_release(ROOT, pkg_pre, source_commit="1111111111111111111111111111111111111111", release_tag="pre", allow_dirty=True)
-    builder.build_release(ROOT, pkg_exec, source_commit="2222222222222222222222222222222222222222", release_tag="exec", allow_dirty=True)
+    with monkeypatch.context() as mp_dirty:
+        mp_dirty.setattr(
+            builder,
+            "_resolve_commit",
+            lambda _root, explicit_commit, *, allow_dirty: (
+                str(explicit_commit or "1" * 40).strip().lower(),
+                "dirty",
+            ),
+        )
+        r1 = builder.build_release(ROOT, pkg_pre, source_commit="1111111111111111111111111111111111111111", release_tag="pre", allow_dirty=True)
+        builder.build_release(ROOT, pkg_exec, source_commit="2222222222222222222222222222222222222222", release_tag="exec", allow_dirty=True)
 
     # 2. REL-W5: strict_clean rejects dirty builds unless allow_dirty_release=True; worktree_state propagates
     prefix = tmp_path / "host_b4"

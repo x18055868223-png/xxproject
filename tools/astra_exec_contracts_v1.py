@@ -894,6 +894,17 @@ class P5DecisionContract:
     condition_triggered: bool = False
     condition_triggered_at_ms: int | None = None
     hold_review_llm_unavailable: bool = False
+    facts_readable: bool = True
+    read_error: str | None = None
+
+
+@dataclass(frozen=True)
+class ExposurePermission:
+    """Single authoritative verdict on whether a hand may open or add exposure (ADMIT / EP / ES)."""
+
+    allowed: bool
+    reason: str | None = None
+    halt_entry: bool = False
 
 
 class CommandStatus(str, Enum):

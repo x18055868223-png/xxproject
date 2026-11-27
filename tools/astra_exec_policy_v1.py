@@ -23,6 +23,7 @@ if __package__:
         ExecConfig,
         ExchangeFacts,
         ExchangeOrder,
+        ExposurePermission,
         InstrumentSpec,
         LifecyclePhase,
         P5DecisionContract,
@@ -31,6 +32,7 @@ if __package__:
         ceil_1e8,
         classify_trade_attribution,
         classify_tx_log_attribution,
+        compute_contract_hash,
         compute_ep_max_price,
         compute_episode_expiry_settlement,
         compute_es_floor_price,
@@ -64,6 +66,7 @@ else:
         ExecConfig,
         ExchangeFacts,
         ExchangeOrder,
+        ExposurePermission,
         InstrumentSpec,
         LifecyclePhase,
         P5DecisionContract,
@@ -72,6 +75,7 @@ else:
         ceil_1e8,
         classify_trade_attribution,
         classify_tx_log_attribution,
+        compute_contract_hash,
         compute_ep_max_price,
         compute_episode_expiry_settlement,
         compute_es_floor_price,
@@ -90,7 +94,160 @@ else:
     )
 
 _VERIFIED_REVOKE_ACTIONS = {"REVOKE_ALIGNED", "REVOKE_DISCRETIONARY"}
+_VALID_LINK_STATES = {"SHADOW_LOCK_CREATED", "ALREADY_LINKED"}
 _TERMINAL_VENUE_ORDER_STATES = {"filled", "cancelled", "rejected"}
+
+
+def check_new_exposure_permission(
+    *,
+    purpose: str,
+    p5_contract: P5DecisionContract | None,
+    episode: EpisodeState | None,
+    capital_auth: CapitalAuthorization,
+    effective_budget_btc: Decimal | None,
+    writes_permitted: bool,
+    writes_disabled: bool = False,
+    dcod_confirmed: bool = True,
+    now_ms: int,
+    venue_now_ms: int = 0,
+    config: ExecConfig,
+    require_p5_facts: bool = False,
+    p5_condition_triggered: bool = False,
+    last_ep_fill_at_ms: int | None = None,
+    available_prot_btc: Decimal = ZERO,
+    reserved_short_btc: Decimal = ZERO,
+    slice_qty_btc: Decimal = ZERO,
+    clock_skew_high: bool = False,
+    has_external_pos: bool = False,
+) -> ExposurePermission:
+    """Single authoritative gate deciding whether the current hand may open or add exposure (ADMIT / EP / ES)."""
+    if purpose not in {"ADMIT", "EP", "ES"}:
+        raise ValueError(f"invalid_new_exposure_purpose:{purpose}")
+
+    if writes_disabled:
+        return ExposurePermission(False, "WRITES_DISABLED", halt_entry=(episode is not None))
+    if not writes_permitted:
+        return ExposurePermission(False, "WRITES_NOT_PERMITTED", halt_entry=False)
+    if not dcod_confirmed:
+        return ExposurePermission(False, "DCOD_UNCONFIRMED", halt_entry=False)
+    if not capital_auth.entry_armed:
+        return ExposurePermission(
+            False,
+            "OPERATOR_PAUSE_ENTRY",
+            halt_entry=(episode is not None and not episode.entry_closed),
+        )
+    if effective_budget_btc is not None and effective_budget_btc <= ZERO:
+        return ExposurePermission(False, "EFFECTIVE_BUDGET_EXHAUSTED", halt_entry=False)
+
+    if episode is not None:
+        if episode.cashflow_settled or episode.entry_closed:
+            return ExposurePermission(False, "ENTRY_CLOSED", halt_entry=True)
+        if episode.exit_latched or episode.operator_exit_all:
+            return ExposurePermission(False, episode.exit_latch_reason or "EXIT_LATCHED", halt_entry=True)
+        if episode.entry_halted:
+            return ExposurePermission(False, episode.entry_halt_reason or "ENTRY_HALTED", halt_entry=True)
+
+    # Current valid P5 fact requirement: fail-closed when missing or unreadable
+    if p5_contract is not None and p5_contract.revoked and p5_contract.revoke_shadow_action in _VERIFIED_REVOKE_ACTIONS:
+        return ExposurePermission(
+            False,
+            "AI_REVOKE" if episode is not None else "P5_ALREADY_REVOKED",
+            halt_entry=True,
+        )
+    if require_p5_facts and (p5_contract is None or not p5_contract.facts_readable):
+        return ExposurePermission(False, "P5_FACTS_UNREADABLE", halt_entry=True)
+    if p5_contract is not None:
+        if not p5_contract.facts_readable:
+            return ExposurePermission(False, "P5_FACTS_UNREADABLE", halt_entry=True)
+        if episode is not None:
+            expected_hash = compute_contract_hash(
+                dossier_id=p5_contract.dossier_id,
+                hand_id=p5_contract.hand_id,
+                p5_episode_id=p5_contract.episode_id,
+                decision_sha256=p5_contract.decision_sha256,
+                condition_sha256=p5_contract.condition_sha256,
+                short_instrument=p5_contract.short_instrument,
+                long_instrument=p5_contract.long_instrument,
+                expiry_ms=p5_contract.expiry_ms,
+            )
+            if (
+                p5_contract.hand_id != episode.hand_id
+                or p5_contract.dossier_id != episode.dossier_id
+                or p5_contract.episode_id != episode.p5_episode_id
+                or p5_contract.side != episode.side
+                or p5_contract.short_instrument != episode.short_instrument
+                or p5_contract.long_instrument != episode.long_instrument
+                or p5_contract.expiry_ms != episode.expiry_ms
+                or (episode.contract_hash and expected_hash != episode.contract_hash)
+            ):
+                return ExposurePermission(False, "P5_HAND_IDENTITY_MISMATCH", halt_entry=True)
+        if p5_contract.decision != "Accept":
+            return ExposurePermission(False, "P5_NOT_ACCEPT", halt_entry=True)
+        if p5_contract.link_state not in _VALID_LINK_STATES:
+            return ExposurePermission(False, f"INVALID_LINK_STATE:{p5_contract.link_state}", halt_entry=True)
+        if p5_contract.revoked:
+            return ExposurePermission(
+                False,
+                "P5_UNVERIFIED_REVOKE_HALT" if episode is not None else "P5_ALREADY_REVOKED",
+                halt_entry=True,
+            )
+        if p5_contract.condition_triggered:
+            return ExposurePermission(
+                False,
+                "P5_CONDITION_TRIGGERED" if episode is not None else "P5_PRE_ENTRY_CONDITION_TRIGGERED",
+                halt_entry=True,
+            )
+    if p5_condition_triggered:
+        return ExposurePermission(
+            False,
+            "P5_CONDITION_TRIGGERED" if episode is not None else "P5_PRE_ENTRY_CONDITION_TRIGGERED",
+            halt_entry=True,
+        )
+
+    # Freshness & expiry time gates evaluated at the current post-query / send boundary timestamp
+    if purpose in {"ADMIT", "EP"} and p5_contract is not None:
+        dec_age = now_ms - p5_contract.decided_at_ms
+        link_age = now_ms - p5_contract.link_recorded_at_ms
+        if p5_contract.decided_at_ms <= 0 or dec_age < -5_000 or dec_age > config.max_decision_age_ms:
+            return ExposurePermission(False, "DECISION_TIMESTAMP_OUT_OF_WINDOW", halt_entry=(episode is not None))
+        if p5_contract.link_recorded_at_ms <= 0 or link_age < -5_000 or link_age > config.max_decision_age_ms:
+            return ExposurePermission(False, "LINK_TIMESTAMP_OUT_OF_WINDOW", halt_entry=(episode is not None))
+
+    if purpose == "ADMIT":
+        if p5_contract is None:
+            return ExposurePermission(False, "P5_FACTS_UNREADABLE", halt_entry=False)
+        if (p5_contract.expiry_ms - now_ms) < config.min_entry_dte_ms:
+            return ExposurePermission(False, "DTE_BELOW_30M", halt_entry=False)
+        if venue_now_ms > 0 and (p5_contract.expiry_ms - venue_now_ms) < config.min_entry_dte_ms:
+            return ExposurePermission(False, "DTE_BELOW_30M", halt_entry=False)
+    elif episode is not None:
+        eff_venue_ms = venue_now_ms if venue_now_ms > 0 else now_ms
+        if (now_ms - episode.created_at_ms) >= config.entry_window_ms:
+            return ExposurePermission(False, "ENTRY_WINDOW_EXPIRED", halt_entry=True)
+        if purpose == "EP":
+            if eff_venue_ms >= (episode.expiry_ms - config.min_entry_dte_ms):
+                return ExposurePermission(False, "EP_PRE_EXPIRY_CUTOFF", halt_entry=True)
+        elif purpose == "ES":
+            if eff_venue_ms >= (episode.expiry_ms - config.es_submit_cutoff_ms):
+                return ExposurePermission(False, "ES_PRE_EXPIRY_CUTOFF", halt_entry=True)
+            if last_ep_fill_at_ms is not None and (now_ms - last_ep_fill_at_ms) >= config.es_rescue_window_ms:
+                return ExposurePermission(False, "ES_RESCUE_WINDOW_EXPIRED", halt_entry=True)
+            if slice_qty_btc > ZERO and (reserved_short_btc + slice_qty_btc) > available_prot_btc:
+                return ExposurePermission(False, "INSUFFICIENT_PROTECTION_COVERAGE", halt_entry=False)
+
+    if clock_skew_high:
+        return ExposurePermission(
+            False,
+            "CLOCK_SKEW_HIGH" if episode is None else "RUNTIME_ANOMALY_HALT",
+            halt_entry=(episode is not None),
+        )
+    if has_external_pos:
+        return ExposurePermission(
+            False,
+            "NON_ZERO_EXISTING_VENUE_POSITIONS" if episode is None else "RUNTIME_ANOMALY_HALT",
+            halt_entry=(episode is not None),
+        )
+    return ExposurePermission(True, None, halt_entry=False)
 
 
 def _book_fresh_ok(book: BookQuote | None, now_ms: int, max_age_ms: int) -> bool:
@@ -800,6 +957,8 @@ def evaluate_step(
     p5_contract: P5DecisionContract | None = None,
     p5_condition_triggered: bool = False,
     writes_disabled: bool = False,
+    require_p5_facts: bool = False,
+    dcod_confirmed: bool = True,
     foreign_event_uids: Collection[str] = (),
     foreign_order_ids: Collection[str] = (),
 ) -> StepResult:
@@ -946,6 +1105,8 @@ def evaluate_step(
             last_ep_fill_at_ms = cand_ep_ms
 
     # 4. P5 Alerts, Irreversible Exit Latch & Entry Halt triggers (Spec 2.2.2)
+    if require_p5_facts and (p5_contract is None or not p5_contract.facts_readable):
+        alerts.append("P5_FACTS_UNREADABLE")
     if p5_contract is not None and p5_contract.hold_review_llm_unavailable:
         alerts.append("HOLD_REVIEW_LLM_UNAVAILABLE")
 
@@ -979,8 +1140,6 @@ def evaluate_step(
     elif operator_exit_all and exit_latch_reason != "OPERATOR_EXIT_ALL":
         exit_latch_reason = "OPERATOR_EXIT_ALL"
 
-    cond_triggered = bool(p5_condition_triggered or (p5_contract is not None and p5_contract.condition_triggered))
-
     entry_halted = episode.entry_halted or exit_latched or writes_disabled or (not capital_auth.entry_armed)
     entry_halt_reason = episode.entry_halt_reason
     if exit_latched and not entry_halt_reason:
@@ -998,28 +1157,62 @@ def evaluate_step(
     uncovered_prot = quant_qty(available_prot - reserved_short, min_s)
     need_short = quant_qty(target_qty - es_filled - reserved_es_rem, min_s)
     need_prot = quant_qty(target_qty - ep_filled - pending_ep_rem, min_l)
+    has_external_pos = ext_opt_pos != ZERO or ext_fut_pos != ZERO
 
+    next_entry_purpose: str | None = None
+    if uncovered_prot >= min_s and need_short >= min_s:
+        next_entry_purpose = "ES"
+    elif need_prot >= min_l:
+        next_entry_purpose = "EP"
+
+    entry_perm = ExposurePermission(False, "ENTRY_CLOSED", halt_entry=True)
     if not episode.entry_closed and not entry_halted:
-        if cond_triggered:
-            # Spec 2.2.2: Pre-entry_closed CONDITION_TRIGGERED halts new entry ONLY, NEVER exit_latched!
+        # While an entry order is already in flight or syncing fills, check episode-wide exposure validity ("ES");
+        # once ready to decide the next leg, enforce that leg's exact freshness & DTE window as well.
+        probe_purpose = (
+            "ES"
+            if (entry_cmds_open_or_unknown or entry_sync_lagging or next_entry_purpose is None)
+            else next_entry_purpose
+        )
+        probe_slice = (
+            min(uncovered_prot, need_short, config.max_entry_slice_btc)
+            if probe_purpose == "ES" and uncovered_prot >= min_s and need_short >= min_s
+            else ZERO
+        )
+        probe_ep = replace(
+            episode,
+            entry_halted=entry_halted,
+            entry_halt_reason=entry_halt_reason,
+            exit_latched=exit_latched,
+            exit_latch_reason=exit_latch_reason,
+            operator_exit_all=operator_exit_all,
+        )
+        entry_perm = check_new_exposure_permission(
+            purpose=probe_purpose,
+            p5_contract=p5_contract,
+            episode=probe_ep,
+            capital_auth=capital_auth,
+            effective_budget_btc=b_eff,
+            writes_permitted=not writes_disabled,
+            writes_disabled=writes_disabled,
+            dcod_confirmed=dcod_confirmed,
+            now_ms=now_ms,
+            venue_now_ms=venue_now_ms,
+            config=config,
+            require_p5_facts=require_p5_facts,
+            p5_condition_triggered=p5_condition_triggered,
+            last_ep_fill_at_ms=last_ep_fill_at_ms if probe_purpose == "ES" else None,
+            available_prot_btc=available_prot,
+            reserved_short_btc=reserved_short,
+            slice_qty_btc=probe_slice,
+            clock_skew_high=clock_skew_high,
+            has_external_pos=has_external_pos,
+        )
+        if not entry_perm.allowed and entry_perm.halt_entry:
             entry_halted = True
-            entry_halt_reason = "P5_CONDITION_TRIGGERED"
-        elif (now_ms - episode.created_at_ms) >= config.entry_window_ms:
-            entry_halted = True
-            entry_halt_reason = "ENTRY_WINDOW_EXPIRED"
-        elif uncovered_prot >= min_s and need_short >= min_s:
-            if venue_now_ms >= (episode.expiry_ms - config.es_submit_cutoff_ms):
-                entry_halted = True
-                entry_halt_reason = "ES_PRE_EXPIRY_CUTOFF"
-            elif last_ep_fill_at_ms is not None and (now_ms - last_ep_fill_at_ms) >= config.es_rescue_window_ms:
-                entry_halted = True
-                entry_halt_reason = "ES_RESCUE_WINDOW_EXPIRED"
-        elif need_prot >= min_l and venue_now_ms >= (episode.expiry_ms - config.min_entry_dte_ms):
-            entry_halted = True
-            entry_halt_reason = "EP_PRE_EXPIRY_CUTOFF"
-        if not entry_halted and (clock_skew_high or ext_opt_pos != ZERO or ext_fut_pos != ZERO):
-            entry_halted = True
-            entry_halt_reason = "RUNTIME_ANOMALY_HALT"
+            entry_halt_reason = entry_perm.reason
+            if entry_perm.reason in {"P5_FACTS_UNREADABLE", "P5_HAND_IDENTITY_MISMATCH"}:
+                alerts.append(f"{entry_perm.reason}_ENTRY_HALTED")
 
     # 5. Formal Irreversible entry_closed
     entry_closed = episode.entry_closed
@@ -1128,13 +1321,21 @@ def evaluate_step(
         for ra in reconcile_actions:
             actions.append(ra)
 
+        def _cancel_retry_ready(c: ExecCommand) -> bool:
+            if c.status == CommandStatus.OPEN:
+                return True
+            return c.cancel_requested_at_ms is None or (now_ms - c.cancel_requested_at_ms) >= 2_000
+
         # Cancel any entry orders if entry halted or exit latched
         if entry_halted or exit_latched:
             for c in entry_cmds_open_or_unknown:
-                if c.status in {CommandStatus.OPEN, CommandStatus.CANCEL_UNKNOWN} or (
-                    c.status in {CommandStatus.PREPARED_UNKNOWN, CommandStatus.SUBMIT_UNKNOWN}
-                    and venue_now_ms <= (c.valid_until_ms + config.clock_safety_margin_ms)
-                ):
+                if (
+                    c.status in {CommandStatus.OPEN, CommandStatus.CANCEL_UNKNOWN}
+                    or (
+                        c.status in {CommandStatus.PREPARED_UNKNOWN, CommandStatus.SUBMIT_UNKNOWN}
+                        and venue_now_ms <= (c.valid_until_ms + config.clock_safety_margin_ms)
+                    )
+                ) and _cancel_retry_ready(c):
                     actions.append(
                         PolicyAction(
                             action_type=ActionType.CANCEL_BY_LABEL,
@@ -1147,7 +1348,7 @@ def evaluate_step(
         # Branch 1: Irreversible Exit Path (Spec 3.2 RX: exact boolean complement + 10009 hedged backoff)
         if exit_latched:
             for c in tp_cmds:
-                if c.is_open_or_unknown:
+                if c.is_open_or_unknown and _cancel_retry_ready(c):
                     actions.append(
                         PolicyAction(
                             action_type=ActionType.CANCEL_BY_LABEL,
@@ -1370,13 +1571,21 @@ def evaluate_step(
                 else:
                     notes.append("RESIDUAL_HOLD")
 
-        # Branch 4: Pure Limit IOC Legged Entry (Spec 1.2.1 & 3.1-3.2: silent re-observation inside 60s/20s)
+        # Branch 4: Pure Limit IOC Legged Entry (gated solely by unified entry_perm + live book/margin checks)
         if entry_sync_lagging and not entry_closed:
             notes.append("WAIT_ENTRY_FILL_SYNC")
-        if (
+        elif (
             not entry_closed
             and not entry_halted
             and not exit_latched
+            and not entry_perm.allowed
+            and entry_perm.reason == "EFFECTIVE_BUDGET_EXHAUSTED"
+        ):
+            alerts.append("ENTRY_GATE_WAIT:EFFECTIVE_BUDGET_EXHAUSTED")
+            notes.append(f"{next_entry_purpose or 'ENTRY'}_WAIT_EFFECTIVE_BUDGET_EXHAUSTED")
+        if (
+            not entry_closed
+            and entry_perm.allowed
             and not any_unknown
             and not entry_cmds_open_or_unknown
             and not entry_sync_lagging

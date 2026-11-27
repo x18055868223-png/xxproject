@@ -59,7 +59,12 @@ if __package__:
         quant_qty,
         sweep_ask_price,
     )
-    from .astra_exec_policy_v1 import _entry_capital_and_margin_ok, evaluate_step
+    from .astra_exec_policy_v1 import (
+        _book_fresh_ok,
+        _entry_capital_and_margin_ok,
+        check_new_exposure_permission,
+        evaluate_step,
+    )
     from .astra_exec_store_v1 import ExecutionStore
 else:
     from astra_exec_contracts_v1 import (
@@ -98,7 +103,12 @@ else:
         quant_qty,
         sweep_ask_price,
     )
-    from astra_exec_policy_v1 import _entry_capital_and_margin_ok, evaluate_step
+    from astra_exec_policy_v1 import (
+        _book_fresh_ok,
+        _entry_capital_and_margin_ok,
+        check_new_exposure_permission,
+        evaluate_step,
+    )
     from astra_exec_store_v1 import ExecutionStore
 
 SCHEMA = "astra_exec_coordinator@1.2.0"
@@ -987,9 +997,44 @@ class DeribitRestAdapter:
 
 def _read_json_optional(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
         return None
+
+
+def _opt_int_ms(val: Any) -> int | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if s and (s.isdigit() or (s.startswith("-") and s[1:].isdigit())):
+            return int(s)
+    return None
+
+
+def _extract_case_contract_and_economics(case: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """Support both real P5 case_file@0.1 (layers.L1[].values) and simplified top-level test fixtures."""
+    c_contract = case.get("contract") if isinstance(case.get("contract"), Mapping) else None
+    c_econ = case.get("economics") if isinstance(case.get("economics"), Mapping) else None
+    layers = case.get("layers") if isinstance(case.get("layers"), Mapping) else None
+    l1 = layers.get("L1") if isinstance(layers, Mapping) else None
+    if isinstance(l1, list):
+        for item in l1:
+            if not isinstance(item, Mapping):
+                continue
+            ref = str(item.get("ref") or "")
+            vals = item.get("values") if isinstance(item.get("values"), Mapping) else (
+                item.get("data") if isinstance(item.get("data"), Mapping) else item
+            )
+            if not isinstance(vals, Mapping):
+                continue
+            if c_contract is None and (ref == "L1.contract" or "short_instrument" in vals):
+                c_contract = vals
+            if c_econ is None and (ref == "L1.economics" or "net_credit_after_entry_fee_btc" in vals):
+                c_econ = vals
+    return (c_contract or {}), (c_econ or {})
 
 
 def _extract_c_decision_ref_btc(
@@ -1000,43 +1045,45 @@ def _extract_c_decision_ref_btc(
     side: str,
 ) -> Decimal | None:
     """Extract per-1.0-BTC net credit after entry fee strictly for non-blocking observation (Spec 2.2.3 & Task Doc 3.3)."""
-    contract_map = cond.get("contract") if isinstance(cond.get("contract"), Mapping) else {}
-    t0 = link.get("t0") if isinstance(link.get("t0"), Mapping) else {}
-    econ = t0.get("economy") if isinstance(t0.get("economy"), Mapping) else {}
-    qty_raw = (
-        (contract_map or {}).get("quantity_btc")
-        or ((t0.get("contract") if isinstance(t0.get("contract"), Mapping) else {}) or {}).get("quantity_btc")
-        or 1
-    )
     try:
-        qty_dec = D(qty_raw)
+        contract_map = cond.get("contract") if isinstance(cond.get("contract"), Mapping) else {}
+        t0 = link.get("t0") if isinstance(link.get("t0"), Mapping) else {}
+        econ = t0.get("economy") if isinstance(t0.get("economy"), Mapping) else {}
+        qty_raw = (
+            (contract_map or {}).get("quantity_btc")
+            or ((t0.get("contract") if isinstance(t0.get("contract"), Mapping) else {}) or {}).get("quantity_btc")
+            or 1
+        )
+        try:
+            qty_dec = D(qty_raw)
+        except Exception:
+            qty_dec = ONE
+        if qty_dec <= ZERO:
+            qty_dec = ONE
+
+        net_entry = opt_dec((econ or {}).get("net_credit_after_entry_fee_btc"))
+        if net_entry is not None:
+            return (net_entry / qty_dec).quantize(SAT)
+
+        src = _read_json_optional(hand_dir / "evidence" / "source.json")
+        if isinstance(src, Mapping):
+            cases = src.get("cases")
+            if isinstance(cases, list):
+                for case in cases:
+                    if not isinstance(case, Mapping):
+                        continue
+                    c_contract, c_econ = _extract_case_contract_and_economics(case)
+                    c_side = str(c_contract.get("side") or "").lower()
+                    if side and c_side and c_side != side.lower():
+                        continue
+                    c_net = opt_dec(c_econ.get("net_credit_after_entry_fee_btc"))
+                    if c_net is not None:
+                        c_qty = opt_dec(c_contract.get("quantity_btc")) or ONE
+                        if c_qty <= ZERO:
+                            c_qty = ONE
+                        return (c_net / c_qty).quantize(SAT)
     except Exception:
-        qty_dec = ONE
-    if qty_dec <= ZERO:
-        qty_dec = ONE
-
-    net_entry = opt_dec((econ or {}).get("net_credit_after_entry_fee_btc"))
-    if net_entry is not None:
-        return (net_entry / qty_dec).quantize(SAT)
-
-    src = _read_json_optional(hand_dir / "evidence" / "source.json")
-    if isinstance(src, Mapping):
-        cases = src.get("cases")
-        if isinstance(cases, list):
-            for case in cases:
-                if not isinstance(case, Mapping):
-                    continue
-                c_contract = case.get("contract") if isinstance(case.get("contract"), Mapping) else {}
-                c_side = str((c_contract or {}).get("side") or "").lower()
-                if side and c_side and c_side != side.lower():
-                    continue
-                c_econ = case.get("economics") if isinstance(case.get("economics"), Mapping) else {}
-                c_net = opt_dec((c_econ or {}).get("net_credit_after_entry_fee_btc"))
-                if c_net is not None:
-                    c_qty = opt_dec((c_contract or {}).get("quantity_btc")) or ONE
-                    if c_qty <= ZERO:
-                        c_qty = ONE
-                    return (c_net / c_qty).quantize(SAT)
+        return None
     return None
 
 
@@ -1054,8 +1101,408 @@ def _is_verified_revoke_event(ev: Mapping[str, Any]) -> bool:
     return True
 
 
+def _scan_episode_events(ev_dir: Path | None) -> dict[str, Any]:
+    """Scan one episode's events/ directory via os.scandir with per-file & permission isolation (never fails open on EACCES)."""
+    revoked = False
+    rev_id: str | None = None
+    rev_act: str | None = None
+    rev_at: int | None = None
+    unverified_rev_act: str | None = None
+    cond_triggered = False
+    cond_triggered_at: int | None = None
+    latest_valid_review_ts = 0
+    latest_fail_ts = 0
+    events_readable = True
+    read_error: str | None = None
+
+    if ev_dir is not None:
+        event_paths: list[Path] = []
+        try:
+            with os.scandir(ev_dir) as it:
+                event_paths = sorted(
+                    (Path(entry.path) for entry in it if entry.name.endswith(".json")),
+                    key=lambda p: p.name,
+                )
+        except FileNotFoundError:
+            # Dossiers.episode() creates events/ lazily on first event; missing events/ when parent exists is empty.
+            event_paths = []
+        except OSError as exc:
+            events_readable = False
+            read_error = f"events_dir_oserror:{exc}"
+            event_paths = []
+
+        rev_candidates: list[tuple[int, str, Mapping[str, Any]]] = []
+        unverified_revs: list[tuple[int, str, Mapping[str, Any]]] = []
+        for p in event_paths:
+            try:
+                ev = _read_json_optional(p)
+                if not isinstance(ev, dict):
+                    events_readable = False
+                    read_error = read_error or f"corrupt_event_json:{p.name}"
+                    continue
+                kind = str(ev.get("kind") or "")
+                if kind == "AI_REVOKE":
+                    if not isinstance(ev.get("body"), Mapping):
+                        events_readable = False
+                        read_error = read_error or f"malformed_ai_revoke:{p.name}"
+                        continue
+                    ev_ts = _opt_int_ms(ev.get("recorded_at_ms"))
+                    if ev_ts is None:
+                        ev_ts = _opt_int_ms(ev.get("decided_at_ms"))
+                    if ev_ts is None:
+                        ev_ts = _opt_int_ms(ev.get("observed_at_ms")) or 0
+                    if _is_verified_revoke_event(ev):
+                        rev_candidates.append((ev_ts, p.name, ev))
+                        latest_valid_review_ts = max(latest_valid_review_ts, ev_ts)
+                    else:
+                        unverified_revs.append((ev_ts, p.name, ev))
+                        latest_valid_review_ts = max(latest_valid_review_ts, ev_ts)
+                elif kind in {"AI_HOLD", "AI_HOLD_UNKNOWN", "HOLD_REVIEW_PASSED"}:
+                    ev_ts = (
+                        _opt_int_ms(ev.get("recorded_at_ms"))
+                        or _opt_int_ms(ev.get("decided_at_ms"))
+                        or _opt_int_ms(ev.get("observed_at_ms"))
+                        or 0
+                    )
+                    latest_valid_review_ts = max(latest_valid_review_ts, ev_ts)
+                elif kind == "CONDITION_TRIGGERED":
+                    cond_triggered = True
+                    obs_ts = (
+                        _opt_int_ms(ev.get("observed_at_ms"))
+                        or _opt_int_ms(ev.get("recorded_at_ms"))
+                        or _opt_int_ms(ev.get("decided_at_ms"))
+                        or 0
+                    )
+                    cond_triggered_at = max(cond_triggered_at or 0, obs_ts)
+                elif kind == "HOLD_REVIEW_FAILED":
+                    fail_ts = (
+                        _opt_int_ms(ev.get("recorded_at_ms"))
+                        or _opt_int_ms(ev.get("observed_at_ms"))
+                        or _opt_int_ms(ev.get("decided_at_ms"))
+                        or 0
+                    )
+                    latest_fail_ts = max(latest_fail_ts, fail_ts)
+            except Exception as exc:
+                events_readable = False
+                read_error = read_error or f"event_parse_error:{p.name}:{exc}"
+                continue
+
+        if rev_candidates:
+            _, _, last_rev = max(rev_candidates, key=lambda item: (item[0], item[1]))
+            rbody = last_rev.get("body") if isinstance(last_rev.get("body"), Mapping) else {}
+            revoked = True
+            rev_id = str(rbody.get("review_id") or "")
+            rev_act = str(rbody.get("shadow_action") or "")
+            rev_at = _opt_int_ms(last_rev.get("decided_at_ms")) or _opt_int_ms(last_rev.get("recorded_at_ms")) or 0
+        elif unverified_revs:
+            _, _, last_u = max(unverified_revs, key=lambda item: (item[0], item[1]))
+            ubody = last_u.get("body") if isinstance(last_u.get("body"), Mapping) else {}
+            revoked = True
+            unverified_rev_act = str(ubody.get("shadow_action") or ubody.get("protocol_status") or "UNVERIFIED")
+
+    hold_llm_unavail = bool(
+        not (revoked and rev_act in _VERIFIED_REVOKE_ACTIONS) and latest_fail_ts > latest_valid_review_ts
+    )
+    return {
+        "revoked": revoked,
+        "revoke_review_id": rev_id,
+        "revoke_shadow_action": rev_act if rev_act else unverified_rev_act,
+        "revoke_at_ms": rev_at,
+        "condition_triggered": cond_triggered,
+        "condition_triggered_at_ms": cond_triggered_at,
+        "hold_review_llm_unavailable": hold_llm_unavail,
+        "events_readable": events_readable,
+        "read_error": read_error,
+    }
+
+
+def _degraded_contract_from_events(
+    *,
+    dossier_id: str,
+    hand_id: str,
+    p5_episode_id: str,
+    ev_dir: Path | None,
+    reason: str,
+    decision: str = "UNREADABLE",
+    decided_at_ms: int = 0,
+    link_recorded_at_ms: int = 0,
+    link_state: str = "UNREADABLE",
+) -> P5DecisionContract:
+    try:
+        ev_info = _scan_episode_events(ev_dir)
+    except Exception as exc:
+        ev_info = {
+            "revoked": False,
+            "revoke_review_id": None,
+            "revoke_shadow_action": None,
+            "revoke_at_ms": None,
+            "condition_triggered": False,
+            "condition_triggered_at_ms": None,
+            "hold_review_llm_unavailable": False,
+            "events_readable": False,
+            "read_error": f"events_scan_failed:{exc}",
+        }
+    return P5DecisionContract(
+        dossier_id=dossier_id,
+        hand_id=hand_id,
+        episode_id=p5_episode_id,
+        decision_id="",
+        decision=decision,
+        side="",
+        short_instrument="",
+        long_instrument="",
+        short_strike_usd=ZERO,
+        long_strike_usd=ZERO,
+        expiry_ms=0,
+        decided_at_ms=decided_at_ms,
+        link_recorded_at_ms=link_recorded_at_ms,
+        link_state=link_state,
+        decision_sha256="",
+        condition_sha256="",
+        input_sha256="",
+        raw_sha256="",
+        revoked=bool(ev_info["revoked"]),
+        revoke_review_id=ev_info["revoke_review_id"],
+        revoke_shadow_action=ev_info["revoke_shadow_action"],
+        revoke_at_ms=ev_info["revoke_at_ms"],
+        condition_triggered=bool(ev_info["condition_triggered"]),
+        condition_triggered_at_ms=ev_info["condition_triggered_at_ms"],
+        hold_review_llm_unavailable=bool(ev_info["hold_review_llm_unavailable"]),
+        facts_readable=False,
+        read_error=ev_info["read_error"] or reason,
+    )
+
+
+def _read_shadow_exit_snapshot(dossier_root: Path | None, dossier_id: str, hand_id: str) -> Mapping[str, Any] | None:
+    if dossier_root is None or not dossier_id or not hand_id:
+        return None
+    sx_meta = _read_json_optional(dossier_root / "dossiers" / dossier_id / "hands" / hand_id / "tracking" / "shadow_exit.json")
+    snap = sx_meta.get("snapshot") if isinstance(sx_meta, Mapping) else None
+    return snap if isinstance(snap, Mapping) else None
+
+
+def _parse_single_hand_contract(
+    dossier_dir: Path,
+    hand_dir: Path,
+    *,
+    ep_dir_hint: Path | None = None,
+) -> tuple[P5DecisionContract | None, dict[str, Any] | None]:
+    """Parse one hand's P5 files isolated from all other hands/dossiers."""
+    link = _read_json_optional(hand_dir / "tracking" / "link.json")
+    if not isinstance(link, dict):
+        return None, None
+    link_state = str(link.get("state") or "")
+    if link_state not in _VALID_LINK_STATES:
+        return None, None
+
+    origin = link.get("origin") if isinstance(link.get("origin"), Mapping) else {}
+    if origin.get("dossier_id") and str(origin["dossier_id"]) != dossier_dir.name:
+        return None, None
+    if origin.get("hand_id") and str(origin["hand_id"]) != hand_dir.name:
+        return None, None
+
+    link_recorded_at_ms = _opt_int_ms(link.get("recorded_at_ms"))
+    origin_ep_id = str(origin.get("dossier_episode_id") or (ep_dir_hint.name if ep_dir_hint is not None else ""))
+    episodes_dir = dossier_dir / "episodes"
+    ep_dir = ep_dir_hint
+    try:
+        if ep_dir is None and origin_ep_id and episodes_dir.is_dir():
+            cand_ep = episodes_dir / origin_ep_id
+            if cand_ep.is_dir():
+                ep_dir = cand_ep
+        if ep_dir is None and episodes_dir.is_dir():
+            with os.scandir(episodes_dir) as it_ep:
+                for entry in sorted(it_ep, key=lambda e: e.name):
+                    if not entry.name.startswith("episode_"):
+                        continue
+                    cand_ep = Path(entry.path)
+                    ep_meta = _read_json_optional(cand_ep / "episode.json")
+                    if isinstance(ep_meta, dict) and str(ep_meta.get("hand_id") or "") == hand_dir.name:
+                        ep_dir = cand_ep
+                        break
+    except OSError as exc:
+        deg = _degraded_contract_from_events(
+            dossier_id=dossier_dir.name,
+            hand_id=hand_dir.name,
+            p5_episode_id=origin_ep_id,
+            ev_dir=None,
+            reason=f"episodes_dir_oserror:{exc}",
+            decision="Accept",
+            decided_at_ms=link_recorded_at_ms or 0,
+            link_recorded_at_ms=link_recorded_at_ms or 0,
+            link_state=link_state,
+        )
+        return deg, {"hold_review_llm_unavailable": deg.hold_review_llm_unavailable, "shadow_exit_snapshot": None}
+
+    def _degrade_linked_hand(reason: str) -> tuple[P5DecisionContract, dict[str, Any]]:
+        deg = _degraded_contract_from_events(
+            dossier_id=dossier_dir.name,
+            hand_id=hand_dir.name,
+            p5_episode_id=ep_dir.name if ep_dir is not None else origin_ep_id,
+            ev_dir=(ep_dir / "events") if ep_dir is not None else None,
+            reason=reason,
+            decision="Accept",
+            decided_at_ms=link_recorded_at_ms or 0,
+            link_recorded_at_ms=link_recorded_at_ms or 0,
+            link_state=link_state,
+        )
+        return deg, {"hold_review_llm_unavailable": deg.hold_review_llm_unavailable, "shadow_exit_snapshot": None}
+
+    dec_path = hand_dir / "decision.json"
+    dec = _read_json_optional(dec_path)
+    if not isinstance(dec, dict):
+        return _degrade_linked_hand("corrupt_or_missing_decision_json")
+    dec_attempt_id = str(dec.get("attempt_id") or dec.get("decision_id") or "")
+    origin_dec_id = str(origin.get("decision_id") or "")
+    if dec_attempt_id and origin_dec_id and dec_attempt_id != origin_dec_id:
+        return _degrade_linked_hand("decision_id_mismatch")
+
+    try:
+        ep_exists = ep_dir is not None and ep_dir.is_dir()
+    except OSError as exc:
+        return _degrade_linked_hand(f"ep_dir_oserror:{exc}")
+    if not ep_exists or ep_dir is None:
+        return _degrade_linked_hand("missing_episode_dir")
+
+    cond_path = ep_dir / "condition.json"
+    cond = _read_json_optional(cond_path)
+    if not isinstance(cond, dict):
+        return _degrade_linked_hand("corrupt_or_missing_condition_json")
+    contract_map = cond.get("contract") if isinstance(cond.get("contract"), Mapping) else {}
+    if (
+        not isinstance(contract_map, Mapping)
+        or not contract_map.get("short_instrument")
+        or not contract_map.get("long_instrument")
+    ):
+        return _degrade_linked_hand("missing_contract_instruments")
+
+    judgment = dec.get("judgment") if isinstance(dec.get("judgment"), Mapping) else {}
+    action = str(judgment.get("action") or dec.get("action") or dec.get("decision") or "")
+    side = str(
+        judgment.get("side")
+        or dec.get("chosen_side")
+        or dec.get("side")
+        or contract_map.get("side")
+        or ""
+    ).lower()
+    if side not in {"put", "call"}:
+        if action == "Accept":
+            return _degrade_linked_hand("invalid_contract_side")
+        return None, None
+
+    try:
+        short_strike = D(contract_map["short_strike_usd"])
+        long_strike = D(contract_map["long_strike_usd"])
+        cond_bytes = cond_path.read_bytes()
+        dec_bytes = dec_path.read_bytes()
+    except Exception as exc:
+        return _degrade_linked_hand(f"contract_parse_or_read_error:{exc}")
+
+    expiry_ms = _opt_int_ms(contract_map.get("expiry_ms"))
+    decided_at_ms = _opt_int_ms(dec.get("decided_at_ms"))
+    if expiry_ms is None or expiry_ms <= 0 or decided_at_ms is None or link_recorded_at_ms is None:
+        return _degrade_linked_hand("missing_or_invalid_timestamps")
+
+    raw_sha = str(dec.get("raw_sha256") or "")
+    cond_sha = str(origin.get("condition_sha256") or hashlib.sha256(cond_bytes).hexdigest())
+    dec_sha = str(origin.get("decision_sha256") or hashlib.sha256(dec_bytes).hexdigest())
+    in_sha = str(origin.get("input_sha256") or "")
+    c_ref = _extract_c_decision_ref_btc(link=link, cond=cond, hand_dir=hand_dir, side=side)
+    p5_ep_id = ep_dir.name
+
+    ev_info = _scan_episode_events(ep_dir / "events")
+    sx_snap = _read_shadow_exit_snapshot(dossier_dir.parent.parent, dossier_dir.name, hand_dir.name)
+    contract = P5DecisionContract(
+        dossier_id=dossier_dir.name,
+        hand_id=hand_dir.name,
+        episode_id=p5_ep_id,
+        decision_id=dec_attempt_id,
+        decision=action,
+        side=side,
+        short_instrument=str(contract_map["short_instrument"]),
+        long_instrument=str(contract_map["long_instrument"]),
+        short_strike_usd=short_strike,
+        long_strike_usd=long_strike,
+        expiry_ms=expiry_ms,
+        decided_at_ms=decided_at_ms,
+        link_recorded_at_ms=link_recorded_at_ms,
+        link_state=link_state,
+        decision_sha256=dec_sha,
+        condition_sha256=cond_sha,
+        input_sha256=in_sha,
+        raw_sha256=raw_sha,
+        c_decision_ref_btc=c_ref,
+        revoked=bool(ev_info["revoked"]),
+        revoke_review_id=ev_info["revoke_review_id"],
+        revoke_shadow_action=ev_info["revoke_shadow_action"],
+        revoke_at_ms=ev_info["revoke_at_ms"],
+        condition_triggered=bool(ev_info["condition_triggered"]),
+        condition_triggered_at_ms=ev_info["condition_triggered_at_ms"],
+        hold_review_llm_unavailable=bool(ev_info["hold_review_llm_unavailable"]),
+        facts_readable=bool(ev_info["events_readable"]),
+        read_error=ev_info["read_error"],
+    )
+    aux_entry = {
+        "hold_review_llm_unavailable": bool(ev_info["hold_review_llm_unavailable"]),
+        "shadow_exit_snapshot": sx_snap,
+    }
+    return contract, aux_entry
+
+
+def read_hand_p5_state(
+    dossier_root: Path | None,
+    *,
+    dossier_id: str,
+    hand_id: str,
+    p5_episode_id: str,
+) -> P5DecisionContract | None:
+    """Total reader for one target hand; never raises on PermissionError/EIO/UnicodeDecodeError, fails closed on new exposure."""
+    if dossier_root is None or not dossier_id or not hand_id:
+        return None
+    dossier_dir = dossier_root / "dossiers" / dossier_id
+    hand_dir = dossier_dir / "hands" / hand_id
+    ep_dir = (dossier_dir / "episodes" / p5_episode_id) if p5_episode_id else None
+    try:
+        if dossier_dir.is_dir() and hand_dir.is_dir():
+            ep_hint = ep_dir if (ep_dir is not None and ep_dir.is_dir()) else None
+            parsed, _ = _parse_single_hand_contract(
+                dossier_dir,
+                hand_dir,
+                ep_dir_hint=ep_hint,
+            )
+            if parsed is not None:
+                return parsed
+    except Exception as exc:
+        return _degraded_contract_from_events(
+            dossier_id=dossier_id,
+            hand_id=hand_id,
+            p5_episode_id=p5_episode_id,
+            ev_dir=(ep_dir / "events") if ep_dir is not None else None,
+            reason=f"hand_state_error:{exc}",
+        )
+
+    # Check whether ep_dir itself exists cleanly before treating missing events/ as empty; if ep_dir is missing or unreadable, fail closed!
+    ev_dir_cand: Path | None = None
+    fallback_reason = "hand_files_unreadable"
+    if ep_dir is not None:
+        try:
+            if ep_dir.is_dir():
+                ev_dir_cand = ep_dir / "events"
+            else:
+                fallback_reason = "episode_dir_missing"
+        except OSError as exc:
+            fallback_reason = f"episode_dir_oserror:{exc}"
+    return _degraded_contract_from_events(
+        dossier_id=dossier_id,
+        hand_id=hand_id,
+        p5_episode_id=p5_episode_id,
+        ev_dir=ev_dir_cand,
+        reason=fallback_reason,
+    )
+
+
 def scan_p5_dossier_root(dossier_root: Path | None) -> tuple[dict[str, P5DecisionContract], dict[str, dict[str, Any]]]:
-    """Read-only scanner for immutable P5 hands/episodes/events matching Deribit_BTC_* layout."""
+    """Read-only per-hand isolated scanner for P5 hands/episodes/events (never aborts whole root on historical bad data)."""
     if dossier_root is None:
         return {}, {}
     dossiers_dir = dossier_root / "dossiers"
@@ -1064,157 +1511,45 @@ def scan_p5_dossier_root(dossier_root: Path | None) -> tuple[dict[str, P5Decisio
 
     out: dict[str, P5DecisionContract] = {}
     aux: dict[str, dict[str, Any]] = {}
-    for dossier_dir in sorted(dossiers_dir.iterdir()):
-        if not dossier_dir.is_dir():
-            continue
-        hands_dir = dossier_dir / "hands"
-        if not hands_dir.is_dir():
-            continue
-        episodes_dir = dossier_dir / "episodes"
-        ep_by_hand: dict[str, Path] = {}
-        if episodes_dir.is_dir():
-            for ep_dir in sorted(episodes_dir.glob("episode_*")):
-                ep_meta = _read_json_optional(ep_dir / "episode.json")
-                if isinstance(ep_meta, dict) and ep_meta.get("hand_id"):
-                    ep_by_hand[str(ep_meta["hand_id"])] = ep_dir
+    try:
+        dossier_dirs = sorted(dossiers_dir.iterdir())
+    except OSError:
+        return {}, {}
 
-        for hand_dir in sorted(hands_dir.glob("hand_*")):
-            if not hand_dir.is_dir():
+    for dossier_dir in dossier_dirs:
+        try:
+            if not dossier_dir.is_dir():
                 continue
-            dec = _read_json_optional(hand_dir / "decision.json")
-            if not isinstance(dec, dict):
+            hands_dir = dossier_dir / "hands"
+            if not hands_dir.is_dir():
                 continue
-            link = _read_json_optional(hand_dir / "tracking" / "link.json")
-            if not isinstance(link, dict):
-                continue
-            link_state = str(link.get("state") or "")
-            if link_state not in _VALID_LINK_STATES:
-                continue
-
-            origin = link.get("origin") if isinstance(link.get("origin"), Mapping) else {}
-            if origin.get("dossier_id") and str(origin["dossier_id"]) != dossier_dir.name:
-                continue
-            if origin.get("hand_id") and str(origin["hand_id"]) != hand_dir.name:
-                continue
-            dec_attempt_id = str(dec.get("attempt_id") or dec.get("decision_id") or "")
-            origin_dec_id = str(origin.get("decision_id") or "")
-            if dec_attempt_id and origin_dec_id and dec_attempt_id != origin_dec_id:
-                continue
-
-            ep_dir = ep_by_hand.get(hand_dir.name)
-            if ep_dir is None and origin.get("dossier_episode_id") and episodes_dir.is_dir():
-                cand_ep = episodes_dir / str(origin["dossier_episode_id"])
-                if cand_ep.is_dir():
-                    ep_dir = cand_ep
-            cond = _read_json_optional(ep_dir / "condition.json") if ep_dir else None
-            if not isinstance(cond, dict):
-                continue
-            contract_map = cond.get("contract") if isinstance(cond.get("contract"), Mapping) else {}
-            if not isinstance(contract_map, Mapping) or not contract_map.get("short_instrument"):
-                continue
-
-            judgment = dec.get("judgment") if isinstance(dec.get("judgment"), Mapping) else {}
-            action = str(judgment.get("action") or dec.get("action") or dec.get("decision") or "")
-            side = str(
-                judgment.get("side")
-                or dec.get("chosen_side")
-                or dec.get("side")
-                or contract_map.get("side")
-                or ""
-            ).lower()
-
-            raw_sha = str(dec.get("raw_sha256") or "")
-            cond_bytes = (ep_dir / "condition.json").read_bytes() if (ep_dir and (ep_dir / "condition.json").is_file()) else b""
-            cond_sha = str(origin.get("condition_sha256") or hashlib.sha256(cond_bytes).hexdigest())
-            dec_sha = str(origin.get("decision_sha256") or hashlib.sha256((hand_dir / "decision.json").read_bytes()).hexdigest())
-            in_sha = str(origin.get("input_sha256") or "")
-            c_ref = _extract_c_decision_ref_btc(link=link, cond=cond, hand_dir=hand_dir, side=side)
-            p5_ep_id = ep_dir.name if ep_dir else ""
-
-            revoked = False
-            rev_id = None
-            rev_act = None
-            rev_at = None
-            unverified_rev_act: str | None = None
-            cond_triggered = False
-            cond_triggered_at: int | None = None
-            latest_valid_review_ts = 0
-            latest_fail_ts = 0
-
-            ev_dir = ep_dir / "events" if ep_dir else None
-            if ev_dir and ev_dir.is_dir():
-                rev_candidates = []
-                unverified_revs = []
-                for p in sorted(ev_dir.glob("*.json")):
-                    ev = _read_json_optional(p)
-                    if not isinstance(ev, dict):
+            episodes_dir = dossier_dir / "episodes"
+            ep_by_hand: dict[str, Path] = {}
+            if episodes_dir.is_dir():
+                for ep_dir in sorted(episodes_dir.glob("episode_*")):
+                    try:
+                        ep_meta = _read_json_optional(ep_dir / "episode.json")
+                        if isinstance(ep_meta, dict) and ep_meta.get("hand_id"):
+                            ep_by_hand[str(ep_meta["hand_id"])] = ep_dir
+                    except Exception:
                         continue
-                    kind = str(ev.get("kind") or "")
-                    ev_ts = int(ev.get("recorded_at_ms") or ev.get("decided_at_ms") or ev.get("observed_at_ms") or 0)
-                    if kind == "AI_REVOKE":
-                        if _is_verified_revoke_event(ev):
-                            rev_candidates.append(ev)
-                            latest_valid_review_ts = max(latest_valid_review_ts, ev_ts)
-                        else:
-                            unverified_revs.append(ev)
-                    elif kind in {"AI_HOLD", "HOLD_REVIEW_PASSED"}:
-                        latest_valid_review_ts = max(latest_valid_review_ts, ev_ts)
-                    elif kind == "CONDITION_TRIGGERED":
-                        cond_triggered = True
-                        obs_ts = int(ev.get("observed_at_ms") or ev_ts)
-                        cond_triggered_at = max(cond_triggered_at or 0, obs_ts)
-                    elif kind == "HOLD_REVIEW_FAILED":
-                        latest_fail_ts = max(latest_fail_ts, ev_ts)
 
-                if rev_candidates:
-                    last_rev = max(rev_candidates, key=lambda e: int(e.get("recorded_at_ms") or 0))
-                    rbody = last_rev.get("body") if isinstance(last_rev.get("body"), Mapping) else {}
-                    revoked = True
-                    rev_id = str(rbody.get("review_id") or "")
-                    rev_act = str(rbody.get("shadow_action") or "")
-                    rev_at = int(last_rev.get("decided_at_ms") or last_rev.get("recorded_at_ms") or 0)
-                elif unverified_revs:
-                    last_u = max(unverified_revs, key=lambda e: int(e.get("recorded_at_ms") or 0))
-                    ubody = last_u.get("body") if isinstance(last_u.get("body"), Mapping) else {}
-                    revoked = True
-                    unverified_rev_act = str(
-                        ubody.get("shadow_action") or ubody.get("protocol_status") or "UNVERIFIED"
+            for hand_dir in sorted(hands_dir.glob("hand_*")):
+                try:
+                    if not hand_dir.is_dir():
+                        continue
+                    contract, aux_entry = _parse_single_hand_contract(
+                        dossier_dir,
+                        hand_dir,
+                        ep_dir_hint=ep_by_hand.get(hand_dir.name),
                     )
-
-            hold_llm_unavail = bool(not (revoked and rev_act in _VERIFIED_REVOKE_ACTIONS) and latest_fail_ts > latest_valid_review_ts)
-            sx_meta = _read_json_optional(hand_dir / "tracking" / "shadow_exit.json")
-            out[hand_dir.name] = P5DecisionContract(
-                dossier_id=dossier_dir.name,
-                hand_id=hand_dir.name,
-                episode_id=p5_ep_id,
-                decision_id=dec_attempt_id,
-                decision=action,
-                side=side,
-                short_instrument=str(contract_map["short_instrument"]),
-                long_instrument=str(contract_map["long_instrument"]),
-                short_strike_usd=D(contract_map["short_strike_usd"]),
-                long_strike_usd=D(contract_map["long_strike_usd"]),
-                expiry_ms=int(contract_map["expiry_ms"]),
-                decided_at_ms=int(dec.get("decided_at_ms") or 0),
-                link_recorded_at_ms=int(link.get("recorded_at_ms") or 0),
-                link_state=link_state,
-                decision_sha256=dec_sha,
-                condition_sha256=cond_sha,
-                input_sha256=in_sha,
-                raw_sha256=raw_sha,
-                c_decision_ref_btc=c_ref,
-                revoked=revoked,
-                revoke_review_id=rev_id,
-                revoke_shadow_action=rev_act if rev_act else unverified_rev_act,
-                revoke_at_ms=rev_at,
-                condition_triggered=cond_triggered,
-                condition_triggered_at_ms=cond_triggered_at,
-                hold_review_llm_unavailable=hold_llm_unavail,
-            )
-            aux[hand_dir.name] = {
-                "hold_review_llm_unavailable": hold_llm_unavail,
-                "shadow_exit_snapshot": (sx_meta.get("snapshot") if isinstance(sx_meta, Mapping) else None),
-            }
+                    if contract is not None and aux_entry is not None:
+                        out[hand_dir.name] = contract
+                        aux[hand_dir.name] = aux_entry
+                except Exception:
+                    continue
+        except Exception:
+            continue
     return out, aux
 
 
@@ -1262,8 +1597,6 @@ class ExecutionCoordinator:
         self._backoff_step: int = 0
         self._last_venue_poll_ms: int = 0
         self._last_tick_duration_ms: int | None = None
-        self._cached_contracts: dict[str, P5DecisionContract] = {}
-        self._cached_aux: dict[str, dict[str, Any]] = {}
 
     def _should_abort_reads(self) -> bool:
         return self._control_interrupt.is_set() or self._pending_control_ops > 0
@@ -1401,13 +1734,28 @@ class ExecutionCoordinator:
         return 5_000
 
     def _scan_dossiers(self) -> tuple[dict[str, P5DecisionContract], dict[str, dict[str, Any]]]:
+        """Scan P5 dossiers fresh without global stale-contract fallback."""
         try:
-            c_map, aux = scan_p5_dossier_root(self.dossier_root)
-            self._cached_contracts = c_map
-            self._cached_aux = aux
+            return scan_p5_dossier_root(self.dossier_root)
         except Exception as exc:
-            self._last_error = f"dossier_scan_nonfatal:{exc}"
-        return self._cached_contracts, self._cached_aux
+            self._last_error = f"dossier_scan_error:{exc}"
+            return {}, {}
+
+    def _refresh_now_ms(self, cur_now_ms: int, *, synthetic_clock: bool, facts: ExchangeFacts | None = None) -> int:
+        if not synthetic_clock:
+            return int(time.time() * 1000)
+        if facts is not None and facts.asof_ms > cur_now_ms:
+            return int(facts.asof_ms)
+        return int(cur_now_ms)
+
+    def _writes_currently_allowed(self, *, from_control: bool = False) -> bool:
+        if not self.writes_permitted_by_mode():
+            return False
+        if self._pending_disarm_entry > 0 or self._pending_exit_all > 0:
+            return False
+        if not from_control and (self._pending_control_ops > 0 or self._control_interrupt.is_set()):
+            return False
+        return True
 
     def _estimated_server_ms(self, facts: ExchangeFacts, now_ms: int) -> int:
         if hasattr(self.adapter, "estimated_server_time_ms") and isinstance(self.adapter, DeribitRestAdapter):
@@ -1616,6 +1964,7 @@ class ExecutionCoordinator:
         now_ms: int,
         *,
         from_control: bool = False,
+        synthetic_clock: bool = True,
     ) -> bool:
         did_sync_venue_op = False
         if not self.writes_permitted_by_mode():
@@ -1625,53 +1974,115 @@ class ExecutionCoordinator:
             if not self.writes_permitted_by_mode():
                 break
             if act.action_type == ActionType.SUBMIT:
-                # Task Doc 3.2: Re-verify authorization, latches, coverage, and expiry boundary at final send boundary!
+                # Unified final send-boundary verification: refresh clock & current hand P5 facts right before wire submit!
                 ep_cur = self.store.get_episode(ep_id)
                 if ep_cur is None or not self.writes_permitted_by_mode():
                     break
-                auth_cur = self.store.get_capital_auth()
+                send_now_ms = self._refresh_now_ms(now_ms, synthetic_clock=synthetic_clock, facts=facts)
+                est_srv_ms = self._estimated_server_ms(facts, send_now_ms)
+                auth_cur, _pnl_s, b_eff_cur = self.store.get_effective_budget_state()
                 purpose = act.purpose or "EP"
-                pending_halt = (not from_control) and (self._pending_control_ops > 0 or self._control_interrupt.is_set())
-                if purpose in {"EP", "ES"}:
-                    if (
-                        pending_halt
-                        or self._pending_disarm_entry > 0
-                        or self._pending_exit_all > 0
-                        or not auth_cur.entry_armed
-                        or ep_cur.entry_halted
-                        or ep_cur.exit_latched
-                        or ep_cur.entry_closed
-                    ):
-                        continue
-                elif purpose == "TP":
-                    if self._pending_exit_all > 0 or ep_cur.exit_latched:
-                        continue
-                elif purpose == "LX":
-                    if (self._pending_exit_all > 0 or ep_cur.exit_latched) and not ep_cur.short_liability_cleared:
-                        continue
+                amt = act.amount or ZERO
+                p5c_send = (
+                    read_hand_p5_state(
+                        self.dossier_root,
+                        dossier_id=ep_cur.dossier_id,
+                        hand_id=ep_cur.hand_id,
+                        p5_episode_id=ep_cur.p5_episode_id,
+                    )
+                    if self.dossier_root is not None
+                    else None
+                )
+                verified_revoke_now = bool(
+                    p5c_send is not None
+                    and p5c_send.revoked
+                    and p5c_send.revoke_shadow_action in _VERIFIED_REVOKE_ACTIONS
+                )
 
                 cmds_cur = self.store.get_commands(ep_id)
-                short_pos = sum(
-                    (p.size for p in facts.positions if p.instrument_name == ep_cur.short_instrument), ZERO
-                )
-                prot_pos = sum(
-                    (p.size for p in facts.positions if p.instrument_name == ep_cur.long_instrument), ZERO
-                )
+                short_pos = ZERO
+                prot_pos = ZERO
+                has_ext_pos = False
+                for p in facts.positions:
+                    if p.instrument_name == ep_cur.short_instrument:
+                        short_pos += p.size
+                    elif p.instrument_name == ep_cur.long_instrument:
+                        prot_pos += p.size
+                    elif matches_episode_future(p.instrument_name, ep_cur.short_instrument):
+                        if est_srv_ms < ep_cur.expiry_ms and p.size != ZERO:
+                            has_ext_pos = True
+                    elif p.size != ZERO:
+                        has_ext_pos = True
                 short_qty = max(ZERO, -short_pos)
                 pending_es = sum((c.reserved_remaining for c in cmds_cur if c.purpose == "ES" and c.is_open_or_unknown), ZERO)
                 pending_lx = sum((c.reserved_remaining for c in cmds_cur if c.purpose == "LX" and c.is_open_or_unknown), ZERO)
                 avail_prot = max(ZERO, prot_pos - pending_lx)
                 res_short = short_qty + pending_es
-                amt = act.amount or ZERO
-                if purpose == "ES" and (res_short + amt) > avail_prot:
-                    continue
-                if purpose == "TP" and short_qty <= ZERO:
-                    continue
 
-                est_srv_ms = self._estimated_server_ms(facts, now_ms)
+                if purpose in {"EP", "ES"}:
+                    perm_send = check_new_exposure_permission(
+                        purpose=purpose,
+                        p5_contract=p5c_send,
+                        episode=ep_cur,
+                        capital_auth=auth_cur,
+                        effective_budget_btc=b_eff_cur,
+                        writes_permitted=self._writes_currently_allowed(from_control=from_control),
+                        writes_disabled=not self.writes_permitted_by_mode(),
+                        dcod_confirmed=self._dcod_confirmed,
+                        now_ms=send_now_ms,
+                        venue_now_ms=est_srv_ms,
+                        config=self.config,
+                        require_p5_facts=True,
+                        last_ep_fill_at_ms=ep_cur.last_ep_fill_at_ms if purpose == "ES" else None,
+                        available_prot_btc=avail_prot,
+                        reserved_short_btc=res_short,
+                        slice_qty_btc=amt,
+                        clock_skew_high=facts_clock_skew_ms(facts, send_now_ms) > self.config.max_clock_skew_ms,
+                        has_external_pos=has_ext_pos,
+                    )
+                    if not perm_send.allowed:
+                        if perm_send.halt_entry and not ep_cur.entry_closed:
+                            did_sync_venue_op = True
+                        continue
+                    if purpose == "EP" and not (
+                        _book_fresh_ok(facts.long_book, send_now_ms, self.config.max_book_fetch_age_ms)
+                        and _book_fresh_ok(facts.short_book, send_now_ms, self.config.max_book_fetch_age_ms)
+                    ):
+                        continue
+                    if purpose == "ES" and not _book_fresh_ok(facts.short_book, send_now_ms, self.config.max_book_fetch_age_ms):
+                        continue
+                elif purpose == "TP":
+                    if (
+                        self._pending_exit_all > 0
+                        or ep_cur.exit_latched
+                        or verified_revoke_now
+                        or short_qty <= ZERO
+                        or est_srv_ms >= (ep_cur.expiry_ms - self.config.tp_submit_cutoff_ms)
+                    ):
+                        if verified_revoke_now and not ep_cur.exit_latched:
+                            did_sync_venue_op = True
+                        continue
+                elif purpose == "LX":
+                    if (
+                        ((self._pending_exit_all > 0 or ep_cur.exit_latched or verified_revoke_now) and not ep_cur.short_liability_cleared)
+                        or est_srv_ms >= (ep_cur.expiry_ms - self.config.lx_submit_cutoff_ms)
+                        or not _book_fresh_ok(facts.long_book, send_now_ms, self.config.max_book_fetch_age_ms)
+                    ):
+                        if verified_revoke_now and not ep_cur.exit_latched:
+                            did_sync_venue_op = True
+                        continue
+                elif purpose == "RX":
+                    if (
+                        est_srv_ms >= (ep_cur.expiry_ms - self.config.rx_submit_cutoff_ms)
+                        or not _book_fresh_ok(facts.short_book, send_now_ms, self.config.max_book_fetch_age_ms)
+                    ):
+                        continue
+
                 valid_until_ms = min(est_srv_ms + self.config.request_valid_window_ms, ep_cur.expiry_ms - 1_000)
                 if valid_until_ms <= (est_srv_ms + self.config.min_valid_until_lead_ms):
                     continue
+
+                now_ms = send_now_ms
 
                 lbl = make_order_label(self.env_tag, ep_cur.episode_id, purpose, ep_cur.next_cmd_seq)
                 cmd = ExecCommand(
@@ -1807,14 +2218,11 @@ class ExecutionCoordinator:
         t_now: int,
         *,
         from_control: bool = False,
+        synthetic_clock: bool = True,
     ) -> tuple[EpisodeState | None, ExchangeFacts | None]:
-        """Automatically admit a fresh, valid P5 Accept under continuous capital authorization (Spec 2.1, 2.2, 4.1)."""
-        if (
-            not self.writes_permitted_by_mode()
-            or self._pending_disarm_entry > 0
-            or self._pending_exit_all > 0
-            or (not from_control and (self._pending_control_ops > 0 or self._control_interrupt.is_set()))
-        ):
+        """Automatically admit a fresh, valid P5 Accept via unified check_new_exposure_permission before & after slow query."""
+        writes_ok = self._writes_currently_allowed(from_control=from_control)
+        if not writes_ok:
             return None, None
         if not self._dcod_confirmed:
             self._last_reject_reason = "DCOD_UNCONFIRMED"
@@ -1826,37 +2234,34 @@ class ExecutionCoordinator:
             self._last_reject_reason = "EFFECTIVE_BUDGET_EXHAUSTED"
             return None, None
 
-        # Evaluate newest hands first by decided_at_ms
         candidates = sorted(
             contracts_map.values(),
             key=lambda x: (x.decided_at_ms, x.hand_id),
             reverse=True,
         )
+        newest_reject_reason: str | None = None
         for p5c in candidates:
             if p5c.decision != "Accept":
                 continue
             if self.store.has_consumed_hand(p5c.hand_id):
                 continue
-            if p5c.link_state not in _VALID_LINK_STATES:
-                self._last_reject_reason = f"INVALID_LINK_STATE:{p5c.link_state}"
-                continue
-            if p5c.revoked:
-                self._last_reject_reason = "P5_ALREADY_REVOKED"
-                continue
-            if p5c.condition_triggered:
-                self._last_reject_reason = "P5_PRE_ENTRY_CONDITION_TRIGGERED"
-                continue
-            dec_age = t_now - p5c.decided_at_ms
-            link_age = t_now - p5c.link_recorded_at_ms
-            if p5c.decided_at_ms <= 0 or dec_age < -5_000 or dec_age > self.config.max_decision_age_ms:
-                # Spec 2.2.1: silently ignore stale (>180s) or future hands without dead-lettering
-                self._last_reject_reason = "DECISION_TIMESTAMP_OUT_OF_WINDOW"
-                continue
-            if p5c.link_recorded_at_ms <= 0 or link_age < -5_000 or link_age > self.config.max_decision_age_ms:
-                self._last_reject_reason = "LINK_TIMESTAMP_OUT_OF_WINDOW"
-                continue
-            if (p5c.expiry_ms - t_now) < self.config.min_entry_dte_ms:
-                self._last_reject_reason = "DTE_BELOW_30M"
+            pre_perm = check_new_exposure_permission(
+                purpose="ADMIT",
+                p5_contract=p5c,
+                episode=None,
+                capital_auth=auth,
+                effective_budget_btc=b_eff,
+                writes_permitted=writes_ok,
+                writes_disabled=not self.writes_permitted_by_mode(),
+                dcod_confirmed=self._dcod_confirmed,
+                now_ms=t_now,
+                venue_now_ms=0,
+                config=self.config,
+                require_p5_facts=True,
+            )
+            if not pre_perm.allowed:
+                if newest_reject_reason is None:
+                    newest_reject_reason = pre_perm.reason
                 continue
 
             facts = self._fetch_facts_safe(
@@ -1870,23 +2275,51 @@ class ExecutionCoordinator:
             if facts is None or facts.api_error is not None:
                 self._last_reject_reason = f"VENUE_FACTS_UNAVAILABLE:{(facts.api_error if facts else None) or self._last_error}"
                 return None, facts
-            if (p5c.expiry_ms - facts.server_time_ms) < self.config.min_entry_dte_ms:
-                self._last_reject_reason = "DTE_BELOW_30M"
+
+            # Post-query verification: refresh clock, current hand P5 facts, and control/authorization state!
+            t_post = self._refresh_now_ms(t_now, synthetic_clock=synthetic_clock, facts=facts)
+            est_srv_ms = self._estimated_server_ms(facts, t_post)
+            p5c_post = read_hand_p5_state(
+                self.dossier_root,
+                dossier_id=p5c.dossier_id,
+                hand_id=p5c.hand_id,
+                p5_episode_id=p5c.episode_id,
+            )
+            auth_post, _pnl_post, b_eff_post = self.store.get_effective_budget_state()
+            has_existing_pos = any(p.size != ZERO for p in facts.positions)
+            post_perm = check_new_exposure_permission(
+                purpose="ADMIT",
+                p5_contract=p5c_post,
+                episode=None,
+                capital_auth=auth_post,
+                effective_budget_btc=b_eff_post,
+                writes_permitted=self._writes_currently_allowed(from_control=from_control),
+                writes_disabled=not self.writes_permitted_by_mode(),
+                dcod_confirmed=self._dcod_confirmed,
+                now_ms=t_post,
+                venue_now_ms=est_srv_ms,
+                config=self.config,
+                require_p5_facts=True,
+                clock_skew_high=facts_clock_skew_ms(facts, t_post) > self.config.max_clock_skew_ms,
+                has_external_pos=has_existing_pos,
+            )
+            if not post_perm.allowed:
+                if newest_reject_reason is None:
+                    newest_reject_reason = post_perm.reason
+                self._last_reject_reason = newest_reject_reason
+                if post_perm.reason in {"CLOCK_SKEW_HIGH", "NON_ZERO_EXISTING_VENUE_POSITIONS", "WRITES_NOT_PERMITTED", "WRITES_DISABLED"}:
+                    return None, facts
                 continue
-            if facts_clock_skew_ms(facts, t_now) > self.config.max_clock_skew_ms:
-                self._last_reject_reason = "CLOCK_SKEW_HIGH"
-                return None, facts
-            if any(p.size != ZERO for p in facts.positions):
-                self._last_reject_reason = "NON_ZERO_EXISTING_VENUE_POSITIONS"
-                return None, facts
+            assert p5c_post is not None
             if not facts.open_orders_complete or len(facts.open_orders) > 0:
                 self._last_reject_reason = "NON_ZERO_EXISTING_OPEN_ORDERS"
                 return None, facts
             if facts.short_spec is None or facts.long_spec is None:
-                self._last_reject_reason = "INSTRUMENT_SPEC_MISSING"
+                if newest_reject_reason is None:
+                    newest_reject_reason = "INSTRUMENT_SPEC_MISSING"
                 continue
 
-            qty = quant_qty(min(auth.max_qty_btc, self.config.initial_qty_btc), facts.short_spec.min_trade_amount)
+            qty = quant_qty(min(auth_post.max_qty_btc, self.config.initial_qty_btc), facts.short_spec.min_trade_amount)
             if qty < facts.short_spec.min_trade_amount:
                 self._last_reject_reason = "AUTHORIZED_QTY_BELOW_MIN_TRADE_AMOUNT"
                 return None, facts
@@ -1901,18 +2334,18 @@ class ExecutionCoordinator:
                 episode_id="cand",
                 env=self.env_tag,
                 subaccount_id=self.subaccount_id,
-                dossier_id=p5c.dossier_id,
-                hand_id=p5c.hand_id,
-                p5_episode_id=p5c.episode_id,
-                side=p5c.side,
-                short_instrument=p5c.short_instrument,
-                long_instrument=p5c.long_instrument,
-                short_strike_usd=p5c.short_strike_usd,
-                long_strike_usd=p5c.long_strike_usd,
-                expiry_ms=p5c.expiry_ms,
+                dossier_id=p5c_post.dossier_id,
+                hand_id=p5c_post.hand_id,
+                p5_episode_id=p5c_post.episode_id,
+                side=p5c_post.side,
+                short_instrument=p5c_post.short_instrument,
+                long_instrument=p5c_post.long_instrument,
+                short_strike_usd=p5c_post.short_strike_usd,
+                long_strike_usd=p5c_post.long_strike_usd,
+                expiry_ms=p5c_post.expiry_ms,
                 contract_hash="",
                 phase=LifecyclePhase.ENTRY,
-                created_at_ms=t_now,
+                created_at_ms=t_post,
                 target_qty_btc=qty,
             )
             gate_ok, gate_reason = _entry_capital_and_margin_ok(
@@ -1922,62 +2355,60 @@ class ExecutionCoordinator:
                 paid_ep_outlay_btc=ZERO,
                 paid_unmatched_ep_outlay_btc=ZERO,
                 unpaid_prot_cost_btc=unpaid_prot_est,
-                effective_budget_btc=b_eff,
+                effective_budget_btc=b_eff_post,
                 config=self.config,
             )
             if not gate_ok:
-                self._last_reject_reason = gate_reason
+                if newest_reject_reason is None:
+                    newest_reject_reason = gate_reason
                 continue
 
             chash = compute_contract_hash(
-                dossier_id=p5c.dossier_id,
-                hand_id=p5c.hand_id,
-                p5_episode_id=p5c.episode_id,
-                decision_sha256=p5c.decision_sha256,
-                condition_sha256=p5c.condition_sha256,
-                short_instrument=p5c.short_instrument,
-                long_instrument=p5c.long_instrument,
-                expiry_ms=p5c.expiry_ms,
+                dossier_id=p5c_post.dossier_id,
+                hand_id=p5c_post.hand_id,
+                p5_episode_id=p5c_post.episode_id,
+                decision_sha256=p5c_post.decision_sha256,
+                condition_sha256=p5c_post.condition_sha256,
+                short_instrument=p5c_post.short_instrument,
+                long_instrument=p5c_post.long_instrument,
+                expiry_ms=p5c_post.expiry_ms,
             )
-            ep_id = f"ep_{hashlib.sha256(f'{p5c.hand_id}:{t_now}'.encode('utf-8')).hexdigest()[:12]}"
+            ep_id = f"ep_{hashlib.sha256(f'{p5c_post.hand_id}:{t_post}'.encode('utf-8')).hexdigest()[:12]}"
             ep = EpisodeState(
                 episode_id=ep_id,
                 env=self.env_tag,
                 subaccount_id=self.subaccount_id,
-                dossier_id=p5c.dossier_id,
-                hand_id=p5c.hand_id,
-                p5_episode_id=p5c.episode_id,
-                side=p5c.side,
-                short_instrument=p5c.short_instrument,
-                long_instrument=p5c.long_instrument,
-                short_strike_usd=p5c.short_strike_usd,
-                long_strike_usd=p5c.long_strike_usd,
-                expiry_ms=p5c.expiry_ms,
+                dossier_id=p5c_post.dossier_id,
+                hand_id=p5c_post.hand_id,
+                p5_episode_id=p5c_post.episode_id,
+                side=p5c_post.side,
+                short_instrument=p5c_post.short_instrument,
+                long_instrument=p5c_post.long_instrument,
+                short_strike_usd=p5c_post.short_strike_usd,
+                long_strike_usd=p5c_post.long_strike_usd,
+                expiry_ms=p5c_post.expiry_ms,
                 contract_hash=chash,
                 phase=LifecyclePhase.ENTRY,
-                created_at_ms=t_now,
-                auth_epoch=auth.auth_epoch,
+                created_at_ms=t_post,
+                auth_epoch=auth_post.auth_epoch,
                 target_qty_btc=qty,
                 min_net_credit_per_btc=self.config.min_net_credit_per_btc,
-                max_zero_rec_ep_outlay_btc=min(b_eff, ceil_1e8(qty * self.config.max_zero_rec_ep_unit_btc)),
-                effective_budget_at_entry_btc=b_eff,
+                max_zero_rec_ep_outlay_btc=min(b_eff_post, ceil_1e8(qty * self.config.max_zero_rec_ep_unit_btc)),
+                effective_budget_at_entry_btc=b_eff_post,
                 margin_model_at_entry=facts.margin_model,
                 entry_spot_usd=facts.spot_usd if facts.spot_usd > ZERO else None,
-                decided_at_ms=p5c.decided_at_ms,
-                link_recorded_at_ms=p5c.link_recorded_at_ms,
-                c_decision_ref_btc=p5c.c_decision_ref_btc,
+                decided_at_ms=p5c_post.decided_at_ms,
+                link_recorded_at_ms=p5c_post.link_recorded_at_ms,
+                c_decision_ref_btc=p5c_post.c_decision_ref_btc,
             )
-            if (
-                not self.writes_permitted_by_mode()
-                or self._pending_disarm_entry > 0
-                or self._pending_exit_all > 0
-                or (not from_control and (self._pending_control_ops > 0 or self._control_interrupt.is_set()))
-            ):
+            if not self._writes_currently_allowed(from_control=from_control):
                 return None, facts
             self.store.create_episode(ep)
             self._last_reject_reason = None
             return ep, facts
 
+        if newest_reject_reason is not None:
+            self._last_reject_reason = newest_reject_reason
         return None, None
 
     def run_tick(self, *, now_ms: int | None = None, max_followups: int = 3) -> dict[str, Any]:
@@ -1988,8 +2419,6 @@ class ExecutionCoordinator:
                 return self._emit_status(
                     self.store.get_active_episode() or self.store.get_latest_episode(),
                     self._last_facts,
-                    self._cached_contracts,
-                    self._cached_aux,
                     writes_off=writes_off,
                     writes_off_reason=writes_off_reason,
                     now_ms=t_bail,
@@ -2013,15 +2442,13 @@ class ExecutionCoordinator:
             return self._emit_status(
                 self.store.get_active_episode() or self.store.get_latest_episode(),
                 self._last_facts,
-                self._cached_contracts,
-                self._cached_aux,
                 writes_off=writes_off,
                 writes_off_reason=writes_off_reason,
                 now_ms=t_now,
             )
 
-        c_map, aux_map = self._scan_dossiers()
         active = self.store.get_active_episode()
+        c_map, aux_map = self._scan_dossiers() if active is None else ({}, {})
         writes_off, writes_off_reason = self.store.writes_disabled()
         self._ensure_dcod_disabled(t_now)
 
@@ -2040,23 +2467,29 @@ class ExecutionCoordinator:
         prefetched_facts: ExchangeFacts | None = None
         if active is None:
             admitted_ep, admitted_facts = self._try_admit_p5_candidate(
-                c_map, t_now, from_control=from_control
+                c_map,
+                t_now,
+                from_control=from_control,
+                synthetic_clock=synthetic_clock,
             )
             if admitted_ep is not None:
                 active = admitted_ep
                 prefetched_facts = admitted_facts
             else:
                 # Spec 5.2 (Fixing D-9): IDLE polls account/positions ONLY — NEVER polls expired option books!
-                facts = self._fetch_facts_safe(
-                    "",
-                    "",
-                    t_now=t_now,
-                    need_tx_logs=False,
-                    allow_account_only=True,
-                    use_cache=False,
+                facts = (
+                    admitted_facts
+                    if admitted_facts is not None
+                    else self._fetch_facts_safe(
+                        "",
+                        "",
+                        t_now=t_now,
+                        need_tx_logs=False,
+                        allow_account_only=True,
+                        use_cache=False,
+                    )
                 )
-                if not synthetic_clock:
-                    t_now = int(time.time() * 1000)
+                t_now = self._refresh_now_ms(t_now, synthetic_clock=synthetic_clock, facts=facts)
                 self._last_venue_poll_ms = t_now
                 self._last_tick_duration_ms = int((time.monotonic() - tick_start_mono) * 1000)
                 return self._emit_status(
@@ -2104,8 +2537,7 @@ class ExecutionCoordinator:
                 )
             if facts is None:
                 break
-            if not synthetic_clock:
-                t_now = int(time.time() * 1000)
+            t_now = self._refresh_now_ms(t_now, synthetic_clock=synthetic_clock, facts=facts)
             self._last_venue_poll_ms = t_now
 
             if facts.api_error is None:
@@ -2113,14 +2545,19 @@ class ExecutionCoordinator:
                 cmds_mid = self.store.get_commands(ep.episode_id)
                 facts = self._probe_missing_commands(ep, cmds_mid, facts, t_now)
                 self._last_facts = facts
-                if not synthetic_clock:
-                    t_now = int(time.time() * 1000)
+                t_now = self._refresh_now_ms(t_now, synthetic_clock=synthetic_clock, facts=facts)
 
             cmds = self.store.get_commands(ep.episode_id)
             events = self.store.get_venue_events(ep.episode_id)
             foreign_uids, foreign_oids = self.store.get_foreign_attribution_ids(ep.episode_id)
             auth_cur, _pnl_s, b_eff = self.store.get_effective_budget_state()
-            p5c = c_map.get(ep.hand_id)
+            # Re-read the active hand's P5 facts AFTER venue/probe queries so concurrent revokes or read failures take effect immediately!
+            p5c = read_hand_p5_state(
+                self.dossier_root,
+                dossier_id=ep.dossier_id,
+                hand_id=ep.hand_id,
+                p5_episode_id=ep.p5_episode_id,
+            )
 
             res = evaluate_step(
                 ep,
@@ -2133,6 +2570,8 @@ class ExecutionCoordinator:
                 effective_budget_btc=b_eff,
                 p5_contract=p5c,
                 writes_disabled=not self.writes_permitted_by_mode(),
+                require_p5_facts=True,
+                dcod_confirmed=self._dcod_confirmed,
                 foreign_event_uids=foreign_uids,
                 foreign_order_ids=foreign_oids,
             )
@@ -2141,7 +2580,12 @@ class ExecutionCoordinator:
             self.store.apply_episode_patch(ep.episode_id, res.episode_patch, now_ms=t_now)
 
             did_op = self._execute_actions(
-                ep.episode_id, res.actions, facts, t_now, from_control=from_control
+                ep.episode_id,
+                res.actions,
+                facts,
+                t_now,
+                from_control=from_control,
+                synthetic_clock=synthetic_clock,
             )
             if not did_op:
                 break
@@ -2165,6 +2609,7 @@ class ExecutionCoordinator:
                     episode_start_ms=ep_last.created_at_ms,
                 )
                 if final_facts is not None and final_facts.api_error is None:
+                    t_now = self._refresh_now_ms(t_now, synthetic_clock=synthetic_clock, facts=final_facts)
                     self.store.ingest_facts_events(ep_last, final_facts, now_ms=t_now)
 
         writes_off, writes_off_reason = self.store.writes_disabled()
@@ -2230,8 +2675,8 @@ class ExecutionCoordinator:
         self,
         ep: EpisodeState | None,
         facts: ExchangeFacts | None,
-        contracts_map: Mapping[str, P5DecisionContract],
-        aux_map: Mapping[str, dict[str, Any]],
+        contracts_map: Mapping[str, P5DecisionContract] | None = None,
+        aux_map: Mapping[str, dict[str, Any]] | None = None,
         *,
         writes_off: bool,
         writes_off_reason: str | None,
@@ -2301,7 +2746,9 @@ class ExecutionCoordinator:
             tp_cmd = next((c for c in reversed(cmds) if c.purpose == "TP"), None)
             active_tp = tp_cmd if (tp_cmd and tp_cmd.is_open_or_unknown) else None
             lx_cmd = next((c for c in reversed(cmds) if c.purpose == "LX"), None)
-            shadow_sx = (aux_map.get(ep.hand_id) or {}).get("shadow_exit_snapshot")
+            shadow_sx = ((aux_map or {}).get(ep.hand_id) or {}).get("shadow_exit_snapshot")
+            if shadow_sx is None:
+                shadow_sx = _read_shadow_exit_snapshot(self.dossier_root, ep.dossier_id, ep.hand_id)
             ledger = self.store.rebuild_episode_ledger(ep.episode_id, facts=facts, shadow_counterfactual=shadow_sx)
             if writes_off and (open_or_unk or short_pos != ZERO or prot_pos != ZERO):
                 manual_takeover = True
@@ -2730,8 +3177,6 @@ class ExecutionCoordinator:
         status = self._emit_status(
             self.store.get_active_episode() or self.store.get_latest_episode(),
             self._last_facts,
-            self._cached_contracts,
-            self._cached_aux,
             writes_off=writes_off,
             writes_off_reason=writes_off_reason,
             now_ms=int(now_ms if now_ms is not None else (time.time() * 1000 if run_tick_after else fallback_now_ms)),
@@ -2818,36 +3263,50 @@ class ExecutionCoordinator:
         c_map: Mapping[str, P5DecisionContract],
         now_ms: int,
     ) -> bool:
-        """Return True ONLY on actionable admission or active exit triggers (never stale accepts or unverified revokes)."""
+        """Return True ONLY on actionable admission or active exit triggers via unified permission rules."""
         if active is None:
-            if not self.writes_permitted_by_mode() or not self.store.get_capital_auth().entry_armed:
+            writes_ok = self._writes_currently_allowed()
+            if not writes_ok:
                 return False
+            auth, _pnl_s, b_eff = self.store.get_effective_budget_state()
             for c in c_map.values():
-                if (
-                    c.decision == "Accept"
-                    and not self.store.has_consumed_hand(c.hand_id)
-                    and c.link_state in _VALID_LINK_STATES
-                    and not c.revoked
-                    and not c.condition_triggered
-                    and c.decided_at_ms > 0
-                    and -5_000 <= (now_ms - c.decided_at_ms) <= self.config.max_decision_age_ms
-                    and c.link_recorded_at_ms > 0
-                    and -5_000 <= (now_ms - c.link_recorded_at_ms) <= self.config.max_decision_age_ms
-                    and (c.expiry_ms - now_ms) >= self.config.min_entry_dte_ms
-                ):
+                if self.store.has_consumed_hand(c.hand_id):
+                    continue
+                perm = check_new_exposure_permission(
+                    purpose="ADMIT",
+                    p5_contract=c,
+                    episode=None,
+                    capital_auth=auth,
+                    effective_budget_btc=b_eff,
+                    writes_permitted=writes_ok,
+                    writes_disabled=not self.writes_permitted_by_mode(),
+                    dcod_confirmed=self._dcod_confirmed,
+                    now_ms=now_ms,
+                    venue_now_ms=0,
+                    config=self.config,
+                    require_p5_facts=True,
+                )
+                if perm.allowed:
                     return True
             return False
-        if active.hand_id in c_map:
-            p5c = c_map[active.hand_id]
+        p5c = c_map.get(active.hand_id) or read_hand_p5_state(
+            self.dossier_root,
+            dossier_id=active.dossier_id,
+            hand_id=active.hand_id,
+            p5_episode_id=active.p5_episode_id,
+        )
+        if p5c is not None:
             verified_revoke = bool(p5c.revoked and p5c.revoke_shadow_action in _VERIFIED_REVOKE_ACTIONS)
             if (verified_revoke and not active.exit_latched) or (
-                p5c.condition_triggered and not active.entry_closed and not active.entry_halted
+                (p5c.condition_triggered or p5c.revoked or not p5c.facts_readable)
+                and not active.entry_closed
+                and not active.entry_halted
             ):
                 return True
         return False
 
     def should_poll_now(self, *, now_ms: int | None = None) -> bool:
-        """Thread-safe daemon poll check holding _lock around shared SQLite connection and dossier cache."""
+        """Thread-safe daemon poll check holding _lock around shared SQLite connection and P5 reader."""
         with self._lock:
             t_now = int(now_ms if now_ms is not None else time.time() * 1000)
             active = self.store.get_active_episode()
@@ -2855,7 +3314,7 @@ class ExecutionCoordinator:
             poll_ms = self.recommended_poll_ms(active, cmds)
             should_poll = (t_now - self._last_venue_poll_ms) >= poll_ms or self._wake_event.is_set()
             if not should_poll:
-                c_map, _ = self._scan_dossiers()
+                c_map = self._scan_dossiers()[0] if active is None else {}
                 if self.has_fast_poll_trigger(active, c_map, t_now):
                     should_poll = True
             if should_poll:

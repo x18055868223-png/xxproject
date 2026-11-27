@@ -2447,3 +2447,648 @@ def test_closure_warnings_and_ops_b5_idle_stale_boundary(tmp_path: Path):
         assert rx_cmds[-1].status == contracts.CommandStatus.SUBMIT_UNKNOWN
     finally:
         st.close()
+
+
+# ---------------------------------------------------------------------------
+# Final Pre-Freeze Robustness Closure: Per-Hand Isolation, No Stale Cache,
+# Slow-Query Send-Boundary Gates, Mid-Entry Revoke After EP Fill, & Real P5 Contract
+# ---------------------------------------------------------------------------
+
+
+def _seed_historical_bad_dossier_and_note(dossier_root: Path) -> Path:
+    """Create an expired historical dossier containing a NOTE with string 'unavailable' timestamps + corrupt hand."""
+    old_dos = dossier_root / "dossiers" / "Deribit_BTC_20261120T080000Z"
+    old_ep = old_dos / "episodes" / "episode_000000000000000000000001"
+    (old_ep / "events").mkdir(parents=True, exist_ok=True)
+    old_hand = old_dos / "hands" / "hand_000000000000000000000001"
+    (old_hand / "tracking").mkdir(parents=True, exist_ok=True)
+    (old_ep / "episode.json").write_text(
+        json.dumps({"episode_id": old_ep.name, "hand_id": old_hand.name}), encoding="utf-8"
+    )
+    (old_ep / "condition.json").write_text(
+        json.dumps(
+            {
+                "hand_id": old_hand.name,
+                "episode_id": old_ep.name,
+                "contract": {
+                    "side": "put",
+                    "short_instrument": "BTC-20NOV26-60000-P",
+                    "long_instrument": "BTC-20NOV26-58000-P",
+                    "short_strike_usd": 60000,
+                    "long_strike_usd": 58000,
+                    "expiry_ms": 1_795_075_200_000,
+                    "quantity_btc": 1.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (old_hand / "decision.json").write_text(
+        json.dumps(
+            {
+                "attempt_id": "dec_old_001",
+                "decided_at_ms": 1_795_010_000_000,
+                "judgment": {"action": "Accept", "side": "put"},
+                "raw_sha256": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (old_hand / "tracking" / "link.json").write_text(
+        json.dumps(
+            {
+                "state": "SHADOW_LOCK_CREATED",
+                "recorded_at_ms": 1_795_010_005_000,
+                "origin": {
+                    "dossier_id": old_dos.name,
+                    "hand_id": old_hand.name,
+                    "decision_id": "dec_old_001",
+                    "dossier_episode_id": old_ep.name,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    bad_note = old_ep / "events" / "ev_001_note_unavailable.json"
+    bad_note.write_text(
+        json.dumps(
+            {
+                "kind": "NOTE",
+                "recorded_at_ms": "unavailable",
+                "decided_at_ms": "unavailable",
+                "observed_at_ms": "unavailable",
+                "body": {"note": "historical_unclocked_note"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Also add a completely corrupt sibling hand in the old dossier to verify per-hand isolation
+    corrupt_hand = old_dos / "hands" / "hand_000000000000000000000002"
+    (corrupt_hand / "tracking").mkdir(parents=True, exist_ok=True)
+    (corrupt_hand / "decision.json").write_text("{corrupt_json", encoding="utf-8")
+    (corrupt_hand / "tracking" / "link.json").write_text('{"state":"SHADOW_LOCK_CREATED"}', encoding="utf-8")
+    return bad_note
+
+
+def test_audit_1_historical_bad_note_and_corrupt_files_never_mask_revoke_or_allow_cached_open(tmp_path: Path):
+    """Audit #1 exact reproduction + degraded current-hand fail-closed controls through real ExecutionCoordinator."""
+    # Scenario A: Initially unarmed coordinator scans valid Accept first, then AI_REVOKE + old NOTE("unavailable")
+    # are written before arming -> MUST NOT open from stale cache!
+    venue_a = _setup_venue()
+    st_a, _adp_a, coord_a, dos_a = _new_coord(tmp_path / "empty_unarmed", venue_a, entry_armed=False)
+    try:
+        assert not hasattr(coord_a, "_cached_contracts")
+        _build_p5_dossier(dos_a, decided_at_ms=venue_a.server_time_ms - 5_000)
+        coord_a.run_tick(now_ms=venue_a.server_time_ms)
+        assert st_a.get_active_episode() is None
+
+        # Write valid AI_REVOKE on current hand + historical NOTE("unavailable") on expired dossier
+        _write_p5_event(dos_a, kind="AI_REVOKE", ts_ms=venue_a.server_time_ms + 100)
+        _seed_historical_bad_dossier_and_note(dos_a)
+
+        venue_a.advance_time(500)
+        coord_a.handle_capital_policy(
+            {"entry_armed": True, "budget_cap_btc": "0.20", "max_qty_btc": "0.1", "operator": "audit_test"},
+            now_ms=venue_a.server_time_ms,
+            run_tick_after=True,
+        )
+        _drive(coord_a, venue_a, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=100)
+        assert _all_episodes(st_a) == []
+        assert not venue_a.get_positions()
+        assert coord_a._last_reject_reason == "P5_ALREADY_REVOKED"
+    finally:
+        st_a.close()
+
+    # Scenario B: Already holding 0.1 BTC spread -> write AI_REVOKE + historical NOTE("unavailable") + same-episode NOTE("unavailable")
+    # -> MUST latch AI_REVOKE, unwind short + long within <=6 ticks, and settle satoshi-exact!
+    venue_b = _setup_venue()
+    st_b, _adp_b, coord_b, dos_b = _new_coord(tmp_path / "open_pos", venue_b, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(dos_b, decided_at_ms=venue_b.server_time_ms - 5_000)
+        _drive(coord_b, venue_b, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=50)
+        ep_open = st_b.get_latest_episode()
+        assert ep_open is not None and ep_open.phase == contracts.LifecyclePhase.TP_MANAGED
+
+        _write_p5_event(dos_b, kind="AI_REVOKE", ts_ms=venue_b.server_time_ms)
+        _seed_historical_bad_dossier_and_note(dos_b)
+        same_ep_events = dos_b / "dossiers" / ep_open.dossier_id / "episodes" / ep_open.p5_episode_id / "events"
+        (same_ep_events / "ev_000_note_unavail.json").write_text(
+            json.dumps({"kind": "NOTE", "recorded_at_ms": "unavailable", "observed_at_ms": "unavailable", "body": {}}),
+            encoding="utf-8",
+        )
+        venue_b.set_book(
+            "BTC-25NOV26-62000-P", bid="0.0080", bid_size="5.0", ask="0.0085", ask_size="5.0", mark_price="0.0083", max_price="0.05"
+        )
+        _drive(coord_b, venue_b, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=6, dt_ms=500)
+
+        ep_settled = st_b.get_episode(ep_open.episode_id)
+        assert ep_settled is not None and ep_settled.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_settled.exit_latched is True and ep_settled.exit_latch_reason == "AI_REVOKE"
+        assert not venue_b.get_positions()
+        oracle_b = sim.IndependentSettlementOracle(initial_balance_btc=D("1.0"), trades=venue_b.export_raw_trades())
+        assert D(st_b.rebuild_episode_ledger(ep_open.episode_id)["accounting"]["episode_total_realized_pnl_btc"]) == oracle_b.expected_episode_realized_pnl_btc
+    finally:
+        st_b.close()
+
+    # Scenario C: Current hand's own material unreadable -> blocks new exposure (empty & mid-entry),
+    # while an already-open position still reads AI_REVOKE from episode events and settles!
+    venue_c = _setup_venue()
+    st_c, _adp_c, coord_c, dos_c = _new_coord(tmp_path / "corrupt_cur", venue_c, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        hand_c = _build_p5_dossier(
+            dos_c, hand_id="hand_corrupt_empty", ep_id="episode_corrupt_empty", decided_at_ms=venue_c.server_time_ms - 3_000
+        )
+        ev_dir_c = dos_c / "dossiers" / "Deribit_BTC_20261125T080000Z" / "episodes" / "episode_corrupt_empty" / "events"
+        (ev_dir_c / "00_corrupt.json").write_text("{truncated_json", encoding="utf-8")
+        _drive(coord_c, venue_c, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=2, dt_ms=50)
+        assert _all_episodes(st_c) == []
+        assert coord_c._last_reject_reason == "P5_FACTS_UNREADABLE"
+
+        # Repair/create clean second hand, enter TP_MANAGED, then corrupt decision.json AND write AI_REVOKE -> still exits!
+        (ev_dir_c / "00_corrupt.json").unlink()
+        hand_c2 = _build_p5_dossier(
+            dos_c, hand_id="hand_corrupt_hold", ep_id="episode_corrupt_hold", decided_at_ms=venue_c.server_time_ms - 1_000
+        )
+        _drive(coord_c, venue_c, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=50)
+        ep_c2 = st_c.get_latest_episode()
+        assert ep_c2 is not None and ep_c2.hand_id == "hand_corrupt_hold" and ep_c2.phase == contracts.LifecyclePhase.TP_MANAGED
+
+        (hand_c2 / "decision.json").write_text("{corrupt_decision_during_hold", encoding="utf-8")
+        _write_p5_event(dos_c, ep_id="episode_corrupt_hold", kind="AI_REVOKE", ts_ms=venue_c.server_time_ms)
+        venue_c.set_book(
+            "BTC-25NOV26-62000-P", bid="0.0080", bid_size="5.0", ask="0.0085", ask_size="5.0", mark_price="0.0083", max_price="0.05"
+        )
+        _drive(coord_c, venue_c, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=6, dt_ms=500)
+        ep_c2_done = st_c.get_episode(ep_c2.episode_id)
+        assert ep_c2_done is not None and ep_c2_done.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_c2_done.exit_latch_reason == "AI_REVOKE"
+    finally:
+        st_c.close()
+
+
+def test_audit_2_slow_query_revoke_and_180s_decision_expiry_blocked_before_first_order(tmp_path: Path):
+    """Audit #2 exact reproduction + ordering controls (during account/book query, post-evaluate_step send boundary, real & synthetic clock)."""
+    # 1. AI_REVOKE written BEFORE scan, DURING account/book fetch_facts, or AT _execute_actions SEND BOUNDARY -> ZERO orders!
+    for mode_label in ("before_scan", "during_query", "at_send_boundary"):
+        venue = _setup_venue()
+        st, adp, coord, dos_root = _new_coord(tmp_path / f"rev_{mode_label}", venue, budget_cap_btc="0.20", max_qty_btc="0.1")
+        try:
+            _build_p5_dossier(dos_root, decided_at_ms=venue.server_time_ms - 10_000)
+            if mode_label == "before_scan":
+                _write_p5_event(dos_root, kind="AI_REVOKE", ts_ms=venue.server_time_ms - 1_000)
+            elif mode_label == "during_query":
+                orig_fetch = adp.fetch_facts
+                wrote = [False]
+
+                def _fetch_write_revoke(short_i: str, long_i: str, *, need_tx_logs: bool = True) -> contracts.ExchangeFacts:
+                    if short_i and long_i and not wrote[0]:
+                        wrote[0] = True
+                        venue.advance_time(500)
+                        _refresh_books(venue, short_i, long_i)
+                        _write_p5_event(dos_root, kind="AI_REVOKE", ts_ms=venue.server_time_ms)
+                    return orig_fetch(short_i, long_i, need_tx_logs=need_tx_logs)
+
+                adp.fetch_facts = _fetch_write_revoke  # type: ignore[method-assign]
+            else:
+                # Hook apply_episode_patch (runs AFTER evaluate_step emits SUBMIT(EP) and IMMEDIATELY BEFORE _execute_actions!)
+                orig_patch = st.apply_episode_patch
+                hooked_sb = [False]
+
+                def _patch_then_revoke(ep_id_arg: str, patch_arg: contracts.EpisodePatch, *, now_ms: int) -> None:
+                    orig_patch(ep_id_arg, patch_arg, now_ms=now_ms)
+                    if not hooked_sb[0]:
+                        hooked_sb[0] = True
+                        _write_p5_event(dos_root, kind="AI_REVOKE", ts_ms=venue.server_time_ms)
+
+                st.apply_episode_patch = _patch_then_revoke  # type: ignore[method-assign]
+
+            _refresh_books(venue, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
+            coord.run_tick(now_ms=venue.server_time_ms)
+            assert not venue.export_raw_trades()
+            assert not venue.get_positions()
+            if mode_label in {"before_scan", "during_query"}:
+                assert _all_episodes(st) == []
+                assert coord._last_reject_reason == "P5_ALREADY_REVOKED"
+            else:
+                ep_sb = st.get_latest_episode()
+                assert ep_sb is not None and st.get_commands(ep_sb.episode_id) == []
+                assert ep_sb.exit_latched is True and ep_sb.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        finally:
+            st.close()
+
+    # 1b. Decision age crosses >180s right between evaluate_step and _execute_actions send boundary -> ZERO orders!
+    t_sb0 = int(time.time() * 1000)
+    exp_sb = t_sb0 + 7_200_000
+    venue_sb = _setup_venue(t0=t_sb0, expiry_ms=exp_sb)
+    st_sb, _adp_sb, coord_sb, dos_sb = _new_coord(tmp_path / "age_send_boundary", venue_sb, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        decided_sb = int(time.time() * 1000) - 179_850
+        _build_p5_dossier(dos_sb, expiry_ms=exp_sb, decided_at_ms=decided_sb)
+        orig_patch_sb = st_sb.apply_episode_patch
+        slept_sb = [False]
+
+        def _patch_then_sleep(ep_id_arg: str, patch_arg: contracts.EpisodePatch, *, now_ms: int) -> None:
+            orig_patch_sb(ep_id_arg, patch_arg, now_ms=now_ms)
+            if not slept_sb[0]:
+                slept_sb[0] = True
+                time.sleep(0.30)  # crosses 180.0s right before _execute_actions SUBMIT(EP)!
+
+        st_sb.apply_episode_patch = _patch_then_sleep  # type: ignore[method-assign]
+        _refresh_books(venue_sb, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
+        coord_sb.run_tick()
+        ep_sb_age = st_sb.get_latest_episode()
+        assert ep_sb_age is not None
+        assert st_sb.get_commands(ep_sb_age.episode_id) == []
+        assert not venue_sb.export_raw_trades()
+        assert ep_sb_age.terminal_outcome == "ABORTED_ZERO_FILL"
+        assert ep_sb_age.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+    finally:
+        st_sb.close()
+
+    # 2. Exact 179.5s decision age + 2.5s slow query -> 182.05s (>180s) on REAL wall clock (now_ms=None) -> ZERO orders!
+    t_wall0 = int(time.time() * 1000)
+    exp_wall = t_wall0 + 7_200_000
+    venue_w = _setup_venue(t0=t_wall0, expiry_ms=exp_wall)
+    st_w, adp_w, coord_w, dos_w = _new_coord(tmp_path / "age_wall", venue_w, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        decided_ms = int(time.time() * 1000) - 179_500
+        _build_p5_dossier(dos_w, expiry_ms=exp_wall, decided_at_ms=decided_ms)
+        orig_fetch_w = adp_w.fetch_facts
+        slept = [False]
+
+        def _slow_wall_fetch(short_i: str, long_i: str, *, need_tx_logs: bool = True) -> contracts.ExchangeFacts:
+            if short_i and long_i and not slept[0]:
+                slept[0] = True
+                time.sleep(2.55)
+            t_cur = int(time.time() * 1000)
+            venue_w.set_server_time(t_cur)
+            if short_i and long_i:
+                _refresh_books(venue_w, short_i, long_i)
+            return orig_fetch_w(short_i, long_i, need_tx_logs=need_tx_logs)
+
+        adp_w.fetch_facts = _slow_wall_fetch  # type: ignore[method-assign]
+        coord_w.run_tick()  # real wall clock (now_ms=None)
+        assert slept[0] is True
+        assert _all_episodes(st_w) == []
+        assert not venue_w.export_raw_trades()
+        assert coord_w._last_reject_reason == "DECISION_TIMESTAMP_OUT_OF_WINDOW"
+    finally:
+        st_w.close()
+
+    # 3. Positive control: 175.0s decision age + 2.5s slow query = 177.5s (<=180s) -> admits & enters TP_MANAGED cleanly!
+    venue_ok = _setup_venue()
+    st_ok, adp_ok, coord_ok, dos_ok = _new_coord(tmp_path / "age_ok", venue_ok, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(dos_ok, decided_at_ms=venue_ok.server_time_ms - 175_000)
+        orig_fetch_ok = adp_ok.fetch_facts
+        advanced_ok = [False]
+
+        def _slow_ok_fetch(short_i: str, long_i: str, *, need_tx_logs: bool = True) -> contracts.ExchangeFacts:
+            if short_i and long_i and not advanced_ok[0]:
+                advanced_ok[0] = True
+                venue_ok.advance_time(2_500)
+                _refresh_books(venue_ok, short_i, long_i)
+            return orig_fetch_ok(short_i, long_i, need_tx_logs=need_tx_logs)
+
+        adp_ok.fetch_facts = _slow_ok_fetch  # type: ignore[method-assign]
+        _drive(coord_ok, venue_ok, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=3, dt_ms=50)
+        ep_ok = st_ok.get_latest_episode()
+        assert ep_ok is not None and ep_ok.phase == contracts.LifecyclePhase.TP_MANAGED
+        assert ep_ok.matched_qty_btc == D("0.1")
+    finally:
+        st_ok.close()
+
+
+def test_ep_partial_or_full_fill_revoke_before_es_converges_without_duplicate_ep(tmp_path: Path):
+    """Cover full/partial EP fill + AI_REVOKE before ES send (executable LX vs dust RESIDUAL_HOLD + UNKNOWN EP fill)."""
+    # Case A: Full 0.1 BTC EP fills, AI_REVOKE arrives right before ES -> 1 EP, 0 ES, 0 RX, 1 LX -> EARLY_FLAT_SETTLED
+    venue_a = _setup_venue()
+    st_a, adp_a, coord_a, dos_a = _new_coord(tmp_path / "ep_full_rev", venue_a, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(dos_a, decided_at_ms=venue_a.server_time_ms - 5_000)
+        orig_sub_a = adp_a.submit_order
+
+        def _sub_ep_then_revoke(**kw: Any) -> contracts.ExchangeOrder:
+            vo = orig_sub_a(**kw)
+            if ":EP:" in str(kw.get("label") or ""):
+                _write_p5_event(dos_a, kind="AI_REVOKE", ts_ms=venue_a.server_time_ms)
+            return vo
+
+        adp_a.submit_order = _sub_ep_then_revoke  # type: ignore[method-assign]
+        _drive(coord_a, venue_a, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=100)
+
+        ep_a = st_a.get_latest_episode()
+        assert ep_a is not None and ep_a.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_a.terminal_outcome == "EARLY_FLAT_SETTLED"
+        assert ep_a.exit_latch_reason == "AI_REVOKE"
+        assert ep_a.entry_closure_reason == "PREEMPTED_BY_AI_REVOKE"
+        cmds_a = st_a.get_commands(ep_a.episode_id)
+        assert [c.purpose for c in cmds_a] == ["EP", "LX"]
+        assert not venue_a.get_positions()
+        oracle_a = sim.IndependentSettlementOracle(initial_balance_btc=D("1.0"), trades=venue_a.export_raw_trades())
+        assert D(st_a.rebuild_episode_ledger(ep_a.episode_id)["accounting"]["episode_total_realized_pnl_btc"]) == oracle_a.expected_episode_realized_pnl_btc
+    finally:
+        st_a.close()
+
+    # Case B: Partial 0.1 BTC EP fill (out of 0.2 BTC IOC) + AI_REVOKE before ES + dust bid (<0.0002) -> RESIDUAL_HOLD -> EXPIRY_SETTLED
+    venue_b = _setup_venue()
+    st_b, adp_b, coord_b, dos_b = _new_coord(
+        tmp_path / "ep_part_dust", venue_b, budget_cap_btc="0.30", max_qty_btc="0.2", max_entry_slice_btc="0.2"
+    )
+    try:
+        _build_p5_dossier(dos_b, decided_at_ms=venue_b.server_time_ms - 5_000)
+        venue_b.inject_partial_fill_cap("BTC-25NOV26-60000-P", D("0.1"))
+        orig_sub_b = adp_b.submit_order
+
+        def _sub_part_ep_then_revoke_dust(**kw: Any) -> contracts.ExchangeOrder:
+            vo = orig_sub_b(**kw)
+            if ":EP:" in str(kw.get("label") or ""):
+                venue_b.inject_partial_fill_cap("BTC-25NOV26-60000-P", None)
+                venue_b.set_book("BTC-25NOV26-60000-P", bid="0.0001", bid_size="5.0", ask="0.0003", ask_size="5.0", mark_price="0.0002")
+                _write_p5_event(dos_b, kind="AI_REVOKE", ts_ms=venue_b.server_time_ms)
+            return vo
+
+        adp_b.submit_order = _sub_part_ep_then_revoke_dust  # type: ignore[method-assign]
+        _drive(coord_b, venue_b, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=100)
+        ep_b = st_b.get_latest_episode()
+        assert ep_b is not None
+        assert ep_b.short_liability_cleared is True and ep_b.inventory_cleared is False
+        assert ep_b.phase == contracts.LifecyclePhase.SHORT_LIABILITY_CLEARED
+        cmds_b = st_b.get_commands(ep_b.episode_id)
+        assert [c.purpose for c in cmds_b] == ["EP"] and cmds_b[0].filled_amount == D("0.1")
+
+        venue_b.set_server_time(ep_b.expiry_ms + 2_000)
+        venue_b.expire_at_settlement(D("59000"))  # ITM long protection payoff at expiry!
+        _drive(coord_b, venue_b, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=2, dt_ms=100)
+        ep_b_done = st_b.get_episode(ep_b.episode_id)
+        assert ep_b_done is not None and ep_b_done.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_b_done.terminal_outcome == "EXPIRY_SETTLED"
+        oracle_b = sim.IndependentSettlementOracle(
+            initial_balance_btc=D("1.0"), trades=venue_b.export_raw_trades(), settlement_price_usd=D("59000"), settlement_period="day"
+        )
+        assert D(st_b.rebuild_episode_ledger(ep_b.episode_id)["accounting"]["episode_total_realized_pnl_btc"]) == oracle_b.expected_episode_realized_pnl_btc
+    finally:
+        st_b.close()
+
+    # Case C: EP filled on venue with dropped submit ACK (SUBMIT_UNKNOWN) + AI_REVOKE arrives during recovery -> zero duplicate EP!
+    venue_c = _setup_venue()
+    st_c, _adp_c, coord_c, dos_c = _new_coord(tmp_path / "ep_unk_rev", venue_c, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(dos_c, decided_at_ms=venue_c.server_time_ms - 5_000)
+        venue_c.inject_drop_next_submit_ack(venue_received=True)
+        _refresh_books(venue_c, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
+        coord_c.run_tick(now_ms=venue_c.server_time_ms)
+        ep_c = st_c.get_latest_episode()
+        assert ep_c is not None
+        assert [c.status for c in st_c.get_commands(ep_c.episode_id)] == [contracts.CommandStatus.SUBMIT_UNKNOWN]
+
+        _write_p5_event(dos_c, kind="AI_REVOKE", ts_ms=venue_c.server_time_ms + 50)
+        venue_c.advance_time(100)
+        _drive(coord_c, venue_c, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=100)
+        ep_c_done = st_c.get_episode(ep_c.episode_id)
+        assert ep_c_done is not None and ep_c_done.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        cmds_c = st_c.get_commands(ep_c.episode_id)
+        assert [c.purpose for c in cmds_c] == ["EP", "LX"]
+    finally:
+        st_c.close()
+
+    # Case D: EP validly submitted at 179.5s (SUBMIT_UNKNOWN), resolves as FILLED at 181.0s (>180s) -> pairs ES cleanly within 20s rescue window!
+    venue_d = _setup_venue()
+    st_d, _adp_d, coord_d, dos_d = _new_coord(tmp_path / "ep_unk_181s_pair", venue_d, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(dos_d, decided_at_ms=venue_d.server_time_ms - 179_500)
+        venue_d.inject_drop_next_submit_ack(venue_received=True)
+        _refresh_books(venue_d, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P")
+        coord_d.run_tick(now_ms=venue_d.server_time_ms)  # EP submitted at 179.5s, ACK dropped -> SUBMIT_UNKNOWN
+        ep_d = st_d.get_latest_episode()
+        assert ep_d is not None and [c.status for c in st_d.get_commands(ep_d.episode_id)] == [contracts.CommandStatus.SUBMIT_UNKNOWN]
+
+        venue_d.advance_time(1_500)  # now 181.0s (>180s), within 20s ES rescue window!
+        _drive(coord_d, venue_d, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=3, dt_ms=100)
+        ep_d_done = st_d.get_episode(ep_d.episode_id)
+        assert ep_d_done is not None and ep_d_done.phase == contracts.LifecyclePhase.TP_MANAGED
+        assert ep_d_done.matched_qty_btc == D("0.1")
+        assert [c.purpose for c in st_d.get_commands(ep_d.episode_id)] == ["EP", "ES", "TP"]
+    finally:
+        st_d.close()
+
+    # Case E: Mid-ENTRY decision.json corruption right after EP fills before ES sends -> LONG_ONLY_ABORT:P5_FACTS_UNREADABLE -> LX!
+    venue_e = _setup_venue()
+    st_e, adp_e, coord_e, dos_e = _new_coord(tmp_path / "ep_corrupt_before_es", venue_e, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        hand_e = _build_p5_dossier(dos_e, decided_at_ms=venue_e.server_time_ms - 5_000)
+        orig_sub_e = adp_e.submit_order
+
+        def _sub_ep_then_corrupt_decision(**kw: Any) -> contracts.ExchangeOrder:
+            vo = orig_sub_e(**kw)
+            if ":EP:" in str(kw.get("label") or ""):
+                (hand_e / "decision.json").write_bytes(b'{"judgment": "\xe4\xb8')  # truncated UTF-8!
+            return vo
+
+        adp_e.submit_order = _sub_ep_then_corrupt_decision  # type: ignore[method-assign]
+        _drive(coord_e, venue_e, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=100)
+        ep_e = st_e.get_latest_episode()
+        assert ep_e is not None and ep_e.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_e.entry_closure_reason == "LONG_ONLY_ABORT:P5_FACTS_UNREADABLE"
+        assert [c.purpose for c in st_e.get_commands(ep_e.episode_id)] == ["EP", "LX"]
+    finally:
+        st_e.close()
+
+
+def test_events_utf8_truncation_and_eacces_permission_error_fail_closed_without_crashing_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify truncated UTF-8 event bytes & PermissionError on events/ scandir block new exposure yet never mask revoke or crash ticks."""
+    # 1. Truncated Chinese UTF-8 in events/ev_001_bad.json + valid events/ev_002_revoke.json:
+    #    - Empty position: blocked (P5_ALREADY_REVOKED / P5_FACTS_UNREADABLE, 0 orders)
+    #    - Open TP_MANAGED position: does NOT crash, reads AI_REVOKE, unwinds & settles!
+    venue_u = _setup_venue()
+    st_u, _adp_u, coord_u, dos_u = _new_coord(tmp_path / "utf8_fault", venue_u, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(dos_u, decided_at_ms=venue_u.server_time_ms - 5_000)
+        _drive(coord_u, venue_u, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=50)
+        ep_u = st_u.get_latest_episode()
+        assert ep_u is not None and ep_u.phase == contracts.LifecyclePhase.TP_MANAGED
+
+        ev_dir_u = dos_u / "dossiers" / ep_u.dossier_id / "episodes" / ep_u.p5_episode_id / "events"
+        (ev_dir_u / "ev_001_bad_utf8.json").write_bytes(b'{"kind":"NOTE","msg":"\xe4\xb8')
+        _write_p5_event(dos_u, kind="AI_REVOKE", ts_ms=venue_u.server_time_ms)
+        venue_u.set_book(
+            "BTC-25NOV26-62000-P", bid="0.0080", bid_size="5.0", ask="0.0085", ask_size="5.0", mark_price="0.0083", max_price="0.05"
+        )
+        _drive(coord_u, venue_u, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=6, dt_ms=500)
+        ep_u_done = st_u.get_episode(ep_u.episode_id)
+        assert ep_u_done is not None and ep_u_done.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_u_done.exit_latch_reason == "AI_REVOKE"
+        assert "P5_FACTS_UNREADABLE" in ep_u_done.alerts
+    finally:
+        st_u.close()
+
+    # 2. PermissionError (EACCES) on events/ scandir: fails CLOSED on ADMIT (never silently returns []),
+    #    and on an active TP_MANAGED episode emits P5_FACTS_UNREADABLE alert while TP fill + LX settlement still complete!
+    venue_p = _setup_venue()
+    st_p, _adp_p, coord_p, dos_p = _new_coord(tmp_path / "eacces_fault", venue_p, budget_cap_btc="0.20", max_qty_btc="0.1")
+    try:
+        _build_p5_dossier(
+            dos_p, hand_id="hand_eacces_1", ep_id="episode_eacces_1", decided_at_ms=venue_p.server_time_ms - 3_000
+        )
+        blocked_ev_dir = dos_p / "dossiers" / "Deribit_BTC_20261125T080000Z" / "episodes" / "episode_eacces_1" / "events"
+        orig_scandir = coord_mod.os.scandir
+        block_active = [True]
+
+        def _guarded_scandir(target_path: Any) -> Any:
+            if block_active[0] and Path(target_path) == blocked_ev_dir:
+                raise PermissionError(13, "Permission denied", str(target_path))
+            return orig_scandir(target_path)
+
+        monkeypatch.setattr(coord_mod.os, "scandir", _guarded_scandir)
+        coord_p.run_tick(now_ms=venue_p.server_time_ms)
+        assert _all_episodes(st_p) == []
+        assert coord_p._last_reject_reason == "P5_FACTS_UNREADABLE"
+
+        # Restore permission -> admits & reaches TP_MANAGED; re-inject EACCES during hold -> alerts P5_FACTS_UNREADABLE, TP + LX still settle!
+        block_active[0] = False
+        _drive(coord_p, venue_p, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=50)
+        ep_p = st_p.get_latest_episode()
+        assert ep_p is not None and ep_p.phase == contracts.LifecyclePhase.TP_MANAGED
+
+        block_active[0] = True
+        _drive(coord_p, venue_p, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=1, dt_ms=100)
+        ep_p_alert = st_p.get_episode(ep_p.episode_id)
+        assert ep_p_alert is not None and "P5_FACTS_UNREADABLE" in ep_p_alert.alerts
+        assert ep_p_alert.exit_latched is False
+
+        tp_cmd_p = next(c for c in st_p.get_commands(ep_p.episode_id) if c.purpose == "TP")
+        venue_p.fill_resting_order(tp_cmd_p.label, D("0.1"), price=D("0.0002"), liquidity="M")
+        _drive(coord_p, venue_p, "BTC-25NOV26-62000-P", "BTC-25NOV26-60000-P", n=4, dt_ms=500)
+        ep_p_done = st_p.get_episode(ep_p.episode_id)
+        assert ep_p_done is not None and ep_p_done.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+    finally:
+        st_p.close()
+
+
+def test_real_p5_latest_dossier_contract_case_file_l1_and_ai_hold_unknown_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """End-to-end contract test wiring real P5 auto_deal() case_file@0.1 output + 2c329f27 note/event shapes into ExecutionCoordinator."""
+    from tests import test_player_e2e_robustness_matrix as p5_e2e
+
+    slot_ms, expiry_ms, spot, _rows, _cd = p5_e2e._nov26_27nov26_chain()
+    clock = [slot_ms + 180_000]
+    wb, arch_root, dossier_root, plan_r16, _s, _exp, _wc, _sync = p5_e2e._setup_nov26_workbench_and_archive(
+        tmp_path / "p5_real", monkeypatch, clock=clock
+    )
+    accept_put = p5_e2e._strict_p5_reply_text("## Accept / Put", short_strike=60_000, long_strike=58_000)
+
+    with (
+        p5_e2e._sse_mock_server(lambda _i, _b: {"status": 200, "text": accept_put}) as (llm_url, _calls),
+        p5_e2e.serving(wb) as wb_url,
+    ):
+        monkeypatch.setenv("ASTRA_PLAYER_USAGE_LEDGER", str(tmp_path / "p5_usage.json"))
+        svc = p5_e2e.post(wb_url, wb)
+        d_p5 = p5_e2e.dossier.Dossiers(dossier_root, clock=lambda: clock[0])
+        res_deal, = p5_e2e.tracking.auto_deal(
+            d_p5,
+            plan_r16,
+            arch_root,
+            svc,
+            llm_config={"api_key": "test-key", "model": "deepseek-reasoner", "endpoint": llm_url},
+        )
+        assert res_deal["status"] == "VALID" and res_deal["decision"] == "Accept"
+
+    dos_dir = d_p5.path(expiry_ms)
+    dos_id = dos_dir.name
+    hand_id = str(res_deal["hand_id"])
+    hand_dir = dos_dir / "hands" / hand_id
+    link_path = hand_dir / "tracking" / "link.json"
+    link_raw = json.loads(link_path.read_text(encoding="utf-8"))
+    assert link_raw["state"] == "SHADOW_LOCK_CREATED"
+    p5_ep_id = str(link_raw["origin"]["dossier_episode_id"])
+    ep_dir = dos_dir / "episodes" / p5_ep_id
+
+    # Seed 2c329f27 issuance notes (DEAL_BLOCKED / SERVICE_BUDGET_DEFERRED) & OBSERVATION(observed_at_ms=None)
+    (hand_dir / "issuance").mkdir(parents=True, exist_ok=True)
+    (ep_dir / "events").mkdir(parents=True, exist_ok=True)
+    (hand_dir / "issuance" / "note_001_budget_deferred.json").write_text(
+        json.dumps({"kind": "SERVICE_BUDGET_DEFERRED", "recorded_at_ms": clock[0] - 1_000}), encoding="utf-8"
+    )
+    (ep_dir / "events" / "obs_001.json").write_text(
+        json.dumps({"kind": "OBSERVATION", "recorded_at_ms": clock[0], "observed_at_ms": None, "decided_at_ms": None, "body": {}}),
+        encoding="utf-8",
+    )
+
+    # Verify fallback extraction of c_decision_ref_btc from genuine case_file@0.1 layers.L1 when t0.economy omits entry split
+    orig_entry_net = link_raw["t0"]["economy"].pop("net_credit_after_entry_fee_btc", None)
+    assert orig_entry_net is not None
+    link_path.write_text(json.dumps(link_raw, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    c_map, _ = coord_mod.scan_p5_dossier_root(dossier_root)
+    assert hand_id in c_map
+    p5c = c_map[hand_id]
+    assert p5c.facts_readable is True
+    assert p5c.c_decision_ref_btc is not None and p5c.c_decision_ref_btc > ZERO
+
+    # Drive real ExecutionCoordinator against the genuine P5 output dossier
+    cond_contract = json.loads((ep_dir / "condition.json").read_text(encoding="utf-8"))["contract"]
+    short_inst = str(cond_contract["short_instrument"])
+    long_inst = str(cond_contract["long_instrument"])
+    venue = _setup_venue(
+        t0=clock[0] + 1_000,
+        expiry_ms=int(cond_contract["expiry_ms"]),
+        short_inst=short_inst,
+        long_inst=long_inst,
+        short_strike=int(cond_contract["short_strike_usd"]),
+        long_strike=int(cond_contract["long_strike_usd"]),
+        option_type=str(cond_contract["side"]).lower(),
+    )
+    venue.set_spot_usd(str(spot))
+    st = store.ExecutionStore(tmp_path / "real_p5_exec.sqlite3")
+    try:
+        adp = SimExchangeAdapter(venue)
+        coord = coord_mod.ExecutionCoordinator(
+            mode="TESTNET",
+            env_tag="tn",
+            subaccount_id="sub-tn-1",
+            store=st,
+            adapter=adp,
+            status_path=tmp_path / "real_p5_status.json",
+            dossier_root=dossier_root,
+            config=contracts.ExecConfig(initial_qty_btc=D("0.1"), max_entry_slice_btc=D("0.1")),
+        )
+        coord.startup_init(now_ms=venue.server_time_ms)
+        coord.handle_capital_policy(
+            {"entry_armed": True, "budget_cap_btc": "0.20", "max_qty_btc": "0.1", "operator": "p5_e2e"},
+            now_ms=venue.server_time_ms,
+            run_tick_after=False,
+        )
+        _drive(coord, venue, short_inst, long_inst, n=4, dt_ms=50)
+        ep_exec = st.get_latest_episode()
+        assert ep_exec is not None and ep_exec.phase == contracts.LifecyclePhase.TP_MANAGED
+        assert ep_exec.c_decision_ref_btc == p5c.c_decision_ref_btc
+
+        # HOLD_REVIEW_FAILED sets hold_review_llm_unavailable=True; subsequent AI_HOLD_UNKNOWN clears it!
+        fail_ts = venue.server_time_ms + 1_000
+        (ep_dir / "events" / f"ev_{fail_ts}_fail.json").write_text(
+            json.dumps({"kind": "HOLD_REVIEW_FAILED", "recorded_at_ms": fail_ts, "observed_at_ms": fail_ts, "decided_at_ms": None, "body": {"reason": "http_502"}}),
+            encoding="utf-8",
+        )
+        p5_fail = coord_mod.read_hand_p5_state(coord.dossier_root, dossier_id=dos_id, hand_id=hand_id, p5_episode_id=p5_ep_id)
+        assert p5_fail is not None and p5_fail.hold_review_llm_unavailable is True
+
+        unk_ts = fail_ts + 2_000
+        (ep_dir / "events" / f"ev_{unk_ts}_hold_unk.json").write_text(
+            json.dumps({"kind": "AI_HOLD_UNKNOWN", "recorded_at_ms": unk_ts, "decided_at_ms": unk_ts, "observed_at_ms": unk_ts - 100, "body": {"verdict": "UNKNOWN", "shadow_action": "HOLD_UNKNOWN_OBSERVE"}}),
+            encoding="utf-8",
+        )
+        p5_unk = coord_mod.read_hand_p5_state(coord.dossier_root, dossier_id=dos_id, hand_id=hand_id, p5_episode_id=p5_ep_id)
+        assert p5_unk is not None and p5_unk.hold_review_llm_unavailable is False
+
+        # Verified AI_REVOKE unwinds cleanly to CASHFLOW_SETTLED
+        venue.advance_time(5_000)
+        _write_p5_event(coord.dossier_root, dossier_id=dos_id, ep_id=p5_ep_id, kind="AI_REVOKE", ts_ms=venue.server_time_ms)  # type: ignore[arg-type]
+        _drive(coord, venue, short_inst, long_inst, n=6, dt_ms=500)
+        ep_final = st.get_episode(ep_exec.episode_id)
+        assert ep_final is not None and ep_final.phase == contracts.LifecyclePhase.CASHFLOW_SETTLED
+        assert ep_final.exit_latch_reason == "AI_REVOKE"
+    finally:
+        st.close()

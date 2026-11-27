@@ -1360,3 +1360,117 @@ def test_closure_policy_completeness_guards_and_mixed_expiry_settlement(tmp_path
         assert ins_n == 1 and acc_qty == D("0.1")
     finally:
         st_store.close()
+
+
+def test_unified_check_new_exposure_permission_single_gate():
+    """Verify check_new_exposure_permission is the single deterministic predicate across ADMIT, EP, and ES."""
+    _venue, ep, auth, cfg = _setup_put_spread()
+    now_ms = ep.created_at_ms
+    valid_p5 = contracts.P5DecisionContract(
+        dossier_id=ep.dossier_id,
+        hand_id=ep.hand_id,
+        episode_id=ep.p5_episode_id,
+        decision_id="dec_1",
+        decision="Accept",
+        side=ep.side,
+        short_instrument=ep.short_instrument,
+        long_instrument=ep.long_instrument,
+        short_strike_usd=ep.short_strike_usd,
+        long_strike_usd=ep.long_strike_usd,
+        expiry_ms=ep.expiry_ms,
+        decided_at_ms=ep.decided_at_ms,
+        link_recorded_at_ms=ep.link_recorded_at_ms,
+        link_state="SHADOW_LOCK_CREATED",
+        decision_sha256="d" * 64,
+        condition_sha256="c" * 64,
+        input_sha256="i" * 64,
+        raw_sha256="r" * 64,
+    )
+
+    # 1. Valid baseline passes ADMIT, EP, and covered ES
+    for purp in ("ADMIT", "EP", "ES"):
+        res_ok = policy.check_new_exposure_permission(
+            purpose=purp,
+            p5_contract=valid_p5,
+            episode=None if purp == "ADMIT" else ep,
+            capital_auth=auth,
+            effective_budget_btc=D("0.10"),
+            writes_permitted=True,
+            now_ms=now_ms,
+            venue_now_ms=now_ms,
+            config=cfg,
+            require_p5_facts=True,
+            available_prot_btc=D("0.1"),
+            reserved_short_btc=ZERO,
+            slice_qty_btc=D("0.1") if purp == "ES" else ZERO,
+        )
+        assert res_ok.allowed is True and res_ok.reason is None
+
+    # 2. Unreadable P5 facts fail closed across ADMIT, EP, and ES with halt_entry=True
+    unreadable_p5 = replace(valid_p5, facts_readable=False, read_error="corrupt_event_json")
+    for purp in ("ADMIT", "EP", "ES"):
+        res_bad = policy.check_new_exposure_permission(
+            purpose=purp,
+            p5_contract=unreadable_p5,
+            episode=None if purp == "ADMIT" else ep,
+            capital_auth=auth,
+            effective_budget_btc=D("0.10"),
+            writes_permitted=True,
+            now_ms=now_ms,
+            venue_now_ms=now_ms,
+            config=cfg,
+            require_p5_facts=True,
+            available_prot_btc=D("0.1"),
+        )
+        assert res_bad.allowed is False and res_bad.reason == "P5_FACTS_UNREADABLE"
+        assert res_bad.halt_entry is True
+
+    # 3. Hand/contract identity mismatch blocks exposure immediately
+    mismatched_p5 = replace(valid_p5, long_instrument="BTC-25NOV26-58000-P")
+    res_id = policy.check_new_exposure_permission(
+        purpose="EP",
+        p5_contract=mismatched_p5,
+        episode=ep,
+        capital_auth=auth,
+        effective_budget_btc=D("0.10"),
+        writes_permitted=True,
+        now_ms=now_ms,
+        venue_now_ms=now_ms,
+        config=cfg,
+        require_p5_facts=True,
+    )
+    assert res_id.allowed is False and res_id.reason == "P5_HAND_IDENTITY_MISMATCH" and res_id.halt_entry is True
+
+    # 4. Crossing 180s decision age blocks ADMIT and new EP, while already-covered ES within 20s rescue window can pair
+    late_now = valid_p5.decided_at_ms + cfg.max_decision_age_ms + 500
+    ep_recent = replace(ep, created_at_ms=late_now - 2_000, last_ep_fill_at_ms=late_now - 1_000)
+    res_ep_late = policy.check_new_exposure_permission(
+        purpose="EP",
+        p5_contract=valid_p5,
+        episode=ep_recent,
+        capital_auth=auth,
+        effective_budget_btc=D("0.10"),
+        writes_permitted=True,
+        now_ms=late_now,
+        venue_now_ms=late_now,
+        config=cfg,
+        require_p5_facts=True,
+    )
+    assert res_ep_late.allowed is False and res_ep_late.reason == "DECISION_TIMESTAMP_OUT_OF_WINDOW"
+    res_es_pair = policy.check_new_exposure_permission(
+        purpose="ES",
+        p5_contract=valid_p5,
+        episode=ep_recent,
+        capital_auth=auth,
+        effective_budget_btc=D("0.10"),
+        writes_permitted=True,
+        now_ms=late_now,
+        venue_now_ms=late_now,
+        config=cfg,
+        require_p5_facts=True,
+        last_ep_fill_at_ms=ep_recent.last_ep_fill_at_ms,
+        available_prot_btc=D("0.1"),
+        reserved_short_btc=ZERO,
+        slice_qty_btc=D("0.1"),
+    )
+    assert res_es_pair.allowed is True
