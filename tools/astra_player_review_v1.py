@@ -452,23 +452,104 @@ def _strip_code_fence(text: str) -> str:
     return match.group(1).strip() if match else stripped
 
 
-def _split_tagged_json(text: str, tag_name: str) -> tuple[str, dict[str, Any]]:
-    pattern = re.compile(rf"<{tag_name}>\s*([\s\S]*?)\s*</{tag_name}>", re.IGNORECASE)
+def _strip_json_trailing_commas(payload_text: str) -> str:
+    """Remove trailing commas before `}` or `]` outside JSON string literals."""
+    out: list[str] = []
+    in_str = False
+    escaped = False
+    n = len(payload_text)
+    i = 0
+    while i < n:
+        ch = payload_text[i]
+        if in_str:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and payload_text[j] in " \t\r\n":
+                j += 1
+            if j < n and payload_text[j] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_json_object_with_minimal_repair(payload_text: str) -> tuple[dict[str, Any], list[str]]:
+    repairs: list[str] = []
+    try:
+        parsed = json.loads(payload_text)
+    except json.JSONDecodeError:
+        cleaned = _strip_json_trailing_commas(payload_text)
+        if cleaned == payload_text:
+            raise
+        parsed = json.loads(cleaned)
+        repairs.append("annotation_json_trailing_comma_repaired")
+    if not isinstance(parsed, dict):
+        raise ValueError("structured JSON block must be an object")
+    return parsed, repairs
+
+
+def _split_tagged_json_with_repairs(text: str, tag_name: str) -> tuple[str, dict[str, Any], list[str]]:
+    repairs: list[str] = []
+    tag_prefix = tag_name.split("_", 1)[0]
+    tag_label = tag_prefix.lower()
+    pattern = re.compile(rf"<{re.escape(tag_name)}>\s*([\s\S]*?)\s*</{re.escape(tag_name)}>", re.IGNORECASE)
     matches = list(pattern.finditer(text))
     if matches:
         match = matches[-1]
         public_text = text[:match.start()].rstrip()
-        payload_text = _strip_code_fence(match.group(1))
+        raw_inner = match.group(1).strip()
+        payload_text = _strip_code_fence(raw_inner)
+        if payload_text != raw_inner:
+            repairs.append(f"{tag_label}_code_fence_stripped")
+        if text[match.end():].strip():
+            repairs.append(f"trailing_text_after_{tag_label}_tag_ignored")
     else:
+        open_matches = list(re.finditer(rf"<{re.escape(tag_name)}>", text, re.IGNORECASE))
+        if open_matches:
+            open_match = open_matches[-1]
+            public_text = text[:open_match.start()].rstrip()
+            tail = text[open_match.end():].strip()
+            tail_no_close = re.sub(
+                rf"</\s*(?:{re.escape(tag_name)}|{re.escape(tag_prefix)}[A-Z0-9_]*)\s*>?\s*$",
+                "",
+                tail,
+                flags=re.IGNORECASE,
+            ).strip()
+            payload_text = _strip_code_fence(tail_no_close)
+            open_repairs = [f"{tag_label}_closing_tag_repaired"]
+            if payload_text != tail_no_close:
+                open_repairs.append(f"{tag_label}_code_fence_stripped")
+            parsed, json_repairs = _loads_json_object_with_minimal_repair(payload_text)
+            return public_text, parsed, [*open_repairs, *json_repairs]
         fence_matches = list(re.finditer(r"```json\s*([\s\S]*?)\s*```", text, re.IGNORECASE))
         if not fence_matches:
             raise ValueError(f"missing {tag_name} or trailing json block")
         fence_match = fence_matches[-1]
         public_text = text[:fence_match.start()].rstrip()
         payload_text = fence_match.group(1).strip()
-    parsed = json.loads(payload_text)
-    if not isinstance(parsed, dict):
-        raise ValueError("structured JSON block must be an object")
+        repairs.append(f"{tag_label}_fenced_json_fallback")
+    parsed, json_repairs = _loads_json_object_with_minimal_repair(payload_text)
+    repairs.extend(json_repairs)
+    return public_text, parsed, repairs
+
+
+def _split_tagged_json(text: str, tag_name: str) -> tuple[str, dict[str, Any]]:
+    public_text, parsed, _ = _split_tagged_json_with_repairs(text, tag_name)
     return public_text, parsed
 
 
@@ -987,6 +1068,149 @@ def _strip_section_label_prefix(norm_text: str) -> str:
     ).strip()
 
 
+def _expand_unambiguous_labeled_excerpt(
+    raw_val: Any,
+    public_text: str,
+    *,
+    expected_section: str,
+    sections: Mapping[str, Mapping[str, str]],
+) -> tuple[str, dict[str, Any] | None]:
+    """Losslessly expand a verbatim sentence/clause-boundary prefix inside an unambiguous labeled section.
+
+    Preserves `public_text` (`response.raw`) byte-for-byte, never alters polarity/side/strikes,
+    and refuses mid-word/mid-phrase truncations (e.g. `truncate_comparison`), wrong-section pointers,
+    or non-verbatim strings.
+    """
+    if not isinstance(raw_val, str) or not raw_val.strip():
+        return raw_val, None
+    ex_s = raw_val.strip()
+    if not dossier.excerpt_in_text(ex_s, public_text):
+        return raw_val, None
+    chk = dossier.inspect_excerpt_integrity(ex_s, public_text, expected_section=expected_section)
+    if chk.get("complete") is True or chk.get("matched") is not True or chk.get("section") != expected_section:
+        return raw_val, None
+    sec = sections.get(expected_section)
+    if not isinstance(sec, Mapping):
+        return raw_val, None
+    norm_ex = _norm_review_excerpt(ex_s)
+    if len(norm_ex) < 20:
+        return raw_val, None
+    target_raw = str(sec.get("raw_full") or sec.get("full") or "")
+    if not target_raw or target_raw not in public_text:
+        return raw_val, None
+    idx = target_raw.find(ex_s)
+    if idx < 0:
+        return raw_val, None
+    if idx > 0 and not re.fullmatch(r"[\s\-*•#>]*[^：:\n]{1,32}[：:]\s*", target_raw[:idx]):
+        return raw_val, None
+    rest = target_raw[idx + len(ex_s):]
+    if not rest.strip():
+        return raw_val, None
+    ends_sentence = bool(dossier._TERMINAL_END_RE.search(ex_s)) or ex_s.endswith(("；", ";"))
+    stops_at_clause_delim = rest[0] in {"，", ",", "；", ";", "。", "！", "？"}
+    has_trailing_connector = bool(re.search(r"[,，、:：(\[（\-—–]$", ex_s))
+    balanced_delims = (
+        ex_s.count("(") == ex_s.count(")")
+        and ex_s.count("（") == ex_s.count("）")
+        and ex_s.count("[") == ex_s.count("]")
+        and ex_s.count("【") == ex_s.count("】")
+        and ex_s.count("“") == ex_s.count("”")
+        and ex_s.count('"') % 2 == 0
+    )
+    if not ((ends_sentence or stops_at_clause_delim) and not has_trailing_connector and balanced_delims):
+        return raw_val, None
+    expanded = target_raw[idx:].strip()
+    if expanded not in public_text:
+        return raw_val, None
+    chk_after = dossier.inspect_excerpt_integrity(expanded, public_text, expected_section=expected_section)
+    if chk_after.get("complete") is not True or chk_after.get("section") not in (None, expected_section):
+        return raw_val, None
+    return expanded, {
+        "kind": "j1_labeled_section_clause_prefix_expanded",
+        "field": expected_section,
+        "original_status": chk.get("status"),
+        "original_coverage_ratio": chk.get("coverage_ratio"),
+    }
+
+
+def is_recoverable_citation_contract_failure(contract_validation: Any) -> bool:
+    """Return True iff `CONTRACT_FAILED` is solely a J1 citation-pointer / duplicate / span flaw on verbatim text."""
+    if not isinstance(contract_validation, Mapping):
+        return False
+    if contract_validation.get("status") != "CONTRACT_FAILED":
+        return False
+    if contract_validation.get("audit_scope") not in {"NON_ACCEPT_J1_ONLY", "ACCEPT_FULL_CONTRACT"}:
+        return False
+    explicit = contract_validation.get("recoverable_citation_only")
+    if isinstance(explicit, bool):
+        return explicit
+    layer1 = contract_validation.get("layer1_deterministic")
+    if not isinstance(layer1, Mapping):
+        return False
+    blocking = [str(e) for e in (layer1.get("blocking_errors") or ()) if e]
+    if not blocking:
+        return False
+    excerpt_checks = layer1.get("excerpt_checks") if isinstance(layer1.get("excerpt_checks"), Mapping) else {}
+    j1_prefixes = ("j1_excerpt_incomplete:", "j1_excerpt_wrong_section:", "j1_excerpt_duplicate_section:")
+    if not any(err.startswith(j1_prefixes) for err in blocking):
+        return False
+    for err in blocking:
+        if not err.startswith(j1_prefixes):
+            return False
+        parts = err.split(":")
+        field_name = parts[1] if len(parts) >= 2 else ""
+        chk = excerpt_checks.get(field_name) if isinstance(excerpt_checks, Mapping) else None
+        if isinstance(chk, Mapping) and chk.get("status") in {"NOT_IN_TEXT", "EMPTY"}:
+            return False
+    return True
+
+
+def _compute_recoverable_citation_only(
+    *,
+    raw_text: str,
+    blocking_errors: Sequence[str],
+    excerpt_checks: Mapping[str, Any],
+    contract: Mapping[str, Any] | None,
+    m1_kwargs: Mapping[str, Any] | None,
+) -> bool:
+    if not blocking_errors:
+        return False
+    j1_prefixes = ("j1_excerpt_incomplete:", "j1_excerpt_wrong_section:", "j1_excerpt_duplicate_section:")
+    if not any(err.startswith(j1_prefixes) for err in blocking_errors):
+        return False
+    conf_pointer_err = any(
+        err.startswith((
+            "j1_excerpt_wrong_section:condition_plan.confirmation_excerpt:",
+            "j1_excerpt_duplicate_section:condition_plan.confirmation_excerpt",
+        ))
+        or err == "j1_excerpt_incomplete:condition_plan.confirmation_excerpt:WRONG_SECTION"
+        for err in blocking_errors
+    )
+    sections_cache: Mapping[str, Any] | None = None
+    for err in blocking_errors:
+        if err.startswith(j1_prefixes):
+            parts = err.split(":")
+            field_name = parts[1] if len(parts) >= 2 else ""
+            chk = excerpt_checks.get(field_name) if isinstance(excerpt_checks, Mapping) else None
+            if isinstance(chk, Mapping) and chk.get("status") in {"NOT_IN_TEXT", "EMPTY"}:
+                return False
+            continue
+        if conf_pointer_err and err.startswith("m1_contract_violation:") and contract is not None and m1_kwargs is not None:
+            if sections_cache is None:
+                sections_cache = dossier.extract_labeled_sections(raw_text)
+            conf_sec = sections_cache.get("confirmation_excerpt") if isinstance(sections_cache, Mapping) else None
+            if not isinstance(conf_sec, Mapping):
+                return False
+            cand_m_text = str(conf_sec.get("raw_full") or conf_sec.get("body") or "")
+            if not cand_m_text:
+                return False
+            if not dossier.condition.validate_confirmation_prose(cand_m_text, contract, **m1_kwargs).get("valid"):
+                return False
+            continue
+        return False
+    return True
+
+
 def validate_initial_reply_contract(
     parsed_reply: Mapping[str, Any],
     contracts: Any = None,
@@ -1002,6 +1226,14 @@ def validate_initial_reply_contract(
     action = str(decision.get("action") or "")
     side = str(decision.get("side") or "").lower()
     mech_ver = getattr(dossier.condition, "MECHANICAL_CONTRACT_VERSION", "p2_strict@1")
+    lossless_repairs = [
+        dict(r) if isinstance(r, Mapping) else {"kind": str(r)}
+        for r in (parsed_reply.get("lossless_repairs") or ())
+    ]
+    warnings: list[str] = [
+        f"lossless_repair:{r.get('kind')}:{r.get('field')}" if r.get("field") else f"lossless_repair:{r.get('kind')}"
+        for r in lossless_repairs
+    ]
 
     excerpt_checks: dict[str, Any] = {}
     blocking_errors: list[str] = []
@@ -1015,10 +1247,20 @@ def validate_initial_reply_contract(
                 blocking_errors.append(f"j1_excerpt_wrong_section:{key}:{chk.get('section')}")
 
     if action != "Accept":
+        rec_cit = _compute_recoverable_citation_only(
+            raw_text=raw_text,
+            blocking_errors=blocking_errors,
+            excerpt_checks=excerpt_checks,
+            contract=None,
+            m1_kwargs=None,
+        )
         return {
             "status": "CONTRACT_FAILED" if blocking_errors else "PASSED",
             "audit_scope": "NON_ACCEPT_J1_ONLY",
             "mechanical_contract_version": mech_ver,
+            "recoverable_citation_only": rec_cit,
+            "warnings": warnings,
+            "lossless_repairs": lossless_repairs,
             "layer1_deterministic": {
                 "valid": not blocking_errors,
                 "blocking_errors": blocking_errors,
@@ -1035,6 +1277,9 @@ def validate_initial_reply_contract(
             "status": "CONTRACT_FAILED",
             "audit_scope": "ACCEPT_FULL_CONTRACT",
             "mechanical_contract_version": mech_ver,
+            "recoverable_citation_only": False,
+            "warnings": warnings,
+            "lossless_repairs": lossless_repairs,
             "layer1_deterministic": {
                 "valid": False,
                 "blocking_errors": blocking_errors,
@@ -1067,14 +1312,27 @@ def validate_initial_reply_contract(
                         blocking_errors.append(f"j1_excerpt_wrong_section:condition_plan.{key}:{chk.get('section')}")
 
     if check_excerpt_completeness:
+        non_m_named = [
+            *((k, decision.get(k)) for k in ("put", "call", "comparison", "put_counter", "call_counter")),
+            *((f"condition_plan.{k}", plan.get(k)) for k in ("historical_facts", "accepted_conditions")),
+        ]
+        for idx_a in range(len(non_m_named)):
+            name_a, val_a = non_m_named[idx_a]
+            norm_a = _strip_section_label_prefix(_norm_review_excerpt(val_a))
+            if len(norm_a) < 24:
+                continue
+            for idx_b in range(idx_a + 1, len(non_m_named)):
+                name_b, val_b = non_m_named[idx_b]
+                norm_b = _strip_section_label_prefix(_norm_review_excerpt(val_b))
+                if len(norm_b) < 24:
+                    continue
+                if norm_a == norm_b or norm_a in norm_b or norm_b in norm_a:
+                    warnings.append(f"j1_non_critical_duplicate_excerpt:{name_a}:{name_b}")
         conf_raw = plan.get("confirmation_excerpt")
         norm_conf = _norm_review_excerpt(conf_raw)
         if norm_conf:
             conf_body = _strip_section_label_prefix(norm_conf)
-            non_m_candidates = [
-                *(decision.get(k) for k in ("put", "call", "comparison", "put_counter", "call_counter")),
-                *(plan.get(k) for k in ("historical_facts", "accepted_conditions")),
-            ]
+            non_m_candidates = [val for _, val in non_m_named]
             is_dup = bool(
                 re.match(r"^(?:两侧|双侧)?(?:对比|比较)(?:与)?(?:择优|结论)\s*[：:]", str(conf_raw or "").strip())
             )
@@ -1112,6 +1370,9 @@ def validate_initial_reply_contract(
             "status": "UNEVALUABLE_MISSING_CONTRACT",
             "audit_scope": "ACCEPT_FULL_CONTRACT",
             "mechanical_contract_version": mech_ver,
+            "recoverable_citation_only": False,
+            "warnings": warnings,
+            "lossless_repairs": lossless_repairs,
             "layer1_deterministic": {
                 "valid": False,
                 "blocking_errors": [*blocking_errors, "missing_valid_contract"],
@@ -1167,10 +1428,20 @@ def validate_initial_reply_contract(
         and plan["check_interval_ms"] % dossier.MINUTE == 0
         else None
     )
+    rec_cit = _compute_recoverable_citation_only(
+        raw_text=raw_text,
+        blocking_errors=blocking_errors,
+        excerpt_checks=excerpt_checks,
+        contract=contract,
+        m1_kwargs=m1_kwargs,
+    )
     return {
         "status": "CONTRACT_FAILED" if blocking_errors else "PASSED",
         "audit_scope": "ACCEPT_FULL_CONTRACT",
         "mechanical_contract_version": mech_ver,
+        "recoverable_citation_only": rec_cit,
+        "warnings": warnings,
+        "lossless_repairs": lossless_repairs,
         "layer1_deterministic": {
             "valid": not blocking_errors,
             "blocking_errors": blocking_errors,
@@ -1309,16 +1580,24 @@ def parse_initial_reply(
         must_require_outside = effective_strict
     eff_contracts = contracts if contracts is not None else (req_payload.get("metadata") or {}).get("contract_pair")
 
-    public_text, payload = _split_tagged_json(llm_result["text"], "ANNOTATION_JSON")
+    public_text, payload, format_repairs = _split_tagged_json_with_repairs(llm_result["text"], "ANNOTATION_JSON")
     if not public_text.strip():
         raise ValueError("empty public decision text")
     raw_bytes = (public_text + "\n").encode("utf-8")
+    lossless_repairs: list[dict[str, Any]] = [{"kind": kind} for kind in format_repairs]
+    labeled_sections = dossier.extract_labeled_sections(public_text) if effective_strict else {}
 
     excerpt_keys = ("put", "call", "comparison", "put_counter", "call_counter")
-    annotation = {
-        **{k: payload.get(k) for k in excerpt_keys},
-        "depends_on_ard": payload.get("depends_on_ard"),
-    }
+    annotation: dict[str, Any] = {"depends_on_ard": payload.get("depends_on_ard")}
+    for k in excerpt_keys:
+        val_k = payload.get(k)
+        if effective_strict:
+            val_k, rep_k = _expand_unambiguous_labeled_excerpt(
+                val_k, public_text, expected_section=k, sections=labeled_sections,
+            )
+            if rep_k is not None:
+                lossless_repairs.append(rep_k)
+        annotation[k] = val_k
 
     def _raise_strict_contract_precheck(
         err_code: str,
@@ -1452,7 +1731,15 @@ def parse_initial_reply(
                         contract_validation=report,
                     )
                 raise ValueError(f"condition_plan.{key} must be a verbatim excerpt from public text")
-            parsed_plan[key] = val.strip()
+            val_clean = val.strip()
+            if effective_strict and key in {"historical_facts", "accepted_conditions", "confirmation_excerpt"}:
+                val_clean, rep_plan_k = _expand_unambiguous_labeled_excerpt(
+                    val_clean, public_text, expected_section=key, sections=labeled_sections,
+                )
+                if rep_plan_k is not None:
+                    rep_plan_k["field"] = f"condition_plan.{key}"
+                    lossless_repairs.append(rep_plan_k)
+            parsed_plan[key] = val_clean
 
     parsed = {
         "raw_bytes": raw_bytes,
@@ -1461,6 +1748,7 @@ def parse_initial_reply(
         "annotation": annotation,
         "condition_plan": parsed_plan,
         "decision": decision,
+        "lossless_repairs": lossless_repairs,
         "usage": llm_result.get("usage"),
         "model": llm_result.get("model") or req_payload["model"],
         "http_status": llm_result.get("http_status"),
