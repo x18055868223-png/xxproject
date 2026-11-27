@@ -54,6 +54,8 @@ export const api = {
     return read(`${BASE}/inquiry?${q}`);
   },
   verification: (id) => read(`${BASE}/decision-path/${encodeURIComponent(id)}`),
+  // Live execution is read-only on this page: one GET, no session, control or write route.
+  execLive: () => read(`${BASE}/execution/live`),
   post: (path, body) => fetch(`${BASE}${path}`, {
     method: "POST", credentials: "same-origin",
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

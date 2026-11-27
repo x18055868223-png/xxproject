@@ -11,6 +11,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
 <link rel="modulepreload" href="api.js">
 <link rel="modulepreload" href="format.js">
 <link rel="modulepreload" href="current-hand.js">
+<link rel="modulepreload" href="execution.js">
 <script type="module" src="current-hand.js"></script>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -23,6 +24,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     <div class="state" id="fact-state"><i class="lamp"></i><span>FMZ 事实</span></div>
     <a class="state" id="sources" href="#src-h"><i class="lamp"></i><span>来源</span></a>
     <a class="state" id="lock-state" href="#lock-h" hidden><i class="lamp"></i><span>追踪中</span></a>
+    <a class="state" id="exec-state" href="#exec-h" hidden><i class="lamp"></i><span>执行</span></a>
     <div class="state" id="budget" hidden><span>今日复核 —</span></div>
     <div class="state" id="refreshed"><span>—</span></div>
     <div class="strip-actions">
@@ -78,7 +80,7 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
     <div class="sheet pad events" id="events"></div>
   </section>
 
-  <div class="layer"><b>业务层</b><span>这张保单怎么办：本期双侧候选对照、锁定追踪、每日交割卷宗与 AI 牌手审计</span></div>
+  <div class="layer"><b>业务层</b><span>这张保单怎么办：本期双侧候选对照、实盘执行、锁定追踪、每日交割卷宗与 AI 牌手审计</span></div>
 
   <section class="band" aria-labelledby="deck-h">
     <div class="band-head">
@@ -97,6 +99,14 @@ try { const t = localStorage.getItem("astra-theme"); if (t === "dark" || t === "
       <p>Decision Path：按固定读序核验一张具体保单；锁定是核验的一种结论</p>
     </div>
     <div class="sheet pad decision" id="decision"></div>
+  </section>
+
+  <section class="band" id="exec-band" aria-labelledby="exec-h">
+    <div class="band-head">
+      <h2 id="exec-h">实盘执行</h2>
+      <p id="exec-sub">AI 牌手决策、执行器动作、真实仓位与这一局如何结束；只读</p>
+    </div>
+    <div class="sheet exec-sheet" id="exec-live"></div>
   </section>
 
   <section class="band" aria-labelledby="lock-h">

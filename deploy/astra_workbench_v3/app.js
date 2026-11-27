@@ -14,6 +14,7 @@ import { auSummary, inquiryAudit, contractKey, toSummary } from "./inquiry.js";
 import { startupSession, initialView, loadCurrent, setSession, setUnauthorizedHandler } from "./current-hand.js";
 import { playerRef, renderPlayerAudit } from "./player-audit.js";
 import { humanize, evidenceName, fieldName, termName, SOURCE_CN, COMPONENT_CN } from "./glossary.js";
+import { renderExecution, execStripModel, execNeedsFastPoll, pickExecFixture } from "./execution.js";
 
 setUnauthorizedHandler(() => {
   authFailed({ status: 401 });
@@ -23,15 +24,20 @@ setUnauthorizedHandler(() => {
   }
 });
 
-const FIXTURE = new URLSearchParams(location.search).has("fixture");
+const PARAMS = new URLSearchParams(location.search);
+const FIXTURE = PARAMS.has("fixture");
+const EXEC_FIXTURE_KEY = PARAMS.get("exec_fixture");
+// Execution is always read-only here; this flag only switches its source to the simulated local fixture.
+const EXEC_SIMULATED = FIXTURE || PARAMS.has("exec_fixture");
 const POLL_MS = 30_000;
+const EXEC_FAST_POLL_MS = 10_000;  // only while an unsettled episode is on screen
 /**
  * The public HTTPS entry reads data only with a workbench session, so the page
  * asks for the token before it reads anything (no browser password dialog).
  * The private listener and the local preview read without one (`?gate=1`
  * previews the public behaviour there).
  */
-const SESSION_GATED = !FIXTURE && (location.protocol === "https:" || new URLSearchParams(location.search).has("gate"));
+const SESSION_GATED = !FIXTURE && (location.protocol === "https:" || PARAMS.has("gate"));
 const needsLogin = () => SESSION_GATED && !state.session.authenticated;
 const state = {
   view: null, sides: {}, focus: "put", auditRef: null, auditPoint: null,
@@ -43,6 +49,8 @@ const state = {
   // question sheets (docs/opus/14): responses by contract, the audit tab, a contract pinned from the audit step
   iq: { cache: {}, last: {}, mode: "player", pin: null, file: {}, q: null, ref: null, reveal: new Set() },
   player: { cards: [], ref: null, detail: null, originals: null, modelInputs: new Map(), modelInputsPending: new Map(), expanded: new Set(), seq: 0, indexSeq: 0, indexInFlight: 0, version: 0 },
+  exec: { status: null, error: null, loading: false, timer: null, seq: 0, fetchedAt: null,
+    fixtureKey: EXEC_FIXTURE_KEY, fixtureKeys: [], fixtureLabels: {}, fixtureAll: null },
   pending: null, error: null, loadedAt: null, busy: false,
   notices: [], open: new Set(), signature: null, reviewPoll: null,
 };
@@ -71,10 +79,11 @@ function signatureOf(view) {
 }
 
 async function load(force = false) {
-  if (needsLogin()) { renderBanners(); return; }
+  if (needsLogin()) { renderBanners(); renderExec(); return; }
   while (force && state.busy) await new Promise((r) => setTimeout(r, 200));
   if (state.busy) return;
   state.busy = true;
+  const execPromise = loadExec(force);
   let changed = true;
   try {
     const view = FIXTURE ? await fetchFixture() : await (initialView() || api.view());
@@ -96,9 +105,10 @@ async function load(force = false) {
   } finally {
     state.busy = false;
   }
-  if (needsLogin()) { renderBanners(); openLogin("会话已过期，请重新输入工作台令牌。"); return; }
+  await execPromise;
+  if (needsLogin()) { renderBanners(); renderExec(); openLogin("会话已过期，请重新输入工作台令牌。"); return; }
   // an unchanged view leaves the Decision Path alone, so a poll never re-draws under the cursor
-  if (changed || state.error) render(); else { renderStrip(); renderBanners(); renderDecks(); }
+  if (changed || state.error) render(); else { renderStrip(); renderBanners(); renderDecks(); renderExec(); }
   applyPlayerRoute();
   loadPlayerIndex();
   // The newest active lock opens by itself once; an open, active lock stays current with the page.
@@ -121,6 +131,70 @@ async function fetchFixture() {
   return r.json();
 }
 
+async function fetchExecFixture() {
+  // Simulated scenarios exist only on the local preview server; production has no such file.
+  const r = await fetch("fixtures/exec_states.json");
+  const raw = r.ok ? await r.json().catch(() => null) : null;
+  if (!raw || raw.simulated !== true) throw new Error("模拟情景只在本地预览提供");
+  return raw;
+}
+
+/** Read the execution status (GET only). Re-reads every 10 s while an unsettled episode is on screen. */
+async function loadExec(force = false) {
+  const E = state.exec;
+  if (needsLogin() && !EXEC_SIMULATED) { renderExec(); return; }
+  if (E.loading && !force) return;
+  E.loading = true;
+  const seq = ++E.seq;  // a slower, older read never overwrites a newer one
+  try {
+    if (EXEC_SIMULATED) {
+      const raw = E.fixtureAll || await fetchExecFixture();
+      E.fixtureAll = raw;
+      const picked = pickExecFixture(raw, E.fixtureKey);
+      if (!picked) throw new Error("模拟情景格式无效");
+      Object.assign(E, { status: picked.status, fixtureKey: picked.key, fixtureKeys: picked.keys, fixtureLabels: picked.labels });
+    } else {
+      const status = await api.execLive();
+      if (seq !== E.seq) return;
+      E.status = status;
+      E.fetchedAt = Date.now();
+    }
+    E.error = null;
+  } catch (err) {
+    if (seq !== E.seq) return;
+    E.error = err;
+    if (SESSION_GATED && err?.status === 401) { E.error = null; authFailed(err); }
+  } finally {
+    if (seq === E.seq) E.loading = false;
+  }
+  renderStrip();
+  renderExec();
+  clearTimeout(E.timer);
+  E.timer = !EXEC_SIMULATED && execNeedsFastPoll(E.status)
+    ? setTimeout(() => { if (!document.hidden) loadExec(); }, EXEC_FAST_POLL_MS) : null;
+}
+
+function renderExec() {
+  const box = $("exec-live");
+  if (!box) return;
+  renderExecution(box, state.exec, {
+    fixture: EXEC_SIMULATED,
+    fetchedAtMs: state.exec.fetchedAt,
+    needsLogin: needsLogin() && !EXEC_SIMULATED,
+    moreOpen: state.open.has("exec:more"),
+    onToggleMore: (open) => { if (open) state.open.add("exec:more"); else state.open.delete("exec:more"); },
+    onPickFixture: (key) => {
+      if (!EXEC_SIMULATED || !state.exec.fixtureAll) return;
+      const picked = pickExecFixture(state.exec.fixtureAll, key);
+      if (!picked) return;
+      state.exec.fixtureKey = picked.key;
+      state.exec.status = picked.status;
+      renderStrip();
+      renderExec();
+    },
+  });
+}
+
 async function loadSession(initial = false) {
   if (FIXTURE) return;
   // Only a 401 means logged out; a busy or unreachable server keeps the session it had.
@@ -131,6 +205,7 @@ async function loadSession(initial = false) {
   renderSession();
   setSession(state.session.authenticated);
   renderSides();  // the first view may have rendered before the session was known
+  renderExec();
   if (state.view?.player_audit_available !== false) {
     if (state.session.authenticated) loadPlayerIndex();
     else {
@@ -162,7 +237,7 @@ function watchReview() {
 function render() {
   // one section's failure must not blank the rest of the page
   for (const section of [renderStrip, renderBanners, renderMapBand, renderVerdict, renderDecks, renderDecision, renderFactors,
-    renderEvents, renderAudit, renderLocks, renderContext, renderRecords, renderFoot]) {
+    renderEvents, renderAudit, renderExec, renderLocks, renderContext, renderRecords, renderFoot]) {
     try { section(); } catch (err) { console.error(section.name, err); }
   }
 }
@@ -212,6 +287,15 @@ function renderStrip() {
   const lk = $("lock-state");
   lk.hidden = !activeLocks;
   if (activeLocks) setLamp(lk, "ok", `追踪中 ${activeLocks}`);
+  const ex = $("exec-state");
+  if (ex) {
+    const exModel = execStripModel(state.exec.status, state.exec.error, { fixture: EXEC_SIMULATED, fetchedAtMs: state.exec.fetchedAt });
+    ex.hidden = Boolean(exModel.hidden);
+    if (!exModel.hidden) {
+      setLamp(ex, exModel.level, exModel.text);
+      ex.title = exModel.title || "";
+    }
+  }
   if ($("budget")) $("budget").hidden = true;
   $("refreshed").textContent = state.error ? (busy(state.error) ? "繁忙，稍后重试" : "读取失败") : `更新于 ${ago(v.updated_at_ms)}`;
 }
@@ -1426,7 +1510,11 @@ function authFailed(err) {
     Object.assign(P, { cards: [], detail: null, originals: null, originalsPending: null, loading: false,
       error: null, indexError: null, indexAt: 0, indexInFlight: 0,
       seq: P.seq + 1, indexSeq: P.indexSeq + 1, version: P.version + 1 });
-    renderSession(); renderAudit();
+    // a logged-out page keeps no execution reading on screen or in the status strip
+    const E = state.exec;
+    clearTimeout(E.timer);
+    if (!EXEC_SIMULATED) Object.assign(E, { status: null, error: null, fetchedAt: null, timer: null, seq: E.seq + 1, loading: false });
+    renderSession(); renderAudit(); renderExec(); renderStrip();
   }
 }
 
@@ -1660,7 +1748,7 @@ $("session-btn").addEventListener("click", async () => {
     try { await api.logout(); } catch {}
     // On the public entry the data was read under this session; leave nothing behind on screen.
     if (SESSION_GATED) { location.reload(); return; }
-    await loadSession(); renderSides(); renderLocks(); return;
+    await loadSession(); renderSides(); renderLocks(); renderExec(); return;
   }
   openLogin("");
 });
@@ -1684,7 +1772,8 @@ $("login-form").addEventListener("submit", async (e) => {
     $("login").close();
     await loadSession();
     if (SESSION_GATED && !state.view) await load(true);
-    renderSides(); renderLocks();
+    else if (SESSION_GATED) await loadExec(true);
+    renderSides(); renderLocks(); renderExec();
   } catch (err) {
     $("login-msg").textContent = loginFailure(err);
   }
@@ -1724,7 +1813,7 @@ window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer
 window.addEventListener("hashchange", applyPlayerRoute);
 $("banners").append(h("div", { class: "banner info" }, "正在读取工作台数据…"));
 if (SESSION_GATED) {
-  loadSession(true).then(() => (needsLogin() ? openLogin("") : load()));
+  loadSession(true).then(() => { if (needsLogin()) { renderExec(); openLogin(""); } else load(); });
 } else {
   load();
   loadSession();
@@ -1732,3 +1821,5 @@ if (SESSION_GATED) {
 setInterval(() => { if (!document.hidden) { loadCurrent(); load(); } }, POLL_MS);
 setInterval(() => { renderStrip(); renderEvents(); renderSessionClock(); }, 10_000);  // countdowns move between data refreshes
 setInterval(() => { if (!document.hidden) loadSession(); }, 5 * 60_000);
+// a tab coming back re-reads execution at once instead of waiting for the next page poll
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !EXEC_SIMULATED) loadExec(true); });
